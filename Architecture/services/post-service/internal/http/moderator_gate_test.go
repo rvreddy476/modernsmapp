@@ -97,6 +97,12 @@ func TestModeratorRoutesMatrix(t *testing.T) {
 	}
 }
 
+// Security sweep #11: the review-status and visibility writes used to admit
+// a gateway moderator (X-User-Id + X-Scopes) or the bare internal key. Both
+// are headers anyone holding the key can set, so neither is a credential any
+// more: every header-only caller is refused (401, no token) before the
+// service. reviewer-service's signed token is the one way in
+// (internal_write_tokens_test.go).
 func TestReviewStateRoutesActorRules(t *testing.T) {
 	r := newGateRouter()
 	postID := uuid.NewString()
@@ -107,20 +113,10 @@ func TestReviewStateRoutesActorRules(t *testing.T) {
 	for _, rt := range routes {
 		rt := rt
 		t.Run(rt.path, func(t *testing.T) {
-			if got := serveGate(r, http.MethodPost, rt.path, rt.body, callerUser).Code; got != http.StatusForbidden {
-				t.Errorf("user: status=%d want 403", got)
-			}
-			if got := serveGate(r, http.MethodPost, rt.path, rt.body, callerScopeOnly).Code; got != http.StatusUnauthorized {
-				t.Errorf("scope without user: status=%d want 401", got)
-			}
 			bad := gateCaller{name: "wrong key", key: "not-the-key"}
-			if got := serveGate(r, http.MethodPost, rt.path, rt.body, bad).Code; got != http.StatusUnauthorized {
-				t.Errorf("wrong key: status=%d want 401", got)
-			}
-			for _, who := range []gateCaller{callerModerator, callerAnon /* key only = service */} {
-				got := serveGate(r, http.MethodPost, rt.path, rt.body, who).Code
-				if got == http.StatusUnauthorized || got == http.StatusForbidden {
-					t.Errorf("%s: status=%d, legitimate caller refused", who.name, got)
+			for _, who := range []gateCaller{callerUser, callerScopeOnly, bad, callerModerator, callerAdmin, callerAnon /* key only */} {
+				if got := serveGate(r, http.MethodPost, rt.path, rt.body, who).Code; got != http.StatusUnauthorized {
+					t.Errorf("%s: status=%d want 401", who.name, got)
 				}
 			}
 		})

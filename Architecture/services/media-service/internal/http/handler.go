@@ -108,7 +108,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 		v1.POST("/confirm", authMW, h.ConfirmUpload)
 		v1.DELETE("/:mediaId", authMW, h.DeleteMedia)
 		v1.PATCH("/:mediaId/alt-text", authMW, h.UpdateAltText)
-		v1.POST("/upload/presigned", authMW, h.GetPresignedUploadURL)
+		// REMOVED (security sweep #6, 21 Oct 2026): POST /upload/presigned.
+		// It joined the client's filename raw into the object key, validated
+		// no MIME, no size and no magic bytes, had no rate limit, and no
+		// client or service called it. /init + /confirm and the resumable
+		// path are the two upload contracts; both validate.
 
 		// Cover frame extraction
 		v1.POST("/:mediaId/extract-frame", authMW, h.ExtractFrame)
@@ -714,38 +718,6 @@ func (h *Handler) UpdateAltText(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
-}
-
-type GetPresignedUploadURLRequest struct {
-	Filename    string `json:"filename" binding:"required"`
-	ContentType string `json:"content_type" binding:"required"`
-}
-
-func (h *Handler) GetPresignedUploadURL(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	var req GetPresignedUploadURLRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
-		return
-	}
-
-	res, err := h.svc.GetPresignedUploadURL(c.Request.Context(), userID, req.Filename, req.ContentType)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{
-		"upload_url": res.UploadURL,
-		"media_id":   res.MediaID,
-		"object_key": res.ObjectKey,
-		"expires_at": res.ExpiresAt,
-	}, nil)
 }
 
 // ─── Cover Frame Extraction ────────────────────────────────────────

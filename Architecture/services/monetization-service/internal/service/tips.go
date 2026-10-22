@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -68,6 +69,11 @@ func (s *Service) SendTip(ctx context.Context, in SendTipInput) (*TipResult, err
 	if err := validateTipInput(&in); err != nil {
 		return nil, err
 	}
+	// Security sweep #16: a block in either direction refuses the tip
+	// BEFORE the cap query, the wallets or the ledger are touched.
+	if err := s.checkTipNotBlocked(ctx, in.SenderID, in.RecipientID); err != nil {
+		return nil, err
+	}
 
 	// Per-pair daily cap. SQL sum is the source of truth (Redis would
 	// be faster but Redis truth-of-cap drifts under failures; we'd
@@ -126,6 +132,49 @@ func (s *Service) SendTip(ctx context.Context, in SendTipInput) (*TipResult, err
 	}
 
 	return &TipResult{Tip: tip}, nil
+}
+
+// TipBlockChecker is the one graph question SendTip asks: is there a block
+// between a and b, in either direction? graph.Client in production
+// (internal/client/graph); a fake in tests.
+type TipBlockChecker interface {
+	BlockedEitherWay(ctx context.Context, a, b uuid.UUID) (bool, error)
+}
+
+// WithTipBlockChecker wires the block lookup SendTip asks first. Unwired,
+// every tip is refused (ErrTipUnavailable): this is a money path, and "we
+// could not tell" is not "nobody is blocked".
+func (s *Service) WithTipBlockChecker(c TipBlockChecker) *Service {
+	s.tipBlocks = c
+	return s
+}
+
+var (
+	// ErrTipNotAllowed refuses a tip across a block. The wording never
+	// says "blocked": the blocked party must not learn of the block from
+	// the error (graph-service permission.go, "never 'blocked'"), so the
+	// sender reads only that this tip cannot be sent.
+	ErrTipNotAllowed = errors.New("TIP_NOT_ALLOWED: this tip can't be sent")
+	// ErrTipUnavailable: the block lookup did not answer (graph down, not
+	// configured, malformed). Fail closed; the sender may retry.
+	ErrTipUnavailable = errors.New("TIP_UNAVAILABLE: tips can't be sent right now")
+)
+
+// checkTipNotBlocked is the block gate in front of SendTip (security sweep
+// #16, 21 Oct 2026). Before it, a user the creator had blocked could still
+// pay them, with a message attached, once writes opened.
+func (s *Service) checkTipNotBlocked(ctx context.Context, sender, recipient uuid.UUID) error {
+	if s.tipBlocks == nil {
+		return ErrTipUnavailable
+	}
+	blocked, err := s.tipBlocks.BlockedEitherWay(ctx, sender, recipient)
+	if err != nil {
+		return ErrTipUnavailable
+	}
+	if blocked {
+		return ErrTipNotAllowed
+	}
+	return nil
 }
 
 // ListSentTips paginates the caller's outgoing tips.

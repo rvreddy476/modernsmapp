@@ -31,6 +31,21 @@ type Handler struct {
 	// permissions serves /v1/permissions/check and /check-batch. It is svc in
 	// production; tests substitute a fake to pin the response shape.
 	permissions permissionResolver
+	// connections serves the follower / following list routes and the
+	// audience rule in front of them (connections_rule.go). It is svc in
+	// production; tests substitute a fake.
+	connections connectionsReader
+}
+
+// connectionsReader is the slice of the service the connection-list routes
+// need: the lists themselves and the three facts the audience rule asks.
+type connectionsReader interface {
+	IsBlockedBy(ctx context.Context, blockerID, candidateID uuid.UUID) (bool, error)
+	IsFollowing(ctx context.Context, followerID, followeeID uuid.UUID) (bool, error)
+	IsPrivateAccount(ctx context.Context, userID uuid.UUID) bool
+	GetFollowers(ctx context.Context, userID uuid.UUID, limit, offset int) ([]uuid.UUID, error)
+	GetFollowing(ctx context.Context, userID uuid.UUID, limit, offset int) ([]uuid.UUID, error)
+	GetFollowingIDs(ctx context.Context, userID uuid.UUID, limit int) ([]uuid.UUID, error)
 }
 
 // permissionResolver is the slice of the service the permission routes need.
@@ -55,7 +70,7 @@ func (h *Handler) WithCanonicalWriteSource(strict bool, warn func(string, ...any
 }
 
 func New(svc *service.Service) *Handler {
-	return &Handler{svc: svc, relationships: svc, permissions: svc}
+	return &Handler{svc: svc, relationships: svc, permissions: svc, connections: svc}
 }
 
 // WithInternalKey sets the internal service key used to authenticate
@@ -86,10 +101,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/counts/:userId", h.GetCounts)
 		v1.GET("/followers/:userId", h.GetFollowers)
 		v1.GET("/following/:userId", h.GetFollowing)
-		// GetFollowingIDs is a slim variant used by search-service to
-		// drive author-affinity in function_score ranking. Returns up
-		// to 500 IDs in one shot, no pagination overhead, no privacy
-		// gate (it's internal-key gated at the engine level).
+		// GetFollowingIDs is a slim variant used by search-service,
+		// dating-service and live-service-v2 to drive author-affinity and
+		// "followed creators". Returns up to 500 IDs in one shot, no
+		// pagination overhead. It is mounted on the PUBLIC group, so it
+		// sits behind the same audience rule as the paginated lists
+		// (security sweep #7): the in-cluster callers name the owner as the
+		// viewer or no viewer at all, and pass; a user the owner blocked or
+		// a stranger to a private account gets the empty list.
 		v1.GET("/:userId/following-ids", h.GetFollowingIDs)
 		v1.GET("/mutuals", h.GetMutualFollowers)
 
@@ -560,6 +579,10 @@ func (h *Handler) Block(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Block(c.Request.Context(), blockerID, blockedID); err != nil {
+		if errors.Is(err, service.ErrRateLimited) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -627,7 +650,7 @@ func (h *Handler) GetFollowers(c *gin.Context) {
 		api.JSON(c.Writer, http.StatusOK, gin.H{"items": ids, "next_cursor": next}, nil)
 		return
 	}
-	ids, err := h.svc.GetFollowers(c.Request.Context(), userID, limit, offset)
+	ids, err := h.connections.GetFollowers(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -660,7 +683,7 @@ func (h *Handler) GetFollowing(c *gin.Context) {
 		api.JSON(c.Writer, http.StatusOK, gin.H{"items": ids, "next_cursor": next}, nil)
 		return
 	}
-	ids, err := h.svc.GetFollowing(c.Request.Context(), userID, limit, offset)
+	ids, err := h.connections.GetFollowing(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -672,14 +695,19 @@ func (h *Handler) GetFollowing(c *gin.Context) {
 }
 
 // GetFollowingIDs handles GET /v1/graph/:userId/following-ids?limit=500.
-// Internal endpoint used by search-service (and any future personalization
-// layer) to fetch the follow graph slice that drives author-affinity
-// boosts. Cap is 500 so the resulting OpenSearch `terms` array stays
-// bounded.
+// Used by search-service, dating-service and live-service-v2 to fetch the
+// follow graph slice that drives author-affinity boosts and "followed
+// creators". Cap is 500 so the resulting OpenSearch `terms` array stays
+// bounded. Same audience rule as the paginated lists (security sweep #7):
+// a refused caller gets the empty page, not an error.
 func (h *Handler) GetFollowingIDs(c *gin.Context) {
 	userID, err := uuid.Parse(c.Param("userId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid userId", nil)
+		return
+	}
+	if !h.callerAllowedToReadConnections(c, userID) {
+		api.JSON(c.Writer, http.StatusOK, gin.H{"items": []uuid.UUID{}, "count": 0}, nil)
 		return
 	}
 	limit := 500
@@ -688,7 +716,7 @@ func (h *Handler) GetFollowingIDs(c *gin.Context) {
 			limit = v
 		}
 	}
-	ids, err := h.svc.GetFollowingIDs(c.Request.Context(), userID, limit)
+	ids, err := h.connections.GetFollowingIDs(c.Request.Context(), userID, limit)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -697,29 +725,6 @@ func (h *Handler) GetFollowingIDs(c *gin.Context) {
 		ids = []uuid.UUID{}
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"items": ids, "count": len(ids)}, nil)
-}
-
-// callerAllowedToReadConnections returns false when the X-User-Id
-// caller is non-empty, distinct from the owner whose connections are
-// being viewed, and present in the owner's blocked set. Missing /
-// invalid X-User-Id (internal callers, unauthenticated) and self-views
-// always pass — the block rule only suppresses the blocked user's view.
-func (h *Handler) callerAllowedToReadConnections(c *gin.Context, ownerID uuid.UUID) bool {
-	rawCaller := c.GetHeader("X-User-Id")
-	if rawCaller == "" {
-		return true
-	}
-	callerID, err := uuid.Parse(rawCaller)
-	if err != nil || callerID == ownerID {
-		return true
-	}
-	blocked, err := h.svc.IsBlockedBy(c.Request.Context(), ownerID, callerID)
-	if err != nil {
-		// Fail open on graph-store errors — surfacing a 500 here would
-		// break the entire profile screen for healthy callers.
-		return true
-	}
-	return !blocked
 }
 
 func (h *Handler) GetMutualFollowers(c *gin.Context) {
@@ -987,6 +992,10 @@ func (h *Handler) Unblock(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Unblock(c.Request.Context(), blockerID, blockedID); err != nil {
+		if errors.Is(err, service.ErrRateLimited) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -1014,6 +1023,10 @@ func (h *Handler) Mute(c *gin.Context) {
 		return
 	}
 	if err := h.svc.Mute(c.Request.Context(), userID, mutedID); err != nil {
+		if errors.Is(err, service.ErrRateLimited) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -1038,7 +1051,14 @@ func (h *Handler) Unmute(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid target user ID", nil)
 		return
 	}
-	h.svc.Unmute(c.Request.Context(), userID, mutedID)
+	if err := h.svc.Unmute(c.Request.Context(), userID, mutedID); err != nil {
+		if errors.Is(err, service.ErrRateLimited) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil)
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		return
+	}
 	c.Status(http.StatusNoContent)
 }
 

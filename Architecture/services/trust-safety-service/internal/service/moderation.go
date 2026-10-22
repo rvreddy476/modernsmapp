@@ -89,6 +89,9 @@ type Service struct {
 	// restrictionKick wakes the dispatcher after a committed transition.
 	copyright       copyrightStore
 	restrictionKick func()
+	// reporterVolume overrides the per-reporter quota counter (reporter_quota.go);
+	// nil means store.
+	reporterVolume reporterVolume
 }
 
 func New(store *postgres.ReportStore, kafkaWriter *kafka.Writer) *Service {
@@ -151,6 +154,14 @@ func (s *Service) FileReportWith(ctx context.Context, in FileReportInput) (*post
 	entityID, entityKey, err := ResolveReportEntity(entityType, entityRef)
 	if err != nil {
 		return nil, err
+	}
+
+	// 1d. The per-reporter volume cap (security sweep #23), user-facing
+	// filings only, after validation so a malformed request costs nothing.
+	if in.EnforceReporterQuota {
+		if err := s.checkReporterQuota(ctx, reporterID); err != nil {
+			return nil, err
+		}
 	}
 
 	// The database partial unique index is the concurrency-safe duplicate

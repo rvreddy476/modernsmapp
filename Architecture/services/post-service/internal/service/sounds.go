@@ -61,13 +61,13 @@ import (
 
 const (
 	// MaxSoundSourceMs is the longest video a sound is taken from.
-	MaxSoundSourceMs = 300 * 1000
+	MaxSoundSourceMs = 600 * 1000 // ten minutes (founder, 2026-10-21; was five)
 	// SoundUseLimitPerHour bounds how many sounds one account may ask
 	// media-service to make in an hour.
 	SoundUseLimitPerHour = 30
 
 	// soundMakeTimeout bounds one call to media-service's sound route. It
-	// runs ffmpeg over a rendition of up to five minutes on first use, so
+	// runs ffmpeg over a rendition of up to ten minutes on first use, so
 	// it is well above the 5 s of the shared client.
 	soundMakeTimeout = 30 * time.Second
 

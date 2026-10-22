@@ -238,6 +238,11 @@ func (s *itPostStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write(body)
 		return
 	}
+	if !strings.HasPrefix(r.Header.Get(restriction.HeaderServiceAuthorization), "Bearer ") {
+		s.t.Errorf("stub: command without its service token")
+		w.WriteHeader(401)
+		return
+	}
 	var req struct {
 		Claims     moderationcap.RestrictionClaims `json:"claims"`
 		Capability string                          `json:"capability"`
@@ -275,7 +280,17 @@ func newITStub(t *testing.T) (*itPostStub, *restriction.Client, string) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	return stub, restriction.New(restriction.Config{BaseURL: srv.URL, InternalKey: "k", Signer: signer}), srv.URL
+	// Every command also carries a post:restrictions.write token (security
+	// sweep #11); the stub checks the key and the capability, as before.
+	_, priv, err := servicetoken.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens, err := servicetoken.NewSignerFromBase64(restriction.Issuer, "t1", priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return stub, restriction.New(restriction.Config{BaseURL: srv.URL, InternalKey: "k", Signer: signer, Tokens: tokens}), srv.URL
 }
 
 // sends counts how often the stub saw decision id.

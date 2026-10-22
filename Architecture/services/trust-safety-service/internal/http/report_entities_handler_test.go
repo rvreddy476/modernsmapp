@@ -1,10 +1,12 @@
 package http
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/atpost/trust-safety-service/internal/service"
 	"github.com/gin-gonic/gin"
@@ -43,5 +45,28 @@ func TestFileReportRejectsBadEntityIDsWith400(t *testing.T) {
 				t.Fatalf("body %s does not say %q", rec.Body.String(), tc.wantMsg)
 			}
 		})
+	}
+}
+
+// Security sweep #23: the user-facing route enforces the per-reporter cap
+// and answers 429 RATE_LIMITED, never 500 and never a write.
+type capReached struct{}
+
+func (capReached) CountReportsByReporterSince(context.Context, uuid.UUID, time.Time) (int, error) {
+	return service.ReporterReportLimit, nil
+}
+
+func TestFileReportOverTheCapIs429(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	h := New(service.New(nil, nil).WithReporterVolume(capReached{}))
+	r := gin.New()
+	r.POST("/v1/reports", h.FileReport)
+	req := httptest.NewRequest(http.MethodPost, "/v1/reports", strings.NewReader(`{"entity_type":"post","entity_id":"`+uuid.NewString()+`","reason":"spam"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-Id", uuid.NewString())
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	if rec.Code != http.StatusTooManyRequests || !strings.Contains(rec.Body.String(), "RATE_LIMITED") {
+		t.Fatalf("status %d body %s, want 429 RATE_LIMITED", rec.Code, rec.Body.String())
 	}
 }

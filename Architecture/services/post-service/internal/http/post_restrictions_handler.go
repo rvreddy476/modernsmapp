@@ -20,19 +20,38 @@ import (
 // Restriction commands and the reconciliation read (Copyright Match plan,
 // sections 3, 6.2, 9.2).
 //
-//	POST /v1/posts/internal/restrictions            internal key + post_restriction capability
+//	POST /v1/posts/internal/restrictions            internal key + service token post:restrictions.write + post_restriction capability
 //	GET  /v1/posts/internal/restrictions?...        internal key + service token post:restrictions.read (trust-safety)
 //
 // Both sit behind the internal-key gate every /v1 route gets (401 without
-// it). The command is judged by the signed capability alone: no header
-// identity is read, and no other caller or key can produce one.
+// it). The command is judged by the signed capability (which no other
+// caller or key can produce) AND, since the security sweep of 21 Oct 2026
+// (#11), by a trust-safety service token: the shared key is stamped on
+// every proxied request by the gateway, so it proves nothing about who is
+// calling, and every /internal WRITE now names its caller with a signed
+// token the way /v1/posts/internal/admin does.
 
 const (
 	// IssuerTrustSafety is the only caller whose service tokens reach the
-	// reconciliation read.
+	// restriction routes and the moderation command.
 	IssuerTrustSafety = moderationcap.IssuerTrustSafety
+	// IssuerReviewerService is the only caller whose tokens reach the
+	// review-status and visibility writes (its ML pre-filter and promotion
+	// worker).
+	IssuerReviewerService = "reviewer-service"
 	// OpRestrictionsRead is the service-token operation the read requires.
 	OpRestrictionsRead = "post:restrictions.read"
+	// OpRestrictionsWrite is the operation POST .../restrictions requires.
+	OpRestrictionsWrite = "post:restrictions.write"
+	// OpModerationWrite is the operation POST .../internal/moderation requires.
+	OpModerationWrite = "post:moderation.write"
+	// OpReviewStatusWrite / OpVisibilityWrite are the operations the
+	// review-status and visibility writes require.
+	OpReviewStatusWrite = "post:review-status.write"
+	OpVisibilityWrite   = "post:visibility.write"
+
+	// ctxServiceIssuer carries the admitted token's issuer to the handler.
+	ctxServiceIssuer = "post_service_token_issuer"
 
 	CodeInvalidRestrictionClaims = "INVALID_CLAIMS"
 	CodeSourceNotEnabled         = "SOURCE_NOT_ENABLED"
@@ -155,13 +174,25 @@ func (h *Handler) ApplyPostRestriction(c *gin.Context) {
 }
 
 // requireTrustSafetyToken admits ONLY a trust-safety-service token carrying
-// op. No token → 401; anything else wrong → 403. Same verifier and header
-// as the admin family, a different pinned issuer.
+// op. See requireServiceToken.
 func (h *Handler) requireTrustSafetyToken(op string) gin.HandlerFunc {
+	return h.requireServiceToken(IssuerTrustSafety, op)
+}
+
+// requireServiceToken admits ONLY a token from issuer carrying op. No
+// token → 401; anything else wrong (bad signature, unknown caller, wrong
+// audience, expired, scope missing, another issuer) → 403. Same verifier
+// and header as the admin family, a pinned issuer per route. Identity
+// headers are stripped from an admitted request so no reused handler can
+// read them; the issuer is recorded for the handler (serviceIssuer).
+func (h *Handler) requireServiceToken(issuer, op string) gin.HandlerFunc {
+	if issuer == "" || op == "" {
+		panic("post: requireServiceToken needs the route's issuer and operation")
+	}
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
 		if rawServiceToken(c) == "" {
-			api.ErrorWithContext(ctx, c.Writer, http.StatusUnauthorized, CodeAdminTokenRequired, "a trust-safety-service token is required", nil)
+			api.ErrorWithContext(ctx, c.Writer, http.StatusUnauthorized, CodeAdminTokenRequired, "a "+issuer+" token is required", nil)
 			c.Abort()
 			return
 		}
@@ -176,13 +207,13 @@ func (h *Handler) requireTrustSafetyToken(op string) gin.HandlerFunc {
 			if errors.Is(err, servicetoken.ErrScopeDenied) {
 				code = CodeAdminPermissionScope
 			}
-			slog.WarnContext(ctx, "post: restrictions read token refused", "reason", err.Error())
+			slog.WarnContext(ctx, "post: service token refused", "reason", err.Error(), "path", c.Request.URL.Path)
 			api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, code, "service token rejected", gin.H{"required": op})
 			c.Abort()
 			return
 		}
-		if verified.Issuer != IssuerTrustSafety {
-			slog.WarnContext(ctx, "post: restrictions read called by another service", "issuer", verified.Issuer)
+		if verified.Issuer != issuer {
+			slog.WarnContext(ctx, "post: internal route called by another service", "issuer", verified.Issuer, "path", c.Request.URL.Path)
 			api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, CodeServiceTokenRejected, "service token rejected", nil)
 			c.Abort()
 			return
@@ -190,8 +221,19 @@ func (h *Handler) requireTrustSafetyToken(op string) gin.HandlerFunc {
 		for _, name := range identityHeaders {
 			c.Request.Header.Del(name)
 		}
+		c.Set(ctxServiceIssuer, verified.Issuer)
 		c.Next()
 	}
+}
+
+// serviceIssuer is the issuer of the token requireServiceToken admitted.
+func serviceIssuer(c *gin.Context) (string, bool) {
+	v, ok := c.Get(ctxServiceIssuer)
+	if !ok {
+		return "", false
+	}
+	issuer, _ := v.(string)
+	return issuer, issuer != ""
 }
 
 // ListPostRestrictions — GET /v1/posts/internal/restrictions

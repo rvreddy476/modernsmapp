@@ -150,9 +150,12 @@ type ChannelUpdate struct {
 	ContentSchedule *string
 }
 
-// UpdateChannel partially updates a channel — only non-nil fields are changed.
-func (s *Store) UpdateChannel(ctx context.Context, u *ChannelUpdate) error {
-	tag, err := s.db.Exec(ctx, `
+// updateChannelSQL is the owner-bound partial update. The ownership rule
+// lives in the WHERE clause (user_id = $12, bound to the caller by
+// updateChannelArgs): a non-owner's update matches no row and is answered
+// CHANNEL_NOT_FOUND. Pinned by TestChannelWritesAreOwnerBoundInSQL
+// (security sweep #28).
+const updateChannelSQL = `
 		UPDATE channels SET
 			name             = COALESCE($2, name),
 			description      = COALESCE($3, description),
@@ -166,9 +169,19 @@ func (s *Store) UpdateChannel(ctx context.Context, u *ChannelUpdate) error {
 			content_schedule = COALESCE($11, content_schedule),
 			updated_at       = NOW()
 		WHERE id = $1 AND user_id = $12
-	`, u.ID, u.Name, u.Description, u.AvatarMediaID, u.BannerMediaID,
+	`
+
+// updateChannelArgs binds u to updateChannelSQL's placeholders; $12 is the
+// caller (X-User-Id via the handler), never a body field.
+func updateChannelArgs(u *ChannelUpdate) []any {
+	return []any{u.ID, u.Name, u.Description, u.AvatarMediaID, u.BannerMediaID,
 		u.Category, u.Country, u.Language, u.ContactEmail,
-		u.CollabStatus, u.ContentSchedule, u.UserID)
+		u.CollabStatus, u.ContentSchedule, u.UserID}
+}
+
+// UpdateChannel partially updates a channel — only non-nil fields are changed.
+func (s *Store) UpdateChannel(ctx context.Context, u *ChannelUpdate) error {
+	tag, err := s.db.Exec(ctx, updateChannelSQL, updateChannelArgs(u)...)
 	if err != nil {
 		return err
 	}
@@ -177,6 +190,12 @@ func (s *Store) UpdateChannel(ctx context.Context, u *ChannelUpdate) error {
 	}
 	return nil
 }
+
+// deleteChannelSQL is the owner-bound delete: id = $1 AND user_id = $2 (the
+// caller). A non-owner matches no row, DeleteChannel answers
+// CHANNEL_NOT_FOUND and the deferred rollback undoes the link and milestone
+// deletes before it (security sweep #28).
+const deleteChannelSQL = `DELETE FROM channels WHERE id = $1 AND user_id = $2`
 
 // DeleteChannel removes a channel.
 func (s *Store) DeleteChannel(ctx context.Context, id, userID uuid.UUID) error {
@@ -194,7 +213,7 @@ func (s *Store) DeleteChannel(ctx context.Context, id, userID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	tag, err := tx.Exec(ctx, `DELETE FROM channels WHERE id = $1 AND user_id = $2`, id, userID)
+	tag, err := tx.Exec(ctx, deleteChannelSQL, id, userID)
 	if err != nil {
 		return err
 	}

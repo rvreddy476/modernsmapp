@@ -10,6 +10,7 @@ import (
 
 	"github.com/atpost/monetization-service/database"
 	"github.com/atpost/monetization-service/internal/buildinfo"
+	"github.com/atpost/monetization-service/internal/client/graph"
 	"github.com/atpost/monetization-service/internal/client/razorpayx"
 	"github.com/atpost/monetization-service/internal/events"
 	"github.com/atpost/monetization-service/internal/http"
@@ -156,6 +157,15 @@ func main() {
 		WithPayoutsEnabled(payoutsEnabled).
 		WithTDSSection(tdsSection).
 		WithTDSApply(mode.TDSApply)
+
+	// Security sweep #16: every tip asks graph-service for a block in either
+	// direction before the ledger is touched. Without GRAPH_SERVICE_URL every
+	// tip answers 503 TIP_UNAVAILABLE (a money path fails closed).
+	if graphClient := graph.New(os.Getenv("GRAPH_SERVICE_URL"), internalKey); graphClient != nil {
+		monetizationSvc.WithTipBlockChecker(graphClient)
+	} else {
+		slog.Warn("GRAPH_SERVICE_URL not set: tips cannot be block-checked and answer 503 TIP_UNAVAILABLE")
+	}
 
 	// 7b. The payout rail (plan Phase 4B). The RazorpayX client is
 	// constructed only when payouts are enabled AND all four credentials

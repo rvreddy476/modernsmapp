@@ -14,8 +14,12 @@ import (
 
 // RegisterReportRoutes registers content report endpoints.
 func (h *Handler) RegisterReportRoutes(r *gin.Engine) {
-	// User-facing: submit a report
-	r.POST("/v1/reports", h.SubmitReport)
+	// REMOVED (security sweep #23, 21 Oct 2026): POST /v1/reports. The
+	// gateway sends /v1/reports to trust-safety-service, which dedupes and
+	// caps reports; this copy had neither, and a comment report through it
+	// auto-hid the comment (comment_report_holds.go) — one user, any comment,
+	// if the prefix were ever repointed. The service-side SubmitReport stays
+	// for the consumers that call it in-process.
 
 	// Admin-facing: list and review reports. Moderator-or-higher scope is
 	// checked here, not left to gateway route order.
@@ -31,68 +35,6 @@ func (h *Handler) RegisterReportRoutes(r *gin.Engine) {
 		mod.GET("/moderation", h.ListFlaggedComments)
 		mod.PATCH("/:commentId/moderation", h.ModerateComment)
 	}
-}
-
-// SubmitReport handles POST /v1/reports
-func (h *Handler) SubmitReport(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	var body struct {
-		TargetType  string `json:"target_type" binding:"required"`
-		TargetID    string `json:"target_id" binding:"required"`
-		Reason      string `json:"reason" binding:"required"`
-		Description string `json:"description"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", nil)
-		return
-	}
-
-	targetID, err := uuid.Parse(body.TargetID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid target ID", nil)
-		return
-	}
-
-	// Validate target_type
-	validTypes := map[string]bool{"post": true, "comment": true, "reel": true, "video": true}
-	if !validTypes[body.TargetType] {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid target type", nil)
-		return
-	}
-
-	// Validate reason
-	validReasons := map[string]bool{
-		"spam": true, "harassment": true, "hate_speech": true,
-		"violence": true, "nudity": true, "misinformation": true, "other": true,
-	}
-	if !validReasons[body.Reason] {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid reason", nil)
-		return
-	}
-
-	report := &postgres.ContentReport{
-		ReporterID:  userID,
-		TargetType:  body.TargetType,
-		TargetID:    targetID,
-		Reason:      body.Reason,
-		Description: body.Description,
-	}
-
-	if err := h.svc.SubmitReport(c.Request.Context(), report); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to submit report", nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusCreated, map[string]interface{}{
-		"id":      report.ID,
-		"status":  "pending",
-		"message": "Report submitted successfully",
-	}, nil)
 }
 
 // ListReports handles GET /v1/admin/reports?status=pending&limit=50&offset=0

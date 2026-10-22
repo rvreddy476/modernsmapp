@@ -153,7 +153,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/:postId/bookmark", h.AddBookmark)
 		v1.DELETE("/:postId/bookmark", h.RemoveBookmark)
 		v1.POST("/:postId/resubmit", h.Resubmit)
-		v1.POST("/:postId/moderation", h.ModeratePost)
+		// RETIRED (security sweep #12, 21 Oct 2026): POST /:postId/moderation
+		// granted moderator rights from the X-Scopes header alone. The admin
+		// console's decision write is the token-only route
+		// /v1/posts/internal/admin/posts/:postId/moderation (admin_token.go).
 		v1.GET("/:postId/poll", h.GetPoll)
 		v1.POST("/:postId/vote", h.CastVote)
 
@@ -180,15 +183,23 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/:postId/series", h.GetPostSeries)
 	}
 
-	// Internal: reviewer-service ML pre-filter auto-resolves flagged content.
-	// Gateway blocks /internal/ from non-admins; direct service calls carry the key.
-	r.POST("/v1/posts/internal/review-status", h.SetReviewStatusInternal)
-	r.POST("/v1/posts/internal/visibility", h.SetVisibilityInternal)
+	// Internal WRITES (security sweep #11, 21 Oct 2026). The gateway refuses
+	// every /internal/ path at the edge, but it also stamps the shared
+	// X-Internal-Service-Key on every proxied request, so the key alone is
+	// no evidence of who is calling. Each write therefore needs a signed
+	// service token from its one caller (requireServiceToken), the way the
+	// admin family and the reconciliation read already did:
+	//
+	//   review-status, visibility   reviewer-service  (ML pre-filter, promotion worker)
+	//   moderation                  trust-safety      (appeal overturn; plus the post_moderation capability)
+	//   restrictions (POST)         trust-safety      (copyright holds; plus the post_restriction capability)
+	r.POST("/v1/posts/internal/review-status", h.requireServiceToken(IssuerReviewerService, OpReviewStatusWrite), h.SetReviewStatusInternal)
+	r.POST("/v1/posts/internal/visibility", h.requireServiceToken(IssuerReviewerService, OpVisibilityWrite), h.SetVisibilityInternal)
 	r.GET("/v1/posts/internal/moderation-subject/:postId", h.GetModerationSubjectInternal)
-	r.POST("/v1/posts/internal/moderation", h.ModeratePostInternal)
+	r.POST("/v1/posts/internal/moderation", h.requireTrustSafetyToken(OpModerationWrite), h.ModeratePostInternal)
 	// Case-specific restrictions (post_restrictions_handler.go): the
 	// signed command from trust-safety, and its reconciliation read.
-	r.POST("/v1/posts/internal/restrictions", h.ApplyPostRestriction)
+	r.POST("/v1/posts/internal/restrictions", h.requireTrustSafetyToken(OpRestrictionsWrite), h.ApplyPostRestriction)
 	r.GET("/v1/posts/internal/restrictions", h.requireTrustSafetyToken(OpRestrictionsRead), h.ListPostRestrictions)
 
 	// Events
@@ -1216,7 +1227,16 @@ func (h *Handler) GetAuthorCounts(c *gin.Context) {
 		return
 	}
 
-	counts, err := h.svc.GetAuthorCounts(c.Request.Context(), authorID)
+	// Same viewer rule as the listing beside it (security sweep #24): a
+	// stranger to a private account, or a viewer the author blocked, reads
+	// the counts of a profile they cannot see — zeros.
+	var viewerID *uuid.UUID
+	if v := c.GetHeader("X-User-Id"); v != "" {
+		if id, err := uuid.Parse(v); err == nil {
+			viewerID = &id
+		}
+	}
+	counts, err := h.svc.GetAuthorCountsForViewer(c.Request.Context(), authorID, viewerID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return

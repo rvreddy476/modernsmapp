@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/atpost/identity-auth-service/internal/middleware"
 	"github.com/atpost/identity-auth-service/internal/store"
 	"github.com/atpost/identity-shared/api"
 	"github.com/gin-gonic/gin"
@@ -149,8 +150,13 @@ func (h *Handler) RegisterWebAuthnRoutes(r *gin.Engine, authMW, csrfMW gin.Handl
 	authed.POST("/register/finish", h.passkeyRegisterFinish(wa))
 	authed.GET("", h.passkeyList)
 	authed.DELETE("/:id", h.passkeyDelete)
-	g.POST("/login/begin", h.passkeyLoginBegin(wa))
-	g.POST("/login/finish", h.passkeyLoginFinish(wa))
+	// Security sweep #25 (21 Oct 2026): the passkey sign-in pair is a
+	// sign-in like /login and /2fa/verify, so it sits behind the same
+	// limiter (10/IP + 5/identifier per 15 min). Before this, challenge
+	// minting and assertion attempts were bounded only by the gateway's
+	// generic per-IP limiter.
+	g.POST("/login/begin", middleware.LoginRateLimit(h.rdb), h.passkeyLoginBegin(wa))
+	g.POST("/login/finish", middleware.LoginRateLimit(h.rdb), h.passkeyLoginFinish(wa))
 }
 
 func callerUUID(c *gin.Context) (uuid.UUID, bool) {
@@ -262,12 +268,12 @@ func (h *Handler) passkeyLoginBegin(wa *webauthn.WebAuthn) gin.HandlerFunc {
 			return
 		}
 		// Challenge keys the single-use session; client echoes it on finish.
-		key := "wa:login:" + session.Challenge.String()
+		key := "wa:login:" + session.Challenge
 		if err := h.saveWAStore(c.Request.Context(), key, session); err != nil {
 			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "save session", nil, nil)
 			return
 		}
-		api.JSON(c.Writer, http.StatusOK, gin.H{"options": options, "session": session.Challenge.String()}, nil)
+		api.JSON(c.Writer, http.StatusOK, gin.H{"options": options, "session": session.Challenge}, nil)
 	}
 }
 

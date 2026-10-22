@@ -41,6 +41,32 @@ func TestAnonymousRoutesAreRegistered(t *testing.T) {
 	}
 }
 
+// Security sweep #6 (21 Oct 2026): the legacy presigned-PUT route — raw
+// filename in the object key, no MIME, size, magic-byte or rate check, and no
+// caller anywhere — is deleted. Only /init + /confirm and the resumable path
+// start an upload.
+func TestPresignedUploadRouteIsGone(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	h := New(service.New(postgres.New(nil), nil)).WithInternalKey("k")
+	h.RegisterRoutes(r, passthrough, passthrough)
+	h.RegisterResumableRoutes(r, passthrough)
+	uploads := map[string]bool{}
+	for _, ri := range r.Routes() {
+		if ri.Path == "/v1/media/upload/presigned" {
+			t.Fatalf("%s /v1/media/upload/presigned is still registered (%s)", ri.Method, ri.Handler)
+		}
+		if ri.Method == http.MethodPost && (ri.Path == "/v1/media/init" || ri.Path == "/v1/media/confirm" || strings.HasPrefix(ri.Path, "/v1/media/upload/")) {
+			uploads[ri.Path] = true
+		}
+	}
+	for _, want := range []string{"/v1/media/init", "/v1/media/confirm", "/v1/media/upload/resumable/init"} {
+		if !uploads[want] {
+			t.Errorf("POST %s is not registered; the validated upload contracts must stay", want)
+		}
+	}
+}
+
 func TestAnonymizeRouteAbsentWithoutInternalKey(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()

@@ -267,7 +267,12 @@ func TestHTTPPostCounts(t *testing.T) {
 	if n, err := c.PostCount(ctx, u); err != nil || n != 8 {
 		t.Fatalf("counts: %d %v", n, err)
 	}
-	f.checkCall(t, "/v1/posts/by-author/"+u.String()+"/counts")
+	// The creator reads their own counts AS the creator: post-service gates
+	// by-author counts on the viewer (security sweep #24), and an unnamed
+	// caller would read a private creator as zero posts.
+	if f.sawPath != "/v1/posts/by-author/"+u.String()+"/counts" || f.sawUser != u.String() || f.caller != "live-service-v2" {
+		t.Fatalf("path %q user %q caller %q; want the creator named as the viewer", f.sawPath, f.sawUser, f.caller)
+	}
 	// Nobody's author: post-service answers a total of zero.
 	f.body = `{"data":{"total":0}}`
 	if n, err := c.PostCount(ctx, u); err != nil || n != 0 {

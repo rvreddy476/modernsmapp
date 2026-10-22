@@ -159,6 +159,10 @@ type postStub struct {
 	seen     []moderationcap.RestrictionClaims
 	answers  []stubAnswer
 	listBody func(r *http.Request) (int, string)
+	// tokenV verifies the command's service token like post-service does;
+	// tokens is the matching signer the client under test mints with.
+	tokenV *servicetoken.Verifier
+	tokens *servicetoken.Signer
 }
 
 type stubAnswer struct {
@@ -181,6 +185,19 @@ func (s *postStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
+		return
+	}
+	// Security sweep #11: no write token, no command.
+	raw := strings.TrimPrefix(r.Header.Get(HeaderServiceAuthorization), "Bearer ")
+	if raw == "" {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":{"code":"ADMIN_SERVICE_TOKEN_REQUIRED"}}`))
+		return
+	}
+	if v, err := s.tokenV.Verify(raw, OpRestrictionsWrite, ""); err != nil || v.Issuer != Issuer {
+		s.t.Errorf("stub: command token refused: %v", err)
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"error":{"code":"SERVICE_TOKEN_REJECTED"}}`))
 		return
 	}
 	var req struct {
@@ -214,7 +231,19 @@ func (s *postStub) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func newStub(t *testing.T, answers ...stubAnswer) (*postStub, *httptest.Server) {
 	t.Helper()
-	s := &postStub{t: t, v: testVerifier(t), key: "k", answers: answers}
+	pub, priv, err := servicetoken.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens, err := servicetoken.NewSignerFromBase64(Issuer, "t1", priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenV := servicetoken.NewVerifier(Audience)
+	if err := tokenV.RegisterBase64(Issuer, "t1", pub, []string{OpRestrictionsRead, OpRestrictionsWrite}, nil); err != nil {
+		t.Fatal(err)
+	}
+	s := &postStub{t: t, v: testVerifier(t), key: "k", answers: answers, tokenV: tokenV, tokens: tokens}
 	srv := httptest.NewServer(s)
 	t.Cleanup(srv.Close)
 	return s, srv
@@ -233,7 +262,7 @@ func TestClient_Send_OutcomesAndRetryKeepTheDecision(t *testing.T) {
 		stubAnswer{422, `{"error":{"code":"INVALID_CLAIMS"}}`},
 		stubAnswer{500, `not json`},
 	)
-	c := New(Config{BaseURL: srv.URL, InternalKey: "k", Signer: testSigner(t)})
+	c := New(Config{BaseURL: srv.URL, InternalKey: "k", Signer: testSigner(t), Tokens: stub.tokens})
 	cmd := sampleCommand()
 	ctx := context.Background()
 
@@ -279,10 +308,10 @@ func TestClient_Send_OutcomesAndRetryKeepTheDecision(t *testing.T) {
 }
 
 func TestClient_Send_TransportFailureIsRetry(t *testing.T) {
-	_, srv := newStub(t)
+	stub, srv := newStub(t)
 	url := srv.URL
 	srv.Close()
-	c := New(Config{BaseURL: url, InternalKey: "k", Signer: testSigner(t), HTTPClient: &http.Client{Timeout: time.Second}})
+	c := New(Config{BaseURL: url, InternalKey: "k", Signer: testSigner(t), Tokens: stub.tokens, HTTPClient: &http.Client{Timeout: time.Second}})
 	if out := c.Send(context.Background(), sampleCommand()); out.Disposition != DispositionRetry || out.StatusCode != 0 || out.Err == nil {
 		t.Fatalf("closed server: %+v", out)
 	}
@@ -290,7 +319,7 @@ func TestClient_Send_TransportFailureIsRetry(t *testing.T) {
 
 func TestClient_Send_SemanticallyInvalidCommandIsParkedWithoutARequest(t *testing.T) {
 	stub, srv := newStub(t)
-	c := New(Config{BaseURL: srv.URL, InternalKey: "k", Signer: testSigner(t)})
+	c := New(Config{BaseURL: srv.URL, InternalKey: "k", Signer: testSigner(t), Tokens: stub.tokens})
 	bad := sampleCommand()
 	bad.ReasonCode = "claim_withdrawn" // a release reason on a place
 	out := c.Send(context.Background(), bad)
@@ -314,8 +343,8 @@ func TestClient_Send_NotConfiguredIsRetryWithoutARequest(t *testing.T) {
 }
 
 func TestClient_Send_WrongKeyIsParked(t *testing.T) {
-	_, srv := newStub(t)
-	c := New(Config{BaseURL: srv.URL, InternalKey: "wrong", Signer: testSigner(t)})
+	stub, srv := newStub(t)
+	c := New(Config{BaseURL: srv.URL, InternalKey: "wrong", Signer: testSigner(t), Tokens: stub.tokens})
 	if out := c.Send(context.Background(), sampleCommand()); out.Disposition != DispositionParked || out.StatusCode != 401 {
 		t.Fatalf("wrong key: %+v", out)
 	}
@@ -409,5 +438,27 @@ func TestFromEnv(t *testing.T) {
 	c, err = FromEnv(get(map[string]string{EnvRestrictionKey: testHMACKey, EnvTokenKey: priv, EnvTokenKID: "t1", EnvPostServiceURL: "http://post:1/"}), "k")
 	if err != nil || !c.CanSend() || !c.CanRead() || c.baseURL != "http://post:1" {
 		t.Fatalf("full: err=%v send=%v read=%v base=%q", err, c.CanSend(), c.CanRead(), c.baseURL)
+	}
+}
+
+// Security sweep #11: post-service refuses a command without trust-safety's
+// post:restrictions.write token, so a client holding only the HMAC signer
+// cannot send. It answers Retry (the row waits for the key, nothing is
+// parked) and makes no request.
+func TestClient_Send_WithoutTheTokenSignerIsRetryWithoutARequest(t *testing.T) {
+	stub, srv := newStub(t)
+	c := New(Config{BaseURL: srv.URL, InternalKey: "k", Signer: testSigner(t)})
+	if c.CanSend() {
+		t.Fatal("CanSend with no service-token signer")
+	}
+	if out := c.Send(context.Background(), sampleCommand()); out.Disposition != DispositionRetry || !errors.Is(out.Err, ErrNotConfigured) {
+		t.Fatalf("no token signer: %+v", out)
+	}
+	if len(stub.seen) != 0 {
+		t.Fatalf("a command was sent without its token")
+	}
+	hmacOnly, err := FromEnv(func(k string) string { return map[string]string{EnvRestrictionKey: testHMACKey}[k] }, "k")
+	if err != nil || hmacOnly.CanSend() {
+		t.Fatalf("HMAC key alone: err=%v send=%v, want not sendable", err, hmacOnly.CanSend())
 	}
 }

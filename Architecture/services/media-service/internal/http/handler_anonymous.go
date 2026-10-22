@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
+	"strconv"
 
 	"github.com/atpost/media-service/internal/service"
 	"github.com/atpost/media-service/internal/store/postgres"
@@ -100,16 +102,31 @@ func writeStreamError(c *gin.Context, err error) {
 	writeDeliveryError(c, err)
 }
 
+// writeStream sends one StreamResult. A streamed Body is copied to the
+// response through io.Copy's fixed buffer and closed (security sweep #5:
+// the object is never held whole in this process); an in-memory Data is
+// written as before.
 func writeStream(c *gin.Context, res *service.StreamResult) {
 	c.Header("Accept-Ranges", "bytes")
 	// Private to this viewer and never stored: the whole point is that the
 	// bytes travel under this URL and no other.
 	c.Header("Cache-Control", "private, no-store")
 	c.Header("Vary", "Cookie, Authorization, X-User-Id")
+	status := http.StatusOK
 	if res.Partial {
 		c.Header("Content-Range", fmt.Sprintf("bytes %d-%d/%d", res.Start, res.End, res.Size))
-		c.Data(http.StatusPartialContent, res.ContentType, res.Data)
+		status = http.StatusPartialContent
+	}
+	if res.Body == nil {
+		c.Data(status, res.ContentType, res.Data)
 		return
 	}
-	c.Data(http.StatusOK, res.ContentType, res.Data)
+	defer res.Body.Close()
+	c.Header("Content-Type", res.ContentType)
+	c.Header("Content-Length", strconv.FormatInt(res.Length(), 10))
+	c.Status(status)
+	if _, err := io.Copy(c.Writer, res.Body); err != nil {
+		// Headers are out; the client sees a short body. Nothing to write.
+		c.Abort()
+	}
 }

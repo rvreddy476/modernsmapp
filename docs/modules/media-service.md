@@ -42,7 +42,6 @@ POST /resumable/:uploadId/chunk
 POST /resumable/:uploadId/complete
 POST /sessions
 POST /stickers/:id/use
-POST /upload/presigned
 POST /v1/media/:mediaId/cover-frame
 POST /voiceover
 PUT /:ownerType/:ownerId/:slotName

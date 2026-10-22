@@ -69,6 +69,20 @@ type Service struct {
 	gate *delivery.Gate
 	// audioTracks is the alternate-audio-track feature (audio_tracks.go).
 	audioTracks *AudioTracks
+	// objects is the object store the anonymous stream reads through
+	// (anonymous_scope.go); nil means blobStore.
+	objects objectReader
+	// uploadLimit is the per-user upload limiter every upload init calls;
+	// nil means CheckUploadRateLimit (ratelimit.go). A seam for tests.
+	uploadLimit func(ctx context.Context, userID uuid.UUID) error
+}
+
+// checkUploadLimit is what InitUpload and InitResumableUpload call.
+func (s *Service) checkUploadLimit(ctx context.Context, userID uuid.UUID) error {
+	if s.uploadLimit != nil {
+		return s.uploadLimit(ctx, userID)
+	}
+	return s.CheckUploadRateLimit(ctx, userID)
 }
 
 // WithDeliveryGate wires byte-delivery authorization. Called from main.go.
@@ -278,7 +292,7 @@ func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, me
 	}
 
 	// Per-user upload rate limit (Redis sliding window)
-	if err := s.CheckUploadRateLimit(ctx, userID); err != nil {
+	if err := s.checkUploadLimit(ctx, userID); err != nil {
 		return nil, err
 	}
 
@@ -551,6 +565,14 @@ func (s *Service) processImage(ctx context.Context, media *postgres.MediaAsset) 
 	// Update media metadata (including blurhash)
 	if err := s.pgStore.UpdateMediaMeta(ctx, media.ID, meta.Width, meta.Height, meta.Blurhash, nil, nil); err != nil {
 		return fmt.Errorf("update media meta: %w", err)
+	}
+	// The worker replaced the original with its metadata-free encode
+	// (security sweep #4); HEAD answers Content-Length from this row.
+	if meta.OriginalSizeBytes > 0 && meta.OriginalSizeBytes != media.FileSizeBytes {
+		if err := s.pgStore.UpdateMediaFileSize(ctx, media.ID, meta.OriginalSizeBytes); err != nil {
+			return fmt.Errorf("update original size: %w", err)
+		}
+		media.FileSizeBytes = meta.OriginalSizeBytes
 	}
 
 	// Insert variant records
@@ -1346,61 +1368,6 @@ func (s *Service) UpdateAltText(ctx context.Context, mediaID uuid.UUID, userID u
 // together, owner-only (Codex P1-7).
 func (s *Service) UpdateAltTextWithDecorative(ctx context.Context, mediaID, userID uuid.UUID, altText string, decorative bool) error {
 	return s.pgStore.UpdateAltTextWithDecorative(ctx, mediaID, userID, altText, decorative)
-}
-
-// ─── Presigned Upload ──────────────────────────────────────────────
-
-// PresignedUploadResponse is returned by GetPresignedUploadURL.
-type PresignedUploadResponse struct {
-	UploadURL string    `json:"upload_url"`
-	MediaID   uuid.UUID `json:"media_id"`
-	ObjectKey string    `json:"object_key"`
-	ExpiresAt time.Time `json:"expires_at"`
-}
-
-// GetPresignedUploadURL creates a new media asset record in pending_upload state and
-// returns a presigned PUT URL that the client can use to upload the file directly to
-// object storage.
-func (s *Service) GetPresignedUploadURL(ctx context.Context, userID uuid.UUID, filename, contentType string) (*PresignedUploadResponse, error) {
-	mediaID := uuid.New()
-	expiry := 15 * time.Minute
-
-	// Derive file_type from content_type
-	fileType := "image"
-	if strings.HasPrefix(contentType, "video/") {
-		fileType = "video"
-	}
-
-	objectKey := fmt.Sprintf("user/%s/%s/original/%s", userID, mediaID, filename)
-
-	presignedURL, err := s.blobStore.GeneratePresignedPutURL(ctx, objectKey, expiry)
-	if err != nil {
-		return nil, fmt.Errorf("generate presigned put url: %w", err)
-	}
-
-	media := &postgres.MediaAsset{
-		ID:               mediaID,
-		UploaderID:       userID,
-		FileType:         fileType,
-		MediaSubtype:     "general",
-		MimeType:         contentType,
-		FileSizeBytes:    0, // unknown at presign time
-		StorageBucket:    s.blobStore.Bucket(),
-		StorageKey:       objectKey,
-		ProcessingStatus: "pending_upload",
-		CreatedAt:        time.Now(),
-	}
-
-	if err := s.pgStore.CreateMedia(ctx, media); err != nil {
-		return nil, fmt.Errorf("create media record: %w", err)
-	}
-
-	return &PresignedUploadResponse{
-		UploadURL: presignedURL.String(),
-		MediaID:   mediaID,
-		ObjectKey: objectKey,
-		ExpiresAt: time.Now().Add(expiry),
-	}, nil
 }
 
 // normaliseUploadPurpose accepts only leases this service recognises.

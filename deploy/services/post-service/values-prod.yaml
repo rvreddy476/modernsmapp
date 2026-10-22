@@ -112,7 +112,12 @@ env:
 
   # Callers whose service tokens post-service verifies.
   SERVICE_CALLERS: 'trust-safety-service'
-  SERVICE_CALLER_TRUST_SAFETY_SERVICE_OPS: 'post:restrictions.read'
+  # Security sweep #11 (21 Oct 2026): every /v1/posts/internal WRITE needs a
+  # signed token from its one caller. trust-safety sends the copyright hold
+  # commands (post:restrictions.write) and the appeal overturn
+  # (post:moderation.write) with the same TRUST_SAFETY_SERVICE_TOKEN_KEY.
+  # reviewer-service (review-status / visibility) is not deployed here.
+  SERVICE_CALLER_TRUST_SAFETY_SERVICE_OPS: 'post:restrictions.read,post:restrictions.write,post:moderation.write'
   # Admin console (see externalSecret above): then SERVICE_CALLERS becomes
   # 'trust-safety-service,admin-service' and this OPS line is uncommented.
   # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'social:stats.read,social:posts.moderate,social:posts.remove,social:reels.moderate,social:reels.remove,social:comments.moderate,social:comments.remove,social:reports.act,social:users.read,tube:stats.read,tube:videos.moderate,tube:videos.remove,tube:channels.moderate,tube:reports.act'

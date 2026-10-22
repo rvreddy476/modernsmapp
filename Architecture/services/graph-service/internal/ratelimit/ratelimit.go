@@ -21,6 +21,11 @@ const (
 	ActionConnectionRequest = "connection_request"
 	ActionFollow            = "follow"
 	ActionCloseFriendAdd    = "close_friend_add"
+	// ActionBlock covers block AND unblock; ActionMute covers mute AND
+	// unmute (security sweep #22, 21 Oct 2026: each flip fires counters and
+	// an outbox event, and nothing bounded thousands of them a minute).
+	ActionBlock = "block"
+	ActionMute  = "mute"
 )
 
 // Per-action limits over a rolling 24h window (spec §10.4).
@@ -31,6 +36,11 @@ const (
 	FollowLimit = 200
 	// CloseFriendAddLimit caps Trusted Circle adds at 30 per 24h.
 	CloseFriendAddLimit = 30
+	// BlockLimit caps block/unblock flips at 200 per 24h — the follow
+	// quota, which no real user reaches by hand.
+	BlockLimit = 200
+	// MuteLimit caps mute/unmute flips at 200 per 24h.
+	MuteLimit = 200
 	// window is the bucket duration for all actions.
 	window = 24 * time.Hour
 )
@@ -40,7 +50,12 @@ var limits = map[string]int{
 	ActionConnectionRequest: ConnectionRequestLimit,
 	ActionFollow:            FollowLimit,
 	ActionCloseFriendAdd:    CloseFriendAddLimit,
+	ActionBlock:             BlockLimit,
+	ActionMute:              MuteLimit,
 }
+
+// Limit reports the per-window quota of action (0: unlimited / unknown).
+func Limit(action string) int { return limits[action] }
 
 // Limiter enforces per-user action quotas backed by Redis.
 type Limiter struct {

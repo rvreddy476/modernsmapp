@@ -23,15 +23,28 @@ import (
 const adminTestKey = "post-admin-token-test-key"
 
 type adminTokenRig struct {
-	r        *gin.Engine
-	v        *servicetoken.Verifier
-	admin    *servicetoken.Signer // admin-service, registered for AdminPermissions
-	notifier *servicetoken.Signer // a registered caller that is not admin-service
-	rogue    *servicetoken.Signer // claims to be admin-service, unregistered key
-	actor    uuid.UUID
+	r           *gin.Engine
+	v           *servicetoken.Verifier
+	admin       *servicetoken.Signer // admin-service, registered for AdminPermissions
+	notifier    *servicetoken.Signer // a registered caller that is not admin-service
+	rogue       *servicetoken.Signer // claims to be admin-service, unregistered key
+	reviewer    *servicetoken.Signer // reviewer-service, registered for the internal review writes
+	trustSafety *servicetoken.Signer // trust-safety-service, registered for the internal moderation/restriction routes
+	actor       uuid.UUID
 }
 
-func adminTestVerifier(t *testing.T) (*servicetoken.Verifier, string, string, string) {
+// adminTestKeys is one verifier and the private keys of the callers it
+// knows (rogue's public half is NOT registered).
+type adminTestKeys struct {
+	v                                             *servicetoken.Verifier
+	admin, notifier, rogue, reviewer, trustSafety string
+}
+
+// internalWriteOps are the operations the /v1/posts/internal WRITE routes
+// require (security sweep #11).
+var internalWriteOps = []string{OpReviewStatusWrite, OpVisibilityWrite, OpModerationWrite, OpRestrictionsWrite}
+
+func adminTestVerifier(t *testing.T) adminTestKeys {
 	t.Helper()
 	aPub, aPriv, err := servicetoken.GenerateKeypair()
 	if err != nil {
@@ -45,27 +58,47 @@ func adminTestVerifier(t *testing.T) (*servicetoken.Verifier, string, string, st
 	if err != nil {
 		t.Fatal(err)
 	}
+	// reviewer-service: the one caller of the internal review-status and
+	// visibility writes (security sweep #11).
+	vPub, vPriv, err := servicetoken.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// trust-safety-service: the one caller of the internal moderation
+	// command and the restriction routes.
+	tPub, tPriv, err := servicetoken.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
 	env := map[string]string{
-		"SERVICE_CALLERS":                            "admin-service,notification-service",
+		"SERVICE_CALLERS":                            "admin-service,notification-service,reviewer-service,trust-safety-service",
+		"SERVICE_CALLER_REVIEWER_SERVICE_KID":        "v1",
+		"SERVICE_CALLER_REVIEWER_SERVICE_PUBKEY":     vPub,
+		"SERVICE_CALLER_REVIEWER_SERVICE_OPS":        OpReviewStatusWrite + "," + OpVisibilityWrite,
+		"SERVICE_CALLER_TRUST_SAFETY_SERVICE_KID":    "t1",
+		"SERVICE_CALLER_TRUST_SAFETY_SERVICE_PUBKEY": tPub,
+		"SERVICE_CALLER_TRUST_SAFETY_SERVICE_OPS":    OpRestrictionsRead + "," + OpRestrictionsWrite + "," + OpModerationWrite,
 		"SERVICE_CALLER_ADMIN_SERVICE_KID":           "a1",
 		"SERVICE_CALLER_ADMIN_SERVICE_PUBKEY":        aPub,
 		"SERVICE_CALLER_ADMIN_SERVICE_OPS":           strings.Join(AdminPermissions, ","),
 		"SERVICE_CALLER_NOTIFICATION_SERVICE_KID":    "n1",
 		"SERVICE_CALLER_NOTIFICATION_SERVICE_PUBKEY": nPub,
 		// Deliberately over-granted: even with the op registered, a caller
-		// other than admin-service must not reach an admin route.
-		"SERVICE_CALLER_NOTIFICATION_SERVICE_OPS": PermCommentsModerate + "," + PermSocialStatsRead,
+		// other than admin-service must not reach an admin route, and a
+		// caller other than the route's pinned issuer must not reach an
+		// internal write.
+		"SERVICE_CALLER_NOTIFICATION_SERVICE_OPS": PermCommentsModerate + "," + PermSocialStatsRead + "," + strings.Join(internalWriteOps, ","),
 	}
 	v, err := ServiceCallersFromEnv(func(k string) string { return env[k] })
 	if err != nil {
 		t.Fatal(err)
 	}
-	return v, aPriv, nPriv, rPriv
+	return adminTestKeys{v: v, admin: aPriv, notifier: nPriv, rogue: rPriv, reviewer: vPriv, trustSafety: tPriv}
 }
 
 func newAdminTokenRig(t *testing.T) *adminTokenRig {
 	t.Helper()
-	v, aPriv, nPriv, rPriv := adminTestVerifier(t)
+	keys := adminTestVerifier(t)
 	mk := func(iss, kid, priv string) *servicetoken.Signer {
 		s, err := servicetoken.NewSignerFromBase64(iss, kid, priv)
 		if err != nil {
@@ -74,12 +107,14 @@ func newAdminTokenRig(t *testing.T) *adminTokenRig {
 		return s
 	}
 	return &adminTokenRig{
-		r:        adminTokenRouter(v),
-		v:        v,
-		admin:    mk(IssuerAdminService, "a1", aPriv),
-		notifier: mk("notification-service", "n1", nPriv),
-		rogue:    mk(IssuerAdminService, "a1", rPriv),
-		actor:    uuid.New(),
+		r:           adminTokenRouter(keys.v),
+		v:           keys.v,
+		admin:       mk(IssuerAdminService, "a1", keys.admin),
+		notifier:    mk("notification-service", "n1", keys.notifier),
+		rogue:       mk(IssuerAdminService, "a1", keys.rogue),
+		reviewer:    mk(IssuerReviewerService, "v1", keys.reviewer),
+		trustSafety: mk(IssuerTrustSafety, "t1", keys.trustSafety),
+		actor:       uuid.New(),
 	}
 }
 

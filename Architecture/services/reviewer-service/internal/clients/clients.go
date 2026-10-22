@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/atpost/shared/servicetoken"
 	"github.com/google/uuid"
 )
 
@@ -20,6 +22,45 @@ type Clients struct {
 	postURL         string
 	walletURL       string
 	internalKey     string
+	// postTokens mints the service tokens post-service requires on its
+	// internal review writes (WithPostTokens).
+	postTokens *servicetoken.Signer
+}
+
+// Security sweep #11 (21 Oct 2026): post-service no longer takes the shared
+// internal key as evidence of the caller on /v1/posts/internal WRITES (the
+// gateway stamps that key on every proxied request). Its review-status and
+// visibility writes admit only a reviewer-service token carrying the route's
+// operation, audience "post".
+const (
+	// Issuer is the iss post-service pins on the review writes.
+	Issuer = "reviewer-service"
+	// OpReviewStatusWrite and OpVisibilityWrite are the scopes the two writes
+	// require.
+	OpReviewStatusWrite = "post:review-status.write"
+	OpVisibilityWrite   = "post:visibility.write"
+	postAudience        = "post"
+	postTokenTTL        = time.Minute
+	// ServiceAuthHeader carries the token.
+	ServiceAuthHeader = "X-Service-Authorization"
+)
+
+// ErrPostTokensNotConfigured: no signer, so the write cannot be
+// authenticated and is not sent (post-service would answer 401).
+var ErrPostTokensNotConfigured = errors.New("reviewer-service has no service-token signer for post-service (REVIEWER_SERVICE_TOKEN_KEY)")
+
+// WithPostTokens sets the signer the post-service writes mint with.
+func (c *Clients) WithPostTokens(s *servicetoken.Signer) *Clients {
+	c.postTokens = s
+	return c
+}
+
+// postToken mints a token for op, or refuses without a signer.
+func (c *Clients) postToken(op string) (string, error) {
+	if c.postTokens == nil {
+		return "", ErrPostTokensNotConfigured
+	}
+	return c.postTokens.Mint(postAudience, "review-write", []string{op}, nil, postTokenTTL)
 }
 
 func New(graphURL, monetizationURL, postURL, walletURL, internalKey string) *Clients {
@@ -138,10 +179,15 @@ func (c *Clients) SetPostReviewStatus(ctx context.Context, postID uuid.UUID, sta
 		"post_id": postID.String(),
 		"status":  status,
 	})
+	tok, err := c.postToken(OpReviewStatusWrite)
+	if err != nil {
+		return err
+	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.postURL+"/v1/posts/internal/review-status", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Internal-Service-Key", c.internalKey)
+	req.Header.Set(ServiceAuthHeader, "Bearer "+tok)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err
@@ -160,10 +206,15 @@ func (c *Clients) SetPostVisibility(ctx context.Context, postID uuid.UUID, visib
 		"post_id":    postID.String(),
 		"visibility": visibility,
 	})
+	tok, err := c.postToken(OpVisibilityWrite)
+	if err != nil {
+		return err
+	}
 	req, _ := http.NewRequestWithContext(ctx, http.MethodPost,
 		c.postURL+"/v1/posts/internal/visibility", bytes.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Internal-Service-Key", c.internalKey)
+	req.Header.Set(ServiceAuthHeader, "Bearer "+tok)
 	resp, err := c.http.Do(req)
 	if err != nil {
 		return err

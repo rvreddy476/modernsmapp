@@ -27,6 +27,7 @@ import (
 	"github.com/atpost/shared/outbox"
 	"github.com/atpost/shared/ownedmedia"
 	"github.com/atpost/shared/realtime"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -250,6 +251,9 @@ type Service struct {
 	store           Store
 	monetizationURL string
 	internalKey     string
+	// monetizationSigner mints the token charge-and-credit requires
+	// (monetization_token.go); nil refuses wallet charges and refunds.
+	monetizationSigner *servicetoken.Signer
 	// digilocker is the Wave 1 B4 provider wiring; a nil Client keeps the
 	// DigiLocker routes at 503.
 	digilocker digilocker.Settings
@@ -553,6 +557,9 @@ func (s *Service) chargeWalletForFoodOrder(ctx context.Context, details *postgre
 		req.Header.Set("X-Internal-Service-Key", s.internalKey)
 	}
 	req.Header.Set("X-User-Id", details.UserID.String())
+	if err := s.authorizeChargeAndCredit(req); err != nil {
+		return err
+	}
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return err
@@ -586,6 +593,9 @@ func (s *Service) reverseWalletForFoodRefund(ctx context.Context, details *postg
 		req.Header.Set("X-Internal-Service-Key", s.internalKey)
 	}
 	req.Header.Set("X-User-Id", details.UserID.String())
+	if err := s.authorizeChargeAndCredit(req); err != nil {
+		return err
+	}
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		return err

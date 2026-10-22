@@ -253,3 +253,15 @@ func (s *ReportStore) UpdateReport(ctx context.Context, reportID uuid.UUID, allo
 	}
 	return &r, nil
 }
+
+// CountReportsByReporterSince counts the reports reporterID filed at or after
+// since (security sweep #23: the per-reporter volume cap). The
+// (reporter_id, entity_type, entity_id) index leads with reporter_id, so this
+// reads one reporter's rows only.
+func (s *ReportStore) CountReportsByReporterSince(ctx context.Context, reporterID uuid.UUID, since time.Time) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM trust.reports WHERE reporter_id = $1 AND created_at >= $2
+	`, reporterID, since).Scan(&n)
+	return n, err
+}

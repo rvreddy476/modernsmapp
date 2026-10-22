@@ -221,6 +221,19 @@ func main() {
 		slog.Info("food-service: payments client ready (service-token auth)")
 	}
 	svc.WithPayments(pmClient)
+	// Wallet charges and refunds (monetization charge-and-credit) carry a
+	// food-service token signed with the same key (security sweep #17).
+	// Without the key they are refused; wallet payments are off by default
+	// (FOOD_WALLET_PAYMENTS_ENABLED).
+	monetizationSigner, err := service.MonetizationSignerFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("food-service: monetization signer", "error", err)
+		os.Exit(1)
+	}
+	if monetizationSigner == nil {
+		slog.Warn("food-service: FOOD_SERVICE_TOKEN_KEY not set — wallet charges and refunds through monetization are refused")
+	}
+	svc.WithMonetizationSigner(monetizationSigner)
 	// FOOD_COD_ENABLED / FOOD_WALLET_PAYMENTS_ENABLED default off: online only.
 	payFlags := payments.FlagsFromEnv(os.Getenv)
 	svc.WithPaymentFlags(payFlags)

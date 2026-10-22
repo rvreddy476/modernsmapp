@@ -55,6 +55,11 @@ type Service struct {
 	payoutClient  razorpayx.API
 	webhookSecret string
 	bankKey       []byte
+
+	// tipBlocks answers "is there a block between sender and creator?"
+	// before any tip touches the ledger (security sweep #16, tips.go). nil
+	// means GRAPH_SERVICE_URL is unset, and every tip is refused.
+	tipBlocks TipBlockChecker
 }
 
 func New(s *postgres.Store, rdb *redis.Client) *Service {

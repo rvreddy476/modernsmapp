@@ -198,10 +198,17 @@ func (h *Handler) FileReport(c *gin.Context) {
 	report, err := h.svc.FileReportWith(c.Request.Context(), service.FileReportInput{
 		ReporterID: userID, EntityType: req.EntityType, EntityRef: req.EntityID, Reason: req.Reason, Details: req.Details,
 		Evidence: req.Evidence.toService(service.EvidenceSourceReporter, conversationOf(req.EntityType, req.EntityID)),
+		// The user-facing route is the one the per-reporter cap guards
+		// (security sweep #23).
+		EnforceReporterQuota: true,
 	})
 	if err != nil {
 		if errors.Is(err, postgres.ErrActiveReportExists) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ACTIVE_REPORT_EXISTS", "You already have an active report for this content", nil)
+			return
+		}
+		if errors.Is(err, service.ErrReportRateLimited) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many reports. Please try again later.", nil)
 			return
 		}
 		if errors.Is(err, service.ErrInvalidReport) {

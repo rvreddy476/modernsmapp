@@ -48,6 +48,9 @@ env:
   MONETIZATION_PAYOUTS_ENABLED: "false"
   MONETIZATION_MAINTENANCE: "false"
   MONETIZATION_TDS_APPLY: "false"
+  # Security sweep #16: tips ask graph-service for a block either way before
+  # the ledger; unset, every tip answers 503 TIP_UNAVAILABLE.
+  GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 ingress:

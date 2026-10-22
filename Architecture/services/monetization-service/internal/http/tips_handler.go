@@ -2,6 +2,7 @@ package http
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -90,6 +91,12 @@ func (h *Handler) SendTip(c *gin.Context) {
 		status := http.StatusInternalServerError
 		code := "INTERNAL_ERROR"
 		switch {
+		// Security sweep #16: a tip across a block is a plain 403 that
+		// never says "blocked"; an unanswered block lookup is 503.
+		case errors.Is(err, service.ErrTipNotAllowed):
+			status, code = http.StatusForbidden, "TIP_NOT_ALLOWED"
+		case errors.Is(err, service.ErrTipUnavailable):
+			status, code = http.StatusServiceUnavailable, "TIP_UNAVAILABLE"
 		case startsWith(err.Error(), "INVALID_", "AMOUNT_", "CANNOT_", "MESSAGE_"):
 			status, code = http.StatusBadRequest, "INVALID_REQUEST"
 		case startsWith(err.Error(), "DAILY_TIP_CAP"):

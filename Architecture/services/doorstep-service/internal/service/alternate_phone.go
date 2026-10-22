@@ -56,7 +56,11 @@ func (s *Service) RequestAlternatePhone(ctx context.Context, uid uuid.UUID) (*Al
 	if err != nil {
 		return nil, internal(ctx, "alternate phone request", err)
 	}
-	slog.Warn("ALTERNATE CONTACT OTP — DEVELOPMENT ONLY — SMS NOT SENT", "user_id", uid, "phone_last4", last, "code", code)
+	// Security sweep #26 (21 Oct 2026): the code itself is never logged. It
+	// used to ride on this line, so it sat in the shipped binary of a parked
+	// product one flag away from production logs. Only its bcrypt hash is
+	// kept (in the store); the line records that a code was issued.
+	slog.Warn("ALTERNATE CONTACT OTP — DEVELOPMENT ONLY — SMS NOT SENT", "user_id", uid, "phone_last4", last)
 	return &AlternatePhoneChallenge{Delivery: "development_log", ExpiresIn: 300, ResendAfter: 60}, nil
 }
 

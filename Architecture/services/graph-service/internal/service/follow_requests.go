@@ -33,6 +33,12 @@ const RequestFollowStatusFollowing = "following"
 // Follow and reports "following"; a private target the requester does not
 // already follow gets a pending request and reports "requested".
 func (s *Service) RequestFollow(ctx context.Context, requesterID, targetID uuid.UUID) (string, error) {
+	// A block in either direction answers "requested", never the block
+	// (quietFollowOutcome, security sweep #10).
+	return quietFollowOutcome(s.requestFollow(ctx, requesterID, targetID))
+}
+
+func (s *Service) requestFollow(ctx context.Context, requesterID, targetID uuid.UUID) (string, error) {
 	if requesterID == targetID {
 		return "", ErrCannotFollowSelf
 	}
@@ -72,10 +78,10 @@ func (s *Service) RequestFollow(ctx context.Context, requesterID, targetID uuid.
 // request neither errors nor announces twice.
 func (s *Service) createFollowRequest(ctx context.Context, requesterID, targetID uuid.UUID) error {
 	if _, err := s.store.UpsertFollowRequestPending(ctx, requesterID, targetID); err != nil {
-		if errors.Is(err, store.ErrBlockedPair) {
-			return fmt.Errorf("cannot follow: blocked")
-		}
-		return err
+		// store.ErrBlockedPair stays recognisable (wrapped) for
+		// quietFollowOutcome; the old "cannot follow: blocked" string told
+		// the blocked party exactly what they must not learn.
+		return fmt.Errorf("follow request: %w", err)
 	}
 	s.invalidateRel(ctx, requesterID, targetID)
 	s.invalidateRel(ctx, targetID, requesterID)

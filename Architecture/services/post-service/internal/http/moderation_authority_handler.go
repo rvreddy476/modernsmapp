@@ -32,22 +32,15 @@ type moderatePostRequest struct {
 	ReportID   *string `json:"report_id,omitempty"`
 }
 
-func (h *Handler) ModeratePost(c *gin.Context) {
-	if !hasAnyScope(c.GetHeader("X-Scopes"), "moderator", "admin", "superadmin") {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Moderator scope required", nil)
-		return
-	}
-	actorID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid actor identity", nil)
-		return
-	}
-	h.moderatePost(c, actorID, nil)
-}
+// ModeratePost (POST /v1/posts/:postId/moderation) was RETIRED (security
+// sweep #12, 21 Oct 2026): it granted moderator rights from the X-Scopes
+// header, which only the gateway's strip-and-restamp kept honest. The admin
+// console's decision write is AdminModeratePost (admin_token.go), judged by a
+// signed admin-service token; trust-safety's is ModeratePostInternal below.
 
-// moderatePost is the decision write shared by the LEGACY route and the
-// admin-service token route. allow, when set, is asked about the action
-// before anything is written and answers the refusal itself.
+// moderatePost is the decision write behind the admin-service token route.
+// allow, when set, is asked about the action before anything is written and
+// answers the refusal itself.
 func (h *Handler) moderatePost(c *gin.Context, actorID uuid.UUID, allow func(c *gin.Context, postID uuid.UUID, action string) bool) {
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {

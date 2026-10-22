@@ -801,7 +801,7 @@ func TestUseSoundNotAReel(t *testing.T) {
 
 	long := newSoundRig(t)
 	m := long.states[sxOriginMedia]
-	m.DurationMs = 301000
+	m.DurationMs = service.MaxSoundSourceMs + 1 // one millisecond past ten minutes
 	long.states[sxOriginMedia] = m
 	wantSoundError(t, long.use(sxOrigin, &fxViewer), http.StatusUnprocessableEntity, "TOO_LONG")
 

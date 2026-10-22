@@ -120,10 +120,22 @@ func main() {
 	} else {
 		slog.Info("legacy strikes carrying the F-15 90-day expiry", "count", n, "policy_version", postgres.LegacyStrikePolicyVersion)
 	}
+	// Security sweep #11: post-service admits the moderation command only
+	// with a post:moderation.write token from this service (the shared key
+	// alone no longer identifies a caller).
+	postServiceTokens, err := restriction.TokenSignerFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("service token signer configuration", "error", err)
+		os.Exit(1)
+	}
+	if postServiceTokens == nil {
+		slog.Warn("trust-safety-service: " + restriction.EnvTokenKey + " not set — appeal overturns cannot reach post-service and stay queued for the sweeper")
+	}
 	svc.SetPostModerationClient(service.NewHTTPPostModerationClient(
 		env("POST_SERVICE_URL", "http://post-service:8084"),
 		env("INTERNAL_SERVICE_KEY", ""),
 		postModerationSigner,
+		postServiceTokens,
 		nil,
 	))
 	// Copyright Match plan section 6.3 (P-3): an appeal whose canonical
@@ -171,7 +183,7 @@ func main() {
 		os.Exit(1)
 	}
 	if !restrictionClient.CanSend() {
-		slog.Warn("trust-safety-service: " + restriction.EnvRestrictionKey + " not set — copyright hold commands are queued but never sent")
+		slog.Warn("trust-safety-service: " + restriction.EnvRestrictionKey + " or " + restriction.EnvTokenKey + " not set — copyright hold commands are queued but never sent (each command needs its capability AND a post:restrictions.write token)")
 	}
 	if !restrictionClient.CanRead() {
 		slog.Warn("trust-safety-service: " + restriction.EnvTokenKey + " not set — copyright hold reconciliation cannot read post-service")

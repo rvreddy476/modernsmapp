@@ -109,6 +109,7 @@ type restrictionRig struct {
 	store *fakeRestrictionStore
 	ts    *servicetoken.Signer // trust-safety-service, registered for post:restrictions.read
 	admin *servicetoken.Signer // admin-service, registered for the admin family only
+	sv    *servicetoken.Verifier
 }
 
 func newRestrictionRig(t *testing.T) *restrictionRig {
@@ -124,10 +125,10 @@ func newRestrictionRig(t *testing.T) *restrictionRig {
 		"SERVICE_CALLERS":                            "admin-service,trust-safety-service",
 		"SERVICE_CALLER_ADMIN_SERVICE_KID":           "a1",
 		"SERVICE_CALLER_ADMIN_SERVICE_PUBKEY":        aPub,
-		"SERVICE_CALLER_ADMIN_SERVICE_OPS":           strings.Join(AdminPermissions, ",") + "," + OpRestrictionsRead, // over-granted on purpose
+		"SERVICE_CALLER_ADMIN_SERVICE_OPS":           strings.Join(AdminPermissions, ",") + "," + OpRestrictionsRead + "," + OpRestrictionsWrite, // over-granted on purpose
 		"SERVICE_CALLER_TRUST_SAFETY_SERVICE_KID":    "t1",
 		"SERVICE_CALLER_TRUST_SAFETY_SERVICE_PUBKEY": tsPub,
-		"SERVICE_CALLER_TRUST_SAFETY_SERVICE_OPS":    OpRestrictionsRead,
+		"SERVICE_CALLER_TRUST_SAFETY_SERVICE_OPS":    OpRestrictionsRead + "," + OpRestrictionsWrite,
 	}
 	sv, err := ServiceCallersFromEnv(func(k string) string { return env[k] })
 	if err != nil {
@@ -138,7 +139,7 @@ func newRestrictionRig(t *testing.T) *restrictionRig {
 	store := newFakeRestrictionStore()
 	r := gin.New()
 	New(nil, nil).WithInternalKey(adminTestKey).WithRestrictionVerifier(verifier).WithRestrictionStore(store).WithServiceAuth(sv).RegisterRoutes(r)
-	return &restrictionRig{r: r, store: store, ts: ts, admin: admin}
+	return &restrictionRig{r: r, store: store, ts: ts, admin: admin, sv: sv}
 }
 
 func restrictionClaims() moderationcap.RestrictionClaims {
@@ -190,6 +191,19 @@ func commandBody(t *testing.T, c moderationcap.RestrictionClaims, sig string) st
 
 func withKey() map[string]string { return map[string]string{"X-Internal-Service-Key": adminTestKey} }
 
+// cmd is what trust-safety sends with every command: the key and its
+// post:restrictions.write token (security sweep #11).
+func (rig *restrictionRig) cmd(t *testing.T) map[string]string {
+	t.Helper()
+	tok, err := rig.ts.Mint(AudiencePost, "restriction-dispatch", []string{OpRestrictionsWrite}, nil, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := withKey()
+	h[ServiceAuthHeader] = "Bearer " + tok
+	return h
+}
+
 func (rig *restrictionRig) post(t *testing.T, body string, hdr map[string]string) *httptest.ResponseRecorder {
 	t.Helper()
 	return adminServe(rig.r, http.MethodPost, "/v1/posts/internal/restrictions", body, hdr)
@@ -204,6 +218,35 @@ func TestRestrictionCommand_401WithoutInternalKey(t *testing.T) {
 	}
 	if rig.store.calls != 0 {
 		t.Fatal("the store was reached without the internal key")
+	}
+}
+
+// Security sweep #11: a perfectly signed capability is not enough on its
+// own — the command also needs trust-safety's post:restrictions.write
+// token, and nothing reaches the store without it.
+func TestRestrictionCommand_NeedsTheWriteToken(t *testing.T) {
+	rig := newRestrictionRig(t)
+	claims, sig := signedCommand(t, restrictionClaims())
+	body := commandBody(t, claims, sig)
+	if w := rig.post(t, body, withKey()); w.Code != http.StatusUnauthorized {
+		t.Fatalf("key only: status=%d body=%s, want 401", w.Code, w.Body.String())
+	}
+	readOnly, _ := rig.ts.Mint(AudiencePost, "reconcile", []string{OpRestrictionsRead}, nil, time.Minute)
+	h := withKey()
+	h[ServiceAuthHeader] = "Bearer " + readOnly
+	if w := rig.post(t, body, h); w.Code != http.StatusForbidden {
+		t.Fatalf("read token: status=%d body=%s, want 403", w.Code, w.Body.String())
+	}
+	adminTok, _ := rig.admin.Mint(AudiencePost, "admin-console", []string{OpRestrictionsWrite}, nil, time.Minute, servicetoken.WithActor(uuid.NewString()))
+	h[ServiceAuthHeader] = "Bearer " + adminTok
+	if w := rig.post(t, body, h); w.Code != http.StatusForbidden {
+		t.Fatalf("admin-service token (over-granted the op): status=%d body=%s, want 403", w.Code, w.Body.String())
+	}
+	if rig.store.calls != 0 {
+		t.Fatalf("the store was reached %d time(s) without trust-safety's write token", rig.store.calls)
+	}
+	if w := rig.post(t, body, rig.cmd(t)); w.Code != http.StatusOK {
+		t.Fatalf("trust-safety write token: status=%d body=%s, want 200", w.Code, w.Body.String())
 	}
 }
 
@@ -275,7 +318,7 @@ func TestRestrictionCommand_403Capability(t *testing.T) {
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			before := rig.store.calls
-			w := rig.post(t, commandBody(t, tc.claims, tc.sig), withKey())
+			w := rig.post(t, commandBody(t, tc.claims, tc.sig), rig.cmd(t))
 			if w.Code != http.StatusForbidden || adminErrorCode(t, w) != "INVALID_CAPABILITY" {
 				t.Fatalf("status=%d body=%s, want 403 INVALID_CAPABILITY", w.Code, w.Body.String())
 			}
@@ -287,12 +330,14 @@ func TestRestrictionCommand_403Capability(t *testing.T) {
 }
 
 func TestRestrictionCommand_403WhenNoVerifierConfigured(t *testing.T) {
+	rig := newRestrictionRig(t)
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	New(nil, nil).WithInternalKey(adminTestKey).RegisterRoutes(r)
+	// Service tokens accepted, but no restriction-capability verifier.
+	New(nil, nil).WithInternalKey(adminTestKey).WithServiceAuth(rig.sv).RegisterRoutes(r)
 	claims, sig := signedCommand(t, restrictionClaims())
-	w := adminServe(r, http.MethodPost, "/v1/posts/internal/restrictions", commandBody(t, claims, sig), withKey())
-	if w.Code != http.StatusForbidden {
+	w := adminServe(r, http.MethodPost, "/v1/posts/internal/restrictions", commandBody(t, claims, sig), rig.cmd(t))
+	if w.Code != http.StatusForbidden || adminErrorCode(t, w) == CodeAdminPermissionScope {
 		t.Fatalf("status=%d, want 403", w.Code)
 	}
 }
@@ -302,7 +347,7 @@ func TestRestrictionCommand_403SafetySourceReserved(t *testing.T) {
 	c := restrictionClaims()
 	c.Source = "safety"
 	claims, sig := signedCommand(t, c)
-	w := rig.post(t, commandBody(t, claims, sig), withKey())
+	w := rig.post(t, commandBody(t, claims, sig), rig.cmd(t))
 	if w.Code != http.StatusForbidden || adminErrorCode(t, w) != CodeSourceNotEnabled {
 		t.Fatalf("status=%d body=%s, want 403 SOURCE_NOT_ENABLED", w.Code, w.Body.String())
 	}
@@ -325,7 +370,7 @@ func TestRestrictionCommand_422SignedButInvalidClaims(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			c := stamp(restrictionClaims(), 5*time.Minute)
 			mutate(&c)
-			w := rig.post(t, commandBody(t, c, signWith(restrictionTestKey, c)), withKey())
+			w := rig.post(t, commandBody(t, c, signWith(restrictionTestKey, c)), rig.cmd(t))
 			if w.Code != http.StatusUnprocessableEntity || adminErrorCode(t, w) != CodeInvalidRestrictionClaims {
 				t.Fatalf("status=%d body=%s, want 422 INVALID_CLAIMS", w.Code, w.Body.String())
 			}
@@ -339,12 +384,12 @@ func TestRestrictionCommand_422SignedButInvalidClaims(t *testing.T) {
 func TestRestrictionCommand_400MalformedBody(t *testing.T) {
 	rig := newRestrictionRig(t)
 	for _, body := range []string{``, `{}`, `{"claims":{}}`, `not json`} {
-		if w := rig.post(t, body, withKey()); w.Code != http.StatusBadRequest {
+		if w := rig.post(t, body, rig.cmd(t)); w.Code != http.StatusBadRequest {
 			t.Fatalf("body %q: status=%d, want 400", body, w.Code)
 		}
 	}
 	claims := stamp(restrictionClaims(), 5*time.Minute)
-	if w := rig.post(t, commandBody(t, claims, ""), withKey()); w.Code != http.StatusBadRequest {
+	if w := rig.post(t, commandBody(t, claims, ""), rig.cmd(t)); w.Code != http.StatusBadRequest {
 		t.Fatalf("empty capability: status=%d, want 400", w.Code)
 	}
 	if rig.store.calls != 0 {
@@ -357,13 +402,13 @@ func TestRestrictionCommand_404And409FromTheStore(t *testing.T) {
 	missing := restrictionClaims()
 	missing.SubjectID = restrictionTestMissing.String()
 	claims, sig := signedCommand(t, missing)
-	if w := rig.post(t, commandBody(t, claims, sig), withKey()); w.Code != http.StatusNotFound || adminErrorCode(t, w) != CodeSubjectNotFound {
+	if w := rig.post(t, commandBody(t, claims, sig), rig.cmd(t)); w.Code != http.StatusNotFound || adminErrorCode(t, w) != CodeSubjectNotFound {
 		t.Fatalf("missing post: status=%d body=%s, want 404 SUBJECT_NOT_FOUND", w.Code, w.Body.String())
 	}
 	mismatch := restrictionClaims()
 	mismatch.SubjectAuthorID = uuid.NewString()
 	claims, sig = signedCommand(t, mismatch)
-	if w := rig.post(t, commandBody(t, claims, sig), withKey()); w.Code != http.StatusConflict || adminErrorCode(t, w) != CodeSubjectMismatch {
+	if w := rig.post(t, commandBody(t, claims, sig), rig.cmd(t)); w.Code != http.StatusConflict || adminErrorCode(t, w) != CodeSubjectMismatch {
 		t.Fatalf("other author: status=%d body=%s, want 409 SUBJECT_MISMATCH", w.Code, w.Body.String())
 	}
 	for code, err := range map[string]error{
@@ -373,13 +418,13 @@ func TestRestrictionCommand_404And409FromTheStore(t *testing.T) {
 	} {
 		rig.store.fail = err
 		claims, sig = signedCommand(t, restrictionClaims())
-		if w := rig.post(t, commandBody(t, claims, sig), withKey()); w.Code != http.StatusConflict || adminErrorCode(t, w) != code {
+		if w := rig.post(t, commandBody(t, claims, sig), rig.cmd(t)); w.Code != http.StatusConflict || adminErrorCode(t, w) != code {
 			t.Fatalf("%v: status=%d body=%s, want 409 %s", err, w.Code, w.Body.String(), code)
 		}
 	}
 	rig.store.fail = errors.New("connection reset")
 	claims, sig = signedCommand(t, restrictionClaims())
-	if w := rig.post(t, commandBody(t, claims, sig), withKey()); w.Code != http.StatusInternalServerError {
+	if w := rig.post(t, commandBody(t, claims, sig), rig.cmd(t)); w.Code != http.StatusInternalServerError {
 		t.Fatalf("store failure: status=%d, want 500", w.Code)
 	}
 }
@@ -388,7 +433,7 @@ func TestRestrictionCommand_IdempotentReplayAndConflict(t *testing.T) {
 	rig := newRestrictionRig(t)
 	base := restrictionClaims()
 	claims, sig := signedCommand(t, base)
-	w := rig.post(t, commandBody(t, claims, sig), withKey())
+	w := rig.post(t, commandBody(t, claims, sig), rig.cmd(t))
 	if w.Code != http.StatusOK {
 		t.Fatalf("first: status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -409,7 +454,7 @@ func TestRestrictionCommand_IdempotentReplayAndConflict(t *testing.T) {
 	if retry.IssuedAtUnix == claims.IssuedAtUnix {
 		t.Fatal("test setup: the retry did not get fresh times")
 	}
-	w = rig.post(t, commandBody(t, retry, retrySig), withKey())
+	w = rig.post(t, commandBody(t, retry, retrySig), rig.cmd(t))
 	if w.Code != http.StatusOK {
 		t.Fatalf("replay: status=%d body=%s", w.Code, w.Body.String())
 	}
@@ -429,7 +474,7 @@ func TestRestrictionCommand_IdempotentReplayAndConflict(t *testing.T) {
 	changed := base
 	changed.ReasonCode = "reinstated_on_review"
 	claims, sig = signedCommand(t, changed)
-	if w := rig.post(t, commandBody(t, claims, sig), withKey()); w.Code != http.StatusConflict || adminErrorCode(t, w) != "DECISION_CONFLICT" {
+	if w := rig.post(t, commandBody(t, claims, sig), rig.cmd(t)); w.Code != http.StatusConflict || adminErrorCode(t, w) != "DECISION_CONFLICT" {
 		t.Fatalf("conflict: status=%d body=%s", w.Code, w.Body.String())
 	}
 }

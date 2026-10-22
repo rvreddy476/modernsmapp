@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,24 +12,41 @@ import (
 	"time"
 
 	"github.com/atpost/shared/moderationcap"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/atpost/trust-safety-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
+
+// postModerationOp is the service-token scope post-service requires on
+// POST /v1/posts/internal/moderation (security sweep #11, 21 Oct 2026: the
+// gateway stamps the shared key on every proxied request, so the key no
+// longer identifies the caller). The token is minted with the same
+// TRUST_SAFETY_SERVICE_TOKEN_KEY/KID as the restriction routes.
+const postModerationOp = "post:moderation.write"
+
+// ErrPostModerationNotConfigured: no service-token signer, so the command
+// cannot be authenticated. Transient from the caller's point of view: the
+// appeal stays in flight and the sweeper replays it once the key is set.
+var ErrPostModerationNotConfigured = errors.New("post moderation client has no service-token signer")
 
 type HTTPPostModerationClient struct {
 	baseURL     string
 	internalKey string
 	httpClient  *http.Client
 	signer      *moderationcap.Signer
+	tokens      *servicetoken.Signer
 }
 
-func NewHTTPPostModerationClient(baseURL, internalKey string, signer *moderationcap.Signer, client *http.Client) *HTTPPostModerationClient {
+// NewHTTPPostModerationClient builds the client. tokens mints the
+// post:moderation.write token every command carries; nil leaves commands
+// refused with ErrPostModerationNotConfigured (subject reads still work).
+func NewHTTPPostModerationClient(baseURL, internalKey string, signer *moderationcap.Signer, tokens *servicetoken.Signer, client *http.Client) *HTTPPostModerationClient {
 	if client == nil {
 		client = &http.Client{Timeout: 5 * time.Second}
 	}
 	return &HTTPPostModerationClient{
 		baseURL: strings.TrimRight(baseURL, "/"), internalKey: internalKey,
-		httpClient: client, signer: signer,
+		httpClient: client, signer: signer, tokens: tokens,
 	}
 }
 
@@ -113,6 +131,13 @@ func (c *HTTPPostModerationClient) GetSubject(ctx context.Context, postID uuid.U
 // ErrPostDecisionConflict (the id was used with other claims). Anything
 // else is a transient failure the caller may retry with the same claims.
 func (c *HTTPPostModerationClient) OverturnAppeal(ctx context.Context, appeal *postgres.ContentAppeal, reviewerID uuid.UUID, contentRevision int64, reason string) error {
+	if c.tokens == nil {
+		return ErrPostModerationNotConfigured
+	}
+	tok, err := c.tokens.Mint("post", "appeal-overturn", []string{postModerationOp}, nil, time.Minute)
+	if err != nil {
+		return err
+	}
 	claims, capability, err := c.signer.Sign(moderationcap.Claims{
 		SubjectID: appeal.ContentID.String(), ContentRevision: contentRevision,
 		Decision: "approve", Reason: reason, DecisionID: appeal.ID.String(),
@@ -131,6 +156,7 @@ func (c *HTTPPostModerationClient) OverturnAppeal(ctx context.Context, appeal *p
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Service-Authorization", "Bearer "+tok)
 	req.Header.Set("X-Internal-Service-Key", c.internalKey)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {

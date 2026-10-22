@@ -14,7 +14,6 @@ import (
 
 	"github.com/buckket/go-blurhash"
 	"github.com/disintegration/imaging"
-	"github.com/atpost/media-service/internal/store/blob"
 )
 
 /*
@@ -51,6 +50,12 @@ type ImageResult struct {
 	Width    int
 	Height   int
 	Blurhash string
+	// OriginalSizeBytes is the size of the original object AFTER
+	// StripOriginalMetadata replaced it (security sweep #4); the row's
+	// file_size_bytes must follow it so HEAD keeps answering the truth.
+	OriginalSizeBytes int64
+	// OriginalContentType is the MIME type of the stored original.
+	OriginalContentType string
 }
 
 // VariantOutput holds the result of a single variant generation.
@@ -63,19 +68,36 @@ type VariantOutput struct {
 	Mime      string
 }
 
+// imageObjectStore is the slice of the blob store ProcessImage reads and
+// writes through (*blob.Store in production). An interface so a test can
+// hold the original in memory and prove the stored bytes are replaced.
+type imageObjectStore interface {
+	DownloadObject(ctx context.Context, objectKey string) ([]byte, error)
+	UploadObject(ctx context.Context, objectKey string, data []byte, contentType string) error
+}
+
 // ProcessImage downloads the original, generates variants, and uploads them.
-func ProcessImage(ctx context.Context, blobStore *blob.Store, objectKey string, mediaIDStr string, ownerIDStr string) ([]VariantOutput, *ImageResult, error) {
+func ProcessImage(ctx context.Context, blobStore imageObjectStore, objectKey string, mediaIDStr string, ownerIDStr string) ([]VariantOutput, *ImageResult, error) {
 	// 1. Download original
 	data, err := blobStore.DownloadObject(ctx, objectKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("download original: %w", err)
 	}
 
-	// 2. Decode image
-	src, _, err := image.Decode(bytes.NewReader(data))
+	// 2. Decode image — and strip its metadata (security sweep #4,
+	// strip_metadata.go). The clean bytes REPLACE the original under the
+	// same key before any rendition is built, so no signed "original" URL
+	// ever hands out the camera file's EXIF/GPS.
+	clean, err := StripOriginalMetadata(data)
 	if err != nil {
 		return nil, nil, fmt.Errorf("decode image: %w", err)
 	}
+	if clean.Changed {
+		if err := blobStore.UploadObject(ctx, objectKey, clean.Bytes, clean.ContentType); err != nil {
+			return nil, nil, fmt.Errorf("replace original without metadata: %w", err)
+		}
+	}
+	src := clean.Image
 
 	bounds := src.Bounds()
 	origWidth := bounds.Dx()
@@ -88,9 +110,11 @@ func ProcessImage(ctx context.Context, blobStore *blob.Store, objectKey string, 
 	}
 
 	meta := &ImageResult{
-		Width:    origWidth,
-		Height:   origHeight,
-		Blurhash: hash,
+		Width:               origWidth,
+		Height:              origHeight,
+		Blurhash:            hash,
+		OriginalSizeBytes:   int64(len(clean.Bytes)),
+		OriginalContentType: clean.ContentType,
 	}
 
 	// 3. Generate variants

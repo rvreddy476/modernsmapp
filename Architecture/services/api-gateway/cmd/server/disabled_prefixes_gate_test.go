@@ -15,8 +15,10 @@ import (
 
 // launchDisabledPrefixes is the GATEWAY_DISABLED_PREFIXES value the first
 // production deployment sets: upstreams that are not deployed at launch.
-// /v1/food is deliberately absent — food-service IS deployed (gated inside
-// the service), so its prefix keeps proxying.
+// /v1/food was absent from that first value — food-service IS deployed
+// (gated inside the service). Security sweep #13 (21 Oct 2026) closed it at
+// the edge as well, with /v1/qa, /v1/pages and /v1/broadcast-channels; the
+// deploy values are pinned by launch_values_test.go.
 const launchDisabledPrefixes = "/v1/memories,/v1/flags,/v1/admin/flags,/v1/reviewer"
 
 // Route inventory for the launch: these prefixes are in the route table and

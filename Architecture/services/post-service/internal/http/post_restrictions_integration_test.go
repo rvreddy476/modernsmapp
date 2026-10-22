@@ -38,6 +38,10 @@ type restrictionIT struct {
 	*adminIT
 	verifier *moderationcap.RestrictionVerifier
 	signer   *moderationcap.RestrictionSigner
+	// trustSafety signs the service token every command now needs (sweep #11).
+	trustSafety *servicetoken.Signer
+	// reviewer signs the token the internal review-status write needs.
+	reviewer *servicetoken.Signer
 	author   uuid.UUID
 	counters bool
 }
@@ -73,8 +77,17 @@ func newRestrictionIT(t *testing.T) *restrictionIT {
 		t.Fatal(err)
 	}
 	// The admin signer must match THIS rig's verifier, not newAdminIT's.
-	v, aPriv, _, _ := adminTestVerifier(t)
-	adminSigner, err := servicetoken.NewSignerFromBase64(IssuerAdminService, "a1", aPriv)
+	keys := adminTestVerifier(t)
+	v := keys.v
+	adminSigner, err := servicetoken.NewSignerFromBase64(IssuerAdminService, "a1", keys.admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tsSigner, err := servicetoken.NewSignerFromBase64(IssuerTrustSafety, "t1", keys.trustSafety)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reviewerSigner, err := servicetoken.NewSignerFromBase64(IssuerReviewerService, "v1", keys.reviewer)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +101,7 @@ func newRestrictionIT(t *testing.T) *restrictionIT {
 	h.RegisterReportRoutes(r)
 	h.RegisterMyUploadsRoutes(r)
 	base.r = r
-	return &restrictionIT{adminIT: base, verifier: verifier, signer: signer, author: uuid.New(), counters: counters != nil}
+	return &restrictionIT{adminIT: base, verifier: verifier, signer: signer, trustSafety: tsSigner, reviewer: reviewerSigner, author: uuid.New(), counters: counters != nil}
 }
 
 func (it *restrictionIT) seedOwned(t *testing.T, review string) uuid.UUID {
@@ -126,7 +139,25 @@ func (it *restrictionIT) command(t *testing.T, post, caseID uuid.UUID, action, e
 
 func (it *restrictionIT) post(t *testing.T, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	return adminServe(it.r, http.MethodPost, "/v1/posts/internal/restrictions", body, withKey())
+	tok, err := it.trustSafety.Mint(AudiencePost, "restriction-dispatch", []string{OpRestrictionsWrite}, nil, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hdr := withKey()
+	hdr[ServiceAuthHeader] = "Bearer " + tok
+	return adminServe(it.r, http.MethodPost, "/v1/posts/internal/restrictions", body, hdr)
+}
+
+// reviewerHeaders is what reviewer-service sends: the key and its token for op.
+func (it *restrictionIT) reviewerHeaders(t *testing.T, op string) map[string]string {
+	t.Helper()
+	tok, err := it.reviewer.Mint(AudiencePost, "ml-prefilter", []string{op}, nil, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hdr := withKey()
+	hdr[ServiceAuthHeader] = "Bearer " + tok
+	return hdr
 }
 
 func (it *restrictionIT) held(t *testing.T, post uuid.UUID) (count int, effective, base string) {
@@ -312,7 +343,7 @@ func TestRestrictionIT_RoutesNeverClearAHold(t *testing.T) {
 	assertHeld("AdminSetReviewStatus", p3, "approved")
 	p3b := it.seedOwned(t, "flagged")
 	hold(p3b)
-	if w := adminServe(it.r, http.MethodPost, "/v1/posts/internal/review-status", `{"post_id":"`+p3b.String()+`","status":"approved"}`, edgeModerator(uuid.New())); w.Code != http.StatusOK {
+	if w := adminServe(it.r, http.MethodPost, "/v1/posts/internal/review-status", `{"post_id":"`+p3b.String()+`","status":"approved"}`, it.reviewerHeaders(t, OpReviewStatusWrite)); w.Code != http.StatusOK {
 		t.Fatalf("internal review-status: %d %s", w.Code, w.Body.String())
 	}
 	assertHeld("SetReviewStatusInternal", p3b, "approved")

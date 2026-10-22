@@ -10,11 +10,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/atpost/shared/moderationcap"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/atpost/trust-safety-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
@@ -27,6 +29,11 @@ type fakePostService struct {
 	commandErr  string
 	lastClaims  moderationcap.Claims
 	lastKey     string
+	// tokenV verifies the command token like post-service does (sweep #11);
+	// tokenOK records whether the last command carried a valid one.
+	tokenV   *servicetoken.Verifier
+	tokenOK  bool
+	commands int
 }
 
 func (f *fakePostService) handler() http.Handler {
@@ -43,6 +50,9 @@ func (f *fakePostService) handler() http.Handler {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.lastKey = r.Header.Get("X-Internal-Service-Key")
+		f.commands++
+		v, err := f.tokenV.Verify(strings.TrimPrefix(r.Header.Get("X-Service-Authorization"), "Bearer "), postModerationOp, "")
+		f.tokenOK = err == nil && v.Issuer == "trust-safety-service"
 		var body struct {
 			Claims     moderationcap.Claims `json:"claims"`
 			Capability string               `json:"capability"`
@@ -62,14 +72,26 @@ func (f *fakePostService) handler() http.Handler {
 
 func newClientRig(t *testing.T) (*HTTPPostModerationClient, *fakePostService) {
 	t.Helper()
-	fake := &fakePostService{subjectCode: http.StatusOK, commandCode: http.StatusOK}
+	pub, priv, err := servicetoken.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokens, err := servicetoken.NewSignerFromBase64("trust-safety-service", "t1", priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tokenV := servicetoken.NewVerifier("post")
+	if err := tokenV.RegisterBase64("trust-safety-service", "t1", pub, []string{postModerationOp}, nil); err != nil {
+		t.Fatal(err)
+	}
+	fake := &fakePostService{subjectCode: http.StatusOK, commandCode: http.StatusOK, tokenV: tokenV}
 	srv := httptest.NewServer(fake.handler())
 	t.Cleanup(srv.Close)
 	signer, err := moderationcap.NewSigner([]byte("0123456789abcdef0123456789abcdef"), "trust-safety-service", "post_moderation", time.Minute)
 	if err != nil {
 		t.Fatal(err)
 	}
-	return NewHTTPPostModerationClient(srv.URL, "test-key", signer, srv.Client()), fake
+	return NewHTTPPostModerationClient(srv.URL, "test-key", signer, tokens, srv.Client()), fake
 }
 
 func TestPostModerationClient_SubjectAsExposedToday(t *testing.T) {
@@ -158,6 +180,11 @@ func TestPostModerationClient_OverturnClaimsAndRefusals(t *testing.T) {
 	if err := client.OverturnAppeal(context.Background(), appeal, reviewer, 7, "Appeal overturned: ok"); err != nil {
 		t.Fatal(err)
 	}
+	// Security sweep #11: the command carries trust-safety's
+	// post:moderation.write token.
+	if !fake.tokenOK {
+		t.Fatal("the overturn command did not carry a valid post:moderation.write token")
+	}
 	c := fake.lastClaims
 	if c.DecisionID != appeal.ID.String() || c.SubjectID != appeal.ContentID.String() || c.ContentRevision != 7 ||
 		c.Decision != "approve" || c.ActorID != reviewer.String() || c.Reason != "Appeal overturned: ok" ||
@@ -191,5 +218,19 @@ func TestPostModerationClient_OverturnClaimsAndRefusals(t *testing.T) {
 		if err == nil || errors.Is(err, ErrPostDecisionSuperseded) || errors.Is(err, ErrPostDecisionConflict) {
 			t.Fatalf("%d %s: got %v, want a plain error", tc.code, tc.body, err)
 		}
+	}
+}
+
+// Without a service-token signer no command is sent: post-service would
+// answer 401, so the client refuses first and the appeal stays in flight.
+func TestPostModerationClient_OverturnNeedsATokenSigner(t *testing.T) {
+	client, fake := newClientRig(t)
+	client.tokens = nil
+	appeal := &postgres.ContentAppeal{ID: uuid.New(), ContentID: uuid.New()}
+	if err := client.OverturnAppeal(context.Background(), appeal, uuid.New(), 7, "r"); !errors.Is(err, ErrPostModerationNotConfigured) {
+		t.Fatalf("no token signer: %v, want ErrPostModerationNotConfigured", err)
+	}
+	if fake.commands != 0 {
+		t.Fatalf("%d command(s) reached post-service without a token", fake.commands)
 	}
 }

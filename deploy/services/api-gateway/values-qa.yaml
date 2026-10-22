@@ -85,9 +85,11 @@ env:
   CORS_ORIGINS: https://qa.cleestudio.com,https://admin-qa.cleestudio.com
 
   # ── Launch switches (plan §3, contract) ──────────────────────────────────
-  # Groups ship with chat (core). Communities stay an invite-only pilot
-  # behind a named moderation owner: closed at the edge.
-  GROUPS_PUBLIC_ENABLED: "true"
+  # Groups: closed at the edge until reviewed for launch (security sweep
+  # #13, 21 Oct 2026; launch is Social, Shorts, Long video and Commerce
+  # only). Communities stay an invite-only pilot behind a named moderation
+  # owner: closed at the edge.
+  GROUPS_PUBLIC_ENABLED: "false"
   COMMUNITIES_PUBLIC_ENABLED: "false"
   # Reviewer programme, Mopedu and Dating: closed at the edge. The dating
   # pilot allowlist is EMPTY on purpose: empty lets nobody through.
@@ -103,9 +105,11 @@ env:
   # "not available" instead of a 502 (memories, feature flags, reviewer).
   # Wallet and bill pay have no production provider (BANK_PARTNER=mock,
   # SETU_MODE=mock) and no edge gate of their own, so they are closed the
-  # same way until a provider exists. Feast (/v1/food) stays routed: it is
-  # deployed and gated inside food-service.
-  GATEWAY_DISABLED_PREFIXES: /v1/memories,/v1/flags,/v1/admin/flags,/v1/reviewer,/v1/wallet,/v1/billpay
+  # same way until a provider exists. Security sweep #13 (21 Oct 2026):
+  # parked products with no dormant gate of their own are closed here too
+  # until each launches: Feast (/v1/food, "off" only because no restaurant
+  # was live), Q&A, business pages and broadcast channels.
+  GATEWAY_DISABLED_PREFIXES: /v1/memories,/v1/flags,/v1/admin/flags,/v1/reviewer,/v1/wallet,/v1/billpay,/v1/food,/v1/qa,/v1/pages,/v1/broadcast-channels
 
   # ── Upstreams (cluster DNS; ports are each service's values-prod port) ──
   AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081

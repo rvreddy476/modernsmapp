@@ -28,6 +28,7 @@ import (
 	"github.com/atpost/api-gateway/pkg/adminsession"
 	"github.com/atpost/api-gateway/pkg/disabledprefixes"
 	"github.com/atpost/api-gateway/pkg/edgeheaders"
+	"github.com/atpost/api-gateway/pkg/edgelimits"
 	"github.com/atpost/api-gateway/pkg/internalroutes"
 	"github.com/atpost/api-gateway/pkg/routepolicy"
 	"github.com/atpost/api-gateway/pkg/sessionrevocation"
@@ -242,7 +243,9 @@ func main() {
 			return r.Method + " " + r.URL.Path
 		}),
 	)
-	handler := corsMiddleware(allowedOrigins, tracedCore)
+	// Security sweep #18: request bodies on non-upload routes are capped at
+	// the edge (edgelimits). Inside CORS so a browser can read the 413.
+	handler := corsMiddleware(allowedOrigins, edgelimits.LimitBody(edgelimits.MaxBodyBytes, tracedCore))
 
 	// Add a recovery middleware wrapper
 	recoveryHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -263,7 +266,9 @@ func main() {
 	})
 
 	log.Printf("API Gateway listening on :%s", port)
-	log.Fatal(http.ListenAndServe(":"+port, recoveryHandler))
+	// Security sweep #18: header timeout, idle timeout and header cap
+	// instead of http.ListenAndServe's none (edgelimits.NewServer).
+	log.Fatal(edgelimits.NewServer(":"+port, recoveryHandler).ListenAndServe())
 }
 
 // edgeChain is the per-request middleware order, kept in one function so
@@ -304,6 +309,9 @@ func newRoute(prefix string, target *url.URL, internalKey string) route {
 	// Otel transport on the proxy gives us a client span per
 	// upstream call so Jaeger shows the gateway→upstream hop.
 	proxy.Transport = otelhttp.NewTransport(http.DefaultTransport)
+	// A body over the edge cap fails the upstream write; answer 413, not
+	// the default 502 (security sweep #18).
+	proxy.ErrorHandler = edgelimits.ProxyErrorHandler
 	return route{prefix: prefix, target: target, proxy: proxy}
 }
 

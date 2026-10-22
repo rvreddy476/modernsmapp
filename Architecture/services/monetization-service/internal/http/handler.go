@@ -98,7 +98,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// Transactions
 		v1.GET("/transactions", h.GetTransactions)
-		v1.POST("/internal/charge-and-credit", h.InternalChargeAndCredit)
+		// Security sweep #17: the shared key is not enough to move money
+		// between two arbitrary wallets; a signed token from a named caller
+		// is (service_caller.go).
+		v1.POST("/internal/charge-and-credit", h.requireServiceCaller(OpChargeAndCredit, chargeAndCreditCallers...), h.InternalChargeAndCredit)
 
 		// Payout Methods
 		v1.POST("/payout-methods", h.AddPayoutMethod)

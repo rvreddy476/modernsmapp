@@ -283,6 +283,32 @@ func (s *Store) ReadObjectRange(ctx context.Context, objectKey string, start, en
 	return data, nil
 }
 
+// OpenObjectRange returns a streaming reader over the inclusive byte range
+// [start,end] of an object. The anonymous-scope serve path reads through it
+// (security sweep #5): an unranged GET of a 10-minute video used to go
+// through DownloadObject's io.ReadAll, so N parallel viewers held N whole
+// objects in this process. The caller closes the reader.
+func (s *Store) OpenObjectRange(ctx context.Context, objectKey string, start, end int64) (io.ReadCloser, error) {
+	if start < 0 || end < start {
+		return nil, fmt.Errorf("blob: invalid byte range %d-%d", start, end)
+	}
+	opts := minio.GetObjectOptions{}
+	if err := opts.SetRange(start, end); err != nil {
+		return nil, fmt.Errorf("blob: set range for %s: %w", objectKey, err)
+	}
+	obj, err := s.client.GetObject(ctx, s.bucket, objectKey, opts)
+	if err != nil {
+		return nil, normalizeObjectError(objectKey, err)
+	}
+	// GetObject is lazy: Stat forces the first request, so a missing key is
+	// reported here rather than on the first Read.
+	if _, err := obj.Stat(); err != nil {
+		_ = obj.Close()
+		return nil, normalizeObjectError(objectKey, err)
+	}
+	return obj, nil
+}
+
 // OpenObject returns a streaming reader over an object's bytes plus its
 // metadata (size, ETag). The fingerprint worker reads HLS segments, MP4
 // variants and originals through it so nothing is buffered whole in memory

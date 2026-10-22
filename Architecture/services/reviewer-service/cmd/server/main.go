@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/atpost/reviewer-service/database"
@@ -18,6 +20,7 @@ import (
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
+	"github.com/atpost/shared/servicetoken"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -64,6 +67,19 @@ func main() {
 		env("WALLET_SERVICE_URL", "http://wallet-service:8114"),
 		internalKey,
 	)
+	// Security sweep #11: post-service admits the ML pre-filter's
+	// review-status write and the promotion worker's visibility write only
+	// with a reviewer-service token (REVIEWER_SERVICE_TOKEN_KEY / _KID, the
+	// pair of post-service's SERVICE_CALLER_REVIEWER_SERVICE_PUBKEY / _KID).
+	postTokens, err := postTokenSigner(os.Getenv)
+	if err != nil {
+		slog.Error("service token signer configuration", "error", err)
+		os.Exit(1)
+	}
+	if postTokens == nil {
+		slog.Warn("reviewer-service: REVIEWER_SERVICE_TOKEN_KEY not set — the pre-filter and promotion worker cannot change a post on post-service")
+	}
+	cl.WithPostTokens(postTokens)
 	store := postgres.New(dbPool)
 	svc := service.New(
 		store, cl,
@@ -160,4 +176,22 @@ func envFloat(key string, fallback float64) float64 {
 		}
 	}
 	return fallback
+}
+
+// postTokenSigner builds the reviewer-service token signer from
+// REVIEWER_SERVICE_TOKEN_KEY / _KID: nil when the key is blank, an error when
+// it is present but unusable (or has no kid).
+func postTokenSigner(getenv func(string) string) (*servicetoken.Signer, error) {
+	key, kid := strings.TrimSpace(getenv("REVIEWER_SERVICE_TOKEN_KEY")), strings.TrimSpace(getenv("REVIEWER_SERVICE_TOKEN_KID"))
+	if key == "" {
+		return nil, nil
+	}
+	if kid == "" {
+		return nil, fmt.Errorf("REVIEWER_SERVICE_TOKEN_KID is required with REVIEWER_SERVICE_TOKEN_KEY")
+	}
+	s, err := servicetoken.NewSignerFromBase64(clients.Issuer, kid, key)
+	if err != nil {
+		return nil, fmt.Errorf("REVIEWER_SERVICE_TOKEN_KEY: %w", err)
+	}
+	return s, nil
 }

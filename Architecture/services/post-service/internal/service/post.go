@@ -2044,7 +2044,24 @@ func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *
 }
 
 // GetAuthorCounts returns post counts grouped by content type.
+// GetAuthorCounts is the ungated count (the admin console's creator view,
+// AdminCreatorCounts). Viewer-facing reads go through
+// GetAuthorCountsForViewer.
 func (s *Service) GetAuthorCounts(ctx context.Context, authorID uuid.UUID) (map[string]int64, error) {
+	return s.pgStore.GetPostCountsByAuthor(ctx, authorID)
+}
+
+// GetAuthorCountsForViewer is GetAuthorCounts behind the profile's own
+// audience rule (security sweep #24): the author always; anyone else only
+// if canViewAuthor says so — the same fail-closed answer GetPostsByAuthor
+// gives, so a private account's post counts are not readable by a stranger
+// whose grid is empty, and a blocked viewer learns nothing. A refused
+// viewer gets the empty map (every count zero), never an error.
+func (s *Service) GetAuthorCountsForViewer(ctx context.Context, authorID uuid.UUID, viewerID *uuid.UUID) (map[string]int64, error) {
+	isAuthor := viewerID != nil && *viewerID == authorID
+	if !isAuthor && !s.canViewAuthor(ctx, viewerID, authorID) {
+		return map[string]int64{}, nil
+	}
 	return s.pgStore.GetPostCountsByAuthor(ctx, authorID)
 }
 

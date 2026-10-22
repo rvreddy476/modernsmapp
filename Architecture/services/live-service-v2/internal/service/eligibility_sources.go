@@ -64,9 +64,18 @@ func eligHTTP() *http.Client {
 // eligGet reads rawURL and returns the status and, for a 200, the body. The
 // errors are fixed text plus the status: a body is never quoted.
 func eligGet(ctx context.Context, client *http.Client, rawURL, internalKey string) (int, []byte, error) {
+	return eligGetAs(ctx, client, rawURL, internalKey, "")
+}
+
+// eligGetAs is eligGet naming a viewer (X-User-Id). Only the post-count read
+// uses it: it asks for the creator's OWN counts, as the creator.
+func eligGetAs(ctx context.Context, client *http.Client, rawURL, internalKey, viewer string) (int, []byte, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
 		return 0, nil, errors.New("build request")
+	}
+	if viewer != "" {
+		req.Header.Set("X-User-Id", viewer)
 	}
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("X-Caller-Service", eligCallerService)
@@ -270,7 +279,10 @@ func NewHTTPPostCounts(baseURL, internalKey string) *HTTPPostCounts {
 }
 
 func (c *HTTPPostCounts) PostCount(ctx context.Context, userID uuid.UUID) (int, error) {
-	status, body, err := eligGet(ctx, c.http, c.baseURL+"/v1/posts/by-author/"+userID.String()+"/counts", c.internalKey)
+	// Named as the creator: post-service gates by-author counts on the
+	// viewer (security sweep #24), and a creator always reads their own —
+	// a private account's counts read as zero to an unnamed caller.
+	status, body, err := eligGetAs(ctx, c.http, c.baseURL+"/v1/posts/by-author/"+userID.String()+"/counts", c.internalKey, userID.String())
 	if err != nil {
 		return 0, fmt.Errorf("post counts: %w", err)
 	}

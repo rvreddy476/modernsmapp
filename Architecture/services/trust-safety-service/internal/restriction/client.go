@@ -15,8 +15,11 @@
 //
 //   - The command: X-Internal-Service-Key plus a post_restriction capability
 //     (moderationcap.RestrictionClaims signed under POST_RESTRICTION_HMAC_KEY,
-//     TTL ≤ 15 min). post-service judges the command by the capability
-//     alone.
+//     TTL ≤ 15 min) AND, since the security sweep of 21 Oct 2026 (#11), an
+//     X-Service-Authorization token with scope post:restrictions.write from
+//     the same TRUST_SAFETY_SERVICE_TOKEN_KEY: the shared key is stamped on
+//     every proxied request by the gateway, so post-service no longer takes
+//     it as evidence of the caller.
 //   - The read: X-Internal-Service-Key plus X-Service-Authorization: Bearer
 //     <Ed25519 service token>, iss trust-safety-service, aud post, scope
 //     post:restrictions.read (TRUST_SAFETY_SERVICE_TOKEN_KEY / _KID), the
@@ -49,6 +52,8 @@ const (
 	Audience           = "post"
 	Issuer             = moderationcap.IssuerTrustSafety
 	OpRestrictionsRead = "post:restrictions.read"
+	// OpRestrictionsWrite is the scope the command token carries (sweep #11).
+	OpRestrictionsWrite = "post:restrictions.write"
 	// TokenTTL is the lifetime of each minted read token (≤ servicetoken.MaxTTL).
 	TokenTTL = 2 * time.Minute
 
@@ -201,8 +206,9 @@ type Config struct {
 	InternalKey string
 	// Signer signs commands (POST_RESTRICTION_HMAC_KEY). Required to send.
 	Signer *moderationcap.RestrictionSigner
-	// Tokens mints the read token (TRUST_SAFETY_SERVICE_TOKEN_KEY/KID).
-	// Required to read.
+	// Tokens mints the service tokens (TRUST_SAFETY_SERVICE_TOKEN_KEY/KID):
+	// the read token, and the write token every command carries. Required to
+	// read AND to send.
 	Tokens     *servicetoken.Signer
 	HTTPClient *http.Client
 }
@@ -237,22 +243,37 @@ func FromEnv(getenv func(string) string, internalKey string) (*Client, error) {
 		}
 		cfg.Signer = s
 	}
-	key, kid := strings.TrimSpace(getenv(EnvTokenKey)), strings.TrimSpace(getenv(EnvTokenKID))
-	if key != "" {
-		if kid == "" {
-			return nil, fmt.Errorf("%s is required with %s", EnvTokenKID, EnvTokenKey)
-		}
-		s, err := servicetoken.NewSignerFromBase64(Issuer, kid, key)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", EnvTokenKey, err)
-		}
-		cfg.Tokens = s
+	tokens, err := TokenSignerFromEnv(getenv)
+	if err != nil {
+		return nil, err
 	}
+	cfg.Tokens = tokens
 	return New(cfg), nil
 }
 
-// CanSend reports whether commands can be signed.
-func (c *Client) CanSend() bool { return c != nil && c.signer != nil }
+// TokenSignerFromEnv builds trust-safety's service-token signer from
+// TRUST_SAFETY_SERVICE_TOKEN_KEY / _KID: nil (no error) when the key is
+// blank, an error when it is present but unusable. The restriction client
+// and the post moderation client (appeal overturns) both mint with it.
+func TokenSignerFromEnv(getenv func(string) string) (*servicetoken.Signer, error) {
+	key, kid := strings.TrimSpace(getenv(EnvTokenKey)), strings.TrimSpace(getenv(EnvTokenKID))
+	if key == "" {
+		return nil, nil
+	}
+	if kid == "" {
+		return nil, fmt.Errorf("%s is required with %s", EnvTokenKID, EnvTokenKey)
+	}
+	s, err := servicetoken.NewSignerFromBase64(Issuer, kid, key)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", EnvTokenKey, err)
+	}
+	return s, nil
+}
+
+// CanSend reports whether commands can be signed AND authenticated: the
+// capability needs the HMAC signer, the request needs the service-token
+// signer (post-service answers 401 to a command without its token).
+func (c *Client) CanSend() bool { return c != nil && c.signer != nil && c.tokens != nil }
 
 // CanRead reports whether the reconciliation read can be authenticated.
 func (c *Client) CanRead() bool { return c != nil && c.tokens != nil }
@@ -273,10 +294,15 @@ func (c *Client) Send(ctx context.Context, cmd Command) Outcome {
 	if err != nil {
 		return Outcome{Disposition: DispositionParked, ErrorCode: "ENCODE_FAILED", Err: err}
 	}
+	tok, err := c.tokens.Mint(Audience, "restriction-dispatch", []string{OpRestrictionsWrite}, nil, TokenTTL)
+	if err != nil {
+		return Outcome{Disposition: DispositionRetry, ErrorCode: "TOKEN_MINT_FAILED", Err: err}
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+CommandPath, bytes.NewReader(body))
 	if err != nil {
 		return Outcome{Disposition: DispositionParked, ErrorCode: "REQUEST_FAILED", Err: err}
 	}
+	req.Header.Set(HeaderServiceAuthorization, "Bearer "+tok)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 	if c.internalKey != "" {

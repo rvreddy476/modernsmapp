@@ -47,6 +47,12 @@ env:
   # nobody. See docs/adr/adr-dormant-products.md.
   DOORSTEP_PUBLIC_ENABLED: "false"
   DOORSTEP_PILOT_USER_IDS: ""
+  # Security sweep #13 (21 Oct 2026): staging mirrors the launch state.
+  # Groups are closed at the edge until reviewed for launch, and the parked
+  # products with no dormant gate of their own (Feast, Q&A, business pages,
+  # broadcast channels) answer NOT_AVAILABLE until each launches.
+  GROUPS_PUBLIC_ENABLED: "false"
+  GATEWAY_DISABLED_PREFIXES: /v1/food,/v1/qa,/v1/pages,/v1/broadcast-channels
   # ── Module 3 SR-1: edge token identity ──────────────────────────────────
   # APP_ENV is what the gateway reads to decide whether to apply production
   # token rules. It is set explicitly here rather than relying on ENV so the

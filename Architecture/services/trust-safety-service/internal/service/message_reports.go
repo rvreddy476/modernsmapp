@@ -53,6 +53,11 @@ type FileReportInput struct {
 	// SourceEventID, when set, makes the filing idempotent: a second filing
 	// with the same key returns postgres.ErrDuplicateSourceEvent.
 	SourceEventID string
+	// EnforceReporterQuota applies the per-reporter volume cap
+	// (reporter_quota.go). The user-facing POST /v1/reports sets it; the
+	// service-side filers (chat consumer, internal message and conversation
+	// routes) do not, so a replayed event is never dropped by the cap.
+	EnforceReporterQuota bool
 }
 
 // ReportEvidence is the snapshot stored with a report.

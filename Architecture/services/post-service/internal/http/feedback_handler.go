@@ -57,15 +57,29 @@ type setReviewStatusRequest struct {
 
 // SetReviewStatusInternal — POST /v1/posts/internal/review-status. Lets
 // reviewer-service's ML pre-filter auto-resolve a FLAGGED post. Scoped to
-// flagged rows. The caller is either a gateway moderator (recorded as that
-// user) or a service holding the internal key (recorded as the service); every
-// change writes one post_review_audit row.
+// flagged rows. The caller is reviewer-service, admitted by its signed
+// service token (requireServiceToken, security sweep #11) and recorded as
+// that service; the admin console's equivalent is AdminSetReviewStatus.
+// Every change writes one post_review_audit row.
 func (h *Handler) SetReviewStatusInternal(c *gin.Context) {
-	actor, ok := h.resolveReviewActor(c)
+	actor, ok := serviceReviewActor(c)
 	if !ok {
 		return
 	}
 	h.setReviewStatus(c, actor, nil)
+}
+
+// serviceReviewActor is the audit actor of an internal review write: the
+// issuer of the service token requireServiceToken admitted (security sweep
+// #11). The route is registered behind that gate, so a missing issuer is a
+// wiring error and is refused, never recorded as "a service".
+func serviceReviewActor(c *gin.Context) (postgres.ReviewAuditActor, bool) {
+	issuer, ok := serviceIssuer(c)
+	if !ok {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, CodeAdminTokenRequired, "a service token is required", nil)
+		return postgres.ReviewAuditActor{}, false
+	}
+	return postgres.ReviewAuditActor{Service: issuer}, true
 }
 
 // setReviewStatus is the flagged → approved|rejected write shared by the
@@ -133,7 +147,7 @@ type setVisibilityRequest struct {
 // reviewer-service promotion worker move a STAGED post to its full visibility.
 // Scoped to staged rows. Same actor rule and audit as SetReviewStatusInternal.
 func (h *Handler) SetVisibilityInternal(c *gin.Context) {
-	actor, ok := h.resolveReviewActor(c)
+	actor, ok := serviceReviewActor(c)
 	if !ok {
 		return
 	}

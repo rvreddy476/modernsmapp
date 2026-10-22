@@ -777,7 +777,14 @@ services:
       SERVICE_CALLERS: ${POST_SERVICE_CALLERS:-}
       SERVICE_CALLER_TRUST_SAFETY_SERVICE_KID: ${TRUST_SAFETY_SERVICE_TOKEN_KID:-t1}
       SERVICE_CALLER_TRUST_SAFETY_SERVICE_PUBKEY: ${TRUST_SAFETY_SERVICE_TOKEN_PUBKEY:-}
-      SERVICE_CALLER_TRUST_SAFETY_SERVICE_OPS: post:restrictions.read
+      # Security sweep #11: every /v1/posts/internal WRITE needs its caller's
+      # signed token. trust-safety: hold commands + appeal overturn;
+      # reviewer-service: review-status + visibility (add reviewer-service to
+      # POST_SERVICE_CALLERS in .env with REVIEWER_SERVICE_TOKEN_PUBKEY set).
+      SERVICE_CALLER_TRUST_SAFETY_SERVICE_OPS: post:restrictions.read,post:restrictions.write,post:moderation.write
+      SERVICE_CALLER_REVIEWER_SERVICE_KID: ${REVIEWER_SERVICE_TOKEN_KID:-v1}
+      SERVICE_CALLER_REVIEWER_SERVICE_PUBKEY: ${REVIEWER_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_REVIEWER_SERVICE_OPS: post:review-status.write,post:visibility.write
       SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
       SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
       SERVICE_CALLER_ADMIN_SERVICE_OPS: social:stats.read,social:posts.moderate,social:posts.remove,social:reels.moderate,social:reels.remove,social:comments.moderate,social:comments.remove,social:reports.act,social:users.read,tube:stats.read,tube:videos.moderate,tube:videos.remove,tube:channels.moderate,tube:reports.act
@@ -1235,6 +1242,10 @@ services:
       WALLET_SERVICE_URL: http://wallet-service:8114
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       REVIEWER_CREDIT_ENABLED: "false"
+      # Signs the post:review-status.write / post:visibility.write tokens
+      # post-service requires on its internal review writes (sweep #11).
+      REVIEWER_SERVICE_TOKEN_KEY: ${REVIEWER_SERVICE_TOKEN_KEY:-}
+      REVIEWER_SERVICE_TOKEN_KID: ${REVIEWER_SERVICE_TOKEN_KID:-v1}
     ports:
       - "8120:8120"
     depends_on:
@@ -1475,6 +1486,16 @@ services:
       SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
       SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
       SERVICE_CALLER_ADMIN_SERVICE_OPS: monetization:stats.read,monetization:fraud.review,monetization:wallet.freeze,monetization:wallet.unfreeze,monetization:wallet.rebuild,monetization:fund.read,monetization:fund.rates,monetization:creators.suspend,monetization:fund.settle,monetization:fund.reverse,monetization:fund.budget,monetization:disputes.read,monetization:disputes.act,monetization:refund.issue,monetization:payouts.read,monetization:audit.read
+      # Security sweep #17: POST /internal/charge-and-credit needs a
+      # food-service token (Feast wallet payments). Read only when
+      # MONETIZATION_SERVICE_CALLERS names food-service; the public key is
+      # the pair of food's FOOD_SERVICE_TOKEN_KEY.
+      SERVICE_CALLER_FOOD_SERVICE_KID: ${FOOD_SERVICE_TOKEN_KID:-f1}
+      SERVICE_CALLER_FOOD_SERVICE_PUBKEY: ${FOOD_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_FOOD_SERVICE_OPS: monetization:charge-and-credit
+      # Security sweep #16: every tip asks graph-service for a block either
+      # way first. Unset, tips answer 503 TIP_UNAVAILABLE.
+      GRAPH_SERVICE_URL: http://graph-service:8083
     ports:
       # Loopback only: the admin routes trust X-Scopes/X-User-Id from
       # whoever reaches the port, so the port must not be reachable from

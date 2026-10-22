@@ -4,12 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
 	"github.com/google/uuid"
 
 	"github.com/atpost/media-service/internal/delivery"
+	"github.com/atpost/media-service/internal/store/blob"
 	"github.com/atpost/media-service/internal/store/postgres"
 )
 
@@ -53,12 +55,50 @@ func (s *Service) MarkAnonymous(ctx context.Context, mediaID uuid.UUID) (bool, e
 
 // StreamResult is one authorized read of an anonymous object, possibly a
 // byte range of it.
+//
+// Body is the window [Start,End] of the object as a stream: the handler
+// copies it to the response through a fixed buffer and closes it, so a
+// whole video is never held in this process (security sweep #5 — the old
+// shape read the entire object into Data on every unranged GET). Data is
+// kept for in-memory producers (test fakes); when Body is nil the handler
+// writes Data.
 type StreamResult struct {
+	Body        io.ReadCloser
 	Data        []byte
 	ContentType string
 	Size        int64
 	Start, End  int64
 	Partial     bool
+}
+
+// Length is the number of bytes the response body carries.
+func (r *StreamResult) Length() int64 {
+	if r.Body == nil {
+		return int64(len(r.Data))
+	}
+	return r.End - r.Start + 1
+}
+
+// objectReader is the slice of the blob store the anonymous stream reads
+// through. An interface so a test can stand a fake object behind it and
+// count what is read.
+type objectReader interface {
+	StatObject(ctx context.Context, objectKey string) (blob.ObjectInfo, error)
+	OpenObjectRange(ctx context.Context, objectKey string, start, end int64) (io.ReadCloser, error)
+}
+
+// WithObjectReader overrides the object store the anonymous stream reads
+// from (tests).
+func (s *Service) WithObjectReader(r objectReader) *Service {
+	s.objects = r
+	return s
+}
+
+func (s *Service) objectReader() objectReader {
+	if s.objects != nil {
+		return s.objects
+	}
+	return s.blobStore
 }
 
 // StreamAnonymous serves the original or a named variant of an anonymous
@@ -127,8 +167,13 @@ func validHLSName(name string) bool {
 	return name != "" && name != "." && name != ".." && !strings.ContainsAny(name, `/\\`)
 }
 
+// readObjectRange opens the requested window of an object as a stream. It
+// never buffers the object: an unranged GET is the window [0,size-1] opened
+// the same way as a Range request, and the bytes move only when the handler
+// copies Body to the response.
 func (s *Service) readObjectRange(ctx context.Context, key, contentType, rangeHeader string) (*StreamResult, error) {
-	info, err := s.blobStore.StatObject(ctx, key)
+	objects := s.objectReader()
+	info, err := objects.StatObject(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("stat object: %w", err)
 	}
@@ -144,19 +189,18 @@ func (s *Service) readObjectRange(ctx context.Context, key, contentType, rangeHe
 		return nil, err
 	}
 	if !ranged {
-		data, err := s.blobStore.DownloadObject(ctx, key)
-		if err != nil {
-			return nil, fmt.Errorf("read object: %w", err)
-		}
-		res.Data = data
-		res.Start, res.End = 0, info.Size-1
+		start, end = 0, info.Size-1
+	}
+	if info.Size == 0 {
+		// Nothing to open: an empty body with the right headers.
+		res.Data, res.Start, res.End, res.Partial = []byte{}, 0, 0, ranged
 		return res, nil
 	}
-	data, err := s.blobStore.ReadObjectRange(ctx, key, start, end)
+	body, err := objects.OpenObjectRange(ctx, key, start, end)
 	if err != nil {
 		return nil, fmt.Errorf("read object range: %w", err)
 	}
-	res.Data, res.Start, res.End, res.Partial = data, start, end, true
+	res.Body, res.Start, res.End, res.Partial = body, start, end, ranged
 	return res, nil
 }
 

@@ -84,11 +84,13 @@ func (s *Service) InitResumableUpload(ctx context.Context, userID uuid.UUID, fil
 	// No total size cap for video here (founder, 2026-10-21); ValidateUpload
 	// still caps images. The chunk plan refuses only what S3's part limit
 	// cannot hold.
-	//
-	// NOTE: unlike InitUpload this path does not call CheckUploadRateLimit,
-	// so resumable inits are not counted against the per-user hourly/daily
-	// upload limits. Left as it was on purpose (2026-10-21); worth closing.
 	if err := ValidateUpload(fileType, "general", mimeType, totalBytes); err != nil {
+		return nil, err
+	}
+	// Security sweep #20: a resumable init counts against the same per-user
+	// hourly/daily upload limits as InitUpload. Before this, multipart
+	// sessions (24 h TTL each) were unlimited.
+	if err := s.checkUploadLimit(ctx, userID); err != nil {
 		return nil, err
 	}
 	chunkSize, totalParts, err := resumableChunkPlan(totalBytes)

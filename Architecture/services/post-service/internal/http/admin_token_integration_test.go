@@ -32,7 +32,8 @@ type adminIT struct {
 func newAdminIT(t *testing.T) *adminIT {
 	t.Helper()
 	pool := openReviewAuditDB(t)
-	v, aPriv, _, _ := adminTestVerifier(t)
+	keys := adminTestVerifier(t)
+	v, aPriv := keys.v, keys.admin
 	signer, err := servicetoken.NewSignerFromBase64(IssuerAdminService, "a1", aPriv)
 	if err != nil {
 		t.Fatal(err)

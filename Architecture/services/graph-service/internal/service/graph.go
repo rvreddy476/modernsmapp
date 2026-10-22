@@ -49,11 +49,18 @@ func isForeignKeyViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23503"
 }
 
+// actionLimiter is the per-user, per-action quota every write asks first.
+// ratelimit.Limiter in production; an interface so a test can stand a
+// refusing limiter in front of a nil store.
+type actionLimiter interface {
+	Allow(ctx context.Context, action string, userID uuid.UUID) (bool, error)
+}
+
 type Service struct {
 	store     *store.Store
 	rdb       *redis.Client
 	producer  *events.Producer
-	rateLimit *ratelimit.Limiter
+	rateLimit actionLimiter
 
 	// Permission resolver dependencies (spec §4 / §9.8). userServiceURL is
 	// the base URL of user-service; internalKey authenticates the call.
@@ -175,6 +182,25 @@ const (
 // keeps its shape for public targets ({"status":"followed"}) and answers
 // {"status":"requested"} for private ones.
 func (s *Service) Follow(ctx context.Context, followerID, followeeID uuid.UUID) (string, error) {
+	return quietFollowOutcome(s.follow(ctx, followerID, followeeID))
+}
+
+// quietFollowOutcome is the one place a follow's result meets the wire rule
+// of permission.go:140-142 — the blocked party never learns of the block.
+// A follow refused by a block (store.ErrBlockedPair, either direction) used
+// to surface as 500 INTERNAL_ERROR "cannot follow: blocked" (security sweep
+// #10, 21 Oct 2026). It now answers exactly what a private-account follow
+// answers: {"status":"requested"}, 200 — a pending state that, like a real
+// request to a private account, may simply never resolve. Nothing is
+// written. Every other error passes through untouched.
+func quietFollowOutcome(status string, err error) (string, error) {
+	if err != nil && errors.Is(err, store.ErrBlockedPair) {
+		return FollowStatusRequested, nil
+	}
+	return status, err
+}
+
+func (s *Service) follow(ctx context.Context, followerID, followeeID uuid.UUID) (string, error) {
 	// Product pivot 2026-06-12 (FB model): users AND pages are both
 	// followable; friendship is the mutual layer on top. Only unknown
 	// targets are rejected. (Supersedes relationship-separation §2.3.)
@@ -231,10 +257,10 @@ func (s *Service) followDirect(ctx context.Context, followerID, followeeID uuid.
 	// feed and search then correctly serve.
 	inserted, err := s.store.FollowAtomic(ctx, followerID, followeeID)
 	if err != nil {
-		if errors.Is(err, store.ErrBlockedPair) {
-			return fmt.Errorf("cannot follow: blocked")
-		}
-		return err
+		// store.ErrBlockedPair is returned AS IS (wrapped) so Follow and
+		// RequestFollow can map it to the quiet "requested" answer; the old
+		// "cannot follow: blocked" string reached the blocked party's screen.
+		return fmt.Errorf("follow: %w", err)
 	}
 
 	// Only bump counters when a genuinely new follow row landed —
@@ -324,6 +350,10 @@ func (s *Service) adjustCount(ctx context.Context, c *counters.Counter, userID u
 // The commit is the success boundary: after it, the block is real AND the
 // event is guaranteed to be delivered by the relay.
 func (s *Service) Block(ctx context.Context, blockerID, blockedID uuid.UUID) error {
+	// Security sweep #22: block/unblock flips are quota'd like follows.
+	if allowed, _ := s.rateLimit.Allow(ctx, ratelimit.ActionBlock, blockerID); !allowed {
+		return ErrRateLimited
+	}
 	res, err := s.store.BlockAtomic(ctx, blockerID, blockedID)
 	if err != nil {
 		return err
@@ -358,6 +388,9 @@ func (s *Service) Block(ctx context.Context, blockerID, blockedID uuid.UUID) err
 // Unblock removes a block. The block event consumers (chat-service severs
 // active conversations on block) need the matching unblock signal.
 func (s *Service) Unblock(ctx context.Context, blockerID, blockedID uuid.UUID) error {
+	if allowed, _ := s.rateLimit.Allow(ctx, ratelimit.ActionBlock, blockerID); !allowed {
+		return ErrRateLimited
+	}
 	// SR-2: the unblock event is recorded in the same transaction as the
 	// delete. chat-service severs active conversations on block; if the
 	// unblock event is lost, that sever is permanent and the users cannot
@@ -751,6 +784,10 @@ func (s *Service) UnfilterConnectionRequest(ctx context.Context, senderID, recei
 // --- Mutes ---
 
 func (s *Service) Mute(ctx context.Context, muterID, mutedID uuid.UUID) error {
+	// Security sweep #22: mute/unmute flips are quota'd like follows.
+	if allowed, _ := s.rateLimit.Allow(ctx, ratelimit.ActionMute, muterID); !allowed {
+		return ErrRateLimited
+	}
 	err := s.store.Mute(ctx, muterID, mutedID)
 	// Invalidate relationship cache
 	s.invalidateRel(ctx, muterID, mutedID)
@@ -758,6 +795,9 @@ func (s *Service) Mute(ctx context.Context, muterID, mutedID uuid.UUID) error {
 }
 
 func (s *Service) Unmute(ctx context.Context, muterID, mutedID uuid.UUID) error {
+	if allowed, _ := s.rateLimit.Allow(ctx, ratelimit.ActionMute, muterID); !allowed {
+		return ErrRateLimited
+	}
 	err := s.store.Unmute(ctx, muterID, mutedID)
 	s.invalidateRel(ctx, muterID, mutedID)
 	return err
@@ -769,6 +809,21 @@ func (s *Service) Unmute(ctx context.Context, muterID, mutedID uuid.UUID) error 
 // blocked — audit HG4).
 func (s *Service) IsBlockedBy(ctx context.Context, blockerID, candidateID uuid.UUID) (bool, error) {
 	return s.store.CheckBlock(ctx, blockerID, candidateID)
+}
+
+// IsFollowing reports whether the follow edge follower → followee exists
+// (an APPROVED follow; a pending request is not one).
+func (s *Service) IsFollowing(ctx context.Context, followerID, followeeID uuid.UUID) (bool, error) {
+	return s.store.CheckFollow(ctx, followerID, followeeID)
+}
+
+// IsPrivateAccount reports whether userID's account_visibility is
+// "private", from the privacy snapshot (3 s cache). A fetch failure reads
+// as the strict default, which is NOT private-by-accident: strictPrivacyDefaults
+// leaves AccountVisibility unknown, and only an explicit "private" closes
+// the follower lists — the same rule Follow applies.
+func (s *Service) IsPrivateAccount(ctx context.Context, userID uuid.UUID) bool {
+	return s.fetchPrivacy(ctx, userID).AccountVisibility == "private"
 }
 
 func (s *Service) GetBlockedAndMuted(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {

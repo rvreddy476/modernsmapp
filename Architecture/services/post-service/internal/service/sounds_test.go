@@ -433,7 +433,7 @@ func TestUseSoundRefusals(t *testing.T) {
 			f.store.posts[f.reel].Media = []postgres.PostMedia{{MediaID: f.publicVideo, Kind: "image"}}
 		}, nil,
 			wantRefusal(SoundCodeNotAReel)},
-		{"longer than five minutes", func(f *useSoundFixture) {
+		{"longer than ten minutes", func(f *useSoundFixture) {
 			m := f.states[f.publicVideo]
 			m.DurationMs = MaxSoundSourceMs + 1
 			f.states[f.publicVideo] = m
@@ -481,15 +481,17 @@ func wantRefusal(code string) func(t *testing.T, err error) {
 	}
 }
 
-// Exactly five minutes is a sound source; the author may always use their
+// Exactly ten minutes is a sound source; the author may always use their
 // own reel's sound, reuse turned off or not.
 func TestUseSoundAdmits(t *testing.T) {
 	f := newUseSoundFixture()
 	m := f.states[f.publicVideo]
-	m.DurationMs = MaxSoundSourceMs
+	// A literal, not the constant: the founder's number (21 Oct 2026, was five
+	// minutes) is what is pinned.
+	m.DurationMs = 10 * 60 * 1000
 	f.states[f.publicVideo] = m
 	if _, err := f.use(f.stranger); err != nil {
-		t.Fatalf("a video of exactly five minutes: %v", err)
+		t.Fatalf("a video of exactly ten minutes: %v", err)
 	}
 
 	g := newUseSoundFixture()
