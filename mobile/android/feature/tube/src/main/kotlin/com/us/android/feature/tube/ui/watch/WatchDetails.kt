@@ -42,11 +42,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.bookmarkedOr
 import com.us.android.core.engagement.data.reactedOr
@@ -185,7 +185,7 @@ fun LazyListScope.watchDetails(
     }
     if (series != null && series.episodes.isNotEmpty()) {
         item(key = "series") { SectionTitle(seriesTitle(series)) }
-        items(series.episodes.sortedBy { it.episodeNum }, key = { "episode:${it.postId}" }) { episode ->
+        items(series.episodes.distinctBy { it.postId }.sortedBy { it.episodeNum }, key = { "episode:${it.postId}" }) { episode ->
             EpisodeRow(
                 episode = episode,
                 current = episode.postId == item.id,
@@ -579,7 +579,7 @@ private fun SectionTitle(text: String) {
 }
 
 private const val DESCRIPTION_LINES = 3
-private val TITLE_SIZE = 18.sp
+private val TITLE_SIZE = UsTypeScale.lg.size
 private val PILL_HEIGHT = 36.dp
 private val PILL_GLYPH = 17.dp
 private val HAIRLINE = 1.dp

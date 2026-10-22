@@ -50,10 +50,10 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 
 /**
  * A short picker over the form — Audience and Category share it.
@@ -303,4 +303,4 @@ private val HANDLE_HEIGHT = 4.dp
 private val HAIRLINE = 1.dp
 private val CHECK_SIZE = 18.dp
 private val FIELD_ICON = 18.dp
-private val SHEET_TITLE_SIZE = 20.sp
+private val SHEET_TITLE_SIZE = UsTypeScale.xl.size

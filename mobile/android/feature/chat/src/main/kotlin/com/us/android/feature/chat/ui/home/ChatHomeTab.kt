@@ -27,8 +27,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.ui.UsFitOrScrollRow
 
 /** The four surfaces of the one chat screen (founder, 2026-09-05). */
@@ -150,4 +150,4 @@ private val RULE_HEIGHT = 1.dp
 private val UNDERLINE_HEIGHT = 2.dp
 private val UNDERLINE_GAP = 4.dp
 private val UNREAD_DOT = 6.dp
-private val TAB_TEXT = 13.sp
+private val TAB_TEXT = UsTypeScale.sm.size

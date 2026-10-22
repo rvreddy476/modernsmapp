@@ -311,6 +311,10 @@ fun UsNavHost(
     // ReelsEntry before the tab switch, because a tab root is restored, not
     // pushed, and carries no argument. Supplied by UsApp from MainViewModel.
     onOpenReel: (postId: String) -> Unit = {},
+    // A profile or channel web link carries a HANDLE (2026-10-22); the
+    // screens take a user id. Supplied by UsApp from MainViewModel; null
+    // means the handle is unknown, and the host opens Search with it typed.
+    resolveLinkUserId: suspend (com.us.android.push.PushDestination) -> String? = { null },
     callState: com.us.android.core.call.CallState = com.us.android.core.call.CallState.Idle,
     // Supplied by MainActivity, which IS the Activity the PSP SDK needs and
     // which holds the coordinator. Passing it down rather than looking up a
@@ -359,7 +363,7 @@ fun UsNavHost(
         val destination = pushDestination ?: return@LaunchedEffect
         if (!sessionState.isAuthenticated) return@LaunchedEffect
         onPushDestinationConsumed()
-        navController.openPushDestination(destination, onOpenReel)
+        navController.openPushDestination(destination, onOpenReel, resolveLinkUserId)
     }
 
     // The bar lives OUTSIDE the NavHost so it survives destination changes
@@ -569,10 +573,15 @@ private fun ShellState.startDestination(): Any = when (this) {
     is ShellState.Ready -> TabResolver.startDestination(prefs).rootRoute
 }
 
-/** Where a notification tap lands, by push type. Unknown types route nowhere. */
-private fun NavHostController.openPushDestination(
+/**
+ * Where a notification tap lands, by push type. Unknown types route nowhere.
+ * Suspends only for a profile or channel web link, whose handle is resolved
+ * to a user id through [resolveLinkUserId] before the screen is opened.
+ */
+private suspend fun NavHostController.openPushDestination(
     destination: com.us.android.push.PushDestination,
     onOpenReel: (postId: String) -> Unit,
+    resolveLinkUserId: suspend (com.us.android.push.PushDestination) -> String? = { null },
 ) {
     val customer = com.us.android.core.model.CustomerNotification.resolve(destination.type, destination.entityId, destination.deepLink)
     if (customer != NotificationTarget.None) {
@@ -598,6 +607,30 @@ private fun NavHostController.openPushDestination(
         // post detail, which reads the post (and its visibility) from the
         // server. The id was already checked to be a UUID by the parser.
         PushDestinations.TYPE_POST_LINK -> if (destination.entityId.isNotBlank()) navigateToPost(destination.entityId)
+        // The web's other share routes (2026-10-22), each on the exact item:
+        // a reel opens the Reels tab AT that reel (the id parked in ReelsEntry
+        // first, like a reel notification); a long video opens Tube's watch
+        // screen; a sound its page; a hashtag its posts. The ids were checked
+        // by the parser; the screens read everything else from the server.
+        PushDestinations.TYPE_REEL_LINK -> if (destination.entityId.isNotBlank()) {
+            onOpenReel(destination.entityId)
+            navigateToTopLevel(TopLevelDestination.REELS)
+        }
+        PushDestinations.TYPE_WATCH_LINK -> if (destination.entityId.isNotBlank()) navigateToWatch(destination.entityId)
+        PushDestinations.TYPE_SOUND_LINK -> if (destination.entityId.isNotBlank()) navigateToSound(destination.entityId)
+        PushDestinations.TYPE_HASHTAG_LINK -> if (destination.entityId.isNotBlank()) navigateToHashtagPosts(destination.entityId)
+        // A profile or channel link names a HANDLE; the screens take a user
+        // id, so it is resolved first. An unknown handle (or a failed read)
+        // lands on Search with the handle typed in — the closest screen that
+        // can still find the person or channel — rather than nowhere.
+        PushDestinations.TYPE_PROFILE_LINK -> {
+            val userId = resolveLinkUserId(destination)
+            if (userId != null) navigateToProfile(userId) else navigateToSearch(SearchOrigin.HOME, destination.entityId)
+        }
+        PushDestinations.TYPE_CHANNEL_LINK -> {
+            val userId = resolveLinkUserId(destination)
+            if (userId != null) navigateToTubeChannel(userId) else navigateToSearch(SearchOrigin.VIDEO, destination.entityId)
+        }
         // Call pushes: the ring tap attaches to the live call state; a
         // missed-call tap opens the history.
         "incoming_call", "incoming_video_call" -> navigateToCallSurface()
@@ -1445,6 +1478,7 @@ fun UsApp(
         pushDestination = pushDestination,
         onPushDestinationConsumed = viewModel::consumePushDestination,
         onOpenReel = viewModel::openReel,
+        resolveLinkUserId = viewModel::resolveLinkUserId,
         callState = callState,
         onOpenPaymentSheet = onOpenPaymentSheet,
         onAbandonPaymentSheet = onAbandonPaymentSheet,

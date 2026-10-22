@@ -288,6 +288,7 @@ class PostShareTest {
         val vm = viewModel()
         vm.open("p-42", feedReposted = false)
 
-        assertThat(vm.ui().link).isEqualTo("https://cleestudio.com/post/p-42")
+        // The permalink, then the web's share tail (`?ref=<id>&utm_source=share`, 2026-10-22).
+        assertThat(vm.ui().link).matches("https://cleestudio.com/post/p-42\\?ref=[a-z0-9]{10}&utm_source=share")
     }
 }

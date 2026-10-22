@@ -56,12 +56,12 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.util.UnstableApi
 import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.media.ui.VideoLoadState
 import com.us.android.core.media.ui.VideoLoadingOverlay
 import com.us.android.core.media.ui.rememberVideoLoadState
@@ -482,6 +482,6 @@ private val FIT_BLUR = 24.dp
 private val PLAY_GLYPH = 44.dp
 private val SPINNER_STROKE = 2.dp
 private val TOOL_GLYPH = 20.dp
-private val TOOL_LABEL_SIZE = 11.sp
+private val TOOL_LABEL_SIZE = UsTypeScale.xs.size
 private val PILL_PAD_H = 14.dp
 private val PILL_PAD_V = 7.dp

@@ -43,13 +43,13 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.us.android.core.common.time.formatDuration
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.feed.data.ChannelState
 import com.us.android.core.feed.data.ContinueWatching
 import com.us.android.core.feed.data.VideoThumb
@@ -555,22 +555,22 @@ private const val META_ALPHA = 0.82f
 private const val RING_PLATE_ALPHA = 0.45f
 private val HAIRLINE = 1.dp
 private val BUBBLE_WIDTH = 64.dp
-private val BUBBLE_LABEL_SIZE = 11.sp
+private val BUBBLE_LABEL_SIZE = UsTypeScale.xs.size
 private val CONTINUE_WIDTH = 200.dp
 private val CONTINUE_RING = 60.dp
 
 /** The ring's distance from the still's corner (design: 12dp). */
 private val CONTINUE_RING_INSET = 12.dp
-private val RING_TIME_SIZE = 12.sp
-private val RING_LEFT_SIZE = 9.sp
-private val SMALL_TITLE_SIZE = 13.sp
+private val RING_TIME_SIZE = UsTypeScale.xs.size
+private val RING_LEFT_SIZE = UsTypeScale.xs.size
+private val SMALL_TITLE_SIZE = UsTypeScale.sm.size
 private val PANEL_RADIUS = 20.dp
 private val PANEL_GLYPH = 22.dp
-private val SECTION_TITLE_SIZE = 18.sp
+private val SECTION_TITLE_SIZE = UsTypeScale.lg.size
 private val REEL_RADIUS = 18.dp
 private val REEL_SCRIM_HEIGHT = 88.dp
 private val TILE_SCRIM_HEIGHT = 96.dp
-private val TILE_TITLE_SIZE = 13.sp
+private val TILE_TITLE_SIZE = UsTypeScale.sm.size
 private val TINY_AVATAR = 16.dp
-private val TINY_INITIAL_SIZE = 9.sp
-private val TINY_META_SIZE = 11.sp
+private val TINY_INITIAL_SIZE = UsTypeScale.xs.size
+private val TINY_META_SIZE = UsTypeScale.xs.size

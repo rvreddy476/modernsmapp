@@ -53,7 +53,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsAvatar
@@ -65,6 +64,7 @@ import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
@@ -712,5 +712,5 @@ private val CLEAR_TARGET = 32.dp
 private val CLEAR_GLYPH = 18.dp
 private val CHIP_HEIGHT = 34.dp
 private val CHIP_HORIZONTAL = 14.dp
-private val CHIP_TEXT = 13.sp
+private val CHIP_TEXT = UsTypeScale.sm.size
 private val ROW_GLYPH = 18.dp

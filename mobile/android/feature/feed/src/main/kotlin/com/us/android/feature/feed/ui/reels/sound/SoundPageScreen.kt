@@ -20,9 +20,11 @@ import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -108,6 +110,7 @@ fun SoundPageScreen(
                 },
                 onLoadMore = viewModel::loadMore,
                 onRetry = viewModel::load,
+                onRefresh = viewModel::refresh,
             ),
             posterFor = { tile -> viewModel.posterUrl(tile.reel) },
             modifier = Modifier.padding(padding),
@@ -122,6 +125,8 @@ internal class SoundPageActions(
     val onOpenReel: (postId: String) -> Unit,
     val onLoadMore: () -> Unit,
     val onRetry: () -> Unit,
+    /** Pull to refresh: the first page again, the tiles staying put. */
+    val onRefresh: () -> Unit = {},
 )
 
 /** The preview stops when the page leaves the foreground; the player itself is the holder's to release. */
@@ -169,6 +174,7 @@ internal fun SoundPageContent(
  * is the grid's first row, so it scrolls away with the tiles; the grid asks
  * for the next page when its last rows come into view.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SoundReels(
     state: SoundPageState,
@@ -188,46 +194,49 @@ private fun SoundReels(
         if (nearEnd && state.wantsMore) actions.onLoadMore()
     }
 
-    LazyVerticalGrid(
-        columns = GridCells.Fixed(GRID_COLUMNS),
-        state = grid,
-        modifier = modifier
-            .fillMaxSize()
-            .testTag("sound_page"),
-        contentPadding = PaddingValues(
-            horizontal = UsTheme.spacing.pageHorizontal,
-            vertical = UsTheme.spacing.l,
-        ),
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
-    ) {
-        item(key = "header", span = { GridItemSpan(maxLineSpan) }) {
-            SoundHeader(
-                sound = state.sound,
-                preview = preview,
-                onTogglePreview = actions.onTogglePreview,
-                onUseSound = actions.onUseSound,
-            )
-        }
-        if (state.isEmpty) {
-            item(key = "empty", span = { GridItemSpan(maxLineSpan) }) {
-                UsEmptyState(
-                    title = "No reels yet",
-                    detail = "Be the first to use this sound.",
-                    modifier = Modifier.testTag("sound_empty"),
+    // Pull to refresh (UI audit 2026-10-21).
+    PullToRefreshBox(isRefreshing = state.refreshing, onRefresh = actions.onRefresh, modifier = modifier.fillMaxSize()) {
+        LazyVerticalGrid(
+            columns = GridCells.Fixed(GRID_COLUMNS),
+            state = grid,
+            modifier = Modifier
+                .fillMaxSize()
+                .testTag("sound_page"),
+            contentPadding = PaddingValues(
+                horizontal = UsTheme.spacing.pageHorizontal,
+                vertical = UsTheme.spacing.l,
+            ),
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+        ) {
+            item(key = "header", span = { GridItemSpan(maxLineSpan) }) {
+                SoundHeader(
+                    sound = state.sound,
+                    preview = preview,
+                    onTogglePreview = actions.onTogglePreview,
+                    onUseSound = actions.onUseSound,
                 )
             }
-        }
-        items(items = state.tiles, key = { it.reel.id }) { tile ->
-            SoundReelTileView(
-                tile = tile,
-                posterUrl = posterFor(tile),
-                onClick = { actions.onOpenReel(tile.reel.id) },
-            )
-        }
-        if (state.loadingMore || state.moreFailed) {
-            item(key = "more", span = { GridItemSpan(maxLineSpan) }) {
-                MoreRow(failed = state.moreFailed, onRetry = actions.onLoadMore)
+            if (state.isEmpty) {
+                item(key = "empty", span = { GridItemSpan(maxLineSpan) }) {
+                    UsEmptyState(
+                        title = "No reels yet",
+                        detail = "Be the first to use this sound.",
+                        modifier = Modifier.testTag("sound_empty"),
+                    )
+                }
+            }
+            items(items = state.tiles, key = { it.reel.id }) { tile ->
+                SoundReelTileView(
+                    tile = tile,
+                    posterUrl = posterFor(tile),
+                    onClick = { actions.onOpenReel(tile.reel.id) },
+                )
+            }
+            if (state.loadingMore || state.moreFailed) {
+                item(key = "more", span = { GridItemSpan(maxLineSpan) }) {
+                    MoreRow(failed = state.moreFailed, onRetry = actions.onLoadMore)
+                }
             }
         }
     }

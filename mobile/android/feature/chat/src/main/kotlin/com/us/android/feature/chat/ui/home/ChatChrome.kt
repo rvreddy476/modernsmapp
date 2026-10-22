@@ -34,8 +34,8 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 
 /**
  * No ripple. The press is shown by the target dipping to 97% on a spring —
@@ -191,8 +191,8 @@ private val GLYPH_SIZE = 24.dp
 private val ACTION_PILL_HEIGHT = 36.dp
 private val ACTION_PILL_HORIZONTAL = 14.dp
 private val ACTION_PILL_GLYPH = 16.dp
-private val ACTION_PILL_TEXT = 13.sp
+private val ACTION_PILL_TEXT = UsTypeScale.sm.size
 private val TOGGLE_PILL_HEIGHT = 32.dp
 private val TOGGLE_PILL_HORIZONTAL = 14.dp
-private val TOGGLE_PILL_TEXT = 13.sp
+private val TOGGLE_PILL_TEXT = UsTypeScale.sm.size
 private val HAIRLINE = 1.dp

@@ -55,6 +55,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -62,6 +63,7 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -636,7 +638,7 @@ private fun KindCoverActions(cover: KindCover, onBothered: (Boolean) -> Unit, on
                 Text(KindMessageCopy.NO, color = UsTheme.extended.accentSolid)
             }
         }
-        cover.offerReport -> Column(modifier = Modifier.widthIn(max = BUBBLE_MAX_WIDTH)) {
+        cover.offerReport -> Column(modifier = Modifier.widthIn(max = bubbleMaxWidth())) {
             Text(
                 text = KindMessageCopy.OFFER_REPORT,
                 style = MaterialTheme.typography.labelMedium,
@@ -1497,7 +1499,7 @@ private fun MessageBubble(
     }
     Column(
         modifier = Modifier
-            .widthIn(max = BUBBLE_MAX_WIDTH)
+            .widthIn(max = bubbleMaxWidth())
             .clip(shape)
             .background(bubbleColor)
             .padding(
@@ -1783,7 +1785,15 @@ private val HAIRLINE = 1.dp
 private val DISAPPEARING_ICON = 14.dp
 private val BUBBLE_CORNER = 18.dp
 private val BUBBLE_TAIL = 4.dp
-private val BUBBLE_MAX_WIDTH = 300.dp
+/**
+ * A bubble is at most this share of the screen's width (UI audit 2026-10-21):
+ * the fixed 300dp it replaced was 83% of a 360dp phone and 73% of a 411dp
+ * one, so the same thread read differently from phone to phone.
+ */
+private const val BUBBLE_MAX_FRACTION = 0.78f
+
+@Composable
+private fun bubbleMaxWidth(): Dp = (LocalConfiguration.current.screenWidthDp * BUBBLE_MAX_FRACTION).dp
 private const val PENDING_ALPHA = 0.6f
 private val SEND_BUTTON = 40.dp
 private val SEND_GLYPH = 18.dp

@@ -45,13 +45,13 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.feature.post.createhub.VoicePublishViewModel.Phase
 import com.us.android.feature.post.createhub.VoicePublishViewModel.VoiceSource
 import kotlin.math.abs
@@ -462,7 +462,7 @@ private const val METER_BARS = 20
 private const val METER_FLOOR = 0.35f
 private const val METER_SHAPE = 0.7f
 
-private val CLOCK_SIZE = 40.sp
+private val CLOCK_SIZE = UsTypeScale.xl4.size
 private val RECORD_BUTTON = 96.dp
 private val RECORD_GLYPH = 40.dp
 private val STOP_GLYPH = 32.dp

@@ -163,7 +163,8 @@ const val CHAT_BANNED_NOTICE_COPY = "You can't chat in this stream."
  * there is no address.
  */
 fun liveShareText(title: String, streamId: String): String? {
-    val url = WebLinks.liveUrl(streamId) ?: return null
+    // The web's share tail (`?ref=…&utm_source=share`) on top, like every link the web hands out.
+    val url = WebLinks.liveUrl(streamId)?.let(WebLinks::withShareRef) ?: return null
     val name = title.trim()
     return if (name.isEmpty()) url else "$name\n\n$url"
 }

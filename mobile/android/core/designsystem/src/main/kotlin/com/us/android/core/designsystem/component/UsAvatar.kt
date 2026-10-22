@@ -27,23 +27,23 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.theme.UsColorTokens
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import kotlin.math.absoluteValue
 
 /** The sizes the product actually uses. A free-form Dp invites one-off sizes. */
 enum class UsAvatarSize(val diameter: Dp, val initialsSize: TextUnit) {
-    Small(32.dp, 13.sp),
+    Small(32.dp, UsTypeScale.sm.size),
 
     /** Momentum's feed-card header and activity rows. */
-    Post(36.dp, 14.sp),
-    Medium(44.dp, 17.sp),
+    Post(36.dp, UsTypeScale.sm.size),
+    Medium(44.dp, UsTypeScale.lg.size),
 
     /** Chat list rows and the online rail (Figma messages-inbox 136:86). */
-    Chat(48.dp, 18.sp),
-    Large(88.dp, 32.sp),
+    Chat(48.dp, UsTypeScale.lg.size),
+    Large(88.dp, UsTypeScale.xl3.size),
 }
 
 /**

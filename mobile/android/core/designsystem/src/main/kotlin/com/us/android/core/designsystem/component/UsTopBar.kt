@@ -31,10 +31,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsColorTokens
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 
 /**
  * The app's top bar.
@@ -384,9 +384,9 @@ fun UsBadgedIcon(
     }
 }
 
-private val BADGE_SIZE = 16.dp
+private val BADGE_SIZE = 18.dp
 private val BADGE_OFFSET = 4.dp
-private val BADGE_TEXT = 9.sp
+private val BADGE_TEXT = UsTypeScale.xs.size
 
 /** Above this the exact number stops being useful and stops fitting. */
 private const val BADGE_MAX = 99

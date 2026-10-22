@@ -24,11 +24,13 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material3.Badge
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -70,6 +72,7 @@ import com.us.android.core.ui.UsLoadingState
  * blanking someone's inbox.
  */
 @Suppress("LongParameterList")
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChatInboxScreen(
     onOpenConversation: (conversationId: String, title: String, isGroup: Boolean) -> Unit,
@@ -96,27 +99,35 @@ fun ChatInboxScreen(
         },
         applyPageGutter = false,
     ) { padding ->
-        Column(modifier = Modifier.padding(padding)) {
-            val nothingCached = state.conversations.isEmpty() && state.requests.isEmpty()
-            if (state.syncFailed && nothingCached && state.tab != InboxTab.Invites) {
-                OfflineBanner(onRetry = viewModel::refresh)
-            }
+        // Pull to refresh (UI audit 2026-10-21): the inbox syncs again; what is
+        // cached stays on screen while it does.
+        PullToRefreshBox(
+            isRefreshing = state.loading && state.conversations.isNotEmpty(),
+            onRefresh = viewModel::refresh,
+            modifier = Modifier.padding(padding).fillMaxSize(),
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                val nothingCached = state.conversations.isEmpty() && state.requests.isEmpty()
+                if (state.syncFailed && nothingCached && state.tab != InboxTab.Invites) {
+                    OfflineBanner(onRetry = viewModel::refresh)
+                }
 
-            when (state.tab) {
-                InboxTab.Chats -> ChatsTab(
-                    state = state,
-                    onQueryChange = viewModel::onQueryChange,
-                    onOpenConversation = onOpenConversation,
-                    onTogglePin = viewModel::togglePin,
-                    onToggleMute = viewModel::toggleMute,
-                )
-                InboxTab.Requests, InboxTab.Invites -> RequestsAndInvites(
-                    state = state,
-                    onSelect = viewModel::selectTab,
-                    onOpenRequest = onOpenRequest,
-                    onAccept = viewModel::acceptInvitation,
-                    onDecline = viewModel::declineInvitation,
-                )
+                when (state.tab) {
+                    InboxTab.Chats -> ChatsTab(
+                        state = state,
+                        onQueryChange = viewModel::onQueryChange,
+                        onOpenConversation = onOpenConversation,
+                        onTogglePin = viewModel::togglePin,
+                        onToggleMute = viewModel::toggleMute,
+                    )
+                    InboxTab.Requests, InboxTab.Invites -> RequestsAndInvites(
+                        state = state,
+                        onSelect = viewModel::selectTab,
+                        onOpenRequest = onOpenRequest,
+                        onAccept = viewModel::acceptInvitation,
+                        onDecline = viewModel::declineInvitation,
+                    )
+                }
             }
         }
     }

@@ -31,13 +31,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.us.android.core.common.time.formatDuration
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.model.FeedItem
 import com.us.android.feature.tube.ui.BlurHashImage
@@ -238,8 +238,8 @@ private const val UNTITLED = "Untitled video"
 internal const val LANDSCAPE = 16f / 9f
 private const val TITLE_LINES = 2
 private const val BADGE_PLATE_ALPHA = 0.7f
-private val CARD_TITLE_SIZE = 15.sp
-private val ROW_TITLE_SIZE = 14.sp
+private val CARD_TITLE_SIZE = UsTypeScale.base.size
+private val ROW_TITLE_SIZE = UsTypeScale.sm.size
 private val ROW_THUMB_WIDTH = 160.dp
 private val MORE_TARGET = 32.dp
 private val MORE_GLYPH = 20.dp

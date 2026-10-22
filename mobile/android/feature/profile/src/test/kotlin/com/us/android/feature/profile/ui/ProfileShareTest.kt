@@ -11,13 +11,14 @@ class ProfileShareTest {
 
     @Test
     fun `the shared text is the name, then the public profile address on its own line`() {
+        // The address ends in the web's share tail (`?ref=<id>&utm_source=share`, 2026-10-22).
         assertThat(profileShareText("Ada Lovelace", "ada"))
-            .isEqualTo("Ada Lovelace\n\nhttps://cleestudio.com/u/ada")
+            .matches("Ada Lovelace\n\nhttps://cleestudio.com/u/ada\\?ref=[a-z0-9]{10}&utm_source=share")
     }
 
     @Test
     fun `a blank name shares the address alone`() {
-        assertThat(profileShareText("  ", "ada")).isEqualTo("https://cleestudio.com/u/ada")
+        assertThat(profileShareText("  ", "ada")).matches("https://cleestudio.com/u/ada\\?ref=[a-z0-9]{10}&utm_source=share")
     }
 
     @Test

@@ -1,5 +1,6 @@
 package com.us.android.push
 
+import com.us.android.core.model.WebLinkTarget
 import com.us.android.core.model.WebLinks
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -38,10 +39,12 @@ class PushDestinations @Inject constructor() {
 
     /**
      * An App Link the activity was opened with: the group invite link
-     * (`https://atpost.app/chat/join/{code}`) or a post's public permalink
-     * (`https://cleestudio.com/post/{id}`, 2026-10-14). Either rides the same
-     * pending slot as a notification tap so it waits through the login like
-     * one. Any other URL is ignored — see [linkDestinationOf].
+     * (`https://atpost.app/chat/join/{code}`) or one of the web app's share
+     * routes (`https://cleestudio.com/post/{id}`, `/reels/{id}`,
+     * `/posttube/watch/{id}`, `/u/{username}`, a channel, a sound, a hashtag
+     * — 2026-10-22). Any of them rides the same pending slot as a
+     * notification tap so it waits through the login like one. Any other
+     * URL is ignored — see [linkDestinationOf].
      */
     fun offerLink(uri: android.net.Uri?) {
         val destination = linkDestinationOf(uri?.toString()) ?: return
@@ -54,7 +57,28 @@ class PushDestinations @Inject constructor() {
         /** The push-destination type minted for an `cleestudio.com/post/{id}` App Link. */
         const val TYPE_POST_LINK = "post_link"
 
-        /** The invite App Link host ([WebLinks.INVITE_HOST]); post links are parsed by [WebLinks.postIdOf]. */
+        /** `cleestudio.com/reels/{id}`: Reels, on that reel. `entityId` is the post id. */
+        const val TYPE_REEL_LINK = "reel_link"
+
+        /** `cleestudio.com/posttube/watch/{id}`: Tube's watch screen. `entityId` is the post id. */
+        const val TYPE_WATCH_LINK = "watch_link"
+
+        /** `cleestudio.com/u/{username}`: the profile. `entityId` is the USERNAME, resolved to an id before routing. */
+        const val TYPE_PROFILE_LINK = "profile_link"
+
+        /** `cleestudio.com/posttube/channel/{handle}` or `/channel/{handle}`. `entityId` is the HANDLE, resolved first. */
+        const val TYPE_CHANNEL_LINK = "channel_link"
+
+        /** `cleestudio.com/reels/sound/{id}`: the sound page. `entityId` is the sound id. */
+        const val TYPE_SOUND_LINK = "sound_link"
+
+        /** `cleestudio.com/hashtag/{tag}`: the tag's posts. `entityId` is the tag, without `#`. */
+        const val TYPE_HASHTAG_LINK = "hashtag_link"
+
+        /** The link types whose `entityId` is a handle the nav host must resolve to a user id first. */
+        val HANDLE_LINK_TYPES: Set<String> = setOf(TYPE_PROFILE_LINK, TYPE_CHANNEL_LINK)
+
+        /** The invite App Link host ([WebLinks.INVITE_HOST]); web links are parsed by [WebLinks.targetOf]. */
         private const val LINK_HOST = WebLinks.INVITE_HOST
 
         /**
@@ -66,10 +90,16 @@ class PushDestinations @Inject constructor() {
             joinCodeOf(trimmed)?.let { code ->
                 return PushDestination(type = TYPE_CHAT_JOIN, entityId = code, deepLink = trimmed)
             }
-            WebLinks.postIdOf(trimmed)?.let { postId ->
-                return PushDestination(type = TYPE_POST_LINK, entityId = postId, deepLink = trimmed)
+            return when (val target = WebLinks.targetOf(trimmed)) {
+                is WebLinkTarget.Post -> PushDestination(TYPE_POST_LINK, target.postId, trimmed)
+                is WebLinkTarget.Reel -> PushDestination(TYPE_REEL_LINK, target.postId, trimmed)
+                is WebLinkTarget.Watch -> PushDestination(TYPE_WATCH_LINK, target.postId, trimmed)
+                is WebLinkTarget.Profile -> PushDestination(TYPE_PROFILE_LINK, target.username, trimmed)
+                is WebLinkTarget.Channel -> PushDestination(TYPE_CHANNEL_LINK, target.handle, trimmed)
+                is WebLinkTarget.Sound -> PushDestination(TYPE_SOUND_LINK, target.soundId, trimmed)
+                is WebLinkTarget.Hashtag -> PushDestination(TYPE_HASHTAG_LINK, target.tag, trimmed)
+                null -> null
             }
-            return null
         }
 
         /**

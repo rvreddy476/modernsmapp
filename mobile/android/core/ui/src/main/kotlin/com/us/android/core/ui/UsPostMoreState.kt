@@ -604,5 +604,9 @@ enum class UsReportReason(val label: String, val wire: String) {
  * nothing served, so every copied link was a 404 (audit T-07). The address is
  * still assembled in ONE place, so the day the payload carries a canonical
  * link only [WebLinks] changes.
+ *
+ * Like every link the web hands out, it ends in `?ref=<id>&utm_source=share`
+ * ([WebLinks.withShareRef], 2026-10-22): the parser ignores the query, and
+ * the Install Referrer can carry the ref back after an install.
  */
-fun postShareLink(postId: String): String = WebLinks.postPermalink(postId)
+fun postShareLink(postId: String): String = WebLinks.withShareRef(WebLinks.postPermalink(postId))

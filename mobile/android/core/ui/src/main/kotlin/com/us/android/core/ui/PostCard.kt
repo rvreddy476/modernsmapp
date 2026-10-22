@@ -52,13 +52,13 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsFollowButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 
 /**
  * Everything a post component renders.
@@ -566,8 +566,8 @@ private val SIDE_PADDING = 16.dp
  * well inside the 60% rule's tolerance.
  */
 val POST_CARD_HEADER_HEIGHT = 56.dp
-private val NAME_SIZE = 14.sp
-private val META_SIZE = 12.sp
+private val NAME_SIZE = UsTypeScale.sm.size
+private val META_SIZE = UsTypeScale.xs.size
 
 /** 24dp glyphs on the Instagram card; post detail and reels keep the 20dp default. */
 private val ACTION_GLYPH = 24.dp

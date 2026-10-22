@@ -48,9 +48,9 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.media.publish.REEL_MAX_MINUTES
 import com.us.android.feature.post.createhub.CoverFrame
 import com.us.android.feature.post.createhub.Filmstrip
@@ -455,6 +455,6 @@ private val HANDLE_GRIP_HEIGHT = 18.dp
 private val LOOK_WIDTH = 56.dp
 private val LOOK_HEIGHT = 76.dp
 private val LOOK_STROKE = 2.dp
-private val LOOK_LABEL_SIZE = 11.sp
+private val LOOK_LABEL_SIZE = UsTypeScale.xs.size
 private val CHIP_PAD_H = 16.dp
 private val CHIP_PAD_V = 8.dp

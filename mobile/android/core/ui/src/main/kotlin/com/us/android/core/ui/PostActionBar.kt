@@ -40,6 +40,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.orSnap
 
 /**
  * The interaction state a post's action bar renders.
@@ -224,7 +225,7 @@ private fun ActionButton(
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(
         targetValue = if (pressed) PRESS_SCALE else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = PRESS_STIFFNESS),
+        animationSpec = spring<Float>(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = PRESS_STIFFNESS).orSnap(),
         label = "actionPress",
     )
     Row(

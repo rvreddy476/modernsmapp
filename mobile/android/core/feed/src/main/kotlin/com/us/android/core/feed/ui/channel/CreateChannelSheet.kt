@@ -46,7 +46,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsAvatar
@@ -54,6 +53,7 @@ import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.feed.data.ChannelAbout
 import com.us.android.core.feed.data.ChannelName
 import com.us.android.core.model.Channel
@@ -441,5 +441,5 @@ private val HANDLE_TOP = 8.dp
 private val HANDLE_BOTTOM = 12.dp
 private val CLOSE_BUTTON = 30.dp
 private val CLOSE_GLYPH = 14.dp
-private val TITLE_SIZE = 20.sp
-private val FIELD_SIZE = 16.sp
+private val TITLE_SIZE = UsTypeScale.xl.size
+private val FIELD_SIZE = UsTypeScale.base.size

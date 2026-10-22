@@ -46,11 +46,11 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.component.UsIconSquare
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsCreateSwatch
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import kotlinx.coroutines.launch
 
 /**
@@ -483,4 +483,4 @@ private val LIVE_PADDING_V = 10.dp
 private val CHEVRON = 16.dp
 private val BADGE_DOT = 5.dp
 
-private val TITLE_SIZE = 20.sp
+private val TITLE_SIZE = UsTypeScale.xl.size

@@ -9,11 +9,15 @@ import com.us.android.core.model.FeedItem
  * it — offers the whole list minus itself, so there is always something to
  * pick from while there is anything at all. Pick, not play: nothing in this
  * list starts on its own (see [endOfVideo]).
+ *
+ * Each video once (2026-10-22): the rows are keyed by id in the Watch
+ * LazyColumn, and a paged list that shifted under the viewer can repeat a
+ * row; a repeated key would crash the list.
  */
 fun upNext(items: List<FeedItem>, currentId: String, limit: Int = UP_NEXT_LIMIT): List<FeedItem> {
     val index = items.indexOfFirst { it.id == currentId }
     val rest = if (index >= 0) items.drop(index + 1) else items.filter { it.id != currentId }
-    return rest.take(limit)
+    return rest.distinctBy { it.id }.take(limit)
 }
 
 /** A phone screen shows about this many rows before the viewer scrolls. */

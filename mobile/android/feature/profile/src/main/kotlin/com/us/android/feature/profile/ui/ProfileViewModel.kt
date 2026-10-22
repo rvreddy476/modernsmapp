@@ -52,8 +52,28 @@ class ProfileViewModel @Inject constructor(
     private val _state = MutableStateFlow<ProfileUiState>(ProfileUiState.Loading)
     val state: StateFlow<ProfileUiState> = _state.asStateFlow()
 
+    private val _refreshing = MutableStateFlow(false)
+
+    /** A read in flight over a profile already on screen (pull to refresh); never true for the first read. */
+    val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
+
     init {
         load()
+    }
+
+    /**
+     * Pull to refresh (UI audit 2026-10-21): the same reads as [load], but the
+     * profile on screen stays while they run, and a failure keeps it rather
+     * than replacing it with an error. A no-op until the profile has loaded.
+     */
+    fun refresh() {
+        if (_state.value !is ProfileUiState.Content || _refreshing.value) return
+        _refreshing.value = true
+        viewModelScope.launch {
+            val batch = firstReads()
+            (batch.profile as? AppResult.Success)?.let { _state.value = contentFor(it.data, batch) }
+            _refreshing.value = false
+        }
     }
 
     fun load() {

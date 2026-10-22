@@ -12,14 +12,17 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -86,6 +89,7 @@ fun ProfileScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val chatState by startChatViewModel.state.collectAsStateWithLifecycle()
+    val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
     val mediaState by mediaViewModel.state.collectAsStateWithLifecycle()
     val reportState by reportViewModel.report.collectAsStateWithLifecycle()
     val shareProfile = rememberProfileSharer()
@@ -135,8 +139,10 @@ fun ProfileScreen(
     ProfileContent(
         state = state,
         destinations = destinations,
+        refreshing = refreshing,
         actions = ProfileActions(
             onRetry = viewModel::load,
+            onRefresh = viewModel::refresh,
             onFollowToggle = viewModel::onFollowToggle,
             onBlockToggle = viewModel::onBlockToggle,
             onDismissActionError = viewModel::dismissActionError,
@@ -218,6 +224,8 @@ internal data class GridTabRequest(val tab: ProfileGridTab, val seq: Int)
 
 internal data class ProfileActions(
     val onRetry: () -> Unit,
+    /** Pull to refresh: the profile is read again while it stays on screen. */
+    val onRefresh: () -> Unit = {},
     val onFollowToggle: () -> Unit,
     val onBlockToggle: () -> Unit,
     val onDismissActionError: () -> Unit,
@@ -248,6 +256,8 @@ internal fun ProfileContent(
     chatState: StartChatUiState = StartChatUiState(),
     media: ProfileMediaUrls = ProfileMediaUrls(),
     report: UsPostReportState = UsPostReportState.Idle,
+    /** A pull-to-refresh read in flight over the loaded profile. */
+    refreshing: Boolean = false,
 ) {
     // Someone else's loaded profile only: the viewer's own gets no rows, so
     // no More control is drawn at all (audit T-03); the owner's Share profile
@@ -296,6 +306,7 @@ internal fun ProfileContent(
                 chatState = chatState,
                 media = media,
                 tabRequest = tabRequest,
+                refreshing = refreshing,
                 modifier = Modifier.padding(padding),
             )
         }
@@ -412,6 +423,7 @@ private fun ProfileMedia(
     state: ProfileUiState.Content,
     destinations: ProfileDestinations,
     tabRequest: GridTabRequest?,
+    refreshSeq: Int = 0,
 ) {
     val profile = state.profile
     val hidden = !profile.isOwnProfile && profile.isPrivate &&
@@ -423,6 +435,7 @@ private fun ProfileMedia(
             onOpenPost = destinations.onOpenPost,
             onPublished = destinations.onPublished,
             tabRequest = tabRequest,
+            refreshSeq = refreshSeq,
         )
     }
 }
@@ -436,6 +449,7 @@ private fun ProfileUiState.title(): String = when (this) {
     else -> "Profile"
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LoadedProfile(
     state: ProfileUiState.Content,
@@ -445,9 +459,20 @@ private fun LoadedProfile(
     media: ProfileMediaUrls,
     modifier: Modifier = Modifier,
     tabRequest: GridTabRequest? = null,
+    refreshing: Boolean = false,
 ) {
     val profile = state.profile
-    Box(modifier = modifier.fillMaxSize()) {
+    // Pull to refresh (UI audit 2026-10-21): the header, counts and the open
+    // grid tab are read again while the profile stays on screen.
+    var refreshSeq by remember { mutableIntStateOf(0) }
+    PullToRefreshBox(
+        isRefreshing = refreshing,
+        onRefresh = {
+            refreshSeq++
+            actions.onRefresh()
+        },
+        modifier = modifier.fillMaxSize(),
+    ) {
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -537,7 +562,7 @@ private fun LoadedProfile(
             }
 
             if (!state.unavailable) {
-                ProfileMedia(state = state, destinations = destinations, tabRequest = tabRequest)
+                ProfileMedia(state = state, destinations = destinations, tabRequest = tabRequest, refreshSeq = refreshSeq)
             }
         }
 

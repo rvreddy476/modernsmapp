@@ -3,6 +3,8 @@ package com.us.android.feature.feed.ui.reels
 import androidx.activity.compose.BackHandler
 import androidx.annotation.OptIn
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.core.snap
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -44,6 +46,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -55,6 +58,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.Role
@@ -768,20 +773,21 @@ private fun BoxScope.ScreenChrome(
     muted: Boolean,
     onToggleMute: () -> Unit,
 ) {
+    val reduced = UsTheme.reducedMotion
     AnimatedVisibility(
         visible = paused,
         modifier = Modifier.align(Alignment.Center),
-        enter = fadeIn(tween(CHROME_ANIM_MILLIS)) +
-            scaleIn(tween(CHROME_ANIM_MILLIS), initialScale = PAUSE_GLYPH_FROM),
-        exit = fadeOut(tween(CHROME_ANIM_MILLIS)),
+        enter = fadeIn(chromeSpec(reduced)) +
+            scaleIn(chromeSpec(reduced), initialScale = PAUSE_GLYPH_FROM),
+        exit = fadeOut(chromeSpec(reduced)),
     ) {
         StagePausedGlyph()
     }
     AnimatedVisibility(
         visible = showHeader,
         modifier = Modifier.align(Alignment.TopCenter),
-        enter = fadeIn(tween(CHROME_ANIM_MILLIS)) + slideInVertically(tween(CHROME_ANIM_MILLIS)) { -it / 2 },
-        exit = fadeOut(tween(CHROME_ANIM_MILLIS)) + slideOutVertically(tween(CHROME_ANIM_MILLIS)) { -it / 2 },
+        enter = fadeIn(chromeSpec(reduced)) + slideInVertically(chromeSpec(reduced)) { -it / 2 },
+        exit = fadeOut(chromeSpec(reduced)) + slideOutVertically(chromeSpec(reduced)) { -it / 2 },
     ) {
         ReelsHeader(
             onOpenMenu = onOpenMenu,
@@ -1094,6 +1100,10 @@ private fun ReelsPager(
     VerticalPager(
         state = pagerState,
         beyondViewportPageCount = 1,
+        // Keyed by the reel (UI audit 2026-10-21): a refresh, or a reel hidden
+        // with "Not interested", must never leave a page showing another
+        // reel's frame because the pages were matched by index.
+        key = { page -> reelPageKey(page, head, items) },
         modifier = Modifier
             .fillMaxSize()
             .background(UsTheme.extended.stage),
@@ -1169,6 +1179,25 @@ private sealed interface ReelsPage {
 }
 
 /**
+ * The pager key for [page]: the reel's post id, so a row inserted or removed
+ * above the viewer never moves them off the reel they are on. The pending
+ * head is keyed by its creation key and a live head by a prefixed id, so
+ * neither can collide with its own paged row while both exist; a row not
+ * loaded yet is keyed by its index.
+ */
+private fun reelPageKey(page: Int, head: ReelsHead?, items: LazyPagingItems<FeedItem>): Any {
+    if (head != null && page == 0) {
+        return when (head) {
+            is ReelsHead.Pending -> "pending:${head.creationKey}"
+            is ReelsHead.Live -> "head:${head.item.id}"
+        }
+    }
+    val index = page - (if (head != null) 1 else 0)
+    if (index < 0 || index >= items.itemCount) return "unloaded:$page"
+    return items.peek(index)?.id ?: "unloaded:$index"
+}
+
+/**
  * The head takes page 0 when present and every ranked reel shifts down one.
  * The pool keys players by page and re-prepares when the playback at a page
  * changes, so the shift cannot leave the wrong video on a page.
@@ -1220,7 +1249,7 @@ private fun PendingReelPage(
         if (head.coverPath != null) {
             AsyncImage(
                 model = File(head.coverPath),
-                contentDescription = null,
+                contentDescription = "Your reel, processing",
                 contentScale = ContentScale.Crop,
                 modifier = Modifier.fillMaxSize(),
             )
@@ -1335,9 +1364,14 @@ private fun ReelPage(
     actions: ReelActions,
 ) {
     val chrome = view.chrome
+    val reduced = UsTheme.reducedMotion
     // How far the reel has played, 0..1, read off the player while this page
     // is settled and playing; the author's avatar ring draws it.
     var progress by remember(item.id) { mutableFloatStateOf(0f) }
+    // The author block's measured height: the caption line is lifted clear of
+    // it (UI audit 2026-10-21) instead of a fixed 160dp that overlapped it on a
+    // 5.4" phone and floated on a 6.8" one.
+    var overlayHeightPx by remember(item.id) { mutableIntStateOf(0) }
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -1363,6 +1397,7 @@ private fun ReelPage(
                 view = view,
                 offline = view.offline.copies[item.id],
                 onProgress = { progress = it },
+                captionsLiftPx = overlayHeightPx,
             )
         } else {
             // No playable rendition yet. An asset still processing has no
@@ -1383,8 +1418,8 @@ private fun ReelPage(
         AnimatedVisibility(
             visible = chrome.showAuthor || chrome.showRail,
             modifier = Modifier.align(Alignment.BottomCenter),
-            enter = fadeIn(tween(CHROME_ANIM_MILLIS)),
-            exit = fadeOut(tween(CHROME_ANIM_MILLIS)),
+            enter = fadeIn(chromeSpec(reduced)),
+            exit = fadeOut(chromeSpec(reduced)),
         ) {
             StageBottomScrim()
         }
@@ -1395,8 +1430,8 @@ private fun ReelPage(
         AnimatedVisibility(
             visible = chrome.showAuthor,
             modifier = Modifier.align(Alignment.BottomStart),
-            enter = fadeIn(tween(CHROME_ANIM_MILLIS)) + slideInVertically(tween(CHROME_ANIM_MILLIS)) { it / 2 },
-            exit = fadeOut(tween(CHROME_ANIM_MILLIS)) + slideOutVertically(tween(CHROME_ANIM_MILLIS)) { it / 2 },
+            enter = fadeIn(chromeSpec(reduced)) + slideInVertically(chromeSpec(reduced)) { it / 2 },
+            exit = fadeOut(chromeSpec(reduced)) + slideOutVertically(chromeSpec(reduced)) { it / 2 },
         ) {
             ReelOverlay(
                 item = item,
@@ -1413,6 +1448,7 @@ private fun ReelPage(
                 // With the bar gone the page reaches the screen's bottom edge,
                 // so the description keeps clear of the gesture handle.
                 clearNavigationBar = !chrome.showBottomBar,
+                modifier = Modifier.onSizeChanged { overlayHeightPx = it.height },
             )
         }
 
@@ -1435,8 +1471,8 @@ private fun ReelPage(
         AnimatedVisibility(
             visible = chrome.showRail,
             modifier = Modifier.align(Alignment.BottomEnd),
-            enter = fadeIn(tween(CHROME_ANIM_MILLIS)) + slideInHorizontally(tween(CHROME_ANIM_MILLIS)) { it / 2 },
-            exit = fadeOut(tween(CHROME_ANIM_MILLIS)) + slideOutHorizontally(tween(CHROME_ANIM_MILLIS)) { it / 2 },
+            enter = fadeIn(chromeSpec(reduced)) + slideInHorizontally(chromeSpec(reduced)) { it / 2 },
+            exit = fadeOut(chromeSpec(reduced)) + slideOutHorizontally(chromeSpec(reduced)) { it / 2 },
         ) {
             ReelRail(
                 item = item,
@@ -1476,6 +1512,8 @@ private fun ReelVideo(
     /** Where this reel's offline copy stands, for the mark at the top left of the page. */
     offline: OfflineEntry?,
     onProgress: (Float) -> Unit,
+    /** The author block's height, so the caption line sits above it; 0 until measured. */
+    captionsLiftPx: Int = 0,
 ) {
     val player = remember(page, playback) { pool.acquire(page, playback, contentId) }
     LaunchedEffect(view.muted, player, mixed) {
@@ -1519,7 +1557,13 @@ private fun ReelVideo(
     // The caption line, lifted clear of the author block and the caption.
     if (settings.captionLanguage != null) {
         Box(modifier = Modifier.fillMaxSize()) {
-            CaptionsOverlay(player = player, modifier = Modifier.padding(bottom = CAPTIONS_LIFT))
+            val density = LocalDensity.current
+            val lift = if (captionsLiftPx > 0) {
+                with(density) { captionsLiftPx.toDp() } + OVERLAY_BOTTOM
+            } else {
+                CAPTIONS_LIFT
+            }
+            CaptionsOverlay(player = player, modifier = Modifier.padding(bottom = lift))
         }
     }
     // An offline copy says so, and one being saved shows how far it is (2026-10-02).
@@ -1735,6 +1779,9 @@ private const val PLAIN_LEVEL = 1.0
 /** Chrome in and out — the rail, the author block, the scrim — matched to the shell's bar. */
 private const val CHROME_ANIM_MILLIS = 200
 
+/** The chrome's ~200ms, or an instant cut when the device asks for no animations (UsTheme.reducedMotion). */
+private fun <T> chromeSpec(reduced: Boolean): FiniteAnimationSpec<T> = if (reduced) snap() else tween(CHROME_ANIM_MILLIS)
+
 /** The bottom scrim covers the lowest 40% of the page. */
 
 /**
@@ -1755,7 +1802,7 @@ private val OVERLAY_SIDE = 16.dp
 /** The description's bottom edge, level with the rail's (was 56dp). */
 private val OVERLAY_BOTTOM = 12.dp
 
-/** How far above the frame's bottom the caption line sits (T-32): over the author block, not on it. */
+/** Where the caption line sits until the author block has been measured (T-32): over it, not on it. */
 private val CAPTIONS_LIFT = 160.dp
 
 /** The overlay stops short of the rail so a long name never runs under it. */

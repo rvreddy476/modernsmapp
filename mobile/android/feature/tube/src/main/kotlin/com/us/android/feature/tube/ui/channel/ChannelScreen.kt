@@ -13,8 +13,10 @@ import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridScope
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
@@ -62,6 +64,7 @@ import com.us.android.feature.tube.ui.you.videoCountLabel
  * unmutes this channel's uploads. The floating bar stays, with nothing
  * lit: this page is not one of its own.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ChannelScreen(
     destinations: TubeDestinations,
@@ -76,7 +79,15 @@ fun ChannelScreen(
     val moreState = rememberTubeMoreState()
 
     TubePage(selected = null, destinations = destinations, onBack = destinations.onBack) { padding ->
-        Box(modifier = Modifier.fillMaxSize()) {
+        // Pull to refresh (UI audit 2026-10-21): the header and the videos are read again.
+        PullToRefreshBox(
+            isRefreshing = items.loadState.refresh is LoadState.Loading && items.itemCount > 0,
+            onRefresh = {
+                viewModel.load()
+                items.refresh()
+            },
+            modifier = Modifier.fillMaxSize(),
+        ) {
             LazyVerticalStaggeredGrid(
                 columns = StaggeredGridCells.Fixed(GRID_COLUMNS),
                 modifier = Modifier

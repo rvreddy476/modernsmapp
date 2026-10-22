@@ -52,10 +52,10 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.media.publish.PublishKind
 import com.us.android.feature.post.createhub.ReelPublishViewModel.CoverPicker
 import kotlin.math.roundToInt
@@ -319,4 +319,4 @@ private val PREVIEW_GLYPH = 28.dp
 private val SPINNER_SIZE = 18.dp
 private val SPINNER_STROKE = 2.dp
 private val UPLOAD_GLYPH = 18.dp
-private val READOUT_SIZE = 18.sp
+private val READOUT_SIZE = UsTypeScale.lg.size

@@ -15,13 +15,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.repeatOnLifecycle
+import com.us.android.core.designsystem.component.UsWordmarkSize
 import kotlinx.coroutines.delay
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -153,7 +153,7 @@ fun ProSplash() {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Text(text = "Doorstep", fontFamily = MomentumWordmarkFontFamily, fontSize = 44.sp, color = UsTheme.extended.textPrimary)
+            Text(text = "Doorstep", fontFamily = MomentumWordmarkFontFamily, fontSize = UsWordmarkSize.Hero, color = UsTheme.extended.textPrimary)
             Text(text = "PRO", style = MaterialTheme.typography.labelLarge, fontWeight = FontWeight.SemiBold, color = UsTheme.extended.accentSolid)
         }
     }

@@ -31,8 +31,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 
 /**
  * Primary action button.
@@ -274,11 +274,11 @@ fun UsFollowButton(
 
 private val PILL_HORIZONTAL = 12.dp
 private val PILL_VERTICAL = 6.dp
-private val PILL_TEXT = 11.sp
+private val PILL_TEXT = UsTypeScale.xs2.size
 private val PILL_SPINNER = 12.dp
 private val FOLLOW_HORIZONTAL = 16.dp
 private val FOLLOW_VERTICAL = 7.dp
-private val FOLLOW_TEXT = 13.sp
+private val FOLLOW_TEXT = UsTypeScale.sm.size
 
 @Preview(name = "Pills", showBackground = true, backgroundColor = 0xFF041122)
 @Composable

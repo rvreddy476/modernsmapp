@@ -164,6 +164,7 @@ class MainViewModelTest {
             callSessionManager = mockk<CallSessionManager> { every { state } returns callState },
             modulePreferences = repository,
             reelsEntry = com.us.android.core.media.ReelsEntry(),
+            linkTargets = mockk<com.us.android.push.LinkTargetResolver>(relaxed = true),
         )
         return viewModel to repository
     }

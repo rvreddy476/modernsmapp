@@ -34,7 +34,8 @@ internal fun rememberProfileSharer(): (Profile) -> Unit {
  * profile has no handle to link to. Pure, so it is unit-tested.
  */
 internal fun profileShareText(displayName: String, username: String): String? {
-    val url = WebLinks.profileUrl(username) ?: return null
+    // The web's share tail (`?ref=…&utm_source=share`) on top, like every link the web hands out.
+    val url = WebLinks.profileUrl(username)?.let(WebLinks::withShareRef) ?: return null
     val name = displayName.trim()
     return if (name.isEmpty()) url else "$name\n\n$url"
 }

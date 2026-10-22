@@ -27,6 +27,14 @@ import com.us.android.core.designsystem.theme.UsTheme
  */
 @Composable
 fun Modifier.shimmer(shape: Shape): Modifier {
+    // No sweep when the device asks for no animations (UsTheme.reducedMotion,
+    // 2026-10-22): the block stays, plain, with the layout of the page.
+    if (UsTheme.reducedMotion) {
+        return this
+            .clip(shape)
+            .background(UsTheme.extended.bgRaised)
+            .semantics { contentDescription = "" }
+    }
     val transition = rememberInfiniteTransition(label = "tubeShimmer")
     val sweep by transition.animateFloat(
         initialValue = 0f,

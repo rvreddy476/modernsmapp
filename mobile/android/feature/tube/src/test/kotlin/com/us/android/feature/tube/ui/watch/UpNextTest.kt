@@ -35,6 +35,12 @@ class UpNextTest {
         assertThat(upNext(long, "v1", limit = 3).map { it.id }).containsExactly("v2", "v3", "v4").inOrder()
     }
 
+    @Test
+    fun `a row repeated by a shifted page shows once, so the keyed list never sees a key twice`() {
+        val repeated = listOf(item("a"), item("b"), item("c"), item("b"), item("d"))
+        assertThat(upNext(repeated, "a").map { it.id }).containsExactly("b", "c", "d").inOrder()
+    }
+
     private fun item(id: String) = FeedItem(
         id = id,
         authorId = "u",

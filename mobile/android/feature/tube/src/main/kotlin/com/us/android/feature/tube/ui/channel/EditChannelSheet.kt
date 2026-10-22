@@ -22,7 +22,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -31,6 +30,7 @@ import com.us.android.core.common.result.AppResult
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.feed.data.ChannelAbout
 import com.us.android.core.feed.data.ChannelCreateError
 import com.us.android.core.feed.data.ChannelHandle
@@ -207,4 +207,4 @@ private fun EditChannelFields(state: EditChannelUiState, viewModel: EditChannelV
 }
 
 private val SHEET_RADIUS = 28.dp
-private val TITLE_SIZE = 20.sp
+private val TITLE_SIZE = UsTypeScale.xl.size

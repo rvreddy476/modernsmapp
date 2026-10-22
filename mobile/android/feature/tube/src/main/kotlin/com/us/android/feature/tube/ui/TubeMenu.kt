@@ -31,13 +31,13 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.feed.data.ChannelRepository
 import com.us.android.core.feed.data.ChannelState
 import com.us.android.feature.tube.navigation.TubeCollectionRoute
@@ -236,4 +236,4 @@ private val ROW_HEIGHT = 52.dp
 private val ROW_SIDE = 20.dp
 private val ROW_GAP = 16.dp
 private val ROW_GLYPH = 22.dp
-private val ROW_TEXT_SIZE = 15.sp
+private val ROW_TEXT_SIZE = UsTypeScale.base.size

@@ -19,8 +19,10 @@ class LiveParityWordsTest {
 
     @Test
     fun `share text is the title, then the web address on its own line`() {
-        assertThat(liveShareText("Friday jam", "s1")).isEqualTo("Friday jam\n\nhttps://cleestudio.com/live/s1")
-        assertThat(liveShareText("  ", "s1")).isEqualTo("https://cleestudio.com/live/s1")
+        // The address ends in the web's share tail (`?ref=<id>&utm_source=share`, 2026-10-22).
+        assertThat(liveShareText("Friday jam", "s1"))
+            .matches("Friday jam\n\nhttps://cleestudio.com/live/s1\\?ref=[a-z0-9]{10}&utm_source=share")
+        assertThat(liveShareText("  ", "s1")).matches("https://cleestudio.com/live/s1\\?ref=[a-z0-9]{10}&utm_source=share")
         assertThat(liveShareText("Friday jam", "")).isNull()
     }
 

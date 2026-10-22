@@ -84,6 +84,7 @@ import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.orSnap
 
 /*
  * The full-screen post stage (post-screens parity, 2026-10-18): what Home's
@@ -264,6 +265,8 @@ private fun StageFollowRing(author: StageRailAuthor, badge: StageRailBadge, modi
         }
     }
     val circle = remember { android.graphics.Path() }
+    // The seal stands still when the device asks for no animations.
+    val reducedMotion = UsTheme.reducedMotion
     val turn by rememberInfiniteTransition(label = "follow-seal").animateFloat(
         initialValue = 0f,
         targetValue = 360f,
@@ -318,7 +321,7 @@ private fun StageFollowRing(author: StageRailAuthor, badge: StageRailBadge, modi
             val bare = word.measureText(FOLLOW_SEAL_TEXT)
             val around = (2 * Math.PI * radius).toFloat()
             word.letterSpacing = ((around - bare) / (word.textSize * FOLLOW_SEAL_TEXT.length)).coerceAtLeast(0f)
-            rotate(degrees = turn, pivot = c) {
+            rotate(degrees = if (reducedMotion) 0f else turn, pivot = c) {
                 drawIntoCanvas { canvas -> canvas.nativeCanvas.drawTextOnPath(FOLLOW_SEAL_TEXT, circle, 0f, 0f, word) }
             }
             val plus = Offset(FOLLOW_PLUS_CENTRE * unit, FOLLOW_PLUS_CENTRE * unit)
@@ -407,7 +410,7 @@ fun Modifier.stagePressScale(onClick: () -> Unit): Modifier {
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(
         targetValue = if (pressed) PRESS_SCALE else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = PRESS_STIFFNESS),
+        animationSpec = spring<Float>(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = PRESS_STIFFNESS).orSnap(),
         label = "stagePress",
     )
     return this

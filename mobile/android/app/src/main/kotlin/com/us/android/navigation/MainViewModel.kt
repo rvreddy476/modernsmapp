@@ -9,6 +9,7 @@ import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.media.ReelsEntry
 import com.us.android.core.model.SessionState
 import com.us.android.core.profile.data.ModulePreferencesRepository
+import com.us.android.push.LinkTargetResolver
 import com.us.android.push.PushDestination
 import com.us.android.push.PushDestinations
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -42,6 +43,7 @@ class MainViewModel @Inject constructor(
     callSessionManager: CallSessionManager,
     modulePreferences: ModulePreferencesRepository,
     private val reelsEntry: ReelsEntry,
+    private val linkTargets: LinkTargetResolver,
 ) : ViewModel() {
     val sessionState: StateFlow<SessionState> = sessionStateProvider.sessionState
 
@@ -67,6 +69,13 @@ class MainViewModel @Inject constructor(
      * because `navigateToTopLevel(REELS)` carries no argument.
      */
     fun openReel(postId: String) = reelsEntry.open(postId)
+
+    /**
+     * A profile or channel link names a HANDLE (2026-10-22); the screens take
+     * a user id. Resolved here, on the shell, so the nav host stays free of
+     * repositories. Null when the handle is unknown or the read failed.
+     */
+    suspend fun resolveLinkUserId(destination: PushDestination): String? = linkTargets.userIdFor(destination)
 
     init {
         // Bind the shared engagement overlay to whoever is signed in.

@@ -38,7 +38,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.us.android.core.common.time.formatDuration
 import com.us.android.core.common.time.formatRelativeTime
@@ -48,6 +47,7 @@ import com.us.android.core.designsystem.component.UsFollowButton
 import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.ui.formatCount
 import com.us.android.feature.search.data.SearchAuthor
@@ -414,4 +414,4 @@ private val PILL_MARGIN = 4.dp
 private val PILL_RADIUS = 4.dp
 private val PILL_PAD_H = 4.dp
 private val PILL_PAD_V = 1.dp
-private val PILL_TEXT = 10.sp
+private val PILL_TEXT = UsTypeScale.xs.size

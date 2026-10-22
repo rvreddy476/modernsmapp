@@ -583,7 +583,8 @@ class PostMoreViewModelTest {
         assertThat(state.username).isEqualTo("call_userb")
         assertThat(state.isBookmarked).isTrue()
         assertThat(state.isOwnPost).isFalse()
-        assertThat(state.link).isEqualTo("https://cleestudio.com/post/p1")
+        // The permalink, then the web's share tail (`?ref=<id>&utm_source=share`, 2026-10-22).
+        assertThat(state.link).matches("https://cleestudio.com/post/p1\\?ref=[a-z0-9]{10}&utm_source=share")
     }
 
     // ── Offline copies (2026-10-02) ─────────────────────────────────────

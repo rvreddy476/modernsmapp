@@ -1,6 +1,5 @@
 package com.us.android.core.designsystem.component
 
-import android.provider.Settings
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.AnimationSpec
 import androidx.compose.animation.core.FastOutSlowInEasing
@@ -36,7 +35,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
@@ -72,7 +70,7 @@ fun UsEndDrawer(
     modifier: Modifier = Modifier,
     content: @Composable ColumnScope.(close: (then: () -> Unit) -> Unit) -> Unit,
 ) {
-    val reducedMotion = rememberReducedMotion()
+    val reducedMotion = UsTheme.reducedMotion
     val spec: AnimationSpec<Float> = if (reducedMotion) snap() else tween(SLIDE_MILLIS, easing = FastOutSlowInEasing)
     // 0 is open, 1 is fully off the end edge.
     val hidden = remember { Animatable(1f) }
@@ -158,18 +156,6 @@ fun UsEndDrawer(
  */
 fun endDrawerCloses(hiddenFraction: Float, velocity: Float, flingPxPerSecond: Float): Boolean =
     hiddenFraction > CLOSE_FRACTION || velocity >= flingPxPerSecond
-
-/**
- * The system's "remove animations" setting (animator duration scale 0): the
- * drawer then appears and leaves without sliding.
- */
-@Composable
-private fun rememberReducedMotion(): Boolean {
-    val context = LocalContext.current
-    return remember(context) {
-        Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f
-    }
-}
 
 /** The share of the screen the panel covers. */
 private const val WIDTH_FRACTION = 0.82f

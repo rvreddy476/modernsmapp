@@ -14,7 +14,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
@@ -23,6 +22,7 @@ import androidx.navigation.compose.rememberNavController
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSurfaceCard
 import com.us.android.core.designsystem.component.UsButton
+import com.us.android.core.designsystem.component.UsWordmarkSize
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.MomentumWordmarkFontFamily
 import com.us.android.core.designsystem.theme.UsTheme
@@ -103,7 +103,7 @@ fun RiderSplash() {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Text(text = "Feast", fontFamily = MomentumWordmarkFontFamily, fontSize = 44.sp, color = UsTheme.extended.textPrimary)
+            Text(text = "Feast", fontFamily = MomentumWordmarkFontFamily, fontSize = UsWordmarkSize.Hero, color = UsTheme.extended.textPrimary)
             Text(
                 text = "RIDER",
                 style = MaterialTheme.typography.labelLarge,

@@ -11,9 +11,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
@@ -55,6 +57,7 @@ import com.us.android.feature.tube.ui.pressScale
  * the end of each row. Under Tube's chrome with a back glyph and nothing lit
  * on the bar, like the saved videos.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CollectionScreen(
     destinations: TubeDestinations,
@@ -65,7 +68,9 @@ fun CollectionScreen(
     RefreshOnResume(viewModel::refresh)
 
     TubePage(selected = null, destinations = destinations, onBack = destinations.onBack) { padding ->
-        Box(modifier = Modifier.fillMaxSize()) {
+        val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
+        // Pull to refresh (UI audit 2026-10-21): the rows stay while the list is read again.
+        PullToRefreshBox(isRefreshing = refreshing, onRefresh = viewModel::refresh, modifier = Modifier.fillMaxSize()) {
             when (val current = content) {
                 CollectionContent.Loading -> UsLoadingState(label = "Loading videos")
                 is CollectionContent.Failed -> UsErrorState(message = current.message, onRetry = viewModel::retry)
@@ -213,6 +218,7 @@ private fun CollectionVideoRow(
  * "Collections" (2026-10-02): the lists the viewer made, each a row that
  * opens its page. Made from the watch page's "Add to collection".
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CollectionsScreen(
     destinations: TubeDestinations,
@@ -222,41 +228,45 @@ fun CollectionsScreen(
     RefreshOnResume(viewModel::refresh)
 
     TubePage(selected = null, destinations = destinations, onBack = destinations.onBack) { padding ->
-        when (val current = content) {
-            CollectionsContent.Loading -> UsLoadingState(label = "Loading collections")
-            is CollectionsContent.Failed -> UsErrorState(message = current.message, onRetry = viewModel::retry)
-            is CollectionsContent.Ready -> if (current.collections.isEmpty()) {
-                UsEmptyState(
-                    title = "No collections yet",
-                    detail = "Tap Add to collection under a video to make your first one.",
-                    modifier = Modifier.testTag("tube_collections_empty"),
-                )
-            } else {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .testTag("tube_collections_list"),
-                    contentPadding = PaddingValues(
-                        top = UsTheme.spacing.l,
-                        bottom = padding.calculateBottomPadding() + UsTheme.spacing.xxl,
-                    ),
-                ) {
-                    item(key = "title") {
-                        Text(
-                            text = "Collections",
-                            style = MaterialTheme.typography.titleLarge,
-                            fontWeight = FontWeight.Bold,
-                            color = UsTheme.extended.textPrimary,
-                            modifier = Modifier
-                                .padding(horizontal = UsTheme.spacing.pageHorizontal)
-                                .padding(bottom = UsTheme.spacing.m),
-                        )
-                    }
-                    items(current.collections, key = { it.id }) { collection ->
-                        CollectionRow(
-                            collection = collection,
-                            onClick = { destinations.onOpenCollection(collection.id) },
-                        )
+        val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
+        // Pull to refresh (UI audit 2026-10-21): the rows stay while the list is read again.
+        PullToRefreshBox(isRefreshing = refreshing, onRefresh = viewModel::refresh, modifier = Modifier.fillMaxSize()) {
+            when (val current = content) {
+                CollectionsContent.Loading -> UsLoadingState(label = "Loading collections")
+                is CollectionsContent.Failed -> UsErrorState(message = current.message, onRetry = viewModel::retry)
+                is CollectionsContent.Ready -> if (current.collections.isEmpty()) {
+                    UsEmptyState(
+                        title = "No collections yet",
+                        detail = "Tap Add to collection under a video to make your first one.",
+                        modifier = Modifier.testTag("tube_collections_empty"),
+                    )
+                } else {
+                    LazyColumn(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("tube_collections_list"),
+                        contentPadding = PaddingValues(
+                            top = UsTheme.spacing.l,
+                            bottom = padding.calculateBottomPadding() + UsTheme.spacing.xxl,
+                        ),
+                    ) {
+                        item(key = "title") {
+                            Text(
+                                text = "Collections",
+                                style = MaterialTheme.typography.titleLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = UsTheme.extended.textPrimary,
+                                modifier = Modifier
+                                    .padding(horizontal = UsTheme.spacing.pageHorizontal)
+                                    .padding(bottom = UsTheme.spacing.m),
+                            )
+                        }
+                        items(current.collections, key = { it.id }) { collection ->
+                            CollectionRow(
+                                collection = collection,
+                                onClick = { destinations.onOpenCollection(collection.id) },
+                            )
+                        }
                     }
                 }
             }

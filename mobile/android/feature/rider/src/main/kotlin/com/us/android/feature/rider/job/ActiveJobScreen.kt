@@ -21,7 +21,6 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsButton
@@ -29,6 +28,7 @@ import com.us.android.core.designsystem.component.UsOtpField
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.food.repository.RiderAssignmentStep
 import com.us.android.feature.rider.money.RiderMoney
 import com.us.android.feature.rider.ui.CardHeading
@@ -90,7 +90,7 @@ fun ActiveJobScreen(onBack: () -> Unit, onFinished: () -> Unit, viewModel: Activ
                     RiderCard {
                         Column(modifier = Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                             Text("Pickup code", style = MaterialTheme.typography.labelLarge, color = UsTheme.extended.textMuted)
-                            Text(code, fontSize = 44.sp, fontWeight = FontWeight.SemiBold, color = UsTheme.extended.accentSolid)
+                            Text(code, fontSize = UsTypeScale.xl4.size, fontWeight = FontWeight.SemiBold, color = UsTheme.extended.accentSolid)
                             Text(
                                 "Show this to the restaurant. They enter it to hand over the order.",
                                 style = MaterialTheme.typography.bodySmall,

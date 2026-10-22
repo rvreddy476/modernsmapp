@@ -60,6 +60,8 @@ data class SoundPageState(
     val canLoadMore: Boolean = false,
     val loadingMore: Boolean = false,
     val moreFailed: Boolean = false,
+    /** The first page is being read again over the tiles on screen (pull to refresh). */
+    val refreshing: Boolean = false,
 ) {
     /** The sound exists and no reel plays it yet — not even its origin is readable. */
     val isEmpty: Boolean get() = phase == SoundPagePhase.Ready && tiles.isEmpty()
@@ -137,6 +139,26 @@ class SoundPageViewModel @Inject constructor(
                     _state.value = soundPageState(pages)
                 }
                 is AppResult.Failure -> _state.value = SoundPageState(phase = soundPagePhase(result.error))
+            }
+        }
+    }
+
+    /**
+     * Pull to refresh (UI audit 2026-10-21): the first page again, with the
+     * tiles on screen left where they are until it lands; a failure keeps them.
+     */
+    fun refresh() {
+        if (_state.value.phase != SoundPagePhase.Ready) return load()
+        if (loading?.isActive == true) return
+        _state.update { it.copy(refreshing = true) }
+        loading = viewModelScope.launch {
+            when (val result = sounds.reels(soundId)) {
+                is AppResult.Success -> {
+                    pages.clear()
+                    pages += result.data
+                    _state.value = soundPageState(pages)
+                }
+                is AppResult.Failure -> _state.update { it.copy(refreshing = false) }
             }
         }
     }

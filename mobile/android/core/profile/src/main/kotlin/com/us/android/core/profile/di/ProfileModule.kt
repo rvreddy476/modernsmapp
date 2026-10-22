@@ -18,6 +18,7 @@ import com.us.android.core.profile.data.PrivacySettingsApi
 import com.us.android.core.profile.data.ProfileApi
 import com.us.android.core.profile.data.ProfileClock
 import com.us.android.core.profile.data.ProfileDetailsApi
+import com.us.android.core.profile.data.UsernameLookupApi
 import com.us.android.core.profile.data.WellbeingApi
 import com.us.android.core.profile.data.WellbeingGuardCache
 import dagger.Module
@@ -43,6 +44,10 @@ object ProfileModule {
     @Provides
     @Singleton
     fun provideProfileApi(retrofit: Retrofit): ProfileApi = retrofit.create(ProfileApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideUsernameLookupApi(retrofit: Retrofit): UsernameLookupApi = retrofit.create(UsernameLookupApi::class.java)
 
     @Provides
     @Singleton

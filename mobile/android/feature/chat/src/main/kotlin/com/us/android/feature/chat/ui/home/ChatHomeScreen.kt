@@ -43,13 +43,13 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.feature.chat.ui.OfflineBanner
 import kotlinx.coroutines.launch
 
@@ -423,6 +423,6 @@ private val SMALL_GLYPH = 18.dp
 private val MIC_GLYPH = 20.dp
 private val HAIRLINE = 1.dp
 private val BADGE_INSET = 4.dp
-private val BADGE_SIZE = 16.dp
-private val BADGE_TEXT = 9.sp
+private val BADGE_SIZE = 18.dp
+private val BADGE_TEXT = UsTypeScale.xs.size
 private const val BADGE_MAX = 99

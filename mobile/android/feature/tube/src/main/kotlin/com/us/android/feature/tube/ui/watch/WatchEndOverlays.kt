@@ -38,10 +38,10 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.model.FeedItem
 import com.us.android.feature.tube.ui.BlurHashImage
@@ -316,7 +316,7 @@ private const val END_SCREEN_ROWS = 3
 private const val SCRIM_ALPHA = 0.72f
 private const val MUTED_ALPHA = 0.7f
 private const val DISC_ALPHA = 0.2f
-private val SECONDS_SIZE = 40.sp
+private val SECONDS_SIZE = UsTypeScale.xl4.size
 private val REPLAY_DISC = 40.dp
 private val REPLAY_GLYPH = 20.dp
 private val PILL_GLYPH = 16.dp

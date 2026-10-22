@@ -61,7 +61,6 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.time.formatRelativeTime
 import com.us.android.core.designsystem.component.UsAvatar
@@ -69,6 +68,7 @@ import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.engagement.data.CommentNotice
 import com.us.android.core.engagement.data.CommentRow
 import com.us.android.core.engagement.data.CommentsUiState
@@ -954,7 +954,7 @@ private val HANDLE_HEIGHT = 4.dp
 private val HANDLE_TOP = 8.dp
 private val HANDLE_BOTTOM = 4.dp
 private val HEADER_HEIGHT = 44.dp
-private val HEADER_TEXT_SIZE = 16.sp
+private val HEADER_TEXT_SIZE = UsTypeScale.base.size
 private val ICON_SIZE = 22.dp
 private val ROW_GAP = 16.dp
 private val REPLY_GAP = 10.dp
@@ -964,7 +964,7 @@ private val BADGE_GLYPH = 14.dp
 private val LIKE_GLYPH = 18.dp
 private val MENU_GLYPH = 18.dp
 private val SMALL_SPINNER = 18.dp
-private val EMOJI_SIZE = 24.sp
+private val EMOJI_SIZE = UsTypeScale.xl2.size
 private val HAIRLINE = 1.dp
 private val FIELD_RADIUS = 22.dp
 private val FIELD_PADDING_H = 16.dp

@@ -39,7 +39,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
@@ -53,6 +52,7 @@ import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.chat.ui.home.ChatTogglePill
@@ -709,11 +709,11 @@ private val EVENT_TILE = 44.dp
 private val PIN_GLYPH = 14.dp
 private val CHIP_HORIZONTAL = 10.dp
 private val CHIP_VERTICAL = 4.dp
-private val CHIP_EMOJI = 14.sp
+private val CHIP_EMOJI = UsTypeScale.sm.size
 private val REACT_TARGET = 32.dp
 private val REACT_GLYPH = 20.dp
 private val STRIP_TARGET = 40.dp
-private val STRIP_EMOJI = 22.sp
+private val STRIP_EMOJI = UsTypeScale.xl2.size
 private val FLAG_TARGET = 32.dp
 private val FLAG_GLYPH = 16.dp
 private val BELL_TARGET = 32.dp

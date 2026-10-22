@@ -55,10 +55,10 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -1026,14 +1026,14 @@ private val OPTION_HEIGHT = 44.dp
 private val ROW_SIDE = 18.dp
 private val ROW_GAP = 16.dp
 private val ROW_GLYPH = 22.dp
-private val ROW_TEXT_SIZE = 15.sp
+private val ROW_TEXT_SIZE = UsTypeScale.base.size
 private val REASON_INDENT = ROW_SIDE + ROW_GLYPH + ROW_GAP
 private val CHEVRON_SIZE = 18.dp
 private val PILL_GLYPH = 16.dp
 private val DIALOG_RADIUS = 20.dp
 private val DIALOG_PADDING = 22.dp
-private val DIALOG_TITLE_SIZE = 18.sp
-private val DIALOG_ACTION_SIZE = 14.sp
+private val DIALOG_TITLE_SIZE = UsTypeScale.lg.size
+private val DIALOG_ACTION_SIZE = UsTypeScale.sm.size
 
 /**
  * What "Don't recommend" says once the server has it: the handle on a feed

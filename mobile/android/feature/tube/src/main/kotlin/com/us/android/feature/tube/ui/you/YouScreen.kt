@@ -16,9 +16,11 @@ import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -77,6 +79,7 @@ import com.us.android.feature.tube.ui.rememberTubeMoreState
  * is not drawn — except Your videos, whose empty state is the invitation
  * to post one.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun YouScreen(
     destinations: TubeDestinations,
@@ -117,7 +120,17 @@ fun YouScreen(
     )
 
     TubePage(selected = TubeTab.YOU, destinations = destinations) { padding ->
-        Box(modifier = Modifier.fillMaxSize()) {
+        // Pull to refresh (UI audit 2026-10-21): the channel, the viewer's own
+        // videos and the saved ones are all read again.
+        PullToRefreshBox(
+            isRefreshing = own.loadState.refresh is LoadState.Loading && own.itemCount > 0,
+            onRefresh = {
+                viewModel.retryChannel()
+                own.refresh()
+                saved.refresh()
+            },
+            modifier = Modifier.fillMaxSize(),
+        ) {
             LazyVerticalStaggeredGrid(
                 columns = StaggeredGridCells.Fixed(GRID_COLUMNS),
                 modifier = Modifier

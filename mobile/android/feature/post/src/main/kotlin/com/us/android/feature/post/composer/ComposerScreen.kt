@@ -51,7 +51,6 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
@@ -63,6 +62,7 @@ import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.feature.post.data.dto.VISIBILITY_FOLLOWERS
 import com.us.android.feature.post.data.dto.VISIBILITY_PRIVATE
 import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
@@ -936,10 +936,10 @@ private val OVERLAY_ICON = 16.dp
 private val POST_PILL_WIDTH = 92.dp
 private val LANGUAGE_FIELD = 110.dp
 private val CANVAS_MIN_HEIGHT = 120.dp
-private val CANVAS_TEXT_SIZE = 19.sp
-private val CANVAS_LINE_HEIGHT = 27.sp
-private val TITLE_TEXT_SIZE = 26.sp
-private val TOP_BAR_TITLE_SIZE = 17.sp
+private val CANVAS_TEXT_SIZE = UsTypeScale.lg.size
+private val CANVAS_LINE_HEIGHT = UsTypeScale.lg.lineHeight
+private val TITLE_TEXT_SIZE = UsTypeScale.xl2.size
+private val TOP_BAR_TITLE_SIZE = UsTypeScale.lg.size
 
 /** The article body's opening height, in lines of [CANVAS_LINE_HEIGHT]. */
 private const val ARTICLE_MIN_LINES = 12

@@ -11,6 +11,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import com.us.android.core.designsystem.theme.orSnap
 
 /**
  * No ripple. The press is shown by the target dipping to 97% on a spring —
@@ -23,7 +24,7 @@ fun Modifier.pressScale(onClick: () -> Unit): Modifier {
     val pressed by interaction.collectIsPressedAsState()
     val scale by animateFloatAsState(
         targetValue = if (pressed) PRESS_SCALE else 1f,
-        animationSpec = spring(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = PRESS_STIFFNESS),
+        animationSpec = spring<Float>(dampingRatio = Spring.DampingRatioMediumBouncy, stiffness = PRESS_STIFFNESS).orSnap(),
         label = "tubePress",
     )
     return this

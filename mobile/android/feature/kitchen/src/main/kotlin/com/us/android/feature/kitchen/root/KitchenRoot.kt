@@ -15,13 +15,13 @@ import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
+import com.us.android.core.designsystem.component.UsWordmarkSize
 import com.us.android.feature.kitchen.navigation.KitchenPushTarget
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.icon.UsIcons
@@ -106,7 +106,7 @@ fun KitchenSplash() {
             Text(
                 text = "Feast",
                 fontFamily = MomentumWordmarkFontFamily,
-                fontSize = 44.sp,
+                fontSize = UsWordmarkSize.Hero,
                 color = UsTheme.extended.textPrimary,
             )
             Text(

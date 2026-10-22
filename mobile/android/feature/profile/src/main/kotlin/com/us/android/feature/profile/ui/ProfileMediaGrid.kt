@@ -70,7 +70,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.paging.LoadState
@@ -80,6 +79,7 @@ import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.feed.data.AuthorPostSort
 import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.feed.ui.channel.CreateChannelSheet
@@ -126,6 +126,8 @@ internal fun ProfileMediaGrid(
      * than the screen.
      */
     tabRequest: GridTabRequest? = null,
+    /** Bumped by the profile's pull to refresh: the open tab's tiles are read again. 0 is the first draw. */
+    refreshSeq: Int = 0,
     viewModel: ProfileGridViewModel = hiltViewModel(),
 ) {
     val tab by viewModel.tab.collectAsStateWithLifecycle()
@@ -145,6 +147,12 @@ internal fun ProfileMediaGrid(
         if ((reloads[ProfileGridTab.POSTS] ?: 0) > 0) posts.refresh()
         if ((reloads[ProfileGridTab.REELS] ?: 0) > 0) reels.refresh()
         if ((reloads[ProfileGridTab.VIDEOS] ?: 0) > 0) longVideos.refresh()
+    }
+
+    // Pull to refresh on the profile (UI audit 2026-10-21): the tab on screen
+    // is read again with the header; the others refresh when opened next.
+    LaunchedEffect(refreshSeq) {
+        if (refreshSeq > 0) TabLists(posts, reels, longVideos, saved, liked).forTab(tab).refresh()
     }
 
     // The last leg of the journey. Collected here rather than watched as
@@ -933,9 +941,9 @@ private val SUCCESS_GLYPH = 16.dp
 private val RING_SIZE = 48.dp
 private val RING_STROKE = 3.dp
 private val RING_INSET = 4.dp
-private val RING_LABEL_SIZE = 10.sp
+private val RING_LABEL_SIZE = UsTypeScale.xs.size
 private val BADGE_SIZE = 20.dp
 private val BADGE_GLYPH = 12.dp
-private val SCHEDULE_LABEL_SIZE = 9.sp
+private val SCHEDULE_LABEL_SIZE = UsTypeScale.xs.size
 private val SHEET_RADIUS = 28.dp
-private val SHEET_TITLE_SIZE = 20.sp
+private val SHEET_TITLE_SIZE = UsTypeScale.xl.size

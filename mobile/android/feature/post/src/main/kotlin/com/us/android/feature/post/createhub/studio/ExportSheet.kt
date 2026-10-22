@@ -26,9 +26,9 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 
 /**
  * "Preparing your reel… 42 %" — the Momentum sheet over the studio while
@@ -168,5 +168,5 @@ private val SHEET_RADIUS = 28.dp
 private val HANDLE_WIDTH = 32.dp
 private val HANDLE_HEIGHT = 4.dp
 private val BAR_HEIGHT = 6.dp
-private val TITLE_SIZE = 20.sp
-private val PERCENT_SIZE = 40.sp
+private val TITLE_SIZE = UsTypeScale.xl.size
+private val PERCENT_SIZE = UsTypeScale.xl4.size

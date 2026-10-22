@@ -8,8 +8,10 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -42,6 +44,7 @@ import com.us.android.feature.tube.ui.rememberTubeMoreState
  * videos as the two-column mosaic, under Tube's chrome with a back glyph
  * and nothing lit on the bar. Empty says where a save comes from.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun SavedVideosScreen(
     destinations: TubeDestinations,
@@ -52,7 +55,12 @@ fun SavedVideosScreen(
     val moreState = rememberTubeMoreState()
 
     TubePage(selected = null, destinations = destinations, onBack = destinations.onBack) { padding ->
-        Box(modifier = Modifier.fillMaxSize()) {
+        // Pull to refresh (UI audit 2026-10-21).
+        PullToRefreshBox(
+            isRefreshing = items.loadState.refresh is LoadState.Loading && items.itemCount > 0,
+            onRefresh = items::refresh,
+            modifier = Modifier.fillMaxSize(),
+        ) {
             SavedBody(
                 items = items,
                 thumbFor = viewModel::thumb,

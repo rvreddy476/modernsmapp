@@ -45,11 +45,11 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 
 /**
  * "Tag people" — a full-screen search over users, multi-select up to
@@ -297,7 +297,7 @@ internal fun TaggedChips(users: List<TaggedUser>, onRemove: (String) -> Unit, mo
 private const val MIN_QUERY = 2
 
 private val TAP_TARGET = 40.dp
-private val TITLE_SIZE = 17.sp
+private val TITLE_SIZE = UsTypeScale.lg.size
 private val RING_SIZE = 22.dp
 private val RING_STROKE = 1.5.dp
 private val RING_GLYPH = 13.dp

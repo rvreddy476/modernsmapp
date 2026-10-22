@@ -79,13 +79,24 @@
                 <data android:pathPrefix="/chat/join/" />
             </intent-filter>
             <!--
-              A post's public permalink (2026-10-14, audit T-07):
-              https://cleestudio.com/post/{id} (also app.cleestudio.com, the hosts
-              production serves the web app on) - what Copy link and Share hand out
-              (core/model WebLinks) - opens the post detail. autoVerify like the
-              invite link above (which stays on atpost.app); verification needs
-              /.well-known/assetlinks.json on both hosts. PushDestinations.offerLink
-              parses it and refuses anything that is not a UUID post id.
+              The web app's share routes (2026-10-14 audit T-07; the full set
+              on 2026-10-22, founder: a shared link tapped on a phone must land
+              well), on cleestudio.com and app.cleestudio.com, the hosts
+              production serves the web app on:
+                /post/{id}                 the post detail
+                /reels/{id}                Reels, on that reel
+                /reels/sound/{id}          the sound page (under /reels/)
+                /posttube/watch/{id}       Tube's watch screen
+                /posttube/channel/{handle} and /channel/{handle}   the channel
+                /u/{username}              the profile
+                /hashtag/{tag}             the tag's posts
+              autoVerify like the invite link above (which stays on atpost.app);
+              verification needs /.well-known/assetlinks.json on both hosts
+              (live for com.us.android.dev). core/model WebLinks.targetOf parses
+              every route and refuses a bad id; PushDestinations.offerLink turns
+              it into a pending destination that waits through the login. The
+              query (?ref=…&utm_source=share) is ignored. /shop/products is
+              deliberately absent: commerce is paused.
             -->
             <intent-filter android:autoVerify="true">
                 <action android:name="android.intent.action.VIEW" />
@@ -95,6 +106,12 @@
                 <data android:host="cleestudio.com" />
                 <data android:host="app.cleestudio.com" />
                 <data android:pathPrefix="/post/" />
+                <data android:pathPrefix="/reels/" />
+                <data android:pathPrefix="/posttube/watch/" />
+                <data android:pathPrefix="/posttube/channel/" />
+                <data android:pathPrefix="/channel/" />
+                <data android:pathPrefix="/u/" />
+                <data android:pathPrefix="/hashtag/" />
             </intent-filter>
             <!--
               Google sign-in's browser redirect (web parity, founder 21 Oct

@@ -37,10 +37,10 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 
 /**
  * The report step, INSIDE the "more" sheet: a back arrow and "Report" in
@@ -286,7 +286,7 @@ private const val FIELD_MAX_LINES = 4
 
 private val SIDE = 18.dp
 private val HEADER_HEIGHT = 44.dp
-private val HEADER_TEXT_SIZE = 16.sp
+private val HEADER_TEXT_SIZE = UsTypeScale.base.size
 private val BACK_GLYPH = 22.dp
 private val REASON_ROW_HEIGHT = 46.dp
 private val CHECK_GLYPH = 20.dp
@@ -296,5 +296,5 @@ private val FIELD_MIN_HEIGHT = 72.dp
 private val FIELD_PADDING_H = 16.dp
 private val FIELD_PADDING_V = 12.dp
 private val OUTCOME_GLYPH = 32.dp
-private val OUTCOME_TITLE_SIZE = 18.sp
+private val OUTCOME_TITLE_SIZE = UsTypeScale.lg.size
 private val OUTCOME_BOTTOM = 28.dp

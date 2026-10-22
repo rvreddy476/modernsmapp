@@ -11,7 +11,6 @@ import androidx.compose.runtime.key
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -23,6 +22,7 @@ import androidx.navigation.toRoute
 import com.us.android.core.auth.AuthRepository
 import com.us.android.core.auth.SessionStateProvider
 import com.us.android.core.designsystem.component.UsScaffold
+import com.us.android.core.designsystem.component.UsWordmarkSize
 import com.us.android.core.designsystem.theme.MomentumWordmarkFontFamily
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.model.SessionState
@@ -97,7 +97,7 @@ private fun CaptainSplash() {
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.Center,
         ) {
-            Text(text = "Mopedu", fontFamily = MomentumWordmarkFontFamily, fontSize = 44.sp, color = UsTheme.extended.textPrimary)
+            Text(text = "Mopedu", fontFamily = MomentumWordmarkFontFamily, fontSize = UsWordmarkSize.Hero, color = UsTheme.extended.textPrimary)
             Text(
                 text = "CAPTAIN",
                 style = MaterialTheme.typography.labelLarge,

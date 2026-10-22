@@ -44,7 +44,6 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -52,6 +51,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.ui.photoeditor.rememberPhotoEditor
 import com.us.android.feature.post.composer.ComposerMode
 import com.us.android.feature.post.composer.ComposerScreen
@@ -467,7 +467,7 @@ private fun PollSurface(
 // ── Constants ───────────────────────────────────────────────────────────
 
 private const val MAX_PICK = 10
-private val QUESTION_TEXT_SIZE = 19.sp
-private val TOP_BAR_TITLE_SIZE = 17.sp
+private val QUESTION_TEXT_SIZE = UsTypeScale.lg.size
+private val TOP_BAR_TITLE_SIZE = UsTypeScale.lg.size
 private val TAP_TARGET = 40.dp
 private val PILL_WIDTH = 92.dp

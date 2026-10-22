@@ -64,7 +64,6 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
@@ -74,6 +73,7 @@ import androidx.media3.common.util.UnstableApi
 import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.feed.data.ChannelGate
 import com.us.android.core.feed.data.channelGate
 import com.us.android.core.feed.ui.channel.CreateChannelSheet
@@ -1374,12 +1374,12 @@ private val PREVIEW_WIDTH = 96.dp
 private val PREVIEW_HEIGHT = 170.dp
 private val PREVIEW_GLYPH = 22.dp
 private val LONG_DESCRIPTION_HEIGHT = 96.dp
-private val TITLE_SIZE = 17.sp
+private val TITLE_SIZE = UsTypeScale.lg.size
 private val ROW_PADDING_H = 14.dp
 private val ROW_PADDING_V = 13.dp
 private val SWITCH_PADDING_V = 4.dp
 private val ROW_ICON = 18.dp
 private val ROW_VALUE_MAX = 150.dp
 private val CHEVRON = 16.dp
-private val DESCRIPTION_SIZE = 15.sp
-private val DESCRIPTION_LINE_HEIGHT = 21.sp
+private val DESCRIPTION_SIZE = UsTypeScale.base.size
+private val DESCRIPTION_LINE_HEIGHT = UsTypeScale.base.lineHeight

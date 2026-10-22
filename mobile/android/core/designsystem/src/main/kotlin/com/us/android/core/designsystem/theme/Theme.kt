@@ -129,11 +129,15 @@ fun UsTheme(
     }
     val radii = remember { UsRadii() }
     val spacing = remember { UsSpacing() }
+    // The device's "remove animations" setting, read once here and honoured
+    // by every screen through UsTheme.reducedMotion (2026-10-22).
+    val reducedMotion = rememberReducedMotion()
 
     CompositionLocalProvider(
         LocalUsExtendedColors provides extendedColors,
         LocalUsRadii provides radii,
         LocalUsSpacing provides spacing,
+        LocalUsReducedMotion provides reducedMotion,
     ) {
         MaterialTheme(
             colorScheme = if (darkTheme) UsDarkColorScheme else UsLightColorScheme,
@@ -160,4 +164,10 @@ object UsTheme {
         @Composable
         @ReadOnlyComposable
         get() = LocalUsSpacing.current
+
+    /** True when the device asks for no animations: a thing appears where it ends up instead of moving there. */
+    val reducedMotion: Boolean
+        @Composable
+        @ReadOnlyComposable
+        get() = LocalUsReducedMotion.current
 }

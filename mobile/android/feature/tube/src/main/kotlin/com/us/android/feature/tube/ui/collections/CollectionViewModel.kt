@@ -84,6 +84,11 @@ class CollectionViewModel @Inject constructor(
     private val _message = MutableStateFlow<UsMessage?>(null)
     val message: StateFlow<UsMessage?> = _message.asStateFlow()
 
+    private val _refreshing = MutableStateFlow(false)
+
+    /** A read in flight over rows already on screen (pull to refresh); never true for the first read. */
+    val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
+
     init {
         library.setViewer(follows.ownId)
         refresh()
@@ -92,7 +97,9 @@ class CollectionViewModel @Inject constructor(
     /** Reads the list again. The rows on screen stay while it does; only a first read shows the loader. */
     fun refresh() {
         viewModelScope.launch {
+            _refreshing.value = loaded.value is CollectionContent.Ready
             val result = if (watchLater) repository.watchLater() else repository.collection(collectionId)
+            _refreshing.value = false
             loaded.value = when (result) {
                 is AppResult.Success -> CollectionContent.Ready(result.data.collection, result.data.videos)
                 is AppResult.Failure ->
@@ -171,13 +178,21 @@ class CollectionsViewModel @Inject constructor(
     private val _content = MutableStateFlow<CollectionsContent>(CollectionsContent.Loading)
     val content: StateFlow<CollectionsContent> = _content.asStateFlow()
 
+    private val _refreshing = MutableStateFlow(false)
+
+    /** A read in flight over rows already on screen (pull to refresh); never true for the first read. */
+    val refreshing: StateFlow<Boolean> = _refreshing.asStateFlow()
+
     init {
         refresh()
     }
 
     fun refresh() {
         viewModelScope.launch {
-            _content.value = when (val result = repository.collections(follows.ownId)) {
+            _refreshing.value = _content.value is CollectionsContent.Ready
+            val result = repository.collections(follows.ownId)
+            _refreshing.value = false
+            _content.value = when (result) {
                 is AppResult.Success -> CollectionsContent.Ready(result.data)
                 is AppResult.Failure ->
                     _content.value as? CollectionsContent.Ready ?: CollectionsContent.Failed(

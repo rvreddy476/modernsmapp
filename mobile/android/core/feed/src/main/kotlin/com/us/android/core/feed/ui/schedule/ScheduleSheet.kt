@@ -43,9 +43,9 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.media.publish.ScheduleWindow
 import java.time.Instant
 import java.time.LocalTime
@@ -253,4 +253,4 @@ private const val HANDLE_ALPHA = 0.35f
 private val SHEET_RADIUS = 28.dp
 private val HANDLE_WIDTH = 32.dp
 private val HANDLE_HEIGHT = 4.dp
-private val TITLE_SIZE = 20.sp
+private val TITLE_SIZE = UsTypeScale.xl.size

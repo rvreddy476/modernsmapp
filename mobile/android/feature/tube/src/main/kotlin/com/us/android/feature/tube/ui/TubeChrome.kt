@@ -48,7 +48,6 @@ import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsBadgedIcon
@@ -60,6 +59,7 @@ import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.icon.VIDEO_MARK_BODY
 import com.us.android.core.designsystem.icon.VIDEO_MARK_PLAY
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.feed.ui.channel.CreateChannelSheet
 import com.us.android.core.notifications.ui.UnreadBadgeViewModel
 import com.us.android.feature.tube.navigation.TubeDestinations
@@ -381,5 +381,5 @@ private val GLYPH_TARGET = 40.dp
 private val ACTION_TARGET = 48.dp
 private val CHIP_HEIGHT = 34.dp
 private val CHIP_HORIZONTAL = 14.dp
-private val CHIP_TEXT = 13.sp
+private val CHIP_TEXT = UsTypeScale.sm.size
 private val HAIRLINE = 1.dp

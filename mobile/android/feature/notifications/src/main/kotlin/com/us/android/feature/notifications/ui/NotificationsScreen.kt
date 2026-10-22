@@ -30,6 +30,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
@@ -53,7 +54,6 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.common.time.formatRelativeTime
@@ -63,6 +63,7 @@ import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.model.CustomerNotification
 import com.us.android.core.model.Notification
 import com.us.android.core.model.NotificationIcon
@@ -91,6 +92,7 @@ import java.time.Instant
  * mapping, which is what keeps features independent of one another. Same
  * contract the composer uses for `onPublished`.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun NotificationsScreen(
     onBack: () -> Unit,
@@ -163,54 +165,62 @@ fun NotificationsScreen(
         },
         applyPageGutter = false,
     ) { padding ->
-        Column(modifier = Modifier.padding(padding).fillMaxSize()) {
-            // Ask for the notification permission HERE — the user has just
-            // said, by opening this screen, that they care about
-            // notifications. See NotificationPermissionPrompt for why not at
-            // first launch. Renders nothing unless there is something to say.
-            permissionPrompt()
+        // Pull to refresh (UI audit 2026-10-21): the rows stay while the first
+        // page is read again; only an empty inbox shows the loading block.
+        PullToRefreshBox(
+            isRefreshing = state.isRefreshing,
+            onRefresh = viewModel::refresh,
+            modifier = Modifier.padding(padding).fillMaxSize(),
+        ) {
+            Column(modifier = Modifier.fillMaxSize()) {
+                // Ask for the notification permission HERE — the user has just
+                // said, by opening this screen, that they care about
+                // notifications. See NotificationPermissionPrompt for why not at
+                // first launch. Renders nothing unless there is something to say.
+                permissionPrompt()
 
-            FilterChips(selected = state.filter, onSelect = viewModel::selectFilter)
+                FilterChips(selected = state.filter, onSelect = viewModel::selectFilter)
 
-            // Momentum's Follow Requests panel — a raised shortcut to the
-            // approval queue, derived from the SAME rows the list below
-            // already loaded rather than a second fetch.
-            val followRequests = remember(state.items) {
-                state.items.filter { it.kind == NotificationKind.FollowRequest }
-            }
-            if (followRequests.isNotEmpty()) {
-                FollowRequestsPanel(
-                    count = followRequests.size,
-                    hasUnread = followRequests.any { !it.isRead },
-                    onClick = onOpenFollowRequests,
-                )
-            }
+                // Momentum's Follow Requests panel — a raised shortcut to the
+                // approval queue, derived from the SAME rows the list below
+                // already loaded rather than a second fetch.
+                val followRequests = remember(state.items) {
+                    state.items.filter { it.kind == NotificationKind.FollowRequest }
+                }
+                if (followRequests.isNotEmpty()) {
+                    FollowRequestsPanel(
+                        count = followRequests.size,
+                        hasUnread = followRequests.any { !it.isRead },
+                        onClick = onOpenFollowRequests,
+                    )
+                }
 
-            when {
-                state.isLoading -> LoadingBlock()
+                when {
+                    state.isLoading -> LoadingBlock()
 
-                state.error != null -> UsErrorState(
-                    message = state.error.orEmpty(),
-                    onRetry = viewModel::refresh,
-                    modifier = Modifier.fillMaxWidth(),
-                )
+                    state.error != null -> UsErrorState(
+                        message = state.error.orEmpty(),
+                        onRetry = viewModel::refresh,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
 
-                // Nothing in the pages read so far. With a cursor left the
-                // filter may still have older rows — say so, and let one tap
-                // look further rather than claiming there are none.
-                state.isEmpty -> FilterEmpty(
-                    filter = state.filter,
-                    hasMore = state.hasMore,
-                    loadingMore = state.isLoadingMore,
-                    onLookFurther = viewModel::loadMore,
-                )
+                    // Nothing in the pages read so far. With a cursor left the
+                    // filter may still have older rows — say so, and let one tap
+                    // look further rather than claiming there are none.
+                    state.isEmpty -> FilterEmpty(
+                        filter = state.filter,
+                        hasMore = state.hasMore,
+                        loadingMore = state.isLoadingMore,
+                        onLookFurther = viewModel::loadMore,
+                    )
 
-                else -> SectionedNotificationList(
-                    state = state,
-                    listState = listState,
-                    callbacks = callbacks,
-                    onShowMore = viewModel::loadMore,
-                )
+                    else -> SectionedNotificationList(
+                        state = state,
+                        listState = listState,
+                        callbacks = callbacks,
+                        onShowMore = viewModel::loadMore,
+                    )
+                }
             }
         }
     }
@@ -901,14 +911,14 @@ private val REQUEST_ICON_CIRCLE = 36.dp
 
 /** The 36dp avatar plus its 2dp ring and 2dp gap on each side. */
 private val AVATAR_SLOT = 44.dp
-private val HEADER_LINK_SIZE = 13.sp
-private val SECTION_SIZE = 14.sp
-private val PANEL_TITLE_SIZE = 14.sp
-private val PANEL_SUBTITLE_SIZE = 12.sp
+private val HEADER_LINK_SIZE = UsTypeScale.sm.size
+private val SECTION_SIZE = UsTypeScale.sm.size
+private val PANEL_TITLE_SIZE = UsTypeScale.sm.size
+private val PANEL_SUBTITLE_SIZE = UsTypeScale.xs.size
 private val CHIP_HEIGHT = 34.dp
 private val CHIP_HORIZONTAL = 14.dp
 private val CHIP_HAIRLINE = 1.dp
-private val CHIP_TEXT = 13.sp
+private val CHIP_TEXT = UsTypeScale.sm.size
 
 /** How much of the danger colour the badge fill behind a missed call is. */
 private const val MISSED_CALL_BAND_ALPHA = 0.12f

@@ -41,6 +41,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.theme.MomentumWordmarkFontFamily
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.food.model.toRupeeText
 import com.us.android.feature.feast.cart.BillCard
 import com.us.android.feature.feast.ui.FeastCard
@@ -226,7 +227,7 @@ private fun DeliveryCodeCard(code: String) {
         Text("Delivery code", style = MaterialTheme.typography.labelLarge, color = UsTheme.extended.textMuted)
         Text(
             text = code.toList().joinToString("  "),
-            style = MaterialTheme.typography.displaySmall.copy(fontSize = 40.sp, letterSpacing = 4.sp),
+            style = MaterialTheme.typography.displaySmall.copy(fontSize = UsTypeScale.xl4.size, letterSpacing = 4.sp),
             fontWeight = FontWeight.SemiBold,
             color = UsTheme.extended.textPrimary,
             modifier = Modifier.padding(vertical = UsTheme.spacing.m),
