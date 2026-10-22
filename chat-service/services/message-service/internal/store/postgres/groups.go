@@ -109,14 +109,21 @@ func (s *ConversationStore) AddMemberCapped(ctx context.Context, conversationID,
 	// join_gen is drawn from the membership sequence WHILE HOLDING the
 	// conversation lock, so it is ordered by serialization, not by clock
 	// (final-verification P0-4).
+	//
+	// A newcomer to a GROUP sees only what is sent after they arrive, as on
+	// WhatsApp (founder, 22 Oct 2026): cleared_before is the join moment, on a
+	// first join and on a rejoin alike, so the history read, search and the
+	// inbox preview all start there. Every way in (invite link, admin add,
+	// accepted invitation, group-service mirror) comes through here.
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO chat.conversation_members (conversation_id, user_id, role, joined_at, join_gen)
-		VALUES ($1, $2, $3, NOW(), nextval('chat.membership_gen_seq'))
+		INSERT INTO chat.conversation_members (conversation_id, user_id, role, joined_at, join_gen, cleared_before)
+		VALUES ($1, $2, $3, NOW(), nextval('chat.membership_gen_seq'), CASE WHEN $4 = 'group' THEN NOW() END)
 		ON CONFLICT (conversation_id, user_id) DO UPDATE
 			SET role = EXCLUDED.role, joined_at = NOW(), left_at = NULL,
-			    join_gen = nextval('chat.membership_gen_seq')
+			    join_gen = nextval('chat.membership_gen_seq'),
+			    cleared_before = CASE WHEN $4 = 'group' THEN NOW() ELSE chat.conversation_members.cleared_before END
 			WHERE chat.conversation_members.left_at IS NOT NULL
-	`, conversationID, userID, role); err != nil {
+	`, conversationID, userID, role, convType); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
