@@ -35,6 +35,11 @@ fun UsScaffold(
     applyPageGutter: Boolean = true,
     /** Forms and service lists stay readable on tablets; edge-to-edge media opt out. */
     contentMaxWidth: Dp? = if (applyPageGutter) 720.dp else null,
+    /**
+     * Painted edge to edge behind the content — under the system bars and
+     * outside [contentMaxWidth] — e.g. the sign-in wallpaper. Null: none.
+     */
+    backdrop: (@Composable () -> Unit)? = null,
     content: @Composable (PaddingValues) -> Unit,
 ) {
     Scaffold(
@@ -76,6 +81,9 @@ fun UsScaffold(
                 .fillMaxSize(),
             contentAlignment = Alignment.TopCenter,
         ) {
+            if (backdrop != null) {
+                Box(Modifier.matchParentSize()) { backdrop() }
+            }
             Box(
                 Modifier
                     .then(if (contentMaxWidth != null) Modifier.widthIn(max = contentMaxWidth) else Modifier)

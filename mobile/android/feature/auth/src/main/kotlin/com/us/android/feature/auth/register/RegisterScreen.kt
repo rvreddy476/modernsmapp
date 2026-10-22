@@ -32,6 +32,7 @@ import com.us.android.core.designsystem.component.UsChoice
 import com.us.android.core.designsystem.component.UsChoiceRow
 import com.us.android.core.designsystem.component.UsDatePickerField
 import com.us.android.core.designsystem.component.UsMessageHost
+import com.us.android.core.designsystem.component.UsActivityWallpaper
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTextField
@@ -94,7 +95,7 @@ fun RegisterScreen(
     onDismissMessage: () -> Unit = {},
     onBackToLogin: () -> Unit = {},
 ) {
-    UsScaffold {
+    UsScaffold(backdrop = { UsActivityWallpaper(Modifier.fillMaxSize()) }) {
         // This screen discards the PaddingValues UsScaffold hands it, so the
         // scaffold's ime inset never reaches the content — the keyboard is
         // applied here instead. Nothing was consumed, so this is the full

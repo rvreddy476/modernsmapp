@@ -32,6 +32,7 @@ import androidx.lifecycle.compose.LifecycleEventEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsMessageHost
+import com.us.android.core.designsystem.component.UsActivityWallpaper
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTextField
@@ -114,7 +115,7 @@ fun LoginScreen(
     onForgotPassword: (() -> Unit)? = null,
     onGoogleSignIn: () -> Unit = {},
 ) {
-    UsScaffold(contentMaxWidth = LOGIN_MAX_WIDTH) { padding ->
+    UsScaffold(contentMaxWidth = LOGIN_MAX_WIDTH, backdrop = { UsActivityWallpaper(Modifier.fillMaxSize()) }) { padding ->
         Box(modifier = Modifier.fillMaxSize().padding(padding)) {
             LoginBody(
                 state = state,
