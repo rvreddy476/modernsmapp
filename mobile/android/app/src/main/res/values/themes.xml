@@ -19,10 +19,10 @@
     <!--
       Banuba Video Editor (2026-09-05). The SDK's VideoCreationTheme is a map
       of ~300 widget styles over a handful of colour resources; those
-      resources are overridden by name in banuba_colors.xml (navy ground and
+      resources are overridden by name in banuba_colors.xml (black ground and
       surfaces, white text, the ember accent), and its Roboto font resources
       are overridden in res/font. What is left for the theme itself is the
-      window: navy behind every screen so no frame flashes grey between the
+      window: black behind every screen so no frame flashes grey between the
       SDK's fragments, and transparent bars like Theme.Us.
     -->
     <style name="Theme.Momentum.VideoCreation" parent="VideoCreationTheme">
@@ -36,7 +36,7 @@
       Banuba Photo Editor (2026-09-05). Its PhotoCreationTheme is the SDK's
       MediaCreationTheme.Dark plus a window background; the colour resources
       that theme names are overridden in banuba_colors.xml alongside the video
-      editor's, so both editors are navy, white and ember. Same window
+      editor's, so both editors are black, white and ember. Same window
       treatment as the video activity.
     -->
     <style name="Theme.Momentum.PhotoCreation" parent="PhotoCreationTheme">

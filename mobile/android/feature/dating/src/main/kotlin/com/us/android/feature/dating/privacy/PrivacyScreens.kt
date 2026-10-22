@@ -518,7 +518,7 @@ fun PrivacyScreen(
             title = "Withdraw consent?",
             body = when (type) {
                 ConsentType.BIOMETRIC_SELFIE -> "We'll delete your face-check data. You may need to verify again to keep using Dating."
-                ConsentType.ECHOES -> "Your Momentum activity will no longer show on your dating profile."
+                ConsentType.ECHOES -> "Your VChat activity will no longer show on your dating profile."
                 else -> "We'll delete this information from your dating profile."
             },
             confirmLabel = "Withdraw",
@@ -546,7 +546,7 @@ fun PrivacyScreen(
     if (confirmDelete) {
         ConfirmDialog(
             title = "Delete your dating profile?",
-            body = "This can't be undone from the app. Your Momentum account stays.",
+            body = "This can't be undone from the app. Your VChat account stays.",
             confirmLabel = "Delete",
             destructive = true,
             onConfirm = {
@@ -578,7 +578,7 @@ fun consentLabel(type: ConsentType): String = when (type) {
     ConsentType.SENSITIVE_RELIGION -> "Religion on my profile"
     ConsentType.SENSITIVE_COMMUNITY -> "Community on my profile"
     ConsentType.BIOMETRIC_SELFIE -> "Face check"
-    ConsentType.ECHOES -> "Echoes (Momentum activity)"
+    ConsentType.ECHOES -> "Echoes (VChat activity)"
 }
 
 fun exportLabel(status: String): String = when (status) {

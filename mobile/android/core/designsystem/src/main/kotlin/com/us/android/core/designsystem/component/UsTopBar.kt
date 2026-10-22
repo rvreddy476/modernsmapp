@@ -182,7 +182,7 @@ fun UsHomeTopBar(
                     modifier = Modifier
                         .clip(RoundedCornerShape(UsTheme.radii.small))
                         .clickable(onClick = onHomeClick)
-                        .semantics { contentDescription = "Momentum home" },
+                        .semantics { contentDescription = "VChat home" },
                 ) {
                     UsWordmark(size = UsWordmarkSize.TopBar)
                 }

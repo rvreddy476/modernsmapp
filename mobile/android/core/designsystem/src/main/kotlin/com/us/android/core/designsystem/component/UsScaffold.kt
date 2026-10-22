@@ -94,7 +94,7 @@ private fun UsScaffoldPreview() {
     UsTheme {
         UsScaffold {
             Text(
-                text = "Momentum",
+                text = "VChat",
                 style = MaterialTheme.typography.headlineMedium,
                 color = UsTheme.extended.textPrimary,
             )

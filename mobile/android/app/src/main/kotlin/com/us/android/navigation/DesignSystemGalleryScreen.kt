@@ -128,7 +128,7 @@ private fun Header() {
     Spacer(Modifier.height(UsTheme.spacing.xxl))
     UsWordmark()
     Text(
-        text = "Momentum · design system",
+        text = "VChat · design system",
         style = MaterialTheme.typography.bodyLarge,
         color = UsTheme.extended.textMuted,
     )

@@ -153,8 +153,8 @@ class SettingsHubTest {
 
     @Test
     fun `the version line names the build, and is left out without one`() {
-        assertThat(settingsVersionLine("0.1.0")).isEqualTo("Momentum 0.1.0")
-        assertThat(settingsVersionLine(" 0.1.0-dev ")).isEqualTo("Momentum 0.1.0-dev")
+        assertThat(settingsVersionLine("0.1.0")).isEqualTo("VChat 0.1.0")
+        assertThat(settingsVersionLine(" 0.1.0-dev ")).isEqualTo("VChat 0.1.0-dev")
         assertThat(settingsVersionLine("")).isNull()
         assertThat(settingsVersionLine("  ")).isNull()
     }

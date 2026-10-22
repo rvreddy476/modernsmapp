@@ -150,8 +150,8 @@ enum class ConsentType(val wire: String, val title: String, val body: String) {
     ),
     ECHOES(
         wire = "echoes",
-        title = "Show your Momentum activity?",
-        body = "Echoes shows a little of your public Momentum activity on your dating profile. It's off unless you turn it on.",
+        title = "Show your VChat activity?",
+        body = "Echoes shows a little of your public VChat activity on your dating profile. It's off unless you turn it on.",
     ),
     ;
 

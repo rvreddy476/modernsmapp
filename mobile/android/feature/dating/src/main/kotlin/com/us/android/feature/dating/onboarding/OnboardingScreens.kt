@@ -175,7 +175,7 @@ private fun CreateStep(saving: Boolean, onCreate: (String) -> Unit) {
     var intent by rememberSaveable { mutableStateOf<String?>(null) }
     Text("Meet people nearby, safely.", style = MaterialTheme.typography.headlineSmall, color = UsTheme.extended.textPrimary)
     Text(
-        "Your first name and age come from your Momentum account. You choose whether your photos are " +
+        "Your first name and age come from your VChat account. You choose whether your photos are " +
             "blurred until you match, and others only ever see a distance range, never where you are.",
         style = MaterialTheme.typography.bodyMedium,
         color = UsTheme.extended.textMuted,
@@ -205,7 +205,7 @@ private fun BasicsStep(
     var community by rememberSaveable { mutableStateOf(profile?.community.orEmpty()) }
 
     DatingCard {
-        SectionLabel("From your Momentum account")
+        SectionLabel("From your VChat account")
         val age = ageFrom(profile?.birthDate)
         Text(
             text = listOfNotNull(profile?.firstName?.takeIf { it.isNotBlank() }, age?.toString()).joinToString(", ").ifBlank { "—" },
@@ -215,7 +215,7 @@ private fun BasicsStep(
         InfoNote("Your name and birth date can't be changed here.")
         if (identityIncomplete) {
             InfoNote(
-                "Your Momentum account is missing a first name or birth date. Add them in your account settings to continue.",
+                "Your VChat account is missing a first name or birth date. Add them in your account settings to continue.",
                 tone = Tone.Warning,
             )
         }
@@ -282,7 +282,7 @@ private fun LocationStepContent(state: OnboardingUiState, viewModel: OnboardingV
             if (step.canAskAgain) {
                 "Location wasn't allowed. You can type your city instead."
             } else {
-                "Location is turned off for Momentum. You can allow it in Settings, or type your city."
+                "Location is turned off for VChat. You can allow it in Settings, or type your city."
             },
             tone = Tone.Warning,
         )

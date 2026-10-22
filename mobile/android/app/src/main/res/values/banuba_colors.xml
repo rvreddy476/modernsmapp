@@ -1,40 +1,40 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Momentum colours for the Banuba Video Editor (2026-09-05).
+  VChat colours for the Banuba Video Editor (2026-09-05; black since 23 Oct 2026).
 
   The SDK paints from named colour resources (read out of the 1.54.1 AARs:
   core-ui-sdk, camera-ui-sdk, ve-ui-sdk, ve-gallery-sdk); an app resource of
   the same name replaces the library's at merge, which is the vendor's own
-  theming route. Values are the Momentum tokens (UsColorTokens): ground
-  #041122, surface #0B1B2E, raised #071D33, hover/border #0E2D4A, white text,
+  theming route. Values (black, founder 23 Oct: no navy anywhere): ground
+  #000000, surface #121212, raised #1C1C1E, hover/border #2C2C2E, white text,
   ember accent #DC2626. Only the SDK's neutral chrome and its record/select
   accents are mapped; per-effect timeline colours are left alone.
 -->
 <resources>
     <!-- Ground: the editor, trimmer and gallery canvases. -->
-    <color name="backgroundDark">#FF041122</color>
-    <color name="backgroundGlobalPrimary">#FF041122</color>
-    <color name="bg_editor_v2">#FF041122</color>
-    <color name="bg_primary_dark">#FF041122</color>
-    <color name="primaryBrandDark">#FF041122</color>
+    <color name="backgroundDark">#FF000000</color>
+    <color name="backgroundGlobalPrimary">#FF000000</color>
+    <color name="bg_editor_v2">#FF000000</color>
+    <color name="bg_primary_dark">#FF000000</color>
+    <color name="primaryBrandDark">#FF000000</color>
 
     <!-- Surfaces: sheets, panels, pickers, the music/volume dialogs. -->
-    <color name="surfaceDark">#FF0B1B2E</color>
-    <color name="bg_container_color_dark">#FF0B1B2E</color>
-    <color name="shark">#FF0B1B2E</color>
-    <color name="volume_dialog_background">#FF0B1B2E</color>
-    <color name="stickers_background_color">#FF0B1B2E</color>
-    <color name="carbon">#FF0B1B2E</color>
-    <color name="tuna">#FF0B1B2E</color>
-    <color name="mineShaft">#FF0B1B2E</color>
-    <color name="auto_cut_track_not_selected">#FF0B1B2E</color>
+    <color name="surfaceDark">#FF121212</color>
+    <color name="bg_container_color_dark">#FF121212</color>
+    <color name="shark">#FF121212</color>
+    <color name="volume_dialog_background">#FF121212</color>
+    <color name="stickers_background_color">#FF121212</color>
+    <color name="carbon">#FF121212</color>
+    <color name="tuna">#FF121212</color>
+    <color name="mineShaft">#FF121212</color>
+    <color name="auto_cut_track_not_selected">#FF121212</color>
 
     <!-- Raised surfaces: alerts, the text tool's colour strip, list items. -->
-    <color name="neutralDark">#FF071D33</color>
-    <color name="quartz">#FF071D33</color>
-    <color name="blackOlive">#FF071D33</color>
-    <color name="shaft">#FF071D33</color>
-    <color name="bg_container_high_color_dark">#FF0E2D4A</color>
+    <color name="neutralDark">#FF1C1C1E</color>
+    <color name="quartz">#FF1C1C1E</color>
+    <color name="blackOlive">#FF1C1C1E</color>
+    <color name="shaft">#FF1C1C1E</color>
+    <color name="bg_container_high_color_dark">#FF2C2C2E</color>
 
     <!-- Text stays white; "primary brand light" is the SDK's text-on-dark. -->
     <color name="neutralLight">#FFFFFFFF</color>
@@ -55,12 +55,12 @@
       Photo Editor (pe-sdk 1.4.2). Its PhotoCreationTheme is MediaCreationTheme.Dark,
       whose ground and containers are the *_dark names above. What is left:
       the primary action (a white "secondary container" with near-black text)
-      becomes ember with white text, borders take the Momentum border, and the
+      becomes ember with white text, borders take the dark border, and the
       module's own `red` (reset / delete) is the ember. Translucent whites for
       inactive and disabled states are left alone.
     -->
     <color name="bg_container_secondary_color_dark">#FFDC2626</color>
     <color name="text_secondary_dark">#FFFFFFFF</color>
-    <color name="border_dark">#FF0E2D4A</color>
+    <color name="border_dark">#FF2C2C2E</color>
     <color name="red">#FFDC2626</color>
 </resources>

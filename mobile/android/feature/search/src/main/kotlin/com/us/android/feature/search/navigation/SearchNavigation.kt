@@ -58,13 +58,13 @@ private val ALL_TABS = listOf(
  * selected on open.
  */
 enum class SearchOrigin(val scopes: List<SearchScope>, val placeholder: String) {
-    HOME(ALL_TABS, "Search Momentum"),
+    HOME(ALL_TABS, "Search VChat"),
     REELS(
         listOf(SearchScope.REELS, SearchScope.PEOPLE, SearchScope.SOUNDS, SearchScope.HASHTAGS),
         "Search reels, people and sounds",
     ),
     VIDEO(listOf(SearchScope.CHANNELS, SearchScope.PEOPLE, SearchScope.VIDEOS), "Search videos, channels"),
-    EXPLORE(ALL_TABS, "Search Momentum"),
+    EXPLORE(ALL_TABS, "Search VChat"),
     ;
 
     companion object {

@@ -190,7 +190,7 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit, onSubmit
             .background(UsTheme.extended.bgRaised, shape)
             .border(1.dp, UsTheme.extended.borderSubtle, shape)
             .padding(horizontal = 16.dp, vertical = 16.dp)
-            .semantics { contentDescription = "Search apps or search Momentum" }
+            .semantics { contentDescription = "Search apps or search VChat" }
             .testTag("explore-search"),
         decorationBox = { inner ->
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {

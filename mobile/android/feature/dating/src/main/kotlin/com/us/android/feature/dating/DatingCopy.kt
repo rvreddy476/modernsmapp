@@ -31,7 +31,7 @@ object DatingCopy {
         is DatingError.ConsentRequired -> "We need your consent before saving that."
         is DatingError.Unexpected -> GENERIC
         is DatingError.Refused -> when (error.code) {
-            "AGE_REQUIRED" -> "Dating needs a verified birth date showing you're 18 or older. Add it to your Momentum account first."
+            "AGE_REQUIRED" -> "Dating needs a verified birth date showing you're 18 or older. Add it to your VChat account first."
             "IDENTITY_UNAVAILABLE" -> "We couldn't confirm your details right now. Try again in a moment."
             "PII_NOT_CONFIGURED" -> "This can't be saved right now. Try again later."
             "INVALID_LOCATION" -> "That location didn't look right. Try again, or type your city."

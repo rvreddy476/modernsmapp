@@ -1355,7 +1355,7 @@ internal fun Modifier.pressDim(interaction: MutableInteractionSource): Modifier 
 }
 
 private val AudienceOptions = listOf(
-    ReelOption(VISIBILITY_PUBLIC, "Public", "Anyone on Momentum"),
+    ReelOption(VISIBILITY_PUBLIC, "Public", "Anyone on VChat"),
     ReelOption(VISIBILITY_FOLLOWERS, "Followers", "People who follow you"),
     ReelOption(VISIBILITY_PRIVATE, "Private", "Only you"),
 )

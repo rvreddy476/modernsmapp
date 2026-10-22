@@ -109,7 +109,7 @@ fun ProRoot(
                 title = "Work with Doorstep",
                 body = "Doorstep Pro is for home-service professionals — cleaning, repairs, painting, pest control and salon at home. " +
                     "Apply, verify your identity and documents, and Doorstep sends you jobs near you. " +
-                    "To book a service, use the Momentum app.",
+                    "To book a service, use the VChat app.",
                 icon = UsIcons.Wrench,
                 primaryLabel = "Apply",
                 onPrimary = viewModel::startApplying,

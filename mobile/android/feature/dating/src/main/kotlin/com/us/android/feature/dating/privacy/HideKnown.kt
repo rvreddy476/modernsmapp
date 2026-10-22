@@ -64,11 +64,11 @@ data class HideKnownUi(
 object HideKnownCopy {
     const val SECTION = "People you know"
     const val TITLE = "Hide me from people I know"
-    const val BODY = "Your Momentum connections won't see you on Pulse, and you won't see them."
+    const val BODY = "Your VChat connections won't see you on Pulse, and you won't see them."
     const val NONE_YET = "On. You don't have any connections to hide from yet."
     const val UNAVAILABLE = "We couldn't check your connections just now, so this is still off. Try again in a moment."
     const val TRY_AGAIN = "Try again"
-    const val CONTACTS = "This uses your Momentum connections only, never your phone's contacts."
+    const val CONTACTS = "This uses your VChat connections only, never your phone's contacts."
     const val LOAD_FAILED = "This setting didn't load."
 
     /** "Hidden from 1 connection" / "Hidden from 12 connections". */

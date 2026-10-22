@@ -168,7 +168,7 @@ private fun SettingsSections.screenFor(row: SettingsRow): (() -> Unit)? = when (
 
 /** What the version line reads; nothing when the build gave no version. */
 internal fun settingsVersionLine(versionName: String): String? =
-    versionName.trim().takeIf { it.isNotEmpty() }?.let { "Momentum $it" }
+    versionName.trim().takeIf { it.isNotEmpty() }?.let { "VChat $it" }
 
 /**
  * Settings & privacy (2026-10-17): grouped rounded cards on the page ground,
@@ -428,12 +428,12 @@ private fun LogoutRow(enabled: Boolean, onClick: () -> Unit) {
     }
 }
 
-/** "Log out of Momentum on this device?" — nothing signs out until it is confirmed. */
+/** "Log out of VChat on this device?" — nothing signs out until it is confirmed. */
 @Composable
 private fun LogoutDialog(onConfirm: () -> Unit, onDismiss: () -> Unit) {
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Log out of Momentum on this device?") },
+        title = { Text("Log out of VChat on this device?") },
         confirmButton = {
             TextButton(onClick = onConfirm, modifier = Modifier.testTag("settings_logout_confirm")) {
                 Text(LOG_OUT, color = UsTheme.extended.statusDanger)

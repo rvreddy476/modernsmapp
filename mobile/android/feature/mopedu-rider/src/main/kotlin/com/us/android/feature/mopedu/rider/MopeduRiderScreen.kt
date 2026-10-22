@@ -336,7 +336,7 @@ private fun LocationSearchCard(
                 if (step.canAskAgain) {
                     "Allow location to set your pickup automatically and see nearby rides."
                 } else {
-                    "Location is off for Momentum. Turn it on in Settings to continue."
+                    "Location is off for VChat. Turn it on in Settings to continue."
                 },
                 tone = PillTone.Warning,
             )
@@ -828,7 +828,7 @@ private fun LocationRationaleDialog(onContinue: () -> Unit, onDismiss: () -> Uni
         title = { Text("Use your location for pickup") },
         text = {
             Text(
-                "Momentum reads your location once, to set your pickup point. It is not tracked and not shared with anyone " +
+                "VChat reads your location once, to set your pickup point. It is not tracked and not shared with anyone " +
                     "other than the captain who takes your ride.",
             )
         },

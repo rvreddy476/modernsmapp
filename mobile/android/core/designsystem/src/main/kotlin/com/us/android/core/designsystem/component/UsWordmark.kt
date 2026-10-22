@@ -26,7 +26,7 @@ fun UsWordmark(
     size: TextUnit = UsWordmarkSize.TopBar,
 ) {
     Text(
-        text = "Momentum",
+        text = "VChat",
         style = TextStyle(
             fontFamily = MomentumWordmarkFontFamily,
             fontWeight = FontWeight.Black,

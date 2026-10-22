@@ -1,20 +1,18 @@
 ﻿<?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!--
-      Momentum (Figma YsWb936muw8pwIxgb0je2A) is dark-native: the splash and
-      window background are the navy ground even for a light-mode launch, so
-      the pre-Compose window matches the brand mark rather than flashing a
-      light canvas the theme is about to replace. values-night carries the
-      same value on purpose — see UsColorTokens.BgPrimary.
+      VChat's launch ground (founder, 23 Oct 2026: "remove navy completely"):
+      black behind the launcher mark, the splash and the video editors, in
+      light and dark mode alike (values-night carries the same value), so the
+      icon and the opening moment read the same on every phone.
     -->
-    <color name="us_background">#FF041122</color>
+    <color name="us_background">#FF000000</color>
     <color name="us_brand">#FFFB923C</color>
     <!--
       The window behind the app once the splash has gone (2026-10-02): the
       page ground of the theme the first frame paints, so a light-mode launch
-      does not show navy between the splash and the feed. The web's canvas:
-      243 246 250 here, black in values-night. The splash itself and the
-      launcher icon keep us_background: the mark is drawn for the navy.
+      does not show black between the splash and the feed. The web's canvas:
+      243 246 250 here, black in values-night.
     -->
     <color name="us_window_background">#FFF3F6FA</color>
 </resources>
