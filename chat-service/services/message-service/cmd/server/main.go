@@ -11,12 +11,15 @@ import (
 	"github.com/atpost/chat-message-service/database"
 	"github.com/atpost/chat-message-service/internal/config"
 	"github.com/atpost/chat-message-service/internal/events"
+	"github.com/atpost/chat-message-service/internal/fieldkeys"
 	"github.com/atpost/chat-message-service/internal/http"
+	"github.com/atpost/chat-message-service/internal/kmsclient"
 	"github.com/atpost/chat-message-service/internal/purge"
 	"github.com/atpost/chat-message-service/internal/service"
 	pgStore "github.com/atpost/chat-message-service/internal/store/postgres"
 	scyllaStore "github.com/atpost/chat-message-service/internal/store/scylla"
 	"github.com/atpost/chat-shared/accessauth"
+	"github.com/atpost/chat-shared/fieldcrypt"
 	"github.com/atpost/chat-shared/logging"
 	"github.com/atpost/chat-shared/transport"
 	"github.com/gin-gonic/gin"
@@ -119,6 +122,23 @@ func main() {
 	// 5. Stores + Service
 	convStore := pgStore.New(dbPool)
 	msgStore := scyllaStore.New(scyllaSession)
+	// Field encryption at rest (founder, 22 Oct 2026): message content is
+	// sealed in both databases. Production refuses to boot without a key
+	// ring; development without keys logs one warning and stores plaintext.
+	fieldKeys, err := fieldkeys.Load(ctx, fieldkeys.Deps{
+		Getenv: os.Getenv,
+		NewWrapper: func(ctx context.Context, keyID string) (fieldcrypt.KeyWrapper, error) {
+			return kmsclient.New(ctx, keyID)
+		},
+		Store: pgStore.NewFieldKeyRingStore(dbPool),
+		Log:   logger,
+	})
+	if err != nil {
+		logger.Error("field encryption is not configured safely", "err", err)
+		os.Exit(1)
+	}
+	convStore.SetFieldCipher(fieldKeys.Cipher)
+	msgStore.SetFieldCipher(fieldKeys.Cipher)
 	// Converge chatservice.messages to the columns the queries name (post_id
 	// for post cards, and the earlier hand-applied reply/edit columns). Not
 	// fatal: a cluster that refuses the ALTER is reported loudly here rather
@@ -176,6 +196,12 @@ func main() {
 
 	// 7. Outbox Relay (background)
 	go svc.StartOutboxRelay(ctx)
+	// Retention: published outbox rows (copies of every message's text)
+	// are deleted after OUTBOX_RETENTION (default 7 days).
+	go svc.StartOutboxRetentionWorker(ctx, service.OutboxRetention{
+		Keep:     cfg.OutboxRetention,
+		Interval: cfg.OutboxRetentionInterval,
+	})
 	go svc.StartMessageDeliveryRepairWorker(ctx)
 	// Dating lane D4: tells dating-service a dating conversation got its
 	// first message (durable, retried; never on the send path).

@@ -73,6 +73,8 @@ import com.us.android.core.chat.data.DisappearTimer
 import com.us.android.core.chat.data.MAX_MESSAGE_LENGTH
 import com.us.android.core.chat.data.Message
 import com.us.android.core.chat.data.PendingSend
+import com.us.android.core.chat.data.Tick
+import com.us.android.core.chat.data.tickState
 import com.us.android.core.chat.data.disappearingNote
 import com.us.android.core.chat.data.presenceLabel
 import com.us.android.core.designsystem.component.UsMessageHost
@@ -222,10 +224,17 @@ fun ChatThreadScreen(
                                 onViewProfile = links.onOpenProfile?.let { open -> { open(intro.userId) } },
                             )
                         } else {
-                            UsEmptyState(
-                                title = "No messages yet",
-                                detail = "Say something to start the conversation.",
-                            )
+                            // A newcomer's empty group still says how they joined.
+                            val join = render.conversation?.myJoin?.takeIf { isGroup || render.loadedIsGroup }
+                            Column(modifier = Modifier.fillMaxSize()) {
+                                if (join != null) {
+                                    JoinNoteRow(join, viewModel.quoteAuthorName(join.addedByUserId))
+                                }
+                                UsEmptyState(
+                                    title = "No messages yet",
+                                    detail = "Say something to start the conversation.",
+                                )
+                            }
                         }
                     }
 
@@ -268,14 +277,21 @@ fun ChatThreadScreen(
                             val previousSender = state.messages.getOrNull(index + 1)?.senderId
                             val isOwn = message.senderId == render.viewerId
                             val newestOwn = isOwn && state.messages.firstOrNull { it.senderId == render.viewerId }?.id == message.id
+                            val readByPeer = message.id == state.peerLastReadMessageId ||
+                                (newestOwn && render.conversation?.lastMessage?.ownStatus == "read" &&
+                                    render.conversation?.lastMessage?.at == message.createdAt)
                             MessageRow(
                                 message = message,
                                 isOwn = isOwn,
                                 showSenderName = (isGroup || render.loadedIsGroup) &&
                                     previousSender != message.senderId,
-                                readByPeer = message.id == state.peerLastReadMessageId ||
-                                    (newestOwn && render.conversation?.lastMessage?.ownStatus == "read" &&
-                                        render.conversation?.lastMessage?.at == message.createdAt),
+                                readByPeer = readByPeer,
+                                // Message ticks, on the last of a run of mine (index-1 is newer).
+                                tick = if (isOwn && state.messages.getOrNull(index - 1)?.senderId != message.senderId) {
+                                    tickState(message, render.viewerId, state.receipts, readHint = readByPeer)
+                                } else {
+                                    Tick.NONE
+                                },
                                 quoteAuthor = viewModel.quoteAuthorName(message.replyToSenderId),
                                 onReact = { emoji ->
                                     viewModel.toggleReaction(message.id, emoji)
@@ -326,6 +342,15 @@ fun ChatThreadScreen(
                                     )
                                 },
                             )
+                        }
+                        // The visual TOP (reverseLayout): once the oldest page
+                        // is in, a group newcomer's history starts at their
+                        // join, so say how they joined (WhatsApp, 2026-10-22).
+                        val join = render.conversation?.myJoin?.takeIf { isGroup || render.loadedIsGroup }
+                        if (join != null && state.nextCursor == null && !state.loading) {
+                            item(key = "join-note") {
+                                JoinNoteRow(join, viewModel.quoteAuthorName(join.addedByUserId))
+                            }
                         }
                     }
                 }
@@ -1293,6 +1318,7 @@ private fun MessageRow(
     onBothered: (Boolean) -> Unit = {},
     onReport: () -> Unit = {},
     rich: RichSlot? = null,
+    tick: Tick = Tick.NONE,
 ) {
     var menuOpen by remember { mutableStateOf(false) }
     // A call log is a line in the conversation, not a bubble (CONTRACT §9).
@@ -1376,13 +1402,22 @@ private fun MessageRow(
                         .testTag("message-reactions"),
                 )
             }
-            if (isOwn && readByPeer) {
-                Text(
-                    text = "Seen",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = UsTheme.extended.textMuted,
-                    modifier = Modifier.testTag("message-read"),
-                )
+            if (isOwn && (readByPeer || (tick != Tick.NONE && tick != Tick.PENDING))) {
+                // Message ticks (2026-10-22): Sent / Delivered / Read, the "Seen" caption kept beside a read.
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+                ) {
+                    if (readByPeer) {
+                        Text(
+                            text = "Seen",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = UsTheme.extended.textMuted,
+                            modifier = Modifier.testTag("message-read"),
+                        )
+                    }
+                    MessageTicks(tick)
+                }
             }
             rich?.seenByCount?.takeIf { it > 0 }?.let { count ->
                 Text(

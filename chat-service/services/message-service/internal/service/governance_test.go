@@ -33,7 +33,12 @@ type governanceFake struct {
 	requestStatus map[uuid.UUID]string
 	// invite links, keyed by code (chat-app pass)
 	inviteLinks map[string]*postgres.GroupInviteLink
+	// how each AddMemberCapped member joined, keyed conv|user (join note)
+	joins map[string]postgres.JoinOrigin
 }
+
+// fakeJoinTime is the joined_at (= cleared_before) the fake reports.
+var fakeJoinTime = time.Date(2026, 10, 22, 9, 30, 0, 0, time.UTC)
 
 func intentKey(convID, userID uuid.UUID) string { return convID.String() + "|" + userID.String() }
 
@@ -293,12 +298,32 @@ func (f *governanceFake) ReplaceLastMessage(context.Context, uuid.UUID, time.Tim
 func (f *governanceFake) CountActiveMembers(ctx context.Context, convID uuid.UUID) (int, error) {
 	return len(f.roles[convID]), nil
 }
-func (f *governanceFake) AddMemberCapped(ctx context.Context, convID, userID uuid.UUID, role string, cap int) error {
+func (f *governanceFake) AddMemberCapped(ctx context.Context, convID, userID uuid.UUID, role string, cap int, origin postgres.JoinOrigin) error {
 	f.cappedAdds++
 	if len(f.roles[convID]) >= cap {
 		return postgres.ErrGroupFull
 	}
+	if f.joins == nil {
+		f.joins = map[string]postgres.JoinOrigin{}
+	}
+	f.joins[intentKey(convID, userID)] = origin
 	return f.AddMember(ctx, convID, userID, role)
+}
+
+// GetMemberJoin mirrors the store: a member added through AddMemberCapped
+// has cleared_before = joined_at (the same NOW()) and the recorded origin;
+// a seeded member has full history and no method.
+func (f *governanceFake) GetMemberJoin(_ context.Context, convID, userID uuid.UUID) (*postgres.MemberJoin, error) {
+	if f.roles[convID][userID] == "" {
+		return nil, nil
+	}
+	origin, ok := f.joins[intentKey(convID, userID)]
+	if !ok {
+		return &postgres.MemberJoin{JoinedAt: fakeJoinTime}, nil
+	}
+	joined := fakeJoinTime
+	method := origin.Method
+	return &postgres.MemberJoin{JoinedAt: joined, ClearedBefore: &joined, JoinMethod: &method, AddedBy: origin.AddedBy}, nil
 }
 func (f *governanceFake) SetMemberRole(ctx context.Context, convID, userID uuid.UUID, role string) (bool, error) {
 	if f.roles[convID][userID] == "" || f.roles[convID][userID] == "owner" {

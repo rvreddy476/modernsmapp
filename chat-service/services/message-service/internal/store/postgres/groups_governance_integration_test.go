@@ -186,7 +186,7 @@ func TestGenerationOrderFollowsSerializationNotTxStart(t *testing.T) {
 	}
 
 	// 2. A LATER-started rejoin takes the conversation lock and commits.
-	if err := store.AddMemberCapped(ctx, convID, member, "member", 1024); err != nil {
+	if err := store.AddMemberCapped(ctx, convID, member, "member", 1024, JoinOrigin{Method: JoinMethodInviteLink}); err != nil {
 		t.Fatal(err)
 	}
 	rejoinGen, err := store.GetMemberGen(ctx, convID, member)
@@ -281,7 +281,7 @@ func TestSeverDirectConversationArmsSerializedGenerations(t *testing.T) {
 		maxSeverGen = severed[1].Gen
 	}
 	// A later rejoin outranks both sever generations.
-	if err := store.AddMemberCapped(ctx, convID, blocker, "member", 1024); err != nil {
+	if err := store.AddMemberCapped(ctx, convID, blocker, "member", 1024, JoinOrigin{Method: JoinMethodInviteLink}); err != nil {
 		t.Fatal(err)
 	}
 	rejoinGen, err := store.GetMemberGen(ctx, convID, blocker)

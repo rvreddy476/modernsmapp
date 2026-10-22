@@ -4,10 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"time"
 
+	"github.com/atpost/chat-message-service/internal/contentcrypt"
+	"github.com/atpost/chat-shared/fieldcrypt"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -57,11 +61,25 @@ type IdempotencyResult struct {
 }
 
 type ConversationStore struct {
-	db *pgxpool.Pool
+	db pgDB
+	// crypt seals content-bearing columns on write and opens them on read
+	// (field encryption at rest, 22 Oct 2026; see fieldcrypt.go). nil writes
+	// plaintext — development only; main refuses that in production.
+	crypt *fieldcrypt.Cipher
+	log   *slog.Logger
+}
+
+// pgDB is the slice of *pgxpool.Pool the store uses. Tests substitute a
+// recorder to prove that no plaintext reaches PostgreSQL.
+type pgDB interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+	Begin(ctx context.Context) (pgx.Tx, error)
 }
 
 func New(db *pgxpool.Pool) *ConversationStore {
-	return &ConversationStore{db: db}
+	return &ConversationStore{db: db, log: slog.Default()}
 }
 
 // CreateDirectConversation idempotently creates a 1:1 conversation. The
@@ -607,6 +625,7 @@ func (s *ConversationStore) GetConversation(ctx context.Context, conversationID 
 		}
 		return nil, err
 	}
+	s.openConversation(ctx, &c)
 	return &c, nil
 }
 
@@ -619,10 +638,11 @@ func (s *ConversationStore) TouchConversation(ctx context.Context, conversationI
 // for the inbox list. The ts guard makes delivery-repair REPLAY idempotent:
 // an older intent re-run never overwrites a newer preview.
 func (s *ConversationStore) SetLastMessage(ctx context.Context, conversationID, senderID uuid.UUID, preview string, ts time.Time) error {
-	if len(preview) > 140 {
-		preview = preview[:140]
+	preview, err := s.sealConversationPreview(ctx, conversationID, preview)
+	if err != nil {
+		return err
 	}
-	_, err := s.db.Exec(ctx, `
+	_, err = s.db.Exec(ctx, `
 		UPDATE chat.conversations
 		SET last_message_at = $2, last_message_preview = $3, last_message_sender = $4, updated_at = $2
 		WHERE id = $1 AND (last_message_at IS NULL OR last_message_at <= $2)
@@ -649,8 +669,9 @@ func (s *ConversationStore) ReplaceLastMessage(
 	senderID *uuid.UUID,
 	ts *time.Time,
 ) error {
-	if len(preview) > 140 {
-		preview = preview[:140]
+	preview, err := s.sealConversationPreview(ctx, conversationID, preview)
+	if err != nil {
+		return err
 	}
 	// The guard is a ONE-MILLISECOND WINDOW, not equality. last_message_at is
 	// written from the delivery intent at microsecond precision, while the
@@ -659,7 +680,7 @@ func (s *ConversationStore) ReplaceLastMessage(
 	// the inbox. The window covers the truncation from either direction; two
 	// messages inside one millisecond would at worst trigger a recompute
 	// that lands on the same newest survivor anyway.
-	_, err := s.db.Exec(ctx, `
+	_, err = s.db.Exec(ctx, `
 		UPDATE chat.conversations
 		SET last_message_at = $3, last_message_preview = $4, last_message_sender = $5
 		WHERE id = $1
@@ -716,6 +737,7 @@ func (s *ConversationStore) ListConversationsByUser(ctx context.Context, userID 
 			&c.SourceApp, &c.MatchID); err != nil {
 			return nil, err
 		}
+		s.openConversation(ctx, &c)
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -806,17 +828,33 @@ func (s *ConversationStore) UpdateTitle(ctx context.Context, conversationID uuid
 
 // --- Outbox ---
 
+// InsertOutboxEvent queues an event. The row gets a unique dedupe key of its
+// own ("evt:<uuid>"; it never collides, so nothing is deduplicated) because
+// the sealed payload is bound to (event_type, dedupe_key).
 func (s *ConversationStore) InsertOutboxEvent(ctx context.Context, eventType string, payload interface{}) error {
-	data, err := json.Marshal(payload)
+	dedupeKey := "evt:" + uuid.NewString()
+	data, err := s.sealOutboxPayload(ctx, eventType, dedupeKey, payload)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(ctx, `INSERT INTO chat.outbox_events (event_type, payload) VALUES ($1, $2)`, eventType, data)
+	_, err = s.db.Exec(ctx, `INSERT INTO chat.outbox_events (dedupe_key, event_type, payload) VALUES ($1, $2, $3)`, dedupeKey, eventType, data)
 	return err
 }
 
+// sealOutboxPayload marshals and seals an outbox payload for its row.
+func (s *ConversationStore) sealOutboxPayload(ctx context.Context, eventType, dedupeKey string, payload interface{}) ([]byte, error) {
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return s.sealJSON(ctx, contentcrypt.ScopeOutboxPayload, contentcrypt.OutboxRow(eventType, dedupeKey), data)
+}
+
+// FetchUnpublishedOutboxEvents returns queued events with their payloads
+// opened. A row whose payload does not open is left unpublished and logged
+// by id (never by content), so one bad row cannot stall the relay.
 func (s *ConversationStore) FetchUnpublishedOutboxEvents(ctx context.Context, limit int) ([]OutboxEvent, error) {
-	rows, err := s.db.Query(ctx, `SELECT id, event_type, payload, created_at FROM chat.outbox_events WHERE published_at IS NULL ORDER BY id LIMIT $1`, limit)
+	rows, err := s.db.Query(ctx, `SELECT id, event_type, COALESCE(dedupe_key, ''), payload, created_at FROM chat.outbox_events WHERE published_at IS NULL ORDER BY id LIMIT $1`, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -825,9 +863,16 @@ func (s *ConversationStore) FetchUnpublishedOutboxEvents(ctx context.Context, li
 	var out []OutboxEvent
 	for rows.Next() {
 		var e OutboxEvent
-		if err := rows.Scan(&e.ID, &e.EventType, &e.Payload, &e.CreatedAt); err != nil {
+		var dedupeKey string
+		if err := rows.Scan(&e.ID, &e.EventType, &dedupeKey, &e.Payload, &e.CreatedAt); err != nil {
 			return nil, err
 		}
+		opened, err := s.openJSON(ctx, contentcrypt.ScopeOutboxPayload, contentcrypt.OutboxRow(e.EventType, dedupeKey), e.Payload)
+		if err != nil {
+			s.logger().Error("field encryption: outbox payload did not open; left unpublished", "event_id", e.ID, "event_type", e.EventType, "err", err)
+			continue
+		}
+		e.Payload = opened
 		out = append(out, e)
 	}
 	return out, rows.Err()
@@ -850,6 +895,12 @@ func (s *ConversationStore) CheckIdempotencyKey(ctx context.Context, key string)
 		}
 		return nil, err
 	}
+	// The cached response of a send carries the message text, so it is
+	// sealed at rest like the message itself.
+	response, err = s.openJSON(ctx, contentcrypt.ScopeIdempotencyResponse, contentcrypt.IdempotencyRow(key), response)
+	if err != nil {
+		return nil, err
+	}
 	return &IdempotencyResult{RequestHash: requestHash, Response: response}, nil
 }
 
@@ -868,6 +919,9 @@ func (s *ConversationStore) CreateIdempotencyKey(ctx context.Context, key, reque
 func (s *ConversationStore) SaveIdempotencyResponse(ctx context.Context, key, requestHash string, response interface{}) error {
 	data, err := json.Marshal(response)
 	if err != nil {
+		return err
+	}
+	if data, err = s.sealJSON(ctx, contentcrypt.ScopeIdempotencyResponse, contentcrypt.IdempotencyRow(key), data); err != nil {
 		return err
 	}
 	tag, err := s.db.Exec(ctx, `

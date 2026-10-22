@@ -322,8 +322,15 @@ class ChatThreadViewModel @Inject constructor(
         // these awaits: a draft typed while the fetch was in flight must
         // survive the write-back (same draft-loss family as the send path).
         _state.value = _state.value.copy(thread = controller.snapshot(), offline = false)
+        acknowledgeHistory()
         controller.markRead()
         store.clearUnread(conversationId)
+    }
+
+    /** History loaded: the newest message from somebody else reached this device (their second tick). */
+    private fun acknowledgeHistory() {
+        if (controller.snapshot().refreshError != null) return
+        controller.newestFromOthers()?.let { session.acknowledgeDelivered(conversationId, it.id, it.ts.ifBlank { null }) }
     }
 
     fun loadMore() = viewModelScope.launch {
@@ -995,7 +1002,8 @@ class ChatThreadViewModel @Inject constructor(
                 conversation = result.data,
                 peerOnline = result.data.peer?.isOnline ?: _state.value.peerOnline,
                 peerLastActiveAt = result.data.peer?.lastActiveAt ?: _state.value.peerLastActiveAt,
-                thread = controller.setMembers(result.data.members),
+                // Message ticks: the conversation's delivered/read watermarks seed the thread.
+                thread = controller.setMembers(result.data.members).let { controller.onReceipts(result.data.receipts) ?: it },
                 // Deep links navigate with a blank title; the loaded
                 // conversation supplies the real one.
                 loadedTitle = result.data.displayTitle(viewerId),
@@ -1030,6 +1038,7 @@ class ChatThreadViewModel @Inject constructor(
                             thread = controller.snapshot(),
                             offline = false,
                         )
+                        acknowledgeHistory()
                     }
                 }
                 is ChatSocketEvent.Disconnected ->

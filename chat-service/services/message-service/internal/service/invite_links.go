@@ -309,7 +309,9 @@ func (s *Service) JoinByInvite(ctx context.Context, userID uuid.UUID, code strin
 	if _, err := s.inviteLinkStore().ConsumeInviteLink(ctx, code); err != nil {
 		return nil, err
 	}
-	if err := s.groupStore().AddMemberCapped(ctx, conv.ID, userID, "member", GroupMemberCap); err != nil {
+	// The link's creator did not add this person: they joined by themselves.
+	if err := s.groupStore().AddMemberCapped(ctx, conv.ID, userID, "member", GroupMemberCap,
+		postgres.JoinOrigin{Method: postgres.JoinMethodInviteLink}); err != nil {
 		return nil, err
 	}
 	_ = s.convStore.InsertOutboxEvent(ctx, sharedEvents.MemberAdded, sharedEvents.MemberAddedPayload{

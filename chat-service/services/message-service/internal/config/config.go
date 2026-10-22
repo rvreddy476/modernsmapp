@@ -52,6 +52,13 @@ type Config struct {
 	RequestExpiryWorkerEnabled bool
 	RequestExpiryPollInterval  time.Duration
 	RequestExpiryBatch         int
+
+	// Field encryption at rest (22 Oct 2026): published outbox rows are
+	// deleted after OUTBOX_RETENTION (default 168h = 7 days), checked every
+	// OUTBOX_RETENTION_INTERVAL (default 1h). The key ring itself is read by
+	// internal/fieldkeys (CHAT_KMS_KEY_ID or CHAT_FIELD_KEYS).
+	OutboxRetention         time.Duration
+	OutboxRetentionInterval time.Duration
 }
 
 func Load() *Config {
@@ -101,6 +108,9 @@ func Load() *Config {
 		RequestExpiryWorkerEnabled: getEnvBool("MESSAGE_REQUEST_EXPIRY_WORKER_ENABLED", true),
 		RequestExpiryPollInterval:  getEnvDuration("MESSAGE_REQUEST_EXPIRY_POLL_INTERVAL", 10*time.Minute),
 		RequestExpiryBatch:         getEnvInt("MESSAGE_REQUEST_EXPIRY_BATCH", 200),
+
+		OutboxRetention:         getEnvDuration("OUTBOX_RETENTION", 7*24*time.Hour),
+		OutboxRetentionInterval: getEnvDuration("OUTBOX_RETENTION_INTERVAL", time.Hour),
 	}
 }
 

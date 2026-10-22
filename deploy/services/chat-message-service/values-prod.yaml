@@ -50,6 +50,14 @@ externalSecret:
     # Owner-issued conversation-room entitlements (shared HMAC with
     # chat-ws-gateway; the seeder writes one value to both).
     - { secretKey: CHAT_ENTITLEMENT_SECRET, remoteRef: chat_entitlement_secret }
+    # Field encryption at rest (22 Oct 2026): the customer-managed KMS key that
+    # wraps the chat content keys (a key-ENCRYPTING key: no data key is stored
+    # in this secret; the wrapped data keys live in chat.field_key_ring).
+    # Required: with APP_ENV=production message-service refuses to boot
+    # without it, and it refuses CHAT_FIELD_KEYS (the dev keyring). The IRSA
+    # role needs kms:GenerateDataKey and kms:Decrypt on this key, with the
+    # encryption context purpose=chat-field, scope=chat.field.
+    - { secretKey: CHAT_KMS_KEY_ID, remoteRef: chat_kms_key_id }
 
 env:
   ENV: prod

@@ -18,7 +18,8 @@ COPY services/message-service/ services/message-service/
 
 # Build
 RUN cd services/message-service && \
-    CGO_ENABLED=0 GOOS=linux go build -o /bin/message-service ./cmd/server
+    CGO_ENABLED=0 GOOS=linux go build -o /bin/message-service ./cmd/server && \
+    CGO_ENABLED=0 GOOS=linux go build -o /bin/fieldcrypt-backfill ./cmd/fieldcrypt-backfill
 
 # --- Runtime ---
 FROM alpine:3.20
@@ -26,6 +27,9 @@ FROM alpine:3.20
 RUN apk add --no-cache ca-certificates tzdata
 
 COPY --from=builder /bin/message-service /usr/local/bin/message-service
+# One-off re-seal of rows written before field encryption (run with
+# kubectl exec; see cmd/fieldcrypt-backfill).
+COPY --from=builder /bin/fieldcrypt-backfill /usr/local/bin/fieldcrypt-backfill
 
 EXPOSE 8092
 

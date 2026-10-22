@@ -52,7 +52,7 @@ var (
 // groupStore is the governance surface of the postgres store.
 type groupStore interface {
 	CountActiveMembers(ctx context.Context, conversationID uuid.UUID) (int, error)
-	AddMemberCapped(ctx context.Context, conversationID, userID uuid.UUID, role string, cap int) error
+	AddMemberCapped(ctx context.Context, conversationID, userID uuid.UUID, role string, cap int, origin postgres.JoinOrigin) error
 	RemoveMemberGoverned(ctx context.Context, conversationID, actorID, targetID uuid.UUID) (int64, error)
 	LeaveGoverned(ctx context.Context, conversationID, userID uuid.UUID) (bool, int64, error)
 	SeverMemberSystem(ctx context.Context, conversationID, userID uuid.UUID) (bool, int64, error)
@@ -258,7 +258,9 @@ func (s *Service) AddMemberWithPolicy(ctx context.Context, actorID, conversation
 	}
 	switch {
 	case directAdd:
-		if err := s.groupStore().AddMemberCapped(ctx, conversationID, targetID, "member", GroupMemberCap); err != nil {
+		adder := actorID
+		if err := s.groupStore().AddMemberCapped(ctx, conversationID, targetID, "member", GroupMemberCap,
+			postgres.JoinOrigin{Method: postgres.JoinMethodAdded, AddedBy: &adder}); err != nil {
 			return nil, err
 		}
 		_ = s.convStore.InsertOutboxEvent(ctx, sharedEvents.MemberAdded, sharedEvents.MemberAddedPayload{
@@ -673,7 +675,9 @@ func (s *Service) AcceptGroupInvitation(ctx context.Context, userID, invitationI
 
 	// Membership FIRST, then the status flip: a crash between the two leaves
 	// a pending invitation whose accept retries into the idempotent add.
-	if err := s.groupStore().AddMemberCapped(ctx, inv.ConversationID, userID, "member", GroupMemberCap); err != nil {
+	inviter := inv.InviterID
+	if err := s.groupStore().AddMemberCapped(ctx, inv.ConversationID, userID, "member", GroupMemberCap,
+		postgres.JoinOrigin{Method: postgres.JoinMethodInvitation, AddedBy: &inviter}); err != nil {
 		return err
 	}
 	if _, err := s.groupStore().ResolveGroupInvitation(ctx, invitationID, "accepted"); err != nil {

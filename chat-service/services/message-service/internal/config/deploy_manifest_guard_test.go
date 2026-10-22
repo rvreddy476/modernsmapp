@@ -63,3 +63,26 @@ func TestAWSManifestsCarryIdentityAuthorityAndEntitlementSecret(t *testing.T) {
 			"the gateway must be able to verify what the issuer signs (P0-4)")
 	}
 }
+
+// Field encryption at rest (22 Oct 2026): APP_ENV=production refuses to boot
+// without a KMS key ring, so every AWS environment must carry the KMS key id
+// as a secret reference, and none may carry the development keyring.
+func TestAWSManifestsCarryTheChatKMSKeyAndNoDevKeyring(t *testing.T) {
+	root := repoRoot(t)
+	msg := filepath.Join(root, "deploy", "services", "chat-message-service")
+	for _, env := range []string{"values-prod.yaml", "values-qa.yaml", "values-staging.yaml"} {
+		path := filepath.Join(msg, env)
+		mustContain(t, path, "{ secretKey: CHAT_KMS_KEY_ID, remoteRef: chat_kms_key_id }",
+			"production refuses to boot without a key ring for chat content (field encryption at rest)")
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(string(raw), "\n") {
+			code := strings.TrimSpace(line)
+			if !strings.HasPrefix(code, "#") && strings.Contains(code, "CHAT_FIELD_KEYS") {
+				t.Errorf("%s sets CHAT_FIELD_KEYS: the development keyring is refused in production and must never hold real keys", path)
+			}
+		}
+	}
+}

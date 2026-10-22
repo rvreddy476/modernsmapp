@@ -182,6 +182,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// Typing & Read receipts
 		v1.POST("/conversations/:id/typing", h.SetTyping)
 		v1.POST("/conversations/:id/read", h.MarkRead)
+		// Delivered ticks: the device acks what it received (receipts_handler.go).
+		v1.POST("/conversations/:id/delivered", h.MarkDelivered)
 		// Presence
 		v1.POST("/presence", h.GetPresence)
 		// Per-conversation presence (M1): who's currently viewing this

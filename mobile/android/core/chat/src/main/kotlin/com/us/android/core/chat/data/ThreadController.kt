@@ -29,6 +29,12 @@ data class ThreadUiState(
      * exactly what a `no_one` receipts setting looks like.
      */
     val peerLastReadMessageId: String? = null,
+    /**
+     * Message ticks (2026-10-22): the viewer-scoped delivered/read
+     * watermarks, seeded from `GET /conversations/{id}` and advanced by
+     * `delivery_receipt` / `read_receipt`. Read by [tickState].
+     */
+    val receipts: ReceiptWatermarks = ReceiptWatermarks(),
 ) {
     val canLoadMore: Boolean get() = nextCursor != null && !appending && appendError == null
     val canSend: Boolean get() = draft.isValidMessage() && !sending
@@ -282,7 +288,16 @@ class ThreadController(
         is ChatSocketEvent.ReadReceipt -> when {
             event.conversationId != conversationId -> null
             event.messageId.isBlank() -> null
-            else -> state.copy(peerLastReadMessageId = event.messageId).also { state = it }
+            else -> state.copy(
+                peerLastReadMessageId = event.messageId,
+                receipts = state.receipts.advance(read = event.readAt),
+            ).also { state = it }
+        }
+
+        // Message ticks: delivered (never gated) or a group's aggregate read.
+        is ChatSocketEvent.ReceiptWatermark -> when {
+            event.conversationId != conversationId -> null
+            else -> onReceipts(ReceiptWatermarks(event.deliveredUpTo, event.readUpTo))
         }
 
         // Malformed is listed explicitly rather than swept up by an `else`:
@@ -507,6 +522,19 @@ class ThreadController(
 
     /** Clear chat: the loaded history goes, the thread stays open. */
     fun clearLoaded(): ThreadUiState = state.copy(messages = emptyList(), nextCursor = null).also { state = it }
+
+    /**
+     * Advances the tick watermarks (the conversation's `receipts`, or a
+     * frame's). Forward only; null when nothing moved.
+     */
+    fun onReceipts(incoming: ReceiptWatermarks): ThreadUiState? {
+        val next = state.receipts.advance(delivered = incoming.deliveredUpTo, read = incoming.readUpTo)
+        if (next == state.receipts) return null
+        return state.copy(receipts = next).also { state = it }
+    }
+
+    /** The newest loaded message somebody else sent: what a delivered ack names. */
+    fun newestFromOthers(): Message? = newestFromOthers(state.messages, viewerId)
 
     /** Marks the newest message read; a no-op on an empty thread. */
     suspend fun markRead(): AppResult<Unit>? {

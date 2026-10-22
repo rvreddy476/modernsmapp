@@ -63,6 +63,12 @@ object ChatApisModule {
     fun provideMessageConsentApi(retrofit: Retrofit): com.us.android.core.chat.data.MessageConsentApi =
         retrofit.create(com.us.android.core.chat.data.MessageConsentApi::class.java)
 
+    /** Message ticks (2026-10-22): the delivered ack route. */
+    @Provides
+    @Singleton
+    fun provideReceiptsApi(retrofit: Retrofit): com.us.android.core.chat.data.ReceiptsApi =
+        retrofit.create(com.us.android.core.chat.data.ReceiptsApi::class.java)
+
     /** A post's share sheet (2026-10-17) reads the inbox and sends the card through the one repository. */
     @Provides
     fun providePostShareChats(repository: ChatRepository): PostShareChats = repository

@@ -29,6 +29,10 @@ class UsMessagingService : FirebaseMessagingService() {
     @Inject
     lateinit var incomingCallHandler: IncomingCallPushHandler
 
+    /** Message ticks: a chat push acks delivery (bound only where chat ships). */
+    @Inject
+    lateinit var chatDelivered: java.util.Optional<ChatPushDeliveredHook>
+
     /**
      * Fires on first launch, reinstall, data clear, and periodic rotation.
      *
@@ -66,6 +70,11 @@ class UsMessagingService : FirebaseMessagingService() {
                 video = data[NotificationPresenter.KEY_TYPE] == "incoming_video_call",
             )
             return
+        }
+        // A chat message reached this device: the sender's second tick. The
+        // hook only enqueues; the batched ack goes out on chat's own scope.
+        chatPushTarget(data)?.let { (conversationId, messageId) ->
+            if (chatDelivered.isPresent) chatDelivered.get().onChatPush(conversationId, messageId)
         }
         // In the foreground, older server builds deliver title/body in FCM's
         // notification envelope, not in data. Preserve both Doorstep formats.

@@ -96,6 +96,11 @@ func TestDatingMatchExtrasEndToEnd(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO chat.user_policy (user_id, read_receipts_visibility, refreshed_at) VALUES ($1, 'everyone', now())`, b); err != nil {
 		t.Fatal(err)
 	}
+	// Reciprocity (ticks, 22 Oct 2026): the viewer's own receipts must be on
+	// too, so a's projection is seeded as well (no identity in this test).
+	if _, err := pool.Exec(ctx, `INSERT INTO chat.user_policy (user_id, read_receipts_visibility, refreshed_at) VALUES ($1, 'everyone', now())`, a); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, `INSERT INTO chat.read_cursors (conversation_id, user_id, last_read_message_id, last_read_at, updated_at)
         VALUES ($1, $2, $3, now(), now())`, convID, b, uuid.New()); err != nil {
 		t.Fatal(err)

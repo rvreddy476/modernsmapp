@@ -365,7 +365,8 @@ class ChatSocketTest {
             """{"type":"read_receipt","payload":{"conversation_id":"c1","user_id":"u2",""" +
                 """"message_id":"m9","read_at":"2026-08-25T10:00:00Z"}}""",
         )
-        assertThat(ok).isEqualTo(ChatSocketEvent.ReadReceipt("c1", "u2", "m9"))
+        // The frame's read_at rides along as the reader's watermark (message ticks).
+        assertThat(ok).isEqualTo(ChatSocketEvent.ReadReceipt("c1", "u2", "m9", "2026-08-25T10:00:00Z"))
 
         val refused = parseChatFrame(
             json,

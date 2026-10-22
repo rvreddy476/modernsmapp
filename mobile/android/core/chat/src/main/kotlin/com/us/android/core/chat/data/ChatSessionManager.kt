@@ -46,7 +46,18 @@ open class ChatSessionManager @Inject constructor(
     private val store: ChatStore,
     private val tokenProvider: TokenProvider,
     private val repository: ChatRepository,
+    // Message ticks (2026-10-22): delivered acks. Null in tests, which keeps
+    // the session as it was.
+    private val deliveredAcks: DeliveredAcker? = null,
 ) {
+
+    /**
+     * Tells the sender's ticks this device has [messageId] (`ts` its server
+     * time, when known). Batched per conversation, at most once a second.
+     */
+    open fun acknowledgeDelivered(conversationId: String, messageId: String?, ts: String?) {
+        deliveredAcks?.offer(conversationId, messageId, ts)
+    }
 
     /** Connection state for screens that show an offline banner. */
     enum class ConnectionState { Disconnected, Connecting, Connected }
@@ -244,10 +255,17 @@ open class ChatSessionManager @Inject constructor(
                         // A new connection must re-subscribe before typing frames flow again.
                         synchronized(roomsLock) { liveRooms.clear() }
                     }
-                    is ChatSocketEvent.MessageReceived ->
+                    is ChatSocketEvent.MessageReceived -> {
                         // Durable FIRST: the cache row and the unread flag
                         // must survive even if nobody is collecting.
                         store.applyRealtimeMessage(event.message)
+                        // This device has it: the sender's second tick.
+                        acknowledgeDelivered(
+                            event.message.conversationId,
+                            event.message.id,
+                            event.message.ts.ifBlank { null },
+                        )
+                    }
                     is ChatSocketEvent.SubscriptionRevoked ->
                         // Removed from the conversation: drop the room so no
                         // reconnect re-subscribes it.

@@ -369,6 +369,21 @@ data class GroupInvitation(
     val createdAt: String,
 )
 
+/**
+ * The viewer's own way into a group (founder, 2026-10-22): a newcomer sees
+ * only what was sent after [joinedAt], and the thread says so at the top.
+ */
+data class MyJoin(
+    /** RFC 3339, as the server sent it. */
+    val joinedAt: String,
+    val method: JoinMethod,
+    /** Who added them / whose invitation they accepted; null when unknown or a link. */
+    val addedByUserId: String?,
+)
+
+/** The three ways in that earn the note. */
+enum class JoinMethod { InviteLink, Added, Invitation }
+
 /** One inbox row / thread header. */
 data class Conversation(
     val id: String,
@@ -411,6 +426,10 @@ data class Conversation(
     val createdBy: String = "",
     /** A requests-list row only: `incoming` or `outgoing`; null everywhere else. */
     val requestDirection: String? = null,
+    /** How the viewer joined this group, when their history starts at that join; null otherwise. */
+    val myJoin: MyJoin? = null,
+    /** The viewer-scoped delivered/read watermarks for their own messages (ticks). */
+    val receipts: ReceiptWatermarks = ReceiptWatermarks(),
 ) {
     /**
      * A Pulse match's chat. It belongs to the dating feature (founder,
@@ -517,6 +536,8 @@ data class Message(
     val deleted: Boolean = false,
     /** The author edited the text; the bubble says so. */
     val edited: Boolean = false,
+    /** History's `status` on the viewer's own message: `sent|delivered|read` (see [tickState]); null otherwise. */
+    val receipt: String? = null,
 ) {
     /** True when this row carries enough address to react/delete. */
     val addressable: Boolean get() = bucket.isNotBlank() && ts.isNotBlank()
@@ -558,4 +579,5 @@ internal fun MessageDto.toDomain() = Message(
     media = mediaInfoOf(media),
     deleted = deleted,
     edited = !editedAt.isNullOrBlank(),
+    receipt = status?.takeIf { it.isNotBlank() },
 )

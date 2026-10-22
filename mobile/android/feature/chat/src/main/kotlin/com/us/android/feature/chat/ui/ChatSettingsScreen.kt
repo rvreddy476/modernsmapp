@@ -333,7 +333,7 @@ class ChatSettingsViewModel @Inject constructor(
     }
 }
 
-private enum class SettingsSheet { BUBBLE, TONE, DISAPPEARING, REPORT, BLOCK, CLEAR, DELETE, SEARCH }
+private enum class SettingsSheet { BUBBLE, READ_TICK, TONE, DISAPPEARING, REPORT, BLOCK, CLEAR, DELETE, SEARCH }
 
 @Composable
 @Suppress("LongMethod", "CyclomaticComplexMethod")
@@ -350,6 +350,8 @@ fun ChatSettingsScreen(
     val cards by postCards.cards.collectAsStateWithLifecycle()
     var sheet by remember { mutableStateOf<SettingsSheet?>(null) }
     var tab by remember { mutableStateOf(0) }
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val readTick = ReadTickColourPrefs.current()
     LaunchedEffect(state.closed) { if (state.closed) onClosed() }
     UsScaffold(topBar = { UsTopBar(title = "Chat settings", onBack = onBack) }, applyPageGutter = false) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
@@ -387,6 +389,13 @@ fun ChatSettingsScreen(
                             title = "Bubble colour",
                             value = BUBBLE_STYLES.firstOrNull { it.first == (state.bubbleStyle ?: "default") }?.second,
                             onClick = { sheet = SettingsSheet.BUBBLE },
+                        )
+                        // Message ticks (2026-10-22): a local, every-chat preference.
+                        UsSettingsLinkRow(
+                            title = "Read tick colour",
+                            value = readTick.label,
+                            onClick = { sheet = SettingsSheet.READ_TICK },
+                            modifier = Modifier.testTag("chat_settings_read_tick"),
                         )
                         if (prefs != null) {
                             UsSettingsLinkRow(title = "Alert tone", value = prefs.alertTone.label, onClick = { sheet = SettingsSheet.TONE })
@@ -492,6 +501,14 @@ fun ChatSettingsScreen(
             current = state.bubbleStyle ?: "default",
             onSave = { style ->
                 viewModel.saveBubbleStyle(style)
+                sheet = null
+            },
+            onDismiss = { sheet = null },
+        )
+        SettingsSheet.READ_TICK -> ReadTickColourSheet(
+            current = readTick,
+            onSave = { choice ->
+                ReadTickColourPrefs.set(context, choice)
                 sheet = null
             },
             onDismiss = { sheet = null },

@@ -10,10 +10,10 @@ import (
 	"github.com/google/uuid"
 )
 
-// Chat parity §1 (lane B1): inbox lanes, unread counts, pins first, mute
+// Chat parity Â§1 (lane B1): inbox lanes, unread counts, pins first, mute
 // expiry, streaks, the DM peer, last_message, hide / clear for me.
 
-// StreakInfo is a DM streak (CONTRACT §3). Present only when days >= 3.
+// StreakInfo is a DM streak (CONTRACT Â§3). Present only when days >= 3.
 type StreakInfo struct {
 	Days      int       `json:"days"`
 	AtRisk    bool      `json:"at_risk"`
@@ -46,7 +46,7 @@ var ErrInvalidLane = errors.New("lane must be primary, requests or archived")
 // pinnedInboxCap bounds the pinned block on the first page.
 const pinnedInboxCap = 100
 
-// streakMinDays is the display threshold (CONTRACT §3).
+// streakMinDays is the display threshold (CONTRACT Â§3).
 const streakMinDays = 3
 
 // streakAtRiskHour: after 18:00 IST a streak that has not been kept today
@@ -166,7 +166,7 @@ func (s *Service) decorateRows(ctx context.Context, viewerID uuid.UUID, rows []C
 	}
 	meta, err := ps.GetInboxMeta(ctx, viewerID, ids)
 	if err != nil {
-		s.log.Warn("inbox meta batch failed — parity fields degraded", "err", err)
+		s.log.Warn("inbox meta batch failed â parity fields degraded", "err", err)
 		meta = map[uuid.UUID]postgres.InboxMeta{}
 	}
 	own, err := s.groupStore().GetReadCursors(ctx, viewerID, ids)
@@ -176,6 +176,12 @@ func (s *Service) decorateRows(ctx context.Context, viewerID uuid.UUID, rows []C
 	others, err := ps.GetOtherMembersReadCursors(ctx, viewerID, directIDs)
 	if err != nil {
 		others = nil
+	}
+	// Ticks: the peer's delivered cursor makes an own last message "delivered"
+	// (shown in a request too — delivered is never privacy-gated).
+	var delivered map[uuid.UUID]map[uuid.UUID]postgres.DeliveredCursor
+	if rs, ok := s.receiptStore(); ok {
+		delivered, _ = rs.GetOtherMembersDeliveredCursors(ctx, viewerID, directIDs)
 	}
 	streaks, err := ps.GetStreaks(ctx, directIDs)
 	if err != nil {
@@ -205,7 +211,7 @@ func (s *Service) decorateRows(ctx context.Context, viewerID uuid.UUID, rows []C
 			r.LastMessagePreview = ""
 			r.LastMessageSender = nil
 			// Its time is part of the hidden history too (rows showed
-			// "Message · 6w" for a chat cleared today). Ordering and the page
+			// "Message Â· 6w" for a chat cleared today). Ordering and the page
 			// cursor come from the store rows, not this field.
 			r.LastMessageAt = nil
 		}
@@ -243,6 +249,14 @@ func (s *Service) decorateRows(ctx context.Context, viewerID uuid.UUID, rows []C
 			lm := &LastMessageInfo{Type: typ, Preview: r.LastMessagePreview, SenderID: r.LastMessageSender, At: *r.LastMessageAt}
 			if r.LastMessageSender != nil && *r.LastMessageSender == viewerID {
 				status := "sent"
+				if p, ok := peers[r.ID]; ok && r.Type == "direct" {
+					dc, dok := delivered[r.ID][p.UserID]
+					rc, rok := others[r.ID][p.UserID]
+					if (dok && !dc.LastDeliveredAt.Before(*r.LastMessageAt)) ||
+						(rok && !rc.LastReadAt.Before(*r.LastMessageAt)) {
+						status = TickDelivered
+					}
+				}
 				// DM consent: never "read" while it is still a request.
 				if p, ok := peers[r.ID]; ok && r.Type == "direct" && !r.IsRequest {
 					if rc, ok := others[r.ID][p.UserID]; ok && !rc.LastReadAt.Before(*r.LastMessageAt) &&
@@ -269,21 +283,15 @@ func (s *Service) decorateRows(ctx context.Context, viewerID uuid.UUID, rows []C
 	s.attachRequestSenders(ctx, viewerID, rows)
 }
 
-// receiptDisclosed applies the reader's own read-receipt privacy (the same
-// rule attachReadCursors and the live frame use) for viewer.
+// receiptDisclosed applies the read-receipt privacy of BOTH sides (the same
+// rule attachReadCursors, the live frame and the ticks use) for viewer.
 func (s *Service) receiptDisclosed(ctx context.Context, convID, viewerID, readerID uuid.UUID) bool {
 	if meta, err := s.convStore.GetConversationMeta(ctx, convID); err == nil && meta != nil && meta.ReceiptsGated &&
 		!s.datingReceiptsAllowed(ctx, convID, viewerID) {
 		return false
 	}
-	policy := s.GetChatPolicy(ctx, readerID)
-	if !policy.Known || policy.ChatPaused || policy.ReadReceiptsVisibility == "no_one" {
-		return false
-	}
-	if policy.ReadReceiptsVisibility == "connections_only" {
-		return s.discloseReceiptTo(ctx, viewerID, readerID)
-	}
-	return true
+	// One rule, reciprocity included (readReceiptVisible, receipt_ticks.go).
+	return s.readDisclosedTo(ctx, viewerID, readerID)
 }
 
 // onlineStates resolves is_online / last_active_at for ids as the viewer
@@ -408,10 +416,10 @@ func (s *Service) profileExtras(ctx context.Context, ids []uuid.UUID) map[uuid.U
 	return got
 }
 
-// --- hide / clear / unread (§1.2, §1.3) ---
+// --- hide / clear / unread (Â§1.2, Â§1.3) ---
 
 // DeleteConversationForMe hides the conversation from the caller's lists and
-// clears their history up to now. Groups: hide only — membership stays.
+// clears their history up to now. Groups: hide only â membership stays.
 func (s *Service) DeleteConversationForMe(ctx context.Context, userID, convID uuid.UUID) error {
 	return s.clearForMe(ctx, userID, convID, true)
 }

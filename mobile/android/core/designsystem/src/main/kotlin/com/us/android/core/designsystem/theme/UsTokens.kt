@@ -192,6 +192,11 @@ data class UsExtendedColors(
     val create: UsCreateColors,
     /** The Explore launcher's per-app tile gradients. See [UsLauncherColors]. */
     val launcher: UsLauncherColors,
+    /**
+     * Two READ ticks under your own message (the web's `--theme-receipt-seen`).
+     * The ONE token for the read colour; chat settings may swap it per viewer.
+     */
+    val receiptSeen: Color = UsColorTokens.Dark.ReceiptSeen,
 )
 
 /** One own-bubble colour and the ink drawn on it. */
@@ -499,4 +504,5 @@ internal val LightExtendedColors = DarkExtendedColors.copy(
     bgSheet = UsColorTokens.Light.Sheet,
     chatAccentText = UsColorTokens.Light.ChatAccentText,
     chatSenders = UsColorTokens.Light.ChatSenders,
+    receiptSeen = UsColorTokens.Light.ReceiptSeen,
 )

@@ -657,3 +657,61 @@ CREATE INDEX IF NOT EXISTS idx_message_expiries_conversation
 -- sweep claims due pending requests by expires_at.
 CREATE INDEX IF NOT EXISTS idx_message_requests_pending_expiry
     ON chat.message_requests(expires_at) WHERE status = 'pending';
+
+-- ===== 015: how a member joined a group (22 Oct 2026) =====
+-- See migrations/015_group_join_method.sql. AddMemberCapped records the way
+-- in (invite_link | added | invitation) and who added them, so a newcomer's
+-- client can show "X added you" above the history that starts at the join.
+-- Existing rows stay NULL and get no note.
+ALTER TABLE chat.conversation_members ADD COLUMN IF NOT EXISTS join_method TEXT;
+ALTER TABLE chat.conversation_members ADD COLUMN IF NOT EXISTS added_by UUID;
+
+-- ===== 016: field encryption at rest (22 Oct 2026) =====
+-- See migrations/016_field_encryption.sql for the full rationale.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'chat' AND table_name = 'message_requests'
+          AND column_name = 'preview' AND data_type <> 'text'
+    ) THEN
+        ALTER TABLE chat.message_requests ALTER COLUMN preview TYPE TEXT;
+    END IF;
+END $$;
+
+CREATE TABLE IF NOT EXISTS chat.field_key_ring (
+    version            INT PRIMARY KEY CHECK (version > 0),
+    wrapped_key        BYTEA NOT NULL,
+    kms_key_id         TEXT NOT NULL,
+    encryption_context JSONB NOT NULL,
+    active             BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    retired_at         TIMESTAMPTZ
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_field_key_ring_one_active
+    ON chat.field_key_ring ((active)) WHERE active;
+
+CREATE TABLE IF NOT EXISTS chat.field_backfill_progress (
+    target       TEXT PRIMARY KEY,
+    resume_after TEXT NOT NULL DEFAULT '',
+    done         BOOLEAN NOT NULL DEFAULT FALSE,
+    scanned      BIGINT NOT NULL DEFAULT 0,
+    sealed       BIGINT NOT NULL DEFAULT 0,
+    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_published_at
+    ON chat.outbox_events(published_at) WHERE published_at IS NOT NULL;
+
+-- Delivered ticks (migration 017, founder 22 Oct 2026): each member's
+-- delivered cursor, advanced by POST /conversations/:id/delivered. A sender's
+-- message is "delivered" when its ts <= every other active member's cursor.
+CREATE TABLE IF NOT EXISTS chat.delivered_cursors (
+    conversation_id           UUID NOT NULL REFERENCES chat.conversations(id) ON DELETE CASCADE,
+    user_id                   UUID NOT NULL,
+    last_delivered_message_id UUID,
+    last_delivered_at         TIMESTAMPTZ NOT NULL,
+    updated_at                TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (conversation_id, user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_delivered_cursors_user ON chat.delivered_cursors(user_id);

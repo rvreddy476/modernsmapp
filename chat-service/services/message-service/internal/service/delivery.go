@@ -277,3 +277,27 @@ func activeMemberIDs(members []postgres.Member) []uuid.UUID {
 	}
 	return ids
 }
+
+// unsentRecordRedactor is the Postgres half of unsend's content removal
+// (postgres.ConversationStore.RedactUnsentMessageRecords).
+type unsentRecordRedactor interface {
+	RedactUnsentMessageRecords(ctx context.Context, conversationID, messageID uuid.UUID) error
+}
+
+// settleDelivery completes a reserved delivery intent — or, for a replay of
+// a key whose delivery already completed (the first attempt's idempotent
+// response was never saved), restores the request's own content onto the
+// in-memory intent WITHOUT replaying it. Completion drops the intent's copy
+// of the text, quote and rich payload (retention, 22 Oct 2026), so a replay
+// would overwrite the stored message with an empty one; everything was
+// already written, and the matching request hash proves this request carries
+// the same content.
+func (s *Service) settleDelivery(ctx context.Context, intent *postgres.MessageDeliveryIntent, text string, replyTo *ReplyRef, extra []byte) error {
+	if intent.CompletedAt != nil {
+		intent.MessageText = text
+		intent.ReplyToPreview = replyRefPreview(replyTo)
+		intent.Extra = extra
+		return nil
+	}
+	return s.completeMessageDelivery(ctx, intent)
+}

@@ -59,6 +59,21 @@ sealed interface ChatSocketEvent {
         val conversationId: String,
         val userId: String,
         val messageId: String,
+        /** `read_up_to` (or `read_at`): the reader's watermark, when the frame carries one. */
+        val readAt: String? = null,
+    ) : ChatSocketEvent
+
+    /**
+     * Message ticks (2026-10-22): the viewer-scoped aggregate watermarks for
+     * their own messages in [conversationId] moved — from `delivery_receipt`
+     * ([deliveredUpTo]; never privacy-gated) or a GROUP's aggregate
+     * `read_receipt` ([readUpTo]; sent only when disclosed). Either may be
+     * null; a watermark only ever moves forward.
+     */
+    data class ReceiptWatermark(
+        val conversationId: String,
+        val deliveredUpTo: String? = null,
+        val readUpTo: String? = null,
     ) : ChatSocketEvent
 
     /**
@@ -465,6 +480,8 @@ fun parseChatFrame(json: Json, text: String): ChatSocketEvent? {
 
         FRAME_READ_RECEIPT -> parseReadReceipt(payload)
 
+        FRAME_DELIVERY_RECEIPT -> parseDeliveryReceipt(payload)
+
         FRAME_SUBSCRIPTION_REVOKED -> parseSubscriptionRevoked(payload)
 
         FRAME_MESSAGE_DELETED -> parseMessageDeleted(payload)
@@ -560,10 +577,34 @@ private fun parseReadReceipt(payload: JsonObject): ChatSocketEvent {
     val conversationId = payload.str("conversation_id").orEmpty()
     val userId = payload.str("user_id").orEmpty()
     val messageId = payload.str("message_id").orEmpty()
+    val readUpTo = (payload.str("read_up_to") ?: payload.str("read_at"))?.takeIf { receiptInstant(it) != null }
+    // A GROUP's aggregate receipt names no reader: only a watermark.
+    if (payload.bool("aggregate") == true) {
+        return if (conversationId.isBlank() || readUpTo == null) {
+            ChatSocketEvent.Malformed(FRAME_READ_RECEIPT, "aggregate receipt without conversation or watermark")
+        } else {
+            ChatSocketEvent.ReceiptWatermark(conversationId, readUpTo = readUpTo)
+        }
+    }
     return if (conversationId.isBlank() || userId.isBlank() || messageId.isBlank()) {
         ChatSocketEvent.Malformed(FRAME_READ_RECEIPT, "missing or blank identifier")
     } else {
-        ChatSocketEvent.ReadReceipt(conversationId, userId, messageId)
+        ChatSocketEvent.ReadReceipt(conversationId, userId, messageId, readUpTo)
+    }
+}
+
+/**
+ * `delivery_receipt {conversation_id, user_id, message_id, delivered_at,
+ * delivered_up_to}`: only the conversation and the recipient's aggregate
+ * watermark matter here. Without either the frame says nothing.
+ */
+private fun parseDeliveryReceipt(payload: JsonObject): ChatSocketEvent {
+    val conversationId = payload.str("conversation_id").orEmpty()
+    val deliveredUpTo = payload.str("delivered_up_to")?.takeIf { receiptInstant(it) != null }
+    return if (conversationId.isBlank() || deliveredUpTo == null) {
+        ChatSocketEvent.Malformed(FRAME_DELIVERY_RECEIPT, "missing conversation or watermark")
+    } else {
+        ChatSocketEvent.ReceiptWatermark(conversationId, deliveredUpTo = deliveredUpTo)
     }
 }
 
@@ -618,6 +659,7 @@ private fun JsonObject.bool(key: String): Boolean? =
 private const val FRAME_MESSAGE = "message"
 private const val FRAME_TYPING = "typing"
 private const val FRAME_READ_RECEIPT = "read_receipt"
+private const val FRAME_DELIVERY_RECEIPT = "delivery_receipt"
 private const val FRAME_SUBSCRIPTION_REVOKED = "subscription_revoked"
 private const val FRAME_MESSAGE_DELETED = "message_deleted"
 private const val FRAME_DISAPPEARING_TIMER = "disappearing_timer_updated"

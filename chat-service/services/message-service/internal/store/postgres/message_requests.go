@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/atpost/chat-message-service/internal/contentcrypt"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -435,6 +436,7 @@ func (s *ConversationStore) ListRequestEnvelopesPage(ctx context.Context, userID
 			&e.SenderID, &e.ReceiverID, &e.Preview, &e.Status, &e.RequestAt); err != nil {
 			return nil, err
 		}
+		e.Preview = s.openPreview(ctx, contentcrypt.ScopeRequestPreview, contentcrypt.ConversationRow(c.ID), e.Preview)
 		out = append(out, e)
 	}
 	return out, rows.Err()

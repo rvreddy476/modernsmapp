@@ -144,6 +144,9 @@ internal object UsColorTokens {
         /** `--theme-success` 27 127 75: chat's green where it is READ on the light ground. */
         val ChatAccentText = Color(0xFF1B7F4B)
 
+        /** `--theme-receipt-seen` 47 107 163: two read ticks on the light ground. */
+        val ReceiptSeen = Color(0xFF2F6BA3)
+
         /**
          * Per-sender name colours in a group thread, each at 4.5:1 or better
          * on the white incoming bubble. The web's own inks where it has one:
@@ -259,6 +262,9 @@ internal object UsColorTokens {
 
         /** Chat's green where it is read on the dark ground: `--theme-success` 74 222 128. */
         val ChatAccentText = Color(0xFF4ADE80)
+
+        /** `--theme-receipt-seen` 106 168 224: two read ticks on the dark ground. */
+        val ReceiptSeen = Color(0xFF6AA8E0)
 
         /** Per-sender name colours in a group thread, each at 4.5:1 or better on the black incoming bubble. */
         val ChatSenders = listOf(

@@ -2,10 +2,10 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
+	"github.com/atpost/chat-message-service/internal/contentcrypt"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -40,8 +40,47 @@ type MessageDeliveryIntent struct {
 	CompletedAt *time.Time
 }
 
+// sealIntent returns the stored forms of an intent's content columns: the
+// message text, the quote snapshot and the rich payload, each bound to the
+// message.
+func (s *ConversationStore) sealIntent(ctx context.Context, intent MessageDeliveryIntent) (text, replyPreview string, extra []byte, err error) {
+	row := contentcrypt.MessageRow(intent.ConversationID, intent.MessageID)
+	if text, err = s.sealText(ctx, contentcrypt.ScopeIntentText, row, intent.MessageText); err != nil {
+		return "", "", nil, err
+	}
+	if replyPreview, err = s.sealText(ctx, contentcrypt.ScopeIntentReplyPreview, row, intent.ReplyToPreview); err != nil {
+		return "", "", nil, err
+	}
+	if extra, err = s.sealJSON(ctx, contentcrypt.ScopeIntentExtra, row, intent.Extra); err != nil {
+		return "", "", nil, err
+	}
+	return text, replyPreview, extra, nil
+}
+
+// openIntent opens a scanned intent's content columns in place. They are
+// authoritative (repair replays them into Scylla), so a failure fails the
+// read rather than replaying ciphertext or an empty message.
+func (s *ConversationStore) openIntent(ctx context.Context, intent *MessageDeliveryIntent) error {
+	row := contentcrypt.MessageRow(intent.ConversationID, intent.MessageID)
+	var err error
+	if intent.MessageText, err = s.openText(ctx, contentcrypt.ScopeIntentText, row, intent.MessageText); err != nil {
+		return err
+	}
+	if intent.ReplyToPreview, err = s.openText(ctx, contentcrypt.ScopeIntentReplyPreview, row, intent.ReplyToPreview); err != nil {
+		return err
+	}
+	if intent.Extra, err = s.openJSON(ctx, contentcrypt.ScopeIntentExtra, row, intent.Extra); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (s *ConversationStore) ReserveMessageDeliveryIntent(ctx context.Context, intent MessageDeliveryIntent) (*MessageDeliveryIntent, error) {
-	_, err := s.db.Exec(ctx, `
+	text, replyPreview, extra, err := s.sealIntent(ctx, intent)
+	if err != nil {
+		return nil, err
+	}
+	_, err = s.db.Exec(ctx, `
 		INSERT INTO chat.message_delivery_intents (
 			idempotency_key, request_hash, conversation_id, sender_id,
 			message_id, bucket, message_ts, message_type, message_text,
@@ -51,10 +90,10 @@ func (s *ConversationStore) ReserveMessageDeliveryIntent(ctx context.Context, in
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
 		ON CONFLICT (idempotency_key) DO NOTHING
 	`, intent.IdempotencyKey, intent.RequestHash, intent.ConversationID, intent.SenderID,
-		intent.MessageID, intent.Bucket, intent.MessageTS, intent.MessageType, intent.MessageText,
+		intent.MessageID, intent.Bucket, intent.MessageTS, intent.MessageType, text,
 		intent.MediaID, intent.MemberIDs, intent.FirstRequest, intent.RequestReceiverID,
-		intent.SourceApp, intent.MatchID, intent.ReplyToID, intent.ReplyToPreview, intent.ReplyToSenderID,
-		intent.PostID, intent.Extra)
+		intent.SourceApp, intent.MatchID, intent.ReplyToID, replyPreview, intent.ReplyToSenderID,
+		intent.PostID, extra)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +128,13 @@ func (s *ConversationStore) GetMessageDeliveryIntent(ctx context.Context, key st
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
-	return &intent, err
+	if err != nil {
+		return nil, err
+	}
+	if err := s.openIntent(ctx, &intent); err != nil {
+		return nil, err
+	}
+	return &intent, nil
 }
 
 func (s *ConversationStore) FetchPendingMessageDeliveryIntents(ctx context.Context, limit int) ([]MessageDeliveryIntent, error) {
@@ -120,22 +165,37 @@ func (s *ConversationStore) FetchPendingMessageDeliveryIntents(ctx context.Conte
 			&intent.PostID, &intent.Extra, &intent.CompletedAt); err != nil {
 			return nil, err
 		}
+		if err := s.openIntent(ctx, &intent); err != nil {
+			// Logged by message id only; the repair worker retries the
+			// batch, and an intent that never opens is an operator alarm.
+			s.logger().Error("field encryption: delivery intent did not open; skipped", "message_id", intent.MessageID, "err", err)
+			continue
+		}
 		intents = append(intents, intent)
 	}
 	return intents, rows.Err()
 }
 
+// CompleteMessageDeliveryIntent marks the cross-store write done and drops
+// the content it carried (retention, 22 Oct 2026): once Scylla, the inbox
+// projections and the outbox hold the message, the intent's copy of the text,
+// quote and rich payload is only a second place to leak it from. The ids,
+// bucket, timestamp and member list stay — they are what repair, unsend and
+// the disappearing-message worker key on. A completed intent is never
+// replayed (the send path returns early on one), so nothing reads the blanked
+// columns back.
 func (s *ConversationStore) CompleteMessageDeliveryIntent(ctx context.Context, key string) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE chat.message_delivery_intents
-		SET completed_at = COALESCE(completed_at, NOW())
+		SET completed_at = COALESCE(completed_at, NOW()),
+		    message_text = '', reply_to_preview = '', extra = NULL
 		WHERE idempotency_key = $1
 	`, key)
 	return err
 }
 
 func (s *ConversationStore) InsertOutboxEventOnce(ctx context.Context, dedupeKey, eventType string, payload interface{}) error {
-	data, err := json.Marshal(payload)
+	data, err := s.sealOutboxPayload(ctx, eventType, dedupeKey, payload)
 	if err != nil {
 		return err
 	}

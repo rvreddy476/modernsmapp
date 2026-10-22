@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/atpost/chat-message-service/internal/contentcrypt"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -78,10 +79,39 @@ func (s *ConversationStore) CountActiveMembers(ctx context.Context, conversation
 	return n, err
 }
 
+// How a member came into a group (chat.conversation_members.join_method).
+// The viewer's "you joined" note at the top of a group chat is built from
+// it (founder, 22 Oct 2026). Rows written before the column existed are
+// NULL and get no note.
+const (
+	JoinMethodInviteLink = "invite_link"
+	JoinMethodAdded      = "added"
+	JoinMethodInvitation = "invitation"
+	JoinMethodCreated    = "created"
+)
+
+// JoinOrigin records how a member joined: the method and, for an add or an
+// accepted invitation, who brought them in (nil when unknown — e.g. the
+// group-service mirror, whose route carries no actor).
+type JoinOrigin struct {
+	Method  string
+	AddedBy *uuid.UUID
+}
+
+// MemberJoin is the viewer's own membership row as the join note needs it.
+type MemberJoin struct {
+	JoinedAt      time.Time
+	ClearedBefore *time.Time
+	JoinMethod    *string
+	AddedBy       *uuid.UUID
+}
+
 // AddMemberCapped inserts (or rejoins) a member inside one transaction that
 // takes a row lock on the conversation, so two concurrent adds cannot both
-// observe count = cap-1 and overshoot the launch cap.
-func (s *ConversationStore) AddMemberCapped(ctx context.Context, conversationID, userID uuid.UUID, role string, cap int) error {
+// observe count = cap-1 and overshoot the launch cap. origin is stored on the
+// row (join_method, added_by) so the newcomer's client can say how they
+// joined; a re-add of an active member changes nothing, origin included.
+func (s *ConversationStore) AddMemberCapped(ctx context.Context, conversationID, userID uuid.UUID, role string, cap int, origin JoinOrigin) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -115,18 +145,45 @@ func (s *ConversationStore) AddMemberCapped(ctx context.Context, conversationID,
 	// first join and on a rejoin alike, so the history read, search and the
 	// inbox preview all start there. Every way in (invite link, admin add,
 	// accepted invitation, group-service mirror) comes through here.
+	//
+	// joined_at and cleared_before are both NOW() — the transaction start —
+	// so they are equal exactly when the cutoff came from this join; a later
+	// "clear chat" moves cleared_before past joined_at.
+	var method *string
+	if origin.Method != "" {
+		method = &origin.Method
+	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO chat.conversation_members (conversation_id, user_id, role, joined_at, join_gen, cleared_before)
-		VALUES ($1, $2, $3, NOW(), nextval('chat.membership_gen_seq'), CASE WHEN $4 = 'group' THEN NOW() END)
+		INSERT INTO chat.conversation_members (conversation_id, user_id, role, joined_at, join_gen, cleared_before, join_method, added_by)
+		VALUES ($1, $2, $3, NOW(), nextval('chat.membership_gen_seq'), CASE WHEN $4 = 'group' THEN NOW() END, $5, $6)
 		ON CONFLICT (conversation_id, user_id) DO UPDATE
 			SET role = EXCLUDED.role, joined_at = NOW(), left_at = NULL,
 			    join_gen = nextval('chat.membership_gen_seq'),
-			    cleared_before = CASE WHEN $4 = 'group' THEN NOW() ELSE chat.conversation_members.cleared_before END
+			    cleared_before = CASE WHEN $4 = 'group' THEN NOW() ELSE chat.conversation_members.cleared_before END,
+			    join_method = EXCLUDED.join_method, added_by = EXCLUDED.added_by
 			WHERE chat.conversation_members.left_at IS NOT NULL
-	`, conversationID, userID, role, convType); err != nil {
+	`, conversationID, userID, role, convType, method, origin.AddedBy); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
+}
+
+// GetMemberJoin returns the user's ACTIVE membership row as the join note
+// needs it (nil when they are not an active member).
+func (s *ConversationStore) GetMemberJoin(ctx context.Context, conversationID, userID uuid.UUID) (*MemberJoin, error) {
+	var m MemberJoin
+	err := s.db.QueryRow(ctx, `
+		SELECT joined_at, cleared_before, join_method, added_by
+		FROM chat.conversation_members
+		WHERE conversation_id = $1 AND user_id = $2 AND left_at IS NULL
+	`, conversationID, userID).Scan(&m.JoinedAt, &m.ClearedBefore, &m.JoinMethod, &m.AddedBy)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &m, nil
 }
 
 // RemoveMemberGoverned severs a member with the role ladder re-checked INSIDE
@@ -627,6 +684,7 @@ func (s *ConversationStore) GetLatestRequestBetween(ctx context.Context, senderI
 		}
 		return nil, err
 	}
+	mr.Preview = s.openPreview(ctx, contentcrypt.ScopeRequestPreview, contentcrypt.ConversationRow(mr.ConversationID), mr.Preview)
 	return &mr, nil
 }
 

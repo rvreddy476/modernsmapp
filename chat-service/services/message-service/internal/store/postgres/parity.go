@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/chat-message-service/internal/contentcrypt"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -135,6 +136,7 @@ func (s *ConversationStore) ListInboxConversations(ctx context.Context, userID u
 			&c.SourceApp, &c.MatchID, &c.SortAt); err != nil {
 			return nil, err
 		}
+		s.openConversation(ctx, &c)
 		out = append(out, c)
 	}
 	return out, rows.Err()
@@ -658,6 +660,10 @@ type Note struct {
 
 // ReplaceNote deletes the author's notes and inserts n in one transaction.
 func (s *ConversationStore) ReplaceNote(ctx context.Context, n Note) error {
+	text, err := s.sealText(ctx, contentcrypt.ScopeNoteText, contentcrypt.NoteRow(n.ID, n.UserID), n.Text)
+	if err != nil {
+		return err
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
@@ -668,7 +674,7 @@ func (s *ConversationStore) ReplaceNote(ctx context.Context, n Note) error {
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO chat.notes (id, user_id, text, audience, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6)
-	`, n.ID, n.UserID, n.Text, n.Audience, n.CreatedAt, n.ExpiresAt); err != nil {
+	`, n.ID, n.UserID, text, n.Audience, n.CreatedAt, n.ExpiresAt); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -679,7 +685,9 @@ func (s *ConversationStore) DeleteNotes(ctx context.Context, userID uuid.UUID) e
 	return err
 }
 
-func scanNotes(rows pgx.Rows) ([]Note, error) {
+// scanNotes reads note rows and opens their text. A note that does not open
+// is left out (logged by id) rather than failing the whole notes feed.
+func (s *ConversationStore) scanNotes(ctx context.Context, rows pgx.Rows) ([]Note, error) {
 	defer rows.Close()
 	var out []Note
 	for rows.Next() {
@@ -687,6 +695,12 @@ func scanNotes(rows pgx.Rows) ([]Note, error) {
 		if err := rows.Scan(&n.ID, &n.UserID, &n.Text, &n.Audience, &n.CreatedAt, &n.ExpiresAt); err != nil {
 			return nil, err
 		}
+		text, err := s.openText(ctx, contentcrypt.ScopeNoteText, contentcrypt.NoteRow(n.ID, n.UserID), n.Text)
+		if err != nil {
+			s.logger().Error("field encryption: note did not open; left out", "note_id", n.ID, "err", err)
+			continue
+		}
+		n.Text = text
 		out = append(out, n)
 	}
 	return out, rows.Err()
@@ -700,7 +714,7 @@ func (s *ConversationStore) GetNote(ctx context.Context, id uuid.UUID, now time.
 	if err != nil {
 		return nil, err
 	}
-	notes, err := scanNotes(rows)
+	notes, err := s.scanNotes(ctx, rows)
 	if err != nil || len(notes) == 0 {
 		return nil, err
 	}
@@ -720,7 +734,7 @@ func (s *ConversationStore) ListLiveNotes(ctx context.Context, userIDs []uuid.UU
 	if err != nil {
 		return nil, err
 	}
-	return scanNotes(rows)
+	return s.scanNotes(ctx, rows)
 }
 
 // DirectPeerIDs lists the people the user shares an active direct

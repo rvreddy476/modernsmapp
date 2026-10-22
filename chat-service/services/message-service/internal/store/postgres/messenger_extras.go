@@ -5,6 +5,7 @@ import (
 	"errors"
 	"time"
 
+	"github.com/atpost/chat-message-service/internal/contentcrypt"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -554,13 +555,18 @@ func (s *ConversationStore) GetMessageRequestByConversation(ctx context.Context,
 		}
 		return nil, err
 	}
+	m.Preview = s.openPreview(ctx, contentcrypt.ScopeRequestPreview, contentcrypt.ConversationRow(m.ConversationID), m.Preview)
 	return &m, nil
 }
 
-// SetMessageRequestPreview stores the sender's first-message text as the
-// preview shown in the recipient's Requests folder.
+// SetMessageRequestPreview stores the sender's first-message text, sealed,
+// as the preview shown in the recipient's Requests folder.
 func (s *ConversationStore) SetMessageRequestPreview(ctx context.Context, convID uuid.UUID, preview string) error {
-	_, err := s.db.Exec(ctx, `
+	preview, err := s.sealText(ctx, contentcrypt.ScopeRequestPreview, contentcrypt.ConversationRow(convID), preview)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `
 		UPDATE chat.message_requests SET preview = $2 WHERE conversation_id = $1
 	`, convID, preview)
 	return err
@@ -578,18 +584,24 @@ func (s *ConversationStore) UpdateMessageRequestStatus(ctx context.Context, conv
 // --- Starred Messages ---
 
 func (s *ConversationStore) StarMessage(ctx context.Context, userID, convID, messageID uuid.UUID, preview *string) (*StarredMessage, error) {
+	row := contentcrypt.StarredRow(userID, messageID)
+	sealed, err := s.sealTextPtr(ctx, contentcrypt.ScopeStarredPreview, row, preview)
+	if err != nil {
+		return nil, err
+	}
 	var sm StarredMessage
-	err := s.db.QueryRow(ctx, `
+	err = s.db.QueryRow(ctx, `
 		INSERT INTO chat.starred_messages (user_id, conversation_id, message_id, message_preview)
 		VALUES ($1, $2, $3, $4)
 		ON CONFLICT (user_id, message_id) DO UPDATE SET message_preview = EXCLUDED.message_preview
 		RETURNING id, user_id, conversation_id, message_id, message_preview, starred_at
-	`, userID, convID, messageID, preview).Scan(
+	`, userID, convID, messageID, sealed).Scan(
 		&sm.ID, &sm.UserID, &sm.ConversationID, &sm.MessageID, &sm.MessagePreview, &sm.StarredAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	sm.MessagePreview = s.openPreviewPtr(ctx, contentcrypt.ScopeStarredPreview, row, sm.MessagePreview)
 	return &sm, nil
 }
 
@@ -620,6 +632,7 @@ func (s *ConversationStore) GetStarredMessages(ctx context.Context, userID uuid.
 		if err := rows.Scan(&sm.ID, &sm.UserID, &sm.ConversationID, &sm.MessageID, &sm.MessagePreview, &sm.StarredAt); err != nil {
 			return nil, err
 		}
+		sm.MessagePreview = s.openPreviewPtr(ctx, contentcrypt.ScopeStarredPreview, contentcrypt.StarredRow(sm.UserID, sm.MessageID), sm.MessagePreview)
 		out = append(out, sm)
 	}
 	return out, rows.Err()
@@ -678,20 +691,44 @@ func (s *ConversationStore) GetLatestChatBackup(ctx context.Context, userID uuid
 
 // --- Scheduled Messages ---
 
+// CreateScheduledMessage stores a message to send later, its content sealed.
+// The id is drawn here rather than by the database because the content is
+// bound to it.
 func (s *ConversationStore) CreateScheduledMessage(ctx context.Context, m *ScheduledMessage) (*ScheduledMessage, error) {
-	err := s.db.QueryRow(ctx, `
-		INSERT INTO chat.scheduled_messages (conversation_id, sender_id, type, content, media_id, send_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
+	if m.ID == uuid.Nil {
+		m.ID = uuid.New()
+	}
+	content, err := s.sealTextPtr(ctx, contentcrypt.ScopeScheduledContent, contentcrypt.IDRow(m.ID), m.Content)
+	if err != nil {
+		return nil, err
+	}
+	err = s.db.QueryRow(ctx, `
+		INSERT INTO chat.scheduled_messages (id, conversation_id, sender_id, type, content, media_id, send_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		RETURNING id, conversation_id, sender_id, type, content, media_id, send_at, status,
 		          attempt_count, next_attempt_at, last_error, failed_at, created_at
-	`, m.ConversationID, m.SenderID, m.Type, m.Content, m.MediaID, m.SendAt).Scan(
+	`, m.ID, m.ConversationID, m.SenderID, m.Type, content, m.MediaID, m.SendAt).Scan(
 		&m.ID, &m.ConversationID, &m.SenderID, &m.Type, &m.Content, &m.MediaID, &m.SendAt, &m.Status,
 		&m.AttemptCount, &m.NextAttemptAt, &m.LastError, &m.FailedAt, &m.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
 	}
+	if err := s.openScheduled(ctx, m); err != nil {
+		return nil, err
+	}
 	return m, nil
+}
+
+// openScheduled opens a scheduled message's content in place. It is what
+// will be sent, so a failure fails the read.
+func (s *ConversationStore) openScheduled(ctx context.Context, m *ScheduledMessage) error {
+	content, err := s.openTextPtr(ctx, contentcrypt.ScopeScheduledContent, contentcrypt.IDRow(m.ID), m.Content)
+	if err != nil {
+		return err
+	}
+	m.Content = content
+	return nil
 }
 
 func (s *ConversationStore) CancelScheduledMessage(ctx context.Context, id, senderID uuid.UUID) error {
@@ -723,6 +760,10 @@ func (s *ConversationStore) GetPendingScheduledMessages(ctx context.Context, bef
 		if err := rows.Scan(&m.ID, &m.ConversationID, &m.SenderID, &m.Type, &m.Content, &m.MediaID, &m.SendAt, &m.Status,
 			&m.AttemptCount, &m.NextAttemptAt, &m.LastError, &m.FailedAt, &m.CreatedAt); err != nil {
 			return nil, err
+		}
+		if err := s.openScheduled(ctx, &m); err != nil {
+			s.logger().Error("field encryption: scheduled message did not open; skipped", "scheduled_id", m.ID, "err", err)
+			continue
 		}
 		out = append(out, m)
 	}
@@ -780,6 +821,10 @@ func (s *ConversationStore) ListScheduledMessages(ctx context.Context, conversat
 			&m.AttemptCount, &m.NextAttemptAt, &m.LastError, &m.FailedAt, &m.CreatedAt); err != nil {
 			return nil, err
 		}
+		if err := s.openScheduled(ctx, &m); err != nil {
+			s.logger().Error("field encryption: scheduled message did not open; skipped", "scheduled_id", m.ID, "err", err)
+			continue
+		}
 		out = append(out, m)
 	}
 	return out, rows.Err()
@@ -788,14 +833,18 @@ func (s *ConversationStore) ListScheduledMessages(ctx context.Context, conversat
 // --- Message Translations ---
 
 func (s *ConversationStore) UpsertMessageTranslation(ctx context.Context, t *MessageTranslation) error {
-	_, err := s.db.Exec(ctx, `
+	translated, err := s.sealText(ctx, contentcrypt.ScopeTranslationText, contentcrypt.TranslationRow(t.MessageID, t.TargetLang), t.TranslatedText)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `
 		INSERT INTO chat.message_translations (message_id, conversation_id, target_lang, translated_text, source_lang)
 		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (message_id, target_lang) DO UPDATE SET
 			translated_text = EXCLUDED.translated_text,
 			source_lang     = EXCLUDED.source_lang,
 			translated_at   = NOW()
-	`, t.MessageID, t.ConversationID, t.TargetLang, t.TranslatedText, t.SourceLang)
+	`, t.MessageID, t.ConversationID, t.TargetLang, translated, t.SourceLang)
 	return err
 }
 
@@ -812,6 +861,9 @@ func (s *ConversationStore) GetMessageTranslation(ctx context.Context, messageID
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
+		return nil, err
+	}
+	if t.TranslatedText, err = s.openText(ctx, contentcrypt.ScopeTranslationText, contentcrypt.TranslationRow(t.MessageID, t.TargetLang), t.TranslatedText); err != nil {
 		return nil, err
 	}
 	return &t, nil
@@ -832,11 +884,16 @@ func (s *ConversationStore) GetOrCreateThread(ctx context.Context, convID, paren
 	if err != nil {
 		return nil, err
 	}
+	t.LastReplyPreview = s.openPreviewPtr(ctx, contentcrypt.ScopeThreadPreview, contentcrypt.IDRow(t.ID), t.LastReplyPreview)
 	return &t, nil
 }
 
 func (s *ConversationStore) IncrementThreadReplyCount(ctx context.Context, threadID uuid.UUID, lastReplyPreview string) error {
-	_, err := s.db.Exec(ctx, `
+	lastReplyPreview, err := s.sealText(ctx, contentcrypt.ScopeThreadPreview, contentcrypt.IDRow(threadID), lastReplyPreview)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(ctx, `
 		UPDATE chat.message_threads
 		SET reply_count = reply_count + 1,
 		    last_reply_at = NOW(),
@@ -861,6 +918,7 @@ func (s *ConversationStore) GetThread(ctx context.Context, convID, parentMessage
 		}
 		return nil, err
 	}
+	t.LastReplyPreview = s.openPreviewPtr(ctx, contentcrypt.ScopeThreadPreview, contentcrypt.IDRow(t.ID), t.LastReplyPreview)
 	return &t, nil
 }
 
@@ -882,6 +940,7 @@ func (s *ConversationStore) ListConversationThreads(ctx context.Context, convID 
 		if err := rows.Scan(&t.ID, &t.ConversationID, &t.ParentMessageID, &t.ReplyCount, &t.LastReplyAt, &t.LastReplyPreview, &t.CreatedAt); err != nil {
 			return nil, err
 		}
+		t.LastReplyPreview = s.openPreviewPtr(ctx, contentcrypt.ScopeThreadPreview, contentcrypt.IDRow(t.ID), t.LastReplyPreview)
 		out = append(out, t)
 	}
 	return out, rows.Err()

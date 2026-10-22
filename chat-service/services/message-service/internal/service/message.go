@@ -207,6 +207,17 @@ type ConversationResponse struct {
 	// always present; 0 = off, else 86400000 (24 h), 604800000 (7 d) or
 	// 7776000000 (90 d).
 	DisappearAfterMs int64 `json:"disappear_after_ms"`
+
+	// MyJoin is how the VIEWER came into this group, present only when their
+	// history starts at that join (founder, 22 Oct 2026): the client shows
+	// "X added you · 22 Oct" above the oldest message. Omitted for the
+	// creator, for members with full history, and outside a single-
+	// conversation read (see my_join.go).
+	MyJoin *MyJoin `json:"my_join,omitempty"`
+
+	// Receipts is the viewer's tick watermarks (founder, 22 Oct 2026; see
+	// receipt_ticks.go). Single-conversation reads only.
+	Receipts *ReceiptWatermarks `json:"receipts,omitempty"`
 }
 
 type ReactionSummary struct {
@@ -251,6 +262,11 @@ type MessageResponse struct {
 	// Disappearing messages (additive): when this message disappears for
 	// everyone (RFC 3339). Omitted when the message does not disappear.
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+
+	// Status is the sender's tick — sent | delivered | read — on the
+	// viewer's OWN messages in history (receipt_ticks.go); omitted on
+	// everyone else's.
+	Status *string `json:"status,omitempty"`
 }
 
 type ToggleReactionResponse struct {
@@ -880,7 +896,9 @@ func (s *Service) AddMember(ctx context.Context, userID, conversationID, targetU
 	// Blocker-2 final correction: even this legacy (currently unrouted)
 	// method uses the conversation-locked writer, so a future re-wiring can
 	// never reintroduce an unserialized membership add.
-	if err := s.groupStore().AddMemberCapped(ctx, conversationID, targetUserID, "member", GroupMemberCap); err != nil {
+	adder := userID
+	if err := s.groupStore().AddMemberCapped(ctx, conversationID, targetUserID, "member", GroupMemberCap,
+		postgres.JoinOrigin{Method: postgres.JoinMethodAdded, AddedBy: &adder}); err != nil {
 		return err
 	}
 
@@ -911,8 +929,10 @@ func (s *Service) ManagedAddGroupMember(ctx context.Context, conversationID, use
 	// lock, so a managed add could race a removal outside the generation
 	// serialization every other membership write obeys. AddMemberCapped is
 	// the conversation-locked writer (and managed groups obey the same
-	// launch cap as every group).
-	return s.groupStore().AddMemberCapped(ctx, conversationID, userID, "member", GroupMemberCap)
+	// launch cap as every group). The /internal route carries no actor, so
+	// the newcomer's note reads "Someone added you".
+	return s.groupStore().AddMemberCapped(ctx, conversationID, userID, "member", GroupMemberCap,
+		postgres.JoinOrigin{Method: postgres.JoinMethodAdded})
 }
 
 func (s *Service) ManagedRemoveGroupMember(ctx context.Context, conversationID, userID uuid.UUID) error {
@@ -1329,28 +1349,13 @@ func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID
 		}
 		now, msgID, bucket = intent.MessageTS, intent.MessageID, intent.Bucket
 
-		msg := &scylla.Message{
-			ConversationID: conversationID,
-			Bucket:         bucket,
-			Ts:             now,
-			MsgID:          msgID,
-			SenderID:       userID,
-			Type:           msgType,
-			Text:           text,
-			MediaID:        mediaID,
-			PostID:         postID,
-			Extra:          string(intent.Extra),
-			IsDeleted:      false,
-			CreatedAt:      now,
-		}
-		// The durable intent is the truth on a replayed key.
-		storedExtra := decodeExtra(string(intent.Extra))
-
 		l := s.log.With("conversation_id", conversationID, "sender_id", userID, "msg_id", msgID)
-		if err := s.completeMessageDelivery(ctx, intent); err != nil {
+		if err := s.settleDelivery(ctx, intent, text, replyTo, extraBytes); err != nil {
 			l.Error("message delivery is pending durable repair", "err", err)
 			return nil, err
 		}
+		// The durable intent is the truth on a replayed key.
+		storedExtra := decodeExtra(string(intent.Extra))
 
 		// 5. Real-time delivery via Redis pub/sub to all members (best-effort).
 		// Runs after the durable outbox handoff so a successful publish
@@ -1431,19 +1436,10 @@ func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID
 			}
 		}()
 
-		// 6. Redis cache update (best-effort).
-		go func() {
-			cacheCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
-			key := fmt.Sprintf("chat_messages:%s", conversationID)
-			data, _ := json.Marshal(msg)
-			pipe := s.rdb.Pipeline()
-			pipe.LPush(cacheCtx, key, data)
-			pipe.LTrim(cacheCtx, key, 0, 99)
-			if _, err := pipe.Exec(cacheCtx); err != nil {
-				l.Warn("failed to update redis cache", "err", err)
-			}
-		}()
+		// The Redis list chat_messages:{conversation} that used to be pushed
+		// here was written and never read: a third, unencrypted copy of every
+		// message with no expiry. Removed with field encryption (22 Oct
+		// 2026); cmd/fieldcrypt-backfill -redis deletes the lists left behind.
 
 		resp := &MessageResponse{
 			ConversationID:  conversationID,
@@ -1576,6 +1572,8 @@ func (s *Service) GetMessages(ctx context.Context, userID, conversationID uuid.U
 	// Fix pass 2: moderation usually lands after the send; complete
 	// media.sensitive from media-service (cached, bounded).
 	s.fillMediaSensitivity(ctx, out)
+	// Ticks: sent | delivered | read on the viewer's own messages.
+	s.attachTickStatus(ctx, userID, conversationID, out)
 
 	return out, nextCursor, nil
 }
@@ -1736,6 +1734,19 @@ func (s *Service) DeleteMessage(ctx context.Context, userID, conversationID, mes
 		ctx, conversationID, messageID, bucket, msg.Ts,
 	); err != nil {
 		return fmt.Errorf("record preview repair obligation: %w", err)
+	}
+
+	// Unsend removes the content everywhere it was kept beside the message
+	// (22 Oct 2026): the completed delivery intent, the cached send
+	// response, the published MessageCreated payload, translations and star
+	// previews. It runs BEFORE the Scylla delete: if it fails nothing is
+	// deleted and the client's retry runs both again (both are idempotent);
+	// the other order would leave a deleted message whose copies a retry
+	// can never reach ("message not found").
+	if r, ok := s.convStore.(unsentRecordRedactor); ok {
+		if err := r.RedactUnsentMessageRecords(ctx, conversationID, messageID); err != nil {
+			return fmt.Errorf("redact unsent message records: %w", err)
+		}
 	}
 
 	if err := s.msgStore.SoftDeleteMessage(ctx, conversationID, bucket, ts, messageID); err != nil {
@@ -2017,16 +2028,18 @@ func (s *Service) getConversationResponseFor(ctx context.Context, viewerID, conv
 	s.resolveGroupAvatarURLs(ctx, viewerID, page)
 	s.attachReadCursors(ctx, viewerID, &page[0])
 	s.decorateRows(ctx, viewerID, page)
+	s.attachMyJoin(ctx, viewerID, &page[0])
+	s.attachConversationReceipts(ctx, viewerID, &page[0])
 	return &page[0], nil
 }
 
 // attachReadCursors fills each member's LastReadAt for this viewer.
 //
 // Disclosure follows exactly the rule the live `read_receipt` frame follows
-// (MarkRead below): the READER's own policy decides. Unknown policy, chat
-// paused or "no_one" discloses nothing; "connections_only" requires the
-// graph to say yes. Anything else would make a reload leak a receipt the
-// live path had deliberately withheld.
+// (MarkRead below): readReceiptVisible (receipt_ticks.go). Unknown policy,
+// chat paused or "no_one" on EITHER side discloses nothing (reciprocity);
+// "connections_only" is satisfied by this accepted conversation. Anything
+// else would make a reload leak a receipt the live path had withheld.
 func (s *Service) attachReadCursors(ctx context.Context, viewerID uuid.UUID, resp *ConversationResponse) {
 	if resp == nil || len(resp.Members) == 0 {
 		return
@@ -2047,6 +2060,7 @@ func (s *Service) attachReadCursors(ctx context.Context, viewerID uuid.UUID, res
 		s.log.Warn("read cursor fetch failed", "err", err, "conversation_id", resp.ID)
 		return
 	}
+	var viewerPolicy *ChatPolicy
 	for i := range resp.Members {
 		reader := resp.Members[i].UserID
 		// The viewer's own cursor is not a receipt and is never withheld.
@@ -2057,12 +2071,13 @@ func (s *Service) attachReadCursors(ctx context.Context, viewerID uuid.UUID, res
 		if !ok || rc.LastReadAt.IsZero() {
 			continue
 		}
-		policy := s.GetChatPolicy(ctx, reader)
-		if !policy.Known || policy.ChatPaused || policy.ReadReceiptsVisibility == "no_one" {
-			continue
+		// One rule for every receipt path, reciprocity included
+		// (readReceiptVisible, receipt_ticks.go).
+		if viewerPolicy == nil {
+			p := s.GetChatPolicy(ctx, viewerID)
+			viewerPolicy = &p
 		}
-		if policy.ReadReceiptsVisibility == "connections_only" &&
-			!s.discloseReceiptTo(ctx, viewerID, reader) {
+		if !readReceiptVisible(*viewerPolicy, s.GetChatPolicy(ctx, reader)) {
 			continue
 		}
 		readAt := rc.LastReadAt
@@ -2298,10 +2313,11 @@ func (s *Service) SetTyping(ctx context.Context, userID, conversationID uuid.UUI
 // The cursor write is unconditional — unread state is the reader's OWN data
 // and repairs push/inbox counts (CH-LB-4.6). The receipt broadcast is a
 // DISCLOSURE and obeys who_can_see_read_receipts: no_one (or unknown policy)
-// discloses nothing; everyone discloses; connections_only is disclosed only
-// in DIRECT conversations after a graph see_read_receipts decision. Group
-// conversations get no per-user receipt frames at launch — permitted senders
-// read aggregate state, never a reader roster (directive §3.5).
+// discloses nothing; everyone and connections_only disclose to the other
+// member of this accepted chat, unless THEIR receipts are off (reciprocity;
+// readReceiptVisible in receipt_ticks.go). Group conversations get no
+// per-user receipt frames at launch — members get only the aggregate "read
+// by everyone" watermark, never a reader roster (directive §3.5).
 func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID, messageID string) error {
 	ok, err := s.convStore.CheckMembership(ctx, conversationID, userID)
 	if err != nil {
@@ -2312,6 +2328,9 @@ func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID
 	}
 
 	now := time.Now().UTC()
+	// Ticks: the group read frame goes only to members whose "everyone has
+	// read" watermark this read moves, which needs the cursor before it.
+	prevRead := s.priorReadAt(ctx, conversationID, userID)
 	if msgID, err := uuid.Parse(messageID); err == nil {
 		if err := s.groupStore().UpsertReadCursor(ctx, conversationID, userID, msgID, now); err != nil {
 			s.log.Warn("read cursor upsert failed", "err", err, "conversation_id", conversationID, "user_id", userID)
@@ -2344,7 +2363,9 @@ func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID
 
 	if conv.Type != "direct" {
 		// Launch groups: aggregate counts only, computed from read cursors —
-		// no per-reader receipt frames.
+		// no per-reader receipt frames. The aggregate "read by everyone"
+		// watermark (the coloured tick) is the only group frame.
+		s.publishGroupReadAggregate(ctx, conversationID, userID, prevRead)
 		return nil
 	}
 
@@ -2361,14 +2382,17 @@ func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID
 			"user_id":         userID.String(),
 			"message_id":      messageID,
 			"read_at":         now.Format(time.RFC3339Nano),
+			// Ticks: the recipient's read watermark (= read_at in a DM).
+			"read_up_to": now.Format(time.RFC3339Nano),
 		},
 	})
 	for _, m := range members {
 		if m.UserID == userID {
 			continue
 		}
-		if policy.ReadReceiptsVisibility == "connections_only" &&
-			!s.discloseReceiptTo(ctx, m.UserID, userID) {
+		// One rule, reciprocity included: a member whose own receipts are
+		// off sees nobody's (readReceiptVisible, receipt_ticks.go).
+		if !readReceiptVisible(s.GetChatPolicy(ctx, m.UserID), policy) {
 			continue
 		}
 		if gated && !s.datingReceiptsAllowed(ctx, conversationID, m.UserID) {
@@ -2379,25 +2403,10 @@ func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID
 	return nil
 }
 
-// discloseReceiptTo asks graph whether VIEWER may see READER's receipts —
-// the connections_only resolution. Cached in Redis for 30 s per pair;
-// failure fails closed (no disclosure).
-func (s *Service) discloseReceiptTo(ctx context.Context, viewerID, readerID uuid.UUID) bool {
-	if s.rdb == nil {
-		return s.checkVisibilityPermission(ctx, viewerID, readerID, "see_read_receipts")
-	}
-	cacheKey := "receiptvis:" + viewerID.String() + ":" + readerID.String()
-	if cached, err := s.rdb.Get(ctx, cacheKey).Result(); err == nil {
-		return cached == "1"
-	}
-	allowed := s.checkVisibilityPermission(ctx, viewerID, readerID, "see_read_receipts")
-	value := "0"
-	if allowed {
-		value = "1"
-	}
-	s.rdb.Set(ctx, cacheKey, value, 30*time.Second)
-	return allowed
-}
+// (discloseReceiptTo — graph's see_read_receipts for connections_only —
+// was removed with the ticks work: graph grants it only on a legacy
+// accepted connection, which withheld nearly every receipt. The rule is
+// readReceiptVisible in receipt_ticks.go.)
 
 // checkVisibilityPermission resolves one disclosure action via graph.
 // ANY failure returns false — disclosure fails closed.
@@ -2486,7 +2495,7 @@ func (s *Service) GetPresence(ctx context.Context, requesterID uuid.UUID, userID
 	return presence, nil
 }
 
-// discloseOnlineTo mirrors discloseReceiptTo for online-status visibility.
+// discloseOnlineTo asks graph about online-status visibility (cached per pair).
 func (s *Service) discloseOnlineTo(ctx context.Context, viewerID, targetID uuid.UUID) bool {
 	if s.rdb == nil {
 		return s.checkVisibilityPermission(ctx, viewerID, targetID, "see_online_status")

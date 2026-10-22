@@ -3,18 +3,80 @@ package scylla
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
+	"github.com/atpost/chat-message-service/internal/contentcrypt"
+	"github.com/atpost/chat-shared/fieldcrypt"
 	"github.com/gocql/gocql"
 	"github.com/google/uuid"
 )
 
 type MessageStore struct {
 	session *gocql.Session
+	// exec runs the content writes (insert, edit, unsend, inbox). It is the
+	// session in production and a recorder in tests, which is how the tests
+	// prove no plaintext reaches Scylla.
+	exec cqlExecer
+	// crypt seals message content on write and opens it on read (field
+	// encryption at rest, 22 Oct 2026). nil writes plaintext — development
+	// only; main refuses that in production.
+	crypt *fieldcrypt.Cipher
+}
+
+// cqlExecer runs one CQL statement.
+type cqlExecer interface {
+	Exec(ctx context.Context, stmt string, args ...interface{}) error
+}
+
+type sessionExecer struct{ session *gocql.Session }
+
+func (e sessionExecer) Exec(ctx context.Context, stmt string, args ...interface{}) error {
+	return e.session.Query(stmt, args...).WithContext(ctx).Exec()
 }
 
 func New(session *gocql.Session) *MessageStore {
-	return &MessageStore{session: session}
+	return &MessageStore{session: session, exec: sessionExecer{session}}
+}
+
+// SetFieldCipher installs the at-rest cipher. Call it before serving.
+func (s *MessageStore) SetFieldCipher(c *fieldcrypt.Cipher) { s.crypt = c }
+
+// sealMessage returns the stored forms of a message's content columns.
+func (s *MessageStore) sealMessage(ctx context.Context, convID, msgID uuid.UUID, text, replyPreview, extra string) (string, string, string, error) {
+	row := contentcrypt.MessageRow(convID, msgID)
+	sText, err := s.crypt.SealString(ctx, contentcrypt.ScopeMessageText, row, text)
+	if err != nil {
+		return "", "", "", fmt.Errorf("seal message text: %w", err)
+	}
+	sReply, err := s.crypt.SealString(ctx, contentcrypt.ScopeMessageReplyPreview, row, replyPreview)
+	if err != nil {
+		return "", "", "", fmt.Errorf("seal reply preview: %w", err)
+	}
+	sExtra, err := s.crypt.SealString(ctx, contentcrypt.ScopeMessageExtra, row, extra)
+	if err != nil {
+		return "", "", "", fmt.Errorf("seal message extra: %w", err)
+	}
+	return sText, sReply, sExtra, nil
+}
+
+// openMessage turns stored content columns back into plaintext in place.
+// Rows written before encryption read through unchanged (dual read). A
+// sealed value that does not open fails the read: returning it would put
+// ciphertext on screen, and a wrong-row binding is exactly what it refuses.
+func (s *MessageStore) openMessage(ctx context.Context, m *Message) error {
+	row := contentcrypt.MessageRow(m.ConversationID, m.MsgID)
+	var err error
+	if m.Text, err = s.crypt.OpenString(ctx, contentcrypt.ScopeMessageText, row, m.Text); err != nil {
+		return fmt.Errorf("open message %s text: %w", m.MsgID, err)
+	}
+	if m.ReplyToPreview, err = s.crypt.OpenString(ctx, contentcrypt.ScopeMessageReplyPreview, row, m.ReplyToPreview); err != nil {
+		return fmt.Errorf("open message %s reply preview: %w", m.MsgID, err)
+	}
+	if m.Extra, err = s.crypt.OpenString(ctx, contentcrypt.ScopeMessageExtra, row, m.Extra); err != nil {
+		return fmt.Errorf("open message %s extra: %w", m.MsgID, err)
+	}
+	return nil
 }
 
 type Message struct {
@@ -146,11 +208,14 @@ func PrevBucket(bucket string) string {
 
 // CreateMessage writes a message to the bucketed messages table.
 func (s *MessageStore) CreateMessage(ctx context.Context, msg *Message) error {
-	return s.session.Query(`
+	text, replyPreview, extra, err := s.sealMessage(ctx, msg.ConversationID, msg.MsgID, msg.Text, msg.ReplyToPreview, msg.Extra)
+	if err != nil {
+		return err
+	}
+	return s.exec.Exec(ctx, `
 		INSERT INTO messages (conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, post_id, extra, is_deleted, created_at)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, uuidToGocql(msg.ConversationID), msg.Bucket, msg.Ts, uuidToGocql(msg.MsgID), uuidToGocql(msg.SenderID), msg.Type, msg.Text, uuidPtrToGocql(msg.MediaID), uuidPtrToGocql(msg.ReplyToID), msg.ReplyToPreview, uuidPtrToGocql(msg.ReplyToSenderID), uuidPtrToGocql(msg.PostID), extraOrNil(msg.Extra), msg.IsDeleted, msg.CreatedAt).
-		WithContext(ctx).Exec()
+	`, uuidToGocql(msg.ConversationID), msg.Bucket, msg.Ts, uuidToGocql(msg.MsgID), uuidToGocql(msg.SenderID), msg.Type, text, uuidPtrToGocql(msg.MediaID), uuidPtrToGocql(msg.ReplyToID), replyPreview, uuidPtrToGocql(msg.ReplyToSenderID), uuidPtrToGocql(msg.PostID), extraOrNil(extra), msg.IsDeleted, msg.CreatedAt)
 }
 
 func (s *MessageStore) GetMessage(ctx context.Context, conversationID uuid.UUID, bucket string, ts time.Time, msgID uuid.UUID) (*Message, error) {
@@ -169,6 +234,9 @@ func (s *MessageStore) GetMessage(ctx context.Context, conversationID uuid.UUID,
 		return nil, err
 	}
 	m := t.toMessage()
+	if err := s.openMessage(ctx, &m); err != nil {
+		return nil, err
+	}
 	return &m, nil
 }
 
@@ -215,7 +283,12 @@ func (s *MessageStore) GetMessages(ctx context.Context, conversationID uuid.UUID
 		var t scanTarget
 		for iter.Scan(&t.ConversationID, &t.Bucket, &t.Ts, &t.MsgID, &t.SenderID, &t.Type, &t.Text, &t.MediaID, &t.ReplyToID, &t.ReplyToPreview, &t.ReplyToSenderID, &t.PostID, &t.Extra, &t.IsDeleted, &t.IsEdited, &t.EditedAt, &t.CreatedAt) {
 			if !t.IsDeleted {
-				messages = append(messages, t.toMessage())
+				m := t.toMessage()
+				if err := s.openMessage(ctx, &m); err != nil {
+					_ = iter.Close()
+					return nil, nil, err
+				}
+				messages = append(messages, m)
 				remaining--
 			}
 			if remaining <= 0 {
@@ -256,19 +329,27 @@ func (s *MessageStore) UpdateMessageText(
 	text string,
 	editedAt time.Time,
 ) error {
-	return s.session.Query(`
+	sealed, err := s.crypt.SealString(ctx, contentcrypt.ScopeMessageText, contentcrypt.MessageRow(conversationID, msgID), text)
+	if err != nil {
+		return fmt.Errorf("seal edited text: %w", err)
+	}
+	return s.exec.Exec(ctx, `
 		UPDATE messages SET text = ?, is_edited = true, edited_at = ?
 		WHERE conversation_id = ? AND bucket = ? AND ts = ? AND msg_id = ?
-	`, text, editedAt, uuidToGocql(conversationID), bucket, ts, uuidToGocql(msgID)).
-		WithContext(ctx).Exec()
+	`, sealed, editedAt, uuidToGocql(conversationID), bucket, ts, uuidToGocql(msgID))
 }
 
-// SoftDeleteMessage marks a message as deleted (avoids Scylla tombstones).
+// SoftDeleteMessage is unsend: the row stays (no tombstone, other members'
+// paging stays consistent) and is marked deleted, and its content goes — the
+// text, the quote snapshot and the rich payload — as the disappearing and
+// purge paths already did. Before 22 Oct 2026 unsend kept the text in the
+// row. The attachment and post references stay (the shared-items and media
+// reference clean-up runs in Postgres). Idempotent.
 func (s *MessageStore) SoftDeleteMessage(ctx context.Context, conversationID uuid.UUID, bucket string, ts time.Time, msgID uuid.UUID) error {
-	return s.session.Query(`
-		UPDATE messages SET is_deleted = true
+	return s.exec.Exec(ctx, `
+		UPDATE messages SET text = '', reply_to_preview = '', extra = null, is_deleted = true
 		WHERE conversation_id = ? AND bucket = ? AND ts = ? AND msg_id = ?
-	`, uuidToGocql(conversationID), bucket, ts, uuidToGocql(msgID)).WithContext(ctx).Exec()
+	`, uuidToGocql(conversationID), bucket, ts, uuidToGocql(msgID))
 }
 
 // RedactMessage is the disappearing-message delete: the row stays (other
@@ -301,17 +382,24 @@ func (s *MessageStore) DeleteInboxProjection(ctx context.Context, memberIDs []uu
 
 // UpsertInbox writes a row to the conversations_by_user inbox projection.
 // Called for each member of a conversation when a message is sent.
+//
+// last_text is at most InboxTextMaxBytes bytes, cut on a character boundary
+// (a byte cut used to split a multi-byte character), then sealed.
 func (s *MessageStore) UpsertInbox(ctx context.Context, userID, conversationID, senderID uuid.UUID, text string, ts time.Time) error {
 	bucket := ts.UTC().Format("200601")
-	truncatedText := text
-	if len(truncatedText) > 100 {
-		truncatedText = truncatedText[:100]
+	truncatedText := contentcrypt.TruncateRunes(text, InboxTextMaxBytes)
+	sealed, err := s.crypt.SealString(ctx, contentcrypt.ScopeInboxLastText, contentcrypt.InboxRow(userID, conversationID, ts), truncatedText)
+	if err != nil {
+		return fmt.Errorf("seal inbox text: %w", err)
 	}
-	return s.session.Query(`
+	return s.exec.Exec(ctx, `
 		INSERT INTO conversations_by_user (user_id, bucket, last_ts, conversation_id, last_sender_id, last_text)
 		VALUES (?, ?, ?, ?, ?, ?)
-	`, uuidToGocql(userID), bucket, ts, uuidToGocql(conversationID), uuidToGocql(senderID), truncatedText).WithContext(ctx).Exec()
+	`, uuidToGocql(userID), bucket, ts, uuidToGocql(conversationID), uuidToGocql(senderID), sealed)
 }
+
+// InboxTextMaxBytes caps conversations_by_user.last_text before sealing.
+const InboxTextMaxBytes = 100
 
 // --- Reactions ---
 

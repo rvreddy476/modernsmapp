@@ -1291,6 +1291,10 @@ services:
       # Production chat pass: owner-issued conversation-room entitlements
       # (shared HMAC with chat-ws-gateway).
       CHAT_ENTITLEMENT_SECRET: ${CHAT_ENTITLEMENT_SECRET:-local_dev_entitlement_change_me}
+      # Field encryption at rest (22 Oct 2026): dev keyring "v1:<b64 32 bytes>"
+      # from .env; empty = plaintext with one warning. Prod uses CHAT_KMS_KEY_ID.
+      CHAT_FIELD_KEYS: ${CHAT_FIELD_KEYS:-}
+      OUTBOX_RETENTION: ${OUTBOX_RETENTION:-168h}
       # Chat parity (2026-10-18): /v1/chat/search reads people and the chat
       # message index from search-service (empty = no people / messages,
       # e.g. SEARCH_SERVICE_URL=http://search-service:8089); message reports

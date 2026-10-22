@@ -6,6 +6,7 @@ import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
 import com.us.android.core.network.noContentApiCall
 import java.time.Instant
+import java.time.OffsetDateTime
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -192,4 +193,23 @@ internal fun ConversationDto.toDomain(): Conversation = Conversation(
         ?.let { RequestSender(it.userId, it.displayName, it.username, it.avatarUrl?.takeIf { url -> url.isNotBlank() }, it.deleted) },
     createdBy = createdBy,
     requestDirection = direction?.takeIf { it.isNotBlank() },
+    myJoin = if (type == "group") myJoin?.toDomainOrNull() else null,
+    receipts = receipts?.toDomain() ?: ReceiptWatermarks(),
 )
+
+/**
+ * `my_join` → [MyJoin], or null for anything that earns no note: "created",
+ * an unknown method, or a blank or unparseable joined_at (Go sends zero
+ * values as empty strings, so empty is absent). A link never names an adder.
+ */
+fun MyJoinDto.toDomainOrNull(): MyJoin? {
+    val joinMethod = when (method) {
+        "invite_link" -> JoinMethod.InviteLink
+        "added" -> JoinMethod.Added
+        "invitation" -> JoinMethod.Invitation
+        else -> return null
+    }
+    if (joinedAt.isBlank() || runCatching { OffsetDateTime.parse(joinedAt) }.isFailure) return null
+    val by = addedByUserId?.takeIf { it.isNotBlank() && joinMethod != JoinMethod.InviteLink }
+    return MyJoin(joinedAt = joinedAt, method = joinMethod, addedByUserId = by)
+}

@@ -33,7 +33,7 @@ func TestGroupNewcomerSeesNoEarlierHistory(t *testing.T) {
 	convID := seedGroup(t, pool, map[uuid.UUID]string{owner: "owner"})
 
 	before := time.Now().Add(-time.Second)
-	if err := store.AddMemberCapped(context.Background(), convID, newcomer, "member", 1024); err != nil {
+	if err := store.AddMemberCapped(context.Background(), convID, newcomer, "member", 1024, JoinOrigin{Method: JoinMethodInviteLink}); err != nil {
 		t.Fatal(err)
 	}
 	cutoff := memberCutoff(t, store, convID, newcomer)
@@ -52,7 +52,7 @@ func TestGroupRejoinStartsHistoryAtTheRejoin(t *testing.T) {
 	convID := seedGroup(t, pool, map[uuid.UUID]string{owner: "owner"})
 	ctx := context.Background()
 
-	if err := store.AddMemberCapped(ctx, convID, member, "member", 1024); err != nil {
+	if err := store.AddMemberCapped(ctx, convID, member, "member", 1024, JoinOrigin{Method: JoinMethodInviteLink}); err != nil {
 		t.Fatal(err)
 	}
 	first := memberCutoff(t, store, convID, member)
@@ -60,7 +60,7 @@ func TestGroupRejoinStartsHistoryAtTheRejoin(t *testing.T) {
 		t.Fatal(err)
 	}
 	time.Sleep(20 * time.Millisecond)
-	if err := store.AddMemberCapped(ctx, convID, member, "member", 1024); err != nil {
+	if err := store.AddMemberCapped(ctx, convID, member, "member", 1024, JoinOrigin{Method: JoinMethodInviteLink}); err != nil {
 		t.Fatal(err)
 	}
 	second := memberCutoff(t, store, convID, member)
@@ -74,10 +74,72 @@ func TestGroupReAddOfAnActiveMemberChangesNothing(t *testing.T) {
 	owner, member := uuid.New(), uuid.New()
 	convID := seedGroup(t, pool, map[uuid.UUID]string{owner: "owner", member: "member"})
 
-	if err := store.AddMemberCapped(context.Background(), convID, member, "member", 1024); err != nil {
+	if err := store.AddMemberCapped(context.Background(), convID, member, "member", 1024, JoinOrigin{Method: JoinMethodInviteLink}); err != nil {
 		t.Fatal(err)
 	}
 	if c := memberCutoff(t, store, convID, member); c != nil {
 		t.Fatalf("re-adding an active member must not hide their history, got cutoff %v", c)
+	}
+}
+
+// The join note (founder, 22 Oct 2026): AddMemberCapped records how the
+// member came in, and GetMemberJoin hands back a cutoff equal to joined_at
+// exactly while that cutoff is the join's own.
+func TestGroupJoinRecordsMethodAndAdder(t *testing.T) {
+	store, pool := testStore(t)
+	owner, member, linker := uuid.New(), uuid.New(), uuid.New()
+	convID := seedGroup(t, pool, map[uuid.UUID]string{owner: "owner"})
+	ctx := context.Background()
+
+	if err := store.AddMemberCapped(ctx, convID, member, "member", 1024,
+		JoinOrigin{Method: JoinMethodAdded, AddedBy: &owner}); err != nil {
+		t.Fatal(err)
+	}
+	j, err := store.GetMemberJoin(ctx, convID, member)
+	if err != nil || j == nil {
+		t.Fatalf("join row: %v %v", j, err)
+	}
+	if j.JoinMethod == nil || *j.JoinMethod != JoinMethodAdded || j.AddedBy == nil || *j.AddedBy != owner {
+		t.Fatalf("method/adder not recorded: %+v", j)
+	}
+	if j.ClearedBefore == nil || !j.ClearedBefore.Equal(j.JoinedAt) {
+		t.Fatalf("cutoff must equal joined_at on a join: joined %v cut %v", j.JoinedAt, j.ClearedBefore)
+	}
+	// The seeded owner has no method and no cutoff: no note.
+	if o, err := store.GetMemberJoin(ctx, convID, owner); err != nil || o == nil || o.JoinMethod != nil || o.ClearedBefore != nil {
+		t.Fatalf("seeded owner: %+v %v", o, err)
+	}
+
+	// A rejoin by link replaces the origin; the adder is gone.
+	if _, err := store.RemoveMember(ctx, convID, member); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddMemberCapped(ctx, convID, member, "member", 1024,
+		JoinOrigin{Method: JoinMethodInviteLink}); err != nil {
+		t.Fatal(err)
+	}
+	j, _ = store.GetMemberJoin(ctx, convID, member)
+	if j == nil || j.JoinMethod == nil || *j.JoinMethod != JoinMethodInviteLink || j.AddedBy != nil {
+		t.Fatalf("rejoin origin: %+v", j)
+	}
+
+	// Clearing the chat later moves the cutoff past the join.
+	time.Sleep(20 * time.Millisecond)
+	if err := store.ClearForMe(ctx, convID, member, time.Now(), false); err != nil {
+		t.Fatal(err)
+	}
+	j, _ = store.GetMemberJoin(ctx, convID, member)
+	if j == nil || j.ClearedBefore == nil || j.ClearedBefore.Equal(j.JoinedAt) {
+		t.Fatalf("a clear must move the cutoff past the join: %+v", j)
+	}
+
+	// A re-add of an ACTIVE member changes nothing, origin included.
+	if err := store.AddMemberCapped(ctx, convID, member, "member", 1024,
+		JoinOrigin{Method: JoinMethodAdded, AddedBy: &linker}); err != nil {
+		t.Fatal(err)
+	}
+	j, _ = store.GetMemberJoin(ctx, convID, member)
+	if j == nil || *j.JoinMethod != JoinMethodInviteLink || j.AddedBy != nil {
+		t.Fatalf("re-add of an active member rewrote the origin: %+v", j)
 	}
 }

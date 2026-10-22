@@ -2,7 +2,6 @@ package postgres
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"time"
 
@@ -166,7 +165,8 @@ func (s *ConversationStore) DeferMessageExpiry(ctx context.Context, messageID uu
 // projection clean-up). ErrExpiryDeliveryPending means the delivery has not
 // completed and nothing was changed.
 func (s *ConversationStore) ExpireMessageRecords(ctx context.Context, e MessageExpiry, alreadyGone bool, eventType string, eventPayload interface{}) ([]uuid.UUID, error) {
-	payload, err := json.Marshal(eventPayload)
+	expiredKey := "message-expired:" + e.MessageID.String()
+	payload, err := s.sealOutboxPayload(ctx, eventType, expiredKey, eventPayload)
 	if err != nil {
 		return nil, err
 	}
@@ -216,7 +216,7 @@ func (s *ConversationStore) ExpireMessageRecords(ctx context.Context, e MessageE
 			statement{releaseUnreadForUnsentSQL, []any{e.ConversationID, e.MessageID, e.SenderID, e.MessageTS}},
 			statement{`INSERT INTO chat.outbox_events (dedupe_key, event_type, payload) VALUES ($1, $2, $3)
 			  ON CONFLICT (dedupe_key) WHERE dedupe_key IS NOT NULL DO NOTHING`,
-				[]any{"message-expired:" + e.MessageID.String(), eventType, payload}},
+				[]any{expiredKey, eventType, payload}},
 		)
 	}
 	statements = append(statements,
@@ -225,11 +225,8 @@ func (s *ConversationStore) ExpireMessageRecords(ctx context.Context, e MessageE
 		statement{`DELETE FROM chat.starred_messages WHERE message_id = $1 AND conversation_id = $2`, []any{e.MessageID, e.ConversationID}},
 		statement{`DELETE FROM chat.conversation_pins WHERE message_id = $1 AND conversation_id = $2`, []any{e.MessageID, e.ConversationID}},
 		statement{`DELETE FROM chat.message_translations WHERE message_id = $1`, []any{e.MessageID}},
-		statement{`UPDATE chat.message_delivery_intents
-		  SET message_text = '', reply_to_preview = '', extra = NULL
-		  WHERE message_id = $1 AND completed_at IS NOT NULL`, []any{e.MessageID}},
-		statement{`UPDATE chat.outbox_events SET payload = payload - 'text' - 'preview'
-		  WHERE dedupe_key = $1 AND published_at IS NOT NULL`, []any{"message-created:" + e.MessageID.String()}},
+		statement{blankCompletedIntentSQL, []any{e.MessageID}},
+		statement{stripPublishedMessageCreatedSQL, []any{"message-created:" + e.MessageID.String()}},
 		statement{`UPDATE chat.message_expiries SET deleted_at = NOW() WHERE message_id = $1`, []any{e.MessageID}},
 	)
 	if hasIntent {
@@ -246,4 +243,68 @@ func (s *ConversationStore) ExpireMessageRecords(ctx context.Context, e MessageE
 		return nil, err
 	}
 	return memberIDs, nil
+}
+
+// blankCompletedIntentSQL drops the content a completed delivery intent
+// still carries ($1 = message id). An incomplete intent keeps it: repair
+// still has to write the message.
+const blankCompletedIntentSQL = `UPDATE chat.message_delivery_intents
+		  SET message_text = '', reply_to_preview = '', extra = NULL
+		  WHERE message_id = $1 AND completed_at IS NOT NULL`
+
+// stripPublishedMessageCreatedSQL removes the text and preview from an
+// already-published MessageCreated outbox row ($1 = its dedupe key). A legacy
+// (plaintext JSON object) payload loses the two keys; a sealed payload is a
+// JSON string that cannot be edited in SQL, and a published row is never
+// read again, so it is replaced by an empty object.
+const stripPublishedMessageCreatedSQL = `UPDATE chat.outbox_events
+		  SET payload = CASE WHEN jsonb_typeof(payload) = 'object'
+		                     THEN payload - 'text' - 'preview'
+		                     ELSE '{}'::jsonb END
+		  WHERE dedupe_key = $1 AND published_at IS NOT NULL`
+
+// RedactUnsentMessageRecords is the Postgres side of unsend's content
+// removal (22 Oct 2026; Scylla's is SoftDeleteMessage), mirroring what the
+// disappearing-message path already did: the completed delivery intent's
+// text, quote and rich payload, the cached send response (a NULL response
+// makes a late retry of that key report "in progress" instead of returning
+// the text), the text and preview inside the published MessageCreated outbox
+// row, any translation of the message and the preview kept on stars of it
+// (the stars themselves stay). Idempotent; one transaction.
+func (s *ConversationStore) RedactUnsentMessageRecords(ctx context.Context, conversationID, messageID uuid.UUID) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	var idempotencyKey string
+	err = tx.QueryRow(ctx, `
+		SELECT idempotency_key FROM chat.message_delivery_intents
+		WHERE message_id = $1 AND conversation_id = $2 AND completed_at IS NOT NULL
+	`, messageID, conversationID).Scan(&idempotencyKey)
+	hasIntent := true
+	if errors.Is(err, pgx.ErrNoRows) {
+		hasIntent = false
+	} else if err != nil {
+		return err
+	}
+	type statement struct {
+		sql  string
+		args []any
+	}
+	statements := []statement{
+		{blankCompletedIntentSQL, []any{messageID}},
+		{stripPublishedMessageCreatedSQL, []any{"message-created:" + messageID.String()}},
+		{`DELETE FROM chat.message_translations WHERE message_id = $1`, []any{messageID}},
+		{`UPDATE chat.starred_messages SET message_preview = NULL WHERE message_id = $1 AND conversation_id = $2`, []any{messageID, conversationID}},
+	}
+	if hasIntent {
+		statements = append(statements, statement{`UPDATE chat.idempotency_keys SET response = NULL WHERE key = $1`, []any{idempotencyKey}})
+	}
+	for _, st := range statements {
+		if _, err := tx.Exec(ctx, st.sql, st.args...); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }

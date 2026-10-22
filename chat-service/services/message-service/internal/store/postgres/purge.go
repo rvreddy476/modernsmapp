@@ -93,6 +93,7 @@ func (s *ConversationStore) PurgeUser(ctx context.Context, userID uuid.UUID) err
 		`DELETE FROM chat.message_requests WHERE sender_id = $1 OR receiver_id = $1`,
 		`DELETE FROM chat.group_invitations WHERE inviter_id = $1 OR invitee_id = $1`,
 		`DELETE FROM chat.read_cursors WHERE user_id = $1`,
+		`DELETE FROM chat.delivered_cursors WHERE user_id = $1`,
 		// Chat parity (2026-10-18): notes, delete-for-me rows, shared-tab
 		// rows the user sent, and DM streaks the user was part of.
 		`DELETE FROM chat.notes WHERE user_id = $1`,

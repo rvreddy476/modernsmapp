@@ -532,6 +532,20 @@ data class ConversationDto(
     /** A requests-list row: its one message, and when it was sent. */
     val preview: String? = null,
     @SerialName("requested_at") val requestedAt: String? = null,
+    // A group newcomer sees only what was sent after they joined (founder,
+    // 2026-10-22). GET /conversations/:id says how they joined, only then —
+    // never for the creator or a member with full history.
+    @SerialName("my_join") val myJoin: MyJoinDto? = null,
+    /** Message ticks (2026-10-22): the viewer-scoped delivered/read watermarks. */
+    val receipts: ReceiptsDto? = null,
+)
+
+/** `my_join`: `method` is `invite_link`, `added` or `invitation`. */
+@Serializable
+data class MyJoinDto(
+    @SerialName("joined_at") val joinedAt: String = "",
+    val method: String = "",
+    @SerialName("added_by_user_id") val addedByUserId: String? = null,
 )
 
 /**
@@ -603,6 +617,8 @@ data class MessageDto(
     val deleted: Boolean = false,
     /** Set once the author edited the text. */
     @SerialName("edited_at") val editedAt: String? = null,
+    /** History, the viewer's own messages only: `sent|delivered|read` (message ticks, 2026-10-22). */
+    val status: String? = null,
 )
 
 const val TEXT_MESSAGE = "text"
