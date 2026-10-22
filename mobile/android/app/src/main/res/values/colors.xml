@@ -17,4 +17,11 @@
       launcher icon keep us_background: the mark is drawn for the navy.
     -->
     <color name="us_window_background">#FFF3F6FA</color>
+    <!--
+      VChat's opening screen (founder, 23 Oct 2026): the sunset gradient's
+      deep end, so the gradient badge (drawable/ic_splash_logo.xml) glows on
+      it. The splash API takes a solid colour only; the full gradient lives in
+      the launcher icon (drawable/ic_launcher_background.xml).
+    -->
+    <color name="vchat_splash">#FF2A0845</color>
 </resources>

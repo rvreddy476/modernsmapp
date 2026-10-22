@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  VChat's launcher ground (founder, 23 Oct 2026: "VChat with a colourful
+  background"): the sunset gradient, violet to magenta to orange to gold,
+  running corner to corner across the whole 108dp adaptive-icon canvas so
+  every launcher mask (circle, squircle, teardrop) shows all four colours.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:aapt="http://schemas.android.com/aapt"
+    android:width="108dp" android:height="108dp"
+    android:viewportWidth="108" android:viewportHeight="108">
+    <path android:pathData="M0,0 H108 V108 H0 Z">
+        <aapt:attr name="android:fillColor">
+            <gradient
+                android:type="linear"
+                android:startX="0" android:startY="0"
+                android:endX="108" android:endY="108">
+                <item android:offset="0" android:color="#FF7B2FF7" />
+                <item android:offset="0.4" android:color="#FFF107A3" />
+                <item android:offset="0.75" android:color="#FFFF7A18" />
+                <item android:offset="1" android:color="#FFFFD200" />
+            </gradient>
+        </aapt:attr>
+    </path>
+</vector>

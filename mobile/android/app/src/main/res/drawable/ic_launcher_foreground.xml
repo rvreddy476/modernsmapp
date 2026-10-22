@@ -1,24 +1,17 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Momentum's launcher mark: an "M" monogram filled with the brand's
-  orange→red gradient. The navy ground is the adaptive icon's background
-  layer (mipmap-anydpi-v26/ic_launcher.xml → @color/us_background), so this
-  foreground carries the glyph alone and stays legible as a monochrome icon.
-  Geometry sits inside the 66dp safe zone of the 108dp canvas.
+  VChat's launcher mark: a white chat bubble with a play triangle cut out of
+  it (chat + video in one glyph). The gradient is the adaptive icon's
+  background layer (drawable/ic_launcher_background.xml), so this foreground
+  is the glyph alone and reads as a monochrome themed icon too. The
+  triangle is an even-odd hole, so the gradient shows through it. Geometry
+  stays inside the 66dp safe zone of the 108dp canvas.
 -->
 <vector xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:aapt="http://schemas.android.com/aapt"
     android:width="108dp" android:height="108dp"
     android:viewportWidth="108" android:viewportHeight="108">
-    <path android:pathData="M31,75 V33 H41 L54,55 L67,33 H77 V75 H67.5 V50.5 L56.5,69 H51.5 L40.5,50.5 V75 Z">
-        <aapt:attr name="android:fillColor">
-            <gradient
-                android:type="linear"
-                android:startX="31" android:startY="54"
-                android:endX="77" android:endY="54">
-                <item android:offset="0" android:color="#FFFB923C" />
-                <item android:offset="1" android:color="#FFDC2626" />
-            </gradient>
-        </aapt:attr>
-    </path>
+    <path
+        android:fillColor="#FFFFFFFF"
+        android:fillType="evenOdd"
+        android:pathData="M40,33 H68 A10,10 0 0 1 78,43 V61 A10,10 0 0 1 68,71 H50 L39,79 V71 H40 A10,10 0 0 1 30,61 V43 A10,10 0 0 1 40,33 Z M49,43 V61 L64,52 Z" />
 </vector>
