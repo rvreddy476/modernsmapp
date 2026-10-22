@@ -53,12 +53,15 @@ type UpdateDraftInput struct {
 	AIGenerated     *bool   `json:"ai_generated"`
 	LocationName    *string `json:"location_name"`
 	LocationPlaceID *string `json:"location_place_id"`
-	AudioTrackID      *string  `json:"audio_track_id"`
-	AudioStartMs      *int     `json:"audio_start_ms"`
-	OriginalAudioVol  *float32 `json:"original_audio_volume"`
-	OverlayAudioVol   *float32 `json:"overlay_audio_volume"`
-	CoverMediaID      *string  `json:"cover_media_id"`
-	ScheduleAt        *string  `json:"schedule_at"`
+	// ContentType is the kind the studio measured: flick or long_video
+	// (migration 069). Anything else is refused.
+	ContentType      *string  `json:"content_type"`
+	AudioTrackID     *string  `json:"audio_track_id"`
+	AudioStartMs     *int     `json:"audio_start_ms"`
+	OriginalAudioVol *float32 `json:"original_audio_volume"`
+	OverlayAudioVol  *float32 `json:"overlay_audio_volume"`
+	CoverMediaID     *string  `json:"cover_media_id"`
+	ScheduleAt       *string  `json:"schedule_at"`
 }
 
 // ErrInvalidDraftSound: audio_track_id on a draft patch is neither a sound
@@ -98,6 +101,40 @@ func draftSoundUpdates(input *UpdateDraftInput, updates map[string]interface{}) 
 			start = 0
 		}
 		updates["audio_start_ms"] = start
+	}
+	return nil
+}
+
+// ErrInvalidDraftContentType: content_type on a draft patch is neither
+// flick nor long_video.
+var ErrInvalidDraftContentType = errors.New("content_type must be flick or long_video")
+
+// draftPublishUpdates resolves the patch fields a publish copies onto the
+// post under the post's own rules (2026-10-22), so a draft can never hold
+// a value the publish would refuse:
+//
+//   - content_type is flick or long_video, or the patch is refused
+//     (ErrInvalidDraftContentType) before a single column is written;
+//   - hashtags pass NormalizeExplicitHashtags, the create route's rule, and
+//     are stored as it canonicalises them. [] clears them.
+func draftPublishUpdates(input *UpdateDraftInput, updates map[string]interface{}) error {
+	if input.ContentType != nil {
+		switch kind := *input.ContentType; kind {
+		case "flick", "long_video":
+			updates["content_type"] = kind
+		default:
+			return ErrInvalidDraftContentType
+		}
+	}
+	if input.Hashtags != nil {
+		tags, err := NormalizeExplicitHashtags(input.Hashtags)
+		if err != nil {
+			return err
+		}
+		if tags == nil {
+			tags = []string{}
+		}
+		updates["hashtags"] = tags
 	}
 	return nil
 }
@@ -160,14 +197,14 @@ func (s *Service) UpdateDraft(ctx context.Context, draftID uuid.UUID, authorID u
 	if err := draftSoundUpdates(input, updates); err != nil {
 		return nil, err
 	}
+	if err := draftPublishUpdates(input, updates); err != nil {
+		return nil, err
+	}
 	if input.Title != nil {
 		updates["title"] = *input.Title
 	}
 	if input.Caption != nil {
 		updates["caption"] = *input.Caption
-	}
-	if input.Hashtags != nil {
-		updates["hashtags"] = input.Hashtags
 	}
 	if input.Tags != nil {
 		updates["tags"] = input.Tags
@@ -348,22 +385,51 @@ func (s *Service) PublishDraft(ctx context.Context, draftID uuid.UUID, authorID 
 		return nil, err
 	}
 
-	// Build CreatePostInput from draft
-	var mediaIDs []uuid.UUID
-	if draft.MediaID != nil {
-		mediaIDs = []uuid.UUID{*draft.MediaID}
-	}
-
 	// P0-5 idempotency: the draft id becomes the post id, so a crash-retry
 	// (or a concurrent worker that stole a stale claim) hits the posts PK
 	// instead of creating a second post.
 	publishPostID := draft.ID
+	input := reelDraftPostInput(draft, authorID, s.unsaidDraftKind(ctx, draft))
+
+	post, err := s.CreatePost(ctx, input)
+	if err != nil {
+		if postgres.IsUniqueViolation(err) {
+			// Already published by a previous attempt — resolve to it.
+			if existing, gerr := s.pgStore.GetPost(ctx, publishPostID); gerr == nil && existing != nil {
+				s.keepDraftSound(ctx, existing, draft)
+				s.pgStore.MarkDraftPublished(ctx, draftID, existing.ID) //nolint:errcheck
+				return existing, nil
+			}
+		}
+		return nil, fmt.Errorf("publish draft as post: %w", err)
+	}
+	s.keepDraftSound(ctx, post, draft)
+
+	// Mark draft as published
+	if err := s.pgStore.MarkDraftPublished(ctx, draftID, post.ID); err != nil {
+		// Non-fatal: the post was already created
+	}
+
+	return post, nil
+}
+
+// reelDraftPostInput is the post a reel draft publishes as. Both publish
+// paths — the person's and the schedule worker's — build it here, so they
+// cannot drift apart again. unsaidKind is the kind to use when the draft
+// never said one (unsaidDraftKind). Every UpdateDraftInput field reaches
+// this input or is listed draft-only in reel_draft_fields_test.go.
+func reelDraftPostInput(draft *postgres.ReelDraft, authorID uuid.UUID, unsaidKind string) *CreatePostInput {
+	var mediaIDs []uuid.UUID
+	if draft.MediaID != nil {
+		mediaIDs = []uuid.UUID{*draft.MediaID}
+	}
+	postID := draft.ID
 	input := &CreatePostInput{
-		PostID:       &publishPostID,
+		PostID:       &postID,
 		AuthorID:     authorID,
 		Text:         draft.Caption,
 		Visibility:   draft.Visibility,
-		ContentType:  "flick", // classified at upload time; legacy drafts default to flick
+		ContentType:  unsaidKind,
 		MediaIDs:     mediaIDs,
 		CoverMediaID: draft.CoverMediaID,
 		NoComments:   !draft.CommentsEnabled,
@@ -390,39 +456,67 @@ func (s *Service) PublishDraft(ctx context.Context, draftID uuid.UUID, authorID 
 		OverlayAudioVol:   draft.OverlayAudioVol,
 	}
 	applyDraftScreenFields(input, draft)
-
-	post, err := s.CreatePost(ctx, input)
-	if err != nil {
-		if postgres.IsUniqueViolation(err) {
-			// Already published by a previous attempt — resolve to it.
-			if existing, gerr := s.pgStore.GetPost(ctx, publishPostID); gerr == nil && existing != nil {
-				s.keepDraftSound(ctx, existing, draft)
-				s.pgStore.MarkDraftPublished(ctx, draftID, existing.ID) //nolint:errcheck
-				return existing, nil
-			}
-		}
-		return nil, fmt.Errorf("publish draft as post: %w", err)
-	}
-	s.keepDraftSound(ctx, post, draft)
-
-	// Mark draft as published
-	if err := s.pgStore.MarkDraftPublished(ctx, draftID, post.ID); err != nil {
-		// Non-fatal: the post was already created
-	}
-
-	return post, nil
+	return input
 }
 
 // applyDraftScreenFields copies what the upload studio saves beyond the
-// original draft columns (migration 068) onto the post being created. Both
-// publish paths — the person's and the schedule worker's — call it, so the
-// AI label and the tagged place survive a saved draft.
+// original draft columns onto the post being created, so none of it is
+// lost to a saved draft:
+//
+//   - the AI label and the tagged place (migration 068);
+//   - the kind the studio measured (migration 069) — a long video saved as
+//     a draft used to publish as a flick;
+//   - the studio's hashtags, the SEO title, and the recording date and
+//     place, which the draft always stored and the publish dropped;
+//   - publish_to_feed=false as the explicit legacy opt-out, the way the
+//     create handler forwards it, so it reaches the stored distribution
+//     policy and not just the column (Codex P1-1).
 func applyDraftScreenFields(input *CreatePostInput, draft *postgres.ReelDraft) {
 	input.AIGenerated = draft.AIGenerated
 	if draft.LocationName != nil && strings.TrimSpace(*draft.LocationName) != "" {
 		input.LocationName = draft.LocationName
 		input.LocationPlaceID = draft.LocationPlaceID
 	}
+	if draft.ContentType != nil && *draft.ContentType != "" {
+		input.ContentType = *draft.ContentType
+	}
+	input.Hashtags = draft.Hashtags
+	input.SEOTitle = draft.SEOTitle
+	input.RecordingDate = draft.RecordingDate
+	input.RecordingLocation = draft.RecordingLocation
+	if !draft.PublishToFeed {
+		off := false
+		input.LegacyDistribution.PublishToFeed = &off
+	}
+}
+
+// unsaidDraftKind is the kind a draft publishes as when its client never
+// said one (content_type NULL: every draft saved before migration 069, and
+// any client that does not send it). It is classified from the measured
+// video the way the direct create path classifies one (ClassifyVideo), and
+// stays a flick — what every legacy draft published as — while transcode
+// has not measured the video yet. A draft that said its kind skips the
+// lookups; applyDraftScreenFields uses the kind it said.
+func (s *Service) unsaidDraftKind(ctx context.Context, draft *postgres.ReelDraft) string {
+	if draft.ContentType != nil && *draft.ContentType != "" {
+		return *draft.ContentType
+	}
+	if draft.MediaID == nil {
+		return "flick"
+	}
+	dur := s.pgStore.ResolveMediaDuration(ctx, *draft.MediaID)
+	w, h, _ := s.pgStore.ResolveMediaDimensions(ctx, *draft.MediaID)
+	return classifyUnsaidDraft(dur, w, h)
+}
+
+// classifyUnsaidDraft: the measurement decides, and an unmeasured video
+// (duration 0) is a flick.
+func classifyUnsaidDraft(durationSeconds, width, height int) string {
+	if durationSeconds <= 0 {
+		return "flick"
+	}
+	kind, _ := ClassifyVideo(float64(durationSeconds), width, height)
+	return kind
 }
 
 // PublishScheduledDrafts claims due reel drafts (SKIP LOCKED — safe with
@@ -470,42 +564,8 @@ func (s *Service) publishClaimedReelDraft(ctx context.Context, draftID, authorID
 	default:
 		return nil, serr
 	}
-	var mediaIDs []uuid.UUID
-	if draft.MediaID != nil {
-		mediaIDs = []uuid.UUID{*draft.MediaID}
-	}
 	publishPostID := draft.ID
-	input := &CreatePostInput{
-		PostID:            &publishPostID,
-		AuthorID:          authorID,
-		Text:              draft.Caption,
-		Visibility:        draft.Visibility,
-		ContentType:       "flick",
-		MediaIDs:          mediaIDs,
-		CoverMediaID:      draft.CoverMediaID,
-		NoComments:        !draft.CommentsEnabled,
-		NoLikes:           !draft.LikesEnabled,
-		AllowDownload:     true,
-		PostType:          "video",
-		AppOrigin:         "posttube",
-		PublishToFeed:     draft.PublishToFeed,
-		ShareToPostbook:   draft.CrossPostPostbook,
-		Title:             draft.Title,
-		Tags:              draft.Tags,
-		Category:          draft.Category,
-		Language:          draft.Language,
-		PaidPromotion:     draft.PaidPromotion,
-		AlteredContent:    draft.AlteredContent,
-		IsMadeForKids:     draft.IsMadeForKids,
-		License:           draft.License,
-		AllowEmbedding:    draft.AllowEmbedding,
-		RemixSetting:      draft.RemixSetting,
-		CommentModeration: draft.CommentModeration,
-		CommentAccess:     draft.CommentAccess,
-		OriginalAudioVol:  draft.OriginalAudioVol,
-		OverlayAudioVol:   draft.OverlayAudioVol,
-	}
-	applyDraftScreenFields(input, draft)
+	input := reelDraftPostInput(draft, authorID, s.unsaidDraftKind(ctx, draft))
 	post, err := s.CreatePost(ctx, input)
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {

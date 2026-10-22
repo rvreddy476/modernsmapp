@@ -111,8 +111,11 @@ func (h *Handler) UpdateDraft(c *gin.Context) {
 
 	draft, err := h.svc.UpdateDraft(c.Request.Context(), draftID, authorID, &input)
 	if err != nil {
-		// audio_track_id is a sound id, or "" to remove the sound.
-		if errors.Is(err, service.ErrInvalidDraftSound) || errors.Is(err, service.ErrInvalidLocationPlaceID) {
+		// audio_track_id is a sound id, or "" to remove the sound;
+		// content_type and hashtags follow the post's own rules.
+		if errors.Is(err, service.ErrInvalidDraftSound) || errors.Is(err, service.ErrInvalidLocationPlaceID) ||
+			errors.Is(err, service.ErrInvalidDraftContentType) ||
+			errors.Is(err, service.ErrInvalidHashtag) || errors.Is(err, service.ErrTooManyHashtags) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 			return
 		}
