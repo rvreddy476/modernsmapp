@@ -221,6 +221,20 @@ cmd_logs() {
   compose logs --no-color --tail "$n" "$svc"
 }
 
+# chat-backfill [redis]: one pass of chat field encryption over the rows
+# stored before it existed (22 Oct 2026). Runs the tool baked into the
+# chat-message-service image; it is idempotent, resumable, logs counts only
+# and refuses to run without a key ring. "redis" is the second pass that
+# deletes the retired chat_messages:* lists. Deliberately narrow: no general
+# exec action on this box.
+cmd_chat_backfill() {
+  if [ "${1:-}" = "redis" ]; then
+    compose exec -T chat-message-service fieldcrypt-backfill -redis
+  else
+    compose exec -T chat-message-service fieldcrypt-backfill -batch 500
+  fi
+}
+
 # load-image <bucket> <key>
 cmd_load_image() {
   local f
@@ -270,6 +284,7 @@ case "$sub" in
   boot)            cmd_boot "$@" ;;
   status)          cmd_status "$@" ;;
   logs)            cmd_logs "$@" ;;
+  chat-backfill)   cmd_chat_backfill "$@" ;;
   load-image)      cmd_load_image "$@" ;;
   build-admin)     cmd_build_admin "$@" ;;
   *) die "unknown subcommand '$sub'" ;;

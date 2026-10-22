@@ -29,5 +29,6 @@ case "${1:-up}" in
   status)      ssm_run 120 status ;;
   logs)        [ -n "${2:-}" ] || die "usage: ./up.sh logs <service> [lines]"
                ssm_run 120 logs "$2" "${3:-120}" ;;
-  *)           die "usage: ./up.sh [--no-build|status|logs <service> [lines]]" ;;
+  chat-backfill) ssm_run 1800 chat-backfill "${2:-}" ;;
+  *)           die "usage: ./up.sh [--no-build|status|logs <service> [lines]|chat-backfill [redis]]" ;;
 esac
