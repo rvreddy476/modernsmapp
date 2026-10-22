@@ -111,15 +111,18 @@ func (h *Handler) UpdateDraft(c *gin.Context) {
 
 	draft, err := h.svc.UpdateDraft(c.Request.Context(), draftID, authorID, &input)
 	if err != nil {
+		switch {
+		// Hashtags follow the create route's rule, so they answer with its
+		// codes (INVALID_HASHTAG, TOO_MANY_HASHTAGS).
+		case writeScheduleError(c, err):
 		// audio_track_id is a sound id, or "" to remove the sound;
-		// content_type and hashtags follow the post's own rules.
-		if errors.Is(err, service.ErrInvalidDraftSound) || errors.Is(err, service.ErrInvalidLocationPlaceID) ||
-			errors.Is(err, service.ErrInvalidDraftContentType) ||
-			errors.Is(err, service.ErrInvalidHashtag) || errors.Is(err, service.ErrTooManyHashtags) {
+		// content_type is flick or long_video.
+		case errors.Is(err, service.ErrInvalidDraftSound) || errors.Is(err, service.ErrInvalidLocationPlaceID) ||
+			errors.Is(err, service.ErrInvalidDraftContentType):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-			return
+		default:
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
 
@@ -202,15 +205,27 @@ func (h *Handler) PublishDraft(c *gin.Context) {
 
 	post, err := h.svc.PublishDraft(c.Request.Context(), draftID, authorID, req.ScheduleAt)
 	if err != nil {
-		if writeStandingError(c, err) {
-			return
-		}
-		if writeCoverMediaError(c, err) {
-			return
-		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		writeReelDraftPublishError(c, err)
 		return
 	}
 
 	api.JSON(c.Writer, http.StatusCreated, post, nil)
+}
+
+// writeReelDraftPublishError answers a refused reel-draft publish. The draft
+// publishes through CreatePost, so its refusals of the request are the
+// create route's 4xx, as for composer drafts (writePostDraftError). Since
+// a draft keeps its kind (migration 069), a long video reaches the
+// long-video guards here too: CHANNEL_REQUIRED and TITLE_REQUIRED used to
+// come back as 500 INTERNAL_ERROR, which tells the client to retry.
+func writeReelDraftPublishError(c *gin.Context, err error) {
+	switch {
+	case writeStandingError(c, err):
+	case writeCoverMediaError(c, err):
+	case writeDistributionError(c, err):
+	case writeCreateGuardError(c, err):
+	case writeScheduleError(c, err):
+	default:
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+	}
 }

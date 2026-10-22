@@ -72,7 +72,7 @@ func TestWriteCoverMediaErrorAnswersLikeThePatchRoute(t *testing.T) {
 func TestCoverRefusalIsMappedOnEveryWritePath(t *testing.T) {
 	for file, funcs := range map[string][]string{
 		"handler.go":     {"CreatePost", "SetCoverFrame"},
-		"drafts.go":      {"PublishDraft"},
+		"drafts.go":      {"writeReelDraftPublishError"},
 		"post_drafts.go": {"writePostDraftError"},
 	} {
 		parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
