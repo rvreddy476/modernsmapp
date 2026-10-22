@@ -48,12 +48,15 @@ import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.feed.data.ChannelState
 import com.us.android.core.feed.data.ContinueWatching
+import com.us.android.core.feed.data.LIKED_VIDEOS_TITLE
 import com.us.android.core.feed.data.VideoThumb
+import com.us.android.core.feed.data.WATCH_LATER_TITLE
 import com.us.android.core.feed.ui.channel.CreateChannelSheet
 import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.model.Channel
 import com.us.android.core.model.FeedItem
 import com.us.android.core.ui.UsErrorState
+import com.us.android.feature.tube.navigation.TubeCollectionRoute
 import com.us.android.feature.tube.navigation.TubeDestinations
 import com.us.android.feature.tube.ui.TubeMoreHost
 import com.us.android.feature.tube.ui.TubePage
@@ -150,6 +153,11 @@ fun YouScreen(
                 item(key = "subscriptions", span = StaggeredGridItemSpan.FullLine) {
                     SubscriptionsRow(onOpen = { destinations.onOpenTab(TubeTab.SUBSCRIPTIONS) })
                 }
+                // The library (web parity, 2026-10-22): History, Liked videos,
+                // Watch later and Collections, each one row to its page.
+                item(key = "library", span = StaggeredGridItemSpan.FullLine) {
+                    LibraryRows(destinations = destinations)
+                }
                 ownVideosSection(own, actions)
                 continueWatchingSection(continueWatching, actions)
                 savedSection(saved, actions)
@@ -177,6 +185,18 @@ private enum class YouSheet { None, Create, Edit }
  */
 @Composable
 private fun SubscriptionsRow(onOpen: () -> Unit) {
+    GlassRow(
+        icon = UsIcons.ListVideo,
+        title = "Subscriptions",
+        detail = "Videos from channels you follow",
+        onOpen = onOpen,
+        testTag = "tube_you_subscriptions",
+    )
+}
+
+/** One glass row: the glyph, the title, a line saying what is behind it, and a chevron. */
+@Composable
+private fun GlassRow(icon: ImageVector, title: String, detail: String, onOpen: () -> Unit, testTag: String) {
     val shape = RoundedCornerShape(ROW_RADIUS)
     Row(
         modifier = Modifier
@@ -186,25 +206,64 @@ private fun SubscriptionsRow(onOpen: () -> Unit) {
             .border(ROW_HAIRLINE, UsTheme.extended.glassBorder, shape)
             .pressScale(onOpen)
             .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.l)
-            .testTag("tube_you_subscriptions"),
+            .testTag(testTag),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
     ) {
-        RowGlyph(UsIcons.ListVideo)
+        RowGlyph(icon)
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "Subscriptions",
+                text = title,
                 style = MaterialTheme.typography.titleSmall,
                 fontWeight = FontWeight.SemiBold,
                 color = UsTheme.extended.textPrimary,
             )
             Text(
-                text = "Videos from channels you follow",
+                text = detail,
                 style = MaterialTheme.typography.bodySmall,
                 color = UsTheme.extended.textMuted,
             )
         }
         RowGlyph(UsIcons.ChevronRight)
+    }
+}
+
+/**
+ * The viewer's library on You (web parity, 2026-10-22), the way YouTube's
+ * You page lists it: History, Liked videos, Watch later, Collections. Every
+ * row opens a real page; the same pages are in the header's More sheet.
+ */
+@Composable
+private fun LibraryRows(destinations: TubeDestinations) {
+    Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+        GlassRow(
+            icon = UsIcons.RotateCcw,
+            title = "History",
+            detail = "Videos you watched, with where you left off",
+            onOpen = destinations.onOpenHistory,
+            testTag = "tube_you_history",
+        )
+        GlassRow(
+            icon = UsIcons.ThumbsUp,
+            title = LIKED_VIDEOS_TITLE,
+            detail = "Long videos you liked",
+            onOpen = { destinations.onOpenCollection(TubeCollectionRoute.LIKED) },
+            testTag = "tube_you_liked",
+        )
+        GlassRow(
+            icon = UsIcons.Clock,
+            title = WATCH_LATER_TITLE,
+            detail = "Videos you kept for later",
+            onOpen = { destinations.onOpenCollection(TubeCollectionRoute.WATCH_LATER) },
+            testTag = "tube_you_watch_later",
+        )
+        GlassRow(
+            icon = UsIcons.Folder,
+            title = "Collections",
+            detail = "The lists you made",
+            onOpen = destinations.onOpenCollections,
+            testTag = "tube_you_collections",
+        )
     }
 }
 

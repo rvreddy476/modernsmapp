@@ -4,9 +4,11 @@ import com.google.common.truth.Truth.assertThat
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.feed.data.AddPlaylistItemRequest
 import com.us.android.core.feed.data.CreatePlaylistRequest
+import com.us.android.core.feed.data.MovePlaylistItemRequest
 import com.us.android.core.feed.data.PlaylistDto
 import com.us.android.core.feed.data.PlaylistItemDto
 import com.us.android.core.feed.data.TuneDto
+import com.us.android.core.feed.data.UpdatePlaylistRequest
 import com.us.android.core.feed.data.VideoCollection
 import com.us.android.core.feed.data.VideoLibraryApi
 import com.us.android.core.feed.data.VideoLibraryRepository
@@ -85,6 +87,14 @@ class CollectionsTest {
         override suspend fun removeWatchLater(postId: String): ApiEnvelope<WatchLaterDto> = error("not used here")
         override suspend fun addDislike(postId: String): ApiEnvelope<TuneDto> = error("not used here")
         override suspend fun removeDislike(postId: String): ApiEnvelope<TuneDto> = error("not used here")
+        override suspend fun updatePlaylist(playlistId: String, body: UpdatePlaylistRequest): ApiEnvelope<PlaylistDto> =
+            error("not used here")
+        override suspend fun deletePlaylist(playlistId: String) = error("not used here")
+        override suspend fun moveItem(
+            playlistId: String,
+            postId: String,
+            body: MovePlaylistItemRequest,
+        ): ApiEnvelope<List<PlaylistItemDto>> = error("not used here")
     }
 
     private fun picker(api: FakeLibraryApi) =

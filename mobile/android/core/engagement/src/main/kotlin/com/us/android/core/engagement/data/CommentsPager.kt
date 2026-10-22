@@ -40,9 +40,23 @@ data class CommentRow(
      * collapsed comment as a preview. See [CommentDto.reply].
      */
     val reply: CommentRow? = null,
+    /**
+     * Edited by its author (2026-10-22): the row reads "Edited". post-service
+     * keeps no edited flag — `updated_at` also moves for a new reply and for
+     * moderation, so it cannot say so — and this is set for the edits made on
+     * this device in this session, which is every edit a viewer can see
+     * themselves make.
+     */
+    val edited: Boolean = false,
 ) {
     val isReply: Boolean get() = parentId != null
 }
+
+/** The comment the composer is editing, and the text it had when editing began. */
+data class EditTarget(
+    val commentId: String,
+    val original: String,
+)
 
 /**
  * The replies under one top-level comment, once someone opened them.
@@ -132,6 +146,8 @@ data class CommentsUiState(
     /** Opened reply threads, by top-level comment id. */
     val threads: Map<String, ReplyThread> = emptyMap(),
     val replyingTo: ReplyTarget? = null,
+    /** The viewer's own comment being edited in the composer (2026-10-22); null for a new comment. */
+    val editing: EditTarget? = null,
     val notice: CommentNotice? = null,
     val report: CommentReportStatus = CommentReportStatus.IDLE,
     /** The `@handle` being typed at the end of the draft, if any. */
@@ -242,6 +258,13 @@ class CommentsController(
     /** Rows whose pin or heart is on the wire. */
     private val creatorInFlight = mutableSetOf<String>()
 
+    /**
+     * Comments the viewer edited this session. The server keeps no edited
+     * flag, so a refresh would otherwise wipe "Edited" off a row the viewer
+     * just changed; every read lays this back over its rows.
+     */
+    private val editedIds = mutableSetOf<String>()
+
     fun snapshot(): CommentsUiState = state
 
     /** Who is commenting. Also names the optimistic row, instead of "You". */
@@ -272,7 +295,7 @@ class CommentsController(
         state = state.copy(loading = true, refreshError = null)
         return when (val result = repository.comments(postId)) {
             is AppResult.Success -> state.copy(
-                rows = result.data.items.map { it.toRow() },
+                rows = result.data.items.map { it.toRow().markEdited() },
                 nextCursor = result.data.nextCursor,
                 loading = false,
                 refreshError = null,
@@ -306,7 +329,7 @@ class CommentsController(
         return when (val result = repository.comments(postId, cursor = cursor)) {
             is AppResult.Success -> {
                 val known = state.rows.mapTo(mutableSetOf()) { it.id }
-                val fresh = result.data.items.map { it.toRow() }.filterNot { it.id in known }
+                val fresh = result.data.items.map { it.toRow().markEdited() }.filterNot { it.id in known }
                 state.copy(
                     rows = state.rows + fresh,
                     nextCursor = result.data.nextCursor,
@@ -360,7 +383,7 @@ class CommentsController(
         return when (val result = actions.replies(parentId, cursor)) {
             is AppResult.Success -> {
                 val current = state.thread(parentId)
-                val fetched = result.data.items.map { it.toRow(parentHint = parentId) }
+                val fetched = result.data.items.map { it.toRow(parentHint = parentId).markEdited() }
                 val fetchedIds = fetched.mapTo(mutableSetOf()) { it.id }
                 // A first page leads with the server's order, then whatever
                 // the viewer posted locally that the page did not include;
@@ -401,8 +424,11 @@ class CommentsController(
         val parentId = row.parentId ?: row.id
         val handle = row.authorUsername
         val name = if (handle.isNotBlank()) "@$handle" else row.authorName
-        val draft = if (row.isReply && handle.isNotBlank() && state.draft.isBlank()) "@$handle " else state.draft
+        // A reply started mid-edit drops the edit: the edited text is not a reply's draft.
+        val current = if (state.editing != null) "" else state.draft
+        val draft = if (row.isReply && handle.isNotBlank() && current.isBlank()) "@$handle " else current
         return state.copy(
+            editing = null,
             replyingTo = ReplyTarget(parentId = parentId, targetId = row.id, name = name),
             draft = draft,
             submitError = null,
@@ -437,6 +463,7 @@ class CommentsController(
     suspend fun submit(): CommentsUiState {
         val text = state.draft.trim()
         if (!text.isValidComment() || state.submitting) return state
+        state.editing?.let { return submitEdit(it, text) }
         val target = state.replyingTo
 
         // Reuse the key only for the SAME intent. A retry of an unchanged draft
@@ -545,6 +572,74 @@ class CommentsController(
     private fun clearSubmitKey() {
         submitKey = null
         submitKeyIntent = null
+    }
+
+    // ── Edit (2026-10-22) ───────────────────────────────────────────────
+
+    /**
+     * The ⋮'s Edit on the viewer's own comment or reply: its text goes into
+     * the composer, which says "Editing your comment" until it is sent or
+     * cancelled. A reply in progress gives way; the menu has already checked
+     * that the comment is the viewer's and inside the 15-minute window.
+     */
+    fun startEdit(commentId: String): CommentsUiState {
+        val row = findRow(commentId) ?: return state
+        if (row.pending) return state
+        return state.copy(
+            editing = EditTarget(commentId = row.id, original = row.body),
+            replyingTo = null,
+            draft = row.body,
+            submitError = null,
+            mentionQuery = null,
+            mentions = emptyList(),
+        ).also { state = it }
+    }
+
+    /** The editing bar's ×: the comment stays as it was and the composer empties. */
+    fun cancelEdit(): CommentsUiState {
+        if (state.editing == null) return state
+        return state.copy(editing = null, draft = "", submitError = null, mentionQuery = null, mentions = emptyList())
+            .also { state = it }
+    }
+
+    /**
+     * Saves an edit. The new text shows at once, marked "Edited"; if the
+     * server refuses (a late edit is `EDIT_WINDOW_EXPIRED`), the old text
+     * comes back and the composer keeps what was typed, with the reason.
+     * The same text as before sends nothing.
+     */
+    private suspend fun submitEdit(target: EditTarget, text: String): CommentsUiState {
+        val before = findRow(target.commentId)
+        if (before == null || text == target.original.trim()) {
+            return state.copy(editing = null, draft = "", submitError = null).also { state = it }
+        }
+        state = state.copy(submitting = true, submitError = null, notice = null)
+        updateRow(target.commentId) { it.copy(body = text, edited = true) }
+
+        return when (val result = actions.edit(target.commentId, text)) {
+            is AppResult.Success -> {
+                editedIds += target.commentId
+                state.copy(
+                    submitting = false,
+                    editing = null,
+                    draft = "",
+                    submitError = null,
+                    mentionQuery = null,
+                    mentions = emptyList(),
+                ).also { state = it }
+            }
+
+            is AppResult.Failure -> {
+                updateRow(target.commentId) { it.copy(body = before.body, edited = before.edited) }
+                state.copy(submitting = false, draft = text, submitError = result.error).also { state = it }
+            }
+        }
+    }
+
+    /** Lays this session's edits back over a freshly read row. */
+    private fun CommentRow.markEdited(): CommentRow {
+        val preview = reply?.let { if (it.id in editedIds) it.copy(edited = true) else it }
+        return copy(edited = edited || id in editedIds, reply = preview)
     }
 
     // ── Like ────────────────────────────────────────────────────────────

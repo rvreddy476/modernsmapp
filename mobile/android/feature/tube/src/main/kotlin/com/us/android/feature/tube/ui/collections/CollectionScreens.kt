@@ -18,9 +18,14 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -36,8 +41,10 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsMessageHost
+import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.feed.data.CollectionVisibility
 import com.us.android.core.feed.data.VideoCollection
 import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.feed.data.WATCH_LATER_TITLE
@@ -48,14 +55,21 @@ import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.tube.navigation.TubeDestinations
 import com.us.android.feature.tube.ui.TubePage
 import com.us.android.feature.tube.ui.home.VideoRow
+import com.us.android.feature.tube.ui.home.displayTitle
 import com.us.android.feature.tube.ui.pressScale
 
 /**
- * One collection's page (2026-10-02): Watch later, or a collection the
- * viewer made. Its videos as rows in the list's own order, each opening the
- * watch screen with the rest of the list as "Up next", and a remove glyph at
- * the end of each row. Under Tube's chrome with a back glyph and nothing lit
- * on the bar, like the saved videos.
+ * One collection's page (2026-10-02): Watch later, Liked videos
+ * (2026-10-22), or a collection the viewer made. Its videos as rows in the
+ * list's own order, each opening the watch screen with the rest of the list
+ * as "Up next". Under Tube's chrome with a back glyph and nothing lit on the
+ * bar, like the saved videos.
+ *
+ * What a row and the header offer follows whose list it is
+ * ([collectionPermissions], the web's `CollectionView`): a list the viewer
+ * made has Edit and Delete under its title and a ⋮ on each row with the
+ * moves and Remove; Watch later has the × alone; Liked videos is read-only,
+ * because the like is its only writer.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -65,7 +79,17 @@ fun CollectionScreen(
 ) {
     val content by viewModel.content.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
+    val edit by viewModel.edit.collectAsStateWithLifecycle()
+    val confirmingDelete by viewModel.confirmingDelete.collectAsStateWithLifecycle()
+    val deleting by viewModel.deleting.collectAsStateWithLifecycle()
+    val deleted by viewModel.deleted.collectAsStateWithLifecycle()
+    var rowMenuFor by rememberSaveable { mutableStateOf<String?>(null) }
     RefreshOnResume(viewModel::refresh)
+
+    // Deleted: the page has nothing left to show. The Collections index reads again on resume.
+    LaunchedEffect(deleted) {
+        if (deleted) destinations.onBack()
+    }
 
     TubePage(selected = null, destinations = destinations, onBack = destinations.onBack) { padding ->
         val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
@@ -77,17 +101,52 @@ fun CollectionScreen(
                 is CollectionContent.Ready -> CollectionBody(
                     collection = current.collection,
                     videos = current.videos,
-                    thumbFor = viewModel::thumb,
-                    onOpen = { item ->
-                        viewModel.onOpen(current.videos)
-                        destinations.onOpenVideo(item.id)
-                    },
-                    onRemove = viewModel::remove,
+                    actions = CollectionPageActions(
+                        thumbFor = viewModel::thumb,
+                        open = { item ->
+                            viewModel.onOpen(current.videos)
+                            destinations.onOpenVideo(item.id)
+                        },
+                        remove = viewModel::remove,
+                        rowMenu = { item -> rowMenuFor = item.id },
+                        edit = viewModel::openEdit,
+                        delete = viewModel::askDelete,
+                        deleting = deleting,
+                    ),
                     bottomPadding = padding,
                 )
             }
             UsMessageHost(message = message, onDismiss = viewModel::dismissMessage)
         }
+    }
+
+    val ready = content as? CollectionContent.Ready
+    val rowItem = ready?.videos?.firstOrNull { it.id == rowMenuFor }
+    if (ready != null && rowItem != null) {
+        CollectionRowSheet(
+            collection = ready.collection,
+            item = rowItem,
+            index = ready.videos.indexOf(rowItem),
+            count = ready.videos.size,
+            onMove = { to -> viewModel.move(rowItem, to) },
+            onRemove = { viewModel.remove(rowItem) },
+            onDismiss = { rowMenuFor = null },
+        )
+    }
+    if (ready != null && edit != CollectionEditState.CLOSED) {
+        CollectionEditSheet(
+            collection = ready.collection,
+            saving = edit == CollectionEditState.SAVING,
+            onSave = viewModel::save,
+            onDismiss = viewModel::closeEdit,
+        )
+    }
+    if (ready != null && confirmingDelete) {
+        DeleteCollectionDialog(
+            title = ready.collection.title,
+            onConfirm = viewModel::delete,
+            onDismiss = viewModel::cancelDelete,
+        )
     }
 }
 
@@ -108,28 +167,25 @@ private fun RefreshOnResume(onResume: () -> Unit) {
     }
 }
 
-@Suppress("LongParameterList")
+/** Everything the page's rows and header can ask, grouped, so the body stays short. */
+private class CollectionPageActions(
+    val thumbFor: (FeedItem) -> VideoThumb,
+    val open: (FeedItem) -> Unit,
+    val remove: (FeedItem) -> Unit,
+    val rowMenu: (FeedItem) -> Unit,
+    val edit: () -> Unit,
+    val delete: () -> Unit,
+    val deleting: Boolean,
+)
+
 @Composable
 private fun CollectionBody(
     collection: VideoCollection,
     videos: List<FeedItem>,
-    thumbFor: (FeedItem) -> VideoThumb,
-    onOpen: (FeedItem) -> Unit,
-    onRemove: (FeedItem) -> Unit,
+    actions: CollectionPageActions,
     bottomPadding: PaddingValues,
 ) {
-    if (videos.isEmpty()) {
-        UsEmptyState(
-            title = if (collection.isWatchLater) "Nothing in $WATCH_LATER_TITLE yet" else "No videos here yet",
-            detail = if (collection.isWatchLater) {
-                "Tap $WATCH_LATER_TITLE under a video and it will be kept here."
-            } else {
-                "Tap Add to collection under a video and choose ${collection.title}."
-            },
-            modifier = Modifier.testTag("tube_collection_empty"),
-        )
-        return
-    }
+    val permissions = collectionPermissions(collection)
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -139,22 +195,55 @@ private fun CollectionBody(
             bottom = bottomPadding.calculateBottomPadding() + UsTheme.spacing.xxl,
         ),
     ) {
-        item(key = "title") { CollectionTitle(collection = collection, count = videos.size) }
+        item(key = "title") {
+            CollectionTitle(collection = collection, count = videos.size, permissions = permissions, actions = actions)
+        }
+        if (videos.isEmpty()) {
+            item(key = "empty") {
+                Box(modifier = Modifier.fillParentMaxHeight(EMPTY_HEIGHT)) {
+                    UsEmptyState(
+                        title = emptyTitle(collection),
+                        detail = emptyDetail(collection),
+                        modifier = Modifier.testTag("tube_collection_empty"),
+                    )
+                }
+            }
+        }
         items(videos, key = { it.id }) { item ->
             CollectionVideoRow(
                 item = item,
-                thumb = thumbFor(item),
+                thumb = actions.thumbFor(item),
                 listTitle = collection.title,
-                onOpen = { onOpen(item) },
-                onRemove = { onRemove(item) },
+                permissions = permissions,
+                onOpen = { actions.open(item) },
+                onRemove = { actions.remove(item) },
+                onMenu = { actions.rowMenu(item) },
+                modifier = if (UsTheme.reducedMotion) Modifier else Modifier.animateItem(),
             )
         }
     }
 }
 
-/** The list's name, and "N videos · Private" under it. */
+private fun emptyTitle(collection: VideoCollection): String = when {
+    collection.isWatchLater -> "Nothing in $WATCH_LATER_TITLE yet"
+    collection.isLiked -> "Videos you like will show up here"
+    else -> "No videos here yet"
+}
+
+private fun emptyDetail(collection: VideoCollection): String = when {
+    collection.isWatchLater -> "Tap $WATCH_LATER_TITLE under a video and it will be kept here."
+    collection.isLiked -> "Tap Like on any video to keep it."
+    else -> "Tap Add to collection under a video and choose ${collection.title}."
+}
+
+/** The list's name, "N videos · Private" under it, its description, and — for a list the viewer made — Edit and Delete. */
 @Composable
-private fun CollectionTitle(collection: VideoCollection, count: Int) {
+private fun CollectionTitle(
+    collection: VideoCollection,
+    count: Int,
+    permissions: CollectionPermissions,
+    actions: CollectionPageActions,
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -170,49 +259,114 @@ private fun CollectionTitle(collection: VideoCollection, count: Int) {
             modifier = Modifier.testTag("tube_collection_title"),
         )
         Text(
-            text = collectionMeta(count, collection.isPrivate),
+            text = if (collection.isSystem) "$count ${if (count == 1) "video" else "videos"} · Only you" else collectionMeta(count, collection.visibility),
             style = MaterialTheme.typography.bodySmall,
             color = UsTheme.extended.textMuted,
         )
+        if (collection.description.isNotBlank()) {
+            Text(
+                text = collection.description,
+                style = MaterialTheme.typography.bodyMedium,
+                color = UsTheme.extended.textSecondary,
+                maxLines = DESCRIPTION_LINES,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.testTag("tube_collection_description"),
+            )
+        }
+        if (permissions.canEdit) {
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+                modifier = Modifier.padding(top = UsTheme.spacing.s),
+            ) {
+                UsPillButton(
+                    text = "Edit",
+                    onClick = actions.edit,
+                    filled = false,
+                    modifier = Modifier.testTag("tube_collection_edit"),
+                )
+                UsPillButton(
+                    text = "Delete",
+                    onClick = actions.delete,
+                    filled = false,
+                    busy = actions.deleting,
+                    modifier = Modifier.testTag("tube_collection_delete"),
+                )
+            }
+        }
     }
 }
 
 /** "1 video · Private", "12 videos · Public". */
 fun collectionMeta(count: Int, isPrivate: Boolean): String =
-    "$count ${if (count == 1) "video" else "videos"} · ${if (isPrivate) "Private" else "Public"}"
+    collectionMeta(count, if (isPrivate) CollectionVisibility.PRIVATE else CollectionVisibility.PUBLIC)
 
-/** The "Up next" row, with the remove glyph at its end. */
+/** "1 video · Private", "3 videos · Unlisted", "12 videos · Public". */
+fun collectionMeta(count: Int, visibility: CollectionVisibility): String =
+    "$count ${if (count == 1) "video" else "videos"} · ${visibility.label}"
+
+/** The "Up next" row, with what the list allows at its end: ⋮ (moves and Remove), ×, or nothing. */
+@Suppress("LongParameterList")
 @Composable
 private fun CollectionVideoRow(
     item: FeedItem,
     thumb: VideoThumb,
     listTitle: String,
+    permissions: CollectionPermissions,
     onOpen: () -> Unit,
     onRemove: () -> Unit,
+    onMenu: () -> Unit,
+    modifier: Modifier = Modifier,
 ) {
-    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+    Row(modifier = modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         VideoRow(item = item, thumb = thumb, onClick = onOpen, modifier = Modifier.weight(1f))
-        Box(
-            contentAlignment = Alignment.Center,
-            modifier = Modifier
-                .padding(end = UsTheme.spacing.m)
-                .size(REMOVE_TARGET)
-                .pressScale(onRemove)
-                .semantics {
-                    role = Role.Button
-                    contentDescription = "Remove from $listTitle"
-                }
-                .testTag("tube_collection_remove:${item.id}"),
-        ) {
-            Icon(
-                imageVector = UsIcons.Close,
-                contentDescription = null,
-                tint = UsTheme.extended.textMuted,
-                modifier = Modifier.size(REMOVE_GLYPH),
+        when {
+            permissions.canReorder -> RowGlyphButton(
+                icon = UsIcons.More,
+                description = "More for ${item.displayTitle}",
+                onClick = onMenu,
+                testTag = "tube_collection_more:${item.id}",
+            )
+            permissions.canRemove -> RowGlyphButton(
+                icon = UsIcons.Close,
+                description = "Remove from $listTitle",
+                onClick = onRemove,
+                testTag = "tube_collection_remove:${item.id}",
             )
         }
     }
 }
+
+@Composable
+private fun RowGlyphButton(
+    icon: ImageVector,
+    description: String,
+    onClick: () -> Unit,
+    testTag: String,
+) {
+    Box(
+        contentAlignment = Alignment.Center,
+        modifier = Modifier
+            .padding(end = UsTheme.spacing.m)
+            .size(REMOVE_TARGET)
+            .pressScale(onClick)
+            .semantics {
+                role = Role.Button
+                contentDescription = description
+            }
+            .testTag(testTag),
+    ) {
+        Icon(
+            imageVector = icon,
+            contentDescription = null,
+            tint = UsTheme.extended.textMuted,
+            modifier = Modifier.size(REMOVE_GLYPH),
+        )
+    }
+}
+
+private const val DESCRIPTION_LINES = 3
+private const val EMPTY_HEIGHT = 0.6f
+
 
 /**
  * "Collections" (2026-10-02): the lists the viewer made, each a row that

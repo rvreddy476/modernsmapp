@@ -5,12 +5,19 @@ import com.us.android.core.feed.data.ChannelApi
 import com.us.android.core.feed.data.FeedApi
 import com.us.android.core.feed.data.FeedItemHydrator
 import com.us.android.core.feed.data.HashtagPostHydrator
+import com.us.android.core.feed.data.HiddenAuthorsApi
+import com.us.android.core.feed.data.HiddenAuthorsRepository
+import com.us.android.core.feed.data.HiddenAuthorsSource
 import com.us.android.core.feed.data.PostEditApi
 import com.us.android.core.feed.data.SoundsApi
+import com.us.android.core.feed.data.VideoCollectionSource
 import com.us.android.core.feed.data.VideoFeedApi
 import com.us.android.core.feed.data.VideoLibraryApi
 import com.us.android.core.feed.data.VideoLibraryRepository
 import com.us.android.core.feed.data.VideoLibraryWrites
+import com.us.android.core.feed.data.WatchHistoryApi
+import com.us.android.core.feed.data.WatchHistoryRepository
+import com.us.android.core.feed.data.WatchHistorySource
 import com.us.android.core.feed.ui.sound.LibrarySoundPreview
 import com.us.android.core.feed.ui.sound.PlayerLibrarySoundPreview
 import com.us.android.core.media.sound.SoundPreviewPlayer
@@ -45,6 +52,28 @@ object FeedModule {
     @Provides
     @Singleton
     fun provideVideoLibraryApi(retrofit: Retrofit): VideoLibraryApi = retrofit.create(VideoLibraryApi::class.java)
+
+    /** Tube's History (2026-10-22): post-service's watch record. */
+    @Provides
+    @Singleton
+    fun provideWatchHistoryApi(retrofit: Retrofit): WatchHistoryApi = retrofit.create(WatchHistoryApi::class.java)
+
+    /** Settings › Hidden channels (2026-10-22): feed-service's "Don't recommend" list. */
+    @Provides
+    @Singleton
+    fun provideHiddenAuthorsApi(retrofit: Retrofit): HiddenAuthorsApi = retrofit.create(HiddenAuthorsApi::class.java)
+
+    /** A collection's page reads and edits through the repository; tests hand it a fake. */
+    @Provides
+    fun provideVideoCollectionSource(impl: VideoLibraryRepository): VideoCollectionSource = impl
+
+    /** The History page reads through the repository; tests hand it a fake. */
+    @Provides
+    fun provideWatchHistorySource(impl: WatchHistoryRepository): WatchHistorySource = impl
+
+    /** The Hidden channels page reads through the repository; tests hand it a fake. */
+    @Provides
+    fun provideHiddenAuthorsSource(impl: HiddenAuthorsRepository): HiddenAuthorsSource = impl
 
     /** media-service's alternate audio tracks (2026-10-21): the picker and the creator's dub manager. */
     @Provides

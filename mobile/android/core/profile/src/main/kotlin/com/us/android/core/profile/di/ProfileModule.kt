@@ -2,6 +2,9 @@ package com.us.android.core.profile.di
 
 import com.us.android.core.profile.data.AccountSecurityApi
 import com.us.android.core.profile.data.AuthorPostCountsApi
+import com.us.android.core.profile.data.BlockedAccountsApi
+import com.us.android.core.profile.data.BlockedAccountsRepository
+import com.us.android.core.profile.data.BlockedAccountsSource
 import com.us.android.core.profile.data.DataStoreKeywordFiltersCache
 import com.us.android.core.profile.data.DataStoreModulePreferencesCache
 import com.us.android.core.profile.data.DataStoreWellbeingGuardCache
@@ -144,4 +147,14 @@ object ProfileCountsModule {
     @Singleton
     fun provideAuthorPostCountsApi(retrofit: Retrofit): AuthorPostCountsApi =
         retrofit.create(AuthorPostCountsApi::class.java)
+
+    /** Settings › Privacy › Blocked accounts (2026-10-22). */
+    @Provides
+    @Singleton
+    fun provideBlockedAccountsApi(retrofit: Retrofit): BlockedAccountsApi =
+        retrofit.create(BlockedAccountsApi::class.java)
+
+    /** The page reads through the repository; tests hand it a fake. */
+    @Provides
+    fun provideBlockedAccountsSource(impl: BlockedAccountsRepository): BlockedAccountsSource = impl
 }

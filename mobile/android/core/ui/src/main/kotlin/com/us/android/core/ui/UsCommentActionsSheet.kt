@@ -82,6 +82,11 @@ internal fun UsCommentActionsSheet(
                 callbacks.onToggleHeart(row.id)
                 leave()
             }
+            // The text goes into the composer below; the sheet steps aside first.
+            CommentMenuAction.EDIT -> {
+                callbacks.onEdit(row.id)
+                leave()
+            }
         }
     }
 
@@ -154,6 +159,7 @@ internal fun UsCommentActionsSheet(
 
 private fun CommentMenuAction.icon(): ImageVector = when (this) {
     CommentMenuAction.DELETE -> UsIcons.Trash
+    CommentMenuAction.EDIT -> UsIcons.Pencil
     CommentMenuAction.HEART -> UsIcons.HeartOutline
     CommentMenuAction.UNHEART -> UsIcons.HeartFilled
     CommentMenuAction.PIN, CommentMenuAction.UNPIN -> UsIcons.Pin

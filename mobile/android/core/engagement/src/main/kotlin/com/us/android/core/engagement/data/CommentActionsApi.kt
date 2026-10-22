@@ -7,6 +7,7 @@ import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
 import retrofit2.http.Header
+import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.PUT
 import retrofit2.http.Path
@@ -74,6 +75,18 @@ interface CommentActionsApi {
     @DELETE("v1/comments/{commentId}")
     suspend fun delete(@Path("commentId") commentId: String): ApiEnvelope<CommentStatusDto>
 
+    /**
+     * `PATCH /v1/comments/:id {body}` (`EditComment`, 2026-10-22 on Android):
+     * the AUTHOR's own comment or reply, within 15 minutes of posting it.
+     * Anyone else is `403 FORBIDDEN`; a late edit is `403
+     * EDIT_WINDOW_EXPIRED`. Answers `{"status":"updated"}`, not the comment.
+     */
+    @PATCH("v1/comments/{commentId}")
+    suspend fun edit(
+        @Path("commentId") commentId: String,
+        @Body body: EditCommentRequest,
+    ): ApiEnvelope<CommentStatusDto>
+
     /** `POST /v1/comments/:id/heart` — the post author only (403 otherwise). */
     @POST("v1/comments/{commentId}/heart")
     suspend fun heart(@Path("commentId") commentId: String): ApiEnvelope<CommentHeartDto>
@@ -97,6 +110,10 @@ interface CommentActionsApi {
 /** The PUT body; post-service's `commentReactionRequest`. No default: see [RepostRequest]. */
 @Serializable
 data class CommentReactionRequest(val emoji: String)
+
+/** The PATCH body; post-service's `EditCommentRequest` (`body`, required). No default: it must always be sent. */
+@Serializable
+data class EditCommentRequest(val body: String)
 
 // ── Responses ───────────────────────────────────────────────────────────
 

@@ -73,4 +73,27 @@ class PlayerPrefsTest {
         DataStoreAudioLanguageStore(settings()).setLanguage(null)
         assertThat(DataStoreAudioLanguageStore(settings()).language.first()).isNull()
     }
+
+    /** Tube's "Pause recording" (2026-10-22): off for a fresh install, as on the web. */
+    @Test
+    fun `history recording is on for a viewer who never paused it`() = runTest {
+        assertThat(DataStoreWatchHistoryPauseStore(settings()).paused.first()).isFalse()
+    }
+
+    @Test
+    fun `pausing history is kept across a restart, and resuming too`() = runTest {
+        DataStoreWatchHistoryPauseStore(settings()).setPaused(true)
+        assertThat(DataStoreWatchHistoryPauseStore(settings()).paused.first()).isTrue()
+
+        DataStoreWatchHistoryPauseStore(settings()).setPaused(false)
+        assertThat(DataStoreWatchHistoryPauseStore(settings()).paused.first()).isFalse()
+    }
+
+    /** Its own key: pausing History does not touch the series autoplay switch beside it. */
+    @Test
+    fun `pausing history leaves autoplay next episode alone`() = runTest {
+        DataStoreWatchHistoryPauseStore(settings()).setPaused(true)
+
+        assertThat(settings().autoplayNextEpisode.first()).isTrue()
+    }
 }

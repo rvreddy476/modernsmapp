@@ -56,6 +56,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
@@ -468,6 +469,15 @@ private fun CommentMeta(row: CommentRow) {
                 color = UsTheme.extended.textMuted,
             )
         }
+        if (row.edited) {
+            Text(
+                text = EDITED_LABEL,
+                style = MaterialTheme.typography.bodySmall,
+                fontStyle = FontStyle.Italic,
+                color = UsTheme.extended.textMuted,
+                modifier = Modifier.testTag("comment_edited:${row.id}"),
+            )
+        }
         if (row.pinned) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -615,13 +625,22 @@ private fun ComposerBlock(state: CommentsUiState, callbacks: UsCommentsCallbacks
         }
         state.submitError?.let {
             Text(
-                text = commentSubmitErrorMessage(it),
+                text = if (state.editing != null) commentEditErrorMessage(it) else commentSubmitErrorMessage(it),
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.error,
             )
         }
         state.replyingTo?.let { target ->
             ReplyingToBar(name = target.name, enabled = !state.submitting, onCancel = callbacks.onCancelReply)
+        }
+        if (state.editing != null) {
+            ComposerTargetBar(
+                text = EDITING_LABEL,
+                cancelDescription = "Cancel edit",
+                enabled = !state.submitting,
+                onCancel = callbacks.onCancelEdit,
+                testTag = "comments_editing",
+            )
         }
         if (state.mentions.isNotEmpty()) {
             MentionSuggestions(candidates = state.mentions, onPick = callbacks.onPickMention)
@@ -658,12 +677,30 @@ private fun NoticeLine(text: String, onDismiss: () -> Unit) {
 /** "Replying to @name" with its ×: the composer's target, and the way back to a plain comment. */
 @Composable
 private fun ReplyingToBar(name: String, enabled: Boolean, onCancel: () -> Unit) {
+    ComposerTargetBar(
+        text = replyingToLabel(name),
+        cancelDescription = "Cancel reply",
+        enabled = enabled,
+        onCancel = onCancel,
+        testTag = "comments_replying_to",
+    )
+}
+
+/** One line over the composer saying what Send will do — reply, or save an edit — with its ×. */
+@Composable
+private fun ComposerTargetBar(
+    text: String,
+    cancelDescription: String,
+    enabled: Boolean,
+    onCancel: () -> Unit,
+    testTag: String,
+) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.fillMaxWidth().testTag("comments_replying_to"),
+        modifier = Modifier.fillMaxWidth().testTag(testTag),
     ) {
         Text(
-            text = replyingToLabel(name),
+            text = text,
             style = MaterialTheme.typography.bodySmall,
             color = UsTheme.extended.textSecondary,
             modifier = Modifier.weight(1f),
@@ -671,7 +708,7 @@ private fun ReplyingToBar(name: String, enabled: Boolean, onCancel: () -> Unit) 
         if (enabled) {
             IconTap(
                 icon = UsIcons.Close,
-                description = "Cancel reply",
+                description = cancelDescription,
                 tint = UsTheme.extended.textMuted,
                 size = BADGE_GLYPH,
                 onClick = onCancel,
@@ -773,7 +810,11 @@ private fun Composer(state: CommentsUiState, callbacks: UsCommentsCallbacks) {
             value = state.draft,
             enabled = !state.submitting,
             canSubmit = state.canSubmit,
-            placeholder = if (state.replyingTo != null) "Add a reply…" else "Add a comment…",
+            placeholder = when {
+                state.editing != null -> "Edit your comment…"
+                state.replyingTo != null -> "Add a reply…"
+                else -> "Add a comment…"
+            },
             onValueChange = callbacks.onDraftChange,
             onSubmit = callbacks.onSubmit,
             modifier = Modifier.weight(1f),
@@ -924,6 +965,26 @@ internal fun commentSubmitErrorMessage(error: AppError): String =
     } else {
         "Your comment wasn't posted. Tap send to try again."
     }
+
+/**
+ * What the composer says under a refused edit (2026-10-22): post-service
+ * answers `403 EDIT_WINDOW_EXPIRED` once the 15 minutes are over, which no
+ * retry will fix; anything else may be tried again.
+ */
+internal fun commentEditErrorMessage(error: AppError): String =
+    if (error is AppError.Forbidden && error.code == CODE_EDIT_WINDOW_EXPIRED) {
+        "Comments can only be edited within 15 minutes of posting."
+    } else {
+        "Your edit wasn't saved. Tap send to try again."
+    }
+
+/** The row's mark for a comment its author changed (the web's channel comments say "Edited"). */
+internal const val EDITED_LABEL = "Edited"
+
+/** The bar over the composer while an edit is in it. */
+internal const val EDITING_LABEL = "Editing your comment"
+
+private const val CODE_EDIT_WINDOW_EXPIRED = "EDIT_WINDOW_EXPIRED"
 
 /** The quick-reaction row, in Instagram's order. */
 val QUICK_REACTIONS: List<String> = listOf("❤️", "🙌", "🔥", "👏", "😢", "😍", "😮", "😂")

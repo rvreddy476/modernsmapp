@@ -11,6 +11,7 @@ import com.us.android.feature.tube.ui.TubeTab
 import com.us.android.feature.tube.ui.channel.ChannelScreen
 import com.us.android.feature.tube.ui.collections.CollectionScreen
 import com.us.android.feature.tube.ui.collections.CollectionsScreen
+import com.us.android.feature.tube.ui.history.HistoryScreen
 import com.us.android.feature.tube.ui.home.TubeHomeScreen
 import com.us.android.feature.tube.ui.hub.CreatorHubScreen
 import com.us.android.feature.tube.ui.offline.OfflineScreen
@@ -65,8 +66,19 @@ data object TubeCollectionsRoute
 data class TubeCollectionRoute(val collectionId: String) {
     companion object {
         const val WATCH_LATER = "watch_later"
+
+        /** Liked videos (2026-10-22): the server's `liked` list, found by kind as Watch later is. */
+        const val LIKED = "liked"
     }
 }
+
+/**
+ * History (web parity, 2026-10-22): every video the viewer watched, with
+ * where they left off — remove one, clear all, pause recording, search.
+ * From the You page and the More sheet.
+ */
+@Serializable
+data object TubeHistoryRoute
 
 /**
  * The offline copies on this device (header More → "Offline", 2026-10-02):
@@ -152,6 +164,8 @@ data class TubeDestinations(
      * the reel create flow, which takes it.
      */
     val onCreateWithSound: () -> Unit = {},
+    /** The You page's and the More sheet's "History": `:app` pushes [TubeHistoryRoute]. */
+    val onOpenHistory: () -> Unit = {},
 ) {
     /** The bar's tap, resolved. */
     fun onBarAction(action: TubeBarAction) = when (action) {
@@ -174,6 +188,7 @@ fun NavGraphBuilder.tubeScreens(destinations: TubeDestinations) {
     composable<TubeCollectionRoute> { CollectionScreen(destinations = destinations) }
     composable<TubeOfflineRoute> { OfflineScreen(destinations = destinations) }
     composable<TubeCreatorHubRoute> { CreatorHubScreen(destinations = destinations) }
+    composable<TubeHistoryRoute> { HistoryScreen(destinations = destinations) }
     composable<WatchRoute> {
         WatchScreen(
             onBack = destinations.onBack,
@@ -209,6 +224,9 @@ fun NavController.navigateToCreatorHub() = navigate(TubeCreatorHubRoute) { launc
 
 /** The saved videos, pushed the same way. */
 fun NavController.navigateToTubeSaved() = navigate(TubeSavedRoute) { launchSingleTop = true }
+
+/** History, pushed the same way. */
+fun NavController.navigateToTubeHistory() = navigate(TubeHistoryRoute) { launchSingleTop = true }
 
 /**
  * The bar's switch between Tube's pages. Everything above Tube home is

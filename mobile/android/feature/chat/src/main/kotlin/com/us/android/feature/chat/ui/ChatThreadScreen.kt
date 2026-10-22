@@ -74,6 +74,7 @@ import com.us.android.core.chat.data.MAX_MESSAGE_LENGTH
 import com.us.android.core.chat.data.Message
 import com.us.android.core.chat.data.PendingSend
 import com.us.android.core.chat.data.Tick
+import com.us.android.core.chat.data.canPin
 import com.us.android.core.chat.data.tickState
 import com.us.android.core.chat.data.disappearingNote
 import com.us.android.core.chat.data.presenceLabel
@@ -132,11 +133,16 @@ fun ChatThreadScreen(
         ActivityResultContracts.PickMultipleVisualMedia(ChatThreadViewModel.MAX_ATTACHMENTS),
     ) { uris -> viewModel.stageAttachments(uris) }
 
-    // A tapped quote scrolls to its original once it is loaded.
+    // A tapped quote (or the pinned bar) scrolls to its original once it is loaded.
+    val reducedMotion = UsTheme.reducedMotion
     LaunchedEffect(render.jumpToId) {
         val target = render.jumpToId ?: return@LaunchedEffect
         val index = state.messages.indexOfFirst { it.id == target }
-        if (index >= 0) listState.animateScrollToItem(index + render.pendingSends.size + typingSlots(state))
+        if (index >= 0) {
+            val at = index + render.pendingSends.size + typingSlots(state)
+            // An instant cut when the device asks for no animations.
+            if (reducedMotion) listState.scrollToItem(at) else listState.animateScrollToItem(at)
+        }
         viewModel.consumeJump()
     }
 
@@ -202,6 +208,17 @@ fun ChatThreadScreen(
         Column(modifier = Modifier.padding(padding).fillMaxSize()) {
             if (render.offline) {
                 OfflineThreadBanner(onRetry = viewModel::refresh)
+            }
+            // Pinned messages (2026-10-22): one at a time; a tap jumps to it and steps on.
+            render.shownPin?.let { pin ->
+                PinnedBar(
+                    pin = pin,
+                    index = render.pinIndex,
+                    count = render.pins.size,
+                    message = state.messages.firstOrNull { it.id == pin.messageId },
+                    onOpen = viewModel::openShownPin,
+                    onUnpin = { viewModel.unpin(pin.messageId) },
+                )
             }
 
             Box(modifier = Modifier.weight(1f)) {
@@ -462,6 +479,10 @@ fun ChatThreadScreen(
                     }
                     ).takeIf { isOwn && message.addressable && !message.deleted },
                 onReport = { viewModel.openReport(message) }.takeIf { render.parityEnabled && !isOwn && !message.deleted },
+                // Pinned messages (2026-10-22): any member, any message but a call line or one unsent.
+                onPin = { viewModel.pin(message) }
+                    .takeIf { render.pinsEnabled && message.canPin() && !render.isPinned(message) },
+                onUnpin = { viewModel.unpin(message.id) }.takeIf { render.pinsEnabled && render.isPinned(message) },
             ),
             onDismiss = { actionsFor = null },
         )

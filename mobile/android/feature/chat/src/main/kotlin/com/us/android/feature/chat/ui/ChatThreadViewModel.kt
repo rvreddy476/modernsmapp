@@ -5,7 +5,14 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.auth.SessionStateProvider
+import com.us.android.core.chat.data.ChatPinsSource
 import com.us.android.core.chat.data.ChatRepository
+import com.us.android.core.chat.data.MAX_PINS_PER_CONVERSATION
+import com.us.android.core.chat.data.PinnedMessage
+import com.us.android.core.chat.data.applyPinUpdate
+import com.us.android.core.chat.data.canPin
+import com.us.android.core.chat.data.nextPinIndex
+import com.us.android.core.chat.data.orderPins
 import com.us.android.core.chat.data.ChatSessionManager
 import com.us.android.core.chat.data.ChatSocketEvent
 import com.us.android.core.chat.data.ChatStore
@@ -38,6 +45,7 @@ import com.us.android.core.chat.data.ThreadUiState
 import com.us.android.core.chat.data.isValidMessage
 import com.us.android.core.chat.data.sendDurably
 import com.us.android.core.common.chat.ConversationKindness
+import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.media.upload.ChatAttachmentUploader
 import com.us.android.core.model.SessionState
@@ -136,7 +144,21 @@ data class ThreadRenderState(
     val parityEnabled: Boolean = false,
     /** The chat's disappearing-messages timer; null until the settings read answered. */
     val disappearing: DisappearTimer? = null,
+    // ── Pinned messages (web parity, 2026-10-22) ────────────────────────
+    /** The chat's pins, newest first; at most three. */
+    val pins: List<PinnedMessage> = emptyList(),
+    /** Which pin the bar shows; a tap jumps to it and steps on to the next. */
+    val pinIndex: Int = 0,
+    /** False in a build without the pins seam (tests): Pin hides and no bar is drawn. */
+    val pinsEnabled: Boolean = false,
 ) {
+    /** The pin the bar shows now, or null when there are none. */
+    val shownPin: PinnedMessage?
+        get() = if (pins.isEmpty()) null else pins[pinIndex.mod(pins.size)]
+
+    /** True when [message] is pinned in this chat (the long-press then offers Unpin). */
+    fun isPinned(message: Message): Boolean = pins.any { it.messageId == message.id }
+
     /** Send is offered for text OR photos — a photo alone is a message. */
     val canSend: Boolean
         get() = (thread.canSend || staged.isNotEmpty()) && !sendInFlight && !thread.draftTooLong && requestAllowsSend
@@ -238,6 +260,8 @@ class ChatThreadViewModel @Inject constructor(
     private val kindness: ConversationKindness = ConversationKindness.None,
     // Chat parity (2026-10-18): null in tests, which keeps the thread as it was.
     private val extras: ThreadExtras? = null,
+    // Pinned messages (2026-10-22): null in tests that do not exercise them.
+    private val pinsSource: ChatPinsSource? = null,
 ) : ViewModel() {
 
     private val conversationId: String =
@@ -291,6 +315,10 @@ class ChatThreadViewModel @Inject constructor(
         if (extras != null) {
             _state.update { it.copy(parityEnabled = true) }
             loadParity(extras)
+        }
+        if (pinsSource != null) {
+            _state.update { it.copy(pinsEnabled = true) }
+            loadPins()
         }
     }
 
@@ -785,6 +813,77 @@ class ChatThreadViewModel @Inject constructor(
     private fun notice(text: String, type: UsMessageType = UsMessageType.Error) =
         _state.update { it.copy(notice = UsMessage(text, type)) }
 
+    // ── Pinned messages (web parity, 2026-10-22) ────────────────────────
+
+    /** The chat's pins. A read that fails leaves the bar absent; the next frame or open reads again. */
+    private fun loadPins() {
+        val source = pinsSource ?: return
+        viewModelScope.launch {
+            val result = source.pins(conversationId)
+            if (result is AppResult.Success) _state.update { it.copy(pins = result.data, pinIndex = 0) }
+        }
+    }
+
+    /**
+     * Pin from the long-press (any member may, as on the web). Waits for the
+     * server, which caps a chat at three: the fourth is refused here first,
+     * with the web's words, rather than sent to fail.
+     */
+    fun pin(message: Message) {
+        val source = pinsSource ?: return
+        val current = _state.value.pins
+        if (!message.canPin() || current.any { it.messageId == message.id }) return
+        if (current.size >= MAX_PINS_PER_CONVERSATION) {
+            notice("You can pin up to $MAX_PINS_PER_CONVERSATION messages. Unpin one first.", UsMessageType.Info)
+            return
+        }
+        viewModelScope.launch {
+            when (val result = source.pin(conversationId, message.id)) {
+                is AppResult.Success -> {
+                    if (result.data.id.isBlank()) {
+                        // No pin id to unpin by later: read the list instead of guessing.
+                        loadPins()
+                    } else {
+                        _state.update { it.copy(pins = orderPins(listOf(result.data) + it.pins), pinIndex = 0) }
+                    }
+                    notice("Message pinned", UsMessageType.Success)
+                }
+                is AppResult.Failure -> notice("Couldn't pin that message")
+            }
+        }
+    }
+
+    /** Unpin (the long-press or the bar's ×): the pin goes at once and comes back if the server refuses. */
+    fun unpin(messageId: String) {
+        val source = pinsSource ?: return
+        val before = _state.value.pins
+        val pin = before.firstOrNull { it.messageId == messageId } ?: return
+        _state.update { it.copy(pins = it.pins.filterNot { p -> p.id == pin.id }, pinIndex = 0) }
+        viewModelScope.launch {
+            val result = source.unpin(conversationId, pin.id)
+            // Already gone (another member unpinned it) is gone.
+            if (result is AppResult.Failure && result.error !is AppError.NotFound) {
+                _state.update { it.copy(pins = before, pinIndex = 0) }
+                notice("Couldn't unpin that message")
+            }
+        }
+    }
+
+    /** The pinned bar was tapped: the list scrolls to the pin shown, and the bar steps on to the next. */
+    fun openShownPin() {
+        val current = _state.value
+        val shown = current.shownPin ?: return
+        _state.update { it.copy(pinIndex = nextPinIndex(it.pinIndex.mod(it.pins.size.coerceAtLeast(1)), it.pins.size)) }
+        jumpTo(shown.messageId)
+    }
+
+    /** A `pin_update` frame for this chat, applied in place (or the list read again when it cannot be). */
+    private fun applyPinFrame(event: ChatSocketEvent.PinUpdate) {
+        if (pinsSource == null || event.conversationId != conversationId) return
+        val next = applyPinUpdate(_state.value.pins, event)
+        if (next == null) loadPins() else _state.update { it.copy(pins = next, pinIndex = 0) }
+    }
+
     /** A recorded voice message: upload as audio, then the durable outbox (`type: voice`). */
     fun sendVoice(file: java.io.File, durationMs: Long, amplitudes: List<Int>) {
         if (!requestPermits(RequestSendKind.Rich)) {
@@ -1062,6 +1161,7 @@ class ChatThreadViewModel @Inject constructor(
         if (event is ChatSocketEvent.DisappearingTimerUpdated && event.conversationId == conversationId) {
             extras?.parity?.applyRemoteDisappearing(event.conversationId, event.disappearAfterMs)
         }
+        if (event is ChatSocketEvent.PinUpdate) applyPinFrame(event)
         controller.onSocketEvent(event)?.let {
             _state.value = _state.value.copy(thread = it)
         }

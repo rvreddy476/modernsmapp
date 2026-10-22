@@ -8,6 +8,7 @@ import com.us.android.core.engagement.data.CommentReactionRequest
 import com.us.android.core.engagement.data.CommentReactionSummaryDto
 import com.us.android.core.engagement.data.CommentStatusDto
 import com.us.android.core.engagement.data.CreateCommentRequest
+import com.us.android.core.engagement.data.EditCommentRequest
 import com.us.android.core.engagement.data.FileReportRequest
 import com.us.android.core.engagement.data.ReportApi
 import com.us.android.core.engagement.data.ReportDto
@@ -71,6 +72,9 @@ internal class FakeCommentActionsApi : CommentActionsApi {
 
     override suspend fun delete(commentId: String): ApiEnvelope<CommentStatusDto> =
         answer("DELETE /v1/comments/$commentId") { ApiEnvelope(data = CommentStatusDto("deleted")) }
+
+    override suspend fun edit(commentId: String, body: EditCommentRequest): ApiEnvelope<CommentStatusDto> =
+        answer("PATCH /v1/comments/$commentId ${body.body}") { ApiEnvelope(data = CommentStatusDto("updated")) }
 
     override suspend fun heart(commentId: String): ApiEnvelope<CommentHeartDto> =
         answer("POST /v1/comments/$commentId/heart") { ApiEnvelope(data = CommentHeartDto(commentId, true)) }

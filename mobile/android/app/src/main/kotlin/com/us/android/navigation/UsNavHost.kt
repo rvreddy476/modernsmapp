@@ -211,6 +211,7 @@ import com.us.android.feature.tube.navigation.navigateToCreatorHub
 import com.us.android.feature.tube.navigation.navigateToTube
 import com.us.android.feature.tube.navigation.navigateToTubeChannel
 import com.us.android.feature.tube.navigation.navigateToTubeCollection
+import com.us.android.feature.tube.navigation.navigateToTubeHistory
 import com.us.android.feature.tube.navigation.navigateToTubeCollections
 import com.us.android.feature.tube.navigation.navigateToTubeOffline
 import com.us.android.feature.tube.navigation.navigateToTubeSaved
@@ -1242,6 +1243,8 @@ private fun NavGraphBuilder.tabDestinations(
             // The hub's Sounds tab (library sounds, 2026-10-15): the same
             // door as Reels' "Use this sound" — the sound is in SoundEntry.
             onCreateWithSound = onCreateWithSound,
+            // The You page's and the More sheet's History (web parity, 2026-10-22).
+            onOpenHistory = { navController.navigateToTubeHistory() },
         ),
     )
 
@@ -1427,6 +1430,9 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
                 onOfflineVideos = { navController.navigateToTubeOffline() },
                 // Chat parity: Settings › Inbox & messaging.
                 onInboxMessaging = { navController.navigate(com.us.android.feature.profile.navigation.InboxSettingsRoute) },
+                // Web parity (2026-10-22): Privacy › Blocked accounts and Content › Hidden channels.
+                onBlockedAccounts = { navController.navigate(com.us.android.feature.profile.navigation.BlockedAccountsRoute) },
+                onHiddenChannels = { navController.navigate(com.us.android.feature.profile.navigation.HiddenChannelsRoute) },
             ),
             versionName = BuildConfig.VERSION_NAME,
         ),

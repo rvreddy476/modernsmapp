@@ -30,6 +30,9 @@ data class UsCommentsCallbacks(
     val onCancelReply: () -> Unit = {},
     val onToggleLike: (commentId: String) -> Unit = {},
     val onDelete: (commentId: String) -> Unit = {},
+    /** The ⋮'s Edit (2026-10-22) and the composer's "Editing" ×. */
+    val onEdit: (commentId: String) -> Unit = {},
+    val onCancelEdit: () -> Unit = {},
     val onTogglePin: (commentId: String) -> Unit = {},
     val onToggleHeart: (commentId: String) -> Unit = {},
     /** The reason is the wire token ([UsReportReason.wire]). */
@@ -53,6 +56,8 @@ data class UsCommentsCallbacks(
             onCancelReply = actions::cancelReply,
             onToggleLike = actions::toggleLike,
             onDelete = actions::delete,
+            onEdit = actions::startEdit,
+            onCancelEdit = actions::cancelEdit,
             onTogglePin = actions::togglePin,
             onToggleHeart = actions::toggleHeart,
             onReport = actions::report,

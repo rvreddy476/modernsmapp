@@ -26,6 +26,10 @@ interface CommentsActions {
     fun cancelReply()
     fun toggleLike(commentId: String)
     fun delete(commentId: String)
+
+    /** The ⋮'s Edit (2026-10-22): the viewer's own comment goes into the composer. */
+    fun startEdit(commentId: String)
+    fun cancelEdit()
     fun togglePin(commentId: String)
     fun toggleHeart(commentId: String)
     fun report(commentId: String, reason: String, details: String)
@@ -99,6 +103,8 @@ class CommentsSession(private val scope: CoroutineScope) : CommentsActions {
     override fun cancelReply() = syncOn { it.cancelReply() }
     override fun toggleLike(commentId: String) = launchOn { it.toggleLike(commentId) }
     override fun delete(commentId: String) = launchOn { it.delete(commentId) }
+    override fun startEdit(commentId: String) = syncOn { it.startEdit(commentId) }
+    override fun cancelEdit() = syncOn { it.cancelEdit() }
     override fun togglePin(commentId: String) = launchOn { it.togglePin(commentId) }
     override fun toggleHeart(commentId: String) = launchOn { it.toggleHeart(commentId) }
     override fun report(commentId: String, reason: String, details: String) =

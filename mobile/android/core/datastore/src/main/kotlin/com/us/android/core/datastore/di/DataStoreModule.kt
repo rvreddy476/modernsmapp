@@ -8,10 +8,12 @@ import com.us.android.core.datastore.DataStoreOfflinePrefs
 import com.us.android.core.datastore.DataStoreReelsAutoScrollStore
 import com.us.android.core.datastore.DataStoreReelsSoundStore
 import com.us.android.core.datastore.DataStoreUsageStore
+import com.us.android.core.datastore.DataStoreWatchHistoryPauseStore
 import com.us.android.core.datastore.OfflinePrefs
 import com.us.android.core.datastore.ReelsAutoScrollStore
 import com.us.android.core.datastore.ReelsSoundStore
 import com.us.android.core.datastore.UsageStore
+import com.us.android.core.datastore.WatchHistoryPauseStore
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -37,4 +39,8 @@ abstract class DataStoreModule {
 
     @Binds
     abstract fun bindAudioLanguageStore(store: DataStoreAudioLanguageStore): AudioLanguageStore
+
+    /** Tube's "Pause recording" (2026-10-22): read by the progress writer and the History page. */
+    @Binds
+    abstract fun bindWatchHistoryPauseStore(store: DataStoreWatchHistoryPauseStore): WatchHistoryPauseStore
 }

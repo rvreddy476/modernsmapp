@@ -68,12 +68,15 @@ internal class MessageActions(
     val onDeleteForMe: (() -> Unit)?,
     val onUnsend: (() -> Unit)?,
     val onReport: (() -> Unit)?,
+    /** Pin or Unpin (2026-10-22, after Forward as on the web); null hides the row. */
+    val onPin: (() -> Unit)? = null,
+    val onUnpin: (() -> Unit)? = null,
 )
 
 /**
  * The message's long-press sheet (CONTRACT §9): the reaction strip with "+"
- * for the full picker, then Reply, Copy, Forward, Edit, Delete for me,
- * Unsend and Report — each offered only where it applies.
+ * for the full picker, then Reply, Copy, Forward, Pin / Unpin, Edit, Delete
+ * for me, Unsend and Report — each offered only where it applies.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -142,6 +145,8 @@ internal fun MessageActionSheet(message: Message, actions: MessageActions, onDis
                 }
             }
             actions.onForward?.let { SheetAction(UsIcons.Forward, "Forward", "message-forward") { act(it) } }
+            actions.onPin?.let { SheetAction(UsIcons.Pin, "Pin", "message-pin") { act(it) } }
+            actions.onUnpin?.let { SheetAction(UsIcons.Pin, "Unpin", "message-unpin") { act(it) } }
             actions.onEdit?.let { SheetAction(UsIcons.Pencil, "Edit", "message-edit") { act(it) } }
             actions.onDeleteForMe?.let { SheetAction(UsIcons.Trash, "Delete for me", "message-delete-me") { act(it) } }
             if (actions.onUnsend != null) {

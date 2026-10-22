@@ -84,7 +84,7 @@ class CommentMenuTest {
     @Test
     fun `labels are the words the viewer reads`() {
         assertThat(CommentMenuAction.entries.map { it.label })
-            .containsExactly("Delete", "Heart", "Remove heart", "Pin", "Unpin", "Report")
+            .containsExactly("Delete", "Edit", "Heart", "Remove heart", "Pin", "Unpin", "Report")
     }
 
     // ── @mention parsing ────────────────────────────────────────────────

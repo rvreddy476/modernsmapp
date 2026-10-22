@@ -140,12 +140,11 @@ interface ProfileApi {
     @POST("v1/graph/follow-requests/{requesterId}/decline")
     suspend fun declineFollowRequest(@Path("requesterId") requesterId: String): ApiEnvelope<GraphStatusDto>
 
-    // Deliberately absent: GET /v1/graph/blocked-and-muted.
-    //
-    // It takes an arbitrary `user_id` query parameter, requires no
-    // authentication, and returns that account's block and mute list to any
-    // caller. It also bypasses the standard envelope, returning bare
-    // {"user_ids":[]}. Wiring it would make this client the consumer of a
-    // privacy hole. Relationship state is instead tracked from actions this
-    // device performed until the backend provides a viewer-scoped route.
+    // GET /v1/graph/blocked-and-muted is not here: it lives on
+    // BlockedAccountsApi (Settings › Privacy › Blocked accounts, 2026-10-22).
+    // It used to take any `user_id`, unauthenticated and outside the
+    // envelope; graph-service has since bound it to the signed-in viewer
+    // (a foreign `user_id` is 400 VIEWER_BOUND) and wrapped it in the
+    // standard envelope, so the list page reads it. Per-profile relationship
+    // state still comes from GET /v1/graph/relationship above.
 }

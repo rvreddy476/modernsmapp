@@ -7,6 +7,7 @@ import kotlinx.serialization.Serializable
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
@@ -44,7 +45,7 @@ interface VideoLibraryApi {
     suspend fun removeDislike(@Path("postId") postId: String): ApiEnvelope<TuneDto>
 
     /**
-     * A system collection by kind (`watch_later`), created on first read.
+     * A system collection by kind (`watch_later`, `liked`), created on first read.
      * Its items are read through [items] with the id this answers.
      */
     @GET("v1/playlists/system/{kind}")
@@ -86,11 +87,63 @@ interface VideoLibraryApi {
         @Path("postId") postId: String,
     )
 
+    /**
+     * `PATCH /v1/playlists/:id` (`UpdatePlaylist`, 2026-10-22 on Android): any
+     * subset of title, description and visibility; a field left out (null,
+     * which the app's Json omits) is left alone. The creator's own user
+     * collections only: a system list answers `409 SYSTEM_PLAYLIST`, a blank
+     * title or an unknown visibility `400`.
+     */
+    @PATCH("v1/playlists/{playlistId}")
+    suspend fun updatePlaylist(
+        @Path("playlistId") playlistId: String,
+        @Body body: UpdatePlaylistRequest,
+    ): ApiEnvelope<PlaylistDto>
+
+    /** `DELETE /v1/playlists/:id`: 204, no body. The videos in it are not touched. */
+    @DELETE("v1/playlists/{playlistId}")
+    suspend fun deletePlaylist(@Path("playlistId") playlistId: String)
+
+    /**
+     * `PATCH /v1/playlists/:id/items/:postId {position}` (`MovePlaylistItem`),
+     * the reorder the web's drag and Move up / Move down use. [MovePlaylistItemRequest.position]
+     * is the 0-based index the post should land on; the server clamps it,
+     * re-writes the whole order and answers the items in their new order,
+     * renumbered from 0 — bare rows, without `post`.
+     */
+    @PATCH("v1/playlists/{playlistId}/items/{postId}")
+    suspend fun moveItem(
+        @Path("playlistId") playlistId: String,
+        @Path("postId") postId: String,
+        @Body body: MovePlaylistItemRequest,
+    ): ApiEnvelope<List<PlaylistItemDto>>
+
     companion object {
         /** post-service's kind for Watch later. */
         const val KIND_WATCH_LATER = "watch_later"
+
+        /** The viewer's liked long videos ("Liked videos"), written by the server's like toggle alone. */
+        const val KIND_LIKED = "liked"
+
+        /** A collection the viewer made. */
+        const val KIND_USER = "user"
     }
 }
+
+/**
+ * The PATCH body. Every field nullable and defaulted to null, so only what
+ * changed goes on the wire (the app's Json omits nulls and defaults).
+ */
+@Serializable
+data class UpdatePlaylistRequest(
+    val title: String? = null,
+    val description: String? = null,
+    val visibility: String? = null,
+)
+
+/** `{position}`: always sent, 0 included (the server reads an absent one as a 400). No default for that reason. */
+@Serializable
+data class MovePlaylistItemRequest(val position: Int)
 
 /** `{"queued":true|false}`: the state after the call. */
 @Serializable

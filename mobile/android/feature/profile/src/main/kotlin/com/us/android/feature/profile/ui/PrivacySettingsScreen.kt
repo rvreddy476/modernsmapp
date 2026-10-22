@@ -17,6 +17,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.testTag
 import androidx.hilt.lifecycle.viewmodel.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsButton
@@ -41,6 +42,8 @@ import com.us.android.core.ui.UsSettingsSwitchRow
 fun PrivacySettingsScreen(
     onBack: () -> Unit,
     onMessagesSettings: () -> Unit,
+    /** Blocked accounts (2026-10-22): who the viewer blocked or muted, with the undo. */
+    onBlockedAccounts: () -> Unit = {},
     viewModel: PrivacySettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -56,16 +59,24 @@ fun PrivacySettingsScreen(
                 UsErrorState(current.message, Modifier.padding(padding), onRetry = viewModel::load)
 
             is PrivacySettingsUiState.Editing ->
-                PrivacySettingsForm(current, viewModel, onMessagesSettings, Modifier.padding(padding))
+                PrivacySettingsForm(
+                    current,
+                    viewModel,
+                    PrivacyLinks(onMessagesSettings, onBlockedAccounts),
+                    Modifier.padding(padding),
+                )
         }
     }
 }
+
+/** The page's doors to the other privacy screens. */
+private class PrivacyLinks(val messages: () -> Unit, val blocked: () -> Unit)
 
 @Composable
 private fun PrivacySettingsForm(
     state: PrivacySettingsUiState.Editing,
     viewModel: PrivacySettingsViewModel,
-    onMessagesSettings: () -> Unit,
+    links: PrivacyLinks,
     modifier: Modifier,
 ) {
     val value = state.value
@@ -84,7 +95,16 @@ private fun PrivacySettingsForm(
             )
         }
         DiscoverabilitySection(state, viewModel)
-        InteractionsSection(value, state.saving, viewModel, onMessagesSettings)
+        InteractionsSection(value, state.saving, viewModel, links.messages)
+        // Blocked accounts (web parity, 2026-10-22): its own page, the undo for every block and mute.
+        UsSettingsSection("Blocked accounts") {
+            UsSettingsLinkRow(
+                title = "Blocked accounts",
+                onClick = links.blocked,
+                description = "People you blocked or muted, and the way to undo it",
+                modifier = Modifier.testTag("privacy_blocked_accounts"),
+            )
+        }
         ContactPermissionSection(value, policyLocked, viewModel)
         ProfileVisibilitySection(value, policyLocked, viewModel)
         ProtectionSection(state, viewModel)

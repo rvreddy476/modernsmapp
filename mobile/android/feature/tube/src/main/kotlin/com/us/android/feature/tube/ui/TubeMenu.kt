@@ -72,6 +72,12 @@ enum class TubeMenuRow(val label: String, val icon: ImageVector) {
     OFFLINE("Offline", UsIcons.ArrowDownToLine),
     WATCH_LATER("Watch later", UsIcons.ListVideo),
 
+    /** Every video watched, with where it was left (web parity, 2026-10-22). */
+    HISTORY("History", UsIcons.RotateCcw),
+
+    /** The `liked` system list (web `/posttube/loved`, 2026-10-22). */
+    LIKED("Liked videos", UsIcons.ThumbsUp),
+
     /** The read-only Creator Hub: overview, library, conversations (T-31, 2026-10-15). */
     CREATOR_HUB("Creator Hub", UsIcons.Gauge),
 }
@@ -94,6 +100,8 @@ fun tubeMenuRows(channel: ChannelState): List<TubeMenuRow> = listOf(
     TubeMenuRow.OFFLINE,
     TubeMenuRow.WATCH_LATER,
     TubeMenuRow.CREATOR_HUB,
+    TubeMenuRow.HISTORY,
+    TubeMenuRow.LIKED,
 ).sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.label })
 
 /** The sheet's one question: does the viewer have a channel? The cached answer, loaded once per process. */
@@ -147,6 +155,8 @@ fun TubeMenuSheet(
             TubeMenuRow.NOTIFICATIONS -> destinations.onOpenNotifications()
             TubeMenuRow.OFFLINE -> destinations.onOpenOffline()
             TubeMenuRow.CREATOR_HUB -> destinations.onOpenCreatorHub()
+            TubeMenuRow.HISTORY -> destinations.onOpenHistory()
+            TubeMenuRow.LIKED -> destinations.onOpenCollection(TubeCollectionRoute.LIKED)
         }
     }
 

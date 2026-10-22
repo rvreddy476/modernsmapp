@@ -279,6 +279,25 @@ class SettingsDataStore @Inject constructor(
         return id
     }
 
+    /**
+     * "Pause recording" on Tube's History page (web parity, 2026-10-22). The
+     * web keeps it as a client preference (`posttube_history_paused_v1`), not
+     * a server field, so this is the device's own copy of it. While true the
+     * watch screen writes no progress rows, so nothing new lands in
+     * `GET /v1/videos/history`; nothing already recorded is touched. Off
+     * until the viewer turns it on.
+     */
+    val watchHistoryPaused: Flow<Boolean> = store.data
+        .safe()
+        .map { it[KEY_WATCH_HISTORY_PAUSED] ?: false }
+
+    suspend fun setWatchHistoryPaused(paused: Boolean) {
+        store.edit { prefs ->
+            // Off removes the key rather than writing false, as the web does.
+            if (paused) prefs[KEY_WATCH_HISTORY_PAUSED] = true else prefs.remove(KEY_WATCH_HISTORY_PAUSED)
+        }
+    }
+
     suspend fun clear() {
         store.edit { it.clear() }
     }
@@ -308,6 +327,7 @@ class SettingsDataStore @Inject constructor(
         val KEY_APPEARANCE_MODE = stringPreferencesKey("appearance_mode")
         val KEY_OFFLINE_DEVICE_ID = stringPreferencesKey("offline_device_id")
         val KEY_AUDIO_LANGUAGE = stringPreferencesKey("audio_language")
+        val KEY_WATCH_HISTORY_PAUSED = booleanPreferencesKey("watch_history_paused")
         const val KEYWORD_SEPARATOR = ","
     }
 }

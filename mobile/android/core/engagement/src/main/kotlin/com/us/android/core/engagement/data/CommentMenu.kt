@@ -1,5 +1,9 @@
 package com.us.android.core.engagement.data
 
+import java.time.Duration
+import java.time.Instant
+import java.time.format.DateTimeParseException
+
 /**
  * What a comment row's ⋮ can offer (2026-10-14, audit T-17), with the label
  * the viewer reads. Momentum's words; the order on screen is alphabetical by
@@ -7,6 +11,9 @@ package com.us.android.core.engagement.data
  */
 enum class CommentMenuAction(val label: String, val destructive: Boolean = false) {
     DELETE("Delete", destructive = true),
+
+    /** The author's own comment, inside the server's 15-minute window (web parity, 2026-10-22). */
+    EDIT("Edit"),
     HEART("Heart"),
     UNHEART("Remove heart"),
     PIN("Pin"),
@@ -28,11 +35,21 @@ enum class CommentMenuAction(val label: String, val destructive: Boolean = false
  *  - **Pin / Unpin** — the post's creator only, top-level comments only
  *    (`CANNOT_PIN_REPLY`).
  *
+ *  - **Edit** — the viewer's OWN comment or reply, while it is younger than
+ *    [COMMENT_EDIT_WINDOW] (`EditComment` refuses anyone else with
+ *    `FORBIDDEN` and a late edit with `EDIT_WINDOW_EXPIRED`; the web's menu
+ *    offers it on the same two conditions).
+ *
  * A row still being written ([CommentRow.pending]) has no id the server
  * knows, so it has no menu. A blank [viewerId] (profile not loaded yet)
  * cannot be the author or the creator, so it is offered Report alone.
  */
-fun commentMenuActions(row: CommentRow, viewerId: String?, postAuthorId: String?): List<CommentMenuAction> {
+fun commentMenuActions(
+    row: CommentRow,
+    viewerId: String?,
+    postAuthorId: String?,
+    now: Instant = Instant.now(),
+): List<CommentMenuAction> {
     if (row.pending) return emptyList()
     val viewer = viewerId.orEmpty()
     val isOwn = viewer.isNotBlank() && row.authorId == viewer
@@ -40,11 +57,30 @@ fun commentMenuActions(row: CommentRow, viewerId: String?, postAuthorId: String?
     return buildList {
         if (!isOwn) add(CommentMenuAction.REPORT)
         if (isOwn) add(CommentMenuAction.DELETE)
+        if (isOwn && isWithinEditWindow(row.createdAt, now)) add(CommentMenuAction.EDIT)
         if (isCreator) {
             add(if (row.heartedByAuthor) CommentMenuAction.UNHEART else CommentMenuAction.HEART)
             if (!row.isReply) add(if (row.pinned) CommentMenuAction.UNPIN else CommentMenuAction.PIN)
         }
     }.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.label })
+}
+
+/** post-service's edit window (`comments.go EditComment`: 15 minutes from `created_at`). */
+val COMMENT_EDIT_WINDOW: Duration = Duration.ofMinutes(15)
+
+/**
+ * True while a comment written at [createdAt] may still be edited. An
+ * unparsable or blank time is not editable: the server would refuse, and a
+ * menu must not offer a request that is bound to fail.
+ */
+fun isWithinEditWindow(createdAt: String, now: Instant = Instant.now()): Boolean {
+    val created = try {
+        Instant.parse(createdAt)
+    } catch (_: DateTimeParseException) {
+        return false
+    }
+    // A clock a little behind the server's makes a fresh comment look "in the future": still editable.
+    return Duration.between(created, now) < COMMENT_EDIT_WINDOW
 }
 
 // ── @mentions ───────────────────────────────────────────────────────────

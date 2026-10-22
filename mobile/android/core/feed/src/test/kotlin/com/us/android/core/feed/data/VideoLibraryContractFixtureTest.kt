@@ -45,6 +45,8 @@ class VideoLibraryContractFixtureTest {
                     itemCount = 4,
                     isPrivate = false,
                     isWatchLater = false,
+                    description = "Every Friday",
+                    visibility = CollectionVisibility.PUBLIC,
                 ),
             )
         },

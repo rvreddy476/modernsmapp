@@ -42,6 +42,10 @@ class CommentActionsRepository @Inject constructor(
     suspend fun delete(commentId: String): AppResult<Unit> =
         apiCall(errorMapper) { api.delete(commentId) }.map { }
 
+    /** The author's own edit; [text] is sent trimmed. */
+    suspend fun edit(commentId: String, text: String): AppResult<Unit> =
+        apiCall(errorMapper) { api.edit(commentId, EditCommentRequest(text.trim())) }.map { }
+
     suspend fun setHearted(commentId: String, hearted: Boolean): AppResult<Unit> =
         if (hearted) {
             apiCall(errorMapper) { api.heart(commentId) }.map { }

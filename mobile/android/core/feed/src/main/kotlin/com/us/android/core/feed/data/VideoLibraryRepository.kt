@@ -11,7 +11,20 @@ import com.us.android.core.network.noContentApiCall
 import javax.inject.Inject
 import javax.inject.Singleton
 
-/** A collection of long videos: one the viewer made, or the Watch later list the server keeps for them. */
+/** Who may open a collection: post-service's three values (`playlistVisibilities`). */
+enum class CollectionVisibility(val wire: String, val label: String) {
+    PUBLIC("public", "Public"),
+    UNLISTED("unlisted", "Unlisted"),
+    PRIVATE("private", "Private"),
+    ;
+
+    companion object {
+        /** Anything unknown reads as Private: a label must never overstate reach. */
+        fun fromWire(value: String?): CollectionVisibility = entries.firstOrNull { it.wire == value } ?: PRIVATE
+    }
+}
+
+/** A collection of long videos: one the viewer made, or a list the server keeps for them (Watch later, Liked videos). */
 data class VideoCollection(
     val id: String,
     val title: String,
@@ -19,10 +32,51 @@ data class VideoCollection(
     val isPrivate: Boolean,
     /** The Watch later list: named by the app, never renamed or deleted, and written through its own routes. */
     val isWatchLater: Boolean,
+    val description: String = "",
+    val visibility: CollectionVisibility = if (isPrivate) CollectionVisibility.PRIVATE else CollectionVisibility.PUBLIC,
+    /** Liked videos: the server's like toggle fills it; no generic write applies (409 SYSTEM_PLAYLIST). */
+    val isLiked: Boolean = false,
+) {
+    /** A list the server keeps: never renamed, deleted or reordered from here. */
+    val isSystem: Boolean get() = isWatchLater || isLiked
+}
+
+/**
+ * A collection with what is in it, in the collection's own order. [order] is
+ * EVERY row's post id by position, the ones the viewer may not see included:
+ * the server's move route counts them, so a reorder is planned against it.
+ */
+data class VideoCollectionContents(
+    val collection: VideoCollection,
+    val videos: List<FeedItem>,
+    val order: List<String> = videos.map { it.id },
 )
 
-/** A collection with what is in it, in the collection's own order. */
-data class VideoCollectionContents(val collection: VideoCollection, val videos: List<FeedItem>)
+/** An edit of a collection's details; null leaves a field as it is. */
+data class CollectionEdit(
+    val title: String? = null,
+    val description: String? = null,
+    val visibility: CollectionVisibility? = null,
+) {
+    val isEmpty: Boolean get() = title == null && description == null && visibility == null
+}
+
+/**
+ * What a collection's page reads and writes. A seam so the page's ViewModel
+ * is tested against answers a test controls; [VideoLibraryRepository] is
+ * the real one.
+ */
+interface VideoCollectionSource {
+    suspend fun watchLater(): AppResult<VideoCollectionContents>
+    suspend fun liked(): AppResult<VideoCollectionContents>
+    suspend fun collection(collectionId: String): AppResult<VideoCollectionContents>
+    suspend fun removeFromCollection(collectionId: String, postId: String): AppResult<Unit>
+    suspend fun updateCollection(collectionId: String, edit: CollectionEdit): AppResult<VideoCollection>
+    suspend fun deleteCollection(collectionId: String): AppResult<Unit>
+
+    /** Moves [postId] to the 0-based [position]; answers every row's post id in the server's new order. */
+    suspend fun moveInCollection(collectionId: String, postId: String, position: Int): AppResult<List<String>>
+}
 
 /**
  * The two writes [VideoLibraryStore] performs. An interface so the store's
@@ -43,7 +97,7 @@ class VideoLibraryRepository @Inject constructor(
     private val api: VideoLibraryApi,
     private val errorMapper: ErrorMapper,
     private val hydrator: FeedItemHydrator,
-) : VideoLibraryWrites {
+) : VideoLibraryWrites, VideoCollectionSource {
 
     override suspend fun setWatchLater(postId: String, queued: Boolean): AppResult<Unit> =
         apiCall(errorMapper) {
@@ -56,14 +110,24 @@ class VideoLibraryRepository @Inject constructor(
         }.map { }
 
     /** The Watch later list and its videos: the system collection (made on first read), then its items. */
-    suspend fun watchLater(): AppResult<VideoCollectionContents> =
-        when (val list = apiCall(errorMapper) { api.systemPlaylist(VideoLibraryApi.KIND_WATCH_LATER) }) {
-            is AppResult.Success -> contentsOf(list.data.toCollection())
+    override suspend fun watchLater(): AppResult<VideoCollectionContents> = system(VideoLibraryApi.KIND_WATCH_LATER)
+
+    /**
+     * Liked videos (web `/posttube/loved`, 2026-10-22 on Android): the `liked`
+     * system collection, then its items. Read-only from here: the server's
+     * like toggle is its only writer.
+     */
+    override suspend fun liked(): AppResult<VideoCollectionContents> = system(VideoLibraryApi.KIND_LIKED)
+
+    private suspend fun system(kind: String): AppResult<VideoCollectionContents> =
+        // The route is the authority on the kind even if the row omits it (the web's rule).
+        when (val list = apiCall(errorMapper) { api.systemPlaylist(kind) }) {
+            is AppResult.Success -> contentsOf(list.data.copy(kind = kind).toCollection())
             is AppResult.Failure -> list
         }
 
     /** One collection and its videos. */
-    suspend fun collection(collectionId: String): AppResult<VideoCollectionContents> =
+    override suspend fun collection(collectionId: String): AppResult<VideoCollectionContents> =
         when (val list = apiCall(errorMapper) { api.playlist(collectionId) }) {
             is AppResult.Success -> contentsOf(list.data.toCollection())
             is AppResult.Failure -> list
@@ -72,15 +136,51 @@ class VideoLibraryRepository @Inject constructor(
     private suspend fun contentsOf(collection: VideoCollection): AppResult<VideoCollectionContents> =
         when (val rows = listApiCall(errorMapper) { api.items(collection.id) }) {
             is AppResult.Success -> AppResult.Success(
-                VideoCollectionContents(collection, hydrator.hydrate(rows.data.toVideos())),
+                VideoCollectionContents(
+                    collection = collection,
+                    videos = hydrator.hydrate(rows.data.toVideos()),
+                    order = rows.data.toOrder(),
+                ),
             )
             is AppResult.Failure -> rows
         }
 
+    /**
+     * Title, description and/or visibility of a collection the viewer made
+     * (`PATCH /v1/playlists/:id`). Only what [edit] names goes on the wire; a
+     * title is trimmed and a blank one is refused here, as the server would.
+     */
+    override suspend fun updateCollection(collectionId: String, edit: CollectionEdit): AppResult<VideoCollection> {
+        val title = edit.title?.trim()
+        if (title != null && title.isEmpty()) {
+            return AppResult.Failure(AppError.InvalidRequest(message = "A collection needs a title."))
+        }
+        return apiCall(errorMapper) {
+            api.updatePlaylist(
+                collectionId,
+                UpdatePlaylistRequest(
+                    title = title,
+                    description = edit.description?.trim(),
+                    visibility = edit.visibility?.wire,
+                ),
+            )
+        }.map { it.toCollection() }
+    }
+
+    /** Deletes a collection the viewer made; its videos are not touched. 204. */
+    override suspend fun deleteCollection(collectionId: String): AppResult<Unit> =
+        noContentApiCall(errorMapper) { api.deletePlaylist(collectionId) }
+
+    /** The reorder: [position] is the 0-based index [postId] lands on, in every row's terms (see [VideoCollectionContents.order]). */
+    override suspend fun moveInCollection(collectionId: String, postId: String, position: Int): AppResult<List<String>> =
+        listApiCall(errorMapper) {
+            api.moveItem(collectionId, postId, MovePlaylistItemRequest(position.coerceAtLeast(0)))
+        }.map { it.toOrder() }
+
     /** The collections [userId] made, the private ones included when it is the viewer. Never the system lists. */
     suspend fun collections(userId: String): AppResult<List<VideoCollection>> =
         listApiCall(errorMapper) { api.creatorPlaylists(userId, COLLECTIONS_LIMIT, 0) }.map { rows ->
-            rows.filter { it.id.isNotBlank() }.map { it.toCollection() }.filterNot { it.isWatchLater }
+            rows.filter { it.id.isNotBlank() }.map { it.toCollection() }.filterNot { it.isSystem }
         }
 
     /** A new, empty collection. Private unless [isPrivate] is false, as on the web's dialog. */
@@ -111,7 +211,7 @@ class VideoLibraryRepository @Inject constructor(
         }.map { }
     }
 
-    suspend fun removeFromCollection(collectionId: String, postId: String): AppResult<Unit> =
+    override suspend fun removeFromCollection(collectionId: String, postId: String): AppResult<Unit> =
         noContentApiCall(errorMapper) { api.removeItem(collectionId, postId) }
 
     companion object {
@@ -144,18 +244,36 @@ internal fun List<PlaylistItemDto>.toVideos(): List<FeedItem> =
         .distinctBy { it.id }
         .map { it.toDomain() }
 
-/** The system list is named by the app's vocabulary, never by the server's row title (which says "Queue"). */
+/**
+ * Every row's post id in position order, hidden rows included: what the
+ * server's move route counts. A repeated id keeps its first place.
+ */
+internal fun List<PlaylistItemDto>.toOrder(): List<String> =
+    sortedBy { it.position }.map { it.postId }.filter { it.isNotBlank() }.distinct()
+
+/** A system list is named by the app's vocabulary, never by the server's row title (which says "Queue"). */
 internal fun PlaylistDto.toCollection(): VideoCollection {
     val watchLater = kind == VideoLibraryApi.KIND_WATCH_LATER
+    val liked = kind == VideoLibraryApi.KIND_LIKED
     return VideoCollection(
         id = id,
-        title = if (watchLater) WATCH_LATER_TITLE else title.trim().ifBlank { "Untitled" },
+        title = when {
+            watchLater -> WATCH_LATER_TITLE
+            liked -> LIKED_VIDEOS_TITLE
+            else -> title.trim().ifBlank { "Untitled" }
+        },
         itemCount = itemCount.coerceAtLeast(0),
         // Anything that is not plainly public is treated as private: the label must never overstate reach.
         isPrivate = visibility != VideoLibraryRepository.PUBLIC,
         isWatchLater = watchLater,
+        description = if (watchLater || liked) "" else description.trim(),
+        visibility = CollectionVisibility.fromWire(visibility),
+        isLiked = liked,
     )
 }
 
 /** RUTUBE's words (founder, 2026-09-28). */
 const val WATCH_LATER_TITLE = "Watch later"
+
+/** The web's title for the `liked` system list (`SYSTEM_TITLES.liked`). */
+const val LIKED_VIDEOS_TITLE = "Liked videos"

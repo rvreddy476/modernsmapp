@@ -63,6 +63,17 @@ object ChatApisModule {
     fun provideMessageConsentApi(retrofit: Retrofit): com.us.android.core.chat.data.MessageConsentApi =
         retrofit.create(com.us.android.core.chat.data.MessageConsentApi::class.java)
 
+    /** Pinned messages (2026-10-22): their own interface, so the other fakes stay valid. */
+    @Provides
+    @Singleton
+    fun provideChatPinsApi(retrofit: Retrofit): com.us.android.core.chat.data.ChatPinsApi =
+        retrofit.create(com.us.android.core.chat.data.ChatPinsApi::class.java)
+
+    /** The thread reads pins through the repository; tests hand it a fake. */
+    @Provides
+    fun provideChatPinsSource(impl: com.us.android.core.chat.data.ChatPinsRepository): com.us.android.core.chat.data.ChatPinsSource =
+        impl
+
     /** Message ticks (2026-10-22): the delivered ack route. */
     @Provides
     @Singleton

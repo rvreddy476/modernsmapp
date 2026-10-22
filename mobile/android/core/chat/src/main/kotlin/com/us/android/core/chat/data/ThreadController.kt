@@ -338,6 +338,8 @@ class ThreadController(
         // The shared disappearing timer is the header's business; the
         // ViewModel applies it. Messages already sent keep their own expiry.
         is ChatSocketEvent.DisappearingTimerUpdated,
+        // Pins are the pinned bar's business; the ViewModel applies them.
+        is ChatSocketEvent.PinUpdate,
         is ChatSocketEvent.Unknown,
         is ChatSocketEvent.Malformed,
         -> null

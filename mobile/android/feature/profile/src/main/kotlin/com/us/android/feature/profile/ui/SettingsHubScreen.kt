@@ -92,6 +92,7 @@ enum class SettingsRow(
     MODULES(SettingsGroup.ACCOUNT, "Modules and home page", "Which apps you use and which opens first", UsIcons.Home),
     RECENTLY_DELETED(SettingsGroup.ACCOUNT, "Recently deleted", "Restore posts from the last 30 days", UsIcons.Trash),
     PRIVACY(SettingsGroup.PRIVACY, "Privacy", "Private account, messages, calls and discovery", UsIcons.Lock),
+    BLOCKED_ACCOUNTS(SettingsGroup.PRIVACY, "Blocked accounts", "People you blocked or muted", UsIcons.Ban),
     INBOX_MESSAGING(
         SettingsGroup.INBOX,
         "Inbox & messaging",
@@ -111,6 +112,12 @@ enum class SettingsRow(
         "Content preferences",
         "Keywords to filter out of your feed",
         UsIcons.Sliders,
+    ),
+    HIDDEN_CHANNELS(
+        SettingsGroup.CONTENT,
+        "Hidden channels",
+        "Channels you asked us not to recommend",
+        UsIcons.EyeOff,
     ),
     OFFLINE_VIDEOS(SettingsGroup.DATA, "Offline videos", "Videos kept on this device", UsIcons.ArrowDownToLine),
     REPORT_PROBLEM(SettingsGroup.SUPPORT, "Report a problem", null, UsIcons.Flag, WebLinks.GRIEVANCE_URL),
@@ -154,6 +161,8 @@ private fun SettingsSections.screenFor(row: SettingsRow): (() -> Unit)? = when (
     SettingsRow.SCREEN_TIME -> onScreenTime
     SettingsRow.CONTENT_PREFERENCES -> onContentPreferences
     SettingsRow.OFFLINE_VIDEOS -> onOfflineVideos
+    SettingsRow.BLOCKED_ACCOUNTS -> onBlockedAccounts
+    SettingsRow.HIDDEN_CHANNELS -> onHiddenChannels
     else -> null
 }
 

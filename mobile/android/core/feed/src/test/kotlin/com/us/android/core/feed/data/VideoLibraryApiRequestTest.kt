@@ -244,6 +244,140 @@ class VideoLibraryApiRequestTest {
         assertThat(result).isInstanceOf(AppResult.Success::class.java)
     }
 
+    // ── Liked videos, edit, delete, reorder (2026-10-22) ────────────────
+
+    @Test
+    fun `liked videos is the liked system playlist, named by the app, then its items`() {
+        enqueue("""{"data":{"id":"lk1","creator_id":"me","title":"Loved","visibility":"private","item_count":1}}""")
+        enqueue("""{"data":[{"playlist_id":"lk1","post_id":"a","position":0,"post":{"id":"a","content_type":"long_video"}}]}""")
+
+        val result = runBlocking { repository.liked() }
+
+        assertThat(server.takeRequest().line()).isEqualTo("GET /v1/playlists/system/liked")
+        assertThat(server.takeRequest().line()).isEqualTo("GET /v1/playlists/lk1/items")
+        val contents = (result as AppResult.Success).data
+        // The route names the kind even when the row omits it.
+        assertThat(contents.collection.isLiked).isTrue()
+        assertThat(contents.collection.isSystem).isTrue()
+        assertThat(contents.collection.title).isEqualTo("Liked videos")
+        assertThat(contents.videos.map { it.id }).containsExactly("a")
+    }
+
+    @Test
+    fun `the order keeps rows the viewer may not see, which the move route counts`() {
+        enqueue("""{"data":{"id":"c1","title":"Build logs","visibility":"public","kind":"user"}}""")
+        enqueue(
+            """{"data":[{"post_id":"b","position":2,"post":{"id":"b"}},{"post_id":"hidden","position":1,"post":null},""" +
+                """{"post_id":"a","position":0,"post":{"id":"a"}}]}""",
+        )
+
+        val contents = (runBlocking { repository.collection("c1") } as AppResult.Success).data
+
+        assertThat(contents.videos.map { it.id }).containsExactly("a", "b").inOrder()
+        assertThat(contents.order).containsExactly("a", "hidden", "b").inOrder()
+    }
+
+    @Test
+    fun `an edit is a PATCH carrying only what changed`() {
+        enqueue(
+            """{"data":{"id":"c1","title":"Friday builds","description":"Every Friday","visibility":"unlisted",""" +
+                """"item_count":4,"kind":"user"}}""",
+        )
+
+        val result = runBlocking {
+            repository.updateCollection("c1", CollectionEdit(title = "  Friday builds ", visibility = CollectionVisibility.UNLISTED))
+        }
+
+        val request = server.takeRequest()
+        assertThat(request.line()).isEqualTo("PATCH /v1/playlists/c1")
+        assertThat(request.bodyText()).isEqualTo("""{"title":"Friday builds","visibility":"unlisted"}""")
+        val collection = (result as AppResult.Success).data
+        assertThat(collection.title).isEqualTo("Friday builds")
+        assertThat(collection.description).isEqualTo("Every Friday")
+        assertThat(collection.visibility).isEqualTo(CollectionVisibility.UNLISTED)
+        // Unlisted is not public: the label never overstates reach.
+        assertThat(collection.isPrivate).isTrue()
+    }
+
+    /** An emptied description is a change and must be sent as "", not left out. */
+    @Test
+    fun `clearing the description sends an empty description`() {
+        enqueue("""{"data":{"id":"c1","title":"Build logs","description":"","visibility":"public","kind":"user"}}""")
+
+        runBlocking { repository.updateCollection("c1", CollectionEdit(description = "")) }
+
+        assertThat(server.takeRequest().bodyText()).isEqualTo("""{"description":""}""")
+    }
+
+    @Test
+    fun `a blank title is refused before any request`() {
+        val result = runBlocking { repository.updateCollection("c1", CollectionEdit(title = "   ")) }
+
+        assertThat(result).isInstanceOf(AppResult.Failure::class.java)
+        assertThat(server.requestCount).isEqualTo(0)
+    }
+
+    /** A system list refuses every generic write: 409 SYSTEM_PLAYLIST is a failure, not a success. */
+    @Test
+    fun `a system list's refusal is a failure`() {
+        enqueue(
+            """{"error":{"code":"SYSTEM_PLAYLIST","message":"this collection is managed by the app"}}""",
+            code = 409,
+        )
+
+        val result = runBlocking { repository.updateCollection("wl1", CollectionEdit(title = "Mine")) }
+
+        assertThat(result).isInstanceOf(AppResult.Failure::class.java)
+    }
+
+    @Test
+    fun `deleting is a DELETE on the playlist, and 204 is success`() {
+        server.enqueue(MockResponse.Builder().code(204).build())
+
+        val result = runBlocking { repository.deleteCollection("c1") }
+
+        assertThat(server.takeRequest().line()).isEqualTo("DELETE /v1/playlists/c1")
+        assertThat(result).isInstanceOf(AppResult.Success::class.java)
+    }
+
+    /** `MovePlaylistItem`'s answer: the bare rows in their new order, renumbered from 0, without `post`. */
+    @Test
+    fun `a move is a PATCH on the item with its new position, answered with the new order`() {
+        enqueue(
+            """{"data":[{"playlist_id":"c1","post_id":"b","position":0,"added_at":"2026-10-01T00:00:00Z"},""" +
+                """{"playlist_id":"c1","post_id":"a","position":1,"added_at":"2026-10-01T00:00:00Z"}]}""",
+        )
+
+        val result = runBlocking { repository.moveInCollection("c1", "b", 0) }
+
+        val request = server.takeRequest()
+        assertThat(request.line()).isEqualTo("PATCH /v1/playlists/c1/items/b")
+        // Position 0 is the commonest move of all and must be sent: an absent one is a 400.
+        assertThat(request.bodyText()).isEqualTo("""{"position":0}""")
+        assertThat((result as AppResult.Success).data).containsExactly("b", "a").inOrder()
+    }
+
+    @Test
+    fun `a refused move is a failure`() {
+        enqueue("""{"error":{"code":"NOT_FOUND","message":"item not found"}}""", code = 404)
+
+        val result = runBlocking { repository.moveInCollection("c1", "gone", 1) }
+
+        assertThat(result).isInstanceOf(AppResult.Failure::class.java)
+    }
+
+    @Test
+    fun `the viewer's collections never list a system one`() {
+        enqueue(
+            """{"data":[{"id":"c1","title":"Mine","kind":"user"},{"id":"wl","kind":"watch_later"},""" +
+                """{"id":"lk","kind":"liked"}]}""",
+        )
+
+        val result = runBlocking { repository.collections("me") }
+
+        assertThat((result as AppResult.Success).data.map { it.id }).containsExactly("c1")
+    }
+
     @Test
     fun `one collection is the playlist, then its items`() {
         enqueue("""{"data":{"id":"c1","title":"Build logs","visibility":"public","item_count":1,"kind":"user"}}""")

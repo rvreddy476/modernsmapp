@@ -14,6 +14,7 @@ import com.us.android.core.engagement.data.CommentReportStatus
 import com.us.android.core.engagement.data.CommentRow
 import com.us.android.core.engagement.data.CommentsUiState
 import com.us.android.core.engagement.data.CommentsViewer
+import com.us.android.core.engagement.data.EditTarget
 import com.us.android.core.engagement.data.MentionCandidate
 import com.us.android.core.engagement.data.ReplyTarget
 import com.us.android.core.engagement.data.ReplyThread
@@ -54,6 +55,8 @@ class UsCommentActionsTest {
             onToggleHeart = { events += "heart:$it" },
             onReport = { id, reason, _ -> events += "report:$id:$reason" },
             onPickMention = { events += "mention:${it.username}" },
+            onEdit = { events += "edit:$it" },
+            onCancelEdit = { events += "cancelEdit" },
         )
     }
 
@@ -192,6 +195,52 @@ class UsCommentActionsTest {
         composeRule.waitForIdle()
 
         assertThat(recorder.events).containsExactly("report:c1:spam")
+    }
+
+    /** Edit (2026-10-22): the author's own fresh comment; the row hands it to the composer. */
+    @Test
+    fun `your own fresh comment's menu offers Edit, which hands it to the composer`() {
+        val fresh = comment("c1", author = "me").copy(createdAt = java.time.Instant.now().toString())
+        val recorder = render(CommentsUiState(rows = listOf(fresh), viewer = viewer))
+
+        composeRule.onNodeWithContentDescription("Comment options").performClick()
+        composeRule.onNodeWithTag("comment_menu_row:edit").performClick()
+        composeRule.waitForIdle()
+
+        assertThat(recorder.events).contains("edit:c1")
+    }
+
+    @Test
+    fun `an old comment of your own offers no Edit`() {
+        render(CommentsUiState(rows = listOf(comment("c1", author = "me").copy(createdAt = "2026-01-01T00:00:00Z")), viewer = viewer))
+
+        composeRule.onNodeWithContentDescription("Comment options").performClick()
+        composeRule.onNodeWithTag("comment_menu_row:delete").assertIsDisplayed()
+        composeRule.onNodeWithTag("comment_menu_row:edit").assertDoesNotExist()
+    }
+
+    @Test
+    fun `an edit in the composer says so, and its x cancels it`() {
+        val recorder = render(
+            CommentsUiState(
+                rows = listOf(comment("c1", author = "me")),
+                viewer = viewer,
+                draft = "body c1",
+                editing = EditTarget("c1", "body c1"),
+            ),
+        )
+
+        composeRule.onNodeWithText(EDITING_LABEL).assertIsDisplayed()
+        composeRule.onNodeWithContentDescription("Cancel edit").performClick()
+        assertThat(recorder.events).containsExactly("cancelEdit")
+    }
+
+    @Test
+    fun `an edited comment reads Edited`() {
+        render(CommentsUiState(rows = listOf(comment("c1").copy(edited = true), comment("c2")), viewer = viewer))
+
+        composeRule.onNodeWithTag("comment_edited:c1").assertIsDisplayed()
+        composeRule.onNodeWithTag("comment_edited:c2").assertDoesNotExist()
     }
 
     @Test

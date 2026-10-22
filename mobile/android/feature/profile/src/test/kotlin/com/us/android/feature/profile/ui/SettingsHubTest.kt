@@ -38,7 +38,7 @@ class SettingsHubTest {
             SettingsRow.MODULES,
             SettingsRow.RECENTLY_DELETED,
         ).inOrder()
-        assertThat(rows.getValue(SettingsGroup.PRIVACY)).containsExactly(SettingsRow.PRIVACY)
+        assertThat(rows.getValue(SettingsGroup.PRIVACY)).containsExactly(SettingsRow.PRIVACY, SettingsRow.BLOCKED_ACCOUNTS).inOrder()
         // Chat parity (2026-10-18): its own group, its own page.
         assertThat(rows.getValue(SettingsGroup.INBOX)).containsExactly(SettingsRow.INBOX_MESSAGING)
         assertThat(rows.getValue(SettingsGroup.NOTIFICATIONS)).containsExactly(SettingsRow.PUSH_NOTIFICATIONS)
@@ -46,6 +46,7 @@ class SettingsHubTest {
             SettingsRow.APPEARANCE,
             SettingsRow.SCREEN_TIME,
             SettingsRow.CONTENT_PREFERENCES,
+            SettingsRow.HIDDEN_CHANNELS,
         ).inOrder()
         // No Data saver row: Android has no such screen, and a row that opens nothing is never drawn.
         assertThat(rows.getValue(SettingsGroup.DATA)).containsExactly(SettingsRow.OFFLINE_VIDEOS)
@@ -77,6 +78,8 @@ class SettingsHubTest {
             onModules = { opened += "modules" },
             onOfflineVideos = { opened += "offline videos" },
             onInboxMessaging = { opened += "inbox and messaging" },
+            onBlockedAccounts = { opened += "blocked accounts" },
+            onHiddenChannels = { opened += "hidden channels" },
         )
         val web = mutableListOf<String>()
 
@@ -98,10 +101,12 @@ class SettingsHubTest {
             "modules",
             "recently deleted",
             "privacy",
+            "blocked accounts",
             "inbox and messaging",
             "notifications",
             "screen time",
             "content preferences",
+            "hidden channels",
             "offline videos",
         ).inOrder()
         assertThat(web).hasSize(3)

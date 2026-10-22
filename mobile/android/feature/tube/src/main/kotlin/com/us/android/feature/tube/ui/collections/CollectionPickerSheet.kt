@@ -215,7 +215,7 @@ private fun Note(text: String) {
 
 /** 32×4, muted at 35%: a handle, not a decoration. */
 @Composable
-private fun GrabHandle() {
+internal fun GrabHandle() {
     Box(
         modifier = Modifier
             .fillMaxWidth()

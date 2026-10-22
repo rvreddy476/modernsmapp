@@ -65,3 +65,24 @@ class DataStoreAppearanceStore @Inject constructor(
 
     override suspend fun setMode(mode: AppearanceMode) = dataStore.setAppearanceMode(mode)
 }
+
+/**
+ * Tube's "Pause recording" (web parity, 2026-10-22), kept across restarts.
+ * A seam for the reason [ReelsAutoScrollStore] is one: the History page's
+ * ViewModel and the progress writer are tested on the JVM against an
+ * in-memory store. The production one is [DataStoreWatchHistoryPauseStore].
+ */
+interface WatchHistoryPauseStore {
+    /** False until the viewer pauses: every watched video is recorded. */
+    val paused: Flow<Boolean>
+
+    suspend fun setPaused(paused: Boolean)
+}
+
+class DataStoreWatchHistoryPauseStore @Inject constructor(
+    private val dataStore: SettingsDataStore,
+) : WatchHistoryPauseStore {
+    override val paused: Flow<Boolean> get() = dataStore.watchHistoryPaused
+
+    override suspend fun setPaused(paused: Boolean) = dataStore.setWatchHistoryPaused(paused)
+}

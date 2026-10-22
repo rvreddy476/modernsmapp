@@ -23,6 +23,8 @@ class TubeMenuTest {
             .containsExactly(
                 "Collections",
                 "Creator Hub",
+                "History",
+                "Liked videos",
                 "Notifications",
                 "Offline",
                 "Saved",
@@ -96,8 +98,8 @@ class TubeMenuTest {
     @Test
     fun `every row has a label and none is empty`() {
         TubeMenuRow.entries.forEach { assertThat(it.label).isNotEmpty() }
-        // 9 since 2026-10-15: Creator Hub joined (T-31).
-        assertThat(tubeMenuRows(ChannelState.Present(channel))).hasSize(9)
+        // 9 since 2026-10-15: Creator Hub joined (T-31). 11 since 2026-10-22: History and Liked videos.
+        assertThat(tubeMenuRows(ChannelState.Present(channel))).hasSize(11)
     }
 
     /** T-31: the read-only Creator Hub is reachable from the video app whatever is known of the channel. */

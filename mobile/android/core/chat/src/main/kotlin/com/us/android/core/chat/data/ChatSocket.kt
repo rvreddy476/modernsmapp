@@ -127,6 +127,21 @@ sealed interface ChatSocketEvent {
     ) : ChatSocketEvent
 
     /**
+     * Pinned messages (2026-10-22): someone in the chat pinned or unpinned a
+     * message (`pin_update {conversation_id, action: pinned|unpinned,
+     * pin_id, message_id, by, at}`, `publishPinUpdate`). The thread applies
+     * it in place; a pin without its id makes the thread read the list.
+     */
+    data class PinUpdate(
+        val conversationId: String,
+        val pinned: Boolean,
+        val pinId: String? = null,
+        val messageId: String? = null,
+        val by: String? = null,
+        val at: String? = null,
+    ) : ChatSocketEvent
+
+    /**
      * Chat parity (CONTRACT §2.5): one reaction added or removed. The server
      * sends the reactor's own frame to their other devices too, so applying
      * it must be idempotent.
@@ -490,6 +505,8 @@ fun parseChatFrame(json: Json, text: String): ChatSocketEvent? {
 
         FRAME_DISAPPEARING_TIMER -> parseDisappearingTimer(payload)
 
+        FRAME_PIN_UPDATE -> parsePinUpdate(payload)
+
         FRAME_MESSAGE_REQUEST_REMOVED -> payload.str("conversation_id")?.takeIf { it.isNotBlank() }
             ?.let { ChatSocketEvent.MessageRequestRemoved(it, payload.str("reason")) }
             ?: ChatSocketEvent.Malformed(FRAME_MESSAGE_REQUEST_REMOVED, "missing conversation")
@@ -524,6 +541,33 @@ private fun parseDisappearingTimer(payload: JsonObject): ChatSocketEvent {
         ChatSocketEvent.Malformed(FRAME_DISAPPEARING_TIMER, "missing conversation or timer")
     } else {
         ChatSocketEvent.DisappearingTimerUpdated(conversationId, millis, payload.str("updated_by"))
+    }
+}
+
+/**
+ * `pin_update {conversation_id, action, pin_id, message_id, by, at}`. The
+ * action is `pinned` / `unpinned` from message-service (the web also
+ * accepts `pin` / `unpin`). Fail closed on the conversation and the action:
+ * a frame that does not say which chat, or which way, changes nothing.
+ */
+private fun parsePinUpdate(payload: JsonObject): ChatSocketEvent {
+    val conversationId = payload.str("conversation_id").orEmpty()
+    val pinned = when (payload.str("action")) {
+        "pinned", "pin" -> true
+        "unpinned", "unpin" -> false
+        else -> null
+    }
+    return if (conversationId.isBlank() || pinned == null) {
+        ChatSocketEvent.Malformed(FRAME_PIN_UPDATE, "missing conversation or action")
+    } else {
+        ChatSocketEvent.PinUpdate(
+            conversationId = conversationId,
+            pinned = pinned,
+            pinId = payload.str("pin_id")?.takeIf { it.isNotBlank() },
+            messageId = payload.str("message_id")?.takeIf { it.isNotBlank() },
+            by = (payload.str("by") ?: payload.str("pinned_by"))?.takeIf { it.isNotBlank() },
+            at = (payload.str("at") ?: payload.str("pinned_at"))?.takeIf { it.isNotBlank() },
+        )
     }
 }
 
@@ -663,6 +707,7 @@ private const val FRAME_DELIVERY_RECEIPT = "delivery_receipt"
 private const val FRAME_SUBSCRIPTION_REVOKED = "subscription_revoked"
 private const val FRAME_MESSAGE_DELETED = "message_deleted"
 private const val FRAME_DISAPPEARING_TIMER = "disappearing_timer_updated"
+private const val FRAME_PIN_UPDATE = "pin_update"
 
 /** `message_deleted.reason` when a disappearing message's timer ran out. */
 private const val DELETE_REASON_EXPIRED = "expired"

@@ -163,12 +163,9 @@ data class ProfileStats(
 /**
  * The viewer's relationship to a profile.
  *
- * Deliberately NOT fetched from `GET /v1/graph/blocked-and-muted`. That route
- * accepts any `user_id`, requires no authentication, and returns another
- * account's block list to an anonymous caller (capture §4). Calling it would
- * make the client a participant in a privacy hole. Until the backend binds it
- * to the authenticated viewer, relationship state is only ever derived from
- * actions this device performed, which is why [isFollowing] and [isBlocked]
+ * Not fetched from `GET /v1/graph/blocked-and-muted`: that route (viewer-bound
+ * since the 2026-10-21 security sweep) is one list of ids for the Blocked
+ * accounts page, not a per-profile answer. [isFollowing] and [isBlocked]
  * default to the honest "unknown" of `false` and are corrected optimistically.
  */
 data class ProfileRelationship(

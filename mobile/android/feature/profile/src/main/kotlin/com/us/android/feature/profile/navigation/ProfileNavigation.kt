@@ -13,6 +13,8 @@ import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 import com.us.android.feature.profile.ui.AppearanceViewModel
+import com.us.android.feature.profile.ui.BlockedAccountsScreen
+import com.us.android.feature.profile.ui.HiddenChannelsScreen
 import com.us.android.feature.profile.ui.EditProfileScreen
 import com.us.android.feature.profile.ui.FollowListScreen
 import com.us.android.feature.profile.ui.FollowListTab
@@ -231,6 +233,12 @@ data object EditProfileRoute
 /** Settings › Inbox & messaging (chat parity, 2026-10-18). */
 @Serializable data object InboxSettingsRoute
 
+/** Settings › Privacy › Blocked accounts (web parity, 2026-10-22): blocks and mutes, each with its undo. */
+@Serializable data object BlockedAccountsRoute
+
+/** Settings › Hidden channels (web parity, 2026-10-22): "Don't recommend this channel", each with Show again. */
+@Serializable data object HiddenChannelsRoute
+
 /**
  * Registers the edit-profile destination.
  *
@@ -280,8 +288,14 @@ fun NavGraphBuilder.settingsScreens(
     }
     composable<ProfileDetailsRoute> { ProfileDetailsScreen(destinations.onBack) }
     composable<PrivacySettingsRoute> {
-        PrivacySettingsScreen(destinations.onBack, destinations.onMessagesSettings)
+        PrivacySettingsScreen(
+            destinations.onBack,
+            destinations.onMessagesSettings,
+            onBlockedAccounts = destinations.sections.onBlockedAccounts,
+        )
     }
+    composable<BlockedAccountsRoute> { BlockedAccountsScreen(onBack = destinations.onBack) }
+    composable<HiddenChannelsRoute> { HiddenChannelsScreen(onBack = destinations.onBack) }
     composable<InboxSettingsRoute> { com.us.android.feature.profile.ui.InboxSettingsScreen(destinations.onBack) }
     composable<NotificationSettingsRoute> { NotificationSettingsScreen(destinations.onBack) }
     composable<SecuritySettingsRoute> {
@@ -334,6 +348,10 @@ data class SettingsSections(
     val onOfflineVideos: () -> Unit,
     /** Chat parity (2026-10-18): Settings › Inbox & messaging, a page of this feature. */
     val onInboxMessaging: () -> Unit = {},
+    /** Privacy › Blocked accounts (2026-10-22), a page of this feature: `:app` pushes [BlockedAccountsRoute]. */
+    val onBlockedAccounts: () -> Unit = {},
+    /** Content & display › Hidden channels (2026-10-22), a page of this feature: `:app` pushes [HiddenChannelsRoute]. */
+    val onHiddenChannels: () -> Unit = {},
 )
 
 /** Type-safe navigation to another user's profile. */

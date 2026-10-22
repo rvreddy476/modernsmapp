@@ -325,7 +325,7 @@ private fun FollowListConfirmSheet(confirm: FollowListConfirm, onConfirm: () -> 
  * picture.
  */
 @Composable
-private fun rememberProfileMediaUrl(mediaId: String?): String? {
+internal fun rememberProfileMediaUrl(mediaId: String?): String? {
     val context = LocalContext.current
     val url by produceState(initialValue = mediaId?.let { ProfileMediaUrlMemo[it] }, mediaId) {
         val id = mediaId?.takeIf { it.isNotBlank() } ?: return@produceState
