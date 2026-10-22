@@ -56,21 +56,13 @@ extraEmptyDirs:
 serviceAccount:
   irsaRoleArn: ""
 
+# No secrets. The chat proxy used to hold CHAT_PROXY_SIGNING_SECRET (the
+# platform jwt_secret) and JWT_KID to mint chat tokens for any user id; it now
+# forwards the signed-in user's own RS256 access token and chat-message-service
+# verifies it with the public key (security sweep 2026-10-21 #3). The
+# atpost/prod/web secret in Secrets Manager can be retired.
 externalSecret:
-  enabled: true
-  remoteKey: atpost/prod/web
-  data:
-    # Signs the short-lived chat WS token (compose: CHAT_PROXY_SIGNING_SECRET
-    # from the gitignored .env). It IS the platform jwt_secret: the seeder
-    # copies the shared jwt_secret here, because chat-message-service and
-    # chat-ws-gateway verify the token with their JWT_SECRET. Rotate it only
-    # together with jwt_secret.
-    - { secretKey: CHAT_PROXY_SIGNING_SECRET, remoteRef: chat_proxy_signing_secret }
-    # The kid stamped on that token. The chat services pick the verification
-    # key by kid (chat-service/shared/accessauth secretFor): it must equal
-    # THEIR JWT_KID (the shared jwt_kid), or every chat request is a 401.
-    # The route.ts default "v1" is the dev kid and is refused in production.
-    - { secretKey: JWT_KID, remoteRef: jwt_kid }
+  enabled: false
 
 env:
   NODE_ENV: production

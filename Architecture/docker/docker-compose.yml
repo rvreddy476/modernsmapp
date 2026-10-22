@@ -2841,8 +2841,8 @@ services:
       PROFILE_SERVICE_URL: http://api-gateway:8080
       GRAPH_SERVICE_URL: http://api-gateway:8080
       POST_SERVICE_URL: http://api-gateway:8080
-      # Signs the short-lived chat WS token. Lives in the gitignored .env.
-      CHAT_PROXY_SIGNING_SECRET: ${CHAT_PROXY_SIGNING_SECRET:?CHAT_PROXY_SIGNING_SECRET must be set in Architecture/docker/.env}
+      # The chat proxy forwards the browser's own access token; it holds no
+      # signing secret (CHAT_PROXY_SIGNING_SECRET retired, sweep 2026-10-21 #3).
       NODE_ENV: production
     depends_on:
       api-gateway: { condition: service_started }

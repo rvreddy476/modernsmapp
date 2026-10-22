@@ -63,6 +63,53 @@ func TestGatewayStripsSpoofedIdentityHeadersWhenUnauthenticated(t *testing.T) {
 	}
 }
 
+// The web chat socket carries the access token as the `bearer.<token>`
+// WebSocket subprotocol (the browser API cannot set Authorization and query
+// tokens are refused by chat-ws-gateway in production). The gateway reads it
+// on the realtime allowlist only — exactly where a query token is read — so
+// the upgrade is verified, revocation-checked and stamped like every other
+// authenticated request, and no REST route gains a new credential source.
+func TestGatewayReadsSubprotocolTokenOnRealtimePathsOnly(t *testing.T) {
+	keys := jwtKeySet{activeKID: "v1", activeSecret: "secret"}
+	policy := devTestPolicy()
+	policy.QueryTokenPaths = []string{"/v1/ws"}
+	token := signJWT(t, map[string]any{"alg": "HS256", "kid": "v1"}, map[string]any{
+		"user_id": "33333333-3333-4333-8333-333333333333",
+		"exp":     time.Now().Add(time.Hour).Unix(),
+	}, keys.activeSecret)
+
+	for _, tc := range []struct {
+		name, path, protocols, wantUser string
+	}{
+		{"chat upgrade", "/v1/ws/connect", "bearer, bearer." + token, "33333333-3333-4333-8333-333333333333"},
+		{"jwt form", "/v1/ws/notifications", "jwt." + token, "33333333-3333-4333-8333-333333333333"},
+		{"rest route stays anonymous", "/v1/users/thing", "bearer, bearer." + token, ""},
+		{"sibling path stays anonymous", "/v1/ws-evil/connect", "bearer." + token, ""},
+		{"garbage subprotocol is not a token", "/v1/ws/connect", "bearer, bearer.not-a-jwt", "refused"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var got map[string]string
+			mw := jwtExtractMiddleware(keys, policy, captureHandler(&got))
+			req := httptest.NewRequest(http.MethodGet, tc.path, nil)
+			req.Header.Set("Sec-WebSocket-Protocol", tc.protocols)
+			rec := httptest.NewRecorder()
+			mw.ServeHTTP(rec, req)
+			if tc.wantUser == "refused" {
+				if rec.Code != http.StatusUnauthorized {
+					t.Fatalf("invalid subprotocol token answered %d, want 401", rec.Code)
+				}
+				return
+			}
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status %d", rec.Code)
+			}
+			if got["X-User-Id"] != tc.wantUser {
+				t.Fatalf("X-User-Id=%q want %q", got["X-User-Id"], tc.wantUser)
+			}
+		})
+	}
+}
+
 func TestGatewayIgnoresClientScopesWithLowPrivToken(t *testing.T) {
 	keys := jwtKeySet{activeKID: "v1", activeSecret: "secret"}
 	var got map[string]string

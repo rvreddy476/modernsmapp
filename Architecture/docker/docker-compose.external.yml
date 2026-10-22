@@ -48,7 +48,6 @@ services:
       API_GATEWAY_URL: "http://api-gateway:8080"
       CHAT_BACKEND_URL: "http://chat-message-service:8092/v1/chat"
       AUTH_SERVICE_URL: "http://identity-auth:8081"
-      CHAT_PROXY_SIGNING_SECRET: "${JWT_SECRET:-local_dev_jwt_change_me}"
       PORT: "3000"
     ports:
       - "3000:3000"

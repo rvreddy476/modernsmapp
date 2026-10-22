@@ -1,6 +1,7 @@
 package http
 
 import (
+	"crypto/subtle"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
@@ -151,7 +152,7 @@ func AuthMiddlewareWithKeys(keys JWTKeySet, log *slog.Logger) gin.HandlerFunc {
 		}
 		if strings.HasPrefix(c.Request.URL.Path, "/internal/v1/chat/") &&
 			keys.InternalServiceKey != "" &&
-			c.GetHeader("X-Internal-Service-Key") == keys.InternalServiceKey {
+			subtle.ConstantTimeCompare([]byte(c.GetHeader("X-Internal-Service-Key")), []byte(keys.InternalServiceKey)) == 1 {
 			c.Next()
 			return
 		}

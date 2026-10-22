@@ -37,11 +37,9 @@ externalSecret:
     - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
     - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
-    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
-    - { secretKey: JWT_KID, remoteRef: jwt_kid }
-    - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
-    - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
-    # RS256 verification (public key); HS256 stays accepted in parallel.
+    # RS256 verification: the platform public key only. No JWT_SECRET here —
+    # the service refuses to boot in production with one set (a verifier that
+    # holds the HS256 secret can mint; security sweep 2026-10-21 #3).
     - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
     # Conversation-room entitlements (shared HMAC with chat-message-service;
     # the gateway verifies, never mints).

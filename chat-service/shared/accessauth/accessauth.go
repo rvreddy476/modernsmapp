@@ -95,6 +95,11 @@ func LoadFromEnv() (KeySet, Policy, error) {
 			return keys, policy, errors.New("JWT_AUDIENCE is required in production")
 		case len(keys.RSAKeys) == 0:
 			return keys, policy, errors.New("JWT_PUBLIC_KEY_PEM is required in production")
+		case keys.ActiveSecret != "" || keys.PreviousSecret != "":
+			// A verifier that holds the HS256 secret can also mint. Production
+			// verifies with the public key only; the symmetric secret must not
+			// even be present in the pod (security sweep 2026-10-21, #3).
+			return keys, policy, errors.New("JWT_SECRET / JWT_SECRET_PREVIOUS must not be set in production: RS256 is the only accepted algorithm and the verifier must not hold a signing secret")
 		}
 	}
 	return keys, policy, nil

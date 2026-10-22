@@ -879,7 +879,15 @@ func jwtExtractMiddleware(keys jwtKeySet, policy tokenpolicy.Policy, next http.H
 			// Previously every route accepted ?access_token= / ?token=, so a
 			// credential could be captured from access logs, browser history,
 			// analytics beacons and Referer headers on ordinary REST calls.
-			if q := r.URL.Query().Get("access_token"); q != "" {
+			//
+			// The same allowlist admits the `bearer.<token>` WebSocket
+			// subprotocol: a browser cannot set Authorization on an upgrade,
+			// and a query token lands in access logs, so the web chat socket
+			// carries its access token this way (chat-ws-gateway reads the
+			// same form). No REST route grows a new credential source.
+			if sp := subprotocolBearerToken(r); sp != "" {
+				token = sp
+			} else if q := r.URL.Query().Get("access_token"); q != "" {
 				token = q
 			} else if q := r.URL.Query().Get("token"); q != "" {
 				token = q
@@ -1277,4 +1285,21 @@ func serveDormantProductGate(w http.ResponseWriter, r *http.Request, products []
 		}
 	}
 	return false
+}
+
+// subprotocolBearerToken returns the access token a WebSocket upgrade carries
+// as a `bearer.<token>` or `jwt.<token>` entry of Sec-WebSocket-Protocol, or
+// "" when there is none. The caller restricts it to the realtime allowlist.
+func subprotocolBearerToken(r *http.Request) string {
+	for _, header := range r.Header.Values("Sec-WebSocket-Protocol") {
+		for _, protocol := range strings.Split(header, ",") {
+			protocol = strings.TrimSpace(protocol)
+			for _, prefix := range []string{"bearer.", "jwt."} {
+				if strings.HasPrefix(protocol, prefix) && len(protocol) > len(prefix) {
+					return strings.TrimPrefix(protocol, prefix)
+				}
+			}
+		}
+	}
+	return ""
 }
