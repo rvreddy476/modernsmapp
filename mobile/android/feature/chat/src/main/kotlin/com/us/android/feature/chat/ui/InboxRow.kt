@@ -80,14 +80,17 @@ internal fun ConversationRow(
     title: String,
     viewerId: String,
     onClick: () -> Unit,
-    online: Boolean = false,
+    /** Resolved by the caller (peerOnline); null falls back to the row's fetched peer.is_online. */
+    online: Boolean? = null,
     onTogglePin: () -> Unit = {},
     onToggleMute: () -> Unit = {},
     avatarUrl: String? = null,
     actions: InboxRowActions? = null,
 ) {
     var sheetOpen by remember { mutableStateOf(false) }
-    val isOnline = online || conversation.peer?.isOnline == true
+    // A caller-resolved value wins (peerOnline): a live offline frame must be able
+    // to put the dot out, which OR-ing the fetched peer.is_online here prevented.
+    val isOnline = online ?: (conversation.peer?.isOnline == true)
     val photo = avatarUrl ?: conversation.peer?.avatarUrl
         ?: conversation.sender?.takeUnless { it.deleted }?.avatarUrl ?: conversation.avatarUrl
     val unread = unreadPillText(conversation.unreadCount, conversation.hasUnread)

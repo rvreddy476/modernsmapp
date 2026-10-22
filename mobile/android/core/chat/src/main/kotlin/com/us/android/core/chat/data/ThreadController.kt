@@ -487,6 +487,7 @@ class ThreadController(
             profileUserId = null,
             soundId = null,
             streamId = null,
+            location = null,
             reactions = emptyList(),
         )
         return state.copy(messages = state.messages.map { if (it.id == messageId) tombstone else it })

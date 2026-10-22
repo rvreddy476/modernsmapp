@@ -349,6 +349,8 @@ data class SendMessageRequest(
     @SerialName("sound_id") val soundId: String? = null,
     /** `type = "live"`. */
     @SerialName("stream_id") val streamId: String? = null,
+    /** `type = "location"` (23 Oct 2026): the shared place; null on every other kind. */
+    val location: ChatLocation? = null,
     /** A reply to someone's Note (CONTRACT §5): the note's id. */
     @SerialName("reply_note_id") val replyNoteId: String? = null,
 )
@@ -604,6 +606,8 @@ data class MessageDto(
     @SerialName("profile_user_id") val profileUserId: String? = null,
     @SerialName("sound_id") val soundId: String? = null,
     @SerialName("stream_id") val streamId: String? = null,
+    /** `type = "location"` (23 Oct 2026): the shared place; null on every other kind. */
+    val location: ChatLocation? = null,
     /** `message`, `note` or null. */
     @SerialName("reply_kind") val replyKind: String? = null,
     /**
@@ -634,6 +638,7 @@ const val GIF_MESSAGE = "gif"
 const val PROFILE_MESSAGE = "profile"
 const val SOUND_MESSAGE = "sound"
 const val LIVE_MESSAGE = "live"
+// LOCATION_MESSAGE ("location", 23 Oct 2026) lives in ChatLocation.kt.
 const val CALL_MESSAGE = "call"
 
 /** The server's page cap for `GET /v1/chat/conversations`. */

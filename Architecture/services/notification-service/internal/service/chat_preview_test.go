@@ -78,6 +78,9 @@ func TestChatPreviewMediaCopy(t *testing.T) {
 		{ChatMessagePush{MessageType: "gif"}, "Asha sent a GIF"},
 		{ChatMessagePush{MessageType: "post"}, "Asha shared a post"},
 		{ChatMessagePush{MessageType: "profile"}, "Asha shared a profile"},
+		{ChatMessagePush{MessageType: "location"}, "Asha shared a location"},
+		// A location push never shows text, even if a client sent some.
+		{ChatMessagePush{MessageType: "location", Text: "12.97160, 77.59460"}, "Asha shared a location"},
 		{ChatMessagePush{MessageType: "sound"}, "Asha shared a sound"},
 		{ChatMessagePush{MessageType: "live"}, "Asha shared a LIVE"},
 		// Media never leaks its caption, even when one is present.

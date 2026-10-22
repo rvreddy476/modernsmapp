@@ -14,6 +14,7 @@ func (s *Service) buildExtra(ctx context.Context, senderID uuid.UUID, in SendInp
 	if fe := in.forwardedExtra; fe != nil {
 		extra.Voice, extra.Sticker, extra.GIF = fe.Voice, fe.Sticker, fe.GIF
 		extra.ProfileUserID, extra.SoundID, extra.StreamID, extra.Media = fe.ProfileUserID, fe.SoundID, fe.StreamID, fe.Media
+		extra.Location = fe.Location
 		return extra, nil, nil
 	}
 	switch in.Type {
@@ -35,6 +36,9 @@ func (s *Service) buildExtra(ctx context.Context, senderID uuid.UUID, in SendInp
 		extra.SoundID = in.SoundID
 	case MessageTypeLive:
 		extra.StreamID = in.StreamID
+	case MessageTypeLocation:
+		// Validated already; stored rounded and trimmed, sealed with the extra.
+		extra.Location = normalizeLocation(in.Location)
 	}
 	if in.MediaID != nil && (in.Type == MessageTypeMedia || in.Type == MessageTypeVoice) {
 		info := s.fetchMediaInfo(ctx, *in.MediaID)
@@ -87,6 +91,9 @@ func addExtraToFrame(body map[string]interface{}, e *MessageExtra) {
 	}
 	if e.StreamID != nil {
 		body["stream_id"] = e.StreamID
+	}
+	if e.Location != nil {
+		body["location"] = e.Location
 	}
 	if e.ReplyKind != "" {
 		body["reply_kind"] = e.ReplyKind

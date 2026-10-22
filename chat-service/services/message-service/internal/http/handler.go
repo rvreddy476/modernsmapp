@@ -679,7 +679,7 @@ const replyPreviewMaxRunes = 140
 
 type SendMessageRequest struct {
 	// Keep oneof in step with service.KnownMessageTypes (a test pins it).
-	Type    string     `json:"type" binding:"required,oneof=text media post voice sticker gif profile sound live"`
+	Type    string     `json:"type" binding:"required,oneof=text media post voice sticker gif profile sound live location"`
 	Text    string     `json:"text" binding:"max=2000"`
 	MediaID *uuid.UUID `json:"media_id"`
 	// PostID is the shared post on a "post" card ("Send to friends"). Text
@@ -701,6 +701,10 @@ type SendMessageRequest struct {
 	UserID      *uuid.UUID      `json:"user_id"`
 	SoundID     *uuid.UUID      `json:"sound_id"`
 	StreamID    *uuid.UUID      `json:"stream_id"`
+	// Location is a shared place (23 Oct 2026): {lat, lng, accuracy_m?,
+	// label?, address?}, validated and rounded by the service. A non-number
+	// fails binding (400); the value is never logged.
+	Location *service.LocationInput `json:"location"`
 }
 
 func (h *Handler) SendMessage(c *gin.Context) {
@@ -765,7 +769,7 @@ func (h *Handler) SendMessage(c *gin.Context) {
 			Type: req.Type, Text: req.Text, MediaID: req.MediaID, PostID: req.PostID, ReplyTo: replyTo,
 			IdempotencyKey: idempotencyKey, ReplyNoteID: req.ReplyNoteID, DurationMs: req.DurationMs,
 			Waveform: req.Waveform, StickerID: req.StickerID, GIF: req.GIF, ProfileUserID: req.UserID,
-			SoundID: req.SoundID, StreamID: req.StreamID,
+			SoundID: req.SoundID, StreamID: req.StreamID, Location: req.Location,
 		})
 	} else {
 		msg, err = h.svc.SendMessage(c.Request.Context(), userID, convID, req.Type, req.Text, req.MediaID, req.PostID, replyTo, idempotencyKey)

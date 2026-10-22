@@ -77,7 +77,8 @@ import com.us.android.core.chat.data.Tick
 import com.us.android.core.chat.data.canPin
 import com.us.android.core.chat.data.tickState
 import com.us.android.core.chat.data.disappearingNote
-import com.us.android.core.chat.data.presenceLabel
+import com.us.android.core.chat.data.ONLINE_LABEL
+import com.us.android.core.chat.data.lastSeenLabel
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
@@ -124,6 +125,7 @@ fun ChatThreadScreen(
     val state = render.thread
     val listState = rememberLazyListState()
     var cameraOpen by remember { mutableStateOf(false) }
+    var locationOpen by remember { mutableStateOf(false) }
     var actionsFor by remember { mutableStateOf<Message?>(null) }
 
     // MULTIPLE, and staged rather than sent. The picker hands back a list
@@ -175,8 +177,9 @@ fun ChatThreadScreen(
                 presence = if (isGroup || render.loadedIsGroup) {
                     null
                 } else {
-                    presenceLabel(render.peerOnline, render.peerLastActiveAt, System.currentTimeMillis())
+                    lastSeenLabel(render.peerOnline, render.peerLastActiveAt, System.currentTimeMillis())
                 },
+                online = !(isGroup || render.loadedIsGroup) && render.peerOnline == true,
                 onMore = links.onOpenChatSettings?.takeIf { render.parityEnabled },
                 disappearing = render.disappearing,
                 onOpenPeer = links.onOpenProfile?.let { open ->
@@ -439,6 +442,7 @@ fun ChatThreadScreen(
                         onVoice = { take -> viewModel.sendVoice(take.file, take.durationMs, take.amplitudes) },
                         // Hold-to-record replaces Send while there is nothing typed or staged.
                         showMic = state.draft.isBlank() && render.staged.isEmpty(),
+                        onLocation = { locationOpen = true },
                     )
                 } else {
                     null
@@ -451,6 +455,15 @@ fun ChatThreadScreen(
 
     if (render.kindPrompt) {
         KindPromptSheet(onEdit = viewModel::editHeldMessage, onSendAnyway = viewModel::sendAnyway)
+    }
+    if (locationOpen && !render.outgoingRequest) {
+        com.us.android.feature.chat.location.ShareLocationSheet(
+            onSend = { place ->
+                locationOpen = false
+                viewModel.sendLocation(place)
+            },
+            onDismiss = { locationOpen = false },
+        )
     }
     if (cameraOpen) {
         ChatCameraDialog(
@@ -527,6 +540,8 @@ internal class ComposerParity(
     val onGif: (com.us.android.core.chat.data.GifInfo) -> Unit,
     val onVoice: (VoiceTake) -> Unit,
     val showMic: Boolean,
+    /** Share location (23 Oct 2026); null hides the button. */
+    val onLocation: (() -> Unit)? = null,
 )
 
 /** What a bubble needs beyond the message itself (chat parity). */
@@ -716,8 +731,10 @@ private fun ChatThreadTopBar(
     onVideoCall: () -> Unit,
     onOpenGroupInfo: () -> Unit,
     avatarUrl: String? = null,
-    /** "Active now" / "Active 5m ago" (direct chats; privacy-gated, so often null). */
+    /** "online" / "last seen today at 14:05" (direct chats; privacy-gated, so often null). */
     presence: String? = null,
+    /** The peer has a live connection right now: the green dot on the avatar. */
+    online: Boolean = false,
     /** The ⋯ → Chat settings page; null hides it. */
     onMore: (() -> Unit)? = null,
     onOpenPeer: (() -> Unit)? = null,
@@ -747,13 +764,27 @@ private fun ChatThreadTopBar(
                     tint = UsTheme.extended.textPrimary,
                 )
             }
-            UsAvatar(
-                name = title,
-                size = UsAvatarSize.Small,
-                seed = title,
-                imageUrl = avatarUrl,
-                modifier = if (onOpenPeer != null) Modifier.clickable(onClick = onOpenPeer) else Modifier,
-            )
+            Box {
+                UsAvatar(
+                    name = title,
+                    size = UsAvatarSize.Small,
+                    seed = title,
+                    imageUrl = avatarUrl,
+                    modifier = if (onOpenPeer != null) Modifier.clickable(onClick = onOpenPeer) else Modifier,
+                )
+                // The green dot, as on the inbox row (founder, 23 Oct 2026).
+                if (online) {
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.BottomEnd)
+                            .size(HEADER_ONLINE_DOT)
+                            .clip(CircleShape)
+                            .background(UsTheme.extended.chatOnline)
+                            .border(HEADER_ONLINE_DOT_RING, MaterialTheme.colorScheme.background, CircleShape)
+                            .testTag("thread-online-dot"),
+                    )
+                }
+            }
             Column(modifier = Modifier.weight(1f)) {
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
@@ -792,7 +823,7 @@ private fun ChatThreadTopBar(
                     Text(
                         text = presence,
                         style = MaterialTheme.typography.labelSmall,
-                        color = if (presence == "Active now") UsTheme.extended.chatOnline else UsTheme.extended.textMuted,
+                        color = if (presence == ONLINE_LABEL) UsTheme.extended.chatOnline else UsTheme.extended.textMuted,
                         modifier = Modifier.testTag("thread-presence"),
                     )
                 }
@@ -1134,6 +1165,19 @@ private fun Composer(
                     Icon(
                         imageVector = UsIcons.Create,
                         contentDescription = "Attach a photo",
+                        tint = UsTheme.extended.textPrimary,
+                    )
+                }
+            }
+            parity?.onLocation?.let { onLocation ->
+                IconButton(
+                    onClick = onLocation,
+                    enabled = !attaching,
+                    modifier = Modifier.testTag("thread-location"),
+                ) {
+                    Icon(
+                        imageVector = UsIcons.MapPin,
+                        contentDescription = "Share location",
                         tint = UsTheme.extended.textPrimary,
                     )
                 }
@@ -1624,6 +1668,9 @@ private fun MessageBubble(
                 rich?.onOpenLive?.invoke(streamId)
             }
         }
+        message.location?.let { place ->
+            com.us.android.feature.chat.location.LocationBubble(location = place, ink = ink)
+        }
         // A shared post is its card; any caption follows under it.
         val postId = message.postId
         if (postId != null && postCard != null) {
@@ -1839,6 +1886,8 @@ private val NAME_TRACKING = (-0.5).sp
 
 private val HAIRLINE = 1.dp
 private val DISAPPEARING_ICON = 14.dp
+private val HEADER_ONLINE_DOT = 10.dp
+private val HEADER_ONLINE_DOT_RING = 2.dp
 private val BUBBLE_CORNER = 18.dp
 private val BUBBLE_TAIL = 4.dp
 /**
@@ -1879,5 +1928,6 @@ private fun Message.withTyped(typed: com.us.android.core.chat.data.TypedSend?): 
             )
         },
         profileUserId = typed.userId,
+        location = typed.location,
     )
 }

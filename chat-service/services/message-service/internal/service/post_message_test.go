@@ -158,6 +158,10 @@ func TestEveryMessageTypeIsHandled(t *testing.T) {
 		MessageTypeProfile: func() error { return validateSendInput(SendInput{Type: MessageTypeProfile, ProfileUserID: &id}) },
 		MessageTypeSound:   func() error { return validateSendInput(SendInput{Type: MessageTypeSound, SoundID: &id}) },
 		MessageTypeLive:    func() error { return validateSendInput(SendInput{Type: MessageTypeLive, StreamID: &id}) },
+		MessageTypeLocation: func() error {
+			lat, lng := 12.9716, 77.5946
+			return validateSendInput(SendInput{Type: MessageTypeLocation, Location: &LocationInput{Lat: &lat, Lng: &lng}})
+		},
 	}
 	for _, typ := range KnownMessageTypes {
 		if messagePreview(typ, "") == "" && typ != MessageTypeText && typ != MessageTypeMedia {

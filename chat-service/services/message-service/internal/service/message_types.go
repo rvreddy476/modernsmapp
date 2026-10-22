@@ -29,7 +29,8 @@ const (
 
 // KnownMessageTypes is every type SendMessage accepts.
 var KnownMessageTypes = []string{MessageTypeText, MessageTypeMedia, MessageTypePost,
-	MessageTypeVoice, MessageTypeSticker, MessageTypeGIF, MessageTypeProfile, MessageTypeSound, MessageTypeLive}
+	MessageTypeVoice, MessageTypeSticker, MessageTypeGIF, MessageTypeProfile, MessageTypeSound, MessageTypeLive,
+	MessageTypeLocation}
 
 // MessageTextMaxRunes matches the HTTP binding (`max=2000`) and applies to a
 // post's optional caption exactly as to a text message.

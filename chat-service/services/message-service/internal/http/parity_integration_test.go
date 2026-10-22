@@ -634,6 +634,22 @@ func TestParityEndToEnd(t *testing.T) {
 	code, raw = e.do("POST", dmPath+"/messages", pA, map[string]any{"type": "live", "stream_id": uuid.New()})
 	e.must(code, 200, raw, "live")
 	assertFixture(t, "message_live", raw)
+	// Shared location (23 Oct 2026): rounded to 5 decimals, text trimmed.
+	code, raw = e.do("POST", dmPath+"/messages", pA, map[string]any{"type": "location", "location": map[string]any{
+		"lat": 12.9715987, "lng": 77.5945627, "accuracy_m": 12.4, "label": " Cubbon Park ", "address": "Kasturba Rd, Bengaluru"}})
+	e.must(code, 200, raw, "location")
+	assertFixture(t, "message_location", raw)
+	for name, loc := range map[string]any{
+		"missing":      nil,
+		"lat range":    map[string]any{"lat": 91, "lng": 1},
+		"lng string":   map[string]any{"lat": 1, "lng": "east"},
+		"long label":   map[string]any{"lat": 1, "lng": 1, "label": strings.Repeat("a", 201)},
+		"no longitude": map[string]any{"lat": 1},
+	} {
+		if code, raw := e.do("POST", dmPath+"/messages", pA, map[string]any{"type": "location", "location": loc}); code != 400 {
+			t.Errorf("location %s accepted: %d %s", name, code, raw)
+		}
+	}
 	code, raw = e.do("POST", dmPath+"/messages", pA, map[string]any{"type": "media", "media_id": image})
 	e.must(code, 200, raw, "media")
 	assertFixture(t, "message_media", raw)

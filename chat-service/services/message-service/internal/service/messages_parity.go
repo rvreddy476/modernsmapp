@@ -230,6 +230,7 @@ func (s *Service) ForwardMessage(ctx context.Context, userID, convID, msgID uuid
 		Type: src.Type, Text: src.Text, MediaID: src.MediaID, PostID: src.PostID,
 		Forwarded: true, forwardedExtra: extra, forwardedMediaOK: src.MediaID != nil,
 		ProfileUserID: extra.ProfileUserID, SoundID: extra.SoundID, StreamID: extra.StreamID,
+		Location: locationInputOf(extra.Location),
 	}
 	if base.Type == "" {
 		base.Type = MessageTypeText

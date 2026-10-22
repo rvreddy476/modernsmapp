@@ -10,6 +10,7 @@ import com.us.android.core.chat.data.DeleteMessageRequest
 import com.us.android.core.chat.data.ForwardOutcome
 import com.us.android.core.chat.data.ForwardResult
 import com.us.android.core.chat.data.LastMessageInfo
+import com.us.android.core.chat.data.PresenceInfo
 import com.us.android.core.chat.data.Message
 import com.us.android.core.chat.data.StickerInfo
 import com.us.android.core.chat.data.TypedSend
@@ -18,10 +19,12 @@ import com.us.android.core.chat.data.downsampleWaveform
 import com.us.android.core.chat.data.formatVoiceDuration
 import com.us.android.core.chat.data.forwardSummary
 import com.us.android.core.chat.data.inboxPreview
+import com.us.android.core.chat.data.lastSeenLabel
 import com.us.android.core.chat.data.mediaInfoOf
 import com.us.android.core.chat.data.orderInbox
 import com.us.android.core.chat.data.ownStatusLabel
 import com.us.android.core.chat.data.parseChatFrame
+import com.us.android.core.chat.data.peerOnline
 import com.us.android.core.chat.data.plainSnippet
 import com.us.android.core.chat.data.presenceLabel
 import com.us.android.core.chat.data.presenceOf
@@ -56,6 +59,36 @@ class ChatParityRulesTest {
         // Privacy denied: nothing honest to say.
         assertThat(presenceLabel(null, null, now)).isNull()
         assertThat(presenceLabel(false, "not a time", now)).isNull()
+    }
+
+    // Founder, 23 Oct 2026: WhatsApp's header line.
+    @Test
+    fun `last seen reads online, today, yesterday, a date, then a dated year`() {
+        val utc = java.time.ZoneOffset.UTC
+        assertThat(lastSeenLabel(true, "2026-10-01T09:00:00Z", now, utc)).isEqualTo("online")
+        assertThat(lastSeenLabel(false, "2026-10-18T09:05:00Z", now, utc)).isEqualTo("last seen today at 09:05")
+        assertThat(lastSeenLabel(null, "2026-10-17T14:05:00Z", now, utc)).isEqualTo("last seen yesterday at 14:05")
+        assertThat(lastSeenLabel(false, "2026-10-12T14:05:00Z", now, utc)).isEqualTo("last seen 12 Oct at 14:05")
+        assertThat(lastSeenLabel(false, "2025-12-31T23:00:00Z", now, utc)).isEqualTo("last seen 31 Dec 2025")
+        // The zone decides the day: 23:30 UTC on the 17th is the 18th in India.
+        val india = java.time.ZoneId.of("Asia/Kolkata")
+        assertThat(lastSeenLabel(false, "2026-10-17T23:30:00Z", now, india)).isEqualTo("last seen today at 05:00")
+        // Privacy denied / never recorded / garbage: nothing.
+        assertThat(lastSeenLabel(null, null, now, utc)).isNull()
+        assertThat(lastSeenLabel(false, "not a time", now, utc)).isNull()
+    }
+
+    @Test
+    fun `a live offline frame puts the dot out over the fetched row`() {
+        val offline = mapOf("u1" to PresenceInfo(isOnline = false, lastActiveAt = null))
+        val online = mapOf("u1" to PresenceInfo(isOnline = true, lastActiveAt = null))
+        assertThat(peerOnline("u1", rowOnline = true, live = offline)).isFalse()
+        assertThat(peerOnline("u1", rowOnline = false, live = online)).isTrue()
+        assertThat(peerOnline("u1", rowOnline = true, live = emptyMap())).isTrue()
+        assertThat(peerOnline("u1", rowOnline = null, live = emptyMap(), onlineIds = setOf("u1"))).isTrue()
+        // Privacy denied on the row (null) and nothing live: no dot.
+        assertThat(peerOnline("u1", rowOnline = null, live = emptyMap())).isFalse()
+        assertThat(peerOnline(null, rowOnline = true, live = offline)).isTrue()
     }
 
     @Test

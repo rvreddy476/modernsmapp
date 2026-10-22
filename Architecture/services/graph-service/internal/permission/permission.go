@@ -60,7 +60,9 @@ type Facts struct {
 	DatingMatch bool
 	// AcceptedChat is true when the pair holds an ACCEPTED 1:1 chat (a direct
 	// conversation, or a message request the recipient accepted). It grants
-	// calls under who_can_call=accepted_chats_only and nothing else. The
+	// calls under who_can_call=accepted_chats_only, keeps the pair messaging,
+	// and satisfies connections_only for online status and last seen (founder,
+	// 23 Oct 2026: an accepted chat IS the connection for presence). The
 	// state lives in chat message-service; like DatingMatch it is populated
 	// only when its provider is wired (ACCEPTED_CHAT_CALLS_ENABLED) and fails
 	// CLOSED to false.
@@ -73,6 +75,13 @@ type Facts struct {
 	// be read. The message decision fails closed (reason unavailable) rather
 	// than guess whether the sender is paused.
 	ActorSettingsUnavailable bool
+	// ActorHidesOnline / ActorHidesLastSeen are the VIEWER's own presence
+	// settings (reciprocity, as on WhatsApp): someone who shares their online
+	// status / last seen with nobody, or who paused chat, sees nobody's.
+	// Populated only when see_online_status / see_last_seen is requested; an
+	// unreadable viewer setting counts as hidden (fail closed).
+	ActorHidesOnline   bool
+	ActorHidesLastSeen bool
 }
 
 func (f Facts) mutualFollow() bool { return f.ActorFollowsTarget && f.TargetFollowsActor }
@@ -167,11 +176,11 @@ func Resolve(action Action, f Facts, p Privacy) Decision {
 	case ActionAddToGroup:
 		return resolveAddToGroup(f, p)
 	case ActionSeeOnlineStatus:
-		return resolvePausableVisibility(f, p, p.WhoCanSeeOnlineStatus)
+		return resolvePresence(f, p, p.WhoCanSeeOnlineStatus, f.ActorHidesOnline)
 	case ActionSeeReadReceipts:
 		return resolvePausableVisibility(f, p, p.WhoCanSeeReadReceipts)
 	case ActionSeeLastSeen:
-		return resolvePausableVisibility(f, p, p.WhoCanSeeLastSeen)
+		return resolvePresence(f, p, p.WhoCanSeeLastSeen, f.ActorHidesLastSeen)
 	case ActionViewProfile:
 		// Gate on the profile-photo visibility setting — H3 fix. A private-
 		// account user (WhoCanSeeProfilePhoto != "everyone") should not have
@@ -433,6 +442,52 @@ func resolvePausableVisibility(f Facts, p Privacy, setting string) Decision {
 		return Decision{Allowed: false, Reason: "chat_paused"}
 	}
 	return resolveVisibility(f, setting)
+}
+
+// ReasonReciprocity denies presence to a viewer who hides their own.
+const ReasonReciprocity = "reciprocity"
+
+// resolvePresence gates online status and last seen (founder, 23 Oct 2026):
+//
+//	target paused                -> deny (chat_paused)
+//	viewer hides their own       -> deny (reciprocity, as on WhatsApp)
+//	everyone                     -> allow
+//	connections_only             -> a legacy accepted connection OR an
+//	                                accepted 1:1 chat. Accepting a message
+//	                                request no longer creates a connection
+//	                                (DM consent model, 20 Oct), so the old
+//	                                connection-only check hid presence from
+//	                                almost every pair — the "no green dot,
+//	                                no last seen" bug, twin of the 22 Oct
+//	                                single-tick bug.
+//	no_one / unknown             -> deny
+//
+// A block in either direction is already fatal at the top of Resolve.
+func resolvePresence(f Facts, p Privacy, setting string, viewerHides bool) Decision {
+	if p.chatPaused() {
+		return Decision{Allowed: false, Reason: "chat_paused"}
+	}
+	if viewerHides {
+		return Decision{Allowed: false, Reason: ReasonReciprocity}
+	}
+	switch setting {
+	case "everyone":
+		return Decision{Allowed: true}
+	case "connections_only":
+		if f.IsConnection || f.AcceptedChat {
+			return Decision{Allowed: true}
+		}
+		return Decision{Allowed: false, Reason: "privacy_connections_only"}
+	default: // no_one, unknown
+		return Decision{Allowed: false, Reason: "privacy_no_one"}
+	}
+}
+
+// HidesPresence reports whether a user's own setting shares the value with
+// nobody (or chat is paused / the settings are unreadable) — the reciprocity
+// input for [Facts.ActorHidesOnline] / [Facts.ActorHidesLastSeen].
+func HidesPresence(p Privacy, setting string) bool {
+	return p.Unavailable || p.chatPaused() || setting == "no_one" || setting == ""
 }
 
 func resolveVisibility(f Facts, setting string) Decision {

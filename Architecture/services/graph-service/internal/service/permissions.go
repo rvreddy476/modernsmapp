@@ -22,23 +22,51 @@ func (s *Service) ResolvePermissions(ctx context.Context, actorID, targetID uuid
 		return nil, err
 	}
 	privacy := s.fetchPrivacy(ctx, targetID)
-	// Action-scoped facts: fetched only when an action that reads them was
-	// requested, and never for a blocked pair (a block is fatal anyway).
-	if !facts.Blocked {
-		if wantsAction(actions, permission.ActionMessage, permission.ActionStartConversation) {
-			// The SENDER's own pause (DM consent contract §2/§4). Same cached,
-			// fail-closed fetch as the target's settings.
-			actorPrivacy := s.fetchPrivacy(ctx, actorID)
-			facts.ActorSettingsUnavailable = actorPrivacy.Unavailable
-			facts.ActorChatPaused = actorPrivacy.ChatAvailability == "paused"
-		}
-		// An accepted 1:1 chat grants calls, and lets the pair keep messaging
-		// (the profile button reads "Message", not "Send request").
-		if !facts.IsConnection && wantsAction(actions, permission.ActionCall, permission.ActionMessage, permission.ActionStartConversation) {
-			facts.AcceptedChat = s.acceptedChatFact(ctx, actorID, targetID)
-		}
-	}
+	facts = withActionScopedFacts(actions, facts,
+		func() permission.Privacy { return s.fetchPrivacy(ctx, actorID) },
+		func() bool { return s.acceptedChatFact(ctx, actorID, targetID) })
 	return permission.ResolveAll(actions, facts, privacy), nil
+}
+
+// withActionScopedFacts adds the facts only some actions read, fetching each
+// only when such an action was requested, and never for a blocked pair (a
+// block is fatal anyway). actorPrivacy is the ACTOR's own settings (the same
+// cached, fail-closed fetch as the target's); acceptedChat is the accepted
+// 1:1 chat probe. Pure apart from the two callbacks, so the wiring is
+// unit-tested.
+func withActionScopedFacts(actions []permission.Action, facts permission.Facts, actorPrivacy func() permission.Privacy, acceptedChat func() bool) permission.Facts {
+	if facts.Blocked {
+		return facts
+	}
+	var actor *permission.Privacy
+	actorSettings := func() permission.Privacy {
+		if actor == nil {
+			p := actorPrivacy()
+			actor = &p
+		}
+		return *actor
+	}
+	if wantsAction(actions, permission.ActionMessage, permission.ActionStartConversation) {
+		// The SENDER's own pause (DM consent contract §2/§4).
+		p := actorSettings()
+		facts.ActorSettingsUnavailable = p.Unavailable
+		facts.ActorChatPaused = p.ChatAvailability == "paused"
+	}
+	// Presence reciprocity (founder, 23 Oct 2026): the VIEWER's own online /
+	// last-seen settings; an unreadable viewer counts as hiding.
+	if wantsAction(actions, permission.ActionSeeOnlineStatus, permission.ActionSeeLastSeen) {
+		p := actorSettings()
+		facts.ActorHidesOnline = permission.HidesPresence(p, p.WhoCanSeeOnlineStatus)
+		facts.ActorHidesLastSeen = permission.HidesPresence(p, p.WhoCanSeeLastSeen)
+	}
+	// An accepted 1:1 chat grants calls, lets the pair keep messaging (the
+	// profile button reads "Message", not "Send request"), and satisfies
+	// connections_only for online status and last seen.
+	if !facts.IsConnection && wantsAction(actions, permission.ActionCall, permission.ActionMessage, permission.ActionStartConversation,
+		permission.ActionSeeOnlineStatus, permission.ActionSeeLastSeen) {
+		facts.AcceptedChat = acceptedChat()
+	}
+	return facts
 }
 
 // wantsAction reports whether any of want is among the requested actions.

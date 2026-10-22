@@ -325,6 +325,60 @@ fun presenceLabel(isOnline: Boolean?, lastActiveAt: String?, nowMillis: Long): S
     }
 }
 
+/** The thread header's word for a peer who is online right now (WhatsApp's). */
+const val ONLINE_LABEL = "online"
+
+/**
+ * The thread header's presence line, WhatsApp style (founder, 23 Oct 2026):
+ * "online" while the person has a live connection, otherwise "last seen today
+ * at 14:05", "last seen yesterday at 14:05", "last seen 12 Oct at 14:05", and
+ * "last seen 12 Oct 2025" from an earlier year. Null when privacy denies it or
+ * nothing was ever recorded. Typing replaces it at the call site.
+ */
+fun lastSeenLabel(
+    isOnline: Boolean?,
+    lastActiveAt: String?,
+    nowMillis: Long,
+    zone: java.time.ZoneId = java.time.ZoneId.systemDefault(),
+): String? {
+    if (isOnline == true) return ONLINE_LABEL
+    val at = lastActiveAt?.let { runCatching { Instant.parse(it) }.getOrNull() } ?: return null
+    val seen = at.atZone(zone)
+    val today = Instant.ofEpochMilli(nowMillis).atZone(zone).toLocalDate()
+    val day = seen.toLocalDate()
+    val time = LAST_SEEN_TIME.format(seen)
+    return when {
+        // A clock a little ahead of the device's still reads as today.
+        !day.isBefore(today) -> "last seen today at $time"
+        day == today.minusDays(1) -> "last seen yesterday at $time"
+        day.year == today.year -> "last seen ${LAST_SEEN_DAY.format(seen)} at $time"
+        else -> "last seen ${LAST_SEEN_DAY_YEAR.format(seen)}"
+    }
+}
+
+private val LAST_SEEN_TIME = java.time.format.DateTimeFormatter.ofPattern("HH:mm", java.util.Locale.ENGLISH)
+private val LAST_SEEN_DAY = java.time.format.DateTimeFormatter.ofPattern("d MMM", java.util.Locale.ENGLISH)
+private val LAST_SEEN_DAY_YEAR = java.time.format.DateTimeFormatter.ofPattern("d MMM yyyy", java.util.Locale.ENGLISH)
+
+/**
+ * Whether a direct row's peer is online right now. A live answer (a
+ * `presence_update` frame or the presence read, in [live]) wins over the
+ * row's own `peer.is_online`, which was true when the inbox was fetched and
+ * kept the dot lit after the person went offline. [onlineIds] is the bulk
+ * presence read; absence there is not an answer (privacy and "not asked"
+ * look the same), so it can only add a dot.
+ */
+fun peerOnline(
+    peerId: String?,
+    rowOnline: Boolean?,
+    live: Map<String, PresenceInfo>,
+    onlineIds: Set<String> = emptySet(),
+): Boolean {
+    if (peerId.isNullOrBlank()) return rowOnline == true
+    live[peerId]?.let { return it.isOnline }
+    return peerId in onlineIds || rowOnline == true
+}
+
 /** The streak count beside the flame, or null when there is no streak worth showing (days < 3). */
 fun streakLabel(streak: ChatStreak?): String? =
     streak?.days?.takeIf { it >= STREAK_MIN_DAYS }?.toString()

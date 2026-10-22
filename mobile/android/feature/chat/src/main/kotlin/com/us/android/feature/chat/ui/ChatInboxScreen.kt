@@ -53,6 +53,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.chat.data.Conversation
+import com.us.android.core.chat.data.peerOnline
 import com.us.android.core.chat.data.requestTitle
 import com.us.android.core.common.time.formatRelativeTime
 import com.us.android.core.designsystem.component.UsAvatar
@@ -417,9 +418,13 @@ private fun ChatsTab(
                         conversation = conversation,
                         title = title,
                         viewerId = state.viewerId,
-                        online = conversation.type != "group" && conversation.members.any {
-                            it.userId != state.viewerId && it.userId in state.onlineUserIds
-                        },
+                        online = conversation.type != "group" && peerOnline(
+                            peerId = conversation.peer?.userId?.takeIf { it.isNotBlank() }
+                                ?: conversation.members.firstOrNull { it.userId != state.viewerId }?.userId,
+                            rowOnline = conversation.peer?.isOnline,
+                            live = emptyMap(),
+                            onlineIds = state.onlineUserIds,
+                        ),
                         onClick = {
                             onOpenConversation(conversation.id, title, conversation.type == "group")
                         },

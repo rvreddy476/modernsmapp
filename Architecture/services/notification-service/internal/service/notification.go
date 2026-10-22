@@ -128,6 +128,10 @@ const (
 // ("You have a new message"), so neither does this.
 const DMPostBody = "Sent you a post"
 
+// DMLocationBody is the push body for a shared location (23 Oct 2026). It
+// never names the place: the coordinates live only in the sealed message.
+const DMLocationBody = "Shared a location"
+
 // DMRender picks the push copy for a "dm" by chat message type. The zero
 // value means "generic per-type copy" (notifTitleBody), which text and media
 // keep. The event carries no post id or caption by design, so the copy says
@@ -136,6 +140,10 @@ func DMRender(messageType string) RenderOverride {
 	if messageType == ChatMessageTypePost {
 		title, _ := notifTitleBody("dm")
 		return RenderOverride{Title: title, Body: DMPostBody}
+	}
+	if messageType == ChatMessageTypeLocation {
+		title, _ := notifTitleBody("dm")
+		return RenderOverride{Title: title, Body: DMLocationBody}
 	}
 	return RenderOverride{}
 }

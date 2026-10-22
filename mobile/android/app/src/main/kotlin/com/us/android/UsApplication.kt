@@ -107,6 +107,13 @@ class UsApplication : Application(), Configuration.Provider {
      */
     @Inject lateinit var offlineCopies: Lazy<com.us.android.core.feed.offline.OfflineCopies>
 
+    /**
+     * Online = the app is open (founder, 23 Oct 2026): the chat socket opens
+     * on foreground and closes on background unless a call holds it. See the
+     * class doc.
+     */
+    @Inject lateinit var chatForegroundPresence: com.us.android.chat.ChatForegroundPresence
+
     override fun onCreate() {
         super.onCreate()
         installCrashReporter()
@@ -118,6 +125,7 @@ class UsApplication : Application(), Configuration.Provider {
                     screenTimeSync.onBackground()
                     screenTimeGuard.onAppBackground()
                     analyticsLifecycle.onBackground()
+                    chatForegroundPresence.onBackground()
                 }
 
                 override fun onStart(owner: androidx.lifecycle.LifecycleOwner) {
@@ -129,6 +137,7 @@ class UsApplication : Application(), Configuration.Provider {
                     // replaced fetching on every per-minute tick.
                     screenTimeGuard.onAppForeground()
                     analyticsLifecycle.onForeground()
+                    chatForegroundPresence.onForeground()
                 }
             },
         )
@@ -141,6 +150,8 @@ class UsApplication : Application(), Configuration.Provider {
         // Starts a single flow collection. Without this the FCM token is
         // stored and never sent, which is the state the app shipped in.
         pushRegistration.start()
+        // One flow collection; the socket follows foreground, sign-in and calls.
+        chatForegroundPresence.start()
         // Adoption of a migrated legacy draft — no-op on every start after the
         // first successful run.
         legacyAdoption.start()

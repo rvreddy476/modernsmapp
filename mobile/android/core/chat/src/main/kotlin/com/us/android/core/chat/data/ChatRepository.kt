@@ -528,6 +528,8 @@ data class Message(
     val profileUserId: String? = null,
     val soundId: String? = null,
     val streamId: String? = null,
+    /** `type = "location"` (23 Oct 2026): the shared place. */
+    val location: ChatLocation? = null,
     /** `message`, `note`, or null. */
     val replyKind: String? = null,
     /** The attachment's kind, size and sensitivity, when the server said. */
@@ -575,6 +577,7 @@ internal fun MessageDto.toDomain() = Message(
     profileUserId = profileUserId?.takeIf { it.isNotBlank() },
     soundId = soundId?.takeIf { it.isNotBlank() },
     streamId = streamId?.takeIf { it.isNotBlank() },
+    location = location?.takeIf { it.valid },
     replyKind = replyKind?.takeIf { it.isNotBlank() },
     media = mediaInfoOf(media),
     deleted = deleted,

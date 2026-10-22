@@ -109,6 +109,7 @@ internal data class CachedMessageExtras(
     val profileUserId: String? = null,
     val soundId: String? = null,
     val streamId: String? = null,
+    val location: ChatLocation? = null,
     val replyKind: String? = null,
     val media: CachedMedia? = null,
     val deleted: Boolean = false,
@@ -134,6 +135,7 @@ internal data class CachedMessageExtras(
         profileUserId = profileUserId,
         soundId = soundId,
         streamId = streamId,
+        location = location,
         replyKind = replyKind,
         media = media?.let { MediaInfo(it.kind, it.width, it.height, it.durationMs, it.sensitive) },
         deleted = deleted,
@@ -150,6 +152,7 @@ internal data class CachedMessageExtras(
                 profileUserId = message.profileUserId,
                 soundId = message.soundId,
                 streamId = message.streamId,
+                location = message.location,
                 replyKind = message.replyKind,
                 media = message.media?.let { CachedMedia(it.kind, it.width, it.height, it.durationMs, it.sensitive) },
                 deleted = message.deleted,
@@ -189,6 +192,7 @@ data class TypedSend(
     val userId: String? = null,
     val soundId: String? = null,
     val streamId: String? = null,
+    val location: ChatLocation? = null,
     val replyNoteId: String? = null,
     val replyToId: String? = null,
     val replyToPreview: String? = null,
@@ -221,6 +225,7 @@ data class TypedSend(
         userId = userId,
         soundId = soundId,
         streamId = streamId,
+        location = location,
         replyNoteId = replyNoteId,
     )
 
@@ -249,6 +254,9 @@ data class TypedSend(
         )
 
         fun profile(userId: String) = TypedSend(type = PROFILE_MESSAGE, userId = userId)
+
+        /** A shared place (23 Oct 2026): already rounded and capped ([chatLocationOf]). */
+        fun location(location: ChatLocation) = TypedSend(type = LOCATION_MESSAGE, location = location)
 
         /** A reply to someone's Note: a text message carrying `reply_note_id`. */
         fun noteReply(text: String, noteId: String) = TypedSend(type = TEXT_MESSAGE, text = text, replyNoteId = noteId)

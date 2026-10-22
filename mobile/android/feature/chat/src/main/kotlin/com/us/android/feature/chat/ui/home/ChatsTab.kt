@@ -23,6 +23,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.us.android.core.chat.data.Conversation
+import com.us.android.core.chat.data.peerOnline
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsEmptyState
@@ -124,9 +125,20 @@ internal fun ChatsTab(
     }
 }
 
+// A live presence frame wins over the row's fetched peer.is_online, so the dot
+// goes out when the person does (peerOnline).
 private fun Conversation.isOnline(state: ChatHomeUiState): Boolean =
-    peer?.isOnline == true ||
+    if (type == "group") {
         members.any { it.userId != state.viewerId && it.userId in state.onlineUserIds }
+    } else {
+        peerOnline(
+            peerId = peer?.userId?.takeIf { it.isNotBlank() }
+                ?: members.firstOrNull { it.userId != state.viewerId }?.userId,
+            rowOnline = peer?.isOnline,
+            live = state.presence,
+            onlineIds = state.onlineUserIds,
+        )
+    }
 
 /** The door to message requests: a raised row with the count in the accent. */
 @Composable

@@ -1041,6 +1041,7 @@ fun typedPreview(message: Message): String? = when {
     message.type == PROFILE_MESSAGE || message.profileUserId != null -> "Shared a profile"
     message.type == SOUND_MESSAGE || message.soundId != null -> "Shared a sound"
     message.type == LIVE_MESSAGE || message.streamId != null -> "Shared a LIVE"
+    message.type == LOCATION_MESSAGE || message.location != null -> LOCATION_PREVIEW
     message.media?.isVideo == true -> "Video"
     message.mediaId != null -> "Photo"
     else -> null

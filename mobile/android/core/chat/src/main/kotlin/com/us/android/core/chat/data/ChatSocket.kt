@@ -429,6 +429,7 @@ private fun Message.withParityFields(payload: JsonObject): Message {
         profileUserId = typed.profileUserId,
         soundId = typed.soundId,
         streamId = typed.streamId,
+        location = typed.location,
         replyKind = typed.replyKind,
         media = typed.media,
     )

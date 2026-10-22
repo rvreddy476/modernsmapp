@@ -87,6 +87,10 @@ dependencies {
     implementation(libs.androidx.camera.view)
     // GIFs: Giphy's own SDK, client-side (founder, 2026-10-18).
     implementation(libs.giphy.ui)
+    // Share location (23 Oct 2026): one fused fix, on demand, after a
+    // rationale; the confirm sheet draws the shared map surface.
+    implementation(libs.play.services.location)
+    implementation(projects.core.maps)
 
     testImplementation(projects.core.testing)
     testImplementation(libs.junit)

@@ -22,6 +22,7 @@ func TestDMPushCopyByMessageType(t *testing.T) {
 		{ChatMessageTypeText, "You have a new message"},
 		{ChatMessageTypeMedia, "You have a new message"},
 		{ChatMessageTypePost, "Sent you a post"},
+		{ChatMessageTypeLocation, "Shared a location"},
 		{"", "You have a new message"},        // older producer omitted the type
 		{"sticker", "You have a new message"}, // unknown future type stays generic
 	}

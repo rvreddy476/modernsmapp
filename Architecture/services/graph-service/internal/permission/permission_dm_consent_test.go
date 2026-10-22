@@ -276,11 +276,11 @@ func TestCallAcceptedChatsOnly(t *testing.T) {
 			}
 		})
 	}
-	// The accepted chat grants calls and messaging (TestAcceptedChatKeepsMessaging)
-	// and nothing else: no group-adds, no online status.
+	// The accepted chat grants calls, messaging (TestAcceptedChatKeepsMessaging)
+	// and presence (TestPresenceAcceptedChat) and nothing else: no group-adds.
 	f := Facts{AcceptedChat: true}
 	p := Privacy{WhoCanMessage: "people_i_follow", WhoCanAddToGroups: "connections_only", WhoCanSeeOnlineStatus: "connections_only"}
-	for _, a := range []Action{ActionAddToGroup, ActionSeeOnlineStatus} {
+	for _, a := range []Action{ActionAddToGroup} {
 		if d := Resolve(a, f, p); d.Allowed {
 			t.Errorf("%s allowed on a bare accepted chat; it must grant calls and messaging only", a)
 		}

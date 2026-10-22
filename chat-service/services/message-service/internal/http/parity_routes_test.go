@@ -275,7 +275,7 @@ func TestStickerAdminGates(t *testing.T) {
 // handler output; here every one must exist and be a {"data": ...} envelope.
 func TestContractFixturesExist(t *testing.T) {
 	names := []string{"conversations_list", "conversation_detail", "message_voice", "message_sticker", "message_gif",
-		"message_profile", "message_sound", "message_live", "message_media", "message_note_reply", "forward_result",
+		"message_profile", "message_sound", "message_live", "message_location", "message_media", "message_note_reply", "forward_result",
 		"reactions_list", "read_summary", "notes_feed", "stickers", "search_result", "shared_posts", "shared_media",
 		"requests_filtered",
 		// fix pass 2

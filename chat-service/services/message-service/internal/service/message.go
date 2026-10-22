@@ -263,6 +263,9 @@ type MessageResponse struct {
 	// everyone (RFC 3339). Omitted when the message does not disappear.
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 
+	// Location is a shared place (location_messages.go), on its type only.
+	Location *LocationInfo `json:"location,omitempty"`
+
 	// Status is the sender's tick — sent | delivered | read — on the
 	// viewer's OWN messages in history (receipt_ticks.go); omitted on
 	// everyone else's.
@@ -1164,18 +1167,20 @@ func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID
 		ReplyToID      *uuid.UUID `json:"reply_to_id,omitempty"`
 		// Chat parity rich fields — all omitempty, so the hash of every
 		// pre-existing text / media / post request is unchanged.
-		ReplyNoteID   *uuid.UUID  `json:"reply_note_id,omitempty"`
-		DurationMs    int         `json:"duration_ms,omitempty"`
-		Waveform      []int       `json:"waveform,omitempty"`
-		StickerID     *uuid.UUID  `json:"sticker_id,omitempty"`
-		GIF           *gifHashRef `json:"gif,omitempty"`
-		ProfileUserID *uuid.UUID  `json:"profile_user_id,omitempty"`
-		SoundID       *uuid.UUID  `json:"sound_id,omitempty"`
-		StreamID      *uuid.UUID  `json:"stream_id,omitempty"`
-		Forwarded     bool        `json:"forwarded,omitempty"`
+		ReplyNoteID   *uuid.UUID     `json:"reply_note_id,omitempty"`
+		DurationMs    int            `json:"duration_ms,omitempty"`
+		Waveform      []int          `json:"waveform,omitempty"`
+		StickerID     *uuid.UUID     `json:"sticker_id,omitempty"`
+		GIF           *gifHashRef    `json:"gif,omitempty"`
+		ProfileUserID *uuid.UUID     `json:"profile_user_id,omitempty"`
+		SoundID       *uuid.UUID     `json:"sound_id,omitempty"`
+		StreamID      *uuid.UUID     `json:"stream_id,omitempty"`
+		Forwarded     bool           `json:"forwarded,omitempty"`
+		Location      *LocationInput `json:"location,omitempty"`
 	}{UserID: userID, ConversationID: conversationID, Type: msgType, Text: text, MediaID: mediaID, PostID: postID,
 		ReplyNoteID: in.ReplyNoteID, DurationMs: in.DurationMs, Waveform: in.Waveform, StickerID: in.StickerID, GIF: gifHashOf(in.GIF),
-		ProfileUserID: in.ProfileUserID, SoundID: in.SoundID, StreamID: in.StreamID, Forwarded: in.Forwarded}
+		ProfileUserID: in.ProfileUserID, SoundID: in.SoundID, StreamID: in.StreamID, Forwarded: in.Forwarded,
+		Location: in.Location}
 	if replyTo != nil {
 		req.ReplyToID = &replyTo.ID
 	}
@@ -1256,6 +1261,11 @@ func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID
 				// replies, which accepts — posts flow like any message.
 				if msgType == MessageTypePost {
 					return nil, fmt.Errorf("%w: posts are not allowed until the request is accepted", ErrRequestFirstMessageInvalid)
+				}
+				// A location is refused the same way (23 Oct 2026): where
+				// someone is never reaches a person who has not accepted them.
+				if msgType == MessageTypeLocation {
+					return nil, fmt.Errorf("%w: locations are not allowed until the request is accepted", ErrRequestFirstMessageInvalid)
 				}
 				if msgType != MessageTypeText || strings.TrimSpace(text) == "" {
 					return nil, fmt.Errorf("%w: first message must be non-empty text", ErrRequestFirstMessageInvalid)

@@ -924,6 +924,13 @@ class ChatThreadViewModel @Inject constructor(
     /** A GIF picked from Giphy's SDK: its id and url go EXACTLY as the SDK returned them. */
     fun sendGif(gif: GifInfo) = sendTyped(TypedSend.gif(gif))
 
+    /**
+     * A shared location (23 Oct 2026), through the same durable outbox as
+     * every typed send. Refused in an outgoing request (text only), like
+     * media; the server refuses it there too.
+     */
+    fun sendLocation(location: com.us.android.core.chat.data.ChatLocation) = sendTyped(TypedSend.location(location))
+
     private fun sendTyped(typed: TypedSend) = viewModelScope.launch {
         if (!requestPermits(RequestSendKind.Rich)) return@launch
         if (store.enqueueTypedSend(conversationId, typed) == null) {

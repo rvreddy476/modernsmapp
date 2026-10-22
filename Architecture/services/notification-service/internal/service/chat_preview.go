@@ -38,6 +38,9 @@ const (
 	ChatMessageTypeProfile = "profile"
 	ChatMessageTypeSound   = "sound"
 	ChatMessageTypeLive    = "live"
+	// A shared location (23 Oct 2026). The push never carries the place:
+	// the coordinates and label live only in the sealed message.
+	ChatMessageTypeLocation = "location"
 )
 
 // ChatPreviewMaxGraphemes bounds the text preview in a push body.
@@ -122,6 +125,8 @@ func chatPreviewAction(messageType, mediaKind string) string {
 		return "shared a sound"
 	case ChatMessageTypeLive:
 		return "shared a LIVE"
+	case ChatMessageTypeLocation:
+		return "shared a location"
 	}
 	return ""
 }

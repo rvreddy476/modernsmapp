@@ -99,6 +99,9 @@ type MessageExtra struct {
 	// ExpiresAt is when a disappearing message goes (created_at + the
 	// conversation timer captured AT SEND TIME). Nil: never.
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
+	// Location is a shared place (location_messages.go). Sealed with the
+	// rest of the payload; never copied into text, previews or logs.
+	Location *LocationInfo `json:"location,omitempty"`
 }
 
 // storedStick keeps the sticker's media id in storage (the wire never shows
@@ -114,7 +117,7 @@ type storedStick struct {
 func (e *MessageExtra) empty() bool {
 	return e == nil || (!e.Forwarded && e.Voice == nil && e.Sticker == nil && e.GIF == nil &&
 		e.ProfileUserID == nil && e.SoundID == nil && e.StreamID == nil && e.ReplyKind == "" && e.Media == nil &&
-		e.ExpiresAt == nil)
+		e.ExpiresAt == nil && e.Location == nil)
 }
 
 func encodeExtra(e *MessageExtra) ([]byte, string) {
@@ -162,6 +165,7 @@ func applyExtra(resp *MessageResponse, e *MessageExtra) {
 	resp.ProfileUserID = e.ProfileUserID
 	resp.SoundID = e.SoundID
 	resp.StreamID = e.StreamID
+	resp.Location = e.Location
 	if e.ReplyKind != "" {
 		k := e.ReplyKind
 		resp.ReplyKind = &k
@@ -191,6 +195,7 @@ type SendInput struct {
 	ProfileUserID *uuid.UUID
 	SoundID       *uuid.UUID
 	StreamID      *uuid.UUID
+	Location      *LocationInput
 
 	// Forwarded marks a forwarded copy (§2.4). forwardedMediaOK skips the
 	// uploader-only media reservation for an attachment the forwarder can
@@ -207,7 +212,7 @@ func nonNil(id *uuid.UUID) bool { return id != nil && *id != uuid.Nil }
 // types are checked here.
 func validateSendInput(in SendInput) error {
 	richSet := nonNil(in.StickerID) || in.GIF != nil || nonNil(in.ProfileUserID) || nonNil(in.SoundID) ||
-		nonNil(in.StreamID) || in.DurationMs != 0 || len(in.Waveform) > 0
+		nonNil(in.StreamID) || in.DurationMs != 0 || len(in.Waveform) > 0 || in.Location != nil
 	switch in.Type {
 	case MessageTypeText, MessageTypeMedia, MessageTypePost:
 		if richSet {
@@ -237,6 +242,9 @@ func validateSendInput(in SendInput) error {
 		if in.Type != MessageTypeVoice && (in.MediaID != nil || in.DurationMs != 0 || len(in.Waveform) > 0) {
 			return fmt.Errorf("%w: media fields are not allowed on %s messages", ErrInvalidMessageContent, in.Type)
 		}
+		if in.Location != nil {
+			return fmt.Errorf("%w: a location is only allowed on location messages", ErrInvalidMessageContent)
+		}
 		return nil
 	}
 	switch in.Type {
@@ -244,7 +252,7 @@ func validateSendInput(in SendInput) error {
 		if !nonNil(in.MediaID) {
 			return fmt.Errorf("%w: media_id is required for voice messages", ErrInvalidMessageContent)
 		}
-		if nonNil(in.StickerID) || in.GIF != nil || nonNil(in.ProfileUserID) || nonNil(in.SoundID) || nonNil(in.StreamID) {
+		if nonNil(in.StickerID) || in.GIF != nil || nonNil(in.ProfileUserID) || nonNil(in.SoundID) || nonNil(in.StreamID) || in.Location != nil {
 			return fmt.Errorf("%w: card fields are not allowed on voice messages", ErrInvalidMessageContent)
 		}
 		if in.DurationMs < 1 || in.DurationMs > VoiceMaxDurationMs {
@@ -284,6 +292,8 @@ func validateSendInput(in SendInput) error {
 		return only("sound_id", nonNil(in.SoundID))
 	case MessageTypeLive:
 		return only("stream_id", nonNil(in.StreamID))
+	case MessageTypeLocation:
+		return validateLocationSend(in)
 	}
 	return fmt.Errorf("%w: unknown message type %q", ErrInvalidMessageContent, in.Type)
 }
@@ -297,6 +307,9 @@ func richPreview(msgType, text string) (string, bool) {
 		return VoicePreview, true
 	case MessageTypeSticker:
 		return StickerPreview, true
+	case MessageTypeLocation:
+		// Never the label or address: a preview travels further than the bubble.
+		return LocationPreview, true
 	case MessageTypeGIF:
 		return GIFPreview, true
 	case MessageTypeProfile:
