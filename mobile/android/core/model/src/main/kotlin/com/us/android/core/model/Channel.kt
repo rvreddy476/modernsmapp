@@ -23,6 +23,8 @@ data class Channel(
     val subscriberCount: Int = 0,
     val createdAt: String = "",
     val updatedAt: String = "",
+    /** The profile Action button (2026-10-23), next to Follow and Message; null when there is none. */
+    val action: PostAction? = null,
 ) {
     /** `@handle`, as it is shown everywhere. */
     val handleForDisplay: String get() = "@$handle"

@@ -16,6 +16,7 @@ import androidx.lifecycle.lifecycleScope
 import com.us.android.core.auth.oauth.GoogleSignIn
 import com.us.android.core.datastore.AppearanceStore
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.feed.ui.action.ProvideActionLabels
 import com.us.android.core.media.PlayerPool
 import com.us.android.core.notifications.NotificationPresenter
 import com.us.android.core.payments.ActivityPaymentHost
@@ -142,38 +143,41 @@ class MainActivity : ComponentActivity(), ActivityPaymentHost {
                 onDispose {}
             }
             UsTheme(darkTheme = dark) {
-                UsApp(
-                    viewModel = viewModel,
-                    pool = playerPool,
-                    // The Activity is what the PSP SDK opens onto and what it
-                    // calls back, so the handoff starts here rather than
-                    // somewhere in the Compose tree that would have to hunt
-                    // for an Activity in a LocalContext.
-                    onOpenPaymentSheet = { attempt, orderNumber ->
-                        paymentOpener.start(
-                            activity = this,
-                            scope = lifecycleScope,
-                            attempt = attempt,
-                            orderNumber = orderNumber,
-                        )
-                    },
-                    // C3-LB-4: releases the launcher's single in-flight slot
-                    // when the checkout screen goes away, so a buyer who backs
-                    // out mid-sheet is not refused on every later attempt.
-                    onAbandonPaymentSheet = { attempt ->
-                        paymentOpener.abandon(attempt)
-                    },
-                    onOpenFeastPayment = { request ->
-                        feastPaymentOpener.start(activity = this, scope = lifecycleScope, request = request)
-                    },
-                    onAbandonFeastPayment = { request -> feastPaymentOpener.abandon(request) },
-                    onOpenDatingPayment = { request -> datingPaymentOpener.start(activity = this, request = request) },
-                    onAbandonDatingPayment = { request -> datingPaymentOpener.abandon(request) },
-                    onOpenMopeduPayment = { request -> mopeduPaymentOpener.start(activity = this, request = request) },
-                    onAbandonMopeduPayment = { request -> mopeduPaymentOpener.abandon(request) },
-                    onOpenDoorstepPayment = { request -> doorstepPaymentOpener.start(activity = this, request = request) },
-                    onAbandonDoorstepPayment = { request -> doorstepPaymentOpener.abandon(request) },
-                )
+                // The Action button's label list (2026-10-23), read once for every editor below.
+                ProvideActionLabels {
+                    UsApp(
+                        viewModel = viewModel,
+                        pool = playerPool,
+                        // The Activity is what the PSP SDK opens onto and what it
+                        // calls back, so the handoff starts here rather than
+                        // somewhere in the Compose tree that would have to hunt
+                        // for an Activity in a LocalContext.
+                        onOpenPaymentSheet = { attempt, orderNumber ->
+                            paymentOpener.start(
+                                activity = this,
+                                scope = lifecycleScope,
+                                attempt = attempt,
+                                orderNumber = orderNumber,
+                            )
+                        },
+                        // C3-LB-4: releases the launcher's single in-flight slot
+                        // when the checkout screen goes away, so a buyer who backs
+                        // out mid-sheet is not refused on every later attempt.
+                        onAbandonPaymentSheet = { attempt ->
+                            paymentOpener.abandon(attempt)
+                        },
+                        onOpenFeastPayment = { request ->
+                            feastPaymentOpener.start(activity = this, scope = lifecycleScope, request = request)
+                        },
+                        onAbandonFeastPayment = { request -> feastPaymentOpener.abandon(request) },
+                        onOpenDatingPayment = { request -> datingPaymentOpener.start(activity = this, request = request) },
+                        onAbandonDatingPayment = { request -> datingPaymentOpener.abandon(request) },
+                        onOpenMopeduPayment = { request -> mopeduPaymentOpener.start(activity = this, request = request) },
+                        onAbandonMopeduPayment = { request -> mopeduPaymentOpener.abandon(request) },
+                        onOpenDoorstepPayment = { request -> doorstepPaymentOpener.start(activity = this, request = request) },
+                        onAbandonDoorstepPayment = { request -> doorstepPaymentOpener.abandon(request) },
+                    )
+                }
             }
         }
     }

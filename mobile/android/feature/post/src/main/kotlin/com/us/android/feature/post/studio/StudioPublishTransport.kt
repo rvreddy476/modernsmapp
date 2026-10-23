@@ -2,6 +2,7 @@ package com.us.android.feature.post.studio
 
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.creator.model.CreateOutcome
+import com.us.android.core.feed.data.action.actionProblem
 import com.us.android.core.creator.model.PostDetails
 import com.us.android.core.creator.model.PublishTransport
 import com.us.android.core.creator.model.UploadOutcome
@@ -122,7 +123,8 @@ class StudioPublishTransport @Inject constructor(
             is AppResult.Success -> CreateOutcome.Created(result.data)
             is AppResult.Failure ->
                 if (repository.isTerminal(result.error)) {
-                    CreateOutcome.Permanent(result.error.javaClass.simpleName)
+                    // A refused Action button (2026-10-23) names itself in our words.
+                    CreateOutcome.Permanent(result.error.actionProblem()?.message ?: result.error.javaClass.simpleName)
                 } else {
                     CreateOutcome.Retryable(result.error.javaClass.simpleName)
                 }

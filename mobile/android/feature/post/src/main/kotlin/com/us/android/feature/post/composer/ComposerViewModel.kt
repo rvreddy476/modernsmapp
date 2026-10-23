@@ -14,6 +14,8 @@ import com.us.android.core.media.upload.PROCESSING_REJECTED
 import com.us.android.core.media.upload.PickedMedia
 import com.us.android.core.media.upload.PresignedPutResult
 import com.us.android.core.memberships.data.membersOnlyRefusal
+import com.us.android.core.feed.data.action.actionProblem
+import com.us.android.core.model.ActionDraft
 import com.us.android.feature.post.data.ComposerRepository
 import com.us.android.feature.post.data.PostMembersGate
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -349,6 +351,12 @@ class ComposerViewModel @Inject constructor(
             }
 
             is AppResult.Failure -> {
+                // A refusal of the Action button is said under its editor (2026-10-23).
+                val actionProblem = result.error.actionProblem()
+                if (actionProblem != null) {
+                    update { ComposerReducer.onPublishRejected(it, actionProblem.message).copy(actionProblem = actionProblem) }
+                    return
+                }
                 // A refusal over the members-only level says so in words (2026-10-23).
                 val message = membersOnlyRefusal(result.error.serverCode()) ?: repository.message(result.error)
                 if (repository.isTerminal(result.error)) {
@@ -358,6 +366,12 @@ class ComposerViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /** The Action button as the editor holds it; null takes it off. An edit after a failure mints a new key. */
+    fun onActionChanged(next: ActionDraft?) = update {
+        if (it.isBusy || it.phase is ComposerPhase.Published) it
+        else ComposerReducer.onEditAfterFailure(it).copy(action = next, actionProblem = null)
     }
 
     /** Members only: one of the creator's levels, or null for everyone. */

@@ -6,11 +6,9 @@ import com.us.android.core.common.result.map
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
 import com.us.android.core.network.listApiCall
+import com.us.android.core.network.pagedApiCall
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonNull
-import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.util.UUID
 import javax.inject.Inject
@@ -97,19 +95,20 @@ class MembershipsRepository @Inject constructor(
     suspend fun myMembership(subscriptionId: String): AppResult<MyMembership> =
         apiCall(errorMapper, { it.toMembership() }) { api.myMembership(subscriptionId) }
 
-    /** Gates [postId] on [levelId], or opens it to everyone when [levelId] is null. Author only. */
-    suspend fun setPostGate(postId: String, levelId: String?): AppResult<String?> =
-        apiCall(errorMapper, { it.tierRequiredId }) { api.setPostGate(postId, gateBody(levelId)) }
+    /**
+     * One page of the signed-in creator's members, newest first
+     * (`GET /v1/monetization/members`): [cursor] from the previous page's
+     * [MembersPage.nextCursor], null for the first. The server caps [limit] at 50.
+     */
+    suspend fun members(cursor: String? = null, limit: Int = MEMBERS_PAGE): AppResult<MembersPage> =
+        pagedApiCall(errorMapper) { api.members(cursor?.takeIf { it.isNotBlank() }, limit) }
+            .map { page -> MembersPage(page.items.mapNotNull { it.toMember() }, page.nextCursor) }
 
     fun newIdempotencyKey(): String = UUID.randomUUID().toString()
 
     companion object {
-        /** `{"tier_required_id": "<uuid>"}`, or `{"tier_required_id": null}` — an explicit null, never `{}` by accident. */
-        fun gateBody(levelId: String?) = buildJsonObject {
-            put(TIER_REQUIRED_ID, levelId?.trim()?.takeIf { it.isNotEmpty() }?.let(::JsonPrimitive) ?: JsonNull)
-        }
-
-        private const val TIER_REQUIRED_ID = "tier_required_id"
+        /** The members page size the app asks for (the server's default is 20, its cap 50). */
+        const val MEMBERS_PAGE = 30
     }
 }
 

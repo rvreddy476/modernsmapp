@@ -1,6 +1,7 @@
 package com.us.android.core.feed.data
 
 import com.us.android.core.common.error.AppError
+import com.us.android.core.feed.data.action.toPostAction
 import com.us.android.core.feed.data.credits.CreditRefusals
 import com.us.android.core.feed.data.credits.CreditsForm
 import com.us.android.core.feed.data.credits.creditsOf
@@ -8,6 +9,7 @@ import com.us.android.core.feed.data.credits.releaseYearOrNull
 import com.us.android.core.feed.data.credits.toForm
 import com.us.android.core.feed.data.credits.toInput
 import com.us.android.core.model.FeedItem
+import kotlinx.serialization.json.JsonNull
 import java.time.LocalDate
 
 /*
@@ -245,6 +247,12 @@ fun FeedItem.withEdits(patch: PostEditPatch): FeedItem = copy(
         commentAccess = patch.commentAccess ?: controls.commentAccess,
     ),
     disclosure = disclosure.copy(paidPromotion = patch.paidPromotion ?: disclosure.paidPromotion),
+    // The Action button: the saved answer's button (PostEditRepository.save), JSON null when removed.
+    action = when (val saved = patch.action) {
+        null -> action
+        is JsonNull -> null
+        else -> saved.toPostAction() ?: action
+    },
 )
 
 /** The web's cap on the recording location, in characters. */

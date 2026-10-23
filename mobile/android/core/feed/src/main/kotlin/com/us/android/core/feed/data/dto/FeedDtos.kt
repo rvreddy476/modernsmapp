@@ -5,6 +5,7 @@ import com.us.android.core.feed.data.credits.CreditListSerializer
 import com.us.android.core.feed.data.credits.GenreSlugListSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 
 /**
  * Wire types for feed-service, transcribed from the 2026-08-17 captures
@@ -146,6 +147,12 @@ data class FeedItemDto(
     @SerialName("duration_ms") val durationMs: Long = 0L,
     /** The level's monthly price on a gated row (post-service posts.go:144); absent elsewhere. */
     @SerialName("tier_required_price_paise") val tierRequiredPricePaise: Long? = null,
+    /**
+     * The Action button (2026-10-23): `{id, label, label_text, domain, href}`
+     * when present and live; the author's rows add `url` and `status`. Raw,
+     * read by `toPostAction`, so absent, `null` or a stray shape is no button.
+     */
+    val action: JsonElement? = null,
 )
 
 /**

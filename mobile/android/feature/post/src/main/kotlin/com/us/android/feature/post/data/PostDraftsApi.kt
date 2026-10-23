@@ -5,6 +5,7 @@ import com.us.android.core.network.ApiEnvelope
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
@@ -84,6 +85,14 @@ data class PostDraftPayloadDto(
     @SerialName("is_branded") val isBranded: Boolean? = null,
     @SerialName("cover_index") val coverIndex: Int? = null,
     @SerialName("location_place_id") val locationPlaceId: String? = null,
+    /**
+     * The Action button (2026-10-23): `{label, url}`; raw, so a saved shape
+     * this build does not expect reads as no button rather than failing the
+     * whole draft (`toActionDraft`).
+     */
+    val action: JsonElement? = null,
+    /** Members only (2026-10-23): the level the post will be for; left off for everyone. */
+    @SerialName("tier_required_id") val tierRequiredId: String? = null,
 )
 
 /** One saved draft, as the list and the read return it. */

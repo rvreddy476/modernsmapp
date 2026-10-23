@@ -52,6 +52,10 @@ class PostDraftsContractTest {
             locationName = "Goa",
             locationPlaceId = "place:1",
             coverIndex = 1,
+            // The Action button and the members-only level (2026-10-23) round-trip too.
+            actionLabel = "apply_now",
+            actionUrl = "https://epfindia.gov.in/apply",
+            tierRequiredId = "7b1d3c2e-0000-4000-8000-000000000001",
         ),
     )
 

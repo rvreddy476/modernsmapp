@@ -1040,6 +1040,7 @@ private fun ShareStep(
             description = state.postText,
             details = state.details,
             recentLocations = state.recentLocations,
+            membersLevels = state.membersLevels,
             mentionQuery = state.mentionQuery,
             mentionResults = state.mentionResults,
             posting = state.publish is StudioViewModel.PublishUi.Publishing,

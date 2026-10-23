@@ -1,5 +1,6 @@
 package com.us.android.feature.post.composer
 
+import com.us.android.core.feed.data.action.toWriteDto
 import com.us.android.feature.post.data.dto.CreatePostRequest
 import com.us.android.feature.post.data.dto.DistributionRequest
 import com.us.android.feature.post.data.dto.POST_TYPE_IMAGE
@@ -244,6 +245,8 @@ object ComposerReducer {
         title = state.title.trim().takeIf { state.longForm && it.isNotEmpty() },
         // Members only (2026-10-23): gated at the create, and only on a level the creator offers.
         tierRequiredId = state.membersLevelId?.takeIf { id -> state.membersLevels.any { it.id == id } },
+        // The Action button (2026-10-23): on the create itself, only when there is one.
+        action = state.action.toWriteDto(),
     )
 }
 

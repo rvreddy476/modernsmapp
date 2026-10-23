@@ -59,6 +59,8 @@ import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsSurfaceCard
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.feed.ui.action.ActionTaps
+import com.us.android.core.model.ActionButtons
 import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.sound.LibrarySoundsList
 import com.us.android.core.ui.UsEmptyState
@@ -454,6 +456,13 @@ private fun LibraryRowCard(row: HubLibraryRow, thumbnailUrl: String?, portrait: 
                 )
                 Text(libraryMeta(row), style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textSecondary)
                 Text(libraryCounts(row), style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
+                // The Action button (2026-10-23): its taps, and why it is hidden when it is not live.
+                row.action?.let { action ->
+                    ActionButtons.statusNote(action)?.let { note ->
+                        Text(note.title, style = MaterialTheme.typography.labelSmall, color = UsTheme.extended.statusWarning)
+                    }
+                    ActionTaps(postId = row.id)
+                }
                 if (row.processingStatus == PROCESSING_FAILED) {
                     Text(
                         "Processing failed",

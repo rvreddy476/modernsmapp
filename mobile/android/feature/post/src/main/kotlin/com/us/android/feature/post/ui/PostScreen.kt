@@ -49,6 +49,8 @@ import coil3.compose.AsyncImage
 import com.us.android.core.common.time.formatRelativeTime
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.feed.ui.action.ActionPill
+import com.us.android.core.feed.ui.action.ActionPillStyle
 import com.us.android.core.engagement.data.EngagementAction
 import com.us.android.core.engagement.data.EngagementFailure
 import com.us.android.core.engagement.data.bookmarkedOr
@@ -317,6 +319,14 @@ private fun PostStage(
                     if (kind == PostStageKind.PHOTO && pages.size > 1) {
                         StagePageDots(pageCount = pages.size, currentPage = carousel.currentPage)
                     }
+                    // The Action button (2026-10-23): under the media, over the
+                    // caption; never on a members-only post this viewer may not open.
+                    ActionPill(
+                        action = post.action,
+                        locked = locked,
+                        style = ActionPillStyle.OnMedia,
+                        modifier = Modifier.padding(bottom = UsTheme.spacing.s),
+                    )
                 },
                 tagPrefix = "post_caption",
                 modifier = Modifier

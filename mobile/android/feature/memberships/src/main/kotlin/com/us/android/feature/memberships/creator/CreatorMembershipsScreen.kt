@@ -55,6 +55,8 @@ import com.us.android.core.ui.usSwitchColors
 @Composable
 fun CreatorMembershipsScreen(
     onBack: () -> Unit,
+    /** The Members list (2026-10-23); null draws the count without a way in. */
+    onOpenMembers: (() -> Unit)? = null,
     viewModel: CreatorMembershipsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -68,7 +70,7 @@ fun CreatorMembershipsScreen(
                 )
                 state.loadError != null && state.levels.isEmpty() ->
                     UsErrorState(message = state.loadError.orEmpty(), onRetry = viewModel::refresh)
-                else -> Content(state = state, viewModel = viewModel)
+                else -> Content(state = state, viewModel = viewModel, onOpenMembers = onOpenMembers)
             }
             val message = remember(
                 state.message
@@ -93,7 +95,7 @@ fun CreatorMembershipsScreen(
 }
 
 @Composable
-private fun Content(state: CreatorMembershipsUiState, viewModel: CreatorMembershipsViewModel) {
+private fun Content(state: CreatorMembershipsUiState, viewModel: CreatorMembershipsViewModel, onOpenMembers: (() -> Unit)?) {
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
         contentPadding = PaddingValues(vertical = UsTheme.spacing.l),
@@ -118,6 +120,17 @@ private fun Content(state: CreatorMembershipsUiState, viewModel: CreatorMembersh
                     color = UsTheme.extended.textPrimary,
                     modifier = Modifier.testTag("creator_memberships_members"),
                 )
+                // Who they are (2026-10-23): the Members list, a page at a time.
+                if (onOpenMembers != null) {
+                    UsSecondaryButton(
+                        text = "See members",
+                        onClick = onOpenMembers,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = UsTheme.spacing.s)
+                            .testTag("creator_memberships_see_members"),
+                    )
+                }
             }
         }
         items(state.levels, key = { it.id }) { level ->

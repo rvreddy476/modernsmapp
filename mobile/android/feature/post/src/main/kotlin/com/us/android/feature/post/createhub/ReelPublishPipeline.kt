@@ -3,12 +3,15 @@ package com.us.android.feature.post.createhub
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.feed.data.ChannelRepository
+import com.us.android.core.feed.data.action.actionProblem
+import com.us.android.core.feed.data.action.toWriteDto
 import com.us.android.core.feed.data.credits.creditRefusal
 import com.us.android.core.feed.data.serverCode
 import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
 import com.us.android.core.memberships.data.membersOnlyRefusal
+import com.us.android.core.model.ActionDraft
 import com.us.android.feature.post.data.ComposerRepository
 import com.us.android.feature.post.data.dto.CONTENT_TYPE_FLICK
 import com.us.android.feature.post.data.dto.CONTENT_TYPE_LONG_VIDEO
@@ -235,7 +238,8 @@ class ReelPublishPipeline @Inject constructor(
             fail(run, pending, CHANNEL_REQUIRED_MESSAGE, retryable = true, needsChannel = true)
         } else {
             val code = error.serverCode()
-            val message = creditRefusal(code) ?: membersOnlyRefusal(code) ?: repository.message(error)
+            val message = creditRefusal(code) ?: membersOnlyRefusal(code) ?: error.actionProblem()?.message
+                ?: repository.message(error)
             fail(run, pending, message, retryable = !repository.isTerminal(error))
         }
 
@@ -410,6 +414,10 @@ class ReelPublishPipeline @Inject constructor(
                 productionHouse = pending.productionHouse.trim().takeIf { long && it.isNotEmpty() },
                 // Members only (2026-10-23): gated at the create, reel and long video alike.
                 tierRequiredId = pending.membersLevelId?.trim()?.takeIf { it.isNotEmpty() },
+                // The Action button (2026-10-23): reel and long video alike, only when there is one.
+                action = pending.actionLabel?.takeIf { it.isNotBlank() }
+                    ?.let { ActionDraft(it, pending.actionUrl.orEmpty()) }
+                    .toWriteDto(),
             )
         }
 

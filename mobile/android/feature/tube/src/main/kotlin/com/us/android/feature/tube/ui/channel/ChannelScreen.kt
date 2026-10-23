@@ -45,6 +45,7 @@ import androidx.paging.compose.itemKey
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.feed.ui.action.ProfileActionButton
 import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.feed.data.offersSubscribe
 import com.us.android.core.feed.ui.more.PostMoreViewModel
@@ -288,6 +289,8 @@ private fun ChannelCard(
             onToggleNotify = onToggleNotify,
             tagPrefix = "tube_channel",
         )
+        // The channel's Action button (2026-10-23), beside Subscribe: a viewer sees only a live one.
+        ProfileActionButton(action = channel.action, modifier = Modifier.fillMaxWidth())
     }
 }
 

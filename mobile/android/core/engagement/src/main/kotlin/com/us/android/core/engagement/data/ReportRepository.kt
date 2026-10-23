@@ -90,6 +90,8 @@ class ReportRepository @Inject constructor(
             "hate",
             "false_info",
             "scam_fraud",
+            // The Action button (2026-10-23): a fake job or scam link, on posts and profiles.
+            "scam_link",
             "impersonation",
             "self_harm",
             "intellectual_property",

@@ -298,6 +298,25 @@ class SettingsDataStore @Inject constructor(
         }
     }
 
+    /**
+     * The Action button's leaving page (2026-10-23): the domains this person
+     * continued to, most recent last, one per line. A line list rather than a
+     * string set because the order is what the 500 cap drops by. Cleared with
+     * everything else on sign-out, so the next person is asked again.
+     */
+    val leavingSeenDomains: Flow<List<String>> = store.data
+        .safe()
+        .map { prefs -> prefs[KEY_LEAVING_SEEN_DOMAINS].orEmpty().split('\n').filter { it.isNotBlank() } }
+
+    /** Rewrites the list through [transform] in one edit, so two quick taps cannot lose a domain. */
+    suspend fun updateLeavingSeenDomains(transform: (List<String>) -> List<String>) {
+        store.edit { prefs ->
+            val now = prefs[KEY_LEAVING_SEEN_DOMAINS].orEmpty().split('\n').filter { it.isNotBlank() }
+            val next = transform(now).filter { it.isNotBlank() && '\n' !in it }
+            if (next.isEmpty()) prefs.remove(KEY_LEAVING_SEEN_DOMAINS) else prefs[KEY_LEAVING_SEEN_DOMAINS] = next.joinToString("\n")
+        }
+    }
+
     suspend fun clear() {
         store.edit { it.clear() }
     }
@@ -328,6 +347,7 @@ class SettingsDataStore @Inject constructor(
         val KEY_OFFLINE_DEVICE_ID = stringPreferencesKey("offline_device_id")
         val KEY_AUDIO_LANGUAGE = stringPreferencesKey("audio_language")
         val KEY_WATCH_HISTORY_PAUSED = booleanPreferencesKey("watch_history_paused")
+        val KEY_LEAVING_SEEN_DOMAINS = stringPreferencesKey("action_leaving_seen_domains")
         const val KEYWORD_SEPARATOR = ","
     }
 }

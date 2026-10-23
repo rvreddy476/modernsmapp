@@ -96,6 +96,8 @@ import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.feed.ui.action.ActionPill
+import com.us.android.core.feed.ui.action.ActionPillStyle
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.feed.data.AudioTrack
 import com.us.android.core.feed.data.videoMediaId
@@ -1743,6 +1745,16 @@ private fun ReelOverlay(
         onOpenAuthor = { actions.onOpenAuthor(item.author.id) },
         onOpenHashtag = actions.onOpenHashtag,
         onSound = actions.onSoundLine,
+        // The Action button (2026-10-23): a pill above the caption,
+        // "Apply now · epfindia.gov.in". The overlay is not drawn on a locked reel.
+        above = {
+            ActionPill(
+                action = item.action,
+                locked = reelIsLocked(item),
+                style = ActionPillStyle.OnMedia,
+                modifier = Modifier.padding(bottom = UsTheme.spacing.s),
+            )
+        },
         showAuthor = showName,
         tagPrefix = "reel_overlay",
         modifier = modifier

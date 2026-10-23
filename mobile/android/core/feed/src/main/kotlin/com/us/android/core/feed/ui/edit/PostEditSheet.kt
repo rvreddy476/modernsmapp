@@ -20,6 +20,9 @@ import com.us.android.core.feed.data.AUDIO_LANGUAGE_CHOICES
 import com.us.android.core.feed.data.EditChoice
 import com.us.android.core.feed.data.PostEditChoices
 import com.us.android.core.feed.data.PostEditForm
+import com.us.android.core.feed.ui.action.ActionEditor
+import com.us.android.core.feed.ui.action.ActionSurface
+import com.us.android.core.feed.ui.action.ActionTaps
 import com.us.android.core.feed.ui.credits.CreditsSection
 import com.us.android.core.memberships.ui.MembersOnlyPickerRow
 import com.us.android.core.ui.UsSettingsOption
@@ -88,6 +91,20 @@ fun PostEditSheet(
                             enabled = !state.saving,
                         )
                     }
+                }
+                // The Action button (2026-10-23): label + link, its status when
+                // it is not live, and the taps it has had.
+                UsSettingsSection(title = "Action button") {
+                    ActionEditor(
+                        value = state.action,
+                        onChange = viewModel::changeAction,
+                        surface = if (longVideo) ActionSurface.Video else ActionSurface.Reel,
+                        savedStatus = state.actionStatus.takeIf { state.action == state.actionBase },
+                        savedReason = state.actionReason,
+                        serverProblem = state.actionProblem,
+                        enabled = !state.saving,
+                    )
+                    if (state.actionBase != null) ActionTaps(postId = postId)
                 }
                 // Video credits (2026-10-23): the same section the upload has,
                 // with where each linked credit's tag stands.

@@ -1,6 +1,8 @@
 package com.us.android.feature.post.studio
 
 import com.us.android.core.creator.model.PostDetails
+import com.us.android.core.feed.data.action.toWriteDto
+import com.us.android.core.model.ActionDraft
 import com.us.android.feature.post.data.dto.COMMENT_ACCESS_EVERYONE
 import com.us.android.feature.post.data.dto.COMMENT_ACCESS_NOBODY
 import com.us.android.feature.post.data.dto.CreatePostRequest
@@ -57,6 +59,9 @@ internal fun studioCreateRequest(
     isBranded = details.isBranded,
     aiGenerated = details.aiGenerated,
     linkUrl = details.linkUrl?.let(PostLink::normalize),
+    // The Action button and the members-only level (2026-10-23), each only when set.
+    action = details.actionLabel?.takeIf { it.isNotBlank() }?.let { ActionDraft(it, details.actionUrl.orEmpty()) }.toWriteDto(),
+    tierRequiredId = details.tierRequiredId?.trim()?.takeIf { it.isNotEmpty() },
 )
 
 /**

@@ -77,6 +77,8 @@ import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.feed.data.ChannelGate
 import com.us.android.core.feed.data.channelGate
 import com.us.android.core.feed.data.credits.creditsSummary
+import com.us.android.core.feed.ui.action.ActionEditor
+import com.us.android.core.feed.ui.action.ActionSurface
 import com.us.android.core.feed.ui.channel.CreateChannelSheet
 import com.us.android.core.memberships.ui.MembersOnlyLevelSheet
 import com.us.android.core.memberships.ui.membersOnlySummary
@@ -500,6 +502,19 @@ private fun ReelForm(
                             testTag = "reel-members-row",
                         )
                     }
+                }
+                // The Action button (2026-10-23): a fixed label and a link, sent
+                // with the create — above the caption on a reel, under the player
+                // on a long video.
+                Spacer(Modifier.height(UsTheme.spacing.xxl))
+                GlassCard {
+                    ActionEditor(
+                        value = state.action,
+                        onChange = viewModel::onActionChanged,
+                        surface = if (state.kind == PublishKind.LONG) ActionSurface.Video else ActionSurface.Reel,
+                        enabled = editable,
+                        modifier = Modifier.padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.xs),
+                    )
                 }
                 Spacer(Modifier.height(UsTheme.spacing.xxl))
                 SwitchesCard(state = state, viewModel = viewModel, enabled = editable)

@@ -16,9 +16,7 @@ import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.di.NetworkModule
 import com.us.android.core.payments.PaymentStatusReading
 import kotlinx.coroutines.runBlocking
-import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
@@ -50,7 +48,7 @@ import java.io.File
  *  - `payment_*.json` — `service.PaymentView` (service/membership_payments.go:156);
  *  - `my_memberships.json` — `service.MembershipView` (service/membership_payments.go:462);
  *  - `error_*.json` — `writeMembershipError` (http/membership_payments_handler.go:117);
- *  - `gate_set.json` — post-service `SetPostMembershipGate` (internal/http/handler.go:1149).
+ *  - `members_*.json` — `service.MemberView` (service/membership_reads.go:254), paged by `meta.next_cursor`.
  */
 class MembershipsContractTest {
 
@@ -272,22 +270,60 @@ class MembershipsContractTest {
         assertThat(membershipRefusal(AppError.Unknown(code = "NEW_CODE", statusCode = 409))).contains("try again")
     }
 
-    // ── The members-only gate ────────────────────────────────────────────
+    // ── The creator's members ─────────────────────────────────────────────
 
     @Test
-    fun `the gate is set with exactly one key, and opened with an explicit null`() {
-        answer("gate_set.json")
-        val set = runBlocking { repository.setPostGate("post-1", "7b1d3c2e-0000-4000-8000-000000000001") }
+    fun `the members page decodes each row, drops one with no member, and carries the cursor`() {
+        answer("members_page.json")
+        val page = (runBlocking { repository.members() } as AppResult.Success).data
         val request = server.takeRequest()
-        assertThat(request.method).isEqualTo("PUT")
-        assertThat(request.target).isEqualTo("/v1/posts/post-1/membership")
-        assertThat(json.parseToJsonElement(request.body!!.utf8()).jsonObject)
-            .isEqualTo(JsonObject(mapOf("tier_required_id" to JsonPrimitive("7b1d3c2e-0000-4000-8000-000000000001"))))
-        assertThat((set as AppResult.Success).data).isEqualTo("7b1d3c2e-0000-4000-8000-000000000001")
+        assertThat(request.method).isEqualTo("GET")
+        assertThat(request.target).isEqualTo("/v1/monetization/members?limit=30")
+        assertThat(page.nextCursor).isEqualTo("MjAyNi0wOS0zMFQwODowMDowMFp8NWEzZg")
+        assertThat(page.items.map { it.subscriptionId })
+            .containsExactly("5a3f0000-0000-4000-8000-0000000ac001", "5a3f0000-0000-4000-8000-0000000ac002").inOrder()
+        val first = page.items[0]
+        assertThat(first.userId).isEqualTo("00000000-0000-4000-8000-0000000000a1")
+        assertThat(first.nameForDisplay).isEqualTo("Call UserA")
+        assertThat(first.username).isEqualTo("call_a")
+        assertThat(first.avatarUrl).isEqualTo("https://cdn.example/a.jpg")
+        assertThat(first.levelName).isEqualTo("Supporter")
+        assertThat(first.pricePaise).isEqualTo(9900)
+        assertThat(first.status).isEqualTo(MembershipStatus.Active)
+        assertThat(first.since).isEqualTo("2026-10-20T09:30:00Z")
+        assertThat(first.accessUntil).isEqualTo("2026-11-20T09:30:00Z")
+        // No profile fields: a neutral word, never the raw id.
+        val second = page.items[1]
+        assertThat(second.nameForDisplay).isEqualTo("A member")
+        assertThat(second.avatarUrl).isNull()
+        assertThat(second.status).isEqualTo(MembershipStatus.CancelledAtPeriodEnd)
+    }
 
-        server.enqueue(MockResponse.Builder().body("""{"data":{"tier_required_id":null}}""").build())
-        runBlocking { repository.setPostGate("post-1", null) }
-        // Not {} by accident: the key is there, and it is null.
-        assertThat(bodyOf()).isEqualTo(JsonObject(mapOf("tier_required_id" to JsonNull)))
+    @Test
+    fun `the next page asks with the cursor, and the last page has none`() {
+        answer("members_last.json")
+        val page = (runBlocking { repository.members(cursor = "abc", limit = 50) } as AppResult.Success).data
+        assertThat(server.takeRequest().target).isEqualTo("/v1/monetization/members?cursor=abc&limit=50")
+        assertThat(page.nextCursor).isNull()
+        assertThat(page.hasMore).isFalse()
+        assertThat(page.items.single().nameForDisplay).isEqualTo("lapsed")
+        assertThat(page.items.single().status).isEqualTo(MembershipStatus.Expired)
+        assertThat(page.items.single().accessUntil).isNull()
+
+        // A blank cursor is the first page; Go's nil slice is an empty page, not a failure.
+        answer("members_empty.json")
+        val empty = (runBlocking { repository.members(cursor = " ") } as AppResult.Success).data
+        assertThat(server.takeRequest().target).isEqualTo("/v1/monetization/members?limit=30")
+        assertThat(empty.items).isEmpty()
+    }
+
+    @Test
+    fun `a cursor the server did not mint is a 400 with its code`() {
+        server.enqueue(
+            MockResponse.Builder().code(400)
+                .body("""{"error":{"code":"INVALID_CURSOR","message":"bad cursor"}}""").build(),
+        )
+        val error = (runBlocking { repository.members(cursor = "nope") } as AppResult.Failure).error
+        assertThat(error.membershipCode()).isEqualTo("INVALID_CURSOR")
     }
 }

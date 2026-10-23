@@ -18,6 +18,7 @@ import com.us.android.core.feed.data.VideoLibraryWrites
 import com.us.android.core.feed.data.WatchHistoryApi
 import com.us.android.core.feed.data.WatchHistoryRepository
 import com.us.android.core.feed.data.WatchHistorySource
+import com.us.android.core.feed.data.action.ActionApi
 import com.us.android.core.feed.data.credits.CreditsApi
 import com.us.android.core.feed.ui.sound.LibrarySoundPreview
 import com.us.android.core.feed.ui.sound.PlayerLibrarySoundPreview
@@ -90,6 +91,11 @@ object FeedModule {
     @Provides
     @Singleton
     fun provideCreditsApi(retrofit: Retrofit): CreditsApi = retrofit.create(CreditsApi::class.java)
+
+    /** The Action button (2026-10-23): labels, the link a tap opens, the creator's taps. */
+    @Provides
+    @Singleton
+    fun provideActionApi(retrofit: Retrofit): ActionApi = retrofit.create(ActionApi::class.java)
 
     /** The store writes through the repository; tests hand it a fake. */
     @Provides

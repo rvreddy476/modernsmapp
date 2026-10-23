@@ -19,6 +19,8 @@ import com.us.android.core.media.ChosenSound
 import com.us.android.core.media.SoundEntry
 import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.ScheduleWindow
+import com.us.android.core.model.ActionButtons
+import com.us.android.core.model.ActionDraft
 import com.us.android.feature.post.data.dto.SupportedAudience
 import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -207,6 +209,8 @@ class ReelPublishViewModel @Inject constructor(
          */
         val membersLevels: List<MembershipLevel> = emptyList(),
         val membersLevelId: String? = null,
+        /** The Action button (2026-10-23): label and link as the editor holds them, or null for none. */
+        val action: ActionDraft? = null,
     ) {
         val isBusy: Boolean
             get() = phase is Phase.Preparing || phase is Phase.Enqueued
@@ -265,6 +269,7 @@ class ReelPublishViewModel @Inject constructor(
         /** A media-only post is legal, so a chosen video that passes the gate is enough. */
         val canPost: Boolean
             get() = videoUri != null && gate.allowsPost && hasRequiredText && hasRequiredCategory &&
+                ActionButtons.draftProblem(action) == null &&
                 (phase is Phase.Editing || phase is Phase.Failure)
 
         val canTagMore: Boolean
@@ -529,6 +534,9 @@ class ReelPublishViewModel @Inject constructor(
     fun onTitleChanged(value: String) = _state.update { it.copy(title = value.take(MAX_TITLE_LENGTH)) }
 
     fun onCaptionChanged(value: String) = _state.update { it.copy(caption = value) }
+
+    /** The Action button as the editor holds it; null takes it off. */
+    fun onActionChanged(next: ActionDraft?) = _state.update { it.copy(action = next) }
 
     /** Members only: one of the creator's levels, or null for everyone. */
     fun onMembersLevelChanged(levelId: String?) = _state.update { s ->
@@ -797,6 +805,9 @@ class ReelPublishViewModel @Inject constructor(
             overlayAudioVolume = current.overlayAudioVolume.toDouble(),
             // Members only (2026-10-23): only a level the creator still offers.
             membersLevelId = current.membersLevelId?.takeIf { id -> current.membersLevels.any { it.id == id } },
+            // The Action button (2026-10-23): the trimmed label and link, or nothing.
+            actionLabel = ActionButtons.createWrite(current.action)?.label,
+            actionUrl = ActionButtons.createWrite(current.action)?.url,
         )
     }
 }

@@ -3,6 +3,7 @@ package com.us.android.core.feed.data
 import com.us.android.core.network.ApiEnvelope
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
@@ -107,6 +108,11 @@ data class ChannelDto(
     @SerialName("notify_on") val notifyOn: String? = null,
     @SerialName("created_at") val createdAt: String = "",
     @SerialName("updated_at") val updatedAt: String = "",
+    /**
+     * The profile Action button (2026-10-23): the post read shape, `null` when
+     * there is none; the owner's `channels/me` adds `url` and `status`.
+     */
+    val action: JsonElement? = null,
 )
 
 @Serializable
@@ -130,6 +136,8 @@ data class UpdateChannelRequest(
     val name: String? = null,
     val handle: String? = null,
     val about: String? = null,
+    /** The profile Action button: `{label, url}`, JSON `null` to remove, left out to leave it (`ActionPatch.toJson`). */
+    val action: JsonElement? = null,
 )
 
 /** `GET v1/channels/{ref}/subscription` and the PATCH answer: the edge, with its bell when it exists. */

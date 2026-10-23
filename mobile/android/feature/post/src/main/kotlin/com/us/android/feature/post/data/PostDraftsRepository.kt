@@ -3,6 +3,7 @@ package com.us.android.feature.post.data
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.map
 import com.us.android.core.creator.model.PostDetails
+import com.us.android.core.feed.data.action.toActionDraft
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
 import com.us.android.feature.post.data.dto.CONTENT_TYPE_POST
@@ -12,6 +13,8 @@ import com.us.android.feature.post.data.dto.POST_TYPE_TEXT
 import com.us.android.feature.post.data.dto.REMIX_ALLOW
 import com.us.android.feature.post.data.dto.REMIX_DISALLOW
 import com.us.android.feature.post.studio.studioCreateRequest
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -105,6 +108,9 @@ internal fun draftPayload(draft: DraftContent): PostDraftPayloadDto {
         isBranded = request.isBranded,
         coverIndex = request.coverMediaId?.let { draft.mediaIds.indexOf(it) }?.takeIf { it >= 0 },
         locationPlaceId = request.locationPlaceId,
+        // The Action button and the members-only level (2026-10-23), as the create would carry them.
+        action = request.action?.let { buildJsonObject { put("label", it.label); put("url", it.url) } },
+        tierRequiredId = request.tierRequiredId,
     )
 }
 
@@ -143,6 +149,9 @@ internal fun PostDraftDto.toDraft(): PostDraft {
             locationName = p.locationName?.takeIf { it.isNotBlank() },
             locationPlaceId = p.locationPlaceId?.takeIf { it.isNotBlank() },
             coverIndex = cover,
+            actionLabel = p.action.toActionDraft()?.label,
+            actionUrl = p.action.toActionDraft()?.url,
+            tierRequiredId = p.tierRequiredId?.trim()?.takeIf { it.isNotEmpty() },
         ),
         status = status,
         updatedAt = updatedAt.ifBlank { createdAt },

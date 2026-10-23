@@ -55,6 +55,8 @@ data class Post(
     val hideShare: Boolean = false,
     /** Members-only (2026-10-23): decide with [MembersOnly.access]. */
     val membersOnly: MembersOnly = MembersOnly.None,
+    /** The Action button (2026-10-23), as the server sent it; show it through [ActionButtons.visible]. */
+    val action: PostAction? = null,
 )
 
 /**

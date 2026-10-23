@@ -3,6 +3,7 @@ package com.us.android.core.feed.data
 import androidx.paging.PagingSource
 import androidx.paging.PagingState
 import com.us.android.core.common.error.AppError
+import com.us.android.core.feed.data.action.toPostAction
 import com.us.android.core.feed.data.credits.creditsOf
 import com.us.android.core.feed.data.dto.FeedItemDto
 import com.us.android.core.feed.data.dto.FeedSoundDto
@@ -281,6 +282,7 @@ internal fun FeedItemDto.toDomain() = FeedItem(
     credits = creditsOf(credits, genres, releaseYear, productionHouse),
     // Members-only (2026-10-23): the lock is drawn from these, by MembersOnly.access.
     membersOnly = MembersOnly.fromWire(tierRequiredId, bodyRedacted, durationMs, tierRequiredPricePaise),
+    action = action.toPostAction(),
 )
 
 /**

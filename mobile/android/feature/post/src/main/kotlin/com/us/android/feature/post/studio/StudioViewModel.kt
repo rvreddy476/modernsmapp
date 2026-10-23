@@ -39,6 +39,8 @@ import com.us.android.feature.post.createhub.ReelLookups
 import com.us.android.feature.post.createhub.TaggedUser
 import com.us.android.feature.post.data.DraftContent
 import com.us.android.feature.post.data.PostDraftsRepository
+import com.us.android.feature.post.data.PostMembersGate
+import com.us.android.core.memberships.data.MembershipLevel
 import com.us.android.feature.post.navigation.StudioRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -92,6 +94,7 @@ class StudioViewModel @Inject constructor(
     private val lookups: ReelLookups,
     private val recentLocations: RecentLocations,
     private val publishRecords: PhotoPublishRecords,
+    private val membersGate: PostMembersGate,
 ) : ViewModel() {
 
     /**
@@ -185,6 +188,8 @@ class StudioViewModel @Inject constructor(
         val details: PostDetailsUi = PostDetailsUi(),
         /** Places tagged recently on this device, newest first. */
         val recentLocations: List<String> = emptyList(),
+        /** Members only (2026-10-23): the creator's active levels, for the details screen's picker. */
+        val membersLevels: List<MembershipLevel> = emptyList(),
         /** The "@" picker: what is typed, and who matches. */
         val mentionQuery: String = "",
         val mentionResults: List<TaggedUser> = emptyList(),
@@ -226,6 +231,10 @@ class StudioViewModel @Inject constructor(
         viewModelScope.launch {
             val recent = recentLocations.load()
             _state.update { it.copy(recentLocations = recent) }
+        }
+        viewModelScope.launch {
+            val levels = membersGate.levels()
+            _state.update { it.copy(membersLevels = levels) }
         }
     }
 

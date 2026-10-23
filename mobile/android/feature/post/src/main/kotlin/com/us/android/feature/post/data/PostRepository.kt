@@ -2,6 +2,7 @@ package com.us.android.feature.post.data
 
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.map
+import com.us.android.core.feed.data.action.toPostAction
 import com.us.android.core.model.FeedDisclosure
 import com.us.android.core.model.MembersOnly
 import com.us.android.core.model.Post
@@ -70,4 +71,5 @@ private fun PostDto.toDomain() = Post(
     hideShare = hideShare,
     // Members-only (2026-10-23): post-service posts.go:131-137.
     membersOnly = MembersOnly.fromWire(tierRequiredId, bodyRedacted, durationMs, tierRequiredPricePaise),
+    action = action.toPostAction(),
 )

@@ -42,6 +42,7 @@ import coil3.compose.AsyncImage
 import com.us.android.core.analytics.AnalyticsSurface
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.feed.ui.action.ActionPill
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.likeCountOr
 import com.us.android.core.feed.data.VideoLibraryState
@@ -438,6 +439,15 @@ private fun WatchBody(
                 .fillMaxSize()
                 .testTag("watch_details"),
         ) {
+            // The Action button (2026-10-23): under the player, never on a locked video.
+            item(key = "watch_action") {
+                ActionPill(
+                    action = item.action,
+                    isAuthor = (viewModel.ownUserId.isNotBlank() && item.authorId == viewModel.ownUserId) || item.action?.isAuthorCopy == true,
+                    locked = (content as? WatchContent.Ready)?.locked == true,
+                    modifier = Modifier.padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.s),
+                )
+            }
             // An offline copy says so, and one being saved shows how far it is (2026-10-02).
             watchOfflineStatusItem(
                 offlineCopy = (content as? WatchContent.Ready)?.offlineCopy == true,

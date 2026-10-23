@@ -104,6 +104,12 @@ data class PendingReelPublish(
      */
     val membersLevelId: String? = null,
     /**
+     * The Action button (2026-10-23): the label and the link, sent with the
+     * create; both null for no button. Defaulted, so an older record loads.
+     */
+    val actionLabel: String? = null,
+    val actionUrl: String? = null,
+    /**
      * Bytes landed and `confirm` succeeded. This is the id the post is
      * created with — instant reels need nothing more than confirmed.
      */

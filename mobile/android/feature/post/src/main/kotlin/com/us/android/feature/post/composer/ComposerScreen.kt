@@ -1,6 +1,8 @@
 package com.us.android.feature.post.composer
 
 import androidx.activity.compose.BackHandler
+import com.us.android.core.feed.ui.action.ActionEditor
+import com.us.android.core.feed.ui.action.ActionSurface
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -203,6 +205,17 @@ fun ComposerScreen(
                         onDecorativeChanged = viewModel::onDecorativeChanged,
                     )
                 }
+
+                // The Action button (2026-10-23): a fixed label and a link, under the post.
+                Spacer(Modifier.height(UsTheme.spacing.m))
+                ActionEditor(
+                    value = state.action,
+                    onChange = viewModel::onActionChanged,
+                    surface = ActionSurface.Post,
+                    serverProblem = state.actionProblem,
+                    enabled = !state.isBusy,
+                    showErrors = state.showValidationErrors,
+                )
 
                 ProgressAndErrors(state = state, onRetry = viewModel::onRetry)
 
@@ -832,6 +845,7 @@ private fun PostAction(state: ComposerUiState, onPost: () -> Unit) {
                 PostBlockedReason.MediaNotReady -> "Post. Unavailable: the photo is still uploading."
                 PostBlockedReason.Busy -> "Post. In progress."
                 PostBlockedReason.MissingTitle -> "Post. Unavailable: add a title first."
+                PostBlockedReason.ActionInvalid -> "Post. Unavailable: fix the action button's link first."
                 null -> "Post"
             }
         },

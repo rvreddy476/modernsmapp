@@ -1,6 +1,8 @@
 package com.us.android.feature.post.studio
 
 import com.us.android.core.creator.model.PostDetails
+import com.us.android.core.model.ActionButtons
+import com.us.android.core.model.ActionDraft
 import com.us.android.feature.post.createhub.HashtagMentionTransformation
 import com.us.android.feature.post.createhub.Hashtags
 import com.us.android.feature.post.data.dto.VISIBILITY_FRIENDS
@@ -29,12 +31,23 @@ data class PostDetailsUi(
     val locationPlaceId: String? = null,
     /** Which photo is the cover, 0-based. */
     val coverIndex: Int = 0,
+    /** Members only (2026-10-23): one of the creator's active levels, or null for everyone. */
+    val membersLevelId: String? = null,
+    /** The Action button (2026-10-23): the label's wire value (null = no button) and the link as typed. */
+    val actionLabel: String? = null,
+    val actionUrl: String = "",
 ) {
+    /** The Action button as the editor holds it. */
+    val action: ActionDraft? get() = actionLabel?.let { ActionDraft(it, actionUrl) }
+
+    /** [next] as the button: null takes it off. */
+    fun withAction(next: ActionDraft?): PostDetailsUi = copy(actionLabel = next?.label, actionUrl = next?.url.orEmpty())
+
     /** Why the link will not be sent, or null. */
     val linkProblem: String? get() = PostLink.problem(link)
 
     /** Post may go: nothing typed is wrong. */
-    val valid: Boolean get() = linkProblem == null && title.length <= MAX_TITLE
+    val valid: Boolean get() = linkProblem == null && title.length <= MAX_TITLE && ActionButtons.draftProblem(action) == null
 
     /**
      * The details as they are published. Every switch is sent explicitly —
@@ -59,6 +72,9 @@ data class PostDetailsUi(
             locationName = locationName.trim().takeIf { it.isNotEmpty() },
             locationPlaceId = locationPlaceId?.takeIf { locationName.isNotBlank() },
             coverIndex = coverIndex.takeIf { pageCount > 1 && it in 0 until pageCount },
+            actionLabel = ActionButtons.createWrite(action)?.label,
+            actionUrl = ActionButtons.createWrite(action)?.url,
+            tierRequiredId = membersLevelId?.trim()?.takeIf { it.isNotEmpty() },
         )
     }
 
@@ -82,6 +98,9 @@ data class PostDetailsUi(
             locationName = details.locationName.orEmpty(),
             locationPlaceId = details.locationPlaceId,
             coverIndex = details.coverIndex ?: 0,
+            membersLevelId = details.tierRequiredId?.takeIf { it.isNotBlank() },
+            actionLabel = details.actionLabel?.takeIf { it.isNotBlank() },
+            actionUrl = details.actionUrl.orEmpty(),
         )
     }
 }

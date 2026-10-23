@@ -3,6 +3,9 @@ package com.us.android.core.feed.data
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.map
+import com.us.android.core.feed.data.action.toJson
+import com.us.android.core.feed.data.action.toPostAction
+import com.us.android.core.model.ActionPatch
 import com.us.android.core.model.Channel
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.NotifyOn
@@ -96,12 +99,21 @@ class ChannelRepository @Inject constructor(
             .also { result -> if (result is AppResult.Success) _own.value = ChannelState.Present(result.data) }
     }
 
-    /** Edits the viewer's channel; blank fields are left as they are. */
-    suspend fun update(name: String?, handle: String?, about: String?): AppResult<Channel> {
+    /**
+     * Edits the viewer's channel; blank fields are left as they are. [action]
+     * is the profile Action button (2026-10-23): left off unless it moved.
+     */
+    suspend fun update(
+        name: String?,
+        handle: String?,
+        about: String?,
+        action: ActionPatch = ActionPatch.Unchanged,
+    ): AppResult<Channel> {
         val request = UpdateChannelRequest(
             name = name?.trim()?.takeIf { it.isNotBlank() },
             handle = handle?.let(ChannelHandle::normalize)?.takeIf { it.isNotBlank() },
             about = about?.trim(),
+            action = action.toJson(),
         )
         return apiCall(errorMapper) { api.update(request) }
             .map { it.toDomain() }
@@ -159,6 +171,7 @@ class ChannelRepository @Inject constructor(
         subscriberCount = subscriberCount,
         createdAt = createdAt,
         updatedAt = updatedAt,
+        action = action.toPostAction(),
     )
 
     companion object {

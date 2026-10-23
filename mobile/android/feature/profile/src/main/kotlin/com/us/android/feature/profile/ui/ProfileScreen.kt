@@ -50,6 +50,7 @@ import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.feed.ui.action.ProfileChannelAction
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.PersonalProfile
 import com.us.android.core.model.Profile
@@ -535,6 +536,8 @@ private fun LoadedProfile(
                     // bar; a pushed own-profile (no header) keeps it in the bar.
                     onOpenSettings = destinations.onOpenSettings?.takeIf { destinations.header != null },
                 )
+                // The owner's own Action button (2026-10-23), with its status when it is not live.
+                ProfileChannelAction(userId = profile.userId, isOwner = true, modifier = Modifier.fillMaxWidth())
             }
 
             // Same gating as Edit profile, and for the same reason: approving
@@ -560,6 +563,9 @@ private fun LoadedProfile(
                     onMessage = actions.onMessage,
                     onDismissChatError = actions.onDismissChatError,
                 )
+
+                // The profile Action button (2026-10-23), beside Message and Follow.
+                ProfileChannelAction(userId = profile.userId, isOwner = false, modifier = Modifier.fillMaxWidth())
 
                 RelationshipControls(
                     relationship = state.relationship,

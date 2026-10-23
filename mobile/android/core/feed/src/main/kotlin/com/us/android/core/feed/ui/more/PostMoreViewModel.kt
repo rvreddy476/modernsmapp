@@ -340,6 +340,7 @@ private fun UsReportReason.toAnalyticsReason(): NegativeSignalReason = when (thi
     UsReportReason.FALSE_INFO -> NegativeSignalReason.MISINFORMATION
     UsReportReason.HARASSMENT,
     UsReportReason.SCAM,
+    UsReportReason.SCAM_LINK,
     UsReportReason.IMPERSONATION,
     UsReportReason.SELF_HARM,
     UsReportReason.INTELLECTUAL_PROPERTY,

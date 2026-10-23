@@ -147,6 +147,7 @@ import com.us.android.feature.live.navigation.navigateToLiveHub
 import com.us.android.feature.live.navigation.navigateToLiveWatch
 import com.us.android.feature.memberships.navigation.MembershipsDestinations
 import com.us.android.feature.memberships.navigation.membershipScreens
+import com.us.android.feature.memberships.navigation.navigateToCreatorMembers
 import com.us.android.feature.memberships.navigation.navigateToCreatorMemberships
 import com.us.android.feature.memberships.navigation.navigateToMembership
 import com.us.android.feature.memberships.navigation.navigateToMyMemberships
@@ -1394,6 +1395,7 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
             onBack = { navController.popBackStack() },
             onOpenCreator = { creatorId -> navController.navigateToProfile(creatorId) },
             onOpenMembership = { subscriptionId -> navController.navigateToMembership(subscriptionId) },
+            onOpenMembers = { navController.navigateToCreatorMembers() },
         ),
     )
     profileScreen(
@@ -1580,7 +1582,8 @@ private fun NavHostController.openNotificationTarget(
         // Paid memberships (2026-10-23).
         is NotificationTarget.Membership -> navigateToMembership(target.subscriptionId)
         NotificationTarget.MyMemberships -> navigateToMyMemberships()
-        NotificationTarget.CreatorMemberships -> navigateToCreatorMemberships()
+        // The creator's new-member notice (the only one that links here) opens the Members list.
+        NotificationTarget.CreatorMemberships -> navigateToCreatorMembers()
         NotificationTarget.None -> Unit
     }
 }

@@ -1,5 +1,7 @@
 package com.us.android.feature.tube.data.hub
 
+import com.us.android.core.feed.data.action.toPostAction
+import com.us.android.core.model.PostAction
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
@@ -185,6 +187,12 @@ data class HubLibraryRow(
      * null when the row has neither.
      */
     val thumbnailPath: String? = null,
+    /**
+     * The Action button (2026-10-23), the author's shape (url and status
+     * included, clarification 4); null when the item has none. Its taps come
+     * from `GET /v1/posts/:id/action/stats`.
+     */
+    val action: PostAction? = null,
 ) {
     /** The row's date: published, else scheduled, else created (web `rowDate`). */
     val date: String get() = publishedAt ?: scheduledAt ?: createdAt
@@ -223,6 +231,7 @@ fun normalizeLibraryRow(raw: JsonElement?): HubLibraryRow? {
         commentCount = num(r["comment_count"]).orElse(num(counts["comments"])).toLong(),
         processingStatus = str(r["processing_status"]).ifEmpty { str(vm["upload_status"]) },
         thumbnailPath = strOrNull(vm["thumbnail_url"]) ?: strOrNull(r["cover_media_id"])?.let { "/v1/media/$it/serve" },
+        action = r["action"].toPostAction(),
     )
 }
 

@@ -91,6 +91,8 @@ data class PostEditDetailDto(
      * posts.go:131). Changed with PUT /v1/posts/:id/membership, never the PATCH.
      */
     @SerialName("tier_required_id") val tierRequiredId: String? = null,
+    /** The Action button (2026-10-23), the author's shape: with `url` and `status`. Read by `toPostAction`. */
+    val action: JsonElement? = null,
 )
 
 /**
@@ -142,6 +144,12 @@ data class PostEditPatch(
      * `""` clears it, null (left out) leaves it. Built by `gatePatch`.
      */
     @SerialName("tier_required_id") val tierRequiredId: String? = null,
+    /**
+     * The Action button (2026-10-23): `{label, url}` to add or change it, a
+     * JSON `null` ([kotlinx.serialization.json.JsonNull]) to remove it, a
+     * Kotlin null (left out) to leave it. Built by `ActionPatch.toJson`.
+     */
+    val action: JsonElement? = null,
 ) {
     /** Nothing moved: Save has nothing to send. */
     val isEmpty: Boolean get() = this == PostEditPatch()
@@ -176,6 +184,7 @@ data class PostEditPatch(
         releaseYear = newer.releaseYear ?: releaseYear,
         productionHouse = newer.productionHouse ?: productionHouse,
         tierRequiredId = newer.tierRequiredId ?: tierRequiredId,
+        action = newer.action ?: action,
     )
 }
 

@@ -5,7 +5,7 @@ import com.us.android.core.memberships.data.CancelRequest
 import com.us.android.core.memberships.data.CheckoutDto
 import com.us.android.core.memberships.data.CreateTierRequest
 import com.us.android.core.memberships.data.EligibilityDto
-import com.us.android.core.memberships.data.MembershipGateDto
+import com.us.android.core.memberships.data.MemberRowDto
 import com.us.android.core.memberships.data.MembershipViewDto
 import com.us.android.core.memberships.data.MembershipsApi
 import com.us.android.core.memberships.data.PaymentStatusDto
@@ -50,7 +50,8 @@ class FakeMembershipsApi : MembershipsApi {
     val created = mutableListOf<CreateTierRequest>()
     val updated = mutableListOf<Pair<String, UpdateTierRequest>>()
     var memberships: List<MembershipViewDto> = emptyList()
-    val gates = mutableListOf<Pair<String, JsonObject>>()
+    val memberPages = mutableListOf<Pair<String?, Int?>>()
+    var members: List<MemberRowDto> = emptyList()
 
     override suspend fun myTiers(): ApiEnvelope<List<TierDto>> = ApiEnvelope(data = tiers)
 
@@ -99,12 +100,10 @@ class FakeMembershipsApi : MembershipsApi {
     override suspend fun myMembership(subscriptionId: String): ApiEnvelope<MembershipViewDto> =
         ApiEnvelope(data = memberships.first { it.subscriptionId == subscriptionId })
 
-    override suspend fun setPostGate(postId: String, body: JsonObject): ApiEnvelope<MembershipGateDto> {
-        gates += postId to body
-        return ApiEnvelope(data = MembershipGateDto((body["tier_required_id"] as? JsonPrimitive)?.contentOrNullSafe()))
+    override suspend fun members(cursor: String?, limit: Int?): ApiEnvelope<List<MemberRowDto>> {
+        memberPages += cursor to limit
+        return ApiEnvelope(data = members)
     }
-
-    private fun JsonPrimitive.contentOrNullSafe(): String? = if (isString) content else null
 }
 
 fun checkout(

@@ -379,12 +379,21 @@ class UsPostMoreRowsTest {
             "Hate speech" to "hate",
             "False information" to "false_info",
             "Scam or fraud" to "scam_fraud",
+            "Fake job or scam link" to "scam_link",
             "Impersonation" to "impersonation",
             "Self-harm" to "self_harm",
             "Intellectual property" to "intellectual_property",
             "Other" to "other",
         ).inOrder()
         assertThat(UsReportReason.entries.filter { it.asksForDetails }).containsExactly(UsReportReason.OTHER)
+    }
+
+    @Test
+    fun `the scam link reason is offered on posts and profiles, never on a comment`() {
+        assertThat(UsReportReason.forSubject("post")).contains(UsReportReason.SCAM_LINK)
+        assertThat(UsReportReason.forSubject("account")).contains(UsReportReason.SCAM_LINK)
+        assertThat(UsReportReason.forSubject("comment")).doesNotContain(UsReportReason.SCAM_LINK)
+        assertThat(UsReportReason.forSubject("comment")).hasSize(UsReportReason.entries.size - 1)
     }
 
     @Test

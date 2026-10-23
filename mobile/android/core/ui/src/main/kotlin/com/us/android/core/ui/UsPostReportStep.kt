@@ -164,7 +164,7 @@ private fun ReportForm(
             color = UsTheme.extended.textMuted,
             modifier = Modifier.padding(horizontal = SIDE, vertical = UsTheme.spacing.m),
         )
-        UsReportReason.entries.forEach { reason ->
+        UsReportReason.forSubject(subject).forEach { reason ->
             SheetRow(
                 icon = null,
                 label = reason.label,

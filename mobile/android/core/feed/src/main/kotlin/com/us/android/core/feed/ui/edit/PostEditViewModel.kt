@@ -9,6 +9,9 @@ import com.us.android.core.feed.data.PostEditForm
 import com.us.android.core.feed.data.PostEditPatch
 import com.us.android.core.feed.data.PostEditRepository
 import com.us.android.core.feed.data.VideoFeedRepository
+import com.us.android.core.feed.data.action.actionProblem
+import com.us.android.core.feed.data.action.toJson
+import com.us.android.core.feed.data.action.toPostAction
 import com.us.android.core.feed.data.credits.CreditPerson
 import com.us.android.core.feed.data.credits.CreditsForm
 import com.us.android.core.feed.data.credits.CreditsRepository
@@ -25,6 +28,11 @@ import com.us.android.core.feed.ui.credits.CreditsEditor
 import com.us.android.core.memberships.data.MembershipLevel
 import com.us.android.core.memberships.data.MembershipsRepository
 import com.us.android.core.memberships.data.membersOnlyRefusal
+import com.us.android.core.model.ActionButtons
+import com.us.android.core.model.ActionDraft
+import com.us.android.core.model.ActionPatch
+import com.us.android.core.model.ActionProblem
+import com.us.android.core.model.ActionStatus
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -61,9 +69,23 @@ data class PostEditUiState(
     val levels: List<MembershipLevel> = emptyList(),
     val gateBase: String? = null,
     val gate: String? = null,
+    /**
+     * The Action button (2026-10-23): as the sheet opened (the author's copy,
+     * url included), as the owner has it now (null = none), the saved one's
+     * status when it is not live, and the server's last refusal of it.
+     */
+    val actionBase: ActionDraft? = null,
+    val action: ActionDraft? = null,
+    val actionStatus: ActionStatus? = null,
+    /** Why it is not live, when the server said (`status_reason`). */
+    val actionReason: String? = null,
+    val actionProblem: ActionProblem? = null,
 ) {
     /** Something moved: Save has a patch to send, or a members-only change to apply. */
-    val dirty: Boolean get() = !postEditPatch(base, form).isEmpty || gateDirty
+    val dirty: Boolean get() = !postEditPatch(base, form).isEmpty || gateDirty || actionDirty
+
+    /** The Action button moved: the PATCH carries `action`. */
+    val actionDirty: Boolean get() = ActionButtons.patch(actionBase, action) != ActionPatch.Unchanged
 
     /** The members-only level moved. */
     val gateDirty: Boolean get() = gate != gateBase
@@ -155,6 +177,8 @@ class PostEditViewModel @Inject constructor(
                     val creditsForm = result.data.creditsForm { credits.newKey() }
                     credits.reset(creditsForm)
                     val gate = result.data.tierRequiredId?.takeIf { it.isNotBlank() }
+                    val saved = result.data.action.toPostAction()
+                    val actionDraft = ActionButtons.draftFrom(saved)
                     _state.update {
                         it.copy(
                             loading = false,
@@ -163,6 +187,11 @@ class PostEditViewModel @Inject constructor(
                             creditsBase = creditsForm,
                             gateBase = gate,
                             gate = gate,
+                            actionBase = actionDraft,
+                            action = actionDraft,
+                            actionStatus = saved?.status?.takeIf { s -> s != ActionStatus.ACTIVE },
+                            actionReason = saved?.statusReason,
+                            actionProblem = null,
                         )
                     }
                 }
@@ -175,6 +204,9 @@ class PostEditViewModel @Inject constructor(
     /** Members only: a level, or null for everyone. Applied on Save. */
     fun selectGate(levelId: String?) = _state.update { it.copy(gate = levelId, problems = emptyList()) }
 
+    /** The Action button as the editor now holds it; null takes it off. Applied on Save. */
+    fun changeAction(next: ActionDraft?) = _state.update { it.copy(action = next, actionProblem = null, problems = emptyList()) }
+
     /** Every field's change goes through here: the sheet hands back the form with one field moved. */
     fun change(transform: (PostEditForm) -> PostEditForm) =
         _state.update { it.copy(form = transform(it.form), problems = emptyList()) }
@@ -182,7 +214,7 @@ class PostEditViewModel @Inject constructor(
     fun save() {
         val now = _state.value
         if (now.saving || now.loading) return
-        val problems = postEditProblems(now.form)
+        val problems = postEditProblems(now.form) + listOfNotNull(ActionButtons.draftProblem(now.action).takeIf { now.actionDirty })
         val creditProblems = if (now.offersCredits) credits.validate() else emptyList()
         if (problems.isNotEmpty() || creditProblems.isNotEmpty()) {
             _state.update { it.copy(problems = problems) }
@@ -192,6 +224,7 @@ class PostEditViewModel @Inject constructor(
         val patch = postEditPatch(now.base, now.form)
             .then(if (now.offersCredits) creditsPatch(now.creditsBase, creditsNow) else PostEditPatch())
             .then(gatePatch(now))
+            .then(actionPatch(now))
         if (patch.isEmpty) {
             _state.update { it.copy(saved = true) }
             return
@@ -206,15 +239,21 @@ class PostEditViewModel @Inject constructor(
                         base = current.form,
                         creditsBase = creditsNow,
                         gateBase = current.gate,
+                        actionBase = current.action,
+                        actionStatus = result.data.action.toPostAction()?.status?.takeIf { it != ActionStatus.ACTIVE },
+                        actionReason = result.data.action.toPostAction()?.statusReason,
                     )
                     is AppResult.Failure -> {
                         // A refusal of the credits fields is said under the Credits section, beside what it is about.
                         val credited = creditRefusal(result.error.serverCode())
                         if (credited != null) credits.showRefusal(credited)
+                        // So is a refusal of the Action button, under the button's editor.
+                        val actionProblem = result.error.actionProblem()
                         val problem = membersOnlyRefusal(result.error.serverCode()) ?: postEditRefusal(result.error)
                         current.copy(
                             saving = false,
-                            problems = if (credited != null) emptyList() else listOf(problem),
+                            problems = if (credited != null || actionProblem != null) emptyList() else listOf(problem),
+                            actionProblem = actionProblem,
                         )
                     }
                 }
@@ -230,3 +269,11 @@ class PostEditViewModel @Inject constructor(
  */
 internal fun gatePatch(state: PostEditUiState): PostEditPatch =
     if (state.gateDirty) PostEditPatch(tierRequiredId = state.gate ?: "") else PostEditPatch()
+
+/**
+ * The Action button's change, in the same PATCH (2026-10-23): `{label, url}`
+ * when it was added or changed, JSON `null` when it was taken off, and no
+ * `action` key at all when it did not move.
+ */
+internal fun actionPatch(state: PostEditUiState): PostEditPatch =
+    PostEditPatch(action = ActionButtons.patch(state.actionBase, state.action).toJson())

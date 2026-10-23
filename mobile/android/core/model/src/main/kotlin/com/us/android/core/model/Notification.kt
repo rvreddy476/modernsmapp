@@ -326,7 +326,9 @@ sealed interface NotificationTarget {
     /**
      * The creator's own Memberships page, levels and members:
      * `/monetization/tiers` (the server's link) or `/monetization/members`
-     * (the contract's spelling of the same page).
+     * (the contract's spelling of the same page). Only the creator's
+     * new-member notice links here, so the app opens it on the Members list
+     * (2026-10-23), the list the Memberships page links to as well.
      */
     data object CreatorMemberships : NotificationTarget
 

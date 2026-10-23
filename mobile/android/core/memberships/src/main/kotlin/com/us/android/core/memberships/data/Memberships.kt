@@ -232,3 +232,52 @@ private val CANCELLABLE = setOf(MembershipStatus.Active, MembershipStatus.PastDu
 
 private const val PAISE_PER_RUPEE = 100L
 private const val THOUSANDS = 3
+
+/**
+ * One of the signed-in creator's members (`GET /v1/monetization/members`,
+ * 2026-10-23): who, on which level at its locked price, the membership's
+ * status, since when (RFC 3339) and until when it gives access (null when
+ * the status gives none).
+ */
+data class CreatorMember(
+    val subscriptionId: String,
+    val userId: String,
+    val username: String,
+    /** The display name, else the username; blank when the server's profile lookup failed. */
+    val name: String,
+    val avatarUrl: String?,
+    val levelId: String,
+    val levelName: String,
+    val pricePaise: Long,
+    val status: MembershipStatus,
+    val since: String,
+    val accessUntil: String?,
+) {
+    /** What the row says: the name, else `@username`, else a neutral word — never a raw id. */
+    val nameForDisplay: String
+        get() = name.ifBlank { username.takeIf { it.isNotBlank() }?.let { "@$it" } ?: "A member" }
+}
+
+/** A row → a member; null for a row with no subscription or no member id (it can open nothing). */
+internal fun MemberRowDto.toMember(): CreatorMember? {
+    val subscription = subscriptionId.trim().ifEmpty { return null }
+    val userId = subscriber.id.trim().ifEmpty { return null }
+    return CreatorMember(
+        subscriptionId = subscription,
+        userId = userId,
+        username = subscriber.username.trim(),
+        name = subscriber.displayName.trim().ifBlank { subscriber.username.trim() },
+        avatarUrl = subscriber.avatarUrl.trim().takeIf { it.isNotEmpty() },
+        levelId = tier.id,
+        levelName = tier.name.trim(),
+        pricePaise = tier.pricePaise,
+        status = MembershipStatus.fromWire(status),
+        since = since,
+        accessUntil = accessUntil?.takeIf { it.isNotBlank() },
+    )
+}
+
+/** One page of the creator's members and the cursor of the next; null on the last page. */
+data class MembersPage(val items: List<CreatorMember>, val nextCursor: String?) {
+    val hasMore: Boolean get() = nextCursor != null
+}

@@ -1,14 +1,13 @@
 package com.us.android.core.memberships.data
 
 import com.us.android.core.network.ApiEnvelope
-import kotlinx.serialization.json.JsonObject
 import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.Header
 import retrofit2.http.PATCH
 import retrofit2.http.POST
-import retrofit2.http.PUT
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 /**
  * Paid memberships (contract pinned 2026-10-23). monetization-service's
@@ -16,7 +15,7 @@ import retrofit2.http.Path
  * http/membership_payments_handler.go (`registerMembershipRoutes`); every one
  * answers 503 `MEMBERSHIPS_NOT_ENABLED` while the server's switch is off.
  */
-// One interface per contract: every membership route the app calls, plus the post gate they serve.
+// One interface per contract: every membership route the app calls.
 @Suppress("TooManyFunctions")
 interface MembershipsApi {
 
@@ -91,15 +90,18 @@ interface MembershipsApi {
     @GET("v1/monetization/memberships/{subscriptionId}")
     suspend fun myMembership(@Path("subscriptionId") subscriptionId: String): ApiEnvelope<MembershipViewDto>
 
-    // ── The members-only gate on a post (post-service) ──────────────────
+    // ── The creator's members ─────────────────────────────────────────────
 
     /**
-     * `PUT /v1/posts/:postId/membership`, author only. The body must be
-     * exactly `{"tier_required_id": "<uuid>"}` to gate or
-     * `{"tier_required_id": null}` to open (post-service http/handler.go
-     * `parseMembershipGateBody` refuses anything else), so it is built as a
-     * [JsonObject] — `explicitNulls = false` would drop a typed null.
+     * The signed-in creator's members, newest first (2026-10-23);
+     * `meta.next_cursor` pages on, absent on the last page. 400
+     * `INVALID_CURSOR` for a cursor the server did not mint. A members-only
+     * level rides the post create and PATCH themselves, so there is no gate
+     * route here.
      */
-    @PUT("v1/posts/{postId}/membership")
-    suspend fun setPostGate(@Path("postId") postId: String, @Body body: JsonObject): ApiEnvelope<MembershipGateDto>
+    @GET("v1/monetization/members")
+    suspend fun members(
+        @Query("cursor") cursor: String? = null,
+        @Query("limit") limit: Int? = null,
+    ): ApiEnvelope<List<MemberRowDto>>
 }

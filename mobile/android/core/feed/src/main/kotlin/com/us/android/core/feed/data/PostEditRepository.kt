@@ -8,6 +8,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -32,6 +34,15 @@ class PostEdits @Inject constructor() {
     }
 }
 
+/**
+ * The Action button moved in this save (2026-10-23): what the lists layer on
+ * is the button the SERVER answered with — its id, `href` and status, which
+ * the `{label, url}` that was sent does not carry — or JSON null when the
+ * answer has none (removed). An unmoved button stays left out.
+ */
+internal fun PostEditPatch.withSavedAction(answer: PostEditDetailDto): PostEditPatch =
+    if (action == null) this else copy(action = answer.action?.takeIf { it is JsonObject } ?: JsonNull)
+
 /** [item] as this session's edits have left it. */
 fun Map<String, PostEditPatch>.applyTo(item: FeedItem): FeedItem = this[item.id]?.let(item::withEdits) ?: item
 
@@ -48,7 +59,7 @@ class PostEditRepository @Inject constructor(
     /** Sends [patch]; on success every list learns it through [PostEdits]. */
     suspend fun save(postId: String, patch: PostEditPatch): AppResult<PostEditDetailDto> {
         val result = apiCall(errorMapper) { api.update(postId, patch) }
-        if (result is AppResult.Success) edits.record(postId, patch)
+        if (result is AppResult.Success) edits.record(postId, patch.withSavedAction(result.data))
         return result
     }
 }

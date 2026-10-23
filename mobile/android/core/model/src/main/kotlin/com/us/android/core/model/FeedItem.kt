@@ -124,6 +124,13 @@ data class FeedItem(
      * [MembersOnly.access], never by reading the fields directly.
      */
     val membersOnly: MembersOnly = MembersOnly.None,
+    /**
+     * The Action button (2026-10-23): a fixed label and a link, or null.
+     * Viewers' rows only ever carry a live one; the author's carry its
+     * status and url. Draw it through [ActionButtons.visible], which also
+     * hides it on a locked (members-only) row.
+     */
+    val action: PostAction? = null,
 ) {
     /** Who a video card credits: the channel when the row carries one, the author otherwise. */
     val creatorName: String get() = channel?.name?.takeIf { it.isNotBlank() } ?: author.nameForDisplay

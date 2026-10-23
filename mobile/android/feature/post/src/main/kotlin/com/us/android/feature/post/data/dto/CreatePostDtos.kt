@@ -1,5 +1,6 @@
 package com.us.android.feature.post.data.dto
 
+import com.us.android.core.feed.data.action.ActionWriteDto
 import com.us.android.core.feed.data.credits.CreditInputDto
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.SerialName
@@ -253,6 +254,17 @@ data class CreatePostRequest(
 
     /** The level the post is for, or null for everyone. */
     @SerialName("tier_required_id") val tierRequiredId: String? = null,
+
+    // ── The Action button (2026-10-23) ──────────────────────────────────
+    //
+    // One fixed label and an https link, any content type. Null (no button)
+    // is left out, so a post without one is byte-identical to the request
+    // before it existed. Refusals: 400 INVALID_ACTION_LABEL / _URL /
+    // ACTION_LINK_SHORTENER / _GROUP_INVITE / _UNSAFE, 503
+    // ACTION_LINK_CHECK_UNAVAILABLE, 403 ACTION_NOT_ELIGIBLE.
+
+    /** `{label, url}`, or null for no button. The legacy [linkUrl] is NOT the action. */
+    val action: ActionWriteDto? = null,
 )
 
 /**

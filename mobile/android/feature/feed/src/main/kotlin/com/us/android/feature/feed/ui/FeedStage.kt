@@ -55,6 +55,8 @@ import com.us.android.core.designsystem.component.UsBadgedIcon
 import com.us.android.core.designsystem.component.usNotificationsDescription
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.feed.ui.action.ActionPill
+import com.us.android.core.feed.ui.action.ActionPillStyle
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.media.Playback
 import com.us.android.core.media.PlayerPool
@@ -214,6 +216,13 @@ internal fun FeedStagePage(
                 if (kind == StageKind.PHOTO && state.pages.size > 1) {
                     StagePageDots(pageCount = state.pages.size, currentPage = carousel.currentPage)
                 }
+                // The Action button (2026-10-23): over the caption, never on a locked post.
+                ActionPill(
+                    action = item.action,
+                    locked = locked,
+                    style = ActionPillStyle.OnMedia,
+                    modifier = Modifier.padding(bottom = UsTheme.spacing.s),
+                )
             },
             // Full mode: no "@name · age" line either (founder, 2026-10-19).
             showAuthor = !fullMode,

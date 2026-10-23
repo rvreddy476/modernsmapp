@@ -2,6 +2,7 @@ package com.us.android.feature.post.data.dto
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
 
 /**
  * Wire types for post-service, transcribed from a live capture on 2026-08-16
@@ -87,6 +88,8 @@ data class PostDto(
     @SerialName("body_redacted") val bodyRedacted: Boolean = false,
     @SerialName("duration_ms") val durationMs: Long = 0L,
     @SerialName("tier_required_price_paise") val tierRequiredPricePaise: Long? = null,
+    /** The Action button (2026-10-23): raw, read by `toPostAction`; the author's copy carries `url` and `status`. */
+    val action: JsonElement? = null,
 )
 
 /** Nested object, not flat fields — `counts.likes`, `counts.comments`. */

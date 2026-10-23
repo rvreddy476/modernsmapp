@@ -47,6 +47,7 @@ import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.feed.ui.action.ProfileActionSection
 import com.us.android.core.profile.data.EditProfileField
 import com.us.android.core.profile.data.EditableProfile
 import com.us.android.core.profile.data.ProfileIdentityRules
@@ -251,11 +252,13 @@ private fun EditProfileForm(
         UsSecondaryButton(
             text = if (state.isDirty) "Unsaved changes" else "Up to date",
             onClick = {},
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(bottom = UsTheme.spacing.xxxxl),
+            modifier = Modifier.fillMaxWidth(),
             enabled = false,
         )
+
+        // The profile Action button (2026-10-23): on the channel, saved on its
+        // own (PATCH /v1/channels/me), so it says when it is saved.
+        ProfileActionSection(modifier = Modifier.padding(bottom = UsTheme.spacing.xxxxl))
     }
 }
 

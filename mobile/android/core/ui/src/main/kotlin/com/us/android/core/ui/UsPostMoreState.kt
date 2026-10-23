@@ -585,6 +585,9 @@ enum class UsReportReason(val label: String, val wire: String) {
     HATE("Hate speech", "hate"),
     FALSE_INFO("False information", "false_info"),
     SCAM("Scam or fraud", "scam_fraud"),
+
+    /** A fake job or a scam behind an Action button (2026-10-23): posts and profiles only, never a comment. */
+    SCAM_LINK("Fake job or scam link", "scam_link"),
     IMPERSONATION("Impersonation", "impersonation"),
     SELF_HARM("Self-harm", "self_harm"),
     INTELLECTUAL_PROPERTY("Intellectual property", "intellectual_property"),
@@ -593,6 +596,15 @@ enum class UsReportReason(val label: String, val wire: String) {
 
     /** Only "Other" asks for words; every other reason is complete on its own. */
     val asksForDetails: Boolean get() = this == OTHER
+
+    /** Offered on a comment's report too; [SCAM_LINK] is about a post's or a profile's link. */
+    val appliesToComments: Boolean get() = this != SCAM_LINK
+
+    companion object {
+        /** The reasons the report step lists for [subject] ("post", "account", "comment"). */
+        fun forSubject(subject: String): List<UsReportReason> =
+            if (subject == "comment") entries.filter { it.appliesToComments } else entries
+    }
 }
 
 /**

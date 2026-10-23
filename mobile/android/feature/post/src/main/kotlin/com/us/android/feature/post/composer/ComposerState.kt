@@ -1,6 +1,9 @@
 package com.us.android.feature.post.composer
 
 import com.us.android.core.memberships.data.MembershipLevel
+import com.us.android.core.model.ActionButtons
+import com.us.android.core.model.ActionDraft
+import com.us.android.core.model.ActionProblem
 import com.us.android.feature.post.data.dto.CreatePostRequest
 import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
 
@@ -72,6 +75,9 @@ enum class PostBlockedReason {
 
     /** An article with no title. Only reachable in long-form mode. */
     MissingTitle,
+
+    /** An Action button whose label or link the server would refuse (2026-10-23). */
+    ActionInvalid,
 }
 
 /**
@@ -128,6 +134,13 @@ data class ComposerUiState(
      */
     val membersLevels: List<MembershipLevel> = emptyList(),
     val membersLevelId: String? = null,
+    /**
+     * The Action button (2026-10-23): the label and link as the editor holds
+     * them (null = none), sent with the create; and the server's last refusal
+     * of it, said under the editor. Not part of the durable draft either.
+     */
+    val action: ActionDraft? = null,
+    val actionProblem: ActionProblem? = null,
     /** Set once the image is confirmed AND ready. Only then may it be attached. */
     val mediaId: String? = null,
     val phase: ComposerPhase = ComposerPhase.Editing,
@@ -198,6 +211,7 @@ data class ComposerUiState(
             textTooLong || titleTooLong -> PostBlockedReason.TextTooLong
             !altDecisionMade -> PostBlockedReason.MissingAltDecision
             hasImage && mediaId == null -> PostBlockedReason.MediaNotReady
+            ActionButtons.draftProblem(action) != null -> PostBlockedReason.ActionInvalid
             else -> null
         }
 

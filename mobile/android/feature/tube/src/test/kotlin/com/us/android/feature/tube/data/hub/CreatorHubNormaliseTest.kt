@@ -405,4 +405,18 @@ class LibraryThumbnailTest {
     fun `a row with neither has no still`() {
         assertThat(row("""{"id":"v1"}""")?.thumbnailPath).isNull()
     }
+
+    /** The Action button on the creator's own rows (2026-10-23): the author's shape, status and reason included. */
+    @Test
+    fun `a library row carries its action button, or none`() {
+        val action = row(
+            """{"id":"v1","action":{"id":"a1","label":"apply_now","domain":"x.in","href":"/l/a1",""" +
+                """"url":"https://x.in","status":"blocked","status_reason":"unsafe"}}""",
+        )!!.action!!
+        assertThat(action.id).isEqualTo("a1")
+        assertThat(action.status).isEqualTo(com.us.android.core.model.ActionStatus.BLOCKED)
+        assertThat(action.statusReason).isEqualTo("unsafe")
+        assertThat(row("""{"id":"v1","action":null}""")!!.action).isNull()
+        assertThat(row("""{"id":"v1"}""")!!.action).isNull()
+    }
 }

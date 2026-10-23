@@ -242,10 +242,19 @@ data class PendingDowngradeDto(
     @SerialName("effective_at") val effectiveAt: String = "",
 )
 
-/** `PUT /v1/posts/:id/membership`'s answer: `{"tier_required_id": <uuid>|null}` (post-service http/handler.go:1149). */
+/**
+ * One row of `GET /v1/monetization/members` (2026-10-23): a member of the
+ * signed-in creator — `service.MemberView` (service/membership_reads.go:254),
+ * newest first, paged by `meta.next_cursor`.
+ */
 @Serializable
-data class MembershipGateDto(
-    @SerialName("tier_required_id") val tierRequiredId: String? = null,
+data class MemberRowDto(
+    @SerialName("subscription_id") val subscriptionId: String = "",
+    val subscriber: MembershipCreatorDto = MembershipCreatorDto(),
+    val tier: MembershipTierDto = MembershipTierDto(),
+    val status: String = "",
+    val since: String = "",
+    @SerialName("access_until") val accessUntil: String? = null,
 )
 
 /** The only currency a level is offered in (service/membership.go `TierCurrency`). */

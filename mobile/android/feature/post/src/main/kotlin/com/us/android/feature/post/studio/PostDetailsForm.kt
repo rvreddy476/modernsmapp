@@ -63,6 +63,11 @@ import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.feed.ui.action.ActionEditor
+import com.us.android.core.feed.ui.action.ActionSurface
+import com.us.android.core.memberships.data.MembershipLevel
+import com.us.android.core.memberships.ui.MembersOnlyLevelSheet
+import com.us.android.core.memberships.ui.membersOnlySummary
 import com.us.android.feature.post.createhub.HashtagMentionTransformation
 import com.us.android.feature.post.createhub.ReelInputField
 import com.us.android.feature.post.createhub.ReelLocationSheet
@@ -101,6 +106,8 @@ data class PostDetailsFormState(
     val draftsLabel: String = "Drafts",
     /** The post's language (BCP-47), edited under More options; null hides the row. */
     val language: String? = null,
+    /** Members only (2026-10-23): the creator's ACTIVE levels; the row is offered only when there is one. */
+    val membersLevels: List<MembershipLevel> = emptyList(),
 )
 
 /** What the details form can ask for. A null action hides its control. */
@@ -120,7 +127,7 @@ class PostDetailsFormActions(
     val onLanguageChanged: ((String) -> Unit)? = null,
 )
 
-private enum class DetailsSheet { AUDIENCE, LOCATION, LINK, MORE, DISCLOSURE, ALT, LANGUAGE }
+private enum class DetailsSheet { AUDIENCE, LOCATION, LINK, MORE, DISCLOSURE, ALT, LANGUAGE, MEMBERS }
 
 /**
  * The post details screen (post-screens parity, 2026-10-18), shared by the
@@ -261,6 +268,25 @@ fun PostDetailsForm(
                 onClick = { sheet = DetailsSheet.LINK },
                 tag = "post-details-link",
             )
+            // Members only (paid memberships, 2026-10-23): the same picker as the
+            // text composer, offered when the creator has an active level.
+            if (state.membersLevels.isNotEmpty() || details.membersLevelId != null) {
+                DetailRow(
+                    icon = UsIcons.Lock,
+                    title = "Members only",
+                    value = membersOnlySummary(state.membersLevels, details.membersLevelId),
+                    onClick = { sheet = DetailsSheet.MEMBERS },
+                    tag = "post-details-members",
+                )
+            }
+            // The Action button (2026-10-23): a fixed label and a link, under the post.
+            ActionEditor(
+                value = details.action,
+                onChange = { next -> actions.onDetails { it.withAction(next) } },
+                surface = ActionSurface.Post,
+                enabled = !state.posting,
+                modifier = Modifier.padding(horizontal = UsTheme.spacing.pageHorizontal),
+            )
             DetailRow(
                 icon = audienceIcon(details.visibility),
                 title = audienceLabel(details.visibility),
@@ -351,6 +377,15 @@ fun PostDetailsForm(
                 onDismiss = { sheet = DetailsSheet.MORE },
             )
         }
+        DetailsSheet.MEMBERS -> MembersOnlyLevelSheet(
+            levels = state.membersLevels,
+            selectedId = details.membersLevelId,
+            onSelect = { level ->
+                actions.onDetails { it.copy(membersLevelId = level) }
+                sheet = null
+            },
+            onDismiss = { sheet = null },
+        )
         DetailsSheet.DISCLOSURE -> DisclosureSheet(details = details, onDetails = actions.onDetails, onDismiss = { sheet = DetailsSheet.MORE })
         DetailsSheet.ALT -> actions.onAltText?.let { onAlt ->
             AltTextSheet(tiles = state.tiles, onAltText = onAlt, onDismiss = { sheet = DetailsSheet.MORE })

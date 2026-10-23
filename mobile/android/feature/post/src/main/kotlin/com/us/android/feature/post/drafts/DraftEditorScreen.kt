@@ -17,7 +17,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.core.feed.data.action.actionProblem
 import com.us.android.core.media.data.MediaRepository
+import com.us.android.core.memberships.data.MembershipLevel
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.post.createhub.ReelLookups
@@ -25,6 +27,7 @@ import com.us.android.feature.post.createhub.TaggedUser
 import com.us.android.feature.post.data.DraftContent
 import com.us.android.feature.post.data.PostDraft
 import com.us.android.feature.post.data.PostDraftsRepository
+import com.us.android.feature.post.data.PostMembersGate
 import com.us.android.feature.post.studio.DetailsTile
 import com.us.android.feature.post.studio.PostDetailsForm
 import com.us.android.feature.post.studio.PostDetailsFormActions
@@ -53,6 +56,8 @@ data class DraftEditorUiState(
     val altTexts: Map<String, String> = emptyMap(),
     val thumbs: Map<String, String?> = emptyMap(),
     val recentLocations: List<String> = emptyList(),
+    /** Members only (2026-10-23): the creator's active levels, for the picker. */
+    val membersLevels: List<MembershipLevel> = emptyList(),
     val mentionQuery: String = "",
     val mentionResults: List<TaggedUser> = emptyList(),
     val saving: Boolean = false,
@@ -77,6 +82,7 @@ class DraftEditorViewModel @Inject constructor(
     private val media: MediaRepository,
     private val lookups: ReelLookups,
     private val recentLocations: RecentLocations,
+    private val membersGate: PostMembersGate,
 ) : ViewModel() {
     private val draftId: String = savedStateHandle.get<String>("draftId").orEmpty()
     private val _state = MutableStateFlow(DraftEditorUiState())
@@ -88,6 +94,10 @@ class DraftEditorViewModel @Inject constructor(
         viewModelScope.launch {
             val recent = recentLocations.load()
             _state.update { it.copy(recentLocations = recent) }
+        }
+        viewModelScope.launch {
+            val levels = membersGate.levels()
+            _state.update { it.copy(membersLevels = levels) }
         }
     }
 
@@ -173,14 +183,21 @@ class DraftEditorViewModel @Inject constructor(
                 altTexts = current.altTexts,
                 details = current.details.toDetails(current.text, draft.mediaIds.size),
             )
-            when (drafts.update(draft.id, content)) {
+            when (val saved = drafts.update(draft.id, content)) {
                 is AppResult.Success -> if (then == null) {
                     _state.update { it.copy(saving = false, saved = true) }
                 } else {
                     then()
                 }
                 is AppResult.Failure ->
-                    _state.update { it.copy(saving = false, publishing = false, notice = "The draft couldn't be saved. Try again.") }
+                    _state.update {
+                        it.copy(
+                            saving = false,
+                            publishing = false,
+                            // A refused Action button (2026-10-23) says why, in our words.
+                            notice = saved.error.actionProblem()?.message ?: "The draft couldn't be saved. Try again.",
+                        )
+                    }
             }
         }
     }
@@ -189,7 +206,12 @@ class DraftEditorViewModel @Inject constructor(
     fun onPublish() = onSave {
         when (val published = drafts.publish(draftId)) {
             is AppResult.Success -> _state.update { it.copy(publishing = false, publishedPostId = published.data) }
-            is AppResult.Failure -> _state.update { it.copy(publishing = false, notice = "This draft couldn't be posted. Try again.") }
+            is AppResult.Failure -> _state.update {
+                it.copy(
+                    publishing = false,
+                    notice = published.error.actionProblem()?.message ?: "This draft couldn't be posted. Try again.",
+                )
+            }
         }
     }
 
@@ -221,6 +243,7 @@ fun DraftEditorScreen(
                     description = state.text,
                     details = state.details,
                     recentLocations = state.recentLocations,
+                    membersLevels = state.membersLevels,
                     mentionQuery = state.mentionQuery,
                     mentionResults = state.mentionResults,
                     posting = state.publishing,

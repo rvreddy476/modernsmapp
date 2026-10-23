@@ -42,4 +42,12 @@ data class PostDetails(
     val locationPlaceId: String? = null,
     /** Which page is the cover, 0-based, on a photo post. */
     val coverIndex: Int? = null,
+    /**
+     * The Action button (2026-10-23): the label's wire value and the link,
+     * both null for no button. Plain strings: this module knows no domain type.
+     */
+    val actionLabel: String? = null,
+    val actionUrl: String? = null,
+    /** Members only (paid memberships, 2026-10-23): the level the post is for, null for everyone. */
+    val tierRequiredId: String? = null,
 )
