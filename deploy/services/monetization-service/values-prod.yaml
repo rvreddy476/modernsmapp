@@ -61,6 +61,14 @@ externalSecret:
     # MONETIZATION_NOT_LAUNCHED (shown as "not launched").
     # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY, remoteRef: caller_admin_pubkey }
     # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID, remoteRef: caller_admin_kid }
+    # Creator memberships (payments-service application memberships, reference
+    # type creator_membership): monetization's PRIVATE ed25519 payments token is
+    # NOT enabled (MEMBERSHIPS_ENABLED stays false). Enable payments-service
+    # first (caller_monetization_pubkey / caller_monetization_kid, then
+    # monetization-service in its SERVICE_CALLERS), then uncomment these two.
+    # The public half goes to payments-service only.
+    # - { secretKey: MONETIZATION_SERVICE_TOKEN_KEY, remoteRef: monetization_service_token_key }
+    # - { secretKey: MONETIZATION_SERVICE_TOKEN_KID, remoteRef: monetization_service_token_kid }
 
 env:
   ENV: prod
@@ -81,6 +89,9 @@ env:
   # Security sweep #16: tips ask graph-service for a block either way before
   # the ledger; unset, every tip answers 503 TIP_UNAVAILABLE.
   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
+  # Creator memberships are paid through payments-service (inert until the
+  # token above is enabled).
+  PAYMENTS_SERVICE_URL: http://payments-service.atpost.svc.cluster.local:8102
   CF_SETTLEMENT_CADENCE: monthly
   # Admin console (see externalSecret above for the order).
   # SERVICE_CALLERS: 'admin-service'

@@ -387,9 +387,10 @@ var legacyOwnerDomains = map[string]string{
 	servicetoken.RefFoodOrder:          "food-service",
 	servicetoken.RefDatingPremium:      "dating-service",
 	servicetoken.RefMopeduRide:         "rider-service",
-	servicetoken.RefMopeduSubscription: "rider-service",    // a captain's plan period, paid to Mopedu
-	servicetoken.RefDoorstepBooking:    "doorstep-service", // a Doorstep booking (migration 015)
-	servicetoken.RefDoorstepExtras:     "doorstep-service", // a Doorstep extras bill (migration 015)
+	servicetoken.RefMopeduSubscription: "rider-service",        // a captain's plan period, paid to Mopedu
+	servicetoken.RefDoorstepBooking:    "doorstep-service",     // a Doorstep booking (migration 015)
+	servicetoken.RefDoorstepExtras:     "doorstep-service",     // a Doorstep extras bill (migration 015)
+	servicetoken.RefCreatorMembership:  "monetization-service", // a paid creator membership period (migration 016)
 }
 
 func ownerDomainForReference(refType string) string {

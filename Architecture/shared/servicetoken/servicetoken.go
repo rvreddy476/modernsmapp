@@ -394,7 +394,10 @@ const (
 // plan period) to rider-service (Mopedu); `doorstep_booking` (one booking,
 // paid in full at checkout; reference_id = booking id) and `doorstep_extras`
 // (one extras bill raised during the visit; reference_id = extras bill id) to
-// doorstep-service (Doorstep).
+// doorstep-service (Doorstep); `creator_membership` (one paid membership
+// period: a first join, a renewal or an upgrade difference; reference_id =
+// monetization's membership_payments.id) to monetization-service (application
+// memberships).
 const (
 	RefOrder              = "order"
 	RefFoodOrder          = "food_order"
@@ -403,6 +406,7 @@ const (
 	RefMopeduSubscription = "mopedu_subscription"
 	RefDoorstepBooking    = "doorstep_booking"
 	RefDoorstepExtras     = "doorstep_extras"
+	RefCreatorMembership  = "creator_membership"
 )
 
 // AudiencePayments is the audience string payments-service accepts.

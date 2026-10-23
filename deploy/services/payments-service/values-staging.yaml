@@ -72,6 +72,15 @@ externalSecret:
     # refuses; so does enabling before 015 has seeded `doorstep`.
     # - { secretKey: SERVICE_CALLER_DOORSTEP_SERVICE_PUBKEY, remoteRef: caller_doorstep_pubkey }
     # - { secretKey: SERVICE_CALLER_DOORSTEP_SERVICE_KID, remoteRef: caller_doorstep_kid }
+    # monetization-service (creator memberships, migration 016) is NOT enabled
+    # yet. Same order as dating-service: store caller_monetization_pubkey /
+    # caller_monetization_kid in Secrets Manager (the private half goes to
+    # monetization-service only), uncomment the two lines below, then add
+    # monetization-service to SERVICE_CALLERS. Enabling first fails the secret
+    # sync and the boot refuses; so does enabling before 016 has seeded
+    # `memberships`.
+    # - { secretKey: SERVICE_CALLER_MONETIZATION_SERVICE_PUBKEY, remoteRef: caller_monetization_pubkey }
+    # - { secretKey: SERVICE_CALLER_MONETIZATION_SERVICE_KID, remoteRef: caller_monetization_kid }
     # admin-service (admin console, /v1/payments/internal/admin/* only) is NOT
     # enabled yet: the console's Payments routes are refused (401). It holds
     # admin permissions only, no REFTYPES and no APPLICATIONS; the money routes
@@ -123,6 +132,12 @@ env:
   # SERVICE_CALLER_DOORSTEP_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create'
   # SERVICE_CALLER_DOORSTEP_SERVICE_REFTYPES: 'doorstep_booking,doorstep_extras'
   # SERVICE_CALLER_DOORSTEP_SERVICE_APPLICATIONS: 'doorstep'
+  # monetization-service (creator memberships, migration 016; see
+  # externalSecret above for the order). Uncomment with its secrets, then add
+  # monetization-service to SERVICE_CALLERS. `memberships` is seeded by 016.
+  # SERVICE_CALLER_MONETIZATION_SERVICE_OPS: 'payments:intent.create,payments:intent.read,payments:refund.create'
+  # SERVICE_CALLER_MONETIZATION_SERVICE_REFTYPES: 'creator_membership'
+  # SERVICE_CALLER_MONETIZATION_SERVICE_APPLICATIONS: 'memberships'
   # admin-service (see externalSecret above for the order). SERVICE_CALLERS
   # above stays unchanged until step 3: then it becomes
   # 'commerce-service,food-service,admin-service' (plus dating-service,
