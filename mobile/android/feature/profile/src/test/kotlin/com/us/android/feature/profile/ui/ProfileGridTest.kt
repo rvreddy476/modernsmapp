@@ -53,6 +53,14 @@ class ProfileGridTest {
     }
 
     @Test
+    fun `a long video held for copyright review says so instead of the green words`() {
+        val held = PublishSuccess(ProfileGridTab.VIDEOS, notice = "In copyright review — this video is hidden until our team checks it.")
+        assertThat(held.message).isEqualTo("In copyright review — this video is hidden until our team checks it.")
+        assertThat(held.held).isTrue()
+        assertThat(PublishSuccess(ProfileGridTab.VIDEOS).held).isFalse()
+    }
+
+    @Test
     fun `a scheduled post lands on the tab of its content type`() {
         assertThat(scheduledTabFor("flick")).isEqualTo(ProfileGridTab.REELS)
         assertThat(scheduledTabFor("long_video")).isEqualTo(ProfileGridTab.VIDEOS)

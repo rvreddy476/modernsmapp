@@ -51,6 +51,7 @@ import com.us.android.core.feed.data.videoMediaId
 import com.us.android.core.feed.offline.OfflineState
 import com.us.android.core.feed.ui.audio.AudioTracksSheet
 import com.us.android.core.feed.ui.comments.CommentsSheet
+import com.us.android.core.feed.ui.copyright.CopyrightReviewPanel
 import com.us.android.core.feed.ui.edit.PostEditSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
 import com.us.android.core.feed.ui.more.PostMoreViewModel
@@ -447,6 +448,18 @@ private fun WatchBody(
                     locked = (content as? WatchContent.Ready)?.locked == true,
                     modifier = Modifier.padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.s),
                 )
+            }
+            // Copyright title review (2026-10-24): only the author's own detail
+            // carries it, and only the author is shown it, with "Request review".
+            val copyright = watchCopyrightReview(item, viewModel.ownUserId)
+            if (copyright != null) {
+                item(key = "watch_copyright") {
+                    CopyrightReviewPanel(
+                        postId = item.id,
+                        review = copyright,
+                        modifier = Modifier.padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.s),
+                    )
+                }
             }
             // An offline copy says so, and one being saved shows how far it is (2026-10-02).
             watchOfflineStatusItem(

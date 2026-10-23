@@ -4,6 +4,9 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.feed.data.FollowGraph
+import com.us.android.core.feed.data.copyright.CopyrightReviews
+import com.us.android.core.feed.data.copyright.over
+import com.us.android.core.model.CopyrightReview
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.ReelsEntry
 import com.us.android.core.network.Paged
@@ -99,10 +102,30 @@ class CreatorHubViewModel @Inject constructor(
     private val follows: FollowGraph,
     private val commentTools: CreatorCommentTools,
     private val urls: MediaUrlResolver,
+    copyrightReviews: CopyrightReviews,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(CreatorHubUiState())
     val state: StateFlow<CreatorHubUiState> = _state.asStateFlow()
+
+    /**
+     * Copyright reviews learned this session (a "Request review" sent from a
+     * row, the Edit sheet or the watch screen), layered over each row's own.
+     */
+    val reviews: StateFlow<Map<String, CopyrightReview>> = copyrightReviews.reviews
+
+    /** A row's review as it stands now: this session's answer, else the row's. */
+    fun reviewOf(row: HubLibraryRow, learned: Map<String, CopyrightReview>): CopyrightReview? =
+        learned.over(row.id, row.copyrightReview)
+
+    /**
+     * Opened from a copyright notice (`/posttube/hub`, 2026-10-24): the
+     * Library's Videos list, where the held or blocked video is.
+     */
+    fun openUploads() {
+        _state.update { it.copy(libraryTab = HubLibraryTab.VIDEOS) }
+        onSection(HubSection.LIBRARY)
+    }
 
     /** The creator: the comments sheet gives the post's author Pin and Heart. */
     val ownUserId: String get() = follows.ownId

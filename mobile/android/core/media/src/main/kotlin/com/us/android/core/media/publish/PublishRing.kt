@@ -32,7 +32,7 @@ fun ReelPublishState.ringLabel(): String = when (this) {
     ReelPublishState.Preparing -> "Preparing"
     ReelPublishState.Processing -> "Processing"
     ReelPublishState.Posting -> "Posting"
-    is ReelPublishState.Published -> "Posted"
+    is ReelPublishState.Published -> if (notice != null) "Posted, not visible yet" else "Posted"
     is ReelPublishState.Failed -> "Couldn't post"
     ReelPublishState.Idle -> ""
 }

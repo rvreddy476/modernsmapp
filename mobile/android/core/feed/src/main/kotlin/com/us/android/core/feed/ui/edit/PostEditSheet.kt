@@ -23,7 +23,9 @@ import com.us.android.core.feed.data.PostEditForm
 import com.us.android.core.feed.ui.action.ActionEditor
 import com.us.android.core.feed.ui.action.ActionSurface
 import com.us.android.core.feed.ui.action.ActionTaps
+import com.us.android.core.feed.ui.copyright.CopyrightReviewPanel
 import com.us.android.core.feed.ui.credits.CreditsSection
+import com.us.android.core.model.CopyrightCopy
 import com.us.android.core.memberships.ui.MembersOnlyPickerRow
 import com.us.android.core.ui.UsSettingsOption
 import com.us.android.core.ui.UsSettingsSection
@@ -79,6 +81,9 @@ fun PostEditSheet(
                 UsSecondaryButton(text = "Try again", onClick = viewModel::retry, modifier = Modifier.fillMaxWidth())
             }
             else -> {
+                // Copyright title review (2026-10-24): where the video stands,
+                // and "Request review" while it is pending.
+                CopyrightReviewPanel(postId = postId, review = state.copyrightReview)
                 EditFields(state = state, change = viewModel::change)
                 // Members only (paid memberships, 2026-10-23): offered when the
                 // owner has an active level; applied on Save with PUT /membership.
@@ -90,6 +95,15 @@ fun PostEditSheet(
                             onSelect = viewModel::selectGate,
                             enabled = !state.saving,
                         )
+                        // A held video cannot be members-only (409 COPYRIGHT_REVIEW).
+                        if (state.copyrightHeld) {
+                            Text(
+                                text = CopyrightCopy.MEMBERS_ONLY_HELD_NOTE,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = UsTheme.extended.statusWarning,
+                                modifier = Modifier.testTag("post_edit_members_copyright"),
+                            )
+                        }
                     }
                 }
                 // The Action button (2026-10-23): label + link, its status when

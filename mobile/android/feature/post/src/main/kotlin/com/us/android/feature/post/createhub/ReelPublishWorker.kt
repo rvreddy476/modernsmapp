@@ -21,6 +21,7 @@ import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
 import com.us.android.core.media.upload.MediaSourceResolver
 import com.us.android.core.media.upload.RESUMABLE_THRESHOLD_BYTES
+import com.us.android.core.model.CopyrightCopy
 import com.us.android.feature.post.studio.PendingPhotoPublish
 import com.us.android.feature.post.studio.PhotoPublishRecords
 import com.us.android.feature.post.studio.PublishWorker
@@ -103,7 +104,7 @@ class ReelPublishWorker @AssistedInject constructor(
                 val final = store.load(key) ?: pending
                 store.remove(key)
                 files.delete(listOf(final.videoPath, final.coverPath))
-                tracker.update(key, ReelPublishState.Published(outcome.postId, publishAt = final.publishAt))
+                tracker.update(key, publishedState(outcome, final.publishAt))
                 Result.success(workDataOf(KEY_POST_ID to outcome.postId))
             }
             ReelPublishPipeline.Outcome.Continue -> {
@@ -371,3 +372,16 @@ abstract class ReelPublishModule {
     @Singleton
     abstract fun bindActions(implementation: ReelPublishController): ReelPublishActions
 }
+
+/**
+ * The tracker's state for a finished publish: the post, its schedule, and —
+ * for a long video held for copyright title review (2026-10-24) — the
+ * contract's sentence, which the profile shows in place of "Uploaded
+ * successfully" (the video is hidden from viewers until it is checked).
+ */
+internal fun publishedState(outcome: ReelPublishPipeline.Outcome.Published, publishAt: String?): ReelPublishState.Published =
+    ReelPublishState.Published(
+        postId = outcome.postId,
+        publishAt = publishAt,
+        notice = outcome.copyrightReview?.takeIf { it.isHeld }?.let { CopyrightCopy.notice(it).message },
+    )

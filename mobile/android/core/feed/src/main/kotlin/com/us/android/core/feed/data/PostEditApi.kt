@@ -93,6 +93,12 @@ data class PostEditDetailDto(
     @SerialName("tier_required_id") val tierRequiredId: String? = null,
     /** The Action button (2026-10-23), the author's shape: with `url` and `status`. Read by `toPostAction`. */
     val action: JsonElement? = null,
+    /**
+     * Copyright title review (2026-10-24, post-service post.go:615): the
+     * owner's view of the review when the video was flagged; absent
+     * otherwise. Read by `toCopyrightReview`.
+     */
+    @SerialName("copyright_review") val copyrightReview: JsonElement? = null,
 )
 
 /**

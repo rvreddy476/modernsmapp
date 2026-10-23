@@ -43,6 +43,20 @@ class PushTargetsTest {
     }
 
     @Test
+    fun `copyright pushes open the uploads, and a clear the video`() {
+        // notification-service copyright_consumer.go:35-43: hold and block link /posttube/hub, a clear the watch page.
+        assertThat(pushTargetOf(PushDestination("copyright_review_hold", entityId = "p1", deepLink = "/posttube/hub")))
+            .isEqualTo(NotificationTarget.CreatorHubUploads)
+        assertThat(pushTargetOf(PushDestination("copyright_review_blocked", entityId = "p1", deepLink = "")))
+            .isEqualTo(NotificationTarget.CreatorHubUploads)
+        assertThat(pushTargetOf(PushDestination("copyright_review_cleared", entityId = "x", deepLink = "/tube/watch/p2")))
+            .isEqualTo(NotificationTarget.Video("p2"))
+        assertThat(pushTargetOf(PushDestination("copyright_review_cleared", entityId = "p3", deepLink = "")))
+            .isEqualTo(NotificationTarget.Video("p3"))
+        assertThat(COPYRIGHT_TYPES).containsExactly("copyright_review_hold", "copyright_review_cleared", "copyright_review_blocked")
+    }
+
+    @Test
     fun `with no usable link the entity id and type decide`() {
         assertThat(pushTargetOf(PushDestination(TYPE_UPLOADED_VIDEO, entityId = "p1", deepLink = "")))
             .isEqualTo(NotificationTarget.Video("p1"))

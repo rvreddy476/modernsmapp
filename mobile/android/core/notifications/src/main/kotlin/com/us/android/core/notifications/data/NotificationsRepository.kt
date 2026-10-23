@@ -144,7 +144,9 @@ internal fun NotificationDto.toDomain(): Notification = Notification(
                     it is NotificationTarget.None
             } ?: NotificationTarget.creditFallback(type, entityId).takeUnless { it == NotificationTarget.None }
                 // Paid memberships (2026-10-23): the subscription the notice is about.
-                ?: NotificationTarget.membershipFallback(type, entityId)
+                ?: NotificationTarget.membershipFallback(type, entityId).takeUnless { it == NotificationTarget.None }
+                // Copyright title review (2026-10-24): the uploads, or the cleared video.
+                ?: NotificationTarget.copyrightFallback(type, entityId)
         }
     },
     isRead = isRead,

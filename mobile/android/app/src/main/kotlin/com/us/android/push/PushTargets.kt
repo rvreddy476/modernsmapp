@@ -27,6 +27,10 @@ fun pushTargetOf(destination: PushDestination): NotificationTarget {
     NotificationTarget.membershipFallback(destination.type, destination.entityId)
         .takeIf { it != NotificationTarget.None }
         ?.let { return it }
+    // Copyright title review (2026-10-24): a hold or a block opens the uploads, a clear the video.
+    NotificationTarget.copyrightFallback(destination.type, destination.entityId)
+        .takeIf { it != NotificationTarget.None }
+        ?.let { return it }
     val postId = destination.entityId.trim()
     if (postId.isBlank()) return NotificationTarget.None
     return when (destination.type) {
@@ -43,6 +47,9 @@ const val TYPE_CREDIT_ACCEPTED = NotificationTarget.CREDIT_ACCEPTED_TYPE
 
 /** Paid memberships (2026-10-23): the six notices; every one routes through [pushTargetOf]. */
 val MEMBERSHIP_TYPES: Set<String> = NotificationTarget.MEMBERSHIP_TYPES
+
+/** Copyright title review (2026-10-24): the three notices; every one routes through [pushTargetOf]. */
+val COPYRIGHT_TYPES: Set<String> = NotificationTarget.COPYRIGHT_TYPES
 
 /** The two upload types notification-service emits for a subscribed channel. */
 const val TYPE_UPLOADED_VIDEO = "creator_uploaded_video"

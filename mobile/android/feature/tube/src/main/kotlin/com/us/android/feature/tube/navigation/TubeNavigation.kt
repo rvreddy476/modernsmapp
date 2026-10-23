@@ -97,6 +97,14 @@ data object TubeOfflineRoute
 data object TubeCreatorHubRoute
 
 /**
+ * The Creator Hub opened on its Library's Videos list (copyright title
+ * review, 2026-10-24): where a copyright notice (`/posttube/hub`) lands, so
+ * the held or blocked video and its "Request review" are in front.
+ */
+@Serializable
+data object TubeCreatorHubUploadsRoute
+
+/**
  * The viewer's pending credit requests (video credits, 2026-10-23): from a
  * `credit_request` notification and from the Me tab's drawer.
  */
@@ -201,6 +209,7 @@ fun NavGraphBuilder.tubeScreens(destinations: TubeDestinations) {
     composable<TubeCollectionRoute> { CollectionScreen(destinations = destinations) }
     composable<TubeOfflineRoute> { OfflineScreen(destinations = destinations) }
     composable<TubeCreatorHubRoute> { CreatorHubScreen(destinations = destinations) }
+    composable<TubeCreatorHubUploadsRoute> { CreatorHubScreen(destinations = destinations, openUploads = true) }
     composable<TubeHistoryRoute> { HistoryScreen(destinations = destinations) }
     composable<TubeCreditRequestsRoute> { CreditRequestsScreen(destinations = destinations) }
     composable<WatchRoute> {
@@ -240,6 +249,9 @@ fun NavController.navigateToTubeOffline() = navigate(TubeOfflineRoute) { launchS
 
 /** The Creator Hub, pushed over whatever opened it (the Me tab, Tube's More sheet). */
 fun NavController.navigateToCreatorHub() = navigate(TubeCreatorHubRoute) { launchSingleTop = true }
+
+/** The Creator Hub on its Videos list (a copyright notice), pushed the same way. */
+fun NavController.navigateToCreatorHubUploads() = navigate(TubeCreatorHubUploadsRoute) { launchSingleTop = true }
 
 /** The saved videos, pushed the same way. */
 fun NavController.navigateToTubeSaved() = navigate(TubeSavedRoute) { launchSingleTop = true }

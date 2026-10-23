@@ -212,6 +212,19 @@ sealed interface NotificationKind {
     /** The viewer's membership has ended. */
     data object MembershipEnded : NotificationKind
 
+    // ── Copyright title review (2026-10-24, notification-service copyright_notify.go:32-34) ──
+    // To the AUTHOR, `system` category. A hold or a block opens the Creator
+    // Hub's uploads (`/posttube/hub`); a clear opens the video (`/tube/watch/{id}`).
+
+    /** The viewer's long video is held for copyright review. */
+    data object CopyrightReviewHold : NotificationKind
+
+    /** The review cleared it: the video is live. */
+    data object CopyrightReviewCleared : NotificationKind
+
+    /** The review blocked it: it stays hidden. */
+    data object CopyrightReviewBlocked : NotificationKind
+
     /** A type this build has no rendering for. Carries the wire value. */
     data class Unknown(val raw: String) : NotificationKind
 
@@ -247,6 +260,9 @@ sealed interface NotificationKind {
             NotificationTarget.MEMBERSHIP_RENEWAL_DUE_TYPE -> MembershipRenewalDue
             NotificationTarget.MEMBERSHIP_PAYMENT_FAILED_TYPE -> MembershipPaymentFailed
             NotificationTarget.MEMBERSHIP_ENDED_TYPE -> MembershipEnded
+            NotificationTarget.COPYRIGHT_HOLD_TYPE -> CopyrightReviewHold
+            NotificationTarget.COPYRIGHT_CLEARED_TYPE -> CopyrightReviewCleared
+            NotificationTarget.COPYRIGHT_BLOCKED_TYPE -> CopyrightReviewBlocked
             else -> Unknown(raw)
         }
     }
@@ -332,6 +348,13 @@ sealed interface NotificationTarget {
      */
     data object CreatorMemberships : NotificationTarget
 
+    /**
+     * The creator's uploads in the Creator Hub (copyright title review,
+     * 2026-10-24): `/posttube/hub`, where a held or blocked video shows its
+     * review and "Request review".
+     */
+    data object CreatorHubUploads : NotificationTarget
+
     /** Unparseable, or a surface this build does not have. Tapping does nothing. */
     data object None : NotificationTarget
 
@@ -399,9 +422,33 @@ sealed interface NotificationTarget {
                 segments.size == 2 && segments[0] == MONETIZATION_SEGMENT && segments[1] in CREATOR_MEMBERSHIP_PAGES ->
                     CreatorMemberships
 
+                // Copyright title review (2026-10-24): the creator's uploads.
+                segments.size == 2 && segments[0] == "posttube" && segments[1] == HUB_SEGMENT -> CreatorHubUploads
+
                 else -> None
             }
         }
+
+        /**
+         * Where a copyright-review notification lands when its deep link does
+         * not say (copyright_consumer.go:35-43): a hold or a block opens the
+         * Creator Hub's uploads; a clear opens the video its entity id names
+         * (the post), else the uploads. [None] for every other type.
+         */
+        fun copyrightFallback(type: String, entityId: String): NotificationTarget = when (type) {
+            COPYRIGHT_HOLD_TYPE, COPYRIGHT_BLOCKED_TYPE -> CreatorHubUploads
+            COPYRIGHT_CLEARED_TYPE -> entityId.trim().takeIf { it.isNotEmpty() }?.let(::Video) ?: CreatorHubUploads
+            else -> None
+        }
+
+        const val COPYRIGHT_HOLD_TYPE = "copyright_review_hold"
+        const val COPYRIGHT_CLEARED_TYPE = "copyright_review_cleared"
+        const val COPYRIGHT_BLOCKED_TYPE = "copyright_review_blocked"
+
+        /** The three copyright-review types. */
+        val COPYRIGHT_TYPES: Set<String> = setOf(COPYRIGHT_HOLD_TYPE, COPYRIGHT_CLEARED_TYPE, COPYRIGHT_BLOCKED_TYPE)
+
+        private const val HUB_SEGMENT = "hub"
 
         /**
          * Where a video-credits notification lands when its deep link does

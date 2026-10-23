@@ -591,19 +591,36 @@ enum class UsReportReason(val label: String, val wire: String) {
     IMPERSONATION("Impersonation", "impersonation"),
     SELF_HARM("Self-harm", "self_harm"),
     INTELLECTUAL_PROPERTY("Intellectual property", "intellectual_property"),
+
+    /**
+     * Copyright (2026-10-24; trust-safety moderation.go:88-101): on videos and
+     * reels only — trust-safety takes them on a post and nothing else.
+     */
+    COPYRIGHT_MINE("Copyright: this is my content", "copyright_mine"),
+    COPYRIGHT_MEDIA("Copyright: film, TV or music", "copyright_media"),
     OTHER("Other", "other"),
     ;
 
     /** Only "Other" asks for words; every other reason is complete on its own. */
     val asksForDetails: Boolean get() = this == OTHER
 
+    /** A copyright reason: offered on a video or a reel, never a photo post, a profile or a comment. */
+    val isCopyright: Boolean get() = this == COPYRIGHT_MINE || this == COPYRIGHT_MEDIA
+
     /** Offered on a comment's report too; [SCAM_LINK] is about a post's or a profile's link. */
-    val appliesToComments: Boolean get() = this != SCAM_LINK
+    val appliesToComments: Boolean get() = this != SCAM_LINK && !isCopyright
 
     companion object {
-        /** The reasons the report step lists for [subject] ("post", "account", "comment"). */
-        fun forSubject(subject: String): List<UsReportReason> =
-            if (subject == "comment") entries.filter { it.appliesToComments } else entries
+        /**
+         * The reasons the report step lists for [subject] ("post", "account",
+         * "comment"); [video] adds the copyright reasons, for a reel or a
+         * long video (a post subject only).
+         */
+        fun forSubject(subject: String, video: Boolean = false): List<UsReportReason> = when {
+            subject == "comment" -> entries.filter { it.appliesToComments }
+            subject == "post" && video -> entries.toList()
+            else -> entries.filterNot { it.isCopyright }
+        }
     }
 }
 

@@ -2,6 +2,9 @@ package com.us.android.feature.tube.ui.hub
 
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.feed.data.FollowGraph
+import com.us.android.core.feed.data.copyright.CopyrightReviews
+import com.us.android.core.model.CopyrightReview
+import com.us.android.core.model.CopyrightReviewState
 import com.us.android.core.media.ReelsEntry
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ApiMeta
@@ -108,7 +111,10 @@ class CreatorHubViewModelTest {
     )
 
     private fun viewModel() =
-        CreatorHubViewModel(CreatorHubRepository(api, ErrorMapper(json)), reelsEntry, follows, tools, urls)
+        CreatorHubViewModel(CreatorHubRepository(api, ErrorMapper(json)), reelsEntry, follows, tools, urls, copyrightReviews)
+
+    /** Copyright reviews learned this session (2026-10-24): a "Request review" sent anywhere. */
+    private val copyrightReviews = CopyrightReviews()
 
     private fun page(vararg rows: String, next: String? = null) =
         ApiEnvelope(data = rows.map(::el), meta = next?.let { ApiMeta(nextCursor = it) })
@@ -398,5 +404,49 @@ class CreatorHubViewModelTest {
         assertThat(vm.open("p1", "post", HubOpenKind.VIDEO)).isEqualTo(HubOpenKind.POST)
         assertThat(vm.open("x1", "", HubOpenKind.REEL)).isEqualTo(HubOpenKind.REEL)
         assertThat(reelsEntry.requested.value).isEqualTo("x1")
+    }
+
+    // ── copyright title review (2026-10-24) ─────────────────────────────
+
+    @Test
+    fun `a copyright notice opens the Library's Videos list, read once`() {
+        api.insights += el("{}")
+        api.uploads += page(
+            """{"id": "v1", "title": "Held", "content_type": "long_video", "flags": ["copyright_hold"],
+               "copyright_review": {"state": "pending", "matched_title": "Leo", "created_at": "2026-10-24T08:00:01Z"}}""",
+        )
+        val vm = viewModel()
+        vm.onLibraryTab(HubLibraryTab.DRAFTS.also { api.drafts += page() })
+        vm.openUploads()
+
+        assertThat(vm.state.value.section).isEqualTo(HubSection.LIBRARY)
+        assertThat(vm.state.value.libraryTab).isEqualTo(HubLibraryTab.VIDEOS)
+        assertThat(api.calls.count { it.startsWith("uploads:videos") }).isEqualTo(1)
+        val row = vm.state.value.videos.items.single()
+        assertThat(row.copyrightReview?.state).isEqualTo(CopyrightReviewState.PENDING)
+        assertThat(row.heldForCopyright).isTrue()
+    }
+
+    @Test
+    fun `a request sent this session is what the row shows, over what the list read`() {
+        api.insights += el("{}")
+        api.uploads += page(
+            """{"id": "v1", "title": "Held", "content_type": "long_video",
+               "copyright_review": {"state": "pending", "matched_title": "Leo", "created_at": "2026-10-24T08:00:01Z"}}""",
+            """{"id": "v2", "title": "Fine", "content_type": "long_video"}""",
+        )
+        val vm = viewModel()
+        vm.openUploads()
+        val (held, fine) = vm.state.value.videos.items
+        assertThat(vm.reviewOf(held, vm.reviews.value)?.canRequestReview).isTrue()
+
+        copyrightReviews.record(
+            "v1",
+            CopyrightReview(CopyrightReviewState.PENDING, "Leo", "2026-10-24T08:00:01Z", reviewRequestedAt = "2026-10-24T09:30:00Z"),
+        )
+        val now = vm.reviewOf(held, vm.reviews.value)!!
+        assertThat(now.canRequestReview).isFalse()
+        assertThat(now.reviewRequestedAt).isEqualTo("2026-10-24T09:30:00Z")
+        assertThat(vm.reviewOf(fine, vm.reviews.value)).isNull()
     }
 }

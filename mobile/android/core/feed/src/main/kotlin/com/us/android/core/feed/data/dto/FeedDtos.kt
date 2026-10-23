@@ -153,6 +153,13 @@ data class FeedItemDto(
      * read by `toPostAction`, so absent, `null` or a stray shape is no button.
      */
     val action: JsonElement? = null,
+    /**
+     * Copyright title review (2026-10-24): `{state, matched_title, created_at,
+     * decided_at?, review_requested_at?}` on the AUTHOR's own post detail of a
+     * flagged long video (post-service service/post.go:615); absent on every
+     * other row. Raw, read by `toCopyrightReview`.
+     */
+    @SerialName("copyright_review") val copyrightReview: JsonElement? = null,
 )
 
 /**

@@ -190,6 +190,8 @@ fun UsPostMoreSheet(
                     report = state.report,
                     onBack = { ui.step = MoreStep.MENU },
                     onSubmit = callbacks.onReport,
+                    // Copyright reasons on a reel or a long video (2026-10-24).
+                    video = state.surface != UsPostMoreSurface.POST,
                 )
             }
         }

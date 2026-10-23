@@ -42,7 +42,17 @@ sealed interface ReelPublishState {
      * Done. The pending tile swaps for the real post — or, when the post was
      * given a [publishAt] in the future, for a scheduled tile that waits for it.
      */
-    data class Published(val postId: String, val publishAt: String? = null) : ReelPublishState
+    data class Published(
+        val postId: String,
+        val publishAt: String? = null,
+        /**
+         * A sentence to show in place of "Uploaded successfully", when the
+         * post exists but viewers cannot see it yet — a long video held for
+         * copyright review (2026-10-24). Null for an ordinary publish. The
+         * words are the feature's; this module only carries them.
+         */
+        val notice: String? = null,
+    ) : ReelPublishState
 
     /**
      * Stopped. [retryable] decides whether the pending item offers "Retry";

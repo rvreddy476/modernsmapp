@@ -274,7 +274,12 @@ internal fun PublishSuccessBanner(
     // Held so the words stay put while the banner fades out, after the
     // state that carried them has already gone.
     var message by remember { mutableStateOf("") }
-    success?.let { message = it.message }
+    // Held for copyright review (2026-10-24): a warning, on as many lines as it needs.
+    var held by remember { mutableStateOf(false) }
+    success?.let {
+        message = it.message
+        held = it.held
+    }
 
     AnimatedVisibility(
         visible = success != null,
@@ -282,20 +287,20 @@ internal fun PublishSuccessBanner(
         exit = fadeOut(),
         modifier = modifier,
     ) {
-        val shape = RoundedCornerShape(UsTheme.radii.full)
+        val shape = RoundedCornerShape(if (held) UsTheme.radii.card else UsTheme.radii.full)
         Row(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
             modifier = Modifier
                 .padding(UsTheme.spacing.l)
                 .clip(shape)
-                .background(UsTheme.extended.statusSuccess)
+                .background(if (held) UsTheme.extended.statusWarning else UsTheme.extended.statusSuccess)
                 .padding(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.m)
                 .semantics { liveRegion = LiveRegionMode.Polite }
-                .testTag("profile_publish_success"),
+                .testTag(if (held) "profile_publish_held" else "profile_publish_success"),
         ) {
             Icon(
-                imageVector = UsIcons.Check,
+                imageVector = if (held) UsIcons.ShieldAlert else UsIcons.Check,
                 contentDescription = null,
                 tint = UsTheme.extended.onStatus,
                 modifier = Modifier.size(SUCCESS_GLYPH),
@@ -305,7 +310,7 @@ internal fun PublishSuccessBanner(
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.SemiBold,
                 color = UsTheme.extended.onStatus,
-                maxLines = 1,
+                maxLines = if (held) HELD_LINES else 1,
             )
         }
     }
@@ -966,6 +971,9 @@ private val APPEND_HEIGHT = 64.dp
 private val KIND_GLYPH = 16.dp
 private val FAILED_GLYPH = 22.dp
 private val SUCCESS_GLYPH = 16.dp
+
+/** A held publish's banner (copyright review) wraps to this many lines. */
+private const val HELD_LINES = 4
 private val RING_SIZE = 48.dp
 private val RING_STROKE = 3.dp
 private val RING_INSET = 4.dp

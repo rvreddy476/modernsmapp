@@ -12,6 +12,7 @@ import com.us.android.core.feed.data.VideoFeedRepository
 import com.us.android.core.feed.data.action.actionProblem
 import com.us.android.core.feed.data.action.toJson
 import com.us.android.core.feed.data.action.toPostAction
+import com.us.android.core.feed.data.copyright.toCopyrightReview
 import com.us.android.core.feed.data.credits.CreditPerson
 import com.us.android.core.feed.data.credits.CreditsForm
 import com.us.android.core.feed.data.credits.CreditsRepository
@@ -33,6 +34,7 @@ import com.us.android.core.model.ActionDraft
 import com.us.android.core.model.ActionPatch
 import com.us.android.core.model.ActionProblem
 import com.us.android.core.model.ActionStatus
+import com.us.android.core.model.CopyrightReview
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -80,7 +82,18 @@ data class PostEditUiState(
     /** Why it is not live, when the server said (`status_reason`). */
     val actionReason: String? = null,
     val actionProblem: ActionProblem? = null,
+    /**
+     * Copyright title review (2026-10-24): the owner's view of the video's
+     * review, when it was flagged (post-service post.go:615); null otherwise.
+     */
+    val copyrightReview: CopyrightReview? = null,
 ) {
+    /**
+     * The video is held for copyright review: members-only is refused
+     * (409 COPYRIGHT_REVIEW), so the picker says so before anyone tries.
+     */
+    val copyrightHeld: Boolean get() = copyrightReview?.isHeld == true
+
     /** Something moved: Save has a patch to send, or a members-only change to apply. */
     val dirty: Boolean get() = !postEditPatch(base, form).isEmpty || gateDirty || actionDirty
 
@@ -192,6 +205,7 @@ class PostEditViewModel @Inject constructor(
                             actionStatus = saved?.status?.takeIf { s -> s != ActionStatus.ACTIVE },
                             actionReason = saved?.statusReason,
                             actionProblem = null,
+                            copyrightReview = result.data.copyrightReview.toCopyrightReview(),
                         )
                     }
                 }

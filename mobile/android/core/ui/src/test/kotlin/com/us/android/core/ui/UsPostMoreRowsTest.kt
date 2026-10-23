@@ -383,6 +383,8 @@ class UsPostMoreRowsTest {
             "Impersonation" to "impersonation",
             "Self-harm" to "self_harm",
             "Intellectual property" to "intellectual_property",
+            "Copyright: this is my content" to "copyright_mine",
+            "Copyright: film, TV or music" to "copyright_media",
             "Other" to "other",
         ).inOrder()
         assertThat(UsReportReason.entries.filter { it.asksForDetails }).containsExactly(UsReportReason.OTHER)
@@ -393,7 +395,28 @@ class UsPostMoreRowsTest {
         assertThat(UsReportReason.forSubject("post")).contains(UsReportReason.SCAM_LINK)
         assertThat(UsReportReason.forSubject("account")).contains(UsReportReason.SCAM_LINK)
         assertThat(UsReportReason.forSubject("comment")).doesNotContain(UsReportReason.SCAM_LINK)
-        assertThat(UsReportReason.forSubject("comment")).hasSize(UsReportReason.entries.size - 1)
+        assertThat(UsReportReason.forSubject("comment")).hasSize(UsReportReason.entries.size - 3)
+    }
+
+    /**
+     * Copyright (2026-10-24): trust-safety takes `copyright_mine` and
+     * `copyright_media` on a post only (moderation.go:88-101, :192), and the
+     * sheet offers them on a reel or a long video — never a photo post, a
+     * profile or a comment.
+     */
+    @Test
+    fun `the copyright reasons are offered on videos and reels only`() {
+        val copyright = listOf(UsReportReason.COPYRIGHT_MINE, UsReportReason.COPYRIGHT_MEDIA)
+        assertThat(UsReportReason.forSubject("post", video = true)).containsAtLeastElementsIn(copyright)
+        assertThat(UsReportReason.forSubject("post", video = true)).hasSize(UsReportReason.entries.size)
+        assertThat(UsReportReason.forSubject("post")).containsNoneIn(copyright)
+        assertThat(UsReportReason.forSubject("post")).contains(UsReportReason.INTELLECTUAL_PROPERTY)
+        assertThat(UsReportReason.forSubject("account", video = true)).containsNoneIn(copyright)
+        assertThat(UsReportReason.forSubject("comment", video = true)).containsNoneIn(copyright)
+        assertThat(UsReportReason.COPYRIGHT_MINE.wire).isEqualTo("copyright_mine")
+        assertThat(UsReportReason.COPYRIGHT_MEDIA.wire).isEqualTo("copyright_media")
+        // The last row stays "Other", which asks for words.
+        assertThat(UsReportReason.forSubject("post", video = true).last()).isEqualTo(UsReportReason.OTHER)
     }
 
     @Test

@@ -214,6 +214,7 @@ import com.us.android.feature.settings.navigation.recentlyDeletedScreen
 import com.us.android.feature.settings.navigation.screenTimeScreen
 import com.us.android.feature.tube.navigation.TubeDestinations
 import com.us.android.feature.tube.navigation.navigateToCreatorHub
+import com.us.android.feature.tube.navigation.navigateToCreatorHubUploads
 import com.us.android.feature.tube.navigation.navigateToCreditRequests
 import com.us.android.feature.tube.navigation.navigateToTube
 import com.us.android.feature.tube.navigation.navigateToTubeChannel
@@ -230,6 +231,7 @@ import com.us.android.push.DatingPushTarget
 import com.us.android.push.DoorstepPushTarget
 import com.us.android.push.LiveOpen
 import com.us.android.push.MEMBERSHIP_TYPES
+import com.us.android.push.COPYRIGHT_TYPES
 import com.us.android.push.PushDestinations
 import com.us.android.push.TYPE_CREDIT_ACCEPTED
 import com.us.android.push.TYPE_CREDIT_REQUEST
@@ -613,6 +615,8 @@ private suspend fun NavHostController.openPushDestination(
             openNotificationTarget(pushTargetOf(destination), onOpenReel)
         // Paid memberships (2026-10-23): the creator's page, or the membership the notice is about.
         in MEMBERSHIP_TYPES -> openNotificationTarget(pushTargetOf(destination), onOpenReel)
+        // Copyright title review (2026-10-24): the uploads, or the cleared video.
+        in COPYRIGHT_TYPES -> openNotificationTarget(pushTargetOf(destination), onOpenReel)
         "message_request" -> navigateToTopLevel(TopLevelDestination.MESSAGES)
         // An `atpost.app/chat/join/{code}` link, offered by MainActivity as a push
         // destination so it waits through the login like a notification tap.
@@ -1584,6 +1588,8 @@ private fun NavHostController.openNotificationTarget(
         NotificationTarget.MyMemberships -> navigateToMyMemberships()
         // The creator's new-member notice (the only one that links here) opens the Members list.
         NotificationTarget.CreatorMemberships -> navigateToCreatorMembers()
+        // Copyright title review (2026-10-24): the Creator Hub, on its Videos list.
+        NotificationTarget.CreatorHubUploads -> navigateToCreatorHubUploads()
         NotificationTarget.None -> Unit
     }
 }

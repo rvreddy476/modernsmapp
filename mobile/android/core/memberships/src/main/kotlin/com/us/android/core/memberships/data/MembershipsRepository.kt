@@ -3,6 +3,7 @@ package com.us.android.core.memberships.data
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.map
+import com.us.android.core.model.CopyrightCopy
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
 import com.us.android.core.network.listApiCall
@@ -190,8 +191,13 @@ const val NOT_ELIGIBLE = "MEMBERSHIPS_NOT_ELIGIBLE"
 fun membersOnlyRefusal(code: String?): String? = when (code) {
     INVALID_TIER -> "That membership level isn't offered any more. Pick another, or choose Everyone."
     TIERS_UNAVAILABLE -> "Members-only can't be checked right now. Nothing was saved — try again in a moment."
+    // 409 COPYRIGHT_REVIEW (copyright quick wins, 2026-10-24; post-service
+    // standing_errors.go:75-78): a members-only level on a video that is, or
+    // would be, held for copyright review — at the create or on an edit.
+    COPYRIGHT_REVIEW_HELD -> CopyrightCopy.MEMBERS_ONLY_HELD
     else -> null
 }
 
 const val INVALID_TIER = "INVALID_TIER"
 const val TIERS_UNAVAILABLE = "MEMBERSHIP_TIERS_UNAVAILABLE"
+const val COPYRIGHT_REVIEW_HELD = "COPYRIGHT_REVIEW"

@@ -29,6 +29,10 @@ import com.us.android.core.media.upload.ResumableUploadTransport
 import com.us.android.core.media.upload.ResumableUploader
 import com.us.android.core.media.upload.UploadSource
 import com.us.android.core.memberships.data.INVALID_TIER
+import com.us.android.core.model.CopyrightCopy
+import com.us.android.core.model.CopyrightReview
+import com.us.android.core.model.CopyrightReviewState
+import com.us.android.feature.post.data.PublishedVideoReview
 import com.us.android.core.memberships.data.TIERS_UNAVAILABLE
 import com.us.android.core.memberships.data.membersOnlyRefusal
 import com.us.android.core.network.ApiEnvelope
@@ -255,6 +259,7 @@ class ReelPublishPipelineTest {
         val files: FakeFiles = FakeFiles(),
         val tracker: ReelPublishTracker = ReelPublishTracker(),
         val resumable: FakeResumableTransport = FakeResumableTransport(),
+        val reviews: FakeReviews = FakeReviews(),
         json: Json,
     ) {
         val pipeline = ReelPublishPipeline(
@@ -267,6 +272,7 @@ class ReelPublishPipelineTest {
             files = files,
             store = store,
             tracker = tracker,
+            reviews = reviews,
         )
     }
 
@@ -1122,6 +1128,113 @@ class ReelPublishPipelineTest {
         assertThat(outcome.message).isEqualTo(membersOnlyRefusal(TIERS_UNAVAILABLE))
         assertThat(outcome.retryable).isTrue()
         assertThat(h.store.record?.membersLevelId).isEqualTo("tier-1")
+    }
+
+    // ── Copyright title review (2026-10-24) ─────────────────────────────
+
+    /** The detail re-read after a long video is created: an answer per post id, every ask recorded. */
+    private class FakeReviews : PublishedVideoReview {
+        val answers = mutableMapOf<String, CopyrightReview?>()
+        val asked = mutableListOf<String>()
+
+        override suspend fun reviewOf(postId: String): CopyrightReview? {
+            asked += postId
+            return answers[postId]
+        }
+    }
+
+    private val held = CopyrightReview(CopyrightReviewState.PENDING, "Kalki 2898 AD", "2026-10-24T08:00:01Z")
+
+    /**
+     * A long video posted now is read back once (the create's answer does
+     * not carry `copyright_review`, post-service copyright_review.go:27-29),
+     * and a held one comes out with its review for the tile.
+     */
+    @Test
+    fun `a long video held for copyright review comes out with its review`() = runTest {
+        val h = harness()
+        h.reviews.answers["post-1"] = held
+
+        val outcome = run(h, pending("Full movie").copy(kind = PublishKind.LONG, title = "Part 1"))
+
+        assertThat(outcome).isEqualTo(ReelPublishPipeline.Outcome.Published("post-1", held))
+        assertThat(h.reviews.asked).containsExactly("post-1")
+        val state = publishedState(outcome as ReelPublishPipeline.Outcome.Published, publishAt = null)
+        assertThat(state.notice).isEqualTo(CopyrightCopy.notice(held).message)
+        assertThat(state.postId).isEqualTo("post-1")
+    }
+
+    @Test
+    fun `a long video that was not flagged, or cleared at once, is an ordinary publish`() = runTest {
+        val h = harness()
+        h.reviews.answers["post-1"] = held.copy(state = CopyrightReviewState.CLEARED)
+
+        val outcome = run(h, pending("Mine").copy(kind = PublishKind.LONG, title = "Mine"))
+
+        assertThat(outcome).isEqualTo(ReelPublishPipeline.Outcome.Published("post-1"))
+        assertThat(publishedState(outcome as ReelPublishPipeline.Outcome.Published, null).notice).isNull()
+        assertThat(publishedState(ReelPublishPipeline.Outcome.Published("p", held.copy(state = CopyrightReviewState.CLEARED)), null).notice)
+            .isNull()
+    }
+
+    @Test
+    fun `a reel and a scheduled long video are never read back`() = runTest {
+        val forReel = harness()
+        val forScheduled = harness()
+        forReel.reviews.answers["post-1"] = held
+        forScheduled.reviews.answers["post-1"] = held
+
+        val reel = run(forReel, pending("a reel"))
+        val scheduled = run(
+            forScheduled,
+            pending("later").copy(kind = PublishKind.LONG, title = "Later", publishAt = "2026-11-01T10:00:00Z"),
+        )
+
+        assertThat(reel).isEqualTo(ReelPublishPipeline.Outcome.Published("post-1"))
+        assertThat(scheduled).isEqualTo(ReelPublishPipeline.Outcome.Published("post-1"))
+        assertThat(forReel.reviews.asked).isEmpty()
+        assertThat(forScheduled.reviews.asked).isEmpty()
+        assertThat(publishedState(scheduled as ReelPublishPipeline.Outcome.Published, "2026-11-01T10:00:00Z").publishAt)
+            .isEqualTo("2026-11-01T10:00:00Z")
+    }
+
+    /**
+     * 403 UPLOADS_PAUSED (post-service http/standing_errors.go:53-55, details
+     * `until`): the long video stops with the contract's words and its date,
+     * and is not offered Retry — the same video is refused until then.
+     */
+    @Test
+    fun `paused long-video uploads stop in words with the date, for good`() = runTest {
+        val repository = RecordingRepository(json).apply {
+            result = AppResult.Failure(
+                AppError.Forbidden(code = "UPLOADS_PAUSED", details = mapOf("until" to "2026-10-31T08:00:00Z")),
+            )
+        }
+        val h = harness(repository = repository)
+
+        val outcome = run(h, pending("Part 2").copy(kind = PublishKind.LONG, title = "Part 2")) as ReelPublishPipeline.Outcome.Failed
+
+        assertThat(outcome.message).isEqualTo(CopyrightCopy.uploadsPaused("2026-10-31T08:00:00Z"))
+        assertThat(outcome.message).contains("Long-video uploads are paused until ")
+        assertThat(outcome.retryable).isFalse()
+        assertThat(outcome.needsChannel).isFalse()
+        assertThat(h.store.record?.failure?.message).isEqualTo(outcome.message)
+    }
+
+    /** 409 COPYRIGHT_REVIEW at the create (standing_errors.go:75-78): a members-only level on a video that would be held. */
+    @Test
+    fun `a members-only level on a video that would be held is refused in words`() = runTest {
+        val repository = RecordingRepository(json).apply {
+            result = AppResult.Failure(AppError.Unknown(code = "COPYRIGHT_REVIEW", statusCode = 409))
+        }
+        val h = harness(repository = repository)
+
+        val outcome = run(
+            h,
+            pending("Part 3").copy(kind = PublishKind.LONG, title = "Part 3", membersLevelId = "tier-1"),
+        ) as ReelPublishPipeline.Outcome.Failed
+
+        assertThat(outcome.message).isEqualTo(CopyrightCopy.MEMBERS_ONLY_HELD)
     }
 }
 

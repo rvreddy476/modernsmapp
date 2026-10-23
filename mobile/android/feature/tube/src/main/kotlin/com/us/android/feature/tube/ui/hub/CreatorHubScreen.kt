@@ -34,6 +34,7 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.saveable.rememberSaveable
@@ -62,6 +63,10 @@ import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.feed.ui.action.ActionTaps
 import com.us.android.core.model.ActionButtons
 import com.us.android.core.feed.ui.comments.CommentsSheet
+import com.us.android.core.feed.ui.copyright.CopyrightNoticeCard
+import com.us.android.core.feed.ui.copyright.CopyrightRequestSheet
+import com.us.android.core.model.CopyrightCopy
+import com.us.android.core.model.CopyrightReview
 import com.us.android.core.feed.ui.sound.LibrarySoundsList
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
@@ -100,10 +105,22 @@ import java.time.format.DateTimeParseException
 @Composable
 fun CreatorHubScreen(
     destinations: TubeDestinations,
+    /** Opened from a copyright notice (2026-10-24): start on the Library's Videos list. */
+    openUploads: Boolean = false,
     viewModel: CreatorHubViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val reviews by viewModel.reviews.collectAsStateWithLifecycle()
     var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
+    // "Request review" from a row (copyright title review, 2026-10-24): the post it is for.
+    var requestFor by rememberSaveable { mutableStateOf<String?>(null) }
+    var uploadsOpened by rememberSaveable { mutableStateOf(false) }
+    LaunchedEffect(openUploads) {
+        if (openUploads && !uploadsOpened) {
+            uploadsOpened = true
+            viewModel.openUploads()
+        }
+    }
 
     val open: (String, String, HubOpenKind) -> Unit = { postId, contentType, fallback ->
         when (viewModel.open(postId, contentType, fallback)) {
@@ -134,6 +151,8 @@ fun CreatorHubScreen(
                 onTogglePin = { row -> viewModel.togglePin(row.commentId) },
                 thumbnailFor = viewModel::thumbnailUrl,
                 onDismissNotice = viewModel::dismissNotice,
+                reviewFor = { row -> viewModel.reviewOf(row, reviews) },
+                onRequestReview = { row -> requestFor = row.id },
             ),
             bottomPadding = padding,
             // Sounds (library sounds, 2026-10-15), the web hub's tab: "Use
@@ -154,6 +173,12 @@ fun CreatorHubScreen(
             postAuthorId = viewModel.ownUserId,
         )
     }
+
+    // The author's "I own the rights" for a held video; the row reads
+    // "Review requested <date>" once it lands (CopyrightReviews).
+    requestFor?.let { postId ->
+        CopyrightRequestSheet(postId = postId, onDismiss = { requestFor = null })
+    }
 }
 
 /** Everything the body can ask for; the screen resolves each. */
@@ -172,6 +197,10 @@ data class CreatorHubCallbacks(
     /** A library row's still, resolved to a URL; null draws the plain tile. */
     val thumbnailFor: (HubLibraryRow) -> String? = { null },
     val onDismissNotice: () -> Unit = {},
+    /** A row's copyright review as it stands now (copyright title review, 2026-10-24). */
+    val reviewFor: (HubLibraryRow) -> CopyrightReview? = { it.copyrightReview },
+    /** "Request review" on a held row. */
+    val onRequestReview: (HubLibraryRow) -> Unit = {},
 )
 
 @Composable
@@ -393,6 +422,8 @@ private fun LibrarySection(state: CreatorHubUiState, callbacks: CreatorHubCallba
                         thumbnailUrl = callbacks.thumbnailFor(row),
                         portrait = tab == HubLibraryTab.REELS,
                         onClick = { callbacks.onOpenRow(row, tab) },
+                        review = callbacks.reviewFor(row),
+                        onRequestReview = { callbacks.onRequestReview(row) },
                     )
                 }
             }
@@ -418,8 +449,16 @@ internal fun libraryCounts(row: HubLibraryRow): String =
     "${hubCount(row.viewCount)} views · ${hubCount(row.likeCount)} likes · ${hubCount(row.commentCount)} comments"
 
 /** A library row: its still at the left (2026-10-17 — the rows had none), the title and the numbers beside it. */
+@Suppress("LongParameterList")
 @Composable
-private fun LibraryRowCard(row: HubLibraryRow, thumbnailUrl: String?, portrait: Boolean, onClick: () -> Unit) {
+private fun LibraryRowCard(
+    row: HubLibraryRow,
+    thumbnailUrl: String?,
+    portrait: Boolean,
+    onClick: () -> Unit,
+    review: CopyrightReview? = row.copyrightReview,
+    onRequestReview: () -> Unit = {},
+) {
     UsSurfaceCard(modifier = Modifier.fillMaxWidth().testTag("creator_hub_row:${row.id}"), onClick = onClick) {
         Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
             Box(
@@ -470,6 +509,23 @@ private fun LibraryRowCard(row: HubLibraryRow, thumbnailUrl: String?, portrait: 
                         color = UsTheme.extended.statusDanger,
                     )
                 }
+                // Copyright title review (2026-10-24): where the video stands, in
+                // the contract's words, and "Request review" while it may be asked.
+                val notice = review?.let { CopyrightCopy.notice(it) }
+                if (notice != null) {
+                    CopyrightNoticeCard(
+                        notice = notice,
+                        onRequest = onRequestReview,
+                        testTag = "creator_hub_copyright:${row.id}",
+                    )
+                } else if (row.heldForCopyright) {
+                    Text(
+                        HIDDEN_COPYRIGHT_CASE,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = UsTheme.extended.statusWarning,
+                        modifier = Modifier.testTag("creator_hub_copyright_hold:${row.id}"),
+                    )
+                }
             }
         }
     }
@@ -493,7 +549,7 @@ private fun DraftCard(draft: HubDraft) {
             overflow = TextOverflow.Ellipsis,
         )
         Text(draftMeta(draft), style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textSecondary)
-        draft.blockedReason?.let {
+        draft.blockedReason?.let { reason -> CopyrightCopy.blockedReason(reason) ?: reason }?.let {
             Text(it, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.statusWarning)
         }
     }
@@ -693,6 +749,9 @@ private fun <T> LazyListScope.pageFooter(page: HubPage<T>, onMore: () -> Unit) {
 }
 
 private const val PROCESSING_FAILED = "failed"
+
+/** A row hidden by a copyright restriction with no title review to show (a copyright case). */
+internal const val HIDDEN_COPYRIGHT_CASE = "Hidden — under a copyright case"
 private val THUMB_WIDTH = 96.dp
 private const val LANDSCAPE_THUMB = 16f / 9f
 private const val PORTRAIT_THUMB = 3f / 4f

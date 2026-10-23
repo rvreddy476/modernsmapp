@@ -173,10 +173,21 @@ fun pendingTabFor(kind: PublishKind?): ProfileGridTab? = when (kind) {
  * something the profile draws and the navigation is something the shell
  * does.
  */
-data class PublishSuccess(val tab: ProfileGridTab) {
+data class PublishSuccess(
+    val tab: ProfileGridTab,
+    /**
+     * Copyright title review (2026-10-24): the post exists but is held, in
+     * the contract's words ("In copyright review — this video is hidden
+     * until our team checks it. …"). Null for an ordinary publish.
+     */
+    val notice: String? = null,
+) {
 
     /** What the banner says. One sentence, no control — it takes itself away. */
-    val message: String get() = "Uploaded successfully"
+    val message: String get() = notice ?: "Uploaded successfully"
+
+    /** The post is not visible yet: the banner warns rather than celebrates, and stays long enough to read. */
+    val held: Boolean get() = notice != null
 }
 
 /** Which tab a scheduled post belongs on, by its content type; null for a kind the grid has no tab for. */
@@ -349,13 +360,22 @@ class ProfileGridViewModel @Inject constructor(
         seenKeys = tiles.mapTo(mutableSetOf()) { it.creationKey }
         fresh.lastOrNull()?.let { _tab.value = it.tab }
         items.filter { it.state is ReelPublishState.Published }.forEach { item ->
-            val postId = (item.state as ReelPublishState.Published).postId
+            val published = item.state as ReelPublishState.Published
+            val notice = published.notice
             item.toTile()?.let { tile ->
-                if (tile.publishAt != null) {
-                    refreshScheduled()
-                } else {
-                    reload(tile.tab)
-                    succeedThenHandOff(tile.tab, postId)
+                when {
+                    tile.publishAt != null -> refreshScheduled()
+                    // Held for copyright review (2026-10-24): nobody else can see
+                    // it, so there is nowhere to carry the viewer; the profile
+                    // says why instead, and the Videos tab reloads to hold it.
+                    notice != null -> {
+                        reload(tile.tab)
+                        showHeld(tile.tab, notice)
+                    }
+                    else -> {
+                        reload(tile.tab)
+                        succeedThenHandOff(tile.tab, published.postId)
+                    }
                 }
             }
             publishActions.dismiss(item.creationKey)
@@ -408,6 +428,15 @@ class ProfileGridViewModel @Inject constructor(
             ProfileGridTab.SAVED, ProfileGridTab.LIKED, ProfileGridTab.APPEARS_IN, ProfileGridTab.MEMBERS -> return
         }
         _published.tryEmit(tab)
+    }
+
+    /** The held publish's sentence, up for [HELD_MILLIS] — long enough to read two lines — with no hand-off. */
+    private fun showHeld(tab: ProfileGridTab, notice: String) {
+        _success.value = PublishSuccess(tab, notice)
+        viewModelScope.launch {
+            delay(HELD_MILLIS)
+            _success.value = null
+        }
     }
 
     private fun reload(tab: ProfileGridTab) = _reloads.update { map -> map + (tab to (map[tab] ?: 0) + 1) }
@@ -474,5 +503,8 @@ class ProfileGridViewModel @Inject constructor(
 
         /** How long the green message stays before it takes itself away — see [succeedThenHandOff]. */
         const val SUCCESS_MILLIS = 1_800L
+
+        /** A held publish's banner: two sentences at a reading pace. */
+        const val HELD_MILLIS = 6_000L
     }
 }

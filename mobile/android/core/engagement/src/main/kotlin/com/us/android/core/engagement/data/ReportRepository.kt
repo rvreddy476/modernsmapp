@@ -95,6 +95,9 @@ class ReportRepository @Inject constructor(
             "impersonation",
             "self_harm",
             "intellectual_property",
+            // Copyright (2026-10-24, trust-safety moderation.go:88-101): posts only.
+            "copyright_mine",
+            "copyright_media",
             "other",
         )
     }

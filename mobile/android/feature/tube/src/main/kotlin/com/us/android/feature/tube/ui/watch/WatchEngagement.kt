@@ -9,6 +9,7 @@ import com.us.android.core.engagement.data.reactedOr
 import com.us.android.core.feed.data.VideoLibraryRepository
 import com.us.android.core.feed.data.VideoLibraryState
 import com.us.android.core.feed.data.VideoLibraryStore
+import com.us.android.core.model.CopyrightReview
 import com.us.android.core.model.FeedItem
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -140,4 +141,20 @@ class WatchEngagement @Inject constructor(
  * does not carry them.
  */
 internal fun FeedItem.withViewerStateOf(detail: FeedItem): FeedItem =
-    copy(viewer = detail.viewer, counts = detail.counts, controls = detail.controls, credits = detail.credits)
+    copy(
+        viewer = detail.viewer,
+        counts = detail.counts,
+        controls = detail.controls,
+        credits = detail.credits,
+        // Copyright title review (2026-10-24): only the detail carries it, and only for the author.
+        copyrightReview = detail.copyrightReview,
+    )
+
+/**
+ * The copyright review the watch page shows (copyright title review,
+ * 2026-10-24): the video's review, to its AUTHOR only. The server already
+ * sends it only on the author's own detail (post-service post.go:615); the
+ * check here keeps a row that somehow carried it from showing anyone else.
+ */
+internal fun watchCopyrightReview(item: FeedItem, ownUserId: String): CopyrightReview? =
+    item.copyrightReview?.takeIf { ownUserId.isNotBlank() && item.authorId == ownUserId }

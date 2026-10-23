@@ -19,6 +19,7 @@ import com.us.android.core.feed.data.WatchHistoryApi
 import com.us.android.core.feed.data.WatchHistoryRepository
 import com.us.android.core.feed.data.WatchHistorySource
 import com.us.android.core.feed.data.action.ActionApi
+import com.us.android.core.feed.data.copyright.CopyrightReviewApi
 import com.us.android.core.feed.data.credits.CreditsApi
 import com.us.android.core.feed.ui.sound.LibrarySoundPreview
 import com.us.android.core.feed.ui.sound.PlayerLibrarySoundPreview
@@ -96,6 +97,11 @@ object FeedModule {
     @Provides
     @Singleton
     fun provideActionApi(retrofit: Retrofit): ActionApi = retrofit.create(ActionApi::class.java)
+
+    /** Copyright title review (2026-10-24): the author's "Request review" and the detail re-read. */
+    @Provides
+    @Singleton
+    fun provideCopyrightReviewApi(retrofit: Retrofit): CopyrightReviewApi = retrofit.create(CopyrightReviewApi::class.java)
 
     /** The store writes through the repository; tests hand it a fake. */
     @Provides

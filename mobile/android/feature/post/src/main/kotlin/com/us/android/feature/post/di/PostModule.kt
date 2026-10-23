@@ -1,6 +1,8 @@
 package com.us.android.feature.post.di
 
 import com.us.android.feature.post.data.ApiPostMembersGate
+import com.us.android.feature.post.data.ApiPublishedVideoReview
+import com.us.android.feature.post.data.PublishedVideoReview
 import com.us.android.feature.post.data.HashtagSearchApi
 import com.us.android.feature.post.data.PeopleSearchApi
 import com.us.android.feature.post.data.PostApi
@@ -27,6 +29,10 @@ object PostModule {
     /** Members only (2026-10-23): the creator's levels, and the gate applied after a create. */
     @Provides
     fun providePostMembersGate(impl: ApiPostMembersGate): PostMembersGate = impl
+
+    /** Copyright title review (2026-10-24): a published long video's review, read once for its tile. */
+    @Provides
+    fun providePublishedVideoReview(impl: ApiPublishedVideoReview): PublishedVideoReview = impl
 
     @Provides
     @Singleton

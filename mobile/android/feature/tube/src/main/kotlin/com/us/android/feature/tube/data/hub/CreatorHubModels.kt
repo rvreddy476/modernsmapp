@@ -1,6 +1,10 @@
 package com.us.android.feature.tube.data.hub
 
 import com.us.android.core.feed.data.action.toPostAction
+import com.us.android.core.feed.data.copyright.hasCopyrightHoldFlag
+import com.us.android.core.feed.data.copyright.hasTitleReviewRestriction
+import com.us.android.core.feed.data.copyright.toCopyrightReview
+import com.us.android.core.model.CopyrightReview
 import com.us.android.core.model.PostAction
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -193,7 +197,24 @@ data class HubLibraryRow(
      * from `GET /v1/posts/:id/action/stats`.
      */
     val action: PostAction? = null,
+    /**
+     * Copyright title review (2026-10-24): the author's view of the row's
+     * review (post-service my_uploads.go:399, the shape
+     * copyright_title_review.go:651-658); null when it was never flagged.
+     */
+    val copyrightReview: CopyrightReview? = null,
+    /** `flags[]` has `copyright_hold` (my_uploads.go:70): some active restriction hides the row. */
+    val copyrightHold: Boolean = false,
+    /** `restrictions[]` has one with `source: "title_review"` (copyright_title_review.go:28). */
+    val titleReviewHold: Boolean = false,
 ) {
+    /**
+     * The row is hidden for copyright: a review that holds it, or a
+     * restriction the uploads answer flags. A hold with no review to show
+     * (a case-specific restriction) still reads as held.
+     */
+    val heldForCopyright: Boolean get() = copyrightReview?.isHeld ?: (copyrightHold || titleReviewHold)
+
     /** The row's date: published, else scheduled, else created (web `rowDate`). */
     val date: String get() = publishedAt ?: scheduledAt ?: createdAt
 }
@@ -232,6 +253,9 @@ fun normalizeLibraryRow(raw: JsonElement?): HubLibraryRow? {
         processingStatus = str(r["processing_status"]).ifEmpty { str(vm["upload_status"]) },
         thumbnailPath = strOrNull(vm["thumbnail_url"]) ?: strOrNull(r["cover_media_id"])?.let { "/v1/media/$it/serve" },
         action = r["action"].toPostAction(),
+        copyrightReview = r["copyright_review"].toCopyrightReview(),
+        copyrightHold = r["flags"].hasCopyrightHoldFlag(),
+        titleReviewHold = r["restrictions"].hasTitleReviewRestriction(),
     )
 }
 

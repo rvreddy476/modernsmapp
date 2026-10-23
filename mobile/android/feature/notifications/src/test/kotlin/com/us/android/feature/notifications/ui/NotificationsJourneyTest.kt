@@ -161,6 +161,7 @@ class NotificationsJourneyTest {
                                     is NotificationTarget.Membership,
                                     NotificationTarget.MyMemberships,
                                     NotificationTarget.CreatorMemberships,
+                                    NotificationTarget.CreatorHubUploads,
                                     NotificationTarget.None,
                                     -> Unit
                                 }

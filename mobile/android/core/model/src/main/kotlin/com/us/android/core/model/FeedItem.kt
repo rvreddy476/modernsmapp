@@ -131,6 +131,13 @@ data class FeedItem(
      * hides it on a locked (members-only) row.
      */
     val action: PostAction? = null,
+    /**
+     * Copyright title review (2026-10-24): only on the AUTHOR's own post
+     * detail of a long video that was flagged (post-service post.go:615);
+     * null on every other row and for every other viewer. Drawn with
+     * [CopyrightCopy.notice].
+     */
+    val copyrightReview: CopyrightReview? = null,
 ) {
     /** Who a video card credits: the channel when the row carries one, the author otherwise. */
     val creatorName: String get() = channel?.name?.takeIf { it.isNotBlank() } ?: author.nameForDisplay

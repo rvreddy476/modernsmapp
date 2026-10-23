@@ -5,6 +5,7 @@ import com.us.android.core.common.result.AppResult
 import com.us.android.core.feed.data.ChannelRepository
 import com.us.android.core.feed.data.action.actionProblem
 import com.us.android.core.feed.data.action.toWriteDto
+import com.us.android.core.feed.data.copyright.uploadsPausedMessage
 import com.us.android.core.feed.data.credits.creditRefusal
 import com.us.android.core.feed.data.serverCode
 import com.us.android.core.media.publish.PublishKind
@@ -12,7 +13,9 @@ import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
 import com.us.android.core.memberships.data.membersOnlyRefusal
 import com.us.android.core.model.ActionDraft
+import com.us.android.core.model.CopyrightReview
 import com.us.android.feature.post.data.ComposerRepository
+import com.us.android.feature.post.data.PublishedVideoReview
 import com.us.android.feature.post.data.dto.CONTENT_TYPE_FLICK
 import com.us.android.feature.post.data.dto.CONTENT_TYPE_LONG_VIDEO
 import com.us.android.feature.post.data.dto.CreatePostRequest
@@ -75,10 +78,17 @@ class ReelPublishPipeline @Inject constructor(
     private val files: ReelPublishFiles,
     private val store: ReelPublishStore,
     private val tracker: ReelPublishTracker,
+    private val reviews: PublishedVideoReview,
 ) {
 
     sealed interface Outcome {
-        data class Published(val postId: String) : Outcome
+        /**
+         * Created. [copyrightReview] is a published long video's copyright
+         * title review (2026-10-24), read back from the post detail because
+         * the create's answer does not carry it; null for a reel, a
+         * scheduled video, a video that was not flagged, or a failed read.
+         */
+        data class Published(val postId: String, val copyrightReview: CopyrightReview? = null) : Outcome
 
         /** The fallback poll is still waiting and this run's budget is spent. */
         data object Continue : Outcome
@@ -209,7 +219,7 @@ class ReelPublishPipeline @Inject constructor(
         val videoId = pending.confirmedVideoId ?: fail(run, pending, "The upload didn't finish. Try again.", true)
         val request = buildRequest(pending, videoId, pending.readyCoverId)
         return when (val result = repository.createPost(pending.creationKey, request)) {
-            is AppResult.Success -> Outcome.Published(result.data)
+            is AppResult.Success -> published(pending, result.data)
             is AppResult.Failure -> if (result.error.isNotReady()) {
                 val ready = awaitVideo(run, pending, videoId, now, runUntil)
                 createReadyFlick(run, ready, request)
@@ -221,9 +231,22 @@ class ReelPublishPipeline @Inject constructor(
 
     private suspend fun createReadyFlick(run: Run, pending: PendingReelPublish, request: CreatePostRequest): Outcome =
         when (val result = repository.createPost(pending.creationKey, request)) {
-            is AppResult.Success -> Outcome.Published(result.data)
+            is AppResult.Success -> published(pending, result.data)
             is AppResult.Failure -> refused(run, pending, result.error)
         }
+
+    /**
+     * The post exists. A long video that went live NOW is read back once for
+     * its copyright title review (2026-10-24): a held one is hidden from
+     * viewers, and its tile says so instead of "Uploaded successfully". A
+     * reel is never held by the rule, and a scheduled video is checked only
+     * when it goes live, so neither costs a read.
+     */
+    private suspend fun published(pending: PendingReelPublish, postId: String): Outcome.Published {
+        val checks = pending.kind == PublishKind.LONG && pending.publishAt.isNullOrBlank()
+        val review = if (checks) reviews.reviewOf(postId)?.takeIf { it.isHeld } else null
+        return Outcome.Published(postId, review)
+    }
 
     /**
      * The create was refused. `CHANNEL_REQUIRED` (channel before video,
@@ -233,7 +256,16 @@ class ReelPublishPipeline @Inject constructor(
      * except a refusal of the credits (2026-10-23), which says it in the
      * Credits section's words: the server's names routes and slugs.
      */
-    private suspend fun refused(run: Run, pending: PendingReelPublish, error: AppError): Nothing =
+    private suspend fun refused(run: Run, pending: PendingReelPublish, error: AppError): Nothing {
+        // 403 UPLOADS_PAUSED (2026-10-24, standing_errors.go:53-55): repeated
+        // copyright blocks paused long-video uploads until a date. Not
+        // retryable: the same video is refused until then.
+        val paused = error.uploadsPausedMessage()
+        if (paused != null) fail(run, pending, paused, retryable = false)
+        return refusedOtherwise(run, pending, error)
+    }
+
+    private suspend fun refusedOtherwise(run: Run, pending: PendingReelPublish, error: AppError): Nothing =
         if (ChannelRepository.requiresChannel(error)) {
             fail(run, pending, CHANNEL_REQUIRED_MESSAGE, retryable = true, needsChannel = true)
         } else {

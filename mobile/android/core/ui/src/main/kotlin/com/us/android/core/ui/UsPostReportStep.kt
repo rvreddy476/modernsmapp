@@ -67,6 +67,8 @@ fun UsPostReportStep(
     onBack: () -> Unit,
     onSubmit: (reason: UsReportReason, details: String) -> Unit,
     subject: String = "post",
+    /** A reel or a long video: the copyright reasons are offered too (2026-10-24). */
+    video: Boolean = false,
 ) {
     var chosen by rememberSaveable { mutableStateOf<UsReportReason?>(null) }
     var details by rememberSaveable { mutableStateOf("") }
@@ -90,6 +92,7 @@ fun UsPostReportStep(
 
             else -> ReportForm(
                 subject = subject,
+                video = video,
                 report = report,
                 chosen = chosen,
                 details = details,
@@ -144,6 +147,7 @@ private fun ReportHeader(onBack: () -> Unit, showBack: Boolean) {
 @Composable
 private fun ReportForm(
     subject: String,
+    video: Boolean,
     report: UsPostReportState,
     chosen: UsReportReason?,
     details: String,
@@ -164,7 +168,7 @@ private fun ReportForm(
             color = UsTheme.extended.textMuted,
             modifier = Modifier.padding(horizontal = SIDE, vertical = UsTheme.spacing.m),
         )
-        UsReportReason.forSubject(subject).forEach { reason ->
+        UsReportReason.forSubject(subject, video).forEach { reason ->
             SheetRow(
                 icon = null,
                 label = reason.label,

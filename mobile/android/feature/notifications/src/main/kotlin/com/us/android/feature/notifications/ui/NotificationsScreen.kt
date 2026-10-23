@@ -831,6 +831,12 @@ internal fun Notification.describe(): String {
         NotificationKind.MembershipPaymentFailed,
         NotificationKind.MembershipEnded,
         -> title ?: membershipLine(kind, actorName)
+        // Copyright title review (2026-10-24): the server's inbox title first,
+        // then its own words for the type (notification-service templates.go:312-326).
+        NotificationKind.CopyrightReviewHold,
+        NotificationKind.CopyrightReviewCleared,
+        NotificationKind.CopyrightReviewBlocked,
+        -> title ?: copyrightLine(kind)
         NotificationKind.MissedCall ->
             if (actorName.isBlank()) "Missed call" else "Missed call from $who"
         // The server writes incoming_* rows on every call invite, answered or
@@ -879,6 +885,18 @@ internal fun membershipLine(kind: NotificationKind, creatorName: String): String
 }
 
 /**
+ * A copyright-review notice from the type alone, in the server's titles
+ * (notification-service templates.go:312-326): the row is about the
+ * viewer's own video, so no actor is named.
+ */
+internal fun copyrightLine(kind: NotificationKind): String = when (kind) {
+    NotificationKind.CopyrightReviewHold -> "Your video is in copyright review"
+    NotificationKind.CopyrightReviewCleared -> "Your video cleared copyright review"
+    NotificationKind.CopyrightReviewBlocked -> "Your video was blocked after copyright review"
+    else -> "You have a new notification"
+}
+
+/**
  * Only a real missed call gets the red phone badge and red text; an
  * incoming_* row may have been answered, so it draws the call category glyph.
  */
@@ -896,7 +914,18 @@ internal sealed interface RowAvatar {
 }
 
 internal fun Notification.rowAvatar(): RowAvatar =
-    if (hasActor) RowAvatar.Actor else RowAvatar.Glyph(category())
+    if (hasActor && kind !in SELF_NOTICE_KINDS) RowAvatar.Actor else RowAvatar.Glyph(category())
+
+/**
+ * Notices about the viewer's own video whose "actor" is the viewer
+ * themselves (copyright_notify.go: the author is the actor of their own
+ * system notice): a glyph, never the viewer's own face.
+ */
+private val SELF_NOTICE_KINDS: Set<NotificationKind> = setOf(
+    NotificationKind.CopyrightReviewHold,
+    NotificationKind.CopyrightReviewCleared,
+    NotificationKind.CopyrightReviewBlocked,
+)
 
 /** The server's category, or — from an older server — one inferred from the type. */
 internal fun Notification.category(): NotificationIcon = icon ?: when (val k = kind) {
@@ -905,6 +934,7 @@ internal fun Notification.category(): NotificationIcon = icon ?: when (val k = k
     NotificationKind.DirectMessage, NotificationKind.MessageRequest -> NotificationIcon.Message
     NotificationKind.CreatorWentLive -> NotificationIcon.Live
     NotificationKind.MatchExpired -> NotificationIcon.Dating
+    in SELF_NOTICE_KINDS -> NotificationIcon.System
     is NotificationKind.Unknown -> unknownCategory(k.raw)
     else -> NotificationIcon.Social
 }

@@ -344,6 +344,8 @@ private fun UsReportReason.toAnalyticsReason(): NegativeSignalReason = when (thi
     UsReportReason.IMPERSONATION,
     UsReportReason.SELF_HARM,
     UsReportReason.INTELLECTUAL_PROPERTY,
+    UsReportReason.COPYRIGHT_MINE,
+    UsReportReason.COPYRIGHT_MEDIA,
     UsReportReason.OTHER,
     -> NegativeSignalReason.UNSPECIFIED
 }

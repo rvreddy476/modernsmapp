@@ -52,4 +52,12 @@ class PublishRingTest {
         assertThat(ReelPublishState.Published("p1").ringPercentLabel()).isNull()
         assertThat(ReelPublishState.Failed("x", retryable = true).ringPercentLabel()).isNull()
     }
+
+    /** A long video held for copyright review (2026-10-24): posted, but not visible yet. */
+    @Test
+    fun `a published post with a notice says it is not visible yet`() {
+        assertThat(ReelPublishState.Published("p1", notice = "In copyright review").ringLabel()).isEqualTo("Posted, not visible yet")
+        assertThat(ReelPublishState.Published("p1").ringLabel()).isEqualTo("Posted")
+        assertThat(ReelPublishState.Published("p1", notice = "x").ring()).isEqualTo(PublishRing.Determinate(1f))
+    }
 }
