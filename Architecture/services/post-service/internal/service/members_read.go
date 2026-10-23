@@ -33,7 +33,8 @@ import (
 // The redacted row (pinned; clients draw the lock from it):
 //
 //   - cleared: text, rich_text, media, poll, and everything derived from the
-//     body — hashtags, mentions (usernames and ids), tags, link_url,
+//     body — hashtags, mentions (usernames and ids), tags, the tagged people
+//     (tagged_user_ids), link_url,
 //     location (name, lat/lng, place id, recording location), and on the
 //     detail chapters (stored or description-derived) and credits, each an
 //     empty array where the read had one;
@@ -45,12 +46,27 @@ import (
 //
 // tier_required_id stays on every gated row, for members and non-members
 // alike, so a member's client can show the badge and a non-member's the join
-// card. body_redacted (and duration_ms) are absent on any row that was not
-// redacted.
+// card, and with it tier_required_price_paise — that tier's monthly price,
+// absent when it could not be read (members_tiers.go). body_redacted (and
+// duration_ms) are absent on any row that was not redacted.
 
 // ErrMembersOnly refuses a non-member a members-only post's comment thread
 // (403 MEMBERS_ONLY at the routes). Counts stay readable on the post itself.
+// The gate's own refusal is a *MembersOnlyError, which matches it.
 var ErrMembersOnly = errors.New("MEMBERS_ONLY")
+
+// MembersOnlyError is ErrMembersOnly with the gate that refused: the routes
+// answer it as details {creator_id, tier_required_id}, so the client can
+// open the Join sheet on the right creator and level.
+type MembersOnlyError struct {
+	CreatorID      uuid.UUID
+	TierRequiredID uuid.UUID
+}
+
+func (e *MembersOnlyError) Error() string { return ErrMembersOnly.Error() }
+
+// Is matches ErrMembersOnly.
+func (e *MembersOnlyError) Is(target error) bool { return target == ErrMembersOnly }
 
 // membersLookupTimeout bounds one (creator, tier) membership question so a
 // slow monetization-service cannot hold a feed page; past it the rows are
@@ -82,6 +98,9 @@ func (s *Service) redactForViewer(ctx context.Context, viewerID *uuid.UUID, post
 			RedactGatedPost(p)
 		}
 	}
+	// Every gated row, member or not, says what its tier costs (absent when
+	// unknown), so the Join sheet can show which levels unlock it.
+	s.attachTierPrices(ctx, posts)
 }
 
 // viewerIsMember is one bounded, fail-closed membership answer for a gated
@@ -220,7 +239,11 @@ func (s *Service) requireMemberOf(ctx context.Context, p *postgres.Post, viewerI
 	// viewerEntitled opens an ungated post and its author's own without a
 	// lookup, and refuses a signed-out viewer without one.
 	if !s.viewerIsMember(ctx, viewer, p) {
-		return ErrMembersOnly
+		refused := &MembersOnlyError{CreatorID: p.AuthorID}
+		if p.TierRequiredID != nil {
+			refused.TierRequiredID = *p.TierRequiredID
+		}
+		return refused
 	}
 	return nil
 }

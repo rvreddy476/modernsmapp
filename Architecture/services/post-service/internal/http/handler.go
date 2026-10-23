@@ -544,6 +544,16 @@ type CreatePostRequest struct {
 	Genres          []string               `json:"genres,omitempty"`
 	ReleaseYear     *int                   `json:"release_year,omitempty"`
 	ProductionHouse string                 `json:"production_house,omitempty"`
+
+	// TierRequiredID gates the post on one of the author's active membership
+	// tiers from birth (2026-10-23, service/members_tiers.go), for every
+	// content type — so a post meant for members is never public for a
+	// moment, as it was when the client created it and then PUT the gate.
+	// A UUID string; absent or null = open. Not one of the author's active
+	// tiers: 400 INVALID_TIER. Tiers unreadable: 503
+	// MEMBERSHIP_TIERS_UNAVAILABLE and no post. omitempty for the
+	// fingerprint reason above.
+	TierRequiredID *uuid.UUID `json:"tier_required_id,omitempty"`
 }
 
 // createPostResponse is the create body: the post as before, plus a long
@@ -647,6 +657,7 @@ func writeCreateGuardError(c *gin.Context, err error) bool {
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_LOCATION_PLACE_ID", err.Error(), nil)
 	case errors.Is(err, service.ErrInvalidVisibility):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_VISIBILITY", err.Error(), nil)
+	case writeTierGateError(c, err):
 	case writeCreditFieldError(c, err):
 	default:
 		return false
@@ -964,6 +975,7 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		VideoCredits: service.VideoCreditFields{
 			Credits: req.Credits, Genres: req.Genres, ReleaseYear: req.ReleaseYear, ProductionHouse: req.ProductionHouse,
 		},
+		TierRequiredID: req.TierRequiredID,
 	}
 
 	if req.Poll != nil {
@@ -1139,7 +1151,10 @@ func (h *Handler) SetPostMembershipGate(c *gin.Context) {
 	}
 
 	if err := h.svc.SetPostMembershipGate(c.Request.Context(), postID, tierID); err != nil {
-		if err.Error() == "POST_NOT_FOUND" {
+		if writeTierGateError(c, err) {
+			return
+		}
+		if err.Error() == "POST_NOT_FOUND" || errors.Is(err, service.ErrPostNotFound) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil)
 			return
 		}
@@ -1147,6 +1162,38 @@ func (h *Handler) SetPostMembershipGate(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"tier_required_id": tierID}, nil)
+}
+
+// parseMembersOnlyParam reads ?members_only: "" and "false" are false,
+// "true" is true (case-insensitive); anything else is not ok.
+func parseMembersOnlyParam(raw string) (bool, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "false", "0":
+		return false, true
+	case "true", "1":
+		return true, true
+	}
+	return false, false
+}
+
+// writeTierGateError answers a refused members-only gate on any write
+// (create, both draft kinds, edit, PUT /membership): 400 INVALID_TIER when
+// the tier is not one of the author's active tiers, 503
+// MEMBERSHIP_TIERS_UNAVAILABLE when monetization-service could not say —
+// nothing was written either way. false when err is neither.
+func writeTierGateError(c *gin.Context, err error) bool {
+	ctx := c.Request.Context()
+	switch {
+	case errors.Is(err, service.ErrInvalidTier):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_TIER",
+			"tier_required_id must be one of your active membership tiers", nil)
+	case errors.Is(err, service.ErrTierLookupUnavailable):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusServiceUnavailable, "MEMBERSHIP_TIERS_UNAVAILABLE",
+			"Membership tiers could not be checked right now; nothing was saved. Try again.", nil)
+	default:
+		return false
+	}
+	return true
 }
 
 // parseMembershipGateBody reads PUT /membership's body: exactly one JSON
@@ -1300,6 +1347,15 @@ func (h *Handler) GetPostsByAuthor(c *gin.Context) {
 		return
 	}
 
+	// ?members_only=true (2026-10-23): only the author's members-only posts,
+	// redacted for non-members like every other row. Absent or false is the
+	// whole grid; any other value is 400.
+	membersOnly, ok := parseMembersOnlyParam(c.Query("members_only"))
+	if !ok {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "members_only must be true or false", nil)
+		return
+	}
+
 	var viewerID *uuid.UUID
 	if v := c.GetHeader("X-User-Id"); v != "" {
 		if id, err := uuid.Parse(v); err == nil {
@@ -1307,7 +1363,9 @@ func (h *Handler) GetPostsByAuthor(c *gin.Context) {
 		}
 	}
 
-	posts, nextCursor, err := h.svc.GetPostsByAuthor(c.Request.Context(), authorID, contentType, sort, limit, cursor, viewerID)
+	posts, nextCursor, err := h.svc.GetPostsByAuthorFiltered(c.Request.Context(), service.AuthorListFilter{
+		AuthorID: authorID, ContentType: contentType, Sort: sort, Limit: limit, Cursor: cursor, MembersOnly: membersOnly,
+	}, viewerID)
 	if errors.Is(err, postgres.ErrInvalidAuthorCursor) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", "cursor is not valid for this sort", nil)
 		return

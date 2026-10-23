@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"strconv"
@@ -118,6 +119,9 @@ func (h *Handler) UpdateDraft(c *gin.Context) {
 		// Video credits answer with the create route's codes
 		// (CREDITS_NOT_ALLOWED, INVALID_CREDIT, INVALID_GENRE, ...).
 		case writeCreditFieldError(c, err):
+		// tier_required_id is a tier id, or null / "" to clear it:
+		// 400 INVALID_TIER otherwise.
+		case writeTierGateError(c, err):
 		// audio_track_id is a sound id, or "" to remove the sound;
 		// content_type is flick or long_video.
 		case errors.Is(err, service.ErrInvalidDraftSound) || errors.Is(err, service.ErrInvalidLocationPlaceID) ||
@@ -188,6 +192,11 @@ func (h *Handler) DeleteDraft(c *gin.Context) {
 
 type publishDraftRequest struct {
 	ScheduleAt *string `json:"schedule_at"`
+	// TierRequiredID, when present, is stored on the draft first (exactly as
+	// PATCH /v1/drafts/:id would: a tier id sets, null / "" clears), so the
+	// post — published now, or later by the schedule worker — is gated from
+	// birth. CreatePost checks it against the author's active tiers.
+	TierRequiredID json.RawMessage `json:"tier_required_id"`
 }
 
 func (h *Handler) PublishDraft(c *gin.Context) {
@@ -205,6 +214,15 @@ func (h *Handler) PublishDraft(c *gin.Context) {
 
 	var req publishDraftRequest
 	_ = c.ShouldBindJSON(&req) // Body is optional
+
+	if len(req.TierRequiredID) > 0 {
+		if _, err := h.svc.UpdateDraft(c.Request.Context(), draftID, authorID, &service.UpdateDraftInput{TierRequiredID: req.TierRequiredID}); err != nil {
+			if !writeTierGateError(c, err) {
+				writeReelDraftPublishError(c, err)
+			}
+			return
+		}
+	}
 
 	post, err := h.svc.PublishDraft(c.Request.Context(), draftID, authorID, req.ScheduleAt)
 	if err != nil {

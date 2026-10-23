@@ -511,6 +511,39 @@ func (s *Store) ListSubscriberMemberships(ctx context.Context, subscriberID uuid
 	return scanSubscriptions(rows)
 }
 
+// MemberCursor is a keyset position in a creator's member list: the
+// (activated_at, id) of the last row a page answered.
+type MemberCursor struct {
+	ActivatedAt time.Time
+	ID          uuid.UUID
+}
+
+// ListCreatorMembers returns up to limit of the creator's members, newest
+// first by (activated_at, id), strictly after the cursor when one is given.
+// A member is a subscription of THIS creator that was paid for at least once
+// (activated_at set) and is in a live status: a join still waiting for its
+// payment, a cancelled and an expired membership are not members.
+func (s *Store) ListCreatorMembers(ctx context.Context, creatorID uuid.UUID, after *MemberCursor, limit int) ([]Subscription, error) {
+	var afterAt *time.Time
+	var afterID *uuid.UUID
+	if after != nil {
+		afterAt, afterID = &after.ActivatedAt, &after.ID
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT `+subscriptionColumns+` FROM subscriptions
+		WHERE creator_id = $1
+		  AND status = ANY($2)
+		  AND activated_at IS NOT NULL
+		  AND ($3::timestamptz IS NULL OR (activated_at, id) < ($3::timestamptz, $4::uuid))
+		ORDER BY activated_at DESC, id DESC
+		LIMIT $5
+	`, creatorID, LiveSubscriptionStatuses, afterAt, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return scanSubscriptions(rows)
+}
+
 // ---------------------------------------------------------------------------
 // The signed payment event
 // ---------------------------------------------------------------------------

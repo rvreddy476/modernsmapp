@@ -15,6 +15,12 @@ func PostEditErrorStatus(err error) (int, string) {
 	switch {
 	case errors.Is(err, ErrPostNotFound), errors.Is(err, ErrPostNotVisible):
 		return http.StatusNotFound, "NOT_FOUND"
+	// Members-only gate (members_tiers.go): 400 / 503 on every route that
+	// sets it, create and PATCH alike.
+	case errors.Is(err, ErrInvalidTier):
+		return http.StatusBadRequest, "INVALID_TIER"
+	case errors.Is(err, ErrTierLookupUnavailable):
+		return http.StatusServiceUnavailable, "MEMBERSHIP_TIERS_UNAVAILABLE"
 	// Video credits (credits.go): 400 on every route, create and PATCH
 	// alike, as the credits contract pins.
 	case errors.Is(err, ErrCreditsNotAllowed):

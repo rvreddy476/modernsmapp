@@ -216,6 +216,11 @@ func main() {
 		// Every deploy values file sets "true": verified_at is required.
 		src.PANFormatSuffices = !envBool("MEMBERSHIPS_REQUIRE_PAN_VERIFIED")
 		monetizationSvc.WithEligibilitySources(src)
+		// The membership reads name creators and members from the same
+		// identity-profile (batch read); unset answers ids only.
+		if p := eligibility.NewProfiles(os.Getenv("PROFILE_SERVICE_URL"), internalKey); p != nil {
+			monetizationSvc.WithProfiles(p)
+		}
 		slog.Info("membership eligibility sources", "age", src.BirthDates != nil, "followers", src.Followers != nil, "strikes", src.Standing != nil,
 			"pan_requires_verified_at", !src.PANFormatSuffices)
 	}

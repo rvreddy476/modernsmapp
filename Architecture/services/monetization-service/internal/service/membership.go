@@ -47,6 +47,7 @@ type MembershipStore interface {
 	MarkMembershipPaymentConfirming(ctx context.Context, paymentID uuid.UUID) error
 	GetMembershipPayment(ctx context.Context, paymentID uuid.UUID) (*membership.Payment, error)
 	ListSubscriberMemberships(ctx context.Context, subscriberID uuid.UUID, since time.Time) ([]postgres.Subscription, error)
+	ListCreatorMembers(ctx context.Context, creatorID uuid.UUID, after *postgres.MemberCursor, limit int) ([]postgres.Subscription, error)
 	ApplyMembershipPaymentEvent(ctx context.Context, ev membership.Event, now time.Time) (membership.Applied, error)
 	RequestMembershipSupportRefund(ctx context.Context, in postgres.SupportRefundInput) (*membership.Payment, error)
 	DueMembershipRefunds(ctx context.Context, now time.Time, limit int) ([]postgres.MembershipRefundDue, error)

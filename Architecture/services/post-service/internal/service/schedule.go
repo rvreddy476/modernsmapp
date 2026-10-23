@@ -142,7 +142,35 @@ func (s *Service) buildPostCreatedPayload(ctx context.Context, p *postgres.Post,
 		s.stampChannel(ctx, &pc, p.AuthorID)
 	}
 	s.stampCreditSearchFields(ctx, &pc, p)
+	redactGatedPostCreated(&pc)
 	return pc
+}
+
+// publicHashtags is what a new post contributes to the public trend and the
+// per-hashtag live streams: a members-only post's hashtags are part of its
+// body (cleared for non-members), so it contributes none.
+func publicHashtags(p *postgres.Post) []string {
+	if p == nil || p.TierRequiredID != nil {
+		return nil
+	}
+	return p.Hashtags
+}
+
+// redactGatedPostCreated keeps a members-only post's body off the bus
+// (2026-10-23): the text, the attached media and the cast & crew names are
+// what members pay for, and every consumer of PostCreated — feed fan-out,
+// search, the subscriber upload pushes — serves non-members. The event keeps
+// what a non-member may see anyway (title, kind, duration, genres) and
+// tier_required_id, which consumers act on. When the gate is cleared, the
+// eligibility event carries the body to search.
+func redactGatedPostCreated(pc *events.PostCreatedPayload) {
+	if pc.TierRequiredID == "" {
+		return
+	}
+	pc.Text = ""
+	pc.Media = nil
+	pc.CreditNames = nil
+	pc.CreditRoles = nil
 }
 
 // stampCreditSearchFields puts a long video's credits on its PostCreated
@@ -241,17 +269,18 @@ func (s *Service) announcePublishedPost(p *postgres.Post, mentions []string) {
 	if s.rdb == nil {
 		return
 	}
+	hashtags := publicHashtags(p)
 	go func() {
 		bgCtx := context.Background()
 
 		// Bump trending hashtag scores for today's bucket. The reader is
 		// search-service `GetTrending` and post-service `GetTrendingHashtagsFeed`,
 		// both of which read from `trending:hashtags:{YYYY-MM-DD}` (UTC).
-		if len(p.Hashtags) > 0 {
+		if len(hashtags) > 0 {
 			today := time.Now().UTC().Format("2006-01-02")
 			key := "trending:hashtags:" + today
 			pipe := s.rdb.Pipeline()
-			for _, tag := range p.Hashtags {
+			for _, tag := range hashtags {
 				pipe.ZIncrBy(bgCtx, key, 1, tag)
 			}
 			// 48h TTL keeps the previous day's set alive briefly so reads
@@ -266,7 +295,7 @@ func (s *Service) announcePublishedPost(p *postgres.Post, mentions []string) {
 			// The flush worker (cmd/server) materializes shard sums back
 			// into the PG row every 10s. The PG fallback (Redis-less dev
 			// loops) is the UPSERT inside adjustHashtagUseCount.
-			for _, tag := range p.Hashtags {
+			for _, tag := range hashtags {
 				cleaned := strings.ToLower(strings.TrimPrefix(tag, "#"))
 				if cleaned == "" {
 					continue
@@ -302,7 +331,7 @@ func (s *Service) announcePublishedPost(p *postgres.Post, mentions []string) {
 		// forward straight through. One channel per tag — clients
 		// subscribed to a specific tag only see posts that actually
 		// carry it, no client-side filtering needed.
-		for _, tag := range p.Hashtags {
+		for _, tag := range hashtags {
 			cleaned := strings.ToLower(strings.TrimPrefix(tag, "#"))
 			if cleaned == "" {
 				continue

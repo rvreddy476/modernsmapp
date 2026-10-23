@@ -74,6 +74,9 @@ type Service struct {
 	membershipLocalEnv bool
 	membershipEvents   MembershipEventPublisher
 	eligibility        EligibilitySources
+	// profiles names creators and members on the membership reads
+	// (membership_reads.go); nil answers ids only.
+	profiles ProfileSource
 }
 
 func New(s *postgres.Store, rdb *redis.Client) *Service {

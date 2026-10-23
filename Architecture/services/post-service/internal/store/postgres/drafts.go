@@ -81,6 +81,11 @@ type ReelDraft struct {
 	Genres          []string      `json:"genres,omitempty"`
 	ReleaseYear     *int          `json:"release_year,omitempty"`
 	ProductionHouse *string       `json:"production_house,omitempty"`
+	// TierRequiredID is the membership tier the post will be gated on from
+	// birth (migration 071); the publish hands it to CreatePost, which checks
+	// it against the author's active tiers and writes it on the row. nil =
+	// open.
+	TierRequiredID *uuid.UUID `json:"tier_required_id,omitempty"`
 }
 
 // decodeDraftCredits reads reel_drafts.credits (NULL = none).
@@ -107,7 +112,8 @@ const draftCols = `id, author_id, media_id,
 	created_at, updated_at, blocked_reason,
 	ai_generated, location_name, location_place_id,
 	content_type,
-	credits, genres, release_year, production_house`
+	credits, genres, release_year, production_house,
+	tier_required_id`
 
 func scanDraft(row pgx.Row) (*ReelDraft, error) {
 	var d ReelDraft
@@ -129,6 +135,7 @@ func scanDraft(row pgx.Row) (*ReelDraft, error) {
 		&d.AIGenerated, &d.LocationName, &d.LocationPlaceID,
 		&d.ContentType,
 		&creditsRaw, &d.Genres, &d.ReleaseYear, &d.ProductionHouse,
+		&d.TierRequiredID,
 	)
 	if err != nil {
 		return nil, err
@@ -197,7 +204,7 @@ func (s *Store) CreateDraft(ctx context.Context, d *ReelDraft) error {
 
 	_, err = s.db.Exec(ctx, `
 		INSERT INTO reel_drafts (`+draftCols+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51)`,
 		d.ID, d.AuthorID, d.MediaID,
 		d.Title, d.Caption, d.Hashtags, d.Tags,
 		d.Visibility, d.TopicID, d.Category, d.Language, d.SEOTitle,
@@ -214,6 +221,7 @@ func (s *Store) CreateDraft(ctx context.Context, d *ReelDraft) error {
 		d.AIGenerated, d.LocationName, d.LocationPlaceID,
 		d.ContentType,
 		creditsRaw, genres, d.ReleaseYear, d.ProductionHouse,
+		d.TierRequiredID,
 	)
 	return err
 }

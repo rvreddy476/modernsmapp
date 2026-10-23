@@ -155,39 +155,73 @@ func authorSortSQL(sort AuthorPostSort, cur *authorCursor, next int) (orderBy, w
 // GetPostsByAuthorSorted is GetPostsByAuthor in the given order. See the
 // file comment for the orders and the cursor.
 func (s *Store) GetPostsByAuthorSorted(ctx context.Context, authorID uuid.UUID, contentType string, sort AuthorPostSort, limit int, cursor string, includeNonApproved bool) ([]Post, string, error) {
-	if limit <= 0 || limit > 50 {
-		limit = 20
+	return s.GetPostsByAuthorQuery(ctx, AuthorPostsQuery{
+		AuthorID: authorID, ContentType: contentType, Sort: sort, Limit: limit, Cursor: cursor,
+		IncludeNonApproved: includeNonApproved,
+	})
+}
+
+// AuthorPostsQuery is one page of an author's posts: GetPostsByAuthorSorted's
+// arguments plus MembersOnly (2026-10-23), which keeps only the author's
+// members-only posts (tier_required_id set) —
+// GET /v1/posts/by-author/:id?members_only=true. The cursor works the same
+// with or without it.
+type AuthorPostsQuery struct {
+	AuthorID           uuid.UUID
+	ContentType        string
+	Sort               AuthorPostSort
+	Limit              int
+	Cursor             string
+	IncludeNonApproved bool
+	MembersOnly        bool
+}
+
+// authorPostsSQL builds the page query for q (limit already defaulted):
+// pure, so the filters are pinned without a database.
+func authorPostsSQL(q AuthorPostsQuery, cur *authorCursor) (string, []any) {
+	args := []any{q.AuthorID, q.Limit + 1}
+	query := `SELECT ` + postCols + `, ` + authorLikesSelect(q.Sort) + `
+		FROM posts
+		WHERE author_id = $1 AND deleted_at IS NULL AND publish_at IS NULL`
+	if !q.IncludeNonApproved {
+		query += " AND " + viewerApprovedSQL
 	}
-	if sort == "" {
-		sort = AuthorSortLatest
+	if q.MembersOnly {
+		query += ` AND tier_required_id IS NOT NULL`
 	}
+	if q.ContentType != "" && q.ContentType != "all" {
+		args = append(args, q.ContentType)
+		query += fmt.Sprintf(` AND content_type = $%d`, len(args))
+	}
+	orderBy, where, keyArgs := authorSortSQL(q.Sort, cur, len(args)+1)
+	if where != "" {
+		query += ` AND ` + where
+		args = append(args, keyArgs...)
+	}
+	query += ` ORDER BY ` + orderBy + ` LIMIT $2`
+	return query, args
+}
+
+// GetPostsByAuthorQuery answers one page of q. See the file comment for the
+// orders and the cursor.
+func (s *Store) GetPostsByAuthorQuery(ctx context.Context, q AuthorPostsQuery) ([]Post, string, error) {
+	if q.Limit <= 0 || q.Limit > 50 {
+		q.Limit = 20
+	}
+	if q.Sort == "" {
+		q.Sort = AuthorSortLatest
+	}
+	sort, limit := q.Sort, q.Limit
 	var cur *authorCursor
-	if cursor != "" {
-		c, err := decodeAuthorCursor(sort, cursor)
+	if q.Cursor != "" {
+		c, err := decodeAuthorCursor(sort, q.Cursor)
 		if err != nil {
 			return nil, "", err
 		}
 		cur = &c
 	}
 
-	args := []any{authorID, limit + 1}
-	query := `SELECT ` + postCols + `, ` + authorLikesSelect(sort) + `
-		FROM posts
-		WHERE author_id = $1 AND deleted_at IS NULL AND publish_at IS NULL`
-	if !includeNonApproved {
-		query += " AND " + viewerApprovedSQL
-	}
-	if contentType != "" && contentType != "all" {
-		args = append(args, contentType)
-		query += fmt.Sprintf(` AND content_type = $%d`, len(args))
-	}
-	orderBy, where, keyArgs := authorSortSQL(sort, cur, len(args)+1)
-	if where != "" {
-		query += ` AND ` + where
-		args = append(args, keyArgs...)
-	}
-	query += ` ORDER BY ` + orderBy + ` LIMIT $2`
-
+	query, args := authorPostsSQL(q, cur)
 	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
 		return nil, "", err

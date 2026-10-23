@@ -266,6 +266,16 @@ type Service struct {
 	batchPostsSeam  func(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) (map[uuid.UUID]*PostDetail, error)
 	postGateSeam    func(ctx context.Context, postID uuid.UUID) (uuid.UUID, *uuid.UUID, error)
 	membershipGates membershipGateStore
+	// creatorTiersSeam stands in for monetization-service's public tier list
+	// (members_tiers.go): the gate validation on every write and the
+	// required-price lookup on gated rows.
+	creatorTiersSeam func(ctx context.Context, creatorID uuid.UUID) ([]CreatorTierRef, error)
+	// createPostWriteSeam stands in for CreatePostWithEventIdempotent: the
+	// one write that commits a new post row and its PostCreated together.
+	createPostWriteSeam func(ctx context.Context, p *postgres.Post, eventType string, payload interface{}, idem *postgres.CreateIdempotency) error
+	// createIdemLookupSeam stands in for LookupCreateIdempotency, the create
+	// route's replay read (found=false: a new intent).
+	createIdemLookupSeam func(ctx context.Context, actorID uuid.UUID, key string) (uuid.UUID, string, bool, error)
 	// engagementPostSeam stands in for loadPostForEngagement (the post and
 	// its visibility decision) and commentLookupSeam for the visible-comment
 	// read, so the comment routes' members gate can be driven without a
@@ -706,6 +716,13 @@ type CreatePostInput struct {
 	// Video credits (2026-10-23, credits.go), long videos only. Validated
 	// and linked by CreatePost; written in the post's transaction.
 	VideoCredits VideoCreditFields
+
+	// TierRequiredID gates the post on one of the author's membership tiers
+	// from birth (members_tiers.go). nil = open to everyone. CreatePost
+	// checks it against monetization-service before anything is written and
+	// stores it on the row in the post's own transaction, so the post is
+	// never public for a moment and its PostCreated already carries the gate.
+	TierRequiredID *uuid.UUID
 }
 
 // CreatePollInput holds poll creation data.
@@ -1022,7 +1039,7 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// CreatePostWithEventIdempotent, because another request can claim the key
 	// between this lookup and that insert.
 	if input.CreateKey != "" {
-		postID, fingerprint, found, lookupErr := s.pgStore.LookupCreateIdempotency(
+		postID, fingerprint, found, lookupErr := s.lookupCreateIdempotency(
 			ctx, input.AuthorID, input.CreateKey)
 		if lookupErr != nil {
 			// Fail closed: an unreadable authority must not become "assume new".
@@ -1096,6 +1113,13 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	taggedUsers, tagErr := NormalizeTaggedUsers(input.AuthorID, input.TaggedUserIDs)
 	if tagErr != nil {
 		return nil, tagErr
+	}
+
+	// Members-only from birth (members_tiers.go): the tier must be one of
+	// the author's active tiers. A tier list monetization-service cannot
+	// answer refuses the create (503) — never a post created open.
+	if err := s.ValidateTierForAuthor(ctx, input.AuthorID, input.TierRequiredID); err != nil {
+		return nil, err
 	}
 
 	// REMOVED 21 Sep: "Trusted Circle after-hours protection", which
@@ -1219,6 +1243,9 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		Genres:            videoCredits.Genres,
 		ReleaseYear:       videoCredits.ReleaseYear,
 		ProductionHouse:   productionHouse,
+		// Written by the insert itself (posts.tier_required_id), in the
+		// same transaction as the row and its PostCreated outbox event.
+		TierRequiredID: copyTierID(input.TierRequiredID),
 	}
 
 	// Persist the validated policy verbatim; rev 1 marks "has a policy",
@@ -1469,9 +1496,7 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 			Fingerprint: input.CreateFingerprint,
 		}
 	}
-	if err := s.pgStore.CreatePostWithEventIdempotent(
-		ctx, p, createEventType, createPayload, idem,
-	); err != nil {
+	if err := s.writeCreatedPost(ctx, p, createEventType, createPayload, idem); err != nil {
 		// A concurrent request won the key. Whether it was the same intent
 		// decides between replaying its post and refusing the reuse.
 		var replay postgres.ErrCreateKeyReplay
@@ -1572,7 +1597,9 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	}
 
 	// Invalidate author content counts cache
-	s.rdb.Del(ctx, fmt.Sprintf("post:author-counts:%s", input.AuthorID))
+	if s.rdb != nil {
+		s.rdb.Del(ctx, fmt.Sprintf("post:author-counts:%s", input.AuthorID))
+	}
 
 	// PostCreated rides the same transaction as the post row (see
 	// CreatePostWithEventIdempotent above) — the outbox worker publishes it
@@ -1798,6 +1825,36 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 // postgres/author_sort.go). A cursor minted for another sort, or one that does
 // not decode, is postgres.ErrInvalidAuthorCursor.
 func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, contentType string, sort postgres.AuthorPostSort, limit int, cursor string, viewerID *uuid.UUID) ([]PostDetail, string, error) {
+	return s.GetPostsByAuthorFiltered(ctx, AuthorListFilter{
+		AuthorID: authorID, ContentType: contentType, Sort: sort, Limit: limit, Cursor: cursor,
+	}, viewerID)
+}
+
+// AuthorListFilter is one page of GET /v1/posts/by-author/:id. MembersOnly
+// (?members_only=true, 2026-10-23) keeps only the author's members-only
+// posts; every row still goes through the members-only rule, so a
+// non-member gets them redacted (the "members" shelf of a profile shows the
+// lock cards).
+type AuthorListFilter struct {
+	AuthorID    uuid.UUID
+	ContentType string
+	Sort        postgres.AuthorPostSort
+	Limit       int
+	Cursor      string
+	MembersOnly bool
+}
+
+// authorPostsQuery is the store query for one page of f.
+func authorPostsQuery(f AuthorListFilter, isAuthor bool) postgres.AuthorPostsQuery {
+	return postgres.AuthorPostsQuery{
+		AuthorID: f.AuthorID, ContentType: f.ContentType, Sort: f.Sort, Limit: f.Limit, Cursor: f.Cursor,
+		IncludeNonApproved: isAuthor, MembersOnly: f.MembersOnly,
+	}
+}
+
+// GetPostsByAuthorFiltered is GetPostsByAuthor with the list's filters.
+func (s *Service) GetPostsByAuthorFiltered(ctx context.Context, f AuthorListFilter, viewerID *uuid.UUID) ([]PostDetail, string, error) {
+	authorID := f.AuthorID
 	isAuthor := viewerID != nil && *viewerID == authorID
 	// Private account: the whole grid is follower-only. An empty page — not
 	// an error — is the honest answer for a stranger: the profile itself
@@ -1806,7 +1863,7 @@ func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, cont
 	if !isAuthor && !s.canViewAuthor(ctx, viewerID, authorID) {
 		return []PostDetail{}, "", nil
 	}
-	posts, nextCursor, err := s.pgStore.GetPostsByAuthorSorted(ctx, authorID, contentType, sort, limit, cursor, isAuthor)
+	posts, nextCursor, err := s.pgStore.GetPostsByAuthorQuery(ctx, authorPostsQuery(f, isAuthor))
 	if err != nil {
 		return nil, "", err
 	}
@@ -1856,6 +1913,11 @@ func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, cont
 	for _, p := range posts {
 		post := p // copy to avoid pointer reuse
 		if !isAuthor && !profileGridAllows(post.Visibility, viewerFollows, viewerMutual) {
+			continue
+		}
+		// The store filters on the gate; an open row is never on the
+		// members-only list whatever it answered.
+		if f.MembersOnly && post.TierRequiredID == nil {
 			continue
 		}
 		counts, _ := s.countsForPost(ctx, p.ID)

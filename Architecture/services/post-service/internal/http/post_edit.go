@@ -90,6 +90,38 @@ type updatePostRequest struct {
 	Genres          *[]string               `json:"genres,omitempty"`
 	ReleaseYear     json.RawMessage         `json:"release_year,omitempty"`
 	ProductionHouse json.RawMessage         `json:"production_house,omitempty"`
+	// Members-only gate (2026-10-23), the alternative to PUT /membership: a
+	// tier id sets it (one of the caller's active tiers, else 400
+	// INVALID_TIER; 503 MEMBERSHIP_TIERS_UNAVAILABLE when that cannot be
+	// checked), null or "" clears it. Raw so null is told apart from absent.
+	TierRequiredID json.RawMessage `json:"tier_required_id,omitempty"`
+}
+
+// applyTierField decodes the raw tier_required_id of a PATCH into in. A
+// value that is neither a UUID string nor null / "" is ErrInvalidTier.
+func (req updatePostRequest) applyTierField(in *service.PostEditInput) error {
+	raw := req.TierRequiredID
+	if len(raw) == 0 {
+		return nil
+	}
+	if rawJSONNull(raw) {
+		in.ClearTierRequired = true
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return service.ErrInvalidTier
+	}
+	if s = strings.TrimSpace(s); s == "" {
+		in.ClearTierRequired = true
+		return nil
+	}
+	id, err := uuid.Parse(s)
+	if err != nil || id == uuid.Nil {
+		return service.ErrInvalidTier
+	}
+	in.TierRequiredID = &id
+	return nil
 }
 
 // applyCreditFields decodes the raw credit fields of a PATCH into in. A
@@ -157,6 +189,10 @@ func (h *Handler) UpdatePost(c *gin.Context) {
 		writePostEditError(c, err)
 		return
 	}
+	if err := req.applyTierField(&in); err != nil {
+		writePostEditError(c, err)
+		return
+	}
 	if req.CoverMediaID != nil {
 		id, err := uuid.Parse(strings.TrimSpace(*req.CoverMediaID))
 		if err != nil {
@@ -192,6 +228,11 @@ func writePostEditError(c *gin.Context, err error) {
 	}
 	if code == "MEDIA_TYPE_MISMATCH" {
 		msg = "cover_media_id must be an image"
+	}
+	// The tier refusals answer exactly as on create (writeTierGateError):
+	// the lookup error names monetization-service's address, never echoed.
+	if writeTierGateError(c, err) {
+		return
 	}
 	api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, msg, nil)
 }
@@ -508,12 +549,24 @@ func writeReadGateError(c *gin.Context, err error) bool {
 // writeMembersOnlyError answers a members-only post's comment-thread
 // refusal (service.ErrMembersOnly, members_read.go): 403 MEMBERS_ONLY. The
 // post exists and the caller may see its preview, so this is not the 404
-// the read gate gives; counts stay readable on the post itself.
+// the read gate gives; counts stay readable on the post itself. details
+// names the gate — {creator_id, tier_required_id} — so the client can open
+// the Join sheet on the right creator and level; absent only for a bare
+// ErrMembersOnly that carries no gate.
 func writeMembersOnlyError(c *gin.Context, err error) bool {
 	if !errors.Is(err, service.ErrMembersOnly) {
 		return false
 	}
+	var details any
+	var gate *service.MembersOnlyError
+	if errors.As(err, &gate) && gate.CreatorID != uuid.Nil {
+		d := gin.H{"creator_id": gate.CreatorID.String()}
+		if gate.TierRequiredID != uuid.Nil {
+			d["tier_required_id"] = gate.TierRequiredID.String()
+		}
+		details = d
+	}
 	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "MEMBERS_ONLY",
-		"Comments on this post are for members only", nil)
+		"Comments on this post are for members only", details)
 	return true
 }

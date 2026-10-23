@@ -75,6 +75,20 @@ func (s *Service) SetPostMembershipGate(ctx context.Context, postID uuid.UUID, t
 	if store == nil {
 		return ErrAuthoringStoreUnavailable
 	}
+	// Setting a gate names one of the author's active tiers (the rule every
+	// gate write shares, members_tiers.go); clearing one needs no lookup.
+	if tierID != nil {
+		authorID, _, err := store.GetPostAuthorAndGate(ctx, postID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrPostNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if err := s.ValidateTierForAuthor(ctx, authorID, tierID); err != nil {
+			return err
+		}
+	}
 	if err := store.SetPostMembershipGate(ctx, postID, tierID); err != nil {
 		return err
 	}
@@ -286,6 +300,8 @@ func RedactGatedPost(p *postgres.Post) {
 	p.Mentions = nil
 	p.MentionUsernames = nil
 	p.Tags = nil
+	// Who is in it is part of what members pay to see.
+	p.TaggedUserIDs = nil
 	p.LinkURL = nil
 	p.LocationName = nil
 	p.LocationLat = nil

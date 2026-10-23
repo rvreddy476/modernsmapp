@@ -82,6 +82,14 @@ type PostEditPatch struct {
 	ClearProductionHouse bool
 	Credits              *CreditsWrite
 
+	// Members-only gate (2026-10-23): TierRequiredID sets tier_required_id
+	// (the service checked it is one of the author's active tiers);
+	// ClearTierRequired writes NULL and wins. A change bumps search_rev and
+	// emits PostSearchEligibilityChanged (carrying the gate) in this
+	// transaction, as PUT /membership does.
+	TierRequiredID    *uuid.UUID
+	ClearTierRequired bool
+
 	// Distribution replaces posts.distribution (the service built it from
 	// the stored policy plus notify_subscribers). When set, the same
 	// transaction bumps distribution_rev and writes DistributionEvent(rev)
@@ -171,6 +179,7 @@ func (s *Store) UpdatePostFields(ctx context.Context, postID, actorID uuid.UUID,
 			genres               = COALESCE($34::text[], genres),
 			release_year         = CASE WHEN $36::boolean THEN NULL ELSE COALESCE($35::int, release_year) END,
 			production_house     = CASE WHEN $38::boolean THEN NULL ELSE COALESCE($37::text, production_house) END,
+			tier_required_id     = CASE WHEN $40::boolean THEN NULL ELSE COALESCE($39::uuid, tier_required_id) END,
 			updated_at       = NOW()
 		WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
 		RETURNING `+postCols,
@@ -185,7 +194,8 @@ func (s *Store) UpdatePostFields(ctx context.Context, postID, actorID uuid.UUID,
 		patch.RelatedPostID, patch.ClearRelatedPost, jsonArg(patch.Distribution),
 		patch.IsBranded, patch.AIGenerated, patch.LinkURL, patch.ClearLinkURL,
 		textArrayArg(patch.Genres), patch.ReleaseYear, patch.ClearReleaseYear,
-		patch.ProductionHouse, patch.ClearProductionHouse))
+		patch.ProductionHouse, patch.ClearProductionHouse,
+		patch.TierRequiredID, patch.ClearTierRequired))
 	if err != nil {
 		return nil, fmt.Errorf("update post fields: %w", err)
 	}
@@ -220,7 +230,7 @@ func (s *Store) UpdatePostFields(ctx context.Context, postID, actorID uuid.UUID,
 	// Search re-reads the post when its visibility or anything search
 	// indexes about a long video's credits changed (migration 070): the
 	// document is replaced whole by the eligibility event.
-	if creditSearchChanged(changes) {
+	if creditSearchChanged(changes) || tierChanged(changes) {
 		if _, visChanged := changes["visibility"]; !visChanged {
 			if err := BumpSearchRevAndEmitTx(ctx, tx, postID); err != nil {
 				return nil, fmt.Errorf("emit search eligibility on credits edit: %w", err)
@@ -361,7 +371,27 @@ func postEditChanges(before *Post, patch PostEditPatch) map[string]PostEditChang
 	if from, to := optString(before.ProductionHouse), nextProductionHouse(before.ProductionHouse, patch); from != to {
 		changes["production_house"] = PostEditChange{From: from, To: to}
 	}
+	if from, to := uuidString(before.TierRequiredID), nextTierRequired(before.TierRequiredID, patch); from != to {
+		changes["tier_required_id"] = PostEditChange{From: from, To: to}
+	}
 	return changes
+}
+
+// tierChanged reports an edit to the members-only gate: search must drop a
+// newly gated post and re-admit one whose gate was cleared.
+func tierChanged(changes map[string]PostEditChange) bool {
+	_, ok := changes["tier_required_id"]
+	return ok
+}
+
+func nextTierRequired(cur *uuid.UUID, patch PostEditPatch) string {
+	switch {
+	case patch.ClearTierRequired:
+		return ""
+	case patch.TierRequiredID != nil:
+		return patch.TierRequiredID.String()
+	}
+	return uuidString(cur)
 }
 
 // creditSearchChanged reports an edit to what search indexes about a long

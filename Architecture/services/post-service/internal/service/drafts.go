@@ -71,6 +71,46 @@ type UpdateDraftInput struct {
 	Genres          *[]string               `json:"genres"`
 	ReleaseYear     json.RawMessage         `json:"release_year"`
 	ProductionHouse json.RawMessage         `json:"production_house"`
+	// TierRequiredID is the members-only gate the post gets at publication
+	// (migration 071, members_tiers.go): a tier UUID string; null or ""
+	// clears it. Raw so null is told apart from absent. Anything else is
+	// ErrInvalidDraftTier. Whether it is one of the author's active tiers is
+	// asked at publication, by CreatePost.
+	TierRequiredID json.RawMessage `json:"tier_required_id"`
+}
+
+// ErrInvalidDraftTier: tier_required_id on a draft patch is neither a UUID
+// string nor null / "" (which clear it). It matches ErrInvalidTier, so the
+// routes answer 400 INVALID_TIER.
+var ErrInvalidDraftTier = fmt.Errorf("%w: tier_required_id must be a tier id, or null to clear it", ErrInvalidTier)
+
+// draftTierUpdates resolves a patch's tier_required_id into the column
+// write, before anything is written: absent leaves it, null / "" clears it,
+// a UUID sets it.
+func draftTierUpdates(input *UpdateDraftInput, updates map[string]interface{}) error {
+	raw := input.TierRequiredID
+	if len(raw) == 0 {
+		return nil
+	}
+	if rawNull(raw) {
+		updates["tier_required_id"] = nil
+		return nil
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return ErrInvalidDraftTier
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		updates["tier_required_id"] = nil
+		return nil
+	}
+	id, err := uuid.Parse(s)
+	if err != nil || id == uuid.Nil {
+		return ErrInvalidDraftTier
+	}
+	updates["tier_required_id"] = id
+	return nil
 }
 
 // draftCreditUpdates resolves the credit fields of a reel-draft patch into
@@ -290,6 +330,9 @@ func (s *Service) UpdateDraft(ctx context.Context, draftID uuid.UUID, authorID u
 		return nil, err
 	}
 	if err := draftPublishUpdates(input, updates); err != nil {
+		return nil, err
+	}
+	if err := draftTierUpdates(input, updates); err != nil {
 		return nil, err
 	}
 	if draftSetsCredits(input) {
@@ -586,6 +629,10 @@ func applyDraftScreenFields(input *CreatePostInput, draft *postgres.ReelDraft) {
 		input.ContentType = *draft.ContentType
 	}
 	input.Hashtags = draft.Hashtags
+	// Members-only from birth (migration 071): CreatePost checks the tier
+	// and writes it on the row, so a draft meant for members never
+	// publishes open.
+	input.TierRequiredID = copyTierID(draft.TierRequiredID)
 	input.SEOTitle = draft.SEOTitle
 	input.RecordingDate = draft.RecordingDate
 	input.RecordingLocation = draft.RecordingLocation
@@ -689,6 +736,13 @@ func (s *Service) publishClaimedReelDraft(ctx context.Context, draftID, authorID
 				s.pgStore.MarkDraftPublished(ctx, draftID, existing.ID) //nolint:errcheck
 				return existing, nil
 			}
+		}
+		// A tier that is no longer the author's is terminal: park the draft
+		// (the author re-arms it by editing) rather than retry it forever.
+		// An unreachable monetization-service is transient: the caller
+		// releases the claim. Neither publishes the post open.
+		if errors.Is(err, ErrInvalidTier) {
+			s.pgStore.MarkReelDraftBlocked(ctx, draftID, BlockReasonInvalidTier) //nolint:errcheck
 		}
 		return nil, fmt.Errorf("publish claimed draft: %w", err)
 	}

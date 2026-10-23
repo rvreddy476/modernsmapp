@@ -54,6 +54,9 @@ var draftReachesPost = map[string][]string{
 	"Genres":          {"VideoCredits"},
 	"ReleaseYear":     {"VideoCredits"},
 	"ProductionHouse": {"VideoCredits"},
+	// Members-only from birth (migration 071): the gate the post is
+	// created with, checked by CreatePost.
+	"TierRequiredID": {"TierRequiredID"},
 }
 
 // draftOnly lists the UpdateDraftInput fields that deliberately do NOT

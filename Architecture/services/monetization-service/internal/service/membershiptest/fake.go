@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -698,6 +699,36 @@ func (f *Store) ListSubscriberMemberships(_ context.Context, subscriberID uuid.U
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].CurrentPeriodEnd.After(out[j].CurrentPeriodEnd) })
+	return out, nil
+}
+
+// ListCreatorMembers mirrors the store: the creator's activated, live
+// subscriptions, newest first by (activated_at, id), after the cursor.
+func (f *Store) ListCreatorMembers(_ context.Context, creatorID uuid.UUID, after *postgres.MemberCursor, limit int) ([]postgres.Subscription, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	before := func(aAt time.Time, aID uuid.UUID, bAt time.Time, bID uuid.UUID) bool { // (a) < (b)
+		if !aAt.Equal(bAt) {
+			return aAt.Before(bAt)
+		}
+		return strings.Compare(aID.String(), bID.String()) < 0
+	}
+	var out []postgres.Subscription
+	for _, s := range f.Subs {
+		if s.CreatorID != creatorID || s.ActivatedAt == nil || !postgres.IsLiveSubscriptionStatus(s.Status) {
+			continue
+		}
+		if after != nil && !before(*s.ActivatedAt, s.ID, after.ActivatedAt, after.ID) {
+			continue
+		}
+		out = append(out, *s)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return before(*out[j].ActivatedAt, out[j].ID, *out[i].ActivatedAt, out[i].ID)
+	})
+	if limit >= 0 && len(out) > limit {
+		out = out[:limit]
+	}
 	return out, nil
 }
 

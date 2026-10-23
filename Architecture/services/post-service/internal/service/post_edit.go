@@ -126,6 +126,13 @@ type PostEditInput struct {
 	ReleaseYear      *int
 	ClearReleaseYear bool
 	ProductionHouse  *string
+
+	// Members-only gate (2026-10-23, members_tiers.go), the edit's
+	// alternative to PUT /membership: TierRequiredID sets it (one of the
+	// author's active tiers, checked live), ClearTierRequired (null or "" on
+	// the wire) opens the post; it wins over TierRequiredID.
+	TierRequiredID    *uuid.UUID
+	ClearTierRequired bool
 }
 
 // setsVideoCredits reports an edit that puts credit data on the post (a
@@ -311,6 +318,17 @@ func (s *Service) buildPostEditPatch(ctx context.Context, current *postgres.Post
 	}
 	if err := s.buildCreditsPatch(ctx, current, in, &patch); err != nil {
 		return patch, err
+	}
+	// The gate last: it asks monetization-service, and a refusal (400
+	// INVALID_TIER, 503 when unreadable) writes nothing.
+	switch {
+	case in.ClearTierRequired:
+		patch.ClearTierRequired = true
+	case in.TierRequiredID != nil:
+		if err := s.ValidateTierForAuthor(ctx, current.AuthorID, in.TierRequiredID); err != nil {
+			return patch, err
+		}
+		patch.TierRequiredID = copyTierID(in.TierRequiredID)
 	}
 	return patch, nil
 }

@@ -135,6 +135,13 @@ type Post struct {
 	// carried off the media the redaction clears so the join card can show
 	// it. Absent (0) on every other row, and never stored or cached.
 	DurationMs int `json:"duration_ms,omitempty"`
+	// TierRequiredPricePaise is the monthly price of the tier a members-only
+	// row is gated on (service.attachTierPrices, 2026-10-23), so the Join
+	// sheet can show which levels unlock it. Set on gated rows of the reads
+	// that run the members-only rule, looked up once per creator per page;
+	// absent when the price is unknown (lookup failed, tier inactive) and on
+	// every open row. Never stored or cached.
+	TierRequiredPricePaise *int64 `json:"tier_required_price_paise,omitempty"`
 	// Distribution is the typed, versioned scalar policy (Module 1 P0-1).
 	// NULL means "no policy — legacy behavior". DistributionRev increases
 	// monotonically on every policy change so consumers can drop stale

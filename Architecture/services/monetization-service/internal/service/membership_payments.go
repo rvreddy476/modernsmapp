@@ -455,59 +455,6 @@ func (s *Service) RefundMembershipPayment(ctx context.Context, actorID, paymentI
 }
 
 // ---------------------------------------------------------------------------
-// My memberships
-// ---------------------------------------------------------------------------
-
-// MembershipView is one row of GET /memberships.
-type MembershipView struct {
-	SubscriptionID   uuid.UUID          `json:"subscription_id"`
-	Creator          MembershipCreator  `json:"creator"`
-	Tier             MembershipTierView `json:"tier"`
-	Status           string             `json:"status"`
-	CurrentPeriodEnd time.Time          `json:"current_period_end"`
-	AccessUntil      *time.Time         `json:"access_until"`
-	RenewAvailable   bool               `json:"renew_available"`
-}
-
-// MembershipCreator is the creator of a membership.
-type MembershipCreator struct {
-	ID uuid.UUID `json:"id"`
-}
-
-// MembershipTierView is the tier a membership is on, at its locked price.
-type MembershipTierView struct {
-	ID         uuid.UUID `json:"id"`
-	Name       string    `json:"name"`
-	PricePaise int64     `json:"price_paise"`
-}
-
-// ListMyMemberships returns the caller's memberships: live, pending, and
-// ended ones still inside the 30-day renewal window.
-func (s *Service) ListMyMemberships(ctx context.Context, subscriberID uuid.UUID) ([]MembershipView, error) {
-	now := s.clock()
-	subs, err := s.members.ListSubscriberMemberships(ctx, subscriberID, now.Add(-membership.RenewAfterExpiryWindow))
-	if err != nil {
-		return nil, err
-	}
-	out := make([]MembershipView, 0, len(subs))
-	for i := range subs {
-		sub := &subs[i]
-		v := MembershipView{
-			SubscriptionID: sub.ID, Creator: MembershipCreator{ID: sub.CreatorID},
-			Tier:   MembershipTierView{ID: sub.TierID, Name: sub.TierName, PricePaise: sub.PricePaise},
-			Status: sub.Status, CurrentPeriodEnd: sub.CurrentPeriodEnd,
-			RenewAvailable: membership.CanRenew(sub.Status, sub.ActivatedAt != nil, sub.CurrentPeriodEnd, now),
-		}
-		if until, ok := SubscriptionAccessUntil(sub); ok {
-			u := until
-			v.AccessUntil = &u
-		}
-		out = append(out, v)
-	}
-	return out, nil
-}
-
-// ---------------------------------------------------------------------------
 // Eligibility to offer memberships
 // ---------------------------------------------------------------------------
 

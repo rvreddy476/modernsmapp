@@ -14,6 +14,7 @@ package http
 import (
 	"errors"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/atpost/monetization-service/internal/service"
@@ -46,6 +47,8 @@ var membershipRoutes = []betaRule{
 	{http.MethodPost, "/v1/monetization/subscriptions/:id/renew"},
 	{http.MethodGet, "/v1/monetization/subscriptions/:id/events"},
 	{http.MethodGet, "/v1/monetization/memberships"},
+	{http.MethodGet, "/v1/monetization/memberships/:subscriptionId"},
+	{http.MethodGet, "/v1/monetization/members"},
 	{http.MethodGet, "/v1/monetization/memberships/payments/:paymentId"},
 	{http.MethodPost, "/v1/monetization/memberships/payments/:paymentId/verify"},
 }
@@ -85,6 +88,8 @@ func (h *Handler) membershipGate(method, pattern string) (handled, allow bool, c
 func (h *Handler) registerMembershipRoutes(v1 *gin.RouterGroup) {
 	v1.POST("/subscriptions/:id/renew", h.RenewSubscription)
 	v1.GET("/memberships", h.ListMyMemberships)
+	v1.GET("/memberships/:subscriptionId", h.GetMyMembership)
+	v1.GET("/members", h.ListCreatorMembers)
 	v1.GET("/memberships/payments/:paymentId", h.GetMembershipPayment)
 	v1.POST("/memberships/payments/:paymentId/verify", h.VerifyMembershipPayment)
 	v1.GET("/creators/:creatorId/membership-eligibility", h.GetMembershipEligibility)
@@ -135,6 +140,10 @@ func writeMembershipError(c *gin.Context, err error) {
 		e(http.StatusBadRequest, "TIER_INACTIVE", "Tier is not active")
 	case errors.Is(err, postgres.ErrSubscriptionStateChanged):
 		e(http.StatusConflict, "SUBSCRIPTION_STATE_CHANGED", "The subscription changed while this request was running; nothing was charged")
+	case errors.Is(err, service.ErrMembershipNotFound):
+		e(http.StatusNotFound, "NOT_FOUND", "Membership not found")
+	case errors.Is(err, service.ErrInvalidMembersCursor):
+		e(http.StatusBadRequest, "INVALID_CURSOR", "cursor is not valid")
 	case errors.Is(err, service.ErrMembershipPaymentNotFound):
 		e(http.StatusNotFound, "NOT_FOUND", "Payment not found")
 	case errors.Is(err, postgres.ErrRefundNotAllowed):
@@ -336,6 +345,54 @@ func (h *Handler) ListMyMemberships(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// GetMyMembership — GET /v1/monetization/memberships/:subscriptionId. The
+// subscriber's own only: anyone else's, and an id that is not one, is 404.
+func (h *Handler) GetMyMembership(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	subID, err := uuid.Parse(c.Param("subscriptionId"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Membership not found", nil)
+		return
+	}
+	v, err := h.svc.GetMyMembership(c.Request.Context(), userID, subID)
+	if err != nil {
+		writeMembershipError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, v, nil)
+}
+
+// ListCreatorMembers — GET /v1/monetization/members?cursor=&limit=. The
+// caller's own members, as their creator; meta.next_cursor pages on.
+func (h *Handler) ListCreatorMembers(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	limit := service.DefaultMembersPageSize
+	if raw := strings.TrimSpace(c.Query("limit")); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n <= 0 {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "limit must be a positive number", nil)
+			return
+		}
+		limit = n
+	}
+	rows, next, err := h.svc.ListCreatorMembers(c.Request.Context(), userID, c.Query("cursor"), limit)
+	if err != nil {
+		writeMembershipError(c, err)
+		return
+	}
+	var meta *api.Meta
+	if next != "" {
+		meta = &api.Meta{NextCursor: next}
+	}
+	api.JSON(c.Writer, http.StatusOK, rows, meta)
 }
 
 // GetMembershipEligibility — GET /v1/monetization/creators/:creatorId/

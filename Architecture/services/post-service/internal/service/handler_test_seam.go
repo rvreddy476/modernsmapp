@@ -82,6 +82,13 @@ type HandlerTestDeps struct {
 	PostGate               func(ctx context.Context, postID uuid.UUID) (uuid.UUID, *uuid.UUID, error)
 	MembershipGates        membershipGateStore
 	MonetizationServiceURL string
+	// CreatorTiers stands in for monetization-service's public tier list
+	// (members_tiers.go): the gate check on writes and the required price on
+	// gated rows. nil reads monetization-service at MonetizationServiceURL.
+	CreatorTiers func(ctx context.Context, creatorID uuid.UUID) ([]CreatorTierRef, error)
+	// CreateIdempotencyLookup stands in for the create route's replay read,
+	// so POST /v1/posts reaches its guards without a database.
+	CreateIdempotencyLookup func(ctx context.Context, actorID uuid.UUID, key string) (uuid.UUID, string, bool, error)
 	// EngagementPost stands in for loadPostForEngagement and CommentLookup
 	// for the visible-comment read (the comment routes' members gate).
 	EngagementPost func(ctx context.Context, postID, viewerID uuid.UUID) (*postgres.Post, error)
@@ -136,6 +143,8 @@ func NewForHandlerTests(d HandlerTestDeps) *Service {
 		postGateSeam:           d.PostGate,
 		membershipGates:        d.MembershipGates,
 		monetizationServiceURL: d.MonetizationServiceURL,
+		creatorTiersSeam:       d.CreatorTiers,
+		createIdemLookupSeam:   d.CreateIdempotencyLookup,
 		engagementPostSeam:     d.EngagementPost,
 		commentLookupSeam:      d.CommentLookup,
 	}

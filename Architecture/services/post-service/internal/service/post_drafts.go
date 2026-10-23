@@ -109,6 +109,13 @@ type PostDraftPayload struct {
 	Genres          []string               `json:"genres,omitempty"`
 	ReleaseYear     *int                   `json:"release_year,omitempty"`
 	ProductionHouse string                 `json:"production_house,omitempty"`
+
+	// ── Members-only (2026-10-23, members_tiers.go) ─────────────────────
+	// The tier the post is gated on from birth. Stored with the draft;
+	// checked against the author's active tiers and written on the post's
+	// row at publication (CreatePost), so a scheduled members-only post is
+	// never published open. Absent = open.
+	TierRequiredID *uuid.UUID `json:"tier_required_id,omitempty"`
 }
 
 // videoCredits is the payload's credit fields.
@@ -218,6 +225,11 @@ func validateDraftDetails(postType string, payload *PostDraftPayload) error {
 	}
 	if _, _, err := validatedVideoCredits(draftPayloadKind(postType, payload), payload.videoCredits(), time.Now()); err != nil {
 		return bad(err)
+	}
+	// Whether the tier is one of the author's active tiers is asked at
+	// publication (CreatePost), when it matters; the nil id is never one.
+	if payload.TierRequiredID != nil && *payload.TierRequiredID == uuid.Nil {
+		return bad(ErrInvalidTier)
 	}
 	return nil
 }
@@ -437,9 +449,11 @@ func (s *Service) publishDraftRow(ctx context.Context, d *postgres.PostDraft, in
 				return existing, nil
 			}
 		}
-		// Content rejection (spam et al) is terminal → blocked with
-		// reason; infra errors are transient → release for retry.
-		if strings.Contains(err.Error(), "content rejected") {
+		// Content rejection (spam et al) and a tier that is not the
+		// author's any more are terminal → blocked with reason; infra
+		// errors (monetization unreachable included) are transient →
+		// release for retry. Neither ever publishes the post open.
+		if strings.Contains(err.Error(), "content rejected") || errors.Is(err, ErrInvalidTier) {
 			s.pgStore.MarkPostDraftBlocked(ctx, d.ID, err.Error(), d.ClaimToken) //nolint:errcheck
 		} else {
 			s.pgStore.ReleasePostDraftClaim(ctx, d.ID, d.ClaimToken) //nolint:errcheck
@@ -664,6 +678,8 @@ func buildDraftCreateInput(d *postgres.PostDraft, payload *PostDraftPayload) *Cr
 	}
 	// Video credits: CreatePost validates and links them again.
 	input.VideoCredits = payload.videoCredits()
+	// Members-only: CreatePost checks the tier and writes it on the row.
+	input.TierRequiredID = copyTierID(payload.TierRequiredID)
 	// Unparseable ids were accepted at save time before this field existed
 	// on the payload; dropping one is better than failing a scheduled post
 	// the author is no longer looking at.

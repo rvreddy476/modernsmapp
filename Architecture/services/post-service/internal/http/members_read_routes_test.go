@@ -34,7 +34,14 @@ type membersRouteRig struct {
 	gatedComment          uuid.UUID
 	monetizationQuestions int
 	gates                 *fakeMembershipGates
+	// tierQuestions counts reads of the public tier list; tiersDown makes
+	// the rig's tier list fail.
+	tierQuestions int
+	tiersDown     bool
 }
+
+// rigTierPrice is the rig tier's monthly price, in paise.
+const rigTierPrice = 4900
 
 func newMembersRouteRig(t *testing.T, monetizationURL func(r *membersRouteRig) string) *membersRouteRig {
 	t.Helper()
@@ -81,6 +88,19 @@ func newMembersRouteRig(t *testing.T, monetizationURL func(r *membersRouteRig) s
 		},
 		MembershipGates: r.gates,
 	}
+	if url == "" {
+		// No monetization-service: the tier list comes from the rig (the
+		// author's one active tier), or fails while tiersDown is set.
+		deps.CreatorTiers = func(_ context.Context, creator uuid.UUID) ([]service.CreatorTierRef, error) {
+			if r.tiersDown {
+				return nil, errors.New("monetization unreachable")
+			}
+			if creator != r.author {
+				return []service.CreatorTierRef{}, nil
+			}
+			return []service.CreatorTierRef{{ID: r.tier, CreatorID: r.author, PricePaise: rigTierPrice, IsActive: true}}, nil
+		}
+	}
 	r.router = gin.New()
 	r.router.Use(gin.CustomRecovery(func(c *gin.Context, _ any) {
 		c.AbortWithStatus(http.StatusInternalServerError)
@@ -96,6 +116,17 @@ func newMembersRouteRig(t *testing.T, monetizationURL func(r *membersRouteRig) s
 func monetizationFake(t *testing.T) func(r *membersRouteRig) string {
 	return func(r *membersRouteRig) string {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			// The public tier list (members_tiers.go): the author's one
+			// active tier, a switched-off one, and nothing for anyone else.
+			if strings.HasPrefix(req.URL.Path, "/v1/monetization/creators/") && strings.HasSuffix(req.URL.Path, "/tiers") {
+				r.tierQuestions++
+				tiers := []map[string]any{}
+				if req.URL.Path == "/v1/monetization/creators/"+r.author.String()+"/tiers" {
+					tiers = append(tiers, map[string]any{"id": r.tier, "creator_id": r.author, "price_paise": rigTierPrice, "is_active": true})
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"data": tiers})
+				return
+			}
 			r.monetizationQuestions++
 			ok := req.URL.Path == "/v1/monetization/entitlements" &&
 				req.Header.Get("X-User-Id") == r.member.String() &&
@@ -176,6 +207,14 @@ func TestBatchRedactsMembersOnlyRowsPerViewer(t *testing.T) {
 			}
 			if gated["tier_required_id"] != r.tier.String() {
 				t.Fatalf("gated row lost tier_required_id: %v", gated)
+			}
+			// Every gated row says what its tier costs, for every viewer;
+			// the open row carries no price key at all.
+			if gated["tier_required_price_paise"] != float64(rigTierPrice) {
+				t.Fatalf("gated row tier_required_price_paise = %v, want %d: %v", gated["tier_required_price_paise"], rigTierPrice, gated)
+			}
+			if _, ok := open["tier_required_price_paise"]; ok {
+				t.Fatalf("the open row carries a tier price: %v", open)
 			}
 			if tc.full {
 				if gated["text"] != "the paid body" || gated["media"] == nil {
@@ -324,7 +363,7 @@ func TestMembershipPutRefusesAMalformedBody(t *testing.T) {
 func TestMembershipPutSetsAndClears(t *testing.T) {
 	r := newMembersRouteRig(t, nil)
 	path := "/v1/posts/" + r.gatedPost.String() + "/membership"
-	tier := uuid.New()
+	tier := r.tier // the author's own active tier
 	if w := r.do(http.MethodPut, path, &r.author, `{"tier_required_id":"`+tier.String()+`"}`); w.Code != http.StatusOK {
 		t.Fatalf("set: %d %s", w.Code, w.Body.String())
 	}
@@ -345,6 +384,79 @@ func TestMembershipPutSetsAndClears(t *testing.T) {
 	}
 	if len(r.gates.sets) != 3 {
 		t.Fatalf("a refused PUT changed the gate: %v", r.gates.sets)
+	}
+}
+
+// PUT /membership names one of the author's ACTIVE tiers: another
+// creator's, an unknown or a switched-off tier is 400 INVALID_TIER, and a
+// tier list monetization-service cannot answer is 503 — the gate unchanged
+// either way. Clearing needs no lookup, so it works while tiers are down.
+func TestMembershipPutChecksTheTier(t *testing.T) {
+	r := newMembersRouteRig(t, nil)
+	path := "/v1/posts/" + r.gatedPost.String() + "/membership"
+	for name, tier := range map[string]string{"unknown or another creator's": uuid.NewString()} {
+		w := r.do(http.MethodPut, path, &r.author, `{"tier_required_id":"`+tier+`"}`)
+		if w.Code != http.StatusBadRequest || codeOf(w) != "INVALID_TIER" {
+			t.Fatalf("%s: %d %s; want 400 INVALID_TIER", name, w.Code, w.Body.String())
+		}
+	}
+	r.tiersDown = true
+	w := r.do(http.MethodPut, path, &r.author, `{"tier_required_id":"`+r.tier.String()+`"}`)
+	if w.Code != http.StatusServiceUnavailable || codeOf(w) != "MEMBERSHIP_TIERS_UNAVAILABLE" {
+		t.Fatalf("tiers down: %d %s; want 503 MEMBERSHIP_TIERS_UNAVAILABLE", w.Code, w.Body.String())
+	}
+	if strings.Contains(w.Body.String(), "unreachable") {
+		t.Fatalf("the lookup error leaked into the body: %s", w.Body.String())
+	}
+	if len(r.gates.sets) != 0 {
+		t.Fatalf("a refused tier changed the gate: %v", r.gates.sets)
+	}
+	if w := r.do(http.MethodPut, path, &r.author, `{}`); w.Code != http.StatusOK || len(r.gates.sets) != 1 || r.gates.sets[0] != nil {
+		t.Fatalf("clear while tiers down: %d %s, store saw %v", w.Code, w.Body.String(), r.gates.sets)
+	}
+}
+
+// A non-member refused on a members-only thread is told which gate: details
+// {creator_id, tier_required_id}, so the Join sheet opens on the right
+// creator and level.
+func TestMembersOnlyRefusalNamesTheGate(t *testing.T) {
+	stranger := uuid.New()
+	r := newMembersRouteRig(t, monetizationFake(t))
+	w := r.do(http.MethodGet, "/v1/posts/"+r.gatedPost.String()+"/comments", &stranger, "")
+	if w.Code != http.StatusForbidden || codeOf(w) != "MEMBERS_ONLY" {
+		t.Fatalf("%d %s; want 403 MEMBERS_ONLY", w.Code, w.Body.String())
+	}
+	var body struct {
+		Error struct {
+			Details map[string]string `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Error.Details["creator_id"] != r.author.String() || body.Error.Details["tier_required_id"] != r.tier.String() {
+		t.Fatalf("details = %v, want creator_id %s and tier_required_id %s", body.Error.Details, r.author, r.tier)
+	}
+}
+
+// GET /v1/posts/by-author/:id?members_only takes true / false; anything
+// else is 400 before any read.
+func TestByAuthorMembersOnlyParam(t *testing.T) {
+	for raw, want := range map[string]bool{"": false, "false": false, "true": true, "TRUE": true, "1": true, "0": false} {
+		got, ok := parseMembersOnlyParam(raw)
+		if !ok || got != want {
+			t.Errorf("%q: got %v ok=%v, want %v", raw, got, ok, want)
+		}
+	}
+	for _, raw := range []string{"yes", "maybe", "2"} {
+		if _, ok := parseMembersOnlyParam(raw); ok {
+			t.Errorf("%q accepted", raw)
+		}
+	}
+	r := newMembersRouteRig(t, nil)
+	w := r.do(http.MethodGet, "/v1/posts/by-author/"+r.author.String()+"?members_only=yes", &r.author, "")
+	if w.Code != http.StatusBadRequest || codeOf(w) != "INVALID_REQUEST" {
+		t.Fatalf("members_only=yes: %d %s; want 400", w.Code, w.Body.String())
 	}
 }
 
