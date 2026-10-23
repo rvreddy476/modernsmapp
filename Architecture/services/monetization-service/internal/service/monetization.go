@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/atpost/monetization-service/internal/client/razorpayx"
+	"github.com/atpost/monetization-service/internal/payments"
 	"github.com/atpost/monetization-service/internal/store/postgres"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -66,6 +67,13 @@ type Service struct {
 	members MembershipStore
 	// now is the membership rules' clock; nil means time.Now (WithClock).
 	now func() time.Time
+
+	// Paid memberships on payments-service (membership_payments.go).
+	// membershipPayments nil: the membership money routes answer 503.
+	membershipPayments payments.API
+	membershipLocalEnv bool
+	membershipEvents   MembershipEventPublisher
+	eligibility        EligibilitySources
 }
 
 func New(s *postgres.Store, rdb *redis.Client) *Service {

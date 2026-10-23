@@ -297,29 +297,30 @@ func TestAdminToken_InternalFamilyRefusesKeyAndForgedActor(t *testing.T) {
 // the permission the route requires.
 func adminRoutePermissions() map[string]string {
 	return map[string]string{
-		"GET /stats":                               PermStatsRead,
-		"GET /fraud-reviews":                       PermFraudReview,
-		"PATCH /fraud-reviews/:id":                 PermFraudReview,
-		"POST /wallet/:userId/freeze":              PermWalletFreeze,
-		"POST /wallet/:userId/unfreeze":            PermWalletUnfreeze,
-		"POST /wallet/:userId/rebuild":             PermWalletRebuild,
-		"GET /creator-fund/rates":                  PermFundRead,
-		"PUT /creator-fund/rates":                  PermFundRates,
-		"PUT /creator-fund/quality-bands":          PermFundRates,
-		"POST /creator-fund/:userId/suspend":       PermCreatorsSuspend,
-		"POST /creator-fund/:userId/unsuspend":     PermCreatorsSuspend,
-		"POST /creator-fund/settle":                PermFundSettle,
-		"POST /creator-fund/settle-period":         PermFundSettle,
-		"POST /creator-fund/:userId/settle-period": PermFundSettle,
-		"POST /creator-fund/earnings/:id/reverse":  PermFundReverse,
-		"GET /creator-fund/earnings/:id":           PermFundRead,
-		"GET /creator-fund/budgets":                PermFundRead,
-		"PUT /creator-fund/budgets":                PermFundBudget,
-		"GET /disputes":                            PermDisputesRead,
-		"PATCH /disputes/:id":                      PermDisputesAct,
-		"POST /refunds":                            PermRefundIssue,
-		"GET /payout-requests":                     PermPayoutsRead,
-		"GET /audit-logs":                          PermAuditRead,
+		"GET /stats":                                   PermStatsRead,
+		"GET /fraud-reviews":                           PermFraudReview,
+		"PATCH /fraud-reviews/:id":                     PermFraudReview,
+		"POST /wallet/:userId/freeze":                  PermWalletFreeze,
+		"POST /wallet/:userId/unfreeze":                PermWalletUnfreeze,
+		"POST /wallet/:userId/rebuild":                 PermWalletRebuild,
+		"GET /creator-fund/rates":                      PermFundRead,
+		"PUT /creator-fund/rates":                      PermFundRates,
+		"PUT /creator-fund/quality-bands":              PermFundRates,
+		"POST /creator-fund/:userId/suspend":           PermCreatorsSuspend,
+		"POST /creator-fund/:userId/unsuspend":         PermCreatorsSuspend,
+		"POST /creator-fund/settle":                    PermFundSettle,
+		"POST /creator-fund/settle-period":             PermFundSettle,
+		"POST /creator-fund/:userId/settle-period":     PermFundSettle,
+		"POST /creator-fund/earnings/:id/reverse":      PermFundReverse,
+		"GET /creator-fund/earnings/:id":               PermFundRead,
+		"GET /creator-fund/budgets":                    PermFundRead,
+		"PUT /creator-fund/budgets":                    PermFundBudget,
+		"GET /disputes":                                PermDisputesRead,
+		"PATCH /disputes/:id":                          PermDisputesAct,
+		"POST /refunds":                                PermRefundIssue,
+		"POST /memberships/payments/:paymentId/refund": PermRefundIssue,
+		"GET /payout-requests":                         PermPayoutsRead,
+		"GET /audit-logs":                              PermAuditRead,
 	}
 }
 
@@ -457,8 +458,8 @@ func TestAdminToken_ReadsAreExactlyTheGets(t *testing.T) {
 			writes++
 		}
 	}
-	if reads != 8 || writes != 15 {
-		t.Fatalf("table has %d reads and %d writes, want 8 and 15 — update this test with the route table", reads, writes)
+	if reads != 8 || writes != 16 {
+		t.Fatalf("table has %d reads and %d writes, want 8 and 16 — update this test with the route table", reads, writes)
 	}
 	// The registrar's guard: a GET read and a POST write pass, a POST marked
 	// read panics.
@@ -513,12 +514,17 @@ func TestAdminToken_WritesDisabledServesReadsRefusesWrites(t *testing.T) {
 			continue
 		}
 		writes++
-		if w.Code != http.StatusServiceUnavailable || errorCode(t, w) != "MONETIZATION_NOT_LAUNCHED" {
+		// The membership refund follows MEMBERSHIPS_ENABLED (off here), not writes.
+		wantCode := "MONETIZATION_NOT_LAUNCHED"
+		if ri.Path == InternalAdminPrefix+MembershipRefundPath {
+			wantCode = "MEMBERSHIPS_NOT_ENABLED"
+		}
+		if w.Code != http.StatusServiceUnavailable || errorCode(t, w) != wantCode {
 			t.Fatalf("write %s %s with writes disabled: status=%d body=%s, want 503 MONETIZATION_NOT_LAUNCHED", ri.Method, ri.Path, w.Code, w.Body.String())
 		}
 	}
-	if reads != 8 || writes != 15 {
-		t.Fatalf("checked %d reads and %d writes, want 8 and 15", reads, writes)
+	if reads != 8 || writes != 16 {
+		t.Fatalf("checked %d reads and %d writes, want 8 and 16", reads, writes)
 	}
 	w := adminServe(r, http.MethodGet, probePath, ``, bearer(tok))
 	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), rg.actor.String()) {
@@ -550,7 +556,7 @@ func TestAdminToken_MaintenanceClosesNonCorrections(t *testing.T) {
 	r := routerFor(h)
 	tok := rg.allPermsToken(t)
 
-	closed := map[string]bool{"PATCH /disputes/:id": true, "POST /refunds": true}
+	closed := map[string]bool{"PATCH /disputes/:id": true, "POST /refunds": true, "POST " + MembershipRefundPath: true}
 	for _, rt := range h.adminRoutes() {
 		key := rt.method + " " + rt.path
 		if rt.maintenanceOpen == closed[key] {

@@ -20,9 +20,21 @@ import (
 // an in-memory store (23 Oct 2026).
 
 func membershipHandler() (*Handler, *membershiptest.Store) {
+	h, fake, _ := membershipRig()
+	return h, fake
+}
+
+// membershipRig is the handler over the real service with memberships on,
+// an in-memory store (every PAN verified), a fake payments-service and
+// eligibility sources that pass.
+func membershipRig() (*Handler, *membershiptest.Store, *membershiptest.Payments) {
 	fake := membershiptest.New()
-	svc := service.New(nil, nil).WithMembershipStore(fake)
-	return New(svc).WithWritesEnabled(true), fake
+	fake.AllPANVerified = true
+	pays := membershiptest.NewPayments()
+	elig := membershiptest.Eligible()
+	svc := service.New(nil, nil).WithMembershipStore(fake).WithMembershipPayments(pays, false).
+		WithEligibilitySources(service.EligibilitySources{BirthDates: elig, Followers: elig, Standing: elig})
+	return New(svc).WithWritesEnabled(true).WithMembershipsEnabled(true), fake, pays
 }
 
 func serveJSON(h *Handler, method, path, userID, body string, headers ...string) *httptest.ResponseRecorder {
@@ -107,13 +119,12 @@ func TestSubscribeWhileALiveSubscriptionExistsIs409(t *testing.T) {
 	h, fake := membershipHandler()
 	creator, fan := uuid.New(), uuid.New()
 	tier := fake.AddTier(creator, "Fan", 4_900)
-	fake.Balances[fan] = 100_000
 	fake.AddSubscription(postgres.Subscription{SubscriberID: fan, CreatorID: creator, TierID: tier.ID, Status: "paused",
 		CurrentPeriodEnd: time.Now().Add(time.Hour)})
 	w := serveJSON(h, http.MethodPost, "/v1/monetization/subscribe/"+creator.String(), fan.String(), `{"tier_id":"`+tier.ID.String()+`"}`)
 	wantCode(t, "paused subscription exists", w, http.StatusConflict, "ALREADY_SUBSCRIBED")
-	if len(fake.Charges) != 0 {
-		t.Fatalf("charged: %v", fake.Charges)
+	if len(fake.Payments) != 0 {
+		t.Fatalf("a payment was opened: %v", fake.Payments)
 	}
 }
 
@@ -213,12 +224,11 @@ func TestUpgradeAnswersWithTheTierChange(t *testing.T) {
 	creator, fan := uuid.New(), uuid.New()
 	bronze := fake.AddTier(creator, "Bronze", 4_900)
 	silver := fake.AddTier(creator, "Silver", 9_900)
-	fake.Balances[fan] = 100_000
 	now := time.Now()
 	sub := fake.AddSubscription(postgres.Subscription{SubscriberID: fan, CreatorID: creator, TierID: silver.ID, TierName: "Silver",
 		PricePaise: 9_900, Status: "active", CurrentPeriodStart: now.Add(-time.Hour), CurrentPeriodEnd: now.Add(29 * 24 * time.Hour)})
 	w := serveJSON(h, http.MethodPost, "/v1/monetization/subscriptions/"+sub.ID.String()+"/upgrade", fan.String(), `{"new_tier_id":"`+bronze.ID.String()+`"}`)
-	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"status":"downgrade_scheduled"`) || !strings.Contains(w.Body.String(), `"charged_paise":0`) {
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"status":"scheduled"`) || !strings.Contains(w.Body.String(), `"charged_paise":0`) {
 		t.Fatalf("%d %s", w.Code, w.Body.String())
 	}
 }

@@ -24,17 +24,17 @@ const holdAgeLimit = 30 * 24 * time.Hour
 // nothing touches a payout_requests row in the background. They also do
 // not start when payouts are enabled but the RazorpayX client is not
 // configured (svc.PayoutRailEnabled false): the rail is off and says so.
-// Everything else — renewals, holds, fundraisers, the fund's accrual and
+// Everything else — holds, fundraisers, the fund's accrual and
 // settlement — is unaffected by it.
 func StartAll(ctx context.Context, store *postgres.Store, producer *events.Producer, svc *service.Service, payoutsEnabled bool) {
 	slog.Info("starting monetization background workers", "payouts_enabled", payoutsEnabled)
 
-	go runSubscriptionRenewal(ctx, store, producer)
+	// Membership workers (sweep, grace, expiry, reminders, refunds, resume)
+	// are NOT started here: they follow MEMBERSHIPS_ENABLED, not the writes
+	// flag (StartMembershipWorkers, memberships.go). The wallet-charging
+	// renewal worker is gone (migration 025).
 	go runStaleHoldCleanup(ctx, store)
 	go runFundraiserExpiry(ctx, store, producer)
-	// Grace ends → cancelled; cancelled_at_period_end at period end → expired.
-	go runSubscriptionExpiry(ctx, store, producer)
-	go runPauseResume(ctx, store, producer)
 	go runLedgerReconciliation(ctx, store)
 	go runStuckTransactionDetector(ctx, store)
 	switch {

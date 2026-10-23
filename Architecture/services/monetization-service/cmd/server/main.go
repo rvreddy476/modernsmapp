@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"strconv"
@@ -10,10 +11,12 @@ import (
 
 	"github.com/atpost/monetization-service/database"
 	"github.com/atpost/monetization-service/internal/buildinfo"
+	"github.com/atpost/monetization-service/internal/client/eligibility"
 	"github.com/atpost/monetization-service/internal/client/graph"
 	"github.com/atpost/monetization-service/internal/client/razorpayx"
 	"github.com/atpost/monetization-service/internal/events"
 	"github.com/atpost/monetization-service/internal/http"
+	"github.com/atpost/monetization-service/internal/payments"
 	"github.com/atpost/monetization-service/internal/runmode"
 	"github.com/atpost/monetization-service/internal/service"
 	"github.com/atpost/monetization-service/internal/store/postgres"
@@ -52,6 +55,9 @@ func main() {
 		PayoutsEnabled: envBool("MONETIZATION_PAYOUTS_ENABLED"),
 		Maintenance:    envBool("MONETIZATION_MAINTENANCE"),
 		TDSApply:       envBool("MONETIZATION_TDS_APPLY"),
+		// Paid creator memberships on payments-service (23 Oct 2026): its own
+		// switch, independent of the writes flag.
+		MembershipsEnabled: envBool("MEMBERSHIPS_ENABLED"),
 	})
 	if err != nil {
 		slog.Error("refusing to start", "error", err)
@@ -167,6 +173,48 @@ func main() {
 		slog.Warn("GRAPH_SERVICE_URL not set: tips cannot be block-checked and answer 503 TIP_UNAVAILABLE")
 	}
 
+	// 7a'. Paid creator memberships (phase 1 contract, 23 Oct 2026). The
+	// payments client exists only with MEMBERSHIPS_ENABLED and
+	// MONETIZATION_SERVICE_TOKEN_KEY/KID; without the key the membership
+	// money routes answer 503 MEMBERSHIP_PAYMENTS_UNAVAILABLE (boot is not
+	// refused). A key that does not load is a configuration error.
+	if mode.MembershipsEnabled {
+		client, err := payments.ClientFromEnv(os.Getenv)
+		switch {
+		case err == nil:
+			monetizationSvc.WithMembershipPayments(client, payments.IsLocalEnv(environment))
+			slog.Warn("memberships ENABLED: payments-service client configured (application memberships)")
+		case errors.Is(err, payments.ErrNotConfigured):
+			slog.Warn("memberships enabled but MONETIZATION_SERVICE_TOKEN_KEY/KID are unset: membership payments answer 503 MEMBERSHIP_PAYMENTS_UNAVAILABLE")
+		default:
+			slog.Error("refusing to start: membership payments client", "error", err)
+			os.Exit(1)
+		}
+	}
+	// Eligibility to offer memberships (first tier): identity date of birth,
+	// graph follower count, trust-safety standing. An unset source is
+	// unknown, and unknown fails closed (the item is reported missing).
+	{
+		var src service.EligibilitySources
+		if b := eligibility.NewBirthDates(os.Getenv("PROFILE_SERVICE_URL"), internalKey); b != nil {
+			src.BirthDates = b
+		}
+		if f := eligibility.NewFollowers(os.Getenv("GRAPH_SERVICE_URL"), internalKey); f != nil {
+			src.Followers = f
+		}
+		st, err := eligibility.NewStanding(os.Getenv("TRUST_SAFETY_SERVICE_URL"), internalKey,
+			os.Getenv(payments.EnvTokenKID), os.Getenv(payments.EnvTokenKey))
+		if err != nil {
+			slog.Error("refusing to start: trust-safety standing client", "error", err)
+			os.Exit(1)
+		}
+		if st != nil {
+			src.Standing = st
+		}
+		monetizationSvc.WithEligibilitySources(src)
+		slog.Info("membership eligibility sources", "age", src.BirthDates != nil, "followers", src.Followers != nil, "strikes", src.Standing != nil)
+	}
+
 	// 7b. The payout rail (plan Phase 4B). The RazorpayX client is
 	// constructed only when payouts are enabled AND all four credentials
 	// are set; otherwise the service logs once and the rail stays off:
@@ -220,12 +268,15 @@ func main() {
 		WithServiceAuth(serviceVerifier).
 		WithWritesEnabled(writesEnabled).
 		WithPayoutsEnabled(payoutsEnabled).
-		WithMaintenance(mode.Maintenance)
+		WithMaintenance(mode.Maintenance).
+		WithMembershipsEnabled(mode.MembershipsEnabled)
 
 	// 7a. Kafka producer + background workers. Neither in maintenance
 	// mode: the point of that mode is that nothing but the operator's
-	// own admin calls can touch the ledger while it is on.
-	if mode.StartWorkers {
+	// own admin calls can touch the ledger while it is on. The producer is
+	// opened for writes OR memberships; the legacy workers follow writes,
+	// the membership workers and the payments consumer follow memberships.
+	if mode.StartKafka {
 		kafkaBrokers := strings.Split(env("KAFKA_BROKERS", "localhost:9092"), ",")
 		kafkaTopic := env("KAFKA_MONETIZATION_TOPIC", events.TopicMonetization)
 		kafkaDialer, err := transport.KafkaDialerFromEnv()
@@ -235,9 +286,22 @@ func main() {
 		}
 		monetizationProducer := events.NewProducerWithDialer(kafkaBrokers, kafkaTopic, kafkaDialer)
 		defer monetizationProducer.Close()
-		monetizationSvc.WithEntitlementPublisher(monetizationProducer)
-		go workers.StartAll(ctx, monetizationStore, monetizationProducer, monetizationSvc, payoutsEnabled)
-		slog.Warn("financial mutation workers enabled", "payouts_enabled", payoutsEnabled)
+		monetizationSvc.WithEntitlementPublisher(monetizationProducer).WithMembershipEvents(monetizationProducer)
+		if mode.StartWorkers {
+			go workers.StartAll(ctx, monetizationStore, monetizationProducer, monetizationSvc, payoutsEnabled)
+			slog.Warn("financial mutation workers enabled", "payouts_enabled", payoutsEnabled)
+		}
+		if mode.StartMembershipWorkers {
+			go workers.StartMembershipWorkers(ctx, monetizationStore, monetizationProducer, monetizationSvc)
+		}
+		if mode.StartPaymentsConsumer {
+			// The ONLY thing that applies membership money: the signed
+			// payments event for application memberships, applied once.
+			consumer := payments.NewConsumer(monetizationSvc, kafkaBrokers, metrics.NewKafkaConsumerMetrics("monetization-service"))
+			go consumer.Start(ctx)
+			defer consumer.Close()
+			slog.Warn("memberships payments consumer started", "group", payments.ConsumerGroup, "topic", payments.Topic)
+		}
 	} else if mode.Maintenance {
 		slog.Warn("maintenance mode: zero workers started, no Kafka producer opened")
 	} else {

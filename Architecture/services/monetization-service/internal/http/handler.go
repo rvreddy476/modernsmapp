@@ -29,6 +29,8 @@ type Handler struct {
 	// route must carry the internal service key as well as the scope
 	// header. It wins over writesEnabled.
 	maintenance bool
+	// membershipsEnabled mirrors MEMBERSHIPS_ENABLED (membership_payments_handler.go).
+	membershipsEnabled bool
 	// verifier admits admin-service tokens on the token-only admin family
 	// (admin_token.go); nil accepts none.
 	verifier *servicetoken.Verifier
@@ -173,6 +175,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/subscriptions/:id/cancel", h.CancelSubscription)
 		v1.POST("/subscriptions/:id/upgrade", h.UpgradeSubscription)
 		v1.GET("/subscriptions/:id/events", h.GetSubscriptionEvents)
+		h.registerMembershipRoutes(v1)
 
 		// Tax profile & compliance
 		v1.POST("/tax-profile", h.SaveTaxProfile)
@@ -359,6 +362,22 @@ func (h *Handler) launchBoundary() gin.HandlerFunc {
 					},
 				})
 			}
+			return
+		}
+		// Memberships run on their own switch (membership_payments_handler.go):
+		// MEMBERSHIPS_ENABLED opens them even with writes off, and with it off
+		// the membership routes stay closed even with writes on.
+		if handled, allow, code := h.membershipGate(c.Request.Method, c.FullPath()); handled {
+			if !allow {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+					"error": gin.H{
+						"code":    code,
+						"message": "Memberships are not available here yet.",
+					},
+				})
+				return
+			}
+			c.Next()
 			return
 		}
 		if h.writesEnabled {
@@ -871,6 +890,8 @@ func writeTierError(c *gin.Context, err error) {
 			"A creator can have at most 3 active tiers", nil)
 	case errors.Is(err, service.ErrTierNotFound):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Tier not found or not owned by you", nil)
+	case errors.Is(err, service.ErrNotEligible):
+		writeMembershipError(c, err)
 	default:
 		reply(http.StatusInternalServerError, "INTERNAL_ERROR")
 	}
@@ -993,61 +1014,7 @@ func (h *Handler) UpdateTier(c *gin.Context) {
 // Subscriptions
 // ---------------------------------------------------------------------------
 
-type SubscribeRequest struct {
-	TierID string `json:"tier_id" binding:"required"`
-}
-
-func (h *Handler) Subscribe(c *gin.Context) {
-	userID, ok := getUserID(c)
-	if !ok {
-		return
-	}
-
-	creatorID, err := uuid.Parse(c.Param("creatorId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid creator ID", nil)
-		return
-	}
-
-	var req SubscribeRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
-	}
-
-	tierID, err := uuid.Parse(req.TierID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid tier ID", nil)
-		return
-	}
-
-	idempotencyKey := c.GetHeader("X-Idempotency-Key")
-
-	sub, err := h.svc.Subscribe(c.Request.Context(), userID, creatorID, tierID, idempotencyKey)
-	if err != nil {
-		switch err.Error() {
-		case "CANNOT_SUBSCRIBE_TO_SELF":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CANNOT_SUBSCRIBE_TO_SELF", "Cannot subscribe to yourself", nil)
-		case "TIER_NOT_FOUND":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "TIER_NOT_FOUND", "Tier not found", nil)
-		case "TIER_INACTIVE":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "TIER_INACTIVE", "Tier is not active", nil)
-		case "TIER_CREATOR_MISMATCH":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "TIER_CREATOR_MISMATCH", "Tier does not belong to this creator", nil)
-		case "ALREADY_SUBSCRIBED":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ALREADY_SUBSCRIBED", "Already subscribed to this creator", nil)
-		case "IDEMPOTENCY_KEY_REUSED":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", "This idempotency key was already used for a different subscription", nil)
-		case "INSUFFICIENT_BALANCE_OR_FROZEN":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INSUFFICIENT_BALANCE", "Insufficient balance or wallet is frozen", nil)
-		default:
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		}
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusCreated, sub, nil)
-}
+// Subscribe (the paid join) lives in membership_payments_handler.go.
 
 func (h *Handler) Unsubscribe(c *gin.Context) {
 	userID, ok := getUserID(c)

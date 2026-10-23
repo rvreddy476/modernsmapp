@@ -142,64 +142,7 @@ func (h *Handler) CancelSubscription(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": status}, nil)
 }
 
-type UpgradeSubscriptionRequest struct {
-	NewTierID string `json:"new_tier_id" binding:"required"`
-}
-
-func (h *Handler) UpgradeSubscription(c *gin.Context) {
-	userID, ok := getUserID(c)
-	if !ok {
-		return
-	}
-
-	subID, err := uuid.Parse(c.Param("id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid subscription ID", nil)
-		return
-	}
-
-	var req UpgradeSubscriptionRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
-	}
-
-	newTierID, err := uuid.Parse(req.NewTierID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid tier ID", nil)
-		return
-	}
-
-	change, err := h.svc.UpgradeSubscription(c.Request.Context(), userID, subID, newTierID)
-	if err != nil {
-		switch err.Error() {
-		case "SUBSCRIPTION_NOT_FOUND":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Subscription not found", nil)
-		case "SUBSCRIPTION_NOT_OWNED":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "You do not own this subscription", nil)
-		case "SUBSCRIPTION_NOT_ACTIVE":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Subscription is not active", nil)
-		case "TIER_NOT_FOUND":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "TIER_NOT_FOUND", "Tier not found", nil)
-		case "TIER_INACTIVE":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "TIER_INACTIVE", "Tier is not active", nil)
-		case "TIER_CREATOR_MISMATCH":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "TIER_CREATOR_MISMATCH", "Tier does not belong to this creator", nil)
-		case "INSUFFICIENT_BALANCE_FOR_UPGRADE":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INSUFFICIENT_BALANCE", "Insufficient balance for upgrade", nil)
-		case "SUBSCRIPTION_STATE_CHANGED":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "SUBSCRIPTION_STATE_CHANGED", "The subscription changed while this request was running; nothing was charged", nil)
-		default:
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		}
-		return
-	}
-
-	// status: "upgraded" (charged_paise taken now, pro-rata), or
-	// "downgrade_scheduled" (effective_at = the next period start, nothing
-	// charged or refunded), or "unchanged".
-	api.JSON(c.Writer, http.StatusOK, change, nil)
-}
+// UpgradeSubscription lives in membership_payments_handler.go.
 
 func (h *Handler) GetSubscriptionEvents(c *gin.Context) {
 	userID, ok := getUserID(c)

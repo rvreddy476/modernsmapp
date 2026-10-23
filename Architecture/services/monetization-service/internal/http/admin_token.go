@@ -202,6 +202,9 @@ func (h *Handler) authorizeAdminToken(c *gin.Context, perm string) bool {
 // the creator fund during the beta. Maintenance is judged first and only by
 // rt.maintenanceOpen, as before.
 func (h *Handler) tokenBoundary(rt adminRoute) gin.HandlerFunc {
+	if isMembershipAdminRoute(rt) {
+		return h.membershipAdminBoundary()
+	}
 	return func(c *gin.Context) {
 		if h.maintenance {
 			if rt.maintenanceOpen {
@@ -282,6 +285,9 @@ func (h *Handler) adminRoutes() []adminRoute {
 		{http.MethodGet, "/disputes", PermDisputesRead, true, true, h.ListOpenDisputesAdmin},
 		{http.MethodPatch, "/disputes/:id", PermDisputesAct, false, false, h.ResolveDisputeAdmin},
 		{http.MethodPost, "/refunds", PermRefundIssue, false, false, h.ProcessRefund},
+		// Support's refund of a membership payment (membership_payments_handler.go).
+		// Judged by MEMBERSHIPS_ENABLED, not the writes flag; closed in maintenance.
+		{http.MethodPost, MembershipRefundPath, PermRefundIssue, false, false, h.RefundMembershipPayment},
 
 		// Payout queue (read-only; payouts stay off) and the audit trail.
 		{http.MethodGet, "/payout-requests", PermPayoutsRead, true, true, h.ListPayoutRequestsAdmin},

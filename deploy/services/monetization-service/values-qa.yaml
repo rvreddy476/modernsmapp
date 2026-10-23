@@ -95,6 +95,9 @@ env:
   MONETIZATION_MAINTENANCE: "false"
   # TDS at payout: computed and recorded, NOT deducted (founder, 12 Sep 2026).
   MONETIZATION_TDS_APPLY: "false"
+  # Paid creator memberships on payments-service. Off in these environments
+  # until the founder switches them on (dev compose runs them).
+  MEMBERSHIPS_ENABLED: "false"
   # Security sweep #16: tips ask graph-service for a block either way before
   # the ledger; unset, every tip answers 503 TIP_UNAVAILABLE.
   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083

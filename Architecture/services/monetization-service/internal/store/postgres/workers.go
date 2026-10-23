@@ -7,68 +7,9 @@ import (
 	"github.com/google/uuid"
 )
 
-// ---------------------------------------------------------------------------
-// Subscription worker queries
-// ---------------------------------------------------------------------------
-
-// SubscriptionForRenewal is a lightweight view of subscriptions used by the renewal worker.
-type SubscriptionForRenewal struct {
-	ID               uuid.UUID
-	SubscriberID     uuid.UUID
-	CreatorID        uuid.UUID
-	TierID           uuid.UUID
-	TierName         string
-	PricePaise       int64
-	Currency         string
-	Status           string // active or past_due
-	CurrentPeriodEnd time.Time
-	RetryCount       int
-	// A scheduled downgrade: the next period renews on this tier at this
-	// (locked) price.
-	PendingTierID     *uuid.UUID
-	PendingPricePaise *int64
-}
-
-// GetSubscriptionsDueForRenewal returns auto-renew subscriptions whose
-// period ends before `before` and that may be charged now: every active
-// one, and every past_due one whose last failed attempt was at or before
-// `retryBefore` (so a failed charge is retried, and its failures progress
-// past_due → grace → cancelled instead of stopping at past_due).
-func (s *Store) GetSubscriptionsDueForRenewal(ctx context.Context, before, retryBefore time.Time) ([]SubscriptionForRenewal, error) {
-	rows, err := s.db.Query(ctx, `
-		SELECT id, subscriber_id, creator_id, tier_id, tier_name, price, currency, status,
-		       current_period_end, retry_count, pending_tier_id, pending_price
-		FROM subscriptions
-		WHERE auto_renew = TRUE
-		  AND current_period_end < $1
-		  AND (status = 'active'
-		       OR (status = 'past_due' AND (payment_failed_at IS NULL OR payment_failed_at <= $2)))
-		ORDER BY current_period_end ASC
-		LIMIT 500
-	`, before, retryBefore)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var subs []SubscriptionForRenewal
-	for rows.Next() {
-		var sub SubscriptionForRenewal
-		if err := rows.Scan(
-			&sub.ID, &sub.SubscriberID, &sub.CreatorID, &sub.TierID, &sub.TierName,
-			&sub.PricePaise, &sub.Currency, &sub.Status, &sub.CurrentPeriodEnd, &sub.RetryCount,
-			&sub.PendingTierID, &sub.PendingPricePaise,
-		); err != nil {
-			return nil, err
-		}
-		subs = append(subs, sub)
-	}
-	return subs, rows.Err()
-}
-
-// The charge-then-extend pair (ChargeAndCreditRef + ExtendSubscriptionPeriod)
-// the renewal worker used to call separately is gone: RenewSubscription in
-// memberships.go does both in one transaction under a per-period key.
+// The wallet-charging renewal query (GetSubscriptionsDueForRenewal) was
+// removed with migration 025: renewal is by reminder and paid through
+// payments-service (membership_payments.go).
 
 // ---------------------------------------------------------------------------
 // BillingPeriod on CreatorTier

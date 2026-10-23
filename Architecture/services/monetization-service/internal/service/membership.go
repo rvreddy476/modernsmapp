@@ -9,6 +9,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/atpost/monetization-service/internal/membership"
 	"github.com/atpost/monetization-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
@@ -26,14 +27,10 @@ type MembershipStore interface {
 	CreateTierLimited(ctx context.Context, t *postgres.CreatorTier, maxActive int) error
 	UpdateTierPartial(ctx context.Context, creatorID, tierID uuid.UUID, p postgres.TierPatch, maxActive int) (*postgres.CreatorTier, error)
 
-	EnsureWallet(ctx context.Context, userID uuid.UUID) (*postgres.Wallet, error)
-
 	GetLiveSubscription(ctx context.Context, subscriberID, creatorID uuid.UUID) (*postgres.Subscription, error)
-	GetSubscriptionByIdempotencyKey(ctx context.Context, subscriberID uuid.UUID, key string) (*postgres.Subscription, error)
 	GetSubscriptionByID(ctx context.Context, subID uuid.UUID) (*postgres.Subscription, error)
-	Subscribe(ctx context.Context, subscriberID, creatorID, tierID uuid.UUID, tierName string, pricePaise int64, currency string, idempotencyKey string) (*postgres.Subscription, error)
 	Unsubscribe(ctx context.Context, subscriberID, creatorID uuid.UUID) (*postgres.Subscription, error)
-	SetSubscriptionStatus(ctx context.Context, subID uuid.UUID, status string) error
+	CancelSubscriptionNow(ctx context.Context, subID uuid.UUID) (*postgres.Subscription, error)
 	PauseSubscription(ctx context.Context, subID uuid.UUID, pauseUntil time.Time) error
 	ResumeSubscription(ctx context.Context, subID uuid.UUID) error
 	CancelAtPeriodEnd(ctx context.Context, subID uuid.UUID, reason string) error
@@ -41,6 +38,24 @@ type MembershipStore interface {
 	SetPendingTier(ctx context.Context, subID, expectedTierID uuid.UUID, pendingTierID *uuid.UUID, pendingPricePaise *int64) error
 	InsertSubscriptionEvent(ctx context.Context, subID uuid.UUID, eventType, oldStatus, newStatus string, metadata json.RawMessage) error
 	GetSubscriptionEvents(ctx context.Context, subID uuid.UUID, limit, offset int) ([]postgres.SubscriptionEvent, error)
+
+	// Paid memberships on payments-service (membership_payments.go).
+	CreateMembershipJoin(ctx context.Context, in postgres.JoinInput) (*postgres.MembershipCheckout, error)
+	CreateMembershipRenewal(ctx context.Context, in postgres.RenewalInput) (*postgres.MembershipCheckout, error)
+	CreateMembershipUpgrade(ctx context.Context, in postgres.UpgradeCheckoutInput) (*postgres.MembershipCheckout, error)
+	SetMembershipPaymentIntent(ctx context.Context, paymentID, intentID uuid.UUID, providerOrderID string) error
+	MarkMembershipPaymentConfirming(ctx context.Context, paymentID uuid.UUID) error
+	GetMembershipPayment(ctx context.Context, paymentID uuid.UUID) (*membership.Payment, error)
+	ListSubscriberMemberships(ctx context.Context, subscriberID uuid.UUID, since time.Time) ([]postgres.Subscription, error)
+	ApplyMembershipPaymentEvent(ctx context.Context, ev membership.Event, now time.Time) (membership.Applied, error)
+	RequestMembershipSupportRefund(ctx context.Context, in postgres.SupportRefundInput) (*membership.Payment, error)
+	DueMembershipRefunds(ctx context.Context, now time.Time, limit int) ([]postgres.MembershipRefundDue, error)
+	MarkMembershipRefundSubmitted(ctx context.Context, paymentID, commandID uuid.UUID) error
+	MarkMembershipRefundRetry(ctx context.Context, paymentID uuid.UUID, next time.Time, lastError string) error
+	MarkMembershipRefundFailed(ctx context.Context, paymentID uuid.UUID, lastError string) error
+
+	// The creator tax profile: PAN verified is an eligibility item.
+	GetCreatorTaxProfile(ctx context.Context, userID uuid.UUID) (*postgres.CreatorTaxProfile, error)
 }
 
 // WithMembershipStore replaces the store the membership rules use. Tests
@@ -189,6 +204,21 @@ func (s *Service) CreateTier(ctx context.Context, creatorID uuid.UUID, in TierIn
 	if err != nil {
 		return nil, err
 	}
+	// Offering memberships at all (the FIRST tier) needs eligibility: 18+,
+	// PAN verified, at least 500 followers, no active strikes. Fail closed.
+	existing, err := s.members.GetCreatorTiers(ctx, creatorID)
+	if err != nil {
+		return nil, err
+	}
+	if len(existing) == 0 {
+		elig, err := s.MembershipEligibility(ctx, creatorID)
+		if err != nil {
+			return nil, err
+		}
+		if !elig.Eligible {
+			return nil, &NotEligibleError{Missing: elig.Missing}
+		}
+	}
 	t := &postgres.CreatorTier{
 		CreatorID:     creatorID,
 		Name:          name,
@@ -258,39 +288,19 @@ var ErrIdempotencyKeyReused = errors.New("IDEMPOTENCY_KEY_REUSED")
 
 const maxAmountPaise int64 = 100_000_000 // 1,000,000.00 INR in paise
 
-// replayByKey returns the subscription the subscriber created under key,
-// if it is for the same creator and tier; ErrIdempotencyKeyReused if the
-// key was used for something else; (nil, nil) if the key is unused.
-func (s *Service) replayByKey(ctx context.Context, subscriberID, creatorID, tierID uuid.UUID, key string) (*postgres.Subscription, error) {
-	existing, err := s.members.GetSubscriptionByIdempotencyKey(ctx, subscriberID, key)
-	if err != nil || existing == nil {
-		return nil, err
-	}
-	if existing.CreatorID != creatorID || existing.TierID != tierID {
-		return nil, ErrIdempotencyKeyReused
-	}
-	return existing, nil
-}
-
-// Subscribe validates the tier exists and is active, then creates the subscription.
-// Charges the subscriber wallet and credits the creator wallet.
-// idempotencyKey is optional; if non-empty, a repeat call by the same
-// subscriber with the same key returns the subscription it created.
-func (s *Service) Subscribe(ctx context.Context, subscriberID, creatorID uuid.UUID, tierID uuid.UUID, idempotencyKey string) (*postgres.Subscription, error) {
+// Subscribe starts a paid join: a pending_payment subscription, its join
+// payment row, and a payments intent for it. NOTHING is charged or granted
+// here; access starts only when the signed payment.succeeded event is
+// applied. idempotencyKey (the Idempotency-Key header) is optional: a repeat
+// with the same key replays the same checkout, and a fresh pending join for
+// the same tier is replayed even without one.
+func (s *Service) Subscribe(ctx context.Context, subscriberID, creatorID uuid.UUID, tierID uuid.UUID, idempotencyKey string) (*Checkout, error) {
 	if subscriberID == creatorID {
 		return nil, fmt.Errorf("CANNOT_SUBSCRIBE_TO_SELF")
 	}
-
-	if idempotencyKey != "" {
-		existing, err := s.replayByKey(ctx, subscriberID, creatorID, tierID, idempotencyKey)
-		if err != nil {
-			return nil, err
-		}
-		if existing != nil {
-			return existing, nil
-		}
+	if s.membershipPayments == nil {
+		return nil, ErrMembershipPaymentsUnavailable
 	}
-
 	tier, err := s.members.GetCreatorTier(ctx, tierID)
 	if err != nil {
 		return nil, err
@@ -308,43 +318,23 @@ func (s *Service) Subscribe(ctx context.Context, subscriberID, creatorID uuid.UU
 		return nil, fmt.Errorf("amount out of valid range: %w", ErrInvalidAmount)
 	}
 
-	// Any live subscription — not only an active one — means the subscriber
-	// already has this creator (the same set the unique index enforces).
-	existing, err := s.members.GetLiveSubscription(ctx, subscriberID, creatorID)
-	if err != nil {
+	rows, err := s.members.CreateMembershipJoin(ctx, postgres.JoinInput{
+		SubscriberID: subscriberID, CreatorID: creatorID, Tier: *tier, ClientKey: idempotencyKey, Now: s.clock(),
+	})
+	switch {
+	case errors.Is(err, postgres.ErrIdempotencyKeyTaken):
+		return nil, ErrIdempotencyKeyReused
+	case err != nil:
 		return nil, err
 	}
-	if existing != nil {
-		return nil, postgres.ErrAlreadySubscribed
-	}
-
-	if _, err := s.members.EnsureWallet(ctx, subscriberID); err != nil {
-		return nil, err
-	}
-	if _, err := s.members.EnsureWallet(ctx, creatorID); err != nil {
-		return nil, err
-	}
-
-	sub, err := s.members.Subscribe(ctx, subscriberID, creatorID, tier.ID, tier.Name, tier.PricePaise, tier.Currency, idempotencyKey)
-	if err != nil {
-		// Lost a race: the other request committed first. A same-key twin is
-		// a replay; anything else is a second subscription and is refused.
-		if idempotencyKey != "" && (errors.Is(err, postgres.ErrIdempotencyKeyTaken) || errors.Is(err, postgres.ErrAlreadySubscribed)) {
-			if replay, rerr := s.replayByKey(ctx, subscriberID, creatorID, tierID, idempotencyKey); rerr != nil {
-				return nil, rerr
-			} else if replay != nil {
-				return replay, nil
-			}
+	if rows.Replayed && rows.Sub.Status != membership.StatusPendingPayment {
+		if membership.IsLive(rows.Sub.Status) && rows.Payment.Status == membership.PayPaid && !rows.Payment.LateCapture {
+			// Already paid: the replay says so and opens nothing.
+			return checkoutFrom(rows, rows.Sub.Status, nil), nil
 		}
-		if errors.Is(err, postgres.ErrIdempotencyKeyTaken) {
-			return nil, ErrIdempotencyKeyReused
-		}
-		return nil, err
+		return nil, ErrCheckoutExpired
 	}
-	// Invalidate downstream caches immediately so a fan who just subscribed
-	// sees gated content on the next read instead of waiting for the TTL.
-	s.publishEntitlementChanged(ctx, sub.ID, subscriberID, creatorID, EntitlementGranted)
-	return sub, nil
+	return s.openCheckout(ctx, rows, membership.StatusPendingPayment)
 }
 
 // Unsubscribe cancels the subscriber's live subscription to a creator now.
@@ -357,6 +347,7 @@ func (s *Service) Unsubscribe(ctx context.Context, subscriberID, creatorID uuid.
 		logEventWriteFailure(err)
 	}
 	s.publishEntitlementChanged(ctx, sub.ID, subscriberID, creatorID, EntitlementRevoked)
+	s.publishMembershipEnded(ctx, sub)
 	return nil
 }
 

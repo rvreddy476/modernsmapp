@@ -6,7 +6,6 @@ import (
 	"errors"
 	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
@@ -21,11 +20,32 @@ import (
 var _ MembershipStore = (*membershiptest.Store)(nil)
 var _ MembershipStore = (*postgres.Store)(nil)
 
+// memRig is the service over the in-memory store, a fake payments-service,
+// a recording publisher and eligibility sources that pass. clock is
+// mutable: tests move time.
+type memRig struct {
+	svc      *Service
+	fake     *membershiptest.Store
+	pub      *membershiptest.Publisher
+	payments *membershiptest.Payments
+	elig     *membershiptest.Eligibility
+	clock    *time.Time
+}
+
+func newRig(now time.Time) *memRig {
+	r := &memRig{fake: membershiptest.New(), pub: &membershiptest.Publisher{}, payments: membershiptest.NewPayments(),
+		elig: membershiptest.Eligible(), clock: &now}
+	r.fake.AllPANVerified = true
+	r.svc = New(nil, nil).WithMembershipStore(r.fake).WithEntitlementPublisher(r.pub).WithMembershipEvents(r.pub).
+		WithMembershipPayments(r.payments, false).
+		WithEligibilitySources(EligibilitySources{BirthDates: r.elig, Followers: r.elig, Standing: r.elig}).
+		WithClock(func() time.Time { return *r.clock })
+	return r
+}
+
 func newMembershipRig(now time.Time) (*Service, *membershiptest.Store, *membershiptest.Publisher) {
-	fake := membershiptest.New()
-	pub := &membershiptest.Publisher{}
-	svc := New(nil, nil).WithMembershipStore(fake).WithEntitlementPublisher(pub).WithClock(func() time.Time { return now })
-	return svc, fake, pub
+	r := newRig(now)
+	return r.svc, r.fake, r.pub
 }
 
 func ptr[T any](v T) *T { return &v }
@@ -374,205 +394,6 @@ func TestPauseDoesNotExtendAccess(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// Subscribe: idempotency, live set, concurrency
-// ---------------------------------------------------------------------------
-
-func TestSubscribeIdempotencyKeyIsScopedToTheSubscriber(t *testing.T) {
-	ctx := context.Background()
-	svc, fake, _ := newMembershipRig(time.Now())
-	creator, a, b := uuid.New(), uuid.New(), uuid.New()
-	tier := fake.AddTier(creator, "Fan", 4_900)
-	fake.Balances[a], fake.Balances[b] = 100_000, 100_000
-
-	subA, err := svc.Subscribe(ctx, a, creator, tier.ID, "key-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// B, same key: B's own subscription — never A's.
-	subB, err := svc.Subscribe(ctx, b, creator, tier.ID, "key-1")
-	if err != nil {
-		t.Fatalf("second subscriber with the same key: %v", err)
-	}
-	if subB.ID == subA.ID || subB.SubscriberID != b {
-		t.Fatalf("subscriber B was handed subscriber A's subscription: %+v", subB)
-	}
-	// A again, same key: a replay, no second charge.
-	replay, err := svc.Subscribe(ctx, a, creator, tier.ID, "key-1")
-	if err != nil || replay.ID != subA.ID {
-		t.Fatalf("replay: %v %+v", err, replay)
-	}
-	if len(fake.Charges) != 2 {
-		t.Fatalf("charges = %v, want one each for A and B", fake.Charges)
-	}
-	// A, same key, different creator: refused, not replayed.
-	other := uuid.New()
-	otherTier := fake.AddTier(other, "Fan", 4_900)
-	if _, err := svc.Subscribe(ctx, a, other, otherTier.ID, "key-1"); !errors.Is(err, ErrIdempotencyKeyReused) {
-		t.Fatalf("key reused for another creator: %v", err)
-	}
-}
-
-func TestSubscribeAlreadySubscribedUsesTheLiveSet(t *testing.T) {
-	for _, tc := range []struct {
-		status string
-		want   error
-	}{
-		{"active", postgres.ErrAlreadySubscribed},
-		{"cancelled_at_period_end", postgres.ErrAlreadySubscribed},
-		{"paused", postgres.ErrAlreadySubscribed},
-		{"past_due", postgres.ErrAlreadySubscribed},
-		{"grace", postgres.ErrAlreadySubscribed},
-		{"cancelled", nil},
-		{"expired", nil},
-	} {
-		t.Run(tc.status, func(t *testing.T) {
-			svc, fake, _ := newMembershipRig(time.Now())
-			creator, fan := uuid.New(), uuid.New()
-			tier := fake.AddTier(creator, "Fan", 4_900)
-			fake.Balances[fan] = 100_000
-			fake.AddSubscription(postgres.Subscription{SubscriberID: fan, CreatorID: creator, TierID: tier.ID, Status: tc.status,
-				CurrentPeriodEnd: time.Now().Add(time.Hour)})
-			_, err := svc.Subscribe(context.Background(), fan, creator, tier.ID, "")
-			if !errors.Is(err, tc.want) {
-				t.Fatalf("existing %s: got %v, want %v", tc.status, err, tc.want)
-			}
-			// Refused by the live-set read before the insert-and-charge is
-			// even attempted (the unique index is the backstop, not the gate).
-			if tc.want != nil && fake.SubscribeCalls != 0 {
-				t.Fatalf("existing %s: the store's subscribe was reached", tc.status)
-			}
-		})
-	}
-}
-
-// Two subscribes that both pass the "already subscribed?" read: the store's
-// unique index lets one win; the other is ALREADY_SUBSCRIBED and charged
-// nothing.
-func TestSubscribeConcurrentOneWins(t *testing.T) {
-	svc, fake, _ := newMembershipRig(time.Now())
-	creator, fan := uuid.New(), uuid.New()
-	tier := fake.AddTier(creator, "Fan", 4_900)
-	fake.Balances[fan] = 100_000
-
-	var arrived sync.WaitGroup
-	arrived.Add(2)
-	fake.AfterGetLive = func() { arrived.Done(); arrived.Wait() } // both read "none" before either writes
-
-	errs := make([]error, 2)
-	var done sync.WaitGroup
-	for i := 0; i < 2; i++ {
-		done.Add(1)
-		go func(i int) {
-			defer done.Done()
-			_, errs[i] = svc.Subscribe(context.Background(), fan, creator, tier.ID, "")
-		}(i)
-	}
-	done.Wait()
-
-	ok, conflict := 0, 0
-	for _, err := range errs {
-		switch {
-		case err == nil:
-			ok++
-		case errors.Is(err, postgres.ErrAlreadySubscribed):
-			conflict++
-		default:
-			t.Fatalf("unexpected error: %v", err)
-		}
-	}
-	if ok != 1 || conflict != 1 || len(fake.Charges) != 1 {
-		t.Fatalf("ok=%d conflict=%d charges=%v, want 1/1/one charge", ok, conflict, fake.Charges)
-	}
-}
-
-// The same key sent twice at once: the loser is a replay of the winner.
-func TestSubscribeConcurrentSameKeyReplays(t *testing.T) {
-	svc, fake, _ := newMembershipRig(time.Now())
-	creator, fan := uuid.New(), uuid.New()
-	tier := fake.AddTier(creator, "Fan", 4_900)
-	fake.Balances[fan] = 100_000
-
-	var arrived sync.WaitGroup
-	arrived.Add(2)
-	fake.AfterGetLive = func() { arrived.Done(); arrived.Wait() }
-	subs := make([]*postgres.Subscription, 2)
-	errs := make([]error, 2)
-	var done sync.WaitGroup
-	for i := 0; i < 2; i++ {
-		done.Add(1)
-		go func(i int) {
-			defer done.Done()
-			subs[i], errs[i] = svc.Subscribe(context.Background(), fan, creator, tier.ID, "same-key")
-		}(i)
-	}
-	done.Wait()
-	if errs[0] != nil || errs[1] != nil || subs[0].ID != subs[1].ID || len(fake.Charges) != 1 {
-		t.Fatalf("errs=%v ids=%v/%v charges=%v", errs, subs[0], subs[1], fake.Charges)
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Events
-// ---------------------------------------------------------------------------
-
-func TestLifecycleChangesPublishEntitlementChanged(t *testing.T) {
-	ctx := context.Background()
-	now := time.Now()
-	svc, fake, pub := newMembershipRig(now)
-	creator, fan := uuid.New(), uuid.New()
-	bronze := fake.AddTier(creator, "Bronze", 4_900)
-	silver := fake.AddTier(creator, "Silver", 9_900)
-	fake.Balances[fan] = 1_000_000
-
-	sub, err := svc.Subscribe(ctx, fan, creator, bronze.ID, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	steps := []struct {
-		name   string
-		do     func() error
-		action string
-	}{
-		{"pause", func() error { return svc.PauseSubscription(ctx, fan, sub.ID, now.Add(48*time.Hour)) }, EntitlementPaused},
-		{"resume", func() error { return svc.ResumeSubscription(ctx, fan, sub.ID) }, EntitlementResumed},
-		{"upgrade", func() error { _, err := svc.UpgradeSubscription(ctx, fan, sub.ID, silver.ID); return err }, EntitlementUpgraded},
-		{"cancel at period end", func() error { return svc.CancelAtPeriodEnd(ctx, fan, sub.ID, "") }, EntitlementCancelPlanned},
-		{"cancel now", func() error { return svc.CancelImmediately(ctx, fan, sub.ID, "") }, EntitlementRevoked},
-	}
-	want := []string{EntitlementGranted}
-	if got := pub.Actions(); !reflect.DeepEqual(got, want) {
-		t.Fatalf("after subscribe: %v", got)
-	}
-	for _, st := range steps {
-		if err := st.do(); err != nil {
-			t.Fatalf("%s: %v", st.name, err)
-		}
-		want = append(want, st.action)
-		if got := pub.Actions(); !reflect.DeepEqual(got, want) {
-			t.Fatalf("after %s: published %v, want %v", st.name, got, want)
-		}
-	}
-	for _, e := range pub.Events {
-		if e.SubscriberID != fan || e.CreatorID != creator || e.SubscriptionID != sub.ID {
-			t.Fatalf("event for the wrong pair: %+v", e)
-		}
-	}
-
-	// DELETE /subscribe/:creatorId on a fresh subscription.
-	sub2, err := svc.Subscribe(ctx, fan, creator, bronze.ID, "")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := svc.Unsubscribe(ctx, fan, creator); err != nil {
-		t.Fatal(err)
-	}
-	last := pub.Events[len(pub.Events)-1]
-	if last.Action != EntitlementRevoked || last.SubscriptionID != sub2.ID {
-		t.Fatalf("unsubscribe published %+v", last)
-	}
-}
-
-// ---------------------------------------------------------------------------
 // Upgrade / downgrade
 // ---------------------------------------------------------------------------
 
@@ -614,6 +435,7 @@ type tierChangeRig struct {
 	svc                  *Service
 	fake                 *membershiptest.Store
 	pub                  *membershiptest.Publisher
+	payments             *membershiptest.Payments
 	creator, fan         uuid.UUID
 	bronze, silver, gold *postgres.CreatorTier
 	sub                  *postgres.Subscription
@@ -622,8 +444,9 @@ type tierChangeRig struct {
 
 func newTierChangeRig(onTier func(r *tierChangeRig) *postgres.CreatorTier, paid int64) *tierChangeRig {
 	now := time.Date(2026, 10, 16, 0, 0, 0, 0, time.UTC)
-	svc, fake, pub := newMembershipRig(now)
-	r := &tierChangeRig{svc: svc, fake: fake, pub: pub, creator: uuid.New(), fan: uuid.New(), now: now}
+	m := newRig(now)
+	fake := m.fake
+	r := &tierChangeRig{svc: m.svc, fake: fake, pub: m.pub, payments: m.payments, creator: uuid.New(), fan: uuid.New(), now: now}
 	r.bronze = fake.AddTier(r.creator, "Bronze", 4_900)
 	r.silver = fake.AddTier(r.creator, "Silver", 9_900)
 	r.gold = fake.AddTier(r.creator, "Gold", 19_900)
@@ -632,44 +455,7 @@ func newTierChangeRig(onTier func(r *tierChangeRig) *postgres.CreatorTier, paid 
 		SubscriberID: r.fan, CreatorID: r.creator, TierID: tier.ID, TierName: tier.Name, PricePaise: paid, Status: "active",
 		CurrentPeriodStart: now.Add(-15 * 24 * time.Hour), CurrentPeriodEnd: now.Add(15 * 24 * time.Hour),
 	})
-	fake.Balances[r.fan] = 100_000
-	fake.Balances[r.creator] = 0
 	return r
-}
-
-func TestUpgradeChargesProRataAndKeepsPeriodEnd(t *testing.T) {
-	r := newTierChangeRig(func(r *tierChangeRig) *postgres.CreatorTier { return r.bronze }, 4_900)
-	change, err := r.svc.UpgradeSubscription(context.Background(), r.fan, r.sub.ID, r.silver.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if change.Result != TierChangeUpgraded || change.ChargedPaise != 2_500 {
-		t.Fatalf("change = %+v, want upgraded, 2500 (half of 5000)", change)
-	}
-	got := r.fake.Sub(r.sub.ID)
-	if got.TierID != r.silver.ID || got.PricePaise != 9_900 || !got.CurrentPeriodEnd.Equal(r.sub.CurrentPeriodEnd) {
-		t.Fatalf("subscription after upgrade: %+v", got)
-	}
-	if r.fake.Balances[r.fan] != 100_000-2_500 || r.fake.Balances[r.creator] != 2_500 {
-		t.Fatalf("balances: fan %d creator %d", r.fake.Balances[r.fan], r.fake.Balances[r.creator])
-	}
-	if !reflect.DeepEqual(r.fake.Charges, []int64{2_500}) {
-		t.Fatalf("charges = %v", r.fake.Charges)
-	}
-}
-
-func TestUpgradeShortBalanceChangesNothing(t *testing.T) {
-	r := newTierChangeRig(func(r *tierChangeRig) *postgres.CreatorTier { return r.bronze }, 4_900)
-	r.fake.Balances[r.fan] = 100
-	if _, err := r.svc.UpgradeSubscription(context.Background(), r.fan, r.sub.ID, r.gold.ID); err == nil || err.Error() != "INSUFFICIENT_BALANCE_FOR_UPGRADE" {
-		t.Fatalf("got %v", err)
-	}
-	if got := r.fake.Sub(r.sub.ID); got.TierID != r.bronze.ID || got.PricePaise != 4_900 {
-		t.Fatalf("tier changed without payment: %+v", got)
-	}
-	if len(r.pub.Events) != 0 {
-		t.Fatalf("published on a failed upgrade: %v", r.pub.Actions())
-	}
 }
 
 func TestDowngradeIsDeferredToTheNextPeriod(t *testing.T) {
@@ -688,8 +474,8 @@ func TestDowngradeIsDeferredToTheNextPeriod(t *testing.T) {
 	if got.PendingTierID == nil || *got.PendingTierID != r.bronze.ID || got.PendingPricePaise == nil || *got.PendingPricePaise != 4_900 {
 		t.Fatalf("pending tier not stored: %+v", got)
 	}
-	if len(r.fake.Charges) != 0 || r.fake.Balances[r.fan] != 100_000 {
-		t.Fatalf("a downgrade moved money: %v", r.fake.Charges)
+	if len(r.fake.Payments) != 0 || len(r.payments.Refunds) != 0 || r.payments.Creates != 0 {
+		t.Fatalf("a downgrade opened a payment: %d rows, %d intents", len(r.fake.Payments), r.payments.Creates)
 	}
 	// Still gold until the period ends.
 	ent, _ := r.svc.CheckEntitlement(context.Background(), EntitlementCheckRequest{SubscriberID: r.fan, CreatorID: r.creator, RequiredTierID: &r.gold.ID})

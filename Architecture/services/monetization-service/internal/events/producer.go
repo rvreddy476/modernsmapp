@@ -34,7 +34,69 @@ const (
 	EventSubscriptionGrace    = "subscription.grace_started"
 	EventSubscriptionUpgraded = "subscription.upgraded"
 	EventEntitlementChanged   = "entitlement.changed"
+
+	// Paid memberships (phase 1 contract, 23 Oct 2026). Consumed by
+	// notification-service; payload MembershipPayload.
+	EventMembershipStarted       = "membership.started"
+	EventMembershipRenewed       = "membership.renewed"
+	EventMembershipRenewalDue    = "membership.renewal_due"
+	EventMembershipPaymentFailed = "membership.payment_failed"
+	EventMembershipEnded         = "membership.ended"
 )
+
+// MembershipPayload is the pinned payload of every membership.* event.
+// PeriodEnd is RFC 3339 (UTC). DaysLeft is set only on renewal_due (3 or 0).
+type MembershipPayload struct {
+	SubscriptionID string `json:"subscription_id"`
+	SubscriberID   string `json:"subscriber_id"`
+	CreatorID      string `json:"creator_id"`
+	TierID         string `json:"tier_id"`
+	TierName       string `json:"tier_name"`
+	AmountPaise    int64  `json:"amount_paise"`
+	Currency       string `json:"currency"`
+	PeriodEnd      string `json:"period_end"`
+	DaysLeft       *int   `json:"days_left,omitempty"`
+}
+
+// IsMembershipEvent reports whether eventType is one of the five membership
+// event types.
+func IsMembershipEvent(eventType string) bool {
+	switch eventType {
+	case EventMembershipStarted, EventMembershipRenewed, EventMembershipRenewalDue,
+		EventMembershipPaymentFailed, EventMembershipEnded:
+		return true
+	}
+	return false
+}
+
+// membershipEventNamespace scopes the stable membership event ids.
+var membershipEventNamespace = uuid.NewSHA1(uuid.NameSpaceURL, []byte("https://momentum.app/events/membership"))
+
+// MembershipEventID is the envelope event id of one logical membership
+// change: a name-based UUID of the event type and its key, so a retried
+// publish carries the SAME id and notification-service (which dedupes per
+// event id and recipient) delivers it once. Keys (service package):
+// started/renewed — the payment id; payment_failed — the payments event
+// id; ended — subscription id + period end; renewal_due — subscription id
+// + period end + days_left.
+func MembershipEventID(eventType, key string) string {
+	return uuid.NewSHA1(membershipEventNamespace, []byte(eventType+"|"+key)).String()
+}
+
+// PublishMembershipEvent publishes one membership.* event on the
+// monetization topic, actor = the subscriber, event id =
+// MembershipEventID(eventType, key). An empty key gets a random id.
+func (p *Producer) PublishMembershipEvent(ctx context.Context, eventType, key string, payload MembershipPayload) error {
+	if !IsMembershipEvent(eventType) {
+		return fmt.Errorf("not a membership event type: %q", eventType)
+	}
+	id := ""
+	if key != "" {
+		id = MembershipEventID(eventType, key)
+	}
+	s := payload.SubscriberID
+	return p.publishWithID(ctx, eventType, id, &s, payload)
+}
 
 // Producer publishes monetization events to Kafka.
 type Producer struct {
@@ -385,12 +447,22 @@ func (p *Producer) PublishEntitlementChanged(ctx context.Context, subscriptionID
 // ---------------------------------------------------------------------------
 
 func (p *Producer) publish(ctx context.Context, eventType string, actorID *string, payload interface{}) error {
+	return p.publishWithID(ctx, eventType, "", actorID, payload)
+}
+
+// publishWithID publishes with a caller-chosen envelope event id (empty =
+// a fresh random one). A stable id lets a consumer that dedupes per event id
+// drop a retried publish of the same logical change.
+func (p *Producer) publishWithID(ctx context.Context, eventType, eventID string, actorID *string, payload interface{}) error {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("marshal payload: %w", err)
 	}
 
 	envelope := sharedEvents.NewEnvelope(ctx, eventType, actorID, payloadBytes)
+	if eventID != "" {
+		envelope.EventID = eventID
+	}
 
 	envelopeBytes, err := json.Marshal(envelope)
 	if err != nil {

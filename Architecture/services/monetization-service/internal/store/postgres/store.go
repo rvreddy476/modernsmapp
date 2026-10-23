@@ -133,6 +133,11 @@ type Subscription struct {
 	// the next renewal (migration 024).
 	PendingTierID     *uuid.UUID `json:"pending_tier_id,omitempty"`
 	PendingPricePaise *int64     `json:"pending_price_paise,omitempty"`
+	// ActivatedAt is when the membership was first paid for; nil for a join
+	// still waiting for its payment (migration 025).
+	ActivatedAt *time.Time `json:"activated_at,omitempty"`
+	// Counted: the row is counted in its tier's subscriber_count.
+	Counted bool `json:"-"`
 }
 
 // CreatorTier represents a creator's subscription tier.
@@ -486,90 +491,14 @@ func (s *Store) GetCreatorTier(ctx context.Context, tierID uuid.UUID) (*CreatorT
 // Subscriptions
 // ---------------------------------------------------------------------------
 
-// Subscribe creates a subscription, charges the subscriber wallet, and credits the creator wallet.
-// All operations are performed within a single DB transaction.
-// idempotencyKey is optional; if non-empty it is stored on the subscription row.
-//
-// Two unique indexes back the service's pre-checks (migration 024): one
-// live subscription per (subscriber, creator) — a concurrent second
-// subscribe is ErrAlreadySubscribed — and one use of an idempotency key per
-// subscriber (ErrIdempotencyKeyTaken). Either rolls back the charge.
-func (s *Store) Subscribe(ctx context.Context, subscriberID, creatorID, tierID uuid.UUID, tierName string, pricePaise int64, currency string, idempotencyKey string) (*Subscription, error) {
-	sub, err := s.subscribeTx(ctx, subscriberID, creatorID, tierID, tierName, pricePaise, currency, idempotencyKey)
-	switch uniqueViolation(err) {
-	case "":
-		return sub, err
-	case idxOneLiveSubscription:
-		return nil, ErrAlreadySubscribed
-	case idxSubscriberIdempotencyKey, legacyIdxSubscriptionIdemKey:
-		return nil, ErrIdempotencyKeyTaken
-	default:
-		return nil, err
-	}
-}
-
-func (s *Store) subscribeTx(ctx context.Context, subscriberID, creatorID, tierID uuid.UUID, tierName string, pricePaise int64, currency string, idempotencyKey string) (*Subscription, error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback(ctx)
-
-	now := time.Now()
-	// One monthly period: monthly is the only billing period offered.
-	periodEnd := now.AddDate(0, 1, 0)
-
-	// Insert first so a duplicate fails before any money moves.
-	var iKey *string
-	if idempotencyKey != "" {
-		iKey = &idempotencyKey
-	}
-	sub := &Subscription{
-		ID:                 uuid.New(),
-		SubscriberID:       subscriberID,
-		CreatorID:          creatorID,
-		TierID:             tierID,
-		TierName:           tierName,
-		PricePaise:         pricePaise,
-		Currency:           currency,
-		Status:             "active",
-		CurrentPeriodStart: now,
-		CurrentPeriodEnd:   periodEnd,
-		CreatedAt:          now,
-		IdempotencyKey:     idempotencyKey,
-	}
-	if _, err = tx.Exec(ctx, `
-		INSERT INTO subscriptions (id, subscriber_id, creator_id, tier_id, tier_name, price, currency, status, current_period_start, current_period_end, created_at, idempotency_key)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-	`, sub.ID, sub.SubscriberID, sub.CreatorID, sub.TierID, sub.TierName,
-		sub.PricePaise, sub.Currency, sub.Status, sub.CurrentPeriodStart, sub.CurrentPeriodEnd, sub.CreatedAt, iKey); err != nil {
-		return nil, err
-	}
-
-	if err := debitCreditTx(ctx, tx, subscriberID, creatorID, pricePaise, currency,
-		"Subscription to "+tierName, "subscription", sub.ID.String()); err != nil {
-		if errors.Is(err, ErrInsufficientFunds) {
-			return nil, errors.New("INSUFFICIENT_BALANCE_OR_FROZEN")
-		}
-		return nil, err
-	}
-
-	// Increment tier subscriber count
-	if _, err = tx.Exec(ctx, `
-		UPDATE creator_tiers SET subscriber_count = subscriber_count + 1, updated_at = NOW()
-		WHERE id = $1
-	`, tierID); err != nil {
-		return nil, err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return nil, err
-	}
-	return sub, nil
-}
+// A join is created by CreateMembershipJoin (membership_payments.go) as a
+// pending_payment subscription plus its payment row; nothing is charged here.
+// The wallet-to-wallet Subscribe that used to live here was removed with
+// migration 025.
 
 // Unsubscribe cancels, immediately, the subscriber's live subscription to a
-// creator (any live status, not only active) and returns it as it was.
+// creator (any live status, not only active) and returns it as it was. A
+// counted row leaves its tier's subscriber_count.
 func (s *Store) Unsubscribe(ctx context.Context, subscriberID, creatorID uuid.UUID) (*Subscription, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -589,24 +518,58 @@ func (s *Store) Unsubscribe(ctx context.Context, subscriberID, creatorID uuid.UU
 	if err != nil {
 		return nil, err
 	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE subscriptions SET status = 'cancelled', cancelled_at = NOW() WHERE id = $1
-	`, sub.ID); err != nil {
+	if err := cancelNowTx(ctx, tx, sub); err != nil {
 		return nil, err
 	}
-
-	// Decrement tier subscriber count
-	if _, err = tx.Exec(ctx, `
-		UPDATE creator_tiers SET subscriber_count = GREATEST(subscriber_count - 1, 0), updated_at = NOW()
-		WHERE id = $1
-	`, sub.TierID); err != nil {
-		return nil, err
-	}
-
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return sub, nil
+}
+
+// CancelSubscriptionNow cancels one subscription immediately (any status but
+// cancelled or expired) and returns it as it was. A counted row leaves its
+// tier's subscriber_count.
+func (s *Store) CancelSubscriptionNow(ctx context.Context, subID uuid.UUID) (*Subscription, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	sub, err := scanSubscription(tx.QueryRow(ctx, `SELECT `+subscriptionColumns+` FROM subscriptions WHERE id = $1 FOR UPDATE`, subID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, errors.New("SUBSCRIPTION_NOT_FOUND")
+	}
+	if err != nil {
+		return nil, err
+	}
+	if sub.Status == "cancelled" || sub.Status == "expired" {
+		return nil, ErrSubscriptionStateChanged
+	}
+	if err := cancelNowTx(ctx, tx, sub); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return sub, nil
+}
+
+func cancelNowTx(ctx context.Context, tx pgx.Tx, sub *Subscription) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE subscriptions SET status = 'cancelled', cancelled_at = NOW(), counted = FALSE WHERE id = $1
+	`, sub.ID); err != nil {
+		return err
+	}
+	if sub.Counted {
+		if _, err := tx.Exec(ctx, `
+			UPDATE creator_tiers SET subscriber_count = GREATEST(subscriber_count - 1, 0), updated_at = NOW()
+			WHERE id = $1
+		`, sub.TierID); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // GetSubscriptionByIdempotencyKey returns the subscriber's subscription

@@ -1098,6 +1098,10 @@ services:
       # blank falls back to the DATING_SAFETY_* values above.
       DOORSTEP_SAFETY_RESPONDER_USER_IDS: ${DOORSTEP_SAFETY_RESPONDER_USER_IDS:-}
       DOORSTEP_SAFETY_OPS_EMAIL: ${DOORSTEP_SAFETY_OPS_EMAIL:-}
+      # Paid memberships: monetization-service's membership.* events (new
+      # member, joined, renewed, renewal due, payment failed, ended), own group.
+      KAFKA_MONETIZATION_TOPIC: monetization.events
+      KAFKA_MEMBERSHIP_GROUP_ID: notification-service-memberships
       IDENTITY_AUTH_URL: http://identity-auth:8081
       OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://jaeger:4318}
     ports:
@@ -1456,6 +1460,18 @@ services:
       # recorded in tds_ledger on every payout, but NOT deducted from the
       # transfer until the later per-user tax module. true withholds.
       MONETIZATION_TDS_APPLY: ${MONETIZATION_TDS_APPLY:-false}
+      # Paid creator memberships (23 Oct 2026): ON in dev. Opens the
+      # membership and entitlement routes, the payments consumer (application
+      # memberships), the Kafka producer and the membership workers even with
+      # MONETIZATION_WRITES_ENABLED=false; creator fund, tips and payouts stay
+      # closed. Production values keep it "false".
+      MEMBERSHIPS_ENABLED: ${MEMBERSHIPS_ENABLED:-true}
+      # Eligibility to offer memberships: date of birth (identity-profile),
+      # follower count (graph-service, GRAPH_SERVICE_URL below) and standing
+      # (trust-safety; needs monetization-service admitted to its standing
+      # route — until then the strikes item fails closed).
+      PROFILE_SERVICE_URL: http://identity-profile:8098
+      TRUST_SAFETY_SERVICE_URL: http://trust-safety-service:8091
       # The gateway stamps X-Internal-Service-Key on every proxied
       # request and the direct callers (commerce, post, food) send it;
       # maintenance mode requires it on every admin route.
@@ -1497,6 +1513,16 @@ services:
       SERVICE_CALLER_FOOD_SERVICE_KID: ${FOOD_SERVICE_TOKEN_KID:-f1}
       SERVICE_CALLER_FOOD_SERVICE_PUBKEY: ${FOOD_SERVICE_TOKEN_PUBKEY:-}
       SERVICE_CALLER_FOOD_SERVICE_OPS: monetization:charge-and-credit
+      # Creator memberships are paid through payments-service (application
+      # memberships, reference type creator_membership) with monetization's
+      # own Ed25519 service token; a period is paid only from the signed
+      # payment.succeeded event. The dev-only seed and kid live in the
+      # gitignored .env; the matching public half goes to payments-service
+      # (SERVICE_CALLER_MONETIZATION_SERVICE_PUBKEY / KID, with
+      # monetization-service in its SERVICE_CALLERS).
+      PAYMENTS_SERVICE_URL: http://payments-service:8102
+      MONETIZATION_SERVICE_TOKEN_KEY: ${MONETIZATION_SERVICE_TOKEN_KEY:-}
+      MONETIZATION_SERVICE_TOKEN_KID: ${MONETIZATION_SERVICE_TOKEN_KID:-}
       # Security sweep #16: every tip asks graph-service for a block either
       # way first. Unset, tips answer 503 TIP_UNAVAILABLE.
       GRAPH_SERVICE_URL: http://graph-service:8083
@@ -1728,6 +1754,16 @@ services:
       SERVICE_CALLER_DOORSTEP_SERVICE_OPS: ${SERVICE_CALLER_DOORSTEP_SERVICE_OPS:-payments:intent.create,payments:intent.read,payments:refund.create}
       SERVICE_CALLER_DOORSTEP_SERVICE_REFTYPES: ${SERVICE_CALLER_DOORSTEP_SERVICE_REFTYPES:-doorstep_booking,doorstep_extras}
       SERVICE_CALLER_DOORSTEP_SERVICE_APPLICATIONS: ${SERVICE_CALLER_DOORSTEP_SERVICE_APPLICATIONS:-doorstep}
+      # monetization-service: paid creator memberships (creator_membership,
+      # one intent per paid period), migration 016. Takes effect only once
+      # SERVICE_CALLERS names monetization-service and its PUBKEY is set (both
+      # in the gitignored .env). Migration 016 must have seeded `memberships`
+      # before that.
+      SERVICE_CALLER_MONETIZATION_SERVICE_KID: ${SERVICE_CALLER_MONETIZATION_SERVICE_KID:-m1}
+      SERVICE_CALLER_MONETIZATION_SERVICE_PUBKEY: ${SERVICE_CALLER_MONETIZATION_SERVICE_PUBKEY:-}
+      SERVICE_CALLER_MONETIZATION_SERVICE_OPS: ${SERVICE_CALLER_MONETIZATION_SERVICE_OPS:-payments:intent.create,payments:intent.read,payments:refund.create}
+      SERVICE_CALLER_MONETIZATION_SERVICE_REFTYPES: ${SERVICE_CALLER_MONETIZATION_SERVICE_REFTYPES:-creator_membership}
+      SERVICE_CALLER_MONETIZATION_SERVICE_APPLICATIONS: ${SERVICE_CALLER_MONETIZATION_SERVICE_APPLICATIONS:-memberships}
       # admin-service: the admin console's /v1/payments/internal/admin/* only.
       # OPS is payments' AdminPermissions; no REFTYPES and no APPLICATIONS (boot
       # refuses either). Takes effect only once SERVICE_CALLERS names

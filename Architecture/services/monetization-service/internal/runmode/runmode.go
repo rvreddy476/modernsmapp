@@ -11,6 +11,10 @@
 //	MONETIZATION_MAINTENANCE      admin routes only, no worker, no consumer
 //	MONETIZATION_TDS_APPLY        deduct TDS at payout (founder: off until
 //	                              the tax module; the calculation is kept)
+//	MEMBERSHIPS_ENABLED           paid creator memberships on payments-service:
+//	                              membership + entitlement routes, the payments
+//	                              consumer, the producer and the membership
+//	                              workers, even with writes off (23 Oct 2026)
 //
 // Maintenance mode (reviewer correction B, 12 Sep 2026) exists so an
 // operator can run the admin corrections — the January reversals — with
@@ -36,6 +40,8 @@ type Config struct {
 	PayoutsEnabled bool
 	Maintenance    bool
 	TDSApply       bool
+	// MembershipsEnabled mirrors MEMBERSHIPS_ENABLED (default false).
+	MembershipsEnabled bool
 }
 
 // Mode is what the process will do about it.
@@ -49,9 +55,9 @@ type Mode struct {
 	// settlement, eligibility, renewals, holds, fundraisers, reconciliation,
 	// and — only with payouts on — the payout submitter and reconciler).
 	StartWorkers bool
-	// StartKafka: the event producer. This service has no Kafka consumer;
-	// the producer is the only Kafka client and it is opened only when
-	// something that publishes can run.
+	// StartKafka: the event producer, opened only when something that
+	// publishes can run (writes, or memberships). The one Kafka consumer is
+	// the memberships payments consumer (StartPaymentsConsumer).
 	StartKafka bool
 	// RequireRedis: the fraud counters. Needed by the live withdrawal path,
 	// not by the admin corrections.
@@ -59,6 +65,17 @@ type Mode struct {
 	// AdminKeyRequired: every /admin/ route must carry the internal
 	// service key in addition to the admin scope header.
 	AdminKeyRequired bool
+
+	// MembershipsEnabled: paid creator memberships are open (MEMBERSHIPS_ENABLED
+	// and not in maintenance). It opens the membership and entitlement routes
+	// even while writes are off; the creator fund, tips and payouts stay closed.
+	MembershipsEnabled bool
+	// StartMembershipWorkers: the membership workers (pending sweep, period
+	// end, grace, expiry, reminders, refunds, auto-resume). They charge nobody.
+	StartMembershipWorkers bool
+	// StartPaymentsConsumer: the payments-event consumer for application
+	// memberships, the only thing that applies membership money.
+	StartPaymentsConsumer bool
 }
 
 var (
@@ -95,15 +112,22 @@ func Resolve(c Config) (Mode, error) {
 	// Maintenance wins over writes: even with both flags on, nothing in
 	// the background runs and only the admin routes accept a write.
 	m.StartWorkers = c.WritesEnabled && !c.Maintenance
-	m.StartKafka = c.WritesEnabled && !c.Maintenance
 	m.RequireRedis = c.WritesEnabled && !c.Maintenance
 	m.AdminKeyRequired = c.Maintenance
+	// Memberships (23 Oct 2026) run on their own switch, independent of the
+	// writes flag: their money moves through payments-service, not the
+	// ledger's own writes. Maintenance still wins: nothing in the background.
+	m.MembershipsEnabled = c.MembershipsEnabled && !c.Maintenance
+	m.StartMembershipWorkers = m.MembershipsEnabled
+	m.StartPaymentsConsumer = m.MembershipsEnabled
+	m.StartKafka = (c.WritesEnabled || c.MembershipsEnabled) && !c.Maintenance
 	return m, nil
 }
 
 // BootLine is the one log line that states the mode. It is deliberately
 // flat so an operator can grep the container log for it.
 func (m Mode) BootLine() string {
-	return fmt.Sprintf("monetization run mode: maintenance=%t writes_enabled=%t payouts_enabled=%t tds_apply=%t workers=%t kafka_producer=%t redis=%t admin_key_required=%t",
-		m.Maintenance, m.WritesEnabled, m.PayoutsEnabled, m.TDSApply, m.StartWorkers, m.StartKafka, m.RequireRedis, m.AdminKeyRequired)
+	return fmt.Sprintf("monetization run mode: maintenance=%t writes_enabled=%t payouts_enabled=%t tds_apply=%t workers=%t kafka_producer=%t redis=%t admin_key_required=%t memberships_enabled=%t membership_workers=%t payments_consumer=%t",
+		m.Maintenance, m.WritesEnabled, m.PayoutsEnabled, m.TDSApply, m.StartWorkers, m.StartKafka, m.RequireRedis, m.AdminKeyRequired,
+		m.MembershipsEnabled, m.StartMembershipWorkers, m.StartPaymentsConsumer)
 }

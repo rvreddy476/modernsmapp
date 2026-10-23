@@ -9,14 +9,15 @@ import (
 	"math/big"
 	"time"
 
+	"github.com/atpost/monetization-service/internal/membership"
 	"github.com/atpost/monetization-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
 
-// The renewal state machine (charge, retry, past_due → grace → cancelled)
-// has ONE implementation: internal/workers (renewSubscriptions and
-// handleRenewalFailure). The copy that used to live here, never called,
-// was removed on 23 Oct 2026.
+// Renewal is by reminder (founder, 23 Oct 2026): nothing is charged
+// automatically. The member pays a renewal (Renew, membership_payments.go);
+// the period-end → grace → expired machine and the reminders run in
+// internal/workers (memberships.go).
 
 func logEventWriteFailure(err error) {
 	slog.Warn("failed to log subscription event", "error", err)
@@ -127,14 +128,24 @@ func (s *Service) CancelImmediately(ctx context.Context, subscriberID, subscript
 		return fmt.Errorf("SUBSCRIPTION_ALREADY_CANCELLED")
 	}
 
-	if err := s.members.SetSubscriptionStatus(ctx, subscriptionID, "cancelled"); err != nil {
+	// A counted subscription leaves its tier's subscriber_count in the same
+	// transaction. A pending join cancelled here never activates: a capture
+	// that still arrives for it is refunded as late.
+	before, err := s.members.CancelSubscriptionNow(ctx, subscriptionID)
+	if errors.Is(err, postgres.ErrSubscriptionStateChanged) {
+		return fmt.Errorf("SUBSCRIPTION_ALREADY_CANCELLED")
+	}
+	if err != nil {
 		return fmt.Errorf("cancel subscription: %w", err)
 	}
 	meta, _ := json.Marshal(map[string]string{"reason": reason})
-	if err := s.members.InsertSubscriptionEvent(ctx, subscriptionID, "cancelled_immediately", sub.Status, "cancelled", meta); err != nil {
+	if err := s.members.InsertSubscriptionEvent(ctx, subscriptionID, "cancelled_immediately", before.Status, "cancelled", meta); err != nil {
 		logEventWriteFailure(err)
 	}
 	s.publishEntitlementChanged(ctx, sub.ID, sub.SubscriberID, sub.CreatorID, EntitlementRevoked)
+	if before.Status != membership.StatusPendingPayment {
+		s.publishMembershipEnded(ctx, before)
+	}
 	return nil
 }
 
@@ -144,9 +155,14 @@ func (s *Service) CancelImmediately(ctx context.Context, subscriberID, subscript
 
 // Tier-change outcomes.
 const (
-	TierChangeUpgraded           = "upgraded"
-	TierChangeDowngradeScheduled = "downgrade_scheduled"
+	// TierChangeUpgraded: applied at once (a pro-rata difference of zero).
+	TierChangeUpgraded = "upgraded"
+	// TierChangeDowngradeScheduled: the next period renews on the new tier.
+	TierChangeDowngradeScheduled = "scheduled"
 	TierChangeUnchanged          = "unchanged"
+	// TierChangePaymentRequired: the difference is paid through a checkout;
+	// the tier changes when its signed payment event is applied.
+	TierChangePaymentRequired = "pending_payment"
 )
 
 // TierChange is what a tier change did.
@@ -155,8 +171,11 @@ type TierChange struct {
 	ChargedPaise int64     `json:"charged_paise"`
 	TierID       uuid.UUID `json:"tier_id"`
 	// EffectiveAt is when the subscription is on TierID: now for an
-	// upgrade, the next period start for a scheduled downgrade.
+	// upgrade applied at once, the next period start for a scheduled
+	// downgrade, and unknown (the payment's capture) for a paid upgrade.
 	EffectiveAt time.Time `json:"effective_at"`
+	// Checkout is set for TierChangePaymentRequired.
+	Checkout *Checkout `json:"-"`
 }
 
 // ProrateUpgradePaise is what moving up costs mid-period: the difference
@@ -190,12 +209,13 @@ func ProrateUpgradePaise(paidPaise, newPricePaise int64, periodStart, periodEnd,
 // creator. Whether that is up or down is decided by tier LEVEL — the two
 // tiers' current prices — the same rule entitlement uses.
 //
-//   - Up: charged now, pro-rata (ProrateUpgradePaise against what was paid
-//     for this period), period end kept; the charge and the tier change are
-//     one transaction. The subscription's locked price becomes the new
-//     tier's price from the next renewal on.
+//   - Up: the pro-rata difference (ProrateUpgradePaise against what was paid
+//     for this period) is paid through payments-service; the tier changes
+//     only when that payment's signed event is applied, period end kept.
+//     A difference of zero applies at once. The subscription's locked price
+//     becomes the new tier's price.
 //   - Down (or level): nothing charged or refunded; the new tier and its
-//     current price are stored as pending and applied at the next renewal.
+//     current price are stored as pending and applied by the next renewal.
 //   - Same tier: clears any scheduled downgrade.
 func (s *Service) UpgradeSubscription(ctx context.Context, subscriberID, subscriptionID, newTierID uuid.UUID) (*TierChange, error) {
 	sub, err := s.ownedSubscription(ctx, subscriberID, subscriptionID)
@@ -254,49 +274,62 @@ func (s *Service) UpgradeSubscription(ctx context.Context, subscriberID, subscri
 		if err := s.members.InsertSubscriptionEvent(ctx, sub.ID, "downgrade_scheduled", sub.Status, sub.Status, meta); err != nil {
 			logEventWriteFailure(err)
 		}
-		// Access is unchanged until the renewal applies it; the renewal
-		// publishes then.
+		// Access is unchanged until the renewal applies it.
 		return &TierChange{Result: TierChangeDowngradeScheduled, TierID: newTier.ID, EffectiveAt: sub.CurrentPeriodEnd}, nil
 	}
 
 	now := s.clock()
 	charge := ProrateUpgradePaise(sub.PricePaise, newTier.PricePaise, sub.CurrentPeriodStart, sub.CurrentPeriodEnd, now)
+	if charge > 0 {
+		if s.membershipPayments == nil {
+			return nil, ErrMembershipPaymentsUnavailable
+		}
+		rows, err := s.members.CreateMembershipUpgrade(ctx, postgres.UpgradeCheckoutInput{
+			SubscriptionID: sub.ID, SubscriberID: sub.SubscriberID, ExpectedTierID: sub.TierID,
+			ExpectedPeriodEnd: sub.CurrentPeriodEnd, NewTier: *newTier, ChargePaise: charge, Now: now,
+		})
+		if err != nil {
+			return nil, tierChangeErr(err)
+		}
+		co, err := s.openCheckout(ctx, rows, membership.StatusPendingPayment)
+		if err != nil {
+			return nil, err
+		}
+		return &TierChange{Result: TierChangePaymentRequired, ChargedPaise: 0, TierID: newTier.ID, Checkout: co}, nil
+	}
+
 	if err := s.members.UpgradeSubscription(ctx, postgres.UpgradeInput{
 		SubscriptionID:    sub.ID,
-		SubscriberID:      sub.SubscriberID,
-		CreatorID:         sub.CreatorID,
 		ExpectedTierID:    sub.TierID,
 		ExpectedPeriodEnd: sub.CurrentPeriodEnd,
 		NewTierID:         newTier.ID,
 		NewTierName:       newTier.Name,
 		NewPricePaise:     newTier.PricePaise,
-		ChargePaise:       charge,
-		Currency:          sub.Currency,
-		Description:       fmt.Sprintf("Subscription upgrade: %s → %s (pro-rata)", sub.TierName, newTier.Name),
 	}); err != nil {
 		return nil, tierChangeErr(err)
 	}
-
 	meta, _ := json.Marshal(map[string]any{
 		"old_tier_id":  sub.TierID.String(),
 		"new_tier_id":  newTier.ID.String(),
 		"paid_paise":   sub.PricePaise,
 		"new_price":    newTier.PricePaise,
-		"charge_paise": charge,
+		"charge_paise": 0,
 	})
 	if err := s.members.InsertSubscriptionEvent(ctx, sub.ID, "upgraded", sub.Status, sub.Status, meta); err != nil {
 		logEventWriteFailure(err)
 	}
 	s.publishEntitlementChanged(ctx, sub.ID, sub.SubscriberID, sub.CreatorID, EntitlementUpgraded)
-	return &TierChange{Result: TierChangeUpgraded, ChargedPaise: charge, TierID: newTier.ID, EffectiveAt: now}, nil
+	return &TierChange{Result: TierChangeUpgraded, TierID: newTier.ID, EffectiveAt: now}, nil
 }
 
 func tierChangeErr(err error) error {
 	switch {
-	case errors.Is(err, postgres.ErrInsufficientFunds):
-		return fmt.Errorf("INSUFFICIENT_BALANCE_FOR_UPGRADE")
 	case errors.Is(err, postgres.ErrSubscriptionStateChanged):
 		return fmt.Errorf("SUBSCRIPTION_STATE_CHANGED")
+	case errors.Is(err, postgres.ErrSubscriptionNotFound):
+		return fmt.Errorf("SUBSCRIPTION_NOT_FOUND")
+	case errors.Is(err, postgres.ErrSubscriptionNotOwned):
+		return fmt.Errorf("SUBSCRIPTION_NOT_OWNED")
 	default:
 		return fmt.Errorf("change subscription tier: %w", err)
 	}

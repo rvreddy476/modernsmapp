@@ -44,6 +44,46 @@ func TestWritesWithoutMaintenanceStartsWorkers(t *testing.T) {
 	}
 }
 
+// The memberships switch matrix (23 Oct 2026): MEMBERSHIPS_ENABLED opens the
+// membership path (consumer, producer, membership workers) whatever the
+// writes flag says, never starts the legacy money workers or Redis on its
+// own, and maintenance wins over it.
+func TestMembershipsSwitchMatrix(t *testing.T) {
+	cases := []struct {
+		name                                    string
+		writes, memberships, maintenance        bool
+		wantMemberships, wantWorkers, wantKafka bool
+		wantMembershipWorkers, wantConsumer     bool
+		wantRedis                               bool
+	}{
+		{"all off", false, false, false, false, false, false, false, false, false},
+		{"memberships only", false, true, false, true, false, true, true, true, false},
+		{"writes only", true, false, false, false, true, true, false, false, true},
+		{"both", true, true, false, true, true, true, true, true, true},
+		{"memberships in maintenance", false, true, true, false, false, false, false, false, false},
+		{"both in maintenance", true, true, true, false, false, false, false, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := Resolve(Config{Environment: "development", InternalKey: "k",
+				WritesEnabled: tc.writes, MembershipsEnabled: tc.memberships, Maintenance: tc.maintenance})
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := []bool{m.MembershipsEnabled, m.StartWorkers, m.StartKafka, m.StartMembershipWorkers, m.StartPaymentsConsumer, m.RequireRedis}
+			want := []bool{tc.wantMemberships, tc.wantWorkers, tc.wantKafka, tc.wantMembershipWorkers, tc.wantConsumer, tc.wantRedis}
+			for i := range got {
+				if got[i] != want[i] {
+					t.Fatalf("mode %+v: field %d = %v, want %v", m, i, got[i], want[i])
+				}
+			}
+			if !strings.Contains(m.BootLine(), "memberships_enabled=") {
+				t.Fatalf("boot line must state memberships: %s", m.BootLine())
+			}
+		})
+	}
+}
+
 func TestContradictoryFlagsRefuseToBoot(t *testing.T) {
 	cases := []struct {
 		name string
