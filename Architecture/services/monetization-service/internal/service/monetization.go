@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -60,10 +59,21 @@ type Service struct {
 	// before any tip touches the ledger (security sweep #16, tips.go). nil
 	// means GRAPH_SERVICE_URL is unset, and every tip is refused.
 	tipBlocks TipBlockChecker
+
+	// members is the storage the membership rules (tiers, subscriptions,
+	// entitlement; membership.go) use. The *postgres.Store in production;
+	// an in-memory fake in tests (WithMembershipStore).
+	members MembershipStore
+	// now is the membership rules' clock; nil means time.Now (WithClock).
+	now func() time.Time
 }
 
 func New(s *postgres.Store, rdb *redis.Client) *Service {
-	return &Service{store: s, rdb: rdb, creatorFundCfg: DefaultCreatorFundConfig(), tdsSection: DefaultTDSSection}
+	svc := &Service{store: s, rdb: rdb, creatorFundCfg: DefaultCreatorFundConfig(), tdsSection: DefaultTDSSection}
+	if s != nil {
+		svc.members = s
+	}
+	return svc
 }
 
 // WithPayoutsEnabled opens or closes the withdrawal path. Defaults to
@@ -223,113 +233,8 @@ func (s *Service) RemovePayoutMethod(ctx context.Context, userID, methodID uuid.
 // RequestPayout lives in payout.go (plan Phase 3A): the gated pipeline
 // that ends in the payout_requests insert.
 
-// ---------------------------------------------------------------------------
-// Creator Tiers
-// ---------------------------------------------------------------------------
-
-// GetCreatorTiers returns all tiers for a creator.
-func (s *Service) GetCreatorTiers(ctx context.Context, creatorID uuid.UUID) ([]postgres.CreatorTier, error) {
-	return s.store.GetCreatorTiers(ctx, creatorID)
-}
-
-// CreateTier creates a new creator tier.
-func (s *Service) CreateTier(ctx context.Context, t *postgres.CreatorTier) error {
-	return s.store.CreateTier(ctx, t)
-}
-
-// UpdateTier updates an existing creator tier.
-func (s *Service) UpdateTier(ctx context.Context, t *postgres.CreatorTier) error {
-	return s.store.UpdateTier(ctx, t)
-}
-
-// ---------------------------------------------------------------------------
-// Subscriptions
-// ---------------------------------------------------------------------------
-
-// ErrInvalidAmount is returned when an amount is out of valid range.
-var ErrInvalidAmount = errors.New("invalid amount")
-
-const maxAmountPaise int64 = 100_000_000 // 1,000,000.00 INR in paise
-
-// Subscribe validates the tier exists and is active, then creates the subscription.
-// Charges the subscriber wallet and credits the creator wallet.
-// idempotencyKey is optional; if non-empty, a duplicate call with the same key returns the existing subscription.
-func (s *Service) Subscribe(ctx context.Context, subscriberID, creatorID uuid.UUID, tierID uuid.UUID, idempotencyKey string) (*postgres.Subscription, error) {
-	if subscriberID == creatorID {
-		return nil, fmt.Errorf("CANNOT_SUBSCRIBE_TO_SELF")
-	}
-
-	// Idempotency check: return cached result if key already used
-	if idempotencyKey != "" {
-		existing, err := s.store.GetSubscriptionByIdempotencyKey(ctx, idempotencyKey)
-		if err == nil && existing != nil {
-			return existing, nil
-		}
-	}
-
-	// Validate tier exists and is active
-	tier, err := s.store.GetCreatorTier(ctx, tierID)
-	if err != nil {
-		return nil, err
-	}
-	if tier == nil {
-		return nil, fmt.Errorf("TIER_NOT_FOUND")
-	}
-	if !tier.IsActive {
-		return nil, fmt.Errorf("TIER_INACTIVE")
-	}
-	if tier.CreatorID != creatorID {
-		return nil, fmt.Errorf("TIER_CREATOR_MISMATCH")
-	}
-
-	// Amount bounds validation
-	if tier.PricePaise <= 0 || tier.PricePaise > maxAmountPaise {
-		return nil, fmt.Errorf("amount out of valid range: %w", ErrInvalidAmount)
-	}
-
-	// Check for existing active subscription
-	existing, err := s.store.GetSubscription(ctx, subscriberID, creatorID)
-	if err != nil {
-		return nil, err
-	}
-	if existing != nil {
-		return nil, fmt.Errorf("ALREADY_SUBSCRIBED")
-	}
-
-	// Ensure both wallets exist
-	_, err = s.store.EnsureWallet(ctx, subscriberID)
-	if err != nil {
-		return nil, err
-	}
-	_, err = s.store.EnsureWallet(ctx, creatorID)
-	if err != nil {
-		return nil, err
-	}
-
-	sub, err := s.store.Subscribe(ctx, subscriberID, creatorID, tier.ID, tier.Name, tier.PricePaise, tier.Currency, idempotencyKey)
-	if err != nil {
-		return nil, err
-	}
-	// Tier 1a: invalidate downstream caches immediately so a fan who
-	// just subscribed sees gated content on the next read instead of
-	// waiting for the TTL to expire.
-	s.publishEntitlementChanged(ctx, sub.ID, subscriberID, creatorID, "granted")
-	return sub, nil
-}
-
-// Unsubscribe cancels an active subscription.
-func (s *Service) Unsubscribe(ctx context.Context, subscriberID, creatorID uuid.UUID) error {
-	if err := s.store.Unsubscribe(ctx, subscriberID, creatorID); err != nil {
-		return err
-	}
-	s.publishEntitlementChanged(ctx, uuid.Nil, subscriberID, creatorID, "revoked")
-	return nil
-}
-
-// GetSubscription returns the active subscription between a subscriber and a creator.
-func (s *Service) GetSubscription(ctx context.Context, subscriberID, creatorID uuid.UUID) (*postgres.Subscription, error) {
-	return s.store.GetSubscription(ctx, subscriberID, creatorID)
-}
+// Creator tiers, subscribe and unsubscribe live in membership.go; the
+// subscription lifecycle in subscription.go; entitlement in entitlement.go.
 
 // ---------------------------------------------------------------------------
 // Tax Info

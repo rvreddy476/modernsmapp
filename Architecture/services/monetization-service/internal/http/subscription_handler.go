@@ -51,6 +51,8 @@ func (h *Handler) PauseSubscription(c *gin.Context) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "You do not own this subscription", nil)
 		case "SUBSCRIPTION_NOT_ACTIVE":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Subscription is not active", nil)
+		case "PAUSE_UNTIL_INVALID":
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_DATE", "pause_until must be in the future", nil)
 		default:
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
@@ -168,7 +170,8 @@ func (h *Handler) UpgradeSubscription(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.UpgradeSubscription(c.Request.Context(), userID, subID, newTierID); err != nil {
+	change, err := h.svc.UpgradeSubscription(c.Request.Context(), userID, subID, newTierID)
+	if err != nil {
 		switch err.Error() {
 		case "SUBSCRIPTION_NOT_FOUND":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Subscription not found", nil)
@@ -184,17 +187,22 @@ func (h *Handler) UpgradeSubscription(c *gin.Context) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "TIER_CREATOR_MISMATCH", "Tier does not belong to this creator", nil)
 		case "INSUFFICIENT_BALANCE_FOR_UPGRADE":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INSUFFICIENT_BALANCE", "Insufficient balance for upgrade", nil)
+		case "SUBSCRIPTION_STATE_CHANGED":
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "SUBSCRIPTION_STATE_CHANGED", "The subscription changed while this request was running; nothing was charged", nil)
 		default:
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "upgraded"}, nil)
+	// status: "upgraded" (charged_paise taken now, pro-rata), or
+	// "downgrade_scheduled" (effective_at = the next period start, nothing
+	// charged or refunded), or "unchanged".
+	api.JSON(c.Writer, http.StatusOK, change, nil)
 }
 
 func (h *Handler) GetSubscriptionEvents(c *gin.Context) {
-	_, ok := getUserID(c)
+	userID, ok := getUserID(c)
 	if !ok {
 		return
 	}
@@ -218,8 +226,12 @@ func (h *Handler) GetSubscriptionEvents(c *gin.Context) {
 		}
 	}
 
-	events, err := h.svc.GetSubscriptionEvents(c.Request.Context(), subID, limit, offset)
+	events, err := h.svc.GetSubscriptionEvents(c.Request.Context(), userID, subID, limit, offset)
 	if err != nil {
+		if err.Error() == "SUBSCRIPTION_NOT_FOUND" {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Subscription not found", nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -69,56 +70,51 @@ func (s *Store) SetSubscriptionStatus(ctx context.Context, subID uuid.UUID, stat
 	return err
 }
 
-// SetSubscriptionGracePeriod sets the grace_period_end on a subscription.
-func (s *Store) SetSubscriptionGracePeriod(ctx context.Context, subID uuid.UUID, graceEnd time.Time) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE subscriptions SET grace_period_end = $2, status = 'grace' WHERE id = $1
-	`, subID, graceEnd)
-	return err
-}
-
-// PauseSubscription sets a subscription to paused with a pause_until timestamp.
+// PauseSubscription sets a subscription to paused with a pause_until
+// timestamp. The paid period is not moved: a paused subscription keeps
+// access only until current_period_end, and is not renewed while paused.
 func (s *Store) PauseSubscription(ctx context.Context, subID uuid.UUID, pauseUntil time.Time) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE subscriptions SET status = 'paused', pause_until = $2 WHERE id = $1
+	tag, err := s.db.Exec(ctx, `
+		UPDATE subscriptions SET status = 'paused', pause_until = $2 WHERE id = $1 AND status = 'active'
 	`, subID, pauseUntil)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSubscriptionStateChanged
+	}
+	return nil
 }
 
 // ResumeSubscription reactivates a paused subscription.
 func (s *Store) ResumeSubscription(ctx context.Context, subID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE subscriptions SET status = 'active', pause_until = NULL WHERE id = $1
+	tag, err := s.db.Exec(ctx, `
+		UPDATE subscriptions SET status = 'active', pause_until = NULL WHERE id = $1 AND status = 'paused'
 	`, subID)
-	return err
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrSubscriptionStateChanged
+	}
+	return nil
 }
 
 // CancelAtPeriodEnd marks a subscription to cancel when the current period ends.
 func (s *Store) CancelAtPeriodEnd(ctx context.Context, subID uuid.UUID, reason string) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE subscriptions
-		SET status = 'cancelled_at_period_end', cancelled_at = NOW(), cancellation_reason = $2
+		SET status = 'cancelled_at_period_end', cancelled_at = NOW(), cancellation_reason = $2,
+		    pending_tier_id = NULL, pending_price = NULL
 		WHERE id = $1
 	`, subID, reason)
 	return err
 }
 
-// IncrementRetryCount atomically increments the retry_count and returns the new value.
-func (s *Store) IncrementRetryCount(ctx context.Context, subID uuid.UUID) (int, error) {
-	var count int
-	err := s.db.QueryRow(ctx, `
-		UPDATE subscriptions SET retry_count = retry_count + 1
-		WHERE id = $1
-		RETURNING retry_count
-	`, subID).Scan(&count)
-	return count, err
-}
-
 // GetPausedSubscriptionsToResume returns paused subscriptions whose pause_until is before now.
 func (s *Store) GetPausedSubscriptionsToResume(ctx context.Context, now time.Time) ([]Subscription, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, subscriber_id, creator_id, tier_id, tier_name, price, currency, status,
-		       current_period_start, current_period_end, created_at
+		SELECT `+subscriptionColumns+`
 		FROM subscriptions
 		WHERE status = 'paused' AND pause_until IS NOT NULL AND pause_until <= $1
 		LIMIT 500
@@ -126,27 +122,13 @@ func (s *Store) GetPausedSubscriptionsToResume(ctx context.Context, now time.Tim
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var subs []Subscription
-	for rows.Next() {
-		var sub Subscription
-		if err := rows.Scan(
-			&sub.ID, &sub.SubscriberID, &sub.CreatorID, &sub.TierID, &sub.TierName,
-			&sub.PricePaise, &sub.Currency, &sub.Status, &sub.CurrentPeriodStart, &sub.CurrentPeriodEnd, &sub.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		subs = append(subs, sub)
-	}
-	return subs, rows.Err()
+	return scanSubscriptions(rows)
 }
 
 // GetGracePeriodExpired returns subscriptions in grace status whose grace_period_end has passed.
 func (s *Store) GetGracePeriodExpired(ctx context.Context, now time.Time) ([]Subscription, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, subscriber_id, creator_id, tier_id, tier_name, price, currency, status,
-		       current_period_start, current_period_end, created_at
+		SELECT `+subscriptionColumns+`
 		FROM subscriptions
 		WHERE status = 'grace' AND grace_period_end IS NOT NULL AND grace_period_end <= $1
 		LIMIT 500
@@ -154,49 +136,18 @@ func (s *Store) GetGracePeriodExpired(ctx context.Context, now time.Time) ([]Sub
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-
-	var subs []Subscription
-	for rows.Next() {
-		var sub Subscription
-		if err := rows.Scan(
-			&sub.ID, &sub.SubscriberID, &sub.CreatorID, &sub.TierID, &sub.TierName,
-			&sub.PricePaise, &sub.Currency, &sub.Status, &sub.CurrentPeriodStart, &sub.CurrentPeriodEnd, &sub.CreatedAt,
-		); err != nil {
-			return nil, err
-		}
-		subs = append(subs, sub)
-	}
-	return subs, rows.Err()
+	return scanSubscriptions(rows)
 }
 
 // GetSubscriptionByID returns a subscription by its ID, regardless of status.
 func (s *Store) GetSubscriptionByID(ctx context.Context, subID uuid.UUID) (*Subscription, error) {
-	var sub Subscription
-	err := s.db.QueryRow(ctx, `
-		SELECT id, subscriber_id, creator_id, tier_id, tier_name, price, currency, status,
-		       current_period_start, current_period_end, created_at
+	sub, err := scanSubscription(s.db.QueryRow(ctx, `
+		SELECT `+subscriptionColumns+`
 		FROM subscriptions
 		WHERE id = $1
-	`, subID).Scan(
-		&sub.ID, &sub.SubscriberID, &sub.CreatorID, &sub.TierID, &sub.TierName,
-		&sub.PricePaise, &sub.Currency, &sub.Status, &sub.CurrentPeriodStart, &sub.CurrentPeriodEnd, &sub.CreatedAt,
-	)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		return nil, err
+	`, subID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
 	}
-	return &sub, nil
-}
-
-// UpdateSubscriptionTier changes the tier and price of a subscription.
-func (s *Store) UpdateSubscriptionTier(ctx context.Context, subID, newTierID uuid.UUID, newTierName string, newPrice int64) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE subscriptions
-		SET tier_id = $2, tier_name = $3, price = $4
-		WHERE id = $1
-	`, subID, newTierID, newTierName, newPrice)
-	return err
+	return sub, err
 }

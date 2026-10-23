@@ -2,7 +2,6 @@ package http
 
 import (
 	"crypto/hmac"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -186,7 +185,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// Entitlement checks (Tier 3c — used by post-service / clients)
 		v1.GET("/entitlements", h.CheckEntitlement)
+		// Caller-only: refuses a subscriber_id other than X-User-Id (403).
 		v1.POST("/entitlements/check", h.BulkCheckEntitlements)
+		// Any subscriber, for a named service only (signed token).
+		v1.POST("/internal/entitlements/check", h.requireServiceCaller(OpEntitlementsCheck, entitlementsCheckCallers...), h.InternalBulkCheckEntitlements)
 
 		// Tips / Super Chat (Tier 3d)
 		v1.POST("/tips", h.SendTip)
@@ -842,10 +844,36 @@ func (h *Handler) SaveTaxInfo(c *gin.Context) {
 // ---------------------------------------------------------------------------
 
 type CreateTierRequest struct {
-	Name       string          `json:"name" binding:"required"`
-	PricePaise int64           `json:"price_paise" binding:"required"`
-	Currency   string          `json:"currency"`
-	Perks      json.RawMessage `json:"perks"`
+	// Validated by the service (name 1..60, price ₹29–₹2,999, perks ≤ 10
+	// of ≤ 100 characters), so a refusal names the field.
+	Name       string   `json:"name"`
+	PricePaise int64    `json:"price_paise"`
+	Currency   string   `json:"currency"`
+	Perks      []string `json:"perks"`
+}
+
+// writeTierError answers a tier create/update refusal with its own code.
+func writeTierError(c *gin.Context, err error) {
+	reply := func(status int, code string) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, err.Error(), nil)
+	}
+	switch {
+	case errors.Is(err, service.ErrTierNameInvalid):
+		reply(http.StatusBadRequest, "TIER_NAME_INVALID")
+	case errors.Is(err, service.ErrTierPriceOutOfRange):
+		reply(http.StatusBadRequest, "TIER_PRICE_OUT_OF_RANGE")
+	case errors.Is(err, service.ErrTierPerksInvalid):
+		reply(http.StatusBadRequest, "TIER_PERKS_INVALID")
+	case errors.Is(err, service.ErrTierCurrencyInvalid):
+		reply(http.StatusBadRequest, "TIER_CURRENCY_INVALID")
+	case errors.Is(err, service.ErrTierLimit):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "TIER_LIMIT",
+			"A creator can have at most 3 active tiers", nil)
+	case errors.Is(err, service.ErrTierNotFound):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Tier not found or not owned by you", nil)
+	default:
+		reply(http.StatusInternalServerError, "INTERNAL_ERROR")
+	}
 }
 
 func (h *Handler) GetMyTiers(c *gin.Context) {
@@ -902,34 +930,30 @@ func (h *Handler) CreateTier(c *gin.Context) {
 		return
 	}
 
-	currency := req.Currency
-	if currency == "" {
-		currency = "INR"
-	}
-
-	t := &postgres.CreatorTier{
-		CreatorID:  userID,
+	t, err := h.svc.CreateTier(c.Request.Context(), userID, service.TierInput{
 		Name:       req.Name,
 		PricePaise: req.PricePaise,
-		Currency:   currency,
+		Currency:   req.Currency,
 		Perks:      req.Perks,
-		IsActive:   true,
-	}
-
-	if err := h.svc.CreateTier(c.Request.Context(), t); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+	})
+	if err != nil {
+		writeTierError(c, err)
 		return
 	}
 
 	api.JSON(c.Writer, http.StatusCreated, t, nil)
 }
 
+// UpdateTierRequest is a PATCH: every field is optional, and a field left
+// out (or sent as null) is left as it is. Until 23 Oct 2026 the absent
+// fields were written as zero values — a price-only PATCH blanked the name
+// and perks and reactivated the tier.
 type UpdateTierRequest struct {
-	Name       string          `json:"name"`
-	PricePaise int64           `json:"price_paise"`
-	Currency   string          `json:"currency"`
-	Perks      json.RawMessage `json:"perks"`
-	IsActive   *bool           `json:"is_active"`
+	Name       *string   `json:"name"`
+	PricePaise *int64    `json:"price_paise"`
+	Currency   *string   `json:"currency"`
+	Perks      *[]string `json:"perks"`
+	IsActive   *bool     `json:"is_active"`
 }
 
 func (h *Handler) UpdateTier(c *gin.Context) {
@@ -950,31 +974,19 @@ func (h *Handler) UpdateTier(c *gin.Context) {
 		return
 	}
 
-	isActive := true
-	if req.IsActive != nil {
-		isActive = *req.IsActive
-	}
-
-	t := &postgres.CreatorTier{
-		ID:         tierID,
-		CreatorID:  userID,
+	t, err := h.svc.UpdateTier(c.Request.Context(), userID, tierID, service.TierPatch{
 		Name:       req.Name,
 		PricePaise: req.PricePaise,
 		Currency:   req.Currency,
 		Perks:      req.Perks,
-		IsActive:   isActive,
-	}
-
-	if err := h.svc.UpdateTier(c.Request.Context(), t); err != nil {
-		if err.Error() == "TIER_NOT_FOUND" {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Tier not found or not owned by you", nil)
-			return
-		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		IsActive:   req.IsActive,
+	})
+	if err != nil {
+		writeTierError(c, err)
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
+	api.JSON(c.Writer, http.StatusOK, map[string]any{"status": "updated", "tier": t}, nil)
 }
 
 // ---------------------------------------------------------------------------
@@ -1024,6 +1036,8 @@ func (h *Handler) Subscribe(c *gin.Context) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "TIER_CREATOR_MISMATCH", "Tier does not belong to this creator", nil)
 		case "ALREADY_SUBSCRIBED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ALREADY_SUBSCRIBED", "Already subscribed to this creator", nil)
+		case "IDEMPOTENCY_KEY_REUSED":
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", "This idempotency key was already used for a different subscription", nil)
 		case "INSUFFICIENT_BALANCE_OR_FROZEN":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INSUFFICIENT_BALANCE", "Insufficient balance or wallet is frozen", nil)
 		default:
