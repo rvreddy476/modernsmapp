@@ -53,6 +53,7 @@ var inboxTabByPrefCategory = map[prefCategory]string{
 	catChannelUrgent:     InboxTabChannels,
 	catCommunityPosts:    InboxTabCommunities,
 	catSystem:            InboxTabSystem,
+	catMemberships:       InboxTabSystem, // paid memberships are account notices: payments, renewals, access
 }
 
 // inboxCompositeTabs are tabs that are a union of primary tabs.

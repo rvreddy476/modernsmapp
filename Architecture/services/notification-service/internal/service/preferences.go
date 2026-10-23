@@ -158,11 +158,12 @@ const (
 	catReposts
 	catLive
 	catMessages
-	catNewVideos  // creator uploads on subscribed channels (Tube long video, flicks)
-	catFoodOrders // Feast customer order updates (migration 007)
-	catOrders     // MStore order updates, buyer and seller (migration 010)
-	catDoorstep   // Doorstep customer booking updates (migration 013)
-	catCredits    // video credits: requests to the tagged person, acceptances to the uploader (migration 017)
+	catNewVideos   // creator uploads on subscribed channels (Tube long video, flicks)
+	catFoodOrders  // Feast customer order updates (migration 007)
+	catOrders      // MStore order updates, buyer and seller (migration 010)
+	catDoorstep    // Doorstep customer booking updates (migration 013)
+	catCredits     // video credits: requests to the tagged person, acceptances to the uploader (migration 017)
+	catMemberships // paid memberships: the creator's new member, the member's join/renewal/reminder/payment/end notices (migration 018)
 )
 
 // categoryForEvent maps every event type this service delivers — both the
@@ -220,6 +221,11 @@ func categoryForEvent(eventType string) prefCategory {
 	// tagged person answers and the acceptance the uploader hears about.
 	case CreditTypeRequest, CreditTypeAccepted:
 		return catCredits
+	// Paid memberships (membership_notify.go): one toggle pair for the
+	// creator's new-member notice and every notice to the member.
+	case MembershipTypeNewMember, MembershipTypeJoined, MembershipTypeRenewed,
+		MembershipTypeRenewalDue, MembershipTypePaymentFailed, MembershipTypeEnded:
+		return catMemberships
 	// Feast customer order updates. Kitchen new-order and rider job-offer
 	// pushes are operational and never consult Momentum preferences
 	// (food_push.go); they map here only so nothing category-gates them.
@@ -320,6 +326,8 @@ func pushCategoryAllowed(p *postgres.NotificationPreferences, eventType string) 
 		return p.PushDoorstep
 	case catCredits:
 		return p.PushCredits
+	case catMemberships:
+		return p.PushMemberships
 	default: // catDefault, catAlwaysOn
 		return true
 	}
@@ -375,6 +383,8 @@ func inappCategoryAllowed(p *postgres.NotificationPreferences, eventType string)
 		return p.InappDoorstep
 	case catCredits:
 		return p.InappCredits
+	case catMemberships:
+		return p.InappMemberships
 	default: // catDefault, catAlwaysOn
 		return true
 	}

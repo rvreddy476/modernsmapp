@@ -27,6 +27,7 @@
     "push_orders": true,
     "push_doorstep": true,
     "push_credits": false,
+    "push_memberships": true,
     "inapp_likes": true,
     "inapp_super_likes": true,
     "inapp_comments": true,
@@ -50,6 +51,7 @@
     "inapp_orders": true,
     "inapp_doorstep": true,
     "inapp_credits": true,
+    "inapp_memberships": true,
     "email_digest": "weekly",
     "updated_at": "2026-10-23T09:30:00Z"
   }

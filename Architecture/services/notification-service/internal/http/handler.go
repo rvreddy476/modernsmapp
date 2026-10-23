@@ -494,6 +494,7 @@ type UpdateNotifPreferencesRequest struct {
 	PushOrders            *bool `json:"push_orders"`
 	PushDoorstep          *bool `json:"push_doorstep"`
 	PushCredits           *bool `json:"push_credits"`
+	PushMemberships       *bool `json:"push_memberships"`
 
 	InappLikes             *bool `json:"inapp_likes"`
 	InappSuperLikes        *bool `json:"inapp_super_likes"`
@@ -518,6 +519,7 @@ type UpdateNotifPreferencesRequest struct {
 	InappOrders            *bool `json:"inapp_orders"`
 	InappDoorstep          *bool `json:"inapp_doorstep"`
 	InappCredits           *bool `json:"inapp_credits"`
+	InappMemberships       *bool `json:"inapp_memberships"`
 
 	EmailDigest *string `json:"email_digest"`
 }
@@ -565,6 +567,7 @@ func applyNotifPreferencesPatch(current *postgres.NotificationPreferences, req *
 	setBool(&current.PushOrders, req.PushOrders)
 	setBool(&current.PushDoorstep, req.PushDoorstep)
 	setBool(&current.PushCredits, req.PushCredits)
+	setBool(&current.PushMemberships, req.PushMemberships)
 
 	setBool(&current.InappLikes, req.InappLikes)
 	setBool(&current.InappSuperLikes, req.InappSuperLikes)
@@ -589,6 +592,7 @@ func applyNotifPreferencesPatch(current *postgres.NotificationPreferences, req *
 	setBool(&current.InappOrders, req.InappOrders)
 	setBool(&current.InappDoorstep, req.InappDoorstep)
 	setBool(&current.InappCredits, req.InappCredits)
+	setBool(&current.InappMemberships, req.InappMemberships)
 
 	if req.EmailDigest != nil {
 		current.EmailDigest = *req.EmailDigest

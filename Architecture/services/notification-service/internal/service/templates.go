@@ -84,6 +84,44 @@ var Templates = map[string]NotificationTemplate{
 		PushEligible: true, CanAggregate: false,
 	},
 
+	// Paid memberships (membership_notify.go, 2026-10-23). Category
+	// `memberships` (push_memberships / inapp_memberships). {member} and
+	// {creator} are profile display names looked up at delivery ("Someone" /
+	// "a creator" when unknown; RenderMembershipNotification also rewords a
+	// nameless "Your {creator} membership"); {tier} is the event's tier name
+	// and drops out with its space when empty. A renewal is told in-app only
+	// (PushEligible false); every other notice may push.
+	MembershipTypeNewMember: {
+		EventType: MembershipTypeNewMember, TitleTemplate: "{member} joined your {tier} membership",
+		BodyTemplate: "Tap to see your members", Icon: "system", Priority: "medium",
+		PushEligible: true, CanAggregate: false,
+	},
+	MembershipTypeJoined: {
+		EventType: MembershipTypeJoined, TitleTemplate: "You're a member of {creator}",
+		BodyTemplate: "Your {tier} membership is active. Members-only posts are unlocked.",
+		Icon:         "system", Priority: "medium", PushEligible: true, CanAggregate: false,
+	},
+	MembershipTypeRenewed: {
+		EventType: MembershipTypeRenewed, TitleTemplate: "Your {creator} membership was renewed",
+		BodyTemplate: "Access continues until {date}", Icon: "system", Priority: "low",
+		PushEligible: false, CanAggregate: false,
+	},
+	MembershipTypeRenewalDue: {
+		EventType: MembershipTypeRenewalDue, TitleTemplate: "Your {creator} membership ends {when} — renew to keep access",
+		BodyTemplate: "Tap to renew", Icon: "system", Priority: "high",
+		PushEligible: true, CanAggregate: false,
+	},
+	MembershipTypePaymentFailed: {
+		EventType: MembershipTypePaymentFailed, TitleTemplate: "Your {creator} membership payment didn't go through",
+		BodyTemplate: "Tap to try again", Icon: "system", Priority: "high",
+		PushEligible: true, CanAggregate: false,
+	},
+	MembershipTypeEnded: {
+		EventType: MembershipTypeEnded, TitleTemplate: "Your {creator} membership has ended",
+		BodyTemplate: "Join again any time to unlock members-only posts", Icon: "system", Priority: "medium",
+		PushEligible: true, CanAggregate: false,
+	},
+
 	// LIVE — a creator goes live. "creator_went_live" is told to the
 	// stream's reminder holders and the channel's subscribers through the
 	// durable fan-out job (service/live_fanout.go), never to every

@@ -62,6 +62,10 @@ type inboxCopyEntry struct {
 	title    string
 	template string
 	icon     string
+	// unnamed, when set, is the whole title used when the actor has no
+	// resolvable name, for a sentence "someone" cannot fill ("Your {actor}
+	// membership has ended"). It holds no placeholder.
+	unnamed string
 }
 
 func (e inboxCopyEntry) text() string {
@@ -74,6 +78,11 @@ func (e inboxCopyEntry) text() string {
 func own(title, icon string) inboxCopyEntry { return inboxCopyEntry{title: title, icon: icon} }
 func reuse(template, icon string) inboxCopyEntry {
 	return inboxCopyEntry{template: template, icon: icon}
+}
+
+// ownNamed is own() with the title a nameless actor gets instead.
+func ownNamed(title, unnamed, icon string) inboxCopyEntry {
+	return inboxCopyEntry{title: title, icon: icon, unnamed: unnamed}
 }
 
 // inboxCopyTable covers every type this service writes to the inbox and every
@@ -298,6 +307,16 @@ var inboxCopyTable = map[string]inboxCopyEntry{
 	"community.invite":          own("You are invited to join a community", InboxIconCommunity),
 	"community.join_approved":   own("You were accepted into the community", InboxIconCommunity),
 
+	// === Paid memberships (membership_notify.go) === The creator's notice
+	// names the member; the member's notices name the creator, and a creator
+	// with no resolvable name is "a creator".
+	MembershipTypeNewMember:     own("{actor} joined your membership", InboxIconAccount),
+	MembershipTypeJoined:        ownNamed("You're a member of {actor}", "You're a member of a creator", InboxIconAccount),
+	MembershipTypeRenewed:       ownNamed("Your {actor} membership was renewed", "Your membership with a creator was renewed", InboxIconAccount),
+	MembershipTypeRenewalDue:    ownNamed("Your {actor} membership ends soon — renew to keep access", "Your membership with a creator ends soon — renew to keep access", InboxIconAccount),
+	MembershipTypePaymentFailed: ownNamed("Your {actor} membership payment didn't go through", "Your membership payment to a creator didn't go through", InboxIconAccount),
+	MembershipTypeEnded:         ownNamed("Your {actor} membership has ended", "Your membership with a creator has ended", InboxIconAccount),
+
 	// === Account ===
 	"system.login_alert":   own("There was a new login to your account", InboxIconAccount),
 	"system.verification":  own("Your verification status changed", InboxIconAccount),
@@ -357,6 +376,9 @@ var inboxFamilies = []inboxFamily{
 // the hydrated display name; empty renders "Someone". Pure: no lookups.
 func InboxCopy(rowType, actorName string) (title, icon string) {
 	if e, ok := inboxCopyTable[rowType]; ok {
+		if e.unnamed != "" && strings.TrimSpace(actorName) == "" {
+			return e.unnamed, e.icon
+		}
 		return renderInboxTitle(e.text(), actorName), e.icon
 	}
 	for _, f := range inboxFamilies {

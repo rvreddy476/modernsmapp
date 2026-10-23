@@ -492,6 +492,23 @@ func main() {
 		"responders", len(doorstepResponderIDs), "responder_source", doorstepResponderSource,
 		"ops_email_configured", doorstepOpsEmail != "")
 
+	// Paid memberships (phase 1 payments contract, "Events"): monetization-
+	// service's membership.* life cycle on monetization.events — the creator's
+	// new member, and the member's join, renewal (in-app only), renewal
+	// reminders, failed payment and end. Own group; every other type on the
+	// topic (entitlement.changed, subscription.*, ...) is ignored.
+	monetizationTopic := env("KAFKA_MONETIZATION_TOPIC", events.MonetizationTopic)
+	membershipConsumer := events.NewMembershipConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		env("KAFKA_MEMBERSHIP_GROUP_ID", "notification-service-memberships"),
+		monetizationTopic,
+		notifSvc,
+		kafkaDialer,
+	)
+	defer membershipConsumer.Close()
+	go membershipConsumer.Start(ctx)
+	slog.Info("kafka membership consumer started", "topic", monetizationTopic)
+
 	// 9a. Account control (auth-service 30-day deletion): suppress deliveries
 	// on user.deactivated / user.deletion_scheduled, lift on the reverse,
 	// and on user.purge_requested erase the inbox partitions + Postgres rows
