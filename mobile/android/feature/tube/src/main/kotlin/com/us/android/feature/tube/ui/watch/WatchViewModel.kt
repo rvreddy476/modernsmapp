@@ -23,6 +23,8 @@ import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.feed.data.AudioTrack
 import com.us.android.core.feed.data.FeedRepository
+import com.us.android.core.feed.data.credits.CreditGenre
+import com.us.android.core.feed.data.credits.CreditsRepository
 import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.feed.data.PostEdits
 import com.us.android.core.feed.data.SubscriptionGraph
@@ -50,6 +52,7 @@ import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.NotifyOn
+import com.us.android.core.model.VideoCredits
 import com.us.android.core.ui.UsAudioTrackOption
 import com.us.android.core.ui.UsReelQuality
 import com.us.android.feature.tube.data.SeriesEpisode
@@ -160,6 +163,8 @@ class WatchViewModel @Inject constructor(
     private val audio: VideoAudio,
     /** The owner's saved edits (2026-10-21), layered over the video on screen. */
     private val edits: PostEdits,
+    /** Video credits (2026-10-23): the genre list the Credits block names genres with. */
+    private val credits: CreditsRepository,
     /** Progress reports outlive the screen: the last one is sent as the ViewModel clears. */
     @ApplicationScope private val appScope: CoroutineScope,
 ) : ViewModel() {
@@ -192,6 +197,61 @@ class WatchViewModel @Inject constructor(
     /** The rows after the current one in the list the viewer came from. */
     val upNext: StateFlow<List<FeedItem>> = combine(queue.items, _currentId) { items, id -> upNext(items, id) }
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), emptyList())
+
+    private val _genres = MutableStateFlow<List<CreditGenre>>(emptyList())
+
+    /**
+     * The server's genres, read the first time a video with genres plays, so
+     * the Credits block says "Sci-fi" rather than the slug. Empty until then,
+     * and on a failed read (the block then shows the slug capitalised).
+     */
+    val genres: StateFlow<List<CreditGenre>> = _genres.asStateFlow()
+
+    private var genresAsked = false
+
+    private fun knowGenres(item: FeedItem) {
+        if (genresAsked || item.credits.genres.isEmpty()) return
+        genresAsked = true
+        viewModelScope.launch {
+            val loaded = credits.genres()
+            if (loaded == null) genresAsked = false else _genres.value = loaded
+        }
+    }
+
+    private val _creditMessage = MutableStateFlow<UsMessage?>(null)
+
+    /** A refused "Remove me", said once over the screen. */
+    val creditMessage: StateFlow<UsMessage?> = _creditMessage.asStateFlow()
+
+    fun dismissCreditMessage() {
+        _creditMessage.value = null
+    }
+
+    /**
+     * "Remove me from this video" on the viewer's OWN accepted credit: the
+     * avatar and the link go at once (the name stays, plain, as for every
+     * viewer after the server has it); refused, they come back.
+     */
+    fun removeMeFromCredit(creditId: String) {
+        val ready = _content.value as? WatchContent.Ready ?: return
+        val before = ready.item.credits
+        val credit = before.credits.firstOrNull { it.id == creditId && it.user?.id == ownUserId } ?: return
+        setCredits(ready.item.id, before.copy(credits = before.credits.map { if (it === credit) it.copy(user = null) else it }))
+        viewModelScope.launch {
+            if (credits.removeMe(creditId) is AppResult.Failure) {
+                setCredits(ready.item.id, before)
+                _creditMessage.value = UsMessage(text = "Couldn't remove you from this video. Try again.")
+            }
+        }
+    }
+
+    private fun setCredits(postId: String, value: VideoCredits) = _content.update { current ->
+        if (current is WatchContent.Ready && current.item.id == postId) {
+            current.copy(item = current.item.copy(credits = value))
+        } else {
+            current
+        }
+    }
 
     private val _series = MutableStateFlow<SeriesInfo?>(null)
 
@@ -418,6 +478,7 @@ class WatchViewModel @Inject constructor(
         )
         offerCaptions(base)
         launchKnowAuthor(item)
+        knowGenres(item)
         viewModelScope.launch { audio.ensure(item) }
         if (playback == null) {
             player.stop()
@@ -500,6 +561,7 @@ class WatchViewModel @Inject constructor(
             val detail = fetch(postId) ?: return@launch
             if (_currentId.value != postId) return@launch
             actions.adopt(detail)
+            knowGenres(detail)
             _content.update { current ->
                 if (current is WatchContent.Ready && current.item.id == postId) {
                     current.copy(item = current.item.withViewerStateOf(detail))

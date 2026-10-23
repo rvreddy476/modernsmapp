@@ -118,6 +118,8 @@ fun NavGraphBuilder.ownProfileScreen(
     onOpenCreatorHub: () -> Unit,
     /** The drawer's "Offline videos": `:app` pushes the Offline page, which lives in Tube. */
     onOpenOffline: () -> Unit,
+    /** The drawer's "Credit requests" (video credits, 2026-10-23): `:app` pushes the screen, which lives in Tube. */
+    onOpenCreditRequests: () -> Unit = {},
     /** The drawer's "Upload": `:app` opens the Create sheet. */
     onOpenUpload: () -> Unit,
 ) {
@@ -141,6 +143,7 @@ fun NavGraphBuilder.ownProfileScreen(
                 // signed-in creator's own numbers and comments.
                 onOpenCreatorHub = onOpenCreatorHub,
                 onOpenOffline = onOpenOffline,
+                onOpenCreditRequests = onOpenCreditRequests,
                 onOpenUpload = onOpenUpload,
             ),
         )

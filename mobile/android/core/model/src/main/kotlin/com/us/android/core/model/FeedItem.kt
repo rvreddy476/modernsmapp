@@ -111,6 +111,12 @@ data class FeedItem(
     val soundReuseAllowed: Boolean = true,
     /** What the author declared: a paid partnership, a brand, AI-made, a link. See [FeedDisclosure]. */
     val disclosure: FeedDisclosure = FeedDisclosure(),
+    /**
+     * A long video's cast & crew, genres, year and production house (video
+     * credits, 2026-10-23). [VideoCredits.None] on every other post and on a
+     * row that does not carry them — list rows may not; the post detail does.
+     */
+    val credits: VideoCredits = VideoCredits.None,
 ) {
     /** Who a video card credits: the channel when the row carries one, the author otherwise. */
     val creatorName: String get() = channel?.name?.takeIf { it.isNotBlank() } ?: author.nameForDisplay

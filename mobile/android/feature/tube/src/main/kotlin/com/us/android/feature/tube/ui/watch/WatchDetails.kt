@@ -149,6 +149,15 @@ class WatchDetailsActions(
     val onOpenVideo: (FeedItem) -> Unit,
     /** An episode row was tapped: by post id, because an episode is not a row the queue knows. */
     val onOpenEpisode: (postId: String) -> Unit,
+    /** A credited name (video credits, 2026-10-23): Tube search for that name. */
+    val onSearchName: (name: String) -> Unit = {},
+    /** A credit the person accepted: their channel. */
+    val onOpenCreditedUser: (userId: String) -> Unit = {},
+    /** A genre slug's label, from the server's list once it has loaded. */
+    val genreLabel: (slug: String) -> String? = { null },
+    /** The viewer, so their own accepted credit offers "Remove me from this video". */
+    val ownUserId: String = "",
+    val onRemoveMeFromCredit: (creditId: String) -> Unit = {},
 )
 
 /** The author row's subscription state, as the screen resolved it for this video's channel. */
@@ -180,6 +189,18 @@ fun LazyListScope.watchDetails(
     item(key = "author") { AuthorRow(item, subscription, actions) }
     item(key = "actions") { ActionRow(item, watchActions(likes, viewer, shareable = !item.controls.hideShare), actions) }
     if (watchDescriptionShown(item)) item(key = "description") { Description(item) }
+    if (watchCreditsShown(item.credits)) {
+        item(key = "credits") {
+            CreditsBlock(
+                credits = item.credits,
+                genreLabel = actions.genreLabel,
+                onSearchName = actions.onSearchName,
+                onOpenUser = actions.onOpenCreditedUser,
+                ownUserId = actions.ownUserId,
+                onRemoveMe = actions.onRemoveMeFromCredit,
+            )
+        }
+    }
     if (!item.controls.noComments) {
         item(key = "comments") { CommentsRow(count = item.counts.comments, onClick = { actions.onComment(item.id) }) }
     }

@@ -1,6 +1,12 @@
 package com.us.android.core.feed.data
 
 import com.us.android.core.common.error.AppError
+import com.us.android.core.feed.data.credits.CreditRefusals
+import com.us.android.core.feed.data.credits.CreditsForm
+import com.us.android.core.feed.data.credits.creditsOf
+import com.us.android.core.feed.data.credits.releaseYearOrNull
+import com.us.android.core.feed.data.credits.toForm
+import com.us.android.core.feed.data.credits.toInput
 import com.us.android.core.model.FeedItem
 import java.time.LocalDate
 
@@ -195,7 +201,31 @@ private val POST_EDIT_REFUSALS: Map<String, String> = mapOf(
     "INVALID_COMMENT_MODERATION" to "That comment moderation level is not one we offer.",
     "INVALID_COMMENT_ACCESS" to "That choice of who can comment is not one we offer.",
     "INVALID_COMMENT_SORT" to "Comments can open on Top or Newest only.",
-)
+) + CreditRefusals // Video credits (2026-10-23): the Credits section's own sentences.
+
+/**
+ * The credits part of the PATCH, from [base] (as the sheet opened) to
+ * [next]: the whole list when anything in it moved — `credits` REPLACES the
+ * list, so a reorder, a rename or a removal all send it entire, and `[]`
+ * clears it, as `genres: []` clears the genres. A year or production house
+ * the owner cleared goes as an explicit JSON `null` (the contract's clear);
+ * unchanged fields stay off the wire. Every row with a tag resends its
+ * `user_id`, so a pending, accepted or declined tag keeps its status.
+ */
+fun creditsPatch(base: CreditsForm, next: CreditsForm): PostEditPatch {
+    val nextYear = next.releaseYearOrNull()
+    val nextHouse = next.productionHouse.trim()
+    return PostEditPatch(
+        credits = next.toInput().takeIf { it != base.toInput() },
+        genres = next.genres.takeIf { it != base.genres },
+        releaseYear = patchYear(nextYear).takeIf { nextYear != base.releaseYearOrNull() },
+        productionHouse = patchText(nextHouse).takeIf { nextHouse != base.productionHouse.trim() },
+    )
+}
+
+/** The owner's credits of a post detail, as the editor opens them. */
+fun PostEditDetailDto.creditsForm(keyFor: (Int) -> String): CreditsForm =
+    creditsOf(credits, genres, releaseYear, productionHouse).toForm(keyFor)
 
 /**
  * A landed save, applied to the row on screen: the fields a row carries take

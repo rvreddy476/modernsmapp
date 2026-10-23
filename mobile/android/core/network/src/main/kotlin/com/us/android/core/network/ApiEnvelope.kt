@@ -50,6 +50,12 @@ data class ApiMeta(
      * construct one. Absent means "no more pages".
      */
     @SerialName("next_cursor") val nextCursor: String? = null,
+    /**
+     * Video credits (post-service, 2026-10-23): how many of a create's or a
+     * PATCH's account tags were stored as plain names because the uploader
+     * passed the daily limit of new tags. Sent only when more than zero.
+     */
+    @SerialName("credit_tags_skipped") val creditTagsSkipped: Int? = null,
 )
 
 /**

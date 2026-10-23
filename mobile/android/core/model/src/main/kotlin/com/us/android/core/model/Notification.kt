@@ -179,6 +179,16 @@ sealed interface NotificationKind {
      */
     data object CreatorWentLive : NotificationKind
 
+    /**
+     * An uploader credited the viewer in a long video (video credits,
+     * 2026-10-23). The row opens the credit requests screen, where it is
+     * accepted or declined; `deep_link` is `/credits/requests`.
+     */
+    data object CreditRequest : NotificationKind
+
+    /** Someone the viewer credited accepted it. The row opens the video. */
+    data object CreditAccepted : NotificationKind
+
     /** A type this build has no rendering for. Carries the wire value. */
     data class Unknown(val raw: String) : NotificationKind
 
@@ -206,6 +216,8 @@ sealed interface NotificationKind {
             "creator_uploaded_video" -> CreatorUploadedVideo
             "creator_uploaded_flick" -> CreatorUploadedFlick
             "creator_went_live" -> CreatorWentLive
+            "credit_request" -> CreditRequest
+            "credit_accepted" -> CreditAccepted
             else -> Unknown(raw)
         }
     }
@@ -266,6 +278,12 @@ sealed interface NotificationTarget {
      */
     data class Live(val streamId: String) : NotificationTarget
 
+    /**
+     * The viewer's pending credit requests (video credits, 2026-10-23):
+     * `/credits/requests`, where each is accepted or declined.
+     */
+    data object CreditRequests : NotificationTarget
+
     /** Unparseable, or a surface this build does not have. Tapping does nothing. */
     data object None : NotificationTarget
 
@@ -323,9 +341,26 @@ sealed interface NotificationTarget {
 
                 segments.size == 2 && segments[0] == "reels" -> Reel(segments[1])
 
+                segments.size == 2 && segments[0] == "credits" && segments[1] == "requests" -> CreditRequests
+
                 else -> None
             }
         }
+
+        /**
+         * Where a video-credits notification lands when its deep link does
+         * not say (2026-10-23): a `credit_request` opens the requests screen
+         * whatever else it carries; a `credit_accepted` opens the video named
+         * by its entity id. [None] for every other type.
+         */
+        fun creditFallback(type: String, entityId: String): NotificationTarget = when (type) {
+            CREDIT_REQUEST_TYPE -> CreditRequests
+            CREDIT_ACCEPTED_TYPE -> entityId.trim().takeIf { it.isNotEmpty() }?.let(::Video) ?: None
+            else -> None
+        }
+
+        const val CREDIT_REQUEST_TYPE = "credit_request"
+        const val CREDIT_ACCEPTED_TYPE = "credit_accepted"
 
         /**
          * The live target for a stream id, or [None] when the id is not a

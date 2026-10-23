@@ -3,6 +3,8 @@ package com.us.android.feature.post.createhub
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.feed.data.ChannelRepository
+import com.us.android.core.feed.data.credits.creditRefusal
+import com.us.android.core.feed.data.serverCode
 import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
@@ -223,13 +225,16 @@ class ReelPublishPipeline @Inject constructor(
      * The create was refused. `CHANNEL_REQUIRED` (channel before video,
      * 2026-09-05) is not terminal even though it is a 403: the pending tile
      * opens the create-channel sheet and retries once there is one. A 400
-     * is shown in the server's own words — a rejected `publish_at` says why.
+     * is shown in the server's own words — a rejected `publish_at` says why —
+     * except a refusal of the credits (2026-10-23), which says it in the
+     * Credits section's words: the server's names routes and slugs.
      */
     private suspend fun refused(run: Run, pending: PendingReelPublish, error: AppError): Nothing =
         if (ChannelRepository.requiresChannel(error)) {
             fail(run, pending, CHANNEL_REQUIRED_MESSAGE, retryable = true, needsChannel = true)
         } else {
-            fail(run, pending, repository.message(error), retryable = !repository.isTerminal(error))
+            val message = creditRefusal(error.serverCode()) ?: repository.message(error)
+            fail(run, pending, message, retryable = !repository.isTerminal(error))
         }
 
     /**
@@ -395,6 +400,12 @@ class ReelPublishPipeline @Inject constructor(
                 audioStartMs = sound?.let { pending.audioStartMs.coerceAtLeast(0L) },
                 originalAudioVolume = sound?.let { pending.originalAudioVolume.coerceIn(0.0, 1.0) },
                 overlayAudioVolume = sound?.let { pending.overlayAudioVolume.coerceIn(0.0, 1.0) },
+                // Video credits (2026-10-23): a long video only — the server
+                // refuses them on a reel — and each field only when set.
+                credits = pending.credits.takeIf { long && it.isNotEmpty() },
+                genres = pending.genres.takeIf { long && it.isNotEmpty() },
+                releaseYear = pending.releaseYear?.takeIf { long },
+                productionHouse = pending.productionHouse.trim().takeIf { long && it.isNotEmpty() },
             )
         }
 

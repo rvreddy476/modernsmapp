@@ -1,0 +1,84 @@
+{
+  "data": [
+    {
+      "slug": "action",
+      "label": "Action"
+    },
+    {
+      "slug": "comedy",
+      "label": "Comedy"
+    },
+    {
+      "slug": "drama",
+      "label": "Drama"
+    },
+    {
+      "slug": "thriller",
+      "label": "Thriller"
+    },
+    {
+      "slug": "romance",
+      "label": "Romance"
+    },
+    {
+      "slug": "horror",
+      "label": "Horror"
+    },
+    {
+      "slug": "sci-fi",
+      "label": "Sci-fi"
+    },
+    {
+      "slug": "fantasy",
+      "label": "Fantasy"
+    },
+    {
+      "slug": "animation",
+      "label": "Animation"
+    },
+    {
+      "slug": "documentary",
+      "label": "Documentary"
+    },
+    {
+      "slug": "family",
+      "label": "Family"
+    },
+    {
+      "slug": "music",
+      "label": "Music"
+    },
+    {
+      "slug": "crime",
+      "label": "Crime"
+    },
+    {
+      "slug": "mystery",
+      "label": "Mystery"
+    },
+    {
+      "slug": "biography",
+      "label": "Biography"
+    },
+    {
+      "slug": "history",
+      "label": "History"
+    },
+    {
+      "slug": "sports",
+      "label": "Sports"
+    },
+    {
+      "slug": "reality",
+      "label": "Reality"
+    },
+    {
+      "slug": "talk",
+      "label": "Talk"
+    },
+    {
+      "slug": "news",
+      "label": "News"
+    }
+  ]
+}

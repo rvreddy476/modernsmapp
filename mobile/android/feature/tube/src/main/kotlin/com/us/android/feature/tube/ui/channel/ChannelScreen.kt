@@ -1,5 +1,9 @@
 package com.us.android.feature.tube.ui.channel
 
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,10 +22,17 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -75,7 +86,12 @@ fun ChannelScreen(
     val subscription by viewModel.subscription.collectAsStateWithLifecycle()
     val subscriberCount by viewModel.subscriberCount.collectAsStateWithLifecycle()
     val subscribeBusy by viewModel.subscribeBusy.collectAsStateWithLifecycle()
-    val items = viewModel.items.collectAsLazyPagingItems()
+    val videoItems = viewModel.items.collectAsLazyPagingItems()
+    val appearances = viewModel.appearances.collectAsLazyPagingItems()
+    val tab by viewModel.tab.collectAsStateWithLifecycle()
+    val offersAppearances by viewModel.offersAppearances.collectAsStateWithLifecycle()
+    val showingAppearances = offersAppearances && tab == ChannelTab.APPEARS_IN
+    val items = if (showingAppearances) appearances else videoItems
     val moreState = rememberTubeMoreState()
 
     TubePage(selected = null, destinations = destinations, onBack = destinations.onBack) { padding ->
@@ -114,8 +130,15 @@ fun ChannelScreen(
                         onRetry = viewModel::load,
                     )
                 }
+                // "Appears in" (video credits, 2026-10-23): only when there is something in it.
+                if (offersAppearances) {
+                    item(key = "tabs", span = StaggeredGridItemSpan.FullLine) {
+                        ChannelTabs(selected = tab, onSelect = viewModel::selectTab)
+                    }
+                }
                 videos(
                     items = items,
+                    emptyTitle = if (showingAppearances) "Not credited in any videos yet" else "No videos yet",
                     thumbFor = viewModel::thumb,
                     onOpen = { item ->
                         viewModel.onOpen(items.itemSnapshotList.items)
@@ -257,8 +280,51 @@ private fun ChannelCard(
     }
 }
 
+/** Videos · Appears in — glass pills, the selected one white with navy text (the app's selection rule). */
+@Composable
+private fun ChannelTabs(selected: ChannelTab, onSelect: (ChannelTab) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("tube_channel_tabs"),
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+    ) {
+        ChannelTab.entries.forEach { tab ->
+            val active = tab == selected
+            val shape = RoundedCornerShape(UsTheme.radii.full)
+            Box(
+                contentAlignment = Alignment.Center,
+                modifier = Modifier
+                    .height(TAB_HEIGHT)
+                    .clip(shape)
+                    .background(if (active) UsTheme.extended.selectedPill else UsTheme.extended.glassBg)
+                    .border(TAB_HAIRLINE, if (active) UsTheme.extended.selectedPill else UsTheme.extended.glassBorder, shape)
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { onSelect(tab) }
+                    .semantics {
+                        role = Role.Tab
+                        this.selected = active
+                    }
+                    .padding(horizontal = UsTheme.spacing.xl)
+                    .testTag("tube_channel_tab:${tab.name.lowercase()}"),
+            ) {
+                Text(
+                    text = tab.label,
+                    style = MaterialTheme.typography.labelLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (active) UsTheme.extended.onSelectedPill else UsTheme.extended.textPrimary,
+                    maxLines = 1,
+                )
+            }
+        }
+    }
+}
+
 private fun LazyStaggeredGridScope.videos(
     items: LazyPagingItems<FeedItem>,
+    emptyTitle: String,
     thumbFor: (FeedItem) -> VideoThumb,
     onOpen: (FeedItem) -> Unit,
     onMore: (FeedItem) -> Unit,
@@ -274,7 +340,7 @@ private fun LazyStaggeredGridScope.videos(
             UsErrorState(message = "We couldn't load these videos.", onRetry = items::retry)
         }
         refresh is LoadState.NotLoading && empty -> item(key = "empty", span = full) {
-            UsEmptyState(title = "No videos yet", modifier = Modifier.padding(vertical = UsTheme.spacing.xxxxl))
+            UsEmptyState(title = emptyTitle, modifier = Modifier.padding(vertical = UsTheme.spacing.xxxxl))
         }
         else -> {
             items(count = items.itemCount, key = items.itemKey { it.id }) { index ->
@@ -287,3 +353,5 @@ private fun LazyStaggeredGridScope.videos(
 }
 
 private val HEADER_LOADING_HEIGHT = 160.dp
+private val TAB_HEIGHT = 36.dp
+private val TAB_HAIRLINE = 1.dp

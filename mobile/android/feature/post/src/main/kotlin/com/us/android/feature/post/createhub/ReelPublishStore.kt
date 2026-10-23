@@ -3,6 +3,7 @@ package com.us.android.feature.post.createhub
 import android.content.Context
 import com.us.android.core.common.di.Dispatcher
 import com.us.android.core.common.di.UsDispatcher
+import com.us.android.core.feed.data.credits.CreditInputDto
 import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.upload.MediaSourceResolver
 import com.us.android.core.media.upload.PickedMedia
@@ -87,6 +88,15 @@ data class PendingReelPublish(
     val originalAudioVolume: Double = 1.0,
     /** The creator's level for the sound, 0..1. */
     val overlayAudioVolume: Double = 1.0,
+    /**
+     * A long video's credits (2026-10-23): cast & crew in order, genres,
+     * year, production house — set only when the form offered the Credits
+     * step. Every field defaults, so a record written before credits loads.
+     */
+    val credits: List<CreditInputDto> = emptyList(),
+    val genres: List<String> = emptyList(),
+    val releaseYear: Int? = null,
+    val productionHouse: String = "",
     /**
      * Bytes landed and `confirm` succeeded. This is the id the post is
      * created with — instant reels need nothing more than confirmed.

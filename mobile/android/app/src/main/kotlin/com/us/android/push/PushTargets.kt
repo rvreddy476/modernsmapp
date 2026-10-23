@@ -19,6 +19,10 @@ import com.us.android.core.model.NotificationTarget
 fun pushTargetOf(destination: PushDestination): NotificationTarget {
     val linked = NotificationTarget.parse(destination.deepLink)
     if (linked != NotificationTarget.None) return linked
+    // Video credits (2026-10-23): a request opens the requests screen, an acceptance the video.
+    NotificationTarget.creditFallback(destination.type, destination.entityId)
+        .takeIf { it != NotificationTarget.None }
+        ?.let { return it }
     val postId = destination.entityId.trim()
     if (postId.isBlank()) return NotificationTarget.None
     return when (destination.type) {
@@ -28,6 +32,10 @@ fun pushTargetOf(destination: PushDestination): NotificationTarget {
         else -> NotificationTarget.None
     }
 }
+
+/** Video credits (2026-10-23): someone credited the viewer, or accepted the viewer's credit. */
+const val TYPE_CREDIT_REQUEST = NotificationTarget.CREDIT_REQUEST_TYPE
+const val TYPE_CREDIT_ACCEPTED = NotificationTarget.CREDIT_ACCEPTED_TYPE
 
 /** The two upload types notification-service emits for a subscribed channel. */
 const val TYPE_UPLOADED_VIDEO = "creator_uploaded_video"

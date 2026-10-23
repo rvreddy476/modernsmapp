@@ -10,6 +10,7 @@ import com.us.android.feature.tube.ui.TubeBarAction
 import com.us.android.feature.tube.ui.TubeTab
 import com.us.android.feature.tube.ui.channel.ChannelScreen
 import com.us.android.feature.tube.ui.collections.CollectionScreen
+import com.us.android.feature.tube.ui.credits.CreditRequestsScreen
 import com.us.android.feature.tube.ui.collections.CollectionsScreen
 import com.us.android.feature.tube.ui.history.HistoryScreen
 import com.us.android.feature.tube.ui.home.TubeHomeScreen
@@ -95,6 +96,13 @@ data object TubeOfflineRoute
 @Serializable
 data object TubeCreatorHubRoute
 
+/**
+ * The viewer's pending credit requests (video credits, 2026-10-23): from a
+ * `credit_request` notification and from the Me tab's drawer.
+ */
+@Serializable
+data object TubeCreditRequestsRoute
+
 /** One video, playing. Pushed over a Tube page; [postId] is the post to open on. */
 @Serializable
 data class WatchRoute(val postId: String)
@@ -166,6 +174,11 @@ data class TubeDestinations(
     val onCreateWithSound: () -> Unit = {},
     /** The You page's and the More sheet's "History": `:app` pushes [TubeHistoryRoute]. */
     val onOpenHistory: () -> Unit = {},
+    /**
+     * A credited name on the watch page (video credits, 2026-10-23): `:app`
+     * opens the search page scoped to the video app, with [query] typed in.
+     */
+    val onSearchVideos: (query: String) -> Unit = {},
 ) {
     /** The bar's tap, resolved. */
     fun onBarAction(action: TubeBarAction) = when (action) {
@@ -189,13 +202,19 @@ fun NavGraphBuilder.tubeScreens(destinations: TubeDestinations) {
     composable<TubeOfflineRoute> { OfflineScreen(destinations = destinations) }
     composable<TubeCreatorHubRoute> { CreatorHubScreen(destinations = destinations) }
     composable<TubeHistoryRoute> { HistoryScreen(destinations = destinations) }
+    composable<TubeCreditRequestsRoute> { CreditRequestsScreen(destinations = destinations) }
     composable<WatchRoute> {
         WatchScreen(
             onBack = destinations.onBack,
             onOpenAuthor = destinations.onOpenAuthor,
+            onSearchName = destinations.onSearchVideos,
+            onOpenChannel = destinations.onOpenChannel,
         )
     }
 }
+
+/** The credit requests, pushed over whatever opened them (a notification, the Me tab); single-top. */
+fun NavController.navigateToCreditRequests() = navigate(TubeCreditRequestsRoute) { launchSingleTop = true }
 
 /** Type-safe navigation to Tube home. */
 fun NavController.navigateToTube() = navigate(TubeHomeRoute)

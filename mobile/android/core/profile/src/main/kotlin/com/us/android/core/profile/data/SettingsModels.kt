@@ -72,6 +72,8 @@ enum class NotificationCategory(val key: String, val label: String, val primary:
     COMMUNITY_POSTS("community_posts", "Community posts", primary = false),
     COMMUNITY_MENTIONS("community_mentions", "Community mentions", primary = false),
     EVENT_REMINDERS("event_reminders", "Event reminders", primary = false),
+    /** Video credits (2026-10-23): someone credited you, or accepted your credit; `inapp_credits` / `push_credits`. */
+    CREDITS("credits", "Video credits", primary = false),
     SYSTEM("system", "Security and system", primary = false),
     ;
 

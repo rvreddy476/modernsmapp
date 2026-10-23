@@ -18,6 +18,7 @@ import com.us.android.core.feed.data.VideoLibraryWrites
 import com.us.android.core.feed.data.WatchHistoryApi
 import com.us.android.core.feed.data.WatchHistoryRepository
 import com.us.android.core.feed.data.WatchHistorySource
+import com.us.android.core.feed.data.credits.CreditsApi
 import com.us.android.core.feed.ui.sound.LibrarySoundPreview
 import com.us.android.core.feed.ui.sound.PlayerLibrarySoundPreview
 import com.us.android.core.media.sound.SoundPreviewPlayer
@@ -84,6 +85,11 @@ object FeedModule {
     @Provides
     @Singleton
     fun providePostEditApi(retrofit: Retrofit): PostEditApi = retrofit.create(PostEditApi::class.java)
+
+    /** Video credits (2026-10-23): genres, credit requests and "Appears in". */
+    @Provides
+    @Singleton
+    fun provideCreditsApi(retrofit: Retrofit): CreditsApi = retrofit.create(CreditsApi::class.java)
 
     /** The store writes through the repository; tests hand it a fake. */
     @Provides

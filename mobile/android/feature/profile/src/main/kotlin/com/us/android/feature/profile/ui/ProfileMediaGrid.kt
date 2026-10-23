@@ -140,6 +140,8 @@ internal fun ProfileMediaGrid(
     val longVideos = viewModel.longVideos.collectAsLazyPagingItems()
     val saved = viewModel.saved.collectAsLazyPagingItems()
     val liked = viewModel.liked.collectAsLazyPagingItems()
+    val appearances = viewModel.appearances.collectAsLazyPagingItems()
+    val tabs by viewModel.tabs.collectAsStateWithLifecycle()
     var failureKey by rememberSaveable { mutableStateOf<String?>(null) }
     var createChannelKey by rememberSaveable { mutableStateOf<String?>(null) }
 
@@ -152,7 +154,10 @@ internal fun ProfileMediaGrid(
     // Pull to refresh on the profile (UI audit 2026-10-21): the tab on screen
     // is read again with the header; the others refresh when opened next.
     LaunchedEffect(refreshSeq) {
-        if (refreshSeq > 0) TabLists(posts, reels, longVideos, saved, liked).forTab(tab).refresh()
+        if (refreshSeq > 0) {
+            TabLists(posts, reels, longVideos, saved, liked, appearances).forTab(tab).refresh()
+            viewModel.checkAppearances()
+        }
     }
 
     // The last leg of the journey. Collected here rather than watched as
@@ -173,13 +178,13 @@ internal fun ProfileMediaGrid(
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
     ) {
         GridControls(
-            tabs = viewModel.tabs,
+            tabs = tabs,
             tab = tab,
             sorts = sorts,
             onSelectTab = viewModel::select,
             onSelectSort = viewModel::selectSort,
         )
-        val items = TabLists(posts, reels, longVideos, saved, liked).forTab(tab)
+        val items = TabLists(posts, reels, longVideos, saved, liked, appearances).forTab(tab)
         val heads = pending.filter { it.tab == tab }.map<PendingVideoTile, GridHead> { GridHead.Pending(it) } +
             scheduled.filter { it.tab == tab }.map { GridHead.Scheduled(it) }
         GridRows(
@@ -318,6 +323,7 @@ private class TabLists(
     val longVideos: LazyPagingItems<FeedItem>,
     val saved: LazyPagingItems<FeedItem>,
     val liked: LazyPagingItems<FeedItem>,
+    val appearances: LazyPagingItems<FeedItem>,
 ) {
     fun forTab(tab: ProfileGridTab): LazyPagingItems<FeedItem> = when (tab) {
         ProfileGridTab.POSTS -> posts
@@ -325,6 +331,7 @@ private class TabLists(
         ProfileGridTab.VIDEOS -> longVideos
         ProfileGridTab.SAVED -> saved
         ProfileGridTab.LIKED -> liked
+        ProfileGridTab.APPEARS_IN -> appearances
     }
 }
 
@@ -565,13 +572,17 @@ internal fun emptyTitle(tab: ProfileGridTab): String = when (tab) {
 
 /** What a tab holds, in a sentence: "reels", "saved", "liked reels". */
 internal fun tabNoun(tab: ProfileGridTab): String =
-    if (tab == ProfileGridTab.LIKED) "liked reels" else tab.label.lowercase()
+    when (tab) {
+        ProfileGridTab.LIKED -> "liked reels"
+        ProfileGridTab.APPEARS_IN -> "credited videos"
+        else -> tab.label.lowercase()
+    }
 
 /** Square for posts, 3:4 for reels (liked ones too), 16:9 for videos — the shape the content has. */
 internal fun tileAspect(tab: ProfileGridTab): Float = when (tab) {
     ProfileGridTab.POSTS -> SQUARE
     ProfileGridTab.REELS, ProfileGridTab.LIKED -> PORTRAIT_TILE
-    ProfileGridTab.VIDEOS -> LANDSCAPE
+    ProfileGridTab.VIDEOS, ProfileGridTab.APPEARS_IN -> LANDSCAPE
     // Saved mixes every kind, so no one shape is right; square is the neutral one.
     ProfileGridTab.SAVED -> SQUARE
 }

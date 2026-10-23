@@ -2,6 +2,10 @@ package com.us.android.feature.tube.di
 
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.engagement.data.CommentActionsRepository
+import com.us.android.core.feed.data.credits.CreditRequest
+import com.us.android.core.feed.data.credits.CreditsRepository
+import com.us.android.core.network.Paged
+import com.us.android.feature.tube.data.CreditRequestsSource
 import com.us.android.feature.tube.data.VideoSeriesApi
 import com.us.android.feature.tube.data.WatchProgressApi
 import com.us.android.feature.tube.data.hub.CreatorCommentTools
@@ -30,6 +34,19 @@ object TubeModule {
     @Provides
     @Singleton
     fun provideCreatorHubApi(retrofit: Retrofit): CreatorHubApi = retrofit.create(CreatorHubApi::class.java)
+
+    /** The credit requests screen (2026-10-23) reads and answers through the credits repository. */
+    @Provides
+    fun provideCreditRequestsSource(credits: CreditsRepository): CreditRequestsSource =
+        object : CreditRequestsSource {
+            override suspend fun requests(cursor: String?): AppResult<Paged<CreditRequest>> = credits.requests(cursor)
+
+            override suspend fun accept(creditId: String): AppResult<Unit> = credits.accept(creditId)
+
+            override suspend fun decline(creditId: String): AppResult<Unit> = credits.decline(creditId)
+
+            override suspend fun removeMe(creditId: String): AppResult<Unit> = credits.removeMe(creditId)
+        }
 
     /** The hub's Heart and Pin (2026-10-17) go through the comments sheet's own repository. */
     @Provides

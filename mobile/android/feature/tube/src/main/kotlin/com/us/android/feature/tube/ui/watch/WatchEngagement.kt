@@ -136,7 +136,8 @@ class WatchEngagement @Inject constructor(
  * the VIEWER laid over it: saved, liked, in Watch later, disliked, the
  * counts and the author's switches. The row's media and everything the
  * player was prepared from are left alone, so the refresh never restarts
- * playback.
+ * playback. The credits (2026-10-23) come from the detail too: a list row
+ * does not carry them.
  */
 internal fun FeedItem.withViewerStateOf(detail: FeedItem): FeedItem =
-    copy(viewer = detail.viewer, counts = detail.counts, controls = detail.controls)
+    copy(viewer = detail.viewer, counts = detail.counts, controls = detail.controls, credits = detail.credits)

@@ -1,5 +1,6 @@
 package com.us.android.feature.post.data.dto
 
+import com.us.android.core.feed.data.credits.CreditInputDto
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -222,6 +223,25 @@ data class CreatePostRequest(
 
     /** The place provider's id for [locationName], when it came from search. */
     @SerialName("location_place_id") val locationPlaceId: String? = null,
+
+    // ── Video credits (long video only, 2026-10-23) ────────────────────
+    //
+    // Nullable with a null default like every optional field above: a post
+    // without credits is byte-identical to the request before they existed.
+    // The server refuses them on anything but a long video (400
+    // CREDITS_NOT_ALLOWED), so only the long-video form sets them.
+
+    /** Cast & crew in the creator's order, at most thirty; a `user_id` asks that account to accept. */
+    val credits: List<CreditInputDto>? = null,
+
+    /** Up to three slugs from `GET /v1/posts/genres`. */
+    val genres: List<String>? = null,
+
+    /** 1900 to next year. */
+    @SerialName("release_year") val releaseYear: Int? = null,
+
+    /** At most 100 characters. */
+    @SerialName("production_house") val productionHouse: String? = null,
 )
 
 /**

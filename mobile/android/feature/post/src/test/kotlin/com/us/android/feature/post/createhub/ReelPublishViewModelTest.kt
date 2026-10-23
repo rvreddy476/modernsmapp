@@ -24,6 +24,7 @@ import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
 import io.mockk.mockk
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.advanceUntilIdle
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.Json
@@ -1095,5 +1096,100 @@ class ReelPublishViewModelTest {
         vm.takeChosenSound()
 
         assertThat(viewModel(soundEntry = SoundEntry(), savedStateHandle = saved).state.value.sound).isEqualTo(library)
+    }
+
+    // ── Video credits (2026-10-23) ──────────────────────────────────────
+
+    private fun TestScope.longVideo(launcher: FakeLauncher, lookups: FakeLookups = FakeLookups()): ReelPublishViewModel {
+        val vm = viewModel(launcher = launcher, lookups = lookups, surface = CreateSurface.Video)
+        vm.onVideoPicked("content://video/1")
+        vm.onTitleChanged("Monsoon")
+        advanceUntilIdle()
+        return vm
+    }
+
+    @Test
+    fun `the Credits step is offered for a long video in a credits category only`() = runTest {
+        val vm = longVideo(FakeLauncher())
+
+        vm.onCategoryChanged("education")
+        assertThat(vm.state.value.offersCredits).isFalse()
+        vm.onCategoryChanged("film-animation")
+        assertThat(vm.state.value.offersCredits).isTrue()
+        vm.onCategoryChanged("podcasts")
+        assertThat(vm.state.value.offersCredits).isTrue()
+
+        val reel = viewModel()
+        reel.onCategoryChanged("music")
+        assertThat(reel.state.value.offersCredits).isFalse()
+    }
+
+    @Test
+    fun `credits go into the record in order, linked ones with their user id`() = runTest {
+        val launcher = FakeLauncher()
+        val lookups = FakeLookups(people = listOf(TaggedUser("u1", "Asha Rao", "asha")))
+        val vm = longVideo(launcher, lookups)
+        vm.onCategoryChanged("film-animation")
+        val credits = vm.credits
+        credits.addCredit()
+        credits.addCredit()
+        val (first, second) = credits.state.value.form.entries.map { it.key }
+        credits.setName(first, "Crew")
+        credits.setRole(first, "Editor")
+        credits.setRole(second, "Director")
+        credits.startLinking(second)
+        credits.onQuery("asha")
+        advanceUntilIdle()
+        credits.link(credits.state.value.results.single())
+        credits.moveUp(second)
+        credits.toggleGenre("drama")
+        credits.setYear("2024")
+        credits.setProduction(" Blue Hour ")
+
+        vm.onPost()
+        advanceUntilIdle()
+
+        val pending = launcher.enqueued.single()
+        assertThat(pending.credits.map { it.name }).containsExactly("Asha Rao", "Crew").inOrder()
+        assertThat(pending.credits.map { it.userId }).containsExactly("u1", null).inOrder()
+        assertThat(pending.genres).containsExactly("drama")
+        assertThat(pending.releaseYear).isEqualTo(2024)
+        assertThat(pending.productionHouse).isEqualTo("Blue Hour")
+    }
+
+    @Test
+    fun `credits left behind by a category change are not sent`() = runTest {
+        val launcher = FakeLauncher()
+        val vm = longVideo(launcher)
+        vm.onCategoryChanged("music")
+        vm.credits.addCredit()
+        val key = vm.credits.state.value.form.entries.single().key
+        vm.credits.setName(key, "Asha")
+        vm.credits.setRole(key, "Singer")
+        vm.onCategoryChanged("education")
+
+        vm.onPost()
+        advanceUntilIdle()
+
+        val pending = launcher.enqueued.single()
+        assertThat(pending.credits).isEmpty()
+        assertThat(pending.genres).isEmpty()
+        assertThat(pending.releaseYear).isNull()
+    }
+
+    @Test
+    fun `a credit the server would refuse stops the post with the reason`() = runTest {
+        val launcher = FakeLauncher()
+        val vm = longVideo(launcher)
+        vm.onCategoryChanged("comedy")
+        vm.credits.addCredit()
+        vm.credits.setName(vm.credits.state.value.form.entries.single().key, "Asha")
+
+        vm.onPost()
+        advanceUntilIdle()
+
+        assertThat(launcher.enqueued).isEmpty()
+        assertThat(vm.state.value.phase).isEqualTo(ReelPublishViewModel.Phase.Failure("Credits: Every credit needs a role."))
+        assertThat(vm.credits.state.value.problems).containsExactly("Every credit needs a role.")
     }
 }

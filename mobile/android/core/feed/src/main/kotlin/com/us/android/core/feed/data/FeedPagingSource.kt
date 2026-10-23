@@ -3,6 +3,7 @@ package com.us.android.core.feed.data
 import androidx.paging.PagingSource
 import androidx.paging.PagingState
 import com.us.android.core.common.error.AppError
+import com.us.android.core.feed.data.credits.creditsOf
 import com.us.android.core.feed.data.dto.FeedItemDto
 import com.us.android.core.feed.data.dto.FeedSoundDto
 import com.us.android.core.model.FeedAuthor
@@ -276,6 +277,7 @@ internal fun FeedItemDto.toDomain() = FeedItem(
     originalVolume = wireVolume(originalAudioVolume),
     overlayVolume = wireVolume(overlayAudioVolume),
     soundReuseAllowed = allowsSoundReuse(remixSetting),
+    credits = creditsOf(credits, genres, releaseYear, productionHouse),
 )
 
 /**

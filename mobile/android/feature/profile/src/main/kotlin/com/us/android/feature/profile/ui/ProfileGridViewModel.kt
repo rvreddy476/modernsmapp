@@ -10,6 +10,7 @@ import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.feed.data.VideoFeedRepository
 import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.feed.data.videoThumb
+import com.us.android.core.feed.data.credits.CreditsRepository
 import com.us.android.core.media.FeedEntry
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.ReelsEntry
@@ -54,12 +55,22 @@ enum class ProfileGridTab(val label: String, val contentType: String) {
     POSTS("Posts", "post"),
     REELS("Reels", "flick"),
     VIDEOS("Videos", "long_video"),
+
+    /**
+     * The long videos the profile's owner is credited in and accepted (video
+     * credits, 2026-10-23), on anyone's profile — offered only when there is
+     * at least one ([gridTabsFor]'s `appearsIn`).
+     */
+    APPEARS_IN("Appears in", "long_video"),
     SAVED("Saved", ""),
     LIKED("Liked", ""),
     ;
 
     /** An author tab — one content type of the profile's own posts. */
-    val authored: Boolean get() = this != SAVED && this != LIKED
+    val authored: Boolean get() = this == POSTS || this == REELS || this == VIDEOS
+
+    /** The viewer's own lists: on their own profile only. */
+    val ownOnly: Boolean get() = this == SAVED || this == LIKED
 
     /** Whether the Latest / Popular / Oldest control applies (the by-author sort, T-21). */
     val sortable: Boolean get() = authored
@@ -69,10 +80,18 @@ enum class ProfileGridTab(val label: String, val contentType: String) {
  * The grid's tabs for a viewer: the three author tabs for everyone, and
  * Saved and Liked after them on the viewer's OWN profile — bookmarks and
  * likes are private to the viewer, so nobody else's profile could show
- * them. Pure, so the two sets are a table test.
+ * them. "Appears in" after the author tabs when [appearsIn] — the profile
+ * is credited in at least one video — on anyone's profile, never empty.
+ * Pure, so the sets are a table test.
  */
-fun gridTabsFor(isOwn: Boolean): List<ProfileGridTab> =
-    ProfileGridTab.entries.filter { it.authored || isOwn }
+fun gridTabsFor(isOwn: Boolean, appearsIn: Boolean = false): List<ProfileGridTab> =
+    ProfileGridTab.entries.filter { tab ->
+        when {
+            tab.authored -> true
+            tab.ownOnly -> isOwn
+            else -> appearsIn
+        }
+    }
 
 /**
  * One tab's pages, re-read whenever that tab's sort changes.
@@ -178,6 +197,7 @@ class ProfileGridViewModel @Inject constructor(
     private val tubeEntry: TubeEntry,
     follows: FollowGraph,
     savedStateHandle: SavedStateHandle,
+    private val credits: CreditsRepository,
 ) : ViewModel() {
 
     private val ownId: String = follows.ownId
@@ -213,8 +233,28 @@ class ProfileGridViewModel @Inject constructor(
      */
     val success: StateFlow<PublishSuccess?> = _success
 
-    /** The tabs this viewer gets — Saved and Liked only on their own profile. */
-    val tabs: List<ProfileGridTab> = gridTabsFor(isOwn)
+    private val _tabs = MutableStateFlow(gridTabsFor(isOwn))
+
+    /**
+     * The tabs this viewer gets — Saved and Liked only on their own profile,
+     * "Appears in" once it is known to hold something (video credits,
+     * 2026-10-23).
+     */
+    val tabs: StateFlow<List<ProfileGridTab>> = _tabs
+
+    /** The long videos this profile is credited in and accepted, newest first. */
+    val appearances: Flow<PagingData<FeedItem>> =
+        if (userId.isBlank()) flowOf(PagingData.empty()) else credits.appearances(userId).cachedIn(viewModelScope)
+
+    /** Asks whether "Appears in" would hold anything; again on every pull, so a new acceptance shows the tab. */
+    fun checkAppearances() {
+        if (userId.isBlank()) return
+        viewModelScope.launch {
+            val any = credits.hasAppearances(userId)
+            _tabs.value = gridTabsFor(isOwn, appearsIn = any)
+            if (!any && _tab.value == ProfileGridTab.APPEARS_IN) _tab.value = ProfileGridTab.POSTS
+        }
+    }
 
     private val _sorts = MutableStateFlow<Map<ProfileGridTab, AuthorPostSort>>(emptyMap())
 
@@ -250,6 +290,7 @@ class ProfileGridViewModel @Inject constructor(
     private var seenKeys: Set<String> = emptySet()
 
     init {
+        checkAppearances()
         if (isOwn) {
             refreshScheduled()
             viewModelScope.launch { tracker.items.collect { items -> onQueueChanged(items) } }
@@ -334,8 +375,8 @@ class ProfileGridViewModel @Inject constructor(
             ProfileGridTab.POSTS -> feedEntry.showFirst(postId)
             ProfileGridTab.REELS -> reelsEntry.open(postId)
             ProfileGridTab.VIDEOS -> tubeEntry.showFirst(postId)
-            // Nothing is ever published INTO Saved or Liked; pendingTabFor never answers them.
-            ProfileGridTab.SAVED, ProfileGridTab.LIKED -> return
+            // Nothing is ever published INTO Saved, Liked or Appears in; pendingTabFor never answers them.
+            ProfileGridTab.SAVED, ProfileGridTab.LIKED, ProfileGridTab.APPEARS_IN -> return
         }
         _published.tryEmit(tab)
     }
@@ -352,7 +393,7 @@ class ProfileGridViewModel @Inject constructor(
     }
 
     fun select(tab: ProfileGridTab) {
-        if (tab in tabs) _tab.value = tab
+        if (tab in _tabs.value) _tab.value = tab
     }
 
     /** The sort [tab] is on; Latest until the viewer picks another. */

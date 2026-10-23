@@ -1,6 +1,13 @@
 package com.us.android.core.feed.data
 
+import com.us.android.core.feed.data.credits.CreditDto
+import com.us.android.core.feed.data.credits.CreditInputDto
+import com.us.android.core.feed.data.credits.CreditListSerializer
+import com.us.android.core.feed.data.credits.GenreSlugListSerializer
 import com.us.android.core.network.ApiEnvelope
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import retrofit2.http.Body
@@ -68,6 +75,17 @@ data class PostEditDetailDto(
     @SerialName("age_restricted") val ageRestricted: Boolean = false,
     @SerialName("hide_like_count") val hideLikeCount: Boolean = false,
     @SerialName("default_comment_sort") val defaultCommentSort: String = "",
+    /**
+     * The long video's credits (2026-10-23), as its OWNER reads them: each
+     * linked credit with its `status`, and the `user_id` of every tag
+     * (pending, accepted or declined), so a save can send the same tag back.
+     */
+    @Serializable(with = CreditListSerializer::class)
+    val credits: List<CreditDto> = emptyList(),
+    @Serializable(with = GenreSlugListSerializer::class)
+    val genres: List<String> = emptyList(),
+    @SerialName("release_year") val releaseYear: Int? = null,
+    @SerialName("production_house") val productionHouse: String? = null,
 )
 
 /**
@@ -99,6 +117,21 @@ data class PostEditPatch(
     @SerialName("age_restricted") val ageRestricted: Boolean? = null,
     @SerialName("hide_like_count") val hideLikeCount: Boolean? = null,
     @SerialName("default_comment_sort") val defaultCommentSort: String? = null,
+    /**
+     * Video credits (2026-10-23). [credits] REPLACES the list — `[]` clears
+     * it, absent leaves it — with the same validation as the create;
+     * `genres: []` clears the genres.
+     *
+     * [releaseYear] and [productionHouse] are JSON values rather than an
+     * `Int?` / `String?` because the contract's CLEAR is an explicit `null`
+     * on the wire, and the app's `Json` drops a Kotlin null (`explicitNulls`
+     * off) — a [JsonNull] is a value and survives. A Kotlin null still means
+     * "leave it". Build them with [patchYear] and [patchText].
+     */
+    val credits: List<CreditInputDto>? = null,
+    val genres: List<String>? = null,
+    @SerialName("release_year") val releaseYear: JsonElement? = null,
+    @SerialName("production_house") val productionHouse: JsonElement? = null,
 ) {
     /** Nothing moved: Save has nothing to send. */
     val isEmpty: Boolean get() = this == PostEditPatch()
@@ -128,5 +161,15 @@ data class PostEditPatch(
         ageRestricted = newer.ageRestricted ?: ageRestricted,
         hideLikeCount = newer.hideLikeCount ?: hideLikeCount,
         defaultCommentSort = newer.defaultCommentSort ?: defaultCommentSort,
+        credits = newer.credits ?: credits,
+        genres = newer.genres ?: genres,
+        releaseYear = newer.releaseYear ?: releaseYear,
+        productionHouse = newer.productionHouse ?: productionHouse,
     )
 }
+
+/** A year for the PATCH: the number, or JSON `null` — the clear — when there is none. */
+fun patchYear(year: Int?): JsonElement = year?.let { JsonPrimitive(it) } ?: JsonNull
+
+/** A text for the PATCH: the trimmed text, or JSON `null` — the clear — when it is blank. */
+fun patchText(text: String): JsonElement = text.trim().takeIf { it.isNotEmpty() }?.let { JsonPrimitive(it) } ?: JsonNull

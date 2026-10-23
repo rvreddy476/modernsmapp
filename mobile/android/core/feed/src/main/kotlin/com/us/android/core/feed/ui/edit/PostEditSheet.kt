@@ -20,6 +20,7 @@ import com.us.android.core.feed.data.AUDIO_LANGUAGE_CHOICES
 import com.us.android.core.feed.data.EditChoice
 import com.us.android.core.feed.data.PostEditChoices
 import com.us.android.core.feed.data.PostEditForm
+import com.us.android.core.feed.ui.credits.CreditsSection
 import com.us.android.core.ui.UsSettingsOption
 import com.us.android.core.ui.UsSettingsSection
 import com.us.android.core.ui.UsSettingsSelectRow
@@ -48,6 +49,7 @@ fun PostEditSheet(
 ) {
     LaunchedEffect(postId) { viewModel.bind(postId, longVideo) }
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val credits by viewModel.credits.state.collectAsStateWithLifecycle()
     LaunchedEffect(state.saved) {
         if (state.saved) {
             onSaved()
@@ -74,11 +76,18 @@ fun PostEditSheet(
             }
             else -> {
                 EditFields(state = state, change = viewModel::change)
+                // Video credits (2026-10-23): the same section the upload has,
+                // with where each linked credit's tag stands.
+                if (state.offersCredits) {
+                    UsSettingsSection(title = "Credits") {
+                        CreditsSection(state = credits, editor = viewModel.credits, enabled = !state.saving)
+                    }
+                }
                 state.problems.forEach { SheetNote(text = it, isError = true, testTag = "post_edit_problem") }
                 UsButton(
                     text = "Save",
                     onClick = viewModel::save,
-                    enabled = state.dirty,
+                    enabled = state.dirty || state.creditsDirty(credits.form),
                     loading = state.saving,
                     modifier = Modifier.fillMaxWidth().testTag("post_edit_save"),
                 )

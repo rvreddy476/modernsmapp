@@ -211,6 +211,8 @@ data class ProfileDestinations(
     val onOpenCreatorHub: (() -> Unit)? = null,
     /** The Me tab's drawer "Offline videos": `:app` pushes the Offline page (Tube's graph). */
     val onOpenOffline: (() -> Unit)? = null,
+    /** The Me tab's drawer "Credit requests" (video credits, 2026-10-23): `:app` pushes the requests screen (Tube's graph). */
+    val onOpenCreditRequests: (() -> Unit)? = null,
     /** The Me tab's drawer "Upload": `:app` opens the Create sheet the bar's centre button opens. */
     val onOpenUpload: (() -> Unit)? = null,
 )
@@ -393,6 +395,7 @@ internal fun meDrawerDoors(state: ProfileUiState, destinations: ProfileDestinati
     return MeDrawerDoors(
         grid = content != null && content.profile.isOwnProfile && !content.unavailable,
         offline = destinations.onOpenOffline != null,
+        creditRequests = destinations.onOpenCreditRequests != null,
         messages = destinations.header != null,
         creatorHub = destinations.onOpenCreatorHub != null,
         upload = destinations.onOpenUpload != null,
@@ -404,6 +407,7 @@ internal fun meDrawerDoors(state: ProfileUiState, destinations: ProfileDestinati
 private fun ProfileDestinations.openDrawerRow(row: MeDrawerRow) {
     when (row) {
         MeDrawerRow.OFFLINE -> onOpenOffline?.invoke()
+        MeDrawerRow.CREDIT_REQUESTS -> onOpenCreditRequests?.invoke()
         MeDrawerRow.MESSAGES -> header?.onOpenMessages?.invoke()
         MeDrawerRow.CREATOR_HUB -> onOpenCreatorHub?.invoke()
         MeDrawerRow.UPLOAD -> onOpenUpload?.invoke()

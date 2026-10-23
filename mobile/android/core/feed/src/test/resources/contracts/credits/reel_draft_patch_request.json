@@ -1,0 +1,19 @@
+{
+  "content_type": "long_video",
+  "credits": [
+    {
+      "name": "Asha Rao",
+      "role": "Director",
+      "user_id": "d3333333-3333-4333-8333-333333333333"
+    },
+    {
+      "name": "Meera Iyer",
+      "role": "Music"
+    }
+  ],
+  "genres": [
+    "drama"
+  ],
+  "release_year": 2024,
+  "production_house": "Blue Hour Films"
+}

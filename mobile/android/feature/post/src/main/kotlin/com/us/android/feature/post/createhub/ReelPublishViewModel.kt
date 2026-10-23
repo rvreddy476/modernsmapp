@@ -8,6 +8,12 @@ import com.us.android.core.common.di.Dispatcher
 import com.us.android.core.common.di.UsDispatcher
 import com.us.android.core.feed.data.ChannelRepository
 import com.us.android.core.feed.data.ChannelState
+import com.us.android.core.feed.data.credits.CreditPerson
+import com.us.android.core.feed.data.credits.CreditsForm
+import com.us.android.core.feed.data.credits.creditsOffered
+import com.us.android.core.feed.data.credits.releaseYearOrNull
+import com.us.android.core.feed.data.credits.toInput
+import com.us.android.core.feed.ui.credits.CreditsEditor
 import com.us.android.core.media.ChosenSound
 import com.us.android.core.media.SoundEntry
 import com.us.android.core.media.publish.PublishKind
@@ -276,12 +282,33 @@ class ReelPublishViewModel @Inject constructor(
         /** The "Add sound" row, which opens the Library sheet: a reel with no sound yet. */
         val showsAddSound: Boolean
             get() = kind == PublishKind.REEL && sound == null
+
+        /**
+         * The Credits step is offered (video credits, 2026-10-23): a long
+         * video whose category is one that asks for cast & crew. Credits
+         * typed and then left behind by a category change are not sent.
+         */
+        val offersCredits: Boolean
+            get() = kind == PublishKind.LONG && creditsOffered(effectiveCategory)
     }
 
     private val _state = MutableStateFlow(
         ReelUiState(kind = videoKindForSurface(savedStateHandle[SURFACE_ARG])),
     )
     val state: StateFlow<ReelUiState> = _state.asStateFlow()
+
+    /**
+     * The long video's Credits step (2026-10-23): cast & crew, genres, year,
+     * production house. Its own state, read at Post; people are found with
+     * the form's own suggester (the one "Mention people" uses).
+     */
+    val credits = CreditsEditor(
+        scope = viewModelScope,
+        searchPeople = { query ->
+            lookups.searchPeople(query).map { CreditPerson(id = it.id, name = it.name, username = it.username) }
+        },
+        loadGenres = { lookups.genres() },
+    )
 
     private var creationKey: String = UUID.randomUUID().toString()
 
@@ -478,6 +505,9 @@ class ReelPublishViewModel @Inject constructor(
         ensureChannel()
     }
 
+    /** The Credits step opened: the genre list is read (once) for its picker. */
+    fun openCredits() = credits.ensureGenres()
+
     // ── Fields ──────────────────────────────────────────────────────────
 
     /** Clamped to [MAX_TITLE_LENGTH]; the field shows the counter. */
@@ -635,6 +665,15 @@ class ReelPublishViewModel @Inject constructor(
     fun onPost() {
         val current = _state.value
         if (!current.canPost) return
+        // Credits the server would refuse stop the post here, in words, rather
+        // than as a failed upload minutes later.
+        if (current.offersCredits) {
+            credits.validate().firstOrNull()?.let { problem ->
+                fail("Credits: $problem")
+                return
+            }
+        }
+        val creditsForm = credits.state.value.form
         _state.update { it.copy(phase = Phase.Preparing) }
         viewModelScope.launch {
             val coverPath = current.cover?.let { frame ->
@@ -646,7 +685,7 @@ class ReelPublishViewModel @Inject constructor(
                 fail("That cover frame couldn't be prepared. Pick another.")
                 return@launch
             }
-            launcher.enqueue(buildPending(current, creationKey, coverPath))
+            launcher.enqueue(buildPending(current, creationKey, coverPath, creditsForm))
             _state.update { it.copy(phase = Phase.Enqueued) }
         }
     }
@@ -688,8 +727,27 @@ class ReelPublishViewModel @Inject constructor(
          * The form, whole, as the record the worker publishes from. Any
          * text still in the hashtag field counts — a tag typed without a
          * trailing space is still a tag the user meant.
+         *
+         * [credits] go only when the form offered the Credits step
+         * ([ReelUiState.offersCredits]): a long video in a category that asks
+         * for them. Otherwise nothing of them is sent.
          */
-        fun buildPending(current: ReelUiState, creationKey: String, coverPath: String?) = PendingReelPublish(
+        fun buildPending(
+            current: ReelUiState,
+            creationKey: String,
+            coverPath: String?,
+            credits: CreditsForm = CreditsForm(),
+        ): PendingReelPublish {
+            val sent = credits.takeIf { current.offersCredits } ?: CreditsForm()
+            return pendingOf(current, creationKey, coverPath).copy(
+                credits = sent.toInput(),
+                genres = sent.genres,
+                releaseYear = sent.releaseYearOrNull(),
+                productionHouse = sent.productionHouse.trim(),
+            )
+        }
+
+        private fun pendingOf(current: ReelUiState, creationKey: String, coverPath: String?) = PendingReelPublish(
             creationKey = creationKey,
             videoUri = current.videoUri.orEmpty(),
             videoPath = current.exportedPath,

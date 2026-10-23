@@ -140,8 +140,9 @@ internal fun NotificationDto.toDomain(): Notification = Notification(
         } else {
             // Do not reinterpret merchant/partner notices as customer bookings.
             NotificationTarget.parse(deepLink).takeUnless {
-                it is NotificationTarget.Customer || it is NotificationTarget.CustomerDues
-            } ?: NotificationTarget.None
+                it is NotificationTarget.Customer || it is NotificationTarget.CustomerDues ||
+                    it is NotificationTarget.None
+            } ?: NotificationTarget.creditFallback(type, entityId)
         }
     },
     isRead = isRead,

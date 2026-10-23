@@ -29,6 +29,19 @@ class PushTargetsTest {
         assertThat(pushTargetOf(destination)).isEqualTo(NotificationTarget.Video("p1"))
     }
 
+    /** Video credits (2026-10-23): a request opens the requests screen, an acceptance the video. */
+    @Test
+    fun `credit pushes open the requests screen and the accepted video`() {
+        assertThat(pushTargetOf(PushDestination(TYPE_CREDIT_REQUEST, entityId = "c1", deepLink = "/credits/requests")))
+            .isEqualTo(NotificationTarget.CreditRequests)
+        assertThat(pushTargetOf(PushDestination(TYPE_CREDIT_REQUEST, entityId = "p1", deepLink = "")))
+            .isEqualTo(NotificationTarget.CreditRequests)
+        assertThat(pushTargetOf(PushDestination(TYPE_CREDIT_ACCEPTED, entityId = "p1", deepLink = "")))
+            .isEqualTo(NotificationTarget.Video("p1"))
+        assertThat(pushTargetOf(PushDestination(TYPE_CREDIT_ACCEPTED, entityId = "x", deepLink = "/tube/watch/p2")))
+            .isEqualTo(NotificationTarget.Video("p2"))
+    }
+
     @Test
     fun `with no usable link the entity id and type decide`() {
         assertThat(pushTargetOf(PushDestination(TYPE_UPLOADED_VIDEO, entityId = "p1", deepLink = "")))

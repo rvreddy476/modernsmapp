@@ -818,6 +818,10 @@ internal fun Notification.describe(): String {
         NotificationKind.CreatorUploadedVideo -> "$who uploaded a new video"
         NotificationKind.CreatorUploadedFlick -> "$who posted a new reel"
         NotificationKind.CreatorWentLive -> "$who is live"
+        // Video credits (2026-10-23): the inbox row has a title and NO body (only the
+        // push carries "{role} · {title}"), so the row is its title, or this from the type.
+        NotificationKind.CreditRequest -> title ?: "$who credited you in a video"
+        NotificationKind.CreditAccepted -> title ?: "$who accepted your credit"
         NotificationKind.MissedCall ->
             if (actorName.isBlank()) "Missed call" else "Missed call from $who"
         // The server writes incoming_* rows on every call invite, answered or

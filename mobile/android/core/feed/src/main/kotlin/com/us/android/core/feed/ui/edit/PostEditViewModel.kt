@@ -3,14 +3,25 @@ package com.us.android.core.feed.ui.edit
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.engagement.data.CommentMentionSource
 import com.us.android.core.feed.data.FeedCategory
 import com.us.android.core.feed.data.PostEditForm
+import com.us.android.core.feed.data.PostEditPatch
 import com.us.android.core.feed.data.PostEditRepository
 import com.us.android.core.feed.data.VideoFeedRepository
+import com.us.android.core.feed.data.credits.CreditPerson
+import com.us.android.core.feed.data.credits.CreditsForm
+import com.us.android.core.feed.data.credits.CreditsRepository
+import com.us.android.core.feed.data.credits.creditRefusal
+import com.us.android.core.feed.data.credits.creditsOffered
+import com.us.android.core.feed.data.creditsForm
+import com.us.android.core.feed.data.creditsPatch
 import com.us.android.core.feed.data.postEditPatch
 import com.us.android.core.feed.data.postEditProblems
 import com.us.android.core.feed.data.postEditRefusal
+import com.us.android.core.feed.data.serverCode
 import com.us.android.core.feed.data.toEditForm
+import com.us.android.core.feed.ui.credits.CreditsEditor
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -32,6 +43,8 @@ data class PostEditUiState(
     /** A long video edits a few fields a short does not (made for kids, age, altered content), as at upload. */
     val longVideo: Boolean = true,
     val categories: List<FeedCategory> = emptyList(),
+    /** The credits as the sheet opened (video credits, 2026-10-23); the editor holds them as they are now. */
+    val creditsBase: CreditsForm = CreditsForm(),
     val saving: Boolean = false,
     /** The checks before Save, or the server's refusal. */
     val problems: List<String> = emptyList(),
@@ -40,6 +53,16 @@ data class PostEditUiState(
 ) {
     /** Something moved: Save has a patch to send. */
     val dirty: Boolean get() = !postEditPatch(base, form).isEmpty
+
+    /**
+     * The Credits section is shown: a long video in a category that asks
+     * for credits — or one that already has some, so they can still be
+     * changed or cleared after its category moved.
+     */
+    val offersCredits: Boolean get() = longVideo && (creditsOffered(form.category) || !creditsBase.isEmpty)
+
+    /** Whether the credits as [now] differ from how the sheet opened. */
+    fun creditsDirty(now: CreditsForm): Boolean = offersCredits && !creditsPatch(creditsBase, now).isEmpty
 }
 
 /**
@@ -48,15 +71,33 @@ data class PostEditUiState(
  * `PATCH /v1/posts/:id`. A landed save is recorded in `PostEdits`, which
  * every list layers over its rows, so the reel or the video on screen shows
  * the new words at once.
+ *
+ * A long video's credits (2026-10-23) are edited in the same sheet through
+ * [credits], each linked credit showing where its tag stands; they ride the
+ * same PATCH, and the list is sent WHOLE when anything in it moved (the
+ * server replaces it).
  */
 @HiltViewModel
 class PostEditViewModel @Inject constructor(
     private val repository: PostEditRepository,
     private val videos: VideoFeedRepository,
+    creditsRepository: CreditsRepository,
+    mentions: CommentMentionSource,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(PostEditUiState())
     val state: StateFlow<PostEditUiState> = _state.asStateFlow()
+
+    /** The Credits section's form, search and genres. */
+    val credits = CreditsEditor(
+        scope = viewModelScope,
+        searchPeople = { query ->
+            mentions.search(query).map {
+                CreditPerson(id = it.userId, name = it.displayName.ifBlank { it.username }, username = it.username)
+            }
+        },
+        loadGenres = creditsRepository::genres,
+    )
 
     private var postId = ""
 
@@ -74,6 +115,7 @@ class PostEditViewModel @Inject constructor(
             val categories = videos.categories()
             _state.update { it.copy(categories = categories) }
         }
+        if (longVideo) credits.ensureGenres()
     }
 
     fun retry() = load()
@@ -82,14 +124,17 @@ class PostEditViewModel @Inject constructor(
         val id = postId
         _state.update { it.copy(loading = true, loadError = null) }
         viewModelScope.launch {
-            _state.update { current ->
-                when (val result = repository.detail(id)) {
-                    is AppResult.Success -> {
-                        val form = result.data.toEditForm()
-                        current.copy(loading = false, base = form, form = form)
+            when (val result = repository.detail(id)) {
+                is AppResult.Success -> {
+                    val form = result.data.toEditForm()
+                    val creditsForm = result.data.creditsForm { credits.newKey() }
+                    credits.reset(creditsForm)
+                    _state.update {
+                        it.copy(loading = false, base = form, form = form, creditsBase = creditsForm)
                     }
-                    is AppResult.Failure -> current.copy(loading = false, loadError = postEditRefusal(result.error))
                 }
+                is AppResult.Failure ->
+                    _state.update { it.copy(loading = false, loadError = postEditRefusal(result.error)) }
             }
         }
     }
@@ -102,11 +147,14 @@ class PostEditViewModel @Inject constructor(
         val now = _state.value
         if (now.saving || now.loading) return
         val problems = postEditProblems(now.form)
-        if (problems.isNotEmpty()) {
+        val creditProblems = if (now.offersCredits) credits.validate() else emptyList()
+        if (problems.isNotEmpty() || creditProblems.isNotEmpty()) {
             _state.update { it.copy(problems = problems) }
             return
         }
+        val creditsNow = credits.state.value.form
         val patch = postEditPatch(now.base, now.form)
+            .then(if (now.offersCredits) creditsPatch(now.creditsBase, creditsNow) else PostEditPatch())
         if (patch.isEmpty) {
             _state.update { it.copy(saved = true) }
             return
@@ -115,9 +163,17 @@ class PostEditViewModel @Inject constructor(
         viewModelScope.launch {
             _state.update { current ->
                 when (val result = repository.save(postId, patch)) {
-                    is AppResult.Success -> current.copy(saving = false, saved = true, base = current.form)
-                    is AppResult.Failure ->
-                        current.copy(saving = false, problems = listOf(postEditRefusal(result.error)))
+                    is AppResult.Success ->
+                        current.copy(saving = false, saved = true, base = current.form, creditsBase = creditsNow)
+                    is AppResult.Failure -> {
+                        // A refusal of the credits fields is said under the Credits section, beside what it is about.
+                        val credited = creditRefusal(result.error.serverCode())
+                        if (credited != null) credits.showRefusal(credited)
+                        current.copy(
+                            saving = false,
+                            problems = if (credited != null) emptyList() else listOf(postEditRefusal(result.error)),
+                        )
+                    }
                 }
             }
         }

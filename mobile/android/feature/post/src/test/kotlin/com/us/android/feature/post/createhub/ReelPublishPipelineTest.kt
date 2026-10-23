@@ -863,6 +863,25 @@ class ReelPublishPipelineTest {
         assertThat(h.store.record?.failure?.message).isEqualTo("publish_at must be at least 5 minutes ahead")
     }
 
+    /** Video credits (2026-10-23): a refusal of the credits says it in plain words — never the code, nor the server's route-naming message. */
+    @Test
+    fun `a refused genre fails with the credits sentence and no retry`() = runTest {
+        val repository = RecordingRepository(json).apply {
+            result = AppResult.Failure(
+                AppError.Unknown(
+                    code = "INVALID_GENRE",
+                    statusCode = 400,
+                    message = "genres must be at most 3 of the slugs GET /v1/posts/genres lists",
+                ),
+            )
+        }
+        val h = harness(repository = repository)
+
+        val outcome = run(h, pending(withCover = false))
+
+        assertThat(outcome).isEqualTo(ReelPublishPipeline.Outcome.Failed("Pick up to 3 genres from the list.", retryable = false))
+    }
+
     // ── The queue (2026-09-05) ──────────────────────────────────────────
 
     /** A publish discarded while it uploads stops, persists nothing, and leaves the store to the discard. */

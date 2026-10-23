@@ -7,6 +7,7 @@ import com.us.android.core.profile.data.NotificationPreferenceCodec
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import org.junit.Test
+import java.io.File
 
 class NotificationPreferenceCodecTest {
 
@@ -57,6 +58,36 @@ class NotificationPreferenceCodecTest {
 
         val encoded = NotificationPreferenceCodec.encode(decoded)
         assertThat(encoded.keys).containsAtLeast("inapp_new_videos", "push_new_videos")
+        assertThat(NotificationPreferenceCodec.decode(encoded)).isEqualTo(decoded)
+    }
+
+    /**
+     * Video credits (2026-10-23), against notification-service's golden files
+     * (`internal/http/testdata/contracts`, copied byte for byte into
+     * `src/test/resources/contracts`): the `credits` category is the
+     * `push_credits` / `inapp_credits` pair, default on, and the save the app
+     * sends carries both keys with the values of the request fixture.
+     */
+    @Test
+    fun `the credits pair reads from the server's fixture, defaults to on, and round-trips onto its request`() {
+        val contracts = File("src/test/resources/contracts")
+        val read = Json.parseToJsonElement(File(contracts, "notification_preferences_credits.json").readText())
+            .jsonObject.getValue("data").jsonObject
+        val request = Json.parseToJsonElement(File(contracts, "notification_preferences_credits_request.json").readText()).jsonObject
+
+        assertThat(NotificationPreferenceCodec.pushKey(NotificationCategory.CREDITS)).isEqualTo("push_credits")
+        assertThat(NotificationPreferenceCodec.inAppKey(NotificationCategory.CREDITS)).isEqualTo("inapp_credits")
+        val decoded = NotificationPreferenceCodec.decode(read)
+        assertThat(decoded.channels(NotificationCategory.CREDITS)).isEqualTo(NotificationChannels(inApp = true, push = false))
+        val absent = NotificationPreferenceCodec.decode(Json.parseToJsonElement("{}").jsonObject)
+        assertThat(absent.channels(NotificationCategory.CREDITS)).isEqualTo(NotificationChannels(inApp = true, push = true))
+
+        val encoded = NotificationPreferenceCodec.encode(decoded)
+        request.forEach { (key, value) -> assertThat(encoded[key]).isEqualTo(value) }
+        // Every category the server's fixture has a pair for that this build knows is read from it, not defaulted.
+        NotificationCategory.entries.forEach { category ->
+            assertThat(read.keys).containsAtLeast(NotificationPreferenceCodec.inAppKey(category), NotificationPreferenceCodec.pushKey(category))
+        }
         assertThat(NotificationPreferenceCodec.decode(encoded)).isEqualTo(decoded)
     }
 

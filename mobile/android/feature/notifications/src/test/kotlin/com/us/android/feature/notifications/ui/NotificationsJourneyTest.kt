@@ -157,6 +157,7 @@ class NotificationsJourneyTest {
                                     is NotificationTarget.Live,
                                     is NotificationTarget.Customer,
                                     NotificationTarget.CustomerDues,
+                                    NotificationTarget.CreditRequests,
                                     NotificationTarget.None,
                                     -> Unit
                                 }

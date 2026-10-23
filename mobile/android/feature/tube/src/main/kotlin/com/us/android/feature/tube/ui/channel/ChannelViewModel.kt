@@ -17,6 +17,7 @@ import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.feed.data.SubscriptionGraph
 import com.us.android.core.feed.data.VideoFeedRepository
 import com.us.android.core.feed.data.VideoThumb
+import com.us.android.core.feed.data.credits.CreditsRepository
 import com.us.android.core.feed.data.hides
 import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.media.MediaUrlResolver
@@ -49,6 +50,14 @@ sealed interface ChannelHeaderState {
     data class Failed(val message: String) : ChannelHeaderState
 }
 
+/** The channel page's two lists. */
+enum class ChannelTab(val label: String) {
+    VIDEOS("Videos"),
+
+    /** Videos the owner is credited in and accepted (video credits, 2026-10-23). */
+    APPEARS_IN("Appears in"),
+}
+
 /**
  * A channel inside Tube (2026-09-05; subscriptions 2026-09-12):
  * `GET v1/channels/{user_id}` for the header, the subscription edge from
@@ -75,9 +84,45 @@ class ChannelViewModel @Inject constructor(
     private val subscriptions: SubscriptionGraph,
     engagement: EngagementStore,
     hidden: HiddenPosts,
+    private val credits: CreditsRepository,
 ) : ViewModel() {
 
     val userId: String = savedStateHandle.toRoute<TubeChannelRoute>().userId
+
+    private val _tab = MutableStateFlow(ChannelTab.VIDEOS)
+
+    /** Which list the page shows: the channel's own videos, or the ones its owner is credited in. */
+    val tab: StateFlow<ChannelTab> = _tab.asStateFlow()
+
+    private val _offersAppearances = MutableStateFlow(false)
+
+    /**
+     * "Appears in" is offered (video credits, 2026-10-23) only when the
+     * owner accepted a credit on at least one video this viewer may see —
+     * an empty tab is never shown.
+     */
+    val offersAppearances: StateFlow<Boolean> = _offersAppearances.asStateFlow()
+
+    /** The videos this channel's owner accepted a credit on, newest first. */
+    val appearances: Flow<PagingData<FeedItem>> = credits.appearances(userId)
+        .cachedIn(viewModelScope)
+        .combine(hidden.state) { page, set ->
+            if (set.isEmpty) page else page.filter { !set.hides(it) }
+        }
+
+    fun selectTab(tab: ChannelTab) {
+        if (tab == ChannelTab.APPEARS_IN && !_offersAppearances.value) return
+        _tab.value = tab
+    }
+
+    /** Asks whether there is anything to show under "Appears in"; on every load, so a pull re-checks. */
+    private fun checkAppearances() {
+        viewModelScope.launch {
+            val any = credits.hasAppearances(userId)
+            _offersAppearances.value = any
+            if (!any && _tab.value == ChannelTab.APPEARS_IN) _tab.value = ChannelTab.VIDEOS
+        }
+    }
 
     private val _header = MutableStateFlow<ChannelHeaderState>(ChannelHeaderState.Loading)
     val header: StateFlow<ChannelHeaderState> = _header.asStateFlow()
@@ -122,6 +167,7 @@ class ChannelViewModel @Inject constructor(
     }
 
     fun load() {
+        checkAppearances()
         _header.value = ChannelHeaderState.Loading
         viewModelScope.launch {
             _header.value = when (val result = channels.read(userId)) {

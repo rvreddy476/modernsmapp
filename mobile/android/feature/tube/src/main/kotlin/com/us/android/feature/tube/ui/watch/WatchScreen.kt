@@ -88,6 +88,10 @@ import com.us.android.feature.tube.ui.collections.CollectionPickerSheet
 fun WatchScreen(
     onBack: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
+    /** A credited name (video credits, 2026-10-23): Tube search for it. */
+    onSearchName: (name: String) -> Unit = {},
+    /** An accepted credit: that person's channel inside Tube. */
+    onOpenChannel: (userId: String) -> Unit = {},
     viewModel: WatchViewModel = hiltViewModel(),
     more: PostMoreViewModel = hiltViewModel(),
     // The Share sheet's (2026-10-17): the screen's, so "Sent" is read here after the sheet has gone.
@@ -105,6 +109,7 @@ fun WatchScreen(
     val moreMessage by more.message.collectAsStateWithLifecycle()
     val library by viewModel.library.collectAsStateWithLifecycle()
     val actionMessage by viewModel.actionMessage.collectAsStateWithLifecycle()
+    val creditMessage by viewModel.creditMessage.collectAsStateWithLifecycle()
     val offlineState by viewModel.offlineState.collectAsStateWithLifecycle()
     var fullscreen by rememberSaveable { mutableStateOf(false) }
     val sheets = remember { WatchSheets() }
@@ -135,8 +140,14 @@ fun WatchScreen(
             onBack = { if (fullscreen) fullscreen = false else onBack() },
         )
     }
-    val actions = remember(viewModel, onOpenAuthor) {
+    val genres by viewModel.genres.collectAsStateWithLifecycle()
+    val actions = remember(viewModel, onOpenAuthor, genres) {
         WatchDetailsActions(
+            onSearchName = onSearchName,
+            onOpenCreditedUser = onOpenChannel,
+            genreLabel = { slug -> genres.firstOrNull { it.slug == slug }?.label },
+            ownUserId = viewModel.ownUserId,
+            onRemoveMeFromCredit = viewModel::removeMeFromCredit,
             onOpenAuthor = onOpenAuthor,
             onSubscribe = viewModel::onSubscribe,
             onUnsubscribe = viewModel::onUnsubscribe,
@@ -180,9 +191,10 @@ fun WatchScreen(
         )
         // A refused Like, Dislike, Watch later or Save first; else what the More or Share sheet left behind.
         UsMessageHost(
-            message = actionMessage ?: moreMessage ?: shareMessage,
+            message = actionMessage ?: creditMessage ?: moreMessage ?: shareMessage,
             onDismiss = {
                 viewModel.dismissActionMessage()
+                viewModel.dismissCreditMessage()
                 more.dismissMessage()
                 sharing.dismissMessage()
             },

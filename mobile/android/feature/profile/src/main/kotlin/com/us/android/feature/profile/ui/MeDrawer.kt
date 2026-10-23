@@ -58,6 +58,9 @@ enum class MeDrawerRow(val label: String, val icon: ImageVector, val group: MeDr
     /** The Offline page (Tube's graph, the same one Reels' header opens). */
     OFFLINE("Offline videos", UsIcons.ArrowDownToLine, MeDrawerGroup.ACTIVITY),
 
+    /** The viewer's pending credit requests (video credits, 2026-10-23), Tube's graph. */
+    CREDIT_REQUESTS("Credit requests", UsIcons.Clapperboard, MeDrawerGroup.ACTIVITY),
+
     /** The chat home. */
     MESSAGES("Messages", UsIcons.Comment, MeDrawerGroup.ACTIVITY),
 
@@ -82,6 +85,7 @@ data class MeDrawerDoors(
     /** The own profile has loaded with its grid, so the Liked and Saved tabs are there to open. */
     val grid: Boolean = false,
     val offline: Boolean = false,
+    val creditRequests: Boolean = false,
     val messages: Boolean = false,
     val creatorHub: Boolean = false,
     val upload: Boolean = false,
@@ -102,6 +106,7 @@ fun meDrawerSections(isOwnProfile: Boolean, doors: MeDrawerDoors): List<MeDrawer
             MeDrawerRow.LIKED -> doors.grid && ProfileGridTab.LIKED in ownTabs
             MeDrawerRow.SAVED -> doors.grid && ProfileGridTab.SAVED in ownTabs
             MeDrawerRow.OFFLINE -> doors.offline
+            MeDrawerRow.CREDIT_REQUESTS -> doors.creditRequests
             MeDrawerRow.MESSAGES -> doors.messages
             MeDrawerRow.CREATOR_HUB -> doors.creatorHub
             MeDrawerRow.UPLOAD -> doors.upload

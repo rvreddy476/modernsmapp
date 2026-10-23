@@ -8,6 +8,8 @@ import android.net.Uri
 import com.us.android.core.common.di.Dispatcher
 import com.us.android.core.common.di.UsDispatcher
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.feed.data.credits.CreditGenre
+import com.us.android.core.feed.data.credits.CreditsRepository
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
 import com.us.android.feature.post.data.HashtagSearchApi
@@ -157,6 +159,13 @@ interface ReelLookups {
 
     /** Tags already used on posts that start with [query], most used first; empty when the call fails. */
     suspend fun suggestHashtags(query: String): List<String>
+
+    /**
+     * The genres a long video's credits may carry (2026-10-23); null when
+     * the list could not be read. Defaulted so a lookup that has no genres
+     * behind it — a test's — needs nothing new.
+     */
+    suspend fun genres(): List<CreditGenre>? = null
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -362,7 +371,10 @@ class ApiReelLookups @Inject constructor(
     private val people: PeopleSearchApi,
     private val hashtags: HashtagSearchApi,
     private val errorMapper: ErrorMapper,
+    private val credits: CreditsRepository,
 ) : ReelLookups {
+
+    override suspend fun genres(): List<CreditGenre>? = credits.genres()
 
     override suspend fun categories(): List<ReelCategory>? =
         when (val result = apiCall(errorMapper) { posts.categories() }) {

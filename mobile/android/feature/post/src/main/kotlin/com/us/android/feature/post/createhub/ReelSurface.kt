@@ -76,6 +76,7 @@ import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.feed.data.ChannelGate
 import com.us.android.core.feed.data.channelGate
+import com.us.android.core.feed.data.credits.creditsSummary
 import com.us.android.core.feed.ui.channel.CreateChannelSheet
 import com.us.android.core.feed.ui.schedule.ScheduleSheet
 import com.us.android.core.feed.ui.sound.LibrarySoundSheet
@@ -363,7 +364,7 @@ private fun studioActions(studio: ReelStudioViewModel) = StudioActions(
     dismissExportError = studio::dismissExportError,
 )
 
-private enum class ReelSheet { None, Audience, Category, Location, People, Schedule, Sound }
+private enum class ReelSheet { None, Audience, Category, Location, People, Schedule, Sound, Credits }
 
 @Suppress("LongMethod") // One surface, one composable: the form IS the list of its parts.
 @Composable
@@ -379,6 +380,7 @@ private fun ReelForm(
     val long = state.kind == PublishKind.LONG
     val noun = if (long) "video" else "reel"
     val previewState by preview.state.collectAsStateWithLifecycle()
+    val credits by viewModel.credits.state.collectAsStateWithLifecycle()
 
     Box(modifier = Modifier.fillMaxSize()) {
         Column(
@@ -467,6 +469,21 @@ private fun ReelForm(
                     onAudience = { sheet = ReelSheet.Audience },
                     onCategory = { sheet = ReelSheet.Category },
                 )
+                // Video credits (2026-10-23): the optional Credits step, only
+                // for a long video in a category that asks for cast & crew.
+                if (state.offersCredits) {
+                    Spacer(Modifier.height(UsTheme.spacing.xxl))
+                    GlassCard {
+                        DetailRow(
+                            icon = UsIcons.Clapperboard,
+                            title = "Credits",
+                            value = creditsSummary(credits.form, credits::genreLabel).ifBlank { "Optional" },
+                            enabled = editable,
+                            onClick = { sheet = ReelSheet.Credits },
+                            testTag = "reel-credits-row",
+                        )
+                    }
+                }
                 Spacer(Modifier.height(UsTheme.spacing.xxl))
                 SwitchesCard(state = state, viewModel = viewModel, enabled = editable)
                 PhaseStatus(phase = state.phase)
@@ -489,6 +506,14 @@ private fun ReelForm(
                 onTag = viewModel::onTagUser,
                 onUntag = viewModel::onUntagUser,
                 onDone = { sheet = ReelSheet.None },
+            )
+        }
+        if (sheet == ReelSheet.Credits) {
+            ReelCreditsScreen(
+                editor = viewModel.credits,
+                onOpen = viewModel::openCredits,
+                onDone = { sheet = ReelSheet.None },
+                enabled = editable,
             )
         }
         state.picker?.let { picker ->
@@ -591,7 +616,7 @@ private fun ReelPickerSheets(
             },
             onDismiss = onClose,
         )
-        ReelSheet.None, ReelSheet.People, ReelSheet.Sound -> Unit
+        ReelSheet.None, ReelSheet.People, ReelSheet.Sound, ReelSheet.Credits -> Unit
     }
 }
 

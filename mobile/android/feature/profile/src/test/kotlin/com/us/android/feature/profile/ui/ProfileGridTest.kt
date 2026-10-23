@@ -230,4 +230,26 @@ class ProfileGridTest {
         assertThat(tile(ProfileGridTab.REELS).failureTitle).isEqualTo("Couldn't post your video")
         assertThat(tile(ProfileGridTab.VIDEOS).failureTitle).isEqualTo("Couldn't post your video")
     }
+
+    /** Video credits (2026-10-23): "Appears in" on anyone's profile, only when it holds something. */
+    @Test
+    fun `Appears in follows the author tabs when there is something in it, on any profile`() {
+        assertThat(gridTabsFor(isOwn = false, appearsIn = true))
+            .containsExactly(ProfileGridTab.POSTS, ProfileGridTab.REELS, ProfileGridTab.VIDEOS, ProfileGridTab.APPEARS_IN)
+            .inOrder()
+        assertThat(gridTabsFor(isOwn = true, appearsIn = true))
+            .containsExactly(
+                ProfileGridTab.POSTS,
+                ProfileGridTab.REELS,
+                ProfileGridTab.VIDEOS,
+                ProfileGridTab.APPEARS_IN,
+                ProfileGridTab.SAVED,
+                ProfileGridTab.LIKED,
+            )
+            .inOrder()
+        assertThat(gridTabsFor(isOwn = true)).doesNotContain(ProfileGridTab.APPEARS_IN)
+        // Not an author tab: it sorts by nothing, and no scheduled post lands in it.
+        assertThat(ProfileGridTab.APPEARS_IN.sortable).isFalse()
+        assertThat(scheduledTabFor("long_video")).isEqualTo(ProfileGridTab.VIDEOS)
+    }
 }

@@ -1,5 +1,8 @@
 package com.us.android.core.feed.data.dto
 
+import com.us.android.core.feed.data.credits.CreditDto
+import com.us.android.core.feed.data.credits.CreditListSerializer
+import com.us.android.core.feed.data.credits.GenreSlugListSerializer
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -117,6 +120,19 @@ data class FeedItemDto(
     @SerialName("link_url") val linkUrl: String? = null,
     /** `everyone`, `followers` or `nobody`; blank on an older row. */
     @SerialName("comment_access") val commentAccess: String = "",
+    /**
+     * A long video's cast & crew and film facts (video credits, 2026-10-23).
+     * `credits` is ONLY on the post detail (`GET /v1/posts/:id`) and the
+     * create / PATCH answers — never on a feed, list or appearances row;
+     * `genres`, `release_year` and `production_house` are on every post body,
+     * left off when unset. Anything but an array reads as none.
+     */
+    @Serializable(with = CreditListSerializer::class)
+    val credits: List<CreditDto> = emptyList(),
+    @Serializable(with = GenreSlugListSerializer::class)
+    val genres: List<String> = emptyList(),
+    @SerialName("release_year") val releaseYear: Int? = null,
+    @SerialName("production_house") val productionHouse: String? = null,
 )
 
 /**

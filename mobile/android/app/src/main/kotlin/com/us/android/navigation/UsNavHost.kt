@@ -208,6 +208,7 @@ import com.us.android.feature.settings.navigation.recentlyDeletedScreen
 import com.us.android.feature.settings.navigation.screenTimeScreen
 import com.us.android.feature.tube.navigation.TubeDestinations
 import com.us.android.feature.tube.navigation.navigateToCreatorHub
+import com.us.android.feature.tube.navigation.navigateToCreditRequests
 import com.us.android.feature.tube.navigation.navigateToTube
 import com.us.android.feature.tube.navigation.navigateToTubeChannel
 import com.us.android.feature.tube.navigation.navigateToTubeCollection
@@ -223,6 +224,8 @@ import com.us.android.push.DatingPushTarget
 import com.us.android.push.DoorstepPushTarget
 import com.us.android.push.LiveOpen
 import com.us.android.push.PushDestinations
+import com.us.android.push.TYPE_CREDIT_ACCEPTED
+import com.us.android.push.TYPE_CREDIT_REQUEST
 import com.us.android.push.TYPE_UPLOADED_FLICK
 import com.us.android.push.TYPE_UPLOADED_VIDEO
 import com.us.android.push.TYPE_WENT_LIVE
@@ -598,7 +601,8 @@ private suspend fun NavHostController.openPushDestination(
         // inbox row would resolve, so the shade and the inbox agree.
         // A followed creator went live (2026-10-02): the live viewer on that
         // stream, resolved the same way.
-        TYPE_UPLOADED_VIDEO, TYPE_UPLOADED_FLICK, TYPE_WENT_LIVE ->
+        // Video credits (2026-10-23): a request opens the requests screen, an acceptance the video.
+        TYPE_UPLOADED_VIDEO, TYPE_UPLOADED_FLICK, TYPE_WENT_LIVE, TYPE_CREDIT_REQUEST, TYPE_CREDIT_ACCEPTED ->
             openNotificationTarget(pushTargetOf(destination), onOpenReel)
         "message_request" -> navigateToTopLevel(TopLevelDestination.MESSAGES)
         // An `atpost.app/chat/join/{code}` link, offered by MainActivity as a push
@@ -1245,6 +1249,8 @@ private fun NavGraphBuilder.tabDestinations(
             onCreateWithSound = onCreateWithSound,
             // The You page's and the More sheet's History (web parity, 2026-10-22).
             onOpenHistory = { navController.navigateToTubeHistory() },
+            // A credited name on the watch page (video credits, 2026-10-23): search, scoped to video.
+            onSearchVideos = { query -> navController.navigateToSearch(SearchOrigin.VIDEO, query) },
         ),
     )
 
@@ -1366,6 +1372,8 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
         onOpenCreatorHub = { navController.navigateToCreatorHub() },
         // The drawer's Offline videos: the Offline page Reels and Tube open.
         onOpenOffline = { navController.navigateToTubeOffline() },
+        // Video credits (2026-10-23): the drawer's Credit requests, in Tube's graph.
+        onOpenCreditRequests = { navController.navigateToCreditRequests() },
         onOpenUpload = onOpenUpload,
     )
     profileScreen(
@@ -1548,6 +1556,7 @@ private fun NavHostController.openNotificationTarget(
             navigateToTopLevel(TopLevelDestination.REELS)
         }
         is NotificationTarget.Live -> openLiveStream(target.streamId)
+        NotificationTarget.CreditRequests -> navigateToCreditRequests()
         NotificationTarget.None -> Unit
     }
 }

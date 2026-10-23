@@ -19,6 +19,7 @@ class MeDrawerRowsTest {
     private val everyDoor = MeDrawerDoors(
         grid = true,
         offline = true,
+        creditRequests = true,
         messages = true,
         creatorHub = true,
         upload = true,
@@ -37,6 +38,7 @@ class MeDrawerRowsTest {
                 MeDrawerRow.LIKED,
                 MeDrawerRow.SAVED,
                 MeDrawerRow.OFFLINE,
+                MeDrawerRow.CREDIT_REQUESTS,
                 MeDrawerRow.MESSAGES,
                 MeDrawerRow.CREATOR_HUB,
                 MeDrawerRow.UPLOAD,
@@ -55,6 +57,7 @@ class MeDrawerRowsTest {
             "Liked",
             "Saved",
             "Offline videos",
+            "Credit requests",
             "Messages",
             "Creator Hub",
             "Upload",
@@ -106,6 +109,7 @@ class MeDrawerRowsTest {
         assertThat(MeDrawerRow.entries.filter { it.gridTab() == null })
             .containsExactly(
                 MeDrawerRow.OFFLINE,
+                MeDrawerRow.CREDIT_REQUESTS,
                 MeDrawerRow.MESSAGES,
                 MeDrawerRow.CREATOR_HUB,
                 MeDrawerRow.UPLOAD,
@@ -123,6 +127,7 @@ class MeDrawerRowsTest {
             header = MomentumHeaderDestinations(onOpenSearch = {}, onOpenMessages = {}, onOpenNotifications = {}),
             onOpenCreatorHub = {},
             onOpenOffline = {},
+            onOpenCreditRequests = {},
             onOpenUpload = {},
         )
         // Still loading: no grid yet, so Liked and Saved are not offered.
