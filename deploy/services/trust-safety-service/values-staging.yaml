@@ -53,6 +53,14 @@ externalSecret:
     # Setting SERVICE_CALLERS before the key exists refuses boot.
     # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_PUBKEY, remoteRef: caller_admin_pubkey }
     # - { secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID, remoteRef: caller_admin_kid }
+    # monetization-service's PUBLIC key (creator-membership eligibility:
+    # no active strikes). NOT enabled yet: memberships stay closed (fail
+    # closed). To enable: the public half of monetization_service_token_key →
+    # caller_monetization_pubkey, its kid → caller_monetization_kid; uncomment
+    # the two lines below AND add monetization-service to SERVICE_CALLERS with
+    # its OPS line under env.
+    # - { secretKey: SERVICE_CALLER_MONETIZATION_SERVICE_PUBKEY, remoteRef: caller_monetization_pubkey }
+    # - { secretKey: SERVICE_CALLER_MONETIZATION_SERVICE_KID, remoteRef: caller_monetization_kid }
 
 env:
   ENV: staging
@@ -60,6 +68,9 @@ env:
   # Admin console (see externalSecret above for the order): uncomment
   # together with SERVICE_CALLER_ADMIN_SERVICE_PUBKEY / _KID.
   # SERVICE_CALLERS: 'admin-service'
+  # Memberships eligibility (see externalSecret above): add
+  # monetization-service to SERVICE_CALLERS and uncomment:
+  # SERVICE_CALLER_MONETIZATION_SERVICE_OPS: 'trust_safety:standing.read'
   # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'trust_safety:stats.read,trust_safety:reports.read,trust_safety:reports.act,trust_safety:appeals.read,trust_safety:appeals.act,trust_safety:grievances.read,trust_safety:grievances.act,trust_safety:strikes.read,trust_safety:strikes.manage,trust_safety:verification.review,trust_safety:media_labels.read,trust_safety:keyword_filters.read,trust_safety:audit.read'
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   STORY_MODERATION_POLICY_VERSION: story-keyword-v1

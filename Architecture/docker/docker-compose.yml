@@ -1217,6 +1217,12 @@ services:
       SERVICE_CALLER_POST_SERVICE_KID: ${POST_SERVICE_TOKEN_KID:-p1}
       SERVICE_CALLER_POST_SERVICE_PUBKEY: ${POST_SERVICE_TOKEN_PUBKEY:-}
       SERVICE_CALLER_POST_SERVICE_OPS: trust_safety:standing.read
+      # monetization-service reads standing for creator-membership eligibility
+      # (no active strikes). Its own .env names: SERVICE_CALLER_MONETIZATION_*
+      # in .env are payments-service's (different OPS), so do not reuse them.
+      SERVICE_CALLER_MONETIZATION_SERVICE_KID: ${MONETIZATION_SERVICE_TOKEN_KID:-m1}
+      SERVICE_CALLER_MONETIZATION_SERVICE_PUBKEY: ${MONETIZATION_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_MONETIZATION_SERVICE_OPS: trust_safety:standing.read
     ports:
       - "8091:8091"
     depends_on:
@@ -1468,9 +1474,15 @@ services:
       MEMBERSHIPS_ENABLED: ${MEMBERSHIPS_ENABLED:-true}
       # Eligibility to offer memberships: date of birth (identity-profile),
       # follower count (graph-service, GRAPH_SERVICE_URL below) and standing
-      # (trust-safety; needs monetization-service admitted to its standing
-      # route — until then the strikes item fails closed).
+      # (trust-safety; monetization-service is admitted to its standing route
+      # when TRUST_SAFETY_SERVICE_CALLERS lists it and .env carries
+      # MONETIZATION_SERVICE_TOKEN_PUBKEY — otherwise the strikes item fails
+      # closed).
       PROFILE_SERVICE_URL: http://identity-profile:8098
+      # PAN item: nothing sets creator_tax_profiles.verified_at yet, so in dev
+      # a PAN on file that passes the shared format check counts. Every deploy
+      # values file sets "true" (verified_at required).
+      MEMBERSHIPS_REQUIRE_PAN_VERIFIED: ${MEMBERSHIPS_REQUIRE_PAN_VERIFIED:-false}
       TRUST_SAFETY_SERVICE_URL: http://trust-safety-service:8091
       # The gateway stamps X-Internal-Service-Key on every proxied
       # request and the direct callers (commerce, post, food) send it;

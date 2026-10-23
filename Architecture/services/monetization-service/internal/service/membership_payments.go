@@ -25,6 +25,7 @@ import (
 	"github.com/atpost/monetization-service/internal/membership"
 	"github.com/atpost/monetization-service/internal/payments"
 	"github.com/atpost/monetization-service/internal/store/postgres"
+	"github.com/atpost/shared/kyc"
 	"github.com/google/uuid"
 )
 
@@ -535,6 +536,30 @@ type EligibilitySources struct {
 	BirthDates BirthDateSource
 	Followers  FollowerCountSource
 	Standing   StandingSource
+	// PANFormatSuffices is MEMBERSHIPS_REQUIRE_PAN_VERIFIED=false: nothing
+	// sets creator_tax_profiles.verified_at yet, so a PAN on file that passes
+	// kyc.ValidatePAN (layout + holder type; a format check, not an Income Tax
+	// lookup) counts as the PAN item. The zero value is strict: verified_at
+	// must be set. Applies to membership eligibility only; payout KYC still
+	// reads verified_at.
+	PANFormatSuffices bool
+}
+
+// panSatisfied is the PAN item: a non-blank PAN on file, and verified_at set
+// (strict) or — when formatSuffices — verified_at set or a PAN that passes
+// the shared format check. The stored value is never logged or returned.
+func panSatisfied(p *postgres.CreatorTaxProfile, formatSuffices bool) bool {
+	if p == nil || p.PANEncrypted == nil || strings.TrimSpace(*p.PANEncrypted) == "" {
+		return false
+	}
+	if p.VerifiedAt != nil {
+		return true
+	}
+	if !formatSuffices {
+		return false
+	}
+	_, err := kyc.ValidatePAN(*p.PANEncrypted)
+	return err == nil
 }
 
 // WithEligibilitySources installs the eligibility fact sources.
@@ -551,7 +576,8 @@ type Eligibility struct {
 
 // MembershipEligibility decides the four items (founder, 23 Oct 2026): 18 or
 // older (identity's date of birth), PAN verified (this service's creator tax
-// profile: a PAN on file AND verified_at set), at least 500 followers
+// profile: a PAN on file AND verified_at set; with PANFormatSuffices a PAN
+// that passes the format check also counts), at least 500 followers
 // (graph-service), no active strikes (trust-safety standing "ok" with no
 // active strike). Every source that is missing, errors or answers without the
 // fact puts its item in Missing: it never reads as satisfied.
@@ -581,7 +607,7 @@ func (s *Service) MembershipEligibility(ctx context.Context, creatorID uuid.UUID
 			slog.WarnContext(ctx, "memberships: eligibility PAN unknown", "creator_id", creatorID, "error", err)
 			return
 		}
-		panOK = p != nil && p.PANEncrypted != nil && strings.TrimSpace(*p.PANEncrypted) != "" && p.VerifiedAt != nil
+		panOK = panSatisfied(p, s.eligibility.PANFormatSuffices)
 	}()
 	go func() {
 		defer wg.Done()

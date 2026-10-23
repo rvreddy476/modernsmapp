@@ -16,10 +16,11 @@
 //     GET {TRUST_SAFETY_SERVICE_URL}/v1/internal/standing/:userId with a
 //     service token (aud trust_safety, scope trust_safety:standing.read,
 //     signed with MONETIZATION_SERVICE_TOKEN_KEY/KID) plus the internal key.
-//     NOTE (23 Oct 2026): trust-safety admits only post-service on that route
-//     today (StandingCallers). Until it lists monetization-service and
-//     registers its public key, every answer is a 403 and the strikes item is
-//     reported missing — the check fails closed.
+//     trust-safety lists monetization-service on StandingCallers; a
+//     deployment must also register its public key there
+//     (SERVICE_CALLER_MONETIZATION_SERVICE_{KID,PUBKEY,OPS}). Until it does,
+//     every answer is a 403 and the strikes item is reported missing — the
+//     check fails closed.
 //
 // The two read-only GETs carry X-Internal-Service-Key and NO user header.
 // Every failure — transport, a non-200, a malformed or foreign body — is an

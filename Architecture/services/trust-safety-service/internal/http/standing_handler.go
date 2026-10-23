@@ -1,5 +1,7 @@
 // Standing (Copyright Match plan section 6.4, P-5): the one question
-// post-service may ask trust-safety before it publishes on a user's behalf.
+// post-service may ask trust-safety before it publishes on a user's behalf,
+// and monetization-service asks before a creator opens paid memberships
+// (eligibility: no active strikes).
 //
 //	GET /v1/internal/standing/:userId
 //
@@ -10,7 +12,8 @@
 // alone proves nothing (the gateway stamps it on edge traffic) and the
 // admin-service token family proves the wrong thing: an admin token, even
 // one carrying standing.read, is refused here, and a post-service token is
-// refused on every admin route (admin_token.go checks the issuer).
+// refused on every admin route (admin_token.go checks the issuer); so is a
+// monetization-service token.
 //
 // The answer is the canonical standing contract, pinned byte-for-byte by
 // testdata/contracts/standing.v1.json:
@@ -48,17 +51,21 @@ import (
 const StandingPath = "/v1/internal/standing/:userId"
 
 // OpStandingRead is the service-token operation the standing route
-// requires. Deployment registers post-service with exactly this op:
+// requires. Deployment registers post-service and monetization-service with
+// exactly this op:
 //
-//	SERVICE_CALLERS=admin-service,post-service
+//	SERVICE_CALLERS=admin-service,post-service,monetization-service
 //	SERVICE_CALLER_POST_SERVICE_KID=p1
 //	SERVICE_CALLER_POST_SERVICE_PUBKEY=<base64 ed25519 public key>
 //	SERVICE_CALLER_POST_SERVICE_OPS=trust_safety:standing.read
+//	SERVICE_CALLER_MONETIZATION_SERVICE_KID=m1
+//	SERVICE_CALLER_MONETIZATION_SERVICE_PUBKEY=<base64 ed25519 public key>
+//	SERVICE_CALLER_MONETIZATION_SERVICE_OPS=trust_safety:standing.read
 const OpStandingRead = "trust_safety:standing.read"
 
 // StandingCallers is the allowlist of token issuers admitted to the
 // standing route. Nobody else, whatever their scope.
-var StandingCallers = []string{"post-service"}
+var StandingCallers = []string{"post-service", "monetization-service"}
 
 // StandingMaxAge is how long a caller may cache an answer.
 const StandingMaxAge = 60 * time.Second

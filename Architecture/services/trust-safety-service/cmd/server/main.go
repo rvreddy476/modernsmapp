@@ -146,8 +146,9 @@ func main() {
 	handler := http.New(svc)
 	// Admin console (Wave 1 — B4): admin-service calls the token-only family
 	// under http.InternalAdminPrefix with a per-call signed token. The same
-	// verifier admits post-service (SERVICE_CALLER_POST_SERVICE_*, op
-	// trust_safety:standing.read) on the standing route. Absent
+	// verifier admits post-service (SERVICE_CALLER_POST_SERVICE_*) and
+	// monetization-service (SERVICE_CALLER_MONETIZATION_SERVICE_*), both with
+	// op trust_safety:standing.read, on the standing route. Absent
 	// SERVICE_CALLERS, both answer 401 to everything.
 	serviceVerifier, err := http.ServiceCallersFromEnv(os.Getenv)
 	if err != nil {

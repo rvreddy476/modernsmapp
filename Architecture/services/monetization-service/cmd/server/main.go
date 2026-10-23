@@ -211,8 +211,13 @@ func main() {
 		if st != nil {
 			src.Standing = st
 		}
+		// Nothing sets creator_tax_profiles.verified_at yet. Unset/false
+		// (dev): a PAN on file that passes the shared format check counts.
+		// Every deploy values file sets "true": verified_at is required.
+		src.PANFormatSuffices = !envBool("MEMBERSHIPS_REQUIRE_PAN_VERIFIED")
 		monetizationSvc.WithEligibilitySources(src)
-		slog.Info("membership eligibility sources", "age", src.BirthDates != nil, "followers", src.Followers != nil, "strikes", src.Standing != nil)
+		slog.Info("membership eligibility sources", "age", src.BirthDates != nil, "followers", src.Followers != nil, "strikes", src.Standing != nil,
+			"pan_requires_verified_at", !src.PANFormatSuffices)
 	}
 
 	// 7b. The payout rail (plan Phase 4B). The RazorpayX client is

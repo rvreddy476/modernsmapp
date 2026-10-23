@@ -46,12 +46,23 @@ externalSecret:
   #   remoteRef: caller_admin_pubkey
   # - secretKey: SERVICE_CALLER_ADMIN_SERVICE_KID
   #   remoteRef: caller_admin_kid
+  # Memberships eligibility: monetization-service's PUBLIC key on the
+  # standing route (no active strikes). NOT enabled yet (fail closed). To
+  # enable: public half of monetization_service_token_key and its kid here,
+  # uncomment below AND add monetization-service to SERVICE_CALLERS with its
+  # OPS line under env.
+  # - secretKey: SERVICE_CALLER_MONETIZATION_SERVICE_PUBKEY
+  #   remoteRef: caller_monetization_pubkey
+  # - secretKey: SERVICE_CALLER_MONETIZATION_SERVICE_KID
+  #   remoteRef: caller_monetization_kid
   secretStoreName: azure-key-vault
 env:
   ENV: prod
   LOG_LEVEL: info
   # Admin console: uncomment with SERVICE_CALLER_ADMIN_SERVICE_PUBKEY / _KID.
   # SERVICE_CALLERS: admin-service
+  # Memberships eligibility: add monetization-service to SERVICE_CALLERS and uncomment:
+  # SERVICE_CALLER_MONETIZATION_SERVICE_OPS: trust_safety:standing.read
   # SERVICE_CALLER_ADMIN_SERVICE_OPS: trust_safety:stats.read,trust_safety:reports.read,trust_safety:reports.act,trust_safety:appeals.read,trust_safety:appeals.act,trust_safety:grievances.read,trust_safety:grievances.act,trust_safety:strikes.read,trust_safety:strikes.manage,trust_safety:verification.review,trust_safety:media_labels.read,trust_safety:keyword_filters.read,trust_safety:audit.read
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 ingress:
