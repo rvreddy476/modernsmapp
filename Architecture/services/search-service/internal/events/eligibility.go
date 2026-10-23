@@ -27,7 +27,14 @@ import (
 // intended state and lets the store decide whether it wins.
 
 // applySearchEligibility projects one transition onto the public index.
-func (c *Consumer) applySearchEligibility(ctx context.Context, p events.PostSearchEligibilityChangedPayload) error {
+//
+// membersOnly is the post's tier gate (tier_required_id on the payload,
+// read by payloadIsMembersOnly — see membership_gate.go). A gated post is
+// ineligible whatever visibility and review say: it takes the removal path
+// below at this event's revision, so the ordinary revision barrier stops an
+// older un-gated event from resurrecting it, and a newer un-gated event
+// (gate cleared) indexes it again.
+func (c *Consumer) applySearchEligibility(ctx context.Context, p events.PostSearchEligibilityChangedPayload, membersOnly bool) error {
 	if p.PostID == "" {
 		return nil // malformed; nothing addressable
 	}
@@ -35,7 +42,8 @@ func (c *Consumer) applySearchEligibility(ctx context.Context, p events.PostSear
 	// A scheduled post (post-service publish_at set) is not public yet
 	// whatever visibility and review say; its PostCreated arrives at
 	// publish time with a higher revision.
-	eligible := !p.Scheduled && events.SearchEligible(p.Visibility, p.ReviewStatus, p.Deleted)
+	eligible := !p.Scheduled && !membersOnly &&
+		events.SearchEligible(p.Visibility, p.ReviewStatus, p.Deleted)
 
 	// A zero/absent revision cannot be ordered. Fail closed: remove, and
 	// let OpenSearch stamp storedRev+1 so the removal raises the barrier
@@ -68,7 +76,8 @@ func (c *Consumer) applySearchEligibility(ctx context.Context, p events.PostSear
 		observeEligibilityApply(p.ChangedAt, "remove")
 		slog.Info("search: post removed from public index",
 			"post_id", p.PostID, "visibility", p.Visibility,
-			"review_status", p.ReviewStatus, "deleted", p.Deleted, "rev", p.SearchRev)
+			"review_status", p.ReviewStatus, "deleted", p.Deleted,
+			"members_only", membersOnly, "rev", p.SearchRev)
 		return nil
 	}
 

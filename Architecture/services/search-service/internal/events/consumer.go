@@ -554,6 +554,31 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 			rev = 1 // creation baseline
 		}
 
+		// Members-only gate (membership_gate.go): a post published behind
+		// a creator tier is not eligible. Unlike the held-content path
+		// above, this writes a removal marker at the creation revision:
+		// the post is otherwise public+approved, so any document an older
+		// event left behind must lose its text now, and the marker keeps
+		// a replayed older un-gated event from indexing it. A newer
+		// eligibility event with the gate cleared outranks it as usual.
+		membersOnly, err := payloadIsMembersOnly(envelope.Payload)
+		if err != nil {
+			return err
+		}
+		if membersOnly {
+			if err := c.store.ApplyPostProjection(ctx, search.PostProjection{
+				PostID:   p.PostID,
+				Rev:      rev,
+				Removed:  true,
+				AuthorID: p.AuthorID,
+			}); err != nil {
+				return fmt.Errorf("post_created(members-only): remove %s: %w", p.PostID, err)
+			}
+			slog.Debug("search: members-only post kept out of the public index",
+				"post_id", p.PostID, "rev", rev)
+			return nil
+		}
+
 		// M2-P0-2: this used to be an unconditional IndexPost, which meant
 		// creation ignored the revision barrier entirely. A replayed
 		// PostCreated at rev 1 arriving after a rev-2 removal simply
@@ -624,7 +649,14 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
 			return err
 		}
-		return c.applySearchEligibility(ctx, p)
+		// Members-only gate (membership_gate.go): post-service emits this
+		// event with a bumped search_rev whenever the gate is set or
+		// cleared, so the gate rides the same revision barrier.
+		membersOnly, err := payloadIsMembersOnly(envelope.Payload)
+		if err != nil {
+			return err
+		}
+		return c.applySearchEligibility(ctx, p, membersOnly)
 
 	case events.ContentTakenDown:
 		// M2-P0-2: an explicit takedown must leave the index even if the

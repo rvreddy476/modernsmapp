@@ -294,6 +294,30 @@ func effectiveReviewStatusExpr(ctx context.Context, pool *pgxpool.Pool) string {
 	return reviewStatusExpr(has)
 }
 
+// postsMembersOnlyExpr is the SELECT expression for the members-only gate:
+// post-service migration 016 put the creator-tier gate on
+// posts.tier_required_id (NULL = not gated).
+//
+// Referenced directly, not through columnExists: a missing column is then a
+// query error that aborts the rebuild, whereas a presence check answers
+// "no" on any catalogue-read failure and would quietly index every gated
+// post's text. The column has existed since migration 016 (and setup.sql),
+// so no supported database lacks it.
+const postsMembersOnlyExpr = "(p.tier_required_id IS NOT NULL)"
+
+// rowSearchEligible is the rebuild's whole eligibility decision for one
+// posts row, kept in step with the consumer's rule (internal/events): the
+// shared visibility/review/deleted allowlist, plus not scheduled, plus not
+// members-only. A gated post is never searchable by anyone and its text is
+// never stored, so it takes the ineligible branch: skipped, or removed when
+// an earlier run or a lost event left it indexed.
+func rowSearchEligible(visibility, reviewStatus string, deleted, scheduled, membersOnly bool) bool {
+	if scheduled || membersOnly {
+		return false
+	}
+	return events.SearchEligible(visibility, reviewStatus, deleted)
+}
+
 // --- posts -----------------------------------------------------------------
 
 // backfillPosts rebuilds posts_v1 from Postgres, which is the source of
@@ -347,6 +371,7 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 	             COALESCE(p.content_type, ''), p.created_at,
 	             (p.deleted_at IS NOT NULL) AS is_deleted,
 	             (p.publish_at IS NOT NULL) AS is_scheduled,
+	             ` + postsMembersOnlyExpr + ` AS is_members_only,
 	             COALESCE(p.title, ''),
 	             COALESCE(p.hashtags, ARRAY[]::text[]),
 	             COALESCE((SELECT pm.media_id::text FROM post_media pm
@@ -447,9 +472,10 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 		var credit creditRow
 		var searchRev int64
 		var createdAt, publishedAt time.Time
-		var isDeleted, isScheduled bool
+		var isDeleted, isScheduled, isMembersOnly bool
 		if err := rows.Scan(&id, &authorID, &text, &visibility,
 			&reviewStatus, &searchRev, &contentType, &createdAt, &isDeleted, &isScheduled,
+			&isMembersOnly,
 			&title, &storedHashtags, &mediaID, &mediaKind, &durationMs,
 			&height, &hasSubtitles, &publishedAt,
 			&credit.Names, &credit.Roles, &credit.Genres, &credit.Year, &credit.House); err != nil {
@@ -458,8 +484,9 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 
 		// The one eligibility rule, shared with the consumer so the
 		// rebuild can never be more permissive than the live path.
-		// A scheduled post (publish_at set) is not public yet either.
-		if isScheduled || !events.SearchEligible(visibility, reviewStatus, isDeleted) {
+		// A scheduled post (publish_at set) is not public yet either, and
+		// a members-only post is never searchable (rowSearchEligible).
+		if !rowSearchEligible(visibility, reviewStatus, isDeleted, isScheduled, isMembersOnly) {
 			if dry {
 				skipped++
 				continue
@@ -498,7 +525,7 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 			}
 			slog.Warn("backfill posts: removed ineligible indexed document",
 				"id", id, "visibility", visibility, "review_status", reviewStatus,
-				"deleted", isDeleted)
+				"deleted", isDeleted, "members_only", isMembersOnly)
 			removed++
 			continue
 		}
