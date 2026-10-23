@@ -34,7 +34,7 @@ import (
 //
 //   - cleared: text, rich_text, media, poll, and everything derived from the
 //     body — hashtags, mentions (usernames and ids), tags, the tagged people
-//     (tagged_user_ids), link_url,
+//     (tagged_user_ids), link_url, the Action button (action),
 //     location (name, lat/lng, place id, recording location), and on the
 //     detail chapters (stored or description-derived) and credits, each an
 //     empty array where the read had one;
@@ -101,6 +101,11 @@ func (s *Service) redactForViewer(ctx context.Context, viewerID *uuid.UUID, post
 	// Every gated row, member or not, says what its tier costs (absent when
 	// unknown), so the Join sheet can show which levels unlock it.
 	s.attachTierPrices(ctx, posts)
+	// The Action button (action_links.go) rides the same per-viewer pass,
+	// AFTER the redaction: a row redacted above gets none; the rest get it
+	// as this viewer may see it (active only, no raw URL — unless the
+	// viewer is the author).
+	s.attachActions(ctx, viewer, posts)
 }
 
 // viewerIsMember is one bounded, fail-closed membership answer for a gated

@@ -172,6 +172,12 @@ type ChannelView struct {
 	ShortCount      int                    `json:"short_count"`
 	LiveCount       int                    `json:"live_count"`
 	CollectionCount int                    `json:"collection_count"`
+	// Action is the profile Action button (action_links.go) as the viewer
+	// may see it, null when there is none (or none this viewer may see).
+	// The owner's read carries url and status. Set on GET /v1/channels/:ref,
+	// GET / PATCH /v1/channels/me and POST /v1/channels; search and batch
+	// rows do not look it up and carry null.
+	Action *postgres.ActionView `json:"action"`
 }
 
 // ChannelRef is the card-sized channel attached to a long_video post.
@@ -204,6 +210,10 @@ type UpdateChannelInput struct {
 	ContactEmail   *string
 	FeaturedPostID *uuid.UUID
 	ClearFeatured  bool
+	// The profile Action button: Action sets it (every post rule), and
+	// ClearAction (null on the wire) removes it and wins.
+	Action      *ActionInput
+	ClearAction bool
 }
 
 // SetMediaServiceURL configures the media-service base URL used to resolve
@@ -240,7 +250,7 @@ func (s *Service) CreateChannel(ctx context.Context, userID uuid.UUID, in Create
 	if err := s.channels.CreateChannel(ctx, ch); err != nil {
 		return nil, err
 	}
-	return s.channelView(ctx, userID, ch), nil
+	return s.withProfileAction(ctx, userID, s.channelView(ctx, userID, ch)), nil
 }
 
 // GetMyChannel returns the caller's channel or ErrChannelNotFound.
@@ -259,7 +269,7 @@ func (s *Service) GetMyChannel(ctx context.Context, userID uuid.UUID) (*ChannelV
 			return nil, err
 		}
 	}
-	return s.channelView(ctx, userID, ch), nil
+	return s.withProfileAction(ctx, userID, s.channelView(ctx, userID, ch)), nil
 }
 
 // UpdateMyChannel applies any subset of fields to the caller's channel.
@@ -292,12 +302,33 @@ func (s *Service) UpdateMyChannel(ctx context.Context, userID uuid.UUID, in Upda
 	if err := s.applyBrandingPatch(ctx, userID, in, &patch); err != nil {
 		return nil, err
 	}
+	// The profile Action button is checked before anything is written
+	// (its refusals write nothing) and stored after the channel fields.
+	touchAction := in.ClearAction || in.Action != nil
+	var actionWrite *postgres.ActionLinkWrite
+	if touchAction && s.actionLinks == nil {
+		return nil, ErrAuthoringStoreUnavailable
+	}
+	if !in.ClearAction && in.Action != nil {
+		w, err := s.prepareAction(ctx, userID, in.Action)
+		if err != nil {
+			return nil, err
+		}
+		actionWrite = w
+	}
 	ch, err := s.channels.UpdateChannel(ctx, userID, patch)
 	if err != nil {
 		return nil, err
 	}
 	s.forgetChannelCounts(userID)
-	return s.channelView(ctx, userID, ch), nil
+	if touchAction {
+		if _, err := s.actionLinks.ReplaceProfileActionLink(ctx, userID, actionWrite); err != nil {
+			return nil, err
+		}
+	}
+	view := s.channelView(ctx, userID, ch)
+	view.Action = s.ProfileActionView(ctx, ch.UserID, userID)
+	return view, nil
 }
 
 // GetChannelByRef resolves a public channel by handle (with or without '@')
@@ -307,7 +338,7 @@ func (s *Service) GetChannelByRef(ctx context.Context, viewerID uuid.UUID, ref s
 	if err != nil {
 		return nil, err
 	}
-	return s.channelView(ctx, viewerID, ch), nil
+	return s.withProfileAction(ctx, viewerID, s.channelView(ctx, viewerID, ch)), nil
 }
 
 // ChannelHandleAvailability answers GET /v1/channels/handle-available.
@@ -747,4 +778,13 @@ func (s *Service) gateVideoBehindChannel(ctx context.Context, authorID uuid.UUID
 		return nil
 	}
 	return s.RequireChannelForVideo(ctx, authorID)
+}
+
+// withProfileAction sets the channel owner's profile Action button on view
+// as viewerID may see it (action_links.go).
+func (s *Service) withProfileAction(ctx context.Context, viewerID uuid.UUID, view *ChannelView) *ChannelView {
+	if view != nil {
+		view.Action = s.ProfileActionView(ctx, view.UserID, viewerID)
+	}
+	return view
 }

@@ -231,6 +231,13 @@ func (s *Store) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 		// with the posts below.
 		`DELETE FROM post_offline_copies WHERE user_id = $1`,
 
+		// Action buttons (migration 072): the user's scam_link reports on
+		// other people's links, and every link the user owns (the profile
+		// button; post buttons would cascade with the posts below anyway).
+		// Clicks and reports on those links cascade with them.
+		`DELETE FROM action_link_reports WHERE reporter_id = $1`,
+		`DELETE FROM action_links WHERE author_id = $1`,
+
 		// Video credits (migration 070): the user tagged on someone else's
 		// video loses the link; the credit stays as the uploader's plain
 		// text. Credits on the user's own posts cascade with the posts below;

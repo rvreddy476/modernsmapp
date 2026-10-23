@@ -116,6 +116,12 @@ type PostDraftPayload struct {
 	// row at publication (CreatePost), so a scheduled members-only post is
 	// never published open. Absent = open.
 	TierRequiredID *uuid.UUID `json:"tier_required_id,omitempty"`
+
+	// ── Action button (2026-10-23, action_links.go) ─────────────────────
+	// {"label","url"}; null or absent = none. Label and URL rules are
+	// checked when the draft is saved; eligibility and the safety check at
+	// publication (CreatePost).
+	Action *ActionInput `json:"action,omitempty"`
 }
 
 // videoCredits is the payload's credit fields.
@@ -230,6 +236,11 @@ func validateDraftDetails(postType string, payload *PostDraftPayload) error {
 	// publication (CreatePost), when it matters; the nil id is never one.
 	if payload.TierRequiredID != nil && *payload.TierRequiredID == uuid.Nil {
 		return bad(ErrInvalidTier)
+	}
+	if payload.Action != nil {
+		if _, _, err := ValidateActionShape(payload.Action); err != nil {
+			return bad(err)
+		}
 	}
 	return nil
 }
@@ -453,7 +464,7 @@ func (s *Service) publishDraftRow(ctx context.Context, d *postgres.PostDraft, in
 		// author's any more are terminal → blocked with reason; infra
 		// errors (monetization unreachable included) are transient →
 		// release for retry. Neither ever publishes the post open.
-		if strings.Contains(err.Error(), "content rejected") || errors.Is(err, ErrInvalidTier) {
+		if strings.Contains(err.Error(), "content rejected") || errors.Is(err, ErrInvalidTier) || IsTerminalActionError(err) {
 			s.pgStore.MarkPostDraftBlocked(ctx, d.ID, err.Error(), d.ClaimToken) //nolint:errcheck
 		} else {
 			s.pgStore.ReleasePostDraftClaim(ctx, d.ID, d.ClaimToken) //nolint:errcheck
@@ -680,6 +691,11 @@ func buildDraftCreateInput(d *postgres.PostDraft, payload *PostDraftPayload) *Cr
 	input.VideoCredits = payload.videoCredits()
 	// Members-only: CreatePost checks the tier and writes it on the row.
 	input.TierRequiredID = copyTierID(payload.TierRequiredID)
+	// The Action button: CreatePost checks eligibility and safety.
+	if payload.Action != nil {
+		a := *payload.Action
+		input.Action = &a
+	}
 	// Unparseable ids were accepted at save time before this field existed
 	// on the payload; dropping one is better than failing a scheduled post
 	// the author is no longer looking at.

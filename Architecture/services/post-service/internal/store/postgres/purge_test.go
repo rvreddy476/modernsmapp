@@ -321,6 +321,31 @@ func TestPurgeUserIsIdempotentAndDecrementsSurvivorCounters(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Action buttons (migration 072, the real idempotent file): userA has a
+	// profile button and reported userB's post button; userB reported
+	// userA's profile button and keeps their own post button.
+	actionDDL, err := database.Migrations.ReadFile("migrations/072_action_links.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(actionDDL)); err != nil {
+		t.Fatalf("apply migration 072: %v", err)
+	}
+	profileLinkA, postLinkB := uuid.New(), uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO action_links (id, post_id, profile_owner_id, author_id, url, domain, label)
+		VALUES ($1, NULL, $2, $2, 'https://a.example.com', 'a.example.com', 'learn_more'),
+		       ($3, $4, NULL, $5, 'https://b.example.com', 'b.example.com', 'apply_now')`,
+		profileLinkA, userA, postLinkB, postB1, userB); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO action_link_reports (link_id, reporter_id, report_id, reported_at)
+		VALUES ($1, $2, gen_random_uuid(), NOW()), ($3, $4, gen_random_uuid(), NOW())`,
+		postLinkB, userA, profileLinkA, userB); err != nil {
+		t.Fatal(err)
+	}
+
 	// Baseline counters on the survivor: seed non-zero so the decrement is
 	// unambiguous (the AFTER-INSERT trigger creates the row at all-zero).
 	if _, err := pool.Exec(ctx, `UPDATE post_engagement_counts SET comment_count=5, like_count=5, repost_count=5 WHERE post_id=$1`, postB1); err != nil {
@@ -373,6 +398,12 @@ func TestPurgeUserIsIdempotentAndDecrementsSurvivorCounters(t *testing.T) {
 	assertZero(t, pool, "comment_report_reporters", "reporter_id=$1", userA)
 	assertZero(t, pool, "comment_report_reporters", "comment_id=$1", commentID)
 	assertOne(t, pool, "comment_report_reporters", "reporter_id=$1", userB)
+	// Action buttons: the purged user's links and reports are gone (with the
+	// report filed against their link); the survivor's post button stays.
+	assertZero(t, pool, "action_links", "author_id=$1", userA)
+	assertZero(t, pool, "action_link_reports", "reporter_id=$1", userA)
+	assertZero(t, pool, "action_link_reports", "link_id=$1", profileLinkA)
+	assertOne(t, pool, "action_links", "id=$1", postLinkB)
 
 	// Cross-user rows owned by userA are gone.
 	assertZero(t, pool, "comments", "id=$1", commentID)

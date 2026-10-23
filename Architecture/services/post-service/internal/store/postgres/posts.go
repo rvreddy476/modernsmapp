@@ -92,6 +92,15 @@ type Post struct {
 	// write its credits in the same transaction (credits.go). Never on the
 	// wire or in the cache.
 	CreditsWrite *CreditsWrite `json:"-"`
+	// Action is the Action button as THIS viewer may see it (migration 072,
+	// service/action_links.go): set per request by the members-only rule's
+	// pass (redactForViewer) and the author's own reads, never stored (the
+	// body cache holds the database row, where it is always nil). Absent
+	// when there is none, or none the viewer may see.
+	Action *ActionView `json:"action,omitempty"`
+	// ActionWrite, when set on a post being created, makes the insert write
+	// its action link in the same transaction. Never on the wire or cached.
+	ActionWrite *ActionLinkWrite `json:"-"`
 	// AudioTrackID is the added sound the post plays over its own video
 	// (service/audio.go), nil when it plays none. AudioStartMs is where in
 	// that sound playback starts; deriveAudio keeps the pair together, so
@@ -859,6 +868,15 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 	if p.CreditsWrite != nil && len(p.CreditsWrite.Candidates) > 0 {
 		if err := replaceCreditsTx(ctx, tx, p.ID, p.AuthorID, p.CreditsWrite); err != nil {
 			return err
+		}
+	}
+
+	// The Action button (migration 072), in the post's own transaction: a
+	// post never exists without the action its author asked for.
+	if p.ActionWrite != nil {
+		pid := p.ID
+		if _, err := insertActionLinkTx(ctx, tx, &pid, nil, p.AuthorID, p.ActionWrite); err != nil {
+			return fmt.Errorf("insert action link: %w", err)
 		}
 	}
 

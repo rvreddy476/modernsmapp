@@ -394,7 +394,16 @@ func routeDefinitions() []routeDef {
 		// gateway (they never held data); /v1/users/me/channels still is.
 		{"/v1/channels", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/pages", env("USER_SERVICE_URL", "http://user-service:8082")},
-		{"/v1/links", env("USER_SERVICE_URL", "http://user-service:8082")},
+		// The Action button's redirect read (2026-10-23): GET /v1/links/:id
+		// on post-service, PUBLIC — no token is needed (a signed-in viewer's
+		// identity is still forwarded and used for the tap dedupe and the
+		// members-only gate); post-service answers active links only. This
+		// prefix used to point at user-service, which registers no
+		// /v1/links route at all (its link routes are /v1/users/:id/links,
+		// /v1/users/me/links and /v1/users/links/:platform/click, all under
+		// /v1/users), so nothing reached it. Stamped with the internal key
+		// like every post-service prefix; never a query-token path.
+		{"/v1/links", env("POST_SERVICE_URL", "http://post-service:8084")},
 		// Privacy settings are served by the IDENTITY user-service, not the
 		// Architecture one, and this route is what makes that reachable.
 		//

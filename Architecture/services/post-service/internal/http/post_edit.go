@@ -95,6 +95,19 @@ type updatePostRequest struct {
 	// INVALID_TIER; 503 MEMBERSHIP_TIERS_UNAVAILABLE when that cannot be
 	// checked), null or "" clears it. Raw so null is told apart from absent.
 	TierRequiredID json.RawMessage `json:"tier_required_id,omitempty"`
+	// The Action button (2026-10-23, action_links.go): {"label","url"} sets
+	// it, null removes it, absent leaves it. Raw for that distinction.
+	Action json.RawMessage `json:"action,omitempty"`
+}
+
+// applyActionField decodes the raw action of a PATCH into in.
+func (req updatePostRequest) applyActionField(in *service.PostEditInput) error {
+	a, clear, present, err := service.ParseActionPatch(req.Action)
+	if err != nil || !present {
+		return err
+	}
+	in.Action, in.ClearAction = a, clear
+	return nil
 }
 
 // applyTierField decodes the raw tier_required_id of a PATCH into in. A
@@ -193,6 +206,10 @@ func (h *Handler) UpdatePost(c *gin.Context) {
 		writePostEditError(c, err)
 		return
 	}
+	if err := req.applyActionField(&in); err != nil {
+		writePostEditError(c, err)
+		return
+	}
 	if req.CoverMediaID != nil {
 		id, err := uuid.Parse(strings.TrimSpace(*req.CoverMediaID))
 		if err != nil {
@@ -212,6 +229,10 @@ func (h *Handler) UpdatePost(c *gin.Context) {
 // writePostEditError maps every refusal of the owner-edit routes
 // (service.PostEditErrorStatus). A 500 does not echo the error.
 func writePostEditError(c *gin.Context, err error) {
+	// The Action button answers exactly as on create (action_links.go).
+	if writeActionError(c, err) {
+		return
+	}
 	status, code := service.PostEditErrorStatus(err)
 	msg := err.Error()
 	switch status {

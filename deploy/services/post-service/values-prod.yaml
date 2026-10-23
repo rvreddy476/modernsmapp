@@ -98,6 +98,20 @@ env:
 
   # ── Peers ────────────────────────────────────────────────────────────────
   MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
+  # Action button (2026-10-23): eligibility reads account age and email
+  # verified from identity (strikes from trust-safety's standing route).
+  AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+  IDENTITY_USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8110
+  # In-app links: no safety lookup for these domains (and subdomains).
+  ACTION_LINK_OWN_DOMAINS: 'cleestudio.com'
+  # Safety check: Google Web Risk. WEB_RISK_API_KEY is a secret; until it is
+  # provisioned every NEW Action button answers 503
+  # ACTION_LINK_CHECK_UNAVAILABLE here (production never stores an unchecked
+  # link) and the daily recheck does not run. To enable: put the key in this
+  # service's secret store as web_risk_api_key and add to externalSecret.data
+  #   - { secretKey: WEB_RISK_API_KEY, remoteRef: web_risk_api_key }
+  # (not added yet: a remoteRef missing from the store fails the secret sync).
+  # WEB_RISK_MOCK and ACTION_LINK_MIN_ACCOUNT_AGE_HOURS stay unset (dev only).
   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
   # The APP user-service owns usernames (@mention resolution, by-owner).
   APP_USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082

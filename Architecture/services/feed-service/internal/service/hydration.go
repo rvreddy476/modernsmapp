@@ -180,6 +180,14 @@ type HydratedPost struct {
 	// length, which post-service carries off the media it cleared so the
 	// join card can still show it. Absent everywhere else.
 	DurationMs int `json:"duration_ms,omitempty"`
+	// Action is the post's Action button (2026-10-23) exactly as
+	// post-service's batch answered it for THIS viewer: {id, label,
+	// label_text, domain, href} on an active link, plus url / status /
+	// status_reason for the author; absent when there is none or the
+	// viewer may not see it. Passed through untouched. A row carrying one
+	// is not cached (hydratedCacheable), so a link that is blocked or put
+	// under review disappears on the next page rather than five minutes on.
+	Action json.RawMessage `json:"action,omitempty"`
 	// Mentions is the merged @mention username list post-service exposes
 	// next to hashtags (explicit form field + caption-parsed).
 	Mentions json.RawMessage `json:"mentions,omitempty"`
@@ -838,8 +846,12 @@ func (s *Service) fetchHydratedCache(ctx context.Context, viewerID uuid.UUID, po
 // for a member, redacted for anyone else) is a membership answer, and
 // post-service holds those for at most a minute, so the feed must not hold
 // them for five.
+//
+// A row with an Action button is not cached either: its link can be
+// blocked (unsafe on recheck, a moderator) or put under review (scam_link
+// reports) at any moment, and the button must go with it.
 func hydratedCacheable(hp HydratedPost) bool {
-	return hp.TierRequiredID == "" && !hp.BodyRedacted
+	return hp.TierRequiredID == "" && !hp.BodyRedacted && len(hp.Action) == 0
 }
 
 func (s *Service) storeHydratedCache(viewerID uuid.UUID, fresh map[string]HydratedPost) {

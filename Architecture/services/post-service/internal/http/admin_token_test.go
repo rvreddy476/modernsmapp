@@ -331,6 +331,8 @@ func adminRoutePermissions() map[string][]string {
 		"GET /reels/:reelId/moderation":         {PermReelsModerate, PermReelsRemove},
 		"GET /reports":                          {PermSocialReportsAct, PermTubeReportsAct},
 		"PATCH /reports/:reportId":              {PermSocialReportsAct, PermTubeReportsAct},
+		"GET /action-links":                     {PermSocialReportsAct, PermTubeReportsAct},
+		"POST /action-links/:linkId/review":     {PermSocialReportsAct, PermTubeReportsAct},
 		"GET /comments/moderation":              remove,
 		"GET /comments/:commentId/audit":        remove,
 		"PATCH /comments/:commentId/moderation": remove,

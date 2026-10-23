@@ -30,9 +30,14 @@ func TestRedactGatedPost(t *testing.T) {
 		Poll:           &postgres.PollData{Question: "secret poll"},
 		CoverMediaID:   &coverID,
 		TierRequiredID: &tierID,
+		Action:         &postgres.ActionView{ID: uuid.New(), Label: "shop_now", Domain: "example.com"},
 	}
 
 	RedactGatedPost(p)
+
+	if p.Action != nil {
+		t.Errorf("the Action button should be redacted, got %+v", p.Action)
+	}
 
 	if p.Text != "" {
 		t.Errorf("Text should be redacted, got %q", p.Text)

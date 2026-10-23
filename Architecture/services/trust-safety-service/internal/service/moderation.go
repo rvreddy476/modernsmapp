@@ -69,7 +69,20 @@ var validReportCategories = map[string]bool{
 	"misinformation":        true,
 	"intellectual_property": true,
 	"other":                 true,
+	// "Fake job or scam link" (Action button contract, 23 Oct 2026): a post's
+	// or a profile's Action button. Only on those two entity types
+	// (scamLinkEntityTypes). post-service consumes the ReportFiled event and
+	// puts the target's action link under review at 3 distinct reporters in
+	// 7 days (post-service internal/consumers/action_link_report.go).
+	ReasonScamLink: true,
 }
+
+// ReasonScamLink is the Action-button report reason.
+const ReasonScamLink = "scam_link"
+
+// scamLinkEntityTypes are the entity types a scam_link report may target:
+// a post's Action button, or a profile's ("user").
+var scamLinkEntityTypes = map[string]bool{"post": true, "user": true}
 
 var validTransitions = map[string][]string{
 	"open":      {"reviewing"},
@@ -147,7 +160,10 @@ func (s *Service) FileReportWith(ctx context.Context, in FileReportInput) (*post
 
 	// 1b. Validate report category against the spec §10.5 allowlist.
 	if !validReportCategories[reason] {
-		return nil, fmt.Errorf("%w: invalid reason: %s (must be one of the 12 spec report categories)", ErrInvalidReport, reason)
+		return nil, fmt.Errorf("%w: invalid reason: %s (must be one of the spec report categories)", ErrInvalidReport, reason)
+	}
+	if reason == ReasonScamLink && !scamLinkEntityTypes[entityType] {
+		return nil, fmt.Errorf("%w: reason scam_link applies to posts and profiles only", ErrInvalidReport)
 	}
 
 	// 1c. The id must be valid for its type (report_entities.go).

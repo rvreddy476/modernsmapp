@@ -23,5 +23,6 @@
   "featured_post_id": "11111111-1111-4111-8111-111111111111",
   "short_count": 30,
   "live_count": 2,
-  "collection_count": 3
+  "collection_count": 3,
+  "action": null
 }

@@ -54,6 +54,7 @@ func gatedRow(author, tier uuid.UUID) *postgres.Post {
 		// Derived from the body: cleared on a redacted row.
 		Hashtags: []string{"secret"}, MentionUsernames: []string{"ravi"}, Mentions: []uuid.UUID{uuid.New()},
 		Tags: []string{"paid-tag"}, LinkURL: strPtr("https://example.com/paid"), TaggedUserIDs: []uuid.UUID{uuid.New()},
+		Action:       &postgres.ActionView{ID: uuid.New(), Label: "apply_now", LabelText: "Apply now", Domain: "example.com", Href: "/l/x"},
 		LocationName: strPtr("Hyderabad"), LocationLat: &lat, LocationLng: &lng, LocationPlaceID: strPtr("place-1"),
 		RecordingLocation: "Studio 4",
 		// Kept on a redacted row.
@@ -71,7 +72,7 @@ func openRow(author uuid.UUID) *postgres.Post {
 // it gone, the preview fields kept, the longest video's duration carried.
 func isRedacted(p *postgres.Post) bool {
 	cleared := p.BodyRedacted && p.Text == "" && p.RichText == nil && p.Media == nil && p.Poll == nil &&
-		p.Hashtags == nil && p.MentionUsernames == nil && p.Mentions == nil && p.Tags == nil && p.TaggedUserIDs == nil && p.LinkURL == nil &&
+		p.Hashtags == nil && p.MentionUsernames == nil && p.Mentions == nil && p.Tags == nil && p.TaggedUserIDs == nil && p.LinkURL == nil && p.Action == nil &&
 		p.LocationName == nil && p.LocationLat == nil && p.LocationLng == nil && p.LocationPlaceID == nil && p.RecordingLocation == ""
 	kept := p.Title == "Episode 1" && p.CoverMediaID != nil && p.ContentType == "long_video" && p.TierRequiredID != nil &&
 		p.AudioTrackID != nil && p.AudioStartMs != nil && len(p.Genres) == 1 && p.ReleaseYear != nil && p.ProductionHouse != nil &&
@@ -84,7 +85,7 @@ func isFull(p *postgres.Post) bool {
 		return false
 	}
 	return p.TierRequiredID == nil || (p.RichText != nil && p.Media != nil && p.Poll != nil &&
-		p.MentionUsernames != nil && p.Tags != nil && p.TaggedUserIDs != nil && p.LocationName != nil && p.RecordingLocation != "")
+		p.MentionUsernames != nil && p.Tags != nil && p.TaggedUserIDs != nil && p.LocationName != nil && p.RecordingLocation != "" && p.Action != nil)
 }
 
 // The rule, row by row, for every kind of viewer — and one membership
@@ -232,7 +233,7 @@ func TestRedactedRowWireShape(t *testing.T) {
 		}
 		return m
 	}
-	cleared := []string{"media", "rich_text", "poll", "hashtags", "mentions", "mention_user_ids", "tags", "tagged_user_ids", "link_url",
+	cleared := []string{"media", "rich_text", "poll", "hashtags", "mentions", "mention_user_ids", "tags", "tagged_user_ids", "link_url", "action",
 		"location_name", "location_lat", "location_lng", "location_place_id", "recording_location"}
 	kept := []string{"tier_required_id", "title", "cover_media_id", "content_type", "author_id",
 		"audio_track_id", "audio_start_ms", "sound", "genres", "release_year", "production_house"}

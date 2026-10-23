@@ -77,6 +77,32 @@ type UpdateDraftInput struct {
 	// ErrInvalidDraftTier. Whether it is one of the author's active tiers is
 	// asked at publication, by CreatePost.
 	TierRequiredID json.RawMessage `json:"tier_required_id"`
+	// Action is the Action button the post gets at publication (migration
+	// 072): {"label","url"} sets it (label and URL rules checked now), null
+	// removes it, absent leaves it. Eligibility and the safety check run at
+	// publication, in CreatePost. Raw so null is told apart from absent.
+	Action json.RawMessage `json:"action"`
+}
+
+// draftActionUpdates resolves a reel-draft patch's action into the two
+// columns, before anything is written.
+func draftActionUpdates(input *UpdateDraftInput, updates map[string]interface{}) error {
+	in, clear, present, err := ParseActionPatch(input.Action)
+	if err != nil || !present {
+		return err
+	}
+	if clear {
+		updates["action_label"] = nil
+		updates["action_url"] = nil
+		return nil
+	}
+	label, checked, err := ValidateActionShape(in)
+	if err != nil {
+		return err
+	}
+	updates["action_label"] = label
+	updates["action_url"] = checked.URL
+	return nil
 }
 
 // ErrInvalidDraftTier: tier_required_id on a draft patch is neither a UUID
@@ -333,6 +359,9 @@ func (s *Service) UpdateDraft(ctx context.Context, draftID uuid.UUID, authorID u
 		return nil, err
 	}
 	if err := draftTierUpdates(input, updates); err != nil {
+		return nil, err
+	}
+	if err := draftActionUpdates(input, updates); err != nil {
 		return nil, err
 	}
 	if draftSetsCredits(input) {
@@ -633,6 +662,11 @@ func applyDraftScreenFields(input *CreatePostInput, draft *postgres.ReelDraft) {
 	// and writes it on the row, so a draft meant for members never
 	// publishes open.
 	input.TierRequiredID = copyTierID(draft.TierRequiredID)
+	// The Action button (migration 072): CreatePost checks eligibility and
+	// safety and writes it with the post.
+	if draft.Action != nil {
+		input.Action = &ActionInput{Label: draft.Action.Label, URL: draft.Action.URL}
+	}
 	input.SEOTitle = draft.SEOTitle
 	input.RecordingDate = draft.RecordingDate
 	input.RecordingLocation = draft.RecordingLocation
@@ -743,6 +777,12 @@ func (s *Service) publishClaimedReelDraft(ctx context.Context, draftID, authorID
 		// releases the claim. Neither publishes the post open.
 		if errors.Is(err, ErrInvalidTier) {
 			s.pgStore.MarkReelDraftBlocked(ctx, draftID, BlockReasonInvalidTier) //nolint:errcheck
+		}
+		// An action the author may not add (not eligible, unsafe, a rule
+		// the saved URL no longer passes) is terminal the same way; the
+		// safety check being unavailable is transient.
+		if IsTerminalActionError(err) {
+			s.pgStore.MarkReelDraftBlocked(ctx, draftID, BlockReasonActionRefused) //nolint:errcheck
 		}
 		return nil, fmt.Errorf("publish claimed draft: %w", err)
 	}

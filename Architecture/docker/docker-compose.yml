@@ -737,6 +737,20 @@ services:
       # Location search (internal/places): Google Places Autocomplete with
       # the server key Feast already uses. Unset = free-text location only.
       GOOGLE_MAPS_SERVER_KEY: ${GOOGLE_MAPS_SERVER_KEY:-}
+      # Action button (2026-10-23, service/action_links.go). Safety check:
+      # Google Web Risk with WEB_RISK_API_KEY; unset on a dev stack, links
+      # are stored "unchecked", or WEB_RISK_MOCK=true flags Google's
+      # testsafebrowsing.appspot.com pages (production ignores the mock and
+      # refuses links without a key). Eligibility reads account age and
+      # email-verified from identity, strikes from trust-safety (above).
+      # ACTION_LINK_MIN_ACCOUNT_AGE_HOURS (default 168) may be lowered on a
+      # dev stack only. Our own domains skip the lookup.
+      WEB_RISK_API_KEY: ${WEB_RISK_API_KEY:-}
+      WEB_RISK_MOCK: ${WEB_RISK_MOCK:-true}
+      ACTION_LINK_OWN_DOMAINS: ${ACTION_LINK_OWN_DOMAINS:-cleestudio.com}
+      ACTION_LINK_MIN_ACCOUNT_AGE_HOURS: ${ACTION_LINK_MIN_ACCOUNT_AGE_HOURS:-168}
+      AUTH_SERVICE_URL: http://identity-auth:8081
+      IDENTITY_USER_SERVICE_URL: http://identity-user:8110
       <<: [*redis_client_env, *kafka_client_env]
       HTTP_PORT: "8084"
       POSTGRES_DSN: *app_postgres_dsn

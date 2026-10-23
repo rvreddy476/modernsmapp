@@ -57,6 +57,8 @@ var draftReachesPost = map[string][]string{
 	// Members-only from birth (migration 071): the gate the post is
 	// created with, checked by CreatePost.
 	"TierRequiredID": {"TierRequiredID"},
+	// The Action button (migration 072): checked and written by CreatePost.
+	"Action": {"Action"},
 }
 
 // draftOnly lists the UpdateDraftInput fields that deliberately do NOT
@@ -156,6 +158,10 @@ func perturb(t *testing.T, v reflect.Value) {
 	case reflect.Struct:
 		if tm, ok := v.Interface().(time.Time); ok {
 			v.Set(reflect.ValueOf(tm.Add(36 * time.Hour)))
+			return
+		}
+		if a, ok := v.Interface().(postgres.DraftAction); ok {
+			v.Set(reflect.ValueOf(postgres.DraftAction{Label: "learn_more", URL: a.URL + "/changed"}))
 			return
 		}
 		t.Fatalf("perturb: no rule for %s", v.Type())

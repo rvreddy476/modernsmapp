@@ -266,6 +266,9 @@ type Service struct {
 	batchPostsSeam  func(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) (map[uuid.UUID]*PostDetail, error)
 	postGateSeam    func(ctx context.Context, postID uuid.UUID) (uuid.UUID, *uuid.UUID, error)
 	membershipGates membershipGateStore
+	// actionLinks / actionCfg are the Action button (action_links.go).
+	actionLinks actionLinkStore
+	actionCfg   *actionConfig
 	// creatorTiersSeam stands in for monetization-service's public tier list
 	// (members_tiers.go): the gate validation on every write and the
 	// required-price lookup on gated rows.
@@ -312,6 +315,7 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		svc.soundReads = pg
 		svc.mediaStates = pg
 		svc.credits = pg
+		svc.actionLinks = pg
 	}
 	svc.creditLinks = defaultCreditLinker{s: svc}
 	if rdb != nil {
@@ -723,6 +727,11 @@ type CreatePostInput struct {
 	// stores it on the row in the post's own transaction, so the post is
 	// never public for a moment and its PostCreated already carries the gate.
 	TierRequiredID *uuid.UUID
+
+	// Action is the Action button (action_links.go); nil = none. CreatePost
+	// runs the label / URL / eligibility / safety checks before anything is
+	// written and inserts the link in the post's own transaction.
+	Action *ActionInput
 }
 
 // CreatePollInput holds poll creation data.
@@ -1053,6 +1062,9 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 			if getErr != nil {
 				return nil, fmt.Errorf("replay created post: %w", getErr)
 			}
+			if existing != nil {
+				s.AttachAuthorActions(ctx, input.AuthorID, []*postgres.Post{existing})
+			}
 			return existing, nil
 		}
 	}
@@ -1120,6 +1132,19 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// answer refuses the create (503) — never a post created open.
 	if err := s.ValidateTierForAuthor(ctx, input.AuthorID, input.TierRequiredID); err != nil {
 		return nil, err
+	}
+
+	// The Action button (action_links.go): label, URL rules, eligibility
+	// and the safety check, before anything is written; the link is
+	// inserted in the post's own transaction (insertPostTx).
+	var actionWrite *postgres.ActionLinkWrite
+	if input.Action != nil {
+		w, err := s.prepareAction(ctx, input.AuthorID, input.Action)
+		if err != nil {
+			return nil, err
+		}
+		w.ID = uuid.New()
+		actionWrite = w
 	}
 
 	// REMOVED 21 Sep: "Trusted Circle after-hours protection", which
@@ -1246,6 +1271,7 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		// Written by the insert itself (posts.tier_required_id), in the
 		// same transaction as the row and its PostCreated outbox event.
 		TierRequiredID: copyTierID(input.TierRequiredID),
+		ActionWrite:    actionWrite,
 	}
 
 	// Persist the validated policy verbatim; rev 1 marks "has a policy",
@@ -1508,6 +1534,7 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 			if err := s.attachMediaState(ctx, []*postgres.Post{existing}); err != nil {
 				return nil, err
 			}
+			s.AttachAuthorActions(ctx, input.AuthorID, []*postgres.Post{existing})
 			return existing, nil
 		}
 		if errors.Is(err, postgres.ErrCreateKeyConflict) {
@@ -1622,6 +1649,14 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// instead of a broken player.
 	if err := s.attachMediaState(ctx, []*postgres.Post{p}); err != nil {
 		return nil, err
+	}
+	// The author's view of the action just written (url and status
+	// included), built from the write: no read back.
+	if actionWrite != nil {
+		p.Action = ActionViewFor(&postgres.ActionLink{
+			ID: actionWrite.ID, AuthorID: p.AuthorID, URL: actionWrite.URL, Domain: actionWrite.Domain,
+			Label: actionWrite.Label, Status: postgres.ActionStatusActive, SafetyStatus: actionWrite.SafetyStatus,
+		}, true)
 	}
 	return p, nil
 }

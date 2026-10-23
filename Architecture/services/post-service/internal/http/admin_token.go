@@ -293,6 +293,12 @@ func (h *Handler) registerAdminTokenRoutes(r *gin.Engine) {
 	g.GET("/reports", gate(PermSocialReportsAct, PermTubeReportsAct), h.AdminListReports)
 	g.PATCH("/reports/:reportId", gate(PermSocialReportsAct, PermTubeReportsAct), h.AdminReviewReport)
 
+	// Action buttons (action_links.go): the review queue (links put under
+	// review by scam_link reports, or blocked) and restore / block. Any
+	// content kind or a profile, so the reports permission either side.
+	g.GET("/action-links", gate(PermSocialReportsAct, PermTubeReportsAct), h.AdminListActionLinks)
+	g.POST("/action-links/:linkId/review", gate(PermSocialReportsAct, PermTubeReportsAct), h.AdminReviewActionLink)
+
 	// Comments (Social).
 	g.GET("/comments/moderation", gate(PermCommentsModerate, PermCommentsRemove), h.ListFlaggedComments)
 	g.GET("/comments/:commentId/audit", gate(PermCommentsModerate, PermCommentsRemove), h.AdminCommentAudit)

@@ -86,6 +86,30 @@ type ReelDraft struct {
 	// it against the author's active tiers and writes it on the row. nil =
 	// open.
 	TierRequiredID *uuid.UUID `json:"tier_required_id,omitempty"`
+	// Action is the Action button the post gets at publication (migration
+	// 072): label and URL as saved (the URL rules were checked then);
+	// eligibility and the safety check run when it publishes. null = none.
+	Action *DraftAction `json:"action"`
+}
+
+// DraftAction is a saved, not yet published, Action button.
+type DraftAction struct {
+	Label string `json:"label"`
+	URL   string `json:"url"`
+}
+
+func (a *DraftAction) labelArg() *string {
+	if a == nil {
+		return nil
+	}
+	return &a.Label
+}
+
+func (a *DraftAction) urlArg() *string {
+	if a == nil {
+		return nil
+	}
+	return &a.URL
 }
 
 // decodeDraftCredits reads reel_drafts.credits (NULL = none).
@@ -113,12 +137,23 @@ const draftCols = `id, author_id, media_id,
 	ai_generated, location_name, location_place_id,
 	content_type,
 	credits, genres, release_year, production_house,
-	tier_required_id`
+	tier_required_id,
+	action_label, action_url`
 
-func scanDraft(row pgx.Row) (*ReelDraft, error) {
-	var d ReelDraft
-	var creditsRaw []byte
-	err := row.Scan(
+// draftScan holds the columns a draft row is decoded from beside the
+// struct's own fields (credits JSON, the two action columns).
+type draftScan struct {
+	credits     []byte
+	actionLabel *string
+	actionURL   *string
+}
+
+// draftScanDestinations is the single source of truth for draftCols scan
+// order, shared by the one-row and the many-row scans (the many-row scan
+// had drifted: it never read tier_required_id, so ListDrafts failed on
+// every row once migration 071 added the column).
+func draftScanDestinations(d *ReelDraft, x *draftScan) []any {
+	return []any{
 		&d.ID, &d.AuthorID, &d.MediaID,
 		&d.Title, &d.Caption, &d.Hashtags, &d.Tags,
 		&d.Visibility, &d.TopicID, &d.Category, &d.Language, &d.SEOTitle,
@@ -134,13 +169,30 @@ func scanDraft(row pgx.Row) (*ReelDraft, error) {
 		&d.CreatedAt, &d.UpdatedAt, &d.BlockedReason,
 		&d.AIGenerated, &d.LocationName, &d.LocationPlaceID,
 		&d.ContentType,
-		&creditsRaw, &d.Genres, &d.ReleaseYear, &d.ProductionHouse,
+		&x.credits, &d.Genres, &d.ReleaseYear, &d.ProductionHouse,
 		&d.TierRequiredID,
-	)
-	if err != nil {
+		&x.actionLabel, &x.actionURL,
+	}
+}
+
+func (d *ReelDraft) finishScan(x *draftScan) error {
+	if err := d.decodeDraftCredits(x.credits); err != nil {
+		return err
+	}
+	d.Action = nil
+	if x.actionLabel != nil && x.actionURL != nil && *x.actionLabel != "" && *x.actionURL != "" {
+		d.Action = &DraftAction{Label: *x.actionLabel, URL: *x.actionURL}
+	}
+	return nil
+}
+
+func scanDraft(row pgx.Row) (*ReelDraft, error) {
+	var d ReelDraft
+	var x draftScan
+	if err := row.Scan(draftScanDestinations(&d, &x)...); err != nil {
 		return nil, err
 	}
-	if err := d.decodeDraftCredits(creditsRaw); err != nil {
+	if err := d.finishScan(&x); err != nil {
 		return nil, err
 	}
 	return &d, nil
@@ -150,28 +202,11 @@ func scanDraftRows(rows pgx.Rows) ([]ReelDraft, error) {
 	var drafts []ReelDraft
 	for rows.Next() {
 		var d ReelDraft
-		var creditsRaw []byte
-		if err := rows.Scan(
-			&d.ID, &d.AuthorID, &d.MediaID,
-			&d.Title, &d.Caption, &d.Hashtags, &d.Tags,
-			&d.Visibility, &d.TopicID, &d.Category, &d.Language, &d.SEOTitle,
-			&d.CrossPostPostbook, &d.CrossPostPosttube, &d.PublishToFeed,
-			&d.IsMadeForKids, &d.PaidPromotion, &d.AlteredContent,
-			&d.AutoChapters, &d.FeaturedPlaces, &d.AutoConcepts,
-			&d.License, &d.AllowEmbedding, &d.RemixSetting,
-			&d.LikesEnabled, &d.CommentsEnabled, &d.CommentModeration, &d.CommentAccess,
-			&d.RecordingDate, &d.RecordingLocation,
-			&d.AudioTrackID, &d.AudioStartMs, &d.OriginalAudioVol, &d.OverlayAudioVol,
-			&d.CoverMediaID, &d.ScheduleAt,
-			&d.Status, &d.ModerationStatus, &d.PublishedPostID,
-			&d.CreatedAt, &d.UpdatedAt, &d.BlockedReason,
-			&d.AIGenerated, &d.LocationName, &d.LocationPlaceID,
-			&d.ContentType,
-			&creditsRaw, &d.Genres, &d.ReleaseYear, &d.ProductionHouse,
-		); err != nil {
+		var x draftScan
+		if err := rows.Scan(draftScanDestinations(&d, &x)...); err != nil {
 			return nil, err
 		}
-		if err := d.decodeDraftCredits(creditsRaw); err != nil {
+		if err := d.finishScan(&x); err != nil {
 			return nil, err
 		}
 		drafts = append(drafts, d)
@@ -204,7 +239,7 @@ func (s *Store) CreateDraft(ctx context.Context, d *ReelDraft) error {
 
 	_, err = s.db.Exec(ctx, `
 		INSERT INTO reel_drafts (`+draftCols+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50,$51,$52,$53)`,
 		d.ID, d.AuthorID, d.MediaID,
 		d.Title, d.Caption, d.Hashtags, d.Tags,
 		d.Visibility, d.TopicID, d.Category, d.Language, d.SEOTitle,
@@ -222,6 +257,7 @@ func (s *Store) CreateDraft(ctx context.Context, d *ReelDraft) error {
 		d.ContentType,
 		creditsRaw, genres, d.ReleaseYear, d.ProductionHouse,
 		d.TierRequiredID,
+		d.Action.labelArg(), d.Action.urlArg(),
 	)
 	return err
 }

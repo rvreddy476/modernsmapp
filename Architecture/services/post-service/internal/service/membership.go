@@ -303,6 +303,8 @@ func RedactGatedPost(p *postgres.Post) {
 	// Who is in it is part of what members pay to see.
 	p.TaggedUserIDs = nil
 	p.LinkURL = nil
+	// The Action button is part of what members get (action_links.go).
+	p.Action = nil
 	p.LocationName = nil
 	p.LocationLat = nil
 	p.LocationLng = nil

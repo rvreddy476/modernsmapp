@@ -5,10 +5,13 @@ import (
 	"errors"
 	"log/slog"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/atpost/post-service/database"
+	"github.com/atpost/post-service/internal/actionlinks"
+	"github.com/atpost/post-service/internal/actionrecheck"
 	mediaConsumers "github.com/atpost/post-service/internal/consumers"
 	"github.com/atpost/post-service/internal/engagement"
 	"github.com/atpost/post-service/internal/engagement/consumers"
@@ -224,6 +227,40 @@ func main() {
 	}
 	postSvc.SetReviewAllVideos(env("REVIEW_ALL_VIDEOS", "false") == "true")
 	postSvc.SetInternalServiceKey(internalServiceKey)
+
+	// The Action button (service/action_links.go). Safety: Google Web Risk
+	// with WEB_RISK_API_KEY; without it production refuses every new link
+	// (503 ACTION_LINK_CHECK_UNAVAILABLE) and a dev stack stores links as
+	// "unchecked" (or uses the mock with WEB_RISK_MOCK=true). Eligibility
+	// reads identity (account age, email verified) and the standing client
+	// above (active strikes).
+	actionChecker := actionlinks.CheckerFromEnv(os.Getenv, isProduction)
+	actionMinAge := service.DefaultActionMinAccountAge
+	if v := strings.TrimSpace(os.Getenv("ACTION_LINK_MIN_ACCOUNT_AGE_HOURS")); v != "" {
+		if hours, err := strconv.Atoi(v); err == nil && hours >= 0 {
+			if isProduction && time.Duration(hours)*time.Hour < service.DefaultActionMinAccountAge {
+				slog.Warn("ACTION_LINK_MIN_ACCOUNT_AGE_HOURS below 168 is ignored in production")
+			} else {
+				actionMinAge = time.Duration(hours) * time.Hour
+			}
+		}
+	}
+	postSvc.SetActionLinks(service.ActionLinkConfig{
+		Checker:       actionChecker,
+		Production:    isProduction,
+		OwnDomains:    actionlinks.ParseOwnDomains(env("ACTION_LINK_OWN_DOMAINS", "cleestudio.com")),
+		Accounts:      actionlinks.NewHTTPAccounts(env(actionlinks.EnvIdentityUserServiceURL, actionlinks.DefaultIdentityUserURL), internalServiceKey),
+		Emails:        actionlinks.NewHTTPEmails(env(actionlinks.EnvAuthServiceURL, actionlinks.DefaultAuthServiceURL), internalServiceKey),
+		MinAccountAge: actionMinAge,
+	})
+	switch {
+	case actionChecker != nil:
+		slog.Info("action link safety checker configured", "checker", actionChecker.Name())
+	case isProduction:
+		slog.Error(actionlinks.EnvWebRiskAPIKey + " is not set: every new Action button answers 503 ACTION_LINK_CHECK_UNAVAILABLE")
+	default:
+		slog.Warn(actionlinks.EnvWebRiskAPIKey + " is not set: Action button links are stored unchecked (dev only)")
+	}
 
 	// M4-P0-1: the server-derived story audience. Without this the story
 	// surfaces answer 503 rather than serving an unfiltered feed — the seam
@@ -466,6 +503,15 @@ func main() {
 	go commentReportHold.Start(consumerCtx)
 	defer commentReportHold.Close()
 
+	// scam_link reports (same ReportFiled event, own group) put an Action
+	// button under review at 3 distinct reporters in 7 days
+	// (internal/consumers/action_link_report.go).
+	actionLinkReports := mediaConsumers.NewActionLinkReportConsumer(
+		postSvc, brokers, env("TRUST_SAFETY_KAFKA_TOPIC", engTopic), consumerMetrics,
+	)
+	go actionLinkReports.Start(consumerCtx)
+	defer actionLinkReports.Close()
+
 	slog.Info("engagement, media, entitlement, and authenticated story moderation consumers started")
 
 	// Real-time trending leaderboard. Single goroutine per replica;
@@ -546,6 +592,12 @@ func main() {
 	// tick (default 30s). See internal/postschedule.
 	scheduleCfg := postschedule.ConfigFromEnv()
 	go postschedule.NewWorker(pgStore, postSvc, scheduleCfg, slog.Default()).Start(consumerCtx)
+
+	// Daily Web Risk recheck of Action-button links (internal/actionrecheck):
+	// a link turning unsafe is blocked. Only with a checker.
+	if actionChecker != nil {
+		go actionrecheck.NewWorker(postSvc, actionrecheck.ConfigFromEnv(), slog.Default()).Start(consumerCtx)
+	}
 
 	slog.Info("reconciler, outbox, purge, schedule, and cleanup workers started",
 		"post_purge_after", purgeCfg.After, "post_purge_interval", purgeCfg.Interval,

@@ -241,8 +241,11 @@ var StampPolicy = map[string]bool{
 	// Architecture user-service: engine-wide RequireInternalKey.
 	"/v1/onboarding": true,
 	"/v1/pages":      true,
-	"/v1/links":      true,
 	"/v1/users":      true,
+
+	// post-service (engine-wide RequireInternalKey): the Action button's
+	// public redirect read, GET /v1/links/:id (2026-10-23).
+	"/v1/links": true,
 
 	// identity-user: engine-wide RequireInternalServiceKey.
 	"/v1/users/me/settings": true,

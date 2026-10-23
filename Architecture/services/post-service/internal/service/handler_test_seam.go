@@ -93,6 +93,9 @@ type HandlerTestDeps struct {
 	// for the visible-comment read (the comment routes' members gate).
 	EngagementPost func(ctx context.Context, postID, viewerID uuid.UUID) (*postgres.Post, error)
 	CommentLookup  func(ctx context.Context, commentID uuid.UUID) (*postgres.Comment, error)
+	// ActionLinks backs the Action button (action_links.go); the rest of its
+	// wiring (checker, eligibility sources, tap dedupe) is SetActionLinks.
+	ActionLinks actionLinkStore
 }
 
 // CreditProfile is one identity-profile account as the credit reads name it.
@@ -147,6 +150,7 @@ func NewForHandlerTests(d HandlerTestDeps) *Service {
 		createIdemLookupSeam:   d.CreateIdempotencyLookup,
 		engagementPostSeam:     d.EngagementPost,
 		commentLookupSeam:      d.CommentLookup,
+		actionLinks:            d.ActionLinks,
 	}
 	if d.Relationships != nil {
 		s.storyAudience = NewStoryAudience(d.Relationships)

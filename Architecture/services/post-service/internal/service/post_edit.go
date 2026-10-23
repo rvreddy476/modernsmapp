@@ -133,6 +133,12 @@ type PostEditInput struct {
 	// the wire) opens the post; it wins over TierRequiredID.
 	TierRequiredID    *uuid.UUID
 	ClearTierRequired bool
+
+	// The Action button (action_links.go): Action sets it (every create
+	// rule, eligibility and the safety check included), ClearAction (null
+	// on the wire) removes it and wins. Neither: unchanged.
+	Action      *ActionInput
+	ClearAction bool
 }
 
 // setsVideoCredits reports an edit that puts credit data on the post (a
@@ -164,9 +170,24 @@ func (s *Service) UpdatePost(ctx context.Context, callerID, postID uuid.UUID, in
 		return nil, ErrNotPostAuthor
 	}
 
+	// The Action button is checked first (its refusals are 400 / 403 /
+	// 503 and must write nothing) and stored after the fields.
+	touchAction := in.ClearAction || in.Action != nil
+	var actionWrite *postgres.ActionLinkWrite
+	if !in.ClearAction && in.Action != nil {
+		if actionWrite, err = s.prepareAction(ctx, callerID, in.Action); err != nil {
+			return nil, err
+		}
+	}
+
 	updated, err := s.applyPostEdit(ctx, callerID, current, in, "post.edit")
 	if err != nil {
 		return nil, err
+	}
+	if touchAction {
+		if _, err := s.writePostAction(ctx, callerID, postID, actionWrite); err != nil {
+			return nil, err
+		}
 	}
 
 	skipped := 0
@@ -177,6 +198,7 @@ func (s *Service) UpdatePost(ctx context.Context, callerID, postID uuid.UUID, in
 		// Test rig without a full store: answer from the row.
 		detail := &PostDetail{Post: updated, CreditTagsSkipped: skipped}
 		s.attachCredits(ctx, detail, &callerID)
+		s.AttachAuthorActions(ctx, callerID, []*postgres.Post{detail.Post})
 		return detail, nil
 	}
 	detail, err := s.GetPost(ctx, postID, &callerID)
@@ -187,6 +209,8 @@ func (s *Service) UpdatePost(ctx context.Context, callerID, postID uuid.UUID, in
 		detail = &PostDetail{Post: updated}
 	}
 	detail.CreditTagsSkipped = skipped
+	// The author's action, url and status included (action_links.go).
+	s.AttachAuthorActions(ctx, callerID, []*postgres.Post{detail.Post})
 	return detail, nil
 }
 

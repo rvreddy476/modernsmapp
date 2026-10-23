@@ -122,6 +122,8 @@ func (h *Handler) UpdateDraft(c *gin.Context) {
 		// tier_required_id is a tier id, or null / "" to clear it:
 		// 400 INVALID_TIER otherwise.
 		case writeTierGateError(c, err):
+		// action is {"label","url"} or null: the create route's codes.
+		case writeActionError(c, err):
 		// audio_track_id is a sound id, or "" to remove the sound;
 		// content_type is flick or long_video.
 		case errors.Is(err, service.ErrInvalidDraftSound) || errors.Is(err, service.ErrInvalidLocationPlaceID) ||

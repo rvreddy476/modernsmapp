@@ -358,6 +358,10 @@ func (s *Service) enrichUploads(ctx context.Context, posts []postgres.Post) []Up
 	if err := s.attachMediaState(ctx, ptrs); err != nil {
 		slog.Warn("my uploads: media state overlay failed", "error", err)
 	}
+	// The author's Action buttons, status included, so Creator Hub can show
+	// each item's label and state (action_links.go). Every row is the
+	// caller's own.
+	s.AttachAuthorActions(ctx, posts[0].AuthorID, ptrs)
 
 	// The owner's restriction notices (migration 056). Best effort like
 	// the media overlay: the flag still comes from the row's count.

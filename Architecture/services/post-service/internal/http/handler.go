@@ -114,6 +114,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/offline/check", h.CheckOfflineCopies)
 		v1.POST("/:postId/offline", h.GrantOfflineCopy)
 		v1.DELETE("/:postId/offline", h.RemoveOfflineCopy)
+		// The Action button (action_links.go). action-labels is static and
+		// registered before /:postId, so it is never read as a post id
+		// (route_order test: action_links_routes_test.go).
+		v1.GET("/action-labels", h.ListActionLabels)
+		v1.GET("/:postId/action/stats", h.GetPostActionStats)
 		v1.GET("/:postId", h.GetPost)
 		// Soft delete → "Recently deleted" → restore (2026-09-04). DELETE
 		// keeps rows and media for POST_PURGE_AFTER; the purge worker
@@ -201,6 +206,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// signed command from trust-safety, and its reconciliation read.
 	r.POST("/v1/posts/internal/restrictions", h.requireTrustSafetyToken(OpRestrictionsWrite), h.ApplyPostRestriction)
 	r.GET("/v1/posts/internal/restrictions", h.requireTrustSafetyToken(OpRestrictionsRead), h.ListPostRestrictions)
+
+	// The Action button's public redirect read (action_links.go): no
+	// identity required; the gateway routes /v1/links here.
+	r.GET("/v1/links/:id", h.ResolveActionLink)
 
 	// Events
 	r.POST("/v1/events", h.CreateEvent)
@@ -554,6 +563,12 @@ type CreatePostRequest struct {
 	// MEMBERSHIP_TIERS_UNAVAILABLE and no post. omitempty for the
 	// fingerprint reason above.
 	TierRequiredID *uuid.UUID `json:"tier_required_id,omitempty"`
+
+	// Action is the Action button (2026-10-23, action_links.go):
+	// {"label","url"}; absent or null = none. Label, URL rules, the
+	// author's eligibility and the safety check all run before anything is
+	// written. omitempty for the fingerprint reason above.
+	Action *service.ActionInput `json:"action,omitempty"`
 }
 
 // createPostResponse is the create body: the post as before, plus a long
@@ -659,6 +674,7 @@ func writeCreateGuardError(c *gin.Context, err error) bool {
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_VISIBILITY", err.Error(), nil)
 	case writeTierGateError(c, err):
 	case writeCreditFieldError(c, err):
+	case writeActionError(c, err):
 	default:
 		return false
 	}
@@ -976,6 +992,7 @@ func (h *Handler) CreatePost(c *gin.Context) {
 			Credits: req.Credits, Genres: req.Genres, ReleaseYear: req.ReleaseYear, ProductionHouse: req.ProductionHouse,
 		},
 		TierRequiredID: req.TierRequiredID,
+		Action:         req.Action,
 	}
 
 	if req.Poll != nil {

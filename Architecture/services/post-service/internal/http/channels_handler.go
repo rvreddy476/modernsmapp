@@ -47,6 +47,8 @@ func (h *Handler) registerChannelRoutes(r *gin.Engine) {
 		channels.POST("", h.CreateChannel)
 		channels.GET("/me", h.GetMyChannel)
 		channels.PATCH("/me", h.UpdateMyChannel)
+		// The profile Action button's tap counts (action_links.go).
+		channels.GET("/me/action/stats", h.GetMyProfileActionStats)
 		channels.GET("/handle-available", h.ChannelHandleAvailable)
 		channels.GET("/name-available", h.ChannelNameAvailable)
 		channels.GET("/batch", h.GetChannelsBatch)
@@ -116,6 +118,9 @@ type updateChannelRequest struct {
 	Links          *[]postgres.ChannelLink `json:"links"`
 	ContactEmail   *string                 `json:"contact_email"`
 	FeaturedPostID json.RawMessage         `json:"featured_post_id"`
+	// The profile Action button (action_links.go): {"label","url"} sets
+	// it, null removes it, absent leaves it.
+	Action json.RawMessage `json:"action"`
 }
 
 // parseNullableID reads a raw JSON id field: (nil, false, nil) when absent,
@@ -180,6 +185,8 @@ func writeChannelError(c *gin.Context, err error) bool {
 		api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 	case errors.Is(err, service.ErrFeaturedPostNotOwned):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+	// The profile Action button: the post routes' codes.
+	case writeActionError(c, err):
 	default:
 		return false
 	}
@@ -290,6 +297,12 @@ func (h *Handler) UpdateMyChannel(c *gin.Context) {
 		return
 	}
 	in.FeaturedPostID, in.ClearFeatured = featured, clearFeatured
+	action, clearAction, _, err := service.ParseActionPatch(req.Action)
+	if err != nil {
+		writeActionError(c, err)
+		return
+	}
+	in.Action, in.ClearAction = action, clearAction
 	in.Links = req.Links
 	in.ContactEmail = req.ContactEmail
 	if req.Links != nil {
