@@ -88,6 +88,12 @@ func newAuthoringService(store videoAuthoringStore) *Service {
 	// The post's own read gate (GET /v1/videos/:id, 2026-09-28) is pinned
 	// in hub_batch_test.go; here every post is readable.
 	s.readGate = func(context.Context, uuid.UUID, *uuid.UUID) error { return nil }
+	// The members-only gate (members_read.go) of GET /v1/videos/:id: these
+	// posts are open (no tier); the gated case is pinned in
+	// members_read_test.go.
+	if f, ok := store.(*fakeAuthoringStore); ok {
+		s.postGateSeam = func(context.Context, uuid.UUID) (uuid.UUID, *uuid.UUID, error) { return f.authorID, nil, nil }
+	}
 	return s
 }
 

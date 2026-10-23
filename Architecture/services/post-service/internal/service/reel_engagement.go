@@ -40,6 +40,10 @@ func (s *Service) AddReelComment(ctx context.Context, reelID, userID uuid.UUID, 
 	if err != nil {
 		return uuid.Nil, err
 	}
+	// Members-only reel: members and the author only (members_read.go).
+	if err := s.requireMemberOf(ctx, post, &userID); err != nil {
+		return uuid.Nil, err
+	}
 	if post.NoComments {
 		return uuid.Nil, ErrCommentsDisabled
 	}
@@ -52,8 +56,13 @@ func (s *Service) AddReelComment(ctx context.Context, reelID, userID uuid.UUID, 
 	return s.scyllaStore.AddReelComment(ctx, reelID, userID, text)
 }
 
-// ListReelComments returns comments for a reel.
-func (s *Service) ListReelComments(ctx context.Context, reelID uuid.UUID, limit int) ([]scylla.Comment, error) {
+// ListReelComments returns comments for a reel. The handler has run the
+// post's read gate; a members-only reel's thread is for members and the
+// author (members_read.go).
+func (s *Service) ListReelComments(ctx context.Context, reelID uuid.UUID, viewerID *uuid.UUID, limit int) ([]scylla.Comment, error) {
+	if err := s.postMembersGate(ctx, reelID, viewerID); err != nil {
+		return nil, err
+	}
 	return s.scyllaStore.ListReelComments(ctx, reelID, limit)
 }
 

@@ -68,6 +68,10 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		// (SearchEligible) treats "restricted" as ineligible unchanged.
 		effective  string
 		restricted int
+		// tier is the members-only gate (tier_required_id, 2026-10-23):
+		// carried on every event so search drops a gated post, and a gated
+		// post's body never rides the bus.
+		tier *uuid.UUID
 	)
 	// The search document is replaced whole on re-approval, so the
 	// result-row projection (title, attached assets in carousel order, the
@@ -85,9 +89,10 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		          COALESCE((SELECT MAX(COALESCE(ma.duration_ms, ma.duration_seconds * 1000, 0))
 		                    FROM media_assets ma JOIN post_media pm ON pm.media_id = ma.id
 		                    WHERE pm.post_id = posts.id AND pm.kind = 'video'), 0)::int,
-		          COALESCE((SELECT vm.height FROM video_metadata vm WHERE vm.post_id = posts.id), 0)::int`, postID).
+		          COALESCE((SELECT vm.height FROM video_metadata vm WHERE vm.post_id = posts.id), 0)::int,
+		          tier_required_id`, postID).
 		Scan(&authorID, &visibility, &review, &text, &title, &contentType,
-			&createdAt, &deletedAt, &publishAt, &rev, &effective, &restricted, &mediaIDs, &mediaKinds, &durationMs, &height)
+			&createdAt, &deletedAt, &publishAt, &rev, &effective, &restricted, &mediaIDs, &mediaKinds, &durationMs, &height, &tier)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, ErrPostRowMissing
 	}
@@ -113,10 +118,15 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		CreatedAt:   createdAt,
 		ChangedAt:   time.Now().UTC(),
 	}
+	if tier != nil {
+		payload.TierRequiredID = tier.String()
+	}
 	// Only carry the body when the post is actually eligible. There is no
 	// reason to put non-public or unapproved text on the bus, and it keeps
-	// removal events small.
-	if publishAt == nil && events.SearchEligible(visibility, effective, deletedAt != nil) {
+	// removal events small. A members-only post is not public search
+	// content either: its paid body stays off the bus, and search drops it
+	// on tier_required_id.
+	if publishAt == nil && tier == nil && events.SearchEligible(visibility, effective, deletedAt != nil) {
 		payload.Text = text
 		payload.Title = title
 		payload.DurationMs = durationMs

@@ -1091,17 +1091,10 @@ func (h *Handler) GetPost(c *gin.Context) {
 	// Tier 3c: members-only gating. If the post is gated and the
 	// viewer isn't entitled (or there is no viewer), redact the body
 	// fields so the response can render as a "subscribe to view"
-	// preview rather than 404 or 403.
-	if p.Post.TierRequiredID != nil {
-		viewerID := uuid.Nil
-		if viewerUUID != nil {
-			viewerID = *viewerUUID
-		}
-		allowed, _, _ := h.svc.CheckEntitlement(c.Request.Context(), viewerID, p.Post.AuthorID, p.Post.TierRequiredID)
-		if !allowed {
-			service.RedactGatedPost(p.Post)
-		}
-	}
+	// preview rather than 404 or 403. The one rule every list shares
+	// (service/members_read.go): author and members in full, everyone
+	// else redacted, a failed lookup redacted.
+	h.svc.RedactDetailForViewer(c.Request.Context(), viewerUUID, p)
 
 	api.JSON(c.Writer, http.StatusOK, p, nil)
 }
@@ -1122,8 +1115,21 @@ func (h *Handler) SetPostMembershipGate(c *gin.Context) {
 		return
 	}
 
+	// The body is read before anything is changed, and strictly: the bind
+	// error used to be ignored, so a malformed body (bad JSON, a tier that
+	// is not a UUID, a misspelt key, no body at all) decoded as "no tier"
+	// and silently made a members-only post public.
+	tierID, ok := parseMembershipGateBody(c)
+	if !ok {
+		return
+	}
+
 	owner, err := h.svc.IsPostAuthor(c.Request.Context(), postID, actorID)
 	if err != nil {
+		if errors.Is(err, service.ErrPostNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -1132,12 +1138,7 @@ func (h *Handler) SetPostMembershipGate(c *gin.Context) {
 		return
 	}
 
-	var body struct {
-		TierRequiredID *uuid.UUID `json:"tier_required_id"`
-	}
-	_ = c.ShouldBindJSON(&body)
-
-	if err := h.svc.SetPostMembershipGate(c.Request.Context(), postID, body.TierRequiredID); err != nil {
+	if err := h.svc.SetPostMembershipGate(c.Request.Context(), postID, tierID); err != nil {
 		if err.Error() == "POST_NOT_FOUND" {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Post not found", nil)
 			return
@@ -1145,7 +1146,40 @@ func (h *Handler) SetPostMembershipGate(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{"tier_required_id": body.TierRequiredID}, nil)
+	api.JSON(c.Writer, http.StatusOK, gin.H{"tier_required_id": tierID}, nil)
+}
+
+// parseMembershipGateBody reads PUT /membership's body: exactly one JSON
+// object whose only key is tier_required_id, a UUID string or null. {} and
+// {"tier_required_id": null} clear the gate. Anything else answers 400
+// INVALID_REQUEST and returns ok=false; nothing has been changed by then.
+func parseMembershipGateBody(c *gin.Context) (*uuid.UUID, bool) {
+	refuse := func(msg string) (*uuid.UUID, bool) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", msg, nil)
+		return nil, false
+	}
+	raw, err := c.GetRawData()
+	if err != nil {
+		return refuse("unreadable body")
+	}
+	if trimmed := bytes.TrimSpace(raw); len(trimmed) == 0 || trimmed[0] != '{' {
+		return refuse(`body must be a JSON object: {"tier_required_id": "<uuid>"} sets the gate, {} or {"tier_required_id": null} clears it`)
+	}
+	var body struct {
+		TierRequiredID *uuid.UUID `json:"tier_required_id"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		return refuse("tier_required_id must be a UUID string or null: " + err.Error())
+	}
+	if dec.More() {
+		return refuse("body must be a single JSON object")
+	}
+	if body.TierRequiredID != nil && *body.TierRequiredID == uuid.Nil {
+		return refuse("tier_required_id must not be the nil UUID")
+	}
+	return body.TierRequiredID, true
 }
 
 func (h *Handler) GetRecentPosts(c *gin.Context) {
@@ -1435,6 +1469,7 @@ func (h *Handler) AddComment(c *gin.Context) {
 	comment, err := h.svc.CreateCommentPG(c.Request.Context(), postID, userID, req.Text, clientKey, fingerprint)
 	if err != nil {
 		switch {
+		case writeMembersOnlyError(c, err):
 		case errors.Is(err, postgres.ErrIdempotencyKeyReused):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", "This Idempotency-Key was already used for a different comment.", nil)
 		case err.Error() == "RATE_LIMITED":
@@ -1957,6 +1992,7 @@ func (h *Handler) CreateReply(c *gin.Context) {
 	reply, err := h.svc.CreateReply(c.Request.Context(), commentID, userID, req.Text)
 	if err != nil {
 		switch {
+		case writeMembersOnlyError(c, err):
 		case err.Error() == "RATE_LIMITED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many replies, please slow down", nil)
 		case err.Error() == "COMMENT_NOT_FOUND":
@@ -1997,6 +2033,9 @@ func (h *Handler) ToggleCommentLike(c *gin.Context) {
 
 	result, err := h.svc.ToggleCommentLike(c.Request.Context(), commentID, userID)
 	if err != nil {
+		if writeMembersOnlyError(c, err) {
+			return
+		}
 		switch err.Error() {
 		case "RATE_LIMITED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many comment like toggles, please slow down", nil)

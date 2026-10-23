@@ -160,6 +160,26 @@ type HydratedPost struct {
 	// is_processing.
 	PublishAt   *string `json:"publish_at,omitempty"`
 	IsScheduled bool    `json:"is_scheduled"`
+
+	// Members-only posts (2026-10-23). post-service's batch redacts a gated
+	// post per viewer — this viewer is the X-User-Id the batch call
+	// forwards — and these two say so, so a client can draw the lock:
+	//
+	//   - TierRequiredID is the tier's UUID on every gated row, for members
+	//     and non-members alike; absent on an open post.
+	//   - BodyRedacted is true only on a row whose text / rich_text / media
+	//     / poll post-service emptied because this viewer is not a member
+	//     (signed out, not subscribed, or the membership lookup failed).
+	//
+	// Passed through untouched, like the fields above. Gated rows are never
+	// written to the hydration cache (storeHydratedCache), so a membership
+	// that ends — or starts — shows on the next page, not five minutes on.
+	TierRequiredID string `json:"tier_required_id,omitempty"`
+	BodyRedacted   bool   `json:"body_redacted,omitempty"`
+	// DurationMs rides only on a redacted row: the longest attached video's
+	// length, which post-service carries off the media it cleared so the
+	// join card can still show it. Absent everywhere else.
+	DurationMs int `json:"duration_ms,omitempty"`
 	// Mentions is the merged @mention username list post-service exposes
 	// next to hashtags (explicit form field + caption-parsed).
 	Mentions json.RawMessage `json:"mentions,omitempty"`
@@ -813,6 +833,15 @@ func (s *Service) fetchHydratedCache(ctx context.Context, viewerID uuid.UUID, po
 
 // storeHydratedCache writes fresh hydrated rows back into Redis.
 // Asynchronous so the response isn't held up by Redis write latency.
+// hydratedCacheable reports whether a fresh row may enter the per-viewer
+// hydration cache as far as the members-only gate goes: a gated row (full
+// for a member, redacted for anyone else) is a membership answer, and
+// post-service holds those for at most a minute, so the feed must not hold
+// them for five.
+func hydratedCacheable(hp HydratedPost) bool {
+	return hp.TierRequiredID == "" && !hp.BodyRedacted
+}
+
 func (s *Service) storeHydratedCache(viewerID uuid.UUID, fresh map[string]HydratedPost) {
 	if s.rdb == nil || len(fresh) == 0 {
 		return
@@ -831,6 +860,11 @@ func (s *Service) storeHydratedCache(viewerID uuid.UUID, fresh map[string]Hydrat
 			// is_processing flip the moment transcoding lands, not five
 			// minutes later.
 			if hp.IsProcessing || hp.IsScheduled {
+				continue
+			}
+			// Members-only: the full or redacted body is this viewer's
+			// membership at this moment; never cache it past that.
+			if !hydratedCacheable(hp) {
 				continue
 			}
 			data, err := json.Marshal(hp)

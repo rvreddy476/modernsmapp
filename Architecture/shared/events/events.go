@@ -619,6 +619,13 @@ type PostCreatedPayload struct {
 	// Video credits (2026-10-23), long videos only and only when set; see
 	// PostCreditSearchFields.
 	PostCreditSearchFields
+
+	// TierRequiredID is the members-only gate (posts.tier_required_id,
+	// 2026-10-23): the tier's UUID string, "" (omitted) when the post is
+	// open to everyone. Additive. A gated post is never public search
+	// content, so consumers drop it from public results whatever the
+	// review status says.
+	TierRequiredID string `json:"tier_required_id,omitempty"`
 }
 
 // PostCreditSearchFields is the cast & crew projection a long video carries
@@ -711,6 +718,15 @@ type PostSearchEligibilityChangedPayload struct {
 	HasSubtitles bool `json:"has_subtitles,omitempty"`
 	// Video credits, as on PostCreatedPayload and for the same reason.
 	PostCreditSearchFields
+
+	// TierRequiredID is the members-only gate, as on PostCreatedPayload:
+	// the tier's UUID string, "" (omitted) when the post is open to
+	// everyone. Carried on every transition, removals included, so a
+	// consumer always knows the current gate. A gated post is not public
+	// search content: post-service leaves the projection body (text,
+	// title, media, credits) off a gated post's event, and consumers drop
+	// it from public results.
+	TierRequiredID string `json:"tier_required_id,omitempty"`
 
 	ChangedAt time.Time `json:"changed_at"`
 }

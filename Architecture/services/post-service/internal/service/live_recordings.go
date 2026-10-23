@@ -46,6 +46,8 @@ func (s *Service) GetLiveRecordings(ctx context.Context, viewerID *uuid.UUID, li
 	if err != nil {
 		return nil, "", err
 	}
+	// Members-only rows: redacted for this viewer (members_read.go).
+	s.redactDetailsForViewer(ctx, viewerID, details)
 	// A shelf of many authors, unlike a profile grid: each card needs its
 	// channel and view count, so both ride along (the same best-effort
 	// attach trending and my-uploads do; the row type is unchanged).

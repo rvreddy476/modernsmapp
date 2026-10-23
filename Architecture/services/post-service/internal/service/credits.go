@@ -680,6 +680,9 @@ func (s *Service) ListAppearances(ctx context.Context, userID uuid.UUID, viewerI
 		}
 		page = append(page, d)
 	}
+	// appearanceListable already leaves members-only videos out; the
+	// shared rule runs anyway so this list cannot drift (members_read.go).
+	s.redactDetailPtrsForViewer(ctx, viewerID, page)
 	if s.channels != nil {
 		viewer := uuid.Nil
 		if viewerID != nil {

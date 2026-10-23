@@ -58,7 +58,7 @@ func (s *Service) visibleCommentForViewer(ctx context.Context, commentID uuid.UU
 }
 
 func (s *Service) visibleCommentForOptionalViewer(ctx context.Context, commentID uuid.UUID, viewerID *uuid.UUID) (*postgres.Comment, error) {
-	c, err := s.pgStore.GetVisibleCommentByID(ctx, commentID)
+	c, err := s.visibleComment(ctx, commentID)
 	if err != nil {
 		return nil, err
 	}
@@ -68,6 +68,11 @@ func (s *Service) visibleCommentForOptionalViewer(ctx context.Context, commentID
 	}
 	if !ok {
 		return nil, fmt.Errorf("COMMENT_NOT_FOUND")
+	}
+	// Replies and reactions under a members-only post: members and the
+	// author only (members_read.go).
+	if err := s.postMembersGate(ctx, c.PostID, viewerID); err != nil {
+		return nil, err
 	}
 	return c, nil
 }

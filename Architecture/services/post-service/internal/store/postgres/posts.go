@@ -130,6 +130,11 @@ type Post struct {
 	TaggedUserIDs  []uuid.UUID `json:"tagged_user_ids,omitempty"`
 	TierRequiredID *uuid.UUID  `json:"tier_required_id,omitempty"`
 	BodyRedacted   bool        `json:"body_redacted,omitempty"`
+	// DurationMs is set only on a members-only row redacted for this viewer
+	// (service.RedactGatedPost): the longest attached video's duration,
+	// carried off the media the redaction clears so the join card can show
+	// it. Absent (0) on every other row, and never stored or cached.
+	DurationMs int `json:"duration_ms,omitempty"`
 	// Distribution is the typed, versioned scalar policy (Module 1 P0-1).
 	// NULL means "no policy — legacy behavior". DistributionRev increases
 	// monotonically on every policy change so consumers can drop stale
@@ -1597,18 +1602,46 @@ func (s *Store) GetPostsByIDs(ctx context.Context, ids []uuid.UUID) ([]Post, err
 // Pass tierID == nil to make the post public again. The caller is
 // responsible for verifying the actor owns the post (handler layer
 // does this before calling).
+//
+// The gate is part of the post's search eligibility (2026-10-23): the row
+// change, the search_rev bump and PostSearchEligibilityChanged (carrying
+// tier_required_id) commit together, so search drops a newly gated post and
+// re-admits one whose gate was cleared.
 func (s *Store) SetPostMembershipGate(ctx context.Context, postID uuid.UUID, tierID *uuid.UUID) error {
-	tag, err := s.db.Exec(ctx,
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	changed, err := setPostMembershipGateTx(ctx, tx, postID, tierID)
+	if err != nil {
+		return err
+	}
+	if !changed {
+		return errors.New("POST_NOT_FOUND")
+	}
+	return tx.Commit(ctx)
+}
+
+// setPostMembershipGateTx is SetPostMembershipGate inside tx: the row
+// change, then — only when a row changed — the search_rev bump and the
+// eligibility event (BumpSearchRevAndEmitTx). false, nil when no post has
+// the id; nothing is emitted then.
+func setPostMembershipGateTx(ctx context.Context, tx pgx.Tx, postID uuid.UUID, tierID *uuid.UUID) (bool, error) {
+	tag, err := tx.Exec(ctx,
 		`UPDATE posts SET tier_required_id = $2, updated_at = NOW() WHERE id = $1`,
 		postID, tierID,
 	)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if tag.RowsAffected() == 0 {
-		return errors.New("POST_NOT_FOUND")
+		return false, nil
 	}
-	return nil
+	if err := BumpSearchRevAndEmitTx(ctx, tx, postID); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // GetPostAuthorAndGate returns just the author_id + tier_required_id

@@ -276,6 +276,8 @@ func (s *Service) GetThread(ctx context.Context, postID uuid.UUID, viewerID *uui
 	if !s.canViewThread(ctx, &entries[0], viewerID) {
 		return nil, ErrPostNotFound
 	}
+	// Members-only entries: redacted for this viewer (members_read.go).
+	s.redactPostRowsForViewer(ctx, viewerID, entries)
 	return entries, nil
 }
 

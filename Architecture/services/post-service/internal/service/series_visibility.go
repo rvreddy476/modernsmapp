@@ -106,10 +106,7 @@ func (s *Service) GetSeriesEpisodes(ctx context.Context, seriesID uuid.UUID, vie
 // id: COMMENT_NOT_FOUND for a missing comment or a post the viewer may not
 // open (the answer the comment like toggle gives), an age refusal as is.
 func (s *Service) gateCommentPost(ctx context.Context, commentID uuid.UUID, viewerID *uuid.UUID) error {
-	if s.pgStore == nil {
-		return ErrAuthoringStoreUnavailable
-	}
-	c, err := s.pgStore.GetVisibleCommentByID(ctx, commentID)
+	c, err := s.visibleComment(ctx, commentID)
 	if err != nil {
 		return err
 	}
@@ -119,7 +116,8 @@ func (s *Service) gateCommentPost(ctx context.Context, commentID uuid.UUID, view
 		}
 		return err
 	}
-	return nil
+	// Members-only post: members and the author only (members_read.go).
+	return s.postMembersGate(ctx, c.PostID, viewerID)
 }
 
 // errCommentNotFound carries the text the comment handlers switch on.

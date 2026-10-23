@@ -605,6 +605,9 @@ func (s *Service) hydrateSoundPosts(ctx context.Context, viewerID *uuid.UUID, po
 	if err != nil {
 		return nil, err
 	}
+	// Members-only rows: redacted for this viewer (members_read.go). The
+	// sound page and the origin card both come through here.
+	s.redactDetailsForViewer(ctx, viewerID, details)
 	ptrs := make([]*PostDetail, len(details))
 	for i := range details {
 		details[i].ViewCount = s.getViewCount(ctx, details[i].Post.ID)

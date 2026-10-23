@@ -12,6 +12,7 @@ import (
 
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // Tier 3c / 1a — Membership gating + Redis-backed entitlement cache.
@@ -46,11 +47,35 @@ const (
 	entitlementCacheTTLDenied = 30 * time.Second
 )
 
+// membershipGateStore is the storage slice behind PUT /membership: the
+// (author, tier) read and the gate write, which bumps search_rev and emits
+// PostSearchEligibilityChanged in the same transaction (store/postgres).
+type membershipGateStore interface {
+	GetPostAuthorAndGate(ctx context.Context, postID uuid.UUID) (uuid.UUID, *uuid.UUID, error)
+	SetPostMembershipGate(ctx context.Context, postID uuid.UUID, tierID *uuid.UUID) error
+}
+
+// membershipStore is the gate store: the test seam, else Postgres, else nil.
+func (s *Service) membershipStore() membershipGateStore {
+	if s.membershipGates != nil {
+		return s.membershipGates
+	}
+	if s.pgStore != nil {
+		return s.pgStore
+	}
+	return nil
+}
+
 // SetPostMembershipGate is called by the handler after it has
 // confirmed the caller owns the post. tierID == nil clears the gate
-// (post becomes public again).
+// (post becomes public again). The store bumps search_rev and emits the
+// eligibility event with the new tier_required_id in the same transaction.
 func (s *Service) SetPostMembershipGate(ctx context.Context, postID uuid.UUID, tierID *uuid.UUID) error {
-	if err := s.pgStore.SetPostMembershipGate(ctx, postID, tierID); err != nil {
+	store := s.membershipStore()
+	if store == nil {
+		return ErrAuthoringStoreUnavailable
+	}
+	if err := store.SetPostMembershipGate(ctx, postID, tierID); err != nil {
 		return err
 	}
 	// Tier 1b: tier_required_id is part of the cached body, drop the
@@ -61,9 +86,16 @@ func (s *Service) SetPostMembershipGate(ctx context.Context, postID uuid.UUID, t
 
 // IsPostAuthor returns whether actor is the post's author. Cheap pgx
 // roundtrip, used to short-circuit gating + to authorise the
-// PUT /membership endpoint.
+// PUT /membership endpoint. A post that does not exist is ErrPostNotFound.
 func (s *Service) IsPostAuthor(ctx context.Context, postID, actorID uuid.UUID) (bool, error) {
-	authorID, _, err := s.pgStore.GetPostAuthorAndGate(ctx, postID)
+	store := s.membershipStore()
+	if store == nil {
+		return false, ErrAuthoringStoreUnavailable
+	}
+	authorID, _, err := store.GetPostAuthorAndGate(ctx, postID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrPostNotFound
+	}
 	if err != nil {
 		return false, err
 	}
@@ -231,14 +263,34 @@ func (s *Service) entitlementCachePut(ctx context.Context, subscriberID, creator
 	_ = s.rdb.Set(ctx, key, EncodeEntitlementCacheValue(allowed, reason), ttl).Err()
 }
 
-// RedactGatedPost zeroes the heavy body fields on a Post when the
-// caller isn't entitled. Title, author, cover, content_type, and
-// counts stay so the frontend can render a "subscribe to view"
-// preview card. body_redacted=true tells the frontend to swap UI.
+// RedactGatedPost zeroes the body, and everything derived from it, on a
+// Post when the caller isn't entitled (the pinned rule is in
+// members_read.go). Title, author, cover, content_type, counts, the tier,
+// the sound reference and the coarse video metadata (genres, release year,
+// production house) stay so the frontend can render a "subscribe to view"
+// preview card; DurationMs carries the longest video's length off the media
+// it clears. body_redacted=true tells the frontend to swap UI.
 func RedactGatedPost(p *postgres.Post) {
+	for _, m := range p.Media {
+		if m.Kind == "video" && m.DurationMs > p.DurationMs {
+			p.DurationMs = m.DurationMs
+		}
+	}
 	p.Text = ""
 	p.RichText = nil
 	p.Media = nil
 	p.Poll = nil
+	// Derived from the body: the caption's tags and mentions, the link it
+	// carries and where it was made.
+	p.Hashtags = nil
+	p.Mentions = nil
+	p.MentionUsernames = nil
+	p.Tags = nil
+	p.LinkURL = nil
+	p.LocationName = nil
+	p.LocationLat = nil
+	p.LocationLng = nil
+	p.LocationPlaceID = nil
+	p.RecordingLocation = ""
 	p.BodyRedacted = true
 }

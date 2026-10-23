@@ -75,6 +75,9 @@ func (h *Handler) RestorePost(c *gin.Context) {
 		api.JSON(c.Writer, http.StatusOK, map[string]string{"id": postID.String(), "status": "restored"}, nil)
 		return
 	}
+	// Only the author restores, and the author reads in full; the one
+	// members-only rule runs anyway so no read of a row skips it.
+	h.svc.RedactDetailForViewer(c.Request.Context(), &userID, p)
 	api.JSON(c.Writer, http.StatusOK, p, nil)
 }
 

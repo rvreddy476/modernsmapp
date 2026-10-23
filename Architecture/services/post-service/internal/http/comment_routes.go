@@ -131,6 +131,7 @@ func (h *Handler) RemoveCommentReaction(c *gin.Context) {
 func (h *Handler) writeCommentLookupError(c *gin.Context, err error) {
 	ctx := c.Request.Context()
 	switch {
+	case writeMembersOnlyError(c, err):
 	case errors.Is(err, service.ErrInvalidEmoji):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_EMOJI", "emoji must be 1 to 16 characters", nil)
 	case err.Error() == "RATE_LIMITED":

@@ -74,6 +74,18 @@ type HandlerTestDeps struct {
 	CreditProfiles        func(ctx context.Context, viewerID *uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]CreditProfile, error)
 	AppearancePosts       func(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) (map[uuid.UUID]*PostDetail, error)
 	AppearanceProfileGate func(ctx context.Context, viewerID *uuid.UUID, userID uuid.UUID) bool
+	// Members-only reads (members_read.go): the batch read's loading (the
+	// redaction still runs after it), the (author, tier) lookup behind the
+	// comment gate, the PUT /membership store, and monetization-service
+	// itself (an httptest fake) for the real entitlement path.
+	BatchPosts             func(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) (map[uuid.UUID]*PostDetail, error)
+	PostGate               func(ctx context.Context, postID uuid.UUID) (uuid.UUID, *uuid.UUID, error)
+	MembershipGates        membershipGateStore
+	MonetizationServiceURL string
+	// EngagementPost stands in for loadPostForEngagement and CommentLookup
+	// for the visible-comment read (the comment routes' members gate).
+	EngagementPost func(ctx context.Context, postID, viewerID uuid.UUID) (*postgres.Post, error)
+	CommentLookup  func(ctx context.Context, commentID uuid.UUID) (*postgres.Comment, error)
 }
 
 // CreditProfile is one identity-profile account as the credit reads name it.
@@ -119,6 +131,13 @@ func NewForHandlerTests(d HandlerTestDeps) *Service {
 		creditProfiles:        d.CreditProfiles,
 		appearancePosts:       d.AppearancePosts,
 		appearanceProfileGate: d.AppearanceProfileGate,
+
+		batchPostsSeam:         d.BatchPosts,
+		postGateSeam:           d.PostGate,
+		membershipGates:        d.MembershipGates,
+		monetizationServiceURL: d.MonetizationServiceURL,
+		engagementPostSeam:     d.EngagementPost,
+		commentLookupSeam:      d.CommentLookup,
 	}
 	if d.Relationships != nil {
 		s.storyAudience = NewStoryAudience(d.Relationships)

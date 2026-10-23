@@ -821,7 +821,9 @@ func TestPostReadsAttachTheSound(t *testing.T) {
 		t.Fatal("GetPost returns the detail before the sound is attached")
 	}
 
-	batch := body("func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) (map[uuid.UUID]*PostDetail, error) {")
+	// The batch read's loading is loadPostsByIDs since the members-only
+	// redaction (members_read.go) wraps it in GetPostsByIDs.
+	batch := body("func (s *Service) loadPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) (map[uuid.UUID]*PostDetail, error) {")
 	attach = strings.Index(batch, "s.attachSounds(ctx, viewerID, page)")
 	if attach < 0 || strings.LastIndex(batch, "return result, nil") < attach {
 		t.Fatal("GetPostsByIDs must attach the sound to the page it returns")

@@ -498,8 +498,22 @@ func writeReadGateError(c *gin.Context, err error) bool {
 	case errors.Is(err, service.ErrAgeSignIn), errors.Is(err, service.ErrAgeRestricted), errors.Is(err, service.ErrAgeUnverified):
 		status, code := service.PostEditErrorStatus(err)
 		api.ErrorWithContext(ctx, c.Writer, status, code, err.Error(), nil)
+	case writeMembersOnlyError(c, err):
 	default:
 		return false
 	}
+	return true
+}
+
+// writeMembersOnlyError answers a members-only post's comment-thread
+// refusal (service.ErrMembersOnly, members_read.go): 403 MEMBERS_ONLY. The
+// post exists and the caller may see its preview, so this is not the 404
+// the read gate gives; counts stay readable on the post itself.
+func writeMembersOnlyError(c *gin.Context, err error) bool {
+	if !errors.Is(err, service.ErrMembersOnly) {
+		return false
+	}
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "MEMBERS_ONLY",
+		"Comments on this post are for members only", nil)
 	return true
 }

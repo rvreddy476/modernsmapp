@@ -163,6 +163,7 @@ func (h *Handler) AddReelComment(c *gin.Context) {
 	commentID, err := h.svc.AddReelComment(c.Request.Context(), reelID, userID, req.Text)
 	if err != nil {
 		switch {
+		case writeMembersOnlyError(c, err):
 		case errors.Is(err, service.ErrCommentsRestricted):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_RESTRICTED", "Only friends can comment on this post", nil)
 		case errors.Is(err, service.ErrCommentsFollowersOnly):
@@ -197,8 +198,11 @@ func (h *Handler) ListReelComments(c *gin.Context) {
 	if !h.requirePostReadable(c, reelID, optionalCallerID(c)) {
 		return
 	}
-	comments, err := h.svc.ListReelComments(c.Request.Context(), reelID, limit)
+	comments, err := h.svc.ListReelComments(c.Request.Context(), reelID, optionalCallerID(c), limit)
 	if err != nil {
+		if writeMembersOnlyError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}

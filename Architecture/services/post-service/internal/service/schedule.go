@@ -121,6 +121,10 @@ func (s *Service) buildPostCreatedPayload(ctx context.Context, p *postgres.Post,
 		DurationMs: maxDuration * 1000,
 		Media:      postMediaRefs(p.Media),
 		Height:     maxHeight,
+		// Members-only gate (2026-10-23): a post the author gated before a
+		// scheduled publish announces itself gated, so search never
+		// indexes it publicly. "" (omitted) for an open post.
+		TierRequiredID: tierRequiredIDString(p.TierRequiredID),
 	}
 	// Additive pointer fields: stamped whenever an intent exists —
 	// either a typed policy or explicit legacy fields (P1-1). Events
@@ -276,6 +280,10 @@ func (s *Service) announcePublishedPost(p *postgres.Post, mentions []string) {
 		snippet := p.Text
 		if len(snippet) > 120 {
 			snippet = snippet[:120]
+		}
+		// A members-only post's text is not for the public stream.
+		if p.TierRequiredID != nil {
+			snippet = ""
 		}
 		feedSignal, _ := json.Marshal(map[string]interface{}{
 			"type": "new_post",

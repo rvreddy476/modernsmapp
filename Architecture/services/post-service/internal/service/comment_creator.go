@@ -47,6 +47,11 @@ func (s *Service) ListCommentsSortedPG(ctx context.Context, postID uuid.UUID, vi
 	if err := s.singlePostRead(ctx, postID, viewerID); err != nil {
 		return nil, "", err
 	}
+	// A members-only post's thread is for members and the author
+	// (members_read.go): ErrMembersOnly, 403 MEMBERS_ONLY.
+	if err := s.postMembersGate(ctx, postID, viewerID); err != nil {
+		return nil, "", err
+	}
 	if sort != postgres.CommentSortTop {
 		sort = postgres.CommentSortNewest
 	}

@@ -257,6 +257,21 @@ type Service struct {
 	creditProfiles        func(ctx context.Context, viewerID *uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]commentProfile, error)
 	appearancePosts       func(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) (map[uuid.UUID]*PostDetail, error)
 	appearanceProfileGate func(ctx context.Context, viewerID *uuid.UUID, userID uuid.UUID) bool
+
+	// Members-only reads (members_read.go, 2026-10-23), each nil-safe and
+	// set only by tests: batchPostsSeam stands in for the batch read's
+	// loading (the members-only redaction still runs after it),
+	// postGateSeam for the (author, tier) lookup behind the comment gate,
+	// and membershipGates for the PUT /membership store.
+	batchPostsSeam  func(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) (map[uuid.UUID]*PostDetail, error)
+	postGateSeam    func(ctx context.Context, postID uuid.UUID) (uuid.UUID, *uuid.UUID, error)
+	membershipGates membershipGateStore
+	// engagementPostSeam stands in for loadPostForEngagement (the post and
+	// its visibility decision) and commentLookupSeam for the visible-comment
+	// read, so the comment routes' members gate can be driven without a
+	// database.
+	engagementPostSeam func(ctx context.Context, postID, viewerID uuid.UUID) (*postgres.Post, error)
+	commentLookupSeam  func(ctx context.Context, commentID uuid.UUID) (*postgres.Comment, error)
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {
@@ -1859,6 +1874,8 @@ func (s *Service) GetPostsByAuthor(ctx context.Context, authorID uuid.UUID, cont
 	if err != nil {
 		return nil, "", err
 	}
+	// Members-only rows: redacted for this viewer (members_read.go).
+	s.redactDetailsForViewer(ctx, viewerID, details)
 	return details, nextCursor, nil
 }
 
@@ -1915,12 +1932,38 @@ func (s *Service) GetRecentPosts(ctx context.Context, viewerID *uuid.UUID, exclu
 	if err != nil {
 		return nil, "", err
 	}
+	// Members-only rows: redacted for this viewer (members_read.go).
+	s.redactDetailsForViewer(ctx, viewerID, details)
 	return details, nextCursor, nil
 }
 
 // GetPostsByIDs returns a map of post_id → PostDetail for the given IDs.
 // If viewerID is provided, viewer-specific state (reaction, bookmark) is included.
+//
+// It is POST /v1/posts/batch, which feed-service hydrates every feed from,
+// and the read behind playlists, watch later, continue watching and
+// history. Members-only rows are redacted for this viewer on the way out
+// (members_read.go), whatever loaded them.
 func (s *Service) GetPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) (map[uuid.UUID]*PostDetail, error) {
+	load := s.loadPostsByIDs
+	if s.batchPostsSeam != nil {
+		load = s.batchPostsSeam
+	}
+	result, err := load(ctx, ids, viewerID)
+	if err != nil {
+		return nil, err
+	}
+	page := make([]*PostDetail, 0, len(result))
+	for _, detail := range result {
+		page = append(page, detail)
+	}
+	s.redactDetailPtrsForViewer(ctx, viewerID, page)
+	return result, nil
+}
+
+// loadPostsByIDs is GetPostsByIDs before the members-only redaction: every
+// visibility drop and the viewer-specific state.
+func (s *Service) loadPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) (map[uuid.UUID]*PostDetail, error) {
 	posts, err := s.pgStore.GetPostsByIDs(ctx, ids)
 	if err != nil {
 		return nil, err
@@ -2360,6 +2403,8 @@ func (s *Service) GetBookmarks(ctx context.Context, userID uuid.UUID, contentTyp
 	if err != nil {
 		return nil, "", err
 	}
+	// Members-only rows: a bookmark outlives a membership (members_read.go).
+	s.redactDetailsForViewer(ctx, &userID, details)
 	ptrs := make([]*PostDetail, len(details))
 	for i := range details {
 		ptrs[i] = &details[i]
@@ -2763,6 +2808,10 @@ func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUI
 	if err != nil {
 		return nil, err
 	}
+	// Members-only post: members and the author only (members_read.go).
+	if err := s.requireMemberOf(ctx, post, &authorID); err != nil {
+		return nil, err
+	}
 	if post.NoComments {
 		return nil, ErrCommentsDisabled
 	}
@@ -2873,12 +2922,16 @@ func (s *Service) CreateReply(ctx context.Context, commentID, userID uuid.UUID, 
 	if strings.TrimSpace(body) == "" {
 		return nil, fmt.Errorf("INVALID_REQUEST: reply body cannot be blank")
 	}
-	target, err := s.pgStore.GetVisibleCommentByID(ctx, commentID)
+	target, err := s.visibleComment(ctx, commentID)
 	if err != nil {
 		return nil, err
 	}
 	post, err := s.loadPostForEngagement(ctx, target.PostID, userID)
 	if err != nil {
+		return nil, err
+	}
+	// Members-only post: members and the author only (members_read.go).
+	if err := s.requireMemberOf(ctx, post, &userID); err != nil {
 		return nil, err
 	}
 	if post.NoComments {
@@ -2992,6 +3045,9 @@ func (s *Service) GetCommentsAroundPG(ctx context.Context, postID, commentID uui
 	if err := s.singlePostRead(ctx, postID, viewerID); err != nil {
 		return nil, err
 	}
+	if err := s.postMembersGate(ctx, postID, viewerID); err != nil {
+		return nil, err
+	}
 	return s.pgStore.GetCommentsAround(ctx, postID, commentID, viewerID, limit)
 }
 
@@ -3089,6 +3145,9 @@ func (s *Service) checkEngagementVisibility(ctx context.Context, postID, viewerI
 // Hot path; uses pgStore.GetPost which already has a Redis-cached
 // path for repeat reads of the same post.
 func (s *Service) loadPostForEngagement(ctx context.Context, postID, viewerID uuid.UUID) (*postgres.Post, error) {
+	if s.engagementPostSeam != nil {
+		return s.engagementPostSeam(ctx, postID, viewerID)
+	}
 	post, err := s.pgStore.GetPost(ctx, postID)
 	if err != nil {
 		return nil, err
@@ -3429,6 +3488,14 @@ func (s *Service) GetVideoDetailForCaller(ctx context.Context, postID uuid.UUID,
 	if callerID == nil || s.requirePostAuthor(ctx, *callerID, postID) != nil {
 		redacted := *vm
 		redacted.StorageVideoURL = nil
+		// Members-only video (2026-10-23): a non-member gets the metadata —
+		// duration, dimensions, category — but no URL to play it from. The
+		// one membership rule (members_read.go): members and the author keep
+		// playback_url; a signed-out caller, a non-member and an unresolved
+		// gate or lookup lose it.
+		if s.postMembersGate(ctx, postID, callerID) != nil {
+			redacted.PlaybackURL = nil
+		}
 		return &redacted, nil
 	}
 	return vm, nil
@@ -3632,6 +3699,9 @@ func (s *Service) GetPostsByHashtag(ctx context.Context, viewerID *uuid.UUID, ha
 	if err != nil {
 		return nil, "", err
 	}
+	// Members-only rows, for the real viewer: members and the author read
+	// them in full here too (members_read.go).
+	s.redactDetailsForViewer(ctx, viewerID, details)
 	return details, nextCursor, nil
 }
 
@@ -3661,6 +3731,9 @@ func (s *Service) GetTrendingPosts(ctx context.Context, contentTypes []string, l
 	if err != nil {
 		return nil, "", err
 	}
+	// Members-only rows, for the real viewer: members and the author read
+	// them in full here too (members_read.go).
+	s.redactDetailsForViewer(ctx, viewerID, details)
 	// A trending long video arrived with no channel, so the watch card had
 	// no name or avatar to draw a poster with. Same best-effort attach
 	// GetBookmarks and the watch-progress list do — one batched lookup for

@@ -79,6 +79,13 @@ func (s *Service) GetReelFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		items = append(items, item)
 	}
 
+	// Members-only reels: redacted for this viewer (members_read.go).
+	rows := make([]*postgres.Post, len(items))
+	for i := range items {
+		rows[i] = items[i].Post
+	}
+	s.redactForViewer(ctx, &userID, rows)
+
 	// Compute next cursor from last item
 	outCursor := ""
 	if len(filtered) >= limit && nextCursor != "" {
