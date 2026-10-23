@@ -5,6 +5,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
@@ -29,6 +30,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.Color
@@ -57,7 +59,11 @@ import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.media.Playback
 import com.us.android.core.media.PlayerPool
 import com.us.android.core.media.ui.VideoLoadingIndicator
+import com.us.android.core.memberships.ui.MembersOnlyLock
+import com.us.android.core.memberships.ui.MembersOnlyLockStyle
 import com.us.android.core.model.FeedItem
+import com.us.android.core.model.MembersAccess
+import com.us.android.core.model.access
 import com.us.android.core.model.FeedPoll
 import com.us.android.core.ui.PORTRAIT_SCREEN_ASPECT
 import com.us.android.core.ui.PostCardMediaPage
@@ -117,8 +123,12 @@ internal fun FeedStagePage(
     fullMode: Boolean = false,
     /** A double tap anywhere on the page switches full mode; null leaves double taps alone. */
     onToggleFullMode: (() -> Unit)? = null,
+    /** A members-only post was unlocked by a join (2026-10-23): read the feed again. */
+    onUnlocked: () -> Unit = {},
 ) {
     val kind = stageKind(item)
+    // Members only (2026-10-23): a post this viewer may not see is the lock.
+    val locked = stageIsLocked(item)
     val carousel = rememberPagerState(pageCount = { state.pages.size })
     val author = StageRailAuthor(
         name = item.author.nameForDisplay,
@@ -142,16 +152,17 @@ internal fun FeedStagePage(
             }
             .testTag("feed_page:${item.id}"),
     ) {
-        when (kind) {
-            StageKind.VIDEO -> if (state.playback != null) {
+        when {
+            locked -> LockedStage(item, poster = state.poster, topInset = state.topInset, onUnlocked = onUnlocked)
+            kind == StageKind.VIDEO -> if (state.playback != null) {
                 val player = remember(page, state.playback) { pool.acquire(page, state.playback) }
                 StageVideo(player = player, posterUrl = state.poster, aspect = state.pages.firstOrNull()?.aspectRatio)
             } else {
                 // Still processing: its poster, and a word on why it does not move.
                 state.pages.firstOrNull()?.let { StagePhoto(page = it.copy(url = state.poster)) }
             }
-            StageKind.PHOTO -> StagePhotoCarousel(pages = state.pages, pagerState = carousel)
-            StageKind.POLL -> StageTextCard(
+            kind == StageKind.PHOTO -> StagePhotoCarousel(pages = state.pages, pagerState = carousel)
+            kind == StageKind.POLL -> StageTextCard(
                 seed = item.id,
                 text = item.text.ifBlank { item.poll?.question.orEmpty() },
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(top = state.topInset),
@@ -170,7 +181,7 @@ internal fun FeedStagePage(
                     }
                 }
             }
-            StageKind.TEXT -> StageTextCard(
+            kind == StageKind.TEXT -> StageTextCard(
                 seed = item.id,
                 text = item.text,
                 contentPadding = androidx.compose.foundation.layout.PaddingValues(top = state.topInset),
@@ -193,7 +204,9 @@ internal fun FeedStagePage(
         // Full mode is the post alone (founder, 2026-10-19): no shade, no caption, no rail.
         if (!fullMode) StageBottomScrim(modifier = Modifier.align(Alignment.BottomCenter))
         if (!fullMode) StageCaption(
-            state = stageCaption(item, kind),
+            state = stageCaption(item, kind).let { caption ->
+                if (locked) caption.copy(title = null, text = "", hashtags = emptyList()) else caption
+            },
             onOpenAuthor = { callbacks.onOpenAuthor(item.author.id) },
             onOpenHashtag = onOpenHashtag,
             onSound = item.sound?.let { sound -> onOpenSound?.let { open -> { open(sound.id) } } },
@@ -232,6 +245,43 @@ internal fun FeedStagePage(
         )
     }
 }
+
+/**
+ * Whether a Home page is the members-only lock: the server redacted the post
+ * for this viewer, or it is gated and arrived with nothing to draw. Pure.
+ */
+internal fun stageIsLocked(item: FeedItem): Boolean = item.membersOnly.access(
+    isAuthor = false,
+    hasBody = item.media.isNotEmpty() || item.text.isNotBlank() || item.poll != null,
+) == MembersAccess.Locked
+
+/** A locked post: its cover (blurred) when it has one, the lock and Join. */
+@Composable
+private fun BoxScope.LockedStage(item: FeedItem, poster: String?, topInset: Dp, onUnlocked: () -> Unit) {
+    if (poster != null) {
+        AsyncImage(
+            model = poster,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize().blur(LOCK_BLUR),
+        )
+    }
+    MembersOnlyLock(
+        creatorId = item.authorId,
+        creatorName = item.creatorName,
+        requiredLevelId = item.membersOnly.tierRequiredId,
+        requiredPricePaise = item.membersOnly.requiredPricePaise,
+        onUnlocked = onUnlocked,
+        style = MembersOnlyLockStyle.OnMedia,
+        title = item.title,
+        durationMs = item.membersOnly.redactedDurationMs,
+        modifier = Modifier
+            .align(Alignment.Center)
+            .padding(top = topInset, start = UsTheme.spacing.xxl, end = UsTheme.spacing.xxl),
+    )
+}
+
+private val LOCK_BLUR = 28.dp
 
 /**
  * A video post, full screen: cropped when it is close to the screen's shape,

@@ -122,6 +122,9 @@ fun interface CommentsViewerSource {
     suspend fun current(): CommentsViewer?
 }
 
+/** post-service's refusal of a members-only thread to a non-member (http/post_edit.go). */
+const val MEMBERS_ONLY_CODE = "MEMBERS_ONLY"
+
 /** Everything the comments UI renders. */
 data class CommentsUiState(
     val rows: List<CommentRow> = emptyList(),
@@ -156,6 +159,15 @@ data class CommentsUiState(
 ) {
     val canLoadMore: Boolean get() = nextCursor != null && !appending && appendError == null
     val canSubmit: Boolean get() = draft.isValidComment() && !submitting
+
+    /**
+     * The thread is a members-only post's and this viewer is not a member
+     * (paid memberships, 2026-10-23): post-service answers 403 MEMBERS_ONLY.
+     * The sheet says so and offers Join instead of an error and a composer.
+     */
+    val membersOnly: Boolean
+        get() = (refreshError as? AppError.Forbidden)?.code == MEMBERS_ONLY_CODE ||
+            (submitError as? AppError.Forbidden)?.code == MEMBERS_ONLY_CODE
 
     fun thread(parentId: String): ReplyThread = threads[parentId] ?: ReplyThread()
 

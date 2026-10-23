@@ -122,7 +122,7 @@ class SettingsRequestEncodingTest {
             "likes", "comments", "follows", "mentions", "reposts", "live", "new_videos", "messages",
             "super_likes", "replies", "friend_requests", "group_posts", "group_mentions",
             "channel_updates", "channel_urgent", "community_posts", "community_mentions",
-            "event_reminders", "credits", "system",
+            "event_reminders", "credits", "memberships", "system",
         )
         val NOTIFICATION_KEYS = setOf(
             "push_enabled", "email_enabled", "quiet_hours_enabled", "quiet_hours_start",

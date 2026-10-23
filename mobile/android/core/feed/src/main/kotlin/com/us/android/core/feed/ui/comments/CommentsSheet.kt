@@ -8,6 +8,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.us.android.core.common.error.AppError
 import com.us.android.core.engagement.data.CommentActionsRepository
 import com.us.android.core.engagement.data.CommentMentionSource
 import com.us.android.core.engagement.data.CommentsActions
@@ -17,6 +18,7 @@ import com.us.android.core.engagement.data.CommentsUiState
 import com.us.android.core.engagement.data.CommentsViewerSource
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.ReportRepository
+import com.us.android.core.memberships.ui.MembersOnlyLock
 import com.us.android.core.ui.UsCommentsCallbacks
 import com.us.android.core.ui.UsCommentsSheet
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -41,6 +43,8 @@ fun CommentsSheet(
     postId: String,
     onDismiss: () -> Unit,
     postAuthorId: String = "",
+    /** The author's name, for the Join a members-only thread offers (2026-10-23). */
+    postAuthorName: String = "",
     viewModel: CommentsViewModel = hiltViewModel(key = "comments:$postId"),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -55,7 +59,40 @@ fun CommentsSheet(
         state = state,
         callbacks = callbacks,
         onDismiss = onDismiss,
+        membersOnlyContent = membersOnlyJoin(
+            state = state,
+            postAuthorId = postAuthorId,
+            creatorName = postAuthorName,
+            onUnlocked = viewModel.actions::refresh,
+        ),
     )
+}
+
+/**
+ * The Join a members-only thread shows a non-member (paid memberships,
+ * 2026-10-23). The creator and level come from post-service's refusal
+ * itself (403 MEMBERS_ONLY with `details {creator_id, tier_required_id}`,
+ * members_read.go `MembersOnlyError`), else from the host's post author.
+ * Null when neither says who — the sheet then shows its sentence alone.
+ */
+fun membersOnlyJoin(
+    state: CommentsUiState,
+    postAuthorId: String,
+    creatorName: String,
+    onUnlocked: () -> Unit,
+): (@Composable () -> Unit)? {
+    val gate = ((state.refreshError ?: state.submitError) as? AppError.Forbidden)?.details.orEmpty()
+    val creatorId = gate["creator_id"]?.takeIf { it.isNotBlank() } ?: postAuthorId
+    if (creatorId.isBlank()) return null
+    val level = gate["tier_required_id"]?.takeIf { it.isNotBlank() }
+    return {
+        MembersOnlyLock(
+            creatorId = creatorId,
+            creatorName = creatorName,
+            requiredLevelId = level,
+            onUnlocked = onUnlocked,
+        )
+    }
 }
 
 /**

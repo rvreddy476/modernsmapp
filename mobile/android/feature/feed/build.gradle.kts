@@ -14,6 +14,8 @@ dependencies {
     // The feed data seam (API, paging, hydration, follow graph) and the shared
     // more/comments sheets — shared with :feature:tube.
     implementation(projects.core.feed)
+    // Paid memberships (2026-10-23): the members-only lock, Join, and the level list.
+    implementation(projects.core.memberships)
     implementation(projects.core.analytics)
     implementation(projects.core.common)
     implementation(projects.core.designsystem)

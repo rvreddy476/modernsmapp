@@ -148,6 +148,7 @@ class ComposerJourneyTest {
             },
             drafts = ComposerDraftStore(dao, json),
             keys = CreationKeyFactory { "key-1" },
+            membersGate = com.us.android.feature.post.RecordingMembersGate(),
         )
         viewModelUnderTest = viewModel
 

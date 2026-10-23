@@ -272,3 +272,15 @@ include(":app-doorstep-pro")
 include(":feature:seller")
 include(":core:commerce-ui")
 include(":core:facear-model")
+
+// Paid memberships (2026-10-23).
+//
+// :core:memberships is the shared half: monetization-service's membership
+// routes and post-service's members-only gate, the level rules, the payment
+// flow on :core:payments as application "memberships", and what every
+// members-only surface draws (the Join sheet, the lock, the level picker).
+// :feature:memberships is the creator's Memberships page and the member's own
+// list and detail. moduleGraphCheck rule (n) keeps both out of the partner
+// apps, the core free of every feature, and the feature reachable only from :app.
+include(":core:memberships")
+include(":feature:memberships")

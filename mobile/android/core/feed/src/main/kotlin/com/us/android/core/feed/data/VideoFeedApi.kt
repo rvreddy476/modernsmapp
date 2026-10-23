@@ -71,6 +71,12 @@ interface VideoFeedApi {
         @Query("limit") limit: Int,
         @Query("cursor") cursor: String? = null,
         @Query("sort") sort: String? = null,
+        /**
+         * Only the author's members-only posts (post-service handler.go
+         * `parseMembersOnlyParam`, 2026-10-23): `true` narrows the grid;
+         * null leaves the parameter out — the whole grid.
+         */
+        @Query("members_only") membersOnly: Boolean? = null,
     ): ApiEnvelope<List<FeedItemDto>>
 
     /** The viewer's bookmarks, every kind of post — post-service `GetBookmarks`. Bare rows again. */

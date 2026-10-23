@@ -38,6 +38,9 @@ dependencies {
     // The post share sheet's "Send in Messages" (2026-10-17): the inbox to
     // pick from and the post card to send. A core module, no feature edge.
     implementation(projects.core.chat)
+    // Paid memberships (2026-10-23): the comments sheet's Join on a
+    // members-only thread, and the Edit sheet's "Members only" level picker.
+    implementation(projects.core.memberships)
 
     // Offline copies: the background check of which copies may still be
     // kept. The same three lines :core:analytics has for its upload worker.

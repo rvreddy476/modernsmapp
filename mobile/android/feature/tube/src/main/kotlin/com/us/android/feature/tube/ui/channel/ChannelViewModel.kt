@@ -21,6 +21,7 @@ import com.us.android.core.feed.data.credits.CreditsRepository
 import com.us.android.core.feed.data.hides
 import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.media.MediaUrlResolver
+import com.us.android.core.memberships.data.MembershipsRepository
 import com.us.android.core.model.Channel
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
@@ -50,13 +51,30 @@ sealed interface ChannelHeaderState {
     data class Failed(val message: String) : ChannelHeaderState
 }
 
-/** The channel page's two lists. */
+/** The channel page's lists. */
 enum class ChannelTab(val label: String) {
     VIDEOS("Videos"),
+
+    /** The owner's members-only long videos (paid memberships, 2026-10-23), while they offer a level. */
+    MEMBERS("Members"),
 
     /** Videos the owner is credited in and accepted (video credits, 2026-10-23). */
     APPEARS_IN("Appears in"),
 }
+
+/**
+ * The channel's tabs, in order: Videos always; Members while the owner
+ * offers a level; Appears in when it holds something. Pure.
+ */
+fun channelTabsFor(members: Boolean, appearsIn: Boolean): List<ChannelTab> = ChannelTab.entries.filter { tab ->
+    when (tab) {
+        ChannelTab.VIDEOS -> true
+        ChannelTab.MEMBERS -> members
+        ChannelTab.APPEARS_IN -> appearsIn
+    }
+}
+
+private const val LONG_VIDEO = "long_video"
 
 /**
  * A channel inside Tube (2026-09-05; subscriptions 2026-09-12):
@@ -85,9 +103,20 @@ class ChannelViewModel @Inject constructor(
     engagement: EngagementStore,
     hidden: HiddenPosts,
     private val credits: CreditsRepository,
+    private val memberships: MembershipsRepository,
 ) : ViewModel() {
 
     val userId: String = savedStateHandle.toRoute<TubeChannelRoute>().userId
+
+    private val _offersMembers = MutableStateFlow(false)
+
+    /** The owner's members-only long videos, newest first; each a lock to a non-member. */
+    val membersItems: Flow<PagingData<FeedItem>> = videos.membersOnlyPosts(userId)
+        .map { page -> page.filter { it.feedContentType == LONG_VIDEO } }
+        .cachedIn(viewModelScope)
+        .combine(hidden.state) { page, set ->
+            if (set.isEmpty) page else page.filter { !set.hides(it) }
+        }
 
     private val _tab = MutableStateFlow(ChannelTab.VIDEOS)
 
@@ -110,8 +139,13 @@ class ChannelViewModel @Inject constructor(
             if (set.isEmpty) page else page.filter { !set.hides(it) }
         }
 
+    /** The tabs offered: Videos, then Members and Appears in only when each has something behind it. */
+    val tabs: StateFlow<List<ChannelTab>> = combine(_offersMembers, _offersAppearances) { members, appears ->
+        channelTabsFor(members = members, appearsIn = appears)
+    }.stateIn(viewModelScope, SharingStarted.Eagerly, listOf(ChannelTab.VIDEOS))
+
     fun selectTab(tab: ChannelTab) {
-        if (tab == ChannelTab.APPEARS_IN && !_offersAppearances.value) return
+        if (tab !in channelTabsFor(_offersMembers.value, _offersAppearances.value)) return
         _tab.value = tab
     }
 
@@ -121,6 +155,12 @@ class ChannelViewModel @Inject constructor(
             val any = credits.hasAppearances(userId)
             _offersAppearances.value = any
             if (!any && _tab.value == ChannelTab.APPEARS_IN) _tab.value = ChannelTab.VIDEOS
+        }
+        // Members (2026-10-23): while the owner offers a level; a failed read is "no".
+        viewModelScope.launch {
+            val offers = (memberships.levelsOf(userId) as? AppResult.Success)?.data.orEmpty().isNotEmpty()
+            _offersMembers.value = offers
+            if (!offers && _tab.value == ChannelTab.MEMBERS) _tab.value = ChannelTab.VIDEOS
         }
     }
 

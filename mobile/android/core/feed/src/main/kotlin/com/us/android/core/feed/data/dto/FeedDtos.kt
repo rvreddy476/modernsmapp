@@ -133,6 +133,19 @@ data class FeedItemDto(
     val genres: List<String> = emptyList(),
     @SerialName("release_year") val releaseYear: Int? = null,
     @SerialName("production_house") val productionHouse: String? = null,
+    /**
+     * Members-only posts (paid memberships, 2026-10-23). `tier_required_id`
+     * is on every gated row, member or not (post-service posts.go:131,
+     * feed-service hydration.go:177); `body_redacted` is true only where the
+     * server emptied the body for this viewer (posts.go:132, hydration.go:178);
+     * `duration_ms` rides only on a redacted row (posts.go:137,
+     * hydration.go:182). All `omitempty`, so an open post carries none.
+     */
+    @SerialName("tier_required_id") val tierRequiredId: String? = null,
+    @SerialName("body_redacted") val bodyRedacted: Boolean = false,
+    @SerialName("duration_ms") val durationMs: Long = 0L,
+    /** The level's monthly price on a gated row (post-service posts.go:144); absent elsewhere. */
+    @SerialName("tier_required_price_paise") val tierRequiredPricePaise: Long? = null,
 )
 
 /**

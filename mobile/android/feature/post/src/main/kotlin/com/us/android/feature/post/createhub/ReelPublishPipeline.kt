@@ -8,6 +8,7 @@ import com.us.android.core.feed.data.serverCode
 import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
+import com.us.android.core.memberships.data.membersOnlyRefusal
 import com.us.android.feature.post.data.ComposerRepository
 import com.us.android.feature.post.data.dto.CONTENT_TYPE_FLICK
 import com.us.android.feature.post.data.dto.CONTENT_TYPE_LONG_VIDEO
@@ -233,7 +234,8 @@ class ReelPublishPipeline @Inject constructor(
         if (ChannelRepository.requiresChannel(error)) {
             fail(run, pending, CHANNEL_REQUIRED_MESSAGE, retryable = true, needsChannel = true)
         } else {
-            val message = creditRefusal(error.serverCode()) ?: repository.message(error)
+            val code = error.serverCode()
+            val message = creditRefusal(code) ?: membersOnlyRefusal(code) ?: repository.message(error)
             fail(run, pending, message, retryable = !repository.isTerminal(error))
         }
 
@@ -406,6 +408,8 @@ class ReelPublishPipeline @Inject constructor(
                 genres = pending.genres.takeIf { long && it.isNotEmpty() },
                 releaseYear = pending.releaseYear?.takeIf { long },
                 productionHouse = pending.productionHouse.trim().takeIf { long && it.isNotEmpty() },
+                // Members only (2026-10-23): gated at the create, reel and long video alike.
+                tierRequiredId = pending.membersLevelId?.trim()?.takeIf { it.isNotEmpty() },
             )
         }
 

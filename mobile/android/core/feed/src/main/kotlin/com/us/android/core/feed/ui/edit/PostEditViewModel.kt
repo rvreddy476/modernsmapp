@@ -22,6 +22,9 @@ import com.us.android.core.feed.data.postEditRefusal
 import com.us.android.core.feed.data.serverCode
 import com.us.android.core.feed.data.toEditForm
 import com.us.android.core.feed.ui.credits.CreditsEditor
+import com.us.android.core.memberships.data.MembershipLevel
+import com.us.android.core.memberships.data.MembershipsRepository
+import com.us.android.core.memberships.data.membersOnlyRefusal
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -50,9 +53,26 @@ data class PostEditUiState(
     val problems: List<String> = emptyList(),
     /** The save landed; the sheet leaves. */
     val saved: Boolean = false,
+    /**
+     * Members only (paid memberships, 2026-10-23): the owner's ACTIVE levels
+     * (the picker is drawn only when there is one), the level the post was
+     * gated on as the sheet opened, and the one picked now (null = everyone).
+     */
+    val levels: List<MembershipLevel> = emptyList(),
+    val gateBase: String? = null,
+    val gate: String? = null,
 ) {
-    /** Something moved: Save has a patch to send. */
-    val dirty: Boolean get() = !postEditPatch(base, form).isEmpty
+    /** Something moved: Save has a patch to send, or a members-only change to apply. */
+    val dirty: Boolean get() = !postEditPatch(base, form).isEmpty || gateDirty
+
+    /** The members-only level moved. */
+    val gateDirty: Boolean get() = gate != gateBase
+
+    /**
+     * The picker is offered: the owner has an active level, or the post is
+     * already gated (on a level since turned off), so it can still be opened.
+     */
+    val offersMembersOnly: Boolean get() = levels.isNotEmpty() || gateBase != null
 
     /**
      * The Credits section is shown: a long video in a category that asks
@@ -83,6 +103,7 @@ class PostEditViewModel @Inject constructor(
     private val videos: VideoFeedRepository,
     creditsRepository: CreditsRepository,
     mentions: CommentMentionSource,
+    private val memberships: MembershipsRepository,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(PostEditUiState())
@@ -115,6 +136,10 @@ class PostEditViewModel @Inject constructor(
             val categories = videos.categories()
             _state.update { it.copy(categories = categories) }
         }
+        viewModelScope.launch {
+            val levels = memberships.ownActiveLevels()
+            _state.update { it.copy(levels = levels) }
+        }
         if (longVideo) credits.ensureGenres()
     }
 
@@ -129,8 +154,16 @@ class PostEditViewModel @Inject constructor(
                     val form = result.data.toEditForm()
                     val creditsForm = result.data.creditsForm { credits.newKey() }
                     credits.reset(creditsForm)
+                    val gate = result.data.tierRequiredId?.takeIf { it.isNotBlank() }
                     _state.update {
-                        it.copy(loading = false, base = form, form = form, creditsBase = creditsForm)
+                        it.copy(
+                            loading = false,
+                            base = form,
+                            form = form,
+                            creditsBase = creditsForm,
+                            gateBase = gate,
+                            gate = gate,
+                        )
                     }
                 }
                 is AppResult.Failure ->
@@ -138,6 +171,9 @@ class PostEditViewModel @Inject constructor(
             }
         }
     }
+
+    /** Members only: a level, or null for everyone. Applied on Save. */
+    fun selectGate(levelId: String?) = _state.update { it.copy(gate = levelId, problems = emptyList()) }
 
     /** Every field's change goes through here: the sheet hands back the form with one field moved. */
     fun change(transform: (PostEditForm) -> PostEditForm) =
@@ -155,6 +191,7 @@ class PostEditViewModel @Inject constructor(
         val creditsNow = credits.state.value.form
         val patch = postEditPatch(now.base, now.form)
             .then(if (now.offersCredits) creditsPatch(now.creditsBase, creditsNow) else PostEditPatch())
+            .then(gatePatch(now))
         if (patch.isEmpty) {
             _state.update { it.copy(saved = true) }
             return
@@ -163,15 +200,21 @@ class PostEditViewModel @Inject constructor(
         viewModelScope.launch {
             _state.update { current ->
                 when (val result = repository.save(postId, patch)) {
-                    is AppResult.Success ->
-                        current.copy(saving = false, saved = true, base = current.form, creditsBase = creditsNow)
+                    is AppResult.Success -> current.copy(
+                        saving = false,
+                        saved = true,
+                        base = current.form,
+                        creditsBase = creditsNow,
+                        gateBase = current.gate,
+                    )
                     is AppResult.Failure -> {
                         // A refusal of the credits fields is said under the Credits section, beside what it is about.
                         val credited = creditRefusal(result.error.serverCode())
                         if (credited != null) credits.showRefusal(credited)
+                        val problem = membersOnlyRefusal(result.error.serverCode()) ?: postEditRefusal(result.error)
                         current.copy(
                             saving = false,
-                            problems = if (credited != null) emptyList() else listOf(postEditRefusal(result.error)),
+                            problems = if (credited != null) emptyList() else listOf(problem),
                         )
                     }
                 }
@@ -179,3 +222,11 @@ class PostEditViewModel @Inject constructor(
         }
     }
 }
+
+/**
+ * The members-only change, in the same PATCH (post-service post_edit.go:97,
+ * 2026-10-23): a level sets the gate, `""` clears it (the platform `Json`
+ * drops a Kotlin null, which means "leave it").
+ */
+internal fun gatePatch(state: PostEditUiState): PostEditPatch =
+    if (state.gateDirty) PostEditPatch(tierRequiredId = state.gate ?: "") else PostEditPatch()

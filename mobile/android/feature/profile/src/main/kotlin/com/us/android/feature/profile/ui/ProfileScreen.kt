@@ -213,6 +213,10 @@ data class ProfileDestinations(
     val onOpenOffline: (() -> Unit)? = null,
     /** The Me tab's drawer "Credit requests" (video credits, 2026-10-23): `:app` pushes the requests screen (Tube's graph). */
     val onOpenCreditRequests: (() -> Unit)? = null,
+    /** The Me tab's drawer "My memberships" (2026-10-23): `:app` pushes the member's list. */
+    val onOpenMyMemberships: (() -> Unit)? = null,
+    /** The Me tab's drawer "Memberships" (2026-10-23): `:app` pushes the creator's page. OWN profile only. */
+    val onOpenMemberships: (() -> Unit)? = null,
     /** The Me tab's drawer "Upload": `:app` opens the Create sheet the bar's centre button opens. */
     val onOpenUpload: (() -> Unit)? = null,
 )
@@ -396,8 +400,10 @@ internal fun meDrawerDoors(state: ProfileUiState, destinations: ProfileDestinati
         grid = content != null && content.profile.isOwnProfile && !content.unavailable,
         offline = destinations.onOpenOffline != null,
         creditRequests = destinations.onOpenCreditRequests != null,
+        myMemberships = destinations.onOpenMyMemberships != null,
         messages = destinations.header != null,
         creatorHub = destinations.onOpenCreatorHub != null,
+        memberships = destinations.onOpenMemberships != null,
         upload = destinations.onOpenUpload != null,
         settings = destinations.onOpenSettings != null,
     )
@@ -408,8 +414,10 @@ private fun ProfileDestinations.openDrawerRow(row: MeDrawerRow) {
     when (row) {
         MeDrawerRow.OFFLINE -> onOpenOffline?.invoke()
         MeDrawerRow.CREDIT_REQUESTS -> onOpenCreditRequests?.invoke()
+        MeDrawerRow.MY_MEMBERSHIPS -> onOpenMyMemberships?.invoke()
         MeDrawerRow.MESSAGES -> header?.onOpenMessages?.invoke()
         MeDrawerRow.CREATOR_HUB -> onOpenCreatorHub?.invoke()
+        MeDrawerRow.MEMBERSHIPS -> onOpenMemberships?.invoke()
         MeDrawerRow.UPLOAD -> onOpenUpload?.invoke()
         MeDrawerRow.SETTINGS -> onOpenSettings?.invoke()
         // Opened in place, by a grid tab request.

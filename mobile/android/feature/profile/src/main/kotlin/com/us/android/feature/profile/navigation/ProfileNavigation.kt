@@ -120,6 +120,9 @@ fun NavGraphBuilder.ownProfileScreen(
     onOpenOffline: () -> Unit,
     /** The drawer's "Credit requests" (video credits, 2026-10-23): `:app` pushes the screen, which lives in Tube. */
     onOpenCreditRequests: () -> Unit = {},
+    /** The drawer's "My memberships" and "Memberships" (2026-10-23): `:app` pushes them; null hides the row. */
+    onOpenMyMemberships: (() -> Unit)? = null,
+    onOpenMemberships: (() -> Unit)? = null,
     /** The drawer's "Upload": `:app` opens the Create sheet. */
     onOpenUpload: () -> Unit,
 ) {
@@ -144,6 +147,8 @@ fun NavGraphBuilder.ownProfileScreen(
                 onOpenCreatorHub = onOpenCreatorHub,
                 onOpenOffline = onOpenOffline,
                 onOpenCreditRequests = onOpenCreditRequests,
+                onOpenMyMemberships = onOpenMyMemberships,
+                onOpenMemberships = onOpenMemberships,
                 onOpenUpload = onOpenUpload,
             ),
         )

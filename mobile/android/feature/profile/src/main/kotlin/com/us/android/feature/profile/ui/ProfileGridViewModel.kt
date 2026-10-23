@@ -5,12 +5,13 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
+import com.us.android.core.common.result.AppResult
 import com.us.android.core.feed.data.AuthorPostSort
 import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.feed.data.VideoFeedRepository
 import com.us.android.core.feed.data.VideoThumb
-import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.feed.data.credits.CreditsRepository
+import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.media.FeedEntry
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.ReelsEntry
@@ -21,6 +22,7 @@ import com.us.android.core.media.publish.ReelPublishActions
 import com.us.android.core.media.publish.ReelPublishItem
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
+import com.us.android.core.memberships.data.MembershipsRepository
 import com.us.android.core.model.FeedItem
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
@@ -57,6 +59,14 @@ enum class ProfileGridTab(val label: String, val contentType: String) {
     VIDEOS("Videos", "long_video"),
 
     /**
+     * The profile's members-only posts, every kind (paid memberships,
+     * 2026-10-23): the by-author rows that carry a level. On anyone's
+     * profile, offered only while the creator has an active level
+     * ([gridTabsFor]'s `members`). A non-member sees each as its lock.
+     */
+    MEMBERS("Members", ""),
+
+    /**
      * The long videos the profile's owner is credited in and accepted (video
      * credits, 2026-10-23), on anyone's profile — offered only when there is
      * at least one ([gridTabsFor]'s `appearsIn`).
@@ -84,11 +94,12 @@ enum class ProfileGridTab(val label: String, val contentType: String) {
  * is credited in at least one video — on anyone's profile, never empty.
  * Pure, so the sets are a table test.
  */
-fun gridTabsFor(isOwn: Boolean, appearsIn: Boolean = false): List<ProfileGridTab> =
+fun gridTabsFor(isOwn: Boolean, appearsIn: Boolean = false, members: Boolean = false): List<ProfileGridTab> =
     ProfileGridTab.entries.filter { tab ->
         when {
             tab.authored -> true
             tab.ownOnly -> isOwn
+            tab == ProfileGridTab.MEMBERS -> members
             else -> appearsIn
         }
     }
@@ -198,6 +209,7 @@ class ProfileGridViewModel @Inject constructor(
     follows: FollowGraph,
     savedStateHandle: SavedStateHandle,
     private val credits: CreditsRepository,
+    private val memberships: MembershipsRepository,
 ) : ViewModel() {
 
     private val ownId: String = follows.ownId
@@ -246,14 +258,31 @@ class ProfileGridViewModel @Inject constructor(
     val appearances: Flow<PagingData<FeedItem>> =
         if (userId.isBlank()) flowOf(PagingData.empty()) else credits.appearances(userId).cachedIn(viewModelScope)
 
+    /** The profile's members-only posts (paid memberships, 2026-10-23), newest first. */
+    val membersPosts: Flow<PagingData<FeedItem>> =
+        if (userId.isBlank()) flowOf(PagingData.empty()) else videos.membersOnlyPosts(userId).cachedIn(viewModelScope)
+
+    private var appearsIn = false
+    private var offersMembers = false
+
     /** Asks whether "Appears in" would hold anything; again on every pull, so a new acceptance shows the tab. */
     fun checkAppearances() {
         if (userId.isBlank()) return
         viewModelScope.launch {
-            val any = credits.hasAppearances(userId)
-            _tabs.value = gridTabsFor(isOwn, appearsIn = any)
-            if (!any && _tab.value == ProfileGridTab.APPEARS_IN) _tab.value = ProfileGridTab.POSTS
+            appearsIn = credits.hasAppearances(userId)
+            publishTabs()
         }
+        viewModelScope.launch {
+            // "Members" while the creator offers a level (2026-10-23); a failed read is "no".
+            offersMembers = (memberships.levelsOf(userId) as? AppResult.Success)?.data.orEmpty().isNotEmpty()
+            publishTabs()
+        }
+    }
+
+    private fun publishTabs() {
+        val tabs = gridTabsFor(isOwn, appearsIn = appearsIn, members = offersMembers)
+        _tabs.value = tabs
+        if (_tab.value !in tabs) _tab.value = ProfileGridTab.POSTS
     }
 
     private val _sorts = MutableStateFlow<Map<ProfileGridTab, AuthorPostSort>>(emptyMap())
@@ -376,7 +405,7 @@ class ProfileGridViewModel @Inject constructor(
             ProfileGridTab.REELS -> reelsEntry.open(postId)
             ProfileGridTab.VIDEOS -> tubeEntry.showFirst(postId)
             // Nothing is ever published INTO Saved, Liked or Appears in; pendingTabFor never answers them.
-            ProfileGridTab.SAVED, ProfileGridTab.LIKED, ProfileGridTab.APPEARS_IN -> return
+            ProfileGridTab.SAVED, ProfileGridTab.LIKED, ProfileGridTab.APPEARS_IN, ProfileGridTab.MEMBERS -> return
         }
         _published.tryEmit(tab)
     }

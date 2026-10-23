@@ -242,6 +242,8 @@ object ComposerReducer {
         language = state.language,
         distribution = DistributionRequest(),
         title = state.title.trim().takeIf { state.longForm && it.isNotEmpty() },
+        // Members only (2026-10-23): gated at the create, and only on a level the creator offers.
+        tierRequiredId = state.membersLevelId?.takeIf { id -> state.membersLevels.any { it.id == id } },
     )
 }
 

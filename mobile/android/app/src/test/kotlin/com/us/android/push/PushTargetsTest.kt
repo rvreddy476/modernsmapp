@@ -127,6 +127,31 @@ class PushTargetsTest {
         assertThat(liveOpenOf(watching = OTHER_STREAM, streamId = STREAM)).isEqualTo(LiveOpen.REPLACE)
     }
 
+    /** Paid memberships (2026-10-23): the creator's notice opens Memberships, a member's opens the membership. */
+    @Test
+    fun `membership pushes open the creator's page or the membership, linked or not`() {
+        val sub = "00000000-0000-4000-8000-0000000ab001"
+        val creatorPush = PushDestination("membership_new_member", entityId = sub, deepLink = "/monetization/tiers")
+        assertThat(pushTargetOf(creatorPush)).isEqualTo(NotificationTarget.CreatorMemberships)
+        val memberPush = PushDestination("membership_renewal_due", entityId = sub, deepLink = "/memberships/$sub")
+        assertThat(pushTargetOf(memberPush)).isEqualTo(NotificationTarget.Membership(sub))
+        // No link: the type and the subscription id still say where.
+        assertThat(pushTargetOf(PushDestination("membership_new_member", entityId = sub, deepLink = "")))
+            .isEqualTo(NotificationTarget.CreatorMemberships)
+        assertThat(pushTargetOf(PushDestination("membership_payment_failed", entityId = sub, deepLink = "")))
+            .isEqualTo(NotificationTarget.Membership(sub))
+        assertThat(pushTargetOf(PushDestination("membership_ended", entityId = "not-an-id", deepLink = "")))
+            .isEqualTo(NotificationTarget.MyMemberships)
+        assertThat(MEMBERSHIP_TYPES).containsExactly(
+            "membership_new_member",
+            "membership_joined",
+            "membership_renewed",
+            "membership_renewal_due",
+            "membership_payment_failed",
+            "membership_ended",
+        )
+    }
+
     private companion object {
         const val STREAM = "3f2b8c1e-7a4d-4e9b-9c55-0d1e2f3a4b5c"
         const val OTHER_STREAM = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"

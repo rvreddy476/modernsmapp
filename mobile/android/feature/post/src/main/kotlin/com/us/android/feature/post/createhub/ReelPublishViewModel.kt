@@ -14,6 +14,7 @@ import com.us.android.core.feed.data.credits.creditsOffered
 import com.us.android.core.feed.data.credits.releaseYearOrNull
 import com.us.android.core.feed.data.credits.toInput
 import com.us.android.core.feed.ui.credits.CreditsEditor
+import com.us.android.core.memberships.data.MembershipLevel
 import com.us.android.core.media.ChosenSound
 import com.us.android.core.media.SoundEntry
 import com.us.android.core.media.publish.PublishKind
@@ -199,6 +200,13 @@ class ReelPublishViewModel @Inject constructor(
         val phase: Phase = Phase.Editing,
         /** The viewer's channel, asked for a long video; unknown for a reel. */
         val channel: ChannelState = ChannelState.Unknown,
+        /**
+         * Members only (paid memberships, 2026-10-23): the creator's ACTIVE
+         * levels — the row is offered only when there is one — and the level
+         * picked, or null for everyone.
+         */
+        val membersLevels: List<MembershipLevel> = emptyList(),
+        val membersLevelId: String? = null,
     ) {
         val isBusy: Boolean
             get() = phase is Phase.Preparing || phase is Phase.Enqueued
@@ -332,6 +340,13 @@ class ReelPublishViewModel @Inject constructor(
             lookups.categories()?.let { loaded -> _state.update { it.copy(categories = loaded) } }
         }
         viewModelScope.launch { channels.own.collect { known -> _state.update { it.copy(channel = known) } } }
+        viewModelScope.launch {
+            val levels = lookups.membershipLevels()
+            _state.update { s ->
+                val kept = s.membersLevelId?.takeIf { id -> levels.any { it.id == id } }
+                s.copy(membersLevels = levels, membersLevelId = kept)
+            }
+        }
         if (_state.value.kind == PublishKind.LONG) ensureChannel()
         viewModelScope.launch { scrubs.collectLatest { timeUs -> seekPreview(timeUs) } }
     }
@@ -514,6 +529,11 @@ class ReelPublishViewModel @Inject constructor(
     fun onTitleChanged(value: String) = _state.update { it.copy(title = value.take(MAX_TITLE_LENGTH)) }
 
     fun onCaptionChanged(value: String) = _state.update { it.copy(caption = value) }
+
+    /** Members only: one of the creator's levels, or null for everyone. */
+    fun onMembersLevelChanged(levelId: String?) = _state.update { s ->
+        s.copy(membersLevelId = levelId?.takeIf { id -> s.membersLevels.any { it.id == id } })
+    }
 
     fun onVisibilityChanged(value: String) = _state.update {
         if (value in SupportedAudience) it.copy(visibility = value) else it
@@ -775,6 +795,8 @@ class ReelPublishViewModel @Inject constructor(
             audioStartMs = 0L,
             originalAudioVolume = current.originalAudioVolume.toDouble(),
             overlayAudioVolume = current.overlayAudioVolume.toDouble(),
+            // Members only (2026-10-23): only a level the creator still offers.
+            membersLevelId = current.membersLevelId?.takeIf { id -> current.membersLevels.any { it.id == id } },
         )
     }
 }

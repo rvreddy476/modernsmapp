@@ -1,9 +1,11 @@
 package com.us.android.feature.post.di
 
+import com.us.android.feature.post.data.ApiPostMembersGate
 import com.us.android.feature.post.data.HashtagSearchApi
 import com.us.android.feature.post.data.PeopleSearchApi
 import com.us.android.feature.post.data.PostApi
 import com.us.android.feature.post.data.PostCategoriesApi
+import com.us.android.feature.post.data.PostMembersGate
 import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
@@ -21,6 +23,10 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object PostModule {
+
+    /** Members only (2026-10-23): the creator's levels, and the gate applied after a create. */
+    @Provides
+    fun providePostMembersGate(impl: ApiPostMembersGate): PostMembersGate = impl
 
     @Provides
     @Singleton

@@ -107,6 +107,12 @@ fun UsCommentsSheet(
     modifier: Modifier = Modifier,
     /** Rendered as the header's ⋮ only when a host has something to put behind it. */
     onOverflow: (() -> Unit)? = null,
+    /**
+     * What a members-only thread shows a non-member (paid memberships,
+     * 2026-10-23) in place of the list and the composer — the host's Join
+     * lock. Null shows the sentence alone.
+     */
+    membersOnlyContent: (@Composable () -> Unit)? = null,
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val sheetHeight = LocalConfiguration.current.screenHeightDp.dp * SHEET_HEIGHT_FRACTION
@@ -130,6 +136,7 @@ fun UsCommentsSheet(
                 callbacks = callbacks,
                 onOverflow = onOverflow,
                 modifier = Modifier.weight(1f),
+                membersOnlyContent = membersOnlyContent,
             )
         }
     }
@@ -151,6 +158,7 @@ fun UsCommentsPanel(
     callbacks: UsCommentsCallbacks,
     modifier: Modifier = Modifier,
     onOverflow: (() -> Unit)? = null,
+    membersOnlyContent: (@Composable () -> Unit)? = null,
 ) {
     val listState = rememberLazyListState()
     val shouldLoadMore by remember(state) {
@@ -175,6 +183,9 @@ fun UsCommentsPanel(
         // which made every zero-comment post impossible to comment on.
         Box(modifier = Modifier.weight(1f)) {
             when {
+                // A members-only thread, to a non-member: no list, no composer, Join.
+                state.membersOnly -> MembersOnlyComments(content = membersOnlyContent)
+
                 state.loading && state.rows.isEmpty() ->
                     UsLoadingState(label = "Loading comments")
 
@@ -212,7 +223,7 @@ fun UsCommentsPanel(
             }
         }
 
-        ComposerBlock(state = state, callbacks = callbacks)
+        if (!state.membersOnly) ComposerBlock(state = state, callbacks = callbacks)
     }
 
     menuFor?.let { id ->
@@ -229,6 +240,26 @@ fun UsCommentsPanel(
                 onDismiss = { menuFor = null },
             )
         }
+    }
+}
+
+/** A members-only thread's comments, to a non-member: the sentence, then the host's Join. */
+@Composable
+private fun MembersOnlyComments(content: (@Composable () -> Unit)?) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(UsTheme.spacing.pageHorizontal)
+            .testTag("comments_members_only"),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+    ) {
+        Text(
+            text = "Comments on this post are for members.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = UsTheme.extended.textMuted,
+        )
+        content?.invoke()
     }
 }
 

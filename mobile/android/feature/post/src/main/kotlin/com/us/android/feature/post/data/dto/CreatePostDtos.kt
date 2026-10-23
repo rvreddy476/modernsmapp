@@ -242,6 +242,17 @@ data class CreatePostRequest(
 
     /** At most 100 characters. */
     @SerialName("production_house") val productionHouse: String? = null,
+
+    // ── Members only (paid memberships, 2026-10-23) ────────────────────
+    //
+    // The post is gated from birth (post-service handler.go:556), every
+    // content type: a members-only post is never public for a moment. One of
+    // the author's ACTIVE levels, or the create is refused 400 INVALID_TIER;
+    // 503 MEMBERSHIP_TIERS_UNAVAILABLE creates nothing. Null (open) is left
+    // out, so an open post is byte-identical to the request before it.
+
+    /** The level the post is for, or null for everyone. */
+    @SerialName("tier_required_id") val tierRequiredId: String? = null,
 )
 
 /**

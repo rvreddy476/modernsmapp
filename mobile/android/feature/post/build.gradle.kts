@@ -21,6 +21,9 @@ dependencies {
     implementation(projects.core.profile)
     implementation(projects.core.media)
     implementation(projects.core.feed)
+    // Paid memberships (2026-10-23): the members-only lock on a post, and the
+    // "Members only" level picker on the composer and the reel / video form.
+    implementation(projects.core.memberships)
     // The publish transport PORT lives in the pure contract module; this
     // adapter implements it beside the DTO whose bytes it freezes.
     implementation(projects.core.creatorModel)

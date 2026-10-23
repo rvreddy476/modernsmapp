@@ -50,6 +50,8 @@ import com.us.android.core.media.applyCaption
 import com.us.android.core.media.captionChoice
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
+import com.us.android.core.model.MembersAccess
+import com.us.android.core.model.membersPlayback
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.NotifyOn
 import com.us.android.core.model.VideoCredits
@@ -86,7 +88,17 @@ sealed interface WatchContent {
      * yet. [offlineCopy] says the frame comes off the device (2026-10-02):
      * the screen then draws the "Offline copy" marker.
      */
-    data class Ready(val item: FeedItem, val playback: Playback?, val offlineCopy: Boolean = false) : WatchContent
+    data class Ready(
+        val item: FeedItem,
+        val playback: Playback?,
+        val offlineCopy: Boolean = false,
+        /**
+         * Members only (paid memberships, 2026-10-23): this viewer may not
+         * watch it — or it is not known yet that they may. The page draws the
+         * lock and Join where the player goes, and the player holds nothing.
+         */
+        val locked: Boolean = false,
+    ) : WatchContent
     data class Failed(val message: String) : WatchContent
 }
 
@@ -420,6 +432,8 @@ class WatchViewModel @Inject constructor(
      */
     private fun applyAudio(tracks: Map<String, List<AudioTrack>>, language: String?) {
         val ready = _content.value as? WatchContent.Ready ?: return
+        // A locked video plays nothing, its dubs included.
+        if (ready.locked) return
         val base = basePlayback ?: return
         val dub = audio.dubPlayback(ready.item, language, tracks)
         val target = dub ?: base
@@ -446,20 +460,31 @@ class WatchViewModel @Inject constructor(
         _currentId.value = postId
     }
 
-    private suspend fun load(postId: String) {
+    /**
+     * The viewer joined (paid memberships, 2026-10-23): read the video again
+     * from the server — never from the list row that was redacted — and play
+     * it if the server now sends it whole.
+     */
+    fun reloadAfterUnlock() {
+        val postId = _currentId.value
+        viewModelScope.launch { load(postId, fromServer = true) }
+    }
+
+    private suspend fun load(postId: String, fromServer: Boolean = false) {
         _content.value = WatchContent.Loading
         offline.ensureLoaded()
         // A copy stored on this device is what plays (2026-10-02), and it
         // opens from what was kept with it: no round trip, so none can fail.
         val stored = offline.playable(postId)
-        val listed = queue.items.value.firstOrNull { it.id == postId }
-        val kept = if (listed == null) stored?.toFeedItem() else null
+        val listed = queue.items.value.firstOrNull { it.id == postId }.takeUnless { fromServer }
+        val kept = if (listed == null) stored.takeUnless { fromServer }?.toFeedItem() else null
         val item = listed ?: kept ?: fetch(postId)
         if (item == null) {
             player.stop()
             _content.value = WatchContent.Failed("We couldn't load this video.")
             return
         }
+        if (showLockedIfMembersOnly(item)) return
         // A row fetched by id IS the post detail; a list row, and a kept one, is refreshed from it.
         if (listed == null && kept == null) actions.adopt(item) else launchRefreshViewerState(postId)
         launchLoadSeries(postId)
@@ -490,6 +515,21 @@ class WatchViewModel @Inject constructor(
         player.playWhenReady = true
         startWatchAnalytics(item)
         resume(postId, item)
+    }
+
+    /**
+     * Members only (2026-10-23): a video this viewer may not watch — the row
+     * was redacted, or it is gated and came without its media — is the lock.
+     * The player is never prepared for it: it fails closed. True when locked.
+     */
+    private fun showLockedIfMembersOnly(item: FeedItem): Boolean {
+        if (item.membersPlayback(ownUserId) != MembersAccess.Locked) return false
+        player.stop()
+        player.clearMediaItems()
+        basePlayback = null
+        _content.value = WatchContent.Ready(item = edits.edits.value.applyTo(item), playback = null, locked = true)
+        launchKnowAuthor(item)
+        return true
     }
 
     /**
@@ -562,6 +602,22 @@ class WatchViewModel @Inject constructor(
             if (_currentId.value != postId) return@launch
             actions.adopt(detail)
             knowGenres(detail)
+            // The detail is the server's answer for THIS viewer: a membership
+            // that ended since the list was read locks the video now.
+            if (detail.membersPlayback(ownUserId) == MembersAccess.Locked) {
+                player.stop()
+                player.clearMediaItems()
+                basePlayback = null
+                endWatchAnalytics(PlayEndReason.SWIPE_NEXT)
+                _content.update { current ->
+                    if (current is WatchContent.Ready && current.item.id == postId) {
+                        current.copy(item = detail, playback = null, locked = true)
+                    } else {
+                        current
+                    }
+                }
+                return@launch
+            }
             _content.update { current ->
                 if (current is WatchContent.Ready && current.item.id == postId) {
                     current.copy(item = current.item.withViewerStateOf(detail))

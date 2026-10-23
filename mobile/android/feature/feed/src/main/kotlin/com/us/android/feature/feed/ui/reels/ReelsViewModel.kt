@@ -25,6 +25,7 @@ import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.feed.data.AudioTrack
 import com.us.android.core.feed.data.FeedRepository
+import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.feed.data.PostEdits
 import com.us.android.core.feed.data.SoundsRepository
@@ -59,6 +60,8 @@ import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedPostControls
 import com.us.android.core.model.FeedQuery
 import com.us.android.core.model.FollowStatus
+import com.us.android.core.model.MembersAccess
+import com.us.android.core.model.membersPlayback
 import com.us.android.core.model.ReelSound
 import com.us.android.core.model.canUseSound
 import com.us.android.core.ui.SPEED_NORMAL
@@ -749,11 +752,18 @@ class ReelsViewModel @Inject constructor(
      * itself — the server's `playback_url`, a ready asset's `hls_url`, a
      * processing asset's original — is [playbackFor].
      */
-    fun playback(item: FeedItem): Playback? =
+    fun playback(item: FeedItem): Playback? {
+        // Members only (2026-10-23): a reel this viewer may not watch is never
+        // handed to a player — not its stored copy, not a dub. Fails closed.
+        if (item.membersPlayback(ownUserId) == MembersAccess.Locked) return null
         // A ready dub in the viewer's language wins over everything, the
         // stored copy included, as the web's `sourceOverride` does.
-        audio.dubPlayback(item, audioLanguage.value, audioTracks.value)
+        return audio.dubPlayback(item, audioLanguage.value, audioTracks.value)
             ?: reelPlayback(storedCopy(item.id)?.playback(), urlResolver.playbackFor(item))
+    }
+
+    /** The still a locked reel is drawn behind (blurred): the chosen cover the server keeps on a redacted row. */
+    fun lockedCover(item: FeedItem): String? = urlResolver.videoThumb(item).url
 
     // ── Alternate audio (2026-10-21) ─────────────────────────────────────
 

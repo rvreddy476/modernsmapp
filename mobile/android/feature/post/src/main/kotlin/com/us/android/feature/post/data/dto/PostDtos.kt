@@ -78,6 +78,15 @@ data class PostDto(
     @SerialName("ai_generated") val aiGenerated: Boolean = false,
     @SerialName("link_url") val linkUrl: String? = null,
     @SerialName("hide_share") val hideShare: Boolean = false,
+    /**
+     * Members-only (paid memberships, 2026-10-23), post-service posts.go:131-137:
+     * the level on every gated post, `body_redacted` where the body was emptied
+     * for this viewer, and the video length kept on a redacted row.
+     */
+    @SerialName("tier_required_id") val tierRequiredId: String? = null,
+    @SerialName("body_redacted") val bodyRedacted: Boolean = false,
+    @SerialName("duration_ms") val durationMs: Long = 0L,
+    @SerialName("tier_required_price_paise") val tierRequiredPricePaise: Long? = null,
 )
 
 /** Nested object, not flat fields — `counts.likes`, `counts.comments`. */

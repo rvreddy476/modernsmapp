@@ -18,6 +18,8 @@ dependencies {
     implementation(projects.core.auth)
     implementation(projects.core.media)
     implementation(projects.core.feed)
+    // Paid memberships (2026-10-23): the members-only lock, Join, and the level list.
+    implementation(projects.core.memberships)
     implementation(projects.core.engagement)
     // Start-direct only: the Message button on someone else's profile opens a
     // conversation through :core:chat. This is a feature depending on a core

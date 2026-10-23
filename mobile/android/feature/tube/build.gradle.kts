@@ -25,6 +25,8 @@ dependencies {
     // The feed data seam: paging, hydration, the follow graph, and the shared
     // more / comments sheets.
     implementation(projects.core.feed)
+    // Paid memberships (2026-10-23): the members-only lock, Join, and the level list.
+    implementation(projects.core.memberships)
     implementation(projects.core.engagement)
     // The viewer's "Autoplay next episode" switch.
     implementation(projects.core.datastore)

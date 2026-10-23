@@ -79,6 +79,31 @@ class AuthorPostSortTest {
             .isEqualTo("/v1/posts/by-author/u1?type=flick&limit=15&cursor=c2&sort=popular")
     }
 
+    /** Paid memberships (2026-10-23): the Members tab asks the server for the gated rows alone. */
+    @Test
+    fun `the Members tab asks for members_only=true and keeps only gated rows`() = runTest {
+        enqueue(
+            """{"data":[{"id":"g","author_id":"u1","tier_required_id":"t1","body_redacted":true},""" +
+                """{"id":"o","author_id":"u1"}]}""",
+        )
+
+        val items = repository.membersOnlyPosts("u1").asSnapshot()
+
+        val request = server.takeRequest()
+        assertThat(request.query("members_only")).isEqualTo("true")
+        assertThat(request.query("type")).isEmpty()
+        assertThat(request.query("sort")).isEqualTo("latest")
+        // An open row that slipped through (a server ignoring the parameter) never fills the tab.
+        assertThat(items.map { it.id }).containsExactly("g")
+    }
+
+    @Test
+    fun `the plain by-author read sends no members_only at all`() = runTest {
+        enqueue("""{"data":[]}""")
+        api.postsByAuthor(authorId = "u1", type = "flick", limit = 15)
+        assertThat(server.takeRequest().query("members_only")).isNull()
+    }
+
     @Test
     fun `the grid sends its sort on every page and pages with the cursor that sort minted`() = runTest {
         enqueue(page(listOf("a", "b"), next = "pop-1"))

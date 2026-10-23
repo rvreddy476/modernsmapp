@@ -61,11 +61,17 @@ enum class MeDrawerRow(val label: String, val icon: ImageVector, val group: MeDr
     /** The viewer's pending credit requests (video credits, 2026-10-23), Tube's graph. */
     CREDIT_REQUESTS("Credit requests", UsIcons.Clapperboard, MeDrawerGroup.ACTIVITY),
 
+    /** The memberships the viewer pays for (paid memberships, 2026-10-23): renew, change, cancel. */
+    MY_MEMBERSHIPS("My memberships", UsIcons.Star, MeDrawerGroup.ACTIVITY),
+
     /** The chat home. */
     MESSAGES("Messages", UsIcons.Comment, MeDrawerGroup.ACTIVITY),
 
     /** The read-only Creator Hub (T-31). */
     CREATOR_HUB("Creator Hub", UsIcons.Gauge, MeDrawerGroup.CREATOR_TOOLS),
+
+    /** The creator's Memberships page (2026-10-23): eligibility, levels, members. */
+    MEMBERSHIPS("Memberships", UsIcons.Award, MeDrawerGroup.CREATOR_TOOLS),
 
     /** The Create sheet, the same one the bar's centre button opens. */
     UPLOAD("Upload", UsIcons.Upload, MeDrawerGroup.CREATOR_TOOLS),
@@ -86,8 +92,10 @@ data class MeDrawerDoors(
     val grid: Boolean = false,
     val offline: Boolean = false,
     val creditRequests: Boolean = false,
+    val myMemberships: Boolean = false,
     val messages: Boolean = false,
     val creatorHub: Boolean = false,
+    val memberships: Boolean = false,
     val upload: Boolean = false,
     val settings: Boolean = false,
 )
@@ -107,8 +115,10 @@ fun meDrawerSections(isOwnProfile: Boolean, doors: MeDrawerDoors): List<MeDrawer
             MeDrawerRow.SAVED -> doors.grid && ProfileGridTab.SAVED in ownTabs
             MeDrawerRow.OFFLINE -> doors.offline
             MeDrawerRow.CREDIT_REQUESTS -> doors.creditRequests
+            MeDrawerRow.MY_MEMBERSHIPS -> doors.myMemberships
             MeDrawerRow.MESSAGES -> doors.messages
             MeDrawerRow.CREATOR_HUB -> doors.creatorHub
+            MeDrawerRow.MEMBERSHIPS -> doors.memberships
             MeDrawerRow.UPLOAD -> doors.upload
             MeDrawerRow.SETTINGS -> doors.settings
         }

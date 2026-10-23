@@ -13,11 +13,15 @@ import com.us.android.core.media.upload.MediaUploader
 import com.us.android.core.media.upload.PresignedPutResult
 import com.us.android.core.media.upload.PresignedUploader
 import com.us.android.core.media.upload.UploadSource
+import com.us.android.core.memberships.data.TIERS_UNAVAILABLE
+import com.us.android.core.memberships.data.membersOnlyRefusal
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.testing.MainDispatcherRule
+import com.us.android.feature.post.RecordingMembersGate
 import com.us.android.feature.post.data.ComposerRepository
 import com.us.android.feature.post.data.dto.CreatePostRequest
+import com.us.android.feature.post.level
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.flow.Flow
@@ -120,6 +124,7 @@ class ComposerViewModelTest {
     private class RecordingRepository(private val json: Json) :
         ComposerRepository(ThrowingPostApi(), ErrorMapper(Json { ignoreUnknownKeys = true })) {
         val keys = mutableListOf<String>()
+        val requests = mutableListOf<CreatePostRequest>()
         var result: AppResult<String> = AppResult.Success("post-1")
 
         override suspend fun createPost(
@@ -127,6 +132,7 @@ class ComposerViewModelTest {
             request: CreatePostRequest,
         ): AppResult<String> {
             keys += creationKey
+            requests += request
             return result
         }
     }
@@ -176,12 +182,14 @@ class ComposerViewModelTest {
             var n = 0
             override fun newKey(): String = "key-${++n}"
         },
+        membersGate: RecordingMembersGate = RecordingMembersGate(),
     ) = ComposerViewModel(
         repository = repository,
         uploader = uploader(api),
         imageSources = resolver,
         drafts = ComposerDraftStore(dao, json),
         keys = keyFactory,
+        membersGate = membersGate,
     )
 
     /** A repository whose publish never succeeds, so the draft survives. */
@@ -622,5 +630,69 @@ class ComposerViewModelTest {
         assertThat(vm.state.value.discarded).isFalse()
         assertThat(dao.clears).isEqualTo(0)
         assertThat(dao.stored?.text).isEqualTo("still writing")
+    }
+
+    // ── Members only (paid memberships, 2026-10-23) ─────────────────────
+
+    @Test
+    fun `the picker offers the creator's levels, and a members-only post is gated in the create`() = runTest {
+        val gate = RecordingMembersGate(levels = listOf(level("tier-1")))
+        val repository = RecordingRepository(json)
+        val vm = viewModel(repository = repository, membersGate = gate)
+        advanceUntilIdle()
+        assertThat(vm.state.value.membersLevels.map { it.id }).containsExactly("tier-1")
+
+        vm.onTextChanged("for my members")
+        vm.onMembersLevelChanged("tier-1")
+        vm.onPostPressed()
+        advanceUntilIdle()
+
+        assertThat(repository.requests.single().tierRequiredId).isEqualTo("tier-1")
+        assertThat(vm.state.value.phase).isEqualTo(ComposerPhase.Published("post-1"))
+    }
+
+    @Test
+    fun `a level the creator does not offer is not picked, and a post for everyone carries none`() = runTest {
+        val gate = RecordingMembersGate(levels = listOf(level("tier-1")))
+        val repository = RecordingRepository(json)
+        val vm = viewModel(repository = repository, membersGate = gate)
+        advanceUntilIdle()
+
+        vm.onTextChanged("for everyone")
+        vm.onMembersLevelChanged("someone-elses-tier")
+        assertThat(vm.state.value.membersLevelId).isNull()
+        vm.onPostPressed()
+        advanceUntilIdle()
+
+        assertThat(repository.requests.single().tierRequiredId).isNull()
+        assertThat(vm.state.value.phase).isEqualTo(ComposerPhase.Published("post-1"))
+    }
+
+    @Test
+    fun `levels that could not be checked keep the draft, say so, and retry the SAME create`() = runTest {
+        val gate = RecordingMembersGate(levels = listOf(level("tier-1")))
+        val dao = FakeDraftDao()
+        val repository = RecordingRepository(json).apply {
+            result = AppResult.Failure(AppError.Server(statusCode = 503, code = TIERS_UNAVAILABLE))
+        }
+        val vm = viewModel(dao = dao, repository = repository, membersGate = gate)
+        advanceUntilIdle()
+
+        vm.onTextChanged("for my members")
+        vm.onMembersLevelChanged("tier-1")
+        vm.onPostPressed()
+        advanceUntilIdle()
+
+        val failed = vm.state.value.phase as ComposerPhase.RetryableFailure
+        assertThat(failed.message).isEqualTo(membersOnlyRefusal(TIERS_UNAVAILABLE))
+        assertThat(dao.stored).isNotNull()
+
+        repository.result = AppResult.Success("post-1")
+        vm.onRetry()
+        advanceUntilIdle()
+
+        assertThat(repository.keys.distinct()).hasSize(1)
+        assertThat(repository.requests.map { it.tierRequiredId }.distinct()).containsExactly("tier-1")
+        assertThat(vm.state.value.phase).isEqualTo(ComposerPhase.Published("post-1"))
     }
 }

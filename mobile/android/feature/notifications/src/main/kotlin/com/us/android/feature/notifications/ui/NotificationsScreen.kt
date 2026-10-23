@@ -822,6 +822,15 @@ internal fun Notification.describe(): String {
         // push carries "{role} · {title}"), so the row is its title, or this from the type.
         NotificationKind.CreditRequest -> title ?: "$who credited you in a video"
         NotificationKind.CreditAccepted -> title ?: "$who accepted your credit"
+        // Paid memberships (2026-10-23): the server's inbox title first
+        // (notification-service inbox_copy.go), then the same words from the type.
+        NotificationKind.MembershipNewMember -> title ?: "$who joined your membership"
+        NotificationKind.MembershipJoined,
+        NotificationKind.MembershipRenewed,
+        NotificationKind.MembershipRenewalDue,
+        NotificationKind.MembershipPaymentFailed,
+        NotificationKind.MembershipEnded,
+        -> title ?: membershipLine(kind, actorName)
         NotificationKind.MissedCall ->
             if (actorName.isBlank()) "Missed call" else "Missed call from $who"
         // The server writes incoming_* rows on every call invite, answered or
@@ -838,6 +847,34 @@ internal fun Notification.describe(): String {
         is NotificationKind.Unknown -> title
             ?: CustomerNotification.description((kind as NotificationKind.Unknown).raw)
             ?: "You have a new notification"
+    }
+}
+
+/**
+ * A member's membership notice, from the type, in the server's words
+ * (inbox_copy.go): the creator by name, or "a creator" when the name is
+ * unknown — "Your a creator membership" is not a sentence.
+ */
+internal fun membershipLine(kind: NotificationKind, creatorName: String): String {
+    val named = creatorName.isNotBlank()
+    return when (kind) {
+        NotificationKind.MembershipJoined ->
+            if (named) "You're a member of $creatorName" else "You're a member of a creator"
+        NotificationKind.MembershipRenewed ->
+            if (named) "Your $creatorName membership was renewed" else "Your membership with a creator was renewed"
+        NotificationKind.MembershipRenewalDue -> if (named) {
+            "Your $creatorName membership ends soon — renew to keep access"
+        } else {
+            "Your membership with a creator ends soon — renew to keep access"
+        }
+        NotificationKind.MembershipPaymentFailed -> if (named) {
+            "Your $creatorName membership payment didn't go through"
+        } else {
+            "Your membership payment to a creator didn't go through"
+        }
+        NotificationKind.MembershipEnded ->
+            if (named) "Your $creatorName membership has ended" else "Your membership with a creator has ended"
+        else -> "You have a new notification"
     }
 }
 

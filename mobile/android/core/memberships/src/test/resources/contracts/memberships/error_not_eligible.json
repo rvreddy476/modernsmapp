@@ -1,0 +1,1 @@
+{"error":{"code":"MEMBERSHIPS_NOT_ELIGIBLE","message":"You can't offer memberships yet","details":{"missing":["pan","followers"]}},"meta":{"request_id":"req-1"}}

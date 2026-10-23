@@ -574,6 +574,12 @@ enum class NotificationChannelSpec(
             // to SOCIAL, so muting likes muted live alerts too.
             "creator_went_live" -> LIVE
             "account", "security" -> ACCOUNT
+            // Paid memberships (2026-10-23): notification-service posts these to
+            // the "account" channel (membership_notify.go MembershipAndroidChannel);
+            // payments, renewals and access are account notices.
+            "membership_new_member", "membership_joined", "membership_renewed",
+            "membership_renewal_due", "membership_payment_failed", "membership_ended",
+            -> ACCOUNT
             // What notification-service's dating and chat consumers emit
             // (dating_consumer.go, chat_consumer.go), Wave 3 2026-09-16.
             "dating.spark.created", "dating.match.formed", "dating.match.new_message", "dating.match.first_message" -> DATING

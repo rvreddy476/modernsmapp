@@ -3,6 +3,7 @@ package com.us.android.feature.post.composer
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.feed.data.serverCode
 import com.us.android.core.media.upload.MEDIA_MODERATION_PASSED
 import com.us.android.core.media.upload.MEDIA_MODERATION_REJECTED
 import com.us.android.core.media.upload.MediaSourceResolver
@@ -12,7 +13,9 @@ import com.us.android.core.media.upload.PROCESSING_READY
 import com.us.android.core.media.upload.PROCESSING_REJECTED
 import com.us.android.core.media.upload.PickedMedia
 import com.us.android.core.media.upload.PresignedPutResult
+import com.us.android.core.memberships.data.membersOnlyRefusal
 import com.us.android.feature.post.data.ComposerRepository
+import com.us.android.feature.post.data.PostMembersGate
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -64,6 +67,7 @@ class ComposerViewModel @Inject constructor(
     private val imageSources: ImageSourceResolver,
     private val drafts: ComposerDraftStore,
     private val keys: CreationKeyFactory,
+    private val membersGate: PostMembersGate,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ComposerUiState())
@@ -73,6 +77,12 @@ class ComposerViewModel @Inject constructor(
     private var inFlight: Job? = null
 
     init {
+        // Members only (paid memberships, 2026-10-23): the creator's active
+        // levels; the picker is drawn only when there is one.
+        viewModelScope.launch {
+            val levels = membersGate.levels()
+            _state.value = _state.value.copy(membersLevels = levels)
+        }
         viewModelScope.launch {
             drafts.load()?.let { restored ->
                 // The draft row carries neither the mode nor the title; the
@@ -339,13 +349,23 @@ class ComposerViewModel @Inject constructor(
             }
 
             is AppResult.Failure -> {
+                // A refusal over the members-only level says so in words (2026-10-23).
+                val message = membersOnlyRefusal(result.error.serverCode()) ?: repository.message(result.error)
                 if (repository.isTerminal(result.error)) {
-                    update { ComposerReducer.onPublishRejected(it, repository.message(result.error)) }
+                    update { ComposerReducer.onPublishRejected(it, message) }
                 } else {
-                    update { ComposerReducer.onPublishFailed(it, repository.message(result.error)) }
+                    update { ComposerReducer.onPublishFailed(it, message) }
                 }
             }
         }
+    }
+
+    /** Members only: one of the creator's levels, or null for everyone. */
+    fun onMembersLevelChanged(levelId: String?) {
+        val current = _state.value
+        if (current.isBusy) return
+        val offered = levelId?.takeIf { id -> current.membersLevels.any { it.id == id } }
+        _state.value = current.copy(membersLevelId = offered)
     }
 
     fun onRetry() {

@@ -18,6 +18,7 @@ import com.us.android.core.engagement.data.CommentsUiState
 import com.us.android.core.engagement.data.CommentsViewerSource
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.ReportRepository
+import com.us.android.core.feed.ui.comments.membersOnlyJoin
 import com.us.android.core.ui.UsCommentsCallbacks
 import com.us.android.core.ui.UsCommentsSheet
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -38,6 +39,8 @@ import javax.inject.Inject
 internal fun PostCommentsSheet(
     onDismiss: () -> Unit,
     postAuthorId: String = "",
+    /** The author's name, for the Join a members-only thread offers (2026-10-23). */
+    postAuthorName: String = "",
     viewModel: PostCommentsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -50,6 +53,12 @@ internal fun PostCommentsSheet(
         state = state,
         callbacks = callbacks,
         onDismiss = onDismiss,
+        membersOnlyContent = membersOnlyJoin(
+            state = state,
+            postAuthorId = postAuthorId,
+            creatorName = postAuthorName,
+            onUnlocked = viewModel.actions::refresh,
+        ),
     )
 }
 

@@ -10,6 +10,8 @@ import com.us.android.core.common.di.UsDispatcher
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.feed.data.credits.CreditGenre
 import com.us.android.core.feed.data.credits.CreditsRepository
+import com.us.android.core.memberships.data.MembershipLevel
+import com.us.android.feature.post.data.PostMembersGate
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
 import com.us.android.feature.post.data.HashtagSearchApi
@@ -166,6 +168,13 @@ interface ReelLookups {
      * behind it — a test's — needs nothing new.
      */
     suspend fun genres(): List<CreditGenre>? = null
+
+    /**
+     * The creator's ACTIVE membership levels (paid memberships, 2026-10-23),
+     * cheapest first; empty when there are none, and then "Members only" is
+     * not offered. Defaulted so a test's lookups need nothing new.
+     */
+    suspend fun membershipLevels(): List<MembershipLevel> = emptyList()
 }
 
 // ════════════════════════════════════════════════════════════════════════
@@ -372,9 +381,12 @@ class ApiReelLookups @Inject constructor(
     private val hashtags: HashtagSearchApi,
     private val errorMapper: ErrorMapper,
     private val credits: CreditsRepository,
+    private val membersGate: PostMembersGate,
 ) : ReelLookups {
 
     override suspend fun genres(): List<CreditGenre>? = credits.genres()
+
+    override suspend fun membershipLevels(): List<MembershipLevel> = membersGate.levels()
 
     override suspend fun categories(): List<ReelCategory>? =
         when (val result = apiCall(errorMapper) { posts.categories() }) {

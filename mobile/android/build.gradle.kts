@@ -95,6 +95,13 @@ tasks.register<Delete>("clean") {
  *      subscription payments), but never kitchen, seller or customer screens,
  *      Face AR, creator engine or posting. It must depend on
  *      `:feature:doorstep-pro` directly.
+ *   n. Paid memberships (2026-10-23): `:feature:memberships` — the creator's
+ *      Memberships page and the member's own list — is reachable ONLY from
+ *      `:app` and reaches no other `:feature:*`. `:core:memberships` (the
+ *      shared data, payment flow, Join sheet and locks, which the feed, Tube,
+ *      profile and post features use) reaches no `:feature:*` and no app. No
+ *      partner app — Kitchen, Rider, Captain, Doorstep Pro — reaches either:
+ *      memberships are Momentum's.
  *
  * (b)–(f) are TRANSITIVE over implementation/api/runtimeOnly project edges,
  * because the hazard is what ends up in the APK, not what one build file says.
@@ -245,6 +252,28 @@ fun applicationBoundaryViolations(direct: Map<String, Set<String>>): List<String
                     ":app-doorstep-pro must not depend on $dep (directly or transitively) — the professionals' app carries no " +
                         "Banuba, creator, restaurant, seller or customer features. Worker roles share one native host.",
                 )
+            }
+        }
+        // (n) Paid memberships: the screens are Momentum's alone, the core is
+        // product-neutral of every feature, and no partner app carries either.
+        direct.keys.filter { it != ":app" && it != ":feature:memberships" }.forEach { module ->
+            if (":feature:memberships" in reach(module)) {
+                add("$module must not depend on :feature:memberships (directly or transitively) — the membership screens ship only in Momentum.")
+            }
+        }
+        if (":feature:memberships" in direct) {
+            reach(":feature:memberships").filter { it.startsWith(":feature:") && it != ":feature:memberships" }.forEach { dep ->
+                add(":feature:memberships must not depend on $dep (directly or transitively) — memberships share code through :core only.")
+            }
+        }
+        if (":core:memberships" in direct) {
+            reach(":core:memberships").filter { it.startsWith(":feature:") || it == ":app" || it.startsWith(":app-") }.forEach { dep ->
+                add(":core:memberships must not depend on $dep (directly or transitively) — the membership core serves features, never the reverse.")
+            }
+        }
+        listOf(":app-kitchen", ":app-rider", ":app-captain", ":app-doorstep-pro").filter { it in direct }.forEach { app ->
+            if (":core:memberships" in reach(app)) {
+                add("$app must not depend on :core:memberships (directly or transitively) — memberships are Momentum's.")
             }
         }
         // (d)
@@ -697,6 +726,48 @@ fun applicationBoundarySelfCheck(): List<String> {
             ":app-doorstep-pro must not depend on :feature:doorstep (directly or transitively) — the professionals' app",
         ),
         Triple("pro app -> :app", mapOf(":app-doorstep-pro" to setOf(":app")), ":app-doorstep-pro must not depend on :app"),
+        // (n) Paid memberships (2026-10-23).
+        Triple(
+            "legal memberships graph",
+            mapOf(
+                ":app" to setOf(":feature:memberships", ":feature:feed", ":core:memberships"),
+                ":feature:memberships" to setOf(":core:memberships", ":core:profile"),
+                ":feature:feed" to setOf(":core:memberships", ":core:feed"),
+                ":core:feed" to setOf(":core:memberships"),
+                ":core:memberships" to setOf(":core:payments", ":core:network"),
+            ),
+            null,
+        ),
+        Triple(
+            "feature -> membership screens",
+            mapOf(":feature:feed" to setOf(":feature:memberships")),
+            ":feature:feed must not depend on :feature:memberships",
+        ),
+        Triple(
+            "core -> membership screens, transitively",
+            mapOf(":core:feed" to setOf(":core:x"), ":core:x" to setOf(":feature:memberships")),
+            ":core:feed must not depend on :feature:memberships",
+        ),
+        Triple(
+            "membership screens -> another feature",
+            mapOf(":feature:memberships" to setOf(":feature:profile")),
+            ":feature:memberships must not depend on :feature:profile",
+        ),
+        Triple(
+            "membership core -> a feature",
+            mapOf(":core:memberships" to setOf(":core:x"), ":core:x" to setOf(":feature:tube")),
+            ":core:memberships must not depend on :feature:tube",
+        ),
+        Triple(
+            "captain app -> membership core, transitively",
+            mapOf(":app-captain" to setOf(":core:x"), ":core:x" to setOf(":core:memberships")),
+            ":app-captain must not depend on :core:memberships",
+        ),
+        Triple(
+            "pro app -> membership screens",
+            mapOf(":app-doorstep-pro" to setOf(":feature:memberships")),
+            ":app-doorstep-pro must not depend on :feature:memberships",
+        ),
     )
     return cases.mapNotNull { (name, graph, expected) ->
         val found = applicationBoundaryViolations(graph)
@@ -980,8 +1051,16 @@ tasks.register("moduleGraphCheck") {
     //      installable, applicationId com.us.doorstep.pro, proposed) at the top
     //      level — no new phantom parent. Rule (m) keeps the feature to the pro
     //      app and the pro app free of payments and every other product's code.
+    // 60 = 58 + paid memberships (2026-10-23): :core:memberships (the
+    //      membership and members-only routes, the level rules, the payment
+    //      flow on :core:payments as application "memberships", the Join sheet,
+    //      the locks and the level picker the feed, Tube, profile, post and
+    //      comments surfaces draw) and :feature:memberships (the creator's
+    //      Memberships page, the member's list and detail), both under existing
+    //      phantom parents. Rule (n) keeps the screens to :app, the core free of
+    //      every feature, and both out of the partner apps.
     // Still to add, one module at a time: :core:location, :core:kyc-ui.
-    val expectedModuleCount = 58
+    val expectedModuleCount = 60
 
     doLast {
         val allViolations = buildList {

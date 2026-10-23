@@ -86,6 +86,11 @@ data class PostEditDetailDto(
     val genres: List<String> = emptyList(),
     @SerialName("release_year") val releaseYear: Int? = null,
     @SerialName("production_house") val productionHouse: String? = null,
+    /**
+     * The members-only level (paid memberships, 2026-10-23; post-service
+     * posts.go:131). Changed with PUT /v1/posts/:id/membership, never the PATCH.
+     */
+    @SerialName("tier_required_id") val tierRequiredId: String? = null,
 )
 
 /**
@@ -132,6 +137,11 @@ data class PostEditPatch(
     val genres: List<String>? = null,
     @SerialName("release_year") val releaseYear: JsonElement? = null,
     @SerialName("production_house") val productionHouse: JsonElement? = null,
+    /**
+     * Members only (2026-10-23, post_edit.go:97): a level id sets the gate,
+     * `""` clears it, null (left out) leaves it. Built by `gatePatch`.
+     */
+    @SerialName("tier_required_id") val tierRequiredId: String? = null,
 ) {
     /** Nothing moved: Save has nothing to send. */
     val isEmpty: Boolean get() = this == PostEditPatch()
@@ -165,6 +175,7 @@ data class PostEditPatch(
         genres = newer.genres ?: genres,
         releaseYear = newer.releaseYear ?: releaseYear,
         productionHouse = newer.productionHouse ?: productionHouse,
+        tierRequiredId = newer.tierRequiredId ?: tierRequiredId,
     )
 }
 

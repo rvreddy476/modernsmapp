@@ -15,6 +15,7 @@ import com.us.android.core.model.FeedPoll
 import com.us.android.core.model.FeedPollOption
 import com.us.android.core.model.FeedPostControls
 import com.us.android.core.model.FeedViewerState
+import com.us.android.core.model.MembersOnly
 import com.us.android.core.model.ReelSoundWire
 import com.us.android.core.model.allowsSoundReuse
 import com.us.android.core.model.toReelSound
@@ -278,6 +279,8 @@ internal fun FeedItemDto.toDomain() = FeedItem(
     overlayVolume = wireVolume(overlayAudioVolume),
     soundReuseAllowed = allowsSoundReuse(remixSetting),
     credits = creditsOf(credits, genres, releaseYear, productionHouse),
+    // Members-only (2026-10-23): the lock is drawn from these, by MembersOnly.access.
+    membersOnly = MembersOnly.fromWire(tierRequiredId, bodyRedacted, durationMs, tierRequiredPricePaise),
 )
 
 /**

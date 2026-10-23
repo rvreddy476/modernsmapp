@@ -369,6 +369,7 @@ internal fun FeedContent(
                                 onToggleFullMode = onToggleFullMode,
                                 onOpenHashtag = onOpenHashtag,
                                 onOpenSound = onOpenSound,
+                                onUnlocked = refresher::refresh,
                             )
                         }
                     }
@@ -395,6 +396,7 @@ internal fun FeedContent(
             postId = postId,
             onDismiss = { commentsFor = null },
             postAuthorId = itemById(postId, head, items)?.author?.id.orEmpty(),
+            postAuthorName = itemById(postId, head, items)?.creatorName.orEmpty(),
         )
     }
     moreFor?.let { item ->

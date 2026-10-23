@@ -21,6 +21,7 @@ import com.us.android.core.feed.data.EditChoice
 import com.us.android.core.feed.data.PostEditChoices
 import com.us.android.core.feed.data.PostEditForm
 import com.us.android.core.feed.ui.credits.CreditsSection
+import com.us.android.core.memberships.ui.MembersOnlyPickerRow
 import com.us.android.core.ui.UsSettingsOption
 import com.us.android.core.ui.UsSettingsSection
 import com.us.android.core.ui.UsSettingsSelectRow
@@ -76,6 +77,18 @@ fun PostEditSheet(
             }
             else -> {
                 EditFields(state = state, change = viewModel::change)
+                // Members only (paid memberships, 2026-10-23): offered when the
+                // owner has an active level; applied on Save with PUT /membership.
+                if (state.offersMembersOnly) {
+                    UsSettingsSection(title = "Members only") {
+                        MembersOnlyPickerRow(
+                            levels = state.levels,
+                            selectedId = state.gate,
+                            onSelect = viewModel::selectGate,
+                            enabled = !state.saving,
+                        )
+                    }
+                }
                 // Video credits (2026-10-23): the same section the upload has,
                 // with where each linked credit's tag stands.
                 if (state.offersCredits) {

@@ -1,5 +1,6 @@
 package com.us.android.feature.post.composer
 
+import com.us.android.core.memberships.data.MembershipLevel
 import com.us.android.feature.post.data.dto.CreatePostRequest
 import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
 
@@ -120,6 +121,13 @@ data class ComposerUiState(
     val language: String = DEFAULT_LANGUAGE,
     /** One of `SupportedAudience`. Public unless the author narrows it. */
     val visibility: String = VISIBILITY_PUBLIC,
+    /**
+     * Members only (paid memberships, 2026-10-23): the creator's ACTIVE
+     * levels and the one picked (null = everyone), applied with PUT
+     * /membership after the create. Not part of the durable draft.
+     */
+    val membersLevels: List<MembershipLevel> = emptyList(),
+    val membersLevelId: String? = null,
     /** Set once the image is confirmed AND ready. Only then may it be attached. */
     val mediaId: String? = null,
     val phase: ComposerPhase = ComposerPhase.Editing,

@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -19,10 +20,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -33,6 +38,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
+import coil3.compose.AsyncImage
 import com.us.android.core.analytics.AnalyticsSurface
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.theme.UsTheme
@@ -51,6 +57,8 @@ import com.us.android.core.feed.ui.share.PostShareSheetHost
 import com.us.android.core.feed.ui.share.PostShareViewModel
 import com.us.android.core.media.PlaybackKind
 import com.us.android.core.media.ui.CaptionsOverlay
+import com.us.android.core.memberships.ui.MembersOnlyLock
+import com.us.android.core.memberships.ui.MembersOnlyLockStyle
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
@@ -287,6 +295,8 @@ private fun WatchSheetsHost(
             postId = postId,
             onDismiss = { sheets.commentsFor = null },
             postAuthorId = (content as? WatchContent.Ready)?.item?.takeIf { it.id == postId }?.let { it.author.id }.orEmpty(),
+            postAuthorName = (content as? WatchContent.Ready)?.item?.takeIf { it.id == postId }
+                ?.creatorName.orEmpty(),
         )
     }
     sheets.moreFor?.let { item ->
@@ -489,7 +499,30 @@ private fun PlayerOrState(
     when (content) {
         WatchContent.Loading -> UsLoadingState(label = "Loading video", modifier = modifier)
         is WatchContent.Failed -> UsErrorState(message = content.message, modifier = modifier, onRetry = null)
-        is WatchContent.Ready -> if (content.playback == null) {
+        // Members only (2026-10-23): the lock where the player goes; nothing plays.
+        is WatchContent.Ready -> if (content.locked) {
+            Box(modifier = modifier.background(UsTheme.extended.stage), contentAlignment = Alignment.Center) {
+                viewModel.thumb(content.item).url?.let { url ->
+                    AsyncImage(
+                        model = url,
+                        contentDescription = null,
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.fillMaxSize().blur(LOCK_BLUR),
+                    )
+                }
+                MembersOnlyLock(
+                    creatorId = content.item.authorId,
+                    creatorName = content.item.creatorName,
+                    requiredLevelId = content.item.membersOnly.tierRequiredId,
+
+                    requiredPricePaise = content.item.membersOnly.requiredPricePaise,
+                    onUnlocked = viewModel::reloadAfterUnlock,
+                    style = MembersOnlyLockStyle.OnMedia,
+                    durationMs = content.item.membersOnly.redactedDurationMs,
+                    modifier = Modifier.padding(UsTheme.spacing.l),
+                )
+            }
+        } else if (content.playback == null) {
             UsEmptyState(
                 title = "Still processing",
                 detail = "This video isn't ready to play yet.",
@@ -524,6 +557,8 @@ private fun PlayerOrState(
         }
     }
 }
+
+private val LOCK_BLUR = 28.dp
 
 /**
  * Fullscreen is an orientation: the Activity is turned to landscape and the

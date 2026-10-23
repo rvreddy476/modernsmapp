@@ -53,6 +53,8 @@ data class Post(
     val disclosure: FeedDisclosure = FeedDisclosure(),
     /** The author hid the share control. */
     val hideShare: Boolean = false,
+    /** Members-only (2026-10-23): decide with [MembersOnly.access]. */
+    val membersOnly: MembersOnly = MembersOnly.None,
 )
 
 /**

@@ -57,7 +57,12 @@ import com.us.android.core.engagement.data.reactedOr
 import com.us.android.core.engagement.data.saveCountOr
 import com.us.android.core.media.Playback
 import com.us.android.core.media.ui.VideoLoadingIndicator
+import com.us.android.core.memberships.ui.MembersOnlyLock
+import com.us.android.core.memberships.ui.MembersOnlyLockStyle
+import com.us.android.core.model.MembersAccess
+import com.us.android.core.model.MembersOnly
 import com.us.android.core.model.Post
+import com.us.android.core.model.access
 import com.us.android.core.ui.EngagementFailureBar
 import com.us.android.core.ui.LightSystemBarGlyphs
 import com.us.android.core.ui.PORTRAIT_SCREEN_ASPECT
@@ -115,9 +120,11 @@ fun PostScreen(
         videoPlayer = viewModel::player,
     )
     if (commentsOpen) {
+        val content = state as? PostUiState.Content
         PostCommentsSheet(
             onDismiss = { commentsOpen = false },
-            postAuthorId = (state as? PostUiState.Content)?.post?.authorId.orEmpty(),
+            postAuthorId = content?.post?.authorId.orEmpty(),
+            postAuthorName = content?.author?.let { it.nameForDisplay.ifBlank { it.username } }.orEmpty(),
         )
     }
 }
@@ -164,6 +171,8 @@ internal fun PostContent(
                 )
                 is PostUiState.Content -> PostStage(
                     state = state,
+                    // A members-only post unlocked by a join: read it again.
+                    onUnlocked = onRetry,
                     onReact = onReact,
                     onBookmark = onBookmark,
                     onOpenAuthor = onOpenAuthor,
@@ -203,6 +212,16 @@ internal fun PostContent(
     }
 }
 
+/**
+ * Whether the post page draws the members-only lock instead of the post:
+ * [MembersOnly.access] with the body the page would draw. The author's own
+ * post always arrives whole, so no viewer id is needed — a gated post with
+ * nothing in it is locked whoever asks. Pure.
+ */
+internal fun postIsLocked(post: Post): Boolean =
+    post.membersOnly.access(isAuthor = false, hasBody = post.media.isNotEmpty() || post.text.isNotBlank()) ==
+        MembersAccess.Locked
+
 /** What a post page draws: its photos, its video, or its words. Pure. */
 internal enum class PostStageKind { PHOTO, VIDEO, TEXT }
 
@@ -227,6 +246,7 @@ internal fun postStageCaption(post: Post, handle: String, kind: PostStageKind = 
 @Composable
 private fun PostStage(
     state: PostUiState.Content,
+    onUnlocked: () -> Unit,
     onReact: () -> Unit,
     onBookmark: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
@@ -248,17 +268,30 @@ private fun PostStage(
     LaunchedEffect(carousel.settledPage, pages.size) { onPageSettled(carousel.settledPage) }
     val authorName = author?.nameForDisplay ?: author?.username.orEmpty()
     val handle = author?.username?.takeIf { it.isNotBlank() }?.let { "@$it" } ?: authorName
+    // Members-only (2026-10-23): a body the server withheld is a lock, never an empty post.
+    val locked = postIsLocked(post)
 
     Column(modifier = Modifier.fillMaxSize()) {
         Box(modifier = Modifier.weight(1f).fillMaxWidth().clipToBounds()) {
-            when (kind) {
-                PostStageKind.PHOTO -> StagePhotoCarousel(pages = pages, pagerState = carousel)
-                PostStageKind.VIDEO -> PostVideo(
+            when {
+                locked -> MembersOnlyLock(
+                    creatorId = post.authorId,
+                    creatorName = authorName,
+                    requiredLevelId = post.membersOnly.tierRequiredId,
+                    requiredPricePaise = post.membersOnly.requiredPricePaise,
+                    onUnlocked = onUnlocked,
+                    style = MembersOnlyLockStyle.OnMedia,
+                    title = post.title,
+                    durationMs = post.membersOnly.redactedDurationMs,
+                    modifier = Modifier.align(Alignment.Center).padding(horizontal = UsTheme.spacing.xxl),
+                )
+                kind == PostStageKind.PHOTO -> StagePhotoCarousel(pages = pages, pagerState = carousel)
+                kind == PostStageKind.VIDEO -> PostVideo(
                     page = pages.first(),
                     hlsUrl = state.media[post.media.first().mediaId]?.takeIf { it.isReady }?.hlsUrl,
                     videoPlayer = videoPlayer,
                 )
-                PostStageKind.TEXT -> StageTextCard(
+                kind == PostStageKind.TEXT -> StageTextCard(
                     seed = post.id,
                     text = post.text.ifBlank { post.title },
                     contentPadding = PaddingValues(top = HEADER_HEIGHT),
@@ -276,7 +309,9 @@ private fun PostStage(
             }
             StageBottomScrim(modifier = Modifier.align(Alignment.BottomCenter))
             StageCaption(
-                state = postStageCaption(post, handle, kind),
+                state = postStageCaption(post, handle, kind).let { caption ->
+                    if (locked) caption.copy(title = null, text = "") else caption
+                },
                 onOpenAuthor = { onOpenAuthor(post.authorId) },
                 above = {
                     if (kind == PostStageKind.PHOTO && pages.size > 1) {

@@ -88,10 +88,16 @@ fun ChannelScreen(
     val subscribeBusy by viewModel.subscribeBusy.collectAsStateWithLifecycle()
     val videoItems = viewModel.items.collectAsLazyPagingItems()
     val appearances = viewModel.appearances.collectAsLazyPagingItems()
+    val membersItems = viewModel.membersItems.collectAsLazyPagingItems()
     val tab by viewModel.tab.collectAsStateWithLifecycle()
-    val offersAppearances by viewModel.offersAppearances.collectAsStateWithLifecycle()
-    val showingAppearances = offersAppearances && tab == ChannelTab.APPEARS_IN
-    val items = if (showingAppearances) appearances else videoItems
+    val tabs by viewModel.tabs.collectAsStateWithLifecycle()
+    val shown = tab.takeIf { it in tabs } ?: ChannelTab.VIDEOS
+    val showingAppearances = shown == ChannelTab.APPEARS_IN
+    val items = when (shown) {
+        ChannelTab.VIDEOS -> videoItems
+        ChannelTab.MEMBERS -> membersItems
+        ChannelTab.APPEARS_IN -> appearances
+    }
     val moreState = rememberTubeMoreState()
 
     TubePage(selected = null, destinations = destinations, onBack = destinations.onBack) { padding ->
@@ -130,15 +136,20 @@ fun ChannelScreen(
                         onRetry = viewModel::load,
                     )
                 }
-                // "Appears in" (video credits, 2026-10-23): only when there is something in it.
-                if (offersAppearances) {
+                // "Appears in" (video credits, 2026-10-23) and "Members" (paid
+                // memberships, 2026-10-23): only when there is something behind them.
+                if (tabs.size > 1) {
                     item(key = "tabs", span = StaggeredGridItemSpan.FullLine) {
-                        ChannelTabs(selected = tab, onSelect = viewModel::selectTab)
+                        ChannelTabs(tabs = tabs, selected = shown, onSelect = viewModel::selectTab)
                     }
                 }
                 videos(
                     items = items,
-                    emptyTitle = if (showingAppearances) "Not credited in any videos yet" else "No videos yet",
+                    emptyTitle = when {
+                        showingAppearances -> "Not credited in any videos yet"
+                        shown == ChannelTab.MEMBERS -> "No members-only videos yet"
+                        else -> "No videos yet"
+                    },
                     thumbFor = viewModel::thumb,
                     onOpen = { item ->
                         viewModel.onOpen(items.itemSnapshotList.items)
@@ -282,14 +293,14 @@ private fun ChannelCard(
 
 /** Videos · Appears in — glass pills, the selected one white with navy text (the app's selection rule). */
 @Composable
-private fun ChannelTabs(selected: ChannelTab, onSelect: (ChannelTab) -> Unit) {
+private fun ChannelTabs(tabs: List<ChannelTab>, selected: ChannelTab, onSelect: (ChannelTab) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .testTag("tube_channel_tabs"),
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
     ) {
-        ChannelTab.entries.forEach { tab ->
+        tabs.forEach { tab ->
             val active = tab == selected
             val shape = RoundedCornerShape(UsTheme.radii.full)
             Box(

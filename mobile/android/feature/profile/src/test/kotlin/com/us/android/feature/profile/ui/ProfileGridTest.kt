@@ -252,4 +252,28 @@ class ProfileGridTest {
         assertThat(ProfileGridTab.APPEARS_IN.sortable).isFalse()
         assertThat(scheduledTabFor("long_video")).isEqualTo(ProfileGridTab.VIDEOS)
     }
+
+    /** Paid memberships (2026-10-23): "Members" on anyone's profile while the creator offers a level. */
+    @Test
+    fun `Members follows the author tabs while a level is offered, on any profile`() {
+        assertThat(gridTabsFor(isOwn = false, members = true))
+            .containsExactly(ProfileGridTab.POSTS, ProfileGridTab.REELS, ProfileGridTab.VIDEOS, ProfileGridTab.MEMBERS)
+            .inOrder()
+        assertThat(gridTabsFor(isOwn = true, appearsIn = true, members = true))
+            .containsExactly(
+                ProfileGridTab.POSTS,
+                ProfileGridTab.REELS,
+                ProfileGridTab.VIDEOS,
+                ProfileGridTab.MEMBERS,
+                ProfileGridTab.APPEARS_IN,
+                ProfileGridTab.SAVED,
+                ProfileGridTab.LIKED,
+            )
+            .inOrder()
+        assertThat(gridTabsFor(isOwn = true)).doesNotContain(ProfileGridTab.MEMBERS)
+        // Not an author tab: it mixes every kind, sorts by nothing, and no publish lands in it.
+        assertThat(ProfileGridTab.MEMBERS.authored).isFalse()
+        assertThat(ProfileGridTab.MEMBERS.sortable).isFalse()
+        assertThat(scheduledTabFor("")).isNull()
+    }
 }

@@ -74,6 +74,12 @@ enum class NotificationCategory(val key: String, val label: String, val primary:
     EVENT_REMINDERS("event_reminders", "Event reminders", primary = false),
     /** Video credits (2026-10-23): someone credited you, or accepted your credit; `inapp_credits` / `push_credits`. */
     CREDITS("credits", "Video credits", primary = false),
+
+    /**
+     * Paid memberships (2026-10-23): a new member, joined, renewed, renewal
+     * due, payment failed, ended; `inapp_memberships` / `push_memberships`.
+     */
+    MEMBERSHIPS("memberships", "Memberships", primary = false),
     SYSTEM("system", "Security and system", primary = false),
     ;
 

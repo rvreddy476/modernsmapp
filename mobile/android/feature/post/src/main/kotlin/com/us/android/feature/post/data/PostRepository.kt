@@ -3,6 +3,7 @@ package com.us.android.feature.post.data
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.map
 import com.us.android.core.model.FeedDisclosure
+import com.us.android.core.model.MembersOnly
 import com.us.android.core.model.Post
 import com.us.android.core.model.PostCounts
 import com.us.android.core.model.PostViewerState
@@ -67,4 +68,6 @@ private fun PostDto.toDomain() = Post(
     hashtags = hashtags,
     disclosure = FeedDisclosure(paidPromotion, isBranded, aiGenerated, linkUrl),
     hideShare = hideShare,
+    // Members-only (2026-10-23): post-service posts.go:131-137.
+    membersOnly = MembersOnly.fromWire(tierRequiredId, bodyRedacted, durationMs, tierRequiredPricePaise),
 )

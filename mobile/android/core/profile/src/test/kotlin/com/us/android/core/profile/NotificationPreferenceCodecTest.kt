@@ -84,11 +84,54 @@ class NotificationPreferenceCodecTest {
 
         val encoded = NotificationPreferenceCodec.encode(decoded)
         request.forEach { (key, value) -> assertThat(encoded[key]).isEqualTo(value) }
-        // Every category the server's fixture has a pair for that this build knows is read from it, not defaulted.
-        NotificationCategory.entries.forEach { category ->
-            assertThat(read.keys).containsAtLeast(NotificationPreferenceCodec.inAppKey(category), NotificationPreferenceCodec.pushKey(category))
+        // Every category the server's fixture has a pair for that this build knows is read from it, not
+        // defaulted. Memberships (2026-10-23) post-date this fixture; its own test below reads them.
+        NotificationCategory.entries.filter { it != NotificationCategory.MEMBERSHIPS }.forEach { category ->
+            assertThat(read.keys).containsAtLeast(
+                NotificationPreferenceCodec.inAppKey(category),
+                NotificationPreferenceCodec.pushKey(category),
+            )
         }
         assertThat(NotificationPreferenceCodec.decode(encoded)).isEqualTo(decoded)
+    }
+
+    /**
+     * Paid memberships (2026-10-23), against notification-service's golden
+     * files (`internal/http/testdata/contracts/notification_preferences_memberships*.json`,
+     * copied byte for byte): the `memberships` category is the
+     * `push_memberships` / `inapp_memberships` pair, default on, read from
+     * the fixture (push off there), and the save carries both keys with the
+     * request fixture's values. Every category this build knows is in that
+     * fixture, so none of them is defaulted.
+     */
+    @Test
+    fun `the memberships pair reads from the server's fixture, defaults to on, and round-trips onto its request`() {
+        val contracts = File("src/test/resources/contracts")
+        val read = Json.parseToJsonElement(File(contracts, "notification_preferences_memberships.json").readText())
+            .jsonObject.getValue("data").jsonObject
+        val requestFile = File(contracts, "notification_preferences_memberships_request.json")
+        val request = Json.parseToJsonElement(requestFile.readText()).jsonObject
+        val memberships = NotificationCategory.MEMBERSHIPS
+
+        assertThat(memberships.key).isEqualTo("memberships")
+        assertThat(NotificationPreferenceCodec.pushKey(memberships)).isEqualTo("push_memberships")
+        assertThat(NotificationPreferenceCodec.inAppKey(memberships)).isEqualTo("inapp_memberships")
+        val decoded = NotificationPreferenceCodec.decode(read)
+        assertThat(decoded.channels(memberships)).isEqualTo(NotificationChannels(inApp = true, push = false))
+        val absent = NotificationPreferenceCodec.decode(Json.parseToJsonElement("{}").jsonObject)
+        assertThat(absent.channels(memberships)).isEqualTo(NotificationChannels(inApp = true, push = true))
+
+        val encoded = NotificationPreferenceCodec.encode(decoded)
+        request.forEach { (key, value) -> assertThat(encoded[key]).isEqualTo(value) }
+        NotificationCategory.entries.forEach { category ->
+            assertThat(read.keys).containsAtLeast(
+                NotificationPreferenceCodec.inAppKey(category),
+                NotificationPreferenceCodec.pushKey(category),
+            )
+        }
+        assertThat(NotificationPreferenceCodec.decode(encoded)).isEqualTo(decoded)
+        // A secondary category: under "More", beside Video credits.
+        assertThat(NotificationCategory.secondaries).contains(NotificationCategory.MEMBERSHIPS)
     }
 
     @Test

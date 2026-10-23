@@ -117,6 +117,13 @@ data class FeedItem(
      * row that does not carry them — list rows may not; the post detail does.
      */
     val credits: VideoCredits = VideoCredits.None,
+    /**
+     * Members-only (paid memberships, 2026-10-23). [MembersOnly.None] on an
+     * open post; on a gated one it carries the level and whether the server
+     * redacted the body for this viewer. Decide what to draw with
+     * [MembersOnly.access], never by reading the fields directly.
+     */
+    val membersOnly: MembersOnly = MembersOnly.None,
 ) {
     /** Who a video card credits: the channel when the row carries one, the author otherwise. */
     val creatorName: String get() = channel?.name?.takeIf { it.isNotBlank() } ?: author.nameForDisplay

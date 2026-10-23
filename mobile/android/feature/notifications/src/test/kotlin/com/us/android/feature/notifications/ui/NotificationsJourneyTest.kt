@@ -158,6 +158,9 @@ class NotificationsJourneyTest {
                                     is NotificationTarget.Customer,
                                     NotificationTarget.CustomerDues,
                                     NotificationTarget.CreditRequests,
+                                    is NotificationTarget.Membership,
+                                    NotificationTarget.MyMemberships,
+                                    NotificationTarget.CreatorMemberships,
                                     NotificationTarget.None,
                                     -> Unit
                                 }

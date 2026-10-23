@@ -97,6 +97,10 @@ dependencies {
     implementation(projects.feature.mopeduRider)
     // Doorstep — home services (2026-10-04). Paid through :core:payments as "doorstep".
     implementation(projects.feature.doorstep)
+    // Paid memberships (2026-10-23): the creator's Memberships page and the
+    // member's own list and detail. Only :app may depend on it (moduleGraphCheck (n)).
+    implementation(projects.feature.memberships)
+    implementation(projects.core.memberships)
     // The payment attempt type the commerce routes carry.
     implementation(projects.core.commerce)
     // The payment sheet (2026-09-14). MainActivity is the ActivityPaymentHost

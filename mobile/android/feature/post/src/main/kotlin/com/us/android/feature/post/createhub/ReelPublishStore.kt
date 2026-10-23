@@ -98,6 +98,12 @@ data class PendingReelPublish(
     val releaseYear: Int? = null,
     val productionHouse: String = "",
     /**
+     * Members only (paid memberships, 2026-10-23): the level the creator
+     * picked, applied with PUT /membership after the create; null for
+     * everyone. Defaulted, so a record written before it loads.
+     */
+    val membersLevelId: String? = null,
+    /**
      * Bytes landed and `confirm` succeeded. This is the id the post is
      * created with — instant reels need nothing more than confirmed.
      */

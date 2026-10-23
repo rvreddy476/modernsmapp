@@ -78,6 +78,8 @@ import com.us.android.core.feed.data.ChannelGate
 import com.us.android.core.feed.data.channelGate
 import com.us.android.core.feed.data.credits.creditsSummary
 import com.us.android.core.feed.ui.channel.CreateChannelSheet
+import com.us.android.core.memberships.ui.MembersOnlyLevelSheet
+import com.us.android.core.memberships.ui.membersOnlySummary
 import com.us.android.core.feed.ui.schedule.ScheduleSheet
 import com.us.android.core.feed.ui.sound.LibrarySoundSheet
 import com.us.android.core.feed.ui.sound.SoundPreviewButton
@@ -364,7 +366,7 @@ private fun studioActions(studio: ReelStudioViewModel) = StudioActions(
     dismissExportError = studio::dismissExportError,
 )
 
-private enum class ReelSheet { None, Audience, Category, Location, People, Schedule, Sound, Credits }
+private enum class ReelSheet { None, Audience, Category, Location, People, Schedule, Sound, Credits, Members }
 
 @Suppress("LongMethod") // One surface, one composable: the form IS the list of its parts.
 @Composable
@@ -484,6 +486,21 @@ private fun ReelForm(
                         )
                     }
                 }
+                // Members only (paid memberships, 2026-10-23): offered when the
+                // creator has an active level; applied after the create.
+                if (state.membersLevels.isNotEmpty()) {
+                    Spacer(Modifier.height(UsTheme.spacing.xxl))
+                    GlassCard {
+                        DetailRow(
+                            icon = UsIcons.Lock,
+                            title = "Members only",
+                            value = membersOnlySummary(state.membersLevels, state.membersLevelId),
+                            enabled = editable,
+                            onClick = { sheet = ReelSheet.Members },
+                            testTag = "reel-members-row",
+                        )
+                    }
+                }
                 Spacer(Modifier.height(UsTheme.spacing.xxl))
                 SwitchesCard(state = state, viewModel = viewModel, enabled = editable)
                 PhaseStatus(phase = state.phase)
@@ -506,6 +523,17 @@ private fun ReelForm(
                 onTag = viewModel::onTagUser,
                 onUntag = viewModel::onUntagUser,
                 onDone = { sheet = ReelSheet.None },
+            )
+        }
+        if (sheet == ReelSheet.Members) {
+            MembersOnlyLevelSheet(
+                levels = state.membersLevels,
+                selectedId = state.membersLevelId,
+                onSelect = {
+                    viewModel.onMembersLevelChanged(it)
+                    sheet = ReelSheet.None
+                },
+                onDismiss = { sheet = ReelSheet.None },
             )
         }
         if (sheet == ReelSheet.Credits) {
@@ -616,7 +644,7 @@ private fun ReelPickerSheets(
             },
             onDismiss = onClose,
         )
-        ReelSheet.None, ReelSheet.People, ReelSheet.Sound, ReelSheet.Credits -> Unit
+        ReelSheet.None, ReelSheet.People, ReelSheet.Sound, ReelSheet.Credits, ReelSheet.Members -> Unit
     }
 }
 

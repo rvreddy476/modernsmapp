@@ -54,6 +54,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil3.compose.AsyncImage
+import com.us.android.core.memberships.ui.MembersOnlyPickerRow
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsButton
@@ -166,6 +167,14 @@ fun ComposerScreen(
                 AuthorHeader(
                     visibility = state.visibility,
                     onVisibilityChanged = viewModel::onVisibilityChanged,
+                )
+                // Members only (paid memberships, 2026-10-23): drawn only when
+                // the creator has an active level.
+                MembersOnlyPickerRow(
+                    levels = state.membersLevels,
+                    selectedId = state.membersLevelId,
+                    onSelect = viewModel::onMembersLevelChanged,
+                    enabled = !state.isBusy,
                 )
 
                 if (mode == ComposerMode.Article) {

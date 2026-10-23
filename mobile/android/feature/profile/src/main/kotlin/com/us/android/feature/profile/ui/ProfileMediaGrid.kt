@@ -141,6 +141,7 @@ internal fun ProfileMediaGrid(
     val saved = viewModel.saved.collectAsLazyPagingItems()
     val liked = viewModel.liked.collectAsLazyPagingItems()
     val appearances = viewModel.appearances.collectAsLazyPagingItems()
+    val members = viewModel.membersPosts.collectAsLazyPagingItems()
     val tabs by viewModel.tabs.collectAsStateWithLifecycle()
     var failureKey by rememberSaveable { mutableStateOf<String?>(null) }
     var createChannelKey by rememberSaveable { mutableStateOf<String?>(null) }
@@ -155,7 +156,7 @@ internal fun ProfileMediaGrid(
     // is read again with the header; the others refresh when opened next.
     LaunchedEffect(refreshSeq) {
         if (refreshSeq > 0) {
-            TabLists(posts, reels, longVideos, saved, liked, appearances).forTab(tab).refresh()
+            TabLists(posts, reels, longVideos, saved, liked, appearances, members).forTab(tab).refresh()
             viewModel.checkAppearances()
         }
     }
@@ -184,7 +185,7 @@ internal fun ProfileMediaGrid(
             onSelectTab = viewModel::select,
             onSelectSort = viewModel::selectSort,
         )
-        val items = TabLists(posts, reels, longVideos, saved, liked, appearances).forTab(tab)
+        val items = TabLists(posts, reels, longVideos, saved, liked, appearances, members).forTab(tab)
         val heads = pending.filter { it.tab == tab }.map<PendingVideoTile, GridHead> { GridHead.Pending(it) } +
             scheduled.filter { it.tab == tab }.map { GridHead.Scheduled(it) }
         GridRows(
@@ -324,6 +325,7 @@ private class TabLists(
     val saved: LazyPagingItems<FeedItem>,
     val liked: LazyPagingItems<FeedItem>,
     val appearances: LazyPagingItems<FeedItem>,
+    val members: LazyPagingItems<FeedItem>,
 ) {
     fun forTab(tab: ProfileGridTab): LazyPagingItems<FeedItem> = when (tab) {
         ProfileGridTab.POSTS -> posts
@@ -332,6 +334,7 @@ private class TabLists(
         ProfileGridTab.SAVED -> saved
         ProfileGridTab.LIKED -> liked
         ProfileGridTab.APPEARS_IN -> appearances
+        ProfileGridTab.MEMBERS -> members
     }
 }
 
@@ -575,6 +578,7 @@ internal fun tabNoun(tab: ProfileGridTab): String =
     when (tab) {
         ProfileGridTab.LIKED -> "liked reels"
         ProfileGridTab.APPEARS_IN -> "credited videos"
+        ProfileGridTab.MEMBERS -> "members-only posts"
         else -> tab.label.lowercase()
     }
 
@@ -583,8 +587,8 @@ internal fun tileAspect(tab: ProfileGridTab): Float = when (tab) {
     ProfileGridTab.POSTS -> SQUARE
     ProfileGridTab.REELS, ProfileGridTab.LIKED -> PORTRAIT_TILE
     ProfileGridTab.VIDEOS, ProfileGridTab.APPEARS_IN -> LANDSCAPE
-    // Saved mixes every kind, so no one shape is right; square is the neutral one.
-    ProfileGridTab.SAVED -> SQUARE
+    // Saved and Members mix every kind, so no one shape is right; square is the neutral one.
+    ProfileGridTab.SAVED, ProfileGridTab.MEMBERS -> SQUARE
 }
 
 /** One post as a tile: its still (the cover for a video), a film glyph for the video kinds. */
@@ -607,6 +611,19 @@ private fun MediaTile(item: FeedItem, thumb: VideoThumb, onClick: () -> Unit, mo
             .testTag("profile_tile:${item.id}"),
     ) {
         TileStill(item = item, thumb = thumb)
+        // Members only (2026-10-23): a gated post wears the lock, member or not.
+        if (item.membersOnly.isGated) {
+            Icon(
+                imageVector = UsIcons.Lock,
+                contentDescription = "Members only",
+                tint = UsTheme.extended.onMedia,
+                modifier = Modifier
+                    .align(Alignment.TopStart)
+                    .padding(UsTheme.spacing.s)
+                    .size(KIND_GLYPH)
+                    .testTag("profile_tile_lock:${item.id}"),
+            )
+        }
         if (item.feedContentType == ProfileGridTab.REELS.contentType ||
             item.feedContentType == ProfileGridTab.VIDEOS.contentType
         ) {

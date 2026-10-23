@@ -1,0 +1,114 @@
+{
+  "data": [
+    {
+      "actor": {
+        "display_name": "Call UserB",
+        "id": "00000000-0000-4000-8000-0000000000b2",
+        "username": "call_b"
+      },
+      "actor_user_id": "00000000-0000-4000-8000-0000000000b2",
+      "bucket": 202610,
+      "created_at": "2026-10-23T09:30:00Z",
+      "deep_link": "/monetization/tiers",
+      "entity_id": "00000000-0000-4000-8000-0000000ab001",
+      "entity_type": "membership",
+      "icon": "account",
+      "is_read": false,
+      "notification_id": "f7888a52-ba17-5bdf-9f48-0dd8ebcb573a",
+      "title": "Call UserB joined your membership",
+      "ts": "52ef5c00-cf0d-11f1-8000-0000000ab0c1",
+      "type": "membership_new_member",
+      "user_id": "00000000-0000-4000-8000-0000000000a1"
+    },
+    {
+      "actor": {
+        "display_name": "Call UserB",
+        "id": "00000000-0000-4000-8000-0000000000b2",
+        "username": "call_b"
+      },
+      "actor_user_id": "00000000-0000-4000-8000-0000000000b2",
+      "bucket": 202610,
+      "created_at": "2026-10-23T09:29:00Z",
+      "deep_link": "/memberships/00000000-0000-4000-8000-0000000ab001",
+      "entity_id": "00000000-0000-4000-8000-0000000ab001",
+      "entity_type": "membership",
+      "icon": "account",
+      "is_read": false,
+      "notification_id": "a412d660-a9ed-5e7b-9618-076e3567b85b",
+      "title": "You're a member of Call UserB",
+      "ts": "2f2c1600-cf0d-11f1-8000-0000000ab0c2",
+      "type": "membership_joined",
+      "user_id": "00000000-0000-4000-8000-0000000000a1"
+    },
+    {
+      "actor_user_id": "00000000-0000-4000-8000-0000000000c3",
+      "bucket": 202610,
+      "created_at": "2026-10-23T09:28:00Z",
+      "deep_link": "/memberships/00000000-0000-4000-8000-0000000ab001",
+      "entity_id": "00000000-0000-4000-8000-0000000ab001",
+      "entity_type": "membership",
+      "icon": "account",
+      "is_read": false,
+      "notification_id": "39c7d7e4-6274-55ba-a47c-7a00c994e7ca",
+      "title": "Your membership with a creator was renewed",
+      "ts": "0b68d000-cf0d-11f1-8000-0000000ab0c3",
+      "type": "membership_renewed",
+      "user_id": "00000000-0000-4000-8000-0000000000a1"
+    },
+    {
+      "actor": {
+        "display_name": "Call UserB",
+        "id": "00000000-0000-4000-8000-0000000000b2",
+        "username": "call_b"
+      },
+      "actor_user_id": "00000000-0000-4000-8000-0000000000b2",
+      "bucket": 202610,
+      "created_at": "2026-10-23T09:27:00Z",
+      "deep_link": "/memberships/00000000-0000-4000-8000-0000000ab001",
+      "entity_id": "00000000-0000-4000-8000-0000000ab001",
+      "entity_type": "membership",
+      "icon": "account",
+      "is_read": false,
+      "notification_id": "e38a968d-51e7-577f-b781-d26d776bd0b7",
+      "title": "Your Call UserB membership ends soon — renew to keep access",
+      "ts": "e7a58a00-cf0c-11f1-8000-0000000ab0c4",
+      "type": "membership_renewal_due",
+      "user_id": "00000000-0000-4000-8000-0000000000a1"
+    },
+    {
+      "actor_user_id": "00000000-0000-4000-8000-0000000000c3",
+      "bucket": 202610,
+      "created_at": "2026-10-23T09:26:00Z",
+      "deep_link": "/memberships/00000000-0000-4000-8000-0000000ab001",
+      "entity_id": "00000000-0000-4000-8000-0000000ab001",
+      "entity_type": "membership",
+      "icon": "account",
+      "is_read": false,
+      "notification_id": "fd83c06b-af94-5150-81a6-70abec509592",
+      "title": "Your membership payment to a creator didn't go through",
+      "ts": "c3e24400-cf0c-11f1-8000-0000000ab0c5",
+      "type": "membership_payment_failed",
+      "user_id": "00000000-0000-4000-8000-0000000000a1"
+    },
+    {
+      "actor": {
+        "display_name": "Call UserB",
+        "id": "00000000-0000-4000-8000-0000000000b2",
+        "username": "call_b"
+      },
+      "actor_user_id": "00000000-0000-4000-8000-0000000000b2",
+      "bucket": 202610,
+      "created_at": "2026-10-23T09:25:00Z",
+      "deep_link": "/memberships/00000000-0000-4000-8000-0000000ab001",
+      "entity_id": "00000000-0000-4000-8000-0000000ab001",
+      "entity_type": "membership",
+      "icon": "account",
+      "is_read": false,
+      "notification_id": "abe4d63b-32be-543d-b8a2-9da271829bbc",
+      "title": "Your Call UserB membership has ended",
+      "ts": "a01efe00-cf0c-11f1-8000-0000000ab0c6",
+      "type": "membership_ended",
+      "user_id": "00000000-0000-4000-8000-0000000000a1"
+    }
+  ]
+}

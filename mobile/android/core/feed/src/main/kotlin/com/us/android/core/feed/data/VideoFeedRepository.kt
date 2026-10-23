@@ -209,6 +209,26 @@ class VideoFeedRepository @Inject constructor(
         }
 
     /**
+     * A creator's members-only posts (paid memberships, 2026-10-23), every
+     * kind, newest first: `GET /v1/posts/by-author/:id?members_only=true`,
+     * each row redacted for a non-member as on any other surface. A row that
+     * is not gated is dropped all the same, so a server that ignored the
+     * parameter could never fill the Members tab with open posts.
+     */
+    fun membersOnlyPosts(userId: String): Flow<PagingData<FeedItem>> =
+        feedPager(errorMapper) { request ->
+            val page = api.postsByAuthor(
+                authorId = userId,
+                type = "",
+                limit = request.limit,
+                cursor = request.cursor,
+                sort = AuthorPostSort.LATEST.wire,
+                membersOnly = true,
+            ).toFeedPage()
+            page.copy(items = hydrator.hydrate(page.items.filter { it.membersOnly.isGated }))
+        }
+
+    /**
      * The viewer's scheduled posts (2026-09-05), soonest first, hydrated;
      * empty — not failed — when the endpoint is unavailable or the server
      * predates it, so a grid without a scheduled tile is never an error.

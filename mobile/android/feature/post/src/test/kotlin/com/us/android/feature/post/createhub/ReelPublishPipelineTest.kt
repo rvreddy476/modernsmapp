@@ -28,6 +28,9 @@ import com.us.android.core.media.upload.ResumableStatusDto
 import com.us.android.core.media.upload.ResumableUploadTransport
 import com.us.android.core.media.upload.ResumableUploader
 import com.us.android.core.media.upload.UploadSource
+import com.us.android.core.memberships.data.INVALID_TIER
+import com.us.android.core.memberships.data.TIERS_UNAVAILABLE
+import com.us.android.core.memberships.data.membersOnlyRefusal
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
 import com.us.android.feature.post.data.ComposerRepository
@@ -1065,6 +1068,60 @@ class ReelPublishPipelineTest {
         assertThat(stashShortfall(size, size + STASH_HEADROOM_BYTES + 1)).isEqualTo(0L)
         assertThat(stashShortfall(size, size + STASH_HEADROOM_BYTES - 1)).isEqualTo(1L)
         assertThat(stashShortfall(size, 0L)).isEqualTo(size + STASH_HEADROOM_BYTES)
+    }
+
+    // ── Members only (paid memberships, 2026-10-23) ─────────────────────
+
+    @Test
+    fun `a members-only reel or video is gated in the create itself`() = runTest {
+        val h = harness()
+
+        run(h, pending("for my members").copy(membersLevelId = "tier-1"))
+        run(h, pending("a long one").copy(kind = PublishKind.LONG, title = "Ep 4", membersLevelId = "tier-1"))
+
+        assertThat(h.repository.requests.map { it.tierRequiredId }).containsExactly("tier-1", "tier-1")
+    }
+
+    @Test
+    fun `a post for everyone carries no level, and its request is the one before memberships`() = runTest {
+        val h = harness()
+
+        run(h, pending("for everyone"))
+        run(h, pending("blank level").copy(membersLevelId = " "))
+
+        assertThat(h.repository.requests.map { it.tierRequiredId }).containsExactly(null, null)
+        val open = ReelPublishPipeline.buildRequest(pending("hi"), "v", "c")
+        assertThat(json.encodeToString(CreatePostRequest.serializer(), open)).doesNotContain("tier_required_id")
+        val gated = ReelPublishPipeline.buildRequest(pending("hi").copy(membersLevelId = "tier-1"), "v", "c")
+        val gatedWire = json.encodeToString(CreatePostRequest.serializer(), gated)
+        assertThat(gatedWire).contains(""""tier_required_id":"tier-1"""")
+    }
+
+    @Test
+    fun `a level the server no longer offers fails in words, for good`() = runTest {
+        val repository = RecordingRepository(json).apply {
+            result = AppResult.Failure(AppError.Unknown(code = INVALID_TIER, statusCode = 400))
+        }
+        val h = harness(repository = repository)
+
+        val outcome = run(h, pending().copy(membersLevelId = "tier-gone")) as ReelPublishPipeline.Outcome.Failed
+
+        assertThat(outcome.message).isEqualTo(membersOnlyRefusal(INVALID_TIER))
+        assertThat(outcome.retryable).isFalse()
+    }
+
+    @Test
+    fun `levels that could not be checked created nothing and may be tried again`() = runTest {
+        val repository = RecordingRepository(json).apply {
+            result = AppResult.Failure(AppError.Server(statusCode = 503, code = TIERS_UNAVAILABLE))
+        }
+        val h = harness(repository = repository)
+
+        val outcome = run(h, pending().copy(membersLevelId = "tier-1")) as ReelPublishPipeline.Outcome.Failed
+
+        assertThat(outcome.message).isEqualTo(membersOnlyRefusal(TIERS_UNAVAILABLE))
+        assertThat(outcome.retryable).isTrue()
+        assertThat(h.store.record?.membersLevelId).isEqualTo("tier-1")
     }
 }
 

@@ -145,6 +145,11 @@ import com.us.android.feature.live.navigation.navigateToGoLive
 import com.us.android.feature.live.navigation.navigateToLiveCreatorCentre
 import com.us.android.feature.live.navigation.navigateToLiveHub
 import com.us.android.feature.live.navigation.navigateToLiveWatch
+import com.us.android.feature.memberships.navigation.MembershipsDestinations
+import com.us.android.feature.memberships.navigation.membershipScreens
+import com.us.android.feature.memberships.navigation.navigateToCreatorMemberships
+import com.us.android.feature.memberships.navigation.navigateToMembership
+import com.us.android.feature.memberships.navigation.navigateToMyMemberships
 import com.us.android.feature.mopedu.rider.navigation.mopeduRiderScreens
 import com.us.android.feature.mopedu.rider.navigation.navigateToMopeduRider
 import com.us.android.feature.mopedu.rider.payment.MopeduPaymentRequest
@@ -223,6 +228,7 @@ import com.us.android.feature.tube.navigation.tubeScreens
 import com.us.android.push.DatingPushTarget
 import com.us.android.push.DoorstepPushTarget
 import com.us.android.push.LiveOpen
+import com.us.android.push.MEMBERSHIP_TYPES
 import com.us.android.push.PushDestinations
 import com.us.android.push.TYPE_CREDIT_ACCEPTED
 import com.us.android.push.TYPE_CREDIT_REQUEST
@@ -604,6 +610,8 @@ private suspend fun NavHostController.openPushDestination(
         // Video credits (2026-10-23): a request opens the requests screen, an acceptance the video.
         TYPE_UPLOADED_VIDEO, TYPE_UPLOADED_FLICK, TYPE_WENT_LIVE, TYPE_CREDIT_REQUEST, TYPE_CREDIT_ACCEPTED ->
             openNotificationTarget(pushTargetOf(destination), onOpenReel)
+        // Paid memberships (2026-10-23): the creator's page, or the membership the notice is about.
+        in MEMBERSHIP_TYPES -> openNotificationTarget(pushTargetOf(destination), onOpenReel)
         "message_request" -> navigateToTopLevel(TopLevelDestination.MESSAGES)
         // An `atpost.app/chat/join/{code}` link, offered by MainActivity as a push
         // destination so it waits through the login like a notification tap.
@@ -1374,7 +1382,19 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
         onOpenOffline = { navController.navigateToTubeOffline() },
         // Video credits (2026-10-23): the drawer's Credit requests, in Tube's graph.
         onOpenCreditRequests = { navController.navigateToCreditRequests() },
+        // Paid memberships (2026-10-23): the drawer's two membership rows.
+        onOpenMyMemberships = { navController.navigateToMyMemberships() },
+        onOpenMemberships = { navController.navigateToCreatorMemberships() },
         onOpenUpload = onOpenUpload,
+    )
+    // Paid memberships (2026-10-23): the creator's page, the member's list and
+    // one membership. Joining happens in place, from the Join sheet the locks open.
+    membershipScreens(
+        MembershipsDestinations(
+            onBack = { navController.popBackStack() },
+            onOpenCreator = { creatorId -> navController.navigateToProfile(creatorId) },
+            onOpenMembership = { subscriptionId -> navController.navigateToMembership(subscriptionId) },
+        ),
     )
     profileScreen(
         onOpenFollowers = { navController.navigateToFollowList(it) },
@@ -1557,6 +1577,10 @@ private fun NavHostController.openNotificationTarget(
         }
         is NotificationTarget.Live -> openLiveStream(target.streamId)
         NotificationTarget.CreditRequests -> navigateToCreditRequests()
+        // Paid memberships (2026-10-23).
+        is NotificationTarget.Membership -> navigateToMembership(target.subscriptionId)
+        NotificationTarget.MyMemberships -> navigateToMyMemberships()
+        NotificationTarget.CreatorMemberships -> navigateToCreatorMemberships()
         NotificationTarget.None -> Unit
     }
 }

@@ -55,6 +55,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
@@ -85,6 +86,8 @@ import androidx.paging.LoadState
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import coil3.compose.AsyncImage
+import com.us.android.core.memberships.ui.MembersOnlyLock
+import com.us.android.core.memberships.ui.MembersOnlyLockStyle
 import com.us.android.core.analytics.WatchProbe
 import com.us.android.core.common.time.formatRelativeTime
 import com.us.android.core.designsystem.component.UsHeaderCornerAction
@@ -122,6 +125,8 @@ import com.us.android.core.media.ui.VideoLoadingIndicator
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
+import com.us.android.core.model.MembersAccess
+import com.us.android.core.model.access
 import com.us.android.core.model.canUseSound
 import com.us.android.core.ui.HideShellBottomBar
 import com.us.android.core.ui.LightSystemBarGlyphs
@@ -358,6 +363,7 @@ fun ReelsScreen(
             postId = postId,
             onDismiss = { commentsFor = null },
             postAuthorId = items.itemSnapshotList.items.firstOrNull { it.id == postId }?.let { it.author.id }.orEmpty(),
+            postAuthorName = items.itemSnapshotList.items.firstOrNull { it.id == postId }?.creatorName.orEmpty(),
         )
     }
 
@@ -886,6 +892,10 @@ internal class ReelActions(
     val onSettledPlayer: (Player?) -> Unit,
     val onRetryPublish: () -> Unit,
     val onDiscardPublish: () -> Unit,
+    /** A members-only reel was unlocked by a join (2026-10-23): read the feed again. */
+    val onUnlocked: () -> Unit = {},
+    /** The still a locked reel is drawn behind, blurred; null draws the stage. */
+    val lockedCover: (FeedItem) -> String? = { null },
 )
 
 /**
@@ -921,6 +931,8 @@ private fun reelActions(
     onSettledPlayer = onSettledPlayer,
     onRetryPublish = viewModel::retryPublish,
     onDiscardPublish = viewModel::discardPublish,
+    onUnlocked = viewModel::refresh,
+    lockedCover = viewModel::lockedCover,
 )
 
 /**
@@ -1385,7 +1397,12 @@ private fun ReelPage(
                 detectTapGestures(onTap = { actions.onTogglePause() }, onDoubleTap = { actions.onToggleMode() })
             },
     ) {
-        if (playback != null) {
+        // Members only (2026-10-23): a reel this viewer may not watch is its
+        // blurred cover, the lock and Join — no player, no caption.
+        val locked = reelIsLocked(item)
+        if (locked) {
+            LockedReel(item = item, cover = actions.lockedCover(item), onUnlocked = actions.onUnlocked)
+        } else if (playback != null) {
             ReelVideo(
                 playback = playback,
                 contentId = item.id,
@@ -1428,7 +1445,7 @@ private fun ReelPage(
         // the rail right — and fades on the way, ~200ms, the same as the
         // shell's bar below them, so the three read as one gesture.
         AnimatedVisibility(
-            visible = chrome.showAuthor,
+            visible = chrome.showAuthor && !locked,
             modifier = Modifier.align(Alignment.BottomStart),
             enter = fadeIn(chromeSpec(reduced)) + slideInVertically(chromeSpec(reduced)) { it / 2 },
             exit = fadeOut(chromeSpec(reduced)) + slideOutVertically(chromeSpec(reduced)) { it / 2 },
@@ -1486,6 +1503,39 @@ private fun ReelPage(
         }
     }
 }
+
+/**
+ * Whether a reel page is the members-only lock: the server redacted it for
+ * this viewer, or it is gated and came without its video. Pure.
+ */
+internal fun reelIsLocked(item: FeedItem): Boolean =
+    item.membersOnly.access(isAuthor = false, hasBody = item.media.isNotEmpty()) == MembersAccess.Locked
+
+/** A locked reel: the cover, blurred so nothing paid shows through, under the lock and Join. */
+@Composable
+private fun BoxScope.LockedReel(item: FeedItem, cover: String?, onUnlocked: () -> Unit) {
+    if (cover != null) {
+        AsyncImage(
+            model = cover,
+            contentDescription = null,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize().blur(LOCK_BLUR),
+        )
+    }
+    MembersOnlyLock(
+        creatorId = item.authorId,
+        creatorName = item.creatorName,
+        requiredLevelId = item.membersOnly.tierRequiredId,
+        requiredPricePaise = item.membersOnly.requiredPricePaise,
+        onUnlocked = onUnlocked,
+        style = MembersOnlyLockStyle.OnMedia,
+        title = item.title,
+        durationMs = item.membersOnly.redactedDurationMs,
+        modifier = Modifier.align(Alignment.Center).padding(horizontal = UsTheme.spacing.xxl),
+    )
+}
+
+private val LOCK_BLUR = 28.dp
 
 /**
  * The video of one page: the pool's player for it, its volume and quality,

@@ -189,6 +189,29 @@ sealed interface NotificationKind {
     /** Someone the viewer credited accepted it. The row opens the video. */
     data object CreditAccepted : NotificationKind
 
+    // ── Paid memberships (2026-10-23, notification-service membership_notify.go) ──
+    // Every one is the `memberships` preference category. The creator's notice
+    // opens their Memberships page (`/monetization/tiers`); every member notice
+    // opens that one membership (`/memberships/{subscription_id}`).
+
+    /** Someone joined one of the viewer's levels (to the CREATOR). */
+    data object MembershipNewMember : NotificationKind
+
+    /** The viewer's join was paid: they are a member now. */
+    data object MembershipJoined : NotificationKind
+
+    /** The viewer's renewal was paid (in-app only, no push). */
+    data object MembershipRenewed : NotificationKind
+
+    /** The viewer's membership ends in 3 days, or today: renew to keep access. */
+    data object MembershipRenewalDue : NotificationKind
+
+    /** A membership payment the viewer made did not go through. */
+    data object MembershipPaymentFailed : NotificationKind
+
+    /** The viewer's membership has ended. */
+    data object MembershipEnded : NotificationKind
+
     /** A type this build has no rendering for. Carries the wire value. */
     data class Unknown(val raw: String) : NotificationKind
 
@@ -218,6 +241,12 @@ sealed interface NotificationKind {
             "creator_went_live" -> CreatorWentLive
             "credit_request" -> CreditRequest
             "credit_accepted" -> CreditAccepted
+            NotificationTarget.MEMBERSHIP_NEW_MEMBER_TYPE -> MembershipNewMember
+            NotificationTarget.MEMBERSHIP_JOINED_TYPE -> MembershipJoined
+            NotificationTarget.MEMBERSHIP_RENEWED_TYPE -> MembershipRenewed
+            NotificationTarget.MEMBERSHIP_RENEWAL_DUE_TYPE -> MembershipRenewalDue
+            NotificationTarget.MEMBERSHIP_PAYMENT_FAILED_TYPE -> MembershipPaymentFailed
+            NotificationTarget.MEMBERSHIP_ENDED_TYPE -> MembershipEnded
             else -> Unknown(raw)
         }
     }
@@ -284,6 +313,23 @@ sealed interface NotificationTarget {
      */
     data object CreditRequests : NotificationTarget
 
+    /**
+     * One of the viewer's memberships (paid memberships, 2026-10-23):
+     * `/memberships/{subscription_id}`, where it is renewed, changed or
+     * cancelled. The id is a UUID or the link opens nothing.
+     */
+    data class Membership(val subscriptionId: String) : NotificationTarget
+
+    /** The viewer's memberships list: `/memberships`. */
+    data object MyMemberships : NotificationTarget
+
+    /**
+     * The creator's own Memberships page, levels and members:
+     * `/monetization/tiers` (the server's link) or `/monetization/members`
+     * (the contract's spelling of the same page).
+     */
+    data object CreatorMemberships : NotificationTarget
+
     /** Unparseable, or a surface this build does not have. Tapping does nothing. */
     data object None : NotificationTarget
 
@@ -343,6 +389,14 @@ sealed interface NotificationTarget {
 
                 segments.size == 2 && segments[0] == "credits" && segments[1] == "requests" -> CreditRequests
 
+                // Paid memberships (2026-10-23).
+                segments.size == 2 && segments[0] == MEMBERSHIPS_SEGMENT -> membershipOf(segments[1])
+
+                segments.size == 1 && segments[0] == MEMBERSHIPS_SEGMENT -> MyMemberships
+
+                segments.size == 2 && segments[0] == MONETIZATION_SEGMENT && segments[1] in CREATOR_MEMBERSHIP_PAGES ->
+                    CreatorMemberships
+
                 else -> None
             }
         }
@@ -361,6 +415,50 @@ sealed interface NotificationTarget {
 
         const val CREDIT_REQUEST_TYPE = "credit_request"
         const val CREDIT_ACCEPTED_TYPE = "credit_accepted"
+
+        /**
+         * Where a membership notification lands when its deep link does not
+         * say (2026-10-23): the creator's new-member notice opens their
+         * Memberships page; every member notice opens the membership its
+         * entity id names (the subscription), or the list when the id is not
+         * a UUID. [None] for every other type.
+         */
+        fun membershipFallback(type: String, entityId: String): NotificationTarget = when (type) {
+            MEMBERSHIP_NEW_MEMBER_TYPE -> CreatorMemberships
+            in MEMBER_NOTICE_TYPES -> membershipOf(entityId).takeIf { it != None } ?: MyMemberships
+            else -> None
+        }
+
+        /** The membership target for a subscription id, or [None] when it is not a UUID. */
+        fun membershipOf(subscriptionId: String): NotificationTarget {
+            val id = subscriptionId.trim()
+            return if (UUID_SHAPE.matches(id)) Membership(id) else None
+        }
+
+        const val MEMBERSHIP_NEW_MEMBER_TYPE = "membership_new_member"
+        const val MEMBERSHIP_JOINED_TYPE = "membership_joined"
+        const val MEMBERSHIP_RENEWED_TYPE = "membership_renewed"
+        const val MEMBERSHIP_RENEWAL_DUE_TYPE = "membership_renewal_due"
+        const val MEMBERSHIP_PAYMENT_FAILED_TYPE = "membership_payment_failed"
+        const val MEMBERSHIP_ENDED_TYPE = "membership_ended"
+
+        /** The five notices to the MEMBER; each is about one subscription. */
+        val MEMBER_NOTICE_TYPES: Set<String> = setOf(
+            MEMBERSHIP_JOINED_TYPE,
+            MEMBERSHIP_RENEWED_TYPE,
+            MEMBERSHIP_RENEWAL_DUE_TYPE,
+            MEMBERSHIP_PAYMENT_FAILED_TYPE,
+            MEMBERSHIP_ENDED_TYPE,
+        )
+
+        /** All six membership types. */
+        val MEMBERSHIP_TYPES: Set<String> = MEMBER_NOTICE_TYPES + MEMBERSHIP_NEW_MEMBER_TYPE
+
+        private const val MEMBERSHIPS_SEGMENT = "memberships"
+        private const val MONETIZATION_SEGMENT = "monetization"
+
+        /** The creator page's two spellings: the server's `tiers` and the contract's `members`. */
+        private val CREATOR_MEMBERSHIP_PAGES = setOf("tiers", "members")
 
         /**
          * The live target for a stream id, or [None] when the id is not a

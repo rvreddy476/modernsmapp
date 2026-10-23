@@ -142,7 +142,9 @@ internal fun NotificationDto.toDomain(): Notification = Notification(
             NotificationTarget.parse(deepLink).takeUnless {
                 it is NotificationTarget.Customer || it is NotificationTarget.CustomerDues ||
                     it is NotificationTarget.None
-            } ?: NotificationTarget.creditFallback(type, entityId)
+            } ?: NotificationTarget.creditFallback(type, entityId).takeUnless { it == NotificationTarget.None }
+                // Paid memberships (2026-10-23): the subscription the notice is about.
+                ?: NotificationTarget.membershipFallback(type, entityId)
         }
     },
     isRead = isRead,

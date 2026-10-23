@@ -20,8 +20,10 @@ class MeDrawerRowsTest {
         grid = true,
         offline = true,
         creditRequests = true,
+        myMemberships = true,
         messages = true,
         creatorHub = true,
+        memberships = true,
         upload = true,
         settings = true,
     )
@@ -39,8 +41,10 @@ class MeDrawerRowsTest {
                 MeDrawerRow.SAVED,
                 MeDrawerRow.OFFLINE,
                 MeDrawerRow.CREDIT_REQUESTS,
+                MeDrawerRow.MY_MEMBERSHIPS,
                 MeDrawerRow.MESSAGES,
                 MeDrawerRow.CREATOR_HUB,
+                MeDrawerRow.MEMBERSHIPS,
                 MeDrawerRow.UPLOAD,
                 MeDrawerRow.SETTINGS,
             )
@@ -58,8 +62,10 @@ class MeDrawerRowsTest {
             "Saved",
             "Offline videos",
             "Credit requests",
+            "My memberships",
             "Messages",
             "Creator Hub",
+            "Memberships",
             "Upload",
             "Settings & privacy",
         ).inOrder()
@@ -110,11 +116,25 @@ class MeDrawerRowsTest {
             .containsExactly(
                 MeDrawerRow.OFFLINE,
                 MeDrawerRow.CREDIT_REQUESTS,
+                MeDrawerRow.MY_MEMBERSHIPS,
                 MeDrawerRow.MESSAGES,
                 MeDrawerRow.CREATOR_HUB,
+                MeDrawerRow.MEMBERSHIPS,
                 MeDrawerRow.UPLOAD,
                 MeDrawerRow.SETTINGS,
             )
+    }
+
+    /** Paid memberships (2026-10-23): each row only where `:app` gave it somewhere to go. */
+    @Test
+    fun `the membership rows follow their doors`() {
+        val without = meDrawerSections(
+            isOwnProfile = true,
+            doors = everyDoor.copy(myMemberships = false, memberships = false),
+        ).flatMap { it.rows }
+        assertThat(without).containsNoneOf(MeDrawerRow.MY_MEMBERSHIPS, MeDrawerRow.MEMBERSHIPS)
+        assertThat(MeDrawerRow.MY_MEMBERSHIPS.group).isEqualTo(MeDrawerGroup.ACTIVITY)
+        assertThat(MeDrawerRow.MEMBERSHIPS.group).isEqualTo(MeDrawerGroup.CREATOR_TOOLS)
     }
 
     @Test
@@ -128,6 +148,8 @@ class MeDrawerRowsTest {
             onOpenCreatorHub = {},
             onOpenOffline = {},
             onOpenCreditRequests = {},
+            onOpenMyMemberships = {},
+            onOpenMemberships = {},
             onOpenUpload = {},
         )
         // Still loading: no grid yet, so Liked and Saved are not offered.
