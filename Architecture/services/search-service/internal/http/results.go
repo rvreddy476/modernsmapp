@@ -117,6 +117,11 @@ func (h *Handler) postResults(ctx context.Context, viewerID uuid.UUID, docs []se
 	assets := h.mediaClient.Resolve(ctx, viewerString(viewerID), mediaIDs)
 
 	for _, d := range docs {
+		// Video credits (2026-10-23) are indexed to be matched and
+		// filtered, not shown: the row keeps the shape it had before them,
+		// and the video page reads credits from post-service, which knows
+		// who may see a tagged account.
+		d = withoutCreditFields(d)
 		row := PostResult{PostDoc: d, ID: d.PostID, DurationMs: d.DurationMs, ViewCount: d.ViewCount, Height: d.Height}
 		if d.PublishedAt != nil && !d.PublishedAt.IsZero() {
 			row.PublishedAt = d.PublishedAt.UTC().Format(time.RFC3339)
@@ -269,4 +274,12 @@ func (h *Handler) rankedPostItems(ctx context.Context, viewerID uuid.UUID, items
 		out = append(out, m)
 	}
 	return out
+}
+
+// withoutCreditFields strips the indexed-only video credit fields from a
+// document before it becomes a result row (see postResults).
+func withoutCreditFields(d search.PostDoc) search.PostDoc {
+	d.CreditNames, d.CreditRoles, d.Genres = nil, nil, nil
+	d.ReleaseYear, d.ProductionHouse = 0, ""
+	return d
 }

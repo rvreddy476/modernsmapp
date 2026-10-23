@@ -50,6 +50,7 @@ type NotificationPreferences struct {
 	PushFoodOrders        bool `json:"push_food_orders"`
 	PushOrders            bool `json:"push_orders"`
 	PushDoorstep          bool `json:"push_doorstep"`
+	PushCredits           bool `json:"push_credits"`
 
 	InappLikes             bool `json:"inapp_likes"`
 	InappSuperLikes        bool `json:"inapp_super_likes"`
@@ -73,6 +74,7 @@ type NotificationPreferences struct {
 	InappFoodOrders        bool `json:"inapp_food_orders"`
 	InappOrders            bool `json:"inapp_orders"`
 	InappDoorstep          bool `json:"inapp_doorstep"`
+	InappCredits           bool `json:"inapp_credits"`
 
 	EmailDigest string    `json:"email_digest"`
 	UpdatedAt   time.Time `json:"updated_at"`
@@ -89,14 +91,14 @@ const notifPrefsColumns = `user_id, push_enabled, email_enabled, quiet_hours_ena
 	push_channel_updates, push_channel_urgent,
 	push_community_posts, push_community_mentions,
 	push_event_reminders, push_system,
-	push_reposts, push_live, push_messages, push_new_videos, push_food_orders, push_orders, push_doorstep,
+	push_reposts, push_live, push_messages, push_new_videos, push_food_orders, push_orders, push_doorstep, push_credits,
 	inapp_likes, inapp_super_likes, inapp_comments, inapp_replies,
 	inapp_mentions, inapp_follows, inapp_friend_requests,
 	inapp_group_posts, inapp_group_mentions,
 	inapp_channel_updates, inapp_channel_urgent,
 	inapp_community_posts, inapp_community_mentions,
 	inapp_event_reminders, inapp_system,
-	inapp_reposts, inapp_live, inapp_messages, inapp_new_videos, inapp_food_orders, inapp_orders, inapp_doorstep,
+	inapp_reposts, inapp_live, inapp_messages, inapp_new_videos, inapp_food_orders, inapp_orders, inapp_doorstep, inapp_credits,
 	email_digest, updated_at`
 
 // scanNotifPrefs returns scan destinations in notifPrefsColumns order.
@@ -110,14 +112,14 @@ func scanNotifPrefs(p *NotificationPreferences) []any {
 		&p.PushChannelUpdates, &p.PushChannelUrgent,
 		&p.PushCommunityPosts, &p.PushCommunityMentions,
 		&p.PushEventReminders, &p.PushSystem,
-		&p.PushReposts, &p.PushLive, &p.PushMessages, &p.PushNewVideos, &p.PushFoodOrders, &p.PushOrders, &p.PushDoorstep,
+		&p.PushReposts, &p.PushLive, &p.PushMessages, &p.PushNewVideos, &p.PushFoodOrders, &p.PushOrders, &p.PushDoorstep, &p.PushCredits,
 		&p.InappLikes, &p.InappSuperLikes, &p.InappComments, &p.InappReplies,
 		&p.InappMentions, &p.InappFollows, &p.InappFriendRequests,
 		&p.InappGroupPosts, &p.InappGroupMentions,
 		&p.InappChannelUpdates, &p.InappChannelUrgent,
 		&p.InappCommunityPosts, &p.InappCommunityMentions,
 		&p.InappEventReminders, &p.InappSystem,
-		&p.InappReposts, &p.InappLive, &p.InappMessages, &p.InappNewVideos, &p.InappFoodOrders, &p.InappOrders, &p.InappDoorstep,
+		&p.InappReposts, &p.InappLive, &p.InappMessages, &p.InappNewVideos, &p.InappFoodOrders, &p.InappOrders, &p.InappDoorstep, &p.InappCredits,
 		&p.EmailDigest, &p.UpdatedAt,
 	}
 }
@@ -133,14 +135,14 @@ func notifPrefsValues(p *NotificationPreferences) []any {
 		p.PushChannelUpdates, p.PushChannelUrgent,
 		p.PushCommunityPosts, p.PushCommunityMentions,
 		p.PushEventReminders, p.PushSystem,
-		p.PushReposts, p.PushLive, p.PushMessages, p.PushNewVideos, p.PushFoodOrders, p.PushOrders, p.PushDoorstep,
+		p.PushReposts, p.PushLive, p.PushMessages, p.PushNewVideos, p.PushFoodOrders, p.PushOrders, p.PushDoorstep, p.PushCredits,
 		p.InappLikes, p.InappSuperLikes, p.InappComments, p.InappReplies,
 		p.InappMentions, p.InappFollows, p.InappFriendRequests,
 		p.InappGroupPosts, p.InappGroupMentions,
 		p.InappChannelUpdates, p.InappChannelUrgent,
 		p.InappCommunityPosts, p.InappCommunityMentions,
 		p.InappEventReminders, p.InappSystem,
-		p.InappReposts, p.InappLive, p.InappMessages, p.InappNewVideos, p.InappFoodOrders, p.InappOrders, p.InappDoorstep,
+		p.InappReposts, p.InappLive, p.InappMessages, p.InappNewVideos, p.InappFoodOrders, p.InappOrders, p.InappDoorstep, p.InappCredits,
 		p.EmailDigest, p.UpdatedAt,
 	}
 }
@@ -201,7 +203,8 @@ func (s *Store) UpdateNotificationPreferences(ctx context.Context, p *Notificati
 // DefaultNotificationPreferences mirrors the column defaults in migrations
 // 003 + 005 + 006: everything on except community-posts push; like pushes are ON
 // (TikTok parity, 005); ALL in-app toggles default on; new_videos on for both
-// halves (006, Tube launch: every subscriber hears about every upload).
+// halves (006, Tube launch: every subscriber hears about every upload);
+// credits on for both halves (017: a credit request waits for an answer).
 func DefaultNotificationPreferences(userID string) *NotificationPreferences {
 	return &NotificationPreferences{
 		UserID:            userID,
@@ -231,6 +234,7 @@ func DefaultNotificationPreferences(userID string) *NotificationPreferences {
 		PushFoodOrders:        true,
 		PushOrders:            true,
 		PushDoorstep:          true,
+		PushCredits:           true,
 
 		InappLikes:             true,
 		InappSuperLikes:        true,
@@ -254,6 +258,7 @@ func DefaultNotificationPreferences(userID string) *NotificationPreferences {
 		InappFoodOrders:        true,
 		InappOrders:            true,
 		InappDoorstep:          true,
+		InappCredits:           true,
 
 		EmailDigest: "weekly",
 		UpdatedAt:   time.Now(),

@@ -137,7 +137,43 @@ func (s *Service) buildPostCreatedPayload(ctx context.Context, p *postgres.Post,
 	if isVideoContentType(p.ContentType) {
 		s.stampChannel(ctx, &pc, p.AuthorID)
 	}
+	s.stampCreditSearchFields(ctx, &pc, p)
 	return pc
+}
+
+// stampCreditSearchFields puts a long video's credits on its PostCreated
+// (credits.go): from the list being written on the create path, from the
+// stored rows when the schedule worker publishes a stored post. Best-effort
+// on the stored path — a failed read leaves the fields off, and the next
+// eligibility event or reindex carries them.
+func (s *Service) stampCreditSearchFields(ctx context.Context, pc *events.PostCreatedPayload, p *postgres.Post) {
+	if !isLongVideoContentType(p.ContentType) {
+		return
+	}
+	pc.CreditNames, pc.CreditRoles = postCreditSearchNames(p.CreditsWrite)
+	pc.Genres = append([]string(nil), p.Genres...)
+	if len(pc.Genres) == 0 {
+		pc.Genres = nil
+	}
+	if p.ReleaseYear != nil {
+		pc.ReleaseYear = *p.ReleaseYear
+	}
+	if p.ProductionHouse != nil {
+		pc.ProductionHouse = *p.ProductionHouse
+	}
+	// A post being created carries its list in CreditsWrite (or has none);
+	// a stored post (the schedule worker) has its rows.
+	if p.CreditsWrite != nil || s.pgStore == nil {
+		return
+	}
+	fields, found, err := s.pgStore.CreditSearchFields(ctx, p.ID)
+	if err != nil {
+		log.Printf("Warning: credit search fields for %s unread: %v", p.ID, err)
+		return
+	}
+	if found {
+		pc.PostCreditSearchFields = fields
+	}
 }
 
 // postMediaRefs projects the attached assets onto the event contract, in

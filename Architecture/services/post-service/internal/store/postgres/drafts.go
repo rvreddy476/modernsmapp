@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 
@@ -73,6 +74,22 @@ type ReelDraft struct {
 	// ContentType is the kind the studio measured, 'flick' or 'long_video'
 	// (migration 069). nil: never said; publish classifies it.
 	ContentType *string `json:"content_type,omitempty"`
+	// Video credits (migration 070), as the Credits step saved them and as
+	// the publish hands them to CreatePost (which links, checks and
+	// announces the tags only then). Omitted when unset.
+	Credits         []CreditInput `json:"credits,omitempty"`
+	Genres          []string      `json:"genres,omitempty"`
+	ReleaseYear     *int          `json:"release_year,omitempty"`
+	ProductionHouse *string       `json:"production_house,omitempty"`
+}
+
+// decodeDraftCredits reads reel_drafts.credits (NULL = none).
+func (d *ReelDraft) decodeDraftCredits(raw []byte) error {
+	d.Credits = nil
+	if len(raw) == 0 {
+		return nil
+	}
+	return json.Unmarshal(raw, &d.Credits)
 }
 
 const draftCols = `id, author_id, media_id,
@@ -89,10 +106,12 @@ const draftCols = `id, author_id, media_id,
 	status, moderation_status, published_post_id,
 	created_at, updated_at, blocked_reason,
 	ai_generated, location_name, location_place_id,
-	content_type`
+	content_type,
+	credits, genres, release_year, production_house`
 
 func scanDraft(row pgx.Row) (*ReelDraft, error) {
 	var d ReelDraft
+	var creditsRaw []byte
 	err := row.Scan(
 		&d.ID, &d.AuthorID, &d.MediaID,
 		&d.Title, &d.Caption, &d.Hashtags, &d.Tags,
@@ -109,8 +128,12 @@ func scanDraft(row pgx.Row) (*ReelDraft, error) {
 		&d.CreatedAt, &d.UpdatedAt, &d.BlockedReason,
 		&d.AIGenerated, &d.LocationName, &d.LocationPlaceID,
 		&d.ContentType,
+		&creditsRaw, &d.Genres, &d.ReleaseYear, &d.ProductionHouse,
 	)
 	if err != nil {
+		return nil, err
+	}
+	if err := d.decodeDraftCredits(creditsRaw); err != nil {
 		return nil, err
 	}
 	return &d, nil
@@ -120,6 +143,7 @@ func scanDraftRows(rows pgx.Rows) ([]ReelDraft, error) {
 	var drafts []ReelDraft
 	for rows.Next() {
 		var d ReelDraft
+		var creditsRaw []byte
 		if err := rows.Scan(
 			&d.ID, &d.AuthorID, &d.MediaID,
 			&d.Title, &d.Caption, &d.Hashtags, &d.Tags,
@@ -136,7 +160,11 @@ func scanDraftRows(rows pgx.Rows) ([]ReelDraft, error) {
 			&d.CreatedAt, &d.UpdatedAt, &d.BlockedReason,
 			&d.AIGenerated, &d.LocationName, &d.LocationPlaceID,
 			&d.ContentType,
+			&creditsRaw, &d.Genres, &d.ReleaseYear, &d.ProductionHouse,
 		); err != nil {
+			return nil, err
+		}
+		if err := d.decodeDraftCredits(creditsRaw); err != nil {
 			return nil, err
 		}
 		drafts = append(drafts, d)
@@ -158,10 +186,18 @@ func (s *Store) CreateDraft(ctx context.Context, d *ReelDraft) error {
 	if d.ModerationStatus == "" {
 		d.ModerationStatus = "pending"
 	}
+	creditsRaw, err := marshalDraftCredits(d.Credits)
+	if err != nil {
+		return err
+	}
+	genres := d.Genres
+	if genres == nil {
+		genres = []string{}
+	}
 
-	_, err := s.db.Exec(ctx, `
+	_, err = s.db.Exec(ctx, `
 		INSERT INTO reel_drafts (`+draftCols+`)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39,$40,$41,$42,$43,$44,$45,$46,$47,$48,$49,$50)`,
 		d.ID, d.AuthorID, d.MediaID,
 		d.Title, d.Caption, d.Hashtags, d.Tags,
 		d.Visibility, d.TopicID, d.Category, d.Language, d.SEOTitle,
@@ -177,6 +213,7 @@ func (s *Store) CreateDraft(ctx context.Context, d *ReelDraft) error {
 		d.CreatedAt, d.UpdatedAt, d.BlockedReason,
 		d.AIGenerated, d.LocationName, d.LocationPlaceID,
 		d.ContentType,
+		creditsRaw, genres, d.ReleaseYear, d.ProductionHouse,
 	)
 	return err
 }

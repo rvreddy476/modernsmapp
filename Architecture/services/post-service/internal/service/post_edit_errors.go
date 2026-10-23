@@ -15,6 +15,20 @@ func PostEditErrorStatus(err error) (int, string) {
 	switch {
 	case errors.Is(err, ErrPostNotFound), errors.Is(err, ErrPostNotVisible):
 		return http.StatusNotFound, "NOT_FOUND"
+	// Video credits (credits.go): 400 on every route, create and PATCH
+	// alike, as the credits contract pins.
+	case errors.Is(err, ErrCreditsNotAllowed):
+		return http.StatusBadRequest, "CREDITS_NOT_ALLOWED"
+	case errors.Is(err, ErrTooManyCredits):
+		return http.StatusBadRequest, "TOO_MANY_CREDITS"
+	case errors.Is(err, ErrInvalidCredit):
+		return http.StatusBadRequest, "INVALID_CREDIT"
+	case errors.Is(err, ErrInvalidGenre):
+		return http.StatusBadRequest, "INVALID_GENRE"
+	case errors.Is(err, ErrInvalidReleaseYear):
+		return http.StatusBadRequest, "INVALID_RELEASE_YEAR"
+	case errors.Is(err, ErrInvalidProductionHouse):
+		return http.StatusBadRequest, "INVALID_PRODUCTION_HOUSE"
 	case errors.Is(err, ErrNotPostAuthor), errors.Is(err, ErrPostForbidden):
 		return http.StatusForbidden, "FORBIDDEN"
 	case errors.Is(err, ErrMediaNotOwned):

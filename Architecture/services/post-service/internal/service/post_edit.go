@@ -117,6 +117,22 @@ type PostEditInput struct {
 	IsBranded   *bool
 	AIGenerated *bool
 	LinkURL     *string
+
+	// Video credits (credits.go), long videos only. Credits replaces the
+	// list ([] clears); Genres likewise; ClearReleaseYear (null on the wire)
+	// wins over ReleaseYear; ProductionHouse "" clears.
+	Credits          *[]postgres.CreditInput
+	Genres           *[]string
+	ReleaseYear      *int
+	ClearReleaseYear bool
+	ProductionHouse  *string
+}
+
+// setsVideoCredits reports an edit that puts credit data on the post (a
+// clear does not).
+func (in PostEditInput) setsVideoCredits() bool {
+	return (in.Credits != nil && len(*in.Credits) > 0) || (in.Genres != nil && len(*in.Genres) > 0) ||
+		in.ReleaseYear != nil || (in.ProductionHouse != nil && strings.TrimSpace(*in.ProductionHouse) != "")
 }
 
 // UpdatePost validates and applies an owner edit, then returns the post
@@ -146,17 +162,24 @@ func (s *Service) UpdatePost(ctx context.Context, callerID, postID uuid.UUID, in
 		return nil, err
 	}
 
+	skipped := 0
+	if updated != nil && updated.CreditsWrite != nil {
+		skipped = updated.CreditsWrite.Result.Skipped
+	}
 	if s.pgStore == nil {
 		// Test rig without a full store: answer from the row.
-		return &PostDetail{Post: updated}, nil
+		detail := &PostDetail{Post: updated, CreditTagsSkipped: skipped}
+		s.attachCredits(ctx, detail, &callerID)
+		return detail, nil
 	}
 	detail, err := s.GetPost(ctx, postID, &callerID)
 	if err != nil {
 		return nil, err
 	}
 	if detail == nil {
-		return &PostDetail{Post: updated}, nil
+		detail = &PostDetail{Post: updated}
 	}
+	detail.CreditTagsSkipped = skipped
 	return detail, nil
 }
 
@@ -178,6 +201,14 @@ func (s *Service) applyPostEdit(ctx context.Context, callerID uuid.UUID, current
 			return nil, ErrNotPostAuthor
 		}
 		return nil, err
+	}
+	// The credit replace's outcome (meta.credit_tags_skipped) rides back on
+	// the row; CreditsWrite is never serialised.
+	if patch.Credits != nil && updated != nil {
+		updated.CreditsWrite = patch.Credits
+	}
+	if patch.Credits != nil {
+		s.NudgeOutbox()
 	}
 	// Tier 1b: every edited field is in the cached body.
 	s.InvalidatePostBodyCache(ctx, current.ID)
@@ -278,7 +309,59 @@ func (s *Service) buildPostEditPatch(ctx context.Context, current *postgres.Post
 	if err := s.buildHubSettingsPatch(ctx, current, in, &patch); err != nil {
 		return patch, err
 	}
+	if err := s.buildCreditsPatch(ctx, current, in, &patch); err != nil {
+		return patch, err
+	}
 	return patch, nil
+}
+
+// buildCreditsPatch validates the video-credit fields (credits.go) into
+// patch: every value first, then the kind (long videos only — clearing is
+// allowed on anything), then — last, because it asks identity-profile and
+// graph-service — which tags may link an account.
+func (s *Service) buildCreditsPatch(ctx context.Context, current *postgres.Post, in PostEditInput, patch *postgres.PostEditPatch) error {
+	var credits []postgres.CreditInput
+	if in.Credits != nil {
+		c, err := ValidateCredits(*in.Credits)
+		if err != nil {
+			return err
+		}
+		credits = c
+	}
+	if in.Genres != nil {
+		g, err := NormalizeGenres(*in.Genres)
+		if err != nil {
+			return err
+		}
+		patch.Genres = &g
+	}
+	if in.ClearReleaseYear {
+		patch.ClearReleaseYear = true
+	} else if in.ReleaseYear != nil {
+		if err := ValidateReleaseYear(*in.ReleaseYear, s.clock()); err != nil {
+			return err
+		}
+		y := *in.ReleaseYear
+		patch.ReleaseYear = &y
+	}
+	if in.ProductionHouse != nil {
+		house, err := NormalizeProductionHouse(*in.ProductionHouse)
+		if err != nil {
+			return err
+		}
+		if house == nil {
+			patch.ClearProductionHouse = true
+		} else {
+			patch.ProductionHouse = house
+		}
+	}
+	if in.setsVideoCredits() && !isLongVideoContentType(current.ContentType) {
+		return ErrCreditsNotAllowed
+	}
+	if in.Credits != nil {
+		patch.Credits = s.resolveCreditCandidates(ctx, current.AuthorID, credits)
+	}
+	return nil
 }
 
 // buildHubSettingsPatch validates the Creator Hub fields (hub_settings.go)

@@ -226,6 +226,12 @@ const (
 	// Mentions
 	EventUserMentioned = "user.mentioned" // payload: UserMentionedPayload
 
+	// Video credits (cast & crew on a long video, 2026-10-23). post-service
+	// writes both to its outbox in the transaction that creates the tag or
+	// records the answer; notification-service delivers them.
+	EventPostCreditRequested = "post.credit.requested" // payload: PostCreditRequestedPayload
+	EventPostCreditAccepted  = "post.credit.accepted"  // payload: PostCreditAcceptedPayload
+
 	// Creator Analytics Events (reel engagement)
 	EventReelLiked     = "reel.liked"
 	EventReelCommented = "reel.commented"
@@ -609,6 +615,25 @@ type PostCreatedPayload struct {
 	// the next reindex fills them from the database.
 	Height       int  `json:"height,omitempty"`
 	HasSubtitles bool `json:"has_subtitles,omitempty"`
+
+	// Video credits (2026-10-23), long videos only and only when set; see
+	// PostCreditSearchFields.
+	PostCreditSearchFields
+}
+
+// PostCreditSearchFields is the cast & crew projection a long video carries
+// to search (2026-10-23), embedded in PostCreatedPayload and
+// PostSearchEligibilityChangedPayload so both writers of the search document
+// send the same fields. Every credit name is plain text here whatever the
+// tag's consent status: the uploader typed it, and search never learns who
+// was tagged. CreditNames and CreditRoles are parallel, in credit order.
+// Omitted for every other content type and on removal events.
+type PostCreditSearchFields struct {
+	CreditNames     []string `json:"credit_names,omitempty"`
+	CreditRoles     []string `json:"credit_roles,omitempty"`
+	Genres          []string `json:"genres,omitempty"`
+	ReleaseYear     int      `json:"release_year,omitempty"`
+	ProductionHouse string   `json:"production_house,omitempty"`
 }
 
 // PostMediaRef is one attached asset as carried on the post events: enough
@@ -684,6 +709,8 @@ type PostSearchEligibilityChangedPayload struct {
 	// the title rides along: the document is replaced whole.
 	Height       int  `json:"height,omitempty"`
 	HasSubtitles bool `json:"has_subtitles,omitempty"`
+	// Video credits, as on PostCreatedPayload and for the same reason.
+	PostCreditSearchFields
 
 	ChangedAt time.Time `json:"changed_at"`
 }
@@ -1416,6 +1443,41 @@ type UserMentionedPayload struct {
 	PostID          string    `json:"post_id"`
 	CommentID       string    `json:"comment_id,omitempty"`
 	OccurredAt      time.Time `json:"occurred_at"`
+}
+
+// PostCreditRequestedPayload: an uploader credited a VChat account on a
+// long video and the tag is waiting for that person's answer (status
+// pending). Never emitted for a self-credit, a tag stored unlinked (blocked
+// either way, unknown account, over the uploader's daily tag limit) or a tag
+// kept unchanged by an edit. TaggedUserID is the recipient, UploaderID the
+// actor. UploaderName is the uploader's display name (username when it has
+// none) as post-service resolved it, best-effort and possibly empty.
+type PostCreditRequestedPayload struct {
+	CreditID     string    `json:"credit_id"`
+	PostID       string    `json:"post_id"`
+	UploaderID   string    `json:"uploader_id"`
+	TaggedUserID string    `json:"tagged_user_id"`
+	Name         string    `json:"name"`
+	Role         string    `json:"role"`
+	PostTitle    string    `json:"post_title,omitempty"`
+	UploaderName string    `json:"uploader_name,omitempty"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// PostCreditAcceptedPayload: the tagged person accepted a credit, so the
+// video now shows on their profile ("Appears in"). Emitted only on the
+// transition into accepted, never for a repeated accept. UploaderID is the
+// recipient, TaggedUserID the actor; Name is the credit as the uploader
+// typed it.
+type PostCreditAcceptedPayload struct {
+	CreditID     string    `json:"credit_id"`
+	PostID       string    `json:"post_id"`
+	UploaderID   string    `json:"uploader_id"`
+	TaggedUserID string    `json:"tagged_user_id"`
+	Name         string    `json:"name"`
+	Role         string    `json:"role"`
+	PostTitle    string    `json:"post_title,omitempty"`
+	AcceptedAt   time.Time `json:"accepted_at"`
 }
 
 // --- Creator Analytics Payloads ---

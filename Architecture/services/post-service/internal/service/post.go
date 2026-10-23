@@ -246,6 +246,17 @@ type Service struct {
 	offline              offlineStore
 	offlineCaptionTracks offlineCaptionSource
 	offlineEntitlement   func(ctx context.Context, viewerID uuid.UUID, p *postgres.Post) (bool, error)
+
+	// Video credits (credits.go, 2026-10-23), each nil-safe: the store slice
+	// (nil = the credit routes answer unavailable and reads carry none), the
+	// link checks (nil = every tag is stored as plain text), and seams tests
+	// use in place of identity-profile (creditProfiles), the batch read
+	// (appearancePosts) and the profile gate (appearanceProfileGate).
+	credits               creditStore
+	creditLinks           creditLinker
+	creditProfiles        func(ctx context.Context, viewerID *uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]commentProfile, error)
+	appearancePosts       func(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) (map[uuid.UUID]*PostDetail, error)
+	appearanceProfileGate func(ctx context.Context, viewerID *uuid.UUID, userID uuid.UUID) bool
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {
@@ -275,7 +286,9 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		svc.channelFeed = pg
 		svc.soundReads = pg
 		svc.mediaStates = pg
+		svc.credits = pg
 	}
+	svc.creditLinks = defaultCreditLinker{s: svc}
 	if rdb != nil {
 		svc.statDedupe = redisStatDeduper{rdb: rdb}
 		svc.likeCounter = counters.New(rdb, counters.Config{EntityKind: "post_like_count", Shards: 32})
@@ -565,6 +578,15 @@ type PostDetail struct {
 	// detail and not on the post because the post body is what the cache
 	// holds (post_cache.go), and a cached body carries nothing per viewer.
 	Sound *PostSound `json:"sound,omitempty"`
+	// Credits is a long video's cast & crew as this viewer may see them
+	// (credits.go): an array on the direct read of a long video (possibly
+	// empty), absent for every other kind and on list surfaces. Per viewer,
+	// so on the detail and never in the cached post body.
+	Credits *[]CreditView `json:"credits,omitempty"`
+	// CreditTagsSkipped is how many tags the write behind this detail stored
+	// as plain text over the uploader's daily limit; the handler puts it in
+	// meta.credit_tags_skipped. Never in the body.
+	CreditTagsSkipped int `json:"-"`
 }
 
 // CreatePostInput holds all fields for creating a new post.
@@ -665,6 +687,10 @@ type CreatePostInput struct {
 	AIGenerated     bool
 	LinkURL         string
 	LocationPlaceID *string
+
+	// Video credits (2026-10-23, credits.go), long videos only. Validated
+	// and linked by CreatePost; written in the post's transaction.
+	VideoCredits VideoCreditFields
 }
 
 // CreatePollInput holds poll creation data.
@@ -1020,6 +1046,15 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		return nil, fmt.Errorf("%w %q: must be post, poll, flick, or long_video", ErrInvalidContentType, contentType)
 	}
 
+	// Video credits (credits.go): every value, then the kind — the INTENT,
+	// so only what the author posted as a long video may carry them (a
+	// plain post with a video attached stays a post). Before anything is
+	// written.
+	videoCredits, productionHouse, err := validatedVideoCredits(contentType, input.VideoCredits, s.clock())
+	if err != nil {
+		return nil, err
+	}
+
 	// Tube: a long video is listed under a channel, so the account must have
 	// created one first (founder rule, 2026-09-05). Reels/flicks are not gated.
 	if err := s.gateVideoBehindChannel(ctx, input.AuthorID, contentType); err != nil {
@@ -1166,6 +1201,9 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		AIGenerated:       input.AIGenerated,
 		LinkURL:           linkURL,
 		LocationPlaceID:   locationPlaceID,
+		Genres:            videoCredits.Genres,
+		ReleaseYear:       videoCredits.ReleaseYear,
+		ProductionHouse:   productionHouse,
 	}
 
 	// Persist the validated policy verbatim; rev 1 marks "has a policy",
@@ -1372,6 +1410,21 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		reviewStatus = "flagged"
 	}
 	p.ReviewStatus = reviewStatus
+
+	// Video credits: which tags may link an account, decided before the
+	// transaction (it asks identity-profile and graph-service); the insert
+	// writes them, spends the tagging limit and announces the requests in
+	// the post's own transaction (store/postgres/credits.go).
+	// Every long video being created carries a write (possibly empty), which
+	// is also how its PostCreated knows the list is this one.
+	if isLongVideoContentType(contentType) {
+		w := &postgres.CreditsWrite{}
+		if len(videoCredits.Credits) > 0 {
+			w = s.resolveCreditCandidates(ctx, input.AuthorID, videoCredits.Credits)
+		}
+		w.PostTitle = title
+		p.CreditsWrite = w
+	}
 
 	// Build the PostCreated event BEFORE the insert so the outbox row
 	// commits in the same transaction as the post (Codex P0-1: event and
@@ -1716,6 +1769,8 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 	// The sound the post plays, for this viewer (sounds.go). After the
 	// cache read, like everything else that depends on who is asking.
 	s.attachSounds(ctx, viewerID, []*PostDetail{detail})
+	// A long video's credits, as this viewer may see them (credits.go).
+	s.attachCredits(ctx, detail, viewerID)
 
 	return detail, nil
 }

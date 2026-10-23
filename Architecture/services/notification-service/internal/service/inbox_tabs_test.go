@@ -81,7 +81,7 @@ func TestInboxTabs_DerivedFromPreferenceCategory(t *testing.T) {
 	wantCats := map[string][]prefCategory{
 		InboxTabLikes:     {catLikes, catSuperLikes},
 		InboxTabComments:  {catComments, catReplies},
-		InboxTabMentions:  {catMentions, catGroupMentions, catCommunityMentions},
+		InboxTabMentions:  {catMentions, catGroupMentions, catCommunityMentions, catCredits},
 		InboxTabFollowers: {catFollows, catFriendRequests},
 	}
 	for tab, cats := range wantCats {
@@ -108,6 +108,8 @@ func TestInboxTabs_TypeTable(t *testing.T) {
 		"post.commented":   InboxTabComments, "comment": InboxTabComments, "comment.replied": InboxTabComments,
 		"mention.created": InboxTabMentions, "mention": InboxTabMentions, "comment_mention": InboxTabMentions,
 		"group.mention": InboxTabMentions, "community.mention": InboxTabMentions,
+		// Video credits are tags (2026-10-23).
+		CreditTypeRequest: InboxTabMentions, CreditTypeAccepted: InboxTabMentions,
 		"user.followed": InboxTabFollowers, "follow": InboxTabFollowers,
 		"friend_request": InboxTabFollowers, "friend_accepted": InboxTabFollowers,
 		"user.friend_request": InboxTabFollowers, "user.friend_accepted": InboxTabFollowers,

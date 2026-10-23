@@ -475,6 +475,15 @@ func routeDefinitions() []routeDef {
 		// post-service GET /v1/crossposts/mine. The per-post crosspost routes
 		// live under /v1/posts and were reachable; this standalone one was not.
 		{"/v1/crossposts", env("POST_SERVICE_URL", "http://post-service:8084")},
+		// Video credits (2026-10-23): the tagged person's side of a long
+		// video's cast & crew — GET /v1/credits/requests, POST
+		// /v1/credits/:id/accept|decline, DELETE /v1/credits/:id. Owned by
+		// post-service (credits live beside the post); stamped with the
+		// internal key like every post-service prefix (internalroutes
+		// StampPolicy). "Appears in" is /v1/creators/:id/appearances, under
+		// the /v1/creators prefix above, because /v1/users goes to
+		// user-service. Never a query-token path.
+		{"/v1/credits", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/feed", env("FEED_SERVICE_URL", "http://feed-service:8086")},
 		// The curated sound library for the reel studio, media-service
 		// RegisterAudioRoutes:

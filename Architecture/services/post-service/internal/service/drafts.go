@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -62,6 +63,97 @@ type UpdateDraftInput struct {
 	OverlayAudioVol  *float32 `json:"overlay_audio_volume"`
 	CoverMediaID     *string  `json:"cover_media_id"`
 	ScheduleAt       *string  `json:"schedule_at"`
+	// Video credits (migration 070, credits.go): the Credits step, under the
+	// create rules. credits and genres replace ([] clears); release_year and
+	// production_house take null to clear ("" too for the house). Tags are
+	// only checked, linked and announced when the draft publishes.
+	Credits         *[]postgres.CreditInput `json:"credits"`
+	Genres          *[]string               `json:"genres"`
+	ReleaseYear     json.RawMessage         `json:"release_year"`
+	ProductionHouse json.RawMessage         `json:"production_house"`
+}
+
+// draftCreditUpdates resolves the credit fields of a reel-draft patch into
+// column writes under the create route's rules, before anything is
+// written. storedKind is the draft's saved content_type ("" = never said);
+// a draft that is, or is being made, a flick refuses credit data with
+// ErrCreditsNotAllowed.
+func draftCreditUpdates(input *UpdateDraftInput, storedKind string, now time.Time, updates map[string]interface{}) error {
+	sets := false
+	if input.Credits != nil {
+		credits, err := ValidateCredits(*input.Credits)
+		if err != nil {
+			return err
+		}
+		if len(credits) == 0 {
+			updates["credits"] = nil
+		} else {
+			raw, err := json.Marshal(credits)
+			if err != nil {
+				return err
+			}
+			updates["credits"] = raw
+			sets = true
+		}
+	}
+	if input.Genres != nil {
+		genres, err := NormalizeGenres(*input.Genres)
+		if err != nil {
+			return err
+		}
+		updates["genres"] = genres
+		sets = sets || len(genres) > 0
+	}
+	if len(input.ReleaseYear) > 0 {
+		if rawNull(input.ReleaseYear) {
+			updates["release_year"] = nil
+		} else {
+			var y int
+			if err := json.Unmarshal(input.ReleaseYear, &y); err != nil {
+				return ErrInvalidReleaseYear
+			}
+			if err := ValidateReleaseYear(y, now); err != nil {
+				return err
+			}
+			updates["release_year"] = y
+			sets = true
+		}
+	}
+	if len(input.ProductionHouse) > 0 {
+		house := ""
+		if !rawNull(input.ProductionHouse) {
+			if err := json.Unmarshal(input.ProductionHouse, &house); err != nil {
+				return ErrInvalidProductionHouse
+			}
+		}
+		h, err := NormalizeProductionHouse(house)
+		if err != nil {
+			return err
+		}
+		if h == nil {
+			updates["production_house"] = nil
+		} else {
+			updates["production_house"] = *h
+			sets = true
+		}
+	}
+	kind := storedKind
+	if input.ContentType != nil {
+		kind = *input.ContentType
+	}
+	if sets && kind == "flick" {
+		return ErrCreditsNotAllowed
+	}
+	return nil
+}
+
+func rawNull(raw json.RawMessage) bool {
+	return strings.TrimSpace(string(raw)) == "null"
+}
+
+// draftSetsCredits reports a patch that touches any credit field.
+func draftSetsCredits(input *UpdateDraftInput) bool {
+	return input.Credits != nil || input.Genres != nil || len(input.ReleaseYear) > 0 || len(input.ProductionHouse) > 0
 }
 
 // ErrInvalidDraftSound: audio_track_id on a draft patch is neither a sound
@@ -199,6 +291,19 @@ func (s *Service) UpdateDraft(ctx context.Context, draftID uuid.UUID, authorID u
 	}
 	if err := draftPublishUpdates(input, updates); err != nil {
 		return nil, err
+	}
+	if draftSetsCredits(input) {
+		storedKind := ""
+		if input.ContentType == nil {
+			// The kind the draft already said decides; one read, only for a
+			// patch that touches credits without naming the kind.
+			if d, err := s.pgStore.GetDraft(ctx, draftID); err == nil && d != nil && d.AuthorID == authorID && d.ContentType != nil {
+				storedKind = *d.ContentType
+			}
+		}
+		if err := draftCreditUpdates(input, storedKind, s.clock(), updates); err != nil {
+			return nil, err
+		}
 	}
 	if input.Title != nil {
 		updates["title"] = *input.Title
@@ -487,6 +592,16 @@ func applyDraftScreenFields(input *CreatePostInput, draft *postgres.ReelDraft) {
 	if !draft.PublishToFeed {
 		off := false
 		input.LegacyDistribution.PublishToFeed = &off
+	}
+	// Video credits (migration 070): only a draft that publishes as a long
+	// video carries them. A draft whose kind was never said and measured as
+	// a flick publishes without them rather than failing its publication
+	// (a scheduled draft has nobody watching to fix it).
+	if isLongVideoContentType(normalizeLegacyContentType(input.ContentType)) {
+		input.VideoCredits = VideoCreditFields{Credits: draft.Credits, Genres: draft.Genres, ReleaseYear: draft.ReleaseYear}
+		if draft.ProductionHouse != nil {
+			input.VideoCredits.ProductionHouse = *draft.ProductionHouse
+		}
 	}
 }
 

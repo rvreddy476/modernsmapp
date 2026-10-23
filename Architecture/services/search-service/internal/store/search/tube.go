@@ -74,6 +74,8 @@ type TubeCollectionDoc struct {
 func (s *Store) initTubeIndices(ctx context.Context) {
 	settings := opensearchSettingsJSON()
 	s.putVideoFilterMapping(ctx, IndexPosts)
+	// Video credits (2026-10-23, credits.go), additive like the line above.
+	s.putCreditsMapping(ctx, IndexPosts)
 
 	s.createIndexIfNotExists(ctx, IndexTubeChannels, `{
 		"settings": `+settings+`,
@@ -309,27 +311,16 @@ func videoSortClause(o VideoSearchOptions) []interface{} {
 // same text match and public-approved filter as SearchPostsFiltered, plus
 // the content-type terms and the video filters. Pure, for the tests.
 func BuildVideoSearchQuery(query string, contentTypes []string, o VideoSearchOptions, limit int) map[string]interface{} {
-	filter := publicApprovedFilter()
-	if len(contentTypes) > 0 {
-		filter = append(filter, map[string]interface{}{
-			"terms": map[string]interface{}{"content_type": contentTypes},
-		})
-	}
-	filter = append(filter, videoFilterClauses(o)...)
-	q := map[string]interface{}{
-		"size": limit,
-		"query": map[string]interface{}{
-			"bool": map[string]interface{}{
-				"must": []map[string]interface{}{
-					{"multi_match": map[string]interface{}{
-						"query":  query,
-						"fields": []string{"title^3", "text^2", "hashtags"},
-					}},
-				},
-				"filter": filter,
-			},
-		},
-	}
+	return BuildVideoSearchQueryWithCredits(query, contentTypes, o, CreditFilters{}, limit)
+}
+
+// BuildVideoSearchQueryWithCredits is BuildVideoSearchQuery plus the
+// ?genre= / ?year= filters (credits.go, 2026-10-23): the text match and
+// filters of BuildPostSearchQuery, then the video filters and the sort.
+func BuildVideoSearchQueryWithCredits(query string, contentTypes []string, o VideoSearchOptions, f CreditFilters, limit int) map[string]interface{} {
+	q := BuildPostSearchQuery(query, contentTypes, f, limit)
+	boolQ := q["query"].(map[string]interface{})["bool"].(map[string]interface{})
+	boolQ["filter"] = append(boolQ["filter"].([]map[string]interface{}), videoFilterClauses(o)...)
 	if sortClause := videoSortClause(o); sortClause != nil {
 		q["sort"] = sortClause
 	}
@@ -339,7 +330,12 @@ func BuildVideoSearchQuery(query string, contentTypes []string, o VideoSearchOpt
 // SearchVideosFiltered is SearchPostsFiltered with the video options. With
 // zero options it sends exactly what SearchPostsFiltered sends.
 func (s *Store) SearchVideosFiltered(ctx context.Context, query string, contentTypes []string, o VideoSearchOptions, limit int) ([]PostDoc, error) {
-	return s.execPostSearch(ctx, BuildVideoSearchQuery(query, contentTypes, o, limit))
+	return s.SearchVideosWithFilters(ctx, query, contentTypes, o, CreditFilters{}, limit)
+}
+
+// SearchVideosWithFilters is SearchVideosFiltered with the credit filters.
+func (s *Store) SearchVideosWithFilters(ctx context.Context, query string, contentTypes []string, o VideoSearchOptions, f CreditFilters, limit int) ([]PostDoc, error) {
+	return s.execPostSearch(ctx, BuildVideoSearchQueryWithCredits(query, contentTypes, o, f, limit))
 }
 
 // IncrementPostViewCount adds delta to a post document's view_count in

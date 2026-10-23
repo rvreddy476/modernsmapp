@@ -71,6 +71,17 @@ type PostEditPatch struct {
 	LinkURL      *string
 	ClearLinkURL bool
 
+	// Video credits (migration 070). Genres replaces the list ([] clears);
+	// ClearReleaseYear / ClearProductionHouse write NULL and win over the
+	// value pointers. Credits, when set, replaces the credit list in this
+	// transaction (credits.go) and its Result is filled in.
+	Genres               *[]string
+	ReleaseYear          *int
+	ClearReleaseYear     bool
+	ProductionHouse      *string
+	ClearProductionHouse bool
+	Credits              *CreditsWrite
+
 	// Distribution replaces posts.distribution (the service built it from
 	// the stored policy plus notify_subscribers). When set, the same
 	// transaction bumps distribution_rev and writes DistributionEvent(rev)
@@ -118,7 +129,7 @@ func (s *Store) UpdatePostFields(ctx context.Context, postID, actorID uuid.UUID,
 	}
 
 	changes := postEditChanges(before, patch)
-	if len(changes) == 0 {
+	if len(changes) == 0 && patch.Credits == nil {
 		// Nothing to write; still answer the current row.
 		if err := tx.Commit(ctx); err != nil {
 			return nil, err
@@ -157,6 +168,9 @@ func (s *Store) UpdatePostFields(ctx context.Context, postID, actorID uuid.UUID,
 			is_branded           = COALESCE($30, is_branded),
 			ai_generated         = COALESCE($31, ai_generated),
 			link_url             = CASE WHEN $33::boolean THEN NULL ELSE COALESCE($32::text, link_url) END,
+			genres               = COALESCE($34::text[], genres),
+			release_year         = CASE WHEN $36::boolean THEN NULL ELSE COALESCE($35::int, release_year) END,
+			production_house     = CASE WHEN $38::boolean THEN NULL ELSE COALESCE($37::text, production_house) END,
 			updated_at       = NOW()
 		WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
 		RETURNING `+postCols,
@@ -169,22 +183,48 @@ func (s *Store) UpdatePostFields(ctx context.Context, postID, actorID uuid.UUID,
 		patch.RemixSetting, patch.CommentModeration, patch.CommentAccess,
 		patch.AgeRestricted, patch.HideLikeCount, patch.DefaultCommentSort,
 		patch.RelatedPostID, patch.ClearRelatedPost, jsonArg(patch.Distribution),
-		patch.IsBranded, patch.AIGenerated, patch.LinkURL, patch.ClearLinkURL))
+		patch.IsBranded, patch.AIGenerated, patch.LinkURL, patch.ClearLinkURL,
+		textArrayArg(patch.Genres), patch.ReleaseYear, patch.ClearReleaseYear,
+		patch.ProductionHouse, patch.ClearProductionHouse))
 	if err != nil {
 		return nil, fmt.Errorf("update post fields: %w", err)
+	}
+
+	// Video credits (credits.go): replaced in this transaction, before the
+	// search bump below so the eligibility event carries the new list.
+	if patch.Credits != nil {
+		patch.Credits.PostTitle = after.Title
+		if err := replaceCreditsTx(ctx, tx, postID, actorID, patch.Credits); err != nil {
+			return nil, err
+		}
+		if patch.Credits.Result.Changed {
+			changes["credits"] = PostEditChange{Changed: true}
+		}
 	}
 
 	action := patch.AuditAction
 	if action == "" {
 		action = "post.edit"
 	}
-	if err := insertPostEditAudit(ctx, tx, postID, actorID, action, changes); err != nil {
-		return nil, err
+	if len(changes) > 0 {
+		if err := insertPostEditAudit(ctx, tx, postID, actorID, action, changes); err != nil {
+			return nil, err
+		}
 	}
 	if patch.Distribution != nil && patch.DistributionEvent != nil {
 		eventType, payload := patch.DistributionEvent(after.DistributionRev)
 		if err := InsertOutboxEventTx(ctx, tx, eventType, "post", postID, payload); err != nil {
 			return nil, fmt.Errorf("emit distribution update on edit: %w", err)
+		}
+	}
+	// Search re-reads the post when its visibility or anything search
+	// indexes about a long video's credits changed (migration 070): the
+	// document is replaced whole by the eligibility event.
+	if creditSearchChanged(changes) {
+		if _, visChanged := changes["visibility"]; !visChanged {
+			if err := BumpSearchRevAndEmitTx(ctx, tx, postID); err != nil {
+				return nil, fmt.Errorf("emit search eligibility on credits edit: %w", err)
+			}
 		}
 	}
 	if vis, changed := changes["visibility"]; changed {
@@ -312,7 +352,56 @@ func postEditChanges(before *Post, patch PostEditPatch) map[string]PostEditChang
 	if from, to := optString(before.LinkURL), nextLinkURL(before.LinkURL, patch); from != to {
 		changes["link_url"] = PostEditChange{From: from, To: to}
 	}
+	if patch.Genres != nil && !sameStrings(before.Genres, *patch.Genres) {
+		changes["genres"] = PostEditChange{From: nonNil(before.Genres), To: nonNil(*patch.Genres)}
+	}
+	if from, to := optInt(before.ReleaseYear), nextReleaseYear(before.ReleaseYear, patch); from != to {
+		changes["release_year"] = PostEditChange{From: from, To: to}
+	}
+	if from, to := optString(before.ProductionHouse), nextProductionHouse(before.ProductionHouse, patch); from != to {
+		changes["production_house"] = PostEditChange{From: from, To: to}
+	}
 	return changes
+}
+
+// creditSearchChanged reports an edit to what search indexes about a long
+// video's credits (credit names and roles, genres, year, production house).
+func creditSearchChanged(changes map[string]PostEditChange) bool {
+	for _, k := range []string{"credits", "genres", "release_year", "production_house"} {
+		if _, ok := changes[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+// optInt renders a nullable INT column for the diff (0 for NULL; 0 is not a
+// year any row may hold).
+func optInt(v *int) int {
+	if v == nil {
+		return 0
+	}
+	return *v
+}
+
+func nextReleaseYear(cur *int, patch PostEditPatch) int {
+	switch {
+	case patch.ClearReleaseYear:
+		return 0
+	case patch.ReleaseYear != nil:
+		return *patch.ReleaseYear
+	}
+	return optInt(cur)
+}
+
+func nextProductionHouse(cur *string, patch PostEditPatch) string {
+	switch {
+	case patch.ClearProductionHouse:
+		return ""
+	case patch.ProductionHouse != nil:
+		return *patch.ProductionHouse
+	}
+	return optString(cur)
 }
 
 // dateString renders a DATE column value the way the wire carries it

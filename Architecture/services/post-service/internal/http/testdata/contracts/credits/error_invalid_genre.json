@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "INVALID_GENRE",
+    "message": "genres must be at most 3 of the slugs GET /v1/posts/genres lists"
+  },
+  "meta": {}
+}

@@ -284,6 +284,26 @@ func TestPurgeUserIsIdempotentAndDecrementsSurvivorCounters(t *testing.T) {
 		userA, postB1, userB, postA1); err != nil {
 		t.Fatal(err)
 	}
+	// Video credits (migration 070, the real idempotent file): userA is
+	// tagged (accepted) on userB's post and tagged userB on their own post;
+	// userA's tagging ledger has a row.
+	creditsDDL, err := database.Migrations.ReadFile("migrations/070_video_credits.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, string(creditsDDL)); err != nil {
+		t.Fatalf("apply migration 070: %v", err)
+	}
+	creditOnB, creditOnA := uuid.New(), uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO post_credits (id, post_id, position, name, role, user_id, status)
+		VALUES ($1,$2,0,'User A','Director',$3,'accepted'), ($4,$5,0,'User B','Actor',$6,'pending')`,
+		creditOnB, postB1, userA, creditOnA, postA1, userB); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO post_credit_tag_events (uploader_id, credit_id) VALUES ($1,$2)`, userA, creditOnA); err != nil {
+		t.Fatal(err)
+	}
 	// Counted comment reports (migration 062, the real idempotent file):
 	// userA reported userB's reply; userB reported userA's comment and
 	// their own reply (the last one survives).
@@ -342,6 +362,12 @@ func TestPurgeUserIsIdempotentAndDecrementsSurvivorCounters(t *testing.T) {
 	assertZero(t, pool, "post_offline_copies", "user_id=$1", userA)
 	assertZero(t, pool, "post_offline_copies", "post_id=$1", postA1)
 	assertOne(t, pool, "post_offline_copies", "user_id=$1", userB)
+	// Video credits: the purged user is unlinked from userB's post (the
+	// credit stays as text), their own post's credits and ledger are gone.
+	assertZero(t, pool, "post_credits", "user_id=$1", userA)
+	assertOne(t, pool, "post_credits", "id=$1 AND status='unlinked' AND name='User A'", creditOnB)
+	assertZero(t, pool, "post_credits", "post_id=$1", postA1)
+	assertZero(t, pool, "post_credit_tag_events", "uploader_id=$1", userA)
 	// Counted comment reports: the purged user's, and those on their
 	// comments; the survivor's report on another reply stays.
 	assertZero(t, pool, "comment_report_reporters", "reporter_id=$1", userA)

@@ -100,6 +100,30 @@ type PostDraftPayload struct {
 	IsBranded       bool     `json:"is_branded,omitempty"`
 	CoverIndex      *int     `json:"cover_index,omitempty"`
 	LocationPlaceID *string  `json:"location_place_id,omitempty"`
+
+	// ── Video credits (2026-10-23, credits.go) ─────────────────────────
+	// A long video's Credits step, so a draft (or a scheduled post saved as
+	// one) keeps it. Long videos only; tags are checked, linked and
+	// announced at publication.
+	Credits         []postgres.CreditInput `json:"credits,omitempty"`
+	Genres          []string               `json:"genres,omitempty"`
+	ReleaseYear     *int                   `json:"release_year,omitempty"`
+	ProductionHouse string                 `json:"production_house,omitempty"`
+}
+
+// videoCredits is the payload's credit fields.
+func (p *PostDraftPayload) videoCredits() VideoCreditFields {
+	return VideoCreditFields{Credits: p.Credits, Genres: p.Genres, ReleaseYear: p.ReleaseYear, ProductionHouse: p.ProductionHouse}
+}
+
+// draftPayloadKind is the content_type a draft publishes as, as far as the
+// credit rule needs it (buildDraftCreateInput's choice, legacy spellings
+// folded).
+func draftPayloadKind(postType string, payload *PostDraftPayload) string {
+	if postType == "poll" {
+		return "poll"
+	}
+	return normalizeLegacyContentType(strings.TrimSpace(payload.ContentType))
 }
 
 // draftPayloadPostTypes is what a draft payload's post_type may say.
@@ -190,6 +214,9 @@ func validateDraftDetails(postType string, payload *PostDraftPayload) error {
 		return bad(ErrInvalidCover)
 	}
 	if _, err := ResolvePostCover(pt, payload.MediaIDs, cover, payload.CoverIndex); err != nil {
+		return bad(err)
+	}
+	if _, _, err := validatedVideoCredits(draftPayloadKind(postType, payload), payload.videoCredits(), time.Now()); err != nil {
 		return bad(err)
 	}
 	return nil
@@ -635,6 +662,8 @@ func buildDraftCreateInput(d *postgres.PostDraft, payload *PostDraftPayload) *Cr
 	if payload.LinkURL != nil {
 		input.LinkURL = *payload.LinkURL
 	}
+	// Video credits: CreatePost validates and links them again.
+	input.VideoCredits = payload.videoCredits()
 	// Unparseable ids were accepted at save time before this field existed
 	// on the payload; dropping one is better than failing a scheduled post
 	// the author is no longer looking at.

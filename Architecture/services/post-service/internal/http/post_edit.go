@@ -82,6 +82,42 @@ type updatePostRequest struct {
 	IsBranded   *bool   `json:"is_branded,omitempty"`
 	AIGenerated *bool   `json:"ai_generated,omitempty"`
 	LinkURL     *string `json:"link_url,omitempty"`
+	// Video credits (2026-10-23, service/credits.go), long videos only.
+	// credits and genres replace their lists ([] clears); release_year and
+	// production_house take null to clear ("" too for the house). Raw so
+	// null is told apart from absent.
+	Credits         *[]postgres.CreditInput `json:"credits,omitempty"`
+	Genres          *[]string               `json:"genres,omitempty"`
+	ReleaseYear     json.RawMessage         `json:"release_year,omitempty"`
+	ProductionHouse json.RawMessage         `json:"production_house,omitempty"`
+}
+
+// applyCreditFields decodes the raw credit fields of a PATCH into in. A
+// value of the wrong JSON type is INVALID_RELEASE_YEAR /
+// INVALID_PRODUCTION_HOUSE, the codes a bad value of the right type gets.
+func (req updatePostRequest) applyCreditFields(in *service.PostEditInput) error {
+	in.Credits, in.Genres = req.Credits, req.Genres
+	if len(req.ReleaseYear) > 0 {
+		if rawJSONNull(req.ReleaseYear) {
+			in.ClearReleaseYear = true
+		} else {
+			var y int
+			if err := json.Unmarshal(req.ReleaseYear, &y); err != nil {
+				return service.ErrInvalidReleaseYear
+			}
+			in.ReleaseYear = &y
+		}
+	}
+	if len(req.ProductionHouse) > 0 {
+		house := ""
+		if !rawJSONNull(req.ProductionHouse) {
+			if err := json.Unmarshal(req.ProductionHouse, &house); err != nil {
+				return service.ErrInvalidProductionHouse
+			}
+		}
+		in.ProductionHouse = &house
+	}
+	return nil
 }
 
 // maxUpdatePostBodyBytes mirrors the create route's cap.
@@ -117,6 +153,10 @@ func (h *Handler) UpdatePost(c *gin.Context) {
 		DefaultCommentSort: req.DefaultCommentSort, RelatedPostID: req.RelatedPostID,
 		IsBranded: req.IsBranded, AIGenerated: req.AIGenerated, LinkURL: req.LinkURL,
 	}
+	if err := req.applyCreditFields(&in); err != nil {
+		writePostEditError(c, err)
+		return
+	}
 	if req.CoverMediaID != nil {
 		id, err := uuid.Parse(strings.TrimSpace(*req.CoverMediaID))
 		if err != nil {
@@ -130,7 +170,7 @@ func (h *Handler) UpdatePost(c *gin.Context) {
 		writePostEditError(c, err)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, detail, nil)
+	writeWithCreditsMeta(c, http.StatusOK, detail, detail.CreditTagsSkipped)
 }
 
 // writePostEditError maps every refusal of the owner-edit routes

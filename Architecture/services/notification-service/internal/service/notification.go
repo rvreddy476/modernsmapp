@@ -444,6 +444,12 @@ func notifTitleBody(notifType string) (string, string) {
 		return "Message Request", "You have a new message request"
 	case "post_reposted":
 		return "New Repost", "Someone reposted your post"
+	// Video credits (credit_notify.go). The named copy rides a render
+	// override; this is the anonymous fallback.
+	case CreditTypeRequest:
+		return "Someone credited you in a video", "Tap to accept or decline"
+	case CreditTypeAccepted:
+		return "Your credit was accepted", "The video now shows on their profile"
 	case "creator_went_live":
 		return "LIVE now", "Someone you follow just went live"
 	case "missed_call":

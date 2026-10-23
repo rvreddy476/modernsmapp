@@ -44,6 +44,7 @@ var inboxTabByPrefCategory = map[prefCategory]string{
 	catMentions:          InboxTabMentions, // post, comment, group and community mentions/tags
 	catGroupMentions:     InboxTabMentions,
 	catCommunityMentions: InboxTabMentions,
+	catCredits:           InboxTabMentions, // video credits are tags too: the request and its acceptance
 	catFollows:           InboxTabFollowers,
 	catFriendRequests:    InboxTabFollowers, // follow/connection requests and their acceptance
 	catGroupPosts:        InboxTabGroups,

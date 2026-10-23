@@ -80,6 +80,18 @@ type Post struct {
 	AIGenerated     bool    `json:"ai_generated"`
 	LinkURL         *string `json:"link_url,omitempty"`
 	LocationPlaceID *string `json:"location_place_id,omitempty"`
+	// Video credits (migration 070), long videos only: up to 3 genre slugs
+	// (service/genres.go), the release year and the production house. All
+	// omitted when unset, so no other kind of post changes shape. The credit
+	// list itself is per viewer and lives on the detail, not here: this
+	// struct is what the body cache holds.
+	Genres          []string `json:"genres,omitempty"`
+	ReleaseYear     *int     `json:"release_year,omitempty"`
+	ProductionHouse *string  `json:"production_house,omitempty"`
+	// CreditsWrite, when set on a post being created, makes the insert
+	// write its credits in the same transaction (credits.go). Never on the
+	// wire or in the cache.
+	CreditsWrite *CreditsWrite `json:"-"`
 	// AudioTrackID is the added sound the post plays over its own video
 	// (service/audio.go), nil when it plays none. AudioStartMs is where in
 	// that sound playback starts; deriveAudio keeps the pair together, so
@@ -282,7 +294,8 @@ const postCols = `id, author_id, text, visibility, content_type, is_pinned,
 	thread_root_id, thread_reply_to_id, thread_seq,
 	created_at, updated_at, review_status, deleted_at,
 	publish_at, published_at, mention_usernames, active_restriction_count,
-	is_branded, ai_generated, link_url, location_place_id`
+	is_branded, ai_generated, link_url, location_place_id,
+	genres, release_year, production_house`
 
 func scanPost(row pgx.Row) (*Post, error) {
 	var p Post
@@ -342,6 +355,7 @@ func postScanDestinations(p *Post) []any {
 		&p.CreatedAt, &p.UpdatedAt, &p.ReviewStatus, &p.DeletedAt,
 		&p.PublishAt, &p.PublishedAt, &p.MentionUsernames, &p.ActiveRestrictionCount,
 		&p.IsBranded, &p.AIGenerated, &p.LinkURL, &p.LocationPlaceID,
+		&p.Genres, &p.ReleaseYear, &p.ProductionHouse,
 	}
 }
 
@@ -763,6 +777,11 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 	if p.MentionUsernames == nil {
 		p.MentionUsernames = []string{}
 	}
+	// posts.genres is NOT NULL DEFAULT '{}' (migration 070), same reason.
+	genres := p.Genres
+	if genres == nil {
+		genres = []string{}
+	}
 	_, err := tx.Exec(ctx, `
 		INSERT INTO posts (id, author_id, text, visibility, content_type,
 			feeling, activity, activity_detail, rich_text,
@@ -781,7 +800,8 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 			hide_share, allow_download, tagged_user_ids, content_type_explicit,
 			created_at, updated_at,
 			publish_at, mention_usernames,
-			is_branded, ai_generated, link_url, location_place_id)
+			is_branded, ai_generated, link_url, location_place_id,
+			genres, release_year, production_house)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
 			$12, $13, $14, $15, $16, $17, $18, $19, $20,
 			$21, $22, $23, $24, $25,
@@ -796,7 +816,8 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 			$46, $47, $48, $49,
 			$50, $50,
 			$51, $52,
-			$53, $54, $55, $56)
+			$53, $54, $55, $56,
+			$57, $58, $59)
 	`, p.ID, p.AuthorID, p.Text, p.Visibility, p.ContentType,
 		p.Feeling, p.Activity, p.ActivityDetail, p.RichText,
 		p.NoComments, p.NoLikes,
@@ -814,9 +835,19 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 		p.HideShare, p.AllowDownload, p.TaggedUserIDs, p.ContentTypeExplicit,
 		p.CreatedAt,
 		p.PublishAt, p.MentionUsernames,
-		p.IsBranded, p.AIGenerated, p.LinkURL, p.LocationPlaceID)
+		p.IsBranded, p.AIGenerated, p.LinkURL, p.LocationPlaceID,
+		genres, p.ReleaseYear, p.ProductionHouse)
 	if err != nil {
 		return err
+	}
+
+	// Video credits (migration 070), in the post's own transaction, so the
+	// post, its tags, the tagging ledger and the request events commit
+	// together or not at all.
+	if p.CreditsWrite != nil && len(p.CreditsWrite.Candidates) > 0 {
+		if err := replaceCreditsTx(ctx, tx, p.ID, p.AuthorID, p.CreditsWrite); err != nil {
+			return err
+		}
 	}
 
 	// Insert media attachments, in request order.

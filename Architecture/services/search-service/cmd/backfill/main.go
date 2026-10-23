@@ -333,6 +333,9 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 	// row, which is the same answer a producer that does not report them
 	// gives, and the run says so.
 	heightExpr, subtitlesExpr := videoFilterExprs(ctx, pool)
+	// Video credits (2026-10-23, credits.go): the document is replaced
+	// whole, so a rebuild carries them or wipes them.
+	credits := creditExprs(ctx, pool)
 	reviewExpr := effectiveReviewStatusExpr(ctx, pool)
 
 	// Result-row projection (title, first attached asset, longest video
@@ -355,7 +358,12 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 	                       WHERE pm.post_id = p.id AND pm.kind = 'video'), 0)::int,
 	             ` + heightExpr + `,
 	             ` + subtitlesExpr + `,
-	             COALESCE(p.publish_at, p.created_at) AS published_at
+	             COALESCE(p.publish_at, p.created_at) AS published_at,
+	             ` + credits.Names + `,
+	             ` + credits.Roles + `,
+	             ` + credits.Genres + `,
+	             ` + credits.Year + `,
+	             ` + credits.House + `
 	      FROM posts p
 	      ORDER BY p.created_at DESC`
 	if limit > 0 {
@@ -436,13 +444,15 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 		var storedHashtags []string
 		var durationMs, height int
 		var hasSubtitles bool
+		var credit creditRow
 		var searchRev int64
 		var createdAt, publishedAt time.Time
 		var isDeleted, isScheduled bool
 		if err := rows.Scan(&id, &authorID, &text, &visibility,
 			&reviewStatus, &searchRev, &contentType, &createdAt, &isDeleted, &isScheduled,
 			&title, &storedHashtags, &mediaID, &mediaKind, &durationMs,
-			&height, &hasSubtitles, &publishedAt); err != nil {
+			&height, &hasSubtitles, &publishedAt,
+			&credit.Names, &credit.Roles, &credit.Genres, &credit.Year, &credit.House); err != nil {
 			return indexed, err
 		}
 
@@ -507,29 +517,32 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 		}
 
 		published := publishedAt
+		doc := search.PostDoc{
+			PostID:       id,
+			AuthorID:     authorID,
+			Text:         text,
+			Visibility:   visibility,
+			ReviewStatus: reviewStatus,
+			SearchRev:    searchRev,
+			PostType:     contentType,
+			ContentType:  contentType,
+			Hashtags:     tags,
+			CreatedAt:    createdAt,
+			Title:        title,
+			DurationMs:   durationMs,
+			MediaID:      mediaID,
+			MediaKind:    mediaKind,
+			Height:       height,
+			HasSubtitles: hasSubtitles,
+			PublishedAt:  &published,
+		}
+		// Video credits: long videos only, as on the live path.
+		applyCredits(&doc, contentType, credit)
 		pending = append(pending, search.PostProjection{
 			PostID:    id,
 			Rev:       searchRev,
 			Reproject: true,
-			Doc: search.PostDoc{
-				PostID:       id,
-				AuthorID:     authorID,
-				Text:         text,
-				Visibility:   visibility,
-				ReviewStatus: reviewStatus,
-				SearchRev:    searchRev,
-				PostType:     contentType,
-				ContentType:  contentType,
-				Hashtags:     tags,
-				CreatedAt:    createdAt,
-				Title:        title,
-				DurationMs:   durationMs,
-				MediaID:      mediaID,
-				MediaKind:    mediaKind,
-				Height:       height,
-				HasSubtitles: hasSubtitles,
-				PublishedAt:  &published,
-			},
+			Doc:       doc,
 		})
 		if len(pending) >= viewCountBatch {
 			flush()

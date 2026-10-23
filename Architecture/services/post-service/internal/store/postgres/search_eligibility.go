@@ -131,6 +131,16 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 			}
 			payload.Media = append(payload.Media, events.PostMediaRef{MediaID: id, Kind: kind})
 		}
+		// Video credits (migration 070): the document is replaced whole, so
+		// a long video's credits ride along with every eligible transition,
+		// read in this transaction (an edit has just rewritten them).
+		if IsLongVideoContentType(contentType) {
+			fields, err := creditSearchFields(ctx, tx, postID)
+			if err != nil {
+				return 0, err
+			}
+			payload.PostCreditSearchFields = fields
+		}
 	}
 
 	if err := InsertOutboxEventTx(ctx, tx, events.PostSearchEligibilityChanged, "post", postID, payload); err != nil {

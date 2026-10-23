@@ -231,6 +231,14 @@ func (s *Store) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 		// with the posts below.
 		`DELETE FROM post_offline_copies WHERE user_id = $1`,
 
+		// Video credits (migration 070): the user tagged on someone else's
+		// video loses the link; the credit stays as the uploader's plain
+		// text. Credits on the user's own posts cascade with the posts below;
+		// their tagging ledger goes now.
+		`UPDATE post_credits SET user_id = NULL, status = 'unlinked', responded_at = NULL
+			WHERE user_id = $1`,
+		`DELETE FROM post_credit_tag_events WHERE uploader_id = $1`,
+
 		// post_moderation_decisions is ON DELETE RESTRICT from posts(id) —
 		// must be emptied before the posts row goes.
 		`DELETE FROM post_moderation_decisions WHERE post_id IN (SELECT id FROM _purge_posts)`,

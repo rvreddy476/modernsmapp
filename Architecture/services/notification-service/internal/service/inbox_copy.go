@@ -105,6 +105,8 @@ var inboxCopyTable = map[string]inboxCopyEntry{
 	"post_reclassified":      own("Your video was moved to long videos", InboxIconSocial),
 	"creator_uploaded_video": own("{actor} uploaded a new video", InboxIconSocial),
 	"creator_uploaded_flick": own("{actor} posted a new short", InboxIconSocial),
+	CreditTypeRequest:        own("{actor} credited you in a video", InboxIconSocial),
+	CreditTypeAccepted:       own("{actor} accepted your credit", InboxIconSocial),
 
 	// === Live ===
 	LiveNotifType:  own("{actor} is live now", InboxIconLive),

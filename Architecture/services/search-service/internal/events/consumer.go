@@ -568,33 +568,36 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if err != nil {
 			return err
 		}
+		doc := search.PostDoc{
+			PostID:          p.PostID,
+			AuthorID:        p.AuthorID,
+			AuthorIsPrivate: authorPrivate,
+			Text:            p.Text,
+			Hashtags:        extractHashtags(p.Text),
+			Visibility:      p.Visibility,
+			ReviewStatus:    p.ReviewStatus,
+			SearchRev:       rev,
+			CreatedAt:       p.CreatedAt,
+			ContentType:     p.ContentType,
+			PostType:        p.ContentType,
+			Title:           p.Title,
+			DurationMs:      postDurationMs(p.DurationMs, p.DurationSeconds),
+			MediaID:         firstMediaID(p.Media),
+			MediaKind:       firstMediaKind(p.Media),
+			// MTube filters: as the producer reports them (0 / false
+			// from a producer that does not yet). PostCreated is
+			// emitted at publish time, so its created_at is the best
+			// published_at the event can offer.
+			Height:       p.Height,
+			HasSubtitles: p.HasSubtitles,
+			PublishedAt:  publishedAtOf(p.CreatedAt),
+		}
+		// Video credits (2026-10-23, credits.go): long videos only.
+		applyCreditFields(&doc, p.ContentType, p.PostCreditSearchFields)
 		return c.store.IndexPostUnlessAuthorErased(ctx, search.PostProjection{
 			PostID: p.PostID,
 			Rev:    rev,
-			Doc: search.PostDoc{
-				PostID:          p.PostID,
-				AuthorID:        p.AuthorID,
-				AuthorIsPrivate: authorPrivate,
-				Text:            p.Text,
-				Hashtags:        extractHashtags(p.Text),
-				Visibility:      p.Visibility,
-				ReviewStatus:    p.ReviewStatus,
-				SearchRev:       rev,
-				CreatedAt:       p.CreatedAt,
-				ContentType:     p.ContentType,
-				PostType:        p.ContentType,
-				Title:           p.Title,
-				DurationMs:      postDurationMs(p.DurationMs, p.DurationSeconds),
-				MediaID:         firstMediaID(p.Media),
-				MediaKind:       firstMediaKind(p.Media),
-				// MTube filters: as the producer reports them (0 / false
-				// from a producer that does not yet). PostCreated is
-				// emitted at publish time, so its created_at is the best
-				// published_at the event can offer.
-				Height:       p.Height,
-				HasSubtitles: p.HasSubtitles,
-				PublishedAt:  publishedAtOf(p.CreatedAt),
-			},
+			Doc:    doc,
 		})
 
 	case events.ReelViewed:

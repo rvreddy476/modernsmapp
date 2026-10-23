@@ -162,6 +162,7 @@ const (
 	catFoodOrders // Feast customer order updates (migration 007)
 	catOrders     // MStore order updates, buyer and seller (migration 010)
 	catDoorstep   // Doorstep customer booking updates (migration 013)
+	catCredits    // video credits: requests to the tagged person, acceptances to the uploader (migration 017)
 )
 
 // categoryForEvent maps every event type this service delivers — both the
@@ -215,6 +216,10 @@ func categoryForEvent(eventType string) prefCategory {
 	// subscriber who mutes uploads mutes all of them. Defaults on (Tube launch).
 	case "creator_uploaded_video", "creator_uploaded_flick":
 		return catNewVideos
+	// Video credits (credit_notify.go): one toggle pair for the request the
+	// tagged person answers and the acceptance the uploader hears about.
+	case CreditTypeRequest, CreditTypeAccepted:
+		return catCredits
 	// Feast customer order updates. Kitchen new-order and rider job-offer
 	// pushes are operational and never consult Momentum preferences
 	// (food_push.go); they map here only so nothing category-gates them.
@@ -313,6 +318,8 @@ func pushCategoryAllowed(p *postgres.NotificationPreferences, eventType string) 
 		return p.PushOrders
 	case catDoorstep:
 		return p.PushDoorstep
+	case catCredits:
+		return p.PushCredits
 	default: // catDefault, catAlwaysOn
 		return true
 	}
@@ -366,6 +373,8 @@ func inappCategoryAllowed(p *postgres.NotificationPreferences, eventType string)
 		return p.InappOrders
 	case catDoorstep:
 		return p.InappDoorstep
+	case catCredits:
+		return p.InappCredits
 	default: // catDefault, catAlwaysOn
 		return true
 	}

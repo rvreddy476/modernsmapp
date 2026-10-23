@@ -84,30 +84,34 @@ func (c *Consumer) applySearchEligibility(ctx context.Context, p events.PostSear
 	if err != nil {
 		return err
 	}
+	doc := search.PostDoc{
+		PostID:          p.PostID,
+		AuthorID:        p.AuthorID,
+		AuthorIsPrivate: authorPrivate,
+		Text:            p.Text,
+		Hashtags:        extractHashtags(p.Text),
+		Visibility:      p.Visibility,
+		ReviewStatus:    p.ReviewStatus,
+		SearchRev:       p.SearchRev,
+		PostType:        p.ContentType,
+		ContentType:     p.ContentType,
+		CreatedAt:       p.CreatedAt,
+		Title:           p.Title,
+		DurationMs:      p.DurationMs,
+		MediaID:         firstMediaID(p.Media),
+		MediaKind:       firstMediaKind(p.Media),
+		// MTube filters, as on PostCreated (consumer.go).
+		Height:       p.Height,
+		HasSubtitles: p.HasSubtitles,
+		PublishedAt:  publishedAtOf(p.CreatedAt),
+	}
+	// Video credits (2026-10-23, credits.go): long videos only. The
+	// document is replaced whole, so these ride along like the title.
+	applyCreditFields(&doc, p.ContentType, p.PostCreditSearchFields)
 	if err := c.store.IndexPostUnlessAuthorErased(ctx, search.PostProjection{
 		PostID: p.PostID,
 		Rev:    p.SearchRev,
-		Doc: search.PostDoc{
-			PostID:          p.PostID,
-			AuthorID:        p.AuthorID,
-			AuthorIsPrivate: authorPrivate,
-			Text:            p.Text,
-			Hashtags:        extractHashtags(p.Text),
-			Visibility:      p.Visibility,
-			ReviewStatus:    p.ReviewStatus,
-			SearchRev:       p.SearchRev,
-			PostType:        p.ContentType,
-			ContentType:     p.ContentType,
-			CreatedAt:       p.CreatedAt,
-			Title:           p.Title,
-			DurationMs:      p.DurationMs,
-			MediaID:         firstMediaID(p.Media),
-			MediaKind:       firstMediaKind(p.Media),
-			// MTube filters, as on PostCreated (consumer.go).
-			Height:       p.Height,
-			HasSubtitles: p.HasSubtitles,
-			PublishedAt:  publishedAtOf(p.CreatedAt),
-		},
+		Doc:    doc,
 	}); err != nil {
 		return fmt.Errorf("eligibility: index %s: %w", p.PostID, err)
 	}

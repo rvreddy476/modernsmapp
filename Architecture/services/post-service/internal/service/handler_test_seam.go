@@ -66,7 +66,18 @@ type HandlerTestDeps struct {
 	OfflineEntitlement func(ctx context.Context, viewerID uuid.UUID, p *postgres.Post) (bool, error)
 	// LikedReels backs GET /v1/reels/liked (liked_reels.go).
 	LikedReels likedReelsStore
+	// Video credits (credits.go): the store, the link checks in place of
+	// identity-profile + graph-service, the accounts the read names, the
+	// batch read behind "Appears in" and its profile gate.
+	Credits               creditStore
+	CreditLinks           creditLinker
+	CreditProfiles        func(ctx context.Context, viewerID *uuid.UUID, ids []uuid.UUID) (map[uuid.UUID]CreditProfile, error)
+	AppearancePosts       func(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) (map[uuid.UUID]*PostDetail, error)
+	AppearanceProfileGate func(ctx context.Context, viewerID *uuid.UUID, userID uuid.UUID) bool
 }
+
+// CreditProfile is one identity-profile account as the credit reads name it.
+type CreditProfile = commentProfile
 
 // NewForHandlerTests builds a Service over HandlerTestDeps, with no
 // Postgres, Scylla or Redis behind it. For tests only; main never calls it.
@@ -102,6 +113,12 @@ func NewForHandlerTests(d HandlerTestDeps) *Service {
 		offlineCaptionTracks: d.OfflineCaptions,
 		offlineEntitlement:   d.OfflineEntitlement,
 		likedReels:           d.LikedReels,
+
+		credits:               d.Credits,
+		creditLinks:           d.CreditLinks,
+		creditProfiles:        d.CreditProfiles,
+		appearancePosts:       d.AppearancePosts,
+		appearanceProfileGate: d.AppearanceProfileGate,
 	}
 	if d.Relationships != nil {
 		s.storyAudience = NewStoryAudience(d.Relationships)

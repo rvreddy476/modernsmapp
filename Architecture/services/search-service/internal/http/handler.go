@@ -264,13 +264,23 @@ func (h *Handler) SearchPosts(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// Video credits (2026-10-23): ?genre=<slug>&year=<YYYY>, on any type —
+	// only long videos carry the fields, so either narrows to long videos.
+	// Validated before the store is touched; unset sends the same body.
+	creditFilters, err := search.ParseCreditFilters(c.Query("genre"), c.Query("year"))
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+		return
+	}
 
 	var results []search.PostDoc
-	var err error
-	if videoOpts.IsZero() {
+	switch {
+	case videoOpts.IsZero() && creditFilters.IsZero():
 		results, err = h.store.SearchPostsFiltered(c.Request.Context(), query, contentTypes, limit)
-	} else {
-		results, err = h.store.SearchVideosFiltered(c.Request.Context(), query, contentTypes, videoOpts, limit)
+	case videoOpts.IsZero():
+		results, err = h.store.SearchPostsWithFilters(c.Request.Context(), query, contentTypes, creditFilters, limit)
+	default:
+		results, err = h.store.SearchVideosWithFilters(c.Request.Context(), query, contentTypes, videoOpts, creditFilters, limit)
 	}
 	if err != nil {
 		slog.Error("SearchPosts error", "error", err)

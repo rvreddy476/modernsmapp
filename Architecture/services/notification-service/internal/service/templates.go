@@ -70,6 +70,20 @@ var Templates = map[string]NotificationTemplate{
 		CanAggregate: true, AggregateWindow: 15 * time.Minute,
 	},
 
+	// Video credits (credit_notify.go, 2026-10-23). Category `credits`
+	// (push_credits / inapp_credits). {uploader} and {name} are filled from
+	// the event; never aggregated, one notice per credit and recipient.
+	CreditTypeRequest: {
+		EventType: CreditTypeRequest, TitleTemplate: "{uploader} credited you in a video",
+		BodyTemplate: "{role} · {title}", Icon: "mention", Priority: "medium",
+		PushEligible: true, CanAggregate: false,
+	},
+	CreditTypeAccepted: {
+		EventType: CreditTypeAccepted, TitleTemplate: "{name} accepted your credit",
+		BodyTemplate: "{role} · {title}", Icon: "mention", Priority: "medium",
+		PushEligible: true, CanAggregate: false,
+	},
+
 	// LIVE — a creator goes live. "creator_went_live" is told to the
 	// stream's reminder holders and the channel's subscribers through the
 	// durable fan-out job (service/live_fanout.go), never to every

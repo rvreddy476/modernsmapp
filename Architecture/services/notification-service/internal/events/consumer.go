@@ -63,6 +63,9 @@ type Consumer struct {
 	// datingNotify delivers Pulse scam alerts and date check-ins
 	// (dating_pulse.go); the service implements it and tests pass a fake.
 	datingNotify datingPulseNotifier
+	// creditNotify delivers video-credit notices (credit_consumer.go); the
+	// service implements it and tests pass a fake.
+	creditNotify creditNotifier
 
 	// Like aggregation: key = "postID:postAuthorID"
 	likeAgg   map[string]*likeAggEntry
@@ -105,6 +108,7 @@ func NewConsumerWithDialer(brokers []string, groupID string, topic string, svc *
 		c.ridePush = svc
 		c.orderNotify = svc
 		c.datingNotify = svc
+		c.creditNotify = svc
 	}
 	return c
 }
@@ -373,6 +377,11 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		authorID, _ := uuid.Parse(e.AuthorID)
 		postID, _ := uuid.Parse(e.PostID)
 		return c.service.CreateNotification(ctx, mentionedID, authorID, "mention", "post", postID, mentionDeepLink(e), e.OccurredAt)
+
+	case events.EventPostCreditRequested, events.EventPostCreditAccepted:
+		// Video credits (credit_consumer.go): the request to the tagged
+		// person, the acceptance to the uploader.
+		return c.handleCreditEvent(ctx, envelope.EventType, envelope.Payload)
 
 	case events.EventPostReposted:
 		var e events.PostRepostedPayload

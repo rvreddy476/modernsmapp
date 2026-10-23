@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "CREDITS_NOT_ALLOWED",
+    "message": "credits, genres, release_year and production_house are for long videos only"
+  },
+  "meta": {}
+}

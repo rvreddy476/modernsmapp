@@ -115,6 +115,9 @@ func (h *Handler) UpdateDraft(c *gin.Context) {
 		// Hashtags follow the create route's rule, so they answer with its
 		// codes (INVALID_HASHTAG, TOO_MANY_HASHTAGS).
 		case writeScheduleError(c, err):
+		// Video credits answer with the create route's codes
+		// (CREDITS_NOT_ALLOWED, INVALID_CREDIT, INVALID_GENRE, ...).
+		case writeCreditFieldError(c, err):
 		// audio_track_id is a sound id, or "" to remove the sound;
 		// content_type is flick or long_video.
 		case errors.Is(err, service.ErrInvalidDraftSound) || errors.Is(err, service.ErrInvalidLocationPlaceID) ||

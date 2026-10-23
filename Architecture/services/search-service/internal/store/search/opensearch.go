@@ -96,7 +96,12 @@ func (s *Store) initIndices() {
 				"title":           { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } } },
 				"duration_ms":     { "type": "long" },
 				"media_id":        { "type": "keyword" },
-				"media_kind":      { "type": "keyword" }
+				"media_kind":      { "type": "keyword" },
+				"credit_names":    { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } } },
+				"credit_roles":    { "type": "text" },
+				"genres":          { "type": "keyword" },
+				"release_year":    { "type": "integer" },
+				"production_house": { "type": "text" }
 			}
 		}
 	}`)
@@ -395,6 +400,17 @@ type PostDoc struct {
 	HasSubtitles bool       `json:"has_subtitles,omitempty"`
 	ViewCount    int64      `json:"view_count,omitempty"`
 	PublishedAt  *time.Time `json:"published_at,omitempty"`
+
+	// Video credits (2026-10-23, credits.go), long videos only: every
+	// credited name (plain text, whatever the tag's consent status) and its
+	// role in credit order, up to three genre slugs, the release year (0 =
+	// unset) and the production house. Matched by the post searches and
+	// filtered by ?genre= / ?year=; never on the wire of a search result.
+	CreditNames     []string `json:"credit_names,omitempty"`
+	CreditRoles     []string `json:"credit_roles,omitempty"`
+	Genres          []string `json:"genres,omitempty"`
+	ReleaseYear     int      `json:"release_year,omitempty"`
+	ProductionHouse string   `json:"production_house,omitempty"`
 }
 
 // PostSearchKind is the page-scoped ?type= filter for post searches.
@@ -830,30 +846,10 @@ func publicChannelFilterAny() []map[string]any {
 func (s *Store) SearchPostsFiltered(ctx context.Context, query string, contentTypes []string, limit int) ([]PostDoc, error) {
 	// A long video is found by its title as much as by its caption, so
 	// the text match spans both (title weighted up), plus the hashtag
-	// terms so "#reel" style queries keep working.
-	mustClauses := []map[string]interface{}{
-		{"multi_match": map[string]interface{}{
-			"query":  query,
-			"fields": []string{"title^3", "text^2", "hashtags"},
-		}},
-	}
-	filter := publicApprovedFilter()
-	if len(contentTypes) > 0 {
-		filter = append(filter, map[string]interface{}{
-			"terms": map[string]interface{}{"content_type": contentTypes},
-		})
-	}
-
-	q := map[string]interface{}{
-		"size": limit,
-		"query": map[string]interface{}{
-			"bool": map[string]interface{}{
-				"must":   mustClauses,
-				"filter": filter,
-			},
-		},
-	}
-	return s.execPostSearch(ctx, q)
+	// terms so "#reel" style queries keep working, and since 2026-10-23
+	// the long video's credited names, genres and production house
+	// (postTextFields, credits.go).
+	return s.execPostSearch(ctx, BuildPostSearchQuery(query, contentTypes, CreditFilters{}, limit))
 }
 
 func (s *Store) execPostSearch(ctx context.Context, query map[string]interface{}) ([]PostDoc, error) {
@@ -2148,8 +2144,10 @@ func buildFunctionScoreQuery(entity, q string, opts RankedSearchOptions) map[str
 	case EntityPosts:
 		inner = map[string]any{
 			"multi_match": map[string]any{
-				"query":  q,
-				"fields": []string{"title^3", "text^3", "hashtags^2", "author_username"},
+				"query": q,
+				// Credited names, genres and production house since
+				// 2026-10-23 (credits.go); roles are not matched.
+				"fields": []string{"title^3", "text^3", "hashtags^2", "author_username", "credit_names^2", "genres", "production_house"},
 			},
 		}
 		// Always exclude non-public and non-approved posts

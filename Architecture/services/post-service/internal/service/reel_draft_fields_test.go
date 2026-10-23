@@ -49,6 +49,11 @@ var draftReachesPost = map[string][]string{
 	"OriginalAudioVol":  {"OriginalAudioVol"},
 	"OverlayAudioVol":   {"OverlayAudioVol"},
 	"CoverMediaID":      {"CoverMediaID"},
+	// Video credits (migration 070): a long video's Credits step.
+	"Credits":         {"VideoCredits"},
+	"Genres":          {"VideoCredits"},
+	"ReleaseYear":     {"VideoCredits"},
+	"ProductionHouse": {"VideoCredits"},
 }
 
 // draftOnly lists the UpdateDraftInput fields that deliberately do NOT
@@ -131,6 +136,10 @@ func perturb(t *testing.T, v reflect.Value) {
 	case reflect.Float32, reflect.Float64:
 		v.SetFloat(v.Float() + 0.25)
 	case reflect.Slice:
+		if v.Type().Elem() == reflect.TypeOf(postgres.CreditInput{}) {
+			v.Set(reflect.Append(v, reflect.ValueOf(postgres.CreditInput{Name: "changed", Role: "Actor"})))
+			return
+		}
 		v.Set(reflect.Append(v, reflect.ValueOf("changed")))
 	case reflect.Ptr:
 		next := reflect.New(v.Type().Elem())
@@ -163,7 +172,7 @@ func TestEveryDraftFieldReachesThePostItMapsTo(t *testing.T) {
 	}
 	base := typicalDraft()
 	author := uuid.New()
-	want := reelDraftPostInput(&base, author, "flick")
+	want := reelDraftPostInput(&base, author, "long_video") // a long video, so the credit fields map too
 	postType := reflect.TypeOf(CreatePostInput{})
 
 	patch := reflect.TypeOf(UpdateDraftInput{})
@@ -177,7 +186,7 @@ func TestEveryDraftFieldReachesThePostItMapsTo(t *testing.T) {
 		changed := typicalDraft()
 		changed.ID, changed.AuthorID, changed.MediaID = base.ID, base.AuthorID, base.MediaID
 		perturb(t, reflect.ValueOf(&changed).Elem().Field(col))
-		got := reelDraftPostInput(&changed, author, "flick")
+		got := reelDraftPostInput(&changed, author, "long_video")
 
 		targets := map[string]bool{}
 		for _, name := range draftReachesPost[field.Name] {

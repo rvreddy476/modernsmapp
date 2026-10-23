@@ -412,6 +412,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.POST("/v1/posts/:postId/product-tags/:tagId/impression", h.RecordProductTagImpression)
 	r.POST("/v1/posts/:postId/product-tags/:tagId/click", h.RecordProductTagClick)
 	r.GET("/v1/creators/:creatorId/product-tags", h.ListProductTagsByCreator)
+
+	// Video credits (2026-10-23, credits.go): the genre list, the tagged
+	// person's requests and answers, and "Appears in".
+	h.registerCreditRoutes(r)
 }
 
 type CreatePollRequest struct {
@@ -528,6 +532,50 @@ type CreatePostRequest struct {
 	AIGenerated     bool    `json:"ai_generated,omitempty"`
 	LinkURL         string  `json:"link_url,omitempty"`
 	LocationPlaceID *string `json:"location_place_id,omitempty"`
+
+	// Video credits (2026-10-23, service/credits.go), long videos only;
+	// omitempty for the same fingerprint reason as the block above.
+	//
+	//   credits           [{name, role, user_id?}], max 30, order kept.
+	//   genres            up to 3 slugs from GET /v1/posts/genres.
+	//   release_year      1900 … next year.
+	//   production_house  <= 100 characters.
+	Credits         []postgres.CreditInput `json:"credits,omitempty"`
+	Genres          []string               `json:"genres,omitempty"`
+	ReleaseYear     *int                   `json:"release_year,omitempty"`
+	ProductionHouse string                 `json:"production_house,omitempty"`
+}
+
+// createPostResponse is the create body: the post as before, plus a long
+// video's credits as its owner sees them. credits is absent on every other
+// kind, so no other create response changes.
+type createPostResponse struct {
+	*postgres.Post
+	Credits *[]service.CreditView `json:"credits,omitempty"`
+}
+
+// creditsMeta is the meta of a write that may have stored tags as plain
+// text over the uploader's daily limit (service/credits.go).
+type creditsMeta struct {
+	RequestID         string `json:"request_id,omitempty"`
+	NextCursor        string `json:"next_cursor,omitempty"`
+	CreditTagsSkipped int    `json:"credit_tags_skipped,omitempty"`
+}
+
+// writeWithCreditsMeta answers data in the api.JSON envelope, adding
+// meta.credit_tags_skipped when the write skipped any tags. With none
+// skipped the bytes are exactly api.JSON's.
+func writeWithCreditsMeta(c *gin.Context, status int, data any, skipped int) {
+	if skipped <= 0 {
+		api.JSON(c.Writer, status, data, nil)
+		return
+	}
+	c.Writer.Header().Set("Content-Type", "application/json")
+	c.Writer.WriteHeader(status)
+	_ = json.NewEncoder(c.Writer).Encode(struct {
+		Data any         `json:"data"`
+		Meta creditsMeta `json:"meta"`
+	}{Data: data, Meta: creditsMeta{CreditTagsSkipped: skipped}})
 }
 
 // writeDistributionError maps distribution policy errors to their typed
@@ -599,10 +647,26 @@ func writeCreateGuardError(c *gin.Context, err error) bool {
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_LOCATION_PLACE_ID", err.Error(), nil)
 	case errors.Is(err, service.ErrInvalidVisibility):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_VISIBILITY", err.Error(), nil)
+	case writeCreditFieldError(c, err):
 	default:
 		return false
 	}
 	return true
+}
+
+// writeCreditFieldError answers the video-credit field refusals (2026-10-23)
+// with the codes PATCH answers (service.PostEditErrorStatus), all 400; false
+// when err is none of them.
+func writeCreditFieldError(c *gin.Context, err error) bool {
+	switch {
+	case errors.Is(err, service.ErrCreditsNotAllowed), errors.Is(err, service.ErrTooManyCredits),
+		errors.Is(err, service.ErrInvalidCredit), errors.Is(err, service.ErrInvalidGenre),
+		errors.Is(err, service.ErrInvalidReleaseYear), errors.Is(err, service.ErrInvalidProductionHouse):
+		status, code := service.PostEditErrorStatus(err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, err.Error(), nil)
+		return true
+	}
+	return false
 }
 
 // resolveAllowDownload is the presence-aware default for `allow_download`.
@@ -897,6 +961,9 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		AIGenerated:        req.AIGenerated,
 		LinkURL:            req.LinkURL,
 		LocationPlaceID:    req.LocationPlaceID,
+		VideoCredits: service.VideoCreditFields{
+			Credits: req.Credits, Genres: req.Genres, ReleaseYear: req.ReleaseYear, ProductionHouse: req.ProductionHouse,
+		},
 	}
 
 	if req.Poll != nil {
@@ -946,7 +1013,15 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		service.ApplySoundLink(p, link)
 	}
 
-	api.JSON(c.Writer, http.StatusCreated, p, nil)
+	// A long video answers with its credits as the owner sees them, and
+	// meta.credit_tags_skipped when the tagging limit turned tags into
+	// plain text.
+	resp, skipped := h.svc.CreatedPostWithCredits(c.Request.Context(), p)
+	if resp.Credits == nil {
+		writeWithCreditsMeta(c, http.StatusCreated, p, skipped)
+		return
+	}
+	writeWithCreditsMeta(c, http.StatusCreated, createPostResponse{Post: p, Credits: resp.Credits}, skipped)
 }
 
 // UpdateDistribution replaces a post's distribution policy (P0-1).

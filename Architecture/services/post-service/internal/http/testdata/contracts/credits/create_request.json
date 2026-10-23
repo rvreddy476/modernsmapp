@@ -1,0 +1,71 @@
+{
+  "text": "A short film about letters that never arrive.",
+  "visibility": "public",
+  "content_type": "long_video",
+  "media_ids": [
+    "d6666666-6666-4666-8666-666666666666"
+  ],
+  "feeling": null,
+  "activity": null,
+  "activity_detail": null,
+  "rich_text": null,
+  "poll": null,
+  "no_comments": false,
+  "no_likes": false,
+  "location_name": null,
+  "location_lat": null,
+  "location_lng": null,
+  "post_type": "video",
+  "app_origin": "",
+  "share_to_postbook": null,
+  "title": "Monsoon Letters",
+  "tags": null,
+  "category": "film_animation",
+  "language": "en",
+  "seo_title": "",
+  "paid_promotion": false,
+  "altered_content": false,
+  "is_made_for_kids": false,
+  "license": "",
+  "allow_embedding": null,
+  "publish_to_feed": null,
+  "remix_setting": "",
+  "comment_moderation": "",
+  "comment_access": "",
+  "recording_date": null,
+  "recording_location": "",
+  "cover_media_id": null,
+  "original_audio_volume": 0,
+  "overlay_audio_volume": 0,
+  "audio_track_id": null,
+  "audio_start_ms": null,
+  "hide_share": false,
+  "allow_download": null,
+  "tagged_user_ids": null,
+  "publish_at": null,
+  "hashtags": null,
+  "mentions": null,
+  "distribution": null,
+  "credits": [
+    {
+      "name": "Asha Rao",
+      "role": "Director",
+      "user_id": "d3333333-3333-4333-8333-333333333333"
+    },
+    {
+      "name": "Ravi Kumar",
+      "role": "Actor",
+      "user_id": "d4444444-4444-4444-8444-444444444444"
+    },
+    {
+      "name": "Meera Iyer",
+      "role": "Music"
+    }
+  ],
+  "genres": [
+    "drama",
+    "romance"
+  ],
+  "release_year": 2024,
+  "production_house": "Blue Hour Films"
+}
