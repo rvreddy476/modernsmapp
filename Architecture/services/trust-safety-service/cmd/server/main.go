@@ -253,6 +253,14 @@ func main() {
 	go storyConsumer.Start(ctx)
 	slog.Info("story moderation evaluator consumer started", "topic", "social.events.v1")
 
+	// Copyright quick wins (2026-10-24): post-service's title-review blocks
+	// (post.copyright_review.changed, state blocked) become upheld copyright
+	// blocks, which the standing answer counts for the long-video pause.
+	copyrightTopic := env("COPYRIGHT_REVIEW_KAFKA_TOPIC", "social.events.v1")
+	copyrightConsumer := tsevents.NewCopyrightReviewConsumer([]string{kafkaBrokers}, copyrightTopic, extras, socialConsumerMetrics)
+	go copyrightConsumer.Start(ctx)
+	slog.Info("copyright review block consumer started", "topic", copyrightTopic)
+
 	// Chat parity §8: a reported message request becomes a report in the
 	// existing queue. Own consumer group on the chat topic.
 	chatReportTopic := env("CHAT_KAFKA_TOPIC", "chat.events.v1")
@@ -308,6 +316,7 @@ func main() {
 		OnShutdown: func() {
 			socialConsumer.Close()
 			storyConsumer.Close()
+			copyrightConsumer.Close()
 			kafkaWriter.Close()
 			dbPool.Close()
 			slog.Info("cleanup completed")

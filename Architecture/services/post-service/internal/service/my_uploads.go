@@ -396,6 +396,8 @@ func (s *Service) enrichUploads(ctx context.Context, posts []postgres.Post) []Up
 		channelPtrs[i] = &details[i].PostDetail
 	}
 	s.attachChannelRefs(ctx, authorOf(posts), channelPtrs)
+	// The author's copyright title reviews (copyright_title_review.go).
+	s.attachCopyrightReviews(ctx, posts[0].AuthorID, channelPtrs)
 	return details
 }
 

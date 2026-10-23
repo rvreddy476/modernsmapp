@@ -66,6 +66,9 @@ type Consumer struct {
 	// creditNotify delivers video-credit notices (credit_consumer.go); the
 	// service implements it and tests pass a fake.
 	creditNotify creditNotifier
+	// copyrightNotify delivers the author's copyright review notices
+	// (copyright_consumer.go); the service implements it, tests pass a fake.
+	copyrightNotify copyrightNotifier
 
 	// Like aggregation: key = "postID:postAuthorID"
 	likeAgg   map[string]*likeAggEntry
@@ -109,6 +112,7 @@ func NewConsumerWithDialer(brokers []string, groupID string, topic string, svc *
 		c.orderNotify = svc
 		c.datingNotify = svc
 		c.creditNotify = svc
+		c.copyrightNotify = svc
 	}
 	return c
 }
@@ -377,6 +381,10 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		authorID, _ := uuid.Parse(e.AuthorID)
 		postID, _ := uuid.Parse(e.PostID)
 		return c.service.CreateNotification(ctx, mentionedID, authorID, "mention", "post", postID, mentionDeepLink(e), e.OccurredAt)
+
+	case events.EventPostCopyrightReview:
+		// Copyright title review (copyright_consumer.go): the author's notice.
+		return c.handleCopyrightReviewEvent(ctx, envelope.Payload)
 
 	case events.EventPostCreditRequested, events.EventPostCreditAccepted:
 		// Video credits (credit_consumer.go): the request to the tagged

@@ -84,6 +84,7 @@ var serviceSinks = []string{
 	"pgStore.CreatePost",
 	"pgStore.CreateThread",
 	"pgStore.PublishScheduledPost",
+	"pgStore.PublishScheduledPostWithHold",
 	"pgStore.CreateCrosspostLink",
 	"pgStore.CreateStoryPending",
 	"pgStore.CreateStory",

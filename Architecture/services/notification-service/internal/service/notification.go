@@ -450,6 +450,14 @@ func notifTitleBody(notifType string) (string, string) {
 		return "Someone credited you in a video", "Tap to accept or decline"
 	case CreditTypeAccepted:
 		return "Your credit was accepted", "The video now shows on their profile"
+	// Copyright title review (copyright_notify.go): the rendered copy rides
+	// an override; these are the fallbacks.
+	case CopyrightTypeHold:
+		return "Your video is in copyright review", "Only you can see it until the review is done"
+	case CopyrightTypeCleared:
+		return "Your video cleared copyright review", "It is now visible to everyone"
+	case CopyrightTypeBlocked:
+		return "Your video was blocked after copyright review", "It stays hidden"
 	case "creator_went_live":
 		return "LIVE now", "Someone you follow just went live"
 	case "missed_call":

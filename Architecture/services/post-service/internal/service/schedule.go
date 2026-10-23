@@ -423,6 +423,21 @@ func (s *Service) PublishScheduled(ctx context.Context, postID uuid.UUID, author
 		return false, err
 	}
 
+	// Long-video uploads paused, and the copyright title review, judged
+	// at the moment the post goes live (copyright_title_review.go). A
+	// refusal parks the worker's post (the author re-arms it by acting on
+	// it) and answers the author's "publish now" with 403 / 409.
+	maxDuration, maxHeight := s.maxVideoDurationAndHeight(ctx, p)
+	hold, cerr := s.scheduledTitleHold(ctx, p, maxDuration)
+	if cerr != nil {
+		if dueOnly && IsTerminalCopyrightError(cerr) {
+			if _, berr := s.pgStore.BlockScheduledPost(ctx, postID, copyrightBlockReason(cerr)); berr != nil {
+				slog.Error("publish scheduled: park failed", "post_id", postID, "reason", copyrightBlockReason(cerr), "err", berr)
+			}
+		}
+		return false, cerr
+	}
+
 	// Everything the event needs that lives outside the row, resolved
 	// before the transaction so it holds no locks while calling out.
 	policy, perr := ParseDistributionPolicy(p.Distribution)
@@ -434,10 +449,9 @@ func (s *Service) PublishScheduled(ctx context.Context, postID uuid.UUID, author
 			"post_id", postID, "err", perr)
 		policy = nil
 	}
-	maxDuration, maxHeight := s.maxVideoDurationAndHeight(ctx, p)
 	now := time.Now().UTC()
 
-	published, err := s.pgStore.PublishScheduledPost(ctx, postID, authorID, now, dueOnly,
+	published, err := s.pgStore.PublishScheduledPostWithHold(ctx, postID, authorID, now, dueOnly, hold,
 		func(rev int64) (string, interface{}, error) {
 			if s.producer == nil {
 				return "", nil, nil
@@ -464,6 +478,12 @@ func (s *Service) PublishScheduled(ctx context.Context, postID uuid.UUID, author
 	p.PublishedAt = &published.PublishedAt
 	p.CreatedAt = published.PublishedAt
 	p.UpdatedAt = published.PublishedAt
+	if published.Held {
+		// Held for copyright title review: live for its author only, and
+		// nothing announced until a reviewer clears it.
+		slog.Info("scheduled post published under copyright title review", "post_id", postID, "author_id", p.AuthorID)
+		return true, nil
+	}
 	s.announcePublishedPost(p, p.MentionUsernames)
 
 	slog.Info("scheduled post published", "event", "post_scheduled_published",

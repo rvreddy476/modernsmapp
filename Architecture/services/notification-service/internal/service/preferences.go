@@ -207,6 +207,10 @@ func categoryForEvent(eventType string) prefCategory {
 		return catCommunityPosts
 	case "system.login_alert", "system.verification", "system.report_result":
 		return catSystem
+	// Copyright title review (copyright_notify.go): account notices about
+	// the author's own video, in the system toggles and tab.
+	case CopyrightTypeHold, CopyrightTypeCleared, CopyrightTypeBlocked:
+		return catSystem
 	// LIVE.
 	case "creator_went_live", "live.started":
 		return catLive

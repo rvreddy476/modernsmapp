@@ -22,7 +22,8 @@
 //	         "policy_version":"standing-v1",
 //	         "suspended_until":RFC3339|null,
 //	         "active_strikes":[{"id","severity","reason","case_id"|null,
-//	                            "issued_at","expires_at"}]}}
+//	                            "issued_at","expires_at"}],
+//	         "long_video_paused_until":RFC3339|null}}
 //
 // It is served with a strong ETag over the body and
 // Cache-Control: private, max-age=60, so post-service caches an answer
@@ -147,6 +148,10 @@ type standingResponse struct {
 	PolicyVersion  string           `json:"policy_version"`
 	SuspendedUntil *string          `json:"suspended_until"`
 	ActiveStrikes  []standingStrike `json:"active_strikes"`
+	// LongVideoPausedUntil: RFC3339 while long-video uploads are paused by
+	// the repeat-uploader rule (three upheld copyright blocks in 90 days),
+	// else null. Additive; post-service reads it on long-video paths only.
+	LongVideoPausedUntil *string `json:"long_video_paused_until"`
 }
 
 type standingStrike struct {
@@ -169,6 +174,10 @@ func standingBody(st *service.Standing) standingResponse {
 	if st.SuspendedUntil != nil {
 		s := rfc3339(*st.SuspendedUntil)
 		out.SuspendedUntil = &s
+	}
+	if st.LongVideoPausedUntil != nil {
+		s := rfc3339(*st.LongVideoPausedUntil)
+		out.LongVideoPausedUntil = &s
 	}
 	for _, s := range st.ActiveStrikes {
 		item := standingStrike{

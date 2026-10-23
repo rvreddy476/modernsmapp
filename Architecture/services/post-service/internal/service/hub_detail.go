@@ -121,6 +121,9 @@ func (s *Service) applyHubDetail(ctx context.Context, d *PostDetail, viewerID *u
 				d.Restrictions = restrictionNotices(active[d.Post.ID])
 			}
 		}
+		// The copyright title review of the owner's long video, if it was
+		// ever flagged (copyright_title_review.go).
+		s.attachCopyrightReviews(ctx, d.Post.AuthorID, []*PostDetail{d})
 	}
 }
 

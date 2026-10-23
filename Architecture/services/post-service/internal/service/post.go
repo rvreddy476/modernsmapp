@@ -285,6 +285,13 @@ type Service struct {
 	// database.
 	engagementPostSeam func(ctx context.Context, postID, viewerID uuid.UUID) (*postgres.Post, error)
 	commentLookupSeam  func(ctx context.Context, commentID uuid.UUID) (*postgres.Comment, error)
+
+	// Copyright title review (copyright_title_review.go, migration 073):
+	// the store slice (nil = the Postgres store), this replica's catalogue
+	// snapshot, and the kill switch (COPYRIGHT_TITLE_HOLD_ENABLED=false).
+	titleReviews      titleReviewStore
+	titleCatalogue    titleCatalogueCache
+	titleHoldDisabled bool
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {
@@ -601,6 +608,11 @@ type PostDetail struct {
 	// empty) for the owner, absent for everyone else — a viewer never
 	// reaches this struct for a restricted post at all.
 	Restrictions []RestrictionNotice `json:"restrictions,omitempty"`
+	// CopyrightReview is the author's view of a copyright title review
+	// (copyright_title_review.go): on the owner's direct read and uploads
+	// rows of a long video that was flagged, absent otherwise and for every
+	// other viewer. Per viewer, so never in the cached body.
+	CopyrightReview *CopyrightReviewView `json:"copyright_review,omitempty"`
 	// Sound is the added sound the post plays (audio_track_id), for a
 	// viewer who may hear it; absent when there is none, when this viewer
 	// may not, and when that could not be decided (sounds.go). It is on the
@@ -1090,6 +1102,14 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		return nil, fmt.Errorf("%w %q: must be post, poll, flick, or long_video", ErrInvalidContentType, contentType)
 	}
 
+	// Long-video uploads paused (copyright repeat-uploader rule,
+	// copyright_title_review.go): one more field of the standing answer
+	// requirePublishStanding already cached. Before anything is written;
+	// reels and posts are never paused by it.
+	if err := s.requireLongVideoUploads(ctx, input.AuthorID, contentType); err != nil {
+		return nil, err
+	}
+
 	// Video credits (credits.go): every value, then the kind — the INTENT,
 	// so only what the author posted as a long video may carry them (a
 	// plain post with a video attached stays a post). Before anything is
@@ -1504,13 +1524,22 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// the same buildPostCreatedPayload — when it publishes (schedule.go).
 	scheduled := p.PublishAt != nil
 	p.IsScheduled = scheduled
-	createEventType := ""
-	var createPayload interface{}
-	if s.producer != nil && !scheduled {
-		createEventType = events.PostCreated
-		// Creation is always revision 1; later transitions increment.
-		createPayload = s.buildPostCreatedPayload(ctx, p, effectivePolicy, maxDuration, videoH, 1)
+
+	// Copyright title review (copyright_title_review.go): a long video over
+	// 20 minutes naming a catalogue title, by a non-owner, is published
+	// HELD — the hold commits with the post and PostCreated is withheld, so
+	// nothing fans out, indexes or notifies until a reviewer clears it. A
+	// scheduled post is judged when it goes live (PublishScheduled). A held
+	// post may not be members-only (409 COPYRIGHT_REVIEW).
+	if !scheduled {
+		if err := s.applyCreateTitleHold(ctx, p, maxDuration, hasVideo); err != nil {
+			return nil, err
+		}
 	}
+	held := p.TitleReviewWrite != nil
+
+	// Creation is always revision 1; later transitions increment.
+	createEventType, createPayload := s.createdEventFor(ctx, p, effectivePolicy, maxDuration, videoH)
 
 	// The post, its outbox event and the durable idempotency claim commit
 	// together or not at all (C-LB-3.2).
@@ -1639,7 +1668,13 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// it out delayed every post before fan-out had even begun, so we tell it
 	// there is work now. Non-blocking, and a no-op if a drain is pending.
 	s.NudgeOutbox()
-	if !scheduled {
+	if held {
+		// The hold committed with the row; the author's own reads see it.
+		p.ActiveRestrictionCount = 1
+		slog.Info("copyright title review: publication held", "post_id", p.ID, "author_id", p.AuthorID,
+			"matched_title", p.TitleReviewWrite.MatchedTitle, "awaiting_duration", p.TitleReviewWrite.AwaitingDuration)
+	}
+	if !scheduled && !held {
 		s.announcePublishedPost(p, mentions)
 	}
 

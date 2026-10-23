@@ -626,6 +626,55 @@ type PostCreatedPayload struct {
 	// content, so consumers drop it from public results whatever the
 	// review status says.
 	TierRequiredID string `json:"tier_required_id,omitempty"`
+
+	// EligibleFrom is set only on a PostCreated that was DEFERRED by a
+	// copyright title review (post-service, migration 073): the post was
+	// published at CreatedAt but held from every viewer until a reviewer
+	// cleared it at EligibleFrom. Monetization consumers (analytics'
+	// ownership projection) must not count any day that ended before it.
+	// Omitted on every ordinary creation. Additive.
+	EligibleFrom *time.Time `json:"eligible_from,omitempty"`
+}
+
+// EventPostCopyrightReview announces a copyright title-review transition on
+// one long video (post-service, migration 073; founder quick wins
+// 2026-10-24). Written to post-service's outbox in the transaction that
+// makes the transition, on the same topic as PostCreated:
+//
+//	pending  the video is held for review (the author is told; never sent
+//	         while the hold is still waiting for the video's duration)
+//	cleared  a reviewer cleared it; the post is now normally visible
+//	blocked  a reviewer upheld the block; it stays hidden. trust-safety
+//	         records one copyright strike for it (the repeat-uploader rule)
+//
+// Consumers: notification-service (the author's notices) and trust-safety
+// (blocked only). ReviewID is stable per post and is the idempotency key.
+const EventPostCopyrightReview = "post.copyright_review.changed" // payload: PostCopyrightReviewPayload
+
+// Copyright title-review states on PostCopyrightReviewPayload.State.
+const (
+	CopyrightReviewPending = "pending"
+	CopyrightReviewCleared = "cleared"
+	CopyrightReviewBlocked = "blocked"
+)
+
+// PostCopyrightReviewPayload is one title-review transition. It carries ids
+// and the matched catalogue title, never the reviewer's note. DecidedBy (the
+// reviewer, on a human decision) is for trust-safety's block record only;
+// author-facing consumers must not show it.
+type PostCopyrightReviewPayload struct {
+	ReviewID     string    `json:"review_id"`
+	PostID       string    `json:"post_id"`
+	AuthorID     string    `json:"author_id"`
+	State        string    `json:"state"`
+	MatchedTitle string    `json:"matched_title"`
+	PostTitle    string    `json:"post_title,omitempty"`
+	ContentType  string    `json:"content_type"`
+	CreatedAt    time.Time `json:"created_at"`
+	// DecidedAt is set on cleared and blocked.
+	DecidedAt  *time.Time `json:"decided_at,omitempty"`
+	DecidedBy  string     `json:"decided_by,omitempty"`
+	OccurredAt time.Time  `json:"occurred_at"`
 }
 
 // PostCreditSearchFields is the cast & crew projection a long video carries

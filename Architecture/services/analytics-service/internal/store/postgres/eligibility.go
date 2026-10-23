@@ -92,10 +92,26 @@ func (s *Store) ClearContentTypeExclusion(ctx context.Context, contentID uuid.UU
 // no ownership row for this content and creator; both are the caller's
 // signal to commit past the record rather than retry it.
 func (s *Store) ApplyContentEligibility(ctx context.Context, e ContentEligibility) (applied bool, err error) {
-	command, err := s.db.Exec(ctx, `
+	command, err := s.db.Exec(ctx, applyContentEligibilitySQL,
+		e.ContentID, e.CreatorID, e.State, e.EffectiveFrom, e.Rev, e.AllowEqualRev, e.IgnoreRev)
+	if err != nil {
+		return false, err
+	}
+	return command.RowsAffected() > 0, nil
+}
+
+// applyContentEligibilitySQL is ApplyContentEligibility's one statement:
+// the revision gate in the WHERE clause, and the floor (migration 014) —
+// becoming eligible AFTER being ineligible (a released copyright hold, a
+// restore, a re-approval) earns from that moment on, never for the days in
+// between. The right-hand eligibility_state is the row's OLD value.
+const applyContentEligibilitySQL = `
 		UPDATE analytics.content_ownership
 		SET eligibility_state = $3,
 		    eligibility_effective_from = $4,
+		    eligibility_eligible_from = CASE
+		        WHEN $3 = 'eligible' AND eligibility_state <> 'eligible' THEN $4
+		        ELSE eligibility_eligible_from END,
 		    eligibility_rev = GREATEST(eligibility_rev, $5),
 		    projected_at = NOW()
 		WHERE content_id = $1 AND creator_id = $2
@@ -103,10 +119,4 @@ func (s *Store) ApplyContentEligibility(ctx context.Context, e ContentEligibilit
 		        $7::boolean
 		     OR ($6::boolean AND $5 >= eligibility_rev)
 		     OR (NOT $6::boolean AND $5 > eligibility_rev)
-		  )`,
-		e.ContentID, e.CreatorID, e.State, e.EffectiveFrom, e.Rev, e.AllowEqualRev, e.IgnoreRev)
-	if err != nil {
-		return false, err
-	}
-	return command.RowsAffected() > 0, nil
-}
+		  )`

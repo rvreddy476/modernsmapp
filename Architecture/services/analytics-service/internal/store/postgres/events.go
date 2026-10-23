@@ -38,6 +38,10 @@ type ContentOwnership struct {
 	CreatorID   uuid.UUID
 	ContentType string
 	CreatedAt   time.Time
+	// EligibleFrom is the deferred-publication floor (migration 014): set
+	// when post-service withheld the PostCreated of a post held for
+	// copyright review, so no day before the clear earns. nil: no floor.
+	EligibleFrom *time.Time
 }
 
 var ErrContentNotProjected = errors.New("content ownership is not projected")
@@ -112,13 +116,15 @@ func (s *Store) InsertBatch(ctx context.Context, events []Event) error {
 func (s *Store) UpsertContentOwnership(ctx context.Context, ownership ContentOwnership) error {
 	command, err := s.db.Exec(ctx, `
 		INSERT INTO analytics.content_ownership
-			(content_id, creator_id, content_type, created_at, projected_at)
-		VALUES ($1, $2, $3, $4, NOW())
+			(content_id, creator_id, content_type, created_at, projected_at, eligibility_eligible_from)
+		VALUES ($1, $2, $3, $4, NOW(), $5)
 		ON CONFLICT (content_id) DO UPDATE SET
 			content_type = EXCLUDED.content_type,
-			projected_at = NOW()
+			projected_at = NOW(),
+			-- A floor only ever rises (GREATEST ignores NULL).
+			eligibility_eligible_from = GREATEST(analytics.content_ownership.eligibility_eligible_from, EXCLUDED.eligibility_eligible_from)
 		WHERE analytics.content_ownership.creator_id = EXCLUDED.creator_id`,
-		ownership.ContentID, ownership.CreatorID, ownership.ContentType, ownership.CreatedAt)
+		ownership.ContentID, ownership.CreatorID, ownership.ContentType, ownership.CreatedAt, ownership.EligibleFrom)
 	if err != nil {
 		return err
 	}

@@ -583,7 +583,16 @@ type StandingSnapshot struct {
 	// ActiveStrikes are the strikes that count at the snapshot's instant:
 	// not voided, expires_at after it. Newest first; never nil.
 	ActiveStrikes []UserStrike
+	// CopyrightBlocks are when the user's upheld copyright blocks happened
+	// within CopyrightBlockLookback of the snapshot (copyright_blocks.go),
+	// oldest first; never nil. The long-video pause is judged from them.
+	CopyrightBlocks []time.Time
 }
+
+// CopyrightBlockLookback is how far back the snapshot reads copyright
+// blocks: the 90-day window plus the 7-day pause, so a pause that began
+// on a block up to 7 days ago still sees the two before it.
+const CopyrightBlockLookback = (90 + 7) * 24 * time.Hour
 
 // StandingSnapshot reads the user's suspension and active strikes in ONE
 // statement, evaluated at now (passed in, so the caller's clock and the
@@ -631,7 +640,18 @@ func (s *TrustExtrasStore) StandingSnapshot(ctx context.Context, userID uuid.UUI
 			*id, *user, *reason, *severity, *policy, *expiresAt, *createdAt
 		snap.ActiveStrikes = append(snap.ActiveStrikes, st)
 	}
-	return snap, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	// The copyright blocks are a second read: they can only lengthen a
+	// pause, and an unreadable answer fails the whole snapshot (closed).
+	blocks, err := s.CopyrightBlockTimes(ctx, userID, now.Add(-CopyrightBlockLookback))
+	if err != nil {
+		return nil, fmt.Errorf("standing snapshot: %w", err)
+	}
+	snap.CopyrightBlocks = blocks
+	return snap, nil
 }
 
 // ─── Verification request methods ─────────────────────────────────────────────

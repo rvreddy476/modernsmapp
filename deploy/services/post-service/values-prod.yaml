@@ -78,6 +78,10 @@ externalSecret:
 env:
   ENV: prod
   LOG_LEVEL: info
+  # Copyright title review (post-service migration 073): long videos over 20
+  # minutes naming a catalogue title are published held for review. "false"
+  # is the kill switch (no new holds; existing holds stay until decided).
+  COPYRIGHT_TITLE_HOLD_ENABLED: "true"
   AWS_REGION: ap-south-1
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
 

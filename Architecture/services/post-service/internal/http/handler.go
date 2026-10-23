@@ -399,6 +399,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.POST("/v1/posts/:postId/cards/:cardId/impression", h.RecordCardImpression)
 	r.POST("/v1/posts/:postId/cards/:cardId/click", h.RecordCardClick)
 	r.PUT("/v1/posts/:postId/membership", h.SetPostMembershipGate)
+	// Copyright title review (copyright_review.go): the author's
+	// "I own the rights" note on their held video.
+	r.POST("/v1/posts/:postId/copyright-review/request", h.RequestCopyrightReview)
 
 	// Watch Progress. The static segments (continue-watching, history) are
 	// registered ahead of the :videoId routes so neither is ever read as a
@@ -1207,6 +1210,8 @@ func writeTierGateError(c *gin.Context, err error) bool {
 	case errors.Is(err, service.ErrTierLookupUnavailable):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusServiceUnavailable, "MEMBERSHIP_TIERS_UNAVAILABLE",
 			"Membership tiers could not be checked right now; nothing was saved. Try again.", nil)
+	case errors.Is(err, service.ErrCopyrightReviewTier):
+		writeCopyrightReviewTier(c)
 	default:
 		return false
 	}

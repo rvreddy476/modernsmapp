@@ -311,6 +311,10 @@ func (h *Handler) registerAdminTokenRoutes(r *gin.Engine) {
 	// Creators.
 	g.GET("/creators/:userId/counts", gate(PermSocialUsersRead), h.AdminCreatorCounts)
 	g.GET("/creators/:userId/video-series", gate(PermVideosModerate, PermVideosRemove), h.AdminCreatorVideoSeries)
+
+	// Copyright title review (copyright_review.go): the title catalogue,
+	// the held-video queue and the clear / block decision.
+	h.registerCopyrightReviewAdminRoutes(g, gate)
 }
 
 // ---------------------------------------------------------------------------

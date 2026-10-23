@@ -144,6 +144,31 @@ func TestCheck_OKAllowsAndIsCached(t *testing.T) {
 	}
 }
 
+// The long-video pause (copyright quick wins) is an "ok" answer with
+// long_video_paused_until: Check allows (reels and posts publish) and hands
+// the time to the long-video paths. Absent (an older trust-safety) is nil.
+func TestCheck_LongVideoPauseIsReadNotDenied(t *testing.T) {
+	f, srv, signer := newFake(t)
+	ck := &clock{t: time.Date(2026, 10, 24, 12, 0, 0, 0, time.UTC)}
+	c := newClient(t, srv, signer, ck)
+	f.body.Store(`{"data":{"standing":"ok","policy_version":"standing-v1","suspended_until":null,"active_strikes":[],"long_video_paused_until":"2026-10-31T04:00:00Z"}}`)
+	res, err := c.Check(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatalf("a pause must not deny: %v", err)
+	}
+	if res.LongVideoPausedUntil == nil || !res.LongVideoPausedUntil.Equal(time.Date(2026, 10, 31, 4, 0, 0, 0, time.UTC)) {
+		t.Fatalf("paused until %v", res.LongVideoPausedUntil)
+	}
+	old, err := c.Check(context.Background(), uuid.New())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.body.Store(okBody())
+	if fresh, err := c.Check(context.Background(), uuid.New()); err != nil || fresh.LongVideoPausedUntil != nil {
+		t.Fatalf("no field: %+v %v (previous %+v)", fresh, err, old)
+	}
+}
+
 func TestCheck_SuspendedDeniesWithUntilAndIsCached(t *testing.T) {
 	f, srv, signer := newFake(t)
 	f.body.Store(suspendedBody())

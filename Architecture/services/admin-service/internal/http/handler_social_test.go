@@ -28,6 +28,10 @@ func contentCase(rt productRoute) string {
 		return `{"status":"visible"}`
 	case rt.operation == "social.report.review", rt.operation == "tube.report.review":
 		return `{"status":"reviewed","review_note":"seen"}`
+	case rt.operation == opTubeCopyrightDecide:
+		return `{"decision":"clear","note":"licensed"}`
+	case rt.operation == opTubeCopyrightTitleAdd, rt.operation == opTubeCopyrightTitleSet:
+		return `{"title":"Jailer 2","aliases":["Jailer II"]}`
 	}
 	if rt.method == http.MethodGet {
 		return ""

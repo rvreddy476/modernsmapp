@@ -32,7 +32,8 @@
 // # The answer, and the cache
 //
 //	{"data":{"standing":"ok"|"restricted"|"suspended","policy_version":"…",
-//	         "suspended_until":RFC3339|null,"active_strikes":[…]}}
+//	         "suspended_until":RFC3339|null,"active_strikes":[…],
+//	         "long_video_paused_until":RFC3339|null}}
 //
 // trust-safety alone computes standing; this client never re-derives a
 // verdict from severities. "ok" allows. "restricted" and "suspended" deny,
@@ -153,6 +154,12 @@ type Result struct {
 	PolicyVersion  string     `json:"policy_version"`
 	SuspendedUntil *time.Time `json:"suspended_until"`
 	ActiveStrikes  []Strike   `json:"active_strikes"`
+	// LongVideoPausedUntil is set while the author's long-video uploads are
+	// paused (three upheld copyright blocks in 90 days, trust-safety
+	// standing). It does not deny publication on its own: the long-video
+	// paths read it (service.requireLongVideoUploads); reels and posts do
+	// not. Absent or null from an older trust-safety: not paused.
+	LongVideoPausedUntil *time.Time `json:"long_video_paused_until"`
 }
 
 // Config builds a Client.

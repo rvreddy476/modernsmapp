@@ -783,6 +783,9 @@ services:
       # reviewer deployment. Production AWS manifests may opt into review-all;
       # the local contract stack must allow already-scanned fixtures to flow.
       REVIEW_ALL_VIDEOS: ${REVIEW_ALL_VIDEOS:-false}
+      # Copyright title review (migration 073): long videos over 20 minutes
+      # naming a catalogue title are published held; false = kill switch.
+      COPYRIGHT_TITLE_HOLD_ENABLED: ${COPYRIGHT_TITLE_HOLD_ENABLED:-true}
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       # Admin console (Social and Tube): /v1/posts/internal/admin/* admits only
       # admin-service tokens (audience "post"). OPS is post-service's

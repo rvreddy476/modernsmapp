@@ -75,10 +75,34 @@ var validReportCategories = map[string]bool{
 	// puts the target's action link under review at 3 distinct reporters in
 	// 7 days (post-service internal/consumers/action_link_report.go).
 	ReasonScamLink: true,
+	// Copyright (founder quick wins, 2026-10-24; migration 018): posts only
+	// (videos and reels are posts; copyrightEntityTypes), into the same
+	// queue as every other report.
+	ReasonCopyrightMine:  true,
+	ReasonCopyrightMedia: true,
 }
 
 // ReasonScamLink is the Action-button report reason.
 const ReasonScamLink = "scam_link"
+
+// Copyright report reasons and their sheet labels.
+const (
+	// ReasonCopyrightMine: "Copyright: this is my content".
+	ReasonCopyrightMine = "copyright_mine"
+	// ReasonCopyrightMedia: "Copyright: film, TV or music".
+	ReasonCopyrightMedia = "copyright_media"
+)
+
+// CopyrightReasonLabels are the report sheet's labels for the copyright
+// reasons (the clients render these).
+var CopyrightReasonLabels = map[string]string{
+	ReasonCopyrightMine:  "Copyright: this is my content",
+	ReasonCopyrightMedia: "Copyright: film, TV or music",
+}
+
+// copyrightEntityTypes are the entity types a copyright report may target:
+// a post (the reel and video aliases normalise to post).
+var copyrightEntityTypes = map[string]bool{"post": true}
 
 // scamLinkEntityTypes are the entity types a scam_link report may target:
 // a post's Action button, or a profile's ("user").
@@ -164,6 +188,9 @@ func (s *Service) FileReportWith(ctx context.Context, in FileReportInput) (*post
 	}
 	if reason == ReasonScamLink && !scamLinkEntityTypes[entityType] {
 		return nil, fmt.Errorf("%w: reason scam_link applies to posts and profiles only", ErrInvalidReport)
+	}
+	if (reason == ReasonCopyrightMine || reason == ReasonCopyrightMedia) && !copyrightEntityTypes[entityType] {
+		return nil, fmt.Errorf("%w: reason %s applies to posts (videos and reels) only", ErrInvalidReport, reason)
 	}
 
 	// 1c. The id must be valid for its type (report_entities.go).

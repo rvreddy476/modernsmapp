@@ -76,6 +76,9 @@ type PublishedPost struct {
 	// PublishedAt is the moment written to created_at, published_at and
 	// updated_at — the post sorts as new from here.
 	PublishedAt time.Time
+	// Held is true when the post was published under a copyright title
+	// review hold (no PostCreated was written; migration 073).
+	Held bool
 }
 
 // PublishScheduledPost makes one scheduled post live.
@@ -97,6 +100,23 @@ func (s *Store) PublishScheduledPost(
 	authorID *uuid.UUID,
 	now time.Time,
 	dueOnly bool,
+	event func(rev int64) (eventType string, payload interface{}, err error),
+) (*PublishedPost, error) {
+	return s.PublishScheduledPostWithHold(ctx, postID, authorID, now, dueOnly, nil, event)
+}
+
+// PublishScheduledPostWithHold is PublishScheduledPost that, when hold is
+// set, also holds the post for copyright title review in the flip's own
+// transaction (migration 073) and then withholds its PostCreated: event is
+// not called, so nothing fans out, indexes or notifies until a reviewer
+// clears it. PublishedPost.Held reports it.
+func (s *Store) PublishScheduledPostWithHold(
+	ctx context.Context,
+	postID uuid.UUID,
+	authorID *uuid.UUID,
+	now time.Time,
+	dueOnly bool,
+	hold *TitleReviewHold,
 	event func(rev int64) (eventType string, payload interface{}, err error),
 ) (*PublishedPost, error) {
 	tx, err := s.db.Begin(ctx)
@@ -121,10 +141,11 @@ func (s *Store) PublishScheduledPost(
 		args = append(args, *authorID)
 		query += fmt.Sprintf(` AND author_id = $%d`, len(args))
 	}
-	query += ` RETURNING search_rev`
+	query += ` RETURNING search_rev, author_id`
 
 	var rev int64
-	err = tx.QueryRow(ctx, query, args...).Scan(&rev)
+	var rowAuthor uuid.UUID
+	err = tx.QueryRow(ctx, query, args...).Scan(&rev, &rowAuthor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -132,7 +153,29 @@ func (s *Store) PublishScheduledPost(
 		return nil, fmt.Errorf("publish scheduled: flip: %w", err)
 	}
 
-	if event != nil {
+	held := false
+	if hold != nil {
+		placed, err := insertTitleReviewHoldTx(ctx, tx, postID, rowAuthor, hold)
+		if err != nil {
+			return nil, fmt.Errorf("publish scheduled: hold: %w", err)
+		}
+		held = placed
+		if !placed {
+			// One review per post: an existing one decides. A post still
+			// under any hold is not announced.
+			if err := tx.QueryRow(ctx, `SELECT active_restriction_count > 0 FROM posts WHERE id = $1`, postID).Scan(&held); err != nil {
+				return nil, fmt.Errorf("publish scheduled: hold state: %w", err)
+			}
+		}
+		if placed {
+			// The hold bumped search_rev; PublishedPost reports the final one.
+			if err := tx.QueryRow(ctx, `SELECT search_rev FROM posts WHERE id = $1`, postID).Scan(&rev); err != nil {
+				return nil, fmt.Errorf("publish scheduled: read rev: %w", err)
+			}
+		}
+	}
+
+	if event != nil && !held {
 		eventType, payload, err := event(rev)
 		if err != nil {
 			return nil, err
@@ -151,7 +194,7 @@ func (s *Store) PublishScheduledPost(
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("publish scheduled: commit: %w", err)
 	}
-	return &PublishedPost{SearchRev: rev, PublishedAt: now}, nil
+	return &PublishedPost{SearchRev: rev, PublishedAt: now, Held: held}, nil
 }
 
 // ReschedulePost moves a scheduled post's publish_at. Author-only and only

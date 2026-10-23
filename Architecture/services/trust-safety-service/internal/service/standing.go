@@ -27,6 +27,10 @@ import (
 // with a manual suspended_until as well, the later of the two wins.
 // "restricted" is reserved and unused.
 //
+// Beside the standing, the answer carries long_video_paused_until: three
+// upheld copyright blocks within 90 days (LongVideoPause) pause long-video
+// uploads for 7 days. That is not a suspension and never changes Standing.
+//
 // The evaluation is a pure function of one snapshot and one clock, so it is
 // deterministic and table-tested without a database.
 
@@ -69,7 +73,50 @@ type Standing struct {
 	// ActiveStrikes are every strike that counts at EvaluatedAt (warnings
 	// included), newest first; never nil.
 	ActiveStrikes []postgres.UserStrike
-	EvaluatedAt   time.Time
+	// LongVideoPausedUntil is set while the user's long-video uploads are
+	// paused by the repeat-uploader rule (LongVideoPause). It does not
+	// change Standing: reels and posts are unaffected, and post-service
+	// refuses only long-video publication on it (403 UPLOADS_PAUSED).
+	LongVideoPausedUntil *time.Time
+	EvaluatedAt          time.Time
+}
+
+// The repeat-uploader rule (founder quick wins, 2026-10-24): this many
+// upheld copyright blocks within the window pause long-video uploads for
+// the pause, counted from the block that reached the threshold.
+const (
+	CopyrightBlockThreshold = 3
+	CopyrightBlockWindow    = 90 * 24 * time.Hour
+	LongVideoPauseDuration  = 7 * 24 * time.Hour
+)
+
+// LongVideoPause applies the repeat-uploader rule to the times of a user's
+// upheld copyright blocks: every block that is the CopyrightBlockThreshold-th
+// (or later) within CopyrightBlockWindow ending at it starts a pause of
+// LongVideoPauseDuration; the answer is the latest such pause still running
+// at now, or nil. Pure: the order of blocks does not matter.
+func LongVideoPause(now time.Time, blocks []time.Time) *time.Time {
+	var until time.Time
+	for _, at := range blocks {
+		n := 0
+		for _, other := range blocks {
+			// (at - window, at]: the block itself and those before it inside
+			// the window. A block after `at` does not count toward `at`.
+			if !other.After(at) && other.After(at.Add(-CopyrightBlockWindow)) {
+				n++
+			}
+		}
+		if n >= CopyrightBlockThreshold {
+			if end := at.Add(LongVideoPauseDuration); end.After(until) {
+				until = end
+			}
+		}
+	}
+	if until.After(now) {
+		u := until.UTC()
+		return &u
+	}
+	return nil
 }
 
 // EvaluateStanding applies standing-v1 to one snapshot at now. active must
@@ -131,6 +178,7 @@ func EvaluateStanding(userID uuid.UUID, now time.Time, snap *postgres.StandingSn
 			out.SuspendedUntil = &u
 		}
 	}
+	out.LongVideoPausedUntil = LongVideoPause(now, snap.CopyrightBlocks)
 	return out, nil
 }
 

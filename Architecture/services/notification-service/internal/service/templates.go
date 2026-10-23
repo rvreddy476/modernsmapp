@@ -307,6 +307,24 @@ var Templates = map[string]NotificationTemplate{
 		Icon: "system", Priority: "medium", PushEligible: true, CanAggregate: false,
 	},
 
+	// Copyright title review (copyright_notify.go, 2026-10-24). Category
+	// `system`; one notice per review and state, never aggregated.
+	CopyrightTypeHold: {
+		EventType: CopyrightTypeHold, TitleTemplate: "Your video is in copyright review",
+		BodyTemplate: "{post_title} · matched {matched_title}", Icon: "system", Priority: "high",
+		PushEligible: true, CanAggregate: false,
+	},
+	CopyrightTypeCleared: {
+		EventType: CopyrightTypeCleared, TitleTemplate: "Your video cleared copyright review",
+		BodyTemplate: "{post_title} · matched {matched_title}", Icon: "system", Priority: "high",
+		PushEligible: true, CanAggregate: false,
+	},
+	CopyrightTypeBlocked: {
+		EventType: CopyrightTypeBlocked, TitleTemplate: "Your video was blocked after copyright review",
+		BodyTemplate: "{post_title} · matched {matched_title}", Icon: "system", Priority: "high",
+		PushEligible: true, CanAggregate: false,
+	},
+
 	// === Pulse (dating) mechanics, dating_pulse.go ===
 	// A scam alert is a safety notice: critical, so even if it ever reaches
 	// the general resolver no toggle, mute or quiet hours can hold it back.

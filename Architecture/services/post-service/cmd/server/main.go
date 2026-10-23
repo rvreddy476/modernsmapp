@@ -227,6 +227,13 @@ func main() {
 	}
 	postSvc.SetReviewAllVideos(env("REVIEW_ALL_VIDEOS", "false") == "true")
 	postSvc.SetInternalServiceKey(internalServiceKey)
+	// Copyright title review (migration 073): long videos over 20 minutes
+	// naming a catalogue title are published held for review. On unless
+	// COPYRIGHT_TITLE_HOLD_ENABLED=false (the kill switch: no new holds;
+	// existing ones stay until decided).
+	titleHold := env("COPYRIGHT_TITLE_HOLD_ENABLED", "true") != "false"
+	postSvc.SetCopyrightTitleHoldEnabled(titleHold)
+	slog.Info("copyright title review", "hold_enabled", titleHold)
 
 	// The Action button (service/action_links.go). Safety: Google Web Risk
 	// with WEB_RISK_API_KEY; without it production refuses every new link
@@ -469,7 +476,8 @@ func main() {
 	// back to the raw MP4 even though HLS variants exist on storage.
 	mediaTranscodeConsumer := mediaConsumers.
 		NewMediaTranscodeConsumer(pgStore, brokers, rdb, consumerMetrics).
-		WithProducer(legacyProducer) // fan PostContentTypeChanged out to feed-service
+		WithProducer(legacyProducer). // fan PostContentTypeChanged out to feed-service
+		WithTitleReview(postSvc)      // settle copyright title holds waiting for a length
 	go mediaTranscodeConsumer.Start(consumerCtx)
 
 	// Tier 1a phase 2: invalidate the local entitlement cache the

@@ -784,6 +784,11 @@ func (s *Service) publishClaimedReelDraft(ctx context.Context, draftID, authorID
 		if IsTerminalActionError(err) {
 			s.pgStore.MarkReelDraftBlocked(ctx, draftID, BlockReasonActionRefused) //nolint:errcheck
 		}
+		// Long-video uploads paused, or a members-only tier on a video the
+		// copyright title review would hold: terminal until the author acts.
+		if IsTerminalCopyrightError(err) {
+			s.pgStore.MarkReelDraftBlocked(ctx, draftID, copyrightBlockReason(err)) //nolint:errcheck
+		}
 		return nil, fmt.Errorf("publish claimed draft: %w", err)
 	}
 	s.keepDraftSound(ctx, post, draft)

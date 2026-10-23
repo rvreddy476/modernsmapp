@@ -101,6 +101,10 @@ type Post struct {
 	// ActionWrite, when set on a post being created, makes the insert write
 	// its action link in the same transaction. Never on the wire or cached.
 	ActionWrite *ActionLinkWrite `json:"-"`
+	// TitleReviewWrite, when set on a post being created, holds it for
+	// copyright title review in the same transaction (migration 073,
+	// copyright_title_review.go). Never on the wire or cached.
+	TitleReviewWrite *TitleReviewHold `json:"-"`
 	// AudioTrackID is the added sound the post plays over its own video
 	// (service/audio.go), nil when it plays none. AudioStartMs is where in
 	// that sound playback starts; deriveAudio keeps the pair together, so
@@ -738,6 +742,15 @@ func (s *Store) CreatePostWithEventIdempotent(
 
 	if err := insertPostTx(ctx, tx, p); err != nil {
 		return err
+	}
+
+	// Copyright title review (migration 073): the hold commits with the
+	// post, so there is no instant at which the post is live and unheld.
+	// The service withholds PostCreated for a held post (eventType "").
+	if p.TitleReviewWrite != nil {
+		if _, err := insertTitleReviewHoldTx(ctx, tx, p.ID, p.AuthorID, p.TitleReviewWrite); err != nil {
+			return err
+		}
 	}
 
 	// Atomic outbox event (optional).
@@ -1652,15 +1665,30 @@ func (s *Store) SetPostMembershipGate(ctx context.Context, postID uuid.UUID, tie
 // change, then — only when a row changed — the search_rev bump and the
 // eligibility event (BumpSearchRevAndEmitTx). false, nil when no post has
 // the id; nothing is emitted then.
+//
+// A post under an active hold (a copyright case or a title review,
+// migrations 056 / 073) may not be gated: the guard is in the statement so
+// a hold landing between a read and this write cannot be raced. Clearing a
+// gate is always allowed. ErrPostCopyrightHeld when refused.
 func setPostMembershipGateTx(ctx context.Context, tx pgx.Tx, postID uuid.UUID, tierID *uuid.UUID) (bool, error) {
 	tag, err := tx.Exec(ctx,
-		`UPDATE posts SET tier_required_id = $2, updated_at = NOW() WHERE id = $1`,
+		`UPDATE posts SET tier_required_id = $2, updated_at = NOW()
+		 WHERE id = $1 AND ($2::uuid IS NULL OR active_restriction_count = 0)`,
 		postID, tierID,
 	)
 	if err != nil {
 		return false, err
 	}
 	if tag.RowsAffected() == 0 {
+		if tierID != nil {
+			var exists bool
+			if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM posts WHERE id = $1)`, postID).Scan(&exists); err != nil {
+				return false, err
+			}
+			if exists {
+				return false, ErrPostCopyrightHeld
+			}
+		}
 		return false, nil
 	}
 	if err := BumpSearchRevAndEmitTx(ctx, tx, postID); err != nil {

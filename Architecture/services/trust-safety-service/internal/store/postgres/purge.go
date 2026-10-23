@@ -72,6 +72,11 @@ func purgeUserTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
 		{"trust.user_strikes", `UPDATE trust.user_strikes SET voided_by = '` + nilUserID + `'::uuid WHERE voided_by = $1`},
 		{"trust.grievances", `DELETE FROM trust.grievances WHERE complainant_id = $1`},
 		{"trust.grievances", `UPDATE trust.grievances SET assigned_to = NULL WHERE assigned_to = $1`},
+		// Upheld copyright blocks (migration 019) are the user's own record;
+		// a purged reviewer is cleared from the ones they decided.
+		{"trust.copyright_blocks", `DELETE FROM trust.copyright_blocks WHERE user_id = $1`},
+		{"trust.copyright_blocks", `UPDATE trust.copyright_blocks SET decided_by = NULL WHERE decided_by = $1`},
+		{"trust.copyright_blocks", `UPDATE trust.copyright_blocks SET voided_by = NULL WHERE voided_by = $1`},
 		{"trust.verification_requests", `DELETE FROM trust.verification_requests WHERE user_id = $1`},
 		{"trust.verification_requests", `UPDATE trust.verification_requests SET reviewed_by = NULL WHERE reviewed_by = $1`},
 		{"trust.reports", `UPDATE trust.reports SET status = 'dismissed', updated_at = NOW()

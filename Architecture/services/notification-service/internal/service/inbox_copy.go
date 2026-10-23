@@ -321,6 +321,10 @@ var inboxCopyTable = map[string]inboxCopyEntry{
 	"system.login_alert":   own("There was a new login to your account", InboxIconAccount),
 	"system.verification":  own("Your verification status changed", InboxIconAccount),
 	"system.report_result": reuse("system.report_result", InboxIconAccount),
+	// Copyright title review (copyright_notify.go): the author's own video.
+	CopyrightTypeHold:    reuse(CopyrightTypeHold, InboxIconAccount),
+	CopyrightTypeCleared: reuse(CopyrightTypeCleared, InboxIconAccount),
+	CopyrightTypeBlocked: reuse(CopyrightTypeBlocked, InboxIconAccount),
 }
 
 // inboxFamily is the fallback for a type the table does not name: the

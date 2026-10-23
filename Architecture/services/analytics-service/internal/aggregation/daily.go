@@ -553,8 +553,14 @@ const dailyInsertSQL = `
 	LEFT JOIN capped c ON c.content_id = h.content_id::text
 	LEFT JOIN analytics.content_ownership o ON o.content_id = h.content_id
 	WHERE o.content_id IS NULL
-	   OR o.eligibility_state = 'eligible'
-	   OR (o.eligibility_effective_from IS NOT NULL AND o.eligibility_effective_from >= $3)`
+	   OR (
+	        -- The eligibility floor (migration 014): a day that ended at or
+	        -- before the content last became eligible earns nothing — the
+	        -- days a copyright hold kept it from viewers stay unpaid.
+	        (o.eligibility_eligible_from IS NULL OR o.eligibility_eligible_from < $3)
+	        AND (o.eligibility_state = 'eligible'
+	             OR (o.eligibility_effective_from IS NOT NULL AND o.eligibility_effective_from >= $3))
+	      )`
 
 func (d *DailyRollup) refreshCQSCache(ctx context.Context, dayStart, dayEnd time.Time) {
 	// The cache is an accelerator, not a source of truth, so a rollup

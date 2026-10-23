@@ -30,6 +30,20 @@ type MediaTranscodeConsumer struct {
 	producer *postEvents.Producer // optional; nil means no fan-out
 	consumer *sharedkafka.Consumer
 	rdb      *redis.Client // for busting the post-body cache on a gate flip
+	// titleReview settles copyright title holds that waited for the
+	// measurement (service.ResolveTitleReviewMeasurement). nil = off.
+	titleReview titleReviewResolver
+}
+
+// titleReviewResolver is the service seam the consumer needs.
+type titleReviewResolver interface {
+	ResolveTitleReviewMeasurement(ctx context.Context, postID uuid.UUID, durationSec int, contentType string) error
+}
+
+// WithTitleReview wires the copyright title review's measurement step.
+func (c *MediaTranscodeConsumer) WithTitleReview(r titleReviewResolver) *MediaTranscodeConsumer {
+	c.titleReview = r
+	return c
 }
 
 func NewMediaTranscodeConsumer(
@@ -202,6 +216,21 @@ func (c *MediaTranscodeConsumer) handle(ctx context.Context, env *events.EventEn
 					}
 				}
 			}
+		}
+	}
+
+	// Copyright title review (migration 073): a long video published while
+	// still transcoding was held on a title match without a length. Now
+	// that it is measured, the hold is queued for a reviewer (over the
+	// threshold) or lifted (under it, or no longer a long video). Durable:
+	// a failure retries this record; a review not waiting is a no-op.
+	if measured && c.titleReview != nil {
+		st, err := c.store.GetPostClassificationState(ctx, vm.PostID)
+		if err != nil {
+			return fmt.Errorf("title review: read post kind %s: %w", vm.PostID, err)
+		}
+		if err := c.titleReview.ResolveTitleReviewMeasurement(ctx, vm.PostID, duration, st.ContentType); err != nil {
+			return fmt.Errorf("title review: resolve measurement for %s: %w", vm.PostID, err)
 		}
 	}
 

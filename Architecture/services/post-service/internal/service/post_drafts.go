@@ -464,7 +464,8 @@ func (s *Service) publishDraftRow(ctx context.Context, d *postgres.PostDraft, in
 		// author's any more are terminal → blocked with reason; infra
 		// errors (monetization unreachable included) are transient →
 		// release for retry. Neither ever publishes the post open.
-		if strings.Contains(err.Error(), "content rejected") || errors.Is(err, ErrInvalidTier) || IsTerminalActionError(err) {
+		if strings.Contains(err.Error(), "content rejected") || errors.Is(err, ErrInvalidTier) || IsTerminalActionError(err) ||
+			IsTerminalCopyrightError(err) {
 			s.pgStore.MarkPostDraftBlocked(ctx, d.ID, err.Error(), d.ClaimToken) //nolint:errcheck
 		} else {
 			s.pgStore.ReleasePostDraftClaim(ctx, d.ID, d.ClaimToken) //nolint:errcheck

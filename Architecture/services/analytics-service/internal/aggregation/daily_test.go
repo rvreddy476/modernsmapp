@@ -1,6 +1,7 @@
 package aggregation
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -96,3 +97,19 @@ func TestResolveViewSourceFailsToPlayEnd(t *testing.T) {
 type fixedAnswer string
 
 func (f fixedAnswer) ViewSourceFor(time.Time) string { return string(f) }
+
+// Copyright quick wins (migration 014): the rollup's eligibility gate has
+// the floor, so a held day never reaches the summary once the content is
+// eligible again (eligibility_floor_integration_test.go runs it on
+// Postgres). Pinned here so the clause cannot be dropped silently.
+func TestDailyInsertHonoursTheEligibilityFloor(t *testing.T) {
+	for _, want := range []string{
+		"o.eligibility_eligible_from IS NULL OR o.eligibility_eligible_from < $3",
+		"o.eligibility_state = 'eligible'",
+		"o.eligibility_effective_from >= $3",
+	} {
+		if !strings.Contains(dailyInsertSQL, want) {
+			t.Fatalf("dailyInsertSQL lost %q", want)
+		}
+	}
+}

@@ -96,6 +96,9 @@ type HandlerTestDeps struct {
 	// ActionLinks backs the Action button (action_links.go); the rest of its
 	// wiring (checker, eligibility sources, tap dedupe) is SetActionLinks.
 	ActionLinks actionLinkStore
+	// TitleReviews backs the copyright title review routes
+	// (copyright_title_review.go).
+	TitleReviews titleReviewStore
 }
 
 // CreditProfile is one identity-profile account as the credit reads name it.
@@ -151,6 +154,7 @@ func NewForHandlerTests(d HandlerTestDeps) *Service {
 		engagementPostSeam:     d.EngagementPost,
 		commentLookupSeam:      d.CommentLookup,
 		actionLinks:            d.ActionLinks,
+		titleReviews:           d.TitleReviews,
 	}
 	if d.Relationships != nil {
 		s.storyAudience = NewStoryAudience(d.Relationships)

@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -26,6 +27,8 @@ import (
 type gateTx struct {
 	pgx.Tx
 	updated  int64 // rows the UPDATE matches
+	missing  bool  // the post does not exist (answers the existence probe)
+	held     bool  // the post is under an active restriction (migration 073 guard)
 	row      gateRow
 	execs    []string
 	queries  []string
@@ -47,6 +50,12 @@ func (t *gateTx) Exec(_ context.Context, sql string, args ...any) (pgconn.Comman
 	t.execs = append(t.execs, sql)
 	switch {
 	case strings.Contains(sql, "UPDATE posts SET tier_required_id"):
+		// The hold guard is the statement's own: a gate on a held post
+		// matches no row (what Postgres does with the WHERE clause).
+		if tier, _ := args[1].(*uuid.UUID); tier != nil && t.held &&
+			strings.Contains(sql, "$2::uuid IS NULL OR active_restriction_count = 0") {
+			return pgconn.NewCommandTag("UPDATE 0"), nil
+		}
 		if tier, _ := args[1].(*uuid.UUID); tier != nil {
 			v := *tier
 			t.row.tier = &v
@@ -78,6 +87,10 @@ type gateScan struct {
 
 // Scan fills BumpSearchRevAndEmitTxRev's RETURNING list in order.
 func (r gateScan) Scan(dest ...any) error {
+	if strings.Contains(r.sql, "SELECT EXISTS (SELECT 1 FROM posts WHERE id = $1)") && len(dest) == 1 {
+		*dest[0].(*bool) = !r.t.missing
+		return nil
+	}
 	if !strings.Contains(r.sql, "SET search_rev = search_rev + 1") {
 		return fmt.Errorf("unexpected query: %s", r.sql)
 	}
@@ -163,13 +176,41 @@ func TestMembershipGateClearEmitsEligibilityWithoutTier(t *testing.T) {
 func TestMembershipGateWriteOnAMissingPostEmitsNothing(t *testing.T) {
 	tx := newGateTx()
 	tx.updated = 0
+	tx.missing = true
 	tier := uuid.New()
 	changed, err := setPostMembershipGateTx(context.Background(), tx, uuid.New(), &tier)
 	if err != nil || changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
-	if len(tx.queries) != 0 || len(tx.payloads) != 0 {
-		t.Fatalf("a missing post bumped/emitted: queries %v payloads %v", tx.queries, tx.payloads)
+	if len(tx.payloads) != 0 {
+		t.Fatalf("a missing post emitted: payloads %v", tx.payloads)
+	}
+	for _, q := range tx.queries {
+		if strings.Contains(q, "search_rev") {
+			t.Fatalf("a missing post bumped search_rev: %v", tx.queries)
+		}
+	}
+}
+
+// Copyright quick wins (migration 073): a post under an active hold may
+// not be gated (409 COPYRIGHT_REVIEW upstream); nothing is bumped or
+// emitted. Clearing a gate on a held post is always allowed.
+func TestMembershipGateRefusedOnAHeldPost(t *testing.T) {
+	tx := newGateTx()
+	tx.held = true
+	tier := uuid.New()
+	changed, err := setPostMembershipGateTx(context.Background(), tx, uuid.New(), &tier)
+	if !errors.Is(err, ErrPostCopyrightHeld) || changed {
+		t.Fatalf("changed=%v err=%v, want ErrPostCopyrightHeld", changed, err)
+	}
+	if len(tx.payloads) != 0 || tx.row.tier != nil {
+		t.Fatalf("a held post was gated: tier %v payloads %v", tx.row.tier, tx.payloads)
+	}
+
+	clear := newGateTx()
+	clear.held = true
+	if changed, err := setPostMembershipGateTx(context.Background(), clear, uuid.New(), nil); err != nil || !changed {
+		t.Fatalf("clearing the gate on a held post: changed=%v err=%v", changed, err)
 	}
 }
 

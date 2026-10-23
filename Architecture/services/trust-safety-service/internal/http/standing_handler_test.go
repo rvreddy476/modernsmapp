@@ -148,7 +148,20 @@ func TestStanding_OKUserHasEmptyArrayAndNullSuspension(t *testing.T) {
 	rg := newStandingRig(t)
 	rg.fake.standing = &service.Standing{Standing: service.StandingOK, PolicyVersion: service.StandingPolicyVersion, ActiveStrikes: nil}
 	w := serveAdmin(rg.r, http.MethodGet, standingURL, "", withKey(bearer(rg.postToken(t, []string{OpStandingRead}))))
-	want := `{"data":{"standing":"ok","policy_version":"standing-v1","suspended_until":null,"active_strikes":[]}}`
+	want := `{"data":{"standing":"ok","policy_version":"standing-v1","suspended_until":null,"active_strikes":[],"long_video_paused_until":null}}`
+	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != want {
+		t.Fatalf("status=%d body=%s\nwant %s", w.Code, w.Body.String(), want)
+	}
+}
+
+// The long-video pause (copyright quick wins) rides beside an "ok"
+// standing as an RFC3339 UTC time.
+func TestStanding_LongVideoPauseOnTheWire(t *testing.T) {
+	rg := newStandingRig(t)
+	until := time.Date(2026, 10, 31, 9, 30, 0, 0, time.FixedZone("IST", 5*3600+1800))
+	rg.fake.standing = &service.Standing{Standing: service.StandingOK, PolicyVersion: service.StandingPolicyVersion, LongVideoPausedUntil: &until}
+	w := serveAdmin(rg.r, http.MethodGet, standingURL, "", withKey(bearer(rg.postToken(t, []string{OpStandingRead}))))
+	want := `{"data":{"standing":"ok","policy_version":"standing-v1","suspended_until":null,"active_strikes":[],"long_video_paused_until":"2026-10-31T04:00:00Z"}}`
 	if w.Code != http.StatusOK || strings.TrimSpace(w.Body.String()) != want {
 		t.Fatalf("status=%d body=%s\nwant %s", w.Code, w.Body.String(), want)
 	}

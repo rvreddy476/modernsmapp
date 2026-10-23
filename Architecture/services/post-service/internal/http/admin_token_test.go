@@ -340,6 +340,12 @@ func adminRoutePermissions() map[string][]string {
 		"GET /channels/:ref":                    {PermTubeChannelsModerate},
 		"GET /creators/:userId/counts":          {PermSocialUsersRead},
 		"GET /creators/:userId/video-series":    {PermVideosModerate, PermVideosRemove},
+		// Copyright title review (copyright_review.go).
+		"GET /copyright/titles":                      {PermVideosModerate, PermVideosRemove},
+		"POST /copyright/titles":                     {PermVideosRemove},
+		"PATCH /copyright/titles/:titleId":           {PermVideosRemove},
+		"GET /copyright/reviews":                     {PermVideosModerate, PermVideosRemove},
+		"POST /copyright/reviews/:reviewId/decision": {PermVideosModerate, PermVideosRemove},
 	}
 }
 

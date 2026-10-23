@@ -129,9 +129,17 @@ func (c *ContentOwnershipConsumer) applyCreated(ctx context.Context, envelope ev
 	if err != nil {
 		return err
 	}
+	// A PostCreated that post-service withheld while the post was held for
+	// copyright review carries eligible_from (the clear): the ownership row
+	// starts with that floor, so the held days never earn.
+	var eligibleFrom *time.Time
+	if payload.EligibleFrom != nil && !payload.EligibleFrom.IsZero() {
+		at := payload.EligibleFrom.UTC()
+		eligibleFrom = &at
+	}
 	return c.store.UpsertContentOwnership(ctx, pgstore.ContentOwnership{
 		ContentID: contentID, CreatorID: creatorID,
-		ContentType: contentType, CreatedAt: createdAt,
+		ContentType: contentType, CreatedAt: createdAt, EligibleFrom: eligibleFrom,
 	})
 }
 

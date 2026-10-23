@@ -135,6 +135,12 @@ func (s *Store) UpdatePostFields(ctx context.Context, postID, actorID uuid.UUID,
 	if before.AuthorID != actorID {
 		return nil, ErrPostEditNotOwned
 	}
+	// A post under an active hold (copyright case or title review,
+	// migrations 056 / 073) may neither gain nor keep a members-only tier:
+	// judged under the row lock, so a hold placed concurrently is seen.
+	if before.ActiveRestrictionCount > 0 && editResultTier(before, patch) != nil {
+		return nil, ErrPostCopyrightHeld
+	}
 
 	changes := postEditChanges(before, patch)
 	if len(changes) == 0 && patch.Credits == nil {

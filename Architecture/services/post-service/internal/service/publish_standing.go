@@ -109,29 +109,38 @@ func (s *Service) StandingConfigured() bool { return s.standing != nil }
 
 // requirePublishStanding is the choke point for interactive paths.
 func (s *Service) requirePublishStanding(ctx context.Context, authorID uuid.UUID) error {
+	_, err := s.publishStandingResult(ctx, authorID)
+	return err
+}
+
+// publishStandingResult is requirePublishStanding that also hands back the
+// answer (nil when a dev stack opted out), for the long-video pause
+// (copyright_title_review.go), which reads one more field of the same,
+// cached, answer.
+func (s *Service) publishStandingResult(ctx context.Context, authorID uuid.UUID) (*standing.Result, error) {
 	if s.standing == nil {
 		if s.requireStandingCheck {
-			return fmt.Errorf("%w: no trust-safety standing client is configured", ErrStandingUnknown)
+			return nil, fmt.Errorf("%w: no trust-safety standing client is configured", ErrStandingUnknown)
 		}
-		return nil // dev: explicitly opted out
+		return nil, nil // dev: explicitly opted out
 	}
 	if authorID == uuid.Nil {
-		return fmt.Errorf("%w: no author", ErrStandingUnknown)
+		return nil, fmt.Errorf("%w: no author", ErrStandingUnknown)
 	}
-	_, err := s.standing.Check(ctx, authorID)
+	res, err := s.standing.Check(ctx, authorID)
 	if err == nil {
-		return nil
+		return res, nil
 	}
 	var denied *standing.DeniedError
 	if errors.As(err, &denied) {
-		return &AuthorSuspendedError{
+		return nil, &AuthorSuspendedError{
 			AuthorID:       authorID,
 			Standing:       denied.Standing,
 			SuspendedUntil: denied.SuspendedUntil,
 			PolicyVersion:  denied.PolicyVersion,
 		}
 	}
-	return fmt.Errorf("%w: %v", ErrStandingUnknown, err)
+	return nil, fmt.Errorf("%w: %v", ErrStandingUnknown, err)
 }
 
 // backgroundVerdict is what a background path does next.

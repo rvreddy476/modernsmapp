@@ -61,6 +61,10 @@ externalSecret:
 env:
   ENV: prod
   LOG_LEVEL: info
+  # Copyright title review (post-service migration 073): long videos over 20
+  # minutes naming a catalogue title are published held for review. "false"
+  # is the kill switch (no new holds; existing holds stay until decided).
+  COPYRIGHT_TITLE_HOLD_ENABLED: "true"
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082
   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083
