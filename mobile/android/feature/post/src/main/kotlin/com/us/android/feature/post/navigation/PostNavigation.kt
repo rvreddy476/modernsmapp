@@ -15,7 +15,14 @@ import kotlinx.serialization.Serializable
 
 /** A single post. Always pushed, never a tab root. */
 @Serializable
-data class PostRoute(val postId: String)
+data class PostRoute(
+    val postId: String,
+    /**
+     * The comment to open the thread ON (2026-10-24): a comment or mention
+     * notification's `focusComment`. The comments sheet opens at once, on it.
+     */
+    val commentId: String? = null,
+)
 
 /**
  * Registers the post destination.
@@ -33,16 +40,17 @@ fun NavGraphBuilder.postScreen(
     onBack: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
 ) {
-    composable<PostRoute> {
+    composable<PostRoute> { entry ->
         PostScreen(
             onBack = onBack,
             onOpenAuthor = onOpenAuthor,
+            openOnComment = entry.toRoute<PostRoute>().commentId != null,
         )
     }
 }
 
 /** Type-safe navigation to a post. */
-fun NavController.navigateToPost(postId: String) = navigate(PostRoute(postId))
+fun NavController.navigateToPost(postId: String, commentId: String? = null) = navigate(PostRoute(postId, commentId))
 
 /**
  * The composer.

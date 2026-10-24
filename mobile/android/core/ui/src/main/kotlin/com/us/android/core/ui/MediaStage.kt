@@ -614,7 +614,8 @@ private fun StageCaptionText(postId: String, text: String, tagPrefix: String) {
         modifier = if (expanded) Modifier.sizeIn(maxHeight = EXPANDED_MAX).verticalScroll(rememberScrollState()) else Modifier,
     ) {
         Text(
-            text = text,
+            // Mentions and hashtags link (2026-10-24).
+            text = rememberRichText(text),
             style = MaterialTheme.typography.bodyMedium,
             color = UsTheme.extended.onMedia,
             maxLines = if (expanded) Int.MAX_VALUE else STAGE_CAPTION_LINES,

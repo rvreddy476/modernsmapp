@@ -11,6 +11,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.engagement.data.CommentActionsRepository
 import com.us.android.core.engagement.data.CommentMentionSource
+import com.us.android.core.engagement.data.CommentsAroundSource
 import com.us.android.core.engagement.data.CommentsActions
 import com.us.android.core.engagement.data.CommentsController
 import com.us.android.core.engagement.data.CommentsSession
@@ -69,13 +70,14 @@ class PostCommentsViewModel @Inject constructor(
     reports: ReportRepository,
     mentionSource: CommentMentionSource,
     private val viewerSource: CommentsViewerSource,
+    around: CommentsAroundSource,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
 
     val postId: String = savedStateHandle.get<String>(POST_ID_KEY).orEmpty()
 
     private val session = CommentsSession(viewModelScope).apply {
-        attach(CommentsController(postId, repository, commentActions, reports, mentionSource))
+        attach(CommentsController(postId, repository, commentActions, reports, mentionSource, around))
     }
 
     val state: StateFlow<CommentsUiState> = session.state
@@ -84,9 +86,20 @@ class PostCommentsViewModel @Inject constructor(
     val actions: CommentsActions get() = session
 
     /** First open: the list, and the viewer's avatar alongside it, not before it. */
-    fun open(postAuthorId: String = "") = session.open(postAuthorId, viewerSource)
+    fun open(postAuthorId: String = "") {
+        // The route's comment (a comment or mention notification, 2026-10-24) is
+        // focused on the FIRST open only; reopening the sheet shows the list.
+        val focus = focusCommentId.takeUnless { focused }
+        focused = true
+        session.open(postAuthorId, viewerSource, focus)
+    }
+
+    /** `PostRoute.commentId`: the comment the post was opened on, if any. */
+    private val focusCommentId: String? = savedStateHandle.get<String>(COMMENT_ID_KEY)?.takeIf { it.isNotBlank() }
+    private var focused = false
 
     private companion object {
         const val POST_ID_KEY = "postId"
+        const val COMMENT_ID_KEY = "commentId"
     }
 }

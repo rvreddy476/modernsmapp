@@ -1,12 +1,17 @@
 package com.us.android.feature.profile.ui
 
+import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.platform.LocalClipboard
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.toClipEntry
 import com.us.android.core.model.Profile
 import com.us.android.core.model.WebLinks
+import kotlinx.coroutines.launch
 
 /**
  * Share profile (T-21, 2026-10-15): the profile's public web address,
@@ -52,3 +57,29 @@ private fun Context.shareText(text: String) {
     // reuse a previously chosen default target.
     startActivity(Intent.createChooser(send, null))
 }
+
+/**
+ * Copy link (the profile More menu, 2026-10-24, the web's "Copy profile
+ * link"): the same address Share profile hands out, on the clipboard. The
+ * returned function answers whether there was an address to copy.
+ */
+@Composable
+internal fun rememberProfileLinkCopier(): (Profile) -> Boolean {
+    val clipboard = LocalClipboard.current
+    val scope = rememberCoroutineScope()
+    return remember(clipboard, scope) {
+        fun(profile: Profile): Boolean {
+            val link = profileLink(profile.username) ?: return false
+            scope.launch { clipboard.setClipEntry(ClipData.newPlainText(PROFILE_LINK_LABEL, link).toClipEntry()) }
+            return true
+        }
+    }
+}
+
+/** The profile's public address with the web's share tail, or null without a handle. Pure, so it is unit-tested. */
+internal fun profileLink(username: String): String? = WebLinks.profileUrl(username)?.let(WebLinks::withShareRef)
+
+private const val PROFILE_LINK_LABEL = "Profile link"
+
+/** What Copy link says once the address is on the clipboard. */
+internal const val LINK_COPIED = "Link copied"

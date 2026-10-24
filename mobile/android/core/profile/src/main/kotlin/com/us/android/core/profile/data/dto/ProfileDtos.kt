@@ -259,6 +259,8 @@ data class RelationshipDto(
     /** `"none"|"pending_sent"|"pending_received"`. */
     @SerialName("follow_request_status") val followRequestStatus: String = "",
     @SerialName("is_private") val isPrivate: Boolean = false,
+    /** The viewer muted the target (graph-service store/graph.go:56). */
+    @SerialName("is_muted") val isMuted: Boolean = false,
 )
 
 /**

@@ -128,6 +128,10 @@ internal fun ProfileMediaGrid(
     tabRequest: GridTabRequest? = null,
     /** Bumped by the profile's pull to refresh: the open tab's tiles are read again. 0 is the first draw. */
     refreshSeq: Int = 0,
+    /** The loaded profile, for the About panel's own fields (bio, website, profession, place, joined). */
+    profile: com.us.android.core.model.Profile? = null,
+    /** Where the panels' rows go (2026-10-24). */
+    panelDestinations: ProfilePanelDestinations = ProfilePanelDestinations(),
     viewModel: ProfileGridViewModel = hiltViewModel(),
 ) {
     val tab by viewModel.tab.collectAsStateWithLifecycle()
@@ -185,17 +189,29 @@ internal fun ProfileMediaGrid(
             onSelectTab = viewModel::select,
             onSelectSort = viewModel::selectSort,
         )
-        val items = TabLists(posts, reels, longVideos, saved, liked, appearances, members).forTab(tab)
-        val heads = pending.filter { it.tab == tab }.map<PendingVideoTile, GridHead> { GridHead.Pending(it) } +
-            scheduled.filter { it.tab == tab }.map { GridHead.Scheduled(it) }
-        GridRows(
-            tab = tab,
-            items = items,
-            heads = heads,
-            thumbFor = viewModel::thumb,
-            onOpen = { item -> onOpenPost?.invoke(item.id, item.feedContentType) },
-            onPendingTap = { tile -> if (tile.failure != null) failureKey = tile.creationKey },
-        )
+        if (tab.panel) {
+            // About, Connections and Reposts (2026-10-24): a panel, not tiles.
+            ProfilePanel(
+                tab = tab,
+                userId = viewModel.userId,
+                isOwn = viewModel.isOwn,
+                profile = profile,
+                destinations = panelDestinations,
+                refreshSeq = refreshSeq,
+            )
+        } else {
+            val items = TabLists(posts, reels, longVideos, saved, liked, appearances, members).forTab(tab)
+            val heads = pending.filter { it.tab == tab }.map<PendingVideoTile, GridHead> { GridHead.Pending(it) } +
+                scheduled.filter { it.tab == tab }.map { GridHead.Scheduled(it) }
+            GridRows(
+                tab = tab,
+                items = items,
+                heads = heads,
+                thumbFor = viewModel::thumb,
+                onOpen = { item -> onOpenPost?.invoke(item.id, item.feedContentType) },
+                onPendingTap = { tile -> if (tile.failure != null) failureKey = tile.creationKey },
+            )
+        }
     }
 
     val failing = pending.firstOrNull { it.creationKey == failureKey }
@@ -340,6 +356,8 @@ private class TabLists(
         ProfileGridTab.LIKED -> liked
         ProfileGridTab.APPEARS_IN -> appearances
         ProfileGridTab.MEMBERS -> members
+        // A panel draws no tiles; never asked for (see ProfilePanel).
+        ProfileGridTab.ABOUT, ProfileGridTab.CONNECTIONS, ProfileGridTab.REPOSTS -> posts
     }
 }
 
@@ -594,6 +612,7 @@ internal fun tileAspect(tab: ProfileGridTab): Float = when (tab) {
     ProfileGridTab.VIDEOS, ProfileGridTab.APPEARS_IN -> LANDSCAPE
     // Saved and Members mix every kind, so no one shape is right; square is the neutral one.
     ProfileGridTab.SAVED, ProfileGridTab.MEMBERS -> SQUARE
+    ProfileGridTab.ABOUT, ProfileGridTab.CONNECTIONS, ProfileGridTab.REPOSTS -> SQUARE
 }
 
 /** One post as a tile: its still (the cover for a video), a film glyph for the video kinds. */

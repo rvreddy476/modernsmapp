@@ -1,11 +1,15 @@
 package com.us.android.core.engagement.di
 
 import com.us.android.core.engagement.data.CommentActionsApi
+import com.us.android.core.engagement.data.CommentsAroundApi
+import com.us.android.core.engagement.data.CommentsAroundRepository
+import com.us.android.core.engagement.data.CommentsAroundSource
 import com.us.android.core.engagement.data.EngagementApi
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.EngagementWrites
 import com.us.android.core.engagement.data.PostLifecycleApi
+import com.us.android.core.engagement.data.QuoteReposts
 import com.us.android.core.engagement.data.ReportApi
 import com.us.android.core.engagement.data.RepostReads
 import com.us.android.core.engagement.data.RepostStateApi
@@ -61,6 +65,10 @@ object EngagementModule {
     @Singleton
     fun provideEngagementWrites(repository: EngagementRepository): EngagementWrites = repository
 
+    /** Quote reposts (2026-10-24), from the share sheet. */
+    @Provides
+    fun provideQuoteReposts(repository: EngagementRepository): QuoteReposts = repository
+
     /** The viewer's repost of one post, for the share sheet's Repost row (2026-10-17). */
     @Provides
     @Singleton
@@ -68,4 +76,17 @@ object EngagementModule {
 
     @Provides
     fun provideRepostReads(repository: RepostStateRepository): RepostReads = repository
+}
+
+/** The thread opened on one comment (2026-10-24): `GET /v1/posts/:id/comments/around/:commentId`. */
+@Module
+@InstallIn(SingletonComponent::class)
+object CommentsAroundModule {
+
+    @Provides
+    @Singleton
+    fun provideCommentsAroundApi(retrofit: Retrofit): CommentsAroundApi = retrofit.create(CommentsAroundApi::class.java)
+
+    @Provides
+    fun provideCommentsAroundSource(repository: CommentsAroundRepository): CommentsAroundSource = repository
 }

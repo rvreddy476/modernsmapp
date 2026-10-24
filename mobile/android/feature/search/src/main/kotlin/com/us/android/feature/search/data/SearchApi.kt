@@ -12,8 +12,10 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.decodeFromJsonElement
+import retrofit2.http.Body
 import retrofit2.http.DELETE
 import retrofit2.http.GET
+import retrofit2.http.POST
 import retrofit2.http.Path
 import retrofit2.http.Query
 
@@ -103,6 +105,18 @@ interface SearchApi {
 
     @DELETE("v1/search/history")
     suspend fun clearHistory(): ApiEnvelope<JsonElement>
+
+    /** Saved searches (2026-10-24, search-service handler.go:141-143): `{"items":[{id,query,search_type,saved_at}]}`. */
+    @GET("v1/search/saved")
+    suspend fun saved(): ApiEnvelope<SavedSearchesDto>
+
+    /** `{query, search_type}` → 201 the saved row. */
+    @POST("v1/search/saved")
+    suspend fun save(@Body body: SaveSearchRequest): ApiEnvelope<SavedSearchDto>
+
+    /** 404 NOT_FOUND when it is already gone. */
+    @DELETE("v1/search/saved/{id}")
+    suspend fun deleteSaved(@Path("id") id: String): ApiEnvelope<JsonElement>
 
     @GET("v1/search/popular")
     suspend fun popular(@Query("limit") limit: Int): ApiEnvelope<JsonElement>
@@ -236,3 +250,22 @@ object SearchRows {
         )
     }
 }
+
+/** One `postgres.SavedSearch` (search-service store/postgres/search_extras.go:12-18). */
+@Serializable
+data class SavedSearchDto(
+    val id: String = "",
+    val query: String = "",
+    @SerialName("search_type") val searchType: String = "",
+    @SerialName("saved_at") val savedAt: String = "",
+)
+
+@Serializable
+data class SavedSearchesDto(val items: List<SavedSearchDto> = emptyList())
+
+/** `search_type` is `universal` unless said otherwise (handler.go:724). */
+@Serializable
+data class SaveSearchRequest(
+    val query: String,
+    @SerialName("search_type") val searchType: String,
+)

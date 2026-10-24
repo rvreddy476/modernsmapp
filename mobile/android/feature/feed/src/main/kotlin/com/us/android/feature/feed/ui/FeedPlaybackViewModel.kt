@@ -2,6 +2,7 @@ package com.us.android.feature.feed.ui
 
 import androidx.lifecycle.ViewModel
 import com.us.android.core.feed.data.playbackFor
+import com.us.android.core.media.DataSaverGate
 import com.us.android.core.media.MediaSources
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.Playback
@@ -40,6 +41,8 @@ class FeedPlaybackViewModel @Inject constructor(
     private val urlResolver: MediaUrlResolver,
     private val playerFactory: PlayerFactory,
     private val sources: MediaSources,
+    /** Data saver (2026-10-24): a lower ceiling and no autoplay on mobile data. */
+    private val dataSaver: DataSaverGate,
 ) : ViewModel() {
 
     /**
@@ -48,7 +51,13 @@ class FeedPlaybackViewModel @Inject constructor(
      * Following share this ViewModel, and the body leaving must not release
      * the players the body arriving has just acquired.
      */
-    fun newPool(): PlayerPool = PlayerPool(playerFactory, sources)
+    fun newPool(): PlayerPool = PlayerPool(playerFactory, sources, dataSaver)
+
+    /**
+     * Whether a settled page starts its video by itself: not while data saver
+     * holds (2026-10-24, the web's `autoPlay={!dataSaver}`) — a tap plays it.
+     */
+    fun autoplays(): Boolean = !dataSaver.active
 
     /** The post's video, or null for a photo or text post, or a video with no rendition yet. */
     fun playback(item: FeedItem): Playback? = urlResolver.playbackFor(item)

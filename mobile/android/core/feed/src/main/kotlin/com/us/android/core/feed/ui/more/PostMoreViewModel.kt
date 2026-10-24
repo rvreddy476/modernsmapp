@@ -19,12 +19,15 @@ import com.us.android.core.engagement.data.ReportOutcome
 import com.us.android.core.engagement.data.ReportRepository
 import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.FollowGraph
+import com.us.android.core.feed.data.PostPinRepository
+import com.us.android.core.feed.data.pinRefusal
 import com.us.android.core.feed.offline.OfflineLibrary
 import com.us.android.core.feed.offline.OfflineSaveResult
 import com.us.android.core.feed.offline.OfflineState
 import com.us.android.core.feed.offline.SAVES_ON_WIFI
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
+import com.us.android.core.profile.data.ConnectionsSource
 import com.us.android.core.profile.data.ProfileRepository
 import com.us.android.core.ui.UsPostDeleteState
 import com.us.android.core.ui.UsPostDontRecommendState
@@ -76,6 +79,10 @@ class PostMoreViewModel @Inject constructor(
     private val analytics: AnalyticsRecorder,
     /** Offline copies (2026-10-02): the video rows Save offline, Cancel and Remove, and what each copy is doing. */
     private val offline: OfflineLibrary,
+    /** The owner's Pin to profile on a feed post (2026-10-24). */
+    private val pinning: PostPinRepository,
+    /** Mute the author of someone else's post (2026-10-24, graph `POST /v1/graph/mute`). */
+    private val graph: ConnectionsSource,
 ) : ViewModel() {
 
     /** Where each video's offline copy stands on this device; the sheet's offline row is drawn from it. */
@@ -258,6 +265,46 @@ class PostMoreViewModel @Inject constructor(
             if (profiles.block(authorId) is AppResult.Failure) {
                 hidden.unhideAuthor(authorId)
                 say("Couldn't block. Try again.", UsMessageType.Error)
+            }
+        }
+    }
+
+    /**
+     * Mute the author (2026-10-24, the web's "Mute this author"). Optimistic,
+     * like Block: every post by them leaves every list at once through
+     * [HiddenPosts], and a refusal puts them back. Nothing changes for them:
+     * no block, no unfollow, and they are not told.
+     */
+    fun mute(item: FeedItem) {
+        val authorId = item.author.id
+        hidden.hideAuthor(authorId)
+        say(
+            "Muted @${item.author.username ?: item.author.nameForDisplay}. Their posts won't show in your feeds.",
+            UsMessageType.Success,
+        )
+        viewModelScope.launch {
+            if (graph.mute(authorId) is AppResult.Failure) {
+                hidden.unhideAuthor(authorId)
+                say("Couldn't mute. Try again.", UsMessageType.Error)
+            }
+        }
+    }
+
+    /** This session's pins, by post id: what the sheet reads over a row's `is_pinned`. */
+    val pins: StateFlow<Map<String, Boolean>> = pinning.pins
+
+    /**
+     * Pin to profile / Unpin from profile, the viewer's own feed post
+     * (2026-10-24). Waits for the server: a 4th pin is refused with
+     * 409 PIN_LIMIT, which says how many and what to do ([pinRefusal]).
+     */
+    fun togglePin(item: FeedItem) {
+        val pinned = pins.value[item.id] ?: item.isPinned
+        viewModelScope.launch {
+            when (val result = pinning.setPinned(item.id, !pinned)) {
+                is AppResult.Success ->
+                    say(if (result.data) "Pinned to your profile" else "Unpinned from your profile", UsMessageType.Success)
+                is AppResult.Failure -> say(pinRefusal(result.error, pinning = !pinned), UsMessageType.Error)
             }
         }
     }

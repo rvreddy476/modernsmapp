@@ -1,10 +1,16 @@
 package com.us.android.core.profile.di
 
+import com.us.android.core.profile.data.AccountDataApi
+import com.us.android.core.profile.data.AccountDataRepository
+import com.us.android.core.profile.data.AccountDataSource
 import com.us.android.core.profile.data.AccountSecurityApi
 import com.us.android.core.profile.data.AuthorPostCountsApi
 import com.us.android.core.profile.data.BlockedAccountsApi
 import com.us.android.core.profile.data.BlockedAccountsRepository
 import com.us.android.core.profile.data.BlockedAccountsSource
+import com.us.android.core.profile.data.ConnectionsApi
+import com.us.android.core.profile.data.ConnectionsRepository
+import com.us.android.core.profile.data.ConnectionsSource
 import com.us.android.core.profile.data.DataStoreKeywordFiltersCache
 import com.us.android.core.profile.data.DataStoreModulePreferencesCache
 import com.us.android.core.profile.data.DataStoreWellbeingGuardCache
@@ -21,6 +27,9 @@ import com.us.android.core.profile.data.PrivacySettingsApi
 import com.us.android.core.profile.data.ProfileApi
 import com.us.android.core.profile.data.ProfileClock
 import com.us.android.core.profile.data.ProfileDetailsApi
+import com.us.android.core.profile.data.ProfilePanelsApi
+import com.us.android.core.profile.data.ProfilePanelsRepository
+import com.us.android.core.profile.data.ProfilePanelsSource
 import com.us.android.core.profile.data.UsernameLookupApi
 import com.us.android.core.profile.data.WellbeingApi
 import com.us.android.core.profile.data.WellbeingGuardCache
@@ -157,4 +166,52 @@ object ProfileCountsModule {
     /** The page reads through the repository; tests hand it a fake. */
     @Provides
     fun provideBlockedAccountsSource(impl: BlockedAccountsRepository): BlockedAccountsSource = impl
+}
+
+/**
+ * Connections and mute (2026-10-24): graph-service's connection-request
+ * routes and the mute pair, read through [ConnectionsSource].
+ */
+@Module
+@InstallIn(SingletonComponent::class)
+object ConnectionsModule {
+
+    @Provides
+    @Singleton
+    fun provideConnectionsApi(retrofit: Retrofit): ConnectionsApi =
+        retrofit.create(ConnectionsApi::class.java)
+
+    @Provides
+    fun provideConnectionsSource(
+        impl: ConnectionsRepository,
+    ): ConnectionsSource = impl
+}
+
+/** The profile's About and Reposts tabs (2026-10-24). */
+@Module
+@InstallIn(SingletonComponent::class)
+object ProfilePanelsModule {
+
+    @Provides
+    @Singleton
+    fun provideProfilePanelsApi(retrofit: Retrofit): ProfilePanelsApi = retrofit.create(ProfilePanelsApi::class.java)
+
+    @Provides
+    fun provideProfilePanelsSource(impl: ProfilePanelsRepository): ProfilePanelsSource = impl
+}
+
+/** Settings › Download your data and Request verification (2026-10-24). */
+@Module
+@InstallIn(SingletonComponent::class)
+object AccountDataModule {
+
+    @Provides
+    @Singleton
+    fun provideAccountDataApi(retrofit: Retrofit): AccountDataApi =
+        retrofit.create(AccountDataApi::class.java)
+
+    @Provides
+    fun provideAccountDataSource(
+        impl: AccountDataRepository,
+    ): AccountDataSource = impl
 }

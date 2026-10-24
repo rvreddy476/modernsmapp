@@ -44,6 +44,9 @@ import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsButton
+import com.us.android.core.designsystem.component.UsMessage
+import com.us.android.core.designsystem.component.UsMessageHost
+import com.us.android.core.designsystem.component.UsMessageType
 import com.us.android.core.designsystem.component.UsMomentumHeader
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
@@ -64,6 +67,8 @@ import com.us.android.core.ui.UsPostReportState
 import com.us.android.core.ui.UsReportReason
 import com.us.android.core.ui.UsStat
 import com.us.android.core.ui.UsStatRow
+import com.us.android.core.ui.rememberRichText
+import com.us.android.feature.profile.navigation.ConnectionsRoute
 import com.us.android.feature.profile.navigation.FollowListRoute
 import com.us.android.feature.profile.navigation.MomentumHeaderDestinations
 
@@ -94,6 +99,7 @@ fun ProfileScreen(
     val mediaState by mediaViewModel.state.collectAsStateWithLifecycle()
     val reportState by reportViewModel.report.collectAsStateWithLifecycle()
     val shareProfile = rememberProfileSharer()
+    val copyProfileLink = rememberProfileLinkCopier()
 
     // Back from the follower lists (or anywhere a follow may have moved):
     // the header's counts are read again. A no-op until the profile loaded.
@@ -164,6 +170,18 @@ fun ProfileScreen(
                 loadedProfile?.let { reportViewModel.report(it, reason, details) }
             },
             onShareProfile = { loadedProfile?.let(shareProfile) },
+            onConnectionTap = viewModel::onConnectionTap,
+            onAcceptConnection = viewModel::onAcceptConnection,
+            onDeclineConnection = viewModel::onDeclineConnection,
+            onConfirmRemoveConnection = viewModel::onConfirmRemoveConnection,
+            onDismissRemoveConnection = viewModel::onDismissRemoveConnection,
+            onMuteToggle = viewModel::onMuteToggle,
+            onCopyLink = {
+                loadedProfile?.let { profile ->
+                    if (copyProfileLink(profile)) viewModel.showNotice(LINK_COPIED)
+                }
+            },
+            onDismissNotice = viewModel::dismissNotice,
         ),
         chatState = chatState,
         media = ProfileMediaUrls(mediaState.avatarUrl, mediaState.coverUrl),
@@ -220,6 +238,10 @@ data class ProfileDestinations(
     val onOpenMemberships: (() -> Unit)? = null,
     /** The Me tab's drawer "Upload": `:app` opens the Create sheet the bar's centre button opens. */
     val onOpenUpload: (() -> Unit)? = null,
+    /** Connections (2026-10-24): the Connections count opens the list; null draws no count. */
+    val onOpenConnections: ((ConnectionsRoute) -> Unit)? = null,
+    /** A person in the Connections tab was tapped (2026-10-24): `:app` opens their profile. */
+    val onOpenProfile: ((userId: String) -> Unit)? = null,
 )
 
 /**
@@ -246,6 +268,17 @@ internal data class ProfileActions(
     val onReportProfile: (reason: UsReportReason, details: String) -> Unit = { _, _ -> },
     /** Share the account on screen's public web address (T-21). */
     val onShareProfile: () -> Unit = {},
+    /** Connections (2026-10-24): the one connection control's tap, and the two answers to a request. */
+    val onConnectionTap: () -> Unit = {},
+    val onAcceptConnection: () -> Unit = {},
+    val onDeclineConnection: () -> Unit = {},
+    val onConfirmRemoveConnection: () -> Unit = {},
+    val onDismissRemoveConnection: () -> Unit = {},
+    /** The More menu's Mute / Unmute (2026-10-24). */
+    val onMuteToggle: () -> Unit = {},
+    /** The More menu's Copy link: the profile's public address on the clipboard. */
+    val onCopyLink: () -> Unit = {},
+    val onDismissNotice: () -> Unit = {},
 )
 
 internal data class ProfileMediaUrls(
@@ -270,7 +303,14 @@ internal fun ProfileContent(
     // no More control is drawn at all (audit T-03); the owner's Share profile
     // is a button beside Edit profile instead.
     val menuRows = (state as? ProfileUiState.Content)
-        ?.let { profileMenuRows(isOwnProfile = it.profile.isOwnProfile, canShare = canShareProfile(it.profile)) }
+        ?.let {
+            profileMenuRows(
+                isOwnProfile = it.profile.isOwnProfile,
+                canShare = canShareProfile(it.profile),
+                isMuted = it.relationship.isMuted,
+                isBlocked = it.relationship.isBlocked,
+            )
+        }
         .orEmpty()
     var menuOpen by rememberSaveable { mutableStateOf(false) }
     // The Me tab's ☰ drawer (2026-10-17), and the grid tab it last asked for.
@@ -326,6 +366,9 @@ internal fun ProfileContent(
             onReport = actions.onReportProfile,
             onDismiss = { menuOpen = false },
             onShare = actions.onShareProfile,
+            onCopyLink = actions.onCopyLink,
+            onMuteToggle = actions.onMuteToggle,
+            onBlockToggle = actions.onBlockToggle,
         )
     }
 
@@ -449,9 +492,21 @@ private fun ProfileMedia(
             onPublished = destinations.onPublished,
             tabRequest = tabRequest,
             refreshSeq = refreshSeq,
+            profile = profile,
+            panelDestinations = ProfilePanelDestinations(
+                onOpenPost = destinations.onOpenPost,
+                onOpenProfile = destinations.onOpenProfile,
+                onOpenConnections = destinations.onOpenConnections,
+            ),
         )
     }
 }
+
+/** The Connections screen for [profile]: the viewer's own opens with its request tabs. */
+internal fun connectionsRoute(profile: Profile) = ConnectionsRoute(
+    userId = profile.userId.takeUnless { profile.isOwnProfile },
+    handle = profile.username,
+)
 
 /** The list screen for [profile], opened on [tab], titled with its handle. */
 internal fun followListRoute(profile: Profile, tab: FollowListTab) =
@@ -520,6 +575,19 @@ private fun LoadedProfile(
                             null
                         },
                     ),
+                ) + listOfNotNull(
+                    // Connections (2026-10-24): the graph's friend count, opening the list.
+                    destinations.onOpenConnections?.let { open ->
+                        UsStat(
+                            "Connections",
+                            state.counts.friends,
+                            onClick = if (canOpen) {
+                                { open(connectionsRoute(profile)) }
+                            } else {
+                                null
+                            },
+                        )
+                    },
                 ),
             )
 
@@ -573,6 +641,19 @@ private fun LoadedProfile(
                     onFollowToggle = actions.onFollowToggle,
                     onBlockToggle = actions.onBlockToggle,
                 )
+
+                // Connections (2026-10-24): a request either way, or the
+                // connection itself. Nothing while there is none to act on.
+                if (!state.relationship.isBlocked) {
+                    ConnectionControls(
+                        name = profile.nameForDisplay,
+                        status = state.relationship.connectionStatus,
+                        busy = state.connectionBusy,
+                        onTap = actions.onConnectionTap,
+                        onAccept = actions.onAcceptConnection,
+                        onDecline = actions.onDeclineConnection,
+                    )
+                }
             }
 
             state.actionError?.let { error ->
@@ -589,6 +670,18 @@ private fun LoadedProfile(
         if (destinations.onPublished != null) {
             PublishSuccessBanner(modifier = Modifier.align(Alignment.TopCenter))
         }
+        UsMessageHost(
+            message = state.notice?.let { UsMessage(it, UsMessageType.Success) },
+            onDismiss = actions.onDismissNotice,
+        )
+    }
+
+    if (state.showRemoveConnectionConfirm) {
+        RemoveConnectionDialog(
+            name = profile.nameForDisplay,
+            onConfirm = actions.onConfirmRemoveConnection,
+            onDismiss = actions.onDismissRemoveConnection,
+        )
     }
 
     if (state.showCancelRequestConfirm) {
@@ -877,7 +970,8 @@ private fun ProfileHeader(
 
             if (profile.bio.isNotBlank()) {
                 Text(
-                    text = profile.bio,
+                    // Mentions and hashtags in the bio link (2026-10-24).
+                    text = rememberRichText(profile.bio),
                     style = MaterialTheme.typography.bodyMedium,
                     color = UsTheme.extended.textPrimary,
                     modifier = Modifier.padding(top = UsTheme.spacing.m),

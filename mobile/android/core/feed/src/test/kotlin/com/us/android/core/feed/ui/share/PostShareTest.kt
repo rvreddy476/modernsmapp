@@ -13,6 +13,7 @@ import com.us.android.core.designsystem.component.UsMessageType
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.EngagementWrites
+import com.us.android.core.engagement.data.QuoteReposts
 import com.us.android.core.engagement.data.RepostReads
 import com.us.android.core.model.SessionState
 import com.us.android.core.testing.MainDispatcherRule
@@ -155,7 +156,16 @@ class PostShareTest {
             MutableStateFlow(SessionState.Authenticated(userId = "me", sessionId = "s"))
     }
 
-    private fun viewModel() = PostShareViewModel(chats, RepostReads { serverReposted }, store, session)
+    private val quoted = mutableListOf<Pair<String, String>>()
+    private var quoteAnswer: AppResult<Unit> = AppResult.Success(Unit)
+
+    private fun viewModel() = PostShareViewModel(
+        chats,
+        RepostReads { serverReposted },
+        store,
+        session,
+        QuoteReposts { postId, text -> quoted += postId to text; quoteAnswer },
+    )
 
     private fun PostShareViewModel.ui() = state.value.toUiState(viewerId, overlays.value[state.value.postId] ?: EngagementOverlay())
 
@@ -290,5 +300,81 @@ class PostShareTest {
 
         // The permalink, then the web's share tail (`?ref=<id>&utm_source=share`, 2026-10-22).
         assertThat(vm.ui().link).matches("https://cleestudio.com/post/p-42\\?ref=[a-z0-9]{10}&utm_source=share")
+    }
+
+    // ── Quote repost (2026-10-24) ────────────────────────────────────────
+
+    @Test
+    fun `Quote is offered while the post is not reposted, and not after`() {
+        val vm = viewModel()
+        assertThat(vm.ui().canQuote).isFalse()
+
+        vm.open("p1", feedReposted = false)
+        assertThat(vm.ui().canQuote).isTrue()
+
+        vm.toggleRepost()
+        assertThat(vm.ui().canQuote).isFalse()
+    }
+
+    @Test
+    fun `a quote sends the words trimmed by the repository, and the row turns to Remove repost`() {
+        val vm = viewModel()
+        vm.open("p1", feedReposted = false)
+
+        vm.openQuote()
+        vm.onQuoteChange("so true")
+        assertThat(vm.ui().quote?.text).isEqualTo("so true")
+        vm.sendQuote()
+
+        assertThat(quoted).containsExactly("p1" to "so true")
+        assertThat(vm.ui().quote).isNull()
+        assertThat(vm.ui().repost).isEqualTo(UsRepostRow.REMOVE)
+        assertThat(vm.message.value?.text).isEqualTo(PostShareViewModel.QUOTED)
+    }
+
+    @Test
+    fun `empty or too long words never leave the sheet`() {
+        val vm = viewModel()
+        vm.open("p1", feedReposted = false)
+        vm.openQuote()
+
+        vm.onQuoteChange("   ")
+        vm.sendQuote()
+        vm.onQuoteChange("x".repeat(501))
+        vm.sendQuote()
+
+        assertThat(quoted).isEmpty()
+        assertThat(vm.ui().quote?.error).isEqualTo("A quote can be up to 500 characters.")
+        assertThat(quoteProblem("x".repeat(500))).isNull()
+        assertThat(quoteProblem("")).isEqualTo("Add your thoughts to quote this post.")
+    }
+
+    @Test
+    fun `a refused quote keeps the words and says why`() {
+        quoteAnswer = AppResult.Failure(AppError.Unknown(code = "ALREADY_REPOSTED", statusCode = 409))
+        val vm = viewModel()
+        vm.open("p1", feedReposted = false)
+        vm.openQuote()
+        vm.onQuoteChange("mine")
+
+        vm.sendQuote()
+
+        assertThat(vm.ui().quote?.text).isEqualTo("mine")
+        assertThat(vm.ui().quote?.error).isEqualTo("You already reposted this post.")
+        assertThat(vm.ui().quote?.busy).isFalse()
+    }
+
+    @Test
+    fun `Back from the quote step drops the words`() {
+        val vm = viewModel()
+        vm.open("p1", feedReposted = false)
+        vm.openQuote()
+        vm.onQuoteChange("draft")
+
+        vm.closeQuote()
+
+        assertThat(vm.ui().quote).isNull()
+        vm.openQuote()
+        assertThat(vm.ui().quote?.text).isEmpty()
     }
 }

@@ -76,6 +76,22 @@ class SearchRepository @Inject constructor(
     suspend fun clearHistory(): AppResult<Unit> =
         unit(apiCall(errorMapper) { api.clearHistory() }, notFoundIsSuccess = false)
 
+    /** The viewer's saved searches (2026-10-24), as the server orders them. Call only when signed in. */
+    suspend fun saved(): AppResult<List<SavedSearch>> =
+        apiCall(errorMapper) { api.saved() }.map { page ->
+            page.items.filter { it.id.isNotBlank() && it.query.isNotBlank() }
+                .map { SavedSearch(id = it.id, query = it.query.trim()) }
+        }
+
+    /** Saves [query] (trimmed) as a universal search; the stored row back. */
+    suspend fun save(query: String): AppResult<SavedSearch> =
+        apiCall(errorMapper) { api.save(SaveSearchRequest(query = query.trim(), searchType = UNIVERSAL)) }
+            .map { SavedSearch(id = it.id, query = it.query.ifBlank { query }.trim()) }
+
+    /** Removes one saved search. Already gone (404) is the outcome asked for. */
+    suspend fun deleteSaved(id: String): AppResult<Unit> =
+        unit(apiCall(errorMapper) { api.deleteSaved(id) }, notFoundIsSuccess = true)
+
     /** Popular searches for the empty box. An empty state never becomes an error: a failure is none. */
     suspend fun popular(): List<String> =
         when (val result = apiCall(errorMapper) { api.popular(POPULAR_LIMIT) }) {
@@ -98,6 +114,8 @@ class SearchRepository @Inject constructor(
     }
 
     companion object {
+        /** search-service's own default kind of saved search. */
+        const val UNIVERSAL = "universal"
         const val LIMIT = 30
         const val TOP_LIMIT = 20
         const val TOP_TYPES = "posts,users,hashtags"

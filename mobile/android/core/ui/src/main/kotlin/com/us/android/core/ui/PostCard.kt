@@ -782,12 +782,14 @@ private fun PollResultRow(option: PostCardPollOption, chosen: Boolean) {
 private fun CaptionText(postId: String, authorName: String, text: String) {
     var expanded by rememberSaveable(postId) { mutableStateOf(false) }
     var overflowed by remember(postId, text) { mutableStateOf(false) }
+    // Mentions and hashtags link (2026-10-24).
+    val body = rememberRichText(text)
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         Text(
             text = buildAnnotatedString {
                 withStyle(SpanStyle(fontWeight = FontWeight.Bold)) { append(authorName) }
                 append(" ")
-                append(text)
+                append(body)
             },
             style = MaterialTheme.typography.bodyMedium,
             color = UsTheme.extended.textBody,

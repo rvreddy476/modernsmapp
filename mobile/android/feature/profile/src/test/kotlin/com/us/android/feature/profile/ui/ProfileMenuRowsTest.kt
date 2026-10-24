@@ -29,3 +29,35 @@ class ProfileMenuRowsTest {
         assertThat(ProfileMenuRow.REPORT.destructive).isTrue()
     }
 }
+
+/** The account rows (2026-10-24, the web's profileParity.ts `profileMenuRows`). */
+class ProfileMenuAccountRowsTest {
+
+    @Test
+    fun `a muted account offers Unmute instead of Mute`() {
+        val rows = profileMenuRows(isOwnProfile = false, isMuted = true)
+
+        assertThat(rows).contains(ProfileMenuRow.UNMUTE)
+        assertThat(rows).doesNotContain(ProfileMenuRow.MUTE)
+    }
+
+    @Test
+    fun `a blocked account offers Unblock and no mute row at all`() {
+        val rows = profileMenuRows(isOwnProfile = false, isMuted = true, isBlocked = true)
+
+        assertThat(rows).containsExactly(ProfileMenuRow.REPORT, ProfileMenuRow.UNBLOCK).inOrder()
+    }
+
+    @Test
+    fun `Block reads as destructive and Unblock does not`() {
+        assertThat(ProfileMenuRow.BLOCK.destructive).isTrue()
+        assertThat(ProfileMenuRow.UNBLOCK.destructive).isFalse()
+        assertThat(ProfileMenuRow.MUTE.destructive).isFalse()
+    }
+
+    @Test
+    fun `the profile link carries the share tail, and a handle-less profile has none`() {
+        assertThat(profileLink("ada")).matches("https://cleestudio.com/u/ada\\?ref=[a-z0-9]{10}&utm_source=share")
+        assertThat(profileLink("")).isNull()
+    }
+}

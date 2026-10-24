@@ -53,6 +53,14 @@ import kotlinx.coroutines.launch
  * read in the danger tint, as Report does on the post sheet.
  */
 enum class ProfileMenuRow(val label: String, val icon: ImageVector, val destructive: Boolean) {
+    /** The web's "Copy profile link" (profileParity.ts:108): the public address on the clipboard. */
+    COPY_LINK("Copy link", UsIcons.Link, destructive = false),
+
+    /** Mute (2026-10-24, graph `POST /v1/graph/mute`): their posts leave the viewer's feeds; they are not told. */
+    MUTE("Mute", UsIcons.SoundOff, destructive = false),
+    UNMUTE("Unmute", UsIcons.SoundOn, destructive = false),
+    BLOCK("Block", UsIcons.Ban, destructive = true),
+    UNBLOCK("Unblock", UsIcons.Ban, destructive = false),
     REPORT("Report", UsIcons.Flag, destructive = true),
     SHARE("Share profile", UsIcons.Share, destructive = false),
 }
@@ -60,19 +68,31 @@ enum class ProfileMenuRow(val label: String, val icon: ImageVector, val destruct
 /**
  * The menu for a profile: empty on the viewer's OWN profile — nobody reports
  * themselves, the Me tab has its own drawer ([meDrawerSections]), and the owner's
- * Share profile is a button beside Edit profile — and on anyone else's,
- * Report plus Share profile when the profile has a handle to link to
- * ([canShare]). Ascending alphabetical order by label, the rule for every
- * menu. Pure, so it is a table test; the screen draws no More control at all
- * when this is empty.
+ * Share profile is a button beside Edit profile — and on anyone else's the
+ * web's list (profileParity.ts `profileMenuRows`): Copy link and Share profile
+ * when the profile has a handle to link to ([canShare]); Mute or Unmute while
+ * the viewer has not blocked them; Block or Unblock; Report. Ascending
+ * alphabetical order by label, the rule for every menu. Pure, so it is a
+ * table test; the screen draws no More control at all when this is empty.
  */
-fun profileMenuRows(isOwnProfile: Boolean, canShare: Boolean = false): List<ProfileMenuRow> =
+fun profileMenuRows(
+    isOwnProfile: Boolean,
+    canShare: Boolean = false,
+    isMuted: Boolean = false,
+    isBlocked: Boolean = false,
+): List<ProfileMenuRow> =
     if (isOwnProfile) {
         emptyList()
     } else {
-        ProfileMenuRow.entries
-            .filter { it != ProfileMenuRow.SHARE || canShare }
-            .sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.label })
+        buildList {
+            if (canShare) {
+                add(ProfileMenuRow.COPY_LINK)
+                add(ProfileMenuRow.SHARE)
+            }
+            if (!isBlocked) add(if (isMuted) ProfileMenuRow.UNMUTE else ProfileMenuRow.MUTE)
+            add(if (isBlocked) ProfileMenuRow.UNBLOCK else ProfileMenuRow.BLOCK)
+            add(ProfileMenuRow.REPORT)
+        }.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.label })
     }
 
 /**
@@ -92,6 +112,10 @@ internal fun ProfileMoreSheet(
     onDismiss: () -> Unit,
     /** Share profile was picked: the system share sheet takes over and this sheet leaves. */
     onShare: () -> Unit = {},
+    /** Copy link, Mute / Unmute, Block / Unblock: each acts, then the sheet leaves. */
+    onCopyLink: () -> Unit = {},
+    onMuteToggle: () -> Unit = {},
+    onBlockToggle: () -> Unit = {},
 ) {
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val scope = rememberCoroutineScope()
@@ -141,6 +165,18 @@ internal fun ProfileMoreSheet(
                                 ProfileMenuRow.REPORT -> reporting = true
                                 ProfileMenuRow.SHARE -> {
                                     onShare()
+                                    leave()
+                                }
+                                ProfileMenuRow.COPY_LINK -> {
+                                    onCopyLink()
+                                    leave()
+                                }
+                                ProfileMenuRow.MUTE, ProfileMenuRow.UNMUTE -> {
+                                    onMuteToggle()
+                                    leave()
+                                }
+                                ProfileMenuRow.BLOCK, ProfileMenuRow.UNBLOCK -> {
+                                    onBlockToggle()
                                     leave()
                                 }
                             }

@@ -80,6 +80,9 @@ sealed interface SearchHit {
 /** One of the signed-in viewer's past searches, as search-service keeps it; [id] is what `DELETE` takes. */
 data class RecentSearch(val id: String, val query: String)
 
+/** A search the viewer saved (2026-10-24, `GET /v1/search/saved`), to run again with one tap. */
+data class SavedSearch(val id: String, val query: String)
+
 /**
  * A suggestion while typing, from `GET v1/search/autocomplete`. A person
  * opens their profile; a tag opens its page; anything else is a query to

@@ -57,12 +57,12 @@ class SuggestionsRepository @Inject constructor(
     suspend fun communities(limit: Int = COMMUNITY_LIMIT): AppResult<List<CommunitySuggestion>> =
         apiCall(errorMapper, { page -> page.items.map { it.toDomain() } }) { api.communities(limit) }
 
-    suspend fun personAction(userId: String, action: SuggestionAction): AppResult<Unit> =
+    suspend fun personAction(userId: String, action: SuggestionAction, surface: String = SURFACE_CHAT): AppResult<Unit> =
         noContentApiCall(errorMapper) {
             api.action(
                 SuggestionActionRequest(
                     type = TYPE_FRIEND,
-                    surface = SURFACE_CHAT,
+                    surface = surface,
                     action = action.wire,
                     candidateUserId = userId,
                 ),
@@ -81,12 +81,12 @@ class SuggestionsRepository @Inject constructor(
             )
         }
 
-    suspend fun peopleImpression(people: List<PersonSuggestion>): AppResult<Unit> =
+    suspend fun peopleImpression(people: List<PersonSuggestion>, surface: String = SURFACE_CHAT): AppResult<Unit> =
         noContentApiCall(errorMapper) {
             api.impression(
                 SuggestionImpressionRequest(
                     type = TYPE_FRIEND,
-                    surface = SURFACE_CHAT,
+                    surface = surface,
                     items = people.mapIndexed { index, person ->
                         SuggestionImpressionItem(
                             candidateUserId = person.userId,
@@ -117,6 +117,9 @@ class SuggestionsRepository @Inject constructor(
         const val TYPE_FRIEND = "friend"
         const val TYPE_COMMUNITY = "community"
         const val SURFACE_CHAT = "chat"
+
+        /** The Home feed's People you may know (2026-10-24), as the web's strip names its surface. */
+        const val SURFACE_HOME = "home"
     }
 }
 

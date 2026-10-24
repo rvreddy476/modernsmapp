@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import com.us.android.core.common.session.SessionTeardownTask
 import com.us.android.core.notifications.data.DeviceApi
+import com.us.android.core.notifications.data.NotificationDeleteApi
 import com.us.android.core.notifications.data.NotificationsApi
 import com.us.android.core.notifications.data.PushApp
 import com.us.android.core.notifications.data.PushTeardown
@@ -27,6 +28,11 @@ object NotificationsModule {
     @Provides
     @Singleton
     fun provideDeviceApi(retrofit: Retrofit): DeviceApi = retrofit.create(DeviceApi::class.java)
+
+    @Provides
+    @Singleton
+    fun provideNotificationDeleteApi(retrofit: Retrofit): NotificationDeleteApi =
+        retrofit.create(NotificationDeleteApi::class.java)
 
     @Provides
     @Singleton

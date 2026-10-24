@@ -33,6 +33,8 @@ import javax.inject.Singleton
 class PlayerPool @Inject constructor(
     private val playerFactory: PlayerFactory,
     private val sources: MediaSources,
+    /** Data saver (2026-10-24): caps the ladder on a metered network. Off where a host passes none. */
+    private val dataSaver: DataSaverGate = NoDataSaver,
 ) {
 
     private val players = mutableMapOf<Int, ExoPlayer>()
@@ -88,6 +90,7 @@ class PlayerPool @Inject constructor(
 
     private fun prepare(player: ExoPlayer, pageIndex: Int, playback: Playback, contentId: String?): ExoPlayer {
         player.setMediaSource(sources.create(playback))
+        player.applyDataSaver(dataSaver.active)
         player.prepare()
         players[pageIndex] = player
         playbacks[pageIndex] = playback

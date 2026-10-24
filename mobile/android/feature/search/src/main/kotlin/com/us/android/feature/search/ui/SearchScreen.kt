@@ -60,6 +60,7 @@ import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageHost
+import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
@@ -69,6 +70,7 @@ import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.search.data.RecentSearch
+import com.us.android.feature.search.data.SavedSearch
 import com.us.android.feature.search.data.SearchHit
 import com.us.android.feature.search.data.SearchSuggestion
 import com.us.android.feature.search.navigation.SearchDestinations
@@ -101,6 +103,7 @@ fun SearchScreen(
     val suggestions by viewModel.suggestions.collectAsStateWithLifecycle()
     val signedIn by viewModel.signedIn.collectAsStateWithLifecycle()
     val recent by viewModel.recent.collectAsStateWithLifecycle()
+    val saved by viewModel.saved.collectAsStateWithLifecycle()
     val popular by viewModel.popular.collectAsStateWithLifecycle()
     val confirmClear by viewModel.confirmClear.collectAsStateWithLifecycle()
     val notice by viewModel.notice.collectAsStateWithLifecycle()
@@ -148,6 +151,18 @@ fun SearchScreen(
                 )
                 if (body == SearchBody.Results) {
                     ScopeTabs(scopes = viewModel.scopes, selected = scope, onSelect = viewModel::onScopeSelected)
+                    // Saved searches (2026-10-24): save the search on screen, or unsave it.
+                    if (signedIn) {
+                        val isSaved = savedMatch(saved, query) != null
+                        UsPillButton(
+                            text = if (isSaved) "Saved" else "Save search",
+                            filled = !isSaved,
+                            onClick = viewModel::toggleSaved,
+                            modifier = Modifier
+                                .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.s)
+                                .testTag("search_save"),
+                        )
+                    }
                 }
             }
         },
@@ -161,6 +176,9 @@ fun SearchScreen(
                 SearchBody.Start -> StartBody(
                     signedIn = signedIn,
                     recent = recent,
+                    saved = saved,
+                    onPickSaved = { item -> submitAnd { viewModel.onSavedPicked(item) } },
+                    onRemoveSaved = viewModel::removeSaved,
                     popular = popular,
                     placeholder = viewModel.origin.placeholder,
                     onPickRecent = { item -> submitAnd { viewModel.onRecentPicked(item) } },
@@ -364,6 +382,9 @@ private fun ScopeTab(scope: SearchScope, active: Boolean, onClick: () -> Unit) {
 private fun StartBody(
     signedIn: Boolean,
     recent: List<RecentSearch>,
+    saved: List<SavedSearch> = emptyList(),
+    onPickSaved: (SavedSearch) -> Unit = {},
+    onRemoveSaved: (SavedSearch) -> Unit = {},
     popular: List<String>,
     placeholder: String,
     onPickRecent: (RecentSearch) -> Unit,
@@ -372,7 +393,8 @@ private fun StartBody(
     onPickPopular: (String) -> Unit,
 ) {
     val recents = if (signedIn) recent else emptyList()
-    if (recents.isEmpty() && popular.isEmpty()) {
+    val saves = if (signedIn) saved else emptyList()
+    if (recents.isEmpty() && popular.isEmpty() && saves.isEmpty()) {
         UsEmptyState(
             title = placeholder,
             detail = "Search for people, videos, reels, sounds and hashtags.",
@@ -386,6 +408,12 @@ private fun StartBody(
             .testTag("search_start"),
         contentPadding = PaddingValues(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.s),
     ) {
+        if (saves.isNotEmpty()) {
+            item(key = "saved_header") { SectionHeader(title = "Saved") }
+            items(saves, key = { "saved:${it.id}" }) { item ->
+                SavedRow(item = item, onPick = { onPickSaved(item) }, onRemove = { onRemoveSaved(item) })
+            }
+        }
         if (recents.isNotEmpty()) {
             item(key = "recent_header") {
                 SectionHeader(title = "Recent", action = "Clear all", onAction = onClearAll, actionTag = "search_recents_clear")
@@ -444,6 +472,34 @@ private fun SectionHeader(
                     .testTag(actionTag),
             )
         }
+    }
+}
+
+/** A saved search: the bookmark, the words, and × to unsave it (2026-10-24). */
+@Composable
+private fun SavedRow(item: SavedSearch, onPick: () -> Unit, onRemove: () -> Unit) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(modifier = Modifier.weight(1f)) {
+            QueryRow(
+                icon = UsIcons.BookmarkOutline,
+                text = item.query,
+                description = "Search ${item.query}",
+                tag = "search_saved:${item.id}",
+                onClick = onPick,
+            )
+        }
+        Glyph(
+            icon = UsIcons.Close,
+            description = "Remove ${item.query} from saved searches",
+            onClick = onRemove,
+            tag = "search_saved_remove:${item.id}",
+            size = CLEAR_TARGET,
+            glyph = CLEAR_GLYPH,
+            tint = UsTheme.extended.textMuted,
+        )
     }
 }
 

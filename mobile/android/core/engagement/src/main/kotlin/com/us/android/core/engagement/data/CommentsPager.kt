@@ -156,6 +156,12 @@ data class CommentsUiState(
     /** The `@handle` being typed at the end of the draft, if any. */
     val mentionQuery: String? = null,
     val mentions: List<MentionCandidate> = emptyList(),
+    /**
+     * The comment the thread was opened ON (a comment or mention
+     * notification, 2026-10-24): the list scrolls to it and marks it. Null
+     * for an ordinary open, and once a plain refresh replaced the list.
+     */
+    val focusedCommentId: String? = null,
 ) {
     val canLoadMore: Boolean get() = nextCursor != null && !appending && appendError == null
     val canSubmit: Boolean get() = draft.isValidComment() && !submitting
@@ -216,6 +222,8 @@ class CommentsController(
     private val actions: CommentActionsRepository,
     private val reports: ReportRepository,
     private val mentionSource: CommentMentionSource = CommentMentionSource.None,
+    /** The thread opened on one comment (2026-10-24); null where the host never focuses one. */
+    private val around: CommentsAroundSource? = null,
 ) {
 
     /**
@@ -303,8 +311,46 @@ class CommentsController(
             onDraftChange(state.draft + emoji)
         }
 
-    suspend fun refresh(): CommentsUiState {
+    /**
+     * Opens the thread ON [commentId] (2026-10-24, the web's focusComment):
+     * the top-level comments around it, then — when it is a reply — the
+     * thread that holds it opened: the preview's parent, or the first of up to
+     * [MAX_FOCUS_PARENTS] threads whose replies contain it. A comment that is
+     * gone (404), a failed read, or a host with no [around] source falls back
+     * to the ordinary list with nothing marked.
+     *
+     * The around window has no cursor: the list shows what is around the
+     * comment, and a pull to refresh brings the whole list back.
+     */
+    suspend fun focus(commentId: String): CommentsUiState {
+        val source = around ?: return refresh()
         state = state.copy(loading = true, refreshError = null)
+        when (val result = source.around(postId, commentId)) {
+            is AppResult.Success -> state = state.copy(
+                rows = result.data.map { it.toRow().markEdited() },
+                nextCursor = null,
+                loading = false,
+                refreshError = null,
+                threads = emptyMap(),
+                focusedCommentId = commentId,
+            )
+            is AppResult.Failure -> return refresh()
+        }
+        when (val target = focusTargetIn(state.rows, commentId)) {
+            is FocusTarget.Top, is FocusTarget.Nowhere -> Unit
+            is FocusTarget.Preview -> toggleReplies(target.parentId)
+            is FocusTarget.Search -> for (parent in target.parents) {
+                loadReplies(parent)
+                if (state.thread(parent).replies.any { it.id == commentId }) break
+                // Not in this thread: close it again, so only the one that holds it stays open.
+                putThread(parent, state.thread(parent).copy(expanded = false))
+            }
+        }
+        return state
+    }
+
+    suspend fun refresh(): CommentsUiState {
+        state = state.copy(loading = true, refreshError = null, focusedCommentId = null)
         return when (val result = repository.comments(postId)) {
             is AppResult.Success -> state.copy(
                 rows = result.data.items.map { it.toRow().markEdited() },

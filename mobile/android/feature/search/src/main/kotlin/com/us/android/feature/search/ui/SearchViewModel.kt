@@ -11,6 +11,7 @@ import com.us.android.core.media.ReelsEntry
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.SessionState
 import com.us.android.feature.search.data.RecentSearch
+import com.us.android.feature.search.data.SavedSearch
 import com.us.android.feature.search.data.SearchHit
 import com.us.android.feature.search.data.SearchRepository
 import com.us.android.feature.search.data.SearchSuggestion
@@ -98,6 +99,11 @@ class SearchViewModel @Inject constructor(
     private val _recent = MutableStateFlow<List<RecentSearch>>(emptyList())
     val recent: StateFlow<List<RecentSearch>> = _recent.asStateFlow()
 
+    private val _saved = MutableStateFlow<List<SavedSearch>>(emptyList())
+
+    /** The viewer's saved searches (2026-10-24); empty signed out. */
+    val saved: StateFlow<List<SavedSearch>> = _saved.asStateFlow()
+
     private val _popular = MutableStateFlow<List<String>>(emptyList())
     val popular: StateFlow<List<String>> = _popular.asStateFlow()
 
@@ -122,7 +128,15 @@ class SearchViewModel @Inject constructor(
     init {
         viewModelScope.launch { _popular.value = repository.popular() }
         viewModelScope.launch {
-            signedIn.collect { yes -> if (yes) loadRecents() else _recent.value = emptyList() }
+            signedIn.collect { yes ->
+                if (yes) {
+                    loadRecents()
+                    loadSaved()
+                } else {
+                    _recent.value = emptyList()
+                    _saved.value = emptyList()
+                }
+            }
         }
         // Back to the empty box after a search: the server has recorded it since.
         viewModelScope.launch {
@@ -155,6 +169,59 @@ class SearchViewModel @Inject constructor(
     fun onRecentPicked(recent: RecentSearch) = submit(recent.query)
 
     fun onPopularPicked(query: String) = submit(query)
+
+    fun onSavedPicked(item: SavedSearch) = submit(item.query)
+
+    /** Whether the search on screen is one of the saved ones (case-insensitive). */
+    fun isSaved(query: String): Boolean = savedMatch(_saved.value, query) != null
+
+    /**
+     * Save the search on screen, or unsave it when it already is. Waits for
+     * the server: a saved search that vanished on the next visit would be a lie.
+     */
+    fun toggleSaved() {
+        val words = _submitted.value.trim()
+        if (words.isEmpty() || !signedIn.value) return
+        val existing = savedMatch(_saved.value, words)
+        viewModelScope.launch {
+            if (existing != null) {
+                when (repository.deleteSaved(existing.id)) {
+                    is AppResult.Success -> {
+                        _saved.update { list -> list.filterNot { it.id == existing.id } }
+                        _notice.value = SEARCH_UNSAVED
+                    }
+                    is AppResult.Failure -> _notice.value = SAVE_FAILED
+                }
+            } else {
+                when (val result = repository.save(words)) {
+                    is AppResult.Success -> {
+                        _saved.update { list -> listOf(result.data) + list.filterNot { it.id == result.data.id } }
+                        _notice.value = SEARCH_SAVED
+                    }
+                    is AppResult.Failure -> _notice.value = SAVE_FAILED
+                }
+            }
+        }
+    }
+
+    /** Removes one saved search from the empty box's list. */
+    fun removeSaved(item: SavedSearch) {
+        val before = _saved.value
+        _saved.update { list -> list.filterNot { it.id == item.id } }
+        viewModelScope.launch {
+            if (repository.deleteSaved(item.id) is AppResult.Failure) {
+                _saved.value = before
+                _notice.value = SAVE_FAILED
+            }
+        }
+    }
+
+    private suspend fun loadSaved() {
+        when (val result = repository.saved()) {
+            is AppResult.Success -> if (signedIn.value) _saved.value = result.data
+            is AppResult.Failure -> Unit
+        }
+    }
 
     /** A suggestion that is a query (not a person or a tag, which open their own pages). */
     fun onSuggestionPicked(text: String) = submit(text)
@@ -247,5 +314,15 @@ class SearchViewModel @Inject constructor(
 
     private companion object {
         const val STOP_TIMEOUT_MILLIS = 5_000L
+        const val SEARCH_SAVED = "Search saved"
+        const val SEARCH_UNSAVED = "Removed from saved searches"
+        const val SAVE_FAILED = "Couldn't update your saved searches. Try again."
     }
+}
+
+/** The saved search with these words, if any — case and spaces aside. Pure, so it is a table test. */
+internal fun savedMatch(saved: List<SavedSearch>, query: String): SavedSearch? {
+    val words = query.trim()
+    if (words.isEmpty()) return null
+    return saved.firstOrNull { it.query.trim().equals(words, ignoreCase = true) }
 }

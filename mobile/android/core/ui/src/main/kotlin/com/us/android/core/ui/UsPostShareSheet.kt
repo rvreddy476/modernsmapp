@@ -40,6 +40,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
+import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.icon.UsIcons
@@ -87,6 +88,19 @@ data class UsPostShareState(
     val repost: UsRepostRow = UsRepostRow.HIDDEN,
     val repostBusy: Boolean = false,
     val picker: UsSharePickerState? = null,
+    /** Quote (2026-10-24): offered while the viewer has not reposted the post. */
+    val canQuote: Boolean = false,
+    /** Non-null while the quote step is open. */
+    val quote: UsQuoteState? = null,
+)
+
+/** The quote step: what the viewer has written, and where the post stands. */
+@Immutable
+data class UsQuoteState(
+    val text: String = "",
+    val busy: Boolean = false,
+    val error: String? = null,
+    val max: Int = 500,
 )
 
 /** What the sheet asks of its host. */
@@ -105,6 +119,11 @@ class UsPostShareCallbacks(
     val onToggleTarget: ((UsShareTarget) -> Unit)? = null,
     val onNoteChange: (String) -> Unit = {},
     val onSendSelected: () -> Unit = {},
+    /** Quote repost (2026-10-24): open the step, type, post, or go back. */
+    val onOpenQuote: () -> Unit = {},
+    val onQuoteChange: (String) -> Unit = {},
+    val onSendQuote: () -> Unit = {},
+    val onCloseQuote: () -> Unit = {},
 )
 
 /**
@@ -154,7 +173,10 @@ fun UsPostShareSheet(
         ) {
             SheetGrabHandle()
             val picker = state.picker
-            if (picker == null) {
+            val quote = state.quote
+            if (quote != null) {
+                QuoteStep(quote = quote, callbacks = callbacks)
+            } else if (picker == null) {
                 ShareMenu(
                     state = state,
                     onSendInMessages = callbacks.onOpenPicker,
@@ -166,6 +188,7 @@ fun UsPostShareSheet(
                     },
                     onToggleRepost = callbacks.onToggleRepost,
                     onMore = { leaveThen(callbacks.onMore) },
+                    onQuote = callbacks.onOpenQuote,
                 )
             } else {
                 SharePicker(picker = picker, callbacks = callbacks)
@@ -181,6 +204,7 @@ private fun ShareMenu(
     onCopyLink: () -> Unit,
     onToggleRepost: () -> Unit,
     onMore: () -> Unit,
+    onQuote: () -> Unit = {},
 ) {
     SheetTitle("Share")
     SheetRow(
@@ -199,7 +223,64 @@ private fun ShareMenu(
             testTag = "post_share_row:repost",
         )
     }
+    if (state.canQuote) {
+        SheetRow(icon = UsIcons.Pencil, label = "Quote", onClick = onQuote, testTag = "post_share_row:quote")
+    }
     SheetRow(icon = UsIcons.More, label = "More…", onClick = onMore, testTag = "post_share_row:more")
+}
+
+/**
+ * Quote repost (2026-10-24): the viewer's words over the post, posted to
+ * their profile's Reposts. Back returns to the menu; the words stay in the
+ * field when the server refuses them.
+ */
+@Composable
+private fun QuoteStep(quote: UsQuoteState, callbacks: UsPostShareCallbacks) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = UsTheme.spacing.s),
+    ) {
+        IconButton(onClick = callbacks.onCloseQuote, modifier = Modifier.testTag("post_share_quote_back")) {
+            Icon(UsIcons.Back, contentDescription = "Back", tint = UsTheme.extended.textPrimary)
+        }
+        Text(
+            text = "Quote",
+            style = MaterialTheme.typography.titleMedium,
+            fontWeight = FontWeight.SemiBold,
+            color = UsTheme.extended.textPrimary,
+        )
+    }
+    Column(
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = UsTheme.spacing.pageHorizontal)
+            .testTag("post_share_quote"),
+    ) {
+        UsTextField(
+            value = quote.text,
+            onValueChange = callbacks.onQuoteChange,
+            label = "Add your thoughts",
+            singleLine = false,
+            enabled = !quote.busy,
+            errorText = quote.error,
+            modifier = Modifier.fillMaxWidth().testTag("post_share_quote_text"),
+        )
+        Text(
+            text = "${quote.text.trim().let { it.codePointCount(0, it.length) }}/${quote.max}",
+            style = MaterialTheme.typography.labelSmall,
+            color = UsTheme.extended.textMuted,
+        )
+        UsButton(
+            text = "Post",
+            onClick = callbacks.onSendQuote,
+            enabled = quote.text.isNotBlank(),
+            loading = quote.busy,
+            modifier = Modifier.fillMaxWidth().testTag("post_share_quote_post"),
+        )
+    }
 }
 
 /** "Send in Messages": a search field over the recent conversations, each with Send. */

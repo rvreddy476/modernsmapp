@@ -86,3 +86,24 @@ class DataStoreWatchHistoryPauseStore @Inject constructor(
 
     override suspend fun setPaused(paused: Boolean) = dataStore.setWatchHistoryPaused(paused)
 }
+
+/**
+ * Data saver (2026-10-24, the web's useDataSaver): on mobile data, videos
+ * play at a lower quality and the Home feed does not start them by itself.
+ * Kept on this device. A seam for the reason the stores above are one; the
+ * reader is `core:media`'s data-saver policy.
+ */
+interface DataSaverStore {
+    /** Off until the viewer turns it on. */
+    val enabled: Flow<Boolean>
+
+    suspend fun setEnabled(enabled: Boolean)
+}
+
+class DataStoreDataSaverStore @Inject constructor(
+    private val dataStore: SettingsDataStore,
+) : DataSaverStore {
+    override val enabled: Flow<Boolean> get() = dataStore.dataSaverEnabled
+
+    override suspend fun setEnabled(enabled: Boolean) = dataStore.setDataSaverEnabled(enabled)
+}

@@ -69,10 +69,11 @@ class CommentsSession(private val scope: CoroutineScope) : CommentsActions {
      * First open: the list, and the viewer alongside it rather than before
      * it, so a slow profile call never delays the comments.
      */
-    fun open(postAuthorId: String, viewerSource: CommentsViewerSource) {
+    fun open(postAuthorId: String, viewerSource: CommentsViewerSource, focusCommentId: String? = null) {
         val current = controller ?: return
         _state.value = current.setPostAuthor(postAuthorId)
-        refresh()
+        // Opened on one comment (2026-10-24): the thread around it, marked.
+        if (focusCommentId.isNullOrBlank()) refresh() else launchOn { it.focus(focusCommentId) }
         launchOn { it.setViewer(viewerSource.current()) }
     }
 

@@ -196,7 +196,45 @@ data class ProfileRelationship(
      * reason to learn about private accounts.
      */
     val followStatus: FollowStatus = FollowStatus.NONE,
+    /**
+     * The CONNECTION between the two (graph `connection_status`, 2026-10-24):
+     * a request either way, or connected. Separate from [followStatus] —
+     * following and connecting are two edges, and a person can hold either
+     * without the other.
+     */
+    val connectionStatus: ConnectionStatus = ConnectionStatus.NONE,
+    /** The viewer muted this account (graph `is_muted`): its posts stay out of the viewer's feeds. */
+    val isMuted: Boolean = false,
 )
+
+/**
+ * Where a connection stands between the viewer and one account.
+ *
+ * graph-service answers `connection_status` as `none | pending_sent |
+ * pending_received | accepted` (store/graph.go:60-64, the same on the single
+ * pair and the batch routes) and `is_connection` beside it; either saying
+ * "accepted" is [CONNECTED].
+ */
+enum class ConnectionStatus {
+    NONE,
+
+    /** The viewer asked; the other account has not answered. */
+    PENDING_SENT,
+
+    /** The other account asked the viewer: Accept / Decline is the viewer's. */
+    PENDING_RECEIVED,
+    CONNECTED,
+    ;
+
+    companion object {
+        fun fromWire(raw: String?, isConnection: Boolean = false): ConnectionStatus = when {
+            isConnection || raw == "accepted" -> CONNECTED
+            raw == "pending_sent" -> PENDING_SENT
+            raw == "pending_received" -> PENDING_RECEIVED
+            else -> NONE
+        }
+    }
+}
 
 /**
  * The three states a follow control can be in.

@@ -3,6 +3,8 @@ package com.us.android.core.media.di
 import android.content.Context
 import androidx.annotation.OptIn
 import androidx.media3.common.util.UnstableApi
+import com.us.android.core.media.DataSaverGate
+import com.us.android.core.media.DataSaverPolicy
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
@@ -182,4 +184,12 @@ object MediaApiModule {
 
     private const val TRANSFER_WRITE_TIMEOUT_MINUTES = 2L
     private const val TRANSFER_READ_TIMEOUT_MINUTES = 3L
+}
+
+/** Data saver (2026-10-24): the gate every player pool and the Home feed read. */
+@Module
+@InstallIn(SingletonComponent::class)
+object DataSaverModule {
+    @Provides
+    fun provideDataSaverGate(policy: DataSaverPolicy): DataSaverGate = policy
 }

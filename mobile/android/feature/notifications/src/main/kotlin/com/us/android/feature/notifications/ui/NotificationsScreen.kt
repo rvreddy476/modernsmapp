@@ -3,6 +3,7 @@ package com.us.android.feature.notifications.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +22,7 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -35,7 +37,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -105,6 +109,8 @@ fun NotificationsScreen(
     onOpenPreferences: () -> Unit,
     /** Opens the profile module's approval queue — the Follow Requests panel. */
     onOpenFollowRequests: () -> Unit = {},
+    /** Opens the profile module's Connections › Requests (2026-10-24): the Connection Requests panel. */
+    onOpenConnectionRequests: () -> Unit = {},
     viewModel: NotificationsViewModel = hiltViewModel(),
     /**
      * The runtime permission prompt — Slice D, D-D2.
@@ -137,8 +143,29 @@ fun NotificationsScreen(
         if (shouldLoadMore) viewModel.loadMore()
     }
 
+    // The row a long press asked to delete (2026-10-24); confirmed below.
+    var deleting by remember { mutableStateOf<Notification?>(null) }
+    deleting?.let { row ->
+        AlertDialog(
+            onDismissRequest = { deleting = null },
+            title = { Text("Delete this notification?") },
+            text = { Text("It leaves your activity for good.") },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        deleting = null
+                        viewModel.delete(row)
+                    },
+                    modifier = Modifier.testTag("activity_delete_confirm"),
+                ) { Text("Delete") }
+            },
+            dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
+        )
+    }
+
     val callbacks = remember(viewModel, onOpenTarget) {
         RowCallbacks(
+            onLongPress = { deleting = it },
             onOpen = { notification, target ->
                 viewModel.onNotificationOpened(notification)
                 // NOT gated on the mark-read request. Making someone wait for
@@ -151,6 +178,8 @@ fun NotificationsScreen(
             onBlock = viewModel::blockRequest,
             onAcceptFollow = viewModel::acceptFollowRequest,
             onDeclineFollow = viewModel::declineFollowRequest,
+            onAcceptConnection = viewModel::acceptConnectionRequest,
+            onDeclineConnection = viewModel::declineConnectionRequest,
         )
     }
 
@@ -192,6 +221,22 @@ fun NotificationsScreen(
                         count = followRequests.size,
                         hasUnread = followRequests.any { !it.isRead },
                         onClick = onOpenFollowRequests,
+                    )
+                }
+                // Connection requests (2026-10-24): the same shortcut, to the
+                // Connections screen's Requests tab, while one still waits.
+                val connectionRequests = remember(state.items, state.pendingConnectionIds) {
+                    state.items.filter {
+                        it.kind == NotificationKind.ConnectionRequest && it.actorUserId in state.pendingConnectionIds
+                    }
+                }
+                if (connectionRequests.isNotEmpty()) {
+                    FollowRequestsPanel(
+                        count = state.pendingConnectionIds.size,
+                        hasUnread = connectionRequests.any { !it.isRead },
+                        onClick = onOpenConnectionRequests,
+                        title = "Connection Requests",
+                        subtitle = "Accept or decline who wants to connect",
                     )
                 }
 
@@ -296,7 +341,13 @@ private fun ActivityTopBar(
  * unchanged; only where the shortcut lives is new.
  */
 @Composable
-private fun FollowRequestsPanel(count: Int, hasUnread: Boolean, onClick: () -> Unit) {
+private fun FollowRequestsPanel(
+    count: Int,
+    hasUnread: Boolean,
+    onClick: () -> Unit,
+    title: String = "Follow Requests",
+    subtitle: String = "Approve or ignore requests",
+) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -324,14 +375,14 @@ private fun FollowRequestsPanel(count: Int, hasUnread: Boolean, onClick: () -> U
         }
         Column(modifier = Modifier.weight(1f)) {
             Text(
-                text = "Follow Requests",
+                text = title,
                 style = MaterialTheme.typography.bodyMedium,
                 fontSize = PANEL_TITLE_SIZE,
                 fontWeight = FontWeight.Bold,
                 color = UsTheme.extended.textPrimary,
             )
             Text(
-                text = "Approve or ignore requests",
+                text = subtitle,
                 style = MaterialTheme.typography.bodyMedium,
                 fontSize = PANEL_SUBTITLE_SIZE,
                 color = UsTheme.extended.textMuted,
@@ -358,6 +409,9 @@ private data class RowCallbacks(
     val onBlock: (Notification) -> Unit,
     val onAcceptFollow: (Notification) -> Unit,
     val onDeclineFollow: (Notification) -> Unit,
+    val onAcceptConnection: (Notification) -> Unit = {},
+    val onDeclineConnection: (Notification) -> Unit = {},
+    val onLongPress: (Notification) -> Unit = {},
 )
 
 /**
@@ -497,6 +551,7 @@ private fun LazyListScope.notificationRows(
             action = state.rowActions[notification.id],
             requestPending = notification.entityId in state.pendingRequestIds,
             alreadyFollowing = notification.actorUserId in state.followingIds,
+            connectionPending = notification.actorUserId in state.pendingConnectionIds,
             callbacks = callbacks,
         )
     }
@@ -539,6 +594,7 @@ private fun NotificationRow(
     action: RowActionState?,
     requestPending: Boolean,
     alreadyFollowing: Boolean,
+    connectionPending: Boolean = false,
     callbacks: RowCallbacks,
 ) {
     val sentence = notification.describe()
@@ -556,7 +612,12 @@ private fun NotificationRow(
         modifier = Modifier
             .fillMaxWidth()
             .background(rowSurface)
-            .clickable { callbacks.onOpen(notification, target) }
+            // A long press offers Delete (2026-10-24).
+            .combinedClickable(
+                onClick = { callbacks.onOpen(notification, target) },
+                onLongClick = { callbacks.onLongPress(notification) },
+                onLongClickLabel = "Delete notification",
+            )
             .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = ROW_VERTICAL),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
@@ -590,6 +651,9 @@ private fun NotificationRow(
             )
             if (notification.kind == NotificationKind.MessageRequest) {
                 RequestActions(notification, action, requestPending, callbacks)
+            }
+            if (notification.kind == NotificationKind.ConnectionRequest) {
+                ConnectionRequestActions(notification, action, connectionPending, callbacks)
             }
             if (notification.kind == NotificationKind.FollowRequest) {
                 FollowRequestActions(notification, action, callbacks)
@@ -675,6 +739,46 @@ private fun FollowRequestActions(
                 busy = busy,
                 onClick = { callbacks.onDeclineFollow(notification) },
             )
+        }
+    }
+}
+
+/**
+ * Accept / Decline under a connection request (2026-10-24), only while the
+ * graph says it still waits ([pending]) — the message-request rule: a row
+ * that cannot learn its state offers nothing rather than a button that fails.
+ * Once answered, the outcome.
+ */
+@Composable
+private fun ConnectionRequestActions(
+    notification: Notification,
+    action: RowActionState?,
+    pending: Boolean,
+    callbacks: RowCallbacks,
+) {
+    val outcome = when (action) {
+        RowActionState.Accepted -> "Connected"
+        RowActionState.Declined -> "Declined"
+        else -> null
+    }
+    when {
+        outcome != null -> OutcomeLabel(outcome)
+        pending -> {
+            val busy = action == RowActionState.Busy
+            Row(
+                modifier = Modifier
+                    .padding(top = UsTheme.spacing.s)
+                    .testTag("activity_connection_actions"),
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+            ) {
+                UsPillButton("Accept", busy = busy, onClick = { callbacks.onAcceptConnection(notification) })
+                UsPillButton(
+                    "Decline",
+                    filled = false,
+                    busy = busy,
+                    onClick = { callbacks.onDeclineConnection(notification) },
+                )
+            }
         }
     }
 }

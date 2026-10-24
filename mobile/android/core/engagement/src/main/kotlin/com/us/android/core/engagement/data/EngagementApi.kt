@@ -151,7 +151,11 @@ data class ReactionRequest(val reaction: String)
  * here would serialize `{}` and the server would bind an empty type.
  */
 @Serializable
-data class RepostRequest(val type: String)
+data class RepostRequest(
+    val type: String,
+    /** A quote repost's words (2026-10-24, handler.go:3410-3415): 1-500 characters; left off a plain repost. */
+    @SerialName("quote_text") val quoteText: String? = null,
+)
 
 @Serializable
 data class ShareRequest(@SerialName("share_type") val shareType: String)

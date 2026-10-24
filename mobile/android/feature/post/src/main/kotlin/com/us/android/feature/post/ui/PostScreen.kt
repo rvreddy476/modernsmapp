@@ -99,13 +99,15 @@ import com.us.android.core.ui.stageCountLabel
 fun PostScreen(
     onBack: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
+    /** The route names a comment (2026-10-24): the sheet opens at once, on it. */
+    openOnComment: Boolean = false,
     viewModel: PostViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val failures by viewModel.failures.collectAsStateWithLifecycle()
     // Comments open OVER the post, the same sheet the feed and reels use:
     // Back closes the sheet rather than the post.
-    var commentsOpen by rememberSaveable { mutableStateOf(false) }
+    var commentsOpen by rememberSaveable { mutableStateOf(openOnComment) }
     PostContent(
         state = state,
         failures = failures,

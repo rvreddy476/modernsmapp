@@ -86,6 +86,14 @@ sealed interface ProfileUiState {
          * 2026-10-17). Null until it arrives or when the read failed.
          */
         val postTotal: Int? = null,
+        /** True while a connection write (send, accept, decline, cancel, remove) is on the wire. */
+        val connectionBusy: Boolean = false,
+        /** "Remove connection?" is being asked before the connection is removed. */
+        val showRemoveConnectionConfirm: Boolean = false,
+        /** True while a mute or unmute is on the wire. */
+        val muteBusy: Boolean = false,
+        /** A one-line confirmation of a menu action ("Muted", "Link copied"), shown then dismissed. */
+        val notice: String? = null,
     ) : ProfileUiState {
 
         /**

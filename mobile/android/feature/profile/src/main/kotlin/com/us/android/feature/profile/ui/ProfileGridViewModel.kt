@@ -58,6 +58,12 @@ enum class ProfileGridTab(val label: String, val contentType: String) {
     REELS("Reels", "flick"),
     VIDEOS("Videos", "long_video"),
 
+    /** The web's About tab (2026-10-24): the bio, website, public links and the public About rows. A panel, not a grid. */
+    ABOUT("About", ""),
+
+    /** The profile's connections (2026-10-24): the first of them, and "See all". A panel. */
+    CONNECTIONS("Connections", ""),
+
     /**
      * The profile's members-only posts, every kind (paid memberships,
      * 2026-10-23): the by-author rows that carry a level. On anyone's
@@ -72,6 +78,9 @@ enum class ProfileGridTab(val label: String, val contentType: String) {
      * at least one ([gridTabsFor]'s `appearsIn`).
      */
     APPEARS_IN("Appears in", "long_video"),
+
+    /** What the profile reposted (2026-10-24, `GET /v1/creators/:id/reposts`), quotes with their words. A panel. */
+    REPOSTS("Reposts", ""),
     SAVED("Saved", ""),
     LIKED("Liked", ""),
     ;
@@ -84,6 +93,9 @@ enum class ProfileGridTab(val label: String, val contentType: String) {
 
     /** Whether the Latest / Popular / Oldest control applies (the by-author sort, T-21). */
     val sortable: Boolean get() = authored
+
+    /** Not a grid of tiles: a panel of its own (About, Connections, Reposts). */
+    val panel: Boolean get() = this == ABOUT || this == CONNECTIONS || this == REPOSTS
 }
 
 /**
@@ -94,12 +106,19 @@ enum class ProfileGridTab(val label: String, val contentType: String) {
  * is credited in at least one video — on anyone's profile, never empty.
  * Pure, so the sets are a table test.
  */
-fun gridTabsFor(isOwn: Boolean, appearsIn: Boolean = false, members: Boolean = false): List<ProfileGridTab> =
+fun gridTabsFor(
+    isOwn: Boolean,
+    appearsIn: Boolean = false,
+    members: Boolean = false,
+    /** About, Connections and Reposts (2026-10-24), on anyone's profile; off where the host has no panels. */
+    panels: Boolean = false,
+): List<ProfileGridTab> =
     ProfileGridTab.entries.filter { tab ->
         when {
             tab.authored -> true
             tab.ownOnly -> isOwn
             tab == ProfileGridTab.MEMBERS -> members
+            tab.panel -> panels
             else -> appearsIn
         }
     }
@@ -256,7 +275,7 @@ class ProfileGridViewModel @Inject constructor(
      */
     val success: StateFlow<PublishSuccess?> = _success
 
-    private val _tabs = MutableStateFlow(gridTabsFor(isOwn))
+    private val _tabs = MutableStateFlow(gridTabsFor(isOwn, panels = true))
 
     /**
      * The tabs this viewer gets — Saved and Liked only on their own profile,
@@ -291,7 +310,7 @@ class ProfileGridViewModel @Inject constructor(
     }
 
     private fun publishTabs() {
-        val tabs = gridTabsFor(isOwn, appearsIn = appearsIn, members = offersMembers)
+        val tabs = gridTabsFor(isOwn, appearsIn = appearsIn, members = offersMembers, panels = true)
         _tabs.value = tabs
         if (_tab.value !in tabs) _tab.value = ProfileGridTab.POSTS
     }
@@ -425,7 +444,9 @@ class ProfileGridViewModel @Inject constructor(
             ProfileGridTab.REELS -> reelsEntry.open(postId)
             ProfileGridTab.VIDEOS -> tubeEntry.showFirst(postId)
             // Nothing is ever published INTO Saved, Liked or Appears in; pendingTabFor never answers them.
-            ProfileGridTab.SAVED, ProfileGridTab.LIKED, ProfileGridTab.APPEARS_IN, ProfileGridTab.MEMBERS -> return
+            ProfileGridTab.SAVED, ProfileGridTab.LIKED, ProfileGridTab.APPEARS_IN, ProfileGridTab.MEMBERS,
+            ProfileGridTab.ABOUT, ProfileGridTab.CONNECTIONS, ProfileGridTab.REPOSTS,
+            -> return
         }
         _published.tryEmit(tab)
     }

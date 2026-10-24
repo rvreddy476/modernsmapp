@@ -56,6 +56,7 @@ import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.feed.data.offersFollow
 import com.us.android.core.feed.ui.comments.CommentsSheet
+import com.us.android.core.feed.ui.edit.FeedPostEditSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
 import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.feed.ui.share.PostShareSheetHost
@@ -154,6 +155,8 @@ fun FeedScreen(
                     startOver = if (tab == FeedTab.FOLLOWING) followingStartOver else 0,
                     fullMode = fullMode,
                     onToggleFullMode = { fullMode = !fullMode },
+                    // People you may know (2026-10-24): a page of For You.
+                    peopleYouMayKnow = tab == FeedTab.FOR_YOU,
                 )
             }
         }
@@ -234,6 +237,9 @@ internal fun FeedContent(
     more: PostMoreViewModel = hiltViewModel(),
     playback: FeedPlaybackViewModel = hiltViewModel(),
     sharing: PostShareViewModel = hiltViewModel(),
+    /** People you may know as a page of the pager (2026-10-24): For You only. */
+    peopleYouMayKnow: Boolean = false,
+    peopleViewModel: @Composable () -> PeopleYouMayKnowViewModel = { hiltViewModel() },
 ) {
     val items = viewModel.items.collectAsLazyPagingItems()
     val head by viewModel.head.collectAsStateWithLifecycle()
@@ -245,8 +251,10 @@ internal fun FeedContent(
     // Plain remember: a sheet that reopened itself after a process death
     // would be about a post the reader may no longer be looking at.
     var moreFor by remember { mutableStateOf<FeedItem?>(null) }
+    // The owner's Edit post (2026-10-24), opened from the More sheet.
+    var editFor by remember { mutableStateOf<FeedItem?>(null) }
     var shareFor by remember { mutableStateOf<FeedItem?>(null) }
-    var paused by remember { mutableStateOf(false) }
+    var paused by remember { mutableStateOf(!playback.autoplays()) }
     val share = rememberPostSharer()
 
     // This body's own players, released the moment it leaves the screen.
@@ -254,9 +262,20 @@ internal fun FeedContent(
     DisposableEffect(pool) { onDispose { pool.release() } }
 
     val append = items.loadState.append
-    val pageCount = stagePageCount(items.itemCount, head != null, appendFailed = append is LoadState.Error)
+    // People you may know (2026-10-24): one page of For You, after the first posts.
+    val suggestions = if (peopleYouMayKnow) peopleViewModel() else null
+    val suggestionState = suggestions?.state?.collectAsStateWithLifecycle()?.value
+    val suggestionsPage = suggestionsPage(
+        enabled = suggestionState?.people?.isNotEmpty() == true,
+        hasHead = head != null,
+        itemCount = items.itemCount,
+    )
+    val pageCount = stagePageCount(items.itemCount, head != null, appendFailed = append is LoadState.Error) +
+        if (suggestionsPage != null) 1 else 0
     val pagerState = rememberPagerState(pageCount = { pageCount })
-    val itemAt: (Int) -> FeedItem? = { page -> stageItemAt(page, head, items.itemCount) { items.peek(it) } }
+    val itemAt: (Int) -> FeedItem? = { page ->
+        postPageOf(page, suggestionsPage)?.let { post -> stageItemAt(post, head, items.itemCount) { items.peek(it) } }
+    }
 
     // Plays only while it is what the reader is looking at: resumed, no
     // comments over it, not held by a tap.
@@ -283,7 +302,9 @@ internal fun FeedContent(
         playing = allowed && !paused,
         running = allowed,
         viewModel = viewModel,
-        onSettled = { paused = false },
+        // Data saver on mobile data (2026-10-24): a settled video waits for a tap.
+        onSettled = { paused = !playback.autoplays() },
+        autoplay = playback::autoplays,
     )
 
     val callbacks = remember(viewModel, onOpenAuthor) {
@@ -341,11 +362,29 @@ internal fun FeedContent(
                         // The neighbours are composed — and their videos
                         // prepared — so a swipe shows a first frame, not a spinner.
                         beyondViewportPageCount = 1,
-                        key = { page -> stagePageKey(page, head, items.itemCount) { items.peek(it)?.id } },
+                        key = { page ->
+                            postPageOf(page, suggestionsPage)
+                                ?.let { post -> stagePageKey(post, head, items.itemCount) { items.peek(it)?.id } }
+                                ?: SUGGESTIONS_KEY
+                        },
                         modifier = Modifier.fillMaxSize().testTag("feed_pager"),
                     ) { page ->
-                        val item = stageItemAt(page, head, items.itemCount) { items[it] }
-                        if (item == null) {
+                        val postPage = postPageOf(page, suggestionsPage)
+                        val item = postPage?.let { post -> stageItemAt(post, head, items.itemCount) { items[it] } }
+                        if (postPage == null && suggestions != null) {
+                            LaunchedEffect(pagerState.settledPage == page) {
+                                if (pagerState.settledPage == page) suggestions.onShown()
+                            }
+                            val suggestionEdges by suggestions.edges.collectAsStateWithLifecycle()
+                            PeopleYouMayKnowPage(
+                                people = suggestionState?.people.orEmpty(),
+                                edges = suggestionEdges,
+                                topInset = pageTopInset,
+                                onOpenProfile = onOpenAuthor,
+                                onFollow = suggestions::follow,
+                                onHide = suggestions::hide,
+                            )
+                        } else if (item == null) {
                             AppendRetryPage(state = append, onRetry = items::retry)
                         } else {
                             FeedStagePage(
@@ -408,7 +447,11 @@ internal fun FeedContent(
             onShare = callbacks.onShare,
             onDismiss = { moreFor = null },
             more = more,
+            onEdit = { editFor = it },
         )
+    }
+    editFor?.let { item ->
+        FeedPostEditSheet(postId = item.id, hasMedia = item.media.isNotEmpty(), onDismiss = { editFor = null })
     }
 }
 
@@ -438,6 +481,8 @@ private fun SettledPageEffects(
     running: Boolean,
     viewModel: FeedViewModel,
     onSettled: () -> Unit,
+    /** Whether a settled page may start by itself (data saver, 2026-10-24). */
+    autoplay: () -> Boolean = { true },
 ) {
     val context = LocalContext.current
     val settled = pagerState.settledPage
@@ -448,7 +493,8 @@ private fun SettledPageEffects(
         val item = itemAt(settled)
         val player = item?.let(playbackOf)?.let { pool.acquire(settled, it) }
         viewModel.onAutoplayChanged(item?.takeIf { player != null }, player?.let(::watchProbe), muted = false)
-        if (currentPlaying) pool.playOnly(settled) else pool.pauseAll()
+        // Data saver (2026-10-24): the newly settled video does not start by itself.
+        if (currentPlaying && autoplay()) pool.playOnly(settled) else pool.pauseAll()
         viewModel.onDwellChanged(item, rankedPosition(settled, hasHead, itemCount), player != null, currentRunning)
         val loader = SingletonImageLoader.get(context)
         prefetchPages(settled, pageCount).forEachIndexed { order, page ->
@@ -573,6 +619,7 @@ private fun FeedMoreSheet(
     onShare: (FeedItem) -> Unit,
     onDismiss: () -> Unit,
     more: PostMoreViewModel,
+    onEdit: (FeedItem) -> Unit,
 ) {
     PostMoreSheetHost(
         item = item,
@@ -582,6 +629,9 @@ private fun FeedMoreSheet(
         onShare = onShare,
         onDismiss = onDismiss,
         viewModel = more,
+        // A feed post's own tools (2026-10-24): Edit post, Pin to profile, Mute.
+        onEdit = onEdit,
+        postTools = true,
     )
 }
 

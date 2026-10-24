@@ -123,3 +123,25 @@ internal const val PREFETCH_AHEAD = 3
 
 /** Away longer than this and the feed starts over on return. */
 internal const val KEEP_POSITION_MILLIS = 10 * 60 * 1000L
+
+/**
+ * People you may know (2026-10-24): the pager page it takes — after the
+ * [SUGGESTIONS_AFTER]th post, counting the head — or null when it is not
+ * shown ([enabled] false: no one to suggest, or not For You) or fewer posts
+ * than that are loaded yet. Pure, so the arithmetic is a table test.
+ */
+internal fun suggestionsPage(enabled: Boolean, hasHead: Boolean, itemCount: Int): Int? =
+    if (!enabled || itemCount < SUGGESTIONS_AFTER) null else SUGGESTIONS_AFTER + if (hasHead) 1 else 0
+
+/** [page] as the post pages number it: one less past the suggestions page, null ON it. */
+internal fun postPageOf(page: Int, suggestions: Int?): Int? = when {
+    suggestions == null || page < suggestions -> page
+    page == suggestions -> null
+    else -> page - 1
+}
+
+/** How many posts come before People you may know. */
+internal const val SUGGESTIONS_AFTER = 4
+
+/** The suggestions page's pager key. */
+internal const val SUGGESTIONS_KEY = "people-you-may-know"

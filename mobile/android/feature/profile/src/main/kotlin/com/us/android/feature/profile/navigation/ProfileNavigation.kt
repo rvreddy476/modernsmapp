@@ -12,8 +12,11 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
+import com.us.android.feature.profile.ui.AccountDataViewModel
 import com.us.android.feature.profile.ui.AppearanceViewModel
 import com.us.android.feature.profile.ui.BlockedAccountsScreen
+import com.us.android.feature.profile.ui.ConnectionsScreen
+import com.us.android.feature.profile.ui.ConnectionsTab
 import com.us.android.feature.profile.ui.HiddenChannelsScreen
 import com.us.android.feature.profile.ui.EditProfileScreen
 import com.us.android.feature.profile.ui.FollowListScreen
@@ -26,7 +29,9 @@ import com.us.android.feature.profile.ui.ProfileDetailsScreen
 import com.us.android.feature.profile.ui.ProfileScreen
 import com.us.android.feature.profile.ui.SecuritySettingsScreen
 import com.us.android.feature.profile.ui.SettingsHubScreen
+import com.us.android.feature.profile.ui.SettingsDataRows
 import com.us.android.feature.profile.ui.SettingsLogoutViewModel
+import com.us.android.feature.profile.ui.VerificationScreen
 import kotlinx.serialization.Serializable
 
 /**
@@ -72,6 +77,10 @@ fun NavGraphBuilder.profileScreen(
     onOpenChat: (conversationId: String, title: String) -> Unit,
     /** A tile of the media grid; `:app` opens a long video in Tube and anything else as a post. */
     onOpenPost: (postId: String, contentType: String) -> Unit,
+    /** Connections (2026-10-24): the Connections count opens that account's list. */
+    onOpenConnections: ((ConnectionsRoute) -> Unit)? = null,
+    /** A person in the Connections tab (2026-10-24): `:app` opens their profile. */
+    onOpenProfile: ((userId: String) -> Unit)? = null,
 ) {
     composable<ProfileRoute> {
         ProfileScreen(
@@ -86,6 +95,8 @@ fun NavGraphBuilder.profileScreen(
                 // possible outcome is an error.
                 onOpenChat = onOpenChat,
                 onOpenPost = onOpenPost,
+                onOpenConnections = onOpenConnections,
+                onOpenProfile = onOpenProfile,
             ),
         )
     }
@@ -125,6 +136,10 @@ fun NavGraphBuilder.ownProfileScreen(
     onOpenMemberships: (() -> Unit)? = null,
     /** The drawer's "Upload": `:app` opens the Create sheet. */
     onOpenUpload: () -> Unit,
+    /** Connections (2026-10-24): the viewer's connections and their requests. */
+    onOpenConnections: ((ConnectionsRoute) -> Unit)? = null,
+    /** A person in the Connections tab (2026-10-24): `:app` opens their profile. */
+    onOpenProfile: ((userId: String) -> Unit)? = null,
 ) {
     composable<OwnProfileRoute> {
         ProfileScreen(
@@ -150,6 +165,8 @@ fun NavGraphBuilder.ownProfileScreen(
                 onOpenMyMemberships = onOpenMyMemberships,
                 onOpenMemberships = onOpenMemberships,
                 onOpenUpload = onOpenUpload,
+                onOpenConnections = onOpenConnections,
+                onOpenProfile = onOpenProfile,
             ),
         )
     }
@@ -189,6 +206,32 @@ fun NavGraphBuilder.followRequestsScreen(
 }
 
 fun NavController.navigateToFollowRequests() = navigate(FollowRequestsRoute)
+
+/**
+ * Connections (2026-10-24): [userId]'s connections, and on the viewer's own
+ * (null, or their id) the requests they were sent and the ones they sent.
+ * [tab] is a [ConnectionsTab.wire]; [handle] titles someone else's.
+ */
+@Serializable
+data class ConnectionsRoute(
+    val userId: String? = null,
+    val handle: String = "",
+    val tab: String = ConnectionsTab.CONNECTIONS.wire,
+)
+
+fun NavGraphBuilder.connectionsScreen(
+    onBack: () -> Unit,
+    onOpenProfile: (userId: String) -> Unit,
+) {
+    composable<ConnectionsRoute> {
+        ConnectionsScreen(onBack = onBack, onOpenProfile = onOpenProfile)
+    }
+}
+
+/** The viewer's own pending connection requests: Connections › Requests. */
+fun NavController.navigateToConnectionRequests() = navigate(ConnectionsRoute(tab = ConnectionsTab.RECEIVED.wire))
+
+fun NavController.navigateToConnections(route: ConnectionsRoute) = navigate(route)
 
 /**
  * A profile's Followers / Following lists, one screen with a tab each.
@@ -247,6 +290,9 @@ data object EditProfileRoute
 /** Settings › Hidden channels (web parity, 2026-10-22): "Don't recommend this channel", each with Show again. */
 @Serializable data object HiddenChannelsRoute
 
+/** Settings › Account › Request verification (2026-10-24). */
+@Serializable data object VerificationRoute
+
 /**
  * Registers the edit-profile destination.
  *
@@ -280,6 +326,10 @@ fun NavGraphBuilder.settingsScreens(
         LaunchedEffect(logoutState.signedOut) {
             if (logoutState.signedOut) destinations.onSignedOut()
         }
+        // Data & storage's in-place rows (2026-10-24): Data saver and Download your data.
+        val accountData: AccountDataViewModel = hiltViewModel()
+        val dataSaver by accountData.dataSaver.collectAsStateWithLifecycle()
+        val export by accountData.export.collectAsStateWithLifecycle()
         SettingsHubScreen(
             destinations.onBack,
             destinations.onEditProfile,
@@ -292,8 +342,17 @@ fun NavGraphBuilder.settingsScreens(
             onLogout = logout::requestLogout,
             onConfirmLogout = logout::confirmLogout,
             onCancelLogout = logout::cancelLogout,
+            data = SettingsDataRows(
+                dataSaver = dataSaver,
+                onDataSaver = accountData::setDataSaver,
+                exporting = export.exporting,
+                exportMessage = if (export.exporting) "Preparing your data…" else export.message,
+                exportFailed = export.failed,
+                onExportTo = accountData::exportTo,
+            ),
         )
     }
+    composable<VerificationRoute> { VerificationScreen(onBack = destinations.onBack) }
     composable<ProfileDetailsRoute> { ProfileDetailsScreen(destinations.onBack) }
     composable<PrivacySettingsRoute> {
         PrivacySettingsScreen(
@@ -363,6 +422,8 @@ data class SettingsSections(
     val onHiddenChats: () -> Unit = {},
     /** Content & display › Hidden channels (2026-10-22), a page of this feature: `:app` pushes [HiddenChannelsRoute]. */
     val onHiddenChannels: () -> Unit = {},
+    /** Account › Request verification (2026-10-24), a page of this feature: `:app` pushes [VerificationRoute]. */
+    val onVerification: () -> Unit = {},
 )
 
 /** Type-safe navigation to another user's profile. */

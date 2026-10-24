@@ -40,6 +40,8 @@ dependencies {
     // Muted keywords: the last server-confirmed list, applied to every page as
     // a client-side fallback. A core module, so no feature-to-feature edge.
     implementation(projects.core.datastore)
+    // People you may know on Home (2026-10-24): the suggestion engine's people route lives there.
+    implementation(projects.core.chat)
 
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     // The in-place media viewer closes on Back, and the pending reel item

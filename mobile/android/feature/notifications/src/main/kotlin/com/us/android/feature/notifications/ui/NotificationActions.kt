@@ -4,7 +4,10 @@ import com.us.android.core.auth.SessionStateProvider
 import com.us.android.core.chat.data.ChatRepository
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.map
+import com.us.android.core.model.NotificationAddress
 import com.us.android.core.model.SessionState
+import com.us.android.core.notifications.data.NotificationDeletes
+import com.us.android.core.profile.data.ConnectionsSource
 import com.us.android.core.profile.data.ProfileRepository
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -38,12 +41,24 @@ interface NotificationActions {
     /** Approves an incoming follow request — a private account's owner only. */
     suspend fun acceptFollowRequest(requesterId: String): AppResult<Unit>
     suspend fun declineFollowRequest(requesterId: String): AppResult<Unit>
+
+    /** Who has a connection request to the viewer still waiting (graph `GET /v1/graph/connection-requests`). */
+    suspend fun pendingConnectionSenders(): AppResult<Set<String>>
+
+    /** Answers a connection request; [senderId] is the row's actor — the person who asked. */
+    suspend fun acceptConnectionRequest(senderId: String): AppResult<Unit>
+    suspend fun declineConnectionRequest(senderId: String): AppResult<Unit>
+
+    /** Deletes one notification by its address (2026-10-24, `DELETE /v1/notifications/:bucket/:ts`). */
+    suspend fun delete(address: NotificationAddress): AppResult<Unit>
 }
 
 class DefaultNotificationActions @Inject constructor(
     private val chat: ChatRepository,
     private val profiles: ProfileRepository,
     private val session: SessionStateProvider,
+    private val connections: ConnectionsSource,
+    private val deletes: NotificationDeletes,
 ) : NotificationActions {
 
     /**
@@ -89,6 +104,14 @@ class DefaultNotificationActions @Inject constructor(
 
     override suspend fun declineFollowRequest(requesterId: String): AppResult<Unit> =
         profiles.declineFollowRequest(requesterId)
+
+    override suspend fun pendingConnectionSenders(): AppResult<Set<String>> = connections.pendingSenderIds()
+
+    override suspend fun acceptConnectionRequest(senderId: String): AppResult<Unit> = connections.accept(senderId)
+
+    override suspend fun declineConnectionRequest(senderId: String): AppResult<Unit> = connections.decline(senderId)
+
+    override suspend fun delete(address: NotificationAddress): AppResult<Unit> = deletes.delete(address)
 
     private companion object {
         /** One page of follow notifications, not the whole graph. */

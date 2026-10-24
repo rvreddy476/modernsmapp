@@ -27,16 +27,23 @@ class ProfileShareTest {
     }
 
     @Test
-    fun `a visitor's menu offers Share profile beside Report, in alphabetical order`() {
+    fun `a visitor's menu offers Copy link and Share profile with the account rows, in alphabetical order`() {
         val rows = profileMenuRows(isOwnProfile = false, canShare = true)
 
-        assertThat(rows).containsExactly(ProfileMenuRow.REPORT, ProfileMenuRow.SHARE).inOrder()
+        assertThat(rows).containsExactly(
+            ProfileMenuRow.BLOCK,
+            ProfileMenuRow.COPY_LINK,
+            ProfileMenuRow.MUTE,
+            ProfileMenuRow.REPORT,
+            ProfileMenuRow.SHARE,
+        ).inOrder()
         assertThat(ProfileMenuRow.SHARE.destructive).isFalse()
     }
 
     @Test
-    fun `no Share row when the profile has no address`() {
-        assertThat(profileMenuRows(isOwnProfile = false, canShare = false)).containsExactly(ProfileMenuRow.REPORT)
+    fun `no Share or Copy link row when the profile has no address`() {
+        assertThat(profileMenuRows(isOwnProfile = false, canShare = false))
+            .containsExactly(ProfileMenuRow.BLOCK, ProfileMenuRow.MUTE, ProfileMenuRow.REPORT).inOrder()
     }
 
     /** The owner's Share is a button beside Edit profile, so their own profile still has no menu. */

@@ -53,6 +53,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -75,6 +76,7 @@ import com.us.android.core.engagement.data.CommentRow
 import com.us.android.core.engagement.data.CommentsUiState
 import com.us.android.core.engagement.data.MentionCandidate
 import com.us.android.core.engagement.data.ReplyThread
+import com.us.android.core.engagement.data.focusIndex
 
 /**
  * The comments sheet — the ONE way comments open anywhere in the app.
@@ -170,6 +172,13 @@ fun UsCommentsPanel(
     LaunchedEffect(shouldLoadMore) {
         if (shouldLoadMore) callbacks.onLoadMore()
     }
+    // Opened on one comment (2026-10-24): scroll it into view once it is in
+    // the list — again when its thread opens under it, not on every change.
+    val focusIndex = state.focusedCommentId?.let { state.focusIndex(it) }
+    val focusedRowId = focusIndex?.let { state.rows.getOrNull(it)?.id }
+    LaunchedEffect(state.focusedCommentId, focusIndex) {
+        if (focusIndex != null) listState.animateScrollToItem(focusIndex)
+    }
     // The comment whose ⋮ is open, by id: the menu always reflects the row
     // as it is NOW (a like or a pin that landed meanwhile), and closes
     // itself once the row is gone.
@@ -208,7 +217,21 @@ fun UsCommentsPanel(
                     verticalArrangement = Arrangement.spacedBy(ROW_GAP),
                 ) {
                     items(state.rows, key = { it.id }) { row ->
-                        CommentItem(row = row, state = state, callbacks = callbacks, onMenu = { menuFor = it })
+                        // The comment the thread was opened on (2026-10-24): its
+                        // row, or the thread that holds it, sits on the highlight.
+                        val focused = row.id == focusedRowId
+                        Box(
+                            modifier = if (focused) {
+                                Modifier
+                                    .clip(RoundedCornerShape(UsTheme.radii.panel))
+                                    .background(UsTheme.extended.unreadRow)
+                                    .testTag("comment_focused")
+                            } else {
+                                Modifier
+                            },
+                        ) {
+                            CommentItem(row = row, state = state, callbacks = callbacks, onMenu = { menuFor = it })
+                        }
                     }
                     if (state.appending || state.appendError != null) {
                         item(key = "append") {
@@ -446,7 +469,8 @@ private fun CommentBody(
         Column(modifier = Modifier.weight(1f)) {
             CommentMeta(row)
             Text(
-                text = row.body,
+                // Mentions and hashtags link (2026-10-24), once the comment is the server's.
+                text = if (row.pending) AnnotatedString(row.body) else rememberRichText(row.body),
                 style = MaterialTheme.typography.bodyLarge,
                 // A comment still being written to the server is dimmed rather
                 // than shown as confirmed. It is the only honest state: it may

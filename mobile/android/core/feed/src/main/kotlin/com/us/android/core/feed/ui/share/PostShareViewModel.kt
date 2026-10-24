@@ -6,16 +6,20 @@ import com.us.android.core.auth.SessionStateProvider
 import com.us.android.core.chat.data.ChatRepository
 import com.us.android.core.chat.data.Conversation
 import com.us.android.core.chat.data.PostShareChats
+import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageType
 import com.us.android.core.engagement.data.EngagementAction
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.EngagementStore
+import com.us.android.core.engagement.data.QUOTE_TEXT_MAX
+import com.us.android.core.engagement.data.QuoteReposts
 import com.us.android.core.engagement.data.RepostReads
 import com.us.android.core.engagement.data.repostedOr
 import com.us.android.core.model.SessionState
 import com.us.android.core.ui.UsPostShareState
+import com.us.android.core.ui.UsQuoteState
 import com.us.android.core.ui.UsRepostRow
 import com.us.android.core.ui.UsSharePickerState
 import com.us.android.core.ui.UsShareTarget
@@ -53,6 +57,11 @@ data class PostShareModel(
     /** Chat parity (2026-10-18): the chats picked for the one Send, in tap order (≤ [MAX_SHARE_TARGETS]). */
     val selected: List<String> = emptyList(),
     val note: String = "",
+    /** The quote step is open (2026-10-24), with what the viewer has written. */
+    val quoting: Boolean = false,
+    val quoteText: String = "",
+    val quoteBusy: Boolean = false,
+    val quoteError: String? = null,
 )
 
 /** At most five chats per share (CONTRACT §9), groups included. */
@@ -74,6 +83,9 @@ fun PostShareModel.toUiState(viewerId: String, overlay: EngagementOverlay): UsPo
         else -> if (overlay.repostedOr(server)) UsRepostRow.REMOVE else UsRepostRow.REPOST
     },
     repostBusy = repostBusy,
+    // Quote (2026-10-24): offered while the viewer has not reposted it; a repost is one per post.
+    canQuote = serverReposted != null && !overlay.repostedOr(serverReposted),
+    quote = if (!quoting) null else UsQuoteState(text = quoteText, busy = quoteBusy, error = quoteError, max = QUOTE_TEXT_MAX),
     picker = if (!picking) {
         null
     } else {
@@ -102,6 +114,8 @@ class PostShareViewModel @Inject constructor(
     private val reposts: RepostReads,
     private val engagement: EngagementStore,
     private val session: SessionStateProvider,
+    /** Quote repost (2026-10-24): the post with the viewer's words over it. */
+    private val quotes: QuoteReposts,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(PostShareModel())
@@ -173,7 +187,7 @@ class PostShareViewModel @Inject constructor(
         _state.update { it.copy(sending = targets.toSet(), pickerError = null) }
         viewModelScope.launch {
             val failed = mutableListOf<String>()
-            var lastError: com.us.android.core.common.error.AppError? = null
+            var lastError: AppError? = null
             for (target in targets) {
                 val intent = target to postId
                 val key = sendKeys.getOrPut(intent) { ChatRepository.newIdempotencyKey() }
@@ -257,6 +271,43 @@ class PostShareViewModel @Inject constructor(
         }
     }
 
+    // ── Quote repost (2026-10-24) ───────────────────────────────────────
+
+    fun openQuote() = _state.update { it.copy(quoting = true, quoteError = null) }
+
+    fun closeQuote() = _state.update { it.copy(quoting = false, quoteText = "", quoteError = null) }
+
+    fun onQuoteChange(text: String) = _state.update { it.copy(quoteText = text, quoteError = null) }
+
+    /**
+     * Posts the quote. Checked first — words are required, 500 at most — then
+     * WAITS for the server: the words are the viewer's, and a refusal must
+     * leave them in the field to fix rather than vanish with the sheet.
+     */
+    fun sendQuote() {
+        val current = _state.value
+        if (current.quoteBusy) return
+        quoteProblem(current.quoteText)?.let { problem ->
+            _state.update { it.copy(quoteError = problem) }
+            return
+        }
+        val postId = current.postId
+        _state.update { it.copy(quoteBusy = true, quoteError = null) }
+        viewModelScope.launch {
+            when (val result = quotes.quote(postId, current.quoteText)) {
+                is AppResult.Success -> {
+                    _state.update {
+                        if (it.postId != postId) it else it.copy(quoting = false, quoteText = "", quoteBusy = false, serverReposted = true)
+                    }
+                    _message.value = UsMessage(QUOTED, UsMessageType.Success)
+                }
+                is AppResult.Failure -> _state.update {
+                    if (it.postId != postId) it else it.copy(quoteBusy = false, quoteError = quoteRefusal(result.error))
+                }
+            }
+        }
+    }
+
     /** Copy link landed on the clipboard. */
     fun onLinkCopied() {
         _message.value = UsMessage(LINK_COPIED, UsMessageType.Success)
@@ -284,5 +335,36 @@ class PostShareViewModel @Inject constructor(
         const val REPOST_FAILED = "Couldn't repost. Try again."
         const val UNREPOST_FAILED = "Couldn't remove the repost. Try again."
         const val NOTE_MAX = 500
+        const val QUOTED = "Quoted to your profile"
+    }
+}
+
+/** What stops a quote before it is sent; null when it may go. Code points, as the server counts. */
+fun quoteProblem(text: String): String? {
+    val trimmed = text.trim()
+    return when {
+        trimmed.isEmpty() -> "Add your thoughts to quote this post."
+        trimmed.codePointCount(0, trimmed.length) > QUOTE_TEXT_MAX -> "A quote can be up to 500 characters."
+        else -> null
+    }
+}
+
+/** A refused quote, by post-service's code (handler.go:3455-3468). */
+fun quoteRefusal(error: AppError): String {
+    val code = when (error) {
+        is AppError.Unknown -> error.code
+        is AppError.Forbidden -> error.code
+        else -> null
+    }
+    return when {
+        error is AppError.NoNetwork || error is AppError.Timeout ->
+            "You're offline. Your words are still here — try again when you're connected."
+        error is AppError.NotFound -> "This post no longer exists."
+        error is AppError.RateLimited -> "Too many reposts at once. Wait a moment and try again."
+        code == "ALREADY_REPOSTED" -> "You already reposted this post."
+        code == "NOT_ELIGIBLE" -> "This post can't be reposted."
+        code == "QUOTE_TEXT_REQUIRED" -> "Add your thoughts to quote this post."
+        code == "QUOTE_TEXT_TOO_LONG" -> "A quote can be up to 500 characters."
+        else -> "Couldn't post your quote. Try again."
     }
 }

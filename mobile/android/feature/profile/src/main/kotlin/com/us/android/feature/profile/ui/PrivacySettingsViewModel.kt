@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.profile.data.PrivacySettings
 import com.us.android.core.profile.data.PrivacySettingsRepository
+import com.us.android.core.profile.data.connectionRequestAudience
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -69,6 +70,22 @@ class PrivacySettingsViewModel @Inject constructor(
     fun setPrivateAccount(private: Boolean) = edit { current ->
         current.copy(
             accountVisibility = if (private) PrivacySettings.VISIBILITY_PRIVATE else PrivacySettings.VISIBILITY_PUBLIC,
+        )
+    }
+
+    /**
+     * "Allow connection requests" (the web's Social preferences): off is
+     * `no_one`; back on restores the audience the account was SAVED with
+     * when it was narrower than everyone ([connectionRequestAudience]).
+     */
+    fun setAllowConnectionRequests(allow: Boolean) = _state.update { state ->
+        val editing = state as? PrivacySettingsUiState.Editing ?: return@update state
+        if (editing.saving) return@update editing
+        editing.copy(
+            value = editing.value.copy(
+                whoCanSendConnectionRequest = connectionRequestAudience(allow, editing.original.whoCanSendConnectionRequest),
+            ),
+            message = null,
         )
     }
 

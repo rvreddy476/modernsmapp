@@ -49,6 +49,11 @@ fun PostShareSheetHost(
             onToggleTarget = viewModel::toggleTarget,
             onNoteChange = viewModel::onNoteChange,
             onSendSelected = viewModel::sendSelected,
+            // Quote repost (2026-10-24).
+            onOpenQuote = viewModel::openQuote,
+            onQuoteChange = viewModel::onQuoteChange,
+            onSendQuote = viewModel::sendQuote,
+            onCloseQuote = viewModel::closeQuote,
         )
     }
     UsPostShareSheet(

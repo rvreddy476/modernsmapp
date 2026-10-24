@@ -10,6 +10,7 @@ import com.us.android.core.feed.data.HiddenAuthorsApi
 import com.us.android.core.feed.data.HiddenAuthorsRepository
 import com.us.android.core.feed.data.HiddenAuthorsSource
 import com.us.android.core.feed.data.PostEditApi
+import com.us.android.core.feed.data.PostPinApi
 import com.us.android.core.feed.data.SoundsApi
 import com.us.android.core.feed.data.TrendingSoundsApi
 import com.us.android.core.feed.data.VideoCollectionSource
@@ -137,4 +138,14 @@ object FeedModule {
     @Provides
     fun provideTrendingSoundPreview(player: SoundPreviewPlayer): TrendingSoundPreview =
         PlayerTrendingSoundPreview(player)
+}
+
+/** A feed post's owner tools (2026-10-24): Pin to profile. */
+@Module
+@InstallIn(SingletonComponent::class)
+object FeedPostOwnerModule {
+
+    @Provides
+    @Singleton
+    fun providePostPinApi(retrofit: Retrofit): PostPinApi = retrofit.create(PostPinApi::class.java)
 }

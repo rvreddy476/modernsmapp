@@ -2,7 +2,9 @@ package com.us.android.core.datastore.di
 
 import com.us.android.core.datastore.AppearanceStore
 import com.us.android.core.datastore.AudioLanguageStore
+import com.us.android.core.datastore.DataSaverStore
 import com.us.android.core.datastore.DataStoreAppearanceStore
+import com.us.android.core.datastore.DataStoreDataSaverStore
 import com.us.android.core.datastore.DataStoreAudioLanguageStore
 import com.us.android.core.datastore.DataStoreLeavingDomainsStore
 import com.us.android.core.datastore.LeavingDomainsStore
@@ -35,6 +37,9 @@ abstract class DataStoreModule {
 
     @Binds
     abstract fun bindAppearanceStore(store: DataStoreAppearanceStore): AppearanceStore
+
+    @Binds
+    abstract fun bindDataSaverStore(store: DataStoreDataSaverStore): DataSaverStore
 
     @Binds
     abstract fun bindOfflinePrefs(store: DataStoreOfflinePrefs): OfflinePrefs

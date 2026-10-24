@@ -355,6 +355,13 @@ sealed interface NotificationTarget {
      */
     data object CreatorHubUploads : NotificationTarget
 
+    /**
+     * The viewer's incoming follow requests (private accounts, 2026-10-24):
+     * `/notifications?tab=requests`, notification-service
+     * follow_request_notify.go:42 — where a `follow_request` lands.
+     */
+    data object FollowRequests : NotificationTarget
+
     /** Unparseable, or a surface this build does not have. Tapping does nothing. */
     data object None : NotificationTarget
 
@@ -392,6 +399,10 @@ sealed interface NotificationTarget {
                 }
 
                 segments.size == 2 && segments[0] == "u" -> Profile(segments[1])
+
+                // Follow requests (2026-10-24): the inbox's Requests tab.
+                segments.size == 1 && segments[0] == "notifications" && queryValue(query, "tab") == "requests" ->
+                    FollowRequests
 
                 // Tube uploads (2026-09-12). Both the current `/tube/watch/{id}`
                 // and the legacy `/posttube/watch/{id}` resolve, because the

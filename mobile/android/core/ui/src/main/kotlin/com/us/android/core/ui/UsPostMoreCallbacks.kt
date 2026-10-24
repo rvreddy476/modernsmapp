@@ -74,4 +74,8 @@ class UsPostMoreCallbacks(
     val onManageAudio: () -> Unit = {},
     /** The owner's video (2026-10-21): "Edit". The sheet has already left; the host opens the edit sheet. */
     val onEdit: () -> Unit = {},
+    /** A feed post's owner (2026-10-24): Pin to profile / Unpin from profile; the sheet has left. */
+    val onTogglePin: () -> Unit = {},
+    /** Other people's feed posts (2026-10-24): mute the author; the sheet has left. */
+    val onMute: () -> Unit = {},
 )

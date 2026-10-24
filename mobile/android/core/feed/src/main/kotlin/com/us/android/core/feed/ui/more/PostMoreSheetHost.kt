@@ -109,12 +109,19 @@ fun PostMoreSheetHost(
      * manager. Non-null offers the row, for a video that has a media id.
      */
     onManageAudio: ((FeedItem) -> Unit)? = null,
+    /**
+     * A FEED host's owner and viewer rows (2026-10-24): Pin to profile on the
+     * viewer's own post, Mute on anyone else's. Off on the video hosts, whose
+     * menu is the video one.
+     */
+    postTools: Boolean = false,
 ) {
     val report by viewModel.report.collectAsStateWithLifecycle()
     val delete by viewModel.delete.collectAsStateWithLifecycle()
     val dontRecommend by viewModel.dontRecommend.collectAsStateWithLifecycle()
     val offlineState by viewModel.offlineState.collectAsStateWithLifecycle()
     val offlineRefusal by viewModel.offlineRefusal.collectAsStateWithLifecycle()
+    val pins by viewModel.pins.collectAsStateWithLifecycle()
     LaunchedEffect(item.id, surface) {
         viewModel.onSurface(surface)
         viewModel.opened()
@@ -160,6 +167,8 @@ fun PostMoreSheetHost(
             onSelectAudioTrack = onSelectAudioTrack,
             onEdit = { onEdit?.invoke(item) },
             onManageAudio = { onManageAudio?.invoke(item) },
+            onTogglePin = { viewModel.togglePin(item) },
+            onMute = { viewModel.mute(item) },
         )
     }
     UsPostMoreSheet(
@@ -183,7 +192,19 @@ fun PostMoreSheetHost(
             } else {
                 null
             },
-        ),
+        ).let { state ->
+            // A feed post (2026-10-24): Edit post where the host has the
+            // sheet, Pin / Unpin on the owner's own, Mute on anyone else's.
+            if (reel != null || longVideo != null) {
+                state
+            } else {
+                state.copy(
+                    canEditPost = onEdit != null,
+                    pinned = if (postTools) pins[item.id] ?: item.isPinned else null,
+                    canMute = postTools,
+                )
+            }
+        },
         callbacks = callbacks,
         onDismiss = onDismiss,
     )

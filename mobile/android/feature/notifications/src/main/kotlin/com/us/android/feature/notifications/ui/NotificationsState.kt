@@ -2,6 +2,7 @@ package com.us.android.feature.notifications.ui
 
 import com.us.android.core.model.Notification
 import com.us.android.core.model.NotificationAddress
+import com.us.android.core.model.NotificationKind
 
 /**
  * Everything the inbox renders — Slice D.
@@ -33,6 +34,12 @@ data class NotificationsUiState(
      * Accept / Decline / Block only while its conversation is in here.
      */
     val pendingRequestIds: Set<String> = emptySet(),
+    /**
+     * People whose CONNECTION request to the viewer is still waiting
+     * (2026-10-24): a connection-request row offers Accept / Decline only
+     * while its actor is in here, the message-request rule.
+     */
+    val pendingConnectionIds: Set<String> = emptySet(),
     /** Actors the viewer already follows; their Follow rows show "Following". */
     val followingIds: Set<String> = emptySet(),
     /** Per-row action progress and outcome, keyed by notification id. */
@@ -200,6 +207,34 @@ object NotificationsReducer {
     fun onPendingRequests(state: NotificationsUiState, ids: Set<String>): NotificationsUiState =
         state.copy(pendingRequestIds = ids)
 
+    /**
+     * Deletes one row at once (2026-10-24). An unread row takes one off the
+     * count with it; a row not in the list changes nothing. The caller keeps
+     * the state from before, for [onDeleteFailed].
+     */
+    fun onDeleted(state: NotificationsUiState, address: NotificationAddress): NotificationsUiState {
+        val target = state.items.firstOrNull { it.address == address } ?: return state
+        return state.copy(
+            items = state.items.filterNot { it.address == address },
+            unreadCount = if (target.isRead) state.unreadCount else (state.unreadCount - 1).coerceAtLeast(0),
+            rowActions = state.rowActions - target.id,
+        )
+    }
+
+    /** A refused delete puts the row back where it was, and the count with it. */
+    fun onDeleteFailed(current: NotificationsUiState, before: NotificationsUiState, address: NotificationAddress): NotificationsUiState {
+        val row = before.items.firstOrNull { it.address == address } ?: return current
+        if (current.items.any { it.address == address }) return current
+        val index = before.items.indexOf(row).coerceAtMost(current.items.size)
+        return current.copy(
+            items = current.items.toMutableList().apply { add(index, row) },
+            unreadCount = if (row.isRead) current.unreadCount else current.unreadCount + 1,
+        )
+    }
+
+    fun onPendingConnections(state: NotificationsUiState, ids: Set<String>): NotificationsUiState =
+        state.copy(pendingConnectionIds = ids)
+
     fun onFollowing(state: NotificationsUiState, ids: Set<String>): NotificationsUiState =
         state.copy(followingIds = state.followingIds + ids)
 
@@ -227,6 +262,16 @@ object NotificationsReducer {
             -> state.pendingRequestIds - notification.entityId
 
             else -> state.pendingRequestIds
+        },
+        // A connection request is answered once, either way: its actor leaves
+        // the pending set, so the row cannot offer Accept again.
+        pendingConnectionIds = if (
+            notification.kind == NotificationKind.ConnectionRequest &&
+            (outcome == RowActionState.Accepted || outcome == RowActionState.Declined)
+        ) {
+            state.pendingConnectionIds - notification.actorUserId
+        } else {
+            state.pendingConnectionIds
         },
         followingIds = if (outcome == RowActionState.Followed) {
             state.followingIds + notification.actorUserId

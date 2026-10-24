@@ -27,7 +27,13 @@ import com.us.android.core.feed.data.FeedApi
 import com.us.android.core.feed.data.FeedFeedbackDto
 import com.us.android.core.feed.data.FeedFeedbackRequest
 import com.us.android.core.feed.data.FeedRepository
+import com.us.android.core.feed.data.PIN_LIMIT_MESSAGE
+import com.us.android.core.feed.data.PinAnswer
+import com.us.android.core.feed.data.PinRequest
 import com.us.android.core.feed.data.PollVoteRequest
+import com.us.android.core.feed.data.PostPinApi
+import com.us.android.core.feed.data.PostPinRepository
+import com.us.android.core.feed.data.PostPins
 import com.us.android.core.feed.data.dto.FeedAuthorDto
 import com.us.android.core.feed.data.dto.FeedItemDto
 import com.us.android.core.feed.offline.NoOfflineLibrary
@@ -144,6 +150,52 @@ class PostMoreViewModelTest {
         override suspend fun getPost(postId: String): Nothing = error("unused")
     }
 
+    /** post-service TogglePin (handler.go:1443-1475): `{"data":{"pinned":…}}`, or 409 PIN_LIMIT on a 4th pin. */
+    private class FakePinApi : PostPinApi {
+        val sent = mutableListOf<Pair<String, Boolean>>()
+        var atLimit = false
+
+        override suspend fun pin(postId: String, body: PinRequest): ApiEnvelope<PinAnswer> {
+            sent += postId to body.pinned
+            if (atLimit && body.pinned) {
+                throw HttpException(
+                    Response.error<Any>(
+                        409,
+                        """{"error":{"code":"PIN_LIMIT","message":"You can pin up to 3 posts.","details":{"max":3}}}"""
+                            .toResponseBody("application/json".toMediaType()),
+                    ),
+                )
+            }
+            return ApiEnvelope(data = PinAnswer(pinned = body.pinned), meta = null)
+        }
+    }
+
+    /** The mute half of [com.us.android.core.profile.data.ConnectionsSource]; nothing else is used here. */
+    private class RecordingConnections : com.us.android.core.profile.data.ConnectionsSource {
+        val muted = mutableListOf<String>()
+        var muteFails = false
+
+        override suspend fun mute(userId: String): AppResult<Unit> {
+            muted += userId
+            return if (muteFails) {
+                AppResult.Failure(com.us.android.core.common.error.AppError.Unknown(code = "INTERNAL_ERROR", statusCode = 500))
+            } else {
+                AppResult.Success(Unit)
+            }
+        }
+
+        override suspend fun requests(direction: com.us.android.core.profile.data.ConnectionRequestDirection) =
+            error("not used")
+        override suspend fun pendingSenderIds() = error("not used")
+        override suspend fun connections(userId: String, offset: Int, limit: Int) = error("not used")
+        override suspend fun send(userId: String) = error("not used")
+        override suspend fun accept(senderId: String) = error("not used")
+        override suspend fun decline(senderId: String) = error("not used")
+        override suspend fun cancel(receiverId: String) = error("not used")
+        override suspend fun remove(userId: String) = error("not used")
+        override suspend fun unmute(userId: String) = error("not used")
+    }
+
     private class FakeReportApi : ReportApi {
         val reports = mutableListOf<FileReportRequest>()
         var alreadyReported = false
@@ -245,6 +297,9 @@ class PostMoreViewModelTest {
         val graph = RecordingGraphApi()
         val hidden = HiddenPosts()
         val lifecycleApi = FakeLifecycleApi()
+        val pinApi = FakePinApi()
+        val pins = PostPins()
+        val connections = RecordingConnections()
     }
 
     private fun viewModel(h: Harness, offline: OfflineLibrary = NoOfflineLibrary): PostMoreViewModel {
@@ -260,6 +315,8 @@ class PostMoreViewModelTest {
             lifecycle = PostLifecycleRepository(h.lifecycleApi, mapper),
             analytics = NoOpAnalyticsRecorder,
             offline = offline,
+            pinning = PostPinRepository(h.pinApi, h.pins, mapper),
+            graph = h.connections,
         )
     }
 
@@ -347,6 +404,79 @@ class PostMoreViewModelTest {
         advanceUntilIdle()
         assertThat(h.graph.blockRequests).containsExactly("a")
         assertThat(vm.message.value?.text).isEqualTo("Blocked @a")
+    }
+
+    // ── Mute and Pin (2026-10-24) ────────────────────────────────────────
+
+    @Test
+    fun `mute removes every post by the author and sends the mute`() = runTest {
+        val h = Harness(page)
+        val vm = viewModel(h)
+        val feed = feedViewModel(h)
+
+        vm.mute(item("p1", "a"))
+
+        assertThat(h.hidden.state.value.authorIds).containsExactly("a")
+        assertThat(feed.items.asSnapshot().map { it.id }).containsExactly("p2")
+        advanceUntilIdle()
+        assertThat(h.connections.muted).containsExactly("a")
+        assertThat(vm.message.value?.text).startsWith("Muted @a")
+        // A mute is not a block.
+        assertThat(h.graph.blockRequests).isEmpty()
+    }
+
+    @Test
+    fun `a refused mute brings the author's posts back`() = runTest {
+        val h = Harness(page).apply { connections.muteFails = true }
+        val vm = viewModel(h)
+
+        vm.mute(item("p1", "a"))
+        advanceUntilIdle()
+
+        assertThat(h.hidden.state.value.authorIds).isEmpty()
+        assertThat(vm.message.value?.type).isEqualTo(UsMessageType.Error)
+    }
+
+    @Test
+    fun `pin sends pinned true for an unpinned post and the next tap unpins`() = runTest {
+        val h = Harness(page)
+        val vm = viewModel(h)
+        val post = item("p1", "me")
+
+        vm.togglePin(post)
+        advanceUntilIdle()
+        assertThat(h.pinApi.sent).containsExactly("p1" to true)
+        assertThat(vm.pins.value["p1"]).isTrue()
+        assertThat(vm.message.value?.text).isEqualTo("Pinned to your profile")
+
+        vm.togglePin(post)
+        advanceUntilIdle()
+        assertThat(h.pinApi.sent.last()).isEqualTo("p1" to false)
+        assertThat(vm.pins.value["p1"]).isFalse()
+    }
+
+    @Test
+    fun `a fourth pin is refused with the limit sentence and nothing is recorded`() = runTest {
+        val h = Harness(page).apply { pinApi.atLimit = true }
+        val vm = viewModel(h)
+
+        vm.togglePin(item("p1", "me"))
+        advanceUntilIdle()
+
+        assertThat(vm.message.value?.text).isEqualTo(PIN_LIMIT_MESSAGE)
+        assertThat(vm.message.value?.type).isEqualTo(UsMessageType.Error)
+        assertThat(vm.pins.value).doesNotContainKey("p1")
+    }
+
+    @Test
+    fun `a pinned post's row unpins`() = runTest {
+        val h = Harness(page)
+        val vm = viewModel(h)
+
+        vm.togglePin(item("p1", "me").copy(isPinned = true))
+        advanceUntilIdle()
+
+        assertThat(h.pinApi.sent).containsExactly("p1" to false)
     }
 
     @Test

@@ -329,6 +329,8 @@ private class MorePresentation {
             UsPostMoreRow.BLOCK -> confirmBlock = true
             UsPostMoreRow.REPORT -> step = MoreStep.REPORT
             UsPostMoreRow.DELETE -> confirmDelete = true
+            UsPostMoreRow.PIN, UsPostMoreRow.UNPIN -> leaveThen(callbacks.onTogglePin)
+            UsPostMoreRow.MUTE -> leaveThen(callbacks.onMute)
         }
     }
 
@@ -756,6 +758,7 @@ private fun UsPostMoreRow.personIcon(): ImageVector? = when (this) {
     UsPostMoreRow.UNFOLLOW -> UsIcons.UserMinus
     UsPostMoreRow.FOLLOW -> UsIcons.UserPlus
     UsPostMoreRow.BLOCK -> UsIcons.Ban
+    UsPostMoreRow.MUTE -> UsIcons.SoundOff
     else -> null
 }
 
@@ -776,7 +779,7 @@ private fun UsPostMoreRow.postIcon(): ImageVector = when (this) {
     UsPostMoreRow.MANAGE_AUDIO,
     UsPostMoreRow.EDIT,
     -> error("a reel row: $this")
-    UsPostMoreRow.DONT_RECOMMEND, UsPostMoreRow.UNFOLLOW, UsPostMoreRow.FOLLOW, UsPostMoreRow.BLOCK ->
+    UsPostMoreRow.DONT_RECOMMEND, UsPostMoreRow.UNFOLLOW, UsPostMoreRow.FOLLOW, UsPostMoreRow.BLOCK, UsPostMoreRow.MUTE ->
         error("a row about the author: $this")
     UsPostMoreRow.SAVE -> UsIcons.BookmarkOutline
     UsPostMoreRow.UNSAVE -> UsIcons.BookmarkFilled
@@ -787,6 +790,7 @@ private fun UsPostMoreRow.postIcon(): ImageVector = when (this) {
     UsPostMoreRow.NOT_INTERESTED -> UsIcons.CircleSlash
     UsPostMoreRow.REPORT -> UsIcons.Flag
     UsPostMoreRow.DELETE -> UsIcons.Trash
+    UsPostMoreRow.PIN, UsPostMoreRow.UNPIN -> UsIcons.Pin
 }
 
 /** The chevron turns over when the reason is open. */

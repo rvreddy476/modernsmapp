@@ -1,5 +1,7 @@
 package com.us.android.feature.profile.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -45,6 +47,7 @@ import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.model.AppearanceMode
 import com.us.android.core.model.WebLinks
+import com.us.android.core.ui.UsSettingsSwitchRow
 import com.us.android.feature.profile.navigation.SettingsSections
 
 /**
@@ -91,6 +94,9 @@ enum class SettingsRow(
     ),
     MODULES(SettingsGroup.ACCOUNT, "Modules and home page", "Which apps you use and which opens first", UsIcons.Home),
     RECENTLY_DELETED(SettingsGroup.ACCOUNT, "Recently deleted", "Restore posts from the last 30 days", UsIcons.Trash),
+
+    /** Request verification (2026-10-24, the web's /settings/verification): a page of this feature. */
+    VERIFICATION(SettingsGroup.ACCOUNT, "Request verification", "Apply for a verified badge", UsIcons.ShieldCheck),
     PRIVACY(SettingsGroup.PRIVACY, "Privacy", "Private account, messages, calls and discovery", UsIcons.Lock),
     BLOCKED_ACCOUNTS(SettingsGroup.PRIVACY, "Blocked accounts", "People you blocked or muted", UsIcons.Ban),
     INBOX_MESSAGING(
@@ -119,6 +125,11 @@ enum class SettingsRow(
         "Channels you asked us not to recommend",
         UsIcons.EyeOff,
     ),
+    /** Data saver (2026-10-24): a switch in place, read by the media layer. */
+    DATA_SAVER(SettingsGroup.DATA, "Data saver", "Less video data on mobile networks", UsIcons.Gauge),
+
+    /** Download your data (2026-10-24, `GET /v1/auth/data-export`): saved where the viewer picks. */
+    DOWNLOAD_DATA(SettingsGroup.DATA, "Download your data", "A copy of your account data, as a file", UsIcons.Download),
     OFFLINE_VIDEOS(SettingsGroup.DATA, "Offline videos", "Videos kept on this device", UsIcons.ArrowDownToLine),
     REPORT_PROBLEM(SettingsGroup.SUPPORT, "Report a problem", null, UsIcons.Flag, WebLinks.GRIEVANCE_URL),
     TERMS(SettingsGroup.SUPPORT, "Terms & policies", null, UsIcons.FileText, WebLinks.TERMS_URL),
@@ -163,6 +174,7 @@ private fun SettingsSections.screenFor(row: SettingsRow): (() -> Unit)? = when (
     SettingsRow.OFFLINE_VIDEOS -> onOfflineVideos
     SettingsRow.BLOCKED_ACCOUNTS -> onBlockedAccounts
     SettingsRow.HIDDEN_CHANNELS -> onHiddenChannels
+    SettingsRow.VERIFICATION -> onVerification
     else -> null
 }
 
@@ -192,9 +204,15 @@ fun SettingsHubScreen(
     onLogout: () -> Unit = {},
     onConfirmLogout: () -> Unit = {},
     onCancelLogout: () -> Unit = {},
+    /** Data & storage's two in-place rows (2026-10-24). */
+    data: SettingsDataRows = SettingsDataRows(),
 ) {
     val context = LocalContext.current
     val openWeb: (String) -> Unit = { url -> context.openWebLink(url) }
+    // Download your data (2026-10-24): the system's own "Save to", then the export streams into it.
+    val saveTo = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument(DATA_EXPORT_MIME)) { uri ->
+        data.onExportTo(uri)
+    }
     UsScaffold(
         topBar = { UsTopBar(title = "Settings & privacy", onBack = onBack) },
         applyPageGutter = false,
@@ -214,6 +232,28 @@ fun SettingsHubScreen(
                         if (index > 0) RowDivider()
                         if (row == SettingsRow.APPEARANCE) {
                             AppearanceRow(appearance = appearance, onAppearance = onAppearance)
+                        } else if (row == SettingsRow.DATA_SAVER) {
+                            UsSettingsSwitchRow(
+                                title = row.title,
+                                checked = data.dataSaver,
+                                onCheckedChange = data.onDataSaver,
+                                description = row.subtitle,
+                                modifier = Modifier
+                                    .padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.s)
+                                    .testTag("settings_row:data_saver"),
+                            )
+                        } else if (row == SettingsRow.DOWNLOAD_DATA) {
+                            SettingsLinkRow(row = row, onClick = { if (!data.exporting) saveTo.launch(DATA_EXPORT_FILE) })
+                            data.exportMessage?.let { message ->
+                                Text(
+                                    text = message,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (data.exportFailed) MaterialTheme.colorScheme.error else UsTheme.extended.statusSuccess,
+                                    modifier = Modifier
+                                        .padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.s)
+                                        .testTag("settings_export_message"),
+                                )
+                            }
                         } else {
                             SettingsLinkRow(
                                 row = row,
@@ -247,6 +287,21 @@ fun SettingsHubScreen(
         LogoutDialog(onConfirm = onConfirmLogout, onDismiss = onCancelLogout)
     }
 }
+
+/** Data & storage's in-place rows: the Data saver switch and Download your data's progress. */
+data class SettingsDataRows(
+    val dataSaver: Boolean = false,
+    val onDataSaver: (Boolean) -> Unit = {},
+    val exporting: Boolean = false,
+    val exportMessage: String? = null,
+    val exportFailed: Boolean = false,
+    /** The picked file, or null when the viewer backed out of "Save to". */
+    val onExportTo: (android.net.Uri?) -> Unit = {},
+)
+
+/** What "Save to" offers as the file: auth-service's own name for it (handler.go:1324). */
+internal const val DATA_EXPORT_FILE = "data-export.json"
+private const val DATA_EXPORT_MIME = "application/json"
 
 /** The appearance choice's line under the switch: what it does, in a few words. */
 internal fun appearanceDescription(mode: AppearanceMode): String = when (mode) {

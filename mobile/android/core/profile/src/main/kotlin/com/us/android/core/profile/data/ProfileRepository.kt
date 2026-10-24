@@ -2,6 +2,7 @@ package com.us.android.core.profile.data
 
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.map
+import com.us.android.core.model.ConnectionStatus
 import com.us.android.core.model.FollowRequest
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.PersonalProfile
@@ -140,6 +141,8 @@ internal fun RelationshipDto.toDomain() = ProfileRelationship(
     isBlockedByTarget = targetBlockedViewer ?: blocked,
     isPrivate = isPrivate,
     followStatus = if (follows) FollowStatus.FOLLOWING else FollowStatus.fromWire(followRequestStatus),
+    connectionStatus = ConnectionStatus.fromWire(connectionStatus, isConnection),
+    isMuted = isMuted,
 )
 
 /**

@@ -89,4 +89,38 @@ class PrivacySettingsViewModelTest {
         assertThat(request.allowCommentsFrom).isEqualTo(PrivacySettings.COMMENTS_FRIENDS)
         assertThat(viewModel.editing().dirty).isFalse()
     }
+
+    // ── Allow connection requests (2026-10-24) ───────────────────────────
+
+    @Test
+    fun `turning connection requests off sends no_one`() = runTest {
+        val (viewModel, api) = buildViewModel(FakeApi().apply { loaded = PrivacySettingsDto(whoCanSendConnectionRequest = "everyone") })
+
+        viewModel.setAllowConnectionRequests(false)
+        viewModel.save()
+
+        assertThat(requireNotNull(api.lastRequest).whoCanSendConnectionRequest).isEqualTo("no_one")
+    }
+
+    @Test
+    fun `off and back on restores the saved narrower audience`() = runTest {
+        val (viewModel, _) = buildViewModel(
+            FakeApi().apply { loaded = PrivacySettingsDto(whoCanSendConnectionRequest = "friends_of_friends") },
+        )
+
+        viewModel.setAllowConnectionRequests(false)
+        viewModel.setAllowConnectionRequests(true)
+
+        assertThat(viewModel.editing().value.whoCanSendConnectionRequest).isEqualTo("friends_of_friends")
+        assertThat(viewModel.editing().dirty).isFalse()
+    }
+
+    @Test
+    fun `turning them on from no_one opens them to everyone`() = runTest {
+        val (viewModel, _) = buildViewModel(FakeApi().apply { loaded = PrivacySettingsDto(whoCanSendConnectionRequest = "no_one") })
+
+        viewModel.setAllowConnectionRequests(true)
+
+        assertThat(viewModel.editing().value.whoCanSendConnectionRequest).isEqualTo("everyone")
+    }
 }

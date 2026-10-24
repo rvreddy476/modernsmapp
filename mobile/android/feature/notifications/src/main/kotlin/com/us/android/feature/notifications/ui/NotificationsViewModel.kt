@@ -201,6 +201,26 @@ class NotificationsViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Deletes one notification (2026-10-24, confirmed on the row's long
+     * press). Optimistic, like read-state: the row leaves at once, and a
+     * refusal puts it back where it was.
+     */
+    fun delete(notification: Notification) {
+        val before = _state.value
+        val address = notification.address
+        val after = NotificationsReducer.onDeleted(before, address)
+        if (after == before) return
+        _state.value = after
+        publishBadge()
+        viewModelScope.launch {
+            if (actions.delete(address) is AppResult.Failure) {
+                _state.value = NotificationsReducer.onDeleteFailed(_state.value, before, address)
+                publishBadge()
+            }
+        }
+    }
+
     // ── Inline row actions ───────────────────────────────────────────────
 
     /** Follow back the account that followed you. */
@@ -241,6 +261,21 @@ class NotificationsViewModel @Inject constructor(
         }
 
     /**
+     * Answers a CONNECTION request (2026-10-24). The sender is
+     * [Notification.actorUserId] (notification-service writes `friend_request`
+     * with the sender as actor and entity, consumer.go:286-300).
+     */
+    fun acceptConnectionRequest(notification: Notification) =
+        runRowAction(notification, RowActionState.Accepted) {
+            actions.acceptConnectionRequest(notification.actorUserId)
+        }
+
+    fun declineConnectionRequest(notification: Notification) =
+        runRowAction(notification, RowActionState.Declined) {
+            actions.declineConnectionRequest(notification.actorUserId)
+        }
+
+    /**
      * One row, one action at a time. Acting on a row also reads it: the user
      * has clearly seen it, and a badge that still counts a request they just
      * accepted is wrong in the direction people notice.
@@ -274,6 +309,18 @@ class NotificationsViewModel @Inject constructor(
                 when (val pending = actions.pendingRequestIds()) {
                     is AppResult.Success ->
                         _state.value = NotificationsReducer.onPendingRequests(_state.value, pending.data)
+                    is AppResult.Failure -> Unit
+                }
+            }
+        }
+        // Connection requests (2026-10-24): which senders still wait. Read
+        // with every page that holds one — a later page can be the first that
+        // does — and kept whole-inbox like the message-request set.
+        if (items.any { it.kind == NotificationKind.ConnectionRequest }) {
+            viewModelScope.launch {
+                when (val pending = actions.pendingConnectionSenders()) {
+                    is AppResult.Success ->
+                        _state.value = NotificationsReducer.onPendingConnections(_state.value, pending.data)
                     is AppResult.Failure -> Unit
                 }
             }

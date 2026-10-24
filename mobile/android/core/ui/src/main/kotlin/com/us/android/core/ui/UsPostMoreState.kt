@@ -63,6 +63,19 @@ data class UsPostMoreState(
      * then exactly what it was.
      */
     val offline: UsOfflineMoreState? = null,
+    /**
+     * A FEED post's owner "Edit post" (2026-10-24, the web's own-post menu):
+     * the host has the post edit sheet. Read only on the viewer's own post;
+     * a video's Edit is [UsReelMoreState.canEdit].
+     */
+    val canEditPost: Boolean = false,
+    /**
+     * A FEED post's pin to the owner's profile (2026-10-24): whether it is
+     * pinned now; null where the host cannot pin, and the row is withheld.
+     */
+    val pinned: Boolean? = null,
+    /** Other people's feed posts: the host can mute the author (2026-10-24). */
+    val canMute: Boolean = false,
 ) {
     /** Which of the three menus this is. A long video wins over a reel; a sheet is never both. */
     val surface: UsPostMoreSurface
@@ -333,6 +346,15 @@ enum class UsPostMoreRow(val label: String) {
     BLOCK("Block"),
     REPORT("Report"),
     DELETE("Delete post"),
+
+    /** The viewer's own feed post (2026-10-24): `PUT /v1/posts/:id/pin {pinned:true}`, three at most. */
+    PIN("Pin to profile"),
+
+    /** [PIN]'s other face, on a post already pinned. */
+    UNPIN("Unpin from profile"),
+
+    /** Other people's feed posts (2026-10-24, the web's "Mute this author"): `POST /v1/graph/mute`. */
+    MUTE("Mute"),
 }
 
 /**
@@ -380,10 +402,17 @@ private fun UsPostMoreState.postRows(): List<UsPostMoreRow> = buildList {
     // No Share row (founder, 2026-10-19): the post's rail has Share.
     if (isOwnPost) {
         add(UsPostMoreRow.DELETE)
+        // The web's own-post menu (2026-10-24): Edit post and Pin / Unpin,
+        // each only where the host has it.
+        if (canEditPost) add(UsPostMoreRow.EDIT)
+        pinned?.let { add(if (it) UsPostMoreRow.UNPIN else UsPostMoreRow.PIN) }
         return@buildList
     }
 
     if (reasonText.isNotBlank()) add(UsPostMoreRow.WHY)
+    // Mute the author (2026-10-24, the web's "Mute this author"): their posts
+    // leave the viewer's feeds without a block or an unfollow.
+    if (canMute) add(UsPostMoreRow.MUTE)
     if (suggested) add(UsPostMoreRow.INTERESTED)
     // One "show me less" row, not two (founder, 2026-10-19): "Not interested"
     // and "Don't recommend" read as the same thing, so only Don't recommend
@@ -526,7 +555,7 @@ private const val PERCENT = 100
  * this channel" and a plain "Delete".
  */
 fun UsPostMoreState.labelOf(row: UsPostMoreRow): String = when (surface) {
-    UsPostMoreSurface.POST -> row.menuLabel(username)
+    UsPostMoreSurface.POST -> if (row == UsPostMoreRow.EDIT) EDIT_POST else row.menuLabel(username)
     UsPostMoreSurface.REEL, UsPostMoreSurface.LONG_VIDEO -> when (row) {
         UsPostMoreRow.BLOCK -> "Block ${videoChannelName()}"
         UsPostMoreRow.DONT_RECOMMEND -> DONT_RECOMMEND_CHANNEL
@@ -559,6 +588,9 @@ private fun UsPostMoreState.thingName(): String = when (surface) {
 /** What a video with no caption unfolds under Description. */
 const val NO_DESCRIPTION = "No description"
 
+/** A feed post's Edit row (2026-10-24), the web's words. */
+private const val EDIT_POST = "Edit post"
+
 /** A video's "Don't recommend" row, on a reel and a long video alike. */
 private const val DONT_RECOMMEND_CHANNEL = "Don't recommend this channel"
 
@@ -568,7 +600,7 @@ private const val DONT_RECOMMEND_CHANNEL = "Don't recommend this channel"
  * rest their own label. [labelOf] is what the sheet draws and sorts by.
  */
 fun UsPostMoreRow.menuLabel(username: String): String = when (this) {
-    UsPostMoreRow.DONT_RECOMMEND, UsPostMoreRow.UNFOLLOW, UsPostMoreRow.BLOCK -> "$label @$username"
+    UsPostMoreRow.DONT_RECOMMEND, UsPostMoreRow.UNFOLLOW, UsPostMoreRow.BLOCK, UsPostMoreRow.MUTE -> "$label @$username"
     else -> label
 }
 

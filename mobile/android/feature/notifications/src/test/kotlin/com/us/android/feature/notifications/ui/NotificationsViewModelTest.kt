@@ -134,6 +134,23 @@ class NotificationsViewModelTest {
 
         override suspend fun declineFollowRequest(requesterId: String) =
             result.also { calls += "declineFollow($requesterId)" }
+
+        var pendingConnections: AppResult<Set<String>> = AppResult.Success(emptySet())
+        var connectionLookups = 0
+
+        override suspend fun pendingConnectionSenders(): AppResult<Set<String>> =
+            pendingConnections.also { connectionLookups++ }
+
+        override suspend fun acceptConnectionRequest(senderId: String) =
+            result.also { calls += "acceptConnection($senderId)" }
+
+        override suspend fun declineConnectionRequest(senderId: String) =
+            result.also { calls += "declineConnection($senderId)" }
+
+        var deleteResult: AppResult<Unit> = AppResult.Success(Unit)
+
+        override suspend fun delete(address: NotificationAddress) =
+            deleteResult.also { calls += "delete(${address.bucket},${address.ts})" }
     }
 
     private fun badge(repository: FakeRepository) = UnreadBadge(repository)
@@ -586,6 +603,128 @@ class NotificationsViewModelTest {
 
         assertThat(actions.calls).containsExactly("declineFollow(actor)")
         assertThat(vm.state.value.rowActions["n1"]).isEqualTo(RowActionState.Failed)
+    }
+
+    // ── Connection requests (2026-10-24) ─────────────────────────────────
+
+    private fun connectionPage() = AppResult.Success(
+        NotificationPage(
+            listOf(row("n1", kind = NotificationKind.ConnectionRequest, entityType = "user", entityId = "actor")),
+            null,
+        ),
+    )
+
+    @Test
+    fun `a page with a connection request asks which senders still wait`() = runTest {
+        val repo = FakeRepository().apply { pages.add(connectionPage()) }
+        val actions = FakeActions().apply { pendingConnections = AppResult.Success(setOf("actor")) }
+        val vm = viewModel(repo, actions = actions)
+        advanceUntilIdle()
+
+        assertThat(actions.connectionLookups).isEqualTo(1)
+        assertThat(vm.state.value.pendingConnectionIds).containsExactly("actor")
+    }
+
+    @Test
+    fun `a page without one never asks`() = runTest {
+        val repo = FakeRepository().apply { pages.add(inboxPage("n1")) }
+        val actions = FakeActions()
+        viewModel(repo, actions = actions)
+        advanceUntilIdle()
+
+        assertThat(actions.connectionLookups).isEqualTo(0)
+    }
+
+    @Test
+    fun `accepting a connection request names the sender and stops offering it`() = runTest {
+        val repo = FakeRepository().apply { pages.add(connectionPage()) }
+        val actions = FakeActions().apply { pendingConnections = AppResult.Success(setOf("actor")) }
+        val vm = viewModel(repo, actions = actions)
+        advanceUntilIdle()
+
+        vm.acceptConnectionRequest(vm.state.value.items.single())
+        advanceUntilIdle()
+
+        assertThat(actions.calls).containsExactly("acceptConnection(actor)")
+        assertThat(vm.state.value.rowActions["n1"]).isEqualTo(RowActionState.Accepted)
+        assertThat(vm.state.value.pendingConnectionIds).isEmpty()
+        assertThat(repo.markedRead).containsExactly(NotificationAddress(202608, "ts-n1"))
+    }
+
+    @Test
+    fun `a refused decline keeps the request pending`() = runTest {
+        val repo = FakeRepository().apply { pages.add(connectionPage()) }
+        val actions = FakeActions().apply {
+            pendingConnections = AppResult.Success(setOf("actor"))
+            result = failure()
+        }
+        val vm = viewModel(repo, actions = actions)
+        advanceUntilIdle()
+
+        vm.declineConnectionRequest(vm.state.value.items.single())
+        advanceUntilIdle()
+
+        assertThat(actions.calls).containsExactly("declineConnection(actor)")
+        assertThat(vm.state.value.rowActions["n1"]).isEqualTo(RowActionState.Failed)
+        assertThat(vm.state.value.pendingConnectionIds).containsExactly("actor")
+    }
+
+    @Test
+    fun `answering a follow request leaves the connection set alone`() = runTest {
+        val state = NotificationsUiState(pendingConnectionIds = setOf("actor"))
+        val followRow = row("n1", kind = NotificationKind.FollowRequest)
+
+        val after = NotificationsReducer.onActionDone(state, followRow, RowActionState.Accepted)
+
+        assertThat(after.pendingConnectionIds).containsExactly("actor")
+    }
+
+    // ── Delete one (2026-10-24) ──────────────────────────────────────────
+
+    @Test
+    fun `deleting an unread row removes it at once, takes one off the count, and sends its address`() = runTest {
+        val repo = FakeRepository().apply {
+            pages.add(AppResult.Success(NotificationPage(listOf(row("n1"), row("n2", isRead = true)), null)))
+            count = AppResult.Success(3)
+        }
+        val actions = FakeActions()
+        val vm = viewModel(repo, actions = actions)
+        advanceUntilIdle()
+
+        vm.delete(vm.state.value.items.first())
+        assertThat(vm.state.value.items.map { it.id }).containsExactly("n2")
+        assertThat(vm.state.value.unreadCount).isEqualTo(2)
+        advanceUntilIdle()
+
+        assertThat(actions.calls).containsExactly("delete(202608,ts-n1)")
+    }
+
+    @Test
+    fun `a refused delete puts the row back where it was, and the count`() = runTest {
+        val repo = FakeRepository().apply {
+            pages.add(AppResult.Success(NotificationPage(listOf(row("n1", isRead = true), row("n2"), row("n3")), null)))
+            count = AppResult.Success(2)
+        }
+        val actions = FakeActions().apply { deleteResult = failure() }
+        val vm = viewModel(repo, actions = actions)
+        advanceUntilIdle()
+
+        vm.delete(vm.state.value.items[1])
+        advanceUntilIdle()
+
+        assertThat(vm.state.value.items.map { it.id }).containsExactly("n1", "n2", "n3").inOrder()
+        assertThat(vm.state.value.unreadCount).isEqualTo(2)
+    }
+
+    @Test
+    fun `deleting a read row leaves the count alone`() {
+        val state = NotificationsUiState(items = listOf(row("n1", isRead = true)), unreadCount = 4)
+
+        val after = NotificationsReducer.onDeleted(state, NotificationAddress(202608, "ts-n1"))
+
+        assertThat(after.items).isEmpty()
+        assertThat(after.unreadCount).isEqualTo(4)
+        assertThat(NotificationsReducer.onDeleted(state, NotificationAddress(1, "x"))).isEqualTo(state)
     }
 
     // ── Activity chips (T-11) ───────────────────────────────────────────

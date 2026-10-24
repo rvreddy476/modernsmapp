@@ -40,6 +40,8 @@ fun NavGraphBuilder.notificationsScreen(
      * `:app` decides that, exactly like [onOpenPreferences].
      */
     onOpenFollowRequests: () -> Unit,
+    /** Connections › Requests (2026-10-24), which `:feature:profile` owns. */
+    onOpenConnectionRequests: () -> Unit = {},
 ) {
     composable<NotificationsRoute> {
         NotificationsScreen(
@@ -47,6 +49,7 @@ fun NavGraphBuilder.notificationsScreen(
             onOpenTarget = onOpenTarget,
             onOpenPreferences = onOpenPreferences,
             onOpenFollowRequests = onOpenFollowRequests,
+            onOpenConnectionRequests = onOpenConnectionRequests,
         )
     }
 }

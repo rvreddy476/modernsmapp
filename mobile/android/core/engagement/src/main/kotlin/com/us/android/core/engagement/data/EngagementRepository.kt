@@ -32,11 +32,19 @@ interface EngagementWrites {
     suspend fun removeRepost(postId: String): AppResult<Unit>
 }
 
+/** A quote repost (2026-10-24); a seam so the share sheet tests with a fake. */
+fun interface QuoteReposts {
+    suspend fun quote(postId: String, text: String): AppResult<Unit>
+}
+
+/** The longest quote post-service takes (QUOTE_TEXT_TOO_LONG past it), in characters. */
+const val QUOTE_TEXT_MAX = 500
+
 @Singleton
 class EngagementRepository @Inject constructor(
     private val api: EngagementApi,
     private val errorMapper: ErrorMapper,
-) : EngagementWrites {
+) : EngagementWrites, QuoteReposts {
 
     override suspend fun react(postId: String, reaction: String): AppResult<Unit> =
         apiCall(errorMapper) { api.addReaction(postId, ReactionRequest(reaction)) }.map { }
@@ -57,6 +65,17 @@ class EngagementRepository @Inject constructor(
      */
     override suspend fun repost(postId: String): AppResult<Unit> =
         apiCall(errorMapper) { api.repost(postId, RepostRequest(type = PLAIN)) }.map { }
+
+    /**
+     * A quote repost (2026-10-24): the post with the viewer's own words over
+     * it — `POST /v1/posts/:id/repost {type:"quote", quote_text}`
+     * (post-service handler.go:3410-3470). Not on [EngagementWrites]: it
+     * carries text the viewer wrote, from the share sheet's quote step, not a
+     * one-tap toggle. Refusals: 409 ALREADY_REPOSTED, 422 QUOTE_TEXT_REQUIRED /
+     * QUOTE_TEXT_TOO_LONG, 403 NOT_ELIGIBLE, 404 NOT_FOUND, 429 RATE_LIMITED.
+     */
+    override suspend fun quote(postId: String, text: String): AppResult<Unit> =
+        apiCall(errorMapper) { api.repost(postId, RepostRequest(type = QUOTE, quoteText = text.trim())) }.map { }
 
     /**
      * Undo a repost.
@@ -111,6 +130,7 @@ class EngagementRepository @Inject constructor(
     companion object {
         const val LIKE = "like"
         const val PLAIN = "plain"
+        const val QUOTE = "quote"
         const val EXTERNAL = "external"
 
         /** Matches post-service's own default page size. */

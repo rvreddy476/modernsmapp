@@ -33,6 +33,8 @@ dependencies {
     // MUST read through that client: HLS playlists are served authorized from
     // the gateway, and a second HTTP stack would fork token refresh.
     implementation(projects.core.network)
+    // Data saver (2026-10-24): the stored switch this module's policy reads to cap the ladder.
+    implementation(projects.core.datastore)
 
     api(libs.media3.exoplayer)
     api(libs.media3.exoplayer.hls)

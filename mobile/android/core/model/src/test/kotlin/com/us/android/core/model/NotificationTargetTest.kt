@@ -305,6 +305,27 @@ class NotificationTargetTest {
             .isEqualTo(NotificationKind.Unknown("commerce.order.shipped"))
     }
 
+    // ── Follow requests (2026-10-24, notification-service follow_request_notify.go:42,67) ──
+
+    @Test
+    fun `a follow request opens the Requests tab of the inbox`() {
+        assertThat(NotificationTarget.parse("/notifications?tab=requests")).isEqualTo(NotificationTarget.FollowRequests)
+    }
+
+    @Test
+    fun `only the requests tab of the inbox is a target`() {
+        assertThat(NotificationTarget.parse("/notifications")).isEqualTo(NotificationTarget.None)
+        assertThat(NotificationTarget.parse("/notifications?tab=all")).isEqualTo(NotificationTarget.None)
+        assertThat(NotificationTarget.parse("/notifications/requests")).isEqualTo(NotificationTarget.None)
+    }
+
+    @Test
+    fun `an accepted follow request opens the account that accepted`() {
+        assertThat(NotificationTarget.parse("/u/$STREAM")).isEqualTo(NotificationTarget.Profile(STREAM))
+        assertThat(NotificationKind.fromWire("follow_request_accepted")).isEqualTo(NotificationKind.FollowRequestAccepted)
+        assertThat(NotificationKind.fromWire("follow_request")).isEqualTo(NotificationKind.FollowRequest)
+    }
+
     private companion object {
         /** A stream id as live-service-v2 mints them. */
         const val STREAM = "3f2b8c1e-7a4d-4e9b-9c55-0d1e2f3a4b5c"

@@ -24,6 +24,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -191,9 +192,12 @@ import com.us.android.feature.profile.navigation.ProfileDetailsRoute
 import com.us.android.feature.profile.navigation.SecuritySettingsRoute
 import com.us.android.feature.profile.navigation.SettingsDestinations
 import com.us.android.feature.profile.navigation.SettingsSections
+import com.us.android.feature.profile.navigation.connectionsScreen
 import com.us.android.feature.profile.navigation.editProfileScreen
 import com.us.android.feature.profile.navigation.followListScreen
 import com.us.android.feature.profile.navigation.followRequestsScreen
+import com.us.android.feature.profile.navigation.navigateToConnectionRequests
+import com.us.android.feature.profile.navigation.navigateToConnections
 import com.us.android.feature.profile.navigation.navigateToEditProfile
 import com.us.android.feature.profile.navigation.navigateToFollowList
 import com.us.android.feature.profile.navigation.navigateToFollowRequests
@@ -251,6 +255,7 @@ import com.us.android.push.TYPE_UPLOADED_VIDEO
 import com.us.android.push.TYPE_WENT_LIVE
 import com.us.android.push.liveOpenOf
 import com.us.android.push.pushTargetOf
+import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -479,7 +484,32 @@ fun UsNavHost(
             }
         },
     ) { shellPadding ->
-        CompositionLocalProvider(LocalChromeVisibility provides chrome) {
+        // Tappable @mentions and #hashtags everywhere text is drawn (2026-10-24):
+        // a mention resolves its handle the way a profile web link does (Search
+        // with the handle when it is unknown); a hashtag opens its posts.
+        val linkScope = rememberCoroutineScope()
+        val richLinks = remember(navController) {
+            com.us.android.core.ui.UsRichTextLinks(
+                onMention = { handle ->
+                    linkScope.launch {
+                        navController.openPushDestination(
+                            com.us.android.push.PushDestination(
+                                type = com.us.android.push.PushDestinations.TYPE_PROFILE_LINK,
+                                entityId = handle,
+                                deepLink = "",
+                            ),
+                            onOpenReel,
+                            resolveLinkUserId,
+                        )
+                    }
+                },
+                onHashtag = { tag -> navController.navigateToHashtagPosts(tag) },
+            )
+        }
+        CompositionLocalProvider(
+            LocalChromeVisibility provides chrome,
+            com.us.android.core.ui.LocalUsRichTextLinks provides richLinks,
+        ) {
             NavHost(
                 navController = navController,
                 startDestination = startDestination,
@@ -629,6 +659,9 @@ private suspend fun NavHostController.openPushDestination(
         // Copyright title review (2026-10-24): the uploads, or the cleared video.
         in COPYRIGHT_TYPES -> openNotificationTarget(pushTargetOf(destination), onOpenReel)
         "message_request" -> navigateToTopLevel(TopLevelDestination.MESSAGES)
+        // Follow and connection requests (2026-10-24): the deep link says where —
+        // `/notifications?tab=requests` the approval queue, `/u/{id}` a profile.
+        in SOCIAL_REQUEST_TYPES -> openNotificationTarget(pushTargetOf(destination), onOpenReel)
         // An `atpost.app/chat/join/{code}` link, offered by MainActivity as a push
         // destination so it waits through the login like a notification tap.
         CHAT_JOIN_LINK -> if (destination.entityId.isNotBlank()) navigateToJoinByLink(destination.entityId)
@@ -1049,6 +1082,8 @@ private fun NavGraphBuilder.tabDestinations(
         // The Momentum Follow Requests panel opens the same approval queue
         // a profile's own entry point does.
         onOpenFollowRequests = { navController.navigateToFollowRequests() },
+        // Connections (2026-10-24): the Connection Requests panel opens Connections › Requests.
+        onOpenConnectionRequests = { navController.navigateToConnectionRequests() },
     )
 
     // Messages. The entry point is the feed's top bar; a profile's Message
@@ -1408,6 +1443,8 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
             onOpenNotifications = { navController.navigateToNotifications() },
         ),
         onOpenPost = { postId, contentType -> navController.openProfilePost(postId, contentType) },
+        onOpenConnections = { navController.navigateToConnections(it) },
+        onOpenProfile = { userId -> navController.navigateToProfile(userId) },
         // The end of the publish journey: the upload the viewer was watching
         // on this grid is live, so carry them to where it landed with it
         // first (founder, 2026-09-06). The post id travelled ahead through
@@ -1459,6 +1496,8 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
             navController.navigateToChatThread(conversationId, title)
         },
         onOpenPost = { postId, contentType -> navController.openProfilePost(postId, contentType) },
+        onOpenConnections = { navController.navigateToConnections(it) },
+        onOpenProfile = { userId -> navController.navigateToProfile(userId) },
     )
     editProfileScreen(
         onBack = { navController.popBackStack() },
@@ -1467,6 +1506,12 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
     // The private-account owner's approval queue. Opening a row is the same
     // destination a Follow-back or any other profile link uses.
     followRequestsScreen(
+        onBack = { navController.popBackStack() },
+        onOpenProfile = { userId -> navController.navigateToProfile(userId) },
+    )
+    // Connections (2026-10-24): a profile's connections, and the viewer's own
+    // requests either way. A row opens that person's profile.
+    connectionsScreen(
         onBack = { navController.popBackStack() },
         onOpenProfile = { userId -> navController.navigateToProfile(userId) },
     )
@@ -1514,6 +1559,8 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
                 // Web parity (2026-10-22): Privacy › Blocked accounts and Content › Hidden channels.
                 onBlockedAccounts = { navController.navigate(com.us.android.feature.profile.navigation.BlockedAccountsRoute) },
                 onHiddenChannels = { navController.navigate(com.us.android.feature.profile.navigation.HiddenChannelsRoute) },
+                // Account › Request verification (2026-10-24).
+                onVerification = { navController.navigate(com.us.android.feature.profile.navigation.VerificationRoute) },
                 // Hidden chats (24 Oct 2026): Privacy › Hidden chats is a :feature:chat page.
                 onHiddenChats = { navController.navigateToHiddenChatsSettings() },
             ),
@@ -1597,8 +1644,7 @@ private fun SplashPreview() {
  *
  * A comment notification opens the POST rather than the comments sheet: the
  * sheet is a modal over the post, so the post is where a deep link has to land
- * for Back to behave. Focusing the individual comment is tracked follow-up
- * work — the id is carried on the target, nothing yet consumes it.
+ * for Back to behave; the comment itself opens the comments sheet on it (2026-10-24).
  *
  * [NotificationTarget.None] navigates nowhere. It is the vertical this build
  * has no screen for, or a deep link that did not parse; either way, doing
@@ -1617,7 +1663,8 @@ private fun NavHostController.openNotificationTarget(
         }
         NotificationTarget.CustomerDues -> navigateToDoorstepOutstanding()
         is NotificationTarget.Post -> navigateToPost(target.postId)
-        is NotificationTarget.PostComment -> navigateToPost(target.postId)
+        // A comment or mention (2026-10-24): the post, its comments open on that comment.
+        is NotificationTarget.PostComment -> navigateToPost(target.postId, target.commentId)
         is NotificationTarget.Profile -> navigateToProfile(target.userId)
         is NotificationTarget.Conversation -> navigateToChatThread(target.conversationId, title = "")
         is NotificationTarget.MessageRequest -> navigateToChatRequest(target.conversationId, target.title)
@@ -1639,6 +1686,8 @@ private fun NavHostController.openNotificationTarget(
         NotificationTarget.CreatorMemberships -> navigateToCreatorMembers()
         // Copyright title review (2026-10-24): the Creator Hub, on its Videos list.
         NotificationTarget.CreatorHubUploads -> navigateToCreatorHubUploads()
+        // Follow requests (2026-10-24): the private account's approval queue.
+        NotificationTarget.FollowRequests -> navigateToFollowRequests()
         NotificationTarget.None -> Unit
     }
 }
@@ -1685,6 +1734,13 @@ private const val POST_CONTENT_TYPE = "post"
 
 /** A reel; it lives on the Reels tab. */
 private const val FLICK_CONTENT_TYPE = "flick"
+
+/**
+ * The follow- and connection-request pushes (notification-service
+ * follow_request_notify.go:29-30 and consumer.go:286-311), each routed by its
+ * deep link through [pushTargetOf].
+ */
+private val SOCIAL_REQUEST_TYPES = setOf("follow_request", "follow_request_accepted", "friend_request", "friend_accepted")
 
 /** The push-destination type MainActivity mints for an `atpost.app/chat/join/{code}` link. */
 private const val CHAT_JOIN_LINK = com.us.android.push.PushDestinations.TYPE_CHAT_JOIN

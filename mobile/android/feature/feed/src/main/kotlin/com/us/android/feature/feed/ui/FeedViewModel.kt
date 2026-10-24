@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
 import androidx.paging.filter
+import androidx.paging.map
 import com.us.android.core.analytics.AnalyticsEventType
 import com.us.android.core.analytics.AnalyticsRecorder
 import com.us.android.core.analytics.AnalyticsSurface
@@ -26,6 +27,8 @@ import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.FollowGraph
+import com.us.android.core.feed.data.PostEdits
+import com.us.android.core.feed.data.applyTo
 import com.us.android.core.feed.data.KeywordFilter
 import com.us.android.core.feed.data.hides
 import com.us.android.core.media.FeedEntry
@@ -92,6 +95,8 @@ class FeedViewModel @AssistedInject constructor(
     private val dwellTracker: PostDwellTracker = PostDwellTracker.disabled(),
     hidden: HiddenPosts,
     settings: SettingsDataStore? = null,
+    /** The owner's saved edits this session (Edit post, 2026-10-24), laid over every row. */
+    edits: PostEdits? = null,
 ) : ViewModel() {
 
     /** The analytics view for the row currently autoplaying, if any. */
@@ -229,6 +234,14 @@ class FeedViewModel @AssistedInject constructor(
         // because a PagingData row cannot be removed in place and a refresh
         // would drop the reader to the top to remove one row.
         if (set.isEmpty) page else page.filter { !set.hides(it) }
+    }.let { flow ->
+        // The owner's Edit post from the more sheet (2026-10-24): the new
+        // words on the card at once, as Reels does for an edited reel.
+        if (edits != null) {
+            flow.combine(edits.edits) { page, saved -> if (saved.isEmpty()) page else page.map { saved.applyTo(it) } }
+        } else {
+            flow
+        }
     }.combine(_head) { page, pinned ->
         // The pinned post is drawn above these rows, so it must not also be
         // one of them. The Reels tab does the same for the reel it is holding.
