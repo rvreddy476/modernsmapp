@@ -244,6 +244,12 @@ func TestACompleteApplicationIsSubmitted(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Migration 045: an all-categories shop needs its GSTIN.
+	if w := call(t, r, http.MethodPut, "/v1/commerce/onboarding/step/sell-scope", userID,
+		map[string]any{"sell_scope": "all_categories", "gstin": "29AAACM1234A1Z4"}); w.Code != http.StatusOK {
+		t.Fatalf("sell scope: status %d\n%s", w.Code, w.Body.String())
+	}
+
 	if ready := readinessOf(t, r, userID); !ready.Ready {
 		t.Fatalf("a complete shop reports itself unready, still missing %v", ready.Missing)
 	}

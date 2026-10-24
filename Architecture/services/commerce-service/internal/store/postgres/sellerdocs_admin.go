@@ -34,11 +34,18 @@ type AdminSellerDocument struct {
 	VerificationStatus string
 	UploadedAt         time.Time
 	MediaID            *uuid.UUID
+	// BackMediaID is the back of a voter ID or passport (migration 045).
+	BackMediaID *uuid.UUID
 }
 
 // HasImage reports whether there is an upload to show.
 func (d AdminSellerDocument) HasImage() bool {
 	return d.MediaID != nil && *d.MediaID != uuid.Nil
+}
+
+// HasBackImage reports whether the back of a two-sided document was uploaded.
+func (d AdminSellerDocument) HasBackImage() bool {
+	return d.BackMediaID != nil && *d.BackMediaID != uuid.Nil
 }
 
 // ListSellerDocumentsForAdmin returns every document of one seller, in a
@@ -53,7 +60,7 @@ func (s *Store) ListSellerDocumentsForAdmin(ctx context.Context, sellerID uuid.U
 		return nil, ErrSellerNotFound
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT id, document_type, verification_status, uploaded_at, media_id
+		SELECT id, document_type, verification_status, uploaded_at, media_id, back_media_id
 		  FROM seller_documents
 		 WHERE seller_id = $1
 		 ORDER BY document_type ASC, uploaded_at ASC, id ASC`, sellerID)
@@ -64,7 +71,7 @@ func (s *Store) ListSellerDocumentsForAdmin(ctx context.Context, sellerID uuid.U
 	out := []AdminSellerDocument{}
 	for rows.Next() {
 		var d AdminSellerDocument
-		if err := rows.Scan(&d.ID, &d.DocumentType, &d.VerificationStatus, &d.UploadedAt, &d.MediaID); err != nil {
+		if err := rows.Scan(&d.ID, &d.DocumentType, &d.VerificationStatus, &d.UploadedAt, &d.MediaID, &d.BackMediaID); err != nil {
 			return nil, err
 		}
 		out = append(out, d)
@@ -80,10 +87,10 @@ func (s *Store) ListSellerDocumentsForAdmin(ctx context.Context, sellerID uuid.U
 func (s *Store) SellerDocumentForAdmin(ctx context.Context, sellerID, documentID uuid.UUID) (*AdminSellerDocument, error) {
 	var d AdminSellerDocument
 	err := s.db.QueryRow(ctx, `
-		SELECT id, document_type, verification_status, uploaded_at, media_id
+		SELECT id, document_type, verification_status, uploaded_at, media_id, back_media_id
 		  FROM seller_documents
 		 WHERE id = $1 AND seller_id = $2`, documentID, sellerID).
-		Scan(&d.ID, &d.DocumentType, &d.VerificationStatus, &d.UploadedAt, &d.MediaID)
+		Scan(&d.ID, &d.DocumentType, &d.VerificationStatus, &d.UploadedAt, &d.MediaID, &d.BackMediaID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrSellerDocumentNotFound
 	}

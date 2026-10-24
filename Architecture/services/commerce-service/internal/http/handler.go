@@ -586,6 +586,7 @@ func (h *Handler) CreateProduct(c *gin.Context) {
 
 	p, err := h.svc.CreateProduct(c.Request.Context(), service.CreateProductInput{
 		SellerID:            seller.ID,
+		SellScope:           seller.SellScope,
 		ActorUserID:         userID,
 		CategoryID:          req.CategoryID,
 		BrandID:             req.BrandID,

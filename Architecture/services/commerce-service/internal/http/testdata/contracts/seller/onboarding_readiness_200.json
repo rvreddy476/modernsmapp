@@ -1,11 +1,17 @@
 {
   "data": {
     "detail": {
+      "sell_scope": "all_categories",
       "has_store_name": true,
       "has_email": true,
       "has_pickup_address": true,
       "has_payout_account": true,
-      "has_kyc_document": true
+      "has_kyc_document": true,
+      "has_gstin": true,
+      "has_pan": false,
+      "has_business_name": false,
+      "has_business_address": false,
+      "has_address_proof": false
     },
     "missing": [],
     "ready": true

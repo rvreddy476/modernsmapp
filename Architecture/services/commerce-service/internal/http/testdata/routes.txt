@@ -125,6 +125,7 @@ GET /v1/commerce/seller/orders/:orderId/history
 GET /v1/commerce/seller/products
 GET /v1/commerce/seller/returns
 GET /v1/commerce/seller/rfqs
+GET /v1/commerce/seller/sell-scope
 GET /v1/commerce/seller/variants/:variantId
 GET /v1/commerce/seller/variants/:variantId/stock
 GET /v1/commerce/sellers/:sellerId/products
@@ -232,6 +233,7 @@ POST /v1/commerce/seller/coupons
 POST /v1/commerce/seller/orders/:orderId/cancel
 POST /v1/commerce/seller/orders/:orderId/pack
 POST /v1/commerce/seller/orders/:orderId/ship
+POST /v1/commerce/seller/sell-scope/upgrade
 POST /v1/commerce/sellers/onboard
 POST /v1/commerce/shipments/courier-callback
 POST /v1/commerce/shipments/webhooks/:courier
@@ -254,6 +256,7 @@ PUT /v1/commerce/onboarding/step/basic
 PUT /v1/commerce/onboarding/step/documents
 PUT /v1/commerce/onboarding/step/fulfillment
 PUT /v1/commerce/onboarding/step/payout
+PUT /v1/commerce/onboarding/step/sell-scope
 PUT /v1/commerce/onboarding/step/storefront
 PUT /v1/commerce/products/:productId/attributes
 PUT /v1/commerce/products/:productId/media/order

@@ -70,7 +70,10 @@ func (h *Handler) AdminSellerDocumentImage(c *gin.Context) {
 		return
 	}
 	actor, _ := tokenActor(c)
-	img, err := h.svc.AdminOpenSellerDocumentImage(ctx, sellerID, documentID, actor)
+	// ?side=back opens the back of a voter ID or passport (migration 045);
+	// anything else is the front, as it always was.
+	back := c.Query("side") == "back"
+	img, err := h.svc.AdminOpenSellerDocumentSide(ctx, sellerID, documentID, actor, back)
 	if err != nil {
 		writeDocumentImageError(c, err)
 		return

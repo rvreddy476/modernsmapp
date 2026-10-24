@@ -35,6 +35,9 @@ type AdminSellerDocumentView struct {
 	VerificationStatus string    `json:"verification_status"`
 	UploadedAt         time.Time `json:"uploaded_at"`
 	Viewable           bool      `json:"viewable"`
+	// BackViewable: the back of a voter ID or passport was uploaded and can
+	// be opened with ?side=back (migration 045).
+	BackViewable bool `json:"back_viewable"`
 }
 
 // ErrDocumentImageUnavailable means the document has no image to show: no
@@ -55,6 +58,7 @@ func (s *Service) AdminListSellerDocuments(ctx context.Context, sellerID uuid.UU
 			VerificationStatus: d.VerificationStatus,
 			UploadedAt:         d.UploadedAt,
 			Viewable:           d.HasImage(),
+			BackViewable:       d.HasBackImage(),
 		})
 	}
 	return out, nil
@@ -77,6 +81,27 @@ type SellerDocumentImage struct {
 // Logs one line per open with the seller, the document and the acting admin —
 // ids only, nothing a document says.
 func (s *Service) AdminOpenSellerDocumentImage(ctx context.Context, sellerID, documentID, actor uuid.UUID) (*SellerDocumentImage, error) {
+	return s.AdminOpenSellerDocumentSide(ctx, sellerID, documentID, actor, false)
+}
+
+// documentImageMediaID picks the upload to open: the front, or with back the
+// back of a two-sided document. Read from the row, never from the request.
+func documentImageMediaID(doc *postgres.AdminSellerDocument, back bool) (uuid.UUID, error) {
+	if back {
+		if !doc.HasBackImage() {
+			return uuid.Nil, ErrDocumentImageUnavailable
+		}
+		return *doc.BackMediaID, nil
+	}
+	if !doc.HasImage() {
+		return uuid.Nil, ErrDocumentImageUnavailable
+	}
+	return *doc.MediaID, nil
+}
+
+// AdminOpenSellerDocumentSide is AdminOpenSellerDocumentImage for either
+// side: back=true opens the back of a voter ID or passport (migration 045).
+func (s *Service) AdminOpenSellerDocumentSide(ctx context.Context, sellerID, documentID, actor uuid.UUID, back bool) (*SellerDocumentImage, error) {
 	if actor == uuid.Nil {
 		return nil, postgres.ErrActorRequired
 	}
@@ -84,10 +109,11 @@ func (s *Service) AdminOpenSellerDocumentImage(ctx context.Context, sellerID, do
 	if err != nil {
 		return nil, err
 	}
-	if !doc.HasImage() {
-		return nil, ErrDocumentImageUnavailable
+	mediaID, err := documentImageMediaID(doc, back)
+	if err != nil {
+		return nil, err
 	}
-	body, contentType, err := s.media.FetchImageBytes(ctx, *doc.MediaID)
+	body, contentType, err := s.media.FetchImageBytes(ctx, mediaID)
 	if err != nil {
 		if errors.Is(err, media.ErrMediaNotFound) {
 			return nil, ErrDocumentImageUnavailable
@@ -95,6 +121,7 @@ func (s *Service) AdminOpenSellerDocumentImage(ctx context.Context, sellerID, do
 		return nil, fmt.Errorf("seller document image: %w", err)
 	}
 	slog.InfoContext(ctx, "commerce: KYC document image opened for an admin",
-		"seller_id", sellerID, "document_id", documentID, "document_type", doc.DocumentType, "actor", actor)
+		"seller_id", sellerID, "document_id", documentID, "document_type", doc.DocumentType,
+		"back", back, "actor", actor)
 	return &SellerDocumentImage{Body: body, ContentType: contentType, DocumentType: doc.DocumentType}, nil
 }

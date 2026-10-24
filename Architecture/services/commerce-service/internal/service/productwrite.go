@@ -639,6 +639,13 @@ func (s *Service) UpdateProduct(ctx context.Context, in UpdateProductInput) (*Up
 	// one if the patch moves the product, otherwise the one it already has.
 	// Checking against the OLD category while moving to a new one would
 	// validate the answers against a form that is about to stop applying.
+	// A books-only shop (migration 045): a move to another category, or onto
+	// a class that charges GST, is refused. Only what the patch touches —
+	// the listing as it stands is the submit's question.
+	if err := s.checkBooksOnlyListing(ctx, seller.SellScope, in.Fields.CategoryID, in.Fields.TaxClassID, false); err != nil {
+		return nil, err
+	}
+
 	targetCategory := product.CategoryID
 	if in.Fields.CategoryID != nil {
 		if err := s.requireCategory(ctx, in.Fields.CategoryID); err != nil {

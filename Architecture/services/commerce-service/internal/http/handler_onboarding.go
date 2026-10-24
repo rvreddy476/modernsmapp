@@ -17,6 +17,9 @@ func (h *Handler) RegisterOnboardingRoutes(r *gin.Engine) {
 	ob.POST("/start", h.StartOnboarding)
 	ob.GET("/status", h.GetOnboardingStatus)
 	ob.PUT("/step/basic", h.SaveBasicInfo)
+	// "What will you sell?" (migration 045): all_categories + GSTIN, or
+	// books_only + PAN + business name. See internal/service/sellscope.go.
+	ob.PUT("/step/sell-scope", h.SaveSellScope)
 	ob.PUT("/step/storefront", h.SaveStorefront)
 	ob.PUT("/step/documents", h.SaveDocuments)
 	ob.PUT("/step/fulfillment", h.SaveFulfillment)
@@ -24,6 +27,9 @@ func (h *Handler) RegisterOnboardingRoutes(r *gin.Engine) {
 	ob.POST("/submit", h.SubmitApplication)
 
 	r.GET("/v1/commerce/dashboard", h.GetDashboard)
+	// The shop's scope, its book categories, and the books-only upgrade.
+	r.GET("/v1/commerce/seller/sell-scope", h.GetSellScope)
+	r.POST("/v1/commerce/seller/sell-scope/upgrade", h.UpgradeSellScope)
 	r.POST("/v1/commerce/products/:productId/submit", h.SubmitProduct)
 
 	// Internal admin routes (called by admin-service with X-Internal-Service-Key)
@@ -104,6 +110,8 @@ type startOnboardingReq struct {
 	Email          string     `json:"email" binding:"required"`
 	SellerType     string     `json:"seller_type"`
 	BusinessType   string     `json:"business_type"`
+	// SellScope: all_categories (default) or books_only. Migration 045.
+	SellScope string `json:"sell_scope"`
 }
 
 func (h *Handler) StartOnboarding(c *gin.Context) {
@@ -123,6 +131,7 @@ func (h *Handler) StartOnboarding(c *gin.Context) {
 		Email:          req.Email,
 		SellerType:     req.SellerType,
 		BusinessType:   req.BusinessType,
+		SellScope:      req.SellScope,
 	})
 	if err != nil {
 		handleErr(c, err)
@@ -224,6 +233,8 @@ type docInput struct {
 	DocumentType   string    `json:"document_type" binding:"required"`
 	DocumentNumber *string   `json:"document_number"`
 	MediaID        uuid.UUID `json:"media_id" binding:"required"`
+	// BackMediaID is the back of a voter ID or passport (migration 045).
+	BackMediaID *uuid.UUID `json:"back_media_id"`
 }
 
 type saveDocumentsReq struct {
@@ -246,6 +257,7 @@ func (h *Handler) SaveDocuments(c *gin.Context) {
 			DocumentType:   d.DocumentType,
 			DocumentNumber: d.DocumentNumber,
 			MediaID:        d.MediaID,
+			BackMediaID:    d.BackMediaID,
 		}
 	}
 	if err := h.svc.SaveDocuments(c.Request.Context(), userID, docs); err != nil {

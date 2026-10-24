@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "DOCUMENT_BACK_NOT_ACCEPTED",
+    "message": "only a voter ID or a passport takes a back side (document_type bank_statement)",
+    "details": {
+      "field": "back_media_id"
+    }
+  },
+  "meta": {}
+}
+

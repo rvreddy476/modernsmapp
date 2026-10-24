@@ -31,6 +31,10 @@ type Seller struct {
 	BusinessPageID    *uuid.UUID `db:"business_page_id" json:"business_page_id,omitempty"`
 	SellerType        string     `db:"seller_type" json:"seller_type"`
 	BusinessType      string     `db:"business_type" json:"business_type"`
+	// SellScope is what the shop may list (migration 045): all_categories
+	// (needs a GSTIN) or books_only (a PAN and a proof of address, book
+	// categories only). Always serialised, so a client never has to guess.
+	SellScope         string     `db:"sell_scope" json:"sell_scope"`
 	StoreName         string     `db:"store_name" json:"store_name"`
 	BrandName         *string    `db:"brand_name" json:"brand_name,omitempty"`
 	LegalBusinessName *string    `db:"legal_business_name" json:"legal_business_name,omitempty"`
@@ -105,6 +109,8 @@ type SellerDocument struct {
 	DocumentType       string     `db:"document_type" json:"document_type"`
 	DocumentNumber     *string    `db:"document_number" json:"document_number,omitempty"`
 	MediaID            uuid.UUID  `db:"media_id" json:"media_id"`
+	// BackMediaID is the back of a two-sided document (migration 045).
+	BackMediaID        *uuid.UUID `db:"back_media_id" json:"back_media_id,omitempty"`
 	VerificationStatus string     `db:"verification_status" json:"verification_status"`
 	Remarks            *string    `db:"remarks" json:"remarks,omitempty"`
 	UploadedAt         time.Time  `db:"uploaded_at" json:"uploaded_at"`
@@ -115,12 +121,15 @@ type SellerDocument struct {
 // SellerDocumentTypes is the KYC document vocabulary.
 //
 // It MUST stay identical to the seller_documents.document_type CHECK
-// constraint in migration 001. It lives here so the service can refuse an
+// constraint, last widened by migration 045 (wirecontract_test.go reads that
+// migration and compares). It lives here so the service can refuse an
 // unknown type with a 400 that names the alternatives, instead of letting
 // Postgres refuse it with a constraint violation the edge reported as 500.
 var SellerDocumentTypes = []string{
 	"gst_certificate", "pan_card", "aadhaar", "passport",
 	"business_registration", "address_proof", "cancelled_cheque", "other",
+	// Migration 045: the proof-of-address kinds a books-only seller uploads.
+	"voter_id", "electricity_bill", "telephone_bill", "bank_statement",
 }
 
 // ValidDocumentType reports whether t is in SellerDocumentTypes.

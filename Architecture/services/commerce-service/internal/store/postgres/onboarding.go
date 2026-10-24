@@ -38,11 +38,11 @@ func (s *Store) StartSellerOnboarding(ctx context.Context, sel *Seller) error {
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO sellers (id, user_id, business_page_id, seller_type, business_type, store_name,
 		  brand_name, owner_name, slug, description, tagline, email, phone,
-		  state, city, postal_code, status, onboarding_step, created_at, updated_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'draft',1,$17,$18)`,
+		  state, city, postal_code, status, onboarding_step, created_at, updated_at, sell_scope)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'draft',1,$17,$18,$19)`,
 		sel.ID, sel.UserID, sel.BusinessPageID, sel.SellerType, sel.BusinessType, sel.StoreName,
 		sel.BrandName, sel.OwnerName, sel.Slug, sel.Description, sel.Tagline, sel.Email, sel.Phone,
-		sel.State, sel.City, sel.PostalCode, sel.CreatedAt, sel.UpdatedAt,
+		sel.State, sel.City, sel.PostalCode, sel.CreatedAt, sel.UpdatedAt, sellScopeOrDefault(sel.SellScope),
 	); err != nil {
 		return err
 	}
@@ -61,13 +61,15 @@ func (s *Store) GetSellerOnboardingStatus(ctx context.Context, userID uuid.UUID)
 		  brand_name, owner_name, slug, description, tagline, email, phone, gst_number,
 		  state, city, postal_code, status, onboarding_step,
 		  submitted_at, approved_at, rejected_at, rejection_reason, changes_requested,
-		  verification_status, store_status, created_at, updated_at
+		  verification_status, store_status, created_at, updated_at,
+		  sell_scope, legal_business_name, pan_masked
 		FROM sellers WHERE user_id=$1`, userID).Scan(
 		&sel.ID, &sel.UserID, &sel.BusinessPageID, &sel.SellerType, &sel.BusinessType, &sel.StoreName,
 		&sel.BrandName, &sel.OwnerName, &sel.Slug, &sel.Description, &sel.Tagline, &sel.Email, &sel.Phone,
 		&sel.GSTNumber, &sel.State, &sel.City, &sel.PostalCode, &sel.Status, &sel.OnboardingStep,
 		&sel.SubmittedAt, &sel.ApprovedAt, &sel.RejectedAt, &sel.RejectionReason, &sel.ChangesRequested,
 		&sel.VerificationStatus, &sel.StoreStatus, &sel.CreatedAt, &sel.UpdatedAt,
+		&sel.SellScope, &sel.LegalBusinessName, &sel.PANMasked,
 	)
 	if err != nil {
 		return nil, err
@@ -158,12 +160,13 @@ func (s *Store) SaveOnboardingCompliance(ctx context.Context, sellerID uuid.UUID
 		d.SellerID = sellerID
 		d.UploadedAt = time.Now()
 		_, err := s.db.Exec(ctx, `
-			INSERT INTO seller_documents (id, seller_id, document_type, document_number, media_id, verification_status, uploaded_at)
-			VALUES ($1,$2,$3,$4,$5,'pending',$6)
+			INSERT INTO seller_documents (id, seller_id, document_type, document_number, media_id, back_media_id, verification_status, uploaded_at)
+			VALUES ($1,$2,$3,$4,$5,$7,'pending',$6)
 			ON CONFLICT (seller_id, document_type) DO UPDATE SET
 			  document_number=EXCLUDED.document_number, media_id=EXCLUDED.media_id,
+			  back_media_id=EXCLUDED.back_media_id,
 			  verification_status='pending', uploaded_at=EXCLUDED.uploaded_at`,
-			d.ID, d.SellerID, d.DocumentType, d.DocumentNumber, d.MediaID, d.UploadedAt,
+			d.ID, d.SellerID, d.DocumentType, d.DocumentNumber, d.MediaID, d.UploadedAt, d.BackMediaID,
 		)
 		if err != nil {
 			return err
@@ -292,7 +295,7 @@ func (s *Store) ListSellerQueue(ctx context.Context, limit, offset int) ([]*Sell
 
 	rows, err := s.db.Query(ctx, `
 		SELECT id, user_id, business_page_id, store_name, email, business_type, seller_type,
-		  status, onboarding_step, submitted_at, created_at, updated_at
+		  status, onboarding_step, submitted_at, created_at, updated_at, sell_scope
 		FROM sellers WHERE status IN ('submitted','under_review','changes_required')
 		ORDER BY submitted_at ASC NULLS LAST
 		LIMIT $1 OFFSET $2`, limit, offset)
@@ -306,7 +309,7 @@ func (s *Store) ListSellerQueue(ctx context.Context, limit, offset int) ([]*Sell
 		var sel Seller
 		if err := rows.Scan(&sel.ID, &sel.UserID, &sel.BusinessPageID, &sel.StoreName, &sel.Email,
 			&sel.BusinessType, &sel.SellerType, &sel.Status, &sel.OnboardingStep,
-			&sel.SubmittedAt, &sel.CreatedAt, &sel.UpdatedAt); err != nil {
+			&sel.SubmittedAt, &sel.CreatedAt, &sel.UpdatedAt, &sel.SellScope); err != nil {
 			return nil, 0, err
 		}
 		sellers = append(sellers, &sel)

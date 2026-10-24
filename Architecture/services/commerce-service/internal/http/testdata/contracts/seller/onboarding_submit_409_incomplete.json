@@ -1,9 +1,10 @@
 {
   "error": {
     "code": "APPLICATION_INCOMPLETE",
-    "message": "the seller application is incomplete: email, pickup_address, payout_account, kyc_document",
+    "message": "the seller application is incomplete: gstin, email, pickup_address, payout_account, kyc_document",
     "details": {
       "missing": [
+        "gstin",
         "email",
         "pickup_address",
         "payout_account",

@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "GSTIN_PAN_MISMATCH",
+    "message": "the GSTIN is not registered to the PAN on file",
+    "details": {
+      "field": "gstin"
+    }
+  },
+  "meta": {}
+}
+

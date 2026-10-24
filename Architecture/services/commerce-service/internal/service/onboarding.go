@@ -32,10 +32,24 @@ type StartOnboardingInput struct {
 	Email          string
 	SellerType     string
 	BusinessType   string
+	// SellScope is the "What will you sell?" answer (migration 045). Empty
+	// means all_categories, the column default. The GSTIN or the PAN that
+	// the scope needs is the next step's (PUT /onboarding/step/sell-scope).
+	SellScope string
 }
 
 // StartOnboarding creates a draft seller record. Idempotent — returns existing if already started.
 func (s *Service) StartOnboarding(ctx context.Context, in StartOnboardingInput) (*postgres.Seller, error) {
+	// Before anything is read: an unknown scope is refused, not defaulted —
+	// a seller who asked for one path must not be put on the other.
+	scope := strings.ToLower(strings.TrimSpace(in.SellScope))
+	if scope == "" {
+		scope = postgres.SellScopeAllCategories
+	}
+	if !postgres.ValidSellScope(scope) {
+		return nil, fieldErr("sell_scope", ErrSellScopeInvalid)
+	}
+
 	// Return existing draft if present
 	existing, err := s.store.GetSellerByUserID(ctx, in.UserID)
 	if err == nil {
@@ -54,6 +68,7 @@ func (s *Service) StartOnboarding(ctx context.Context, in StartOnboardingInput) 
 		Slug:           slug,
 		SellerType:     coalesceStr(in.SellerType, "individual"),
 		BusinessType:   coalesceStr(in.BusinessType, "individual"),
+		SellScope:      scope,
 	}
 	if err := s.store.StartSellerOnboarding(ctx, sel); err != nil {
 		return nil, fmt.Errorf("start onboarding: %w", err)
@@ -121,6 +136,11 @@ func (s *Service) SaveDocuments(ctx context.Context, userID uuid.UUID, docs []po
 	if err := validateDocumentNumbers(docs); err != nil {
 		return err
 	}
+	// Migration 045: the back of a voter ID or passport, and the image-only
+	// proofs of address.
+	if err := validateDocumentSides(docs); err != nil {
+		return err
+	}
 	for i := range docs {
 		if docs[i].DocumentType == "aadhaar" {
 			docs[i].DocumentNumber = nil // a blank is stored as absent, not as ""
@@ -134,7 +154,7 @@ func (s *Service) SaveDocuments(ctx context.Context, userID uuid.UUID, docs []po
 	// would leave a KYC set that is half verified and half not, and the
 	// reviewer cannot tell which half.
 	for i := range docs {
-		if err := s.verifyMedia(ctx, userID, media.KindAny, &docs[i].MediaID); err != nil {
+		if err := s.verifyMedia(ctx, userID, media.KindAny, &docs[i].MediaID, docs[i].BackMediaID); err != nil {
 			return err
 		}
 	}

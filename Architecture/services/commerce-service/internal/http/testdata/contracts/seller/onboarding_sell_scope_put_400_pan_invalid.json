@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "PAN_INVALID",
+    "message": "that is not a valid PAN",
+    "details": {
+      "field": "pan"
+    }
+  },
+  "meta": {}
+}
+

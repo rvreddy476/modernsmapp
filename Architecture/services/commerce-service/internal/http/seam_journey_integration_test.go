@@ -105,6 +105,11 @@ func openAShopForReal(t *testing.T, r *gin.Engine) realJourney {
 		t.Fatal(err)
 	}
 
+	// Migration 045: an all-categories shop needs its GSTIN.
+	mustCall(http.MethodPut, "/v1/commerce/onboarding/step/sell-scope", map[string]any{
+		"sell_scope": "all_categories", "gstin": "29AAACM1234A1Z4",
+	}, http.StatusOK)
+
 	mustCall(http.MethodPost, "/v1/commerce/onboarding/submit", nil,
 		http.StatusOK, http.StatusNoContent)
 

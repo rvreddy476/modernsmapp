@@ -568,6 +568,12 @@ func writeCommerceError(c *gin.Context, err error) {
 		return
 	}
 
+	// Sell scope (migration 045): the books-only path's step refusals and
+	// the 403 a books-only shop gets listing outside books.
+	if writeSellScopeError(c, err) {
+		return
+	}
+
 	// Out of stock carries per-line detail so the cart can grey the right
 	// rows instead of showing a generic failure.
 	var oos *postgres.OutOfStockError

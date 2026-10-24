@@ -1,0 +1,13 @@
+{
+  "error": {
+    "code": "SELLER_SCOPE_BOOKS_ONLY",
+    "message": "a books-only shop can list only in book categories; add a GSTIN to sell in others",
+    "details": {
+      "field": "category_id",
+      "how_to_fix": "list in a book category on GST 0%, or add a GSTIN with POST /v1/commerce/seller/sell-scope/upgrade to sell in every category",
+      "sell_scope": "books_only"
+    }
+  },
+  "meta": {}
+}
+

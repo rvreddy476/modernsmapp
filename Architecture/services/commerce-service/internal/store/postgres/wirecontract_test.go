@@ -9,6 +9,9 @@ package postgres
 
 import (
 	"encoding/json"
+	"os"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -159,11 +162,9 @@ func TestCustomerCanCancelMatchesTheCancellationMatrix(t *testing.T) {
 // schema enforces. If these drift, an accepted value 500s in Postgres.
 func TestSellerDocumentTypesMatchTheSchemaVocabulary(t *testing.T) {
 	// Exactly the list in the seller_documents.document_type CHECK
-	// constraint (migration 001).
-	want := []string{
-		"gst_certificate", "pan_card", "aadhaar", "passport",
-		"business_registration", "address_proof", "cancelled_cheque", "other",
-	}
+	// constraint, read out of the migration that last replaced it (045), so
+	// the two cannot drift by someone editing only one of them.
+	want := documentTypeCheckFromMigration(t, "../../../database/migrations/045_books_only_sellers.sql")
 	if len(SellerDocumentTypes) != len(want) {
 		t.Fatalf("SellerDocumentTypes has %d entries, the CHECK constraint has %d",
 			len(SellerDocumentTypes), len(want))
@@ -180,4 +181,26 @@ func TestSellerDocumentTypesMatchTheSchemaVocabulary(t *testing.T) {
 		t.Error("ValidDocumentType accepted a type the CHECK constraint refuses; " +
 			"it would reach Postgres and come back as a 500")
 	}
+}
+
+// documentTypeCheckFromMigration returns the quoted values of the
+// `CHECK (document_type IN (...))` in a migration, in order.
+func documentTypeCheckFromMigration(t *testing.T, path string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?s)CHECK \(document_type IN \((.*?)\)\)`).FindSubmatch(raw)
+	if m == nil {
+		t.Fatalf("%s has no CHECK (document_type IN (...))", path)
+	}
+	var out []string
+	for _, q := range regexp.MustCompile(`'([a-z_]+)'`).FindAllSubmatch(m[1], -1) {
+		out = append(out, string(q[1]))
+	}
+	if len(out) == 0 || strings.Contains(string(m[1]), "--") {
+		t.Fatalf("could not read the document_type vocabulary out of %s", path)
+	}
+	return out
 }

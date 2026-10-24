@@ -425,6 +425,13 @@ func (s *Service) SubmitProduct(ctx context.Context, productID, userID uuid.UUID
 		return ErrNotProductOwner
 	}
 
+	// A books-only shop (migration 045) sends only a book, on GST 0%, to
+	// review. The whole listing is checked here, not just what the last
+	// edit touched: a bulk-imported draft arrives with no category at all.
+	if err := s.checkBooksOnlyListing(ctx, sel.SellScope, product.CategoryID, product.TaxClassID, true); err != nil {
+		return err
+	}
+
 	ready, err := s.checkListingComplete(ctx, product)
 	if err != nil {
 		return err

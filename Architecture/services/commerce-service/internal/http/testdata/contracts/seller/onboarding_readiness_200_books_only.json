@@ -1,0 +1,26 @@
+{
+  "data": {
+    "detail": {
+      "sell_scope": "books_only",
+      "has_store_name": true,
+      "has_email": true,
+      "has_pickup_address": false,
+      "has_payout_account": false,
+      "has_kyc_document": false,
+      "has_gstin": false,
+      "has_pan": true,
+      "has_business_name": true,
+      "has_business_address": false,
+      "has_address_proof": false
+    },
+    "missing": [
+      "business_address",
+      "address_proof",
+      "pickup_address",
+      "payout_account",
+      "kyc_document"
+    ],
+    "ready": false
+  }
+}
+

@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 
+	"github.com/atpost/commerce-service/internal/service"
 	"github.com/google/uuid"
 )
 
@@ -26,10 +27,13 @@ var (
 	ctStranger     = uuid.MustParse("00000000-0000-4000-8000-0000000c0003")
 	ctDraftUser    = uuid.MustParse("00000000-0000-4000-8000-0000000c0004")
 	ctOtherSellerU = uuid.MustParse("00000000-0000-4000-8000-0000000c0005")
+	// Migration 045: a books-only applicant (PAN, no GSTIN). c0006 is the admin.
+	ctBooksUser = uuid.MustParse("00000000-0000-4000-8000-0000000c0007")
 
 	ctSeller      = uuid.MustParse("00000000-0000-4000-8000-0000000c0010")
 	ctDraftSeller = uuid.MustParse("00000000-0000-4000-8000-0000000c0011")
 	ctOtherSeller = uuid.MustParse("00000000-0000-4000-8000-0000000c0012")
+	ctBooksSeller = uuid.MustParse("00000000-0000-4000-8000-0000000c0013")
 
 	ctPickupAddr   = uuid.MustParse("00000000-0000-4000-8000-0000000c0020")
 	ctBuyerAddr    = uuid.MustParse("00000000-0000-4000-8000-0000000c0021")
@@ -112,8 +116,8 @@ func (e *contractEnv) seed() {
 	// Every id above is "known": the stabiliser leaves it alone. The
 	// categories and banners from migrations 023/024 are fixed too.
 	for _, id := range []uuid.UUID{
-		ctBuyer, ctSellerUser, ctStranger, ctDraftUser, ctOtherSellerU,
-		ctSeller, ctDraftSeller, ctOtherSeller, ctPickupAddr, ctBuyerAddr, ctBuyerAddrFar,
+		ctBuyer, ctSellerUser, ctStranger, ctDraftUser, ctOtherSellerU, ctBooksUser,
+		ctSeller, ctDraftSeller, ctOtherSeller, ctBooksSeller, ctPickupAddr, ctBuyerAddr, ctBuyerAddrFar,
 		ctP1, ctV1, ctV1b, ctP2, ctV2, ctP3, ctV3, ctP4, ctV4, ctP5, ctV5, ctUnknownProduct,
 		ctOConfirmed, ctIConfirmed, ctODelivered, ctShipment, ctInvoice, ctIDelivered, ctIDelivered2,
 		ctOFailed, ctIFailed, ctORefund, ctIRefund, ctOPending, ctIPending, ctReview, ctCart,
@@ -148,10 +152,11 @@ func (e *contractEnv) seed() {
 	e.exec(`UPDATE commerce_banners SET created_at = '2026-09-01T00:00:00Z', updated_at = '2026-09-01T00:00:00Z'`)
 
 	// ── Sellers ──────────────────────────────────────────────────────────
-	e.exec(`INSERT INTO sellers (id,user_id,seller_type,store_name,slug,description,email,phone,state,city,postal_code,
+	// An all-categories shop carries its GSTIN (migration 045: readiness asks for one).
+	e.exec(`INSERT INTO sellers (id,user_id,seller_type,store_name,slug,description,email,phone,gst_number,state,city,postal_code,
 	           status,onboarding_step,approved_at,created_at,updated_at)
 	        VALUES ($1,$2,'business','Momentum Electronics','momentum-electronics','Phones, audio and accessories',
-	           'shop@momentum-electronics.test','9000000001','KA','Bengaluru','560001',
+	           'shop@momentum-electronics.test','9000000001','29AAACM1234A1Z4','KA','Bengaluru','560001',
 	           'approved',7,'2026-09-01T09:00:00Z','2026-09-01T09:00:00Z','2026-09-01T09:00:00Z')`, ctSeller, ctSellerUser)
 	e.exec(`INSERT INTO seller_addresses (id,seller_id,address_type,contact_name,phone,address_line_1,city,state,postal_code,is_default,created_at)
 	        VALUES ($1,$2,'pickup','Warehouse desk','9000000001','1 Warehouse Road','Bengaluru','KA','560001',TRUE,'2026-09-01T09:00:00Z')`,
@@ -172,6 +177,18 @@ func (e *contractEnv) seed() {
 	e.exec(`INSERT INTO sellers (id,user_id,store_name,slug,email,state,status,created_at,updated_at)
 	        VALUES ($1,$2,'Other Shop','other-shop','other@shop.test','MH','approved','2026-09-01T09:00:00Z','2026-09-01T09:00:00Z')`,
 		ctOtherSeller, ctOtherSellerU)
+
+	// Migration 045: a books-only applicant who has saved the "What will you
+	// sell?" step and nothing else. The PAN goes through the production path,
+	// so it is sealed exactly as a real one is.
+	e.exec(`INSERT INTO sellers (id,user_id,store_name,slug,email,status,onboarding_step,sell_scope,created_at,updated_at)
+	        VALUES ($1,$2,'Asha Books','asha-books','hello@asha-books.test','draft',1,'books_only',
+	           '2026-09-02T09:00:00Z','2026-09-02T09:00:00Z')`, ctBooksSeller, ctBooksUser)
+	if _, err := e.svc.SaveSellScope(context.Background(), ctBooksUser, service.SellScopeInput{
+		SellScope: "books_only", PAN: ctStr("ABCPE1234F"), BusinessName: ctStr("Asha Books"),
+	}); err != nil {
+		t.Fatalf("seed the books-only seller: %v", err)
+	}
 
 	// ── Products ─────────────────────────────────────────────────────────
 	product := func(id, seller, category, tax uuid.UUID, title, slug, status, approval string, published bool, created string, image string) {
@@ -947,6 +964,53 @@ func (e *contractEnv) fixtures() []ctFixture {
 		}},
 
 		// ── seller: the listing editor's edits on an APPROVED listing ──
+		// ── Migration 045: the books-only path ─────────────────────────
+		// Also rendered without a database by sellscope_contract_test.go,
+		// over a fake store holding this same world. Every refusal writes
+		// nothing; the upgrade is last because it widens the books seller.
+		{name: "seller/onboarding_sell_scope_put_200_books_only", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodPut, path: "/v1/commerce/onboarding/step/sell-scope", user: ctBooksUser,
+				body: map[string]any{"sell_scope": "books_only", "pan": "abcpe1234f", "business_name": "Asha Books"}})
+		}},
+		{name: "seller/onboarding_readiness_200_books_only", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.get("/v1/commerce/onboarding/readiness", ctBooksUser)
+		}},
+		{name: "seller/onboarding_sell_scope_put_400_pan_invalid", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodPut, path: "/v1/commerce/onboarding/step/sell-scope", user: ctBooksUser,
+				body: map[string]any{"sell_scope": "books_only", "pan": "ABCDE12345", "business_name": "Asha Books"}})
+		}},
+		{name: "seller/onboarding_sell_scope_put_400_gstin_required", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodPut, path: "/v1/commerce/onboarding/step/sell-scope", user: ctDraftUser,
+				body: map[string]any{"sell_scope": "all_categories"}})
+		}},
+		{name: "seller/onboarding_sell_scope_put_409_locked", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodPut, path: "/v1/commerce/onboarding/step/sell-scope", user: ctSellerUser,
+				body: map[string]any{"sell_scope": "all_categories", "gstin": "29AAACM1234A1Z4"}})
+		}},
+		{name: "seller/seller_sell_scope_get_200_books_only", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.get("/v1/commerce/seller/sell-scope", ctBooksUser)
+		}},
+		{name: "seller/product_post_403_seller_scope_books_only", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.post("/v1/commerce/products", ctBooksUser, map[string]any{
+				"title": "Momentum Power Bank", "category_id": ctCatElectronics.String(), "tax_class_id": ctTax0.String(),
+				"variants": []map[string]any{{"sku": "ASHA-PB-1", "mrp_minor": 199900, "selling_price_minor": 149900}},
+			})
+		}},
+		{name: "seller/onboarding_documents_put_400_back_not_accepted", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodPut, path: "/v1/commerce/onboarding/step/documents", user: ctBooksUser,
+				body: map[string]any{"documents": []map[string]any{{"document_type": "bank_statement",
+					"media_id": ctMediaKYC.String(), "back_media_id": ctMedia2.String()}}}})
+		}},
+		{name: "seller/seller_sell_scope_upgrade_post_400_gstin_pan_mismatch", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.post("/v1/commerce/seller/sell-scope/upgrade", ctBooksUser, map[string]any{"gstin": "27PQRCS6789Z1Z0"})
+		}},
+		{name: "seller/seller_sell_scope_upgrade_post_409_not_books_only", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.post("/v1/commerce/seller/sell-scope/upgrade", ctSellerUser, map[string]any{"gstin": "29AAACM1234A1Z4"})
+		}},
+		{name: "seller/seller_sell_scope_upgrade_post_200", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.post("/v1/commerce/seller/sell-scope/upgrade", ctBooksUser, map[string]any{"gstin": "27ABCPE1234F1ZB"})
+		}},
+
 		// Last in the run: the 200 reprices a seeded variant, and nothing
 		// after it may read the old price. The three refusals write nothing.
 		// The refusal bodies are also pinned without a database by
@@ -981,3 +1045,5 @@ func quoteWithCoupon(e *contractEnv, code string) *httptest.ResponseRecorder {
 		"address_id": ctBuyerAddr.String(), "payment_method": "upi", "coupon_code": code,
 	})
 }
+
+func ctStr(s string) *string { return &s }

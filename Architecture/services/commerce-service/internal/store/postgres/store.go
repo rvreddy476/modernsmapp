@@ -107,7 +107,7 @@ func (s *Store) GetSellerByUserID(ctx context.Context, userID uuid.UUID) (*Selle
 		logo_media_id,banner_media_id,email,phone,gst_number,pan_number,pan_enc,pan_masked,state,city,postal_code,
 		verification_status,store_status,quality_score,performance_tier,avg_rating,review_count,
 		follower_count,total_products,total_orders,created_at,updated_at,
-		status,onboarding_step
+		status,onboarding_step,sell_scope,legal_business_name
 		FROM sellers WHERE user_id=$1`, userID).Scan(
 		&sel.ID, &sel.UserID, &sel.SellerType, &sel.StoreName, &sel.BrandName, &sel.Slug, &sel.Description,
 		&sel.LogoMediaID, &sel.BannerMediaID, &sel.Email, &sel.Phone, &sel.GSTNumber, &sel.PANNumber,
@@ -115,7 +115,7 @@ func (s *Store) GetSellerByUserID(ctx context.Context, userID uuid.UUID) (*Selle
 		&sel.State, &sel.City, &sel.PostalCode, &sel.VerificationStatus, &sel.StoreStatus,
 		&sel.QualityScore, &sel.PerformanceTier, &sel.AvgRating, &sel.ReviewCount,
 		&sel.FollowerCount, &sel.TotalProducts, &sel.TotalOrders, &sel.CreatedAt, &sel.UpdatedAt,
-		&sel.Status, &sel.OnboardingStep,
+		&sel.Status, &sel.OnboardingStep, &sel.SellScope, &sel.LegalBusinessName,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// The caller has no seller account.
@@ -150,7 +150,8 @@ func (s *Store) GetSellerByID(ctx context.Context, id uuid.UUID) (*Seller, error
 	err := s.db.QueryRow(ctx, `SELECT id,user_id,seller_type,store_name,brand_name,slug,description,
 		logo_media_id,banner_media_id,email,phone,gst_number,pan_number,pan_enc,pan_masked,state,city,postal_code,
 		verification_status,store_status,quality_score,performance_tier,avg_rating,review_count,
-		follower_count,total_products,total_orders,created_at,updated_at
+		follower_count,total_products,total_orders,created_at,updated_at,
+		sell_scope,legal_business_name
 		FROM sellers WHERE id=$1`, id).Scan(
 		&sel.ID, &sel.UserID, &sel.SellerType, &sel.StoreName, &sel.BrandName, &sel.Slug, &sel.Description,
 		&sel.LogoMediaID, &sel.BannerMediaID, &sel.Email, &sel.Phone, &sel.GSTNumber, &sel.PANNumber,
@@ -158,6 +159,7 @@ func (s *Store) GetSellerByID(ctx context.Context, id uuid.UUID) (*Seller, error
 		&sel.State, &sel.City, &sel.PostalCode, &sel.VerificationStatus, &sel.StoreStatus,
 		&sel.QualityScore, &sel.PerformanceTier, &sel.AvgRating, &sel.ReviewCount,
 		&sel.FollowerCount, &sel.TotalProducts, &sel.TotalOrders, &sel.CreatedAt, &sel.UpdatedAt,
+		&sel.SellScope, &sel.LegalBusinessName,
 	)
 	return &sel, err
 }

@@ -153,6 +153,10 @@ type Service struct {
 	// its answer for paymentOffersTTL. Set by WithPayments.
 	offers     offersReader
 	offerCache offerCache
+
+	// scope is the sell-scope view of store (sellscope.go). nil means the
+	// store itself; the unit tests set a fake through WithSellScopeStore.
+	scope SellScopeStore
 }
 
 // WithClock pins the clock the delivery estimate computes "today" from.
@@ -335,6 +339,8 @@ func (s *Service) OnboardSeller(ctx context.Context, in OnboardSellerInput) (*po
 		PostalCode:         in.PostalCode,
 		VerificationStatus: "pending",
 		StoreStatus:        "active",
+		// The column default (migration 045); CreateSeller does not write it.
+		SellScope: postgres.SellScopeAllCategories,
 	}
 	if err := s.store.CreateSeller(ctx, sel); err != nil {
 		return nil, fmt.Errorf("create seller: %w", err)
@@ -353,6 +359,9 @@ func (s *Service) GetSellerProfile(ctx context.Context, userID uuid.UUID) (*post
 
 type CreateProductInput struct {
 	SellerID uuid.UUID
+	// SellScope is the seller's sellers.sell_scope (migration 045). A
+	// books_only shop is held to book categories on a zero-rated class.
+	SellScope string
 	// ActorUserID is the human behind the seller account. Media ownership is
 	// recorded against the USER who uploaded it, not the seller row, so this
 	// is the identity the media check compares against.
@@ -447,6 +456,13 @@ func (s *Service) CreateProduct(ctx context.Context, in CreateProductInput) (*po
 		if err := priceWithinMRP(vi.MRPMinor, vi.SellingPriceMinor); err != nil {
 			return nil, fmt.Errorf("%w (sku %s)", err, vi.SKU)
 		}
+	}
+
+	// A books-only shop (migration 045) lists books, on GST 0%, and nothing
+	// else. Before the category is looked up, so an unknown category from a
+	// books-only shop is told what it may list rather than that it typo'd.
+	if err := s.checkBooksOnlyListing(ctx, in.SellScope, in.CategoryID, in.TaxClassID, false); err != nil {
+		return nil, err
 	}
 
 	// Before anything is written. Both ids arrive in the request body and
