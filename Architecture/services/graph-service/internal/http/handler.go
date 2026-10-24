@@ -1192,9 +1192,11 @@ func (h *Handler) GetMutualConnectionCounts(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
 		return
 	}
-	viewerID, err := uuid.Parse(req.ViewerID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid viewer_id", nil)
+	// Edge traffic answers for the signed-in viewer only, as
+	// /relationships/batch does: a body viewer_id must not name someone else,
+	// or anyone could map another person's connections through the counts.
+	viewerID, ok := boundActor(c, req.ViewerID)
+	if !ok {
 		return
 	}
 	if len(req.TargetIDs) > store.MaxRelationshipBatch {

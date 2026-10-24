@@ -150,3 +150,26 @@ func TestServiceReadsStillNameTheActor(t *testing.T) {
 		t.Fatalf("batch: status %d: %s", resp.Code, resp.Body.String())
 	}
 }
+
+// Social audit, 24 Oct 2026: /connections/mutual-counts took viewer_id from
+// the body, so anyone could read mutual-connection counts for another person,
+// private accounts included. Through the edge it answers for the caller only.
+func TestEdgeMutualCountsCannotNameAnotherViewer(t *testing.T) {
+	attacker, victim, target := uuid.New(), uuid.New(), uuid.New()
+	r := relationshipRouter(seedBlocks(victim, target, blockCase{}))
+
+	raw, _ := json.Marshal(map[string]any{"viewer_id": victim.String(), "target_ids": []string{target.String()}})
+	req := httptest.NewRequest(http.MethodPost, "/v1/graph/connections/mutual-counts", bytes.NewReader(raw))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(GraphWriteSourceHeader, "api-gateway")
+	req.Header.Set("X-User-Id", attacker.String())
+
+	resp := httptest.NewRecorder()
+	r.ServeHTTP(resp, req)
+	if resp.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400: %s", resp.Code, resp.Body.String())
+	}
+	if code := errorCode(t, resp); code != "VIEWER_BOUND" {
+		t.Fatalf("code %q, want VIEWER_BOUND", code)
+	}
+}
