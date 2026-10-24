@@ -964,6 +964,8 @@ private class MinimalChatDao : ChatDao {
     override suspend fun retry(key: String) = Unit
     override suspend fun completeSend(key: String) = Unit
     override suspend fun clearPendingSends() = Unit
+    override suspend fun allPendingSends(): List<ChatPendingSendEntity> = emptyList()
+    override suspend fun updatePendingSend(row: ChatPendingSendEntity) = Unit
 }
 
 private fun minimalStore(): ChatStore = ChatStore(

@@ -74,6 +74,10 @@ class ChatStoreParityTest {
             pending.remove(key)
         }
         override suspend fun clearPendingSends() = pending.clear()
+        override suspend fun allPendingSends(): List<ChatPendingSendEntity> = pending.values.toList()
+        override suspend fun updatePendingSend(row: ChatPendingSendEntity) {
+            if (row.idempotencyKey in pending) pending[row.idempotencyKey] = row
+        }
     }
 
     private class FakeParityDao(

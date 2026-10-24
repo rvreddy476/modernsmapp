@@ -49,14 +49,31 @@ internal class FakeChatDao : ChatDao {
     override suspend fun recentMessages(conversationId: String, limit: Int) =
         messages.values.filter { it.conversationId == conversationId }.take(limit)
     override suspend fun clearMessages() = messages.clear()
-    override suspend fun enqueueSend(row: ChatPendingSendEntity) = Unit
-    override suspend fun pendingSends(): List<ChatPendingSendEntity> = emptyList()
-    override fun pendingSendsFor(conversationId: String): Flow<List<ChatPendingSendEntity>> = MutableStateFlow(emptyList())
-    override suspend fun recordAttempt(key: String) = Unit
-    override suspend fun markFailed(key: String) = Unit
-    override suspend fun retry(key: String) = Unit
-    override suspend fun completeSend(key: String) = Unit
-    override suspend fun clearPendingSends() = Unit
+    /** A working outbox (hidden chats × outbox tests); the list tests never queue anything. */
+    val sends = linkedMapOf<String, ChatPendingSendEntity>()
+    override suspend fun enqueueSend(row: ChatPendingSendEntity) {
+        sends.putIfAbsent(row.idempotencyKey, row)
+    }
+    override suspend fun pendingSends(): List<ChatPendingSendEntity> = sends.values.filter { !it.failed }
+    override fun pendingSendsFor(conversationId: String): Flow<List<ChatPendingSendEntity>> =
+        MutableStateFlow(sends.values.filter { it.conversationId == conversationId })
+    override suspend fun recordAttempt(key: String) {
+        sends[key]?.let { sends[key] = it.copy(attempts = it.attempts + 1) }
+    }
+    override suspend fun markFailed(key: String) {
+        sends[key]?.let { sends[key] = it.copy(failed = true) }
+    }
+    override suspend fun retry(key: String) {
+        sends[key]?.let { sends[key] = it.copy(failed = false) }
+    }
+    override suspend fun completeSend(key: String) {
+        sends.remove(key)
+    }
+    override suspend fun clearPendingSends() = sends.clear()
+    override suspend fun allPendingSends(): List<ChatPendingSendEntity> = sends.values.toList()
+    override suspend fun updatePendingSend(row: ChatPendingSendEntity) {
+        if (row.idempotencyKey in sends) sends[row.idempotencyKey] = row
+    }
 }
 
 /** The inbox the fake server answers with. */
@@ -75,13 +92,45 @@ internal object NoScheduler : OutboxScheduler {
     override fun cancelDrain() = Unit
 }
 
-internal fun testStore(dao: FakeChatDao, api: ChatApi, hidden: HiddenTokenStore?) = ChatStore(
+internal fun testStore(
+    dao: FakeChatDao,
+    api: ChatApi,
+    hidden: HiddenTokenStore?,
+    scheduler: OutboxScheduler = NoScheduler,
+    cipher: HiddenOutboxCipher? = null,
+) = ChatStore(
     repository = ChatRepository(api, ErrorMapper(Json { ignoreUnknownKeys = true })),
     dao = dao,
-    scheduler = NoScheduler,
+    scheduler = scheduler,
     scrubRecovery = NoScrubOwed,
     hidden = hidden,
+    outboxCipher = cipher,
 )
+
+/** A software AES key for the outbox cipher on the JVM (the Keystore's stand-in). */
+internal class SoftwareOutboxKeys : OutboxKeySource {
+    private var current: javax.crypto.SecretKey? = null
+    var destroyed = 0
+    override fun key(create: Boolean): javax.crypto.SecretKey? {
+        current?.let { return it }
+        if (!create) return null
+        return javax.crypto.KeyGenerator.getInstance("AES").apply { init(256) }.generateKey().also { current = it }
+    }
+    override fun destroy() {
+        current = null
+        destroyed++
+    }
+}
+
+/** Counts the foreground drains asked for. */
+internal class CountingScheduler : OutboxScheduler {
+    var drainsAsked = 0
+    override fun scheduleDrain() = Unit
+    override fun cancelDrain() = Unit
+    override fun drainNow(drain: suspend () -> Unit) {
+        drainsAsked++
+    }
+}
 
 internal fun conversationRow(id: String, unread: Boolean = false, request: Boolean = false) = ChatConversationEntity(
     id = id,

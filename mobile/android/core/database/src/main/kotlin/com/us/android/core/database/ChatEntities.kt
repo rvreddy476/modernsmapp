@@ -31,6 +31,11 @@ import kotlinx.coroutines.flow.Flow
  * Plaintext note: message text lives here in the app's private storage, like
  * every other cached API response. When E2EE lands these columns hold
  * ciphertext and decryption moves behind the chat-unlock boundary.
+ *
+ * Exception (24 Oct 2026): an outbox row of a HIDDEN chat never holds its
+ * body in plain text — core/chat seals it (AES-GCM, Keystore key) into
+ * `extrasJson` and leaves the other content columns empty; see
+ * `HiddenOutbox.kt`. No schema change: the sealed envelope is the marker.
  */
 @Entity(tableName = "chat_conversation")
 data class ChatConversationEntity(
@@ -169,6 +174,18 @@ interface ChatDao {
 
     @Query("SELECT * FROM chat_pending_send WHERE conversationId = :conversationId ORDER BY createdAtMillis ASC")
     fun pendingSendsFor(conversationId: String): Flow<List<ChatPendingSendEntity>>
+
+    /**
+     * Every outbox row, parked ones included (hidden chats, 24 Oct 2026): the
+     * pass that seals a hidden conversation's plain rows and the wipes on
+     * reset / delete need the failed rows too.
+     */
+    @Query("SELECT * FROM chat_pending_send ORDER BY createdAtMillis ASC")
+    suspend fun allPendingSends(): List<ChatPendingSendEntity>
+
+    /** Rewrites one outbox row in place (same key) — how a plain hidden-chat row becomes sealed. */
+    @androidx.room.Update
+    suspend fun updatePendingSend(row: ChatPendingSendEntity)
 
     @Query("UPDATE chat_pending_send SET attempts = attempts + 1 WHERE idempotencyKey = :key")
     suspend fun recordAttempt(key: String)

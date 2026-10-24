@@ -169,6 +169,9 @@ class HiddenChats @Inject constructor(
             is HiddenResult.Ok -> {
                 vault.forget(viewerId)
                 tokens.drop(HiddenDropReason.Changed)
+                // The old secrets' chats (deleted outright in strict mode):
+                // nothing queued for them may wait on this device.
+                store.get().dropHiddenOutbox()
                 _settings.value = HiddenSettings(configured = true, strict = strict ?: (_settings.value?.strict == true))
                 HiddenResult.Ok(Unit)
             }
@@ -219,6 +222,9 @@ class HiddenChats @Inject constructor(
         }
         val rows = all.filter { it.id.isNotBlank() }.map { it.toDomain().copy(locked = true) }
         tokens.markLocked(rows.map { it.id })
+        // A row queued in plain text for one of these (before this build, or
+        // before this process knew) is sealed as soon as the id is known.
+        store.get().protectHiddenOutbox()
         _rows.value = rows
         return HiddenResult.Ok(rows)
     }
@@ -235,6 +241,8 @@ class HiddenChats @Inject constructor(
                     HiddenResult.Err(HiddenError.Unknown(status = 200, code = null))
                 } else {
                     tokens.setOpen(token, r.value?.expiresAt)
+                    // What waited while the chats were locked goes now.
+                    store.get().resumeHiddenSends()
                     HiddenResult.Ok(Unit)
                 }
             }
@@ -283,6 +291,8 @@ class HiddenChats @Inject constructor(
             is HiddenResult.Ok -> {
                 tokens.unmarkLocked(conversationId)
                 _rows.value = _rows.value?.filterNot { it.id == conversationId }
+                // Its sealed sends need the open token, which is held now.
+                store.get().resumeHiddenSends()
                 scope.launch { store.get().syncInbox() }
                 HiddenResult.Ok(Unit)
             }

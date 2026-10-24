@@ -4,6 +4,7 @@ import com.google.common.truth.Truth.assertThat
 import com.google.common.truth.Truth.assertWithMessage
 import com.us.android.core.auth.SessionStateProvider
 import com.us.android.core.chat.data.ChatApi
+import com.us.android.core.chat.data.isSealed
 import com.us.android.core.model.SessionState
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -42,6 +43,12 @@ class HiddenChatsHttpTest {
     private var refreshes = 0
     private lateinit var tokens: HiddenChatTokens
     private val vault = FakeVault()
+
+    // Hidden chats × outbox: the store's queue, drains and key, observable.
+    private val chatDao = FakeChatDao()
+    private val outboxScheduler = CountingScheduler()
+    private val outboxKeys = SoftwareOutboxKeys()
+    private lateinit var store: com.us.android.core.chat.data.ChatStore
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -105,7 +112,8 @@ class HiddenChatsHttpTest {
         val session = object : SessionStateProvider {
             override val sessionState: StateFlow<SessionState> = MutableStateFlow(SessionState.Authenticated("me", "s1"))
         }
-        val store = testStore(FakeChatDao(), InboxApi(), tokens)
+        val store = testStore(chatDao, InboxApi(), tokens, outboxScheduler, AesGcmOutboxCipher(outboxKeys))
+        this.store = store
         return HiddenChats(api, tokens, vault, Provider { store }, Provider { session }, scope)
     }
 
@@ -460,6 +468,82 @@ class HiddenChatsHttpTest {
         h.openWithSealedPassword("stale")
 
         assertThat(vault.has("me")).isFalse()
+    }
+
+    // ── Hidden chats × outbox ────────────────────────────────────────────
+
+    private fun queued(key: String, conversationId: String, text: String) = com.us.android.core.database.ChatPendingSendEntity(
+        idempotencyKey = key,
+        conversationId = conversationId,
+        text = text,
+        mediaId = null,
+        createdAtMillis = 1,
+        attempts = 0,
+        failed = false,
+    )
+
+    @Test
+    fun `reading the hidden list seals a plain row queued for one of its chats`() = runTest {
+        chatDao.sends["old"] = queued("old", "h1", "typed before the fix")
+        chatDao.sends["n"] = queued("n", "c2", "normal")
+
+        revealedHidden(backgroundScope)
+
+        assertThat(chatDao.sends["old"]!!.isSealed()).isTrue()
+        assertThat(chatDao.sends["old"].toString()).doesNotContain("typed before the fix")
+        assertThat(chatDao.sends["n"]!!.text).isEqualTo("normal")
+    }
+
+    @Test
+    fun `opening the chats sends what waited for them`() = runTest {
+        val h = revealedHidden(backgroundScope)
+        route("POST", "/v1/chat/hidden/open") { ok(opened) }
+        val before = outboxScheduler.drainsAsked
+
+        h.open("right-pass")
+
+        assertThat(outboxScheduler.drainsAsked).isGreaterThan(before)
+    }
+
+    @Test
+    fun `a refused open asks for no drain`() = runTest {
+        val h = revealedHidden(backgroundScope)
+        route("POST", "/v1/chat/hidden/open") { status(401, """{"error":{"code":"WRONG_PASSWORD"}}""") }
+        val before = outboxScheduler.drainsAsked
+
+        h.open("wrong-pass")
+
+        assertThat(outboxScheduler.drainsAsked).isEqualTo(before)
+    }
+
+    @Test
+    fun `a reset (strict or not) drops the hidden chats' queued sends and the outbox key`() = runTest {
+        val h = revealedHidden(backgroundScope)
+        route("POST", "/v1/chat/hidden/open") { ok(opened) }
+        h.open("right-pass")
+        val hiddenKey = store.enqueueSend("h1", "the secret plan")!!
+        val normalKey = store.enqueueSend("c2", "hello")!!
+        assertThat(chatDao.sends.keys).containsExactly(hiddenKey, normalKey)
+        route("POST", "/v1/chat/hidden/reset") { ok("""{"data":{}}""") }
+
+        h.reset("abcd1234", "secret-pass", stepUpToken = null, strict = true)
+
+        assertThat(chatDao.sends.keys).containsExactly(normalKey)
+        assertThat(outboxKeys.destroyed).isEqualTo(1)
+    }
+
+    @Test
+    fun `a refused reset keeps the queue`() = runTest {
+        val h = revealedHidden(backgroundScope)
+        route("POST", "/v1/chat/hidden/open") { ok(opened) }
+        h.open("right-pass")
+        val hiddenKey = store.enqueueSend("h1", "the secret plan")!!
+        route("POST", "/v1/chat/hidden/reset") { status(403, """{"error":{"code":"STEP_UP_REQUIRED"}}""") }
+
+        h.reset("abcd1234", "secret-pass", stepUpToken = null)
+
+        assertThat(chatDao.sends.keys).containsExactly(hiddenKey)
+        assertThat(outboxKeys.destroyed).isEqualTo(0)
     }
 
     /** The lock call is fire-and-forget on the app scope; wait for it on the real network thread. */

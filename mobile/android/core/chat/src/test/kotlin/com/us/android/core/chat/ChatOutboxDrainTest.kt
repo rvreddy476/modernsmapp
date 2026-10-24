@@ -81,6 +81,10 @@ class ChatOutboxDrainTest {
             sends.remove(key)
         }
         override suspend fun clearPendingSends() = Unit
+        override suspend fun allPendingSends(): List<ChatPendingSendEntity> = sends.values.sortedBy { it.createdAtMillis }
+        override suspend fun updatePendingSend(row: ChatPendingSendEntity) {
+            if (row.idempotencyKey in sends) sends[row.idempotencyKey] = row
+        }
     }
 
     /** Scripted ChatApi: each send consults [script] by idempotency key. */

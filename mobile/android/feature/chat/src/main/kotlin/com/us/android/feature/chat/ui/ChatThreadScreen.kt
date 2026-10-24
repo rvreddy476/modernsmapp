@@ -377,6 +377,12 @@ fun ChatThreadScreen(
                 }
             }
 
+            HiddenOutboxNote(
+                status = render.hiddenOutbox,
+                onRetry = viewModel::retryHiddenFailed,
+                onDiscard = viewModel::discardHiddenFailed,
+            )
+
             ComposerStatus(render = render, onDismissError = viewModel::dismissAttachmentError)
 
             render.replyingTo?.let { original ->
@@ -999,6 +1005,41 @@ private fun SendingAttachmentsRow(count: Int) {
             style = MaterialTheme.typography.bodySmall,
             color = UsTheme.extended.textMuted,
         )
+    }
+}
+
+@Composable
+private fun HiddenOutboxNote(
+    status: com.us.android.core.chat.data.HiddenOutboxStatus,
+    onRetry: () -> Unit,
+    onDiscard: () -> Unit,
+) {
+    // A hidden chat's queued sends are sealed and never drawn as bubbles;
+    // this one line says they exist and are going (24 Oct 2026).
+    com.us.android.core.chat.data.hiddenOutboxWaitingNote(status)?.let { note ->
+        Text(
+            text = note,
+            style = MaterialTheme.typography.bodySmall,
+            color = UsTheme.extended.textMuted,
+            modifier = Modifier
+                .padding(horizontal = UsTheme.spacing.pageHorizontal)
+                .testTag("hidden-outbox-waiting"),
+        )
+    }
+    com.us.android.core.chat.data.hiddenOutboxFailedNote(status)?.let { note ->
+        Row(
+            modifier = Modifier.padding(horizontal = UsTheme.spacing.pageHorizontal),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                text = note,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.error,
+                modifier = Modifier.weight(1f).testTag("hidden-outbox-failed"),
+            )
+            TextButton(onClick = onRetry) { Text("Retry") }
+            TextButton(onClick = onDiscard) { Text("Discard") }
+        }
     }
 }
 

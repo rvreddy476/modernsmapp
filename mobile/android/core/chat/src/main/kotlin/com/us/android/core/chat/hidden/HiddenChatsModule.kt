@@ -61,6 +61,10 @@ abstract class HiddenChatsBindings {
     @Binds
     abstract fun bindUnlockVault(impl: KeystoreHiddenUnlockVault): HiddenUnlockVault
 
+    /** Seals hidden chats' queued sends; its own background Keystore key. */
+    @Binds
+    abstract fun bindOutboxCipher(impl: KeystoreHiddenOutboxCipher): HiddenOutboxCipher
+
     @Binds
     @IntoSet
     abstract fun bindTeardown(impl: HiddenChatsTeardown): SessionTeardownTask

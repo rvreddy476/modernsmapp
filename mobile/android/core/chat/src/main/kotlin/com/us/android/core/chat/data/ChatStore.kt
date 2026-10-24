@@ -10,6 +10,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.flowOf
+import com.us.android.core.chat.hidden.HiddenOutboxCipher
 import com.us.android.core.chat.hidden.HiddenTokenStore
 import com.us.android.core.chat.hidden.withoutHiddenChats
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -124,11 +125,35 @@ class ChatStore @Inject constructor(
      * nothing is hidden.
      */
     private val hidden: HiddenTokenStore? = null,
+    /**
+     * Hidden chats × outbox (24 Oct 2026, HiddenOutbox.kt): seals a hidden
+     * chat's queued sends. Null in older tests — a hidden chat's send is
+     * then REFUSED, never queued in plain text.
+     */
+    private val outboxCipher: HiddenOutboxCipher? = null,
 ) {
 
     private val hiddenIds: Flow<Set<String>> get() = hidden?.lockedIds ?: flowOf(emptySet())
 
     private fun isHidden(conversationId: String): Boolean = hidden?.isLocked(conversationId) == true
+
+    /**
+     * An outbox row of a hidden chat: sealed (the durable marker — it survives
+     * process death, when the in-memory hidden-id set starts empty), or of a
+     * conversation this process knows is hidden.
+     */
+    private fun isHiddenRow(row: ChatPendingSendEntity): Boolean = row.isSealed() || isHidden(row.conversationId)
+
+    /** True while the hidden chats are OPEN (the open token is held and live). */
+    private fun hiddenChatsOpen(): Boolean = hidden?.open() != null
+
+    /**
+     * The row as Room may hold it: a hidden chat's row sealed, every other
+     * row exactly as given. Null when a hidden chat's row cannot be sealed —
+     * the caller writes nothing (fail closed, never plain text).
+     */
+    private fun storable(row: ChatPendingSendEntity): ChatPendingSendEntity? =
+        if (!isHidden(row.conversationId)) row else outboxCipher?.let { row.sealedWith(it) }
 
     /** The signed-in user's id, or blank when signed out (or unknown). */
     private fun viewerId(): String =
@@ -318,6 +343,9 @@ class ChatStore @Inject constructor(
                 datingIds.forEach { dao.deleteConversation(it) }
             }
         }
+        // The hidden ids just learned: a plain row an older build (or a send
+        // before this process knew) queued for one of them is sealed now.
+        if (hiddenNow.isNotEmpty()) sealHiddenOutbox(generation)
         if (ok) _reconnectPending.value = false
         return ok
     }
@@ -512,6 +540,12 @@ class ChatStore @Inject constructor(
         guardedWrite {
             parityDao?.clearConversationMessages(conversationId)
             dao.deleteConversation(conversationId)
+            // A hidden chat's queued sends go with it — including after an
+            // Unhide (the rows stay sealed until they are sent). A normal
+            // chat's queue is untouched, as it always was.
+            dao.allPendingSends()
+                .filter { it.conversationId == conversationId && isHiddenRow(it) }
+                .forEach { dao.completeSend(it.idempotencyKey) }
         }
     }
 
@@ -519,6 +553,9 @@ class ChatStore @Inject constructor(
      * Hidden chats: these conversations leave this device's cache — the row
      * and every cached message. Hide chat, a re-lock and a
      * `conversation_hidden` frame all land here.
+     *
+     * Their queued sends STAY (they go when the chats are next opened), but
+     * sealed: a plain row of a chat that just became hidden is sealed here.
      */
     suspend fun purgeHiddenLocally(conversationIds: Collection<String>) {
         if (conversationIds.isEmpty()) return
@@ -527,6 +564,91 @@ class ChatStore @Inject constructor(
                 parityDao?.clearConversationMessages(id)
                 dao.deleteConversation(id)
             }
+        }
+        sealHiddenOutbox(generation = null)
+    }
+
+    /**
+     * Seals every plain outbox row of a conversation known to be hidden —
+     * the upgrade path for rows queued before this fix, and for a chat that
+     * became hidden with sends still queued. Runs at every drain, sync,
+     * hide and re-lock, so a plain row survives at most until the hidden id
+     * is learned. A row that cannot be sealed (no key) stays as it is and is
+     * tried again next time; it is never deleted unsent.
+     *
+     * When a plain row was sealed, its old bytes may still sit in the WAL and
+     * free pages, so the disk is scrubbed once (best effort, as at logout).
+     */
+    private suspend fun sealHiddenOutbox(generation: Long?): Int {
+        val cipher = outboxCipher ?: return 0
+        if (hidden == null) return 0
+        val sealed = guardedWrite(generation) {
+            var count = 0
+            dao.allPendingSends()
+                .filter { !it.isSealed() && isHidden(it.conversationId) }
+                .forEach { row ->
+                    row.sealedWith(cipher)?.let {
+                        dao.updatePendingSend(it)
+                        count++
+                    }
+                }
+            // Inside the guarded block, so a logout teardown waits for it
+            // instead of racing two VACUUMs.
+            if (count > 0) runCatching { dao.scrubDeletedRowsFromDisk() }
+            count
+        } ?: 0
+        return sealed
+    }
+
+    /** The hidden list was just read (reveal): seal what is queued, plain, for any of its chats. */
+    suspend fun protectHiddenOutbox(): Int = sealHiddenOutbox(generation = null)
+
+    /**
+     * Hidden-chats reset (strict or not): the old secrets' chats are gone for
+     * this device, so every hidden chat's queued send goes — sealed, or of a
+     * conversation known hidden — and the outbox key with them, which turns
+     * any sealed bytes left on disk into noise. Normal chats' rows stay.
+     */
+    suspend fun dropHiddenOutbox() {
+        guardedWrite {
+            dao.allPendingSends().filter { isHiddenRow(it) }.forEach { dao.completeSend(it.idempotencyKey) }
+        }
+        outboxCipher?.destroyKey()
+    }
+
+    /**
+     * The hidden chats were just opened (chat password or biometric): what
+     * waited for them goes now. Also after Unhide, while the open token is
+     * still held — a sealed row needs it to be opened and sent.
+     */
+    fun resumeHiddenSends() = kickDrain()
+
+    /**
+     * What a hidden chat's thread shows of its queued sends: COUNTS, never a
+     * body (a sealed body is opened only to send it). Empty for normal chats.
+     */
+    fun hiddenOutboxFor(conversationId: String): Flow<HiddenOutboxStatus> =
+        dao.pendingSendsFor(conversationId).combine(hiddenIds) { rows, ids ->
+            val mine = rows.filter { it.isSealed() || it.conversationId in ids }
+            HiddenOutboxStatus(waiting = mine.count { !it.failed }, failed = mine.count { it.failed })
+        }
+
+    /** Retry for a hidden chat's parked rows (the note's Retry). */
+    suspend fun retryHiddenFailed(conversationId: String) {
+        guardedWrite {
+            dao.allPendingSends()
+                .filter { it.conversationId == conversationId && it.failed && isHiddenRow(it) }
+                .forEach { dao.retry(it.idempotencyKey) }
+        } ?: return
+        kickDrain()
+    }
+
+    /** Discard for a hidden chat's parked rows (the note's Discard). */
+    suspend fun discardHiddenFailed(conversationId: String) {
+        guardedWrite {
+            dao.allPendingSends()
+                .filter { it.conversationId == conversationId && it.failed && isHiddenRow(it) }
+                .forEach { dao.completeSend(it.idempotencyKey) }
         }
     }
 
@@ -641,29 +763,35 @@ class ChatStore @Inject constructor(
         lease: Long? = null,
     ): String? {
         val key = ChatRepository.newIdempotencyKey()
-        guardedWrite(lease) {
-            dao.enqueueSend(
-                ChatPendingSendEntity(
-                    idempotencyKey = key,
-                    conversationId = conversationId,
-                    text = typed.text,
-                    mediaId = typed.mediaId,
-                    createdAtMillis = System.currentTimeMillis(),
-                    attempts = 0,
-                    failed = false,
-                    type = typed.type,
-                    extrasJson = json.encodeToString(TypedSend.serializer(), typed),
-                ),
-            )
-        } ?: return null
+        val row = storable(
+            ChatPendingSendEntity(
+                idempotencyKey = key,
+                conversationId = conversationId,
+                text = typed.text,
+                mediaId = typed.mediaId,
+                createdAtMillis = System.currentTimeMillis(),
+                attempts = 0,
+                failed = false,
+                type = typed.type,
+                extrasJson = json.encodeToString(TypedSend.serializer(), typed),
+            ),
+        ) ?: return null
+        guardedWrite(lease) { dao.enqueueSend(row) } ?: return null
         kickDrain()
         return key
     }
 
     // ── The durable send outbox ─────────────────────────────────────────
 
+    /**
+     * The queued sends a thread draws as bubbles. A hidden chat's rows are
+     * never among them — locked or open, their bodies are not opened for
+     * display; [hiddenOutboxFor] gives the thread their count instead.
+     */
     fun pendingSendsFor(conversationId: String): Flow<List<PendingSend>> =
-        dao.pendingSendsFor(conversationId).map { rows ->
+        dao.pendingSendsFor(conversationId).combine(hiddenIds) { rows, ids ->
+            rows.filterNot { it.isSealed() || it.conversationId in ids }
+        }.map { rows ->
             rows.map {
                 PendingSend(
                     idempotencyKey = it.idempotencyKey,
@@ -701,22 +829,23 @@ class ChatStore @Inject constructor(
         lease: Long? = null,
     ): String? {
         val key = ChatRepository.newIdempotencyKey()
-        guardedWrite(lease) {
-            dao.enqueueSend(
-                ChatPendingSendEntity(
-                    idempotencyKey = key,
-                    conversationId = conversationId,
-                    text = text,
-                    mediaId = mediaId,
-                    replyToId = replyTo?.messageId,
-                    replyToPreview = replyTo?.preview,
-                    replyToSenderId = replyTo?.senderId,
-                    createdAtMillis = System.currentTimeMillis(),
-                    attempts = 0,
-                    failed = false,
-                ),
-            )
-        } ?: return null
+        // A hidden chat's row is sealed BEFORE it reaches Room; one that
+        // cannot be sealed is refused (null) rather than stored in plain text.
+        val row = storable(
+            ChatPendingSendEntity(
+                idempotencyKey = key,
+                conversationId = conversationId,
+                text = text,
+                mediaId = mediaId,
+                replyToId = replyTo?.messageId,
+                replyToPreview = replyTo?.preview,
+                replyToSenderId = replyTo?.senderId,
+                createdAtMillis = System.currentTimeMillis(),
+                attempts = 0,
+                failed = false,
+            ),
+        ) ?: return null
+        guardedWrite(lease) { dao.enqueueSend(row) } ?: return null
         kickDrain()
         return key
     }
@@ -779,6 +908,9 @@ class ChatStore @Inject constructor(
         // best-effort, so a worker that outlives teardown must find every
         // one of its writes refused — including after a new session opens.
         val generation = acquireWriteLease() ?: return true
+        // A plain row of a chat now known hidden is sealed before anything
+        // else (the upgrade path for rows queued before sealing existed).
+        sealHiddenOutbox(generation)
         while (true) {
             val rows = guardedWrite(generation) { dao.pendingSends() } ?: return true
             if (rows.isEmpty()) return true
@@ -787,12 +919,22 @@ class ChatStore @Inject constructor(
             val blockedConversations = mutableSetOf<String>()
             for (row in rows) {
                 if (row.conversationId in blockedConversations) continue
+                // HIDDEN AND LOCKED: not attempted at all — no 403
+                // CHAT_LOCKED, no attempt counted, no lockout noise. The row
+                // waits (and holds its chat's order) until the chats are
+                // opened, which kicks a drain ([resumeHiddenSends]).
+                if (isHiddenRow(row) && !hiddenChatsOpen()) {
+                    blockedConversations += row.conversationId
+                    continue
+                }
                 when (attemptSend(row, generation)) {
                     SendAttempt.Delivered, SendAttempt.Parked -> progressed = true
                     SendAttempt.RetryLater -> {
                         retryableFailure = true
                         blockedConversations += row.conversationId
                     }
+                    // Locked while it was on the wire: waits like the rest.
+                    SendAttempt.Waiting -> blockedConversations += row.conversationId
                     SendAttempt.Halted -> return true
                 }
             }
@@ -801,11 +943,18 @@ class ChatStore @Inject constructor(
         }
     }
 
-    private enum class SendAttempt { Delivered, Parked, RetryLater, Halted }
+    private enum class SendAttempt { Delivered, Parked, RetryLater, Waiting, Halted }
 
-    private suspend fun attemptSend(row: ChatPendingSendEntity, generation: Long): SendAttempt {
-        guardedWrite(generation) { dao.recordAttempt(row.idempotencyKey) }
+    private suspend fun attemptSend(stored: ChatPendingSendEntity, generation: Long): SendAttempt {
+        guardedWrite(generation) { dao.recordAttempt(stored.idempotencyKey) }
             ?: return SendAttempt.Halted
+        // A sealed body is opened HERE, in memory, for this one send — never
+        // written back. One that can no longer be opened (the key is gone)
+        // can never be sent: parked for the user to discard.
+        val row = stored.openedWith(outboxCipher) ?: run {
+            guardedWrite(generation) { dao.markFailed(stored.idempotencyKey) } ?: return SendAttempt.Halted
+            return SendAttempt.Parked
+        }
         val mediaId = row.mediaId
         val replyTo = row.replyToId?.let {
             ReplyRef(
@@ -845,6 +994,16 @@ class ChatStore @Inject constructor(
                 SendAttempt.Delivered
             }
             is com.us.android.core.common.result.AppResult.Failure -> {
+                // 403 CHAT_LOCKED: the chat is hidden and its open token died
+                // (or was never sent — a row queued before this process knew
+                // the chat was hidden). The headers interceptor has already
+                // learned the id. Not a refusal of the MESSAGE: the row stays
+                // queued, sealed, until the chats are opened again.
+                val locked = result.error.isChatLocked()
+                if (locked && (stored.isSealed() || isHidden(stored.conversationId))) {
+                    if (!stored.isSealed()) sealHiddenOutbox(generation)
+                    return SendAttempt.Waiting
+                }
                 val permanent = !result.error.isRetryableSend()
                 if (permanent || row.attempts + 1 >= MAX_SEND_ATTEMPTS) {
                     // Parked for an explicit user retry — never silently
@@ -930,6 +1089,9 @@ class ChatStore @Inject constructor(
             // included. The commit result is honoured, not discarded.
             val markerPersisted = scrubRecovery.setPending(true)
             dao.wipeAll()
+            // Every hidden chat's sealed send went with the wipe; the key
+            // goes too, so a sealed byte the scrub misses is noise.
+            outboxCipher?.destroyKey()
             val scrubbed = dao.scrubDeletedRowsFromDisk()
             if (scrubbed) {
                 // Nothing is owed. Clearing may fail harmlessly: a stale
@@ -1161,6 +1323,12 @@ fun com.us.android.core.common.error.AppError.isRetryableSend(): Boolean = when 
 }
 
 private const val HTTP_SERVER_ERROR = 500
+
+/** 403 `CHAT_LOCKED`: a hidden chat asked about without a live open token. */
+fun com.us.android.core.common.error.AppError.isChatLocked(): Boolean =
+    this is com.us.android.core.common.error.AppError.Forbidden && code.equals(CHAT_LOCKED_CODE, ignoreCase = true)
+
+private const val CHAT_LOCKED_CODE = "CHAT_LOCKED"
 
 /**
  * The UI-facing outcome of a durable text send. [Queued] means the outbox

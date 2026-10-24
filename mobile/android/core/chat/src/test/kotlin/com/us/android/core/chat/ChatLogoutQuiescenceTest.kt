@@ -105,6 +105,10 @@ class ChatLogoutQuiescenceTest {
             sends.remove(key)
         }
         override suspend fun clearPendingSends() = sends.clear()
+        override suspend fun allPendingSends(): List<ChatPendingSendEntity> = sends.values.sortedBy { it.createdAtMillis }
+        override suspend fun updatePendingSend(row: ChatPendingSendEntity) {
+            if (row.idempotencyKey in sends) sends[row.idempotencyKey] = row
+        }
     }
 
     /** ChatApi whose send and conversation-list calls hold on gates. */

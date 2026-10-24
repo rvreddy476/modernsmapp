@@ -38,6 +38,7 @@ import kotlinx.coroutines.flow.first
 import com.us.android.core.chat.data.DurableSendResult
 import com.us.android.core.chat.data.Message
 import com.us.android.core.chat.data.PendingSend
+import com.us.android.core.chat.data.HiddenOutboxStatus
 import com.us.android.core.chat.data.ReplyRef
 import com.us.android.core.chat.data.TYPING_TTL_MILLIS
 import com.us.android.core.chat.data.ThreadController
@@ -72,6 +73,11 @@ import javax.inject.Inject
 data class ThreadRenderState(
     val thread: ThreadUiState,
     val pendingSends: List<PendingSend> = emptyList(),
+    /**
+     * A hidden chat's queued sends, as COUNTS (24 Oct 2026): their bodies are
+     * sealed and never drawn as bubbles; the thread shows a small note.
+     */
+    val hiddenOutbox: HiddenOutboxStatus = HiddenOutboxStatus(),
     val offline: Boolean = false,
     /**
      * Photos CHOSEN but not yet sent.
@@ -311,6 +317,7 @@ class ChatThreadViewModel @Inject constructor(
         refresh()
         observeSession()
         observePendingSends()
+        observeHiddenOutbox()
         viewModelScope.launch { store.clearUnread(conversationId) }
         if (extras != null) {
             _state.update { it.copy(parityEnabled = true) }
@@ -539,6 +546,12 @@ class ChatThreadViewModel @Inject constructor(
     fun abandonSend(idempotencyKey: String) = viewModelScope.launch {
         store.abandonSend(idempotencyKey)
     }
+
+    /** A hidden chat's parked sends: try them again (the note's Retry). */
+    fun retryHiddenFailed() = viewModelScope.launch { store.retryHiddenFailed(conversationId) }
+
+    /** A hidden chat's parked sends: drop them (the note's Discard). */
+    fun discardHiddenFailed() = viewModelScope.launch { store.discardHiddenFailed(conversationId) }
 
     /**
      * Send, for a composer carrying photos: upload each, then queue it.
@@ -1212,6 +1225,26 @@ class ChatThreadViewModel @Inject constructor(
             // ONE emission: the outbox row leaves in the same frame the
             // confirmed bubble arrives — no gap, no double.
             _state.value = _state.value.copy(thread = controller.snapshot(), pendingSends = rows)
+        }
+    }
+
+    /**
+     * A hidden chat's queued sends (24 Oct 2026): counted, never drawn. When
+     * the count drops a row was delivered, and its confirmed copy is in Room
+     * — merged here, as [observePendingSends] does for bubbles it can see.
+     */
+    private fun observeHiddenOutbox() = viewModelScope.launch {
+        var previousWaiting = 0
+        store.hiddenOutboxFor(conversationId).collect { status ->
+            val delivered = status.waiting < previousWaiting
+            previousWaiting = status.waiting
+            if (delivered) {
+                mergeConfirmed()
+                _state.update { it.copy(thread = controller.snapshot(), hiddenOutbox = status) }
+            } else if (_state.value.hiddenOutbox != status) {
+                // A normal chat always reads empty: nothing changes, nothing is emitted.
+                _state.update { it.copy(hiddenOutbox = status) }
+            }
         }
     }
 
