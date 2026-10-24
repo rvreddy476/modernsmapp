@@ -313,6 +313,9 @@ type Service struct {
 	// database.
 	engagementPostSeam func(ctx context.Context, postID, viewerID uuid.UUID) (*postgres.Post, error)
 	commentLookupSeam  func(ctx context.Context, commentID uuid.UUID) (*postgres.Comment, error)
+	// repostTargetSeam stands in for the post read the repost routes make
+	// (heart_only.go: loadRepostTarget).
+	repostTargetSeam func(ctx context.Context, postID uuid.UUID) (*postgres.Post, error)
 
 	// Copyright title review (copyright_title_review.go, migration 073):
 	// the store slice (nil = the Postgres store), this replica's catalogue
@@ -1870,19 +1873,18 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 	repostCount, _ := s.pgStore.GetRepostCount(ctx, id)
 	detail.RepostCount = repostCount
 
-	// A post is repostable if it's public (non-private)
-	detail.IsRepostable = repostableVisibility(p.Visibility)
+	// A post is repostable if it's public (non-private) and not a reel
+	// (heart_only.go).
+	detail.IsRepostable = repostableContent(p.ContentType, p.Visibility)
 
 	// Enrich with viewer-specific state
 	if viewerID != nil {
-		reaction, err := s.scyllaStore.GetReaction(ctx, id, *viewerID)
+		stored, err := s.scyllaStore.GetReaction(ctx, id, *viewerID)
 		if err != nil {
 			return nil, fmt.Errorf("load viewer reaction: %w", err)
 		}
-		if reaction != "" {
-			detail.ViewerReaction = &reaction
-			detail.HasReacted = true
-		}
+		// An old emoji reads as the heart (heart_only.go).
+		applyViewerReaction(detail, stored)
 		bookmarked, err := s.pgStore.IsBookmarked(ctx, *viewerID, id)
 		if err != nil {
 			return nil, fmt.Errorf("load viewer bookmark: %w", err)
@@ -2257,16 +2259,13 @@ func (s *Service) loadPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID 
 			Post:         &post,
 			Counts:       counts,
 			RepostCount:  repostCounts[post.ID],
-			IsRepostable: repostableVisibility(post.Visibility),
+			IsRepostable: repostableContent(post.ContentType, post.Visibility),
 		}
 
 		// Enrich with viewer-specific state
 		if viewerID != nil {
-			reaction := reactions[post.ID]
-			if reaction != "" {
-				detail.ViewerReaction = &reaction
-				detail.HasReacted = true
-			}
+			// An old emoji reads as the heart (heart_only.go).
+			applyViewerReaction(detail, reactions[post.ID])
 			detail.IsBookmarked = bookmarks[post.ID]
 			if repost := activeReposts[post.ID]; repost != nil {
 				detail.HasReposted = true
@@ -2366,6 +2365,10 @@ func (s *Service) TogglePin(ctx context.Context, postID, authorID uuid.UUID, pin
 }
 
 func (s *Service) React(ctx context.Context, postID, userID uuid.UUID, reaction string) error {
+	// Heart only (heart_only.go): before anything is read or written.
+	if err := checkPostReaction(reaction); err != nil {
+		return err
+	}
 	// Audit C5 + H2: one fetch covers visibility + author-id for
 	// the PostReacted event. Was: visibility check did a GetPost,
 	// the goroutine below did *another* GetPost just for AuthorID.
@@ -2484,7 +2487,12 @@ func (s *Service) Unreact(ctx context.Context, postID, userID uuid.UUID) error {
 }
 
 func (s *Service) GetMyReaction(ctx context.Context, postID, userID uuid.UUID) (string, error) {
-	return s.scyllaStore.GetReaction(ctx, postID, userID)
+	stored, err := s.scyllaStore.GetReaction(ctx, postID, userID)
+	if err != nil {
+		return "", err
+	}
+	// An old emoji reads as the heart (heart_only.go).
+	return heartViewerReaction(stored), nil
 }
 
 // invalidateFeedHydration removes the per-viewer feed cache entry after a
@@ -2897,9 +2905,16 @@ func (s *Service) SharePost(ctx context.Context, postID, userID uuid.UUID, share
 	}
 
 	// Check circle restriction
-	post, err := s.pgStore.GetPost(ctx, postID)
+	post, err := s.loadRepostTarget(ctx, postID)
 	if err != nil || post == nil {
 		return nil, fmt.Errorf("POST_NOT_FOUND")
+	}
+	// A reel is never reposted (heart_only.go); an external share is not a
+	// repost and is unaffected.
+	if isRepostShareType(shareType) {
+		if err := checkRepostContentType(post.ContentType); err != nil {
+			return nil, err
+		}
 	}
 	if shareRestricted(post.Visibility, shareType) {
 		return nil, fmt.Errorf("CIRCLE_SHARE_RESTRICTED")
@@ -3549,8 +3564,11 @@ type ReactionToggleResult struct {
 
 // ToggleReaction sets, changes, or removes a reaction on a post.
 func (s *Service) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, reactionType string) (*ReactionToggleResult, error) {
-	if !postgres.ValidReactionTypes[reactionType] {
-		return nil, fmt.Errorf("INVALID_REACTION_TYPE")
+	// Heart only (heart_only.go). The store toggles any existing reaction
+	// off for a post, so a viewer whose old emoji reads as the heart
+	// un-hearts on the next tap rather than being switched to "like".
+	if err := checkPostReaction(reactionType); err != nil {
+		return nil, err
 	}
 
 	// Audit C5 + H2 combined: one fetch checks visibility *and*
@@ -3605,7 +3623,7 @@ func (s *Service) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, 
 	return &ReactionToggleResult{
 		ReactionType: newType,
 		IsSet:        isSet,
-		Counts:       counts,
+		Counts:       foldPostReactionCounts(counts),
 	}, nil
 }
 
@@ -3822,8 +3840,13 @@ func (s *Service) PublishVideo(ctx context.Context, postID, userID uuid.UUID) er
 }
 
 // GetReactionCounts returns the breakdown of reaction counts for a post.
+// Every emoji folds into "like" (heart_only.go).
 func (s *Service) GetReactionCounts(ctx context.Context, postID uuid.UUID) (*postgres.ReactionCounts, error) {
-	return s.pgStore.GetReactionCounts(ctx, "post", postID)
+	counts, err := s.pgStore.GetReactionCounts(ctx, "post", postID)
+	if err != nil {
+		return nil, err
+	}
+	return foldPostReactionCounts(counts), nil
 }
 
 // ============================================================
@@ -4076,9 +4099,16 @@ func (s *Service) CreateRepost(ctx context.Context, input CreateRepostInput) (*R
 	}
 
 	// 1. Verify original post exists and is not deleted (GetPost filters deleted_at IS NULL)
-	post, err := s.pgStore.GetPost(ctx, input.PostID)
+	post, err := s.loadRepostTarget(ctx, input.PostID)
 	if err != nil || post == nil {
 		return nil, fmt.Errorf("POST_NOT_FOUND")
+	}
+
+	// 1b. A reel is never reposted, plain or quote (heart_only.go). An
+	// existing reel repost stays; switching its type is a new repost and is
+	// refused here too, while undo (UndoRepost) still works.
+	if err := checkRepostContentType(post.ContentType); err != nil {
+		return nil, err
 	}
 
 	// 2. Visibility check — private or followers-only posts cannot be reposted

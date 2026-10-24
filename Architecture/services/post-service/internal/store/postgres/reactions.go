@@ -78,11 +78,10 @@ func (s *Store) ToggleReaction(ctx context.Context, targetType string, targetID,
 		return ReactionToggle{}, err
 	}
 
-	result := ReactionToggle{NewType: reactionType, PrevType: existingType, IsSet: true}
+	result := nextReactionToggle(targetType, existingType, reactionType)
 	switch {
-	case existingType == reactionType:
-		// Same type — toggle off (remove)
-		result = ReactionToggle{PrevType: existingType}
+	case !result.IsSet:
+		// Toggle off (remove)
 		_, err = tx.Exec(ctx, `
 			DELETE FROM reactions
 			WHERE target_type = $1 AND target_id = $2 AND user_id = $3
@@ -116,6 +115,21 @@ func (s *Store) ToggleReaction(ctx context.Context, targetType string, targetID,
 		return ReactionToggle{}, err
 	}
 	return result, nil
+}
+
+// nextReactionToggle decides what a toggle does. The same type toggles off;
+// a different type switches; none adds. A post takes the heart only
+// (service/heart_only.go, 24 Oct 2026), so on a post ANY existing reaction
+// toggles off: a viewer whose old emoji reads as the heart un-hearts on the
+// next tap instead of being switched to "like" and left hearted.
+func nextReactionToggle(targetType, existingType, reactionType string) ReactionToggle {
+	switch {
+	case existingType == "":
+		return ReactionToggle{NewType: reactionType, IsSet: true}
+	case existingType == reactionType, targetType == "post":
+		return ReactionToggle{PrevType: existingType}
+	}
+	return ReactionToggle{NewType: reactionType, PrevType: existingType, IsSet: true}
 }
 
 // GetReactionCounts returns reaction counts by type for a target.

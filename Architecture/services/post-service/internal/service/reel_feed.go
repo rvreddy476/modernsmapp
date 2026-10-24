@@ -71,7 +71,8 @@ func (s *Service) GetReelFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	for _, reel := range filtered {
 		item := ReelFeedItem{Post: reel, ViewerDisliked: disliked[reel.ID]}
 		if reaction, err := s.scyllaStore.GetReelReaction(ctx, reel.ID, userID); err == nil {
-			item.ViewerReaction = reaction
+			// An old emoji reads as the heart (heart_only.go).
+			item.ViewerReaction = heartViewerReaction(reaction)
 		}
 		if saved, err := s.scyllaStore.IsReelSaved(ctx, reel.ID, userID); err == nil {
 			item.IsSaved = saved

@@ -79,6 +79,9 @@ func (h *Handler) ReactToReel(c *gin.Context) {
 		return
 	}
 	if err := h.svc.ReactToReel(c.Request.Context(), reelID, userID, req.Reaction); err != nil {
+		if writeHeartOnlyError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -240,6 +243,9 @@ func (h *Handler) ShareReel(c *gin.Context) {
 		return
 	}
 	if err := h.svc.ShareReel(c.Request.Context(), reelID, userID, req.ShareType); err != nil {
+		if writeHeartOnlyError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}

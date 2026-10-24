@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/atpost/post-service/internal/engagement"
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/atpost/post-service/internal/store/scylla"
 	"github.com/google/uuid"
@@ -115,6 +116,11 @@ type HandlerTestDeps struct {
 	// (hashtag_follows.go).
 	SavedCollections savedCollectionStore
 	HashtagFollows   hashtagFollowStore
+	// Heart-only and no reel repost (heart_only.go): the post the repost
+	// routes read, and the engagement rate limiter (nil leaves the routes
+	// that rate-limit unusable, as before).
+	RepostTarget func(ctx context.Context, postID uuid.UUID) (*postgres.Post, error)
+	RateLimiter  *engagement.RateLimiter
 }
 
 // CreditProfile is one identity-profile account as the credit reads name it.
@@ -178,6 +184,8 @@ func NewForHandlerTests(d HandlerTestDeps) *Service {
 		pins:                   d.Pins,
 		savedCollections:       d.SavedCollections,
 		hashtagFollows:         d.HashtagFollows,
+		repostTargetSeam:       d.RepostTarget,
+		rateLimiter:            d.RateLimiter,
 	}
 	if d.Relationships != nil {
 		s.storyAudience = NewStoryAudience(d.Relationships)

@@ -69,6 +69,7 @@ var membersReadExempt = map[string]string{
 	"decorateHashtagDetails":      "loader: counts + media state inside FollowedHashtagPosts, which redacts",
 	"GetPost":                     "loader: service-internal callers need the full row; the GET /v1/posts/:postId and restore handlers redact (members_read_routes_test.go in internal/http)",
 	"loadPostForEngagement":       "loader: engagement gate, never serialised",
+	"loadRepostTarget":            "loader: the repost routes' content-type and visibility checks, never serialised",
 	"loadVisiblePost":             "loader: read gate, never serialised",
 	"getCachedPostBody":           "loader: the body cache, never serialised by itself",
 	"approvedPostsForMedia":       "loader: media byte gate (media_access.go), never serialised",

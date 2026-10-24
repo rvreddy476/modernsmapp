@@ -1519,6 +1519,9 @@ func (h *Handler) React(c *gin.Context) {
 		return
 	}
 	if err := h.svc.React(c.Request.Context(), postID, userID, req.Reaction); err != nil {
+		if writeHeartOnlyError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -2038,6 +2041,9 @@ func (h *Handler) SharePost(c *gin.Context) {
 
 	result, err := h.svc.SharePost(c.Request.Context(), postID, userID, req.ShareType, req.QuoteText)
 	if err != nil {
+		if writeHeartOnlyError(c, err) {
+			return
+		}
 		switch err.Error() {
 		case "RATE_LIMITED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many shares, please slow down", nil)
@@ -2404,8 +2410,8 @@ func (h *Handler) ToggleReaction(c *gin.Context) {
 	result, err := h.svc.ToggleReaction(c.Request.Context(), postID, userID, req.ReactionType)
 	if err != nil {
 		switch {
-		case err.Error() == "INVALID_REACTION_TYPE":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REACTION_TYPE", "Valid types: like, love, haha, wow, sad, angry", nil)
+		case writeHeartOnlyError(c, err):
+			// 400 REACTION_NOT_ALLOWED: a post takes the heart only.
 		case err.Error() == "RATE_LIMITED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many reactions, please slow down", nil)
 		case errors.Is(err, service.ErrPostNotFound), errors.Is(err, service.ErrPostNotVisible):
@@ -3493,7 +3499,7 @@ func (h *Handler) CreateRepost(c *gin.Context) {
 		SourceContextID:   sourceCtxID,
 	})
 	if err != nil {
-		if writeStandingError(c, err) {
+		if writeStandingError(c, err) || writeHeartOnlyError(c, err) {
 			return
 		}
 		switch err.Error() {

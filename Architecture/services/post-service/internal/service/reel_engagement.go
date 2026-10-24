@@ -11,6 +11,10 @@ import (
 // first (liked_reels.go); both writes are idempotent, so a failure is an
 // error the client retries.
 func (s *Service) ReactToReel(ctx context.Context, reelID, userID uuid.UUID, reaction string) error {
+	// Heart only (heart_only.go): before anything is written.
+	if err := checkPostReaction(reaction); err != nil {
+		return err
+	}
 	if err := s.indexReaction(ctx, reelID, userID, reaction, true); err != nil {
 		return err
 	}
@@ -25,9 +29,14 @@ func (s *Service) UnreactToReel(ctx context.Context, reelID, userID uuid.UUID) e
 	return s.scyllaStore.UnreactToReel(ctx, reelID, userID)
 }
 
-// GetReelReaction returns the viewer's reaction for a reel.
+// GetReelReaction returns the viewer's reaction for a reel; an old emoji
+// reads as the heart (heart_only.go).
 func (s *Service) GetReelReaction(ctx context.Context, reelID, userID uuid.UUID) (string, error) {
-	return s.scyllaStore.GetReelReaction(ctx, reelID, userID)
+	stored, err := s.scyllaStore.GetReelReaction(ctx, reelID, userID)
+	if err != nil {
+		return "", err
+	}
+	return heartViewerReaction(stored), nil
 }
 
 // AddReelComment adds a comment to a reel.
@@ -66,8 +75,22 @@ func (s *Service) ListReelComments(ctx context.Context, reelID uuid.UUID, viewer
 	return s.scyllaStore.ListReelComments(ctx, reelID, limit)
 }
 
-// ShareReel records a reel share.
+// ShareReel records a reel share. A repost or quote share of a reel is
+// refused (heart_only.go); a direct or external share is a link sent
+// elsewhere and is recorded as before.
 func (s *Service) ShareReel(ctx context.Context, reelID, userID uuid.UUID, shareType string) error {
+	if isRepostShareType(shareType) {
+		post, err := s.loadRepostTarget(ctx, reelID)
+		if err != nil {
+			return err
+		}
+		if post == nil {
+			return ErrPostNotFound
+		}
+		if err := checkRepostContentType(post.ContentType); err != nil {
+			return err
+		}
+	}
 	return s.scyllaStore.ShareReel(ctx, reelID, userID, shareType)
 }
 
