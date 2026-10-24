@@ -136,8 +136,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/blocked-and-muted", h.GetBlockedAndMuted)
 		// Batch relationship lookup
 		v1.POST("/relationships/batch", h.GetRelationshipBatch)
-		// How many connections the viewer shares with each target, for a
-		// whole list in one query. POST because the input is a list of ids;
+		// How many friends (mutual follows) the viewer shares with each
+		// target, for a whole list in one query. The path keeps its old
+		// "connections" name for existing callers; since 24 Oct 2026 it
+		// counts mutual follows. POST because the input is a list of ids;
 		// it reads, so it is registered in readOnlyPostRoutes.
 		v1.POST("/connections/mutual-counts", h.GetMutualConnectionCounts)
 
@@ -858,9 +860,19 @@ func (h *Handler) RemoveConnection(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "removed"}, nil)
 }
 
+// GetConnections lists a user's (legacy) connections. It sits behind the
+// same audience rule as the follower / following lists
+// (callerAllowedToReadConnections): the owner always; a signed-in user the
+// owner blocked, or a non-follower of a private account, gets the empty
+// list; a signed-out edge caller reads a public account's list only.
+// Hidden accounts are left out of the list by the store.
 func (h *Handler) GetConnections(c *gin.Context) {
 	userID, limit, offset, ok := parsePaginatedUserID(c)
 	if !ok {
+		return
+	}
+	if !h.callerAllowedToReadConnections(c, userID) {
+		api.JSON(c.Writer, http.StatusOK, []uuid.UUID{}, nil)
 		return
 	}
 	ids, err := h.legacyConnections.GetConnections(c.Request.Context(), userID, limit, offset)
@@ -1165,10 +1177,12 @@ func (h *Handler) GetRelationshipBatch(c *gin.Context) {
 	c.JSON(http.StatusOK, result)
 }
 
-// GetMutualConnectionCounts answers "N mutual connections" for a list of
-// people at once. The pre-existing /v1/graph/mutuals is per-pair and counts
-// mutual FOLLOWERS, which is neither the right question nor the right shape
-// for a grid of cards.
+// GetMutualConnectionCounts answers "N mutual friends" for a list of people
+// at once (People you may know). Since connections were retired (24 Oct
+// 2026) a friend is a mutual follow (store.MutualFollowCounts); the route
+// and response shape are unchanged. The pre-existing /v1/graph/mutuals is
+// per-pair and lists people who follow both, which is neither the right
+// question nor the right shape for a grid of cards.
 func (h *Handler) GetMutualConnectionCounts(c *gin.Context) {
 	var req struct {
 		ViewerID  string   `json:"viewer_id"`
@@ -1199,7 +1213,7 @@ func (h *Handler) GetMutualConnectionCounts(c *gin.Context) {
 		}
 		targetIDs = append(targetIDs, uid)
 	}
-	counts, err := h.svc.MutualConnectionCounts(c.Request.Context(), viewerID, targetIDs)
+	counts, err := h.svc.MutualFollowCounts(c.Request.Context(), viewerID, targetIDs)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return

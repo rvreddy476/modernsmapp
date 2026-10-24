@@ -46,10 +46,8 @@ var allowedPrivacyValues = map[string]map[string]bool{
 		"everyone_message_requests": true, "followers_message_requests": true,
 		"people_i_follow": true, "no_one": true,
 	},
-	"who_can_send_connection_request": {
-		"no_one": true, "friends_of_friends_or_contacts": true, "friends_of_friends": true,
-		"contacts_only": true, "everyone": true,
-	},
+	// who_can_send_connection_request is gone (24 Oct 2026): connection
+	// requests are retired, so the key is ignored on PUT and never returned.
 	// connections_only is legacy: accepting a message request no longer
 	// creates a graph connection, so it is mapped to accepted_chats_only on
 	// write (normaliseLegacySettings) and never stored.
@@ -177,7 +175,6 @@ func validatePrivacySettings(s *store.UserSettings) error {
 		{"account_visibility", "account_visibility", s.AccountVisibility},
 		{"allow_comments_from", "allow_comments_from", s.AllowCommentsFrom},
 		{"who_can_message", "who_can_message", s.WhoCanMessage},
-		{"who_can_send_connection_request", "who_can_send_connection_request", s.WhoCanSendConnectionRequest},
 		{"who_can_call", "who_can_call", s.WhoCanCall},
 		{"who_can_add_to_groups", "who_can_add_to_groups", s.WhoCanAddToGroups},
 		{"chat_availability", "chat_availability", s.ChatAvailability},

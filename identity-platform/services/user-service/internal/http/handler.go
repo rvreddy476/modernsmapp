@@ -202,12 +202,16 @@ func (h *Handler) GetUserSettings(c *gin.Context) {
 // is a pointer, and only the fields present in the JSON body are applied.
 // under_18_mode and privacy_version are deliberately absent — both are
 // server-controlled (spec §5.4) and cannot be set by the user.
+//
+// who_can_send_connection_request is gone too (24 Oct 2026, connections
+// retired). An older app that still sends it is not refused: the decoder
+// ignores unknown keys, so the rest of its PUT applies and the key does
+// nothing, whatever its value.
 type updateSettingsRequest struct {
 	AccountVisibility             *string `json:"account_visibility"`
 	AllowMessagesFrom             *string `json:"allow_messages_from"`
 	AllowCommentsFrom             *string `json:"allow_comments_from"`
 	WhoCanMessage                 *string `json:"who_can_message"`
-	WhoCanSendConnectionRequest   *string `json:"who_can_send_connection_request"`
 	WhoCanCall                    *string `json:"who_can_call"`
 	WhoCanAddToGroups             *string `json:"who_can_add_to_groups"`
 	WhoCanSeeOnlineStatus         *string `json:"who_can_see_online_status"`
@@ -258,9 +262,6 @@ func (r *updateSettingsRequest) applyTo(cur *store.UserSettings) {
 	}
 	if r.WhoCanMessage != nil {
 		cur.WhoCanMessage = *r.WhoCanMessage
-	}
-	if r.WhoCanSendConnectionRequest != nil {
-		cur.WhoCanSendConnectionRequest = *r.WhoCanSendConnectionRequest
 	}
 	if r.WhoCanCall != nil {
 		cur.WhoCanCall = *r.WhoCanCall

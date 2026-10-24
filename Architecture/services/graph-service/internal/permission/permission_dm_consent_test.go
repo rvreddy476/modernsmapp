@@ -277,12 +277,18 @@ func TestCallAcceptedChatsOnly(t *testing.T) {
 		})
 	}
 	// The accepted chat grants calls, messaging (TestAcceptedChatKeepsMessaging)
-	// and presence (TestPresenceAcceptedChat) and nothing else: no group-adds.
+	// and, since connections were retired (24 Oct 2026), membership of the
+	// connections_only audience — group adds included
+	// (TestConnectionsOnlyAudienceAfterRetirement). It is still not a
+	// follow: friends-only comments and a private account's posts stay shut.
 	f := Facts{AcceptedChat: true}
-	p := Privacy{WhoCanMessage: "people_i_follow", WhoCanAddToGroups: "connections_only", WhoCanSeeOnlineStatus: "connections_only"}
-	for _, a := range []Action{ActionAddToGroup} {
+	p := Privacy{WhoCanMessage: "people_i_follow", WhoCanAddToGroups: "connections_only", AllowCommentsFrom: "friends", AccountVisibility: "private"}
+	if d := Resolve(ActionAddToGroup, f, p); !d.Allowed {
+		t.Errorf("add_to_group on an accepted chat under connections_only = %+v, want allowed", d)
+	}
+	for _, a := range []Action{ActionComment, ActionViewPosts} {
 		if d := Resolve(a, f, p); d.Allowed {
-			t.Errorf("%s allowed on a bare accepted chat; it must grant calls and messaging only", a)
+			t.Errorf("%s allowed on a bare accepted chat; a chat is not a follow", a)
 		}
 	}
 }

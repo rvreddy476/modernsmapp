@@ -45,7 +45,7 @@ var SchemaRequirements = []schemaguard.Requirement{
 	// Keep this list byte-identical to userSettingsColumns in users.go.
 	{Table: "usr.user_settings", Columns: []string{
 		"user_id", "account_visibility", "allow_messages_from", "allow_comments_from",
-		"who_can_message", "who_can_send_connection_request", "who_can_call", "who_can_add_to_groups",
+		"who_can_message", "who_can_call", "who_can_add_to_groups",
 		"who_can_see_online_status", "who_can_see_read_receipts", "who_can_see_last_seen",
 		"who_can_see_profile_photo",
 		"allow_phone_discovery", "allow_contact_sync_match", "discoverable_by_phone_to_contacts",

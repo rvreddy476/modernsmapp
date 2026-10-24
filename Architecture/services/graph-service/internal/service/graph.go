@@ -895,8 +895,9 @@ func (s *Service) EnsureConnection(ctx context.Context, a, b uuid.UUID) (bool, e
 	return created, nil
 }
 
-// MutualConnectionCounts returns how many connections the viewer shares
-// with each target. One query for the whole batch — see the store method.
-func (s *Service) MutualConnectionCounts(ctx context.Context, viewerID uuid.UUID, targetIDs []uuid.UUID) (map[uuid.UUID]int, error) {
-	return s.store.MutualConnectionCounts(ctx, viewerID, targetIDs)
+// MutualFollowCounts returns how many friends (mutual follows) the viewer
+// shares with each target. One query for the whole batch — see the store
+// method. It replaced the mutual-connection count on 24 Oct 2026.
+func (s *Service) MutualFollowCounts(ctx context.Context, viewerID uuid.UUID, targetIDs []uuid.UUID) (map[uuid.UUID]int, error) {
+	return s.store.MutualFollowCounts(ctx, viewerID, targetIDs)
 }

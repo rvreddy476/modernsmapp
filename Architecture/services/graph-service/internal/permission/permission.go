@@ -52,6 +52,13 @@ type Facts struct {
 	// by the graph store as a bounded EXISTS — adjacency lists never leave
 	// the service.
 	SecondDegree bool
+	// FollowSecondDegree is true when someone (a third party) follows BOTH
+	// the actor and the target: the follow-graph stand-in for
+	// friends-of-friends now that no new connections form (24 Oct 2026).
+	// Only who_can_add_to_groups=friends_of_friends_invites reads it, and it
+	// earns an INVITATION, never a direct add. Populated only when that
+	// setting is in play; a lookup failure reads false (fail closed).
+	FollowSecondDegree bool
 	// DatingMatch is true when the pair holds an OPEN dating match — the
 	// same conversation row that gates dating messages in chat-service
 	// (source_app='dating', closed_at IS NULL, neither side departed).
@@ -68,8 +75,8 @@ type Facts struct {
 	// AcceptedChat is true when the pair holds an ACCEPTED 1:1 chat (a direct
 	// conversation, or a message request the recipient accepted). It grants
 	// calls under who_can_call=accepted_chats_only, keeps the pair messaging,
-	// and satisfies connections_only for online status and last seen (founder,
-	// 23 Oct 2026: an accepted chat IS the connection for presence). The
+	// and puts the actor in the connections_only audience (founder, 23 Oct
+	// 2026: an accepted chat IS the connection; see InConnectionsAudience). The
 	// state lives in chat message-service; like DatingMatch it is populated
 	// only when its provider is wired (ACCEPTED_CHAT_CALLS_ENABLED) and fails
 	// CLOSED to false.
@@ -93,16 +100,34 @@ type Facts struct {
 
 func (f Facts) mutualFollow() bool { return f.ActorFollowsTarget && f.TargetFollowsActor }
 
+// InConnectionsAudience is who a "connections_only" setting admits now that
+// connections are retired (24 Oct 2026; no new connection can form, so the
+// literal rule would freeze every such setting at the pairs connected before
+// that day):
+//
+//	an existing (legacy) connection
+//	OR the target follows the actor   (following = consent, DM consent model)
+//	OR an accepted 1:1 chat           (an accepted chat IS the connection)
+//
+// A follow the other way round (the actor follows the target) is NOT enough:
+// anyone can follow anyone, so it would make connections_only mean
+// everyone. Used by online status, last seen, read receipts, profile photo
+// and group adds. who_can_call keeps its own rule (resolveCall).
+func (f Facts) InConnectionsAudience() bool {
+	return f.IsConnection || f.TargetFollowsActor || f.AcceptedChat
+}
+
 // Privacy is the subset of the target's privacy settings the matrix consults.
+// who_can_send_connection_request is gone (24 Oct 2026): connections are
+// retired, so nothing reads it.
 type Privacy struct {
-	WhoCanMessage               string
-	WhoCanCall                  string
-	WhoCanAddToGroups           string
-	WhoCanSendConnectionRequest string
-	WhoCanSeeOnlineStatus       string
-	WhoCanSeeReadReceipts       string
-	WhoCanSeeLastSeen           string
-	WhoCanSeeProfilePhoto       string
+	WhoCanMessage         string
+	WhoCanCall            string
+	WhoCanAddToGroups     string
+	WhoCanSeeOnlineStatus string
+	WhoCanSeeReadReceipts string
+	WhoCanSeeLastSeen     string
+	WhoCanSeeProfilePhoto string
 	// ChatAvailability 'paused' is stronger than any who_can_message value:
 	// it denies new conversations, requests and group adds toward the target
 	// and suppresses the target's presence/receipt disclosures (chat
@@ -370,8 +395,8 @@ func resolveCall(f Facts, p Privacy) Decision {
 // answers 410 CONNECTIONS_RETIRED), so no client may offer a Connect button.
 const ReasonConnectionsRetired = "connections_retired"
 
-// resolveConnect always denies. who_can_send_connection_request no longer
-// controls anything; an existing connection still reads as
+// resolveConnect always denies (who_can_send_connection_request was removed
+// with the retirement); an existing connection still reads as
 // already_connected so a client showing old data is not told otherwise.
 func resolveConnect(f Facts, _ Privacy) Decision {
 	if f.IsConnection {
@@ -462,15 +487,19 @@ func resolveAddToGroup(f Facts, p Privacy) Decision {
 		// behaviour shipped on the old value.)
 		return Decision{Allowed: false, Fallback: "group_invitation", Reason: "consent_required"}
 	case "friends_of_friends_invites":
-		if f.IsConnection {
+		// The connections_only audience adds directly; a friend of a friend
+		// may only INVITE. "Friend of a friend" is a shared legacy connection
+		// or, since connections are retired, someone who follows both of
+		// them (FollowSecondDegree).
+		if f.InConnectionsAudience() {
 			return Decision{Allowed: true}
 		}
-		if f.SecondDegree {
+		if f.SecondDegree || f.FollowSecondDegree {
 			return Decision{Allowed: false, Fallback: "group_invitation", Reason: "consent_required"}
 		}
 		return Decision{Allowed: false, Reason: "privacy_disallows"}
 	case "connections_only", "connections_and_contacts":
-		if f.IsConnection {
+		if f.InConnectionsAudience() {
 			return Decision{Allowed: true}
 		}
 		return Decision{Allowed: false, Reason: "privacy_connections_only"}
@@ -496,14 +525,16 @@ const ReasonReciprocity = "reciprocity"
 //	target paused                -> deny (chat_paused)
 //	viewer hides their own       -> deny (reciprocity, as on WhatsApp)
 //	everyone                     -> allow
-//	connections_only             -> a legacy accepted connection OR an
-//	                                accepted 1:1 chat. Accepting a message
-//	                                request no longer creates a connection
-//	                                (DM consent model, 20 Oct), so the old
-//	                                connection-only check hid presence from
-//	                                almost every pair — the "no green dot,
-//	                                no last seen" bug, twin of the 22 Oct
-//	                                single-tick bug.
+//	connections_only             -> the connections_only audience
+//	                                (InConnectionsAudience: a legacy
+//	                                connection, the target following the
+//	                                viewer, or an accepted 1:1 chat).
+//	                                Accepting a message request no longer
+//	                                creates a connection (DM consent model,
+//	                                20 Oct), so the old connection-only check
+//	                                hid presence from almost every pair — the
+//	                                "no green dot, no last seen" bug, twin of
+//	                                the 22 Oct single-tick bug.
 //	no_one / unknown             -> deny
 //
 // A block in either direction is already fatal at the top of Resolve.
@@ -518,7 +549,7 @@ func resolvePresence(f Facts, p Privacy, setting string, viewerHides bool) Decis
 	case "everyone":
 		return Decision{Allowed: true}
 	case "connections_only":
-		if f.IsConnection || f.AcceptedChat {
+		if f.InConnectionsAudience() {
 			return Decision{Allowed: true}
 		}
 		return Decision{Allowed: false, Reason: "privacy_connections_only"}
@@ -534,12 +565,14 @@ func HidesPresence(p Privacy, setting string) bool {
 	return p.Unavailable || p.chatPaused() || setting == "no_one" || setting == ""
 }
 
+// resolveVisibility gates read receipts and the profile photo / profile view:
+// everyone, the connections_only audience (InConnectionsAudience), or no one.
 func resolveVisibility(f Facts, setting string) Decision {
 	switch setting {
 	case "everyone":
 		return Decision{Allowed: true}
 	case "connections_only":
-		if f.IsConnection {
+		if f.InConnectionsAudience() {
 			return Decision{Allowed: true}
 		}
 		return Decision{Allowed: false, Reason: "privacy_connections_only"}

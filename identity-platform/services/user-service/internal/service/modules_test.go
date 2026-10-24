@@ -128,20 +128,19 @@ func TestValidRegionCode(t *testing.T) {
 // allowed value, so each test flips exactly one field.
 func validSettings() *store.UserSettings {
 	return &store.UserSettings{
-		AccountVisibility:           "public",
-		AllowCommentsFrom:           "everyone",
-		WhoCanMessage:               "everyone_message_requests",
-		WhoCanSendConnectionRequest: "everyone",
-		WhoCanCall:                  "accepted_chats_only",
-		WhoCanAddToGroups:           "connections_only",
-		WhoCanSeeOnlineStatus:       "everyone",
-		WhoCanSeeReadReceipts:       "everyone",
-		WhoCanSeeLastSeen:           "everyone",
-		WhoCanSeeProfilePhoto:       "everyone",
-		ChatAvailability:            "enabled",
-		ChatBubbleStyle:             "default",
-		WhoCanMention:               "everyone",
-		WhoCanTag:                   "everyone",
+		AccountVisibility:     "public",
+		AllowCommentsFrom:     "everyone",
+		WhoCanMessage:         "everyone_message_requests",
+		WhoCanCall:            "accepted_chats_only",
+		WhoCanAddToGroups:     "connections_only",
+		WhoCanSeeOnlineStatus: "everyone",
+		WhoCanSeeReadReceipts: "everyone",
+		WhoCanSeeLastSeen:     "everyone",
+		WhoCanSeeProfilePhoto: "everyone",
+		ChatAvailability:      "enabled",
+		ChatBubbleStyle:       "default",
+		WhoCanMention:         "everyone",
+		WhoCanTag:             "everyone",
 	}
 }
 

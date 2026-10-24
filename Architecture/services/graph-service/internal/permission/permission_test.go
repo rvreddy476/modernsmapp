@@ -79,12 +79,13 @@ func TestResolveConnectAndFollow(t *testing.T) {
 		t.Error("connect to an existing connection should be denied")
 	}
 	// Connections are retired (24 Oct 2026): connect is denied for every
-	// setting and every relationship, with its own reason.
-	for _, setting := range []string{"", "no_one", "everyone", "friends_of_friends", "friends_of_friends_or_contacts", "contacts_only"} {
-		for _, f := range []Facts{{}, {TargetFollowsActor: true}, {ActorFollowsTarget: true, TargetFollowsActor: true}, {SecondDegree: true}} {
-			d := Resolve(ActionConnect, f, Privacy{WhoCanSendConnectionRequest: setting})
+	// relationship and every settings snapshot, with its own reason
+	// (who_can_send_connection_request itself was removed the same day).
+	for _, p := range []Privacy{{}, {WhoCanMessage: "everyone_message_requests", WhoCanAddToGroups: "everyone_with_approval"}, strictForTest()} {
+		for _, f := range []Facts{{}, {TargetFollowsActor: true}, {ActorFollowsTarget: true, TargetFollowsActor: true}, {SecondDegree: true}, {AcceptedChat: true}} {
+			d := Resolve(ActionConnect, f, p)
 			if d.Allowed || d.Reason != ReasonConnectionsRetired {
-				t.Errorf("connect with who_can_send_connection_request=%q facts=%+v = %+v, want deny %s", setting, f, d, ReasonConnectionsRetired)
+				t.Errorf("connect with privacy=%+v facts=%+v = %+v, want deny %s", p, f, d, ReasonConnectionsRetired)
 			}
 		}
 	}
@@ -96,6 +97,15 @@ func TestResolveConnectAndFollow(t *testing.T) {
 	}
 	if d := Resolve(ActionFollow, Facts{Blocked: true}, Privacy{}); d.Allowed {
 		t.Error("follow should be denied when blocked")
+	}
+}
+
+// strictForTest is a settings snapshot with every field set to a value.
+func strictForTest() Privacy {
+	return Privacy{
+		WhoCanMessage: "no_one", WhoCanCall: "no_one", WhoCanAddToGroups: "no_one",
+		WhoCanSeeOnlineStatus: "no_one", WhoCanSeeReadReceipts: "no_one", WhoCanSeeLastSeen: "no_one",
+		WhoCanSeeProfilePhoto: "no_one", ChatAvailability: "enabled",
 	}
 }
 

@@ -39,8 +39,9 @@ type UserSettings struct {
 	AllowMessagesFrom string    `json:"allow_messages_from"`
 	AllowCommentsFrom string    `json:"allow_comments_from"`
 
-	WhoCanMessage                 string `json:"who_can_message"`
-	WhoCanSendConnectionRequest   string `json:"who_can_send_connection_request"`
+	WhoCanMessage string `json:"who_can_message"`
+	// who_can_send_connection_request was removed on 24 Oct 2026
+	// (connections retired): not returned, ignored on PUT, column kept.
 	WhoCanCall                    string `json:"who_can_call"`
 	WhoCanAddToGroups             string `json:"who_can_add_to_groups"`
 	WhoCanSeeOnlineStatus         string `json:"who_can_see_online_status"`
@@ -89,8 +90,13 @@ type UserSettings struct {
 
 // userSettingsColumns is the column list shared by GetSettings and the
 // UpdateSettings RETURNING clause, in scanUserSettings order.
+//
+// who_can_send_connection_request is deliberately absent (24 Oct 2026):
+// connection requests are retired, so the setting is neither read nor
+// written. The column stays in usr.user_settings (auth-service setup.sql
+// owns it, NOT NULL DEFAULT 'everyone') and keeps whatever it held.
 const userSettingsColumns = `user_id, account_visibility, allow_messages_from, allow_comments_from,
-	who_can_message, who_can_send_connection_request, who_can_call, who_can_add_to_groups,
+	who_can_message, who_can_call, who_can_add_to_groups,
 	who_can_see_online_status, who_can_see_read_receipts, who_can_see_last_seen, who_can_see_profile_photo,
 	allow_phone_discovery, allow_contact_sync_match, discoverable_by_phone_to_contacts,
 	strict_privacy_mode, block_unknown_calls, auto_filter_abusive_content, under_18_mode,
@@ -113,7 +119,7 @@ func keywordsOrEmpty(k []string) []string {
 func scanUserSettings(row pgx.Row, us *UserSettings) error {
 	err := row.Scan(
 		&us.UserID, &us.AccountVisibility, &us.AllowMessagesFrom, &us.AllowCommentsFrom,
-		&us.WhoCanMessage, &us.WhoCanSendConnectionRequest, &us.WhoCanCall, &us.WhoCanAddToGroups,
+		&us.WhoCanMessage, &us.WhoCanCall, &us.WhoCanAddToGroups,
 		&us.WhoCanSeeOnlineStatus, &us.WhoCanSeeReadReceipts, &us.WhoCanSeeLastSeen, &us.WhoCanSeeProfilePhoto,
 		&us.AllowPhoneDiscovery, &us.AllowContactSyncMatch, &us.DiscoverableByPhoneToContacts,
 		&us.StrictPrivacyMode, &us.BlockUnknownCalls, &us.AutoFilterAbusiveContent, &us.Under18Mode,
@@ -274,39 +280,38 @@ func (s *Store) UpdateSettings(ctx context.Context, settings *UserSettings) (*Us
 			allow_messages_from = $3,
 			allow_comments_from = $4,
 			who_can_message = $5,
-			who_can_send_connection_request = $6,
-			who_can_call = $7,
-			who_can_add_to_groups = $8,
-			who_can_see_online_status = $9,
-			who_can_see_read_receipts = $10,
-			who_can_see_last_seen = $11,
-			who_can_see_profile_photo = $12,
-			allow_phone_discovery = $13,
-			allow_contact_sync_match = $14,
-			discoverable_by_phone_to_contacts = $15,
-			strict_privacy_mode = $16,
-			block_unknown_calls = $17,
-			auto_filter_abusive_content = $18,
-			under_18_mode = $19,
-			tc_close_friends_posts = $20,
-			tc_location_pings = $21,
-			tc_after_hours_posts = $22,
-			tc_audio_room_invite = $23,
-			chat_availability = $24,
-			send_typing_indicators = $25,
-			show_message_preview = $26,
-			dm_safe_mode = $27,
-			dm_sensitive_media_filter = $28,
-			dm_filtered_keywords = $29,
-			chat_bubble_style = $30,
-			who_can_mention = $31,
-			who_can_tag = $32,
+			who_can_call = $6,
+			who_can_add_to_groups = $7,
+			who_can_see_online_status = $8,
+			who_can_see_read_receipts = $9,
+			who_can_see_last_seen = $10,
+			who_can_see_profile_photo = $11,
+			allow_phone_discovery = $12,
+			allow_contact_sync_match = $13,
+			discoverable_by_phone_to_contacts = $14,
+			strict_privacy_mode = $15,
+			block_unknown_calls = $16,
+			auto_filter_abusive_content = $17,
+			under_18_mode = $18,
+			tc_close_friends_posts = $19,
+			tc_location_pings = $20,
+			tc_after_hours_posts = $21,
+			tc_audio_room_invite = $22,
+			chat_availability = $23,
+			send_typing_indicators = $24,
+			show_message_preview = $25,
+			dm_safe_mode = $26,
+			dm_sensitive_media_filter = $27,
+			dm_filtered_keywords = $28,
+			chat_bubble_style = $29,
+			who_can_mention = $30,
+			who_can_tag = $31,
 			privacy_version = privacy_version + 1,
 			updated_at = NOW()
 		WHERE user_id = $1
 		RETURNING `+userSettingsColumns,
 		settings.UserID, settings.AccountVisibility, settings.AllowMessagesFrom, settings.AllowCommentsFrom,
-		settings.WhoCanMessage, settings.WhoCanSendConnectionRequest, settings.WhoCanCall, settings.WhoCanAddToGroups,
+		settings.WhoCanMessage, settings.WhoCanCall, settings.WhoCanAddToGroups,
 		settings.WhoCanSeeOnlineStatus, settings.WhoCanSeeReadReceipts, settings.WhoCanSeeLastSeen, settings.WhoCanSeeProfilePhoto,
 		settings.AllowPhoneDiscovery, settings.AllowContactSyncMatch, settings.DiscoverableByPhoneToContacts,
 		settings.StrictPrivacyMode, settings.BlockUnknownCalls, settings.AutoFilterAbusiveContent, settings.Under18Mode,

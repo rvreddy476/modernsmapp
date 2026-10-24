@@ -6,7 +6,9 @@ import (
 )
 
 // Who may read whose follower / following lists (GET /followers/:userId,
-// GET /following/:userId, GET /:userId/following-ids).
+// GET /following/:userId, GET /:userId/following-ids) and legacy connection
+// list (GET /connections/:userId — it had no rule at all until 24 Oct 2026,
+// so anyone could read anyone's connections).
 //
 // Audit HG4 hid the lists from users the owner has blocked. The security
 // sweep of 21 Oct 2026 added two more rules:

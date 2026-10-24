@@ -33,7 +33,7 @@ type Handler struct {
 	verifier         serviceTokenVerifier
 	store            *store.Store
 	graphURL         string
-	presenceStore    *presence.Store
+	presenceStore    presenceBackend
 	graphClient      *http.Client
 	internalKey      string
 	internalRouteKey string
@@ -1039,8 +1039,9 @@ func (h *Handler) Heartbeat(c *gin.Context) {
 }
 
 // GetOnlineStatus returns whether the target user is online.
-// Due to privacy rules, only circle members (mutual friends) receive a truthful answer.
-// All other callers receive {"online": false} regardless of actual status (fail-closed).
+// Only a requester graph-service's see_online_status permission admits
+// (presenceVisibleTo) receives a truthful answer; everyone else receives
+// {"online": false} regardless of actual status (fail-closed).
 func (h *Handler) GetOnlineStatus(c *gin.Context) {
 	requesterIDStr := c.GetHeader("X-User-Id")
 	requesterID, err := uuid.Parse(requesterIDStr)
@@ -1056,30 +1057,12 @@ func (h *Handler) GetOnlineStatus(c *gin.Context) {
 		return
 	}
 
-	// Self-check: always truthful
-	inCircle := requesterID == targetID
-
-	if !inCircle {
-		// Check mutual friendship (circle membership) via graph-service.
-		// Fail-closed: if graph-service is unreachable, treat as not in circle.
-		url := fmt.Sprintf("%s/v1/graph/relationship?user_id=%s&other_id=%s", h.graphURL, requesterID, targetID)
-		graphReq, _ := h.newGraphRequest(c.Request.Context(), url)
-		resp, err := h.graphClient.Do(graphReq)
-		if err == nil {
-			defer resp.Body.Close()
-			var body struct {
-				Data struct {
-					IsFriend bool `json:"is_friend"`
-				} `json:"data"`
-			}
-			if json.NewDecoder(resp.Body).Decode(&body) == nil {
-				inCircle = body.Data.IsFriend
-			}
-		}
-		// If err != nil, inCircle stays false (fail-closed for privacy)
-	}
-
-	if !inCircle {
+	// The self-check is always truthful; anyone else needs graph-service's
+	// see_online_status permission. This used to read an `is_friend` key that
+	// /v1/graph/relationship has never returned (it says is_connection), so
+	// every other user was reported offline.
+	visible := h.presenceVisibleTo(c.Request.Context(), requesterID, []string{targetID.String()})
+	if !visible[targetID.String()] {
 		api.JSON(c.Writer, http.StatusOK, map[string]bool{"online": false}, nil)
 		return
 	}
@@ -1096,9 +1079,9 @@ func (h *Handler) GetOnlineStatus(c *gin.Context) {
 
 // GetOnlineStatusBatch returns online status for many users in a single call,
 // so a friends list does not need one request per friend. Privacy mirrors
-// GetOnlineStatus: only the requester's connections (and the requester
-// themselves) get a truthful answer; everyone else is reported offline
-// (fail-closed). The batch is capped at 100 ids.
+// GetOnlineStatus: only targets whose see_online_status permission admits the
+// requester (and the requester themselves) get a truthful answer; everyone
+// else is reported offline (fail-closed). The batch is capped at 100 ids.
 func (h *Handler) GetOnlineStatusBatch(c *gin.Context) {
 	requesterID, err := uuid.Parse(c.GetHeader("X-User-Id"))
 	if err != nil {
@@ -1142,42 +1125,17 @@ func (h *Handler) GetOnlineStatusBatch(c *gin.Context) {
 		return
 	}
 
-	// Privacy gate: a target is visible only if it is the requester or one of
-	// their connections. Page through the requester's FULL connection list
-	// (graph caps a page at 100) so a user with many friends is not silently
-	// truncated to the first page. On any error the set stays as-is —
-	// fail-closed, leak nothing.
-	circle := map[string]struct{}{requesterID.String(): {}}
-	for offset := 0; offset <= 5000; offset += 100 {
-		graphURL := fmt.Sprintf("%s/v1/graph/connections/%s?limit=100&offset=%d", h.graphURL, requesterID, offset)
-		graphReq, rerr := h.newGraphRequest(c.Request.Context(), graphURL)
-		if rerr != nil {
-			break
-		}
-		resp, derr := h.graphClient.Do(graphReq)
-		if derr != nil {
-			break
-		}
-		var body struct {
-			Data []string `json:"data"`
-		}
-		decErr := json.NewDecoder(resp.Body).Decode(&body)
-		resp.Body.Close()
-		if decErr != nil {
-			break
-		}
-		for _, id := range body.Data {
-			circle[id] = struct{}{}
-		}
-		if len(body.Data) < 100 {
-			break
-		}
-	}
+	// Privacy gate: graph-service's see_online_status decision per target
+	// (the requester themselves always passes). It used to be "one of the
+	// requester's legacy connections", a list that can no longer grow now
+	// that connections are retired (24 Oct 2026). Any error leaves a target
+	// hidden — fail-closed, leak nothing.
+	admitted := h.presenceVisibleTo(c.Request.Context(), requesterID, targets)
 
 	// Resolve presence for the visible subset only — one Redis round-trip.
 	visible := make([]string, 0, len(targets))
 	for _, t := range targets {
-		if _, ok := circle[t]; ok {
+		if admitted[t] {
 			visible = append(visible, t)
 		}
 	}

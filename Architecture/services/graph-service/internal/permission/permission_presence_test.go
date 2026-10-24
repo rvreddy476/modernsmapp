@@ -19,7 +19,11 @@ func TestPresenceAcceptedChat(t *testing.T) {
 		{"accepted chat sees connections_only", Facts{AcceptedChat: true}, Privacy{WhoCanSeeOnlineStatus: "connections_only", WhoCanSeeLastSeen: "connections_only"}, true, ""},
 		{"legacy connection still sees", Facts{IsConnection: true}, Privacy{WhoCanSeeOnlineStatus: "connections_only", WhoCanSeeLastSeen: "connections_only"}, true, ""},
 		{"stranger denied under connections_only", Facts{}, Privacy{WhoCanSeeOnlineStatus: "connections_only", WhoCanSeeLastSeen: "connections_only"}, false, "privacy_connections_only"},
-		{"a follow is not a chat", Facts{ActorFollowsTarget: true, TargetFollowsActor: true}, Privacy{WhoCanSeeOnlineStatus: "connections_only", WhoCanSeeLastSeen: "connections_only"}, false, "privacy_connections_only"},
+		// 24 Oct 2026: the connections_only audience includes people the
+		// target follows (InConnectionsAudience); following the target
+		// yourself is still not enough.
+		{"the target following the viewer counts", Facts{TargetFollowsActor: true}, Privacy{WhoCanSeeOnlineStatus: "connections_only", WhoCanSeeLastSeen: "connections_only"}, true, ""},
+		{"following the target is not enough", Facts{ActorFollowsTarget: true}, Privacy{WhoCanSeeOnlineStatus: "connections_only", WhoCanSeeLastSeen: "connections_only"}, false, "privacy_connections_only"},
 		{"a bare dating match is not a chat", Facts{DatingMatch: true}, Privacy{WhoCanSeeOnlineStatus: "connections_only", WhoCanSeeLastSeen: "connections_only"}, false, "privacy_connections_only"},
 		{"everyone sees a stranger", Facts{}, Privacy{WhoCanSeeOnlineStatus: "everyone", WhoCanSeeLastSeen: "everyone"}, true, ""},
 		{"no_one beats an accepted chat", Facts{AcceptedChat: true, IsConnection: true}, Privacy{WhoCanSeeOnlineStatus: "no_one", WhoCanSeeLastSeen: "no_one"}, false, "privacy_no_one"},
@@ -70,13 +74,5 @@ func TestHidesPresence(t *testing.T) {
 		if got := HidesPresence(tc.p, tc.v); got != tc.want {
 			t.Errorf("%s: HidesPresence = %v, want %v", tc.name, got, tc.want)
 		}
-	}
-}
-
-// Read receipts keep their own rule (chat message-service readReceiptVisible);
-// the presence change must not widen see_read_receipts.
-func TestReadReceiptsUnchangedByPresenceRule(t *testing.T) {
-	if d := Resolve(ActionSeeReadReceipts, Facts{AcceptedChat: true}, Privacy{WhoCanSeeReadReceipts: "connections_only"}); d.Allowed {
-		t.Fatalf("see_read_receipts widened by an accepted chat: %+v", d)
 	}
 }

@@ -47,8 +47,8 @@ func memSettingsRouter(t *testing.T, row *store.UserSettings, update func(*store
 func defaultRow(id uuid.UUID) *store.UserSettings {
 	return &store.UserSettings{
 		UserID: id, AccountVisibility: "public", AllowMessagesFrom: "everyone", AllowCommentsFrom: "everyone",
-		WhoCanMessage: "everyone_message_requests", WhoCanSendConnectionRequest: "everyone",
-		WhoCanCall: "connections_only", WhoCanAddToGroups: "connections_only",
+		WhoCanMessage: "everyone_message_requests",
+		WhoCanCall:    "connections_only", WhoCanAddToGroups: "connections_only",
 		WhoCanSeeOnlineStatus: "connections_only", WhoCanSeeReadReceipts: "connections_only",
 		WhoCanSeeLastSeen: "connections_only", WhoCanSeeProfilePhoto: "everyone",
 		ChatAvailability: "enabled", SendTypingIndicators: true, ShowMessagePreview: true,

@@ -154,16 +154,15 @@ func TestResolveCallDatingMatrix(t *testing.T) {
 func TestDatingMatchGrantsCallsOnly(t *testing.T) {
 	f := Facts{DatingMatch: true}
 	p := Privacy{
-		WhoCanMessage:               "connections_only",
-		WhoCanCall:                  "connections_only",
-		WhoCanAddToGroups:           "connections_only",
-		WhoCanSendConnectionRequest: "everyone",
-		WhoCanSeeOnlineStatus:       "connections_only",
-		WhoCanSeeReadReceipts:       "connections_only",
-		WhoCanSeeLastSeen:           "connections_only",
-		WhoCanSeeProfilePhoto:       "connections_only",
-		AllowCommentsFrom:           "friends",
-		AccountVisibility:           "private",
+		WhoCanMessage:         "connections_only",
+		WhoCanCall:            "connections_only",
+		WhoCanAddToGroups:     "connections_only",
+		WhoCanSeeOnlineStatus: "connections_only",
+		WhoCanSeeReadReceipts: "connections_only",
+		WhoCanSeeLastSeen:     "connections_only",
+		WhoCanSeeProfilePhoto: "connections_only",
+		AllowCommentsFrom:     "friends",
+		AccountVisibility:     "private",
 	}
 	denied := []Action{
 		ActionMessage, ActionAddToGroup, ActionSeeOnlineStatus,

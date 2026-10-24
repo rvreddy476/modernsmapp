@@ -748,6 +748,38 @@ func (s *Store) CheckSecondDegree(ctx context.Context, actorID, targetID uuid.UU
 	return exists, err
 }
 
+// FollowSecondDegreeScanLimit bounds CheckFollowSecondDegree: only the
+// actor's most recent followers are probed. A celebrity actor is therefore
+// "second degree" only through a recent follower; a miss reads as "not
+// second degree", which only withholds a group INVITATION (the safe side).
+const FollowSecondDegreeScanLimit = 1000
+
+// CheckFollowSecondDegree reports whether some third party follows BOTH the
+// actor and the target — friends-of-friends over the follow graph, which
+// replaced connections on 24 Oct 2026. It reads at most
+// [FollowSecondDegreeScanLimit] of the actor's followers (followee index,
+// newest first) and probes each against the follows primary key, so its
+// cost does not grow with either account's size. Hidden (deactivated /
+// deletion-scheduled) accounts do not count. One boolean leaves the service.
+func (s *Store) CheckFollowSecondDegree(ctx context.Context, actorID, targetID uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM (
+				SELECT follower_id FROM follows
+				WHERE followee_id = $1
+				ORDER BY created_at DESC
+				LIMIT $3
+			) a
+			JOIN follows b ON b.follower_id = a.follower_id AND b.followee_id = $2
+			WHERE a.follower_id NOT IN ($1, $2)
+			  AND NOT EXISTS (SELECT 1 FROM hidden_users h WHERE h.user_id = a.follower_id)
+		)
+	`, actorID, targetID, FollowSecondDegreeScanLimit).Scan(&exists)
+	return exists, err
+}
+
 // GetConnectionRequestStatus returns the request status between actor and
 // target: "none", "pending_sent", "pending_received", or a terminal status.
 func (s *Store) GetConnectionRequestStatus(ctx context.Context, actorID, targetID uuid.UUID) (string, error) {
@@ -785,7 +817,9 @@ func (s *Store) GetConnectionRequestStatus(ctx context.Context, actorID, targetI
 	return "none", nil
 }
 
-// GetConnections returns a paginated list of connection user IDs.
+// GetConnections returns a paginated list of connection user IDs. Hidden
+// (deactivated / deletion-scheduled) accounts are left out, as on the
+// follower / following lists.
 func (s *Store) GetConnections(ctx context.Context, userID uuid.UUID, limit, offset int) ([]uuid.UUID, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 20
@@ -793,7 +827,9 @@ func (s *Store) GetConnections(ctx context.Context, userID uuid.UUID, limit, off
 	rows, err := s.db.Query(ctx, `
 		SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS connection_id
 		FROM connections
-		WHERE user_a = $1 OR user_b = $1
+		WHERE (user_a = $1 OR user_b = $1)
+		  AND NOT EXISTS (SELECT 1 FROM hidden_users h
+		                  WHERE h.user_id = CASE WHEN connections.user_a = $1 THEN connections.user_b ELSE connections.user_a END)
 		ORDER BY created_at DESC
 		LIMIT $2 OFFSET $3
 	`, userID, limit, offset)
@@ -1305,41 +1341,46 @@ func (s *Store) EnsureConnection(ctx context.Context, a, b uuid.UUID) (bool, err
 	return created, tx.Commit(ctx)
 }
 
-// MutualConnectionCounts returns, for each target, how many connections the
-// viewer and that target have in common.
+// MutualFollowCounts returns, for each target, how many FRIENDS the viewer
+// and that target have in common, a friend being a MUTUAL follow (each
+// follows the other — the same "friends" bond allow_comments_from uses).
+// It replaced the mutual-CONNECTION count on 24 Oct 2026: connections are
+// retired, so that count could never grow past the pairs connected before.
 //
-// ONE query for the whole batch. The obvious implementation — ask
-// /v1/graph/mutuals per row — is N+1 against a list, and that endpoint
-// answers a different question anyway: it counts mutual FOLLOWERS, while a
-// "mutual connections" count is over the connections table.
+// ONE query for the whole batch. Its cost is bounded by the VIEWER's own
+// friends (their following list, probed against the primary key), never by
+// how many followers a target has, so a grid of celebrities stays cheap.
 //
-// The viewer and the target are excluded from their own count: being
-// connected to each other is not a mutual connection.
+// The viewer and the target are excluded from their own count, duplicate
+// target ids count once, and hidden (deactivated / deletion-scheduled)
+// accounts are not counted.
 //
-// A target with no shared connections is absent from the map; callers read
-// a missing key as zero.
-func (s *Store) MutualConnectionCounts(ctx context.Context, viewerID uuid.UUID, targetIDs []uuid.UUID) (map[uuid.UUID]int, error) {
+// A target with no friends in common is absent from the map; callers read a
+// missing key as zero.
+func (s *Store) MutualFollowCounts(ctx context.Context, viewerID uuid.UUID, targetIDs []uuid.UUID) (map[uuid.UUID]int, error) {
 	out := make(map[uuid.UUID]int, len(targetIDs))
 	if len(targetIDs) == 0 {
 		return out, nil
 	}
 	rows, err := s.db.Query(ctx, `
 		WITH mine AS (
-			SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS id
-			FROM connections
-			WHERE user_a = $1 OR user_b = $1
+			SELECT a.followee_id AS id
+			FROM follows a
+			JOIN follows b ON b.follower_id = a.followee_id AND b.followee_id = a.follower_id
+			WHERE a.follower_id = $1
+			  AND a.followee_id <> $1
+			  AND NOT EXISTS (SELECT 1 FROM hidden_users h WHERE h.user_id = a.followee_id)
 		),
-		theirs AS (
-			SELECT t.id AS target,
-			       CASE WHEN c.user_a = t.id THEN c.user_b ELSE c.user_a END AS id
-			FROM unnest($2::uuid[]) AS t(id)
-			JOIN connections c ON c.user_a = t.id OR c.user_b = t.id
+		targets AS (
+			SELECT DISTINCT id FROM unnest($2::uuid[]) AS u(id)
 		)
-		SELECT theirs.target, COUNT(*)
-		FROM theirs
-		JOIN mine ON mine.id = theirs.id
-		WHERE theirs.id <> $1 AND theirs.id <> theirs.target
-		GROUP BY theirs.target
+		SELECT t.id, COUNT(*)
+		FROM targets t
+		JOIN mine m ON m.id <> t.id
+		WHERE t.id <> $1
+		  AND EXISTS (SELECT 1 FROM follows x WHERE x.follower_id = t.id AND x.followee_id = m.id)
+		  AND EXISTS (SELECT 1 FROM follows y WHERE y.follower_id = m.id AND y.followee_id = t.id)
+		GROUP BY t.id
 	`, viewerID, targetIDs)
 	if err != nil {
 		return nil, err
