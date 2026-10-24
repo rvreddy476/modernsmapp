@@ -72,6 +72,10 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		// carried on every event so search drops a gated post, and a gated
 		// post's body never rides the bus.
 		tier *uuid.UUID
+		// earningsExcluded: a registered rights owner tracks the post
+		// (copyright_owner_tracks, migration 075). Carried on EVERY event, so
+		// no later transition re-grants earnings to a tracked post.
+		earningsExcluded bool
 	)
 	// The search document is replaced whole on re-approval, so the
 	// result-row projection (title, attached assets in carousel order, the
@@ -90,9 +94,11 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		                    FROM media_assets ma JOIN post_media pm ON pm.media_id = ma.id
 		                    WHERE pm.post_id = posts.id AND pm.kind = 'video'), 0)::int,
 		          COALESCE((SELECT vm.height FROM video_metadata vm WHERE vm.post_id = posts.id), 0)::int,
-		          tier_required_id`, postID).
+		          tier_required_id,
+		          EXISTS (SELECT 1 FROM copyright_owner_tracks ct WHERE ct.post_id = posts.id)`, postID).
 		Scan(&authorID, &visibility, &review, &text, &title, &contentType,
-			&createdAt, &deletedAt, &publishAt, &rev, &effective, &restricted, &mediaIDs, &mediaKinds, &durationMs, &height, &tier)
+			&createdAt, &deletedAt, &publishAt, &rev, &effective, &restricted, &mediaIDs, &mediaKinds, &durationMs, &height, &tier,
+			&earningsExcluded)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, ErrPostRowMissing
 	}
@@ -113,10 +119,11 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		// flag as ineligible. Its PostCreated arrives at publish time with a
 		// higher revision.
 		Scheduled:   publishAt != nil,
-		SearchRev:   rev,
-		ContentType: contentType,
-		CreatedAt:   createdAt,
-		ChangedAt:   time.Now().UTC(),
+		SearchRev:        rev,
+		ContentType:      contentType,
+		CreatedAt:        createdAt,
+		EarningsExcluded: earningsExcluded,
+		ChangedAt:        time.Now().UTC(),
 	}
 	if tier != nil {
 		payload.TierRequiredID = tier.String()

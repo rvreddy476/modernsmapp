@@ -243,6 +243,22 @@ func main() {
 		slog.Warn("notification-service: INTERNAL_SERVICE_KEY not set — every endpoint is unauthenticated. Do not run this configuration in production.")
 	}
 
+	// Copyright email (founder 24 Oct): a copyright hold or block is also
+	// emailed to the uploader, through the SMTP mailer above, at the
+	// VERIFIED address identity's contact read returns (IDENTITY_AUTH_URL +
+	// INTERNAL_SERVICE_KEY). WEB_APP_BASE_URL is the web origin the Creator
+	// Hub link is built on. Without IDENTITY_AUTH_URL nothing is emailed.
+	if contacts := service.NewHTTPVerifiedEmails(os.Getenv("IDENTITY_AUTH_URL"), internalKey); contacts != nil {
+		webBase := os.Getenv("WEB_APP_BASE_URL")
+		notifSvc.SetCopyrightEmail(contacts, webBase)
+		if service.CopyrightHubURL(webBase) == "" {
+			slog.Warn("copyright email: WEB_APP_BASE_URL is not an absolute http(s) URL; emails name Creator Hub without a link")
+		}
+		slog.Info("copyright email configured", "creator_hub_link", service.CopyrightHubURL(webBase) != "")
+	} else {
+		slog.Warn("copyright email disabled: IDENTITY_AUTH_URL is not set, so no verified address can be read")
+	}
+
 	// 9. Kafka Consumers
 	consumer := events.NewConsumerWithDialer(
 		strings.Split(kafkaBrokers, ","),

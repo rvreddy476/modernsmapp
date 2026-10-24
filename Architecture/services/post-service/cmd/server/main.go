@@ -233,7 +233,12 @@ func main() {
 	// existing ones stay until decided).
 	titleHold := env("COPYRIGHT_TITLE_HOLD_ENABLED", "true") != "false"
 	postSvc.SetCopyrightTitleHoldEnabled(titleHold)
-	slog.Info("copyright title review", "hold_enabled", titleHold)
+	// Owner-registered auto-block (migration 075, founder 24 Oct): a held
+	// upload matching an auto_block entry is blocked at once by the system.
+	// COPYRIGHT_AUTO_BLOCK_ENABLED=false sends those to a reviewer instead.
+	autoBlock := env("COPYRIGHT_AUTO_BLOCK_ENABLED", "true") != "false"
+	postSvc.SetCopyrightAutoBlockEnabled(autoBlock)
+	slog.Info("copyright title review", "hold_enabled", titleHold, "auto_block_enabled", autoBlock)
 
 	// The Action button (service/action_links.go). Safety: Google Web Risk
 	// with WEB_RISK_API_KEY; without it production refuses every new link

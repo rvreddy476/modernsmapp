@@ -102,3 +102,19 @@ func TestCopyrightReviewConsumer_FailurePolicy(t *testing.T) {
 		t.Fatalf("undecodable: %v", err)
 	}
 }
+
+// A block the SYSTEM made for a registered rights owner (post-service
+// migration 075: no reviewer, reason owner_registered) counts toward the
+// repeat-uploader pause exactly like a reviewer's block.
+func TestCopyrightReviewConsumer_SystemBlockCounts(t *testing.T) {
+	rec := &recorder{}
+	c := &CopyrightReviewConsumer{store: rec}
+	p := blockedPayload()
+	p.DecidedBy, p.Reason, p.RightsOwner = "", events.CopyrightReasonOwnerRegistered, "Sun Pictures"
+	if err := c.handle(context.Background(), reviewEnvelope(t, p)); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.got) != 1 || rec.got[0].DecidedBy != nil || rec.got[0].ReviewID.String() != p.ReviewID || !rec.got[0].BlockedAt.Equal(*p.DecidedAt) {
+		t.Fatalf("system block recorded as %+v", rec.got)
+	}
+}

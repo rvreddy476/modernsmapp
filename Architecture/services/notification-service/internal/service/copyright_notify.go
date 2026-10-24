@@ -17,9 +17,15 @@ package service
 //	blocked -> copyright_review_blocked  "Your video was blocked …"           → /posttube/hub
 //
 // The notice names the matched catalogue title, never the reviewer.
+//
+// A blocked review may be the SYSTEM's (founder 24 Oct, post-service
+// migration 075): the rights owner registered the title and asked for
+// copies blocked, so no reviewer was involved (reason owner_registered).
+// The hold and the block are also emailed (copyright_email.go).
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -53,8 +59,13 @@ type CopyrightReviewNotification struct {
 	Type         string
 	MatchedTitle string
 	PostTitle    string
-	DeepLink     string
-	CreatedAt    time.Time
+	// RightsOwner names the registered owner, when the entry names one.
+	RightsOwner string
+	// Reason: owner_registered (the system blocked it for the owner),
+	// mute_requested (the owner asked for a mute; in review) or "".
+	Reason    string
+	DeepLink  string
+	CreatedAt time.Time
 }
 
 // Identity keys the idempotent inbox write: one notice per review and type.
@@ -93,9 +104,18 @@ func (s *Service) CreateCopyrightReviewNotification(ctx context.Context, n Copyr
 	if s.recipientSuppressed(ctx, n.RecipientID, n.Type) {
 		return nil
 	}
-	decision := s.resolveGeneralDelivery(ctx, n.RecipientID, n.Type)
-	// The author is the actor of their own system notice (as
-	// post_reclassified is): no other person is named.
-	return s.deliverWithDecision(ctx, decision, n.RecipientID, n.RecipientID, n.Type,
-		CopyrightEntityType, n.PostID, n.DeepLink, n.CreatedAt, n.Identity(), RenderCopyrightNotification(n))
+	var inApp error
+	if s.copyrightInAppSeam != nil {
+		inApp = s.copyrightInAppSeam(ctx, n)
+	} else {
+		decision := s.resolveGeneralDelivery(ctx, n.RecipientID, n.Type)
+		// The author is the actor of their own system notice (as
+		// post_reclassified is): no other person is named.
+		inApp = s.deliverWithDecision(ctx, decision, n.RecipientID, n.RecipientID, n.Type,
+			CopyrightEntityType, n.PostID, n.DeepLink, n.CreatedAt, n.Identity(), RenderCopyrightNotification(n))
+	}
+	// A hold or a block is also EMAILED (copyright_email.go), whatever the
+	// in-app/push preferences decided — a legal-type notice — and even when
+	// the in-app write failed.
+	return errors.Join(inApp, s.sendCopyrightEmail(ctx, n))
 }

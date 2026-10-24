@@ -32,9 +32,18 @@ import (
 	GET   /v1/posts/internal/admin/copyright/titles?active=true|false&q=&cursor=&limit=
 	      tube:videos.moderate | tube:videos.remove
 	POST  /v1/posts/internal/admin/copyright/titles            tube:videos.remove
-	      {"title","aliases":[],"language","owner_channel_ids":[],"active"}
+	      {"title","aliases":[],"language","owner_channel_ids":[],"active",
+	       "auto_block": false, "rights_owner": "Sun Pictures"}
+	      auto_block (migration 075): the rights owner registered the title and
+	      asked for blocking — a matching upload is BLOCKED at once by the
+	      system (reason owner_registered), no reviewer; requires rights_owner
+	      (1-200 printable characters), else 400 INVALID_COPYRIGHT_TITLE.
 	PATCH /v1/posts/internal/admin/copyright/titles/:titleId   tube:videos.remove
-	      any of the same fields ("language": null clears; "active": false disables), "note"
+	      any of the same fields ("language": null / "rights_owner": null clear;
+	      "active": false disables), "note"
+	      Entries answer with auto_block and rights_owner; review rows with
+	      rights_owner, reason (owner_registered | mute_requested | null) and
+	      title_auto_block. A system block has decided_by null.
 	GET   /v1/posts/internal/admin/copyright/reviews?state=pending|cleared|blocked&cursor=&limit=
 	      tube:videos.moderate | tube:videos.remove — oldest first
 	POST  /v1/posts/internal/admin/copyright/reviews/:reviewId/decision {"decision":"clear"|"block","note"}
@@ -107,11 +116,27 @@ type copyrightTitleBody struct {
 	Language        *json.RawMessage `json:"language"`
 	OwnerChannelIDs *[]string        `json:"owner_channel_ids"`
 	Active          *bool            `json:"active"`
-	Note            string           `json:"note"`
+	// AutoBlock (migration 075): the rights owner registered the title and
+	// asked for copies to be blocked; requires rights_owner.
+	AutoBlock *bool `json:"auto_block"`
+	// RightsOwner is the owner's display name; JSON null clears it on update.
+	RightsOwner *json.RawMessage `json:"rights_owner"`
+	Note        string           `json:"note"`
 }
 
 func (b copyrightTitleBody) input() (service.CopyrightTitleInput, error) {
-	in := service.CopyrightTitleInput{Title: b.Title, Aliases: b.Aliases, Active: b.Active, Note: b.Note}
+	in := service.CopyrightTitleInput{Title: b.Title, Aliases: b.Aliases, Active: b.Active, AutoBlock: b.AutoBlock, Note: b.Note}
+	if b.RightsOwner != nil {
+		if strings.TrimSpace(string(*b.RightsOwner)) == "null" {
+			in.ClearRightsOwner = true
+		} else {
+			var owner string
+			if err := json.Unmarshal(*b.RightsOwner, &owner); err != nil {
+				return in, errors.New("rights_owner must be a string or null")
+			}
+			in.RightsOwner = &owner
+		}
+	}
 	if b.Language != nil {
 		raw := strings.TrimSpace(string(*b.Language))
 		if raw == "null" {
@@ -144,7 +169,7 @@ func bindCopyrightTitleBody(c *gin.Context) (service.CopyrightTitleInput, bool) 
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(&body); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST",
-			"body must be {title, aliases, language, owner_channel_ids, active, note}", nil)
+			"body must be {title, aliases, language, owner_channel_ids, active, auto_block, rights_owner, note}", nil)
 		return service.CopyrightTitleInput{}, false
 	}
 	in, err := body.input()

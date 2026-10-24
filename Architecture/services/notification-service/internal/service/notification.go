@@ -43,6 +43,13 @@ type Service struct {
 	nameReader      SenderNameReader
 	chatOnce        sync.Once
 	chatLookups     *chatLookups
+
+	// copyrightEmail emails the author on a copyright hold or block
+	// (copyright_email.go); nil = no copyright email.
+	copyrightEmail *copyrightEmailer
+	// copyrightInAppSeam replaces the copyright notice's in-app delivery
+	// (tests only; nil in production).
+	copyrightInAppSeam func(ctx context.Context, n CopyrightReviewNotification) error
 }
 
 func New(scyllaStore *scylla.NotificationStore, rdb *redis.Client) *Service {
@@ -463,7 +470,7 @@ func notifTitleBody(notifType string) (string, string) {
 	case CopyrightTypeCleared:
 		return "Your video cleared copyright review", "It is now visible to everyone"
 	case CopyrightTypeBlocked:
-		return "Your video was blocked after copyright review", "It stays hidden"
+		return "Your video was blocked for copyright", "It stays hidden"
 	case "creator_went_live":
 		return "LIVE now", "Someone you follow just went live"
 	case "missed_call":

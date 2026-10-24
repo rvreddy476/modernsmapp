@@ -33,6 +33,8 @@ env:
   # Dating lane D8 panic paging (responder ids pending a named owner).
   DATING_SERVICE_URL: http://dating-service.atpost.svc.cluster.local:8112
   IDENTITY_AUTH_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+  # Web origin for the Creator Hub link in copyright emails.
+  WEB_APP_BASE_URL: https://staging.cleestudio.com
   IDENTITY_USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8110
   DATING_SAFETY_RESPONDER_USER_IDS: ''
   DATING_SAFETY_OPS_EMAIL: ''

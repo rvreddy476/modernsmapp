@@ -323,6 +323,10 @@ type Service struct {
 	titleReviews      titleReviewStore
 	titleCatalogue    titleCatalogueCache
 	titleHoldDisabled bool
+	// autoBlockDisabled is the owner-registered auto-block kill switch
+	// (COPYRIGHT_AUTO_BLOCK_ENABLED=false, migration 075): matches go to a
+	// reviewer instead of being blocked by the system.
+	autoBlockDisabled bool
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {

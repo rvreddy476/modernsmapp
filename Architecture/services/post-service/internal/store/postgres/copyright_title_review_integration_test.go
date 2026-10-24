@@ -200,7 +200,7 @@ func TestTitleReviewIT_DurationRule(t *testing.T) {
 			t.Fatal("an unmeasured hold is in the reviewer queue")
 		}
 	}
-	out, err := it.s.ResolveTitleReviewDuration(it.ctx, short, 600, false, "", announce)
+	out, err := it.s.ResolveTitleReviewDuration(it.ctx, short, 600, false, true, "", announce)
 	if err != nil || out != store.TitleReviewDurationCleared || announced != 1 {
 		t.Fatalf("short: %q announced=%d %v", out, announced, err)
 	}
@@ -208,13 +208,13 @@ func TestTitleReviewIT_DurationRule(t *testing.T) {
 		t.Fatalf("short after: count=%d effective=%s", n, eff)
 	}
 	long, _ := it.heldPost(titleID, true)
-	if out, err := it.s.ResolveTitleReviewDuration(it.ctx, long, 3600, true, "", announce); err != nil || out != store.TitleReviewDurationQueued {
+	if out, err := it.s.ResolveTitleReviewDuration(it.ctx, long, 3600, true, true, "", announce); err != nil || out != store.TitleReviewDurationQueued {
 		t.Fatalf("long: %q %v", out, err)
 	}
 	if got := count(it.outboxTypes(long), events.EventPostCopyrightReview); got != 1 {
 		t.Fatalf("queued hold review events = %d, want 1", got)
 	}
-	if out, _ := it.s.ResolveTitleReviewDuration(it.ctx, long, 3600, true, "", announce); out != store.TitleReviewDurationNone {
+	if out, _ := it.s.ResolveTitleReviewDuration(it.ctx, long, 3600, true, true, "", announce); out != store.TitleReviewDurationNone {
 		t.Fatalf("a measured review was settled again: %q", out)
 	}
 }

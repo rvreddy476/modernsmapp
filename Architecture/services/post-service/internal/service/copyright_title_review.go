@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/atpost/post-service/internal/store/postgres"
@@ -104,18 +105,33 @@ type titleReviewStore interface {
 	ListTitleReviews(ctx context.Context, state, cursor string, limit int) ([]postgres.TitleReviewQueueItem, string, error)
 	GetTitleReview(ctx context.Context, id uuid.UUID) (*postgres.TitleReview, error)
 	DecideTitleReview(ctx context.Context, in postgres.DecideTitleReviewInput, announce postgres.TitleReviewAnnounce) (*postgres.TitleReviewOutcome, error)
-	ResolveTitleReviewDuration(ctx context.Context, postID uuid.UUID, durationSec int, hold bool, reason string, announce postgres.TitleReviewAnnounce) (postgres.TitleReviewDurationOutcome, error)
+	ResolveTitleReviewDuration(ctx context.Context, postID uuid.UUID, durationSec int, hold, autoBlock bool, reason string, announce postgres.TitleReviewAnnounce) (postgres.TitleReviewDurationOutcome, error)
 	RequestTitleReview(ctx context.Context, postID, authorID uuid.UUID, note string) (*postgres.TitleReview, error)
 	TitleReviewsByPost(ctx context.Context, postIDs []uuid.UUID) (map[uuid.UUID]*postgres.TitleReview, error)
+	CopyrightMatchPostAuthor(ctx context.Context, postID uuid.UUID) (uuid.UUID, error)
+	ApplyOwnerMatch(ctx context.Context, in postgres.OwnerMatchInput) (*postgres.OwnerMatchResult, error)
 }
 
-// titleCatalogue is one replica's snapshot: the matcher and each entry's
-// owner channels.
+// titleCatalogue is one replica's snapshot: the matcher, each entry's
+// owner channels and each entry's owner request (auto_block, rights_owner).
 type titleCatalogue struct {
 	matcher *titlematch.Matcher
 	owners  map[uuid.UUID]map[uuid.UUID]bool
+	entries map[uuid.UUID]titleEntryMeta
 	loaded  time.Time
 }
+
+// titleEntryMeta is what a hold copies from its matched entry.
+type titleEntryMeta struct {
+	autoBlock   bool
+	rightsOwner *string
+}
+
+// SetCopyrightAutoBlockEnabled is the owner-registered auto-block kill
+// switch (COPYRIGHT_AUTO_BLOCK_ENABLED, default true). Off, an upload that
+// matches an auto_block entry — or an owner match asking for a block — is
+// held for a reviewer instead of blocked by the system.
+func (s *Service) SetCopyrightAutoBlockEnabled(v bool) { s.autoBlockDisabled = !v }
 
 type titleCatalogueCache struct {
 	mu  sync.Mutex
@@ -166,6 +182,7 @@ func (s *Service) titleCatalogueSnapshot(ctx context.Context) (*titleCatalogue, 
 func buildTitleCatalogue(rows []postgres.CopyrightTitle, now time.Time) *titleCatalogue {
 	entries := make([]titlematch.Entry, 0, len(rows))
 	owners := make(map[uuid.UUID]map[uuid.UUID]bool, len(rows))
+	meta := make(map[uuid.UUID]titleEntryMeta, len(rows))
 	for _, r := range rows {
 		if !r.Active {
 			continue
@@ -176,8 +193,9 @@ func buildTitleCatalogue(rows []postgres.CopyrightTitle, now time.Time) *titleCa
 			set[id] = true
 		}
 		owners[r.ID] = set
+		meta[r.ID] = titleEntryMeta{autoBlock: r.AutoBlock, rightsOwner: r.RightsOwner}
 	}
-	return &titleCatalogue{matcher: titlematch.New(entries), owners: owners, loaded: now}
+	return &titleCatalogue{matcher: titlematch.New(entries), owners: owners, entries: meta, loaded: now}
 }
 
 // dropTitleCatalogue forces the next publication on this replica to reload.
@@ -227,23 +245,45 @@ func (s *Service) decideTitleHold(ctx context.Context, sub titleHoldSubject) (*p
 			channelID = ch.ID
 		}
 	}
-	for _, m := range matches {
+	// The first title the uploader does not own decides — except that a
+	// title whose owner asked for blocking wins over one that only goes to a
+	// reviewer: the video is blocked for it whichever the text names first.
+	var pick *titlematch.Match
+	for i := range matches {
+		m := &matches[i]
 		if channelID != uuid.Nil && cat.owners[m.EntryID][channelID] {
 			continue // a verified owner of this title
 		}
-		hold := &postgres.TitleReviewHold{
-			ReviewID: uuid.New(), TitleID: m.EntryID, MatchedTitle: m.Title, MatchedTerm: m.Term,
-			MatchedField: m.Field, AnnounceOnClear: true,
+		if pick == nil {
+			pick = m
 		}
-		if sub.DurationSec > 0 {
-			d := sub.DurationSec
-			hold.DurationSeconds = &d
-		} else {
-			hold.AwaitingDuration = true
+		if s.entryAutoBlocks(cat.entries[m.EntryID]) {
+			pick = m
+			break
 		}
-		return hold, nil
 	}
-	return nil, nil
+	if pick == nil {
+		return nil, nil
+	}
+	meta := cat.entries[pick.EntryID]
+	hold := &postgres.TitleReviewHold{
+		ReviewID: uuid.New(), TitleID: pick.EntryID, MatchedTitle: pick.Title, MatchedTerm: pick.Term,
+		MatchedField: pick.Field, AnnounceOnClear: true, RightsOwner: meta.rightsOwner,
+		AutoBlock: s.entryAutoBlocks(meta),
+	}
+	if sub.DurationSec > 0 {
+		d := sub.DurationSec
+		hold.DurationSeconds = &d
+	} else {
+		hold.AwaitingDuration = true
+	}
+	return hold, nil
+}
+
+// entryAutoBlocks: the entry's owner asked for blocking, names themself,
+// and the auto-block kill switch is on.
+func (s *Service) entryAutoBlocks(m titleEntryMeta) bool {
+	return !s.autoBlockDisabled && m.autoBlock && m.rightsOwner != nil && strings.TrimSpace(*m.rightsOwner) != ""
 }
 
 // requireLongVideoUploads refuses a long-video publication while
@@ -354,7 +394,7 @@ func (s *Service) ResolveTitleReviewMeasurement(ctx context.Context, postID uuid
 		post = p
 	}
 	now := s.clock().UTC()
-	outcome, err := store.ResolveTitleReviewDuration(ctx, postID, durationSec, hold, reason, s.titleReviewAnnounce(ctx, post, now))
+	outcome, err := store.ResolveTitleReviewDuration(ctx, postID, durationSec, hold, !s.autoBlockDisabled, reason, s.titleReviewAnnounce(ctx, post, now))
 	if err != nil {
 		return err
 	}
@@ -477,7 +517,12 @@ type CopyrightTitleInput struct {
 	ClearLanguage   bool
 	OwnerChannelIDs *[]uuid.UUID
 	Active          *bool
-	Note            string
+	// AutoBlock: the rights owner registered the title and asked for copies
+	// to be blocked (requires RightsOwner).
+	AutoBlock        *bool
+	RightsOwner      *string
+	ClearRightsOwner bool
+	Note             string
 }
 
 var titleLanguageRE = regexp.MustCompile(`^[A-Za-z]{2,3}(-[A-Za-z0-9]{2,8})*$`)
@@ -552,6 +597,21 @@ func normalizeTitleWrite(w postgres.CopyrightTitleWrite) (postgres.CopyrightTitl
 		}
 	}
 	w.OwnerChannelIDs = owners
+	if w.RightsOwner != nil {
+		owner := strings.Join(strings.Fields(*w.RightsOwner), " ")
+		switch {
+		case owner == "":
+			w.RightsOwner = nil
+		case utf8.RuneCountInString(owner) > maxTitleRunes || strings.IndexFunc(owner, unicode.IsControl) >= 0:
+			return w, fmt.Errorf("%w: rights_owner must be 1-%d printable characters", ErrInvalidCopyrightTitle, maxTitleRunes)
+		default:
+			w.RightsOwner = &owner
+		}
+	}
+	// An automatic block is the OWNER's request: the entry says whose.
+	if w.AutoBlock && w.RightsOwner == nil {
+		return w, fmt.Errorf("%w: auto_block needs rights_owner (who registered the title and asked for blocking)", ErrInvalidCopyrightTitle)
+	}
 	return w, nil
 }
 
@@ -564,7 +624,7 @@ func (s *Service) CreateCopyrightTitle(ctx context.Context, in CopyrightTitleInp
 	if in.Title == nil {
 		return nil, fmt.Errorf("%w: title is required", ErrInvalidCopyrightTitle)
 	}
-	w := postgres.CopyrightTitleWrite{Title: *in.Title, Language: in.Language, Active: true}
+	w := postgres.CopyrightTitleWrite{Title: *in.Title, Language: in.Language, Active: true, RightsOwner: in.RightsOwner}
 	if in.Aliases != nil {
 		w.Aliases = *in.Aliases
 	}
@@ -573,6 +633,9 @@ func (s *Service) CreateCopyrightTitle(ctx context.Context, in CopyrightTitleInp
 	}
 	if in.Active != nil {
 		w.Active = *in.Active
+	}
+	if in.AutoBlock != nil {
+		w.AutoBlock = *in.AutoBlock
 	}
 	w, err := normalizeTitleWrite(w)
 	if err != nil {
@@ -599,6 +662,15 @@ func (s *Service) UpdateCopyrightTitle(ctx context.Context, id uuid.UUID, in Cop
 	w := postgres.CopyrightTitleWrite{
 		Title: cur.Title, Aliases: cur.Aliases, Language: cur.Language,
 		OwnerChannelIDs: cur.OwnerChannelIDs, Active: cur.Active,
+		AutoBlock: cur.AutoBlock, RightsOwner: cur.RightsOwner,
+	}
+	if in.AutoBlock != nil {
+		w.AutoBlock = *in.AutoBlock
+	}
+	if in.ClearRightsOwner {
+		w.RightsOwner = nil
+	} else if in.RightsOwner != nil {
+		w.RightsOwner = in.RightsOwner
 	}
 	if in.Title != nil {
 		w.Title = *in.Title
@@ -655,6 +727,12 @@ type CopyrightReviewView struct {
 	DecidedAt    *time.Time `json:"decided_at,omitempty"`
 	// ReviewRequestedAt is when the author sent "I own the rights".
 	ReviewRequestedAt *time.Time `json:"review_requested_at,omitempty"`
+	// RightsOwner names the registered owner the video matched, when the
+	// entry names one (migration 075).
+	RightsOwner string `json:"rights_owner,omitempty"`
+	// Reason: "owner_registered" (blocked at once for the registered
+	// owner) or "mute_requested" (the owner asked for a mute; in review).
+	Reason string `json:"reason,omitempty"`
 }
 
 func copyrightReviewView(r *postgres.TitleReview) *CopyrightReviewView {
@@ -664,10 +742,17 @@ func copyrightReviewView(r *postgres.TitleReview) *CopyrightReviewView {
 	if r.State == postgres.TitleReviewCleared && !r.AuthorNotified {
 		return nil // lifted by the duration rule before the author was told
 	}
-	return &CopyrightReviewView{
+	v := &CopyrightReviewView{
 		State: r.State, MatchedTitle: r.MatchedTitle, CreatedAt: r.CreatedAt,
 		DecidedAt: r.DecidedAt, ReviewRequestedAt: r.AuthorRequestedAt,
 	}
+	if r.RightsOwner != nil {
+		v.RightsOwner = *r.RightsOwner
+	}
+	if r.Reason != nil {
+		v.Reason = *r.Reason
+	}
+	return v
 }
 
 // attachCopyrightReviews fills CopyrightReview on the author's own long

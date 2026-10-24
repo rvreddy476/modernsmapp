@@ -243,7 +243,9 @@ func (c *ContentOwnershipConsumer) applyEligibility(ctx context.Context, envelop
 	switch {
 	case payload.Deleted:
 		state = pgstore.EligibilityDeleted
-	case events.SearchEligible(payload.Visibility, payload.ReviewStatus, false) && !payload.Scheduled:
+	// A registered rights owner TRACKS the post (post-service migration 075):
+	// it stays visible, but it earns nothing from this change on.
+	case events.SearchEligible(payload.Visibility, payload.ReviewStatus, false) && !payload.Scheduled && !payload.EarningsExcluded:
 		state = pgstore.EligibilityEligible
 	}
 	return c.writeEligibility(ctx, pgstore.ContentEligibility{

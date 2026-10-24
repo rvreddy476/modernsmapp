@@ -34,13 +34,17 @@ type fakeTitleStore struct {
 	created     []postgres.CopyrightTitleWrite
 	byPost      map[uuid.UUID]*postgres.TitleReview
 	requestedBy []uuid.UUID
+	// Owner matches (migration 075).
+	postAuthors  map[uuid.UUID]uuid.UUID
+	ownerMatches []postgres.OwnerMatchInput
 }
 
 type resolveCall struct {
-	post   uuid.UUID
-	dur    int
-	hold   bool
-	reason string
+	post      uuid.UUID
+	dur       int
+	hold      bool
+	autoBlock bool
+	reason    string
 }
 
 func (f *fakeTitleStore) ListActiveCopyrightTitles(context.Context) ([]postgres.CopyrightTitle, error) {
@@ -69,6 +73,7 @@ func (f *fakeTitleStore) UpdateCopyrightTitle(_ context.Context, id uuid.UUID, w
 	for i := range f.titles {
 		if f.titles[i].ID == id {
 			f.titles[i].Title, f.titles[i].Aliases, f.titles[i].Active = w.Title, w.Aliases, w.Active
+			f.titles[i].AutoBlock, f.titles[i].RightsOwner = w.AutoBlock, w.RightsOwner
 			t := f.titles[i]
 			return &t, nil
 		}
@@ -90,10 +95,27 @@ func (f *fakeTitleStore) DecideTitleReview(_ context.Context, in postgres.Decide
 	r := *f.review
 	return &postgres.TitleReviewOutcome{Review: &r}, nil
 }
-func (f *fakeTitleStore) ResolveTitleReviewDuration(_ context.Context, postID uuid.UUID, dur int, hold bool, reason string, announce postgres.TitleReviewAnnounce) (postgres.TitleReviewDurationOutcome, error) {
-	f.resolved = append(f.resolved, resolveCall{postID, dur, hold, reason})
+func (f *fakeTitleStore) ResolveTitleReviewDuration(_ context.Context, postID uuid.UUID, dur int, hold, autoBlock bool, reason string, announce postgres.TitleReviewAnnounce) (postgres.TitleReviewDurationOutcome, error) {
+	f.resolved = append(f.resolved, resolveCall{postID, dur, hold, autoBlock, reason})
 	f.announce = announce
 	return f.resolveOut, nil
+}
+func (f *fakeTitleStore) CopyrightMatchPostAuthor(_ context.Context, postID uuid.UUID) (uuid.UUID, error) {
+	if a, ok := f.postAuthors[postID]; ok {
+		return a, nil
+	}
+	return uuid.Nil, postgres.ErrPostNotFound
+}
+func (f *fakeTitleStore) ApplyOwnerMatch(_ context.Context, in postgres.OwnerMatchInput) (*postgres.OwnerMatchResult, error) {
+	f.ownerMatches = append(f.ownerMatches, in)
+	out := postgres.OwnerMatchResult{Outcome: postgres.OwnerMatchHeld}
+	switch in.Policy {
+	case postgres.OwnerPolicyBlock:
+		out.Outcome = postgres.OwnerMatchBlocked
+	case postgres.OwnerPolicyTrack:
+		out.Outcome = postgres.OwnerMatchTracked
+	}
+	return &out, nil
 }
 func (f *fakeTitleStore) RequestTitleReview(_ context.Context, _ uuid.UUID, authorID uuid.UUID, _ string) (*postgres.TitleReview, error) {
 	f.requestedBy = append(f.requestedBy, authorID)
@@ -383,8 +405,8 @@ func TestResolveTitleReviewMeasurement_QueuesOrLifts(t *testing.T) {
 				return
 			}
 			got := r.store.resolved[0]
-			if got.post != post || got.dur != c.duration || got.hold != c.hold || got.reason != c.reason {
-				t.Fatalf("resolve = %+v, want hold=%v reason=%q", got, c.hold, c.reason)
+			if got.post != post || got.dur != c.duration || got.hold != c.hold || got.reason != c.reason || !got.autoBlock {
+				t.Fatalf("resolve = %+v, want hold=%v reason=%q autoBlock allowed", got, c.hold, c.reason)
 			}
 		})
 	}

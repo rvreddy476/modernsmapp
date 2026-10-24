@@ -35,7 +35,25 @@ const (
 	titleReviewReasonBlocked = "review_blocked"
 	titleReviewReasonShort   = "duration_under_threshold"
 	titleReviewReasonKind    = "not_long_video"
+	// titleReviewReasonOwnerBlock is the restriction reason of a block the
+	// system made for a registered rights owner (migration 075).
+	titleReviewReasonOwnerBlock = "owner_registered"
 )
+
+// Why the system acted on a review (copyright_title_reviews.reason,
+// migration 075; the event's reason).
+const (
+	// TitleReviewReasonOwnerRegistered: blocked at once, no reviewer, because
+	// the rights owner registered the title and asked for copies blocked.
+	TitleReviewReasonOwnerRegistered = events.CopyrightReasonOwnerRegistered
+	// TitleReviewReasonMuteRequested: the owner asked for the audio to be
+	// muted; there is no audio muting yet, so a reviewer decides.
+	TitleReviewReasonMuteRequested = events.CopyrightReasonMuteRequested
+)
+
+// MatchedFieldOwnerMatch is the matched_field of a review opened by an owner
+// match (ApplyOwnerMatch) rather than by the title text.
+const MatchedFieldOwnerMatch = "owner_match"
 
 // Title review states (the wire's copyright_review.state).
 const (
@@ -80,6 +98,17 @@ type TitleReviewHold struct {
 	AwaitingDuration bool
 	// AnnounceOnClear: the publication's PostCreated was withheld.
 	AnnounceOnClear bool
+	// RightsOwner is the matched entry's registered owner (a snapshot for
+	// the review, the event and the author's email); nil when it names none.
+	RightsOwner *string
+	// AutoBlock: the matched entry's owner asked for copies to be blocked.
+	// A measured hold is then decided BLOCKED in the same transaction, by
+	// the system, with reason owner_registered; an unmeasured one waits for
+	// its length like any other hold (ResolveTitleReviewDuration decides).
+	AutoBlock bool
+	// Reason is the hold's own reason: "" (a title match) or
+	// TitleReviewReasonMuteRequested (an owner asked for a mute).
+	Reason string
 }
 
 func (h *TitleReviewHold) validate() error {
@@ -88,12 +117,23 @@ func (h *TitleReviewHold) validate() error {
 		return fmt.Errorf("%w: hold", ErrTitleReviewInvalid)
 	}
 	switch h.MatchedField {
-	case "title", "description", "hashtag":
+	case "title", "description", "hashtag", MatchedFieldOwnerMatch:
 	default:
 		return fmt.Errorf("%w: matched_field %q", ErrTitleReviewInvalid, h.MatchedField)
 	}
 	if h.AwaitingDuration != (h.DurationSeconds == nil) {
 		return fmt.Errorf("%w: awaiting_duration must mean an unknown duration", ErrTitleReviewInvalid)
+	}
+	switch h.Reason {
+	case "", TitleReviewReasonMuteRequested:
+	default:
+		return fmt.Errorf("%w: hold reason %q", ErrTitleReviewInvalid, h.Reason)
+	}
+	if h.AutoBlock && h.Reason != "" {
+		return fmt.Errorf("%w: an automatic block carries no hold reason", ErrTitleReviewInvalid)
+	}
+	if h.AutoBlock && (h.RightsOwner == nil || strings.TrimSpace(*h.RightsOwner) == "") {
+		return fmt.Errorf("%w: an automatic block names the rights owner", ErrTitleReviewInvalid)
 	}
 	return nil
 }
@@ -119,26 +159,36 @@ type TitleReview struct {
 	DecidedBy         *uuid.UUID `json:"decided_by"`
 	DecidedAt         *time.Time `json:"decided_at"`
 	DecisionNote      *string    `json:"decision_note"`
-	CreatedAt         time.Time  `json:"created_at"`
-	UpdatedAt         time.Time  `json:"updated_at"`
+	// RightsOwner is the owner the matched entry named (migration 075).
+	RightsOwner *string `json:"rights_owner"`
+	// Reason: owner_registered (the system blocked it) or mute_requested
+	// (an owner asked for a mute); nil for an ordinary title match.
+	Reason    *string   `json:"reason"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 const titleReviewCols = `id, post_id, author_id, restriction_id, title_id, matched_title, matched_term, matched_field,
 	duration_seconds, awaiting_duration, state, announce_on_clear, announced_at, author_notified,
-	author_note, author_requested_at, decided_by, decided_at, decision_note, created_at, updated_at`
+	author_note, author_requested_at, decided_by, decided_at, decision_note, rights_owner, reason, created_at, updated_at`
 
 // titleReviewColsR is titleReviewCols qualified with the alias r.
 const titleReviewColsR = `r.id, r.post_id, r.author_id, r.restriction_id, r.title_id, r.matched_title, r.matched_term,
 	r.matched_field, r.duration_seconds, r.awaiting_duration, r.state, r.announce_on_clear, r.announced_at,
 	r.author_notified, r.author_note, r.author_requested_at, r.decided_by, r.decided_at, r.decision_note,
-	r.created_at, r.updated_at`
+	r.rights_owner, r.reason, r.created_at, r.updated_at`
+
+// titleReviewDest is the scan destinations of titleReviewCols, in order.
+func titleReviewDest(r *TitleReview) []any {
+	return []any{&r.ID, &r.PostID, &r.AuthorID, &r.RestrictionID, &r.TitleID, &r.MatchedTitle, &r.MatchedTerm,
+		&r.MatchedField, &r.DurationSeconds, &r.AwaitingDuration, &r.State, &r.AnnounceOnClear, &r.AnnouncedAt,
+		&r.AuthorNotified, &r.AuthorNote, &r.AuthorRequestedAt, &r.DecidedBy, &r.DecidedAt, &r.DecisionNote,
+		&r.RightsOwner, &r.Reason, &r.CreatedAt, &r.UpdatedAt}
+}
 
 func scanTitleReview(row pgx.Row) (*TitleReview, error) {
 	var r TitleReview
-	if err := row.Scan(&r.ID, &r.PostID, &r.AuthorID, &r.RestrictionID, &r.TitleID, &r.MatchedTitle, &r.MatchedTerm,
-		&r.MatchedField, &r.DurationSeconds, &r.AwaitingDuration, &r.State, &r.AnnounceOnClear, &r.AnnouncedAt,
-		&r.AuthorNotified, &r.AuthorNote, &r.AuthorRequestedAt, &r.DecidedBy, &r.DecidedAt, &r.DecisionNote,
-		&r.CreatedAt, &r.UpdatedAt); err != nil {
+	if err := row.Scan(titleReviewDest(&r)...); err != nil {
 		return nil, err
 	}
 	return &r, nil
@@ -152,6 +202,10 @@ func scanTitleReview(row pgx.Row) (*TitleReview, error) {
 // the history row and — when the length is known — the author's
 // "in copyright review" event. A post that already has a review is left
 // alone (false): one review per post.
+//
+// A measured hold on an entry whose owner asked for blocking (AutoBlock) is
+// decided BLOCKED by the system in the same transaction (systemBlockTx):
+// the author hears of the block, never of a review that nobody will make.
 func insertTitleReviewHoldTx(ctx context.Context, tx pgx.Tx, postID, authorID uuid.UUID, hold *TitleReviewHold) (bool, error) {
 	if err := hold.validate(); err != nil {
 		return false, err
@@ -160,11 +214,12 @@ func insertTitleReviewHoldTx(ctx context.Context, tx pgx.Tx, postID, authorID uu
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO copyright_title_reviews
 			(id, post_id, author_id, restriction_id, title_id, matched_title, matched_term, matched_field,
-			 duration_seconds, awaiting_duration, state, announce_on_clear, author_notified)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11,$12)
+			 duration_seconds, awaiting_duration, state, announce_on_clear, author_notified, rights_owner, reason)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'pending',$11,$12,$13,$14)
 		ON CONFLICT (post_id) DO NOTHING`,
 		hold.ReviewID, postID, authorID, restrictionID, hold.TitleID, hold.MatchedTitle, hold.MatchedTerm,
-		hold.MatchedField, hold.DurationSeconds, hold.AwaitingDuration, hold.AnnounceOnClear, !hold.AwaitingDuration)
+		hold.MatchedField, hold.DurationSeconds, hold.AwaitingDuration, hold.AnnounceOnClear, !hold.AwaitingDuration,
+		hold.RightsOwner, nilIfBlank(hold.Reason))
 	if err != nil {
 		return false, fmt.Errorf("title review: insert review: %w", err)
 	}
@@ -186,15 +241,49 @@ func insertTitleReviewHoldTx(ctx context.Context, tx pgx.Tx, postID, authorID uu
 	if err := BumpSearchRevAndEmitTx(ctx, tx, postID); err != nil {
 		return false, err
 	}
-	if err := insertTitleReviewEventTx(ctx, tx, hold.ReviewID, postID, "hold", nil, "", TitleReviewPending, ""); err != nil {
+	if err := insertTitleReviewEventTx(ctx, tx, hold.ReviewID, postID, "hold", nil, "", TitleReviewPending, hold.Reason); err != nil {
 		return false, err
 	}
-	if !hold.AwaitingDuration {
-		if err := emitTitleReviewTx(ctx, tx, hold.ReviewID); err != nil {
-			return false, err
-		}
+	if hold.AwaitingDuration {
+		return true, nil // nobody is told until the transcode measures it
+	}
+	if hold.AutoBlock {
+		return true, systemBlockTx(ctx, tx, hold.ReviewID, postID, restrictionID, TitleReviewPending)
+	}
+	if err := emitTitleReviewTx(ctx, tx, hold.ReviewID); err != nil {
+		return false, err
 	}
 	return true, nil
+}
+
+// systemBlockTx decides a PENDING review blocked by the system for a
+// registered rights owner: the hold stays (its restriction row records
+// why), the review is blocked with decided_by NULL and reason
+// owner_registered (the 075 decision-shape CHECK admits exactly that), the
+// history row is the audit (actor NULL = the system), and the blocked event
+// goes out — trust-safety counts it toward the repeat-uploader pause and
+// notification-service tells the author, in-app and by email. No reviewer
+// is involved and nothing waits for one.
+func systemBlockTx(ctx context.Context, tx pgx.Tx, reviewID, postID, restrictionID uuid.UUID, prevState string) error {
+	if err := markTitleReviewBlockedTx(ctx, tx, reviewID, restrictionID, titleReviewReasonOwnerBlock); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE copyright_title_reviews
+		SET state = 'blocked', decided_by = NULL, decided_at = now(), reason = $2,
+		    awaiting_duration = FALSE, author_notified = TRUE, updated_at = now()
+		WHERE id = $1 AND state = 'pending'`, reviewID, TitleReviewReasonOwnerRegistered)
+	if err != nil {
+		return fmt.Errorf("title review: system block: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("title review: system block: review %s is not pending", reviewID)
+	}
+	if err := insertTitleReviewEventTx(ctx, tx, reviewID, postID, "auto_block", nil, prevState, TitleReviewBlocked,
+		TitleReviewReasonOwnerRegistered); err != nil {
+		return err
+	}
+	return emitTitleReviewTx(ctx, tx, reviewID)
 }
 
 // recountRestrictionsTx is the one count write: a recount of the active
@@ -239,10 +328,11 @@ func emitTitleReviewTx(ctx context.Context, tx pgx.Tx, reviewID uuid.UUID) error
 	)
 	if err := tx.QueryRow(ctx, `
 		SELECT r.post_id, r.author_id, r.state, r.matched_title, COALESCE(p.title, ''), p.content_type,
-		       r.created_at, r.decided_at, r.decided_by
+		       r.created_at, r.decided_at, r.decided_by, COALESCE(r.rights_owner, ''), COALESCE(r.reason, '')
 		FROM copyright_title_reviews r JOIN posts p ON p.id = r.post_id
 		WHERE r.id = $1`, reviewID).
-		Scan(&postID, &authorID, &p.State, &p.MatchedTitle, &p.PostTitle, &p.ContentType, &p.CreatedAt, &decidedAt, &decidedBy); err != nil {
+		Scan(&postID, &authorID, &p.State, &p.MatchedTitle, &p.PostTitle, &p.ContentType, &p.CreatedAt, &decidedAt, &decidedBy,
+			&p.RightsOwner, &p.Reason); err != nil {
 		return fmt.Errorf("title review: read for event: %w", err)
 	}
 	p.ReviewID, p.PostID, p.AuthorID = reviewID.String(), postID.String(), authorID.String()
@@ -317,7 +407,7 @@ func (s *Store) DecideTitleReview(ctx context.Context, in DecideTitleReviewInput
 			return nil, err
 		}
 		out.Announced = announced
-	} else if err := markTitleReviewBlockedTx(ctx, tx, r); err != nil {
+	} else if err := markTitleReviewBlockedTx(ctx, tx, r.ID, r.RestrictionID, titleReviewReasonBlocked); err != nil {
 		return nil, err
 	}
 	if _, err := tx.Exec(ctx, `
@@ -409,23 +499,36 @@ func releaseTitleReviewTx(ctx context.Context, tx pgx.Tx, r *TitleReview, reason
 	if _, err := tx.Exec(ctx, `UPDATE copyright_title_reviews SET announced_at = now() WHERE id = $1`, r.ID); err != nil {
 		return false, err
 	}
+	// A rights owner tracks this post (migration 075): the eligibility event
+	// above carried earnings_excluded, but it reached monetization BEFORE the
+	// ownership row this PostCreated creates. One more revision after it
+	// restates the exclusion, so the cleared post never starts earning.
+	var tracked bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM copyright_owner_tracks WHERE post_id = $1)`, r.PostID).Scan(&tracked); err != nil {
+		return false, err
+	}
+	if tracked {
+		if err := BumpSearchRevAndEmitTx(ctx, tx, r.PostID); err != nil {
+			return false, err
+		}
+	}
 	return true, nil
 }
 
 // markTitleReviewBlockedTx keeps the hold and records why on its row.
-func markTitleReviewBlockedTx(ctx context.Context, tx pgx.Tx, r *TitleReview) error {
+func markTitleReviewBlockedTx(ctx context.Context, tx pgx.Tx, reviewID, restrictionID uuid.UUID, reasonCode string) error {
 	tag, err := tx.Exec(ctx, `
 		UPDATE post_restrictions
 		SET case_revision = case_revision + 1, last_decision_id = $2, reason_code = $3, updated_at = now()
 		WHERE restriction_id = $1 AND source = $4 AND state = 'active'`,
-		r.RestrictionID, uuid.New(), titleReviewReasonBlocked, RestrictionSourceTitleReview)
+		restrictionID, uuid.New(), reasonCode, RestrictionSourceTitleReview)
 	if err != nil {
 		return fmt.Errorf("title review: block: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
 		// A pending review always has its active hold; anything else is a
 		// data fault, and a block must never be recorded without one.
-		return fmt.Errorf("title review: block: no active hold for review %s", r.ID)
+		return fmt.Errorf("title review: block: no active hold for review %s", reviewID)
 	}
 	return nil
 }
@@ -439,14 +542,17 @@ const (
 	TitleReviewDurationNone    TitleReviewDurationOutcome = ""        // no review waiting
 	TitleReviewDurationQueued  TitleReviewDurationOutcome = "queued"  // over the threshold: queued, author told
 	TitleReviewDurationCleared TitleReviewDurationOutcome = "cleared" // under it (or no longer a long video): lifted
+	TitleReviewDurationBlocked TitleReviewDurationOutcome = "blocked" // over it, and the owner asked for blocking
 )
 
 // ResolveTitleReviewDuration settles a hold that was waiting for the
 // video's length. hold=false lifts it as the system (no reviewer, no
 // notice: the author was never told of it); hold=true queues it for a
-// reviewer and tells the author. A review that is not waiting is left
-// alone (TitleReviewDurationNone).
-func (s *Store) ResolveTitleReviewDuration(ctx context.Context, postID uuid.UUID, durationSec int, hold bool, reason string, announce TitleReviewAnnounce) (TitleReviewDurationOutcome, error) {
+// reviewer and tells the author — unless autoBlock is allowed and the
+// matched entry's owner (read now, in this transaction) still asks for
+// blocking: then the system blocks it at once (systemBlockTx). A review
+// that is not waiting is left alone (TitleReviewDurationNone).
+func (s *Store) ResolveTitleReviewDuration(ctx context.Context, postID uuid.UUID, durationSec int, hold, autoBlock bool, reason string, announce TitleReviewAnnounce) (TitleReviewDurationOutcome, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return TitleReviewDurationNone, err
@@ -469,6 +575,26 @@ func (s *Store) ResolveTitleReviewDuration(ctx context.Context, postID uuid.UUID
 		}
 		if err := insertTitleReviewEventTx(ctx, tx, r.ID, postID, "duration_measured", nil, r.State, TitleReviewPending, ""); err != nil {
 			return TitleReviewDurationNone, err
+		}
+		if autoBlock {
+			// The entry as it is NOW: an owner who withdrew the request (or
+			// an entry switched off) since the upload sends it to a reviewer.
+			var ownerBlocks bool
+			var owner *string
+			if err := tx.QueryRow(ctx, `SELECT active AND auto_block, rights_owner FROM copyright_review_titles WHERE id = $1`,
+				r.TitleID).Scan(&ownerBlocks, &owner); err != nil {
+				return TitleReviewDurationNone, fmt.Errorf("title review: entry for block: %w", err)
+			}
+			if ownerBlocks && owner != nil && strings.TrimSpace(*owner) != "" {
+				if _, err := tx.Exec(ctx, `UPDATE copyright_title_reviews SET rights_owner = COALESCE(rights_owner, $2) WHERE id = $1`,
+					r.ID, owner); err != nil {
+					return TitleReviewDurationNone, err
+				}
+				if err := systemBlockTx(ctx, tx, r.ID, postID, r.RestrictionID, r.State); err != nil {
+					return TitleReviewDurationNone, err
+				}
+				return TitleReviewDurationBlocked, tx.Commit(ctx)
+			}
 		}
 		if err := emitTitleReviewTx(ctx, tx, r.ID); err != nil {
 			return TitleReviewDurationNone, err
@@ -590,6 +716,8 @@ type TitleReviewQueueItem struct {
 	TitleLanguage   *string    `json:"title_language"`
 	TitleAliases    []string   `json:"title_aliases"`
 	TitleOwnerCount int        `json:"title_owner_channel_count"`
+	// TitleAutoBlock: the entry's owner currently asks for blocking.
+	TitleAutoBlock bool `json:"title_auto_block"`
 }
 
 // MaxTitleReviewPage caps one queue or catalogue page.
@@ -623,7 +751,7 @@ func (s *Store) ListTitleReviews(ctx context.Context, state, cursor string, limi
 	rows, err := s.db.Query(ctx, `
 		SELECT `+titleReviewColsR+`,
 		       COALESCE(p.title, ''), p.text, p.hashtags, p.content_type, p.visibility, p.review_status,
-		       p.deleted_at, p.created_at, t.language, t.aliases, cardinality(t.owner_channel_ids)
+		       p.deleted_at, p.created_at, t.language, t.aliases, cardinality(t.owner_channel_ids), t.auto_block
 		FROM copyright_title_reviews r
 		JOIN posts p ON p.id = r.post_id
 		JOIN copyright_review_titles t ON t.id = r.title_id
@@ -637,13 +765,10 @@ func (s *Store) ListTitleReviews(ctx context.Context, state, cursor string, limi
 	out := make([]TitleReviewQueueItem, 0, limit)
 	for rows.Next() {
 		var it TitleReviewQueueItem
-		r := &it.TitleReview
-		if err := rows.Scan(&r.ID, &r.PostID, &r.AuthorID, &r.RestrictionID, &r.TitleID, &r.MatchedTitle, &r.MatchedTerm,
-			&r.MatchedField, &r.DurationSeconds, &r.AwaitingDuration, &r.State, &r.AnnounceOnClear, &r.AnnouncedAt,
-			&r.AuthorNotified, &r.AuthorNote, &r.AuthorRequestedAt, &r.DecidedBy, &r.DecidedAt, &r.DecisionNote,
-			&r.CreatedAt, &r.UpdatedAt,
+		dest := append(titleReviewDest(&it.TitleReview),
 			&it.PostTitle, &it.PostText, &it.PostHashtags, &it.ContentType, &it.PostVisibility, &it.PostReview,
-			&it.PostDeletedAt, &it.PostCreatedAt, &it.TitleLanguage, &it.TitleAliases, &it.TitleOwnerCount); err != nil {
+			&it.PostDeletedAt, &it.PostCreatedAt, &it.TitleLanguage, &it.TitleAliases, &it.TitleOwnerCount, &it.TitleAutoBlock)
+		if err := rows.Scan(dest...); err != nil {
 			return nil, "", err
 		}
 		out = append(out, it)
@@ -670,17 +795,23 @@ type CopyrightTitle struct {
 	Language        *string     `json:"language"`
 	OwnerChannelIDs []uuid.UUID `json:"owner_channel_ids"`
 	Active          bool        `json:"active"`
-	CreatedBy       uuid.UUID   `json:"created_by"`
-	UpdatedBy       uuid.UUID   `json:"updated_by"`
-	CreatedAt       time.Time   `json:"created_at"`
-	UpdatedAt       time.Time   `json:"updated_at"`
+	// AutoBlock (migration 075): the rights owner registered this title and
+	// asked for copies to be blocked; a matching upload is blocked at once.
+	AutoBlock bool `json:"auto_block"`
+	// RightsOwner is the owner's display name (required with AutoBlock).
+	RightsOwner *string   `json:"rights_owner"`
+	CreatedBy   uuid.UUID `json:"created_by"`
+	UpdatedBy   uuid.UUID `json:"updated_by"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-const copyrightTitleCols = `id, title, aliases, language, owner_channel_ids, active, created_by, updated_by, created_at, updated_at`
+const copyrightTitleCols = `id, title, aliases, language, owner_channel_ids, active, auto_block, rights_owner,
+	created_by, updated_by, created_at, updated_at`
 
 func scanCopyrightTitle(row pgx.Row) (*CopyrightTitle, error) {
 	var t CopyrightTitle
-	if err := row.Scan(&t.ID, &t.Title, &t.Aliases, &t.Language, &t.OwnerChannelIDs, &t.Active,
+	if err := row.Scan(&t.ID, &t.Title, &t.Aliases, &t.Language, &t.OwnerChannelIDs, &t.Active, &t.AutoBlock, &t.RightsOwner,
 		&t.CreatedBy, &t.UpdatedBy, &t.CreatedAt, &t.UpdatedAt); err != nil {
 		return nil, err
 	}
@@ -784,6 +915,8 @@ type CopyrightTitleWrite struct {
 	Language        *string
 	OwnerChannelIDs []uuid.UUID
 	Active          bool
+	AutoBlock       bool
+	RightsOwner     *string
 }
 
 // CreateCopyrightTitle inserts an entry and its audit row together.
@@ -794,10 +927,12 @@ func (s *Store) CreateCopyrightTitle(ctx context.Context, id uuid.UUID, w Copyri
 	}
 	defer tx.Rollback(ctx)
 	t, err := scanCopyrightTitle(tx.QueryRow(ctx, `
-		INSERT INTO copyright_review_titles (id, title, aliases, language, owner_channel_ids, active, created_by, updated_by)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$7)
+		INSERT INTO copyright_review_titles (id, title, aliases, language, owner_channel_ids, active, created_by, updated_by,
+		                                     auto_block, rights_owner)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$9)
 		RETURNING `+copyrightTitleCols,
-		id, w.Title, nonNilStrings(w.Aliases), w.Language, nonNilUUIDs(w.OwnerChannelIDs), w.Active, actor))
+		id, w.Title, nonNilStrings(w.Aliases), w.Language, nonNilUUIDs(w.OwnerChannelIDs), w.Active, actor,
+		w.AutoBlock, w.RightsOwner))
 	if err != nil {
 		return nil, err
 	}
@@ -824,10 +959,12 @@ func (s *Store) UpdateCopyrightTitle(ctx context.Context, id uuid.UUID, w Copyri
 	}
 	t, err := scanCopyrightTitle(tx.QueryRow(ctx, `
 		UPDATE copyright_review_titles
-		SET title = $2, aliases = $3, language = $4, owner_channel_ids = $5, active = $6, updated_by = $7, updated_at = now()
+		SET title = $2, aliases = $3, language = $4, owner_channel_ids = $5, active = $6, updated_by = $7,
+		    auto_block = $8, rights_owner = $9, updated_at = now()
 		WHERE id = $1
 		RETURNING `+copyrightTitleCols,
-		id, w.Title, nonNilStrings(w.Aliases), w.Language, nonNilUUIDs(w.OwnerChannelIDs), w.Active, actor))
+		id, w.Title, nonNilStrings(w.Aliases), w.Language, nonNilUUIDs(w.OwnerChannelIDs), w.Active, actor,
+		w.AutoBlock, w.RightsOwner))
 	if err != nil {
 		return nil, err
 	}
@@ -856,7 +993,12 @@ func titleAuditValue(t *CopyrightTitle) string {
 	if t.Language != nil {
 		lang = *t.Language
 	}
-	v := fmt.Sprintf("title=%q aliases=%d owners=%d language=%q active=%t", t.Title, len(t.Aliases), len(t.OwnerChannelIDs), lang, t.Active)
+	owner := ""
+	if t.RightsOwner != nil {
+		owner = *t.RightsOwner
+	}
+	v := fmt.Sprintf("title=%q aliases=%d owners=%d language=%q active=%t auto_block=%t rights_owner=%q",
+		t.Title, len(t.Aliases), len(t.OwnerChannelIDs), lang, t.Active, t.AutoBlock, owner)
 	if len(v) > 1000 {
 		v = v[:1000]
 	}

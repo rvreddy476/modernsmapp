@@ -80,3 +80,14 @@ func TestConsumerRoutesCopyrightReviewEvents(t *testing.T) {
 		t.Fatalf("notices = %+v", f.got)
 	}
 }
+
+// The owner and the system's reason ride through to the notice (the email
+// names the owner and explains an owner-registered block).
+func TestPlanCopyrightNotice_OwnerAndReason(t *testing.T) {
+	p := copyrightReview(events.CopyrightReviewBlocked)
+	p.RightsOwner, p.Reason, p.DecidedBy = "Sun Pictures", events.CopyrightReasonOwnerRegistered, ""
+	n, ok, err := planCopyrightNotice(rawJSON(t, p), time.Now())
+	if err != nil || !ok || n.RightsOwner != "Sun Pictures" || n.Reason != events.CopyrightReasonOwnerRegistered || n.Type != service.CopyrightTypeBlocked {
+		t.Fatalf("notice = %+v ok=%v err=%v", n, ok, err)
+	}
+}

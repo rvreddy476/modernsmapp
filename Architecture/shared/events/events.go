@@ -644,7 +644,9 @@ type PostCreatedPayload struct {
 //	pending  the video is held for review (the author is told; never sent
 //	         while the hold is still waiting for the video's duration)
 //	cleared  a reviewer cleared it; the post is now normally visible
-//	blocked  a reviewer upheld the block; it stays hidden. trust-safety
+//	blocked  a reviewer upheld the block, or (migration 075) the system
+//	         blocked it at once for a registered rights owner (Reason
+//	         owner_registered, no DecidedBy); it stays hidden. trust-safety
 //	         records one copyright strike for it (the repeat-uploader rule)
 //
 // Consumers: notification-service (the author's notices) and trust-safety
@@ -672,10 +674,28 @@ type PostCopyrightReviewPayload struct {
 	ContentType  string    `json:"content_type"`
 	CreatedAt    time.Time `json:"created_at"`
 	// DecidedAt is set on cleared and blocked.
-	DecidedAt  *time.Time `json:"decided_at,omitempty"`
-	DecidedBy  string     `json:"decided_by,omitempty"`
-	OccurredAt time.Time  `json:"occurred_at"`
+	DecidedAt *time.Time `json:"decided_at,omitempty"`
+	// DecidedBy is the reviewer on a human decision; empty on a system
+	// decision (an owner-registered block, a duration auto-clear). A blocked
+	// event without it still counts as an upheld block.
+	DecidedBy string `json:"decided_by,omitempty"`
+	// RightsOwner is the registered rights owner's display name when the
+	// matched catalogue entry names one (post-service migration 075).
+	// Author-facing copy may show it. Additive.
+	RightsOwner string `json:"rights_owner,omitempty"`
+	// Reason says why the system acted (migration 075; additive):
+	//   CopyrightReasonOwnerRegistered  blocked at once for the registered owner
+	//   CopyrightReasonMuteRequested    the owner asked for a mute; held for a reviewer
+	// Empty on an ordinary title-match hold and a reviewer's decision on it.
+	Reason     string    `json:"reason,omitempty"`
+	OccurredAt time.Time `json:"occurred_at"`
 }
+
+// Reasons on PostCopyrightReviewPayload.Reason.
+const (
+	CopyrightReasonOwnerRegistered = "owner_registered"
+	CopyrightReasonMuteRequested   = "mute_requested"
+)
 
 // PostCreditSearchFields is the cast & crew projection a long video carries
 // to search (2026-10-23), embedded in PostCreatedPayload and
@@ -776,6 +796,14 @@ type PostSearchEligibilityChangedPayload struct {
 	// title, media, credits) off a gated post's event, and consumers drop
 	// it from public results.
 	TierRequiredID string `json:"tier_required_id,omitempty"`
+
+	// EarningsExcluded is true while a registered rights owner TRACKS this
+	// post (post-service copyright_owner_tracks, migration 075): the post
+	// stays visible and searchable, but it earns nothing. Monetization
+	// projections (analytics' content ownership) read it as ineligible from
+	// ChangedAt; search ignores it. Carried on every transition so a later
+	// edit cannot re-grant earnings. Additive.
+	EarningsExcluded bool `json:"earnings_excluded,omitempty"`
 
 	ChangedAt time.Time `json:"changed_at"`
 }

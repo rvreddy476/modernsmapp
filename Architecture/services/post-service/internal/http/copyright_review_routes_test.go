@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -57,8 +58,14 @@ func (f *routeTitleStore) DecideTitleReview(_ context.Context, in postgres.Decid
 	r := *f.review
 	return &postgres.TitleReviewOutcome{Review: &r}, nil
 }
-func (f *routeTitleStore) ResolveTitleReviewDuration(context.Context, uuid.UUID, int, bool, string, postgres.TitleReviewAnnounce) (postgres.TitleReviewDurationOutcome, error) {
+func (f *routeTitleStore) ResolveTitleReviewDuration(context.Context, uuid.UUID, int, bool, bool, string, postgres.TitleReviewAnnounce) (postgres.TitleReviewDurationOutcome, error) {
 	return postgres.TitleReviewDurationNone, nil
+}
+func (f *routeTitleStore) CopyrightMatchPostAuthor(context.Context, uuid.UUID) (uuid.UUID, error) {
+	return uuid.Nil, postgres.ErrPostNotFound
+}
+func (f *routeTitleStore) ApplyOwnerMatch(context.Context, postgres.OwnerMatchInput) (*postgres.OwnerMatchResult, error) {
+	return nil, errors.New("not used by the routes")
 }
 func (f *routeTitleStore) RequestTitleReview(_ context.Context, _, _ uuid.UUID, note string) (*postgres.TitleReview, error) {
 	f.reqNote = note
@@ -154,6 +161,41 @@ func TestCopyrightTitles_CreateValidatesAndNeedsRemove(t *testing.T) {
 	}
 	if w := adminServe(r, http.MethodGet, InternalAdminPrefix+"/copyright/reviews", "", bearer(moderate)); w.Code != http.StatusOK {
 		t.Fatalf("queue: %d %s", w.Code, w.Body.String())
+	}
+}
+
+// auto_block and rights_owner ride the create body; an automatic block
+// without a named owner is refused before the store.
+func TestCopyrightTitles_AutoBlockNeedsRightsOwner(t *testing.T) {
+	store := &routeTitleStore{}
+	r, rg := copyrightRouter(t, store)
+	path := InternalAdminPrefix + "/copyright/titles"
+	remove := rg.mint(t, rg.admin, AudiencePost, []string{PermVideosRemove}, rg.actor.String())
+
+	for name, bad := range map[string]string{
+		"no owner":         `{"title":"Jailer 2","auto_block":true}`,
+		"blank owner":      `{"title":"Jailer 2","auto_block":true,"rights_owner":"   "}`,
+		"null owner":       `{"title":"Jailer 2","auto_block":true,"rights_owner":null}`,
+		"owner not string": `{"title":"Jailer 2","auto_block":true,"rights_owner":7}`,
+		"control in owner": `{"title":"Jailer 2","auto_block":true,"rights_owner":"Sun\u0000Pictures"}`,
+	} {
+		if w := adminServe(r, http.MethodPost, path, bad, bearer(remove)); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d %s", name, w.Code, w.Body.String())
+		}
+	}
+	if len(store.created) != 0 {
+		t.Fatalf("an owner-less automatic block was written: %+v", store.created)
+	}
+	w := adminServe(r, http.MethodPost, path, `{"title":"Jailer 2","auto_block":true,"rights_owner":"  Sun   Pictures "}`, bearer(remove))
+	if w.Code != http.StatusCreated || len(store.created) != 1 {
+		t.Fatalf("create: %d %s", w.Code, w.Body.String())
+	}
+	if c := store.created[0]; !c.AutoBlock || c.RightsOwner == nil || *c.RightsOwner != "Sun Pictures" {
+		t.Fatalf("written = %+v, want auto_block with the owner named", c)
+	}
+	// Default: not an automatic block.
+	if w := adminServe(r, http.MethodPost, path, `{"title":"Leo"}`, bearer(remove)); w.Code != http.StatusCreated || store.created[1].AutoBlock {
+		t.Fatalf("default entry: %d %+v", w.Code, store.created[1])
 	}
 }
 

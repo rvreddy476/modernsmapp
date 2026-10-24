@@ -69,3 +69,30 @@ func TestDeferredPostCreatedCarriesTheFloor(t *testing.T) {
 		t.Fatalf("an ordinary PostCreated set a floor: %v", store.upserts[1].EligibleFrom)
 	}
 }
+
+// A post a rights owner TRACKS (post-service migration 075) stays public,
+// but its eligibility events carry earnings_excluded: it earns nothing from
+// then on, and a later ordinary transition that still carries the flag
+// does not re-grant earnings.
+func TestOwnerTrackedPostEarnsNothing(t *testing.T) {
+	store := &recordingStore{}
+	c := NewContentOwnershipConsumer(store)
+	post, author := uuid.New(), uuid.New()
+	at := time.Date(2026, 10, 24, 9, 0, 0, 0, time.UTC)
+	for i, excluded := range []bool{true, true, false} {
+		if err := c.apply(context.Background(), envelopeFor(t, events.PostSearchEligibilityChanged, events.PostSearchEligibilityChangedPayload{
+			PostID: post.String(), AuthorID: author.String(), Visibility: "public", ReviewStatus: "approved",
+			BaseReviewStatus: "approved", SearchRev: int64(10 + i), EarningsExcluded: excluded, ChangedAt: at.Add(time.Duration(i) * time.Hour),
+		})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(store.eligibility) != 3 {
+		t.Fatalf("eligibility writes = %d", len(store.eligibility))
+	}
+	for i, want := range []string{pgstore.EligibilityIneligible, pgstore.EligibilityIneligible, pgstore.EligibilityEligible} {
+		if store.eligibility[i].State != want {
+			t.Fatalf("write %d = %s, want %s", i, store.eligibility[i].State, want)
+		}
+	}
+}

@@ -94,8 +94,8 @@ func (r gateScan) Scan(dest ...any) error {
 	if !strings.Contains(r.sql, "SET search_rev = search_rev + 1") {
 		return fmt.Errorf("unexpected query: %s", r.sql)
 	}
-	if len(dest) != 17 {
-		return fmt.Errorf("RETURNING scans %d columns; this fake knows 17", len(dest))
+	if len(dest) != 18 {
+		return fmt.Errorf("RETURNING scans %d columns; this fake knows 18", len(dest))
 	}
 	row := r.t.row
 	row.rev++
@@ -117,6 +117,7 @@ func (r gateScan) Scan(dest ...any) error {
 	*dest[14].(*int) = 61000
 	*dest[15].(*int) = 1080
 	*dest[16].(**uuid.UUID) = row.tier
+	*dest[17].(*bool) = false // earnings_excluded: no owner tracks the post
 	return nil
 }
 

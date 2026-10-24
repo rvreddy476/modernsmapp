@@ -51,7 +51,7 @@ func TestRenderCopyrightNotification(t *testing.T) {
 	n := CopyrightReviewNotification{RecipientID: uuid.New(), ReviewID: review, PostID: uuid.New(), Type: CopyrightTypeBlocked,
 		MatchedTitle: "Jailer 2", PostTitle: "Jailer 2 full movie", CreatedAt: time.Now()}
 	r := RenderCopyrightNotification(n)
-	if r.Title != "Your video was blocked after copyright review" || r.Body != "Jailer 2 full movie · matched Jailer 2" || r.CollapseKey != "copyright:"+review.String() {
+	if r.Title != "Your video was blocked for copyright" || r.Body != "Jailer 2 full movie · matched Jailer 2" || r.CollapseKey != "copyright:"+review.String() {
 		t.Fatalf("render = %+v", r)
 	}
 	n.PostTitle = ""

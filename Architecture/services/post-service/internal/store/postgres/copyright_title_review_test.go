@@ -30,19 +30,64 @@ type titleTx struct {
 	eligibility    []events.PostSearchEligibilityChangedPayload
 	reviewEvents   []events.PostCopyrightReviewPayload
 	rev            int64
+
+	// Owner-registered blocks and owner matches (migration 075).
+	state        string   // the review's state as the event read sees it ("" = pending)
+	reason       *string  // the review's reason as the event read sees it
+	owner        *string  // the review's rights_owner as the event read sees it
+	blockMisses  bool     // the system block's compare-and-set finds no pending row
+	tracked      bool     // a copyright_owner_tracks row exists for the post
+	authorID     uuid.UUID
+	existing     *TitleReview // the post's review (nil = none)
+	reasonCodes  []string     // restriction reason codes written, in order
+	historyActs  []string     // copyright_title_review_events actions, in order
+	historyNotes []string
 }
 
 func (t *titleTx) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	t.execs = append(t.execs, sql)
 	switch {
 	case strings.Contains(sql, "INSERT INTO copyright_title_reviews"):
+		if t.reviewInserted == 1 {
+			t.owner, _ = args[12].(*string)
+			t.reason, _ = args[13].(*string)
+		}
 		return pgconn.NewCommandTag(fmt.Sprintf("INSERT 0 %d", t.reviewInserted)), nil
+	case strings.Contains(sql, "SET state = 'blocked', decided_by = NULL"):
+		if t.blockMisses {
+			return pgconn.NewCommandTag("UPDATE 0"), nil
+		}
+		t.state = TitleReviewBlocked
+		r := args[1].(string)
+		t.reason = &r
+		return pgconn.NewCommandTag("UPDATE 1"), nil
+	case strings.Contains(sql, "INSERT INTO copyright_title_review_events"):
+		t.historyActs = append(t.historyActs, args[3].(string))
+		note := ""
+		if n, ok := args[7].(*string); ok && n != nil {
+			note = *n
+		}
+		t.historyNotes = append(t.historyNotes, note)
+		return pgconn.NewCommandTag("INSERT 0 1"), nil
+	case strings.Contains(sql, "INSERT INTO copyright_owner_tracks"):
+		if t.tracked {
+			return pgconn.NewCommandTag("INSERT 0 0"), nil
+		}
+		t.tracked = true
+		return pgconn.NewCommandTag("INSERT 0 1"), nil
+	case strings.Contains(sql, "SET rights_owner = COALESCE(rights_owner"):
+		return pgconn.NewCommandTag("UPDATE 1"), nil
+	case strings.Contains(sql, "SET reason = COALESCE(reason, $2)"):
+		if r, ok := args[1].(*string); ok && r != nil && t.reason == nil {
+			t.reason = r
+		}
+		return pgconn.NewCommandTag("UPDATE 1"), nil
 	case strings.Contains(sql, "INSERT INTO post_restrictions"),
 		strings.Contains(sql, "SET active_restriction_count"),
-		strings.Contains(sql, "INSERT INTO copyright_title_review_events"),
 		strings.Contains(sql, "UPDATE copyright_title_reviews SET announced_at"):
 		return pgconn.NewCommandTag("UPDATE 1"), nil
 	case strings.Contains(sql, "UPDATE post_restrictions"):
+		t.reasonCodes = append(t.reasonCodes, args[2].(string))
 		return pgconn.NewCommandTag("UPDATE 1"), nil
 	case strings.Contains(sql, "INSERT INTO post_outbox_events"):
 		typ := args[0].(string)
@@ -83,6 +128,25 @@ func (r titleScan) Scan(dest ...any) error {
 	case strings.Contains(r.sql, "SELECT active_restriction_count > 0 FROM posts"):
 		*dest[0].(*bool) = r.t.stillHeld
 		return nil
+	case strings.Contains(r.sql, "SELECT EXISTS (SELECT 1 FROM copyright_owner_tracks"):
+		*dest[0].(*bool) = r.t.tracked
+		return nil
+	case strings.Contains(r.sql, "SELECT author_id, deleted_at IS NOT NULL FROM posts"):
+		*dest[0].(*uuid.UUID) = r.t.authorID
+		*dest[1].(*bool) = r.t.deleted
+		return nil
+	case strings.Contains(r.sql, "FROM copyright_title_reviews WHERE post_id = $1 FOR UPDATE"):
+		if r.t.existing == nil {
+			return pgx.ErrNoRows
+		}
+		src := titleReviewDest(r.t.existing)
+		for i := range dest {
+			copyScan(dest[i], src[i])
+		}
+		return nil
+	case strings.Contains(r.sql, "FROM media_assets ma JOIN post_media pm") && strings.Contains(r.sql, "/ 1000"):
+		*dest[0].(*int) = 3600
+		return nil
 	case strings.Contains(r.sql, "SET search_rev = search_rev + 1"):
 		r.t.rev++
 		*dest[0].(*uuid.UUID) = uuid.New()
@@ -106,20 +170,57 @@ func (r titleScan) Scan(dest ...any) error {
 		*dest[14].(*int) = 0
 		*dest[15].(*int) = 0
 		*dest[16].(**uuid.UUID) = nil
+		*dest[17].(*bool) = r.t.tracked
 		return nil
 	case strings.Contains(r.sql, "FROM copyright_title_reviews r JOIN posts p"):
+		state := r.t.state
+		if state == "" {
+			state = TitleReviewPending
+		}
 		*dest[0].(*uuid.UUID) = uuid.New()
 		*dest[1].(*uuid.UUID) = uuid.New()
-		*dest[2].(*string) = TitleReviewPending
+		*dest[2].(*string) = state
 		*dest[3].(*string) = "Jailer 2"
 		*dest[4].(*string) = "Jailer 2 full movie"
 		*dest[5].(*string) = "long_video"
 		*dest[6].(*time.Time) = time.Now()
 		*dest[7].(**time.Time) = nil
 		*dest[8].(**uuid.UUID) = nil
+		*dest[9].(*string) = ""
+		if r.t.owner != nil {
+			*dest[9].(*string) = *r.t.owner
+		}
+		*dest[10].(*string) = ""
+		if r.t.reason != nil {
+			*dest[10].(*string) = *r.t.reason
+		}
 		return nil
 	}
 	return fmt.Errorf("unexpected query: %s", r.sql)
+}
+
+// copyScan copies *src into *dst for the scan destinations of TitleReview.
+func copyScan(dst, src any) {
+	switch d := dst.(type) {
+	case *uuid.UUID:
+		*d = *src.(*uuid.UUID)
+	case *string:
+		*d = *src.(*string)
+	case *bool:
+		*d = *src.(*bool)
+	case **int:
+		*d = *src.(**int)
+	case **string:
+		*d = *src.(**string)
+	case **time.Time:
+		*d = *src.(**time.Time)
+	case **uuid.UUID:
+		*d = *src.(**uuid.UUID)
+	case *time.Time:
+		*d = *src.(*time.Time)
+	default:
+		panic(fmt.Sprintf("copyScan: %T", dst))
+	}
 }
 
 func testHold(awaiting bool) *TitleReviewHold {

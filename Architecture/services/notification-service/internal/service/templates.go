@@ -335,7 +335,7 @@ var Templates = map[string]NotificationTemplate{
 		PushEligible: true, CanAggregate: false,
 	},
 	CopyrightTypeBlocked: {
-		EventType: CopyrightTypeBlocked, TitleTemplate: "Your video was blocked after copyright review",
+		EventType: CopyrightTypeBlocked, TitleTemplate: "Your video was blocked for copyright",
 		BodyTemplate: "{post_title} · matched {matched_title}", Icon: "system", Priority: "high",
 		PushEligible: true, CanAggregate: false,
 	},

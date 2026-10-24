@@ -29,7 +29,8 @@ func planCopyrightNotice(raw json.RawMessage, now time.Time) (service.CopyrightR
 	if err := unmarshalPayload(raw, &p); err != nil {
 		return service.CopyrightReviewNotification{}, false, err
 	}
-	n := service.CopyrightReviewNotification{MatchedTitle: p.MatchedTitle, PostTitle: p.PostTitle, CreatedAt: orNow(p.OccurredAt, now)}
+	n := service.CopyrightReviewNotification{MatchedTitle: p.MatchedTitle, PostTitle: p.PostTitle,
+		RightsOwner: p.RightsOwner, Reason: p.Reason, CreatedAt: orNow(p.OccurredAt, now)}
 	switch p.State {
 	case events.CopyrightReviewPending:
 		n.Type, n.DeepLink = service.CopyrightTypeHold, service.CopyrightHubDeepLink
