@@ -215,29 +215,69 @@ func (s *Store) GetFollowingIDs(ctx context.Context, userID uuid.UUID) ([]uuid.U
 	return ids, rows.Err()
 }
 
-// GetFriendsOfFriends returns a map of candidateID → mutual friend count.
+// FriendScanLimit bounds every read of "the viewer's friends" below: only the
+// viewer's newest followers (followee index) are probed for the reverse
+// follow. graph-service's CheckFollowSecondDegree uses the same cap. A friend
+// past it is simply not used as a bridge, which only withholds a suggestion.
+const FriendScanLimit = 1000
+
+// FriendOfFriendScanLimit bounds the second hop: for each bridging friend,
+// only their newest followers are probed for a reverse follow, so one friend
+// with a million followers costs the same as one with two hundred.
+const FriendOfFriendScanLimit = 200
+
+// GetFriendsOfFriends returns People-you-may-know candidates over the FOLLOW
+// graph, candidateID → friends in common. Connections were retired on
+// 24 Oct 2026 (no new one can form), so the old connections-table version
+// could never suggest anyone to an account made after that day.
+//
+// A friend is a MUTUAL follow — graph-service's "friends" bond and the
+// definition behind its MutualFollowCounts — so a candidate is a friend of
+// one of the viewer's friends, and the count is how many of the viewer's
+// friends are friends with the candidate (as far as the bounded scan sees).
+//
+// Excluded in SQL: the viewer, excludeIDs, anyone the viewer already
+// follows, a block in either direction, and hidden (deactivated /
+// deletion-scheduled) accounts on either hop. Cost is bounded by
+// FriendScanLimit × FriendOfFriendScanLimit index probes.
 func (s *Store) GetFriendsOfFriends(ctx context.Context, userID uuid.UUID, excludeIDs []uuid.UUID) (map[uuid.UUID]int, error) {
 	q := `
 	WITH my_friends AS (
-		SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS friend_id
-		FROM connections WHERE user_a = $1 OR user_b = $1
+		SELECT f.follower_id AS friend_id
+		FROM (
+			SELECT follower_id FROM follows
+			WHERE followee_id = $1
+			ORDER BY created_at DESC
+			LIMIT $3
+		) f
+		JOIN follows back ON back.follower_id = $1 AND back.followee_id = f.follower_id
+		WHERE f.follower_id <> $1
+		  AND NOT EXISTS (SELECT 1 FROM hidden_users hf WHERE hf.user_id = f.follower_id)
 	),
 	fof AS (
-		SELECT
-			CASE WHEN f.user_a = mf.friend_id THEN f.user_b ELSE f.user_a END AS candidate_id,
-			mf.friend_id AS via_friend
-		FROM connections f
-		JOIN my_friends mf ON (f.user_a = mf.friend_id OR f.user_b = mf.friend_id)
-		WHERE CASE WHEN f.user_a = mf.friend_id THEN f.user_b ELSE f.user_a END != $1
+		SELECT c.follower_id AS candidate_id, mf.friend_id AS via_friend
+		FROM my_friends mf
+		CROSS JOIN LATERAL (
+			SELECT follower_id FROM follows
+			WHERE followee_id = mf.friend_id
+			ORDER BY created_at DESC
+			LIMIT $4
+		) c
+		JOIN follows cb ON cb.follower_id = mf.friend_id AND cb.followee_id = c.follower_id
+		WHERE c.follower_id <> $1
 	)
-	SELECT candidate_id, COUNT(DISTINCT via_friend)::int AS mutual_count
+	SELECT fof.candidate_id, COUNT(DISTINCT fof.via_friend)::int AS mutual_count
 	FROM fof
-	WHERE candidate_id != ALL($2::uuid[])
-	GROUP BY candidate_id
+	WHERE fof.candidate_id <> ALL(COALESCE($2::uuid[], '{}'::uuid[]))
+	  AND NOT EXISTS (SELECT 1 FROM follows vf WHERE vf.follower_id = $1 AND vf.followee_id = fof.candidate_id)
+	  AND NOT EXISTS (SELECT 1 FROM hidden_users hc WHERE hc.user_id = fof.candidate_id)
+	  AND NOT EXISTS (SELECT 1 FROM blocks bv WHERE bv.blocker_id = $1 AND bv.blocked_id = fof.candidate_id)
+	  AND NOT EXISTS (SELECT 1 FROM blocks bc WHERE bc.blocker_id = fof.candidate_id AND bc.blocked_id = $1)
+	GROUP BY fof.candidate_id
 	ORDER BY mutual_count DESC
 	LIMIT 1000
 	`
-	rows, err := s.appDB.Query(ctx, q, userID, excludeIDs)
+	rows, err := s.appDB.Query(ctx, q, userID, excludeIDs, FriendScanLimit, FriendOfFriendScanLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -284,14 +324,18 @@ func (s *Store) GetPopularUsers(ctx context.Context, limit int) ([]uuid.UUID, er
 	return ids, rows.Err()
 }
 
-// GetAllUsersWithFriends returns user IDs that have at least one friend.
+// GetAllUsersWithFriends returns the users the friend and follow batches run
+// for: everyone with at least one friend, a friend being a MUTUAL follow.
+// It read the connections table until 24 Oct 2026, which meant an account
+// made after Connect was retired never had suggestions computed. Hidden
+// (deactivated / deletion-scheduled) accounts are skipped.
 func (s *Store) GetAllUsersWithFriends(ctx context.Context) ([]uuid.UUID, error) {
 	rows, err := s.appDB.Query(ctx, `
-		SELECT DISTINCT user_id FROM (
-			SELECT user_a AS user_id FROM connections
-			UNION
-			SELECT user_b AS user_id FROM connections
-		) t
+		SELECT DISTINCT a.follower_id
+		FROM follows a
+		JOIN follows b ON b.follower_id = a.followee_id AND b.followee_id = a.follower_id
+		WHERE a.follower_id <> a.followee_id
+		  AND NOT EXISTS (SELECT 1 FROM hidden_users h WHERE h.user_id = a.follower_id)
 	`)
 	if err != nil {
 		return nil, err
@@ -1037,19 +1081,28 @@ func (s *Store) GetCandidateBlockRate(ctx context.Context, candidateID uuid.UUID
 
 // ─── Mutual friend IDs (for API response) ────────────────────
 
-// GetMutualFriendIDs returns actual mutual friend IDs between viewer and candidate.
+// GetMutualFriendIDs returns friends the viewer and candidate have in common
+// (the ids shown beside a suggestion's count), a friend being a MUTUAL follow
+// with each of them — the same definition GetFriendsOfFriends counts. Only
+// the viewer's newest FriendScanLimit followers are probed; hidden accounts
+// are never shown.
 func (s *Store) GetMutualFriendIDs(ctx context.Context, viewerID, candidateID uuid.UUID, limit int) ([]uuid.UUID, error) {
 	rows, err := s.appDB.Query(ctx, `
-		SELECT vf.fid FROM (
-			SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS fid
-			FROM connections WHERE user_a = $1 OR user_b = $1
-		) vf
-		JOIN (
-			SELECT CASE WHEN user_a = $2 THEN user_b ELSE user_a END AS fid
-			FROM connections WHERE user_a = $2 OR user_b = $2
-		) cf ON vf.fid = cf.fid
+		SELECT a.follower_id
+		FROM (
+			SELECT follower_id, created_at FROM follows
+			WHERE followee_id = $1
+			ORDER BY created_at DESC
+			LIMIT $4
+		) a
+		WHERE a.follower_id NOT IN ($1, $2)
+		  AND EXISTS (SELECT 1 FROM follows vb WHERE vb.follower_id = $1 AND vb.followee_id = a.follower_id)
+		  AND EXISTS (SELECT 1 FROM follows fc WHERE fc.follower_id = a.follower_id AND fc.followee_id = $2)
+		  AND EXISTS (SELECT 1 FROM follows cf WHERE cf.follower_id = $2 AND cf.followee_id = a.follower_id)
+		  AND NOT EXISTS (SELECT 1 FROM hidden_users h WHERE h.user_id = a.follower_id)
+		ORDER BY a.created_at DESC
 		LIMIT $3
-	`, viewerID, candidateID, limit)
+	`, viewerID, candidateID, limit, FriendScanLimit)
 	if err != nil {
 		return nil, err
 	}

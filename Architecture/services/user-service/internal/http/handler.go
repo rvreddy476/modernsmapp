@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"strconv"
@@ -511,7 +512,9 @@ func (h *Handler) newGraphRequest(ctx context.Context, url string) (*http.Reques
 	return req, nil
 }
 
-// resolveViewerAccess determines the viewer's access level by calling graph-service.
+// resolveViewerAccess determines the viewer's About-section audience from
+// graph-service's relationship facts. See about_visibility.go for the rule;
+// every failure leaves the viewer with public items only.
 func (h *Handler) resolveViewerAccess(ctx *gin.Context, ownerID uuid.UUID) service.ViewerAccess {
 	viewerIDStr := ctx.GetHeader("X-User-Id")
 	viewerID, err := uuid.Parse(viewerIDStr)
@@ -527,26 +530,23 @@ func (h *Handler) resolveViewerAccess(ctx *gin.Context, ownerID uuid.UUID) servi
 	if err != nil {
 		return service.ViewerAccess{}
 	}
+	graphReq.Header.Set("X-User-Id", viewerID.String())
 	resp, err := h.graphClient.Do(graphReq)
 	if err != nil {
 		return service.ViewerAccess{}
 	}
 	defer resp.Body.Close()
-
-	var body struct {
-		Data struct {
-			FollowedBy bool `json:"followed_by"`
-			IsFriend   bool `json:"is_friend"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+	if resp.StatusCode != http.StatusOK {
 		return service.ViewerAccess{}
 	}
 
-	return service.ViewerAccess{
-		IsFollower: body.Data.FollowedBy,
-		IsFriend:   body.Data.IsFriend,
+	var body struct {
+		Data aboutRelationship `json:"data"`
 	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
+		return service.ViewerAccess{}
+	}
+	return aboutAccessFromRelationship(body.Data)
 }
 
 func (h *Handler) GetAbout(c *gin.Context) {
