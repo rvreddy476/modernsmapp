@@ -246,7 +246,7 @@ func TestBookmarksTypeFilterAndLimitCap(t *testing.T) {
 
 	// type=long_video: only long videos, and limit 500 is clamped to 100
 	// (so the 101st long video lands on page two, with a cursor to reach it).
-	posts, next, err := st.GetBookmarks(ctx, r.viewer, []string{"long_video"}, 500, "")
+	posts, next, err := st.GetBookmarks(ctx, r.viewer, []string{"long_video"}, 500, "", postgres.SavedScope{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +261,7 @@ func TestBookmarksTypeFilterAndLimitCap(t *testing.T) {
 			t.Fatalf("type=long_video returned %s (%s)", p.ID, p.ContentType)
 		}
 	}
-	rest, next2, err := st.GetBookmarks(ctx, r.viewer, []string{"long_video"}, 500, next)
+	rest, next2, err := st.GetBookmarks(ctx, r.viewer, []string{"long_video"}, 500, next, postgres.SavedScope{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -270,7 +270,7 @@ func TestBookmarksTypeFilterAndLimitCap(t *testing.T) {
 	}
 
 	// type=flick: the two flicks only.
-	flicks, _, err := st.GetBookmarks(ctx, r.viewer, []string{"flick"}, 20, "")
+	flicks, _, err := st.GetBookmarks(ctx, r.viewer, []string{"flick"}, 20, "", postgres.SavedScope{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestBookmarksTypeFilterAndLimitCap(t *testing.T) {
 	}
 
 	// No filter: everything, still capped.
-	all, _, err := st.GetBookmarks(ctx, r.viewer, nil, 500, "")
+	all, _, err := st.GetBookmarks(ctx, r.viewer, nil, 500, "", postgres.SavedScope{})
 	if err != nil {
 		t.Fatal(err)
 	}

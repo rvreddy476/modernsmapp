@@ -509,7 +509,7 @@ func (h *Handler) ListIncomingFollowRequests(c *gin.Context) {
 }
 
 // CanInternal handles POST /v1/internal/graph/can
-// {"viewer_id","action":"view_posts"|"comment","target_ids":[...]}
+// {"viewer_id","action":"view_posts"|"comment"|"mention"|"tag","target_ids":[...]}
 // → {"data":{"<target_id>":true|false}}. Fails closed: a privacy-fetch
 // failure resolves to deny inside the service; a graph-store failure is a
 // 500 the caller must treat as deny.
@@ -528,9 +528,9 @@ func (h *Handler) CanInternal(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid viewer_id", nil)
 		return
 	}
-	actions := permission.ParseActions([]string{req.Action})
-	if len(actions) != 1 || (actions[0] != permission.ActionViewPosts && actions[0] != permission.ActionComment) {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "action must be view_posts or comment", nil)
+	action, known := permission.ParseCanAction(req.Action)
+	if !known || !service.IsCanBatchAction(action) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "action must be view_posts, comment, mention or tag", nil)
 		return
 	}
 	if len(req.TargetIDs) > store.MaxRelationshipBatch {
@@ -549,7 +549,7 @@ func (h *Handler) CanInternal(c *gin.Context) {
 		}
 		targetIDs = append(targetIDs, id)
 	}
-	result, err := h.svc.CanBatch(c.Request.Context(), viewerID, actions[0], targetIDs)
+	result, err := h.svc.CanBatch(c.Request.Context(), viewerID, action, targetIDs)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return

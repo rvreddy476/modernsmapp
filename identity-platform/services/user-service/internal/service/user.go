@@ -67,6 +67,12 @@ var allowedPrivacyValues = map[string]map[string]bool{
 	"chat_availability": {
 		"enabled": true, "paused": true,
 	},
+	// Mentions and tags (2026-10-24): who_can_mention and who_can_tag share
+	// one set. "following" = the accounts this user follows (graph-service
+	// resolves it as "target follows actor").
+	"mention_tag": {
+		"everyone": true, "following": true, "no_one": true,
+	},
 	// The four visibility fields share one enum set.
 	"visibility": {
 		"everyone": true, "connections_only": true, "no_one": true,
@@ -179,6 +185,8 @@ func validatePrivacySettings(s *store.UserSettings) error {
 		{"visibility", "who_can_see_read_receipts", s.WhoCanSeeReadReceipts},
 		{"visibility", "who_can_see_last_seen", s.WhoCanSeeLastSeen},
 		{"visibility", "who_can_see_profile_photo", s.WhoCanSeeProfilePhoto},
+		{"mention_tag", "who_can_mention", s.WhoCanMention},
+		{"mention_tag", "who_can_tag", s.WhoCanTag},
 	}
 	for _, c := range checks {
 		if !allowedPrivacyValues[c.vocab][c.value] {
@@ -247,6 +255,15 @@ func applyStrictMode(s *store.UserSettings) {
 	s.WhoCanSeeReadReceipts = "connections_only"
 	s.WhoCanSeeLastSeen = "connections_only"
 	s.WhoCanSeeProfilePhoto = "connections_only"
+	// Strangers may not @mention or tag a minor / strict-mode account:
+	// "everyone" narrows to the people it follows; following and no_one
+	// stay as chosen.
+	if s.WhoCanMention == "everyone" {
+		s.WhoCanMention = "following"
+	}
+	if s.WhoCanTag == "everyone" {
+		s.WhoCanTag = "following"
+	}
 	s.BlockUnknownCalls = true
 	s.AutoFilterAbusiveContent = true
 	s.AllowPhoneDiscovery = false
@@ -384,13 +401,15 @@ func (s *Service) ListUsers(ctx context.Context, limit, offset int) ([]store.Use
 
 // settingsCacheKey is the Redis key for a user's cached settings snapshot.
 //
-// Versioned (v2, chat parity 2026-10-18): an entry written before the dm_* /
+// Versioned (v3, mentions and tags 2026-10-24: a v2 entry would unmarshal
+// who_can_mention / who_can_tag as "", which validation refuses, so the PUT
+// read-modify-write would 400. v2, chat parity 2026-10-18): an entry written before the dm_* /
 // chat_bubble_style fields existed would unmarshal with dm_safe_mode=false and
 // chat_bubble_style="" — the wrong default, and a value the PUT
 // read-modify-write would then refuse. Bump the version whenever a field with
 // a non-zero default is added.
 func settingsCacheKey(id uuid.UUID) string {
-	return fmt.Sprintf("user:settings:v2:%s", id)
+	return fmt.Sprintf("user:settings:v3:%s", id)
 }
 
 // legacySettingsCacheKey is the pre-v2 key. Still deleted on every write so a
@@ -400,9 +419,15 @@ func legacySettingsCacheKey(id uuid.UUID) string {
 	return fmt.Sprintf("user:settings:%s", id)
 }
 
-// invalidateSettingsCache drops both the current and the legacy entry.
+// v2SettingsCacheKey is the chat-parity key the previous build reads; deleted
+// on every write for the same rolling-deploy reason.
+func v2SettingsCacheKey(id uuid.UUID) string {
+	return fmt.Sprintf("user:settings:v2:%s", id)
+}
+
+// invalidateSettingsCache drops the current and both older entries.
 func (s *Service) invalidateSettingsCache(ctx context.Context, id uuid.UUID) {
-	keys := []string{settingsCacheKey(id), legacySettingsCacheKey(id)}
+	keys := []string{settingsCacheKey(id), v2SettingsCacheKey(id), legacySettingsCacheKey(id)}
 	if err := s.rdb.Del(ctx, keys...).Err(); err != nil {
 		s.log.Warn("failed to delete settings cache", "err", err, "cache_keys", keys)
 	}

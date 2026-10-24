@@ -23,6 +23,10 @@ const MaxTaggedUsers = 20
 // ErrTooManyTaggedUsers is more than MaxTaggedUsers ids in one request.
 var ErrTooManyTaggedUsers = errors.New("too many tagged users")
 
+// ErrInvalidTaggedUser is a tagged_user_ids entry that is not a user id
+// (the edit route; the create route answers its own 400).
+var ErrInvalidTaggedUser = errors.New("invalid tagged user id")
+
 // NormalizeTaggedUsers returns the ids to store, in the order first given.
 //
 // Duplicates collapse because tagging someone twice is one tag, not two. The

@@ -154,6 +154,11 @@ func (c *Client) RelationshipBatch(ctx context.Context, viewerID string, targetI
 const (
 	ActionViewPosts = "view_posts"
 	ActionComment   = "comment"
+	// ActionMention / ActionTag (2026-10-24): may the viewer @mention / tag
+	// the target (who_can_mention / who_can_tag). Internal only: graph-
+	// service does not answer them on the client-facing check routes.
+	ActionMention = "mention"
+	ActionTag     = "tag"
 )
 
 // MaxCanBatch mirrors graph-service's per-call ceiling; a larger batch is

@@ -1436,7 +1436,7 @@ func (s *Store) BatchIsBookmarked(ctx context.Context, userID uuid.UUID, postIDs
 // asks for long_video alone; the same filter GetRecentPosts takes). The
 // limit is clamped to 100 rather than reset to the default, so a client
 // asking for more gets the largest page we serve.
-func (s *Store) GetBookmarks(ctx context.Context, userID uuid.UUID, contentTypes []string, limit int, cursor string) ([]Post, string, error) {
+func (s *Store) GetBookmarks(ctx context.Context, userID uuid.UUID, contentTypes []string, limit int, cursor string, scope SavedScope) ([]Post, string, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -1446,16 +1446,21 @@ func (s *Store) GetBookmarks(ctx context.Context, userID uuid.UUID, contentTypes
 
 	var args []interface{}
 	args = append(args, userID, limit+1)
-	argIdx := 3
+
+	// Saved collections (migration 074): scope keeps one collection, or the
+	// default one; the zero scope is every saved post.
+	var scopeCond string
+	scopeCond, args = scope.where("si", args)
+	argIdx := len(args) + 1
 
 	// The subquery deliberately exposes saved_at instead of its own id and
 	// created_at names. This keeps the shared postCols projection unambiguous.
 	query := `SELECT ` + postCols + `, b.saved_at
 		FROM posts p
 		INNER JOIN (
-			SELECT user_id, target_id, created_at AS saved_at
-			FROM saved_items
-			WHERE target_type = 'post'
+			SELECT si.user_id, si.target_id, si.created_at AS saved_at
+			FROM saved_items si
+			WHERE si.target_type = 'post' AND si.user_id = $1` + scopeCond + `
 		) b ON b.target_id = p.id
 		WHERE b.user_id = $1 AND p.deleted_at IS NULL`
 

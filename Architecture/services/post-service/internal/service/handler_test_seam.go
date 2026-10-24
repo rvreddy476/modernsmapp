@@ -110,6 +110,11 @@ type HandlerTestDeps struct {
 	RepostProfileGate func(ctx context.Context, viewerID *uuid.UUID, userID uuid.UUID) bool
 	// Pins backs PUT /v1/posts/:postId/pin (TogglePin).
 	Pins pinStore
+	// SavedCollections backs the saved-collection routes
+	// (saved_collections.go); HashtagFollows the hashtag-follow routes
+	// (hashtag_follows.go).
+	SavedCollections savedCollectionStore
+	HashtagFollows   hashtagFollowStore
 }
 
 // CreditProfile is one identity-profile account as the credit reads name it.
@@ -171,6 +176,8 @@ func NewForHandlerTests(d HandlerTestDeps) *Service {
 		userRepostsSeam:        d.UserReposts,
 		repostProfileGate:      d.RepostProfileGate,
 		pins:                   d.Pins,
+		savedCollections:       d.SavedCollections,
+		hashtagFollows:         d.HashtagFollows,
 	}
 	if d.Relationships != nil {
 		s.storyAudience = NewStoryAudience(d.Relationships)

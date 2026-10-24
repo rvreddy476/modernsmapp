@@ -61,6 +61,12 @@ func PostEditErrorStatus(err error) (int, string) {
 		return http.StatusUnprocessableEntity, "INVALID_HASHTAG"
 	case errors.Is(err, ErrTooManyHashtags):
 		return http.StatusUnprocessableEntity, "TOO_MANY_HASHTAGS"
+	case errors.Is(err, ErrInvalidMention):
+		return http.StatusUnprocessableEntity, "INVALID_MENTION"
+	case errors.Is(err, ErrTooManyMentions):
+		return http.StatusUnprocessableEntity, "TOO_MANY_MENTIONS"
+	case errors.Is(err, ErrTooManyTaggedUsers), errors.Is(err, ErrInvalidTaggedUser):
+		return http.StatusUnprocessableEntity, "INVALID_TAGGED_USERS"
 	case errors.Is(err, ErrInvalidLanguage):
 		return http.StatusUnprocessableEntity, "INVALID_LANGUAGE"
 	case errors.Is(err, ErrTooManyTags), errors.Is(err, ErrTagTooLong):

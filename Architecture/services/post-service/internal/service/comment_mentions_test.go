@@ -78,6 +78,8 @@ type mentionRig struct {
 	cannotView map[uuid.UUID]bool
 	// followers follow the author.
 	followers map[uuid.UUID]bool
+	// noMention is the set whose who_can_mention denies the commenter.
+	noMention map[uuid.UUID]bool
 }
 
 func newMentionRig(t *testing.T) *mentionRig {
@@ -89,6 +91,7 @@ func newMentionRig(t *testing.T) *mentionRig {
 		users:      map[string]uuid.UUID{},
 		cannotView: map[uuid.UUID]bool{},
 		followers:  map[uuid.UUID]bool{},
+		noMention:  map[uuid.UUID]bool{},
 	}
 	users := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		handle := strings.TrimPrefix(req.URL.Path, "/v1/users/by-username/")
@@ -108,6 +111,11 @@ func newMentionRig(t *testing.T) *mentionRig {
 			viewer, _ := uuid.Parse(body.ViewerID)
 			data := map[string]bool{}
 			for _, id := range body.TargetIDs {
+				if body.Action == "mention" {
+					target, _ := uuid.Parse(id)
+					data[id] = !r.noMention[target]
+					continue
+				}
 				data[id] = !r.cannotView[viewer]
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
@@ -161,6 +169,19 @@ func TestCommentMentionRecipientsRules(t *testing.T) {
 	}
 	if len(r.graph.seen) != 1 || r.graph.seen[0] != r.commenter.String() {
 		t.Fatalf("block check must be one batch from the commenter's side, saw %v", r.graph.seen)
+	}
+}
+
+// who_can_mention (2026-10-24): someone who does not allow the commenter to
+// mention them is not notified; the others still are.
+func TestCommentMentionRecipientsRespectWhoCanMention(t *testing.T) {
+	r := newMentionRig(t)
+	sam := r.user("sam")
+	quiet := r.user("quiet")
+	r.noMention[quiet] = true
+	got := r.svc.commentMentionRecipients(context.Background(), r.post("public"), r.commenter, "@sam @quiet")
+	if !reflect.DeepEqual(got, []uuid.UUID{sam}) {
+		t.Fatalf("recipients = %v, want only sam %v (quiet disallows mentions)", got, sam)
 	}
 }
 

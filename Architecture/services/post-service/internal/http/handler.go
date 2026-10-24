@@ -157,6 +157,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// retry silently undo the user's first successful tap.
 		v1.POST("/:postId/bookmark", h.AddBookmark)
 		v1.DELETE("/:postId/bookmark", h.RemoveBookmark)
+		// Saved collections (saved_collections_handler.go): move a saved
+		// post to a collection, addressed by the post.
+		v1.PUT("/:postId/bookmark/collection", h.MoveBookmark)
 		v1.POST("/:postId/resubmit", h.Resubmit)
 		// RETIRED (security sweep #12, 21 Oct 2026): POST /:postId/moderation
 		// granted moderator rights from the X-Scopes header alone. The admin
@@ -262,7 +265,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		saved.POST("", h.SaveItem)
 		saved.GET("", h.ListSavedItems)
 		saved.DELETE("/:savedId", h.UnsaveItem)
-		saved.GET("/collections", h.ListCollections)
+		// Saved collections (2026-10-24, saved_collections_handler.go).
+		saved.GET("/collections", h.ListSavedCollections)
+		saved.POST("/collections", h.CreateSavedCollection)
+		saved.PATCH("/collections/:collectionId", h.RenameSavedCollection)
+		saved.DELETE("/collections/:collectionId", h.DeleteSavedCollection)
+		saved.PUT("/:savedId/collection", h.MoveSavedItem)
 	}
 
 	// Hashtag search
@@ -288,6 +296,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	})
 	r.GET("/v1/posts/places/autocomplete", placesLimit, h.AutocompletePlaces)
 	r.GET("/v1/hashtags/:tag/posts", h.GetPostsByHashtag)
+	// Followed hashtags (2026-10-24, hashtag_follows_handler.go). The two
+	// static "followed" routes resolve before :tag.
+	r.GET("/v1/hashtags/followed", h.ListFollowedHashtags)
+	r.GET("/v1/hashtags/followed/posts", h.GetFollowedHashtagPosts)
+	r.GET("/v1/hashtags/:tag/follow", h.GetHashtagFollow)
+	r.POST("/v1/hashtags/:tag/follow", h.FollowHashtag)
+	r.DELETE("/v1/hashtags/:tag/follow", h.UnfollowHashtag)
 	// Real-time hashtag-feed push. Holds an SSE connection open and
 	// forwards every new post that includes :tag (via Redis pub/sub
 	// channel `hashtag:<tag>:new_post`). Implementation lives in
@@ -1864,7 +1879,19 @@ func (h *Handler) AddBookmark(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.AddBookmark(c.Request.Context(), userID, postID); err != nil {
+	// Optional body {"collection_id": "<uuid>"} saves straight into one of
+	// the caller's collections (2026-10-24); no body is the plain save,
+	// which keeps an already-saved post where it is.
+	collectionID, err := optionalCollectionBody(c)
+	if err != nil {
+		writeSavedCollectionError(c, err)
+		return
+	}
+	if err := h.svc.AddBookmarkTo(c.Request.Context(), userID, postID, collectionID); err != nil {
+		if isSavedCollectionError(err) {
+			writeSavedCollectionError(c, err)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -1918,7 +1945,17 @@ func (h *Handler) GetBookmarks(c *gin.Context) {
 		return
 	}
 
-	posts, nextCursor, err := h.svc.GetBookmarks(c.Request.Context(), userID, contentTypes, limit, cursor)
+	// Optional ?collection_id= (saved collections, 2026-10-24): "default"
+	// is the default collection, a UUID one of the caller's collections
+	// (404 COLLECTION_NOT_FOUND for anyone else's); absent is every saved
+	// post.
+	scope, err := h.svc.ResolveSavedScope(c.Request.Context(), userID, c.Query("collection_id"))
+	if err != nil {
+		writeSavedCollectionError(c, err)
+		return
+	}
+
+	posts, nextCursor, err := h.svc.GetBookmarks(c.Request.Context(), userID, contentTypes, limit, cursor, scope)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -2412,9 +2449,15 @@ func (h *Handler) GetReactionCounts(c *gin.Context) {
 // ============================================================
 
 type SaveItemRequest struct {
-	TargetType     string `json:"target_type" binding:"required,oneof=post video reel"`
-	TargetID       string `json:"target_id" binding:"required"`
-	CollectionName string `json:"collection_name"`
+	TargetType string `json:"target_type" binding:"required,oneof=post video reel"`
+	TargetID   string `json:"target_id" binding:"required"`
+	// CollectionID (2026-10-24) saves into one of the caller's collections;
+	// it wins over CollectionName. CollectionName is the pre-collections
+	// field: an existing name (case-insensitive) is that collection, a new
+	// one is created under the collection rules (1-40 characters, at most
+	// 50), "" / "All Saved" is the default collection.
+	CollectionID   *string `json:"collection_id"`
+	CollectionName string  `json:"collection_name"`
 }
 
 func (h *Handler) SaveItem(c *gin.Context) {
@@ -2441,9 +2484,16 @@ func (h *Handler) SaveItem(c *gin.Context) {
 	if !h.requirePostReadable(c, targetID, &userID) {
 		return
 	}
-	item, err := h.svc.SaveItem(c.Request.Context(), userID, req.TargetType, targetID, req.CollectionName)
+	var collectionID *uuid.UUID
+	if req.CollectionID != nil {
+		if collectionID, err = parseCollectionRef(*req.CollectionID); err != nil {
+			writeSavedCollectionError(c, err)
+			return
+		}
+	}
+	item, err := h.svc.SaveItem(c.Request.Context(), userID, req.TargetType, targetID, collectionID, req.CollectionName)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		writeSavedCollectionError(c, err)
 		return
 	}
 
@@ -2458,16 +2508,26 @@ func (h *Handler) ListSavedItems(c *gin.Context) {
 		return
 	}
 
-	collectionName := c.DefaultQuery("collection", "")
 	cursor := c.DefaultQuery("cursor", "")
 	limit := 20
 	if l, err := strconv.Atoi(c.DefaultQuery("limit", "20")); err == nil && l > 0 {
 		limit = l
 	}
 
-	items, nextCursor, err := h.svc.ListSavedItems(c.Request.Context(), userID, collectionName, limit, cursor)
+	// ?collection_id=default|<uuid> (2026-10-24) wins over the
+	// pre-collections ?collection=<name>.
+	scope, err := h.svc.ResolveSavedScope(c.Request.Context(), userID, c.Query("collection_id"))
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		writeSavedCollectionError(c, err)
+		return
+	}
+	if c.Query("collection_id") == "" {
+		scope.CollectionName = c.DefaultQuery("collection", "")
+	}
+
+	items, nextCursor, err := h.svc.ListSavedItems(c.Request.Context(), userID, scope, limit, cursor)
+	if err != nil {
+		writeSavedCollectionError(c, err)
 		return
 	}
 	if items == nil {
@@ -2509,25 +2569,7 @@ func (h *Handler) UnsaveItem(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "unsaved"}, nil)
 }
 
-func (h *Handler) ListCollections(c *gin.Context) {
-	userIDStr := c.GetHeader("X-User-Id")
-	userID, err := uuid.Parse(userIDStr)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	collections, err := h.svc.ListCollections(c.Request.Context(), userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	if collections == nil {
-		collections = []postgres.SavedCollection{}
-	}
-
-	api.JSON(c.Writer, http.StatusOK, collections, nil)
-}
+// The collection routes are in saved_collections_handler.go.
 
 // ============================================================
 // Hashtag Handler

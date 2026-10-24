@@ -239,6 +239,10 @@ type updateSettingsRequest struct {
 	DmSensitiveMediaFilter *bool     `json:"dm_sensitive_media_filter"`
 	DmFilteredKeywords     *[]string `json:"dm_filtered_keywords"`
 	ChatBubbleStyle        *string   `json:"chat_bubble_style"`
+
+	// Mentions and tags (2026-10-24): everyone | following | no_one.
+	WhoCanMention *string `json:"who_can_mention"`
+	WhoCanTag     *string `json:"who_can_tag"`
 }
 
 // applyTo merges the present fields of the request onto cur.
@@ -326,6 +330,12 @@ func (r *updateSettingsRequest) applyTo(cur *store.UserSettings) {
 	}
 	if r.ChatBubbleStyle != nil {
 		cur.ChatBubbleStyle = *r.ChatBubbleStyle
+	}
+	if r.WhoCanMention != nil {
+		cur.WhoCanMention = *r.WhoCanMention
+	}
+	if r.WhoCanTag != nil {
+		cur.WhoCanTag = *r.WhoCanTag
 	}
 }
 

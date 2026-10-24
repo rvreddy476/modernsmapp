@@ -90,8 +90,14 @@ func TestIntegrationChatSettingsMigrationIdempotent(t *testing.T) {
 		got.DmFilteredKeywords == nil || len(got.DmFilteredKeywords) != 0 {
 		t.Fatalf("pre-existing row defaults wrong: %+v", got)
 	}
+	// Mentions and tags (2026-10-24): a pre-existing row reads "everyone".
+	if got.WhoCanMention != "everyone" || got.WhoCanTag != "everyone" {
+		t.Fatalf("pre-existing row mention/tag defaults wrong: %q %q", got.WhoCanMention, got.WhoCanTag)
+	}
 
 	// Round trip through the real UPDATE.
+	got.WhoCanMention = "following"
+	got.WhoCanTag = "no_one"
 	got.DmSafeMode = false
 	got.DmSensitiveMediaFilter = true
 	got.DmFilteredKeywords = []string{"crypto", "free money"}
@@ -108,6 +114,14 @@ func TestIntegrationChatSettingsMigrationIdempotent(t *testing.T) {
 		if s.DmSafeMode || !s.DmSensitiveMediaFilter || s.ChatBubbleStyle != "forest" ||
 			!reflect.DeepEqual(s.DmFilteredKeywords, []string{"crypto", "free money"}) {
 			t.Fatalf("round trip wrong: %+v", s)
+		}
+		if s.WhoCanMention != "following" || s.WhoCanTag != "no_one" {
+			t.Fatalf("mention/tag round trip wrong: %q %q", s.WhoCanMention, s.WhoCanTag)
+		}
+	}
+	for _, col := range []string{"who_can_mention", "who_can_tag"} {
+		if _, err := pool.Exec(ctx, `UPDATE usr.user_settings SET `+col+` = 'friends' WHERE user_id = $1`, legacy); err == nil {
+			t.Fatalf("CHECK should refuse an unknown %s", col)
 		}
 	}
 

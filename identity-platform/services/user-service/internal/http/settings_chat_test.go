@@ -53,6 +53,7 @@ func defaultRow(id uuid.UUID) *store.UserSettings {
 		WhoCanSeeLastSeen: "connections_only", WhoCanSeeProfilePhoto: "everyone",
 		ChatAvailability: "enabled", SendTypingIndicators: true, ShowMessagePreview: true,
 		DmSafeMode: true, DmSensitiveMediaFilter: false, DmFilteredKeywords: []string{}, ChatBubbleStyle: "default",
+		WhoCanMention: "everyone", WhoCanTag: "everyone",
 	}
 }
 

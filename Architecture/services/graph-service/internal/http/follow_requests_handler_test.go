@@ -135,6 +135,14 @@ func TestCanInternalValidation(t *testing.T) {
 			}
 		})
 	}
+	// The mention / tag gates (2026-10-24) are served like the content gates.
+	for _, action := range []string{"mention", "tag", "view_posts", "comment"} {
+		resp := doFollowReq(r, http.MethodPost, "/v1/internal/graph/can", "", "",
+			`{"viewer_id":"`+validUser+`","action":"`+action+`","target_ids":[]}`)
+		if resp.Code != http.StatusOK {
+			t.Fatalf("action %s: status %d body %s, want 200", action, resp.Code, resp.Body.String())
+		}
+	}
 	// Too many targets is refused rather than truncated.
 	ids := make([]string, 0, 101)
 	for i := 0; i < 101; i++ {

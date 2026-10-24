@@ -45,6 +45,13 @@ type PostEditPatch struct {
 	MadeForKids   *bool
 	Language      *string
 
+	// Mentions and tagged people (2026-10-24): the lists AFTER the
+	// who_can_mention / who_can_tag drop. MentionUsernames replaces
+	// posts.mention_usernames and, in this transaction, the post's
+	// post_mentions rows; TaggedUserIDs replaces posts.tagged_user_ids.
+	MentionUsernames *[]string
+	TaggedUserIDs    *[]uuid.UUID
+
 	// Creator Hub (2026-09-28): the create route's columns (006/038) and
 	// the migration 052 settings. ClearRecordingDate / ClearRelatedPost
 	// write NULL ("" on the wire); they win over the value pointers.
@@ -186,6 +193,8 @@ func (s *Store) UpdatePostFields(ctx context.Context, postID, actorID uuid.UUID,
 			release_year         = CASE WHEN $36::boolean THEN NULL ELSE COALESCE($35::int, release_year) END,
 			production_house     = CASE WHEN $38::boolean THEN NULL ELSE COALESCE($37::text, production_house) END,
 			tier_required_id     = CASE WHEN $40::boolean THEN NULL ELSE COALESCE($39::uuid, tier_required_id) END,
+			mention_usernames    = COALESCE($41::text[], mention_usernames),
+			tagged_user_ids      = COALESCE($42::uuid[], tagged_user_ids),
 			updated_at       = NOW()
 		WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL
 		RETURNING `+postCols,
@@ -201,9 +210,17 @@ func (s *Store) UpdatePostFields(ctx context.Context, postID, actorID uuid.UUID,
 		patch.IsBranded, patch.AIGenerated, patch.LinkURL, patch.ClearLinkURL,
 		textArrayArg(patch.Genres), patch.ReleaseYear, patch.ClearReleaseYear,
 		patch.ProductionHouse, patch.ClearProductionHouse,
-		patch.TierRequiredID, patch.ClearTierRequired))
+		patch.TierRequiredID, patch.ClearTierRequired,
+		textArrayArg(patch.MentionUsernames), uuidArrayArg(patch.TaggedUserIDs)))
 	if err != nil {
 		return nil, fmt.Errorf("update post fields: %w", err)
+	}
+	// post_mentions follows the stored list (the mentions inbox reads it):
+	// a mention the edit removed, or dropped for who_can_mention, goes.
+	if _, changed := changes["mentions"]; changed {
+		if err := syncPostMentionsTx(ctx, tx, postID, after.ContentType, *patch.MentionUsernames); err != nil {
+			return nil, err
+		}
 	}
 
 	// Video credits (credits.go): replaced in this transaction, before the
@@ -305,6 +322,40 @@ func textArrayArg(v *[]string) interface{} {
 	return *v
 }
 
+// uuidArrayArg is textArrayArg for UUID[]: nil pointer -> SQL NULL, empty
+// slice -> '{}'.
+func uuidArrayArg(v *[]uuid.UUID) interface{} {
+	if v == nil {
+		return nil
+	}
+	if *v == nil {
+		return []uuid.UUID{}
+	}
+	return *v
+}
+
+// syncPostMentionsTx makes the post's post_mentions rows exactly usernames
+// (post_mentions.mentioned_user_id holds the username; see mentions.go).
+func syncPostMentionsTx(ctx context.Context, tx pgx.Tx, postID uuid.UUID, postType string, usernames []string) error {
+	if usernames == nil {
+		usernames = []string{}
+	}
+	if _, err := tx.Exec(ctx, `
+		DELETE FROM post_mentions WHERE post_id = $1 AND NOT (mentioned_user_id = ANY($2::text[]))`,
+		postID, usernames); err != nil {
+		return fmt.Errorf("sync post mentions (delete): %w", err)
+	}
+	for _, u := range usernames {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO post_mentions (post_id, post_type, mentioned_user_id)
+			VALUES ($1, $2, $3)
+			ON CONFLICT (post_id, mentioned_user_id) DO NOTHING`, postID, postType, u); err != nil {
+			return fmt.Errorf("sync post mentions (insert): %w", err)
+		}
+	}
+	return nil
+}
+
 // postEditChanges diffs the patch against the row so the audit records only
 // what actually changed, and so a no-op PATCH writes nothing.
 func postEditChanges(before *Post, patch PostEditPatch) map[string]PostEditChange {
@@ -328,6 +379,12 @@ func postEditChanges(before *Post, patch PostEditPatch) map[string]PostEditChang
 	}
 	if patch.Hashtags != nil && !sameStrings(before.Hashtags, *patch.Hashtags) {
 		changes["hashtags"] = PostEditChange{From: nonNil(before.Hashtags), To: nonNil(*patch.Hashtags)}
+	}
+	if patch.MentionUsernames != nil && !sameStrings(before.MentionUsernames, *patch.MentionUsernames) {
+		changes["mentions"] = PostEditChange{From: nonNil(before.MentionUsernames), To: nonNil(*patch.MentionUsernames)}
+	}
+	if patch.TaggedUserIDs != nil && !sameUUIDs(before.TaggedUserIDs, *patch.TaggedUserIDs) {
+		changes["tagged_user_ids"] = PostEditChange{From: uuidStrings(before.TaggedUserIDs), To: uuidStrings(*patch.TaggedUserIDs)}
 	}
 	str("category", before.Category, patch.Category)
 	str("visibility", before.Visibility, patch.Visibility)
@@ -502,6 +559,18 @@ func nonNil(v []string) []string {
 		return []string{}
 	}
 	return v
+}
+
+func sameUUIDs(a, b []uuid.UUID) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func insertPostEditAudit(ctx context.Context, tx pgx.Tx, postID, actorID uuid.UUID, action string, changes map[string]PostEditChange) error {

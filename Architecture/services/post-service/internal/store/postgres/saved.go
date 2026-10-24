@@ -20,41 +20,13 @@ type SavedItem struct {
 	TargetType     string    `json:"target_type"`
 	TargetID       uuid.UUID `json:"target_id"`
 	CollectionName string    `json:"collection_name"`
-	CreatedAt      time.Time `json:"created_at"`
+	// CollectionID is the named collection the item is in; null = the
+	// default collection (migration 074).
+	CollectionID *uuid.UUID `json:"collection_id"`
+	CreatedAt    time.Time  `json:"created_at"`
 }
 
-// SavedCollection represents a named collection with item count.
-type SavedCollection struct {
-	Name  string `json:"name"`
-	Count int64  `json:"count"`
-}
-
-// SaveItem adds an item to a user's saved collection.
-func (s *Store) SaveItem(ctx context.Context, userID uuid.UUID, targetType string, targetID uuid.UUID, collectionName string) (*SavedItem, error) {
-	if collectionName == "" {
-		collectionName = "All Saved"
-	}
-
-	item := &SavedItem{
-		ID:             uuid.New(),
-		UserID:         userID,
-		TargetType:     targetType,
-		TargetID:       targetID,
-		CollectionName: collectionName,
-		CreatedAt:      time.Now(),
-	}
-
-	_, err := s.db.Exec(ctx, `
-		INSERT INTO saved_items (id, user_id, target_type, target_id, collection_name, created_at)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		ON CONFLICT (user_id, target_type, target_id) DO UPDATE SET collection_name = $5
-	`, item.ID, item.UserID, item.TargetType, item.TargetID, item.CollectionName, item.CreatedAt)
-	if err != nil {
-		return nil, err
-	}
-
-	return item, nil
-}
+// SaveItem is in saved_collections.go (collections, migration 074).
 
 // UnsaveItemByTarget removes the saved-items row for (user, target). No-op if
 // it doesn't exist. Used by ToggleBookmark to keep the /saved page in sync
@@ -81,8 +53,9 @@ func (s *Store) UnsaveItem(ctx context.Context, savedID, userID uuid.UUID) error
 	return nil
 }
 
-// ListSavedItems returns paginated saved items for a user, optionally filtered by collection.
-func (s *Store) ListSavedItems(ctx context.Context, userID uuid.UUID, collectionName string, limit int, cursor string) ([]SavedItem, string, error) {
+// ListSavedItems returns paginated saved items for a user, narrowed by scope
+// (the zero scope is every saved item).
+func (s *Store) ListSavedItems(ctx context.Context, userID uuid.UUID, scope SavedScope, limit int, cursor string) ([]SavedItem, string, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
@@ -90,22 +63,19 @@ func (s *Store) ListSavedItems(ctx context.Context, userID uuid.UUID, collection
 	var args []interface{}
 	args = append(args, userID, limit+1)
 
-	query := `SELECT id, user_id, target_type, target_id, collection_name, created_at
+	query := `SELECT ` + savedItemCols + `
 		FROM saved_items
 		WHERE user_id = $1`
 
-	argIdx := 3
-	if collectionName != "" {
-		query += fmt.Sprintf(` AND collection_name = $%d`, argIdx)
-		args = append(args, collectionName)
-		argIdx++
-	}
+	var cond string
+	cond, args = scope.where("saved_items", args)
+	query += cond
 
 	if cursor != "" {
 		cursorTime, err := time.Parse(time.RFC3339Nano, cursor)
 		if err == nil {
-			query += fmt.Sprintf(` AND created_at < $%d`, argIdx)
 			args = append(args, cursorTime)
+			query += fmt.Sprintf(` AND created_at < $%d`, len(args))
 		}
 	}
 
@@ -119,12 +89,11 @@ func (s *Store) ListSavedItems(ctx context.Context, userID uuid.UUID, collection
 
 	var items []SavedItem
 	for rows.Next() {
-		var item SavedItem
-		if err := rows.Scan(&item.ID, &item.UserID, &item.TargetType, &item.TargetID,
-			&item.CollectionName, &item.CreatedAt); err != nil {
+		item, err := scanSavedItem(rows)
+		if err != nil {
 			return nil, "", err
 		}
-		items = append(items, item)
+		items = append(items, *item)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, "", err
@@ -139,30 +108,7 @@ func (s *Store) ListSavedItems(ctx context.Context, userID uuid.UUID, collection
 	return items, nextCursor, nil
 }
 
-// ListCollections returns all collection names with item counts for a user.
-func (s *Store) ListCollections(ctx context.Context, userID uuid.UUID) ([]SavedCollection, error) {
-	rows, err := s.db.Query(ctx, `
-		SELECT collection_name, COUNT(*) as count
-		FROM saved_items
-		WHERE user_id = $1
-		GROUP BY collection_name
-		ORDER BY count DESC
-	`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	var collections []SavedCollection
-	for rows.Next() {
-		var c SavedCollection
-		if err := rows.Scan(&c.Name, &c.Count); err != nil {
-			return nil, err
-		}
-		collections = append(collections, c)
-	}
-	return collections, rows.Err()
-}
+// The collection list is ListSavedCollections (saved_collections.go).
 
 // IsSaved checks if a specific target is saved by the user.
 func (s *Store) IsSaved(ctx context.Context, userID uuid.UUID, targetType string, targetID uuid.UUID) (bool, error) {

@@ -106,6 +106,34 @@ ALTER TABLE usr.user_settings ADD CONSTRAINT user_settings_dm_filtered_keywords_
     cardinality(dm_filtered_keywords) <= 100
 );
 
+-- Mentions and tags (2026-10-24). who_can_mention: who may @mention this
+-- account in a post or comment; who_can_tag: who may tag it on a post
+-- (tagged_user_ids). Both everyone | following | no_one, default everyone;
+-- "following" = accounts this user follows. post-service enforces them via
+-- graph-service (a disallowed mention / tag is silently dropped). Added here
+-- for the same reason as the chat-parity columns above; additive, defaulted
+-- and idempotent.
+ALTER TABLE usr.user_settings
+    ADD COLUMN IF NOT EXISTS who_can_mention TEXT NOT NULL DEFAULT 'everyone',
+    ADD COLUMN IF NOT EXISTS who_can_tag     TEXT NOT NULL DEFAULT 'everyone';
+ALTER TABLE usr.user_settings DROP CONSTRAINT IF EXISTS user_settings_who_can_mention_known;
+ALTER TABLE usr.user_settings ADD CONSTRAINT user_settings_who_can_mention_known CHECK (
+    who_can_mention IN ('everyone','following','no_one')
+);
+ALTER TABLE usr.user_settings DROP CONSTRAINT IF EXISTS user_settings_who_can_tag_known;
+ALTER TABLE usr.user_settings ADD CONSTRAINT user_settings_who_can_tag_known CHECK (
+    who_can_tag IN ('everyone','following','no_one')
+);
+-- Minors and Strict Privacy Mode accounts never hold "everyone" (the service
+-- clamps on write, applyStrictMode); this backfills existing rows. It only
+-- matches the clamped value, so it is a no-op once applied.
+UPDATE usr.user_settings
+   SET who_can_mention = CASE WHEN who_can_mention = 'everyone' THEN 'following' ELSE who_can_mention END,
+       who_can_tag     = CASE WHEN who_can_tag     = 'everyone' THEN 'following' ELSE who_can_tag     END,
+       privacy_version = privacy_version + 1, updated_at = NOW()
+ WHERE (under_18_mode OR strict_privacy_mode)
+   AND (who_can_mention = 'everyone' OR who_can_tag = 'everyone');
+
 -- DM consent model (founder-approved 2026-10-20) — value migration.
 --
 -- who_can_message now has exactly four values: everyone_message_requests,

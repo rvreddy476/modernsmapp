@@ -93,6 +93,14 @@ type PostEditInput struct {
 	MadeForKids   *bool
 	Language      *string
 
+	// Mentions and tagged people (2026-10-24, mention_tag_privacy.go).
+	// Mentions is the explicit @mention list (the create route's
+	// `mentions`), TaggedUserIDs replaces tagged_user_ids ([] clears). Both
+	// pass the create rules and then who_can_mention / who_can_tag: a
+	// disallowed entry is dropped silently, never an error.
+	Mentions      *[]string
+	TaggedUserIDs *[]uuid.UUID
+
 	// Creator Hub (2026-09-28, hub_settings.go). RecordingDate and
 	// RelatedPostID take "" to clear. NotifySubscribers changes the stored
 	// distribution policy of a post that is not published yet (scheduled)
@@ -304,6 +312,42 @@ func (s *Service) buildPostEditPatch(ctx context.Context, current *postgres.Post
 			merged = []string{}
 		}
 		patch.Hashtags = &merged
+	}
+	// Mentions: the same union as on create (caption-parsed + explicit).
+	// When only the text changed, the previously stored list stands in for
+	// the explicit one, as for hashtags. The whole result is re-checked
+	// against who_can_mention, so a mention stored before its person
+	// switched mentions off leaves the post on its next edit.
+	if in.Mentions != nil || in.Text != nil {
+		text := current.Text
+		if in.Text != nil {
+			text = *in.Text
+		}
+		explicit := current.MentionUsernames
+		if in.Mentions != nil {
+			normalized, err := NormalizeExplicitMentions(*in.Mentions)
+			if err != nil {
+				return patch, err
+			}
+			explicit = normalized
+		}
+		merged := mergeTags(extractMentions(text), explicit, maxMergedMentions)
+		merged = s.allowedMentions(ctx, current.AuthorID, merged)
+		if merged == nil {
+			merged = []string{}
+		}
+		patch.MentionUsernames = &merged
+	}
+	if in.TaggedUserIDs != nil {
+		tagged, err := NormalizeTaggedUsers(current.AuthorID, *in.TaggedUserIDs)
+		if err != nil {
+			return patch, err
+		}
+		tagged = s.allowedTags(ctx, current.AuthorID, tagged)
+		if tagged == nil {
+			tagged = []uuid.UUID{}
+		}
+		patch.TaggedUserIDs = &tagged
 	}
 	if in.Category != nil {
 		category, err := NormalizeCategoryFor(current.ContentType, *in.Category)

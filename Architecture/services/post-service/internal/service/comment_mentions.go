@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/atpost/post-service/internal/store/postgres"
+	"github.com/atpost/post-service/pkg/graphclient"
 	"github.com/google/uuid"
 )
 
@@ -24,7 +25,10 @@ import (
 //     handle, or the handle blocked the commenter);
 //   - never someone who cannot open the post — a followers-only post, a
 //     private account, a private post not shared with them. The mention would
-//     deep-link them to a 404, and worse, tell them the post exists.
+//     deep-link them to a 404, and worse, tell them the post exists;
+//   - never someone whose who_can_mention does not allow the commenter
+//     (2026-10-24, mention_tag_privacy.go): the comment keeps the text, the
+//     notification is dropped silently.
 //
 // Every lookup fails closed: an unresolved handle, a graph outage or an
 // unanswered relationship drops the notification, never the comment.
@@ -133,10 +137,16 @@ func (s *Service) commentMentionRecipients(ctx context.Context, post *postgres.P
 		return nil
 	}
 
+	// who_can_mention, one graph call for every candidate (fails closed).
+	mayMention := s.graphCan(ctx, commenterID, graphclient.ActionMention, candidates)
+
 	out := make([]uuid.UUID, 0, len(candidates))
 	for _, id := range candidates {
 		rel := rels[id.String()]
 		if rel.Blocked || rel.BlockedBy {
+			continue
+		}
+		if !mayMention[id] {
 			continue
 		}
 		// The post's own audience, judged as the mentioned user: the same

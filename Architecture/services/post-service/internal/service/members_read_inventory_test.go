@@ -66,6 +66,7 @@ var membersReadExempt = map[string]string{
 	"attachMediaStateToDetails":   "loader: page filter; every list calling it redacts after it",
 	"attachContinueWatchingPosts": "loader: assembles rows hydrateWatchProgress read through GetPostsByIDs, which redacts",
 	"hashtagPostsVisibleTo":       "loader: author gate inside GetPostsByHashtag, which redacts",
+	"decorateHashtagDetails":      "loader: counts + media state inside FollowedHashtagPosts, which redacts",
 	"GetPost":                     "loader: service-internal callers need the full row; the GET /v1/posts/:postId and restore handlers redact (members_read_routes_test.go in internal/http)",
 	"loadPostForEngagement":       "loader: engagement gate, never serialised",
 	"loadVisiblePost":             "loader: read gate, never serialised",

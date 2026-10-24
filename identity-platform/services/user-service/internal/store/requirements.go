@@ -53,6 +53,7 @@ var SchemaRequirements = []schemaguard.Requirement{
 		"tc_close_friends_posts", "tc_location_pings", "tc_after_hours_posts", "tc_audio_room_invite",
 		"chat_availability", "send_typing_indicators", "show_message_preview",
 		"dm_safe_mode", "dm_sensitive_media_filter", "dm_filtered_keywords", "chat_bubble_style",
+		"who_can_mention", "who_can_tag",
 		"privacy_version", "created_at", "updated_at",
 	}},
 

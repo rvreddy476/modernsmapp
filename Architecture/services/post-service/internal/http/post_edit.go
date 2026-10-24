@@ -24,7 +24,10 @@ import (
 	                 license, allow_embedding, recording_date,
 	                 recording_location, remix_setting, comment_moderation,
 	                 comment_access, notify_subscribers, age_restricted,
-	                 hide_like_count, default_comment_sort, related_post_id
+	                 hide_like_count, default_comment_sort, related_post_id,
+	                 mentions, tagged_user_ids (2026-10-24; entries the
+	                 person's who_can_mention / who_can_tag refuse are
+	                 dropped silently)
 	                 -> the post detail
 	  GET    /v1/posts/me/summary            {videos, shorts, live, collections, followers}
 	  POST   /v1/uploads/bulk                {post_ids, patch:{...}} -> {results:[{id, ok, error?}]}
@@ -39,7 +42,8 @@ import (
 	or a post the caller may not see), 403 FORBIDDEN (not the owner),
 	422 for a value the field cannot take (INVALID_CATEGORY,
 	INVALID_VISIBILITY, TITLE_TOO_LONG, TITLE_REQUIRED, TEXT_TOO_LONG,
-	EMPTY_POST, INVALID_HASHTAG, TOO_MANY_HASHTAGS, INVALID_LANGUAGE,
+	EMPTY_POST, INVALID_HASHTAG, TOO_MANY_HASHTAGS, INVALID_MENTION,
+	TOO_MANY_MENTIONS, INVALID_TAGGED_USERS, INVALID_LANGUAGE,
 	INVALID_TAGS, MEDIA_NOT_FOUND, MEDIA_NOT_READY, MEDIA_TYPE_MISMATCH,
 	INVALID_LICENSE, INVALID_RECORDING_DATE, INVALID_RECORDING_LOCATION,
 	INVALID_REMIX_SETTING, INVALID_COMMENT_MODERATION,
@@ -62,6 +66,12 @@ type updatePostRequest struct {
 	NoComments    *bool     `json:"no_comments"`
 	MadeForKids   *bool     `json:"made_for_kids"`
 	Language      *string   `json:"language"`
+	// Mentions and tagged people (2026-10-24): mentions is the explicit
+	// @mention list (as on create), tagged_user_ids replaces the tagged
+	// people ([] clears). An entry the person's who_can_mention /
+	// who_can_tag does not allow is dropped silently.
+	Mentions      *[]string `json:"mentions,omitempty"`
+	TaggedUserIDs *[]string `json:"tagged_user_ids,omitempty"`
 	// Creator Hub (2026-09-28). recording_date and related_post_id take ""
 	// to clear.
 	PaidPromotion      *bool   `json:"paid_promotion"`
@@ -197,6 +207,20 @@ func (h *Handler) UpdatePost(c *gin.Context) {
 		NotifySubscribers: req.NotifySubscribers, AgeRestricted: req.AgeRestricted, HideLikeCount: req.HideLikeCount,
 		DefaultCommentSort: req.DefaultCommentSort, RelatedPostID: req.RelatedPostID,
 		IsBranded: req.IsBranded, AIGenerated: req.AIGenerated, LinkURL: req.LinkURL,
+		Mentions: req.Mentions,
+	}
+	if req.TaggedUserIDs != nil {
+		ids, err := parseTaggedUserIDs(*req.TaggedUserIDs)
+		if err != nil {
+			if len(*req.TaggedUserIDs) > service.MaxTaggedUsers {
+				err = service.ErrTooManyTaggedUsers
+			} else {
+				err = service.ErrInvalidTaggedUser
+			}
+			writePostEditError(c, err)
+			return
+		}
+		in.TaggedUserIDs = &ids
 	}
 	if err := req.applyCreditFields(&in); err != nil {
 		writePostEditError(c, err)

@@ -186,17 +186,28 @@ func (s *Service) AutoAcceptPendingFollowRequests(ctx context.Context, targetID 
 }
 
 // ErrUnsupportedCanAction is returned by CanBatch for an action outside the
-// content-gating pair the internal endpoint serves.
-var ErrUnsupportedCanAction = errors.New("unsupported action: expected view_posts or comment")
+// content-gating actions the internal endpoint serves.
+var ErrUnsupportedCanAction = errors.New("unsupported action: expected view_posts, comment, mention or tag")
+
+// IsCanBatchAction reports whether POST /v1/internal/graph/can serves action:
+// the content gates view_posts and comment, and (2026-10-24) the mention /
+// tag gates post-service applies to a post's @mentions and tagged people.
+func IsCanBatchAction(action permission.Action) bool {
+	switch action {
+	case permission.ActionViewPosts, permission.ActionComment, permission.ActionMention, permission.ActionTag:
+		return true
+	}
+	return false
+}
 
 // CanBatch answers "may viewer do <action> to each target" for the content
 // services (post/feed/comment). Facts come from one relationship batch;
 // privacy comes from the per-target snapshot. A privacy-fetch failure yields
-// the strict defaults, which the matrix resolves to DENY for comment and to
-// follower-only for view_posts — never to a grant. The viewer always passes
-// against themselves.
+// the strict defaults, which the matrix resolves to DENY for comment, mention
+// and tag and to follower-only for view_posts — never to a grant. The viewer
+// always passes against themselves.
 func (s *Service) CanBatch(ctx context.Context, viewerID uuid.UUID, action permission.Action, targetIDs []uuid.UUID) (map[string]bool, error) {
-	if action != permission.ActionViewPosts && action != permission.ActionComment {
+	if !IsCanBatchAction(action) {
 		return nil, ErrUnsupportedCanAction
 	}
 	out := make(map[string]bool, len(targetIDs))

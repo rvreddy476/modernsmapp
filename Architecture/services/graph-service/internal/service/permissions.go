@@ -259,6 +259,8 @@ func (s *Service) fetchPrivacyFromUserService(ctx context.Context, userID uuid.U
 			ChatAvailability            string `json:"chat_availability"`
 			AccountVisibility           string `json:"account_visibility"`
 			AllowCommentsFrom           string `json:"allow_comments_from"`
+			WhoCanMention               string `json:"who_can_mention"`
+			WhoCanTag                   string `json:"who_can_tag"`
 		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
@@ -274,6 +276,15 @@ func (s *Service) fetchPrivacyFromUserService(ctx context.Context, userID uuid.U
 	if envelope.Data.AllowCommentsFrom == "" {
 		envelope.Data.AllowCommentsFrom = "everyone"
 	}
+	// Same rule for the mention / tag settings (2026-10-24): an identity build
+	// that predates them answers without the keys, and their product default
+	// is everyone.
+	if envelope.Data.WhoCanMention == "" {
+		envelope.Data.WhoCanMention = "everyone"
+	}
+	if envelope.Data.WhoCanTag == "" {
+		envelope.Data.WhoCanTag = "everyone"
+	}
 	return permission.Privacy{
 		WhoCanMessage:               envelope.Data.WhoCanMessage,
 		WhoCanCall:                  envelope.Data.WhoCanCall,
@@ -286,5 +297,7 @@ func (s *Service) fetchPrivacyFromUserService(ctx context.Context, userID uuid.U
 		ChatAvailability:            envelope.Data.ChatAvailability,
 		AccountVisibility:           envelope.Data.AccountVisibility,
 		AllowCommentsFrom:           envelope.Data.AllowCommentsFrom,
+		WhoCanMention:               envelope.Data.WhoCanMention,
+		WhoCanTag:                   envelope.Data.WhoCanTag,
 	}, nil
 }

@@ -25,6 +25,14 @@ type User struct {
 // pre-spec columns, retained so existing callers (the web settings page) keep
 // working. WhoCanMessage is the authoritative field the permission resolver
 // reads — AllowMessagesFrom is no longer consulted for messaging decisions.
+//
+// Mentions and tags (2026-10-24): WhoCanMention is who may @mention this
+// account in a post caption or comment, WhoCanTag who may tag it on a post
+// (tagged_user_ids). everyone | following | no_one, default everyone;
+// "following" = accounts this user follows. Enforced by post-service through
+// graph-service's mention / tag actions: a disallowed mention or tag is
+// silently dropped from the post (no notification), never an error that
+// would reveal the setting.
 type UserSettings struct {
 	UserID            uuid.UUID `json:"user_id"`
 	AccountVisibility string    `json:"account_visibility"`
@@ -39,6 +47,8 @@ type UserSettings struct {
 	WhoCanSeeReadReceipts         string `json:"who_can_see_read_receipts"`
 	WhoCanSeeLastSeen             string `json:"who_can_see_last_seen"`
 	WhoCanSeeProfilePhoto         string `json:"who_can_see_profile_photo"`
+	WhoCanMention                 string `json:"who_can_mention"` // see type doc: mentions and tags
+	WhoCanTag                     string `json:"who_can_tag"`     // see type doc: mentions and tags
 	AllowPhoneDiscovery           bool   `json:"allow_phone_discovery"`
 	AllowContactSyncMatch         bool   `json:"allow_contact_sync_match"`
 	DiscoverableByPhoneToContacts bool   `json:"discoverable_by_phone_to_contacts"`
@@ -87,6 +97,7 @@ const userSettingsColumns = `user_id, account_visibility, allow_messages_from, a
 	tc_close_friends_posts, tc_location_pings, tc_after_hours_posts, tc_audio_room_invite,
 	chat_availability, send_typing_indicators, show_message_preview,
 	dm_safe_mode, dm_sensitive_media_filter, dm_filtered_keywords, chat_bubble_style,
+	who_can_mention, who_can_tag,
 	privacy_version, created_at, updated_at`
 
 // keywordsOrEmpty keeps a nil slice from reaching the NOT NULL TEXT[] column
@@ -109,6 +120,7 @@ func scanUserSettings(row pgx.Row, us *UserSettings) error {
 		&us.TcCloseFriendsPosts, &us.TcLocationPings, &us.TcAfterHoursPosts, &us.TcAudioRoomInvite,
 		&us.ChatAvailability, &us.SendTypingIndicators, &us.ShowMessagePreview,
 		&us.DmSafeMode, &us.DmSensitiveMediaFilter, &us.DmFilteredKeywords, &us.ChatBubbleStyle,
+		&us.WhoCanMention, &us.WhoCanTag,
 		&us.PrivacyVersion, &us.CreatedAt, &us.UpdatedAt,
 	)
 	us.DmFilteredKeywords = keywordsOrEmpty(us.DmFilteredKeywords)
@@ -287,6 +299,8 @@ func (s *Store) UpdateSettings(ctx context.Context, settings *UserSettings) (*Us
 			dm_sensitive_media_filter = $28,
 			dm_filtered_keywords = $29,
 			chat_bubble_style = $30,
+			who_can_mention = $31,
+			who_can_tag = $32,
 			privacy_version = privacy_version + 1,
 			updated_at = NOW()
 		WHERE user_id = $1
@@ -299,6 +313,7 @@ func (s *Store) UpdateSettings(ctx context.Context, settings *UserSettings) (*Us
 		settings.TcCloseFriendsPosts, settings.TcLocationPings, settings.TcAfterHoursPosts, settings.TcAudioRoomInvite,
 		settings.ChatAvailability, settings.SendTypingIndicators, settings.ShowMessagePreview,
 		settings.DmSafeMode, settings.DmSensitiveMediaFilter, keywordsOrEmpty(settings.DmFilteredKeywords), settings.ChatBubbleStyle,
+		settings.WhoCanMention, settings.WhoCanTag,
 	)
 	if err := scanUserSettings(row, &us); err != nil {
 		return nil, err

@@ -122,6 +122,17 @@ type Service struct {
 	// commentMentionPublisher replaces the Kafka producer for comment
 	// @mentions in tests (comment_mentions.go). Nil in production.
 	commentMentionPublisher commentMentionPublisher
+	// postMentionPublisher does the same for a post's @mentions at publish
+	// (mention_tag_privacy.go). Nil in production.
+	postMentionPublisher postMentionPublisher
+	// savedCollections stands in for the Postgres store on the saved-
+	// collection routes in tests (saved_collections.go). Nil = pgStore.
+	savedCollections savedCollectionStore
+	// hashtagFollows / followedPostsDecorate stand in for the Postgres
+	// store and the per-row counts + media state on the hashtag-follow
+	// routes in tests (hashtag_follows.go). Nil = the real ones.
+	hashtagFollows        hashtagFollowStore
+	followedPostsDecorate func(ctx context.Context, details []PostDetail) ([]PostDetail, error)
 
 	// Sharded post_engagement_counts counters. Each replaces a hot-row
 	// UPDATE on post_engagement_counts.<col> = <col> + 1 — at celebrity-
@@ -1225,6 +1236,13 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		return nil, err
 	}
 	mentions = mergeTags(mentions, explicitMentions, maxMergedMentions)
+
+	// "Who can mention or tag me" (mention_tag_privacy.go): a mention or tag
+	// of someone who does not allow it is dropped here, silently — the
+	// mention stays in the text as plain text — so it is never stored,
+	// linked or notified, and the create never fails over it.
+	mentions = s.allowedMentions(ctx, input.AuthorID, mentions)
+	taggedUsers = s.allowedTags(ctx, input.AuthorID, taggedUsers)
 
 	// Default reel metadata values
 	lang := input.Language
@@ -2554,9 +2572,10 @@ func (s *Service) RemoveBookmark(ctx context.Context, userID, postID uuid.UUID) 
 // GetBookmarks is the viewer's saved list. contentTypes is the canonical
 // filter from the handler (nil means every type); it is applied in SQL so
 // a page of long videos is a full page, not a page of everything with the
-// flicks removed afterwards.
-func (s *Service) GetBookmarks(ctx context.Context, userID uuid.UUID, contentTypes []string, limit int, cursor string) ([]PostDetail, string, error) {
-	posts, nextCursor, err := s.pgStore.GetBookmarks(ctx, userID, contentTypes, limit, cursor)
+// flicks removed afterwards. scope narrows it to one saved collection or the
+// default one (saved_collections.go; the zero scope is every saved post).
+func (s *Service) GetBookmarks(ctx context.Context, userID uuid.UUID, contentTypes []string, limit int, cursor string, scope postgres.SavedScope) ([]PostDetail, string, error) {
+	posts, nextCursor, err := s.pgStore.GetBookmarks(ctx, userID, contentTypes, limit, cursor, scope)
 	if err != nil {
 		return nil, "", err
 	}
@@ -2728,7 +2747,7 @@ func (s *Service) ToggleBookmarkNew(ctx context.Context, postID, userID uuid.UUI
 	// Redis/Scylla bookmark — the icon's source of truth is still the
 	// engagement layer.
 	if result.IsSet {
-		if _, err := s.pgStore.SaveItem(ctx, userID, "post", postID, ""); err != nil {
+		if _, err := s.pgStore.SaveItem(ctx, userID, "post", postID, nil); err != nil {
 			log.Printf("Warning: failed to mirror bookmark into saved_items: %v", err)
 		}
 	} else {
@@ -3811,24 +3830,12 @@ func (s *Service) GetReactionCounts(ctx context.Context, postID uuid.UUID) (*pos
 // Saved Items / Collections
 // ============================================================
 
-// SaveItem saves a post/video/reel to a user's collection.
-func (s *Service) SaveItem(ctx context.Context, userID uuid.UUID, targetType string, targetID uuid.UUID, collectionName string) (*postgres.SavedItem, error) {
-	return s.pgStore.SaveItem(ctx, userID, targetType, targetID, collectionName)
-}
+// SaveItem, ListSavedItems and the collection routes are in
+// saved_collections.go (migration 074).
 
 // UnsaveItem removes a saved item.
 func (s *Service) UnsaveItem(ctx context.Context, savedID, userID uuid.UUID) error {
 	return s.pgStore.UnsaveItem(ctx, savedID, userID)
-}
-
-// ListSavedItems returns paginated saved items.
-func (s *Service) ListSavedItems(ctx context.Context, userID uuid.UUID, collectionName string, limit int, cursor string) ([]postgres.SavedItem, string, error) {
-	return s.pgStore.ListSavedItems(ctx, userID, collectionName, limit, cursor)
-}
-
-// ListCollections returns all saved collections for a user.
-func (s *Service) ListCollections(ctx context.Context, userID uuid.UUID) ([]postgres.SavedCollection, error) {
-	return s.pgStore.ListCollections(ctx, userID)
 }
 
 // ============================================================

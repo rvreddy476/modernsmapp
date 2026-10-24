@@ -224,6 +224,9 @@ func postMediaRefs(media []postgres.PostMedia) []events.PostMediaRef {
 // storeMentions persists the merged mention list to post_mentions (the
 // join notifications and the mentions inbox read). Best-effort per row.
 func (s *Service) storeMentions(ctx context.Context, postID uuid.UUID, postType string, mentions []string) {
+	if s.pgStore == nil {
+		return // store-less test rigs (createRig)
+	}
 	for _, username := range mentions {
 		if err := s.pgStore.InsertMention(ctx, postID, postType, username); err != nil {
 			log.Printf("Warning: failed to insert mention for @%s on post %s: %v", username, postID, err)
@@ -243,27 +246,17 @@ func (s *Service) storeMentions(ctx context.Context, postID uuid.UUID, postType 
 // clients tolerate missing a live signal (they catch up on the next
 // fetch; SSE replay covers the gap).
 func (s *Service) announcePublishedPost(p *postgres.Post, mentions []string) {
-	// Resolve @mentions and emit user.mentioned events.
-	if s.producer != nil && len(mentions) > 0 {
-		postID := p.ID
-		authorID := p.AuthorID
-		for _, uname := range mentions {
-			go func(username string) {
-				ctx2, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				userID, err := s.lookupUserByUsername(ctx2, username)
-				if err != nil || userID == "" {
-					return
-				}
-				mentionedID, err := uuid.Parse(userID)
-				if err != nil || mentionedID == authorID {
-					return // skip self-mentions
-				}
-				if err := s.producer.PublishUserMentioned(ctx2, mentionedID, authorID, postID.String()); err != nil {
-					log.Printf("Warning: failed to publish UserMentioned event for @%s: %v", username, err)
-				}
-			}(uname)
-		}
+	// Resolve @mentions and emit user.mentioned events — only to the people
+	// whose who_can_mention allows the author NOW (mention_tag_privacy.go):
+	// a scheduled post publishes after its mentions were stored.
+	if s.postMentionPublish() != nil && len(mentions) > 0 {
+		postID, authorID := p.ID, p.AuthorID
+		names := append([]string(nil), mentions...)
+		go func() {
+			ctx2, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			s.publishPostMentions(ctx2, postID, authorID, names)
+		}()
 	}
 
 	if s.rdb == nil {

@@ -140,6 +140,8 @@ func validSettings() *store.UserSettings {
 		WhoCanSeeProfilePhoto:       "everyone",
 		ChatAvailability:            "enabled",
 		ChatBubbleStyle:             "default",
+		WhoCanMention:               "everyone",
+		WhoCanTag:                   "everyone",
 	}
 }
 

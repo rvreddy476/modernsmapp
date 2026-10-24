@@ -30,6 +30,13 @@ const (
 	// ActionViewPosts gates reading the target's post surfaces
 	// (account_visibility: public | private).
 	ActionViewPosts Action = "view_posts"
+	// ActionMention gates @mentioning the target in a post or comment
+	// (who_can_mention), ActionTag tagging the target on a post
+	// (who_can_tag). Both: everyone | following | no_one, where "following"
+	// means the TARGET follows the actor. post-service drops a disallowed
+	// mention or tag silently, so the answer is never shown to the actor.
+	ActionMention Action = "mention"
+	ActionTag     Action = "tag"
 )
 
 // Facts is the relationship snapshot between an actor and a target.
@@ -110,6 +117,12 @@ type Privacy struct {
 	// AllowCommentsFrom is "everyone" or "friends". Empty means UNKNOWN and
 	// denies (fail closed).
 	AllowCommentsFrom string
+	// WhoCanMention / WhoCanTag are "everyone", "following" or "no_one"
+	// (2026-10-24). Empty means UNKNOWN (the strict-default snapshot) and
+	// denies: a mention dropped during an outage is recoverable, one that
+	// reached someone who switched mentions off is not.
+	WhoCanMention string
+	WhoCanTag     string
 	// Unavailable marks the strict-default snapshot used when the target's
 	// real settings could not be fetched. It is never serialised (only
 	// successful fetches are cached), so a cached record is always real.
@@ -173,6 +186,10 @@ func Resolve(action Action, f Facts, p Privacy) Decision {
 		return resolveComment(f, p)
 	case ActionViewPosts:
 		return resolveViewPosts(f, p)
+	case ActionMention:
+		return resolveMentionOrTag(f, p.WhoCanMention)
+	case ActionTag:
+		return resolveMentionOrTag(f, p.WhoCanTag)
 	case ActionAddToGroup:
 		return resolveAddToGroup(f, p)
 	case ActionSeeOnlineStatus:
@@ -399,6 +416,31 @@ func resolveViewPosts(f Facts, p Privacy) Decision {
 	return Decision{Allowed: false, Reason: "private_account"}
 }
 
+// resolveMentionOrTag implements who_can_mention / who_can_tag. A block in
+// either direction is already fatal at the top of Resolve.
+//
+//	everyone  → allow
+//	following → only someone the target follows (TargetFollowsActor); a
+//	            follow the other way round, a legacy connection or a mutual
+//	            "friends" bond without the target's follow does not count
+//	no_one    → deny
+//	unknown   → deny (fail closed; an unreadable setting is not "everyone")
+func resolveMentionOrTag(f Facts, setting string) Decision {
+	switch setting {
+	case "everyone":
+		return Decision{Allowed: true}
+	case "following":
+		if f.TargetFollowsActor {
+			return Decision{Allowed: true}
+		}
+		return Decision{Allowed: false, Reason: "privacy_following_only"}
+	case "no_one":
+		return Decision{Allowed: false, Reason: "privacy_no_one"}
+	default:
+		return Decision{Allowed: false, Reason: "privacy_disallows"}
+	}
+}
+
 // resolveAddToGroup implements the group-add row (chat directive §3.4).
 //
 // Allowed=true means a DIRECT add is permitted (the target consented in
@@ -504,6 +546,22 @@ func resolveVisibility(f Facts, setting string) Decision {
 	}
 }
 
+// ParseCanAction maps one action name for the INTERNAL content gate
+// (POST /v1/internal/graph/can): everything ParseActions knows plus mention
+// and tag. ok is false for an unknown name.
+func ParseCanAction(name string) (Action, bool) {
+	switch name {
+	case string(ActionMention):
+		return ActionMention, true
+	case string(ActionTag):
+		return ActionTag, true
+	}
+	if a := ParseActions([]string{name}); len(a) == 1 {
+		return a[0], true
+	}
+	return "", false
+}
+
 // ParseActions maps spec action names to Action values, skipping unknowns.
 func ParseActions(names []string) []Action {
 	known := map[string]Action{
@@ -519,6 +577,11 @@ func ParseActions(names []string) []Action {
 		"view_profile":       ActionViewProfile,
 		"comment":            ActionComment,
 		"view_posts":         ActionViewPosts,
+		// mention and tag are deliberately NOT here: this is the parser of
+		// the client-facing /v1/permissions/check routes, and a client that
+		// could ask "may I mention X" would read X's setting off the answer.
+		// The silent drop in post-service exists so that it cannot
+		// (ParseCanAction serves the internal endpoint).
 	}
 	out := make([]Action, 0, len(names))
 	for _, n := range names {
