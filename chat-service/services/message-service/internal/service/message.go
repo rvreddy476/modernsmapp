@@ -218,6 +218,12 @@ type ConversationResponse struct {
 	// Receipts is the viewer's tick watermarks (founder, 22 Oct 2026; see
 	// receipt_ticks.go). Single-conversation reads only.
 	Receipts *ReceiptWatermarks `json:"receipts,omitempty"`
+
+	// Locked: the VIEWER has hidden this conversation (hidden chats, 24 Oct
+	// 2026). Set on hidden-list rows and on a locked conversation returned
+	// by another entry point (open-a-DM); omitted otherwise, so every other
+	// row stays byte-compatible.
+	Locked bool `json:"locked,omitempty"`
 }
 
 type ReactionSummary struct {
@@ -318,6 +324,9 @@ type Service struct {
 	nowFn            func() time.Time
 	searchServiceURL string
 	trustSafetyURL   string
+
+	// hiddenChatsDisabled is HIDDEN_CHATS_ENABLED=false (hidden_chats.go).
+	hiddenChatsDisabled bool
 }
 
 var (
@@ -1427,7 +1436,7 @@ func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID
 				// receives its own frame back. Clients de-duplicate by
 				// message_id — the same rule that already makes the
 				// convroom publish below safe alongside this one.
-				pipe.Publish(pubCtx, fmt.Sprintf("chat:%s", m.UserID), payload)
+				publishPersonal(pubCtx, pipe, m, payload)
 				recipients++
 			}
 			// Conversation-room publish (scoped-rooms foundation, directive
@@ -1682,7 +1691,7 @@ func (s *Service) EditMessage(
 		for _, m := range members {
 			// The author's other sessions included: an edit made on the
 			// phone has to land on the same person's open laptop tab.
-			pipe.Publish(pubCtx, fmt.Sprintf("chat:%s", m.UserID), payload)
+			publishPersonal(pubCtx, pipe, m, payload)
 			recipients++
 		}
 		pipe.Publish(pubCtx, fmt.Sprintf("convroom:%s", conversationID), payload)
@@ -1883,7 +1892,7 @@ func (s *Service) ToggleReaction(ctx context.Context, userID, conversationID, me
 			// other devices. The client applies reaction updates
 			// idempotently (add-if-absent, remove-if-present), so the
 			// originating tab replaying its own frame changes nothing.
-			pipe.Publish(pubCtx, fmt.Sprintf("chat:%s", m.UserID), payload)
+			publishPersonal(pubCtx, pipe, m, payload)
 			recipients++
 		}
 		// Chat parity §2.5: the conversation room hears reactions too, the
@@ -2310,8 +2319,7 @@ func (s *Service) SetTyping(ctx context.Context, userID, conversationID uuid.UUI
 		if m.UserID == userID {
 			continue
 		}
-		channel := fmt.Sprintf("chat:%s", m.UserID)
-		s.rdb.Publish(ctx, channel, payload)
+		publishPersonal(ctx, s.rdb, m, payload)
 	}
 
 	return nil
@@ -2408,7 +2416,7 @@ func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID
 		if gated && !s.datingReceiptsAllowed(ctx, conversationID, m.UserID) {
 			continue
 		}
-		s.rdb.Publish(ctx, fmt.Sprintf("chat:%s", m.UserID), payload)
+		publishPersonal(ctx, s.rdb, m, payload)
 	}
 	return nil
 }

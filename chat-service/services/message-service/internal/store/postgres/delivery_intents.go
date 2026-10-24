@@ -217,6 +217,10 @@ func (s *ConversationStore) InsertMessageMediaReference(ctx context.Context, mes
 	return err
 }
 
+// ViewerMayAccessChatMedia: the media rides a message in a conversation the
+// viewer is an active member of and has NOT hidden (hidden chats: media in a
+// locked conversation needs an open token — ViewerMayAccessLockedChatMedia),
+// or it is an active catalogue sticker.
 func (s *ConversationStore) ViewerMayAccessChatMedia(ctx context.Context, viewerID, mediaID uuid.UUID) (bool, error) {
 	var allowed bool
 	err := s.db.QueryRow(ctx, `
@@ -224,7 +228,7 @@ func (s *ConversationStore) ViewerMayAccessChatMedia(ctx context.Context, viewer
 			SELECT 1
 			FROM chat.message_media_references r
 			JOIN chat.conversation_members m ON m.conversation_id = r.conversation_id
-			WHERE r.media_id = $1 AND m.user_id = $2 AND m.left_at IS NULL
+			WHERE r.media_id = $1 AND m.user_id = $2 AND m.left_at IS NULL AND `+memberNotLocked+`
 		) OR EXISTS (
 			-- Chat parity §2.7: an active catalogue sticker is deliverable
 			-- to any signed-in viewer (the catalogue is the same for all).

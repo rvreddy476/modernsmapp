@@ -79,6 +79,11 @@ type Service struct {
 	// authorization (so ws-gateway drops the caller's call_ring/call_offer to
 	// them). Nil rings everyone.
 	muteChecker CallMuteChecker
+
+	// hiddenChecker (hidden chats, hidden_chats.go): a call from a
+	// conversation the callee hid rings with no name and stays out of their
+	// call history. Nil hides nothing.
+	hiddenChecker CallHiddenChecker
 }
 
 // CallMuteChecker answers whether callee muted calls from this conversation.
@@ -426,6 +431,7 @@ func (s *Service) createCallLocked(ctx context.Context, userID uuid.UUID, req Cr
 			InviteeUserID: targetID.String(),
 			CallType:      req.CallType,
 			CreatedAt:     now,
+			HiddenChat:    s.callHiddenFor(ctx, targetID, userID, req.CallType, req.SourceType, req.SourceID),
 		})
 
 		// Authorize the pair to exchange call-control signaling
@@ -457,6 +463,9 @@ type PendingInviteResponse struct {
 	AudioOnly     bool      `json:"audio_only"`
 	CallState     string    `json:"call_state"`
 	CreatedAt     time.Time `json:"created_at"`
+	// HiddenChat: the viewer hid the conversation this call comes from —
+	// clients show "Incoming call" with no name or avatar.
+	HiddenChat bool `json:"hidden_chat,omitempty"`
 }
 
 // ListPendingInvites returns the viewer's pending invitations on live calls.
@@ -479,6 +488,7 @@ func (s *Service) ListPendingInvites(ctx context.Context, userID uuid.UUID) ([]P
 			AudioOnly:     session.AudioOnly,
 			CallState:     session.State,
 			CreatedAt:     inv.CreatedAt,
+			HiddenChat:    s.callHiddenFor(ctx, userID, inv.InviterUserID, session.CallType, session.SourceType, session.SourceID),
 		})
 	}
 	return out, nil
@@ -1111,6 +1121,7 @@ func (s *Service) InviteParticipants(ctx context.Context, userID, callID uuid.UU
 			InviteeUserID: targetID.String(),
 			CallType:      session.CallType,
 			CreatedAt:     now,
+			HiddenChat:    s.callHiddenFor(ctx, targetID, userID, session.CallType, session.SourceType, session.SourceID),
 		})
 		sent++
 	}
@@ -1220,6 +1231,12 @@ func (s *Service) GetCallHistory(ctx context.Context, userID uuid.UUID, limit in
 
 		isMissed := cs.EndedReason != nil && *cs.EndedReason == domain.EndedReasonMissed
 		isIncoming := cs.InitiatorUserID != userID
+
+		// Hidden chats: a call from a conversation the viewer hid stays out
+		// of their call history.
+		if s.historyHidden(ctx, userID, cs.InitiatorUserID, cs.CallType, cs.SourceType, cs.SourceID, participants) {
+			continue
+		}
 
 		partResponses := make([]ParticipantResponse, 0, len(participants))
 		for _, p := range participants {

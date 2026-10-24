@@ -46,6 +46,13 @@ type ServerOptions struct {
 	// (chat-shared/roomauth). Empty disables `conversation.subscribe`.
 	EntitlementSecret string
 
+	// EntitlementFetcher (hidden chats, hidden_chats.go) lets a client
+	// subscribe with {conversation_id, open_token} instead of an
+	// entitlement: the gateway asks message-service for one with the
+	// connection's bearer and the open token. Nil keeps the old rule (a
+	// subscribe without an entitlement is ignored).
+	EntitlementFetcher EntitlementFetcher
+
 	// EnableConversationFrames (chat parity §4) admits the per-conversation
 	// frames — conversation.enter / heartbeat / leave, typing.start /
 	// typing.stop — past the beta gate WITHOUT opening the other
@@ -336,10 +343,37 @@ func (s *Server) announcePresence(userID uuid.UUID) {
 type roomSubscriptions struct {
 	mu     sync.Mutex
 	claims map[string]*roomauth.Claims // conversationID -> authorizing claims
+	// open holds the hidden-chat open token a room was subscribed with
+	// (forwarded on that room's typing calls). Never logged.
+	open map[string]string
 }
 
 func newRoomSubscriptions() *roomSubscriptions {
-	return &roomSubscriptions{claims: map[string]*roomauth.Claims{}}
+	return &roomSubscriptions{claims: map[string]*roomauth.Claims{}, open: map[string]string{}}
+}
+
+// setOpenToken remembers (or, with "", forgets) a room's open token.
+func (r *roomSubscriptions) setOpenToken(conversationID, token string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.open == nil {
+		r.open = map[string]string{}
+	}
+	if token == "" {
+		delete(r.open, conversationID)
+		return
+	}
+	r.open[conversationID] = token
+}
+
+// openTokenFor is the open token of a held room ("" when none).
+func (r *roomSubscriptions) openTokenFor(conversationID string) string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, held := r.claims[conversationID]; !held {
+		return ""
+	}
+	return r.open[conversationID]
 }
 
 func (r *roomSubscriptions) set(conversationID string, claims *roomauth.Claims) {
@@ -361,6 +395,7 @@ func (r *roomSubscriptions) delete(conversationID string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	delete(r.claims, conversationID)
+	delete(r.open, conversationID)
 }
 
 func (r *roomSubscriptions) snapshot() map[string]*roomauth.Claims {
@@ -390,14 +425,14 @@ func (s *Server) serveConnection(
 	liveGrants := newLiveRoomGrants()
 
 	queue := newTypingQueue()
-	typing := s.newConnTypingTracker(queue, userID)
+	typing := s.newConnTypingTracker(queue, userID, subs)
 	go queue.run(s.opts.TypingNotifier, bearerToken, userID, s.log)
 	defer queue.close()
 	// Runs before queue.close (defers are LIFO): every indicator this
 	// connection left on is turned off.
 	defer typing.StopAll()
 
-	go s.readLoop(ctx, cancel, conn, pubsub, outbound, userID, subs, postGrants, liveGrants, typing, connID)
+	go s.readLoop(ctx, cancel, conn, pubsub, outbound, userID, subs, postGrants, liveGrants, typing, connID, bearerToken)
 	go s.redisLoop(ctx, cancel, pubsub, outbound, userID, subs)
 	go s.reconcileRoomSubscriptions(ctx, pubsub, outbound, userID, subs, postGrants, liveGrants)
 	s.writeLoop(ctx, cancel, conn, outbound, userID)
@@ -456,6 +491,9 @@ func (s *Server) reconcileRoomSubscriptions(ctx context.Context, pubsub *redis.P
 					"user_id", userID, "conversation_id", convID)
 				_ = pubsub.Unsubscribe(ctx, "convroom:"+convID)
 				subs.delete(convID)
+				// Tell the client so an open (hidden) chat re-subscribes;
+				// the gateway never renews on its own (hidden_chats.go).
+				offer(outbound, subscriptionFrame("subscription_expired", convID, ""))
 			}
 		case <-postTicker.C:
 			if !s.opts.EnablePostRooms {
@@ -523,7 +561,7 @@ var roomSignalingTypes = map[string]bool{
 	"call_recording_stopped":   true,
 }
 
-func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, pubsub *redis.PubSub, outbound chan<- []byte, userID uuid.UUID, subs *roomSubscriptions, postGrants, liveGrants *postRoomGrants, typing *typingTracker, connID string) {
+func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, pubsub *redis.PubSub, outbound chan<- []byte, userID uuid.UUID, subs *roomSubscriptions, postGrants, liveGrants *postRoomGrants, typing *typingTracker, connID string, bearerToken string) {
 	defer cancel()
 
 	conn.SetReadLimit(s.opts.MaxMessageSize)
@@ -568,6 +606,20 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 				continue
 			}
 			token, _ := envelope["entitlement"].(string)
+			openToken, _ := envelope["open_token"].(string)
+			requested, _ := envelope["conversation_id"].(string)
+			if token == "" {
+				// Hidden chats: {conversation_id, open_token} — the gateway
+				// fetches the entitlement (hidden_chats.go).
+				fetched, reason := s.fetchEntitlement(ctx, bearerToken, requested, openToken)
+				if fetched == "" {
+					if requested != "" && reason != "" {
+						offer(outbound, subscriptionFrame("subscription_refused", requested, reason))
+					}
+					continue
+				}
+				token = fetched
+			}
 			claims, err := roomauth.Verify(token, s.opts.EntitlementSecret, time.Now())
 			if err != nil {
 				s.log.Warn("conversation.subscribe rejected", "err", err, "user_id", userID)
@@ -576,6 +628,10 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 			if claims.Subject != userID.String() {
 				s.log.Warn("conversation.subscribe rejected: subject mismatch",
 					"user_id", userID, "subject", claims.Subject)
+				continue
+			}
+			if requested != "" && !strings.EqualFold(requested, claims.ConversationID) {
+				s.log.Warn("conversation.subscribe rejected: conversation mismatch", "user_id", userID)
 				continue
 			}
 			// P0-4: a still-valid token presented after removal. The issuer
@@ -602,6 +658,7 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 				continue
 			}
 			subs.set(claims.ConversationID, claims)
+			subs.setOpenToken(claims.ConversationID, openToken)
 			continue
 		case "conversation.unsubscribe":
 			convID, _ := envelope["conversation_id"].(string)

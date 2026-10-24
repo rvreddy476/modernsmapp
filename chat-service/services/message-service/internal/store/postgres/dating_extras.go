@@ -84,7 +84,7 @@ func (s *ConversationStore) DatingTurnsOwed(ctx context.Context, userID uuid.UUI
 		SELECT COUNT(*) FROM chat.conversations c
 		JOIN chat.conversation_members m
 		  ON m.conversation_id = c.id AND m.user_id = $1 AND m.left_at IS NULL
-		WHERE c.source_app = 'dating'
+		WHERE `+memberNotLocked+` AND c.source_app = 'dating'
 		  AND c.closed_at IS NULL
 		  AND c.last_message_sender IS NOT NULL
 		  AND c.last_message_sender <> $1

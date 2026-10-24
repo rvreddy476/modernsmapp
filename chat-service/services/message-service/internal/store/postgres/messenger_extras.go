@@ -232,7 +232,7 @@ func (s *ConversationStore) ListConversationsByLabel(ctx context.Context, userID
 		SELECT conversation_id, user_id, label, is_muted, mute_until, disappear_after_ms,
 		       read_receipts_enabled, theme, is_pinned, pinned_at, mute_calls, alert_tone
 		FROM chat.conversation_settings
-		WHERE user_id = $1 AND label = $2
+		WHERE user_id = $1 AND label = $2 AND `+notLockedFor("conversation_id", "$1")+`
 		ORDER BY pinned_at DESC NULLS LAST, conversation_id
 		LIMIT $3 OFFSET $4
 	`, userID, label, limit, offset)
@@ -333,9 +333,10 @@ func (s *ConversationStore) RemoveConversationFromFolder(ctx context.Context, fo
 
 func (s *ConversationStore) GetFolderConversations(ctx context.Context, folderID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT conversation_id FROM chat.chat_folder_conversations
-		WHERE folder_id = $1
-		ORDER BY added_at ASC
+		SELECT fc.conversation_id FROM chat.chat_folder_conversations fc
+		JOIN chat.chat_folders f ON f.id = fc.folder_id
+		WHERE fc.folder_id = $1 AND `+notLockedFor("fc.conversation_id", "f.user_id")+`
+		ORDER BY fc.added_at ASC
 	`, folderID)
 	if err != nil {
 		return nil, err
@@ -482,7 +483,7 @@ func (s *ConversationStore) ListMessageRequests(ctx context.Context, userID uuid
 		FROM chat.conversations c
 		JOIN chat.conversation_members m ON m.conversation_id = c.id AND m.left_at IS NULL
 		LEFT JOIN chat.message_requests mr ON mr.conversation_id = c.id
-		WHERE m.user_id = $1 AND `+liveRequest+`
+		WHERE m.user_id = $1 AND `+memberNotLocked+` AND `+liveRequest+`
 		ORDER BY c.created_at DESC
 		LIMIT $2 OFFSET $3
 	`, userID, limit, offset)
@@ -617,7 +618,7 @@ func (s *ConversationStore) GetStarredMessages(ctx context.Context, userID uuid.
 	rows, err := s.db.Query(ctx, `
 		SELECT id, user_id, conversation_id, message_id, message_preview, starred_at
 		FROM chat.starred_messages
-		WHERE user_id = $1
+		WHERE user_id = $1 AND `+notLockedFor("conversation_id", "$1")+`
 		ORDER BY starred_at DESC
 		LIMIT $2 OFFSET $3
 	`, userID, limit, offset)

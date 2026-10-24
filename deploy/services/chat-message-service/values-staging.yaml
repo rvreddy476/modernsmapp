@@ -65,6 +65,9 @@ env:
   IDENTITY_USER_SERVICE_URL: http://identity-user-service.atpost.svc.cluster.local:8110
   # Dating first-message notifications (chat → dating internal route).
   DATING_SERVICE_URL: http://dating-service.atpost.svc.cluster.local:8112
+  # Hidden chats kill switch (false = no new setup/hide/reveal/open; existing
+  # hidden chats stay hidden).
+  HIDDEN_CHATS_ENABLED: "true"
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   # Add per-service inter-service URLs here. Common ones:

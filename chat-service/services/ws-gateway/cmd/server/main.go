@@ -100,8 +100,11 @@ func main() {
 		LiveViewer:               httpapi.NewHTTPLiveViewAuthorizer(cfg.LiveServiceV2URL, cfg.InternalServiceKey, nil),
 		EnableConversationFrames: cfg.ConversationFramesEnabled,
 		TypingNotifier:           httpapi.NewHTTPTypingNotifier(cfg.MessageServiceURL, nil),
-		PresencePeers:            presencePeers,
-		PresenceVisibility:       presenceVisibility,
+		// Hidden chats: subscribe with {conversation_id, open_token}; the
+		// gateway fetches the room entitlement from message-service.
+		EntitlementFetcher: httpapi.NewHTTPEntitlementFetcher(cfg.MessageServiceURL, nil),
+		PresencePeers:      presencePeers,
+		PresenceVisibility: presenceVisibility,
 	})
 	logger.Info("realtime rooms", "post_rooms", cfg.PostRoomsEnabled, "live_rooms", cfg.LiveRoomsEnabled, "conversation_frames", cfg.ConversationFramesEnabled)
 

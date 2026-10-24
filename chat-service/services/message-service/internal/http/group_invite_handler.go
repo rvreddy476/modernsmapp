@@ -166,5 +166,9 @@ func (h *Handler) JoinByInvite(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
 	}
+	// Hidden chats: re-joining a group the caller hid returns it redacted.
+	if !h.redactIfLocked(c, userID, conv) {
+		return
+	}
 	api.JSON(c.Writer, http.StatusOK, conv, nil)
 }

@@ -41,6 +41,13 @@ type Identity struct {
 	SessionID string
 	Scopes    string
 	ExpiresAt time.Time
+	// AuthTime is `auth_time` (unix seconds of the session's last FULL
+	// authentication: password / OAuth / passkey, plus 2FA when asked) and
+	// StepUpAt is `step_up_at` (unix seconds of the last POST
+	// /v1/auth/step-up; only the token step-up returns carries it). Both are
+	// signed claims minted by identity auth-service; zero when absent.
+	AuthTime int64
+	StepUpAt int64
 }
 
 type Claims struct {
@@ -55,6 +62,31 @@ type Claims struct {
 	TokenType string `json:"typ"`
 	Type      string `json:"type"`
 	Scopes    string `json:"scopes"`
+	AuthTime  int64  `json:"auth_time,omitempty"`
+	StepUpAt  int64  `json:"step_up_at,omitempty"`
+}
+
+// StepUpValidity mirrors identity's accesstoken.StepUpValidity: a re-auth
+// (auth_time) or a step-up (step_up_at) counts as fresh for 300 seconds.
+const StepUpValidity = 300 * time.Second
+
+// FreshReauth reports whether the identity proves a re-authentication within
+// StepUpValidity of now: a step-up (step_up_at) or a full sign-in
+// (auth_time). A value more than a minute in the future (clock skew
+// allowance) is not fresh — the same rule identity's StepUpFresh applies.
+func (id Identity) FreshReauth(now time.Time) bool {
+	return claimFresh(id.StepUpAt, now) || claimFresh(id.AuthTime, now)
+}
+
+func claimFresh(at int64, now time.Time) bool {
+	if at <= 0 {
+		return false
+	}
+	age := now.Unix() - at
+	if age < -60 {
+		return false
+	}
+	return age <= int64(StepUpValidity/time.Second)
 }
 
 // LoadFromEnv returns both key material and policy. Production is inferred
@@ -173,6 +205,8 @@ func Verify(raw string, keys KeySet, policy Policy, now time.Time) (Identity, er
 		SessionID: claims.Sid,
 		Scopes:    claims.Scopes,
 		ExpiresAt: time.Unix(claims.Exp, 0),
+		AuthTime:  claims.AuthTime,
+		StepUpAt:  claims.StepUpAt,
 	}, nil
 }
 

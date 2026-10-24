@@ -44,7 +44,7 @@ const (
 	typingRefresh = 4 * time.Second
 	// typingQueueSize bounds per-connection pending typing calls; typing is
 	// best-effort, so a full queue drops rather than blocking the read loop.
-	typingQueueSize = 32
+	typingQueueSize   = 32
 	typingCallTimeout = 3 * time.Second
 )
 
@@ -78,6 +78,9 @@ func (n *HTTPTypingNotifier) SetTyping(ctx context.Context, bearerToken string, 
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+bearerToken)
+	if open := openTokenFrom(ctx); open != "" {
+		req.Header.Set("X-Chat-Open", open)
+	}
 	resp, err := n.Client.Do(req)
 	if err != nil {
 		return err
@@ -224,6 +227,8 @@ type typingQueue struct {
 type typingEvent struct {
 	conversationID uuid.UUID
 	isTyping       bool
+	// openToken: the room's hidden-chat open token, sent as X-Chat-Open.
+	openToken string
 }
 
 func newTypingQueue() *typingQueue { return &typingQueue{ch: make(chan typingEvent, typingQueueSize)} }
@@ -260,6 +265,7 @@ func (q *typingQueue) run(notifier TypingNotifier, token string, userID uuid.UUI
 			continue
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), typingCallTimeout)
+		ctx = withOpenToken(ctx, ev.openToken)
 		if err := notifier.SetTyping(ctx, token, ev.conversationID, ev.isTyping); err != nil {
 			log.Warn("typing forward failed", "err", err, "user_id", userID,
 				"conversation_id", ev.conversationID, "is_typing", ev.isTyping)

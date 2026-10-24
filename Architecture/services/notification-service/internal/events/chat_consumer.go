@@ -52,6 +52,9 @@ type messageCreatedPayload struct {
 	// Recipients who muted this conversation. Chat owns that setting, so it
 	// arrives on the event; absent means nobody muted it.
 	MutedRecipientIDs []string `json:"muted_recipient_ids,omitempty"`
+	// Recipients who HID this conversation (hidden chats). They get only the
+	// content-free "New message" push: no inbox row, no badge, no preview.
+	LockedRecipientIDs []string `json:"locked_recipient_ids,omitempty"`
 
 	// Push-preview fields (chat-parity CONTRACT §8). All optional and
 	// additive: an older publisher sends none and every push stays generic.
@@ -121,6 +124,9 @@ type chatNotifier interface {
 	// copy, the data map gains conversation_id/message_id/alert_tone, and
 	// muted sends no device push.
 	CreateChatMessageNotification(ctx context.Context, userID, actorID, conversationID uuid.UUID, deepLink string, createdAt time.Time, msg service.ChatMessagePush, muted bool) error
+	// CreateHiddenChatMessagePush is the only delivery for a recipient who
+	// hid the conversation: a content-free push, no inbox row.
+	CreateHiddenChatMessagePush(ctx context.Context, userID uuid.UUID, muted bool) error
 }
 
 type ChatConsumer struct {
@@ -242,6 +248,11 @@ func (c *ChatConsumer) handleMessageCreated(ctx context.Context, e messageCreate
 		muted[id] = struct{}{}
 	}
 
+	locked := make(map[string]struct{}, len(e.LockedRecipientIDs))
+	for _, id := range e.LockedRecipientIDs {
+		locked[id] = struct{}{}
+	}
+
 	var firstErr error
 	for _, ridStr := range e.RecipientIDs {
 		recipientID, err := uuid.Parse(ridStr)
@@ -253,6 +264,17 @@ func (c *ChatConsumer) handleMessageCreated(ctx context.Context, e messageCreate
 			continue
 		}
 		_, isMuted := muted[ridStr]
+		if _, hidden := locked[ridStr]; hidden {
+			// Hidden chat: nothing about the sender, the text or the
+			// conversation — and no inbox row, so no badge.
+			if err := c.service.CreateHiddenChatMessagePush(ctx, recipientID, isMuted); err != nil {
+				log.Printf("chat: failed to push hidden-chat notification: %v\n", err)
+				if firstErr == nil {
+					firstErr = err
+				}
+			}
+			continue
+		}
 		if err := c.service.CreateChatMessageNotification(
 			ctx, recipientID, senderID, conversationID, deepLink, createdAt, e.pushFor(ridStr), isMuted,
 		); err != nil {
@@ -320,6 +342,10 @@ func (c *ChatConsumer) handleChatDatingMessageNew(ctx context.Context, e chatDat
 	recipientID, senderID, matchID, deepLink, ok := datingNewMessageNotification(e)
 	if !ok {
 		return nil
+	}
+	if e.HiddenChat {
+		// Hidden chat: content-free push only, no match row.
+		return c.service.CreateHiddenChatMessagePush(ctx, recipientID, false)
 	}
 	sentAt := e.SentAt
 	if sentAt.IsZero() {

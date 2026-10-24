@@ -416,7 +416,7 @@ func (s *ConversationStore) ListRequestEnvelopesPage(ctx context.Context, userID
 		FROM chat.conversations c
 		JOIN chat.conversation_members m ON m.conversation_id = c.id AND m.user_id = $1 AND m.left_at IS NULL
 		LEFT JOIN chat.message_requests mr ON mr.conversation_id = c.id
-		WHERE ` + where
+		WHERE ` + memberNotLocked + ` AND (` + where + `)`
 	if after != nil {
 		args = append(args, after.At, after.ID)
 		q += ` AND (COALESCE(mr.created_at, c.created_at), c.id) < ($2, $3)`

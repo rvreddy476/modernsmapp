@@ -38,6 +38,9 @@ type callNotifier interface {
 	CreateCallNotification(ctx context.Context, userID, actorID uuid.UUID,
 		notifType, entityType string, entityID uuid.UUID, deepLink string,
 		createdAt time.Time, identity string) error
+	// CreateHiddenCallPush rings a callee who hid the conversation:
+	// "Incoming call", no caller, no inbox row (hidden chats).
+	CreateHiddenCallPush(ctx context.Context, userID uuid.UUID, notifType string, callID uuid.UUID) error
 }
 
 // callMessageSource is the broker seam: fetch and commit, exactly what
@@ -284,6 +287,14 @@ func (c *CallConsumer) processMessage(ctx context.Context, m kafka.Message) erro
 		// incoming_call.
 		if strings.HasSuffix(e.CallType, "video") {
 			notifType = "incoming_video_call"
+		}
+		// Hidden chats: chat-service's CallInvited carries hidden_chat when
+		// the invitee hid the conversation — a nameless ring, no row.
+		var hidden struct {
+			HiddenChat bool `json:"hidden_chat"`
+		}
+		if unmarshalPayload(envelope.Payload, &hidden) == nil && hidden.HiddenChat {
+			return c.notifier.CreateHiddenCallPush(ctx, inviteeID, notifType, callID)
 		}
 		deepLink := fmt.Sprintf("/call/%s", e.CallID)
 		// Idempotency identity = event id + recipient: broker redelivery

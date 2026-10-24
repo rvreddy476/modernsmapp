@@ -117,6 +117,18 @@ func (s *Service) recheckSearchHits(ctx context.Context, userID uuid.UUID, hits 
 	return kept
 }
 
+// redactSearchURLError drops the request URL from a transport error. The URL
+// carries the search text, and the secret key of hidden chats may be typed
+// into the chat search box (hidden chats, 24 Oct 2026): a *url.Error would
+// print it into the log line that reports the failure.
+func redactSearchURLError(err error) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		return fmt.Errorf("search-service %s request failed: %w", ue.Op, ue.Err)
+	}
+	return err
+}
+
 func (s *Service) searchGet(ctx context.Context, path string, params url.Values, viewer *uuid.UUID) ([]byte, error) {
 	if s.searchServiceURL == "" || s.httpClient == nil {
 		return nil, errors.New("search not configured")
@@ -125,7 +137,7 @@ func (s *Service) searchGet(ctx context.Context, path string, params url.Values,
 	defer cancel()
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, s.searchServiceURL+path+"?"+params.Encode(), nil)
 	if err != nil {
-		return nil, err
+		return nil, redactSearchURLError(err)
 	}
 	if viewer != nil {
 		req.Header.Set("X-User-Id", viewer.String())
@@ -135,7 +147,7 @@ func (s *Service) searchGet(ctx context.Context, path string, params url.Values,
 	}
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, redactSearchURLError(err)
 	}
 	defer resp.Body.Close()
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))

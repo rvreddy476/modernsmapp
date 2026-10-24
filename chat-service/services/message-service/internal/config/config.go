@@ -50,8 +50,13 @@ type Config struct {
 	// DM consent model (20 Oct 2026): the 30-day message-request expiry
 	// sweep. ON unless MESSAGE_REQUEST_EXPIRY_WORKER_ENABLED is false/0/off.
 	RequestExpiryWorkerEnabled bool
-	RequestExpiryPollInterval  time.Duration
-	RequestExpiryBatch         int
+	// HiddenChatsEnabled (HIDDEN_CHATS_ENABLED, default true) is the hidden
+	// chats kill switch. Off refuses new setup / hide / reveal / open; locks
+	// already in place keep holding (lists stay filtered, locked chats keep
+	// needing an open token) so switching off never exposes a hidden chat.
+	HiddenChatsEnabled        bool
+	RequestExpiryPollInterval time.Duration
+	RequestExpiryBatch        int
 
 	// Field encryption at rest (22 Oct 2026): published outbox rows are
 	// deleted after OUTBOX_RETENTION (default 168h = 7 days), checked every
@@ -106,6 +111,7 @@ func Load() *Config {
 		DisappearingBatch:         getEnvInt("DISAPPEARING_MESSAGES_BATCH", 100),
 
 		RequestExpiryWorkerEnabled: getEnvBool("MESSAGE_REQUEST_EXPIRY_WORKER_ENABLED", true),
+		HiddenChatsEnabled:         getEnvBool("HIDDEN_CHATS_ENABLED", true),
 		RequestExpiryPollInterval:  getEnvDuration("MESSAGE_REQUEST_EXPIRY_POLL_INTERVAL", 10*time.Minute),
 		RequestExpiryBatch:         getEnvInt("MESSAGE_REQUEST_EXPIRY_BATCH", 200),
 

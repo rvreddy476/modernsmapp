@@ -1328,6 +1328,9 @@ services:
       # are filed with trust-safety.
       SEARCH_SERVICE_URL: ${SEARCH_SERVICE_URL:-http://search-service:8089}
       TRUST_SAFETY_SERVICE_URL: ${TRUST_SAFETY_SERVICE_URL:-http://trust-safety-service:8091}
+      # Hidden chats (24 Oct 2026) kill switch. false refuses new setup /
+      # hide / reveal / open; chats already hidden stay hidden.
+      HIDDEN_CHATS_ENABLED: ${HIDDEN_CHATS_ENABLED:-true}
     ports:
       - "8092:8092"
     depends_on:

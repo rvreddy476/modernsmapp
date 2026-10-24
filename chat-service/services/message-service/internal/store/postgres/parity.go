@@ -110,7 +110,7 @@ func (s *ConversationStore) ListInboxConversations(ctx context.Context, userID u
 		JOIN chat.conversation_members m ON m.conversation_id = c.id AND m.user_id = $1 AND m.left_at IS NULL
 		LEFT JOIN chat.conversation_settings s ON s.conversation_id = c.id AND s.user_id = $1
 		LEFT JOIN chat.message_requests mr ON mr.conversation_id = c.id
-		WHERE ` + visibleToMember + ` AND ` + laneFilter(lane) + `
+		WHERE ` + memberNotLocked + ` AND ` + visibleToMember + ` AND ` + laneFilter(lane) + `
 		  AND COALESCE(s.is_pinned, false) = $2`
 	if !pinned && cursorTs != nil && cursorID != nil {
 		args = append(args, *cursorTs, *cursorID)
@@ -745,7 +745,7 @@ func (s *ConversationStore) DirectPeerIDs(ctx context.Context, userID uuid.UUID,
 		FROM chat.conversation_members m
 		JOIN chat.conversations c ON c.id = m.conversation_id AND c.type = 'direct'
 		JOIN chat.conversation_members o ON o.conversation_id = m.conversation_id AND o.user_id <> m.user_id AND o.left_at IS NULL
-		WHERE m.user_id = $1 AND m.left_at IS NULL
+		WHERE m.user_id = $1 AND m.left_at IS NULL AND `+memberNotLocked+`
 		ORDER BY COALESCE(c.last_message_at, c.created_at) DESC
 		LIMIT $2
 	`, userID, limit)
@@ -864,7 +864,7 @@ func (s *ConversationStore) SearchMyConversations(ctx context.Context, userID uu
 		FROM chat.conversations c
 		JOIN chat.conversation_members m ON m.conversation_id = c.id AND m.user_id = $1 AND m.left_at IS NULL
 		LEFT JOIN chat.message_requests mr ON mr.conversation_id = c.id
-		WHERE `+visibleToMember+` AND NOT `+incomingRequest+`
+		WHERE `+memberNotLocked+` AND `+visibleToMember+` AND NOT `+incomingRequest+`
 		  AND (
 		    (c.type = 'group' AND lower(COALESCE(c.title, '')) LIKE $2 ESCAPE '\')
 		    OR (c.type = 'direct' AND EXISTS (
@@ -913,7 +913,7 @@ func (s *ConversationStore) GetMemberSearchStates(ctx context.Context, userID uu
 	rows, err := s.db.Query(ctx, `
 		SELECT m.conversation_id, m.cleared_before, c.is_request
 		FROM chat.conversation_members m JOIN chat.conversations c ON c.id = m.conversation_id
-		WHERE m.user_id = $1 AND m.left_at IS NULL AND m.conversation_id = ANY($2::uuid[])
+		WHERE m.user_id = $1 AND m.left_at IS NULL AND `+memberNotLocked+` AND m.conversation_id = ANY($2::uuid[])
 	`, userID, convIDs)
 	if err != nil {
 		return nil, err

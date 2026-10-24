@@ -161,6 +161,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		managedGroups.DELETE("/conversations/:id/members/:userId", h.RemoveManagedGroupMember)
 	}
 	v1 := r.Group("/v1/chat")
+	// Hidden chats: every /conversations/:id route of a conversation the
+	// caller hid needs X-Chat-Open (hidden_chats_handler.go). Installed
+	// before any route so no route can be registered outside it.
+	v1.Use(h.hiddenChatGate())
 	{
 		v1.GET("/health", h.Health)
 		// Conversations
@@ -257,12 +261,24 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 
 		// Chat parity programme (CONTRACT §1-3, §5-7, 2026-10-18).
 		h.registerParityRoutes(v1, internal)
+
+		// Hidden chats (contract pinned 24 Oct 2026).
+		h.registerHiddenChatRoutes(v1)
 	}
 }
 
 type chatMediaAccessRequest struct {
 	ViewerID string `json:"viewer_id" binding:"required"`
 	MediaID  string `json:"media_id" binding:"required"`
+	// Hidden chats: media that rides only conversations the viewer hid needs
+	// the viewer's open token. media-service forwards the `chat_open` query
+	// parameter (an <img>/<video> URL cannot send headers) as open_token and
+	// the viewer's access-token session id as session_id (or the client's
+	// X-Device-Id as device_id), so the device binding is checked. Never
+	// logged on either side.
+	OpenToken string `json:"open_token,omitempty"`
+	SessionID string `json:"session_id,omitempty"`
+	DeviceID  string `json:"device_id,omitempty"`
 }
 
 func (h *Handler) ChatMediaAccess(c *gin.Context) {
@@ -284,6 +300,12 @@ func (h *Handler) ChatMediaAccess(c *gin.Context) {
 	if err != nil {
 		c.JSON(http.StatusServiceUnavailable, gin.H{"allowed": false})
 		return
+	}
+	if !allowed {
+		if allowed, err = h.lockedChatMediaAllowed(c, viewerID, mediaID, body); err != nil {
+			c.JSON(http.StatusServiceUnavailable, gin.H{"allowed": false})
+			return
+		}
 	}
 	if !allowed {
 		c.JSON(http.StatusForbidden, gin.H{"allowed": false})
@@ -423,6 +445,11 @@ func (h *Handler) CreateDirectConversation(c *gin.Context) {
 		}
 		h.log.Error("failed to create direct conversation", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	// Hidden chats: opening a DM the caller hid returns it redacted (no
+	// preview, no unread) unless the request holds an open token.
+	if !h.redactIfLocked(c, userID, conv) {
 		return
 	}
 

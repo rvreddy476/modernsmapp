@@ -107,11 +107,28 @@ func (s *Service) ListInbox(ctx context.Context, userID uuid.UUID, lane string, 
 	}
 	convs = append(convs, rest...)
 
+	out, err := s.inboxRows(ctx, userID, convs)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	var next *ConversationCursor
+	if len(rest) == limit {
+		last := rest[len(rest)-1]
+		next = &ConversationCursor{UpdatedAt: last.SortAt, ID: last.ID}
+	}
+	return out, next, nil
+}
+
+// inboxRows turns a page of conversations into the inbox row shape (members,
+// group avatars, the viewer-scoped parity fields). The normal lanes and the
+// hidden list share it, so a hidden row is exactly a normal row.
+func (s *Service) inboxRows(ctx context.Context, userID uuid.UUID, convs []postgres.Conversation) ([]ConversationResponse, error) {
 	out := make([]ConversationResponse, 0, len(convs))
 	for _, c := range convs {
 		members, err := s.convStore.GetMembers(ctx, c.ID)
 		if err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 		out = append(out, ConversationResponse{
 			ID:                 c.ID,
@@ -133,13 +150,7 @@ func (s *Service) ListInbox(ctx context.Context, userID uuid.UUID, lane string, 
 	}
 	s.resolveGroupAvatarURLs(ctx, userID, out)
 	s.decorateRows(ctx, userID, out)
-
-	var next *ConversationCursor
-	if len(rest) == limit {
-		last := rest[len(rest)-1]
-		next = &ConversationCursor{UpdatedAt: last.SortAt, ID: last.ID}
-	}
-	return out, next, nil
+	return out, nil
 }
 
 // ListConversations is the legacy entry point: the primary lane.

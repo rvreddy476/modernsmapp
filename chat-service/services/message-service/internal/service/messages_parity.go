@@ -161,7 +161,7 @@ func (s *Service) publishToConversation(convID uuid.UUID, members []postgres.Mem
 		payload, _ := json.Marshal(map[string]interface{}{"type": frameType, "payload": body})
 		pipe := s.rdb.Pipeline()
 		for _, m := range members {
-			pipe.Publish(pubCtx, fmt.Sprintf("chat:%s", m.UserID), payload)
+			publishPersonal(pubCtx, pipe, m, payload)
 		}
 		pipe.Publish(pubCtx, fmt.Sprintf("convroom:%s", convID), payload)
 		if _, err := pipe.Exec(pubCtx); err != nil {
@@ -598,7 +598,7 @@ func (s *Service) SetTypingState(ctx context.Context, userID, convID uuid.UUID, 
 	})
 	for _, m := range members {
 		if m.UserID != userID {
-			s.rdb.Publish(ctx, fmt.Sprintf("chat:%s", m.UserID), payload)
+			publishPersonal(ctx, s.rdb, m, payload)
 		}
 	}
 	return nil

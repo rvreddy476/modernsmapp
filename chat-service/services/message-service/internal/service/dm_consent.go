@@ -250,5 +250,7 @@ func (s *Service) publishRequestRemoved(ctx context.Context, userID, convID uuid
 			"reason":          reason,
 		},
 	})
-	s.rdb.Publish(ctx, fmt.Sprintf("chat:%s", userID), payload)
+	if ch, ok := s.personalChannelFor(ctx, userID, convID); ok {
+		s.rdb.Publish(ctx, ch, payload)
+	}
 }

@@ -69,13 +69,19 @@ func (s *Server) handleConversationFrame(ctx context.Context, msgType string, en
 }
 
 // newConnTypingTracker builds one connection's tracker, emitting into queue.
-func (s *Server) newConnTypingTracker(queue *typingQueue, userID uuid.UUID) *typingTracker {
+// A room subscribed with a hidden-chat open token forwards it on its typing
+// calls (message-service's gate needs it for a hidden conversation).
+func (s *Server) newConnTypingTracker(queue *typingQueue, userID uuid.UUID, subs *roomSubscriptions) *typingTracker {
 	return newTypingTracker(s.opts.typingClock, s.opts.TypingTimeout, 0, func(conversationID string, isTyping bool) {
 		id, err := uuid.Parse(conversationID)
 		if err != nil {
 			return
 		}
-		if !queue.push(typingEvent{conversationID: id, isTyping: isTyping}) {
+		openToken := ""
+		if subs != nil {
+			openToken = subs.openTokenFor(id.String())
+		}
+		if !queue.push(typingEvent{conversationID: id, isTyping: isTyping, openToken: openToken}) {
 			s.log.Warn("typing queue full or closed; dropping", "user_id", userID, "conversation_id", id, "is_typing", isTyping)
 		}
 	})

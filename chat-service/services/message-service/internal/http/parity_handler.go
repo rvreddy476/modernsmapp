@@ -280,6 +280,12 @@ func (h *Handler) ForwardMessage(c *gin.Context) {
 		}
 		targets = append(targets, id)
 	}
+	// Hidden chats: forwarding INTO a conversation the caller hid is a send
+	// in that conversation — it needs the open token too (the source
+	// conversation already passed the gate).
+	if hs, ok := h.hidden(); ok && len(targets) > 0 && !h.requireOpen(c, hs, userID, targets) {
+		return
+	}
 	key := req.IdempotencyKey
 	if key == "" {
 		key = c.GetHeader("Idempotency-Key")

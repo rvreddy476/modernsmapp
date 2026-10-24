@@ -87,6 +87,9 @@ env:
   # scylla/schema.prod.cql, applied by deploy/scylla/).
   SCYLLA_HOSTS: atpost-qa-client.scylla.svc.cluster.local # terraform output scylla_client_service
   SCYLLA_KEYSPACE: chatservice
+  # Hidden chats kill switch (false = no new setup/hide/reveal/open; existing
+  # hidden chats stay hidden).
+  HIDDEN_CHATS_ENABLED: "true"
   USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082
   # Chat-policy authority (usr.user_settings): the IDENTITY user-service on
   # 8110. Pointing this at user-service silently breaks policy refresh.

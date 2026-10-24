@@ -99,7 +99,8 @@ func CORSMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
 		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-User-Id, X-Request-Id, X-Session-Id, Idempotency-Key")
+		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-User-Id, X-Request-Id, X-Session-Id, Idempotency-Key, X-Chat-Reveal, X-Chat-Open, X-Step-Up-Token, X-Device-Id")
+		c.Writer.Header().Set("Access-Control-Expose-Headers", "X-Request-Id, X-Chat-Open-Expires-At, X-Chat-Reveal-Expires-At")
 		c.Writer.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		if c.Request.Method == http.MethodOptions {
 			c.AbortWithStatus(http.StatusNoContent)
@@ -171,7 +172,7 @@ func AuthMiddlewareWithKeys(keys JWTKeySet, log *slog.Logger) gin.HandlerFunc {
 		}
 
 		token := strings.TrimSpace(strings.TrimPrefix(authz, "Bearer "))
-		userID, err := parseAndValidateJWTWithKeys(token, keys)
+		identity, err := parseIdentityWithKeys(token, keys)
 		if err != nil {
 			log.Warn("invalid bearer token", "err", err, "request_id", RequestIDFromContext(c))
 			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid token", nil, nil)
@@ -179,9 +180,43 @@ func AuthMiddlewareWithKeys(keys JWTKeySet, log *slog.Logger) gin.HandlerFunc {
 			return
 		}
 
-		c.Set(userIDKey, userID)
+		c.Set(userIDKey, identity.UserID)
+		c.Set(accessIdentityKey, identity)
+		// Hidden chats reset (POST /v1/chat/hidden/reset) accepts a separate
+		// step-up access token from identity. It is verified with exactly the
+		// same keys and policy as the bearer, and kept only when it names the
+		// same user (and, when both carry one, the same session).
+		if raw := strings.TrimSpace(c.GetHeader(stepUpTokenHeader)); raw != "" {
+			if su, err := parseIdentityWithKeys(raw, keys); err == nil && su.UserID == identity.UserID &&
+				(su.SessionID == "" || identity.SessionID == "" || su.SessionID == identity.SessionID) {
+				c.Set(stepUpIdentityKey, su)
+			}
+		}
 		c.Next()
 	}
+}
+
+const (
+	// accessIdentityKey holds the verified bearer's accessauth.Identity.
+	accessIdentityKey = "access_identity"
+	// stepUpIdentityKey holds a verified X-Step-Up-Token's identity.
+	stepUpIdentityKey = "step_up_identity"
+	stepUpTokenHeader = "X-Step-Up-Token"
+)
+
+// accessIdentityFrom returns the verified bearer identity set by the auth
+// middleware (zero value when absent, e.g. on an internal-key request).
+func accessIdentityFrom(c *gin.Context) accessauth.Identity {
+	if v, ok := c.Get(accessIdentityKey); ok {
+		if id, ok := v.(accessauth.Identity); ok {
+			return id
+		}
+	}
+	return accessauth.Identity{}
+}
+
+func parseIdentityWithKeys(token string, keys JWTKeySet) (accessauth.Identity, error) {
+	return accessauth.Verify(token, keys.accessKeys(), keys.accessPolicy(), time.Now())
 }
 
 func parseAndValidateJWT(token string, secret []byte) (string, error) {

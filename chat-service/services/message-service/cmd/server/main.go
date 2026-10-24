@@ -162,6 +162,11 @@ func main() {
 	// with ws-gateway; empty disables issuance and the personal channel
 	// remains the only delivery path.
 	svc.SetEntitlementSecret(os.Getenv("CHAT_ENTITLEMENT_SECRET"))
+	// Hidden chats kill switch (default on). Existing locks hold either way.
+	svc.SetHiddenChatsEnabled(cfg.HiddenChatsEnabled)
+	if !cfg.HiddenChatsEnabled {
+		logger.Warn("hidden chats DISABLED by HIDDEN_CHATS_ENABLED; existing hidden chats stay hidden")
+	}
 	handler := http.New(svc, logger).WithInternalServiceKey(cfg.InternalServiceKey)
 
 	// 6. Identity Event Consumer (background)

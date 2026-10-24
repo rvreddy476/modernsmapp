@@ -565,6 +565,9 @@ type chatDatingMessageNewPayload struct {
 	RecipientID    string    `json:"recipient_id"`
 	MessagePreview string    `json:"message_preview,omitempty"`
 	SentAt         time.Time `json:"sent_at"`
+	// HiddenChat: the recipient hid this conversation (hidden chats) — only
+	// the content-free push, no match row.
+	HiddenChat bool `json:"hidden_chat,omitempty"`
 }
 
 func (c *Consumer) handleChatDatingMessageNew(ctx context.Context, raw json.RawMessage) error {
@@ -575,6 +578,9 @@ func (c *Consumer) handleChatDatingMessageNew(ctx context.Context, raw json.RawM
 	recipient, sender, matchID, deepLink, ok := datingNewMessageNotification(e)
 	if !ok {
 		return fmt.Errorf("dating.match.new_message: invalid recipient_id %q", e.RecipientID)
+	}
+	if e.HiddenChat {
+		return c.service.CreateHiddenChatMessagePush(ctx, recipient, false)
 	}
 	return c.service.CreateNotification(ctx, recipient, sender, "dating.match.new_message",
 		DatingNewMessageEntityType, matchID, deepLink, e.SentAt)

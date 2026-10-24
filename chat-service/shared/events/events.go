@@ -61,6 +61,10 @@ type ChatDatingMessageNewPayload struct {
 	RecipientID    string    `json:"recipient_id"`
 	MessagePreview string    `json:"message_preview,omitempty"`
 	SentAt         time.Time `json:"sent_at"`
+	// HiddenChat: the recipient hid this conversation (hidden chats). The
+	// preview is then empty and notification-service sends only the
+	// content-free hidden-chat push.
+	HiddenChat bool `json:"hidden_chat,omitempty"`
 }
 
 // Group-governance payloads (production chat pass).
@@ -163,8 +167,13 @@ type MessageCreatedPayload struct {
 	// boundary to ask. Those recipients still get their durable inbox row —
 	// mute means "do not buzz me", not "hide this from me" — but no device
 	// push. Additive and omitempty: an older publisher simply mutes nobody.
-	MutedRecipientIDs []string  `json:"muted_recipient_ids,omitempty"`
-	CreatedAt         time.Time `json:"created_at"`
+	MutedRecipientIDs []string `json:"muted_recipient_ids,omitempty"`
+	// LockedRecipientIDs is the subset of RecipientIDs who have HIDDEN this
+	// conversation (hidden chats, 24 Oct 2026). notification-service sends
+	// them only a content-free "New message" push — no sender, no text, no
+	// avatar, no inbox row, nothing on the badge. Additive and omitempty.
+	LockedRecipientIDs []string  `json:"locked_recipient_ids,omitempty"`
+	CreatedAt          time.Time `json:"created_at"`
 	// Chat parity (2026-10-18, additive): the message text (search indexing,
 	// notification previews), the inbox preview line, the source app
 	// ("dating" for a Pulse chat; consumers skip it) and the per-recipient
@@ -285,6 +294,10 @@ type CallInvitedPayload struct {
 	InviteeUserID string    `json:"invitee_user_id"`
 	CallType      string    `json:"call_type"`
 	CreatedAt     time.Time `json:"created_at"`
+	// HiddenChat: the invitee hid the conversation this call comes from
+	// (the call's source chat, or the pair's DM). notification-service then
+	// rings "Incoming call" with no name and writes no inbox row.
+	HiddenChat bool `json:"hidden_chat,omitempty"`
 }
 
 type CallAcceptedPayload struct {

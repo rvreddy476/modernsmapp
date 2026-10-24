@@ -723,6 +723,11 @@ func (h *Handler) GetMessageTranslation(c *gin.Context) {
 		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "Translation not found", nil, nil)
 		return
 	}
+	// Hidden chats: a translation is message content — a message of a
+	// conversation the caller hid needs the open token.
+	if hs, ok := h.hidden(); ok && !h.requireOpen(c, hs, userID, []uuid.UUID{translation.ConversationID}) {
+		return
+	}
 
 	api.JSON(c.Writer, http.StatusOK, translation, nil)
 }

@@ -201,6 +201,8 @@ func main() {
 		} else {
 			defer muteReader.Close()
 			svc = svc.WithCallMuteChecker(muteReader)
+			// Hidden chats: same read-only chat_db view (conversation_members.locked).
+			svc = svc.WithCallHiddenChecker(muteReader)
 			logger.Info("call mute enabled")
 		}
 	} else {

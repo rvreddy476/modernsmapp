@@ -154,6 +154,16 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 			recipients = append(recipients, memberID.String())
 		}
 	}
+	// Hidden chats: recipients who hid this conversation get a content-free
+	// push. A failed lookup retries the delivery rather than risk a preview.
+	locked, err := s.lockedRecipients(ctx, intent.ConversationID, recipients)
+	if err != nil {
+		return err
+	}
+	lockedSet := make(map[string]bool, len(locked))
+	for _, id := range locked {
+		lockedSet[id] = true
+	}
 	created := sharedEvents.MessageCreatedPayload{
 		MessageID:      intent.MessageID.String(),
 		ConversationID: intent.ConversationID.String(),
@@ -164,7 +174,9 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 		// Per-conversation mute is chat's state; it rides the event so the
 		// notifier never has to ask across the service boundary.
 		MutedRecipientIDs: s.mutedRecipients(ctx, intent.ConversationID, recipients),
-		CreatedAt:         intent.MessageTS,
+		// Hidden chats: these recipients get a content-free push only.
+		LockedRecipientIDs: locked,
+		CreatedAt:          intent.MessageTS,
 		// Chat parity (additive): search indexes the text; notifications
 		// render the preview and pick the channel from the alert tone.
 		Text:       intent.MessageText,
@@ -192,6 +204,10 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 				RecipientID:    recipientID,
 				MessagePreview: datingPreview,
 				SentAt:         intent.MessageTS,
+			}
+			if lockedSet[recipientID] {
+				payload.MessagePreview = ""
+				payload.HiddenChat = true
 			}
 			dedupe := "dating-message:" + intent.MessageID.String() + ":" + recipientID
 			if err := s.deliveryStore().InsertOutboxEventOnce(ctx, dedupe, sharedEvents.ChatDatingMessageNew, payload); err != nil {

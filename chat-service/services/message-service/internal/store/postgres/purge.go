@@ -102,6 +102,11 @@ func (s *ConversationStore) PurgeUser(ctx context.Context, userID uuid.UUID) err
 		`DELETE FROM chat.dm_streaks WHERE user_a = $1 OR user_b = $1`,
 		`DELETE FROM chat.user_policy WHERE user_id = $1`,
 		`DELETE FROM chat.revocation_intents WHERE user_id = $1`,
+		// Hidden chats (migration 018): the secret hashes, lockouts and
+		// reveal/open tokens. The locked flag goes with the member rows.
+		`DELETE FROM chat.hidden_chat_settings WHERE user_id = $1`,
+		`DELETE FROM chat.hidden_chat_attempts WHERE user_id = $1`,
+		`DELETE FROM chat.hidden_chat_tokens WHERE user_id = $1`,
 		`DELETE FROM chat.direct_conversation_keys WHERE user_a = $1 OR user_b = $1`,
 		`DELETE FROM chat.message_delivery_intents WHERE sender_id = $1`,
 		`DELETE FROM chat.dating_first_message_notifications WHERE actor_id = $1`,

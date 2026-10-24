@@ -46,6 +46,10 @@ type Member struct {
 	UserID   uuid.UUID `json:"user_id"`
 	Role     string    `json:"role"`
 	JoinedAt time.Time `json:"joined_at"`
+	// Locked: this member has hidden the conversation for themself (hidden
+	// chats, migration 018). Never serialised — other members must not learn
+	// it. Personal-channel fan-out skips a locked member (personalChannel).
+	Locked bool `json:"-"`
 }
 
 type OutboxEvent struct {
@@ -710,7 +714,7 @@ func (s *ConversationStore) ListConversationsByUser(ctx context.Context, userID 
 			SELECT `+listColumns+`
 			FROM chat.conversations c
 			JOIN chat.conversation_members m ON m.conversation_id = c.id
-			WHERE m.user_id = $1 AND m.left_at IS NULL AND (c.updated_at, c.id) < ($2, $3)
+			WHERE m.user_id = $1 AND m.left_at IS NULL AND `+memberNotLocked+` AND (c.updated_at, c.id) < ($2, $3)
 			ORDER BY c.updated_at DESC, c.id DESC
 			LIMIT $4
 		`, userID, *cursorUpdatedAt, *cursorID, limit)
@@ -719,7 +723,7 @@ func (s *ConversationStore) ListConversationsByUser(ctx context.Context, userID 
 			SELECT `+listColumns+`
 			FROM chat.conversations c
 			JOIN chat.conversation_members m ON m.conversation_id = c.id
-			WHERE m.user_id = $1 AND m.left_at IS NULL
+			WHERE m.user_id = $1 AND m.left_at IS NULL AND `+memberNotLocked+`
 			ORDER BY c.updated_at DESC, c.id DESC
 			LIMIT $2
 		`, userID, limit)
@@ -755,7 +759,7 @@ func (s *ConversationStore) CheckMembership(ctx context.Context, conversationID,
 
 func (s *ConversationStore) GetMembers(ctx context.Context, conversationID uuid.UUID) ([]Member, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT user_id, role, joined_at
+		SELECT user_id, role, joined_at, locked
 		FROM chat.conversation_members
 		WHERE conversation_id = $1 AND left_at IS NULL
 	`, conversationID)
@@ -767,7 +771,7 @@ func (s *ConversationStore) GetMembers(ctx context.Context, conversationID uuid.
 	var members []Member
 	for rows.Next() {
 		var m Member
-		if err := rows.Scan(&m.UserID, &m.Role, &m.JoinedAt); err != nil {
+		if err := rows.Scan(&m.UserID, &m.Role, &m.JoinedAt, &m.Locked); err != nil {
 			return nil, err
 		}
 		members = append(members, m)

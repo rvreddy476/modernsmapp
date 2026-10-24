@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"time"
 
 	"github.com/atpost/chat-message-service/internal/ratelimit"
@@ -521,7 +520,7 @@ func (s *Service) MarkDelivered(ctx context.Context, userID, convID uuid.UUID, m
 		} else {
 			payload["aggregate"] = true
 		}
-		s.publishFrame(ctx, v, "delivery_receipt", payload)
+		s.publishFrame(ctx, st, v, "delivery_receipt", payload)
 	}
 	return out, nil
 }
@@ -577,7 +576,7 @@ func (s *Service) publishGroupReadAggregate(ctx context.Context, convID, readerI
 		if receiptsOff(st.policies[v]) || !s.readGateOpen(ctx, st, v) {
 			continue
 		}
-		s.publishFrame(ctx, v, "read_receipt", map[string]interface{}{
+		s.publishFrame(ctx, st, v, "read_receipt", map[string]interface{}{
 			"conversation_id": convID.String(),
 			"aggregate":       true,
 			"read_up_to":      upTo.UTC().Format(time.RFC3339Nano),
@@ -585,15 +584,23 @@ func (s *Service) publishGroupReadAggregate(ctx context.Context, convID, readerI
 	}
 }
 
-func (s *Service) publishFrame(ctx context.Context, userID uuid.UUID, typ string, payload map[string]interface{}) {
-	if s.rdb == nil {
+// publishFrame sends one receipt frame to a member's personal channel —
+// through personalChannel, so a member who hid the conversation gets none. A
+// recipient missing from the member list gets none either.
+func (s *Service) publishFrame(ctx context.Context, st *receiptState, userID uuid.UUID, typ string, payload map[string]interface{}) {
+	if s.rdb == nil || st == nil {
 		return
 	}
 	raw, err := json.Marshal(map[string]interface{}{"type": typ, "payload": payload})
 	if err != nil {
 		return
 	}
-	s.rdb.Publish(ctx, fmt.Sprintf("chat:%s", userID), raw)
+	for _, m := range st.members {
+		if m.UserID == userID {
+			publishPersonal(ctx, s.rdb, m, raw)
+			return
+		}
+	}
 }
 
 // readDisclosedTo is readReceiptVisible with both policies resolved — the

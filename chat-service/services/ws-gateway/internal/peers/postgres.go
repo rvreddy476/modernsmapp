@@ -17,7 +17,9 @@ import (
 // dmPeersSQL selects the other member of every ACCEPTED direct conversation
 // the user still belongs to, most recently active first. Pending message
 // requests are excluded: a stranger whose request was never accepted gets
-// no presence pushes.
+// no presence pushes. A peer who HID the DM (hidden chats, message-service
+// migration 018: conversation_members.locked) gets none either — nothing
+// about a hidden chat reaches that person's personal channel.
 //
 // Each peer appears ONCE: a pair can hold more than one direct conversation
 // (an older DM kept alongside a newer one, e.g. after a block severed the
@@ -35,6 +37,7 @@ WHERE me.user_id = $1
   AND c.is_request = false
   AND me.left_at IS NULL
   AND other.left_at IS NULL
+  AND NOT other.locked
 GROUP BY other.user_id
 ORDER BY MAX(c.updated_at) DESC
 LIMIT $2`
