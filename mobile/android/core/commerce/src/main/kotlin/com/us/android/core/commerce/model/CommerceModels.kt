@@ -783,6 +783,8 @@ data class NewProduct(
 /** A variant as its seller sees it: what it costs and whether it is on sale. */
 data class SellerVariant(
     val variantId: String,
+    /** The listing it belongs to, whose approval state decides whether the SKU may change. */
+    val productId: String = "",
     val title: String,
     val sku: String,
     val sellingPrice: Paise,

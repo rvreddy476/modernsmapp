@@ -1,0 +1,18 @@
+{
+  "error": {
+    "code": "RETURN_POLICY_INVALID",
+    "message": "return_policy_type must be one of no_return, 7_days, 15_days, 30_days, custom",
+    "details": {
+      "allowed": [
+        "no_return",
+        "7_days",
+        "15_days",
+        "30_days",
+        "custom"
+      ],
+      "field": "return_policy_type"
+    }
+  },
+  "meta": {}
+}
+

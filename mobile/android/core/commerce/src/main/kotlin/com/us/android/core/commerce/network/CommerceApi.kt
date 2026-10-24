@@ -1235,7 +1235,13 @@ data class CreateVariantRequest(
 data class UpdateVariantRequest(
     @SerialName("selling_price_minor") val sellingPriceMinor: Paise? = null,
     @SerialName("mrp_minor") val mrpMinor: Paise? = null,
+    /** One of `active`, `inactive`, `out_of_stock`; anything else is 400 VARIANT_STATUS_INVALID. */
     val status: String? = null,
+    /**
+     * Sent only when the seller changed it. Editable while the listing is
+     * unapproved; once it has been approved the server answers 409 SKU_LOCKED.
+     */
+    val sku: String? = null,
 )
 
 /**

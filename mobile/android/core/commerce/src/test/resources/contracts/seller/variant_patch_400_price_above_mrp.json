@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "PRICE_ABOVE_MRP",
+    "message": "the selling price cannot be above the MRP; lower the price or raise the MRP",
+    "details": {
+      "field": "selling_price_minor"
+    }
+  },
+  "meta": {}
+}
+

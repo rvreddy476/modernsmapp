@@ -6,7 +6,6 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
@@ -28,7 +27,6 @@ import com.us.android.feature.commerce.seller.SellerReturnsScreen
 import com.us.android.feature.commerce.seller.SellerScreen
 import com.us.android.feature.commerce.seller.StartSellingScreen
 import com.us.android.feature.commerce.seller.StockScreen
-import com.us.android.feature.commerce.seller.SubmitProductViewModel
 import com.us.android.feature.commerce.seller.SubmitShopScreen
 import kotlinx.serialization.Serializable
 
@@ -113,10 +111,10 @@ data class SellerEditPriceRoute(val variantId: String, val title: String)
 
 fun NavGraphBuilder.mSellerScreens(navController: NavController) {
     navigation<MSellerGraph>(startDestination = MSellerRoute) {
-        composable<MSellerRoute> { entry ->
-            // Scoped to this destination, so a submit in flight survives a
-            // recomposition but does not outlive the screen that started it.
-            val submitter: SubmitProductViewModel = hiltViewModel(entry)
+        composable<MSellerRoute> {
+            // A listing's submit is the hub's own ViewModel's work
+            // (2026-10-24): it used to be a second ViewModel called here with
+            // an empty callback, whose progress and refusal nothing showed.
             SellerScreen(
                 onBack = navController::popBackStack,
                 actions = SellerHubActions(
@@ -129,7 +127,6 @@ fun NavGraphBuilder.mSellerScreens(navController: NavController) {
                     openPickupAddress = { navController.navigate(SellerPickupAddressRoute) },
                     listProduct = { navController.navigate(NewProductRoute) },
                     submitShop = { navController.navigate(SubmitShopRoute) },
-                    submitProduct = { productId -> submitter.submit(productId) { } },
                     openOrders = { navController.navigate(SellerOrdersRoute) },
                     openReturns = { navController.navigate(SellerReturnsRoute) },
                     openEarnings = { navController.navigate(SellerEarningsRoute) },

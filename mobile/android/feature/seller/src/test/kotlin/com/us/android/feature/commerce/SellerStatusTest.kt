@@ -6,6 +6,7 @@ import com.us.android.core.commerce.model.SellerStatus
 import com.us.android.feature.commerce.seller.guidance
 import com.us.android.feature.commerce.seller.label
 import com.us.android.feature.commerce.seller.notLiveReason
+import com.us.android.feature.commerce.seller.reviewRemark
 import org.junit.Test
 
 /**
@@ -95,9 +96,27 @@ class SellerStatusTest {
     @Test
     fun `a moderation rejection shows the moderator's own reason`() {
         // Reporting a generic "not on sale" here leaves the seller with no
-        // idea what to change.
-        assertThat(product("draft", "rejected", "Prohibited item").notLiveReason())
-            .isEqualTo("Prohibited item")
+        // idea what to change. Since 2026-10-24 the state is the status line
+        // and the moderator's words are the row's remark, beside Resubmit.
+        val rejected = product("draft", "rejected", "Prohibited item")
+        assertThat(rejected.notLiveReason()).isEqualTo("Not approved by moderation")
+        assertThat(rejected.reviewRemark()).isEqualTo("Prohibited item")
+    }
+
+    @Test
+    fun `the states a reviewer sends a listing back in are named`() {
+        assertThat(product("draft", "changes_requested").notLiveReason()).isEqualTo("Changes requested")
+        assertThat(product("draft", "flagged").notLiveReason()).isEqualTo("Flagged by moderation")
+        assertThat(product("active", "hidden").notLiveReason()).isEqualTo("Hidden by moderation")
+        assertThat(product("draft", "pending").notLiveReason()).isEqualTo("Not submitted for review")
+    }
+
+    @Test
+    fun `paused is read from the product's own status column`() {
+        // `products.status` has `paused`; a VARIANT's off switch is
+        // `inactive`, which is a different column and never read here.
+        assertThat(product("paused", "approved").notLiveReason()).isEqualTo("Paused")
+        assertThat(product("inactive", "approved").notLiveReason()).isEqualTo("Not on sale")
     }
 
     @Test

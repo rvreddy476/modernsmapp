@@ -280,6 +280,53 @@ class CommerceRepositoryTest {
     }
 
     @Test
+    fun `a submit refusal carries every gap the server named`() = runBlocking {
+        // The PRODUCT_INCOMPLETE envelope (handler_products.go): `fields`,
+        // keyed by code, every gap at once. The seller is shown the list, so
+        // dropping it here is the "Something went wrong" this used to be.
+        enqueue(
+            """{"error":{"code":"PRODUCT_INCOMPLETE","message":"this listing is not ready for review yet",""" +
+                """"details":{"fields":[""" +
+                """{"code":"listing.image","label":"Product image","reason":"no image"},""" +
+                """{"code":"hsn_code","label":"HSN Code","reason":"Electronics requires this field"},""" +
+                """{"label":"no code, dropped","reason":"x"}],"how_to_fix":"fill them in"}}}""",
+            code = 422,
+        )
+
+        val result = repo.submitProduct("p-1") as CommerceResult.Failure
+        val error = result.error as CommerceError.Unexpected
+
+        assertThat(error.code).isEqualTo("PRODUCT_INCOMPLETE")
+        assertThat(error.httpStatus).isEqualTo(422)
+        assertThat(error.fields.map { it.code }).containsExactly("listing.image", "hsn_code").inOrder()
+        assertThat(error.fields.last().label).isEqualTo("HSN Code")
+    }
+
+    @Test
+    fun `a refusal whose fields are null maps to no fields, not a network failure`() = runBlocking {
+        enqueue("""{"error":{"code":"PRODUCT_INCOMPLETE","message":"m","details":{"fields":null}}}""", code = 422)
+
+        val result = repo.submitProduct("p-1") as CommerceResult.Failure
+
+        assertThat(result.error).isEqualTo(CommerceError.Unexpected("PRODUCT_INCOMPLETE", "m", httpStatus = 422))
+    }
+
+    @Test
+    fun `a variant edit sends the SKU only when one is given`() = runBlocking {
+        enqueue("""{"data":{"id":"v-1"}}""")
+        enqueue("""{"data":{"id":"v-1"}}""")
+
+        repo.updateVariant("v-1", sellingPrice = Paise(99_900))
+        repo.updateVariant("v-1", sku = "MOM-NEW")
+
+        val priceOnly = server.takeRequest().body?.utf8().orEmpty()
+        val skuOnly = server.takeRequest().body?.utf8().orEmpty()
+        assertThat(priceOnly).doesNotContain("sku")
+        assertThat(skuOnly).contains("\"sku\":\"MOM-NEW\"")
+        assertThat(skuOnly).doesNotContain("selling_price")
+    }
+
+    @Test
     fun `ORDER_NOT_FOUND is a permanent refusal`() = runBlocking {
         enqueue("""{"error":{"code":"ORDER_NOT_FOUND","message":"order not found"}}""", code = 404)
 

@@ -112,18 +112,23 @@ fun SellerScreen(
                     // The row resolves the VARIANT before the editor opens;
                     // the product id never reaches the stock route.
                     onOpenProduct = { product -> viewModel.openStock(product, actions.openStock) },
+                    onSubmitProduct = viewModel::submitProduct,
+                    onDismissSubmitProblem = viewModel::dismissSubmitProblem,
                 )
             }
         }
     }
 }
 
+@Suppress("LongParameterList")
 @Composable
 private fun SellerContent(
     state: SellerUiState.Content,
     padding: PaddingValues,
     actions: SellerHubActions,
     onOpenProduct: (SellerProduct) -> Unit,
+    onSubmitProduct: (productId: String) -> Unit,
+    onDismissSubmitProblem: () -> Unit,
 ) {
     val profile = state.profile
     val products = state.products
@@ -208,10 +213,22 @@ private fun SellerContent(
                     // The other half of the step that was missing: a listing
                     // created in `draft` was never submitted, so it never
                     // appeared in search and the seller had no way to find out
-                    // why. Offered only where it applies — a product already
-                    // under review or rejected has nothing to submit.
-                    onSubmit = { actions.submitProduct(product.id) }
-                        .takeIf { product.approvalStatus == "draft" },
+                    // why. Offered only where the server takes it — a first
+                    // submit for a draft, a resubmit after a rejection or a
+                    // change request (2026-10-24; it used to be draft only, so
+                    // a listing sent back by a reviewer was a dead end).
+                    submit = product.submitOffer()?.let { offer ->
+                        RowSubmit(
+                            offer = offer,
+                            submitting = state.submittingProductId == product.id,
+                            // One submit at a time; the others wait rather
+                            // than queue behind it unseen.
+                            enabled = state.submittingProductId == null,
+                            onSubmit = { onSubmitProduct(product.id) },
+                        )
+                    },
+                    problem = state.submitProblem?.takeIf { it.productId == product.id },
+                    onDismissProblem = onDismissSubmitProblem,
                     onEditImages = { actions.openImages(product.id, product.title) },
                 )
             }
@@ -244,11 +261,22 @@ private fun LazyListScope.ordersSection(actions: SellerHubActions) {
     }
 }
 
+/** A row's submit button: which one, and whether a submit is in flight. */
+private data class RowSubmit(
+    val offer: SubmitOffer,
+    val submitting: Boolean,
+    val enabled: Boolean,
+    val onSubmit: () -> Unit,
+)
+
+@Suppress("LongParameterList")
 @Composable
 private fun SellerProductRow(
     product: SellerProduct,
     onClick: () -> Unit,
-    onSubmit: (() -> Unit)?,
+    submit: RowSubmit?,
+    problem: SubmitProblem?,
+    onDismissProblem: () -> Unit,
     onEditImages: () -> Unit,
     resolving: Boolean = false,
 ) {
@@ -297,6 +325,15 @@ private fun SellerProductRow(
                         UsTheme.extended.textPrimary
                     },
                 )
+                // The reviewer's own words, for a listing they sent back: the
+                // thing the seller has to act on before Resubmit means anything.
+                product.reviewRemark()?.let { remark ->
+                    Text(
+                        text = "Reviewer's note: $remark",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = UsTheme.extended.textSecondary,
+                    )
+                }
             }
         }
 
@@ -308,16 +345,52 @@ private fun SellerProductRow(
             modifier = Modifier.fillMaxWidth(),
         )
 
-        // Only where it applies. A product already under review, approved or
-        // rejected has nothing to submit, and a button that does nothing is
-        // worse than no button.
-        onSubmit?.let { submit ->
+        // Only where it applies. A product already under review, live or
+        // hidden has nothing to submit, and a button that does nothing is
+        // worse than no button. A rejected or sent-back listing is offered a
+        // resubmit, which the server takes.
+        submit?.let { s ->
             UsSecondaryButton(
-                text = "Submit for review",
-                onClick = submit,
-                modifier = Modifier.fillMaxWidth(),
+                text = if (s.submitting) "Sending for review…" else s.offer.label,
+                onClick = s.onSubmit,
+                enabled = s.enabled && !s.submitting,
+                modifier = Modifier.fillMaxWidth().testTag("mseller_submit:${product.id}"),
             )
         }
+
+        problem?.let { SubmitProblemCard(problem = it, onDismiss = onDismissProblem) }
+    }
+}
+
+/**
+ * Why the server would not take a listing for review, under the row that
+ * asked: the sentence, then every gap it named, so the seller can fix them
+ * all before trying again rather than one refusal at a time.
+ */
+@Composable
+private fun SubmitProblemCard(problem: SubmitProblem, onDismiss: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(UsTheme.radii.medium))
+            .background(UsTheme.extended.bgCard)
+            .padding(UsTheme.spacing.s)
+            .testTag("mseller_submit_problem:${problem.productId}"),
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+    ) {
+        Text(
+            text = problem.message,
+            style = MaterialTheme.typography.bodyMedium,
+            color = UsTheme.extended.statusDanger,
+        )
+        problem.gaps.forEach { gap ->
+            Text(
+                text = "• $gap",
+                style = MaterialTheme.typography.bodySmall,
+                color = UsTheme.extended.textPrimary,
+            )
+        }
+        UsSecondaryButton(text = "Dismiss", onClick = onDismiss, compact = true)
     }
 }
 
@@ -454,6 +527,19 @@ private fun SellerContentPreview() {
                         rejectionReason = null,
                         imageUrl = null,
                     ),
+                    SellerProduct(
+                        id = "p-3",
+                        title = "Brass diya, set of 4",
+                        status = "draft",
+                        approvalStatus = "changes_requested",
+                        rejectionReason = "Add a photo that shows all four pieces.",
+                        imageUrl = null,
+                    ),
+                ),
+                submitProblem = SubmitProblem(
+                    productId = "p-2",
+                    message = "This listing isn't ready for review yet.",
+                    gaps = listOf("Add at least one product photo.", "Choose a GST tax class."),
                 ),
             ),
             padding = PaddingValues(),
@@ -463,12 +549,13 @@ private fun SellerContentPreview() {
                 openPickupAddress = {},
                 listProduct = {},
                 submitShop = {},
-                submitProduct = {},
                 openOrders = {},
                 openReturns = {},
                 openEarnings = {},
             ),
             onOpenProduct = {},
+            onSubmitProduct = {},
+            onDismissSubmitProblem = {},
         )
     }
 }

@@ -761,6 +761,7 @@ class CommerceRepository @Inject constructor(
         sellingPrice: Paise? = null,
         mrp: Paise? = null,
         status: String? = null,
+        sku: String? = null,
     ): CommerceResult<Unit> =
         call {
             api.updateVariant(
@@ -769,6 +770,7 @@ class CommerceRepository @Inject constructor(
                     sellingPriceMinor = sellingPrice,
                     mrpMinor = mrp,
                     status = status,
+                    sku = sku,
                 ),
             )
         }.map { }
@@ -778,6 +780,7 @@ class CommerceRepository @Inject constructor(
         call { api.sellerVariant(variantId) }.map { dto ->
             SellerVariant(
                 variantId = dto.variantId,
+                productId = dto.productId,
                 title = dto.title,
                 sku = dto.sku,
                 sellingPrice = dto.sellingPriceMinor,
@@ -1087,7 +1090,19 @@ class CommerceRepository @Inject constructor(
                 // always send the header.
                 CommerceError.Unexpected(code, "checkout was sent without an Idempotency-Key")
 
-            else -> CommerceError.Unexpected(code.orEmpty(), message.orEmpty(), httpStatus)
+            else -> CommerceError.Unexpected(
+                code = code.orEmpty(),
+                message = message.orEmpty(),
+                httpStatus = httpStatus,
+                // The per-field envelope PRODUCT_INCOMPLETE and
+                // ATTRIBUTE_VALUES_INVALID share. Read by type, like `lines`,
+                // so a code that sends none — or sends it as null — maps to an
+                // empty list rather than throwing inside call{}.
+                fields = (details?.get("fields") as? JsonArray).orEmpty()
+                    .mapNotNull { it as? JsonObject }
+                    .map { o -> FieldProblem(o.text("code"), o.text("label"), o.text("reason")) }
+                    .filter { it.code.isNotBlank() },
+            )
         }
     }
 

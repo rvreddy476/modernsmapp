@@ -68,6 +68,7 @@ fun EditPriceScreen(
                     .verticalScroll(rememberScrollState()),
                 onPrice = viewModel::setPrice,
                 onMrp = viewModel::setMrp,
+                onSku = viewModel::setSku,
                 onPaused = viewModel::setPaused,
                 onSave = { viewModel.save(onBack) },
             )
@@ -75,12 +76,14 @@ fun EditPriceScreen(
     }
 }
 
+@Suppress("LongParameterList")
 @Composable
 private fun EditPriceForm(
     state: EditPriceUiState.Content,
     modifier: Modifier = Modifier,
     onPrice: (String) -> Unit,
     onMrp: (String) -> Unit,
+    onSku: (String) -> Unit,
     onPaused: (Boolean) -> Unit,
     onSave: () -> Unit,
 ) {
@@ -123,6 +126,18 @@ private fun EditPriceForm(
             enabled = !state.saving,
         )
 
+        // A price is not reviewed content (commerce-service f6dce2470): the
+        // change is live the moment it saves and the listing stays on sale.
+        // Said up front so a seller matching a competitor does not wait for a
+        // review that is not coming.
+        Text(
+            text = PRICE_GOES_LIVE_COPY,
+            style = MaterialTheme.typography.bodySmall,
+            color = UsTheme.extended.textSecondary,
+        )
+
+        SkuField(state = state, onSku = onSku)
+
         // Applied immediately, not batched with the price. A seller pausing
         // something has usually just run out of it, and making them press Save
         // first is how stock gets sold that does not exist.
@@ -132,10 +147,10 @@ private fun EditPriceForm(
         // as every other on/off in the product.
         UsSettingsSwitchRow(
             title = "On sale",
-            description = if (state.paused) {
-                "Paused — buyers cannot add this to a bag"
-            } else {
-                "Buyers can order this"
+            description = when {
+                state.paused -> "Paused — buyers cannot add this to a bag"
+                state.outOfStock -> "Out of stock — add stock to sell it"
+                else -> "Buyers can order this"
             },
             checked = !state.paused,
             onCheckedChange = { onSale -> onPaused(!onSale) },
@@ -155,11 +170,43 @@ private fun EditPriceForm(
         }
 
         UsButton(
-            text = "Save price",
+            text = if (state.skuEditable) "Save changes" else "Save price",
             onClick = onSave,
             enabled = state.canSave,
             loading = state.saving,
             modifier = Modifier.fillMaxWidth(),
         )
+    }
+}
+
+/**
+ * The variant's SKU: a field while the listing is unapproved, read-only from
+ * approval on (409 SKU_LOCKED), the same rule as the web editor. Like the
+ * prices, an empty field means "keep it", so an untouched SKU is never sent.
+ */
+@Composable
+private fun SkuField(state: EditPriceUiState.Content, onSku: (String) -> Unit) {
+    if (state.skuEditable) {
+        UsTextField(
+            value = state.sku,
+            onValueChange = onSku,
+            label = "SKU",
+            placeholder = state.currentSku.takeIf { it.isNotBlank() }?.let { "Leave empty to keep $it" },
+            enabled = !state.saving,
+        )
+    } else if (state.currentSku.isNotBlank()) {
+        Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs)) {
+            UsTextField(
+                value = state.currentSku,
+                onValueChange = {},
+                label = "SKU",
+                enabled = false,
+            )
+            Text(
+                text = SKU_LOCKED_COPY,
+                style = MaterialTheme.typography.bodySmall,
+                color = UsTheme.extended.textSecondary,
+            )
+        }
     }
 }

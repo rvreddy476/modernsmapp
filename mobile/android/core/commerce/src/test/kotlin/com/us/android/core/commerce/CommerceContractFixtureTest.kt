@@ -33,6 +33,7 @@ import com.us.android.core.commerce.network.SellerProfileDto
 import com.us.android.core.commerce.network.ShipmentsDto
 import com.us.android.core.commerce.network.StockDto
 import com.us.android.core.commerce.network.TaxClassListDto
+import com.us.android.core.commerce.network.VariantDto
 import com.us.android.core.commerce.network.VariantListDto
 import com.us.android.core.commerce.repository.CommerceError
 import com.us.android.core.commerce.repository.CommerceRepository
@@ -323,6 +324,44 @@ class CommerceContractFixtureTest {
         },
         "seller/product_submit_post_204.json" to served({ submitProduct("p-1") }) {
             assertThat(it).isEqualTo(CommerceResult.Success(Unit))
+        },
+        // 2026-10-24 (commerce-service f6dce2470): a price edit on a live
+        // listing goes live at once — a plain 200 with the new row, no
+        // REVALIDATION_REQUIRED, no `revalidated` notice — and the three
+        // refusals a variant or listing edit can now meet by name.
+        "seller/variant_patch_200_price_live.json" to { name, raw ->
+            lenient(VariantDto.serializer()) { v ->
+                assertThat(v.id).isEqualTo("00000000-0000-4000-8000-0000000c0102")
+                assertThat(v.sellingPriceMinor).isEqualTo(Paise(119_900))
+                assertThat(v.mrpMinor).isEqualTo(Paise(149_900))
+                assertThat(v.status).isEqualTo("active")
+                assertThat(v.sku).isEqualTo("MOM-EB-WHT")
+            }(name, raw)
+            served({ updateVariant("v-1", sellingPrice = Paise(119_900)) }) { result ->
+                assertThat(result).isEqualTo(CommerceResult.Success(Unit))
+            }(name, raw)
+        },
+        "seller/variant_patch_400_price_above_mrp.json" to served({ updateVariant("v-1", sellingPrice = Paise(1)) }) {
+            val error = it.error() as CommerceError.Unexpected
+            assertThat(error.code).isEqualTo("PRICE_ABOVE_MRP")
+            assertThat(error.httpStatus).isEqualTo(400)
+            assertThat(error.fields).isEmpty()
+        },
+        "seller/variant_patch_409_sku_locked.json" to served({ updateVariant("v-1", sku = "MOM-EB-NEW") }) {
+            val error = it.error() as CommerceError.Unexpected
+            assertThat(error.code).isEqualTo("SKU_LOCKED")
+            assertThat(error.httpStatus).isEqualTo(409)
+            // Re-sending it will not change the answer.
+            assertThat(error.isPermanentRefusal()).isTrue()
+        },
+        // The app has no product PATCH; the same refusal answers a create
+        // whose return window is outside the CHECK, so it is served there.
+        "seller/product_patch_400_return_policy_invalid.json" to served({ createProduct(newProduct()) }) {
+            val error = it.error() as CommerceError.Unexpected
+            assertThat(error.code).isEqualTo("RETURN_POLICY_INVALID")
+            assertThat(error.httpStatus).isEqualTo(400)
+            // `details.allowed` is a list of strings, not a `fields` envelope.
+            assertThat(error.fields).isEmpty()
         },
         "seller/seller_orders_200.json" to lenient(ListSerializer(SellerOrderDto.serializer())) {
             assertThat(it).hasSize(3)

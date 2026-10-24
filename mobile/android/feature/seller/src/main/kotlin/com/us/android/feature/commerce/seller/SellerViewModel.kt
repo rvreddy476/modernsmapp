@@ -39,6 +39,10 @@ sealed interface SellerUiState {
         val chooser: VariantChooser? = null,
         /** One line under the header: a resolution that found nothing, or failed. */
         val message: String? = null,
+        /** The listing whose submit is in flight; its button shows progress, the others wait. */
+        val submittingProductId: String? = null,
+        /** The server's refusal of the last submit, shown under that listing's row. */
+        val submitProblem: SubmitProblem? = null,
     ) : SellerUiState
 
     /**
@@ -79,6 +83,9 @@ fun variantTarget(variants: List<Variant>): VariantTarget = when (variants.size)
 
 /** The one line for a product whose variants could not be found. */
 const val NO_VARIANT_TO_EDIT = "This product has no variant to edit yet."
+
+/** The one line after a listing was sent for review. */
+const val SUBMITTED_FOR_REVIEW = "Sent for review. It goes on sale once it's approved."
 
 @HiltViewModel
 class SellerViewModel @Inject constructor(
@@ -154,6 +161,58 @@ class SellerViewModel @Inject constructor(
     fun dismissMessage() {
         val current = _state.value as? SellerUiState.Content ?: return
         _state.value = current.copy(message = null)
+    }
+
+    /**
+     * Sends [productId] for review — first time, or again after a reviewer
+     * rejected it or asked for changes (the server allows both, see
+     * [submitOffer]).
+     *
+     * 2026-10-24. This used to be a separate ViewModel whose progress and
+     * error nobody collected, called with an empty callback: a refused
+     * submit — a listing with no photo, no stock, a missing category field —
+     * looked exactly like a successful one, and the row never changed. Now
+     * the row shows progress, a refusal lands under it with every gap the
+     * server named, and a success re-reads the catalogue so the row says
+     * "Awaiting review".
+     */
+    fun submitProduct(productId: String) {
+        val current = _state.value as? SellerUiState.Content ?: return
+        if (current.submittingProductId != null) return
+        _state.value = current.copy(submittingProductId = productId, submitProblem = null, message = null)
+        viewModelScope.launch {
+            val result = repo.submitProduct(productId)
+            val latest = _state.value as? SellerUiState.Content ?: return@launch
+            when (result) {
+                is CommerceResult.Failure -> _state.value = latest.copy(
+                    submittingProductId = null,
+                    submitProblem = submitProblem(productId, result.error),
+                )
+
+                is CommerceResult.Success -> {
+                    val products = when (val p = repo.sellerProducts()) {
+                        is CommerceResult.Success -> p.value
+                        // The submit went through; only the re-read failed.
+                        // Said locally so the row does not keep offering a
+                        // submit the server would now refuse.
+                        is CommerceResult.Failure -> latest.products.map {
+                            if (it.id == productId) it.copy(approvalStatus = "submitted") else it
+                        }
+                    }
+                    val after = _state.value as? SellerUiState.Content ?: return@launch
+                    _state.value = after.copy(
+                        products = products,
+                        submittingProductId = null,
+                        message = SUBMITTED_FOR_REVIEW,
+                    )
+                }
+            }
+        }
+    }
+
+    fun dismissSubmitProblem() {
+        val current = _state.value as? SellerUiState.Content ?: return
+        _state.value = current.copy(submitProblem = null)
     }
 
     private suspend fun load() {
@@ -252,12 +311,21 @@ fun SellerStatus.guidance(): String? = when (this) {
  * seller needs the right one: `status` is whether they have switched it on,
  * `approvalStatus` is whether moderation let it through. Reporting only one
  * leaves a seller toggling a switch that was never the problem.
+ *
+ * `status` here is the PRODUCT's column (draft, active, paused, archived) —
+ * `paused` is a real value of it. A VARIANT's switch is a different column
+ * whose "paused" is `inactive`; see [variantStatusFor].
+ *
+ * 2026-10-24: the states a reviewer sends a listing back in are named, and
+ * the reviewer's own words are on the row beneath ([reviewRemark]), next to
+ * the Resubmit button the server now honours.
  */
 fun SellerProduct.notLiveReason(): String? = when {
-    approvalStatus == "rejected" ->
-        rejectionReason?.takeIf { it.isNotBlank() } ?: "Not approved by moderation"
-
-    approvalStatus == "draft" -> "Not submitted for review"
+    approvalStatus == "rejected" -> "Not approved by moderation"
+    approvalStatus == "changes_requested" -> "Changes requested"
+    approvalStatus == "flagged" -> "Flagged by moderation"
+    approvalStatus == "hidden" -> "Hidden by moderation"
+    approvalStatus == "draft" || approvalStatus == "pending" -> "Not submitted for review"
     approvalStatus == "submitted" || approvalStatus == "under_review" -> "Awaiting review"
     status == "draft" -> "Draft"
     status == "paused" -> "Paused"
@@ -360,45 +428,6 @@ class PickupAddressViewModel @Inject constructor(
 }
 
 /**
- * Sending a listing for review.
- *
- * `POST /products/:id/submit` was declared in the API layer and called by
- * nothing. A seller listed a product that stayed `draft` forever, so it never
- * appeared in search, never reached a cart, and the seller had no way to find
- * out why — the catalogue filter hides everything that is not approved.
- */
-@HiltViewModel
-class SubmitProductViewModel @Inject constructor(
-    private val repo: CommerceRepository,
-) : ViewModel() {
-
-    private val _submitting = MutableStateFlow(false)
-    val submitting: StateFlow<Boolean> = _submitting.asStateFlow()
-
-    private val _error = MutableStateFlow<String?>(null)
-    val error: StateFlow<String?> = _error.asStateFlow()
-
-    fun submit(productId: String, onSubmitted: () -> Unit) {
-        if (_submitting.value) return
-        _submitting.value = true
-        _error.value = null
-        viewModelScope.launch {
-            when (val r = repo.submitProduct(productId)) {
-                is CommerceResult.Failure -> {
-                    _submitting.value = false
-                    _error.value = r.error.describe()
-                }
-
-                is CommerceResult.Success -> {
-                    _submitting.value = false
-                    onSubmitted()
-                }
-            }
-        }
-    }
-}
-
-/**
  * What the seller hub can do, as one value.
  *
  * Grouped rather than passed as five separate callbacks: the hub is a menu,
@@ -418,7 +447,9 @@ data class SellerHubActions(
     val openPickupAddress: () -> Unit,
     val listProduct: () -> Unit,
     val submitShop: () -> Unit,
-    val submitProduct: (productId: String) -> Unit,
+    // A listing's submit is not here: it is the hub's own work
+    // (SellerViewModel.submitProduct), because its progress and refusal
+    // belong on the row that started it, not in a callback nobody watched.
     /**
      * The order surface: what to pack and ship, what came back, what was
      * earned. MSeller had catalogue, stock, price and payout and no way to

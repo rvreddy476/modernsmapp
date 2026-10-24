@@ -104,9 +104,32 @@ sealed interface CommerceError {
      * NOT_YOUR_ORDER, a 400 — from a 5xx it may not. It is NOT what a screen
      * branches on: branch on [code], as every existing `code == "NO_SELLER"`
      * check does, and the two-argument form keeps compiling for them.
+     *
+     * [fields] (2026-10-24) is the refusal's per-field `details.fields`, when
+     * it sends one: `PRODUCT_INCOMPLETE` names every gap a listing still has
+     * before it can be reviewed, and `ATTRIBUTE_VALUES_INVALID` every value
+     * refused, in the same envelope. Empty for every other code, so the
+     * existing two- and three-argument forms compare as they did.
      */
-    data class Unexpected(val code: String, val message: String, val httpStatus: Int = 0) : CommerceError
+    data class Unexpected(
+        val code: String,
+        val message: String,
+        val httpStatus: Int = 0,
+        val fields: List<FieldProblem> = emptyList(),
+    ) : CommerceError
 }
+
+/**
+ * One field a refusal names: its code (a category attribute code, or a
+ * built-in such as `listing.price`, which carries a dot no attribute code may),
+ * the label the server gives it, and the server's own reason. The reason is
+ * for the log; a seller is shown copy written for them.
+ */
+data class FieldProblem(
+    val code: String,
+    val label: String,
+    val reason: String,
+)
 
 /**
  * Whether the server has answered this request for good, so repeating it is
