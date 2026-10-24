@@ -58,7 +58,10 @@ private class PlaylistAwareDataSource(
     private var active: DataSource? = null
 
     override fun open(dataSpec: DataSpec): Long {
-        val delegate = if (dataSpec.uri.isPlaylist()) direct else cached
+        // A hidden chat's media (24 Oct 2026) is never cached either: its
+        // URL carries the chat's open token, and the cache would keep both
+        // the bytes and that URL on disk after the chat re-locks.
+        val delegate = if (dataSpec.uri.isPlaylist() || carriesChatOpen(dataSpec.uri.encodedQuery)) direct else cached
         active = delegate
         return delegate.open(dataSpec)
     }
@@ -108,3 +111,7 @@ private fun Uri.isPlaylist(): Boolean = isPlaylistPath(path)
  */
 internal fun isPlaylistPath(path: String?): Boolean =
     path?.endsWith(".m3u8", ignoreCase = true) == true
+
+/** True when the query names `chat_open` (a hidden chat's open token). Pure, like [isPlaylistPath]. */
+internal fun carriesChatOpen(encodedQuery: String?): Boolean =
+    encodedQuery?.split('&')?.any { it.substringBefore('=') == "chat_open" } == true

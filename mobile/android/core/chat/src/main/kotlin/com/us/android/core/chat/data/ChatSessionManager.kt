@@ -37,6 +37,8 @@ import javax.inject.Singleton
  *  - is an ACCELERATION layer only. HTTP history repairs any gap after
  *    reconnect; nothing here is the source of truth.
  */
+private const val REFUSED_CHAT_LOCKED = "chat_locked"
+
 @Singleton
 // `open` (class + the three functions a thread screen calls) solely so the
 // feature-level ViewModel tests can substitute an inert session; production
@@ -49,6 +51,9 @@ open class ChatSessionManager @Inject constructor(
     // Message ticks (2026-10-22): delivered acks. Null in tests, which keeps
     // the session as it was.
     private val deliveredAcks: DeliveredAcker? = null,
+    // Hidden chats (24 Oct 2026): a hidden chat's room is subscribed with
+    // its open token, never an entitlement. Null in tests: nothing is hidden.
+    private val hidden: com.us.android.core.chat.hidden.HiddenTokenStore? = null,
 ) {
 
     /**
@@ -214,6 +219,17 @@ open class ChatSessionManager @Inject constructor(
     }
 
     private suspend fun sendSubscribe(conversationId: String) {
+        // A hidden chat: nothing about it reaches the personal channel, so
+        // its room is the only realtime path. The open token rides the
+        // subscribe frame and the gateway fetches the entitlement itself; no
+        // open token, no subscribe (the thread is not showing then anyway).
+        if (hidden?.isLocked(conversationId) == true) {
+            val open = hidden.open() ?: return
+            if (socket.send(com.us.android.core.chat.hidden.hiddenSubscribeFrame(json, conversationId, open))) {
+                synchronized(roomsLock) { if (conversationId in subscribedRooms) liveRooms.add(conversationId) }
+            }
+            return
+        }
         // Fresh entitlement per subscribe: the membership authority re-checks
         // ACTIVE membership and signs the current generation, so a member
         // removed since the last token cannot ride an old one.
@@ -223,6 +239,33 @@ open class ChatSessionManager @Inject constructor(
         }
         if (token.isNotBlank() && socket.send(subscribeFrame(json, token))) {
             synchronized(roomsLock) { if (conversationId in subscribedRooms) liveRooms.add(conversationId) }
+        }
+    }
+
+    /** Hidden chats: what the gateway said about one room. */
+    private suspend fun onRoomNotice(scope: CoroutineScope, notice: ChatSocketEvent.RoomNotice) {
+        val id = notice.conversationId
+        when (notice.kind) {
+            RoomNoticeKind.Refused -> {
+                synchronized(roomsLock) { liveRooms.remove(id) }
+                if (notice.reason == REFUSED_CHAT_LOCKED) {
+                    // The open token was refused: the chat is hidden and closed now.
+                    hidden?.markLocked(listOf(id))
+                    hidden?.drop(com.us.android.core.chat.hidden.HiddenDropReason.Server, openOnly = true)
+                }
+            }
+            RoomNoticeKind.Expired -> {
+                val wanted = synchronized(roomsLock) {
+                    liveRooms.remove(id)
+                    id in subscribedRooms
+                }
+                // Still open on screen: subscribe again (the gateway never renews by itself).
+                if (wanted) scope.launch { sendSubscribe(id) }
+            }
+            RoomNoticeKind.ConversationHidden -> {
+                hidden?.markLocked(listOf(id))
+                store.purgeHiddenLocally(listOf(id))
+            }
         }
     }
 
@@ -273,6 +316,7 @@ open class ChatSessionManager @Inject constructor(
                             subscribedRooms.remove(event.conversationId)
                             liveRooms.remove(event.conversationId)
                         }
+                    is ChatSocketEvent.RoomNotice -> onRoomNotice(scope, event)
                     // Chat parity: durable first, like a message — the
                     // cached thread must not resurrect an unsent message or
                     // forget a reaction when it is next opened offline.

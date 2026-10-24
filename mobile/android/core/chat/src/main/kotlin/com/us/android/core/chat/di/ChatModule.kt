@@ -20,6 +20,14 @@ import javax.inject.Singleton
 import kotlinx.coroutines.launch
 
 /**
+ * The Retrofit every chat endpoint is built from (hidden chats, 24 Oct 2026):
+ * the app-wide one, on the chat client below.
+ */
+@javax.inject.Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class ChatRetrofit
+
+/**
  * Creates the chat endpoints and the socket from the app-wide instances.
  *
  * No client, no base URL, no converter of its own. A module that assembles its
@@ -30,9 +38,32 @@ import kotlinx.coroutines.launch
 @InstallIn(SingletonComponent::class)
 object ChatModule {
 
+    /**
+     * The chat client: the authenticated client DERIVED, not rebuilt —
+     * `newBuilder()` keeps its pool, its interceptors and its one token
+     * refresher, so refresh stays single-flight. Two additions for hidden
+     * chats (HiddenChatsHttp.kt): `X-Chat-Open`/`X-Device-Id` on a hidden
+     * chat's own calls only, and no refresh-and-replay of a refused secret.
+     */
     @Provides
     @Singleton
-    fun provideChatApi(retrofit: Retrofit): ChatApi = retrofit.create(ChatApi::class.java)
+    @ChatRetrofit
+    fun provideChatRetrofit(
+        retrofit: Retrofit,
+        @AuthenticatedClient client: OkHttpClient,
+        hiddenHeaders: com.us.android.core.chat.hidden.HiddenChatHeadersInterceptor,
+    ): Retrofit = retrofit.newBuilder()
+        .client(
+            client.newBuilder()
+                .addInterceptor(hiddenHeaders)
+                .authenticator(com.us.android.core.chat.hidden.HiddenAwareAuthenticator(client.authenticator))
+                .build(),
+        )
+        .build()
+
+    @Provides
+    @Singleton
+    fun provideChatApi(@ChatRetrofit retrofit: Retrofit): ChatApi = retrofit.create(ChatApi::class.java)
 
     /**
      * The socket shares the AUTHENTICATED OkHttp client.

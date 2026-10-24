@@ -37,6 +37,9 @@ dependencies {
     // echoes from incoming messages (an own echo never marks a chat unread).
     // Injected as Provider<…> — chat's teardown task feeds AuthRepository.
     implementation(projects.core.auth)
+    // Hidden chats (24 Oct 2026): X-Device-Id is the install id offline
+    // copies already keep in DataStore — one stable id, not a second one.
+    implementation(projects.core.datastore)
     implementation(libs.work.runtime)
     implementation(libs.hilt.work)
     ksp(libs.hilt.work.compiler)

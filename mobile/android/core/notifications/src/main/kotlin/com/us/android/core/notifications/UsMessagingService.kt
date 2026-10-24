@@ -73,7 +73,8 @@ class UsMessagingService : FirebaseMessagingService() {
         }
         // A chat message reached this device: the sender's second tick. The
         // hook only enqueues; the batched ack goes out on chat's own scope.
-        chatPushTarget(data)?.let { (conversationId, messageId) ->
+        // A hidden chat's push names no chat (and is never acked from here).
+        chatPushTarget(hiddenChatSafePush(data))?.let { (conversationId, messageId) ->
             if (chatDelivered.isPresent) chatDelivered.get().onChatPush(conversationId, messageId)
         }
         // In the foreground, older server builds deliver title/body in FCM's

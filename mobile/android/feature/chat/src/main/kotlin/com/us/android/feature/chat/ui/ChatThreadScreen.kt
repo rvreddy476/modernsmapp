@@ -123,6 +123,7 @@ fun ChatThreadScreen(
     val render by viewModel.state.collectAsStateWithLifecycle()
     val cards by postCards.cards.collectAsStateWithLifecycle()
     val state = render.thread
+    val hiddenChat = com.us.android.feature.chat.ui.hidden.LocalHiddenChat.current
     val listState = rememberLazyListState()
     var cameraOpen by remember { mutableStateOf(false) }
     var locationOpen by remember { mutableStateOf(false) }
@@ -418,6 +419,8 @@ fun ChatThreadScreen(
                 onDraftChange = {
                     viewModel.onDraftChange(it)
                     viewModel.sendTyping()
+                    // Typing is activity too: a hidden chat's idle re-lock waits.
+                    hiddenChat.touch()
                 },
                 onSend = viewModel::send,
                 onAttach = if (render.outgoingRequest) null else {
@@ -1833,8 +1836,20 @@ private fun AttachmentImage(
         ).apiConfig()
     },
 ) {
+    val hiddenChat = com.us.android.feature.chat.ui.hidden.LocalHiddenChat.current
+    val url = hiddenChat.mediaUrl(config.baseUrl.trimEnd('/') + "/v1/media/" + mediaId + "/serve")
+    val context = androidx.compose.ui.platform.LocalContext.current
     AsyncImage(
-        model = config.baseUrl.trimEnd('/') + "/v1/media/" + mediaId + "/serve",
+        // A hidden chat's photo: its URL carries the open token, and nothing
+        // of it is written to the image disk cache.
+        model = if (hiddenChat.hidden) {
+            coil3.request.ImageRequest.Builder(context)
+                .data(url)
+                .diskCachePolicy(coil3.request.CachePolicy.DISABLED)
+                .build()
+        } else {
+            url
+        },
         contentDescription = "Photo attachment",
         contentScale = ContentScale.Crop,
         modifier = Modifier

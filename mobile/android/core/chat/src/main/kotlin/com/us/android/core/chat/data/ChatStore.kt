@@ -8,6 +8,10 @@ import com.us.android.core.database.ChatPendingSendEntity
 import com.us.android.core.database.scrubDeletedRowsFromDisk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flowOf
+import com.us.android.core.chat.hidden.HiddenTokenStore
+import com.us.android.core.chat.hidden.withoutHiddenChats
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -113,7 +117,18 @@ class ChatStore @Inject constructor(
      * someone else's, which is the old behaviour.
      */
     private val sessionState: Provider<SessionStateProvider>? = null,
+    /**
+     * Hidden chats (24 Oct 2026): the ids this process knows are hidden. Every
+     * list and count here leaves them out, a sync never caches one, and a
+     * re-lock purges what an open hidden chat cached. Null in older tests:
+     * nothing is hidden.
+     */
+    private val hidden: HiddenTokenStore? = null,
 ) {
+
+    private val hiddenIds: Flow<Set<String>> get() = hidden?.lockedIds ?: flowOf(emptySet())
+
+    private fun isHidden(conversationId: String): Boolean = hidden?.isLocked(conversationId) == true
 
     /** The signed-in user's id, or blank when signed out (or unknown). */
     private fun viewerId(): String =
@@ -230,12 +245,13 @@ class ChatStore @Inject constructor(
     // data boundary, so a feature module never couples to a column.
 
     fun conversationsFlow(): Flow<List<Conversation>> =
-        dao.conversations().map { rows -> rows.map { it.toDomainConversation() } }
+        dao.conversations().combine(hiddenIds) { rows, ids -> rows.map { it.toDomainConversation() }.withoutHiddenChats(ids) }
 
     fun requestsFlow(): Flow<List<Conversation>> =
-        dao.requests().map { rows -> rows.map { it.toDomainConversation() } }
+        dao.requests().combine(hiddenIds) { rows, ids -> rows.map { it.toDomainConversation() }.withoutHiddenChats(ids) }
 
-    fun unreadCount(): Flow<Int> = dao.unreadConversationCount()
+    /** Unread conversations, hidden ones never counted (the same rows [conversationsFlow] shows). */
+    fun unreadCount(): Flow<Int> = conversationsFlow().map { rows -> rows.count { it.hasUnread } }
 
     /**
      * Pulls the authoritative inbox + requests and replaces the cache rows.
@@ -261,11 +277,26 @@ class ChatStore @Inject constructor(
             (conversations as? com.us.android.core.common.result.AppResult.Success)?.data,
             (requests as? com.us.android.core.common.result.AppResult.Success)?.data,
         ).flatten().filter { it.isDatingChat }.map { it.id }.distinct()
+        // Hidden chats: a row the server marks `locked` (or this process knows
+        // is hidden) never enters the cache, and an older copy of it goes.
+        val hiddenNow = listOfNotNull(
+            (conversations as? com.us.android.core.common.result.AppResult.Success)?.data,
+            (requests as? com.us.android.core.common.result.AppResult.Success)?.data,
+        ).flatten().filter { it.locked || isHidden(it.id) }.map { it.id }.distinct()
+        hidden?.markLocked(hiddenNow)
         if (conversations is com.us.android.core.common.result.AppResult.Success) {
             val written = guardedWrite(generation) {
-                val rows = conversations.data.withoutDatingChats()
+                val rows = conversations.data.withoutDatingChats().filterNot { it.id in hiddenNow }
                 dao.upsertConversations(rows.map { it.toEntity(isRequestList = false, now) })
                 datingIds.forEach { dao.deleteConversation(it) }
+                // The row always goes. The cached messages go too unless the
+                // hidden chats are open right now — an open thread reads its
+                // own sends back from them; the re-lock purge takes them then.
+                val open = hidden?.snapshot?.value?.opened == true
+                hiddenNow.forEach { id ->
+                    if (!open) parityDao?.clearConversationMessages(id)
+                    dao.deleteConversation(id)
+                }
                 // Chat parity: a row archived or hidden elsewhere leaves the
                 // primary list. Pruned only when the answer was ONE short
                 // page — then it is certainly the whole inbox; a paged or
@@ -281,7 +312,9 @@ class ChatStore @Inject constructor(
         }
         if (requests is com.us.android.core.common.result.AppResult.Success) {
             guardedWrite(generation) {
-                dao.upsertConversations(requests.data.withoutDatingChats().map { it.toEntity(isRequestList = true, now) })
+                dao.upsertConversations(
+                    requests.data.withoutDatingChats().filterNot { it.id in hiddenNow }.map { it.toEntity(isRequestList = true, now) },
+                )
                 datingIds.forEach { dao.deleteConversation(it) }
             }
         }
@@ -374,6 +407,13 @@ class ChatStore @Inject constructor(
         // and time like any other, but never marks the chat unread: a message
         // sent from the laptop must not light this phone's inbox dot.
         val own = viewer.isNotBlank() && message.senderId == viewer
+        if (isHidden(message.conversationId)) {
+            // An OPEN hidden chat: its thread may read the row back while it is
+            // open; no inbox row, preview or unread dot, and the re-lock purge
+            // takes the row again.
+            guardedWrite { dao.insertMessages(listOf(message.toEntity())) }
+            return
+        }
         guardedWrite {
             dao.insertMessages(listOf(message.toEntity()))
             if (!own) {
@@ -472,6 +512,21 @@ class ChatStore @Inject constructor(
         guardedWrite {
             parityDao?.clearConversationMessages(conversationId)
             dao.deleteConversation(conversationId)
+        }
+    }
+
+    /**
+     * Hidden chats: these conversations leave this device's cache — the row
+     * and every cached message. Hide chat, a re-lock and a
+     * `conversation_hidden` frame all land here.
+     */
+    suspend fun purgeHiddenLocally(conversationIds: Collection<String>) {
+        if (conversationIds.isEmpty()) return
+        guardedWrite {
+            conversationIds.forEach { id ->
+                parityDao?.clearConversationMessages(id)
+                dao.deleteConversation(id)
+            }
         }
     }
 

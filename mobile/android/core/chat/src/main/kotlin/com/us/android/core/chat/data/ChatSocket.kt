@@ -174,6 +174,18 @@ sealed interface ChatSocketEvent {
     data class Unknown(val type: String) : ChatSocketEvent
 
     /**
+     * Hidden chats (24 Oct 2026): ws-gateway's word on one conversation room,
+     * sent FLAT (`{"type", "conversation_id", "reason"?}`):
+     *  - [RoomNoticeKind.Refused] — `subscription_refused`, reason
+     *    `chat_locked` (the open token was refused) or `denied`;
+     *  - [RoomNoticeKind.Expired] — `subscription_expired`: the room's
+     *    entitlement ran out; an open chat subscribes again;
+     *  - [RoomNoticeKind.ConversationHidden] — `conversation_hidden`: the
+     *    viewer hid it (here or on another device).
+     */
+    data class RoomNotice(val kind: RoomNoticeKind, val conversationId: String, val reason: String? = null) : ChatSocketEvent
+
+    /**
      * A frame this client DOES model, whose required fields are missing.
      *
      * Distinct from [Unknown] on purpose. "Unknown type=message" would tell
@@ -185,6 +197,9 @@ sealed interface ChatSocketEvent {
      */
     data class Malformed(val type: String, val reason: String) : ChatSocketEvent
 }
+
+/** See [ChatSocketEvent.RoomNotice]. */
+enum class RoomNoticeKind { Refused, Expired, ConversationHidden }
 
 /**
  * The realtime half of chat.
@@ -457,6 +472,19 @@ fun parseChatFrame(json: Json, text: String): ChatSocketEvent? {
     // with `type` injected); a nested copy is accepted too.
     if (type == FRAME_PRESENCE_UPDATE) return parsePresence(nested ?: frame)
 
+    // Hidden chats: the gateway's room notices are flat; a nested copy is accepted too.
+    roomNoticeKind(type)?.let { kind ->
+        val source = nested ?: frame
+        val conversationId = source.str("conversation_id")?.trim().orEmpty()
+        return if (conversationId.isEmpty()) {
+            ChatSocketEvent.Malformed(type, "missing or blank conversation_id")
+        } else {
+            ChatSocketEvent.RoomNotice(kind, conversationId, source.str("reason")?.takeIf { it.isNotBlank() })
+        }
+    }
+    // subscription_revoked may arrive flat as well (the gateway's reconcile loop).
+    if (type == FRAME_SUBSCRIPTION_REVOKED && nested == null) return parseSubscriptionRevoked(frame)
+
     val payload = nested ?: return ChatSocketEvent.Unknown(type)
 
     return when (type) {
@@ -709,6 +737,13 @@ private const val FRAME_SUBSCRIPTION_REVOKED = "subscription_revoked"
 private const val FRAME_MESSAGE_DELETED = "message_deleted"
 private const val FRAME_DISAPPEARING_TIMER = "disappearing_timer_updated"
 private const val FRAME_PIN_UPDATE = "pin_update"
+
+private fun roomNoticeKind(type: String): RoomNoticeKind? = when (type) {
+    "subscription_refused" -> RoomNoticeKind.Refused
+    "subscription_expired" -> RoomNoticeKind.Expired
+    "conversation_hidden" -> RoomNoticeKind.ConversationHidden
+    else -> null
+}
 
 /** `message_deleted.reason` when a disappearing message's timer ran out. */
 private const val DELETE_REASON_EXPIRED = "expired"

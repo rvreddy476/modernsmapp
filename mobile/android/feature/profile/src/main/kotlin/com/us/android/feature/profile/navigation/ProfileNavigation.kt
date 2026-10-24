@@ -300,6 +300,7 @@ fun NavGraphBuilder.settingsScreens(
             destinations.onBack,
             destinations.onMessagesSettings,
             onBlockedAccounts = destinations.sections.onBlockedAccounts,
+            onHiddenChats = destinations.sections.onHiddenChats,
         )
     }
     composable<BlockedAccountsRoute> { BlockedAccountsScreen(onBack = destinations.onBack) }
@@ -358,6 +359,8 @@ data class SettingsSections(
     val onInboxMessaging: () -> Unit = {},
     /** Privacy › Blocked accounts (2026-10-22), a page of this feature: `:app` pushes [BlockedAccountsRoute]. */
     val onBlockedAccounts: () -> Unit = {},
+    /** Privacy › Hidden chats (24 Oct 2026), a `:feature:chat` page: `:app` owns the route. */
+    val onHiddenChats: () -> Unit = {},
     /** Content & display › Hidden channels (2026-10-22), a page of this feature: `:app` pushes [HiddenChannelsRoute]. */
     val onHiddenChannels: () -> Unit = {},
 )

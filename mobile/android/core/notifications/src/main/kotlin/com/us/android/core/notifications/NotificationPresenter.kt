@@ -44,7 +44,10 @@ class NotificationPresenter @Inject constructor(
 ) {
     init { inAppOffers.attachStorage(context) }
 
-    fun present(data: Map<String, String>) {
+    fun present(raw: Map<String, String>) {
+        // Hidden chats: whatever a hidden chat's push carries, it shows only
+        // "New message" and taps into the app, never into the chat.
+        val data = hiddenChatSafePush(raw)
         if (!acceptsInstalledAppNotification(installedApp.orElse(PushApp.MOMENTUM), data[KEY_TYPE])) return
         val offer = DoorstepOfferNotification.evaluate(data)
         if (installedApp.orElse(PushApp.MOMENTUM) == PushApp.PARTNER) {
@@ -221,6 +224,37 @@ class NotificationPresenter @Inject constructor(
         /** Fix pass 2: the channel notification-service chose for a chat push. */
         const val KEY_ANDROID_CHANNEL_ID = "android_channel_id"
 
+    }
+}
+
+/** The data key notification-service sets on a hidden chat's push (contract 24 Oct 2026). */
+const val KEY_HIDDEN_CHAT = "hidden_chat"
+
+/** What a hidden chat's message push says — all it says. */
+const val HIDDEN_CHAT_PUSH_TITLE = "New message"
+
+/** The one notification every hidden chat's messages fold into. */
+private const val HIDDEN_CHAT_SUBJECT = "hidden_chat"
+
+/**
+ * A push for a conversation the recipient hid. notification-service already
+ * blanks it (title "New message", no body, no sender, no conversation id);
+ * this keeps the APP to the same rule whatever arrives: the title and body
+ * are replaced, every id, link and name is dropped (so a tap opens the app,
+ * not the chat, and nothing local can be looked up by them), and all such
+ * pushes share one notification. A ringing push is untouched — the call
+ * stack needs its call id, and its ring is nameless already.
+ */
+fun hiddenChatSafePush(data: Map<String, String>): Map<String, String> {
+    if (data[KEY_HIDDEN_CHAT]?.trim()?.lowercase() != "true") return data
+    if (data[NotificationPresenter.KEY_TYPE] in RINGING_PUSH_TYPES) return data
+    return buildMap {
+        put(NotificationPresenter.KEY_TYPE, data[NotificationPresenter.KEY_TYPE]?.takeIf { it.isNotBlank() } ?: "dm")
+        put(NotificationPresenter.KEY_TITLE, HIDDEN_CHAT_PUSH_TITLE)
+        put(NotificationPresenter.KEY_BODY, "")
+        put(NotificationPresenter.KEY_SUBJECT, HIDDEN_CHAT_SUBJECT)
+        put(KEY_HIDDEN_CHAT, "true")
+        data[NotificationPresenter.KEY_ANDROID_CHANNEL_ID]?.let { put(NotificationPresenter.KEY_ANDROID_CHANNEL_ID, it) }
     }
 }
 

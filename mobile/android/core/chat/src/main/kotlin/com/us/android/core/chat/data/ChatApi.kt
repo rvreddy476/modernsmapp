@@ -540,6 +540,12 @@ data class ConversationDto(
     @SerialName("my_join") val myJoin: MyJoinDto? = null,
     /** Message ticks (2026-10-22): the viewer-scoped delivered/read watermarks. */
     val receipts: ReceiptsDto? = null,
+    /**
+     * Hidden chats (24 Oct 2026): the VIEWER hid this conversation. Only the
+     * hidden list and an opened hidden chat's own routes return such a row;
+     * every other list leaves it out server-side, and the client does too.
+     */
+    val locked: Boolean = false,
 )
 
 /** `my_join`: `method` is `invite_link`, `added` or `invitation`. */

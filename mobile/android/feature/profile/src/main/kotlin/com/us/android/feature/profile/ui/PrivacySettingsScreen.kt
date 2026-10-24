@@ -44,6 +44,8 @@ fun PrivacySettingsScreen(
     onMessagesSettings: () -> Unit,
     /** Blocked accounts (2026-10-22): who the viewer blocked or muted, with the undo. */
     onBlockedAccounts: () -> Unit = {},
+    /** Hidden chats (24 Oct 2026): set up or change the secret key and chat password. */
+    onHiddenChats: () -> Unit = {},
     viewModel: PrivacySettingsViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -62,7 +64,7 @@ fun PrivacySettingsScreen(
                 PrivacySettingsForm(
                     current,
                     viewModel,
-                    PrivacyLinks(onMessagesSettings, onBlockedAccounts),
+                    PrivacyLinks(onMessagesSettings, onBlockedAccounts, onHiddenChats),
                     Modifier.padding(padding),
                 )
         }
@@ -70,7 +72,7 @@ fun PrivacySettingsScreen(
 }
 
 /** The page's doors to the other privacy screens. */
-private class PrivacyLinks(val messages: () -> Unit, val blocked: () -> Unit)
+private class PrivacyLinks(val messages: () -> Unit, val blocked: () -> Unit, val hiddenChats: () -> Unit)
 
 @Composable
 private fun PrivacySettingsForm(
@@ -103,6 +105,15 @@ private fun PrivacySettingsForm(
                 onClick = links.blocked,
                 description = "People you blocked or muted, and the way to undo it",
                 modifier = Modifier.testTag("privacy_blocked_accounts"),
+            )
+        }
+        // Hidden chats (24 Oct 2026): their own page in Messages' feature.
+        UsSettingsSection("Hidden chats") {
+            UsSettingsLinkRow(
+                title = "Hidden chats",
+                onClick = links.hiddenChats,
+                description = "A secret key shows them in chat search; a chat password opens them",
+                modifier = Modifier.testTag("privacy_hidden_chats"),
             )
         }
         ContactPermissionSection(value, policyLocked, viewModel)

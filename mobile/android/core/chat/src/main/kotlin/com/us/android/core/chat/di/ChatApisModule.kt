@@ -27,46 +27,46 @@ object ChatApisModule {
 
     @Provides
     @Singleton
-    fun provideGroupInviteApi(retrofit: Retrofit): GroupInviteApi = retrofit.create(GroupInviteApi::class.java)
+    fun provideGroupInviteApi(@ChatRetrofit retrofit: Retrofit): GroupInviteApi = retrofit.create(GroupInviteApi::class.java)
 
     @Provides
     @Singleton
-    fun provideCommunityApi(retrofit: Retrofit): CommunityApi = retrofit.create(CommunityApi::class.java)
+    fun provideCommunityApi(@ChatRetrofit retrofit: Retrofit): CommunityApi = retrofit.create(CommunityApi::class.java)
 
     @Provides
     @Singleton
-    fun provideCommunityMembershipApi(retrofit: Retrofit): CommunityMembershipApi =
+    fun provideCommunityMembershipApi(@ChatRetrofit retrofit: Retrofit): CommunityMembershipApi =
         retrofit.create(CommunityMembershipApi::class.java)
 
     @Provides
     @Singleton
-    fun provideCommunityUpdatesApi(retrofit: Retrofit): CommunityUpdatesApi =
+    fun provideCommunityUpdatesApi(@ChatRetrofit retrofit: Retrofit): CommunityUpdatesApi =
         retrofit.create(CommunityUpdatesApi::class.java)
 
     @Provides
     @Singleton
-    fun provideSuggestionsApi(retrofit: Retrofit): SuggestionsApi = retrofit.create(SuggestionsApi::class.java)
+    fun provideSuggestionsApi(@ChatRetrofit retrofit: Retrofit): SuggestionsApi = retrofit.create(SuggestionsApi::class.java)
 
     @Provides
     @Singleton
-    fun providePeopleLookupApi(retrofit: Retrofit): PeopleLookupApi = retrofit.create(PeopleLookupApi::class.java)
+    fun providePeopleLookupApi(@ChatRetrofit retrofit: Retrofit): PeopleLookupApi = retrofit.create(PeopleLookupApi::class.java)
 
     /** The chat-parity routes (2026-10-18): their own interface, so existing ChatApi fakes stay valid. */
     @Provides
     @Singleton
-    fun provideChatParityApi(retrofit: Retrofit): com.us.android.core.chat.data.ChatParityApi =
+    fun provideChatParityApi(@ChatRetrofit retrofit: Retrofit): com.us.android.core.chat.data.ChatParityApi =
         retrofit.create(com.us.android.core.chat.data.ChatParityApi::class.java)
 
     /** DM consent (2026-10-20): the message permission read and the paged requests folder. */
     @Provides
     @Singleton
-    fun provideMessageConsentApi(retrofit: Retrofit): com.us.android.core.chat.data.MessageConsentApi =
+    fun provideMessageConsentApi(@ChatRetrofit retrofit: Retrofit): com.us.android.core.chat.data.MessageConsentApi =
         retrofit.create(com.us.android.core.chat.data.MessageConsentApi::class.java)
 
     /** Pinned messages (2026-10-22): their own interface, so the other fakes stay valid. */
     @Provides
     @Singleton
-    fun provideChatPinsApi(retrofit: Retrofit): com.us.android.core.chat.data.ChatPinsApi =
+    fun provideChatPinsApi(@ChatRetrofit retrofit: Retrofit): com.us.android.core.chat.data.ChatPinsApi =
         retrofit.create(com.us.android.core.chat.data.ChatPinsApi::class.java)
 
     /** The thread reads pins through the repository; tests hand it a fake. */
@@ -77,7 +77,7 @@ object ChatApisModule {
     /** Message ticks (2026-10-22): the delivered ack route. */
     @Provides
     @Singleton
-    fun provideReceiptsApi(retrofit: Retrofit): com.us.android.core.chat.data.ReceiptsApi =
+    fun provideReceiptsApi(@ChatRetrofit retrofit: Retrofit): com.us.android.core.chat.data.ReceiptsApi =
         retrofit.create(com.us.android.core.chat.data.ReceiptsApi::class.java)
 
     /** A post's share sheet (2026-10-17) reads the inbox and sends the card through the one repository. */

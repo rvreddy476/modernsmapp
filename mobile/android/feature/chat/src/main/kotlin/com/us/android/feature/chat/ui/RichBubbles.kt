@@ -110,6 +110,7 @@ private fun ApiConfig.serveUrl(mediaId: String) = baseUrl.trimEnd('/') + "/v1/me
 @Composable
 internal fun VoiceBubble(mediaId: String?, voice: VoiceInfo, ink: Color) {
     val entry = bubbleEntry()
+    val hiddenChat = com.us.android.feature.chat.ui.hidden.LocalHiddenChat.current
     var player by remember { mutableStateOf<androidx.media3.exoplayer.ExoPlayer?>(null) }
     var playing by remember { mutableStateOf(false) }
     var progress by remember { mutableFloatStateOf(0f) }
@@ -142,7 +143,9 @@ internal fun VoiceBubble(mediaId: String?, voice: VoiceInfo, ink: Color) {
                 .clickable(enabled = mediaId != null) {
                     val id = mediaId ?: return@clickable
                     val current = player ?: entry.playerFactory().create().also { created ->
-                        created.setMediaSource(entry.mediaSources().create(Playback.original(entry.apiConfig().serveUrl(id))))
+                        created.setMediaSource(
+                            entry.mediaSources().create(Playback.original(hiddenChat.mediaUrl(entry.apiConfig().serveUrl(id)))),
+                        )
                         created.prepare()
                         player = created
                     }
@@ -236,11 +239,14 @@ internal fun VideoBubble(mediaId: String, blurred: Boolean, onReveal: () -> Unit
 @Composable
 private fun VideoPlayerDialog(mediaId: String, onDismiss: () -> Unit) {
     val entry = bubbleEntry()
+    val hiddenChat = com.us.android.feature.chat.ui.hidden.LocalHiddenChat.current
     val player = remember { entry.playerFactory().create() }
     LaunchedEffect(mediaId) {
-        val hls = (entry.mediaRepository().delivery(mediaId) as? AppResult.Success)?.data?.hlsUrl
+        // A hidden chat plays the original through the one open-token URL;
+        // the delivery lookup carries no open token.
+        val hls = if (hiddenChat.hidden) null else (entry.mediaRepository().delivery(mediaId) as? AppResult.Success)?.data?.hlsUrl
         val playback = hls?.takeIf { it.isNotBlank() }?.let { Playback.hls(it) }
-            ?: Playback.original(entry.apiConfig().serveUrl(mediaId))
+            ?: Playback.original(hiddenChat.mediaUrl(entry.apiConfig().serveUrl(mediaId)))
         player.setMediaSource(entry.mediaSources().create(playback))
         player.prepare()
         player.playWhenReady = true

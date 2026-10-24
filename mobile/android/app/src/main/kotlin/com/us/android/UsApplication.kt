@@ -114,6 +114,13 @@ class UsApplication : Application(), Configuration.Provider {
      */
     @Inject lateinit var chatForegroundPresence: com.us.android.chat.ChatForegroundPresence
 
+    /**
+     * Hidden chats (24 Oct 2026): the reveal and open tokens never outlive
+     * the app leaving the screen. Lazy: nothing of chat is built on the
+     * cold-start path for this.
+     */
+    @Inject lateinit var hiddenChats: Lazy<com.us.android.core.chat.hidden.HiddenChats>
+
     override fun onCreate() {
         super.onCreate()
         installCrashReporter()
@@ -122,6 +129,7 @@ class UsApplication : Application(), Configuration.Provider {
                 override fun onStop(owner: androidx.lifecycle.LifecycleOwner) {
                     appForegroundState.isForeground = false
                     chatLockManager.onAppBackgrounded()
+                    hiddenChats.get().onAppBackgrounded()
                     screenTimeSync.onBackground()
                     screenTimeGuard.onAppBackground()
                     analyticsLifecycle.onBackground()

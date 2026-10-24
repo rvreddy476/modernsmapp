@@ -90,6 +90,10 @@ object NetworkModule {
             // Set-Cookie, BODY would print login passwords. Device logs are
             // readable by other tooling — the Flutter client made the same
             // call for the same reason (api_client.dart:52).
+            // A hidden chat's media URL carries its open token as
+            // `chat_open` (media-service reads it): the URL line BASIC prints
+            // must never show it.
+            redactQueryParams("chat_open")
             level = if (config.isDebug) {
                 HttpLoggingInterceptor.Level.BASIC
             } else {

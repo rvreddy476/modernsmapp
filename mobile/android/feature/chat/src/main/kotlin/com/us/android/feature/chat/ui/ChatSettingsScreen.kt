@@ -80,6 +80,10 @@ import com.us.android.core.ui.UsSettingsRadioRow
 import com.us.android.core.ui.UsSettingsSection
 import com.us.android.core.ui.UsSettingsSwitchRow
 import com.us.android.feature.chat.ui.home.rememberMediaUrl
+import com.us.android.core.chat.hidden.HiddenChats
+import com.us.android.core.chat.hidden.HiddenError
+import com.us.android.core.chat.hidden.HiddenResult
+import com.us.android.core.chat.hidden.settingsErrorMessage
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -113,6 +117,10 @@ data class ChatSettingsUiState(
     val message: UsMessage? = null,
     /** Set once the chat was deleted or the person blocked: the page and the thread both close. */
     val closed: Boolean = false,
+    /** Hidden chats: the viewer hid this chat (it is open now, or this page would not be showing). */
+    val hidden: Boolean = false,
+    /** "Hide chat" before the secrets exist: open setup for this chat, once. */
+    val setupHiddenFor: String? = null,
 ) {
     val peerId: String
         get() = conversation?.peer?.userId
@@ -132,6 +140,7 @@ class ChatSettingsViewModel @Inject constructor(
     private val profiles: ProfileRepository,
     session: SessionStateProvider,
     savedStateHandle: SavedStateHandle,
+    private val hiddenChats: HiddenChats,
 ) : ViewModel() {
     private val conversationId: String = savedStateHandle.get<String>(CONVERSATION_ID_KEY).orEmpty()
     private val _state = MutableStateFlow(
@@ -140,6 +149,9 @@ class ChatSettingsViewModel @Inject constructor(
     val state: StateFlow<ChatSettingsUiState> = _state.asStateFlow()
 
     init {
+        viewModelScope.launch {
+            hiddenChats.tokens.lockedIds.collect { ids -> _state.update { it.copy(hidden = conversationId in ids) } }
+        }
         viewModelScope.launch {
             val conversation = (repository.conversation(conversationId) as? AppResult.Success)?.data
             val prefs = (parity.prefs(conversationId) as? AppResult.Success)?.data
@@ -324,6 +336,28 @@ class ChatSettingsViewModel @Inject constructor(
         }
     }
 
+    /** Hide chat (24 Oct 2026): it leaves Messages; the page and the thread close. */
+    fun hideChat() = viewModelScope.launch {
+        when (val result = hiddenChats.hide(conversationId)) {
+            is HiddenResult.Ok -> _state.update { it.copy(closed = true) }
+            is HiddenResult.Err -> if (result.error == HiddenError.NotConfigured) {
+                _state.update { it.copy(setupHiddenFor = conversationId) }
+            } else {
+                say(settingsErrorMessage(result.error), UsMessageType.Error)
+            }
+        }
+    }
+
+    /** Unhide, from inside the open hidden chat: it is back in Messages. */
+    fun unhideChat() = viewModelScope.launch {
+        when (val result = hiddenChats.unhide(conversationId)) {
+            is HiddenResult.Ok -> say("Chat unhidden. It's back in Messages.", UsMessageType.Success)
+            is HiddenResult.Err -> say(settingsErrorMessage(result.error), UsMessageType.Error)
+        }
+    }
+
+    fun consumeHiddenSetup() = _state.update { it.copy(setupHiddenFor = null) }
+
     private fun say(text: String, type: UsMessageType) = _state.update { it.copy(message = UsMessage(text, type)) }
 
     fun dismissMessage() = _state.update { it.copy(message = null) }
@@ -343,6 +377,8 @@ fun ChatSettingsScreen(
     onOpenProfile: (userId: String) -> Unit,
     onOpenThread: () -> Unit,
     onOpenSharedPost: (postId: String) -> Unit,
+    /** Hidden chats: "Hide chat" before setup opens the setup page for this chat. */
+    onSetUpHiddenChats: (conversationId: String) -> Unit = {},
     viewModel: ChatSettingsViewModel = hiltViewModel(),
     postCards: PostCardsViewModel = hiltViewModel(),
 ) {
@@ -353,6 +389,12 @@ fun ChatSettingsScreen(
     val context = androidx.compose.ui.platform.LocalContext.current
     val readTick = ReadTickColourPrefs.current()
     LaunchedEffect(state.closed) { if (state.closed) onClosed() }
+    LaunchedEffect(state.setupHiddenFor) {
+        state.setupHiddenFor?.let { id ->
+            viewModel.consumeHiddenSetup()
+            onSetUpHiddenChats(id)
+        }
+    }
     UsScaffold(topBar = { UsTopBar(title = "Chat settings", onBack = onBack) }, applyPageGutter = false) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
             val conversation = state.conversation
@@ -426,11 +468,29 @@ fun ChatSettingsScreen(
                         if (state.peerId.isNotBlank()) {
                             UsSettingsLinkRow(title = "Block", onClick = { sheet = SettingsSheet.BLOCK })
                         }
+                        // Hidden chats: hide it from Messages, or (open hidden chat) bring it back.
+                        if (state.hidden) {
+                            UsSettingsLinkRow(
+                                title = "Unhide chat",
+                                description = "Show this chat in Messages again",
+                                onClick = viewModel::unhideChat,
+                                modifier = Modifier.testTag("chat_settings_unhide"),
+                            )
+                        } else {
+                            UsSettingsLinkRow(
+                                title = "Hide chat",
+                                description = "Only your secret key shows it, and your chat password opens it",
+                                onClick = viewModel::hideChat,
+                                modifier = Modifier.testTag("chat_settings_hide"),
+                            )
+                        }
                         UsSettingsLinkRow(title = "Clear chat", onClick = { sheet = SettingsSheet.CLEAR })
                         UsSettingsLinkRow(title = "Delete chat", onClick = { sheet = SettingsSheet.DELETE })
                     }
                 }
-                item(key = "tabs") {
+                // A hidden chat's shared media is resolved by URL routes that
+                // carry no open token; it is seen in the chat itself instead.
+                if (!state.hidden) item(key = "tabs") {
                     Row(
                         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
                         modifier = Modifier.padding(vertical = UsTheme.spacing.l),
@@ -447,7 +507,7 @@ fun ChatSettingsScreen(
                     }
                 }
                 val items = if (tab == 0) state.sharedPosts else state.sharedMedia
-                when {
+                if (!state.hidden) when {
                     items == null -> item(key = "shared-loading") { Text("Loading…", color = UsTheme.extended.textMuted) }
                     items.isEmpty() -> item(key = "shared-empty") {
                         Text(

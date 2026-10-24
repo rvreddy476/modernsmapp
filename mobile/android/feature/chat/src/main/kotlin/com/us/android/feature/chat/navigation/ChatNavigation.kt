@@ -26,6 +26,9 @@ import com.us.android.feature.chat.ui.group.GroupAddMembersScreen
 import com.us.android.feature.chat.ui.group.JoinByLinkScreen
 import com.us.android.feature.chat.ui.home.ChatHomeDestinations
 import com.us.android.feature.chat.ui.home.ChatHomeScreen
+import com.us.android.feature.chat.ui.hidden.HiddenChatGuard
+import com.us.android.feature.chat.ui.hidden.HiddenChatsListScreen
+import com.us.android.feature.chat.ui.hidden.HiddenChatsSettingsScreen
 import kotlinx.serialization.Serializable
 
 /**
@@ -168,7 +171,9 @@ fun NavGraphBuilder.chatThreadScreen(
 ) {
     composable<ChatThreadRoute> { entry ->
         val route = entry.toRoute<ChatThreadRoute>()
-        ChatLockGate {
+        // Hidden chats: a hidden chat's thread composes only while it is
+        // open, under FLAG_SECURE, and leaves the moment it re-locks.
+        ChatLockGate { HiddenChatGuard(conversationId = route.conversationId, onRelocked = onBack) {
             ChatThreadScreen(
                 links = parity?.let { destinations ->
                     com.us.android.feature.chat.ui.ThreadLinks(
@@ -189,7 +194,7 @@ fun NavGraphBuilder.chatThreadScreen(
                 onReportSender = onReportSender,
                 onOpenPost = onOpenPost,
             )
-        }
+        } }
     }
 }
 
@@ -347,6 +352,8 @@ data class ChatParityDestinations(
     val onOpenSharedReels: (conversationId: String, postId: String) -> Unit,
     /** The chat was deleted or the person blocked: leave its settings AND its thread. */
     val onChatClosed: () -> Unit,
+    /** Hidden chats: "Hide chat" before the secrets exist opens setup for this chat. */
+    val onSetUpHiddenChats: (conversationId: String) -> Unit = {},
 )
 
 /** Registers the new-message picker, archived chats, chat settings and the shared-reel viewer. */
@@ -369,15 +376,16 @@ fun NavGraphBuilder.chatParityScreens(destinations: ChatParityDestinations) {
     }
     composable<ChatSettingsRoute> { entry ->
         val route = entry.toRoute<ChatSettingsRoute>()
-        ChatLockGate {
+        ChatLockGate { HiddenChatGuard(conversationId = route.conversationId, onRelocked = destinations.onBack) {
             com.us.android.feature.chat.ui.ChatSettingsScreen(
                 onBack = destinations.onBack,
                 onClosed = destinations.onChatClosed,
                 onOpenProfile = destinations.onOpenProfile,
                 onOpenThread = destinations.onBack,
                 onOpenSharedPost = { postId -> destinations.onOpenSharedReels(route.conversationId, postId) },
+                onSetUpHiddenChats = destinations.onSetUpHiddenChats,
             )
-        }
+        } }
     }
     composable<SharedReelsRoute> {
         ChatLockGate {
@@ -398,3 +406,49 @@ fun NavController.navigateToChatSettings(conversationId: String) = navigate(Chat
 
 fun NavController.navigateToSharedReels(conversationId: String, postId: String) =
     navigate(SharedReelsRoute(conversationId, postId))
+
+// ── Hidden chats (24 Oct 2026) ─────────────────────────────────────────
+
+/**
+ * Settings › Privacy › Hidden chats. [hideConversationId] is the chat whose
+ * "Hide chat" asked for setup first (blank otherwise); the key matches
+ * HiddenChatsSettingsViewModel's.
+ */
+@Serializable
+data class HiddenChatsSettingsRoute(val hideConversationId: String = "")
+
+/** The hidden list, behind the secret key. No argument: nothing about it rides a route. */
+@Serializable
+data object HiddenChatsListRoute
+
+/** Where the hidden-chat screens send the user; `:app` owns every destination. */
+data class HiddenChatsDestinations(
+    val onBack: () -> Unit,
+    val onOpenThread: (conversationId: String, title: String, isGroup: Boolean) -> Unit,
+    /** Settings finished; [hidAChat] when the chat that asked for setup is hidden now. */
+    val onSettingsDone: (hidAChat: Boolean) -> Unit,
+    /** "Forgot your chat password?" from the open prompt: the settings page's reset. */
+    val onForgot: () -> Unit,
+)
+
+fun NavGraphBuilder.hiddenChatsScreens(destinations: HiddenChatsDestinations) {
+    composable<HiddenChatsSettingsRoute> {
+        HiddenChatsSettingsScreen(onBack = destinations.onBack, onDone = destinations.onSettingsDone)
+    }
+    composable<HiddenChatsListRoute> {
+        ChatLockGate {
+            HiddenChatGuard(conversationId = null, onRelocked = destinations.onBack, requireReveal = true) {
+                HiddenChatsListScreen(
+                    onBack = destinations.onBack,
+                    onOpenThread = destinations.onOpenThread,
+                    onForgot = destinations.onForgot,
+                )
+            }
+        }
+    }
+}
+
+fun NavController.navigateToHiddenChatsSettings(hideConversationId: String = "") =
+    navigate(HiddenChatsSettingsRoute(hideConversationId))
+
+fun NavController.navigateToHiddenChats() = navigate(HiddenChatsListRoute)

@@ -93,6 +93,10 @@ import com.us.android.feature.chat.navigation.groupCreateScreen
 import com.us.android.feature.chat.navigation.groupScreens
 import com.us.android.feature.chat.navigation.navigateToChatHome
 import com.us.android.feature.chat.navigation.navigateToChatLockSettings
+import com.us.android.feature.chat.navigation.HiddenChatsDestinations
+import com.us.android.feature.chat.navigation.hiddenChatsScreens
+import com.us.android.feature.chat.navigation.navigateToHiddenChats
+import com.us.android.feature.chat.navigation.navigateToHiddenChatsSettings
 import com.us.android.feature.chat.navigation.navigateToChatRequest
 import com.us.android.feature.chat.navigation.navigateToChatRequestsList
 import com.us.android.feature.chat.navigation.navigateToChatThread
@@ -1078,6 +1082,23 @@ private fun NavGraphBuilder.tabDestinations(
             // Chat parity (2026-10-18).
             onNewMessage = { navController.navigateToNewMessage() },
             onOpenArchived = { navController.navigateToArchivedChats() },
+            // Hidden chats (24 Oct 2026).
+            onOpenHiddenChats = { navController.navigateToHiddenChats() },
+            onSetUpHiddenChats = { conversationId -> navController.navigateToHiddenChatsSettings(conversationId) },
+        ),
+    )
+    // Hidden chats: the settings page and the list behind the secret key. A
+    // chat hidden from inside it (setup first) closes back to Messages.
+    hiddenChatsScreens(
+        HiddenChatsDestinations(
+            onBack = { navController.popBackStack() },
+            onOpenThread = { conversationId, title, isGroup ->
+                navController.navigateToChatThread(conversationId, title, isGroup)
+            },
+            onSettingsDone = { hidAChat ->
+                if (hidAChat) navController.navigateToTopLevel(TopLevelDestination.MESSAGES) else navController.popBackStack()
+            },
+            onForgot = { navController.navigateToHiddenChatsSettings() },
         ),
     )
     chatParityScreens(
@@ -1091,6 +1112,7 @@ private fun NavGraphBuilder.tabDestinations(
             onOpenSharedReels = { conversationId, postId -> navController.navigateToSharedReels(conversationId, postId) },
             // Deleting a chat or blocking its person closes its settings AND its thread.
             onChatClosed = { navController.navigateToTopLevel(TopLevelDestination.MESSAGES) },
+            onSetUpHiddenChats = { conversationId -> navController.navigateToHiddenChatsSettings(conversationId) },
         ),
     )
     // The 2026-08 inbox stays registered for any older entry point.
@@ -1492,6 +1514,8 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
                 // Web parity (2026-10-22): Privacy › Blocked accounts and Content › Hidden channels.
                 onBlockedAccounts = { navController.navigate(com.us.android.feature.profile.navigation.BlockedAccountsRoute) },
                 onHiddenChannels = { navController.navigate(com.us.android.feature.profile.navigation.HiddenChannelsRoute) },
+                // Hidden chats (24 Oct 2026): Privacy › Hidden chats is a :feature:chat page.
+                onHiddenChats = { navController.navigateToHiddenChatsSettings() },
             ),
             versionName = BuildConfig.VERSION_NAME,
         ),

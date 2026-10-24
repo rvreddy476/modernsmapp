@@ -61,6 +61,8 @@ data class InboxRowActions(
     val onMarkUnread: (() -> Unit)? = null,
     /** Archived list: "Unarchive" in place of "Archive". */
     val archived: Boolean = false,
+    /** Hidden chats (24 Oct 2026): "Hide chat" — out of Messages, behind the secret key. */
+    val onHide: (() -> Unit)? = null,
 )
 
 /**
@@ -365,6 +367,9 @@ private fun ConversationActionsSheet(
                 actions.onMarkRead?.let { SheetAction(UsIcons.CheckCheck, "Mark as read", "chat-row-read") { act(it) } }
             } else {
                 actions.onMarkUnread?.let { SheetAction(UsIcons.Circle, "Mark as unread", "chat-row-unread") { act(it) } }
+            }
+            actions.onHide?.let {
+                SheetAction(UsIcons.Lock, "Hide chat", "chat-row-hide") { act(it) }
             }
             actions.onArchive?.let {
                 SheetAction(UsIcons.Archive, if (actions.archived) "Unarchive" else "Archive", "chat-row-archive") { act(it) }

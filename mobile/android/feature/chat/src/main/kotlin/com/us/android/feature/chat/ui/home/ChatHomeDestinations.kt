@@ -17,4 +17,8 @@ data class ChatHomeDestinations(
     val onNewMessage: () -> Unit = onCreateGroup,
     /** Chat parity: the ≡ menu's "Archived chats". */
     val onOpenArchived: () -> Unit = {},
+    /** Hidden chats: the list a secret key in search revealed. */
+    val onOpenHiddenChats: () -> Unit = {},
+    /** Hidden chats: "Hide chat" before setup — the setup page, then this chat is hidden. */
+    val onSetUpHiddenChats: (conversationId: String) -> Unit = {},
 )

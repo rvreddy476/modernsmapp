@@ -332,6 +332,9 @@ class ThreadController(
         is ChatSocketEvent.Connected,
         is ChatSocketEvent.Disconnected,
         is ChatSocketEvent.SubscriptionRevoked,
+        // Hidden chats: room bookkeeping is the session manager's; a re-lock
+        // closes the thread through the hidden-chat guard, not through here.
+        is ChatSocketEvent.RoomNotice,
         // Call signaling belongs to :core:call's CallSessionManager; a chat
         // thread renders nothing for it.
         is ChatSocketEvent.CallSignal,

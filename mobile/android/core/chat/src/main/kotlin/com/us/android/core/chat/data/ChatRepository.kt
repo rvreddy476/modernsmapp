@@ -430,6 +430,8 @@ data class Conversation(
     val myJoin: MyJoin? = null,
     /** The viewer-scoped delivered/read watermarks for their own messages (ticks). */
     val receipts: ReceiptWatermarks = ReceiptWatermarks(),
+    /** Hidden chats: the viewer hid it (`locked` on the wire). Never cached, never in a normal list. */
+    val locked: Boolean = false,
 ) {
     /**
      * A Pulse match's chat. It belongs to the dating feature (founder,

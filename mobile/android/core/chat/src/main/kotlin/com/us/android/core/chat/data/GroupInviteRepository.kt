@@ -195,6 +195,7 @@ internal fun ConversationDto.toDomain(): Conversation = Conversation(
     requestDirection = direction?.takeIf { it.isNotBlank() },
     myJoin = if (type == "group") myJoin?.toDomainOrNull() else null,
     receipts = receipts?.toDomain() ?: ReceiptWatermarks(),
+    locked = locked,
 )
 
 /**

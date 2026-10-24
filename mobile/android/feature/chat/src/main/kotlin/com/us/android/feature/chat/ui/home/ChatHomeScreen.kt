@@ -82,6 +82,18 @@ fun ChatHomeScreen(
         viewModel.consumePendingOpen()
         destinations.onOpenThread(open.conversationId, open.title, open.isGroup)
     }
+    // Hidden chats: a secret key submitted from search revealed the list.
+    LaunchedEffect(state.openHiddenChats) {
+        if (!state.openHiddenChats) return@LaunchedEffect
+        viewModel.consumeOpenHiddenChats()
+        destinations.onOpenHiddenChats()
+    }
+    // "Hide chat" before the secrets exist: set them up for this chat.
+    LaunchedEffect(state.setupHiddenFor) {
+        val id = state.setupHiddenFor ?: return@LaunchedEffect
+        viewModel.consumeHiddenSetup()
+        destinations.onSetUpHiddenChats(id)
+    }
 
     UsScaffold(
         topBar = {
@@ -95,6 +107,7 @@ fun ChatHomeScreen(
                     query = state.query,
                     placeholder = state.tab.searchPlaceholder(),
                     onQueryChange = viewModel::onQueryChange,
+                    onSubmit = viewModel::onSearchSubmit,
                     onClear = viewModel::clearQuery,
                     onVoiceResults = viewModel::onVoiceResults,
                     onVoiceUnavailable = { viewModel.showMessage(it) },
@@ -321,7 +334,9 @@ private fun MenuRow(label: String, count: Int, tag: String, countLabel: String =
 /**
  * The search pill: full width, glass, a hairline border, the search glyph,
  * the text, × once there is text, and the mic at the right end. Enter on
- * the keyboard just closes it — the field filters as it is typed.
+ * the keyboard closes it — the field filters as it is typed — and hands the
+ * text to [onSubmit] (hidden chats: a key-shaped submit is quietly tried as
+ * the secret key; to the eye it stays an ordinary search).
  */
 @Composable
 private fun ChatSearchPill(
@@ -331,6 +346,7 @@ private fun ChatSearchPill(
     onClear: () -> Unit,
     onVoiceResults: (List<String>) -> Unit,
     onVoiceUnavailable: (String) -> Unit,
+    onSubmit: () -> Unit = {},
 ) {
     val keyboard = LocalSoftwareKeyboardController.current
     val voice = rememberVoiceSearch(onResult = onVoiceResults, onUnavailable = onVoiceUnavailable)
@@ -342,7 +358,10 @@ private fun ChatSearchPill(
         textStyle = MaterialTheme.typography.bodyLarge.copy(color = UsTheme.extended.textPrimary),
         cursorBrush = SolidColor(UsTheme.extended.accentSolid),
         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-        keyboardActions = KeyboardActions(onSearch = { keyboard?.hide() }),
+        keyboardActions = KeyboardActions(onSearch = {
+            keyboard?.hide()
+            onSubmit()
+        }),
         modifier = Modifier
             .fillMaxWidth()
             .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.m)

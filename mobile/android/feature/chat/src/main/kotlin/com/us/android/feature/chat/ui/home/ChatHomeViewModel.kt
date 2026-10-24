@@ -26,6 +26,10 @@ import com.us.android.core.chat.data.StartDirectResult
 import com.us.android.core.chat.data.SuggestionAction
 import com.us.android.core.chat.data.SuggestionsRepository
 import com.us.android.core.chat.data.withoutDatingChats
+import com.us.android.core.chat.hidden.HiddenChats
+import com.us.android.core.chat.hidden.HiddenError
+import com.us.android.core.chat.hidden.HiddenResult
+import com.us.android.core.chat.hidden.settingsErrorMessage
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageType
@@ -96,6 +100,10 @@ data class ChatHomeUiState(
     val requestCountCapped: Boolean = false,
     /** Requests the safety filter set aside (Hidden requests); 0 until the server count is read. */
     val hiddenRequestCount: Int = 0,
+    /** Hidden chats: the secret key in search revealed the list — open it, once. */
+    val openHiddenChats: Boolean = false,
+    /** Hidden chats: "Hide chat" before setup — open setup for this chat, once. */
+    val setupHiddenFor: String? = null,
 ) {
     /**
      * The rows Messages may show. A Pulse match's chat lives in the dating
@@ -149,6 +157,7 @@ class ChatHomeViewModel @Inject constructor(
     private val session: ChatSessionManager,
     private val sources: ChatHomeSources,
     authRepository: AuthRepository,
+    private val hiddenChats: HiddenChats,
 ) : ViewModel() {
 
     private val communities: CommunityRepository get() = sources.communities
@@ -177,6 +186,42 @@ class ChatHomeViewModel @Inject constructor(
         observePresence()
         refresh()
         loadActivityStatus()
+        // Hidden chats: only an account that has them ever tries a search as a key.
+        viewModelScope.launch { hiddenChats.loadSettings() }
+    }
+
+    /**
+     * The search box's Enter (hidden chats, 24 Oct 2026). A key-shaped text
+     * on an account with hidden chats is quietly tried as the secret key; a
+     * correct one clears the box and opens the hidden list. Anything else —
+     * a wrong key, a lockout, offline — changes nothing on screen: the
+     * search results stay exactly as they were.
+     */
+    fun onSearchSubmit() {
+        val text = _state.value.query
+        viewModelScope.launch {
+            if (hiddenChats.revealFromSearch(text)) {
+                // The key must not linger in the box.
+                if (_state.value.query == text) onQueryChange("")
+                _state.update { it.copy(openHiddenChats = true) }
+            }
+        }
+    }
+
+    fun consumeOpenHiddenChats() = _state.update { it.copy(openHiddenChats = false) }
+
+    fun consumeHiddenSetup() = _state.update { it.copy(setupHiddenFor = null) }
+
+    /** Hide chat: out of Messages at once; the first time, set the secrets up. */
+    fun hide(conversation: Conversation) = viewModelScope.launch {
+        when (val result = hiddenChats.hide(conversation.id)) {
+            is HiddenResult.Ok -> showMessage("Chat hidden.", UsMessageType.Success)
+            is HiddenResult.Err -> if (result.error == HiddenError.NotConfigured) {
+                _state.update { it.copy(setupHiddenFor = conversation.id) }
+            } else {
+                showMessage(settingsErrorMessage(result.error), UsMessageType.Error)
+            }
+        }
     }
 
     fun selectTab(tab: ChatHomeTab) {
@@ -341,6 +386,7 @@ class ChatHomeViewModel @Inject constructor(
         onDelete = { deleteForMe(conversation) },
         onMarkRead = { markRead(conversation) },
         onMarkUnread = { markUnread(conversation) },
+        onHide = { hide(conversation) },
     )
 
     /** Archive: the row leaves the inbox now; the server keeps it under Archived. */
