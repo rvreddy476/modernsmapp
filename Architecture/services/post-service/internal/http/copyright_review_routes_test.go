@@ -26,6 +26,14 @@ type routeTitleStore struct {
 	decided []postgres.DecideTitleReviewInput
 	created []postgres.CopyrightTitleWrite
 	reqNote string
+	// Track removals (migration 076).
+	removed    [][3]uuid.UUID
+	removeNote string
+	noTrack    bool
+	// The owner-match route.
+	title     *postgres.CopyrightTitle
+	matchPost uuid.UUID
+	matches   []postgres.OwnerMatchInput
 }
 
 func (f *routeTitleStore) ListActiveCopyrightTitles(context.Context) ([]postgres.CopyrightTitle, error) {
@@ -34,7 +42,11 @@ func (f *routeTitleStore) ListActiveCopyrightTitles(context.Context) ([]postgres
 func (f *routeTitleStore) ListCopyrightTitles(context.Context, postgres.CopyrightTitleFilter) ([]postgres.CopyrightTitle, string, error) {
 	return []postgres.CopyrightTitle{}, "", nil
 }
-func (f *routeTitleStore) GetCopyrightTitle(context.Context, uuid.UUID) (*postgres.CopyrightTitle, error) {
+func (f *routeTitleStore) GetCopyrightTitle(_ context.Context, id uuid.UUID) (*postgres.CopyrightTitle, error) {
+	if f.title != nil && f.title.ID == id {
+		t := *f.title
+		return &t, nil
+	}
 	return nil, postgres.ErrCopyrightTitleNotFound
 }
 func (f *routeTitleStore) CreateCopyrightTitle(_ context.Context, id uuid.UUID, w postgres.CopyrightTitleWrite, actor uuid.UUID) (*postgres.CopyrightTitle, error) {
@@ -61,16 +73,41 @@ func (f *routeTitleStore) DecideTitleReview(_ context.Context, in postgres.Decid
 func (f *routeTitleStore) ResolveTitleReviewDuration(context.Context, uuid.UUID, int, bool, bool, string, postgres.TitleReviewAnnounce) (postgres.TitleReviewDurationOutcome, error) {
 	return postgres.TitleReviewDurationNone, nil
 }
-func (f *routeTitleStore) CopyrightMatchPostAuthor(context.Context, uuid.UUID) (uuid.UUID, error) {
+func (f *routeTitleStore) CopyrightMatchPostAuthor(_ context.Context, postID uuid.UUID) (uuid.UUID, error) {
+	if f.matchPost != uuid.Nil && postID == f.matchPost {
+		return uuid.New(), nil
+	}
 	return uuid.Nil, postgres.ErrPostNotFound
 }
-func (f *routeTitleStore) ApplyOwnerMatch(context.Context, postgres.OwnerMatchInput) (*postgres.OwnerMatchResult, error) {
-	return nil, errors.New("not used by the routes")
+func (f *routeTitleStore) ApplyOwnerMatch(_ context.Context, in postgres.OwnerMatchInput) (*postgres.OwnerMatchResult, error) {
+	if f.title == nil {
+		return nil, errors.New("not used by the routes")
+	}
+	f.matches = append(f.matches, in)
+	id := uuid.New()
+	return &postgres.OwnerMatchResult{Outcome: postgres.OwnerMatchBlocked, ReviewID: &id}, nil
+}
+func (f *routeTitleStore) RemoveCopyrightOwnerTrack(_ context.Context, postID, titleID, actor uuid.UUID, note string) (*postgres.OwnerTrackRemoval, error) {
+	f.removed = append(f.removed, [3]uuid.UUID{postID, titleID, actor})
+	f.removeNote = note
+	if f.noTrack {
+		return nil, postgres.ErrOwnerTrackNotFound
+	}
+	return &postgres.OwnerTrackRemoval{PostID: postID, TitleID: titleID}, nil
 }
 func (f *routeTitleStore) RequestTitleReview(_ context.Context, _, _ uuid.UUID, note string) (*postgres.TitleReview, error) {
 	f.reqNote = note
 	if f.review == nil {
 		return nil, postgres.ErrTitleReviewNotFound
+	}
+	if f.review.AppealedAt != nil {
+		return nil, postgres.ErrTitleReviewAppealed
+	}
+	if f.review.State == postgres.TitleReviewBlocked {
+		now := time.Now()
+		r := *f.review
+		r.State, r.AppealedAt, r.AuthorRequestedAt, r.DecidedAt = postgres.TitleReviewPending, &now, &now, nil
+		return &r, nil
 	}
 	if f.review.State != postgres.TitleReviewPending {
 		return nil, postgres.ErrTitleReviewDecided
@@ -222,7 +259,21 @@ func TestCopyrightReviewRequest_AuthorRoute(t *testing.T) {
 	if w := adminServe(r, http.MethodPost, path, `{"note":"x"}`, map[string]string{"X-Internal-Service-Key": adminTestKey}); w.Code != http.StatusUnauthorized {
 		t.Fatalf("no user: %d", w.Code)
 	}
+	// A blocked video: the request is the author's one appeal (076).
 	store.review.State = postgres.TitleReviewBlocked
+	w = adminServe(r, http.MethodPost, path, `{"note":"licence attached"}`, hdr)
+	body.Data = nil
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	if w.Code != http.StatusOK || body.Data["state"] != "pending" || body.Data["appealed_at"] == nil || body.Data["can_appeal"] != false {
+		t.Fatalf("appeal: %d %s", w.Code, w.Body.String())
+	}
+	now := time.Now()
+	store.review.AppealedAt = &now
+	if w := adminServe(r, http.MethodPost, path, `{"note":"again"}`, hdr); w.Code != http.StatusConflict || adminErrorCode(t, w) != CodeCopyrightAppealUsed {
+		t.Fatalf("second appeal: %d %s", w.Code, w.Body.String())
+	}
+	store.review.AppealedAt = nil
+	store.review.State = postgres.TitleReviewCleared
 	if w := adminServe(r, http.MethodPost, path, `{"note":"x"}`, hdr); w.Code != http.StatusConflict || adminErrorCode(t, w) != CodeCopyrightReviewDecided {
 		t.Fatalf("decided: %d %s", w.Code, w.Body.String())
 	}
@@ -263,5 +314,80 @@ func TestPublicationRefusals_OnTheWire(t *testing.T) {
 				t.Fatalf("pause without its end: %s", w.Body.String())
 			}
 		}
+	}
+}
+
+// Removing a tracked owner match (076): tube:videos.remove only, the acting
+// admin recorded, an optional note, 404 for no such track.
+func TestCopyrightTrackRemoval_Route(t *testing.T) {
+	store := &routeTitleStore{}
+	r, rg := copyrightRouter(t, store)
+	post, title := uuid.New(), uuid.New()
+	path := InternalAdminPrefix + "/copyright/tracks/" + post.String() + "/" + title.String()
+	moderate := rg.mint(t, rg.admin, AudiencePost, []string{PermVideosModerate}, rg.actor.String())
+	remove := rg.mint(t, rg.admin, AudiencePost, []string{PermVideosRemove}, rg.actor.String())
+
+	if w := adminServe(r, http.MethodDelete, path, `{"note":"licence shown"}`, bearer(moderate)); w.Code != http.StatusForbidden {
+		t.Fatalf("moderate only: %d %s", w.Code, w.Body.String())
+	}
+	if len(store.removed) != 0 {
+		t.Fatal("a refused removal reached the store")
+	}
+	w := adminServe(r, http.MethodDelete, path, `{"note":"licence shown"}`, bearer(remove))
+	if w.Code != http.StatusOK || len(store.removed) != 1 || store.removed[0] != [3]uuid.UUID{post, title, rg.actor} || store.removeNote != "licence shown" {
+		t.Fatalf("remove: %d %s %+v", w.Code, w.Body.String(), store.removed)
+	}
+	if w := adminServe(r, http.MethodDelete, path, "", bearer(remove)); w.Code != http.StatusOK {
+		t.Fatalf("no body: %d %s", w.Code, w.Body.String())
+	}
+	if w := adminServe(r, http.MethodDelete, path, `{"why":"x"}`, bearer(remove)); w.Code != http.StatusBadRequest {
+		t.Fatalf("unknown field: %d", w.Code)
+	}
+	if w := adminServe(r, http.MethodDelete, InternalAdminPrefix+"/copyright/tracks/nope/"+title.String(), "", bearer(remove)); w.Code != http.StatusBadRequest {
+		t.Fatalf("bad id: %d", w.Code)
+	}
+	store.noTrack = true
+	if w := adminServe(r, http.MethodDelete, path, "", bearer(remove)); w.Code != http.StatusNotFound || adminErrorCode(t, w) != CodeCopyrightTrackNotFound {
+		t.Fatalf("no track: %d %s", w.Code, w.Body.String())
+	}
+	// The bare internal key (what the gateway stamps) never reaches it.
+	if w := adminServe(r, http.MethodDelete, path, "", withKey()); w.Code != http.StatusUnauthorized {
+		t.Fatalf("key only: %d", w.Code)
+	}
+}
+
+// The owner-match entry point reaches ApplyOwnerMatch with the provider's
+// fields and answers the outcome; a malformed body never reaches it.
+func TestCopyrightOwnerMatchRoute_ReachesTheService(t *testing.T) {
+	owner := "Sun Pictures"
+	store := &routeTitleStore{title: &postgres.CopyrightTitle{ID: uuid.New(), Title: "Jailer 2", Active: true, RightsOwner: &owner},
+		matchPost: uuid.New()}
+	r, rg := copyrightRouter(t, store)
+	hdr := serviceTokenHeaders(t, rg.trustSafety, AudiencePost, OpCopyrightOwnerMatchWrite)
+	body := `{"post_id":"` + store.matchPost.String() + `","title_id":"` + store.title.ID.String() + `","reference":"fp-9","policy":"BLOCK"}`
+	w := adminServe(r, http.MethodPost, copyrightOwnerMatchPath, body, hdr)
+	if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"outcome":"blocked"`) {
+		t.Fatalf("match: %d %s", w.Code, w.Body.String())
+	}
+	if len(store.matches) != 1 || store.matches[0].PostID != store.matchPost || store.matches[0].Reference != "fp-9" ||
+		store.matches[0].Policy != postgres.OwnerPolicyBlock {
+		t.Fatalf("matches = %+v", store.matches)
+	}
+	for name, bad := range map[string]string{
+		"unknown policy": `{"post_id":"` + store.matchPost.String() + `","title_id":"` + store.title.ID.String() + `","policy":"delete"}`,
+		"review policy":  `{"post_id":"` + store.matchPost.String() + `","title_id":"` + store.title.ID.String() + `","policy":"review"}`,
+		"bad post":       `{"post_id":"x","title_id":"` + store.title.ID.String() + `","policy":"track"}`,
+		"unknown field":  `{"post_id":"` + store.matchPost.String() + `","title_id":"` + store.title.ID.String() + `","policy":"track","owner":"x"}`,
+	} {
+		if w := adminServe(r, http.MethodPost, copyrightOwnerMatchPath, bad, hdr); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: %d %s", name, w.Code, w.Body.String())
+		}
+	}
+	if len(store.matches) != 1 {
+		t.Fatalf("a malformed match reached the store: %+v", store.matches)
+	}
+	missing := `{"post_id":"` + uuid.NewString() + `","title_id":"` + store.title.ID.String() + `","policy":"mute"}`
+	if w := adminServe(r, http.MethodPost, copyrightOwnerMatchPath, missing, hdr); w.Code != http.StatusNotFound {
+		t.Fatalf("unknown post: %d %s", w.Code, w.Body.String())
 	}
 }

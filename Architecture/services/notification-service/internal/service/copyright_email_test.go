@@ -11,9 +11,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atpost/notification-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
 	"github.com/atpost/shared/mailer"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // Copyright email (founder 24 Oct 2026): the uploader is emailed on a hold
@@ -52,41 +54,105 @@ func (f *fakeContacts) VerifiedEmail(context.Context, uuid.UUID) (string, bool, 
 	return f.addr, true, nil
 }
 
-type fakeLedger struct {
-	claimed  map[uuid.UUID]bool
-	released []uuid.UUID
+// fakeQueue is copyright_email_jobs with the store's semantics: an id is
+// inserted once (ON CONFLICT DO NOTHING), a legacy event_dedup claim under
+// the same id blocks it, a claim leases one due job, and only the lease
+// holder's finish lands. expire() is a lease running out (a dead worker).
+type fakeQueue struct {
+	jobs     map[uuid.UUID]*fakeJob
+	order    []uuid.UUID
+	legacy   map[uuid.UUID]bool
+	enqErr   error
+	finished []string // status:code, in order
 }
 
-func (l *fakeLedger) ClaimEventDedup(_ context.Context, id uuid.UUID) (bool, error) {
-	if l.claimed[id] {
+type fakeJob struct {
+	recipient uuid.UUID
+	payload   []byte
+	status    string
+	attempts  int
+	lease     uuid.UUID
+	delay     time.Duration
+}
+
+func newFakeQueue() *fakeQueue {
+	return &fakeQueue{jobs: map[uuid.UUID]*fakeJob{}, legacy: map[uuid.UUID]bool{}}
+}
+
+func (q *fakeQueue) EnqueueCopyrightEmail(_ context.Context, id, recipient uuid.UUID, payload []byte) (bool, error) {
+	if q.enqErr != nil {
+		return false, q.enqErr
+	}
+	if q.jobs[id] != nil || q.legacy[id] {
 		return false, nil
 	}
-	l.claimed[id] = true
+	q.jobs[id] = &fakeJob{recipient: recipient, payload: append([]byte(nil), payload...), status: "pending"}
+	q.order = append(q.order, id)
 	return true, nil
 }
 
-func (l *fakeLedger) ReleaseEventDedup(_ context.Context, id uuid.UUID) error {
-	delete(l.claimed, id)
-	l.released = append(l.released, id)
+func (q *fakeQueue) ClaimCopyrightEmail(context.Context) (*postgres.CopyrightEmailJob, error) {
+	for _, id := range q.order {
+		j := q.jobs[id]
+		if j.status == "pending" || j.status == "expired" {
+			j.status, j.lease = "processing", uuid.New()
+			j.attempts++
+			return &postgres.CopyrightEmailJob{ID: id, Payload: j.payload, LeaseID: j.lease, Attempts: j.attempts}, nil
+		}
+	}
+	return nil, pgx.ErrNoRows
+}
+
+func (q *fakeQueue) FinishCopyrightEmail(_ context.Context, j *postgres.CopyrightEmailJob, status, code string, delay time.Duration) error {
+	fj := q.jobs[j.ID]
+	if fj == nil || fj.lease != j.LeaseID || fj.status != "processing" {
+		return nil // not the lease holder: nothing lands
+	}
+	fj.status, fj.lease, fj.delay = status, uuid.Nil, delay
+	q.finished = append(q.finished, status+":"+code)
 	return nil
 }
 
+// expire hands every processing job back, as a lapsed lease does.
+func (q *fakeQueue) expire() {
+	for _, j := range q.jobs {
+		if j.status == "processing" {
+			j.status = "expired"
+		}
+	}
+}
+
+func (q *fakeQueue) status(id uuid.UUID) string {
+	if j := q.jobs[id]; j != nil {
+		return j.status
+	}
+	return ""
+}
+
 type emailRig struct {
-	svc      *Service
-	mail     *recordingMailer
-	contacts *fakeContacts
-	ledger   *fakeLedger
+	svc        *Service
+	mail       *recordingMailer
+	contacts   *fakeContacts
+	queue      *fakeQueue
+	suppressed bool
+	suppErr    error
 }
 
 func newEmailRig(t *testing.T) *emailRig {
 	t.Helper()
-	r := &emailRig{mail: &recordingMailer{}, contacts: &fakeContacts{addr: "maker@example.com", verified: true},
-		ledger: &fakeLedger{claimed: map[uuid.UUID]bool{}}}
+	r := &emailRig{mail: &recordingMailer{}, contacts: &fakeContacts{addr: "maker@example.com", verified: true}, queue: newFakeQueue()}
 	r.svc = &Service{}
 	r.svc.SetMailer(r.mail)
 	r.svc.SetCopyrightEmail(r.contacts, "https://cleestudio.com/")
-	r.svc.setCopyrightEmailLedger(r.ledger, func(time.Duration) {})
+	r.svc.setCopyrightEmailQueue(r.queue, func(context.Context, uuid.UUID) (bool, error) { return r.suppressed, r.suppErr })
 	return r
+}
+
+// drain runs the worker until the queue has nothing due.
+func (r *emailRig) drain(t *testing.T) {
+	t.Helper()
+	for i := 0; i < 100 && r.svc.runCopyrightEmailJob(context.Background()); i++ {
+	}
 }
 
 func copyrightNotice(typ, reason string) CopyrightReviewNotification {
@@ -95,7 +161,9 @@ func copyrightNotice(typ, reason string) CopyrightReviewNotification {
 		DeepLink: CopyrightHubDeepLink, CreatedAt: time.Now()}
 }
 
-func TestCopyrightEmail_SentOncePerState(t *testing.T) {
+// A redelivered event queues nothing new: one email per review and state;
+// a clear is never mailed; the answer to an appeal is a new email.
+func TestCopyrightEmail_QueuedOncePerState(t *testing.T) {
 	r := newEmailRig(t)
 	ctx := context.Background()
 	hold := copyrightNotice(CopyrightTypeHold, "")
@@ -104,10 +172,15 @@ func TestCopyrightEmail_SentOncePerState(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(r.mail.sent) != 1 || r.mail.sent[0].To[0] != "maker@example.com" {
-		t.Fatalf("hold sent %d emails: %+v", len(r.mail.sent), r.mail.sent)
+	if len(r.queue.order) != 1 {
+		t.Fatalf("hold queued %d jobs, want one", len(r.queue.order))
 	}
-	// The block of the same review is a different state: one more email.
+	if len(r.mail.sent) != 0 {
+		t.Fatal("the consumer's call sent the email itself; only the worker sends")
+	}
+	if strings.Contains(string(r.queue.jobs[r.queue.order[0]].payload), "@") {
+		t.Fatalf("the queued payload carries an address: %s", r.queue.jobs[r.queue.order[0]].payload)
+	}
 	block := hold
 	block.Type = CopyrightTypeBlocked
 	for i := 0; i < 2; i++ {
@@ -115,18 +188,48 @@ func TestCopyrightEmail_SentOncePerState(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if len(r.mail.sent) != 2 {
-		t.Fatalf("sent %d emails, want hold + block", len(r.mail.sent))
-	}
-	// A clear is not emailed.
 	clear := hold
 	clear.Type = CopyrightTypeCleared
-	if err := r.svc.sendCopyrightEmail(ctx, clear); err != nil || len(r.mail.sent) != 2 {
-		t.Fatalf("a clear was emailed: %d %v", len(r.mail.sent), err)
+	if err := r.svc.sendCopyrightEmail(ctx, clear); err != nil || len(r.queue.order) != 2 {
+		t.Fatalf("a clear was queued: %d %v", len(r.queue.order), err)
+	}
+	r.drain(t)
+	if len(r.mail.sent) != 2 || r.mail.sent[0].To[0] != "maker@example.com" {
+		t.Fatalf("sent %d emails, want hold + block: %+v", len(r.mail.sent), r.mail.sent)
+	}
+	// Redelivered after it was sent: still nothing new.
+	if err := r.svc.sendCopyrightEmail(ctx, block); err != nil || len(r.queue.order) != 2 {
+		t.Fatalf("redelivery after the send queued again: %d %v", len(r.queue.order), err)
+	}
+	r.drain(t)
+	if len(r.mail.sent) != 2 {
+		t.Fatalf("a redelivery after the send mailed again: %d", len(r.mail.sent))
+	}
+	// The reviewer's answer to an appeal of the same block is mailed.
+	answer := block
+	answer.Appeal = true
+	if err := r.svc.sendCopyrightEmail(ctx, answer); err != nil || len(r.queue.order) != 3 {
+		t.Fatalf("appeal answer: jobs=%d err=%v", len(r.queue.order), err)
+	}
+	r.drain(t)
+	if len(r.mail.sent) != 3 || !strings.Contains(r.mail.sent[2].TextBody, "reviewed your request and upheld the block") ||
+		!strings.Contains(r.mail.sent[2].TextBody, "already used the review") {
+		t.Fatalf("appeal answer email = %+v", r.mail.sent)
 	}
 	if CopyrightEmailDedupID(hold.ReviewID, CopyrightTypeHold) == CopyrightEmailDedupID(hold.ReviewID, CopyrightTypeBlocked) ||
-		CopyrightEmailDedupID(hold.ReviewID, CopyrightTypeHold) == CopyrightEmailDedupID(uuid.New(), CopyrightTypeHold) {
-		t.Fatal("dedup ids collide across states or reviews")
+		CopyrightEmailDedupID(hold.ReviewID, CopyrightTypeHold) == CopyrightEmailDedupID(uuid.New(), CopyrightTypeHold) ||
+		block.emailDedupID() == answer.emailDedupID() {
+		t.Fatal("dedup ids collide across states, reviews or appeals")
+	}
+	// The pre-queue ledger id is kept, so an email the ledger recorded
+	// before the upgrade is not queued again.
+	if block.emailDedupID() != CopyrightEmailDedupID(block.ReviewID, CopyrightTypeBlocked) {
+		t.Fatal("the queue id is not the ledger id")
+	}
+	legacy := copyrightNotice(CopyrightTypeBlocked, "")
+	r.queue.legacy[legacy.emailDedupID()] = true
+	if err := r.svc.sendCopyrightEmail(ctx, legacy); err != nil || len(r.queue.order) != 3 {
+		t.Fatalf("a ledger-recorded email was queued again: %d %v", len(r.queue.order), err)
 	}
 }
 
@@ -142,6 +245,7 @@ func TestCopyrightEmail_NoopMailerNeverLogsTheAddress(t *testing.T) {
 	if err := r.svc.sendCopyrightEmail(context.Background(), copyrightNotice(CopyrightTypeBlocked, "")); err != nil {
 		t.Fatal(err)
 	}
+	r.drain(t)
 	if strings.Contains(logs.String(), "maker@example.com") {
 		t.Fatalf("the address reached the log: %s", logs.String())
 	}
@@ -158,53 +262,126 @@ func TestCopyrightEmail_SkippedWithoutVerifiedEmail(t *testing.T) {
 	} {
 		r := newEmailRig(t)
 		r.svc.SetCopyrightEmail(c, "https://cleestudio.com")
-		r.svc.setCopyrightEmailLedger(r.ledger, func(time.Duration) {})
+		r.svc.setCopyrightEmailQueue(r.queue, nil)
 		n := copyrightNotice(CopyrightTypeBlocked, events.CopyrightReasonOwnerRegistered)
 		if err := r.svc.sendCopyrightEmail(ctx, n); err != nil {
-			t.Fatalf("%s: err=%v, want a silent skip", name, err)
+			t.Fatalf("%s: err=%v", name, err)
 		}
-		if len(r.mail.sent) != 0 {
-			t.Fatalf("%s: emailed %+v", name, r.mail.sent)
+		r.drain(t)
+		if len(r.mail.sent) != 0 || r.queue.status(n.emailDedupID()) != "skipped" || c.reads != 1 {
+			t.Fatalf("%s: sent=%+v status=%s reads=%d", name, r.mail.sent, r.queue.status(n.emailDedupID()), c.reads)
 		}
-		// Kept claimed: a redelivery does not look the address up again.
-		if err := r.svc.sendCopyrightEmail(ctx, n); err != nil || c.reads != 1 {
-			t.Fatalf("%s: reads=%d err=%v", name, c.reads, err)
+		// Done: a redelivery does not look the address up again.
+		_ = r.svc.sendCopyrightEmail(ctx, n)
+		r.drain(t)
+		if c.reads != 1 {
+			t.Fatalf("%s: reads=%d after a redelivery", name, c.reads)
 		}
 	}
-	// Not configured at all: nothing, no error.
+	// Not configured at all: nothing queued, no error.
 	s := &Service{}
 	if err := s.sendCopyrightEmail(ctx, copyrightNotice(CopyrightTypeHold, "")); err != nil {
 		t.Fatal(err)
 	}
 }
 
-// A send that fails is retried a bounded number of times; when it still
-// fails the claim is released so a redelivery can send it.
-func TestCopyrightEmail_FailureRetriesAndReleases(t *testing.T) {
+// A failed send is NOT lost: the job stays pending with a backoff and the
+// next claim sends it; after the last attempt it is failed for an operator.
+// A contact read that fails is retried the same way.
+func TestCopyrightEmail_FailureIsRetriedDurably(t *testing.T) {
 	r := newEmailRig(t)
 	ctx := context.Background()
 	n := copyrightNotice(CopyrightTypeBlocked, "")
+	if err := r.svc.sendCopyrightEmail(ctx, n); err != nil {
+		t.Fatal(err)
+	}
 	r.mail.fail = 1
-	if err := r.svc.sendCopyrightEmail(ctx, n); err != nil || len(r.mail.sent) != 1 {
-		t.Fatalf("one failure then success: sent=%d err=%v", len(r.mail.sent), err)
+	if !r.svc.runCopyrightEmailJob(ctx) {
+		t.Fatal("no job")
 	}
+	j := r.queue.jobs[n.emailDedupID()]
+	if j.status != "pending" || j.delay != time.Minute || len(r.mail.sent) != 0 || r.queue.finished[0] != "pending:send_failed" {
+		t.Fatalf("after a failed send: %+v finished=%v", j, r.queue.finished)
+	}
+	r.drain(t)
+	if len(r.mail.sent) != 1 || j.status != "sent" {
+		t.Fatalf("retry: sent=%d status=%s", len(r.mail.sent), j.status)
+	}
+
+	// Every attempt fails: failed after the last one, never sent.
 	r = newEmailRig(t)
-	r.mail.fail = copyrightEmailAttempts
-	err := r.svc.sendCopyrightEmail(ctx, n)
-	if err == nil || len(r.mail.sent) != 0 || len(r.ledger.released) != 1 {
-		t.Fatalf("all attempts failed: err=%v sent=%d released=%d", err, len(r.mail.sent), len(r.ledger.released))
+	n = copyrightNotice(CopyrightTypeHold, "")
+	_ = r.svc.sendCopyrightEmail(ctx, n)
+	r.mail.fail = 1000
+	r.drain(t)
+	j = r.queue.jobs[n.emailDedupID()]
+	if j.status != "failed" || j.attempts != copyrightEmailMaxAttempts || len(r.mail.sent) != 0 {
+		t.Fatalf("exhausted: %+v", j)
 	}
-	if strings.Contains(err.Error(), "@") {
-		t.Fatalf("the error carries an address: %v", err)
+	if last := r.queue.finished[len(r.queue.finished)-1]; last != "failed:send_failed" {
+		t.Fatalf("last finish = %q", last)
 	}
-	if err := r.svc.sendCopyrightEmail(ctx, n); err != nil || len(r.mail.sent) != 1 {
-		t.Fatalf("redelivery after a release: sent=%d err=%v", len(r.mail.sent), err)
-	}
-	// A contact read that keeps failing is an error too, and released.
+
+	// Identity unreachable: retried, not dropped.
 	r = newEmailRig(t)
 	r.contacts.err = errors.New("identity down")
-	if err := r.svc.sendCopyrightEmail(ctx, n); err == nil || len(r.ledger.released) != 1 || r.contacts.reads != copyrightEmailAttempts {
-		t.Fatalf("contact failure: err=%v released=%d reads=%d", err, len(r.ledger.released), r.contacts.reads)
+	n = copyrightNotice(CopyrightTypeBlocked, "")
+	_ = r.svc.sendCopyrightEmail(ctx, n)
+	r.svc.runCopyrightEmailJob(ctx)
+	if r.queue.status(n.emailDedupID()) != "pending" || r.queue.finished[0] != "pending:contact_read_failed" {
+		t.Fatalf("contact failure: %v", r.queue.finished)
+	}
+	r.contacts.err = nil
+	r.drain(t)
+	if len(r.mail.sent) != 1 {
+		t.Fatalf("after identity recovered: sent=%d", len(r.mail.sent))
+	}
+}
+
+// A worker that dies after its claim (no finish) does not lose the email:
+// the lease runs out and the next claim sends it, once.
+func TestCopyrightEmail_DeadWorkerDoesNotLoseIt(t *testing.T) {
+	r := newEmailRig(t)
+	ctx := context.Background()
+	n := copyrightNotice(CopyrightTypeBlocked, "")
+	_ = r.svc.sendCopyrightEmail(ctx, n)
+	if _, err := r.queue.ClaimCopyrightEmail(ctx); err != nil { // claimed, then the worker died
+		t.Fatal(err)
+	}
+	r.drain(t)
+	if len(r.mail.sent) != 0 {
+		t.Fatal("a leased job was sent by a second worker before its lease ran out")
+	}
+	r.queue.expire()
+	r.drain(t)
+	if len(r.mail.sent) != 1 || r.queue.status(n.emailDedupID()) != "sent" {
+		t.Fatalf("after the lease ran out: sent=%d status=%s", len(r.mail.sent), r.queue.status(n.emailDedupID()))
+	}
+}
+
+// A queue that cannot be written is an error, so the consumer does not
+// commit the event; an account suppressed since is skipped at send time,
+// and a suppression read that fails is retried.
+func TestCopyrightEmail_QueueAndSuppressionFailures(t *testing.T) {
+	r := newEmailRig(t)
+	ctx := context.Background()
+	r.queue.enqErr = errors.New("postgres down")
+	if err := r.svc.sendCopyrightEmail(ctx, copyrightNotice(CopyrightTypeHold, "")); err == nil {
+		t.Fatal("an email that was not queued reported success")
+	}
+	r.queue.enqErr = nil
+
+	n := copyrightNotice(CopyrightTypeHold, "")
+	_ = r.svc.sendCopyrightEmail(ctx, n)
+	r.suppErr = errors.New("postgres down")
+	r.svc.runCopyrightEmailJob(ctx)
+	if r.queue.status(n.emailDedupID()) != "pending" || len(r.mail.sent) != 0 {
+		t.Fatalf("suppression read failure: status=%s", r.queue.status(n.emailDedupID()))
+	}
+	r.suppErr, r.suppressed = nil, true
+	r.drain(t)
+	if r.queue.status(n.emailDedupID()) != "skipped" || len(r.mail.sent) != 0 {
+		t.Fatalf("suppressed account: status=%s sent=%d", r.queue.status(n.emailDedupID()), len(r.mail.sent))
 	}
 }
 
@@ -309,8 +486,10 @@ func TestCopyrightHubURL(t *testing.T) {
 
 // The in-app notice and the email go together through
 // CreateCopyrightReviewNotification: a reviewer's block and the system's
-// both email; the email still goes when the in-app write fails (and the
-// failure is returned); a clear is in-app only.
+// both queue an email; the email is queued even when the in-app write fails
+// (and the failure is returned, so the event is redelivered; queueing again
+// inserts nothing); a clear is in-app only; a suppression read that fails
+// is an error to retry, never a silent drop.
 func TestCopyrightEmail_DeliveredWithTheInAppNotice(t *testing.T) {
 	ctx := context.Background()
 	r := newEmailRig(t)
@@ -321,21 +500,29 @@ func TestCopyrightEmail_DeliveredWithTheInAppNotice(t *testing.T) {
 		return inAppErr
 	}
 	reviewer := copyrightNotice(CopyrightTypeBlocked, "") // a reviewer's block: no reason
-	if err := r.svc.CreateCopyrightReviewNotification(ctx, reviewer); err != nil || len(r.mail.sent) != 1 || len(inApp) != 1 {
-		t.Fatalf("reviewer block: sent=%d inApp=%v err=%v", len(r.mail.sent), inApp, err)
-	}
-	if !strings.Contains(r.mail.sent[0].TextBody, "upheld the block") || r.mail.sent[0].HTMLBody == "" {
-		t.Fatalf("message = %+v", r.mail.sent[0])
+	if err := r.svc.CreateCopyrightReviewNotification(ctx, reviewer); err != nil || len(r.queue.order) != 1 || len(inApp) != 1 {
+		t.Fatalf("reviewer block: jobs=%d inApp=%v err=%v", len(r.queue.order), inApp, err)
 	}
 	auto := copyrightNotice(CopyrightTypeBlocked, events.CopyrightReasonOwnerRegistered)
 	inAppErr = errors.New("scylla down")
-	if err := r.svc.CreateCopyrightReviewNotification(ctx, auto); err == nil || len(r.mail.sent) != 2 {
-		t.Fatalf("in-app failure: sent=%d err=%v, want the email sent and the failure returned", len(r.mail.sent), err)
+	if err := r.svc.CreateCopyrightReviewNotification(ctx, auto); err == nil || len(r.queue.order) != 2 {
+		t.Fatalf("in-app failure: jobs=%d err=%v, want the email queued and the failure returned", len(r.queue.order), err)
 	}
 	inAppErr = nil
+	if err := r.svc.CreateCopyrightReviewNotification(ctx, auto); err != nil || len(r.queue.order) != 2 {
+		t.Fatalf("redelivery: jobs=%d err=%v, want no second email", len(r.queue.order), err)
+	}
 	clear := copyrightNotice(CopyrightTypeCleared, "")
-	if err := r.svc.CreateCopyrightReviewNotification(ctx, clear); err != nil || len(r.mail.sent) != 2 || len(inApp) != 3 {
-		t.Fatalf("clear: sent=%d inApp=%v err=%v", len(r.mail.sent), inApp, err)
+	if err := r.svc.CreateCopyrightReviewNotification(ctx, clear); err != nil || len(r.queue.order) != 2 || len(inApp) != 4 {
+		t.Fatalf("clear: jobs=%d inApp=%v err=%v", len(r.queue.order), inApp, err)
+	}
+	r.drain(t)
+	if len(r.mail.sent) != 2 || !strings.Contains(r.mail.sent[0].TextBody, "upheld the block") || r.mail.sent[0].HTMLBody == "" {
+		t.Fatalf("sent = %+v", r.mail.sent)
+	}
+	r.suppErr = errors.New("postgres down")
+	if err := r.svc.CreateCopyrightReviewNotification(ctx, copyrightNotice(CopyrightTypeHold, "")); err == nil || len(inApp) != 4 {
+		t.Fatalf("suppression read failure: err=%v inApp=%v, want an error and nothing delivered", err, inApp)
 	}
 }
 

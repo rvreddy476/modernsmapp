@@ -110,6 +110,7 @@ type titleReviewStore interface {
 	TitleReviewsByPost(ctx context.Context, postIDs []uuid.UUID) (map[uuid.UUID]*postgres.TitleReview, error)
 	CopyrightMatchPostAuthor(ctx context.Context, postID uuid.UUID) (uuid.UUID, error)
 	ApplyOwnerMatch(ctx context.Context, in postgres.OwnerMatchInput) (*postgres.OwnerMatchResult, error)
+	RemoveCopyrightOwnerTrack(ctx context.Context, postID, titleID, actor uuid.UUID, note string) (*postgres.OwnerTrackRemoval, error)
 }
 
 // titleCatalogue is one replica's snapshot: the matcher, each entry's
@@ -733,6 +734,14 @@ type CopyrightReviewView struct {
 	// Reason: "owner_registered" (blocked at once for the registered
 	// owner) or "mute_requested" (the owner asked for a mute; in review).
 	Reason string `json:"reason,omitempty"`
+	// AppealedAt is when the author asked for a review of the block
+	// (migration 076). With state pending the appeal is with a reviewer and
+	// the video stays hidden; with cleared / blocked the reviewer answered.
+	AppealedAt *time.Time `json:"appealed_at,omitempty"`
+	// CanAppeal: the video is blocked and its one appeal is unused — the
+	// "ask for a review" request (POST .../copyright-review/request) will
+	// send it back to a reviewer.
+	CanAppeal bool `json:"can_appeal"`
 }
 
 func copyrightReviewView(r *postgres.TitleReview) *CopyrightReviewView {
@@ -745,6 +754,8 @@ func copyrightReviewView(r *postgres.TitleReview) *CopyrightReviewView {
 	v := &CopyrightReviewView{
 		State: r.State, MatchedTitle: r.MatchedTitle, CreatedAt: r.CreatedAt,
 		DecidedAt: r.DecidedAt, ReviewRequestedAt: r.AuthorRequestedAt,
+		AppealedAt: r.AppealedAt,
+		CanAppeal:  r.State == postgres.TitleReviewBlocked && r.AppealedAt == nil,
 	}
 	if r.RightsOwner != nil {
 		v.RightsOwner = *r.RightsOwner
@@ -783,8 +794,12 @@ func (s *Service) attachCopyrightReviews(ctx context.Context, ownerID uuid.UUID,
 	}
 }
 
-// RequestCopyrightReview records the author's "I own the rights" note on
-// their pending review.
+// RequestCopyrightReview records the author's "I own the rights" note: on
+// their pending review a note for the reviewer, on their BLOCKED review the
+// one appeal (migration 076) — the review goes back to a reviewer, the video
+// stays hidden until a reviewer clears it, and a second appeal is refused
+// (ErrTitleReviewAppealed, 409). Author only: the store looks the review up
+// by post AND author.
 func (s *Service) RequestCopyrightReview(ctx context.Context, postID, authorID uuid.UUID, note string) (*CopyrightReviewView, error) {
 	store := s.titleReviewStore()
 	if store == nil {
@@ -797,6 +812,10 @@ func (s *Service) RequestCopyrightReview(ctx context.Context, postID, authorID u
 	r, err := store.RequestTitleReview(ctx, postID, authorID, note)
 	if err != nil {
 		return nil, err
+	}
+	if r != nil && r.AppealedAt != nil {
+		// The appeal wrote its event to the outbox; deliver it promptly.
+		s.NudgeOutbox()
 	}
 	return copyrightReviewView(r), nil
 }

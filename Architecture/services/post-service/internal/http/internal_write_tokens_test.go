@@ -33,6 +33,8 @@ func internalWriteRoutes() []internalWriteRoute {
 		{"/v1/posts/internal/visibility", `{"post_id":"` + post + `","visibility":"public"}`, IssuerReviewerService, OpVisibilityWrite},
 		{"/v1/posts/internal/moderation", `{"claims":{},"capability":"x"}`, IssuerTrustSafety, OpModerationWrite},
 		{"/v1/posts/internal/restrictions", `{"claims":{},"capability":"x"}`, IssuerTrustSafety, OpRestrictionsWrite},
+		// The fingerprint provider's owner match (076): trust-safety only.
+		{copyrightOwnerMatchPath, `{"post_id":"` + post + `","title_id":"` + uuid.NewString() + `","policy":"block"}`, IssuerTrustSafety, OpCopyrightOwnerMatchWrite},
 	}
 }
 

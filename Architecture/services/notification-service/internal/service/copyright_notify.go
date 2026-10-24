@@ -26,6 +26,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 
@@ -63,14 +64,23 @@ type CopyrightReviewNotification struct {
 	RightsOwner string
 	// Reason: owner_registered (the system blocked it for the owner),
 	// mute_requested (the owner asked for a mute; in review) or "".
-	Reason    string
+	Reason string
+	// Appeal: the reviewer's answer to the author's appeal of the block
+	// (post-service migration 076) — a new notice, keyed apart from the
+	// block it reopened.
+	Appeal    bool
 	DeepLink  string
 	CreatedAt time.Time
 }
 
-// Identity keys the idempotent inbox write: one notice per review and type.
+// Identity keys the idempotent inbox write: one notice per review and type
+// (and, for the answer to an appeal, per review, type and appeal).
 func (n CopyrightReviewNotification) Identity() string {
-	return n.ReviewID.String() + ":" + n.Type
+	id := n.ReviewID.String() + ":" + n.Type
+	if n.Appeal {
+		id += ":appeal"
+	}
+	return id
 }
 
 // RenderCopyrightNotification renders the push copy from the registered
@@ -101,7 +111,14 @@ func (s *Service) CreateCopyrightReviewNotification(ctx context.Context, n Copyr
 	if n.RecipientID == uuid.Nil || n.ReviewID == uuid.Nil {
 		return nil
 	}
-	if s.recipientSuppressed(ctx, n.RecipientID, n.Type) {
+	// The consumer commits this event only after this returns nil (at least
+	// once), so a suppression lookup that FAILS is an error to retry — not a
+	// silent drop as for ordinary notices.
+	suppressed, err := s.copyrightRecipientSuppressed(ctx, n.RecipientID)
+	if err != nil {
+		return fmt.Errorf("copyright notice: suppression lookup: %w", err)
+	}
+	if suppressed {
 		return nil
 	}
 	var inApp error
@@ -114,8 +131,10 @@ func (s *Service) CreateCopyrightReviewNotification(ctx context.Context, n Copyr
 		inApp = s.deliverWithDecision(ctx, decision, n.RecipientID, n.RecipientID, n.Type,
 			CopyrightEntityType, n.PostID, n.DeepLink, n.CreatedAt, n.Identity(), RenderCopyrightNotification(n))
 	}
-	// A hold or a block is also EMAILED (copyright_email.go), whatever the
-	// in-app/push preferences decided — a legal-type notice — and even when
-	// the in-app write failed.
+	// A hold or a block is also EMAILED (copyright_email.go: queued here, sent
+	// by the worker), whatever the in-app/push preferences decided — a
+	// legal-type notice — and even when the in-app write failed. Either
+	// failure is returned, so the event is delivered again; both writes are
+	// idempotent (the inbox identity, the queue id).
 	return errors.Join(inApp, s.sendCopyrightEmail(ctx, n))
 }

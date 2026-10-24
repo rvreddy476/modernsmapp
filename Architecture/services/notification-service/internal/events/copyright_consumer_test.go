@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -12,11 +13,16 @@ import (
 )
 
 type fakeCopyrightNotifier struct {
-	got []service.CopyrightReviewNotification
+	got  []service.CopyrightReviewNotification
+	fail int // the first fail deliveries return an error
 }
 
 func (f *fakeCopyrightNotifier) CreateCopyrightReviewNotification(_ context.Context, n service.CopyrightReviewNotification) error {
 	f.got = append(f.got, n)
+	if f.fail > 0 {
+		f.fail--
+		return errors.New("postgres down")
+	}
 	return nil
 }
 
@@ -90,4 +96,66 @@ func TestPlanCopyrightNotice_OwnerAndReason(t *testing.T) {
 	if err != nil || !ok || n.RightsOwner != "Sun Pictures" || n.Reason != events.CopyrightReasonOwnerRegistered || n.Type != service.CopyrightTypeBlocked {
 		t.Fatalf("notice = %+v ok=%v err=%v", n, ok, err)
 	}
+}
+
+// An appeal (post-service 076): the author's own request back to a reviewer
+// is no notice; the reviewer's answer is one, keyed apart from the block it
+// reopened so the inbox write and the email are not deduped away.
+func TestPlanCopyrightNotice_Appeal(t *testing.T) {
+	now := time.Now()
+	p := copyrightReview(events.CopyrightReviewPending)
+	p.Appeal = true
+	if _, ok, err := planCopyrightNotice(rawJSON(t, p), now); ok || err != nil {
+		t.Fatalf("appeal sent back to review: ok=%v err=%v, want no notice", ok, err)
+	}
+	for _, c := range []struct{ state, typ string }{
+		{events.CopyrightReviewBlocked, service.CopyrightTypeBlocked},
+		{events.CopyrightReviewCleared, service.CopyrightTypeCleared},
+	} {
+		p := copyrightReview(c.state)
+		p.Appeal = true
+		n, ok, err := planCopyrightNotice(rawJSON(t, p), now)
+		if err != nil || !ok || !n.Appeal || n.Type != c.typ {
+			t.Fatalf("%s answer: %+v ok=%v err=%v", c.state, n, ok, err)
+		}
+		if n.Identity() != "00000000-0000-4000-8000-00000000c001:"+c.typ+":appeal" {
+			t.Fatalf("%s answer identity %q", c.state, n.Identity())
+		}
+	}
+}
+
+// The review event is committed only after its notice and email were
+// written: a failed write is retried on the read loop, not lost (it used to
+// go to the worker pool, committed when queued). An undecodable payload is
+// skipped so it cannot hold the topic.
+func TestCopyrightReviewEvent_CommittedOnlyAfterDelivery(t *testing.T) {
+	if !commitsAfterProcessing(events.EventPostCopyrightReview) {
+		t.Fatal("post.copyright_review.changed is committed before it is handled")
+	}
+	if commitsAfterProcessing(events.PostCreated) {
+		t.Fatal("PostCreated moved onto the read loop")
+	}
+	f := &fakeCopyrightNotifier{fail: 1}
+	c := &Consumer{copyrightNotify: f}
+	env := events.EventEnvelope{EventID: uuid.NewString(), EventType: events.EventPostCopyrightReview, OccurredAt: crAt,
+		Payload: rawJSON(t, copyrightReview(events.CopyrightReviewBlocked))}
+	r := &copyrightCommitRecorder{}
+	if !processAndCommit(context.Background(), r, kafka.Message{Value: rawJSON(t, env)}, c.processMessage) {
+		t.Fatal("not committed")
+	}
+	if len(f.got) != 2 || r.commits != 1 {
+		t.Fatalf("deliveries=%d commits=%d, want the failure retried then one commit", len(f.got), r.commits)
+	}
+	bad := events.EventEnvelope{EventID: uuid.NewString(), EventType: events.EventPostCopyrightReview, OccurredAt: crAt,
+		Payload: []byte(`{"state": 7}`)}
+	if err := c.processMessage(context.Background(), kafka.Message{Value: rawJSON(t, bad)}); err != nil {
+		t.Fatalf("undecodable payload: %v, want skipped", err)
+	}
+}
+
+type copyrightCommitRecorder struct{ commits int }
+
+func (r *copyrightCommitRecorder) CommitMessages(context.Context, ...kafka.Message) error {
+	r.commits++
+	return nil
 }

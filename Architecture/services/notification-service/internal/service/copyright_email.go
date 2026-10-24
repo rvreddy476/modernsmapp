@@ -20,10 +20,16 @@ package service
 //     category, and this is a legal-type notice about the user's content.
 //     (Account suppression — deactivated or deletion scheduled — still
 //     applies: such an account gets nothing.)
-//   - Idempotent per (review, state): notify_meta.event_dedup is claimed
-//     under a UUIDv5 of the pair before sending; a failed send releases the
-//     claim so a redelivery can try again. A crash between the claim and the
-//     send loses that one email (at most once, never twice).
+//   - At least once, and once per (review, state): the consumer handles the
+//     event synchronously and commits its offset only after the email is
+//     QUEUED (copyright_email_jobs, migration 019) under a UUIDv5 of the
+//     pair — a redelivered event inserts nothing — and a worker sends it
+//     with durable retries (RunCopyrightEmailWorker), so neither a crash nor
+//     an SMTP outage loses it and an outage never stalls the topic. A send
+//     repeats only if the worker dies after the mailer accepted it and
+//     before the 'sent' write (the lease expires; the partner-queue window).
+//     The answer to an appeal (migration 076, Appeal) is a new state of the
+//     pair, so the author hears it even though the block was mailed before.
 //   - The copy is plain and short, names the video and the matched
 //     title/owner, says what it means (not a strike; repeated blocks pause
 //     long-video uploads) and links to Creator Hub (WEB_APP_BASE_URL +
@@ -46,16 +52,20 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/atpost/notification-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
 	"github.com/atpost/shared/mailer"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // CopyrightEmailBrand is the product name the copyright emails use.
 const CopyrightEmailBrand = "VChat"
 
-// copyrightEmailAttempts bounds one delivery's tries (lookup + send).
-const copyrightEmailAttempts = 3
+// copyrightEmailMaxAttempts bounds one email's durable tries (lookup +
+// send, one per lease) before it is marked failed for an operator. With the
+// backoff below that is about nine hours of retrying.
+const copyrightEmailMaxAttempts = 12
 
 // VerifiedEmailReader returns a user's VERIFIED email address. ok is false
 // (with a nil error) when there is none to mail: no address, an unverified
@@ -64,18 +74,21 @@ type VerifiedEmailReader interface {
 	VerifiedEmail(ctx context.Context, userID uuid.UUID) (addr string, ok bool, err error)
 }
 
-// emailLedger is the idempotency ledger (notify_meta.event_dedup).
-type emailLedger interface {
-	ClaimEventDedup(ctx context.Context, id uuid.UUID) (bool, error)
-	ReleaseEventDedup(ctx context.Context, id uuid.UUID) error
+// copyrightEmailQueue is the durable queue (copyright_email_jobs, 019).
+type copyrightEmailQueue interface {
+	EnqueueCopyrightEmail(ctx context.Context, id, recipient uuid.UUID, payload []byte) (bool, error)
+	ClaimCopyrightEmail(ctx context.Context) (*postgres.CopyrightEmailJob, error)
+	FinishCopyrightEmail(ctx context.Context, j *postgres.CopyrightEmailJob, status, code string, delay time.Duration) error
 }
 
 // copyrightEmailer holds the copyright email's collaborators.
 type copyrightEmailer struct {
 	contacts VerifiedEmailReader
-	ledger   emailLedger // nil = the Postgres store's, when there is one
-	hubURL   string      // absolute Creator Hub link; "" = name it without a link
-	sleep    func(time.Duration)
+	queue    copyrightEmailQueue // nil = the Postgres store's, when there is one
+	hubURL   string              // absolute Creator Hub link; "" = name it without a link
+	// suppressed reports an account that gets nothing (tests); nil = the
+	// Postgres store's suppression list.
+	suppressed func(ctx context.Context, userID uuid.UUID) (bool, error)
 }
 
 // SetCopyrightEmail wires the copyright email: the identity contact read
@@ -83,17 +96,31 @@ type copyrightEmailer struct {
 // must be an absolute http(s) URL, else the email names Creator Hub without
 // a link). A nil reader turns the email off (logged at start-up).
 func (s *Service) SetCopyrightEmail(contacts VerifiedEmailReader, webBaseURL string) {
-	s.copyrightEmail = &copyrightEmailer{contacts: contacts, hubURL: CopyrightHubURL(webBaseURL), sleep: time.Sleep}
+	s.copyrightEmail = &copyrightEmailer{contacts: contacts, hubURL: CopyrightHubURL(webBaseURL)}
 }
 
-// setCopyrightEmailLedger replaces the ledger and the retry wait (tests).
-func (s *Service) setCopyrightEmailLedger(l emailLedger, sleep func(time.Duration)) {
+// setCopyrightEmailQueue replaces the queue and the suppression read (tests).
+func (s *Service) setCopyrightEmailQueue(q copyrightEmailQueue, suppressed func(context.Context, uuid.UUID) (bool, error)) {
 	if s.copyrightEmail != nil {
-		s.copyrightEmail.ledger = l
-		if sleep != nil {
-			s.copyrightEmail.sleep = sleep
-		}
+		s.copyrightEmail.queue = q
+		s.copyrightEmail.suppressed = suppressed
 	}
+}
+
+func (s *Service) copyrightQueue() copyrightEmailQueue {
+	if s.copyrightEmail != nil && s.copyrightEmail.queue != nil {
+		return s.copyrightEmail.queue
+	}
+	if s.pgStore != nil {
+		return s.pgStore
+	}
+	return nil
+}
+
+// copyrightEmailConfigured: a contact read, a mailer, and somewhere to queue.
+func (s *Service) copyrightEmailConfigured() bool {
+	e := s.copyrightEmail
+	return e != nil && e.contacts != nil && s.mail != nil
 }
 
 // CopyrightHubURL is the absolute Creator Hub link on webBaseURL, or "" when
@@ -113,9 +140,21 @@ func CopyrightHubURL(webBaseURL string) string {
 // copyrightEmailNamespace scopes the email's dedup ids.
 var copyrightEmailNamespace = uuid.MustParse("8d5f3f0e-6a51-4f3c-9c2b-6c0a2f9e7d14")
 
-// CopyrightEmailDedupID is the ledger key for one (review, state) email.
+// CopyrightEmailDedupID is the queue key for one (review, state) email —
+// the same id the pre-queue ledger used, so an email sent before the queue
+// existed is recognised (EnqueueCopyrightEmail).
 func CopyrightEmailDedupID(reviewID uuid.UUID, notifType string) uuid.UUID {
 	return uuid.NewSHA1(copyrightEmailNamespace, []byte("copyright-email|"+reviewID.String()+"|"+notifType))
+}
+
+// emailDedupID is n's queue key: the answer to an appeal is keyed apart
+// from the block it reopened, so it is mailed too.
+func (n CopyrightReviewNotification) emailDedupID() uuid.UUID {
+	key := n.Type
+	if n.Appeal {
+		key += "|appeal"
+	}
+	return CopyrightEmailDedupID(n.ReviewID, key)
 }
 
 // emailsFor reports whether a copyright notice type is also emailed: the
@@ -194,16 +233,22 @@ func RenderCopyrightEmail(n CopyrightReviewNotification, hubURL string) (Copyrig
 	case CopyrightTypeBlocked:
 		subject = "Your " + CopyrightEmailBrand + " video was blocked for copyright"
 		lead := "We have blocked " + video + " because it matches " + what + "."
-		if n.Reason == events.CopyrightReasonOwnerRegistered {
+		next := "If you think this is a mistake, or you own the rights, ask for a review in Creator Hub."
+		switch {
+		case n.Appeal:
+			// The reviewer's answer to the author's one appeal (076).
+			lead += " Our team reviewed your request and upheld the block."
+			next = "You have already used the review for this video, so it cannot be requested again."
+		case n.Reason == events.CopyrightReasonOwnerRegistered:
 			lead += " The rights owner registered this title and asked us to block copies."
-		} else {
+		default:
 			lead += " Our team reviewed it and upheld the block."
 		}
 		paras = []string{
 			"Hi,",
 			lead,
 			"What this means: the video stays hidden from viewers. " + meaning,
-			"If you think this is a mistake, or you own the rights, ask for a review in Creator Hub.",
+			next,
 		}
 	}
 	var text strings.Builder
@@ -225,85 +270,196 @@ func RenderCopyrightEmail(n CopyrightReviewNotification, hubURL string) (Copyrig
 	return CopyrightEmail{Subject: subject, Text: text.String(), HTML: html.String()}, true
 }
 
-// sendCopyrightEmail emails the author about a hold or a block. Skipped
-// (nil) for other types, when unconfigured, and when the author has no
-// verified address. Each (review, type) is mailed at most once.
+// copyrightEmailPayload is a queued email: ids and the titles the copy
+// names, never an address (it is read at send time).
+type copyrightEmailPayload struct {
+	RecipientID  uuid.UUID `json:"recipient_id"`
+	ReviewID     uuid.UUID `json:"review_id"`
+	PostID       uuid.UUID `json:"post_id"`
+	Type         string    `json:"type"`
+	MatchedTitle string    `json:"matched_title,omitempty"`
+	PostTitle    string    `json:"post_title,omitempty"`
+	RightsOwner  string    `json:"rights_owner,omitempty"`
+	Reason       string    `json:"reason,omitempty"`
+	Appeal       bool      `json:"appeal,omitempty"`
+}
+
+func (p copyrightEmailPayload) notification() CopyrightReviewNotification {
+	return CopyrightReviewNotification{RecipientID: p.RecipientID, ReviewID: p.ReviewID, PostID: p.PostID, Type: p.Type,
+		MatchedTitle: p.MatchedTitle, PostTitle: p.PostTitle, RightsOwner: p.RightsOwner, Reason: p.Reason, Appeal: p.Appeal}
+}
+
+// sendCopyrightEmail QUEUES the author's email about a hold or a block
+// (the worker sends it). Skipped (nil) for other types and when the email
+// is not configured. An error means nothing was queued: the consumer does
+// not commit the event, so it is delivered again. Queued at most once per
+// (review, state[, appeal]).
 func (s *Service) sendCopyrightEmail(ctx context.Context, n CopyrightReviewNotification) error {
-	msg, ok := RenderCopyrightEmail(n, s.copyrightEmailHub())
-	if !ok {
+	if _, ok := RenderCopyrightEmail(n, ""); !ok {
 		return nil
 	}
-	e := s.copyrightEmail
-	if e == nil || e.contacts == nil || s.mail == nil {
+	if !s.copyrightEmailConfigured() {
 		slog.Debug("copyright email skipped: not configured", "review_id", n.ReviewID, "type", n.Type)
 		return nil
 	}
-	ledger := e.ledger
-	if ledger == nil && s.pgStore != nil {
-		ledger = s.pgStore
+	q := s.copyrightQueue()
+	if q == nil {
+		return errors.New("copyright email: no queue")
 	}
-	dedup := CopyrightEmailDedupID(n.ReviewID, n.Type)
-	if ledger != nil {
-		first, err := ledger.ClaimEventDedup(ctx, dedup)
-		if err != nil {
-			return fmt.Errorf("copyright email: claim: %w", err)
-		}
-		if !first {
-			return nil // already sent for this review and state
-		}
+	raw, err := json.Marshal(copyrightEmailPayload{RecipientID: n.RecipientID, ReviewID: n.ReviewID, PostID: n.PostID, Type: n.Type,
+		MatchedTitle: n.MatchedTitle, PostTitle: n.PostTitle, RightsOwner: n.RightsOwner, Reason: n.Reason, Appeal: n.Appeal})
+	if err != nil {
+		return fmt.Errorf("copyright email: encode: %w", err)
 	}
-	err := s.deliverCopyrightEmail(ctx, n, msg)
-	if errors.Is(err, errNoVerifiedEmail) {
-		// Nobody to mail: the claim stays, so a redelivery does not look again.
-		slog.Info("copyright email skipped: no verified address", "review_id", n.ReviewID, "type", n.Type)
-		return nil
+	queued, err := q.EnqueueCopyrightEmail(ctx, n.emailDedupID(), n.RecipientID, raw)
+	if err != nil {
+		return fmt.Errorf("copyright email: queue: %w", err)
 	}
-	if err != nil && ledger != nil {
-		// Not sent: release the claim so a redelivery can try again.
-		if rerr := ledger.ReleaseEventDedup(ctx, dedup); rerr != nil {
-			slog.Error("copyright email: claim release failed; this email will not be retried",
-				"review_id", n.ReviewID, "type", n.Type, "error", rerr)
-		}
+	if queued {
+		slog.Info("copyright email queued", "review_id", n.ReviewID, "type", n.Type, "appeal", n.Appeal)
 	}
-	return err
+	return nil
 }
 
 var errNoVerifiedEmail = errors.New("copyright email: no verified address")
 
-// deliverCopyrightEmail looks the address up and sends, with bounded
-// retries. No verified address is errNoVerifiedEmail (not retried; the
-// claim is kept so a redelivery does not look again).
+// RunCopyrightEmailWorker sends queued copyright emails until ctx ends.
+// Without a configured email or a queue it returns at once.
+func (s *Service) RunCopyrightEmailWorker(ctx context.Context) {
+	if !s.copyrightEmailConfigured() || s.copyrightQueue() == nil {
+		return
+	}
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		for i := 0; i < 20 && ctx.Err() == nil; i++ {
+			if !s.runCopyrightEmailJob(ctx) {
+				break
+			}
+		}
+	}
+}
+
+// runCopyrightEmailJob leases, sends and finishes one job; false when there
+// was none (or the queue could not be read).
+func (s *Service) runCopyrightEmailJob(ctx context.Context) bool {
+	q := s.copyrightQueue()
+	j, err := q.ClaimCopyrightEmail(ctx)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false
+	}
+	if err != nil {
+		slog.Error("copyright email queue read failed", "error", err)
+		return false
+	}
+	runCtx, cancel := context.WithTimeout(ctx, time.Minute)
+	status, code := s.processCopyrightEmailJob(runCtx, j)
+	cancel()
+	if status == "pending" && j.Attempts >= copyrightEmailMaxAttempts {
+		status = "failed"
+	}
+	if err := q.FinishCopyrightEmail(ctx, j, status, code, copyrightEmailRetryDelay(j.Attempts)); err != nil {
+		// The lease runs out and the job is tried again: at least once.
+		slog.Error("copyright email result not recorded", "job_id", j.ID, "status", status, "error", err)
+	}
+	if status == "failed" {
+		slog.Error("copyright email failed; needs operator attention", "job_id", j.ID, "reason", code, "attempts", j.Attempts)
+	}
+	return true
+}
+
+// copyrightEmailRetryDelay: 1, 2, 4 … minutes, at most an hour.
+func copyrightEmailRetryDelay(attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	if attempt > 7 {
+		return time.Hour
+	}
+	return time.Minute * time.Duration(1<<(attempt-1))
+}
+
+// processCopyrightEmailJob sends one leased email and says how it ended:
+// sent, skipped (nothing to send: suppressed account, no verified address),
+// pending (try again later) or failed (cannot ever be sent).
+func (s *Service) processCopyrightEmailJob(ctx context.Context, j *postgres.CopyrightEmailJob) (status, code string) {
+	var p copyrightEmailPayload
+	if err := json.Unmarshal(j.Payload, &p); err != nil || p.RecipientID == uuid.Nil || p.ReviewID == uuid.Nil {
+		return "failed", "invalid_payload"
+	}
+	n := p.notification()
+	msg, ok := RenderCopyrightEmail(n, s.copyrightEmailHub())
+	if !ok {
+		return "skipped", "not_emailed"
+	}
+	if !s.copyrightEmailConfigured() {
+		return "pending", "unconfigured"
+	}
+	// An account deactivated or scheduled for deletion since the event gets
+	// nothing; a lookup that fails is retried, not guessed.
+	suppressed, err := s.copyrightRecipientSuppressed(ctx, n.RecipientID)
+	if err != nil {
+		return "pending", "suppression_lookup_failed"
+	}
+	if suppressed {
+		return "skipped", "account_suppressed"
+	}
+	switch err := s.deliverCopyrightEmail(ctx, n, msg); {
+	case err == nil:
+		return "sent", ""
+	case errors.Is(err, errNoVerifiedEmail):
+		slog.Info("copyright email skipped: no verified address", "review_id", n.ReviewID, "type", n.Type)
+		return "skipped", "no_verified_address"
+	case errors.Is(err, errCopyrightContactRead):
+		return "pending", "contact_read_failed"
+	default:
+		return "pending", "send_failed"
+	}
+}
+
+func (s *Service) copyrightRecipientSuppressed(ctx context.Context, userID uuid.UUID) (bool, error) {
+	if e := s.copyrightEmail; e != nil && e.suppressed != nil {
+		return e.suppressed(ctx, userID)
+	}
+	if s.pgStore == nil {
+		return false, nil
+	}
+	return s.pgStore.IsSuppressed(ctx, userID)
+}
+
+var errCopyrightContactRead = errors.New("copyright email: contact read failed")
+
+// deliverCopyrightEmail looks the address up and sends, once (the queue
+// retries). No verified address is errNoVerifiedEmail (not retried). No
+// error carries the address.
 func (s *Service) deliverCopyrightEmail(ctx context.Context, n CopyrightReviewNotification, msg CopyrightEmail) error {
 	e := s.copyrightEmail
-	var last error
-	for attempt := 1; attempt <= copyrightEmailAttempts; attempt++ {
-		if attempt > 1 {
-			e.sleep(time.Duration(attempt-1) * time.Second)
-		}
-		addr, ok, err := e.contacts.VerifiedEmail(ctx, n.RecipientID)
-		if err != nil {
-			last = fmt.Errorf("copyright email: contact read: %w", err)
-			continue
-		}
-		if !ok {
-			return errNoVerifiedEmail
-		}
-		if isNoopMailer(s.mail) {
-			// Dev without SMTP: the noop mailer would log the address. Log
-			// that the email would have gone, without it.
-			slog.Info("copyright email (noop mailer, not sent)", "review_id", n.ReviewID, "type", n.Type, "subject", msg.Subject)
-			return nil
-		}
-		if err := s.mail.Send(ctx, mailer.Message{To: []string{addr}, Subject: msg.Subject, TextBody: msg.Text, HTMLBody: msg.HTML}); err != nil {
-			// The mailer's error may carry the address; it is not passed on.
-			last = errors.New("copyright email: send failed")
-			continue
-		}
-		slog.Info("copyright email sent", "review_id", n.ReviewID, "type", n.Type, "attempt", attempt)
+	addr, ok, err := e.contacts.VerifiedEmail(ctx, n.RecipientID)
+	if err != nil {
+		slog.Warn("copyright email: contact read failed; will retry", "review_id", n.ReviewID, "type", n.Type, "error", err)
+		return errCopyrightContactRead
+	}
+	if !ok {
+		return errNoVerifiedEmail
+	}
+	if isNoopMailer(s.mail) {
+		// Dev without SMTP: the noop mailer would log the address. Log that
+		// the email would have gone, without it.
+		slog.Info("copyright email (noop mailer, not sent)", "review_id", n.ReviewID, "type", n.Type, "subject", msg.Subject)
 		return nil
 	}
-	slog.Error("copyright email failed", "review_id", n.ReviewID, "type", n.Type, "attempts", copyrightEmailAttempts, "error", last)
-	return last
+	if err := s.mail.Send(ctx, mailer.Message{To: []string{addr}, Subject: msg.Subject, TextBody: msg.Text, HTMLBody: msg.HTML}); err != nil {
+		// The mailer's error may carry the address; it is not passed on.
+		slog.Warn("copyright email: send failed; will retry", "review_id", n.ReviewID, "type", n.Type)
+		return errors.New("copyright email: send failed")
+	}
+	slog.Info("copyright email sent", "review_id", n.ReviewID, "type", n.Type)
+	return nil
 }
 
 func isNoopMailer(m mailer.Mailer) bool {

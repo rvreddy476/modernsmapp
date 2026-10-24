@@ -56,6 +56,10 @@ const (
 	OwnerMatchAlreadyTracked  OwnerMatchOutcome = "already_tracked"  // nothing to do
 	OwnerMatchReviewerCleared OwnerMatchOutcome = "reviewer_cleared" // a reviewer cleared it: left alone
 	OwnerMatchPostDeleted     OwnerMatchOutcome = "post_deleted"     // nothing to do
+	// The author appealed the block and a reviewer is deciding it (migration
+	// 076): the match is recorded in the history, nothing else changes —
+	// a provider's retry must not re-block a video a human is reviewing.
+	OwnerMatchUnderAppeal OwnerMatchOutcome = "under_appeal"
 	// Decided by the service before the store is asked:
 	OwnerMatchOwnerUpload   OwnerMatchOutcome = "owner_upload"   // the uploader's channel owns the title
 	OwnerMatchEntryInactive OwnerMatchOutcome = "entry_inactive" // the entry is switched off
@@ -129,11 +133,12 @@ func (s *Store) ApplyOwnerMatch(ctx context.Context, in OwnerMatchInput) (*Owner
 func applyOwnerMatchTx(ctx context.Context, tx pgx.Tx, in OwnerMatchInput) (*OwnerMatchResult, error) {
 	// The post first (the restriction command's lock order: post, then row).
 	var (
-		authorID uuid.UUID
-		deleted  bool
+		authorID  uuid.UUID
+		deleted   bool
+		scheduled bool
 	)
-	err := tx.QueryRow(ctx, `SELECT author_id, deleted_at IS NOT NULL FROM posts WHERE id = $1 FOR UPDATE`, in.PostID).
-		Scan(&authorID, &deleted)
+	err := tx.QueryRow(ctx, `SELECT author_id, deleted_at IS NOT NULL, publish_at IS NOT NULL FROM posts WHERE id = $1 FOR UPDATE`, in.PostID).
+		Scan(&authorID, &deleted, &scheduled)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrPostNotFound
 	}
@@ -149,7 +154,7 @@ func applyOwnerMatchTx(ctx context.Context, tx pgx.Tx, in OwnerMatchInput) (*Own
 
 	r, err := scanTitleReview(tx.QueryRow(ctx, `SELECT `+titleReviewCols+` FROM copyright_title_reviews WHERE post_id = $1 FOR UPDATE`, in.PostID))
 	if errors.Is(err, pgx.ErrNoRows) {
-		return openOwnerHoldTx(ctx, tx, in, authorID)
+		return openOwnerHoldTx(ctx, tx, in, authorID, scheduled)
 	}
 	if err != nil {
 		return nil, err
@@ -160,6 +165,13 @@ func applyOwnerMatchTx(ctx context.Context, tx pgx.Tx, in OwnerMatchInput) (*Own
 		return &OwnerMatchResult{Outcome: OwnerMatchAlreadyBlocked, ReviewID: &id}, nil
 	case TitleReviewCleared:
 		return &OwnerMatchResult{Outcome: OwnerMatchReviewerCleared, ReviewID: &id}, nil
+	}
+	if r.AppealedAt != nil {
+		// Pending because the author appealed a block: a reviewer decides it.
+		if err := insertTitleReviewEventTx(ctx, tx, r.ID, in.PostID, "owner_match", nil, r.State, r.State, ownerMatchNote(in)); err != nil {
+			return nil, err
+		}
+		return &OwnerMatchResult{Outcome: OwnerMatchUnderAppeal, ReviewID: &id}, nil
 	}
 	// Pending: the owner's request decides it now (block) or says why a
 	// reviewer is deciding it (mute).
@@ -191,10 +203,19 @@ func applyOwnerMatchTx(ctx context.Context, tx pgx.Tx, in OwnerMatchInput) (*Own
 }
 
 // openOwnerHoldTx holds a post that has no review yet, for the owner: a
-// measured hold (an owner match comes after the transcode), never announced
-// on a clear (the post was published and announced already), then blocked
-// at once (block) or queued with reason mute_requested (mute).
-func openOwnerHoldTx(ctx context.Context, tx pgx.Tx, in OwnerMatchInput, authorID uuid.UUID) (*OwnerMatchResult, error) {
+// measured hold (an owner match comes after the transcode), then blocked at
+// once (block) or queued with reason mute_requested (mute).
+//
+// Whether a reviewer's clear announces the post (announce_on_clear) is
+// whether its PostCreated is still OWED: a live post was announced at its
+// publication (a post with no review was never withheld by this rule), so a
+// clear must not announce it twice; a SCHEDULED post (publish_at set, under
+// the post lock) has not been announced at all, and the schedule worker's
+// flip withholds it while this hold is active (scheduledFlipHeldTx), so the
+// clear is what announces it — exactly once, through the same
+// releaseTitleReviewTx path every clear takes (or the flip itself, if the
+// clear comes first).
+func openOwnerHoldTx(ctx context.Context, tx pgx.Tx, in OwnerMatchInput, authorID uuid.UUID, scheduled bool) (*OwnerMatchResult, error) {
 	var durationSec int
 	if err := tx.QueryRow(ctx, `
 		SELECT (COALESCE(MAX(COALESCE(ma.duration_ms, ma.duration_seconds * 1000, 0)), 0) / 1000)::int
@@ -205,6 +226,7 @@ func openOwnerHoldTx(ctx context.Context, tx pgx.Tx, in OwnerMatchInput, authorI
 	hold := &TitleReviewHold{
 		ReviewID: uuid.New(), TitleID: in.TitleID, MatchedTitle: in.MatchedTitle, MatchedTerm: in.MatchedTitle,
 		MatchedField: MatchedFieldOwnerMatch, DurationSeconds: &durationSec, RightsOwner: in.RightsOwner,
+		AnnounceOnClear: scheduled,
 	}
 	outcome := OwnerMatchHeld
 	switch in.Policy {
@@ -252,6 +274,85 @@ func applyOwnerTrackTx(ctx context.Context, tx pgx.Tx, in OwnerMatchInput) (*Own
 		return nil, err
 	}
 	return &OwnerMatchResult{Outcome: OwnerMatchTracked}, nil
+}
+
+// ErrOwnerTrackNotFound: no copyright_owner_tracks row for that post and
+// entry (404 TRACK_NOT_FOUND).
+var ErrOwnerTrackNotFound = errors.New("copyright owner track not found")
+
+// OwnerTrackRemoval is what removing one track did.
+type OwnerTrackRemoval struct {
+	PostID  uuid.UUID `json:"post_id"`
+	TitleID uuid.UUID `json:"title_id"`
+	// StillTracked: another owner still tracks the post, so its earnings
+	// stay excluded.
+	StillTracked bool `json:"still_tracked"`
+}
+
+// RemoveCopyrightOwnerTrack deletes one tracked owner match (an admin's
+// decision, migration 076) in one transaction under the post's row lock:
+// the row, then a restatement of the post's eligibility — the event's
+// earnings_excluded is recomputed from the tracks that remain, so the
+// monetization projection counts the post again from now unless another
+// owner still tracks it — and the admin audit row.
+func (s *Store) RemoveCopyrightOwnerTrack(ctx context.Context, postID, titleID, actor uuid.UUID, note string) (*OwnerTrackRemoval, error) {
+	if postID == uuid.Nil || titleID == uuid.Nil {
+		return nil, fmt.Errorf("%w: a track names a post and an entry", ErrTitleReviewInvalid)
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx)
+	out, err := removeOwnerTrackTx(ctx, tx, postID, titleID, actor, note)
+	if err != nil {
+		return nil, err
+	}
+	return out, tx.Commit(ctx)
+}
+
+func removeOwnerTrackTx(ctx context.Context, tx pgx.Tx, postID, titleID, actor uuid.UUID, note string) (*OwnerTrackRemoval, error) {
+	if actor == uuid.Nil {
+		return nil, ErrAdminAuditActor // never an anonymous removal
+	}
+	// The post first (the lock order every owner-match write takes).
+	var locked bool
+	err := tx.QueryRow(ctx, `SELECT TRUE FROM posts WHERE id = $1 FOR UPDATE`, postID).Scan(&locked)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrOwnerTrackNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("owner track: lock post: %w", err)
+	}
+	var owner, reference *string
+	err = tx.QueryRow(ctx, `
+		DELETE FROM copyright_owner_tracks WHERE post_id = $1 AND title_id = $2
+		RETURNING rights_owner, reference`, postID, titleID).Scan(&owner, &reference)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrOwnerTrackNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("owner track: remove: %w", err)
+	}
+	// Restate eligibility: earnings_excluded is read from the remaining rows.
+	if err := BumpSearchRevAndEmitTx(ctx, tx, postID); err != nil {
+		return nil, err
+	}
+	var still bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM copyright_owner_tracks WHERE post_id = $1)`, postID).Scan(&still); err != nil {
+		return nil, err
+	}
+	prev := "title_id=" + titleID.String()
+	if owner != nil {
+		prev += fmt.Sprintf(" rights_owner=%q", *owner)
+	}
+	if reference != nil {
+		prev += fmt.Sprintf(" reference=%q", *reference)
+	}
+	if err := insertAdminAudit(ctx, tx, actor, "copyright_track.remove", "copyright_track", postID, prev, "removed", note); err != nil {
+		return nil, err
+	}
+	return &OwnerTrackRemoval{PostID: postID, TitleID: titleID, StillTracked: still}, nil
 }
 
 // ownerMatchNote is the history row's note: the policy and the provider's

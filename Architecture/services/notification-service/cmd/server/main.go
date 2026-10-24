@@ -255,6 +255,9 @@ func main() {
 			slog.Warn("copyright email: WEB_APP_BASE_URL is not an absolute http(s) URL; emails name Creator Hub without a link")
 		}
 		slog.Info("copyright email configured", "creator_hub_link", service.CopyrightHubURL(webBase) != "")
+		// The consumer queues each email (copyright_email_jobs); this sends
+		// them with durable retries.
+		go notifSvc.RunCopyrightEmailWorker(ctx)
 	} else {
 		slog.Warn("copyright email disabled: IDENTITY_AUTH_URL is not set, so no verified address can be read")
 	}

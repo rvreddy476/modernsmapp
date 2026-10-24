@@ -209,6 +209,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// signed command from trust-safety, and its reconciliation read.
 	r.POST("/v1/posts/internal/restrictions", h.requireTrustSafetyToken(OpRestrictionsWrite), h.ApplyPostRestriction)
 	r.GET("/v1/posts/internal/restrictions", h.requireTrustSafetyToken(OpRestrictionsRead), h.ListPostRestrictions)
+	//   copyright/owner-match       trust-safety      (a fingerprint provider's owner match; copyright_owner_match_internal.go)
+	h.registerCopyrightOwnerMatchInternalRoute(r)
 
 	// The Action button's public redirect read (action_links.go): no
 	// identity required; the gateway routes /v1/links here.

@@ -80,6 +80,9 @@ var (
 	// ErrPostCopyrightHeld: the post is under an active hold, so a
 	// members-only tier may not be set or kept on it (409 COPYRIGHT_REVIEW).
 	ErrPostCopyrightHeld = errors.New("post is under copyright review")
+	// ErrTitleReviewAppealed: the author already used the one appeal of
+	// this review's block (409 APPEAL_ALREADY_USED; migration 076).
+	ErrTitleReviewAppealed = errors.New("copyright review already appealed")
 )
 
 // TitleReviewHold, set on a post being published, makes the publishing
@@ -163,27 +166,32 @@ type TitleReview struct {
 	RightsOwner *string `json:"rights_owner"`
 	// Reason: owner_registered (the system blocked it) or mute_requested
 	// (an owner asked for a mute); nil for an ordinary title match.
-	Reason    *string   `json:"reason"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Reason *string `json:"reason"`
+	// AppealedAt is when the author appealed the block (migration 076): the
+	// review went back to pending for a reviewer, and no second appeal is
+	// accepted. The block it reopened is in the review's history.
+	AppealedAt *time.Time `json:"appealed_at"`
+	CreatedAt  time.Time  `json:"created_at"`
+	UpdatedAt  time.Time  `json:"updated_at"`
 }
 
 const titleReviewCols = `id, post_id, author_id, restriction_id, title_id, matched_title, matched_term, matched_field,
 	duration_seconds, awaiting_duration, state, announce_on_clear, announced_at, author_notified,
-	author_note, author_requested_at, decided_by, decided_at, decision_note, rights_owner, reason, created_at, updated_at`
+	author_note, author_requested_at, decided_by, decided_at, decision_note, rights_owner, reason, appealed_at,
+	created_at, updated_at`
 
 // titleReviewColsR is titleReviewCols qualified with the alias r.
 const titleReviewColsR = `r.id, r.post_id, r.author_id, r.restriction_id, r.title_id, r.matched_title, r.matched_term,
 	r.matched_field, r.duration_seconds, r.awaiting_duration, r.state, r.announce_on_clear, r.announced_at,
 	r.author_notified, r.author_note, r.author_requested_at, r.decided_by, r.decided_at, r.decision_note,
-	r.rights_owner, r.reason, r.created_at, r.updated_at`
+	r.rights_owner, r.reason, r.appealed_at, r.created_at, r.updated_at`
 
 // titleReviewDest is the scan destinations of titleReviewCols, in order.
 func titleReviewDest(r *TitleReview) []any {
 	return []any{&r.ID, &r.PostID, &r.AuthorID, &r.RestrictionID, &r.TitleID, &r.MatchedTitle, &r.MatchedTerm,
 		&r.MatchedField, &r.DurationSeconds, &r.AwaitingDuration, &r.State, &r.AnnounceOnClear, &r.AnnouncedAt,
 		&r.AuthorNotified, &r.AuthorNote, &r.AuthorRequestedAt, &r.DecidedBy, &r.DecidedAt, &r.DecisionNote,
-		&r.RightsOwner, &r.Reason, &r.CreatedAt, &r.UpdatedAt}
+		&r.RightsOwner, &r.Reason, &r.AppealedAt, &r.CreatedAt, &r.UpdatedAt}
 }
 
 func scanTitleReview(row pgx.Row) (*TitleReview, error) {
@@ -328,11 +336,12 @@ func emitTitleReviewTx(ctx context.Context, tx pgx.Tx, reviewID uuid.UUID) error
 	)
 	if err := tx.QueryRow(ctx, `
 		SELECT r.post_id, r.author_id, r.state, r.matched_title, COALESCE(p.title, ''), p.content_type,
-		       r.created_at, r.decided_at, r.decided_by, COALESCE(r.rights_owner, ''), COALESCE(r.reason, '')
+		       r.created_at, r.decided_at, r.decided_by, COALESCE(r.rights_owner, ''), COALESCE(r.reason, ''),
+		       r.appealed_at IS NOT NULL
 		FROM copyright_title_reviews r JOIN posts p ON p.id = r.post_id
 		WHERE r.id = $1`, reviewID).
 		Scan(&postID, &authorID, &p.State, &p.MatchedTitle, &p.PostTitle, &p.ContentType, &p.CreatedAt, &decidedAt, &decidedBy,
-			&p.RightsOwner, &p.Reason); err != nil {
+			&p.RightsOwner, &p.Reason, &p.Appeal); err != nil {
 		return fmt.Errorf("title review: read for event: %w", err)
 	}
 	p.ReviewID, p.PostID, p.AuthorID = reviewID.String(), postID.String(), authorID.String()
@@ -423,7 +432,11 @@ func (s *Store) DecideTitleReview(ctx context.Context, in DecideTitleReviewInput
 	if err := emitTitleReviewTx(ctx, tx, r.ID); err != nil {
 		return nil, err
 	}
-	if err := insertAdminAudit(ctx, tx, actor, "copyright_review.decide", "copyright_review", r.ID, r.State, next, in.Note); err != nil {
+	prevAudit := r.State
+	if r.AppealedAt != nil {
+		prevAudit += " (appeal)" // the reviewer is answering the author's appeal
+	}
+	if err := insertAdminAudit(ctx, tx, actor, "copyright_review.decide", "copyright_review", r.ID, prevAudit, next, in.Note); err != nil {
 		return nil, err
 	}
 	decided, err := scanTitleReview(tx.QueryRow(ctx, `SELECT `+titleReviewCols+` FROM copyright_title_reviews WHERE id = $1`, r.ID))
@@ -449,10 +462,17 @@ func nilIfBlank(s string) *string {
 // publication's PostCreated was withheld and the post is still live, that
 // event — exactly once, because announced_at is set in this transaction
 // and the review row's lock serialises every decision.
+//
+// A post that is still SCHEDULED (an owner match held it before its
+// publication, 076) is not announced here even when its PostCreated is
+// owed: the schedule worker's flip emits it, once, when the post goes live
+// (PublishScheduledPostWithHold no longer withholds it after this release),
+// so announcing now would announce a post that is not live and then twice.
 func releaseTitleReviewTx(ctx context.Context, tx pgx.Tx, r *TitleReview, reason string, announce TitleReviewAnnounce) (bool, error) {
 	// Lock the post first (the restriction command's order: post, then row).
-	var deleted bool
-	if err := tx.QueryRow(ctx, `SELECT deleted_at IS NOT NULL FROM posts WHERE id = $1 FOR UPDATE`, r.PostID).Scan(&deleted); err != nil {
+	var deleted, scheduled bool
+	if err := tx.QueryRow(ctx, `SELECT deleted_at IS NOT NULL, publish_at IS NOT NULL FROM posts WHERE id = $1 FOR UPDATE`, r.PostID).
+		Scan(&deleted, &scheduled); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, ErrTitleReviewNotFound
 		}
@@ -473,7 +493,7 @@ func releaseTitleReviewTx(ctx context.Context, tx pgx.Tx, r *TitleReview, reason
 	if err != nil {
 		return false, err
 	}
-	if !r.AnnounceOnClear || r.AnnouncedAt != nil || deleted || announce == nil {
+	if !r.AnnounceOnClear || r.AnnouncedAt != nil || deleted || scheduled || announce == nil {
 		return false, nil
 	}
 	// Still held by another case (a trust-safety copyright hold): the post
@@ -627,8 +647,12 @@ const TitleReviewReasonNotLongVideo = titleReviewReasonKind
 // ── The author ──────────────────────────────────────────────────────────
 
 // RequestTitleReview records the author's "I own the rights" note on their
-// pending review. ErrTitleReviewNotFound when the post has no review of
-// theirs; ErrTitleReviewDecided once it is decided.
+// review. On a PENDING review it is a note for the reviewer; on a BLOCKED
+// one it is the author's one APPEAL (migration 076, appealTitleReviewTx).
+// ErrTitleReviewNotFound when the post has no review of theirs (or the post
+// is deleted, for an appeal); ErrTitleReviewDecided once it is cleared;
+// ErrTitleReviewAppealed once the appeal is used — while it waits for a
+// reviewer, and after the reviewer answered.
 func (s *Store) RequestTitleReview(ctx context.Context, postID, authorID uuid.UUID, note string) (*TitleReview, error) {
 	note = strings.TrimSpace(note)
 	if note == "" {
@@ -639,33 +663,96 @@ func (s *Store) RequestTitleReview(ctx context.Context, postID, authorID uuid.UU
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	r, err := scanTitleReview(tx.QueryRow(ctx, `SELECT `+titleReviewCols+` FROM copyright_title_reviews
-		WHERE post_id = $1 AND author_id = $2 FOR UPDATE`, postID, authorID))
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, ErrTitleReviewNotFound
-	}
+	reviewID, err := requestTitleReviewTx(ctx, tx, postID, authorID, note)
 	if err != nil {
 		return nil, err
 	}
-	if r.State != TitleReviewPending {
-		return nil, ErrTitleReviewDecided
+	out, err := scanTitleReview(tx.QueryRow(ctx, `SELECT `+titleReviewCols+` FROM copyright_title_reviews WHERE id = $1`, reviewID))
+	if err != nil {
+		return nil, err
+	}
+	return out, tx.Commit(ctx)
+}
+
+// requestTitleReviewTx is RequestTitleReview's transaction: the author's
+// review, locked, then the note (pending) or the appeal (blocked).
+func requestTitleReviewTx(ctx context.Context, tx pgx.Tx, postID, authorID uuid.UUID, note string) (uuid.UUID, error) {
+	r, err := scanTitleReview(tx.QueryRow(ctx, `SELECT `+titleReviewCols+` FROM copyright_title_reviews
+		WHERE post_id = $1 AND author_id = $2 FOR UPDATE`, postID, authorID))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, ErrTitleReviewNotFound
+	}
+	if err != nil {
+		return uuid.Nil, err
+	}
+	switch {
+	case r.State == TitleReviewCleared:
+		return uuid.Nil, ErrTitleReviewDecided
+	case r.AppealedAt != nil:
+		// One appeal per review: refused while it waits and once answered.
+		return uuid.Nil, ErrTitleReviewAppealed
+	case r.State == TitleReviewBlocked:
+		return r.ID, appealTitleReviewTx(ctx, tx, r, authorID, note)
+	case r.State != TitleReviewPending:
+		return uuid.Nil, ErrTitleReviewDecided
 	}
 	if _, err := tx.Exec(ctx, `
 		UPDATE copyright_title_reviews
 		SET author_note = $2, author_requested_at = now(), updated_at = now()
 		WHERE id = $1`, r.ID, note); err != nil {
-		return nil, err
+		return uuid.Nil, err
 	}
 	// The note itself stays on the review row only (the author's words are
 	// not copied into the history).
 	if err := insertTitleReviewEventTx(ctx, tx, r.ID, postID, "author_request", &authorID, r.State, r.State, ""); err != nil {
-		return nil, err
+		return uuid.Nil, err
 	}
-	out, err := scanTitleReview(tx.QueryRow(ctx, `SELECT `+titleReviewCols+` FROM copyright_title_reviews WHERE id = $1`, r.ID))
+	return r.ID, nil
+}
+
+// appealTitleReviewTx sends a BLOCKED review (the system's for a registered
+// owner, or a reviewer's) back to the reviewer queue, once (migration 076).
+//
+// It changes the REVIEW ROW ONLY: the state goes back to pending (so the
+// queue lists it and DecideTitleReview's clear or block decides it), the
+// author's note is the request, appealed_at uses the one appeal, and the
+// decided_* columns are emptied as the decision-shape CHECK requires of a
+// pending review (the decision it reopens stays in the history). The hold —
+// the active title_review restriction — is NOT touched: no release, no
+// recount, no eligibility event, no PostCreated, so the video stays hidden
+// from every viewer until a reviewer clears it. The compare-and-set refuses
+// a review that is not blocked, was appealed already, or has lost its
+// active hold (a data fault: an appeal must never reopen a review with
+// nothing holding the video). The history row (actor = the author) is the
+// audit; the pending event carries Appeal so the author gets no "on hold"
+// notice for their own request.
+func appealTitleReviewTx(ctx context.Context, tx pgx.Tx, r *TitleReview, authorID uuid.UUID, note string) error {
+	var deleted bool
+	err := tx.QueryRow(ctx, `SELECT deleted_at IS NOT NULL FROM posts WHERE id = $1`, r.PostID).Scan(&deleted)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && deleted) {
+		return ErrTitleReviewNotFound // nothing left to appeal for
+	}
 	if err != nil {
-		return nil, err
+		return fmt.Errorf("title review: appeal: post: %w", err)
 	}
-	return out, tx.Commit(ctx)
+	tag, err := tx.Exec(ctx, `
+		UPDATE copyright_title_reviews
+		SET state = 'pending', decided_by = NULL, decided_at = NULL, decision_note = NULL,
+		    author_note = $2, author_requested_at = now(), appealed_at = now(), updated_at = now()
+		WHERE id = $1 AND state = 'blocked' AND appealed_at IS NULL
+		  AND EXISTS (SELECT 1 FROM post_restrictions pr
+		              WHERE pr.restriction_id = copyright_title_reviews.restriction_id
+		                AND pr.source = 'title_review' AND pr.state = 'active')`, r.ID, note)
+	if err != nil {
+		return fmt.Errorf("title review: appeal: %w", err)
+	}
+	if tag.RowsAffected() != 1 {
+		return fmt.Errorf("title review: appeal: review %s is not a blocked review under an active hold", r.ID)
+	}
+	if err := insertTitleReviewEventTx(ctx, tx, r.ID, r.PostID, "appeal", &authorID, TitleReviewBlocked, TitleReviewPending, ""); err != nil {
+		return err
+	}
+	return emitTitleReviewTx(ctx, tx, r.ID)
 }
 
 // TitleReviewsByPost returns the review of each post that has one, for the

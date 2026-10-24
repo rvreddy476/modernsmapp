@@ -58,6 +58,7 @@ func (s *Store) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 		{"notification_digests", `DELETE FROM notification_digests WHERE user_id = $1`},
 		{"subscriber_fanout_delivered", `DELETE FROM subscriber_fanout_delivered WHERE user_id = $1`},
 		{"subscriber_fanout_jobs", `DELETE FROM subscriber_fanout_jobs WHERE author_id = $1`},
+		{"copyright_email_jobs", `DELETE FROM copyright_email_jobs WHERE recipient_id = $1`},
 		{"notification_suppressed_users", `DELETE FROM notification_suppressed_users WHERE user_id = $1`},
 	}
 	for _, st := range steps {

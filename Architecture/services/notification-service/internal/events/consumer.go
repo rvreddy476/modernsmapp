@@ -162,8 +162,7 @@ func (c *Consumer) Start(ctx context.Context) {
 			break
 		}
 		typ, _, _ := decodeFoodMessage(m)
-		_, account := captainAccountTypes[typ]
-		if account || typ == events.EventRiderRideAssigned || typ == events.EventRiderRideCancelled || typ == events.EventRiderRideCompleted || typ == events.EventRiderRideOffered || typ == events.EventRiderRidePaymentPaid || commerceDeliveryNotificationType(typ) || partnerSupportNotificationType(typ) {
+		if commitsAfterProcessing(typ) {
 			if !processAndCommit(ctx, c.reader, m, c.processMessage) {
 				break
 			}
@@ -180,6 +179,30 @@ func (c *Consumer) Start(ctx context.Context) {
 	}
 	close(jobs)
 	wg.Wait()
+}
+
+// commitsAfterProcessing names the event types that are handled on the read
+// loop and whose offset is committed only after the handler succeeded
+// (processAndCommit: a failure is retried, never skipped). Every other type
+// goes to the worker pool, whose offset is committed when it is queued.
+//
+// post.copyright_review.changed is one (25 Oct 2026): its handler writes the
+// author's inbox notice and QUEUES the copyright email durably (both
+// idempotent per review and state), so committing after it means a crash or
+// a failed write redelivers the event instead of losing the email; the
+// sending itself is the email worker's, so an SMTP outage never holds the
+// topic.
+func commitsAfterProcessing(typ string) bool {
+	if _, account := captainAccountTypes[typ]; account {
+		return true
+	}
+	switch typ {
+	case events.EventRiderRideAssigned, events.EventRiderRideCancelled, events.EventRiderRideCompleted,
+		events.EventRiderRideOffered, events.EventRiderRidePaymentPaid,
+		events.EventPostCopyrightReview:
+		return true
+	}
+	return commerceDeliveryNotificationType(typ) || partnerSupportNotificationType(typ)
 }
 
 func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {

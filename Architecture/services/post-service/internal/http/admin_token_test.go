@@ -42,7 +42,7 @@ type adminTestKeys struct {
 
 // internalWriteOps are the operations the /v1/posts/internal WRITE routes
 // require (security sweep #11).
-var internalWriteOps = []string{OpReviewStatusWrite, OpVisibilityWrite, OpModerationWrite, OpRestrictionsWrite}
+var internalWriteOps = []string{OpReviewStatusWrite, OpVisibilityWrite, OpModerationWrite, OpRestrictionsWrite, OpCopyrightOwnerMatchWrite}
 
 func adminTestVerifier(t *testing.T) adminTestKeys {
 	t.Helper()
@@ -77,7 +77,7 @@ func adminTestVerifier(t *testing.T) adminTestKeys {
 		"SERVICE_CALLER_REVIEWER_SERVICE_OPS":        OpReviewStatusWrite + "," + OpVisibilityWrite,
 		"SERVICE_CALLER_TRUST_SAFETY_SERVICE_KID":    "t1",
 		"SERVICE_CALLER_TRUST_SAFETY_SERVICE_PUBKEY": tPub,
-		"SERVICE_CALLER_TRUST_SAFETY_SERVICE_OPS":    OpRestrictionsRead + "," + OpRestrictionsWrite + "," + OpModerationWrite,
+		"SERVICE_CALLER_TRUST_SAFETY_SERVICE_OPS":    OpRestrictionsRead + "," + OpRestrictionsWrite + "," + OpModerationWrite + "," + OpCopyrightOwnerMatchWrite,
 		"SERVICE_CALLER_ADMIN_SERVICE_KID":           "a1",
 		"SERVICE_CALLER_ADMIN_SERVICE_PUBKEY":        aPub,
 		"SERVICE_CALLER_ADMIN_SERVICE_OPS":           strings.Join(AdminPermissions, ","),
@@ -346,6 +346,8 @@ func adminRoutePermissions() map[string][]string {
 		"PATCH /copyright/titles/:titleId":           {PermVideosRemove},
 		"GET /copyright/reviews":                     {PermVideosModerate, PermVideosRemove},
 		"POST /copyright/reviews/:reviewId/decision": {PermVideosModerate, PermVideosRemove},
+		// Removing an owner's track restores the video's earnings: remove only.
+		"DELETE /copyright/tracks/:postId/:titleId": {PermVideosRemove},
 	}
 }
 

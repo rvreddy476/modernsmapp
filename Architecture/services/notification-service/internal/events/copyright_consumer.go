@@ -3,7 +3,9 @@ package events
 // Copyright title review (2026-10-24): post.copyright_review.changed from
 // post-service's outbox, on the topic this consumer already reads for
 // PostCreated. planCopyrightNotice is pure; delivery is the service's
-// CreateCopyrightReviewNotification (copyright_notify.go).
+// CreateCopyrightReviewNotification (copyright_notify.go). The event is
+// handled on the read loop and its offset committed only after delivery
+// succeeded (commitsAfterProcessing, consumer.go): an error here is retried.
 
 import (
 	"context"
@@ -30,9 +32,15 @@ func planCopyrightNotice(raw json.RawMessage, now time.Time) (service.CopyrightR
 		return service.CopyrightReviewNotification{}, false, err
 	}
 	n := service.CopyrightReviewNotification{MatchedTitle: p.MatchedTitle, PostTitle: p.PostTitle,
-		RightsOwner: p.RightsOwner, Reason: p.Reason, CreatedAt: orNow(p.OccurredAt, now)}
+		RightsOwner: p.RightsOwner, Reason: p.Reason, Appeal: p.Appeal, CreatedAt: orNow(p.OccurredAt, now)}
 	switch p.State {
 	case events.CopyrightReviewPending:
+		if p.Appeal {
+			// The author's own appeal going back to a reviewer (076): they
+			// just asked, so no "on hold" notice or email; the reviewer's
+			// answer (cleared / blocked with Appeal) is the next notice.
+			return n, false, nil
+		}
 		n.Type, n.DeepLink = service.CopyrightTypeHold, service.CopyrightHubDeepLink
 	case events.CopyrightReviewCleared:
 		n.Type = service.CopyrightTypeCleared
@@ -62,7 +70,10 @@ func planCopyrightNotice(raw json.RawMessage, now time.Time) (service.CopyrightR
 func (c *Consumer) handleCopyrightReviewEvent(ctx context.Context, raw json.RawMessage) error {
 	n, ok, err := planCopyrightNotice(raw, time.Now())
 	if err != nil {
-		return err
+		// A payload that does not decode never will: skipped, so the
+		// commit-after-success loop is not held by it forever.
+		slog.Error("copyright review event payload undecodable; skipped", "error", err)
+		return nil
 	}
 	if !ok {
 		slog.Debug("copyright review event names no deliverable notice; skipped")

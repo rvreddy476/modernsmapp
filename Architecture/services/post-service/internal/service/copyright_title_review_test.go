@@ -37,6 +37,13 @@ type fakeTitleStore struct {
 	// Owner matches (migration 075).
 	postAuthors  map[uuid.UUID]uuid.UUID
 	ownerMatches []postgres.OwnerMatchInput
+	// Track removals (migration 076).
+	trackRemovals []trackRemoval
+}
+
+type trackRemoval struct {
+	post, title, actor uuid.UUID
+	note               string
 }
 
 type resolveCall struct {
@@ -116,6 +123,10 @@ func (f *fakeTitleStore) ApplyOwnerMatch(_ context.Context, in postgres.OwnerMat
 		out.Outcome = postgres.OwnerMatchTracked
 	}
 	return &out, nil
+}
+func (f *fakeTitleStore) RemoveCopyrightOwnerTrack(_ context.Context, postID, titleID, actor uuid.UUID, note string) (*postgres.OwnerTrackRemoval, error) {
+	f.trackRemovals = append(f.trackRemovals, trackRemoval{postID, titleID, actor, note})
+	return &postgres.OwnerTrackRemoval{PostID: postID, TitleID: titleID}, nil
 }
 func (f *fakeTitleStore) RequestTitleReview(_ context.Context, _ uuid.UUID, authorID uuid.UUID, _ string) (*postgres.TitleReview, error) {
 	f.requestedBy = append(f.requestedBy, authorID)

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/google/uuid"
@@ -114,4 +115,30 @@ func (s *Service) ApplyOwnerMatch(ctx context.Context, postID uuid.UUID, owner O
 	slog.Info("copyright owner match", "post_id", postID, "title_id", entry.ID, "policy", policy,
 		"applied", effective, "outcome", res.Outcome)
 	return res, nil
+}
+
+// RemoveCopyrightOwnerTrack is an admin's removal of one tracked owner match
+// (migration 076): the copyright_owner_tracks row goes, the post's
+// eligibility is restated (earnings_excluded clears unless another owner
+// still tracks it) and the removal is audited with the acting admin.
+func (s *Service) RemoveCopyrightOwnerTrack(ctx context.Context, postID, titleID, actorID uuid.UUID, note string) (*postgres.OwnerTrackRemoval, error) {
+	store := s.titleReviewStore()
+	if store == nil {
+		return nil, ErrCopyrightReviewUnavailable
+	}
+	if postID == uuid.Nil || titleID == uuid.Nil {
+		return nil, fmt.Errorf("%w: a track names a post and an entry", postgres.ErrTitleReviewInvalid)
+	}
+	note = strings.TrimSpace(note)
+	if utf8.RuneCountInString(note) > 2000 {
+		return nil, fmt.Errorf("%w: note is longer than 2000 characters", postgres.ErrTitleReviewInvalid)
+	}
+	out, err := store.RemoveCopyrightOwnerTrack(ctx, postID, titleID, actorID, note)
+	if err != nil {
+		return nil, err
+	}
+	s.InvalidatePostBodyCache(ctx, postID)
+	s.NudgeOutbox()
+	slog.Info("copyright owner track removed", "post_id", postID, "title_id", titleID, "still_tracked", out.StillTracked)
+	return out, nil
 }

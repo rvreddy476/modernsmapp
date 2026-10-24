@@ -42,6 +42,19 @@ type titleTx struct {
 	reasonCodes  []string     // restriction reason codes written, in order
 	historyActs  []string     // copyright_title_review_events actions, in order
 	historyNotes []string
+
+	// Appeals, scheduled posts and track removal (migration 076).
+	scheduled       bool        // the post is still scheduled (publish_at set)
+	appealed        bool        // the event read sees appealed_at set
+	appealMisses    bool        // the appeal's compare-and-set finds no blocked row under an active hold
+	historyActors   []*uuid.UUID
+	titleHoldActive bool     // an active title_review restriction exists (the flip's check)
+	missingPost     bool     // the track removal's post lock finds no post
+	otherTracks     bool     // another owner still tracks the post after a removal
+	audits          []string // post_admin_audit actions written
+	auditPrev       []string
+	// insertedAnnounce is the announce_on_clear the review INSERT wrote.
+	insertedAnnounce bool
 }
 
 func (t *titleTx) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
@@ -51,6 +64,7 @@ func (t *titleTx) Exec(_ context.Context, sql string, args ...any) (pgconn.Comma
 		if t.reviewInserted == 1 {
 			t.owner, _ = args[12].(*string)
 			t.reason, _ = args[13].(*string)
+			t.insertedAnnounce, _ = args[10].(bool)
 		}
 		return pgconn.NewCommandTag(fmt.Sprintf("INSERT 0 %d", t.reviewInserted)), nil
 	case strings.Contains(sql, "SET state = 'blocked', decided_by = NULL"):
@@ -61,8 +75,26 @@ func (t *titleTx) Exec(_ context.Context, sql string, args ...any) (pgconn.Comma
 		r := args[1].(string)
 		t.reason = &r
 		return pgconn.NewCommandTag("UPDATE 1"), nil
+	case strings.Contains(sql, "SET state = 'pending', decided_by = NULL"):
+		// The compare-and-set is the appeal's guard: only a blocked,
+		// never-appealed review under an ACTIVE hold reopens.
+		if !strings.Contains(sql, "WHERE id = $1 AND state = 'blocked' AND appealed_at IS NULL") ||
+			!strings.Contains(sql, "pr.source = 'title_review' AND pr.state = 'active'") {
+			return pgconn.CommandTag{}, fmt.Errorf("appeal update without its guard: %s", sql)
+		}
+		if t.appealMisses {
+			return pgconn.NewCommandTag("UPDATE 0"), nil
+		}
+		t.state, t.appealed = TitleReviewPending, true
+		return pgconn.NewCommandTag("UPDATE 1"), nil
+	case strings.Contains(sql, "INSERT INTO post_admin_audit"):
+		t.audits = append(t.audits, args[1].(string))
+		t.auditPrev = append(t.auditPrev, args[4].(string))
+		return pgconn.NewCommandTag("INSERT 0 1"), nil
 	case strings.Contains(sql, "INSERT INTO copyright_title_review_events"):
 		t.historyActs = append(t.historyActs, args[3].(string))
+		actor, _ := args[4].(*uuid.UUID)
+		t.historyActors = append(t.historyActors, actor)
 		note := ""
 		if n, ok := args[7].(*string); ok && n != nil {
 			note = *n
@@ -75,6 +107,8 @@ func (t *titleTx) Exec(_ context.Context, sql string, args ...any) (pgconn.Comma
 		}
 		t.tracked = true
 		return pgconn.NewCommandTag("INSERT 0 1"), nil
+	case strings.Contains(sql, "SET author_note = $2, author_requested_at = now(), updated_at = now()\n\t\tWHERE id = $1"):
+		return pgconn.NewCommandTag("UPDATE 1"), nil
 	case strings.Contains(sql, "SET rights_owner = COALESCE(rights_owner"):
 		return pgconn.NewCommandTag("UPDATE 1"), nil
 	case strings.Contains(sql, "SET reason = COALESCE(reason, $2)"):
@@ -125,17 +159,43 @@ func (r titleScan) Scan(dest ...any) error {
 	case strings.Contains(r.sql, "SELECT deleted_at IS NOT NULL FROM posts"):
 		*dest[0].(*bool) = r.t.deleted
 		return nil
+	case strings.Contains(r.sql, "SELECT deleted_at IS NOT NULL, publish_at IS NOT NULL FROM posts"):
+		*dest[0].(*bool) = r.t.deleted
+		*dest[1].(*bool) = r.t.scheduled
+		return nil
 	case strings.Contains(r.sql, "SELECT active_restriction_count > 0 FROM posts"):
 		*dest[0].(*bool) = r.t.stillHeld
 		return nil
 	case strings.Contains(r.sql, "SELECT EXISTS (SELECT 1 FROM copyright_owner_tracks"):
 		*dest[0].(*bool) = r.t.tracked
 		return nil
-	case strings.Contains(r.sql, "SELECT author_id, deleted_at IS NOT NULL FROM posts"):
+	case strings.Contains(r.sql, "SELECT EXISTS (SELECT 1 FROM post_restrictions"):
+		*dest[0].(*bool) = r.t.titleHoldActive
+		return nil
+	case strings.Contains(r.sql, "SELECT TRUE FROM posts WHERE id = $1 FOR UPDATE"):
+		if r.t.missingPost {
+			return pgx.ErrNoRows
+		}
+		*dest[0].(*bool) = true
+		return nil
+	case strings.Contains(r.sql, "DELETE FROM copyright_owner_tracks"):
+		if !r.t.tracked {
+			return pgx.ErrNoRows
+		}
+		r.t.tracked = r.t.otherTracks
+		owner, ref := "Sun Pictures", "fp-123"
+		*dest[0].(**string) = &owner
+		*dest[1].(**string) = &ref
+		return nil
+	case strings.Contains(r.sql, "SELECT author_id, deleted_at IS NOT NULL"):
 		*dest[0].(*uuid.UUID) = r.t.authorID
 		*dest[1].(*bool) = r.t.deleted
+		if len(dest) > 2 {
+			*dest[2].(*bool) = r.t.scheduled
+		}
 		return nil
-	case strings.Contains(r.sql, "FROM copyright_title_reviews WHERE post_id = $1 FOR UPDATE"):
+	case strings.Contains(r.sql, "FROM copyright_title_reviews WHERE post_id = $1 FOR UPDATE"),
+		strings.Contains(r.sql, "WHERE post_id = $1 AND author_id = $2 FOR UPDATE"):
 		if r.t.existing == nil {
 			return pgx.ErrNoRows
 		}
@@ -194,6 +254,7 @@ func (r titleScan) Scan(dest ...any) error {
 		if r.t.reason != nil {
 			*dest[10].(*string) = *r.t.reason
 		}
+		*dest[11].(*bool) = r.t.appealed
 		return nil
 	}
 	return fmt.Errorf("unexpected query: %s", r.sql)

@@ -642,7 +642,9 @@ type PostCreatedPayload struct {
 // makes the transition, on the same topic as PostCreated:
 //
 //	pending  the video is held for review (the author is told; never sent
-//	         while the hold is still waiting for the video's duration)
+//	         while the hold is still waiting for the video's duration), or
+//	         (Appeal, migration 076) the author appealed a block and it is
+//	         back with a reviewer, still hidden
 //	cleared  a reviewer cleared it; the post is now normally visible
 //	blocked  a reviewer upheld the block, or (migration 075) the system
 //	         blocked it at once for a registered rights owner (Reason
@@ -687,7 +689,15 @@ type PostCopyrightReviewPayload struct {
 	//   CopyrightReasonOwnerRegistered  blocked at once for the registered owner
 	//   CopyrightReasonMuteRequested    the owner asked for a mute; held for a reviewer
 	// Empty on an ordinary title-match hold and a reviewer's decision on it.
-	Reason     string    `json:"reason,omitempty"`
+	Reason string `json:"reason,omitempty"`
+	// Appeal is true once the author has appealed the review's block
+	// (post-service migration 076; additive): a "pending" with it is the
+	// appeal going back to a reviewer (the hold stays; the author just asked,
+	// so no hold notice is due), and a "cleared" or "blocked" with it is the
+	// reviewer's answer to the appeal — a NEW notice for the author, never
+	// deduplicated against the block it reopened. trust-safety keys its
+	// strike on ReviewID, so a confirmed block is not counted twice.
+	Appeal     bool      `json:"appeal,omitempty"`
 	OccurredAt time.Time `json:"occurred_at"`
 }
 

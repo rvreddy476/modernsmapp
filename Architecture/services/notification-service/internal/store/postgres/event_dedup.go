@@ -22,11 +22,3 @@ func (s *Store) ClaimEventDedup(ctx context.Context, id uuid.UUID) (bool, error)
 	}
 	return tag.RowsAffected() == 1, nil
 }
-
-// ReleaseEventDedup removes a claim whose delivery did not happen, so a
-// redelivery can claim and try again (the copyright email: a send that
-// failed after its claim). A missing row is not an error.
-func (s *Store) ReleaseEventDedup(ctx context.Context, id uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM notify_meta.event_dedup WHERE event_id = $1`, id)
-	return err
-}

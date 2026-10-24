@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,9 +21,14 @@ import (
 
 	Author (gateway-authenticated, X-User-Id):
 	POST /v1/posts/:postId/copyright-review/request   {"note": "I own the rights…"} (1-1000 chars)
-	     → 200 {state, matched_title, created_at, decided_at?, review_requested_at}
-	     404 REVIEW_NOT_FOUND (no review of the caller's on that post),
-	     409 REVIEW_ALREADY_DECIDED
+	     → 200 {state, matched_title, created_at, decided_at?, review_requested_at, appealed_at?, can_appeal}
+	     On a pending review: the note for the reviewer. On a BLOCKED review
+	     (the system's owner_registered block or a reviewer's) it is the ONE
+	     appeal (migration 076): state goes back to "pending" with
+	     appealed_at set, the video stays hidden until a reviewer clears it.
+	     404 REVIEW_NOT_FOUND (no review of the caller's on that post, or the
+	     post is deleted), 409 REVIEW_ALREADY_DECIDED (cleared),
+	     409 APPEAL_ALREADY_USED (a second appeal — waiting or answered)
 
 	The author's own GET /v1/posts/:postId and uploads rows carry
 	"copyright_review": {state: pending|cleared|blocked, matched_title,
@@ -48,10 +54,25 @@ import (
 	      tube:videos.moderate | tube:videos.remove — oldest first
 	POST  /v1/posts/internal/admin/copyright/reviews/:reviewId/decision {"decision":"clear"|"block","note"}
 	      clear: tube:videos.moderate (or .remove); block: tube:videos.remove
+	      An appealed review (appealed_at set) is decided the same way: clear
+	      publishes it as normal (the withheld PostCreated once, subscriber
+	      fan-out included); block confirms the block.
+	DELETE /v1/posts/internal/admin/copyright/tracks/:postId/:titleId  {"note"} (optional body)
+	      tube:videos.remove — removes a tracked owner match; the post's
+	      eligibility is restated so earnings_excluded clears (unless another
+	      owner tracks it) → 200 {post_id, title_id, still_tracked};
+	      404 TRACK_NOT_FOUND
 
 	Every write is audited (post_admin_audit) with the token's act claim.
 	Errors: 400 INVALID_REQUEST / INVALID_COPYRIGHT_TITLE, 404 TITLE_NOT_FOUND /
-	REVIEW_NOT_FOUND, 409 REVIEW_ALREADY_DECIDED, 503 COPYRIGHT_REVIEW_UNAVAILABLE.
+	REVIEW_NOT_FOUND / TRACK_NOT_FOUND, 409 REVIEW_ALREADY_DECIDED,
+	503 COPYRIGHT_REVIEW_UNAVAILABLE.
+
+	Fingerprint provider (service-only; copyright_owner_match_internal.go):
+	POST  /v1/posts/internal/copyright/owner-match
+	      {"post_id","title_id","reference","policy":"block"|"track"|"mute"}
+	      internal key AND a trust-safety-service token carrying
+	      post:copyright-owner-match.write → 200 {outcome, review_id?}
 */
 
 // Error codes these routes answer with.
@@ -61,6 +82,10 @@ const (
 	CodeCopyrightReviewNotFound    = "REVIEW_NOT_FOUND"
 	CodeCopyrightReviewDecided     = "REVIEW_ALREADY_DECIDED"
 	CodeCopyrightReviewUnavailable = "COPYRIGHT_REVIEW_UNAVAILABLE"
+	// CodeCopyrightAppealUsed: the author already appealed this block (076).
+	CodeCopyrightAppealUsed = "APPEAL_ALREADY_USED"
+	// CodeCopyrightTrackNotFound: no tracked owner match for that post and entry.
+	CodeCopyrightTrackNotFound = "TRACK_NOT_FOUND"
 )
 
 func (h *Handler) registerCopyrightReviewAdminRoutes(g *gin.RouterGroup, gate func(perms ...string) gin.HandlerFunc) {
@@ -69,6 +94,9 @@ func (h *Handler) registerCopyrightReviewAdminRoutes(g *gin.RouterGroup, gate fu
 	g.PATCH("/copyright/titles/:titleId", gate(PermVideosRemove), h.AdminUpdateCopyrightTitle)
 	g.GET("/copyright/reviews", gate(PermVideosModerate, PermVideosRemove), h.AdminListCopyrightReviews)
 	g.POST("/copyright/reviews/:reviewId/decision", gate(PermVideosModerate, PermVideosRemove), h.AdminDecideCopyrightReview)
+	// Removing a tracked owner match restores the video's earnings: the
+	// catalogue's own permission (tube:videos.remove), like the title writes.
+	g.DELETE("/copyright/tracks/:postId/:titleId", gate(PermVideosRemove), h.AdminRemoveCopyrightOwnerTrack)
 }
 
 // CopyrightReviewDecisionPermission: a block keeps a video down (a
@@ -93,6 +121,12 @@ func writeCopyrightReviewError(c *gin.Context, op string, err error) {
 		api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, CodeCopyrightReviewNotFound, "Copyright review not found", nil)
 	case errors.Is(err, postgres.ErrTitleReviewDecided):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusConflict, CodeCopyrightReviewDecided, "This copyright review has already been decided", nil)
+	case errors.Is(err, postgres.ErrTitleReviewAppealed):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusConflict, CodeCopyrightAppealUsed, "This block has already been appealed", nil)
+	case errors.Is(err, postgres.ErrOwnerTrackNotFound):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, CodeCopyrightTrackNotFound, "No tracked owner match for that post and title", nil)
+	case errors.Is(err, postgres.ErrPostNotFound):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, "POST_NOT_FOUND", "Post not found", nil)
 	case errors.Is(err, service.ErrCopyrightReviewUnavailable):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusServiceUnavailable, CodeCopyrightReviewUnavailable, "Copyright review is unavailable", nil)
 	default:
@@ -321,6 +355,41 @@ func (h *Handler) AdminDecideCopyrightReview(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, out, nil)
 }
 
+type copyrightTrackRemoveBody struct {
+	Note string `json:"note"`
+}
+
+// AdminRemoveCopyrightOwnerTrack — DELETE .../copyright/tracks/:postId/:titleId.
+// The body ({"note"}) is optional.
+func (h *Handler) AdminRemoveCopyrightOwnerTrack(c *gin.Context) {
+	ctx := c.Request.Context()
+	actor, ok := requireActor(c)
+	if !ok {
+		return
+	}
+	postID, perr := uuid.Parse(c.Param("postId"))
+	titleID, terr := uuid.Parse(c.Param("titleId"))
+	if perr != nil || terr != nil || postID == uuid.Nil || titleID == uuid.Nil {
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post or title ID", nil)
+		return
+	}
+	var body copyrightTrackRemoveBody
+	if c.Request.Body != nil && c.Request.ContentLength != 0 {
+		dec := json.NewDecoder(c.Request.Body)
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil && !errors.Is(err, io.EOF) {
+			api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "body must be {note}", nil)
+			return
+		}
+	}
+	out, err := h.svc.RemoveCopyrightOwnerTrack(ctx, postID, titleID, actor, body.Note)
+	if err != nil {
+		writeCopyrightReviewError(c, "remove copyright owner track", err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
 type copyrightReviewRequestBody struct {
 	Note string `json:"note"`
 }
@@ -352,6 +421,8 @@ func (h *Handler) RequestCopyrightReview(c *gin.Context) {
 			api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, CodeCopyrightReviewNotFound, "No copyright review on this post", nil)
 		case errors.Is(err, postgres.ErrTitleReviewDecided):
 			api.ErrorWithContext(ctx, c.Writer, http.StatusConflict, CodeCopyrightReviewDecided, "This copyright review has already been decided", nil)
+		case errors.Is(err, postgres.ErrTitleReviewAppealed):
+			api.ErrorWithContext(ctx, c.Writer, http.StatusConflict, CodeCopyrightAppealUsed, "You have already asked for a review of this block", nil)
 		case errors.Is(err, service.ErrCopyrightReviewUnavailable):
 			api.ErrorWithContext(ctx, c.Writer, http.StatusServiceUnavailable, CodeCopyrightReviewUnavailable, "Copyright review is unavailable", nil)
 		default:

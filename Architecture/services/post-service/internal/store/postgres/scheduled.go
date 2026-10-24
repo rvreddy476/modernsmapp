@@ -153,26 +153,9 @@ func (s *Store) PublishScheduledPostWithHold(
 		return nil, fmt.Errorf("publish scheduled: flip: %w", err)
 	}
 
-	held := false
-	if hold != nil {
-		placed, err := insertTitleReviewHoldTx(ctx, tx, postID, rowAuthor, hold)
-		if err != nil {
-			return nil, fmt.Errorf("publish scheduled: hold: %w", err)
-		}
-		held = placed
-		if !placed {
-			// One review per post: an existing one decides. A post still
-			// under any hold is not announced.
-			if err := tx.QueryRow(ctx, `SELECT active_restriction_count > 0 FROM posts WHERE id = $1`, postID).Scan(&held); err != nil {
-				return nil, fmt.Errorf("publish scheduled: hold state: %w", err)
-			}
-		}
-		if placed {
-			// The hold bumped search_rev; PublishedPost reports the final one.
-			if err := tx.QueryRow(ctx, `SELECT search_rev FROM posts WHERE id = $1`, postID).Scan(&rev); err != nil {
-				return nil, fmt.Errorf("publish scheduled: read rev: %w", err)
-			}
-		}
+	held, err := scheduledFlipHeldTx(ctx, tx, postID, rowAuthor, hold, &rev)
+	if err != nil {
+		return nil, err
 	}
 
 	if event != nil && !held {
@@ -195,6 +178,51 @@ func (s *Store) PublishScheduledPostWithHold(
 		return nil, fmt.Errorf("publish scheduled: commit: %w", err)
 	}
 	return &PublishedPost{SearchRev: rev, PublishedAt: now, Held: held}, nil
+}
+
+// scheduledFlipHeldTx decides, inside the flip's transaction, whether the
+// post goes live HELD (its PostCreated withheld until a reviewer clears it).
+//
+//   - hold set (the title rule matched at the flip): the hold is placed;
+//     when a review already exists (one per post) it decides — a post still
+//     under any hold is not announced.
+//   - hold nil: a copyright review placed BEFORE the flip — an owner match
+//     on the scheduled post (migration 075/076) — still holds it when its
+//     title_review restriction is active. Then the flip announces nothing:
+//     the review owes the PostCreated (announce_on_clear) and a reviewer's
+//     clear emits it, once. Without this the flip would fan a hidden video
+//     out to subscribers and the clear would have nothing left to announce.
+//     Other restriction sources (trust-safety's) keep their old behaviour.
+//
+// rev is updated when the placed hold bumped the search revision.
+func scheduledFlipHeldTx(ctx context.Context, tx pgx.Tx, postID, rowAuthor uuid.UUID, hold *TitleReviewHold, rev *int64) (bool, error) {
+	if hold == nil {
+		var held bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM post_restrictions
+			               WHERE post_id = $1 AND source = 'title_review' AND state = 'active')`, postID).Scan(&held); err != nil {
+			return false, fmt.Errorf("publish scheduled: copyright hold state: %w", err)
+		}
+		return held, nil
+	}
+	placed, err := insertTitleReviewHoldTx(ctx, tx, postID, rowAuthor, hold)
+	if err != nil {
+		return false, fmt.Errorf("publish scheduled: hold: %w", err)
+	}
+	if !placed {
+		// One review per post: an existing one decides. A post still
+		// under any hold is not announced.
+		var held bool
+		if err := tx.QueryRow(ctx, `SELECT active_restriction_count > 0 FROM posts WHERE id = $1`, postID).Scan(&held); err != nil {
+			return false, fmt.Errorf("publish scheduled: hold state: %w", err)
+		}
+		return held, nil
+	}
+	// The hold bumped search_rev; PublishedPost reports the final one.
+	if err := tx.QueryRow(ctx, `SELECT search_rev FROM posts WHERE id = $1`, postID).Scan(rev); err != nil {
+		return false, fmt.Errorf("publish scheduled: read rev: %w", err)
+	}
+	return true, nil
 }
 
 // ReschedulePost moves a scheduled post's publish_at. Author-only and only
