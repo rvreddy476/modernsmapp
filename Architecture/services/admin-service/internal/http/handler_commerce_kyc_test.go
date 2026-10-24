@@ -232,7 +232,7 @@ func TestKYCDocumentView_WritesOneAuditRow(t *testing.T) {
 		e.StatusCode != http.StatusOK || e.RequestID != "req-product-1" {
 		t.Fatalf("audit row = %+v", e)
 	}
-	if want := map[string]any{"document_id": k.doc, "document_type": "pan_card"}; !reflect.DeepEqual(e.Payload, want) {
+	if want := map[string]any{"document_id": k.doc, "document_type": "pan_card", "side": "front"}; !reflect.DeepEqual(e.Payload, want) {
 		t.Fatalf("audit detail = %v, want %v", e.Payload, want)
 	}
 }
@@ -484,7 +484,7 @@ func TestKYCDocumentList_ReturnsOnlyThePinnedFields(t *testing.T) {
 		t.Fatalf("list body %s (%v)", w.Body.String(), err)
 	}
 	want := map[string]any{"id": doc, "document_type": "aadhaar", "verification_status": "pending",
-		"uploaded_at": "2026-09-30T10:00:00Z", "viewable": true}
+		"uploaded_at": "2026-09-30T10:00:00Z", "viewable": true, "back_viewable": false}
 	if !reflect.DeepEqual(env.Data[0], want) {
 		t.Fatalf("list row = %v, want %v", env.Data[0], want)
 	}

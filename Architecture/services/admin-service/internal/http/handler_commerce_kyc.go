@@ -72,6 +72,9 @@ type kycDocument struct {
 	VerificationStatus string `json:"verification_status"`
 	UploadedAt         string `json:"uploaded_at"`
 	Viewable           bool   `json:"viewable"`
+	// BackViewable: the document has a back side (voter ID, passport;
+	// commerce migration 045) that opens with ?side=back.
+	BackViewable bool `json:"back_viewable"`
 }
 
 var errUnreadableDocuments = errors.New("commerce answered an unreadable document list")
@@ -217,7 +220,16 @@ func (h *Handler) viewSellerKYCDocument(p product) gin.HandlerFunc {
 				break
 			}
 		}
-		if doc == nil || !doc.Viewable {
+		// Only "back" is a side; anything else is the front. The back opens
+		// only when commerce listed one, so ?side=back never falls through to
+		// the front image under a "back" label.
+		back := c.Query("side") == "back"
+		side, viewable := "front", doc != nil && doc.Viewable
+		if back {
+			side, viewable = "back", doc != nil && doc.BackViewable
+		}
+		info.set("side", side)
+		if !viewable {
 			if doc != nil {
 				info.set("document_type", doc.DocumentType)
 				info.set("viewable", false)
@@ -226,10 +238,14 @@ func (h *Handler) viewSellerKYCDocument(p product) gin.HandlerFunc {
 			return
 		}
 		info.set("document_type", doc.DocumentType)
+		rawQuery := ""
+		if back {
+			rawQuery = "side=back"
+		}
 
 		// 2-4. Open the image, judge it, write the audit row, stream it.
 		h.relayDocumentImage(c, p, info, service.ProductRequest{
-			Method: http.MethodGet, Path: "/sellers/" + seller + "/documents/" + document + "/image",
+			Method: http.MethodGet, Path: "/sellers/" + seller + "/documents/" + document + "/image", RawQuery: rawQuery,
 			Permission: perm, Actor: actorFrom(c),
 		}, kycImageTypes, notFound, "kyc document stream ended early", "seller_id", seller, "document_id", document)
 	}
