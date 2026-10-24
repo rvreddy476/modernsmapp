@@ -9,6 +9,10 @@ import (
 )
 
 // PairSignals holds precomputed pair-level signals from ScyllaDB.
+//
+// The table's mutual_follow column is no longer read or written
+// (25 Oct 2026): a candidate is never someone the viewer follows, so it was
+// always false.
 type PairSignals struct {
 	ViewerID              uuid.UUID
 	CandidateID           uuid.UUID
@@ -18,7 +22,6 @@ type PairSignals struct {
 	SameCity              bool
 	SameSchool            bool
 	SameCompany           bool
-	MutualFollow          bool
 	ProfileView7d         int
 	ReverseView7d         int
 	ChatInteraction30d    int
@@ -44,14 +47,14 @@ func (s *ScyllaStore) UpsertPairSignals(_ context.Context, ps *PairSignals) erro
 		INSERT INTO user_pair_signals (
 			viewer_id, candidate_id,
 			mutual_friend_count, mutual_strong_count, common_group_count,
-			same_city, same_school, same_company, mutual_follow,
+			same_city, same_school, same_company,
 			profile_view_7d, reverse_view_7d, chat_interaction_30d,
 			content_coengagement_7d, triadic_closure_score, interest_similarity,
 			last_updated_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		ps.ViewerID, ps.CandidateID,
 		ps.MutualFriendCount, ps.MutualStrongCount, ps.CommonGroupCount,
-		ps.SameCity, ps.SameSchool, ps.SameCompany, ps.MutualFollow,
+		ps.SameCity, ps.SameSchool, ps.SameCompany,
 		ps.ProfileView7d, ps.ReverseView7d, ps.ChatInteraction30d,
 		ps.ContentCoengagement7d, ps.TriadicClosureScore, ps.InterestSimilarity,
 		time.Now(),
@@ -63,7 +66,7 @@ func (s *ScyllaStore) GetPairSignals(_ context.Context, viewerID, candidateID uu
 	ps := &PairSignals{ViewerID: viewerID, CandidateID: candidateID}
 	err := s.session.Query(`
 		SELECT mutual_friend_count, mutual_strong_count, common_group_count,
-		       same_city, same_school, same_company, mutual_follow,
+		       same_city, same_school, same_company,
 		       profile_view_7d, reverse_view_7d, chat_interaction_30d,
 		       content_coengagement_7d, triadic_closure_score, interest_similarity,
 		       last_updated_at
@@ -72,7 +75,7 @@ func (s *ScyllaStore) GetPairSignals(_ context.Context, viewerID, candidateID uu
 		viewerID, candidateID,
 	).Scan(
 		&ps.MutualFriendCount, &ps.MutualStrongCount, &ps.CommonGroupCount,
-		&ps.SameCity, &ps.SameSchool, &ps.SameCompany, &ps.MutualFollow,
+		&ps.SameCity, &ps.SameSchool, &ps.SameCompany,
 		&ps.ProfileView7d, &ps.ReverseView7d, &ps.ChatInteraction30d,
 		&ps.ContentCoengagement7d, &ps.TriadicClosureScore, &ps.InterestSimilarity,
 		&ps.LastUpdatedAt,
@@ -97,7 +100,7 @@ func (s *ScyllaStore) GetPairSignalsBatch(_ context.Context, viewerID uuid.UUID,
 	iter := s.session.Query(`
 		SELECT candidate_id,
 		       mutual_friend_count, mutual_strong_count, common_group_count,
-		       same_city, same_school, same_company, mutual_follow,
+		       same_city, same_school, same_company,
 		       profile_view_7d, reverse_view_7d, chat_interaction_30d,
 		       content_coengagement_7d, triadic_closure_score, interest_similarity,
 		       last_updated_at
@@ -110,7 +113,7 @@ func (s *ScyllaStore) GetPairSignalsBatch(_ context.Context, viewerID uuid.UUID,
 	for iter.Scan(
 		&ps.CandidateID,
 		&ps.MutualFriendCount, &ps.MutualStrongCount, &ps.CommonGroupCount,
-		&ps.SameCity, &ps.SameSchool, &ps.SameCompany, &ps.MutualFollow,
+		&ps.SameCity, &ps.SameSchool, &ps.SameCompany,
 		&ps.ProfileView7d, &ps.ReverseView7d, &ps.ChatInteraction30d,
 		&ps.ContentCoengagement7d, &ps.TriadicClosureScore, &ps.InterestSimilarity,
 		&ps.LastUpdatedAt,

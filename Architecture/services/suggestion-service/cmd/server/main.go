@@ -252,28 +252,20 @@ func main() {
 	}
 }
 
-// runTieredBatchJobs runs the 3 tiered batch jobs on separate schedules.
+// runTieredBatchJobs runs the tiered batch jobs on separate schedules. (The
+// hourly hot-signals refresh was retired on 25 Oct 2026: its one signal,
+// mutual follow, was always false for a candidate. See batch.go.)
 func runTieredBatchJobs(ctx context.Context, svc *service.Service) {
 	// Initial delay to let the service warm up
 	time.Sleep(30 * time.Second)
 
-	hotTicker := time.NewTicker(1 * time.Hour)
 	fullTicker := time.NewTicker(6 * time.Hour)
 	coldTicker := time.NewTicker(24 * time.Hour)
-	defer hotTicker.Stop()
 	defer fullTicker.Stop()
 	defer coldTicker.Stop()
 
 	for {
 		select {
-		case <-hotTicker.C:
-			slog.Info("[cron] starting hot signals refresh")
-			batchCtx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
-			if err := svc.RunHotSignalsRefresh(batchCtx); err != nil {
-				slog.Error("[cron] hot signals error", "error", err)
-			}
-			cancel()
-
 		case <-fullTicker.C:
 			slog.Info("[cron] starting full candidate generation")
 			batchCtx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)

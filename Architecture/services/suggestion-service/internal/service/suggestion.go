@@ -152,6 +152,14 @@ func (s *Service) GetSuggestions(ctx context.Context, viewerID uuid.UUID, suggTy
 		candidates, _ = s.store.GetCandidates(ctx, viewerID, suggType, 50, 0)
 	}
 
+	// 3.5. "Follows you" is merged live on every cache miss: the batch runs
+	// every six hours, and the follow event clears this cache so that a new
+	// follower appears now (and one followed back, gone, leaves). See
+	// follows_you.go.
+	if suggType == "friend" {
+		candidates = liveFollowsYou(ctx, s.store, viewerID, candidates, time.Now())
+	}
+
 	// 4. Still empty → popular users fallback
 	if len(candidates) == 0 {
 		return s.getPopularFallback(ctx, viewerID, suggType, limit, surface)

@@ -10,60 +10,14 @@ import (
 	"github.com/google/uuid"
 )
 
-// ─── RunHotSignalsRefresh — every 1 hour (active users only) ──
-
-// RunHotSignalsRefresh recomputes fast-changing signals for recently active users
-// and writes them to ScyllaDB user_pair_signals.
-func (s *Service) RunHotSignalsRefresh(ctx context.Context) error {
-	log.Println("[batch:hot] Starting hot signals refresh")
-	start := time.Now()
-
-	// Get users active in last 24 hours
-	activeUserIDs, err := s.store.GetActiveUsers(ctx, 24*time.Hour)
-	if err != nil {
-		return err
-	}
-
-	log.Printf("[batch:hot] Processing %d active users", len(activeUserIDs))
-	var errCount int
-
-	for _, viewerID := range activeUserIDs {
-		if ctx.Err() != nil {
-			break
-		}
-
-		// Get viewer's current friend candidate IDs
-		candidates, err := s.store.GetCandidates(ctx, viewerID, "friend", 200, 0)
-		if err != nil || len(candidates) == 0 {
-			continue
-		}
-
-		candidateIDs := make([]uuid.UUID, len(candidates))
-		for i, c := range candidates {
-			candidateIDs[i] = c.CandidateID
-		}
-
-		// Batch check mutual follows
-		mutualFollows, _ := s.store.BatchCheckMutualFollows(ctx, viewerID, candidateIDs)
-
-		// Write signals to ScyllaDB for each pair
-		if s.scyllaStore != nil {
-			for _, cid := range candidateIDs {
-				ps := &store.PairSignals{
-					ViewerID:     viewerID,
-					CandidateID:  cid,
-					MutualFollow: mutualFollows[cid],
-				}
-				if err := s.scyllaStore.UpsertPairSignals(ctx, ps); err != nil {
-					errCount++
-				}
-			}
-		}
-	}
-
-	log.Printf("[batch:hot] Complete: %d users in %s (%d errors)", len(activeUserIDs), time.Since(start), errCount)
-	return nil
-}
+// ─── Hot signals refresh: retired ────────────────────────────
+//
+// RunHotSignalsRefresh (hourly, removed 25 Oct 2026) computed one signal,
+// "the viewer and this candidate follow each other", and wrote it to
+// ScyllaDB user_pair_signals with every other column zero. A candidate is
+// never someone the viewer follows, so the signal was always false and the
+// job only rewrote empty rows. Its replacement, "Follows you", is read live
+// (see follows_you.go).
 
 // ─── RunFriendCandidatesFull — every 6 hours ──────────────────
 
@@ -133,6 +87,28 @@ func (s *Service) runFriendBatchForUser(ctx context.Context, viewerID uuid.UUID)
 	// IS a mutual follow now, so the set is empty by definition; see the
 	// note where store.GetMutualFollowNonFriends used to be.)
 
+	// "Follows you": the viewer's newest followers whom the viewer has not
+	// followed back (founder, 25 Oct 2026). A failed read drops only this
+	// source; the read path merges the live list again (follows_you.go).
+	followers, err := s.store.GetFollowersNotFollowedBack(ctx, viewerID, excludeSlice)
+	if err != nil {
+		log.Printf("[batch:friend] follows-you read for %s failed: %v", viewerID, err)
+		followers = nil
+	}
+	followedYouAt := make(map[uuid.UUID]time.Time, len(followers))
+	followerIDs := make([]uuid.UUID, 0, len(followers))
+	for i, f := range followers { // excludeSlice is applied in SQL; newest first
+		followedYouAt[f.UserID] = f.FollowedAt
+		// Only the newest followsYouBatchPool join the pool: every pooled
+		// person is scored with two more queries, the share cap keeps at most
+		// a third of the list, and an older follow scores lower anyway. An
+		// older follower found by another source still carries FOLLOWS_YOU
+		// through followedYouAt.
+		if i < followsYouBatchPool {
+			followerIDs = append(followerIDs, f.UserID)
+		}
+	}
+
 	// 3. Load viewer profile for community matching
 	viewerProfile, err := s.store.GetProfileInfo(ctx, viewerID)
 	if err != nil {
@@ -178,6 +154,7 @@ func (s *Service) runFriendBatchForUser(ctx context.Context, viewerID uuid.UUID)
 	// 7. Merge all candidate pools, deduplicate, exclude
 	allCandidateIDs := collectUniqueMulti(
 		fofCandidates, triadicCandidates,
+		followerIDs,
 		communityCandidateIDs,
 		groupCandidateIDs, schoolCandidateIDs, companyCandidateIDs,
 		excludeSet,
@@ -203,8 +180,9 @@ func (s *Service) runFriendBatchForUser(ctx context.Context, viewerID uuid.UUID)
 		return err
 	}
 
-	// 9. Batch check mutual follows
-	mutualFollows, _ := s.store.BatchCheckMutualFollows(ctx, viewerID, allCandidateIDs)
+	// 9. (A mutual-follow check stood here until 25 Oct 2026; it was always
+	// false, since followed people are excluded. See followedYouAt above.)
+	now := time.Now()
 
 	// 10. Batch load common group counts
 	commonGroupCounts, _ := s.store.GetCommonGroupCountBatch(ctx, viewerID, allCandidateIDs)
@@ -258,7 +236,7 @@ func (s *Service) runFriendBatchForUser(ctx context.Context, viewerID uuid.UUID)
 		}
 		sameLocation := viewerProfile.Location != "" && viewerProfile.Location == profile.Location
 		sameProfession := viewerProfile.Profession != "" && viewerProfile.Profession == profile.Profession
-		isMutualFollow := mutualFollows[candidateID]
+		followedAt, followsYou := followedYouAt[candidateID]
 		commonGroups := commonGroupCounts[candidateID]
 
 		// Check school/company overlap from candidate's life entries
@@ -286,7 +264,7 @@ func (s *Service) runFriendBatchForUser(ctx context.Context, viewerID uuid.UUID)
 
 		// Determine dismiss penalty
 		var dismissPenalty float32
-		reasons := computeReasonTypes(mutualCount, commonGroups, sameLocation, sameSchool, sameCompany, sameProfession, isMutualFollow)
+		reasons := computeReasonTypes(mutualCount, commonGroups, sameLocation, sameSchool, sameCompany, sameProfession, followsYou)
 		for _, r := range reasons {
 			if pen, ok := dismissPatterns[r]; ok && (dismissPenalty == 0 || pen < dismissPenalty) {
 				dismissPenalty = pen
@@ -317,7 +295,8 @@ func (s *Service) runFriendBatchForUser(ctx context.Context, viewerID uuid.UUID)
 			SameProfession:        sameProfession,
 			SameSchool:            sameSchool,
 			SameCompany:           sameCompany,
-			MutualFollow:          isMutualFollow,
+			FollowsYou:            followsYou,
+			FollowsYouAgeDays:     ageDays(followedAt, now),
 			TriadicClosureScore:   triadicScore,
 			ProfileView7d:         ps.ProfileView7d,
 			ReverseView7d:         ps.ReverseView7d,
@@ -343,9 +322,9 @@ func (s *Service) runFriendBatchForUser(ctx context.Context, viewerID uuid.UUID)
 			continue
 		}
 
-		bucket := categorizeBucket(mutualCount, commonGroups, sameSchool, sameCompany, sameLocation, isMutualFollow, triadicScore)
+		bucket := categorizeBucket(mutualCount, commonGroups, sameSchool, sameCompany, sameLocation, followsYou, triadicScore)
 
-		cityOnly := sameLocation && mutualCount == 0 && !sameSchool && !sameCompany && commonGroups == 0 && !isMutualFollow
+		cityOnly := sameLocation && mutualCount == 0 && !sameSchool && !sameCompany && commonGroups == 0 && !followsYou
 
 		scored = append(scored, scoredEntry{
 			candidate: store.SuggestionCandidate{
@@ -389,6 +368,9 @@ func (s *Service) runFriendBatchForUser(ctx context.Context, viewerID uuid.UUID)
 	for i, d := range diversified {
 		finalCandidates[i] = d.SuggestionCandidate
 	}
+	// At most one card in followsYouOneIn is a follows-you card, so a
+	// popular account's followers do not flood the list.
+	finalCandidates = capFollowsYouShare(finalCandidates)
 
 	// 17. Write to DB
 	if err := s.store.DeleteCandidatesForViewer(ctx, viewerID, "friend"); err != nil {
@@ -641,6 +623,7 @@ func mapKeys(m map[uuid.UUID]bool) []uuid.UUID {
 func collectUniqueMulti(
 	fofMap map[uuid.UUID]int,
 	triadicMap map[uuid.UUID]int,
+	followerIDs []uuid.UUID,
 	communityIDs []uuid.UUID,
 	groupIDs []uuid.UUID,
 	schoolIDs []uuid.UUID,
@@ -661,6 +644,9 @@ func collectUniqueMulti(
 		add(id)
 	}
 	for id := range triadicMap {
+		add(id)
+	}
+	for _, id := range followerIDs {
 		add(id)
 	}
 	for _, id := range communityIDs {
@@ -687,15 +673,18 @@ func toSet(items []string) map[string]bool {
 	return s
 }
 
-func categorizeBucket(mutualCount, commonGroups int, sameSchool, sameCompany, sameLocation, mutualFollow bool, triadicScore float32) string {
+// categorizeBucket names a candidate's source_bucket. A follower who is not
+// followed back is "follows_you" whatever else they share: it is the reason
+// their card leads with, and the bucket capFollowsYouShare caps.
+func categorizeBucket(mutualCount, commonGroups int, sameSchool, sameCompany, sameLocation, followsYou bool, triadicScore float32) string {
+	if followsYou {
+		return BucketFollowsYou
+	}
 	if mutualCount > 0 {
 		return "fof"
 	}
 	if triadicScore > 0 {
 		return "triadic"
-	}
-	if mutualFollow {
-		return "mutual_follow"
 	}
 	if commonGroups > 0 {
 		return "group"
@@ -712,8 +701,11 @@ func categorizeBucket(mutualCount, commonGroups int, sameSchool, sameCompany, sa
 	return "community"
 }
 
-func computeReasonTypes(mutualCount, commonGroups int, sameLocation, sameSchool, sameCompany, sameProfession, mutualFollow bool) []string {
+func computeReasonTypes(mutualCount, commonGroups int, sameLocation, sameSchool, sameCompany, sameProfession, followsYou bool) []string {
 	var reasons []string
+	if followsYou {
+		reasons = append(reasons, ReasonFollowsYou)
+	}
 	if mutualCount > 0 {
 		reasons = append(reasons, "MUTUAL_FRIENDS")
 	}
@@ -731,9 +723,6 @@ func computeReasonTypes(mutualCount, commonGroups int, sameLocation, sameSchool,
 	}
 	if sameProfession {
 		reasons = append(reasons, "SAME_PROFESSION")
-	}
-	if mutualFollow {
-		reasons = append(reasons, "MUTUAL_FOLLOW")
 	}
 	return reasons
 }

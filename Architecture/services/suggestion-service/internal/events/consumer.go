@@ -443,30 +443,27 @@ func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.Event
 		return err
 	}
 
-	followerID, err := uuid.Parse(payload.FollowerID)
-	if err != nil {
+	if _, err := uuid.Parse(payload.FollowerID); err != nil {
 		return err
 	}
-	followeeID, err := uuid.Parse(payload.FolloweeID)
-	if err != nil {
+	if _, err := uuid.Parse(payload.FolloweeID); err != nil {
 		return err
 	}
 
 	// The follower now follows the followee, so the followee is excluded from
 	// both of the follower's lists (a suggestion card offers only Follow).
 	// Drop both caches so the next read refilters instead of serving the
-	// followee for up to the cache TTL.
-	//
-	// A mutual follow also makes the two FRIENDS (the definition since
-	// Connect was retired on 24 Oct 2026), so it changes the followee's
-	// friend-graph signals too: drop their friend cache as well.
-	mutualFollows, _ := c.store.BatchCheckMutualFollows(ctx, followerID, []uuid.UUID{followeeID})
-	if mutualFollows[followeeID] {
-		c.invalidateCache(ctx, payload.FolloweeID, "friend")
-		log.Printf("[suggestion-consumer] Mutual follow detected: %s↔%s", payload.FollowerID, payload.FolloweeID)
-	}
+	// followee for up to the cache TTL. When this follow is a follow BACK,
+	// that is also what takes the followee's "Follows you" card out of the
+	// follower's list.
 	c.invalidateCache(ctx, payload.FollowerID, "friend")
 	c.invalidateCache(ctx, payload.FollowerID, "follow")
+	// The followee has a new follower: drop their friend cache so the next
+	// read merges the live follower list and shows "Follows you" now rather
+	// than after the next batch (service/follows_you.go). This also covers a
+	// follow that makes the two friends (a mutual follow), which changes the
+	// followee's friend-graph signals.
+	c.invalidateCache(ctx, payload.FolloweeID, "friend")
 	return nil
 }
 
@@ -476,6 +473,9 @@ func (c *Consumer) handleUserUnfollowed(ctx context.Context, envelope events.Eve
 		return err
 	}
 	c.invalidateCache(ctx, payload.FollowerID, "follow")
+	// The followee lost a follower: drop their friend cache so the read
+	// path's live merge removes that person's "Follows you" card.
+	c.invalidateCache(ctx, payload.FolloweeID, "friend")
 	return nil
 }
 

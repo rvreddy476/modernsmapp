@@ -283,16 +283,6 @@ func (s *Store) GetFriendsOfFriends(ctx context.Context, userID uuid.UUID, exclu
 	return result, rows.Err()
 }
 
-// CheckMutualFollow checks if both users follow each other.
-func (s *Store) CheckMutualFollow(ctx context.Context, userA, userB uuid.UUID) (bool, error) {
-	var count int
-	err := s.appDB.QueryRow(ctx, `
-		SELECT COUNT(*) FROM follows
-		WHERE (follower_id = $1 AND followee_id = $2) OR (follower_id = $2 AND followee_id = $1)
-	`, userA, userB).Scan(&count)
-	return count == 2, err
-}
-
 // GetPopularUsers returns user IDs sorted by follower count (fallback).
 func (s *Store) GetPopularUsers(ctx context.Context, limit int) ([]uuid.UUID, error) {
 	rows, err := s.appDB.Query(ctx, `
@@ -585,50 +575,61 @@ func (s *Store) CleanExpiredCooldowns(ctx context.Context) (int64, error) {
 
 // ─── Helpers ─────────────────────────────────────────────────
 
-// BatchCheckMutualFollows checks mutual follow status for a viewer against multiple candidates.
-func (s *Store) BatchCheckMutualFollows(ctx context.Context, viewerID uuid.UUID, candidateIDs []uuid.UUID) (map[uuid.UUID]bool, error) {
-	if len(candidateIDs) == 0 {
-		return map[uuid.UUID]bool{}, nil
-	}
-	// Get all follow relationships involving the viewer and the candidates
+// (BatchCheckMutualFollows was removed on 25 Oct 2026. Every candidate path
+// excludes people the viewer follows, so "this candidate and the viewer
+// follow each other" was always false for a candidate; the MUTUAL_FOLLOW
+// reason it fed is replaced by FOLLOWS_YOU, read by GetFollowersNotFollowedBack.)
+
+// FollowerScanLimit bounds the "Follows you" source: only the viewer's newest
+// followers (followee index, newest first) are read, the same cap as
+// FriendScanLimit. A follower past it is simply not suggested.
+const FollowerScanLimit = 1000
+
+// FollowerEdge is one person who follows the viewer, and when they did.
+type FollowerEdge struct {
+	UserID     uuid.UUID
+	FollowedAt time.Time
+}
+
+// GetFollowersNotFollowedBack is the "Follows you" People-you-may-know source
+// (founder, 25 Oct 2026): people who follow the viewer whom the viewer has
+// not followed back, newest follow first. A suggestion card offers only
+// Follow, so following back is the one action it asks for.
+//
+// The scan reads the viewer's newest FollowerScanLimit followers, then drops,
+// in SQL: the viewer, excludeIDs (the batch exclude set: cooldowns, blocks,
+// follows), anyone the viewer already follows (so friends too), a block in
+// either direction, and hidden (deactivated / deletion-scheduled) accounts.
+func (s *Store) GetFollowersNotFollowedBack(ctx context.Context, viewerID uuid.UUID, excludeIDs []uuid.UUID) ([]FollowerEdge, error) {
 	rows, err := s.appDB.Query(ctx, `
-		SELECT followee_id FROM follows WHERE follower_id = $1 AND followee_id = ANY($2)
-	`, viewerID, candidateIDs)
+		SELECT f.follower_id, f.created_at
+		FROM (
+			SELECT follower_id, created_at FROM follows
+			WHERE followee_id = $1
+			ORDER BY created_at DESC
+			LIMIT $3
+		) f
+		WHERE f.follower_id <> $1
+		  AND f.follower_id <> ALL(COALESCE($2::uuid[], '{}'::uuid[]))
+		  AND NOT EXISTS (SELECT 1 FROM follows vf WHERE vf.follower_id = $1 AND vf.followee_id = f.follower_id)
+		  AND NOT EXISTS (SELECT 1 FROM hidden_users h WHERE h.user_id = f.follower_id)
+		  AND NOT EXISTS (SELECT 1 FROM blocks bv WHERE bv.blocker_id = $1 AND bv.blocked_id = f.follower_id)
+		  AND NOT EXISTS (SELECT 1 FROM blocks bc WHERE bc.blocker_id = f.follower_id AND bc.blocked_id = $1)
+		ORDER BY f.created_at DESC
+	`, viewerID, excludeIDs, FollowerScanLimit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	viewerFollows := make(map[uuid.UUID]bool)
+	var out []FollowerEdge
 	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
+		var e FollowerEdge
+		if err := rows.Scan(&e.UserID, &e.FollowedAt); err != nil {
 			return nil, err
 		}
-		viewerFollows[id] = true
+		out = append(out, e)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-
-	// Now check reverse direction
-	rows2, err := s.appDB.Query(ctx, `
-		SELECT follower_id FROM follows WHERE followee_id = $1 AND follower_id = ANY($2)
-	`, viewerID, candidateIDs)
-	if err != nil {
-		return nil, err
-	}
-	defer rows2.Close()
-	result := make(map[uuid.UUID]bool)
-	for rows2.Next() {
-		var id uuid.UUID
-		if err := rows2.Scan(&id); err != nil {
-			return nil, err
-		}
-		if viewerFollows[id] {
-			result[id] = true
-		}
-	}
-	return result, rows2.Err()
+	return out, rows.Err()
 }
 
 // CountCandidates returns count of candidates for a viewer.
@@ -1193,28 +1194,8 @@ func (s *Store) RemoveCandidateFromAllViewers(ctx context.Context, candidateID u
 	return err
 }
 
-// ─── Active users query ──────────────────────────────────────
-
-// GetActiveUsers returns user IDs with recent activity (based on counts table updated_at).
-func (s *Store) GetActiveUsers(ctx context.Context, window time.Duration) ([]uuid.UUID, error) {
-	cutoff := time.Now().Add(-window)
-	rows, err := s.appDB.Query(ctx, `
-		SELECT user_id FROM counts WHERE updated_at >= $1
-	`, cutoff)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
+// (GetActiveUsers was removed on 25 Oct 2026 with its one caller, the
+// retired hourly hot-signals refresh.)
 
 // ─── EnsureSchema update ─────────────────────────────────────
 

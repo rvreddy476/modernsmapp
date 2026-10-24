@@ -20,8 +20,13 @@ type ScoringInput struct {
 	SameCompany    bool
 
 	// Graph structure signals
-	MutualFollow        bool
 	TriadicClosureScore float32 // 0.0-1.0
+
+	// "Follows you": the candidate follows the viewer and the viewer has not
+	// followed back. FollowsYouAgeDays is how long ago they followed; a
+	// recent follow scores higher (see followsYouScore).
+	FollowsYou        bool
+	FollowsYouAgeDays float64
 
 	// Behavioral signals
 	ProfileView7d         int     // future scaffold (0)
@@ -64,6 +69,13 @@ func ScoreFriendCandidate(input ScoringInput) ScoringOutput {
 	var score float64
 	var reasons []string
 	var parts []string
+
+	// --- Follows you (first, so it leads the explain text) ---
+	if input.FollowsYou {
+		score += followsYouScore(input.FollowsYouAgeDays)
+		reasons = append(reasons, ReasonFollowsYou)
+		parts = append(parts, FollowsYouText)
+	}
 
 	// --- Core graph signals ---
 	if input.MutualFriendCount > 0 {
@@ -127,12 +139,8 @@ func ScoreFriendCandidate(input ScoringInput) ScoringOutput {
 	}
 
 	// --- Graph structure signals ---
-	if input.MutualFollow {
-		score += 15.0
-		reasons = append(reasons, "MUTUAL_FOLLOW")
-		parts = append(parts, "You follow each other")
-	}
-
+	// (MUTUAL_FOLLOW / "You follow each other" was removed on 25 Oct 2026:
+	// a candidate is never someone the viewer follows, so it never fired.)
 	if input.TriadicClosureScore > 0 {
 		score += 7.0 * float64(input.TriadicClosureScore)
 		reasons = append(reasons, "TRIADIC_CLOSURE")
@@ -304,6 +312,36 @@ func ScoreFollowCandidate(input FollowScoringInput) FollowScoringOutput {
 		ReasonCodes: reasons,
 		ExplainText: buildExplainText(parts),
 	}
+}
+
+// ─── Follows you ─────────────────────────────────────────────
+
+const (
+	// ReasonFollowsYou is the reason code for "this person follows you and
+	// you have not followed back" (founder, 25 Oct 2026). Clients map it to
+	// FollowsYouText; the server also puts that text first in explain_text.
+	ReasonFollowsYou = "FOLLOWS_YOU"
+	// FollowsYouText is the card's reason line.
+	FollowsYouText = "Follows you"
+	// BucketFollowsYou is the source_bucket of a follows-you candidate.
+	BucketFollowsYou = "follows_you"
+
+	// A follower scores followsYouFloor plus followsYouRecent, halved every
+	// followsYouHalfLifeDays since they followed: about 24 on the day (above
+	// four mutual friends, 12·ln5 ≈ 19), 17 after a week, 10.7 after a month
+	// (a shared school or company is 10), never below 10.
+	followsYouFloor        = 10.0
+	followsYouRecent       = 14.0
+	followsYouHalfLifeDays = 7.0
+)
+
+// followsYouScore weighs a follow by how recent it is. A negative age (clock
+// skew) counts as today.
+func followsYouScore(ageDays float64) float64 {
+	if ageDays < 0 || math.IsNaN(ageDays) {
+		ageDays = 0
+	}
+	return followsYouFloor + followsYouRecent*math.Pow(0.5, ageDays/followsYouHalfLifeDays)
 }
 
 // ─── Helpers ─────────────────────────────────────────────────
