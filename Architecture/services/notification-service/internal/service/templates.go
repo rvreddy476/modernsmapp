@@ -84,6 +84,21 @@ var Templates = map[string]NotificationTemplate{
 		PushEligible: true, CanAggregate: false,
 	},
 
+	// Follow requests to private accounts (follow_request_notify.go,
+	// 2026-10-24). Category `follows` (push_follows / inapp_follows). {actor}
+	// is the profile display name looked up at delivery ("Someone" when
+	// unknown); never aggregated, one notice per event and recipient.
+	FollowRequestType: {
+		EventType: FollowRequestType, TitleTemplate: "{actor} requested to follow you",
+		BodyTemplate: "Tap to accept or decline", Icon: "follow", Priority: "medium",
+		PushEligible: true, CanAggregate: false,
+	},
+	FollowRequestAcceptedType: {
+		EventType: FollowRequestAcceptedType, TitleTemplate: "{actor} accepted your follow request",
+		BodyTemplate: "You can now see their posts", Icon: "follow", Priority: "medium",
+		PushEligible: true, CanAggregate: false,
+	},
+
 	// Paid memberships (membership_notify.go, 2026-10-23). Category
 	// `memberships` (push_memberships / inapp_memberships). {member} and
 	// {creator} are profile display names looked up at delivery ("Someone" /

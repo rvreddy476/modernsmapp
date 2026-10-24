@@ -47,6 +47,13 @@ env:
   # nobody. See docs/adr/adr-dormant-products.md.
   DOORSTEP_PUBLIC_ENABLED: "false"
   DOORSTEP_PILOT_USER_IDS: ""
+  # Parked products: each has its own edge gate as well as its
+  # GATEWAY_DISABLED_PREFIXES entry, so dropping one from that list does not
+  # open it. /v1/broadcast-channels has no gate of its own: chat uses it.
+  QA_PUBLIC_ENABLED: "false"
+  PAGES_PUBLIC_ENABLED: "false"
+  MEMORIES_PUBLIC_ENABLED: "false"
+  FOOD_PUBLIC_ENABLED: "false"
   # Security sweep #13 (21 Oct 2026): staging mirrors the launch state.
   # Groups are closed at the edge until reviewed for launch, and the parked
   # products with no dormant gate of their own (Feast, Q&A, business pages,

@@ -84,6 +84,11 @@ services:
       # over. Empty lets nobody through.
       DOORSTEP_PUBLIC_ENABLED: "false"
       DOORSTEP_PILOT_USER_IDS: ${DOORSTEP_PILOT_USER_IDS:-}
+      # Parked products stay closed at the edge until each launches.
+      QA_PUBLIC_ENABLED: "false"
+      PAGES_PUBLIC_ENABLED: "false"
+      MEMORIES_PUBLIC_ENABLED: "false"
+      FOOD_PUBLIC_ENABLED: "false"
 
   identity-auth:
     <<: *transport_certs

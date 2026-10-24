@@ -275,7 +275,10 @@ func main() {
 		}
 		slog.Warn("media-service: INTERNAL_SERVICE_KEY not set — internal routes disabled (non-production only)")
 	}
-	mediaHandler := mediaHttp.New(mediaSvc).WithInternalKey(internalServiceKey)
+	mediaHandler := mediaHttp.New(mediaSvc).WithInternalKey(internalServiceKey).
+		// Hidden chats: the viewer's token `sid` binds a chat_open to the
+		// device it was issued to (internal/http/chat_open.go).
+		WithSessionKeys(jwtKeys)
 
 	// Trending sounds (2026-10-24): every 15 minutes one replica reads
 	// post-service's use counts (GET /v1/internal/sound-uses) and stores the

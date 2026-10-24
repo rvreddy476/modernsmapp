@@ -355,6 +355,15 @@ services:
       DOORSTEP_SERVICE_URL: http://doorstep-service:8122
       DOORSTEP_PUBLIC_ENABLED: ${DOORSTEP_PUBLIC_ENABLED:-false}
       DOORSTEP_PILOT_USER_IDS: ${DOORSTEP_PILOT_USER_IDS:-2d598287-eee7-40b4-a7f5-b46b9412e4e7,66668bc2-a3f6-40a5-9cdd-c998dcf72f29}
+      # Parked products (security sweep #13): each answers 404 at the edge
+      # unless its flag is "true". Open on dev so the services stay testable;
+      # every launch environment sets them "false" (deploy/services/api-gateway
+      # values, docker-compose.production.yml). /v1/broadcast-channels has no
+      # gate: the web messenger and Android chat (a launch app) use it.
+      QA_PUBLIC_ENABLED: ${QA_PUBLIC_ENABLED:-true}
+      PAGES_PUBLIC_ENABLED: ${PAGES_PUBLIC_ENABLED:-true}
+      MEMORIES_PUBLIC_ENABLED: ${MEMORIES_PUBLIC_ENABLED:-true}
+      FOOD_PUBLIC_ENABLED: ${FOOD_PUBLIC_ENABLED:-true}
     ports:
       - "8080:8080"
     depends_on:

@@ -86,6 +86,13 @@ type Handler struct {
 	// internalAltText backs PATCH /v1/media/internal/:mediaId/alt-text
 	// (internal_alt_text_handler.go); nil means the service.
 	internalAltText internalAltTextService
+	// sessionKeys verify the viewer's access token for its `sid`, the device
+	// binding of a hidden chat's open token (chat_open.go); nil binds by
+	// X-Device-Id alone.
+	sessionKeys *JWTKeySet
+	// hlsPlaylists backs the HLS playlist route; nil means the service. An
+	// interface so the chat_open carry (chat_open.go) is testable.
+	hlsPlaylists hlsPlaylistService
 }
 
 func New(svc *service.Service) *Handler {
@@ -105,7 +112,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 	// read and every user-authenticated write in this service — breaking
 	// ordinary clients. It is attached to the internal route group only,
 	// below.
-	v1 := r.Group("/v1/media")
+	// chatOpenContext first: a hidden chat's `chat_open` leaves the URL
+	// before anything can log it, and rides the context to the chat
+	// authorizer only (chat_open.go).
+	v1 := r.Group("/v1/media", h.chatOpenContext())
 	{
 		// Write endpoints — require authentication
 		v1.POST("/init", authMW, h.InitUpload)
@@ -646,11 +656,12 @@ func (h *Handler) ServeHLSPlaylist(c *gin.Context) {
 }
 
 func (h *Handler) serveHLSPlaylist(c *gin.Context, mediaID uuid.UUID, playlist string) {
-	body, err := h.svc.GetHLSPlaylist(c.Request.Context(), deliveryViewer(c), mediaID, playlist)
+	body, err := h.hlsSvc().GetHLSPlaylist(c.Request.Context(), deliveryViewer(c), mediaID, playlist)
 	if err != nil {
 		writeDeliveryError(c, err)
 		return
 	}
+	body = carryChatOpen(c, mediaID, body)
 	c.Header("Content-Type", "application/vnd.apple.mpegurl")
 	c.Header("Cache-Control", "private, no-store")
 	c.Data(http.StatusOK, "application/vnd.apple.mpegurl", body)

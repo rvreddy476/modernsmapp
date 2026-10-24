@@ -1189,12 +1189,15 @@ func (s *Store) SetPinned(ctx context.Context, postID, authorID uuid.UUID, pinne
 	return err
 }
 
-// CountPinnedByAuthor returns the number of pinned posts for an author.
-func (s *Store) CountPinnedByAuthor(ctx context.Context, authorID uuid.UUID) (int, error) {
+// CountPinnedByAuthor returns the number of pinned posts for an author,
+// leaving out exceptPostID (uuid.Nil: none) so pinning an already pinned post
+// again is not counted against the limit.
+func (s *Store) CountPinnedByAuthor(ctx context.Context, authorID, exceptPostID uuid.UUID) (int, error) {
 	var count int
 	err := s.db.QueryRow(ctx, `
-		SELECT COUNT(*) FROM posts WHERE author_id = $1 AND is_pinned = true AND deleted_at IS NULL
-	`, authorID).Scan(&count)
+		SELECT COUNT(*) FROM posts
+		WHERE author_id = $1 AND is_pinned = true AND deleted_at IS NULL AND id <> $2
+	`, authorID, exceptPostID).Scan(&count)
 	return count, err
 }
 

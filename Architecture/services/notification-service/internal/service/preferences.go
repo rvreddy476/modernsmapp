@@ -188,7 +188,9 @@ func categoryForEvent(eventType string) prefCategory {
 	// control it (both default TRUE, so no effective change for defaults).
 	case "post_reposted", "post.reposted", "post.shared":
 		return catReposts
-	case "user.followed", "follow":
+	// Follow requests to a private account and their acceptance ride the
+	// same toggle pair as a follow (follow_request_notify.go).
+	case "user.followed", "follow", FollowRequestType, FollowRequestAcceptedType:
 		return catFollows
 	case "user.friend_request", "user.friend_accepted", "friend_request", "friend_accepted":
 		return catFriendRequests

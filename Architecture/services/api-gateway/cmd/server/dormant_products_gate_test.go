@@ -69,7 +69,7 @@ func TestDormantProductsGateDoesNotTouchNeighbours(t *testing.T) {
 	products := productsFrom(t, nil)
 	for _, path := range []string{
 		"/v1/groupsx", "/v1/broadcast-channels", "/v1/community-service", "/v1/chat/requests",
-		"/v1/riders", "/v1/ride", "/v1/food", "/v1/datingx", "/v1/date",
+		"/v1/riders", "/v1/ride", "/v1/foodx", "/v1/datingx", "/v1/date",
 	} {
 		if gated(t, products, path) {
 			t.Errorf("%s was gated but is not a dormant product", path)
@@ -380,7 +380,10 @@ func TestDoorstepFlagDefaultsClosed(t *testing.T) {
 
 func TestDoorstepGateDoesNotTouchNeighbours(t *testing.T) {
 	products := productsFrom(t, map[string]string{"DATING_PUBLIC_ENABLED": "true", "RIDER_PUBLIC_ENABLED": "true",
-		"GROUPS_PUBLIC_ENABLED": "true", "COMMUNITIES_PUBLIC_ENABLED": "true"})
+		"GROUPS_PUBLIC_ENABLED": "true", "COMMUNITIES_PUBLIC_ENABLED": "true",
+		// /v1/food has its own parked gate now; open it so this test still
+		// asks only whether the DOORSTEP entry reaches a neighbour.
+		"FOOD_PUBLIC_ENABLED": "true"})
 	for _, path := range []string{"/v1/doorsteps", "/v1/door", "/v1/doorstepx/catalogue", "/v1/food", "/v1/rider/rides"} {
 		if gated(t, products, path) {
 			t.Errorf("%s was gated by the doorstep entry", path)

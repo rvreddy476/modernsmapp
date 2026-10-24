@@ -96,6 +96,18 @@ func TestLaunchValuesCloseParkedProducts(t *testing.T) {
 					t.Errorf("%s is open with these values", path)
 				}
 			}
+			// Each parked product's own gate is closed too, independently
+			// of GATEWAY_DISABLED_PREFIXES (parked_products_gate_test.go).
+			for flag, paths := range parkedProductFlags {
+				if got, ok := env[flag]; !ok || got != "false" {
+					t.Errorf("%s = %q (set: %v), want \"false\"", flag, got, ok)
+				}
+				for _, path := range paths {
+					if !gated(t, products, path) {
+						t.Errorf("%s is open at its own gate with these values", path)
+					}
+				}
+			}
 
 			// The disabled list parses against the REAL route table (a typo
 			// is a boot failure) and closes every parked prefix.

@@ -217,7 +217,7 @@ type posterContentAuthorizer interface {
 // NewHTTPChatAuthorizer asks chat-service. Chat attachments have no
 // signed-out reading.
 func NewHTTPChatAuthorizer(baseURL, internalKey string, client *http.Client) *HTTPContentAuthorizer {
-	return newHTTPAuthorizer(baseURL, "/internal/v1/chat/media-access", internalKey, client, anonymousDenied)
+	return newHTTPAuthorizer(baseURL, chatMediaAccessPath, internalKey, client, anonymousDenied)
 }
 
 // NewHTTPGroupAuthorizer asks group-service, which owns group posts and their
@@ -283,6 +283,9 @@ func (a *HTTPContentAuthorizer) authorize(ctx context.Context, viewerID, mediaID
 	if purpose != "" {
 		payload["purpose"] = purpose
 	}
+	// Hidden chats (chat_open.go): chat-service alone is sent the viewer's
+	// open token. It is never logged here.
+	addChatOpen(ctx, a.path, payload)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("%w: encode request: %v", ErrDeliveryUnresolved, err)

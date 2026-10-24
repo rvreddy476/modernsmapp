@@ -264,6 +264,17 @@ type Service struct {
 	appearancePosts       func(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) (map[uuid.UUID]*PostDetail, error)
 	appearanceProfileGate func(ctx context.Context, viewerID *uuid.UUID, userID uuid.UUID) bool
 
+	// A creator's Reposts tab (creator_reposts.go, 2026-10-24), each nil-safe
+	// and set only by tests: the store page (nil = the Postgres store), the
+	// reposter's profile gate (nil = canViewAuthor) and the viewer's follow
+	// edges with the reposter (nil = followEdgesOfRestrictedPosts).
+	userRepostsSeam   userRepostsPage
+	repostProfileGate func(ctx context.Context, viewerID *uuid.UUID, userID uuid.UUID) bool
+	repostEdgesSeam   func(ctx context.Context, viewerID *uuid.UUID, reposterID uuid.UUID) map[uuid.UUID]followEdges
+	// pins stands in for the Postgres store on PUT /v1/posts/:postId/pin
+	// (TogglePin); nil = pgStore.
+	pins pinStore
+
 	// Members-only reads (members_read.go, 2026-10-23), each nil-safe and
 	// set only by tests: batchPostsSeam stands in for the batch read's
 	// loading (the members-only redaction still runs after it),
@@ -2302,17 +2313,38 @@ func (s *Service) GetAuthorCountsForViewer(ctx context.Context, authorID uuid.UU
 }
 
 // TogglePin sets or unsets pinned status, enforcing max 3 pinned per author.
+// MaxPinnedPosts is how many posts one author may pin to their profile.
+const MaxPinnedPosts = 3
+
+// ErrPinLimit refuses a pin past MaxPinnedPosts (409 PIN_LIMIT, details
+// {max: 3}). Pinning a post that is already pinned is not counted.
+var ErrPinLimit = errors.New("PIN_LIMIT")
+
+// pinStore is the pin read and write; the Postgres store satisfies it.
+type pinStore interface {
+	CountPinnedByAuthor(ctx context.Context, authorID, exceptPostID uuid.UUID) (int, error)
+	SetPinned(ctx context.Context, postID, authorID uuid.UUID, pinned bool) error
+}
+
+func (s *Service) pinReads() pinStore {
+	if s.pins != nil {
+		return s.pins
+	}
+	return s.pgStore
+}
+
 func (s *Service) TogglePin(ctx context.Context, postID, authorID uuid.UUID, pinned bool) error {
+	pins := s.pinReads()
 	if pinned {
-		count, err := s.pgStore.CountPinnedByAuthor(ctx, authorID)
+		count, err := pins.CountPinnedByAuthor(ctx, authorID, postID)
 		if err != nil {
 			return err
 		}
-		if count >= 3 {
-			return fmt.Errorf("maximum 3 pinned posts allowed")
+		if count >= MaxPinnedPosts {
+			return ErrPinLimit
 		}
 	}
-	return s.pgStore.SetPinned(ctx, postID, authorID, pinned)
+	return pins.SetPinned(ctx, postID, authorID, pinned)
 }
 
 func (s *Service) React(ctx context.Context, postID, userID uuid.UUID, reaction string) error {
@@ -4248,31 +4280,18 @@ type UserRepostItem struct {
 	QuoteText      string    `json:"quote_text,omitempty"`
 	OriginalPostID uuid.UUID `json:"original_post_id"`
 	CreatedAt      string    `json:"created_at"`
+	// Post is the original post as THIS viewer may read it (the batch read:
+	// the original author's privacy, blocks, review state, age gate, and the
+	// members-only redaction). A repost whose original the viewer may not
+	// read is left off the page, so this is always set on a listed item.
+	Post *PostDetail `json:"post,omitempty"`
 }
 
-// ListUserRepostsResult is the response shape for GET /users/{userId}/reposts.
+// ListUserRepostsResult is the response shape for GET
+// /v1/creators/:creatorId/reposts (and the older /v1/users/:userId/reposts).
 type ListUserRepostsResult struct {
 	Items      []UserRepostItem `json:"items"`
 	NextCursor string           `json:"next_cursor,omitempty"`
-}
-
-// ListUserReposts returns a paginated list of reposts by a given user.
-func (s *Service) ListUserReposts(ctx context.Context, userID uuid.UUID, limit int, cursor string) (*ListUserRepostsResult, error) {
-	reposts, nextCursor, err := s.pgStore.ListUserReposts(ctx, userID, limit, cursor)
-	if err != nil {
-		return nil, err
-	}
-	items := make([]UserRepostItem, 0, len(reposts))
-	for _, r := range reposts {
-		items = append(items, UserRepostItem{
-			RepostID:       r.ID,
-			Type:           r.RepostType,
-			QuoteText:      r.QuoteText,
-			OriginalPostID: r.OriginalPostID,
-			CreatedAt:      r.CreatedAt.Format(time.RFC3339),
-		})
-	}
-	return &ListUserRepostsResult{Items: items, NextCursor: nextCursor}, nil
 }
 
 // BatchGetRepostStates returns repost states for multiple posts for a single user.

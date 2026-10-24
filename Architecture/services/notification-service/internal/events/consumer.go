@@ -69,6 +69,10 @@ type Consumer struct {
 	// copyrightNotify delivers the author's copyright review notices
 	// (copyright_consumer.go); the service implements it, tests pass a fake.
 	copyrightNotify copyrightNotifier
+	// followRequestNotify delivers private-account follow-request notices
+	// (follow_request_consumer.go); the service implements it, tests pass a
+	// fake.
+	followRequestNotify followRequestNotifier
 
 	// Like aggregation: key = "postID:postAuthorID"
 	likeAgg   map[string]*likeAggEntry
@@ -113,6 +117,7 @@ func NewConsumerWithDialer(brokers []string, groupID string, topic string, svc *
 		c.datingNotify = svc
 		c.creditNotify = svc
 		c.copyrightNotify = svc
+		c.followRequestNotify = svc
 	}
 	return c
 }
@@ -205,6 +210,12 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 
 		deepLink := fmt.Sprintf("/u/%s", e.FollowerID)
 		return c.service.CreateNotification(ctx, followeeID, followerID, "follow", "user", followerID, deepLink, e.CreatedAt)
+
+	case events.GraphFollowRequested, events.GraphFollowRequestAccepted:
+		// Private accounts (follow_request_consumer.go): the request to the
+		// account, the acceptance to the requester. Idempotent per event id
+		// and recipient.
+		return c.handleFollowRequestEvent(ctx, envelope, m.Value)
 
 	case events.PostCreated:
 		// Module 1 P0-3: upload notifications go to CHANNEL SUBSCRIBERS,

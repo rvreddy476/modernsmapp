@@ -1462,7 +1462,12 @@ func (h *Handler) TogglePin(c *gin.Context) {
 	}
 
 	if err := h.svc.TogglePin(c.Request.Context(), postID, userID, req.Pinned); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		if errors.Is(err, service.ErrPinLimit) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "PIN_LIMIT",
+				"You can pin up to 3 posts. Unpin one to pin this.", map[string]int{"max": service.MaxPinnedPosts})
+			return
+		}
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil)
 		return
 	}
 
@@ -3397,6 +3402,9 @@ func (h *Handler) RegisterRepostRoutes(r *gin.Engine) {
 	}
 
 	r.GET("/v1/users/:userId/reposts", h.ListUserReposts)
+	// The reachable route: /v1/creators is proxied to this service, /v1/users
+	// is not (service/creator_reposts.go).
+	r.GET("/v1/creators/:creatorId/reposts", h.ListCreatorReposts)
 }
 
 type CreateRepostRequest struct {
@@ -3547,10 +3555,22 @@ func (h *Handler) ListReposters(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, result, nil)
 }
 
-func (h *Handler) ListUserReposts(c *gin.Context) {
-	userID, err := uuid.Parse(c.Param("userId"))
+// ListUserReposts is GET /v1/users/:userId/reposts — the older route, kept;
+// the gateway sends /v1/users to user-service, so clients use
+// GET /v1/creators/:creatorId/reposts (ListCreatorReposts). Same answer.
+func (h *Handler) ListUserReposts(c *gin.Context) { h.answerUserReposts(c, c.Param("userId")) }
+
+// ListCreatorReposts is GET /v1/creators/:creatorId/reposts: the creator's
+// reposts as the viewer may see them (service/creator_reposts.go). Signed-out
+// viewers get the public answer. {data:{items:[…], next_cursor}}; 400
+// INVALID_ID / INVALID_CURSOR.
+func (h *Handler) ListCreatorReposts(c *gin.Context) { h.answerUserReposts(c, c.Param("creatorId")) }
+
+func (h *Handler) answerUserReposts(c *gin.Context, rawUserID string) {
+	ctx := c.Request.Context()
+	userID, err := uuid.Parse(rawUserID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil)
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil)
 		return
 	}
 
@@ -3561,10 +3581,18 @@ func (h *Handler) ListUserReposts(c *gin.Context) {
 		}
 	}
 	cursor := c.Query("cursor")
+	var viewerID *uuid.UUID
+	if id, err := uuid.Parse(c.GetHeader("X-User-Id")); err == nil && id != uuid.Nil {
+		viewerID = &id
+	}
 
-	result, err := h.svc.ListUserReposts(c.Request.Context(), userID, limit, cursor)
+	result, err := h.svc.ListUserReposts(ctx, userID, viewerID, limit, cursor)
+	if errors.Is(err, service.ErrInvalidRepostCursor) {
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_CURSOR", "Invalid cursor", nil)
+		return
+	}
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		api.ErrorWithContext(ctx, c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil)
 		return
 	}
 

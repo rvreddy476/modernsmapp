@@ -412,6 +412,12 @@ func notifTitleBody(notifType string) (string, string) {
 		return "New Comment", "Someone commented on your post"
 	case "comment_reaction":
 		return "New Reaction", "Someone reacted to your comment"
+	// Follow requests (follow_request_notify.go). The named copy rides a
+	// render override; this is the anonymous fallback.
+	case FollowRequestType:
+		return "Someone requested to follow you", "Tap to accept or decline"
+	case FollowRequestAcceptedType:
+		return "Someone accepted your follow request", "You can now see their posts"
 	case "friend_request":
 		return "Friend Request", "You have a new friend request"
 	case "friend_accepted":

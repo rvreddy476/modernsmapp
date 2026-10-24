@@ -20,6 +20,9 @@ type jwtClaims struct {
 	Sub    string `json:"sub"`
 	UserID string `json:"user_id"`
 	Exp    int64  `json:"exp"`
+	// Sid is the auth-service session the token was minted for (hidden-chat
+	// open tokens are bound to it; chat_open.go).
+	Sid string `json:"sid"`
 }
 
 // JWTKeySet — C7. Active is the current signing secret; previous is the
@@ -65,21 +68,38 @@ func (k JWTKeySet) rsaFor(kid string) (*rsa.PublicKey, bool) {
 // user ID. Uses stdlib only (crypto/hmac + crypto/sha256). C7: picks
 // secret by `kid` so rotation windows can verify both old + new tokens.
 func verifyJWT(tokenStr string, keys JWTKeySet) (string, error) {
+	claims, err := verifyJWTClaims(tokenStr, keys)
+	if err != nil {
+		return "", err
+	}
+	return claims.subject(), nil
+}
+
+// subject is the token's user id: `sub`, else the legacy `user_id`.
+func (c jwtClaims) subject() string {
+	if c.Sub != "" {
+		return c.Sub
+	}
+	return c.UserID
+}
+
+// verifyJWTClaims is verifyJWT returning every claim this service reads.
+func verifyJWTClaims(tokenStr string, keys JWTKeySet) (jwtClaims, error) {
 	parts := strings.Split(tokenStr, ".")
 	if len(parts) != 3 {
-		return "", fmt.Errorf("invalid token format")
+		return jwtClaims{}, fmt.Errorf("invalid token format")
 	}
 
 	headerRaw, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return "", fmt.Errorf("header decode: %w", err)
+		return jwtClaims{}, fmt.Errorf("header decode: %w", err)
 	}
 	var header struct {
 		Alg string `json:"alg"`
 		Kid string `json:"kid"`
 	}
 	if err := json.Unmarshal(headerRaw, &header); err != nil {
-		return "", fmt.Errorf("header parse: %w", err)
+		return jwtClaims{}, fmt.Errorf("header parse: %w", err)
 	}
 	// Accept HS256 and RS256 only (no `none`/alg-confusion). RS256 lets this
 	// service verify with a public key it can't mint with; HS256 stays accepted
@@ -89,54 +109,50 @@ func verifyJWT(tokenStr string, keys JWTKeySet) (string, error) {
 	case "HS256":
 		secret, ok := keys.secretFor(header.Kid)
 		if !ok {
-			return "", fmt.Errorf("unknown kid")
+			return jwtClaims{}, fmt.Errorf("unknown kid")
 		}
 		mac := hmac.New(sha256.New, secret)
 		mac.Write([]byte(signingInput))
 		expectedSig := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
 		if !hmac.Equal([]byte(parts[2]), []byte(expectedSig)) {
-			return "", fmt.Errorf("invalid signature")
+			return jwtClaims{}, fmt.Errorf("invalid signature")
 		}
 	case "RS256":
 		pub, ok := keys.rsaFor(header.Kid)
 		if !ok {
-			return "", fmt.Errorf("unknown kid")
+			return jwtClaims{}, fmt.Errorf("unknown kid")
 		}
 		sig, derr := base64.RawURLEncoding.DecodeString(parts[2])
 		if derr != nil {
-			return "", fmt.Errorf("invalid signature encoding")
+			return jwtClaims{}, fmt.Errorf("invalid signature encoding")
 		}
 		if verr := verifyRS256(signingInput, sig, pub); verr != nil {
-			return "", fmt.Errorf("invalid signature")
+			return jwtClaims{}, fmt.Errorf("invalid signature")
 		}
 	default:
-		return "", fmt.Errorf("unsupported jwt algorithm")
+		return jwtClaims{}, fmt.Errorf("unsupported jwt algorithm")
 	}
 
 	// Decode payload
 	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
 	if err != nil {
-		return "", fmt.Errorf("payload decode: %w", err)
+		return jwtClaims{}, fmt.Errorf("payload decode: %w", err)
 	}
 
 	var claims jwtClaims
 	if err := json.Unmarshal(payload, &claims); err != nil {
-		return "", fmt.Errorf("claims parse: %w", err)
+		return jwtClaims{}, fmt.Errorf("claims parse: %w", err)
 	}
 
 	if claims.Exp > 0 && time.Now().Unix() > claims.Exp {
-		return "", fmt.Errorf("token expired")
+		return jwtClaims{}, fmt.Errorf("token expired")
 	}
 
-	userID := claims.Sub
-	if userID == "" {
-		userID = claims.UserID
-	}
-	if userID == "" {
-		return "", fmt.Errorf("no user_id in token")
+	if claims.subject() == "" {
+		return jwtClaims{}, fmt.Errorf("no user_id in token")
 	}
 
-	return userID, nil
+	return claims, nil
 }
 
 // extractToken gets the JWT from Authorization header or access_token cookie.

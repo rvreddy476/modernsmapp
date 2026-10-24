@@ -104,6 +104,12 @@ type HandlerTestDeps struct {
 	// TitleReviews backs the copyright title review routes
 	// (copyright_title_review.go).
 	TitleReviews titleReviewStore
+	// A creator's Reposts tab (creator_reposts.go): the store page and the
+	// reposter's profile gate (nil = canViewAuthor against GraphServiceURL).
+	UserReposts       func(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]postgres.Repost, string, error)
+	RepostProfileGate func(ctx context.Context, viewerID *uuid.UUID, userID uuid.UUID) bool
+	// Pins backs PUT /v1/posts/:postId/pin (TogglePin).
+	Pins pinStore
 }
 
 // CreditProfile is one identity-profile account as the credit reads name it.
@@ -162,6 +168,9 @@ func NewForHandlerTests(d HandlerTestDeps) *Service {
 		commentLookupSeam:      d.CommentLookup,
 		actionLinks:            d.ActionLinks,
 		titleReviews:           d.TitleReviews,
+		userRepostsSeam:        d.UserReposts,
+		repostProfileGate:      d.RepostProfileGate,
+		pins:                   d.Pins,
 	}
 	if d.Relationships != nil {
 		s.storyAudience = NewStoryAudience(d.Relationships)

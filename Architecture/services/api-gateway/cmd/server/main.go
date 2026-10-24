@@ -1221,6 +1221,21 @@ func dormantProductsFromEnv(getenv func(string) string, production bool) ([]dorm
 		// except to an internal pilot while the first version is built; an
 		// empty allowlist lets nobody through.
 		{prefixes: []string{"/v1/doorstep"}, enabled: flag("DOORSTEP_PUBLIC_ENABLED"), partnerEnabled: flag("DOORSTEP_PARTNER_ENABLED"), pilotUsers: doorstepPilot},
+		// Parked until each launches (security sweep #13, 21 Oct 2026; launch
+		// is Social, Shorts, Long video and Commerce). Until now these were
+		// closed only by GATEWAY_DISABLED_PREFIXES in the deploy values, so an
+		// environment whose list dropped one opened it; each now has its own
+		// gate that is closed unless its flag says "true".
+		//
+		// /v1/broadcast-channels is deliberately NOT here: the web
+		// messenger's Channels lane and Android chat's Communities read and
+		// write it, and chat is part of the Social launch.
+		{prefixes: []string{"/v1/qa"}, enabled: flag("QA_PUBLIC_ENABLED")},
+		{prefixes: []string{"/v1/pages"}, enabled: flag("PAGES_PUBLIC_ENABLED")},
+		{prefixes: []string{"/v1/memories"}, enabled: flag("MEMORIES_PUBLIC_ENABLED")},
+		// Feast (food-service): the customer app, the restaurant console and
+		// the rider job feed all live under /v1/food; one flag opens them.
+		{prefixes: []string{"/v1/food"}, enabled: flag("FOOD_PUBLIC_ENABLED")},
 	}, nil
 }
 
