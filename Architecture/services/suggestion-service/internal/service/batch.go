@@ -98,29 +98,24 @@ func (s *Service) RunFriendCandidatesFull(ctx context.Context) error {
 
 // runFriendBatchForUser generates and scores friend candidates for a single user.
 func (s *Service) runFriendBatchForUser(ctx context.Context, viewerID uuid.UUID) error {
-	// 1. Load exclusion set
+	// 1. Load exclusion set. People the viewer already follows are in it: a
+	// suggestion card offers only Follow, so the location, profession, group,
+	// school and company pools (which do not exclude in SQL) must not hand
+	// back someone already followed. Pending connection requests no longer
+	// count — Connect was retired on 24 Oct 2026 and no request can be
+	// accepted, so a stale one is no reason to withhold a Follow suggestion.
 	friendIDs, err := s.store.GetFriendIDs(ctx, viewerID)
 	if err != nil {
 		return err
 	}
+	followingIDs, err := s.store.GetFollowingIDs(ctx, viewerID)
+	if err != nil {
+		return err
+	}
 	blockedIDs, _ := s.store.GetBlockedIDs(ctx, viewerID)
-	pendingIDs, _ := s.store.GetPendingRequestIDs(ctx, viewerID)
 	cooldowns, _ := s.store.GetActiveCooldowns(ctx, viewerID)
 
-	excludeSet := make(map[uuid.UUID]bool)
-	excludeSet[viewerID] = true
-	for _, id := range friendIDs {
-		excludeSet[id] = true
-	}
-	for _, id := range blockedIDs {
-		excludeSet[id] = true
-	}
-	for _, id := range pendingIDs {
-		excludeSet[id] = true
-	}
-	for id := range cooldowns {
-		excludeSet[id] = true
-	}
+	excludeSet := candidateExcludeSet(viewerID, cooldowns, friendIDs, followingIDs, blockedIDs)
 	excludeSlice := mapKeys(excludeSet)
 
 	// 2. Generate candidates from multiple sources
@@ -134,8 +129,9 @@ func (s *Service) runFriendBatchForUser(ctx context.Context, viewerID uuid.UUID)
 	// Triadic closure candidates
 	triadicCandidates, _ := s.store.GetTriadicClosureCandidates(ctx, viewerID, excludeSlice, 100)
 
-	// Mutual follow non-friends
-	mutualFollowIDs, _ := s.store.GetMutualFollowNonFriends(ctx, viewerID, excludeSlice)
+	// (Mutual-follow non-friends were a source until 25 Oct 2026. A friend
+	// IS a mutual follow now, so the set is empty by definition; see the
+	// note where store.GetMutualFollowNonFriends used to be.)
 
 	// 3. Load viewer profile for community matching
 	viewerProfile, err := s.store.GetProfileInfo(ctx, viewerID)
@@ -182,7 +178,7 @@ func (s *Service) runFriendBatchForUser(ctx context.Context, viewerID uuid.UUID)
 	// 7. Merge all candidate pools, deduplicate, exclude
 	allCandidateIDs := collectUniqueMulti(
 		fofCandidates, triadicCandidates,
-		mutualFollowIDs, communityCandidateIDs,
+		communityCandidateIDs,
 		groupCandidateIDs, schoolCandidateIDs, companyCandidateIDs,
 		excludeSet,
 	)
@@ -452,26 +448,18 @@ func (s *Service) RunFollowCandidatesFull(ctx context.Context) error {
 }
 
 func (s *Service) runFollowBatchForUser(ctx context.Context, viewerID uuid.UUID) error {
-	// Load exclusion set — must include existing friends, follows, blocked, and cooldowns
+	// Load exclusion set — must include existing friends, follows, blocked,
+	// and cooldowns. A failed follows read ends this viewer's run rather than
+	// risk suggesting people they already follow.
 	friendIDs, _ := s.store.GetFriendIDs(ctx, viewerID)
-	followingIDs, _ := s.store.GetFollowingIDs(ctx, viewerID)
+	followingIDs, err := s.store.GetFollowingIDs(ctx, viewerID)
+	if err != nil {
+		return err
+	}
 	blockedIDs, _ := s.store.GetBlockedIDs(ctx, viewerID)
 	cooldowns, _ := s.store.GetActiveCooldowns(ctx, viewerID)
 
-	excludeSet := make(map[uuid.UUID]bool)
-	excludeSet[viewerID] = true
-	for _, id := range friendIDs {
-		excludeSet[id] = true
-	}
-	for _, id := range followingIDs {
-		excludeSet[id] = true
-	}
-	for _, id := range blockedIDs {
-		excludeSet[id] = true
-	}
-	for id := range cooldowns {
-		excludeSet[id] = true
-	}
+	excludeSet := candidateExcludeSet(viewerID, cooldowns, friendIDs, followingIDs, blockedIDs)
 
 	// Social proof candidates: "friends of viewer also follow X"
 	socialProof, _ := s.store.GetSocialProofCandidates(ctx, viewerID, 200)
@@ -624,6 +612,24 @@ func (s *Service) RunFullBatch(ctx context.Context) error {
 
 // ─── Helpers ─────────────────────────────────────────────────
 
+// candidateExcludeSet is the one place a batch's exclude set is built: the
+// viewer, every id in idLists (friends, people the viewer follows, blocks)
+// and every active cooldown. Both batches pass the viewer's follows, because
+// a suggestion card offers only Follow and suggesting someone already
+// followed is useless.
+func candidateExcludeSet(viewerID uuid.UUID, cooldowns map[uuid.UUID]store.CooldownEntry, idLists ...[]uuid.UUID) map[uuid.UUID]bool {
+	excludeSet := map[uuid.UUID]bool{viewerID: true}
+	for _, ids := range idLists {
+		for _, id := range ids {
+			excludeSet[id] = true
+		}
+	}
+	for id := range cooldowns {
+		excludeSet[id] = true
+	}
+	return excludeSet
+}
+
 func mapKeys(m map[uuid.UUID]bool) []uuid.UUID {
 	keys := make([]uuid.UUID, 0, len(m))
 	for k := range m {
@@ -635,7 +641,6 @@ func mapKeys(m map[uuid.UUID]bool) []uuid.UUID {
 func collectUniqueMulti(
 	fofMap map[uuid.UUID]int,
 	triadicMap map[uuid.UUID]int,
-	mutualFollowIDs []uuid.UUID,
 	communityIDs []uuid.UUID,
 	groupIDs []uuid.UUID,
 	schoolIDs []uuid.UUID,
@@ -656,9 +661,6 @@ func collectUniqueMulti(
 		add(id)
 	}
 	for id := range triadicMap {
-		add(id)
-	}
-	for _, id := range mutualFollowIDs {
 		add(id)
 	}
 	for _, id := range communityIDs {

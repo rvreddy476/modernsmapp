@@ -162,12 +162,12 @@ func (s *Service) GetSuggestions(ctx context.Context, viewerID uuid.UUID, suggTy
 	// not — there was no block lookup anywhere in this service. Blocks are now
 	// filtered at egress in filterBlocked, which covers every return path
 	// including the cache hit above.
+	//
+	// People the viewer already follows are dropped too: a stored candidate
+	// may predate the follow, and a suggestion card offers only Follow.
 	friendIDs, _ := s.store.GetFriendIDs(ctx, viewerID)
-	friendSet := make(map[uuid.UUID]bool, len(friendIDs)+1)
-	friendSet[viewerID] = true
-	for _, fid := range friendIDs {
-		friendSet[fid] = true
-	}
+	followingIDs, _ := s.store.GetFollowingIDs(ctx, viewerID)
+	friendSet := candidateExcludeSet(viewerID, nil, friendIDs, followingIDs)
 	filtered := candidates[:0]
 	for _, c := range candidates {
 		if !friendSet[c.CandidateID] {
@@ -189,37 +189,19 @@ func (s *Service) GetSuggestions(ctx context.Context, viewerID uuid.UUID, suggTy
 	return s.filterBlocked(ctx, viewerID, resp), nil
 }
 
+// InterstitialTriggerFollow is the only interstitial trigger. "friend_accept"
+// (the pop-up after accepting a connection request) was retired on
+// 25 Oct 2026: graph-service answers 410 to accepting since Connect was
+// retired on 24 Oct, so the moment it described can no longer happen. The
+// handler answers it 410; here it returns nothing.
+const InterstitialTriggerFollow = "follow"
+
 // GetInterstitialSuggestions returns contextual suggestions after an action.
 func (s *Service) GetInterstitialSuggestions(ctx context.Context, viewerID uuid.UUID, triggerType string, triggerUserID uuid.UUID, limit int) (*SuggestionsResponse, error) {
 	var candidateIDs []uuid.UUID
 
 	switch triggerType {
-	case "friend_accept":
-		// Return candidates who are friends with both viewer AND the new friend
-		mutualFriends, _ := s.store.GetMutualFriendIDs(ctx, viewerID, triggerUserID, limit*3)
-		// Filter to those NOT already friends with viewer
-		viewerFriends, _ := s.store.GetFriendIDs(ctx, viewerID)
-		viewerFriendSet := make(map[uuid.UUID]bool)
-		viewerFriendSet[viewerID] = true
-		viewerFriendSet[triggerUserID] = true
-		for _, id := range viewerFriends {
-			viewerFriendSet[id] = true
-		}
-		// Get friends of the trigger user as candidates
-		triggerFriends, _ := s.store.GetFriendIDs(ctx, triggerUserID)
-		for _, fid := range triggerFriends {
-			if !viewerFriendSet[fid] && len(candidateIDs) < limit {
-				candidateIDs = append(candidateIDs, fid)
-			}
-		}
-		// Also add mutual friends not yet friends with viewer
-		for _, mfid := range mutualFriends {
-			if !viewerFriendSet[mfid] && len(candidateIDs) < limit {
-				candidateIDs = append(candidateIDs, mfid)
-			}
-		}
-
-	case "follow":
+	case InterstitialTriggerFollow:
 		// Return candidates followed by people who also follow the trigger user
 		socialProof, _ := s.store.GetSocialProofCandidates(ctx, viewerID, limit*3)
 		for cid := range socialProof {

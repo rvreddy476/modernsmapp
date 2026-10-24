@@ -5,6 +5,7 @@ package store
 import (
 	"context"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -23,8 +24,18 @@ func pymkPool(t *testing.T) *pgxpool.Pool {
 	if dsn == "" {
 		t.Skip("SUGGESTION_IT_POSTGRES_DSN not set")
 	}
+	cfg, err := pgxpool.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("parse SUGGESTION_IT_POSTGRES_DSN: %v", err)
+	}
+	// These tests create tables and write rows: refuse anything that is not
+	// visibly a scratch database.
+	if !strings.HasSuffix(cfg.ConnConfig.Database, "_test") {
+		t.Skipf("SUGGESTION_IT_POSTGRES_DSN names database %q; only a scratch database ending in _test is used",
+			cfg.ConnConfig.Database)
+	}
 	ctx := context.Background()
-	pool, err := pgxpool.New(ctx, dsn)
+	pool, err := pgxpool.NewWithConfig(ctx, cfg)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}

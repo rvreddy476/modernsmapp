@@ -320,7 +320,9 @@ func (c *Consumer) handleFriendRequestSent(ctx context.Context, envelope events.
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
 		return err
 	}
-	// Invalidate sender's cache (candidate now excluded via pending)
+	// Connection requests were retired on 24 Oct 2026 (graph-service answers
+	// 410), so this only arrives as a replay of an old event; pending requests
+	// no longer feed the exclude set. Dropping the cache is harmless.
 	c.invalidateCache(ctx, payload.SenderID, "friend")
 	return nil
 }
@@ -450,16 +452,20 @@ func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.Event
 		return err
 	}
 
-	// Check if this creates a mutual follow → add to friend candidates with MUTUAL_FOLLOW reason
+	// The follower now follows the followee, so the followee is excluded from
+	// both of the follower's lists (a suggestion card offers only Follow).
+	// Drop both caches so the next read refilters instead of serving the
+	// followee for up to the cache TTL.
+	//
+	// A mutual follow also makes the two FRIENDS (the definition since
+	// Connect was retired on 24 Oct 2026), so it changes the followee's
+	// friend-graph signals too: drop their friend cache as well.
 	mutualFollows, _ := c.store.BatchCheckMutualFollows(ctx, followerID, []uuid.UUID{followeeID})
 	if mutualFollows[followeeID] {
-		// Mutual follow detected — invalidate friend caches so they appear as candidates
-		c.invalidateCache(ctx, payload.FollowerID, "friend")
 		c.invalidateCache(ctx, payload.FolloweeID, "friend")
 		log.Printf("[suggestion-consumer] Mutual follow detected: %s↔%s", payload.FollowerID, payload.FolloweeID)
 	}
-
-	// Invalidate follow caches
+	c.invalidateCache(ctx, payload.FollowerID, "friend")
 	c.invalidateCache(ctx, payload.FollowerID, "follow")
 	return nil
 }

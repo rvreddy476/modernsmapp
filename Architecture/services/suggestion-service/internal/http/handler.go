@@ -166,8 +166,14 @@ func (h *Handler) GetInterstitialSuggestions(c *gin.Context) {
 	}
 
 	triggerType := c.Query("trigger_type")
-	if triggerType != "friend_accept" && triggerType != "follow" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "trigger_type must be 'friend_accept' or 'follow'"})
+	if triggerType == "friend_accept" {
+		// Retired 25 Oct 2026 with Connect (no connection can be accepted
+		// since 24 Oct): 410, as graph-service answers the accept itself.
+		c.JSON(http.StatusGone, gin.H{"error": "trigger_type 'friend_accept' is retired: connections were retired; use 'follow'"})
+		return
+	}
+	if triggerType != service.InterstitialTriggerFollow {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "trigger_type must be 'follow'"})
 		return
 	}
 

@@ -128,13 +128,24 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 
 // ─── Graph reads (app DB) ────────────────────────────────────
 
-// GetFriendIDs returns all friend user IDs for a given user, read from the
-// canonical graph-service connections table in the app database.
+// GetFriendIDs returns the user's friends, a friend being a MUTUAL follow —
+// the definition GetFriendsOfFriends and GetMutualFriendIDs use. It read the
+// connections table until 24 Oct 2026; Connect was retired that day, so an
+// account made after it had no friends here and nobody's list could grow.
+//
+// It is an EXCLUSION list (the batch exclude set and the read-path filter),
+// so unlike the candidate scans it is not capped by FriendScanLimit: a cap
+// would let a friend past it back into the list. It walks the user's own
+// followees (follows primary-key prefix, the rows GetFollowingIDs returns)
+// and keeps those who follow back, so it costs no more than GetFollowingIDs.
+// Hidden friends are kept; excluding them too is harmless.
 func (s *Store) GetFriendIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
 	rows, err := s.appDB.Query(ctx, `
-		SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS connection_id
-		FROM connections
-		WHERE user_a = $1 OR user_b = $1
+		SELECT f.followee_id
+		FROM follows f
+		JOIN follows back ON back.follower_id = f.followee_id AND back.followee_id = $1
+		WHERE f.follower_id = $1
+		  AND f.followee_id <> $1
 	`, userID)
 	if err != nil {
 		return nil, err
@@ -157,28 +168,6 @@ func (s *Store) GetBlockedIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUI
 		SELECT blocked_id FROM blocks WHERE blocker_id = $1
 		UNION
 		SELECT blocker_id FROM blocks WHERE blocked_id = $1
-	`, userID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
-
-// GetPendingRequestIDs returns user IDs with pending friend requests (sent or received).
-func (s *Store) GetPendingRequestIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
-	rows, err := s.appDB.Query(ctx, `
-		SELECT receiver_id FROM connection_requests WHERE sender_id = $1 AND status = 'pending'
-		UNION
-		SELECT sender_id FROM connection_requests WHERE receiver_id = $1 AND status = 'pending'
 	`, userID)
 	if err != nil {
 		return nil, err
@@ -831,43 +820,70 @@ func (s *Store) GetUsersByLifeEntry(ctx context.Context, entryName string, limit
 
 // ─── Triadic closure (app DB) ────────────────────────────────
 
-// GetTriadicClosureCandidates finds users D where V↔B, V↔C, B↔C, B↔D, C↔D but NOT V↔D.
-// Returns map[candidateID]score where score is count of unique triads.
+// GetTriadicClosureCandidates finds users D who close triangles in the
+// viewer's friend graph — V↔B, V↔C, B↔C, B↔D and C↔D — returning
+// candidateID → how many such (B, C) pairs D closes. ↔ is a friend, a MUTUAL
+// follow (see GetFriendsOfFriends). It read the connections table until
+// 24 Oct 2026, so it never found anyone for an account made after Connect
+// was retired.
+//
+// Bounded like GetFriendsOfFriends: the viewer's friends come from their
+// newest FriendScanLimit followers, and each friend's own friends from that
+// friend's newest FriendOfFriendScanLimit followers; an edge outside those
+// scans is simply not seen. B↔C is found from either side's scan. Excluded
+// in SQL: the viewer, excludeIDs, anyone the viewer already follows (every
+// friend among them), a block in either direction, and hidden accounts (a
+// hidden B or C closes no triangle).
 func (s *Store) GetTriadicClosureCandidates(ctx context.Context, viewerID uuid.UUID, excludeIDs []uuid.UUID, limit int) (map[uuid.UUID]int, error) {
 	q := `
 	WITH my_friends AS (
-		SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS fid
-		FROM connections WHERE user_a = $1 OR user_b = $1
+		SELECT f.follower_id AS friend_id
+		FROM (
+			SELECT follower_id FROM follows
+			WHERE followee_id = $1
+			ORDER BY created_at DESC
+			LIMIT $4
+		) f
+		JOIN follows back ON back.follower_id = $1 AND back.followee_id = f.follower_id
+		WHERE f.follower_id <> $1
+		  AND NOT EXISTS (SELECT 1 FROM hidden_users hf WHERE hf.user_id = f.follower_id)
+	),
+	friend_friends AS (
+		SELECT mf.friend_id AS b, c.follower_id AS x
+		FROM my_friends mf
+		CROSS JOIN LATERAL (
+			SELECT follower_id FROM follows
+			WHERE followee_id = mf.friend_id
+			ORDER BY created_at DESC
+			LIMIT $5
+		) c
+		JOIN follows cb ON cb.follower_id = mf.friend_id AND cb.followee_id = c.follower_id
+		WHERE c.follower_id <> $1
 	),
 	triads AS (
-		SELECT mf1.fid AS b, mf2.fid AS c
-		FROM my_friends mf1
-		JOIN my_friends mf2 ON mf1.fid < mf2.fid
-		WHERE EXISTS (
-			SELECT 1 FROM connections
-			WHERE (user_a = LEAST(mf1.fid, mf2.fid) AND user_b = GREATEST(mf1.fid, mf2.fid))
-		)
+		SELECT DISTINCT LEAST(ff.b, ff.x) AS b, GREATEST(ff.b, ff.x) AS c
+		FROM friend_friends ff
+		JOIN my_friends mf2 ON mf2.friend_id = ff.x
 	),
 	candidates AS (
-		SELECT CASE WHEN f.user_a = t.b THEN f.user_b ELSE f.user_a END AS d_id, t.b, t.c
+		SELECT db.x AS d_id
 		FROM triads t
-		JOIN connections f ON (f.user_a = t.b OR f.user_b = t.b)
-		WHERE CASE WHEN f.user_a = t.b THEN f.user_b ELSE f.user_a END != $1
-		  AND CASE WHEN f.user_a = t.b THEN f.user_b ELSE f.user_a END != t.c
-		  AND EXISTS (
-			SELECT 1 FROM connections
-			WHERE (user_a = LEAST(CASE WHEN f.user_a = t.b THEN f.user_b ELSE f.user_a END, t.c)
-			   AND user_b = GREATEST(CASE WHEN f.user_a = t.b THEN f.user_b ELSE f.user_a END, t.c))
-		  )
+		JOIN friend_friends db ON db.b = t.b
+		JOIN friend_friends dc ON dc.b = t.c AND dc.x = db.x
+		WHERE db.x NOT IN (t.b, t.c)
 	)
-	SELECT d_id, COUNT(*)::int AS triad_count
-	FROM candidates
-	WHERE d_id != ALL($2::uuid[])
-	GROUP BY d_id
+	SELECT cand.d_id, COUNT(*)::int AS triad_count
+	FROM candidates cand
+	WHERE cand.d_id <> ALL(COALESCE($2::uuid[], '{}'::uuid[]))
+	  AND NOT EXISTS (SELECT 1 FROM follows vf WHERE vf.follower_id = $1 AND vf.followee_id = cand.d_id)
+	  AND NOT EXISTS (SELECT 1 FROM hidden_users hc WHERE hc.user_id = cand.d_id)
+	  AND NOT EXISTS (SELECT 1 FROM blocks bv WHERE bv.blocker_id = $1 AND bv.blocked_id = cand.d_id)
+	  AND NOT EXISTS (SELECT 1 FROM blocks bc WHERE bc.blocker_id = cand.d_id AND bc.blocked_id = $1)
+	GROUP BY cand.d_id
 	ORDER BY triad_count DESC
 	LIMIT $3
 	`
-	rows, err := s.appDB.Query(ctx, q, viewerID, excludeIDs, limit)
+	rows, err := s.appDB.Query(ctx, q, viewerID, excludeIDs, limit, FriendScanLimit, FriendOfFriendScanLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -884,55 +900,64 @@ func (s *Store) GetTriadicClosureCandidates(ctx context.Context, viewerID uuid.U
 	return result, rows.Err()
 }
 
-// ─── Mutual follow non-friends (app DB) ──────────────────────
-
-// GetMutualFollowNonFriends returns users where both follow each other but are not friends.
-func (s *Store) GetMutualFollowNonFriends(ctx context.Context, viewerID uuid.UUID, excludeIDs []uuid.UUID) ([]uuid.UUID, error) {
-	rows, err := s.appDB.Query(ctx, `
-		SELECT f1.followee_id
-		FROM follows f1
-		JOIN follows f2 ON f1.followee_id = f2.follower_id AND f1.follower_id = f2.followee_id
-		WHERE f1.follower_id = $1
-		  AND f1.followee_id != ALL($2::uuid[])
-		  AND NOT EXISTS (
-			SELECT 1 FROM connections
-			WHERE (user_a = LEAST($1, f1.followee_id) AND user_b = GREATEST($1, f1.followee_id))
-		  )
-	`, viewerID, excludeIDs)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
+// ─── Mutual follow non-friends: retired ──────────────────────
+//
+// GetMutualFollowNonFriends (removed 25 Oct 2026) returned the viewer's
+// mutual follows who were not also a legacy connection. Since a friend IS a
+// mutual follow, that set is empty by definition — and the query, still
+// reading the retired connections table, returned every mutual follow made
+// since, i.e. suggested the viewer's own friends. A suggestion card offers
+// only Follow, and the viewer already follows each of them.
 
 // ─── Follow suggestion queries (app DB) ──────────────────────
 
-// GetSocialProofCandidates returns followees of viewer's friends that viewer doesn't follow.
+// GetSocialProofCandidates returns accounts the viewer's friends follow and
+// the viewer does not, candidateID → how many of the viewer's friends follow
+// them. A friend is a MUTUAL follow (see GetFriendsOfFriends); it read the
+// connections table until 24 Oct 2026, so "friends follow them" never fired
+// for an account made after Connect was retired.
+//
+// Bounded like GetFriendsOfFriends: the viewer's friends come from their
+// newest FriendScanLimit followers, and each friend contributes only their
+// newest FriendOfFriendScanLimit follows. Excluded in SQL: the viewer, anyone
+// the viewer already follows, a block in either direction, and hidden
+// accounts on either hop.
 func (s *Store) GetSocialProofCandidates(ctx context.Context, viewerID uuid.UUID, limit int) (map[uuid.UUID]int, error) {
 	q := `
 	WITH my_friends AS (
-		SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS fid
-		FROM connections WHERE user_a = $1 OR user_b = $1
+		SELECT f.follower_id AS friend_id
+		FROM (
+			SELECT follower_id FROM follows
+			WHERE followee_id = $1
+			ORDER BY created_at DESC
+			LIMIT $3
+		) f
+		JOIN follows back ON back.follower_id = $1 AND back.followee_id = f.follower_id
+		WHERE f.follower_id <> $1
+		  AND NOT EXISTS (SELECT 1 FROM hidden_users hf WHERE hf.user_id = f.follower_id)
+	),
+	friend_follows AS (
+		SELECT ff.followee_id AS candidate_id, mf.friend_id AS via_friend
+		FROM my_friends mf
+		CROSS JOIN LATERAL (
+			SELECT followee_id FROM follows
+			WHERE follower_id = mf.friend_id
+			ORDER BY created_at DESC
+			LIMIT $4
+		) ff
+		WHERE ff.followee_id <> $1
 	)
-	SELECT f.followee_id, COUNT(DISTINCT mf.fid)::int AS friend_count
-	FROM follows f
-	JOIN my_friends mf ON f.follower_id = mf.fid
-	WHERE f.followee_id != $1
-	  AND NOT EXISTS (SELECT 1 FROM follows WHERE follower_id = $1 AND followee_id = f.followee_id)
-	GROUP BY f.followee_id
+	SELECT fl.candidate_id, COUNT(DISTINCT fl.via_friend)::int AS friend_count
+	FROM friend_follows fl
+	WHERE NOT EXISTS (SELECT 1 FROM follows vf WHERE vf.follower_id = $1 AND vf.followee_id = fl.candidate_id)
+	  AND NOT EXISTS (SELECT 1 FROM hidden_users hc WHERE hc.user_id = fl.candidate_id)
+	  AND NOT EXISTS (SELECT 1 FROM blocks bv WHERE bv.blocker_id = $1 AND bv.blocked_id = fl.candidate_id)
+	  AND NOT EXISTS (SELECT 1 FROM blocks bc WHERE bc.blocker_id = fl.candidate_id AND bc.blocked_id = $1)
+	GROUP BY fl.candidate_id
 	ORDER BY friend_count DESC
 	LIMIT $2
 	`
-	rows, err := s.appDB.Query(ctx, q, viewerID, limit)
+	rows, err := s.appDB.Query(ctx, q, viewerID, limit, FriendScanLimit, FriendOfFriendScanLimit)
 	if err != nil {
 		return nil, err
 	}
@@ -1021,35 +1046,62 @@ func (s *Store) DecayDismissPatterns(ctx context.Context) error {
 
 // ─── Block propagation & safety ──────────────────────────────
 
-// GetBlockCountByFriends returns how many of viewer's friends have blocked the candidate.
+// GetBlockCountByFriends returns how many of the viewer's friends have
+// blocked the candidate — the "your friends blocked this person" safety
+// signal (ScoringInput.BlockPropagation). A friend is a MUTUAL follow, read
+// exactly as GetFriendsOfFriends reads it (the viewer's newest
+// FriendScanLimit followers, followed back, not hidden). It read the
+// connections table until 24 Oct 2026, so the signal was always 0 for an
+// account made after Connect was retired.
 func (s *Store) GetBlockCountByFriends(ctx context.Context, viewerID, candidateID uuid.UUID) (int, error) {
 	var count int
 	err := s.appDB.QueryRow(ctx, `
-		SELECT COUNT(*)::int FROM blocks b
-		JOIN (
-			SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS fid
-			FROM connections WHERE user_a = $1 OR user_b = $1
-		) mf ON b.blocker_id = mf.fid
+		WITH my_friends AS (
+			SELECT f.follower_id AS friend_id
+			FROM (
+				SELECT follower_id FROM follows
+				WHERE followee_id = $1
+				ORDER BY created_at DESC
+				LIMIT $3
+			) f
+			JOIN follows back ON back.follower_id = $1 AND back.followee_id = f.follower_id
+			WHERE f.follower_id <> $1
+			  AND NOT EXISTS (SELECT 1 FROM hidden_users hf WHERE hf.user_id = f.follower_id)
+		)
+		SELECT COUNT(*)::int
+		FROM blocks b
+		JOIN my_friends mf ON mf.friend_id = b.blocker_id
 		WHERE b.blocked_id = $2
-	`, viewerID, candidateID).Scan(&count)
+	`, viewerID, candidateID, FriendScanLimit).Scan(&count)
 	return count, err
 }
 
-// GetBlockCountByFriendsBatch returns block counts for multiple candidates.
+// GetBlockCountByFriendsBatch is GetBlockCountByFriends for many candidates
+// at once, candidateID → friends who blocked them (absent = 0). Same friend
+// definition and the same FriendScanLimit bound.
 func (s *Store) GetBlockCountByFriendsBatch(ctx context.Context, viewerID uuid.UUID, candidateIDs []uuid.UUID) (map[uuid.UUID]int, error) {
 	if len(candidateIDs) == 0 {
 		return map[uuid.UUID]int{}, nil
 	}
 	rows, err := s.appDB.Query(ctx, `
+		WITH my_friends AS (
+			SELECT f.follower_id AS friend_id
+			FROM (
+				SELECT follower_id FROM follows
+				WHERE followee_id = $1
+				ORDER BY created_at DESC
+				LIMIT $3
+			) f
+			JOIN follows back ON back.follower_id = $1 AND back.followee_id = f.follower_id
+			WHERE f.follower_id <> $1
+			  AND NOT EXISTS (SELECT 1 FROM hidden_users hf WHERE hf.user_id = f.follower_id)
+		)
 		SELECT b.blocked_id, COUNT(*)::int
 		FROM blocks b
-		JOIN (
-			SELECT CASE WHEN user_a = $1 THEN user_b ELSE user_a END AS fid
-			FROM connections WHERE user_a = $1 OR user_b = $1
-		) mf ON b.blocker_id = mf.fid
+		JOIN my_friends mf ON mf.friend_id = b.blocker_id
 		WHERE b.blocked_id = ANY($2)
 		GROUP BY b.blocked_id
-	`, viewerID, candidateIDs)
+	`, viewerID, candidateIDs, FriendScanLimit)
 	if err != nil {
 		return nil, err
 	}
