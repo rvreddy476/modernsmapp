@@ -7,6 +7,7 @@ import com.us.android.core.feed.data.credits.CreditsRepository
 import com.us.android.core.network.Paged
 import com.us.android.feature.tube.data.CreditRequestsSource
 import com.us.android.feature.tube.data.VideoSeriesApi
+import com.us.android.feature.tube.data.WatchElementsApi
 import com.us.android.feature.tube.data.WatchProgressApi
 import com.us.android.feature.tube.data.hub.CreatorCommentTools
 import com.us.android.feature.tube.data.hub.CreatorHubApi
@@ -29,6 +30,11 @@ object TubeModule {
     @Provides
     @Singleton
     fun provideVideoSeriesApi(retrofit: Retrofit): VideoSeriesApi = retrofit.create(VideoSeriesApi::class.java)
+
+    /** End screens and cards as a viewer sees them (2026-10-24). */
+    @Provides
+    @Singleton
+    fun provideWatchElementsApi(retrofit: Retrofit): WatchElementsApi = retrofit.create(WatchElementsApi::class.java)
 
     /** The Creator Hub's reads (T-31). */
     @Provides

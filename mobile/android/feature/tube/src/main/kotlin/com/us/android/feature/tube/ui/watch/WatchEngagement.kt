@@ -148,6 +148,8 @@ internal fun FeedItem.withViewerStateOf(detail: FeedItem): FeedItem =
         credits = detail.credits,
         // Copyright title review (2026-10-24): only the detail carries it, and only for the author.
         copyrightReview = detail.copyrightReview,
+        // Chapters (2026-10-24): list rows carry none; the detail does.
+        chapters = detail.chapters,
     )
 
 /**

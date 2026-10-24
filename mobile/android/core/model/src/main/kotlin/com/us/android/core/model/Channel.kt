@@ -25,6 +25,15 @@ data class Channel(
     val updatedAt: String = "",
     /** The profile Action button (2026-10-23), next to Follow and Message; null when there is none. */
     val action: PostAction? = null,
+    /**
+     * The channel page's tab tally (2026-10-24; post-service
+     * service/channels.go:172-174): public shorts, videos that came from a
+     * stream, public collections. Null when the read did not carry it — an
+     * older server — which is not the same as zero: the tab then stays.
+     */
+    val shortCount: Int? = null,
+    val liveCount: Int? = null,
+    val collectionCount: Int? = null,
 ) {
     /** `@handle`, as it is shown everywhere. */
     val handleForDisplay: String get() = "@$handle"

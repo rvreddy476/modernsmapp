@@ -11,6 +11,9 @@ import com.us.android.feature.tube.ui.TubeTab
 import com.us.android.feature.tube.ui.channel.ChannelScreen
 import com.us.android.feature.tube.ui.collections.CollectionScreen
 import com.us.android.feature.tube.ui.credits.CreditRequestsScreen
+import com.us.android.feature.tube.ui.discovery.TopicScreen
+import com.us.android.feature.tube.ui.discovery.TopicsScreen
+import com.us.android.feature.tube.ui.discovery.TrendingScreen
 import com.us.android.feature.tube.ui.collections.CollectionsScreen
 import com.us.android.feature.tube.ui.history.HistoryScreen
 import com.us.android.feature.tube.ui.home.TubeHomeScreen
@@ -111,6 +114,18 @@ data object TubeCreatorHubUploadsRoute
 @Serializable
 data object TubeCreditRequestsRoute
 
+/** Trending (web parity, 2026-10-24): the ranked long videos, Today / Week / Month. */
+@Serializable
+data object TubeTrendingRoute
+
+/** Topics (web parity, 2026-10-24): every long-video subject. */
+@Serializable
+data object TubeTopicsRoute
+
+/** One topic's videos: [slug] as the feed takes it, [label] to title the page before anything loads. */
+@Serializable
+data class TubeTopicRoute(val slug: String, val label: String = "")
+
 /** One video, playing. Pushed over a Tube page; [postId] is the post to open on. */
 @Serializable
 data class WatchRoute(val postId: String)
@@ -187,6 +202,12 @@ data class TubeDestinations(
      * opens the search page scoped to the video app, with [query] typed in.
      */
     val onSearchVideos: (query: String) -> Unit = {},
+    /** The More sheet's "Trending" (2026-10-24): `:app` pushes [TubeTrendingRoute]. */
+    val onOpenTrending: () -> Unit = {},
+    /** The More sheet's "Topics", and an empty page's way out: `:app` pushes [TubeTopicsRoute]. */
+    val onOpenTopics: () -> Unit = {},
+    /** A topic tile: `:app` pushes [TubeTopicRoute]. */
+    val onOpenTopic: (slug: String, label: String) -> Unit = { _, _ -> },
 ) {
     /** The bar's tap, resolved. */
     fun onBarAction(action: TubeBarAction) = when (action) {
@@ -212,15 +233,25 @@ fun NavGraphBuilder.tubeScreens(destinations: TubeDestinations) {
     composable<TubeCreatorHubUploadsRoute> { CreatorHubScreen(destinations = destinations, openUploads = true) }
     composable<TubeHistoryRoute> { HistoryScreen(destinations = destinations) }
     composable<TubeCreditRequestsRoute> { CreditRequestsScreen(destinations = destinations) }
+    composable<TubeTrendingRoute> { TrendingScreen(destinations = destinations) }
+    composable<TubeTopicsRoute> { TopicsScreen(destinations = destinations) }
+    composable<TubeTopicRoute> { TopicScreen(destinations = destinations) }
     composable<WatchRoute> {
         WatchScreen(
             onBack = destinations.onBack,
             onOpenAuthor = destinations.onOpenAuthor,
             onSearchName = destinations.onSearchVideos,
             onOpenChannel = destinations.onOpenChannel,
+            onOpenCollection = destinations.onOpenCollection,
         )
     }
 }
+
+fun NavController.navigateToTubeTrending() = navigate(TubeTrendingRoute) { launchSingleTop = true }
+
+fun NavController.navigateToTubeTopics() = navigate(TubeTopicsRoute) { launchSingleTop = true }
+
+fun NavController.navigateToTubeTopic(slug: String, label: String) = navigate(TubeTopicRoute(slug, label))
 
 /** The credit requests, pushed over whatever opened them (a notification, the Me tab); single-top. */
 fun NavController.navigateToCreditRequests() = navigate(TubeCreditRequestsRoute) { launchSingleTop = true }

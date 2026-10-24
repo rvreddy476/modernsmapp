@@ -133,6 +133,8 @@ import com.us.android.feature.feed.navigation.friendsFeedScreen
 import com.us.android.feature.feed.navigation.hashtagPostsScreen
 import com.us.android.feature.feed.navigation.navigateToHashtagPosts
 import com.us.android.feature.feed.navigation.navigateToSound
+import com.us.android.feature.feed.navigation.navigateToReelsExplore
+import com.us.android.feature.feed.navigation.reelsExploreScreen
 import com.us.android.feature.feed.navigation.navigateToTrendingSounds
 import com.us.android.feature.feed.navigation.reelsScreen
 import com.us.android.feature.feed.navigation.soundScreen
@@ -222,6 +224,9 @@ import com.us.android.feature.tube.navigation.navigateToTube
 import com.us.android.feature.tube.navigation.navigateToTubeChannel
 import com.us.android.feature.tube.navigation.navigateToTubeCollection
 import com.us.android.feature.tube.navigation.navigateToTubeHistory
+import com.us.android.feature.tube.navigation.navigateToTubeTopic
+import com.us.android.feature.tube.navigation.navigateToTubeTopics
+import com.us.android.feature.tube.navigation.navigateToTubeTrending
 import com.us.android.feature.tube.navigation.navigateToTubeCollections
 import com.us.android.feature.tube.navigation.navigateToTubeOffline
 import com.us.android.feature.tube.navigation.navigateToTubeSaved
@@ -1210,6 +1215,13 @@ private fun NavGraphBuilder.tabDestinations(
         onCreateWithSound = onCreateWithSound,
         // The Offline page lives in Tube's graph; Reels' header More opens it when there is no reel.
         onOpenOffline = { navController.navigateToTubeOffline() },
+        // Explore (2026-10-24): the category grid, pushed over Reels.
+        onOpenExplore = { navController.navigateToReelsExplore() },
+    )
+    // A tile opens its reel in the Reels TAB (the page has left the id in ReelsEntry).
+    reelsExploreScreen(
+        onBack = { navController.popBackStack() },
+        onOpenReels = onOpenReels,
     )
     // A sound's page, pushed over Reels. A tile opens its reel in the Reels
     // TAB (the page has left the id in ReelsEntry, as the feeds do).
@@ -1273,6 +1285,10 @@ private fun NavGraphBuilder.tabDestinations(
             onOpenHistory = { navController.navigateToTubeHistory() },
             // A credited name on the watch page (video credits, 2026-10-23): search, scoped to video.
             onSearchVideos = { query -> navController.navigateToSearch(SearchOrigin.VIDEO, query) },
+            // Discovery (2026-10-24): Trending, Topics and one topic's page, inside Tube.
+            onOpenTrending = { navController.navigateToTubeTrending() },
+            onOpenTopics = { navController.navigateToTubeTopics() },
+            onOpenTopic = { slug, label -> navController.navigateToTubeTopic(slug, label) },
         ),
     )
 

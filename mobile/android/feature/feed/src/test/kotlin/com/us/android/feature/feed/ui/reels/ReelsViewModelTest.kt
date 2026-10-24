@@ -44,6 +44,7 @@ import com.us.android.core.feed.data.dto.FeedAuthorDto
 import com.us.android.core.feed.data.dto.FeedDeltaDto
 import com.us.android.core.feed.data.dto.FeedItemDto
 import com.us.android.core.feed.data.dto.FeedMediaDto
+import com.us.android.core.model.FeedQuery
 import com.us.android.core.feed.data.dto.FeedSoundDto
 import com.us.android.core.feed.offline.NoOfflineLibrary
 import com.us.android.core.feed.offline.OfflineCopy
@@ -1981,5 +1982,111 @@ class ReelsViewModelTest {
         advanceUntilIdle()
 
         assertThat(h.audioApi.lists).isEqualTo(1)
+    }
+
+    // ── For You / Following (web parity, 2026-10-24) ────────────────────
+
+    /** Each header tab is one request shape: For You is the plain surface, Following adds following_only. */
+    @Test
+    fun `each feed asks reels its own way`() {
+        assertThat(ReelsFeed.FOR_YOU.query()).isEqualTo(FeedQuery.Reels)
+        assertThat(ReelsFeed.FOLLOWING.query()).isEqualTo(FeedQuery.ReelsFollowing)
+        assertThat(FeedQuery.ReelsFollowing.followingOnly).isTrue()
+        assertThat(FeedQuery.Reels.followingOnly).isFalse()
+        assertThat(ReelsFeed.entries.map { it.label }).containsExactly("Following", "For You").inOrder()
+    }
+
+    /**
+     * Following is a fresh pager from its first page with following_only=true
+     * (feed-service internal/http/handler.go:233); its reels replace the For
+     * You reels and the pager goes to the top. Back to For You asks without it.
+     */
+    @Test
+    fun `switching to Following reloads with following_only and goes to the top`() = runTest {
+        val h = Harness(api = RecordingApi(feedPages = listOf(listOf("r1", "r2"), listOf("f1"), listOf("r3"))))
+        val vm = viewModel(h)
+        val shown = show(vm)
+        settle()
+        assertThat(vm.feed.value).isEqualTo(ReelsFeed.FOR_YOU)
+
+        vm.selectFeed(ReelsFeed.FOLLOWING)
+        settle()
+
+        assertThat(vm.feed.value).isEqualTo(ReelsFeed.FOLLOWING)
+        assertThat(h.api.followingOnly).containsExactly(null, true).inOrder()
+        assertThat(h.api.cursors).containsExactly(null, null)
+        assertThat(shown.ids).containsExactly("f1")
+        assertThat(vm.scrollToTop.value).isTrue()
+        assertThat(vm.refreshing.value).isFalse()
+        vm.onScrolledToTop()
+
+        vm.selectFeed(ReelsFeed.FOR_YOU)
+        settle()
+
+        assertThat(h.api.followingOnly).containsExactly(null, true, null).inOrder()
+        assertThat(shown.ids).containsExactly("r3")
+        assertThat(vm.scrollToTop.value).isTrue()
+    }
+
+    /** The tab already on screen is the same wish as a pull: a refresh of that feed. */
+    @Test
+    fun `tapping the tab on screen refreshes that feed`() = runTest {
+        val h = Harness(api = RecordingApi(feedPages = listOf(listOf("r1"), listOf("f1"), listOf("f2"))))
+        val vm = viewModel(h)
+        val shown = show(vm)
+        settle()
+        vm.selectFeed(ReelsFeed.FOLLOWING)
+        settle()
+        vm.onScrolledToTop()
+
+        vm.selectFeed(ReelsFeed.FOLLOWING)
+        settle()
+
+        assertThat(h.api.followingOnly).containsExactly(null, true, true).inOrder()
+        assertThat(shown.ids).containsExactly("f2")
+        assertThat(vm.scrollToTop.value).isTrue()
+        assertThat(vm.refreshing.value).isFalse()
+    }
+
+    /** A Following that fails to load says nothing of a refresh and does not move the pager. */
+    @Test
+    fun `a failed switch does not scroll and is not a refresh failure`() = runTest {
+        val h = Harness(api = RecordingApi(feedPages = listOf(listOf("r1"), null)))
+        val vm = viewModel(h)
+        show(vm)
+        settle()
+
+        vm.selectFeed(ReelsFeed.FOLLOWING)
+        settle()
+
+        assertThat(vm.scrollToTop.value).isFalse()
+        assertThat(vm.refreshFailure.value).isNull()
+        assertThat(vm.feed.value).isEqualTo(ReelsFeed.FOLLOWING)
+    }
+
+    /** A reel a feed tap pinned above For You goes with For You. */
+    @Test
+    fun `switching feed lets go of another author's pinned reel`() = runTest {
+        val posted = FeedItemDto(
+            id = "from-feed",
+            authorId = "someone-else",
+            author = FeedAuthorDto(id = "someone-else"),
+            postType = "video",
+            media = listOf(FeedMediaDto(mediaId = "m1", kind = "video", hlsUrl = "/v1/media/m1/hls/master.m3u8")),
+        )
+        val h = Harness(api = RecordingApi(post = posted, feedPages = listOf(listOf("r1"), listOf("f1"))))
+        val vm = viewModel(h)
+        backgroundScope.launch { vm.head.collect {} }
+        show(vm)
+        settle()
+        h.entry.open("from-feed")
+        vm.resolveEntry(listOf("r1"))
+        settle()
+        assertThat(vm.head.value).isInstanceOf(ReelsHead.Live::class.java)
+
+        vm.selectFeed(ReelsFeed.FOLLOWING)
+        settle()
+
+        assertThat(vm.head.value).isNull()
     }
 }

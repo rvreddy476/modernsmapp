@@ -158,6 +158,8 @@ class WatchDetailsActions(
     /** The viewer, so their own accepted credit offers "Remove me from this video". */
     val ownUserId: String = "",
     val onRemoveMeFromCredit: (creditId: String) -> Unit = {},
+    /** A chapter pill (2026-10-24): the player goes to that chapter's start. */
+    val onSeekTo: (positionMs: Long) -> Unit = {},
 )
 
 /** The author row's subscription state, as the screen resolved it for this video's channel. */
@@ -169,7 +171,7 @@ data class WatchSubscription(
 
 /**
  * What sits under the player, top to bottom: the title and its line, the
- * author row with Subscribe (or Subscribed and the bell), the action row,
+ * chapter strip when the video has chapters, the author row with Subscribe (or Subscribed and the bell), the action row,
  * the description (three lines, then "more"), the comments row, "In this
  * series" when the video is an episode, and "Up next".
  */
@@ -184,8 +186,13 @@ fun LazyListScope.watchDetails(
     series: SeriesInfo?,
     thumbFor: (FeedItem) -> VideoThumb,
     actions: WatchDetailsActions,
+    /** The chapter playing now ([com.us.android.core.model.chapterIndexAt]); -1 before the first. */
+    chapterIndex: Int = -1,
 ) {
     item(key = "title") { TitleBlock(item) }
+    if (item.chapters.isNotEmpty()) {
+        item(key = "chapters") { ChapterStrip(chapters = item.chapters, currentIndex = chapterIndex, onSeek = actions.onSeekTo) }
+    }
     item(key = "author") { AuthorRow(item, subscription, actions) }
     item(key = "actions") { ActionRow(item, watchActions(likes, viewer, shareable = !item.controls.hideShare), actions) }
     if (watchDescriptionShown(item)) item(key = "description") { Description(item) }

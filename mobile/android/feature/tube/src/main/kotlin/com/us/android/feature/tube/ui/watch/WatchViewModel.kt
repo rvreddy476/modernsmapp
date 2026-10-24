@@ -62,6 +62,12 @@ import com.us.android.feature.tube.data.SeriesInfo
 import com.us.android.feature.tube.data.TubeQueue
 import com.us.android.feature.tube.data.VideoSeriesRepository
 import com.us.android.feature.tube.data.WatchProgressRepository
+import com.us.android.feature.tube.data.ElementEvent
+import com.us.android.feature.tube.data.ElementSurface
+import com.us.android.feature.tube.data.ImpressionLog
+import com.us.android.feature.tube.data.MediaHref
+import com.us.android.feature.tube.data.WatchElements
+import com.us.android.feature.tube.data.WatchElementsRepository
 import com.us.android.feature.tube.navigation.WatchRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CoroutineScope
@@ -177,6 +183,8 @@ class WatchViewModel @Inject constructor(
     private val edits: PostEdits,
     /** Video credits (2026-10-23): the genre list the Credits block names genres with. */
     private val credits: CreditsRepository,
+    /** End screens and cards (2026-10-24): what the creator placed over the video. */
+    private val elementsRepository: WatchElementsRepository,
     /** Progress reports outlive the screen: the last one is sent as the ViewModel clears. */
     @ApplicationScope private val appScope: CoroutineScope,
 ) : ViewModel() {
@@ -488,6 +496,7 @@ class WatchViewModel @Inject constructor(
         // A row fetched by id IS the post detail; a list row, and a kept one, is refreshed from it.
         if (listed == null && kept == null) actions.adopt(item) else launchRefreshViewerState(postId)
         launchLoadSeries(postId)
+        launchLoadElements(postId)
         val base = stored?.playback() ?: urlResolver.playbackFor(item)
         basePlayback = base
         baseOffline = stored != null
@@ -903,6 +912,48 @@ class WatchViewModel @Inject constructor(
             change()
             _subscribeBusy.value = false
         }
+    }
+
+    // ── End screens and cards (2026-10-24) ───────────────────────────────
+
+    private val _elements = MutableStateFlow<WatchElements?>(null)
+
+    /**
+     * The video's end-screen elements and cards, for the video on screen
+     * only; null until read, and empty — never an error — when the read
+     * failed or the video has none (a made-for-kids video always has none).
+     */
+    val elements: StateFlow<WatchElements?> = _elements.asStateFlow()
+
+    private val impressions = ImpressionLog()
+    private val cardImpressions = ImpressionLog()
+
+    /** Gateway paths the server sends for thumbnails and avatars, made absolute. */
+    private val mediaHref = MediaHref { raw -> urlResolver.hlsUrl(raw) ?: raw }
+
+    private fun launchLoadElements(postId: String) {
+        if (_elements.value?.postId != postId) _elements.value = null
+        impressions.reset()
+        cardImpressions.reset()
+        viewModelScope.launch {
+            val fetched = elementsRepository.elements(postId, mediaHref)
+            if (_currentId.value == postId) _elements.value = fetched
+        }
+    }
+
+    /** These elements are on screen: one impression each per view, fire-and-forget. */
+    fun onElementsShown(surface: ElementSurface, ids: List<String>) {
+        val postId = _elements.value?.postId ?: return
+        val log = if (surface == ElementSurface.CARDS) cardImpressions else impressions
+        log.take(ids).forEach { id ->
+            appScope.launch { elementsRepository.record(postId, surface, id, ElementEvent.IMPRESSION) }
+        }
+    }
+
+    /** An element or card was tapped: the click is counted on the app's scope, so leaving the screen keeps it. */
+    fun onElementClicked(surface: ElementSurface, id: String) {
+        val postId = _elements.value?.postId ?: return
+        appScope.launch { elementsRepository.record(postId, surface, id, ElementEvent.CLICK) }
     }
 
     private fun recordEngagement(type: String) {

@@ -2,6 +2,7 @@ package com.us.android.core.feed.di
 
 import com.us.android.core.feed.data.AudioTracksApi
 import com.us.android.core.feed.data.ChannelApi
+import com.us.android.core.feed.data.DiscoveryApi
 import com.us.android.core.feed.data.FeedApi
 import com.us.android.core.feed.data.FeedItemHydrator
 import com.us.android.core.feed.data.HashtagPostHydrator
@@ -110,6 +111,11 @@ object FeedModule {
     @Provides
     @Singleton
     fun provideCopyrightReviewApi(retrofit: Retrofit): CopyrightReviewApi = retrofit.create(CopyrightReviewApi::class.java)
+
+    /** Discovery (2026-10-24): Reels Explore, Tube Trending and Topics, end screens and cards. */
+    @Provides
+    @Singleton
+    fun provideDiscoveryApi(retrofit: Retrofit): DiscoveryApi = retrofit.create(DiscoveryApi::class.java)
 
     /** The store writes through the repository; tests hand it a fake. */
     @Provides

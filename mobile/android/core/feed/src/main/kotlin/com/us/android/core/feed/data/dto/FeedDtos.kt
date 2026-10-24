@@ -160,6 +160,14 @@ data class FeedItemDto(
      * other row. Raw, read by `toCopyrightReview`.
      */
     @SerialName("copyright_review") val copyrightReview: JsonElement? = null,
+    /**
+     * A long video's chapters, `[{start_ms, title}]` (post-service
+     * service/post.go:599, ChapterRef at service/chapters.go:30): always an
+     * array on the direct read, null on list surfaces.
+     */
+    val chapters: List<ChapterDto>? = null,
+    /** `upload` or `live` (post-service store/postgres/posts.go:139), on post-service rows; blank elsewhere. */
+    val source: String = "",
 )
 
 /**
@@ -325,4 +333,11 @@ data class FeedChannelDto(
     val name: String = "",
     val handle: String = "",
     @SerialName("avatar_url") val avatarUrl: String? = null,
+)
+
+/** One chapter on the post detail (post-service service/chapters.go:30). A start the row lacks is dropped as negative. */
+@Serializable
+data class ChapterDto(
+    @SerialName("start_ms") val startMs: Long = -1L,
+    val title: String = "",
 )

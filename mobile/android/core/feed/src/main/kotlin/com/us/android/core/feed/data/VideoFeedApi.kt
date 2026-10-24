@@ -165,4 +165,8 @@ data class ContinueWatchingDto(
 data class FeedCategoryDto(
     val id: String = "",
     val label: String = "",
+    /** The same value as [id] under the web contract's name (post-service service/categories.go:42). */
+    val slug: String = "",
+    /** `all`, `short` or `long` (categories.go:44); blank from a server that predates it. */
+    val kind: String = "",
 )

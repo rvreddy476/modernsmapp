@@ -80,6 +80,12 @@ enum class TubeMenuRow(val label: String, val icon: ImageVector) {
 
     /** The read-only Creator Hub: overview, library, conversations (T-31, 2026-10-15). */
     CREATOR_HUB("Creator Hub", UsIcons.Gauge),
+
+    /** The ranked long videos, Today / Week / Month (web parity, 2026-10-24). */
+    TRENDING("Trending", UsIcons.Flame),
+
+    /** Every long-video subject, one page each (web parity, 2026-10-24). */
+    TOPICS("Topics", UsIcons.Compass),
 }
 
 /**
@@ -102,6 +108,8 @@ fun tubeMenuRows(channel: ChannelState): List<TubeMenuRow> = listOf(
     TubeMenuRow.CREATOR_HUB,
     TubeMenuRow.HISTORY,
     TubeMenuRow.LIKED,
+    TubeMenuRow.TRENDING,
+    TubeMenuRow.TOPICS,
 ).sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.label })
 
 /** The sheet's one question: does the viewer have a channel? The cached answer, loaded once per process. */
@@ -157,6 +165,8 @@ fun TubeMenuSheet(
             TubeMenuRow.CREATOR_HUB -> destinations.onOpenCreatorHub()
             TubeMenuRow.HISTORY -> destinations.onOpenHistory()
             TubeMenuRow.LIKED -> destinations.onOpenCollection(TubeCollectionRoute.LIKED)
+            TubeMenuRow.TRENDING -> destinations.onOpenTrending()
+            TubeMenuRow.TOPICS -> destinations.onOpenTopics()
         }
     }
 

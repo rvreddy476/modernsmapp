@@ -138,6 +138,17 @@ data class FeedItem(
      * [CopyrightCopy.notice].
      */
     val copyrightReview: CopyrightReview? = null,
+    /**
+     * A long video's chapters (2026-10-24), sorted, from the post detail
+     * only ([normalizeChapters]); empty on list rows and on every other post.
+     */
+    val chapters: List<VideoChapter> = emptyList(),
+    /**
+     * Where a post came from (2026-10-24): `live` for a recording a stream
+     * left behind, `upload` or blank otherwise (post-service
+     * store/postgres/posts.go:139). The channel page's Live tab reads it.
+     */
+    val source: String = "",
 ) {
     /** Who a video card credits: the channel when the row carries one, the author otherwise. */
     val creatorName: String get() = channel?.name?.takeIf { it.isNotBlank() } ?: author.nameForDisplay

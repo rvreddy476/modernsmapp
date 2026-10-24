@@ -14,6 +14,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -57,6 +58,9 @@ import com.us.android.core.media.ui.VideoLoadState
 import com.us.android.core.ui.StageVolumeControl
 import com.us.android.core.media.ui.VideoLoadingOverlay
 import com.us.android.core.media.ui.rememberVideoLoadState
+import com.us.android.core.model.VideoChapter
+import com.us.android.core.model.chapterAt
+import com.us.android.core.model.chapterTicks
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
@@ -132,6 +136,8 @@ fun WatchPlayer(
     fullscreen: Boolean,
     transport: WatchTransport,
     modifier: Modifier = Modifier,
+    /** The video's chapters (2026-10-24): ticks on the seek bar and the playing one's name. */
+    chapters: List<VideoChapter> = emptyList(),
 ) {
     // The shared observer, read here rather than in the ViewModel: the
     // centre play/pause has to stand aside while it spins, which is a fact
@@ -200,6 +206,7 @@ fun WatchPlayer(
                 // The spinner takes the centre while it is there; two discs
                 // stacked on one another is how a control reads as broken.
                 busy = loadState != VideoLoadState.NONE,
+                chapters = chapters,
             )
         }
         if (!controlsVisible) {
@@ -275,6 +282,7 @@ private fun Controls(
     onToggleMute: () -> Unit,
     /** The buffering spinner has the centre; the play/pause stands down. */
     busy: Boolean,
+    chapters: List<VideoChapter> = emptyList(),
 ) {
     Box(
         modifier = Modifier
@@ -314,13 +322,16 @@ private fun Controls(
                 modifier = Modifier.align(Alignment.Center),
             )
         }
-        BottomRow(
-            playhead = playhead,
-            fullscreen = fullscreen,
-            transport = transport,
-            onInteract = onInteract,
-            modifier = Modifier.align(Alignment.BottomCenter),
-        )
+        Column(modifier = Modifier.align(Alignment.BottomCenter)) {
+            ChapterLabel(chapter = chapterAt(chapters, playhead.positionMs))
+            BottomRow(
+                playhead = playhead,
+                fullscreen = fullscreen,
+                transport = transport,
+                onInteract = onInteract,
+                ticks = chapterTicks(chapters, playhead.durationMs),
+            )
+        }
     }
 }
 
@@ -331,6 +342,7 @@ private fun BottomRow(
     transport: WatchTransport,
     onInteract: () -> Unit,
     modifier: Modifier = Modifier,
+    ticks: List<Float> = emptyList(),
 ) {
     Row(
         modifier = modifier
@@ -342,6 +354,7 @@ private fun BottomRow(
         TimeText(text = formatDuration(playhead.positionMs), tag = "watch_elapsed")
         SeekBar(
             playhead = playhead,
+            ticks = ticks,
             onSeekTo = {
                 onInteract()
                 transport.onSeekTo(it)
@@ -412,13 +425,14 @@ private fun PlayPauseButton(playing: Boolean, onClick: () -> Unit, modifier: Mod
  * than the player's until then so the thumb follows the hand.
  */
 @Composable
-private fun SeekBar(playhead: Playhead, onSeekTo: (Long) -> Unit, modifier: Modifier = Modifier) {
+private fun SeekBar(playhead: Playhead, onSeekTo: (Long) -> Unit, modifier: Modifier = Modifier, ticks: List<Float> = emptyList()) {
     var scrub by remember { mutableStateOf<Float?>(null) }
     val played = scrub ?: playhead.playedFraction
     val buffered = playhead.bufferedFraction
     val track = UsTheme.extended.onMedia.copy(alpha = TRACK_ALPHA)
     val loaded = UsTheme.extended.onMedia.copy(alpha = BUFFERED_ALPHA)
     val accent = UsTheme.extended.playhead
+    val gapColor = UsTheme.extended.stage
     val duration = playhead.durationMs
     Canvas(
         modifier = modifier
@@ -445,6 +459,12 @@ private fun SeekBar(playhead: Playhead, onSeekTo: (Long) -> Unit, modifier: Modi
         drawLine(track, Offset(0f, y), Offset(size.width, y), stroke, StrokeCap.Round)
         if (buffered > 0f) drawLine(loaded, Offset(0f, y), Offset(size.width * buffered, y), stroke, StrokeCap.Round)
         if (played > 0f) drawLine(accent, Offset(0f, y), Offset(size.width * played, y), stroke, StrokeCap.Round)
+        // Chapter starts (2026-10-24): a short gap cut through the bar, as YouTube draws them.
+        val gap = TICK_GAP.toPx()
+        ticks.forEach { at ->
+            val x = size.width * at
+            drawLine(gapColor, Offset(x - gap / 2, y), Offset(x + gap / 2, y), stroke * TICK_OVERDRAW)
+        }
         drawCircle(accent, radius = SEEK_THUMB.toPx() / 2, center = Offset(size.width * played, y))
     }
 }
@@ -483,3 +503,5 @@ private val SEEK_TOUCH_HEIGHT = 32.dp
 private val SEEK_STROKE = 3.dp
 private val SEEK_THUMB = 12.dp
 private val LINE_HEIGHT = 2.dp
+private val TICK_GAP = 2.dp
+private const val TICK_OVERDRAW = 1.5f

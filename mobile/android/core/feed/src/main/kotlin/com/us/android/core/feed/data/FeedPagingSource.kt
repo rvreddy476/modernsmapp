@@ -19,7 +19,9 @@ import com.us.android.core.model.FeedPostControls
 import com.us.android.core.model.FeedViewerState
 import com.us.android.core.model.MembersOnly
 import com.us.android.core.model.ReelSoundWire
+import com.us.android.core.model.VideoChapter
 import com.us.android.core.model.allowsSoundReuse
+import com.us.android.core.model.normalizeChapters
 import com.us.android.core.model.toReelSound
 import com.us.android.core.model.wireVolume
 import com.us.android.core.network.ApiEnvelope
@@ -286,6 +288,8 @@ internal fun FeedItemDto.toDomain() = FeedItem(
     action = action.toPostAction(),
     // Copyright title review (2026-10-24): the author's own detail only.
     copyrightReview = copyrightReview.toCopyrightReview(),
+    chapters = normalizeChapters(chapters.orEmpty().map { VideoChapter(startMs = it.startMs, title = it.title) }),
+    source = source.trim().lowercase(),
 )
 
 /**

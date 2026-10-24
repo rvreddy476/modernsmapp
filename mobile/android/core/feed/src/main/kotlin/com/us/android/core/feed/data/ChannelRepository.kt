@@ -172,6 +172,9 @@ class ChannelRepository @Inject constructor(
         createdAt = createdAt,
         updatedAt = updatedAt,
         action = action.toPostAction(),
+        shortCount = shortCount,
+        liveCount = liveCount,
+        collectionCount = collectionCount,
     )
 
     companion object {

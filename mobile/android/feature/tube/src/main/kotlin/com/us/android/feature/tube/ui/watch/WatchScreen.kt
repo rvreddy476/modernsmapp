@@ -25,6 +25,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalConfiguration
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.unit.dp
@@ -64,6 +65,9 @@ import com.us.android.core.memberships.ui.MembersOnlyLockStyle
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
+import com.us.android.core.model.chapterIndexAt
+import com.us.android.core.feed.ui.action.openActionTarget
+import com.us.android.feature.tube.data.ElementTarget
 import com.us.android.core.ui.HideShellBottomBar
 import com.us.android.core.ui.PLAYBACK_SPEEDS
 import com.us.android.core.ui.UsCaptionOption
@@ -102,6 +106,8 @@ fun WatchScreen(
     onSearchName: (name: String) -> Unit = {},
     /** An accepted credit: that person's channel inside Tube. */
     onOpenChannel: (userId: String) -> Unit = {},
+    /** An end-screen element or card for a collection (2026-10-24): that collection's page. */
+    onOpenCollection: (collectionId: String) -> Unit = {},
     viewModel: WatchViewModel = hiltViewModel(),
     more: PostMoreViewModel = hiltViewModel(),
     // The Share sheet's (2026-10-17): the screen's, so "Sent" is read here after the sheet has gone.
@@ -136,6 +142,13 @@ fun WatchScreen(
     }
 
     HideShellBottomBar(hidden = true)
+    // Picture in picture (2026-10-24): leaving the app while a video plays
+    // shrinks it into the system's window, with play/pause on it.
+    val inWindow = rememberWatchPictureInPicture(
+        eligible = pictureInPictureEligible(content, playhead.playing, ended, supported = true),
+        playing = playhead.playing,
+        onTogglePlay = viewModel::togglePlay,
+    )
     FullscreenMode(fullscreen)
     PauseOnBackground(viewModel)
     BackHandler(enabled = fullscreen) { fullscreen = false }
@@ -173,7 +186,25 @@ fun WatchScreen(
             onMore = { sheets.moreFor = it },
             onOpenVideo = { viewModel.open(it.id) },
             onOpenEpisode = viewModel::open,
+            onSeekTo = viewModel::seekTo,
         )
+    }
+
+    val context = LocalContext.current
+    // An end-screen element or a card (2026-10-24): a video plays here, a
+    // collection or a channel opens inside Tube, a link leaves for the browser.
+    val onOpenTarget: (ElementTarget) -> Unit = remember(viewModel, onOpenChannel, onOpenCollection, context) {
+        { target ->
+            when (target) {
+                is ElementTarget.Video -> {
+                    if (fullscreen) fullscreen = false
+                    viewModel.open(target.postId)
+                }
+                is ElementTarget.Collection -> onOpenCollection(target.collectionId)
+                is ElementTarget.Channel -> target.userId.takeIf { it.isNotBlank() }?.let(onOpenChannel)
+                is ElementTarget.External -> context.openActionTarget(target.url)
+            }
+        }
     }
 
     Box(
@@ -182,7 +213,10 @@ fun WatchScreen(
             .background(UsTheme.extended.bgCanvas)
             .testTag("watch_screen"),
     ) {
-        WatchBody(
+        if (inWindow) {
+            PictureInPicturePlayer(player = viewModel.player)
+        } else WatchBody(
+            onOpenTarget = onOpenTarget,
             content = content,
             fullscreen = fullscreen || landscape,
             playhead = playhead,
@@ -402,9 +436,11 @@ private fun WatchBody(
     offlineState: OfflineState,
     viewModel: WatchViewModel,
     actions: WatchDetailsActions,
+    onOpenTarget: (ElementTarget) -> Unit = {},
 ) {
     if (fullscreen) {
         PlayerOrState(
+            onOpenTarget = onOpenTarget,
             content = content,
             playhead = playhead,
             fullscreen = true,
@@ -419,6 +455,7 @@ private fun WatchBody(
     }
     Column(modifier = Modifier.fillMaxSize()) {
         PlayerOrState(
+            onOpenTarget = onOpenTarget,
             content = content,
             playhead = playhead,
             fullscreen = false,
@@ -479,6 +516,7 @@ private fun WatchBody(
                 series = series,
                 thumbFor = viewModel::thumb,
                 actions = actions,
+                chapterIndex = chapterIndexAt(item.chapters, playhead.positionMs),
             )
         }
     }
@@ -518,7 +556,9 @@ private fun PlayerOrState(
     ended: Boolean,
     viewModel: WatchViewModel,
     modifier: Modifier = Modifier,
+    onOpenTarget: (ElementTarget) -> Unit = {},
 ) {
+    val elements by viewModel.elements.collectAsStateWithLifecycle()
     when (content) {
         WatchContent.Loading -> UsLoadingState(label = "Loading video", modifier = modifier)
         is WatchContent.Failed -> UsErrorState(message = content.message, modifier = modifier, onRetry = null)
@@ -558,6 +598,7 @@ private fun PlayerOrState(
                     playhead = playhead,
                     fullscreen = fullscreen,
                     transport = transport,
+                    chapters = content.item.chapters,
                     modifier = Modifier.fillMaxSize(),
                 )
                 // The stored caption track the viewer turned on; nothing is drawn while it is off.
@@ -576,6 +617,18 @@ private fun PlayerOrState(
                         onOpen = { viewModel.open(it.id) },
                     )
                 }
+                // The creator's end screen and cards, above everything the
+                // app draws at the end, as on the web: they are the video's.
+                WatchElementsOverlay(
+                    elements = elements?.takeIf { it.postId == content.item.id },
+                    playhead = playhead,
+                    ended = ended,
+                    onShown = viewModel::onElementsShown,
+                    onOpen = { surface, id, target ->
+                        viewModel.onElementClicked(surface, id)
+                        onOpenTarget(target)
+                    },
+                )
             }
         }
     }

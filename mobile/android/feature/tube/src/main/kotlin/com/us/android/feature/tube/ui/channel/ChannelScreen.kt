@@ -13,6 +13,15 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.staggeredgrid.items
+import androidx.compose.ui.layout.ContentScale
+import coil3.compose.AsyncImage
+import com.us.android.core.ui.formatCount
+import com.us.android.feature.tube.ui.collections.CollectionRow
+import com.us.android.feature.tube.ui.home.TubeListSkeleton
 import androidx.compose.foundation.lazy.staggeredgrid.LazyStaggeredGridScope
 import androidx.compose.foundation.lazy.staggeredgrid.LazyVerticalStaggeredGrid
 import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridCells
@@ -90,12 +99,18 @@ fun ChannelScreen(
     val videoItems = viewModel.items.collectAsLazyPagingItems()
     val appearances = viewModel.appearances.collectAsLazyPagingItems()
     val membersItems = viewModel.membersItems.collectAsLazyPagingItems()
+    val shortsItems = viewModel.shortsItems.collectAsLazyPagingItems()
+    val liveItems = viewModel.liveItems.collectAsLazyPagingItems()
+    val postItems = viewModel.postItems.collectAsLazyPagingItems()
+    val collections by viewModel.collections.collectAsStateWithLifecycle()
     val tab by viewModel.tab.collectAsStateWithLifecycle()
     val tabs by viewModel.tabs.collectAsStateWithLifecycle()
     val shown = tab.takeIf { it in tabs } ?: ChannelTab.VIDEOS
-    val showingAppearances = shown == ChannelTab.APPEARS_IN
     val items = when (shown) {
-        ChannelTab.VIDEOS -> videoItems
+        ChannelTab.VIDEOS, ChannelTab.COLLECTIONS -> videoItems
+        ChannelTab.SHORTS -> shortsItems
+        ChannelTab.LIVE -> liveItems
+        ChannelTab.POSTS -> postItems
         ChannelTab.MEMBERS -> membersItems
         ChannelTab.APPEARS_IN -> appearances
     }
@@ -107,7 +122,7 @@ fun ChannelScreen(
             isRefreshing = items.loadState.refresh is LoadState.Loading && items.itemCount > 0,
             onRefresh = {
                 viewModel.load()
-                items.refresh()
+                if (shown == ChannelTab.COLLECTIONS) viewModel.loadCollections() else items.refresh()
             },
             modifier = Modifier.fillMaxSize(),
         ) {
@@ -144,20 +159,29 @@ fun ChannelScreen(
                         ChannelTabs(tabs = tabs, selected = shown, onSelect = viewModel::selectTab)
                     }
                 }
-                videos(
-                    items = items,
-                    emptyTitle = when {
-                        showingAppearances -> "Not credited in any videos yet"
-                        shown == ChannelTab.MEMBERS -> "No members-only videos yet"
-                        else -> "No videos yet"
-                    },
-                    thumbFor = viewModel::thumb,
-                    onOpen = { item ->
-                        viewModel.onOpen(items.itemSnapshotList.items)
-                        destinations.onOpenVideo(item.id)
-                    },
-                    onMore = { item -> moreState.open(item, suggested = false) },
-                )
+                when (shown) {
+                    ChannelTab.COLLECTIONS -> collectionRows(
+                        state = collections,
+                        onOpen = destinations.onOpenCollection,
+                        onRetry = viewModel::loadCollections,
+                    )
+                    ChannelTab.POSTS -> posts(items = items, thumbFor = viewModel::thumb, onOpen = { destinations.onOpenPost(it.id) })
+                    else -> videos(
+                        items = items,
+                        emptyTitle = channelEmptyTitle(shown),
+                        thumbFor = viewModel::thumb,
+                        onOpen = { item ->
+                            if (shown == ChannelTab.SHORTS) {
+                                viewModel.openShort(item.id)
+                                destinations.onOpenReels()
+                            } else {
+                                viewModel.onOpen(items.itemSnapshotList.items)
+                                destinations.onOpenVideo(item.id)
+                            }
+                        },
+                        onMore = { item -> moreState.open(item, suggested = false) },
+                    )
+                }
             }
             TubeMoreHost(
                 state = moreState,
@@ -294,12 +318,24 @@ private fun ChannelCard(
     }
 }
 
-/** Videos · Appears in — glass pills, the selected one white with navy text (the app's selection rule). */
+/** What an empty tab says. */
+internal fun channelEmptyTitle(tab: ChannelTab): String = when (tab) {
+    ChannelTab.APPEARS_IN -> "Not credited in any videos yet"
+    ChannelTab.MEMBERS -> "No members-only videos yet"
+    ChannelTab.SHORTS -> "No shorts yet"
+    ChannelTab.LIVE -> "No past live streams yet"
+    ChannelTab.COLLECTIONS -> "No collections yet"
+    ChannelTab.POSTS -> "No posts yet"
+    ChannelTab.VIDEOS -> "No videos yet"
+}
+
+/** Videos · Shorts · Live · … — glass pills, the selected one white with navy text, sideways on a phone. */
 @Composable
 private fun ChannelTabs(tabs: List<ChannelTab>, selected: ChannelTab, onSelect: (ChannelTab) -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
             .testTag("tube_channel_tabs"),
         horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
     ) {
@@ -366,6 +402,102 @@ private fun LazyStaggeredGridScope.videos(
     }
 }
 
+/** The Collections tab: one row per collection, the whole width. */
+private fun LazyStaggeredGridScope.collectionRows(
+    state: ChannelCollectionsState,
+    onOpen: (String) -> Unit,
+    onRetry: () -> Unit,
+) {
+    val full = StaggeredGridItemSpan.FullLine
+    when (state) {
+        ChannelCollectionsState.Loading -> item(key = "collections_loading", span = full) {
+            TubeListSkeleton(modifier = Modifier.padding(vertical = UsTheme.spacing.l))
+        }
+        is ChannelCollectionsState.Failed -> item(key = "collections_error", span = full) {
+            UsErrorState(message = state.message, onRetry = onRetry)
+        }
+        is ChannelCollectionsState.Loaded -> if (state.collections.isEmpty()) {
+            item(key = "collections_empty", span = full) {
+                UsEmptyState(title = channelEmptyTitle(ChannelTab.COLLECTIONS), modifier = Modifier.padding(vertical = UsTheme.spacing.xxxxl))
+            }
+        } else {
+            items(state.collections, key = { "collection:" + it.id }, span = { full }) { collection ->
+                CollectionRow(collection = collection, onClick = { onOpen(collection.id) })
+            }
+        }
+    }
+}
+
+/** The Posts tab: each post as a tile, its picture when it has one, else its words. */
+private fun LazyStaggeredGridScope.posts(
+    items: LazyPagingItems<FeedItem>,
+    thumbFor: (FeedItem) -> VideoThumb,
+    onOpen: (FeedItem) -> Unit,
+) {
+    val refresh = items.loadState.refresh
+    val empty = items.itemCount == 0
+    val full = StaggeredGridItemSpan.FullLine
+    when {
+        refresh is LoadState.Loading && empty -> item(key = "posts_loading", span = full) {
+            TubeGridSkeleton(modifier = Modifier.padding(vertical = UsTheme.spacing.l))
+        }
+        refresh is LoadState.Error && empty -> item(key = "posts_error", span = full) {
+            UsErrorState(message = "We couldn't load these posts.", onRetry = items::retry)
+        }
+        refresh is LoadState.NotLoading && empty -> item(key = "posts_empty", span = full) {
+            UsEmptyState(title = channelEmptyTitle(ChannelTab.POSTS), modifier = Modifier.padding(vertical = UsTheme.spacing.xxxxl))
+        }
+        else -> {
+            items(count = items.itemCount, key = items.itemKey { "post:" + it.id }) { index ->
+                val item = items[index] ?: return@items
+                PostTile(item = item, imageUrl = thumbFor(item).url, onClick = { onOpen(item) })
+            }
+            appendFooter(items)
+        }
+    }
+}
+
+@Composable
+private fun PostTile(item: FeedItem, imageUrl: String?, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(UsTheme.radii.medium)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(UsTheme.extended.glassBg, shape)
+            .border(TAB_HAIRLINE, UsTheme.extended.glassBorder, shape)
+            .clickable(role = Role.Button, onClick = onClick)
+            .testTag("tube_channel_post:" + item.id),
+    ) {
+        if (imageUrl != null) {
+            AsyncImage(
+                model = imageUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier.fillMaxWidth().aspectRatio(1f),
+            )
+        }
+        val words = item.title.ifBlank { item.text }
+        if (words.isNotBlank()) {
+            Text(
+                text = words,
+                style = MaterialTheme.typography.bodyMedium,
+                color = UsTheme.extended.textPrimary,
+                maxLines = POST_LINES,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(UsTheme.spacing.l),
+            )
+        }
+        Text(
+            text = formatCount(item.counts.likes) + " likes · " + formatCount(item.counts.comments) + " comments",
+            style = MaterialTheme.typography.labelSmall,
+            color = UsTheme.extended.textMuted,
+            modifier = Modifier.padding(start = UsTheme.spacing.l, end = UsTheme.spacing.l, bottom = UsTheme.spacing.l),
+        )
+    }
+}
+
+private const val POST_LINES = 6
 private val HEADER_LOADING_HEIGHT = 160.dp
 private val TAB_HEIGHT = 36.dp
 private val TAB_HAIRLINE = 1.dp

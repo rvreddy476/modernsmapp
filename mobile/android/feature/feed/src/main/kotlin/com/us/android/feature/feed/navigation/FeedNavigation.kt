@@ -14,6 +14,7 @@ import com.us.android.feature.feed.ui.FriendsFeedScreen
 import com.us.android.feature.feed.ui.HashtagPostsScreen
 import com.us.android.feature.feed.ui.HomeMenuRow
 import com.us.android.feature.feed.ui.reels.ReelsScreen
+import com.us.android.feature.feed.ui.reels.explore.ReelsExploreScreen
 import com.us.android.feature.feed.ui.reels.sound.SoundPageScreen
 import kotlinx.serialization.Serializable
 
@@ -141,6 +142,8 @@ fun NavGraphBuilder.reelsScreen(
      * same reason.
      */
     onOpenOffline: () -> Unit,
+    /** The header's Explore tab (2026-10-24): `:app` pushes [ReelsExploreRoute]. Required, as above. */
+    onOpenExplore: () -> Unit,
 ) {
     composable<ReelsRoute> {
         ReelsScreen(
@@ -150,9 +153,30 @@ fun NavGraphBuilder.reelsScreen(
             onOpenSound = onOpenSound,
             onCreateWithSound = onCreateWithSound,
             onOpenOffline = onOpenOffline,
+            onOpenExplore = onOpenExplore,
         )
     }
 }
+
+/**
+ * Reels Explore (web parity, 2026-10-24): category chips over a grid of
+ * reel covers, pushed from the Reels header. A pushed screen, never a tab.
+ */
+@Serializable
+data object ReelsExploreRoute
+
+/** Registers Explore. [onOpenReels] is the tab switch a tile asks for; the reel's id is already in `ReelsEntry`. */
+fun NavGraphBuilder.reelsExploreScreen(
+    onBack: () -> Unit,
+    onOpenReels: () -> Unit,
+) {
+    composable<ReelsExploreRoute> {
+        ReelsExploreScreen(onBack = onBack, onOpenReels = onOpenReels)
+    }
+}
+
+/** Type-safe navigation to Explore. */
+fun NavController.navigateToReelsExplore() = navigate(ReelsExploreRoute)
 
 /**
  * One sound's page (original sounds, 2026-09-30), pushed from a reel's sound

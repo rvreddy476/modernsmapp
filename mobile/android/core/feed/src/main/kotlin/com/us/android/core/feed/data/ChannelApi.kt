@@ -113,6 +113,10 @@ data class ChannelDto(
      * there is none; the owner's `channels/me` adds `url` and `status`.
      */
     val action: JsonElement? = null,
+    /** The tab tally (post-service service/channels.go:172-174, store/postgres/channels.go:306); absent from older servers. */
+    @SerialName("short_count") val shortCount: Int? = null,
+    @SerialName("live_count") val liveCount: Int? = null,
+    @SerialName("collection_count") val collectionCount: Int? = null,
 )
 
 @Serializable

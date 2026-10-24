@@ -168,8 +168,8 @@ import java.io.File
  * the header — search and More, white — translucent over the top
  * of the video on its own scrim; the right rail — like, comment, share,
  * save, mute — bottom-right; the author, Follow and
- * the caption bottom-left over a bottom scrim. No For You / Following tabs:
- * Reels is one surface.
+ * the caption bottom-left over a bottom scrim. The header carries Explore,
+ * Following and For You ([ReelsFeedTabs], 2026-10-24 web parity).
  *
  * Two gestures on the video (founder, 2026-09-04, from the phone):
  *
@@ -244,6 +244,8 @@ fun ReelsScreen(
     onCreateWithSound: () -> Unit,
     /** The header's More with no reel to describe (the feed did not load): `:app` pushes what this device keeps. */
     onOpenOffline: () -> Unit,
+    /** The header's Explore tab (2026-10-24): `:app` pushes the category grid over Reels. */
+    onOpenExplore: () -> Unit = {},
     viewModel: ReelsViewModel = hiltViewModel(),
     more: PostMoreViewModel = hiltViewModel(),
     sound: ReelSoundViewModel = hiltViewModel(),
@@ -259,6 +261,7 @@ fun ReelsScreen(
     val items = viewModel.items.collectAsLazyPagingItems()
     val pagerState = rememberReelsPager(viewModel, items, head)
     val refreshing by viewModel.refreshing.collectAsStateWithLifecycle()
+    val feed by viewModel.feed.collectAsStateWithLifecycle()
     RefreshTriggers(viewModel = viewModel, pagerState = pagerState)
     var commentsFor by rememberSaveable { mutableStateOf<String?>(null) }
     var moreFor by remember { mutableStateOf<FeedItem?>(null) }
@@ -341,11 +344,16 @@ fun ReelsScreen(
             ),
             refreshing = refreshing,
             onRefresh = viewModel::refresh,
+            feed = feed,
+            onForYou = { viewModel.selectFeed(ReelsFeed.FOR_YOU) },
         )
 
         ScreenChrome(
             paused = view.paused,
             showHeader = chrome.showHeader,
+            feed = feed,
+            onSelectFeed = viewModel::selectFeed,
+            onOpenExplore = onOpenExplore,
             // With no reel to open the sheet for (the feed did not load, as with no
             // network), More goes straight to what the device keeps.
             // The row as the list has it NOW: an Edit saved since the reel
@@ -776,6 +784,9 @@ internal data class ReelsViewState(
 private fun BoxScope.ScreenChrome(
     paused: Boolean,
     showHeader: Boolean,
+    feed: ReelsFeed,
+    onSelectFeed: (ReelsFeed) -> Unit,
+    onOpenExplore: () -> Unit,
     onOpenMenu: () -> Unit,
     onClearScreen: () -> Unit,
     muted: Boolean,
@@ -797,11 +808,20 @@ private fun BoxScope.ScreenChrome(
         enter = fadeIn(chromeSpec(reduced)) + slideInVertically(chromeSpec(reduced)) { -it / 2 },
         exit = fadeOut(chromeSpec(reduced)) + slideOutVertically(chromeSpec(reduced)) { -it / 2 },
     ) {
-        ReelsHeader(
-            onOpenMenu = onOpenMenu,
-            onClearScreen = onClearScreen,
-            modifier = Modifier.testTag("reels_header"),
-        )
+        Box {
+            ReelsHeader(
+                onOpenMenu = onOpenMenu,
+                onClearScreen = onClearScreen,
+                modifier = Modifier.testTag("reels_header"),
+            )
+            // The header's 64dp row is its bottom: the status bar sits above it.
+            ReelsFeedTabs(
+                selected = feed,
+                onSelect = onSelectFeed,
+                onOpenExplore = onOpenExplore,
+                modifier = Modifier.align(Alignment.BottomCenter),
+            )
+        }
     }
     // The sound control on the header's line, at the left (founder,
     // 2026-10-19): one for the screen, not one per reel. It stays in full
@@ -962,6 +982,9 @@ private fun ReelsBody(
     /** A refresh the viewer asked for is on the wire ([ReelsViewModel.refreshing]). */
     refreshing: Boolean,
     onRefresh: () -> Unit,
+    /** Which header tab the reels come from: Following's empty state is its own. */
+    feed: ReelsFeed = ReelsFeed.FOR_YOU,
+    onForYou: () -> Unit = {},
 ) {
     val refresh = items.loadState.refresh
     val empty = items.itemCount == 0 && head == null
@@ -972,6 +995,8 @@ private fun ReelsBody(
             message = "We couldn't load reels.",
             onRetry = items::retry,
         )
+
+        refresh is LoadState.NotLoading && empty && feed == ReelsFeed.FOLLOWING -> ReelsFollowingEmpty(onForYou = onForYou)
 
         refresh is LoadState.NotLoading && empty -> UsEmptyState(
             title = "No reels yet",

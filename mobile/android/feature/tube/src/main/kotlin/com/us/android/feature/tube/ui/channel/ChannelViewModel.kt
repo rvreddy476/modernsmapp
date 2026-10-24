@@ -17,6 +17,9 @@ import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.feed.data.SubscriptionGraph
 import com.us.android.core.feed.data.VideoFeedRepository
 import com.us.android.core.feed.data.VideoThumb
+import com.us.android.core.feed.data.VideoCollection
+import com.us.android.core.feed.data.VideoLibraryRepository
+import com.us.android.core.media.ReelsEntry
 import com.us.android.core.feed.data.credits.CreditsRepository
 import com.us.android.core.feed.data.hides
 import com.us.android.core.feed.data.videoThumb
@@ -51,9 +54,25 @@ sealed interface ChannelHeaderState {
     data class Failed(val message: String) : ChannelHeaderState
 }
 
-/** The channel page's lists. */
+/**
+ * The channel page's lists, in the web's order (web parity, 2026-10-24:
+ * features/posttube/channel/channelModel.ts): Videos, Shorts, Live,
+ * Collections, Posts, then Members and Appears in.
+ */
 enum class ChannelTab(val label: String) {
     VIDEOS("Videos"),
+
+    /** The owner's reels (`content_type=flick`); a tile opens it in Reels. */
+    SHORTS("Shorts"),
+
+    /** The owner's long videos that came from a live stream (`source = live`). */
+    LIVE("Live"),
+
+    /** The owner's public collections (the viewer's own include private ones). */
+    COLLECTIONS("Collections"),
+
+    /** The owner's ordinary posts (`content_type=post`); a tile opens the post. */
+    POSTS("Posts"),
 
     /** The owner's members-only long videos (paid memberships, 2026-10-23), while they offer a level. */
     MEMBERS("Members"),
@@ -63,18 +82,52 @@ enum class ChannelTab(val label: String) {
 }
 
 /**
- * The channel's tabs, in order: Videos always; Members while the owner
- * offers a level; Appears in when it holds something. Pure.
+ * The channel read's tab tally (post-service service/channels.go:172-174).
+ * A null count is one the server did not send, which is not zero.
  */
-fun channelTabsFor(members: Boolean, appearsIn: Boolean): List<ChannelTab> = ChannelTab.entries.filter { tab ->
+data class ChannelTabCounts(val shorts: Int? = null, val live: Int? = null, val collections: Int? = null)
+
+fun Channel.tabCounts(): ChannelTabCounts = ChannelTabCounts(shortCount, liveCount, collectionCount)
+
+/**
+ * The channel's tabs, in order — the web's `visibleTabs`: Videos always;
+ * Shorts, Live and Collections unless the channel says it has none (a count
+ * of exactly 0; an unknown count keeps the tab, and its empty state
+ * answers); Posts always (the server counts none); the owner sees every one
+ * of those; then Members while the owner offers a level, and Appears in
+ * when it holds something. [counts] is null while the channel is still
+ * being read: only Videos and the two extras are offered until it lands,
+ * so tabs do not appear and vanish under the viewer. Pure.
+ */
+fun channelTabsFor(
+    members: Boolean,
+    appearsIn: Boolean,
+    counts: ChannelTabCounts? = ChannelTabCounts(),
+    isOwner: Boolean = false,
+): List<ChannelTab> = ChannelTab.entries.filter { tab ->
+    fun has(count: Int?) = counts != null && (isOwner || count != 0)
     when (tab) {
         ChannelTab.VIDEOS -> true
+        ChannelTab.SHORTS -> has(counts?.shorts)
+        ChannelTab.LIVE -> has(counts?.live)
+        ChannelTab.COLLECTIONS -> has(counts?.collections)
+        ChannelTab.POSTS -> counts != null
         ChannelTab.MEMBERS -> members
         ChannelTab.APPEARS_IN -> appearsIn
     }
 }
 
+/** The Collections tab's list: loading, the collections, or why not. */
+sealed interface ChannelCollectionsState {
+    data object Loading : ChannelCollectionsState
+    data class Loaded(val collections: List<VideoCollection>) : ChannelCollectionsState
+    data class Failed(val message: String) : ChannelCollectionsState
+}
+
 private const val LONG_VIDEO = "long_video"
+private const val SHORT_FORM = "flick"
+private const val PLAIN_POST = "post"
+private const val OFFLINE_LINE = "You are offline. Check your connection."
 
 /**
  * A channel inside Tube (2026-09-05; subscriptions 2026-09-12):
@@ -104,6 +157,10 @@ class ChannelViewModel @Inject constructor(
     hidden: HiddenPosts,
     private val credits: CreditsRepository,
     private val memberships: MembershipsRepository,
+    /** The Collections tab (2026-10-24): the owner's collections. */
+    private val library: VideoLibraryRepository,
+    /** A Shorts tile opens that reel in the Reels tab. */
+    private val reelsEntry: ReelsEntry,
 ) : ViewModel() {
 
     val userId: String = savedStateHandle.toRoute<TubeChannelRoute>().userId
@@ -139,15 +196,67 @@ class ChannelViewModel @Inject constructor(
             if (set.isEmpty) page else page.filter { !set.hides(it) }
         }
 
-    /** The tabs offered: Videos, then Members and Appears in only when each has something behind it. */
-    val tabs: StateFlow<List<ChannelTab>> = combine(_offersMembers, _offersAppearances) { members, appears ->
-        channelTabsFor(members = members, appearsIn = appears)
+    private val _header = MutableStateFlow<ChannelHeaderState>(ChannelHeaderState.Loading)
+    val header: StateFlow<ChannelHeaderState> = _header.asStateFlow()
+
+    /** The tabs offered, by what the channel read said and whose channel it is ([channelTabsFor]). */
+    val tabs: StateFlow<List<ChannelTab>> = combine(_offersMembers, _offersAppearances, _header) { members, appears, header ->
+        channelTabsFor(
+            members = members,
+            appearsIn = appears,
+            counts = when (header) {
+                ChannelHeaderState.Loading -> null
+                is ChannelHeaderState.Loaded -> header.channel.tabCounts()
+                else -> ChannelTabCounts()
+            },
+            isOwner = ownUserId.isNotBlank() && ownUserId == userId,
+        )
     }.stateIn(viewModelScope, SharingStarted.Eagerly, listOf(ChannelTab.VIDEOS))
 
     fun selectTab(tab: ChannelTab) {
-        if (tab !in channelTabsFor(_offersMembers.value, _offersAppearances.value)) return
+        if (tab !in tabs.value) return
         _tab.value = tab
+        if (tab == ChannelTab.COLLECTIONS && _collections.value !is ChannelCollectionsState.Loaded) loadCollections()
     }
+
+    /** The owner's reels, newest first. */
+    val shortsItems: Flow<PagingData<FeedItem>> = videos.authorPosts(userId, SHORT_FORM)
+        .cachedIn(viewModelScope)
+        .combine(hidden.state) { page, set ->
+            if (set.isEmpty) page else page.filter { !set.hides(it) }
+        }
+
+    /** The owner's live recordings, newest first. */
+    val liveItems: Flow<PagingData<FeedItem>> = videos.liveVideos(userId)
+        .cachedIn(viewModelScope)
+        .combine(hidden.state) { page, set ->
+            if (set.isEmpty) page else page.filter { !set.hides(it) }
+        }
+
+    /** The owner's ordinary posts, newest first. */
+    val postItems: Flow<PagingData<FeedItem>> = videos.authorPosts(userId, PLAIN_POST)
+        .cachedIn(viewModelScope)
+        .combine(hidden.state) { page, set ->
+            if (set.isEmpty) page else page.filter { !set.hides(it) }
+        }
+
+    private val _collections = MutableStateFlow<ChannelCollectionsState>(ChannelCollectionsState.Loading)
+    val collections: StateFlow<ChannelCollectionsState> = _collections.asStateFlow()
+
+    fun loadCollections() {
+        _collections.value = ChannelCollectionsState.Loading
+        viewModelScope.launch {
+            _collections.value = when (val result = library.collections(userId)) {
+                is AppResult.Success -> ChannelCollectionsState.Loaded(result.data)
+                is AppResult.Failure -> ChannelCollectionsState.Failed(
+                    if (result.error is AppError.NoNetwork) OFFLINE_LINE else "We couldn't load these collections.",
+                )
+            }
+        }
+    }
+
+    /** A Shorts tile: Reels opens on that reel. */
+    fun openShort(postId: String) = reelsEntry.open(postId)
 
     /** Asks whether there is anything to show under "Appears in"; on every load, so a pull re-checks. */
     private fun checkAppearances() {
@@ -163,9 +272,6 @@ class ChannelViewModel @Inject constructor(
             if (!offers && _tab.value == ChannelTab.MEMBERS) _tab.value = ChannelTab.VIDEOS
         }
     }
-
-    private val _header = MutableStateFlow<ChannelHeaderState>(ChannelHeaderState.Loading)
-    val header: StateFlow<ChannelHeaderState> = _header.asStateFlow()
 
     val items: Flow<PagingData<FeedItem>> = videos.ownVideos(userId)
         .cachedIn(viewModelScope)

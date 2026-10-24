@@ -30,6 +30,8 @@ class TubeMenuTest {
                 "Saved",
                 "Scheduled posts",
                 "Subscriptions",
+                "Topics",
+                "Trending",
                 "Watch later",
                 "Your channel",
             )
@@ -99,7 +101,8 @@ class TubeMenuTest {
     fun `every row has a label and none is empty`() {
         TubeMenuRow.entries.forEach { assertThat(it.label).isNotEmpty() }
         // 9 since 2026-10-15: Creator Hub joined (T-31). 11 since 2026-10-22: History and Liked videos.
-        assertThat(tubeMenuRows(ChannelState.Present(channel))).hasSize(11)
+        // 13 since 2026-10-24: Trending and Topics (web parity).
+        assertThat(tubeMenuRows(ChannelState.Present(channel))).hasSize(13)
     }
 
     /** T-31: the read-only Creator Hub is reachable from the video app whatever is known of the channel. */

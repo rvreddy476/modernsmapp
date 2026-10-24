@@ -7,6 +7,7 @@ import com.us.android.core.model.FeedAuthor
 import com.us.android.core.model.FeedCounts
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedViewerState
+import com.us.android.core.model.VideoChapter
 import org.junit.Test
 
 /**
@@ -43,6 +44,15 @@ class WatchCopyrightTest {
         assertThat(merged.copyrightReview).isEqualTo(held)
         // A detail with none clears a stale one (a review that lifted itself).
         assertThat(video(held).withViewerStateOf(video()).copyrightReview).isNull()
+    }
+
+    /** Chapters (2026-10-24) ride only on the detail; a list row opened on the watch page learns them from it. */
+    @Test
+    fun `the detail brings the chapters to the row the screen is playing`() {
+        val chapters = listOf(VideoChapter(0, "Intro"), VideoChapter(60_000, "Main"))
+        val merged = video().withViewerStateOf(video().copy(chapters = chapters))
+        assertThat(merged.chapters).isEqualTo(chapters)
+        assertThat(video().copy(chapters = chapters).withViewerStateOf(video()).chapters).isEmpty()
     }
 
     @Test

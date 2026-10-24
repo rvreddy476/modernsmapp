@@ -94,6 +94,19 @@ class VideoFeedRepository @Inject constructor(
     }
 
     /**
+     * One channel's videos that came from a live stream (the channel page's
+     * Live tab, web parity 2026-10-24): the author's long videos with
+     * `source = "live"` (post-service store/postgres/posts.go:139), newest
+     * first. The by-author route has no source filter, so the client keeps
+     * only recordings and walks past pages of uploads, as the saved list does.
+     */
+    fun liveVideos(userId: String): Flow<PagingData<FeedItem>> = feedPager(errorMapper) { request ->
+        videosOnly(request, keep = { it.feedContentType == LONG_VIDEO && it.source == LIVE_SOURCE }) { limit, cursor ->
+            api.postsByAuthor(userId, LONG_VIDEO, limit, cursor)
+        }
+    }
+
+    /**
      * The viewer's saved long videos: the bookmark list — every kind of
      * post — narrowed to videos, page by page. A page of nothing but saved
      * photos is skipped, up to [MAX_PAGE_HOPS] in one load, so the list is
@@ -355,6 +368,7 @@ class VideoFeedRepository @Inject constructor(
         private const val CODE_NOT_SCHEDULED = "NOT_SCHEDULED"
         private const val CODE_INVALID_PUBLISH_AT = "INVALID_PUBLISH_AT"
         private const val LONG_VIDEO = "long_video"
+        private const val LIVE_SOURCE = "live"
 
         /** Pages of non-video bookmarks skipped in one load before giving Paging the cursor back. */
         private const val MAX_PAGE_HOPS = 4

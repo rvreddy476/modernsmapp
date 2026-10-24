@@ -111,6 +111,25 @@ sealed interface ReelsHead {
 
 data class PendingFailure(val message: String, val retryable: Boolean)
 
+/**
+ * Which ranked reels the stage shows (web parity, 2026-10-24): the web's
+ * `/reels` (For You) and `/reels?feed=following` (features/reels/feed.ts).
+ * Both read `GET /v1/feed/reels`; Following adds `following_only=true`,
+ * which feed-service reads as only authors the viewer follows
+ * (feed-service internal/http/handler.go:233). Supersedes the 2026-09-04
+ * one-surface rule: since 2026-10-21 Android has everything the web has.
+ */
+enum class ReelsFeed(val label: String) {
+    FOLLOWING("Following"),
+    FOR_YOU("For You"),
+}
+
+/** The one request each feed makes. Pure, so the selection is a table test. */
+fun ReelsFeed.query(): FeedQuery = when (this) {
+    ReelsFeed.FOR_YOU -> FeedQuery.Reels
+    ReelsFeed.FOLLOWING -> FeedQuery.ReelsFollowing
+}
+
 /** Which rail controls a reel shows — the author's switches, applied. */
 data class ReelRailVisibility(val showComment: Boolean, val showShare: Boolean)
 
@@ -335,6 +354,37 @@ class ReelsViewModel @Inject constructor(
     /** Which Pager the ranked reels come from; [refresh] moves it on. Declared before [items], which reads it. */
     private val generation = MutableStateFlow(0)
 
+    // ── For You / Following ─────────────────────────────────────────────
+
+    private val _feed = MutableStateFlow(ReelsFeed.FOR_YOU)
+
+    /**
+     * The header tab the reels come from. For You until the viewer picks
+     * Following; held for the life of the screen's ViewModel, so a pushed
+     * profile and Back land on the tab the viewer chose.
+     */
+    val feed: StateFlow<ReelsFeed> = _feed.asStateFlow()
+
+    /** The feed just switched to, until its first page lands ([onFirstPage]). */
+    private val _switchedTo = MutableStateFlow<ReelsFeed?>(null)
+
+    /**
+     * A header tab. The tab already on screen is a refresh (a tap on the
+     * current tab, as on TikTok); the other is a fresh pager from its first
+     * page. The reels on screen keep playing until the new feed's first page
+     * is in, then the pager goes to its first reel ([scrollToTop]). A reel a
+     * feed tap pinned above the old feed goes with it; the viewer's own
+     * just-posted reel stays, as on a refresh.
+     */
+    fun selectFeed(feed: ReelsFeed) {
+        if (feed == _feed.value) return refresh()
+        _refreshing.value = false
+        _refreshFailure.value = null
+        if (_live.value?.isOwnedBy(ownUserId) == false) _live.value = null
+        _switchedTo.value = feed
+        _feed.value = feed
+    }
+
     private val _refreshing = MutableStateFlow(false)
 
     /**
@@ -395,8 +445,15 @@ class ReelsViewModel @Inject constructor(
      * reel stays: until the ranked feed carries it, that slot is the only
      * place it shows.
      */
-    private fun onFirstPage(asked: Int, loaded: Boolean) {
-        if (!_refreshing.value || asked != generation.value) return
+    private fun onFirstPage(asked: Int, feed: ReelsFeed, loaded: Boolean) {
+        if (asked != generation.value || feed != _feed.value) return
+        // A switch of feed lands like a refresh: the new feed's first reel,
+        // from the top. A failed one shows the error over no reels.
+        if (_switchedTo.value == feed) {
+            _switchedTo.value = null
+            if (loaded) _scrollToTop.value = true
+        }
+        if (!_refreshing.value) return
         _refreshing.value = false
         if (!loaded) {
             _refreshFailure.value = System.currentTimeMillis()
@@ -409,8 +466,8 @@ class ReelsViewModel @Inject constructor(
     /**
      * The ranked reels surface, one cached stream: `cachedIn` replays the
      * pages across rotation rather than refetching and dropping the viewer
-     * to the first reel. No For You / Following split — the founder reversed
-     * that (2026-09-04); Reels is one surface, like Instagram's.
+     * to the first reel. For You or Following ([feed], 2026-10-24 web
+     * parity): a switch is a new pager, like a [refresh].
      *
      * A reel that went live this session is filtered out of the ranked page
      * once the feed carries it: the head slot already shows it, and the same
@@ -421,7 +478,10 @@ class ReelsViewModel @Inject constructor(
     // that generation's first page is presented, and keeps it on a failure.
     @OptIn(ExperimentalCoroutinesApi::class)
     val items: Flow<PagingData<FeedItem>> = generation
-        .flatMapLatest { asked -> repository.feed(FeedQuery.Reels) { loaded -> onFirstPage(asked, loaded) } }
+        .combine(_feed) { asked, feed -> asked to feed }
+        .flatMapLatest { (asked, feed) ->
+            repository.feed(feed.query()) { loaded -> onFirstPage(asked, feed, loaded) }
+        }
         .cachedIn(viewModelScope)
         // A long video is not a reel, whatever the row is tagged
         // (founder, 2026-09-06) — see [belongsInReels]. Applied AFTER the
