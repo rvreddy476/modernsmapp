@@ -453,6 +453,17 @@ func writeProductWriteError(c *gin.Context, err error) {
 		api.ErrorWithContext(ctx, w, http.StatusConflict, "SKU_LOCKED",
 			"the SKU cannot be changed once a listing has been approved; archive this variant "+
 				"and add a new one with the new SKU", gin.H{"field": "sku"})
+	case errors.Is(err, service.ErrSellingAboveMRP):
+		// 400, in the family of PRICE_NOT_POSITIVE and PRICE_DISAGREEMENT: a
+		// price the seller typed that cannot be charged. A price change goes
+		// live without review, so this is the check that stands in for one.
+		api.ErrorWithContext(ctx, w, http.StatusBadRequest, "PRICE_ABOVE_MRP",
+			"the selling price cannot be above the MRP; lower the price or raise the MRP",
+			gin.H{"field": "selling_price_minor"})
+	case errors.Is(err, service.ErrReturnPolicyInvalid):
+		api.ErrorWithContext(ctx, w, http.StatusBadRequest, "RETURN_POLICY_INVALID",
+			"return_policy_type must be one of "+strings.Join(service.ReturnPolicyTypes, ", "),
+			gin.H{"field": "return_policy_type", "allowed": service.ReturnPolicyTypes})
 	case errors.Is(err, service.ErrVariantStatusInvalid):
 		api.ErrorWithContext(ctx, w, http.StatusBadRequest, "VARIANT_STATUS_INVALID",
 			"status must be one of active, inactive, out_of_stock (DELETE the variant to archive it)",

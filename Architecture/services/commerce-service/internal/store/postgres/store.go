@@ -921,9 +921,10 @@ func (s *Store) UpdateVariant(ctx context.Context, id uuid.UUID, updates map[str
 			return asDuplicateSKU(err, sku)
 		}
 	}
-	// A price, SKU or option change on an approved listing is a
+	// An option or image change on an approved listing is a
 	// reviewed-content change; the review state moves in the same
-	// transaction. See revalidateProductTx.
+	// transaction. See revalidateProductTx. (A price change is not: it goes
+	// live at once, see service.checkVariantPatch.)
 	if revalidate {
 		if err := revalidateProductTx(ctx, tx, productID); err != nil {
 			return err

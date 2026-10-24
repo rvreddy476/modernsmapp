@@ -945,6 +945,32 @@ func (e *contractEnv) fixtures() []ctFixture {
 			return e.adminDo(http.MethodPatch, "/v1/commerce/internal/admin/coupons/"+ctCpnPct.String(), PermCouponsManage,
 				map[string]any{"is_active": false})
 		}},
+
+		// ── seller: the listing editor's edits on an APPROVED listing ──
+		// Last in the run: the 200 reprices a seeded variant, and nothing
+		// after it may read the old price. The three refusals write nothing.
+		// The refusal bodies are also pinned without a database by
+		// listing_errors_contract_test.go.
+		//
+		// A price change goes live at once — no 409, no meta.revalidated.
+		// ctV1b (earbuds, white) is on approved ctP1 with no stock and no cart
+		// or order line still open on it.
+		{name: "seller/variant_patch_200_price_live", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodPatch, path: "/v1/commerce/variants/" + ctV1b.String(),
+				user: ctSellerUser, body: map[string]any{"sku": "MOM-EB-WHT", "selling_price_minor": 119900}})
+		}},
+		{name: "seller/variant_patch_400_price_above_mrp", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodPatch, path: "/v1/commerce/variants/" + ctV1.String(),
+				user: ctSellerUser, body: map[string]any{"selling_price_minor": 159900}})
+		}},
+		{name: "seller/variant_patch_409_sku_locked", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodPatch, path: "/v1/commerce/variants/" + ctV1.String(),
+				user: ctSellerUser, body: map[string]any{"sku": "MOM-EB-BLACK", "revalidate": true}})
+		}},
+		{name: "seller/product_patch_400_return_policy_invalid", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.do(ctReq{method: http.MethodPatch, path: "/v1/commerce/products/" + ctP1.String(),
+				user: ctSellerUser, body: map[string]any{"return_policy_type": "14_days", "return_policy_days": 14}})
+		}},
 	}
 }
 

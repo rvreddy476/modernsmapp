@@ -124,8 +124,10 @@ func TestAnExactPriceSurvivesAnEdit(t *testing.T) {
 	s := seedSellerSurface(t, 1)
 	variantID := listAt(t, r, s, 100000)
 
+	// The MRP moves with it: a selling price above the MRP is refused
+	// (PRICE_ABOVE_MRP), and listAt lists at MRP == price.
 	if w := call(t, r, http.MethodPatch, "/v1/commerce/variants/"+variantID, s.sellerUserID,
-		map[string]any{"selling_price_minor": 129999}); w.Code != http.StatusOK {
+		map[string]any{"mrp_minor": 129999, "selling_price_minor": 129999}); w.Code != http.StatusOK {
 		t.Fatalf("status %d: %s", w.Code, w.Body.String())
 	}
 	if got := effectivePrice(t, variantID); got != 129999 {

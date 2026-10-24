@@ -11,8 +11,11 @@ package http
 //     body carried no stock figure, and the inventory row was always 0;
 //  5. any save of a live listing forced re-review, because the substantive
 //     check fired on field PRESENCE: the web editor re-sends the whole form;
-//  6. the gallery and a variant's price could be changed on a live listing
-//     with no review at all.
+//  6. the gallery could be changed on a live listing with no review at all
+//     (now reviewed), and a variant's price had no server-side check (it
+//     goes live at once, per the MSeller rule, and is refused above the MRP);
+//  1. a return window outside the CHECK came back as the generic
+//     INVALID_VALUE (now 400 RETURN_POLICY_INVALID, naming the field).
 //
 //	COMMERCE_TEST_DSN=... go test -tags=integration ./internal/http/... -run ListingFix -v
 
@@ -297,7 +300,50 @@ func TestListingFixAnUnchangedResendDoesNotForceReview(t *testing.T) {
 	})
 }
 
-// ─── 6. The gallery and a variant's price are reviewed content ──────────
+// ─── 1. A return window outside the CHECK is refused by name ────────────
+
+func TestListingFixReturnWindowOutsideTheCheckIsNamed(t *testing.T) {
+	f := newListingFixture(t)
+	r := journeyEngine(t, 4000)
+	id := f.createDraft(t, r, "Returns listing")
+
+	w := call(t, r, http.MethodPatch, "/v1/commerce/products/"+id, f.actor,
+		map[string]any{"return_policy_type": "14_days", "return_policy_days": 14})
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("status %d, want 400\n%s", w.Code, w.Body.String())
+	}
+	code, _, details := errorEnvelope(t, w.Body.Bytes())
+	if code != "RETURN_POLICY_INVALID" || details["field"] != "return_policy_type" {
+		t.Fatalf("want RETURN_POLICY_INVALID on return_policy_type (was the generic INVALID_VALUE)\n%s", w.Body.String())
+	}
+
+	before, beforeV, _ := f.countsFor(t)
+	w = call(t, r, http.MethodPost, "/v1/commerce/products", f.actor,
+		f.body("Fourteen days", map[string]any{"return_policy_type": "14_days", "return_policy_days": 14}))
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("create: status %d, want 400\n%s", w.Code, w.Body.String())
+	}
+	if code, _, _ := errorEnvelope(t, w.Body.Bytes()); code != "RETURN_POLICY_INVALID" {
+		t.Fatalf("create: want RETURN_POLICY_INVALID\n%s", w.Body.String())
+	}
+	if after, afterV, _ := f.countsFor(t); after != before || afterV != beforeV {
+		t.Fatal("a refused create wrote rows anyway")
+	}
+
+	// Every window the web editor offers is accepted.
+	for _, rp := range []struct {
+		typ  string
+		days int
+	}{{"no_return", 0}, {"7_days", 7}, {"15_days", 15}, {"30_days", 30}} {
+		w := call(t, r, http.MethodPatch, "/v1/commerce/products/"+id, f.actor,
+			map[string]any{"return_policy_type": rp.typ, "return_policy_days": rp.days})
+		if w.Code != http.StatusOK {
+			t.Fatalf("%s: status %d\n%s", rp.typ, w.Code, w.Body.String())
+		}
+	}
+}
+
+// ─── 6. The gallery is reviewed content ─────────────────────────────────
 
 func TestListingFixGalleryEditsAreReviewed(t *testing.T) {
 	f := newListingFixture(t)
@@ -376,7 +422,11 @@ func TestListingFixGalleryEditsAreReviewed(t *testing.T) {
 	})
 }
 
-func TestListingFixVariantPriceEditsAreReviewed(t *testing.T) {
+// The MSeller rule for the variant half: "price and stock changes go live at
+// once; title, images or category go back through checks". A price change on
+// an approved listing therefore applies in place with no acknowledgement —
+// and is validated instead: never above the MRP.
+func TestListingFixVariantPriceEditsGoLiveAtOnce(t *testing.T) {
 	f := newListingFixture(t)
 	r := journeyEngine(t, 4000)
 	ctx := context.Background()
@@ -384,10 +434,10 @@ func TestListingFixVariantPriceEditsAreReviewed(t *testing.T) {
 	variantID, _ := f.firstVariant(t, id)
 	f.approve(t, id)
 
-	priceOf := func() int64 {
-		var p int64
-		_ = edgePool.QueryRow(ctx, `SELECT selling_price_minor FROM product_variants WHERE id=$1`, uuid.MustParse(variantID)).Scan(&p)
-		return p
+	priceOf := func() (mrp, sell int64) {
+		_ = edgePool.QueryRow(ctx, `SELECT mrp_minor, selling_price_minor FROM product_variants WHERE id=$1`,
+			uuid.MustParse(variantID)).Scan(&mrp, &sell)
+		return
 	}
 
 	t.Run("re-sending the stored price applies in place", func(t *testing.T) {
@@ -402,31 +452,12 @@ func TestListingFixVariantPriceEditsAreReviewed(t *testing.T) {
 		f.mustBeLive(t, id, "after re-sending the stored price")
 	})
 
-	t.Run("a new price is refused until acknowledged, and nothing is written", func(t *testing.T) {
+	t.Run("a new price lands at once and the listing stays on sale", func(t *testing.T) {
 		w := call(t, r, http.MethodPatch, "/v1/commerce/variants/"+variantID, f.actor,
 			map[string]any{"selling_price_minor": 89900})
-		if w.Code != http.StatusConflict {
-			t.Fatalf("status %d, want 409\n%s", w.Code, w.Body.String())
-		}
-		code, _, details := errorEnvelope(t, w.Body.Bytes())
-		fields, _ := details["fields"].([]any)
-		if code != "REVALIDATION_REQUIRED" || len(fields) != 1 || fields[0] != "price" {
-			t.Fatalf("want REVALIDATION_REQUIRED naming price\n%s", w.Body.String())
-		}
-		if priceOf() != 99900 {
-			t.Fatalf("the refused price was written: %d", priceOf())
-		}
-		f.mustBeLive(t, id, "after a refused price change")
-	})
-
-	t.Run("acknowledged, the price lands and the listing returns to review", func(t *testing.T) {
-		w := call(t, r, http.MethodPatch, "/v1/commerce/variants/"+variantID, f.actor,
-			map[string]any{"selling_price_minor": 89900, "revalidate": true})
 		if w.Code != http.StatusOK {
-			t.Fatalf("status %d\n%s", w.Code, w.Body.String())
+			t.Fatalf("status %d, want 200\n%s", w.Code, w.Body.String())
 		}
-		// `data` is still the bare variant (two shipped clients decode it);
-		// the bounce is said in meta.
 		var env struct {
 			Data struct {
 				ID                string `json:"id"`
@@ -437,14 +468,59 @@ func TestListingFixVariantPriceEditsAreReviewed(t *testing.T) {
 		if env.Data.ID != variantID || env.Data.SellingPriceMinor != 89900 {
 			t.Fatalf("data must be the repriced variant\n%s", w.Body.String())
 		}
-		reval, notice := decodeMeta(t, w.Body.Bytes())
-		if !reval || notice == "" {
-			t.Fatalf("the response must say the listing left the catalogue\n%s", w.Body.String())
+		if reval, _ := decodeMeta(t, w.Body.Bytes()); reval {
+			t.Fatalf("a price change must not send the listing to review\n%s", w.Body.String())
 		}
-		if priceOf() != 89900 {
-			t.Fatalf("price = %d, want 89900", priceOf())
+		if _, sell := priceOf(); sell != 89900 {
+			t.Fatalf("price = %d, want 89900", sell)
 		}
-		f.mustBeBackInReview(t, id, "after an acknowledged price change")
+		f.mustBeLive(t, id, "after a price change")
+	})
+
+	t.Run("a selling price above the MRP is 400 PRICE_ABOVE_MRP and nothing is written", func(t *testing.T) {
+		for _, body := range []map[string]any{
+			{"selling_price_minor": 129901},                      // above the stored MRP
+			{"mrp_minor": 79900},                                 // MRP below the stored price
+			{"mrp_minor": 100000, "selling_price_minor": 100100}, // both, inverted
+		} {
+			w := call(t, r, http.MethodPatch, "/v1/commerce/variants/"+variantID, f.actor, body)
+			if w.Code != http.StatusBadRequest {
+				t.Fatalf("%v: status %d, want 400\n%s", body, w.Code, w.Body.String())
+			}
+			if code, _, details := errorEnvelope(t, w.Body.Bytes()); code != "PRICE_ABOVE_MRP" || details["field"] != "selling_price_minor" {
+				t.Fatalf("%v: want PRICE_ABOVE_MRP on selling_price_minor\n%s", body, w.Body.String())
+			}
+			if mrp, sell := priceOf(); mrp != 129900 || sell != 89900 {
+				t.Fatalf("%v: a refused price was written: mrp=%d sell=%d", body, mrp, sell)
+			}
+		}
+		f.mustBeLive(t, id, "after refused prices")
+	})
+
+	t.Run("an option change is still reviewed content", func(t *testing.T) {
+		w := call(t, r, http.MethodPatch, "/v1/commerce/variants/"+variantID, f.actor,
+			map[string]any{"option_1_name": "Edition", "option_1_value": "Signed"})
+		if w.Code != http.StatusConflict {
+			t.Fatalf("status %d, want 409\n%s", w.Code, w.Body.String())
+		}
+		code, _, details := errorEnvelope(t, w.Body.Bytes())
+		fields, _ := details["fields"].([]any)
+		if code != "REVALIDATION_REQUIRED" || len(fields) != 1 || fields[0] != "options" {
+			t.Fatalf("want REVALIDATION_REQUIRED naming options\n%s", w.Body.String())
+		}
+		f.mustBeLive(t, id, "after a refused option change")
+	})
+
+	t.Run("adding a variant priced above its MRP is refused", func(t *testing.T) {
+		w := call(t, r, http.MethodPost, "/v1/commerce/products/"+id+"/variants", f.actor, map[string]any{
+			"sku": "UP-" + uuid.New().String()[:8], "mrp_minor": 99900, "selling_price_minor": 109900, "stock_qty": 1,
+		})
+		if w.Code != http.StatusBadRequest {
+			t.Fatalf("status %d, want 400\n%s", w.Code, w.Body.String())
+		}
+		if code, _, _ := errorEnvelope(t, w.Body.Bytes()); code != "PRICE_ABOVE_MRP" {
+			t.Fatalf("want PRICE_ABOVE_MRP\n%s", w.Body.String())
+		}
 	})
 
 	t.Run("a status outside the schema is 400, named, and paused is not one", func(t *testing.T) {

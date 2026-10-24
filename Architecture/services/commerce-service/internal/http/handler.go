@@ -905,11 +905,13 @@ func (h *Handler) AddProductVariant(c *gin.Context) {
 // Sparse update — only fields in the JSON body are written. Seller
 // ownership is verified against the parent product.
 //
-// `revalidate: true` is the acknowledgement an APPROVED listing's price,
-// option, image or SKU change needs — the same key, the same 409
-// REVALIDATION_REQUIRED refusal and the same `revalidated`/`notice` answer as
-// PATCH /products/:id, so a client handles one flow. A SKU change after
-// approval is 409 SKU_LOCKED whatever the acknowledgement says.
+// `revalidate: true` is the acknowledgement an APPROVED listing's option or
+// image change needs — the same key, the same 409 REVALIDATION_REQUIRED
+// refusal and the same `revalidated`/`notice` answer as PATCH
+// /products/:id, so a client handles one flow. A SKU change after approval
+// is 409 SKU_LOCKED whatever the acknowledgement says. A price change goes
+// live at once, with no acknowledgement, and is refused with 400
+// PRICE_ABOVE_MRP when it would put the selling price above the MRP.
 func (h *Handler) UpdateProductVariant(c *gin.Context) {
 	userID, ok := getUserID(c)
 	if !ok {

@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "SKU_LOCKED",
+    "message": "the SKU cannot be changed once a listing has been approved; archive this variant and add a new one with the new SKU",
+    "details": {
+      "field": "sku"
+    }
+  },
+  "meta": {}
+}
+

@@ -606,6 +606,12 @@ func (s *Service) editOnlyFillsOpenComplianceGaps(
 // review), state before validation (there is no reason to check the values of
 // an edit that is refused anyway), and validation before anything is written.
 func (s *Service) UpdateProduct(ctx context.Context, in UpdateProductInput) (*UpdateProductResult, error) {
+	// Input validation, before anything is read: the CHECK's vocabulary,
+	// refused by name rather than by the database (see ErrReturnPolicyInvalid).
+	if rp := in.Fields.ReturnPolicyType; rp != nil && !validReturnPolicyType(*rp) {
+		return nil, fmt.Errorf("%w: got %q", ErrReturnPolicyInvalid, *rp)
+	}
+
 	product, err := s.store.GetProductByID(ctx, in.ProductID)
 	if err != nil {
 		return nil, err

@@ -17,7 +17,15 @@ package service
 //
 // This file fixes both halves. Every comparison below is old-vs-new against
 // what the product HOLDS, and the same gate decides for the columns, the
-// attributes, the matrix, the gallery and a variant's price.
+// attributes, the matrix, the gallery and a variant's options and image.
+//
+// A variant's PRICE is deliberately not on that list. The MSeller rule is
+// "price and stock changes go live at once; title, images or category go
+// back through checks": a seller matching a competitor's price must not take
+// their listing off sale to do it. What a price change gets instead is
+// validation — positive, whole paise (the store), and never above the MRP
+// (variantPriceAfterPatch) — so going live at once is not going live
+// unchecked.
 
 import (
 	"context"
@@ -52,6 +60,45 @@ var ErrVariantStatusInvalid = errors.New("commerce: a variant's status is one of
 // `archived` is deliberately absent: that is DELETE /variants/:id, which is
 // the soft delete and must stay the only way to reach it.
 var variantSettableStatuses = map[string]bool{"active": true, "inactive": true, "out_of_stock": true}
+
+// ErrSellingAboveMRP is returned when a write would leave a variant's selling
+// price above its MRP.
+//
+// The MRP is the most a buyer may be charged (Legal Metrology (Packaged
+// Commodities) Rules, 2011), and the storefront renders "MRP ₹X, now ₹Y" from
+// the pair: a selling price above it is both unlawful to charge and a
+// negative discount on the product card. The web editor refused it locally;
+// nothing on the server did, and a price change now goes live without a
+// reviewer seeing it, so the check has to be here.
+var ErrSellingAboveMRP = errors.New("commerce: the selling price cannot be above the MRP")
+
+// priceWithinMRP is the one comparison every price write makes. Non-positive
+// amounts are left to the checks that refuse them by name (ErrPriceNotPositive).
+func priceWithinMRP(mrpMinor, sellingMinor int64) error {
+	if mrpMinor > 0 && sellingMinor > 0 && sellingMinor > mrpMinor {
+		return fmt.Errorf("%w: selling price %d paise, MRP %d paise", ErrSellingAboveMRP, sellingMinor, mrpMinor)
+	}
+	return nil
+}
+
+// ErrReturnPolicyInvalid is returned when a listing names a return window the
+// schema does not have. The values ARE products.return_policy_type's CHECK
+// (setup.sql); a value outside it reached the database and came back as the
+// generic INVALID_VALUE, which does not say which field or what is allowed.
+// The web editor offered "14_days" for exactly that reason.
+var ErrReturnPolicyInvalid = errors.New("commerce: return_policy_type must be one of no_return, 7_days, 15_days, 30_days, custom")
+
+// ReturnPolicyTypes is the CHECK's list, in the order a form offers it.
+var ReturnPolicyTypes = []string{"no_return", "7_days", "15_days", "30_days", "custom"}
+
+func validReturnPolicyType(v string) bool {
+	for _, t := range ReturnPolicyTypes {
+		if v == t {
+			return true
+		}
+	}
+	return false
+}
 
 // ─── The gate ───────────────────────────────────────────────────────────
 
@@ -300,12 +347,14 @@ func (s *Service) afterGalleryRevalidation(ctx context.Context, product *postgre
 // ─── A variant's reviewed fields ────────────────────────────────────────
 
 // variantSubstantiveChanges names the reviewed fields a PATCH /variants/:id
-// body would change on `cur`: the price a reviewer saw, the options that
-// place the variant in the matrix, its image, and its SKU.
+// body would change on `cur`: the options that place the variant in the
+// matrix, its image, and its SKU (which checkVariantPatch then locks outright
+// on an approved listing).
 //
-// Status, stock, barcode, weight, currency and cost price are not reviewed
-// content: pausing a size or correcting a parcel weight must not take the
-// listing down.
+// Price, status, stock, barcode, weight, currency and cost price are not
+// reviewed content: repricing, pausing a size or correcting a parcel weight
+// must not take the listing down. Price is validated instead — see
+// variantPriceAfterPatch.
 func variantSubstantiveChanges(cur *postgres.ProductVariant, updates map[string]any) []string {
 	out := []string{}
 	add := func(name string, changed bool) {
@@ -317,8 +366,6 @@ func variantSubstantiveChanges(cur *postgres.ProductVariant, updates map[string]
 		sent, _ := raw.(string)
 		add("sku", strings.TrimSpace(sent) != cur.SKU)
 	}
-	add("price", requestedMinorChanges(updates, "mrp", cur.MRPMinor, cur.MRP) ||
-		requestedMinorChanges(updates, "selling_price", cur.SellingPriceMinor, cur.SellingPrice))
 	add("options",
 		optionTextChanges(updates, "option_1_name", cur.Option1Name) ||
 			optionTextChanges(updates, "option_1_value", cur.Option1Value) ||
@@ -337,35 +384,99 @@ func variantSubstantiveChanges(cur *postgres.ProductVariant, updates map[string]
 	return out
 }
 
-// requestedMinorChanges resolves the price a body sends for one column pair
-// — paise preferred, rupees as the legacy fallback, the same preference the
-// store's normaliseVariantMoney applies — and compares it with the stored
-// paise. A body that sends neither form leaves the price alone.
-//
-// A value that cannot be read (a string, a negative) is reported as a change:
-// the store refuses it a moment later with its own error, and treating it as
-// "no change" here would let the refusal be skipped on an approved listing.
-func requestedMinorChanges(updates map[string]any, rupeeCol string, storedMinor *int64, storedRupees float64) bool {
+// requestedMinor resolves the price a body sends for one column pair — paise
+// preferred, rupees as the legacy fallback, the same preference the store's
+// normaliseVariantMoney applies. `sent` is false when the body names neither
+// form; `readable` is false for a value the store will refuse with its own
+// error (a string, a null).
+func requestedMinor(updates map[string]any, rupeeCol string) (minor int64, sent bool, readable bool) {
 	rawMinor, hasMinor := updates[rupeeCol+"_minor"]
 	rawRupees, hasRupees := updates[rupeeCol]
-	if !hasMinor && !hasRupees {
-		return false
+	switch {
+	case hasMinor:
+		minor, readable = anyToPaise(rawMinor, 1)
+	case hasRupees:
+		minor, readable = anyToPaise(rawRupees, 100)
+	default:
+		return 0, false, false
 	}
-	var sent int64
-	var ok bool
-	if hasMinor {
-		sent, ok = anyToPaise(rawMinor, 1)
-	} else {
-		sent, ok = anyToPaise(rawRupees, 100)
+	return minor, true, readable
+}
+
+// storedMinor is a variant's stored paise for one pair: the minor column when
+// it holds a value, the rupee mirror otherwise (the read path's own rule).
+func storedMinor(minor *int64, rupees float64) int64 {
+	if minor != nil && *minor > 0 {
+		return *minor
 	}
-	if !ok {
-		return true
+	return int64(math.Round(rupees * 100)) // money-exempt: fallback for a row with no minor column
+}
+
+// variantPriceAfterPatch refuses a PATCH /variants/:id body that would leave
+// the selling price above the MRP — comparing the price the variant would
+// HAVE afterwards, so lowering the MRP alone below the stored selling price
+// is caught as surely as raising the selling price alone.
+//
+// A body that touches neither price is not checked: pausing a size on a
+// legacy row whose pair is already inverted must not start failing. An
+// unreadable value is left to the store, which refuses it by name.
+func variantPriceAfterPatch(cur *postgres.ProductVariant, updates map[string]any) error {
+	mrp, mrpSent, mrpOK := requestedMinor(updates, "mrp")
+	sell, sellSent, sellOK := requestedMinor(updates, "selling_price")
+	if !mrpSent && !sellSent {
+		return nil
 	}
-	have := int64(math.Round(storedRupees * 100)) // money-exempt: fallback for a row with no minor column
-	if storedMinor != nil {
-		have = *storedMinor
+	if (mrpSent && !mrpOK) || (sellSent && !sellOK) {
+		return nil
 	}
-	return sent != have
+	if !mrpSent {
+		mrp = storedMinor(cur.MRPMinor, cur.MRP)
+	}
+	if !sellSent {
+		sell = storedMinor(cur.SellingPriceMinor, cur.SellingPrice)
+	}
+	return priceWithinMRP(mrp, sell)
+}
+
+// checkVariantPatch is everything PATCH /variants/:id decides from the
+// product, the variant and the body alone, before the review gate: the
+// status vocabulary, the SKU (blank refused, an unchanged re-send dropped,
+// locked once the listing has been approved), and the price pair. It
+// normalises `updates` in place and returns the reviewed fields the body
+// would change, for gateApprovedEdit.
+func checkVariantPatch(product *postgres.Product, variant *postgres.ProductVariant, updates map[string]any) ([]string, error) {
+	if raw, ok := updates["status"]; ok {
+		status, _ := raw.(string)
+		if !variantSettableStatuses[status] {
+			return nil, fmt.Errorf("%w: got %q", ErrVariantStatusInvalid, status)
+		}
+	}
+
+	changed := variantSubstantiveChanges(variant, updates)
+	if raw, ok := updates["sku"]; ok {
+		sku, _ := raw.(string)
+		sku = strings.TrimSpace(sku)
+		if sku == "" {
+			return nil, fmt.Errorf("%w: sku", ErrVariantFieldRequired)
+		}
+		if sku == variant.SKU {
+			// Re-sending the SKU the variant already has is not an edit.
+			delete(updates, "sku")
+		} else {
+			// Locked once live: the editable-without-revalidation arm of
+			// ProductEditability is exactly "still a draft".
+			editable, needsRevalidation := postgres.ProductEditability(product.ApprovalStatus)
+			if !editable || needsRevalidation {
+				return nil, ErrSKULocked
+			}
+			updates["sku"] = sku
+		}
+	}
+
+	if err := variantPriceAfterPatch(variant, updates); err != nil {
+		return nil, err
+	}
+	return changed, nil
 }
 
 // anyToPaise reads a JSON number (float64 after a map decode, or an integer

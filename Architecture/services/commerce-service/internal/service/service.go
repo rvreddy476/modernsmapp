@@ -436,6 +436,19 @@ func (s *Service) CreateProduct(ctx context.Context, in CreateProductInput) (*po
 		return nil, fmt.Errorf("at least one variant is required")
 	}
 
+	// The two checks the schema would otherwise make, by name and before
+	// anything is read: a return window outside products.return_policy_type's
+	// CHECK came back as the generic INVALID_VALUE, and a selling price above
+	// the MRP was not checked anywhere on the server.
+	if in.ReturnPolicyType != "" && !validReturnPolicyType(in.ReturnPolicyType) {
+		return nil, fmt.Errorf("%w: got %q", ErrReturnPolicyInvalid, in.ReturnPolicyType)
+	}
+	for _, vi := range in.Variants {
+		if err := priceWithinMRP(vi.MRPMinor, vi.SellingPriceMinor); err != nil {
+			return nil, fmt.Errorf("%w (sku %s)", err, vi.SKU)
+		}
+	}
+
 	// Before anything is written. Both ids arrive in the request body and
 	// were stored unchecked, so a seller could point their listing at a
 	// competitor's product photography by reading the media id out of the
@@ -738,6 +751,13 @@ var ErrStockNegative = errors.New("commerce: stock_qty cannot be negative")
 // SKU must be unique per seller (the import path enforces this; here
 // the DB UNIQUE constraint on (sku, seller_id) is the final guard).
 func (s *Service) AddProductVariant(ctx context.Context, actorID, productID uuid.UUID, v *postgres.ProductVariant, stockQty int) (*postgres.ProductVariant, error) {
+	// Input validation before anything is read: a selling price above the
+	// MRP is wrong whoever sends it (see ErrSellingAboveMRP).
+	if v.MRPMinorIn != nil && v.SellingPriceMinorIn != nil {
+		if err := priceWithinMRP(*v.MRPMinorIn, *v.SellingPriceMinorIn); err != nil {
+			return nil, err
+		}
+	}
 	product, err := s.store.GetProductByID(ctx, productID)
 	if err != nil {
 		return nil, err
@@ -810,16 +830,19 @@ func (s *Service) AddProductVariant(ctx context.Context, actorID, productID uuid
 // UpdateProductVariant patches an existing variant. Authorization same
 // as AddProductVariant — actor must own the parent product's seller.
 //
-// Three rules on top of ownership, all decided against what the variant
-// HOLDS rather than what the body carries (see reviewedcontent.go):
+// Four rules on top of ownership, all decided against what the variant
+// HOLDS rather than what the body carries (see checkVariantPatch in
+// reviewedcontent.go):
 //
 //   - the SKU is editable while the listing is a draft and locked once it
 //     has been approved (ErrSKULocked). It used to be dropped silently;
-//   - a price, option, image or SKU change on an APPROVED listing is a
-//     reviewed-content change: refused with RevalidationRequiredError until
-//     the caller acknowledges it with `ack`, then applied and the listing
-//     returned to review in the same transaction. Re-sending the price the
-//     variant already has is not a change;
+//   - an option or image change on an APPROVED listing is a reviewed-content
+//     change: refused with RevalidationRequiredError until the caller
+//     acknowledges it with `ack`, then applied and the listing returned to
+//     review in the same transaction;
+//   - a PRICE change goes live at once (the MSeller rule: price and stock
+//     changes do not go back through checks) but is validated: never above
+//     the MRP (ErrSellingAboveMRP), positive and whole paise (the store);
 //   - `status` must be one of the values the schema allows.
 //
 // Returns whether the listing was sent back to review, so the handler can
@@ -844,32 +867,9 @@ func (s *Service) UpdateProductVariant(ctx context.Context, actorID, variantID u
 		return nil, false, ErrNotProductOwner
 	}
 
-	if raw, ok := updates["status"]; ok {
-		status, _ := raw.(string)
-		if !variantSettableStatuses[status] {
-			return nil, false, fmt.Errorf("%w: got %q", ErrVariantStatusInvalid, status)
-		}
-	}
-
-	changed := variantSubstantiveChanges(variant, updates)
-	if raw, ok := updates["sku"]; ok {
-		sku, _ := raw.(string)
-		sku = strings.TrimSpace(sku)
-		if sku == "" {
-			return nil, false, fmt.Errorf("%w: sku", ErrVariantFieldRequired)
-		}
-		if sku == variant.SKU {
-			// Re-sending the SKU the variant already has is not an edit.
-			delete(updates, "sku")
-		} else {
-			// Locked once live: the editable-without-revalidation arm of
-			// ProductEditability is exactly "still a draft".
-			editable, needsRevalidation := postgres.ProductEditability(product.ApprovalStatus)
-			if !editable || needsRevalidation {
-				return nil, false, ErrSKULocked
-			}
-			updates["sku"] = sku
-		}
+	changed, err := checkVariantPatch(product, variant, updates)
+	if err != nil {
+		return nil, false, err
 	}
 
 	revalidate, err := gateApprovedEdit(product, changed, ack)
