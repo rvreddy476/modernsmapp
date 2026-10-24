@@ -36,6 +36,7 @@ import com.us.android.core.commerce.model.chooserLabel
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
+import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
@@ -114,6 +115,12 @@ fun SellerScreen(
                     onOpenProduct = { product -> viewModel.openStock(product, actions.openStock) },
                     onSubmitProduct = viewModel::submitProduct,
                     onDismissSubmitProblem = viewModel::dismissSubmitProblem,
+                    upgrade = UpgradeActions(
+                        onOpen = viewModel::openUpgrade,
+                        onCancel = viewModel::cancelUpgrade,
+                        onGstin = viewModel::setUpgradeGstin,
+                        onSubmit = viewModel::upgrade,
+                    ),
                 )
             }
         }
@@ -129,6 +136,7 @@ private fun SellerContent(
     onOpenProduct: (SellerProduct) -> Unit,
     onSubmitProduct: (productId: String) -> Unit,
     onDismissSubmitProblem: () -> Unit,
+    upgrade: UpgradeActions,
 ) {
     val profile = state.profile
     val products = state.products
@@ -172,6 +180,11 @@ private fun SellerContent(
                 onClick = actions.listProduct,
                 modifier = Modifier.fillMaxWidth(),
             )
+        }
+
+        // A books-only shop (migration 045) can add a GSTIN and sell everything.
+        if (offersUpgrade(state.sellScope)) {
+            item { SellMoreCategoriesCard(form = state.upgrade, actions = upgrade) }
         }
 
         item {
@@ -394,6 +407,68 @@ private fun SubmitProblemCard(problem: SubmitProblem, onDismiss: () -> Unit) {
     }
 }
 
+/** What the "Sell more categories" panel can do. */
+internal data class UpgradeActions(
+    val onOpen: () -> Unit,
+    val onCancel: () -> Unit,
+    val onGstin: (String) -> Unit,
+    val onSubmit: () -> Unit,
+)
+
+/**
+ * "Sell more categories": a books-only shop adds its GSTIN, which must be the
+ * one issued on the shop's own PAN, to list in every category.
+ */
+@Composable
+internal fun SellMoreCategoriesCard(form: UpgradeForm, actions: UpgradeActions) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(UsTheme.radii.medium))
+            .background(UsTheme.extended.bgCard)
+            .padding(UsTheme.spacing.m)
+            .testTag("mseller_sell_more"),
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+    ) {
+        Text(
+            text = "Sell more categories",
+            style = MaterialTheme.typography.titleSmall,
+            color = UsTheme.extended.textPrimary,
+        )
+        Text(
+            text = "Your shop sells books only. Add a GSTIN to list in every other category.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = UsTheme.extended.textSecondary,
+        )
+        if (!form.open) {
+            UsSecondaryButton(text = "Add a GSTIN", onClick = actions.onOpen, modifier = Modifier.fillMaxWidth())
+        } else {
+            UsTextField(
+                value = form.gstin,
+                onValueChange = actions.onGstin,
+                label = "GSTIN",
+                placeholder = UPGRADE_GSTIN_HELP,
+                errorText = form.error,
+                enabled = !form.saving,
+                modifier = Modifier.testTag("mseller_sell_more:gstin"),
+            )
+            Text(
+                text = "Books stay on GST 0%. Listings in other categories charge the GST rate you choose for them.",
+                style = MaterialTheme.typography.bodySmall,
+                color = UsTheme.extended.textSecondary,
+            )
+            UsButton(
+                text = "Add GSTIN",
+                onClick = actions.onSubmit,
+                enabled = !form.saving,
+                loading = form.saving,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            UsSecondaryButton(text = "Cancel", onClick = actions.onCancel, compact = true)
+        }
+    }
+}
+
 /** One of the three order tiles: a card that reads as a place to go, not a form control. */
 @Composable
 private fun HubTile(text: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
@@ -556,6 +631,7 @@ private fun SellerContentPreview() {
             onOpenProduct = {},
             onSubmitProduct = {},
             onDismissSubmitProblem = {},
+            upgrade = UpgradeActions(onOpen = {}, onCancel = {}, onGstin = {}, onSubmit = {}),
         )
     }
 }

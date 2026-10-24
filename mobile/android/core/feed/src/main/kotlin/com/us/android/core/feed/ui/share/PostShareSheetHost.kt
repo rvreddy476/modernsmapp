@@ -7,6 +7,7 @@ import androidx.compose.runtime.remember
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.model.FeedItem
+import com.us.android.core.model.allowsRepost
 import com.us.android.core.ui.UsPostShareCallbacks
 import com.us.android.core.ui.UsPostShareSheet
 
@@ -27,7 +28,8 @@ fun PostShareSheetHost(
     onMore: (FeedItem) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    LaunchedEffect(item.id) { viewModel.open(item.id, item.viewer.hasReposted) }
+    // A reel takes no Repost and no Quote (founder, 24 Oct 2026); feed posts and long videos keep them.
+    LaunchedEffect(item.id) { viewModel.open(item.id, item.viewer.hasReposted, allowRepost = item.allowsRepost) }
     // A card that went out closes the sheet; the screen says "Sent".
     LaunchedEffect(viewModel) { viewModel.sent.collect { onDismiss() } }
 

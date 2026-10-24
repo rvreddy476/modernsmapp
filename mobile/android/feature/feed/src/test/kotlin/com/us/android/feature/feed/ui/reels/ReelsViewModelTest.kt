@@ -1744,6 +1744,19 @@ class ReelsViewModelTest {
         assertThat(reelEngagementRefusal(EngagementAction.REPOST)).isEqualTo("Couldn't repost that. Try again.")
     }
 
+    @Test
+    fun `the server's heart-only refusal is said as a plain sentence on a reel`() {
+        assertThat(
+            reelEngagementRefusal(
+                EngagementAction.REACTION,
+                com.us.android.core.common.error.AppError.Unknown(code = "REACTION_NOT_ALLOWED", statusCode = 400),
+            ),
+        ).isEqualTo("Posts take a like only. Tap the heart to like it.")
+        assertThat(
+            reelEngagementRefusal(EngagementAction.REACTION, com.us.android.core.common.error.AppError.NoNetwork()),
+        ).isEqualTo("Couldn't save your like. Try again.")
+    }
+
     // ── The rail ────────────────────────────────────────────────────────
 
     @Test

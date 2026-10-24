@@ -11,11 +11,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.commerce.model.ADDRESS_PROOF_TYPES
 import com.us.android.core.commerce.model.SellerDocumentType
+import com.us.android.core.commerce.model.imageOnly
+import com.us.android.core.commerce.model.twoSided
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsChoice
 import com.us.android.core.designsystem.component.UsChoiceRow
@@ -47,9 +51,12 @@ import com.us.android.feature.commerce.ui.MSellerPageBar
 fun DocumentScreen(
     onBack: () -> Unit,
     onAttached: () -> Unit,
+    /** A books-only shop's proof of address (migration 045): only the five kinds that prove one. */
+    addressProof: Boolean = false,
     viewModel: DocumentViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    LaunchedEffect(addressProof) { if (addressProof) viewModel.startAsAddressProof() }
 
     // A document is not always an image — a PAN card is often a PDF — so this
     // is the general file picker rather than the photo picker. The MIME filter
@@ -58,7 +65,7 @@ fun DocumentScreen(
         ActivityResultContracts.GetContent(),
     ) { uri -> uri?.let { viewModel.upload(it.toString(), onAttached) } }
 
-    UsScaffold(topBar = { MSellerPageBar(title = "Identity document", onBack = onBack) }) { padding ->
+    UsScaffold(topBar = { MSellerPageBar(title = if (addressProof) "Proof of address" else "Identity document", onBack = onBack) }) { padding ->
         Column(
             modifier = Modifier
                 .padding(padding)
@@ -74,13 +81,15 @@ fun DocumentScreen(
             )
 
             UsChoiceRow(
-                options = SellerDocumentType.entries.map { UsChoice(it, it.label) },
+                options = documentChoices(addressProof).map { UsChoice(it, it.label) },
                 selected = state.type,
                 onSelect = { it?.let(viewModel::setType) },
                 label = "Which document?",
                 enabled = !state.busy,
                 allowDeselect = false,
             )
+
+            documentGuidance(state)?.let { CommerceNotice(text = it) }
 
             if (state.asksForNumber) {
                 UsTextField(
@@ -94,7 +103,7 @@ fun DocumentScreen(
                     errorText = state.numberError,
                     enabled = !state.busy,
                 )
-            } else {
+            } else if (state.type == SellerDocumentType.AADHAAR) {
                 // Aadhaar: no number field at all. The number cannot be stored,
                 // so the upload itself must not show it either.
                 CommerceNotice(text = MASKED_AADHAAR_GUIDANCE)
@@ -115,11 +124,7 @@ fun DocumentScreen(
             }
 
             UsButton(
-                text = if (state.stage == DocumentUploadState.Stage.Done) {
-                    "Send another"
-                } else {
-                    "Choose a file"
-                },
+                text = state.pickLabel,
                 onClick = { pickDocument.launch(PICKER_FILTER) },
                 enabled = state.canPick,
                 loading = state.busy,
@@ -127,6 +132,21 @@ fun DocumentScreen(
             )
         }
     }
+}
+
+/**
+ * The document kinds offered: the five proofs of address for a books-only
+ * shop (migration 045), every kind otherwise. Pure.
+ */
+internal fun documentChoices(addressProof: Boolean): List<SellerDocumentType> =
+    if (addressProof) ADDRESS_PROOF_TYPES else SellerDocumentType.entries
+
+/** What the seller is told about the chosen kind before they pick a file, or null. Pure. */
+internal fun documentGuidance(state: DocumentUploadState): String? = when {
+    state.awaitingBack -> "Front received. Now send the back, where the address is."
+    state.type.twoSided -> "Send both sides: the front first, then the back with your address."
+    state.type.imageOnly -> "Send a recent one showing your name and address. It is kept as the image only, so there is no number to type."
+    else -> null
 }
 
 /**

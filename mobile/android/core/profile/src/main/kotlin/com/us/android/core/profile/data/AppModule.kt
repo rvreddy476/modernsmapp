@@ -49,3 +49,25 @@ enum class AppModule(
         fun fromId(id: String): AppModule? = entries.firstOrNull { it.id == id }
     }
 }
+
+/**
+ * The parked product behind a module (`GET /v1/features`, founder decision C,
+ * 24 Oct 2026), or null for one no gateway switch closes.
+ */
+val AppModule.product: com.us.android.core.model.Product?
+    get() = when (this) {
+        AppModule.DATING -> com.us.android.core.model.Product.DATING
+        AppModule.FOOD -> com.us.android.core.model.Product.FOOD
+        AppModule.QA -> com.us.android.core.model.Product.QA
+        AppModule.MOBILITY -> com.us.android.core.model.Product.RIDER
+        AppModule.HOME_SERVICES -> com.us.android.core.model.Product.DOORSTEP
+        AppModule.FEED, AppModule.REELS, AppModule.COMMERCE, AppModule.CHAT, AppModule.POSTTUBE -> null
+    }
+
+/**
+ * The modules the picker offers: [AppModule.selectable] without those of a
+ * closed product. A choice already saved for a closed one is left as it is
+ * and shows again when the product opens. Pure.
+ */
+fun offeredModules(open: Set<com.us.android.core.model.Product>?): List<AppModule> =
+    AppModule.selectable.filter { module -> module.product?.let { com.us.android.core.model.productOpen(it, open) } != false }

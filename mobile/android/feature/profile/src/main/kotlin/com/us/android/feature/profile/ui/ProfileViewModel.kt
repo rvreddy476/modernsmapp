@@ -6,7 +6,6 @@ import androidx.lifecycle.viewModelScope
 import com.us.android.core.auth.SessionStateProvider
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.common.result.getOrNull
-import com.us.android.core.model.ConnectionStatus
 import com.us.android.core.model.FollowCounts
 import com.us.android.core.model.FollowRequest
 import com.us.android.core.model.FollowStatus
@@ -16,8 +15,8 @@ import com.us.android.core.model.ProfileStats
 import com.us.android.core.model.SessionState
 import com.us.android.core.network.Paged
 import com.us.android.core.profile.data.AuthorPostCountsRepository
-import com.us.android.core.profile.data.ConnectionsSource
 import com.us.android.core.profile.data.GraphCountsRepository
+import com.us.android.core.profile.data.MuteSource
 import com.us.android.core.profile.data.ProfileRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.async
@@ -36,8 +35,8 @@ class ProfileViewModel @Inject constructor(
     private val graphCounts: GraphCountsRepository,
     /** The live post total (post-service, 2026-10-17): the profile payload's is never written. */
     private val postCounts: AuthorPostCountsRepository,
-    /** Connections and mute (2026-10-24): graph-service's connection-request and mute routes. */
-    private val connections: ConnectionsSource,
+    /** Mute (2026-10-24): graph-service's mute pair. Connect is gone (founder, 24 Oct 2026). */
+    private val mutes: MuteSource,
     sessionStateProvider: SessionStateProvider,
     savedStateHandle: SavedStateHandle,
 ) : ViewModel() {
@@ -332,92 +331,6 @@ class ProfileViewModel @Inject constructor(
         }
     }
 
-    // ── Connections (2026-10-24) ────────────────────────────────────────
-
-    /** [CONNECT_OFFERED], on the instance so a test can turn the send on. */
-    internal var connectOffered: Boolean = CONNECT_OFFERED
-
-    /**
-     * The one connection control's tap, by where the connection stands:
-     * Connect sends a request (only where [CONNECT_OFFERED]), "Request sent"
-     * withdraws it, "Connected" asks "Remove connection?" first. A request
-     * TO the viewer has its own two buttons ([onAcceptConnection],
-     * [onDeclineConnection]), so a tap here does nothing for it.
-     */
-    fun onConnectionTap() {
-        val current = _state.value as? ProfileUiState.Content ?: return
-        if (current.connectionBusy || current.profile.isOwnProfile || current.unavailable) return
-        val target = current.profile.userId
-        when (current.relationship.connectionStatus) {
-            ConnectionStatus.NONE -> if (connectOffered) {
-                connectionWrite(ConnectionStatus.PENDING_SENT) { connections.send(target) }
-            }
-            ConnectionStatus.PENDING_SENT -> connectionWrite(ConnectionStatus.NONE) { connections.cancel(target) }
-            ConnectionStatus.CONNECTED -> _state.update {
-                (it as? ProfileUiState.Content)?.copy(showRemoveConnectionConfirm = true) ?: it
-            }
-            ConnectionStatus.PENDING_RECEIVED -> Unit
-        }
-    }
-
-    /** Accept the request this profile sent the viewer. */
-    fun onAcceptConnection() = respond(accept = true)
-
-    fun onDeclineConnection() = respond(accept = false)
-
-    private fun respond(accept: Boolean) {
-        val current = _state.value as? ProfileUiState.Content ?: return
-        if (current.relationship.connectionStatus != ConnectionStatus.PENDING_RECEIVED) return
-        val sender = current.profile.userId
-        if (accept) {
-            connectionWrite(ConnectionStatus.CONNECTED) { connections.accept(sender) }
-        } else {
-            connectionWrite(ConnectionStatus.NONE) { connections.decline(sender) }
-        }
-    }
-
-    fun onConfirmRemoveConnection() {
-        val current = _state.value as? ProfileUiState.Content ?: return
-        _state.update { (it as? ProfileUiState.Content)?.copy(showRemoveConnectionConfirm = false) ?: it }
-        if (current.relationship.connectionStatus != ConnectionStatus.CONNECTED) return
-        val target = current.profile.userId
-        connectionWrite(ConnectionStatus.NONE) { connections.remove(target) }
-    }
-
-    fun onDismissRemoveConnection() = _state.update {
-        (it as? ProfileUiState.Content)?.copy(showRemoveConnectionConfirm = false) ?: it
-    }
-
-    /**
-     * Not optimistic: "you are now connected" is the inbox's rule — the
-     * control shows busy, then the server's outcome ([next]), or the old
-     * state and the reason.
-     */
-    private fun connectionWrite(next: ConnectionStatus, call: suspend () -> AppResult<Unit>) {
-        val current = _state.value as? ProfileUiState.Content ?: return
-        if (current.connectionBusy) return
-        val target = current.profile.userId
-        _state.update { (it as? ProfileUiState.Content)?.copy(connectionBusy = true, actionError = null) ?: it }
-        viewModelScope.launch {
-            val result = call()
-            _state.update { state ->
-                val content = state as? ProfileUiState.Content
-                if (content == null || content.profile.userId != target) return@update state
-                when (result) {
-                    is AppResult.Success -> content.copy(
-                        connectionBusy = false,
-                        relationship = content.relationship.copy(connectionStatus = next),
-                    )
-                    is AppResult.Failure -> content.copy(
-                        connectionBusy = false,
-                        actionError = ProfileErrorText.forRelationshipAction(result.error),
-                    )
-                }
-            }
-            if (result is AppResult.Success) refreshCounts(target)
-        }
-    }
-
     // ── Mute (2026-10-24) ───────────────────────────────────────────────
 
     /**
@@ -433,7 +346,7 @@ class ProfileViewModel @Inject constructor(
         val muting = !current.relationship.isMuted
         _state.update { (it as? ProfileUiState.Content)?.copy(muteBusy = true, actionError = null) ?: it }
         viewModelScope.launch {
-            val result = if (muting) connections.mute(target) else connections.unmute(target)
+            val result = if (muting) mutes.mute(target) else mutes.unmute(target)
             _state.update { state ->
                 val content = state as? ProfileUiState.Content
                 if (content == null || content.profile.userId != target) return@update state
@@ -521,18 +434,6 @@ private data class LoadBatch(
     val counts: AppResult<FollowCounts>?,
     val posts: AppResult<Int>?,
 )
-
-/**
- * Whether the profile offers "Connect" to START a connection.
- *
- * Off, as on the web (FriendRequestButton.tsx `allowSend`, false on every
- * surface): the founder removed Connect from the product, and a connection is
- * now formed by accepting a message request (message-service
- * `ensureGraphConnection`). The rest stays live — a request sent before the
- * change can still be answered, withdrawn, and a connection removed — and
- * flipping this one constant brings the send back; the call is wired.
- */
-internal const val CONNECT_OFFERED = false
 
 private const val MUTED_NOTICE = "Muted. Their posts won't show in your feeds."
 private const val UNMUTED_NOTICE = "Unmuted."

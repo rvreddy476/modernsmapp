@@ -118,6 +118,8 @@ private val SELLER_COPY = mapOf(
     "SELLER_NOT_APPROVED" to "Your shop is still being reviewed. You can submit listings once it's approved.",
     "SKU_TAKEN" to "That SKU is already in use. Each SKU has to be unique.",
     "PRICE_NOT_POSITIVE" to "Enter a price above zero.",
+    // Migration 045: a books-only shop lists only books, at GST 0% (create, edit, submit).
+    "SELLER_SCOPE_BOOKS_ONLY" to BOOKS_ONLY_LISTING_COPY,
 )
 
 /**

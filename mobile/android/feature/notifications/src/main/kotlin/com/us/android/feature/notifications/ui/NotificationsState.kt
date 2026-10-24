@@ -34,12 +34,6 @@ data class NotificationsUiState(
      * Accept / Decline / Block only while its conversation is in here.
      */
     val pendingRequestIds: Set<String> = emptySet(),
-    /**
-     * People whose CONNECTION request to the viewer is still waiting
-     * (2026-10-24): a connection-request row offers Accept / Decline only
-     * while its actor is in here, the message-request rule.
-     */
-    val pendingConnectionIds: Set<String> = emptySet(),
     /** Actors the viewer already follows; their Follow rows show "Following". */
     val followingIds: Set<String> = emptySet(),
     /** Per-row action progress and outcome, keyed by notification id. */
@@ -232,9 +226,6 @@ object NotificationsReducer {
         )
     }
 
-    fun onPendingConnections(state: NotificationsUiState, ids: Set<String>): NotificationsUiState =
-        state.copy(pendingConnectionIds = ids)
-
     fun onFollowing(state: NotificationsUiState, ids: Set<String>): NotificationsUiState =
         state.copy(followingIds = state.followingIds + ids)
 
@@ -262,16 +253,6 @@ object NotificationsReducer {
             -> state.pendingRequestIds - notification.entityId
 
             else -> state.pendingRequestIds
-        },
-        // A connection request is answered once, either way: its actor leaves
-        // the pending set, so the row cannot offer Accept again.
-        pendingConnectionIds = if (
-            notification.kind == NotificationKind.ConnectionRequest &&
-            (outcome == RowActionState.Accepted || outcome == RowActionState.Declined)
-        ) {
-            state.pendingConnectionIds - notification.actorUserId
-        } else {
-            state.pendingConnectionIds
         },
         followingIds = if (outcome == RowActionState.Followed) {
             state.followingIds + notification.actorUserId

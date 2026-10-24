@@ -44,7 +44,11 @@ sealed interface NotificationSettingsUiState {
 @HiltViewModel
 class NotificationSettingsViewModel @Inject constructor(
     private val repository: NotificationSettingsRepository,
+    features: com.us.android.core.profile.data.ProductFeaturesStore,
 ) : ViewModel() {
+    /** `GET /v1/features` (24 Oct 2026): a closed product's categories have no switches. */
+    val openProducts: StateFlow<Set<com.us.android.core.model.Product>?> = features.open
+
     private val _state = MutableStateFlow<NotificationSettingsUiState>(NotificationSettingsUiState.Loading)
     val state: StateFlow<NotificationSettingsUiState> = _state.asStateFlow()
     init {

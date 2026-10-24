@@ -15,8 +15,6 @@ import androidx.navigation.compose.composable
 import com.us.android.feature.profile.ui.AccountDataViewModel
 import com.us.android.feature.profile.ui.AppearanceViewModel
 import com.us.android.feature.profile.ui.BlockedAccountsScreen
-import com.us.android.feature.profile.ui.ConnectionsScreen
-import com.us.android.feature.profile.ui.ConnectionsTab
 import com.us.android.feature.profile.ui.HiddenChannelsScreen
 import com.us.android.feature.profile.ui.EditProfileScreen
 import com.us.android.feature.profile.ui.FollowListScreen
@@ -77,9 +75,7 @@ fun NavGraphBuilder.profileScreen(
     onOpenChat: (conversationId: String, title: String) -> Unit,
     /** A tile of the media grid; `:app` opens a long video in Tube and anything else as a post. */
     onOpenPost: (postId: String, contentType: String) -> Unit,
-    /** Connections (2026-10-24): the Connections count opens that account's list. */
-    onOpenConnections: ((ConnectionsRoute) -> Unit)? = null,
-    /** A person in the Connections tab (2026-10-24): `:app` opens their profile. */
+    /** A person in one of the profile's panels: `:app` opens their profile. */
     onOpenProfile: ((userId: String) -> Unit)? = null,
 ) {
     composable<ProfileRoute> {
@@ -95,7 +91,6 @@ fun NavGraphBuilder.profileScreen(
                 // possible outcome is an error.
                 onOpenChat = onOpenChat,
                 onOpenPost = onOpenPost,
-                onOpenConnections = onOpenConnections,
                 onOpenProfile = onOpenProfile,
             ),
         )
@@ -138,9 +133,9 @@ fun NavGraphBuilder.ownProfileScreen(
     onOpenMemberships: (() -> Unit)? = null,
     /** The drawer's "Upload": `:app` opens the Create sheet. */
     onOpenUpload: () -> Unit,
-    /** Connections (2026-10-24): the viewer's connections and their requests. */
-    onOpenConnections: ((ConnectionsRoute) -> Unit)? = null,
-    /** A person in the Connections tab (2026-10-24): `:app` opens their profile. */
+    /** The People tab's Blocked row (24 Oct 2026): `:app` pushes Blocked accounts; null leaves the row out. */
+    onOpenBlocked: (() -> Unit)? = null,
+    /** A person in one of the profile's panels: `:app` opens their profile. */
     onOpenProfile: ((userId: String) -> Unit)? = null,
 ) {
     composable<OwnProfileRoute> {
@@ -168,7 +163,7 @@ fun NavGraphBuilder.ownProfileScreen(
                 onOpenMyMemberships = onOpenMyMemberships,
                 onOpenMemberships = onOpenMemberships,
                 onOpenUpload = onOpenUpload,
-                onOpenConnections = onOpenConnections,
+                onOpenBlocked = onOpenBlocked,
                 onOpenProfile = onOpenProfile,
             ),
         )
@@ -209,32 +204,6 @@ fun NavGraphBuilder.followRequestsScreen(
 }
 
 fun NavController.navigateToFollowRequests() = navigate(FollowRequestsRoute)
-
-/**
- * Connections (2026-10-24): [userId]'s connections, and on the viewer's own
- * (null, or their id) the requests they were sent and the ones they sent.
- * [tab] is a [ConnectionsTab.wire]; [handle] titles someone else's.
- */
-@Serializable
-data class ConnectionsRoute(
-    val userId: String? = null,
-    val handle: String = "",
-    val tab: String = ConnectionsTab.CONNECTIONS.wire,
-)
-
-fun NavGraphBuilder.connectionsScreen(
-    onBack: () -> Unit,
-    onOpenProfile: (userId: String) -> Unit,
-) {
-    composable<ConnectionsRoute> {
-        ConnectionsScreen(onBack = onBack, onOpenProfile = onOpenProfile)
-    }
-}
-
-/** The viewer's own pending connection requests: Connections › Requests. */
-fun NavController.navigateToConnectionRequests() = navigate(ConnectionsRoute(tab = ConnectionsTab.RECEIVED.wire))
-
-fun NavController.navigateToConnections(route: ConnectionsRoute) = navigate(route)
 
 /**
  * A profile's Followers / Following lists, one screen with a tab each.

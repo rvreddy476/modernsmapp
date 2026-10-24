@@ -120,9 +120,6 @@ class NotificationsJourneyTest {
         override suspend fun blockRequest(conversationId: String): AppResult<Unit> = error("not used")
         override suspend fun acceptFollowRequest(requesterId: String): AppResult<Unit> = error("not used")
         override suspend fun declineFollowRequest(requesterId: String): AppResult<Unit> = error("not used")
-        override suspend fun pendingConnectionSenders(): AppResult<Set<String>> = AppResult.Success(emptySet())
-        override suspend fun acceptConnectionRequest(senderId: String): AppResult<Unit> = error("not used")
-        override suspend fun declineConnectionRequest(senderId: String): AppResult<Unit> = error("not used")
         override suspend fun delete(address: NotificationAddress): AppResult<Unit> = error("not used")
     }
 

@@ -36,7 +36,7 @@ data class CommunitySuggestion(
 enum class SuggestionAction(val wire: String) {
     Dismiss("dismiss"),
     Follow("follow"),
-    FriendRequest("friend_request"),
+    // No `friend_request`: Connect is gone (founder, 24 Oct 2026).
     Hide("hide"),
     Block("block"),
 }

@@ -31,6 +31,10 @@ import com.us.android.core.commerce.network.ReadinessDto
 import com.us.android.core.commerce.network.RejectReturnRequest
 import com.us.android.core.commerce.network.ReturnRequestDto
 import com.us.android.core.commerce.network.SaveDocumentsRequest
+import com.us.android.core.commerce.network.SaveSellScopeRequest
+import com.us.android.core.commerce.network.SellScopeSavedDto
+import com.us.android.core.commerce.network.SellScopeViewDto
+import com.us.android.core.commerce.network.UpgradeSellScopeRequest
 import com.us.android.core.commerce.network.SellerAddressRequest
 import com.us.android.core.commerce.network.SellerCancelOrderRequest
 import com.us.android.core.commerce.network.SellerEarningsDto
@@ -189,6 +193,13 @@ open class FakeCommerceApi : CommerceApi {
     override suspend fun submitSellerApplication(): Response<ApiEnvelope<Unit>> = unused()
 
     override suspend fun saveSellerAddress(body: SellerAddressRequest): Response<ApiEnvelope<Unit>> = unused()
+
+    override suspend fun saveSellScope(body: SaveSellScopeRequest): Response<ApiEnvelope<SellScopeSavedDto>> = unused()
+
+    override suspend fun sellScope(): Response<ApiEnvelope<SellScopeViewDto>> = unused()
+
+    override suspend fun upgradeSellScope(body: UpgradeSellScopeRequest): Response<ApiEnvelope<SellScopeViewDto>> =
+        unused()
 
     override suspend fun sellerOrders(limit: Int, offset: Int): Response<ApiEnvelope<List<SellerOrderDto>>> =
         unused()

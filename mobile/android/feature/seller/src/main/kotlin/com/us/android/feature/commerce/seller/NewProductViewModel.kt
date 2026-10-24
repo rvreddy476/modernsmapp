@@ -6,6 +6,8 @@ import com.us.android.core.commerce.model.CategoryChoice
 import com.us.android.core.commerce.model.NewProduct
 import com.us.android.core.commerce.model.Paise
 import com.us.android.core.commerce.model.TaxClass
+import com.us.android.core.commerce.model.bookCategoryChoices
+import com.us.android.core.commerce.model.zeroRatedTaxClasses
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.commerce.repository.CommerceResult
 import com.us.android.feature.commerce.ui.describe
@@ -13,6 +15,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.Locale
 import java.util.UUID
@@ -46,6 +49,12 @@ data class NewProductForm(
     val categoryId: String? = null,
     val categories: List<CategoryChoice> = emptyList(),
     val loadingCategories: Boolean = true,
+    /**
+     * A books-only shop (migration 045): it may list only in a book category
+     * ([bookCategoryIds]) and only at GST 0%, and is offered nothing else.
+     */
+    val booksOnly: Boolean = false,
+    val bookCategoryIds: List<String> = emptyList(),
     val saving: Boolean = false,
     val error: String? = null,
 ) {
@@ -55,6 +64,14 @@ data class NewProductForm(
 
     /** The chosen category's path, for the picker row. */
     val categoryLabel: String? get() = categories.firstOrNull { it.id == categoryId }?.label
+
+    /** The categories the picker offers: book categories only, for a books-only shop. */
+    val offeredCategories: List<CategoryChoice>
+        get() = if (booksOnly) bookCategoryChoices(categories, bookCategoryIds) else categories
+
+    /** The GST rates offered: GST 0% only, for a books-only shop. */
+    val offeredTaxClasses: List<TaxClass>
+        get() = if (booksOnly) zeroRatedTaxClasses(taxClasses) else taxClasses
 
     /**
      * Whether the struck-through price is a lie.
@@ -156,6 +173,27 @@ class NewProductViewModel @Inject constructor(
     init {
         loadRates()
         loadCategories()
+        loadSellScope()
+    }
+
+    /**
+     * What this shop may list (migration 045). Only a books-only answer
+     * narrows the pickers; a read that fails leaves them whole, and the
+     * server still refuses a listing outside books (403 SELLER_SCOPE_BOOKS_ONLY).
+     */
+    private fun loadSellScope() {
+        viewModelScope.launch {
+            val view = (repo.sellScope() as? CommerceResult.Success)?.value ?: return@launch
+            if (!view.booksOnly) return@launch
+            _form.update { form ->
+                val narrowed = form.copy(booksOnly = true, bookCategoryIds = view.bookCategoryIds)
+                // A choice made before the answer arrived that books may not use is cleared.
+                narrowed.copy(
+                    categoryId = narrowed.categoryId?.takeIf { id -> narrowed.offeredCategories.any { it.id == id } },
+                    taxClassId = narrowed.taxClassId?.takeIf { id -> narrowed.offeredTaxClasses.any { it.id == id } },
+                )
+            }
+        }
     }
 
     /**
@@ -174,7 +212,8 @@ class NewProductViewModel @Inject constructor(
                     error = r.error.describe(),
                 )
 
-                is CommerceResult.Success -> _form.value = _form.value.copy(
+                is CommerceResult.Success -> _form.update {
+                    it.copy(
                     taxClasses = r.value,
                     loadingRates = false,
                     // Never preselected. Picking one for the seller files the
@@ -182,6 +221,7 @@ class NewProductViewModel @Inject constructor(
                     // rate, and it is the kind of default nobody revisits.
                     taxClassId = null,
                 )
+                }
             }
         }
     }
@@ -199,7 +239,7 @@ class NewProductViewModel @Inject constructor(
                 is CommerceResult.Success -> r.value
                 is CommerceResult.Failure -> emptyList()
             }
-            _form.value = _form.value.copy(categories = choices, loadingCategories = false)
+            _form.update { it.copy(categories = choices, loadingCategories = false) }
         }
     }
 
@@ -240,8 +280,10 @@ class NewProductViewModel @Inject constructor(
                 openingStock = stock,
             )
             when (val r = repo.createProduct(product)) {
+                // The seller console's sentence: a books-only shop's refusal
+                // (SELLER_SCOPE_BOOKS_ONLY) says what to do, not "Something went wrong".
                 is CommerceResult.Failure ->
-                    _form.value = form.copy(saving = false, error = r.error.describe())
+                    _form.update { it.copy(saving = false, error = r.error.describeForSeller()) }
 
                 is CommerceResult.Success -> {
                     // The stock screen needs the VARIANT's id (2026-09-30).

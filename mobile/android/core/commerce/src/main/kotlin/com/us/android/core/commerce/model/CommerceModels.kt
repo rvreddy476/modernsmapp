@@ -642,6 +642,8 @@ data class SellerProfile(
     val postalCode: String?,
     val totalProducts: Int,
     val totalOrders: Int,
+    /** What the shop may list (migration 045); null from a server that does not say. */
+    val sellScope: SellScope? = null,
 )
 
 /**
@@ -732,6 +734,16 @@ enum class StockReason(val wire: String, val label: String) {
     CORRECTION("correction", "Correcting a mistake"),
 }
 
+/**
+ * Which of the seller's addresses a save writes (`address_type`): the pickup
+ * point couriers collect from, or the business address a books-only seller
+ * gives with their PAN (migration 045). One row of each per shop.
+ */
+enum class SellerAddressKind(val wire: String) {
+    PICKUP("pickup"),
+    BUSINESS("business"),
+}
+
 /** The seller's pickup point — the origin of every shipment they send. */
 data class SellerAddress(
     val contactName: String,
@@ -808,6 +820,16 @@ sealed interface SellerRequirement {
     data object PickupAddress : SellerRequirement
     data object PayoutAccount : SellerRequirement
     data object KycDocument : SellerRequirement
+
+    // Per sell scope (migration 045, 24 Oct 2026). Every category but books
+    // needs a GSTIN; books only need a PAN, the business name, a business
+    // address and one proof of address.
+    data object SellScopeNotChosen : SellerRequirement
+    data object Gstin : SellerRequirement
+    data object Pan : SellerRequirement
+    data object BusinessName : SellerRequirement
+    data object BusinessAddress : SellerRequirement
+    data object AddressProof : SellerRequirement
     data class Unknown(val key: String) : SellerRequirement
 
     companion object {
@@ -817,6 +839,12 @@ sealed interface SellerRequirement {
             "pickup_address" -> PickupAddress
             "payout_account" -> PayoutAccount
             "kyc_document" -> KycDocument
+            "sell_scope" -> SellScopeNotChosen
+            "gstin" -> Gstin
+            "pan" -> Pan
+            "business_name" -> BusinessName
+            "business_address" -> BusinessAddress
+            "address_proof" -> AddressProof
             else -> Unknown(key)
         }
     }
@@ -825,6 +853,8 @@ sealed interface SellerRequirement {
 data class SellerReadiness(
     val ready: Boolean,
     val missing: List<SellerRequirement>,
+    /** The scope the checklist was worked out for (`detail.sell_scope`); null when the server did not say. */
+    val scope: SellScope? = null,
 )
 
 /** Where a seller is paid. */
@@ -851,6 +881,14 @@ enum class SellerDocumentType(val wire: String, val label: String) {
     BUSINESS_REGISTRATION("business_registration", "Business registration"),
     ADDRESS_PROOF("address_proof", "Address proof"),
     CANCELLED_CHEQUE("cancelled_cheque", "Cancelled cheque"),
+
+    // Migration 045: the proofs of address a books-only seller uploads. A voter
+    // ID and a passport carry the address on the back ([twoSided]); a bill and
+    // a bank statement are stored as their image only ([imageOnly]).
+    VOTER_ID("voter_id", "Voter ID"),
+    ELECTRICITY_BILL("electricity_bill", "Electricity bill"),
+    TELEPHONE_BILL("telephone_bill", "Telephone bill"),
+    BANK_STATEMENT("bank_statement", "Bank statement"),
 }
 
 /** One uploaded identity document, ready to attach. */
@@ -858,4 +896,6 @@ data class SellerDocument(
     val type: SellerDocumentType,
     val mediaId: String,
     val documentNumber: String?,
+    /** The back of a voter ID or passport (migration 045); null for a one-sided document. */
+    val backMediaId: String? = null,
 )

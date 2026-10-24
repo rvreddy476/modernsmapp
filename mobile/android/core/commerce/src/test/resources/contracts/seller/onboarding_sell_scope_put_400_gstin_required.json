@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "GSTIN_REQUIRED",
+    "message": "a GSTIN is required to sell in all categories",
+    "details": {
+      "field": "gstin"
+    }
+  },
+  "meta": {}
+}
+

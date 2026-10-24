@@ -1,0 +1,11 @@
+{
+  "data": {
+    "sell_scope": "all_categories",
+    "has_gstin": true,
+    "book_category_ids": [
+      "00000000-0000-4000-8000-00000000c101"
+    ],
+    "can_upgrade": false
+  }
+}
+

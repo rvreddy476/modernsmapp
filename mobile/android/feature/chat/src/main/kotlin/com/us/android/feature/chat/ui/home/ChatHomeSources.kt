@@ -6,6 +6,7 @@ import com.us.android.core.chat.data.MessageConsentRepository
 import com.us.android.core.chat.data.SuggestionsRepository
 import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.profile.data.PrivacySettingsRepository
+import com.us.android.core.profile.data.ProductFeaturesStore
 import com.us.android.core.profile.data.ProfileRepository
 import javax.inject.Inject
 
@@ -28,4 +29,6 @@ class ChatHomeSources @Inject constructor(
     val privacy: PrivacySettingsRepository,
     /** DM consent (2026-10-20): the waiting-requests badge count. */
     val consent: MessageConsentRepository,
+    /** `GET /v1/features` (24 Oct 2026): whether the Communities tab, riding on broadcast channels, shows. */
+    val features: ProductFeaturesStore,
 )

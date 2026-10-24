@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "SELL_SCOPE_LOCKED",
+    "message": "commerce: the sell scope can only be chosen while the application is a draft or has changes requested"
+  },
+  "meta": {}
+}
+

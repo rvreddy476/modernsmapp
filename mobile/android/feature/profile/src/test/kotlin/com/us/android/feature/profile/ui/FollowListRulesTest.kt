@@ -67,7 +67,7 @@ class FollowListRulesTest {
     @Test
     fun `the title is the handle`() {
         assertThat(followListTitle("ada")).isEqualTo("@ada")
-        assertThat(followListTitle("")).isEqualTo("Connections")
+        assertThat(followListTitle("")).isEqualTo("People")
     }
 
     @Test
@@ -76,37 +76,37 @@ class FollowListRulesTest {
             .isEqualTo(FollowListRoute(userId = "u1", handle = "ada", tab = "following"))
     }
 
-    // ── canOpenConnections ───────────────────────────────────────────────
+    // ── canOpenFollowLists ───────────────────────────────────────────────
 
     private fun content(profile: Profile, relationship: ProfileRelationship = ProfileRelationship()) =
         ProfileUiState.Content(profile = profile, stats = null, relationship = relationship)
 
     @Test
     fun `the viewer's own lists always open, however private`() {
-        assertThat(content(ownProfile.copy(isPrivate = true)).canOpenConnections).isTrue()
+        assertThat(content(ownProfile.copy(isPrivate = true)).canOpenFollowLists).isTrue()
     }
 
     @Test
     fun `a public account's lists open`() {
-        assertThat(content(publicProfile).canOpenConnections).isTrue()
+        assertThat(content(publicProfile).canOpenFollowLists).isTrue()
     }
 
     @Test
     fun `a private account opens only for a follower`() {
         val private = publicProfile.copy(isPrivate = true)
-        assertThat(content(private).canOpenConnections).isFalse()
+        assertThat(content(private).canOpenFollowLists).isFalse()
         assertThat(
-            content(private, ProfileRelationship(followStatus = FollowStatus.REQUESTED)).canOpenConnections,
+            content(private, ProfileRelationship(followStatus = FollowStatus.REQUESTED)).canOpenFollowLists,
         ).isFalse()
         assertThat(
             content(private, ProfileRelationship(isFollowing = true, followStatus = FollowStatus.FOLLOWING))
-                .canOpenConnections,
+                .canOpenFollowLists,
         ).isTrue()
     }
 
     @Test
     fun `an account that blocked the viewer keeps plain numbers`() {
-        assertThat(content(publicProfile, ProfileRelationship(isBlockedByTarget = true)).canOpenConnections).isFalse()
+        assertThat(content(publicProfile, ProfileRelationship(isBlockedByTarget = true)).canOpenFollowLists).isFalse()
     }
 
     private companion object {

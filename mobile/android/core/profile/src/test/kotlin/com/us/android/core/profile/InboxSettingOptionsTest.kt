@@ -102,7 +102,7 @@ class InboxSettingOptionsTest {
     @Test
     fun `a PUT omits parity keys this client never read`() {
         val base = UpdatePrivacySettingsRequest(
-            "connections_only", "everyone", "connections_only", "connections_only", "connections_only", "connections_only",
+            "connections_only", "connections_only", "connections_only", "connections_only", "connections_only",
             "connections_only", "everyone", false, false, false, false, false, true, true, true, true, true, "enabled", true,
             true, "public", "everyone",
         )

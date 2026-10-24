@@ -61,4 +61,9 @@ dependencies {
     testImplementation(libs.okhttp.mockwebserver)
     testImplementation(libs.retrofit.kotlinx.serialization)
     testImplementation(libs.paging.testing)
+    // Compose semantics on the UNIT source set (Robolectric, via :core:testing):
+    // the People you may know page is pinned to its one Follow button (24 Oct 2026).
+    testImplementation(platform(libs.compose.bom))
+    testImplementation(libs.compose.ui.test.junit4)
+    debugImplementation(libs.compose.ui.test.manifest)
 }

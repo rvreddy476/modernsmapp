@@ -120,7 +120,7 @@ fun FollowListScreen(
     }
 }
 
-internal fun followListTitle(handle: String): String = if (handle.isBlank()) "Connections" else "@$handle"
+internal fun followListTitle(handle: String): String = if (handle.isBlank()) "People" else "@$handle"
 
 @Composable
 @Suppress("LongParameterList") // the tab's state and its four doors out

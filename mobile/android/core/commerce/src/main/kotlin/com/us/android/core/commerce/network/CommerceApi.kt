@@ -397,6 +397,29 @@ interface CommerceApi {
         @Body body: SellerAddressRequest,
     ): Response<ApiEnvelope<Unit>>
 
+    /**
+     * "What will you sell?" (migration 045, 24 Oct 2026): all categories with
+     * a GSTIN, or books only with a PAN and the business name. Only while the
+     * application is a draft or has changes requested (409 SELL_SCOPE_LOCKED).
+     */
+    @PUT("v1/commerce/onboarding/step/sell-scope")
+    suspend fun saveSellScope(
+        @Body body: SaveSellScopeRequest,
+    ): Response<ApiEnvelope<SellScopeSavedDto>>
+
+    /** The shop's sell scope and, for a books-only shop, the categories it may list in. */
+    @GET("v1/commerce/seller/sell-scope")
+    suspend fun sellScope(): Response<ApiEnvelope<SellScopeViewDto>>
+
+    /**
+     * A books-only shop adds a GSTIN and sells in every category. The GSTIN
+     * must be registered to the PAN on file (400 GSTIN_PAN_MISMATCH).
+     */
+    @POST("v1/commerce/seller/sell-scope/upgrade")
+    suspend fun upgradeSellScope(
+        @Body body: UpgradeSellScopeRequest,
+    ): Response<ApiEnvelope<SellScopeViewDto>>
+
     // Seller orders, fulfilment, returns and earnings.
     //
     // The DTOs live in SellerFulfilmentDtos.kt. One shape below is unusual
@@ -1095,6 +1118,8 @@ data class SellerProfileDto(
     @SerialName("postal_code") val postalCode: String? = null,
     @SerialName("total_products") val totalProducts: Int = 0,
     @SerialName("total_orders") val totalOrders: Int = 0,
+    /** `all_categories` or `books_only` (migration 045); always sent by a current server. */
+    @SerialName("sell_scope") val sellScope: String = "",
 )
 
 @Serializable
@@ -1276,6 +1301,28 @@ data class SellerVariantDto(
 data class ReadinessDto(
     val ready: Boolean = false,
     val missing: List<String> = emptyList(),
+    /** Every fact the checklist was worked out from (migration 045). */
+    val detail: ReadinessDetailDto? = null,
+)
+
+/**
+ * The readiness facts. Every one is read whatever the scope; `missing` says
+ * which count for it: `has_gstin` for all categories, the PAN, business name,
+ * business address and proof of address for books only.
+ */
+@Serializable
+data class ReadinessDetailDto(
+    @SerialName("sell_scope") val sellScope: String = "",
+    @SerialName("has_store_name") val hasStoreName: Boolean = false,
+    @SerialName("has_email") val hasEmail: Boolean = false,
+    @SerialName("has_pickup_address") val hasPickupAddress: Boolean = false,
+    @SerialName("has_payout_account") val hasPayoutAccount: Boolean = false,
+    @SerialName("has_kyc_document") val hasKycDocument: Boolean = false,
+    @SerialName("has_gstin") val hasGstin: Boolean = false,
+    @SerialName("has_pan") val hasPan: Boolean = false,
+    @SerialName("has_business_name") val hasBusinessName: Boolean = false,
+    @SerialName("has_business_address") val hasBusinessAddress: Boolean = false,
+    @SerialName("has_address_proof") val hasAddressProof: Boolean = false,
 )
 
 @Serializable
@@ -1295,4 +1342,37 @@ data class DocumentInput(
     @SerialName("document_type") val documentType: String,
     @SerialName("media_id") val mediaId: String,
     @SerialName("document_number") val documentNumber: String? = null,
+    /** The back of a voter ID or passport (migration 045); omitted for every other type. */
+    @SerialName("back_media_id") val backMediaId: String? = null,
 )
+
+/** `PUT /onboarding/step/sell-scope` (saveSellScopeReq). Null fields are omitted on the wire. */
+@Serializable
+data class SaveSellScopeRequest(
+    @SerialName("sell_scope") val sellScope: String,
+    val gstin: String? = null,
+    val pan: String? = null,
+    @SerialName("business_name") val businessName: String? = null,
+)
+
+/** service.SellScopeSaved: the PAN masked, with its holder type. */
+@Serializable
+data class SellScopeSavedDto(
+    @SerialName("sell_scope") val sellScope: String = "",
+    val gstin: String? = null,
+    @SerialName("business_name") val businessName: String? = null,
+    @SerialName("pan_masked") val panMasked: String? = null,
+    @SerialName("pan_holder_type") val panHolderType: String? = null,
+)
+
+/** service.SellScopeView. */
+@Serializable
+data class SellScopeViewDto(
+    @SerialName("sell_scope") val sellScope: String = "",
+    @SerialName("has_gstin") val hasGstin: Boolean = false,
+    @SerialName("book_category_ids") val bookCategoryIds: List<String> = emptyList(),
+    @SerialName("can_upgrade") val canUpgrade: Boolean = false,
+)
+
+@Serializable
+data class UpgradeSellScopeRequest(val gstin: String)

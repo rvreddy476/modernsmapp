@@ -1,6 +1,9 @@
 package com.us.android.explore
 
+import com.us.android.core.model.Product
+import com.us.android.core.model.productOpen
 import com.us.android.core.profile.data.AppModule
+import com.us.android.features.product
 
 /**
  * The mini-apps the Explore launcher can show, in the order the founder set
@@ -68,9 +71,14 @@ data class LauncherTile(val app: LauncherApp, val soon: Boolean)
  *     choices in Settings decide the home page and the bar, not this grid.
  *  3. An app this build cannot open yet is shown as "Soon": a promise, not
  *     a lie — its tile is dimmed and says so on tap.
+ *  4. An app whose product the gateway has closed (`GET /v1/features`,
+ *     founder decision C, 24 Oct 2026) has no tile at all. [open] is the
+ *     last good answer, or null for none ([productOpen]'s default).
  */
-fun launcherTiles(): List<LauncherTile> =
-    LauncherApp.entries.map { app -> LauncherTile(app, soon = app.module?.hasScreen == false) }
+fun launcherTiles(open: Set<Product>? = null): List<LauncherTile> =
+    LauncherApp.entries
+        .filter { app -> app.product?.let { productOpen(it, open) } != false }
+        .map { app -> LauncherTile(app, soon = app.module?.hasScreen == false) }
 
 /** What a "Soon" tile says when tapped: "Match is coming soon". */
 fun comingSoonMessage(app: LauncherApp): String = "${app.label} is coming soon"

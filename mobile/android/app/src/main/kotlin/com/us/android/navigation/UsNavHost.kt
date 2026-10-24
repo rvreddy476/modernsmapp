@@ -25,6 +25,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -53,8 +54,8 @@ import com.us.android.core.ui.ChromeVisibility
 import com.us.android.core.ui.LocalChromeVisibility
 import com.us.android.explore.ExploreScreen
 import com.us.android.explore.LauncherApp
-import com.us.android.explore.LauncherTile
-import com.us.android.explore.launcherTiles
+import com.us.android.features.navigateToProductUnavailable
+import com.us.android.features.productUnavailableScreen
 import com.us.android.feature.auth.login.LoginRoute
 import com.us.android.feature.auth.navigation.SignInSecurityDestinations
 import com.us.android.feature.auth.navigation.navigateToChangePassword
@@ -195,12 +196,9 @@ import com.us.android.feature.profile.navigation.ProfileDetailsRoute
 import com.us.android.feature.profile.navigation.SecuritySettingsRoute
 import com.us.android.feature.profile.navigation.SettingsDestinations
 import com.us.android.feature.profile.navigation.SettingsSections
-import com.us.android.feature.profile.navigation.connectionsScreen
 import com.us.android.feature.profile.navigation.editProfileScreen
 import com.us.android.feature.profile.navigation.followListScreen
 import com.us.android.feature.profile.navigation.followRequestsScreen
-import com.us.android.feature.profile.navigation.navigateToConnectionRequests
-import com.us.android.feature.profile.navigation.navigateToConnections
 import com.us.android.feature.profile.navigation.navigateToEditProfile
 import com.us.android.feature.profile.navigation.navigateToFollowList
 import com.us.android.feature.profile.navigation.navigateToFollowRequests
@@ -348,6 +346,10 @@ fun UsNavHost(
     // means the handle is unknown, and the host opens Search with it typed.
     resolveLinkUserId: suspend (com.us.android.push.PushDestination) -> String? = { null },
     callState: com.us.android.core.call.CallState = com.us.android.core.call.CallState.Idle,
+    // `GET /v1/features` (founder decision C, 24 Oct 2026): the last good answer,
+    // or null for none; and, for a tap or link, the closed product it lands in.
+    openProducts: Set<com.us.android.core.model.Product>? = null,
+    closedProductFor: suspend (com.us.android.push.PushDestination) -> com.us.android.core.model.Product? = { null },
     // Supplied by MainActivity, which IS the Activity the PSP SDK needs and
     // which holds the coordinator. Passing it down rather than looking up a
     // context here removes the "what if this is not an Activity" branch
@@ -371,7 +373,8 @@ fun UsNavHost(
     val tabs = remember(shellState) {
         (shellState as? ShellState.Ready)?.let { TabResolver.resolve(it.prefs) }.orEmpty()
     }
-    val launcher = rememberLauncher()
+    val openProductsState = rememberUpdatedState(openProducts)
+    val gate = remember { com.us.android.features.ProductGateState(openProductsState) }
     val startDestination = shellState.startDestination()
 
     // An incoming ring fronts the call surface (foreground path; background
@@ -395,7 +398,13 @@ fun UsNavHost(
         val destination = pushDestination ?: return@LaunchedEffect
         if (!sessionState.isAuthenticated) return@LaunchedEffect
         onPushDestinationConsumed()
-        navController.openPushDestination(destination, onOpenReel, resolveLinkUserId)
+        // A tap or link into a product the gateway has closed lands on "Not available".
+        val closed = closedProductFor(destination)
+        if (closed != null) {
+            navController.navigateToProductUnavailable(closed)
+        } else {
+            navController.openPushDestination(destination, onOpenReel, resolveLinkUserId)
+        }
     }
 
     // The bar lives OUTSIDE the NavHost so it survives destination changes
@@ -528,10 +537,11 @@ fun UsNavHost(
             ) {
                 authDestinations(navController)
                 shellDestinations()
+                productUnavailableScreen(onBack = { navController.popBackStack() })
                 tabDestinations(
                     navController,
                     pool,
-                    launcher,
+                    gate,
                     onOpenPaymentSheet,
                     onAbandonPaymentSheet,
                     onOpenFeastPayment,
@@ -583,14 +593,6 @@ private fun CreateSheetHost(scope: CreateScope?, navController: NavHostControlle
         onOpenDrafts = { navController.navigateToDrafts() },
     )
 }
-
-/**
- * The Explore launcher's tiles: every app, always, with the ones this build
- * cannot open marked "Soon". The module choices shape the bar and the home
- * page, not this grid — Explore is where the apps are found.
- */
-@Composable
-private fun rememberLauncher(): List<LauncherTile> = remember { launcherTiles() }
 
 /**
  * The two start destinations between sign-in and the tabs.
@@ -662,7 +664,8 @@ private suspend fun NavHostController.openPushDestination(
         // Copyright title review (2026-10-24): the uploads, or the cleared video.
         in COPYRIGHT_TYPES -> openNotificationTarget(pushTargetOf(destination), onOpenReel)
         "message_request" -> navigateToTopLevel(TopLevelDestination.MESSAGES)
-        // Follow and connection requests (2026-10-24): the deep link says where —
+        // Follow requests, and old connection-request pushes (Connect is gone, 24 Oct
+        // 2026; a tap opens the person's profile): the deep link says where —
         // `/notifications?tab=requests` the approval queue, `/u/{id}` a profile.
         in SOCIAL_REQUEST_TYPES -> openNotificationTarget(pushTargetOf(destination), onOpenReel)
         // An `atpost.app/chat/join/{code}` link, offered by MainActivity as a push
@@ -824,7 +827,8 @@ private fun NavGraphBuilder.authDestinations(navController: NavHostController) {
 private fun NavGraphBuilder.tabDestinations(
     navController: NavHostController,
     pool: PlayerPool,
-    launcher: List<LauncherTile>,
+    /** `GET /v1/features`: the launcher's tiles and the inbox's gate read it. */
+    gate: com.us.android.features.ProductGateState,
     // Passed through rather than captured: this is a top-level extension, not
     // a lambda inside UsNavHost, so the parameter is not otherwise in scope.
     onOpenPaymentSheet: (attempt: PaymentAttempt, orderNumber: String) -> Unit,
@@ -1087,15 +1091,21 @@ private fun NavGraphBuilder.tabDestinations(
     // follow-up work — the id is carried, nothing yet consumes it.
     notificationsScreen(
         onBack = { navController.popBackStack() },
-        onOpenTarget = { target -> navController.openNotificationTarget(target, onOpenReel) },
+        // A row into a closed product (Feast, Ride, Doorstep) lands on "Not available".
+        onOpenTarget = { target ->
+            val product = com.us.android.core.model.productOf(target)
+            if (product != null && !gate.isOpen(product)) {
+                navController.navigateToProductUnavailable(product)
+            } else {
+                navController.openNotificationTarget(target, onOpenReel)
+            }
+        },
         // Preferences are a `:feature:profile` destination. The inbox asks
         // for "settings"; :app decides that means this route.
         onOpenPreferences = { navController.navigate(NotificationSettingsRoute) },
         // The Momentum Follow Requests panel opens the same approval queue
         // a profile's own entry point does.
         onOpenFollowRequests = { navController.navigateToFollowRequests() },
-        // Connections (2026-10-24): the Connection Requests panel opens Connections › Requests.
-        onOpenConnectionRequests = { navController.navigateToConnectionRequests() },
     )
 
     // Messages. The entry point is the feed's top bar; a profile's Message
@@ -1306,7 +1316,7 @@ private fun NavGraphBuilder.tabDestinations(
         onBack = { navController.popBackStack() },
         onCreateWithSound = onCreateWithSound,
     )
-    exploreDestinations(navController, launcher, exploreHasBack)
+    exploreDestinations(navController, gate, exploreHasBack)
 
     // Tube — the long-video mini-app (redesign, 2026-09-05): home, pushed
     // from the Explore launcher, with You beside it under Tube's own bar
@@ -1405,12 +1415,14 @@ private fun NavGraphBuilder.tabDestinations(
  */
 private fun NavGraphBuilder.exploreDestinations(
     navController: NavHostController,
-    launcher: List<LauncherTile>,
+    gate: com.us.android.features.ProductGateState,
     hasBack: Boolean,
 ) {
     composable<ExploreRoute> {
         ExploreScreen(
-            tiles = launcher,
+            // Every app, with the ones this build cannot open marked "Soon", and
+            // none whose product the gateway has closed (24 Oct 2026).
+            tiles = gate.launcher(),
             // A bar root has nowhere "back" to go; opened from a header it does.
             onBack = if (hasBack) ({ navController.popBackStack() }) else null,
             onSearch = { query -> navController.navigateToSearch(SearchOrigin.EXPLORE, query) },
@@ -1455,7 +1467,8 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
             onOpenNotifications = { navController.navigateToNotifications() },
         ),
         onOpenPost = { postId, contentType -> navController.openProfilePost(postId, contentType) },
-        onOpenConnections = { navController.navigateToConnections(it) },
+        // The People tab's Blocked row (24 Oct 2026): own profile only.
+        onOpenBlocked = { navController.navigate(com.us.android.feature.profile.navigation.BlockedAccountsRoute) },
         onOpenProfile = { userId -> navController.navigateToProfile(userId) },
         // The end of the publish journey: the upload the viewer was watching
         // on this grid is live, so carry them to where it landed with it
@@ -1510,7 +1523,6 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
             navController.navigateToChatThread(conversationId, title)
         },
         onOpenPost = { postId, contentType -> navController.openProfilePost(postId, contentType) },
-        onOpenConnections = { navController.navigateToConnections(it) },
         onOpenProfile = { userId -> navController.navigateToProfile(userId) },
     )
     editProfileScreen(
@@ -1520,12 +1532,6 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
     // The private-account owner's approval queue. Opening a row is the same
     // destination a Follow-back or any other profile link uses.
     followRequestsScreen(
-        onBack = { navController.popBackStack() },
-        onOpenProfile = { userId -> navController.navigateToProfile(userId) },
-    )
-    // Connections (2026-10-24): a profile's connections, and the viewer's own
-    // requests either way. A row opens that person's profile.
-    connectionsScreen(
         onBack = { navController.popBackStack() },
         onOpenProfile = { userId -> navController.navigateToProfile(userId) },
     )
@@ -1621,6 +1627,7 @@ fun UsApp(
     val shellState by viewModel.shellState.collectAsStateWithLifecycle()
     val pushDestination by viewModel.pushDestination.collectAsStateWithLifecycle()
     val callState by viewModel.callState.collectAsStateWithLifecycle()
+    val openProducts by viewModel.openProducts.collectAsStateWithLifecycle()
     UsNavHost(
         sessionState = sessionState,
         shellState = shellState,
@@ -1629,6 +1636,8 @@ fun UsApp(
         onPushDestinationConsumed = viewModel::consumePushDestination,
         onOpenReel = viewModel::openReel,
         resolveLinkUserId = viewModel::resolveLinkUserId,
+        openProducts = openProducts,
+        closedProductFor = viewModel::closedProductFor,
         callState = callState,
         onOpenPaymentSheet = onOpenPaymentSheet,
         onAbandonPaymentSheet = onAbandonPaymentSheet,
@@ -1750,9 +1759,10 @@ private const val POST_CONTENT_TYPE = "post"
 private const val FLICK_CONTENT_TYPE = "flick"
 
 /**
- * The follow- and connection-request pushes (notification-service
- * follow_request_notify.go:29-30 and consumer.go:286-311), each routed by its
- * deep link through [pushTargetOf].
+ * The follow-request pushes (notification-service follow_request_notify.go:29-30
+ * and consumer.go:286-311), each routed by its deep link through [pushTargetOf].
+ * `friend_request` / `friend_accepted` are old connection pushes still in the
+ * tray after Connect was retired (24 Oct 2026): they open the person's profile.
  */
 private val SOCIAL_REQUEST_TYPES = setOf("follow_request", "follow_request_accepted", "friend_request", "friend_accepted")
 

@@ -8,6 +8,14 @@ import com.us.android.core.commerce.model.OrderStatus
 import com.us.android.core.commerce.model.Paise
 import com.us.android.core.commerce.model.ProductImage
 import com.us.android.core.commerce.model.SellerProduct
+import com.us.android.core.commerce.model.SellScope
+import com.us.android.core.commerce.model.SellScopeChoice
+import com.us.android.core.commerce.model.SellScopeView
+import com.us.android.core.commerce.model.SellerDocument
+import com.us.android.core.commerce.model.SellerDocumentType
+import com.us.android.core.commerce.model.SellerReadiness
+import com.us.android.core.commerce.model.SellerRequirement
+import com.us.android.core.commerce.model.panHolderLabel
 import com.us.android.core.commerce.network.AddressDto
 import com.us.android.core.commerce.network.CartDto
 import com.us.android.core.commerce.network.CategoryDto
@@ -30,6 +38,8 @@ import com.us.android.core.commerce.network.SellerOrderDto
 import com.us.android.core.commerce.network.SellerOrderHistoryDto
 import com.us.android.core.commerce.network.SellerProductDto
 import com.us.android.core.commerce.network.SellerProfileDto
+import com.us.android.core.commerce.network.SellScopeSavedDto
+import com.us.android.core.commerce.network.SellScopeViewDto
 import com.us.android.core.commerce.network.ShipmentsDto
 import com.us.android.core.commerce.network.StockDto
 import com.us.android.core.commerce.network.TaxClassListDto
@@ -62,7 +72,8 @@ import java.io.File
  * The fixtures are commerce-service's handler-test goldens
  * (`internal/http/testdata/contracts/<area>/<name>.json`, lane C1), copied
  * byte for byte into `src/test/resources/contracts/<area>/`. Only the ones a
- * route in [CommerceApi] answers are copied (56 of 67 on 2026-09-30); the
+ * route in [CommerceApi] answers are copied (56 of 67 on 2026-09-30; the 11
+ * sell-scope goldens of migration 045 joined them on 2026-10-25); the
  * invoice, order items, shipment timeline, reviews, attributes, product
  * readiness, onboarding status and stub-confirm goldens belong to screens
  * lanes AC2 and AC3 have not built, and are copied with the DTOs that read
@@ -281,15 +292,95 @@ class CommerceContractFixtureTest {
             assertThat(it.storeName).isEqualTo("Momentum Electronics")
             assertThat(it.status).isEqualTo("approved")
             assertThat(it.onboardingStep).isEqualTo(7)
+            // Migration 045: every shop says what it may list.
+            assertThat(it.sellScope).isEqualTo("all_categories")
         },
-        "seller/onboarding_readiness_200.json" to lenient(ReadinessDto.serializer()) {
+        "seller/onboarding_readiness_200.json" to strict(ReadinessDto.serializer()) {
             assertThat(it.ready).isTrue()
             assertThat(it.missing).isEmpty()
+            val detail = checkNotNull(it.detail)
+            assertThat(detail.sellScope).isEqualTo("all_categories")
+            assertThat(detail.hasGstin).isTrue()
+            assertThat(detail.hasPan).isFalse()
+        },
+        // ── Sell scope (migration 045, books-only sellers) ───────────────
+        "seller/onboarding_readiness_200_books_only.json" to served({ sellerReadiness() }) {
+            val readiness = it.value<SellerReadiness>()
+            assertThat(readiness.ready).isFalse()
+            assertThat(readiness.scope).isEqualTo(SellScope.BOOKS_ONLY)
+            // The scope's own requirements come first, as the server orders them.
+            assertThat(readiness.missing).containsExactly(
+                SellerRequirement.BusinessAddress,
+                SellerRequirement.AddressProof,
+                SellerRequirement.PickupAddress,
+                SellerRequirement.PayoutAccount,
+                SellerRequirement.KycDocument,
+            ).inOrder()
+        },
+        "seller/onboarding_sell_scope_put_200_books_only.json" to strict(SellScopeSavedDto.serializer()) {
+            assertThat(it.sellScope).isEqualTo("books_only")
+            assertThat(it.gstin).isNull()
+            assertThat(it.businessName).isEqualTo("Asha Books")
+            assertThat(it.panMasked).isEqualTo("XXXXXX234F")
+            assertThat(panHolderLabel(checkNotNull(it.panHolderType))).isEqualTo("Individual")
+        },
+        "seller/onboarding_sell_scope_put_400_gstin_required.json" to served({ saveSellScope(SellScopeChoice(SellScope.ALL_CATEGORIES)) }) {
+            val error = it.error() as CommerceError.Unexpected
+            assertThat(error.code).isEqualTo("GSTIN_REQUIRED")
+            assertThat(error.httpStatus).isEqualTo(400)
+        },
+        "seller/onboarding_sell_scope_put_400_pan_invalid.json" to served({ saveSellScope(booksChoice()) }) {
+            val error = it.error() as CommerceError.Unexpected
+            assertThat(error.code).isEqualTo("PAN_INVALID")
+            assertThat(error.httpStatus).isEqualTo(400)
+        },
+        "seller/onboarding_sell_scope_put_409_locked.json" to served({ saveSellScope(booksChoice()) }) {
+            val error = it.error() as CommerceError.Unexpected
+            assertThat(error.code).isEqualTo("SELL_SCOPE_LOCKED")
+            assertThat(error.httpStatus).isEqualTo(409)
+        },
+        "seller/onboarding_documents_put_400_back_not_accepted.json" to served({
+            saveDocuments(listOf(SellerDocument(SellerDocumentType.BANK_STATEMENT, "m-1", null)))
+        }) {
+            val error = it.error() as CommerceError.Unexpected
+            assertThat(error.code).isEqualTo("DOCUMENT_BACK_NOT_ACCEPTED")
+            assertThat(error.httpStatus).isEqualTo(400)
+        },
+        "seller/product_post_403_seller_scope_books_only.json" to served({ createProduct(newProduct()) }) {
+            val error = it.error() as CommerceError.Unexpected
+            assertThat(error.code).isEqualTo("SELLER_SCOPE_BOOKS_ONLY")
+            assertThat(error.httpStatus).isEqualTo(403)
+        },
+        "seller/seller_sell_scope_get_200_books_only.json" to served({ sellScope() }) {
+            val view = it.value<SellScopeView>()
+            assertThat(view.scope).isEqualTo(SellScope.BOOKS_ONLY)
+            assertThat(view.booksOnly).isTrue()
+            assertThat(view.hasGstin).isFalse()
+            assertThat(view.bookCategoryIds).containsExactly("00000000-0000-4000-8000-00000000c101")
+            assertThat(view.canUpgrade).isTrue()
+        },
+        "seller/seller_sell_scope_upgrade_post_200.json" to strict(SellScopeViewDto.serializer()) {
+            assertThat(it.sellScope).isEqualTo("all_categories")
+            assertThat(it.hasGstin).isTrue()
+            assertThat(it.canUpgrade).isFalse()
+            assertThat(it.bookCategoryIds).containsExactly("00000000-0000-4000-8000-00000000c101")
+        },
+        "seller/seller_sell_scope_upgrade_post_400_gstin_pan_mismatch.json" to served({ upgradeSellScope("27PQRCS6789Z1Z0") }) {
+            val error = it.error() as CommerceError.Unexpected
+            assertThat(error.code).isEqualTo("GSTIN_PAN_MISMATCH")
+            assertThat(error.httpStatus).isEqualTo(400)
+        },
+        "seller/seller_sell_scope_upgrade_post_409_not_books_only.json" to served({ upgradeSellScope("29AAACM1234A1Z4") }) {
+            val error = it.error() as CommerceError.Unexpected
+            assertThat(error.code).isEqualTo("SELL_SCOPE_NOT_BOOKS_ONLY")
+            assertThat(error.httpStatus).isEqualTo(409)
         },
         "seller/onboarding_submit_409_incomplete.json" to served({ submitSellerApplication() }) {
             val error = it.error() as CommerceError.Unexpected
             assertThat(error.code).isEqualTo("APPLICATION_INCOMPLETE")
             assertThat(error.httpStatus).isEqualTo(409)
+            // Migration 045: an all-categories application now needs a GSTIN, named first.
+            assertThat(error.message).startsWith("the seller application is incomplete: gstin,")
         },
         "seller/seller_products_200.json" to served({ sellerProducts() }) {
             val products = it.value<List<SellerProduct>>()
@@ -532,6 +623,8 @@ class CommerceContractFixtureTest {
         paymentMethod = "upi",
         expectedTotal = Paise(134_800),
     )
+
+    private fun booksChoice() = SellScopeChoice(SellScope.BOOKS_ONLY, pan = "ABCPE1234X", businessName = "Asha Books")
 
     private fun newProduct() = NewProduct(
         title = "Momentum Power Bank 10000",

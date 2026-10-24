@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "SELL_SCOPE_NOT_BOOKS_ONLY",
+    "message": "commerce: only a books-only shop can be upgraded to all categories"
+  },
+  "meta": {}
+}
+

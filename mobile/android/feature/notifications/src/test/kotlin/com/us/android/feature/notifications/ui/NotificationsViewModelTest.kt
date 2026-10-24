@@ -135,17 +135,6 @@ class NotificationsViewModelTest {
         override suspend fun declineFollowRequest(requesterId: String) =
             result.also { calls += "declineFollow($requesterId)" }
 
-        var pendingConnections: AppResult<Set<String>> = AppResult.Success(emptySet())
-        var connectionLookups = 0
-
-        override suspend fun pendingConnectionSenders(): AppResult<Set<String>> =
-            pendingConnections.also { connectionLookups++ }
-
-        override suspend fun acceptConnectionRequest(senderId: String) =
-            result.also { calls += "acceptConnection($senderId)" }
-
-        override suspend fun declineConnectionRequest(senderId: String) =
-            result.also { calls += "declineConnection($senderId)" }
 
         var deleteResult: AppResult<Unit> = AppResult.Success(Unit)
 
@@ -605,78 +594,28 @@ class NotificationsViewModelTest {
         assertThat(vm.state.value.rowActions["n1"]).isEqualTo(RowActionState.Failed)
     }
 
-    // ── Connection requests (2026-10-24) ─────────────────────────────────
-
-    private fun connectionPage() = AppResult.Success(
-        NotificationPage(
-            listOf(row("n1", kind = NotificationKind.ConnectionRequest, entityType = "user", entityId = "actor")),
-            null,
-        ),
-    )
+    // ── Old connection requests (Connect is gone, founder 24 Oct 2026) ───
 
     @Test
-    fun `a page with a connection request asks which senders still wait`() = runTest {
-        val repo = FakeRepository().apply { pages.add(connectionPage()) }
-        val actions = FakeActions().apply { pendingConnections = AppResult.Success(setOf("actor")) }
-        val vm = viewModel(repo, actions = actions)
-        advanceUntilIdle()
-
-        assertThat(actions.connectionLookups).isEqualTo(1)
-        assertThat(vm.state.value.pendingConnectionIds).containsExactly("actor")
-    }
-
-    @Test
-    fun `a page without one never asks`() = runTest {
-        val repo = FakeRepository().apply { pages.add(inboxPage("n1")) }
-        val actions = FakeActions()
-        viewModel(repo, actions = actions)
-        advanceUntilIdle()
-
-        assertThat(actions.connectionLookups).isEqualTo(0)
-    }
-
-    @Test
-    fun `accepting a connection request names the sender and stops offering it`() = runTest {
-        val repo = FakeRepository().apply { pages.add(connectionPage()) }
-        val actions = FakeActions().apply { pendingConnections = AppResult.Success(setOf("actor")) }
-        val vm = viewModel(repo, actions = actions)
-        advanceUntilIdle()
-
-        vm.acceptConnectionRequest(vm.state.value.items.single())
-        advanceUntilIdle()
-
-        assertThat(actions.calls).containsExactly("acceptConnection(actor)")
-        assertThat(vm.state.value.rowActions["n1"]).isEqualTo(RowActionState.Accepted)
-        assertThat(vm.state.value.pendingConnectionIds).isEmpty()
-        assertThat(repo.markedRead).containsExactly(NotificationAddress(202608, "ts-n1"))
-    }
-
-    @Test
-    fun `a refused decline keeps the request pending`() = runTest {
-        val repo = FakeRepository().apply { pages.add(connectionPage()) }
-        val actions = FakeActions().apply {
-            pendingConnections = AppResult.Success(setOf("actor"))
-            result = failure()
+    fun `an old connection-request row offers nothing to press and reads nothing`() = runTest {
+        val repo = FakeRepository().apply {
+            pages.add(
+                AppResult.Success(
+                    NotificationPage(
+                        listOf(row("n1", kind = NotificationKind.ConnectionRequest, entityType = "user", entityId = "actor")),
+                        null,
+                    ),
+                ),
+            )
         }
+        val actions = FakeActions()
         val vm = viewModel(repo, actions = actions)
         advanceUntilIdle()
 
-        vm.declineConnectionRequest(vm.state.value.items.single())
-        advanceUntilIdle()
-
-        assertThat(actions.calls).containsExactly("declineConnection(actor)")
-        assertThat(vm.state.value.rowActions["n1"]).isEqualTo(RowActionState.Failed)
-        assertThat(vm.state.value.pendingConnectionIds).containsExactly("actor")
-    }
-
-    @Test
-    fun `answering a follow request leaves the connection set alone`() = runTest {
-        val state = NotificationsUiState(pendingConnectionIds = setOf("actor"))
-        val followRow = row("n1", kind = NotificationKind.FollowRequest)
-
-        val after = NotificationsReducer.onActionDone(state, followRow, RowActionState.Accepted)
-
-        assertThat(after.pendingConnectionIds).containsExactly("actor")
+        assertThat(vm.state.value.items).hasSize(1)
+        assertThat(actions.calls).isEmpty()
+        assertThat(inlineActionsFor(NotificationKind.ConnectionRequest)).isNull()
+        assertThat(NotificationsViewModel::class.java.methods.map { it.name }.filter { it.contains("Connection") }).isEmpty()
     }
 
     // ── Delete one (2026-10-24) ──────────────────────────────────────────

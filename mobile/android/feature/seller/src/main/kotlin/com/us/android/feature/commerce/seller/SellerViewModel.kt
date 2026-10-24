@@ -2,11 +2,16 @@ package com.us.android.feature.commerce.seller
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.us.android.core.commerce.model.SellScope
+import com.us.android.core.commerce.model.SellScopeView
 import com.us.android.core.commerce.model.SellerAddress
+import com.us.android.core.commerce.model.SellerAddressKind
 import com.us.android.core.commerce.model.SellerProduct
 import com.us.android.core.commerce.model.SellerProfile
 import com.us.android.core.commerce.model.SellerStatus
 import com.us.android.core.commerce.model.Variant
+import com.us.android.core.commerce.model.gstinProblem
+import com.us.android.core.commerce.model.normaliseTaxId
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.commerce.repository.CommerceResult
 import com.us.android.feature.commerce.ui.describe
@@ -43,6 +48,12 @@ sealed interface SellerUiState {
         val submittingProductId: String? = null,
         /** The server's refusal of the last submit, shown under that listing's row. */
         val submitProblem: SubmitProblem? = null,
+        /**
+         * A books-only shop's scope (migration 045), read only when the profile
+         * says books only; null otherwise. Drives "Sell more categories".
+         */
+        val sellScope: SellScopeView? = null,
+        val upgrade: UpgradeForm = UpgradeForm(),
     ) : SellerUiState
 
     /**
@@ -56,6 +67,24 @@ sealed interface SellerUiState {
 
     data class Failed(val message: String, val retryable: Boolean) : SellerUiState
 }
+
+/**
+ * "Sell more categories": a books-only shop adds a GSTIN registered to its
+ * PAN (`POST /seller/sell-scope/upgrade`). The local check shows only after
+ * a first try.
+ */
+data class UpgradeForm(
+    val open: Boolean = false,
+    val gstin: String = "",
+    val attempted: Boolean = false,
+    val saving: Boolean = false,
+    val serverError: String? = null,
+) {
+    val error: String? get() = serverError ?: if (attempted) gstinProblem(gstin) else null
+}
+
+/** Whether the hub offers "Sell more categories": a books-only shop the server says may upgrade. */
+fun offersUpgrade(view: SellScopeView?): Boolean = view != null && view.booksOnly && view.canUpgrade
 
 /** A product with several variants, and the variants to choose from. */
 data class VariantChooser(
@@ -83,6 +112,8 @@ fun variantTarget(variants: List<Variant>): VariantTarget = when (variants.size)
 
 /** The one line for a product whose variants could not be found. */
 const val NO_VARIANT_TO_EDIT = "This product has no variant to edit yet."
+
+private const val GSTIN_LENGTH = 15
 
 /** The one line after a listing was sent for review. */
 const val SUBMITTED_FOR_REVIEW = "Sent for review. It goes on sale once it's approved."
@@ -215,6 +246,46 @@ class SellerViewModel @Inject constructor(
         _state.value = current.copy(submitProblem = null)
     }
 
+    fun openUpgrade() = editUpgrade { it.copy(open = true) }
+
+    fun cancelUpgrade() = editUpgrade { UpgradeForm() }
+
+    fun setUpgradeGstin(raw: String) =
+        editUpgrade { it.copy(gstin = normaliseTaxId(raw).take(GSTIN_LENGTH), serverError = null) }
+
+    /** Adds the GSTIN; on success the shop sells in every category and the panel goes. */
+    fun upgrade() {
+        val current = _state.value as? SellerUiState.Content ?: return
+        val form = current.upgrade
+        if (form.saving) return
+        if (gstinProblem(form.gstin) != null) {
+            _state.value = current.copy(upgrade = form.copy(attempted = true))
+            return
+        }
+        _state.value = current.copy(upgrade = form.copy(attempted = true, saving = true, serverError = null))
+        viewModelScope.launch {
+            val result = repo.upgradeSellScope(form.gstin)
+            val latest = _state.value as? SellerUiState.Content ?: return@launch
+            _state.value = when (result) {
+                is CommerceResult.Failure -> latest.copy(
+                    upgrade = latest.upgrade.copy(saving = false, serverError = sellScopeRefusal(result.error).message),
+                )
+
+                is CommerceResult.Success -> latest.copy(
+                    profile = latest.profile.copy(sellScope = result.value.scope),
+                    sellScope = result.value,
+                    upgrade = UpgradeForm(),
+                    message = UPGRADE_DONE_COPY,
+                )
+            }
+        }
+    }
+
+    private fun editUpgrade(transform: (UpgradeForm) -> UpgradeForm) {
+        val current = _state.value as? SellerUiState.Content ?: return
+        _state.value = current.copy(upgrade = transform(current.upgrade))
+    }
+
     private suspend fun load() {
         when (val profile = repo.sellerProfile()) {
             is CommerceResult.Failure -> {
@@ -242,7 +313,14 @@ class SellerViewModel @Inject constructor(
                     is CommerceResult.Success -> p.value
                     is CommerceResult.Failure -> emptyList()
                 }
-                _state.value = SellerUiState.Content(profile.value, products)
+                // Only a books-only shop has a scope to show (migration 045);
+                // a read that fails hides the upgrade rather than the hub.
+                val scope = if (profile.value.sellScope == SellScope.BOOKS_ONLY) {
+                    (repo.sellScope() as? CommerceResult.Success)?.value
+                } else {
+                    null
+                }
+                _state.value = SellerUiState.Content(profile.value, products, sellScope = scope)
             }
         }
     }
@@ -408,13 +486,17 @@ class PickupAddressViewModel @Inject constructor(
         _form.value = transform(_form.value).copy(error = null, saved = false)
     }
 
-    fun save(onSaved: () -> Unit) {
+    /**
+     * Saves the form as the [kind] of address: the pickup point, or the
+     * business address a books-only seller gives (migration 045).
+     */
+    fun save(kind: SellerAddressKind = SellerAddressKind.PICKUP, onSaved: () -> Unit) {
         val form = _form.value
         if (!form.isComplete || form.saving) return
 
         _form.value = form.copy(saving = true, error = null)
         viewModelScope.launch {
-            when (val r = repo.saveSellerAddress(form.toAddress())) {
+            when (val r = repo.saveSellerAddress(form.toAddress(), kind)) {
                 is CommerceResult.Failure ->
                     _form.value = form.copy(saving = false, error = r.error.describe())
 

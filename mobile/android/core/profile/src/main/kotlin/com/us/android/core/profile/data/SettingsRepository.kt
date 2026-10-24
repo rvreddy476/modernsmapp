@@ -129,7 +129,6 @@ class ProfileDetailsRepository @Inject constructor(
 
 private fun PrivacySettingsDto.toDomain() = PrivacySettings(
     whoCanMessage,
-    whoCanSendConnectionRequest,
     whoCanCall,
     whoCanAddToGroups,
     whoCanSeeOnlineStatus,
@@ -163,7 +162,6 @@ private fun PrivacySettingsDto.toDomain() = PrivacySettings(
 
 private fun PrivacySettings.toRequest() = UpdatePrivacySettingsRequest(
     whoCanMessage,
-    whoCanSendConnectionRequest,
     whoCanCall,
     whoCanAddToGroups,
     whoCanSeeOnlineStatus,

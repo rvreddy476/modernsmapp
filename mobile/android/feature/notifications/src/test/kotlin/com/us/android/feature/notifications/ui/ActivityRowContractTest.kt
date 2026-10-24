@@ -88,7 +88,8 @@ class ActivityRowContractTest {
     @Test
     fun `the social types the parse table already knew keep their own sentences`() {
         assertThat(row("dm").describe()).isEqualTo("Asha sent you a message")
-        assertThat(row("friend_request").describe()).isEqualTo("Asha sent you a connection request")
+        // Connect is gone (24 Oct 2026): an old request row says so, the web's words.
+        assertThat(row("friend_request").describe()).isEqualTo("Connections have ended. Follow or message them instead.")
         assertThat(row("friend_accepted").describe()).isEqualTo("Asha accepted your connection request")
         assertThat(row("comment_reaction").describe()).isEqualTo("Asha reacted to your comment")
     }

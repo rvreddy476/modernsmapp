@@ -3,7 +3,6 @@ package com.us.android.feature.profile.ui
 import androidx.lifecycle.SavedStateHandle
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.auth.SessionStateProvider
-import com.us.android.core.model.ConnectionStatus
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.SessionState
 import com.us.android.core.network.ApiEnvelope
@@ -145,12 +144,12 @@ class ProfileViewModelTest {
         userId: String? = "other-user",
         counts: FakeCountsApi = FakeCountsApi(),
         postCounts: FakePostCountsApi = FakePostCountsApi(),
-        connections: FakeConnections = FakeConnections(),
+        mutes: FakeMutes = FakeMutes(),
     ) = ProfileViewModel(
         repository = ProfileRepository(api, ErrorMapper(json)),
         graphCounts = GraphCountsRepository(counts, ErrorMapper(json)),
         postCounts = AuthorPostCountsRepository(postCounts, ErrorMapper(json)),
-        connections = connections,
+        mutes = mutes,
         sessionStateProvider = FakeSessionProvider(),
         savedStateHandle = SavedStateHandle(
             if (userId == null) emptyMap() else mapOf("userId" to userId),
@@ -663,149 +662,49 @@ class ProfileViewModelTest {
         assertThat(content.relationship.isBlocked).isTrue()
     }
 
-    // ── Connections and mute (2026-10-24) ────────────────────────────────
+    // ── Mute; Connect is gone (founder, 24 Oct 2026) ─────────────────────
 
-    private fun FakeApi.answering(connection: String, muted: Boolean = false) = apply {
-        relationship = ApiEnvelope(RelationshipDto(connectionStatus = connection, isMuted = muted))
+    private fun FakeApi.answering(muted: Boolean = false) = apply {
+        relationship = ApiEnvelope(RelationshipDto(isMuted = muted))
     }
 
     private fun content(vm: ProfileViewModel) = vm.state.value as ProfileUiState.Content
 
     @Test
-    fun `a request to the viewer is accepted with the sender's id and settles on connected`() = runTest {
-        val connections = FakeConnections()
-        val vm = viewModel(FakeApi().answering("pending_received"), connections = connections)
-
-        vm.onAcceptConnection()
-
-        assertThat(connections.calls).containsExactly("accept(u)")
-        assertThat(content(vm).relationship.connectionStatus).isEqualTo(ConnectionStatus.CONNECTED)
-        assertThat(content(vm).connectionBusy).isFalse()
-    }
-
-    @Test
-    fun `declining a request settles on no connection`() = runTest {
-        val connections = FakeConnections()
-        val vm = viewModel(FakeApi().answering("pending_received"), connections = connections)
-
-        vm.onDeclineConnection()
-
-        assertThat(connections.calls).containsExactly("decline(u)")
-        assertThat(content(vm).relationship.connectionStatus).isEqualTo(ConnectionStatus.NONE)
-    }
-
-    @Test
-    fun `a refused accept keeps the request and says why`() = runTest {
-        val connections = FakeConnections().apply { writeResult = FakeConnections.FAILURE }
-        val vm = viewModel(FakeApi().answering("pending_received"), connections = connections)
-
-        vm.onAcceptConnection()
-
-        assertThat(content(vm).relationship.connectionStatus).isEqualTo(ConnectionStatus.PENDING_RECEIVED)
-        assertThat(content(vm).actionError).isNotNull()
-        assertThat(content(vm).connectionBusy).isFalse()
-    }
-
-    @Test
-    fun `accept does nothing when no request is pending`() = runTest {
-        val connections = FakeConnections()
-        val vm = viewModel(FakeApi().answering("none"), connections = connections)
-
-        vm.onAcceptConnection()
-        vm.onDeclineConnection()
-
-        assertThat(connections.calls).isEmpty()
-    }
-
-    @Test
-    fun `tapping a sent request withdraws it`() = runTest {
-        val connections = FakeConnections()
-        val vm = viewModel(FakeApi().answering("pending_sent"), connections = connections)
-
-        vm.onConnectionTap()
-
-        assertThat(connections.calls).containsExactly("cancel(u)")
-        assertThat(content(vm).relationship.connectionStatus).isEqualTo(ConnectionStatus.NONE)
-    }
-
-    @Test
-    fun `tapping Connected asks first, and only the confirmation removes it`() = runTest {
-        val connections = FakeConnections()
-        val vm = viewModel(FakeApi().answering("accepted"), connections = connections)
-
-        vm.onConnectionTap()
-
-        assertThat(connections.calls).isEmpty()
-        assertThat(content(vm).showRemoveConnectionConfirm).isTrue()
-
-        vm.onConfirmRemoveConnection()
-
-        assertThat(connections.calls).containsExactly("remove(u)")
-        assertThat(content(vm).showRemoveConnectionConfirm).isFalse()
-        assertThat(content(vm).relationship.connectionStatus).isEqualTo(ConnectionStatus.NONE)
-    }
-
-    @Test
-    fun `dismissing the remove confirmation keeps the connection`() = runTest {
-        val connections = FakeConnections()
-        val vm = viewModel(FakeApi().answering("accepted"), connections = connections)
-
-        vm.onConnectionTap()
-        vm.onDismissRemoveConnection()
-
-        assertThat(connections.calls).isEmpty()
-        assertThat(content(vm).relationship.connectionStatus).isEqualTo(ConnectionStatus.CONNECTED)
-    }
-
-    @Test
-    fun `with no connection, a tap sends nothing while Connect is not offered`() = runTest {
-        val connections = FakeConnections()
-        val vm = viewModel(FakeApi().answering("none"), connections = connections)
-
-        vm.onConnectionTap()
-
-        assertThat(connections.calls).isEmpty()
-    }
-
-    @Test
-    fun `with Connect offered, a tap sends the request and settles on sent`() = runTest {
-        val connections = FakeConnections()
-        val vm = viewModel(FakeApi().answering("none"), connections = connections)
-        vm.connectOffered = true
-
-        vm.onConnectionTap()
-
-        assertThat(connections.calls).containsExactly("send(u)")
-        assertThat(content(vm).relationship.connectionStatus).isEqualTo(ConnectionStatus.PENDING_SENT)
+    fun `the profile has no Connect, Accept, Decline or Connected control left`() {
+        val vmMethods = ProfileViewModel::class.java.methods.map { it.name }
+        assertThat(vmMethods.filter { it.contains("connect", ignoreCase = true) }).isEmpty()
+        val stateFields = ProfileUiState.Content::class.java.declaredFields.map { it.name }
+        assertThat(stateFields.filter { it.contains("connection", ignoreCase = true) }).isEmpty()
     }
 
     @Test
     fun `mute names the account, flips to muted and says so`() = runTest {
-        val connections = FakeConnections()
-        val vm = viewModel(FakeApi().answering("none"), connections = connections)
+        val mutes = FakeMutes()
+        val vm = viewModel(FakeApi().answering(), mutes = mutes)
 
         vm.onMuteToggle()
 
-        assertThat(connections.calls).containsExactly("mute(u)")
+        assertThat(mutes.calls).containsExactly("mute(u)")
         assertThat(content(vm).relationship.isMuted).isTrue()
         assertThat(content(vm).notice).startsWith("Muted")
     }
 
     @Test
     fun `a muted account is unmuted`() = runTest {
-        val connections = FakeConnections()
-        val vm = viewModel(FakeApi().answering("none", muted = true), connections = connections)
+        val mutes = FakeMutes()
+        val vm = viewModel(FakeApi().answering(muted = true), mutes = mutes)
 
         vm.onMuteToggle()
 
-        assertThat(connections.calls).containsExactly("unmute(u)")
+        assertThat(mutes.calls).containsExactly("unmute(u)")
         assertThat(content(vm).relationship.isMuted).isFalse()
     }
 
     @Test
     fun `a refused mute leaves the account unmuted`() = runTest {
-        val connections = FakeConnections().apply { writeResult = FakeConnections.FAILURE }
-        val vm = viewModel(FakeApi().answering("none"), connections = connections)
+        val mutes = FakeMutes().apply { writeResult = FakeMutes.FAILURE }
+        val vm = viewModel(FakeApi().answering(), mutes = mutes)
 
         vm.onMuteToggle()
 
@@ -815,13 +714,12 @@ class ProfileViewModelTest {
     }
 
     @Test
-    fun `the viewer's own profile never mutes or connects`() = runTest {
-        val connections = FakeConnections()
-        val vm = viewModel(FakeApi(), userId = null, connections = connections)
+    fun `the viewer's own profile never mutes`() = runTest {
+        val mutes = FakeMutes()
+        val vm = viewModel(FakeApi(), userId = null, mutes = mutes)
 
         vm.onMuteToggle()
-        vm.onConnectionTap()
 
-        assertThat(connections.calls).isEmpty()
+        assertThat(mutes.calls).isEmpty()
     }
 }

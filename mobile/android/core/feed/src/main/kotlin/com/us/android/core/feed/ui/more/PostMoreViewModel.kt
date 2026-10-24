@@ -27,7 +27,7 @@ import com.us.android.core.feed.offline.OfflineState
 import com.us.android.core.feed.offline.SAVES_ON_WIFI
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
-import com.us.android.core.profile.data.ConnectionsSource
+import com.us.android.core.profile.data.MuteSource
 import com.us.android.core.profile.data.ProfileRepository
 import com.us.android.core.ui.UsPostDeleteState
 import com.us.android.core.ui.UsPostDontRecommendState
@@ -82,7 +82,7 @@ class PostMoreViewModel @Inject constructor(
     /** The owner's Pin to profile on a feed post (2026-10-24). */
     private val pinning: PostPinRepository,
     /** Mute the author of someone else's post (2026-10-24, graph `POST /v1/graph/mute`). */
-    private val graph: ConnectionsSource,
+    private val graph: MuteSource,
 ) : ViewModel() {
 
     /** Where each video's offline copy stands on this device; the sheet's offline row is drawn from it. */

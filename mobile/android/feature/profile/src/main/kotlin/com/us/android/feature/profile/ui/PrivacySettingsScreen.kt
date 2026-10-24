@@ -24,7 +24,6 @@ import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
-import com.us.android.core.profile.data.CONNECTION_REQUESTS_NO_ONE
 import com.us.android.core.profile.data.PrivacySettings
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
@@ -225,16 +224,6 @@ private fun InteractionsSection(
                 modifier = Modifier.testTag("privacy_who_can_tag"),
             )
         }
-        // Connections (2026-10-24, the web's Social preferences): the switch
-        // graph-service enforces on POST /v1/graph/connection-request.
-        UsSettingsSwitchRow(
-            title = "Allow connection requests",
-            checked = value.whoCanSendConnectionRequest != CONNECTION_REQUESTS_NO_ONE,
-            onCheckedChange = viewModel::setAllowConnectionRequests,
-            description = "Who can send you connection requests: off means no one can",
-            enabled = !saving,
-            modifier = Modifier.testTag("privacy_connection_requests"),
-        )
         // DM consent: the ONE Messages settings screen (the master switch and
         // who can message you). Nothing here edits either.
         UsSettingsLinkRow(

@@ -14,6 +14,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.commerce.model.SellerAddressKind
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsTextField
@@ -38,11 +39,13 @@ import com.us.android.feature.commerce.ui.MSellerPageBar
 fun PickupAddressScreen(
     onBack: () -> Unit,
     onSaved: () -> Unit,
+    /** The pickup point, or a books-only seller's business address (migration 045): the same form. */
+    kind: SellerAddressKind = SellerAddressKind.PICKUP,
     viewModel: PickupAddressViewModel = hiltViewModel(),
 ) {
     val form by viewModel.form.collectAsStateWithLifecycle()
 
-    UsScaffold(topBar = { MSellerPageBar(title = "Pickup address", onBack = onBack) }) { padding ->
+    UsScaffold(topBar = { MSellerPageBar(title = kind.title, onBack = onBack) }) { padding ->
         Column(
             modifier = Modifier
                 .padding(padding)
@@ -51,7 +54,7 @@ fun PickupAddressScreen(
             verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
         ) {
             Text(
-                text = "Where couriers collect your orders.",
+                text = kind.explainer,
                 style = MaterialTheme.typography.bodyMedium,
                 color = UsTheme.extended.textSecondary,
             )
@@ -59,7 +62,7 @@ fun PickupAddressScreen(
             AddressFields(form = form, onChange = viewModel::update)
 
             if (form.saved) {
-                CommerceNotice(text = "Saved. New shipments will be collected from here.")
+                CommerceNotice(text = kind.savedCopy)
             }
 
             form.error?.let { error ->
@@ -72,7 +75,7 @@ fun PickupAddressScreen(
 
             UsButton(
                 text = "Save",
-                onClick = { viewModel.save(onSaved) },
+                onClick = { viewModel.save(kind, onSaved) },
                 enabled = form.isComplete && !form.saving,
                 loading = form.saving,
                 modifier = Modifier.fillMaxWidth(),
@@ -138,5 +141,25 @@ private fun AddressFields(
         enabled = !form.saving,
     )
 }
+
+// What each kind of address is called and is for.
+private val SellerAddressKind.title: String
+    get() = when (this) {
+        SellerAddressKind.PICKUP -> "Pickup address"
+        SellerAddressKind.BUSINESS -> "Business address"
+    }
+
+private val SellerAddressKind.explainer: String
+    get() = when (this) {
+        SellerAddressKind.PICKUP -> "Where couriers collect your orders."
+        SellerAddressKind.BUSINESS ->
+            "Where your business is registered. It must match your proof of address; couriers do not collect from it."
+    }
+
+private val SellerAddressKind.savedCopy: String
+    get() = when (this) {
+        SellerAddressKind.PICKUP -> "Saved. New shipments will be collected from here."
+        SellerAddressKind.BUSINESS -> "Saved. A reviewer checks it against your proof of address."
+    }
 
 private const val PIN_DIGITS = 6

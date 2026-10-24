@@ -20,6 +20,7 @@ import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.profile.data.NotificationCategory
+import com.us.android.core.profile.data.openCategories
 import com.us.android.core.profile.data.NotificationSettings
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
@@ -169,7 +170,8 @@ private fun InteractionsSection(
 ) {
     UsSettingsSection("Interactions") {
         UsSettingsDualSwitchHeader()
-        NotificationCategory.primaries.forEach { category ->
+        val open by vm.openProducts.collectAsStateWithLifecycle()
+        openCategories(NotificationCategory.primaries, open).forEach { category ->
             CategoryRow(category, value, state.saving, vm)
         }
     }
@@ -189,7 +191,8 @@ private fun MoreSection(
         )
         if (state.moreExpanded) {
             UsSettingsDualSwitchHeader()
-            NotificationCategory.secondaries.forEach { category ->
+            val open by vm.openProducts.collectAsStateWithLifecycle()
+            openCategories(NotificationCategory.secondaries, open).forEach { category ->
                 CategoryRow(category, value, state.saving, vm)
             }
         }

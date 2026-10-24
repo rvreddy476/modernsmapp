@@ -26,7 +26,6 @@ class SettingsRequestEncodingTest {
         val encoded = json.encodeToString(
             UpdatePrivacySettingsRequest(
                 whoCanMessage = "no_one",
-                whoCanSendConnectionRequest = "no_one",
                 whoCanCall = "no_one",
                 whoCanAddToGroups = "no_one",
                 whoCanSeeOnlineStatus = "no_one",
@@ -53,6 +52,8 @@ class SettingsRequestEncodingTest {
         val body = json.parseToJsonElement(encoded).jsonObject
 
         assertThat(body.keys).containsExactlyElementsIn(PRIVACY_KEYS)
+        // Connect is gone (24 Oct 2026): the PUT never carries the retired audience.
+        assertThat(body.keys).doesNotContain("who_can_send_connection_request")
         assertThat(encoded).contains("\"allow_phone_discovery\":false")
         assertThat(encoded).contains("\"auto_filter_abusive_content\":false")
         assertThat(encoded).contains("\"tc_audio_room_invite\":false")
@@ -65,7 +66,6 @@ class SettingsRequestEncodingTest {
         // user-service internal/http/handler.go:243-245 (the PUT keys) and :334-339 (applied only when present).
         val base = UpdatePrivacySettingsRequest(
             whoCanMessage = "people_i_follow",
-            whoCanSendConnectionRequest = "everyone",
             whoCanCall = "no_one",
             whoCanAddToGroups = "no_one",
             whoCanSeeOnlineStatus = "no_one",
@@ -163,7 +163,7 @@ class SettingsRequestEncodingTest {
 
     private companion object {
         val PRIVACY_KEYS = setOf(
-            "who_can_message", "who_can_send_connection_request", "who_can_call",
+            "who_can_message", "who_can_call",
             "who_can_add_to_groups", "who_can_see_online_status",
             "who_can_see_read_receipts", "who_can_see_last_seen",
             "who_can_see_profile_photo", "allow_phone_discovery",
@@ -175,7 +175,7 @@ class SettingsRequestEncodingTest {
         )
         val CATEGORY_KEYS = listOf(
             "likes", "comments", "follows", "mentions", "reposts", "live", "new_videos", "messages",
-            "super_likes", "replies", "friend_requests", "group_posts", "group_mentions",
+            "super_likes", "replies", "group_posts", "group_mentions",
             "channel_updates", "channel_urgent", "community_posts", "community_mentions",
             "event_reminders", "credits", "memberships", "system",
         )

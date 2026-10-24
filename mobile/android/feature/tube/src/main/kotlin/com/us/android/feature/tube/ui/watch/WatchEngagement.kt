@@ -5,6 +5,7 @@ import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageType
 import com.us.android.core.engagement.data.EngagementAction
 import com.us.android.core.engagement.data.EngagementStore
+import com.us.android.core.engagement.data.postActionRefusalText
 import com.us.android.core.engagement.data.reactedOr
 import com.us.android.core.feed.data.VideoLibraryRepository
 import com.us.android.core.feed.data.VideoLibraryState
@@ -119,7 +120,7 @@ class WatchEngagement @Inject constructor(
      */
     private fun refusedEngagement(postId: String, action: EngagementAction, text: String) {
         val failure = engagement.failures.value.firstOrNull { it.postId == postId && it.action == action } ?: return
-        say(VideoLibraryRepository.errorMessage(failure.error, text))
+        say(postActionRefusalText(failure.error) ?: VideoLibraryRepository.errorMessage(failure.error, text))
         engagement.clearFailure(postId, action)
     }
 

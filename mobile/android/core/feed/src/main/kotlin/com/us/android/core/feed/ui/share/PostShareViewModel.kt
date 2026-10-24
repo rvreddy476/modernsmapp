@@ -15,7 +15,9 @@ import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.QUOTE_TEXT_MAX
 import com.us.android.core.engagement.data.QuoteReposts
+import com.us.android.core.engagement.data.REPOST_NOT_ALLOWED
 import com.us.android.core.engagement.data.RepostReads
+import com.us.android.core.engagement.data.postActionRefusalText
 import com.us.android.core.engagement.data.repostedOr
 import com.us.android.core.model.SessionState
 import com.us.android.core.ui.UsPostShareState
@@ -62,6 +64,11 @@ data class PostShareModel(
     val quoteText: String = "",
     val quoteBusy: Boolean = false,
     val quoteError: String? = null,
+    /**
+     * The post may be reposted and quoted (founder, 24 Oct 2026): false for a
+     * reel, whose Repost and Quote rows are never offered ([allowsRepost]).
+     */
+    val allowRepost: Boolean = true,
 )
 
 /** At most five chats per share (CONTRACT §9), groups included. */
@@ -78,13 +85,13 @@ fun List<String>.toggledTarget(id: String, cap: Int = MAX_SHARE_TARGETS): List<S
 fun PostShareModel.toUiState(viewerId: String, overlay: EngagementOverlay): UsPostShareState = UsPostShareState(
     postId = postId,
     link = postShareLink(postId),
-    repost = when (val server = serverReposted) {
+    repost = when (val server = serverReposted?.takeIf { allowRepost }) {
         null -> UsRepostRow.HIDDEN
         else -> if (overlay.repostedOr(server)) UsRepostRow.REMOVE else UsRepostRow.REPOST
     },
     repostBusy = repostBusy,
     // Quote (2026-10-24): offered while the viewer has not reposted it; a repost is one per post.
-    canQuote = serverReposted != null && !overlay.repostedOr(serverReposted),
+    canQuote = allowRepost && serverReposted != null && !overlay.repostedOr(serverReposted),
     quote = if (!quoting) null else UsQuoteState(text = quoteText, busy = quoteBusy, error = quoteError, max = QUOTE_TEXT_MAX),
     picker = if (!picking) {
         null
@@ -151,10 +158,12 @@ class PostShareViewModel @Inject constructor(
      * read from the server; until it answers the row is withheld, and if it
      * fails the feed's own [feedReposted] stands in.
      */
-    fun open(postId: String, feedReposted: Boolean) {
+    fun open(postId: String, feedReposted: Boolean, allowRepost: Boolean = true) {
         val conversations = _state.value.conversations
-        _state.value = PostShareModel(postId = postId, conversations = conversations)
+        _state.value = PostShareModel(postId = postId, conversations = conversations, allowRepost = allowRepost)
         repostJob?.cancel()
+        // A reel has no Repost row to fill, so its repost state is never asked for.
+        if (!allowRepost) return
         repostJob = viewModelScope.launch {
             val known = (reposts.hasReposted(postId) as? AppResult.Success)?.data ?: feedReposted
             _state.update { if (it.postId == postId) it.copy(serverReposted = known) else it }
@@ -252,6 +261,7 @@ class PostShareViewModel @Inject constructor(
      */
     fun toggleRepost() {
         val current = _state.value
+        if (!current.allowRepost) return
         val server = current.serverReposted ?: return
         if (current.repostBusy) return
         val postId = current.postId
@@ -259,11 +269,14 @@ class PostShareViewModel @Inject constructor(
         _state.update { it.copy(repostBusy = true) }
         viewModelScope.launch {
             engagement.toggleRepost(postId, server)
-            val failed = engagement.failures.value.any { it.postId == postId && it.action == EngagementAction.REPOST }
-            _message.value = if (failed) {
+            val failure = engagement.failures.value.firstOrNull { it.postId == postId && it.action == EngagementAction.REPOST }
+            _message.value = if (failure != null) {
                 // Said here, so no other screen raises a second banner for it.
                 engagement.clearFailure(postId, EngagementAction.REPOST)
-                UsMessage(if (wanted) REPOST_FAILED else UNREPOST_FAILED, UsMessageType.Error)
+                UsMessage(
+                    postActionRefusalText(failure.error) ?: if (wanted) REPOST_FAILED else UNREPOST_FAILED,
+                    UsMessageType.Error,
+                )
             } else {
                 UsMessage(if (wanted) REPOSTED else UNREPOSTED, UsMessageType.Success)
             }
@@ -273,7 +286,7 @@ class PostShareViewModel @Inject constructor(
 
     // ── Quote repost (2026-10-24) ───────────────────────────────────────
 
-    fun openQuote() = _state.update { it.copy(quoting = true, quoteError = null) }
+    fun openQuote() = _state.update { if (!it.allowRepost) it else it.copy(quoting = true, quoteError = null) }
 
     fun closeQuote() = _state.update { it.copy(quoting = false, quoteText = "", quoteError = null) }
 
@@ -363,6 +376,7 @@ fun quoteRefusal(error: AppError): String {
         error is AppError.RateLimited -> "Too many reposts at once. Wait a moment and try again."
         code == "ALREADY_REPOSTED" -> "You already reposted this post."
         code == "NOT_ELIGIBLE" -> "This post can't be reposted."
+        code == REPOST_NOT_ALLOWED -> postActionRefusalText(error) ?: "This post can't be reposted."
         code == "QUOTE_TEXT_REQUIRED" -> "Add your thoughts to quote this post."
         code == "QUOTE_TEXT_TOO_LONG" -> "A quote can be up to 500 characters."
         else -> "Couldn't post your quote. Try again."

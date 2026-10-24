@@ -204,7 +204,7 @@ internal fun ProfileMediaGrid(
             onSelectSort = viewModel::selectSort,
         )
         if (tab.panel) {
-            // About, Connections and Reposts (2026-10-24): a panel, not tiles.
+            // About, People and Reposts (2026-10-24): a panel, not tiles.
             ProfilePanel(
                 tab = tab,
                 userId = viewModel.userId,
@@ -396,7 +396,7 @@ private class TabLists(
         ProfileGridTab.APPEARS_IN -> appearances
         ProfileGridTab.MEMBERS -> members
         // A panel draws no tiles; never asked for (see ProfilePanel).
-        ProfileGridTab.ABOUT, ProfileGridTab.CONNECTIONS, ProfileGridTab.REPOSTS -> posts
+        ProfileGridTab.ABOUT, ProfileGridTab.PEOPLE, ProfileGridTab.REPOSTS -> posts
     }
 }
 
@@ -663,7 +663,7 @@ internal fun tileAspect(tab: ProfileGridTab): Float = when (tab) {
     ProfileGridTab.VIDEOS, ProfileGridTab.APPEARS_IN -> LANDSCAPE
     // Saved and Members mix every kind, so no one shape is right; square is the neutral one.
     ProfileGridTab.SAVED, ProfileGridTab.MEMBERS -> SQUARE
-    ProfileGridTab.ABOUT, ProfileGridTab.CONNECTIONS, ProfileGridTab.REPOSTS -> SQUARE
+    ProfileGridTab.ABOUT, ProfileGridTab.PEOPLE, ProfileGridTab.REPOSTS -> SQUARE
 }
 
 /** One post as a tile: its still (the cover for a video), a film glyph for the video kinds. */

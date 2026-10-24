@@ -7,6 +7,7 @@ import com.us.android.core.profile.data.AppModule
 import com.us.android.core.profile.data.ModulePreferences
 import com.us.android.core.profile.data.ModulePreferencesRepository
 import com.us.android.core.profile.data.ModulePrefsState
+import com.us.android.core.profile.data.ProductFeaturesStore
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -46,7 +47,11 @@ sealed interface OnboardingUiState {
 @HiltViewModel
 class OnboardingViewModel @Inject constructor(
     private val repository: ModulePreferencesRepository,
+    features: ProductFeaturesStore,
 ) : ViewModel() {
+    /** `GET /v1/features` (24 Oct 2026): a closed product's module is not offered. */
+    val openProducts: StateFlow<Set<com.us.android.core.model.Product>?> = features.open
+
     private val _state = MutableStateFlow<OnboardingUiState>(OnboardingUiState.Loading)
     val state: StateFlow<OnboardingUiState> = _state.asStateFlow()
 

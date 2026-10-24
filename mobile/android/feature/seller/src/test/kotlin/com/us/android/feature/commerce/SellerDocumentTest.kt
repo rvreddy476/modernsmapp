@@ -3,6 +3,7 @@ package com.us.android.feature.commerce
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.commerce.model.SellerDocument
 import com.us.android.core.commerce.model.SellerDocumentType
+import com.us.android.core.commerce.model.imageOnly
 import com.us.android.core.commerce.network.SaveDocumentsRequest
 import com.us.android.core.commerce.repository.CommerceError
 import com.us.android.core.commerce.repository.CommerceRepository
@@ -39,6 +40,8 @@ class SellerDocumentTest {
         // strings are asserted here. A value outside
         // `seller_documents_document_type_check` is a 500 from the database,
         // which reaches the seller as a generic failure.
+        // Migration 045 (books-only sellers) added voter_id and the three
+        // image-only address proofs.
         val serverAllowList = setOf(
             "gst_certificate",
             "pan_card",
@@ -47,6 +50,10 @@ class SellerDocumentTest {
             "business_registration",
             "address_proof",
             "cancelled_cheque",
+            "voter_id",
+            "electricity_bill",
+            "telephone_bill",
+            "bank_statement",
             "other",
         )
         for (type in SellerDocumentType.entries) {
@@ -151,10 +158,12 @@ class SellerDocumentTest {
     private val aadhaarShaped = "234567890124"
 
     @Test
-    fun `aadhaar does not ask for a number, every other type does`() {
+    fun `aadhaar and the image-only address proofs do not ask for a number, every other type does`() {
+        // A bill or a bank statement is stored as its upload alone (migration
+        // 045): its "number" would be an account number.
         for (type in SellerDocumentType.entries) {
             val asks = DocumentUploadState(type = type).asksForNumber
-            assertThat(asks).isEqualTo(type != SellerDocumentType.AADHAAR)
+            assertThat(asks).isEqualTo(type != SellerDocumentType.AADHAAR && !type.imageOnly)
         }
     }
 

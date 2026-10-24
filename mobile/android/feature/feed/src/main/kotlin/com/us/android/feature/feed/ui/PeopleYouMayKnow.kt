@@ -39,6 +39,7 @@ import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import com.us.android.core.model.FollowStatus
+import com.us.android.core.model.suggestionButton
 import com.us.android.core.profile.data.FollowListApi
 import com.us.android.core.profile.data.ProfileBatchRequest
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -59,7 +60,7 @@ data class SuggestedPerson(
     val avatarMediaId: String?,
     /** The avatar's resolved address, when the asset is ready; null draws the initial. */
     val avatarUrl: String? = null,
-    /** "3 mutual connections", the engine's own reason, or the handle. */
+    /** "3 mutual friends", the engine's own reason, or the handle. */
     val line: String,
 )
 
@@ -112,7 +113,7 @@ class DefaultPeopleSuggestionsSource @Inject constructor(
                     name = s.displayName.ifBlank { p?.displayName.orEmpty().ifBlank { username } },
                     username = username,
                     avatarMediaId = p?.avatarMediaId?.takeIf { it.isNotBlank() },
-                    line = suggestionLine(s.mutualFriendCount, s.explainText, username),
+                    line = suggestionLine(s.mutualFriendCount, s.explainText, username, s.reasonCodes),
                 )
             }
         // Each picture through `GET /v1/media/{id}/url`, like every other surface; a miss draws the initial.
@@ -147,13 +148,30 @@ class DefaultPeopleSuggestionsSource @Inject constructor(
     }
 }
 
-/** The line under a name: mutual connections first, then the engine's reason, then the handle. Pure. */
-internal fun suggestionLine(mutualCount: Int, explainText: String, username: String): String = when {
-    mutualCount > 0 -> "$mutualCount mutual connection" + if (mutualCount == 1) "" else "s"
+/** suggestion-service's reason code for someone who follows the viewer and is not followed back (25 Oct 2026). */
+internal const val REASON_FOLLOWS_YOU = "FOLLOWS_YOU"
+
+/**
+ * The line under a name (the web's lib/suggestionReason.ts): "Follows you" first
+ * when the engine says so by its reason code (not by explain_text), with
+ * " · N mutual friends" after it when there are any; else the mutual friends,
+ * then the engine's reason, then the handle. Pure.
+ */
+internal fun suggestionLine(
+    mutualCount: Int,
+    explainText: String,
+    username: String,
+    reasonCodes: List<String> = emptyList(),
+): String = when {
+    REASON_FOLLOWS_YOU in reasonCodes ->
+        if (mutualCount > 0) "Follows you · ${mutualFriends(mutualCount)}" else "Follows you"
+    mutualCount > 0 -> mutualFriends(mutualCount)
     explainText.isNotBlank() -> explainText.trim()
     username.isNotBlank() -> "@$username"
     else -> "Suggested for you"
 }
+
+private fun mutualFriends(count: Int): String = "$count mutual friend" + if (count == 1) "" else "s"
 
 @Immutable
 data class PeopleYouMayKnowState(
@@ -210,7 +228,12 @@ class PeopleYouMayKnowViewModel @Inject constructor(
     }
 }
 
-/** The page: a title and up to ten people, each with Follow and a dismiss. Drawn on the dark stage. */
+/**
+ * The page: a title and up to ten people, each with ONE button and a dismiss.
+ * Drawn on the dark stage. The button is [suggestionButton]'s: Follow, or
+ * Following / Requested once followed. No Message, no Connect, no Add friend
+ * (founder, 24 Oct 2026); tapping the row opens the person's profile.
+ */
 @Composable
 internal fun PeopleYouMayKnowPage(
     people: List<SuggestedPerson>,
@@ -268,10 +291,11 @@ internal fun PeopleYouMayKnowPage(
                             overflow = TextOverflow.Ellipsis,
                         )
                     }
-                    when (edges[person.userId]) {
-                        FollowStatus.FOLLOWING -> UsPillButton("Following", filled = false, enabled = false, onClick = {})
-                        FollowStatus.REQUESTED -> UsPillButton("Requested", filled = false, enabled = false, onClick = {})
-                        else -> UsPillButton("Follow", onClick = { onFollow(person.userId) })
+                    val button = suggestionButton(edges[person.userId])
+                    if (button.tappable) {
+                        UsPillButton(button.label, onClick = { onFollow(person.userId) })
+                    } else {
+                        UsPillButton(button.label, filled = false, enabled = false, onClick = {})
                     }
                     IconButton(onClick = { onHide(person.userId) }, modifier = Modifier.size(DISMISS_TARGET)) {
                         Icon(UsIcons.Close, contentDescription = "Not interested in $name", tint = UsTheme.extended.onMediaMuted)

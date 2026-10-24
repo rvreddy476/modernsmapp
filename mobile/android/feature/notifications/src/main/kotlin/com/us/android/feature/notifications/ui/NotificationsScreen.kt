@@ -109,8 +109,6 @@ fun NotificationsScreen(
     onOpenPreferences: () -> Unit,
     /** Opens the profile module's approval queue — the Follow Requests panel. */
     onOpenFollowRequests: () -> Unit = {},
-    /** Opens the profile module's Connections › Requests (2026-10-24): the Connection Requests panel. */
-    onOpenConnectionRequests: () -> Unit = {},
     viewModel: NotificationsViewModel = hiltViewModel(),
     /**
      * The runtime permission prompt — Slice D, D-D2.
@@ -178,8 +176,6 @@ fun NotificationsScreen(
             onBlock = viewModel::blockRequest,
             onAcceptFollow = viewModel::acceptFollowRequest,
             onDeclineFollow = viewModel::declineFollowRequest,
-            onAcceptConnection = viewModel::acceptConnectionRequest,
-            onDeclineConnection = viewModel::declineConnectionRequest,
         )
     }
 
@@ -221,22 +217,6 @@ fun NotificationsScreen(
                         count = followRequests.size,
                         hasUnread = followRequests.any { !it.isRead },
                         onClick = onOpenFollowRequests,
-                    )
-                }
-                // Connection requests (2026-10-24): the same shortcut, to the
-                // Connections screen's Requests tab, while one still waits.
-                val connectionRequests = remember(state.items, state.pendingConnectionIds) {
-                    state.items.filter {
-                        it.kind == NotificationKind.ConnectionRequest && it.actorUserId in state.pendingConnectionIds
-                    }
-                }
-                if (connectionRequests.isNotEmpty()) {
-                    FollowRequestsPanel(
-                        count = state.pendingConnectionIds.size,
-                        hasUnread = connectionRequests.any { !it.isRead },
-                        onClick = onOpenConnectionRequests,
-                        title = "Connection Requests",
-                        subtitle = "Accept or decline who wants to connect",
                     )
                 }
 
@@ -409,8 +389,6 @@ private data class RowCallbacks(
     val onBlock: (Notification) -> Unit,
     val onAcceptFollow: (Notification) -> Unit,
     val onDeclineFollow: (Notification) -> Unit,
-    val onAcceptConnection: (Notification) -> Unit = {},
-    val onDeclineConnection: (Notification) -> Unit = {},
     val onLongPress: (Notification) -> Unit = {},
 )
 
@@ -551,7 +529,6 @@ private fun LazyListScope.notificationRows(
             action = state.rowActions[notification.id],
             requestPending = notification.entityId in state.pendingRequestIds,
             alreadyFollowing = notification.actorUserId in state.followingIds,
-            connectionPending = notification.actorUserId in state.pendingConnectionIds,
             callbacks = callbacks,
         )
     }
@@ -594,7 +571,6 @@ private fun NotificationRow(
     action: RowActionState?,
     requestPending: Boolean,
     alreadyFollowing: Boolean,
-    connectionPending: Boolean = false,
     callbacks: RowCallbacks,
 ) {
     val sentence = notification.describe()
@@ -649,14 +625,10 @@ private fun NotificationRow(
                     contentDescription = if (notification.isRead) sentence else "Unread. $sentence"
                 },
             )
-            if (notification.kind == NotificationKind.MessageRequest) {
-                RequestActions(notification, action, requestPending, callbacks)
-            }
-            if (notification.kind == NotificationKind.ConnectionRequest) {
-                ConnectionRequestActions(notification, action, connectionPending, callbacks)
-            }
-            if (notification.kind == NotificationKind.FollowRequest) {
-                FollowRequestActions(notification, action, callbacks)
+            when (inlineActionsFor(notification.kind)) {
+                RowInlineActions.MessageRequest -> RequestActions(notification, action, requestPending, callbacks)
+                RowInlineActions.FollowRequest -> FollowRequestActions(notification, action, callbacks)
+                RowInlineActions.FollowBack, null -> Unit
             }
             if (action == RowActionState.Failed) {
                 Text(
@@ -666,7 +638,7 @@ private fun NotificationRow(
                 )
             }
         }
-        if (notification.kind == NotificationKind.Follow) {
+        if (inlineActionsFor(notification.kind) == RowInlineActions.FollowBack) {
             FollowAction(notification, action, alreadyFollowing, callbacks.onFollow)
         }
         UnreadDot(notification.isRead)
@@ -739,46 +711,6 @@ private fun FollowRequestActions(
                 busy = busy,
                 onClick = { callbacks.onDeclineFollow(notification) },
             )
-        }
-    }
-}
-
-/**
- * Accept / Decline under a connection request (2026-10-24), only while the
- * graph says it still waits ([pending]) — the message-request rule: a row
- * that cannot learn its state offers nothing rather than a button that fails.
- * Once answered, the outcome.
- */
-@Composable
-private fun ConnectionRequestActions(
-    notification: Notification,
-    action: RowActionState?,
-    pending: Boolean,
-    callbacks: RowCallbacks,
-) {
-    val outcome = when (action) {
-        RowActionState.Accepted -> "Connected"
-        RowActionState.Declined -> "Declined"
-        else -> null
-    }
-    when {
-        outcome != null -> OutcomeLabel(outcome)
-        pending -> {
-            val busy = action == RowActionState.Busy
-            Row(
-                modifier = Modifier
-                    .padding(top = UsTheme.spacing.s)
-                    .testTag("activity_connection_actions"),
-                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
-            ) {
-                UsPillButton("Accept", busy = busy, onClick = { callbacks.onAcceptConnection(notification) })
-                UsPillButton(
-                    "Decline",
-                    filled = false,
-                    busy = busy,
-                    onClick = { callbacks.onDeclineConnection(notification) },
-                )
-            }
         }
     }
 }
@@ -912,7 +844,8 @@ internal fun Notification.describe(): String {
         NotificationKind.Follow -> "$who started following you"
         NotificationKind.Mention -> "$who mentioned you in a post"
         NotificationKind.Repost -> "$who reposted your post"
-        NotificationKind.ConnectionRequest -> "$who sent you a connection request"
+        // Connect is gone (founder, 24 Oct 2026): an old request cannot be answered, so the row says what to do instead.
+        NotificationKind.ConnectionRequest -> CONNECTIONS_ENDED
         NotificationKind.ConnectionAccepted -> "$who accepted your connection request"
         NotificationKind.NewSubscriber -> "$who subscribed to you"
         NotificationKind.MessageRequest -> "$who sent you a message request"

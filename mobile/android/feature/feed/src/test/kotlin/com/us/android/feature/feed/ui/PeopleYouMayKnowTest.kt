@@ -53,12 +53,24 @@ class PeopleYouMayKnowTest {
     }
 
     @Test
-    fun `the line under a name prefers mutual connections, then the reason, then the handle`() {
-        assertThat(suggestionLine(1, "x", "ana")).isEqualTo("1 mutual connection")
-        assertThat(suggestionLine(3, "x", "ana")).isEqualTo("3 mutual connections")
+    fun `the line under a name prefers mutual friends, then the reason, then the handle`() {
+        assertThat(suggestionLine(1, "x", "ana")).isEqualTo("1 mutual friend")
+        assertThat(suggestionLine(3, "x", "ana")).isEqualTo("3 mutual friends")
         assertThat(suggestionLine(0, " Follows you ", "ana")).isEqualTo("Follows you")
         assertThat(suggestionLine(0, "", "ana")).isEqualTo("@ana")
         assertThat(suggestionLine(0, "", "")).isEqualTo("Suggested for you")
+    }
+
+    @Test
+    fun `a person who follows the viewer reads Follows you first, by the reason code`() {
+        val follows = listOf("FOLLOWS_YOU")
+        assertThat(suggestionLine(0, "", "ana", follows)).isEqualTo("Follows you")
+        assertThat(suggestionLine(1, "", "ana", follows)).isEqualTo("Follows you · 1 mutual friend")
+        assertThat(suggestionLine(3, "Follows you · 3 mutual friends", "ana", follows)).isEqualTo("Follows you · 3 mutual friends")
+        // The label comes from the code, not the text: other words in explain_text change nothing.
+        assertThat(suggestionLine(2, "Popular near you", "ana", follows)).isEqualTo("Follows you · 2 mutual friends")
+        // No code, no label: the mutual count leads as before, and retired codes mean nothing.
+        assertThat(suggestionLine(2, "", "ana", listOf("MUTUAL_FOLLOW", "mutual_follow"))).isEqualTo("2 mutual friends")
     }
 
     // ── The ViewModel ────────────────────────────────────────────────────

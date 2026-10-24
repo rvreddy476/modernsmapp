@@ -4,6 +4,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.commerce.model.SellerDocument
 import com.us.android.core.commerce.model.SellerDocumentType
+import com.us.android.core.commerce.model.ADDRESS_PROOF_TYPES
+import com.us.android.core.commerce.model.imageOnly
+import com.us.android.core.commerce.model.provesAddress
+import com.us.android.core.commerce.model.twoSided
 import com.us.android.core.commerce.repository.CommerceError
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.commerce.repository.CommerceResult
@@ -43,6 +47,12 @@ data class DocumentUploadState(
      * as a general failure — the seller's fix is to edit that field.
      */
     val numberError: String? = null,
+    /**
+     * The front of a two-sided document, uploaded and waiting for its back
+     * (migration 045: the address on a voter ID or passport is on the back).
+     * Nothing is attached until both are there.
+     */
+    val frontMediaId: String? = null,
 ) {
     enum class Stage {
         Idle,
@@ -81,7 +91,19 @@ data class DocumentUploadState(
      * refuses any number sent with it (AADHAAR_NUMBER_NOT_ACCEPTED). Asking
      * for one would collect exactly what cannot be kept.
      */
-    val asksForNumber: Boolean get() = type != SellerDocumentType.AADHAAR
+    val asksForNumber: Boolean get() = type != SellerDocumentType.AADHAAR && !type.imageOnly
+
+    /** A voter ID or passport whose front is in: the next file is its back. */
+    val awaitingBack: Boolean get() = type.twoSided && frontMediaId != null
+
+    /** What the pick button asks for. */
+    val pickLabel: String
+        get() = when {
+            stage == Stage.Done -> "Send another"
+            awaitingBack -> "Choose the back"
+            type.twoSided -> "Choose the front"
+            else -> "Choose a file"
+        }
 
     /** What goes on the wire: never a number for Aadhaar, never a blank. */
     val numberToSend: String?
@@ -93,7 +115,10 @@ data class DocumentUploadState(
      */
     fun withType(newType: SellerDocumentType): DocumentUploadState = copy(
         type = newType,
-        documentNumber = if (newType == SellerDocumentType.AADHAAR) "" else documentNumber,
+        documentNumber = if (newType == SellerDocumentType.AADHAAR || newType.imageOnly) "" else documentNumber,
+        // A front uploaded for another type is not this document's front.
+        frontMediaId = null,
+        stage = if (stage == Stage.Done) Stage.Idle else stage,
         error = null,
         numberError = null,
     )
@@ -138,6 +163,13 @@ class DocumentViewModel @Inject constructor(
     private var inFlight: Job? = null
 
     fun setType(type: SellerDocumentType) = edit { it.withType(type) }
+
+    /**
+     * Opened for a books-only shop's proof of address (migration 045): starts
+     * on a voter ID, the first of [ADDRESS_PROOF_TYPES], unless a proof type
+     * is already chosen.
+     */
+    fun startAsAddressProof() = edit { if (it.type.provesAddress) it else it.withType(ADDRESS_PROOF_TYPES.first()) }
 
     fun setNumber(raw: String) = edit { it.withNumber(raw) }
 
@@ -188,14 +220,23 @@ class DocumentViewModel @Inject constructor(
             return fail("The upload could not be confirmed.")
         }
 
+        // A voter ID or passport: the first file is the front. Held until the
+        // back is in, so a reviewer is never sent half a document.
+        val front = _state.value.frontMediaId
+        if (_state.value.type.twoSided && front == null) {
+            edit { it.copy(stage = DocumentUploadState.Stage.Idle, progress = null, frontMediaId = init.mediaId) }
+            return
+        }
+
         // Attach. The server verifies the media id belongs to this caller, is
         // ready, and has passed moderation — so this can refuse even though
         // every step above succeeded, and the seller is told which.
         edit { it.copy(stage = DocumentUploadState.Stage.Attaching) }
         val document = SellerDocument(
             type = _state.value.type,
-            mediaId = init.mediaId,
+            mediaId = front ?: init.mediaId,
             documentNumber = _state.value.numberToSend,
+            backMediaId = init.mediaId.takeIf { front != null },
         )
         when (val r = repo.saveDocuments(listOf(document))) {
             // The number the seller typed was refused, not the file: say so
@@ -214,7 +255,7 @@ class DocumentViewModel @Inject constructor(
             }
 
             is CommerceResult.Success -> {
-                edit { it.copy(stage = DocumentUploadState.Stage.Done, progress = null) }
+                edit { it.copy(stage = DocumentUploadState.Stage.Done, progress = null, frontMediaId = null) }
                 onAttached()
             }
         }
@@ -244,8 +285,15 @@ class DocumentViewModel @Inject constructor(
         return picked
     }
 
+    // A refusal at attach starts a two-sided document again from its front:
+    // which side was refused is not something the seller can tell.
     private fun fail(message: String) = edit {
-        it.copy(stage = DocumentUploadState.Stage.Idle, progress = null, error = message)
+        it.copy(
+            stage = DocumentUploadState.Stage.Idle,
+            progress = null,
+            error = message,
+            frontMediaId = it.frontMediaId.takeIf { _ -> it.stage != DocumentUploadState.Stage.Attaching },
+        )
     }
 
     private fun edit(transform: (DocumentUploadState) -> DocumentUploadState) {

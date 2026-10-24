@@ -20,6 +20,8 @@ import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.engagement.data.EngagementAction
 import com.us.android.core.engagement.data.EngagementFailure
+import com.us.android.core.engagement.data.isPostActionRefusal
+import com.us.android.core.engagement.data.postActionRefusalText
 
 /**
  * Tells the viewer that an engagement action did not stick, and offers a way out.
@@ -64,15 +66,18 @@ fun EngagementFailureBar(
                 horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
             ) {
                 Text(
-                    text = failure.action.failureMessage(),
+                    text = engagementFailureText(failure),
                     style = MaterialTheme.typography.bodySmall,
                     color = UsTheme.extended.textPrimary,
                     modifier = Modifier.weight(1f),
                 )
-                UsSecondaryButton(
-                    text = "Retry",
-                    onClick = { onRetry(failure.postId, failure.action) },
-                )
+                // A heart-only refusal (24 Oct 2026) says the same on every retry.
+                if (!isPostActionRefusal(failure.error)) {
+                    UsSecondaryButton(
+                        text = "Retry",
+                        onClick = { onRetry(failure.postId, failure.action) },
+                    )
+                }
                 UsSecondaryButton(
                     text = "Dismiss",
                     onClick = { onDismiss(failure.postId, failure.action) },
@@ -81,6 +86,13 @@ fun EngagementFailureBar(
         }
     }
 }
+
+/**
+ * The line for [failure]: the server's heart-only refusals in their own plain
+ * words ([postActionRefusalText]), anything else as the action that failed.
+ */
+fun engagementFailureText(failure: EngagementFailure): String =
+    postActionRefusalText(failure.error) ?: failure.action.failureMessage()
 
 /**
  * Names the action, not the transport.

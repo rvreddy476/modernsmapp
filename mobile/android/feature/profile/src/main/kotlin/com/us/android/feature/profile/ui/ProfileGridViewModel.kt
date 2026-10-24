@@ -62,8 +62,11 @@ enum class ProfileGridTab(val label: String, val contentType: String) {
     /** The web's About tab (2026-10-24): the bio, website, public links and the public About rows. A panel, not a grid. */
     ABOUT("About", ""),
 
-    /** The profile's connections (2026-10-24): the first of them, and "See all". A panel. */
-    CONNECTIONS("Connections", ""),
+    /**
+     * The web's People tab (24 Oct 2026, replacing Connections): Followers,
+     * Following and, on the viewer's own profile, Blocked. A panel.
+     */
+    PEOPLE("People", ""),
 
     /**
      * The profile's members-only posts, every kind (paid memberships,
@@ -95,8 +98,8 @@ enum class ProfileGridTab(val label: String, val contentType: String) {
     /** Whether the Latest / Popular / Oldest control applies (the by-author sort, T-21). */
     val sortable: Boolean get() = authored
 
-    /** Not a grid of tiles: a panel of its own (About, Connections, Reposts). */
-    val panel: Boolean get() = this == ABOUT || this == CONNECTIONS || this == REPOSTS
+    /** Not a grid of tiles: a panel of its own (About, People, Reposts). */
+    val panel: Boolean get() = this == ABOUT || this == PEOPLE || this == REPOSTS
 }
 
 /**
@@ -111,7 +114,7 @@ fun gridTabsFor(
     isOwn: Boolean,
     appearsIn: Boolean = false,
     members: Boolean = false,
-    /** About, Connections and Reposts (2026-10-24), on anyone's profile; off where the host has no panels. */
+    /** About, People and Reposts (2026-10-24), on anyone's profile; off where the host has no panels. */
     panels: Boolean = false,
 ): List<ProfileGridTab> =
     ProfileGridTab.entries.filter { tab ->
@@ -442,7 +445,7 @@ class ProfileGridViewModel @Inject constructor(
             ProfileGridTab.VIDEOS -> tubeEntry.showFirst(postId)
             // Nothing is ever published INTO Saved, Liked or Appears in; pendingTabFor never answers them.
             ProfileGridTab.SAVED, ProfileGridTab.LIKED, ProfileGridTab.APPEARS_IN, ProfileGridTab.MEMBERS,
-            ProfileGridTab.ABOUT, ProfileGridTab.CONNECTIONS, ProfileGridTab.REPOSTS,
+            ProfileGridTab.ABOUT, ProfileGridTab.PEOPLE, ProfileGridTab.REPOSTS,
             -> return
         }
         _published.tryEmit(tab)

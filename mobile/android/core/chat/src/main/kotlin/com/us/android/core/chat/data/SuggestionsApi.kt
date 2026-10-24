@@ -69,7 +69,7 @@ data class CommunitySuggestionDto(
     @SerialName("join_path") val joinPath: String = "",
 )
 
-/** `type` is `friend` or `community`; `action` is dismiss | follow | friend_request | hide | block. */
+/** `type` is `friend` or `community`; `action` is dismiss | follow | hide | block (`friend_request` is never sent: Connect is gone, 24 Oct 2026). */
 @Serializable
 data class SuggestionActionRequest(
     val type: String,

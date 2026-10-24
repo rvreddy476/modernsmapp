@@ -21,6 +21,7 @@ import com.us.android.core.model.MembersOnly
 import com.us.android.core.model.ReelSoundWire
 import com.us.android.core.model.VideoChapter
 import com.us.android.core.model.allowsSoundReuse
+import com.us.android.core.model.isPostLiked
 import com.us.android.core.model.normalizeChapters
 import com.us.android.core.model.toReelSound
 import com.us.android.core.model.wireVolume
@@ -213,7 +214,8 @@ internal fun FeedItemDto.toDomain() = FeedItem(
     counts = toCounts(),
     viewer = FeedViewerState(
         isBookmarked = isBookmarked,
-        hasReacted = hasReacted,
+        // Heart only (founder, 24 Oct 2026): an older reaction of any kind reads as liked.
+        hasReacted = isPostLiked(hasReacted, viewerReaction),
         hasReposted = hasReposted,
         viewerReaction = viewerReaction,
         isQueued = viewerQueued,

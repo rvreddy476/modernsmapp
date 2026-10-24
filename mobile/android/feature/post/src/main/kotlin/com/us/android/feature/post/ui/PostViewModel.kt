@@ -16,6 +16,7 @@ import com.us.android.core.media.MediaSources
 import com.us.android.core.media.Playback
 import com.us.android.core.media.PlayerFactory
 import com.us.android.core.media.data.MediaRepository
+import com.us.android.core.model.canRepostContentType
 import com.us.android.core.profile.data.ProfileRepository
 import com.us.android.feature.post.data.PostRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -212,6 +213,8 @@ class PostViewModel @Inject constructor(
     fun onRepostToggle() {
         val content = _state.value as? PostUiState.Content ?: return
         if (!content.post.isRepostable) return
+        // A reel is never reposted (founder, 24 Oct 2026), whatever the flag says.
+        if (!canRepostContentType(content.post.contentType)) return
         viewModelScope.launch {
             engagement.toggleRepost(postId, content.post.viewer.hasReposted)
         }

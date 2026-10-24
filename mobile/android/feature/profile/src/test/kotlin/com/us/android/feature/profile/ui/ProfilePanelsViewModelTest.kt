@@ -39,7 +39,7 @@ class ProfilePanelsViewModelTest {
     @Test
     fun `each panel reads once when opened, and again only on a pull`() = runTest {
         val panels = FakePanels()
-        val vm = ProfilePanelsViewModel(panels, FakeConnections())
+        val vm = ProfilePanelsViewModel(panels)
 
         vm.open("u1", ProfileGridTab.ABOUT)
         vm.open("u1", ProfileGridTab.ABOUT)
@@ -53,7 +53,7 @@ class ProfilePanelsViewModelTest {
     @Test
     fun `a failed About says so and keeps nothing invented`() = runTest {
         val panels = FakePanels().apply { about = AppResult.Failure(AppError.NotFound()) }
-        val vm = ProfilePanelsViewModel(panels, FakeConnections())
+        val vm = ProfilePanelsViewModel(panels)
 
         vm.open("u1", ProfileGridTab.ABOUT)
 
@@ -62,14 +62,26 @@ class ProfilePanelsViewModelTest {
     }
 
     @Test
-    fun `connections read a preview of the account's own list`() = runTest {
-        val connections = FakeConnections().apply { people = AppResult.Success(listOf(connectionPerson("c1"))) }
-        val vm = ProfilePanelsViewModel(FakePanels(), connections)
+    fun `the People tab is Followers, Following and, on the own profile, Blocked`() {
+        assertThat(peopleRows(isOwn = true, canOpenBlocked = true))
+            .containsExactly(PeopleRow.FOLLOWERS, PeopleRow.FOLLOWING, PeopleRow.BLOCKED).inOrder()
+        assertThat(peopleRows(isOwn = false, canOpenBlocked = true))
+            .containsExactly(PeopleRow.FOLLOWERS, PeopleRow.FOLLOWING).inOrder()
+        assertThat(peopleRows(isOwn = true, canOpenBlocked = false))
+            .containsExactly(PeopleRow.FOLLOWERS, PeopleRow.FOLLOWING).inOrder()
+        assertThat(PeopleRow.entries.map { it.label }).containsExactly("Followers", "Following", "Blocked").inOrder()
+    }
 
-        vm.open("u1", ProfileGridTab.CONNECTIONS)
+    @Test
+    fun `the People tab reads nothing of its own and no connections list survives`() = runTest {
+        val panels = FakePanels()
+        val vm = ProfilePanelsViewModel(panels)
 
-        assertThat(connections.calls).containsExactly("connections(u1)")
-        assertThat(vm.state.value.connections.data?.map { it.userId }).containsExactly("c1")
+        vm.open("u1", ProfileGridTab.PEOPLE)
+
+        assertThat(panels.calls).isEmpty()
+        assertThat(ProfileGridTab.entries.map { it.label }).doesNotContain("Connections")
+        assertThat(ProfilePanelsUiState::class.java.declaredFields.map { it.name }).doesNotContain("connections")
     }
 
     @Test
@@ -78,7 +90,7 @@ class ProfilePanelsViewModelTest {
             pages += AppResult.Success(Paged(listOf(repost("r1"), repost("r2")), "c2"))
             pages += AppResult.Success(Paged(listOf(repost("r2"), repost("r3")), null))
         }
-        val vm = ProfilePanelsViewModel(panels, FakeConnections())
+        val vm = ProfilePanelsViewModel(panels)
 
         vm.open("u1", ProfileGridTab.REPOSTS)
         vm.loadMoreReposts()
@@ -92,7 +104,7 @@ class ProfilePanelsViewModelTest {
     @Test
     fun `another account starts the panels over`() = runTest {
         val panels = FakePanels()
-        val vm = ProfilePanelsViewModel(panels, FakeConnections())
+        val vm = ProfilePanelsViewModel(panels)
 
         vm.open("u1", ProfileGridTab.ABOUT)
         vm.open("u2", ProfileGridTab.ABOUT)
@@ -107,11 +119,11 @@ class ProfilePanelsViewModelTest {
             ProfileGridTab.REELS,
             ProfileGridTab.VIDEOS,
             ProfileGridTab.ABOUT,
-            ProfileGridTab.CONNECTIONS,
+            ProfileGridTab.PEOPLE,
             ProfileGridTab.REPOSTS,
         ).inOrder()
         assertThat(gridTabsFor(isOwn = true, panels = true).takeLast(2)).containsExactly(ProfileGridTab.SAVED, ProfileGridTab.LIKED)
-        assertThat(gridTabsFor(isOwn = false)).containsNoneOf(ProfileGridTab.ABOUT, ProfileGridTab.CONNECTIONS, ProfileGridTab.REPOSTS)
+        assertThat(gridTabsFor(isOwn = false)).containsNoneOf(ProfileGridTab.ABOUT, ProfileGridTab.PEOPLE, ProfileGridTab.REPOSTS)
         assertThat(ProfileGridTab.REPOSTS.panel).isTrue()
         assertThat(ProfileGridTab.REPOSTS.sortable).isFalse()
         assertThat(ProfileGridTab.POSTS.panel).isFalse()

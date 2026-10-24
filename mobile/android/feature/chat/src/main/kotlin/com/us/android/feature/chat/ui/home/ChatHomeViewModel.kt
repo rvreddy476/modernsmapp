@@ -35,6 +35,8 @@ import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageType
 import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.model.FollowStatus
+import com.us.android.core.model.Product
+import com.us.android.core.model.productOpen
 import com.us.android.core.model.SessionState
 import com.us.android.core.profile.data.ProfileRepository
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -75,6 +77,11 @@ data class ChatHomeUiState(
     val people: List<PersonSuggestion> = emptyList(),
     val suggestedCommunities: List<CommunitySuggestion> = emptyList(),
     val suggestionsLoaded: Boolean = false,
+    /**
+     * Broadcast channels are open on this deployment (`GET /v1/features`,
+     * 24 Oct 2026). Off by default: with no answer the app hides them.
+     */
+    val channelsOpen: Boolean = false,
     val followEdges: Map<String, FollowStatus> = emptyMap(),
     val busyPeopleIds: Set<String> = emptySet(),
     val message: UsMessage? = null,
@@ -120,8 +127,12 @@ data class ChatHomeUiState(
     val visibleDiscover: List<Community>
         get() = ChatHomeFilters.communities(discover, query).filter { row -> myCommunities.none { it.id == row.id } }
     val visiblePeople: List<PersonSuggestion> get() = ChatHomeFilters.people(people, query)
+    /** "Communities to join" are broadcast channels: none while those are closed. */
     val visibleSuggestedCommunities: List<CommunitySuggestion>
-        get() = ChatHomeFilters.suggestedCommunities(suggestedCommunities, query)
+        get() = if (channelsOpen) ChatHomeFilters.suggestedCommunities(suggestedCommunities, query) else emptyList()
+
+    /** The tabs on screen ([chatHomeTabs]). */
+    val tabs: List<ChatHomeTab> get() = chatHomeTabs(channelsOpen)
 
     /** The tabs wearing an unread dot: Chats for direct, Groups for groups. */
     val unreadTabs: Set<ChatHomeTab>
@@ -188,6 +199,7 @@ class ChatHomeViewModel @Inject constructor(
         loadActivityStatus()
         // Hidden chats: only an account that has them ever tries a search as a key.
         viewModelScope.launch { hiddenChats.loadSettings() }
+        observeProducts()
     }
 
     /**
@@ -224,7 +236,22 @@ class ChatHomeViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Broadcast channels open or close with `GET /v1/features`. Closed, the
+     * Communities tab and the communities to join disappear, and a viewer on
+     * that tab is moved to Chats.
+     */
+    private fun observeProducts() = viewModelScope.launch {
+        sources.features.open.collect { open ->
+            val on = productOpen(Product.BROADCAST_CHANNELS, open)
+            _state.update { s ->
+                s.copy(channelsOpen = on, tab = if (!on && s.tab == ChatHomeTab.Communities) ChatHomeTab.Chats else s.tab)
+            }
+        }
+    }
+
     fun selectTab(tab: ChatHomeTab) {
+        if (tab !in _state.value.tabs) return
         _state.update { it.copy(tab = tab) }
         when (tab) {
             ChatHomeTab.Communities -> if (!_state.value.communitiesLoaded) loadCommunities()
@@ -688,23 +715,6 @@ class ChatHomeViewModel @Inject constructor(
                 is AppResult.Failure -> showMessage("Couldn't follow right now.", UsMessageType.Error)
             }
             _state.update { it.copy(busyPeopleIds = it.busyPeopleIds - userId) }
-        }
-    }
-
-    /** "Message": the server decides which conversation that is, or refuses. */
-    fun messagePerson(person: PersonSuggestion) {
-        if (person.userId in _state.value.busyPeopleIds) return
-        _state.update { it.copy(busyPeopleIds = it.busyPeopleIds + person.userId) }
-        viewModelScope.launch {
-            when (val result = startDirect.open(person.userId)) {
-                is StartDirectResult.Opened -> _state.update {
-                    it.copy(pendingOpen = PendingOpen(result.conversation.id, person.displayName, isGroup = false))
-                }
-                is StartDirectResult.NotAllowed ->
-                    showMessage("${person.displayName} doesn't accept messages from you yet.", UsMessageType.Warning)
-                is StartDirectResult.Failed -> showMessage("Couldn't start that chat. Try again.", UsMessageType.Error)
-            }
-            _state.update { it.copy(busyPeopleIds = it.busyPeopleIds - person.userId) }
         }
     }
 

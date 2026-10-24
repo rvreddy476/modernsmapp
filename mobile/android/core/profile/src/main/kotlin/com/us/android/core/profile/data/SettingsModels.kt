@@ -3,7 +3,6 @@ package com.us.android.core.profile.data
 /** The privacy policy graph-service actually enforces. */
 data class PrivacySettings(
     val whoCanMessage: String,
-    val whoCanSendConnectionRequest: String,
     val whoCanCall: String,
     val whoCanAddToGroups: String,
     val whoCanSeeOnlineStatus: String,
@@ -79,7 +78,9 @@ enum class NotificationCategory(val key: String, val label: String, val primary:
     MESSAGES("messages", "Messages", primary = true),
     SUPER_LIKES("super_likes", "Super likes", primary = false),
     REPLIES("replies", "Replies", primary = false),
-    FRIEND_REQUESTS("friend_requests", "Connection requests", primary = false),
+    // No "Connection requests" row: Connect is gone (founder, 24 Oct 2026). The
+    // server still carries `inapp_friend_requests`; its PUT is partial, so the
+    // key is simply never sent.
     GROUP_POSTS("group_posts", "Group posts", primary = false),
     GROUP_MENTIONS("group_mentions", "Group mentions", primary = false),
     CHANNEL_UPDATES("channel_updates", "Channel updates", primary = false),
@@ -235,3 +236,26 @@ data class ProfileLink(
     val pinned: Boolean,
     val sortOrder: Int,
 )
+
+/**
+ * The parked product a notification category belongs to (`GET /v1/features`,
+ * 24 Oct 2026; the web's CATEGORY_PRODUCT), or null for one that is always
+ * shown. A closed product has no switches on the settings page; the stored
+ * values are untouched and come back when it opens.
+ */
+val NotificationCategory.product: com.us.android.core.model.Product?
+    get() = when (this) {
+        NotificationCategory.GROUP_POSTS, NotificationCategory.GROUP_MENTIONS -> com.us.android.core.model.Product.GROUPS
+        NotificationCategory.CHANNEL_UPDATES, NotificationCategory.CHANNEL_URGENT ->
+            com.us.android.core.model.Product.BROADCAST_CHANNELS
+        NotificationCategory.COMMUNITY_POSTS, NotificationCategory.COMMUNITY_MENTIONS ->
+            com.us.android.core.model.Product.COMMUNITIES
+        else -> null
+    }
+
+/** [categories] without those of a closed product; [open] is the last good features answer. Pure. */
+fun openCategories(
+    categories: List<NotificationCategory>,
+    open: Set<com.us.android.core.model.Product>?,
+): List<NotificationCategory> =
+    categories.filter { category -> category.product?.let { com.us.android.core.model.productOpen(it, open) } != false }

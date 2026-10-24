@@ -7,8 +7,11 @@ import com.us.android.core.call.CallSessionManager
 import com.us.android.core.call.CallState
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.media.ReelsEntry
+import com.us.android.core.model.Product
 import com.us.android.core.model.SessionState
 import com.us.android.core.profile.data.ModulePreferencesRepository
+import com.us.android.core.profile.data.ProductFeaturesStore
+import com.us.android.features.productOfPush
 import com.us.android.push.LinkTargetResolver
 import com.us.android.push.PushDestination
 import com.us.android.push.PushDestinations
@@ -44,6 +47,7 @@ class MainViewModel @Inject constructor(
     modulePreferences: ModulePreferencesRepository,
     private val reelsEntry: ReelsEntry,
     private val linkTargets: LinkTargetResolver,
+    private val productFeatures: ProductFeaturesStore,
 ) : ViewModel() {
     val sessionState: StateFlow<SessionState> = sessionStateProvider.sessionState
 
@@ -76,6 +80,24 @@ class MainViewModel @Inject constructor(
      * repositories. Null when the handle is unknown or the read failed.
      */
     suspend fun resolveLinkUserId(destination: PushDestination): String? = linkTargets.userIdFor(destination)
+
+    /**
+     * The last good `GET /v1/features` answer (founder decision C, 24 Oct
+     * 2026), or null before there is one: the launcher and the gates read it.
+     */
+    val openProducts: StateFlow<Set<Product>?> = productFeatures.open
+
+    /**
+     * A notification tap or app link into a product the gateway has closed:
+     * that product, so the host lands on "Not available" instead. Null for a
+     * destination that belongs to no parked product, or an open one. At cold
+     * start it waits briefly for the session's first read.
+     */
+    suspend fun closedProductFor(destination: PushDestination): Product? {
+        val product = productOfPush(destination) ?: return null
+        productFeatures.awaitFirstRead()
+        return product.takeUnless { productFeatures.isOpen(it) }
+    }
 
     init {
         // Bind the shared engagement overlay to whoever is signed in.

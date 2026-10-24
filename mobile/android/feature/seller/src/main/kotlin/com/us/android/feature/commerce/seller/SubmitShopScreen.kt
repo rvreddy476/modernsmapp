@@ -17,6 +17,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
+import com.us.android.core.commerce.model.SellScope
 import com.us.android.core.commerce.model.SellerRequirement
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.commerce.repository.CommerceResult
@@ -42,6 +43,8 @@ sealed interface SubmitShopUiState {
     data class Content(
         val ready: Boolean,
         val missing: List<SellerRequirement>,
+        /** What the shop chose to sell (migration 045); null when the server did not say. */
+        val scope: SellScope? = null,
         val submitting: Boolean = false,
         val error: String? = null,
     ) : SubmitShopUiState
@@ -84,6 +87,7 @@ class SubmitShopViewModel @Inject constructor(
                     _state.value = SubmitShopUiState.Content(
                         ready = r.value.ready,
                         missing = r.value.missing,
+                        scope = r.value.scope,
                     )
             }
         }
@@ -114,6 +118,56 @@ class SubmitShopViewModel @Inject constructor(
     }
 }
 
+/** The requirements the "What will you sell?" step answers. */
+val SELL_SCOPE_STEP_REQUIREMENTS: Set<SellerRequirement> = setOf(
+    SellerRequirement.SellScopeNotChosen,
+    SellerRequirement.Gstin,
+    SellerRequirement.Pan,
+    SellerRequirement.BusinessName,
+)
+
+/**
+ * The checklist's shortcuts, in order: each outstanding requirement the app
+ * can resolve, once. Pure, so which button a gap offers is a table test.
+ */
+enum class SubmitShortcut(val label: String) {
+    SELL_SCOPE("Choose what you will sell"),
+    BUSINESS_ADDRESS("Add your business address"),
+    ADDRESS_PROOF("Send a proof of address"),
+    PICKUP_ADDRESS("Add a pickup address"),
+    PAYOUT("Add where you get paid"),
+    DOCUMENT("Send an identity document"),
+}
+
+fun submitShortcuts(missing: List<SellerRequirement>): List<SubmitShortcut> = buildList {
+    if (missing.any { it in SELL_SCOPE_STEP_REQUIREMENTS }) add(SubmitShortcut.SELL_SCOPE)
+    if (SellerRequirement.BusinessAddress in missing) add(SubmitShortcut.BUSINESS_ADDRESS)
+    if (SellerRequirement.AddressProof in missing) add(SubmitShortcut.ADDRESS_PROOF)
+    if (SellerRequirement.PickupAddress in missing) add(SubmitShortcut.PICKUP_ADDRESS)
+    if (SellerRequirement.PayoutAccount in missing) add(SubmitShortcut.PAYOUT)
+    // A proof of address is itself a KYC document, so the books path is sent there instead.
+    if (SellerRequirement.KycDocument in missing && SellerRequirement.AddressProof !in missing) add(SubmitShortcut.DOCUMENT)
+}
+
+/** Where the checklist's shortcuts go. */
+data class SubmitShopActions(
+    val openSellScope: () -> Unit,
+    val openBusinessAddress: () -> Unit,
+    val openAddressProof: () -> Unit,
+    val openPickupAddress: () -> Unit,
+    val openPayout: () -> Unit,
+    val openDocument: () -> Unit,
+) {
+    fun open(shortcut: SubmitShortcut) = when (shortcut) {
+        SubmitShortcut.SELL_SCOPE -> openSellScope()
+        SubmitShortcut.BUSINESS_ADDRESS -> openBusinessAddress()
+        SubmitShortcut.ADDRESS_PROOF -> openAddressProof()
+        SubmitShortcut.PICKUP_ADDRESS -> openPickupAddress()
+        SubmitShortcut.PAYOUT -> openPayout()
+        SubmitShortcut.DOCUMENT -> openDocument()
+    }
+}
+
 /** What each outstanding requirement means, in the seller's terms. */
 fun SellerRequirement.label(): String = when (this) {
     SellerRequirement.StoreName -> "A name for your shop"
@@ -121,6 +175,13 @@ fun SellerRequirement.label(): String = when (this) {
     SellerRequirement.PickupAddress -> "A pickup address"
     SellerRequirement.PayoutAccount -> "Where you get paid"
     SellerRequirement.KycDocument -> "An identity document"
+    // Per sell scope (migration 045).
+    SellerRequirement.SellScopeNotChosen -> "What you will sell"
+    SellerRequirement.Gstin -> "Your GSTIN (needed to sell in every category)"
+    SellerRequirement.Pan -> "Your PAN"
+    SellerRequirement.BusinessName -> "Your business name"
+    SellerRequirement.BusinessAddress -> "Your business address"
+    SellerRequirement.AddressProof -> "A proof of address (both sides of a voter ID or passport)"
     // Shown rather than dropped: a requirement this build does not recognise
     // is still one the server will refuse on, and a seller staring at an
     // apparently complete checklist that will not submit has no way forward.
@@ -130,9 +191,7 @@ fun SellerRequirement.label(): String = when (this) {
 @Composable
 fun SubmitShopScreen(
     onBack: () -> Unit,
-    onOpenPickupAddress: () -> Unit,
-    onOpenPayout: () -> Unit,
-    onOpenDocument: () -> Unit,
+    actions: SubmitShopActions,
     onSubmitted: () -> Unit,
     viewModel: SubmitShopViewModel = hiltViewModel(),
 ) {
@@ -156,9 +215,7 @@ fun SubmitShopScreen(
                 modifier = Modifier
                     .padding(padding)
                     .verticalScroll(rememberScrollState()),
-                onOpenPickupAddress = onOpenPickupAddress,
-                onOpenPayout = onOpenPayout,
-                onOpenDocument = onOpenDocument,
+                actions = actions,
                 onSubmit = { viewModel.submit(onSubmitted) },
             )
         }
@@ -169,15 +226,20 @@ fun SubmitShopScreen(
 private fun SubmitShopContent(
     state: SubmitShopUiState.Content,
     modifier: Modifier = Modifier,
-    onOpenPickupAddress: () -> Unit,
-    onOpenPayout: () -> Unit,
-    onOpenDocument: () -> Unit,
+    actions: SubmitShopActions,
     onSubmit: () -> Unit,
 ) {
     Column(
         modifier = modifier.padding(vertical = UsTheme.spacing.m),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
     ) {
+        state.scope?.let { scope ->
+            Text(
+                text = "Selling: ${scope.label}",
+                style = MaterialTheme.typography.labelLarge,
+                color = UsTheme.extended.textSecondary,
+            )
+        }
         if (state.ready) {
             Text(
                 text = "Everything is in place. Submitting sends your shop for review; " +
@@ -200,27 +262,11 @@ private fun SubmitShopContent(
             }
         }
 
-        // Shortcuts to the two the app can actually resolve. The identity
-        // document needs a file upload, which is not built — so it is listed
-        // and not linked, rather than offering a button that goes nowhere.
-        if (SellerRequirement.PickupAddress in state.missing) {
+        // A shortcut for every gap the app can resolve ([submitShortcuts]).
+        for (shortcut in submitShortcuts(state.missing)) {
             UsSecondaryButton(
-                text = "Add a pickup address",
-                onClick = onOpenPickupAddress,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        if (SellerRequirement.PayoutAccount in state.missing) {
-            UsSecondaryButton(
-                text = "Add where you get paid",
-                onClick = onOpenPayout,
-                modifier = Modifier.fillMaxWidth(),
-            )
-        }
-        if (SellerRequirement.KycDocument in state.missing) {
-            UsSecondaryButton(
-                text = "Send an identity document",
-                onClick = onOpenDocument,
+                text = shortcut.label,
+                onClick = { actions.open(shortcut) },
                 modifier = Modifier.fillMaxWidth(),
             )
         }

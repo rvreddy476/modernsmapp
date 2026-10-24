@@ -33,20 +33,23 @@ import com.us.android.core.designsystem.component.UsFollowButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.model.FollowStatus
+import com.us.android.core.model.suggestionButton
 import com.us.android.core.ui.UsLoadingState
 
 /**
  * Suggestions (founder, 2026-09-05: "so the user follows people and spends
  * more time in chat"): "People you may know" cards — avatar, name, the
- * engine's reason, Follow, Message, × — then "Communities to join". An
+ * engine's reason, Follow, × — then "Communities to join". An
  * impression is posted once per shown batch; Follow, Join and × post an
  * action. Empty when both lists are.
+ *
+ * Follow is the only button a person carries (founder, 24 Oct 2026): no
+ * Message, no Connect, no Add friend ([suggestionButton]).
  */
 @Composable
 internal fun SuggestionsTab(
     state: ChatHomeUiState,
     onFollow: (String) -> Unit,
-    onMessage: (PersonSuggestion) -> Unit,
     onDismiss: (String) -> Unit,
     onJoinCommunity: (CommunitySuggestion) -> Unit,
     onOpenCommunity: (String) -> Unit,
@@ -74,7 +77,6 @@ internal fun SuggestionsTab(
                     edge = state.followEdges[person.userId],
                     busy = person.userId in state.busyPeopleIds,
                     onFollow = { onFollow(person.userId) },
-                    onMessage = { onMessage(person) },
                     onDismiss = { onDismiss(person.userId) },
                 )
             }
@@ -102,17 +104,16 @@ internal fun SuggestionsTab(
 }
 
 /**
- * One person: avatar, name, the reason ("1 mutual friend"), and the three
- * things to do about them — Follow (the app's one follow button, gone once
- * followed or requested), Message, and × to dismiss.
+ * One person: avatar, name, the reason ("1 mutual friend"), the one button
+ * ([suggestionButton]: Follow, or Following / Requested once followed) and ×
+ * to dismiss. Nothing else (founder, 24 Oct 2026).
  */
 @Composable
-private fun PersonCard(
+internal fun PersonCard(
     person: PersonSuggestion,
     edge: FollowStatus?,
     busy: Boolean,
     onFollow: () -> Unit,
-    onMessage: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val shape = RoundedCornerShape(UsTheme.radii.large)
@@ -169,46 +170,18 @@ private fun PersonCard(
             horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            when (edge) {
-                FollowStatus.FOLLOWING -> ChatTogglePill(text = "Following", selected = true, onClick = {})
-                FollowStatus.REQUESTED -> ChatTogglePill(text = "Requested", selected = true, onClick = {})
-                FollowStatus.NONE, null -> UsFollowButton(
+            val button = suggestionButton(edge)
+            if (button.tappable) {
+                UsFollowButton(
                     onClick = onFollow,
+                    text = button.label,
                     busy = busy,
                     modifier = Modifier.testTag("chat_home_person_follow:${person.userId}"),
                 )
+            } else {
+                ChatTogglePill(text = button.label, selected = true, onClick = {})
             }
-            MessagePill(onClick = onMessage, busy = busy, tag = "chat_home_person_message:${person.userId}")
         }
-    }
-}
-
-/** "Message": a glass pill with the comment glyph — starts the direct chat. */
-@Composable
-private fun MessagePill(onClick: () -> Unit, busy: Boolean, tag: String) {
-    val shape = RoundedCornerShape(UsTheme.radii.full)
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
-        modifier = Modifier
-            .background(UsTheme.extended.glassBg, shape)
-            .border(HAIRLINE, UsTheme.extended.glassBorder, shape)
-            .pressScale(onClick, enabled = !busy)
-            .padding(horizontal = MESSAGE_HORIZONTAL, vertical = MESSAGE_VERTICAL)
-            .testTag(tag),
-    ) {
-        Icon(
-            imageVector = UsIcons.Comment,
-            contentDescription = null,
-            tint = UsTheme.extended.textPrimary,
-            modifier = Modifier.size(MESSAGE_GLYPH)
-        )
-        Text(
-            text = "Message",
-            style = MaterialTheme.typography.labelLarge,
-            fontWeight = FontWeight.SemiBold,
-            color = UsTheme.extended.textPrimary,
-        )
     }
 }
 
@@ -266,9 +239,6 @@ private val LINE_GAP = 2.dp
 private val HAIRLINE = 1.dp
 private val DISMISS_TARGET = 32.dp
 private val DISMISS_GLYPH = 18.dp
-private val MESSAGE_HORIZONTAL = 14.dp
-private val MESSAGE_VERTICAL = 7.dp
-private val MESSAGE_GLYPH = 16.dp
 private val EMPTY_TOP = 40.dp
 private val EMPTY_ICON = 72.dp
 private val EMPTY_GLYPH = 34.dp

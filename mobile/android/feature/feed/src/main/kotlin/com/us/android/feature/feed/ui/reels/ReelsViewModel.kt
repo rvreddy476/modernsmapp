@@ -14,6 +14,7 @@ import com.us.android.core.analytics.PlayStartMethod
 import com.us.android.core.analytics.VideoWatchTracker
 import com.us.android.core.analytics.WatchProbe
 import com.us.android.core.analytics.WatchSession
+import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.datastore.ReelsAutoScrollStore
 import com.us.android.core.datastore.ReelsSoundStore
@@ -23,6 +24,7 @@ import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.HiddenPosts
+import com.us.android.core.engagement.data.postActionRefusalText
 import com.us.android.core.feed.data.AudioTrack
 import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.videoThumb
@@ -938,8 +940,8 @@ class ReelsViewModel @Inject constructor(
      * show a reel's refusal later.
      */
     private fun sayIfRefused(postId: String, action: EngagementAction) {
-        if (engagement.failures.value.none { it.postId == postId && it.action == action }) return
-        _engagementMessage.value = UsMessage(reelEngagementRefusal(action))
+        val failure = engagement.failures.value.firstOrNull { it.postId == postId && it.action == action } ?: return
+        _engagementMessage.value = UsMessage(reelEngagementRefusal(action, failure.error))
         engagement.clearFailure(postId, action)
     }
 
@@ -1125,8 +1127,15 @@ class ReelsViewModel @Inject constructor(
     }
 }
 
-/** What the reel says when a rail action was refused: the action, never the transport. */
-fun reelEngagementRefusal(action: EngagementAction): String = when (action) {
+/**
+ * What the reel says when a rail action was refused: the action, never the
+ * transport — or, for the server's two heart-only refusals (24 Oct 2026),
+ * its plain sentence ([postActionRefusalText]).
+ */
+fun reelEngagementRefusal(action: EngagementAction, error: AppError? = null): String =
+    error?.let(::postActionRefusalText) ?: reelEngagementFailure(action)
+
+private fun reelEngagementFailure(action: EngagementAction): String = when (action) {
     EngagementAction.REACTION -> "Couldn't save your like. Try again."
     EngagementAction.BOOKMARK -> "Couldn't save this reel. Try again."
     EngagementAction.REPOST -> "Couldn't repost that. Try again."

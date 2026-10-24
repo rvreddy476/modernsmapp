@@ -8,7 +8,6 @@ import kotlinx.serialization.json.JsonElement
 data class PrivacySettingsDto(
     // DM consent (2026-10-20): absent reads as the strictest choice short of No one.
     @SerialName("who_can_message") val whoCanMessage: String = "people_i_follow",
-    @SerialName("who_can_send_connection_request") val whoCanSendConnectionRequest: String = "everyone",
     @SerialName("who_can_call") val whoCanCall: String = "accepted_chats_only",
     @SerialName("who_can_add_to_groups") val whoCanAddToGroups: String = "connections_only",
     @SerialName("who_can_see_online_status") val whoCanSeeOnlineStatus: String = "connections_only",
@@ -51,7 +50,6 @@ data class PrivacySettingsDto(
 @Serializable
 data class UpdatePrivacySettingsRequest(
     @SerialName("who_can_message") val whoCanMessage: String,
-    @SerialName("who_can_send_connection_request") val whoCanSendConnectionRequest: String,
     @SerialName("who_can_call") val whoCanCall: String,
     @SerialName("who_can_add_to_groups") val whoCanAddToGroups: String,
     @SerialName("who_can_see_online_status") val whoCanSeeOnlineStatus: String,

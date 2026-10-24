@@ -130,6 +130,7 @@ class PostShareTest {
 
     private class FakeWrites : EngagementWrites {
         var repostFails = false
+        var repostError: AppError = AppError.NoNetwork()
         val calls = mutableListOf<String>()
 
         override suspend fun react(postId: String, reaction: String) = AppResult.Success(Unit)
@@ -138,7 +139,7 @@ class PostShareTest {
 
         override suspend fun repost(postId: String): AppResult<Unit> {
             calls += "repost:$postId"
-            return if (repostFails) AppResult.Failure(AppError.NoNetwork()) else AppResult.Success(Unit)
+            return if (repostFails) AppResult.Failure(repostError) else AppResult.Success(Unit)
         }
 
         override suspend fun removeRepost(postId: String): AppResult<Unit> {
@@ -151,6 +152,7 @@ class PostShareTest {
     private val writes = FakeWrites()
     private val store = EngagementStore(writes)
     private var serverReposted: AppResult<Boolean> = AppResult.Success(false)
+    private var repostReads = 0
     private val session = object : SessionStateProvider {
         override val sessionState: StateFlow<SessionState> =
             MutableStateFlow(SessionState.Authenticated(userId = "me", sessionId = "s"))
@@ -161,7 +163,7 @@ class PostShareTest {
 
     private fun viewModel() = PostShareViewModel(
         chats,
-        RepostReads { serverReposted },
+        RepostReads { repostReads++; serverReposted },
         store,
         session,
         QuoteReposts { postId, text -> quoted += postId to text; quoteAnswer },
@@ -221,6 +223,70 @@ class PostShareTest {
         assertThat(vm.message.value?.type).isEqualTo(UsMessageType.Error)
         assertThat(store.failures.value).isEmpty()
         assertThat(vm.ui().repostBusy).isFalse()
+    }
+
+    // ── No repost on reels (founder, 24 Oct 2026) ──────────────────────
+
+    @Test
+    fun `a reel's sheet has no Repost and no Quote, and never asks or writes`() {
+        val vm = viewModel()
+
+        vm.open("r1", feedReposted = false, allowRepost = false)
+        vm.toggleRepost()
+        vm.openQuote()
+
+        assertThat(vm.ui().repost).isEqualTo(UsRepostRow.HIDDEN)
+        assertThat(vm.ui().canQuote).isFalse()
+        assertThat(vm.ui().quote).isNull()
+        assertThat(repostReads).isEqualTo(0)
+        assertThat(writes.calls).isEmpty()
+    }
+
+    @Test
+    fun `a reel draws no Repost and no Quote even with a repost state in hand`() {
+        // The rule sits in the drawing too, not only in what open() reads.
+        for (reposted in listOf(true, false)) {
+            val ui = PostShareModel(postId = "r1", serverReposted = reposted, allowRepost = false)
+                .toUiState("me", EngagementOverlay())
+            assertThat(ui.repost).isEqualTo(UsRepostRow.HIDDEN)
+            assertThat(ui.canQuote).isFalse()
+        }
+        val post = PostShareModel(postId = "p1", serverReposted = false).toUiState("me", EngagementOverlay())
+        assertThat(post.repost).isEqualTo(UsRepostRow.REPOST)
+        assertThat(post.canQuote).isTrue()
+    }
+
+    @Test
+    fun `a reel the feed thinks was reposted still shows no Repost`() {
+        serverReposted = AppResult.Success(true)
+        val vm = viewModel()
+
+        vm.open("r1", feedReposted = true, allowRepost = false)
+
+        assertThat(vm.ui().repost).isEqualTo(UsRepostRow.HIDDEN)
+    }
+
+    @Test
+    fun `a post keeps Repost and Quote`() {
+        val vm = viewModel()
+
+        vm.open("p1", feedReposted = false)
+
+        assertThat(vm.ui().repost).isEqualTo(UsRepostRow.REPOST)
+        assertThat(vm.ui().canQuote).isTrue()
+        assertThat(repostReads).isEqualTo(1)
+    }
+
+    @Test
+    fun `the server's REPOST_NOT_ALLOWED is said as a plain sentence`() {
+        writes.repostFails = true
+        writes.repostError = AppError.Unknown(code = "REPOST_NOT_ALLOWED", statusCode = 400)
+        val vm = viewModel()
+        vm.open("p1", feedReposted = false)
+
+        vm.toggleRepost()
+
+        assertThat(vm.message.value?.text).isEqualTo("Reels cannot be reposted. Share the link instead.")
     }
 
     @Test

@@ -288,6 +288,52 @@ class PostViewerStateContractTest {
         assertThat(writes.calls).containsExactly("POST /reactions", "POST /repost").inOrder()
     }
 
+    // ── Heart only; no repost on reels (founder, 24 Oct 2026) ──────────
+
+    @Test
+    fun `an older non-like reaction reads as liked even when has_reacted is false`() = runTest {
+        val envelope: ApiEnvelope<PostDto> =
+            json.decodeFromString(ENGAGED_CAPTURE.replace("\"has_reacted\":true", "\"has_reacted\":false"))
+
+        val post = (repositoryFor(envelope).getPost(POST_ID) as AppResult.Success).data
+
+        assertThat(post.viewer.hasReacted).isTrue()
+    }
+
+    @Test
+    fun `a reel is never reposted from the post page`() = runTest {
+        for (type in listOf("flick", "reel", "short", "flick_embed")) {
+            val writes = RecordingWrites()
+            val reel: ApiEnvelope<PostDto> = json.decodeFromString(
+                UNENGAGED_CAPTURE.replace("\"content_type\":\"post\"", "\"content_type\":\"$type\""),
+            )
+            val viewModel = viewModelFor(reel, writes)
+            runCurrent()
+
+            viewModel.onRepostToggle()
+            runCurrent()
+
+            assertThat(writes.calls).isEmpty()
+        }
+    }
+
+    @Test
+    fun `a feed post and a long video keep repost`() = runTest {
+        for (type in listOf("post", "long_video")) {
+            val writes = RecordingWrites()
+            val post: ApiEnvelope<PostDto> = json.decodeFromString(
+                UNENGAGED_CAPTURE.replace("\"content_type\":\"post\"", "\"content_type\":\"$type\""),
+            )
+            val viewModel = viewModelFor(post, writes)
+            runCurrent()
+
+            viewModel.onRepostToggle()
+            runCurrent()
+
+            assertThat(writes.calls).containsExactly("POST /repost")
+        }
+    }
+
     private companion object {
         const val POST_ID = "a742c9a7-acb9-4751-a5b4-0f0a7b7763c8"
 

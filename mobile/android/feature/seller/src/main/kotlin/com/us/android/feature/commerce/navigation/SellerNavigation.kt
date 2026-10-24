@@ -12,6 +12,7 @@ import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.navigation
 import androidx.navigation.toRoute
+import com.us.android.core.commerce.model.SellerAddressKind
 import com.us.android.core.commerce.payment.PaymentAttempt
 import com.us.android.feature.commerce.seller.DocumentScreen
 import com.us.android.feature.commerce.seller.EditPriceScreen
@@ -25,9 +26,11 @@ import com.us.android.feature.commerce.seller.SellerOrderDetailScreen
 import com.us.android.feature.commerce.seller.SellerOrdersScreen
 import com.us.android.feature.commerce.seller.SellerReturnsScreen
 import com.us.android.feature.commerce.seller.SellerScreen
+import com.us.android.feature.commerce.seller.SellScopeScreen
 import com.us.android.feature.commerce.seller.StartSellingScreen
 import com.us.android.feature.commerce.seller.StockScreen
 import com.us.android.feature.commerce.seller.SubmitShopScreen
+import com.us.android.feature.commerce.seller.SubmitShopActions
 import kotlinx.serialization.Serializable
 
 // ─── MSeller ─────────────────────────────────────────────────────────
@@ -93,6 +96,18 @@ data object SubmitShopRoute
 /** Sending an identity document for review. */
 @Serializable
 data object SellerDocumentRoute
+
+/** "What will you sell?" (migration 045): all categories with a GSTIN, or books only with a PAN. */
+@Serializable
+data object SellScopeRoute
+
+/** A books-only seller's business address (migration 045). */
+@Serializable
+data object SellerBusinessAddressRoute
+
+/** A books-only seller's proof of address: the document screen, offering the five kinds that prove one. */
+@Serializable
+data object SellerAddressProofRoute
 
 /** Listing a product. */
 @Serializable
@@ -232,9 +247,14 @@ fun NavGraphBuilder.mSellerScreens(navController: NavController) {
         composable<SubmitShopRoute> {
             SubmitShopScreen(
                 onBack = navController::popBackStack,
-                onOpenPickupAddress = { navController.navigate(SellerPickupAddressRoute) },
-                onOpenPayout = { navController.navigate(SellerPayoutRoute) },
-                onOpenDocument = { navController.navigate(SellerDocumentRoute) },
+                actions = SubmitShopActions(
+                    openSellScope = { navController.navigate(SellScopeRoute) },
+                    openBusinessAddress = { navController.navigate(SellerBusinessAddressRoute) },
+                    openAddressProof = { navController.navigate(SellerAddressProofRoute) },
+                    openPickupAddress = { navController.navigate(SellerPickupAddressRoute) },
+                    openPayout = { navController.navigate(SellerPayoutRoute) },
+                    openDocument = { navController.navigate(SellerDocumentRoute) },
+                ),
                 // Back to the hub, which now shows the shop as submitted. The
                 // seller has nothing further to do until a reviewer answers.
                 onSubmitted = navController::popBackStack,
@@ -244,10 +264,15 @@ fun NavGraphBuilder.mSellerScreens(navController: NavController) {
         composable<StartSellingRoute> {
             StartSellingScreen(
                 onBack = navController::popBackStack,
-                // Back to the hub, which now has a shop to show. popBackStack
-                // rather than navigate, so "open shop" does not stack a second
-                // hub on top of the one the seller came from.
-                onOpened = navController::popBackStack,
+                // Straight to "What will you sell?" (migration 045), the first
+                // thing a new shop answers. The start form leaves the back
+                // stack, so Back from the step returns to the hub, which now
+                // has a shop to show, rather than to a form that opened one.
+                onOpened = {
+                    navController.navigate(SellScopeRoute) {
+                        popUpTo(StartSellingRoute) { inclusive = true }
+                    }
+                },
             )
         }
 
@@ -256,6 +281,31 @@ fun NavGraphBuilder.mSellerScreens(navController: NavController) {
             EditPriceScreen(
                 title = route.title,
                 onBack = navController::popBackStack,
+            )
+        }
+
+        composable<SellScopeRoute> {
+            SellScopeScreen(
+                onBack = navController::popBackStack,
+                // Back to whoever asked: the checklist re-reads readiness, the
+                // hub re-reads the shop.
+                onDone = navController::popBackStack,
+            )
+        }
+
+        composable<SellerBusinessAddressRoute> {
+            PickupAddressScreen(
+                onBack = navController::popBackStack,
+                onSaved = navController::popBackStack,
+                kind = SellerAddressKind.BUSINESS,
+            )
+        }
+
+        composable<SellerAddressProofRoute> {
+            DocumentScreen(
+                onBack = navController::popBackStack,
+                onAttached = navController::popBackStack,
+                addressProof = true,
             )
         }
 

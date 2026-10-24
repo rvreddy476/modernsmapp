@@ -37,6 +37,7 @@ import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.profile.data.AppModule
+import com.us.android.core.profile.data.offeredModules
 import com.us.android.core.profile.data.ModulePreferences
 import com.us.android.core.ui.UsSettingsRadioRow
 
@@ -58,6 +59,7 @@ fun OnboardingScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val editing = state as? OnboardingUiState.Editing
+    val openProducts by viewModel.openProducts.collectAsStateWithLifecycle()
 
     LaunchedEffect(editing?.saved) {
         if (editing?.saved == true) onSaved()
@@ -87,6 +89,7 @@ fun OnboardingScreen(
         } else {
             OnboardingContent(
                 prefs = editing.value,
+                offered = offeredModules(openProducts),
                 message = editing.message,
                 onToggle = viewModel::toggleModule,
                 onSelectHome = viewModel::selectHome,
@@ -99,6 +102,7 @@ fun OnboardingScreen(
 @Composable
 private fun OnboardingContent(
     prefs: ModulePreferences,
+    offered: List<AppModule>,
     message: String?,
     onToggle: (AppModule, Boolean) -> Unit,
     onSelectHome: (AppModule) -> Unit,
@@ -116,7 +120,7 @@ private fun OnboardingContent(
             title = "Pick what you use",
             subtitle = "Only the parts you switch on appear in the app. Change this any time in Settings.",
         )
-        AppModule.selectable.forEach { module ->
+        offered.forEach { module ->
             ModuleCard(
                 module = module,
                 checked = module in prefs.modules,
@@ -129,7 +133,7 @@ private fun OnboardingContent(
             subtitle = "The page that opens first.",
         )
         Column {
-            prefs.homeCandidates.forEach { module ->
+            prefs.homeCandidates.filter { it == AppModule.FEED || it in offered }.forEach { module ->
                 UsSettingsRadioRow(
                     title = module.displayName,
                     selected = module == prefs.homeModule,

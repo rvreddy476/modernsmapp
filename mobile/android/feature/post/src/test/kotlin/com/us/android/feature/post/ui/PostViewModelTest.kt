@@ -119,8 +119,10 @@ class PostViewModelTest {
             error("this post carries no media; nothing should be resolved")
     }
 
+    private val engagementApi = NoEngagementApi()
+
     private val engagementRepository by lazy {
-        EngagementRepository(NoEngagementApi(), ErrorMapper(json))
+        EngagementRepository(engagementApi, ErrorMapper(json))
     }
 
     /**
@@ -130,6 +132,9 @@ class PostViewModelTest {
      * if one starts firing, this fails loudly rather than passing unnoticed.
      */
     private class NoEngagementApi : com.us.android.core.engagement.data.EngagementApi {
+        // Every repost the screen tried to send; each still fails loudly.
+        val reposts = mutableListOf<String>()
+
         override suspend fun addReaction(
             postId: String,
             body: com.us.android.core.engagement.data.ReactionRequest,
@@ -140,7 +145,10 @@ class PostViewModelTest {
         override suspend fun repost(
             postId: String,
             body: com.us.android.core.engagement.data.RepostRequest,
-        ): Nothing = error("no engagement expected")
+        ): Nothing = run {
+            reposts += postId
+            error("no engagement expected")
+        }
         override suspend fun removeRepost(postId: String): Nothing = error("no engagement expected")
         override suspend fun share(
             postId: String,
@@ -252,6 +260,20 @@ class PostViewModelTest {
 
         assertThat(state.retryable).isFalse()
         assertThat(state.message).contains("deleted")
+    }
+
+    /**
+     * A reel is never reposted (founder, 24 Oct 2026), even when the post
+     * says is_repostable: the screen sends nothing. A plain post still tries.
+     */
+    @Test
+    fun `a reel is never reposted from the post screen, whatever its flag says`() = runTest {
+        val reel = FakeApi().apply { post = ApiEnvelope(post.data!!.copy(contentType = "short")) }
+        viewModel(reel).onRepostToggle()
+        assertThat(engagementApi.reposts).isEmpty()
+
+        viewModel(FakeApi()).onRepostToggle()
+        assertThat(engagementApi.reposts).containsExactly("p")
     }
 
     // Reaction, bookmark and repost behaviour is no longer asserted here.

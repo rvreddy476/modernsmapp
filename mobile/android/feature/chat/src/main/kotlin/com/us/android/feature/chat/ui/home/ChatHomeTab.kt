@@ -40,6 +40,16 @@ enum class ChatHomeTab(val label: String) {
 }
 
 /**
+ * The tabs Messages shows, in order. Communities ride on broadcast channels
+ * (`/v1/broadcast-channels`), so the tab is there only while the gateway
+ * serves them (`GET /v1/features`, founder decision C, 24 Oct 2026); closed,
+ * the tab is gone rather than an error screen. Groups are message-service
+ * group chats, not the parked `groups` product, so they always show. Pure.
+ */
+fun chatHomeTabs(channelsOpen: Boolean): List<ChatHomeTab> =
+    ChatHomeTab.entries.filter { it != ChatHomeTab.Communities || channelsOpen }
+
+/**
  * "Chats | Groups | Communities | Suggestions" — the home feed's tab row
  * (FeedTabsRow) worn by Messages: four equal columns at 44dp where the
  * labels fit them, scrolling sideways where they do not, the label
@@ -53,6 +63,7 @@ enum class ChatHomeTab(val label: String) {
  */
 @Composable
 internal fun ChatHomeTabsRow(
+    tabs: List<ChatHomeTab>,
     selected: ChatHomeTab,
     unread: Set<ChatHomeTab>,
     onSelect: (ChatHomeTab) -> Unit,
@@ -78,7 +89,7 @@ internal fun ChatHomeTabsRow(
             .selectableGroup()
             .testTag("chat_home_tabs"),
     ) {
-        ChatHomeTab.entries.forEach { tab ->
+        tabs.forEach { tab ->
             ChatHomeTabItem(
                 tab = tab,
                 active = tab == selected,

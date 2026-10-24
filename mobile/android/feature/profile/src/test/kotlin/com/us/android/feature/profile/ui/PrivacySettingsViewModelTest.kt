@@ -96,38 +96,21 @@ class PrivacySettingsViewModelTest {
         assertThat(viewModel.editing().dirty).isFalse()
     }
 
-    // ── Allow connection requests (2026-10-24) ───────────────────────────
+    // ── Connection requests are gone (founder, 24 Oct 2026) ──────────────
 
     @Test
-    fun `turning connection requests off sends no_one`() = runTest {
-        val (viewModel, api) = buildViewModel(FakeApi().apply { loaded = PrivacySettingsDto(whoCanSendConnectionRequest = "everyone") })
+    fun `no connection-request audience is read, kept or sent`() = runTest {
+        val (viewModel, api) = buildViewModel()
 
-        viewModel.setAllowConnectionRequests(false)
+        viewModel.toggle(PrivacyToggleField.TYPING, false)
         viewModel.save()
 
-        assertThat(requireNotNull(api.lastRequest).whoCanSendConnectionRequest).isEqualTo("no_one")
-    }
-
-    @Test
-    fun `off and back on restores the saved narrower audience`() = runTest {
-        val (viewModel, _) = buildViewModel(
-            FakeApi().apply { loaded = PrivacySettingsDto(whoCanSendConnectionRequest = "friends_of_friends") },
-        )
-
-        viewModel.setAllowConnectionRequests(false)
-        viewModel.setAllowConnectionRequests(true)
-
-        assertThat(viewModel.editing().value.whoCanSendConnectionRequest).isEqualTo("friends_of_friends")
-        assertThat(viewModel.editing().dirty).isFalse()
-    }
-
-    @Test
-    fun `turning them on from no_one opens them to everyone`() = runTest {
-        val (viewModel, _) = buildViewModel(FakeApi().apply { loaded = PrivacySettingsDto(whoCanSendConnectionRequest = "no_one") })
-
-        viewModel.setAllowConnectionRequests(true)
-
-        assertThat(viewModel.editing().value.whoCanSendConnectionRequest).isEqualTo("everyone")
+        assertThat(PrivacySettings::class.java.declaredFields.map { it.name })
+            .doesNotContain("whoCanSendConnectionRequest")
+        assertThat(requireNotNull(api.lastRequest)::class.java.declaredFields.map { it.name })
+            .doesNotContain("whoCanSendConnectionRequest")
+        assertThat(PrivacySettingsViewModel::class.java.methods.map { it.name })
+            .doesNotContain("setAllowConnectionRequests")
     }
 
     // ── Who can mention me / Who can tag me (2026-10-24) ──────────────────
@@ -214,7 +197,6 @@ class PrivacySettingsViewModelTest {
 private object PrivacySettingsRepositoryFixtures {
     fun settings(whoCanMention: String?, whoCanTag: String?) = PrivacySettings(
         whoCanMessage = "people_i_follow",
-        whoCanSendConnectionRequest = "everyone",
         whoCanCall = "accepted_chats_only",
         whoCanAddToGroups = "connections_only",
         whoCanSeeOnlineStatus = "connections_only",

@@ -27,14 +27,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.common.result.AppResult
-import com.us.android.core.designsystem.component.UsAvatar
-import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.model.Profile
-import com.us.android.core.profile.data.ConnectionPerson
-import com.us.android.core.profile.data.ConnectionsSource
 import com.us.android.core.profile.data.ProfileAbout
 import com.us.android.core.profile.data.ProfilePanelsSource
 import com.us.android.core.profile.data.RepostRow
@@ -42,7 +38,7 @@ import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.rememberRichText
-import com.us.android.feature.profile.navigation.ConnectionsRoute
+import com.us.android.feature.profile.navigation.FollowListRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -60,7 +56,11 @@ import javax.inject.Inject
 data class ProfilePanelDestinations(
     val onOpenPost: ((postId: String, contentType: String) -> Unit)? = null,
     val onOpenProfile: ((userId: String) -> Unit)? = null,
-    val onOpenConnections: ((ConnectionsRoute) -> Unit)? = null,
+    /** The People tab's Followers and Following rows: the follow list, opened on that tab. */
+    val onOpenFollowers: ((FollowListRoute) -> Unit)? = null,
+    val onOpenFollowing: ((FollowListRoute) -> Unit)? = null,
+    /** The People tab's Blocked row: own profile only, so `:app` passes null on anyone else's. */
+    val onOpenBlocked: (() -> Unit)? = null,
 )
 
 /** One panel's read. */
@@ -84,19 +84,18 @@ data class RepostsLoad(
 @Immutable
 data class ProfilePanelsUiState(
     val about: PanelLoad<ProfileAbout> = PanelLoad(),
-    val connections: PanelLoad<List<ConnectionPerson>> = PanelLoad(),
     val reposts: RepostsLoad = RepostsLoad(),
 )
 
 /**
- * Behind the profile's About, Connections and Reposts tabs (2026-10-24).
- * Each panel reads when it is first opened, and again on the profile's pull
- * to refresh; Reposts pages through its cursor.
+ * Behind the profile's About and Reposts tabs (2026-10-24). Each panel reads
+ * when it is first opened, and again on the profile's pull to refresh;
+ * Reposts pages through its cursor. The People tab reads nothing: its rows
+ * open the follow lists and Blocked accounts, which load themselves.
  */
 @HiltViewModel
 class ProfilePanelsViewModel @Inject constructor(
     private val panels: ProfilePanelsSource,
-    private val connections: ConnectionsSource,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ProfilePanelsUiState())
@@ -114,8 +113,6 @@ class ProfilePanelsViewModel @Inject constructor(
         val s = _state.value
         when (tab) {
             ProfileGridTab.ABOUT -> if (force || (s.about.data == null && !s.about.loading)) loadAbout()
-            ProfileGridTab.CONNECTIONS ->
-                if (force || (s.connections.data == null && !s.connections.loading)) loadConnections()
             ProfileGridTab.REPOSTS -> if (force || (!s.reposts.loaded && !s.reposts.loading)) loadReposts()
             else -> Unit
         }
@@ -132,23 +129,6 @@ class ProfilePanelsViewModel @Inject constructor(
                     about = when (result) {
                         is AppResult.Success -> PanelLoad(data = result.data)
                         is AppResult.Failure -> it.about.copy(loading = false, error = ABOUT_FAILED)
-                    },
-                )
-            }
-        }
-    }
-
-    private fun loadConnections() {
-        val owner = userId
-        _state.update { it.copy(connections = it.connections.copy(loading = true, error = null)) }
-        viewModelScope.launch {
-            val result = connections.connections(owner, offset = 0, limit = CONNECTIONS_PREVIEW)
-            if (owner != userId) return@launch
-            _state.update {
-                it.copy(
-                    connections = when (result) {
-                        is AppResult.Success -> PanelLoad(data = result.data)
-                        is AppResult.Failure -> it.connections.copy(loading = false, error = CONNECTIONS_FAILED)
                     },
                 )
             }
@@ -203,10 +183,7 @@ class ProfilePanelsViewModel @Inject constructor(
     }
 
     companion object {
-        /** How many connections the panel shows before "See all". */
-        const val CONNECTIONS_PREVIEW = 12
         private const val ABOUT_FAILED = "Couldn't load About."
-        private const val CONNECTIONS_FAILED = "Couldn't load connections."
         private const val REPOSTS_FAILED = "Couldn't load reposts."
     }
 }
@@ -229,14 +206,18 @@ internal fun ProfilePanel(
     Column(modifier = Modifier.fillMaxWidth().testTag("profile_panel:${tab.name.lowercase()}")) {
         when (tab) {
             ProfileGridTab.ABOUT -> AboutPanel(profile = profile, load = state.about, onRetry = { viewModel.open(userId, tab, force = true) })
-            ProfileGridTab.CONNECTIONS -> ConnectionsPanel(
-                load = state.connections,
-                isOwn = isOwn,
-                onOpenProfile = destinations.onOpenProfile,
-                onSeeAll = destinations.onOpenConnections?.let { open ->
-                    { open(ConnectionsRoute(userId = userId.takeUnless { isOwn }, handle = profile?.username.orEmpty())) }
+            ProfileGridTab.PEOPLE -> PeoplePanel(
+                rows = peopleRows(isOwn = isOwn, canOpenBlocked = destinations.onOpenBlocked != null),
+                onOpen = { row ->
+                    val route = { t: FollowListTab ->
+                        FollowListRoute(userId = userId, handle = profile?.username.orEmpty(), tab = t.wire)
+                    }
+                    when (row) {
+                        PeopleRow.FOLLOWERS -> destinations.onOpenFollowers?.invoke(route(FollowListTab.FOLLOWERS))
+                        PeopleRow.FOLLOWING -> destinations.onOpenFollowing?.invoke(route(FollowListTab.FOLLOWING))
+                        PeopleRow.BLOCKED -> destinations.onOpenBlocked?.invoke()
+                    }
                 },
-                onRetry = { viewModel.open(userId, tab, force = true) },
             )
             ProfileGridTab.REPOSTS -> RepostsPanel(
                 load = state.reposts,
@@ -351,46 +332,54 @@ internal fun sectionTitle(section: String): String = when (section) {
     else -> section.replace('_', ' ').replaceFirstChar { it.uppercase() }
 }
 
-// ── Connections ─────────────────────────────────────────────────────────
+// ── People ──────────────────────────────────────────────────────────────
+
+/**
+ * A row of the People tab (24 Oct 2026, the web's People tab). Connections
+ * are gone, so the tab is Followers, Following and, on the viewer's own
+ * profile, Blocked.
+ */
+internal enum class PeopleRow(val label: String) {
+    FOLLOWERS("Followers"),
+    FOLLOWING("Following"),
+    BLOCKED("Blocked"),
+}
+
+/** The People tab's rows. Blocked only on the viewer's own profile, and only when `:app` can open it. Pure. */
+internal fun peopleRows(isOwn: Boolean, canOpenBlocked: Boolean): List<PeopleRow> =
+    listOfNotNull(PeopleRow.FOLLOWERS, PeopleRow.FOLLOWING, PeopleRow.BLOCKED.takeIf { isOwn && canOpenBlocked })
 
 @Composable
-private fun ConnectionsPanel(
-    load: PanelLoad<List<ConnectionPerson>>,
-    isOwn: Boolean,
-    onOpenProfile: ((String) -> Unit)?,
-    onSeeAll: (() -> Unit)?,
-    onRetry: () -> Unit,
-) {
-    val people = load.data
-    when {
-        load.error != null && people == null -> UsErrorState(message = load.error, onRetry = onRetry)
-        people == null -> UsLoadingState(label = "Loading connections")
-        people.isEmpty() -> UsEmptyState(
-            title = if (isOwn) "No connections yet" else "No connections to show",
-            detail = if (isOwn) "People you connect with will be listed here." else null,
-        )
-        else -> Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
-            people.forEach { person ->
-                val name = person.displayName.ifBlank { person.username.ifBlank { "Someone" } }
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .then(if (onOpenProfile != null) Modifier.clickable { onOpenProfile(person.userId) } else Modifier)
-                        .testTag("profile_connection:${person.userId}"),
-                ) {
-                    UsAvatar(name = name, size = UsAvatarSize.Chat, seed = person.userId, imageUrl = rememberProfileMediaUrl(person.avatarMediaId))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(name, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.SemiBold, color = UsTheme.extended.textPrimary)
-                        if (person.username.isNotBlank()) {
-                            Text("@${person.username}", style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
-                        }
-                    }
-                }
-            }
-            if (onSeeAll != null) {
-                UsPillButton(text = "See all", filled = false, onClick = onSeeAll, modifier = Modifier.testTag("profile_connections_all"))
+private fun PeoplePanel(rows: List<PeopleRow>, onOpen: (PeopleRow) -> Unit) {
+    Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s)) {
+        rows.forEach { row ->
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable { onOpen(row) }
+                    .padding(vertical = UsTheme.spacing.m)
+                    .testTag("profile_people:${row.name.lowercase()}"),
+            ) {
+                Icon(
+                    imageVector = when (row) {
+                        PeopleRow.FOLLOWERS -> UsIcons.Profile
+                        PeopleRow.FOLLOWING -> UsIcons.UserPlus
+                        PeopleRow.BLOCKED -> UsIcons.Ban
+                    },
+                    contentDescription = null,
+                    tint = UsTheme.extended.textMuted,
+                    modifier = Modifier.size(ABOUT_ICON),
+                )
+                Text(
+                    text = row.label,
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = UsTheme.extended.textPrimary,
+                    modifier = Modifier.weight(1f),
+                )
+                Icon(UsIcons.ChevronRight, contentDescription = null, tint = UsTheme.extended.textMuted, modifier = Modifier.size(ABOUT_ICON))
             }
         }
     }

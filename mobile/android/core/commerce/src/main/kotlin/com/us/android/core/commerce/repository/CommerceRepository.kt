@@ -27,6 +27,17 @@ import com.us.android.core.commerce.model.ProductImage
 import com.us.android.core.commerce.model.ProductPage
 import com.us.android.core.commerce.model.ProductSummary
 import com.us.android.core.commerce.model.SellerAddress
+import com.us.android.core.commerce.model.SellerAddressKind
+import com.us.android.core.commerce.model.SellScope
+import com.us.android.core.commerce.model.SellScopeChoice
+import com.us.android.core.commerce.model.SellScopeSaved
+import com.us.android.core.commerce.model.SellScopeView
+import com.us.android.core.commerce.model.imageOnly
+import com.us.android.core.commerce.model.normaliseTaxId
+import com.us.android.core.commerce.model.twoSided
+import com.us.android.core.commerce.network.SaveSellScopeRequest
+import com.us.android.core.commerce.network.SellScopeViewDto
+import com.us.android.core.commerce.network.UpgradeSellScopeRequest
 import com.us.android.core.commerce.model.SellerDocument
 import com.us.android.core.commerce.model.SellerDocumentType
 import com.us.android.core.commerce.model.SellerEarning
@@ -603,6 +614,7 @@ class CommerceRepository @Inject constructor(
                 postalCode = dto.postalCode,
                 totalProducts = dto.totalProducts,
                 totalOrders = dto.totalOrders,
+                sellScope = SellScope.fromWire(dto.sellScope),
             )
         }
 
@@ -665,10 +677,14 @@ class CommerceRepository @Inject constructor(
      * is the courier's origin, and the state is the seller half of the GST
      * place-of-supply comparison.
      */
-    suspend fun saveSellerAddress(address: SellerAddress): CommerceResult<Unit> =
+    suspend fun saveSellerAddress(address: SellerAddress, kind: SellerAddressKind = SellerAddressKind.PICKUP): CommerceResult<Unit> =
         call {
             api.saveSellerAddress(
                 SellerAddressRequest(
+                    addressType = kind.wire,
+                    // A business address (migration 045) is not where the courier
+                    // collects, so it never claims to be the default pickup.
+                    isDefault = kind == SellerAddressKind.PICKUP,
                     contactName = address.contactName.trim(),
                     phone = address.phone.trim(),
                     addressLine1 = address.line1.trim(),
@@ -703,6 +719,7 @@ class CommerceRepository @Inject constructor(
                 postalCode = dto.postalCode,
                 totalProducts = dto.totalProducts,
                 totalOrders = dto.totalOrders,
+                sellScope = SellScope.fromWire(dto.sellScope),
             )
         }
 
@@ -801,8 +818,49 @@ class CommerceRepository @Inject constructor(
             SellerReadiness(
                 ready = dto.ready,
                 missing = dto.missing.map(SellerRequirement::from),
+                scope = SellScope.fromWire(dto.detail?.sellScope),
             )
         }
+
+    /**
+     * "What will you sell?" (migration 045). Only the fields the chosen path
+     * takes are sent ([sellScopeChoice]); the server validates and seals the
+     * PAN, and answers it masked with its holder type.
+     */
+    suspend fun saveSellScope(choice: SellScopeChoice): CommerceResult<SellScopeSaved> =
+        call {
+            api.saveSellScope(
+                SaveSellScopeRequest(
+                    sellScope = choice.scope.wire,
+                    gstin = choice.gstin?.takeIf { choice.scope == SellScope.ALL_CATEGORIES && it.isNotBlank() },
+                    pan = choice.pan?.takeIf { choice.scope == SellScope.BOOKS_ONLY && it.isNotBlank() },
+                    businessName = choice.businessName?.trim()?.takeIf { it.isNotBlank() },
+                ),
+            )
+        }.map { dto ->
+            SellScopeSaved(
+                scope = SellScope.fromWire(dto.sellScope),
+                gstin = dto.gstin,
+                businessName = dto.businessName,
+                panMasked = dto.panMasked,
+                panHolderType = dto.panHolderType,
+            )
+        }
+
+    /** The shop's sell scope, and the categories a books-only shop may list in. */
+    suspend fun sellScope(): CommerceResult<SellScopeView> =
+        call { api.sellScope() }.map(::toSellScopeView)
+
+    /** A books-only shop adds a GSTIN registered to its PAN and sells in every category. */
+    suspend fun upgradeSellScope(gstin: String): CommerceResult<SellScopeView> =
+        call { api.upgradeSellScope(UpgradeSellScopeRequest(normaliseTaxId(gstin))) }.map(::toSellScopeView)
+
+    private fun toSellScopeView(dto: SellScopeViewDto) = SellScopeView(
+        scope = SellScope.fromWire(dto.sellScope),
+        hasGstin = dto.hasGstin,
+        bookCategoryIds = dto.bookCategoryIds,
+        canUpgrade = dto.canUpgrade,
+    )
 
     /**
      * Saves where the seller is paid.
@@ -846,7 +904,10 @@ class CommerceRepository @Inject constructor(
                             documentNumber = d.documentNumber
                                 ?.trim()
                                 ?.uppercase()
-                                ?.takeIf { it.isNotBlank() && d.type != SellerDocumentType.AADHAAR },
+                                ?.takeIf { it.isNotBlank() && d.type != SellerDocumentType.AADHAAR && !d.type.imageOnly },
+                            // A back only on a voter ID or passport (migration 045):
+                            // the server refuses one anywhere else.
+                            backMediaId = d.backMediaId?.takeIf { it.isNotBlank() && d.type.twoSided },
                         )
                     },
                 ),

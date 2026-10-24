@@ -121,6 +121,14 @@ class UsApplication : Application(), Configuration.Provider {
      */
     @Inject lateinit var hiddenChats: Lazy<com.us.android.core.chat.hidden.HiddenChats>
 
+    /**
+     * `GET /v1/features` (founder decision C, 24 Oct 2026): read on the
+     * session's first start and again on a resume ten minutes after the last
+     * read. Lazy: the store, and the client behind it, are built off the
+     * cold-start path.
+     */
+    @Inject lateinit var productFeatures: Lazy<com.us.android.core.profile.data.ProductFeaturesStore>
+
     override fun onCreate() {
         super.onCreate()
         installCrashReporter()
@@ -146,6 +154,7 @@ class UsApplication : Application(), Configuration.Provider {
                     screenTimeGuard.onAppForeground()
                     analyticsLifecycle.onForeground()
                     chatForegroundPresence.onForeground()
+                    productFeatures.get().refreshIfStale()
                 }
             },
         )

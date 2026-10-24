@@ -145,10 +145,27 @@ class MainViewModelTest {
             .isEqualTo(ShellState.Ready(ModulePreferences.DEFAULT))
     }
 
+    /** Founder decision C (24 Oct 2026): a tap into a closed product names it; the host shows "Not available". */
+    @Test
+    fun `a tap into a closed product is held after the first read, an open one or an ungated one passes`() = runTest {
+        val features = mockk<com.us.android.core.profile.data.ProductFeaturesStore>(relaxed = true)
+        every { features.isOpen(any()) } answers { firstArg<com.us.android.core.model.Product>() == com.us.android.core.model.Product.FOOD }
+        val (viewModel, _) = build(FakeSession(signedIn), FakeApi(ApiEnvelope(completed)), features = features)
+        fun push(type: String) = com.us.android.push.PushDestination(type = type, entityId = "e1", deepLink = "")
+
+        assertThat(viewModel.closedProductFor(push("dating.match.formed"))).isEqualTo(com.us.android.core.model.Product.DATING)
+        assertThat(viewModel.closedProductFor(push("ride.started"))).isEqualTo(com.us.android.core.model.Product.RIDER)
+        assertThat(viewModel.closedProductFor(push("food_order_status"))).isNull()
+        assertThat(viewModel.closedProductFor(push("post_link"))).isNull()
+        io.mockk.coVerify(exactly = 3) { features.awaitFirstRead(any()) }
+    }
+
     private fun TestScope.build(
         session: FakeSession,
         api: FakeApi,
         cache: FakeCache = FakeCache(),
+        features: com.us.android.core.profile.data.ProductFeaturesStore =
+            mockk<com.us.android.core.profile.data.ProductFeaturesStore>(relaxed = true),
     ): Pair<MainViewModel, ModulePreferencesRepository> {
         val repository = ModulePreferencesRepository(
             api,
@@ -165,6 +182,7 @@ class MainViewModelTest {
             modulePreferences = repository,
             reelsEntry = com.us.android.core.media.ReelsEntry(),
             linkTargets = mockk<com.us.android.push.LinkTargetResolver>(relaxed = true),
+            productFeatures = features,
         )
         return viewModel to repository
     }

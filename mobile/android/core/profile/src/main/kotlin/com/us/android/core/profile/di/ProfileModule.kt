@@ -8,13 +8,11 @@ import com.us.android.core.profile.data.AuthorPostCountsApi
 import com.us.android.core.profile.data.BlockedAccountsApi
 import com.us.android.core.profile.data.BlockedAccountsRepository
 import com.us.android.core.profile.data.BlockedAccountsSource
-import com.us.android.core.profile.data.ConnectionsApi
-import com.us.android.core.profile.data.ConnectionsRepository
-import com.us.android.core.profile.data.ConnectionsSource
 import com.us.android.core.profile.data.DataStoreKeywordFiltersCache
 import com.us.android.core.profile.data.DataStoreModulePreferencesCache
 import com.us.android.core.profile.data.DataStoreWellbeingGuardCache
 import com.us.android.core.profile.data.DeviceSecurityApi
+import com.us.android.core.profile.data.FeaturesApi
 import com.us.android.core.profile.data.FollowListApi
 import com.us.android.core.profile.data.GraphCountsApi
 import com.us.android.core.profile.data.KeywordFiltersApi
@@ -22,6 +20,9 @@ import com.us.android.core.profile.data.KeywordFiltersCache
 import com.us.android.core.profile.data.ManageAccountApi
 import com.us.android.core.profile.data.ModulePreferencesApi
 import com.us.android.core.profile.data.ModulePreferencesCache
+import com.us.android.core.profile.data.MuteApi
+import com.us.android.core.profile.data.MuteRepository
+import com.us.android.core.profile.data.MuteSource
 import com.us.android.core.profile.data.NotificationSettingsApi
 import com.us.android.core.profile.data.PrivacySettingsApi
 import com.us.android.core.profile.data.ProfileApi
@@ -56,6 +57,11 @@ object ProfileModule {
     @Provides
     @Singleton
     fun provideProfileApi(retrofit: Retrofit): ProfileApi = retrofit.create(ProfileApi::class.java)
+
+    /** `GET /v1/features` (24 Oct 2026): which parked products the gateway serves. */
+    @Provides
+    @Singleton
+    fun provideFeaturesApi(retrofit: Retrofit): FeaturesApi = retrofit.create(FeaturesApi::class.java)
 
     @Provides
     @Singleton
@@ -169,22 +175,20 @@ object ProfileCountsModule {
 }
 
 /**
- * Connections and mute (2026-10-24): graph-service's connection-request
- * routes and the mute pair, read through [ConnectionsSource].
+ * Mute (2026-10-24): graph-service's mute pair, read through [MuteSource].
+ * Connect is gone (founder, 24 Oct 2026), so nothing else of the old
+ * connections seam is provided.
  */
 @Module
 @InstallIn(SingletonComponent::class)
-object ConnectionsModule {
+object MuteModule {
 
     @Provides
     @Singleton
-    fun provideConnectionsApi(retrofit: Retrofit): ConnectionsApi =
-        retrofit.create(ConnectionsApi::class.java)
+    fun provideMuteApi(retrofit: Retrofit): MuteApi = retrofit.create(MuteApi::class.java)
 
     @Provides
-    fun provideConnectionsSource(
-        impl: ConnectionsRepository,
-    ): ConnectionsSource = impl
+    fun provideMuteSource(impl: MuteRepository): MuteSource = impl
 }
 
 /** The profile's About and Reposts tabs (2026-10-24). */

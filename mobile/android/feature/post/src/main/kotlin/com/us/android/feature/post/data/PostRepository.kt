@@ -8,6 +8,7 @@ import com.us.android.core.model.MembersOnly
 import com.us.android.core.model.Post
 import com.us.android.core.model.PostCounts
 import com.us.android.core.model.PostViewerState
+import com.us.android.core.model.isPostLiked
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.network.apiCall
 import com.us.android.feature.post.data.dto.PostDto
@@ -57,7 +58,8 @@ private fun PostDto.toDomain() = Post(
         // Server-authoritative. These were previously hardcoded to false,
         // which made an already-liked or already-reposted post render as
         // untouched and sent the first tap in the wrong direction.
-        hasReacted = hasReacted,
+        // Heart only (founder, 24 Oct 2026): an older reaction of any kind reads as liked.
+        hasReacted = isPostLiked(hasReacted, viewerReaction),
         viewerReaction = viewerReaction,
         hasReposted = hasReposted,
     ),

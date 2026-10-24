@@ -254,8 +254,6 @@ data class RelationshipDto(
      */
     @SerialName("viewer_blocked_target") val viewerBlockedTarget: Boolean? = null,
     @SerialName("target_blocked_viewer") val targetBlockedViewer: Boolean? = null,
-    @SerialName("is_connection") val isConnection: Boolean = false,
-    @SerialName("connection_status") val connectionStatus: String = "",
     /** `"none"|"pending_sent"|"pending_received"`. */
     @SerialName("follow_request_status") val followRequestStatus: String = "",
     @SerialName("is_private") val isPrivate: Boolean = false,

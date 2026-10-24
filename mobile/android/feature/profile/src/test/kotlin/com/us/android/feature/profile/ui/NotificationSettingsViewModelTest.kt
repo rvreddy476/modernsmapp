@@ -40,7 +40,13 @@ class NotificationSettingsViewModelTest {
     }
 
     private fun buildViewModel(api: FakeApi = FakeApi()) =
-        NotificationSettingsViewModel(NotificationSettingsRepository(api, ErrorMapper(json))) to api
+        NotificationSettingsViewModel(
+            NotificationSettingsRepository(api, ErrorMapper(json)),
+            com.us.android.core.profile.data.ProductFeaturesStore(
+                dagger.Lazy { error("the settings screen never reads the features route") },
+                kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined),
+            ),
+        ) to api
 
     private fun NotificationSettingsViewModel.editing() = state.value as NotificationSettingsUiState.Editing
 
@@ -70,11 +76,11 @@ class NotificationSettingsViewModelTest {
     fun `a secondary category round-trips through save the same way a primary one does`() = runTest {
         val (viewModel, api) = buildViewModel()
 
-        viewModel.setChannel(NotificationCategory.FRIEND_REQUESTS, inApp = false, push = false)
+        viewModel.setChannel(NotificationCategory.GROUP_POSTS, inApp = false, push = false)
         viewModel.save()
 
         val saved = NotificationPreferenceCodec.decode(requireNotNull(api.lastRequest))
-        val channels = saved.channels(NotificationCategory.FRIEND_REQUESTS)
+        val channels = saved.channels(NotificationCategory.GROUP_POSTS)
         assertThat(channels.inApp).isFalse()
         assertThat(channels.push).isFalse()
         assertThat(viewModel.editing().dirty).isFalse()

@@ -172,8 +172,8 @@ class PostMoreViewModelTest {
         }
     }
 
-    /** The mute half of [com.us.android.core.profile.data.ConnectionsSource]; nothing else is used here. */
-    private class RecordingConnections : com.us.android.core.profile.data.ConnectionsSource {
+    /** A recording [com.us.android.core.profile.data.MuteSource]. */
+    private class RecordingConnections : com.us.android.core.profile.data.MuteSource {
         val muted = mutableListOf<String>()
         var muteFails = false
 
@@ -186,15 +186,6 @@ class PostMoreViewModelTest {
             }
         }
 
-        override suspend fun requests(direction: com.us.android.core.profile.data.ConnectionRequestDirection) =
-            error("not used")
-        override suspend fun pendingSenderIds() = error("not used")
-        override suspend fun connections(userId: String, offset: Int, limit: Int) = error("not used")
-        override suspend fun send(userId: String) = error("not used")
-        override suspend fun accept(senderId: String) = error("not used")
-        override suspend fun decline(senderId: String) = error("not used")
-        override suspend fun cancel(receiverId: String) = error("not used")
-        override suspend fun remove(userId: String) = error("not used")
         override suspend fun unmute(userId: String) = error("not used")
     }
 

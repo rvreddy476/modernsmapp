@@ -94,7 +94,7 @@ fun NewProductScreen(
 
     if (choosingCategory) {
         CategoryPickerSheet(
-            choices = form.categories,
+            choices = form.offeredCategories,
             selected = form.categoryId,
             onChoose = { id ->
                 viewModel.update { it.copy(categoryId = id) }
@@ -113,7 +113,7 @@ fun NewProductScreen(
 
             // Without the rates there is no legal way to submit, so the screen
             // says so instead of showing a form whose button can never enable.
-            form.taxClasses.isEmpty() -> UsErrorState(
+            form.offeredTaxClasses.isEmpty() -> UsErrorState(
                 message = form.error
                     ?: "GST rates are unavailable, so a product cannot be listed right now.",
                 modifier = Modifier.padding(padding),
@@ -177,6 +177,7 @@ private fun NewProductForm(
         // Required (2026-09-30): a product with no category appears in no
         // category, so a buyer browsing never reaches it. Chosen from the
         // tree's listable leaves, never preselected.
+        if (form.booksOnly) CommerceNotice(text = BOOKS_ONLY_EDITOR_NOTE)
         CategoryRow(
             form = form,
             enabled = !form.saving,
@@ -200,7 +201,7 @@ private fun NewProductForm(
         // tax on every sale of anything that is not that rate, and it is
         // exactly the kind of default nobody ever revisits.
         UsChoiceRow(
-            options = form.taxClasses.map { UsChoice(it.id, it.name) },
+            options = form.offeredTaxClasses.map { UsChoice(it.id, it.name) },
             selected = form.taxClassId,
             onSelect = { id -> onChange { it.copy(taxClassId = id) } },
             label = "GST rate",
@@ -267,7 +268,7 @@ private fun CategoryRow(
                 text = when {
                     label != null -> label
                     form.loadingCategories -> "Loading categories"
-                    form.categories.isEmpty() -> "No categories to choose from"
+                    form.offeredCategories.isEmpty() -> "No categories to choose from"
                     else -> CHOOSE_A_CATEGORY
                 },
                 style = MaterialTheme.typography.bodyMedium,

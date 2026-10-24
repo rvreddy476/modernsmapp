@@ -21,6 +21,12 @@ import org.junit.Test
 
 class OnboardingViewModelTest {
 
+    // The gateway is never asked: no answer, so every module this picker knows stays offered.
+    private fun TestScope.noFeatures() = com.us.android.core.profile.data.ProductFeaturesStore(
+        dagger.Lazy { error("no features route in this test") },
+        backgroundScope,
+    )
+
     @get:Rule
     val mainDispatcherRule = MainDispatcherRule()
 
@@ -71,7 +77,7 @@ class OnboardingViewModelTest {
 
     @Test
     fun `seeds from the loaded preferences with everything on and the feed first`() = runTest {
-        val viewModel = OnboardingViewModel(repository(FakeApi()))
+        val viewModel = OnboardingViewModel(repository(FakeApi()), noFeatures())
 
         val state = editing(viewModel)
         assertThat(state.value.modules).containsExactlyElementsIn(AppModule.selectable)
@@ -83,7 +89,7 @@ class OnboardingViewModelTest {
     fun `refreshes first when nothing is loaded yet`() = runTest {
         val api = FakeApi(current = ModulePreferencesDto(modules = listOf("chat"), homeModule = "chat"))
 
-        val viewModel = OnboardingViewModel(repository(api, refreshed = false))
+        val viewModel = OnboardingViewModel(repository(api, refreshed = false), noFeatures())
 
         assertThat(editing(viewModel).value.modules).containsExactly(AppModule.CHAT)
         assertThat(editing(viewModel).value.homeModule).isEqualTo(AppModule.CHAT)
@@ -91,7 +97,7 @@ class OnboardingViewModelTest {
 
     @Test
     fun `switching off the home module sends the home back to the feed`() = runTest {
-        val viewModel = OnboardingViewModel(repository(FakeApi()))
+        val viewModel = OnboardingViewModel(repository(FakeApi()), noFeatures())
         viewModel.selectHome(AppModule.REELS)
         assertThat(editing(viewModel).value.homeModule).isEqualTo(AppModule.REELS)
 
@@ -103,7 +109,7 @@ class OnboardingViewModelTest {
 
     @Test
     fun `a module that is off cannot become the home`() = runTest {
-        val viewModel = OnboardingViewModel(repository(FakeApi()))
+        val viewModel = OnboardingViewModel(repository(FakeApi()), noFeatures())
         viewModel.toggleModule(AppModule.CHAT, enabled = false)
 
         viewModel.selectHome(AppModule.CHAT)
@@ -115,7 +121,7 @@ class OnboardingViewModelTest {
     fun `save completes onboarding and adopts the server's echo`() = runTest {
         val api = FakeApi()
         val repository = repository(api)
-        val viewModel = OnboardingViewModel(repository)
+        val viewModel = OnboardingViewModel(repository, noFeatures())
         viewModel.toggleModule(AppModule.DATING, enabled = false)
         viewModel.selectHome(AppModule.REELS)
 
@@ -140,7 +146,7 @@ class OnboardingViewModelTest {
     fun `a failed save keeps the draft and reports inline`() = runTest {
         val api = FakeApi(failWrites = true)
         val repository = repository(api)
-        val viewModel = OnboardingViewModel(repository)
+        val viewModel = OnboardingViewModel(repository, noFeatures())
         viewModel.selectHome(AppModule.CHAT)
 
         viewModel.save()

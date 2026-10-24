@@ -69,13 +69,20 @@ fun ChatHomeScreen(
     viewModel: ChatHomeViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val pagerState = rememberPagerState(initialPage = state.tab.ordinal) { ChatHomeTab.entries.size }
+    val tabs = state.tabs
+    val pagerState = rememberPagerState(initialPage = tabs.indexOf(state.tab).coerceAtLeast(0)) { tabs.size }
     val scope = rememberCoroutineScope()
 
     // The pager and the row are one selection: a swipe moves the underline,
     // a tap scrolls the page.
     LaunchedEffect(pagerState.settledPage) {
-        viewModel.selectTab(ChatHomeTab.entries[pagerState.settledPage])
+        tabs.getOrNull(pagerState.settledPage)?.let(viewModel::selectTab)
+    }
+    // Communities come or go with `GET /v1/features`: keep the page on the tab
+    // that was showing, whatever index it has now.
+    LaunchedEffect(tabs) {
+        val index = tabs.indexOf(state.tab)
+        if (index >= 0 && pagerState.currentPage != index) pagerState.scrollToPage(index)
     }
     LaunchedEffect(state.pendingOpen) {
         val open = state.pendingOpen ?: return@LaunchedEffect
@@ -113,9 +120,13 @@ fun ChatHomeScreen(
                     onVoiceUnavailable = { viewModel.showMessage(it) },
                 )
                 ChatHomeTabsRow(
+                    tabs = tabs,
                     selected = state.tab,
                     unread = state.unreadTabs,
-                    onSelect = { tab -> scope.launch { pagerState.animateScrollToPage(tab.ordinal) } },
+                    onSelect = { tab ->
+                        val index = tabs.indexOf(tab)
+                        if (index >= 0) scope.launch { pagerState.animateScrollToPage(index) }
+                    },
                 )
                 if (state.syncFailed && state.conversations.isEmpty() && state.requests.isEmpty()) {
                     OfflineBanner(onRetry = viewModel::refresh)
@@ -145,7 +156,7 @@ private fun ChatHomePager(
         modifier = Modifier.fillMaxSize().testTag("chat_home_pager"),
         beyondViewportPageCount = 0,
     ) { page ->
-        when (ChatHomeTab.entries[page]) {
+        when (state.tabs.getOrElse(page) { ChatHomeTab.Chats }) {
             ChatHomeTab.Chats -> ChatsTab(
                 state = state,
                 onOpenConversation = destinations.onOpenThread,
@@ -177,7 +188,6 @@ private fun ChatHomePager(
             ChatHomeTab.Suggestions -> SuggestionsTab(
                 state = state,
                 onFollow = viewModel::followPerson,
-                onMessage = viewModel::messagePerson,
                 onDismiss = viewModel::dismissPerson,
                 onJoinCommunity = viewModel::joinSuggestedCommunity,
                 onOpenCommunity = destinations.onOpenCommunity,
