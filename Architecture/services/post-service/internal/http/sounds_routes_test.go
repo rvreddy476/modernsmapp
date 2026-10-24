@@ -248,6 +248,15 @@ func newSoundRig(t *testing.T) *soundRig {
 		SoundReads: r.store, MediaStates: r.states, Channels: chans, HiddenAuthors: r.hidden,
 		MediaServiceURL: r.mediaServer.URL, InternalServiceKey: soundTestKey,
 		Now: func() time.Time { return fxTime },
+		// media-service's cover and badge of the sound page (trending
+		// sounds); the HTTP client itself is tested in service.
+		SoundExtras: func(_ context.Context, id uuid.UUID) (*service.SoundExtras, error) {
+			if id != sxSound {
+				return &service.SoundExtras{}, nil
+			}
+			cover := "/v1/media/" + sxOriginMedia.String() + "/serve/thumb_150"
+			return &service.SoundExtras{CoverURL: &cover, Trending: &service.SoundTrending{Rank: 3, Rising: true}}, nil
+		},
 		SoundCounts: func(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]*scylla.Counts, error) {
 			out := map[uuid.UUID]*scylla.Counts{}
 			for _, id := range ids {
@@ -472,6 +481,10 @@ func wantKeys(t *testing.T, name string, got map[string]json.RawMessage, want ..
 
 var soundKeys = []string{"id", "title", "artist", "duration_ms", "start_ms", "use_count", "source_post_id", "creator_user_id"}
 
+// pageSoundKeys is the sound at the top of the sound page: the post's
+// sound plus its cover and trending badge (trending sounds, 2026-10-24).
+var pageSoundKeys = append(append([]string(nil), soundKeys...), "cover_url", "trending")
+
 // postKeys is every key of a listed reel that plays no added sound;
 // postWithSoundKeys adds the three the contract adds.
 var postKeys = []string{"id", "author_id", "text", "visibility", "content_type", "is_pinned", "no_comments", "no_likes",
@@ -501,7 +514,7 @@ func TestSoundWireKeysArePinned(t *testing.T) {
 		_ = json.Unmarshal(contracts["use_sound.json"], &used)
 
 		wantKeys(t, "by-sound", top, "sound", "origin", "items")
-		wantKeys(t, "by-sound sound", page.Sound, soundKeys...)
+		wantKeys(t, "by-sound sound", page.Sound, pageSoundKeys...)
 		wantKeys(t, "origin", page.Origin, postKeys...)
 		if len(page.Items) != 2 {
 			t.Fatalf("%d items", len(page.Items))

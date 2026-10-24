@@ -7,6 +7,7 @@ import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 import androidx.navigation.toRoute
+import com.us.android.core.feed.ui.sound.TrendingSoundsScreen
 import com.us.android.core.media.PlayerPool
 import com.us.android.feature.feed.ui.FeedScreen
 import com.us.android.feature.feed.ui.FriendsFeedScreen
@@ -173,15 +174,42 @@ fun NavGraphBuilder.soundScreen(
     onBack: () -> Unit,
     onOpenReels: () -> Unit,
     onCreateWithSound: () -> Unit,
+    /** Trending sounds (2026-10-24): the top bar's flame and the page's badge; `:app` pushes [TrendingSoundsRoute]. */
+    onOpenTrending: () -> Unit,
 ) {
     composable<SoundRoute> {
         SoundPageScreen(
             onBack = onBack,
             onOpenReels = onOpenReels,
             onCreateWithSound = onCreateWithSound,
+            onOpenTrending = onOpenTrending,
         )
     }
 }
 
 /** Type-safe navigation to one sound's page. */
 fun NavController.navigateToSound(soundId: String) = navigate(SoundRoute(soundId))
+
+/**
+ * Trending sounds (2026-10-24): the ranked list, All / Rising, pushed from a
+ * sound's page. The sound picker shows the same list in place, inside its
+ * sheet, so it needs no route.
+ */
+@Serializable
+data object TrendingSoundsRoute
+
+/**
+ * Registers the ranked list. [onCreateWithSound] is "Use this sound": the
+ * sound is already in `SoundEntry`, and `:app` opens the reel create flow.
+ */
+fun NavGraphBuilder.trendingSoundsScreen(
+    onBack: () -> Unit,
+    onCreateWithSound: () -> Unit,
+) {
+    composable<TrendingSoundsRoute> {
+        TrendingSoundsScreen(onBack = onBack, onChosen = onCreateWithSound)
+    }
+}
+
+/** Type-safe navigation to the ranked list. */
+fun NavController.navigateToTrendingSounds() = navigate(TrendingSoundsRoute)

@@ -124,6 +124,13 @@ func soundSchema(t *testing.T, shape string) *pgxpool.Pool {
 // transaction.
 func applySoundMigration(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	// Every sound read selects its library row's cover_url (trending
+	// sounds, 2026-10-24), so the schema has audio_library as migration 006
+	// creates it on every real database.
+	if _, err := pool.Exec(context.Background(),
+		strings.Replace(audioLibraryDDL, "CREATE TABLE audio_library", "CREATE TABLE IF NOT EXISTS audio_library", 1)); err != nil {
+		t.Fatalf("create audio_library: %v", err)
+	}
 	for _, file := range []string{"024_sound_per_source.sql", "028_library_sounds.sql"} {
 		applyMediaMigration(t, pool, file)
 	}
@@ -412,8 +419,10 @@ func TestSoundOriginAndCountersOnBothShapes(t *testing.T) {
 				t.Errorf("bare row: key %q usage %d use %d wire %d", row.AudioKey, row.UsageCount, row.UseCount, row.WireUsageCount())
 			}
 
-			// The lists order by the counter the wire carries: the bare row
-			// (1 and 5) is ahead of the sound (3 and 0).
+			// The search orders by the counter the wire carries: the bare
+			// row (1 and 5) is ahead of the sound (3 and 0). (The trending
+			// list is the stored ranking since 2026-10-24,
+			// trending_sounds_integration_test.go.)
 			if _, err := pool.Exec(ctx, `UPDATE audio_tracks SET usage_count = 3 WHERE id = $1`, sound.ID); err != nil {
 				t.Fatalf("seed the sound's uses: %v", err)
 			}
@@ -421,7 +430,6 @@ func TestSoundOriginAndCountersOnBothShapes(t *testing.T) {
 				name string
 				read func() ([]AudioTrack, error)
 			}{
-				{"trending", func() ([]AudioTrack, error) { return store.GetTrendingAudioTracks(ctx, 10, 0) }},
 				{"search", func() ([]AudioTrack, error) { return store.SearchAudioTracks(ctx, "take", 10, 0) }},
 			} {
 				tracks, err := list.read()

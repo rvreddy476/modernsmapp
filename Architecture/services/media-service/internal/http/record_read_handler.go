@@ -24,7 +24,6 @@ type recordReadService interface {
 	AudioTrackURLForViewer(ctx context.Context, viewerID, audioID uuid.UUID) (string, error)
 	// The sound reads (service/audio_reads.go).
 	AudioTrackForViewer(ctx context.Context, viewerID, audioID uuid.UUID) (*postgres.AudioTrack, error)
-	TrendingAudioForViewer(ctx context.Context, viewerID uuid.UUID, limit, offset int) ([]postgres.AudioTrack, error)
 	SearchAudioForViewer(ctx context.Context, viewerID uuid.UUID, query string, limit, offset int) ([]postgres.AudioTrack, error)
 	UseAudioTrackAsViewer(ctx context.Context, viewerID, audioID uuid.UUID) error
 }

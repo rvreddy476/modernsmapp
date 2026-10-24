@@ -10,6 +10,7 @@ import com.us.android.core.feed.data.HiddenAuthorsRepository
 import com.us.android.core.feed.data.HiddenAuthorsSource
 import com.us.android.core.feed.data.PostEditApi
 import com.us.android.core.feed.data.SoundsApi
+import com.us.android.core.feed.data.TrendingSoundsApi
 import com.us.android.core.feed.data.VideoCollectionSource
 import com.us.android.core.feed.data.VideoFeedApi
 import com.us.android.core.feed.data.VideoLibraryApi
@@ -23,6 +24,8 @@ import com.us.android.core.feed.data.copyright.CopyrightReviewApi
 import com.us.android.core.feed.data.credits.CreditsApi
 import com.us.android.core.feed.ui.sound.LibrarySoundPreview
 import com.us.android.core.feed.ui.sound.PlayerLibrarySoundPreview
+import com.us.android.core.feed.ui.sound.PlayerTrendingSoundPreview
+import com.us.android.core.feed.ui.sound.TrendingSoundPreview
 import com.us.android.core.media.sound.SoundPreviewPlayer
 import dagger.Module
 import dagger.Provides
@@ -51,6 +54,11 @@ object FeedModule {
     @Provides
     @Singleton
     fun provideSoundsApi(retrofit: Retrofit): SoundsApi = retrofit.create(SoundsApi::class.java)
+
+    /** Trending sounds (2026-10-24): media-service's ranking, and a sound's own place on it. */
+    @Provides
+    @Singleton
+    fun provideTrendingSoundsApi(retrofit: Retrofit): TrendingSoundsApi = retrofit.create(TrendingSoundsApi::class.java)
 
     @Provides
     @Singleton
@@ -118,4 +126,9 @@ object FeedModule {
      */
     @Provides
     fun provideLibrarySoundPreview(player: SoundPreviewPlayer): LibrarySoundPreview = PlayerLibrarySoundPreview(player)
+
+    /** The Trending list's preview player (2026-10-24): unscoped for the same reason, one per list. */
+    @Provides
+    fun provideTrendingSoundPreview(player: SoundPreviewPlayer): TrendingSoundPreview =
+        PlayerTrendingSoundPreview(player)
 }

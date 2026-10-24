@@ -133,8 +133,10 @@ import com.us.android.feature.feed.navigation.friendsFeedScreen
 import com.us.android.feature.feed.navigation.hashtagPostsScreen
 import com.us.android.feature.feed.navigation.navigateToHashtagPosts
 import com.us.android.feature.feed.navigation.navigateToSound
+import com.us.android.feature.feed.navigation.navigateToTrendingSounds
 import com.us.android.feature.feed.navigation.reelsScreen
 import com.us.android.feature.feed.navigation.soundScreen
+import com.us.android.feature.feed.navigation.trendingSoundsScreen
 import com.us.android.feature.feed.ui.HomeMenuRow
 import com.us.android.feature.live.navigation.GoLiveRoute
 import com.us.android.feature.live.navigation.LiveCreatorCentreRoute
@@ -1214,6 +1216,13 @@ private fun NavGraphBuilder.tabDestinations(
     soundScreen(
         onBack = { navController.popBackStack() },
         onOpenReels = onOpenReels,
+        onCreateWithSound = onCreateWithSound,
+        onOpenTrending = { navController.navigateToTrendingSounds() },
+    )
+    // Trending sounds (2026-10-24), pushed from a sound's page: "Use this
+    // sound" is the same door — the sound is already in SoundEntry.
+    trendingSoundsScreen(
+        onBack = { navController.popBackStack() },
         onCreateWithSound = onCreateWithSound,
     )
     exploreDestinations(navController, launcher, exploreHasBack)

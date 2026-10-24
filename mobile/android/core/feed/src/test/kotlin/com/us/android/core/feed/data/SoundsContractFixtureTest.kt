@@ -103,7 +103,9 @@ class SoundsContractFixtureTest {
         "by_sound.json" to { raw ->
             val keys = strict.parseToJsonElement(raw).jsonObject
             assertThat(keys.keys).containsExactly("sound", "origin", "items")
-            strictSound(keys.getValue("sound").jsonObject)
+            // Trending sounds (2026-10-24): the page's sound alone also says its cover and its place on the ranking.
+            val pageSound = strictSound(keys.getValue("sound").jsonObject, optional = TRENDING_KEYS)
+            assertThat(pageSound.coverUrl).isEqualTo("/v1/media/ffffffff-ffff-4fff-8fff-ffffffffffff/serve/thumb_150")
             keys.getValue("items").jsonArray.forEach { strictSound(it.jsonObject.getValue("sound").jsonObject) }
 
             val page = app.decodeFromString(SoundReelsDto.serializer(), raw).toPage(meta = null)
@@ -119,6 +121,8 @@ class SoundsContractFixtureTest {
             assertThat(page.items.map { it.sound?.startMs }).containsExactly(1_500L, 0L).inOrder()
             assertThat(page.items.map { it.originalVolume }).containsExactly(0.2, 0.2).inOrder()
             assertThat(page.nextCursor).isNull()
+            assertThat(page.trending).isEqualTo(TrendingMark(rank = 3, rising = true))
+            assertThat(trendingBadges(page.trending)).containsExactly("#3 trending", "Rising").inOrder()
             assertThat(soundReelTiles(listOf(page)).map { it.reel.id to it.isOrigin }).containsExactly(
                 "dddddddd-dddd-4ddd-8ddd-dddddddddddd" to true,
                 "a1a1a1a1-a1a1-4a1a-8a1a-a1a1a1a1a1a1" to false,
@@ -149,18 +153,13 @@ class SoundsContractFixtureTest {
         },
     )
 
-    /** The sound object decodes STRICTLY: exactly the eight keys of contract 2.1, no more. */
-    private fun strictSound(sound: JsonObject): FeedSoundDto {
-        assertThat(sound.keys).containsExactly(
-            "id",
-            "title",
-            "artist",
-            "duration_ms",
-            "start_ms",
-            "use_count",
-            "source_post_id",
-            "creator_user_id",
-        )
+    /**
+     * The sound object decodes STRICTLY: the eight keys of contract 2.1, and
+     * of [optional] only those the caller allows, no more.
+     */
+    private fun strictSound(sound: JsonObject, optional: Set<String> = emptySet()): FeedSoundDto {
+        assertThat(optional).containsAtLeastElementsIn(sound.keys - REQUIRED_SOUND_KEYS)
+        assertThat(sound.keys).containsAtLeastElementsIn(REQUIRED_SOUND_KEYS)
         return strict.decodeFromJsonElement(FeedSoundDto.serializer(), sound)
     }
 
@@ -211,5 +210,19 @@ class SoundsContractFixtureTest {
 
     private companion object {
         val POST_SERVICE_FIXTURES = listOf("post_with_sound.json", "use_sound.json", "by_sound.json")
+
+        val REQUIRED_SOUND_KEYS = setOf(
+            "id",
+            "title",
+            "artist",
+            "duration_ms",
+            "start_ms",
+            "use_count",
+            "source_post_id",
+            "creator_user_id",
+        )
+
+        /** Trending sounds (2026-10-24): on the by-sound page's sound only. */
+        val TRENDING_KEYS = setOf("cover_url", "trending")
     }
 }

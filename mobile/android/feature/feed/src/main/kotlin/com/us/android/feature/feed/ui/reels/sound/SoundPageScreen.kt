@@ -22,6 +22,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
@@ -61,6 +62,8 @@ import com.us.android.core.feed.data.SoundReelTile
 import com.us.android.core.feed.data.soundReelCount
 import com.us.android.core.feed.ui.sound.SoundPreviewButton
 import com.us.android.core.feed.ui.sound.SoundPreviewViewModel
+import com.us.android.core.feed.ui.sound.TRENDING_TITLE
+import com.us.android.core.feed.ui.sound.TrendingBadge
 import com.us.android.core.media.sound.SoundPreview
 import com.us.android.core.model.ReelSound
 import com.us.android.core.ui.UsEmptyState
@@ -85,6 +88,8 @@ fun SoundPageScreen(
     onOpenReels: () -> Unit,
     /** "Use this sound"; the sound is already in `SoundEntry`. `:app` opens the reel create flow. */
     onCreateWithSound: () -> Unit,
+    /** Trending sounds (2026-10-24): the ranked list, from the top bar and from a badge. */
+    onOpenTrending: () -> Unit = {},
     viewModel: SoundPageViewModel = hiltViewModel(),
     preview: SoundPreviewViewModel = hiltViewModel(),
 ) {
@@ -94,12 +99,27 @@ fun SoundPageScreen(
     PausePreviewOnStop(preview)
 
     UsScaffold(
-        topBar = { UsTopBar(title = "Sound", onBack = onBack) },
+        topBar = {
+            UsTopBar(
+                title = "Sound",
+                onBack = onBack,
+                actions = {
+                    IconButton(onClick = onOpenTrending, modifier = Modifier.testTag("sound_open_trending")) {
+                        Icon(
+                            imageVector = UsIcons.Flame,
+                            contentDescription = TRENDING_TITLE,
+                            tint = UsTheme.extended.textPrimary,
+                        )
+                    }
+                },
+            )
+        },
         applyPageGutter = false,
     ) { padding ->
         SoundPageContent(
             state = state,
             preview = playing,
+            badges = state.badges,
             actions = SoundPageActions(
                 onTogglePreview = { preview.player.toggle(viewModel.soundId) },
                 onUseSound = { if (viewModel.chooseSound()) onCreateWithSound() },
@@ -111,6 +131,10 @@ fun SoundPageScreen(
                 onLoadMore = viewModel::loadMore,
                 onRetry = viewModel::load,
                 onRefresh = viewModel::refresh,
+                onOpenTrending = {
+                    preview.player.pause()
+                    onOpenTrending()
+                },
             ),
             posterFor = { tile -> viewModel.posterUrl(tile.reel) },
             modifier = Modifier.padding(padding),
@@ -127,6 +151,8 @@ internal class SoundPageActions(
     val onRetry: () -> Unit,
     /** Pull to refresh: the first page again, the tiles staying put. */
     val onRefresh: () -> Unit = {},
+    /** A trending badge: the ranked list. */
+    val onOpenTrending: () -> Unit = {},
 )
 
 /** The preview stops when the page leaves the foreground; the player itself is the holder's to release. */
@@ -150,6 +176,7 @@ private fun PausePreviewOnStop(preview: SoundPreviewViewModel) {
 internal fun SoundPageContent(
     state: SoundPageState,
     preview: SoundPreview,
+    badges: List<String> = emptyList(),
     actions: SoundPageActions,
     posterFor: (SoundReelTile) -> String?,
     modifier: Modifier = Modifier,
@@ -162,6 +189,7 @@ internal fun SoundPageContent(
         SoundPagePhase.Ready -> SoundReels(
             state = state,
             preview = preview,
+            badges = badges,
             actions = actions,
             posterFor = posterFor,
             modifier = modifier,
@@ -179,6 +207,7 @@ internal fun SoundPageContent(
 private fun SoundReels(
     state: SoundPageState,
     preview: SoundPreview,
+    badges: List<String>,
     actions: SoundPageActions,
     posterFor: (SoundReelTile) -> String?,
     modifier: Modifier = Modifier,
@@ -213,6 +242,8 @@ private fun SoundReels(
                 SoundHeader(
                     sound = state.sound,
                     preview = preview,
+                    badges = badges,
+                    onOpenTrending = actions.onOpenTrending,
                     onTogglePreview = actions.onTogglePreview,
                     onUseSound = actions.onUseSound,
                 )
@@ -247,6 +278,8 @@ private fun SoundReels(
 private fun SoundHeader(
     sound: ReelSound?,
     preview: SoundPreview,
+    badges: List<String>,
+    onOpenTrending: () -> Unit,
     onTogglePreview: () -> Unit,
     onUseSound: () -> Unit,
     modifier: Modifier = Modifier,
@@ -291,6 +324,9 @@ private fun SoundHeader(
                     color = UsTheme.extended.textMuted,
                     modifier = Modifier.testTag("sound_count"),
                 )
+                if (badges.isNotEmpty()) {
+                    TrendingBadgeRow(badges = badges, onClick = onOpenTrending)
+                }
             }
         }
         if (preview == SoundPreview.FAILED) {
@@ -354,6 +390,30 @@ private fun SoundReelTileView(
             )
         }
         if (tile.isOrigin) OriginalBadge(modifier = Modifier.align(Alignment.TopStart))
+    }
+}
+
+/**
+ * "#3 trending" and "Rising" (2026-10-24): where the sound stands on the
+ * ranking. A tap opens the ranked list.
+ */
+@Composable
+private fun TrendingBadgeRow(badges: List<String>, onClick: () -> Unit) {
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+        modifier = Modifier
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                role = Role.Button,
+                onClick = onClick,
+            )
+            .semantics(mergeDescendants = true) {
+                contentDescription = badges.joinToString(", ") + ". Open trending sounds"
+            }
+            .testTag("sound_trending_badges"),
+    ) {
+        badges.forEach { TrendingBadge(text = it) }
     }
 }
 

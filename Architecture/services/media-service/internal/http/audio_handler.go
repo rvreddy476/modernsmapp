@@ -19,7 +19,9 @@ func (h *Handler) RegisterAudioRoutes(r *gin.Engine, authMW gin.HandlerFunc) {
 	v1 := r.Group("/v1/audio")
 	{
 		v1.POST("/extract/:mediaId", authMW, h.ExtractAudio)
-		v1.GET("/trending", h.GetTrendingAudio)
+		// Trending sounds (2026-10-24): the stored ranking, signed in
+		// (trending_sounds_handler.go).
+		v1.GET("/trending", authMW, h.GetTrendingSounds)
 		v1.GET("/search", h.SearchAudio)
 		v1.GET("/:audioId", h.GetAudioTrack)
 		v1.GET("/:audioId/url", h.GetAudioTrackURL)
@@ -95,7 +97,12 @@ func (h *Handler) GetAudioTrack(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, track, nil)
+	// The sound page's badge (trending sounds, 2026-10-24): its place in
+	// the stored ranking, or null.
+	api.JSON(c.Writer, http.StatusOK, soundWithTrending{
+		track:    track,
+		trending: h.trendingBadge(c.Request.Context(), track.ID),
+	}, nil)
 }
 
 func (h *Handler) GetAudioTrackURL(c *gin.Context) {
@@ -116,22 +123,6 @@ func (h *Handler) GetAudioTrackURL(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, gin.H{"url": url}, nil)
-}
-
-func (h *Handler) GetTrendingAudio(c *gin.Context) {
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "20"))
-	offset, _ := strconv.Atoi(c.DefaultQuery("offset", "0"))
-
-	// Only the sounds this viewer may hear: a private video's sound is not
-	// listed to a stranger. An unresolved authority is a retryable 503, never
-	// a shorter list that looks complete.
-	tracks, err := h.recordsSvc().TrendingAudioForViewer(c.Request.Context(), deliveryViewer(c), limit, offset)
-	if err != nil {
-		writeAudioListError(c, err)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, gin.H{"tracks": tracks}, nil)
 }
 
 func (h *Handler) SearchAudio(c *gin.Context) {

@@ -737,9 +737,10 @@ func TestExtractAudioSharesTheEnsurePath(t *testing.T) {
 // ── the Sound shape ─────────────────────────────────────────────────────
 
 // soundKeys is every key a sound carries: contract 1.4, and the fields the
-// row carried before it (genre and sample_rate when the row has them).
+// row carried before it (genre and sample_rate when the row has them), and
+// cover_url (trending sounds, 2026-10-24).
 var soundKeys = []string{
-	"artist", "created_at", "creator_user_id", "duration_ms", "id", "is_original", "license_type",
+	"artist", "cover_url", "created_at", "creator_user_id", "duration_ms", "id", "is_original", "license_type",
 	"sample_rate", "source_media_id", "source_post_id", "source_reel_id", "status", "title",
 	"updated_at", "usage_count",
 }
@@ -768,7 +769,6 @@ func TestSoundRowCarriesNoStorageKey(t *testing.T) {
 		"extract":      f.extract(reel, f.owner, ""),
 		"one sound":    f.sound(id, f.owner),
 		"public sound": f.sound(f.trackPublic, uuid.Nil),
-		"trending":     f.get("/v1/audio/trending", f.owner),
 		"search":       f.get("/v1/audio/search?q=take", f.owner),
 		"url":          f.audioURL(f.trackPublic, uuid.Nil),
 	} {
@@ -809,16 +809,16 @@ func TestSoundUsageCountIsTheGreaterCounter(t *testing.T) {
 			} `json:"tracks"`
 		} `json:"data"`
 	}
-	rec := f.get("/v1/audio/trending", f.owner)
+	rec := f.get("/v1/audio/search?q=take", f.owner)
 	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
-		t.Fatalf("decode trending: %v", err)
+		t.Fatalf("decode search: %v", err)
 	}
 	counts := map[uuid.UUID]int{}
 	for _, row := range env.Data.Tracks {
 		counts[row.ID] = row.UsageCount
 	}
 	if counts[f.trackPublic] != 3 || counts[f.trackPrivate] != 7 {
-		t.Errorf("trending counts %v, want %s: 3 and %s: 7", counts, f.trackPublic, f.trackPrivate)
+		t.Errorf("search counts %v, want %s: 3 and %s: 7", counts, f.trackPublic, f.trackPrivate)
 	}
 	if strings.Contains(rec.Body.String(), "use_count") {
 		t.Errorf("the second counter is on the wire: %s", rec.Body.String())

@@ -137,9 +137,32 @@ type PostSound struct {
 	LibraryID *uuid.UUID `json:"library_id,omitempty"`
 }
 
+// SoundTrending is the sound page's trending badge (trending sounds,
+// 2026-10-24): the sound's place in media-service's stored ranking.
+type SoundTrending struct {
+	Rank   int  `json:"rank"`
+	Rising bool `json:"rising"`
+}
+
+// SoundExtras is what media-service adds to the sound page's sound
+// (GET /v1/media/internal/sounds/:id/extras).
+type SoundExtras struct {
+	Trending *SoundTrending `json:"trending"`
+	CoverURL *string        `json:"cover_url"`
+}
+
+// PageSound is the sound at the top of the sound page: the PostSound, plus
+// its cover and its trending badge (each null when it has none, or when
+// media-service could not say).
+type PageSound struct {
+	*PostSound
+	CoverURL *string        `json:"cover_url"`
+	Trending *SoundTrending `json:"trending"`
+}
+
 // SoundPage is one page of GET /v1/posts/by-sound/:soundId.
 type SoundPage struct {
-	Sound *PostSound `json:"sound"`
+	Sound *PageSound `json:"sound"`
 	// Origin is the reel the sound was taken from: on the first page only,
 	// and only when this viewer may open it. Never repeated in Items.
 	Origin *PostDetail  `json:"origin"`
@@ -561,11 +584,81 @@ func (s *Service) PostsBySound(ctx context.Context, viewerID *uuid.UUID, soundID
 	if err != nil {
 		return nil, "", err
 	}
-	page := &SoundPage{Sound: postSoundOf(track, 0), Items: items}
+	extras := s.soundPageExtras(ctx, soundID)
+	page := &SoundPage{
+		Sound: &PageSound{PostSound: postSoundOf(track, 0), CoverURL: extras.CoverURL, Trending: extras.Trending},
+		Items: items,
+	}
 	if cursor == "" && track.SourcePostID != nil {
 		page.Origin = s.soundOrigin(ctx, viewerID, *track.SourcePostID)
 	}
 	return page, nextCursor, nil
+}
+
+// soundExtrasTimeout bounds the badge-and-cover read: a decoration, so a
+// slow media-service costs it, not the page.
+const soundExtrasTimeout = 2 * time.Second
+
+// soundPageExtras is the sound page's cover and trending badge from
+// media-service. Best-effort: a fault is logged and the page carries both
+// as null. The caller has already decided the viewer may hear the sound.
+func (s *Service) soundPageExtras(ctx context.Context, soundID uuid.UUID) SoundExtras {
+	var (
+		extras *SoundExtras
+		err    error
+	)
+	if s.soundExtrasSeam != nil {
+		extras, err = s.soundExtrasSeam(ctx, soundID)
+	} else {
+		extras, err = s.fetchSoundExtras(ctx, soundID)
+	}
+	if err != nil || extras == nil {
+		if err != nil {
+			slog.Warn("sound page: cover and trending unavailable", "sound_id", soundID, "error", err)
+		}
+		return SoundExtras{}
+	}
+	return *extras
+}
+
+func (s *Service) fetchSoundExtras(ctx context.Context, soundID uuid.UUID) (*SoundExtras, error) {
+	if s.mediaServiceURL == "" {
+		return nil, errors.New("media-service not configured")
+	}
+	ctx, cancel := context.WithTimeout(ctx, soundExtrasTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		strings.TrimRight(s.mediaServiceURL, "/")+"/v1/media/internal/sounds/"+soundID.String()+"/extras", nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "application/json")
+	if s.internalServiceKey != "" {
+		req.Header.Set("X-Internal-Service-Key", s.internalServiceKey)
+	}
+	client := s.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
+		return nil, fmt.Errorf("media-service sound extras returned %d", resp.StatusCode)
+	}
+	var envelope struct {
+		Data *SoundExtras `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&envelope); err != nil {
+		return nil, fmt.Errorf("media-service sound extras body: %w", err)
+	}
+	if envelope.Data == nil {
+		return nil, errors.New("media-service sound extras answered without data")
+	}
+	return envelope.Data, nil
 }
 
 // hydrateSoundPosts turns listed rows into the details every listing

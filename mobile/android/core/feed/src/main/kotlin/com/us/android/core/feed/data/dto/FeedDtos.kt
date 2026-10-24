@@ -177,6 +177,13 @@ data class FeedSoundDto(
     @SerialName("use_count") val useCount: Long = 0L,
     @SerialName("source_post_id") val sourcePostId: String? = null,
     @SerialName("creator_user_id") val creatorUserId: String? = null,
+    /**
+     * Trending sounds (2026-10-24), on the by-sound page's sound only: the
+     * sound's cover (a gateway path or an https URL) and its place on the
+     * ranking, `{rank, rising} | null`. Raw, read by `trendingMark`.
+     */
+    @SerialName("cover_url") val coverUrl: String? = null,
+    val trending: JsonElement? = null,
 )
 
 /**

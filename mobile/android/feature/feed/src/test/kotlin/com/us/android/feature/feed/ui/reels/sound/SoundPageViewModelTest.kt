@@ -300,4 +300,66 @@ class SoundPageViewModelTest {
 
         assertThat(viewModel(h, soundId = "s-9").soundId).isEqualTo("s-9")
     }
+
+    // ── trending badges (2026-10-24) ────────────────────────────────────
+
+    /** A first page whose sound carries [trending], raw, as the by-sound read sends it. */
+    private fun trendingPage(trending: String?): () -> ApiEnvelope<SoundReelsDto> = {
+        ApiEnvelope(
+            data = SoundReelsDto(
+                sound = sound.copy(trending = trending?.let { Json.parseToJsonElement(it) }),
+                items = listOf(reel("a", sound)),
+            ),
+        )
+    }
+
+    @Test
+    fun `a ranked rising sound wears both badges, the rank first`() {
+        val h = Harness(ScriptedSoundsApi(mapOf(null to trendingPage("""{"rank":3,"rising":true}"""))))
+
+        assertThat(viewModel(h).state.value.badges).containsExactly("#3 trending", "Rising").inOrder()
+    }
+
+    @Test
+    fun `a sound off the ranking wears no badge, and the page still loads`() {
+        for (trending in listOf(null, "null", "{}", """{"rank":0,"rising":false}""", "true")) {
+            val vm = viewModel(Harness(ScriptedSoundsApi(mapOf(null to trendingPage(trending)))))
+
+            assertThat(vm.state.value.badges).isEmpty()
+            assertThat(vm.state.value.phase).isEqualTo(SoundPagePhase.Ready)
+            assertThat(vm.state.value.tiles).hasSize(1)
+        }
+    }
+
+    @Test
+    fun `pull to refresh reads the badge again`() {
+        var trending: String? = null
+        val api = ScriptedSoundsApi(mapOf(null to { trendingPage(trending)() }))
+        val vm = viewModel(Harness(api))
+        assertThat(vm.state.value.badges).isEmpty()
+
+        trending = """{"rank":1,"rising":false}"""
+        vm.refresh()
+
+        assertThat(vm.state.value.badges).containsExactly("#1 trending")
+    }
+
+    @Test
+    fun `a later page keeps the badge`() {
+        val first: () -> ApiEnvelope<SoundReelsDto> = {
+            ApiEnvelope(
+                data = SoundReelsDto(
+                    sound = sound.copy(trending = Json.parseToJsonElement("""{"rank":2,"rising":false}""")),
+                    items = listOf(reel("a", sound)),
+                ),
+                meta = ApiMeta(nextCursor = "c1"),
+            )
+        }
+        val vm = viewModel(Harness(ScriptedSoundsApi(mapOf(null to first, "c1" to page("b")))))
+
+        vm.loadMore()
+
+        assertThat(vm.state.value.tiles).hasSize(2)
+        assertThat(vm.state.value.badges).containsExactly("#2 trending")
+    }
 }

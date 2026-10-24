@@ -56,6 +56,11 @@ data class ApiMeta(
      * passed the daily limit of new tags. Sent only when more than zero.
      */
     @SerialName("credit_tags_skipped") val creditTagsSkipped: Int? = null,
+    /**
+     * Trending sounds (media-service, 2026-10-24): when the stored ranking
+     * was computed, RFC 3339. Only on `GET v1/audio/trending`.
+     */
+    @SerialName("updated_at") val updatedAt: String? = null,
 )
 
 /**

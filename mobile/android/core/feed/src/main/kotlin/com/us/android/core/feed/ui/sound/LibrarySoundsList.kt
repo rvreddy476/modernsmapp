@@ -30,6 +30,9 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -130,11 +133,17 @@ fun LibrarySoundsList(
     onChosen: () -> Unit,
     modifier: Modifier = Modifier,
     viewModel: LibrarySoundsViewModel = hiltViewModel(),
+    trending: TrendingSoundsViewModel = hiltViewModel(),
     useLabel: String = "Use this sound",
     contentPadding: PaddingValues = PaddingValues(0.dp),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val preview by viewModel.previewState.collectAsStateWithLifecycle()
+    val trendingState by trending.state.collectAsStateWithLifecycle()
+    val trendingPreview by trending.previewState.collectAsStateWithLifecycle()
+    // Trending sounds (2026-10-24): "See all" swaps the library for the full
+    // list in place, so a "Use" there closes the picker like a library row's.
+    var showTrending by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(state.chosenSoundId) {
         if (state.chosenSoundId != null) {
@@ -143,6 +152,32 @@ fun LibrarySoundsList(
         }
     }
     PreviewFollowsList(viewModel)
+    PreviewFollowsTrending(trending)
+
+    // Two lists, two players: pressing play on one silences the other.
+    val trendingActions = trendingActions(trending).let { base ->
+        TrendingSoundsActions(
+            onFilter = base.onFilter,
+            onRetry = base.onRetry,
+            onLoadMore = base.onLoadMore,
+            onTogglePreview = { sound ->
+                viewModel.stopPreview()
+                base.onTogglePreview(sound)
+            },
+            onUse = base.onUse,
+        )
+    }
+
+    if (showTrending) {
+        TrendingSoundsPanel(
+            onBack = { showTrending = false },
+            onChosen = onChosen,
+            viewModel = trending,
+            useLabel = useLabel,
+            modifier = modifier,
+        )
+        return
+    }
 
     LibrarySoundsContent(
         state = state,
@@ -151,12 +186,28 @@ fun LibrarySoundsList(
             onGenre = viewModel::onGenre,
             onRetry = { viewModel.load(more = false) },
             onLoadMore = { viewModel.load(more = true) },
-            onTogglePreview = viewModel::togglePreview,
+            onTogglePreview = { sound ->
+                trending.stopPreview()
+                viewModel.togglePreview(sound)
+            },
             onUse = viewModel::use,
         ),
         useLabel = useLabel,
         contentPadding = contentPadding,
         modifier = modifier,
+        header = {
+            TrendingSoundsShelf(
+                state = trendingState,
+                preview = trendingPreview,
+                actions = trendingActions,
+                onSeeAll = {
+                    viewModel.stopPreview()
+                    trending.stopPreview()
+                    showTrending = true
+                },
+                modifier = Modifier.padding(bottom = UsTheme.spacing.m),
+            )
+        },
     )
 }
 
@@ -178,8 +229,11 @@ fun LibrarySoundsContent(
     modifier: Modifier = Modifier,
     useLabel: String = "Use this sound",
     contentPadding: PaddingValues = PaddingValues(0.dp),
+    /** Drawn above everything else: the Trending shelf in the picker. */
+    header: @Composable () -> Unit = {},
 ) {
     Column(modifier = modifier.fillMaxSize().testTag("library_sounds")) {
+        header()
         if (state.genres.isNotEmpty()) {
             GenrePills(genres = state.genres, selected = state.genre, onGenre = actions.onGenre)
         }

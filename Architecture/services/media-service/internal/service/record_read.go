@@ -64,8 +64,7 @@ type recordReadStore interface {
 	GetMediaWithVariants(ctx context.Context, id uuid.UUID) (*postgres.MediaAsset, error)
 	GetTranscodingJobs(ctx context.Context, mediaAssetID uuid.UUID) ([]postgres.TranscodingJob, error)
 	GetAudioTrack(ctx context.Context, id uuid.UUID) (*postgres.AudioTrack, error)
-	// The sound lists and the usage counter (audio_reads.go).
-	GetTrendingAudioTracks(ctx context.Context, limit, offset int) ([]postgres.AudioTrack, error)
+	// The sound search and the usage counter (audio_reads.go).
 	SearchAudioTracks(ctx context.Context, query string, limit, offset int) ([]postgres.AudioTrack, error)
 	IncrementAudioUsageCount(ctx context.Context, id uuid.UUID) error
 }

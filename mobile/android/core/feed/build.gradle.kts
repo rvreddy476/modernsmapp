@@ -54,6 +54,8 @@ dependencies {
     // the system's document picker.
     implementation(libs.androidx.activity.compose)
     implementation(libs.kotlinx.serialization.json)
+    // Trending sounds (2026-10-24): a ranked sound's cover, when it has one.
+    implementation(libs.coil.compose)
     // Paging is part of this module's public surface: FeedRepository returns
     // Flow<PagingData<FeedItem>>, so consumers need the type.
     api(libs.paging.runtime)

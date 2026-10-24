@@ -10,6 +10,7 @@ import com.us.android.core.feed.data.SoundReelTile
 import com.us.android.core.feed.data.SoundReelsPage
 import com.us.android.core.feed.data.SoundsRepository
 import com.us.android.core.feed.data.soundReelTiles
+import com.us.android.core.feed.data.trendingBadges
 import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.ReelsEntry
@@ -62,6 +63,11 @@ data class SoundPageState(
     val moreFailed: Boolean = false,
     /** The first page is being read again over the tiles on screen (pull to refresh). */
     val refreshing: Boolean = false,
+    /**
+     * Trending sounds (2026-10-24): "#3 trending", "Rising" — the by-sound
+     * page's `sound.trending`. Empty when the sound is not on the ranking.
+     */
+    val badges: List<String> = emptyList(),
 ) {
     /** The sound exists and no reel plays it yet — not even its origin is readable. */
     val isEmpty: Boolean get() = phase == SoundPagePhase.Ready && tiles.isEmpty()
@@ -82,6 +88,7 @@ fun soundPageState(pages: List<SoundReelsPage>, loadingMore: Boolean = false, mo
         canLoadMore = pages.lastOrNull()?.nextCursor != null,
         loadingMore = loadingMore,
         moreFailed = moreFailed,
+        badges = trendingBadges(pages.firstNotNullOfOrNull { it.trending }),
     )
 
 /** What the first page's failure means for the page: gone, or worth another try. */

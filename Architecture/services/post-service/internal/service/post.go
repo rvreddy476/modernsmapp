@@ -183,6 +183,12 @@ type Service struct {
 	soundMaker    soundSource
 	soundLimiter  func(ctx context.Context, userID uuid.UUID) bool
 	mediaStates   mediaStateStore
+	// soundUses is the store slice behind GET /v1/internal/sound-uses
+	// (sound_uses.go, trending sounds); nil = the Postgres store.
+	soundUses soundUsesStore
+	// soundExtrasSeam stands in for media-service's cover-and-badge read on
+	// the sound page (sounds.go soundPageExtras); nil = the HTTP client.
+	soundExtrasSeam func(ctx context.Context, soundID uuid.UUID) (*SoundExtras, error)
 
 	postEdits       postEditStore
 	systemPlaylists systemPlaylistStore

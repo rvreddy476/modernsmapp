@@ -159,8 +159,9 @@ func TestSoundUnresolvedIs503(t *testing.T) {
 // ── GET /v1/audio/trending, /v1/audio/search ────────────────────────────
 
 func TestSoundListsShowOnlyWhatTheViewerMayHear(t *testing.T) {
+	// The trending list is the stored ranking since 2026-10-24; its own
+	// audience tests are trending_sounds_handler_test.go.
 	for _, list := range []struct{ name, path string }{
-		{"trending", "/v1/audio/trending"},
 		{"search", "/v1/audio/search?q=take"},
 	} {
 		t.Run(list.name, func(t *testing.T) {
@@ -192,7 +193,7 @@ func TestSoundSearchMatchesBeforeItFilters(t *testing.T) {
 // Two sounds of one video are one question to the authority.
 func TestSoundListAsksOncePerSource(t *testing.T) {
 	f, _ := newSoundFixture(t)
-	listedIDs(t, f.get("/v1/audio/trending", f.viewer))
+	listedIDs(t, f.get("/v1/audio/search?q=take", f.viewer))
 	if f.authz.calls != 2 {
 		t.Errorf("authority asked %d times for two sources, want 2", f.authz.calls)
 	}
@@ -201,7 +202,7 @@ func TestSoundListAsksOncePerSource(t *testing.T) {
 // A list that cannot be checked is a 503, never a shorter list that looks
 // complete.
 func TestSoundListUnresolvedIs503(t *testing.T) {
-	for _, path := range []string{"/v1/audio/trending", "/v1/audio/search?q=take"} {
+	for _, path := range []string{"/v1/audio/search?q=take"} {
 		f, _ := newSoundFixture(t)
 		f.authz.err = delivery.ErrDeliveryUnresolved
 		rec := f.get(path, f.viewer)
@@ -217,7 +218,7 @@ func TestSoundListUnresolvedIs503(t *testing.T) {
 func TestSoundListFaultKeepsItsTextOnTheServer(t *testing.T) {
 	f, _ := newSoundFixture(t)
 	f.store.listFail = errors.New(`pq: relation "audio_tracks" does not exist`)
-	rec := f.get("/v1/audio/trending", f.viewer)
+	rec := f.get("/v1/audio/search?q=take", f.viewer)
 	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "audio_tracks") {
 		t.Errorf("store fault: got %d %s want 500 without the fault's text", rec.Code, rec.Body.String())
 	}
@@ -225,10 +226,10 @@ func TestSoundListFaultKeepsItsTextOnTheServer(t *testing.T) {
 
 func TestSoundListPagesAreBounded(t *testing.T) {
 	f, second := newSoundFixture(t)
-	wantIDs(t, "limit 1", listedIDs(t, f.get("/v1/audio/trending?limit=1", f.viewer)), f.trackPrivate)
-	wantIDs(t, "offset 1", listedIDs(t, f.get("/v1/audio/trending?offset=1", f.viewer)), f.trackPublic, second)
-	wantIDs(t, "past the end", listedIDs(t, f.get("/v1/audio/trending?offset=40", f.viewer)))
-	wantIDs(t, "negative offset", listedIDs(t, f.get("/v1/audio/trending?offset=-5&limit=1", f.viewer)), f.trackPrivate)
+	wantIDs(t, "limit 1", listedIDs(t, f.get("/v1/audio/search?q=take&limit=1", f.viewer)), f.trackPrivate)
+	wantIDs(t, "offset 1", listedIDs(t, f.get("/v1/audio/search?q=take&offset=1", f.viewer)), f.trackPublic, second)
+	wantIDs(t, "past the end", listedIDs(t, f.get("/v1/audio/search?q=take&offset=40", f.viewer)))
+	wantIDs(t, "negative offset", listedIDs(t, f.get("/v1/audio/search?q=take&offset=-5&limit=1", f.viewer)), f.trackPrivate)
 }
 
 // ── POST /v1/audio/:audioId/use ─────────────────────────────────────────

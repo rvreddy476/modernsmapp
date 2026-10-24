@@ -74,10 +74,6 @@ func (f *fakeRecordStore) page(match func(*postgres.AudioTrack) bool, limit, off
 	return out, nil
 }
 
-func (f *fakeRecordStore) GetTrendingAudioTracks(_ context.Context, limit, offset int) ([]postgres.AudioTrack, error) {
-	return f.page(func(*postgres.AudioTrack) bool { return true }, limit, offset)
-}
-
 func (f *fakeRecordStore) SearchAudioTracks(_ context.Context, query string, limit, offset int) ([]postgres.AudioTrack, error) {
 	q := strings.ToLower(query)
 	return f.page(func(t *postgres.AudioTrack) bool {
@@ -598,7 +594,7 @@ func TestRecordReadRoutesAreWired(t *testing.T) {
 		"GET /v1/media/:mediaId/status": ".GetMediaStatus",
 		"GET /v1/audio/:audioId/url":    ".GetAudioTrackURL",
 		"GET /v1/audio/:audioId":        ".GetAudioTrack",
-		"GET /v1/audio/trending":        ".GetTrendingAudio",
+		"GET /v1/audio/trending":        ".GetTrendingSounds",
 		"GET /v1/audio/search":          ".SearchAudio",
 		"POST /v1/audio/:audioId/use":   ".UseAudioTrack",
 		// The sound's bytes and the two ensure routes (sound_handler.go).

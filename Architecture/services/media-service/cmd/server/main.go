@@ -277,6 +277,23 @@ func main() {
 	}
 	mediaHandler := mediaHttp.New(mediaSvc).WithInternalKey(internalServiceKey)
 
+	// Trending sounds (2026-10-24): every 15 minutes one replica reads
+	// post-service's use counts (GET /v1/internal/sound-uses) and stores the
+	// ranking GET /v1/audio/trending serves; each read skips sounds whose
+	// creator holds a block with the viewer (graph-service blocked-any).
+	// Without POST_SERVICE_URL or the internal key no run is made and the
+	// stored list (empty at first) is served as it is.
+	var trendingUses service.SoundUsesSource
+	if postURL := os.Getenv("POST_SERVICE_URL"); postURL != "" && internalServiceKey != "" {
+		trendingUses = service.NewHTTPSoundUses(postURL, internalServiceKey, nil)
+	} else {
+		slog.Warn("media-service: trending sounds ranking disabled (POST_SERVICE_URL or INTERNAL_SERVICE_KEY not set)")
+	}
+	trending := service.NewTrendingSounds(pgStore, trendingUses, mediaSvc.RecordReads(),
+		service.NewHTTPBlockChecker(env("GRAPH_SERVICE_URL", "http://graph-service:8083"), internalServiceKey, nil))
+	mediaHandler.WithTrendingSounds(trending)
+	trending.Start(ctx)
+
 	// Seller KYC documents, view-only (2026-10-01): GET
 	// /v1/media/internal/:mediaId/image-bytes answers commerce-service (seller
 	// KYC) and doorstep-service (professional documents, 2026-10-04) only.

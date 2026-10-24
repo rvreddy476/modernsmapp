@@ -57,6 +57,11 @@ type HandlerTestDeps struct {
 	SoundCounts        func(ctx context.Context, postIDs []uuid.UUID) (map[uuid.UUID]*scylla.Counts, error)
 	MediaServiceURL    string
 	InternalServiceKey string
+	// SoundUses backs GET /v1/internal/sound-uses (sound_uses.go).
+	SoundUses soundUsesStore
+	// SoundExtras stands in for media-service's cover and trending badge on
+	// the sound page; nil asks media-service at MediaServiceURL.
+	SoundExtras func(ctx context.Context, soundID uuid.UUID) (*SoundExtras, error)
 	// Offline copies (offline_copies.go): the store, the relationship graph
 	// the playback decision reads, the caption-track list in place of
 	// media-service and the members-only answer in place of monetization.
@@ -133,6 +138,8 @@ func NewForHandlerTests(d HandlerTestDeps) *Service {
 		soundCounts:         d.SoundCounts,
 		mediaServiceURL:     d.MediaServiceURL,
 		internalServiceKey:  d.InternalServiceKey,
+		soundUses:           d.SoundUses,
+		soundExtrasSeam:     d.SoundExtras,
 
 		offline:              d.Offline,
 		offlineCaptionTracks: d.OfflineCaptions,

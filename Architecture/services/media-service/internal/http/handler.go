@@ -60,6 +60,10 @@ type Handler struct {
 	// (library_sound_handler.go); nil means the service. An interface so
 	// the routes can be pinned without PostgreSQL.
 	library librarySoundService
+	// trending backs GET /v1/audio/trending and the sound page's `trending`
+	// (trending_sounds_handler.go); nil answers the list 503 and every
+	// badge null.
+	trending trendingSoundsService
 	// imageBytes backs GET /v1/media/internal/:mediaId/image-bytes
 	// (image_bytes_handler.go); nil means the service's reader. An interface
 	// so a test can stand fake stores behind the real reader.
@@ -186,6 +190,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 			// Original sounds on reels (2026-09-29): post-service, on "use
 			// this sound". The one sound of the video, extracted on first use.
 			internal.POST("/:mediaId/sound", h.EnsureSound)
+			// Trending sounds (2026-10-24): post-service's sound page asks
+			// for the badge and the cover (trending_sounds_handler.go).
+			internal.GET("/sounds/:audioId/extras", refuseGatewayIdentity(), h.GetSoundExtrasInternal)
 			// Copyright Match phase 1 (shadow): queue or inspect the visual
 			// fingerprint job of a ready video. No URLs, no user ids.
 			internal.POST("/:mediaId/fingerprint", h.EnqueueFingerprint)

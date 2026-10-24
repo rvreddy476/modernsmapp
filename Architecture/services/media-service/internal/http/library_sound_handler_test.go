@@ -172,9 +172,9 @@ func TestLibrarySoundUseThenEveryoneHearsIt(t *testing.T) {
 			t.Fatalf("HEAD serve: %d Location %q", head.Code, head.Header().Get("Location"))
 		}
 	}
-	// Listed in trending for a signed-out viewer, and usable by anyone.
-	if ids := listedIDs(t, f.get("/v1/audio/trending", uuid.Nil)); !containsID(ids, id) {
-		t.Fatalf("trending for a signed-out viewer = %v, want it to include %s", ids, id)
+	// Found by search for a signed-out viewer, and usable by anyone.
+	if ids := listedIDs(t, f.get("/v1/audio/search?q=monsoon", uuid.Nil)); !containsID(ids, id) {
+		t.Fatalf("search for a signed-out viewer = %v, want it to include %s", ids, id)
 	}
 	if rec := f.use(id, f.stranger); rec.Code != http.StatusOK {
 		t.Fatalf("POST /v1/audio/%s/use: %d %s", id, rec.Code, rec.Body.String())
@@ -258,7 +258,7 @@ func TestLibrarySoundWithdrawn(t *testing.T) {
 	if rec := f.get("/v1/audio/"+id.String()+"/serve", f.stranger); rec.Code != http.StatusNotFound {
 		t.Fatalf("serve of a withdrawn sound: %d", rec.Code)
 	}
-	if ids := listedIDs(t, f.get("/v1/audio/trending", f.stranger)); containsID(ids, id) {
+	if ids := listedIDs(t, f.get("/v1/audio/search?q=monsoon", f.stranger)); containsID(ids, id) {
 		t.Fatalf("a withdrawn library sound is still listed: %v", ids)
 	}
 }

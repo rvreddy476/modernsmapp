@@ -73,7 +73,7 @@ fun AppError.soundRefusalMessage(): String = soundRefusalMessage(soundRefusalCod
 // ── the answers ─────────────────────────────────────────────────────────
 
 /** A sound row that may be played: an absent or empty status is taken as ready. */
-private val USABLE_STATUS = setOf("", "ready", "active")
+internal val USABLE_STATUS = setOf("", "ready", "active")
 
 /**
  * media-service's row as a [ReelSound], or null when it is no sound, or one
@@ -104,6 +104,8 @@ data class SoundReelsPage(
     val items: List<FeedItem>,
     /** Null at the end; an empty cursor is the end too. */
     val nextCursor: String?,
+    /** Trending sounds (2026-10-24): where the sound stands on the ranking; null when it is not on it. */
+    val trending: TrendingMark? = null,
 )
 
 /**
@@ -118,6 +120,7 @@ internal fun SoundReelsDto.toPage(meta: ApiMeta?): SoundReelsPage {
         origin = originRow,
         items = items.mapNotNull { it.toSoundReel() }.filter { it.id != originRow?.id },
         nextCursor = meta?.nextCursor?.takeIf { it.isNotBlank() },
+        trending = trendingMark(sound?.trending),
     )
 }
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -48,6 +49,35 @@ type AudioTrack struct {
 	LibraryID *uuid.UUID `json:"library_id,omitempty"`
 	CreatedAt time.Time  `json:"created_at"`
 	UpdatedAt time.Time  `json:"updated_at"`
+	// LibraryCoverURL is the library row's artwork (audio_library.cover_url)
+	// of a platform sound; nil on every other sound. On the wire only as
+	// cover_url, and only when it is https (CoverURL).
+	LibraryCoverURL *string `json:"-"`
+}
+
+// soundCoverVariant is the still of a source video a sound's cover is: the
+// thumbnail every ready video has (cmd/worker), served behind the poster
+// question of the media gate.
+const soundCoverVariant = "thumb_150"
+
+// CoverURL is the sound's cover (trending sounds, 2026-10-24): a library
+// sound's https artwork, or the site path of its source video's thumbnail
+// (/v1/media/:id/serve/thumb_150, gated like every media read). nil when
+// the sound has neither. The thumbnail is the video's frame, not a custom
+// cover its source post may carry.
+func (a AudioTrack) CoverURL() *string {
+	if a.LibraryID != nil && *a.LibraryID != uuid.Nil {
+		if a.LibraryCoverURL != nil && strings.HasPrefix(*a.LibraryCoverURL, "https://") {
+			cover := *a.LibraryCoverURL
+			return &cover
+		}
+		return nil
+	}
+	if a.SourceMediaID != nil && *a.SourceMediaID != uuid.Nil {
+		cover := "/v1/media/" + a.SourceMediaID.String() + "/serve/" + soundCoverVariant
+		return &cover
+	}
+	return nil
 }
 
 // IsLibrarySound reports whether the row is a platform library sound.
@@ -71,7 +101,8 @@ func (a AudioTrack) MarshalJSON() ([]byte, error) {
 	sound := struct {
 		row
 		SourcePostID *uuid.UUID `json:"source_post_id"`
-	}{row: row(a), SourcePostID: a.SourceReelID}
+		CoverURL     *string    `json:"cover_url"`
+	}{row: row(a), SourcePostID: a.SourceReelID, CoverURL: a.CoverURL()}
 	sound.UsageCount = a.WireUsageCount()
 	return json.Marshal(sound)
 }
@@ -82,7 +113,8 @@ func (a AudioTrack) MarshalJSON() ([]byte, error) {
 const audioTrackCols = `id, source_media_id, source_reel_id, title, artist, genre,
 		       COALESCE(audio_key, ''), waveform_key, duration_ms, sample_rate, status, is_original,
 		       license_type, COALESCE(usage_count, 0), COALESCE(use_count, 0), creator_user_id,
-		       library_id, created_at, updated_at`
+		       library_id, created_at, updated_at,
+		       (SELECT al.cover_url FROM audio_library al WHERE al.id = library_id)`
 
 // audioTrackUses is the counter the lists order by: the one the wire carries.
 const audioTrackUses = `GREATEST(COALESCE(usage_count, 0), COALESCE(use_count, 0))`
@@ -92,7 +124,7 @@ func scanSound(row pgx.Row, a *AudioTrack) error {
 		&a.ID, &a.SourceMediaID, &a.SourceReelID, &a.Title, &a.Artist, &a.Genre,
 		&a.AudioKey, &a.WaveformKey, &a.DurationMs, &a.SampleRate, &a.Status, &a.IsOriginal,
 		&a.LicenseType, &a.UsageCount, &a.UseCount, &a.CreatorUserID,
-		&a.LibraryID, &a.CreatedAt, &a.UpdatedAt,
+		&a.LibraryID, &a.CreatedAt, &a.UpdatedAt, &a.LibraryCoverURL,
 	)
 }
 
@@ -182,22 +214,6 @@ func (s *MediaAssetStore) UpdateAudioTrackWaveform(ctx context.Context, id uuid.
 		UPDATE audio_tracks SET waveform_key = $1, updated_at = NOW() WHERE id = $2
 	`, waveformKey, id)
 	return err
-}
-
-// GetTrendingAudioTracks returns audio tracks ordered by usage count (snapshot-based).
-func (s *MediaAssetStore) GetTrendingAudioTracks(ctx context.Context, limit, offset int) ([]AudioTrack, error) {
-	rows, err := s.db.Query(ctx, `
-		SELECT `+audioTrackCols+`
-		FROM audio_tracks
-		WHERE status = 'ready'
-		ORDER BY `+audioTrackUses+` DESC, created_at DESC
-		LIMIT $1 OFFSET $2
-	`, limit, offset)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	return scanAudioTracks(rows)
 }
 
 // SearchAudioTracks searches audio tracks by title or artist.

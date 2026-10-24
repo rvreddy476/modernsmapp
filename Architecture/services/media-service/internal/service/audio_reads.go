@@ -95,18 +95,8 @@ func (r *RecordReads) admitToTrack(ctx context.Context, viewerID uuid.UUID, trac
 	return err
 }
 
-// TrendingAudioForViewer is GET /v1/audio/trending for viewerID.
-func (r *RecordReads) TrendingAudioForViewer(ctx context.Context, viewerID uuid.UUID, limit, offset int) ([]postgres.AudioTrack, error) {
-	if r == nil || r.store == nil {
-		return nil, fmt.Errorf("%w: record store not configured", delivery.ErrDeliveryUnresolved)
-	}
-	limit, offset = clampAudioPage(limit, offset)
-	tracks, err := r.store.GetTrendingAudioTracks(ctx, limit, offset)
-	if err != nil {
-		return nil, fmt.Errorf("list trending audio: %w", err)
-	}
-	return r.audibleTo(ctx, viewerID, tracks)
-}
+// GET /v1/audio/trending is the stored ranking since 2026-10-24
+// (trending_sounds.go); it asks admitToTrack for every row it serves.
 
 // SearchAudioForViewer is GET /v1/audio/search for viewerID.
 func (r *RecordReads) SearchAudioForViewer(ctx context.Context, viewerID uuid.UUID, query string, limit, offset int) ([]postgres.AudioTrack, error) {
