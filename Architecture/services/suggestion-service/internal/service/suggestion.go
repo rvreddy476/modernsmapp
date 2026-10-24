@@ -112,10 +112,11 @@ type ActionRequest struct {
 
 // GetSuggestions returns ranked suggestions for a viewer.
 func (s *Service) GetSuggestions(ctx context.Context, viewerID uuid.UUID, suggType string, limit int, cursor string, surface string) (*SuggestionsResponse, error) {
-	cacheKey := fmt.Sprintf("suggestions:%s:%s:%s", viewerID, suggType, surface)
-	if surface == "" {
-		cacheKey = fmt.Sprintf("suggestions:%s:%s", viewerID, suggType)
-	}
+	// One key per viewer and type, the same one cacheItems writes and
+	// invalidateCache clears: the cached list does not depend on the surface
+	// (it is only echoed in the response). A surface-specific key was never
+	// written, so every request naming a surface missed the cache.
+	cacheKey := suggestionsCacheKey(viewerID, suggType)
 	offset := decodeCursor(cursor)
 
 	// 1. Try Redis cache
@@ -452,7 +453,7 @@ func (s *Service) candidatesToItems(ctx context.Context, viewerID uuid.UUID, can
 }
 
 func (s *Service) cacheItems(ctx context.Context, viewerID uuid.UUID, suggType string, items []SuggestionItem) {
-	cacheKey := fmt.Sprintf("suggestions:%s:%s", viewerID, suggType)
+	cacheKey := suggestionsCacheKey(viewerID, suggType)
 	data, err := json.Marshal(items)
 	if err != nil {
 		return
@@ -465,7 +466,7 @@ func (s *Service) cacheItems(ctx context.Context, viewerID uuid.UUID, suggType s
 }
 
 func (s *Service) invalidateCache(ctx context.Context, viewerID uuid.UUID, suggType string) {
-	key := fmt.Sprintf("suggestions:%s:%s", viewerID, suggType)
+	key := suggestionsCacheKey(viewerID, suggType)
 	s.rdb.Del(ctx, key)
 }
 
@@ -567,4 +568,10 @@ func decodeCursor(cursor string) int {
 	}
 	json.Unmarshal(data, &c)
 	return c.Offset
+}
+
+// suggestionsCacheKey is the one Redis key for a viewer's cached list of a
+// type; the read, the write and the clear (and the events consumer) share it.
+func suggestionsCacheKey(viewerID uuid.UUID, suggType string) string {
+	return fmt.Sprintf("suggestions:%s:%s", viewerID, suggType)
 }
