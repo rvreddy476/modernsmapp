@@ -76,3 +76,100 @@ func TestCopyrightBlocksIT_CountAndPause(t *testing.T) {
 		t.Fatalf("a voided block still pauses: %v", st.LongVideoPausedUntil)
 	}
 }
+
+// An overturned block (post-service migration 076: the author appealed and
+// a reviewer cleared it) stops counting and lifts the pause; the void is
+// idempotent per review; a redelivered old block or old clear changes
+// nothing; a clear of a review never blocked changes nothing; a block of
+// the same review after the clear counts once again.
+func TestCopyrightBlocksIT_OverturnLiftsPause(t *testing.T) {
+	pool, svc, extras := newStrikeRig(t)
+	ctx := context.Background()
+	user, reviewer := uuid.New(), uuid.New()
+	now := time.Now().UTC()
+
+	var blocks []postgres.CopyrightBlockInput
+	for _, ago := range []time.Duration{30 * 24 * time.Hour, 20 * 24 * time.Hour, 2 * time.Hour} {
+		b := postgres.CopyrightBlockInput{UserID: user, PostID: uuid.New(), ReviewID: uuid.New(), MatchedTitle: "Jailer 2", BlockedAt: now.Add(-ago)}
+		if created, err := extras.RecordCopyrightBlock(ctx, b); err != nil || !created {
+			t.Fatalf("record: created=%v err=%v", created, err)
+		}
+		blocks = append(blocks, b)
+	}
+	paused := func() *time.Time {
+		t.Helper()
+		st, err := svc.Standing(ctx, user)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return st.LongVideoPausedUntil
+	}
+	if paused() == nil {
+		t.Fatal("three blocks did not pause long video")
+	}
+
+	third := blocks[2]
+	clear := postgres.CopyrightBlockVoidInput{UserID: user, ReviewID: third.ReviewID, ClearedAt: third.BlockedAt.Add(time.Hour),
+		VoidedBy: &reviewer, Reason: postgres.CopyrightBlockVoidAppealCleared}
+	if voided, err := extras.VoidCopyrightBlock(ctx, clear); err != nil || !voided {
+		t.Fatalf("void: voided=%v err=%v", voided, err)
+	}
+	if p := paused(); p != nil {
+		t.Fatalf("the pause outlived the overturned block: %v", p)
+	}
+	var reason string
+	var by *uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT void_reason, voided_by FROM trust.copyright_blocks WHERE source_ref = $1 AND voided_at IS NOT NULL`,
+		third.ReviewID).Scan(&reason, &by); err != nil || reason != postgres.CopyrightBlockVoidAppealCleared || by == nil || *by != reviewer {
+		t.Fatalf("void row: reason=%q by=%v err=%v", reason, by, err)
+	}
+
+	// Replays: the clear again, the overturned block again.
+	if voided, err := extras.VoidCopyrightBlock(ctx, clear); err != nil || voided {
+		t.Fatalf("replayed void: voided=%v err=%v", voided, err)
+	}
+	if created, err := extras.RecordCopyrightBlock(ctx, third); err != nil || created {
+		t.Fatalf("replayed block after its void: created=%v err=%v", created, err)
+	}
+	if p := paused(); p != nil {
+		t.Fatalf("a replay brought the pause back: %v", p)
+	}
+
+	// A clear of a review that was never blocked, and one naming another
+	// user, change nothing.
+	if voided, err := extras.VoidCopyrightBlock(ctx, postgres.CopyrightBlockVoidInput{UserID: user, ReviewID: uuid.New(),
+		ClearedAt: now, Reason: postgres.CopyrightBlockVoidReviewCleared}); err != nil || voided {
+		t.Fatalf("clear without a block: voided=%v err=%v", voided, err)
+	}
+	other := clear
+	other.UserID, other.ReviewID, other.ClearedAt = uuid.New(), blocks[1].ReviewID, now
+	if voided, err := extras.VoidCopyrightBlock(ctx, other); err != nil || voided {
+		t.Fatalf("clear naming another user: voided=%v err=%v", voided, err)
+	}
+
+	// Blocked again after the clear: one new block, counted once.
+	reblock := third
+	reblock.BlockedAt = clear.ClearedAt.Add(30 * time.Minute)
+	if created, err := extras.RecordCopyrightBlock(ctx, reblock); err != nil || !created {
+		t.Fatalf("re-block: created=%v err=%v", created, err)
+	}
+	if created, err := extras.RecordCopyrightBlock(ctx, reblock); err != nil || created {
+		t.Fatalf("replayed re-block: created=%v err=%v", created, err)
+	}
+	// The old clear redelivered after the re-block does not void it.
+	if voided, err := extras.VoidCopyrightBlock(ctx, clear); err != nil || voided {
+		t.Fatalf("old clear after the re-block: voided=%v err=%v", voided, err)
+	}
+	if p := paused(); p == nil || p.Sub(reblock.BlockedAt.Add(LongVideoPauseDuration)).Abs() > time.Second {
+		t.Fatalf("re-block: paused=%v, want from the re-block", p)
+	}
+	var rows, active int
+	if err := pool.QueryRow(ctx, `SELECT count(*), count(*) FILTER (WHERE voided_at IS NULL) FROM trust.copyright_blocks WHERE source_ref = $1`,
+		third.ReviewID).Scan(&rows, &active); err != nil || rows != 2 || active != 1 {
+		t.Fatalf("review rows=%d active=%d err=%v, want 2 and 1", rows, active, err)
+	}
+	times, err := extras.CopyrightBlockTimes(ctx, user, now.Add(-postgres.CopyrightBlockLookback))
+	if err != nil || len(times) != 3 {
+		t.Fatalf("blocks = %v err=%v, want 3", times, err)
+	}
+}

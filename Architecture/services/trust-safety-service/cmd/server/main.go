@@ -255,7 +255,8 @@ func main() {
 
 	// Copyright quick wins (2026-10-24): post-service's title-review blocks
 	// (post.copyright_review.changed, state blocked) become upheld copyright
-	// blocks, which the standing answer counts for the long-video pause.
+	// blocks, which the standing answer counts for the long-video pause; a
+	// clear (an appeal a reviewer upheld) voids the review's block.
 	copyrightTopic := env("COPYRIGHT_REVIEW_KAFKA_TOPIC", "social.events.v1")
 	copyrightConsumer := tsevents.NewCopyrightReviewConsumer([]string{kafkaBrokers}, copyrightTopic, extras, socialConsumerMetrics)
 	go copyrightConsumer.Start(ctx)

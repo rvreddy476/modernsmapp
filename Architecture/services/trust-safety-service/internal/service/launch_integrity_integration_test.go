@@ -69,6 +69,10 @@ func openM7TrustDB(t *testing.T) *pgxpool.Pool {
 		"migrations/014_report_entity_key.sql",
 		"migrations/015_message_reports.sql",
 		"migrations/016_conversation_reports.sql",
+		"migrations/017_scam_link_reason.sql",
+		"migrations/018_copyright_report_reasons.sql",
+		"migrations/019_copyright_blocks.sql",
+		"migrations/020_copyright_block_overturn.sql",
 	} {
 		raw, readErr := database.Migrations.ReadFile(name)
 		if readErr != nil {
