@@ -78,11 +78,18 @@ func TestResolveConnectAndFollow(t *testing.T) {
 	if d := Resolve(ActionConnect, Facts{IsConnection: true}, Privacy{}); d.Allowed {
 		t.Error("connect to an existing connection should be denied")
 	}
-	if d := Resolve(ActionConnect, Facts{}, Privacy{WhoCanSendConnectionRequest: "no_one"}); d.Allowed {
-		t.Error("connect should be denied when who_can_send_connection_request=no_one")
+	// Connections are retired (24 Oct 2026): connect is denied for every
+	// setting and every relationship, with its own reason.
+	for _, setting := range []string{"", "no_one", "everyone", "friends_of_friends", "friends_of_friends_or_contacts", "contacts_only"} {
+		for _, f := range []Facts{{}, {TargetFollowsActor: true}, {ActorFollowsTarget: true, TargetFollowsActor: true}, {SecondDegree: true}} {
+			d := Resolve(ActionConnect, f, Privacy{WhoCanSendConnectionRequest: setting})
+			if d.Allowed || d.Reason != ReasonConnectionsRetired {
+				t.Errorf("connect with who_can_send_connection_request=%q facts=%+v = %+v, want deny %s", setting, f, d, ReasonConnectionsRetired)
+			}
+		}
 	}
-	if d := Resolve(ActionConnect, Facts{}, Privacy{WhoCanSendConnectionRequest: "everyone"}); !d.Allowed {
-		t.Error("connect should be allowed when who_can_send_connection_request=everyone")
+	if d := Resolve(ActionConnect, Facts{IsConnection: true}, Privacy{}); d.Reason != "already_connected" {
+		t.Errorf("connect to an existing connection reason = %q, want already_connected", d.Reason)
 	}
 	if d := Resolve(ActionFollow, Facts{}, Privacy{}); !d.Allowed {
 		t.Error("public follow should always be allowed")

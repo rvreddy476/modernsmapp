@@ -365,17 +365,19 @@ func resolveCall(f Facts, p Privacy) Decision {
 	}
 }
 
-func resolveConnect(f Facts, p Privacy) Decision {
+// ReasonConnectionsRetired denies "connect" for every pair: connection
+// requests were retired on 24 Oct 2026 (POST /v1/graph/connection-request
+// answers 410 CONNECTIONS_RETIRED), so no client may offer a Connect button.
+const ReasonConnectionsRetired = "connections_retired"
+
+// resolveConnect always denies. who_can_send_connection_request no longer
+// controls anything; an existing connection still reads as
+// already_connected so a client showing old data is not told otherwise.
+func resolveConnect(f Facts, _ Privacy) Decision {
 	if f.IsConnection {
 		return Decision{Allowed: false, Reason: "already_connected"}
 	}
-	if p.WhoCanSendConnectionRequest == "no_one" {
-		return Decision{Allowed: false, Reason: "privacy_no_one"}
-	}
-	// everyone / friends_of_friends* / contacts_only are all permitted in
-	// Phase 1 — friend-of-friend and contact gating arrives with the
-	// contact-sync work (spec §11 compliance track).
-	return Decision{Allowed: true}
+	return Decision{Allowed: false, Reason: ReasonConnectionsRetired}
 }
 
 // resolveComment implements the allow_comments_from row. A block in either

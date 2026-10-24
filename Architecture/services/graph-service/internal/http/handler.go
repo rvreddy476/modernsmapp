@@ -35,6 +35,22 @@ type Handler struct {
 	// audience rule in front of them (connections_rule.go). It is svc in
 	// production; tests substitute a fake.
 	connections connectionsReader
+	// legacyConnections serves the connection routes that still work after
+	// connections were retired (24 Oct 2026): the reads of existing data and
+	// the routes that only remove (decline, cancel, remove). It is svc in
+	// production; tests substitute a fake.
+	legacyConnections legacyConnectionStore
+}
+
+// legacyConnectionStore is the slice of the service the surviving
+// connection routes need. Nothing in it creates a connection or a request.
+type legacyConnectionStore interface {
+	GetConnections(ctx context.Context, userID uuid.UUID, limit, offset int) ([]uuid.UUID, error)
+	GetPendingConnectionRequests(ctx context.Context, userID uuid.UUID) ([]store.ConnectionRequest, error)
+	GetSentConnectionRequests(ctx context.Context, userID uuid.UUID) ([]store.ConnectionRequest, error)
+	DeclineConnectionRequest(ctx context.Context, senderID, receiverID uuid.UUID) error
+	CancelConnectionRequest(ctx context.Context, senderID, receiverID uuid.UUID) error
+	RemoveConnection(ctx context.Context, userA, userB uuid.UUID) error
 }
 
 // connectionsReader is the slice of the service the connection-list routes
@@ -70,7 +86,7 @@ func (h *Handler) WithCanonicalWriteSource(strict bool, warn func(string, ...any
 }
 
 func New(svc *service.Service) *Handler {
-	return &Handler{svc: svc, relationships: svc, permissions: svc, connections: svc}
+	return &Handler{svc: svc, relationships: svc, permissions: svc, connections: svc, legacyConnections: svc}
 }
 
 // WithInternalKey sets the internal service key used to authenticate
@@ -125,7 +141,13 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// it reads, so it is registered in readOnlyPostRoutes.
 		v1.POST("/connections/mutual-counts", h.GetMutualConnectionCounts)
 
-		// Connections (formerly "friends" — spec §3.2/§19)
+		// Connections (formerly "friends" — spec §3.2/§19). RETIRED 24 Oct
+		// 2026 (founder decision B: anyone can message anyone by their
+		// settings; no connection requests anywhere). Sending and accepting
+		// answer 410 CONNECTIONS_RETIRED, so nothing new is created. Existing
+		// connections and pending requests stay readable, and the routes
+		// that only remove (decline, cancel, filter, unfilter, remove) keep
+		// working so old data can still be cleared.
 		v1.POST("/connection-request", h.SendConnectionRequest)
 		v1.POST("/connection-request/accept", h.AcceptConnectionRequest)
 		v1.POST("/connection-request/decline", h.DeclineConnectionRequest)
@@ -160,6 +182,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	internal := r.Group("/v1/internal/graph")
 	internal.GET("/blocked-and-muted", h.GetBlockedAndMutedInternal)
 	internal.POST("/blocked-any", h.BlockedAnyInternal)
+	// Retired 24 Oct 2026 with the connection routes: answers 410.
 	internal.POST("/connections/ensure", h.EnsureConnectionInternal)
 	// Content gating for post/feed/comment services: may viewer view_posts /
 	// comment against each target. Internal-key only; the gateway does not
@@ -761,66 +784,29 @@ func parseConnectionTarget(c *gin.Context) (uuid.UUID, uuid.UUID, bool) {
 	return parseAuthAndBody(c)
 }
 
-func (h *Handler) SendConnectionRequest(c *gin.Context) {
-	senderID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-	var req struct {
-		UserID  string `json:"user_id" binding:"required"`
-		Source  string `json:"source"`
-		Message string `json:"message"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
-	}
-	receiverID, err := uuid.Parse(req.UserID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid target user ID", nil)
-		return
-	}
-	if len(req.Message) > 280 {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "MESSAGE_TOO_LONG", "connection request message exceeds 280 chars", nil)
-		return
-	}
-	if err := h.svc.SendConnectionRequest(c.Request.Context(), senderID, receiverID, req.Source, req.Message); err != nil {
-		if errors.Is(err, service.ErrRateLimited) {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil)
-			return
-		}
-		if errors.Is(err, service.ErrWrongEntityType) {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "WRONG_ENTITY_TYPE", "friend request is only valid against a user", nil)
-			return
-		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "request_sent"}, nil)
+// CodeConnectionsRetired is the error code of every retired connection route.
+const CodeConnectionsRetired = "CONNECTIONS_RETIRED"
+
+// refuseConnectionsRetired answers a retired connection route: 410 with a
+// stable code, without reading the body or touching the service, so no
+// caller (an old app build, a stale service image) can create anything.
+func refuseConnectionsRetired(c *gin.Context) {
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusGone, CodeConnectionsRetired,
+		"Connections are retired. Follow people, or message them as their settings allow.", nil)
 }
 
+// SendConnectionRequest is retired (24 Oct 2026): 410 CONNECTIONS_RETIRED.
+// The service's SendConnectionRequest, and the auto-accept inside it when
+// the other person had already asked, are no longer reachable.
+func (h *Handler) SendConnectionRequest(c *gin.Context) {
+	refuseConnectionsRetired(c)
+}
+
+// AcceptConnectionRequest is retired with sending: accepting a request that
+// was pending before the retirement would still create a new connection.
+// Such a request can be declined (receiver) or cancelled (sender).
 func (h *Handler) AcceptConnectionRequest(c *gin.Context) {
-	receiverID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-	var req UserIDRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
-	}
-	senderID, err := uuid.Parse(req.UserID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid sender user ID", nil)
-		return
-	}
-	if err := h.svc.AcceptConnectionRequest(c.Request.Context(), senderID, receiverID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "accepted"}, nil)
+	refuseConnectionsRetired(c)
 }
 
 func (h *Handler) DeclineConnectionRequest(c *gin.Context) {
@@ -839,7 +825,7 @@ func (h *Handler) DeclineConnectionRequest(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid sender user ID", nil)
 		return
 	}
-	if err := h.svc.DeclineConnectionRequest(c.Request.Context(), senderID, receiverID); err != nil {
+	if err := h.legacyConnections.DeclineConnectionRequest(c.Request.Context(), senderID, receiverID); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -853,7 +839,7 @@ func (h *Handler) CancelConnectionRequest(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.svc.CancelConnectionRequest(c.Request.Context(), senderID, receiverID); err != nil {
+	if err := h.legacyConnections.CancelConnectionRequest(c.Request.Context(), senderID, receiverID); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -865,7 +851,7 @@ func (h *Handler) RemoveConnection(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if err := h.svc.RemoveConnection(c.Request.Context(), actorID, targetID); err != nil {
+	if err := h.legacyConnections.RemoveConnection(c.Request.Context(), actorID, targetID); err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -877,7 +863,7 @@ func (h *Handler) GetConnections(c *gin.Context) {
 	if !ok {
 		return
 	}
-	ids, err := h.svc.GetConnections(c.Request.Context(), userID, limit, offset)
+	ids, err := h.legacyConnections.GetConnections(c.Request.Context(), userID, limit, offset)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -894,7 +880,7 @@ func (h *Handler) GetPendingConnectionRequests(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
-	reqs, err := h.svc.GetPendingConnectionRequests(c.Request.Context(), userID)
+	reqs, err := h.legacyConnections.GetPendingConnectionRequests(c.Request.Context(), userID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -913,7 +899,7 @@ func (h *Handler) GetSentConnectionRequests(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 		return
 	}
-	reqs, err := h.svc.GetSentConnectionRequests(c.Request.Context(), userID)
+	reqs, err := h.legacyConnections.GetSentConnectionRequests(c.Request.Context(), userID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -1227,22 +1213,13 @@ func (h *Handler) GetMutualConnectionCounts(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"counts": out})
 }
 
-// EnsureConnectionInternal makes two users connections idempotently.
-// Service-to-service only: chat calls it when a message request is accepted,
-// because accepting a chat is now what makes two people connections.
+// EnsureConnectionInternal is retired with the user-facing routes (24 Oct
+// 2026): 410 CONNECTIONS_RETIRED. It made two users connections directly
+// (no block check, no event). message-service called it when a message
+// request was accepted until the DM consent model (20 Oct 2026), which made
+// accepting open the chat and nothing more; that call was best-effort and
+// only logged a failure, so an older message-service image still accepts.
+// Nothing calls it now.
 func (h *Handler) EnsureConnectionInternal(c *gin.Context) {
-	var req struct {
-		UserA uuid.UUID `json:"user_a" binding:"required"`
-		UserB uuid.UUID `json:"user_b" binding:"required"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
-	}
-	created, err := h.svc.EnsureConnection(c.Request.Context(), req.UserA, req.UserB)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{"created": created}, nil)
+	refuseConnectionsRetired(c)
 }

@@ -318,8 +318,14 @@ func newRoute(prefix string, target *url.URL, internalKey string) route {
 // newCoreHandler serves probes, metrics and the launch gates, then proxies by
 // route prefix.
 func newCoreHandler(routes []route, promHandler http.Handler, reviewerPublicEnabled bool, dormantProducts []dormantProduct, disabled disabledprefixes.Set) http.Handler {
+	// GET /v1/features: built once, from the same gates the requests below
+	// pass through (the flags and the disabled list are read at boot only).
+	features := featuresBody(featureProducts(routes, dormantProducts, disabled))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if handleProbe(w, r, len(routes)) {
+			return
+		}
+		if serveFeatures(w, r, features) {
 			return
 		}
 		// Prometheus scrape endpoint.
@@ -871,6 +877,14 @@ func jwtExtractMiddleware(keys jwtKeySet, policy tokenpolicy.Policy, next http.H
 		// trusted.
 		stampGraphWriteSource(r)
 
+		// GET /v1/features is the same answer for every caller and is
+		// served by the gateway itself, never proxied. A stale access_token
+		// cookie must not turn it into a 401, so no credential is read here.
+		if r.URL.Path == featuresPath {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// Resolve JWT from one of (in priority order):
 		//   1. Authorization: Bearer header   — mobile + REST callers
 		//   2. access_token cookie            — browser EventSource
@@ -1303,25 +1317,35 @@ func (p dormantProduct) pilotAllows(userID string) bool {
 // backstop below the route match. Internal service-to-service calls do not
 // pass through here. It must run after jwtExtractMiddleware.
 func serveDormantProductGate(w http.ResponseWriter, r *http.Request, products []dormantProduct) bool {
+	if !dormantProductRefuses(r.URL.Path, verifiedUserID(r), products) {
+		return false
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusNotFound)
+	_, _ = w.Write([]byte(`{"error":{"code":"NOT_FOUND","message":"Not found"}}`))
+	return true
+}
+
+// dormantProductRefuses is the gate's decision for a path and a verified
+// user id ("" for anonymous). serveDormantProductGate and GET /v1/features
+// both call it, so the features map cannot disagree with the gate.
+func dormantProductRefuses(path, userID string, products []dormantProduct) bool {
 	for _, p := range products {
 		if p.enabled {
 			continue
 		}
 		for _, prefix := range p.prefixes {
-			if r.URL.Path != prefix && !strings.HasPrefix(r.URL.Path, prefix+"/") {
+			if path != prefix && !strings.HasPrefix(path, prefix+"/") {
 				continue
 			}
-			if p.pilotAllows(verifiedUserID(r)) {
+			if p.pilotAllows(userID) {
 				return false
 			}
 			// Recruiting professionals is independent of customer booking launch.
 			// Client identity headers cannot satisfy verifiedUserID.
-			if p.partnerEnabled && verifiedUserID(r) != "" && prefix == "/v1/doorstep" && (r.URL.Path == prefix+"/pro" || strings.HasPrefix(r.URL.Path, prefix+"/pro/")) {
+			if p.partnerEnabled && userID != "" && prefix == "/v1/doorstep" && (path == prefix+"/pro" || strings.HasPrefix(path, prefix+"/pro/")) {
 				return false
 			}
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusNotFound)
-			_, _ = w.Write([]byte(`{"error":{"code":"NOT_FOUND","message":"Not found"}}`))
 			return true
 		}
 	}

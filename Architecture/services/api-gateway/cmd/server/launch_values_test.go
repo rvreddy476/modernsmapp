@@ -138,6 +138,57 @@ func TestLaunchValuesCloseParkedProducts(t *testing.T) {
 	}
 }
 
+// GET /v1/features built from each launch environment's real values: every
+// parked product reads as disabled, broadcast channels included (they have no
+// gate of their own and are closed by GATEWAY_DISABLED_PREFIXES there), so
+// clients hide them. A values edit that opens one changes this map and fails
+// here until the expectation is updated on purpose.
+func TestLaunchValuesFeaturesMap(t *testing.T) {
+	known := prefixesOf(routeDefinitions())
+	want := map[string]bool{
+		"broadcast_channels": false,
+		"communities":        false,
+		"groups":             false,
+		"qa":                 false,
+		"pages":              false,
+		"memories":           false,
+		"food":               false,
+		"rider":              false,
+		"dating":             false,
+		"doorstep":           false,
+	}
+	for _, tc := range []struct {
+		file       string
+		production bool
+	}{
+		{"values-prod.yaml", true},
+		{"values-staging.yaml", false},
+		{"values-qa.yaml", false},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			env := gatewayEnv(t, tc.file)
+			products, err := dormantProductsFromEnv(envOf(env), tc.production)
+			if err != nil {
+				t.Fatalf("dormantProductsFromEnv: %v", err)
+			}
+			disabled, err := disabledprefixes.Parse(env[disabledprefixes.EnvVar], known)
+			if err != nil {
+				t.Fatalf("%s does not boot: %v", disabledprefixes.EnvVar, err)
+			}
+			core := newCoreHandler(upstreamRoutes(t), nil, false, products, disabled)
+			_, got := getFeatures(t, core, nil)
+			if len(got) != len(want) {
+				t.Fatalf("features keys = %v, want %d keys", sortedKeys(got), len(want))
+			}
+			for key, enabled := range want {
+				if g, ok := got[key]; !ok || g != enabled {
+					t.Errorf("%s: %s enabled = %v (present %v), want %v", tc.file, key, g, ok, enabled)
+				}
+			}
+		})
+	}
+}
+
 // Every parked prefix is a real route in the table, so the list above is
 // closing something rather than a name that never routed.
 func TestParkedPrefixesAreRoutes(t *testing.T) {
