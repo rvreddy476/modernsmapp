@@ -48,7 +48,8 @@ import javax.inject.Inject
  *
  * The first three are the AUTHOR's posts by content type, read from
  * `GET /v1/posts/by-author/:id` and sortable ([sortable]). [SAVED] is the
- * VIEWER's bookmarks (`GET /v1/posts/bookmarks`) and [LIKED] the reels they
+ * VIEWER's bookmarks, one collection at a time (`GET /v1/posts/bookmarks
+ * ?collection_id=`, SavedCollectionsViewModel, 2026-10-24) and [LIKED] the reels they
  * liked (`GET /v1/reels/liked`, 2026-10-17), so both exist on the viewer's
  * own profile only ([gridTabsFor]); neither carries a content type of its
  * own nor has a server sort.
@@ -327,10 +328,6 @@ class ProfileGridViewModel @Inject constructor(
     val posts: Flow<PagingData<FeedItem>> = paged(ProfileGridTab.POSTS)
     val reels: Flow<PagingData<FeedItem>> = paged(ProfileGridTab.REELS)
     val longVideos: Flow<PagingData<FeedItem>> = paged(ProfileGridTab.VIDEOS)
-
-    /** The viewer's own bookmarks; never requested on anyone else's profile. */
-    val saved: Flow<PagingData<FeedItem>> =
-        if (isOwn) videos.savedPosts().cachedIn(viewModelScope) else flowOf(PagingData.empty())
 
     /** The reels the viewer liked, newest like first; never requested on anyone else's profile. */
     val liked: Flow<PagingData<FeedItem>> =

@@ -70,6 +70,9 @@ sealed interface FeedMode {
 
     /** One tag's posts, pushed from a tapped #tag. */
     data class Hashtag(val tag: String) : FeedMode
+
+    /** The posts of every hashtag the viewer follows (followed hashtags, 2026-10-24). */
+    data object FollowedHashtags : FeedMode
 }
 
 
@@ -220,6 +223,7 @@ class FeedViewModel @AssistedInject constructor(
         }
         FeedMode.Friends -> cached(FeedQuery.Friends)
         is FeedMode.Hashtag -> repository.hashtagPosts(mode.tag).cachedIn(viewModelScope)
+        FeedMode.FollowedHashtags -> repository.followedHashtagPosts().cachedIn(viewModelScope)
     }.let { flow ->
         if (settings != null) {
             flow.combine(settings.keywordFilters) { page, keywords ->

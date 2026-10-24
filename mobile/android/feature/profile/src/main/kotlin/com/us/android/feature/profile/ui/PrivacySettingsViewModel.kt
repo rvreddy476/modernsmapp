@@ -27,7 +27,12 @@ sealed interface PrivacySettingsUiState {
     }
 }
 
-enum class PrivacyEnumField { MESSAGE, PHOTO, GROUP_ADD, ONLINE, LAST_SEEN, READ_RECEIPTS, CHAT_AVAILABILITY, COMMENTS }
+enum class PrivacyEnumField {
+    MESSAGE, PHOTO, GROUP_ADD, ONLINE, LAST_SEEN, READ_RECEIPTS, CHAT_AVAILABILITY, COMMENTS,
+
+    /** Who can mention me / Who can tag me (2026-10-24): everyone | following | no_one. */
+    MENTION, TAG,
+}
 enum class PrivacyToggleField { STRICT, TC_POSTS, TYPING, MESSAGE_PREVIEW }
 
 @HiltViewModel
@@ -58,6 +63,9 @@ class PrivacySettingsViewModel @Inject constructor(
             PrivacyEnumField.READ_RECEIPTS -> current.copy(whoCanSeeReadReceipts = value)
             PrivacyEnumField.CHAT_AVAILABILITY -> current.copy(chatAvailability = value)
             PrivacyEnumField.COMMENTS -> current.copy(allowCommentsFrom = value)
+            // Never introduce a key the server did not send (null = row hidden).
+            PrivacyEnumField.MENTION -> if (current.whoCanMention == null) current else current.copy(whoCanMention = value)
+            PrivacyEnumField.TAG -> if (current.whoCanTag == null) current else current.copy(whoCanTag = value)
         }
     }
 
@@ -104,10 +112,12 @@ class PrivacySettingsViewModel @Inject constructor(
         _state.value = current.copy(saving = true, message = null)
         viewModelScope.launch {
             _state.value = when (val result = repository.save(current.value)) {
+                // The screen shows what the SERVER stored: a minor or strict
+                // account asking for "everyone" is narrowed to "following".
                 is AppResult.Success -> PrivacySettingsUiState.Editing(
                     result.data,
                     result.data,
-                    message = "Privacy settings saved.",
+                    message = savedMessage(sent = current.value, stored = result.data),
                 )
                 is AppResult.Failure -> current.copy(saving = false, message = "Nothing changed. Please try again.")
             }
@@ -123,7 +133,28 @@ class PrivacySettingsViewModel @Inject constructor(
     }
 }
 
+internal const val PRIVACY_SAVED = "Privacy settings saved."
+internal const val PRIVACY_SAVED_MENTIONS_NARROWED =
+    "Privacy settings saved. Your account's protections allow only people you follow to mention or tag you."
+
+/**
+ * The save confirmation. When the server stored a narrower mention or tag
+ * audience than the one sent (minors and Strict Privacy Mode: everyone →
+ * following, user-service service/user.go applyStrictMode), say so — the
+ * rows already show the stored value.
+ */
+internal fun savedMessage(sent: PrivacySettings, stored: PrivacySettings): String {
+    val narrowed = (sent.whoCanMention != null && sent.whoCanMention != stored.whoCanMention) ||
+        (sent.whoCanTag != null && sent.whoCanTag != stored.whoCanTag)
+    return if (narrowed) PRIVACY_SAVED_MENTIONS_NARROWED else PRIVACY_SAVED
+}
+
+private fun narrowAudience(value: String?): String? =
+    if (value == PrivacySettings.AUDIENCE_EVERYONE) PrivacySettings.AUDIENCE_FOLLOWING else value
+
 private fun PrivacySettings.strict() = copy(
+    whoCanMention = narrowAudience(whoCanMention),
+    whoCanTag = narrowAudience(whoCanTag),
     strictPrivacyMode = true,
     whoCanMessage = "connections_only",
     whoCanCall = "no_one",

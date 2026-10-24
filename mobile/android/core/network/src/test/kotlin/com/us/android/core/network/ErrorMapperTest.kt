@@ -124,6 +124,16 @@ class ErrorMapperTest {
     }
 
     @Test
+    fun `a 404 keeps its code, so two refusals on one route stay apart`() = runTest {
+        // post-service saved_collections_handler.go:76-79: COLLECTION_NOT_FOUND and NOT_SAVED are both 404.
+        val notSaved = failureFor(404, """{"error":{"code":"NOT_SAVED","message":"This is not in your saved items"}}""")
+        val noCode = failureFor(404, """{"error":{"message":"no"}}""")
+
+        assertThat((notSaved as AppError.NotFound).code).isEqualTo("NOT_SAVED")
+        assertThat((noCode as AppError.NotFound).code).isNull()
+    }
+
+    @Test
     fun `429 carries Retry-After`() = runTest {
         server.enqueue(
             MockResponse.Builder()

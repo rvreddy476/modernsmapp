@@ -55,6 +55,9 @@ enum class MeDrawerRow(val label: String, val icon: ImageVector, val group: MeDr
     /** The own profile's Saved grid tab. */
     SAVED("Saved", UsIcons.BookmarkOutline, MeDrawerGroup.ACTIVITY),
 
+    /** The tags the viewer follows (followed hashtags, 2026-10-24), the feed's graph. */
+    FOLLOWED_HASHTAGS("Followed hashtags", UsIcons.Hash, MeDrawerGroup.ACTIVITY),
+
     /** The Offline page (Tube's graph, the same one Reels' header opens). */
     OFFLINE("Offline videos", UsIcons.ArrowDownToLine, MeDrawerGroup.ACTIVITY),
 
@@ -90,6 +93,8 @@ data class MeDrawerSection(val group: MeDrawerGroup, val rows: List<MeDrawerRow>
 data class MeDrawerDoors(
     /** The own profile has loaded with its grid, so the Liked and Saved tabs are there to open. */
     val grid: Boolean = false,
+    /** Followed hashtags (2026-10-24). */
+    val followedHashtags: Boolean = false,
     val offline: Boolean = false,
     val creditRequests: Boolean = false,
     val myMemberships: Boolean = false,
@@ -113,6 +118,7 @@ fun meDrawerSections(isOwnProfile: Boolean, doors: MeDrawerDoors): List<MeDrawer
         when (row) {
             MeDrawerRow.LIKED -> doors.grid && ProfileGridTab.LIKED in ownTabs
             MeDrawerRow.SAVED -> doors.grid && ProfileGridTab.SAVED in ownTabs
+            MeDrawerRow.FOLLOWED_HASHTAGS -> doors.followedHashtags
             MeDrawerRow.OFFLINE -> doors.offline
             MeDrawerRow.CREDIT_REQUESTS -> doors.creditRequests
             MeDrawerRow.MY_MEMBERSHIPS -> doors.myMemberships

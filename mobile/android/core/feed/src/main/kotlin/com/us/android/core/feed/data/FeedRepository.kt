@@ -122,6 +122,40 @@ class FeedRepository @Inject constructor(
     }
 
     /**
+     * The posts of every hashtag the viewer follows, newest first (followed
+     * hashtags, 2026-10-24) — hydrated like a tag's own page. The server's
+     * author gate can empty a page that still has a cursor, so an empty page
+     * is walked past, up to [FOLLOWED_TAG_PAGE_HOPS] in one load, rather than
+     * ending the list there.
+     */
+    fun followedHashtagPosts(): Flow<PagingData<FeedItem>> = pager { request ->
+        followedHashtagPage(request) { limit, cursor ->
+            // The cursor is kept on an EMPTY page here (toFeedPage drops it):
+            // the gate's empty page is not the end of the list.
+            api.getFollowedHashtagPosts(limit, cursor).let { envelope ->
+                envelope.toFeedPage().copy(nextCursor = envelope.meta?.nextCursor?.takeIf { it.isNotBlank() })
+            }
+        }
+    }
+
+    /** One load of [followedHashtagPosts]: pages until one holds a post or the cursor ends. */
+    internal suspend fun followedHashtagPage(
+        request: FeedPageRequest,
+        fetch: suspend (limit: Int, cursor: String?) -> FeedPage,
+    ): FeedPage {
+        var cursor = request.cursor
+        repeat(FOLLOWED_TAG_PAGE_HOPS) {
+            val page = fetch(request.limit.coerceAtMost(FOLLOWED_TAG_MAX_LIMIT), cursor)
+            if (page.items.isNotEmpty() || page.nextCursor == null || page.errorCode != null) {
+                return page.copy(items = hashtagHydrator.hydrate(page.items))
+            }
+            cursor = page.nextCursor
+        }
+        // Hops exhausted on empty pages: hand Paging the cursor to keep going from.
+        return FeedPage(items = emptyList(), nextCursor = cursor)
+    }
+
+    /**
      * One post as a feed row: post-service's bare `PostDetail`, hydrated the
      * way a hashtag page is. The author's own just-posted reel comes in here.
      */
@@ -194,6 +228,12 @@ class FeedRepository @Inject constructor(
     private companion object {
         /** The server clamps to 30; a phone screen shows about half that. */
         const val TRENDING_LIMIT = 20
+
+        /** hashtag_follows_handler.go:113: the followed-posts page is capped at 50. */
+        const val FOLLOWED_TAG_MAX_LIMIT = 50
+
+        /** Empty followed-tag pages walked past in one load before Paging gets the cursor back. */
+        const val FOLLOWED_TAG_PAGE_HOPS = 3
 
         /** The pill reads "50+" past this; counting further buys nothing. */
         const val NEW_POSTS_LIMIT = 50

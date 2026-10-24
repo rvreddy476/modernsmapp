@@ -49,6 +49,9 @@ import kotlinx.coroutines.launch
  */
 enum class HomeMenuRow(val label: String, val icon: ImageVector) {
     FRIENDS("Friends", UsIcons.Friends),
+
+    /** Followed hashtags (2026-10-24): the posts of every tag the viewer follows — a section of Home, not a header tab. */
+    HASHTAGS("Hashtags", UsIcons.Hash),
     LIVE("Live", UsIcons.Live),
     SETTINGS("Settings", UsIcons.Settings),
 }

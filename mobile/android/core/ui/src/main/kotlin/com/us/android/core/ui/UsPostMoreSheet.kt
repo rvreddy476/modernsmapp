@@ -315,6 +315,7 @@ private class MorePresentation {
             UsPostMoreRow.EDIT,
             -> onReelRow(row, callbacks, leaveThen)
             UsPostMoreRow.SAVE, UsPostMoreRow.UNSAVE -> callbacks.onToggleSave()
+            UsPostMoreRow.SAVE_TO_COLLECTION -> leaveThen(callbacks.onSaveToCollection)
             UsPostMoreRow.COPY_LINK -> {
                 copyLink()
                 linkCopied = true
@@ -783,6 +784,7 @@ private fun UsPostMoreRow.postIcon(): ImageVector = when (this) {
         error("a row about the author: $this")
     UsPostMoreRow.SAVE -> UsIcons.BookmarkOutline
     UsPostMoreRow.UNSAVE -> UsIcons.BookmarkFilled
+    UsPostMoreRow.SAVE_TO_COLLECTION -> UsIcons.FolderPlus
     UsPostMoreRow.COPY_LINK -> UsIcons.Link
     UsPostMoreRow.SHARE -> UsIcons.Share
     UsPostMoreRow.WHY -> UsIcons.Info

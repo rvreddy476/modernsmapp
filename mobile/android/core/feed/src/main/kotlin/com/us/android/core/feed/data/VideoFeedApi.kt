@@ -84,6 +84,12 @@ interface VideoFeedApi {
     suspend fun bookmarks(
         @Query("limit") limit: Int,
         @Query("cursor") cursor: String? = null,
+        /**
+         * Saved collections (2026-10-24, handler.go:1948-1956): "default" is
+         * All Saved, a UUID one of the viewer's collections; null leaves the
+         * parameter out — every saved post.
+         */
+        @Query("collection_id") collectionId: String? = null,
     ): ApiEnvelope<List<FeedItemDto>>
 
     /**

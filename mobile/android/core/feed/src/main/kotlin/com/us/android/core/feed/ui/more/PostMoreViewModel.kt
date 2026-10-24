@@ -172,6 +172,13 @@ class PostMoreViewModel @Inject constructor(
         _message.value = null
     }
 
+    /**
+     * A sheet the More menu led to finished somewhere else — "Saved to
+     * Recipes" from the collection picker (2026-10-24) — and its line is
+     * read where the menu's own lines are.
+     */
+    fun announce(text: String) = say(text, UsMessageType.Success)
+
     fun toggleSave(item: FeedItem) = viewModelScope.launch {
         if (!item.viewer.isBookmarked) analytics.recordEngagement(AnalyticsEventType.SAVE, session(item))
         engagement.toggleBookmark(item.id, item.viewer.isBookmarked)

@@ -161,9 +161,13 @@ class VideoFeedRepository @Inject constructor(
      * the bookmark list, hydrated per page. The owner's Saved tab on the
      * profile grid reads this (T-21, 2026-10-15); a tile opens by its own
      * content type, as on the other tabs.
+     *
+     * [collection] (saved collections, 2026-10-24) narrows it to one
+     * collection: "default" for All Saved, or a collection's id. Null is
+     * every saved post.
      */
-    fun savedPosts(): Flow<PagingData<FeedItem>> = feedPager(errorMapper) { request ->
-        val page = api.bookmarks(request.limit, request.cursor).toFeedPage()
+    fun savedPosts(collection: String? = null): Flow<PagingData<FeedItem>> = feedPager(errorMapper) { request ->
+        val page = api.bookmarks(request.limit, request.cursor, collection).toFeedPage()
         page.copy(items = hydrator.hydrate(page.items))
     }
 

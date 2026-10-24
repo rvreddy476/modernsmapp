@@ -13,9 +13,10 @@ import org.junit.Test
 class HomeMenuRowsTest {
 
     @Test
-    fun `the rows are Friends, Live, Settings, in alphabetical order`() {
+    fun `the rows are Friends, Hashtags, Live, Settings, in alphabetical order`() {
+        // Hashtags (2026-10-24): the followed-tags feed, a section of Home rather than a header tab.
         assertThat(homeMenuRows().map { it.label })
-            .containsExactly("Friends", "Live", "Settings")
+            .containsExactly("Friends", "Hashtags", "Live", "Settings")
             .inOrder()
     }
 

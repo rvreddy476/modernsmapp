@@ -40,6 +40,11 @@ data class PrivacySettingsDto(
     @SerialName("dm_sensitive_media_filter") val dmSensitiveMediaFilter: Boolean? = null,
     @SerialName("dm_filtered_keywords") val dmFilteredKeywords: List<String>? = null,
     @SerialName("chat_bubble_style") val chatBubbleStyle: String? = null,
+    // Mentions and tags (2026-10-24, user-service internal/http/handler.go:243-245):
+    // everyone | following | no_one. Null = this server does not carry the
+    // key yet: the rows are hidden and the PUT omits them.
+    @SerialName("who_can_mention") val whoCanMention: String? = null,
+    @SerialName("who_can_tag") val whoCanTag: String? = null,
 )
 
 /** Full authoritative snapshot. No defaults: false and enum values must all be encoded. */
@@ -79,6 +84,10 @@ data class UpdatePrivacySettingsRequest(
     @SerialName("dm_sensitive_media_filter") val dmSensitiveMediaFilter: Boolean? = null,
     @SerialName("dm_filtered_keywords") val dmFilteredKeywords: List<String>? = null,
     @SerialName("chat_bubble_style") val chatBubbleStyle: String? = null,
+    // Mentions and tags (2026-10-24). Omitted when null, like the chat parity
+    // keys: a value this client never read is never written back.
+    @SerialName("who_can_mention") val whoCanMention: String? = null,
+    @SerialName("who_can_tag") val whoCanTag: String? = null,
 )
 
 /*

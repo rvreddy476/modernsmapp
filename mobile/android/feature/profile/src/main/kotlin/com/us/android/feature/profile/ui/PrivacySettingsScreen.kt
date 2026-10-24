@@ -198,6 +198,33 @@ private fun InteractionsSection(
             description = "Who can comment on your posts",
             enabled = !saving,
         )
+        // Mentions and tags (2026-10-24): user-service who_can_mention /
+        // who_can_tag, enforced by post-service when a caption or comment
+        // names the account. Hidden when the server does not send them;
+        // minors and strict accounts are offered no "Everyone".
+        val audienceOptions = if (value.mentionAudienceNarrowed) NARROWED_AUDIENCE_OPTIONS else AUDIENCE_OPTIONS
+        value.whoCanMention?.let { mention ->
+            UsSettingsSelectRow(
+                title = "Who can mention me",
+                selected = mention,
+                options = audienceOptions,
+                onSelected = { viewModel.select(PrivacyEnumField.MENTION, it) },
+                description = "Who can @mention you in posts and comments",
+                enabled = !saving,
+                modifier = Modifier.testTag("privacy_who_can_mention"),
+            )
+        }
+        value.whoCanTag?.let { tag ->
+            UsSettingsSelectRow(
+                title = "Who can tag me",
+                selected = tag,
+                options = audienceOptions,
+                onSelected = { viewModel.select(PrivacyEnumField.TAG, it) },
+                description = "Who can tag you on their posts",
+                enabled = !saving,
+                modifier = Modifier.testTag("privacy_who_can_tag"),
+            )
+        }
         // Connections (2026-10-24, the web's Social preferences): the switch
         // graph-service enforces on POST /v1/graph/connection-request.
         UsSettingsSwitchRow(
@@ -326,6 +353,16 @@ private val GROUP_ADD_OPTIONS = options(
     "friends_of_friends_invites" to "Friends of friends, by invite",
     "everyone_with_approval" to "Anyone, with your approval",
 )
+
+/** Who can mention / tag me: "following" is the accounts this user follows. */
+internal val AUDIENCE_OPTIONS = options(
+    PrivacySettings.AUDIENCE_EVERYONE to "Everyone",
+    PrivacySettings.AUDIENCE_FOLLOWING to "People you follow",
+    PrivacySettings.AUDIENCE_NO_ONE to "No one",
+)
+
+/** Minors and Strict Privacy Mode: the server would store following for everyone. */
+internal val NARROWED_AUDIENCE_OPTIONS = AUDIENCE_OPTIONS.filterNot { it.value == PrivacySettings.AUDIENCE_EVERYONE }
 
 private val COMMENTS_OPTIONS = options(
     PrivacySettings.COMMENTS_EVERYONE to "Everyone",

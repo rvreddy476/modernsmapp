@@ -115,6 +115,12 @@ fun PostMoreSheetHost(
      * menu is the video one.
      */
     postTools: Boolean = false,
+    /**
+     * A FEED host's "Save to collection" (saved collections, 2026-10-24):
+     * non-null offers the row; the sheet has left when it fires, and the host
+     * opens the collection picker for the post.
+     */
+    onSaveToCollection: ((FeedItem) -> Unit)? = null,
 ) {
     val report by viewModel.report.collectAsStateWithLifecycle()
     val delete by viewModel.delete.collectAsStateWithLifecycle()
@@ -141,6 +147,7 @@ fun PostMoreSheetHost(
         onSelectAudioTrack,
         onEdit,
         onManageAudio,
+        onSaveToCollection,
     ) {
         UsPostMoreCallbacks(
             onToggleSave = { viewModel.toggleSave(item) },
@@ -169,6 +176,7 @@ fun PostMoreSheetHost(
             onManageAudio = { onManageAudio?.invoke(item) },
             onTogglePin = { viewModel.togglePin(item) },
             onMute = { viewModel.mute(item) },
+            onSaveToCollection = { onSaveToCollection?.invoke(item) },
         )
     }
     UsPostMoreSheet(
@@ -202,6 +210,7 @@ fun PostMoreSheetHost(
                     canEditPost = onEdit != null,
                     pinned = if (postTools) pins[item.id] ?: item.isPinned else null,
                     canMute = postTools,
+                    canSaveToCollection = onSaveToCollection != null,
                 )
             }
         },

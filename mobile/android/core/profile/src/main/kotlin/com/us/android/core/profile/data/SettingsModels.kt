@@ -35,14 +35,29 @@ data class PrivacySettings(
     val dmSensitiveMediaFilter: Boolean? = null,
     val dmFilteredKeywords: List<String>? = null,
     val chatBubbleStyle: String? = null,
+    /**
+     * Mentions and tags (2026-10-24): who may @mention this account, and who
+     * may tag it on a post — [AUDIENCE_EVERYONE], [AUDIENCE_FOLLOWING] (the
+     * accounts this user follows) or [AUDIENCE_NO_ONE]. Null = the server does
+     * not carry it. The server narrows everyone to following for minors and in
+     * Strict Privacy Mode.
+     */
+    val whoCanMention: String? = null,
+    val whoCanTag: String? = null,
 ) {
     val isPrivateAccount: Boolean get() = accountVisibility == VISIBILITY_PRIVATE
+
+    /** Minors and Strict Privacy Mode: the server never stores "everyone" for mentions or tags. */
+    val mentionAudienceNarrowed: Boolean get() = under18Mode || strictPrivacyMode
 
     companion object {
         const val VISIBILITY_PUBLIC = "public"
         const val VISIBILITY_PRIVATE = "private"
         const val COMMENTS_EVERYONE = "everyone"
         const val COMMENTS_FRIENDS = "friends"
+        const val AUDIENCE_EVERYONE = "everyone"
+        const val AUDIENCE_FOLLOWING = "following"
+        const val AUDIENCE_NO_ONE = "no_one"
     }
 }
 

@@ -54,9 +54,12 @@ import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.engagement.data.EngagementOverlay
+import com.us.android.core.engagement.data.bookmarkedOr
 import com.us.android.core.feed.data.offersFollow
 import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.edit.FeedPostEditSheet
+import com.us.android.core.feed.ui.saved.CollectionTarget
+import com.us.android.core.feed.ui.saved.SaveToCollectionSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
 import com.us.android.core.feed.ui.more.PostMoreViewModel
 import com.us.android.core.feed.ui.share.PostShareSheetHost
@@ -253,6 +256,8 @@ internal fun FeedContent(
     var moreFor by remember { mutableStateOf<FeedItem?>(null) }
     // The owner's Edit post (2026-10-24), opened from the More sheet.
     var editFor by remember { mutableStateOf<FeedItem?>(null) }
+    // Save to collection (saved collections, 2026-10-24), opened from the More sheet.
+    var collectionFor by remember { mutableStateOf<FeedItem?>(null) }
     var shareFor by remember { mutableStateOf<FeedItem?>(null) }
     var paused by remember { mutableStateOf(!playback.autoplays()) }
     val share = rememberPostSharer()
@@ -448,10 +453,22 @@ internal fun FeedContent(
             onDismiss = { moreFor = null },
             more = more,
             onEdit = { editFor = it },
+            onSaveToCollection = { collectionFor = it },
         )
     }
     editFor?.let { item ->
         FeedPostEditSheet(postId = item.id, hasMedia = item.media.isNotEmpty(), onDismiss = { editFor = null })
+    }
+    collectionFor?.let { item ->
+        val saved = (overlays[item.id] ?: EngagementOverlay()).bookmarkedOr(item.viewer.isBookmarked)
+        SaveToCollectionSheet(
+            target = CollectionTarget.Save(postId = item.id, alreadySaved = saved),
+            onDone = { outcome ->
+                collectionFor = null
+                more.announce(outcome.message)
+            },
+            onDismiss = { collectionFor = null },
+        )
     }
 }
 
@@ -620,6 +637,7 @@ private fun FeedMoreSheet(
     onDismiss: () -> Unit,
     more: PostMoreViewModel,
     onEdit: (FeedItem) -> Unit,
+    onSaveToCollection: (FeedItem) -> Unit,
 ) {
     PostMoreSheetHost(
         item = item,
@@ -632,6 +650,8 @@ private fun FeedMoreSheet(
         // A feed post's own tools (2026-10-24): Edit post, Pin to profile, Mute.
         onEdit = onEdit,
         postTools = true,
+        // Saved collections (2026-10-24): "Save to collection" opens the picker.
+        onSaveToCollection = onSaveToCollection,
     )
 }
 

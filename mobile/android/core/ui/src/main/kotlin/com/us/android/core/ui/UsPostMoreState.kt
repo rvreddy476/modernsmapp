@@ -76,6 +76,11 @@ data class UsPostMoreState(
     val pinned: Boolean? = null,
     /** Other people's feed posts: the host can mute the author (2026-10-24). */
     val canMute: Boolean = false,
+    /**
+     * A FEED post's "Save to collection" (saved collections, 2026-10-24): the
+     * host has the collection picker. Offered on any feed post, saved or not.
+     */
+    val canSaveToCollection: Boolean = false,
 ) {
     /** Which of the three menus this is. A long video wins over a reel; a sheet is never both. */
     val surface: UsPostMoreSurface
@@ -332,6 +337,9 @@ enum class UsPostMoreRow(val label: String) {
     /** Videos: a copy is stored on this device. */
     REMOVE_OFFLINE("Remove offline copy"),
     SAVE("Save"),
+
+    /** Feed posts (saved collections, 2026-10-24): pick a collection to save into — or move to, when saved. */
+    SAVE_TO_COLLECTION("Save to collection"),
     UNSAVE("Unsave"),
     COPY_LINK("Copy link"),
     SHARE("Share"),
@@ -398,6 +406,9 @@ internal fun UsPostMoreState.offeredRows(): List<UsPostMoreRow> = when (surface)
  */
 private fun UsPostMoreState.postRows(): List<UsPostMoreRow> = buildList {
     add(if (isBookmarked) UsPostMoreRow.UNSAVE else UsPostMoreRow.SAVE)
+    // Saved collections (2026-10-24): where the host has the picker, for the
+    // viewer's own posts and everyone else's alike.
+    if (canSaveToCollection) add(UsPostMoreRow.SAVE_TO_COLLECTION)
     add(UsPostMoreRow.COPY_LINK)
     // No Share row (founder, 2026-10-19): the post's rail has Share.
     if (isOwnPost) {

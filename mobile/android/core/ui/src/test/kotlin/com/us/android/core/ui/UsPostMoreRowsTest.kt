@@ -666,4 +666,30 @@ class UsPostMoreRowsTest {
         assertThat(reel(qualities = reelQualityOptions(emptyList())).canPickQuality).isFalse()
         assertThat(reel(qualities = reelQualityOptions(listOf(720))).canPickQuality).isTrue()
     }
+
+    // ── Save to collection (saved collections, 2026-10-24) ───────────────
+
+    @Test
+    fun `save to collection is offered on a feed post only where the host has the picker`() {
+        assertThat(state().rows()).doesNotContain(UsPostMoreRow.SAVE_TO_COLLECTION)
+        assertThat(state().copy(canSaveToCollection = true).rows()).contains(UsPostMoreRow.SAVE_TO_COLLECTION)
+        // Saved or not, own post or not: the picker saves, or moves a saved post.
+        assertThat(state(bookmarked = true).copy(canSaveToCollection = true).rows()).contains(UsPostMoreRow.SAVE_TO_COLLECTION)
+        assertThat(state(own = true).copy(canSaveToCollection = true).rows()).containsExactly(
+            UsPostMoreRow.COPY_LINK,
+            UsPostMoreRow.DELETE,
+            UsPostMoreRow.SAVE,
+            UsPostMoreRow.SAVE_TO_COLLECTION,
+        ).inOrder()
+    }
+
+    @Test
+    fun `a video never offers save to collection, whatever the host says`() {
+        val onReel = state().copy(canSaveToCollection = true, reel = reel())
+        val onVideo = state().copy(canSaveToCollection = true, reel = reel(), longVideo = longVideo())
+
+        assertThat(onReel.rows()).doesNotContain(UsPostMoreRow.SAVE_TO_COLLECTION)
+        assertThat(onVideo.rows()).doesNotContain(UsPostMoreRow.SAVE_TO_COLLECTION)
+        assertThat(UsPostMoreRow.SAVE_TO_COLLECTION.menuLabel("call_userb")).isEqualTo("Save to collection")
+    }
 }

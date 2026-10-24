@@ -46,6 +46,8 @@ dependencies {
 
     testImplementation(projects.core.testing)
     testImplementation(libs.okhttp.mockwebserver)
+    // The Saved tab's pages (2026-10-24) are read in tests with asSnapshot().
+    testImplementation(libs.paging.testing)
     // The converter is `implementation` in :core:network by design, so it does
     // not leak onto this classpath. Contract tests build their own Retrofit
     // against MockWebServer and need it explicitly.

@@ -13,6 +13,8 @@ import com.us.android.feature.feed.ui.FeedScreen
 import com.us.android.feature.feed.ui.FriendsFeedScreen
 import com.us.android.feature.feed.ui.HashtagPostsScreen
 import com.us.android.feature.feed.ui.HomeMenuRow
+import com.us.android.feature.feed.ui.hashtag.FollowedHashtagPostsScreen
+import com.us.android.feature.feed.ui.hashtag.FollowedHashtagsScreen
 import com.us.android.feature.feed.ui.reels.ReelsScreen
 import com.us.android.feature.feed.ui.reels.explore.ReelsExploreScreen
 import com.us.android.feature.feed.ui.reels.sound.SoundPageScreen
@@ -109,6 +111,47 @@ fun NavGraphBuilder.hashtagPostsScreen(
 
 /** Type-safe navigation to one tag's posts. */
 fun NavController.navigateToHashtagPosts(tag: String) = navigate(HashtagPostsRoute(tag))
+
+/**
+ * Followed hashtags (2026-10-24): the Hashtags feed — the posts of every tag
+ * the viewer follows — opened from Home's More menu. A pushed screen, never a
+ * header tab (the HashTag tab left the header on 2026-10-19).
+ */
+@Serializable
+data object FollowedHashtagPostsRoute
+
+/** Followed hashtags: the list of tags, with Following / Follow on each. From the Me drawer and the Hashtags feed. */
+@Serializable
+data object FollowedHashtagsRoute
+
+/**
+ * Registers the Hashtags feed and the list of followed tags. [onOpenHashtag]
+ * is a tag's own page ([HashtagPostsRoute]); `:app` pushes it.
+ */
+fun NavGraphBuilder.followedHashtagScreens(
+    onBack: () -> Unit,
+    onOpenAuthor: (userId: String) -> Unit,
+    onOpenHashtag: (tag: String) -> Unit,
+    onOpenFollowedList: () -> Unit,
+) {
+    composable<FollowedHashtagPostsRoute> {
+        FollowedHashtagPostsScreen(
+            onBack = onBack,
+            onOpenAuthor = onOpenAuthor,
+            onOpenHashtag = onOpenHashtag,
+            onManage = onOpenFollowedList,
+        )
+    }
+    composable<FollowedHashtagsRoute> {
+        FollowedHashtagsScreen(onBack = onBack, onOpenHashtag = onOpenHashtag)
+    }
+}
+
+/** Type-safe navigation to the Hashtags feed. */
+fun NavController.navigateToFollowedHashtagPosts() = navigate(FollowedHashtagPostsRoute)
+
+/** Type-safe navigation to the list of followed tags. */
+fun NavController.navigateToFollowedHashtags() = navigate(FollowedHashtagsRoute)
 
 /** The Reels tab root. */
 @Serializable

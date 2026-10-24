@@ -13,6 +13,7 @@ import androidx.compose.animation.slideInVertically
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
@@ -59,9 +60,11 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.CustomAccessibilityAction
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
@@ -83,6 +86,8 @@ import com.us.android.core.designsystem.theme.UsTypeScale
 import com.us.android.core.feed.data.AuthorPostSort
 import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.feed.ui.channel.CreateChannelSheet
+import com.us.android.core.feed.ui.saved.CollectionTarget
+import com.us.android.core.feed.ui.saved.SaveToCollectionSheet
 import com.us.android.core.media.publish.PublishRing
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ring
@@ -133,6 +138,8 @@ internal fun ProfileMediaGrid(
     /** Where the panels' rows go (2026-10-24). */
     panelDestinations: ProfilePanelDestinations = ProfilePanelDestinations(),
     viewModel: ProfileGridViewModel = hiltViewModel(),
+    /** The Saved tab's collections and its pages (saved collections, 2026-10-24). */
+    savedViewModel: SavedCollectionsViewModel = hiltViewModel(),
 ) {
     val tab by viewModel.tab.collectAsStateWithLifecycle()
     val pending by viewModel.pending.collectAsStateWithLifecycle()
@@ -142,13 +149,19 @@ internal fun ProfileMediaGrid(
     val posts = viewModel.posts.collectAsLazyPagingItems()
     val reels = viewModel.reels.collectAsLazyPagingItems()
     val longVideos = viewModel.longVideos.collectAsLazyPagingItems()
-    val saved = viewModel.saved.collectAsLazyPagingItems()
+    val saved = savedViewModel.posts.collectAsLazyPagingItems()
+    val savedState by savedViewModel.state.collectAsStateWithLifecycle()
     val liked = viewModel.liked.collectAsLazyPagingItems()
     val appearances = viewModel.appearances.collectAsLazyPagingItems()
     val members = viewModel.membersPosts.collectAsLazyPagingItems()
     val tabs by viewModel.tabs.collectAsStateWithLifecycle()
     var failureKey by rememberSaveable { mutableStateOf<String?>(null) }
     var createChannelKey by rememberSaveable { mutableStateOf<String?>(null) }
+    // A saved post being moved to another collection (2026-10-24): its id.
+    var moveFor by remember { mutableStateOf<String?>(null) }
+
+    // Only the viewer's own profile has a Saved tab; its collections are read from then on.
+    LaunchedEffect(viewModel.isOwn) { if (viewModel.isOwn) savedViewModel.activate() }
 
     LaunchedEffect(reloads) {
         if ((reloads[ProfileGridTab.POSTS] ?: 0) > 0) posts.refresh()
@@ -162,6 +175,7 @@ internal fun ProfileMediaGrid(
         if (refreshSeq > 0) {
             TabLists(posts, reels, longVideos, saved, liked, appearances, members).forTab(tab).refresh()
             viewModel.checkAppearances()
+            if (tab == ProfileGridTab.SAVED && viewModel.isOwn) savedViewModel.load()
         }
     }
 
@@ -203,6 +217,8 @@ internal fun ProfileMediaGrid(
             val items = TabLists(posts, reels, longVideos, saved, liked, appearances, members).forTab(tab)
             val heads = pending.filter { it.tab == tab }.map<PendingVideoTile, GridHead> { GridHead.Pending(it) } +
                 scheduled.filter { it.tab == tab }.map { GridHead.Scheduled(it) }
+            val savedTab = tab == ProfileGridTab.SAVED && viewModel.isOwn
+            if (savedTab) SavedCollectionsBar(savedState, savedCollectionActions(savedViewModel))
             GridRows(
                 tab = tab,
                 items = items,
@@ -210,8 +226,31 @@ internal fun ProfileMediaGrid(
                 thumbFor = viewModel::thumb,
                 onOpen = { item -> onOpenPost?.invoke(item.id, item.feedContentType) },
                 onPendingTap = { tile -> if (tile.failure != null) failureKey = tile.creationKey },
+                // Saved collections (2026-10-24): a long press moves a saved post.
+                onMove = { item: FeedItem -> moveFor = item.id }.takeIf { savedTab },
+                emptyTitle = if (savedTab) savedEmptyTitle(savedState) else null,
             )
         }
+    }
+
+    moveFor?.let { postId ->
+        SaveToCollectionSheet(
+            target = CollectionTarget.Move(postId = postId, fromCollectionId = savedState.selected),
+            onDone = { outcome ->
+                moveFor = null
+                savedViewModel.onMoved(outcome)
+            },
+            onDismiss = { moveFor = null },
+        )
+    }
+    savedState.dialog?.let { dialog ->
+        SavedCollectionDialog(
+            dialog = dialog,
+            busy = savedState.busy,
+            onName = savedViewModel::changeDialogName,
+            onConfirm = savedViewModel::confirmDialog,
+            onDismiss = savedViewModel::dismissDialog,
+        )
     }
 
     val failing = pending.firstOrNull { it.creationKey == failureKey }
@@ -495,6 +534,10 @@ private fun GridRows(
     thumbFor: (FeedItem) -> VideoThumb,
     onOpen: (FeedItem) -> Unit,
     onPendingTap: (PendingVideoTile) -> Unit,
+    /** The Saved tab (2026-10-24): a long press on a tile moves the post to another collection. */
+    onMove: ((FeedItem) -> Unit)? = null,
+    /** What an empty list says, when not the tab's own words (a collection with nothing in it). */
+    emptyTitle: String? = null,
 ) {
     val slots = heads.size + items.itemCount
     Column(verticalArrangement = Arrangement.spacedBy(GRID_GAP)) {
@@ -523,13 +566,14 @@ private fun GridRows(
                             item = items[slot - heads.size],
                             thumbFor = thumbFor,
                             onOpen = onOpen,
+                            onMove = onMove,
                             modifier = cell,
                         )
                     }
                 }
             }
         }
-        GridState(tab = tab, items = items, hasHead = heads.isNotEmpty())
+        GridState(tab = tab, items = items, hasHead = heads.isNotEmpty(), emptyOverride = emptyTitle)
     }
 }
 
@@ -539,10 +583,17 @@ private fun PagedTile(
     item: FeedItem?,
     thumbFor: (FeedItem) -> VideoThumb,
     onOpen: (FeedItem) -> Unit,
+    onMove: ((FeedItem) -> Unit)?,
     modifier: Modifier,
 ) {
     if (item != null) {
-        MediaTile(item = item, thumb = thumbFor(item), onClick = { onOpen(item) }, modifier = modifier)
+        MediaTile(
+            item = item,
+            thumb = thumbFor(item),
+            onClick = { onOpen(item) },
+            onLongClick = onMove?.let { move -> { move(item) } },
+            modifier = modifier,
+        )
     } else {
         Spacer(modifier)
     }
@@ -550,7 +601,7 @@ private fun PagedTile(
 
 /** The list's own state under the rows: the first load, its failure, the empty message, the next page. */
 @Composable
-private fun GridState(tab: ProfileGridTab, items: LazyPagingItems<FeedItem>, hasHead: Boolean) {
+private fun GridState(tab: ProfileGridTab, items: LazyPagingItems<FeedItem>, hasHead: Boolean, emptyOverride: String? = null) {
     val refresh = items.loadState.refresh
     val count = items.itemCount
     Column {
@@ -569,7 +620,7 @@ private fun GridState(tab: ProfileGridTab, items: LazyPagingItems<FeedItem>, has
                     .height(STATE_HEIGHT),
             )
             refresh is LoadState.NotLoading && count == 0 && !hasHead -> UsEmptyState(
-                title = emptyTitle(tab),
+                title = emptyOverride ?: emptyTitle(tab),
                 modifier = Modifier
                     .fillMaxWidth()
                     .height(STATE_HEIGHT)
@@ -617,20 +668,37 @@ internal fun tileAspect(tab: ProfileGridTab): Float = when (tab) {
 
 /** One post as a tile: its still (the cover for a video), a film glyph for the video kinds. */
 @Composable
-private fun MediaTile(item: FeedItem, thumb: VideoThumb, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun MediaTile(
+    item: FeedItem,
+    thumb: VideoThumb,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    /** The Saved tab (2026-10-24): "Move to collection", on a long press and as an accessibility action. */
+    onLongClick: (() -> Unit)? = null,
+) {
     val shape = RoundedCornerShape(UsTheme.radii.small)
     Box(
         modifier = modifier
             .clip(shape)
             .background(UsTheme.extended.bgCard)
-            .clickable(
+            .combinedClickable(
                 interactionSource = remember { MutableInteractionSource() },
                 indication = null,
+                onLongClickLabel = onLongClick?.let { MOVE_TO_COLLECTION },
+                onLongClick = onLongClick,
                 onClick = onClick,
             )
             .semantics {
                 role = Role.Button
                 contentDescription = "Open ${item.title.ifBlank { item.text }.ifBlank { "post" }}"
+                onLongClick?.let { move ->
+                    customActions = listOf(
+                        CustomAccessibilityAction(MOVE_TO_COLLECTION) {
+                            move()
+                            true
+                        },
+                    )
+                }
             }
             .testTag("profile_tile:${item.id}"),
     ) {
@@ -969,6 +1037,9 @@ private fun PublishFailureSheet(
 }
 
 private const val GRID_COLUMNS = 3
+
+/** A saved tile's long press (2026-10-24), and its accessibility action. */
+private const val MOVE_TO_COLLECTION = "Move to collection"
 private const val SQUARE = 1f
 private const val PORTRAIT_TILE = 3f / 4f
 private const val LANDSCAPE = 16f / 9f

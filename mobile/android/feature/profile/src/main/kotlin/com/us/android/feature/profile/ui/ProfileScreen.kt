@@ -232,6 +232,8 @@ data class ProfileDestinations(
     val onOpenOffline: (() -> Unit)? = null,
     /** The Me tab's drawer "Credit requests" (video credits, 2026-10-23): `:app` pushes the requests screen (Tube's graph). */
     val onOpenCreditRequests: (() -> Unit)? = null,
+    /** The Me tab's drawer "Followed hashtags" (2026-10-24): `:app` pushes the list (the feed's graph). */
+    val onOpenFollowedHashtags: (() -> Unit)? = null,
     /** The Me tab's drawer "My memberships" (2026-10-23): `:app` pushes the member's list. */
     val onOpenMyMemberships: (() -> Unit)? = null,
     /** The Me tab's drawer "Memberships" (2026-10-23): `:app` pushes the creator's page. OWN profile only. */
@@ -444,6 +446,7 @@ internal fun meDrawerDoors(state: ProfileUiState, destinations: ProfileDestinati
         grid = content != null && content.profile.isOwnProfile && !content.unavailable,
         offline = destinations.onOpenOffline != null,
         creditRequests = destinations.onOpenCreditRequests != null,
+        followedHashtags = destinations.onOpenFollowedHashtags != null,
         myMemberships = destinations.onOpenMyMemberships != null,
         messages = destinations.header != null,
         creatorHub = destinations.onOpenCreatorHub != null,
@@ -458,6 +461,7 @@ private fun ProfileDestinations.openDrawerRow(row: MeDrawerRow) {
     when (row) {
         MeDrawerRow.OFFLINE -> onOpenOffline?.invoke()
         MeDrawerRow.CREDIT_REQUESTS -> onOpenCreditRequests?.invoke()
+        MeDrawerRow.FOLLOWED_HASHTAGS -> onOpenFollowedHashtags?.invoke()
         MeDrawerRow.MY_MEMBERSHIPS -> onOpenMyMemberships?.invoke()
         MeDrawerRow.MESSAGES -> header?.onOpenMessages?.invoke()
         MeDrawerRow.CREATOR_HUB -> onOpenCreatorHub?.invoke()

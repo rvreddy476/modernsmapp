@@ -157,6 +157,8 @@ private fun PrivacySettingsDto.toDomain() = PrivacySettings(
     dmSensitiveMediaFilter = dmSensitiveMediaFilter,
     dmFilteredKeywords = dmFilteredKeywords,
     chatBubbleStyle = chatBubbleStyle,
+    whoCanMention = whoCanMention,
+    whoCanTag = whoCanTag,
 )
 
 private fun PrivacySettings.toRequest() = UpdatePrivacySettingsRequest(
@@ -187,6 +189,8 @@ private fun PrivacySettings.toRequest() = UpdatePrivacySettingsRequest(
     dmSensitiveMediaFilter = dmSensitiveMediaFilter,
     dmFilteredKeywords = dmFilteredKeywords,
     chatBubbleStyle = chatBubbleStyle,
+    whoCanMention = whoCanMention,
+    whoCanTag = whoCanTag,
 )
 
 /** Shared with [ManageAccountRepository], which reads the same `/v1/auth/me`. */

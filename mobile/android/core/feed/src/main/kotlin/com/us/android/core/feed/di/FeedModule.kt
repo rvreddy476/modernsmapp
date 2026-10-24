@@ -15,6 +15,7 @@ import com.us.android.core.feed.data.SoundsApi
 import com.us.android.core.feed.data.TrendingSoundsApi
 import com.us.android.core.feed.data.VideoCollectionSource
 import com.us.android.core.feed.data.VideoFeedApi
+import com.us.android.core.feed.data.VideoFeedRepository
 import com.us.android.core.feed.data.VideoLibraryApi
 import com.us.android.core.feed.data.VideoLibraryRepository
 import com.us.android.core.feed.data.VideoLibraryWrites
@@ -24,6 +25,9 @@ import com.us.android.core.feed.data.WatchHistorySource
 import com.us.android.core.feed.data.action.ActionApi
 import com.us.android.core.feed.data.copyright.CopyrightReviewApi
 import com.us.android.core.feed.data.credits.CreditsApi
+import com.us.android.core.feed.data.hashtag.HashtagFollowApi
+import com.us.android.core.feed.data.saved.SavedCollectionsApi
+import com.us.android.core.feed.data.saved.SavedPostsSource
 import com.us.android.core.feed.ui.sound.LibrarySoundPreview
 import com.us.android.core.feed.ui.sound.PlayerLibrarySoundPreview
 import com.us.android.core.feed.ui.sound.PlayerTrendingSoundPreview
@@ -48,6 +52,20 @@ object FeedModule {
     @Provides
     @Singleton
     fun provideVideoFeedApi(retrofit: Retrofit): VideoFeedApi = retrofit.create(VideoFeedApi::class.java)
+
+    /** Saved collections (2026-10-24): the Saved tab's collections, and saving into or moving between them. */
+    @Provides
+    @Singleton
+    fun provideSavedCollectionsApi(retrofit: Retrofit): SavedCollectionsApi = retrofit.create(SavedCollectionsApi::class.java)
+
+    /** The Saved tab's pages per collection: the bookmark list, `?collection_id=`. */
+    @Provides
+    fun provideSavedPostsSource(videos: VideoFeedRepository): SavedPostsSource = SavedPostsSource { videos.savedPosts(it) }
+
+    /** Followed hashtags (2026-10-24): follow a tag, the list, and the posts from them. */
+    @Provides
+    @Singleton
+    fun provideHashtagFollowApi(retrofit: Retrofit): HashtagFollowApi = retrofit.create(HashtagFollowApi::class.java)
 
     @Provides
     @Singleton

@@ -67,6 +67,7 @@ class NewPostsTest {
         override suspend fun getTrendingHashtags(limit: Int): Nothing = error("unused")
         override suspend fun getPostsByHashtag(tag: String, limit: Int, cursor: String?, sort: String): Nothing =
             error("unused")
+        override suspend fun getFollowedHashtagPosts(limit: Int, cursor: String?): Nothing = error("unused")
 
         override suspend fun getPost(postId: String): Nothing = error("unused")
         override suspend fun votePoll(postId: String, body: PollVoteRequest): Nothing = error("unused")

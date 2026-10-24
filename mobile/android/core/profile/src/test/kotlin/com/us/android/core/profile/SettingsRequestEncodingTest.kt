@@ -5,6 +5,7 @@ import com.us.android.core.profile.data.NotificationCategory
 import com.us.android.core.profile.data.NotificationChannels
 import com.us.android.core.profile.data.NotificationPreferenceCodec
 import com.us.android.core.profile.data.NotificationSettings
+import com.us.android.core.profile.data.dto.PrivacySettingsDto
 import com.us.android.core.profile.data.dto.UpdatePrivacySettingsRequest
 import com.us.android.core.profile.data.dto.UpdateWellbeingRequest
 import kotlinx.serialization.encodeToString
@@ -57,6 +58,60 @@ class SettingsRequestEncodingTest {
         assertThat(encoded).contains("\"tc_audio_room_invite\":false")
         assertThat(encoded).contains("\"account_visibility\":\"private\"")
         assertThat(encoded).contains("\"allow_comments_from\":\"friends\"")
+    }
+
+    @Test
+    fun privacySnapshotCarriesWhoCanMentionAndTagOnlyWhenTheServerSentThem() {
+        // user-service internal/http/handler.go:243-245 (the PUT keys) and :334-339 (applied only when present).
+        val base = UpdatePrivacySettingsRequest(
+            whoCanMessage = "people_i_follow",
+            whoCanSendConnectionRequest = "everyone",
+            whoCanCall = "no_one",
+            whoCanAddToGroups = "no_one",
+            whoCanSeeOnlineStatus = "no_one",
+            whoCanSeeReadReceipts = "no_one",
+            whoCanSeeLastSeen = "no_one",
+            whoCanSeeProfilePhoto = "no_one",
+            allowPhoneDiscovery = false,
+            allowContactSyncMatch = false,
+            discoverableByPhoneToContacts = false,
+            strictPrivacyMode = false,
+            blockUnknownCalls = false,
+            autoFilterAbusiveContent = false,
+            trustedCircleCloseFriendsPosts = false,
+            trustedCircleLocationPings = false,
+            trustedCircleAfterHoursPosts = false,
+            trustedCircleAudioRoomInvites = false,
+            chatAvailability = "enabled",
+            sendTypingIndicators = false,
+            showMessagePreview = false,
+            accountVisibility = "public",
+            allowCommentsFrom = "everyone",
+        )
+        val omitted = json.parseToJsonElement(json.encodeToString(base)).jsonObject
+        assertThat(omitted.keys).containsNoneOf("who_can_mention", "who_can_tag")
+
+        val sent = json.parseToJsonElement(
+            json.encodeToString(base.copy(whoCanMention = "following", whoCanTag = "no_one")),
+        ).jsonObject
+        assertThat(sent["who_can_mention"]).isEqualTo(JsonPrimitive("following"))
+        assertThat(sent["who_can_tag"]).isEqualTo(JsonPrimitive("no_one"))
+    }
+
+    @Test
+    fun privacyReadDecodesWhoCanMentionAndTag() {
+        // store/users.go:50-51: GET /v1/users/me/settings carries both keys (everyone | following | no_one).
+        val lenient = Json { ignoreUnknownKeys = true }
+        val read = lenient.decodeFromString(
+            PrivacySettingsDto.serializer(),
+            """{"who_can_message":"people_i_follow","who_can_mention":"following","who_can_tag":"no_one","under_18_mode":true}""",
+        )
+        assertThat(read.whoCanMention).isEqualTo("following")
+        assertThat(read.whoCanTag).isEqualTo("no_one")
+        // A server that predates the keys: null, so the rows stay hidden.
+        val older = lenient.decodeFromString(PrivacySettingsDto.serializer(), """{}""")
+        assertThat(older.whoCanMention).isNull()
+        assertThat(older.whoCanTag).isNull()
     }
 
     @Test

@@ -66,7 +66,8 @@ class ErrorMapper @Inject constructor(
             // The code survives: the step-up routes tell an expired pending
             // session from a wrong code on the same status (anomaly.go).
             e.code() == HTTP_UNAUTHORIZED -> AppError.AuthFailed(requestId, code)
-            e.code() == HTTP_NOT_FOUND -> AppError.NotFound(requestId)
+            // The code survives: one route can answer two different 404s.
+            e.code() == HTTP_NOT_FOUND -> AppError.NotFound(requestId, code)
 
             e.code() == HTTP_TOO_MANY_REQUESTS -> AppError.RateLimited(
                 retryAfterSeconds = e.response()

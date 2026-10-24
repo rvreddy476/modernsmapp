@@ -135,7 +135,10 @@ import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.FriendsFeedRoute
 import com.us.android.feature.feed.navigation.feedScreen
 import com.us.android.feature.feed.navigation.friendsFeedScreen
+import com.us.android.feature.feed.navigation.followedHashtagScreens
 import com.us.android.feature.feed.navigation.hashtagPostsScreen
+import com.us.android.feature.feed.navigation.navigateToFollowedHashtagPosts
+import com.us.android.feature.feed.navigation.navigateToFollowedHashtags
 import com.us.android.feature.feed.navigation.navigateToHashtagPosts
 import com.us.android.feature.feed.navigation.navigateToSound
 import com.us.android.feature.feed.navigation.navigateToReelsExplore
@@ -868,6 +871,7 @@ private fun NavGraphBuilder.tabDestinations(
         onOpenMenuRow = { row ->
             when (row) {
                 HomeMenuRow.FRIENDS -> navController.navigate(FriendsFeedRoute)
+                HomeMenuRow.HASHTAGS -> navController.navigateToFollowedHashtagPosts()
                 HomeMenuRow.LIVE -> navController.navigateToLiveHub()
                 HomeMenuRow.SETTINGS -> navController.navigateToSettings()
             }
@@ -886,6 +890,14 @@ private fun NavGraphBuilder.tabDestinations(
     hashtagPostsScreen(
         onBack = { navController.popBackStack() },
         onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
+    )
+    // Followed hashtags (2026-10-24): the Hashtags feed (Home's More menu) and the
+    // list of followed tags (the Me drawer, and the feed's # glyph).
+    followedHashtagScreens(
+        onBack = { navController.popBackStack() },
+        onOpenAuthor = { authorId -> navController.navigateToProfile(authorId) },
+        onOpenHashtag = { tag -> navController.navigateToHashtagPosts(tag) },
+        onOpenFollowedList = { navController.navigateToFollowedHashtags() },
     )
 
     // The Create hub — one composer, opened on the surface the Create sheet
@@ -1471,6 +1483,8 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
         onOpenOffline = { navController.navigateToTubeOffline() },
         // Video credits (2026-10-23): the drawer's Credit requests, in Tube's graph.
         onOpenCreditRequests = { navController.navigateToCreditRequests() },
+        // Followed hashtags (2026-10-24): the drawer's row, the list in the feed's graph.
+        onOpenFollowedHashtags = { navController.navigateToFollowedHashtags() },
         // Paid memberships (2026-10-23): the drawer's two membership rows.
         onOpenMyMemberships = { navController.navigateToMyMemberships() },
         onOpenMemberships = { navController.navigateToCreatorMemberships() },

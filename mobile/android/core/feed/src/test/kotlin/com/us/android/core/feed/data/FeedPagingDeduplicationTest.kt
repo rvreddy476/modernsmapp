@@ -87,6 +87,8 @@ class FeedPagingDeduplicationTest {
             sort: String,
         ) = error("these pages are the home surface")
 
+        override suspend fun getFollowedHashtagPosts(limit: Int, cursor: String?) = error("these pages are the home surface")
+
         override suspend fun getPost(postId: String) = error("the paging source never fetches one post")
     }
 

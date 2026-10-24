@@ -219,6 +219,9 @@ private class UnusedFeedApi : com.us.android.core.feed.data.FeedApi {
     override suspend fun getPostsByHashtag(tag: String, limit: Int, cursor: String?, sort: String): Nothing =
         error("hashtag pages are not under test")
 
+    override suspend fun getFollowedHashtagPosts(limit: Int, cursor: String?): Nothing =
+        error("followed hashtag pages are not under test")
+
     override suspend fun getPost(postId: String): Nothing = error("single posts are not under test")
 
     override suspend fun getDelta(feedType: String, anchor: String, limit: Int): Nothing =

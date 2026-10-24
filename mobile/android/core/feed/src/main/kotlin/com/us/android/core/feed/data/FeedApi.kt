@@ -118,6 +118,20 @@ interface FeedApi {
     ): ApiEnvelope<List<FeedItemDto>>
 
     /**
+     * The recent posts carrying any tag the viewer follows, newest first
+     * (followed hashtags, 2026-10-24; post-service
+     * hashtag_follows_handler.go:107-126). The same `PostDetail` rows as
+     * [getPostsByHashtag]. A page can be short — even empty — and still
+     * carry `meta.next_cursor`: the author gate removes rows after the SQL
+     * page. [limit] is capped at 50.
+     */
+    @GET("v1/hashtags/followed/posts")
+    suspend fun getFollowedHashtagPosts(
+        @Query("limit") limit: Int,
+        @Query("cursor") cursor: String? = null,
+    ): ApiEnvelope<List<FeedItemDto>>
+
+    /**
      * One post by id — post-service `GetPost`, the same `PostDetail` row the
      * hashtag list returns, so [FeedItemDto] decodes it and [HashtagPostHydrator]
      * fills in the author and the media delivery.

@@ -221,6 +221,24 @@ class EngagementStore @Inject constructor(
         toggle(ActionKey(postId, EngagementAction.BOOKMARK), serverBookmarked)
     }
 
+    /**
+     * Saved collections (2026-10-24): a save the server has ALREADY
+     * acknowledged outside this lane — `POST /v1/posts/:id/bookmark
+     * {collection_id}` or the move into All Saved — so every surface's
+     * bookmark glyph shows Saved without another request. Recorded settled
+     * (confirmed = desired = true); a lane with work outstanding is left
+     * alone, since its own write will settle it.
+     */
+    fun confirmBookmarked(postId: String) {
+        val key = ActionKey(postId, EngagementAction.BOOKMARK)
+        updateStates { states ->
+            val current = states[key]
+            if (current != null && !current.settled) return@updateStates states
+            states + (key to ActionState(confirmed = true, desired = true))
+        }
+        clearFailure(postId, EngagementAction.BOOKMARK)
+    }
+
     suspend fun toggleRepost(postId: String, serverReposted: Boolean) {
         toggle(ActionKey(postId, EngagementAction.REPOST), serverReposted)
     }

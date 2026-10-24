@@ -18,6 +18,7 @@ class MeDrawerRowsTest {
 
     private val everyDoor = MeDrawerDoors(
         grid = true,
+        followedHashtags = true,
         offline = true,
         creditRequests = true,
         myMemberships = true,
@@ -39,6 +40,7 @@ class MeDrawerRowsTest {
             .containsExactly(
                 MeDrawerRow.LIKED,
                 MeDrawerRow.SAVED,
+                MeDrawerRow.FOLLOWED_HASHTAGS,
                 MeDrawerRow.OFFLINE,
                 MeDrawerRow.CREDIT_REQUESTS,
                 MeDrawerRow.MY_MEMBERSHIPS,
@@ -60,6 +62,7 @@ class MeDrawerRowsTest {
         assertThat(MeDrawerRow.entries.map { it.label }).containsExactly(
             "Liked",
             "Saved",
+            "Followed hashtags",
             "Offline videos",
             "Credit requests",
             "My memberships",
@@ -93,7 +96,7 @@ class MeDrawerRowsTest {
         val rows = meDrawerSections(isOwnProfile = true, doors = everyDoor.copy(grid = false)).flatMap { it.rows }
 
         assertThat(rows).containsNoneOf(MeDrawerRow.LIKED, MeDrawerRow.SAVED)
-        assertThat(rows.first()).isEqualTo(MeDrawerRow.OFFLINE)
+        assertThat(rows.first()).isEqualTo(MeDrawerRow.FOLLOWED_HASHTAGS)
     }
 
     @Test
@@ -114,6 +117,7 @@ class MeDrawerRowsTest {
         assertThat(MeDrawerRow.SAVED.gridTab()).isEqualTo(ProfileGridTab.SAVED)
         assertThat(MeDrawerRow.entries.filter { it.gridTab() == null })
             .containsExactly(
+                MeDrawerRow.FOLLOWED_HASHTAGS,
                 MeDrawerRow.OFFLINE,
                 MeDrawerRow.CREDIT_REQUESTS,
                 MeDrawerRow.MY_MEMBERSHIPS,
@@ -123,6 +127,16 @@ class MeDrawerRowsTest {
                 MeDrawerRow.UPLOAD,
                 MeDrawerRow.SETTINGS,
             )
+    }
+
+    /** Followed hashtags (2026-10-24): under Your activity, only where `:app` gave it the list to open. */
+    @Test
+    fun `the followed hashtags row follows its door`() {
+        val without = meDrawerSections(isOwnProfile = true, doors = everyDoor.copy(followedHashtags = false)).flatMap { it.rows }
+
+        assertThat(without).doesNotContain(MeDrawerRow.FOLLOWED_HASHTAGS)
+        assertThat(MeDrawerRow.FOLLOWED_HASHTAGS.group).isEqualTo(MeDrawerGroup.ACTIVITY)
+        assertThat(MeDrawerRow.FOLLOWED_HASHTAGS.gridTab()).isNull()
     }
 
     /** Paid memberships (2026-10-23): each row only where `:app` gave it somewhere to go. */
@@ -148,6 +162,7 @@ class MeDrawerRowsTest {
             onOpenCreatorHub = {},
             onOpenOffline = {},
             onOpenCreditRequests = {},
+            onOpenFollowedHashtags = {},
             onOpenMyMemberships = {},
             onOpenMemberships = {},
             onOpenUpload = {},

@@ -131,6 +131,8 @@ fun NavGraphBuilder.ownProfileScreen(
     onOpenOffline: () -> Unit,
     /** The drawer's "Credit requests" (video credits, 2026-10-23): `:app` pushes the screen, which lives in Tube. */
     onOpenCreditRequests: () -> Unit = {},
+    /** The drawer's "Followed hashtags" (2026-10-24): `:app` pushes the list, which lives in the feed's graph; null hides the row. */
+    onOpenFollowedHashtags: (() -> Unit)? = null,
     /** The drawer's "My memberships" and "Memberships" (2026-10-23): `:app` pushes them; null hides the row. */
     onOpenMyMemberships: (() -> Unit)? = null,
     onOpenMemberships: (() -> Unit)? = null,
@@ -162,6 +164,7 @@ fun NavGraphBuilder.ownProfileScreen(
                 onOpenCreatorHub = onOpenCreatorHub,
                 onOpenOffline = onOpenOffline,
                 onOpenCreditRequests = onOpenCreditRequests,
+                onOpenFollowedHashtags = onOpenFollowedHashtags,
                 onOpenMyMemberships = onOpenMyMemberships,
                 onOpenMemberships = onOpenMemberships,
                 onOpenUpload = onOpenUpload,

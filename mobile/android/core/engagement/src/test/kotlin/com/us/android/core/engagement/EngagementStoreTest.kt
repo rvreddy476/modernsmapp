@@ -568,4 +568,38 @@ class EngagementStoreTest {
         assertThat(EngagementOverlay(bookmarked = false).saveCountOr(serverCount = 0, serverSaved = true)).isEqualTo(0)
         assertThat(EngagementOverlay(bookmarked = true).saveCountOr(serverCount = null, serverSaved = false)).isNull()
     }
+
+    // ── Saved collections (2026-10-24) ──────────────────────────────────
+
+    @Test
+    fun `a save acknowledged outside the lane shows Saved without a request`() = runTest {
+        val server = FakeServer()
+        val store = storeWith(server)
+
+        store.confirmBookmarked(postId)
+
+        assertThat(store.overlayFor(postId).bookmarked).isTrue()
+        assertThat(server.log).isEmpty()
+        // The next tap starts from the confirmed save: it unsaves.
+        backgroundScope.launch { store.toggleBookmark(postId, serverBookmarked = false) }
+        runCurrent()
+        assertThat(server.log).containsExactly("bookmark=false")
+    }
+
+    @Test
+    fun `a confirmed save leaves a lane with a write in flight alone`() = runTest {
+        val server = FakeServer()
+        val store = storeWith(server)
+        backgroundScope.launch { store.toggleBookmark(postId, serverBookmarked = true) }
+        runCurrent()
+
+        store.confirmBookmarked(postId)
+
+        // The viewer's unsave is still what the glyph shows, and still what is sent.
+        assertThat(store.overlayFor(postId).bookmarked).isFalse()
+        server.releaseSuccess()
+        runCurrent()
+        assertThat(server.bookmarked).isFalse()
+        assertThat(store.overlayFor(postId).bookmarked).isFalse()
+    }
 }

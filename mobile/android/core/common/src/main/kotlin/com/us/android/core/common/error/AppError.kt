@@ -66,7 +66,13 @@ sealed interface AppError {
         override val requestId: String? = null,
     ) : AppError
 
-    data class NotFound(override val requestId: String? = null) : AppError
+    /**
+     * 404. [code] is the server's contract string when the body carried one
+     * (2026-10-24): one route can answer more than one 404 — saved
+     * collections tell `COLLECTION_NOT_FOUND` from `NOT_SAVED`, and a hashtag
+     * follow answers `HASHTAG_UNAVAILABLE`. Null when the body had none.
+     */
+    data class NotFound(override val requestId: String? = null, val code: String? = null) : AppError
 
     data class RateLimited(
         val retryAfterSeconds: Long?,

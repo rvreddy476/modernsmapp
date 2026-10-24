@@ -78,4 +78,6 @@ class UsPostMoreCallbacks(
     val onTogglePin: () -> Unit = {},
     /** Other people's feed posts (2026-10-24): mute the author; the sheet has left. */
     val onMute: () -> Unit = {},
+    /** Feed posts (saved collections, 2026-10-24): "Save to collection"; the sheet has left, the host opens the picker. */
+    val onSaveToCollection: () -> Unit = {},
 )
