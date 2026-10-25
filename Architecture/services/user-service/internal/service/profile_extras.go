@@ -51,32 +51,11 @@ func (s *Service) GetProfilePins(ctx context.Context, userID uuid.UUID) ([]store
 }
 
 // --- Portfolio ---
-
-// AddPortfolioItem creates a new portfolio entry for a user.
-func (s *Service) AddPortfolioItem(ctx context.Context, userID uuid.UUID, title, desc, itemType, url string, mediaID *uuid.UUID, order int) (*store.PortfolioItem, error) {
-	item := &store.PortfolioItem{
-		UserID:      userID,
-		Title:       title,
-		Description: desc,
-		Type:        itemType,
-		URL:         url,
-		MediaID:     mediaID,
-		SortOrder:   order,
-	}
-	if err := s.store.CreatePortfolioItem(ctx, item); err != nil {
-		return nil, err
-	}
-	return item, nil
-}
+// AddPortfolioItem and DeletePortfolioItem are in media_claims.go.
 
 // UpdatePortfolioItem updates an existing portfolio item (must be owned by the user).
 func (s *Service) UpdatePortfolioItem(ctx context.Context, item *store.PortfolioItem) error {
 	return s.store.UpdatePortfolioItem(ctx, item)
-}
-
-// DeletePortfolioItem removes a portfolio item if owned by userID.
-func (s *Service) DeletePortfolioItem(ctx context.Context, id, userID uuid.UUID) error {
-	return s.store.DeletePortfolioItem(ctx, id, userID)
 }
 
 // GetPortfolio returns all portfolio items for a user.

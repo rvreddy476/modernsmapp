@@ -880,6 +880,9 @@ func (h *Handler) CreateChannel(c *gin.Context) {
 	}
 
 	if err := h.svc.CreateChannel(c.Request.Context(), ch); err != nil {
+		if writeMediaError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -961,6 +964,9 @@ func (h *Handler) UpdateChannel(c *gin.Context) {
 	}
 
 	if err := h.svc.UpdateChannel(c.Request.Context(), upd); err != nil {
+		if writeMediaError(c, err) {
+			return
+		}
 		if err.Error() == "CHANNEL_NOT_FOUND" {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Channel not found or not owned by you", nil)
 			return

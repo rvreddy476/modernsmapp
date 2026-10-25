@@ -121,8 +121,11 @@ func (s *Store) CountPins(ctx context.Context, userID uuid.UUID) (int, error) {
 // --- Portfolio ---
 
 // CreatePortfolioItem inserts a new portfolio item.
+// An ID already set is kept (the media claim is taken against it first).
 func (s *Store) CreatePortfolioItem(ctx context.Context, item *PortfolioItem) error {
-	item.ID = uuid.New()
+	if item.ID == uuid.Nil {
+		item.ID = uuid.New()
+	}
 	return s.db.QueryRow(ctx, `
 		INSERT INTO portfolio_items (id, user_id, title, description, type, url, media_id, sort_order, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
@@ -148,17 +151,26 @@ func (s *Store) UpdatePortfolioItem(ctx context.Context, item *PortfolioItem) er
 }
 
 // DeletePortfolioItem removes a portfolio item that belongs to userID.
-func (s *Store) DeletePortfolioItem(ctx context.Context, id, userID uuid.UUID) error {
-	tag, err := s.db.Exec(ctx, `
-		DELETE FROM portfolio_items WHERE id = $1 AND user_id = $2
-	`, id, userID)
+// Its media claim is enqueued for release in the same transaction
+// (migration 010): once the row is gone nothing else remembers it.
+// hadMedia reports whether the deleted row named media.
+func (s *Store) DeletePortfolioItem(ctx context.Context, id, userID uuid.UUID) (hadMedia bool, err error) {
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if tag.RowsAffected() == 0 {
-		return pgx.ErrNoRows
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
+	if err := enqueuePendingTx(ctx, tx, portfolioDeletePending, id, userID); err != nil {
+		return false, err
 	}
-	return nil
+	err = tx.QueryRow(ctx, `
+		DELETE FROM portfolio_items WHERE id = $1 AND user_id = $2
+		RETURNING media_id IS NOT NULL
+	`, id, userID).Scan(&hadMedia)
+	if err != nil {
+		return false, err // pgx.ErrNoRows: not found or not the owner's
+	}
+	return hadMedia, tx.Commit(ctx)
 }
 
 // GetPortfolio returns all portfolio items for a user ordered by sort_order.

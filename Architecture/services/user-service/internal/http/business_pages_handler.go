@@ -97,6 +97,9 @@ func (h *Handler) CreateBusinessPage(c *gin.Context) {
 	}
 
 	if err := h.svc.CreateBusinessPage(c.Request.Context(), p); err != nil {
+		if writeMediaError(c, err) {
+			return
+		}
 		if strings.Contains(err.Error(), "unique") || strings.Contains(err.Error(), "duplicate") {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "HANDLE_TAKEN", "Page handle already taken", nil)
 			return
@@ -348,6 +351,9 @@ func (h *Handler) UpdateBusinessPage(c *gin.Context) {
 	}
 
 	if err := h.svc.UpdateBusinessPage(c.Request.Context(), existing); err != nil {
+		if writeMediaError(c, err) {
+			return
+		}
 		if err.Error() == "PAGE_NOT_FOUND" {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Page not found", nil)
 			return

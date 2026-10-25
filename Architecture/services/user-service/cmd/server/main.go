@@ -17,6 +17,7 @@ import (
 	"github.com/atpost/user-service/internal/events"
 	"github.com/atpost/user-service/internal/http"
 	"github.com/atpost/user-service/internal/identityclient"
+	"github.com/atpost/user-service/internal/mediaclient"
 	"github.com/atpost/user-service/internal/presence"
 	"github.com/atpost/user-service/internal/purge"
 	"github.com/atpost/user-service/internal/reconcile"
@@ -221,6 +222,16 @@ func main() {
 	userStore := store.New(dbPool)
 	identityClient := identityclient.New(profileURL, internalKey)
 	userSvc := service.New(userStore, rdb).WithIdentityClient(identityClient)
+	// Media attached to channels, portfolio items and business pages is
+	// checked (the actor's own finished upload) and claimed in media-service
+	// so its owner cannot delete it from under the row (service/media_claims.go).
+	// media-service must already register claimant "user-service".
+	if mc := mediaclient.New(env("MEDIA_SERVICE_URL", "http://media-service:8087"), internalKey); mc != nil {
+		userSvc.WithMedia(mc)
+	} else {
+		slog.Warn("user-service: MEDIA_SERVICE_URL or INTERNAL_SERVICE_KEY not set — writes that attach media " +
+			"(channel picture/banner, portfolio media, page avatar/cover) are refused with 503 MEDIA_UNAVAILABLE")
+	}
 	presenceStore := presence.New(rdb)
 	userHandler := http.New(userSvc, presenceStore, userStore).WithInternalRoutes(internalKey)
 	if internalKey == "" {
@@ -300,6 +311,26 @@ func main() {
 				} else if cleared > 0 {
 					slog.Info("cleared expired statuses", "count", cleared)
 				}
+			}
+		}
+	}()
+
+	// Media claim drain: settle holders queued in media_claim_pending
+	// (deleted channels and portfolio items, disabled pages, purged accounts,
+	// failed releases) so their owners' media is deletable again.
+	go func() {
+		ticker := time.NewTicker(10 * time.Minute)
+		defer ticker.Stop()
+		for {
+			if rep, err := userSvc.DrainMediaClaims(ctx); err != nil {
+				slog.Error("media claim drain error", "error", err)
+			} else if rep.Rows > 0 {
+				slog.Info("media claim drain", "report", rep.String())
+			}
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
 			}
 		}
 	}()

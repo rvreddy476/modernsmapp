@@ -51,8 +51,12 @@ type ChannelMilestone struct {
 }
 
 // CreateChannel creates a new channel.
+// An ID already set is kept: the media claim protocol claims against the
+// row's id before the row exists (service/media_claims.go).
 func (s *Store) CreateChannel(ctx context.Context, ch *Channel) error {
-	ch.ID = uuid.New()
+	if ch.ID == uuid.Nil {
+		ch.ID = uuid.New()
+	}
 	now := time.Now()
 	ch.CreatedAt = now
 	ch.UpdatedAt = now
@@ -205,6 +209,12 @@ func (s *Store) DeleteChannel(ctx context.Context, id, userID uuid.UUID) error {
 	}
 	defer tx.Rollback(ctx)
 
+	// Enqueue the channel's media claims for release in this transaction:
+	// the row is about to be gone, and with it any record that the claims
+	// exist (migration 010). A non-owner matches nothing here either.
+	if err := enqueuePendingTx(ctx, tx, channelDeletePending, id, userID); err != nil {
+		return err
+	}
 	_, err = tx.Exec(ctx, `DELETE FROM channel_milestones WHERE channel_id = $1`, id)
 	if err != nil {
 		return err

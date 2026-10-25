@@ -12,6 +12,7 @@ import (
 	"github.com/atpost/user-service/internal/identityclient"
 	"github.com/atpost/user-service/internal/store"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -19,11 +20,26 @@ type Service struct {
 	store    *store.Store
 	rdb      *redis.Client
 	identity *identityclient.Client
+
+	// ms is store, seen through the calls the media-writing paths make
+	// (media_claims.go); tests substitute an in-memory fake.
+	ms mediaStore
+	// media checks an attached asset is the actor's own finished upload;
+	// claims registers the reference with media-service. Nil refuses every
+	// write that ADDS media: fail closed (media_claims.go).
+	media  MediaLookup
+	claims MediaClaims
 }
 
 func New(s *store.Store, rdb *redis.Client) *Service {
-	return &Service{store: s, rdb: rdb}
+	svc := &Service{store: s, rdb: rdb}
+	if s != nil {
+		svc.ms = s
+	}
+	return svc
 }
+
+func isNoRows(err error) bool { return errors.Is(err, pgx.ErrNoRows) }
 
 // WithIdentityClient wires the profile-service client used to repair the
 // local app.users projection from the identity source of truth.
@@ -387,11 +403,6 @@ func (s *Service) UpdateSettings(ctx context.Context, settings *store.UserSettin
 
 // --- Channels ---
 
-// CreateChannel creates a new creator channel.
-func (s *Service) CreateChannel(ctx context.Context, ch *store.Channel) error {
-	return s.store.CreateChannel(ctx, ch)
-}
-
 // GetChannel returns a channel by handle with links and milestones.
 func (s *Service) GetChannel(ctx context.Context, handle string) (*store.ChannelDetail, error) {
 	ch, err := s.store.GetChannelByHandle(ctx, handle)
@@ -415,16 +426,6 @@ func (s *Service) GetChannel(ctx context.Context, handle string) (*store.Channel
 	return &store.ChannelDetail{Channel: *ch, Links: links, Milestones: milestones}, nil
 }
 
-// UpdateChannel updates a channel's editable fields.
-func (s *Service) UpdateChannel(ctx context.Context, upd *store.ChannelUpdate) error {
-	return s.store.UpdateChannel(ctx, upd)
-}
-
-// DeleteChannel removes a channel.
-func (s *Service) DeleteChannel(ctx context.Context, id, userID uuid.UUID) error {
-	return s.store.DeleteChannel(ctx, id, userID)
-}
-
 // GetUserChannels returns all channels for a user.
 func (s *Service) GetUserChannels(ctx context.Context, userID uuid.UUID) ([]store.Channel, error) {
 	return s.store.GetUserChannels(ctx, userID)
@@ -438,11 +439,6 @@ func (s *Service) EnsurePublisher(ctx context.Context, userID uuid.UUID) (*store
 
 // --- Business Pages ---
 
-// CreateBusinessPage creates a new business page.
-func (s *Service) CreateBusinessPage(ctx context.Context, p *store.BusinessPage) error {
-	return s.store.CreateBusinessPage(ctx, p)
-}
-
 // GetBusinessPage returns a business page by handle OR UUID, with optional viewer follow status.
 // Accepting both forms keeps the public `:id` route flexible: clients can deep-link by handle
 // while internal flows (e.g. onboarding wizard) can address pages by their stable UUID.
@@ -451,11 +447,6 @@ func (s *Service) GetBusinessPage(ctx context.Context, idOrHandle string, viewer
 		return s.store.GetBusinessPageByID(ctx, pageID, viewerID)
 	}
 	return s.store.GetBusinessPageByHandle(ctx, idOrHandle, viewerID)
-}
-
-// DeleteBusinessPage hard-deletes a page owned by the caller.
-func (s *Service) DeleteBusinessPage(ctx context.Context, pageID, userID uuid.UUID) error {
-	return s.store.DeleteBusinessPage(ctx, pageID, userID)
 }
 
 // DiscoverPages returns pages filtered by category/search with pagination.
@@ -516,11 +507,6 @@ func (s *Service) UploadedDocTypes(ctx context.Context, pageID uuid.UUID) (map[s
 // SetPageDocStatus reviews a single document.
 func (s *Service) SetPageDocStatus(ctx context.Context, docID, reviewerID uuid.UUID, status, reason string) error {
 	return s.store.SetPageDocStatus(ctx, docID, reviewerID, status, reason)
-}
-
-// UpdateBusinessPage updates a business page.
-func (s *Service) UpdateBusinessPage(ctx context.Context, p *store.BusinessPage) error {
-	return s.store.UpdateBusinessPage(ctx, p)
 }
 
 // GetPageReviews returns reviews for a business page.

@@ -78,6 +78,33 @@ func (s *Store) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 		{"users", `DELETE FROM users WHERE id = $1`},
 	}
 	present := map[string]bool{}
+
+	// The rows below hold media claims in media-service. Enqueue each holder
+	// for release before it is deleted, in this transaction, so the drain
+	// releases them once the erase commits (migration 010). Probed like the
+	// erase steps: a missing table holds no claims.
+	queued, err := tableExists(ctx, tx, "media_claim_pending")
+	if err != nil {
+		return fmt.Errorf("purge: probe media_claim_pending: %w", err)
+	}
+	for _, st := range purgePending {
+		if !queued {
+			break
+		}
+		ok, known := present[st.table]
+		if !known {
+			if ok, err = tableExists(ctx, tx, st.table); err != nil {
+				return fmt.Errorf("purge: probe %s: %w", st.table, err)
+			}
+			present[st.table] = ok
+		}
+		if !ok {
+			continue
+		}
+		if err := enqueuePendingTx(ctx, tx, []pendingEnqueue{st}, userID); err != nil {
+			return fmt.Errorf("purge: %w", err)
+		}
+	}
 	for _, st := range steps {
 		ok, known := present[st.table]
 		if !known {

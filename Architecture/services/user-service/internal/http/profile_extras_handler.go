@@ -133,6 +133,9 @@ func (h *Handler) AddPortfolioItem(c *gin.Context) {
 
 	item, err := h.svc.AddPortfolioItem(c.Request.Context(), userID, req.Title, req.Description, req.Type, req.URL, req.MediaID, req.SortOrder)
 	if err != nil {
+		if writeMediaError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}

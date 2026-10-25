@@ -18,8 +18,12 @@ COPY services /services
 
 # Build the application
 RUN go build -mod=vendor -o /server ./services/user-service/cmd/server/main.go
+# The media claim reconcile tool (cmd/media-claims): run in the pod with
+# `kubectl exec deploy/user-service -- /media-claims` (dry run) or `-apply`.
+RUN go build -mod=vendor -o /media-claims ./services/user-service/cmd/media-claims
 
 FROM alpine:3.19
 WORKDIR /
 COPY --from=builder /server /server
+COPY --from=builder /media-claims /media-claims
 CMD ["/server"]

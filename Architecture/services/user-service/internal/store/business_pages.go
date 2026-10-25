@@ -107,8 +107,11 @@ func scanPage(row interface {
 
 // CreateBusinessPage creates a new business page and auto-inserts the creator's
 // owner role row in the same transaction (spec §5.4).
+// An ID already set is kept (the media claims are taken against it first).
 func (s *Store) CreateBusinessPage(ctx context.Context, p *BusinessPage) error {
-	p.ID = uuid.New()
+	if p.ID == uuid.Nil {
+		p.ID = uuid.New()
+	}
 	now := time.Now()
 	p.CreatedAt = now
 	p.UpdatedAt = now
@@ -254,8 +257,15 @@ func (s *Store) UpdateBusinessPage(ctx context.Context, p *BusinessPage) error {
 
 // DeleteBusinessPage soft-deletes a page (spec §6.7: owner soft-delete →
 // status='disabled', terminal). Existing follow rows are preserved for audit.
+// A disabled page no longer shows its avatar or cover, so their media claims
+// are enqueued for release in the same transaction (migration 010).
 func (s *Store) DeleteBusinessPage(ctx context.Context, pageID, userID uuid.UUID) error {
-	tag, err := s.db.Exec(ctx,
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
+	tag, err := tx.Exec(ctx,
 		`UPDATE business_pages SET status='disabled', disabled_at=NOW(), updated_at=NOW()
 		 WHERE id=$1 AND user_id=$2 AND status != 'disabled'`, pageID, userID)
 	if err != nil {
@@ -264,7 +274,10 @@ func (s *Store) DeleteBusinessPage(ctx context.Context, pageID, userID uuid.UUID
 	if tag.RowsAffected() == 0 {
 		return fmt.Errorf("PAGE_NOT_FOUND")
 	}
-	return nil
+	if err := enqueuePendingTx(ctx, tx, pageDisablePending, pageID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // UpdatePageStatus performs a page lifecycle transition atomically with its
@@ -320,6 +333,10 @@ func applyPageStatus(ctx context.Context, tx pgx.Tx, pageID uuid.UUID, to string
 		_, err = tx.Exec(ctx,
 			`UPDATE business_pages SET status='disabled', disabled_at=NOW(), updated_at=NOW()
 			 WHERE id=$1`, pageID)
+		if err == nil {
+			// Terminal: the page's media claims go (migration 010).
+			err = enqueuePendingTx(ctx, tx, pageDisablePending, pageID)
+		}
 	case "draft":
 		_, err = tx.Exec(ctx,
 			`UPDATE business_pages SET status='draft', updated_at=NOW() WHERE id=$1`, pageID)
