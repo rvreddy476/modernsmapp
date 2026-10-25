@@ -365,7 +365,7 @@ func (s *MediaAssetStore) DeleteMedia(ctx context.Context, id uuid.UUID) ([]stri
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit; on error pgx closes the conn
 
 	// 1. Lock the row: every claim decision below is made under it.
 	var storageKey string

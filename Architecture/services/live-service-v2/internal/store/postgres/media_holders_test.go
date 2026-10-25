@@ -18,7 +18,7 @@ func TestMediaHolderLockWaitsAndIsTransactionScoped(t *testing.T) {
 
 func TestMediaHolderLockKeyIsPerStream(t *testing.T) {
 	a, b := uuid.New(), uuid.New()
-	if mediaHolderLockKey(a) != mediaHolderLockKey(a) {
+	if first, again := mediaHolderLockKey(a), mediaHolderLockKey(a); first != again {
 		t.Fatal("the key for one stream must be stable")
 	}
 	if mediaHolderLockKey(a) == mediaHolderLockKey(b) {

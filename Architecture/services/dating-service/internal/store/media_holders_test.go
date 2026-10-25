@@ -18,7 +18,7 @@ func TestMediaHolderLockWaitsAndIsTransactionScoped(t *testing.T) {
 
 func TestMediaHolderLockKeyIsPerHolder(t *testing.T) {
 	a, b := uuid.NewString(), uuid.NewString()
-	if mediaHolderLockKey(mediaclient.KindPhoto, a) != mediaHolderLockKey(mediaclient.KindPhoto, a) {
+	if first, again := mediaHolderLockKey(mediaclient.KindPhoto, a), mediaHolderLockKey(mediaclient.KindPhoto, a); first != again {
 		t.Fatal("unstable key")
 	}
 	if mediaHolderLockKey(mediaclient.KindPhoto, a) == mediaHolderLockKey(mediaclient.KindPhoto, b) ||

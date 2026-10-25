@@ -30,7 +30,7 @@ func TestMediaHolderLockWaitsAndIsTransactionScoped(t *testing.T) {
 
 func TestMediaHolderLockKeyIsPerRowAndTable(t *testing.T) {
 	a, b := uuid.New(), uuid.New()
-	if mediaHolderLockKey(HolderFundraiserCover, a) != mediaHolderLockKey(HolderFundraiserCover, a) {
+	if first, again := mediaHolderLockKey(HolderFundraiserCover, a), mediaHolderLockKey(HolderFundraiserCover, a); first != again {
 		t.Fatal("unstable key")
 	}
 	if mediaHolderLockKey(HolderFundraiserCover, a) == mediaHolderLockKey(HolderFundraiserCover, b) ||
