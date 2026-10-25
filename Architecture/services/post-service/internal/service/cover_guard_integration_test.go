@@ -31,6 +31,9 @@ type coverWriteFixture struct {
 	theirImage    uuid.UUID
 	theirVideo    uuid.UUID
 	created       []uuid.UUID
+	// claims is media-service's claim table, faked (media_claims.go): every
+	// accepted cover is claimed before the row names it.
+	claims *fakeClaims
 }
 
 func newCoverWriteFixture(t *testing.T) *coverWriteFixture {
@@ -48,6 +51,8 @@ func newCoverWriteFixture(t *testing.T) *coverWriteFixture {
 	})
 	t.Cleanup(func() { _ = rdb.Close() })
 	f.svc = New(postgres.New(f.pool), nil, rdb)
+	f.claims = newFakeClaims()
+	f.svc.SetMediaClaims(f.claims)
 
 	f.set(t, `INSERT INTO users (id) VALUES ($1) ON CONFLICT DO NOTHING`, f.stranger)
 	for _, m := range []struct {
@@ -156,6 +161,9 @@ func TestCoverWriteCreateRefusesAStrangersAsset(t *testing.T) {
 			if f.postExists(t, id) {
 				t.Fatal("a refused cover still created the post")
 			}
+			if got := f.claims.held(postgres.HolderPostCover, id); len(got) != 0 {
+				t.Fatalf("a refused cover was claimed: %v", got)
+			}
 		})
 	}
 }
@@ -195,7 +203,8 @@ func TestCoverWriteCreateAcceptsTheAuthorsOwnUpload(t *testing.T) {
 	if got := f.coverOf(t, id); got == nil || *got != f.ownImage {
 		t.Fatalf("stored cover = %v, want %s", got, f.ownImage)
 	}
-
+	// The cover is claimed under the new post's id (media_claims.go).
+	sameIDs(t, "the new post's cover claim", f.claims.held(postgres.HolderPostCover, id), f.ownImage)
 }
 
 // A video is never a cover, the post's own included: the old frame picker
@@ -261,4 +270,5 @@ func TestCoverWriteCoverFrameAcceptsTheAuthorsOwnUpload(t *testing.T) {
 	if got := f.coverOf(t, f.post); got == nil || *got != f.ownImage {
 		t.Fatalf("stored cover = %v, want %s", got, f.ownImage)
 	}
+	sameIDs(t, "the cover frame's claim", f.claims.held(postgres.HolderPostCover, f.post), f.ownImage)
 }

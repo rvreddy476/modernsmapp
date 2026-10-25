@@ -231,7 +231,20 @@ func (s *Service) applyPostEdit(ctx context.Context, callerID uuid.UUID, current
 		return nil, err
 	}
 	patch.AuditAction = action
-	updated, err := s.postEdits.UpdatePostFields(ctx, current.ID, callerID, patch)
+	var updated *postgres.Post
+	write := func() error {
+		var werr error
+		updated, werr = s.postEdits.UpdatePostFields(ctx, current.ID, callerID, patch)
+		return werr
+	}
+	if patch.CoverMediaID != nil {
+		// A new cover is claimed before the row names it and the one it
+		// replaces released after (media_claims.go). Other edits leave the
+		// cover column alone (COALESCE), so they take no claim and no lock.
+		err = s.setPostCoverClaimed(ctx, current.ID, *patch.CoverMediaID, write)
+	} else {
+		err = write()
+	}
 	if err != nil {
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):

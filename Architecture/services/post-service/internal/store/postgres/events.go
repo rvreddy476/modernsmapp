@@ -38,18 +38,24 @@ type EventRSVP struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// CreateEvent inserts e. Its id is minted here when the caller did not: the
+// cover claim (service/media_claims_writers.go) names the row before it
+// exists.
 func (s *Store) CreateEvent(ctx context.Context, e *Event) (*Event, error) {
+	if e.ID == uuid.Nil {
+		e.ID = uuid.New()
+	}
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO events (post_id, creator_id, title, description, starts_at, ends_at,
 			location_name, location_lat, location_lng, cover_media_id, is_ticketed,
-			ticket_price, max_attendees, status)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
+			ticket_price, max_attendees, status, id)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
 		RETURNING id, post_id, creator_id, title, description, starts_at, ends_at,
 			location_name, location_lat, location_lng, cover_media_id, is_ticketed,
 			ticket_price, max_attendees, chat_conv_id, rsvp_count, status, created_at, updated_at`,
 		e.PostID, e.CreatorID, e.Title, e.Description, e.StartsAt, e.EndsAt,
 		e.LocationName, e.LocationLat, e.LocationLng, e.CoverMediaID, e.IsTicketed,
-		e.TicketPrice, e.MaxAttendees, e.Status,
+		e.TicketPrice, e.MaxAttendees, e.Status, e.ID,
 	).Scan(&e.ID, &e.PostID, &e.CreatorID, &e.Title, &e.Description, &e.StartsAt, &e.EndsAt,
 		&e.LocationName, &e.LocationLat, &e.LocationLng, &e.CoverMediaID, &e.IsTicketed,
 		&e.TicketPrice, &e.MaxAttendees, &e.ChatConvID, &e.RSVPCount, &e.Status, &e.CreatedAt, &e.UpdatedAt)

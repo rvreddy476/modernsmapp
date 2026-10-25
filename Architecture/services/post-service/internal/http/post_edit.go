@@ -50,7 +50,9 @@ import (
 	INVALID_COMMENT_ACCESS, INVALID_COMMENT_SORT, RELATED_NOT_FOUND,
 	RELATED_SELF, TOO_MANY_SHARES, INVALID_USER), 403 MEDIA_NOT_OWNED for a
 	cover the caller did not upload, 409 SYSTEM_PLAYLIST for a generic write
-	on a server-owned collection. The table is service.PostEditErrorStatus.
+	on a server-owned collection, 503 MEDIA_CLAIMS_UNAVAILABLE when
+	media-service could not record a new cover's claim (nothing written;
+	retry). The table is service.PostEditErrorStatus.
 */
 
 // updatePostRequest keeps every field raw-presence-aware: absent = leave it.

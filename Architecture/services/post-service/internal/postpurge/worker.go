@@ -75,6 +75,27 @@ type MediaDeleter interface {
 	DeleteMediaForPurgedPost(ctx context.Context, mediaID, postID uuid.UUID) error
 }
 
+// ClaimReleaser releases the media-service claims a purged post held (its
+// cover, kind post_cover). Optional: a MediaDeleter that also implements it
+// (*service.Service does) is asked after every purge. Best effort here —
+// DeleteMediaForPurgedPost repeats it durably for every queued asset, and
+// cmd/media-claims repairs a cover the queue does not carry (one another
+// post still uses).
+type ClaimReleaser interface {
+	ReleasePurgedPostClaims(ctx context.Context, postID uuid.UUID) error
+}
+
+// releaseClaims asks the deleter to release the purged post's claims.
+func (w *Worker) releaseClaims(ctx context.Context, postID uuid.UUID) {
+	r, ok := w.media.(ClaimReleaser)
+	if !ok {
+		return
+	}
+	if err := r.ReleasePurgedPostClaims(ctx, postID); err != nil {
+		w.log.Warn("post purge: media claims not released; run media-claims", "post_id", postID, "err", err)
+	}
+}
+
 // Config is read from the environment by ConfigFromEnv.
 type Config struct {
 	// After is the "Recently deleted" window (POST_PURGE_AFTER, default
@@ -219,6 +240,7 @@ func (w *Worker) Tick(ctx context.Context) TickReport {
 		}
 		rep.Purged++
 		rep.MediaQueued += len(queued)
+		w.releaseClaims(ctx, c.PostID)
 		w.log.Info("post purged", "event", "post_purged", "post_id", c.PostID, "author_id", c.AuthorID,
 			"deleted_at", c.DeletedAt, "media_queued", len(queued))
 	}

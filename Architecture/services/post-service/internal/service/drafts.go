@@ -329,7 +329,13 @@ func (s *Service) CreateDraft(ctx context.Context, input *CreateDraftInput) (*po
 		OverlayAudioVol:   1.0,
 	}
 
-	if err := s.pgStore.CreateDraft(ctx, draft); err != nil {
+	// The source asset is the author's own and is claimed before the row
+	// names it (media_claims_writers.go).
+	if err := s.createReelDraftClaimed(ctx, draft); err != nil {
+		if errors.Is(err, ErrMediaNotFound) || errors.Is(err, ErrMediaNotOwned) ||
+			errors.Is(err, ErrMediaClaimsUnavailable) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("create draft: %w", err)
 	}
 	return draft, nil
@@ -492,9 +498,11 @@ func (s *Service) UpdateDraft(ctx context.Context, draftID uuid.UUID, authorID u
 	if input.OverlayAudioVol != nil {
 		updates["overlay_audio_volume"] = *input.OverlayAudioVol
 	}
+	var newCover *uuid.UUID
 	if input.CoverMediaID != nil {
 		if id, err := uuid.Parse(*input.CoverMediaID); err == nil {
 			updates["cover_media_id"] = id
+			newCover = &id
 		}
 	}
 	if input.ScheduleAt != nil {
@@ -510,7 +518,20 @@ func (s *Service) UpdateDraft(ctx context.Context, draftID uuid.UUID, authorID u
 		return s.GetDraft(ctx, draftID, authorID)
 	}
 
-	if err := s.pgStore.UpdateDraft(ctx, draftID, authorID, updates); err != nil {
+	write := func() error { return s.pgStore.UpdateDraft(ctx, draftID, authorID, updates) }
+	var err error
+	if newCover != nil {
+		// A new cover is the author's own, claimed before the row names it;
+		// the one it replaces is released after (media_claims_writers.go).
+		err = s.updateReelDraftCoverClaimed(ctx, draftID, authorID, *newCover, write)
+		if errors.Is(err, ErrMediaNotFound) || errors.Is(err, ErrMediaNotOwned) ||
+			errors.Is(err, ErrMediaClaimsUnavailable) {
+			return nil, err
+		}
+	} else {
+		err = write()
+	}
+	if err != nil {
 		return nil, fmt.Errorf("update draft: %w", err)
 	}
 	return s.pgStore.GetDraft(ctx, draftID)
@@ -522,8 +543,18 @@ func (s *Service) ListDrafts(ctx context.Context, authorID uuid.UUID, limit int,
 }
 
 // DeleteDraft soft-deletes a draft.
+//
+// A deleted draft is never shown again, so its media claims are released
+// (best effort; media-claims repairs a lost release). settle re-reads the
+// row and releases only when it is no longer live, so a delete aimed at
+// someone else's draft (which the store's author filter makes a no-op)
+// releases nothing.
 func (s *Service) DeleteDraft(ctx context.Context, draftID uuid.UUID, authorID uuid.UUID) error {
-	return s.pgStore.DeleteDraft(ctx, draftID, authorID)
+	if err := s.pgStore.DeleteDraft(ctx, draftID, authorID); err != nil {
+		return err
+	}
+	s.settleMediaHolderBestEffort(ctx, postgres.HolderReelDraft, draftID)
+	return nil
 }
 
 // PublishDraft converts a draft into a real post and marks it published.
@@ -574,7 +605,7 @@ func (s *Service) PublishDraft(ctx context.Context, draftID uuid.UUID, authorID 
 			// Already published by a previous attempt — resolve to it.
 			if existing, gerr := s.pgStore.GetPost(ctx, publishPostID); gerr == nil && existing != nil {
 				s.keepDraftSound(ctx, existing, draft)
-				s.pgStore.MarkDraftPublished(ctx, draftID, existing.ID) //nolint:errcheck
+				s.markReelDraftPublished(ctx, draftID, existing.ID) //nolint:errcheck
 				return existing, nil
 			}
 		}
@@ -583,7 +614,7 @@ func (s *Service) PublishDraft(ctx context.Context, draftID uuid.UUID, authorID 
 	s.keepDraftSound(ctx, post, draft)
 
 	// Mark draft as published
-	if err := s.pgStore.MarkDraftPublished(ctx, draftID, post.ID); err != nil {
+	if err := s.markReelDraftPublished(ctx, draftID, post.ID); err != nil {
 		// Non-fatal: the post was already created
 		slog.Warn("draft publish: draft not marked published",
 			"draft_id", draftID, "post_id", post.ID, "error", err)
@@ -769,7 +800,7 @@ func (s *Service) publishClaimedReelDraft(ctx context.Context, draftID, authorID
 		if postgres.IsUniqueViolation(err) {
 			if existing, gerr := s.pgStore.GetPost(ctx, publishPostID); gerr == nil && existing != nil {
 				s.keepDraftSound(ctx, existing, draft)
-				s.pgStore.MarkDraftPublished(ctx, draftID, existing.ID) //nolint:errcheck
+				s.markReelDraftPublished(ctx, draftID, existing.ID) //nolint:errcheck
 				return existing, nil
 			}
 		}
@@ -794,7 +825,7 @@ func (s *Service) publishClaimedReelDraft(ctx context.Context, draftID, authorID
 		return nil, fmt.Errorf("publish claimed draft: %w", err)
 	}
 	s.keepDraftSound(ctx, post, draft)
-	if err := s.pgStore.MarkDraftPublished(ctx, draftID, post.ID); err != nil {
+	if err := s.markReelDraftPublished(ctx, draftID, post.ID); err != nil {
 		// Non-fatal: idempotency resolves this on the stale-claim retry.
 	}
 	return post, nil

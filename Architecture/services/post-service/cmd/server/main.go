@@ -17,6 +17,7 @@ import (
 	"github.com/atpost/post-service/internal/engagement/consumers"
 	postEvents "github.com/atpost/post-service/internal/events"
 	"github.com/atpost/post-service/internal/http"
+	"github.com/atpost/post-service/internal/mediaclaims"
 	"github.com/atpost/post-service/internal/postpurge"
 	"github.com/atpost/post-service/internal/postschedule"
 	"github.com/atpost/post-service/internal/places"
@@ -227,6 +228,16 @@ func main() {
 	}
 	postSvc.SetReviewAllVideos(env("REVIEW_ALL_VIDEOS", "false") == "true")
 	postSvc.SetInternalServiceKey(internalServiceKey)
+	// Media claims (internal/service/media_claims.go): post covers, reel
+	// draft media and event covers are registered with media-service so
+	// their owner cannot delete them from under the row. Same address and
+	// key as every other media-service call. Without them every write that
+	// attaches such media is refused 503 (fail closed).
+	if claims := mediaclaims.New(env("MEDIA_SERVICE_URL", "http://media-service:8087"), internalServiceKey); claims != nil {
+		postSvc.SetMediaClaims(claims)
+	} else {
+		slog.Warn("media claims disabled: MEDIA_SERVICE_URL or INTERNAL_SERVICE_KEY unset; covers, reel draft media and event covers will be refused")
+	}
 	// Copyright title review (migration 073): long videos over 20 minutes
 	// naming a catalogue title are published held for review. On unless
 	// COPYRIGHT_TITLE_HOLD_ENABLED=false (the kill switch: no new holds;

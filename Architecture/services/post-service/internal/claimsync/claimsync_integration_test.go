@@ -1,0 +1,125 @@
+//go:build integration
+
+package claimsync
+
+import (
+	"context"
+	"os"
+	"strings"
+	"testing"
+
+	"github.com/atpost/post-service/database"
+	"github.com/atpost/post-service/internal/mediaclaims"
+	"github.com/atpost/post-service/internal/store/postgres"
+	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// The backfill / repair pass (cmd/media-claims) on the real schema, with
+// media-service faked: a pre-protocol post cover is claimed, a deleted reel
+// draft's claims are released, and a claim whose post was purged is found
+// through media_claims and released.
+//
+//	POSTGRES_DSN=postgres://…/post_it_test go test -tags integration ./internal/claimsync/ -run MediaClaimsIT -v
+//
+// Refuses any database whose name does not end in _test.
+
+func openDB(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	dsn := os.Getenv("POSTGRES_DSN")
+	if dsn == "" {
+		t.Skip("POSTGRES_DSN not set")
+	}
+	cfg, err := pgx.ParseConfig(dsn)
+	if err != nil {
+		t.Fatalf("POSTGRES_DSN does not parse: %v", err)
+	}
+	if db := cfg.Database; db == "app" || !strings.HasSuffix(db, "_test") {
+		t.Fatalf("refusing to run against database %q: the name must end in _test", db)
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	for _, ddl := range []string{
+		`CREATE TABLE IF NOT EXISTS users (id UUID PRIMARY KEY)`,
+		`CREATE TABLE IF NOT EXISTS media_assets (
+			id UUID PRIMARY KEY, uploader_id UUID NOT NULL, file_type TEXT NOT NULL,
+			processing_status TEXT NOT NULL, moderation_status TEXT NOT NULL DEFAULT 'pending',
+			duration_seconds INTEGER, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
+	} {
+		if _, err := pool.Exec(ctx, ddl); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := postgres.BootstrapSchema(ctx, pool, database.SetupSQL, database.Migrations); err != nil {
+		t.Fatalf("bootstrap schema: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS media_claims (
+		media_id UUID NOT NULL, claimant TEXT NOT NULL, claim_kind TEXT NOT NULL,
+		claim_ref TEXT NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+		PRIMARY KEY (media_id, claimant, claim_kind, claim_ref))`); err != nil {
+		t.Fatal(err)
+	}
+	return pool
+}
+
+func TestMediaClaimsIT_BackfillRepairAndOrphans(t *testing.T) {
+	pool := openDB(t)
+	ctx := context.Background()
+	author, cover, draftMedia := uuid.New(), uuid.New(), uuid.New()
+	post, draft, purged := uuid.New(), uuid.New(), uuid.New()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO posts (id, author_id, text, visibility, content_type, review_status, cover_media_id, created_at, updated_at)
+		VALUES ($1, $2, 'old', 'public', 'post', 'approved', $3, NOW(), NOW())`, post, author, cover); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO reel_drafts (id, author_id, media_id, status) VALUES ($1, $2, $3, 'deleted')`,
+		draft, author, draftMedia); err != nil {
+		t.Fatal(err)
+	}
+	// The purged post's claim, as media-service holds it.
+	if _, err := pool.Exec(ctx, `INSERT INTO media_claims (media_id, claimant, claim_kind, claim_ref) VALUES ($1, $2, $3, $4)`,
+		uuid.New(), mediaclaims.Claimant, mediaclaims.KindPostCover, purged.String()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = pool.Exec(bg, `DELETE FROM posts WHERE id = $1`, post)
+		_, _ = pool.Exec(bg, `DELETE FROM reel_drafts WHERE id = $1`, draft)
+		_, _ = pool.Exec(bg, `DELETE FROM media_claims WHERE claim_ref = $1`, purged.String())
+	})
+
+	var log []string
+	c := &fakeClaims{held: map[key]map[uuid.UUID]bool{}, missing: map[uuid.UUID]bool{}, log: &log}
+	c.held[key{mediaclaims.KindReelDraft, draft}] = map[uuid.UUID]bool{draftMedia: true}
+	c.held[key{mediaclaims.KindPostCover, purged}] = map[uuid.UUID]bool{uuid.New(): true}
+
+	// Dry run first: nothing sent.
+	if _, err := Run(ctx, postgres.New(pool), c, false); err != nil {
+		t.Fatal(err)
+	}
+	if len(log) != 0 {
+		t.Fatalf("the dry run sent %v", log)
+	}
+
+	rep, err := Run(ctx, postgres.New(pool), c, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rep.OrphanScan != "done" {
+		t.Fatalf("orphan scan: %s", rep.OrphanScan)
+	}
+	if got := c.ids(mediaclaims.KindPostCover, post); got != cover.String() {
+		t.Fatalf("the pre-protocol cover was not backfilled: %q", got)
+	}
+	if got := c.ids(mediaclaims.KindReelDraft, draft); got != "" {
+		t.Fatalf("the deleted draft kept its claim: %q", got)
+	}
+	if got := c.ids(mediaclaims.KindPostCover, purged); got != "" {
+		t.Fatalf("the purged post's orphan claim survived: %q", got)
+	}
+}

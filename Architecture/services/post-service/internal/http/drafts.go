@@ -62,6 +62,11 @@ func (h *Handler) CreateDraft(c *gin.Context) {
 		Caption:    req.Caption,
 	})
 	if err != nil {
+		// The source asset is the author's own, claimed with media-service
+		// (service/media_claims.go): 403 / 422 / 503.
+		if writeOwnMediaError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -124,6 +129,9 @@ func (h *Handler) UpdateDraft(c *gin.Context) {
 		case writeTierGateError(c, err):
 		// action is {"label","url"} or null: the create route's codes.
 		case writeActionError(c, err):
+		// cover_media_id is the author's own, claimed with media-service
+		// (service/media_claims.go): 403 / 422 / 503.
+		case writeOwnMediaError(c, err):
 		// audio_track_id is a sound id, or "" to remove the sound;
 		// content_type is flick or long_video.
 		case errors.Is(err, service.ErrInvalidDraftSound) || errors.Is(err, service.ErrInvalidLocationPlaceID) ||

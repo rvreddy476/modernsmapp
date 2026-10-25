@@ -104,6 +104,10 @@ func PostEditErrorStatus(err error) (int, string) {
 	case errors.Is(err, ErrBulkNothing), errors.Is(err, ErrBulkTooMany),
 		errors.Is(err, ErrBulkEmptyPatch), errors.Is(err, ErrBulkTagsMode):
 		return http.StatusUnprocessableEntity, "INVALID_REQUEST"
+	// Media claims (media_claims.go): media-service could not record the
+	// reference, so nothing was written. A retry can succeed.
+	case errors.Is(err, ErrMediaClaimsUnavailable):
+		return http.StatusServiceUnavailable, "MEDIA_CLAIMS_UNAVAILABLE"
 	case errors.Is(err, ErrAuthoringStoreUnavailable):
 		return http.StatusServiceUnavailable, "STORE_UNAVAILABLE"
 	case errors.Is(err, ErrShareUsersUnknown):

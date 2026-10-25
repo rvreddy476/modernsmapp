@@ -46,7 +46,9 @@ func (s *Service) CreateEvent(ctx context.Context, input CreateEventInput) (*pos
 		MaxAttendees: input.MaxAttendees,
 		Status:       "upcoming",
 	}
-	return s.pgStore.CreateEvent(ctx, e)
+	// The cover is the creator's own and is claimed before the row names it
+	// (media_claims_writers.go).
+	return s.createEventClaimed(ctx, e)
 }
 
 func (s *Service) GetEvent(ctx context.Context, eventID uuid.UUID) (*postgres.Event, error) {

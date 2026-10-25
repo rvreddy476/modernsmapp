@@ -43,6 +43,9 @@ func reelDraftKindService(t *testing.T, f *soundsITFixture) *Service {
 	t.Cleanup(func() { _ = rdb.Close() })
 	svc := New(f.store, nil, rdb)
 	svc.WithStoryAudience(NewStoryAudience(noRelationships{}))
+	// A draft's source asset is claimed with media-service before the row
+	// names it (media_claims.go); media-service is faked here.
+	svc.SetMediaClaims(newFakeClaims())
 	// A long video is listed under a channel.
 	f.set(t, `INSERT INTO channels (user_id, name, handle) VALUES ($1, 'Draft Proof', $2) ON CONFLICT DO NOTHING`,
 		f.stranger, "draft."+uuid.NewString()[:8])

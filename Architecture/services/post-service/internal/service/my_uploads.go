@@ -293,6 +293,14 @@ func (s *Service) ListMyDeletedPosts(ctx context.Context, authorID uuid.UUID, li
 // (something else still holds the asset) and a 404 (already gone) both mean
 // "nothing more for this post to do" and resolve the queue row.
 func (s *Service) DeleteMediaForPurgedPost(ctx context.Context, mediaID, postID uuid.UUID) error {
+	// The purged post's own cover claim first (media_claims.go): media-service
+	// refuses a referrer delete while ANY claim names the asset, and would
+	// answer 409, which this queue reads as "someone else still uses it" —
+	// keeping the asset, and the stale claim, forever. The post row is gone,
+	// so settling releases; a failed release defers this queue row.
+	if err := s.settleMediaHolder(ctx, postgres.HolderPostCover, postID); err != nil {
+		return fmt.Errorf("release the purged post's cover claim: %w", err)
+	}
 	base := os.Getenv("MEDIA_SERVICE_URL")
 	if base == "" {
 		base = "http://media-service:8087"

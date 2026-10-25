@@ -655,6 +655,9 @@ func writeCreateGuardError(c *gin.Context, err error) bool {
 		// 409, not 400: the request is well-formed, it conflicts with an
 		// earlier one. The client must mint a new key, not fix a field.
 		api.ErrorWithContext(ctx, c.Writer, http.StatusConflict, "IDEMPOTENCY_KEY_REUSED", err.Error(), nil)
+	case writeMediaClaimsError(c, err):
+		// 503: media-service could not record the cover's claim; nothing
+		// was written (service/media_claims.go).
 	case errors.Is(err, service.ErrMediaNotFound):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "MEDIA_NOT_FOUND", err.Error(), nil)
 	case errors.Is(err, service.ErrMediaNotOwned):
@@ -2987,7 +2990,7 @@ func (h *Handler) SetCoverFrame(c *gin.Context) {
 	}
 
 	if err := h.svc.SetCoverFrame(c.Request.Context(), videoID, userID, coverMediaID, req.ThumbnailURL); err != nil {
-		if writeCoverMediaError(c, err) {
+		if writeCoverMediaError(c, err) || writeMediaClaimsError(c, err) {
 			return
 		}
 		if strings.Contains(err.Error(), "unauthorized") {
@@ -3206,6 +3209,11 @@ func (h *Handler) CreateEvent(c *gin.Context) {
 		MaxAttendees: req.MaxAttendees,
 	})
 	if err != nil {
+		// The cover is claimed with media-service (service/media_claims.go):
+		// 403 / 422 / 503 for the cover, 400 for the rest as before.
+		if writeOwnMediaError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "CREATE_EVENT_ERROR", err.Error(), nil)
 		return
 	}

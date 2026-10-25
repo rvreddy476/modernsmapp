@@ -108,6 +108,16 @@ type Service struct {
 	internalServiceKey   string
 	httpClient           *http.Client
 
+	// claims registers the media a non-FK column holds (post covers, reel
+	// drafts, event covers) with media-service, so the uploader cannot
+	// delete it from under the row (media_claims.go). Nil refuses every
+	// write that ADDS such media: fail closed.
+	claims MediaClaims
+	// mediaHolders locks and re-reads a holder row for the claim protocol;
+	// ownMedia is the ownership read that gates a claim. *postgres.Store.
+	mediaHolders mediaHolderStore
+	ownMedia     mediaOwnershipReader
+
 	// purgeAfter is the "Recently deleted" window: a soft-deleted post can
 	// be restored until deleted_at + purgeAfter, after which the purge
 	// worker hard-deletes it. Set from POST_PURGE_AFTER (default 30 days).
@@ -358,6 +368,8 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		svc.mediaStates = pg
 		svc.credits = pg
 		svc.actionLinks = pg
+		svc.mediaHolders = pg
+		svc.ownMedia = pg
 	}
 	svc.creditLinks = defaultCreditLinker{s: svc}
 	if rdb != nil {
@@ -1593,7 +1605,10 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 			Fingerprint: input.CreateFingerprint,
 		}
 	}
-	if err := s.writeCreatedPost(ctx, p, createEventType, createPayload, idem); err != nil {
+	// The cover is claimed with media-service before the row names it
+	// (media_claims.go); the write and its compensation run under the
+	// cover's holder lock.
+	if err := s.writeCreatedPostClaimed(ctx, p, createEventType, createPayload, idem); err != nil {
 		// A concurrent request won the key. Whether it was the same intent
 		// decides between replaying its post and refusing the reuse.
 		var replay postgres.ErrCreateKeyReplay
@@ -3789,7 +3804,11 @@ func (s *Service) SetCoverFrame(ctx context.Context, postID, userID uuid.UUID, c
 		if err := s.verifyCoverOnWrite(ctx, authorID, *coverMediaID); err != nil {
 			return err
 		}
-		if err := s.pgStore.UpdatePostCoverMedia(ctx, postID, coverMediaID); err != nil {
+		// Claimed before the row names it; the cover it replaces is
+		// released after (media_claims.go).
+		if err := s.setPostCoverClaimed(ctx, postID, *coverMediaID, func() error {
+			return s.pgStore.UpdatePostCoverMedia(ctx, postID, coverMediaID)
+		}); err != nil {
 			return err
 		}
 		// Tier 1b: cover_media_id is in the cached body.

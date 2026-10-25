@@ -220,6 +220,8 @@ func TestUpdatePostValidatesEveryField(t *testing.T) {
 
 func TestUpdatePostCoverMustBeTheOwnersImage(t *testing.T) {
 	svc, store, owner, post := newEditRig(t)
+	claims := newFakeClaims()
+	svc.SetMediaClaims(claims)
 	ctx := context.Background()
 	foreign := uuid.New()
 	store.media[foreign] = postgres.MediaOwnership{UploaderID: uuid.New(), Kind: "image", ProcessingStatus: "ready", ModerationStatus: "passed"}
@@ -239,6 +241,11 @@ func TestUpdatePostCoverMustBeTheOwnersImage(t *testing.T) {
 	}
 	if last := store.updates[len(store.updates)-1]; last.CoverMediaID == nil || *last.CoverMediaID != image {
 		t.Fatalf("cover not in patch: %+v", last)
+	}
+	// Only the accepted cover was claimed (media_claims.go): the refused
+	// ones never reached media-service.
+	if got := claims.held(postgres.HolderPostCover, post.ID); len(got) != 1 || got[0] != image {
+		t.Fatalf("claims after the edit = %v, want exactly the new cover", got)
 	}
 }
 
