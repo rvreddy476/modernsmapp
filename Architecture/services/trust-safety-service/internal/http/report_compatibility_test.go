@@ -8,9 +8,12 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// These tests run in parallel, so they must not call gin.SetMode (it writes
+// gin package globals and races under -race); TestMain in main_test.go sets
+// gin.TestMode once for the package.
+
 func TestFileReportRequestAcceptsReleasedEntityAliases(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 
 	for _, entityType := range []string{"user", "post", "comment", "hashtag", "sound", "reel", "video"} {
 		entityType := entityType
@@ -33,7 +36,6 @@ func TestFileReportRequestAcceptsReleasedEntityAliases(t *testing.T) {
 
 func TestFileReportRequestRejectsUnknownEntityType(t *testing.T) {
 	t.Parallel()
-	gin.SetMode(gin.TestMode)
 	request := httptest.NewRequest("POST", "/v1/reports", strings.NewReader(
 		`{"entity_type":"story","entity_id":"11111111-1111-1111-1111-111111111111","reason":"spam"}`,
 	))
