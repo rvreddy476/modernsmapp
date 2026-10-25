@@ -594,9 +594,41 @@ func TestContractFixtures(t *testing.T) {
 			continue
 		}
 		if !bytes.Equal(wantBytes, got) {
-			t.Errorf("%s: fixture differs from the handler's output.\n--- fixture\n%s\n--- handler\n%s", f.name, wantBytes, got)
+			// The first line says where: CI's summary keeps only the line
+			// that names the _test.go file.
+			t.Errorf("%s: fixture differs from the handler's output (%s).\n--- fixture\n%s\n--- handler\n%s",
+				f.name, ctFirstDifference(wantBytes, got), wantBytes, got)
 		}
 	}
+}
+
+// ctFirstDifference names the first line where the fixture and the handler's
+// rendering part, both sides quoted so whitespace and a missing trailing
+// blank line show.
+func ctFirstDifference(want, got []byte) string {
+	w := strings.Split(string(want), "\n")
+	g := strings.Split(string(got), "\n")
+	for i := 0; i < len(w) || i < len(g); i++ {
+		var wl, gl string
+		wOK, gOK := i < len(w), i < len(g)
+		if wOK {
+			wl = w[i]
+		}
+		if gOK {
+			gl = g[i]
+		}
+		if wOK != gOK || wl != gl {
+			ws, gs := strconv.Quote(wl), strconv.Quote(gl)
+			if !wOK {
+				ws = "<end of file>"
+			}
+			if !gOK {
+				gs = "<end of output>"
+			}
+			return fmt.Sprintf("line %d: fixture %s, handler %s", i+1, ws, gs)
+		}
+	}
+	return "same lines, different bytes"
 }
 
 // render pretty-prints the stabilised body: two-space indent, trailing

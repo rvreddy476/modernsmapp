@@ -171,17 +171,42 @@ jobs:
       - name: The commerce surface is reachable from the app
         run: |
           set -euo pipefail
-          H=mobile/android/app/src/main/kotlin/com/us/android/navigation/UsNavHost.kt
-          E=mobile/android/app/src/main/kotlin/com/us/android/navigation/ExploreScreen.kt
+          # The ways in, as the app composes them now: the Explore launcher
+          # has an MStore tile (buyer catalogue) and an MSeller tile (seller
+          # hub), each opening its own graph; order history is MStore's
+          # profile menu row "My orders".
+          A=mobile/android/app/src/main/kotlin/com/us/android
+          H=$A/navigation/UsNavHost.kt
+          T=$A/explore/LauncherTiles.kt
+          M=mobile/android/core/profile/src/main/kotlin/com/us/android/core/profile/data/AppModule.kt
+          C=mobile/android/feature/commerce/src/main/kotlin/com/us/android/feature/commerce
+          N=$C/navigation/CommerceNavigation.kt
+          P=$C/profile
+          S=mobile/android/feature/seller/src/main/kotlin/com/us/android/feature/commerce/navigation/SellerNavigation.kt
           BAD=0
-          grep -q 'ExploreScreen(' "$H"             || { echo "::error::ExploreScreen is not composed; the whole commerce surface is unreachable"; BAD=1; }
-          grep -q 'navigateToCommerce()' "$H"             || { echo "::error::nothing navigates to the catalogue"; BAD=1; }
-          grep -q 'navigateToSeller()' "$H"             || { echo "::error::nothing navigates to the seller hub"; BAD=1; }
-          grep -q 'commerceScreens(' "$H"             || { echo "::error::the commerce graph is not registered"; BAD=1; }
-          # And the entry point must offer all three ways in.
-          for label in '"Shop"' '"My orders"' '"My shop"'; do
-            grep -q "text = $label" "$E"               || { echo "::error::ExploreScreen no longer offers $label"; BAD=1; }
+          for f in "$H" "$T" "$M" "$N" "$P/StoreProfileViewModel.kt" "$P/StoreProfileSheet.kt" "$S"; do
+            [ -f "$f" ] || { echo "::error::$f is gone; re-point this guard at where the app composes commerce now"; BAD=1; }
           done
+          [ "$BAD" -eq 0 ] || exit 1
+          need() { grep -qF -- "$2" "$1" || { echo "::error::$3"; BAD=1; }; }
+          need "$H" 'ExploreScreen(' "the Explore launcher is not composed; the whole commerce surface is unreachable"
+          need "$H" 'mStoreScreens(' "the MStore (buyer) graph is not registered"
+          need "$H" 'mSellerScreens(' "the MSeller (seller hub) graph is not registered"
+          need "$H" 'LauncherApp.MSTORE -> navController.navigateToMStore()' "the MStore tile does not open the catalogue"
+          need "$H" 'LauncherApp.MSELLER -> navController.navigateToMSeller()' "the MSeller tile does not open the seller hub"
+          need "$T" 'MSTORE("MStore", AppModule.COMMERCE)' "the launcher no longer has an MStore tile"
+          need "$T" 'MSELLER("MSeller", AppModule.COMMERCE)' "the launcher no longer has an MSeller tile"
+          # hasScreen = false draws both tiles as "Soon" and opens nothing.
+          need "$M" 'COMMERCE("commerce", "Commerce", hasScreen = true)' "the commerce module is marked as having no screen; its tiles say Soon"
+          need "$N" 'fun NavController.navigateToMStore() = navigate(MStoreGraph)' "navigateToMStore no longer opens the MStore graph"
+          need "$S" 'fun NavController.navigateToMSeller() = navigate(MSellerGraph)' "navigateToMSeller no longer opens the MSeller graph"
+          # Order history: the "My orders" row, always listed, mapped to the
+          # orders route, which the graph registers.
+          need "$P/StoreProfileViewModel.kt" 'ORDERS("My orders"' "MStore's profile menu no longer offers My orders"
+          need "$P/StoreProfileViewModel.kt" '    StoreMenuRow.ORDERS,' "My orders is not among the rows the menu lists"
+          need "$P/StoreProfileSheet.kt" 'StoreMenuRow.ORDERS -> destinations.onOrders()' "the My orders row does not open the orders list"
+          need "$N" 'onOrders = { navController.navigate(OrdersRoute(' "MStore's onOrders does not navigate to the orders route"
+          need "$N" 'composable<OrdersRoute>' "the orders route is not registered in the MStore graph"
           [ "$BAD" -eq 0 ] || exit 1
           echo "the buyer catalogue, order history and seller hub are all reachable"
 
@@ -1050,18 +1075,28 @@ jobs:
           for f in database/migrations/00[1-8]*.sql; do
             psql -d c10 -v ON_ERROR_STOP=1 -q -f "$f"
           done
-          # Plant a row that violates reserved_qty <= total_qty BEFORE 009,
-          # then apply the gated validation, which must refuse.
-          psql -d c10 -v ON_ERROR_STOP=1 -q -f database/migrations/009_inventory_integrity.sql
-          psql -d c10 -c "
+          # Plant a row that violates reserved_qty <= total_qty BEFORE 009
+          # (009 adds the CHECK NOT VALID, which still refuses a NEW row, so
+          # the plant must come first), apply 009, then the validation,
+          # which must refuse.
+          #
+          # return_policy_type is named: setup.sql defaults it to 'standard',
+          # which its own CHECK has never accepted, and only 020 realigns the
+          # default. This database stops at 009.
+          psql -d c10 -v ON_ERROR_STOP=1 -q -c "
             INSERT INTO sellers (id,user_id,store_name,slug,email)
               VALUES ('00000000-0000-0000-0000-0000000000aa','00000000-0000-0000-0000-0000000000bb','S','s','s@x.test');
-            INSERT INTO products (id,seller_id,title,slug,status,approval_status)
-              VALUES ('00000000-0000-0000-0000-0000000000cc','00000000-0000-0000-0000-0000000000aa','P','p','active','approved');
+            INSERT INTO products (id,seller_id,title,slug,status,approval_status,return_policy_type)
+              VALUES ('00000000-0000-0000-0000-0000000000cc','00000000-0000-0000-0000-0000000000aa','P','p','active','approved','7_days');
             INSERT INTO product_variants (id,product_id,sku,mrp,selling_price)
               VALUES ('00000000-0000-0000-0000-0000000000dd','00000000-0000-0000-0000-0000000000cc','SKU',1,1);
             INSERT INTO inventory_items (variant_id,seller_id,total_qty,reserved_qty)
               VALUES ('00000000-0000-0000-0000-0000000000dd','00000000-0000-0000-0000-0000000000aa',1,5);"
+          psql -d c10 -v ON_ERROR_STOP=1 -q -f database/migrations/009_inventory_integrity.sql
+          # 009 must have installed the constraint (NOT VALID), or the
+          # VALIDATE below fails for the wrong reason: a missing constraint.
+          INSTALLED=$(psql -d c10 -tAc "SELECT convalidated FROM pg_constraint WHERE conrelid='inventory_items'::regclass AND conname='chk_inv_reserved_le_total'")
+          [ "$INSTALLED" = "f" ] || { echo "::error::009 did not install chk_inv_reserved_le_total NOT VALID (got '$INSTALLED')"; exit 1; }
           if psql -d c10 -v ON_ERROR_STOP=1 -q -c "ALTER TABLE inventory_items VALIDATE CONSTRAINT chk_inv_reserved_le_total"; then
             echo "::error::VALIDATE succeeded against data that violates the invariant"
             exit 1

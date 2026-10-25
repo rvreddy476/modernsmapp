@@ -82,8 +82,12 @@ func TestContractInventoryMatchesTheFixtureList(t *testing.T) {
 			}
 			continue
 		}
-		if len(body) == 0 || body[len(body)-1] != '\n' {
-			t.Errorf("%s: fixture must end with a newline", name)
+		// render keeps the encoder's trailing newline and adds its own, so a
+		// rendered body ends "}\n\n". A hand-written fixture ending "}\n"
+		// fails TestContractFixtures in CI with no visible difference; it
+		// fails here first, without a database.
+		if !strings.HasSuffix(string(body), "}\n\n") {
+			t.Errorf("%s: fixture must end exactly as render writes it: \"}\\n\\n\" (closing brace, then a blank line)", name)
 		}
 		hasError := strings.Contains(string(body), `"error": {`)
 		if status >= 400 && !hasError {
