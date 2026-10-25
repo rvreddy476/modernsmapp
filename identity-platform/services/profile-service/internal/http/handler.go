@@ -555,6 +555,9 @@ func (h *Handler) UpdateMyAvatar(c *gin.Context) {
 	}
 
 	if err := h.svc.UpdateAvatar(c.Request.Context(), userID, req.MediaID); err != nil {
+		if writeProfileMediaError(c, err, "avatar") {
+			return
+		}
 		h.log.Error("failed to update avatar", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
 		return
@@ -586,6 +589,9 @@ func (h *Handler) UpdateMyCover(c *gin.Context) {
 	}
 
 	if err := h.svc.UpdateCover(c.Request.Context(), userID, req.MediaID); err != nil {
+		if writeProfileMediaError(c, err, "cover") {
+			return
+		}
 		h.log.Error("failed to update cover", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
 		return

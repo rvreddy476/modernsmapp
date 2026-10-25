@@ -522,21 +522,8 @@ func (s *Store) UpsertAboutItem(ctx context.Context, item *AboutItem) (*AboutIte
 // Avatar / Cover
 // ---------------------------------------------------------------
 
-// UpdateAvatar sets the avatar_media_id for a user's profile.
-func (s *Store) UpdateAvatar(ctx context.Context, userID uuid.UUID, mediaID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE profile.profiles SET avatar_media_id = $1, updated_at = NOW() WHERE user_id = $2
-	`, mediaID, userID)
-	return err
-}
-
-// UpdateCover sets the cover_media_id for a user's profile.
-func (s *Store) UpdateCover(ctx context.Context, userID uuid.UUID, mediaID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE profile.profiles SET cover_media_id = $1, updated_at = NOW() WHERE user_id = $2
-	`, mediaID, userID)
-	return err
-}
+// The avatar and cover are written by SetProfileMediaID (media_claims.go),
+// under the media claim protocol.
 
 // DeleteAboutItem deletes a single about item.
 func (s *Store) DeleteAboutItem(ctx context.Context, userID uuid.UUID, section string, itemID uuid.UUID) error {

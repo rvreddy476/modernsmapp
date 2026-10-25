@@ -27,7 +27,12 @@ type Service struct {
 	profiles ProfileWriteStore
 	// handles is the store slice ChangeHandle reads and writes through.
 	handles HandleChangeStore
-	now     func() time.Time
+	// media is the store slice avatar and cover writes go through, and
+	// claims records with media-service that a profile holds them
+	// (media_claims.go). Nil claims refuses every avatar and cover write.
+	media  ProfileMediaStore
+	claims MediaClaims
+	now    func() time.Time
 }
 
 // ProfileWriteStore is what a validated profile write needs from storage.
@@ -50,7 +55,7 @@ func New(s *store.Store, rdb *redis.Client, producer *events.Producer, cfg *conf
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{store: s, rdb: rdb, producer: producer, cfg: cfg, log: logger, profiles: s, handles: s, now: time.Now}
+	return &Service{store: s, rdb: rdb, producer: producer, cfg: cfg, log: logger, profiles: s, handles: s, media: s, now: time.Now}
 }
 
 // WithHandleChangeStore replaces the storage behind ChangeHandle. For tests.
@@ -190,6 +195,13 @@ func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, params st
 		params.Username = &trimmed
 	}
 
+	// Only UpdateAvatar / UpdateCover may name media: they claim it with
+	// media-service first (media_claims.go). A write here would attach an
+	// unchecked, unclaimed asset the owner could delete from under the row.
+	if params.AvatarMediaID != nil || params.CoverMediaID != nil {
+		return nil, ErrMediaRouteRequired
+	}
+
 	dobChange, err := s.checkIdentityFields(ctx, userID, &params)
 	if err != nil {
 		return nil, err
@@ -280,23 +292,8 @@ func (s *Service) DeleteAboutItem(ctx context.Context, userID uuid.UUID, section
 // Avatar / Cover
 // ---------------------------------------------------------------
 
-// UpdateAvatar sets the avatar media ID and invalidates cache.
-func (s *Service) UpdateAvatar(ctx context.Context, userID uuid.UUID, mediaID uuid.UUID) error {
-	if err := s.store.UpdateAvatar(ctx, userID, mediaID); err != nil {
-		return err
-	}
-	s.rdb.Del(ctx, fmt.Sprintf("profile:card:%s", userID))
-	return nil
-}
-
-// UpdateCover sets the cover media ID and invalidates cache.
-func (s *Service) UpdateCover(ctx context.Context, userID uuid.UUID, mediaID uuid.UUID) error {
-	if err := s.store.UpdateCover(ctx, userID, mediaID); err != nil {
-		return err
-	}
-	s.rdb.Del(ctx, fmt.Sprintf("profile:card:%s", userID))
-	return nil
-}
+// UpdateAvatar and UpdateCover are in media_claims.go: they write under the
+// media claim protocol.
 
 // ---------------------------------------------------------------
 // Helpers

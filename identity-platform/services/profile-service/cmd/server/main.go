@@ -12,6 +12,7 @@ import (
 	"github.com/atpost/identity-profile-service/internal/config"
 	"github.com/atpost/identity-profile-service/internal/events"
 	"github.com/atpost/identity-profile-service/internal/http"
+	"github.com/atpost/identity-profile-service/internal/mediaclient"
 	"github.com/atpost/identity-profile-service/internal/purge"
 	"github.com/atpost/identity-profile-service/internal/service"
 	"github.com/atpost/identity-profile-service/internal/store"
@@ -174,6 +175,16 @@ func main() {
 		profileHandler.WithMediaAuthority(
 			http.NewMediaAuthorityClient(mediaURL, os.Getenv("INTERNAL_SERVICE_KEY")))
 		logger.Info("profile-service: media reference authority enabled", "media_service_url", mediaURL)
+		// Media claims (internal/service/media_claims.go): the avatar and
+		// cover a profile shows are claimed with media-service so the owner
+		// cannot delete them from under it. No client (no internal key)
+		// refuses every avatar and cover write.
+		if claims := mediaclient.New(mediaURL, os.Getenv("INTERNAL_SERVICE_KEY")); claims != nil {
+			profileSvc.WithMediaClaims(claims)
+			logger.Info("profile-service: media claims enabled")
+		} else {
+			logger.Error("profile-service: INTERNAL_SERVICE_KEY not set — media claims cannot be recorded, so avatar and cover updates will be refused")
+		}
 	} else {
 		logger.Error("profile-service: MEDIA_SERVICE_URL not set — avatar and cover updates will be refused")
 	}
@@ -204,7 +215,7 @@ func main() {
 	// ack as "profile" onto platform.purge-acks.v1.
 	purgeAcks := purge.NewKafkaAckPublisher(cfg.KafkaBrokers, envOr("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic), kafkaDialer)
 	defer func() { _ = purgeAcks.Close() }()
-	consumer.WithLifecycleHandler(purge.NewHandler("profile", profileStore, purgeAcks, profileStore, logger))
+	consumer.WithLifecycleHandler(purge.NewHandler("profile", profileSvc.ReleasingMediaOnPurge(profileStore), purgeAcks, profileStore, logger))
 	defer func() {
 		if err := consumer.Close(); err != nil {
 			logger.Warn("failed to close kafka consumer", "err", err)
