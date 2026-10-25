@@ -104,23 +104,11 @@ func (s *Store) MediaHolderRowFor(ctx context.Context, table MediaHolderTable, i
 
 // LockMediaHolder serialises the claim-write-release of one row's media, for
 // as long as the caller holds it (the reconcile tool, and any writer added
-// later). Transaction-scoped; unlock is idempotent.
+// later). Transaction-scoped; unlock is idempotent. Callers pass the
+// in-process holderGate before taking a connection, so lock holders can
+// never exhaust the pool (media_holder_gate.go).
 func (s *Store) LockMediaHolder(ctx context.Context, table MediaHolderTable, id uuid.UUID) (unlock func(), err error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("lock media holder: %w", err)
-	}
-	if _, err := tx.Exec(ctx, lockMediaHolderSQL, mediaHolderLockKey(table, id)); err != nil {
-		_ = tx.Rollback(context.WithoutCancel(ctx))
-		return nil, fmt.Errorf("lock media holder: %w", err)
-	}
-	done := false
-	return func() {
-		if !done {
-			done = true
-			_ = tx.Rollback(context.WithoutCancel(ctx))
-		}
-	}, nil
+	return lockMediaHolder(ctx, s.holders, s.db, mediaHolderLockKey(table, id))
 }
 
 // lockMediaHolderSQL waits (never try_) for an exclusive, transaction-scoped

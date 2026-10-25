@@ -6,7 +6,6 @@ package postgres
 import (
 	"context"
 	"errors"
-	"fmt"
 	"hash/fnv"
 
 	"github.com/google/uuid"
@@ -27,22 +26,11 @@ func optionalID(id uuid.UUID) *uuid.UUID {
 // stream that each read it first can interleave so that one's release
 // removes a claim the other's write relies on. Transaction-scoped, so a
 // crash or a lost connection frees it. unlock is idempotent.
+//
+// Callers pass the in-process holderGate before taking a connection, so lock
+// holders can never exhaust the pool (media_holder_gate.go).
 func (s *Store) LockMediaHolder(ctx context.Context, streamID uuid.UUID) (unlock func(), err error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("lock media holder: %w", err)
-	}
-	if _, err := tx.Exec(ctx, lockMediaHolderSQL, mediaHolderLockKey(streamID)); err != nil {
-		_ = tx.Rollback(context.WithoutCancel(ctx))
-		return nil, fmt.Errorf("lock media holder: %w", err)
-	}
-	done := false
-	return func() {
-		if !done {
-			done = true
-			_ = tx.Rollback(context.WithoutCancel(ctx))
-		}
-	}, nil
+	return lockMediaHolder(ctx, s.holders, s.db, mediaHolderLockKey(streamID))
 }
 
 // lockMediaHolderSQL waits (never try_) for an exclusive, transaction-scoped

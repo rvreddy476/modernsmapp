@@ -15,6 +15,9 @@ import (
 // Store wraps a pgxpool and exposes per-aggregate methods (profiles, tunes, …).
 type Store struct {
 	db *pgxpool.Pool
+	// holders gates LockMediaHolder so lock holders can never exhaust db
+	// (media_holder_gate.go).
+	holders *holderGate
 	// declineCooldown is how long a decline keeps the sender away from the
 	// decliner (see DeclineCooldown in sparks.go).
 	declineCooldown time.Duration
@@ -40,8 +43,13 @@ type Store struct {
 
 // New returns a Store backed by the given pool.
 func New(db *pgxpool.Pool) *Store {
+	maxConns := int32(0)
+	if db != nil {
+		maxConns = db.Config().MaxConns
+	}
 	return &Store{
 		db:                db,
+		holders:           newHolderGate(holderSlotsFor(maxConns)),
 		declineCooldown:   DeclineCooldown,
 		locationLimits:    DefaultLocationChangeLimits(),
 		explainDailyLimit: DefaultExplainDailyLimit,

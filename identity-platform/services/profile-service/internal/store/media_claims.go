@@ -69,22 +69,11 @@ func (s *Store) SetProfileMediaID(ctx context.Context, userID uuid.UUID, kind st
 // steps; without this, two saves of the same profile can interleave so that
 // one's release removes the claim the other's write relies on. Transaction-
 // scoped, so a crash or a lost connection frees it. unlock is idempotent.
+//
+// Callers pass the in-process holderGate before taking a connection, so lock
+// holders can never exhaust the pool (media_holder_gate.go).
 func (s *Store) LockMediaHolder(ctx context.Context, userID uuid.UUID) (unlock func(), err error) {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("lock media holder: %w", err)
-	}
-	if _, err := tx.Exec(ctx, lockMediaHolderSQL, mediaHolderLockKey(userID)); err != nil {
-		_ = tx.Rollback(context.WithoutCancel(ctx))
-		return nil, fmt.Errorf("lock media holder: %w", err)
-	}
-	done := false
-	return func() {
-		if !done {
-			done = true
-			_ = tx.Rollback(context.WithoutCancel(ctx))
-		}
-	}, nil
+	return lockMediaHolder(ctx, s.holders, s.db, mediaHolderLockKey(userID))
 }
 
 // lockMediaHolderSQL waits (never try_) for an exclusive, transaction-scoped

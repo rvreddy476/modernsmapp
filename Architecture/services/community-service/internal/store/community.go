@@ -118,10 +118,17 @@ type CommunityEvent struct {
 
 type Store struct {
 	db *pgxpool.Pool
+	// holders gates LockMediaHolder so lock holders can never exhaust db
+	// (media_holder_gate.go).
+	holders *holderGate
 }
 
 func New(db *pgxpool.Pool) *Store {
-	return &Store{db: db}
+	maxConns := int32(0)
+	if db != nil {
+		maxConns = db.Config().MaxConns
+	}
+	return &Store{db: db, holders: newHolderGate(holderSlotsFor(maxConns))}
 }
 
 // --- Community CRUD ---
