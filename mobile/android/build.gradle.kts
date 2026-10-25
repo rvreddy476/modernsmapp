@@ -24,6 +24,10 @@ detekt {
     buildUponDefaultConfig = true
     allRules = false
     config.setFrom(files("$rootDir/config/detekt/detekt.yml"))
+    // The debt that existed on 25 Oct 2026 (29,106 weighted issues) is recorded
+    // here, so detekt fails only on new issues. Regenerate with
+    // `./gradlew detektBaseline` only when paying debt down, never to hide new code.
+    baseline = file("$rootDir/config/detekt/baseline.xml")
     source.setFrom(
         files(
             subprojects.map { "${it.projectDir}/src/main/kotlin" },

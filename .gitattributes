@@ -16,3 +16,9 @@
 # the goal is to protect files that a Linux shell executes, not to
 # renormalise the entire tree.
 *.sh text eol=lf
+
+# Contract fixtures are compared byte for byte across this repo, the web tree
+# and Android (testdata/contracts, src/test/resources/contracts). A CRLF
+# checkout on Windows fails every byte-identity test locally while CI passes.
+**/testdata/contracts/**/*.json text eol=lf
+mobile/android/**/resources/contracts/**/*.json text eol=lf
