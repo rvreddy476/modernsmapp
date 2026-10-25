@@ -28,7 +28,8 @@ final class APIClientTests: XCTestCase {
         let sessionManager = SessionManager(storage: storage)
 
         XCTAssertFalse(sessionManager.isAuthenticated)
-        XCTAssertNil(await sessionManager.getAccessToken())
+        let initialToken = await sessionManager.getAccessToken()
+        XCTAssertNil(initialToken)
 
         let session = AuthSession(
             userId: "user-123",
