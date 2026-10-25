@@ -1,0 +1,125 @@
+# gitleaks allow-list, by finding fingerprint (commit:file:rule:line).
+#
+# Only two kinds of finding belong here, each under a comment giving the reason:
+#   fake      a test fixture, example or placeholder value
+#   dead-dev  a dev-only credential that is no longer valid, or a local docker default
+# Anything that could be a real production or third-party credential is never
+# listed here: it is rotated first, and the scan stays red until it is.
+# Reviewed 2026-10-25 against a full-history scan of codex/module-01-02-launch-safety
+# with gitleaks 8.24.3 (the version gitleaks-action@v2 installs), default rules.
+# Fingerprints carry the commit SHA: a history rewrite invalidates them.
+
+# dead-dev: Local auth-service HS256 access tokens (iss auth-service, 15-minute TTL,
+# expired 2026-03-05) in two old Bash permission entries; removed from the tree in 367e8064.
+03ee615eb51dc244826cebe63f854e59bf33f30e:.claude/settings.json:jwt:66
+03ee615eb51dc244826cebe63f854e59bf33f30e:.claude/settings.json:jwt:67
+
+# dead-dev: Throwaway TLS keys from a local secure-smoke compose run: self-signed
+# "atpost-local-ca", SANs redis/redpanda/localhost/127.0.0.1, expired 2026-03-27.
+# Untracked in ad57d0f6.
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/secure-smoke/certs/ca.key:private-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/secure-smoke/certs/redis.key:private-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/secure-smoke/certs/redpanda.key:private-key:1
+
+# dead-dev: Headless Chrome profiles from local live-smoke runs (no signed-in account):
+# pref MACs, a profile-bound encrypted cookie key, and the public "key" of
+# built-in component extensions. Untracked in ad57d0f6.
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/host-1774380663893/Local State:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/host-1774380834958/Default/BrowsingTopicsState:generic-api-key:10
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/host-1774380834958/Default/Extensions/ghbmnnjooekpmoecnnnilnnbdlolhkhi/1.102.1_0/manifest.json:generic-api-key:24
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/host-1774380834958/Default/Extensions/nmmhkkegccagdldgiimedpiccmgmieda/1.0.0.6_0/manifest.json:generic-api-key:15
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/host-1774380834958/Default/Preferences:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/host-1774380834958/Default/Secure Preferences:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/host-1774380834958/Local State:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/live-smoke-host-1774380171635/Default/BrowsingTopicsState:generic-api-key:10
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/live-smoke-host-1774380171635/Default/Extensions/ghbmnnjooekpmoecnnnilnnbdlolhkhi/1.102.1_0/manifest.json:generic-api-key:24
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/live-smoke-host-1774380171635/Default/Extensions/nmmhkkegccagdldgiimedpiccmgmieda/1.0.0.6_0/manifest.json:generic-api-key:15
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/live-smoke-host-1774380171635/Default/Preferences:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/live-smoke-host-1774380171635/Default/Secure Preferences:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/live-smoke-host-1774380171635/Local State:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/live-smoke-viewer-1774380171646/Default/BrowsingTopicsState:generic-api-key:10
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/live-smoke-viewer-1774380171646/Default/Extensions/ghbmnnjooekpmoecnnnilnnbdlolhkhi/1.102.1_0/manifest.json:generic-api-key:24
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/live-smoke-viewer-1774380171646/Default/Extensions/nmmhkkegccagdldgiimedpiccmgmieda/1.0.0.6_0/manifest.json:generic-api-key:15
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/live-smoke-viewer-1774380171646/Default/Preferences:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/live-smoke-viewer-1774380171646/Default/Secure Preferences:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/live-smoke-viewer-1774380171646/Local State:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/live-smoke-viewer-1774380918342/Local State:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/viewer-1774380663902/Default/BrowsingTopicsState:generic-api-key:10
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/viewer-1774380663902/Default/Extensions/ghbmnnjooekpmoecnnnilnnbdlolhkhi/1.102.1_0/manifest.json:generic-api-key:24
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/viewer-1774380663902/Default/Extensions/nmmhkkegccagdldgiimedpiccmgmieda/1.0.0.6_0/manifest.json:generic-api-key:15
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/viewer-1774380663902/Local State:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/viewer-1774380834967/Default/BrowsingTopicsState:generic-api-key:10
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/viewer-1774380834967/Default/Extensions/ghbmnnjooekpmoecnnnilnnbdlolhkhi/1.102.1_0/manifest.json:generic-api-key:24
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/viewer-1774380834967/Default/Extensions/nmmhkkegccagdldgiimedpiccmgmieda/1.0.0.6_0/manifest.json:generic-api-key:15
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/viewer-1774380834967/Default/Preferences:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/viewer-1774380834967/Default/Secure Preferences:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:.tmp/viewer-1774380834967/Local State:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:Architecture/docker/.tmp/live-smoke-host-1774380357870/Default/BrowsingTopicsState:generic-api-key:10
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:Architecture/docker/.tmp/live-smoke-host-1774380357870/Default/Extensions/ghbmnnjooekpmoecnnnilnnbdlolhkhi/1.102.1_0/manifest.json:generic-api-key:24
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:Architecture/docker/.tmp/live-smoke-host-1774380357870/Default/Extensions/nmmhkkegccagdldgiimedpiccmgmieda/1.0.0.6_0/manifest.json:generic-api-key:15
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:Architecture/docker/.tmp/live-smoke-host-1774380357870/Default/Preferences:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:Architecture/docker/.tmp/live-smoke-host-1774380357870/Default/Secure Preferences:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:Architecture/docker/.tmp/live-smoke-host-1774380357870/Local State:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:Architecture/docker/.tmp/live-smoke-viewer-1774380357876/Default/BrowsingTopicsState:generic-api-key:10
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:Architecture/docker/.tmp/live-smoke-viewer-1774380357876/Default/Extensions/ghbmnnjooekpmoecnnnilnnbdlolhkhi/1.102.1_0/manifest.json:generic-api-key:24
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:Architecture/docker/.tmp/live-smoke-viewer-1774380357876/Default/Extensions/nmmhkkegccagdldgiimedpiccmgmieda/1.0.0.6_0/manifest.json:generic-api-key:15
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:Architecture/docker/.tmp/live-smoke-viewer-1774380357876/Default/Preferences:generic-api-key:1
+fc24b4bd69ca553dc195c6310ca2d17d7ce0aa89:Architecture/docker/.tmp/live-smoke-viewer-1774380357876/Default/Secure Preferences:generic-api-key:1
+
+# fake: Not a secret at all: a slog field name, Terraform comment prose, a user_id
+# UUID in a runbook SQL example, Flutter SharedPreferences key names.
+47a729a48f7ebb63206b2c21726afcb9d4984179:Architecture/services/api-gateway/cmd/server/main.go:generic-api-key:99
+94ccb1663d73dd2548ae5f0d7084b97baae5b24e:docs/runbooks/admin-console-weekend-test.md:generic-api-key:78
+9d25acb15207517f0c254a0bafd1583f76be6e3a:mobile/atpost_app/lib/providers/pulse_safety_providers.dart:generic-api-key:12
+c62447da6693df5d0f3e24ca9af2656116d19028:infra/terraform/envs/prod/ses.tf:generic-api-key:2
+e117105504454fee0f34ff7bf5707356a3e1db1c:mobile/atpost_app/lib/data/repositories/mopedu_repository.dart:generic-api-key:20
+
+# fake: Go test fixtures: UUID and idempotency-key literals, a deliberately bad key,
+# a forged alg=none token the gateway must refuse, test HMAC/JWT/SecretBox keys,
+# a fake GPS string, and a service token signed by the in-repo fixture key (kid fixture-1).
+3549f595912708e67c03a312a3044a8cfe1fb377:Architecture/services/monetization-service/internal/service/monetization_test.go:generic-api-key:453
+5b65801923ce85cd0315064235b466ecebc5d669:Architecture/services/admin-service/internal/http/handler_access_test.go:generic-api-key:18
+5c03713f9ff568251b29bf2c15c778951260e107:Architecture/services/dating-service/internal/http/auth_test.go:generic-api-key:23
+6965cd613d86ddfb36f08d930c9a4a8890bf0cbd:chat-service/services/ws-gateway/internal/http/personal_channel_integration_test.go:generic-api-key:36
+ac57b28943779bb48f3da82b2cd1a2038976a378:Architecture/services/admin-service/internal/http/handler_dating_test.go:generic-api-key:369
+ad2853a98b99b5ebcc6b52da089032b47c2212c6:identity-platform/shared/crypto/secret_box_test.go:generic-api-key:57
+ad2853a98b99b5ebcc6b52da089032b47c2212c6:identity-platform/shared/crypto/secret_box_test.go:generic-api-key:9
+af232ff707f0a8eab31aee0870d19ad29c27c41f:Architecture/services/api-gateway/cmd/server/dormant_products_gate_test.go:jwt:219
+ba0d92636fc468d96684cfd9382794825e00bcd7:Architecture/services/trust-safety-service/internal/restriction/client_test.go:generic-api-key:24
+e143bcee03297638a83420b2d1f9942ebf3f2ac7:identity-platform/services/auth-service/internal/servicetoken/fixture_shared_test.go:jwt:22
+e291f1a29a97b95426dc10fcfacdf47aaabdc140:Architecture/services/media-service/internal/http/dating_photo_handler_test.go:generic-api-key:30
+e291f1a29a97b95426dc10fcfacdf47aaabdc140:Architecture/services/media-service/internal/processing/dating_photo_test.go:generic-api-key:18
+
+# fake: Made-up Razorpay key ids (rzp_test_/rzp_live_ placeholders) in the prod-secrets prompt tests.
+05af6f4a67927ce5c2fb24591f32f8a4f628dcc2:tools/prodsecrets/env_test.go:generic-api-key:326
+05af6f4a67927ce5c2fb24591f32f8a4f628dcc2:tools/prodsecrets/env_test.go:generic-api-key:334
+05af6f4a67927ce5c2fb24591f32f8a4f628dcc2:tools/prodsecrets/env_test.go:generic-api-key:362
+39b638a7b12f524c982734ad284feb8981d56f51:tools/prodsecrets/resolve_test.go:generic-api-key:276
+
+# fake: Contract fixtures and API examples: the doorstep share-token golden fixture
+# (request_id "fixture", copied byte for byte into Android) and the OpenAPI
+# example access_token (a JWT header followed by "...").
+009227dc6bc90011f7fb6847de7fffc80791bd26:mobile-integration/04-API-ENDPOINTS/openapi.yaml:generic-api-key:1142
+009227dc6bc90011f7fb6847de7fffc80791bd26:mobile-integration/04-API-ENDPOINTS/openapi.yaml:generic-api-key:831
+009227dc6bc90011f7fb6847de7fffc80791bd26:mobile/mobile-integration/04-API-ENDPOINTS/openapi.yaml:generic-api-key:1142
+009227dc6bc90011f7fb6847de7fffc80791bd26:mobile/mobile-integration/04-API-ENDPOINTS/openapi.yaml:generic-api-key:831
+d1fbe924d40470b4ca29b03a67e7d654bb8d94ab:Architecture/services/doorstep-service/internal/http/testdata/contracts/share_post_201.json:generic-api-key:1
+d1fbe924d40470b4ca29b03a67e7d654bb8d94ab:mobile/android/feature/doorstep/src/test/resources/contracts/share_post_201.json:generic-api-key:1
+
+# fake: Android / iOS test fixtures: creationKey UUIDs and a verification_token literal.
+7144a86d08837c3e409f7b819b65469bf8ce4e05:mobile/ios/Packages/UsCore/Tests/UsNetworkTests/APIClientTests.swift:generic-api-key:105
+7144a86d08837c3e409f7b819b65469bf8ce4e05:mobile/ios/Packages/UsCore/Tests/UsNetworkTests/APIClientTests.swift:generic-api-key:114
+ebc53d8b5814ddd368818b4bc84a727dea1193f0:mobile/android/core/creator-engine/src/test/kotlin/com/us/android/core/creator/engine/AdoptionRunnerTest.kt:generic-api-key:159
+ebc53d8b5814ddd368818b4bc84a727dea1193f0:mobile/android/core/creator-engine/src/test/kotlin/com/us/android/core/creator/engine/AdoptionRunnerTest.kt:generic-api-key:192
+ebc53d8b5814ddd368818b4bc84a727dea1193f0:mobile/android/core/creator-engine/src/test/kotlin/com/us/android/core/creator/engine/LegacyAdoptionTest.kt:generic-api-key:74
+ebc53d8b5814ddd368818b4bc84a727dea1193f0:mobile/android/core/creator-engine/src/test/kotlin/com/us/android/core/creator/engine/MalformedFrozenRequestTest.kt:generic-api-key:56
+ebc53d8b5814ddd368818b4bc84a727dea1193f0:mobile/android/core/creator-model/src/test/resources/fixtures/04b-publish-operation.json:generic-api-key:1
+ebc53d8b5814ddd368818b4bc84a727dea1193f0:mobile/android/core/creator-model/src/test/resources/fixtures/04c-publish-operation-text.json:generic-api-key:1
+ebc53d8b5814ddd368818b4bc84a727dea1193f0:mobile/android/core/database/src/test/kotlin/com/us/android/core/database/LiveSlotOwnershipTest.kt:generic-api-key:68
+ebc53d8b5814ddd368818b4bc84a727dea1193f0:mobile/android/core/database/src/test/kotlin/com/us/android/core/database/Migration23Test.kt:generic-api-key:53
+ebc53d8b5814ddd368818b4bc84a727dea1193f0:mobile/android/core/database/src/test/kotlin/com/us/android/core/database/RecoveryCleanupSafetyTest.kt:generic-api-key:41
+ebc53d8b5814ddd368818b4bc84a727dea1193f0:mobile/android/core/database/src/test/kotlin/com/us/android/core/database/RoomOpenAfterMigrationTest.kt:generic-api-key:49
+
+# fake: Made-up AKIA id (an alphabet run) the smoke-log scrubber test checks gets removed.
+18d4ce24aa0432100c34ae80738d946ba11de092:scripts/smoke/dev-smoke.test.mjs:aws-access-token:80
+18d4ce24aa0432100c34ae80738d946ba11de092:scripts/smoke/dev-smoke.test.mjs:aws-access-token:85
