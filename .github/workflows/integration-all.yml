@@ -1,0 +1,152 @@
+name: Integration (all Go services)
+
+# Every Go module with database-backed tests, each against its own throwaway
+# PostgreSQL databases whose names end in _test. The list, the schema each
+# suite needs and the services it needs live in
+# scripts/ci/integration-services.yaml; scripts/ci/integration-manifest-check.sh
+# keeps that file in step with the code.
+#
+# Per job: integration-setup.sh creates the databases, applies the schema and
+# writes the DSNs to $GITHUB_ENV (never to the log), then the same check the
+# agents and the lead run: scripts/verify/go.sh --full --db.
+#
+# Jobs whose suites need Kafka, OpenSearch, Scylla or MinIO are skipped for
+# now (continue-on-error, a warning names what is missing). Redis is started
+# only for the entries that use it.
+#
+# The narrower workflows (integration-postgres, integration-commerce,
+# module-0x-*) are unchanged and still own their special proofs (gated
+# commerce fences, negative controls, the Redpanda projection).
+
+on:
+  push:
+    branches:
+      - 'codex/**'
+      - 'feat/**'
+      - main
+    paths:
+      - '**.go'
+      - '**/go.mod'
+      - '**/go.sum'
+      - '**/go.work'
+      - '**.sql'
+      - '**.cql'
+      - 'scripts/ci/integration-*'
+      - 'scripts/ci/sql/**'
+      - 'scripts/verify/**'
+      - '.github/workflows/integration-all.yml'
+  workflow_dispatch:
+    inputs:
+      wave:
+        description: 'Which wave to run (1 = launch apps, 2 = the rest)'
+        type: choice
+        options: [all, '1', '2']
+        default: all
+
+concurrency:
+  group: integration-all-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  matrix:
+    name: Build the matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.build.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the manifest against the code
+        run: bash scripts/ci/integration-manifest-check.sh
+      - name: Emit the matrix
+        id: build
+        env:
+          WAVE: ${{ github.event.inputs.wave || 'all' }}
+        run: |
+          set -euo pipefail
+          m="$(bash scripts/ci/integration-matrix.sh "$WAVE")"
+          echo "$m" | jq -r '.include[] | "\(.wave)  \(.module)  \(.blocked)"'
+          echo "matrix=$m" >> "$GITHUB_OUTPUT"
+
+  integration:
+    name: ${{ matrix.module }}
+    needs: matrix
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    # A job that needs a service this workflow does not start yet is skipped
+    # and may not fail the run.
+    continue-on-error: ${{ matrix.blocked != '' }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.matrix.outputs.matrix) }}
+
+    services:
+      postgres:
+        image: ${{ matrix.pg_image }}
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+      redis:
+        # Empty image = no container (entries without redis).
+        image: ${{ matrix.redis }}
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    env:
+      PGHOST: localhost
+      PGPORT: '5432'
+      PGUSER: postgres
+      # Throwaway password of the job's own postgres container.
+      PGPASSWORD: postgres
+      VERIFY_LOG_DIR: ${{ github.workspace }}/verify-logs
+
+    steps:
+      - name: Skipped - needs ${{ matrix.blocked }}
+        if: matrix.blocked != ''
+        run: |
+          echo "::warning title=Integration skipped::${{ matrix.module }} needs ${{ matrix.blocked }}, which this workflow does not start yet. Its tests did not run."
+
+      - uses: actions/checkout@v4
+        if: matrix.blocked == ''
+
+      - uses: actions/setup-go@v5
+        if: matrix.blocked == ''
+        with:
+          go-version-file: ${{ matrix.workspace }}/go.work
+          cache-dependency-path: ${{ matrix.workspace }}/**/go.sum
+
+      - name: PostgreSQL client
+        if: matrix.blocked == ''
+        run: command -v psql >/dev/null || { sudo apt-get update && sudo apt-get install -y postgresql-client; }
+
+      - name: Create databases and apply schema
+        if: matrix.blocked == ''
+        run: bash scripts/ci/integration-setup.sh "${{ matrix.module }}"
+
+      - name: Build, vet, unit and integration tests
+        if: matrix.blocked == ''
+        run: bash scripts/verify/go.sh --full --db "$INTEG_DSN" "${{ matrix.module }}"
+
+      - name: Keep the logs
+        if: failure() && matrix.blocked == ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: verify-logs-${{ strategy.job-index }}
+          path: verify-logs/
+          retention-days: 7

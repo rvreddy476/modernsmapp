@@ -103,14 +103,6 @@ func TestPairAtomic_ConcurrentRelationshipCreationVersusBlockLeavesNothing(t *te
 	for i := 0; i < iterations; i++ {
 		alice, bob := pairFixture(t, pool)
 
-		// A circle to race circle-member adds against.
-		var circleID uuid.UUID
-		if err := pool.QueryRow(ctx,
-			`INSERT INTO circles (owner_id, name) VALUES ($1, 'test') RETURNING id`,
-			alice).Scan(&circleID); err != nil {
-			t.Fatalf("create circle: %v", err)
-		}
-
 		// Stagger the block so it lands at a different point in the racer
 		// sequence each iteration; a fixed ordering would only ever exercise
 		// one interleaving.
@@ -239,18 +231,6 @@ func TestPairAtomic_BlockSweepsEverySeededRelationshipTable(t *testing.T) {
 	ctx := context.Background()
 
 	alice, bob := pairFixture(t, pool)
-
-	var aliceCircle, bobCircle uuid.UUID
-	for _, p := range []struct {
-		owner uuid.UUID
-		dst   *uuid.UUID
-	}{{alice, &aliceCircle}, {bob, &bobCircle}} {
-		if err := pool.QueryRow(ctx,
-			`INSERT INTO circles (owner_id, name) VALUES ($1, 'c') RETURNING id`,
-			p.owner).Scan(p.dst); err != nil {
-			t.Fatalf("create circle: %v", err)
-		}
-	}
 
 	// Seed a row in EVERY table, in both directions where the table allows it.
 	seed := []struct {

@@ -78,6 +78,21 @@ db_name_of() {
   printf '%s' "$name"
 }
 
+# dsn_vars <module-dir>: the DSN variables the module's tests read:
+# os.Getenv/os.LookupEnv("..._DSN" / "...DATABASE_URL...") in *_test.go files
+# and in any .go file carrying the integration build tag (test helpers such
+# as analytics-service/internal/testsupport). scripts/ci/integration-
+# manifest-check.sh uses the same function, so the CI manifest and go.sh
+# always agree on the list.
+dsn_vars() {
+  {
+    grep -rl --include='*_test.go' -e 'Getenv' -e 'LookupEnv' "$1" 2>/dev/null
+    grep -rlE --include='*.go' '^//go:build (.*[ (&|])?integration([ )&|]|$)' "$1" 2>/dev/null
+  } | sort -u |
+    xargs -r -d '\n' grep -hoE 'os\.(Getenv|LookupEnv)\("[A-Z0-9_]*(DSN|DATABASE_URL)[A-Z0-9_]*"\)' 2>/dev/null |
+    sed -E 's/.*"([A-Z0-9_]+)".*/\1/' | sort -u
+}
+
 # require_test_db <dsn>: refuses any database that is not a scratch *_test one.
 require_test_db() {
   local name

@@ -16,6 +16,9 @@
 #           (os.Getenv("..._DSN")) is set to it unless already set; each one
 #           must name a database ending in _test or the run is refused.
 #           Agents never pass --db: there are no local databases. CI does.
+#           The plain test stage then runs with those variables unset, and
+#           GO_INTEG_FLAGS (e.g. "-timeout 30m") is added to the integration
+#           go test; CI takes both from scripts/ci/integration-services.yaml.
 #
 # Prints one PASS/FAIL line per stage (scripts/verify/lib.sh).
 
@@ -80,11 +83,12 @@ changed_packages() {
   done | sort -u
 }
 
-# dsn_vars <module>: the DSN variables the module's tests read.
-dsn_vars() {
-  grep -rhoE --include='*_test.go' 'os\.Getenv\("[A-Z0-9_]*(DSN|DATABASE_URL)[A-Z0-9_]*"\)' "$1" 2>/dev/null |
-    sed -E 's/.*"([A-Z0-9_]+)".*/\1/' | sort -u
-}
+# dsn_vars <module>: the DSN variables the module's tests read (lib.sh).
+
+# Extra flags for the integration go test only (e.g. -timeout 30m, -skip RE),
+# word-split, no globbing. CI sets it from scripts/ci/integration-services.yaml.
+INTEG_FLAGS=()
+read -r -a INTEG_FLAGS <<<"${GO_INTEG_FLAGS:-}"
 
 for m in "${MODULES[@]}"; do
   if [ ! -f "$m/go.mod" ]; then
@@ -95,6 +99,15 @@ for m in "${MODULES[@]}"; do
   name="${m##*/}"
   run_stage build "$name" "$m" go build ./...
 
+  # With --db, the plain test stage runs with the module's DSN variables
+  # unset, so database suites without the integration tag run once, in the
+  # integration stage (-p 1), not in parallel packages here as well.
+  mapfile -t MOD_DSN_VARS < <(dsn_vars "$m")
+  UNSET_DSN=()
+  if [ -n "$DSN" ]; then
+    for var in "${MOD_DSN_VARS[@]}"; do [ -n "$var" ] && UNSET_DSN+=(-u "$var"); done
+  fi
+
   if [ "$MODE" = fast ]; then
     mapfile -t PKGS < <(changed_packages "$m")
     if [ ${#PKGS[@]} -eq 0 ]; then
@@ -102,13 +115,13 @@ for m in "${MODULES[@]}"; do
     else
       run_stage vet "$name" "$m" go vet "${PKGS[@]}"
       run_stage vet-integ "$name" "$m" go vet -tags integration "${PKGS[@]}"
-      run_stage test "$name" "$m" go test -count=1 "${PKGS[@]}"
+      run_stage test "$name" "$m" env "${UNSET_DSN[@]}" go test -count=1 "${PKGS[@]}"
     fi
   else
     PKGS=(./...)
     run_stage vet "$name" "$m" go vet ./...
     run_stage vet-integ "$name" "$m" go vet -tags integration ./...
-    run_stage test "$name" "$m" go test -count=1 ./...
+    run_stage test "$name" "$m" env "${UNSET_DSN[@]}" go test -count=1 ./...
   fi
 
   if [ -n "$DSN" ] && [ ${#PKGS[@]} -gt 0 ]; then
@@ -121,12 +134,12 @@ for m in "${MODULES[@]}"; do
         echo "  ($var)" >&2
         refused=1
       fi
-    done < <(dsn_vars "$m")
+    done < <(printf '%s\n' "${MOD_DSN_VARS[@]}")
     if [ $refused -eq 1 ]; then
       VERIFY_FAILED=$((VERIFY_FAILED + 1))
       echo "FAIL integration    $name  (a preset DSN is not a _test database)"
     else
-      run_stage integration "$name" "$m" go test -tags integration -p 1 -count=1 "${PKGS[@]}"
+      run_stage integration "$name" "$m" go test -tags integration -p 1 -count=1 "${INTEG_FLAGS[@]}" "${PKGS[@]}"
     fi
   fi
 done

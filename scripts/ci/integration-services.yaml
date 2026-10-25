@@ -1,0 +1,344 @@
+# Integration-test manifest: one entry per Go module whose tests touch a
+# database. .github/workflows/integration-all.yml builds its matrix from this
+# file; scripts/ci/integration-setup.sh creates each entry's databases and
+# applies its schema; scripts/verify/go.sh --full --db runs the tests.
+# scripts/ci/integration-manifest-check.sh checks this file against the code.
+#
+# Format: a small YAML subset read by scripts/ci/integration-manifest-lib.sh
+# (no yq needed). Two-space indents, no tabs, one value per line or an inline
+# [a, b] list, comments start with " #".
+#
+#   module             repo-relative module dir (has go.mod, listed in its go.work)
+#   db                 the module's scratch database; must end in _test
+#   wave               1 = launch apps, 2 = everything else
+#   needs              services the tests FAIL without:
+#                      postgres | redis | kafka | opensearch | scylla | minio
+#   optional           services some tests use when present and SKIP without
+#   pg_image           postgres image (default postgres:16; postgis for PostGIS)
+#   vars               DSN env vars pointed at db. Together with extra_dbs they
+#                      must be exactly the DSN vars the module's tests read
+#                      (the check enforces it, using go.sh's own detection).
+#   schema             SQL files or globs applied in order, before the tests.
+#                      Empty when the suites bootstrap their own schema (most
+#                      do, through BootstrapSchema / the migration runner).
+#   record_migrations  service name: record every applied database/migrations/
+#                      file in schema_migrations, so a suite that calls
+#                      BootstrapSchema later does not replay them
+#   extra_dbs          a second database for vars that cannot share db
+#                      (db, vars, schema, record_migrations)
+#   env                plain settings for the test run ({repo} = repo root)
+#   go_flags           extra flags for the integration go test (go.sh reads
+#                      GO_INTEG_FLAGS)
+#
+# Never pre-apply a service's own migrations with psql unless the entry also
+# records them: BootstrapSchema replays anything schema_migrations lacks.
+
+modules:
+  # ------------------------------------------------------------------ wave 1
+  # post-service: every suite runs BootstrapSchema (setup.sql + the embedded
+  # chain) itself; the chain needs other services' parent tables, created
+  # from the stubs file. No post/media/user setup.sql here (see the stubs file).
+  - module: Architecture/services/post-service
+    db: post_it_test
+    wave: 1
+    needs: [postgres, redis]
+    optional: [kafka, scylla]
+    vars: [POSTGRES_DSN, M7_POSTGRES_DSN, ACTION_LINKS_POSTGRES_DSN, CREDITS_POSTGRES_DSN, MEMBERS_POSTGRES_DSN, POLL_POSTGRES_DSN, POST_SCREENS_POSTGRES_DSN, SCHEDULE_POSTGRES_DSN, SOCIAL_GAPS_POSTGRES_DSN, STORY_POSTGRES_DSN, VIDEO_SERIES_POSTGRES_DSN]
+    schema:
+      - scripts/ci/sql/post-service-stubs.sql
+    env:
+      M7_REDIS_ADDR: localhost:6379
+      REDIS_ADDR: localhost:6379
+      TEST_REDIS_ADDR: localhost:6379
+    go_flags: "-timeout 30m"
+
+  # media-service: the order integration-postgres.yml uses (media setup, post
+  # setup, post 030 for the LB-1 foreign keys) plus user-service setup for the
+  # avatar reclaim race. The media chain itself is applied by BootstrapSchema
+  # (internal/http runs first). Adding any other service's schema here can
+  # trip the reclaim guard, which scans every public *media_id column.
+  - module: Architecture/services/media-service
+    db: media_it_test
+    wave: 1
+    needs: [postgres]
+    optional: [kafka]
+    vars: [POSTGRES_DSN, MEDIA_CHAT_POSTGRES_DSN, MEDIA_DURABILITY_POSTGRES_DSN]
+    schema:
+      - Architecture/services/media-service/database/setup.sql
+      - Architecture/services/user-service/database/setup.sql
+      - Architecture/services/post-service/database/setup.sql
+      - Architecture/services/post-service/database/migrations/030_media_reference_integrity.sql
+
+  # graph-service: inline test schema; the real setup.sql breaks the inserts
+  # (created_at NOT NULL without a default). Leave the database empty.
+  - module: Architecture/services/graph-service
+    db: graph_it_test
+    wave: 1
+    needs: [postgres]
+    vars: [POSTGRES_DSN]
+    go_flags: "-timeout 30m"
+
+  - module: Architecture/services/user-service
+    db: user_it_test
+    wave: 1
+    needs: [postgres]
+    vars: [TEST_PG_DSN]
+
+  - module: identity-platform/services/user-service
+    db: idusers_it_test
+    wave: 1
+    needs: [postgres]
+    vars: [USER_SETTINGS_IT_POSTGRES_DSN]
+
+  # auth-service: the store suite installs a hand-written subset whose seeds
+  # break on the full auth schema, which the http and service suites apply
+  # first; it gets its own empty database.
+  - module: identity-platform/services/auth-service
+    db: auth_it_test
+    wave: 1
+    needs: [postgres]
+    vars: [AUTH_JOURNEY_POSTGRES_DSN, AUTH_ROLES_POSTGRES_DSN]
+    extra_dbs:
+      - db: auth_store_it_test
+        vars: [POSTGRES_DSN]
+
+  # message-service: internal/events needs Kafka, internal/store/scylla and
+  # the http parity rig need Scylla (keyspace created from scylla/schema.cql),
+  # DM consent rate limiting fails closed without Redis.
+  - module: chat-service/services/message-service
+    db: chat_it_test
+    wave: 1
+    needs: [postgres, redis, kafka, scylla]
+    vars: [CHAT_POSTGRES_DSN]
+    env:
+      REDIS_ADDR: localhost:6379
+      SCYLLA_HOST: localhost
+      CHAT_SCYLLA_KEYSPACE: chatservice_m5_test
+
+  - module: Architecture/services/notification-service
+    db: notification_it_test
+    wave: 1
+    needs: [postgres]
+    optional: [kafka]
+    vars: [NOTIFICATION_TEST_DSN, PARTNER_NOTIFICATION_TEST_DSN]
+
+  - module: Architecture/services/suggestion-service
+    db: suggestion_it_test
+    wave: 1
+    needs: [postgres]
+    optional: [kafka]
+    vars: [POSTGRES_DSN, SUGGESTION_IT_POSTGRES_DSN]
+
+  - module: Architecture/services/trust-safety-service
+    db: trust_it_test
+    wave: 1
+    needs: [postgres]
+    vars: [M7_TRUST_POSTGRES_DSN]
+
+  # commerce-service: setup + every migration, recorded so BootstrapSchema
+  # (invoice reissue) does not replay them. NOT gated 998: it fences tables
+  # other suites write. The four tests that need 998 run in
+  # integration-commerce.yml's commerce-proofs job on a gated database.
+  # The delivery suites build their own stubs on an EMPTY database.
+  - module: Architecture/services/commerce-service
+    db: commerce_it_test
+    wave: 1
+    needs: [postgres]
+    vars: [COMMERCE_TEST_DSN]
+    schema:
+      - Architecture/services/commerce-service/database/setup.sql
+      - Architecture/services/commerce-service/database/migrations/*.sql
+    record_migrations: commerce-service
+    extra_dbs:
+      - db: commerce_delivery_it_test
+        vars: [COMMERCE_DELIVERY_TEST_DSN]
+    go_flags: "-timeout 30m -skip ^(TestProofFencedSurfacesRefuseWrites|TestProofNegativeControl_FenceRemovedAllowsTheWrite|TestProofIllegalOrderTransitionRejected|TestC3DatabaseRefusesAnUnsupportedMethodDirectly)$"
+
+  # payments-service: setup + migrations, never gated 998 (application_id NOT
+  # NULL breaks seeds that leave it out). Needs a superuser
+  # (session_replication_role), which the CI postgres user is.
+  - module: Architecture/services/payments-service
+    db: payments_it_test
+    wave: 1
+    needs: [postgres]
+    vars: [PAYMENTS_TEST_DSN, PAYMENTS_TEST_POSTGRES_DSN]
+    schema:
+      - Architecture/services/payments-service/database/setup.sql
+      - Architecture/services/payments-service/database/migrations/*.sql
+    record_migrations: payments-service
+    go_flags: "-timeout 30m"
+
+  # monetization-service bootstraps its own schema but reads analytics'
+  # content_daily_summary and v_creator_daily_metrics_v1 (module-06 order).
+  - module: Architecture/services/monetization-service
+    db: monetization_it_test
+    wave: 1
+    needs: [postgres]
+    vars: [MONETIZATION_POSTGRES_DSN]
+    schema:
+      - Architecture/services/analytics-service/database/setup.sql
+      - Architecture/services/analytics-service/database/migrations/*.sql
+    record_migrations: analytics-service
+
+  # analytics-service: the DSN is only a maintenance connection; each package
+  # creates and bootstraps analytics_it_<pkg> beside it (needs CREATEDB).
+  - module: Architecture/services/analytics-service
+    db: analytics_it_test
+    wave: 1
+    needs: [postgres]
+    optional: [kafka]
+    vars: [ANALYTICS_POSTGRES_DSN]
+    env:
+      PLAYBACK_FIXTURES_DIR: "{repo}/Architecture/services/analytics-service/testdata/playback-fixtures"
+
+  # ------------------------------------------------------------------ wave 2
+  - module: Architecture/services/admin-service
+    db: admin_it_test
+    wave: 2
+    needs: [postgres]
+    vars: [POSTGRES_DSN]
+
+  # group-service: internal/events needs Kafka. Never the full migration
+  # chain (002 alters post-service's posts); suites apply what they need.
+  - module: Architecture/services/group-service
+    db: group_it_test
+    wave: 2
+    needs: [postgres, kafka]
+    vars: [GROUP_POSTGRES_DSN, TEST_PG_DSN]
+
+  - module: Architecture/services/search-service
+    db: search_it_test
+    wave: 2
+    needs: [postgres]
+    optional: [kafka, opensearch]
+    vars: [SEARCH_IT_POSTGRES_DSN]
+
+  # identityroles drops its own rider schema; partnerwork's domain suite
+  # stubs rider_* tables in public, so it gets its own database.
+  - module: Architecture/shared
+    db: shared_it_test
+    wave: 2
+    needs: [postgres]
+    optional: [redis]
+    vars: [TEST_PG_DSN, PARTNER_WORK_TEST_DSN, MIGRATIONRUNNER_TEST_DSN, COMMERCE_TEST_DSN]
+    extra_dbs:
+      - db: shared_partner_domain_it_test
+        vars: [PARTNER_WORK_DOMAIN_TEST_DSN]
+    env:
+      REDIS_TEST_ADDR: localhost:6379
+
+  # The DSN is a maintenance connection: the suite drops and recreates
+  # contentownershipbackfill_it_test itself (so db must not be that name).
+  - module: Architecture/tools/contentownershipbackfill
+    db: cobackfill_it_test
+    wave: 2
+    needs: [postgres]
+    vars: [CONTENT_OWNERSHIP_BACKFILL_DSN]
+
+  # call-service: the call rate limiter fails closed without Redis; the mute
+  # suite refuses Redis DB 0.
+  - module: chat-service/services/call-service
+    db: call_it_test
+    wave: 2
+    needs: [postgres, redis]
+    vars: [CALL_POSTGRES_DSN, CALL_MUTE_TEST_DSN, CHAT_MUTE_TEST_DSN]
+    env:
+      CALL_REDIS_ADDR: localhost:6379
+      CALL_MUTE_TEST_REDIS: localhost:6379
+      CALL_MUTE_TEST_REDIS_DB: "13"
+
+  - module: chat-service/services/ws-gateway
+    db: wsgateway_it_test
+    wave: 2
+    needs: [postgres, redis]
+    vars: [PEERS_TEST_DSN]
+    env:
+      REDIS_ADDR: localhost:6379
+
+  - module: identity-platform/services/profile-service
+    db: profile_it_test
+    wave: 2
+    needs: [postgres]
+    vars: [PROFILE_IT_POSTGRES_DSN]
+
+  - module: identity-platform/shared
+    db: idshared_it_test
+    wave: 2
+    needs: [postgres]
+    vars: [POSTGRES_DSN]
+
+  # The modules below have DB-backed tests WITHOUT the integration tag: they
+  # read TEST_PG_DSN (or LIVE_V2_TEST_DSN), skip when it is unset, and
+  # bootstrap their own schema. go.sh runs them in its integration stage.
+  - module: Architecture/services/community-service
+    db: community_it_test
+    wave: 2
+    needs: [postgres]
+    vars: [TEST_PG_DSN]
+
+  # database.RequireTestDatabase accepts exactly doorstep_it_test.
+  - module: Architecture/services/doorstep-service
+    db: doorstep_it_test
+    wave: 2
+    needs: [postgres]
+    pg_image: postgis/postgis:16-3.4
+    vars: [TEST_PG_DSN]
+
+  - module: Architecture/services/bill-pay-service
+    db: billpay_it_test
+    wave: 2
+    needs: [postgres]
+    vars: [TEST_PG_DSN]
+
+  - module: Architecture/services/channel-service
+    db: channel_it_test
+    wave: 2
+    needs: [postgres]
+    vars: [TEST_PG_DSN]
+
+  - module: Architecture/services/wallet-service
+    db: wallet_it_test
+    wave: 2
+    needs: [postgres]
+    vars: [TEST_PG_DSN]
+
+  - module: Architecture/services/dating-service
+    db: dating_it_test
+    wave: 2
+    needs: [postgres]
+    optional: [redis]
+    vars: [TEST_PG_DSN]
+    env:
+      REDIS_ADDR: localhost:6379
+
+  - module: Architecture/services/rider-service
+    db: rider_it_test
+    wave: 2
+    needs: [postgres]
+    pg_image: postgis/postgis:16-3.4
+    vars: [TEST_PG_DSN]
+
+  - module: Architecture/services/food-service
+    db: food_it_test
+    wave: 2
+    needs: [postgres]
+    vars: [TEST_PG_DSN]
+
+  - module: Architecture/services/qa-service
+    db: qa_it_test
+    wave: 2
+    needs: [postgres]
+    vars: [TEST_PG_DSN]
+
+  - module: Architecture/services/live-service-v2
+    db: livev2_it_test
+    wave: 2
+    needs: [postgres]
+    vars: [LIVE_V2_TEST_DSN]
+
+exclude:
+  # Live end-to-end tests against running services (ATPOST_RUN_INTEGRATION,
+  # an internal key, a webhook secret, the deployed databases). They are not
+  # unit-of-one-service tests and must never point at a scratch matrix job.
+  - module: Architecture/tools/integration
+    reason: live end-to-end suite against running services, not a per-service database suite
