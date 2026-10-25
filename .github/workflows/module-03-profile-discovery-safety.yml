@@ -79,7 +79,13 @@ jobs:
         run: |
           set -euo pipefail
           cp internal/http/handler.go /tmp/handler.go.bak
-          sed -i 's|api.JSON(c.Writer, http.StatusOK, ToPublicProfile(p), nil)|api.JSON(c.Writer, http.StatusOK, p, nil)|g' internal/http/handler.go
+          sed -i 's|api.JSON(c.Writer, http.StatusOK, h.applyProfilePrivacy(c, h.applyProfilePhotoPrivacy(c, ToPublicProfile(p))), nil)|api.JSON(c.Writer, http.StatusOK, p, nil)|g' internal/http/handler.go
+          # A pattern that no longer matches the handler makes this control a
+          # no-op that "passes"; refuse to run the test on an unmutated file.
+          if cmp -s internal/http/handler.go /tmp/handler.go.bak; then
+            echo "::error::The negative-control sed matched nothing in handler.go; update its pattern to the current public-route serialisation."
+            exit 1
+          fi
           if go test -count=1 ./internal/http/ -run 'PublicProfileResponseContainsNoPrivateValues'; then
             echo "::error::The leak test PASSED while the public route serialised the stored profile."
             cp /tmp/handler.go.bak internal/http/handler.go
