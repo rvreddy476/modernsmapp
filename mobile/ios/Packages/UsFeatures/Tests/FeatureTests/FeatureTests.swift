@@ -59,7 +59,8 @@ final class MockComposerApiClient: APIClientProtocol, @unchecked Sendable {
             let resp = CreatedPostResponse(id: returnPostId, text: "Created", visibility: "public", postType: "text")
             return resp as! T
         }
-        throw AppError.network(URLError(.badServerResponse))
+        // Same wrapping APIClient applies to transport errors.
+        throw AppError.network(URLError(.badServerResponse).localizedDescription)
     }
 
     func requestEnvelope<T: Decodable>(
