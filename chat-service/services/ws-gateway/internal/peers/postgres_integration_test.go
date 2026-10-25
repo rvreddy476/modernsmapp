@@ -44,7 +44,9 @@ func TestDMPeersOnlyAcceptedActiveDirectConversations(t *testing.T) {
 		`CREATE TABLE chat.conversations (id UUID PRIMARY KEY, type TEXT NOT NULL,
 			is_request BOOLEAN NOT NULL DEFAULT FALSE, updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW())`,
 		`CREATE TABLE chat.conversation_members (conversation_id UUID NOT NULL REFERENCES chat.conversations(id),
-			user_id UUID NOT NULL, left_at TIMESTAMPTZ, PRIMARY KEY (conversation_id, user_id))`,
+			user_id UUID NOT NULL, left_at TIMESTAMPTZ,
+			locked BOOLEAN NOT NULL DEFAULT FALSE, -- message-service migration 018 (hidden chats)
+			PRIMARY KEY (conversation_id, user_id))`,
 	} {
 		if _, err := pool.Exec(ctx, stmt); err != nil {
 			t.Fatal(err)
@@ -79,13 +81,20 @@ func TestDMPeersOnlyAcceptedActiveDirectConversations(t *testing.T) {
 	// it doubled every presence frame). The friend must still appear once,
 	// ranked by the newest shared conversation.
 	add("direct", false, "2 days", friend, false)
+	// A peer who hid the DM (hidden chats: their member row is locked) gets
+	// no presence from it.
+	hider := uuid.New()
+	add("direct", false, "1 second", hider, false)
+	if _, err := pool.Exec(ctx, `UPDATE chat.conversation_members SET locked = TRUE WHERE user_id = $1`, hider); err != nil {
+		t.Fatal(err)
+	}
 
 	got, err := New(pool).DMPeers(ctx, me, 10)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 2 || got[0] != friend || got[1] != older {
-		t.Fatalf("peers = %v, want [friend older] (each peer once; no requests, leavers or group members)", got)
+		t.Fatalf("peers = %v, want [friend older] (each peer once; no requests, leavers, hiders or group members)", got)
 	}
 	if limited, _ := New(pool).DMPeers(ctx, me, 1); len(limited) != 1 || limited[0] != friend {
 		t.Fatalf("limit must keep the most recent: %v", limited)

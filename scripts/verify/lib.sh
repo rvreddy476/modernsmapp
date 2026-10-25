@@ -34,6 +34,13 @@ run_stage() {
   else
     VERIFY_FAILED=$((VERIFY_FAILED + 1))
     printf 'FAIL %-14s %s  (%ss)  log: %s\n' "$stage" "$target" "$((SECONDS - start))" "$log"
+    # The failing tests and their messages first: a tail alone can be all
+    # setup chatter (migration logs) and name no test.
+    if grep -qE -e '--- FAIL|^panic:|_test\.go:[0-9]+:' "$log"; then
+      echo "    failures:"
+      grep -E -e '--- FAIL|^panic:|_test\.go:[0-9]+:|^FAIL\s' "$log" | head -n 60 | cut -c1-300 | sed 's/^/      /'
+      echo "    last lines:"
+    fi
     tail -n "$VERIFY_TAIL_LINES" "$log" | sed 's/^/    /'
   fi
   return $rc

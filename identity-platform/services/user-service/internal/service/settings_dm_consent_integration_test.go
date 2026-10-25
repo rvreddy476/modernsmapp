@@ -105,7 +105,11 @@ func TestIntegrationDMConsentMigrationIdempotent(t *testing.T) {
 		{"minor everyone", "everyone_message_requests", "no_one", true, false, "people_i_follow", "no_one", true},
 		{"minor followers", "followers_message_requests", "no_one", true, false, "people_i_follow", "no_one", true},
 		{"minor fof", "friends_of_friends_requests", "no_one", true, false, "people_i_follow", "no_one", true},
-		{"minor no_one", "no_one", "no_one", true, false, "no_one", "no_one", false},
+		// DM consent leaves this row's message/call values alone, but the
+		// mention/tag clamp earlier in the same setup.sql (546eec063, 24 Oct)
+		// moves a minor's pre-clamp who_can_mention/who_can_tag 'everyone'
+		// default to 'following' and bumps privacy_version once.
+		{"minor no_one", "no_one", "no_one", true, false, "no_one", "no_one", true},
 		{"strict adult everyone", "everyone_message_requests", "no_one", false, true, "people_i_follow", "no_one", true},
 	}
 	ids := make([]uuid.UUID, len(seeds))

@@ -48,7 +48,7 @@ func seedOwnerChannel(t *testing.T, st *Store, pool *pgxpool.Pool) (*Channel, uu
 	owner := uuid.New()
 	handle := "it" + strings.ReplaceAll(owner.String(), "-", "")[:16]
 	if _, err := pool.Exec(ctx,
-		`INSERT INTO users (id, username, display_name) VALUES ($1, $2, $3)`,
+		`INSERT INTO users (id, username, display_name, created_at, updated_at) VALUES ($1, $2, $3, now(), now())`,
 		owner, handle, "Channel Owner"); err != nil {
 		t.Fatalf("seed user: %v", err)
 	}
