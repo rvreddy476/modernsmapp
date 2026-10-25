@@ -127,16 +127,47 @@ func TestListingFixSKUIsEditableWhileDraftAndLockedOnceApproved(t *testing.T) {
 		}
 	})
 
-	t.Run("a SKU another variant of the shop holds is 409 SKU_TAKEN", func(t *testing.T) {
-		other := f.createDraft(t, r, "Other listing")
-		_, taken := f.firstVariant(t, other)
-		w := call(t, r, http.MethodPatch, "/v1/commerce/variants/"+variantID, f.actor,
-			map[string]any{"sku": taken})
+	// Since migration 031 a SKU is unique per LISTING (offer), not per shop:
+	// UNIQUE NULLS NOT DISTINCT (offer_id, sku). See ErrDuplicateSKU in
+	// internal/store/postgres/productwrite.go for the three cases. The
+	// refusal is pinned on the case that is still refused, and the case the
+	// migration deliberately opened is pinned as allowed.
+	t.Run("a SKU another variant of the same listing holds is 409 SKU_TAKEN", func(t *testing.T) {
+		skuA, skuB := "LA-"+uuid.New().String()[:10], "LB-"+uuid.New().String()[:10]
+		w := call(t, r, http.MethodPost, "/v1/commerce/products", f.actor,
+			f.body("Two variants", map[string]any{"variants": []map[string]any{
+				{"sku": skuA, "mrp_minor": 129900, "selling_price_minor": 99900, "stock_qty": 1},
+				{"sku": skuB, "mrp_minor": 129900, "selling_price_minor": 99900, "stock_qty": 1},
+			}}))
+		if w.Code != http.StatusCreated {
+			t.Fatalf("create: status %d\n%s", w.Code, w.Body.String())
+		}
+		var variantA string
+		if err := edgePool.QueryRow(ctx, `SELECT id FROM product_variants WHERE product_id=$1 AND sku=$2`,
+			uuid.MustParse(createdProductID(t, w.Body.Bytes())), skuA).Scan(&variantA); err != nil {
+			t.Fatalf("variant A: %v", err)
+		}
+		w = call(t, r, http.MethodPatch, "/v1/commerce/variants/"+variantA, f.actor,
+			map[string]any{"sku": skuB})
 		if w.Code != http.StatusConflict {
 			t.Fatalf("status %d, want 409\n%s", w.Code, w.Body.String())
 		}
 		if code, _, _ := errorEnvelope(t, w.Body.Bytes()); code != "SKU_TAKEN" {
 			t.Fatalf("code %q, want SKU_TAKEN\n%s", code, w.Body.String())
+		}
+		var stored string
+		_ = edgePool.QueryRow(ctx, `SELECT sku FROM product_variants WHERE id=$1`, uuid.MustParse(variantA)).Scan(&stored)
+		if stored != skuA {
+			t.Fatalf("the refused SKU change was written: stored %q, want %q", stored, skuA)
+		}
+
+		// Another listing of the same shop may reuse the code (031).
+		var other string
+		_ = edgePool.QueryRow(ctx, `SELECT sku FROM product_variants WHERE id=$1`, uuid.MustParse(variantID)).Scan(&other)
+		w = call(t, r, http.MethodPatch, "/v1/commerce/variants/"+variantA, f.actor,
+			map[string]any{"sku": other})
+		if w.Code != http.StatusOK {
+			t.Fatalf("reusing another listing's SKU: status %d, want 200 (031 scopes SKUs per listing)\n%s", w.Code, w.Body.String())
 		}
 	})
 

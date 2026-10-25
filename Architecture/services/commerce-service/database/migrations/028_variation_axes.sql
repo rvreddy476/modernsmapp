@@ -349,7 +349,7 @@ BEGIN
 END $$;
 
 DROP TRIGGER IF EXISTS product_variant_options_sync ON product_variant_options;
-CREATE TRIGGER product_variant_options_sync
+CREATE TRIGGER product_variant_options_sync -- expand-only: AFTER trigger on product_variant_options, a table this file creates; no pre-028 image writes it, so it cannot reject an old replica's write
     AFTER INSERT OR UPDATE OR DELETE ON product_variant_options
     FOR EACH ROW EXECUTE FUNCTION commerce_variant_options_sync_trg();
 
@@ -372,7 +372,7 @@ BEGIN
 END $$;
 
 DROP TRIGGER IF EXISTS product_variation_axes_sync ON product_variation_axes;
-CREATE TRIGGER product_variation_axes_sync
+CREATE TRIGGER product_variation_axes_sync -- expand-only: AFTER UPDATE trigger on product_variation_axes, a table this file creates; no pre-028 image writes it, so it cannot reject an old replica's write
     AFTER UPDATE ON product_variation_axes
     FOR EACH ROW EXECUTE FUNCTION commerce_variation_axes_sync_trg();
 

@@ -115,14 +115,33 @@ jobs:
         run: |
           set -euo pipefail
           BAD=0
-          for route in '"/orders/checkout"' '"/orders/:orderId/payment/confirm"'; do
-            if grep -rn --include='*.go' "v1.POST($route" internal/http/; then
-              echo "::error::$route was re-registered; it is a fenced legacy money route"
-              BAD=1
-            fi
-          done
+          # The legacy checkout is deleted outright: any registration fails.
+          if grep -rn --include='*.go' 'v1.POST("/orders/checkout"' internal/http/; then
+            echo "::error::\"/orders/checkout\" was re-registered; it is a fenced legacy money route"
+            BAD=1
+          fi
+          # The confirm route is the dev-stack stub settlement path (044f2457;
+          # StubSettlementPattern in internal/http/handler_p0.go). It is
+          # unregistered in production — the route-table proof in the unit
+          # job pins that — but registered when PAYMENTS_ALLOW_STUB is set,
+          # which a flat grep cannot tell apart from a re-add. So it may
+          # appear ONLY as the body of `if h.allowStubSettlement {`, at most
+          # once, and only while cmd/server refuses that flag outside a
+          # development ENV. Anything else is a re-registration.
+          CONFIRM='v1.POST("/orders/:orderId/payment/confirm"'
+          all=$(grep -rn --include='*.go' -F "$CONFIRM" internal/http/ | wc -l)
+          gated=$(grep -rn --include='*.go' -A1 -F 'if h.allowStubSettlement {' internal/http/ | grep -cF "$CONFIRM" || true)
+          if [ "$all" -ne "$gated" ] || [ "$all" -gt 1 ]; then
+            grep -rn --include='*.go' -F "$CONFIRM" internal/http/ || true
+            echo "::error::\"/orders/:orderId/payment/confirm\" is registered outside the PAYMENTS_ALLOW_STUB branch ($all registration(s), $gated gated); it is a fenced legacy money route"
+            BAD=1
+          fi
+          if [ "$all" -gt 0 ] && ! grep -qF 'stubSettlementPermitted(os.Getenv("ENV"), allowStub)' cmd/server/main.go; then
+            echo "::error::the stub confirm route is registered, but cmd/server no longer refuses PAYMENTS_ALLOW_STUB outside development"
+            BAD=1
+          fi
           [ "$BAD" -eq 0 ] || exit 1
-          echo "legacy money routes remain unregistered"
+          echo "legacy money routes remain unregistered (stub confirm: dev-only, behind PAYMENTS_ALLOW_STUB)"
 
       - name: Reject Double money in the Android commerce modules
         run: |
@@ -828,10 +847,28 @@ jobs:
           set -euo pipefail
           BAD=0
           for f in database/migrations/00[789]*.sql database/migrations/0[12]*.sql; do
-            if grep -Ein 'DROP[[:space:]]+(COLUMN|TABLE)' "$f"; then
+            # A DROP TABLE whose every target is a TEMP table created in the
+            # same file is not destructive: it drops session scratch, not
+            # schema (028's re-runnable backfill must drop its own temp tables
+            # so a second call in one transaction can recreate them). Only
+            # that exact shape is exempt; DROP COLUMN and any DROP TABLE that
+            # names a real table still fail.
+            while IFS= read -r hit; do
+              [ -n "$hit" ] || continue
+              line=${hit#*:}
+              if ! grep -Eiq 'DROP[[:space:]]+COLUMN' <<<"$line" \
+                 && grep -Eiq '^[[:space:]]*DROP[[:space:]]+TABLE[[:space:]]+(IF[[:space:]]+EXISTS[[:space:]]+)?[A-Za-z_][A-Za-z0-9_]*([[:space:]]*,[[:space:]]*[A-Za-z_][A-Za-z0-9_]*)*[[:space:]]*;[[:space:]]*$' <<<"$line"; then
+                names=$(sed -E 's/^[[:space:]]*DROP[[:space:]]+TABLE[[:space:]]+(IF[[:space:]]+EXISTS[[:space:]]+)?//I; s/;.*$//; s/,/ /g' <<<"$line")
+                temp=1
+                for n in $names; do
+                  grep -Eiq "CREATE[[:space:]]+TEMP(ORARY)?[[:space:]]+TABLE[[:space:]]+(IF[[:space:]]+NOT[[:space:]]+EXISTS[[:space:]]+)?$n([[:space:]]|\$)" "$f" || temp=0
+                done
+                [ "$temp" -eq 1 ] && continue
+              fi
+              echo "$hit"
               echo "::error file=$f::destructive step in a boot migration"
               BAD=1
-            fi
+            done < <(grep -Ein 'DROP[[:space:]]+(COLUMN|TABLE)' "$f" || true)
             if grep -Ein 'VALIDATE[[:space:]]+CONSTRAINT' "$f"; then
               echo "::error file=$f::VALIDATE CONSTRAINT belongs in database/gated/, not the boot set"
               BAD=1

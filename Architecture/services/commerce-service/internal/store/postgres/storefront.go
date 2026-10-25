@@ -582,7 +582,13 @@ func (s *Store) DealProducts(ctx context.Context, limit int) ([]*Product, error)
 // Cancelled lines are excluded: a bulk order somebody placed and cancelled is
 // not evidence that anything sells. Orders still awaiting payment are
 // excluded for the same reason.
-func (s *Store) BestSellerProducts(ctx context.Context, window time.Duration, limit int) ([]*Product, error) {
+//
+// The window is [since, now): `since` is computed by the caller from the
+// service clock, not from the database's NOW(). With NOW() the section was
+// the one part of the home page a pinned clock could not reach, so the golden
+// fixture (orders seeded in September, clock pinned to 30 Sep) changed by
+// itself once the wall clock passed 30 days after the seed.
+func (s *Store) BestSellerProducts(ctx context.Context, since time.Time, limit int) ([]*Product, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT `+productSummaryColumns+`
 		`+productSummaryFrom+`
@@ -591,13 +597,13 @@ func (s *Store) BestSellerProducts(ctx context.Context, window time.Duration, li
 			FROM order_items oi
 			JOIN orders o ON o.id = oi.order_id
 			WHERE oi.product_id = p.id
-			  AND oi.created_at >= NOW() - $1::interval
+			  AND oi.created_at >= $1::timestamptz
 			  AND oi.status NOT IN ('cancelled','returned')
 			  AND o.status NOT IN ('cancelled','payment_pending','payment_failed')
 		) sold ON true
 		WHERE `+productSummaryLive+` AND sold.units > 0
 		ORDER BY sold.units DESC, p.avg_rating DESC, p.created_at DESC
-		LIMIT $2`, fmt.Sprintf("%d hours", int(window.Hours())), limit)
+		LIMIT $2`, since, limit)
 	if err != nil {
 		return nil, err
 	}

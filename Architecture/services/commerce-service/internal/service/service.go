@@ -139,7 +139,8 @@ type Service struct {
 	internalServiceKey     string
 	httpClient             *http.Client
 
-	// now is the clock the delivery estimate reads "today" from. nil means
+	// now is the clock the delivery estimate reads "today" from, and the
+	// home page's best-seller window is measured back from. nil means
 	// time.Now; tests and the golden fixtures pin it (WithClock). Nothing
 	// that touches money reads it.
 	now func() time.Time

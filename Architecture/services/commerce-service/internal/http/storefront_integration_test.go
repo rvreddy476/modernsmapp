@@ -226,6 +226,9 @@ func asDraft(t *testing.T, productID uuid.UUID) {
 		`UPDATE products SET status='draft', approval_status='draft' WHERE id=$1`, productID); err != nil {
 		t.Fatalf("draft: %v", err)
 	}
+	// Since 027 the offer is the authority for the lifecycle columns
+	// (GetProductByID reads po.approval_status), so the offer must follow.
+	seedOfferFor(t, productID)
 }
 
 // attachGalleryThenApprove sets a gallery through the real route the way a
@@ -245,6 +248,7 @@ func attachGalleryThenApprove(t *testing.T, r *gin.Engine, seller, productID uui
 		`UPDATE products SET status='active', approval_status='approved' WHERE id=$1`, productID); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
+	seedOfferFor(t, productID)
 }
 
 type galleryItem struct {

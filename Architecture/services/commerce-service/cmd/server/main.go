@@ -312,6 +312,10 @@ func main() {
 	// payments-service's PAYMENTS_ALLOW_STUB — docker-compose sets both;
 	// production leaves it unset so a client can never name the stub.
 	allowStub := env("PAYMENTS_ALLOW_STUB", "") == "true"
+	if err := stubSettlementPermitted(os.Getenv("ENV"), allowStub); err != nil {
+		slog.Error("commerce: refusing to start", "error", err)
+		os.Exit(1)
+	}
 	svc.WithAllowStubGateway(allowStub)
 	if allowStub {
 		slog.Warn("commerce: PAYMENTS_ALLOW_STUB=true — POST /v1/commerce/orders/:orderId/payment/confirm " +
@@ -721,6 +725,26 @@ func classifyPIIEnvironment(raw string) piiEnvironment {
 	default:
 		return piiEnvUnknown
 	}
+}
+
+// stubSettlementPermitted refuses PAYMENTS_ALLOW_STUB outside a development
+// environment.
+//
+// The flag registers and un-fences POST /v1/commerce/orders/:orderId/payment/
+// confirm, the one route on which a client's own callback can settle an order
+// (gateway=stub). Until now nothing but convention kept it out of a deployed
+// environment: the values files leave it unset, but a manifest or compose
+// default that set it would have booted a managed environment with that route
+// open, held back only by payments-service's own stub refusal (ENV=prod only,
+// so not staging). Same closed list and same posture as the KMS, media and
+// service-token decisions: managed AND unknown environments refuse to start.
+func stubSettlementPermitted(rawEnv string, allowStub bool) error {
+	if !allowStub || classifyPIIEnvironment(rawEnv) == piiEnvLocal {
+		return nil
+	}
+	return fmt.Errorf("PAYMENTS_ALLOW_STUB=true is permitted only in a development environment "+
+		"(ENV is %q): it opens POST /v1/commerce/orders/:orderId/payment/confirm, on which a "+
+		"client-asserted stub payment settles an order", rawEnv)
 }
 
 // blobProduction is the object store's production verdict: only a

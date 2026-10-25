@@ -3,7 +3,7 @@ package http
 // The reviewer's view of a seller's KYC documents (admin-service token only).
 //
 //	GET /v1/commerce/internal/admin/sellers/:sellerId/documents
-//	    → {"data":[{"id","document_type","verification_status","uploaded_at","viewable"}]}
+//	    → {"data":[{"id","document_type","verification_status","uploaded_at","viewable","back_viewable"}]}
 //	GET /v1/commerce/internal/admin/sellers/:sellerId/documents/:documentId/image
 //	    → the image bytes, inline, never cached
 //

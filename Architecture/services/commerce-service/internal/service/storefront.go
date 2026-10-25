@@ -434,7 +434,7 @@ func (s *Service) Home(ctx context.Context, viewerID uuid.UUID) (*HomePage, erro
 	if err != nil {
 		return nil, err
 	}
-	best, err := s.store.BestSellerProducts(ctx, bestSellerWindow, homeSectionSize)
+	best, err := s.store.BestSellerProducts(ctx, s.clock().Add(-bestSellerWindow), homeSectionSize)
 	if err != nil {
 		return nil, err
 	}

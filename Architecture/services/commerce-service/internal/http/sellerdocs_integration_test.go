@@ -195,8 +195,13 @@ func TestSellerDocsIT_ListCarriesNoMediaIdNumberOrURL(t *testing.T) {
 		s.missing.String(): {"address_proof", "needs_correction", false},
 	}
 	for _, d := range env.Data {
-		if len(d) != 5 {
-			t.Fatalf("row has fields %v, want exactly id, document_type, verification_status, uploaded_at, viewable", d)
+		// back_viewable joined the wire shape in migration 045 (the back of a
+		// voter ID or passport); none of these three documents has a back.
+		if len(d) != 6 {
+			t.Fatalf("row has fields %v, want exactly id, document_type, verification_status, uploaded_at, viewable, back_viewable", d)
+		}
+		if bv, ok := d["back_viewable"].(bool); !ok || bv {
+			t.Fatalf("row %v: back_viewable must be false for a document with no back image", d)
 		}
 		w, ok := want[d["id"].(string)]
 		if !ok {

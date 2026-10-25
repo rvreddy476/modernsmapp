@@ -204,3 +204,45 @@ func documentTypeCheckFromMigration(t *testing.T, path string) []string {
 	}
 	return out
 }
+
+// approvalCheckValues returns the quoted values of the LAST
+// `products_approval_status_check ... CHECK (approval_status IN (...))` in a
+// SQL file, in order.
+func approvalCheckValues(t *testing.T, path string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	all := regexp.MustCompile(`(?s)ADD CONSTRAINT products_approval_status_check[^\n]*\n\s*CHECK \(approval_status IN \((.*?)\)\)`).FindAllSubmatch(raw, -1)
+	if len(all) == 0 {
+		t.Fatalf("%s restates no products_approval_status_check", path)
+	}
+	var out []string
+	for _, q := range regexp.MustCompile(`'([a-z_]+)'`).FindAllSubmatch(all[len(all)-1][1], -1) {
+		out = append(out, string(q[1]))
+	}
+	return out
+}
+
+// A fresh database runs setup.sql and then every migration, and migration 001
+// narrows products_approval_status_check below what setup.sql states. 046 puts
+// setup.sql's list back so a first boot is not narrower than every later one;
+// it is only correct while the two lists are identical, and the list has to
+// carry every state the editability rule and the moderator's actions write.
+func TestFreshDatabaseApprovalVocabularyMatchesSetup(t *testing.T) {
+	setup := approvalCheckValues(t, "../../../database/setup.sql")
+	fresh := approvalCheckValues(t, "../../../database/migrations/046_approval_status_fresh_database.sql")
+	if strings.Join(setup, ",") != strings.Join(fresh, ",") {
+		t.Fatalf("046 restates %v, setup.sql states %v; a fresh database would boot with a different vocabulary", fresh, setup)
+	}
+	allowed := map[string]bool{}
+	for _, v := range fresh {
+		allowed[v] = true
+	}
+	for _, s := range []string{"draft", "pending", "rejected", "changes_requested", "flagged", "approved", "submitted", "under_review", "hidden", "archived"} {
+		if !allowed[s] {
+			t.Errorf("approval_status %q is written by the service but refused by 046's CHECK", s)
+		}
+	}
+}

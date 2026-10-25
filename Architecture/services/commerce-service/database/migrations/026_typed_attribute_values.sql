@@ -152,9 +152,9 @@ COMMENT ON COLUMN product_attributes.position IS
 -- cannot fail while costing a later gated migration to remember it.
 
 ALTER TABLE product_attributes
-    DROP CONSTRAINT IF EXISTS product_attributes_one_typed_value;
+    DROP CONSTRAINT IF EXISTS product_attributes_one_typed_value; -- expand-only: only this file creates the constraint, so this drops nothing but a re-run's own copy
 ALTER TABLE product_attributes
-    ADD CONSTRAINT product_attributes_one_typed_value CHECK (
+    ADD CONSTRAINT product_attributes_one_typed_value CHECK ( -- expand-only: binds only definition_id IS NOT NULL rows, a column this file adds, so no existing row and no old replica's write can fail it
         definition_id IS NULL
         OR (
             (value_text     IS NOT NULL)::int
@@ -177,9 +177,9 @@ ALTER TABLE product_attributes
 -- pre-026 pod may write has to check each constraint individually instead of
 -- reading the one invariant at the top of this file.
 ALTER TABLE product_attributes
-    DROP CONSTRAINT IF EXISTS product_attributes_unit_needs_number;
+    DROP CONSTRAINT IF EXISTS product_attributes_unit_needs_number; -- expand-only: only this file creates the constraint, so this drops nothing but a re-run's own copy
 ALTER TABLE product_attributes
-    ADD CONSTRAINT product_attributes_unit_needs_number CHECK (
+    ADD CONSTRAINT product_attributes_unit_needs_number CHECK ( -- expand-only: binds only definition_id IS NOT NULL rows, a column this file adds, so no existing row and no old replica's write can fail it
         definition_id IS NULL
         OR unit_code IS NULL
         OR value_num IS NOT NULL
