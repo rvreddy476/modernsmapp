@@ -28,6 +28,7 @@ public struct UserAccountProfile: Identifiable, Hashable {
     }
 }
 
+@MainActor
 public struct AccountSwitcherView: View {
     public let onSelectAccount: (UserAccountProfile) -> Void
     public let onDismiss: () -> Void

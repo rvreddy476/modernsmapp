@@ -16,6 +16,7 @@ public struct SiriShortcutItem: Identifiable {
     }
 }
 
+@MainActor
 public struct SuperAppIntentsView: View {
     public let onDismiss: () -> Void
 

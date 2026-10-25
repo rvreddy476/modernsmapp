@@ -12,6 +12,7 @@ public enum ARFilterEffect: String, CaseIterable, Identifiable {
     public var id: String { rawValue }
 }
 
+@MainActor
 public struct ARCameraView: View {
     public let onCapture: (UIImage) -> Void
     public let onDismiss: () -> Void

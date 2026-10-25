@@ -3,6 +3,7 @@ import UsModel
 import UsDesignSystem
 import UsNetwork
 
+@MainActor
 public struct StoryTrayView: View {
     public let userStories: [UserStories]
     public let currentUserId: String

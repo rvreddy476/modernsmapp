@@ -8,6 +8,7 @@ public struct WheelSlice: Identifiable {
     public let color: Color
 }
 
+@MainActor
 public struct SpinTheWheelView: View {
     public let onDismiss: () -> Void
 

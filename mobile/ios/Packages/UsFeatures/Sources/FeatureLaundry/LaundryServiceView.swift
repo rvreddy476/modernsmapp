@@ -17,6 +17,7 @@ public struct LaundryServiceOption: Identifiable {
     }
 }
 
+@MainActor
 public struct LaundryServiceView: View {
     public let onDismiss: () -> Void
 

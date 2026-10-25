@@ -14,6 +14,7 @@ public struct PollOptionItem: Identifiable {
     }
 }
 
+@MainActor
 public struct InteractivePollStickerView: View {
     public let question: String
     public let onVoted: (String) -> Void

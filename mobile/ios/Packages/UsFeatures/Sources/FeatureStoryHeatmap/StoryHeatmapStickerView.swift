@@ -8,6 +8,7 @@ public struct HeatmapPoint: Identifiable {
     public let y: CGFloat
 }
 
+@MainActor
 public struct StoryHeatmapStickerView: View {
     public let prompt: String
     public let onTapped: (CGPoint) -> Void

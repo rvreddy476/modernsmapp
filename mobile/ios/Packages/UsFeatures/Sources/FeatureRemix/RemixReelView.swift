@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct RemixReelView: View {
     public let originalAuthor: Author
     public let onPublishRemix: () -> Void

@@ -15,6 +15,7 @@ public struct StageHandRaiseItem: Identifiable {
     }
 }
 
+@MainActor
 public struct StageModerationView: View {
     public let onDismiss: () -> Void
 

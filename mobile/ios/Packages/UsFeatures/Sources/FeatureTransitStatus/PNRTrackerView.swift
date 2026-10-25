@@ -23,6 +23,7 @@ public struct TransitBookingStatus: Identifiable {
     }
 }
 
+@MainActor
 public struct PNRTrackerView: View {
     @State private var viewModel: PNRTrackerViewModel
     @State private var inputPNR: String = ""

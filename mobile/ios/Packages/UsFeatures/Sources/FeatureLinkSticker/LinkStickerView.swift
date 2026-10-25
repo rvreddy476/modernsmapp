@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct LinkStickerView: View {
     public let urlString: String
     public let customTitle: String?

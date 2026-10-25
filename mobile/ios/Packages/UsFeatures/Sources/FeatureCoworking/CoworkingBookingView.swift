@@ -21,6 +21,7 @@ public struct CoworkingSpaceItem: Identifiable {
     }
 }
 
+@MainActor
 public struct CoworkingBookingView: View {
     @State private var viewModel: CoworkingViewModel
     public let onDismiss: () -> Void

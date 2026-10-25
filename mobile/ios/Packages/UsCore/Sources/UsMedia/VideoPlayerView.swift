@@ -3,6 +3,7 @@ import AVKit
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct VideoPlayerView: View {
     public let videoURL: URL
     public let posterURL: URL?

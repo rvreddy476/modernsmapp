@@ -4,6 +4,7 @@ import UsDesignSystem
 import UsNetwork
 import UsMedia
 
+@MainActor
 public struct ReelPlayerCardView: View {
     public let item: FeedItem
     public let isCurrentPage: Bool

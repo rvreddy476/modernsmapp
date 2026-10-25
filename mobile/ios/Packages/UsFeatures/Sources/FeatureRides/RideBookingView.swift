@@ -71,6 +71,7 @@ public final class RideBookingViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct RideBookingView: View {
     @State private var viewModel: RideBookingViewModel
     public let onDismiss: () -> Void

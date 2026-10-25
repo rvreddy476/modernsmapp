@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct VoiceTranscriptBubbleView: View {
     public let audioDuration: String
     public let transcriptText: String

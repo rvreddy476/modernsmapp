@@ -4,6 +4,7 @@ import UsModel
 import UsDesignSystem
 import UsNetwork
 
+@MainActor
 public struct ProfileQRCodeView: View {
     public let username: String
     public let displayName: String

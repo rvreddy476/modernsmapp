@@ -19,6 +19,7 @@ public struct FriendContact: Identifiable, Hashable {
     }
 }
 
+@MainActor
 public struct SplitBillView: View {
     public let onDismiss: () -> Void
 

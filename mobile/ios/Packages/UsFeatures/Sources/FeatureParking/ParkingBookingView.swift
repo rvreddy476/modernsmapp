@@ -21,6 +21,7 @@ public struct ParkingSpotItem: Identifiable {
     }
 }
 
+@MainActor
 public struct ParkingBookingView: View {
     public let onDismiss: () -> Void
 

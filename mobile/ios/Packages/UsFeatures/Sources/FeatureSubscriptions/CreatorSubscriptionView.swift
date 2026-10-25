@@ -31,6 +31,7 @@ public struct SubscriptionTier: Identifiable, Hashable {
     }
 }
 
+@MainActor
 public struct CreatorSubscriptionView: View {
     public let creator: Author
     public let onDismiss: () -> Void

@@ -1,6 +1,7 @@
 import SwiftUI
 import UsModel
 
+@MainActor
 public struct PostActionBar: View {
     public let likeCount: Int
     public let commentCount: Int

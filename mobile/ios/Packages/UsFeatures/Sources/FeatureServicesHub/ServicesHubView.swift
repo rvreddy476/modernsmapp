@@ -42,6 +42,7 @@ public enum SuperAppService: String, CaseIterable, Identifiable {
     }
 }
 
+@MainActor
 public struct ServicesHubView: View {
     public let onSelectService: (SuperAppService) -> Void
 

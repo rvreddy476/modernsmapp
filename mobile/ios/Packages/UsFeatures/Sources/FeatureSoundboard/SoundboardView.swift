@@ -16,6 +16,7 @@ public struct SoundEffect: Identifiable, Hashable {
     }
 }
 
+@MainActor
 public struct SoundboardView: View {
     public let onTriggerSound: (SoundEffect) -> Void
     public let onDismiss: () -> Void

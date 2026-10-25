@@ -22,6 +22,7 @@ public enum UsAvatarSize {
     }
 }
 
+@MainActor
 public struct UsAvatar: View {
     public let name: String
     public let url: String?

@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct WeatherMoodStickerView: View {
     public let city: String
     public let tempCelsius: Int

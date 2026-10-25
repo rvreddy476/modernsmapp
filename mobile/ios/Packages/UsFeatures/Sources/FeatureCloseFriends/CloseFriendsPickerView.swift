@@ -16,6 +16,7 @@ public struct CloseFriendContact: Identifiable {
     }
 }
 
+@MainActor
 public struct CloseFriendsPickerView: View {
     public let onDismiss: () -> Void
 

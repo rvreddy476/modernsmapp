@@ -16,6 +16,7 @@ public struct QuizOptionItem: Identifiable {
     }
 }
 
+@MainActor
 public struct QuizStickerView: View {
     public let question: String
     public let onAnswer: (Bool) -> Void

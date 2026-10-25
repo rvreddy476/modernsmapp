@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct AudioSnippetClipperView: View {
     public let sourceTitle: String
     public let speakerName: String

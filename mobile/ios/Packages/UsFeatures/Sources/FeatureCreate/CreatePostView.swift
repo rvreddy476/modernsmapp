@@ -298,6 +298,7 @@ public final class CreatePostViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct CreatePostView: View {
     @State private var viewModel: CreatePostViewModel
     public let onDismiss: () -> Void

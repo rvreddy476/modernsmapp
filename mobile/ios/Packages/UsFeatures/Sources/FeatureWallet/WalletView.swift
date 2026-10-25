@@ -40,6 +40,7 @@ public final class WalletViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct WalletView: View {
     @State private var viewModel: WalletViewModel
     @State private var showSendSheet: Bool = false
@@ -236,6 +237,7 @@ public struct WalletView: View {
     }
 }
 
+@MainActor
 public struct SendMoneyView: View {
     @State private var recipient: String = ""
     @State private var amount: String = ""

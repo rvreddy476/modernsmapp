@@ -19,6 +19,7 @@ public struct GiftOption: Identifiable, Hashable {
     }
 }
 
+@MainActor
 public struct GiftSelectorSheetView: View {
     public let recipientName: String
     public let onSendGift: (GiftOption) -> Void

@@ -2,6 +2,7 @@ import SwiftUI
 import UsDesignSystem
 import UsNetwork
 
+@MainActor
 public struct AuthView: View {
     @State private var viewModel: AuthViewModel
     @State private var isRegisterMode: Bool = false

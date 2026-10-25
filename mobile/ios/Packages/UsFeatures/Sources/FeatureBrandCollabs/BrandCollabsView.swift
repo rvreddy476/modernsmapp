@@ -21,6 +21,7 @@ public struct BrandDealItem: Identifiable {
     }
 }
 
+@MainActor
 public struct BrandCollabsView: View {
     public let onDismiss: () -> Void
 

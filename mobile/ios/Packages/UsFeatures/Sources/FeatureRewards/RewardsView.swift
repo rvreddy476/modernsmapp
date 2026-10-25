@@ -3,6 +3,7 @@ import UsModel
 import UsDesignSystem
 import UsNetwork
 
+@MainActor
 public struct RewardsView: View {
     public let onDismiss: () -> Void
 

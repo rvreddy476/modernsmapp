@@ -26,6 +26,7 @@ public enum RichTextParser {
     }
 }
 
+@MainActor
 public struct RichTextView: View {
     public let text: String
     public let onMentionTap: ((String) -> Void)?

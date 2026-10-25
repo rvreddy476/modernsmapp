@@ -26,6 +26,7 @@ public final class MarketplaceViewModel: @unchecked Sendable {
         }
     }
 
+    @MainActor
     public func addToCart(product: Product) {
         if let idx = cartItems.firstIndex(where: { $0.product.id == product.id }) {
             cartItems[idx].quantity += 1
@@ -45,6 +46,7 @@ public final class MarketplaceViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct MarketplaceView: View {
     @State private var viewModel = MarketplaceViewModel()
     @State private var showCartSheet: Bool = false
@@ -205,6 +207,7 @@ public struct MarketplaceView: View {
     }
 }
 
+@MainActor
 public struct CartView: View {
     @Binding public var cartItems: [CartItem]
     @State private var isCheckingOut: Bool = false

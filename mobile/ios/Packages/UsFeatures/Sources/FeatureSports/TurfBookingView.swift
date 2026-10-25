@@ -21,6 +21,7 @@ public struct TurfArenaItem: Identifiable {
     }
 }
 
+@MainActor
 public struct TurfBookingView: View {
     @State private var viewModel: TurfBookingViewModel
     public let onDismiss: () -> Void

@@ -19,24 +19,39 @@ concurrency:
 jobs:
   test-packages:
     name: Swift Test (Core & Features) & App Build
-    runs-on: macos-14
-    timeout-minutes: 30
+    # The packages are iOS-only (UIKit representables, AVAudioSession), so they
+    # are tested on an iOS simulator via xcodebuild; `swift test` builds for
+    # macOS and cannot compile them. Xcode 16 / iOS 18 SDK is what the code is
+    # written against (View is @MainActor there).
+    runs-on: macos-15
+    timeout-minutes: 45
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Select Xcode 15.4
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app
+      - name: Select Xcode 16
+        run: |
+          xcode=$(ls -d /Applications/Xcode_16*.app | sort -V | tail -1)
+          echo "Using $xcode"
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
+
+      - name: Pick an iPhone simulator
+        id: sim
+        run: |
+          udid=$(xcrun simctl list devices available -j \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin)["devices"]; print(next(x["udid"] for k in sorted(d, reverse=True) if "iOS" in k for x in d[k] if x["name"].startswith("iPhone")))')
+          echo "udid=$udid" >> "$GITHUB_OUTPUT"
 
       - name: Run UsCore Tests
         run: |
           cd mobile/ios/Packages/UsCore
-          swift test
+          xcodebuild test -scheme UsCore-Package -destination "id=${{ steps.sim.outputs.udid }}" CODE_SIGNING_ALLOWED=NO
 
       - name: Run UsFeatures Tests
         run: |
           cd mobile/ios/Packages/UsFeatures
-          swift test
+          xcodebuild test -scheme UsFeatures-Package -destination "id=${{ steps.sim.outputs.udid }}" CODE_SIGNING_ALLOWED=NO
 
       - name: Validate XcodeGen Project Generation
         run: |

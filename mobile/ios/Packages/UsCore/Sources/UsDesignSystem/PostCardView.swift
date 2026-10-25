@@ -1,6 +1,7 @@
 import SwiftUI
 import UsModel
 
+@MainActor
 public struct PostCardView: View {
     public let item: FeedItem
     public let overlay: EngagementOverlay
@@ -113,16 +114,10 @@ public struct PostCardView: View {
                     .onTapGesture(perform: onClick)
             }
 
-            // Poll embed if available
-            if let poll = item.poll {
-                PollWidgetView(
-                    poll: poll,
-                    onVote: { _ in
-                        HapticManager.shared.trigger(.success)
-                        ToastManager.shared.show("Vote recorded!", style: .success)
-                    }
-                )
-            }
+            // Feed polls are not rendered yet: FeedItem has no `poll` field.
+            // The feed hydrates one (feed-service hydration.go `json:"poll"`);
+            // add it to UsModel from the pinned contract fixture before
+            // embedding PollWidgetView here.
 
             // Media attachment
             if let firstMedia = item.media.first, firstMedia.isReady {

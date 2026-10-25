@@ -18,6 +18,7 @@ public struct TopFanMember: Identifiable {
     }
 }
 
+@MainActor
 public struct FanLeaderboardView: View {
     public let creatorName: String
     public let onDismiss: () -> Void

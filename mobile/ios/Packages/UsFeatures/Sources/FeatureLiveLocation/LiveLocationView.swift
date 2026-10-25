@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct LiveLocationView: View {
     public let recipientName: String
     public let onDismiss: () -> Void

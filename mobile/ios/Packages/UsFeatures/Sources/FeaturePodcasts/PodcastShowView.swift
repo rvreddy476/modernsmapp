@@ -19,6 +19,7 @@ public struct PodcastEpisode: Identifiable {
     }
 }
 
+@MainActor
 public struct PodcastShowView: View {
     public let onDismiss: () -> Void
 

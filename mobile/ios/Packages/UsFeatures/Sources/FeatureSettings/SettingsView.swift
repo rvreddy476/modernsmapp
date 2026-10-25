@@ -3,6 +3,7 @@ import UsModel
 import UsDesignSystem
 import UsNetwork
 
+@MainActor
 public struct SettingsView: View {
     // Privacy state
     @State private var isPrivateAccount: Bool = false

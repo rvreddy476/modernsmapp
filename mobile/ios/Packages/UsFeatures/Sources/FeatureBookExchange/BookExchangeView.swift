@@ -21,6 +21,7 @@ public struct BookListingItem: Identifiable {
     }
 }
 
+@MainActor
 public struct BookExchangeView: View {
     public let onDismiss: () -> Void
 

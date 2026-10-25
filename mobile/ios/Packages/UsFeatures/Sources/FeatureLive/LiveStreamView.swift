@@ -42,6 +42,7 @@ public final class LiveStreamViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct LiveStreamView: View {
     @State private var viewModel = LiveStreamViewModel()
     public let streamTitle: String

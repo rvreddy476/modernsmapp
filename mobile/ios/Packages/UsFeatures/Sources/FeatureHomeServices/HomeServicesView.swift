@@ -19,6 +19,7 @@ public struct HomeServiceItem: Identifiable {
     }
 }
 
+@MainActor
 public struct HomeServicesView: View {
     @State private var viewModel: HomeServicesViewModel
     public let onDismiss: () -> Void

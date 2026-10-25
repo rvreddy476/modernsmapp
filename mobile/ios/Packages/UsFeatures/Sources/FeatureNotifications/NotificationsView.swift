@@ -128,6 +128,7 @@ public final class NotificationsViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct NotificationsView: View {
     @State private var viewModel: NotificationsViewModel
     public let onOpenPost: (String) -> Void

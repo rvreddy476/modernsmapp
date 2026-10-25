@@ -21,6 +21,7 @@ public final class QAFeedViewModel: @unchecked Sendable {
         return questions.filter { $0.topic == selectedTopic }
     }
 
+    @MainActor
     public func toggleUpvote(questionId: String) {
         if upvotedQuestionIds.contains(questionId) {
             upvotedQuestionIds.remove(questionId)
@@ -69,6 +70,7 @@ public final class QAFeedViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct QAFeedView: View {
     @State private var viewModel = QAFeedViewModel()
     @State private var askQuestionTitle: String = ""

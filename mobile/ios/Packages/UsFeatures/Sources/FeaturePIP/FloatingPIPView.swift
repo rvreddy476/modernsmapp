@@ -26,6 +26,7 @@ public final class PIPPlayerManager: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct FloatingPIPView: View {
     @State private var pip = PIPPlayerManager.shared
     @State private var dragOffset: CGSize = .zero

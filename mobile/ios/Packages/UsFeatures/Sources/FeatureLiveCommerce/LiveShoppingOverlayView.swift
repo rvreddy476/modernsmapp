@@ -3,6 +3,7 @@ import UsModel
 import UsDesignSystem
 import UsNetwork
 
+@MainActor
 public struct LiveShoppingOverlayView: View {
     public let product: LiveProductPin
     public let onBuyNow: (LiveProductPin) -> Void

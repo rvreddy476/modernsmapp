@@ -9,6 +9,7 @@ public enum DeliveryStage: String, CaseIterable {
     case delivered = "Delivered 🎉"
 }
 
+@MainActor
 public struct LiveActivityView: View {
     public let orderTitle: String
     public let restaurantName: String

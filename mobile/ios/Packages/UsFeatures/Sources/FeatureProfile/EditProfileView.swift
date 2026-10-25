@@ -97,6 +97,7 @@ public final class EditProfileViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct EditProfileView: View {
     @State private var viewModel: EditProfileViewModel
     public let onDismiss: () -> Void

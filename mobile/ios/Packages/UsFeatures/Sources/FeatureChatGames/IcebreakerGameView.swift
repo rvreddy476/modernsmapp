@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct IcebreakerGameView: View {
     public let groupName: String
     public let onDismiss: () -> Void

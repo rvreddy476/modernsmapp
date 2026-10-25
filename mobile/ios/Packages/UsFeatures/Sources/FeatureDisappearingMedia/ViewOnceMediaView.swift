@@ -8,6 +8,7 @@ public enum ViewOnceState {
     case expired
 }
 
+@MainActor
 public struct ViewOnceMediaView: View {
     public let imageUrl: String
     public let senderName: String
@@ -76,13 +77,16 @@ public struct ViewOnceMediaView: View {
         state = .viewing(remainingSeconds: 5)
         countdown = 5
 
+        // Scheduled from a button action on the main run loop, so the block runs on main.
         Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { timer in
-            countdown -= 1
-            if countdown <= 0 {
-                timer.invalidate()
-                showFullScreen = false
-                state = .expired
-                HapticManager.shared.trigger(.medium)
+            MainActor.assumeIsolated {
+                countdown -= 1
+                if countdown <= 0 {
+                    timer.invalidate()
+                    showFullScreen = false
+                    state = .expired
+                    HapticManager.shared.trigger(.medium)
+                }
             }
         }
     }

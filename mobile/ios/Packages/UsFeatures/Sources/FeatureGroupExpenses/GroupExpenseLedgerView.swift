@@ -19,6 +19,7 @@ public struct GroupDebtItem: Identifiable {
     }
 }
 
+@MainActor
 public struct GroupExpenseLedgerView: View {
     public let groupName: String
     public let onDismiss: () -> Void

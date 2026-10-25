@@ -13,6 +13,7 @@ public enum SubtitleLanguage: String, CaseIterable, Identifiable {
     public var id: String { rawValue }
 }
 
+@MainActor
 public struct LiveSubtitlesView: View {
     @State private var selectedLanguage: SubtitleLanguage = .hindi
     @State private var activeSubtitleText: String = "नमस्ते दोस्तों, आज हम भारत के पहले सुपर-ऐप का डेमो देखने जा रहे हैं!"

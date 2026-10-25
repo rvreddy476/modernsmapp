@@ -11,6 +11,7 @@ public enum SharedMediaTab: String, CaseIterable, Identifiable {
     public var id: String { rawValue }
 }
 
+@MainActor
 public struct SharedMediaGalleryView: View {
     public let chatTitle: String
     public let onDismiss: () -> Void

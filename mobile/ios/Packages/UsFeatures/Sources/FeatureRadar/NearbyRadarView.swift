@@ -31,6 +31,7 @@ public struct NearbyUser: Identifiable, Hashable {
     }
 }
 
+@MainActor
 public struct NearbyRadarView: View {
     public let onDismiss: () -> Void
 

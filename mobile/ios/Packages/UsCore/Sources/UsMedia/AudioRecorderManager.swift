@@ -80,6 +80,7 @@ public final class AudioRecorderManager: NSObject, AVAudioRecorderDelegate, @unc
     }
 }
 
+@MainActor
 public struct VoiceNoteRecorderView: View {
     @State private var recorder = AudioRecorderManager()
     public let onSendAudio: (URL, TimeInterval) -> Void

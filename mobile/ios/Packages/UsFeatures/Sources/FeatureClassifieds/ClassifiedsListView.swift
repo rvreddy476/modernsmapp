@@ -31,6 +31,7 @@ public struct ClassifiedItem: Identifiable, Hashable {
     }
 }
 
+@MainActor
 public struct ClassifiedsListView: View {
     public let onDismiss: () -> Void
 

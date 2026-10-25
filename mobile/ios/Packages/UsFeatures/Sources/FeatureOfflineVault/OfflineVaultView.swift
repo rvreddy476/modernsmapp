@@ -20,6 +20,7 @@ public struct OfflineMediaItem: Identifiable {
     }
 }
 
+@MainActor
 public struct OfflineVaultView: View {
     public let onDismiss: () -> Void
 

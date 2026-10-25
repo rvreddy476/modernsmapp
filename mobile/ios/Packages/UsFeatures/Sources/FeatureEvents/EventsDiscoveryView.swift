@@ -64,6 +64,7 @@ public final class EventsViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct EventsDiscoveryView: View {
     @State private var viewModel: EventsViewModel
     @State private var selectedEvent: EventItem? = nil

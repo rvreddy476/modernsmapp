@@ -60,6 +60,7 @@ public final class CommentsViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct CommentsSheetView: View {
     @State private var viewModel: CommentsViewModel
     public let onDismiss: () -> Void

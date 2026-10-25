@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct CountdownStickerView: View {
     public let eventTitle: String
     public let targetDate: Date
@@ -72,12 +73,15 @@ public struct CountdownStickerView: View {
         .shadow(radius: 8)
         .frame(width: 280)
         .onAppear {
+            // Scheduled from onAppear on the main run loop, so the block runs on main.
             Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { _ in
-                if remainingTime.secs > 0 {
-                    remainingTime.secs -= 1
-                } else {
-                    remainingTime.secs = 59
-                    if remainingTime.mins > 0 { remainingTime.mins -= 1 }
+                MainActor.assumeIsolated {
+                    if remainingTime.secs > 0 {
+                        remainingTime.secs -= 1
+                    } else {
+                        remainingTime.secs = 59
+                        if remainingTime.mins > 0 { remainingTime.mins -= 1 }
+                    }
                 }
             }
         }

@@ -86,6 +86,7 @@ public final class StoryViewerViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct StoryViewerView: View {
     @State private var viewModel: StoryViewerViewModel
     public let onDismiss: () -> Void

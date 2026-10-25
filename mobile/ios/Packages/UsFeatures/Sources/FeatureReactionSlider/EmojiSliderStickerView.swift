@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct EmojiSliderStickerView: View {
     public let question: String
     public let emoji: String

@@ -63,6 +63,7 @@ public final class ToastManager: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct ToastView: View {
     public let toast: ToastMessage
 

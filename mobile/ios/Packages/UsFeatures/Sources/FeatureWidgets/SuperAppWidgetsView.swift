@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct SuperAppWidgetsView: View {
     public let onDismiss: () -> Void
 

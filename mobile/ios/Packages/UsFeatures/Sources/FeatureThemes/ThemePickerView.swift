@@ -22,6 +22,7 @@ public enum AppThemePreset: String, CaseIterable, Identifiable {
     }
 }
 
+@MainActor
 public struct ThemePickerView: View {
     public let onDismiss: () -> Void
 

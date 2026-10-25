@@ -28,6 +28,7 @@ public struct StoreProductItem: Identifiable, Hashable {
     }
 }
 
+@MainActor
 public struct CreatorStorefrontView: View {
     public let creator: Author
     public let onDismiss: () -> Void

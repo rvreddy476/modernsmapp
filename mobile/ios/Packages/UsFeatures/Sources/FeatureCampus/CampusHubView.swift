@@ -18,6 +18,7 @@ public struct CampusNoticeItem: Identifiable {
     }
 }
 
+@MainActor
 public struct CampusHubView: View {
     public let onDismiss: () -> Void
 

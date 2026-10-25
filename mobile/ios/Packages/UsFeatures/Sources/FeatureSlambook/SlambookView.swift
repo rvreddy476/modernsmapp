@@ -8,6 +8,7 @@ public struct SlambookEntry: Identifiable {
     public var answer: String
 }
 
+@MainActor
 public struct SlambookView: View {
     public let friendName: String
     public let onDismiss: () -> Void

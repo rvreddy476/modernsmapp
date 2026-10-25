@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct CarPlayAudioView: View {
     public let onDismiss: () -> Void
 

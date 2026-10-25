@@ -21,6 +21,7 @@ public struct MedicineItem: Identifiable, Hashable {
     }
 }
 
+@MainActor
 public struct PharmacyDeliveryView: View {
     public let onDismiss: () -> Void
 

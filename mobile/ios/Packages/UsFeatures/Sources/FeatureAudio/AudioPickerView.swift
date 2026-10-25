@@ -59,6 +59,7 @@ public final class AudioPickerViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct AudioPickerView: View {
     @State private var viewModel = AudioPickerViewModel()
     public let onSelectTrack: (AudioTrack) -> Void

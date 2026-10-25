@@ -11,6 +11,7 @@ import UsDesignSystem
 // CH-LB-5 passes. The public API is preserved; the surface now states the
 // truth and presents no verification theater.
 
+@MainActor
 public struct E2EESafetyNumberView: View {
     public let contact: Author
     public let onDismiss: () -> Void

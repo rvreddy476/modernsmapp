@@ -3,6 +3,7 @@ import UsModel
 import UsDesignSystem
 import UsNetwork
 
+@MainActor
 public struct MultiLiveStreamView: View {
     public let host: Author
     public let guest: Author

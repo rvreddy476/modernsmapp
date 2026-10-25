@@ -52,6 +52,7 @@ public final class WatchDetailViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct WatchDetailView: View {
     @State private var viewModel: WatchDetailViewModel
     public let onOpenVideo: (String) -> Void

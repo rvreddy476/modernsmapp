@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct LyricsStickerView: View {
     public let songTitle: String
     public let artistName: String

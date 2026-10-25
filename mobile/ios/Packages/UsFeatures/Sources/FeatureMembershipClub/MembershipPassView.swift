@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct MembershipPassView: View {
     public let creatorName: String
     public let memberTier: String

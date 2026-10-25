@@ -14,6 +14,7 @@ public struct WatchPartyFriend: Identifiable {
     }
 }
 
+@MainActor
 public struct WatchPartyView: View {
     public let videoTitle: String
     public let onDismiss: () -> Void

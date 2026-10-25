@@ -23,6 +23,7 @@ public struct CarpoolRideItem: Identifiable {
     }
 }
 
+@MainActor
 public struct CarpoolView: View {
     @State private var viewModel: CarpoolViewModel
     public let onDismiss: () -> Void

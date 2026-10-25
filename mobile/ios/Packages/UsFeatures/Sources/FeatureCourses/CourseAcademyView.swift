@@ -17,6 +17,7 @@ public struct CourseLessonItem: Identifiable {
     }
 }
 
+@MainActor
 public struct CourseAcademyView: View {
     public let onDismiss: () -> Void
 

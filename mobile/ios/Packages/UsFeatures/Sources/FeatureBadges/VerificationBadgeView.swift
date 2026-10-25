@@ -24,6 +24,7 @@ public enum VerificationType {
     }
 }
 
+@MainActor
 public struct VerificationBadgeView: View {
     public let type: VerificationType
     public let size: CGFloat

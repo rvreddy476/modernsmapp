@@ -2,6 +2,7 @@ import SwiftUI
 import LocalAuthentication
 import UsDesignSystem
 
+@MainActor
 public struct AppLockView: View {
     public let onUnlock: () -> Void
 

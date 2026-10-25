@@ -54,6 +54,7 @@ public final class FoodDeliveryViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct FoodDeliveryView: View {
     @State private var viewModel: FoodDeliveryViewModel
     @State private var selectedRestaurant: Restaurant? = nil
@@ -209,6 +210,7 @@ public struct FoodDeliveryView: View {
     }
 }
 
+@MainActor
 public struct RestaurantDetailView: View {
     public let restaurant: Restaurant
     public let onDismiss: () -> Void

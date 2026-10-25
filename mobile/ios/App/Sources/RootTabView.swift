@@ -36,6 +36,7 @@ import FeaturePetCare
 import FeatureSports
 import FeatureHomeServices
 
+@MainActor
 public struct RootTabView: View {
     @State private var selectedTab: Int = 0
     @State private var showCreateSheet: Bool = false

@@ -19,6 +19,7 @@ public struct PetServiceOption: Identifiable {
     }
 }
 
+@MainActor
 public struct PetCareServicesView: View {
     @State private var viewModel: PetCareViewModel
     public let onDismiss: () -> Void

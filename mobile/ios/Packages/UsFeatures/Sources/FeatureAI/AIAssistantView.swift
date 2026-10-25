@@ -84,6 +84,7 @@ public final class AIAssistantViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct AIAssistantView: View {
     @State private var viewModel: AIAssistantViewModel
     public let onDismiss: () -> Void

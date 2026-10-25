@@ -73,6 +73,7 @@ public final class FollowListViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct FollowersListView: View {
     @State private var viewModel: FollowListViewModel
     public let type: FollowListType

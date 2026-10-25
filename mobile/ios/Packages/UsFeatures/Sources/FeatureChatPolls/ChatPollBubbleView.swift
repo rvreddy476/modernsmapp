@@ -16,6 +16,7 @@ public struct ChatPollOption: Identifiable {
     }
 }
 
+@MainActor
 public struct ChatPollBubbleView: View {
     public let question: String
     public let creatorName: String

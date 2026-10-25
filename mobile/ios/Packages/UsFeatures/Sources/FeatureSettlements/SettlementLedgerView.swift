@@ -21,6 +21,7 @@ public struct PayoutSettlementItem: Identifiable {
     }
 }
 
+@MainActor
 public struct SettlementLedgerView: View {
     public let onDismiss: () -> Void
 

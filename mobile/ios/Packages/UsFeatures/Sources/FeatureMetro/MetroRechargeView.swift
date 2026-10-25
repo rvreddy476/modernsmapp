@@ -17,6 +17,7 @@ public struct MetroCity: Identifiable {
     }
 }
 
+@MainActor
 public struct MetroRechargeView: View {
     public let onDismiss: () -> Void
 

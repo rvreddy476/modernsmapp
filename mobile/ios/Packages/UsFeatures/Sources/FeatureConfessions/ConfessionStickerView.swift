@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct ConfessionStickerView: View {
     public let prompt: String
     public let onSubmitted: (String) -> Void

@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct EmojiPongStickerView: View {
     public let stickerTitle: String
     public let highScore: Int

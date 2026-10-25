@@ -25,12 +25,14 @@ public final class AudioSpaceViewModel: @unchecked Sendable {
         )
     }
 
+    @MainActor
     public func toggleHand() {
         isHandRaised.toggle()
         HapticManager.shared.trigger(.selection)
         ToastManager.shared.show(isHandRaised ? "Hand Raised" : "Hand Lowered", style: .info)
     }
 
+    @MainActor
     public func sendReaction(_ emoji: String) {
         reactionEmoji = emoji
         HapticManager.shared.trigger(.light)
@@ -40,6 +42,7 @@ public final class AudioSpaceViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct AudioSpaceView: View {
     @State private var viewModel: AudioSpaceViewModel
     public let onDismiss: () -> Void

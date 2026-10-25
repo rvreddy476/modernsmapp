@@ -21,6 +21,7 @@ public struct GymCenterItem: Identifiable {
     }
 }
 
+@MainActor
 public struct GymPassBookingView: View {
     public let onDismiss: () -> Void
 

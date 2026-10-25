@@ -10,6 +10,7 @@ public struct HeartParticle: Identifiable {
     public var sway: CGFloat
 }
 
+@MainActor
 public struct FloatingHeartsEmitter: View {
     @Binding public var trigger: Int
 

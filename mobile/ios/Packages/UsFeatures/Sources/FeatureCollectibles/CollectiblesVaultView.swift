@@ -20,6 +20,7 @@ public struct DigitalCollectibleItem: Identifiable {
     }
 }
 
+@MainActor
 public struct CollectiblesVaultView: View {
     public let onDismiss: () -> Void
 

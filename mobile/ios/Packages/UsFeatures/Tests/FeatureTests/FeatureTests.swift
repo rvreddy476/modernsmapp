@@ -342,6 +342,7 @@ final class FeatureTests: XCTestCase {
         XCTAssertEqual(vm.balance.currency, "INR")
     }
 
+    @MainActor
     func testMarketplaceCartOperations() {
         let vm = MarketplaceViewModel()
         XCTAssertFalse(vm.products.isEmpty)
@@ -357,6 +358,7 @@ final class FeatureTests: XCTestCase {
         }
     }
 
+    @MainActor
     func testDatingSwipeOperations() {
         let vm = DatingViewModel()
         let initialCount = vm.profiles.count
@@ -376,6 +378,7 @@ final class FeatureTests: XCTestCase {
         XCTAssertEqual(vm.messages.count, 2)
     }
 
+    @MainActor
     func testQAFeedUpvote() {
         let vm = QAFeedViewModel()
         XCTAssertFalse(vm.questions.isEmpty)

@@ -34,6 +34,7 @@ public final class ChatListViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct ChatListView: View {
     @State private var viewModel: ChatListViewModel
     public let client: APIClientProtocol

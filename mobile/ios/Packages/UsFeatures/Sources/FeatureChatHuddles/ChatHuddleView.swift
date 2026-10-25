@@ -14,6 +14,7 @@ public struct HuddleParticipant: Identifiable {
     }
 }
 
+@MainActor
 public struct ChatHuddleView: View {
     @State private var isJoined: Bool = false
     @State private var participants: [HuddleParticipant] = [

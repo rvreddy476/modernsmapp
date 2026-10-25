@@ -13,6 +13,7 @@ public enum VoiceEffectPreset: String, CaseIterable, Identifiable {
     public var id: String { rawValue }
 }
 
+@MainActor
 public struct VoiceFXView: View {
     public let onSelectEffect: (VoiceEffectPreset) -> Void
     public let onDismiss: () -> Void

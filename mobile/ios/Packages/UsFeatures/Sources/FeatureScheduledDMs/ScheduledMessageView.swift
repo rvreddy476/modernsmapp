@@ -16,6 +16,7 @@ public struct ScheduledDMItem: Identifiable {
     }
 }
 
+@MainActor
 public struct ScheduledMessageView: View {
     public let onDismiss: () -> Void
 

@@ -8,6 +8,7 @@ public struct TriviaQuestion {
     public let correctIndex: Int
 }
 
+@MainActor
 public struct LiveTriviaGameView: View {
     public let onDismiss: () -> Void
 

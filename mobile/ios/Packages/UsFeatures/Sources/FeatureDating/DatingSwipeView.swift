@@ -16,6 +16,7 @@ public final class DatingViewModel: @unchecked Sendable {
         populateMockProfiles()
     }
 
+    @MainActor
     public func swipeRight(profile: DatingProfile) {
         HapticManager.shared.trigger(.success)
         profiles.removeAll { $0.id == profile.id }
@@ -25,6 +26,7 @@ public final class DatingViewModel: @unchecked Sendable {
         }
     }
 
+    @MainActor
     public func swipeLeft(profile: DatingProfile) {
         HapticManager.shared.trigger(.light)
         profiles.removeAll { $0.id == profile.id }
@@ -39,6 +41,7 @@ public final class DatingViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct DatingSwipeView: View {
     @State private var viewModel = DatingViewModel()
     @State private var offset: CGSize = .zero

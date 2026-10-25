@@ -1,5 +1,6 @@
 import SwiftUI
 
+@MainActor
 public struct UsLoadingState: View {
     public let message: String
 
@@ -21,6 +22,7 @@ public struct UsLoadingState: View {
     }
 }
 
+@MainActor
 public struct UsErrorState: View {
     public let message: String
     public let onRetry: () -> Void
@@ -52,6 +54,7 @@ public struct UsErrorState: View {
     }
 }
 
+@MainActor
 public struct UsEmptyState: View {
     public let title: String
     public let detail: String

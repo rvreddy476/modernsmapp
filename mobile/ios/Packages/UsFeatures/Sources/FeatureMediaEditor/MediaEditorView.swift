@@ -22,6 +22,7 @@ public enum ColorFilterPreset: String, CaseIterable, Identifiable {
     }
 }
 
+@MainActor
 public struct MediaEditorView: View {
     public let image: UIImage?
     public let onSave: (UIImage) -> Void

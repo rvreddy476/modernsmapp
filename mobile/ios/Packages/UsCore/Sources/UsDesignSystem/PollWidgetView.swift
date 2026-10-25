@@ -12,6 +12,7 @@ public struct PollOption: Identifiable, Hashable, Codable, Sendable {
     }
 }
 
+@MainActor
 public struct PollWidgetView: View {
     public let question: String
     @State public var options: [PollOption]

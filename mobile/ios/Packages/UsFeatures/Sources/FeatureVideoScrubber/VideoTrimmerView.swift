@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct VideoTrimmerView: View {
     public let maxDurationSeconds: Double
     public let onTrimChanged: (Double, Double) -> Void

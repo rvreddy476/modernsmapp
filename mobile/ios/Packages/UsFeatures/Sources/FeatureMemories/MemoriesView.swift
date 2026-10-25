@@ -11,6 +11,7 @@ public struct MemoryItem: Identifiable, Hashable {
     public let imageUrl: String
 }
 
+@MainActor
 public struct MemoriesView: View {
     public let onDismiss: () -> Void
 

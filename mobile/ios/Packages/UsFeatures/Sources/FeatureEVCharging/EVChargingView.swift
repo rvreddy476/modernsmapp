@@ -25,6 +25,7 @@ public struct EVStationItem: Identifiable {
     }
 }
 
+@MainActor
 public struct EVChargingView: View {
     public let onDismiss: () -> Void
 

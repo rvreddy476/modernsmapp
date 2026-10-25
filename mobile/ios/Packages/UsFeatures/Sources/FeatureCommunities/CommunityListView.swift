@@ -36,6 +36,7 @@ public final class CommunitiesViewModel: @unchecked Sendable {
         isLoading = false
     }
 
+    @MainActor
     public func toggleJoin(community: Community) {
         if let idx = discoverCommunities.firstIndex(where: { $0.id == community.id }) {
             var updated = discoverCommunities[idx]
@@ -78,6 +79,7 @@ public final class CommunitiesViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct CommunityListView: View {
     @State private var viewModel: CommunitiesViewModel
     @State private var selectedCommunity: Community? = nil
@@ -205,6 +207,7 @@ public struct CommunityListView: View {
     }
 }
 
+@MainActor
 public struct CommunityDetailView: View {
     public let community: Community
     public let onDismiss: () -> Void

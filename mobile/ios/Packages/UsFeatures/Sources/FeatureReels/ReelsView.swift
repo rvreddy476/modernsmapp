@@ -36,6 +36,7 @@ public final class ReelsViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct ReelsView: View {
     @State private var viewModel: ReelsViewModel
     @State private var commentsPostId: String? = nil

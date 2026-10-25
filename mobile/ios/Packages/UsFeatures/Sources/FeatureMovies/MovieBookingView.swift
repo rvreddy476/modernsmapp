@@ -21,6 +21,7 @@ public struct MovieShowtimeItem: Identifiable {
     }
 }
 
+@MainActor
 public struct MovieBookingView: View {
     @State private var viewModel: MovieBookingViewModel
     public let onDismiss: () -> Void

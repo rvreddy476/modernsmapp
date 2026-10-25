@@ -92,6 +92,7 @@ public final class ChatThreadViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct ChatThreadView: View {
     @State private var viewModel: ChatThreadViewModel
     public let participant: Author

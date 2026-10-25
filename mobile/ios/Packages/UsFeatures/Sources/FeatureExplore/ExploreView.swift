@@ -66,6 +66,7 @@ public final class ExploreViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct ExploreView: View {
     @State private var viewModel: ExploreViewModel
     public let onOpenPost: (String) -> Void

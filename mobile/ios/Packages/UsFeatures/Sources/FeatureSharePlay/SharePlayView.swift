@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct SharePlayView: View {
     public let mediaTitle: String
     public let onDismiss: () -> Void

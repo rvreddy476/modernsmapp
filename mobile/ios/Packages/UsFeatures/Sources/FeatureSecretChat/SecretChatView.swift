@@ -24,6 +24,7 @@ public struct SecretChatMessage: Identifiable {
     }
 }
 
+@MainActor
 public struct SecretChatView: View {
     public let recipientName: String
     public let onDismiss: () -> Void

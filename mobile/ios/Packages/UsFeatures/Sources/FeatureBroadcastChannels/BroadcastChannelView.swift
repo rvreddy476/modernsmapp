@@ -15,6 +15,7 @@ public final class BroadcastChannelViewModel: @unchecked Sendable {
         populateMockUpdates()
     }
 
+    @MainActor
     public func toggleReaction(id: String) {
         if reactedMessageIds.contains(id) {
             reactedMessageIds.remove(id)
@@ -33,6 +34,7 @@ public final class BroadcastChannelViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct BroadcastChannelView: View {
     @State private var viewModel: BroadcastChannelViewModel
     public let onDismiss: () -> Void

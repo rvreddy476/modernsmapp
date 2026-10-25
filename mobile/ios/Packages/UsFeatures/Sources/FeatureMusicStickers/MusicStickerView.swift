@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct MusicStickerView: View {
     public let trackTitle: String
     public let artistName: String
@@ -92,6 +93,7 @@ public struct MusicStickerView: View {
     }
 }
 
+@MainActor
 private struct EqualizerBar: View {
     public let isAnimating: Bool
     public let delay: Double

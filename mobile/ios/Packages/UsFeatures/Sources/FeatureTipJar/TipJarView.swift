@@ -17,6 +17,7 @@ public struct TipChip: Identifiable, Hashable {
     }
 }
 
+@MainActor
 public struct TipJarView: View {
     public let creator: Author
     public let onDismiss: () -> Void

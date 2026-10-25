@@ -3,6 +3,7 @@ import AVKit
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct WatchVideoPlayerView: View {
     public let videoURL: URL
     public let posterURL: URL?
@@ -131,12 +132,15 @@ public struct WatchVideoPlayerView: View {
         self.player = player
 
         let interval = CMTime(seconds: 0.5, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
+        // queue: .main delivers every callback on the main queue.
         player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { time in
-            if !self.isDraggingScrubber {
-                self.currentTime = time.seconds
-            }
-            if let item = player.currentItem, item.duration.isValid {
-                self.duration = item.duration.seconds
+            MainActor.assumeIsolated {
+                if !self.isDraggingScrubber {
+                    self.currentTime = time.seconds
+                }
+                if let item = player.currentItem, item.duration.isValid {
+                    self.duration = item.duration.seconds
+                }
             }
         }
 

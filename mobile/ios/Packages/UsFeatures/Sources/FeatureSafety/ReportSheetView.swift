@@ -15,6 +15,7 @@ public enum ReportReason: String, CaseIterable, Identifiable {
     public var id: String { rawValue }
 }
 
+@MainActor
 public struct ReportSheetView: View {
     public let targetId: String
     public let targetType: String // "post", "user", "comment", "reel"

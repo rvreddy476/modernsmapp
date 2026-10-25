@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct MentionStickerView: View {
     public let user: Author
     public let onProfileTapped: (Author) -> Void

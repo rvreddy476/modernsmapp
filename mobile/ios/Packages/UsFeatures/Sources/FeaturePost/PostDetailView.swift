@@ -60,6 +60,7 @@ public final class PostDetailViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct PostDetailView: View {
     @State private var viewModel: PostDetailViewModel
     public let onOpenAuthor: (String) -> Void

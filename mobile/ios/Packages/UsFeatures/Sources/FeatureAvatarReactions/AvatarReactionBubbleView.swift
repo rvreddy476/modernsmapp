@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct AvatarReactionBubbleView: View {
     public let emoji: String
     public let authorName: String

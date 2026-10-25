@@ -2,6 +2,7 @@ import SwiftUI
 import UsModel
 import UsDesignSystem
 
+@MainActor
 public struct QuestionBoxStickerView: View {
     public let promptTitle: String
     public let recipientName: String

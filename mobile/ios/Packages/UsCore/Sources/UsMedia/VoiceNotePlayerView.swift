@@ -58,6 +58,7 @@ public final class VoiceNotePlayerManager: NSObject, AVAudioPlayerDelegate, @unc
     }
 }
 
+@MainActor
 public struct VoiceNotePlayerView: View {
     public let audioURL: URL?
     public let simulatedDuration: TimeInterval

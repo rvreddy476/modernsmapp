@@ -3,6 +3,7 @@ import UsModel
 import UsDesignSystem
 import UsNetwork
 
+@MainActor
 public struct FeedView<HeaderContent: View>: View {
     @State private var viewModel: FeedViewModel
     @State private var commentsPostId: String? = nil

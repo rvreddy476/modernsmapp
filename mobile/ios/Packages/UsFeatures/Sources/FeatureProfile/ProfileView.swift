@@ -82,6 +82,7 @@ public final class ProfileViewModel: @unchecked Sendable {
     }
 }
 
+@MainActor
 public struct ProfileView: View {
     public let userId: String
     @State private var viewModel: ProfileViewModel

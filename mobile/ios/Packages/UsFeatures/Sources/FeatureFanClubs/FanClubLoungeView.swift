@@ -18,6 +18,7 @@ public struct FanClubPost: Identifiable {
     }
 }
 
+@MainActor
 public struct FanClubLoungeView: View {
     public let creatorName: String
     public let onDismiss: () -> Void

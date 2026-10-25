@@ -10,6 +10,7 @@ public struct BillCategory: Identifiable {
     public let color: Color
 }
 
+@MainActor
 public struct BillPayView: View {
     public let onDismiss: () -> Void
 

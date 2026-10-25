@@ -9,6 +9,7 @@ public enum CallState {
     case ended
 }
 
+@MainActor
 public struct CallView: View {
     public let participant: Author
     public let isVideo: Bool
