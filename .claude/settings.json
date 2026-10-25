@@ -63,8 +63,6 @@
       "Bash(flutter analyze --no-fatal-infos)",
       "Bash(flutter pub get)",
       "Bash(sort -t: -k2 -n)",
-      "Bash(TOKEN=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJhdXRoLXNlcnZpY2UiLCJzdWIiOiI3YWY3Njg0Zi02NjYxLTRmMTItOWY2MS00MjI4YTU2Mjk0YjMiLCJleHAiOjE3NzI3Mzc5MTcsIm5iZiI6MTc3MjczNzAxNywiaWF0IjoxNzcyNzM3MDE3LCJzaWQiOiI5N2IwZDUxNS02NjE5LTRlMGYtYmUxNS0zMDliM2EyZGMwNDkifQ.eIuEVIPEpbo3d5UKeg0wtBFBluNhQQ4ktU6c97np8oE\")",
-      "Bash(TOKEN=\"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJhdXRoLXNlcnZpY2UiLCJzdWIiOiI3YWY3Njg0Zi02NjYxLTRmMTItOWY2MS00MjI4YTU2Mjk0YjMiLCJleHAiOjE3NzI3NDE5NzUsIm5iZiI6MTc3Mjc0MTA3NSwiaWF0IjoxNzcyNzQxMDc1LCJzaWQiOiI5MDZkNTQ4Ni03OGQwLTQwNDItYjFiMS01ODRkMWY3ZmUwMzUifQ.nG0Kyv0yER-k5WpZUqIU9_CTEejobrnR-gQQghH2ZVk\")",
       "Bash(/tmp/profile_pictures_visual_flow.md:*)",
       "Read(//v1/**)",
       "Bash(flutter analyze --no-fatal-infos lib/features/create/create_post_screen.dart lib/data/models/post.dart lib/data/repositories/post_repository.dart)",
