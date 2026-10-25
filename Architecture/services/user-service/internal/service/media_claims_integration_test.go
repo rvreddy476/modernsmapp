@@ -123,6 +123,11 @@ func TestMediaClaimsIT_ConcurrentEditsLeaveTheFinalPictureClaimed(t *testing.T) 
 		if !m.holds(mediaclient.KindChannelAvatar, ch.ID, *got.AvatarMediaID) {
 			t.Fatalf("round %d: the channel shows %s with no claim", round, got.AvatarMediaID)
 		}
+		// One channel per account (uq_channels_user, post-service migration
+		// 041): the next round's channel needs this one gone.
+		if err := svc.DeleteChannel(ctx, ch.ID, owner); err != nil {
+			t.Fatalf("round %d: delete: %v", round, err)
+		}
 	}
 }
 
