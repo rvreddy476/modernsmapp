@@ -1,26 +1,33 @@
 package service
 
-// Instant captain approval where the data is government-verified.
-//
-// Founder rule: nothing a captain does waits for a human, except one
-// fallback — a document the captain uploaded by hand (source upload), which
-// keeps the admin review path. evaluatePartnerApproval runs after every
-// document, vehicle or Aadhaar change and after every admin verification:
+// Instant captain approval where a machine can decide (founder, 25 Oct:
+// "nothing manual, instant approval"), on top of the review gate d61bd603c
+// added (13 Oct). evaluatePartnerApproval runs after every document,
+// vehicle or Aadhaar change and after every admin decision:
 //
 //   - a document DigiLocker returned (source digilocker) is already verified
 //     (the store recorded it approved, verified_by_actor auto, audit row
-//     actor system / reason digilocker), likewise a vehicle whose RC came
-//     from DigiLocker;
-//   - the selfie (profile_photo upload with a media_id) is compared
-//     server-side with the DL photo through media-service; at or above the
-//     threshold it is verified automatically; below it, or with
-//     media-service unavailable, it stays pending review — never verified;
-//   - when every required document (Aadhaar, DL, selfie) and the RC of at
-//     least one vehicle are verified, the partner is approved automatically
-//     (audit row, the partner-approved event, the identity role intent);
+//     actor system / reason digilocker);
+//   - the selfie (the latest profile_photo, an upload with a media_id) is
+//     compared server-side with the DigiLocker licence photo through
+//     media-service; a match (selfieMatches: at or above the threshold, one
+//     face on each side) verifies it automatically; a borderline or failed
+//     match, or no verdict at all, leaves it pending for a person;
+//   - a vehicle's RC is pulled from DigiLocker under the partner's
+//     assertion; a vehicle whose latest RC came from DigiLocker is approved
+//     automatically (autoApprovableVehicles); a hand-uploaded RC waits for
+//     a person (VerifyVehicle);
+//   - when the rule (evaluateApproval) finds every required document and an
+//     RC verified, by the machine or by a person, the partner is approved
+//     at once (AutoApprovePartner, behind the same evidence gate as the
+//     admin's approval); no second manual step;
 //   - otherwise the partner is "under review" with the pending documents
-//     named; the under_review event is published once per change of that
-//     set.
+//     named; the under_review event is queued once per change of that set,
+//     and an approval the gate refused is named partner_approval for a
+//     person.
+//
+// Uploaded identity documents (DL, PAN, passport, voter ID) are never
+// verified automatically: they keep the admin review path.
 
 import (
 	"context"
@@ -132,16 +139,43 @@ func evaluateApproval(in ApprovalInput) ApprovalVerdict {
 	return v
 }
 
-// evaluatePartnerApproval publishes review readiness only. Offline uploads,
-// selfies, vehicles and the final account all require human decisions.
+// evaluatePartnerApproval runs the automatic checks (selfie face match, RC
+// pull and vehicle approval) and then the approval rule, approving the
+// partner or queueing under_review. A failed automatic check never returns
+// an error (it leaves the document pending for a person); only failed
+// reads/writes do.
 func (s *Service) evaluatePartnerApproval(ctx context.Context, partnerID uuid.UUID) (*OnboardingStatus, error) {
 	partner, err := s.store.GetPartner(ctx, partnerID)
 	if err != nil {
 		return nil, err
 	}
-	status, _, err := s.onboardingVerdict(ctx, partner)
+	// The automatic checks run for a partner on the journey and for an
+	// approved one (a vehicle added later is approved from its DigiLocker
+	// RC too); never for a rejected, suspended or blocked one.
+	switch partner.Status {
+	case "rejected", "suspended", "blocked":
+	default:
+		s.autoVerifySelfie(ctx, partner)
+		s.pullVehicleRCs(ctx, partner)
+		s.autoApproveVehicles(ctx, partner)
+	}
+	status, verdict, err := s.onboardingVerdict(ctx, partner)
 	if err != nil {
 		return nil, err
+	}
+	if verdict.Approve {
+		approved, err := s.store.AutoApprovePartner(ctx, partner.ID, map[string]any{"reason": "all required documents verified"})
+		if err != nil {
+			return nil, fmt.Errorf("auto approve partner: %w", err)
+		}
+		if approved {
+			slog.Info("rider: partner approved automatically", "partner_id", partner.ID)
+			status.Status, status.PartnerStatus, status.Pending = OnboardingApproved, "approved", []string{}
+			return status, nil
+		}
+		// The evidence gate refused what the rule allowed (an expired RC,
+		// a licence without its evidence): status names partner_approval
+		// and a person reviews it.
 	}
 	if status.Status == OnboardingUnderReview {
 		s.publishUnderReviewOnce(ctx, partner, status.Pending)
@@ -194,10 +228,31 @@ func (s *Service) publishUnderReviewOnce(ctx context.Context, partner *store.Par
 	}
 }
 
-// autoVerifySelfie compares a pending uploaded selfie (media_id) with the
-// DigiLocker DL photo (photo_media_id). Verified only at or above the
-// threshold; every other outcome leaves it pending with the reason
-// recorded.
+// selfieMatches is the face-match decision that verifies a selfie with no
+// person: similarity at or above the threshold (DefaultSelfieMinSimilarity
+// when unset) and exactly one face in the selfie and in the licence photo.
+// Anything else (borderline, failed, no result) goes to a person.
+func selfieMatches(res *FaceCompareResult, min float64) bool {
+	if res == nil {
+		return false
+	}
+	min = selfieThreshold(min)
+	return res.Similarity >= min && res.FaceCountSource == 1 && res.FaceCountTarget == 1
+}
+
+// selfieThreshold is the configured similarity threshold, or the default
+// when none is set.
+func selfieThreshold(min float64) float64 {
+	if min <= 0 {
+		return DefaultSelfieMinSimilarity
+	}
+	return min
+}
+
+// autoVerifySelfie compares the latest selfie, when it is a pending upload
+// with a media_id, with the latest driving licence's DigiLocker photo
+// (photo_media_id). Verified only when selfieMatches; every other outcome
+// leaves it pending with the reason recorded for the reviewer.
 func (s *Service) autoVerifySelfie(ctx context.Context, partner *store.Partner) {
 	selfie, err := s.store.GetPartnerDocumentByType(ctx, partner.ID, DocSelfie)
 	if err != nil || selfie.Status != "pending" || selfie.Source != store.DocSourceUpload {
@@ -209,7 +264,7 @@ func (s *Service) autoVerifySelfie(ctx context.Context, partner *store.Partner) 
 	}
 	dl, err := s.store.GetPartnerDocumentByType(ctx, partner.ID, DocDrivingLicence)
 	if err != nil || dl.Status != "approved" || dl.PhotoMediaID == nil {
-		_ = s.store.SetDocumentAutoCheckDetail(ctx, selfie.ID, "no verified driving licence photo yet")
+		_ = s.store.SetDocumentAutoCheckDetail(ctx, selfie.ID, "no verified driving licence photo yet: manual review")
 		return
 	}
 	if s.faceCompare == nil {
@@ -229,12 +284,9 @@ func (s *Service) autoVerifySelfie(ctx context.Context, partner *store.Partner) 
 		_ = s.store.SetDocumentAutoCheckDetail(ctx, selfie.ID, detail)
 		return
 	}
-	min := s.selfieMinSimilarity
-	if min <= 0 {
-		min = DefaultSelfieMinSimilarity
-	}
-	detail := fmt.Sprintf("face_compare similarity %.1f threshold %.0f provider %s", res.Similarity, min, res.Provider)
-	if res.Similarity < min || res.FaceCountSource != 1 || res.FaceCountTarget != 1 {
+	min := selfieThreshold(s.selfieMinSimilarity)
+	detail := fmt.Sprintf("face_compare similarity %.1f threshold %.0f faces %d/%d provider %s", res.Similarity, min, res.FaceCountSource, res.FaceCountTarget, res.Provider)
+	if !selfieMatches(res, min) {
 		_ = s.store.SetDocumentAutoCheckDetail(ctx, selfie.ID, "below threshold: manual review ("+detail+")")
 		return
 	}
@@ -244,8 +296,9 @@ func (s *Service) autoVerifySelfie(ctx context.Context, partner *store.Partner) 
 }
 
 // pullVehicleRCs fetches from DigiLocker the RC of every vehicle that has no
-// verified RC yet, once the partner's Aadhaar assertion exists. A vehicle
-// the issuer does not return stays pending (the upload path).
+// verified RC yet, once the partner's DigiLocker assertion exists, and
+// records each one the issuer returns. A vehicle the issuer does not return
+// keeps its hand-uploaded RC, which waits for a person.
 func (s *Service) pullVehicleRCs(ctx context.Context, partner *store.Partner) {
 	if s.digilockerClient == nil {
 		return
@@ -257,7 +310,7 @@ func (s *Service) pullVehicleRCs(ctx context.Context, partner *store.Partner) {
 	var regs []string
 	byReg := map[string]uuid.UUID{}
 	for _, v := range vehicles {
-		if v.RCStatus == "approved" {
+		if v.RCStatus == "approved" || v.Status == "rejected" {
 			continue
 		}
 		regs = append(regs, v.RegistrationNumber)
@@ -285,6 +338,35 @@ func (s *Service) pullVehicleRCs(ctx context.Context, partner *store.Partner) {
 		}
 		if _, err := s.store.UpsertDigiLockerVehicleRC(ctx, vid, d.FileURL, d.ExpiresAt, d.Reference); err != nil {
 			slog.Warn("rider: record digilocker rc failed", "vehicle_id", vid, "error", err)
+		}
+	}
+}
+
+// autoApprovableVehicles is the RC decision: a pending vehicle is approved
+// with no person only when its latest RC came from DigiLocker and is
+// approved. A hand-uploaded RC (source upload), pending or not, goes to a
+// person; a rejected vehicle stays rejected.
+func autoApprovableVehicles(vehicles []store.VehicleState) []uuid.UUID {
+	var out []uuid.UUID
+	for _, v := range vehicles {
+		if v.Status == "pending" && v.RCStatus == "approved" && v.RCSource == store.DocSourceDigiLocker {
+			out = append(out, v.ID)
+		}
+	}
+	return out
+}
+
+// autoApproveVehicles approves the vehicles autoApprovableVehicles picks;
+// the store re-checks the same rule under the row lock.
+func (s *Service) autoApproveVehicles(ctx context.Context, partner *store.Partner) {
+	vehicles, err := s.store.PartnerVehicleStates(ctx, partner.ID)
+	if err != nil {
+		slog.Warn("rider: read vehicles for auto approval failed", "partner_id", partner.ID, "error", err)
+		return
+	}
+	for _, id := range autoApprovableVehicles(vehicles) {
+		if _, err := s.store.AutoApproveVehicle(ctx, id); err != nil {
+			slog.Warn("rider: auto approve vehicle failed", "vehicle_id", id, "error", err)
 		}
 	}
 }

@@ -176,9 +176,10 @@ func stringValue(v *string) string {
 // --- Vehicles ------------------------------------------------------------
 
 // UpsertDigiLockerVehicleRC records the vehicle's RC fetched from DigiLocker
-// (rider_vehicle_documents, source digilocker, approved) and approves the
-// vehicle with verified_by_actor auto, plus the audit rows, in one
-// transaction.
+// (rider_vehicle_documents, source digilocker, approved, verified_by_actor
+// auto) with its audit row, in one transaction. The vehicle itself is
+// approved by AutoApproveVehicle, which the approval evaluator calls for a
+// vehicle whose latest RC is this one.
 func (s *Store) UpsertDigiLockerVehicleRC(ctx context.Context, vehicleID uuid.UUID, fileURL string, expiresAt *time.Time, ref string) (*VehicleDocument, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -204,17 +205,52 @@ func (s *Store) UpsertDigiLockerVehicleRC(ctx context.Context, vehicleID uuid.UU
 	if err != nil {
 		return nil, fmt.Errorf("upsert digilocker rc: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `
-        UPDATE rider_vehicles SET status = 'approved', verified_by_actor = 'auto', verified_at = NOW(), updated_at = NOW()
-        WHERE id = $1 AND status <> 'approved'`, vehicleID); err != nil {
-		return nil, fmt.Errorf("auto approve vehicle: %w", err)
-	}
-	if err := recordSystemAuditTx(ctx, tx, "vehicle.auto_verify", "vehicle", vehicleID, map[string]any{
-		"actor": "system", "reason": "digilocker", "document_id": d.ID.String(),
+	if err := recordSystemAuditTx(ctx, tx, "document.auto_verify", "vehicle_document", d.ID, map[string]any{
+		"actor": "system", "reason": "digilocker", "vehicle_id": vehicleID.String(), "document_type": "vehicle_rc",
 	}); err != nil {
 		return nil, err
 	}
 	return d, tx.Commit(ctx)
+}
+
+// AutoApproveVehicle approves a pending vehicle with no person, only when
+// its latest RC is one DigiLocker returned (source digilocker), approved and
+// current: a hand-uploaded RC, even one an admin later approved, never
+// passes here (it is the admin's SetVehicleStatusBy). The audit row and the
+// vehicle-approved notification are written in the same transaction. A
+// vehicle that does not qualify is a no-op (false).
+func (s *Store) AutoApproveVehicle(ctx context.Context, vehicleID uuid.UUID) (bool, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	var partnerID, rcID uuid.UUID
+	err = tx.QueryRow(ctx, `
+        UPDATE rider_vehicles v
+        SET status = 'approved', verified_by_actor = 'auto', verified_at = NOW(), updated_at = NOW()
+        FROM (SELECT id, source, status, expires_at FROM rider_vehicle_documents
+              WHERE vehicle_id = $1 AND document_type = 'vehicle_rc'
+              ORDER BY created_at DESC, id DESC LIMIT 1) rc
+        WHERE v.id = $1 AND v.deleted_at IS NULL AND v.status = 'pending'
+          AND rc.source = 'digilocker' AND rc.status = 'approved'
+          AND (rc.expires_at IS NULL OR rc.expires_at > NOW())
+        RETURNING v.partner_id, rc.id`, vehicleID).Scan(&partnerID, &rcID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("auto approve vehicle: %w", err)
+	}
+	if err := recordSystemAuditTx(ctx, tx, "vehicle.auto_verify", "vehicle", vehicleID, map[string]any{
+		"actor": "system", "reason": "digilocker", "document_id": rcID.String(),
+	}); err != nil {
+		return false, err
+	}
+	if err := enqueuePartnerReviewTx(ctx, tx, "rider.partner.vehicle_approved", partnerID, "approved", PartnerReview{}); err != nil {
+		return false, err
+	}
+	return true, tx.Commit(ctx)
 }
 
 // SetVehicleStatusBy is the admin path with the actor recorded.
@@ -341,13 +377,15 @@ func (s *Store) PartnerVehicleStates(ctx context.Context, partnerID uuid.UUID) (
 }
 
 // GetPartnerDocumentByType returns the partner's latest document of the
-// type (approved first), or ErrDocumentNotFound.
+// type, or ErrDocumentNotFound. The latest row wins, as in
+// LatestPartnerDocuments and the approval gate (d61bd603c): a new upload is
+// what gets checked, never an older approved row it replaced.
 func (s *Store) GetPartnerDocumentByType(ctx context.Context, partnerID uuid.UUID, docType string) (*PartnerDocument, error) {
 	d, err := scanPartnerDoc(s.db.QueryRow(ctx, `
         SELECT `+partnerDocColumns+`
         FROM rider_partner_documents
         WHERE partner_id = $1 AND document_type = $2::rider_document_type
-        ORDER BY (status = 'approved') DESC, created_at DESC LIMIT 1`, partnerID, docType))
+        ORDER BY created_at DESC, id DESC LIMIT 1`, partnerID, docType))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrDocumentNotFound
@@ -358,8 +396,10 @@ func (s *Store) GetPartnerDocumentByType(ctx context.Context, partnerID uuid.UUI
 }
 
 // AutoApprovePartner approves the partner (status approved, kyc approved,
-// the identity role intent) with the audit row, in one transaction. A
-// partner already approved is a no-op (false).
+// the identity role intent, the partner-approved notification) with the
+// audit row, in one transaction. It passes the same evidence gate as the
+// admin's approval (reviewedEvidenceSQL); a partner already approved, off
+// the journey, or without that evidence is a no-op (false).
 func (s *Store) AutoApprovePartner(ctx context.Context, partnerID uuid.UUID, detail map[string]any) (bool, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -370,7 +410,7 @@ func (s *Store) AutoApprovePartner(ctx context.Context, partnerID uuid.UUID, det
 	err = tx.QueryRow(ctx, `
         UPDATE rider_partners
         SET status = 'approved', kyc_status = 'approved', approved_at = NOW(), updated_at = NOW()
-        WHERE id = $1 AND deleted_at IS NULL AND status IN ('draft','pending_verification')
+        WHERE id = $1 AND deleted_at IS NULL AND status IN ('draft','pending_verification')`+reviewedEvidenceSQL+`
         RETURNING user_id`, partnerID).Scan(&userID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

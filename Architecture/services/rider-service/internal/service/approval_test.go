@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/atpost/rider-service/internal/store"
+	"github.com/google/uuid"
 )
 
 func approvedDocs() map[string]store.DocumentState {
@@ -99,5 +100,63 @@ func TestFaceCompareFromEnv(t *testing.T) {
 		if _, _, err := FaceCompareFromEnv(env(map[string]string{EnvSelfieMinSimilarity: bad}), false, "k"); err == nil {
 			t.Fatalf("threshold %q accepted", bad)
 		}
+	}
+}
+
+// The selfie face-match decision (founder, 25 Oct: a match approves with
+// no person; borderline or failed goes to a person). Mutation guards: the
+// threshold comparison flipped or loosened, the face counts ignored, a
+// missing result treated as a pass, the default threshold dropped.
+func TestSelfieMatches(t *testing.T) {
+	res := func(sim float64, src, dst int) *FaceCompareResult {
+		return &FaceCompareResult{Similarity: sim, FaceCountSource: src, FaceCountTarget: dst, Provider: "test"}
+	}
+	cases := []struct {
+		name string
+		res  *FaceCompareResult
+		min  float64
+		want bool
+	}{
+		{"clear match approves", res(96, 1, 1), 80, true},
+		{"exactly at the threshold approves", res(80, 1, 1), 80, true},
+		{"just below the threshold goes to a person", res(79.9, 1, 1), 80, false},
+		{"failed match goes to a person", res(12, 1, 1), 80, false},
+		{"two faces in the selfie go to a person", res(96, 2, 1), 80, false},
+		{"no face on the licence photo goes to a person", res(96, 1, 0), 80, false},
+		{"no result goes to a person", nil, 80, false},
+		{"unset threshold falls back to the default (borderline)", res(DefaultSelfieMinSimilarity-0.5, 1, 1), 0, false},
+		{"unset threshold falls back to the default (match)", res(DefaultSelfieMinSimilarity, 1, 1), 0, true},
+		{"a stricter configured threshold is honoured", res(85, 1, 1), 90, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := selfieMatches(tc.res, tc.min); got != tc.want {
+				t.Fatalf("selfieMatches(%+v, %v) = %v want %v", tc.res, tc.min, got, tc.want)
+			}
+		})
+	}
+}
+
+// The RC decision: only a pending vehicle whose latest RC DigiLocker
+// returned (approved) is approved with no person. Mutation guards: a
+// hand-uploaded RC (pending, or approved without the vehicle) approving the
+// vehicle, a pending RC counting, a rejected vehicle re-approved.
+func TestAutoApprovableVehicles(t *testing.T) {
+	ids := []uuid.UUID{uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()}
+	vehicles := []store.VehicleState{
+		{ID: ids[0], Status: "pending", RCStatus: "approved", RCSource: store.DocSourceDigiLocker},  // DigiLocker RC: approve
+		{ID: ids[1], Status: "pending", RCStatus: "pending", RCSource: store.DocSourceUpload},       // hand-uploaded: a person
+		{ID: ids[2], Status: "pending", RCStatus: "approved", RCSource: store.DocSourceUpload},      // hand-uploaded RC approved alone: a person
+		{ID: ids[3], Status: "pending", RCStatus: "pending", RCSource: store.DocSourceDigiLocker},   // not approved: no
+		{ID: ids[4], Status: "rejected", RCStatus: "approved", RCSource: store.DocSourceDigiLocker}, // an admin's rejection stands
+		{ID: ids[5], Status: "approved", RCStatus: "approved", RCSource: store.DocSourceDigiLocker}, // already approved: nothing to do
+		{ID: uuid.New(), Status: "pending", RCStatus: "", RCSource: ""},                             // no RC at all
+	}
+	got := autoApprovableVehicles(vehicles)
+	if len(got) != 1 || got[0] != ids[0] {
+		t.Fatalf("auto approvable = %v, want only the DigiLocker RC vehicle %v", got, ids[0])
+	}
+	if got := autoApprovableVehicles([]store.VehicleState{vehicles[1], vehicles[2]}); len(got) != 0 {
+		t.Fatalf("a hand-uploaded RC was approved automatically: %v", got)
 	}
 }

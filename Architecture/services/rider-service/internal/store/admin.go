@@ -158,6 +158,24 @@ func (s *Store) SetPartnerApprovedAt(ctx context.Context, partnerID uuid.UUID) e
 	return s.SetPartnerApprovedBy(ctx, partnerID, PartnerReview{})
 }
 
+// reviewedEvidenceSQL is the evidence every approval needs (the review gate
+// of d61bd603c, 13 Oct), the admin's and the automatic one alike, written
+// against rider_partners in the enclosing UPDATE: the latest driving
+// licence approved, current and backed by evidence (the uploaded image's
+// media_id, or the DigiLocker issuer record and its licence photo for a
+// licence DigiLocker returned), the latest selfie approved with its
+// media_id, and an approved vehicle with an approved, current RC.
+const reviewedEvidenceSQL = `
+          AND EXISTS (SELECT 1 FROM (SELECT * FROM rider_partner_documents WHERE partner_id=rider_partners.id AND document_type='driving_license' ORDER BY created_at DESC,id DESC LIMIT 1) d
+            WHERE d.document_type='driving_license' AND d.status='approved'
+            AND (d.media_id IS NOT NULL OR (d.source='digilocker' AND NULLIF(d.digilocker_ref,'') IS NOT NULL AND d.photo_media_id IS NOT NULL))
+            AND (d.expires_at IS NULL OR d.expires_at>NOW()))
+          AND EXISTS (SELECT 1 FROM (SELECT * FROM rider_partner_documents WHERE partner_id=rider_partners.id AND document_type='profile_photo' ORDER BY created_at DESC,id DESC LIMIT 1) d
+            WHERE d.document_type='profile_photo' AND d.status='approved' AND d.media_id IS NOT NULL)
+          AND EXISTS (SELECT 1 FROM rider_vehicles v JOIN rider_vehicle_documents d ON d.vehicle_id=v.id
+            WHERE v.partner_id=rider_partners.id AND v.status='approved' AND d.document_type='vehicle_rc'
+              AND d.status='approved' AND (d.expires_at IS NULL OR d.expires_at>NOW()))`
+
 func (s *Store) SetPartnerApprovedBy(ctx context.Context, partnerID uuid.UUID, review PartnerReview) error {
 	const q = `
         UPDATE rider_partners
@@ -165,15 +183,7 @@ func (s *Store) SetPartnerApprovedBy(ctx context.Context, partnerID uuid.UUID, r
             kyc_status  = 'approved',
             approved_at = NOW(),
             updated_at  = NOW()
-        WHERE id = $1 AND deleted_at IS NULL AND status IN ('draft','pending_verification')
-          AND EXISTS (SELECT 1 FROM (SELECT * FROM rider_partner_documents WHERE partner_id=rider_partners.id AND document_type='driving_license' ORDER BY created_at DESC,id DESC LIMIT 1) d
-            WHERE d.document_type='driving_license' AND d.status='approved' AND d.media_id IS NOT NULL
-            AND (d.expires_at IS NULL OR d.expires_at>NOW()))
-          AND EXISTS (SELECT 1 FROM (SELECT * FROM rider_partner_documents WHERE partner_id=rider_partners.id AND document_type='profile_photo' ORDER BY created_at DESC,id DESC LIMIT 1) d
-            WHERE d.document_type='profile_photo' AND d.status='approved' AND d.media_id IS NOT NULL)
-          AND EXISTS (SELECT 1 FROM rider_vehicles v JOIN rider_vehicle_documents d ON d.vehicle_id=v.id
-            WHERE v.partner_id=rider_partners.id AND v.status='approved' AND d.document_type='vehicle_rc'
-              AND d.status='approved' AND (d.expires_at IS NULL OR d.expires_at>NOW()))
+        WHERE id = $1 AND deleted_at IS NULL AND status IN ('draft','pending_verification')` + reviewedEvidenceSQL + `
         RETURNING user_id`
 	err := s.updatePartnerStatusWithReviewTx(ctx, q, "approved", "rider partner approved", review, partnerID)
 	if errors.Is(err, pgx.ErrNoRows) {
