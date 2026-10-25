@@ -201,7 +201,7 @@ func Load() *Config {
 		JWTSecretPrevious:          getEnv("JWT_SECRET_PREVIOUS", ""),
 		JWTKIDPrevious:             getEnv("JWT_KID_PREVIOUS", ""),
 		CookieDomain:               getEnv("COOKIE_DOMAIN", ""),
-		CookieSecure:               getEnvBool("COOKIE_SECURE", false),
+		CookieSecure:               IsProductionEnv() || getEnvBool("COOKIE_SECURE", false),
 		AdminSessionTTL:            getEnvDuration("ADMIN_SESSION_TTL", 12*time.Hour),
 		AdminCookieSecure:          IsProductionEnv() || getEnvBool("ADMIN_COOKIE_SECURE", true),
 		AdminLocalPasswordLoginKey: strings.TrimSpace(os.Getenv("ADMIN_LOCAL_PASSWORD_LOGIN_KEY")),
