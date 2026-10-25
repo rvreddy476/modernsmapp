@@ -126,6 +126,17 @@ func assertCoverRefused(t *testing.T, err, want error) {
 	}
 }
 
+// The cover's authority on create is asked on a VIDEO post: a video's cover
+// is an uploaded frame, not one of its attachments, so only
+// verifyCoverOnWrite stands between the request and the row.
+//
+// A photo post never gets that far with a foreign cover. Since the post
+// screens parity work (795058cf, 2026-10-18) its cover must be one of its
+// own media_ids, which verifyMediaAuthority already holds to the attachment
+// rule; ResolvePostCover refuses anything else as 400 INVALID_COVER before
+// any asset is read (TestCreatePost_RefusesBadDetailFields pins that order).
+// That refusal says nothing about the named asset, so checking membership
+// first leaks nothing.
 func TestCoverWriteCreateRefusesAStrangersAsset(t *testing.T) {
 	f := newCoverWriteFixture(t)
 	for _, tc := range []struct {
@@ -136,12 +147,36 @@ func TestCoverWriteCreateRefusesAStrangersAsset(t *testing.T) {
 		{"a stranger's image", f.theirImage, ErrMediaNotOwned},
 		{"a stranger's video", f.theirVideo, ErrMediaNotOwned},
 		{"no such asset", uuid.New(), ErrMediaNotFound},
-		{"own video the post does not attach", f.ownOtherVideo, ErrMediaTypeMismatch},
-		{"the post's own video", f.media, ErrMediaTypeMismatch},
+		{"own video the post does not attach", f.media, ErrMediaTypeMismatch},
+		{"the post's own video", f.ownOtherVideo, ErrMediaTypeMismatch},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id, err := f.create(t, "flick", "video", []uuid.UUID{f.ownOtherVideo}, tc.cover)
+			assertCoverRefused(t, err, tc.want)
+			if f.postExists(t, id) {
+				t.Fatal("a refused cover still created the post")
+			}
+		})
+	}
+}
+
+func TestCoverWriteCreateRefusesAPhotoCoverOffTheCarousel(t *testing.T) {
+	f := newCoverWriteFixture(t)
+	for _, tc := range []struct {
+		name  string
+		cover uuid.UUID
+	}{
+		{"a stranger's image", f.theirImage},
+		{"a stranger's video", f.theirVideo},
+		{"no such asset", uuid.New()},
+		{"own video the post does not attach", f.ownOtherVideo},
+		{"another post's video", f.media},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			id, err := f.create(t, "post", "image", []uuid.UUID{f.ownImage}, tc.cover)
-			assertCoverRefused(t, err, tc.want)
+			if !errors.Is(err, ErrInvalidCover) {
+				t.Fatalf("want %v, got %v", ErrInvalidCover, err)
+			}
 			if f.postExists(t, id) {
 				t.Fatal("a refused cover still created the post")
 			}

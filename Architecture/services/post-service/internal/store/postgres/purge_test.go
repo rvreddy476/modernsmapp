@@ -29,6 +29,27 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// requireChainTable asserts that a migration openM7PostDB's BootstrapSchema
+// applied (the whole embedded chain) left its table behind. The suite used to
+// re-run 060, 062, 070 and 072 here as "idempotent" files; they are not, once
+// later migrations widen a CHECK they set: re-running 072 narrowed
+// post_admin_audit_action_check back to 072's list and failed with 23514 on
+// the copyright audit rows 073-076 admit (and, had it succeeded, would have
+// left every later suite on the narrower constraint).
+func requireChainTable(t *testing.T, pool *pgxpool.Pool, migration, table string) {
+	t.Helper()
+	if _, err := database.Migrations.ReadFile(migration); err != nil {
+		t.Fatalf("%s is not in the embedded chain: %v", migration, err)
+	}
+	var reg *string
+	if err := pool.QueryRow(context.Background(), `SELECT to_regclass($1)::text`, table).Scan(&reg); err != nil {
+		t.Fatal(err)
+	}
+	if reg == nil {
+		t.Fatalf("%s: table %s is missing after BootstrapSchema", migration, table)
+	}
+}
+
 func purgeTestExtraSchema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	ddl := []string{
@@ -275,32 +296,19 @@ func TestPurgeUserIsIdempotentAndDecrementsSurvivorCounters(t *testing.T) {
 	if _, err := pool.Exec(ctx, `UPDATE posts SET related_post_id = $2 WHERE id = $1`, postB1, postA1); err != nil {
 		t.Fatal(err)
 	}
-	// Offline copies (migration 060, applied here from the real file: it is
-	// idempotent). userA holds a copy of userB's post, userB holds a copy of
+	// Offline copies (migration 060, applied by the bootstrap chain). userA holds a copy of userB's post, userB holds a copy of
 	// userA's post and of their own.
-	offlineDDL, err := database.Migrations.ReadFile("migrations/060_post_offline_copies.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, string(offlineDDL)); err != nil {
-		t.Fatalf("apply migration 060: %v", err)
-	}
+	requireChainTable(t, pool, "migrations/060_post_offline_copies.sql", "post_offline_copies")
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO post_offline_copies (user_id, post_id, device_id, expires_at)
 		VALUES ($1,$2,'dev-a',NOW() + INTERVAL '30 days'), ($3,$4,'dev-b',NOW() + INTERVAL '30 days'), ($3,$2,'dev-b',NOW() + INTERVAL '30 days')`,
 		userA, postB1, userB, postA1); err != nil {
 		t.Fatal(err)
 	}
-	// Video credits (migration 070, the real idempotent file): userA is
+	// Video credits (migration 070, from the bootstrap chain): userA is
 	// tagged (accepted) on userB's post and tagged userB on their own post;
 	// userA's tagging ledger has a row.
-	creditsDDL, err := database.Migrations.ReadFile("migrations/070_video_credits.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, string(creditsDDL)); err != nil {
-		t.Fatalf("apply migration 070: %v", err)
-	}
+	requireChainTable(t, pool, "migrations/070_video_credits.sql", "post_credits")
 	creditOnB, creditOnA := uuid.New(), uuid.New()
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO post_credits (id, post_id, position, name, role, user_id, status)
@@ -311,16 +319,10 @@ func TestPurgeUserIsIdempotentAndDecrementsSurvivorCounters(t *testing.T) {
 	if _, err := pool.Exec(ctx, `INSERT INTO post_credit_tag_events (uploader_id, credit_id) VALUES ($1,$2)`, userA, creditOnA); err != nil {
 		t.Fatal(err)
 	}
-	// Counted comment reports (migration 062, the real idempotent file):
+	// Counted comment reports (migration 062, from the bootstrap chain):
 	// userA reported userB's reply; userB reported userA's comment and
 	// their own reply (the last one survives).
-	reportersDDL, err := database.Migrations.ReadFile("migrations/062_comment_report_reporters.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, string(reportersDDL)); err != nil {
-		t.Fatalf("apply migration 062: %v", err)
-	}
+	requireChainTable(t, pool, "migrations/062_comment_report_reporters.sql", "comment_report_reporters")
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO comment_report_reporters (comment_id, reporter_id, report_id)
 		VALUES ($1,$2,gen_random_uuid()), ($3,$4,gen_random_uuid()), ($1,$4,gen_random_uuid())`,
@@ -328,16 +330,10 @@ func TestPurgeUserIsIdempotentAndDecrementsSurvivorCounters(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Action buttons (migration 072, the real idempotent file): userA has a
+	// Action buttons (migration 072, from the bootstrap chain): userA has a
 	// profile button and reported userB's post button; userB reported
 	// userA's profile button and keeps their own post button.
-	actionDDL, err := database.Migrations.ReadFile("migrations/072_action_links.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(ctx, string(actionDDL)); err != nil {
-		t.Fatalf("apply migration 072: %v", err)
-	}
+	requireChainTable(t, pool, "migrations/072_action_links.sql", "action_links")
 	profileLinkA, postLinkB := uuid.New(), uuid.New()
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO action_links (id, post_id, profile_owner_id, author_id, url, domain, label)

@@ -106,8 +106,17 @@ func TestOwnerBlockIT_AutoBlockAtPublication(t *testing.T) {
 		}
 	}
 	// A human block is still impossible without a reviewer: the CHECK.
+	// 075's `reason = 'owner_registered'` let a NULL reason through (NULL
+	// passes a CHECK); 077 compares with IS NOT DISTINCT FROM.
 	if _, err := it.pool.Exec(it.ctx, `UPDATE copyright_title_reviews SET reason = NULL WHERE id = $1`, review); err == nil {
 		t.Fatal("a blocked review without a reviewer or owner_registered was accepted")
+	}
+	if _, err := it.pool.Exec(it.ctx, `UPDATE copyright_title_reviews SET reason = 'mute_requested' WHERE id = $1`, review); err == nil {
+		t.Fatal("a blocked review without a reviewer, reason mute_requested, was accepted")
+	}
+	// A reviewer's block needs no reason: the CHECK is not tightened there.
+	if _, err := it.pool.Exec(it.ctx, `UPDATE copyright_title_reviews SET decided_by = $2, reason = NULL WHERE id = $1`, review, uuid.New()); err != nil {
+		t.Fatalf("a reviewer's block with no reason was refused: %v", err)
 	}
 	// An entry cannot block automatically without naming the owner.
 	if _, err := it.pool.Exec(it.ctx, `INSERT INTO copyright_review_titles (id, title, auto_block, created_by, updated_by) VALUES ($1,'X Film',TRUE,$2,$2)`,

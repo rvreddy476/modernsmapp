@@ -2,9 +2,10 @@
 
 // Restriction routes on the real schema (M7_POSTGRES_DSN, post_it_test):
 // the signed command end to end through the router and the real store,
-// then P-2 at the route level — the LEGACY moderator route, the
-// admin-token route, the review-status routes and the author's restore
-// each change only the base and leave the hold in place — and the
+// then P-2 at the route level — the admin-token route, the review-status
+// routes and the author's restore each change only the base and leave the
+// hold in place, and the retired LEGACY moderator route answers 404 and
+// changes nothing — and the
 // viewer's absence versus the owner's notice.
 //
 // The direct read and the Hub list read engagement counters from Scylla;
@@ -318,13 +319,17 @@ func TestRestrictionIT_RoutesNeverClearAHold(t *testing.T) {
 		}
 		it.assertVisible(t, post, uuid.New(), false)
 	}
-	// 1. LEGACY moderator route (gateway superadmin headers).
+	// 1. LEGACY moderator route (gateway superadmin headers). Retired by
+	// security sweep #12 (TestLegacyModerationRouteIsRetired): it granted
+	// moderator rights from X-Scopes alone. Every moderator scope and the
+	// internal key now find no route, and the held post is untouched —
+	// neither the hold nor the base moves.
 	p1 := it.seedOwned(t, "flagged")
 	hold(p1)
-	if w := adminServe(it.r, http.MethodPost, "/v1/posts/"+p1.String()+"/moderation", decisionBody("approve"), edgeModerator(uuid.New())); w.Code != http.StatusOK {
-		t.Fatalf("legacy approve: %d %s", w.Code, w.Body.String())
+	if w := adminServe(it.r, http.MethodPost, "/v1/posts/"+p1.String()+"/moderation", decisionBody("approve"), edgeModerator(uuid.New())); w.Code != http.StatusNotFound {
+		t.Fatalf("legacy approve: %d %s, want 404 (route retired)", w.Code, w.Body.String())
 	}
-	assertHeld("legacy moderator approve", p1, "approved")
+	assertHeld("legacy moderator approve", p1, "flagged")
 
 	// 2. admin-token route.
 	p2 := it.seedOwned(t, "flagged")
@@ -383,9 +388,10 @@ func (it *restrictionIT) assertSubjectAfterDecision(t *testing.T, post uuid.UUID
 		_ = json.Unmarshal(w.Body.Bytes(), &body)
 		return body.Data
 	}
+	// The admin console's token route (the legacy header route is retired).
 	adminDecision := uuid.New()
-	if w := adminServe(it.r, http.MethodPost, "/v1/posts/"+post.String()+"/moderation",
-		`{"decision_id":"`+adminDecision.String()+`","action":"reject","reason":"policy"}`, edgeModerator(uuid.New())); w.Code != http.StatusOK {
+	if w := adminServe(it.r, http.MethodPost, InternalAdminPrefix+"/posts/"+post.String()+"/moderation",
+		`{"decision_id":"`+adminDecision.String()+`","action":"reject","reason":"policy"}`, it.as(t, PermPostsRemove)); w.Code != http.StatusOK {
 		t.Fatalf("admin reject: %d %s", w.Code, w.Body.String())
 	}
 	s := read()

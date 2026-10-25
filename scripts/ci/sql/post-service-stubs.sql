@@ -38,10 +38,17 @@ CREATE TABLE IF NOT EXISTS channels (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
--- The media_assets stub every post-service helper uses, plus duration_ms
--- (search and feed queries read it; helpers add it with ADD COLUMN IF NOT
--- EXISTS). Other optional columns (alt_text, width, ...) are added by the
--- suites that need them.
+-- The media_assets stub every post-service helper uses, plus every column
+-- post-service's production queries read. Leaving optional columns to "the
+-- suites that need them" made the result depend on package order: a suite
+-- that ran before the helper that added alt_text / hls_master_key failed with
+-- 42703. The read columns are nullable or defaulted here (unlike media-service,
+-- where storage_key is NOT NULL) because the tests insert only the first four.
+--
+-- Guarded by TestMediaAssetsStubCoversEveryColumnPostServiceReads
+-- (Architecture/services/post-service/internal/store/postgres/
+-- media_assets_stub_test.go): it fails when a column post-service reads is
+-- missing here, or a column here is not one of media-service's.
 CREATE TABLE IF NOT EXISTS media_assets (
     id UUID PRIMARY KEY,
     uploader_id UUID NOT NULL,
@@ -50,5 +57,11 @@ CREATE TABLE IF NOT EXISTS media_assets (
     moderation_status TEXT NOT NULL DEFAULT 'pending',
     duration_seconds INTEGER,
     duration_ms INTEGER,
+    width INTEGER,
+    height INTEGER,
+    alt_text TEXT DEFAULT '',
+    alt_decorative BOOLEAN NOT NULL DEFAULT FALSE,
+    hls_master_key TEXT,
+    storage_key TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

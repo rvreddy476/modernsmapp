@@ -98,35 +98,42 @@ func applyStorySchema(t *testing.T, pool *pgxpool.Pool) {
 	// A legacy story, inserted BEFORE migration 032 runs, so the retirement
 	// step has something real to act on.
 	//
-	// Seed it ONLY on the first run against this database. Once the migration
-	// has applied, stories_media_or_retired_chk correctly refuses a new row
-	// with no media_id that is not already retired — so re-seeding would fail,
-	// and it would fail for the right reason. Gating on the constraint keeps
-	// the suite re-runnable without weakening what it proves.
-	var migrated bool
-	if err := pool.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM pg_constraint WHERE conname = 'stories_media_or_retired_chk')`,
-	).Scan(&migrated); err != nil {
-		t.Fatalf("check migration state: %v", err)
-	}
-	if !migrated {
-		if _, err := pool.Exec(ctx, `
-			INSERT INTO stories (id, author_id, media_url, media_type, visibility, expires_at, is_highlight, highlight_group)
-			VALUES ($1, $2, 'https://evil.example/legacy.jpg', 'image', 'public', NOW() + interval '10 years', TRUE, 'best')
-		`, uuid.New(), uuid.New()); err != nil {
-			t.Fatalf("seed legacy story: %v", err)
-		}
-	}
-
+	// The database may already be migrated: in CI this suite shares
+	// post_it_test with every suite that bootstraps the full chain, so 032
+	// ran long before this point, and stories_media_or_retired_chk correctly
+	// refuses a new legacy-shaped row (no media_id, pending). Seeding only on
+	// a fresh database therefore left nothing to retire, and the retirement
+	// proof failed with "deleted rather than retired". So the seed and the
+	// replay of the real 032 file run in ONE transaction that first drops
+	// that constraint: the row is inserted exactly as a pre-032 row would
+	// be, 032 retires it and re-adds (and validates) the constraint, and a
+	// failure rolls everything back, constraint included. Fresh or migrated,
+	// every run proves the migration on a row of its own.
 	raw, err := os.ReadFile("../../../database/migrations/032_story_canonical_media_and_moderation.sql")
 	if err != nil {
 		t.Fatalf("read migration 032: %v", err)
 	}
-	// Split on ';' at statement level would break the DO $$ ... $$ blocks, so
-	// the whole file is executed as one batch exactly as the migration runner
-	// does for a multi-statement migration.
-	if _, err := pool.Exec(ctx, string(raw)); err != nil {
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `ALTER TABLE stories DROP CONSTRAINT IF EXISTS stories_media_or_retired_chk`); err != nil {
+		t.Fatalf("drop stories_media_or_retired_chk for the legacy seed: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO stories (id, author_id, media_url, media_type, visibility, expires_at, is_highlight, highlight_group)
+		VALUES ($1, $2, 'https://evil.example/legacy.jpg', 'image', 'public', NOW() + interval '10 years', TRUE, 'best')
+	`, uuid.New(), uuid.New()); err != nil {
+		t.Fatalf("seed legacy story: %v", err)
+	}
+	// The whole file as one batch, exactly as the migration runner applies a
+	// multi-statement migration (a ';' split would break the DO $$ blocks).
+	if _, err := tx.Exec(ctx, string(raw)); err != nil {
 		t.Fatalf("apply migration 032: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit legacy seed + 032: %v", err)
 	}
 }
 
