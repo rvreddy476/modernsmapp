@@ -568,13 +568,22 @@ func TestAdminTokenIntegration_ReadsServedWhileWritesDisabled(t *testing.T) {
 		for _, rep := range [][2]string{{":userId", creator.String()}, {":id", earningID.String()}} {
 			path = replaceAll(path, rep[0], rep[1])
 		}
+		// The membership refund is judged by MEMBERSHIPS_ENABLED (off in this
+		// rig), not the writes flag: membership money lives on
+		// payments-service, so the beta's writes switch does not govern it
+		// (9cf7bd23; TestAdminToken_WritesDisabledServesReadsRefusesWrites pins the
+		// same split without a database).
+		wantCode := "MONETIZATION_NOT_LAUNCHED"
+		if isMembershipAdminRoute(rt) {
+			wantCode = "MEMBERSHIPS_NOT_ENABLED"
+		}
 		code, body := it.call(t, it.actor, rt.perm, rt.method, path, `{"reason":"x","status":"resolved_denied","transaction_id":"`+txnID.String()+`","amount_paise":1}`)
-		if code != http.StatusServiceUnavailable || !containsCode(body, "MONETIZATION_NOT_LAUNCHED") {
-			t.Fatalf("%s %s with writes disabled: status=%d body=%s, want 503 MONETIZATION_NOT_LAUNCHED", rt.method, rt.path, code, body)
+		if code != http.StatusServiceUnavailable || !containsCode(body, wantCode) {
+			t.Fatalf("%s %s with writes disabled: status=%d body=%s, want 503 %s", rt.method, rt.path, code, body, wantCode)
 		}
 	}
-	if writes != 15 {
-		t.Fatalf("checked %d writes, want 15", writes)
+	if writes != 16 {
+		t.Fatalf("checked %d writes, want 16", writes)
 	}
 	if after := len(it.auditRows(t, it.actor)); after != before {
 		t.Fatalf("writes with writes disabled left %d audit rows", after-before)

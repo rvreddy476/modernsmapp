@@ -63,7 +63,7 @@ func TestLiveSettlementPaysDifferentlyForDifferentQuality(t *testing.T) {
 			_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_eligibility WHERE creator_id = $1`, creator)
 			_, _ = pool.Exec(ctx, `DELETE FROM analytics.content_daily_summary WHERE creator_id = $1`, creator)
 			_, _ = pool.Exec(ctx, `DELETE FROM transactions WHERE wallet_id = $1`, creator)
-			_, _ = pool.Exec(ctx, `DELETE FROM ledger_entries WHERE credit_owner_id = $1 OR debit_owner_id = $1`, creator)
+			_, _ = pool.Exec(ctx, `DELETE FROM ledger_entries WHERE debit_account_id IN (SELECT id FROM accounts WHERE owner_id=$1) OR credit_account_id IN (SELECT id FROM accounts WHERE owner_id=$1)`, creator)
 			_, _ = pool.Exec(ctx, `DELETE FROM creator_ledger WHERE user_id = $1`, creator)
 		})
 
@@ -199,7 +199,7 @@ func TestLiveSettlementOfAZeroImpressionDayPaysTheNeutralAmount(t *testing.T) {
 		_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_eligibility WHERE creator_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM analytics.content_daily_summary WHERE creator_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM transactions WHERE wallet_id = $1`, creator)
-		_, _ = pool.Exec(ctx, `DELETE FROM ledger_entries WHERE credit_owner_id = $1 OR debit_owner_id = $1`, creator)
+		_, _ = pool.Exec(ctx, `DELETE FROM ledger_entries WHERE debit_account_id IN (SELECT id FROM accounts WHERE owner_id=$1) OR credit_account_id IN (SELECT id FROM accounts WHERE owner_id=$1)`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM creator_ledger WHERE user_id = $1`, creator)
 	})
 

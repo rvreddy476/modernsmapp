@@ -1018,15 +1018,20 @@ type ReminderDue struct {
 // period end (days_left 3), and from 24 h before it through grace (days_left
 // 0, "ends today"). A membership scheduled to end (cancelled_at_period_end)
 // is not reminded.
+//
+// $1 is cast to timestamptz at every use. Left untyped, Postgres resolves
+// `$1 + $2::interval` as interval + interval, types $1 as an interval, and
+// then refuses `current_period_end <= interval` (SQLSTATE 42883), so the
+// query failed on every call and no reminder was ever sent.
 func (s *Store) DueRenewalReminders(ctx context.Context, now time.Time) ([]ReminderDue, error) {
 	rows, err := s.db.Query(ctx, `
 		WITH c AS (
 			SELECT `+subscriptionColumns+`,
-			       CASE WHEN current_period_end <= $1 + $2::interval THEN 0 ELSE 3 END AS days_left
+			       CASE WHEN current_period_end <= $1::timestamptz + $2::interval THEN 0 ELSE 3 END AS days_left
 			FROM subscriptions
 			WHERE status IN ('active', 'past_due', 'grace') AND activated_at IS NOT NULL
-			  AND current_period_end <= $1 + $3::interval
-			  AND current_period_end > $1 - $3::interval
+			  AND current_period_end <= $1::timestamptz + $3::interval
+			  AND current_period_end > $1::timestamptz - $3::interval
 		)
 		SELECT c.* FROM c
 		WHERE NOT EXISTS (SELECT 1 FROM membership_renewal_reminders r

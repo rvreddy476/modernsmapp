@@ -287,6 +287,35 @@ func TestMembershipIntegrationGraceExpiryCountAndReminders(t *testing.T) {
 		t.Fatal("second claim for the same period accepted")
 	}
 
+	// Both edges of the window, through the real query: before the 72 h lead
+	// nothing is due, and inside the last 24 h the "ends today" reminder is due
+	// even though the 3-day one for the same period is already claimed.
+	early, err := f.store.DueRenewalReminders(f.ctx, end.Add(-73*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range early {
+		if r.ID == co.SubscriptionID {
+			t.Fatalf("reminder due %d day(s) out, before the 72 h lead", r.DaysLeft)
+		}
+	}
+	today, err := f.store.DueRenewalReminders(f.ctx, end.Add(-12*time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundToday := false
+	for _, r := range today {
+		if r.ID == co.SubscriptionID {
+			if r.DaysLeft != 0 {
+				t.Fatalf("12 h before the end: days_left %d, want 0", r.DaysLeft)
+			}
+			foundToday = true
+		}
+	}
+	if !foundToday {
+		t.Fatal("ends-today reminder not due 12 h before the period end")
+	}
+
 	graced, err := f.store.StartGraceForEndedPeriods(f.ctx, end.Add(time.Minute))
 	if err != nil {
 		t.Fatal(err)
