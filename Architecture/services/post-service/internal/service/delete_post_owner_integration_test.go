@@ -54,7 +54,10 @@ func TestIntegrationDeletePostIsAuthorOnly(t *testing.T) {
 	`, postID, author); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM posts WHERE id=$1`, postID) })
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM post_engagement_counts WHERE post_id = $1`, postID)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM posts WHERE id=$1`, postID)
+	})
 
 	deleted := func() bool {
 		t.Helper()

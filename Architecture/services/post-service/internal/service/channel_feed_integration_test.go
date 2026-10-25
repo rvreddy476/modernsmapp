@@ -28,6 +28,7 @@ func TestChannelFeedAgainstPostgres(t *testing.T) {
 		VALUES ($1, $2, 'link only', 'Link only', 'unlisted', 'long_video', 'approved', NOW(), NOW())`, unlisted, f.author)
 	t.Cleanup(func() {
 		bg := context.Background()
+		_, _ = f.pool.Exec(bg, `DELETE FROM post_engagement_counts WHERE post_id = $1`, unlisted)
 		_, _ = f.pool.Exec(bg, `DELETE FROM posts WHERE id = $1`, unlisted)
 		_, _ = f.pool.Exec(bg, `DELETE FROM channels WHERE user_id = $1`, f.author)
 	})

@@ -89,7 +89,10 @@ func claimsITPost(t *testing.T, pool *pgxpool.Pool, author uuid.UUID, cover *uui
 		VALUES ($1, $2, 'cover', 'public', 'post', 'approved', $3, NOW(), NOW())`, id, author, cover); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM posts WHERE id = $1`, id) })
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM post_engagement_counts WHERE post_id = $1`, id)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM posts WHERE id = $1`, id)
+	})
 	return id
 }
 

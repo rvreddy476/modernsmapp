@@ -71,7 +71,10 @@ func insertActionPost(t *testing.T, pool *pgxpool.Pool, author uuid.UUID) uuid.U
 		VALUES ($1, $2, 'hiring', 'public', 'post', 'approved', NOW(), NOW())`, id, author); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM posts WHERE id = $1`, id) })
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM post_engagement_counts WHERE post_id = $1`, id)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM posts WHERE id = $1`, id)
+	})
 	return id
 }
 
@@ -162,6 +165,7 @@ func TestActionLinksITCreateTapsAndStats(t *testing.T) {
 	t.Cleanup(func() {
 		bg := context.Background()
 		_, _ = pool.Exec(bg, `DELETE FROM post_outbox_events WHERE aggregate_id = $1`, p.ID)
+		_, _ = pool.Exec(bg, `DELETE FROM post_engagement_counts WHERE post_id = $1`, p.ID)
 		_, _ = pool.Exec(bg, `DELETE FROM posts WHERE id = $1`, p.ID)
 	})
 	if err := s.CreatePostWithEventIdempotent(ctx, p, "", nil, nil); err != nil {

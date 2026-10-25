@@ -78,7 +78,10 @@ func socialPost(t *testing.T, pool *pgxpool.Pool, author uuid.UUID, visibility s
 		VALUES ($1, $2, 'post', $3, 'post', 'approved', $4, $5, $5)`, id, author, visibility, tags, created); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM posts WHERE id = $1`, id) })
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM post_engagement_counts WHERE post_id = $1`, id)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM posts WHERE id = $1`, id)
+	})
 	return id
 }
 

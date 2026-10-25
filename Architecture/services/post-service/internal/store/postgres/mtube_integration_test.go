@@ -67,6 +67,7 @@ func (r *mtubeRig) newPost(t *testing.T, author uuid.UUID, contentType, visibili
 	}
 	t.Cleanup(func() {
 		_, _ = r.pool.Exec(context.Background(), `DELETE FROM post_outbox_events WHERE aggregate_id = $1`, p.ID)
+		_, _ = r.pool.Exec(context.Background(), `DELETE FROM post_engagement_counts WHERE post_id = $1`, p.ID)
 		_, _ = r.pool.Exec(context.Background(), `DELETE FROM posts WHERE id = $1`, p.ID)
 	})
 	return p
@@ -159,6 +160,7 @@ func TestMTubeLiveVODPostIsIdempotentPerStream(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		_, _ = r.pool.Exec(context.Background(), `DELETE FROM post_outbox_events WHERE aggregate_id = $1`, first.ID)
+		_, _ = r.pool.Exec(context.Background(), `DELETE FROM post_engagement_counts WHERE post_id = $1`, first.ID)
 		_, _ = r.pool.Exec(context.Background(), `DELETE FROM posts WHERE id = $1`, first.ID)
 	})
 	second, created, err := r.store.CreateLiveVODPost(ctx, build())

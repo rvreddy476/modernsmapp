@@ -32,6 +32,7 @@ func TestBackfillPostReactions(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		pool.Exec(ctx, `DELETE FROM reactions WHERE target_id IN ($1, $2)`, live, gone)
+		_, _ = pool.Exec(ctx, `DELETE FROM post_engagement_counts WHERE post_id = $1`, live)
 		pool.Exec(ctx, `DELETE FROM posts WHERE id = $1`, live)
 		pool.Exec(ctx, `DELETE FROM users WHERE id IN ($1, $2, $3)`, author, viewer, other)
 	})

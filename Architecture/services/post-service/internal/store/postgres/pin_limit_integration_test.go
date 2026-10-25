@@ -24,7 +24,10 @@ func TestPinnedCountLeavesOutThePostBeingPinned(t *testing.T) {
 	store := postgres.New(pool)
 	ctx := context.Background()
 	author := uuid.New()
-	t.Cleanup(func() { pool.Exec(context.Background(), `DELETE FROM posts WHERE author_id = $1`, author) })
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM post_engagement_counts WHERE post_id IN (SELECT id FROM posts WHERE author_id = $1)`, author)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM posts WHERE author_id = $1`, author)
+	})
 
 	pinned := []uuid.UUID{uuid.New(), uuid.New(), uuid.New()}
 	for _, id := range pinned {

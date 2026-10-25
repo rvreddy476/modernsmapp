@@ -37,6 +37,7 @@ func TestMembersGateITCreateWritesTheGateWithTheRow(t *testing.T) {
 	t.Cleanup(func() {
 		bg := context.Background()
 		_, _ = pool.Exec(bg, `DELETE FROM post_outbox_events WHERE aggregate_id = $1`, p.ID)
+		_, _ = pool.Exec(bg, `DELETE FROM post_engagement_counts WHERE post_id = $1`, p.ID)
 		_, _ = pool.Exec(bg, `DELETE FROM posts WHERE id = $1`, p.ID)
 	})
 	payload := events.PostCreatedPayload{PostID: p.ID.String(), AuthorID: author.String(), TierRequiredID: tier.String(), Visibility: "public"}
@@ -76,7 +77,10 @@ func TestMembersGateITByAuthorMembersOnlyPages(t *testing.T) {
 			VALUES ($1, $2, 'body', 'public', 'post', 'approved', $3, $3, $4)`, id, author, base.Add(time.Duration(i)*time.Minute), gate); err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM posts WHERE id = $1`, id) })
+		t.Cleanup(func() {
+			_, _ = pool.Exec(context.Background(), `DELETE FROM post_engagement_counts WHERE post_id = $1`, id)
+			_, _ = pool.Exec(context.Background(), `DELETE FROM posts WHERE id = $1`, id)
+		})
 	}
 	var seen []uuid.UUID
 	cursor := ""
@@ -120,6 +124,7 @@ func TestMembersGateITEditSetsTheGateAndTellsSearch(t *testing.T) {
 		bg := context.Background()
 		_, _ = pool.Exec(bg, `DELETE FROM post_edit_audit WHERE post_id = $1`, postID)
 		_, _ = pool.Exec(bg, `DELETE FROM post_outbox_events WHERE aggregate_id = $1`, postID)
+		_, _ = pool.Exec(bg, `DELETE FROM post_engagement_counts WHERE post_id = $1`, postID)
 		_, _ = pool.Exec(bg, `DELETE FROM posts WHERE id = $1`, postID)
 	})
 	lastEligibility := func() events.PostSearchEligibilityChangedPayload {

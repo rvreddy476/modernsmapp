@@ -68,17 +68,21 @@ func claimsITAsset(t *testing.T, pool *pgxpool.Pool, owner uuid.UUID, kind strin
 
 // claimsITDeletePost removes a test post and the engagement counts row its
 // insert trigger created (post_engagement_counts.post_id REFERENCES posts).
-func claimsITDeletePost(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) {
+// It reports whether both deletes succeeded (failures are t.Errorf'd).
+func claimsITDeletePost(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) bool {
 	t.Helper()
 	bg := context.Background()
+	ok := true
 	for _, stmt := range []string{
 		`DELETE FROM post_engagement_counts WHERE post_id = $1`,
 		`DELETE FROM posts WHERE id = $1`,
 	} {
 		if _, err := pool.Exec(bg, stmt, id); err != nil {
-			t.Errorf("cleanup %q: %v", stmt, err)
+			t.Errorf("delete post %s: %q: %v", id, stmt, err)
+			ok = false
 		}
 	}
+	return ok
 }
 
 func TestMediaClaimsIT_ReelDraftLifecycle(t *testing.T) {
@@ -187,19 +191,18 @@ func TestMediaClaimsIT_PurgedPostReleasesItsCover(t *testing.T) {
 		_ = claims.Claim(ctx, postgres.HolderPostCover, id, []uuid.UUID{cover})
 	}
 	t.Cleanup(func() { claimsITDeletePost(t, pool, live) })
-	// The real purge, as postpurge.Worker runs it before
-	// ReleasePurgedPostClaims: soft delete, then PurgePost removes the row
-	// and its dependants (a bare DELETE trips post_engagement_counts' FK,
-	// whose row the posts insert trigger creates).
-	if _, err := pool.Exec(ctx, `UPDATE posts SET deleted_at = NOW() WHERE id = $1`, purged); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := postgres.New(pool).PurgePost(ctx, purged); err != nil {
-		t.Fatal(err)
+	// The purge's end state: the row is gone. What PurgePost deletes is
+	// proven by the store's purge ITs; this package's database lacks the
+	// tables only cmd/server's ensureSchema creates (reel_crosspost), so
+	// the row and the engagement counts row its insert trigger made are
+	// removed directly. A failure here fails the test: a post left behind
+	// would make the release a no-op and the assertion below meaningless.
+	if !claimsITDeletePost(t, pool, purged) {
+		t.FailNow()
 	}
 	var left int
 	if err := pool.QueryRow(ctx, `SELECT count(*) FROM posts WHERE id = $1`, purged).Scan(&left); err != nil || left != 0 {
-		t.Fatalf("the purge did not remove the post (rows=%d, err=%v)", left, err)
+		t.Fatalf("the purged post is still there (rows=%d, err=%v)", left, err)
 	}
 
 	for _, id := range []uuid.UUID{live, purged} {

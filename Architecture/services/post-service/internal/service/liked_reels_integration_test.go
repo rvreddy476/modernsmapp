@@ -51,6 +51,7 @@ func TestLikedReelsAgainstPostgres(t *testing.T) {
 		bg := context.Background()
 		for _, id := range ids {
 			_, _ = pool.Exec(bg, `DELETE FROM reactions WHERE target_type = 'post' AND target_id = $1`, id)
+			_, _ = pool.Exec(bg, `DELETE FROM post_engagement_counts WHERE post_id = $1`, id)
 			_, _ = pool.Exec(bg, `DELETE FROM posts WHERE id = $1`, id)
 		}
 	})

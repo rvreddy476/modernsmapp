@@ -75,6 +75,7 @@ func TestMembershipGateOnTheRealSchema(t *testing.T) {
 	t.Cleanup(func() {
 		bg := context.Background()
 		_, _ = pool.Exec(bg, `DELETE FROM post_outbox_events WHERE aggregate_id = $1`, postID)
+		_, _ = pool.Exec(bg, `DELETE FROM post_engagement_counts WHERE post_id = $1`, postID)
 		_, _ = pool.Exec(bg, `DELETE FROM posts WHERE id = $1`, postID)
 	})
 
