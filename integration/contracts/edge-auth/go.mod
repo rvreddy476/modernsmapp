@@ -16,7 +16,7 @@
 // environment CI runs in and exactly the environment an image build is not.
 module github.com/atpost/contracts/edge-auth
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/atpost/api-gateway v0.0.0

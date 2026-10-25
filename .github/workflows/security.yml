@@ -51,7 +51,11 @@ jobs:
           failed=()
           for m in "${MODULES[@]}"; do
             echo "::group::$WS/$m"
-            if (cd "$WS/$m" && govulncheck ./...); then
+            # A module whose every package carries the integration tag
+            # (Architecture/tools/integration) matches no packages without it.
+            tags=()
+            if [ -z "$(cd "$WS/$m" && go list ./... 2>/dev/null)" ]; then tags=(-tags integration); fi
+            if (cd "$WS/$m" && govulncheck "${tags[@]}" ./...); then
               echo "PASS govulncheck $WS/$m"
             else
               echo "FAIL govulncheck $WS/$m"

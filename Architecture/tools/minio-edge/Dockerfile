@@ -1,5 +1,5 @@
 # DEV ONLY: see main.go. Standard library only, so it builds offline.
-FROM golang:1.25.6-alpine AS builder
+FROM golang:1.26.10-alpine AS builder
 WORKDIR /src
 COPY go.mod main.go ./
 RUN CGO_ENABLED=0 GOWORK=off go build -trimpath -ldflags="-s -w" -o /minio-edge .
