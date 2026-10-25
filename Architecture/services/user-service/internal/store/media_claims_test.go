@@ -19,7 +19,11 @@ func TestMediaHolderLockWaitsAndIsTransactionScoped(t *testing.T) {
 
 func TestMediaHolderLockKeyIsNamespacedAndStable(t *testing.T) {
 	ref := uuid.New()
-	if mediaHolderLockKey(ref) != mediaHolderLockKey(ref) {
+	// Two separate calls (not one expression twice, staticcheck SA4000): the
+	// key must not depend on anything but ref.
+	first := mediaHolderLockKey(ref)
+	again := mediaHolderLockKey(ref)
+	if first != again {
 		t.Fatal("the key is not stable")
 	}
 	if mediaHolderLockKey(ref) == mediaHolderLockKey(uuid.New()) {
