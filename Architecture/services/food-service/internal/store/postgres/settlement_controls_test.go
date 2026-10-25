@@ -213,7 +213,7 @@ func TestSettlementControlsReplayOverlapStaleAndCarryForward(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	carry, err := s.restaurantCarryForwardTx(ctx, tx, rid)
 	if err != nil {
 		t.Fatal(err)

@@ -130,7 +130,7 @@ func (s *Store) CreateChannel(ctx context.Context, ch *BroadcastChannel) error {
 		return err
 	}
 	// Rollback after a successful commit is a no-op, so this needs no flag.
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	query := `
 		INSERT INTO broadcast_channels (

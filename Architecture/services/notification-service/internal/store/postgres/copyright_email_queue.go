@@ -72,7 +72,7 @@ func (s *Store) FinishCopyrightEmail(ctx context.Context, j *CopyrightEmailJob, 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	tag, err := tx.Exec(ctx, `
 		UPDATE copyright_email_jobs
 		SET status = $3, last_error = $4, available_at = now() + make_interval(secs => $5),

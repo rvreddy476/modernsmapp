@@ -12,7 +12,7 @@ import (
 
 func TestCheckoutRequestHash(t *testing.T) {
 	in := PlaceOrderInput{AddressID: uuid.New(), PaymentMethod: "ONLINE", PaymentInstrument: "upi"}
-	if checkoutRequestHash(in) != checkoutRequestHash(in) {
+	if first, again := checkoutRequestHash(in), checkoutRequestHash(in); first != again {
 		t.Fatal("unstable hash")
 	}
 	changed := in
@@ -161,7 +161,7 @@ func TestCheckoutWaitsForMenuEditAndRejectsNewStockout(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if _, err := tx.Exec(ctx, `UPDATE food.menu_items SET is_available=false WHERE id=$1`, item); err != nil {
 		t.Fatal(err)
 	}

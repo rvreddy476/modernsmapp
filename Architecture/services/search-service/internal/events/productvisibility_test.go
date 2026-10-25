@@ -407,7 +407,7 @@ func TestALegacyProductListedGoesThroughTheReadBack(t *testing.T) {
 		Price:     1.00,
 	})
 	raw, _ := json.Marshal(events.EventEnvelope{
-		EventType: events.ProductListed, Payload: payload,
+		EventType: events.ProductListed, Payload: payload, //nolint:staticcheck // SA1019: replaying the deprecated legacy event is the case under test
 	})
 	if err := c.processMessage(context.Background(), kafka.Message{Value: raw}); err != nil {
 		t.Fatalf("legacy replay: %v", err)

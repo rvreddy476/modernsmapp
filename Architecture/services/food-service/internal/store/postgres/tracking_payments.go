@@ -322,7 +322,7 @@ func (s *Store) PartnerRestaurantSummary(ctx context.Context, ownerID, restauran
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var orders, delivered, refunded int
 	if err = tx.QueryRow(ctx, `SELECT COUNT(*)::int, COUNT(*) FILTER(WHERE delivered_at IS NOT NULL)::int, COUNT(*) FILTER(WHERE status='REFUNDED')::int FROM food.orders WHERE restaurant_id=$1`, restaurantID).Scan(&orders, &delivered, &refunded); err != nil {
 		return nil, err

@@ -22,7 +22,7 @@ func (s *Store) QueueDocumentReminder(ctx context.Context, d ExpiringDocument, b
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var user uuid.UUID
 	if err = tx.QueryRow(ctx, `SELECT user_id FROM rider_partners WHERE id=$1`, d.PartnerID).Scan(&user); err != nil {
 		return false, err
@@ -56,7 +56,7 @@ func (s *Store) RejectSubscriptionPaymentBy(ctx context.Context, paymentID uuid.
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var partner uuid.UUID
 	var subscription *uuid.UUID
 	var status string

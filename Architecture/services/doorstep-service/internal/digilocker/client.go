@@ -95,7 +95,7 @@ const (
 // Default DigiLocker (MeriPehchaan) endpoints; overridable for a partner.
 const (
 	DefaultAuthorizeURL = "https://digilocker.meripehchaan.gov.in/public/oauth2/1/authorize"
-	DefaultTokenURL     = "https://digilocker.meripehchaan.gov.in/public/oauth2/1/token"
+	DefaultTokenURL     = "https://digilocker.meripehchaan.gov.in/public/oauth2/1/token" //nolint:gosec // G101: public OAuth token endpoint URL, not a credential
 )
 
 // HashDocumentType returns the lowercase hex SHA-256 of the doc-type label.

@@ -56,7 +56,7 @@ func assertBodyMatchesFixture(t *testing.T, body []byte, fixture string) {
 
 // ── creator/me ──────────────────────────────────────────────────────────
 
-type fakeCreatorStore struct{ ownerOnly bool }
+type fakeCreatorStore struct{}
 
 func (f fakeCreatorStore) zeroFor(creatorID uuid.UUID) bool { return creatorID != mtubeOwner }
 

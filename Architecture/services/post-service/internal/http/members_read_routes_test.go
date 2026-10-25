@@ -340,7 +340,7 @@ func TestMembershipPutRefusesAMalformedBody(t *testing.T) {
 		"truncated":     `{"tier_required_id":`,
 		"not a uuid":    `{"tier_required_id":"gold"}`,
 		"a number":      `{"tier_required_id":42}`,
-		"misspelt key":  `{"tier_requried_id":"` + uuid.NewString() + `"}`,
+		"misspelt key":  `{"tier_requried_id":"` + uuid.NewString() + `"}`, //nolint:misspell // the misspelt key is the case under test
 		"array":         `[{"tier_required_id":null}]`,
 		"bare null":     `null`,
 		"trailing data": `{} {}`,

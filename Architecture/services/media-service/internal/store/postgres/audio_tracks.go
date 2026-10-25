@@ -79,7 +79,7 @@ func (s *MediaAssetStore) ReplaceMediaAudioTrack(ctx context.Context, t *MediaAu
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	rows, err := tx.Query(ctx, `
 		DELETE FROM media_audio_tracks
@@ -219,7 +219,7 @@ func (s *MediaAssetStore) DeleteMediaAudioTrack(ctx context.Context, mediaID, tr
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	var language string
 	var sourceKey *string

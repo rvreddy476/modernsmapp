@@ -20,7 +20,7 @@ func SeedCatalogue(ctx context.Context, db *pgxpool.Pool) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	ex := func(sql string, args ...any) {
 		if err == nil {
 			_, err = tx.Exec(ctx, sql, args...)

@@ -136,7 +136,7 @@ func ReindexUsers(
 		for _, p := range profiles {
 			ids = append(ids, p.UserID)
 		}
-		existing := map[string]search.UserDoc{}
+		var existing map[string]search.UserDoc
 		if got, err := store.GetUsersByIDs(ctx, ids); err != nil {
 			// Fail SAFE for the data: without the read-back we cannot tell
 			// "no username" from "username we are about to delete", so skip

@@ -48,7 +48,7 @@ func (s *Store) submitPartnerChange(ctx context.Context, id uuid.UUID, kind stri
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var status string
 	var approved bool
 	if err = tx.QueryRow(ctx, `SELECT status, approved_at IS NOT NULL FROM doorstep.professionals WHERE id=$1 FOR UPDATE`, id).Scan(&status, &approved); err != nil {

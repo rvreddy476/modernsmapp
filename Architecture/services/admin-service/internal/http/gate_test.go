@@ -262,8 +262,6 @@ func TestMeShape(t *testing.T) {
 		t.Fatalf("decode: %v in %s", err, w.Body.String())
 	}
 	me := meEnv.Data
-	if false {
-	}
 	if me.UserID != adminA || !me.MFA.Required || !me.MFA.Verified || me.MFA.AuthTime == nil || me.StepUpWindowSeconds != 300 {
 		t.Fatalf("me %+v", me)
 	}

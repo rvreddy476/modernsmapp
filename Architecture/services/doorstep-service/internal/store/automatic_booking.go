@@ -96,7 +96,7 @@ func (s *Store) MatchAutomatic(ctx context.Context, id uuid.UUID, at time.Time) 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	b, err := lockAutomatic(ctx, tx, id)
 	if err != nil {
 		return err
@@ -270,7 +270,7 @@ func (s *Store) AcceptAutomatic(ctx context.Context, in AcceptInput) (*AcceptRes
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	b, err := lockAutomatic(ctx, tx, id)
 	if err != nil {
 		return nil, err
@@ -362,7 +362,7 @@ func (s *Store) DeclineAutomatic(ctx context.Context, in AcceptInput) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	b, err := lockAutomatic(ctx, tx, id)
 	if err != nil {
 		return err

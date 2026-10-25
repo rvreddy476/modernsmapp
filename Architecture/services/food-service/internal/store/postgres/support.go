@@ -250,7 +250,7 @@ func (s *Store) SetTicketStatus(ctx context.Context, adminID, ticketID uuid.UUID
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	tag, err := tx.Exec(ctx, `
 		UPDATE food.support_tickets
 		SET status = $2::food.ticket_status,
@@ -285,7 +285,7 @@ func (s *Store) CreateRefundRequest(ctx context.Context, customerID, orderID uui
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if _, err := tx.Exec(ctx, `SELECT id FROM food.orders WHERE id=$1 FOR UPDATE`, orderID); err != nil {
 		return nil, err
 	}
@@ -347,7 +347,7 @@ func (s *Store) DecideRefund(ctx context.Context, adminID, refundID uuid.UUID, s
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var orderID uuid.UUID
 	if err := tx.QueryRow(ctx, `SELECT order_id FROM food.refund_requests WHERE id=$1`, refundID).Scan(&orderID); err != nil {
 		return err

@@ -103,7 +103,7 @@ func TestPostsByMediaAnswers(t *testing.T) {
 	// None is an empty list, not null.
 	empty := byMediaGet(byMediaRouter(&fakePostsByMedia{}), media.String())
 	if empty.Code != http.StatusOK || !json.Valid(empty.Body.Bytes()) ||
-		string(empty.Body.Bytes()) != `{"media_id":"`+media.String()+`","post_ids":[]}` {
+		empty.Body.String() != `{"media_id":"`+media.String()+`","post_ids":[]}` {
 		t.Fatalf("no posts: status=%d body=%s", empty.Code, empty.Body.String())
 	}
 

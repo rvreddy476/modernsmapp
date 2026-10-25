@@ -441,7 +441,7 @@ func (s *Store) UpdateAddonGroup(ctx context.Context, ownerID, itemID, groupID u
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	g, err := lockOwnedGroupTx(ctx, tx, ownerID, itemID, groupID)
 	if err != nil {
 		return nil, err
@@ -494,7 +494,7 @@ func (s *Store) DeleteAddonGroup(ctx context.Context, ownerID, itemID, groupID u
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if _, err := lockOwnedGroupTx(ctx, tx, ownerID, itemID, groupID); err != nil {
 		return err
 	}
@@ -568,7 +568,7 @@ func (s *Store) DeleteAddon(ctx context.Context, ownerID, itemID, groupID, addon
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var id uuid.UUID
 	if err := tx.QueryRow(ctx, `
 		SELECT a.id

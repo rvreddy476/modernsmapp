@@ -110,7 +110,7 @@ func (s *Store) UpdateReportStatus(ctx context.Context, reportID uuid.UUID, stat
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var previous string
 	if err := tx.QueryRow(ctx, `SELECT status FROM content_reports WHERE id = $1 FOR UPDATE`, reportID).Scan(&previous); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

@@ -39,7 +39,9 @@ func TestPrivateIntroduction(t *testing.T) {
 				}
 				data := map[string]any{"id": id, "uploader_id": owner, "file_type": "video", "processing_status": "ready", "moderation_status": "passed", "storage_key": "protected/video.mp4", "duration_ms": 60000, "file_size_bytes": 64 << 20}
 				tc.change(data)
-				json.NewEncoder(w).Encode(map[string]any{"data": data})
+				if err := json.NewEncoder(w).Encode(map[string]any{"data": data}); err != nil {
+					t.Error(err)
+				}
 			}))
 			defer server.Close()
 			err := VerifyIntroduction(context.Background(), New(server.URL, "test"), owner, id)

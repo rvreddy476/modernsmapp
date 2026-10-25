@@ -111,5 +111,3 @@ func transitionOrderTx(ctx context.Context, tx pgx.Tx, tr OrderTransition) error
 	}
 	return nil
 }
-
-func uuidPtr(id uuid.UUID) *uuid.UUID { return &id }

@@ -92,7 +92,7 @@ func (w *httpDraftAltTextWriter) SetAltText(ctx context.Context, mediaID, upload
 	if err != nil {
 		return err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPatch,
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, //nolint:gosec // G704: base URL is the configured media-service address; the path is fixed plus a uuid
 		strings.TrimRight(base, "/")+"/v1/media/internal/"+mediaID.String()+"/alt-text", bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -103,7 +103,7 @@ func (w *httpDraftAltTextWriter) SetAltText(ctx context.Context, mediaID, upload
 	if client == nil {
 		client = http.DefaultClient
 	}
-	resp, err := client.Do(req)
+	resp, err := client.Do(req) //nolint:gosec // G704: base URL is the configured media-service address; the path is fixed plus a uuid
 	if err != nil {
 		return err
 	}

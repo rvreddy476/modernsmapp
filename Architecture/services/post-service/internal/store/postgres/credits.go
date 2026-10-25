@@ -179,7 +179,7 @@ func sameCreditText(a, b []PostCredit) bool {
 	return true
 }
 
-const postCreditCols = `id, post_id, position, name, role, user_id, status, created_at, responded_at`
+const postCreditCols = `id, post_id, position, name, role, user_id, status, created_at, responded_at` //nolint:gosec // G101: SQL column list, not a credential
 
 func scanPostCredits(rows pgx.Rows) ([]PostCredit, error) {
 	var out []PostCredit

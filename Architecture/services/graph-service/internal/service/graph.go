@@ -458,8 +458,11 @@ func (s *Service) GetRelationship(ctx context.Context, actorID, targetID uuid.UU
 	// snapshot is marshalled BEFORE IsPrivate is set (and before the
 	// goroutine) so the write below cannot race the encoder.
 	if data, err := json.Marshal(rel); err == nil {
+		// Detached from the request's cancellation so the write survives
+		// the response, as context.Background did, but keeps its values.
+		cacheCtx := context.WithoutCancel(ctx)
 		go func() {
-			s.rdb.Set(context.Background(), cacheKey, data, 60*time.Second)
+			s.rdb.Set(cacheCtx, cacheKey, data, 60*time.Second)
 		}()
 	}
 

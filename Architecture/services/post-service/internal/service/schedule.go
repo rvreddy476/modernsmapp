@@ -334,13 +334,6 @@ func (s *Service) announcePublishedPost(p *postgres.Post, mentions []string) {
 	}()
 }
 
-// maxVideoDuration is the longest attached video in seconds (0 when none
-// or unknown), the DurationSeconds the PostCreated event carries.
-func (s *Service) maxVideoDuration(ctx context.Context, p *postgres.Post) int {
-	dur, _ := s.maxVideoDurationAndHeight(ctx, p)
-	return dur
-}
-
 // maxVideoDurationAndHeight reads the longest duration (seconds) and the
 // tallest frame (pixels) across the post's attached videos in one batch;
 // both 0 when nothing is attached or the metadata is unreadable.

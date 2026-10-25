@@ -59,7 +59,7 @@ func (s *Store) SaveDeliveryArea(ctx context.Context, actor uuid.UUID, a Deliver
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var before any
 	if a.ID == uuid.Nil {
 		if a.Revision != 0 {
@@ -149,7 +149,7 @@ func (s *Store) SaveDeliveryAreaSeller(ctx context.Context, actor uuid.UUID, a D
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	// Serialize insert/update with area edits. A seller is never auto-enabled.
 	var area uuid.UUID
 	if err = tx.QueryRow(ctx, `SELECT id FROM commerce_delivery_areas WHERE id=$1 FOR UPDATE`, a.AreaID).Scan(&area); errors.Is(err, pgx.ErrNoRows) {

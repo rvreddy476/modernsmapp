@@ -17,6 +17,19 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// fakeDownloadAuthority is post-service's old "does the post allow
+// download" answer. It is wired to the gate in these tests exactly as
+// cmd/server wires it, so a test can prove it is never asked.
+type fakeDownloadAuthority struct {
+	err   error
+	asked []string
+}
+
+func (f *fakeDownloadAuthority) AllowDownload(_ context.Context, viewerID, mediaID string) error {
+	f.asked = append(f.asked, viewerID+"/"+mediaID)
+	return f.err
+}
+
 // The file-download route over a real store (owner only since 2026-10-02).
 //
 //	POSTGRES_DSN=postgres://…/media_rec_it_test go test -tags integration ./internal/service -run DownloadIT -v

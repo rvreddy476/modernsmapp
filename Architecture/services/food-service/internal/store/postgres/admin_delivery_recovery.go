@@ -52,7 +52,7 @@ func(s *Store) AdminDeliveryRecovery(ctx context.Context,page Pagination)([]Deli
 func(s *Store) AdminReissueDeliveryCode(ctx context.Context,adminID,orderID uuid.UUID,kind,reason,key string)(map[string]any,error){
  reason=strings.TrimSpace(reason);key=strings.TrimSpace(key)
  if adminID==uuid.Nil||(kind!="pickup"&&kind!="delivery")||reason==""||len(reason)>500||key==""||len(key)>200{return nil,ErrDeliveryRecoveryInvalid}
- tx,err:=s.db.Begin(ctx);if err!=nil{return nil,err};defer tx.Rollback(ctx)
+ tx,err:=s.db.Begin(ctx);if err!=nil{return nil,err};defer func(){_=tx.Rollback(ctx)}() // no-op after Commit
  body,handled,err:=s.lockGenericIdempotency(ctx,tx,adminID,key);if err!=nil{return nil,err}
  if handled {if fmt.Sprint(body["order_id"])!=orderID.String()||body["kind"]!=kind{return nil,ErrDeliveryRecoveryInvalid};return body,tx.Commit(ctx)}
  var os,as,oldCode string;var attempts int

@@ -170,7 +170,7 @@ func (s *Store) ComputeVisitSettlements(ctx context.Context, at time.Time) (int,
 	if e != nil {
 		return 0, e
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if _, e = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(81422006)`); e != nil {
 		return 0, e
 	}

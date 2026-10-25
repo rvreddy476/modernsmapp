@@ -1789,7 +1789,7 @@ func (s *Store) CreateGroupPostV2(ctx context.Context, p *GroupPostV2) error {
 		return err
 	}
 	// A rollback after a successful commit is a no-op, so this needs no flag.
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	query := `INSERT INTO group_posts (id, group_id, channel_id, author_id, content_type, title, body, body_html,
 		type_payload, attachments, needs_approval, is_pinned, is_announcement, status,

@@ -56,7 +56,7 @@ func (s *Store) SetPartnerOnlineFlag(ctx context.Context, partnerID uuid.UUID, o
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var userID uuid.UUID
 	if err := tx.QueryRow(ctx, `SELECT user_id FROM rider_partners WHERE id=$1`, partnerID).Scan(&userID); err != nil {
 		return err

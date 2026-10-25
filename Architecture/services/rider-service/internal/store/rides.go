@@ -84,7 +84,7 @@ func (s *Store) CreateRideAtomic(ctx context.Context, in CreateRideAtomicInput) 
 	if err != nil {
 		return nil, false, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	// 1. Claim idempotency row with ON CONFLICT DO NOTHING
 	const claimQ = `
@@ -237,7 +237,7 @@ func (s *Store) TransitionRideAtomic(ctx context.Context, in TransitionRideAtomi
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	const lockQ = `SELECT ` + rideSelectColumns + ` FROM rider_rides WHERE id = $1 FOR UPDATE`
 	row := tx.QueryRow(ctx, lockQ, in.RideID)

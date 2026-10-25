@@ -190,7 +190,7 @@ func (s *Store) AcceptOfferAndAssignRideTx(ctx context.Context, in AcceptOfferAn
 	if err != nil {
 		return nil, nil, fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	// Step 1: Lock ride aggregate row FIRST (Ride-First Lock Order)
 	const lockRideQ = `SELECT ` + rideSelectColumns + ` FROM rider_rides WHERE id = $1 FOR UPDATE`

@@ -11,7 +11,7 @@ import (
 const (
 	EnvMode               = "DIGILOCKER_MODE"
 	EnvClientID           = "DIGILOCKER_CLIENT_ID"
-	EnvClientSecret       = "DIGILOCKER_CLIENT_SECRET"
+	EnvClientSecret       = "DIGILOCKER_CLIENT_SECRET" //nolint:gosec // G101: name of the env variable, not its value
 	EnvAuthorizeURL       = "DIGILOCKER_AUTHORIZE_URL"
 	EnvTokenURL           = "DIGILOCKER_TOKEN_URL"
 	EnvIssuedDocumentsURL = "DIGILOCKER_ISSUED_DOCUMENTS_URL"

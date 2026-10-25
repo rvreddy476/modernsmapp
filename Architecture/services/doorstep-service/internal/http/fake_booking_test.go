@@ -60,10 +60,9 @@ type fakeBooking struct {
 }
 
 type fakeChange struct {
-	in      store.ChangeInput
-	status  string
-	prev    int64
-	refunds []uuid.UUID
+	in     store.ChangeInput
+	status string
+	prev   int64
 }
 
 type fakeRefund struct {

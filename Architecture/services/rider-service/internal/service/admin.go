@@ -80,17 +80,6 @@ func (s *Service) ApprovePartner(ctx context.Context, partnerID, adminID uuid.UU
 	return p, nil
 }
 
-// partnerUserIDOf resolves the captain's user id for a partner-facing event
-// (uuid.Nil when the partner cannot be read; the event still carries
-// partner_id and notification-service warns on the fallback).
-func (s *Service) partnerUserIDOf(ctx context.Context, partnerID uuid.UUID) uuid.UUID {
-	p, err := s.store.GetPartner(ctx, partnerID)
-	if err != nil || p == nil {
-		return uuid.Nil
-	}
-	return p.UserID
-}
-
 // RejectPartner sets status=rejected and stores the admin reason.
 func (s *Service) RejectPartner(ctx context.Context, partnerID, adminID uuid.UUID, reason string) error {
 	if strings.TrimSpace(reason) == "" {

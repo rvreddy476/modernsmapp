@@ -29,7 +29,7 @@ func InstallDomain(ctx context.Context, db *pgxpool.Pool, c Category) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('partner-work-domain-install'))`); err != nil {
 		return err
 	}

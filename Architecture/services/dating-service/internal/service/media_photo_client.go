@@ -51,7 +51,7 @@ func (c *HTTPMediaPhotoClient) call(ctx context.Context, method, path string, bo
 		}
 		rd = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, rd)
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, rd) //nolint:gosec // G704: base URL is the configured internal service address; the path is fixed plus a uuid
 	if err != nil {
 		return 0, nil, fmt.Errorf("%w: build request: %v", ErrPhotoMediaUnavailable, err)
 	}
@@ -61,7 +61,7 @@ func (c *HTTPMediaPhotoClient) call(ctx context.Context, method, path string, bo
 	if c.internalKey != "" {
 		req.Header.Set("X-Internal-Service-Key", c.internalKey)
 	}
-	resp, err := c.client.Do(req)
+	resp, err := c.client.Do(req) //nolint:gosec // G704: base URL is the configured internal service address; the path is fixed plus a uuid
 	if err != nil {
 		return 0, nil, fmt.Errorf("%w: media-service unreachable: %v", ErrPhotoMediaUnavailable, err)
 	}

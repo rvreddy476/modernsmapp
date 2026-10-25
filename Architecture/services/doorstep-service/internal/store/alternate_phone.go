@@ -13,7 +13,7 @@ func (s *Store) RequestAlternatePhone(ctx context.Context, uid uuid.UUID, hash s
 	if err != nil {
 		return "", err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var id uuid.UUID
 	var last *string
 	var verified, sent, window *time.Time
@@ -53,7 +53,7 @@ func (s *Store) VerifyAlternatePhone(ctx context.Context, uid uuid.UUID, code st
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var id uuid.UUID
 	var hash *string
 	var expires, verified *time.Time

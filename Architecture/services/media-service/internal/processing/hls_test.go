@@ -344,7 +344,9 @@ func TestHLSMasterBandwidthIsTheMeasuredPeak(t *testing.T) {
 	seg("720p_000.ts", 3_000_000) // 4 Mbit/s over 6 s
 	seg("720p_001.ts", 1_500_000) // 2 Mbit/s
 	seg("720p_002.ts", 200_000)   // 0.2 s tail: 8 Mbit/s, ignored
-	os.WriteFile(pl, []byte("#EXTM3U\n#EXTINF:6.000000,\n720p_000.ts\n#EXTINF:6.0,\n720p_001.ts\n#EXTINF:0.2,\n720p_002.ts\n#EXT-X-ENDLIST\n"), 0o644)
+	if err := os.WriteFile(pl, []byte("#EXTM3U\n#EXTINF:6.000000,\n720p_000.ts\n#EXTINF:6.0,\n720p_001.ts\n#EXTINF:0.2,\n720p_002.ts\n#EXT-X-ENDLIST\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	got, ok := peakSegmentBandwidth(pl)
 	if !ok || got != 4_000_000 {
 		t.Fatalf("peak = %d, %v; want 4000000", got, ok)
@@ -353,7 +355,9 @@ func TestHLSMasterBandwidthIsTheMeasuredPeak(t *testing.T) {
 	// Only a short segment: it is all there is, so it counts.
 	pl2 := filepath.Join(dir, "360p.m3u8")
 	seg("360p_000.ts", 50_000)
-	os.WriteFile(pl2, []byte("#EXTM3U\n#EXTINF:0.5,\n360p_000.ts\n#EXT-X-ENDLIST\n"), 0o644)
+	if err := os.WriteFile(pl2, []byte("#EXTM3U\n#EXTINF:0.5,\n360p_000.ts\n#EXT-X-ENDLIST\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 	if got, ok := peakSegmentBandwidth(pl2); !ok || got != 800_000 {
 		t.Fatalf("short-only peak = %d, %v; want 800000", got, ok)
 	}

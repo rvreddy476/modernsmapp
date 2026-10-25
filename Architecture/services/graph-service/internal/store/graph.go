@@ -1303,7 +1303,7 @@ func (s *Store) EnsureConnection(ctx context.Context, a, b uuid.UUID) (bool, err
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	userA, userB := normalizePair(a, b)
 	tag, err := tx.Exec(ctx, `

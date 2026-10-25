@@ -585,6 +585,8 @@ func (s *Service) PublishDraft(ctx context.Context, draftID uuid.UUID, authorID 
 	// Mark draft as published
 	if err := s.pgStore.MarkDraftPublished(ctx, draftID, post.ID); err != nil {
 		// Non-fatal: the post was already created
+		slog.Warn("draft publish: draft not marked published",
+			"draft_id", draftID, "post_id", post.ID, "error", err)
 	}
 
 	return post, nil

@@ -65,7 +65,7 @@ func NewTopicProjector(db *pgxpool.Pool, rdb *redis.Client) *TopicProjector {
 		if d, err := time.ParseDuration(raw); err == nil && d > 0 {
 			interval = d
 		} else {
-			log.Printf("ignoring invalid FEED_TOPIC_PROJECTION_INTERVAL=%q", raw)
+			log.Printf("ignoring invalid FEED_TOPIC_PROJECTION_INTERVAL=%q", raw) //nolint:gosec // G706: operator env value, %q-quoted so it cannot forge log lines
 		}
 	}
 	return &TopicProjector{db: db, rdb: rdb, interval: interval, window: topicWindow}

@@ -82,7 +82,7 @@ func (s *Store) AdminSetPageStatus(ctx context.Context, d PageStatusDecision) er
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	var current string
 	if err := tx.QueryRow(ctx,
@@ -120,7 +120,7 @@ func (s *Store) AdminDecidePageDocument(ctx context.Context, d PageDocumentDecis
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	var pageID uuid.UUID
 	var current string

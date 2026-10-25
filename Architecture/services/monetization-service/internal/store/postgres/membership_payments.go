@@ -175,7 +175,7 @@ func (s *Store) createMembershipJoinTx(ctx context.Context, in JoinInput) (*Memb
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if err := lockPairTx(ctx, tx, in.SubscriberID, in.CreatorID); err != nil {
 		return nil, err
 	}
@@ -291,7 +291,7 @@ func (s *Store) CreateMembershipRenewal(ctx context.Context, in RenewalInput) (*
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	sub, err := scanSubscription(tx.QueryRow(ctx, `SELECT `+subscriptionColumns+` FROM subscriptions WHERE id = $1 FOR UPDATE`, in.SubscriptionID))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -393,7 +393,7 @@ func (s *Store) CreateMembershipUpgrade(ctx context.Context, in UpgradeCheckoutI
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	sub, err := scanSubscription(tx.QueryRow(ctx, `SELECT `+subscriptionColumns+` FROM subscriptions WHERE id = $1 FOR UPDATE`, in.SubscriptionID))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -576,7 +576,7 @@ func (s *Store) ApplyMembershipPaymentEvent(ctx context.Context, ev membership.E
 	if err != nil {
 		return applied, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	claim := paymentevents.Claim{EventID: ev.EventID, EventType: ev.EventType, IntentID: ev.IntentID,
 		ReferenceID: ev.PaymentID, AmountMinor: ev.AmountMinor, Currency: ev.Currency}
@@ -784,7 +784,7 @@ func (s *Store) RequestMembershipSupportRefund(ctx context.Context, in SupportRe
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	p, err := scanPayment(tx.QueryRow(ctx, `SELECT `+paymentColumns+` FROM membership_payments WHERE id = $1 FOR UPDATE`, in.PaymentID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrMembershipPaymentNotFound
@@ -893,7 +893,7 @@ func (s *Store) SweepStalePendingJoins(ctx context.Context, cutoff time.Time) ([
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	rows, err := tx.Query(ctx, `
 		UPDATE subscriptions SET status = 'expired'
 		WHERE id IN (
@@ -962,7 +962,7 @@ func (s *Store) ExpireEndedMemberships(ctx context.Context, now time.Time) ([]Ex
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	rows, err := tx.Query(ctx, `
 		WITH due AS (
 			SELECT id, status AS from_status, counted AS was_counted FROM subscriptions

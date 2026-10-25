@@ -213,7 +213,7 @@ func mp4TranscodeArgs(inputPath, outputPath string, maxHeight int, p mp4Profile)
 
 // TranscodeToMP4 transcodes a long video to a specific resolution.
 func TranscodeToMP4(ctx context.Context, inputPath, outputPath string, maxHeight int) error {
-	cmd := exec.CommandContext(ctx, "ffmpeg", mp4TranscodeArgs(inputPath, outputPath, maxHeight, longFormMP4Profile)...)
+	cmd := exec.CommandContext(ctx, "ffmpeg", mp4TranscodeArgs(inputPath, outputPath, maxHeight, longFormMP4Profile)...) //nolint:gosec // G204: fixed ffmpeg binary, argv without a shell; paths are worker-built temp files
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }
@@ -338,7 +338,7 @@ const MinVideoResolution = 360
 // TranscodeToMP4Fast transcodes with ultrafast preset for reels where encode
 // speed matters more than compression ratio.
 func TranscodeToMP4Fast(ctx context.Context, inputPath, outputPath string, maxHeight int) error {
-	cmd := exec.CommandContext(ctx, "ffmpeg", mp4TranscodeArgs(inputPath, outputPath, maxHeight, reelMP4Profile)...)
+	cmd := exec.CommandContext(ctx, "ffmpeg", mp4TranscodeArgs(inputPath, outputPath, maxHeight, reelMP4Profile)...) //nolint:gosec // G204: fixed ffmpeg binary, argv without a shell; paths are worker-built temp files
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
 }

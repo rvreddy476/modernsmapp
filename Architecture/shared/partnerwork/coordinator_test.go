@@ -42,7 +42,7 @@ func transaction(db *pgxpool.Pool, f func(pgx.Tx) error) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if err = f(tx); err != nil {
 		return err
 	}

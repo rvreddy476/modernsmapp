@@ -33,7 +33,9 @@ func TestOwnedPrivateReadyImage(t *testing.T) {
 				}
 				data := map[string]any{"id": id, "uploader_id": owner, "file_type": "image", "processing_status": "ready", "moderation_status": "passed", "storage_key": "protected/identity.jpg"}
 				tc.change(data)
-				json.NewEncoder(w).Encode(map[string]any{"data": data})
+				if err := json.NewEncoder(w).Encode(map[string]any{"data": data}); err != nil {
+					t.Error(err)
+				}
 			}))
 			defer srv.Close()
 			err := New(srv.URL, "test-key").VerifyOwnedImage(context.Background(), owner, id)

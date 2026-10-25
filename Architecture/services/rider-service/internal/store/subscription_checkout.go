@@ -127,7 +127,7 @@ func (s *Store) ActivateTrialSubscription(ctx context.Context, partnerID, planID
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var id uuid.UUID
 	err = tx.QueryRow(ctx, `
         UPDATE rider_partners SET trial_used_at = $2, updated_at = NOW()

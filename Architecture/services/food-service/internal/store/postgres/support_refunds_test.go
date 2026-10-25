@@ -87,7 +87,9 @@ func TestSupportRefundApprovalIsAtomicConcurrentAndSettledByEvent(t *testing.T) 
 		t.Fatalf("bad plan %+v", plan)
 	}
 	var n int
-	s.db.QueryRow(ctx, `SELECT COUNT(*) FROM food.refunds WHERE order_id=$1`, order).Scan(&n)
+	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM food.refunds WHERE order_id=$1`, order).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
 	if n != 1 {
 		t.Fatalf("duplicate refunds %d", n)
 	}
@@ -97,7 +99,9 @@ func TestSupportRefundApprovalIsAtomicConcurrentAndSettledByEvent(t *testing.T) 
 	if err = s.RecordRefundSubmissionFailure(ctx, plan.RefundID); err != nil {
 		t.Fatal(err)
 	}
-	s.db.Exec(ctx, `UPDATE food.refunds SET created_at=NOW()-INTERVAL '2 minutes',raw_response=raw_response || jsonb_build_object('next_submission_at',NOW()-INTERVAL '1 second') WHERE id=$1`, plan.RefundID)
+	if _, err := s.db.Exec(ctx, `UPDATE food.refunds SET created_at=NOW()-INTERVAL '2 minutes',raw_response=raw_response || jsonb_build_object('next_submission_at',NOW()-INTERVAL '1 second') WHERE id=$1`, plan.RefundID); err != nil {
+		t.Fatal(err)
+	}
 	retry, err := s.ListUnsubmittedSystemRefunds(ctx, time.Minute, 500)
 	if err != nil {
 		t.Fatal(err)
@@ -126,7 +130,9 @@ func TestSupportRefundApprovalIsAtomicConcurrentAndSettledByEvent(t *testing.T) 
 		t.Fatalf("provider duplicate: %+v %v", applied, err)
 	}
 	var status, txn string
-	s.db.QueryRow(ctx, `SELECT status::text,refund_txn_id FROM food.refund_requests WHERE id=$1`, req.ID).Scan(&status, &txn)
+	if err := s.db.QueryRow(ctx, `SELECT status::text,refund_txn_id FROM food.refund_requests WHERE id=$1`, req.ID).Scan(&status, &txn); err != nil {
+		t.Fatal(err)
+	}
 	if status != "processed" || txn != ev.ProviderRefundID {
 		t.Fatalf("readback %s %s", status, txn)
 	}
@@ -147,12 +153,16 @@ func TestSupportRefundCannotApproveUncapturedOrForeignLegacyRequest(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.db.Exec(ctx, `UPDATE food.refund_requests SET customer_id=$2 WHERE id=$1`, req.ID, uuid.New())
+	if _, err := s.db.Exec(ctx, `UPDATE food.refund_requests SET customer_id=$2 WHERE id=$1`, req.ID, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
 	if err = s.DecideRefund(ctx, uuid.New(), req.ID, "approved", ""); !errors.Is(err, ErrRefundNotEligible) {
 		t.Fatalf("legacy foreign: %v", err)
 	}
 	var n int
-	s.db.QueryRow(ctx, `SELECT COUNT(*) FROM food.refunds WHERE order_id=$1`, order).Scan(&n)
+	if err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM food.refunds WHERE order_id=$1`, order).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
 	if n != 0 {
 		t.Fatal("failed approval created refund")
 	}
@@ -176,7 +186,9 @@ func TestRefundFailureEventIsVisibleWithoutMarkingProcessed(t *testing.T) {
 	}
 	plan, _ := s.SupportRefundPlan(ctx, req.ID)
 	command := uuid.NewString()
-	s.MarkRefundSubmitted(ctx, plan.RefundID, map[string]any{"payments_command_id": command})
+	if err := s.MarkRefundSubmitted(ctx, plan.RefundID, map[string]any{"payments_command_id": command}); err != nil {
+		t.Fatal(err)
+	}
 	ev := payments.Event{EventID: uuid.NewString(), EventType: events.EventPaymentRefundFailed, OrderID: order, IntentID: intent, CommandID: command, AmountMinor: 25000}
 	if _, err = s.ApplyPaymentEvent(ctx, ev); err != nil {
 		t.Fatal(err)
@@ -205,7 +217,9 @@ func TestRefundFailureEventIsVisibleWithoutMarkingProcessed(t *testing.T) {
 		t.Fatal(err)
 	}
 	var status string
-	s.db.QueryRow(ctx, `SELECT status::text FROM food.refund_requests WHERE id=$1`, req.ID).Scan(&status)
+	if err := s.db.QueryRow(ctx, `SELECT status::text FROM food.refund_requests WHERE id=$1`, req.ID).Scan(&status); err != nil {
+		t.Fatal(err)
+	}
 	if status != "processed" {
 		t.Fatal(status)
 	}

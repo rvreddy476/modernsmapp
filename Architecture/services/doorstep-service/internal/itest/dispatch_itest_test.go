@@ -919,7 +919,7 @@ func TestDutyLocationAndStaleFix(t *testing.T) {
 		status, body := dr.pro(u, "GET", p, "")
 		want(t, p, status, body, 200)
 	}
-	status, body = dr.pro(u, "GET", "/me/bank", "")
+	_, body = dr.pro(u, "GET", "/me/bank", "") // status asserted by the loop above
 	if !strings.Contains(string(body), `"account_last4":"1234"`) || strings.Contains(string(body), "sealed") {
 		t.Fatalf("bank: %s", body)
 	}

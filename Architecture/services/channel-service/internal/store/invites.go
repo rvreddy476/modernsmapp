@@ -56,7 +56,7 @@ func (s *Store) CreateChannelInvite(ctx context.Context, channelID, createdBy uu
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE channel_invites SET revoked_at = NOW()

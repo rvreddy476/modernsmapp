@@ -43,7 +43,7 @@ func (s *Store) BindRidePaymentIntent(ctx context.Context, paymentID, intentID u
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	const q = `
         UPDATE rider_ride_payments
         SET intent_id = $2, provider_reference = NULLIF($3, ''), payment_method = $4,
@@ -71,7 +71,7 @@ func (s *Store) SwitchRidePaymentToCash(ctx context.Context, rideID uuid.UUID) (
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	const q = `
         UPDATE rider_ride_payments
         SET payment_method = 'cash', status = 'pending_cash_confirmation', failure_reason = NULL, updated_at = NOW()
@@ -229,7 +229,7 @@ func (s *Store) ApplyRidePaymentEvent(ctx context.Context, ev payments.Event) (p
 	if err != nil {
 		return applied, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	claim := paymentevents.Claim{
 		EventID: ev.EventID, EventType: ev.EventType, IntentID: ev.IntentID,

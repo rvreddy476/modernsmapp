@@ -540,7 +540,7 @@ func (s *Service) StartRide(ctx context.Context, partnerUserID, rideID uuid.UUID
 	if err != nil {
 		return fmt.Errorf("begin tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	const lockQ = `
         SELECT id, customer_user_id, status, revision, otp_code, otp_expires_at, otp_attempts, otp_locked_until
@@ -650,7 +650,7 @@ func (s *Service) ConfirmCashPayment(ctx context.Context, partnerUserID, rideID 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	const lockQ = `SELECT revision FROM rider_rides WHERE id = $1 FOR UPDATE`
 	var rev int

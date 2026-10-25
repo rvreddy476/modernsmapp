@@ -34,7 +34,7 @@ func (s *Store) CreatePartnerSupport(ctx context.Context, user, ride uuid.UUID, 
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var customer, partner uuid.UUID
 	err = tx.QueryRow(ctx, `SELECT r.customer_user_id,p.id FROM rider_rides r JOIN rider_partners p ON p.id=r.partner_id WHERE r.id=$1 AND p.user_id=$2 FOR SHARE OF r,p`, ride, user).Scan(&customer, &partner)
 	if errors.Is(err, pgx.ErrNoRows) {

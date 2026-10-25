@@ -45,7 +45,7 @@ const (
 	// operator path touches it. Money settles on frozen days.
 	freezeWindow = 48 * time.Hour
 
-	settingDailyRollupWatermark = "daily_rollup_watermark"
+	settingDailyRollupWatermark = "daily_rollup_watermark" //nolint:gosec // G101: settings-table key name, not a credential
 )
 
 // ErrDayFrozen is returned by RollupDay for a day outside the
@@ -106,7 +106,7 @@ func viewCapFromEnv() int {
 	}
 	parsed, err := strconv.Atoi(raw)
 	if err != nil {
-		log.Printf("[DailyRollup] %s=%q is not an integer; using default %d",
+		log.Printf("[DailyRollup] %s=%q is not an integer; using default %d", //nolint:gosec // G706: operator env value, %q-quoted so it cannot forge log lines
 			viewCapEnv, raw, defaultViewCapPerViewerPerDay)
 		return defaultViewCapPerViewerPerDay
 	}
@@ -350,7 +350,7 @@ func (d *DailyRollup) rebuildDayTx(ctx context.Context, day, dayEnd time.Time, s
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	// One rollup of a day at a time, across instances and the operator
 	// route. Blocking rather than try: an operator asking for a day the

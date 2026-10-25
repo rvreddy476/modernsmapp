@@ -146,7 +146,7 @@ func perturb(t *testing.T, v reflect.Value) {
 			return
 		}
 		v.Set(reflect.Append(v, reflect.ValueOf("changed")))
-	case reflect.Ptr:
+	case reflect.Pointer:
 		next := reflect.New(v.Type().Elem())
 		if !v.IsNil() {
 			next.Elem().Set(v.Elem())

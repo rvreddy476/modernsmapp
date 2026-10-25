@@ -212,16 +212,12 @@ func buildProfileDetail(bio string, languages []string, basics ProfileBasics, pr
 	return d
 }
 
-// buildPersonCard renders one compact row for one viewer. matched says
-// whether the viewer currently has an open match with this person, and viewer
-// is the viewer's own profile (nil = no distance bucket).
-func buildPersonCard(row *store.PersonRow, matched bool, viewer *store.Profile) *PersonCard {
-	return buildPersonCardDetail(row, matched, viewer, nil, nil, false)
-}
-
-// buildPersonCardDetail is buildPersonCard plus the pre-match detail block.
-// withDetail is the switch, so a caller that must stay compact (the match
-// list, trusted contacts, location shares) cannot grow the block by accident.
+// buildPersonCardDetail renders one row for one viewer. matched says whether
+// the viewer currently has an open match with this person, and viewer is the
+// viewer's own profile (nil = no distance bucket). withDetail adds the
+// pre-match detail block; it is the switch, so a caller that must stay
+// compact (the match list, trusted contacts, location shares) cannot grow the
+// block by accident.
 func buildPersonCardDetail(row *store.PersonRow, matched bool, viewer *store.Profile,
 	prompts []store.Prompt, photos []store.PhotoRef, withDetail bool) *PersonCard {
 	if row == nil {

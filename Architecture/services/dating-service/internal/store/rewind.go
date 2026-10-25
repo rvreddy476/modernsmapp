@@ -32,6 +32,8 @@ var (
 // rewindablePassSQL selects the one pass a rewind may undo: the user's most
 // recent live pass, and only when no spark of theirs and no rewind of theirs
 // is newer than it. $1 is the user.
+//
+//nolint:gosec // G101: SQL text, not a credential
 const rewindablePassSQL = `
     SELECT dp.candidate_id FROM dating_passes dp
     WHERE dp.user_id = $1

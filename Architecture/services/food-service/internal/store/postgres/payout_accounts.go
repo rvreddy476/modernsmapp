@@ -251,7 +251,7 @@ func (s *Store) UpsertRestaurantPayoutAccount(ctx context.Context, ownerUserID, 
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if _, err := lockOwnedRestaurantTx(ctx, tx, ownerUserID, restaurantID); err != nil {
 		return nil, err
 	}
@@ -270,7 +270,7 @@ func (s *Store) GetRestaurantPayoutAccount(ctx context.Context, ownerUserID, res
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if _, err := lockOwnedRestaurantTx(ctx, tx, ownerUserID, restaurantID); err != nil {
 		return nil, err
 	}
@@ -295,7 +295,7 @@ func (s *Store) UpsertDeliveryPartnerPayoutAccount(ctx context.Context, userID u
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var partnerID uuid.UUID
 	if err := tx.QueryRow(ctx, `SELECT id FROM food.delivery_partners WHERE user_id = $1 FOR UPDATE`, userID).Scan(&partnerID); err != nil {
 		return nil, err

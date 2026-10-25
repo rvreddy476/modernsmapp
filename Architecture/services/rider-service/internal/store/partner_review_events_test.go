@@ -97,7 +97,11 @@ func TestPartnerReviewOutboxFailureRollsBackDecisions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.db.Exec(ctx, `DROP TRIGGER reject_test_review ON rider.outbox_events; DROP FUNCTION rider.reject_test_review()`)
+	defer func() {
+		if _, err := s.db.Exec(ctx, `DROP TRIGGER reject_test_review ON rider.outbox_events; DROP FUNCTION rider.reject_test_review()`); err != nil {
+			t.Errorf("drop test trigger: %v", err)
+		}
+	}()
 	if err := s.UpdatePartnerStatus(ctx, p.ID, "rejected"); err == nil {
 		t.Fatal("decision ignored queue failure")
 	}

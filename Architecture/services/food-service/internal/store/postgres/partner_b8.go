@@ -356,7 +356,7 @@ func (s *Store) patchPartnerRestaurant(ctx context.Context, ownerID, restaurantI
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var currentName string
 	var partnerID uuid.UUID
 	if err := tx.QueryRow(ctx, `

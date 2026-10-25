@@ -42,7 +42,7 @@ func SeedTestPartners(ctx context.Context, db *pgxpool.Pool, getenv func(string)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var actual string
 	if err = tx.QueryRow(ctx, `SELECT current_database()`).Scan(&actual); err != nil {
 		return err

@@ -1,9 +1,6 @@
 package fingerprint
 
-import (
-	"fmt"
-	"testing"
-)
+import "testing"
 
 // Survey of lavfi sources for the harness (run with -run Survey -v in the
 // worker container): how much informative weight each yields at 2 fps, and
@@ -47,6 +44,6 @@ func TestHarnessSurveySources(t *testing.T) {
 		if len(ds) > 0 {
 			med = ds[len(ds)/2]
 		}
-		t.Log(fmt.Sprintf("%-16s frames %3d informative %5d ms  0.2s-phase nearest-neighbour median Hamming %d", name, len(r.Frames), inf, med))
+		t.Logf("%-16s frames %3d informative %5d ms  0.2s-phase nearest-neighbour median Hamming %d", name, len(r.Frames), inf, med)
 	}
 }

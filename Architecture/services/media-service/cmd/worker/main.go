@@ -279,8 +279,8 @@ func processTranscodeLocked(ctx context.Context, envelope events.EventEnvelope,
 		return nil
 	}
 	if superseded, current := supersededDelivery(ctx, pgStore, mediaAssetID, envelope.EventID); superseded {
-		log.Printf("Transcode event %s for media %s superseded by re-queued event %s; skipping",
-			envelope.EventID, payload.MediaAssetID, current)
+		log.Printf("Transcode event %q for media %s superseded by re-queued event %q; skipping", //nolint:gosec // G706: the event ids are %q-quoted; the media id is a parsed uuid
+			envelope.EventID, mediaAssetID, current)
 		return nil
 	}
 
@@ -531,8 +531,8 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 		if err := pgStore.UpdateMediaFileSize(ctx, mediaAssetID, rotatedSize); err != nil {
 			return fmt.Errorf("update original size: %w", err)
 		}
-		log.Printf("Rotation override %d° applied to original of media %s (%d bytes)",
-			payload.RotateDegrees, payload.MediaAssetID, rotatedSize)
+		log.Printf("Rotation override %d° applied to original of media %s (%d bytes)", //nolint:gosec // G706: an int, a parsed uuid and an int64; nothing can forge a log line
+			payload.RotateDegrees, mediaAssetID, rotatedSize)
 		inputPath = rotatedPath
 	}
 
@@ -674,11 +674,11 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 	} else {
 		for _, key := range stale {
 			if err := blobStore.DeleteObject(ctx, key); err != nil {
-				log.Printf("Warning: stale variant object %s for %s not deleted: %v", key, payload.MediaAssetID, err)
+				log.Printf("Warning: stale variant object %s for %s not deleted: %v", key, mediaAssetID, err) //nolint:gosec // G706: object key read back from our own variant rows; media id is a parsed uuid
 			}
 		}
 		if len(stale) > 0 {
-			log.Printf("Pruned %d stale variant(s) for media %s", len(stale), payload.MediaAssetID)
+			log.Printf("Pruned %d stale variant(s) for media %s", len(stale), mediaAssetID) //nolint:gosec // G706: a count and a parsed uuid
 		}
 	}
 
@@ -786,7 +786,7 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 				continue
 			}
 			if err := blobStore.DeleteObject(ctx, key); err != nil {
-				log.Printf("Warning: stale HLS object %s not deleted: %v", key, err)
+				log.Printf("Warning: stale HLS object %s not deleted: %v", key, err) //nolint:gosec // G706: object key listed from our own HLS prefix in the media bucket
 			}
 		}
 	}

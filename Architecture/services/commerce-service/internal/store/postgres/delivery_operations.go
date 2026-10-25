@@ -176,7 +176,7 @@ func (s *Store) SaveDeliveryLocation(ctx context.Context, user, owner uuid.UUID,
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var id uuid.UUID
 	if kind == "order" {
 		err = tx.QueryRow(ctx, `SELECT id FROM orders WHERE id=$1 AND customer_user_id=$2 AND payment_status<>'paid' AND status NOT IN ('cancelled','delivered','refunded') FOR UPDATE`, owner, user).Scan(&id)
@@ -218,7 +218,7 @@ func (s *Store) PrepareLocalDelivery(ctx context.Context, order, seller uuid.UUI
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var customer uuid.UUID
 	var paid, method, status string
 	err = tx.QueryRow(ctx, `SELECT customer_user_id,payment_status,COALESCE(payment_method,''),status FROM orders WHERE id=$1 FOR UPDATE`, order).Scan(&customer, &paid, &method, &status)
@@ -319,7 +319,7 @@ func (s *Store) SellerDeliveryReady(ctx context.Context, user, job uuid.UUID) (s
 	if err != nil {
 		return "", err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	j, err := scanDeliveryJob(tx.QueryRow(ctx, `SELECT `+deliveryJobCols+` FROM commerce_delivery_jobs WHERE id=$1 AND seller_id IN (SELECT id FROM sellers WHERE user_id=$2) FOR UPDATE`, job, user))
 	if err != nil {
 		return "", err
@@ -400,7 +400,7 @@ func (s *Store) CreateDeliveryOffer(ctx context.Context, job, user, reservation 
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	j, err := scanDeliveryJob(tx.QueryRow(ctx, `SELECT `+deliveryJobCols+` FROM commerce_delivery_jobs WHERE id=$1 FOR UPDATE`, job))
 	if err != nil {
 		return nil, err
@@ -473,7 +473,7 @@ func (s *Store) DecideDeliveryOffer(ctx context.Context, user, id uuid.UUID, acc
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	j, err := scanDeliveryJob(tx.QueryRow(ctx, `SELECT `+deliveryJobCols+` FROM commerce_delivery_jobs WHERE id=$1 FOR UPDATE`, o.JobID))
 	if err != nil {
 		return nil, err
@@ -528,7 +528,7 @@ func (s *Store) TransitionDeliveryJob(ctx context.Context, user, id uuid.UUID, a
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	// Order before job is the global lock order for shipment and customer tracking.
 	var orderID uuid.UUID
 	if err = tx.QueryRow(ctx, `SELECT order_id FROM commerce_delivery_jobs WHERE id=$1 AND partner_user_id=$2`, id, user).Scan(&orderID); err != nil {
@@ -696,7 +696,7 @@ func (s *Store) DeliverySupport(ctx context.Context, user, id uuid.UUID, reason 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	j, err := scanDeliveryJob(tx.QueryRow(ctx, `SELECT `+deliveryJobCols+` FROM commerce_delivery_jobs WHERE id=$1 AND partner_user_id=$2 FOR SHARE`, id, user))
 	if err != nil {
 		return err
@@ -919,7 +919,7 @@ func (s *Store) AdminDeliveryAction(ctx context.Context, actor, id uuid.UUID, ac
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	j, err := scanDeliveryJob(tx.QueryRow(ctx, `SELECT `+deliveryJobCols+` FROM commerce_delivery_jobs WHERE id=$1 FOR UPDATE`, id))
 	if err != nil {
 		return err
@@ -1023,7 +1023,7 @@ func (s *Store) ResolveDeliverySupport(ctx context.Context, actor, id uuid.UUID,
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var job uuid.UUID
 	err = tx.QueryRow(ctx, `UPDATE commerce_delivery_support SET status='resolved' WHERE id=$1 AND status='open' RETURNING job_id`, id).Scan(&job)
 	if err != nil {

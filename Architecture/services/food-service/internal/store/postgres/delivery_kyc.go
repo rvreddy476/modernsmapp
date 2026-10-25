@@ -267,7 +267,7 @@ func (s *Store) AddDeliveryPartnerDocument(ctx context.Context, userID uuid.UUID
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var partnerID uuid.UUID
 	if err := tx.QueryRow(ctx, `SELECT id FROM food.delivery_partners WHERE user_id = $1 FOR UPDATE`, userID).Scan(&partnerID); err != nil {
 		return nil, err
@@ -341,7 +341,7 @@ func (s *Store) RecordDigiLockerVerification(ctx context.Context, partnerID uuid
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var locked uuid.UUID
 	if err := tx.QueryRow(ctx, `SELECT id FROM food.delivery_partners WHERE id = $1 FOR UPDATE`, partnerID).Scan(&locked); err != nil {
 		return err
@@ -521,7 +521,7 @@ func (s *Store) AdminDecideDeliveryPartnerDocument(ctx context.Context, adminID,
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var unusable bool
 	if err := tx.QueryRow(ctx, `
 		SELECT (expires_at IS NOT NULL AND expires_at <= NOW()) OR status = 'EXPIRED'

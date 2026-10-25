@@ -37,7 +37,7 @@ func (s *Store) ApproveGroupPost(ctx context.Context, id uuid.UUID, approvedBy s
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	now := time.Now()
 	tag, err := tx.Exec(ctx,

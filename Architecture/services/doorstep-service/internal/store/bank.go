@@ -63,7 +63,7 @@ func (s *Store) SetPayoutAccount(ctx context.Context, proID uuid.UUID, in BankSu
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var status string
 	if err = tx.QueryRow(ctx, `SELECT status FROM doorstep.professionals WHERE id=$1 FOR UPDATE`, proID).Scan(&status); err != nil {
 		return nil, mapErr(err)

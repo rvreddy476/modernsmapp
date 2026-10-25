@@ -117,7 +117,7 @@ func envDuration(name string, def time.Duration) time.Duration {
 		if d, err := time.ParseDuration(v); err == nil && d >= 0 {
 			return d
 		}
-		log.Printf("%s=%q is not a duration; using %s", name, v, def)
+		log.Printf("%s=%q is not a duration; using %s", name, v, def) //nolint:gosec // G706: operator env value, %q-quoted so it cannot forge log lines
 	}
 	return def
 }
@@ -127,7 +127,7 @@ func envInt(name string, def int) int {
 		if n, err := strconv.Atoi(v); err == nil && n >= 0 {
 			return n
 		}
-		log.Printf("%s=%q is not a non-negative integer; using %d", name, v, def)
+		log.Printf("%s=%q is not a non-negative integer; using %d", name, v, def) //nolint:gosec // G706: operator env value, %q-quoted so it cannot forge log lines
 	}
 	return def
 }

@@ -1,6 +1,7 @@
 package postgres
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -118,11 +119,11 @@ func TestDeriveSessionMeasuresFallsBackWithoutABitmap(t *testing.T) {
 }
 
 func TestSessionUpdateWithoutSessionIDIsRefused(t *testing.T) {
-	err := applySessionUpdate(nil, nil, Event{Session: &SessionUpdate{Kind: "play_end"}, Timestamp: time.Now()})
+	err := applySessionUpdate(context.TODO(), nil, Event{Session: &SessionUpdate{Kind: "play_end"}, Timestamp: time.Now()})
 	if err == nil {
 		t.Fatal("a playback update with the nil session was applied")
 	}
-	if err := applySessionUpdate(nil, nil, Event{SessionID: uuid.New()}); err != nil {
+	if err := applySessionUpdate(context.TODO(), nil, Event{SessionID: uuid.New()}); err != nil {
 		t.Fatalf("a non-playback event (nil Session) must be a no-op, got %v", err)
 	}
 }

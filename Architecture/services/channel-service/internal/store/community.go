@@ -95,7 +95,7 @@ func (s *Store) SetReaction(ctx context.Context, updateID, userID uuid.UUID, emo
 	if err != nil {
 		return "", err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	var previous string
 	err = tx.QueryRow(ctx, `SELECT emoji FROM update_reactions WHERE update_id = $1 AND user_id = $2 FOR UPDATE`,
@@ -122,7 +122,7 @@ func (s *Store) RemoveReaction(ctx context.Context, updateID, userID uuid.UUID) 
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	tag, err := tx.Exec(ctx, `DELETE FROM update_reactions WHERE update_id = $1 AND user_id = $2`, updateID, userID)
 	if err != nil {
 		return false, err

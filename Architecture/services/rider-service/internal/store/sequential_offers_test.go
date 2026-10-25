@@ -163,7 +163,11 @@ func TestSequentialRideOfferOutboxFailureRollsBackOffer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.db.Exec(ctx, `DROP TRIGGER reject_test_offer ON rider.outbox_events; DROP FUNCTION rider.reject_test_offer()`)
+	defer func() {
+		if _, err := s.db.Exec(ctx, `DROP TRIGGER reject_test_offer ON rider.outbox_events; DROP FUNCTION rider.reject_test_offer()`); err != nil {
+			t.Errorf("drop test trigger: %v", err)
+		}
+	}()
 	if _, err = s.CreateSequentialRideOffer(ctx, CreateOfferInput{RideID: r, PartnerID: p}); err == nil {
 		t.Fatal("outbox failure ignored")
 	}

@@ -62,7 +62,7 @@ func (s *MediaAssetStore) DeleteAssetForReferrer(ctx context.Context, mediaID uu
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	var uploaderID uuid.UUID
 	var storageKey string

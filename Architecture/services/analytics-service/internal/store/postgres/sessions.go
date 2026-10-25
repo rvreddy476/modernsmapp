@@ -288,7 +288,7 @@ func (s *Store) finalizeInactiveBatch(ctx context.Context, before, now time.Time
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	rows, err := tx.Query(ctx,
 		`SELECT `+sessionColumns+` FROM analytics.playback_sessions

@@ -113,7 +113,7 @@ func (s *Store) AllocateOrderInvoiceNumbers(ctx context.Context, orderID, restau
 	if err != nil {
 		return "", "", err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var platformNo, restaurantNo string
 	if err := tx.QueryRow(ctx, `
 		SELECT COALESCE(platform_invoice_number, ''), COALESCE(restaurant_invoice_number, '')

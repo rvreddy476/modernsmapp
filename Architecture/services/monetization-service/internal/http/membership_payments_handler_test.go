@@ -115,8 +115,10 @@ func TestUpgradeOverTheWireOpensACheckout(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := fake.Payment(co.PaymentID)
-	h.svc.ApplyMembershipPaymentEvent(context.Background(), membership.Event{EventID: "e1", EventType: events.EventPaymentSucceeded,
-		IntentID: p.IntentID, PaymentID: p.ID, PayerID: fan, AmountMinor: 4_900, Currency: "INR"})
+	if _, err := h.svc.ApplyMembershipPaymentEvent(context.Background(), membership.Event{EventID: "e1", EventType: events.EventPaymentSucceeded,
+		IntentID: p.IntentID, PaymentID: p.ID, PayerID: fan, AmountMinor: 4_900, Currency: "INR"}); err != nil {
+		t.Fatal(err)
+	}
 	w := serveJSON(h, http.MethodPost, "/v1/monetization/subscriptions/"+co.SubscriptionID.String()+"/upgrade", fan.String(), `{"tier_id":"`+silver.ID.String()+`"}`)
 	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"kind":"upgrade"`) || !strings.Contains(w.Body.String(), `"status":"pending_payment"`) {
 		t.Fatalf("upgrade: %d %s", w.Code, w.Body.String())
@@ -240,8 +242,10 @@ func TestSupportRefundRouteNeedsTheAdminTokenAndMemberships(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := fake.Payment(co.PaymentID)
-	svc.ApplyMembershipPaymentEvent(context.Background(), membership.Event{EventID: "e1", EventType: events.EventPaymentSucceeded,
-		IntentID: p.IntentID, PaymentID: p.ID, PayerID: fan, AmountMinor: 4_900, Currency: "INR"})
+	if _, err := svc.ApplyMembershipPaymentEvent(context.Background(), membership.Event{EventID: "e1", EventType: events.EventPaymentSucceeded,
+		IntentID: p.IntentID, PaymentID: p.ID, PayerID: fan, AmountMinor: 4_900, Currency: "INR"}); err != nil {
+		t.Fatal(err)
+	}
 	path := InternalAdminPrefix + "/memberships/payments/" + co.PaymentID.String() + "/refund"
 
 	off := routerFor(New(svc).WithServiceAuth(rg.v).WithWritesEnabled(true))

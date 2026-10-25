@@ -122,7 +122,7 @@ func (s *Store) ApplyOwnerMatch(ctx context.Context, in OwnerMatchInput) (*Owner
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	out, err := applyOwnerMatchTx(ctx, tx, in)
 	if err != nil {
 		return nil, err
@@ -303,7 +303,7 @@ func (s *Store) RemoveCopyrightOwnerTrack(ctx context.Context, postID, titleID, 
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	out, err := removeOwnerTrackTx(ctx, tx, postID, titleID, actor, note)
 	if err != nil {
 		return nil, err

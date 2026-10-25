@@ -29,7 +29,7 @@ import (
 // EnvWebRiskAPIKey names the key. Unset: no checker is built (see
 // FromEnv); the service then allows links as "unchecked" outside
 // production and refuses them (503) in production.
-const EnvWebRiskAPIKey = "WEB_RISK_API_KEY"
+const EnvWebRiskAPIKey = "WEB_RISK_API_KEY" //nolint:gosec // G101: name of the env variable, not its value
 
 // EnvWebRiskMock turns on the mock checker when no key is set (dev stacks
 // only; production ignores it, so a production deployment can never run

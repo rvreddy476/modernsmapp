@@ -391,7 +391,7 @@ func (s *Store) DecideTitleReview(ctx context.Context, in DecideTitleReviewInput
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	r, err := scanTitleReview(tx.QueryRow(ctx, `SELECT `+titleReviewCols+` FROM copyright_title_reviews WHERE id = $1 FOR UPDATE`, in.ReviewID))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -577,7 +577,7 @@ func (s *Store) ResolveTitleReviewDuration(ctx context.Context, postID uuid.UUID
 	if err != nil {
 		return TitleReviewDurationNone, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	r, err := scanTitleReview(tx.QueryRow(ctx, `SELECT `+titleReviewCols+` FROM copyright_title_reviews
 		WHERE post_id = $1 AND state = 'pending' AND awaiting_duration FOR UPDATE`, postID))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -662,7 +662,7 @@ func (s *Store) RequestTitleReview(ctx context.Context, postID, authorID uuid.UU
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	reviewID, err := requestTitleReviewTx(ctx, tx, postID, authorID, note)
 	if err != nil {
 		return nil, err
@@ -1012,7 +1012,7 @@ func (s *Store) CreateCopyrightTitle(ctx context.Context, id uuid.UUID, w Copyri
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	t, err := scanCopyrightTitle(tx.QueryRow(ctx, `
 		INSERT INTO copyright_review_titles (id, title, aliases, language, owner_channel_ids, active, created_by, updated_by,
 		                                     auto_block, rights_owner)
@@ -1036,7 +1036,7 @@ func (s *Store) UpdateCopyrightTitle(ctx context.Context, id uuid.UUID, w Copyri
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	before, err := scanCopyrightTitle(tx.QueryRow(ctx, `SELECT `+copyrightTitleCols+` FROM copyright_review_titles WHERE id = $1 FOR UPDATE`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrCopyrightTitleNotFound

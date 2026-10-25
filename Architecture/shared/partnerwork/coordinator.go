@@ -86,7 +86,7 @@ func Read(ctx context.Context, db *pgxpool.Pool, user uuid.UUID) (Session, []Res
 	if err != nil {
 		return Session{}, nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	s := Session{UserID: user}
 	err = tx.QueryRow(ctx, `SELECT category,revision,updated_at FROM partner_work.sessions WHERE user_id=$1`, user).Scan(&s.Category, &s.Revision, &s.UpdatedAt)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {

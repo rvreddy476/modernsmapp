@@ -298,7 +298,7 @@ func (s *Service) DeleteMediaForPurgedPost(ctx context.Context, mediaID, postID 
 		base = "http://media-service:8087"
 	}
 	body, _ := json.Marshal(map[string]string{"referrer": "post", "referrer_id": postID.String()})
-	req, err := http.NewRequestWithContext(ctx, http.MethodDelete,
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, //nolint:gosec // G704: base URL is the configured media-service address; the path is fixed plus a uuid
 		strings.TrimRight(base, "/")+"/v1/media/internal/"+mediaID.String(), bytes.NewReader(body))
 	if err != nil {
 		return err
@@ -307,7 +307,7 @@ func (s *Service) DeleteMediaForPurgedPost(ctx context.Context, mediaID, postID 
 	if s.internalServiceKey != "" {
 		req.Header.Set("X-Internal-Service-Key", s.internalServiceKey)
 	}
-	resp, err := s.httpClient.Do(req)
+	resp, err := s.httpClient.Do(req) //nolint:gosec // G704: base URL is the configured media-service address; the path is fixed plus a uuid
 	if err != nil {
 		return err
 	}

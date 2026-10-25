@@ -802,14 +802,13 @@ type endScreenResolver struct {
 	viewer *uuid.UUID
 	owner  bool
 
-	ownChannel        *EndScreenChannel
-	ownChannelLoaded  bool
-	latest, popular   *EndScreenVideo
-	latestLoaded      bool
-	popularLoaded     bool
-	candidates        []uuid.UUID
-	candidatesLoaded  bool
-	candidateLoadFail bool
+	ownChannel       *EndScreenChannel
+	ownChannelLoaded bool
+	latest, popular  *EndScreenVideo
+	latestLoaded     bool
+	popularLoaded    bool
+	candidates       []uuid.UUID
+	candidatesLoaded bool
 }
 
 // element resolves one row; ok is false when its target is not the

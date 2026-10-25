@@ -254,7 +254,7 @@ func (s *Store) ApplyPremiumPaymentEvent(ctx context.Context, ev payments.Event)
 	if err != nil {
 		return applied, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	claim := paymentevents.Claim{
 		EventID: ev.EventID, EventType: ev.EventType, IntentID: ev.IntentID,

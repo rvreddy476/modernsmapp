@@ -48,7 +48,7 @@ func TestContract_ProfessionalsList(t *testing.T) {
 	w = br.as(fixtureUser, "GET", kitchenList("date=2026-10-05"), "")
 	assertFixture(t, "service_professionals_get_200.json", w, 200)
 	s := w.Body.String()
-	if strings.Index(s, fakePro2.String()) > strings.Index(s, fakePro1.String()) || strings.Index(s, fakePro1.String()) < 0 {
+	if strings.Index(s, fakePro2.String()) > strings.Index(s, fakePro1.String()) || !strings.Contains(s, fakePro1.String()) {
 		t.Fatalf("not sorted by price: %s", s)
 	}
 	for _, leak := range []string{`"distance_m"`, `"lat"`, `"lng"`, `"home`, `"live_distance`, `"last_fix`} {

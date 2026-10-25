@@ -71,7 +71,7 @@ func TestDeliveryReviewOutboxRollsBackAndDoesNotAnnounceFailedApproval(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if err = enqueueDeliveryReviewTx(ctx, tx, partner, uuid.Nil, "APPROVED"); err != nil {
 		t.Fatal(err)
 	}

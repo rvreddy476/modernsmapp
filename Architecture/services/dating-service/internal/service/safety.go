@@ -536,7 +536,7 @@ func postGraphBlock(ctx context.Context, c *http.Client, base, key string, block
 	if err != nil {
 		return fmt.Errorf("encode block body: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/v1/graph/block", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(base, "/")+"/v1/graph/block", bytes.NewReader(body)) //nolint:gosec // G704: base URL is the configured graph-service address; the path is fixed
 	if err != nil {
 		return fmt.Errorf("build block request: %w", err)
 	}
@@ -549,7 +549,7 @@ func postGraphBlock(ctx context.Context, c *http.Client, base, key string, block
 	if key != "" {
 		req.Header.Set(internalKeyHeader, key)
 	}
-	resp, err := c.Do(req)
+	resp, err := c.Do(req) //nolint:gosec // G704: base URL is the configured graph-service address; the path is fixed
 	if err != nil {
 		return fmt.Errorf("graph-service unreachable: %w", err)
 	}

@@ -468,7 +468,7 @@ func (s *Store) UpsertDeliveryPartner(ctx context.Context, userID uuid.UUID, in 
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	var partner DeliveryPartner
 	if err := tx.QueryRow(ctx, `
@@ -1203,7 +1203,7 @@ func (s *Store) AdminCreateCoupon(ctx context.Context, adminID uuid.UUID, input 
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var id uuid.UUID
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO food.coupons (
@@ -1239,7 +1239,7 @@ func (s *Store) AdminUpdateCoupon(ctx context.Context, adminID, couponID uuid.UU
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	tag, err := tx.Exec(ctx, `
 		UPDATE food.coupons
 		SET code = COALESCE(NULLIF($3, ''), code),
@@ -1309,7 +1309,7 @@ func (s *Store) AdminCreateServiceArea(ctx context.Context, adminID uuid.UUID, i
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var id uuid.UUID
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO food.service_areas (
@@ -1340,7 +1340,7 @@ func (s *Store) AdminUpdateServiceArea(ctx context.Context, adminID, areaID uuid
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	tag, err := tx.Exec(ctx, `
 		UPDATE food.service_areas
 		SET name = COALESCE(NULLIF($3, ''), name),

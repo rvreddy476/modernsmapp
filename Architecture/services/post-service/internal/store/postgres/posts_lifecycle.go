@@ -47,7 +47,7 @@ func (s *Store) RestorePost(ctx context.Context, postID, authorID uuid.UUID, win
 	if err != nil {
 		return 0, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	var (
 		deletedAt   *time.Time

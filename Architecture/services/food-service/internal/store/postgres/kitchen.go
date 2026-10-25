@@ -104,7 +104,7 @@ func (s *Store) AutoRejectExpiredOrders(ctx context.Context, batch int) ([]uuid.
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	// SKIP LOCKED keeps two workers from fighting over the same rows; each
 	// locked id then goes through the guarded writer in this transaction.
 	rows, err := tx.Query(ctx, `

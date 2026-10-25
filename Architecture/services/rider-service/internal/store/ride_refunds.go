@@ -65,7 +65,7 @@ func (s *Store) CreateRideRefund(ctx context.Context, in CreateRideRefundInput) 
 	if err != nil {
 		return nil, nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	p, err := scanRidePayment(tx.QueryRow(ctx, `
         SELECT `+ridePaymentColumns+`
         FROM rider_ride_payments WHERE ride_id = $1
@@ -145,7 +145,7 @@ func (s *Store) CreateOutstandingRefund(ctx context.Context, in CreateOutstandin
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	o, err := scanOutstanding(tx.QueryRow(ctx, `SELECT `+outstandingColumns+` FROM rider_customer_outstanding WHERE id = $1 FOR UPDATE`, in.OutstandingID))
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

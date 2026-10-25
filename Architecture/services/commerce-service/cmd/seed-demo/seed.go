@@ -142,7 +142,7 @@ func seed(ctx context.Context, pool *pgxpool.Pool, cat demoCatalogue) (*summary,
 	}
 	// Rollback after a successful Commit is a no-op; this is the usual
 	// "whatever happens, the transaction ends" shape.
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	sum := newSummary()
 	now := time.Now()

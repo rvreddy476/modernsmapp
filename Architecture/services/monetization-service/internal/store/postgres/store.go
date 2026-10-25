@@ -535,7 +535,7 @@ func (s *Store) CancelSubscriptionNow(ctx context.Context, subID uuid.UUID) (*Su
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	sub, err := scanSubscription(tx.QueryRow(ctx, `SELECT `+subscriptionColumns+` FROM subscriptions WHERE id = $1 FOR UPDATE`, subID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errors.New("SUBSCRIPTION_NOT_FOUND")

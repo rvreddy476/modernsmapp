@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/atpost/group-service/internal/store"
@@ -207,7 +208,7 @@ func (s *Service) createOnePost(
 	// Neither of these runs for an anonymous post — the contributor
 	// leaderboard and the notification fanout would each name the author.
 	if !params.IsAnonymous {
-		s.store.IncrementMemberPostCount(ctx, groupID, actorID)
+		s.tryIncrementMemberPostCount(ctx, groupID, actorID, post.ID)
 		s.publishEvent(func() error {
 			return s.producer.PublishGroupPostCreated(ctx, groupID, post.ID, actorID)
 		})
@@ -306,4 +307,14 @@ func (s *Service) CrossPost(
 	}
 
 	return result, nil
+}
+
+// tryIncrementMemberPostCount bumps the contributor count for a new post. The
+// post is already created, so a failed increment must not fail it, but it is
+// logged rather than dropped silently.
+func (s *Service) tryIncrementMemberPostCount(ctx context.Context, groupID, actorID, postID uuid.UUID) {
+	if err := s.store.IncrementMemberPostCount(ctx, groupID, actorID); err != nil {
+		slog.Warn("cross-post: member post count not incremented",
+			"group_id", groupID, "post_id", postID, "error", err)
+	}
 }

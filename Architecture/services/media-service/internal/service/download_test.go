@@ -1,7 +1,6 @@
 package service
 
 import (
-	"context"
 	"errors"
 	"testing"
 	"time"
@@ -14,19 +13,6 @@ import (
 // The file-download route's decision (owner only since 2026-10-02): the
 // uploader, and nobody else, whatever the post says. The route end to end
 // over a real store is download_integration_test.go.
-
-// fakeDownloadAuthority is post-service's old "does the post allow
-// download" answer. It is wired to the gate in these tests exactly as
-// cmd/server wires it, so a test can prove it is never asked.
-type fakeDownloadAuthority struct {
-	err   error
-	asked []string
-}
-
-func (f *fakeDownloadAuthority) AllowDownload(_ context.Context, viewerID, mediaID string) error {
-	f.asked = append(f.asked, viewerID+"/"+mediaID)
-	return f.err
-}
 
 type noopSigner struct{}
 

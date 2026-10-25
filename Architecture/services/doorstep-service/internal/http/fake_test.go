@@ -44,8 +44,7 @@ var (
 	hyd            = model.CityRef{Code: "HYD", Name: "Hyderabad"}
 )
 
-func strp(s string) *string { return &s }
-func i64p(v int64) *int64   { return &v }
+func i64p(v int64) *int64 { return &v }
 
 func price(key string, paise int64, mrp int64) *catalogue.Price {
 	p := &catalogue.Price{ID: devseed.ID("price", key), PricePaise: paise}

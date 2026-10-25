@@ -225,7 +225,7 @@ func (s *Store) ClaimAndCreditPeriodAccruals(ctx context.Context, in PeriodClaim
 	if err != nil {
 		return out, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	err = tx.QueryRow(ctx, `
 		WITH claimed AS (

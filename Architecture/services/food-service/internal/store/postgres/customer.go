@@ -166,7 +166,7 @@ func (s *Store) UpdateCartItem(ctx context.Context, userID, itemID uuid.UUID, in
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if _, _, err := s.ensureCartForUpdate(ctx, tx, userID); err != nil {
 		return nil, err
 	}
@@ -189,7 +189,7 @@ func (s *Store) RemoveCartItem(ctx context.Context, userID, itemID uuid.UUID) er
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if _, _, err := s.ensureCartForUpdate(ctx, tx, userID); err != nil {
 		return err
 	}
@@ -209,7 +209,7 @@ func (s *Store) ClearCart(ctx context.Context, userID uuid.UUID) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if _, _, err := s.ensureCartForUpdate(ctx, tx, userID); err != nil {
 		return err
 	}

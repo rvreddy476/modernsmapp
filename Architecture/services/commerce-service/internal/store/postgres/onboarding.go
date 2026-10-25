@@ -33,7 +33,7 @@ func (s *Store) StartSellerOnboarding(ctx context.Context, sel *Seller) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO sellers (id, user_id, business_page_id, seller_type, business_type, store_name,
@@ -479,7 +479,7 @@ func (s *Store) UnsuspendSellerByAdmin(ctx context.Context, sellerID, actorID uu
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	// Guarded on the current state: unsuspending something that was never
 	// suspended would quietly promote a draft or rejected seller to

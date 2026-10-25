@@ -146,7 +146,7 @@ func (s *Store) markSettlementPaid(ctx context.Context, adminID, id uuid.UUID, r
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if err = lockSettlementsTx(ctx, tx); err != nil {
 		return nil, err
 	}

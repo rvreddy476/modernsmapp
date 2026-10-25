@@ -24,7 +24,7 @@ func (s *Store) visitTransaction(ctx context.Context, id uuid.UUID, at time.Time
 	if e != nil {
 		return e
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	f, e := visitFactsTx(ctx, tx, id, at, true)
 	if e != nil {
 		return e
@@ -215,7 +215,7 @@ func (s *Store) OpenVisitTicket(ctx context.Context, u uuid.UUID, kind string, i
 	if e != nil {
 		return nil, e
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if in.BookingID != nil {
 		f, e := visitFactsTx(ctx, tx, *in.BookingID, at, true)
 		if e != nil {

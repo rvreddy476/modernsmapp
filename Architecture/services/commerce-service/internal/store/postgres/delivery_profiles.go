@@ -71,7 +71,7 @@ func (s *Store) DeliveryProfile(ctx context.Context, user uuid.UUID) (*DeliveryP
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	p, err := scanDeliveryProfile(tx.QueryRow(ctx, `SELECT `+deliveryProfileCols+` FROM commerce_delivery_profiles WHERE user_id=$1`, user))
 	if err != nil {
 		return nil, err
@@ -122,7 +122,7 @@ func (s *Store) SaveDeliveryDocument(ctx context.Context, user uuid.UUID, kind s
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	p, err := scanDeliveryProfile(tx.QueryRow(ctx, `SELECT `+deliveryProfileCols+` FROM commerce_delivery_profiles WHERE user_id=$1 FOR UPDATE`, user))
 	if err != nil {
 		return err
@@ -160,7 +160,7 @@ func (s *Store) SubmitDeliveryProfile(ctx context.Context, user uuid.UUID) error
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	p, err := scanDeliveryProfile(tx.QueryRow(ctx, `SELECT `+deliveryProfileCols+` FROM commerce_delivery_profiles WHERE user_id=$1 FOR UPDATE`, user))
 	if err != nil {
 		return err
@@ -195,7 +195,7 @@ func (s *Store) ReviewDelivery(ctx context.Context, actor, profile, document uui
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	p, err := scanDeliveryProfile(tx.QueryRow(ctx, `SELECT `+deliveryProfileCols+` FROM commerce_delivery_profiles WHERE id=$1 FOR UPDATE`, profile))
 	if err != nil {
 		return err

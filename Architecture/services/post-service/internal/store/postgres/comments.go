@@ -762,7 +762,7 @@ func (s *Store) SetCommentModerationStatus(ctx context.Context, actor, commentID
 	if err != nil {
 		return uuid.Nil, "", err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if err := tx.QueryRow(ctx, `SELECT moderation_status, post_id FROM comments WHERE id = $1 FOR UPDATE`, commentID).Scan(&previous, &postID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return uuid.Nil, "", fmt.Errorf("COMMENT_NOT_FOUND")

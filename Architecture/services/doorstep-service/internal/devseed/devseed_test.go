@@ -94,7 +94,7 @@ func TestSeedDataShape(t *testing.T) {
 			t.Errorf("launch category %s missing", s)
 		}
 	}
-	if ID("service", "a") == ID("service", "b") || ID("service", "a") != ID("service", "a") {
+	if a1, a2 := ID("service", "a"), ID("service", "a"); a1 == ID("service", "b") || a1 != a2 {
 		t.Fatal("ID must be deterministic and distinct")
 	}
 }

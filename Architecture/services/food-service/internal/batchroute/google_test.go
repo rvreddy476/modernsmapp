@@ -28,7 +28,7 @@ func TestPreviewOpaqueIndicesCacheAndPermutation(t *testing.T) {
 		if json.Unmarshal(body, &model) != nil || r.Method != "POST" {
 			t.Error("invalid request")
 		}
-		io.WriteString(w, `{"routes":[{"visits":[{"shipmentIndex":1},{}]}]}`)
+		_, _ = io.WriteString(w, `{"routes":[{"visits":[{"shipmentIndex":1},{}]}]}`) // a failed write fails the client assertions
 	}))
 	defer server.Close()
 	client := newClient(server.Client(), server.URL)
@@ -45,7 +45,7 @@ func TestPreviewOpaqueIndicesCacheAndPermutation(t *testing.T) {
 func TestRejectsIncompleteOrCorruptGoogleRoutes(t *testing.T) {
 	for _, body := range []string{`{}`, `{"routes":[{"visits":[{},{}]}]}`, `{"routes":[{"visits":[{}, {"shipmentIndex":3}]}]}`, `{"routes":[{"visits":[{}, {"shipmentIndex":1,"isPickup":true}]}]}`, `{"routes":[{"visits":[{}, {"shipmentIndex":1}]}],"skippedShipments":[{}]}`, `{"routes":[{"visits":[{}, {"shipmentIndex":1}]}],"validationErrors":[{}]}`, `bad`, strings.Repeat("x", 65537)} {
 		t.Run(body[:min(len(body), 70)], func(t *testing.T) {
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, body) }))
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = io.WriteString(w, body) }))
 			defer server.Close()
 			if _, err := newClient(server.Client(), server.URL).Preview(context.Background(), fixture()); !errors.Is(err, ErrUnavailable) {
 				t.Fatalf("expected unavailable, got %v", err)
@@ -64,7 +64,7 @@ func TestInvalidInputNeverCallsGoogle(t *testing.T) {
 func TestErrorsRedactedAndCallsBounded(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(403)
-		io.WriteString(w, "token=secret-credentials private-order-a")
+		_, _ = io.WriteString(w, "token=secret-credentials private-order-a") // a failed write fails the client assertions
 	}))
 	defer server.Close()
 	client := newClient(server.Client(), server.URL)

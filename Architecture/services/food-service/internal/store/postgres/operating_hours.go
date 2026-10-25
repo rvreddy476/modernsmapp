@@ -148,7 +148,7 @@ func (s *Store) ReplaceOperatingHours(ctx context.Context, ownerID, restaurantID
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if _, err := lockOwnedRestaurantTx(ctx, tx, ownerID, restaurantID); err != nil {
 		return nil, err
 	}

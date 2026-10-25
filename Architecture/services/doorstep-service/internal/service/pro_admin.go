@@ -172,7 +172,9 @@ func approvalCheck(st *store.ProState, cats []prokyc.SkillCategory) error {
 	if missing := prokyc.MissingSteps(st.Facts); len(missing) > 0 {
 		return incomplete(missing...)
 	}
-	for _, b := range prokyc.ApprovalBlocks(cats, st.Gender, st.BackgroundClear) {
+	// Only the first block (results are sorted) is reported.
+	if blocks := prokyc.ApprovalBlocks(cats, st.Gender, st.BackgroundClear); len(blocks) > 0 {
+		b := blocks[0]
 		if b.Reason == prokyc.BlockGender {
 			return apperr.New(http.StatusForbidden, apperr.CodeGenderRule,
 				"the professional's reviewed eligibility does not satisfy this skill's category rule").WithDetails(map[string]any{"skill_code": b.Skill})

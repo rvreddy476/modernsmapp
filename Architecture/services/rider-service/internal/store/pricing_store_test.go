@@ -183,7 +183,7 @@ func TestCoupon_ReserveEnforcesLimitsUnderLock(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer tx.Rollback(ctx)
+		defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 		if err := ReserveCouponTx(ctx, tx, CouponReservation{CouponID: c.ID, DiscountPaise: 500}, u, ride, time.Now()); err != nil {
 			return err
 		}
@@ -235,7 +235,7 @@ func TestOutstanding_ReserveSettleReleaseWaive(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		defer tx.Rollback(ctx)
+		defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 		if err := fn(tx); err != nil {
 			return err
 		}

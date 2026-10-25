@@ -62,7 +62,7 @@ func InternalHandler(db *pgxpool.Pool, key string) http.Handler {
 				writeError(w, err)
 				return
 			}
-			json.NewEncoder(w).Encode(s)
+			_ = json.NewEncoder(w).Encode(s) // status already sent: nothing left to report a failed write to
 			return
 		}
 		tx, err := db.Begin(r.Context())
@@ -70,7 +70,7 @@ func InternalHandler(db *pgxpool.Pool, key string) http.Handler {
 			writeError(w, err)
 			return
 		}
-		defer tx.Rollback(r.Context())
+		defer func() { _ = tx.Rollback(r.Context()) }() // no-op after Commit
 		var result any = map[string]bool{"ok": true}
 		switch in.Action {
 		case "duty":
@@ -97,7 +97,7 @@ func InternalHandler(db *pgxpool.Pool, key string) http.Handler {
 			writeError(w, err)
 			return
 		}
-		json.NewEncoder(w).Encode(result)
+		_ = json.NewEncoder(w).Encode(result) // status already sent: nothing left to report a failed write to
 	})
 }
 
@@ -122,5 +122,5 @@ func writeError(w http.ResponseWriter, err error) {
 		status = http.StatusServiceUnavailable
 	}
 	w.WriteHeader(status)
-	json.NewEncoder(w).Encode(map[string]string{"code": code})
+	_ = json.NewEncoder(w).Encode(map[string]string{"code": code}) // status already sent: nothing left to report a failed write to
 }

@@ -110,7 +110,7 @@ func TestFollowRequestIdentityIsPerEventNotPerPair(t *testing.T) {
 	if id := followRequestDedupID(env, a.Value); id == "" || id == string(a.Key) {
 		t.Fatalf("fallback dedup id = %q", id)
 	}
-	if followRequestDedupID(env, a.Value) != followRequestDedupID(env, a.Value) {
+	if first, again := followRequestDedupID(env, a.Value), followRequestDedupID(env, a.Value); first != again {
 		t.Fatal("fallback dedup id is not stable across a redelivery")
 	}
 	if followRequestDedupID(env, a.Value) == followRequestDedupID(env, b.Value) {

@@ -92,8 +92,8 @@ const (
 )
 
 const (
-	ctxTokenPath       = "monetization_admin_token_path"
-	ctxAdminTokenPerms = "monetization_admin_token_perms"
+	ctxTokenPath       = "monetization_admin_token_path"  //nolint:gosec // G101: request-context key name, not a credential
+	ctxAdminTokenPerms = "monetization_admin_token_perms" //nolint:gosec // G101: request-context key name, not a credential
 	ctxAdminActor      = "monetization_admin_actor"
 	ctxServiceCaller   = "monetization_service_caller"
 )

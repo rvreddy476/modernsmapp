@@ -83,10 +83,12 @@ func pushesByApp(ps []service.FoodPush) map[string][]service.FoodPush {
 func TestFoodConsumer_PaidOrderRingsTheKitchenAndTellsTheCustomer(t *testing.T) {
 	d := &recordingFoodDeliverer{}
 	c := newFoodConsumer(d)
-	c.processMessage(context.Background(), foodMsg(events.EventFoodOrderPaymentSucceeded, fxOrderPayload("CONFIRMED", map[string]any{
+	if err := c.processMessage(context.Background(), foodMsg(events.EventFoodOrderPaymentSucceeded, fxOrderPayload("CONFIRMED", map[string]any{
 		"restaurant_owner_user_id":  fxOwner,
 		"restaurant_staff_user_ids": []string{fxStaff, fxOwner},
-	})))
+	}))); err != nil {
+		t.Fatal(err)
+	}
 
 	byApp := pushesByApp(d.pushes)
 	kitchen := byApp[service.AppFeastKitchen]
@@ -132,12 +134,16 @@ func TestFoodConsumer_PlacedIsAnnouncedOnlyOnceConfirmed(t *testing.T) {
 
 	d := &recordingFoodDeliverer{}
 	c := newFoodConsumer(d)
-	c.processMessage(context.Background(), foodMsg(events.EventFoodOrderPlaced, fxOrderPayload("PAYMENT_PENDING", owner)))
+	if err := c.processMessage(context.Background(), foodMsg(events.EventFoodOrderPlaced, fxOrderPayload("PAYMENT_PENDING", owner))); err != nil {
+		t.Fatal(err)
+	}
 	if len(d.pushes) != 0 || c.countOf(foodOutcomeIgnored) != 1 {
 		t.Fatalf("an unpaid placed order pushed %d (ignored=%d)", len(d.pushes), c.countOf(foodOutcomeIgnored))
 	}
 
-	c.processMessage(context.Background(), foodMsg(events.EventFoodOrderPlaced, fxOrderPayload("CONFIRMED", owner)))
+	if err := c.processMessage(context.Background(), foodMsg(events.EventFoodOrderPlaced, fxOrderPayload("CONFIRMED", owner))); err != nil {
+		t.Fatal(err)
+	}
 	if len(d.pushes) != 1 || d.pushes[0].App != service.AppFeastKitchen {
 		t.Fatalf("a confirmed placed order must ring only the kitchen: %+v", d.pushes)
 	}
@@ -186,7 +192,9 @@ func TestFoodConsumer_DeliveryOfferGoesToTheRiderApp(t *testing.T) {
 	for name, payload := range map[string]any{"single": single, "batch": batch} {
 		t.Run(name, func(t *testing.T) {
 			d := &recordingFoodDeliverer{}
-			newFoodConsumer(d).processMessage(context.Background(), foodMsg(foodEventDeliveryOffered, payload))
+			if err := newFoodConsumer(d).processMessage(context.Background(), foodMsg(foodEventDeliveryOffered, payload)); err != nil {
+				t.Fatal(err)
+			}
 			if len(d.pushes) != 1 {
 				t.Fatalf("pushes = %d, want 1", len(d.pushes))
 			}
@@ -212,9 +220,11 @@ func TestFoodConsumer_CustomerStatusEventsGoToMomentum(t *testing.T) {
 	for ev := range foodCustomerStatusCopy {
 		t.Run(ev, func(t *testing.T) {
 			d := &recordingFoodDeliverer{}
-			newFoodConsumer(d).processMessage(context.Background(), foodMsg(ev, map[string]any{
+			if err := newFoodConsumer(d).processMessage(context.Background(), foodMsg(ev, map[string]any{
 				"order_id": fxOrder, "user_id": fxCustomer,
-			}))
+			})); err != nil {
+				t.Fatal(err)
+			}
 			var customer []service.FoodPush
 			for _, p := range d.pushes {
 				if p.App == service.AppMomentum {
@@ -282,7 +292,9 @@ func TestFoodConsumer_CurrentFoodServicePayloadsNameTheMissingRecipientField(t *
 
 			d := &recordingFoodDeliverer{}
 			c := newFoodConsumer(d)
-			c.processMessage(context.Background(), m)
+			if err := c.processMessage(context.Background(), m); err != nil {
+				t.Fatal(err)
+			}
 			for _, p := range d.pushes {
 				if (tc.field == "user_id" && p.App == service.AppMomentum) ||
 					(tc.field == "restaurant_owner_user_id" && p.App == service.AppFeastKitchen) ||
@@ -301,11 +313,13 @@ func TestFoodConsumer_CurrentFoodServicePayloadsNameTheMissingRecipientField(t *
 func TestFoodConsumer_NeverForwardsDeliveryCodes(t *testing.T) {
 	d := &recordingFoodDeliverer{}
 	c := newFoodConsumer(d)
-	c.processMessage(context.Background(), foodMsg(events.EventFoodDeliveryAssigned, map[string]any{
+	if err := c.processMessage(context.Background(), foodMsg(events.EventFoodDeliveryAssigned, map[string]any{
 		"order_id": fxOrder, "user_id": fxCustomer, "partner_id": fxPartner,
 		"pickup_code": "482913", "delivery_code": "730541",
 		"verification": map[string]any{"otp": "915377"},
-	}))
+	})); err != nil {
+		t.Fatal(err)
+	}
 	if len(d.pushes) != 1 {
 		t.Fatalf("pushes = %d, want 1", len(d.pushes))
 	}
@@ -364,12 +378,24 @@ func TestFoodConsumer_UnknownAndBrokenEventsAreCountedNeverFatal(t *testing.T) {
 	c := newFoodConsumer(d)
 	ctx := context.Background()
 
-	c.processMessage(ctx, foodMsg("food.order.teleported", map[string]any{"id": fxOrder}))
-	c.processMessage(ctx, foodMsg("", map[string]any{"id": fxOrder}))
-	c.processMessage(ctx, kafka.Message{Value: []byte(`not json`)})
-	c.processMessage(ctx, kafka.Message{Value: []byte(`{}`), Headers: []kafka.Header{{Key: "event_type", Value: []byte(events.EventFoodDeliveryPickedUp)}}})
-	c.processMessage(ctx, kafka.Message{Value: []byte(`[1,2`), Headers: []kafka.Header{{Key: "event_type", Value: []byte(events.EventFoodOrderCancelled)}}})
-	c.processMessage(ctx, foodMsg(events.EventFoodSettlementPaid, map[string]any{"id": fxOrder}))
+	if err := c.processMessage(ctx, foodMsg("food.order.teleported", map[string]any{"id": fxOrder})); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.processMessage(ctx, foodMsg("", map[string]any{"id": fxOrder})); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.processMessage(ctx, kafka.Message{Value: []byte(`not json`)}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.processMessage(ctx, kafka.Message{Value: []byte(`{}`), Headers: []kafka.Header{{Key: "event_type", Value: []byte(events.EventFoodDeliveryPickedUp)}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.processMessage(ctx, kafka.Message{Value: []byte(`[1,2`), Headers: []kafka.Header{{Key: "event_type", Value: []byte(events.EventFoodOrderCancelled)}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.processMessage(ctx, foodMsg(events.EventFoodSettlementPaid, map[string]any{"id": fxOrder})); err != nil {
+		t.Fatal(err)
+	}
 
 	if got := c.countOf(foodOutcomeUnknown); got != 1 {
 		t.Errorf("unknown = %d, want 1", got)
@@ -389,12 +415,16 @@ func TestFoodConsumer_UnknownAndBrokenEventsAreCountedNeverFatal(t *testing.T) {
 
 	statusMsg := foodMsg(events.EventFoodDeliveryPickedUp, map[string]any{"order_id": fxOrder, "user_id": fxCustomer})
 	d.err = errors.New("fcm down")
-	c.processMessage(ctx, statusMsg)
+	if err := c.processMessage(ctx, statusMsg); err == nil {
+		t.Fatal("delivery failure not returned for consumer retry")
+	}
 	if c.countOf(foodOutcomeDeliveryError) != 1 {
 		t.Error("delivery error not counted")
 	}
 	d.err, d.panicky = nil, true
-	c.processMessage(ctx, statusMsg)
+	if err := c.processMessage(ctx, statusMsg); err == nil {
+		t.Fatal("recovered panic not returned for consumer retry")
+	}
 	if c.countOf(foodOutcomePanic) != 1 {
 		t.Error("panic not recovered and counted")
 	}
@@ -418,7 +448,9 @@ func TestFoodConsumer_EnvelopeValueUsesEventID(t *testing.T) {
 	inner, _ := json.Marshal(map[string]any{"order_id": fxOrder, "user_id": fxCustomer})
 	value, _ := json.Marshal(events.EventEnvelope{EventID: "evt-42", EventType: events.EventFoodDeliveryPickedUp, Payload: inner})
 	d := &recordingFoodDeliverer{}
-	newFoodConsumer(d).processMessage(context.Background(), kafka.Message{Value: value})
+	if err := newFoodConsumer(d).processMessage(context.Background(), kafka.Message{Value: value}); err != nil {
+		t.Fatal(err)
+	}
 	if len(d.pushes) != 1 || !strings.HasPrefix(d.pushes[0].DedupKey, "event:evt-42") {
 		t.Fatalf("pushes: %+v", d.pushes)
 	}
@@ -427,7 +459,9 @@ func TestFoodConsumer_EnvelopeValueUsesEventID(t *testing.T) {
 // The channel travels as a transport key that the FCM builder lifts out.
 func TestFoodConsumer_PushesNameAnAndroidChannel(t *testing.T) {
 	d := &recordingFoodDeliverer{}
-	newFoodConsumer(d).processMessage(context.Background(), foodMsg(events.EventFoodDeliveryPickedUp, map[string]any{"order_id": fxOrder, "user_id": fxCustomer}))
+	if err := newFoodConsumer(d).processMessage(context.Background(), foodMsg(events.EventFoodDeliveryPickedUp, map[string]any{"order_id": fxOrder, "user_id": fxCustomer})); err != nil {
+		t.Fatal(err)
+	}
 	msg := push.BuildFCMMessage("tok", d.pushes[0].Title, d.pushes[0].Body, service.FoodPushData(d.pushes[0]))
 	android, _ := msg["android"].(map[string]interface{})
 	notification, _ := android["notification"].(map[string]string)

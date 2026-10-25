@@ -373,7 +373,9 @@ func TestDoorstepEveryRegistryPushTypeIsDelivered(t *testing.T) {
 				data[k] = v
 			}
 			cons, d := newTestDoorstepConsumer()
-			cons.processMessage(context.Background(), dsMessage(t, want.FromEvent, uuid.NewString(), data, true))
+			if err := cons.processMessage(context.Background(), dsMessage(t, want.FromEvent, uuid.NewString(), data, true)); err != nil {
+				t.Fatal(err)
+			}
 
 			var got *service.DoorstepPush
 			for i := range d.pushes {
@@ -475,7 +477,9 @@ func TestDoorstepRoutingCustomerVersusPro(t *testing.T) {
 				delete(data, k)
 			}
 			cons, d := newTestDoorstepConsumer()
-			cons.processMessage(context.Background(), dsMessage(t, tc.event, uuid.NewString(), data, true))
+			if err := cons.processMessage(context.Background(), dsMessage(t, tc.event, uuid.NewString(), data, true)); err != nil {
+				t.Fatal(err)
+			}
 			var got []sent
 			for _, p := range d.pushes {
 				got = append(got, sent{p.Type, p.App, p.RecipientID})
@@ -504,7 +508,9 @@ func TestDoorstepEnvelopeIDsRoute(t *testing.T) {
 	msg.Value, _ = json.Marshal(env)
 
 	cons, d := newTestDoorstepConsumer()
-	cons.processMessage(context.Background(), msg)
+	if err := cons.processMessage(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
 	if len(d.pushes) != 2 || d.pushes[0].RecipientID != dsCustomer || d.pushes[1].RecipientID != dsPro {
 		t.Fatalf("pushes = %+v", d.pushes)
 	}
@@ -514,7 +520,9 @@ func TestDoorstepMissingRecipientIsCountedNotSent(t *testing.T) {
 	data := dsData()
 	delete(data, "customer_user_id")
 	cons, d := newTestDoorstepConsumer()
-	cons.processMessage(context.Background(), dsMessage(t, doorstepEventBookingConfirmed, uuid.NewString(), data, true))
+	if err := cons.processMessage(context.Background(), dsMessage(t, doorstepEventBookingConfirmed, uuid.NewString(), data, true)); err != nil {
+		t.Fatal(err)
+	}
 	if len(d.pushes) != 0 {
 		t.Fatalf("pushed without a recipient: %+v", d.pushes)
 	}
@@ -530,9 +538,15 @@ func TestDoorstepDedupKeyIsTheEventID(t *testing.T) {
 	id := uuid.NewString()
 	msg := dsMessage(t, doorstepEventBookingConfirmed, id, dsData(), true)
 	cons, d := newTestDoorstepConsumer()
-	cons.processMessage(context.Background(), msg)
-	cons.processMessage(context.Background(), msg)
-	cons.processMessage(context.Background(), dsMessage(t, doorstepEventBookingConfirmed, uuid.NewString(), dsData(), true))
+	if err := cons.processMessage(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cons.processMessage(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cons.processMessage(context.Background(), dsMessage(t, doorstepEventBookingConfirmed, uuid.NewString(), dsData(), true)); err != nil {
+		t.Fatal(err)
+	}
 	if len(d.pushes) != 3 {
 		t.Fatalf("pushes = %d", len(d.pushes))
 	}
@@ -575,8 +589,12 @@ func TestDoorstepDuplicateEventIgnoredEndToEnd(t *testing.T) {
 	cons := newDoorstepConsumer(deliverer)
 	cons.now = func() time.Time { return dsNow }
 	msg := dsMessage(t, doorstepEventBookingReminder, uuid.NewString(), dsData(), true)
-	cons.processMessage(context.Background(), msg)
-	cons.processMessage(context.Background(), msg)
+	if err := cons.processMessage(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
+	if err := cons.processMessage(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
 	if sends != 2 { // customer + pro, once each
 		t.Fatalf("sends = %d, want 2 (one per side, the redelivery sends nothing)", sends)
 	}
@@ -590,7 +608,9 @@ func (f doorstepDelivererFunc) DeliverDoorstepPush(_ context.Context, p service.
 
 func TestDoorstepOfferTTLAndExpiry(t *testing.T) {
 	cons, d := newTestDoorstepConsumer()
-	cons.processMessage(context.Background(), dsMessage(t, doorstepEventProOfferCreated, uuid.NewString(), dsData(), true))
+	if err := cons.processMessage(context.Background(), dsMessage(t, doorstepEventProOfferCreated, uuid.NewString(), dsData(), true)); err != nil {
+		t.Fatal(err)
+	}
 	if len(d.pushes) != 1 || d.pushes[0].TTL != 5*time.Minute {
 		t.Fatalf("offer push = %+v", d.pushes)
 	}
@@ -601,7 +621,9 @@ func TestDoorstepOfferTTLAndExpiry(t *testing.T) {
 	data := dsData()
 	data["expires_at"] = dsNow.Add(-time.Second).Format(time.RFC3339)
 	cons, d = newTestDoorstepConsumer()
-	cons.processMessage(context.Background(), dsMessage(t, doorstepEventProOfferCreated, uuid.NewString(), data, true))
+	if err := cons.processMessage(context.Background(), dsMessage(t, doorstepEventProOfferCreated, uuid.NewString(), data, true)); err != nil {
+		t.Fatal(err)
+	}
 	if len(d.pushes) != 0 || cons.countOf(doorstepOutcomeOfferExpired) != 1 {
 		t.Fatalf("lapsed offer pushed: %+v", d.pushes)
 	}
@@ -616,7 +638,9 @@ func TestDoorstepPIIGuardBlocksALeak(t *testing.T) {
 	data["pro_first_name"] = "Ravinder"
 	data["landmark"] = "Ravinder"
 	cons, d := newTestDoorstepConsumer()
-	cons.processMessage(context.Background(), dsMessage(t, doorstepEventBookingAssigned, uuid.NewString(), data, true))
+	if err := cons.processMessage(context.Background(), dsMessage(t, doorstepEventBookingAssigned, uuid.NewString(), data, true)); err != nil {
+		t.Fatal(err)
+	}
 	if len(d.pushes) != 0 || cons.countOf(doorstepOutcomePIIBlocked) != 1 {
 		t.Fatalf("leaking push delivered: %+v (blocked %d)", d.pushes, cons.countOf(doorstepOutcomePIIBlocked))
 	}
@@ -644,18 +668,28 @@ func TestDoorstepPIIGuardBlocksALeak(t *testing.T) {
 func TestDoorstepMalformedAndUnknownAreCounted(t *testing.T) {
 	cons, d := newTestDoorstepConsumer()
 	ctx := context.Background()
-	cons.processMessage(ctx, kafka.Message{Value: []byte("not json")})
-	cons.processMessage(ctx, kafka.Message{Value: []byte(`{"data":{}}`)})
+	if err := cons.processMessage(ctx, kafka.Message{Value: []byte("not json")}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cons.processMessage(ctx, kafka.Message{Value: []byte(`{"data":{}}`)}); err != nil {
+		t.Fatal(err)
+	}
 	mismatch := dsMessage(t, doorstepEventBookingConfirmed, uuid.NewString(), dsData(), true)
 	mismatch.Headers = []kafka.Header{{Key: "event_type", Value: []byte(doorstepEventBookingCompleted)}}
-	cons.processMessage(ctx, mismatch)
+	if err := cons.processMessage(ctx, mismatch); err != nil {
+		t.Fatal(err)
+	}
 	bad := dsData()
 	bad["booking_id"] = "not-a-uuid"
-	cons.processMessage(ctx, dsMessage(t, doorstepEventBookingConfirmed, uuid.NewString(), bad, false))
+	if err := cons.processMessage(ctx, dsMessage(t, doorstepEventBookingConfirmed, uuid.NewString(), bad, false)); err != nil {
+		t.Fatal(err)
+	}
 	if n := cons.countOf(doorstepOutcomeMalformed); n != 4 {
 		t.Fatalf("malformed = %d, want 4", n)
 	}
-	cons.processMessage(ctx, dsMessage(t, "doorstep.booking.teleported", uuid.NewString(), dsData(), true))
+	if err := cons.processMessage(ctx, dsMessage(t, "doorstep.booking.teleported", uuid.NewString(), dsData(), true)); err != nil {
+		t.Fatal(err)
+	}
 	if cons.countOf(doorstepOutcomeUnknown) != 1 {
 		t.Fatal("unknown event not counted")
 	}
@@ -665,7 +699,9 @@ func TestDoorstepMalformedAndUnknownAreCounted(t *testing.T) {
 
 	// A bare payload with the type only in the header is accepted.
 	raw, _ := json.Marshal(dsData())
-	cons.processMessage(ctx, kafka.Message{Value: raw, Headers: []kafka.Header{{Key: "event_type", Value: []byte(doorstepEventBookingStarted)}}})
+	if err := cons.processMessage(ctx, kafka.Message{Value: raw, Headers: []kafka.Header{{Key: "event_type", Value: []byte(doorstepEventBookingStarted)}}}); err != nil {
+		t.Fatal(err)
+	}
 	if len(d.pushes) != 1 || d.pushes[0].Type != service.DoorstepTypeBookingStarted || !strings.HasPrefix(d.pushes[0].DedupKey, "sha256:") {
 		t.Fatalf("bare payload pushes = %+v", d.pushes)
 	}
@@ -733,7 +769,9 @@ func TestDoorstepIncidentPagesResponders(t *testing.T) {
 	cons, d := newTestDoorstepConsumer()
 	cons.WithSafety(safety)
 	msg := dsMessage(t, doorstepEventIncidentRaised, uuid.NewString(), dsIncidentData("sos", "critical", "customer"), true)
-	cons.processMessage(context.Background(), msg)
+	if err := cons.processMessage(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
 
 	if len(safety.alerts) != 1 {
 		t.Fatalf("alerts = %+v", safety.alerts)
@@ -765,7 +803,9 @@ func TestDoorstepIncidentPagesResponders(t *testing.T) {
 	}
 
 	// Redelivery pages nobody again.
-	cons.processMessage(context.Background(), msg)
+	if err := cons.processMessage(context.Background(), msg); err != nil {
+		t.Fatal(err)
+	}
 	if len(safety.alerts) != 1 || len(safety.ops) != 1 || len(safety.emails) != 1 {
 		t.Fatalf("duplicate incident handled again: alerts %d ops %d emails %d", len(safety.alerts), len(safety.ops), len(safety.emails))
 	}
@@ -775,7 +815,9 @@ func TestDoorstepIncidentWithoutRespondersRaisesCriticalAlert(t *testing.T) {
 	safety := newFakeDoorstepSafety()
 	cons, _ := newTestDoorstepConsumer()
 	cons.WithSafety(safety)
-	cons.processMessage(context.Background(), dsMessage(t, doorstepEventIncidentRaised, uuid.NewString(), dsIncidentData("unsafe_exit", "high", "pro"), true))
+	if err := cons.processMessage(context.Background(), dsMessage(t, doorstepEventIncidentRaised, uuid.NewString(), dsIncidentData("unsafe_exit", "high", "pro"), true)); err != nil {
+		t.Fatal(err)
+	}
 	if len(safety.ops) != 1 || safety.ops[0].Kind != OpsAlertDoorstepIncidentNoResponder || safety.ops[0].Severity != "critical" {
 		t.Fatalf("ops = %+v", safety.ops)
 	}
@@ -788,7 +830,9 @@ func TestDoorstepLowSeverityIncidentIsRecordedNotPaged(t *testing.T) {
 	safety := newFakeDoorstepSafety(dsResponder)
 	cons, _ := newTestDoorstepConsumer()
 	cons.WithSafety(safety)
-	cons.processMessage(context.Background(), dsMessage(t, doorstepEventIncidentRaised, uuid.NewString(), dsIncidentData("damage", "low", "customer"), true))
+	if err := cons.processMessage(context.Background(), dsMessage(t, doorstepEventIncidentRaised, uuid.NewString(), dsIncidentData("damage", "low", "customer"), true)); err != nil {
+		t.Fatal(err)
+	}
 	if len(safety.alerts) != 0 || len(safety.emails) != 0 {
 		t.Fatalf("low damage report paged: %+v", safety.alerts)
 	}
@@ -799,7 +843,9 @@ func TestDoorstepLowSeverityIncidentIsRecordedNotPaged(t *testing.T) {
 
 func TestDoorstepIncidentWithoutSafetyWiringDoesNotPanic(t *testing.T) {
 	cons, _ := newTestDoorstepConsumer()
-	cons.processMessage(context.Background(), dsMessage(t, doorstepEventIncidentRaised, uuid.NewString(), dsIncidentData("sos", "critical", "pro"), true))
+	if err := cons.processMessage(context.Background(), dsMessage(t, doorstepEventIncidentRaised, uuid.NewString(), dsIncidentData("sos", "critical", "pro"), true)); err != nil {
+		t.Fatal(err)
+	}
 	if cons.countOf(doorstepOutcomePanic) != 0 || cons.countOf(doorstepOutcomeIncident) != 1 {
 		t.Fatal("incident without wiring mishandled")
 	}
@@ -811,7 +857,9 @@ func TestDoorstepUnassignedAlertBecomesOpsAlert(t *testing.T) {
 	cons.WithSafety(safety)
 	data := dsData()
 	data["minutes_to_slot"] = 120
-	cons.processMessage(context.Background(), dsMessage(t, doorstepEventBookingUnassignedAlert, uuid.NewString(), data, true))
+	if err := cons.processMessage(context.Background(), dsMessage(t, doorstepEventBookingUnassignedAlert, uuid.NewString(), data, true)); err != nil {
+		t.Fatal(err)
+	}
 	if len(safety.ops) != 1 || safety.ops[0].Kind != OpsAlertDoorstepBookingUnassigned || safety.ops[0].SubjectID != dsBooking ||
 		safety.ops[0].DedupeKey != "doorstep_unassigned:"+dsBooking.String() {
 		t.Fatalf("ops = %+v", safety.ops)

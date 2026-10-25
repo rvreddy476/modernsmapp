@@ -145,7 +145,7 @@ func (s *Store) CreateTierLimited(ctx context.Context, t *CreatorTier, maxActive
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	if err := lockCreatorTiers(ctx, tx, t.CreatorID); err != nil {
 		return err
@@ -187,7 +187,7 @@ func (s *Store) UpdateTierPartial(ctx context.Context, creatorID, tierID uuid.UU
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	if err := lockCreatorTiers(ctx, tx, creatorID); err != nil {
 		return nil, err
@@ -297,7 +297,7 @@ func (s *Store) UpgradeSubscription(ctx context.Context, in UpgradeInput) error 
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	var counted bool
 	err = tx.QueryRow(ctx, `

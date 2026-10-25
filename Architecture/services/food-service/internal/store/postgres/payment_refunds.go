@@ -58,7 +58,7 @@ func (s *Store) AdminRequestRefund(ctx context.Context, adminID, orderID uuid.UU
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	plan, err := s.adminRequestRefundTx(ctx, tx, adminID, orderID, reason, amount, idempotencyKey)
 	if err != nil {
 		return nil, err
@@ -258,7 +258,7 @@ func (s *Store) FinalizeWalletRefund(ctx context.Context, refundID uuid.UUID) er
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	var orderID uuid.UUID
 	var refundMinor, orderMinor, processedMinor int64

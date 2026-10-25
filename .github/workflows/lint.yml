@@ -63,9 +63,15 @@ jobs:
           failed=()
           for m in "${MODULES[@]}"; do
             echo "::group::$WS/$m"
+            # A module whose every package carries the integration tag
+            # (Architecture/tools/integration) matches no packages without
+            # it, and golangci-lint fails with "no go files to analyze".
+            # Same check as security.yml's govulncheck step.
+            tags=()
+            if [ -z "$(cd "$WS/$m" && go list ./... 2>/dev/null)" ]; then tags=(--build-tags integration); fi
             # Reported paths are relative to the root .golangci.yml (v2
             # relative-path-mode: cfg), i.e. repo-relative.
-            if (cd "$WS/$m" && golangci-lint run --timeout=10m \
+            if (cd "$WS/$m" && golangci-lint run --timeout=10m "${tags[@]}" \
                   --new-from-rev="origin/$BASE_REF" ./...); then
               echo "PASS lint $WS/$m"
             else

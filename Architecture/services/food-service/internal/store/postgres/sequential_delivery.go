@@ -23,7 +23,7 @@ func (s *Store) CreateSequentialDeliveryOffer(ctx context.Context, orderID, part
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if batchID != nil {
 		var status string
 		if err = tx.QueryRow(ctx, `SELECT status FROM food.delivery_batches WHERE id=$1 FOR UPDATE`, *batchID).Scan(&status); err != nil {

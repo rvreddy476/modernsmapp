@@ -181,7 +181,7 @@ func (s *Store) UpdateComplaintStatus(ctx context.Context, in UpdateComplaintSta
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	const q = `
         UPDATE rider_complaints
         SET status          = $2,

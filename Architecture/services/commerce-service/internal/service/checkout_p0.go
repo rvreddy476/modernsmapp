@@ -433,7 +433,7 @@ func (s *Service) OpenPaymentForOrder(ctx context.Context, orderID, userID uuid.
 	if order.CustomerUserID != userID {
 		return nil, ErrNotOrderOwner
 	}
-	attempt := 1
+	var attempt int // every branch below sets it or returns
 	switch {
 	case CanRetryPayment(order, userID):
 		if s.payments == nil {

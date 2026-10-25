@@ -259,7 +259,9 @@ func main() {
 				}
 				slog.Error("panic recovered", "error", err, "path", r.URL.Path)
 				w.WriteHeader(http.StatusInternalServerError)
-				w.Write([]byte(`{"error":"internal server error"}`))
+				// Best effort: the client may already be gone, and there is
+				// nothing left to report a failed write to.
+				_, _ = w.Write([]byte(`{"error":"internal server error"}`))
 			}
 		}()
 		handler.ServeHTTP(w, r)

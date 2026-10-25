@@ -49,7 +49,7 @@ func (s *Store) RetryPartnerNotification(ctx context.Context, id, actor uuid.UUI
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	tag, err := tx.Exec(ctx, `UPDATE partner_notification_jobs SET status='pending',attempts=0,last_error='',available_at=now(),completed_at=NULL,lease_id=NULL,lease_until=NULL WHERE id=$1 AND status='failed' AND expires_at IS NULL`, id)
 	if err != nil {
 		return err

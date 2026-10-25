@@ -497,8 +497,12 @@ func TestRenewalWindowAndStates(t *testing.T) {
 	end := r.fake.Sub(co.SubscriptionID).CurrentPeriodEnd
 	// Expired more than 30 days ago: not renewable.
 	*r.clock = end.Add(31 * 24 * time.Hour)
-	r.fake.StartGraceForEndedPeriods(ctx, *r.clock)
-	r.fake.ExpireEndedMemberships(ctx, *r.clock)
+	if _, err := r.fake.StartGraceForEndedPeriods(ctx, *r.clock); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.fake.ExpireEndedMemberships(ctx, *r.clock); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := r.svc.Renew(ctx, r.fan, co.SubscriptionID); !errors.Is(err, postgres.ErrNotRenewable) {
 		t.Fatalf("31 days after expiry: %v", err)
 	}

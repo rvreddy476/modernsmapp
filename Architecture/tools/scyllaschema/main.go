@@ -61,7 +61,7 @@ func main() {
 		_, _ = os.Stdout.Write(rendered)
 		return
 	}
-	if err := os.WriteFile(*out, rendered, 0o644); err != nil {
+	if err := os.WriteFile(*out, rendered, 0o644); err != nil { //nolint:gosec // G306: the schema file is committed to the repo, so it must be world-readable
 		fmt.Fprintln(os.Stderr, "scyllaschema:", err)
 		os.Exit(2)
 	}

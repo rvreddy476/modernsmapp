@@ -154,8 +154,11 @@ func (s *Service) publishCommentReactionEvents(ctx context.Context, comment *pos
 			eventType = engagement.EventCommentUnliked
 		}
 		event := engagement.BuildEvent(eventType, comment.PostID, userID, comment.AuthorID, comment.ID, "comment", "like", set, seq, actionTS)
+		// Detached from the request's cancellation so the publish outlives
+		// the response, as context.Background did, but keeps its values.
+		pubCtx := context.WithoutCancel(ctx)
 		go func() {
-			if err := s.engProducer.Publish(context.Background(), event); err != nil {
+			if err := s.engProducer.Publish(pubCtx, event); err != nil {
 				log.Printf("Warning: failed to publish comment reaction event: %v", err)
 			}
 		}()
@@ -166,8 +169,9 @@ func (s *Service) publishCommentReactionEvents(ctx context.Context, comment *pos
 			reactType = emoji
 		}
 		commentID, postID, authorID := comment.ID, comment.PostID, comment.AuthorID
+		pubCtx := context.WithoutCancel(ctx)
 		go func() {
-			if err := s.producer.PublishCommentReacted(context.Background(), commentID, postID, authorID, userID, reactType); err != nil {
+			if err := s.producer.PublishCommentReacted(pubCtx, commentID, postID, authorID, userID, reactType); err != nil {
 				log.Printf("Warning: failed to publish CommentReacted event: %v", err)
 			}
 		}()

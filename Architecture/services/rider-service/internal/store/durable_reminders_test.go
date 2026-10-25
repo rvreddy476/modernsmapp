@@ -43,7 +43,11 @@ func TestDocumentReminderAndSubscriptionRejectionAtomicOutbox(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer s.db.Exec(ctx, `DROP TRIGGER reject_test_reminder ON rider.outbox_events; DROP FUNCTION rider.reject_test_reminder()`)
+	defer func() {
+		if _, err := s.db.Exec(ctx, `DROP TRIGGER reject_test_reminder ON rider.outbox_events; DROP FUNCTION rider.reject_test_reminder()`); err != nil {
+			t.Errorf("drop test trigger: %v", err)
+		}
+	}()
 	d.DocumentID = uuid.New()
 	if _, err = s.QueueDocumentReminder(ctx, d, "3d"); err == nil {
 		t.Fatal("queue outage ignored")

@@ -34,7 +34,7 @@ func (s *Store) FinishPartnerNotification(ctx context.Context, j *PartnerNotific
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	tag, err := tx.Exec(ctx, `UPDATE partner_notification_jobs SET status=$3,last_error=$4,available_at=now()+make_interval(secs=>$5),
         lease_until=NULL,lease_id=NULL,completed_at=CASE WHEN $3='pending' THEN NULL ELSE now() END WHERE id=$1 AND lease_id=$2`, j.ID, j.LeaseID, status, code, delay.Seconds())
 	if err != nil {

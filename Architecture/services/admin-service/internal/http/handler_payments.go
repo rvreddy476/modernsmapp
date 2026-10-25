@@ -208,11 +208,11 @@ func paymentsScopeFor(c *gin.Context, perms adminauth.Permissions, perm string) 
 		if len(list) > 1 {
 			return paymentsScope{}, false, badRequest(CodeApplicationNeed, "application_id is required: you may act on more than one application")
 		}
-		return paymentsScope{application: list[0].application, heldAs: list[0].heldAs}, true, nil
+		return paymentsScope(list[0]), true, nil
 	}
 	for _, a := range list {
 		if a.application == client {
-			return paymentsScope{application: a.application, heldAs: a.heldAs}, true, nil
+			return paymentsScope(a), true, nil
 		}
 	}
 	return paymentsScope{}, false, &DecisionError{Status: http.StatusForbidden, Code: CodeApplicationDeny,

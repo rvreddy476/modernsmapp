@@ -17,7 +17,7 @@ func runTransition(t *testing.T, s *Store, tr OrderTransition) error {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	terr := transitionOrderTx(ctx, tx, tr)
 	// Commit even on error: anything the writer did before returning would
 	// persist and be caught by the assertions.
@@ -123,7 +123,7 @@ func TestTransitionOrderTx_ConcurrentWritersOneWins(t *testing.T) {
 				errs[i] = err
 				return
 			}
-			defer tx.Rollback(ctx)
+			defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 			if errs[i] = transitionOrderTx(ctx, tx, trs[i]); errs[i] == nil {
 				errs[i] = tx.Commit(ctx)
 			}

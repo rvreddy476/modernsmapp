@@ -21,7 +21,7 @@ func (s *Store) CreateSequentialRideOffer(ctx context.Context, in CreateOfferInp
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var status string
 	if err = tx.QueryRow(ctx, `SELECT status::text FROM rider_rides WHERE id=$1 FOR UPDATE`, in.RideID).Scan(&status); err != nil {
 		return nil, err

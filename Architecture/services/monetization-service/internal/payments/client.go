@@ -40,8 +40,8 @@ const (
 	maxResponseBytes   = 1 << 20
 
 	EnvURL      = "PAYMENTS_SERVICE_URL"
-	EnvTokenKey = "MONETIZATION_SERVICE_TOKEN_KEY"
-	EnvTokenKID = "MONETIZATION_SERVICE_TOKEN_KID"
+	EnvTokenKey = "MONETIZATION_SERVICE_TOKEN_KEY" //nolint:gosec // G101: name of the env variable, not its value
+	EnvTokenKID = "MONETIZATION_SERVICE_TOKEN_KID" //nolint:gosec // G101: name of the env variable, not its value
 	EnvPayeeID  = "MONETIZATION_PAYMENTS_PAYEE_ID"
 
 	// DefaultMethod is the instrument an intent is opened for when the

@@ -46,8 +46,6 @@ func isUniqueViolation(err error) bool { return pgCode(err) == sqlStateUniqueVio
 // application learns it was prevented.
 func isCheckViolation(err error) bool { return pgCode(err) == sqlStateCheckViolation }
 
-func isForeignKeyViolation(err error) bool { return pgCode(err) == sqlStateForeignKeyViolation }
-
 // IsRetryable reports a transient concurrency failure.
 //
 // Under the row-level locking the checkout transaction takes, a deadlock

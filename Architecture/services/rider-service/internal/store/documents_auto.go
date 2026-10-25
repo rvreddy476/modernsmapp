@@ -48,7 +48,7 @@ func (s *Store) UpsertDigiLockerDocument(ctx context.Context, in UpsertDigiLocke
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	// Refresh an existing DigiLocker row of the type rather than piling up.
 	row := tx.QueryRow(ctx, `
         UPDATE rider_partner_documents
@@ -99,7 +99,7 @@ func (s *Store) AutoVerifyPartnerDocument(ctx context.Context, id uuid.UUID, rea
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	d, err := scanPartnerDoc(tx.QueryRow(ctx, `
         UPDATE rider_partner_documents
         SET status = 'approved', rejection_reason = NULL, verified_by_actor = 'auto', verified_at = NOW(), verified_by = $2,
@@ -137,7 +137,7 @@ func (s *Store) SetPartnerDocumentStatusBy(ctx context.Context, id uuid.UUID, st
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	previous, err := scanPartnerDoc(tx.QueryRow(ctx, `SELECT `+partnerDocColumns+` FROM rider_partner_documents WHERE id=$1 FOR UPDATE`, id))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrDocumentNotFound
@@ -185,7 +185,7 @@ func (s *Store) UpsertDigiLockerVehicleRC(ctx context.Context, vehicleID uuid.UU
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	row := tx.QueryRow(ctx, `
         UPDATE rider_vehicle_documents
         SET file_url = $2, expires_at = $3, digilocker_ref = $4, status = 'approved', rejection_reason = NULL,
@@ -224,7 +224,7 @@ func (s *Store) AutoApproveVehicle(ctx context.Context, vehicleID uuid.UUID) (bo
 	if err != nil {
 		return false, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var partnerID, rcID uuid.UUID
 	err = tx.QueryRow(ctx, `
         UPDATE rider_vehicles v
@@ -262,7 +262,7 @@ func (s *Store) SetVehicleStatusBy(ctx context.Context, id uuid.UUID, status str
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var partnerID uuid.UUID
 	var previous string
 	if err := tx.QueryRow(ctx, `SELECT partner_id,status::text FROM rider_vehicles WHERE id=$1 AND deleted_at IS NULL FOR UPDATE`, id).Scan(&partnerID, &previous); err != nil {
@@ -470,7 +470,7 @@ func (s *Store) RecordUnderReview(ctx context.Context, partnerID uuid.UUID, pend
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var userID uuid.UUID
 	var status string
 	if err := tx.QueryRow(ctx, `SELECT user_id,status::text FROM rider_partners WHERE id=$1 FOR UPDATE`, partnerID).Scan(&userID, &status); err != nil {

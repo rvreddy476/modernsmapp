@@ -173,7 +173,7 @@ func (s *Store) SetRestaurantCompliance(ctx context.Context, ownerID, restaurant
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if _, err := lockOwnedRestaurantTx(ctx, tx, ownerID, restaurantID); err != nil {
 		return nil, err
 	}
@@ -224,7 +224,7 @@ func (s *Store) SetRestaurantLocation(ctx context.Context, ownerID, restaurantID
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if _, err := lockOwnedRestaurantTx(ctx, tx, ownerID, restaurantID); err != nil {
 		return nil, err
 	}
@@ -278,7 +278,7 @@ func (s *Store) SetRestaurantAccepting(ctx context.Context, ownerID, restaurantI
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	status, err := lockOwnedRestaurantTx(ctx, tx, ownerID, restaurantID)
 	if err != nil {
 		return nil, err
@@ -321,7 +321,7 @@ func (s *Store) SubmitRestaurantFSSAI(ctx context.Context, ownerID, restaurantID
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if _, err := lockOwnedRestaurantTx(ctx, tx, ownerID, restaurantID); err != nil {
 		return nil, err
 	}
@@ -400,7 +400,7 @@ func (s *Store) SubmitRestaurantForReview(ctx context.Context, ownerID, restaura
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	status, err := lockOwnedRestaurantTx(ctx, tx, ownerID, restaurantID)
 	if err != nil {
 		return nil, err
@@ -454,7 +454,7 @@ func (s *Store) AdminDecideRestaurantDocument(ctx context.Context, adminID, rest
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	var expired bool
 	if err := tx.QueryRow(ctx, `
 		SELECT (expires_at IS NOT NULL AND expires_at <= NOW()) OR (document_type = 'FSSAI' AND expires_at IS NULL)
@@ -512,7 +512,7 @@ func (s *Store) PauseRestaurantsWithExpiredFSSAI(ctx context.Context, limit int)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	rows, err := tx.Query(ctx, `
 		WITH due AS (
 			SELECT r.id

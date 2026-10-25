@@ -329,7 +329,11 @@ func TestServiceabilityPointInZone(t *testing.T) {
 	if _, err := p.Exec(ctx, `UPDATE doorstep.zones SET active = FALSE WHERE slug = 'west-hitec-gachibowli'`); err != nil {
 		t.Fatal(err)
 	}
-	defer p.Exec(ctx, `UPDATE doorstep.zones SET active = TRUE WHERE slug = 'west-hitec-gachibowli'`)
+	defer func() {
+		if _, err := p.Exec(ctx, `UPDATE doorstep.zones SET active = TRUE WHERE slug = 'west-hitec-gachibowli'`); err != nil {
+			t.Errorf("reactivate zone: %v", err)
+		}
+	}()
 	_, body := rg.call("POST", "/v1/doorstep/serviceability", `{"lat":17.4504,"lng":78.3808}`, nil)
 	if !strings.Contains(string(body), `"serviceable":false`) {
 		t.Fatalf("inactive zone still serves: %s", body)

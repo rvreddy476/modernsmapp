@@ -83,18 +83,14 @@ func (s *Store) enqueueRoleIntentTx(ctx context.Context, tx pgx.Tx, op identityr
 	})
 }
 
-// updatePartnerStatusTx wraps a partner status update so the role intent
-// commits with it.
+// updatePartnerStatusWithReviewTx wraps a partner status update so the role
+// intent commits with it.
 //
 // It takes the whole UPDATE as `sql` and expects it to RETURNING user_id.
 // Doing it this way keeps every rider partner status writer on one code path,
 // which matters because the three callers (admin status changes, admin
 // approval, the fraud job) were previously three unrelated bare Execs with no
 // transaction between them.
-func (s *Store) updatePartnerStatusTx(ctx context.Context, sql, status, reason string, args ...any) error {
-	return s.updatePartnerStatusWithReviewTx(ctx, sql, status, reason, PartnerReview{}, args...)
-}
-
 func (s *Store) updatePartnerStatusWithReviewTx(ctx context.Context, sql, status, reason string, review PartnerReview, args ...any) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {

@@ -39,7 +39,7 @@ func (s *Store) SubmitPartnerApplication(ctx context.Context, in ApplicationSubm
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, in.UserID.String()); err != nil {
 		return nil, err
 	}

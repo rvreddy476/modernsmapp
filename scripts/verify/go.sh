@@ -102,7 +102,7 @@ for m in "${MODULES[@]}"; do
     continue
   fi
   name="${m##*/}"
-  run_stage build "$name" "$m" go build ./...
+  run_stage build "$name" "$m" go build -o /dev/null ./...
 
   # With --db, the plain test stage runs with the module's DSN variables
   # unset, so database suites without the integration tag run once, in the

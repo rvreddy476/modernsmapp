@@ -32,7 +32,7 @@ func MuxAudioArgs(videoPath, audioPath, outPath string) []string {
 
 // MuxAudio runs MuxAudioArgs through ffmpeg.
 func MuxAudio(ctx context.Context, videoPath, audioPath, outPath string) error {
-	cmd := exec.CommandContext(ctx, "ffmpeg", MuxAudioArgs(videoPath, audioPath, outPath)...)
+	cmd := exec.CommandContext(ctx, "ffmpeg", MuxAudioArgs(videoPath, audioPath, outPath)...) //nolint:gosec // G204: fixed ffmpeg binary, argv without a shell; paths are worker-built temp files
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("ffmpeg audio mux failed: %w\n%s", err, truncateOutput(out, 2048))
 	}

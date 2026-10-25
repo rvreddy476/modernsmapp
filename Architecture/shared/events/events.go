@@ -229,8 +229,8 @@ const (
 	// Video credits (cast & crew on a long video, 2026-10-23). post-service
 	// writes both to its outbox in the transaction that creates the tag or
 	// records the answer; notification-service delivers them.
-	EventPostCreditRequested = "post.credit.requested" // payload: PostCreditRequestedPayload
-	EventPostCreditAccepted  = "post.credit.accepted"  // payload: PostCreditAcceptedPayload
+	EventPostCreditRequested = "post.credit.requested" //nolint:gosec // G101: event name, not a credential. payload: PostCreditRequestedPayload
+	EventPostCreditAccepted  = "post.credit.accepted"  //nolint:gosec // G101: event name, not a credential. payload: PostCreditAcceptedPayload
 
 	// Creator Analytics Events (reel engagement)
 	EventReelLiked     = "reel.liked"

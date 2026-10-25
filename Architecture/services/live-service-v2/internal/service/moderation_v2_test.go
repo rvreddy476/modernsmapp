@@ -107,9 +107,13 @@ func TestMayWatch(t *testing.T) {
 	r.graph.blocked[viewer.String()+":"+host.String()] = true
 	check(false, "blocked by the host")
 	delete(r.graph.blocked, viewer.String()+":"+host.String())
-	r.store.BanFromStream(ctx, st.ID, viewer, host, "")
+	if err := r.store.BanFromStream(ctx, st.ID, viewer, host, ""); err != nil {
+		t.Fatal(err)
+	}
 	check(false, "stream-banned")
-	r.store.UnbanFromStream(ctx, st.ID, viewer)
+	if err := r.store.UnbanFromStream(ctx, st.ID, viewer); err != nil {
+		t.Fatal(err)
+	}
 	r.store.PlatformBans[viewer] = postgres.PlatformBan{UserID: viewer}
 	check(false, "platform live-banned")
 	delete(r.store.PlatformBans, viewer)

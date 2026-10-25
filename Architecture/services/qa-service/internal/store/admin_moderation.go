@@ -86,7 +86,7 @@ func (s *Store) withAdminTx(ctx context.Context, fn func(pgx.Tx) error) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if err := fn(tx); err != nil {
 		return err
 	}

@@ -34,7 +34,8 @@ func TestCreateChannelWritesOwnerMembershipInSameTransaction(t *testing.T) {
 	if !strings.Contains(fn, "tx.Commit(ctx)") {
 		t.Fatal("CreateChannel must commit its transaction")
 	}
-	if !strings.Contains(fn, "defer tx.Rollback(ctx)") {
+	// Either spelling of a deferred rollback; the second is the errcheck-clean one.
+	if !strings.Contains(fn, "defer tx.Rollback(ctx)") && !strings.Contains(fn, "defer func() { _ = tx.Rollback(ctx) }()") {
 		t.Fatal("CreateChannel must defer a rollback, or a failure between the two inserts leaves the transaction open")
 	}
 	if !strings.Contains(fn, "INSERT INTO channel_members") {

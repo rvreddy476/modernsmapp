@@ -952,9 +952,7 @@ func renderDoorstepDeepLink(template string, f *doorstepFields) (string, error) 
 		}
 		out = out[:open] + v + out[open+end+1:]
 	}
-	if strings.HasPrefix(out, doorstepMomentumScheme) {
-		out = strings.TrimPrefix(out, doorstepMomentumScheme)
-	}
+	out = strings.TrimPrefix(out, doorstepMomentumScheme)
 	return out, nil
 }
 

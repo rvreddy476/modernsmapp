@@ -179,7 +179,7 @@ func generateHLS(ctx context.Context, inputPath, outputDir string, plan HLSPlan,
 	}
 
 	masterPlaylistPath = filepath.Join(outputDir, "master.m3u8")
-	if err := os.WriteFile(masterPlaylistPath, []byte(hlsMasterPlaylist(results)), 0644); err != nil {
+	if err := os.WriteFile(masterPlaylistPath, []byte(hlsMasterPlaylist(results)), 0o600); err != nil { //nolint:gosec // G703: path built by this package under the worker temp dir
 		return "", nil, results, fmt.Errorf("write HLS master: %w", err)
 	}
 	return masterPlaylistPath, variantPaths, results, nil
@@ -226,7 +226,7 @@ type hlsSegment struct {
 
 // readHLSPlaylist reads the #EXTINF durations and URIs of a media playlist.
 func readHLSPlaylist(path string) ([]hlsSegment, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // G703: path built by this package under the worker temp dir from the internal rung ladder
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +279,7 @@ func peakSegmentBandwidth(playlistPath string) (int, bool) {
 		if !filepath.IsAbs(segPath) {
 			segPath = filepath.Join(dir, segPath)
 		}
-		st, err := os.Stat(segPath)
+		st, err := os.Stat(segPath) //nolint:gosec // G703: segment URI from the playlist ffmpeg just wrote in the worker temp dir
 		if err != nil {
 			return 0, false
 		}
@@ -300,10 +300,10 @@ func peakSegmentBandwidth(playlistPath string) (int, bool) {
 }
 
 func removeHLSRungFiles(outputDir, quality string) {
-	_ = os.Remove(filepath.Join(outputDir, quality+".m3u8"))
+	_ = os.Remove(filepath.Join(outputDir, quality+".m3u8")) //nolint:gosec // G703: path built by this package under the worker temp dir from the internal rung ladder
 	segs, _ := filepath.Glob(filepath.Join(outputDir, quality+"_*.ts"))
 	for _, s := range segs {
-		_ = os.Remove(s)
+		_ = os.Remove(s) //nolint:gosec // G703: path built by this package under the worker temp dir from the internal rung ladder
 	}
 }
 

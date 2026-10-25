@@ -27,7 +27,7 @@ import (
 
 const (
 	// OpChargeAndCredit is the operation a charge-and-credit token carries.
-	OpChargeAndCredit = "monetization:charge-and-credit"
+	OpChargeAndCredit = "monetization:charge-and-credit" //nolint:gosec // G101: service-token operation name, not a credential
 	// IssuerFoodService is today's only caller of charge-and-credit (Feast
 	// wallet payments and their refunds, food-service service.go).
 	IssuerFoodService = "food-service"

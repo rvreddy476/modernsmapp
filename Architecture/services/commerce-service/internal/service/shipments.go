@@ -872,13 +872,6 @@ func strPtr(s string) *string {
 	return &s
 }
 
-func codAmount(pm string, total float64) float64 { // money-exempt: COD is fenced (A5) — orders_payment_method_prepaid_only rejects the method at the DB
-	if pm == "cod" {
-		return total
-	}
-	return 0
-}
-
 func orderNumberOrEmpty(o *postgres.Order) string {
 	if o == nil {
 		return ""

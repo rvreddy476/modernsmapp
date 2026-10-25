@@ -27,32 +27,32 @@ func exifWithGPS() []byte {
 	b.WriteString("Exif\x00\x00")
 	tiff := new(bytes.Buffer)
 	tiff.WriteString("MM\x00\x2a")
-	binary.Write(tiff, binary.BigEndian, uint32(8)) // IFD0 offset
+	writeBin(tiff, binary.BigEndian, uint32(8)) // IFD0 offset
 	// IFD0: 2 entries.
-	binary.Write(tiff, binary.BigEndian, uint16(2))
+	writeBin(tiff, binary.BigEndian, uint16(2))
 	// Orientation (0x0112), SHORT, count 1, value 6.
-	binary.Write(tiff, binary.BigEndian, uint16(0x0112))
-	binary.Write(tiff, binary.BigEndian, uint16(3))
-	binary.Write(tiff, binary.BigEndian, uint32(1))
-	binary.Write(tiff, binary.BigEndian, uint16(6))
-	binary.Write(tiff, binary.BigEndian, uint16(0))
+	writeBin(tiff, binary.BigEndian, uint16(0x0112))
+	writeBin(tiff, binary.BigEndian, uint16(3))
+	writeBin(tiff, binary.BigEndian, uint32(1))
+	writeBin(tiff, binary.BigEndian, uint16(6))
+	writeBin(tiff, binary.BigEndian, uint16(0))
 	// GPSInfo (0x8825), LONG, count 1, offset of the GPS IFD.
 	gpsIFDOffset := uint32(8 + 2 + 2*12 + 4)
-	binary.Write(tiff, binary.BigEndian, uint16(0x8825))
-	binary.Write(tiff, binary.BigEndian, uint16(4))
-	binary.Write(tiff, binary.BigEndian, uint32(1))
-	binary.Write(tiff, binary.BigEndian, gpsIFDOffset)
-	binary.Write(tiff, binary.BigEndian, uint32(0)) // next IFD: none
+	writeBin(tiff, binary.BigEndian, uint16(0x8825))
+	writeBin(tiff, binary.BigEndian, uint16(4))
+	writeBin(tiff, binary.BigEndian, uint32(1))
+	writeBin(tiff, binary.BigEndian, gpsIFDOffset)
+	writeBin(tiff, binary.BigEndian, uint32(0)) // next IFD: none
 	// GPS IFD: 1 entry, GPSLatitude (0x0002), RATIONAL, count 3, at offset.
-	binary.Write(tiff, binary.BigEndian, uint16(1))
+	writeBin(tiff, binary.BigEndian, uint16(1))
 	latOffset := gpsIFDOffset + 2 + 12 + 4
-	binary.Write(tiff, binary.BigEndian, uint16(0x0002))
-	binary.Write(tiff, binary.BigEndian, uint16(5))
-	binary.Write(tiff, binary.BigEndian, uint32(3))
-	binary.Write(tiff, binary.BigEndian, latOffset)
-	binary.Write(tiff, binary.BigEndian, uint32(0))
+	writeBin(tiff, binary.BigEndian, uint16(0x0002))
+	writeBin(tiff, binary.BigEndian, uint16(5))
+	writeBin(tiff, binary.BigEndian, uint32(3))
+	writeBin(tiff, binary.BigEndian, latOffset)
+	writeBin(tiff, binary.BigEndian, uint32(0))
 	for _, v := range []uint32{17, 1, 23, 1, 4560, 100} { // 17° 23' 45.60"
-		binary.Write(tiff, binary.BigEndian, v)
+		writeBin(tiff, binary.BigEndian, v)
 	}
 	b.Write(tiff.Bytes())
 	return b.Bytes()
@@ -79,7 +79,7 @@ func jpegWithExif(t *testing.T) []byte {
 	var out bytes.Buffer
 	out.Write(raw[:2])
 	out.Write([]byte{0xFF, 0xE1})
-	binary.Write(&out, binary.BigEndian, uint16(len(payload)+2))
+	writeBin(&out, binary.BigEndian, uint16(len(payload)+2))
 	out.Write(payload)
 	out.Write(raw[2:])
 	return out.Bytes()
@@ -123,16 +123,24 @@ func TestStripOriginalMetadataDropsJPEGExifAndGPS(t *testing.T) {
 	}
 }
 
+// writeBin encodes v into b. binary.Write into a bytes.Buffer fails only
+// for a value that is not fixed-size, which would be a bug in the fixture.
+func writeBin(b *bytes.Buffer, order binary.ByteOrder, v any) {
+	if err := binary.Write(b, order, v); err != nil {
+		panic(err)
+	}
+}
+
 // pngChunk frames one PNG chunk.
 func pngChunk(typ string, payload []byte) []byte {
 	var b bytes.Buffer
-	binary.Write(&b, binary.BigEndian, uint32(len(payload)))
+	writeBin(&b, binary.BigEndian, uint32(len(payload)))
 	b.WriteString(typ)
 	b.Write(payload)
 	crc := crc32.NewIEEE()
 	crc.Write([]byte(typ))
 	crc.Write(payload)
-	binary.Write(&b, binary.BigEndian, crc.Sum32())
+	writeBin(&b, binary.BigEndian, crc.Sum32())
 	return b.Bytes()
 }
 
@@ -172,7 +180,7 @@ func TestStripOriginalMetadataDropsPNGTextChunks(t *testing.T) {
 func webpChunk(fourcc string, payload []byte) []byte {
 	var b bytes.Buffer
 	b.WriteString(fourcc)
-	binary.Write(&b, binary.LittleEndian, uint32(len(payload)))
+	writeBin(&b, binary.LittleEndian, uint32(len(payload)))
 	b.Write(payload)
 	if len(payload)%2 == 1 {
 		b.WriteByte(0)
@@ -205,7 +213,7 @@ func TestStripOriginalMetadataDropsWebPExifAndXMP(t *testing.T) {
 	}, nil)
 	var in bytes.Buffer
 	in.WriteString("RIFF")
-	binary.Write(&in, binary.LittleEndian, uint32(len(body)))
+	writeBin(&in, binary.LittleEndian, uint32(len(body)))
 	in.Write(body)
 
 	out, changed := stripWebPMetadata(in.Bytes())

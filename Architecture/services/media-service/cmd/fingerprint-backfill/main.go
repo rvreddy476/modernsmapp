@@ -104,7 +104,7 @@ func main() {
 					skipped++ // a row appeared since the list was read
 				default:
 					skipped++
-					log.Printf("skip %s: %v", id, err)
+					log.Printf("skip %s: %v", id, err) //nolint:gosec // G706: id is a uuid.UUID from our own table; err is a store error
 				}
 			}
 			if *maxJobs > 0 && enqueued >= *maxJobs {

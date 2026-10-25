@@ -47,9 +47,9 @@ const DefaultBaseURL = "https://api.razorpay.com"
 // last two are the rail's own.
 const (
 	EnvKeyID         = "RAZORPAY_KEY_ID"
-	EnvKeySecret     = "RAZORPAY_KEY_SECRET"
+	EnvKeySecret     = "RAZORPAY_KEY_SECRET" //nolint:gosec // G101: name of the env variable, not its value
 	EnvAccountNumber = "RAZORPAYX_ACCOUNT_NUMBER"
-	EnvWebhookSecret = "RAZORPAYX_WEBHOOK_SECRET"
+	EnvWebhookSecret = "RAZORPAYX_WEBHOOK_SECRET" //nolint:gosec // G101: name of the env variable, not its value
 )
 
 // impsCeilingPaise: IMPS under Rs 2 lakh, NEFT at and above it.

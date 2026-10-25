@@ -27,7 +27,7 @@ const (
 	// monetizationAudience is the audience monetization-service accepts.
 	monetizationAudience = "monetization"
 	// OpMonetizationChargeAndCredit is the one operation food asks for.
-	OpMonetizationChargeAndCredit = "monetization:charge-and-credit"
+	OpMonetizationChargeAndCredit = "monetization:charge-and-credit" //nolint:gosec // G101: service-token operation name, not a credential
 	// monetizationTokenTTL bounds each minted token; one call, one token.
 	monetizationTokenTTL = time.Minute
 	// monetizationServiceAuthHeader carries the token (monetization's

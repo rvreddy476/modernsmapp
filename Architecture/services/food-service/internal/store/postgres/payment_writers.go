@@ -157,7 +157,7 @@ func (s *Store) CreatePaymentIntent(ctx context.Context, userID, orderID uuid.UU
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	if idempotencyKey != "" {
 		existingOrderID, handled, err := s.lockIdempotency(ctx, tx, userID, idempotencyKey)
@@ -308,7 +308,7 @@ func (s *Store) MarkWalletPaid(ctx context.Context, userID, orderID uuid.UUID) (
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	var status, paymentStatus, method string
 	var deliveryFee float64

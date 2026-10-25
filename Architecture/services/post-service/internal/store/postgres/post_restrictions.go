@@ -158,7 +158,7 @@ func (s *Store) ApplyPostRestriction(ctx context.Context, in RestrictionCommand)
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	// 2. Serialise on the decision id, then replay or conflict.
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, $2))`, in.DecisionID.String(), restrictionLockSpace); err != nil {
@@ -473,7 +473,7 @@ func (s *Store) repairOneRestrictionCount(ctx context.Context, postID uuid.UUID)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if _, err := tx.Exec(ctx, `SELECT 1 FROM posts WHERE id = $1 FOR UPDATE`, postID); err != nil {
 		return err
 	}

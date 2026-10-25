@@ -107,7 +107,7 @@ func TestOrderEventIsWrittenInsideTheTransitionTx(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	if err := transitionOrderTx(ctx, tx, OrderTransition{
 		OrderID: orderID, From: orderstate.Confirmed, To: orderstate.Preparing,
 		Actor: orderstate.ActorRestaurant, ChangedBy: &owner, Reason: "accepted",

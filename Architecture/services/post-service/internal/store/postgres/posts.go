@@ -1658,7 +1658,7 @@ func (s *Store) SetPostMembershipGate(ctx context.Context, postID uuid.UUID, tie
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 	changed, err := setPostMembershipGateTx(ctx, tx, postID, tierID)
 	if err != nil {
 		return err

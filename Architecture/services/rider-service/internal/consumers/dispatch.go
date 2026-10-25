@@ -99,7 +99,7 @@ func (dc *DispatchConsumer) handleRideRequested(ctx context.Context, env *events
 	if err != nil {
 		return fmt.Errorf("begin inbox tx: %w", err)
 	}
-	defer tx.Rollback(ctx)
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
 	claimed, err := dc.svc.Store().ClaimInboxEventTx(ctx, tx, "rider-dispatch-consumer", env.EventID, 1)
 	if err != nil {
