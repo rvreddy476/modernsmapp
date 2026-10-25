@@ -789,16 +789,22 @@ ALTER TABLE reviews ADD COLUMN IF NOT EXISTS moderation_status TEXT NOT NULL DEF
 ALTER TABLE reviews ADD COLUMN IF NOT EXISTS seller_response TEXT;
 ALTER TABLE reviews ADD COLUMN IF NOT EXISTS seller_responded_at TIMESTAMPTZ;
 
--- Phase 3.4 — admin moderation needs a "request changes" terminal state
--- distinct from rejection. The original CHECK was already implicitly
--- broken (CreateProduct writes 'draft', ApproveProductByAdmin writes
--- 'live') — the rewrite documents the full set the code actually uses.
-ALTER TABLE products DROP CONSTRAINT IF EXISTS products_approval_status_check;
-ALTER TABLE products ADD CONSTRAINT products_approval_status_check
-    CHECK (approval_status IN (
-        'draft','submitted','under_review','pending','approved','rejected',
-        'flagged','changes_requested','live','hidden','archived'
-    ));
+-- ─── This file never restates a constraint ─────────────────────────────
+--
+-- It runs on EVERY boot, before the migrations, against a database that may
+-- already be migrated past it — including by the gated contract files, which
+-- no boot re-applies. Anything here that drops and re-adds a constraint
+-- therefore undoes, on every restart, whatever a later migration made of it.
+-- That is what the Phase 3.4 block that stood here did: it restated
+-- products_approval_status_check with 'live' in it, so gated
+-- 1001_approval_status_tighten.sql held only until the next pod start.
+--
+-- The vocabulary is owned by the migrations now: 046 gives a fresh database
+-- the full set, and gated 1001 contracts it. The fulfillment_jobs kind CHECK
+-- below went the same way; the CREATE TABLE above already carries all four
+-- kinds, and every database that predates them has booted this file since.
+-- TestSetupSQLNeverRestatesAConstraint (internal/store/postgres) refuses a
+-- DROP or a bare ADD CONSTRAINT here; a change of shape is a migration.
 
 -- ─── Phase 6.1 — Fulfillment job queue ─────────────────────────
 -- Replaces `go s.fulfillPaidOrder()` with a durable retry-with-backoff
@@ -826,18 +832,9 @@ CREATE TABLE IF NOT EXISTS fulfillment_jobs (
     dead_letter_at  TIMESTAMPTZ
 );
 
--- Phase F2.3 — bulk SKU import + Phase F2.2 RFQ added two new fulfillment
--- job kinds. Idempotent ALTER so existing deployments accept the new
--- enum values without a manual migration. Moved AFTER the CREATE TABLE
--- above so first-run bootstrap doesn't error on a missing relation.
-ALTER TABLE fulfillment_jobs DROP CONSTRAINT IF EXISTS fulfillment_jobs_kind_check;
-ALTER TABLE fulfillment_jobs ADD CONSTRAINT fulfillment_jobs_kind_check
-    CHECK (kind IN (
-        'fulfill_paid_order',
-        'process_return_approved',
-        'bulk_import_validate',
-        'bulk_import_execute'
-    ));
+-- Phase F2.3 / F2.2 added the two bulk-import kinds; the CREATE TABLE
+-- above carries them. (The drop-and-re-add that widened older databases at
+-- boot is gone: see "This file never restates a constraint" above.)
 CREATE INDEX IF NOT EXISTS idx_fulfillment_jobs_pending
     ON fulfillment_jobs(status, next_run_at)
     WHERE status IN ('pending','processing');

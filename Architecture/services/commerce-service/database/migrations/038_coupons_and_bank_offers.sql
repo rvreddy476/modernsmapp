@@ -69,7 +69,7 @@ UPDATE coupons
    SET funded_by = CASE WHEN seller_id IS NULL THEN 'platform' ELSE 'seller' END
  WHERE funded_by IS NULL;
 
-ALTER TABLE coupons ALTER COLUMN funded_by SET NOT NULL;
+ALTER TABLE coupons ALTER COLUMN funded_by SET NOT NULL; -- expand-only: backfilled above, and trg_coupons_derive_funded_by fills it on every insert before the NOT NULL check, so an old writer that never names funded_by still satisfies it
 
 -- funded_by is DERIVED: every insert, and every change of seller_id, sets it
 -- from seller_id, so no writer can state it wrongly (and one that does not
@@ -83,7 +83,7 @@ END;
 $$;
 
 DROP TRIGGER IF EXISTS trg_coupons_derive_funded_by ON coupons;
-CREATE TRIGGER trg_coupons_derive_funded_by
+CREATE TRIGGER trg_coupons_derive_funded_by -- expand-only: BEFORE trigger that never raises; it derives funded_by from seller_id, which is what lets an old writer that never sets funded_by satisfy the NOT NULL
     BEFORE INSERT OR UPDATE OF seller_id, funded_by ON coupons
     FOR EACH ROW EXECUTE FUNCTION coupons_derive_funded_by();
 
@@ -91,7 +91,7 @@ DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint
                     WHERE conrelid = 'coupons'::regclass AND conname = 'chk_coupon_funded_by') THEN
-        ALTER TABLE coupons ADD CONSTRAINT chk_coupon_funded_by
+        ALTER TABLE coupons ADD CONSTRAINT chk_coupon_funded_by -- expand-only: funded_by is derived from seller_id by trg_coupons_derive_funded_by on every insert and seller_id change, and backfilled above the same way, so no row or old write can disagree with it
             CHECK ((funded_by = 'platform' AND seller_id IS NULL)
                 OR (funded_by = 'seller'   AND seller_id IS NOT NULL));
     END IF;
@@ -135,7 +135,7 @@ DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint
                     WHERE conrelid = 'orders'::regclass AND conname = 'chk_order_offer_minor') THEN
-        ALTER TABLE orders ADD CONSTRAINT chk_order_offer_minor
+        ALTER TABLE orders ADD CONSTRAINT chk_order_offer_minor -- expand-only: binds only the three columns added just above, which no pre-038 image writes, so they are NULL on every existing row and every old write
             CHECK ((offer_discount_minor IS NULL OR offer_discount_minor > 0)
                AND (captured_minor IS NULL OR captured_minor > 0)
                AND (platform_discount_minor IS NULL OR platform_discount_minor >= 0));
@@ -147,13 +147,13 @@ END$$;
 -- 036's CHECKs were inline, so they carry Postgres's generated names. They
 -- are replaced, not loosened: the old values are all still allowed.
 
-ALTER TABLE commerce_admin_audit_log DROP CONSTRAINT IF EXISTS commerce_admin_audit_log_action_check;
-ALTER TABLE commerce_admin_audit_log DROP CONSTRAINT IF EXISTS commerce_admin_audit_log_target_type_check;
-ALTER TABLE commerce_admin_audit_log DROP CONSTRAINT IF EXISTS chk_admin_audit_action;
-ALTER TABLE commerce_admin_audit_log DROP CONSTRAINT IF EXISTS chk_admin_audit_target_type;
-ALTER TABLE commerce_admin_audit_log ADD CONSTRAINT chk_admin_audit_action
+ALTER TABLE commerce_admin_audit_log DROP CONSTRAINT IF EXISTS commerce_admin_audit_log_action_check; -- expand-only: 036's inline action CHECK, replaced below by chk_admin_audit_action, a strict superset
+ALTER TABLE commerce_admin_audit_log DROP CONSTRAINT IF EXISTS commerce_admin_audit_log_target_type_check; -- expand-only: 036's inline target_type CHECK, replaced below by chk_admin_audit_target_type, a strict superset
+ALTER TABLE commerce_admin_audit_log DROP CONSTRAINT IF EXISTS chk_admin_audit_action; -- expand-only: this file's own constraint (re-run idempotency), re-added below
+ALTER TABLE commerce_admin_audit_log DROP CONSTRAINT IF EXISTS chk_admin_audit_target_type; -- expand-only: this file's own constraint (re-run idempotency), re-added below
+ALTER TABLE commerce_admin_audit_log ADD CONSTRAINT chk_admin_audit_action -- expand-only: strict superset of 036's action list
     CHECK (action IN ('cod_remittance_settle','seller_kyc_verify',
                       'banner_create','banner_update','banner_delete',
                       'coupon_create','coupon_update'));
-ALTER TABLE commerce_admin_audit_log ADD CONSTRAINT chk_admin_audit_target_type
+ALTER TABLE commerce_admin_audit_log ADD CONSTRAINT chk_admin_audit_target_type -- expand-only: strict superset of 036's target_type list
     CHECK (target_type IN ('cod_remittance','seller','banner','coupon'));

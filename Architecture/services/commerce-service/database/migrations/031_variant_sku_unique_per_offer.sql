@@ -73,7 +73,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS product_variants_offer_sku_key
 -- ─── The old one ────────────────────────────────────────────────────────
 
 ALTER TABLE product_variants
-    DROP CONSTRAINT IF EXISTS product_variants_sku_key;
+    DROP CONSTRAINT IF EXISTS product_variants_sku_key; -- expand-only: drops a UNIQUE after the wider (offer_id, sku) index above is in place; removing a uniqueness rule accepts every write it accepted before, and the one reader that leaned on it (the unscoped SKU importer) is seller-scoped and its routes are fenced
 
 -- `idx_variants_sku`, the plain btree on `sku` alone, is deliberately KEPT.
 -- It was never the uniqueness rule; it is what `ResolveSKUForSeller` looks a

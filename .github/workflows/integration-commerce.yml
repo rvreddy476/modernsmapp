@@ -846,7 +846,41 @@ jobs:
         run: |
           set -euo pipefail
           BAD=0
-          for f in database/migrations/00[789]*.sql database/migrations/0[12]*.sql; do
+          # Every boot migration, including any added after this line was
+          # written: the set is the directory, not a numbered range. (It was
+          # `00[789]* 0[12]*`, which silently stopped at 029, so 030 onwards
+          # was never checked.)
+          #
+          # The only files left out are the six that PREDATE the expand-only
+          # rule, named one by one so nothing new can fall into the gap. They
+          # were written before the rolling-deploy discipline existed, have
+          # run on every database, and can only ever run again on an empty
+          # one, where no old replica exists to be rejected. 001 narrows
+          # products_approval_status_check and 006 swaps the order
+          # idempotency key; neither is expand-only, and marking them so
+          # would be false.
+          PRE_RULE=" 001_seller_onboarding.sql 002_invoices_shipments.sql 003_returns_refunds.sql 004_cod_remittances.sql 005_outbox_and_perf.sql 006_order_idempotency_scope.sql "
+          # CONTRACT_AT_BOOT: triggers that DO refuse an old image's writes and
+          # stay in the boot set anyway, because every write they refuse is one
+          # no image is allowed to make. One per line: <file>:<trigger>|<reason>.
+          # Not the expand-only marker: these are contract operations, said
+          # plainly, and each entry must still name a trigger that exists.
+          CONTRACT_AT_BOOT='035_seller_kyc_pii_encryption.sql:trg_seller_documents_no_raw_aadhaar|refuses only raw Aadhaar writes, which no image may make'
+          CONTRACT_AT_BOOT_KEYS=$(cut -d'|' -f1 <<<"$CONTRACT_AT_BOOT")
+          while IFS= read -r entry; do
+            key=${entry%%|*}; reason=${entry#*|}
+            file=database/migrations/${key%%:*}; trg=${key#*:}
+            if [ -z "$reason" ] || [ "$reason" = "$entry" ]; then
+              echo "::error::CONTRACT_AT_BOOT entry '$key' states no reason"; BAD=1
+            fi
+            if [ ! -f "$file" ] || ! grep -Eiq "^[[:space:]]*CREATE[[:space:]]+(OR[[:space:]]+REPLACE[[:space:]]+)?TRIGGER[[:space:]]+$trg([[:space:]]|\$)" "$file"; then
+              echo "::error::CONTRACT_AT_BOOT names $key, which no longer exists; remove the exemption rather than let it outlive its trigger"; BAD=1
+            fi
+          done <<<"$CONTRACT_AT_BOOT"
+          N=0
+          for f in database/migrations/*.sql; do
+            case "$PRE_RULE" in *" $(basename "$f") "*) continue ;; esac
+            N=$((N+1))
             # A DROP TABLE whose every target is a TEMP table created in the
             # same file is not destructive: it drops session scratch, not
             # schema (028's re-runnable backfill must drop its own temp tables
@@ -882,10 +916,22 @@ jobs:
             # refuses the old image's writes the moment it is attached.
             # Defining the FUNCTION is fine and stays in the boot set; it is
             # the attachment that contracts.
-            if grep -Ein '^[[:space:]]*CREATE[[:space:]]+(OR[[:space:]]+REPLACE[[:space:]]+)?TRIGGER' "$f" | grep -v 'expand-only:'; then
+            #
+            # A trigger that DOES reject an old image's writes, on purpose, is
+            # not expand-only and must not be marked so. The only way it stays
+            # in the boot set is an entry in CONTRACT_AT_BOOT (top of this
+            # step), keyed by file and trigger name, with its reason.
+            trg_hits=$(grep -Ein '^[[:space:]]*CREATE[[:space:]]+(OR[[:space:]]+REPLACE[[:space:]]+)?TRIGGER' "$f" | grep -v 'expand-only:' || true)
+            while IFS= read -r hit; do
+              [ -n "$hit" ] || continue
+              tname=$(sed -E 's/^[0-9]+:[[:space:]]*CREATE[[:space:]]+(OR[[:space:]]+REPLACE[[:space:]]+)?TRIGGER[[:space:]]+([A-Za-z0-9_]+).*/\2/I' <<<"$hit")
+              if grep -qxF "$(basename "$f"):$tname" <<<"$CONTRACT_AT_BOOT_KEYS"; then
+                continue
+              fi
+              echo "$hit"
               echo "::error file=$f::CREATE TRIGGER in a boot migration. Attaching a rejecting trigger is a CONTRACT operation — move it to database/gated/ (the CREATE FUNCTION may stay). A trigger that cannot reject a write may stay if the line is marked '-- expand-only: <reason>'"
               BAD=1
-            fi
+            done <<<"$trg_hits"
             # DROP CONSTRAINT — previously waved through as "permitted inside
             # the guarded CHECK replacement blocks, which re-add immediately".
             # That reasoning is wrong when the replacement is NARROWER than
@@ -903,13 +949,37 @@ jobs:
             fi
             # A CHECK added without NOT VALID is validated immediately against
             # existing rows and enforced against new ones.
-            if grep -Ein 'ADD[[:space:]]+CONSTRAINT' "$f" | grep -Eiv 'NOT[[:space:]]+VALID' | grep -v 'expand-only:' | grep -Ei 'CHECK|FOREIGN[[:space:]]+KEY'; then
+            #
+            # Judged on the whole STATEMENT, from the ADD CONSTRAINT line to the
+            # next `;`, not on the one line: a CHECK written on the line after
+            # its ADD CONSTRAINT used to pass unseen. The marker, when the
+            # reason holds, goes on the ADD CONSTRAINT line.
+            add_hits=$(sed 's/--.*$//' "$f" | awk '
+              { l = tolower($0) }
+              l ~ /add[[:space:]]+constraint/ { if (in_add) print start "\t" stmt; start = NR; stmt = ""; in_add = 1 }
+              in_add { stmt = stmt " " $0
+                       if ($0 ~ /;/) { print start "\t" stmt; in_add = 0 } }' \
+              | grep -Ei 'CHECK|FOREIGN[[:space:]]+KEY|REFERENCES' | grep -Eiv 'NOT[[:space:]]+VALID' | cut -f1 || true)
+            for ln in $add_hits; do
+              line=$(sed -n "${ln}p" "$f")
+              grep -q 'expand-only:' <<<"$line" && continue
+              echo "$ln:$line"
               echo "::error file=$f::a CHECK/FK constraint is added without NOT VALID in a boot migration"
+              BAD=1
+            done
+            # SET NOT NULL on an existing column refuses every old-image write
+            # that leaves it out, and scans the table to prove no row is NULL.
+            # Safe only when nothing can write a NULL (a default the old image
+            # inherits, a trigger that fills it, a column no old image writes);
+            # the line says which, or it is a gated operation.
+            if grep -Ein 'SET[[:space:]]+NOT[[:space:]]+NULL' "$f" | grep -v 'expand-only:'; then
+              echo "::error file=$f::SET NOT NULL in a boot migration. It refuses an old image's writes that omit the column — move it to database/gated/, or mark the line '-- expand-only: <why no writer can leave it NULL>'"
               BAD=1
             fi
           done
+          [ "$N" -gt 0 ] || { echo "::error::no boot migrations were checked"; exit 1; }
           [ "$BAD" -eq 0 ] || exit 1
-          echo "boot migrations are expand-only"
+          echo "boot migrations are expand-only ($N checked)"
 
       # B11: and the contract half must actually exist, so the operations
       # removed from the boot set were MOVED rather than deleted.

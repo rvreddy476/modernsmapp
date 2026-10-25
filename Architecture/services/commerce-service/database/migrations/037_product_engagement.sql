@@ -40,9 +40,9 @@ ALTER TABLE products ADD COLUMN IF NOT EXISTS share_count BIGINT NOT NULL DEFAUL
 DO $$
 BEGIN
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'products_like_count_nonneg') THEN
-        ALTER TABLE products ADD CONSTRAINT products_like_count_nonneg CHECK (like_count >= 0);
+        ALTER TABLE products ADD CONSTRAINT products_like_count_nonneg CHECK (like_count >= 0); -- expand-only: like_count is added by this file with DEFAULT 0 and no pre-037 image writes it, so no existing row or old write can fail it
     END IF;
     IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'products_share_count_nonneg') THEN
-        ALTER TABLE products ADD CONSTRAINT products_share_count_nonneg CHECK (share_count >= 0);
+        ALTER TABLE products ADD CONSTRAINT products_share_count_nonneg CHECK (share_count >= 0); -- expand-only: share_count is added by this file with DEFAULT 0 and no pre-037 image writes it, so no existing row or old write can fail it
     END IF;
 END $$;

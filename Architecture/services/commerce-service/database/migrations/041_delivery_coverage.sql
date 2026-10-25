@@ -29,5 +29,5 @@ CREATE TABLE IF NOT EXISTS commerce_delivery_config_audit (
  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 DROP TRIGGER IF EXISTS commerce_delivery_config_audit_append_only ON commerce_delivery_config_audit;
-CREATE TRIGGER commerce_delivery_config_audit_append_only BEFORE UPDATE OR DELETE ON commerce_delivery_config_audit
+CREATE TRIGGER commerce_delivery_config_audit_append_only BEFORE UPDATE OR DELETE ON commerce_delivery_config_audit -- expand-only: guards commerce_delivery_config_audit, a table this file creates; no pre-041 image writes it
  FOR EACH ROW EXECUTE FUNCTION commerce_delivery_audit_append_only();

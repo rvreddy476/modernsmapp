@@ -59,6 +59,6 @@ END;
 $$;
 
 DROP TRIGGER IF EXISTS trg_commerce_admin_audit_log_append_only ON commerce_admin_audit_log;
-CREATE TRIGGER trg_commerce_admin_audit_log_append_only
+CREATE TRIGGER trg_commerce_admin_audit_log_append_only -- expand-only: guards commerce_admin_audit_log, a table this file creates; no pre-036 image writes it, so it cannot reject an old replica's write
     BEFORE UPDATE OR DELETE ON commerce_admin_audit_log
     FOR EACH ROW EXECUTE FUNCTION commerce_admin_audit_log_append_only();

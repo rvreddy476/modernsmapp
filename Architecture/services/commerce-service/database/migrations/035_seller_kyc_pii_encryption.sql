@@ -155,7 +155,7 @@ END
 $fn$;
 
 DROP TRIGGER IF EXISTS trg_payout_account_stale_ciphertext ON seller_payout_accounts; -- expand-only: recreated immediately below, so re-running the migration is idempotent
-CREATE TRIGGER trg_payout_account_stale_ciphertext
+CREATE TRIGGER trg_payout_account_stale_ciphertext -- expand-only: BEFORE trigger that never raises; it only clears ciphertext an old writer left stale, so it cannot reject an old replica's write
     BEFORE INSERT OR UPDATE OF account_number, ifsc_code, account_number_enc ON seller_payout_accounts
     FOR EACH ROW EXECUTE FUNCTION commerce_payout_account_stale_ciphertext();
 
@@ -192,7 +192,7 @@ END
 $fn$;
 
 DROP TRIGGER IF EXISTS trg_seller_pan_stale_ciphertext ON sellers; -- expand-only: recreated immediately below, so re-running the migration is idempotent
-CREATE TRIGGER trg_seller_pan_stale_ciphertext
+CREATE TRIGGER trg_seller_pan_stale_ciphertext -- expand-only: BEFORE trigger that never raises; it only clears ciphertext an old writer left stale, so it cannot reject an old replica's write
     BEFORE INSERT OR UPDATE OF pan_number, pan_enc ON sellers
     FOR EACH ROW EXECUTE FUNCTION commerce_seller_pan_stale_ciphertext();
 
@@ -220,7 +220,7 @@ END
 $fn$;
 
 DROP TRIGGER IF EXISTS trg_organization_pan_stale_ciphertext ON organizations; -- expand-only: recreated immediately below, so re-running the migration is idempotent
-CREATE TRIGGER trg_organization_pan_stale_ciphertext
+CREATE TRIGGER trg_organization_pan_stale_ciphertext -- expand-only: BEFORE trigger that never raises; it only clears ciphertext an old writer left stale, so it cannot reject an old replica's write
     BEFORE INSERT OR UPDATE OF pan, pan_enc ON organizations
     FOR EACH ROW EXECUTE FUNCTION commerce_organization_pan_stale_ciphertext();
 

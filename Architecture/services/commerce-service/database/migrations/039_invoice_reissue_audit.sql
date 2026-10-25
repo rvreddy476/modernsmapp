@@ -23,19 +23,19 @@
 -- Additive and ungated: the old values are all still allowed, and an old
 -- replica never writes the new ones.
 
-ALTER TABLE commerce_admin_audit_log DROP CONSTRAINT IF EXISTS chk_admin_audit_action;
-ALTER TABLE commerce_admin_audit_log ADD CONSTRAINT chk_admin_audit_action
+ALTER TABLE commerce_admin_audit_log DROP CONSTRAINT IF EXISTS chk_admin_audit_action; -- expand-only: 038's list, replaced below by a strict superset that adds 'invoice_reissue'
+ALTER TABLE commerce_admin_audit_log ADD CONSTRAINT chk_admin_audit_action -- expand-only: strict superset of 038's list (adds 'invoice_reissue')
     CHECK (action IN ('cod_remittance_settle','seller_kyc_verify',
                       'banner_create','banner_update','banner_delete',
                       'coupon_create','coupon_update',
                       'invoice_reissue'));
 
-ALTER TABLE commerce_admin_audit_log DROP CONSTRAINT IF EXISTS chk_admin_audit_target_type;
-ALTER TABLE commerce_admin_audit_log ADD CONSTRAINT chk_admin_audit_target_type
+ALTER TABLE commerce_admin_audit_log DROP CONSTRAINT IF EXISTS chk_admin_audit_target_type; -- expand-only: 038's list, replaced below by a strict superset that adds 'invoice'
+ALTER TABLE commerce_admin_audit_log ADD CONSTRAINT chk_admin_audit_target_type -- expand-only: strict superset of 038's list (adds 'invoice')
     CHECK (target_type IN ('cod_remittance','seller','banner','coupon','invoice'));
 
-ALTER TABLE commerce_admin_audit_log DROP CONSTRAINT IF EXISTS chk_admin_audit_invoice_reissue_actor;
-ALTER TABLE commerce_admin_audit_log ADD CONSTRAINT chk_admin_audit_invoice_reissue_actor
+ALTER TABLE commerce_admin_audit_log DROP CONSTRAINT IF EXISTS chk_admin_audit_invoice_reissue_actor; -- expand-only: only this file creates the constraint (re-run idempotency); it binds an id no user holds to an action no old image writes, so it cannot reject an old replica's write
+ALTER TABLE commerce_admin_audit_log ADD CONSTRAINT chk_admin_audit_invoice_reissue_actor -- expand-only: both sides are false for every row an old image writes (a real admin id, an action other than invoice_reissue), so it cannot reject one
     CHECK (
         (actor_user_id = '0888221b-0db5-4fcc-81e0-67a27eb880b5'::uuid)
         = (action = 'invoice_reissue'

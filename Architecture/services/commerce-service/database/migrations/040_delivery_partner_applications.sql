@@ -42,5 +42,5 @@ BEGIN
     RAISE EXCEPTION 'commerce delivery audit is append-only' USING ERRCODE='insufficient_privilege';
 END; $$;
 DROP TRIGGER IF EXISTS commerce_delivery_audit_append_only ON commerce_delivery_review_audit;
-CREATE TRIGGER commerce_delivery_audit_append_only BEFORE UPDATE OR DELETE ON commerce_delivery_review_audit
+CREATE TRIGGER commerce_delivery_audit_append_only BEFORE UPDATE OR DELETE ON commerce_delivery_review_audit -- expand-only: guards commerce_delivery_review_audit, a table this file creates; no pre-040 image writes it
     FOR EACH ROW EXECUTE FUNCTION commerce_delivery_audit_append_only();

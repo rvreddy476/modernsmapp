@@ -139,7 +139,7 @@ BEGIN
                         WHERE conname = 'product_attributes_offer_id_fkey')
     THEN
         ALTER TABLE product_attributes
-            ADD CONSTRAINT product_attributes_offer_id_fkey
+            ADD CONSTRAINT product_attributes_offer_id_fkey -- expand-only: product_attributes.offer_id (026) has no writer in any image before this one, so every value is NULL and no old write can fail the reference
             FOREIGN KEY (offer_id) REFERENCES product_offers(id);
     END IF;
 END $$;

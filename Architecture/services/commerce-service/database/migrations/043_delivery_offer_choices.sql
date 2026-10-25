@@ -12,5 +12,5 @@ BEGIN
  RETURN NEW;
 END $$;
 DROP TRIGGER IF EXISTS commerce_delivery_offer_choice_limit ON commerce_delivery_offers;
-CREATE TRIGGER commerce_delivery_offer_choice_limit BEFORE INSERT OR UPDATE OF status,expires_at ON commerce_delivery_offers
+CREATE TRIGGER commerce_delivery_offer_choice_limit BEFORE INSERT OR UPDATE OF status,expires_at ON commerce_delivery_offers -- expand-only: 042 and 043 were added in the same commit (d61bd603c, 13 Oct 2026), so no image ever wrote commerce_delivery_offers under 042's one-offer index without this trigger
  FOR EACH ROW EXECUTE FUNCTION commerce_delivery_offer_choice_limit();
