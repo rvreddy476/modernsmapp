@@ -211,7 +211,9 @@ func (s *Service) VerifyPartnerPhone(ctx context.Context, id, code, device, plat
 		if err != nil {
 			return nil, err
 		}
-		defer tx.Rollback(ctx)
+		// After Commit, Rollback is a no-op returning ErrTxClosed; on an
+		// early return the original error is the one returned.
+		defer func() { _ = tx.Rollback(ctx) }()
 		// Serialise simultaneous registrations for the same phone. A second
 		// verified challenge must never replace an existing person's profile.
 		if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, "partner-phone:"+p.Input.Phone); err != nil {

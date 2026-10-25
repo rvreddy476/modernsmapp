@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
-	"strings"
 	"sync"
 
 	"github.com/jackc/pgx/v5"
@@ -62,19 +61,6 @@ func (f *fakeDB) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
 }
 
 func (f *fakeDB) Begin(context.Context) (pgx.Tx, error) { return &fakeTx{db: f}, nil }
-
-// writes returns the exec calls and the args of every call.
-func (f *fakeDB) writes() []dbCall {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	var out []dbCall
-	for _, c := range f.calls {
-		if c.kind == "exec" || strings.Contains(strings.ToUpper(c.sql), "INSERT") || strings.Contains(strings.ToUpper(c.sql), "UPDATE") {
-			out = append(out, c)
-		}
-	}
-	return out
-}
 
 type fakeTx struct {
 	pgx.Tx

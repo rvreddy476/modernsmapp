@@ -226,7 +226,10 @@ func refreshRateLimit(rdb *redis.Client, cookieName string, readBody bool) gin.H
 			var req struct {
 				RefreshToken string `json:"refresh_token"`
 			}
-			json.Unmarshal(bodyBytes, &req)
+			// A body that is not JSON carries no refresh_token: the token
+			// stays empty and the cookie below is tried. The handler, not
+			// the limiter, rejects the malformed body.
+			_ = json.Unmarshal(bodyBytes, &req)
 			c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 			token = req.RefreshToken
 		}

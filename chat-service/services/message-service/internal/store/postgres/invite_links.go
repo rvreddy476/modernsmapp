@@ -52,7 +52,8 @@ func (s *ConversationStore) CreateInviteLink(ctx context.Context, conversationID
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	// No-op after Commit (ErrTxClosed); an early return keeps its own error.
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx, `
 		UPDATE chat.group_invite_links SET revoked_at = NOW()

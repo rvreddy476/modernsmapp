@@ -426,7 +426,8 @@ func (s *ConversationStore) ApplyDeliveryParity(ctx context.Context, d DeliveryP
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	// No-op after Commit (ErrTxClosed); an early return keeps its own error.
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	var convType string
 	if err := tx.QueryRow(ctx, `SELECT type FROM chat.conversations WHERE id = $1`, d.ConversationID).Scan(&convType); err != nil {
@@ -668,7 +669,8 @@ func (s *ConversationStore) ReplaceNote(ctx context.Context, n Note) error {
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx)
+	// No-op after Commit (ErrTxClosed); an early return keeps its own error.
+	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `DELETE FROM chat.notes WHERE user_id = $1`, n.UserID); err != nil {
 		return err
 	}

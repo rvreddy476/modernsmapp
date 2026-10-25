@@ -302,7 +302,9 @@ func TestRecoveryCodeLoginIsNotAdminMFA(t *testing.T) {
 	f.st.platformRoles[u.ID] = []string{"admin"}
 	// Seed one recovery code in Redis the way promoteRecoveryCodes stores it.
 	hash, _ := bcrypt.GenerateFromPassword([]byte("RECOVERYCODE1"), 4)
-	f.mr.Set(recoveryCodesPrefix+u.ID.String(), `["`+string(hash)+`"]`)
+	if err := f.mr.Set(recoveryCodesPrefix+u.ID.String(), `["`+string(hash)+`"]`); err != nil {
+		t.Fatalf("seed recovery code: %v", err)
+	}
 
 	pending, err := f.svc.LoginWithPassword(context.Background(), *u.Email, adminTestPassword, "dev", "web", "10.0.0.5", "Mozilla/5.0")
 	if err != nil || !pending.Requires2FA {

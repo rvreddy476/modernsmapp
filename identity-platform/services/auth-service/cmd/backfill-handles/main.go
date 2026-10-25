@@ -150,7 +150,9 @@ func claim(ctx context.Context, pool *pgxpool.Pool, userID uuid.UUID, cands []st
 	if err != nil {
 		return "", err
 	}
-	defer tx.Rollback(ctx)
+	// After Commit, Rollback is a no-op returning ErrTxClosed; on an
+	// early return the claim's own error is what the caller reports.
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	for _, cand := range cands {
 		sp, err := tx.Begin(ctx)

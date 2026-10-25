@@ -159,9 +159,8 @@ func (f *expiryFake) ExpireMessageRecords(_ context.Context, e postgres.MessageE
 // redactMsgStore adds the Scylla content wipe to the preview message store.
 type redactMsgStore struct {
 	*previewMsgStore
-	redacts     int
-	inboxDrops  []uuid.UUID
-	redactedTxt string
+	redacts    int
+	inboxDrops []uuid.UUID
 }
 
 func (m *redactMsgStore) RedactMessage(context.Context, uuid.UUID, string, time.Time, uuid.UUID) error {

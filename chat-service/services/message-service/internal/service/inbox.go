@@ -458,17 +458,6 @@ func (s *Service) clearForMe(ctx context.Context, userID, convID uuid.UUID, hide
 // so a route never confirms a conversation exists).
 var ErrNotMember = errors.New("not a conversation member")
 
-// memberCutoff returns the caller's history cut-off (nil: none).
-// A lookup error propagates: callers fail closed rather than show history
-// the member cleared.
-func (s *Service) memberCutoff(ctx context.Context, convID, userID uuid.UUID) (*time.Time, error) {
-	ps, ok := s.parity()
-	if !ok {
-		return nil, nil
-	}
-	return ps.GetMemberCutoff(ctx, convID, userID)
-}
-
 // discloseLastSeenTo mirrors discloseOnlineTo for the last-active time
 // (graph action see_last_seen), cached 30 s per pair, failing closed.
 func (s *Service) discloseLastSeenTo(ctx context.Context, viewerID, targetID uuid.UUID) bool {

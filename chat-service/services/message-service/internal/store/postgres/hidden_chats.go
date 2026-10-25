@@ -112,7 +112,8 @@ func (s *ConversationStore) RecordHiddenChatFailure(ctx context.Context, userID 
 	if err != nil {
 		return AttemptState{}, err
 	}
-	defer tx.Rollback(ctx)
+	// No-op after Commit (ErrTxClosed); an early return keeps its own error.
+	defer func() { _ = tx.Rollback(ctx) }()
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO chat.hidden_chat_attempts (user_id, secret_kind) VALUES ($1, $2)
 		ON CONFLICT (user_id, secret_kind) DO NOTHING
@@ -230,7 +231,8 @@ func (s *ConversationStore) LockConversationForMember(ctx context.Context, conve
 	if err != nil {
 		return false, 0, err
 	}
-	defer tx.Rollback(ctx)
+	// No-op after Commit (ErrTxClosed); an early return keeps its own error.
+	defer func() { _ = tx.Rollback(ctx) }()
 	// Conversation row lock first: the order every membership write uses.
 	var convType string
 	if err := tx.QueryRow(ctx, `SELECT type FROM chat.conversations WHERE id = $1 FOR UPDATE`, conversationID).Scan(&convType); err != nil {
@@ -421,7 +423,8 @@ func (s *ConversationStore) ResetHiddenChats(ctx context.Context, r HiddenChatsR
 	if err != nil {
 		return nil, err
 	}
-	defer tx.Rollback(ctx)
+	// No-op after Commit (ErrTxClosed); an early return keeps its own error.
+	defer func() { _ = tx.Rollback(ctx) }()
 	userID := r.Settings.UserID
 	var wiped []uuid.UUID
 	if r.Wipe {

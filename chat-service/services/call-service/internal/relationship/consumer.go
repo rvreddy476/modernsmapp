@@ -143,9 +143,7 @@ func (h *Handler) end(ctx context.Context, userA, userB uuid.UUID, eventType str
 	if ended > 0 {
 		args := []any{"event", "call_terminated_on_revocation", "event_type", eventType,
 			"user_a", userA, "user_b", userB, "calls_ended", ended}
-		for _, a := range attrs {
-			args = append(args, a)
-		}
+		args = append(args, attrs...)
 		h.log.Info("live call ended because the relationship was revoked", args...)
 	}
 	return nil

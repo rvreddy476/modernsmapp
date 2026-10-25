@@ -63,7 +63,9 @@ func (h *Handler) StepUp(c *gin.Context) {
 		h.writeStepUpErr(c, err)
 		return
 	}
-	http.SetCookie(c.Writer, &http.Cookie{
+	// Replaces the access cookie setAuthCookies wrote, with the same
+	// attributes, so the browser keeps one cookie under one Domain/Secure.
+	http.SetCookie(c.Writer, &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure follows COOKIE_SECURE exactly as setAuthCookies does for this cookie
 		Name:     accessTokenCookieName,
 		Value:    resp.AccessToken,
 		Path:     "/",

@@ -108,7 +108,8 @@ func (s *ConversationStore) OpenDirectConversation(ctx context.Context, actorID,
 	if err != nil {
 		return DirectOpenResult{}, err
 	}
-	defer tx.Rollback(ctx)
+	// No-op after Commit (ErrTxClosed); an early return keeps its own error.
+	defer func() { _ = tx.Rollback(ctx) }()
 
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, pairKey); err != nil {
 		return DirectOpenResult{}, err

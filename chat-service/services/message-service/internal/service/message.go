@@ -1674,8 +1674,11 @@ func (s *Service) EditMessage(
 	})
 
 	members, _ := s.convStore.GetMembers(ctx, conversationID)
+	// The fan-out outlives the request: detach from its cancellation but
+	// keep its values (request id, trace).
+	bgCtx := context.WithoutCancel(ctx)
 	go func() {
-		pubCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		pubCtx, cancel := context.WithTimeout(bgCtx, 2*time.Second)
 		defer cancel()
 		payload, _ := json.Marshal(map[string]interface{}{
 			"type": "message_edited",

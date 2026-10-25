@@ -201,7 +201,7 @@ const (
 	accessIdentityKey = "access_identity"
 	// stepUpIdentityKey holds a verified X-Step-Up-Token's identity.
 	stepUpIdentityKey = "step_up_identity"
-	stepUpTokenHeader = "X-Step-Up-Token"
+	stepUpTokenHeader = "X-Step-Up-Token" //nolint:gosec // G101: an HTTP header name, not a credential
 )
 
 // accessIdentityFrom returns the verified bearer identity set by the auth

@@ -426,7 +426,10 @@ func (s *Server) serveConnection(
 
 	queue := newTypingQueue()
 	typing := s.newConnTypingTracker(queue, userID, subs)
-	go queue.run(s.opts.TypingNotifier, bearerToken, userID, s.log)
+	// Deliberately not tied to ctx: typing.StopAll runs after ctx is
+	// cancelled and its "stopped typing" events must still be forwarded;
+	// queue.close ends the goroutine.
+	go queue.run(s.opts.TypingNotifier, bearerToken, userID, s.log) //nolint:gosec // G118: must outlive ctx to flush teardown events; bounded by queue.close
 	defer queue.close()
 	// Runs before queue.close (defers are LIFO): every indicator this
 	// connection left on is turned off.

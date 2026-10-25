@@ -98,7 +98,10 @@ func requireAdminCSRF() gin.HandlerFunc {
 
 // adminCookie builds one admin cookie. There is deliberately no Domain.
 func (h *Handler) adminCookie(name, value string, expires time.Time, httpOnly bool) *http.Cookie {
-	return &http.Cookie{
+	// SameSite is Strict; Secure is AdminCookieSecure (default true, forced
+	// true in production); HttpOnly is false only for the double-submit CSRF
+	// cookie, which the console must read to echo in the header.
+	return &http.Cookie{ //nolint:gosec // G124: Secure is config-forced in production; non-HttpOnly only for the CSRF double-submit cookie
 		Name:     name,
 		Value:    value,
 		Path:     "/",
@@ -133,7 +136,7 @@ func (h *Handler) setAdminCookies(c *gin.Context, tokens service.TokenPair) bool
 func (h *Handler) clearAdminCookies(c *gin.Context) {
 	expired := time.Now().Add(-24 * time.Hour)
 	for _, name := range []string{adminAccessCookieName, adminRefreshCookieName, adminCSRFCookieName} {
-		ck := h.adminCookie(name, "", expired, name != adminCSRFCookieName)
+		ck := h.adminCookie(name, "", expired, name != adminCSRFCookieName) //nolint:gosec // G124: expiring cookie; same attributes as adminCookie, CSRF cookie is JS-readable by design
 		ck.MaxAge = -1
 		http.SetCookie(c.Writer, ck)
 	}
