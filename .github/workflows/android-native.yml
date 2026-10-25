@@ -14,10 +14,14 @@ on:
     paths:
       - 'mobile/android/**'
       - '.github/workflows/android-native.yml'
+      - 'scripts/verify/android.sh'
+      - 'scripts/verify/lib.sh'
   pull_request:
     paths:
       - 'mobile/android/**'
       - '.github/workflows/android-native.yml'
+      - 'scripts/verify/android.sh'
+      - 'scripts/verify/lib.sh'
   workflow_dispatch:
 
 concurrency:
@@ -39,6 +43,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # scripts/verify/android.sh --base diffs against the merge base.
+          fetch-depth: 0
 
       # JDK 21 runs the Gradle daemon; modules still emit Java 17 bytecode
       # (source/targetCompatibility 17). See README "Toolchain".
@@ -48,17 +55,24 @@ jobs:
           distribution: temurin
           java-version: '21'
 
+      # The action's default package list is "tools platform-tools"; the
+      # obsolete "tools" package no longer exists in the SDK repository, so
+      # `sdkmanager tools` exited 1 right after the licences were accepted
+      # (16 Oct run). Install what the build compiles against instead:
+      # compileSdk 37 (AndroidSdk.COMPILE, build-logic/convention/.../
+      # ProjectExtensions.kt) and the matching build-tools. The action
+      # accepts the licences non-interactively.
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
+          packages: 'platform-tools platforms;android-37.0 build-tools;37.0.0'
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
-
-      # ── Job 6: module graph rules (fast, fails early) ─────────────────
-      - name: Module graph check
-        run: ./gradlew moduleGraphCheck
 
       # Firebase config. Deliberately NOT in the repo (see mobile/android/
       # .gitignore): it carries a project API key that is package-restricted
@@ -74,9 +88,35 @@ jobs:
             echo "GOOGLE_SERVICES_JSON secret is not set — the Android build cannot run." >&2
             exit 1
           fi
-          echo "$GOOGLE_SERVICES_JSON" | base64 -d > mobile/android/app/google-services.json
+          # The run steps' working directory is already mobile/android.
+          echo "$GOOGLE_SERVICES_JSON" | base64 -d > app/google-services.json
           echo "clients:"
-          grep -o '"package_name": "[^"]*"' mobile/android/app/google-services.json | cut -d'"' -f4
+          grep -o '"package_name": "[^"]*"' app/google-services.json | cut -d'"' -f4
+
+      # ── The agents' check (docs/harness/AGENT-RULES.md) ───────────────
+      # The same command agents and the lead run: moduleGraphCheck, the unit
+      # tests of every module changed since the base, the unit-test sources
+      # of their dependents, :app:compileDevDebugKotlin and detekt. Online,
+      # since a fresh runner has no Gradle cache (the script defaults to
+      # --offline). A change to build-logic, gradle/ or a root build file
+      # checks every module.
+      - name: Agent check (scripts/verify/android.sh --full)
+        env:
+          ANDROID_VERIFY_ONLINE: '1'
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            BASE="origin/$BASE_REF"
+          elif [ -n "$BEFORE" ] && [ "$BEFORE" != 0000000000000000000000000000000000000000 ] &&
+               git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            BASE="$BEFORE"
+          else
+            BASE="HEAD~1"
+          fi
+          echo "base: $BASE"
+          bash ../../scripts/verify/android.sh --full --base "$BASE"
 
       # ── Job 1: assemble ───────────────────────────────────────────────
       - name: Assemble devDebug
@@ -87,12 +127,11 @@ jobs:
       # so their task is `testDebugUnitTest`; only :app is flavored and has
       # `testDevDebugUnitTest`. Running just the latter silently skips every
       # library module's tests.
+      # The agent check above already ran the changed modules' tests and
+      # detekt; Gradle finds those up to date here, so this adds only the
+      # untouched modules.
       - name: Unit tests
         run: ./gradlew testDebugUnitTest :app:testDevDebugUnitTest
-
-      # ── Job 4: static analysis (detekt + ktlint via detekt-formatting) ─
-      - name: Detekt
-        run: ./gradlew detekt
 
       # ── Job 3: Android lint ───────────────────────────────────────────
       - name: Lint

@@ -1,0 +1,15 @@
+# CI-only override for Architecture/docker/docker-compose.infra.yml (E2E job).
+#
+# minio/minio is gone from Docker Hub ("pull access denied", Oct 2026) and
+# quay.io/minio/minio no longer allows anonymous pulls: MinIO stopped
+# publishing community images. pgsty/minio is a community rebuild of the same
+# server from source with the upstream image layout (docker-entrypoint.sh,
+# VOLUME /data, runs as root), so `command: server /data ...` in the base file
+# works unchanged. Pinned by tag and index digest.
+#
+# The dev compose files still name minio/minio:latest; that is left to the
+# founder (Architecture/docker/docker-compose.infra.yml, docker-compose.yml,
+# scripts/docker-bringup.sh).
+services:
+  minio:
+    image: pgsty/minio:RELEASE.2026-08-04T00-00-00Z@sha256:b6bfe7239bfc83fb90d31612d9704d86039dd714f7904b3f1ad68f211e602372

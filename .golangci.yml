@@ -1,40 +1,59 @@
+# golangci-lint v2 configuration (lint.yml pins the version).
+#
 # Modest first cut — turn on the cheap correctness checks, leave style
 # enforcement off until the team has had time to clean up known noise.
 # Bump severity over time.
+#
+# Migrated from the v1 file without widening it: v2 folds gosimple into
+# staticcheck, so staticcheck runs the SA* (staticcheck) and S1* (gosimple)
+# checks only, not the ST*/QF* style and quick-fix checks v2 adds by default;
+# typecheck is no longer a linter (load errors are always reported); and the
+# v1 default exclusions are the presets below.
+
+version: "2"
 
 run:
   timeout: 10m
   tests: true
 
 linters:
-  disable-all: true
+  default: none
   enable:
     - errcheck
-    - gosimple
     - govet
     - ineffassign
     - staticcheck
-    - typecheck
     - unused
     - gosec
     - misspell
 
-linters-settings:
-  gosec:
-    excludes:
-      # G104 (unhandled errors) — too noisy; errcheck owns that.
-      - G104
-      # G115 (integer overflow conversion) — false-positives on legit
-      # uint→int casts after bounds check.
-      - G115
+  settings:
+    staticcheck:
+      checks:
+        - "SA*"
+        - "S1*"
+    gosec:
+      excludes:
+        # G104 (unhandled errors) — too noisy; errcheck owns that.
+        - G104
+        # G115 (integer overflow conversion) — false-positives on legit
+        # uint→int casts after bounds check.
+        - G115
 
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-    - path: vendor/
-      linters:
-        - typecheck
-        - gosec
-        - staticcheck
+  exclusions:
+    generated: lax
+    # The v1 defaults (exclude-use-default: true).
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+    paths:
+      - vendor/
+      - third_party$
+      - builtin$
+      - examples$

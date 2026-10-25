@@ -15,6 +15,7 @@ on:
       - 'deploy/services/identity-auth-service/**'
       - 'deploy/services/post-service/**'
       - 'deploy/services/trust-safety-service/**'
+      - 'scripts/ci/sql/post-service-stubs.sql'
       - '.github/workflows/module-07-trust-safety.yml'
   push:
     branches: [main]
@@ -87,8 +88,8 @@ jobs:
           --health-retries 20
     env:
       M7_POSTGRES_ADMIN_DSN: postgres://postgres:postgres@localhost:5432/postgres?sslmode=disable
-      M7_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m7post_codex_ci?sslmode=disable
-      M7_TRUST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m7trust_codex_ci?sslmode=disable
+      M7_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m7post_codex_ci_test?sslmode=disable
+      M7_TRUST_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m7trust_codex_ci_test?sslmode=disable
       M7_REDIS_ADDR: localhost:6379
     steps:
       - uses: actions/checkout@v4
@@ -99,8 +100,14 @@ jobs:
       - name: Create isolated proof databases through the guarded helper
         working-directory: Architecture/services/trust-safety-service
         run: |
-          M7_DATABASE_NAME=m7post_codex_ci go run ./cmd/m7dbsetup
-          M7_DATABASE_NAME=m7trust_codex_ci go run ./cmd/m7dbsetup
+          M7_DATABASE_NAME=m7post_codex_ci_test go run ./cmd/m7dbsetup
+          M7_DATABASE_NAME=m7trust_codex_ci_test go run ./cmd/m7dbsetup
+      # The post suites bootstrap the real schema (setup.sql + the migration
+      # chain), which points at other services' parent tables (users,
+      # user_preferences, channels, media_assets). Same stubs as the
+      # integration-all manifest's post-service entry.
+      - name: Cross-service parent tables for the post schema
+        run: psql "$M7_POSTGRES_DSN" -v ON_ERROR_STOP=1 -q -f scripts/ci/sql/post-service-stubs.sql
       - name: Post moderation atomicity, idempotency and rollback
         working-directory: Architecture/services/post-service
         run: go test -tags integration -count=1 ./internal/store/postgres -run Moderation -v

@@ -16,6 +16,7 @@ on:
       - 'identity-platform/**'
       - 'chat-service/**'
       - '.github/workflows/e2e.yml'
+      - '.github/e2e/**'
   push:
     branches: [main]
 
@@ -96,7 +97,13 @@ jobs:
           cache-dependency-path: Architecture/go.sum
 
       - name: Start infra (Postgres/Redis/Scylla/Redpanda/MinIO)
-        run: docker compose -f Architecture/docker/docker-compose.infra.yml up -d --wait
+        # The override swaps the MinIO image only: minio/minio no longer
+        # exists on Docker Hub (see the override file).
+        run: >-
+          docker compose
+          -f Architecture/docker/docker-compose.infra.yml
+          -f .github/e2e/docker-compose.e2e.yml
+          up -d --wait
 
       - name: Start services
         run: |

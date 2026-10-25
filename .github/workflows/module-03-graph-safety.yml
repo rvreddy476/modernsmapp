@@ -45,7 +45,8 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: m3graph
+          # Scratch databases end in _test (docs/harness/AGENT-RULES.md).
+          POSTGRES_DB: m3graph_test
         ports:
           - 5432:5432
         options: >-
@@ -55,7 +56,7 @@ jobs:
           --health-retries 12
 
     env:
-      POSTGRES_DSN: postgres://postgres:postgres@127.0.0.1:5432/m3graph?sslmode=disable
+      POSTGRES_DSN: postgres://postgres:postgres@127.0.0.1:5432/m3graph_test?sslmode=disable
 
     steps:
       - uses: actions/checkout@v4
@@ -101,12 +102,24 @@ jobs:
       # Each removes one protection and REQUIRES the suite to fail. A control
       # that still passes means the test was not testing the protection — the
       # exact false positive this suite shipped with previously.
+      #
+      # Each control also refuses to run when its sed matched nothing: a
+      # control whose target text has moved breaks nothing and proves nothing
+      # (the close_friends sweep it once targeted was dropped by migration 012,
+      # and the relay lease condition gained an e2. alias).
       - name: Negative control — removing the pair advisory lock must FAIL
         working-directory: Architecture/services/graph-service
         run: |
           set -euo pipefail
           cp internal/store/pair_atomic.go /tmp/pair_atomic.go.bak
-          sed -i 's|SELECT pg_advisory_xact_lock($1)|SELECT 1|' internal/store/pair_atomic.go
+          # SELECT $1::bigint keeps the bound argument: a bare SELECT 1 makes
+          # pgx refuse the extra argument, so every call errored and the
+          # suite failed without ever racing.
+          sed -i 's|SELECT pg_advisory_xact_lock($1)|SELECT $1::bigint|' internal/store/pair_atomic.go
+          if cmp -s /tmp/pair_atomic.go.bak internal/store/pair_atomic.go; then
+            echo "::error::The lock control's sed matched nothing in pair_atomic.go; update the control."
+            exit 1
+          fi
           if go test -tags integration -count=1 -timeout 10m ./internal/store/ -run 'TestPairAtomic_Concurrent'; then
             echo "::error::The concurrency suite PASSED with the pair lock removed. It is not testing the lock."
             cp /tmp/pair_atomic.go.bak internal/store/pair_atomic.go
@@ -115,12 +128,18 @@ jobs:
           cp /tmp/pair_atomic.go.bak internal/store/pair_atomic.go
           echo "Negative control OK: removing the lock fails the suite."
 
-      - name: Negative control — the guessed close_friends column must FAIL
+      - name: Negative control — a wrong sweep column must FAIL
         working-directory: Architecture/services/graph-service
         run: |
           set -euo pipefail
           cp internal/store/pair_atomic.go /tmp/pair_atomic.go.bak
-          sed -i 's|WHERE (user_id = \$1 AND friend_id = \$2) OR (user_id = \$2 AND friend_id = \$1)|WHERE (owner_id = $1 AND friend_id = $2) OR (owner_id = $2 AND friend_id = $1)|' internal/store/pair_atomic.go
+          # follow_requests is the newest swept table (migration 010), the one
+          # most likely to drift; target_id becomes a column it does not have.
+          sed -i 's|WHERE (requester_id = \$1 AND target_id = \$2) OR (requester_id = \$2 AND target_id = \$1)|WHERE (requester_id = $1 AND followee_id = $2) OR (requester_id = $2 AND followee_id = $1)|' internal/store/pair_atomic.go
+          if cmp -s /tmp/pair_atomic.go.bak internal/store/pair_atomic.go; then
+            echo "::error::The sweep-column control's sed matched nothing in pair_atomic.go; update the control."
+            exit 1
+          fi
           if go test -tags integration -count=1 ./internal/store/ -run 'TestPairAtomic_BlockSweeps'; then
             echo "::error::The sweep suite PASSED with a non-existent column. The schema is incomplete again."
             cp /tmp/pair_atomic.go.bak internal/store/pair_atomic.go
@@ -135,7 +154,11 @@ jobs:
           set -euo pipefail
           cp internal/store/outbox_relay.go /tmp/outbox_relay.go.bak
           sed -i 's|FOR UPDATE SKIP LOCKED|-- lease removed|' internal/store/outbox_relay.go
-          sed -i 's|AND (leased_until IS NULL OR leased_until < NOW())|AND (leased_until IS NULL OR TRUE)|' internal/store/outbox_relay.go
+          sed -i 's|AND (e2.leased_until IS NULL OR e2.leased_until < NOW())|AND (e2.leased_until IS NULL OR TRUE)|' internal/store/outbox_relay.go
+          if grep -q -e 'FOR UPDATE SKIP LOCKED' -e 'e2.leased_until < NOW()' internal/store/outbox_relay.go; then
+            echo "::error::The leasing control's sed left a lease in outbox_relay.go; update the control."
+            exit 1
+          fi
           if go test -tags integration -count=1 ./internal/store/ -run 'TestRelay_Concurrent'; then
             echo "::error::The relay suite PASSED without leasing. Replicas would double-publish."
             cp /tmp/outbox_relay.go.bak internal/store/outbox_relay.go

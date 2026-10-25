@@ -1,5 +1,19 @@
 name: Lint
 
+# golangci-lint v2, per Go module (the `use` entries of each go.work: a
+# go.work root holds no module, so linting it fails to load packages).
+#
+# v1.61.0 was built with go1.23 and refused every module ("can't load config:
+# the Go language version (go1.23) used to build golangci-lint is lower than
+# the targeted Go version (1.25.0)"). v2.14.0 (24 Sep 2026) needs Go 1.26
+# to build, so its binary is newer than every module here.
+#
+# Gate: only issues on lines this pull request changes fail the job
+# (--new-from-rev against the base branch). The job has never run green on
+# the existing code, so the size of the backlog is unknown; the backlog
+# itself fails nothing until someone decides to burn it down. The config is
+# .golangci.yml at the repo root (v2 schema).
+
 on:
   pull_request:
     paths:
@@ -9,27 +23,56 @@ on:
       - '.github/workflows/lint.yml'
       - '.golangci.yml'
 
+env:
+  GOLANGCI_LINT_VERSION: v2.14.0
+
 jobs:
   golangci-lint:
-    name: golangci-lint
+    name: golangci-lint (${{ matrix.workspace }})
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        workdir:
-          - Architecture
-          - identity-platform/services/auth-service
-          - identity-platform/services/user-service
-          - identity-platform/services/profile-service
-          - chat-service
+        workspace: [Architecture, identity-platform, chat-service]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # --new-from-rev needs the base branch and the merge base.
+          fetch-depth: 0
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          version: v1.61.0
-          working-directory: ${{ matrix.workdir }}
-          args: --timeout=10m
+          go-version-file: ${{ matrix.workspace }}/go.work
+          cache-dependency-path: ${{ matrix.workspace }}/**/go.sum
+
+      - name: Install golangci-lint ${{ env.GOLANGCI_LINT_VERSION }}
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/${GOLANGCI_LINT_VERSION}/install.sh |
+            sh -s -- -b "$(go env GOPATH)/bin" "${GOLANGCI_LINT_VERSION}"
+          golangci-lint version
+
+      - name: golangci-lint per module (new issues only)
+        env:
+          WS: ${{ matrix.workspace }}
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          mapfile -t MODULES < <(cd "$WS" && go work edit -json | jq -r '.Use[].DiskPath' | sed 's#^\./##' | sort)
+          failed=()
+          for m in "${MODULES[@]}"; do
+            echo "::group::$WS/$m"
+            # Reported paths are relative to the root .golangci.yml (v2
+            # relative-path-mode: cfg), i.e. repo-relative.
+            if (cd "$WS/$m" && golangci-lint run --timeout=10m \
+                  --new-from-rev="origin/$BASE_REF" ./...); then
+              echo "PASS lint $WS/$m"
+            else
+              echo "FAIL lint $WS/$m"
+              failed+=("$WS/$m")
+            fi
+            echo "::endgroup::"
+          done
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "RESULT FAIL (${#failed[@]} modules): ${failed[*]}"
+            exit 1
+          fi
+          echo "RESULT PASS"

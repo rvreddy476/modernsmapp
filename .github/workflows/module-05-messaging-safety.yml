@@ -133,9 +133,9 @@ jobs:
       PGHOST: localhost
       PGPORT: '5432'
       PGUSER: postgres
-      CHAT_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m5chat?sslmode=disable
-      GROUP_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m5group?sslmode=disable
-      MEDIA_CHAT_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m5media?sslmode=disable
+      CHAT_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m5chat_test?sslmode=disable
+      GROUP_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m5group_test?sslmode=disable
+      MEDIA_CHAT_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m5media_test?sslmode=disable
       REDIS_ADDR: localhost:6379
     steps:
       - uses: actions/checkout@v4
@@ -152,9 +152,9 @@ jobs:
           sudo apt-get install -y postgresql-client
       - name: Create isolated databases
         run: |
-          createdb m5chat
-          createdb m5group
-          createdb m5media
+          createdb m5chat_test
+          createdb m5group_test
+          createdb m5media_test
       - name: Message identity, repair, outbox and scheduled-send durability
         working-directory: chat-service/services/message-service
         run: |
@@ -206,8 +206,8 @@ jobs:
       PGHOST: localhost
       PGPORT: '5432'
       PGUSER: postgres
-      CHAT_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m5chat_events?sslmode=disable
-      GROUP_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m5group_events?sslmode=disable
+      CHAT_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m5chat_events_test?sslmode=disable
+      GROUP_POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/m5group_events_test?sslmode=disable
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -222,8 +222,8 @@ jobs:
           sudo apt-get install -y postgresql-client
       - name: Create isolated consumer databases
         run: |
-          createdb m5chat_events
-          createdb m5group_events
+          createdb m5chat_events_test
+          createdb m5group_events_test
       - name: Crash-before-effect must redeliver
         working-directory: chat-service/services/message-service
         run: go test -tags integration ./internal/events -run FetchedOffset -v -count=1 -timeout 3m

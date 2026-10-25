@@ -90,6 +90,11 @@ changed_packages() {
 INTEG_FLAGS=()
 read -r -a INTEG_FLAGS <<<"${GO_INTEG_FLAGS:-}"
 
+# Extra flags for the plain go test stage only (e.g. -race), same splitting.
+# Go CI sets -race; agents leave it unset.
+TEST_FLAGS=()
+read -r -a TEST_FLAGS <<<"${GO_TEST_FLAGS:-}"
+
 for m in "${MODULES[@]}"; do
   if [ ! -f "$m/go.mod" ]; then
     echo "FAIL not-a-module  $m"
@@ -115,13 +120,24 @@ for m in "${MODULES[@]}"; do
     else
       run_stage vet "$name" "$m" go vet "${PKGS[@]}"
       run_stage vet-integ "$name" "$m" go vet -tags integration "${PKGS[@]}"
-      run_stage test "$name" "$m" env "${UNSET_DSN[@]}" go test -count=1 "${PKGS[@]}"
+      run_stage test "$name" "$m" env "${UNSET_DSN[@]}" go test -count=1 "${TEST_FLAGS[@]}" "${PKGS[@]}"
     fi
   else
     PKGS=(./...)
-    run_stage vet "$name" "$m" go vet ./...
+    # A module whose every package carries the integration tag
+    # (Architecture/tools/integration) has nothing to vet or test without
+    # it, and go exits 1 on "no packages to vet". Its vet-integ stage and,
+    # with --db, its integration stage still run.
+    HAS_PLAIN="$(cd "$m" && go list -e ./... 2>/dev/null)"
+    if [ -z "$HAS_PLAIN" ]; then
+      echo "SKIP vet/test       $name  (every package needs -tags integration)"
+    else
+      run_stage vet "$name" "$m" go vet ./...
+    fi
     run_stage vet-integ "$name" "$m" go vet -tags integration ./...
-    run_stage test "$name" "$m" env "${UNSET_DSN[@]}" go test -count=1 ./...
+    if [ -n "$HAS_PLAIN" ]; then
+      run_stage test "$name" "$m" env "${UNSET_DSN[@]}" go test -count=1 "${TEST_FLAGS[@]}" ./...
+    fi
   fi
 
   if [ -n "$DSN" ] && [ ${#PKGS[@]} -gt 0 ]; then

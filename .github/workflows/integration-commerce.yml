@@ -353,11 +353,18 @@ jobs:
       #
       # B-LB-1 lived here. A store-only run cannot see it, because the defect
       # was in what the client was HANDED and what the edge accepted back.
+      #
+      # TestC3 only. This database carries gated 998 (fences, prepaid-only
+      # orders, the order-transition trigger), and most of the HTTP suite
+      # seeds what 998 refuses on purpose (COD orders, reviews, legacy
+      # approval states, direct order transitions): run whole here, ~15
+      # suites failed in their seeds, not their assertions. The whole HTTP
+      # package runs ungated in integration-all.yml (commerce_it_test).
       - name: C3 checkout journey and edge refusals (real routes)
         working-directory: Architecture/services/commerce-service
         env:
           COMMERCE_TEST_DSN: postgres://postgres:postgres@localhost:5432/commerce_p0_test?sslmode=disable
-        run: go test -tags=integration ./internal/http/... -count=1 -v
+        run: go test -tags=integration ./internal/http/... -run TestC3 -count=1 -v
 
       # C3-LB-1: exact provider money truth on the two paths review 3 found
       # open — immediate ambiguous-create recovery, and a SIGNED webhook that
@@ -378,7 +385,7 @@ jobs:
         run: |
           set -euo pipefail
           go test -tags=integration ./internal/store/postgres/... -run TestC3 -count=1 -v | tee c3.log
-          go test -tags=integration ./internal/http/... -count=1 -v | tee -a c3.log
+          go test -tags=integration ./internal/http/... -run TestC3 -count=1 -v | tee -a c3.log
           (cd ../payments-service && go test -tags=integration ./internal/service/... -run TestC3 -count=1 -v) | tee -a c3.log
           for p in TestC3QuoteReturnsACompleteBreakdown \
                    TestC3QuotedTotalIsAcceptedByCheckoutExactly \
@@ -406,7 +413,8 @@ jobs:
       # under `-run TestProof` and `-run TestC3`. None of these names match
       # either pattern, so without this step they would be a suite that never
       # executes — the same "a check that cannot fire" shape they exist to
-      # rule out. The HTTP half is already covered by the whole-package run.
+      # rule out. The HTTP half is covered by the whole-package run in
+      # integration-all.yml (ungated commerce_it_test).
       #
       #   stock was set-once: the only restock route was behind the fence
       #   the storefront returned drafts and moderation rejections to anyone

@@ -23,28 +23,45 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   govulncheck:
-    name: govulncheck (${{ matrix.workdir }})
+    name: govulncheck (${{ matrix.workspace }})
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     if: github.event_name != 'pull_request'
     strategy:
       fail-fast: false
       matrix:
-        workdir:
-          - Architecture
-          - identity-platform/services/auth-service
-          - identity-platform/services/user-service
-          - identity-platform/services/profile-service
-          - chat-service
+        # Per module, from each go.work's `use` list: govulncheck at a go.work
+        # root fails ("govulncheck only works with Go modules").
+        workspace: [Architecture, identity-platform, chat-service]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
+          go-version-file: ${{ matrix.workspace }}/go.work
+          cache-dependency-path: ${{ matrix.workspace }}/**/go.sum
       - name: install
         run: go install golang.org/x/vuln/cmd/govulncheck@latest
-      - name: scan
-        run: cd ${{ matrix.workdir }} && govulncheck ./...
+      - name: scan every module
+        env:
+          WS: ${{ matrix.workspace }}
+        run: |
+          mapfile -t MODULES < <(cd "$WS" && go work edit -json | jq -r '.Use[].DiskPath' | sed 's#^\./##' | sort)
+          failed=()
+          for m in "${MODULES[@]}"; do
+            echo "::group::$WS/$m"
+            if (cd "$WS/$m" && govulncheck ./...); then
+              echo "PASS govulncheck $WS/$m"
+            else
+              echo "FAIL govulncheck $WS/$m"
+              failed+=("$WS/$m")
+            fi
+            echo "::endgroup::"
+          done
+          if [ ${#failed[@]} -gt 0 ]; then
+            echo "RESULT FAIL (${#failed[@]} modules): ${failed[*]}"
+            exit 1
+          fi
+          echo "RESULT PASS"
 
   trivy-fs:
     name: trivy filesystem scan

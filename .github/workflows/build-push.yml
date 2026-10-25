@@ -68,7 +68,24 @@ jobs:
     outputs:
       services: ${{ steps.set.outputs.services }}
       matrix: ${{ steps.set.outputs.matrix }}
+      can_push: ${{ steps.creds.outputs.can_push }}
     steps:
+      # The build-push and bump-tag jobs assume the CI role through
+      # secrets.AWS_CI_ROLE_ARN. Until that secret exists (it did not on
+      # 25 Oct 2026) they are skipped with a warning instead of failing at
+      # configure-aws-credentials; nothing is built or pushed without it.
+      - name: Registry credentials present?
+        id: creds
+        env:
+          AWS_CI_ROLE_ARN: ${{ secrets.AWS_CI_ROLE_ARN }}
+        run: |
+          if [ -n "$AWS_CI_ROLE_ARN" ]; then
+            echo "can_push=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "can_push=false" >> "$GITHUB_OUTPUT"
+            echo "::warning title=build-push skipped::secrets.AWS_CI_ROLE_ARN is not set; no image is built or pushed and no values file is bumped."
+          fi
+
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
@@ -137,7 +154,7 @@ jobs:
   # ─── Job 2: matrixed build + push ────────────────────────────────
   build-push:
     needs: detect-changes
-    if: ${{ needs.detect-changes.outputs.services != '' }}
+    if: ${{ needs.detect-changes.outputs.services != '' && needs.detect-changes.outputs.can_push == 'true' }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -238,7 +255,7 @@ jobs:
   # staging cluster itself is not built.
   bump-tag:
     needs: [detect-changes, build-push]
-    if: ${{ needs.detect-changes.outputs.services != '' }}
+    if: ${{ needs.detect-changes.outputs.services != '' && needs.detect-changes.outputs.can_push == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

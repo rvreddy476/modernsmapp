@@ -134,7 +134,8 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: graph
+          # Scratch databases end in _test (docs/harness/AGENT-RULES.md).
+          POSTGRES_DB: graph_test
         ports:
           - 5432:5432
         options: >-
@@ -148,7 +149,7 @@ jobs:
       PGHOST: localhost
       PGPORT: '5432'
       PGUSER: postgres
-      POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/graph?sslmode=disable
+      POSTGRES_DSN: postgres://postgres:postgres@localhost:5432/graph_test?sslmode=disable
 
     steps:
       - uses: actions/checkout@v4
@@ -158,13 +159,14 @@ jobs:
           go-version-file: 'Architecture/go.work'
           cache-dependency-path: 'Architecture/**/go.sum'
 
-      - name: Install psql client
-        run: sudo apt-get update && sudo apt-get install -y postgresql-client
-
-      - name: Apply graph-service schema
-        working-directory: Architecture
-        run: psql -d graph -v ON_ERROR_STOP=1 -q -f services/graph-service/database/setup.sql
-
+      # No setup.sql here. The suite installs the COMPLETE graph schema itself
+      # (internal/store/testschema_integration_test.go: every relationship
+      # table, the outbox, follow_requests and a users stand-in for the FKs)
+      # and refuses to run if a relationship table is missing. setup.sql
+      # alone is a schema that exists nowhere (no migrations 004-011), and
+      # its tables shadowed the suite's CREATE IF NOT EXISTS. This is the same
+      # empty database scripts/ci/integration-services.yaml gives the module
+      # in integration-all.yml.
       - name: Block symmetry + mute asymmetry suite
         working-directory: Architecture/services/graph-service
         run: go test -tags integration ./internal/store/ -run "Block|Mute" -v -count=1

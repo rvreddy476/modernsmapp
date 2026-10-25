@@ -1,9 +1,19 @@
 name: Go CI
 
-# Builds, vets, and tests every Go workspace on PR + merge to main.
-# Each workspace is a job so a failure surfaces against the right module
-# without scrolling through 20+ services. govulncheck + gosec run weekly via
-# a scheduled workflow (security.yml) — they're too slow for PR.
+# Builds, vets (with and without the integration tag) and tests every Go
+# module, with the same command agents and the lead run:
+#   scripts/verify/go.sh --full <module-dir>...
+# (docs/harness/AGENT-RULES.md). It prints one PASS/FAIL line per stage and
+# ends with RESULT PASS / RESULT FAIL; the full logs are kept on failure.
+#
+# Modules are the `use` entries of each workspace's go.work. Running
+# `go vet ./...` at a go.work root fails ("directory prefix . does not contain
+# modules listed in go.work"), so the check runs per module. Architecture is
+# split into shards by position in the sorted module list, so a new service
+# lands in a shard without editing this file.
+#
+# No databases here: suites that need one skip without their DSN and run in
+# integration-all.yml. govulncheck + gosec run weekly (security.yml).
 
 on:
   pull_request:
@@ -16,65 +26,59 @@ on:
       - 'deploy/web/**'
       - 'deploy/argocd/**'
       - 'infra/terraform/**'
+      - 'scripts/verify/go.sh'
+      - 'scripts/verify/lib.sh'
       - '.github/workflows/go-ci.yml'
   push:
     branches: [main]
 
 jobs:
-  architecture:
-    name: Architecture (build / vet / test)
+  workspace:
+    name: ${{ matrix.workspace }} (${{ matrix.shard }}/${{ matrix.shards }})
     runs-on: ubuntu-latest
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
-          cache-dependency-path: Architecture/go.sum
-      - name: go vet
-        run: cd Architecture && go vet ./...
-      - name: go build
-        run: cd Architecture && go build ./...
-      - name: go test
-        run: cd Architecture && go test -race -count=1 ./...
-
-  identity-platform:
-    name: identity-platform (per-service)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 40
     strategy:
       fail-fast: false
       matrix:
-        service: [auth-service, user-service, profile-service]
+        include:
+          - { workspace: Architecture, shard: 0, shards: 4 }
+          - { workspace: Architecture, shard: 1, shards: 4 }
+          - { workspace: Architecture, shard: 2, shards: 4 }
+          - { workspace: Architecture, shard: 3, shards: 4 }
+          - { workspace: identity-platform, shard: 0, shards: 1 }
+          - { workspace: chat-service, shard: 0, shards: 1 }
+    env:
+      VERIFY_LOG_DIR: ${{ github.workspace }}/verify-logs
+      # Added to go.sh's plain `go test` stage (this job used -race before).
+      GO_TEST_FLAGS: -race
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.25'
-          cache-dependency-path: identity-platform/services/${{ matrix.service }}/go.sum
-      - name: go vet
-        run: cd identity-platform/services/${{ matrix.service }} && go vet ./...
-      - name: go build
-        run: cd identity-platform/services/${{ matrix.service }} && go build ./...
-      - name: go test
-        run: cd identity-platform/services/${{ matrix.service }} && go test -race -count=1 ./...
+          go-version-file: ${{ matrix.workspace }}/go.work
+          cache-dependency-path: ${{ matrix.workspace }}/**/go.sum
 
-  chat-service:
-    name: chat-service (build / vet / test)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - name: go.sh --full
+        env:
+          WS: ${{ matrix.workspace }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ matrix.shards }}
+        run: |
+          mapfile -t ALL < <(cd "$WS" && go work edit -json | jq -r '.Use[].DiskPath' | sed 's#^\./##' | sort)
+          MODULES=()
+          for i in "${!ALL[@]}"; do
+            if [ $((i % SHARDS)) -eq "$SHARD" ]; then MODULES+=("$WS/${ALL[$i]}"); fi
+          done
+          echo "modules: ${MODULES[*]}"
+          bash scripts/verify/go.sh --full "${MODULES[@]}"
+
+      - name: Keep the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
         with:
-          go-version: '1.25'
-          cache-dependency-path: chat-service/go.sum
-      - name: go vet
-        run: cd chat-service && go vet ./...
-      - name: go build
-        run: cd chat-service && go build ./...
-      - name: go test
-        run: cd chat-service && go test -race -count=1 ./...
+          name: go-ci-logs-${{ strategy.job-index }}
+          path: verify-logs/
+          retention-days: 7
 
   # The secrets seeder (tools/prodsecrets, stdlib only; --env prod|qa). Its
   # tests include the drift guards, per environment: every externalSecret
@@ -85,16 +89,24 @@ jobs:
   # infra/terraform/ are trigger paths.
   # go.mod says go 1.24; 1.25 is what every other job here uses.
   prodsecrets:
-    name: tools/prodsecrets (build / vet / test)
+    name: tools/prodsecrets
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    env:
+      VERIFY_LOG_DIR: ${{ github.workspace }}/verify-logs
+      GO_TEST_FLAGS: -race
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
           go-version: '1.25'
           cache: false
-      - name: go vet
-        run: cd tools/prodsecrets && go vet ./...
-      - name: go test
-        run: cd tools/prodsecrets && go test -race -count=1 ./...
+      - name: go.sh --full
+        run: bash scripts/verify/go.sh --full tools/prodsecrets
+      - name: Keep the logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: go-ci-logs-prodsecrets
+          path: verify-logs/
+          retention-days: 7
