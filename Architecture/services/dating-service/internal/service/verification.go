@@ -30,6 +30,7 @@ import (
 	"time"
 
 	"github.com/atpost/dating-service/internal/digilocker"
+	"github.com/atpost/dating-service/internal/mediaclient"
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -382,14 +383,33 @@ func (s *Service) SubmitSelfie(ctx context.Context, userID, videoMediaID, challe
 	// Lane D10: a video media-service has not finished with is a 409
 	// MEDIA_NOT_READY before any attempt is consumed, so the client retries
 	// the same upload instead of burning an attempt.
-	if err := s.requireReadySelfieVideo(ctx, userID, videoMediaID); err != nil {
-		return nil, err
-	}
-	cfg := s.SelfieSettings()
-	start, err := s.store.BeginSelfieAttempt(ctx, userID, challengeID, videoMediaID, cfg.MaxAttemptsPerDay)
+	ownerConfirmed, err := s.requireReadySelfieVideo(ctx, userID, videoMediaID)
 	if err != nil {
 		return nil, err
 	}
+	cfg := s.SelfieSettings()
+
+	// The attempt row names the video: claim it for the row before the row
+	// exists, release it if the row is not written (media_claims.go).
+	attemptID := uuid.New()
+	attemptRef := attemptID.String()
+	video := []uuid.UUID{videoMediaID}
+	if err := s.claim(ctx, mediaclient.KindSelfieAttempt, attemptRef, video, ErrSelfieMediaNotFound, ErrFaceCompareUnavailable); err != nil {
+		return nil, err
+	}
+	start, err := s.store.BeginSelfieAttempt(ctx, attemptID, userID, challengeID, videoMediaID, cfg.MaxAttemptsPerDay)
+	if err != nil {
+		s.release(ctx, mediaclient.KindSelfieAttempt, attemptRef, video)
+		return nil, err
+	}
+	// An attempt keeps its claim only once media-service has said the video
+	// is this user's (the readiness check, or a liveness answer). Otherwise
+	// submitting another user's media id would pin their asset.
+	defer func() {
+		if !ownerConfirmed {
+			s.release(ctx, mediaclient.KindSelfieAttempt, attemptRef, video)
+		}
+	}()
 	remaining := cfg.MaxAttemptsPerDay - start.UsedInWindow
 	if remaining < 0 {
 		remaining = 0
@@ -417,14 +437,26 @@ func (s *Service) SubmitSelfie(ctx context.Context, userID, videoMediaID, challe
 	case err != nil:
 		slog.Warn("selfie: liveness unavailable", "user_id", userID, "attempt_id", start.AttemptID, "error", err)
 		return nil, noVerdict(ErrFaceCompareUnavailable, "PROVIDER_UNAVAILABLE")
-	case res.Reason == mediaReasonVideoTooLong:
+	}
+	// media-service answered the liveness check for this requester: the
+	// video is theirs.
+	ownerConfirmed = true
+	if res.Reason == mediaReasonVideoTooLong {
 		return nil, noVerdict(ErrSelfieVideoTooLong, mediaReasonVideoTooLong)
 	}
 
 	reviewFirst := start.PriorVerdicts == 0 && s.selfieHighRisk(ctx, userID)
 	decision, clientReason := decideSelfie(cfg, res, reviewFirst)
-	if err := s.store.FinishSelfieAttempt(ctx, userID, start.AttemptID, videoMediaID, decision); err != nil {
-		return nil, fmt.Errorf("persist selfie outcome: %w", err)
+	// The verdict writes the video onto dating_verifications (unless a pass
+	// is already there): claimed before, settled after (media_claims.go).
+	settle, err := s.claimVerificationVideo(ctx, userID, videoMediaID)
+	if err != nil {
+		return nil, noVerdict(err, "MEDIA_CLAIM_UNAVAILABLE")
+	}
+	ferr := s.store.FinishSelfieAttempt(ctx, userID, start.AttemptID, videoMediaID, decision)
+	settle()
+	if ferr != nil {
+		return nil, fmt.Errorf("persist selfie outcome: %w", ferr)
 	}
 	slog.Info("selfie verification decided", "user_id", userID, "attempt_id", start.AttemptID,
 		"outcome", decision.Outcome, "reason", decision.Reason, "blinks", res.BlinksDetected, "provider", decision.Provider)
@@ -614,26 +646,81 @@ var ErrSelfieMediaNotReady = errors.New("selfie media is still being processed")
 // Best effort by design: with no media client wired, or when media-service
 // cannot answer, the check is skipped and the liveness call decides — a
 // media outage must not make every selfie unverifiable.
-func (s *Service) requireReadySelfieVideo(ctx context.Context, userID, videoMediaID uuid.UUID) error {
+//
+// ownerConfirmed reports that media-service said the video is the user's;
+// it is false whenever the check was skipped (no client, unreachable).
+func (s *Service) requireReadySelfieVideo(ctx context.Context, userID, videoMediaID uuid.UUID) (ownerConfirmed bool, err error) {
 	if s.mediaPhotos == nil {
-		return nil
+		return false, nil
 	}
 	st, err := s.mediaPhotos.PhotoOwnerStatus(ctx, videoMediaID, userID)
 	switch {
 	case errors.Is(err, ErrPhotoMediaNotFound):
-		return ErrSelfieMediaNotFound
+		return false, ErrSelfieMediaNotFound
 	case errors.Is(err, ErrPhotoMediaNotReady):
-		return ErrSelfieMediaNotReady
+		return false, ErrSelfieMediaNotReady
 	case err != nil:
 		slog.Warn("selfie: media readiness check unavailable; continuing",
 			"user_id", userID, "video_media_id", videoMediaID, "error", err)
-		return nil
+		return false, nil
 	case st == nil:
-		return nil
+		return false, nil
 	case !st.OwnerMatches:
-		return ErrSelfieMediaNotFound
+		return false, ErrSelfieMediaNotFound
 	case st.Status != "ready" || st.ModerationStatus == "pending" || st.ModerationStatus == "":
-		return ErrSelfieMediaNotReady
+		return true, ErrSelfieMediaNotReady
 	}
-	return nil
+	return true, nil
+}
+
+// claimVerificationVideo claims video for the user's verification row before
+// FinishSelfieAttempt may write it there, under the row's holder lock. settle
+// (always call it) releases whichever of the two the row does not name
+// afterwards — the replaced video when the write happened, the new one when
+// it did not (a pass is never overwritten) — and drops the lock.
+func (s *Service) claimVerificationVideo(ctx context.Context, userID, video uuid.UUID) (settle func(), err error) {
+	ref := userID.String()
+	unlock, err := s.lockMediaHolder(ctx, mediaclient.KindVerificationSelfie, ref)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrFaceCompareUnavailable, err)
+	}
+	prev, err := s.store.VerificationSelfieMedia(ctx, userID)
+	if err != nil {
+		unlock()
+		return nil, fmt.Errorf("%w: %v", ErrFaceCompareUnavailable, err)
+	}
+	add, _ := mediaChange(prev, &video)
+	if err := s.claim(ctx, mediaclient.KindVerificationSelfie, ref, add, ErrSelfieMediaNotFound, ErrFaceCompareUnavailable); err != nil {
+		unlock()
+		return nil, err
+	}
+	return func() {
+		defer unlock()
+		cur, err := s.store.VerificationSelfieMedia(context.WithoutCancel(ctx), userID)
+		if err != nil {
+			slog.Warn("selfie: verification video not re-read; claims left for /media-claims", "user_id", userID, "error", err)
+			return
+		}
+		if drop := verificationVideoRelease(prev, cur, video, add); len(drop) > 0 {
+			s.release(ctx, mediaclient.KindVerificationSelfie, ref, drop)
+		}
+	}, nil
+}
+
+// verificationVideoRelease is what settle releases: prev was the row's video
+// before, cur is the row's video after, add is what was claimed for video.
+// Never an id the row names now.
+func verificationVideoRelease(prev, cur *uuid.UUID, video uuid.UUID, add []uuid.UUID) []uuid.UUID {
+	if cur != nil && *cur == video {
+		_, drop := mediaChange(prev, cur) // written: the replaced video goes
+		return drop
+	}
+	if cur != nil {
+		for _, id := range add {
+			if id == *cur {
+				return nil
+			}
+		}
+	}
+	return add // not written (a pass stays): the new claim goes
 }

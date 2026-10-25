@@ -129,8 +129,15 @@ func (m *MemStore) CreateStream(_ context.Context, p postgres.CreateStreamParams
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	now := m.Now()
+	id := p.ID
+	if id == uuid.Nil {
+		id = uuid.New()
+	}
+	if _, taken := m.Streams[id]; taken {
+		return nil, errors.New("live_streams_pkey") // the primary key
+	}
 	st := &postgres.LiveStream{
-		ID: uuid.New(), CreatorUserID: p.CreatorUserID, LiveKitRoom: p.LiveKitRoom, Title: p.Title,
+		ID: id, CreatorUserID: p.CreatorUserID, LiveKitRoom: p.LiveKitRoom, Title: p.Title,
 		Description: p.Description, CoverMediaID: p.CoverMediaID, Status: postgres.StatusScheduled,
 		Visibility: p.Visibility, ScheduledAt: p.ScheduledAt, StatusChangedAt: now, CreatedAt: now, UpdatedAt: now,
 		Source: p.Source, Orientation: p.Orientation, Category: p.Category,

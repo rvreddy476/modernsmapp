@@ -401,6 +401,15 @@ func writeServiceErr(c *gin.Context, err error) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 	case errors.Is(err, service.ErrReportResolved):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "REPORT_ALREADY_RESOLVED", err.Error(), nil)
+	// Stream covers (service/media_claims.go): channel-service's codes.
+	case errors.Is(err, service.ErrCoverNotFound):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "MEDIA_NOT_FOUND", err.Error(), nil)
+	case errors.Is(err, service.ErrCoverNotOwned):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "MEDIA_NOT_OWNED", err.Error(), nil)
+	case errors.Is(err, service.ErrCoverNotReady):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "MEDIA_NOT_READY", err.Error(), nil)
+	case errors.Is(err, service.ErrMediaUnavailable):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "MEDIA_UNAVAILABLE", err.Error(), nil)
 	default:
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 	}

@@ -11,6 +11,10 @@ import (
 
 // CreatePhotoParams is the payload accepted by POST /v1/dating/photos.
 type CreatePhotoParams struct {
+	// ID is the row's id (never from the request); uuid.Nil lets the
+	// database choose. The service chooses it so the photo's media can be
+	// claimed for the row before the row exists (service/media_claims.go).
+	ID         uuid.UUID `json:"-"`
 	MediaID    uuid.UUID `json:"media_id"`
 	SortOrder  int       `json:"sort_order"`
 	IsPrimary  bool      `json:"is_primary"`

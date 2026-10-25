@@ -137,13 +137,13 @@ func (s *Store) CreateModeratedPhoto(ctx context.Context, userID uuid.UUID, p Cr
 		visibility = "public"
 	}
 	row := tx.QueryRow(ctx, `
-        INSERT INTO dating_photos (user_id, media_id, sort_order, is_primary, visibility,
+        INSERT INTO dating_photos (id, user_id, media_id, sort_order, is_primary, visibility,
                                    moderation_status, moderation_reason, moderation_source,
                                    moderation_labels, media_checked_at, face_count)
-        VALUES ($1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8, $9::jsonb, now(), $10)
+        VALUES (COALESCE($11::uuid, gen_random_uuid()), $1, $2, $3, $4, $5, $6, NULLIF($7, ''), $8, $9::jsonb, now(), $10)
         RETURNING `+photoSelectCols,
 		userID, p.MediaID, p.SortOrder, primary, visibility,
-		d.Status, d.Reason, d.Source, labelsArg(d.Labels), d.FaceCount)
+		d.Status, d.Reason, d.Source, labelsArg(d.Labels), d.FaceCount, optionalID(p.ID))
 	out, err := scanPhoto(row)
 	if err != nil {
 		return nil, err

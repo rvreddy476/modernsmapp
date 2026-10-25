@@ -14,6 +14,7 @@ import (
 	datingevents "github.com/atpost/dating-service/internal/events"
 	datinghttp "github.com/atpost/dating-service/internal/http"
 	"github.com/atpost/dating-service/internal/matcher"
+	"github.com/atpost/dating-service/internal/mediaclient"
 	"github.com/atpost/dating-service/internal/moderation"
 	"github.com/atpost/dating-service/internal/payments"
 	"github.com/atpost/dating-service/internal/purge"
@@ -342,6 +343,15 @@ func main() {
 	// Mechanic M15: voice/video prompt clips (media-service needs
 	// MEDIA_DATING_CLIPS_ENABLED too).
 	datingSvc.SetMediaClipClient(service.NewHTTPMediaClipClient(mediaServiceURL, internalKey, nil))
+	// Media claims (service/media_claims.go): every photo, prompt clip and
+	// selfie video a dating row names is claimed in media-service, so its
+	// uploader cannot delete it from under the row. Without the client
+	// every write that adds media answers media-unavailable (503).
+	if claims := mediaclient.New(mediaServiceURL, internalKey); claims != nil {
+		datingSvc.SetMediaClaims(claims)
+	} else {
+		slog.Warn("dating-service: MEDIA_SERVICE_URL or INTERNAL_SERVICE_KEY not set — photos, clips and selfies are refused (media claims unavailable)")
+	}
 	slog.Info("dating photo safety configured", "max_photos", photoCfg.MaxPhotos,
 		"explicit_min_confidence", photoCfg.ExplicitMinConfidence, "review_min_confidence", photoCfg.ReviewMinConfidence,
 		"require_face", photoCfg.RequireFaceOnPrimary, "recheck_enabled", photoCfg.RecheckEnabled,
@@ -433,7 +443,9 @@ func main() {
 	// tables it leaves) and ack as "dating" onto platform.purge-acks.v1.
 	purgeAcks := purge.NewKafkaAckPublisher(kafkaBrokers, env("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic), kafkaDialer)
 	defer purgeAcks.Close()
-	datingEraser := purge.NewEraser(datingSvc, datingStore)
+	// The service is also the auxiliary eraser: it releases the selfie
+	// attempts' media claims before the store erases them.
+	datingEraser := purge.NewEraser(datingSvc, datingSvc)
 	lifecycle := purge.NewConsumer(kafkaBrokers, env("IDENTITY_KAFKA_TOPIC", "identity.events.v1"),
 		"dating-service-account-lifecycle", kafkaDialer,
 		purge.NewHandler("dating", datingEraser, purgeAcks, datingEraser, slog.Default()), slog.Default())

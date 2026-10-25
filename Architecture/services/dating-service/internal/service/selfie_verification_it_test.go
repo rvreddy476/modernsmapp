@@ -78,6 +78,7 @@ func newSelfieSvc(t *testing.T) (*Service, *store.Store, *pgxpool.Pool) {
 	svc := New(st, nil)
 	svc.SetProducer(datingevents.NewProducerWithWriter(&recordingWriter{}))
 	svc.SetMessageClient(&syncStubMessageClient{})
+	svc.SetMediaClaims(newFakeMediaClaims()) // media_claims.go: selfies claim their video
 	return svc, st, pool
 }
 

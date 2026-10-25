@@ -148,6 +148,7 @@ func setupD10(t *testing.T) *d10Env {
 	svc.SetMediaPhotoClient(media)
 	live := &d10Liveness{result: d10Blinks(96)}
 	svc.SetLivenessClient(live)
+	svc.SetMediaClaims(newStubClaims())
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	New(svc).RegisterRoutes(r)

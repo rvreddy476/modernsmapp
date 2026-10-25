@@ -113,6 +113,7 @@ func setupPhotoHTTP(t *testing.T) *photoHTTPEnv {
 	svc.SetMessageClient(&stubMessageClient{})
 	media := &httpFakeMedia{owners: map[uuid.UUID]uuid.UUID{}, status: map[uuid.UUID]string{}}
 	svc.SetMediaPhotoClient(media)
+	svc.SetMediaClaims(newStubClaims())
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	New(svc).WithInternalKey(testInternalKey).RegisterRoutes(r)

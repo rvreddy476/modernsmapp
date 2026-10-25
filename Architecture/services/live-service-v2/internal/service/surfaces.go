@@ -761,6 +761,16 @@ type UpdateStreamParams struct {
 // while it is 'scheduled' (ErrStateConflict otherwise). Paid visibility is
 // refused as on create.
 func (s *Service) UpdateStream(ctx context.Context, streamID, hostID uuid.UUID, p UpdateStreamParams) (*postgres.LiveStream, error) {
+	// A cover change claims, writes and releases from the read below: it is
+	// serialised with every other cover write of this stream, and the read
+	// happens under that lock (media_claims.go).
+	if p.SetCoverMediaID {
+		unlock, err := s.lockMediaHolder(ctx, streamID)
+		if err != nil {
+			return nil, err
+		}
+		defer unlock()
+	}
 	st, err := s.requireCreator(ctx, streamID, hostID)
 	if err != nil {
 		return nil, err
@@ -814,7 +824,21 @@ func (s *Service) UpdateStream(ctx context.Context, streamID, hostID uuid.UUID, 
 		o = normalizeOrientation(o)
 		patch.Orientation = &o
 	}
-	next, err := s.store.UpdateScheduled(ctx, streamID, patch)
+	var coverAdd, coverDrop []uuid.UUID
+	if p.SetCoverMediaID {
+		coverAdd, coverDrop = coverDiff(st.CoverMediaID, p.CoverMediaID)
+		if len(coverAdd) > 0 {
+			if err := s.verifyCover(ctx, hostID, p.CoverMediaID); err != nil {
+				return nil, err
+			}
+		}
+	}
+	var next *postgres.LiveStream
+	err = s.writeWithClaims(ctx, streamID, coverAdd, coverDrop, func() error {
+		var werr error
+		next, werr = s.store.UpdateScheduled(ctx, streamID, patch)
+		return werr
+	})
 	switch {
 	case errors.Is(err, postgres.ErrNotFound):
 		return nil, ErrStreamNotFound

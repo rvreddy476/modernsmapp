@@ -240,6 +240,7 @@ func (c *fakeClock) Advance(d time.Duration) {
 // events and a fake clock shared by all three.
 type rig struct {
 	svc   *Service
+	media *fakeCoverMedia
 	store *storetest.MemStore
 	lk    *recLiveKit
 	ev    *recEvents
@@ -256,5 +257,13 @@ func newRig(pilot ...uuid.UUID) *rig {
 	svc := New(store, lk, graph, nil, Config{PilotUserIDs: pilot})
 	ev := newRecEvents(clock.Now)
 	svc.rt = ev
-	return &rig{svc: svc, store: store, lk: lk, ev: ev, clock: clock, graph: graph}
+	// Covers (media_claims.go): an id the fake was not told about is the
+	// first pilot user's finished upload, so tests that set a cover in
+	// passing need not register it.
+	media := newFakeCoverMedia()
+	if len(pilot) > 0 {
+		media.owner = pilot[0]
+	}
+	svc.WithMedia(media)
+	return &rig{svc: svc, media: media, store: store, lk: lk, ev: ev, clock: clock, graph: graph}
 }

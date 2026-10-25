@@ -143,6 +143,9 @@ const selectColumns = `
     created_at, updated_at`
 
 type CreateStreamParams struct {
+	// ID is the row's id; uuid.Nil lets the database choose one. The service
+	// chooses it so the cover can be claimed for the row before it exists.
+	ID            uuid.UUID
 	CreatorUserID uuid.UUID
 	LiveKitRoom   string
 	Title         string
@@ -173,9 +176,9 @@ const (
 func (s *Store) CreateStream(ctx context.Context, p CreateStreamParams) (*LiveStream, error) {
 	const q = `
         INSERT INTO live_streams
-            (creator_user_id, livekit_room, title, description, cover_media_id,
+            (id, creator_user_id, livekit_room, title, description, cover_media_id,
              visibility, scheduled_at, status, source, orientation, category)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, 'scheduled', $8, $9, $10)
+        VALUES (COALESCE($11::uuid, gen_random_uuid()), $1, $2, $3, $4, $5, $6, $7, 'scheduled', $8, $9, $10)
         RETURNING ` + selectColumns
 	source := p.Source
 	if source == "" {
@@ -196,6 +199,7 @@ func (s *Store) CreateStream(ctx context.Context, p CreateStreamParams) (*LiveSt
 		source,
 		orientation,
 		p.Category,
+		optionalID(p.ID),
 	))
 }
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/dating-service/internal/mediaclient"
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
 )
@@ -100,8 +101,16 @@ func (s *Service) CreatePhoto(ctx context.Context, userID uuid.UUID, p store.Cre
 		return nil, err
 	}
 	decision := ClassifyPhoto(cfg, prepared, p.IsPrimary)
+	// Claim the media for the row before the row exists, and release it if
+	// the row is not written (media_claims.go).
+	p.ID = uuid.New()
+	ref := p.ID.String()
+	if err := s.claim(ctx, mediaclient.KindPhoto, ref, []uuid.UUID{p.MediaID}, ErrPhotoMediaNotFound, ErrPhotoMediaUnavailable); err != nil {
+		return nil, err
+	}
 	photo, err := s.store.CreateModeratedPhoto(ctx, userID, p, cfg.MaxPhotos, decision)
 	if err != nil {
+		s.release(ctx, mediaclient.KindPhoto, ref, []uuid.UUID{p.MediaID})
 		return nil, err
 	}
 	slog.Info("dating photo attached", "user_id", userID, "photo_id", photo.ID,
@@ -143,15 +152,25 @@ func (s *Service) DeletePhoto(ctx context.Context, userID, photoID uuid.UUID) er
 	if err != nil {
 		return err
 	}
+	if others == 0 && s.mediaPhotos == nil {
+		return fmt.Errorf("%w: no media photo client configured", ErrPhotoMediaUnavailable)
+	}
+	// The photo's claim goes first: the media purge refuses while it exists,
+	// and after the row is gone nothing would name it (media_claims.go).
+	ref := photo.ID.String()
+	if err := s.releaseBeforeDetach(ctx, mediaclient.KindPhoto, ref, ErrPhotoMediaUnavailable); err != nil {
+		return err
+	}
 	if others == 0 {
-		if s.mediaPhotos == nil {
-			return fmt.Errorf("%w: no media photo client configured", ErrPhotoMediaUnavailable)
-		}
 		if err := s.mediaPhotos.DeletePhotoMedia(ctx, photo.MediaID, userID); err != nil {
+			s.reclaim(ctx, mediaclient.KindPhoto, ref, photo.MediaID) // the photo stays
 			return err
 		}
 	}
 	if err := s.store.DeletePhoto(ctx, userID, photoID); err != nil {
+		if others > 0 {
+			s.reclaim(ctx, mediaclient.KindPhoto, ref, photo.MediaID) // the photo and its media stay
+		}
 		return err
 	}
 	s.syncPhotoState(ctx, userID)

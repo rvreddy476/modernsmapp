@@ -86,6 +86,7 @@ func newSurfaceRig(t *testing.T) *surfaceRig {
 		Categories: stubCategories{{Slug: "music", Label: "Music"}, {Slug: "gaming", Label: "Gaming"}},
 		Following:  following,
 	})
+	svc.WithMedia(stubCovers{owner: sfAsha}) // every cover is asha's finished upload
 	h := New(svc).WithInternalKey(rigKey)
 	r := gin.New()
 	h.RegisterRoutes(r)

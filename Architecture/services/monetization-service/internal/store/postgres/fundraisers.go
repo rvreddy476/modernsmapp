@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -51,7 +52,11 @@ type Donation struct {
 // ---------------------------------------------------------------------------
 
 // CreateFundraiser inserts a new fundraiser and returns the created record.
+// A cover is refused (ErrMediaClaimRequired, media_holders.go).
 func (s *Store) CreateFundraiser(ctx context.Context, f *Fundraiser) (*Fundraiser, error) {
+	if f.CoverMediaID != nil {
+		return nil, fmt.Errorf("%w: fundraisers.cover_media_id", ErrMediaClaimRequired)
+	}
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO fundraisers
 			(creator_id, type, title, description, cover_media_id, goal_amount, currency,

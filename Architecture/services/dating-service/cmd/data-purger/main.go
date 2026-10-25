@@ -34,6 +34,7 @@ import (
 	"github.com/atpost/dating-service/internal/datingpii"
 	datingevents "github.com/atpost/dating-service/internal/events"
 	datinghttp "github.com/atpost/dating-service/internal/http"
+	"github.com/atpost/dating-service/internal/mediaclient"
 	"github.com/atpost/dating-service/internal/service"
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/atpost/shared/o11y/logging"
@@ -125,6 +126,19 @@ func main() {
 	producer := datingevents.NewProducerWithDialer(kafkaBrokers, kafkaTopic, dialer)
 	defer func() { _ = producer.Close() }()
 	svc.SetProducer(producer)
+	// The purge releases the media claims of what it erases (photos, prompt
+	// clips, the verification video) before erasing (service/media_claims.go).
+	// Without a client a profile's claims are left for /media-claims.
+	mediaURL, err := datinghttp.ResolveMediaServiceURL(os.Getenv)
+	if err != nil {
+		slog.Error("media service url", "error", err)
+		os.Exit(1)
+	}
+	if claims := mediaclient.New(mediaURL, os.Getenv("INTERNAL_SERVICE_KEY")); claims != nil {
+		svc.SetMediaClaims(claims)
+	} else {
+		slog.Warn("data-purger: INTERNAL_SERVICE_KEY not set — purged profiles' media claims are not released; run /media-claims")
+	}
 
 	for {
 		purged, expired, err := runOnce(ctx, st, svc, graceDays, batchSize)

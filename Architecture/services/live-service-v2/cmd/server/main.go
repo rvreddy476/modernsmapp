@@ -11,6 +11,7 @@ import (
 	dbschema "github.com/atpost/live-service-v2/database"
 	v2http "github.com/atpost/live-service-v2/internal/http"
 	"github.com/atpost/live-service-v2/internal/livekit"
+	"github.com/atpost/live-service-v2/internal/mediaclient"
 	"github.com/atpost/live-service-v2/internal/purge"
 	"github.com/atpost/live-service-v2/internal/service"
 	pgstore "github.com/atpost/live-service-v2/internal/store/postgres"
@@ -247,6 +248,14 @@ func main() {
 		Following:              following,
 		Eligibility:            elig,
 	})
+	// Stream covers (service/media_claims.go): the cover must be the host's
+	// own finished upload, and is claimed in media-service while a stream
+	// names it. Without the client every cover is refused (503).
+	if covers := mediaclient.New(mediaURL, internalKey); covers != nil {
+		svc.WithMedia(covers)
+	} else {
+		slog.Warn("live-v2: MEDIA_SERVICE_URL or INTERNAL_SERVICE_KEY not set — stream covers are refused (MEDIA_UNAVAILABLE)")
+	}
 	// Timeouts by the database clock, LiveKit reconcile, recording imports.
 	go svc.RunSweeper(bgCtx, service.SweepInterval)
 
@@ -258,7 +267,7 @@ func main() {
 	defer purgeAcks.Close()
 	lifecycle := purge.NewConsumer(kafkaBrokers, env("IDENTITY_KAFKA_TOPIC", "identity.events.v1"),
 		"live-service-v2-account-lifecycle", kafkaDialer,
-		purge.NewHandler("live-v2", store, purgeAcks, store, slog.Default()), slog.Default())
+		purge.NewHandler("live-v2", svc.ReleasingEraser(store), purgeAcks, store, slog.Default()), slog.Default())
 	defer lifecycle.Close()
 	go lifecycle.Start(ctx)
 

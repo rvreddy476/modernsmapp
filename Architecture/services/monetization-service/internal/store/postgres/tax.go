@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -221,8 +222,12 @@ func (s *Store) InsertGSTEntry(ctx context.Context, e *GSTEntry) error {
 // Invoices
 // ---------------------------------------------------------------------------
 
-// CreateInvoice inserts a new invoice record.
+// CreateInvoice inserts a new invoice record. A PDF is refused
+// (ErrMediaClaimRequired, media_holders.go).
 func (s *Store) CreateInvoice(ctx context.Context, inv *Invoice) error {
+	if inv.PDFMediaID != nil {
+		return fmt.Errorf("%w: invoices.pdf_media_id", ErrMediaClaimRequired)
+	}
 	if inv.ID == uuid.Nil {
 		inv.ID = uuid.New()
 	}

@@ -201,6 +201,11 @@ type Service struct {
 	// media imports egress recordings into media-service; nil leaves the
 	// import jobs pending (vod_ready never goes out without a media id).
 	media MediaImporter
+	// coverMedia reads a cover's media record before it is set; claims
+	// registers the cover a stream holds with media-service
+	// (media_claims.go). Nil refuses every cover: fail closed.
+	coverMedia MediaLookup
+	claims     MediaClaims
 	// posts answers which video a recording became; nil leaves
 	// recording_post_id unset (recording_post.go).
 	posts RecordingPostSource
@@ -394,21 +399,34 @@ func (s *Service) CreateStream(ctx context.Context, creatorID uuid.UUID, p Creat
 	if err != nil {
 		return nil, err
 	}
+	// The cover must be the host's own finished upload (media_claims.go).
+	if err := s.verifyCover(ctx, creatorID, p.CoverMediaID); err != nil {
+		return nil, err
+	}
+	// The row's id is chosen here so the cover can be claimed for it before
+	// the row exists. The room name keeps its own id, as before: nothing may
+	// read the stream id out of the room name (GetByRoom).
 	streamID := uuid.New()
-	room := "stream_" + streamID.String()
-	st, err := s.store.CreateStream(ctx, postgres.CreateStreamParams{
-		CreatorUserID: creatorID,
-		LiveKitRoom:   room,
-		Title:         strings.TrimSpace(p.Title),
-		Description:   strings.TrimSpace(p.Description),
-		CoverMediaID:  p.CoverMediaID,
-		Visibility:    vis,
-		ScheduledAt:   p.ScheduledAt,
-		Source:        source,
-		Orientation:   orientation,
-		Category:      category,
-	})
-	if err != nil {
+	room := "stream_" + uuid.New().String()
+	coverAdd, _ := coverDiff(nil, p.CoverMediaID)
+	var st *postgres.LiveStream
+	if err := s.writeWithClaims(ctx, streamID, coverAdd, nil, func() error {
+		var err error
+		st, err = s.store.CreateStream(ctx, postgres.CreateStreamParams{
+			ID:            streamID,
+			CreatorUserID: creatorID,
+			LiveKitRoom:   room,
+			Title:         strings.TrimSpace(p.Title),
+			Description:   strings.TrimSpace(p.Description),
+			CoverMediaID:  p.CoverMediaID,
+			Visibility:    vis,
+			ScheduledAt:   p.ScheduledAt,
+			Source:        source,
+			Orientation:   orientation,
+			Category:      category,
+		})
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	return s.withViewerCap(ctx, creatorID, []*postgres.LiveStream{s.withCreator(ctx, withHasIngress(st))})[0], nil

@@ -111,6 +111,7 @@ func newM15Deck(t *testing.T, on bool) (*m1Deck, *clipMedia) {
 	d := newM1Deck(t, service.MechanicsConfig{DeckRefill: true, DeckDailyLimitFree: 50, DeckDailyLimitPass: 50, MediaPrompts: on})
 	m := &clipMedia{clips: map[uuid.UUID]*fakeClip{}}
 	d.env.svc.SetMediaClipClient(m)
+	d.env.svc.SetMediaClaims(newStubClaims())
 	return d, m
 }
 

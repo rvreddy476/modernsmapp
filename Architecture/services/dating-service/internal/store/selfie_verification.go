@@ -184,8 +184,10 @@ func (s *Store) CreateSelfieChallenge(ctx context.Context, userID uuid.UUID, ins
 // in the window (the attempt limit), consumes the challenge (the caller's,
 // unexpired, unused) and records the attempt. The attempt counts toward the
 // limit whatever happens after, so every consumed challenge — and every
-// provider call — is limited.
-func (s *Store) BeginSelfieAttempt(ctx context.Context, userID, challengeID, videoMediaID uuid.UUID, maxAttempts int) (*SelfieAttemptStart, error) {
+// provider call — is limited. attemptID is the new row's id (uuid.Nil: the
+// database chooses); the service chooses it so the video can be claimed for
+// the attempt before the row exists.
+func (s *Store) BeginSelfieAttempt(ctx context.Context, attemptID, userID, challengeID, videoMediaID uuid.UUID, maxAttempts int) (*SelfieAttemptStart, error) {
 	if userID == uuid.Nil || videoMediaID == uuid.Nil || maxAttempts <= 0 {
 		return nil, fmt.Errorf("invalid: selfie attempt arguments")
 	}
@@ -228,9 +230,9 @@ func (s *Store) BeginSelfieAttempt(ctx context.Context, userID, challengeID, vid
 		return nil, fmt.Errorf("selfie attempt: count verdicts: %w", err)
 	}
 	if err := tx.QueryRow(ctx, `
-        INSERT INTO dating_selfie_attempts (user_id, challenge_id, video_media_id, instruction)
-        VALUES ($1, $2, $3, $4)
-        RETURNING id`, userID, challengeID, videoMediaID, out.Instruction).Scan(&out.AttemptID); err != nil {
+        INSERT INTO dating_selfie_attempts (id, user_id, challenge_id, video_media_id, instruction)
+        VALUES (COALESCE($5::uuid, gen_random_uuid()), $1, $2, $3, $4)
+        RETURNING id`, userID, challengeID, videoMediaID, out.Instruction, optionalID(attemptID)).Scan(&out.AttemptID); err != nil {
 		return nil, fmt.Errorf("selfie attempt: insert: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

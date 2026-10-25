@@ -21,6 +21,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/atpost/dating-service/internal/mediaclient"
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
 )
@@ -113,11 +114,34 @@ func (s *Service) PutPromptClip(ctx context.Context, userID uuid.UUID, promptID 
 		return nil, err
 	}
 	status, reason := clipState(st.Moderation)
-	previous, err := s.store.SetPromptClip(ctx, userID, promptID, mediaID, kind, durationMs, status, reason)
+
+	// The slot's clip is claimed before the row names it and the clip it
+	// replaces released after, under the slot's lock (media_claims.go).
+	ref := store.PromptClipRef(userID, promptID)
+	unlock, err := s.lockMediaHolder(ctx, mediaclient.KindPromptClip, ref)
 	if err != nil {
 		return nil, err
 	}
+	defer unlock()
+	var current *uuid.UUID
+	switch p, err := s.store.GetPrompt(ctx, userID, promptID); {
+	case err == nil:
+		current = p.ClipMediaID
+	case !errors.Is(err, store.ErrPromptNotFound):
+		return nil, err
+	}
+	add, _ := mediaChange(current, &mediaID)
+	if err := s.claim(ctx, mediaclient.KindPromptClip, ref, add, ErrClipMediaNotFound, ErrClipMediaUnavailable); err != nil {
+		return nil, err
+	}
+	previous, err := s.store.SetPromptClip(ctx, userID, promptID, mediaID, kind, durationMs, status, reason)
+	if err != nil {
+		s.release(ctx, mediaclient.KindPromptClip, ref, add)
+		return nil, err
+	}
 	if previous != nil {
+		// Released before the purge, which refuses a claimed asset.
+		s.release(ctx, mediaclient.KindPromptClip, ref, []uuid.UUID{*previous})
 		if err := s.mediaClips.DeleteClip(ctx, *previous, userID); err != nil {
 			slog.Warn("prompt clip: replaced clip not deleted", "user_id", userID, "error", err)
 		}
@@ -131,8 +155,29 @@ func (s *Service) DeletePromptClip(ctx context.Context, userID uuid.UUID, prompt
 	if err := s.clipsReady(); err != nil {
 		return err
 	}
+	// The slot's claim goes before the row stops naming the clip: the purge
+	// below refuses a claimed asset, and a row deleted with its answer would
+	// leave nothing naming the claim (media_claims.go).
+	ref := store.PromptClipRef(userID, promptID)
+	unlock, err := s.lockMediaHolder(ctx, mediaclient.KindPromptClip, ref)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	cur, err := s.store.GetPrompt(ctx, userID, promptID)
+	if err != nil {
+		return err
+	}
+	if cur.ClipMediaID != nil {
+		if err := s.releaseBeforeDetach(ctx, mediaclient.KindPromptClip, ref, ErrClipMediaUnavailable); err != nil {
+			return err
+		}
+	}
 	media, err := s.store.ClearPromptClip(ctx, userID, promptID)
 	if err != nil {
+		if cur.ClipMediaID != nil {
+			s.reclaim(ctx, mediaclient.KindPromptClip, ref, *cur.ClipMediaID)
+		}
 		return err
 	}
 	if media != nil {

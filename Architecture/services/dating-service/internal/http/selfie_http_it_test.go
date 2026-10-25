@@ -70,6 +70,7 @@ func setupSelfieHTTP(t *testing.T) *selfieHTTPEnv {
 	st := store.New(pool)
 	svc := service.New(st, nil)
 	svc.SetMessageClient(&stubMessageClient{})
+	svc.SetMediaClaims(newStubClaims())
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	New(svc).WithInternalKey(testInternalKey).RegisterRoutes(r)

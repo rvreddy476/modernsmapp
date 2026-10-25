@@ -20,8 +20,12 @@ COPY tools /tools
 # reports it and every creator-fund accrual row is stamped with it.
 ARG BUILD_SHA=unknown
 RUN go build -mod=vendor -ldflags "-X github.com/atpost/monetization-service/internal/buildinfo.SHA=${BUILD_SHA}" -o /server ./services/monetization-service/cmd/server/main.go
+# The media claim backfill (cmd/media-claims): run in the pod with
+# `kubectl exec deploy/monetization-service -- /media-claims` (dry run) or `-apply`.
+RUN go build -mod=vendor -o /media-claims ./services/monetization-service/cmd/media-claims
 
 FROM alpine:3.19
 WORKDIR /
 COPY --from=builder /server /server
+COPY --from=builder /media-claims /media-claims
 CMD ["/server"]

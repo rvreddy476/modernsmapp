@@ -35,6 +35,10 @@ type Service struct {
 	mediaPhotos          MediaPhotoClient
 	// mediaClips is media-service for prompt clips (mechanic M15).
 	mediaClips MediaClipClient
+	// claims registers the media a dating row holds with media-service, so
+	// its uploader cannot delete it from under the row (media_claims.go).
+	// Nil refuses every write that adds media: fail closed.
+	claims MediaClaims
 	photoCfg             PhotoSafetyConfig
 	photoCfgSet          bool
 	graphServiceClient   GraphServiceClient

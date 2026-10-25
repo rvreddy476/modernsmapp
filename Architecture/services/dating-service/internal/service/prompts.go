@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"strings"
 
+	"github.com/atpost/dating-service/internal/mediaclient"
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
 )
@@ -102,11 +103,26 @@ func (s *Service) UpsertPrompt(ctx context.Context, userID uuid.UUID, promptID i
 func (s *Service) DeletePrompt(ctx context.Context, userID uuid.UUID, promptID int) error {
 	// Mechanic M15: the answer's clip goes with it (best effort; media-service
 	// reclaims an asset no row names anyway).
+	// Its claim goes before the row (media_claims.go), under the slot's lock.
+	ref := store.PromptClipRef(userID, promptID)
+	unlock, err := s.lockMediaHolder(ctx, mediaclient.KindPromptClip, ref)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	var clip *uuid.UUID
 	if p, err := s.store.GetPrompt(ctx, userID, promptID); err == nil {
 		clip = p.ClipMediaID
 	}
+	if clip != nil {
+		if err := s.releaseBeforeDetach(ctx, mediaclient.KindPromptClip, ref, ErrClipMediaUnavailable); err != nil {
+			return err
+		}
+	}
 	if err := s.store.DeletePrompt(ctx, userID, promptID); err != nil {
+		if clip != nil {
+			s.reclaim(ctx, mediaclient.KindPromptClip, ref, *clip)
+		}
 		return err
 	}
 	if clip != nil && s.mediaClips != nil {

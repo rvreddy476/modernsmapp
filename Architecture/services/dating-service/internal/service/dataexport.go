@@ -435,6 +435,11 @@ func (s *Service) PurgeProfile(ctx context.Context, userID uuid.UUID) error {
 	if userID == uuid.Nil {
 		return fmt.Errorf("invalid: user_id required")
 	}
+	// Photos, prompt clips and the verification video stop being held in
+	// media-service before their rows go (media_claims.go).
+	if err := s.releaseProfileClaims(ctx, userID); err != nil {
+		return err
+	}
 	out, err := s.store.PurgeUserDataWithOutcome(ctx, userID)
 	if err != nil {
 		return err

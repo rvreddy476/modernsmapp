@@ -35,6 +35,8 @@ type fakeMediaPhotos struct {
 	deletes    [][2]uuid.UUID
 	deliveries []string
 	deleteErr  error
+	// onDelete runs inside DeletePhotoMedia (to look at the claims then).
+	onDelete func(mediaID uuid.UUID)
 }
 
 func newFakeMediaPhotos() *fakeMediaPhotos {
@@ -104,6 +106,9 @@ func (f *fakeMediaPhotos) PhotoDeliveryURL(_ context.Context, mediaID, owner uui
 }
 
 func (f *fakeMediaPhotos) DeletePhotoMedia(_ context.Context, mediaID, owner uuid.UUID) error {
+	if f.onDelete != nil {
+		f.onDelete(mediaID)
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deletes = append(f.deletes, [2]uuid.UUID{mediaID, owner})
@@ -121,6 +126,7 @@ type photoEnv struct {
 	st     *store.Store
 	pool   *pgxpool.Pool
 	media  *fakeMediaPhotos
+	claims *fakeMediaClaims
 	writer *recordingWriter
 }
 
@@ -150,7 +156,9 @@ func newPhotoEnv(t *testing.T) *photoEnv {
 	svc.SetMessageClient(&syncStubMessageClient{})
 	media := newFakeMediaPhotos()
 	svc.SetMediaPhotoClient(media)
-	return &photoEnv{svc: svc, st: st, pool: pool, media: media, writer: writer}
+	claims := newFakeMediaClaims() // media_claims.go: photos claim their media
+	svc.SetMediaClaims(claims)
+	return &photoEnv{svc: svc, st: st, pool: pool, media: media, claims: claims, writer: writer}
 }
 
 // seedAtPendingPhoto writes the basics and walks the profile to pending_photo.

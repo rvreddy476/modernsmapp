@@ -22,10 +22,14 @@ RUN go build -mod=vendor -o /server ./services/dating-service/cmd/server/main.go
 # worker start them with an explicit command; CMD stays the server.
 RUN go build -mod=vendor -o /data-exporter ./services/dating-service/cmd/data-exporter
 RUN go build -mod=vendor -o /data-purger ./services/dating-service/cmd/data-purger
+# The media claim reconcile tool (cmd/media-claims): run in the pod with
+# `kubectl exec deploy/dating-service -- /media-claims` (dry run) or `-apply`.
+RUN go build -mod=vendor -o /media-claims ./services/dating-service/cmd/media-claims
 
 FROM alpine:3.19
 WORKDIR /
 COPY --from=builder /server /server
 COPY --from=builder /data-exporter /data-exporter
 COPY --from=builder /data-purger /data-purger
+COPY --from=builder /media-claims /media-claims
 CMD ["/server"]
