@@ -52,18 +52,26 @@ public final class EditProfileViewModel: @unchecked Sendable {
         isSaving = true
         errorMessage = nil
 
-        var uploadedAvatarUrl = currentAvatarUrl
-
-        // Upload new avatar if changed
+        // New avatar: upload it, then attach it through the dedicated route.
+        // PUT /v1/profiles/me refuses avatar fields (DEDICATED_MEDIA_ROUTE_REQUIRED)
+        // so profile-service can verify media ownership and safety.
         if let data = avatarData {
             do {
-                let uploadResult = try await uploader.upload(
+                let mediaId = try await uploader.uploadImage(
                     data: data,
                     mimeType: "image/jpeg",
-                    filename: "avatar.jpg",
+                    altText: "",
+                    decorative: true,
+                    uploadPurpose: "profile",
                     progressHandler: nil
                 )
-                uploadedAvatarUrl = uploadResult.previewUrl
+                let avatarBody = try JSONEncoder().encode(["media_id": mediaId])
+                let _: AvatarUpdateResponse = try await client.request(
+                    endpoint: "v1/profiles/me/avatar",
+                    method: "PUT",
+                    query: nil,
+                    body: avatarBody
+                )
             } catch {
                 self.errorMessage = "Failed to upload avatar: \(error.localizedDescription)"
                 self.isSaving = false
@@ -72,20 +80,17 @@ public final class EditProfileViewModel: @unchecked Sendable {
         }
 
         do {
-            var payload: [String: String] = [
+            let payload: [String: String] = [
                 "display_name": displayName,
                 "bio": bio,
                 "website": website,
                 "location": location
             ]
-            if let avatar = uploadedAvatarUrl {
-                payload["avatar_url"] = avatar
-            }
 
             let body = try JSONEncoder().encode(payload)
             let _: UserProfile = try await client.request(
                 endpoint: "v1/profiles/me",
-                method: "PATCH",
+                method: "PUT",
                 query: nil,
                 body: body
             )
@@ -222,5 +227,16 @@ public struct EditProfileView: View {
                     .overlay(RoundedRectangle(cornerRadius: 10).stroke(UsColors.borderMedium, lineWidth: 1))
             }
         }
+    }
+}
+
+/// Response of PUT /v1/profiles/me/avatar (profile-service `UpdateMyAvatar`).
+private struct AvatarUpdateResponse: Codable, Sendable {
+    let status: String
+    let avatarMediaId: String?
+
+    enum CodingKeys: String, CodingKey {
+        case status
+        case avatarMediaId = "avatar_media_id"
     }
 }

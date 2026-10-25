@@ -1234,6 +1234,8 @@ let package = Package(
                 "FeatureCreate",
                 "FeatureNotifications",
                 "FeatureAuth",
+                .product(name: "UsModel", package: "UsCore"),
+                .product(name: "UsNetwork", package: "UsCore"),
                 .product(name: "UsMedia", package: "UsCore"),
             ],
             path: "Tests/FeatureTests"

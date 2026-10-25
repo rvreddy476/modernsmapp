@@ -149,7 +149,7 @@ public struct PNRTrackerView: View {
                 Spacer()
 
                 Text("⏰ Departure: \(trip.departureTime)")
-                    .font(.system(size: 11, weight: .monospaced))
+                    .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(UsColors.postbookPrimary)
             }
         }

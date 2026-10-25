@@ -32,7 +32,7 @@ let package = Package(
         ),
         .target(
             name: "UsMedia",
-            dependencies: ["UsModel", "UsDesignSystem"],
+            dependencies: ["UsModel", "UsDesignSystem", "UsNetwork"],
             path: "Sources/UsMedia"
         ),
         .testTarget(

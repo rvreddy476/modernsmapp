@@ -109,7 +109,7 @@ public struct SettlementLedgerView: View {
                 Spacer()
 
                 Text(item.utrNumber)
-                    .font(.system(size: 10, weight: .monospaced))
+                    .font(.system(size: 10, design: .monospaced))
                     .foregroundColor(UsColors.textDim)
             }
         }

@@ -318,7 +318,7 @@ public struct EventsDiscoveryView: View {
                         .clipShape(RoundedRectangle(cornerRadius: 12))
 
                         Text("Pass ID: US-TKT-9482-BGL")
-                            .font(.system(size: 12, weight: .monospaced))
+                            .font(.system(size: 12, design: .monospaced))
                             .foregroundColor(UsColors.textMuted)
                     }
                     .padding(20)

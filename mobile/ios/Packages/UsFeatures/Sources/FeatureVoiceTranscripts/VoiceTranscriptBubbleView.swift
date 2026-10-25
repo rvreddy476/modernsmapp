@@ -49,7 +49,7 @@ public struct VoiceTranscriptBubbleView: View {
                 Spacer()
 
                 Text(audioDuration)
-                    .font(.system(size: 11, weight: .monospaced))
+                    .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(UsColors.textMuted)
             }
 

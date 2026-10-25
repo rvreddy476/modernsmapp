@@ -60,7 +60,8 @@ public struct RootTabView: View {
                     mediaUrl: "https://images.unsplash.com/photo-1517841905240-472988babdf9?w=800",
                     mediaType: "image",
                     duration: 5.0,
-                    createdAt: "2h"
+                    createdAt: "2h",
+                    expiresAt: "22h"
                 )
             ]
         ),
@@ -74,7 +75,8 @@ public struct RootTabView: View {
                     mediaUrl: "https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=800",
                     mediaType: "image",
                     duration: 5.0,
-                    createdAt: "4h"
+                    createdAt: "4h",
+                    expiresAt: "20h"
                 )
             ]
         ),
@@ -88,7 +90,8 @@ public struct RootTabView: View {
                     mediaUrl: "https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=800",
                     mediaType: "image",
                     duration: 5.0,
-                    createdAt: "6h"
+                    createdAt: "6h",
+                    expiresAt: "18h"
                 )
             ]
         )

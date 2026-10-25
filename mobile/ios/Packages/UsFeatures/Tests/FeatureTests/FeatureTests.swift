@@ -108,8 +108,8 @@ final class FeatureTests: XCTestCase {
 
     func testStoryViewerProgression() async {
         let author = Author(id: "auth-1", username: "alex", displayName: "Alex")
-        let story1 = StoryItem(id: "s1", authorId: "auth-1", mediaUrl: "https://example.com/s1.jpg", duration: 0.1, createdAt: "1h")
-        let story2 = StoryItem(id: "s2", authorId: "auth-1", mediaUrl: "https://example.com/s2.jpg", duration: 0.1, createdAt: "2h")
+        let story1 = StoryItem(id: "s1", authorId: "auth-1", mediaUrl: "https://example.com/s1.jpg", duration: 0.1, createdAt: "1h", expiresAt: "23h")
+        let story2 = StoryItem(id: "s2", authorId: "auth-1", mediaUrl: "https://example.com/s2.jpg", duration: 0.1, createdAt: "2h", expiresAt: "22h")
         let userStories = UserStories(id: "auth-1", author: author, stories: [story1, story2])
 
         let vm = StoryViewerViewModel(userStories: userStories)
