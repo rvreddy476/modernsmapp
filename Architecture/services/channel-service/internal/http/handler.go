@@ -317,7 +317,36 @@ func writePolicyError(c *gin.Context, err error) bool {
 	return true
 }
 
+// writeMediaError maps the channel-update media refusals
+// (service/update_media.go). The codes and statuses are post-service's for the
+// same refusal, so a client handles both surfaces the same way. Checked before
+// the message switch below: "media does not exist" must not land on whatever
+// substring rule happens to match it.
+func writeMediaError(c *gin.Context, err error) bool {
+	ctx := c.Request.Context()
+	switch {
+	case errors.Is(err, service.ErrMediaNotFound):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "MEDIA_NOT_FOUND", "media does not exist", nil)
+	case errors.Is(err, service.ErrMediaNotOwned):
+		// 403 and a message that says nothing about the foreign asset.
+		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "MEDIA_NOT_OWNED", "You cannot attach this media", nil)
+	case errors.Is(err, service.ErrMediaNotReady):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "MEDIA_NOT_READY", "that media has not finished uploading", nil)
+	case errors.Is(err, service.ErrMediaUnavailable):
+		// 503: the caller did nothing wrong; the check could not be made and
+		// the update was not stored. Retryable.
+		slog.Error("channel-service: media verification could not be performed", "error", err)
+		api.ErrorWithContext(ctx, c.Writer, http.StatusServiceUnavailable, "MEDIA_UNAVAILABLE", "media could not be checked right now; try again", nil)
+	default:
+		return false
+	}
+	return true
+}
+
 func handleServiceError(c *gin.Context, err error) {
+	if writeMediaError(c, err) {
+		return
+	}
 	if writePolicyError(c, err) {
 		return
 	}

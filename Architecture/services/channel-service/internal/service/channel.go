@@ -139,6 +139,10 @@ type Service struct {
 	// from DefaultCommunityPolicy so a caller that never calls
 	// WithCommunityPolicy still gets the pilot, not the open product.
 	policy CommunityPolicy
+	// media answers whether a media id an update attaches is the actor's own
+	// confirmed upload (update_media.go). Nil refuses every update that
+	// carries media: fail closed.
+	media MediaLookup
 }
 
 func New(s *store.Store, rdb *redis.Client) *Service {
@@ -799,6 +803,9 @@ func (s *Service) CreateUpdate(ctx context.Context, channelID, authorID uuid.UUI
 		publishedAt = &now
 	}
 
+	if err := s.verifyUpdateMedia(ctx, authorID, params.MediaIDs, nil); err != nil {
+		return nil, err
+	}
 	mediaIDs := params.MediaIDs
 	if mediaIDs == nil {
 		mediaIDs = []uuid.UUID{}
@@ -894,6 +901,11 @@ func (s *Service) EditUpdate(ctx context.Context, channelID, updateID, actorID u
 			return nil, err
 		}
 		params.Metadata = merged
+	}
+	if params.MediaIDs != nil {
+		if err := s.verifyUpdateMedia(ctx, actorID, params.MediaIDs, u.MediaIDs); err != nil {
+			return nil, err
+		}
 	}
 
 	if params.UpdateType != "" {

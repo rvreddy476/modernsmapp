@@ -10,6 +10,7 @@ import (
 	"github.com/atpost/channel-service/database"
 	channelevents "github.com/atpost/channel-service/internal/events"
 	"github.com/atpost/channel-service/internal/http"
+	"github.com/atpost/channel-service/internal/mediaclient"
 	"github.com/atpost/channel-service/internal/service"
 	"github.com/atpost/channel-service/internal/store"
 	pgstore "github.com/atpost/channel-service/internal/store/postgres"
@@ -130,6 +131,19 @@ func main() {
 	// 8. Dependencies
 	channelStore := store.New(dbPool)
 	channelSvc := service.New(channelStore, rdb).WithCommunityPolicy(policy)
+
+	// Channel-update media authority: every media id an update attaches must
+	// be the author's own confirmed upload (service/update_media.go). Read
+	// from media-service's GET /v1/media/{id} with the internal key, the call
+	// commerce-service already makes. Without a client, updates that carry
+	// media answer 503 MEDIA_UNAVAILABLE; updates without media are untouched.
+	mediaURL := env("MEDIA_SERVICE_URL", "http://media-service:8087")
+	if mc := mediaclient.New(mediaURL, os.Getenv("INTERNAL_SERVICE_KEY")); mc != nil {
+		channelSvc.WithMedia(mc)
+		slog.Info("channel-service: update media verification enabled", "media_url", mediaURL)
+	} else {
+		slog.Warn("channel-service: MEDIA_SERVICE_URL or INTERNAL_SERVICE_KEY not set — updates that attach media are refused with 503 MEDIA_UNAVAILABLE")
+	}
 
 	// 8. Kafka producer
 	producer := channelevents.NewProducerWithDialer(kafkaBrokers, kafkaTopic, rdb, kafkaDialer)
