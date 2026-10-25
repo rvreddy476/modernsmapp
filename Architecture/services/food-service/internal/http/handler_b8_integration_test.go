@@ -39,6 +39,9 @@ func TestB8OnboardingReadBacksAreMaskedAndOwnerOnly(t *testing.T) {
 	} {
 		expectStatus(t, doJSON(r, put.method, put.path, put.body, owner, false), http.StatusOK, put.path)
 	}
+	// The selfie step joined readiness in d61bd603c (13 Oct).
+	expectStatus(t, doJSON(r, http.MethodPost, base+"/documents", `{"document_type":"SELFIE","media_id":"`+uuid.NewString()+`"}`, owner, false),
+		http.StatusCreated, "selfie upload")
 	seedAvailableMenuItem(t, pool, rid)
 
 	panHex := hex.EncodeToString([]byte(itPAN))

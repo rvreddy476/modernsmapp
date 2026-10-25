@@ -77,6 +77,20 @@ func seedITPartner(t *testing.T, pool *pgxpool.Pool, status string) uuid.UUID {
 		RETURNING id`, uuid.New(), "+91"+uuid.NewString()[:10], status)
 }
 
+// seedITReviewedOnboarding gives the partner what an admin approval needs
+// since the review gate (d61bd603c, 13 Oct): a reviewed driving licence and
+// selfie, each with its media, and an approved vehicle with an approved RC.
+func seedITReviewedOnboarding(t *testing.T, pool *pgxpool.Pool, partnerID uuid.UUID) {
+	t.Helper()
+	itExec(t, pool, `INSERT INTO rider_partner_documents (partner_id, document_type, file_url, status, media_id)
+		VALUES ($1, 'driving_license', 'media://it-dl', 'approved', $2), ($1, 'profile_photo', 'media://it-selfie', 'approved', $3)`,
+		partnerID, uuid.New(), uuid.New())
+	vehicleID := itScanUUID(t, pool, `INSERT INTO rider_vehicles (partner_id, vehicle_type, registration_number, status)
+		VALUES ($1, 'bike', $2, 'approved') RETURNING id`, partnerID, "IT"+strings.ToUpper(uuid.NewString()[:8]))
+	itExec(t, pool, `INSERT INTO rider_vehicle_documents (vehicle_id, document_type, file_url, status)
+		VALUES ($1, 'vehicle_rc', 'media://it-rc', 'approved')`, vehicleID)
+}
+
 // seedITRide inserts a ride in status with the given creation time and,
 // for a cancelled status, a cancellation time of now.
 func seedITRide(t *testing.T, pool *pgxpool.Pool, status string, createdAt time.Time) uuid.UUID {
@@ -133,6 +147,7 @@ func TestAdminTokenIT_WriteAndPartnerReadRecordAct(t *testing.T) {
 	rg, pool := setupAdminTokenIT(t)
 	ctx := context.Background()
 	partnerID := seedITPartner(t, pool, "pending_verification")
+	seedITReviewedOnboarding(t, pool, partnerID)
 
 	if code, body := rg.tokenCall(t, PermPartnersApprove, http.MethodPost, "/partners/"+partnerID.String()+"/approve", ""); code != http.StatusOK {
 		t.Fatalf("approve: status=%d body=%s", code, body)

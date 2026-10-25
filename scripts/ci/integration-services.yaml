@@ -69,8 +69,10 @@ modules:
       - Architecture/services/post-service/database/setup.sql
       - Architecture/services/post-service/database/migrations/030_media_reference_integrity.sql
 
-  # graph-service: inline test schema; the real setup.sql breaks the inserts
-  # (created_at NOT NULL without a default). Leave the database empty.
+  # graph-service: the store suite installs its complete schema inline
+  # (internal/store/testschema_integration_test.go); the http story contract
+  # test installs follows + migration 011 (hidden_users). setup.sql alone is
+  # not the deployed schema (no migrations), so leave the database empty.
   - module: Architecture/services/graph-service
     db: graph_it_test
     wave: 1
@@ -78,11 +80,17 @@ modules:
     vars: [POSTGRES_DSN]
     go_flags: "-timeout 30m"
 
+  # user-service: channels is a shared app-db table. channels.is_default comes
+  # from cmd/server/main.go's boot DDL and post-service 041, neither of which
+  # BootstrapSchema runs; 041 (written to run before user-service on a fresh
+  # database) gives the store suite the table the store code writes.
   - module: Architecture/services/user-service
     db: user_it_test
     wave: 1
     needs: [postgres]
     vars: [TEST_PG_DSN]
+    schema:
+      - Architecture/services/post-service/database/migrations/041_channels.sql
 
   - module: identity-platform/services/user-service
     db: idusers_it_test

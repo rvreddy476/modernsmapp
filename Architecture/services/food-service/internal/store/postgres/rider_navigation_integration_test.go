@@ -383,14 +383,16 @@ func TestDeliveryOfferContextNamesTheJobButNotTheCustomer(t *testing.T) {
 		t.Fatalf("stale ping: distance_to_restaurant_meters = %d", *v.DistanceToRestaurantMeters)
 	}
 
+	// A batch is one pickup: CreateBatch refuses members from another
+	// restaurant (d61bd603c), so the second order is at the first's.
 	o1, _, _ := seedOrderWithItem(t, s, "DELIVERY_ASSIGNING")
-	o2, _, _ := seedOrderWithItem(t, s, "DELIVERY_ASSIGNING")
-	rnSetMoney(t, s, seedDeliveryAssignmentWithStatus(t, s, o1, nil, "CREATED"), "29.00", "23.20")
-	rnSetMoney(t, s, seedDeliveryAssignmentWithStatus(t, s, o2, nil, "CREATED"), "1.15", "0.92")
 	var restaurantID uuid.UUID
 	if err := s.db.QueryRow(ctx, `SELECT restaurant_id FROM food.orders WHERE id = $1`, o1).Scan(&restaurantID); err != nil {
 		t.Fatal(err)
 	}
+	o2 := seedOrderInRestaurant(t, s, restaurantID, "DELIVERY_ASSIGNING")
+	rnSetMoney(t, s, seedDeliveryAssignmentWithStatus(t, s, o1, nil, "CREATED"), "29.00", "23.20")
+	rnSetMoney(t, s, seedDeliveryAssignmentWithStatus(t, s, o2, nil, "CREATED"), "1.15", "0.92")
 	batch, err := s.CreateBatch(ctx, restaurantID, []uuid.UUID{o1, o2})
 	if err != nil {
 		t.Fatal(err)

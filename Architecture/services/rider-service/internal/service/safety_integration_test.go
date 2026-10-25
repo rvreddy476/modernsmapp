@@ -211,13 +211,20 @@ func TestService_Admin_ApprovePartner_AdminAction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreatePartner: %v", err)
 	}
+	seedReviewedOnboarding(t, svc, p.ID)
 	if _, err := svc.ApprovePartner(ctx, p.ID, admin); err != nil {
 		t.Fatalf("ApprovePartner: %v", err)
 	}
 	pub.mu.Lock()
 	defer pub.mu.Unlock()
-	if len(pub.partnerStatus) == 0 {
-		t.Error("expected partner status change event")
+	// The status change goes through the transactional outbox since
+	// d61bd603c (13 Oct), not straight to the producer.
+	var statusEvents int
+	if err := svc.Store().DB().QueryRow(ctx, `SELECT count(*) FROM rider.outbox_events WHERE event_type = 'rider.partner.approved' AND payload->>'partner_id' = $1`, p.ID.String()).Scan(&statusEvents); err != nil {
+		t.Fatal(err)
+	}
+	if statusEvents != 1 {
+		t.Errorf("expected one partner status change event, got %d", statusEvents)
 	}
 	if len(pub.adminActions) == 0 {
 		t.Error("expected admin action event")
@@ -285,6 +292,11 @@ func TestService_Admin_VerifyVehicle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateVehicle: %v", err)
 	}
+	// An admin reviews the vehicle against a current RC (d61bd603c).
+	if _, err := svc.Store().DB().Exec(ctx, `INSERT INTO rider_vehicle_documents (vehicle_id, document_type, file_url, status)
+		VALUES ($1, 'vehicle_rc', 'media://it-rc', 'pending')`, v.ID); err != nil {
+		t.Fatalf("seed RC: %v", err)
+	}
 	if err := svc.VerifyVehicle(ctx, v.ID, admin); err != nil {
 		t.Fatalf("VerifyVehicle: %v", err)
 	}
@@ -340,4 +352,27 @@ func helperCreateRideForCustomerService(t *testing.T, s *store.Store, customer u
 		t.Fatalf("create ride: %v", err)
 	}
 	return r.ID
+}
+
+// seedReviewedOnboarding gives the partner what an admin approval needs
+// since the review gate (d61bd603c, 13 Oct): a reviewed driving licence and
+// selfie, each with its media, and an approved vehicle with an approved RC.
+func seedReviewedOnboarding(t *testing.T, svc *Service, partnerID uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	db := svc.Store().DB()
+	if _, err := db.Exec(ctx, `INSERT INTO rider_partner_documents (partner_id, document_type, file_url, status, media_id)
+		VALUES ($1, 'driving_license', 'media://it-dl', 'approved', $2), ($1, 'profile_photo', 'media://it-selfie', 'approved', $3)`,
+		partnerID, uuid.New(), uuid.New()); err != nil {
+		t.Fatalf("seed documents: %v", err)
+	}
+	var vehicleID uuid.UUID
+	if err := db.QueryRow(ctx, `INSERT INTO rider_vehicles (partner_id, vehicle_type, registration_number, status)
+		VALUES ($1, 'bike', $2, 'approved') RETURNING id`, partnerID, "KA01R"+uuid.NewString()[:6]).Scan(&vehicleID); err != nil {
+		t.Fatalf("seed vehicle: %v", err)
+	}
+	if _, err := db.Exec(ctx, `INSERT INTO rider_vehicle_documents (vehicle_id, document_type, file_url, status)
+		VALUES ($1, 'vehicle_rc', 'media://it-rc', 'approved')`, vehicleID); err != nil {
+		t.Fatalf("seed RC: %v", err)
+	}
 }

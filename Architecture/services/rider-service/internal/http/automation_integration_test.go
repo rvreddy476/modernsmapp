@@ -15,6 +15,7 @@ import (
 	"github.com/atpost/rider-service/internal/digilocker"
 	"github.com/atpost/rider-service/internal/service"
 	"github.com/atpost/rider-service/internal/store"
+	"github.com/atpost/shared/ownedmedia"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -82,7 +83,10 @@ func TestLaunchSafetyRoutes(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil {
 		t.Fatal(err)
 	}
-	if env.Data.Status != service.OnboardingIncomplete || len(env.Data.Missing) != 4 || len(env.Data.Pending) != 0 {
+	// Aadhaar left the required set in d61bd603c (13 Oct: Aadhaar uploads
+	// are refused); a fresh partner misses the licence, the selfie and an RC.
+	wantMissing := strings.Join([]string{service.DocDrivingLicence, service.DocSelfie, service.DocVehicleRC}, ",")
+	if env.Data.Status != service.OnboardingIncomplete || strings.Join(env.Data.Missing, ",") != wantMissing || len(env.Data.Pending) != 0 {
 		t.Fatalf("onboarding = %+v", env.Data)
 	}
 	_ = svc
@@ -98,6 +102,9 @@ func TestPostMyDocument_SelfieMediaID(t *testing.T) {
 	svc := service.New(store.New(pool), nil, service.Config{})
 	svc.SetDigiLockerClient(digilocker.NewMockClient())
 	svc.SetFaceComparer(&service.MockFaceComparer{Similarity: 96}, 80)
+	// Every media_id is checked against media-service since d61bd603c; the
+	// stub owns every image, as newIntegrationService's does.
+	svc.WithDocumentMedia(ownedmedia.Func(func(context.Context, uuid.UUID, uuid.UUID) error { return nil }))
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	New(svc, adminTestInternalKey).RegisterRoutes(r)
@@ -118,8 +125,10 @@ func TestPostMyDocument_SelfieMediaID(t *testing.T) {
 	if n := itCount(t, pool, `SELECT COUNT(*) FROM rider_partner_documents WHERE partner_id = $1 AND document_type = 'profile_photo'`, p.ID); n != 0 {
 		t.Fatalf("a selfie row was written without media_id: %d", n)
 	}
-	// A DL upload (not the selfie) needs no media_id: it waits for a human.
-	w = partnerServe(r, http.MethodPost, "/v1/rider/partners/me/documents", `{"document_type":"pan","document_number":"ABCDE1234F","file_url":"media://pan"}`, uid)
+	// An identity document (not the selfie) gets no face check: it waits for
+	// a human. Since d61bd603c it must carry its image's media_id.
+	pan := uuid.New()
+	w = partnerServe(r, http.MethodPost, "/v1/rider/partners/me/documents", `{"document_type":"pan","document_number":"ABCDE1234F","file_url":"media://`+pan.String()+`","media_id":"`+pan.String()+`"}`, uid)
 	if w.Code != http.StatusCreated || !strings.Contains(w.Body.String(), `"status":"pending"`) {
 		t.Fatalf("pan upload: %d %s", w.Code, w.Body.String())
 	}

@@ -200,7 +200,13 @@ func TestOnboardingRoutesAreOwnerOnly(t *testing.T) {
 	}
 
 	decide := "/v1/food/admin/restaurants/" + rid.String() + "/documents/" + uuid.NewString() + "/decide"
-	expectStatus(t, doJSON(r, http.MethodPost, decide, `{"decision":"APPROVED"}`, owner, false), http.StatusForbidden, "decide without admin scope")
+	// Since d61bd603c (13 Oct) the legacy admin family is token-only: no
+	// admin-service token is 401 ADMIN_SERVICE_TOKEN_REQUIRED (admin_token.go).
+	noToken := doJSON(r, http.MethodPost, decide, `{"decision":"APPROVED"}`, owner, false)
+	expectStatus(t, noToken, http.StatusUnauthorized, "decide without an admin-service token")
+	if code := errorCode(t, noToken); code != CodeAdminTokenRequired {
+		t.Fatalf("decide without an admin-service token: code %q, want %s", code, CodeAdminTokenRequired)
+	}
 	expectStatus(t, doJSON(r, http.MethodPost, decide, `{"decision":"APPROVED"}`, owner, true), http.StatusNotFound, "decide an unknown document")
 }
 
