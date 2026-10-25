@@ -2,8 +2,16 @@ package service
 
 // Server-side selfie check: the captain's selfie (profile_photo upload,
 // media_id) is compared with the driving-licence photo DigiLocker returned
-// (photo_media_id) through media-service's internal face-compare route, the
-// same one dating-service uses (copied from its liveness client). The call
+// (photo_media_id) or, without one, the hand-uploaded licence image a person
+// approved (its media_id; pickSelfieReference). The comparer takes
+// media-service ids only (no bytes, no URLs), and the route compares only
+// ready, moderation-passed images owned by requester_user_id. An uploaded
+// licence already passed VerifyOwnedImage (the captain's own processed
+// image) when it was submitted, so it goes by id exactly like the DigiLocker
+// photo; anything media-service refuses (404, 422, the same id twice) leaves
+// the selfie for a person. Both go through media-service's internal
+// face-compare route, the same one dating-service uses (copied from its
+// liveness client). The call
 // carries the internal service key and NO end-user identity headers; the
 // captain is named in the body (requester_user_id).
 //

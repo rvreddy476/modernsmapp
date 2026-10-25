@@ -353,7 +353,7 @@ func TestPartnerApproval_DigiLockerAndSelfieAutomatic(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, _ := svc.Store().GetPartnerDocument(ctx, selfie.ID)
-	if got.Status != "approved" || got.Source != store.DocSourceUpload || got.VerifiedByActor == nil || *got.VerifiedByActor != store.VerifiedByAuto || got.AutoCheckDetail == nil || !contains(*got.AutoCheckDetail, "face_compare") {
+	if got.Status != "approved" || got.Source != store.DocSourceUpload || got.VerifiedByActor == nil || *got.VerifiedByActor != store.VerifiedByAuto || got.AutoCheckDetail == nil || !contains(*got.AutoCheckDetail, "face_compare") || !contains(*got.AutoCheckDetail, "reference "+SelfieRefDigiLockerPhoto) {
 		t.Fatalf("selfie = %+v", got)
 	}
 	pp, _ := svc.GetMyPartner(ctx, uid)
@@ -520,6 +520,125 @@ func TestPartnerApproval_HandUploadedRCGoesToPerson(t *testing.T) {
 	}
 	if pp, _ := svc.GetMyPartner(ctx, uid); pp.Status != "approved" {
 		t.Fatalf("partner after vehicle review = %+v", pp)
+	}
+}
+
+// recordingFaceComparer answers a fixed similarity and records what it was
+// asked to compare.
+type recordingFaceComparer struct {
+	similarity float64
+	calls      []FaceCompareRequest
+}
+
+func (c *recordingFaceComparer) CompareFaces(_ context.Context, req FaceCompareRequest) (*FaceCompareResult, error) {
+	c.calls = append(c.calls, req)
+	return &FaceCompareResult{Similarity: c.similarity, FaceCountSource: 1, FaceCountTarget: 1, Match: c.similarity >= DefaultSelfieMinSimilarity, Provider: "recording"}, nil
+}
+
+// A captain with no DigiLocker uploads the licence by hand. Once a person
+// approves that licence, its image is trusted evidence: the selfie is
+// compared with it and a match verifies the selfie with no person, the
+// reference recorded (founder, 25 Oct: "nothing manual, instant
+// approval"). Mutation guards: a pending or rejected licence used as the
+// reference, an older approved licence used while the latest is not
+// approved, the reference not recorded.
+func TestPartnerApproval_ApprovedUploadedLicenceVerifiesSelfie(t *testing.T) {
+	svc, _, cleanup := newIntegrationService(t)
+	defer cleanup()
+	ctx := context.Background()
+	cmp := &recordingFaceComparer{similarity: 96}
+	svc.SetFaceComparer(cmp, 80)
+	uid, p := newCaptainUser(t, svc, "Upload Licence Captain")
+	admin := uuid.New()
+
+	// An older licence a person approved, then a newer one still pending:
+	// the newer one wins, so there is nothing trusted to compare with.
+	oldImage := uuid.New()
+	oldDL, err := svc.SubmitKYCDocument(ctx, uid, p.ID, SubmitKYCDocumentRequest{DocumentType: DocDrivingLicence, FileURL: "media://" + oldImage.String(), MediaID: &oldImage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.VerifyDocument(ctx, oldDL.ID, admin); err != nil {
+		t.Fatal(err)
+	}
+	newImage := uuid.New()
+	newDL, err := svc.SubmitKYCDocument(ctx, uid, p.ID, SubmitKYCDocumentRequest{DocumentType: DocDrivingLicence, FileURL: "media://" + newImage.String(), MediaID: &newImage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	selfieImage := uuid.New()
+	selfie, err := svc.SubmitKYCDocument(ctx, uid, p.ID, SubmitKYCDocumentRequest{DocumentType: DocSelfie, FileURL: "media://" + selfieImage.String(), MediaID: &selfieImage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := svc.Store().GetPartnerDocument(ctx, selfie.ID)
+	if len(cmp.calls) != 0 || got.Status != "pending" || got.VerifiedByActor != nil || got.AutoCheckDetail == nil || !contains(*got.AutoCheckDetail, "not approved") {
+		t.Fatalf("selfie while the latest licence is pending = %+v, compare calls %+v", got, cmp.calls)
+	}
+
+	// The person rejects the newer licence: still nothing trusted.
+	if _, err := svc.RejectDocument(ctx, newDL.ID, admin, "blurred"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ = svc.Store().GetPartnerDocument(ctx, selfie.ID); len(cmp.calls) != 0 || got.Status != "pending" {
+		t.Fatalf("selfie against a rejected licence = %+v, compare calls %+v", got, cmp.calls)
+	}
+
+	// A fresh licence, approved by a person: the selfie is compared with
+	// that image and verified automatically, the reference recorded.
+	freshImage := uuid.New()
+	freshDL, err := svc.SubmitKYCDocument(ctx, uid, p.ID, SubmitKYCDocumentRequest{DocumentType: DocDrivingLicence, FileURL: "media://" + freshImage.String(), MediaID: &freshImage})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cmp.calls) != 0 {
+		t.Fatalf("compared against a pending licence: %+v", cmp.calls)
+	}
+	if _, err := svc.VerifyDocument(ctx, freshDL.ID, admin); err != nil {
+		t.Fatal(err)
+	}
+	if len(cmp.calls) != 1 || cmp.calls[0].SourceMediaID != selfieImage || cmp.calls[0].TargetMediaID != freshImage || cmp.calls[0].RequesterUserID != uid {
+		t.Fatalf("compare calls = %+v, want the selfie against the approved licence image", cmp.calls)
+	}
+	got, _ = svc.Store().GetPartnerDocument(ctx, selfie.ID)
+	if got.Status != "approved" || got.VerifiedByActor == nil || *got.VerifiedByActor != store.VerifiedByAuto || got.AutoCheckDetail == nil ||
+		!contains(*got.AutoCheckDetail, "face_compare") || !contains(*got.AutoCheckDetail, "reference "+SelfieRefUploadedLicence) {
+		t.Fatalf("selfie after the licence review = %+v", got)
+	}
+	if n := countRows(t, svc, `SELECT COUNT(*) FROM rider_admin_audit_logs WHERE admin_user_id = $1 AND action = 'document.auto_verify' AND entity_id = $2 AND new_value->>'actor' = 'system' AND new_value->>'detail' LIKE '%reference `+SelfieRefUploadedLicence+`%'`, store.SystemActorID, selfie.ID); n != 1 {
+		t.Fatalf("selfie auto_verify audit rows naming the uploaded licence = %d, want 1", n)
+	}
+	// The licence itself stays the person's decision.
+	if d, _ := svc.Store().GetPartnerDocument(ctx, freshDL.ID); d.VerifiedByActor == nil || *d.VerifiedByActor != admin.String() {
+		t.Fatalf("licence = %+v", d)
+	}
+}
+
+// A borderline match against the approved uploaded licence still goes to
+// a person, with the reference named for the reviewer.
+func TestPartnerApproval_BorderlineSelfieAgainstUploadedLicenceGoesToPerson(t *testing.T) {
+	svc, _, cleanup := newIntegrationService(t)
+	defer cleanup()
+	ctx := context.Background()
+	svc.SetFaceComparer(&MockFaceComparer{Similarity: 79}, 80)
+	uid, p := newCaptainUser(t, svc, "Borderline Upload Captain")
+	licence := uuid.New()
+	dl, err := svc.SubmitKYCDocument(ctx, uid, p.ID, SubmitKYCDocumentRequest{DocumentType: DocDrivingLicence, FileURL: "media://" + licence.String(), MediaID: &licence})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.VerifyDocument(ctx, dl.ID, uuid.New()); err != nil {
+		t.Fatal(err)
+	}
+	media := uuid.New()
+	selfie, err := svc.SubmitKYCDocument(ctx, uid, p.ID, SubmitKYCDocumentRequest{DocumentType: DocSelfie, FileURL: "media://" + media.String(), MediaID: &media})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, _ := svc.Store().GetPartnerDocument(ctx, selfie.ID)
+	if got.Status != "pending" || got.VerifiedByActor != nil || got.AutoCheckDetail == nil ||
+		!contains(*got.AutoCheckDetail, "below threshold") || !contains(*got.AutoCheckDetail, "reference "+SelfieRefUploadedLicence) {
+		t.Fatalf("borderline selfie = %+v", got)
 	}
 }
 

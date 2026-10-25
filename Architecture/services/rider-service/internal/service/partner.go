@@ -134,7 +134,10 @@ type SubmitKYCDocumentRequest struct {
 	ExpiresAt      *time.Time
 	// MediaID is the media-service id of the uploaded file. For the selfie
 	// (profile_photo) it is what the server-side face check compares with
-	// the DigiLocker licence photo; without it the selfie waits for a human.
+	// the DigiLocker licence photo (or the approved hand-uploaded licence
+	// image); without it the selfie waits for a human. For a hand-uploaded
+	// driving licence it is the image that check reads once a person
+	// approved the licence.
 	MediaID *uuid.UUID
 }
 

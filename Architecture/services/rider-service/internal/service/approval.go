@@ -9,10 +9,13 @@ package service
 //     (the store recorded it approved, verified_by_actor auto, audit row
 //     actor system / reason digilocker);
 //   - the selfie (the latest profile_photo, an upload with a media_id) is
-//     compared server-side with the DigiLocker licence photo through
-//     media-service; a match (selfieMatches: at or above the threshold, one
-//     face on each side) verifies it automatically; a borderline or failed
-//     match, or no verdict at all, leaves it pending for a person;
+//     compared server-side through media-service with the latest approved
+//     driving licence's DigiLocker photo or, when that licence has none, its
+//     hand-uploaded image once a person approved it (pickSelfieReference;
+//     the reference used is recorded); a match (selfieMatches: at or above
+//     the threshold, one face on each side) verifies it automatically; a
+//     borderline or failed match, or no verdict at all, leaves it pending
+//     for a person;
 //   - a vehicle's RC is pulled from DigiLocker under the partner's
 //     assertion; a vehicle whose latest RC came from DigiLocker is approved
 //     automatically (autoApprovableVehicles); a hand-uploaded RC waits for
@@ -30,6 +33,7 @@ package service
 // verified automatically: they keep the admin review path.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -249,10 +253,84 @@ func selfieThreshold(min float64) float64 {
 	return min
 }
 
+// Where the reference face for the selfie check came from; recorded in the
+// document's auto_check_detail and the document.auto_verify audit row.
+const (
+	// SelfieRefDigiLockerPhoto: the photo DigiLocker returned with the
+	// licence (photo_media_id).
+	SelfieRefDigiLockerPhoto = "digilocker_licence_photo"
+	// SelfieRefUploadedLicence: the hand-uploaded licence image (media_id),
+	// once a person approved that licence.
+	SelfieRefUploadedLicence = "uploaded_licence_image"
+)
+
+// selfieReference is the face the selfie is compared with.
+type selfieReference struct {
+	MediaID uuid.UUID
+	Source  string // SelfieRefDigiLockerPhoto | SelfieRefUploadedLicence
+}
+
+// latestDocumentOfType is the partner's latest document of the type (newest
+// created_at, then the highest id, the order GetPartnerDocumentByType and
+// the review gate use), or nil. Latest wins (d61bd603c): an older licence
+// is never evidence once a newer one exists, whatever its status.
+func latestDocumentOfType(docs []store.PartnerDocument, docType string) *store.PartnerDocument {
+	var latest *store.PartnerDocument
+	for i := range docs {
+		d := &docs[i]
+		if d.DocumentType != docType {
+			continue
+		}
+		if latest == nil || d.CreatedAt.After(latest.CreatedAt) ||
+			(d.CreatedAt.Equal(latest.CreatedAt) && bytes.Compare(d.ID[:], latest.ID[:]) > 0) {
+			latest = d
+		}
+	}
+	return latest
+}
+
+// pickSelfieReference chooses what the selfie (selfieMediaID) is compared
+// with, from the partner's documents. Only the latest driving licence
+// counts, and only when it is approved:
+//
+//   - its DigiLocker photo (photo_media_id) when there is one;
+//   - otherwise, a hand-uploaded licence a person approved (source upload,
+//     verified_by_actor an admin, not auto) is trusted evidence: its own
+//     image (media_id) is the reference;
+//   - anything else (no licence, pending, rejected, expired status, no
+//     image, the selfie's own image) has no reference: the selfie goes to
+//     a person. The string says why.
+func pickSelfieReference(docs []store.PartnerDocument, selfieMediaID uuid.UUID) (*selfieReference, string) {
+	dl := latestDocumentOfType(docs, DocDrivingLicence)
+	if dl == nil {
+		return nil, "no driving licence yet: manual review"
+	}
+	if dl.Status != "approved" {
+		return nil, "latest driving licence is not approved yet: manual review"
+	}
+	ref := &selfieReference{}
+	switch {
+	case dl.PhotoMediaID != nil && *dl.PhotoMediaID != uuid.Nil:
+		ref.MediaID, ref.Source = *dl.PhotoMediaID, SelfieRefDigiLockerPhoto
+	case dl.Source == store.DocSourceUpload && dl.MediaID != nil && *dl.MediaID != uuid.Nil &&
+		dl.VerifiedByActor != nil && *dl.VerifiedByActor != "" && *dl.VerifiedByActor != store.VerifiedByAuto:
+		// Fallback, only when the licence has no DigiLocker photo.
+		ref.MediaID, ref.Source = *dl.MediaID, SelfieRefUploadedLicence
+	default:
+		return nil, "no verified driving licence photo yet: manual review"
+	}
+	if ref.MediaID == selfieMediaID {
+		return nil, "selfie is the licence image itself: manual review"
+	}
+	return ref, ""
+}
+
 // autoVerifySelfie compares the latest selfie, when it is a pending upload
-// with a media_id, with the latest driving licence's DigiLocker photo
-// (photo_media_id). Verified only when selfieMatches; every other outcome
-// leaves it pending with the reason recorded for the reviewer.
+// with a media_id, with the reference pickSelfieReference chooses: the
+// latest approved driving licence's DigiLocker photo, or, without one, that
+// licence's hand-uploaded image once a person approved it. Verified only
+// when selfieMatches; every other outcome leaves it pending with the reason
+// (and the reference used) recorded for the reviewer.
 func (s *Service) autoVerifySelfie(ctx context.Context, partner *store.Partner) {
 	selfie, err := s.store.GetPartnerDocumentByType(ctx, partner.ID, DocSelfie)
 	if err != nil || selfie.Status != "pending" || selfie.Source != store.DocSourceUpload {
@@ -262,16 +340,21 @@ func (s *Service) autoVerifySelfie(ctx context.Context, partner *store.Partner) 
 		_ = s.store.SetDocumentAutoCheckDetail(ctx, selfie.ID, "no media_id: manual review")
 		return
 	}
-	dl, err := s.store.GetPartnerDocumentByType(ctx, partner.ID, DocDrivingLicence)
-	if err != nil || dl.Status != "approved" || dl.PhotoMediaID == nil {
-		_ = s.store.SetDocumentAutoCheckDetail(ctx, selfie.ID, "no verified driving licence photo yet: manual review")
+	docs, err := s.store.ListPartnerDocuments(ctx, partner.ID)
+	if err != nil {
+		slog.Warn("rider: read documents for the selfie check failed", "partner_id", partner.ID, "error", err)
+		return
+	}
+	ref, why := pickSelfieReference(docs, *selfie.MediaID)
+	if ref == nil {
+		_ = s.store.SetDocumentAutoCheckDetail(ctx, selfie.ID, why)
 		return
 	}
 	if s.faceCompare == nil {
 		_ = s.store.SetDocumentAutoCheckDetail(ctx, selfie.ID, "face compare not configured: manual review")
 		return
 	}
-	res, err := s.faceCompare.CompareFaces(ctx, FaceCompareRequest{SourceMediaID: *selfie.MediaID, TargetMediaID: *dl.PhotoMediaID, RequesterUserID: partner.UserID})
+	res, err := s.faceCompare.CompareFaces(ctx, FaceCompareRequest{SourceMediaID: *selfie.MediaID, TargetMediaID: ref.MediaID, RequesterUserID: partner.UserID})
 	if err != nil {
 		detail := "face compare unavailable: manual review"
 		switch {
@@ -280,12 +363,12 @@ func (s *Service) autoVerifySelfie(ctx context.Context, partner *store.Partner) 
 		case errors.Is(err, ErrFaceImageUnsupported):
 			detail = "selfie cannot be compared: manual review"
 		}
-		slog.Warn("rider: selfie face compare gave no verdict", "partner_id", partner.ID, "document_id", selfie.ID, "error", err)
-		_ = s.store.SetDocumentAutoCheckDetail(ctx, selfie.ID, detail)
+		slog.Warn("rider: selfie face compare gave no verdict", "partner_id", partner.ID, "document_id", selfie.ID, "reference", ref.Source, "error", err)
+		_ = s.store.SetDocumentAutoCheckDetail(ctx, selfie.ID, detail+" (reference "+ref.Source+")")
 		return
 	}
 	min := selfieThreshold(s.selfieMinSimilarity)
-	detail := fmt.Sprintf("face_compare similarity %.1f threshold %.0f faces %d/%d provider %s", res.Similarity, min, res.FaceCountSource, res.FaceCountTarget, res.Provider)
+	detail := fmt.Sprintf("face_compare reference %s similarity %.1f threshold %.0f faces %d/%d provider %s", ref.Source, res.Similarity, min, res.FaceCountSource, res.FaceCountTarget, res.Provider)
 	if !selfieMatches(res, min) {
 		_ = s.store.SetDocumentAutoCheckDetail(ctx, selfie.ID, "below threshold: manual review ("+detail+")")
 		return
