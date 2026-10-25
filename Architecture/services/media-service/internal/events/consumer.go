@@ -15,8 +15,10 @@ import (
 // Consumer subscribes to the identity event bus and reacts to account
 // lifecycle events:
 //
-//   - user.deletion_requested (legacy DPDP soft-delete): marks the user's
-//     assets deleted; log-and-continue as before.
+//   - user.deletion_requested (legacy, no longer emitted): ignored. Its old
+//     handler set processing_status='deleted', which the status CHECK
+//     refuses, and would otherwise have erased media at request time with
+//     no recovery window. Erasure is user.purge_requested's job.
 //   - user.purge_requested and the deactivate/reactivate family
 //     (internal/purge): erased in one transaction, acked as "media", retried
 //     in place until durable — the offset never advances past an unacked
@@ -92,14 +94,11 @@ func (c *Consumer) handle(ctx context.Context, m kafka.Message) bool {
 	}
 	switch envelope.EventType {
 	case events.EventUserDeletionRequested:
-		var p events.UserDeletionRequestedPayload
-		if err := json.Unmarshal(envelope.Payload, &p); err != nil {
-			slog.Warn("media consumer: bad user.deletion_requested payload", "error", err)
-			return true
-		}
-		if err := c.store.SoftDeleteMediaByUploader(ctx, p.UserID); err != nil {
-			slog.Error("media: failed to soft-delete media for deleted user", "user_id", p.UserID, "error", err)
-		}
+		// auth-service emits user.deletion_scheduled at request time and
+		// user.purge_requested after the 30-day window (shared/events); this
+		// legacy event would bypass both. A stray or replayed one is dropped.
+		slog.Warn("media consumer: legacy user.deletion_requested ignored; media is erased on user.purge_requested",
+			"offset", m.Offset)
 	default:
 		if c.lifecycle != nil && purge.Handles(envelope.EventType) {
 			return c.lifecycle.HandleUntilDurable(ctx, envelope.EventType, envelope.Payload)

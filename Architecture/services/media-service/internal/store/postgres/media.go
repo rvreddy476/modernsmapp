@@ -536,17 +536,6 @@ func (s *MediaAssetStore) ListOrphanedPendingUploads(ctx context.Context, olderT
 	return out, rows.Err()
 }
 
-// SoftDeleteMediaByUploader marks all media assets belonging to the given uploader
-// as deleted (GDPR right-to-erasure). The actual blob objects are not removed here;
-// a separate background job should purge them using the stored object keys.
-func (s *MediaAssetStore) SoftDeleteMediaByUploader(ctx context.Context, uploaderID string) error {
-	_, err := s.db.Exec(ctx,
-		`UPDATE media_assets SET processing_status = 'deleted', updated_at = NOW()
-		 WHERE uploader_id = $1::uuid`,
-		uploaderID)
-	return err
-}
-
 // ─── URL Population ────────────────────────────────────────────────
 
 // UpdateMediaURLs sets the original_url, cdn_url, and thumbnail_url for a media asset.
