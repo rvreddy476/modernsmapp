@@ -25,12 +25,9 @@ import (
 // countsForPost is the per-post read: Scylla likes + PostgreSQL comments,
 // shares and saves.
 func (s *Service) countsForPost(ctx context.Context, postID uuid.UUID) (*scylla.Counts, error) {
-	counts, err := s.scyllaStore.GetCounts(ctx, postID)
+	counts, err := s.likeCountsForPost(ctx, postID)
 	if err != nil {
 		return nil, err
-	}
-	if counts == nil {
-		counts = &scylla.Counts{}
 	}
 	rows, err := s.pgStore.GetEngagementCountRows(ctx, []uuid.UUID{postID})
 	if err != nil {
@@ -38,6 +35,35 @@ func (s *Service) countsForPost(ctx context.Context, postID uuid.UUID) (*scylla.
 	}
 	applyEngagementRow(counts, rows[postID])
 	return counts, nil
+}
+
+// likeCountsForPost is countsForPost's Scylla half, never nil on success.
+// A Service built without a counter store (service.New(pg, nil, …): the
+// integration rigs that run without Scylla, M7_SCYLLA_HOSTS unset) reads
+// zero likes, as countsForSoundPosts does, instead of dereferencing a nil
+// store; cmd/server always wires one.
+func (s *Service) likeCountsForPost(ctx context.Context, postID uuid.UUID) (*scylla.Counts, error) {
+	if s.scyllaStore == nil {
+		return &scylla.Counts{}, nil
+	}
+	counts, err := s.scyllaStore.GetCounts(ctx, postID)
+	if err != nil {
+		return nil, err
+	}
+	if counts == nil {
+		counts = &scylla.Counts{}
+	}
+	return counts, nil
+}
+
+// viewerStoredReaction is the viewer's stored reaction on a post ("" for
+// none). Without a counter store there is nothing stored to read; see
+// likeCountsForPost.
+func (s *Service) viewerStoredReaction(ctx context.Context, postID, viewerID uuid.UUID) (string, error) {
+	if s.scyllaStore == nil {
+		return "", nil
+	}
+	return s.scyllaStore.GetReaction(ctx, postID, viewerID)
 }
 
 // overlayCommentCounts replaces the comment figure in a Scylla batch with the

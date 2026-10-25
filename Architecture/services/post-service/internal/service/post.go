@@ -1883,7 +1883,7 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 
 	// Enrich with viewer-specific state
 	if viewerID != nil {
-		stored, err := s.scyllaStore.GetReaction(ctx, id, *viewerID)
+		stored, err := s.viewerStoredReaction(ctx, id, *viewerID)
 		if err != nil {
 			return nil, fmt.Errorf("load viewer reaction: %w", err)
 		}

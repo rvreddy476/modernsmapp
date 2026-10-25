@@ -185,17 +185,48 @@ func TestPicksPutVerifiedFirst(t *testing.T) {
 }
 
 // Guard: the day follows the viewer's zone. Two zones a day apart are two
-// different days, each with its own selection.
+// different days, each with its own selection, and each ends at its own
+// next local midnight.
+//
+// The two zones are 25 hours apart, so their midnights fall at 10:00 UTC
+// (east) and 11:00 UTC (west) every day: between those two instants the
+// eastern day ends AFTER the western one. An "east resets first" check
+// therefore failed one hour a day (CI run 40182877603, 10:06 UTC); the
+// ordering that always holds is the date itself.
 func TestPicksFollowTheLocalDay(t *testing.T) {
 	d := newM1Deck(t, m7Config(true))
 	d.candidate()
+	before := time.Now()
 	east := d.picks("Pacific/Kiritimati") // UTC+14
 	west := d.picks("Pacific/Pago_Pago")  // UTC-11
+	after := time.Now()
 	if east.Meta.Date == west.Meta.Date {
 		t.Fatalf("UTC+14 and UTC-11 share the date %s", east.Meta.Date)
 	}
-	if !east.Meta.ResetsAt.Before(west.Meta.ResetsAt) {
-		t.Fatalf("the eastern day ends at %s, after the western %s", east.Meta.ResetsAt, west.Meta.ResetsAt)
+	if east.Meta.Date < west.Meta.Date {
+		t.Fatalf("the eastern date %s is before the western %s", east.Meta.Date, west.Meta.Date)
+	}
+	for _, c := range []struct {
+		zone string
+		got  m7Picks
+	}{{"Pacific/Kiritimati", east}, {"Pacific/Pago_Pago", west}} {
+		loc, err := time.LoadLocation(c.zone)
+		if err != nil {
+			t.Fatal(err)
+		}
+		// The read sits between before and after; a local midnight in that
+		// gap may legitimately land on either day.
+		ok := false
+		for _, at := range []time.Time{before.In(loc), after.In(loc)} {
+			date := at.Format("2006-01-02")
+			reset := time.Date(at.Year(), at.Month(), at.Day()+1, 0, 0, 0, 0, loc)
+			if c.got.Meta.Date == date && c.got.Meta.ResetsAt.Equal(reset) {
+				ok = true
+			}
+		}
+		if !ok {
+			t.Fatalf("%s: date %s resets_at %s, want today's date there and its next local midnight", c.zone, c.got.Meta.Date, c.got.Meta.ResetsAt)
+		}
 	}
 	// No zone at all is Asia/Kolkata.
 	if def := d.picks(""); def.Meta.Timezone != service.DefaultPicksTimezone {
