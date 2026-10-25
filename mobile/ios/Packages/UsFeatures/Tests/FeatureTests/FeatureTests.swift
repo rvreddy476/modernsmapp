@@ -92,10 +92,10 @@ final class MockMediaUploader: MediaUploaderProtocol, @unchecked Sendable {
         altText: String,
         decorative: Bool,
         uploadPurpose: String,
-        onProgress: @escaping (Double) -> Void
+        progressHandler: (@Sendable (Double) -> Void)?
     ) async throws -> String {
         uploadCallCount += 1
-        onProgress(1.0)
+        progressHandler?(1.0)
         return returnMediaId
     }
 }
