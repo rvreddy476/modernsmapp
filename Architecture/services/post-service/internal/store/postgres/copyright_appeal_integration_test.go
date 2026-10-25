@@ -184,7 +184,7 @@ func TestAppealIT_TrackRemoval(t *testing.T) {
 		t.Fatalf("remove: %+v %v", rm, err)
 	}
 	var raw []byte
-	if err := it.pool.QueryRow(it.ctx, `SELECT payload FROM post_outbox_events WHERE aggregate_id=$1 AND event_type=$2 ORDER BY id DESC LIMIT 1`,
+	if err := it.pool.QueryRow(it.ctx, `SELECT payload FROM post_outbox_events WHERE aggregate_id=$1 AND event_type=$2 ORDER BY created_at DESC, ctid DESC LIMIT 1`,
 		post, events.PostSearchEligibilityChanged).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}

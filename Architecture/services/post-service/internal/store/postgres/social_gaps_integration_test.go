@@ -68,6 +68,11 @@ func openSocialGapsDB(t *testing.T) *pgxpool.Pool {
 func socialPost(t *testing.T, pool *pgxpool.Pool, author uuid.UUID, visibility string, tags []string, created time.Time) uuid.UUID {
 	t.Helper()
 	id := uuid.New()
+	// posts.hashtags is NOT NULL DEFAULT '{}' (setup.sql): a nil slice is
+	// sent as NULL, so "no tags" is the empty array.
+	if tags == nil {
+		tags = []string{}
+	}
 	if _, err := pool.Exec(context.Background(), `
 		INSERT INTO posts (id, author_id, text, visibility, content_type, review_status, hashtags, created_at, updated_at)
 		VALUES ($1, $2, 'post', $3, 'post', 'approved', $4, $5, $5)`, id, author, visibility, tags, created); err != nil {

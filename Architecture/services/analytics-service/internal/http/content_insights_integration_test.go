@@ -48,12 +48,19 @@ func TestContentInsightsFromTheRealTables(t *testing.T) {
 	}
 	// Two settled days, one hourly row inside a settled day (ignored), one
 	// hourly row today (counted).
+	//
+	// The settled-day hourly row sits in the oldest bucket of the 48-hour
+	// realtime strip (current hour - 47h). That hour is always before today
+	// (a settled day, so views_by_day ignores it) and always inside the
+	// strip, at any time of day. A fixed 10:00 two days ago left the strip
+	// once the clock passed 10:00 UTC, so the test failed every afternoon.
+	settledHour := now.Truncate(time.Hour).Add(-47 * time.Hour)
 	exec(`INSERT INTO analytics.content_daily_summary (content_id, day_bucket, creator_id, content_type, views_display, watch_time_total_ms, unique_viewers)
 	      VALUES ($1, $2, $3, 'long_video', 10, 100000, 8)`, content, today.AddDate(0, 0, -3), owner)
 	exec(`INSERT INTO analytics.content_daily_summary (content_id, day_bucket, creator_id, content_type, views_display, watch_time_total_ms, unique_viewers)
 	      VALUES ($1, $2, $3, 'long_video', 5, 50000, 4)`, content, today.AddDate(0, 0, -2), owner)
 	exec(`INSERT INTO analytics.content_hourly_agg (content_id, hour_bucket, creator_id, content_type, views_display, watch_time_total_ms)
-	      VALUES ($1, $2, $3, 'long_video', 7, 70000)`, content, today.AddDate(0, 0, -2).Add(10*time.Hour), owner)
+	      VALUES ($1, $2, $3, 'long_video', 7, 70000)`, content, settledHour, owner)
 	exec(`INSERT INTO analytics.content_hourly_agg (content_id, hour_bucket, creator_id, content_type, views_display, watch_time_total_ms, unique_viewers)
 	      VALUES ($1, $2, $3, 'long_video', 3, 30000, 3)`, content, now.Truncate(time.Hour), owner)
 
@@ -203,7 +210,7 @@ func TestContentInsightsFromTheRealTables(t *testing.T) {
 	if len(creator.TopContent) != 1 || creator.TopContent[0].ContentID != content.String() || creator.TopContent[0].Views != 18 {
 		t.Fatalf("top_content = %+v", creator.TopContent)
 	}
-	if len(creator.Realtime.Series) != 48 || creator.Realtime.Views48h != 10 || creator.Realtime.Series[47] != 3 {
-		t.Fatalf("realtime = %+v, want 48 buckets, 10 views (7 two days ago falls inside 48h + 3 now), 3 in the current hour", creator.Realtime)
+	if len(creator.Realtime.Series) != 48 || creator.Realtime.Views48h != 10 || creator.Realtime.Series[0] != 7 || creator.Realtime.Series[47] != 3 {
+		t.Fatalf("realtime = %+v, want 48 buckets, 10 views (7 in the oldest hour + 3 now), 3 in the current hour", creator.Realtime)
 	}
 }

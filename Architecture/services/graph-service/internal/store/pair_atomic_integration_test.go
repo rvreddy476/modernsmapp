@@ -238,11 +238,11 @@ func TestPairAtomic_BlockSweepsEverySeededRelationshipTable(t *testing.T) {
 		sql  string
 		args []any
 	}{
-		{"follow a→b", `INSERT INTO follows (follower_id, followee_id) VALUES ($1,$2)`, []any{alice, bob}},
-		{"follow b→a", `INSERT INTO follows (follower_id, followee_id) VALUES ($1,$2)`, []any{bob, alice}},
-		{"connection", `INSERT INTO connections (user_a, user_b) VALUES ($1,$2)`, normalizePairArgs(alice, bob)},
-		{"request a→b", `INSERT INTO connection_requests (sender_id, receiver_id, status) VALUES ($1,$2,'pending')`, []any{alice, bob}},
-		{"request b→a", `INSERT INTO connection_requests (sender_id, receiver_id, status) VALUES ($1,$2,'pending')`, []any{bob, alice}},
+		{"follow a→b", `INSERT INTO follows (follower_id, followee_id, created_at) VALUES ($1,$2,NOW())`, []any{alice, bob}},
+		{"follow b→a", `INSERT INTO follows (follower_id, followee_id, created_at) VALUES ($1,$2,NOW())`, []any{bob, alice}},
+		{"connection", `INSERT INTO connections (user_a, user_b, created_at) VALUES ($1,$2,NOW())`, normalizePairArgs(alice, bob)},
+		{"request a→b", `INSERT INTO connection_requests (sender_id, receiver_id, status, created_at, updated_at) VALUES ($1,$2,'pending',NOW(),NOW())`, []any{alice, bob}},
+		{"request b→a", `INSERT INTO connection_requests (sender_id, receiver_id, status, created_at, updated_at) VALUES ($1,$2,'pending',NOW(),NOW())`, []any{bob, alice}},
 		{"follow request a→b", `INSERT INTO follow_requests (requester_id, target_id, status) VALUES ($1,$2,'pending')`, []any{alice, bob}},
 		{"follow request b→a", `INSERT INTO follow_requests (requester_id, target_id, status) VALUES ($1,$2,'pending')`, []any{bob, alice}},
 	}

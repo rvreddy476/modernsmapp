@@ -134,7 +134,12 @@ func TestCredits_MigrationConstraints(t *testing.T) {
 			t.Errorf("%s accepted", label)
 		}
 	}
-	// Deleting the post takes its credits.
+	// Deleting the post takes its credits. setup.sql's insert trigger gave the
+	// post a post_engagement_counts row, whose FK has no ON DELETE (the purge
+	// path deletes it first), so it goes before the post, as in PurgePost.
+	if _, err := pool.Exec(ctx, `DELETE FROM post_engagement_counts WHERE post_id = $1`, p.ID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := pool.Exec(ctx, `DELETE FROM posts WHERE id = $1`, p.ID); err != nil {
 		t.Fatal(err)
 	}

@@ -42,29 +42,20 @@ func openM7PostDB(t *testing.T) *pgxpool.Pool {
 		pool.Close()
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(context.Background(), database.SetupSQL); err != nil {
-		pool.Close()
-		t.Fatalf("apply real setup.sql: %v", err)
-	}
-	if _, err := pool.Exec(context.Background(), `
-		CREATE TABLE IF NOT EXISTS post_outbox_events (
-			id UUID PRIMARY KEY DEFAULT gen_random_uuid(), event_type TEXT NOT NULL,
-			aggregate_type TEXT NOT NULL, aggregate_id UUID NOT NULL, payload JSONB NOT NULL,
-			published BOOLEAN NOT NULL DEFAULT FALSE, published_at TIMESTAMPTZ,
-			created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-		)
-	`); err != nil {
+	if _, err := pool.Exec(context.Background(), `ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS duration_ms INT`); err != nil {
 		pool.Close()
 		t.Fatal(err)
 	}
-	migration, err := database.Migrations.ReadFile("migrations/033_post_moderation_authority.sql")
-	if err != nil {
+	// The schema the server boots with: setup.sql plus the whole embedded
+	// migration chain (033's moderation authority, 007's outbox, and the
+	// later posts columns such as publish_at that the moderation path
+	// reads). setup.sql + 033 alone went stale once the store read columns
+	// added after 033. The chain also needs the other services' parent
+	// tables (users, user_preferences, channels): CI creates them from
+	// scripts/ci/sql/post-service-stubs.sql before this suite runs.
+	if err := store.BootstrapSchema(context.Background(), pool, database.SetupSQL, database.Migrations); err != nil {
 		pool.Close()
-		t.Fatal(err)
-	}
-	if _, err := pool.Exec(context.Background(), string(migration)); err != nil {
-		pool.Close()
-		t.Fatalf("apply real migration 033: %v", err)
+		t.Fatalf("bootstrap real schema (setup.sql + migrations): %v", err)
 	}
 	t.Cleanup(pool.Close)
 	return pool

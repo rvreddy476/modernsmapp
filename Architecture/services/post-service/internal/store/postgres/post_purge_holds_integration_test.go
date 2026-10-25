@@ -31,7 +31,13 @@ type purgeIT struct {
 
 func newPurgeIT(t *testing.T) *purgeIT {
 	at := time.Date(1990, 1, 1, 0, 0, 0, 0, time.UTC).Add(time.Duration(time.Now().UnixNano()%1e9) * time.Microsecond)
-	return &purgeIT{restrictionIT: newRestrictionIT(t), deletedAt: at}
+	it := newRestrictionIT(t)
+	// PurgePost also deletes from tables that only cmd/server/main.go's
+	// ensureSchema creates (reel_crosspost: migration 009 renamed the
+	// migrated one away), which the migration chain alone does not have.
+	// purge_test.go's helper creates them with the shape PurgePost uses.
+	purgeTestExtraSchema(t, it.pool)
+	return &purgeIT{restrictionIT: it, deletedAt: at}
 }
 
 func (p *purgeIT) deletedPost() uuid.UUID {

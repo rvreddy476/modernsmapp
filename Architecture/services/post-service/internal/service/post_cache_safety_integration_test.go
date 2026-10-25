@@ -28,8 +28,21 @@ func TestStaleApprovedCacheCannotBypassCanonicalModeration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer pool.Close()
-	if _, err := pool.Exec(ctx, database.SetupSQL); err != nil {
-		t.Fatalf("apply real setup.sql: %v", err)
+	// The schema the server boots with (setup.sql + the migration chain):
+	// the read path selects columns that only migrations add. CI creates the
+	// cross-service parent tables from scripts/ci/sql/post-service-stubs.sql.
+	if _, err := pool.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS media_assets (
+			id UUID PRIMARY KEY, uploader_id UUID NOT NULL, file_type TEXT NOT NULL, processing_status TEXT NOT NULL,
+			moderation_status TEXT NOT NULL DEFAULT 'pending', duration_seconds INTEGER, created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+		)`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS duration_ms INT`); err != nil {
+		t.Fatal(err)
+	}
+	if err := postgres.BootstrapSchema(ctx, pool, database.SetupSQL, database.Migrations); err != nil {
+		t.Fatalf("bootstrap real schema (setup.sql + migrations): %v", err)
 	}
 	rdb := redis.NewClient(&redis.Options{Addr: redisAddr})
 	defer rdb.Close()

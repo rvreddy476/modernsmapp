@@ -165,6 +165,13 @@ func TestPurgeUserIsIdempotentAndDecrementsSurvivorCounters(t *testing.T) {
 
 	insertPost(t, pool, postA1, userA)
 	insertPost(t, pool, postB1, userB)
+	// On the full migration chain video_series.creator_id and
+	// watch_progress.user_id reference users(id) (migration 012), so both
+	// users exist as parents. In CI users is the id-only stub from
+	// scripts/ci/sql/post-service-stubs.sql.
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id) VALUES ($1), ($2) ON CONFLICT DO NOTHING`, userA, userB); err != nil {
+		t.Fatalf("seed users: %v", err)
+	}
 
 	// userA's own post carries dependent rows with no CASCADE from posts:
 	// post_media, a poll (+option +vote), reel/product metadata, a report
@@ -214,7 +221,7 @@ func TestPurgeUserIsIdempotentAndDecrementsSurvivorCounters(t *testing.T) {
 	// Another creator's video_series has a dangling trailer reference into
 	// userA's post — must be nulled, not left to fail the transaction.
 	seriesID := uuid.New()
-	if _, err := pool.Exec(ctx, `INSERT INTO video_series (id, creator_id, trailer_post_id) VALUES ($1,$2,$3)`, seriesID, userB, postA1); err != nil {
+	if _, err := pool.Exec(ctx, `INSERT INTO video_series (id, creator_id, trailer_post_id, title) VALUES ($1,$2,$3,'purge proof series')`, seriesID, userB, postA1); err != nil {
 		t.Fatal(err)
 	}
 

@@ -214,6 +214,39 @@ func decodeData(t *testing.T, w *httptest.ResponseRecorder, into any) {
 	}
 }
 
+// asDraft steps a seeded listing back to an unreviewed draft. Since 21 Oct
+// (7e2289e64) a gallery change on an APPROVED listing is reviewed content:
+// without `revalidate` it is refused 409 REVALIDATION_REQUIRED, and with it
+// the listing leaves sale (listingfixes_integration_test.go proves that
+// gate). A real listing gets its first gallery while it is a draft, before
+// review; these tests are about the gallery, so they set it in that state.
+func asDraft(t *testing.T, productID uuid.UUID) {
+	t.Helper()
+	if _, err := edgePool.Exec(context.Background(),
+		`UPDATE products SET status='draft', approval_status='draft' WHERE id=$1`, productID); err != nil {
+		t.Fatalf("draft: %v", err)
+	}
+}
+
+// attachGalleryThenApprove sets a gallery through the real route the way a
+// listing gets one (as a draft), then restores the approved, on-sale state
+// the seed gave it, as a reviewer would. The tests that read the gallery on
+// a LIVE product (browse grid, home page, media access) start from here.
+func attachGalleryThenApprove(t *testing.T, r *gin.Engine, seller, productID uuid.UUID, mediaIDs []string) {
+	t.Helper()
+	asDraft(t, productID)
+	decodeData(t, call(t, r, http.MethodPost,
+		"/v1/commerce/products/"+productID.String()+"/media", seller,
+		map[string]any{"media_ids": mediaIDs}),
+		&struct {
+			Items []galleryItem `json:"items"`
+		}{})
+	if _, err := edgePool.Exec(context.Background(),
+		`UPDATE products SET status='active', approval_status='approved' WHERE id=$1`, productID); err != nil {
+		t.Fatalf("approve: %v", err)
+	}
+}
+
 type galleryItem struct {
 	MediaID      uuid.UUID `json:"media_id"`
 	SortOrder    int       `json:"sort_order"`
@@ -270,9 +303,12 @@ func TestASellerCannotAttachAnAssetSomebodyElseUploaded(t *testing.T) {
 	victim := uuid.New()
 	r, _ := storefrontEngine(t, victim) // every asset belongs to the victim
 
+	// The listing is approved, so the edit carries the revalidation
+	// acknowledgement (otherwise it stops at 409 REVALIDATION_REQUIRED
+	// before media ownership is asked); the asset check must still refuse.
 	w := call(t, r, http.MethodPost,
 		"/v1/commerce/products/"+f.discounted.String()+"/media", f.sellerUserID,
-		map[string]any{"media_ids": []string{uuid.NewString()}})
+		map[string]any{"media_ids": []string{uuid.NewString()}, "revalidate": true})
 
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("status %d, want 403 — a seller attached a competitor's product "+
@@ -311,6 +347,7 @@ func TestTheGalleryKeepsItsOrderAndItsCover(t *testing.T) {
 	f := seedStorefront(t)
 	r, _ := storefrontEngine(t, f.sellerUserID)
 	ctx := context.Background()
+	asDraft(t, f.discounted) // set, reorder and delete without the review gate
 
 	ids := []string{uuid.NewString(), uuid.NewString(), uuid.NewString()}
 	var set struct {
@@ -405,12 +442,8 @@ func TestTheBrowseGridCarriesImagesAndDiscountsInOneMediaCall(t *testing.T) {
 	// Attach a gallery, and NOTHING else — in particular, do not set
 	// primary_image_media_id by hand. This is the case that used to render as
 	// a grey box: the gallery editor never writes that column.
-	decodeData(t, call(t, r, http.MethodPost,
-		"/v1/commerce/products/"+f.discounted.String()+"/media", f.sellerUserID,
-		map[string]any{"media_ids": []string{uuid.NewString(), uuid.NewString()}}),
-		&struct {
-			Items []galleryItem `json:"items"`
-		}{})
+	attachGalleryThenApprove(t, r, f.sellerUserID, f.discounted,
+		[]string{uuid.NewString(), uuid.NewString()})
 
 	// The full-price product gets NO gallery, only an external picture in
 	// source_image_url: the shape of every imported and demo product. The
@@ -595,12 +628,7 @@ func TestTheHomePageOmitsEmptySectionsAndResolvesInOneCall(t *testing.T) {
 	f := seedStorefront(t)
 	r, batches := storefrontEngine(t, f.sellerUserID)
 
-	decodeData(t, call(t, r, http.MethodPost,
-		"/v1/commerce/products/"+f.discounted.String()+"/media", f.sellerUserID,
-		map[string]any{"media_ids": []string{uuid.NewString()}}),
-		&struct {
-			Items []galleryItem `json:"items"`
-		}{})
+	attachGalleryThenApprove(t, r, f.sellerUserID, f.discounted, []string{uuid.NewString()})
 
 	*batches = 0
 	var page struct {
@@ -716,21 +744,11 @@ func TestCommerceAnswersMediaAccessForLiveProductsOnly(t *testing.T) {
 	ctx := context.Background()
 
 	live := uuid.NewString()
-	decodeData(t, call(t, r, http.MethodPost,
-		"/v1/commerce/products/"+f.discounted.String()+"/media", f.sellerUserID,
-		map[string]any{"media_ids": []string{live}}),
-		&struct {
-			Items []galleryItem `json:"items"`
-		}{})
+	attachGalleryThenApprove(t, r, f.sellerUserID, f.discounted, []string{live})
 
 	// A second product, taken back off sale, holding its own image.
 	hidden := uuid.NewString()
-	decodeData(t, call(t, r, http.MethodPost,
-		"/v1/commerce/products/"+f.fullPrice.String()+"/media", f.sellerUserID,
-		map[string]any{"media_ids": []string{hidden}}),
-		&struct {
-			Items []galleryItem `json:"items"`
-		}{})
+	attachGalleryThenApprove(t, r, f.sellerUserID, f.fullPrice, []string{hidden})
 	if _, err := edgePool.Exec(ctx,
 		`UPDATE products SET status='draft', approval_status='draft' WHERE id=$1`, f.fullPrice); err != nil {
 		t.Fatalf("unpublishing: %v", err)

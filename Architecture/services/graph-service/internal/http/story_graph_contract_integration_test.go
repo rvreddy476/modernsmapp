@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atpost/graph-service/database"
 	"github.com/atpost/graph-service/internal/service"
 	"github.com/atpost/graph-service/internal/store"
 	"github.com/atpost/post-service/pkg/graphclient"
@@ -39,6 +40,15 @@ func TestStoryFollowingWireContract(t *testing.T) {
 		PRIMARY KEY (follower_id, followee_id)
 	)`); err != nil {
 		t.Fatalf("ensure follows: %v", err)
+	}
+	// Following omits hidden (deactivated) accounts, so the handler reads
+	// hidden_users too. Install it from the real migration, not a copy.
+	hiddenUsers, err := database.Migrations.ReadFile("migrations/011_hidden_users.sql")
+	if err != nil {
+		t.Fatalf("read migration 011: %v", err)
+	}
+	if _, err := pool.Exec(ctx, string(hiddenUsers)); err != nil {
+		t.Fatalf("ensure hidden_users: %v", err)
 	}
 
 	viewer, first, second := uuid.New(), uuid.New(), uuid.New()

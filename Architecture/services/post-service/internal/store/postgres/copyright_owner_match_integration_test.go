@@ -59,7 +59,10 @@ func (it *restrictionIT) ownerHeldPost(titleID uuid.UUID, awaiting bool) (uuid.U
 
 func (it *restrictionIT) reviewEvents(postID uuid.UUID) []events.PostCopyrightReviewPayload {
 	it.t.Helper()
-	rows, err := it.pool.Query(it.ctx, `SELECT payload FROM post_outbox_events WHERE aggregate_id=$1 AND event_type=$2 ORDER BY id`,
+	// Write order: post_outbox_events.id is a random UUID (gen_random_uuid),
+	// so ORDER BY id shuffled the events; created_at is each write's
+	// transaction time, ctid breaks ties inside one transaction.
+	rows, err := it.pool.Query(it.ctx, `SELECT payload FROM post_outbox_events WHERE aggregate_id=$1 AND event_type=$2 ORDER BY created_at, ctid`,
 		postID, events.EventPostCopyrightReview)
 	if err != nil {
 		it.t.Fatal(err)
@@ -173,7 +176,7 @@ func TestOwnerBlockIT_OwnerMatches(t *testing.T) {
 		t.Fatal(err)
 	}
 	var raw []byte
-	if err := it.pool.QueryRow(it.ctx, `SELECT payload FROM post_outbox_events WHERE aggregate_id=$1 AND event_type=$2 ORDER BY id DESC LIMIT 1`,
+	if err := it.pool.QueryRow(it.ctx, `SELECT payload FROM post_outbox_events WHERE aggregate_id=$1 AND event_type=$2 ORDER BY created_at DESC, ctid DESC LIMIT 1`,
 		tracked, events.PostSearchEligibilityChanged).Scan(&raw); err != nil {
 		t.Fatal(err)
 	}

@@ -31,7 +31,7 @@ func followAudiencePool(t *testing.T) *pgxpool.Pool {
 func follow(t *testing.T, pool *pgxpool.Pool, follower, followee uuid.UUID) {
 	t.Helper()
 	if _, err := pool.Exec(context.Background(),
-		`INSERT INTO follows (follower_id, followee_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, follower, followee); err != nil {
+		`INSERT INTO follows (follower_id, followee_id, created_at) VALUES ($1, $2, NOW()) ON CONFLICT DO NOTHING`, follower, followee); err != nil {
 		t.Fatalf("follow: %v", err)
 	}
 }
@@ -119,7 +119,7 @@ func TestGetConnectionsOmitsHiddenAccountsLive(t *testing.T) {
 	owner, visible, hidden := uuid.New(), uuid.New(), uuid.New()
 	for _, other := range []uuid.UUID{visible, hidden} {
 		a, b := normalizePair(owner, other)
-		if _, err := pool.Exec(ctx, `INSERT INTO connections (user_a, user_b) VALUES ($1, $2)`, a, b); err != nil {
+		if _, err := pool.Exec(ctx, `INSERT INTO connections (user_a, user_b, created_at) VALUES ($1, $2, NOW())`, a, b); err != nil {
 			t.Fatalf("connection: %v", err)
 		}
 	}

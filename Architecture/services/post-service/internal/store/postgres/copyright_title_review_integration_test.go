@@ -57,7 +57,7 @@ func (it *restrictionIT) heldPost(titleID uuid.UUID, awaiting bool) (uuid.UUID, 
 
 func (it *restrictionIT) outboxTypes(postID uuid.UUID) []string {
 	it.t.Helper()
-	rows, err := it.pool.Query(it.ctx, `SELECT event_type FROM post_outbox_events WHERE aggregate_id=$1 ORDER BY id`, postID)
+	rows, err := it.pool.Query(it.ctx, `SELECT event_type FROM post_outbox_events WHERE aggregate_id=$1 ORDER BY created_at, ctid`, postID)
 	if err != nil {
 		it.t.Fatal(err)
 	}
