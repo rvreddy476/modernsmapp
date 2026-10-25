@@ -118,6 +118,9 @@ func (f *fakeOrderStore) EnqueueJobPool(_ context.Context, kind string, _ []byte
 
 // fakePayments scripts payments-service's advisory verify answer.
 type fakePayments struct {
+	// mu guards calls and lastIntent: TestConcurrentWebhookAndConfirm calls
+	// VerifyCallback from several goroutines.
+	mu      sync.Mutex
 	verdict *payments.CallbackVerdict
 	err     error
 	calls   int
@@ -139,6 +142,8 @@ type fakePayments struct {
 }
 
 func (p *fakePayments) VerifyCallback(_ context.Context, intentID uuid.UUID, _, _, _ string, _ money.Paise) (*payments.CallbackVerdict, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 	p.calls++
 	p.lastIntent = intentID
 	return p.verdict, p.err
