@@ -87,6 +87,23 @@ var ErrMediaNotFound = errors.New("media not found")
 // audit-H9 sweep keeps running.
 var ErrMediaConfirmed = errors.New("media is confirmed and not reclaimable")
 
+// refuseConfirmedReclaim is the C-CLB-1 status gate, as a pure function so
+// it is unit-tested (and mutation-checked) without a database.
+//
+// It is the WHOLE of the race safety for writers that take no lock on the
+// media row — the scalar ones (users.avatar_media_id, ...) and the one array
+// writer (channel-service writing channel_updates.media_ids). None of them
+// serializes against the reclaim transaction, so instead of trying to win
+// that race the reclaim refuses every asset such a writer could legitimately
+// claim: anything whose upload finished. The refusal reads only the asset's
+// own status, so it holds whatever shape the referencing column has.
+func refuseConfirmedReclaim(processingStatus string) error {
+	if processingStatus != ProcessingStatusPendingUpload {
+		return ErrMediaConfirmed
+	}
+	return nil
+}
+
 // DeleteOrphanMediaAtomic performs the ENTIRE eligibility decision and the
 // deletion inside one transaction (Module 1 fixes-v3 / LB-1).
 //
@@ -151,8 +168,8 @@ func (s *MediaAssetStore) DeleteOrphanMediaAtomic(ctx context.Context, mediaID u
 	//
 	// See ErrMediaConfirmed for why the row lock taken above cannot make
 	// confirmed reclamation safe while non-FK claims exist.
-	if processingStatus != ProcessingStatusPendingUpload {
-		return nil, ErrMediaConfirmed
+	if err := refuseConfirmedReclaim(processingStatus); err != nil {
+		return nil, err
 	}
 
 	// 3. References — EVERY canonical live claim, not just posts and drafts.
