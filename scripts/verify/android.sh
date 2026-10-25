@@ -47,11 +47,22 @@ LOCK="$ANDROID_DIR/build/.verify-android.lock"
 mkdir -p "$ANDROID_DIR/build"
 waited=0
 until mkdir "$LOCK" 2>/dev/null; do
-  if [ $waited -eq 0 ]; then echo "waiting for another android verify in this tree ($LOCK)"; fi
-  waited=1
+  holder="$(cat "$LOCK/pid" 2>/dev/null)"
+  # A run killed from outside (timeout, closed shell) leaves its lock: take
+  # it over once its process is gone, or a lock with no pid after a minute.
+  if { [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; } ||
+     { [ -z "$holder" ] && [ $waited -ge 12 ]; }; then
+    echo "removing a stale android verify lock (pid ${holder:-unknown} is gone)"
+    rm -rf "$LOCK"
+    continue
+  fi
+  if [ $waited -eq 0 ]; then echo "waiting for another android verify in this tree (pid ${holder:-?}, $LOCK)"; fi
+  waited=$((waited + 1))
   sleep 5
 done
-trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+echo $$ >"$LOCK/pid"
+trap 'rm -rf "$LOCK"' EXIT
+trap 'exit 130' INT TERM
 
 # Every module: Gradle path and its directory (":core:commerce-ui" -> core/commerce-ui).
 mapfile -t ALL < <(grep -oE 'include\("[^"]+"\)' settings.gradle.kts | sed -E 's/include\("(.*)"\)/\1/')
@@ -89,13 +100,19 @@ accessor_of() {
   printf '%s' "$out"
 }
 
+# Directories computed once: a subshell per module per changed file took
+# over a minute on Windows.
+declare -A DIR=()
+for m in "${ALL[@]}"; do p="${m#:}"; DIR[$m]="${p//://}"; done
+
+# module_of_path <rel>: sets HIT to the deepest module containing rel, or "".
 module_of_path() {
   local rel="$1" best="" m d
+  HIT=""
   for m in "${ALL[@]}"; do
-    d="$(dir_of "$m")"
-    case "$rel" in "$d"/*) [ ${#d} -gt ${#best} ] && best="$d" && bestm="$m" ;; esac
+    d="${DIR[$m]}"
+    case "$rel" in "$d"/*) [ ${#d} -gt ${#best} ] && best="$d" && HIT="$m" ;; esac
   done
-  [ -n "$best" ] && printf '%s' "$bestm"
 }
 
 EVERYTHING=0
@@ -109,12 +126,11 @@ if [ ${#MODULES[@]} -eq 0 ]; then
       test-fixtures/*)
         fx="${rel#test-fixtures/}"; fx="test-fixtures/${fx%%/*}"
         for m in "${ALL[@]}"; do
-          grep -q "$fx" "$(dir_of "$m")/build.gradle.kts" && MODULES+=("$m")
+          grep -q "$fx" "${DIR[$m]}/build.gradle.kts" && MODULES+=("$m")
         done ;;
       *)
-        bestm=""
-        m="$(module_of_path "$rel")"
-        [ -n "$m" ] && MODULES+=("$m") ;;
+        module_of_path "$rel"
+        [ -n "$HIT" ] && MODULES+=("$HIT") ;;
     esac
   done < <(changed_files "$BASE")
   mapfile -t MODULES < <(printf '%s\n' "${MODULES[@]}" | sed '/^$/d' | sort -u)
@@ -128,6 +144,34 @@ if [ ${#MODULES[@]} -eq 0 ]; then
   exit 0
 fi
 echo "modules: ${MODULES[*]}"
+
+# Lane scope: when scripts/harness/android-worktree.sh gave this tree a lane,
+# every touched module must sit inside the lane's claim.
+CLAIMS_DIR="$(cd "$VERIFY_ROOT" && cd "$(git rev-parse --git-common-dir)" && pwd)/harness-android-lanes"
+for claim in "$CLAIMS_DIR"/*; do
+  [ -f "$claim" ] || continue
+  [ "$(sed -n 's/^tree=//p' "$claim")" = "$VERIFY_ROOT" ] || continue
+  lane="$(basename "$claim")"
+  mapfile -t HELD < <(grep -v -e '^tree=' -e '^branch=' -e '^$' "$claim")
+  outside=()
+  for m in "${MODULES[@]}"; do
+    inside=0
+    for h in "${HELD[@]}"; do
+      case "$m" in "$h" | "$h":*) inside=1 ;; esac
+      [ "$h" = ":" ] && inside=1
+    done
+    [ $inside -eq 1 ] || outside+=("$m")
+  done
+  if [ $EVERYTHING -eq 1 ] && ! printf '%s\n' "${HELD[@]}" | grep -qx ':'; then
+    outside=("build setup")
+  fi
+  if [ ${#outside[@]} -gt 0 ]; then
+    VERIFY_FAILED=$((VERIFY_FAILED + 1))
+    echo "FAIL lane-scope     $lane  outside the claim (${HELD[*]}): ${outside[*]}"
+  else
+    echo "PASS lane-scope     $lane"
+  fi
+done
 
 TESTS=()
 for m in "${MODULES[@]}"; do TESTS+=("$(test_task "$m")"); done

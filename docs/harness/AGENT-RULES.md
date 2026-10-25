@@ -49,7 +49,8 @@ One Android check per tree at a time (the script holds a lock).
 - **Two Android lanes may run at once only in two worktrees and only on
   disjoint modules.** The lead creates the second one with
   `scripts/harness/android-worktree.sh`; the script refuses overlapping
-  module lists.
+  module lists. Each lane claims its modules, and `scripts/verify/android.sh`
+  fails `lane-scope` when a change touches a module outside the claim.
 - Contracts first: routes, fields and error codes are pinned before clients
   are built. Golden JSON fixtures are copied byte for byte from the service's
   `testdata/contracts/` into web and Android.
