@@ -144,8 +144,12 @@ func TestMediaClaimsIT_ReconcileBackfillsAndReleases(t *testing.T) {
 }
 
 // The second writer of one row waits for the first; another row does not.
+// The second writer is a second Store on the same database, standing in for
+// another replica: within one Store the in-process holderGate would queue it
+// before Postgres is asked, and this proves the advisory lock itself.
 func TestMediaClaimsIT_HolderLockSerialises(t *testing.T) {
-	_, st, _, _ := setupMediaClaimsIT(t)
+	_, st, pool, _ := setupMediaClaimsIT(t)
+	replica := store.New(pool)
 	ctx := context.Background()
 	ref := uuid.New()
 	unlock, err := st.LockMediaHolder(ctx, ref)
@@ -159,7 +163,7 @@ func TestMediaClaimsIT_HolderLockSerialises(t *testing.T) {
 	other()
 	got := make(chan struct{})
 	go func() {
-		u, err := st.LockMediaHolder(ctx, ref)
+		u, err := replica.LockMediaHolder(ctx, ref)
 		if err == nil {
 			u()
 		}

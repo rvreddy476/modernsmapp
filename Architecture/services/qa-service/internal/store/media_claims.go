@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"sync"
 
 	"github.com/atpost/qa-service/internal/claimsync"
 	"github.com/atpost/qa-service/internal/mediaclient"
@@ -23,21 +24,30 @@ import (
 // holds, for as long as the caller holds it, so the reconcile tool never acts
 // on a set a writer is changing. Transaction-scoped, so a crash or a lost
 // connection frees it. unlock is idempotent.
+//
+// Callers pass the in-process holderGate before taking a connection, so lock
+// holders can never exhaust the pool (media_holder_gate.go).
 func (s *Store) LockMediaHolder(ctx context.Context, ref uuid.UUID) (unlock func(), err error) {
+	leave, err := s.holders.enter(ctx, ref)
+	if err != nil {
+		return nil, fmt.Errorf("lock media holder: %w", err)
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
+		leave()
 		return nil, fmt.Errorf("lock media holder: %w", err)
 	}
 	if _, err := tx.Exec(ctx, lockMediaHolderSQL, mediaHolderLockKey(ref)); err != nil {
 		_ = tx.Rollback(context.WithoutCancel(ctx))
+		leave()
 		return nil, fmt.Errorf("lock media holder: %w", err)
 	}
-	done := false
+	var once sync.Once
 	return func() {
-		if !done {
-			done = true
+		once.Do(func() {
 			_ = tx.Rollback(context.WithoutCancel(ctx))
-		}
+			leave()
+		})
 	}, nil
 }
 

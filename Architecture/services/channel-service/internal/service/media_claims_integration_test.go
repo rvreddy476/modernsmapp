@@ -16,6 +16,7 @@ import (
 
 	"github.com/atpost/channel-service/internal/claimsync"
 	"github.com/atpost/channel-service/internal/mediaclient"
+	"github.com/atpost/channel-service/internal/store"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -265,20 +266,26 @@ func TestMediaClaimsIT_ConcurrentEditsNeverLeaveAnUnclaimedReference(t *testing.
 	}
 }
 
-// The lock is exclusive per row and free for other rows.
+// The lock is exclusive per row and free for other rows. The same-row attempt
+// is made twice: through the same Store (queued by the in-process holderGate)
+// and through a second Store on the same database, standing in for another
+// replica, which only Postgres's advisory lock can hold back.
 func TestMediaClaimsIT_HolderLockSerialises(t *testing.T) {
-	_, st, _ := setupReactionCountIT(t)
+	_, st, pool := setupReactionCountIT(t)
 	ctx := context.Background()
 	ref := uuid.New()
 	unlock, err := st.LockMediaHolder(ctx, ref)
 	if err != nil {
 		t.Fatal(err)
 	}
-	short, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
-	defer cancel()
-	if u2, err := st.LockMediaHolder(short, ref); err == nil {
-		u2()
-		t.Fatal("a second holder of the same row's lock got it while the first held it")
+	for name, s := range map[string]*store.Store{"same store": st, "another replica": store.New(pool)} {
+		short, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+		u2, err := s.LockMediaHolder(short, ref)
+		cancel()
+		if err == nil {
+			u2()
+			t.Fatalf("%s: a second holder of the same row's lock got it while the first held it", name)
+		}
 	}
 	other, err := st.LockMediaHolder(ctx, uuid.New())
 	if err != nil {

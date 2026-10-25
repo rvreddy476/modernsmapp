@@ -142,6 +142,7 @@ func (f *fakeMedia) Release(_ context.Context, kind string, ref uuid.UUID, ids [
 	for _, id := range ids {
 		delete(f.held[fakeKey(kind, ref)], id)
 	}
+	f.pruneLocked(kind, ref)
 	return nil
 }
 
@@ -153,7 +154,17 @@ func (f *fakeMedia) ReleaseExcept(_ context.Context, kind string, ref uuid.UUID,
 			delete(f.held[fakeKey(kind, ref)], id)
 		}
 	}
+	f.pruneLocked(kind, ref)
 	return nil
+}
+
+// pruneLocked drops a holder that no longer holds anything, as media-service
+// does: a ref with no claim rows has no claims, so f.held lists only holders
+// with at least one claim and len(f.held) == 0 means nothing is claimed.
+func (f *fakeMedia) pruneLocked(kind string, ref uuid.UUID) {
+	if k := fakeKey(kind, ref); len(f.held[k]) == 0 {
+		delete(f.held, k)
+	}
 }
 
 func (f *fakeMedia) holds(kind string, ref, id uuid.UUID) bool {

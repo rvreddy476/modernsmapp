@@ -18,7 +18,9 @@ func TestMediaHolderLockWaitsAndIsTransactionScoped(t *testing.T) {
 
 func TestMediaHolderLockKeyIsPerRow(t *testing.T) {
 	a, b := uuid.New(), uuid.New()
-	if mediaHolderLockKey(a) != mediaHolderLockKey(a) {
+	// The same row named by a separately parsed id: the key depends on the
+	// id's value only, so every writer of that row contends for one lock.
+	if mediaHolderLockKey(a) != mediaHolderLockKey(uuid.MustParse(a.String())) {
 		t.Fatal("the key for one row must be stable")
 	}
 	if mediaHolderLockKey(a) == mediaHolderLockKey(b) {

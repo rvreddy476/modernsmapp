@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"sync"
 	"time"
 
 	"github.com/atpost/channel-service/internal/mediaclient"
@@ -102,10 +103,17 @@ type EventAttendee struct {
 
 type Store struct {
 	db *pgxpool.Pool
+	// holders gates LockMediaHolder so lock holders can never exhaust db
+	// (media_holder_gate.go).
+	holders *holderGate
 }
 
 func New(db *pgxpool.Pool) *Store {
-	return &Store{db: db}
+	maxConns := int32(0)
+	if db != nil {
+		maxConns = db.Config().MaxConns
+	}
+	return &Store{db: db, holders: newHolderGate(holderSlotsFor(maxConns))}
 }
 
 // --- Channel CRUD ---
@@ -1010,21 +1018,30 @@ func (s *Store) ChannelMediaClaimRows(ctx context.Context, after uuid.UUID, limi
 // interleave so that one's release removes a claim the other's write relies on
 // (internal/service/media_claims.go). Transaction-scoped, so a crash or a lost
 // connection frees it. unlock is idempotent.
+//
+// Callers pass the in-process holderGate before taking a connection, so lock
+// holders can never exhaust the pool (media_holder_gate.go).
 func (s *Store) LockMediaHolder(ctx context.Context, ref uuid.UUID) (unlock func(), err error) {
+	leave, err := s.holders.enter(ctx, ref)
+	if err != nil {
+		return nil, fmt.Errorf("lock media holder: %w", err)
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
+		leave()
 		return nil, fmt.Errorf("lock media holder: %w", err)
 	}
 	if _, err := tx.Exec(ctx, lockMediaHolderSQL, mediaHolderLockKey(ref)); err != nil {
 		_ = tx.Rollback(context.WithoutCancel(ctx))
+		leave()
 		return nil, fmt.Errorf("lock media holder: %w", err)
 	}
-	done := false
+	var once sync.Once
 	return func() {
-		if !done {
-			done = true
+		once.Do(func() {
 			_ = tx.Rollback(context.WithoutCancel(ctx))
-		}
+			leave()
+		})
 	}, nil
 }
 
