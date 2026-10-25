@@ -218,6 +218,14 @@ CREATE TABLE IF NOT EXISTS chatservice.messages (
     type text,
     text text,
     media_id uuid,
+    -- Kept in step with chat-service/services/message-service/scylla/schema.cql
+    -- (quoted replies, post cards, chat-parity rich messages). Running
+    -- clusters gain them at message-service boot (EnsureMessageColumns).
+    reply_to_id uuid,
+    reply_to_preview text,
+    reply_to_sender_id uuid,
+    post_id uuid,
+    extra text,
     is_deleted boolean,
     -- Edit metadata. Existing clusters:
     -- ALTER TABLE chatservice.messages ADD (is_edited boolean, edited_at timestamp);

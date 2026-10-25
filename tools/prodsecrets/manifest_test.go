@@ -547,7 +547,8 @@ func TestCommittedManifestFullApply(t *testing.T) {
 				t.Errorf("role %s has no password", g.Role)
 			}
 		}
-		if len(p.Roles) != 33 {
+		// 33 + chat_db for chat_call and chat_ws_gateway (CHAT_POSTGRES_DSN).
+		if len(p.Roles) != 35 {
 			t.Errorf("roles: %d", len(p.Roles))
 		}
 		// Spot checks of the cross-service contracts.
@@ -574,6 +575,8 @@ func TestCommittedManifestFullApply(t *testing.T) {
 			{"admin-service", "admin_service_token_key", "user-service.caller_admin_pubkey"},
 			{"post-service", "post_service_token_key", "trust-safety-service.caller_post_pubkey"},
 			{"trust-safety-service", "trust_safety_service_token_key", "post-service.caller_trust_safety_pubkey"},
+			{"monetization-service", "monetization_service_token_key", "payments-service.caller_monetization_pubkey"},
+			{"monetization-service", "monetization_service_token_key", "trust-safety-service.caller_monetization_pubkey"},
 		} {
 			recv := strings.SplitN(c[2], ".", 2)
 			rebuilt, err := pairFromPrivate(GenEd25519, get(c[0], c[1]))

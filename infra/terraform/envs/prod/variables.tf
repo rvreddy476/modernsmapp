@@ -134,6 +134,12 @@ variable "web_image_names" {
   default = ["web", "admin-console"]
 }
 
+variable "extra_secret_shells" {
+  description = "Secret shells that are not deployables: the ArgoCD repository credential deploy/argocd/repo-credentials.yaml reads (atpost/prod/argocd-repo-modernsmapp). Containers only; the seeder writes the value."
+  type        = list(string)
+  default     = ["argocd-repo-modernsmapp"]
+}
+
 variable "web_zone_names" {
   description = "ECR repo names for the retired atpost-web Multi-Zone apps. Empty in prod (W6 parks the 11 zones); list them here to recreate the repos."
   type        = list(string)

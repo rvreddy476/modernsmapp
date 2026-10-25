@@ -160,26 +160,68 @@ func TestManifestHasNoHardCodedEnvironment(t *testing.T) {
 	}
 }
 
-// prod leaves out what its Terraform creates no shell for; qa fills it.
-func TestOmitSecretsPerEnvironment(t *testing.T) {
-	prod := loadCommitted(t, "prod")
-	qa := loadCommitted(t, "qa")
-	has := func(m *Manifest, name string) bool {
-		for _, s := range m.Secrets {
-			if s.Name == name {
-				return true
-			}
+func hasSecret(m *Manifest, name string) bool {
+	for _, s := range m.Secrets {
+		if s.Name == name {
+			return true
 		}
-		return false
 	}
-	if has(prod, "argocd-repo-modernsmapp") || !has(qa, "argocd-repo-modernsmapp") {
-		t.Fatalf("argocd-repo-modernsmapp: prod %v, qa %v", has(prod, "argocd-repo-modernsmapp"), has(qa, "argocd-repo-modernsmapp"))
+	return false
+}
+
+// An environment leaves out what its Terraform creates no shell for (the
+// mechanism, on an inline manifest); the other environment still fills it.
+func TestOmitSecretsPerEnvironment(t *testing.T) {
+	src := `
+version: 1
+environments:
+  prod:
+    omit_secrets: argocd-repo-modernsmapp
+    vars:
+      host: api.example.com
+  qa:
+    vars:
+      host: api-qa.example.com
+prefix: atpost/${env}
+secrets:
+  web:
+    jwt_kid: const:k1
+  argocd-repo-modernsmapp:
+    username: prompt:GitHub user for ${host}
+`
+	prod, err := ParseManifestEnv(strings.NewReader(src), "prod")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if qa.FullName("argocd-repo-modernsmapp") != "atpost/qa/argocd-repo-modernsmapp" {
-		t.Fatal(qa.FullName("argocd-repo-modernsmapp"))
+	qa, err := ParseManifestEnv(strings.NewReader(src), "qa")
+	if err != nil {
+		t.Fatal(err)
 	}
-	if len(prod.Secrets) != 35 || len(qa.Secrets) != 36 {
+	if hasSecret(prod, "argocd-repo-modernsmapp") || !hasSecret(qa, "argocd-repo-modernsmapp") {
+		t.Fatalf("argocd-repo-modernsmapp: prod %v, qa %v", hasSecret(prod, "argocd-repo-modernsmapp"), hasSecret(qa, "argocd-repo-modernsmapp"))
+	}
+	if !hasSecret(prod, "web") || len(prod.Secrets) != 1 || len(qa.Secrets) != 2 {
 		t.Fatalf("secrets: prod %d, qa %d", len(prod.Secrets), len(qa.Secrets))
+	}
+	if len(prod.Omitted) != 1 || prod.Omitted[0] != "argocd-repo-modernsmapp" || len(qa.Omitted) != 0 {
+		t.Fatalf("omitted: prod %v, qa %v", prod.Omitted, qa.Omitted)
+	}
+}
+
+// Both committed environments now create the ArgoCD repository shell
+// (extra_secret_shells in envs/<env>/variables.tf), so both fill it.
+func TestCommittedArgoCDRepoSecretPerEnvironment(t *testing.T) {
+	for _, env := range []string{"prod", "qa"} {
+		m := loadCommitted(t, env)
+		if !hasSecret(m, "argocd-repo-modernsmapp") {
+			t.Fatalf("%s: argocd-repo-modernsmapp missing", env)
+		}
+		if got := m.FullName("argocd-repo-modernsmapp"); got != "atpost/"+env+"/argocd-repo-modernsmapp" {
+			t.Fatalf("%s: %s", env, got)
+		}
+		if len(m.Omitted) != 0 || len(m.Secrets) != 36 {
+			t.Fatalf("%s: secrets %d, omitted %v", env, len(m.Secrets), m.Omitted)
+		}
 	}
 }
 

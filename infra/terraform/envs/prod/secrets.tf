@@ -1,7 +1,9 @@
 # Empty-shell secrets — one per deployable, named atpost/prod/<name> to match
 # the `externalSecret.remoteKey` in deploy/services/*/values-prod.yaml, plus
-# the two web images. Terraform never writes a value: the seeder (W3) does,
-# and External Secrets mirrors them into the cluster.
+# the two web images and the ArgoCD repository credential
+# (atpost/prod/argocd-repo-modernsmapp, read by deploy/argocd/repo-credentials.yaml).
+# Terraform never writes a value: the seeder (W3) does, and External Secrets
+# mirrors them into the cluster.
 #
 # Secrets that already exist elsewhere and are NOT shells:
 #   atpost/prod/platform-auth           modules/auth-keys (generated)
@@ -15,7 +17,7 @@ module "service_secrets" {
   source = "../../modules/service-secrets"
 
   environment             = "prod"
-  names                   = concat(var.service_names, var.web_image_names)
+  names                   = concat(var.service_names, var.web_image_names, var.extra_secret_shells)
   recovery_window_in_days = var.secret_recovery_window_days
 }
 

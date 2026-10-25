@@ -54,10 +54,6 @@ version: 1
 # omit_secrets: secrets that environment's Terraform creates no shell for.
 environments:
   prod:
-    # envs/prod has no argocd-repo shell yet (deploy/argocd/repo-credentials.yaml
-    # reads atpost/prod/argocd-repo-modernsmapp): drop this line once
-    # envs/prod/secrets.tf creates it.
-    omit_secrets: argocd-repo-modernsmapp
     vars:
       env_label: PRODUCTION
       env_word: production
@@ -141,6 +137,10 @@ shared:
   svc_live_kid: const:live-1
   svc_doorstep: generate:ed25519-keypair
   svc_doorstep_kid: const:doorstep-1
+  # Creator memberships: monetization-service signs, payments-service and
+  # trust-safety-service verify. Off at launch (MEMBERSHIPS_ENABLED=false).
+  svc_monetization: generate:ed25519-keypair
+  svc_monetization_kid: const:monetization-1
   # identity-auth mini-app session signer (RS256).
   mini_app_session_rs256: generate:rsa2048-pem
   # Third parties, typed once, used by several services.
@@ -292,6 +292,9 @@ secrets:
     # Admin console: pre-filled so enabling is uncommenting the values lines.
     caller_admin_pubkey: shared-public:svc_admin
     caller_admin_kid: shared:svc_admin_kid
+    # Google Web Risk for Action-button links. Until it is set every new
+    # Action button answers 503 ACTION_LINK_CHECK_UNAVAILABLE outside dev.
+    web_risk_api_key: prompt-optional:Google Web Risk API key for post-service link checks (empty: new Action buttons answer 503)
 
   feed-service:
     postgres_dsn: dsn:app/feed_service
@@ -395,6 +398,10 @@ secrets:
     trust_safety_service_token_kid: shared:svc_trust_safety_kid
     caller_post_pubkey: shared-public:svc_post
     caller_post_kid: shared:svc_post_kid
+    # Creator-membership eligibility (no active strikes): pre-filled so
+    # enabling is uncommenting the values lines.
+    caller_monetization_pubkey: shared-public:svc_monetization
+    caller_monetization_kid: shared:svc_monetization_kid
     # Admin console: pre-filled so enabling is uncommenting the values lines.
     caller_admin_pubkey: shared-public:svc_admin
     caller_admin_kid: shared:svc_admin_kid
@@ -413,6 +420,11 @@ secrets:
     jwt_kid_previous: shared:jwt_kid_previous
     jwt_public_key_pem: copy:platform-auth#jwt_public_key_pem
     chat_entitlement_secret: shared:chat_entitlement_secret
+    # Message field encryption (CHAT_KMS_KEY_ID): message-service refuses to
+    # boot outside dev without it. No Terraform module creates this key
+    # yet, so the founder types its id or ARN (purpose=chat-field context;
+    # the IRSA role needs kms:GenerateDataKey and kms:Decrypt on it).
+    chat_kms_key_id: prompt:KMS key id or ARN for chat field encryption (${env_label})
 
   chat-ws-gateway:
     redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
@@ -424,9 +436,13 @@ secrets:
     jwt_kid_previous: shared:jwt_kid_previous
     jwt_public_key_pem: copy:platform-auth#jwt_public_key_pem
     chat_entitlement_secret: shared:chat_entitlement_secret
+    # chat_db DSN for presence fan-out (DM peers); the gateway only reads.
+    chat_postgres_dsn: dsn:chat_db/chat_ws_gateway
 
   chat-call-service:
     postgres_dsn: dsn:call_db/chat_call
+    # chat_db DSN for per-chat "mute calls"; chat-call-service only reads.
+    chat_postgres_dsn: dsn:chat_db/chat_call
     redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
     redis_password: copy:elasticache-auth#auth_token
     kafka_brokers: tf:msk_bootstrap_brokers
@@ -462,6 +478,11 @@ secrets:
     # Payouts are off at launch (MONETIZATION_PAYOUTS_ENABLED=false).
     razorpayx_account_number: prompt-optional:RazorpayX account number (payouts; empty at launch)
     razorpayx_webhook_secret: prompt-optional:RazorpayX webhook secret (payouts; empty at launch)
+    # Creator memberships: the PRIVATE payments token; the public half is
+    # caller_monetization_pubkey in payments-service and trust-safety-service.
+    # Pre-filled so enabling is uncommenting the values lines.
+    monetization_service_token_key: shared-private:svc_monetization
+    monetization_service_token_kid: shared:svc_monetization_kid
     # Admin console: pre-filled so enabling is uncommenting the values lines.
     caller_admin_pubkey: shared-public:svc_admin
     caller_admin_kid: shared:svc_admin_kid
@@ -535,6 +556,10 @@ secrets:
     caller_rider_kid: shared:svc_rider_kid
     caller_doorstep_pubkey: shared-public:svc_doorstep
     caller_doorstep_kid: shared:svc_doorstep_kid
+    # Creator memberships (application memberships): pre-filled so enabling
+    # is uncommenting the values lines.
+    caller_monetization_pubkey: shared-public:svc_monetization
+    caller_monetization_kid: shared:svc_monetization_kid
     # Admin console: pre-filled so enabling is uncommenting the values lines.
     caller_admin_pubkey: shared-public:svc_admin
     caller_admin_kid: shared:svc_admin_kid
@@ -799,8 +824,8 @@ secrets:
   admin-console:
 
   # ArgoCD's read credential for the private modernsmapp repository
-  # (deploy/argocd/repo-credentials.yaml reads username + password). Filled
-  # in qa; prod omits it until envs/prod creates the shell (environments).
+  # (deploy/argocd/repo-credentials.yaml reads username + password). The
+  # shell is extra_secret_shells in envs/<env>/variables.tf.
   # Rotate the token with apply --rotate argocd-repo-modernsmapp/password.
   argocd-repo-modernsmapp:
     username: prompt:GitHub user name for ArgoCD (for a fine-grained token: its owner)
