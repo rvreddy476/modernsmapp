@@ -24,6 +24,8 @@ name: Module 3 — Identity edge auth
 #      that does not resolve as production.
 
 on:
+  # Manual run from any branch (lead verifies harness changes without a PR).
+  workflow_dispatch:
   pull_request:
     paths:
       - 'Architecture/services/api-gateway/**'

@@ -25,6 +25,8 @@ name: Integration (OpenSearch)
 # the graph-service relationship query could land without ever running the
 # safety gate — even though all three are part of the same guarantee.
 on:
+  # Manual run from any branch (lead verifies harness changes without a PR).
+  workflow_dispatch:
   pull_request:
     paths:
       - 'Architecture/services/search-service/**'

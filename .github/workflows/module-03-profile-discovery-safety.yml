@@ -25,6 +25,8 @@ name: Module 3 — Profile and discovery safety
 #         run. The platform recommended that you follow people you had blocked.
 
 on:
+  # Manual run from any branch (lead verifies harness changes without a PR).
+  workflow_dispatch:
   pull_request:
     paths:
       - 'identity-platform/services/profile-service/**'

@@ -16,6 +16,8 @@ name: Integration (PostgreSQL)
 # that installs nothing must never be recorded as applied.
 
 on:
+  # Manual run from any branch (lead verifies harness changes without a PR).
+  workflow_dispatch:
   pull_request:
     paths:
       - 'Architecture/services/media-service/**'

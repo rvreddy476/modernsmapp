@@ -15,6 +15,8 @@ name: Integration (Commerce P0)
 # proof.
 
 on:
+  # Manual run from any branch (lead verifies harness changes without a PR).
+  workflow_dispatch:
   pull_request:
     paths:
       - 'Architecture/services/commerce-service/**'

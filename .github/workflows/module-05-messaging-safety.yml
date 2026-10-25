@@ -4,6 +4,8 @@ name: Module 5 - Messaging safety
 # until device-tested; this workflow also prevents an accidental client-side
 # re-enable from bypassing that release decision.
 on:
+  # Manual run from any branch (lead verifies harness changes without a PR).
+  workflow_dispatch:
   pull_request:
     paths:
       - 'chat-service/**'
