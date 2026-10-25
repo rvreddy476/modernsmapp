@@ -35,6 +35,9 @@ import (
 // processing_status only moves forward from `pending_upload`, and a confirmed
 // asset is never reclaimed, so an id that passed this check cannot be swept.
 //
+// What this check does NOT stop is the uploader deleting the asset after it is
+// attached; the claim protocol (media_claims.go) closes that.
+//
 // # Fail closed
 //
 // No client, an unreachable media-service or an unreadable answer is
@@ -64,8 +67,15 @@ type MediaLookup interface {
 
 // WithMedia installs the media-service lookup. Without one, any update that
 // carries media is refused with ErrMediaUnavailable.
+//
+// A lookup that also implements MediaClaims (mediaclient.Client does) is
+// installed as the claim client too: the gate and the claims are the same
+// media-service, and wiring one without the other would refuse every attach.
 func (s *Service) WithMedia(m MediaLookup) *Service {
 	s.media = m
+	if c, ok := m.(MediaClaims); ok {
+		s.claims = c
+	}
 	return s
 }
 

@@ -30,43 +30,7 @@ func (s *MediaAssetStore) PurgeUser(ctx context.Context, userID uuid.UUID) error
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	const owned = `SELECT id FROM media_assets WHERE uploader_id = $1`
-
-	steps := []struct{ table, sql string }{
-		// 1. Blob keys into the reclaim ledger.
-		{"media_assets", `INSERT INTO media_blob_reclaim (object_key, media_id)
-			SELECT storage_key, id FROM media_assets WHERE uploader_id = $1 AND storage_key <> ''
-			ON CONFLICT (object_key) DO NOTHING`},
-		{"media_variants", `INSERT INTO media_blob_reclaim (object_key, media_id)
-			SELECT object_key, media_asset_id FROM media_variants WHERE media_asset_id IN (` + owned + `) AND object_key <> ''
-			ON CONFLICT (object_key) DO NOTHING`},
-		{"media_renditions", `INSERT INTO media_blob_reclaim (object_key, media_id)
-			SELECT object_key, media_id FROM media_renditions WHERE media_id IN (` + owned + `) AND object_key IS NOT NULL AND object_key <> ''
-			ON CONFLICT (object_key) DO NOTHING`},
-		{"resumable_uploads", `INSERT INTO media_blob_reclaim (object_key, media_id)
-			SELECT object_key, media_id FROM resumable_uploads WHERE (media_id IN (` + owned + `) OR uploader_id = $1) AND object_key <> ''
-			ON CONFLICT (object_key) DO NOTHING`},
-		// 2. Dependent rows.
-		{"media_variants", `DELETE FROM media_variants WHERE media_asset_id IN (` + owned + `)`},
-		{"media_renditions", `DELETE FROM media_renditions WHERE media_id IN (` + owned + `)`},
-		{"transcoding_jobs", `DELETE FROM transcoding_jobs WHERE media_asset_id IN (` + owned + `)`},
-		{"resumable_upload_parts", `DELETE FROM resumable_upload_parts WHERE upload_id IN (
-			SELECT upload_id FROM resumable_uploads WHERE media_id IN (` + owned + `) OR uploader_id = $1)`},
-		{"resumable_uploads", `DELETE FROM resumable_uploads WHERE media_id IN (` + owned + `) OR uploader_id = $1`},
-		{"media_subtitles", `DELETE FROM media_subtitles WHERE media_asset_id IN (` + owned + `)`},
-		{"media_caption_jobs", `DELETE FROM media_caption_jobs WHERE media_id IN (` + owned + `)`},
-		{"media_transcode_inbox", `DELETE FROM media_transcode_inbox WHERE media_asset_id IN (` + owned + `)`},
-		{"media_chat_attachment_reservations", `DELETE FROM media_chat_attachment_reservations WHERE media_id IN (` + owned + `) OR uploader_id = $1`},
-		{"media_clips", `DELETE FROM media_clips WHERE media_asset_id IN (` + owned + `)`},
-		{"audio_tracks", `UPDATE audio_tracks SET source_media_id = NULL WHERE source_media_id IN (` + owned + `)`},
-		{"media_event_outbox", `DELETE FROM media_event_outbox WHERE media_asset_id IN (` + owned + `)`},
-		{"owner_media_slots", `DELETE FROM owner_media_slots WHERE media_asset_id IN (` + owned + `) OR (owner_type = 'profile' AND owner_id = $1)`},
-		{"owner_media_resolved", `DELETE FROM owner_media_resolved WHERE media_asset_id IN (` + owned + `) OR (owner_type = 'profile' AND owner_id = $1)`},
-		// 3. The assets.
-		{"media_assets", `DELETE FROM media_assets WHERE uploader_id = $1`},
-		// 4. Library audio: anonymise the source, keep the track.
-		{"audio_library", `UPDATE audio_library SET source_user_id = NULL WHERE source_user_id = $1`},
-	}
+	steps := purgeUserSteps()
 	// Copyright Match (migration 023): per asset, invalidate its pairs (one
 	// outbox event each) and drop its derived rows, before the assets go.
 	if err := purgeCopyrightDataForUploaderTx(ctx, tx, userID); err != nil {
@@ -101,4 +65,55 @@ func tableExists(ctx context.Context, tx pgx.Tx, table string) (bool, error) {
 		return false, err
 	}
 	return oid != nil, nil
+}
+
+// purgeStep is one statement of PurgeUser, run only when its table exists.
+type purgeStep struct{ table, sql string }
+
+// purgeUserSteps is PurgeUser's statement list, in order ($1 = the user). A
+// function so the order is testable without a database.
+func purgeUserSteps() []purgeStep {
+	const owned = `SELECT id FROM media_assets WHERE uploader_id = $1`
+
+	return []purgeStep{
+		// 1. Blob keys into the reclaim ledger.
+		{"media_assets", `INSERT INTO media_blob_reclaim (object_key, media_id)
+			SELECT storage_key, id FROM media_assets WHERE uploader_id = $1 AND storage_key <> ''
+			ON CONFLICT (object_key) DO NOTHING`},
+		{"media_variants", `INSERT INTO media_blob_reclaim (object_key, media_id)
+			SELECT object_key, media_asset_id FROM media_variants WHERE media_asset_id IN (` + owned + `) AND object_key <> ''
+			ON CONFLICT (object_key) DO NOTHING`},
+		{"media_renditions", `INSERT INTO media_blob_reclaim (object_key, media_id)
+			SELECT object_key, media_id FROM media_renditions WHERE media_id IN (` + owned + `) AND object_key IS NOT NULL AND object_key <> ''
+			ON CONFLICT (object_key) DO NOTHING`},
+		{"resumable_uploads", `INSERT INTO media_blob_reclaim (object_key, media_id)
+			SELECT object_key, media_id FROM resumable_uploads WHERE (media_id IN (` + owned + `) OR uploader_id = $1) AND object_key <> ''
+			ON CONFLICT (object_key) DO NOTHING`},
+		// 2. Dependent rows.
+		{"media_variants", `DELETE FROM media_variants WHERE media_asset_id IN (` + owned + `)`},
+		{"media_renditions", `DELETE FROM media_renditions WHERE media_id IN (` + owned + `)`},
+		{"transcoding_jobs", `DELETE FROM transcoding_jobs WHERE media_asset_id IN (` + owned + `)`},
+		{"resumable_upload_parts", `DELETE FROM resumable_upload_parts WHERE upload_id IN (
+			SELECT upload_id FROM resumable_uploads WHERE media_id IN (` + owned + `) OR uploader_id = $1)`},
+		{"resumable_uploads", `DELETE FROM resumable_uploads WHERE media_id IN (` + owned + `) OR uploader_id = $1`},
+		{"media_subtitles", `DELETE FROM media_subtitles WHERE media_asset_id IN (` + owned + `)`},
+		{"media_caption_jobs", `DELETE FROM media_caption_jobs WHERE media_id IN (` + owned + `)`},
+		{"media_transcode_inbox", `DELETE FROM media_transcode_inbox WHERE media_asset_id IN (` + owned + `)`},
+		{"media_chat_attachment_reservations", `DELETE FROM media_chat_attachment_reservations WHERE media_id IN (` + owned + `) OR uploader_id = $1`},
+		// Other services' claims on the user's assets (migration 031). An
+		// erasure is not refused by them: the claimant's row then names an
+		// asset that is gone, which every reader already has to tolerate (a
+		// 404 from media-service), whereas a purge that could never finish
+		// would keep the user's media forever.
+		{"media_claims", `DELETE FROM media_claims WHERE media_id IN (` + owned + `)`},
+		{"media_clips", `DELETE FROM media_clips WHERE media_asset_id IN (` + owned + `)`},
+		{"audio_tracks", `UPDATE audio_tracks SET source_media_id = NULL WHERE source_media_id IN (` + owned + `)`},
+		{"media_event_outbox", `DELETE FROM media_event_outbox WHERE media_asset_id IN (` + owned + `)`},
+		{"owner_media_slots", `DELETE FROM owner_media_slots WHERE media_asset_id IN (` + owned + `) OR (owner_type = 'profile' AND owner_id = $1)`},
+		{"owner_media_resolved", `DELETE FROM owner_media_resolved WHERE media_asset_id IN (` + owned + `) OR (owner_type = 'profile' AND owner_id = $1)`},
+		// 3. The assets.
+		{"media_assets", `DELETE FROM media_assets WHERE uploader_id = $1`},
+		// 4. Library audio: anonymise the source, keep the track.
+		{"audio_library", `UPDATE audio_library SET source_user_id = NULL WHERE source_user_id = $1`},
+	}
 }

@@ -2,6 +2,7 @@ package mediaclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -88,5 +89,110 @@ func TestUnreachableAndUnconfiguredAreUnavailable(t *testing.T) {
 	}
 	if New("", "k") != nil || New("http://media", "") != nil {
 		t.Fatal("a blank URL or a blank key must yield no client")
+	}
+}
+
+type claimCapture struct {
+	path, key string
+	body      map[string]any
+}
+
+func serveClaims(t *testing.T, status int, body string, got *claimCapture) *Client {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got != nil {
+			got.path, got.key = r.URL.Path, r.Header.Get(internalKeyHeader)
+			_ = json.NewDecoder(r.Body).Decode(&got.body)
+		}
+		w.WriteHeader(status)
+		_, _ = w.Write([]byte(body))
+	}))
+	t.Cleanup(srv.Close)
+	return New(srv.URL, "k-test")
+}
+
+func TestClaimPostsTheHolderWithTheKey(t *testing.T) {
+	var got claimCapture
+	c := serveClaims(t, http.StatusOK, `{"data":{"claimed":1}}`, &got)
+	ref, id := uuid.New(), uuid.New()
+	if err := c.Claim(context.Background(), "channel_update", ref, []uuid.UUID{id}); err != nil {
+		t.Fatalf("Claim: %v", err)
+	}
+	if got.path != "/v1/media/internal/claims" || got.key != "k-test" {
+		t.Fatalf("posted to %q with key %q", got.path, got.key)
+	}
+	if got.body["claimant"] != "channel-service" || got.body["kind"] != "channel_update" || got.body["ref"] != ref.String() {
+		t.Fatalf("body %v", got.body)
+	}
+	ids, _ := got.body["media_ids"].([]any)
+	if len(ids) != 1 || ids[0] != id.String() {
+		t.Fatalf("media_ids %v", got.body["media_ids"])
+	}
+}
+
+func TestReleaseAllOmitsTheIDs(t *testing.T) {
+	var got claimCapture
+	c := serveClaims(t, http.StatusOK, `{"data":{"released":0}}`, &got)
+	if err := c.Release(context.Background(), "channel_avatar", uuid.New(), nil); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+	if got.path != "/v1/media/internal/claims/release" {
+		t.Fatalf("posted to %q", got.path)
+	}
+	if _, ok := got.body["media_ids"]; ok {
+		t.Fatalf("a release-all must not send media_ids: %v", got.body)
+	}
+}
+
+// Only media-service's own MEDIA_NOT_FOUND is a verdict. A bare 404 is a
+// media-service without the claim route (deployed out of order): treating it
+// as "no such media" would refuse every attach with a wrong answer, and
+// treating it as success would attach with no claim at all.
+func TestClaimAnswers(t *testing.T) {
+	for name, tc := range map[string]struct {
+		status int
+		body   string
+		want   error
+	}{
+		"asset missing":     {http.StatusNotFound, `{"error":{"code":"MEDIA_NOT_FOUND","message":"media does not exist"}}`, ErrNotFound},
+		"route missing":     {http.StatusNotFound, `404 page not found`, ErrUnavailable},
+		"other 404 code":    {http.StatusNotFound, `{"error":{"code":"NOT_FOUND"}}`, ErrUnavailable},
+		"bad claim":         {http.StatusBadRequest, `{"error":{"code":"CLAIM_INVALID"}}`, ErrUnavailable},
+		"server error":      {http.StatusInternalServerError, `{}`, ErrUnavailable},
+		"unauthenticated":   {http.StatusUnauthorized, `{}`, ErrUnavailable},
+		"created is not ok": {http.StatusCreated, `{}`, ErrUnavailable},
+	} {
+		c := serveClaims(t, tc.status, tc.body, nil)
+		if err := c.Claim(context.Background(), "channel_update", uuid.New(), []uuid.UUID{uuid.New()}); !errors.Is(err, tc.want) {
+			t.Errorf("%s: got %v, want %v", name, err, tc.want)
+		}
+	}
+	var nilClient *Client
+	if err := nilClient.Claim(context.Background(), "channel_update", uuid.New(), []uuid.UUID{uuid.New()}); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("nil client claim = %v", err)
+	}
+	if err := nilClient.Release(context.Background(), "channel_update", uuid.New(), nil); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("nil client release = %v", err)
+	}
+}
+
+// "Keep nothing" must never go out as a release-except: media-service would
+// refuse it, and a client that sent it would mean "release everything".
+func TestReleaseExceptNeedsAKeepSet(t *testing.T) {
+	var got claimCapture
+	c := serveClaims(t, http.StatusOK, `{}`, &got)
+	if err := c.ReleaseExcept(context.Background(), KindChannelUpdate, uuid.New(), nil); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("empty keep = %v", err)
+	}
+	if got.path != "" {
+		t.Fatal("an empty keep set was sent")
+	}
+	keep := uuid.New()
+	if err := c.ReleaseExcept(context.Background(), KindChannelUpdate, uuid.New(), []uuid.UUID{keep}); err != nil {
+		t.Fatal(err)
+	}
+	ids, _ := got.body["except_media_ids"].([]any)
+	if got.path != "/v1/media/internal/claims/release" || len(ids) != 1 || ids[0] != keep.String() {
+		t.Fatalf("sent %q %v", got.path, got.body)
 	}
 }

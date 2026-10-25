@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -351,37 +352,61 @@ func (s *MediaAssetStore) GetTranscodingJobs(ctx context.Context, mediaAssetID u
 
 // DeleteMedia removes a media asset and all its variants and transcoding jobs.
 // Returns the list of object keys that were associated (for blob cleanup).
+//
+// Refused while another service holds a claim on the asset (media_claims,
+// migration 031): *MediaInUseError, which unwraps to ErrMediaInUse. The row is
+// locked FOR UPDATE before the claims are read, and ClaimMedia locks it FOR
+// KEY SHARE, so a claim racing this delete either commits first and is seen
+// here, or waits and then finds the row gone (media_claims.go). A RESTRICT
+// foreign key that still fires (a chat reservation, a post attachment) is
+// ErrMediaStillReferenced rather than an opaque failure.
 func (s *MediaAssetStore) DeleteMedia(ctx context.Context, id uuid.UUID) ([]string, error) {
-	// 1. Collect all object keys for blob cleanup
-	var objectKeys []string
-
-	var storageKey string
-	err := s.db.QueryRow(ctx, `SELECT storage_key FROM media_assets WHERE id = $1`, id).Scan(&storageKey)
-	if err != nil {
-		return nil, fmt.Errorf("fetch media storage_key: %w", err)
-	}
-	objectKeys = append(objectKeys, storageKey)
-
-	rows, err := s.db.Query(ctx, `SELECT object_key FROM media_variants WHERE media_asset_id = $1`, id)
-	if err != nil {
-		return nil, fmt.Errorf("fetch variant keys: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var key string
-		if err := rows.Scan(&key); err != nil {
-			return nil, err
-		}
-		objectKeys = append(objectKeys, key)
-	}
-
-	// 2. Delete in correct FK order within a transaction
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("begin tx: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
+	// 1. Lock the row: every claim decision below is made under it.
+	var storageKey string
+	err = tx.QueryRow(ctx, lockMediaForDeleteSQL, id).Scan(&storageKey)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrMediaNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("fetch media storage_key: %w", err)
+	}
+
+	// 2. Claims. An unreadable claim table refuses: deleting under a live
+	// reference is not recoverable, retaining the asset is.
+	holders, err := mediaClaimHoldersTx(ctx, tx, id)
+	if err != nil {
+		return nil, fmt.Errorf("%w: claim check unavailable: %v", ErrMediaStillReferenced, err)
+	}
+	if err := refuseClaimedDelete(holders); err != nil {
+		return nil, err
+	}
+
+	// 3. Collect all object keys for blob cleanup.
+	objectKeys := []string{storageKey}
+	rows, err := tx.Query(ctx, `SELECT object_key FROM media_variants WHERE media_asset_id = $1`, id)
+	if err != nil {
+		return nil, fmt.Errorf("fetch variant keys: %w", err)
+	}
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		objectKeys = append(objectKeys, key)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("fetch variant keys: %w", err)
+	}
+
+	// 4. Delete in correct FK order within the same transaction.
 	if _, err := tx.Exec(ctx, `DELETE FROM transcoding_jobs WHERE media_asset_id = $1`, id); err != nil {
 		return nil, fmt.Errorf("delete transcoding_jobs: %w", err)
 	}
@@ -392,10 +417,16 @@ func (s *MediaAssetStore) DeleteMedia(ctx context.Context, id uuid.UUID) ([]stri
 		return nil, err
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM media_assets WHERE id = $1`, id); err != nil {
+		if isForeignKeyViolation(err) {
+			return nil, fmt.Errorf("%w: foreign key", ErrMediaStillReferenced)
+		}
 		return nil, fmt.Errorf("delete media_asset: %w", err)
 	}
 
 	if err := tx.Commit(ctx); err != nil {
+		if isForeignKeyViolation(err) {
+			return nil, fmt.Errorf("%w: foreign key", ErrMediaStillReferenced)
+		}
 		return nil, fmt.Errorf("commit tx: %w", err)
 	}
 

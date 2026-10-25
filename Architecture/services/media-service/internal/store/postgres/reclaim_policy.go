@@ -106,6 +106,15 @@ var LiveMediaReferences = []MediaReference{
 		Why: "media reserved for a chat message; reclaiming breaks a sent attachment",
 	},
 	{
+		// Migration 031. A claim is another service's reference recorded on
+		// THIS side (channel_updates.media_ids, broadcast_channels avatars
+		// and banners, ...), precisely because those rows may live where no
+		// predicate here can see them. RESTRICT, so this is also the FK
+		// backstop; classified so the catalog scan does not refuse on it.
+		Table: "media_claims", Column: "media_id",
+		Why: "another service's registered reference; reclaiming breaks what it shows",
+	},
+	{
 		Table: "owner_media_resolved", Column: "media_asset_id",
 		// The READ side of owner_media_slots: the denormalised row every
 		// surface actually renders an avatar or cover from. Classifying only

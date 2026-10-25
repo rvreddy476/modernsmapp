@@ -93,6 +93,10 @@ type Handler struct {
 	// hlsPlaylists backs the HLS playlist route; nil means the service. An
 	// interface so the chat_open carry (chat_open.go) is testable.
 	hlsPlaylists hlsPlaylistService
+	// claims backs the cross-service claim routes (media_claims_handler.go);
+	// nil means the service. An interface so the routes are testable
+	// without PostgreSQL.
+	claims mediaClaimsService
 }
 
 func New(svc *service.Service) *Handler {
@@ -193,6 +197,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 			// text the author wrote, onto the author's own asset only.
 			internal.PATCH("/:mediaId/alt-text", refuseGatewayIdentity(), h.UpdateAltTextInternal)
 			internal.POST("/chat-attachment/reserve", h.ReserveChatAttachment)
+			// Cross-service claims (2026-10-25): a service that stores a
+			// media id in its own tables claims it first, and the owner
+			// delete refuses while a claim exists (media_claims_handler.go).
+			h.registerClaimRoutes(internal)
 			internal.GET("/:mediaId/profile-authority", h.GetProfileMediaAuthority)
 			// Re-run the transcode pipeline for a video (Tube thumbnail
 			// sideways, 2026-09-05); optional rotation override in the body.
@@ -492,6 +500,10 @@ func (h *Handler) DeleteMedia(c *gin.Context) {
 
 	err = h.svc.DeleteMedia(c.Request.Context(), mediaID, userID)
 	if err != nil {
+		// Another service still shows it: 409 naming where (media_claims).
+		if writeDeleteMediaError(c, err) {
+			return
+		}
 		if err.Error() == "forbidden: you do not own this media" {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
 			return

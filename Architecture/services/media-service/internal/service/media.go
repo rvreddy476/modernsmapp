@@ -1245,10 +1245,12 @@ func (s *Service) DeleteMedia(ctx context.Context, mediaID uuid.UUID, userID uui
 		return fmt.Errorf("forbidden: you do not own this media")
 	}
 
-	// 2. Delete from DB (returns all object keys)
+	// 2. Delete from DB (returns all object keys). Refused while another
+	// service holds a claim on the asset (media_claims.go): the owner is told
+	// where it is used instead of leaving that reference pointing at nothing.
 	objectKeys, err := s.pgStore.DeleteMedia(ctx, mediaID)
-	if err != nil {
-		return fmt.Errorf("delete media record: %w", err)
+	if err := ownerDeleteStoreError(err); err != nil {
+		return err
 	}
 
 	// 3. Delete blobs from storage (best-effort, don't fail the request)

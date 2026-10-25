@@ -9,7 +9,11 @@
 // `moderation_status` (handler.go GetMedia → MediaForService), and
 // commerce-service (internal/media) and doorstep-service (internal/mediaclient)
 // already read it this way. This is the same call, narrowed to the fields the
-// channel-update decision uses. No new media-service route.
+// channel-update decision uses. No new media-service route for the read.
+//
+// Claim and Release (bottom of this file) are the other half: media-service's
+// keyed claim routes, so an asset a channel row holds cannot be deleted by its
+// owner while the row still shows it.
 //
 // # Fail closed
 //
@@ -20,6 +24,7 @@
 package mediaclient
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -116,4 +121,101 @@ func (c *Client) Get(ctx context.Context, mediaID uuid.UUID) (*Asset, error) {
 		return nil, fmt.Errorf("%w: the response did not contain the requested asset", ErrUnavailable)
 	}
 	return &env.Data, nil
+}
+
+// ── Claims (media-service media_claims, POST /v1/media/internal/claims) ──────
+//
+// channel-service stores media ids in its own tables, which media-service
+// cannot see. A claim is media-service's record that one of those rows holds
+// an asset; while it exists the owner cannot delete the asset out from under
+// the row. The protocol (claim before writing, release after detaching) is the
+// service's, in internal/service/media_claims.go; this is the transport.
+
+// Claimant is how channel-service names itself to media-service.
+const Claimant = "channel-service"
+
+// The kinds of row that hold media here, as media-service registers them.
+const (
+	KindChannelUpdate = "channel_update" // channel_updates.media_ids, ref = update id
+	KindChannelAvatar = "channel_avatar" // broadcast_channels.avatar_media_id, ref = channel id
+	KindChannelBanner = "channel_banner" // broadcast_channels.banner_media_id, ref = channel id
+)
+
+// mediaNotFoundCode is media-service's code for "no such asset". A 404 without
+// it is a missing ROUTE (a media-service that predates claims), which is not a
+// verdict about the asset and must not be read as one.
+const mediaNotFoundCode = "MEDIA_NOT_FOUND"
+
+type claimRequest struct {
+	Claimant string      `json:"claimant"`
+	Kind     string      `json:"kind"`
+	Ref      string      `json:"ref"`
+	MediaIDs []uuid.UUID `json:"media_ids,omitempty"`
+	// ExceptMediaIDs (release only): release everything but these.
+	ExceptMediaIDs []uuid.UUID `json:"except_media_ids,omitempty"`
+}
+
+// Claim records that the row ref (of kind) holds every id. All or nothing:
+// ErrNotFound means one id names no asset and nothing was claimed. Idempotent.
+func (c *Client) Claim(ctx context.Context, kind string, ref uuid.UUID, mediaIDs []uuid.UUID) error {
+	return c.postClaim(ctx, "/v1/media/internal/claims", claimRequest{
+		Claimant: Claimant, Kind: kind, Ref: ref.String(), MediaIDs: mediaIDs,
+	})
+}
+
+// Release removes the row ref's claims on mediaIDs, or all of its claims when
+// mediaIDs is empty. Releasing what is not claimed succeeds.
+func (c *Client) Release(ctx context.Context, kind string, ref uuid.UUID, mediaIDs []uuid.UUID) error {
+	return c.postClaim(ctx, "/v1/media/internal/claims/release", claimRequest{
+		Claimant: Claimant, Kind: kind, Ref: ref.String(), MediaIDs: mediaIDs,
+	})
+}
+
+// ReleaseExcept removes every claim the row ref holds EXCEPT those on keep
+// ("this row holds exactly keep"), for the reconcile tool. keep must not be
+// empty; claim keep first.
+func (c *Client) ReleaseExcept(ctx context.Context, kind string, ref uuid.UUID, keep []uuid.UUID) error {
+	if len(keep) == 0 {
+		return fmt.Errorf("%w: ReleaseExcept needs a non-empty keep set; use Release", ErrUnavailable)
+	}
+	return c.postClaim(ctx, "/v1/media/internal/claims/release", claimRequest{
+		Claimant: Claimant, Kind: kind, Ref: ref.String(), ExceptMediaIDs: keep,
+	})
+}
+
+func (c *Client) postClaim(ctx context.Context, path string, body claimRequest) error {
+	if c == nil {
+		return fmt.Errorf("%w: no media-service client configured", ErrUnavailable)
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(raw))
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(internalKeyHeader, c.internalKey)
+
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: %v", ErrUnavailable, err)
+	}
+	defer resp.Body.Close() //nolint:errcheck
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	if resp.StatusCode == http.StatusNotFound {
+		var env struct {
+			Error struct {
+				Code string `json:"code"`
+			} `json:"error"`
+		}
+		if json.Unmarshal(respBody, &env) == nil && env.Error.Code == mediaNotFoundCode {
+			return ErrNotFound
+		}
+	}
+	return fmt.Errorf("%w: %s status %d", ErrUnavailable, path, resp.StatusCode)
 }

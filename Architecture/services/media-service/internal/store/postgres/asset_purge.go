@@ -85,21 +85,7 @@ func (s *MediaAssetStore) DeleteAssetForReferrer(ctx context.Context, mediaID uu
 	// fail-closed branch below — which is exactly what happened on the first
 	// live purge (2026-09-04, 409 for every asset). Each check therefore
 	// declares the arguments it binds.
-	checks := []struct {
-		table string
-		sql   string
-		args  []any
-	}{
-		{"post_media", `SELECT EXISTS (SELECT 1 FROM post_media WHERE media_id = $1)`, []any{mediaID}},
-		{"posts", `SELECT EXISTS (SELECT 1 FROM posts WHERE cover_media_id = $1 AND id <> $2)`, []any{mediaID, referrerID}},
-		{"post_draft_media", `SELECT EXISTS (
-			SELECT 1 FROM post_draft_media dm JOIN post_drafts d ON d.id = dm.draft_id
-			WHERE dm.media_id = $1 AND d.status <> 'deleted')`, []any{mediaID}},
-		{"stories", `SELECT EXISTS (SELECT 1 FROM stories WHERE media_id = $1)`, []any{mediaID}},
-		{"owner_media_slots", `SELECT EXISTS (SELECT 1 FROM owner_media_slots WHERE media_asset_id = $1)`, []any{mediaID}},
-		{"video_series", `SELECT EXISTS (SELECT 1 FROM video_series WHERE cover_media_id = $1)`, []any{mediaID}},
-		{"media_chat_attachment_reservations", `SELECT EXISTS (SELECT 1 FROM media_chat_attachment_reservations WHERE media_id = $1)`, []any{mediaID}},
-	}
+	checks := referrerPurgeChecks(mediaID, referrerID)
 	for _, c := range checks {
 		ok, err := tableExists(ctx, tx, c.table)
 		if err != nil {
@@ -204,4 +190,30 @@ func (s *MediaAssetStore) DeleteAssetForReferrer(ctx context.Context, mediaID uu
 		MediaID: mediaID, UploaderID: uploaderID,
 		Prefix: AssetPrefix(uploaderID, mediaID), ObjectKeys: keys,
 	}, nil
+}
+
+// referrerCheck is one reference DeleteAssetForReferrer must find empty.
+type referrerCheck struct {
+	table string
+	sql   string
+	args  []any
+}
+
+// referrerPurgeChecks is every claim the referrer purge consults, in order. A
+// function so the list is testable without a database.
+func referrerPurgeChecks(mediaID, referrerID uuid.UUID) []referrerCheck {
+	return []referrerCheck{
+		{"post_media", `SELECT EXISTS (SELECT 1 FROM post_media WHERE media_id = $1)`, []any{mediaID}},
+		{"posts", `SELECT EXISTS (SELECT 1 FROM posts WHERE cover_media_id = $1 AND id <> $2)`, []any{mediaID, referrerID}},
+		{"post_draft_media", `SELECT EXISTS (
+			SELECT 1 FROM post_draft_media dm JOIN post_drafts d ON d.id = dm.draft_id
+			WHERE dm.media_id = $1 AND d.status <> 'deleted')`, []any{mediaID}},
+		{"stories", `SELECT EXISTS (SELECT 1 FROM stories WHERE media_id = $1)`, []any{mediaID}},
+		{"owner_media_slots", `SELECT EXISTS (SELECT 1 FROM owner_media_slots WHERE media_asset_id = $1)`, []any{mediaID}},
+		{"video_series", `SELECT EXISTS (SELECT 1 FROM video_series WHERE cover_media_id = $1)`, []any{mediaID}},
+		{"media_chat_attachment_reservations", `SELECT EXISTS (SELECT 1 FROM media_chat_attachment_reservations WHERE media_id = $1)`, []any{mediaID}},
+		// Another service's claim (migration 031): the post may have been the
+		// last POST to use the asset, but a channel update still shows it.
+		{"media_claims", `SELECT EXISTS (SELECT 1 FROM media_claims WHERE media_id = $1)`, []any{mediaID}},
+	}
 }

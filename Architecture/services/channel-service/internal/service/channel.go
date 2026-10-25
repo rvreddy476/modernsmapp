@@ -143,6 +143,10 @@ type Service struct {
 	// confirmed upload (update_media.go). Nil refuses every update that
 	// carries media: fail closed.
 	media MediaLookup
+	// claims registers the media a channel row holds with media-service, so
+	// the uploader cannot delete it from under the row (media_claims.go).
+	// Nil refuses every write that ADDS media: fail closed.
+	claims MediaClaims
 }
 
 func New(s *store.Store, rdb *redis.Client) *Service {
@@ -307,11 +311,22 @@ func (s *Service) CreateChannel(ctx context.Context, ownerID uuid.UUID, params C
 		Status:                 "active",
 	}
 
-	if err := s.store.CreateChannel(ctx, ch); err != nil {
-		if strings.Contains(err.Error(), "broadcast_channels_handle_key") || strings.Contains(err.Error(), "duplicate key") {
-			return nil, fmt.Errorf("already taken: handle @%s is in use", handle)
+	// Claim the picture and banner before the row exists (media_claims.go).
+	avatarAdd, _ := optionalMediaDiff(nil, ch.AvatarMediaID)
+	bannerAdd, _ := optionalMediaDiff(nil, ch.BannerMediaID)
+	if err := s.writeWithClaims(ctx, []claimChange{
+		{kind: claimKindAvatar, ref: ch.ID, add: avatarAdd},
+		{kind: claimKindBanner, ref: ch.ID, add: bannerAdd},
+	}, func() error {
+		if err := s.store.CreateChannel(ctx, ch); err != nil {
+			if strings.Contains(err.Error(), "broadcast_channels_handle_key") || strings.Contains(err.Error(), "duplicate key") {
+				return fmt.Errorf("already taken: handle @%s is in use", handle)
+			}
+			return fmt.Errorf("failed to create channel: %w", err)
 		}
-		return nil, fmt.Errorf("failed to create channel: %w", err)
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	// The owner's membership row is written inside CreateChannel's transaction,
@@ -464,6 +479,15 @@ func (s *Service) UpdateChannel(ctx context.Context, channelID, actorID uuid.UUI
 		return nil, fmt.Errorf("forbidden: only admins and above can update the channel")
 	}
 
+	// Every save rewrites the picture and banner from this read, so every
+	// save is serialised with the other writers of this row's media
+	// (media_claims.go), not only the ones that change them.
+	unlock, err := s.lockMediaHolder(ctx, channelID)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
 	ch, err := s.store.GetChannelByID(ctx, channelID)
 	if err != nil {
 		return nil, err
@@ -509,6 +533,7 @@ func (s *Service) UpdateChannel(ctx context.Context, channelID, actorID uuid.UUI
 		}
 		ch.Description = about
 	}
+	prevAvatar, prevBanner := ch.AvatarMediaID, ch.BannerMediaID
 	if params.AvatarMediaID != nil {
 		ch.AvatarMediaID = params.AvatarMediaID
 	}
@@ -589,8 +614,20 @@ func (s *Service) UpdateChannel(ctx context.Context, channelID, actorID uuid.UUI
 		return nil, err
 	}
 
-	if err := s.store.UpdateChannel(ctx, ch); err != nil {
-		return nil, fmt.Errorf("failed to update channel: %w", err)
+	// A new picture or banner is claimed before the row names it; the one it
+	// replaces is released only after the row stops naming it.
+	avatarAdd, avatarDrop := optionalMediaDiff(prevAvatar, ch.AvatarMediaID)
+	bannerAdd, bannerDrop := optionalMediaDiff(prevBanner, ch.BannerMediaID)
+	if err := s.writeWithClaims(ctx, []claimChange{
+		{kind: claimKindAvatar, ref: ch.ID, add: avatarAdd, drop: avatarDrop},
+		{kind: claimKindBanner, ref: ch.ID, add: bannerAdd, drop: bannerDrop},
+	}, func() error {
+		if err := s.store.UpdateChannel(ctx, ch); err != nil {
+			return fmt.Errorf("failed to update channel: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	if s.producer != nil {
@@ -614,6 +651,9 @@ func (s *Service) DeleteChannel(ctx context.Context, channelID, actorID uuid.UUI
 	if err := s.store.DeleteChannel(ctx, channelID); err != nil {
 		return fmt.Errorf("failed to delete channel: %w", err)
 	}
+	// The channel is gone for good (no restore path): its picture, banner
+	// and every update's media stop being held (media_claims.go).
+	s.releaseChannelClaims(ctx, channelID)
 
 	if s.producer != nil {
 		if err := s.producer.PublishChannelDeleted(ctx, channelID, actorID); err != nil {
@@ -825,8 +865,15 @@ func (s *Service) CreateUpdate(ctx context.Context, channelID, authorID uuid.UUI
 		Status:      status,
 	}
 
-	if err := s.store.CreateUpdate(ctx, u); err != nil {
-		return nil, fmt.Errorf("failed to create update: %w", err)
+	if err := s.writeWithClaims(ctx, []claimChange{
+		{kind: claimKindUpdate, ref: u.ID, add: uniqueMedia(mediaIDs)},
+	}, func() error {
+		if err := s.store.CreateUpdate(ctx, u); err != nil {
+			return fmt.Errorf("failed to create update: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	if err := s.store.IncrementUpdateCount(ctx, channelID, 1); err != nil {
@@ -878,6 +925,14 @@ func (s *Service) EditUpdate(ctx context.Context, channelID, updateID, actorID u
 		return nil, err
 	}
 
+	// The edit rewrites media_ids from this read: serialise it with the
+	// other writers of this update's media (media_claims.go).
+	unlock, err := s.lockMediaHolder(ctx, updateID)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
 	u, err := s.store.GetUpdate(ctx, updateID)
 	if err != nil {
 		return nil, err
@@ -920,6 +975,7 @@ func (s *Service) EditUpdate(ctx context.Context, channelID, updateID, actorID u
 	if params.Body != "" {
 		u.Body = params.Body
 	}
+	prevMedia := u.MediaIDs
 	if params.MediaIDs != nil {
 		u.MediaIDs = params.MediaIDs
 	}
@@ -930,8 +986,18 @@ func (s *Service) EditUpdate(ctx context.Context, channelID, updateID, actorID u
 		u.ScheduledAt = params.ScheduledAt
 	}
 
-	if err := s.store.UpdateUpdate(ctx, u); err != nil {
-		return nil, fmt.Errorf("failed to edit update: %w", err)
+	// Added media is claimed before the row names it; removed media is
+	// released only after the row stops naming it (media_claims.go).
+	added, removed := mediaDiff(prevMedia, u.MediaIDs)
+	if err := s.writeWithClaims(ctx, []claimChange{
+		{kind: claimKindUpdate, ref: u.ID, add: added, drop: removed},
+	}, func() error {
+		if err := s.store.UpdateUpdate(ctx, u); err != nil {
+			return fmt.Errorf("failed to edit update: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	return u, nil
@@ -946,6 +1012,12 @@ func (s *Service) DeleteUpdate(ctx context.Context, channelID, updateID, actorID
 		return fmt.Errorf("forbidden: only admins and above can delete updates")
 	}
 
+	unlock, err := s.lockMediaHolder(ctx, updateID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+
 	u, err := s.store.GetUpdate(ctx, updateID)
 	if err != nil {
 		return err
@@ -956,6 +1028,11 @@ func (s *Service) DeleteUpdate(ctx context.Context, channelID, updateID, actorID
 
 	if err := s.store.DeleteUpdate(ctx, updateID); err != nil {
 		return fmt.Errorf("failed to delete update: %w", err)
+	}
+	// Deleted updates are never shown again: release their media
+	// (media_claims.go). Best effort; nil releases all the update holds.
+	if len(u.MediaIDs) > 0 {
+		s.release(ctx, claimKindUpdate, updateID, nil)
 	}
 
 	if s.producer != nil {

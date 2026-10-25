@@ -5,20 +5,78 @@ import (
 	"errors"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/atpost/channel-service/internal/mediaclient"
 	"github.com/google/uuid"
 )
 
-// fakeMedia answers Get from a map; an id not in it is ErrNotFound.
+// fakeMedia answers Get from a map; an id not in it is ErrNotFound. It also
+// takes claims the way media-service does (media_claims.go): all or nothing,
+// refused when an id is not in the map, and remembers what is held.
 type fakeMedia struct {
 	assets map[uuid.UUID]*mediaclient.Asset
 	err    error
 	calls  []uuid.UUID
+	// held is the claim table: kind/ref -> media ids.
+	held map[string]map[uuid.UUID]bool
+	mu   sync.Mutex // concurrent-edit tests call in from several goroutines
+}
+
+func claimKey(kind string, ref uuid.UUID) string { return kind + "/" + ref.String() }
+
+func (f *fakeMedia) Claim(_ context.Context, kind string, ref uuid.UUID, ids []uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	for _, id := range ids {
+		if _, ok := f.assets[id]; !ok {
+			return mediaclient.ErrNotFound
+		}
+	}
+	if f.held == nil {
+		f.held = map[string]map[uuid.UUID]bool{}
+	}
+	k := claimKey(kind, ref)
+	if f.held[k] == nil {
+		f.held[k] = map[uuid.UUID]bool{}
+	}
+	for _, id := range ids {
+		f.held[k][id] = true
+	}
+	return nil
+}
+
+func (f *fakeMedia) Release(_ context.Context, kind string, ref uuid.UUID, ids []uuid.UUID) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.err != nil {
+		return f.err
+	}
+	k := claimKey(kind, ref)
+	if len(ids) == 0 {
+		delete(f.held, k)
+		return nil
+	}
+	for _, id := range ids {
+		delete(f.held[k], id)
+	}
+	return nil
+}
+
+// holds reports whether kind/ref holds a claim on id.
+func (f *fakeMedia) holds(kind string, ref, id uuid.UUID) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.held[claimKey(kind, ref)][id]
 }
 
 func (f *fakeMedia) Get(_ context.Context, id uuid.UUID) (*mediaclient.Asset, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
 	f.calls = append(f.calls, id)
 	if f.err != nil {
 		return nil, f.err

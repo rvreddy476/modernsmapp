@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"time"
 
+	"github.com/atpost/channel-service/internal/mediaclient"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -908,4 +910,165 @@ func (s *Store) ListAttendees(ctx context.Context, updateID uuid.UUID, status st
 		attendees = append(attendees, a)
 	}
 	return attendees, rows.Err()
+}
+
+// ListUpdateIDsWithMedia returns every update of the channel that carries
+// media, deleted ones included: releasing their media claims is idempotent,
+// and a delete whose release failed is exactly the one to retry.
+func (s *Store) ListUpdateIDsWithMedia(ctx context.Context, channelID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT id FROM channel_updates WHERE channel_id = $1 AND cardinality(media_ids) > 0`, channelID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// MediaClaimRow is one channel row that holds (or held) media, for the media
+// claim reconcile tool (cmd/media-claims). Live is false when the row, or its
+// channel, is deleted: its claims should be released.
+type MediaClaimRow struct {
+	Kind     string // mediaclient.Kind*, as media-service registers it
+	Ref      uuid.UUID
+	MediaIDs []uuid.UUID
+	Live     bool
+}
+
+// UpdateMediaClaimRows pages through every update that names media, deleted
+// ones included, in id order after `after`.
+func (s *Store) UpdateMediaClaimRows(ctx context.Context, after uuid.UUID, limit int) ([]MediaClaimRow, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT u.id, u.media_ids, (u.status <> 'deleted' AND c.status <> 'deleted')
+		FROM channel_updates u
+		JOIN broadcast_channels c ON c.id = u.channel_id
+		WHERE cardinality(u.media_ids) > 0 AND u.id > $1
+		ORDER BY u.id
+		LIMIT $2`, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []MediaClaimRow
+	for rows.Next() {
+		r := MediaClaimRow{Kind: mediaclient.KindChannelUpdate}
+		if err := rows.Scan(&r.Ref, &r.MediaIDs, &r.Live); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ChannelMediaClaimRows pages through every channel with a picture or banner,
+// deleted ones included, in id order after `after`; the second value is the
+// last channel id read (the next cursor), since one channel yields up to two
+// rows.
+func (s *Store) ChannelMediaClaimRows(ctx context.Context, after uuid.UUID, limit int) ([]MediaClaimRow, uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT id, avatar_media_id, banner_media_id, status <> 'deleted'
+		FROM broadcast_channels
+		WHERE (avatar_media_id IS NOT NULL OR banner_media_id IS NOT NULL) AND id > $1
+		ORDER BY id
+		LIMIT $2`, after, limit)
+	if err != nil {
+		return nil, after, err
+	}
+	defer rows.Close()
+	var out []MediaClaimRow
+	last := after
+	for rows.Next() {
+		var id uuid.UUID
+		var avatar, banner *uuid.UUID
+		var live bool
+		if err := rows.Scan(&id, &avatar, &banner, &live); err != nil {
+			return nil, after, err
+		}
+		last = id
+		if avatar != nil {
+			out = append(out, MediaClaimRow{Kind: mediaclient.KindChannelAvatar, Ref: id, MediaIDs: []uuid.UUID{*avatar}, Live: live})
+		}
+		if banner != nil {
+			out = append(out, MediaClaimRow{Kind: mediaclient.KindChannelBanner, Ref: id, MediaIDs: []uuid.UUID{*banner}, Live: live})
+		}
+	}
+	return out, last, rows.Err()
+}
+
+// LockMediaHolder serialises every write that changes which media one row
+// holds (an update's media_ids, a channel's picture and banner), for as long as
+// the caller holds it. The claim protocol claims, writes and releases in three
+// steps; without this, two edits of the same row that each read it first can
+// interleave so that one's release removes a claim the other's write relies on
+// (internal/service/media_claims.go). Transaction-scoped, so a crash or a lost
+// connection frees it. unlock is idempotent.
+func (s *Store) LockMediaHolder(ctx context.Context, ref uuid.UUID) (unlock func(), err error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("lock media holder: %w", err)
+	}
+	if _, err := tx.Exec(ctx, lockMediaHolderSQL, mediaHolderLockKey(ref)); err != nil {
+		_ = tx.Rollback(context.WithoutCancel(ctx))
+		return nil, fmt.Errorf("lock media holder: %w", err)
+	}
+	done := false
+	return func() {
+		if !done {
+			done = true
+			_ = tx.Rollback(context.WithoutCancel(ctx))
+		}
+	}, nil
+}
+
+// lockMediaHolderSQL waits (never try_) for an exclusive, transaction-scoped
+// lock. Pinned by TestMediaHolderLockWaitsAndIsTransactionScoped; proven live
+// by TestMediaClaimsIT_HolderLockSerialises (CI).
+const lockMediaHolderSQL = `SELECT pg_advisory_xact_lock($1)`
+
+// mediaHolderLockKey namespaces the advisory lock so it cannot collide with
+// another lock taken on the same id for a different purpose.
+func mediaHolderLockKey(ref uuid.UUID) int64 {
+	h := fnv.New64a()
+	_, _ = h.Write([]byte("channel-media-holder:"))
+	_, _ = h.Write(ref[:])
+	return int64(h.Sum64())
+}
+
+// MediaClaimRowFor re-reads one holder row, for the reconcile tool, under
+// LockMediaHolder. A row that no longer exists is not live and holds nothing.
+func (s *Store) MediaClaimRowFor(ctx context.Context, kind string, ref uuid.UUID) (MediaClaimRow, error) {
+	row := MediaClaimRow{Kind: kind, Ref: ref}
+	var err error
+	switch kind {
+	case mediaclient.KindChannelUpdate:
+		err = s.db.QueryRow(ctx, `
+			SELECT u.media_ids, (u.status <> 'deleted' AND c.status <> 'deleted')
+			FROM channel_updates u JOIN broadcast_channels c ON c.id = u.channel_id
+			WHERE u.id = $1`, ref).Scan(&row.MediaIDs, &row.Live)
+	case mediaclient.KindChannelAvatar, mediaclient.KindChannelBanner:
+		col := "avatar_media_id"
+		if kind == mediaclient.KindChannelBanner {
+			col = "banner_media_id"
+		}
+		var id *uuid.UUID
+		err = s.db.QueryRow(ctx, `SELECT `+col+`, status <> 'deleted' FROM broadcast_channels WHERE id = $1`, ref).
+			Scan(&id, &row.Live)
+		if id != nil {
+			row.MediaIDs = []uuid.UUID{*id}
+		}
+	default:
+		return row, fmt.Errorf("unknown media holder kind %q", kind)
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		return MediaClaimRow{Kind: kind, Ref: ref}, nil
+	}
+	return row, err
 }
