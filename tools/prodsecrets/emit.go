@@ -132,15 +132,19 @@ func pushScript(env string, p *Plan, region string, now time.Time) string {
 }
 
 // rolesSQL is an idempotent psql script: one NOLOGIN owner group per
-// database, one LOGIN role per service that joins the group and assumes it
-// per database, so every member can migrate and read tables any other member
-// created. Run as the Aurora master user; re-running converges (passwords are
-// always set to the value in the matching DSN).
+// database, one LOGIN role per service. A read-write login (dsn:) joins the
+// group and assumes it per database, so every member can migrate and read
+// tables any other member created. A read-only login (dsn-ro:) gets CONNECT,
+// USAGE on every schema, SELECT on every table, and default privileges so
+// tables the owner group creates later are readable too; it is never a
+// member of the owner group, and any membership an earlier roles.sql gave it
+// is revoked. Run as the Aurora master user; re-running converges (passwords
+// are always set to the value in the matching DSN).
 func rolesSQL(p *Plan, now time.Time) string {
-	byDB := map[string][]string{}
+	byDB := map[string][]RoleGrant{}
 	roles := map[string]bool{}
 	for _, g := range p.Roles {
-		byDB[g.Database] = append(byDB[g.Database], g.Role)
+		byDB[g.Database] = append(byDB[g.Database], g)
 		roles[g.Role] = true
 	}
 	dbs := make([]string, 0, len(byDB))
@@ -174,25 +178,70 @@ func rolesSQL(p *Plan, now time.Time) string {
 	}
 	for _, db := range dbs {
 		owner := db + "_owner"
-		members := byDB[db]
-		sort.Strings(members)
-		fmt.Fprintf(&b, "-- database %s: owner group %s; members %s\n", db, owner, strings.Join(members, ", "))
+		grants := byDB[db]
+		sort.Slice(grants, func(i, j int) bool { return grants[i].Role < grants[j].Role })
+		var writers, readers []string
+		for _, g := range grants {
+			if g.ReadOnly {
+				readers = append(readers, g.Role)
+			} else {
+				writers = append(writers, g.Role)
+			}
+		}
+		fmt.Fprintf(&b, "-- database %s: owner group %s; members %s", db, owner, listOrNone(writers))
+		if len(readers) > 0 {
+			fmt.Fprintf(&b, "; read-only %s", strings.Join(readers, ", "))
+		}
+		fmt.Fprintf(&b, "\n")
 		fmt.Fprintf(&b, "DO $$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '%s') THEN CREATE ROLE %s NOLOGIN; END IF; END $$;\n", owner, owner)
 		fmt.Fprintf(&b, "GRANT %s TO CURRENT_USER;\n", owner)
 		fmt.Fprintf(&b, "ALTER DATABASE %s OWNER TO %s;\n", db, owner)
 		fmt.Fprintf(&b, "REVOKE CONNECT ON DATABASE %s FROM PUBLIC;\n", db)
-		for _, role := range members {
+		for _, role := range writers {
 			fmt.Fprintf(&b, "GRANT CONNECT ON DATABASE %s TO %s;\n", db, role)
 			fmt.Fprintf(&b, "GRANT %s TO %s;\n", owner, role)
 			fmt.Fprintf(&b, "ALTER ROLE %s IN DATABASE %s SET role = '%s';\n", role, db, owner)
+		}
+		for _, role := range readers {
+			fmt.Fprintf(&b, "GRANT CONNECT ON DATABASE %s TO %s;\n", db, role)
+			// Converges a login an earlier roles.sql put in the owner group.
+			fmt.Fprintf(&b, "REVOKE %s FROM %s;\n", owner, role)
+			fmt.Fprintf(&b, "ALTER ROLE %s IN DATABASE %s RESET role;\n", role, db)
+			// Belt and braces: even a grant added by hand later cannot be
+			// used without an explicit read-write transaction.
+			fmt.Fprintf(&b, "ALTER ROLE %s IN DATABASE %s SET default_transaction_read_only = on;\n", role, db)
 		}
 		fmt.Fprintf(&b, "\\connect %s\n", db)
 		fmt.Fprintf(&b, "ALTER SCHEMA public OWNER TO %s;\n", owner)
 		fmt.Fprintf(&b, "GRANT ALL ON ALL TABLES IN SCHEMA public TO %s;\n", owner)
 		fmt.Fprintf(&b, "GRANT ALL ON ALL SEQUENCES IN SCHEMA public TO %s;\n", owner)
+		if len(readers) > 0 {
+			// Before PostgreSQL 15 every role may CREATE in public; a reader
+			// must not. Members keep it through the owner group, which owns
+			// the schema.
+			fmt.Fprintf(&b, "REVOKE CREATE ON SCHEMA public FROM PUBLIC;\n")
+		}
+		for _, role := range readers {
+			// Every user schema, not only public: chat_db's tables live in
+			// schema chat and identity_db's legacy blocks in schema profile.
+			fmt.Fprintf(&b, "DO $$ DECLARE s name; BEGIN FOR s IN SELECT nspname FROM pg_namespace WHERE nspname NOT LIKE 'pg\\_%%' AND nspname <> 'information_schema' LOOP "+
+				"EXECUTE format('GRANT USAGE ON SCHEMA %%I TO %s', s); "+
+				"EXECUTE format('GRANT SELECT ON ALL TABLES IN SCHEMA %%I TO %s', s); "+
+				"END LOOP; END $$;\n", role, role)
+			// Schemas and tables the owner group creates after this run.
+			fmt.Fprintf(&b, "ALTER DEFAULT PRIVILEGES FOR ROLE %s GRANT USAGE ON SCHEMAS TO %s;\n", owner, role)
+			fmt.Fprintf(&b, "ALTER DEFAULT PRIVILEGES FOR ROLE %s GRANT SELECT ON TABLES TO %s;\n", owner, role)
+		}
 		fmt.Fprintf(&b, "\\connect postgres\n\n")
 	}
 	return b.String()
+}
+
+func listOrNone(names []string) string {
+	if len(names) == 0 {
+		return "(none)"
+	}
+	return strings.Join(names, ", ")
 }
 
 func sqlLiteral(s string) string {

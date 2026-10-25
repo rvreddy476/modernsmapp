@@ -507,6 +507,7 @@ func TestCommittedManifestFullApply(t *testing.T) {
 			TF: map[string]string{
 				"aurora_cluster_endpoint":      "aurora.example.internal",
 				"commerce_pii_kms_key_id":      "1234abcd-12ab-34cd-56ef-1234567890ab",
+				"chat_field_kms_key_id":        "5678abcd-12ab-34cd-56ef-1234567890ab",
 				"elasticache_primary_endpoint": "cache.example.internal",
 				"msk_bootstrap_brokers":        "b-1.example:9096,b-2.example:9096",
 				"opensearch_endpoint":          "vpc-search.example.internal",

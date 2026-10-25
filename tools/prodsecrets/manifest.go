@@ -20,6 +20,7 @@ const (
 	KindPromptFile     = "prompt-file"
 	KindTF             = "tf"
 	KindDSN            = "dsn"
+	KindDSNReadOnly    = "dsn-ro"
 	KindShared         = "shared"
 	KindSharedPrivate  = "shared-private"
 	KindSharedPublic   = "shared-public"
@@ -49,7 +50,7 @@ func (s Spec) Category() string {
 		return "prompt"
 	case KindTF:
 		return "terraform-output"
-	case KindDSN, KindDerive, KindShared, KindSharedPrivate, KindSharedPublic:
+	case KindDSN, KindDSNReadOnly, KindDerive, KindShared, KindSharedPrivate, KindSharedPublic:
 		return "derive"
 	case KindCopy:
 		return "copy"
@@ -184,7 +185,13 @@ func (m *Manifest) SharedEntry(name string) (Entry, bool) {
 	return Entry{}, false
 }
 
-// DSNRef is the parsed argument of dsn:<database>/<role>.
+// IsDSN reports whether the spec is a database login: dsn: (read-write, a
+// member of the database's owner group) or dsn-ro: (SELECT only, never a
+// member of the owner group).
+func (s Spec) IsDSN() bool { return s.Kind == KindDSN || s.Kind == KindDSNReadOnly }
+
+// DSNRef is the parsed argument of dsn:<database>/<role> and
+// dsn-ro:<database>/<role>.
 type DSNRef struct {
 	Database string
 	Role     string
@@ -592,7 +599,7 @@ func parseSpec(s string) (Spec, error) {
 		if !keyRe.MatchString(arg) {
 			return spec, fmt.Errorf("%s needs a name, got %q", kind, arg)
 		}
-	case KindDSN:
+	case KindDSN, KindDSNReadOnly:
 		if _, err := ParseDSNRef(arg); err != nil {
 			return spec, err
 		}
@@ -680,6 +687,23 @@ func (m *Manifest) validate() error {
 			// The private half would be generated and thrown away: every
 			// receiver would trust a key nobody can sign with.
 			return fmt.Errorf("manifest line %d: keypair %q has no shared-private holder", e.Line, e.Name)
+		}
+	}
+	// A login is read-write or read-only in a database, never both: one
+	// LOGIN role cannot be inside and outside the owner group at once, and a
+	// silent "read-write wins" would hand a reader the right to write.
+	loginMode := map[string]Entry{}
+	for _, s := range m.Secrets {
+		for _, k := range s.Keys {
+			if !k.Spec.IsDSN() {
+				continue
+			}
+			ref, _ := ParseDSNRef(k.Spec.Arg)
+			id := ref.Role + "@" + ref.Database
+			if prev, ok := loginMode[id]; ok && prev.Spec.Kind != k.Spec.Kind {
+				return fmt.Errorf("manifest line %d: %s.%s declares role %s on %s as %s, but line %d declares it %s; a login is read-write or read-only in a database, not both", k.Line, s.Name, k.Name, ref.Role, ref.Database, k.Spec.Kind, prev.Line, prev.Spec.Kind)
+			}
+			loginMode[id] = k
 		}
 	}
 	for _, s := range m.Secrets {

@@ -238,6 +238,17 @@ module "commerce_pii_kms" {
   principal_role_arns       = [module.service_irsa["commerce-service"].role_arn]
 }
 
+# Chat field encryption key (CHAT_KMS_KEY_ID). message-service runs with
+# APP_ENV=production here, so the encryption context it sets says
+# environment=production; see the module header.
+module "chat_field_kms" {
+  source = "../../modules/chat-field-kms"
+
+  env                            = var.environment
+  encryption_context_environment = "production"
+  principal_role_arns            = [module.service_irsa["chat-message-service"].role_arn]
+}
+
 # ─── In-cluster tooling (pass 2) ─────────────────────────────────────
 
 module "external_secrets" {
@@ -429,5 +440,7 @@ output "auth_keys_secret_name" { value = module.auth_keys.secret_name }
 output "auth_keys_secret_arn" { value = module.auth_keys.secret_arn }
 output "commerce_pii_kms_key_id" { value = module.commerce_pii_kms.key_id }
 output "commerce_pii_kms_key_arn" { value = module.commerce_pii_kms.key_arn }
+output "chat_field_kms_key_id" { value = module.chat_field_kms.key_id }
+output "chat_field_kms_key_arn" { value = module.chat_field_kms.key_arn }
 output "codeartifact_npm_endpoint" { value = module.codeartifact.npm_endpoint }
 output "codeartifact_domain" { value = module.codeartifact.domain }

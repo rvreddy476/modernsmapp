@@ -86,10 +86,13 @@ func (s SecretPlan) Payload() map[string]string {
 	return out
 }
 
-// RoleGrant records that a role needs access to a database.
+// RoleGrant records that a role needs access to a database. ReadOnly
+// (dsn-ro:) logins get CONNECT, schema USAGE and SELECT, and are never put in
+// the database's owner group.
 type RoleGrant struct {
 	Role     string
 	Database string
+	ReadOnly bool
 }
 
 // Plan is the result of a resolution run.
@@ -251,7 +254,7 @@ func (r *resolver) checkRotateTarget(t string) error {
 	case "role":
 		for _, s := range r.m.Secrets {
 			for _, k := range s.Keys {
-				if k.Spec.Kind == KindDSN {
+				if k.Spec.IsDSN() {
 					ref, _ := ParseDSNRef(k.Spec.Arg)
 					if ref.Role == name {
 						return nil
@@ -259,7 +262,7 @@ func (r *resolver) checkRotateTarget(t string) error {
 				}
 			}
 		}
-		return fmt.Errorf("--rotate %q: no dsn: key uses role %q", t, name)
+		return fmt.Errorf("--rotate %q: no dsn: or dsn-ro: key uses role %q", t, name)
 	default:
 		for _, s := range r.m.Secrets {
 			if s.Name != kind {
@@ -272,7 +275,7 @@ func (r *resolver) checkRotateTarget(t string) error {
 				switch k.Spec.Kind {
 				case KindShared, KindSharedPrivate, KindSharedPublic:
 					return fmt.Errorf("--rotate %q: this key copies shared %q; rotate shared/%s instead", t, k.Spec.Arg, k.Spec.Arg)
-				case KindDSN:
+				case KindDSN, KindDSNReadOnly:
 					ref, _ := ParseDSNRef(k.Spec.Arg)
 					return fmt.Errorf("--rotate %q: this key is a DSN; rotate role/%s instead", t, ref.Role)
 				}
@@ -319,7 +322,7 @@ func (r *resolver) rotating(secret string, k Entry) bool {
 			ref, _ := ParseCopyRef(e.Spec.Arg)
 			return r.in.Rotate["source/"+ref.Source]
 		}
-	case KindDSN:
+	case KindDSN, KindDSNReadOnly:
 		ref, _ := ParseDSNRef(k.Spec.Arg)
 		return r.in.Rotate["role/"+ref.Role]
 	case KindCopy:
@@ -392,7 +395,7 @@ func (r *resolver) resolveKey(secret string, k Entry) (KeyResult, error) {
 		value, origin, pending = r.copyValue(k.Spec.Arg)
 	case KindDerive:
 		value, origin, pending = r.deriveValue(k.Spec.Arg)
-	case KindDSN:
+	case KindDSN, KindDSNReadOnly:
 		value, origin, pending, err = r.dsnValue(k.Spec.Arg, rotating)
 	case KindShared, KindSharedPrivate, KindSharedPublic:
 		sv, serr := r.resolveShared(k.Spec.Arg)
@@ -625,7 +628,7 @@ func (r *resolver) adoptRolePassword(role string, src map[string]map[string]stri
 	found := ""
 	for _, s := range r.m.Secrets {
 		for _, k := range s.Keys {
-			if k.Spec.Kind != KindDSN {
+			if !k.Spec.IsDSN() {
 				continue
 			}
 			ref, _ := ParseDSNRef(k.Spec.Arg)
@@ -857,7 +860,7 @@ func (r *resolver) collectRoles() {
 	seen := map[string]bool{}
 	for _, s := range r.m.Secrets {
 		for _, k := range s.Keys {
-			if k.Spec.Kind != KindDSN {
+			if !k.Spec.IsDSN() {
 				continue
 			}
 			ref, _ := ParseDSNRef(k.Spec.Arg)
@@ -866,7 +869,7 @@ func (r *resolver) collectRoles() {
 				continue
 			}
 			seen[id] = true
-			r.plan.Roles = append(r.plan.Roles, RoleGrant{Role: ref.Role, Database: ref.Database})
+			r.plan.Roles = append(r.plan.Roles, RoleGrant{Role: ref.Role, Database: ref.Database, ReadOnly: k.Spec.Kind == KindDSNReadOnly})
 		}
 	}
 	sort.Slice(r.plan.Roles, func(i, j int) bool {

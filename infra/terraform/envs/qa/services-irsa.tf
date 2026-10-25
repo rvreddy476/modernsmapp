@@ -5,6 +5,7 @@
 #   media-service           media bucket + KMS, Rekognition, READ on live-recordings
 #                           (the worker shares media-service's ServiceAccount)
 #   commerce-service        commerce PII KMS key, commerce-invoices bucket
+#   chat-message-service    chat field KMS key (GenerateDataKey, Decrypt)
 #   food-service            food-files bucket
 #   live-service-v2         live-recordings bucket
 #   everyone else           nothing — Kafka is SASL/SCRAM, OpenSearch basic auth
@@ -99,6 +100,13 @@ module "service_irsa" {
 resource "aws_iam_role_policy_attachment" "commerce_pii_kms" {
   role       = module.service_irsa["commerce-service"].role_name
   policy_arn = module.commerce_pii_kms.client_policy_arn
+}
+
+# Same pattern for the chat field key (main.tf, module.chat_field_kms):
+# GenerateDataKey + Decrypt on that key only, under the pinned context.
+resource "aws_iam_role_policy_attachment" "chat_field_kms" {
+  role       = module.service_irsa["chat-message-service"].role_name
+  policy_arn = module.chat_field_kms.client_policy_arn
 }
 
 output "service_irsa_role_arns" {

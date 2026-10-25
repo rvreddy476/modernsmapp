@@ -41,7 +41,12 @@
 #   terraform  tf:<output>               a `terraform output -json` value (not secret)
 #   derive     derive:<template>         {tf:<output>} and {copy:<source>#<field>} substituted
 #              dsn:<database>/<role>     postgres://<role>:<pw>@<tf:aurora_cluster_endpoint>:5432/<database>?sslmode=require
-#                                        one generated password per role; CREATE ROLE/GRANT SQL in roles.sql
+#                                        one generated password per role; CREATE ROLE/GRANT SQL in roles.sql;
+#                                        the login joins <database>_owner (read-write, may migrate)
+#              dsn-ro:<database>/<role>  the same DSN for a READ-ONLY login: roles.sql grants CONNECT, USAGE
+#                                        on every schema, SELECT on every table (and default privileges for
+#                                        future ones) and never owner membership. A role is dsn or dsn-ro
+#                                        in a given database, not both.
 #              shared:<name>             the same value in every secret that names it
 #              shared-private:<name>     private half of a shared keypair (the CALLER)
 #              shared-public:<name>      public half of the same keypair (every RECEIVER)
@@ -248,8 +253,10 @@ secrets:
     jwt_kid: copy:platform-auth#jwt_kid
     jwt_secret_previous: shared:jwt_secret_previous
     jwt_kid_previous: shared:jwt_kid_previous
-    # Blocks recorded by the retired profile service live in identity_db.
-    legacy_profile_blocks_dsn: dsn:identity_db/graph_service
+    # Blocks recorded by the retired profile service live in identity_db
+    # (profile.blocks). The reconciler only SELECTs there; imports are
+    # written to graph-service's own app database.
+    legacy_profile_blocks_dsn: dsn-ro:identity_db/graph_service
 
   group-service:
     postgres_dsn: dsn:app/group_service
@@ -421,10 +428,10 @@ secrets:
     jwt_public_key_pem: copy:platform-auth#jwt_public_key_pem
     chat_entitlement_secret: shared:chat_entitlement_secret
     # Message field encryption (CHAT_KMS_KEY_ID): message-service refuses to
-    # boot outside dev without it. No Terraform module creates this key
-    # yet, so the founder types its id or ARN (purpose=chat-field context;
-    # the IRSA role needs kms:GenerateDataKey and kms:Decrypt on it).
-    chat_kms_key_id: prompt:KMS key id or ARN for chat field encryption (${env_label})
+    # boot outside dev without it. modules/chat-field-kms creates the key
+    # (alias/atpost-${env}-chat-field, purpose=chat-field context) and grants
+    # this service's IRSA role kms:GenerateDataKey and kms:Decrypt on it.
+    chat_kms_key_id: tf:chat_field_kms_key_id
 
   chat-ws-gateway:
     redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
@@ -437,12 +444,13 @@ secrets:
     jwt_public_key_pem: copy:platform-auth#jwt_public_key_pem
     chat_entitlement_secret: shared:chat_entitlement_secret
     # chat_db DSN for presence fan-out (DM peers); the gateway only reads.
-    chat_postgres_dsn: dsn:chat_db/chat_ws_gateway
+    chat_postgres_dsn: dsn-ro:chat_db/chat_ws_gateway
 
   chat-call-service:
     postgres_dsn: dsn:call_db/chat_call
-    # chat_db DSN for per-chat "mute calls"; chat-call-service only reads.
-    chat_postgres_dsn: dsn:chat_db/chat_call
+    # chat_db DSN for per-chat "mute calls" and hidden chats;
+    # chat-call-service only reads.
+    chat_postgres_dsn: dsn-ro:chat_db/chat_call
     redis_addr: derive:{tf:elasticache_primary_endpoint}:6379
     redis_password: copy:elasticache-auth#auth_token
     kafka_brokers: tf:msk_bootstrap_brokers

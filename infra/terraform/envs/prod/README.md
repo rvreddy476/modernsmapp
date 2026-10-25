@@ -62,13 +62,15 @@ terraform plan -var-file=prod.tfvars -out=pass1.plan \
   -target=module.waf -target=module.waf_psp_webhook \
   -target=module.codeartifact -target=module.auth_keys \
   -target=module.service_irsa -target=module.commerce_pii_kms \
+  -target=module.chat_field_kms \
   -target=module.public_edge_cert -target=module.media_cdn_cert \
   -target=module.bucket_live_recordings -target=module.bucket_commerce_invoices \
   -target=module.bucket_food_files -target=module.service_secrets \
   -target=module.ses -target=module.ops \
   -target=aws_iam_policy.rekognition -target=aws_iam_policy.livekit_egress \
   -target=aws_iam_role_policy_attachment.ci_codeartifact \
-  -target=aws_iam_role_policy_attachment.commerce_pii_kms
+  -target=aws_iam_role_policy_attachment.commerce_pii_kms \
+  -target=aws_iam_role_policy_attachment.chat_field_kms
 terraform apply pass1.plan
 ```
 
@@ -132,6 +134,7 @@ Run pass 2 with the SAME principal as pass 1 (or one listed in
 | `waf_web_acl_arn` | every public ingress (api-gateway, chat-ws-gateway, payments webhook, web, admin console). The payments webhook shares the api ALB and the load-balancer controller refuses an ingress group whose members name different ACLs, so it uses this ACL too |
 | `waf_psp_webhook_acl_arn` | not wired yet: either move its rule into the web ACL scoped to the webhook path, or give the webhook its own host and ALB |
 | `commerce_pii_kms_key_id` | commerce `COMMERCE_KMS_KEY_ID` |
+| `chat_field_kms_key_id` | chat-message-service `CHAT_KMS_KEY_ID` (the seeder reads it; alias `alias/atpost-prod-chat-field`) |
 | `ses_configuration_set_name` | identity-auth `SES_CONFIGURATION_SET` (already `atpost-prod-transactional`) |
 | `ci_role_arn`, `terraform_apply_role_arn` | GitHub repository secrets `AWS_CI_ROLE_ARN`, `AWS_TERRAFORM_ROLE_ARN` (+ state bucket / lock table names) |
 | `ecr_repository_urls` | CI image names |
