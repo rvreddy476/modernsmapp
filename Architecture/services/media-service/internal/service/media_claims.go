@@ -43,6 +43,48 @@ var claimKinds = map[string]map[string]claimLabel{
 		"channel_avatar": {"channel picture", "channel pictures"},
 		"channel_banner": {"channel banner", "channel banners"},
 	},
+	"profile-service": {
+		"profile_avatar": {"profile picture", "profile pictures"},
+		"profile_cover":  {"profile cover", "profile covers"},
+	},
+	"user-service": {
+		"channel_avatar":       {"channel picture", "channel pictures"},
+		"channel_banner":       {"channel banner", "channel banners"},
+		"portfolio_item":       {"portfolio item", "portfolio items"},
+		"business_page_avatar": {"page picture", "page pictures"},
+		"business_page_cover":  {"page cover", "page covers"},
+	},
+	"post-service": {
+		"post_cover":  {"post cover", "post covers"},
+		"reel_draft":  {"reel draft", "reel drafts"},
+		"event_cover": {"event cover", "event covers"},
+	},
+	"community-service": {
+		"community_avatar": {"community picture", "community pictures"},
+		"community_banner": {"community banner", "community banners"},
+	},
+	"group-service": {
+		"group_avatar":      {"group picture", "group pictures"},
+		"group_cover":       {"group cover", "group covers"},
+		"group_event_cover": {"group event cover", "group event covers"},
+	},
+	"qa-service": {
+		"qa_question": {"question", "questions"},
+		"qa_answer":   {"answer", "answers"},
+	},
+	"live-service-v2": {
+		"live_cover": {"live stream cover", "live stream covers"},
+	},
+	"monetization-service": {
+		"fundraiser_cover": {"fundraiser cover", "fundraiser covers"},
+		"invoice_pdf":      {"invoice", "invoices"},
+	},
+	"dating-service": {
+		"dating_photo":        {"dating profile photo", "dating profile photos"},
+		"prompt_clip":         {"dating prompt clip", "dating prompt clips"},
+		"selfie_attempt":      {"selfie verification attempt", "selfie verification attempts"},
+		"verification_selfie": {"selfie verification", "selfie verifications"},
+	},
 }
 
 type claimLabel struct{ one, many string }
