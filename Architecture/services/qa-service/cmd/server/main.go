@@ -10,6 +10,8 @@ import (
 	"github.com/atpost/qa-service/database"
 	qaevents "github.com/atpost/qa-service/internal/events"
 	"github.com/atpost/qa-service/internal/http"
+	"github.com/atpost/qa-service/internal/mediaclaims"
+	"github.com/atpost/qa-service/internal/mediaclient"
 	"github.com/atpost/qa-service/internal/service"
 	"github.com/atpost/qa-service/internal/store"
 	pgstore "github.com/atpost/qa-service/internal/store/postgres"
@@ -99,6 +101,19 @@ func main() {
 	// 7. Dependencies
 	qaStore := store.New(dbPool)
 	qaSvc := service.New(qaStore, rdb)
+
+	// Question media authority: every media id a question attaches must be
+	// the author's own confirmed upload, and is claimed in media-service
+	// before the row names it so the uploader cannot delete it out from under
+	// the question (internal/mediaclaims). Without a client, questions that
+	// carry media answer 503 MEDIA_UNAVAILABLE; others are untouched.
+	mediaURL := env("MEDIA_SERVICE_URL", "http://media-service:8087")
+	if mc := mediaclient.New(mediaURL, os.Getenv("INTERNAL_SERVICE_KEY")); mc != nil {
+		qaSvc.WithMedia(mediaclaims.FromClient(mc))
+		slog.Info("qa-service: media verification and claims enabled", "media_url", mediaURL)
+	} else {
+		slog.Warn("qa-service: MEDIA_SERVICE_URL or INTERNAL_SERVICE_KEY not set — questions that carry media are refused with 503 MEDIA_UNAVAILABLE")
+	}
 
 	// 8. Kafka producer
 	producer := qaevents.NewProducerWithDialer(kafkaBrokers, kafkaTopic, kafkaDialer)

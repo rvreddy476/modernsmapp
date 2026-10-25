@@ -68,6 +68,8 @@ env:
   LOG_LEVEL: info
   AWS_REGION: ap-south-1
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
+  # Media attach checks and claims call media-service.
+  MEDIA_SERVICE_URL: http://media-service.atpost.svc.cluster.local:8087
   REDIS_TLS_ENABLED: "true"
   KAFKA_TLS_ENABLED: "true"
   KAFKA_SASL_MECHANISM: SCRAM-SHA-512

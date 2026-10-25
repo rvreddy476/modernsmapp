@@ -8,6 +8,7 @@ import (
 	"time"
 
 	communityevents "github.com/atpost/community-service/internal/events"
+	"github.com/atpost/community-service/internal/mediaclaims"
 	"github.com/atpost/community-service/internal/store"
 	"github.com/atpost/shared/counters"
 	"github.com/google/uuid"
@@ -142,6 +143,10 @@ type Service struct {
 	// Redis is configured the service falls back to per-event PG
 	// UPDATE (the legacy hot-row path) so the dev loop still works.
 	memberCounter *counters.Counter
+	// media is the attach gate and claim protocol for a community's avatar
+	// and banner (media_claims.go). Nil refuses every write that adds media:
+	// fail closed.
+	media *mediaclaims.Gate
 }
 
 func New(s *store.Store, rdb *redis.Client) *Service {
@@ -360,8 +365,15 @@ func (s *Service) CreateCommunity(ctx context.Context, ownerID uuid.UUID, params
 		Status:          "active",
 	}
 
-	if err := s.store.CreateCommunity(ctx, c); err != nil {
-		return nil, fmt.Errorf("failed to create community: %w", err)
+	// The avatar and banner must be the owner's own finished uploads, and
+	// are claimed before the row names them (media_claims.go).
+	if err := s.media.Attach(ctx, ownerID, communityMediaChanges(c.ID, nil, nil, c.AvatarMediaID, c.BannerMediaID), func() error {
+		if err := s.store.CreateCommunity(ctx, c); err != nil {
+			return fmt.Errorf("failed to create community: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	// Add owner as member
@@ -439,10 +451,20 @@ func (s *Service) UpdateCommunity(ctx context.Context, communityID, actorID uuid
 		return nil, fmt.Errorf("forbidden: only admins and above can update the community")
 	}
 
+	// Every save rewrites the avatar and banner from this read, so every save
+	// is serialised with the other writers of this row's media
+	// (media_claims.go), not only the ones that change them.
+	unlock, err := s.lockMediaHolder(ctx, communityID)
+	if err != nil {
+		return nil, err
+	}
+	defer unlock()
+
 	c, err := s.store.GetCommunityByID(ctx, communityID)
 	if err != nil {
 		return nil, err
 	}
+	prevAvatar, prevBanner := c.AvatarMediaID, c.BannerMediaID
 
 	if params.Name != nil {
 		c.Name = *params.Name
@@ -505,8 +527,16 @@ func (s *Service) UpdateCommunity(ctx context.Context, communityID, actorID uuid
 		c.TopicTags = params.TopicTags
 	}
 
-	if err := s.store.UpdateCommunity(ctx, c); err != nil {
-		return nil, fmt.Errorf("failed to update community: %w", err)
+	// A new avatar or banner must be the actor's own finished upload and is
+	// claimed before the row names it; the one it replaces is released only
+	// after the row stops naming it.
+	if err := s.media.Attach(ctx, actorID, communityMediaChanges(c.ID, prevAvatar, prevBanner, c.AvatarMediaID, c.BannerMediaID), func() error {
+		if err := s.store.UpdateCommunity(ctx, c); err != nil {
+			return fmt.Errorf("failed to update community: %w", err)
+		}
+		return nil
+	}); err != nil {
+		return nil, err
 	}
 
 	if s.producer != nil {
@@ -527,9 +557,17 @@ func (s *Service) DeleteCommunity(ctx context.Context, communityID, actorID uuid
 		return fmt.Errorf("forbidden: only the community owner can delete the community")
 	}
 
+	unlock, err := s.lockMediaHolder(ctx, communityID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := s.store.DeleteCommunity(ctx, communityID); err != nil {
 		return fmt.Errorf("failed to delete community: %w", err)
 	}
+	// A deleted community is never shown again (no restore path): its avatar
+	// and banner stop being held (media_claims.go).
+	s.releaseCommunityMedia(ctx, communityID)
 
 	if s.producer != nil {
 		if err := s.producer.PublishCommunityDeleted(ctx, communityID, actorID); err != nil {

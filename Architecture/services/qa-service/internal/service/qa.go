@@ -7,6 +7,7 @@ import (
 	"time"
 
 	qaevents "github.com/atpost/qa-service/internal/events"
+	"github.com/atpost/qa-service/internal/mediaclaims"
 	"github.com/atpost/qa-service/internal/store"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
@@ -21,6 +22,10 @@ type Service struct {
 	store    *store.Store
 	rdb      *redis.Client
 	producer *qaevents.Producer
+	// media is the attach gate and claim protocol for a question's media
+	// (media_claims.go). Nil refuses every question that carries media: fail
+	// closed.
+	media *mediaclaims.Gate
 }
 
 func New(s *store.Store, rdb *redis.Client) *Service {
@@ -62,8 +67,20 @@ func (s *Service) CreateQuestion(ctx context.Context, authorID uuid.UUID, p stor
 			p.Status = "pending_approval"
 		}
 	}
-	q, err := s.store.CreateQuestion(ctx, authorID, p)
+	// The media must be the author's own finished uploads, and is claimed
+	// against the question's id before the row exists (media_claims.go).
+	mediaIDs, err := parseQuestionMedia(p.MediaIDs)
 	if err != nil {
+		return nil, err
+	}
+	p.ID = uuid.New()
+	p.MediaIDs = mediaIDStrings(mediaIDs)
+	var q *store.Question
+	if err := s.media.Attach(ctx, authorID, questionMediaChanges(p.ID, mediaIDs), func() error {
+		var err error
+		q, err = s.store.CreateQuestion(ctx, authorID, p)
+		return err
+	}); err != nil {
 		return nil, err
 	}
 	if s.producer != nil {
@@ -118,9 +135,17 @@ func (s *Service) DeleteQuestion(ctx context.Context, questionID, actorID uuid.U
 	if existing.AuthorID != actorID {
 		return fmt.Errorf("not authorized")
 	}
+	unlock, err := s.lockMediaHolder(ctx, questionID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := s.store.DeleteQuestion(ctx, questionID); err != nil {
 		return err
 	}
+	// A deleted question is never shown again (no restore path): its media
+	// stops being held (media_claims.go).
+	s.releaseQuestionMedia(ctx, questionID)
 	if s.producer != nil {
 		_ = s.producer.PublishQuestionDeleted(ctx, questionID, actorID)
 	}

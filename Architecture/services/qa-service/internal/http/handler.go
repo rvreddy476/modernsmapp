@@ -287,6 +287,9 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 	if err == nil {
 		return
 	}
+	if writeMediaError(c, err) {
+		return
+	}
 
 	msg := err.Error()
 	if detail, ok := strings.CutPrefix(msg, "invalid: "); ok {

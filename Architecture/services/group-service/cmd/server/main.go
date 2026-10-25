@@ -10,6 +10,8 @@ import (
 	"github.com/atpost/group-service/database"
 	groupevents "github.com/atpost/group-service/internal/events"
 	"github.com/atpost/group-service/internal/http"
+	"github.com/atpost/group-service/internal/mediaclaims"
+	"github.com/atpost/group-service/internal/mediaclient"
 	"github.com/atpost/group-service/internal/service"
 	"github.com/atpost/group-service/internal/store"
 	"github.com/atpost/shared/health"
@@ -100,6 +102,18 @@ func main() {
 	// because a block must never be bypassed by a missing dependency.
 	groupSvc.SetGraphServiceURL(env("GRAPH_SERVICE_URL", "http://graph-service:8083"))
 	groupSvc.SetMediaServiceURL(env("MEDIA_SERVICE_URL", "http://media-service:8087"))
+	// Group avatar/cover and event cover authority: a new one must be the
+	// actor's own confirmed upload, and is claimed in media-service before the
+	// row names it so the uploader cannot delete it out from under the group
+	// (internal/mediaclaims). Without a client, writes that set new media
+	// answer 503 MEDIA_UNAVAILABLE; other writes are untouched.
+	mediaURL := env("MEDIA_SERVICE_URL", "http://media-service:8087")
+	if mc := mediaclient.New(mediaURL, os.Getenv("INTERNAL_SERVICE_KEY")); mc != nil {
+		groupSvc.WithMedia(mediaclaims.FromClient(mc))
+		slog.Info("group-service: media verification and claims enabled", "media_url", mediaURL)
+	} else {
+		slog.Warn("group-service: MEDIA_SERVICE_URL or INTERNAL_SERVICE_KEY not set — writes that set group or event media are refused with 503 MEDIA_UNAVAILABLE")
+	}
 
 	// 8. Kafka producer
 	kafkaDialer, err := transport.KafkaDialerFromEnv()

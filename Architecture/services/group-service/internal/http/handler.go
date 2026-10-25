@@ -284,6 +284,9 @@ func resolveIdempotencyKey(c *gin.Context, bodyKey string) string {
 }
 
 func handleServiceError(c *gin.Context, err error) {
+	if writeMediaError(c, err) {
+		return
+	}
 	msg := err.Error()
 	switch {
 	case contains(msg, "forbidden"), contains(msg, "only admins"), contains(msg, "only the group"):
@@ -480,7 +483,9 @@ func (h *Handler) UpdateGroup(c *gin.Context) {
 	if req.Visibility != nil {
 		visibility = *req.Visibility
 	}
-	avatar := existing.AvatarMediaID
+	// nil keeps the current avatar/cover: the service reads it under the
+	// group's media lock, not from this earlier read.
+	var avatar, cover *uuid.UUID
 	if req.AvatarMediaID != nil {
 		parsed, err := uuid.Parse(*req.AvatarMediaID)
 		if err != nil {
@@ -489,7 +494,6 @@ func (h *Handler) UpdateGroup(c *gin.Context) {
 		}
 		avatar = &parsed
 	}
-	cover := existing.CoverMediaID
 	if req.CoverMediaID != nil {
 		parsed, err := uuid.Parse(*req.CoverMediaID)
 		if err != nil {

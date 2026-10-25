@@ -2234,8 +2234,12 @@ func (s *Store) DeleteGroupPostComment(ctx context.Context, commentID uuid.UUID,
 
 // ==================== V2 Events ====================
 
+// CreateGroupEvent inserts e. An id the caller fixed is kept (the cover's
+// media claim was made against it); otherwise one is generated.
 func (s *Store) CreateGroupEvent(ctx context.Context, e *GroupEvent) error {
-	e.ID = uuid.New()
+	if e.ID == uuid.Nil {
+		e.ID = uuid.New()
+	}
 	e.CreatedAt = time.Now()
 	if e.Timezone == "" {
 		e.Timezone = "UTC"

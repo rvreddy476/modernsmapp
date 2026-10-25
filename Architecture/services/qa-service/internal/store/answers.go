@@ -168,17 +168,6 @@ func (s *Store) UnselectBestAnswer(ctx context.Context, questionID uuid.UUID) er
 	return tx.Commit(ctx)
 }
 
-func (s *Store) AddAnswerMedia(ctx context.Context, answerID uuid.UUID, mediaIDs []string) error {
-	for i, mid := range mediaIDs {
-		parsed, err := uuid.Parse(mid)
-		if err != nil {
-			continue
-		}
-		_, _ = s.db.Exec(ctx, `INSERT INTO answer_media (answer_id, media_id, sort_order) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, answerID, parsed, i)
-	}
-	return nil
-}
-
 func (s *Store) AddAnswerReferences(ctx context.Context, answerID uuid.UUID, refs []AnswerReference) error {
 	for i, ref := range refs {
 		_, _ = s.db.Exec(ctx, `

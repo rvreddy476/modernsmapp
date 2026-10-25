@@ -219,6 +219,9 @@ func parsePagination(c *gin.Context) (int, int) {
 }
 
 func handleServiceError(c *gin.Context, err error) {
+	if writeMediaError(c, err) {
+		return
+	}
 	msg := err.Error()
 	switch {
 	case contains(msg, "forbidden"), contains(msg, "only admins"), contains(msg, "only the community"), contains(msg, "only moderators"), contains(msg, "only space managers"):

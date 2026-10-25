@@ -11,6 +11,9 @@ import (
 )
 
 type CreateQuestionParams struct {
+	// ID, when set by the service, is the new question's id: its media is
+	// claimed against it before the row exists. Never from the request.
+	ID          uuid.UUID  `json:"-"`
 	CommunityID *uuid.UUID `json:"community_id,omitempty"`
 	Title       string     `json:"title"`
 	Body        string     `json:"body"`
@@ -48,7 +51,10 @@ type dbtx interface {
 }
 
 func (s *Store) CreateQuestion(ctx context.Context, authorID uuid.UUID, p CreateQuestionParams) (*Question, error) {
-	id := uuid.New()
+	id := p.ID
+	if id == uuid.Nil {
+		id = uuid.New()
+	}
 	slug := generateSlug(p.Title, id)
 	lang := p.Language
 	if lang == "" {
@@ -497,18 +503,6 @@ func (s *Store) GetQuestionTags(ctx context.Context, questionID uuid.UUID) ([]st
 		tags = append(tags, t)
 	}
 	return tags, nil
-}
-
-func (s *Store) AddQuestionMedia(ctx context.Context, questionID uuid.UUID, mediaIDs []string) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	if err := s.addQuestionMediaTx(ctx, tx, questionID, mediaIDs); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
 }
 
 func (s *Store) addQuestionMediaTx(ctx context.Context, exec dbtx, questionID uuid.UUID, mediaIDs []string) error {

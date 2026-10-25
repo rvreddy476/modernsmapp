@@ -10,6 +10,8 @@ import (
 	"github.com/atpost/community-service/database"
 	communityevents "github.com/atpost/community-service/internal/events"
 	"github.com/atpost/community-service/internal/http"
+	"github.com/atpost/community-service/internal/mediaclaims"
+	"github.com/atpost/community-service/internal/mediaclient"
 	"github.com/atpost/community-service/internal/reconcile"
 	"github.com/atpost/community-service/internal/service"
 	"github.com/atpost/community-service/internal/store"
@@ -102,6 +104,19 @@ func main() {
 	// 7. Dependencies
 	communityStore := store.New(dbPool)
 	communitySvc := service.New(communityStore, rdb)
+
+	// Community avatar and banner authority: a new one must be the actor's
+	// own confirmed upload, and is claimed in media-service before the row
+	// names it so the uploader cannot delete it out from under the community
+	// (internal/mediaclaims). Without a client, saves that set new media
+	// answer 503 MEDIA_UNAVAILABLE; other saves are untouched.
+	mediaURL := env("MEDIA_SERVICE_URL", "http://media-service:8087")
+	if mc := mediaclient.New(mediaURL, os.Getenv("INTERNAL_SERVICE_KEY")); mc != nil {
+		communitySvc.WithMedia(mediaclaims.FromClient(mc))
+		slog.Info("community-service: media verification and claims enabled", "media_url", mediaURL)
+	} else {
+		slog.Warn("community-service: MEDIA_SERVICE_URL or INTERNAL_SERVICE_KEY not set — saves that set an avatar or banner are refused with 503 MEDIA_UNAVAILABLE")
+	}
 
 	// 8. Kafka producer
 	producer := communityevents.NewProducerWithDialer(kafkaBrokers, kafkaTopic, kafkaDialer)

@@ -13,6 +13,8 @@ import (
 	"unicode"
 
 	groupevents "github.com/atpost/group-service/internal/events"
+	"github.com/atpost/group-service/internal/mediaclaims"
+	"github.com/atpost/group-service/internal/mediaclient"
 	"github.com/atpost/group-service/internal/store"
 	"github.com/atpost/shared/httpclient"
 	"github.com/google/uuid"
@@ -36,6 +38,9 @@ type Service struct {
 	// media-service, for scoping an anonymous post's attachments (media_anonymize.go).
 	mediaServiceURL string
 	mediaClient     *http.Client
+	// media is the attach gate and claim protocol for group and event media
+	// (media_claims.go). Nil refuses every write that adds media: fail closed.
+	media *mediaclaims.Gate
 	producer        *groupevents.Producer
 	rateLimiter     *RateLimiter
 }
@@ -457,6 +462,11 @@ func (s *Service) checkGroupAccess(ctx context.Context, g *store.Group, actorID 
 }
 
 // UpdateGroup updates a group's details. Only admins or the owner may update.
+//
+// avatar and cover are the NEW media, nil meaning "keep the current one": the
+// current one is read here, under the group's media lock, never from a read
+// the caller made earlier (media_claims.go). A new one must be the actor's own
+// finished upload and is claimed before the row names it.
 func (s *Service) UpdateGroup(ctx context.Context, actorID, groupID uuid.UUID, name, desc string, avatar, cover *uuid.UUID, visibility string) error {
 	g, err := s.store.GetGroupByID(ctx, groupID)
 	if err != nil {
@@ -474,7 +484,24 @@ func (s *Service) UpdateGroup(ctx context.Context, actorID, groupID uuid.UUID, n
 		return fmt.Errorf("forbidden: only admins can update the group")
 	}
 
-	if err := s.store.UpdateGroup(ctx, groupID, name, desc, avatar, cover, visibility); err != nil {
+	// Every save rewrites the avatar and cover, so every save is serialised
+	// with the other writers of this row's media, and re-reads them under
+	// the lock.
+	unlock, err := s.lockMediaHolder(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
+	if g, err = s.store.GetGroupByID(ctx, groupID); err != nil {
+		return err
+	}
+	if g == nil {
+		return fmt.Errorf("group not found")
+	}
+	nextAvatar, nextCover := keepUnlessSet(g.AvatarMediaID, avatar), keepUnlessSet(g.CoverMediaID, cover)
+	if err := s.media.Attach(ctx, actorID, groupMediaChanges(groupID, g.AvatarMediaID, g.CoverMediaID, nextAvatar, nextCover), func() error {
+		return s.store.UpdateGroup(ctx, groupID, name, desc, nextAvatar, nextCover, visibility)
+	}); err != nil {
 		return err
 	}
 
@@ -544,9 +571,17 @@ func (s *Service) DeleteGroup(ctx context.Context, actorID, groupID uuid.UUID) e
 		return fmt.Errorf("forbidden: only the group creator can delete the group")
 	}
 
+	unlock, err := s.lockMediaHolder(ctx, groupID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := s.store.DeleteGroup(ctx, groupID); err != nil {
 		return err
 	}
+	// A deleted group is never shown again (no restore path): its avatar,
+	// cover and every event's cover stop being held (media_claims.go).
+	s.releaseGroupMedia(ctx, groupID)
 
 	s.publishEvent(func() error {
 		return s.producer.PublishGroupDeleted(ctx, groupID, actorID)
@@ -2536,7 +2571,15 @@ func (s *Service) CreateGroupEvent(ctx context.Context, actorID, groupID uuid.UU
 	}
 	event.GroupID = groupID
 	event.CreatorID = actorID.String()
-	return s.store.CreateGroupEvent(ctx, event)
+	// The id is fixed before the write so the cover can be claimed against
+	// it; the cover must be the actor's own finished upload (media_claims.go).
+	event.ID = uuid.New()
+	add, _ := mediaclaims.OptionalDiff(nil, event.CoverMediaID)
+	return s.media.Attach(ctx, actorID, []mediaclaims.Change{
+		{Kind: mediaclient.KindGroupEventCover, Ref: event.ID, Add: add},
+	}, func() error {
+		return s.store.CreateGroupEvent(ctx, event)
+	})
 }
 
 func (s *Service) ListGroupEvents(ctx context.Context, actorID, groupID uuid.UUID, limit, offset int) ([]store.GroupEvent, error) {
@@ -2592,7 +2635,14 @@ func (s *Service) DeleteGroupEvent(ctx context.Context, actorID, groupID, eventI
 	if e.GroupID != groupID {
 		return fmt.Errorf("not found: event not found in this group")
 	}
-	return s.store.DeleteGroupEvent(ctx, eventID)
+	if err := s.store.DeleteGroupEvent(ctx, eventID); err != nil {
+		return err
+	}
+	// A cancelled event is never shown again: release its cover.
+	if e.CoverMediaID != nil {
+		s.media.Release(ctx, mediaclient.KindGroupEventCover, eventID, nil)
+	}
+	return nil
 }
 
 func (s *Service) RSVPGroupEvent(ctx context.Context, actorID, groupID, eventID uuid.UUID, status string) error {
