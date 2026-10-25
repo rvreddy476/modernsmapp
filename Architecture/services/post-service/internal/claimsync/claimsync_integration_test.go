@@ -88,6 +88,9 @@ func TestMediaClaimsIT_BackfillRepairAndOrphans(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		bg := context.Background()
+		// The posts insert trigger made an engagement counts row, whose
+		// foreign key refuses the post's delete until it goes first.
+		_, _ = pool.Exec(bg, `DELETE FROM post_engagement_counts WHERE post_id = $1`, post)
 		_, _ = pool.Exec(bg, `DELETE FROM posts WHERE id = $1`, post)
 		_, _ = pool.Exec(bg, `DELETE FROM reel_drafts WHERE id = $1`, draft)
 		_, _ = pool.Exec(bg, `DELETE FROM media_claims WHERE claim_ref = $1`, purged.String())

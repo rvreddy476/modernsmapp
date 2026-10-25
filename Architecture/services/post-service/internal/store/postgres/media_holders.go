@@ -5,9 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"sync"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // ── Media holders: the rows whose media ids take a media-service claim ──────
@@ -51,22 +53,125 @@ const reelDraftLiveSQL = `status NOT IN ('deleted', 'published')`
 // can interleave so that one's release removes a claim the other's write
 // relies on. Transaction-scoped, so a crash or a lost connection frees it;
 // unlock is idempotent.
+//
+// The lock's transaction pins a pool connection for as long as it is held,
+// and the holder needs a SECOND connection for its re-read and its write.
+// Unbounded, that starves the pool: N edits of one post fill every
+// connection, one holds the lock and waits forever for a connection to do
+// its write, the rest wait in Postgres for its lock (CI: the concurrent
+// cover test hung for 30 minutes). So, before any connection is taken, the
+// caller waits in-process for its row (holderGate.key: a second writer of
+// the same row waits here, not on a connection) and then for one of a
+// bounded number of lock slots (holderGate.slots, at most half the pool), so
+// connections are always left for the holders' work.
+//
+// A holder must not take a second holder lock while it holds one.
 func (s *Store) LockMediaHolder(ctx context.Context, kind string, ref uuid.UUID) (unlock func(), err error) {
-	tx, err := s.db.Begin(ctx)
+	key := mediaHolderLockKey(kind, ref)
+	release, err := gateFor(s.db).acquire(ctx, key)
 	if err != nil {
 		return nil, fmt.Errorf("lock media holder: %w", err)
 	}
-	if _, err := tx.Exec(ctx, lockMediaHolderSQL, mediaHolderLockKey(kind, ref)); err != nil {
-		_ = tx.Rollback(context.WithoutCancel(ctx))
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		release()
 		return nil, fmt.Errorf("lock media holder: %w", err)
 	}
-	done := false
+	if _, err := tx.Exec(ctx, lockMediaHolderSQL, key); err != nil {
+		_ = tx.Rollback(context.WithoutCancel(ctx))
+		release()
+		return nil, fmt.Errorf("lock media holder: %w", err)
+	}
+	var once sync.Once
 	return func() {
-		if !done {
-			done = true
+		once.Do(func() {
 			_ = tx.Rollback(context.WithoutCancel(ctx))
-		}
+			release()
+		})
 	}, nil
+}
+
+// holderGates is one holderGate per pool: every Store built on a pool shares
+// its connections, so they must share its slots.
+var holderGates sync.Map // *pgxpool.Pool -> *holderGate
+
+func gateFor(db *pgxpool.Pool) *holderGate {
+	if g, ok := holderGates.Load(db); ok {
+		return g.(*holderGate)
+	}
+	g, _ := holderGates.LoadOrStore(db, newHolderGate(holderLockSlots(db.Config().MaxConns)))
+	return g.(*holderGate)
+}
+
+// holderLockSlots is how many holder locks may pin a connection at once:
+// half the pool, at least one, so the other half is always free for the
+// holders' re-reads and writes (and every other query).
+func holderLockSlots(maxConns int32) int {
+	if n := int(maxConns) / 2; n > 0 {
+		return n
+	}
+	return 1
+}
+
+// holderGate is LockMediaHolder's in-process admission: a mutex per lock key,
+// then a bounded semaphore of connection slots. The key is taken FIRST so a
+// writer queued behind another writer of the same row holds no slot.
+type holderGate struct {
+	slots chan struct{}
+	mu    sync.Mutex
+	keys  map[int64]*holderKeyLock
+}
+
+type holderKeyLock struct {
+	ch      chan struct{} // capacity 1: full while the key is held
+	waiters int           // holders and waiters; the entry goes at zero
+}
+
+func newHolderGate(slots int) *holderGate {
+	if slots < 1 {
+		slots = 1
+	}
+	return &holderGate{slots: make(chan struct{}, slots), keys: map[int64]*holderKeyLock{}}
+}
+
+// acquire waits for key, then for a slot. release frees both; it must be
+// called exactly once after a nil error.
+func (g *holderGate) acquire(ctx context.Context, key int64) (release func(), err error) {
+	g.mu.Lock()
+	k := g.keys[key]
+	if k == nil {
+		k = &holderKeyLock{ch: make(chan struct{}, 1)}
+		g.keys[key] = k
+	}
+	k.waiters++
+	g.mu.Unlock()
+
+	select {
+	case k.ch <- struct{}{}:
+	case <-ctx.Done():
+		g.leave(key, k)
+		return nil, ctx.Err()
+	}
+	select {
+	case g.slots <- struct{}{}:
+	case <-ctx.Done():
+		<-k.ch
+		g.leave(key, k)
+		return nil, ctx.Err()
+	}
+	return func() {
+		<-g.slots
+		<-k.ch
+		g.leave(key, k)
+	}, nil
+}
+
+func (g *holderGate) leave(key int64, k *holderKeyLock) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if k.waiters--; k.waiters == 0 {
+		delete(g.keys, key)
+	}
 }
 
 // lockMediaHolderSQL waits (never try_) for an exclusive, transaction-scoped

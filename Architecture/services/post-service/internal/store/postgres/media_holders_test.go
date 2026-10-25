@@ -20,7 +20,8 @@ func TestMediaHolderLockWaitsAndIsTransactionScoped(t *testing.T) {
 // kinds, because a reel draft publishes as a post with the same id.
 func TestMediaHolderLockKeyIsPerKindAndRow(t *testing.T) {
 	a, b := uuid.New(), uuid.New()
-	if mediaHolderLockKey(HolderPostCover, a) != mediaHolderLockKey(HolderPostCover, a) {
+	first, again := mediaHolderLockKey(HolderPostCover, a), mediaHolderLockKey(HolderPostCover, a)
+	if first != again {
 		t.Fatal("the key for one row must be stable")
 	}
 	if mediaHolderLockKey(HolderPostCover, a) == mediaHolderLockKey(HolderPostCover, b) {

@@ -827,6 +827,8 @@ func (s *Service) publishClaimedReelDraft(ctx context.Context, draftID, authorID
 	s.keepDraftSound(ctx, post, draft)
 	if err := s.markReelDraftPublished(ctx, draftID, post.ID); err != nil {
 		// Non-fatal: idempotency resolves this on the stale-claim retry.
+		slog.Warn("reel draft publish: mark published failed; the retry resolves it",
+			"post_id", post.ID, "draft_id", draftID, "err", err)
 	}
 	return post, nil
 }

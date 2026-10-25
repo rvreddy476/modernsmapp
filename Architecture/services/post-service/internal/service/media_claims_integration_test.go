@@ -66,6 +66,21 @@ func claimsITAsset(t *testing.T, pool *pgxpool.Pool, owner uuid.UUID, kind strin
 	return id
 }
 
+// claimsITDeletePost removes a test post and the engagement counts row its
+// insert trigger created (post_engagement_counts.post_id REFERENCES posts).
+func claimsITDeletePost(t *testing.T, pool *pgxpool.Pool, id uuid.UUID) {
+	t.Helper()
+	bg := context.Background()
+	for _, stmt := range []string{
+		`DELETE FROM post_engagement_counts WHERE post_id = $1`,
+		`DELETE FROM posts WHERE id = $1`,
+	} {
+		if _, err := pool.Exec(bg, stmt, id); err != nil {
+			t.Errorf("cleanup %q: %v", stmt, err)
+		}
+	}
+}
+
 func TestMediaClaimsIT_ReelDraftLifecycle(t *testing.T) {
 	pool := openMediaClaimsServiceDB(t)
 	svc, claims := claimsITService(t, pool)
@@ -171,9 +186,20 @@ func TestMediaClaimsIT_PurgedPostReleasesItsCover(t *testing.T) {
 		}
 		_ = claims.Claim(ctx, postgres.HolderPostCover, id, []uuid.UUID{cover})
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM posts WHERE id = $1`, live) })
-	if _, err := pool.Exec(ctx, `DELETE FROM posts WHERE id = $1`, purged); err != nil {
+	t.Cleanup(func() { claimsITDeletePost(t, pool, live) })
+	// The real purge, as postpurge.Worker runs it before
+	// ReleasePurgedPostClaims: soft delete, then PurgePost removes the row
+	// and its dependants (a bare DELETE trips post_engagement_counts' FK,
+	// whose row the posts insert trigger creates).
+	if _, err := pool.Exec(ctx, `UPDATE posts SET deleted_at = NOW() WHERE id = $1`, purged); err != nil {
 		t.Fatal(err)
+	}
+	if _, err := postgres.New(pool).PurgePost(ctx, purged); err != nil {
+		t.Fatal(err)
+	}
+	var left int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM posts WHERE id = $1`, purged).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("the purge did not remove the post (rows=%d, err=%v)", left, err)
 	}
 
 	for _, id := range []uuid.UUID{live, purged} {
@@ -205,7 +231,7 @@ func TestMediaClaimsIT_ConcurrentCoverEditsNeverLeaveTheCoverUnclaimed(t *testin
 		VALUES ($1, $2, 'c', 'public', 'post', 'approved', NOW(), NOW())`, post, author); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM posts WHERE id = $1`, post) })
+	t.Cleanup(func() { claimsITDeletePost(t, pool, post) })
 
 	store := postgres.New(pool)
 	var wg sync.WaitGroup
