@@ -28,7 +28,7 @@ public final class ReelsViewModel: @unchecked Sendable {
                 query: nil,
                 body: nil
             )
-            self.reels = response.data.filter { $0.media.first?.isVideo ?? true }
+            self.reels = (response.data ?? []).filter { $0.media.first?.isVideo ?? true }
         } catch {
             self.errorMessage = error.localizedDescription
         }

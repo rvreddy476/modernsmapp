@@ -56,7 +56,7 @@ public final class ProfileViewModel: @unchecked Sendable {
 
             let (fetchedProfile, fetchedPosts) = try await (profileTask, postsTask)
             self.profile = fetchedProfile
-            self.posts = fetchedPosts.data
+            self.posts = fetchedPosts.data ?? []
             self.isFollowingLocal = fetchedProfile.isFollowing
         } catch {
             self.errorMessage = error.localizedDescription

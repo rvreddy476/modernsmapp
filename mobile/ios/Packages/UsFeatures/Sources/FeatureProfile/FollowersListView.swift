@@ -47,9 +47,9 @@ public final class FollowListViewModel: @unchecked Sendable {
                 query: nil,
                 body: nil
             )
-            self.users = response.data
+            self.users = response.data ?? []
             if type == .following {
-                self.followingSet = Set(response.data.map { $0.id })
+                self.followingSet = Set((response.data ?? []).map { $0.id })
             }
         } catch {
             self.errorMessage = error.localizedDescription

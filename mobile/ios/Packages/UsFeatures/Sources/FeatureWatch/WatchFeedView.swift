@@ -26,7 +26,7 @@ public final class WatchFeedViewModel: @unchecked Sendable {
                 query: nil,
                 body: nil
             )
-            self.videos = response.data.filter { $0.postType == "long_video" || $0.postType == "video" }
+            self.videos = (response.data ?? []).filter { $0.postType == "long_video" || $0.postType == "video" }
         } catch {
             self.errorMessage = error.localizedDescription
         }

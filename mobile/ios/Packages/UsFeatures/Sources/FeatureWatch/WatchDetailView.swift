@@ -33,7 +33,7 @@ public final class WatchDetailViewModel: @unchecked Sendable {
 
             let (p, r, c) = try await (postTask, relatedTask, commentsTask)
             self.post = p
-            self.relatedVideos = r.data.filter { $0.id != postId }
+            self.relatedVideos = (r.data ?? []).filter { $0.id != postId }
             self.comments = c
         } catch {
             self.errorMessage = error.localizedDescription

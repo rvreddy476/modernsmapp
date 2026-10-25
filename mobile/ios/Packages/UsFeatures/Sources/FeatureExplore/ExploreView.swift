@@ -27,7 +27,7 @@ public final class ExploreViewModel: @unchecked Sendable {
                 query: nil,
                 body: nil
             )
-            self.trendingItems = response.data
+            self.trendingItems = response.data ?? []
         } catch {
             // Fallback gracefully
         }
@@ -54,7 +54,7 @@ public final class ExploreViewModel: @unchecked Sendable {
                     body: nil
                 )
                 await MainActor.run {
-                    self.searchResults = results.data
+                    self.searchResults = results.data ?? []
                     self.isSearching = false
                 }
             } catch {
