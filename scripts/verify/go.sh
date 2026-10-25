@@ -102,6 +102,14 @@ for m in "${MODULES[@]}"; do
     continue
   fi
   name="${m##*/}"
+  # A module under a go.work that does not list it (an archived service, a
+  # standalone tool) is refused in workspace mode ("directory prefix . does
+  # not contain modules listed in go.work"): check it on its own go.mod.
+  unset GOWORK
+  if [ "$(cd "$m" && go env GOWORK)" != "" ] &&
+    ! (cd "$m" && go list -m -f '{{.Dir}}' 2>/dev/null | grep -qxF "$(pwd -P)"); then
+    export GOWORK=off
+  fi
   run_stage build "$name" "$m" go build -o /dev/null ./...
 
   # With --db, the plain test stage runs with the module's DSN variables
