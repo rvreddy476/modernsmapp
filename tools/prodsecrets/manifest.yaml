@@ -584,7 +584,10 @@ secrets:
     jwt_kid: copy:platform-auth#jwt_kid
     jwt_secret_previous: shared:jwt_secret_previous
     jwt_kid_previous: shared:jwt_kid_previous
-    identity_postgres_dsn: dsn:identity_db/suggestion_service
+    # identity_db DSN for profile enrichment: suggestion-service only reads
+    # (SELECT on profile.profiles and profile.user_about). Read-write on its
+    # own app database above.
+    identity_postgres_dsn: dsn-ro:identity_db/suggestion_service
 
   commerce-service:
     postgres_dsn: dsn:commerce_db/commerce_service

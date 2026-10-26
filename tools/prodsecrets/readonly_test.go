@@ -219,9 +219,10 @@ func TestReadOnlyDSNRejects(t *testing.T) {
 // login ever gets owner membership in its database.
 func TestCommittedManifestReadOnlyLogins(t *testing.T) {
 	wantRO := map[string]bool{
-		"graph_service@identity_db": true, // legacy profile.blocks reconciler
-		"chat_ws_gateway@chat_db":   true, // presence fan-out DM peers
-		"chat_call@chat_db":         true, // call mute + hidden chats
+		"graph_service@identity_db":      true, // legacy profile.blocks reconciler
+		"suggestion_service@identity_db": true, // profile + public life-entry enrichment
+		"chat_ws_gateway@chat_db":        true, // presence fan-out DM peers
+		"chat_call@chat_db":              true, // call mute + hidden chats
 	}
 	forEachEnv(t, func(t *testing.T, env string) {
 		m := loadCommitted(t, env)
