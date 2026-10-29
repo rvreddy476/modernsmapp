@@ -318,6 +318,11 @@ func (h *Handler) adminHide(targetType, param string) gin.HandlerFunc {
 			return
 		}
 		action, err := h.admin().AdminHideContent(c.Request.Context(), adminActor(c), targetType, id, reportID, body.Reason)
+		if err == nil {
+			// The hidden row is never shown again: release what it held
+			// (best effort; never fails the hide).
+			h.svc.ReleaseHiddenMedia(c.Request.Context(), targetType, id)
+		}
 		respondAdminWrite(c, action, err)
 	}
 }

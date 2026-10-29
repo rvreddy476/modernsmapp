@@ -299,3 +299,61 @@ func TestMediaClaimsIT_HolderLockSerialises(t *testing.T) {
 	}
 	again()
 }
+
+// The picture and banner are checked like an update's media: someone else's
+// upload, an unfinished one or a rejected one is refused with the same
+// errors, nothing is claimed and the row is not written; an admin who did not
+// upload the current picture can still save it unchanged.
+func TestMediaClaimsIT_ChannelPictureAndBannerOwnerGate(t *testing.T) {
+	svc, _, pool := setupReactionCountIT(t)
+	ctx := context.Background()
+	owner := uuid.New()
+	channelID := seedOwnedChannel(t, pool, owner)
+	seedOwnerMember(t, pool, channelID, owner)
+	own := asset(owner, "ready", "passed")
+	foreign := asset(uuid.New(), "ready", "passed")
+	pending := asset(owner, "pending_upload", "pending")
+	rejected := asset(owner, "ready", "rejected")
+	f := claimFake(own, foreign, pending, rejected)
+	svc.WithMedia(f)
+
+	for name, tc := range map[string]struct {
+		params UpdateChannelParams
+		want   error
+	}{
+		"someone else's picture": {UpdateChannelParams{AvatarMediaID: &foreign.ID}, ErrMediaNotOwned},
+		"someone else's banner":  {UpdateChannelParams{BannerMediaID: &foreign.ID}, ErrMediaNotOwned},
+		"unfinished picture":     {UpdateChannelParams{AvatarMediaID: &pending.ID}, ErrMediaNotReady},
+		"rejected banner":        {UpdateChannelParams{BannerMediaID: &rejected.ID}, ErrMediaNotReady},
+	} {
+		if _, err := svc.UpdateChannel(ctx, channelID, owner, tc.params); !errors.Is(err, tc.want) {
+			t.Fatalf("%s = %v, want %v", name, err, tc.want)
+		}
+	}
+	if len(f.held) != 0 {
+		t.Fatalf("refused saves left claims: %v", f.held)
+	}
+	var avatar, banner *uuid.UUID
+	if err := pool.QueryRow(ctx, `SELECT avatar_media_id, banner_media_id FROM broadcast_channels WHERE id = $1`, channelID).
+		Scan(&avatar, &banner); err != nil || avatar != nil || banner != nil {
+		t.Fatalf("a refused save was written: %v %v %v", avatar, banner, err)
+	}
+
+	if _, err := svc.UpdateChannel(ctx, channelID, owner, UpdateChannelParams{AvatarMediaID: &own.ID}); err != nil {
+		t.Fatalf("own picture: %v", err)
+	}
+	// A second admin re-saves the owner's picture: nothing is added, so it is
+	// not re-checked against them.
+	admin := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO channel_members (channel_id, user_id, role) VALUES ($1, $2, 'admin')`, channelID, admin); err != nil {
+		t.Fatalf("seed admin: %v", err)
+	}
+	name := "renamed"
+	if _, err := svc.UpdateChannel(ctx, channelID, admin, UpdateChannelParams{Name: &name, AvatarMediaID: &own.ID}); err != nil {
+		t.Fatalf("an admin re-saving the current picture = %v", err)
+	}
+	// But the admin cannot set the owner's upload as the banner.
+	if _, err := svc.UpdateChannel(ctx, channelID, admin, UpdateChannelParams{BannerMediaID: &own.ID}); !errors.Is(err, ErrMediaNotOwned) {
+		t.Fatalf("an admin setting another user's upload as the banner = %v, want ErrMediaNotOwned", err)
+	}
+}

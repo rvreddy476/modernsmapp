@@ -181,3 +181,123 @@ func TestMediaClaimsIT_HolderLockSerialises(t *testing.T) {
 		t.Fatal("the lock was not freed by unlock")
 	}
 }
+
+// seedQuestionIT writes a question by author holding one media id, and one
+// answer by answerer under it holding another, both claimed: the rows a hide
+// or an erasure removes.
+func seedQuestionIT(t *testing.T, pool *pgxpool.Pool, f *fakeMedia, author, answerer uuid.UUID) (qid, aid uuid.UUID, qm, am *mediaclient.Asset) {
+	t.Helper()
+	ctx := context.Background()
+	qm, am = readyAsset(author), readyAsset(answerer)
+	f.mu.Lock()
+	f.assets[qm.ID], f.assets[am.ID] = qm, am
+	f.mu.Unlock()
+	if err := pool.QueryRow(ctx, `INSERT INTO questions (author_id, title, slug) VALUES ($1, 'removed', $2) RETURNING id`,
+		author, "removed-"+uuid.NewString()).Scan(&qid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO question_media (question_id, media_id) VALUES ($1, $2)`, qid, qm.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := pool.QueryRow(ctx, `INSERT INTO answers (question_id, author_id, body) VALUES ($1, $2, 'a') RETURNING id`,
+		qid, answerer).Scan(&aid); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO answer_media (answer_id, media_id) VALUES ($1, $2)`, aid, am.ID); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Claim(ctx, mediaclient.KindQuestionMedia, qid, []uuid.UUID{qm.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Claim(ctx, mediaclient.KindAnswerMedia, aid, []uuid.UUID{am.ID}); err != nil {
+		t.Fatal(err)
+	}
+	return qid, aid, qm, am
+}
+
+// A moderator's hide releases what the hidden question held, and what its
+// answers held (they die with it); an admin-service hide of an answer
+// releases that answer's; a hide of a still-live row's sibling leaves the
+// sibling claimed.
+func TestMediaClaimsIT_ModerationHideReleases(t *testing.T) {
+	svc, st, pool, _ := setupMediaClaimsIT(t)
+	ctx := context.Background()
+	f := newFakeMedia()
+	svc.WithMedia(mediaclaims.New(f, f))
+	author, answerer := uuid.New(), uuid.New()
+
+	qid, aid, qm, am := seedQuestionIT(t, pool, f, author, answerer)
+	keepQ, keepA, kqm, kam := seedQuestionIT(t, pool, f, author, answerer)
+	if err := svc.HideContent(ctx, "question", qid, uuid.New(), "spam"); err != nil {
+		t.Fatal(err)
+	}
+	if f.holds(mediaclient.KindQuestionMedia, qid, qm.ID) || f.holds(mediaclient.KindAnswerMedia, aid, am.ID) {
+		t.Fatalf("a hidden question (or its answer) still holds media: %v", f.held)
+	}
+
+	if _, err := st.AdminHideContent(ctx, uuid.New(), "answer", keepA, nil, "spam"); err != nil {
+		t.Fatal(err)
+	}
+	svc.ReleaseHiddenMedia(ctx, "answer", keepA)
+	if f.holds(mediaclient.KindAnswerMedia, keepA, kam.ID) {
+		t.Fatal("an admin-hidden answer still holds media")
+	}
+	if !f.holds(mediaclient.KindQuestionMedia, keepQ, kqm.ID) {
+		t.Fatal("hiding an answer released its live question's media")
+	}
+
+	// A row that is still live is never released, whatever the caller says.
+	svc.ReleaseRemovedMedia(ctx, []uuid.UUID{keepQ}, nil)
+	if !f.holds(mediaclient.KindQuestionMedia, keepQ, kqm.ID) {
+		t.Fatal("a live question's media was released")
+	}
+}
+
+// An account erasure releases the media of the questions and answers it
+// deleted, and of other users' answers under the erased questions; another
+// user's live content keeps its claims.
+func TestMediaClaimsIT_ErasureReleases(t *testing.T) {
+	svc, st, pool, _ := setupMediaClaimsIT(t)
+	ctx := context.Background()
+	f := newFakeMedia()
+	svc.WithMedia(mediaclaims.New(f, f))
+	erased, other := uuid.New(), uuid.New()
+
+	q1, a1, q1m, a1m := seedQuestionIT(t, pool, f, erased, other) // erased's question, other's answer
+	q2, a2, q2m, a2m := seedQuestionIT(t, pool, f, other, erased) // other's question, erased's answer
+
+	got, err := st.AnonymizeUser(ctx, erased)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.QuestionIDs) != 1 || got.QuestionIDs[0] != q1 || len(got.AnswerIDs) != 1 || got.AnswerIDs[0] != a2 {
+		t.Fatalf("erased %+v, want question %s and answer %s", got, q1, a2)
+	}
+	svc.ReleaseRemovedMedia(ctx, got.QuestionIDs, got.AnswerIDs)
+	if f.holds(mediaclient.KindQuestionMedia, q1, q1m.ID) || f.holds(mediaclient.KindAnswerMedia, a1, a1m.ID) ||
+		f.holds(mediaclient.KindAnswerMedia, a2, a2m.ID) {
+		t.Fatalf("erased content still holds media: %v", f.held)
+	}
+	if !f.holds(mediaclient.KindQuestionMedia, q2, q2m.ID) {
+		t.Fatal("another user's live question lost its claim")
+	}
+}
+
+// An author's answer delete releases what the answer held.
+func TestMediaClaimsIT_AnswerDeleteReleases(t *testing.T) {
+	svc, _, pool, _ := setupMediaClaimsIT(t)
+	ctx := context.Background()
+	f := newFakeMedia()
+	svc.WithMedia(mediaclaims.New(f, f))
+	author, answerer := uuid.New(), uuid.New()
+	qid, aid, qm, am := seedQuestionIT(t, pool, f, author, answerer)
+	if err := svc.DeleteAnswer(ctx, aid, answerer); err != nil {
+		t.Fatal(err)
+	}
+	if f.holds(mediaclient.KindAnswerMedia, aid, am.ID) {
+		t.Fatal("a deleted answer still holds media")
+	}
+	if !f.holds(mediaclient.KindQuestionMedia, qid, qm.ID) {
+		t.Fatal("deleting an answer released its question's media")
+	}
+}

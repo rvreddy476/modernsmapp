@@ -17,6 +17,34 @@ type Consumer struct {
 	reader *kafka.Reader
 	store  *store.Store
 	rdb    *redis.Client
+	// eraser is the account erasure (store.AnonymizeUser); nil means store.
+	eraser UserEraser
+	// media releases what erased questions and answers held; nil releases
+	// nothing (WithMediaRelease).
+	media MediaReleaser
+}
+
+// UserEraser is the store's account erasure.
+type UserEraser interface {
+	AnonymizeUser(ctx context.Context, userID uuid.UUID) (store.Erased, error)
+}
+
+// MediaReleaser releases the media claims of removed questions and answers
+// (service.Service.ReleaseRemovedMedia). Best effort: it logs, never fails.
+type MediaReleaser interface {
+	ReleaseRemovedMedia(ctx context.Context, questionIDs, answerIDs []uuid.UUID)
+}
+
+// WithMediaRelease installs the release of an erased account's media claims.
+func (c *Consumer) WithMediaRelease(r MediaReleaser) *Consumer {
+	c.media = r
+	return c
+}
+
+// WithEraser replaces the store's erasure (tests).
+func (c *Consumer) WithEraser(e UserEraser) *Consumer {
+	c.eraser = e
+	return c
 }
 
 func NewConsumer(brokers []string, groupID string, s *store.Store, rdb *redis.Client) *Consumer {
@@ -94,10 +122,28 @@ func (c *Consumer) handleUserDeletionRequested(ctx context.Context, envelope eve
 	}
 
 	slog.Info("processing GDPR deletion for user in qa-service", "user_id", userID)
+	return c.eraseUser(ctx, userID)
+}
 
-	if err := c.store.AnonymizeUser(ctx, userID); err != nil {
+// eraseUser anonymises the account, then releases the media claims of the
+// questions and answers it deleted (and of the answers under those
+// questions), so the erased user's media is not pinned until someone runs the
+// reconcile tool. The release never fails the erasure.
+func (c *Consumer) eraseUser(ctx context.Context, userID uuid.UUID) error {
+	var eraser UserEraser = c.eraser
+	if eraser == nil {
+		eraser = c.store
+	}
+	erased, err := eraser.AnonymizeUser(ctx, userID)
+	if err != nil {
 		slog.Warn("failed to anonymize user in qa-service", "user_id", userID, "error", err)
 		return err
+	}
+	if c.media != nil {
+		c.media.ReleaseRemovedMedia(ctx, erased.QuestionIDs, erased.AnswerIDs)
+	} else if len(erased.QuestionIDs)+len(erased.AnswerIDs) > 0 {
+		slog.Warn("qa-service: erased content's media claims not released (no releaser); run the reconcile tool (media-claims -apply)",
+			"user_id", userID, "questions", len(erased.QuestionIDs), "answers", len(erased.AnswerIDs))
 	}
 
 	slog.Info("GDPR deletion completed for user in qa-service", "user_id", userID)

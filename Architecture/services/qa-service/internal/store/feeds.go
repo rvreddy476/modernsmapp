@@ -180,11 +180,19 @@ func (s *Store) GetLocalFeed(ctx context.Context, lat, lng float64, radiusKm int
 	return scanQuestionSummaries(rows)
 }
 
+// Erased is what one AnonymizeUser removed: the questions and answers it
+// deleted, whose media claims the caller releases afterwards.
+type Erased struct {
+	QuestionIDs []uuid.UUID
+	AnswerIDs   []uuid.UUID
+}
+
 // GDPR cleanup
-func (s *Store) AnonymizeUser(ctx context.Context, userID uuid.UUID) error {
+func (s *Store) AnonymizeUser(ctx context.Context, userID uuid.UUID) (Erased, error) {
+	var out Erased
 	_, _ = s.db.Exec(ctx, `UPDATE qa_profiles SET display_name = 'Deleted User', bio = '', expertise_areas = '{}', updated_at = now() WHERE user_id = $1`, userID)
-	_, _ = s.db.Exec(ctx, `UPDATE questions SET deleted_at = now(), status = 'deleted' WHERE author_id = $1 AND deleted_at IS NULL`, userID)
-	_, _ = s.db.Exec(ctx, `UPDATE answers SET deleted_at = now() WHERE author_id = $1 AND deleted_at IS NULL`, userID)
+	out.QuestionIDs, _ = s.updateReturningIDs(ctx, `UPDATE questions SET deleted_at = now(), status = 'deleted' WHERE author_id = $1 AND deleted_at IS NULL RETURNING id`, userID)
+	out.AnswerIDs, _ = s.updateReturningIDs(ctx, `UPDATE answers SET deleted_at = now() WHERE author_id = $1 AND deleted_at IS NULL RETURNING id`, userID)
 	_, _ = s.db.Exec(ctx, `UPDATE answer_comments SET deleted_at = now() WHERE author_id = $1 AND deleted_at IS NULL`, userID)
 	_, _ = s.db.Exec(ctx, `DELETE FROM question_votes WHERE user_id = $1`, userID)
 	_, _ = s.db.Exec(ctx, `DELETE FROM answer_votes WHERE user_id = $1`, userID)
@@ -194,5 +202,23 @@ func (s *Store) AnonymizeUser(ctx context.Context, userID uuid.UUID) error {
 	_, _ = s.db.Exec(ctx, `DELETE FROM contributor_follows WHERE follower_id = $1 OR followed_id = $1`, userID)
 	_, _ = s.db.Exec(ctx, `DELETE FROM question_saves WHERE user_id = $1`, userID)
 	_, _ = s.db.Exec(ctx, `DELETE FROM answer_saves WHERE user_id = $1`, userID)
-	return nil
+	return out, nil
+}
+
+// updateReturningIDs runs an UPDATE ... RETURNING id and collects the ids.
+func (s *Store) updateReturningIDs(ctx context.Context, sql string, args ...any) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return ids, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
 }

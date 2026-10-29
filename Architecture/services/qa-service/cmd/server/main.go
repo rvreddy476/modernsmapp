@@ -121,7 +121,8 @@ func main() {
 	slog.Info("kafka producer initialized", "topic", kafkaTopic)
 
 	// 9. Kafka consumer (GDPR)
-	consumer := qaevents.NewConsumerWithDialer(kafkaBrokers, "qa-service-consumer", qaStore, rdb, kafkaDialer)
+	consumer := qaevents.NewConsumerWithDialer(kafkaBrokers, "qa-service-consumer", qaStore, rdb, kafkaDialer).
+		WithMediaRelease(qaSvc) // an erased account's questions and answers release their media
 	consumerCtx, cancelConsumer := context.WithCancel(ctx)
 	go consumer.Start(consumerCtx)
 	slog.Info("kafka consumer started")

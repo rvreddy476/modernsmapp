@@ -311,9 +311,13 @@ func (s *Service) CreateChannel(ctx context.Context, ownerID uuid.UUID, params C
 		Status:                 "active",
 	}
 
-	// Claim the picture and banner before the row exists (media_claims.go).
+	// Check, then claim, the picture and banner before the row exists
+	// (update_media.go, media_claims.go).
 	avatarAdd, _ := optionalMediaDiff(nil, ch.AvatarMediaID)
 	bannerAdd, _ := optionalMediaDiff(nil, ch.BannerMediaID)
+	if err := s.verifyChannelMedia(ctx, ownerID, avatarAdd, bannerAdd); err != nil {
+		return nil, err
+	}
 	if err := s.writeWithClaims(ctx, []claimChange{
 		{kind: claimKindAvatar, ref: ch.ID, add: avatarAdd},
 		{kind: claimKindBanner, ref: ch.ID, add: bannerAdd},
@@ -618,6 +622,9 @@ func (s *Service) UpdateChannel(ctx context.Context, channelID, actorID uuid.UUI
 	// replaces is released only after the row stops naming it.
 	avatarAdd, avatarDrop := optionalMediaDiff(prevAvatar, ch.AvatarMediaID)
 	bannerAdd, bannerDrop := optionalMediaDiff(prevBanner, ch.BannerMediaID)
+	if err := s.verifyChannelMedia(ctx, actorID, avatarAdd, bannerAdd); err != nil {
+		return nil, err
+	}
 	if err := s.writeWithClaims(ctx, []claimChange{
 		{kind: claimKindAvatar, ref: ch.ID, add: avatarAdd, drop: avatarDrop},
 		{kind: claimKindBanner, ref: ch.ID, add: bannerAdd, drop: bannerDrop},

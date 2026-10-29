@@ -127,3 +127,57 @@ func (s *Store) MediaClaimRowFor(ctx context.Context, kind string, ref uuid.UUID
 	}
 	return row, err
 }
+
+// MediaHolder names one row that holds media: Kind is mediaclient.Kind*, Ref
+// the question or answer id.
+type MediaHolder struct {
+	Kind string
+	Ref  uuid.UUID
+}
+
+// MediaHoldersAmong narrows the questions and answers a removal just touched
+// to the rows that hold media: each listed question with question_media, and
+// each answer with answer_media that is listed or belongs to a listed
+// question (an answer dies with its question). Rows that hold nothing are left
+// out, so an erasure of a user with no media makes no further calls. Whether
+// each row is dead is the caller's to re-check under the holder lock
+// (MediaClaimRowFor).
+func (s *Store) MediaHoldersAmong(ctx context.Context, questionIDs, answerIDs []uuid.UUID) ([]MediaHolder, error) {
+	if len(questionIDs) == 0 && len(answerIDs) == 0 {
+		return nil, nil
+	}
+	if questionIDs == nil {
+		questionIDs = []uuid.UUID{}
+	}
+	if answerIDs == nil {
+		answerIDs = []uuid.UUID{}
+	}
+	rows, err := s.db.Query(ctx, mediaHoldersAmongSQL, questionIDs, answerIDs)
+	if err != nil {
+		return nil, fmt.Errorf("media holders: %w", err)
+	}
+	defer rows.Close()
+	var out []MediaHolder
+	for rows.Next() {
+		var isQuestion bool
+		var ref uuid.UUID
+		if err := rows.Scan(&isQuestion, &ref); err != nil {
+			return nil, fmt.Errorf("media holders: %w", err)
+		}
+		kind := mediaclient.KindAnswerMedia
+		if isQuestion {
+			kind = mediaclient.KindQuestionMedia
+		}
+		out = append(out, MediaHolder{Kind: kind, Ref: ref})
+	}
+	return out, rows.Err()
+}
+
+const mediaHoldersAmongSQL = `
+	SELECT true, q.id FROM questions q
+	WHERE q.id = ANY($1::uuid[]) AND EXISTS (SELECT 1 FROM question_media m WHERE m.question_id = q.id)
+	UNION
+	SELECT false, a.id FROM answers a
+	WHERE (a.id = ANY($2::uuid[]) OR a.question_id = ANY($1::uuid[]))
+	  AND EXISTS (SELECT 1 FROM answer_media m WHERE m.answer_id = a.id)
+	ORDER BY 1 DESC, 2`

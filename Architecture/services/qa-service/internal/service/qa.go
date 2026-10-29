@@ -26,6 +26,8 @@ type Service struct {
 	// (media_claims.go). Nil refuses every question that carries media: fail
 	// closed.
 	media *mediaclaims.Gate
+	// holders backs ReleaseRemovedMedia; nil means store (media_claims.go).
+	holders MediaHolders
 }
 
 func New(s *store.Store, rdb *redis.Client) *Service {
@@ -139,13 +141,14 @@ func (s *Service) DeleteQuestion(ctx context.Context, questionID, actorID uuid.U
 	if err != nil {
 		return err
 	}
-	defer unlock()
-	if err := s.store.DeleteQuestion(ctx, questionID); err != nil {
+	err = s.store.DeleteQuestion(ctx, questionID)
+	unlock() // ReleaseRemovedMedia takes the lock again, per row
+	if err != nil {
 		return err
 	}
-	// A deleted question is never shown again (no restore path): its media
-	// stops being held (media_claims.go).
-	s.releaseQuestionMedia(ctx, questionID)
+	// A deleted question is never shown again (no restore path): its media,
+	// and its answers', stops being held (media_claims.go).
+	s.ReleaseRemovedMedia(ctx, []uuid.UUID{questionID}, nil)
 	if s.producer != nil {
 		_ = s.producer.PublishQuestionDeleted(ctx, questionID, actorID)
 	}
@@ -319,7 +322,11 @@ func (s *Service) DeleteAnswer(ctx context.Context, answerID, actorID uuid.UUID)
 	if existing.AuthorID != actorID {
 		return fmt.Errorf("not authorized")
 	}
-	return s.store.DeleteAnswer(ctx, answerID)
+	if err := s.store.DeleteAnswer(ctx, answerID); err != nil {
+		return err
+	}
+	s.ReleaseRemovedMedia(ctx, nil, []uuid.UUID{answerID})
+	return nil
 }
 
 func (s *Service) ListAnswers(ctx context.Context, questionID uuid.UUID, viewerID *uuid.UUID, sortBy string, limit, offset int) ([]store.Answer, error) {
@@ -735,7 +742,12 @@ func (s *Service) DismissReport(ctx context.Context, reportID, reviewedBy uuid.U
 }
 
 func (s *Service) HideContent(ctx context.Context, targetType string, targetID, actorID uuid.UUID, reason string) error {
-	return s.store.HideContent(ctx, targetType, targetID, actorID, reason)
+	if err := s.store.HideContent(ctx, targetType, targetID, actorID, reason); err != nil {
+		return err
+	}
+	// A hidden question or answer is never shown again: release its media.
+	s.ReleaseHiddenMedia(ctx, targetType, targetID)
+	return nil
 }
 
 func (s *Service) LockQuestion(ctx context.Context, questionID, actorID uuid.UUID, reason string) error {

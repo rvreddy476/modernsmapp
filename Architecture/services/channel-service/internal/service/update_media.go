@@ -9,7 +9,8 @@ import (
 	"github.com/google/uuid"
 )
 
-// Channel-update media authority.
+// Channel-update media authority, and the channel's picture and banner
+// (verifyChannelMedia: the same rule, the same errors).
 //
 // # The hole
 //
@@ -142,4 +143,16 @@ func (s *Service) verifyUpdateMedia(ctx context.Context, actorID uuid.UUID, ids,
 		}
 	}
 	return nil
+}
+
+// verifyChannelMedia is the same gate for a channel's picture and banner
+// (broadcast_channels.avatar_media_id / banner_media_id, claim kinds
+// channel_avatar / channel_banner). Without it any media id that exists could
+// be set, and the claim would then pin another user's upload to this channel.
+// Only the ids a save ADDS are checked (optionalMediaDiff): re-saving the
+// current picture attaches nothing new, and it may be another admin's upload.
+func (s *Service) verifyChannelMedia(ctx context.Context, actorID uuid.UUID, avatarAdd, bannerAdd []uuid.UUID) error {
+	added := make([]uuid.UUID, 0, len(avatarAdd)+len(bannerAdd))
+	added = append(append(added, avatarAdd...), bannerAdd...)
+	return s.verifyUpdateMedia(ctx, actorID, added, nil)
 }
