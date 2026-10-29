@@ -1,5 +1,6 @@
 // media-claims reconciles media-service's claims with the media ids the
-// group tables hold (internal/claimsync has the rules).
+// group tables hold: group avatars and covers, event covers and post
+// attachments (internal/claimsync has the rules).
 //
 //	media-claims            dry run: read every row, send nothing, print the counts
 //	media-claims -apply     claim what live rows hold, release what dead rows held
@@ -61,7 +62,7 @@ func run(apply bool) int {
 	if client != nil {
 		claims = client
 	}
-	rep, err := claimsync.Run(ctx, st, claims, []claimsync.Pager{st.GroupMediaClaimRows, st.GroupEventMediaClaimRows}, apply)
+	rep, err := claimsync.Run(ctx, st, claims, []claimsync.Pager{st.GroupMediaClaimRows, st.GroupEventMediaClaimRows, st.GroupPostMediaClaimRows}, apply)
 	mode := "dry run"
 	if apply {
 		mode = "applied"

@@ -1,13 +1,13 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
 
+	"github.com/atpost/group-service/internal/mediaclaims"
 	"github.com/google/uuid"
 )
 
@@ -37,40 +37,10 @@ func (s *Service) SetMediaServiceURL(url string) {
 	}
 }
 
-// attachmentIDs reads the media ids out of the attachments JSON. Both shapes
-// the composer has ever sent are accepted: ["id", …] and [{"media_id": …}].
+// attachmentIDs reads the media ids out of the attachments JSON
+// (mediaclaims.AttachmentIDs: ["id", …] or [{"media_id": …}]).
 func attachmentIDs(raw json.RawMessage) ([]uuid.UUID, error) {
-	if len(bytes.TrimSpace(raw)) == 0 || string(bytes.TrimSpace(raw)) == "null" {
-		return nil, nil
-	}
-	var items []json.RawMessage
-	if err := json.Unmarshal(raw, &items); err != nil {
-		return nil, fmt.Errorf("invalid: attachments must be a list")
-	}
-	var out []uuid.UUID
-	for _, it := range items {
-		var asString string
-		if err := json.Unmarshal(it, &asString); err == nil {
-			id, err := uuid.Parse(asString)
-			if err != nil {
-				return nil, fmt.Errorf("invalid: attachment %q is not a media id", asString)
-			}
-			out = append(out, id)
-			continue
-		}
-		var asObject struct {
-			MediaID string `json:"media_id"`
-		}
-		if err := json.Unmarshal(it, &asObject); err != nil || asObject.MediaID == "" {
-			return nil, fmt.Errorf("invalid: attachment is not a media id")
-		}
-		id, err := uuid.Parse(asObject.MediaID)
-		if err != nil {
-			return nil, fmt.Errorf("invalid: attachment %q is not a media id", asObject.MediaID)
-		}
-		out = append(out, id)
-	}
-	return out, nil
+	return mediaclaims.AttachmentIDs(raw)
 }
 
 // anonymizeAttachments scopes every attached asset as anonymous, or fails.

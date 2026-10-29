@@ -1565,8 +1565,13 @@ func (s *Service) DeleteGroupPost(ctx context.Context, actorID, groupID, postID 
 		}
 	}
 
-	if err := s.store.DeleteGroupPost(ctx, groupID, postID); err != nil {
+	withMedia, err := s.store.DeleteGroupPost(ctx, groupID, postID)
+	if err != nil {
 		return err
+	}
+	// A deleted row is gone: release whatever it held (media_claims.go).
+	for _, id := range withMedia {
+		s.media.Release(ctx, mediaclient.KindGroupPostAttachment, id, nil)
 	}
 
 	s.publishEvent(func() error {
@@ -2048,9 +2053,17 @@ func (s *Service) RejectPendingPost(ctx context.Context, actorID, groupID, postI
 	}
 	// No counter change: a pending post was never counted, so rejecting it
 	// has nothing to undo.
+	unlock, err := s.lockMediaHolder(ctx, postID)
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	if err := s.store.RejectGroupPost(ctx, postID); err != nil {
 		return err
 	}
+	// A moderator's rejection is final (approval needs a pending post): the
+	// post's attachments stop being held. Best effort, like every release.
+	s.releasePostMedia(ctx, postID, post.Attachments)
 	s.invalidateGroupCache(ctx, groupID)
 	return nil
 }
@@ -2351,7 +2364,17 @@ func (s *Service) DeleteGroupPostV2(ctx context.Context, actorID, groupID, postI
 		}
 	}
 
-	if err := s.store.DeleteGroupPostV2(ctx, groupID, postID); err != nil {
+	unlock, err := s.lockMediaHolder(ctx, postID)
+	if err != nil {
+		return err
+	}
+	err = s.store.DeleteGroupPostV2(ctx, groupID, postID)
+	if err == nil {
+		// A deleted post is never shown again: release its attachments.
+		s.releasePostMedia(ctx, postID, p.Attachments)
+	}
+	unlock()
+	if err != nil {
 		return err
 	}
 	// Named as the post knows the actor: the alias when the anonymous

@@ -1,10 +1,11 @@
 // media-claims reconciles media-service's claims with the stream covers
-// live_streams holds (internal/claimsync has the rules).
+// live_streams holds and the recording assets live_recording_imports holds
+// (internal/claimsync has the rules).
 //
 //	media-claims             dry run: read every stream with a cover, send nothing, print the counts
 //	media-claims -apply      claim what streams hold, release what they no longer hold
-//	media-claims -all ...    visit every stream, not only those with a cover (repairs
-//	                         stale claims of covers that were cleared)
+//	media-claims -all ...    visit every stream and import, not only those that name
+//	                         media (repairs stale claims of covers that were cleared)
 //
 // Environment, the same as the server: POSTGRES_DSN,
 // MEDIA_SERVICE_URL, INTERNAL_SERVICE_KEY. Run it once after the claim-aware

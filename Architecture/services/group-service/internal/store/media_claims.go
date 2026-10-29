@@ -7,6 +7,7 @@ import (
 	"hash/fnv"
 
 	"github.com/atpost/group-service/internal/claimsync"
+	"github.com/atpost/group-service/internal/mediaclaims"
 	"github.com/atpost/group-service/internal/mediaclient"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -14,10 +15,12 @@ import (
 
 // Media claim support (internal/mediaclaims, internal/claimsync).
 //
-// The holders: groups.avatar_media_id and cover_media_id (ref = group id) and
-// group_events.cover_media_id (ref = event id). A group is dead once deleted
-// (archived groups are still shown); an event once cancelled, or once its
-// group is deleted.
+// The holders: groups.avatar_media_id and cover_media_id (ref = group id),
+// group_events.cover_media_id (ref = event id) and group_posts.attachments
+// (ref = group post id). A group is dead once deleted (archived groups are
+// still shown); an event once cancelled, or once its group is deleted; a post
+// once deleted or rejected, or once its group is deleted (a pending post is
+// live: approving it shows it).
 
 // LockMediaHolder serialises every write that changes which media one row
 // holds, for as long as the caller holds it. The claim protocol claims,
@@ -153,6 +156,17 @@ func (s *Store) MediaClaimRowFor(ctx context.Context, kind string, ref uuid.UUID
 			SELECT e.cover_media_id, `+eventLiveSQL+`
 			FROM group_events e LEFT JOIN groups g ON g.id = e.group_id
 			WHERE e.id = $1`, ref).Scan(&id, &row.Live)
+	case mediaclient.KindGroupPostAttachment:
+		var raw []byte
+		err = s.db.QueryRow(ctx, `
+			SELECT p.attachments, `+postLiveSQL+`
+			FROM group_posts p LEFT JOIN groups g ON g.id = p.group_id
+			WHERE p.id = $1`, ref).Scan(&raw, &row.Live)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return claimsync.Row{Kind: kind, Ref: ref}, nil
+		}
+		row.MediaIDs = mediaclaims.StoredAttachmentIDs(raw)
+		return row, err
 	default:
 		return row, fmt.Errorf("unknown media holder kind %q", kind)
 	}
@@ -163,4 +177,65 @@ func (s *Store) MediaClaimRowFor(ctx context.Context, kind string, ref uuid.UUID
 		row.MediaIDs = []uuid.UUID{*id}
 	}
 	return row, err
+}
+
+// postLiveSQL is when a group post's attachments count as shown: the post is
+// neither deleted nor rejected (a pending post is shown once approved), and
+// its group exists and is not deleted. An unknown status counts as live: an
+// extra claim is repaired by a later pass, a missing one is not noticed.
+const postLiveSQL = `(COALESCE(p.status, 'published') NOT IN ('deleted', 'rejected') AND COALESCE(g.status <> 'deleted', false))`
+
+// hasAttachmentsSQL is true when group_posts.attachments is a non-empty
+// list. jsonb_array_length errors on a non-array, so the type is checked in
+// a CASE (SQL does not promise AND short-circuits).
+const hasAttachmentsSQL = `(CASE WHEN jsonb_typeof(attachments) = 'array' THEN jsonb_array_length(attachments) > 0 ELSE false END)`
+
+// PostIDsWithAttachments returns every post of the group that names
+// attachments, deleted and rejected ones included: releasing is idempotent,
+// and a delete whose release failed is exactly the one to retry.
+func (s *Store) PostIDsWithAttachments(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx,
+		`SELECT id FROM group_posts WHERE group_id = $1 AND `+hasAttachmentsSQL+` ORDER BY id`, groupID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}
+
+// GroupPostMediaClaimRows pages through every group post that names
+// attachments, dead ones included, in id order after `after`.
+func (s *Store) GroupPostMediaClaimRows(ctx context.Context, after uuid.UUID, limit int) ([]claimsync.Row, uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT p.id, p.attachments, `+postLiveSQL+`
+		FROM group_posts p LEFT JOIN groups g ON g.id = p.group_id
+		WHERE (CASE WHEN jsonb_typeof(p.attachments) = 'array' THEN jsonb_array_length(p.attachments) > 0 ELSE false END)
+		  AND p.id > $1
+		ORDER BY p.id
+		LIMIT $2`, after, limit)
+	if err != nil {
+		return nil, after, err
+	}
+	defer rows.Close()
+	var out []claimsync.Row
+	last := after
+	for rows.Next() {
+		r := claimsync.Row{Kind: mediaclient.KindGroupPostAttachment}
+		var raw []byte
+		if err := rows.Scan(&r.Ref, &raw, &r.Live); err != nil {
+			return nil, after, err
+		}
+		r.MediaIDs = mediaclaims.StoredAttachmentIDs(raw)
+		last = r.Ref
+		out = append(out, r)
+	}
+	return out, last, rows.Err()
 }

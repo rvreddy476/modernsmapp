@@ -169,12 +169,21 @@ func (s *Service) lookupRecordingPost(ctx context.Context, l postgres.PostLookup
 	switch {
 	case err == nil && post.Deleted:
 		slog.Info("live-v2 recording post: the post was deleted; not offered", "stream_id", l.StreamID)
-		if err := s.store.StopPostLookup(ctx, l.StreamID, postgres.PostLookupDeleted); err != nil {
+		if err := s.settleImport(ctx, l.StreamID, func() error {
+			return s.store.StopPostLookup(ctx, l.StreamID, postgres.PostLookupDeleted)
+		}); err != nil {
 			slog.Warn("live-v2 recording post: record deleted", "stream_id", l.StreamID, "err", err)
 		}
 		return true
 	case err == nil:
-		stored, err := s.store.SetRecordingPost(ctx, l.StreamID, post.PostID)
+		// Found: the video post holds the asset now (post-service), so the
+		// import row stops holding it (recording_claims.go).
+		var stored bool
+		err := s.settleImport(ctx, l.StreamID, func() error {
+			var err error
+			stored, err = s.store.SetRecordingPost(ctx, l.StreamID, post.PostID)
+			return err
+		})
 		if err != nil {
 			slog.Warn("live-v2 recording post: store", "stream_id", l.StreamID, "err", err)
 			return false
@@ -197,7 +206,9 @@ func (s *Service) lookupRecordingPost(ctx context.Context, l postgres.PostLookup
 	}
 	if l.Age >= limit {
 		slog.Warn("live-v2 recording post: gave up", "stream_id", l.StreamID, "age", l.Age.String(), "no_post", notYet)
-		if err := s.store.StopPostLookup(ctx, l.StreamID, postgres.PostLookupGaveUp); err != nil {
+		if err := s.settleImport(ctx, l.StreamID, func() error {
+			return s.store.StopPostLookup(ctx, l.StreamID, postgres.PostLookupGaveUp)
+		}); err != nil {
 			slog.Warn("live-v2 recording post: record give-up", "stream_id", l.StreamID, "err", err)
 		}
 		return false

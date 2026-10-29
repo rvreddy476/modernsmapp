@@ -194,6 +194,23 @@ func (s *Service) createOnePost(
 		Status:           status,
 	}
 
+	/*
+		The attachments are the author's own finished uploads, and each is
+		claimed against this post before the row names it (media_claims.go):
+		the id is fixed first so the claim and the row agree. The check runs
+		before anything else touches the media, so a foreign asset is neither
+		scoped anonymous nor claimed.
+	*/
+	attached, err := attachmentIDs(params.Attachments)
+	if err != nil {
+		return "", nil, err
+	}
+	post.ID = uuid.New()
+	media := postAttachmentChange(post.ID, attached)
+	if err := s.media.Verify(ctx, actorID, media); err != nil {
+		return "", nil, err
+	}
+
 	// An anonymous post's pictures are scoped BEFORE the row exists, and the
 	// post is refused if that fails: see media_anonymize.go.
 	if params.IsAnonymous {
@@ -201,7 +218,9 @@ func (s *Service) createOnePost(
 			return "", nil, err
 		}
 	}
-	if err := s.store.CreateGroupPostV2(ctx, post); err != nil {
+	if err := s.media.Write(ctx, media, func() error {
+		return s.store.CreateGroupPostV2(ctx, post)
+	}); err != nil {
 		return "", nil, err
 	}
 

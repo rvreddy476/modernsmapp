@@ -211,7 +211,8 @@ type UserEraser interface {
 	PurgeUser(ctx context.Context, userID uuid.UUID) error
 }
 
-// ReleasingEraser releases a purged host's cover claims, then erases.
+// ReleasingEraser releases a purged host's cover and recording import
+// claims, then erases.
 type ReleasingEraser struct {
 	svc  *Service
 	next UserEraser
@@ -230,6 +231,10 @@ func (s *Service) ReleasingEraser(next UserEraser) *ReleasingEraser {
 // cover only for the moment between the two, while their account is erased.
 func (e *ReleasingEraser) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 	if err := e.svc.releaseCreatorCovers(ctx, userID); err != nil {
+		return err
+	}
+	// The recording imports the erase deletes (recording_claims.go).
+	if err := e.svc.releaseCreatorImports(ctx, userID); err != nil {
 		return err
 	}
 	return e.next.PurgeUser(ctx, userID)

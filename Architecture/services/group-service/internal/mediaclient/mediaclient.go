@@ -50,6 +50,8 @@ const (
 	KindGroupAvatar     = "group_avatar"      // groups.avatar_media_id, ref = group id
 	KindGroupCover      = "group_cover"       // groups.cover_media_id, ref = group id
 	KindGroupEventCover = "group_event_cover" // group_events.cover_media_id, ref = event id
+	// group_posts.attachments (a JSONB list of media ids), ref = group post id.
+	KindGroupPostAttachment = "group_post_attachment"
 )
 
 // Asset is the subset of media-service's record the attach gate reads.

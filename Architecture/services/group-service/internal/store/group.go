@@ -1213,26 +1213,48 @@ func (s *Store) CountPinnedPosts(ctx context.Context, groupID uuid.UUID) (int, e
 }
 
 // DeleteGroupPost removes a post from the group and decrements the post count.
-func (s *Store) DeleteGroupPost(ctx context.Context, groupID, postID uuid.UUID) error {
+// It returns the ids of the deleted rows that named attachments, whose media
+// claims the caller releases (a legacy row carries none, but the column has
+// no constraint saying so).
+func (s *Store) DeleteGroupPost(ctx context.Context, groupID, postID uuid.UUID) ([]uuid.UUID, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback(ctx)
 
-	cmdTag, err := tx.Exec(ctx, `DELETE FROM group_posts WHERE group_id = $1 AND post_id = $2`, groupID, postID)
+	rows, err := tx.Query(ctx, `DELETE FROM group_posts WHERE group_id = $1 AND post_id = $2
+		RETURNING id, `+hasAttachmentsSQL, groupID, postID)
 	if err != nil {
-		return err
+		return nil, err
+	}
+	var deleted int
+	var withMedia []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		var has bool
+		if err := rows.Scan(&id, &has); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		deleted++
+		if has {
+			withMedia = append(withMedia, id)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, err
 	}
 
-	if cmdTag.RowsAffected() > 0 {
+	if deleted > 0 {
 		_, err = tx.Exec(ctx, `UPDATE groups SET post_count = GREATEST(post_count - 1, 0), updated_at = NOW() WHERE id = $1`, groupID)
 		if err != nil {
-			return err
+			return nil, err
 		}
 	}
 
-	return tx.Commit(ctx)
+	return withMedia, tx.Commit(ctx)
 }
 
 // GetGroupPost returns a group post by group ID and post ID.
@@ -1766,7 +1788,11 @@ func scanGroupPostV2WithViewer(row pgx.Row) (*GroupPostV2, error) {
 }
 
 func (s *Store) CreateGroupPostV2(ctx context.Context, p *GroupPostV2) error {
-	p.ID = uuid.New()
+	// A caller that claimed media against the post fixes its id first
+	// (service createOnePost); otherwise the id is minted here.
+	if p.ID == uuid.Nil {
+		p.ID = uuid.New()
+	}
 	p.CreatedAt = time.Now()
 	p.UpdatedAt = p.CreatedAt
 	if p.ContentType == "" {

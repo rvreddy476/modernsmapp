@@ -160,6 +160,14 @@ func (g *Gate) verify(ctx context.Context, actorID uuid.UUID, changes []Change) 
 	return nil
 }
 
+// Verify is the gate on its own: every added id must be the actor's own
+// confirmed upload. For a writer that has a step to run between the check and
+// the claim (an anonymous post scopes its attachments there); it then calls
+// Write. Attach is Verify then Write.
+func (g *Gate) Verify(ctx context.Context, actorID uuid.UUID, changes []Change) error {
+	return g.verify(ctx, actorID, changes)
+}
+
 // Attach checks every added id is the actor's own confirmed upload, then runs
 // write under the claim protocol.
 func (g *Gate) Attach(ctx context.Context, actorID uuid.UUID, changes []Change, write func() error) error {

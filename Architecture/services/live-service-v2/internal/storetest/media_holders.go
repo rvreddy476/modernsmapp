@@ -34,3 +34,17 @@ func (m *MemStore) StreamIDsWithCover(_ context.Context, creatorID uuid.UUID) ([
 	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
 	return out, nil
 }
+
+// StreamIDsWithImportMedia mirrors postgres.Store.StreamIDsWithImportMedia.
+func (m *MemStore) StreamIDsWithImportMedia(_ context.Context, creatorID uuid.UUID) ([]uuid.UUID, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []uuid.UUID
+	for id, j := range m.Imports {
+		if st, ok := m.Streams[id]; ok && st.CreatorUserID == creatorID && j.MediaID != nil {
+			out = append(out, id)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].String() < out[j].String() })
+	return out, nil
+}

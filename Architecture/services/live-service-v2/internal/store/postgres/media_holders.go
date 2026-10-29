@@ -108,3 +108,73 @@ func (s *Store) CoverClaimRowFor(ctx context.Context, streamID uuid.UUID) (Cover
 	}
 	return r, err
 }
+
+// ImportHoldsSQL is the media id a live_recording_imports row holds a claim
+// on (service/recording_claims.go): its media_id while the job is pending,
+// or done with the post lookup still pending; NULL otherwise.
+const ImportHoldsSQL = `(CASE WHEN state = 'pending' OR (state = 'done' AND post_lookup_state = 'pending') THEN media_id END)`
+
+// StreamIDsWithImportMedia lists the creator's streams whose recording import
+// names a media id, held or not (the purge releases their claims before it
+// erases them; releasing is idempotent).
+func (s *Store) StreamIDsWithImportMedia(ctx context.Context, creatorID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT i.stream_id FROM live_recording_imports i
+		JOIN live_streams st ON st.id = i.stream_id
+		WHERE st.creator_user_id = $1 AND i.media_id IS NOT NULL
+		ORDER BY i.stream_id`, creatorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
+}
+
+// ImportClaimRow is one stream's recording import and the media id it holds
+// (nil: none, the job no longer relies on it, or the row is gone).
+type ImportClaimRow struct {
+	StreamID uuid.UUID
+	Held     *uuid.UUID
+}
+
+// ImportClaimRows pages through every import that names a media id (with
+// all, every import), in stream id order after `after`. A row that names an
+// id it no longer holds is listed too: its claim is released.
+func (s *Store) ImportClaimRows(ctx context.Context, after uuid.UUID, limit int, all bool) ([]ImportClaimRow, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT stream_id, `+ImportHoldsSQL+` FROM live_recording_imports
+		WHERE ($3::boolean OR media_id IS NOT NULL) AND stream_id > $1
+		ORDER BY stream_id LIMIT $2`, after, limit, all)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ImportClaimRow
+	for rows.Next() {
+		var r ImportClaimRow
+		if err := rows.Scan(&r.StreamID, &r.Held); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ImportClaimRowFor re-reads one stream's import, under LockMediaHolder. An
+// import that no longer exists holds nothing.
+func (s *Store) ImportClaimRowFor(ctx context.Context, streamID uuid.UUID) (ImportClaimRow, error) {
+	r := ImportClaimRow{StreamID: streamID}
+	err := s.db.QueryRow(ctx, `SELECT `+ImportHoldsSQL+` FROM live_recording_imports WHERE stream_id = $1`, streamID).Scan(&r.Held)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ImportClaimRow{StreamID: streamID}, nil
+	}
+	return r, err
+}

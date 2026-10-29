@@ -276,9 +276,19 @@ func (s *Service) RunImports(ctx context.Context) {
 }
 
 func (s *Service) runImport(ctx context.Context, j postgres.RecordingImport) {
+	// Every write of the job runs under the claim protocol for the media id
+	// it records (recording_claims.go): j.MediaID is what the row holds now.
 	terminate := func(mediaID *uuid.UUID, status, msg string) {
 		slog.Warn("live-v2 imports: gave up; no vod_ready", "stream_id", j.StreamID, "reason", msg)
-		if err := s.store.TerminateImport(ctx, j.StreamID, mediaID, status, msg); err != nil {
+		before := j.MediaID
+		if before == nil {
+			// Nothing was recorded, but a claim may have outlived a failed
+			// write: a failed job holds nothing either way.
+			before = mediaID
+		}
+		if err := s.writeImportClaim(ctx, j.StreamID, before, nil, func() error {
+			return s.store.TerminateImport(ctx, j.StreamID, mediaID, status, msg)
+		}); err != nil {
 			slog.Warn("live-v2 imports: record terminal state", "stream_id", j.StreamID, "err", err)
 		}
 	}
@@ -287,7 +297,19 @@ func (s *Service) runImport(ctx context.Context, j postgres.RecordingImport) {
 			terminate(mediaID, status, "no ready media asset within 6h: "+msg)
 			return
 		}
-		if err := s.store.RetryImport(ctx, j.StreamID, mediaID, status, msg, in); err != nil {
+		after := j.MediaID
+		if mediaID != nil {
+			after = mediaID
+		}
+		err := s.writeImportClaim(ctx, j.StreamID, j.MediaID, after, func() error {
+			return s.store.RetryImport(ctx, j.StreamID, mediaID, status, msg, in)
+		})
+		if errors.Is(err, ErrMediaUnavailable) {
+			// The id could not be claimed, so it is not recorded; the next
+			// attempt learns it again (the import is idempotent).
+			err = s.store.RetryImport(ctx, j.StreamID, nil, status, truncateMsg(msg, err), in)
+		}
+		if err != nil {
 			slog.Warn("live-v2 imports: record retry", "stream_id", j.StreamID, "err", err)
 		}
 	}
@@ -323,14 +345,27 @@ func (s *Service) runImport(ctx context.Context, j postgres.RecordingImport) {
 		retry(&mediaID, res.ProcessingStatus, "", importPollInterval)
 		return
 	}
-	err = s.store.CompleteImport(ctx, j.StreamID, mediaID, func(st *postgres.LiveStream, done postgres.RecordingImport) ([]postgres.OutboxEvent, error) {
-		e, err := events.VODReady(ctx, st, done.RecordingURL, int(done.DurationMs/1000), mediaID)
-		if err != nil {
-			return nil, err
-		}
-		return []postgres.OutboxEvent{e}, nil
+	// The ready id is claimed before the transaction that records it and
+	// announces it (vod_ready names it to post-service).
+	err = s.writeImportClaim(ctx, j.StreamID, j.MediaID, &mediaID, func() error {
+		return s.store.CompleteImport(ctx, j.StreamID, mediaID, func(st *postgres.LiveStream, done postgres.RecordingImport) ([]postgres.OutboxEvent, error) {
+			e, err := events.VODReady(ctx, st, done.RecordingURL, int(done.DurationMs/1000), mediaID)
+			if err != nil {
+				return nil, err
+			}
+			return []postgres.OutboxEvent{e}, nil
+		})
 	})
 	if err != nil {
 		retry(&mediaID, res.ProcessingStatus, err.Error(), importBackoff(j.Attempts+1))
 	}
+}
+
+// truncateMsg joins the attempt's message and why its media id was not
+// recorded.
+func truncateMsg(msg string, claimErr error) string {
+	if msg == "" {
+		return "media id not recorded: " + claimErr.Error()
+	}
+	return msg + "; media id not recorded: " + claimErr.Error()
 }

@@ -50,6 +50,13 @@ const Claimant = "live-service-v2"
 // KindLiveCover is live_streams.cover_media_id; ref = the stream id.
 const KindLiveCover = "live_cover"
 
+// KindLiveRecordingImport is live_recording_imports.media_id, the asset
+// media-service made from the stream's recording on the host's behalf; ref =
+// the stream id. Held from the moment this service records the id until the
+// recording's video post exists (post-service then holds the asset), the
+// import fails, the lookup stops, or the host's account is purged.
+const KindLiveRecordingImport = "live_recording_import"
+
 // Asset is the subset of media-service's record the cover check reads.
 type Asset struct {
 	ID               uuid.UUID `json:"id"`
