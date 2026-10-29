@@ -10,6 +10,8 @@
 //	reel_drafts.media_id         (migration 006: plain UUID)
 //	reel_drafts.cover_media_id   (migration 006: plain UUID)
 //	events.cover_media_id        (migration 010: plain UUID)
+//	post_drafts.payload          (migration 026: JSONB; its cover_media_id
+//	                              key is a media id no column can constrain)
 //
 // A plain UUID write takes no lock on the media row, so the uploader's
 // DELETE /v1/media/{id} could remove an asset one of these rows still shows.
@@ -59,10 +61,15 @@ const (
 	KindReelDraft = "reel_draft"
 	// KindEventCover: events.cover_media_id, ref = event id.
 	KindEventCover = "event_cover"
+	// KindPostDraftCover: the cover_media_id key of a composer draft's
+	// post_drafts.payload, ref = draft id. A draft publishes as a post with
+	// the SAME id; the post's cover is then held under KindPostCover, a
+	// different (kind, ref), so neither releases the other.
+	KindPostDraftCover = "post_draft_cover"
 )
 
 // Kinds is every kind post-service claims, in a stable order.
-var Kinds = []string{KindPostCover, KindReelDraft, KindEventCover}
+var Kinds = []string{KindPostCover, KindReelDraft, KindEventCover, KindPostDraftCover}
 
 var (
 	// ErrNotFound: media-service has no such asset (code MEDIA_NOT_FOUND).

@@ -290,3 +290,71 @@ func TestMediaClaimsIT_ClaimedRefsPageReadsOnlyThisClaimant(t *testing.T) {
 		t.Fatalf("refs = %+v", got)
 	}
 }
+
+func claimsITPostDraft(t *testing.T, pool *pgxpool.Pool, author uuid.UUID, payload, status string) uuid.UUID {
+	t.Helper()
+	id := uuid.New()
+	if _, err := pool.Exec(context.Background(), `
+		INSERT INTO post_drafts (id, author_id, post_type, payload, status) VALUES ($1, $2, 'post', $3::jsonb, $4)`,
+		id, author, payload, status); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM post_drafts WHERE id = $1`, id) })
+	return id
+}
+
+// A composer draft's cover lives only in its JSONB payload: the holder
+// re-read and the pager read it there, parse it in Go (a legacy non-UUID
+// value holds nothing and fails nothing), and apply the draft liveness rule.
+func TestMediaClaimsIT_PostDraftCoverIsReadFromThePayload(t *testing.T) {
+	pool := openMediaClaimsDB(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	author, cover := uuid.New(), uuid.New()
+	withCover := `{"text":"t","cover_media_id":"` + cover.String() + `"}`
+
+	for status, live := range map[string]bool{"draft": true, "publishing": true, "blocked": true, "published": false, "deleted": false} {
+		d := claimsITPostDraft(t, pool, author, withCover, status)
+		h, err := s.MediaHeldBy(ctx, store.HolderPostDraftCover, d)
+		if err != nil || h.Live != live || len(h.MediaIDs) != 1 || h.MediaIDs[0] != cover {
+			t.Fatalf("draft %s: %+v err=%v, want live=%v holding the cover", status, h, err, live)
+		}
+	}
+	noCover := claimsITPostDraft(t, pool, author, `{"text":"t"}`, "draft")
+	if h, err := s.MediaHeldBy(ctx, store.HolderPostDraftCover, noCover); err != nil || !h.Live || len(h.MediaIDs) != 0 {
+		t.Fatalf("no cover: %+v err=%v", h, err)
+	}
+	legacy := claimsITPostDraft(t, pool, author, `{"text":"t","cover_media_id":"not-a-uuid"}`, "draft")
+	if h, err := s.MediaHeldBy(ctx, store.HolderPostDraftCover, legacy); err != nil || len(h.MediaIDs) != 0 {
+		t.Fatalf("legacy cover: %+v err=%v", h, err)
+	}
+	if h, err := s.MediaHeldBy(ctx, store.HolderPostDraftCover, uuid.New()); err != nil || h.Live || len(h.MediaIDs) != 0 {
+		t.Fatalf("a gone draft: %+v err=%v", h, err)
+	}
+	walks := claimsITPostDraft(t, pool, author, withCover, "draft")
+
+	seen := map[uuid.UUID]store.MediaHolding{}
+	after := uuid.Nil
+	for {
+		page, err := s.MediaHoldingPage(ctx, store.HolderPostDraftCover, after, 2)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, h := range page {
+			seen[h.Ref] = h
+		}
+		if len(page) < 2 {
+			break
+		}
+		after = page[len(page)-1].Ref
+	}
+	if h, ok := seen[walks]; !ok || !h.Live || len(h.MediaIDs) != 1 || h.MediaIDs[0] != cover {
+		t.Fatalf("a draft with a cover was not paged: %+v ok=%v", h, ok)
+	}
+	if _, ok := seen[noCover]; ok {
+		t.Fatal("a draft with no cover was paged")
+	}
+	if h, ok := seen[legacy]; !ok || len(h.MediaIDs) != 0 {
+		t.Fatalf("a legacy cover must be paged holding nothing (its claims go): %+v ok=%v", h, ok)
+	}
+}

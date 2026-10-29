@@ -316,3 +316,32 @@ func TestReportString(t *testing.T) {
 		t.Fatal(got)
 	}
 }
+
+// Composer draft covers are backfilled like every other kind: a live draft's
+// payload cover is claimed, a published or deleted draft's claim released,
+// and an erased account's draft (row gone) found by the orphan pass.
+func TestRunReconcilesPostDraftCovers(t *testing.T) {
+	src, c := rig()
+	live, published, erased := uuid.New(), uuid.New(), uuid.New()
+	cover := uuid.New()
+	src.row(mediaclaims.KindPostDraftCover, live, true, cover)
+	src.row(mediaclaims.KindPostDraftCover, published, false, cover)
+	c.held[key{mediaclaims.KindPostDraftCover, published}] = map[uuid.UUID]bool{cover: true}
+	c.held[key{mediaclaims.KindPostDraftCover, erased}] = map[uuid.UUID]bool{cover: true}
+	src.refs = []postgres.ClaimedRef{{Kind: mediaclaims.KindPostDraftCover, Ref: erased}}
+	rep, err := Run(context.Background(), src, c, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.ids(mediaclaims.KindPostDraftCover, live); got != cover.String() {
+		t.Fatalf("live draft claims = %q", got)
+	}
+	for name, ref := range map[string]uuid.UUID{"published": published, "erased": erased} {
+		if got := c.ids(mediaclaims.KindPostDraftCover, ref); got != "" {
+			t.Fatalf("%s draft kept %q", name, got)
+		}
+	}
+	if rep.Claimed != 1 || rep.Released != 2 || rep.Orphans != 1 || rep.Failed != 0 {
+		t.Fatalf("report = %s", rep)
+	}
+}

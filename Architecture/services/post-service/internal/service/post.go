@@ -117,6 +117,10 @@ type Service struct {
 	// ownMedia is the ownership read that gates a claim. *postgres.Store.
 	mediaHolders mediaHolderStore
 	ownMedia     mediaOwnershipReader
+	// postDraftRows is the composer draft rows the claimed writers write
+	// (post_draft_cover_claims.go). *postgres.Store; nil falls back to
+	// pgStore.
+	postDraftRows postDraftRows
 
 	// purgeAfter is the "Recently deleted" window: a soft-deleted post can
 	// be restored until deleted_at + purgeAfter, after which the purge
@@ -370,6 +374,7 @@ func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client)
 		svc.actionLinks = pg
 		svc.mediaHolders = pg
 		svc.ownMedia = pg
+		svc.postDraftRows = pg
 	}
 	svc.creditLinks = defaultCreditLinker{s: svc}
 	if rdb != nil {

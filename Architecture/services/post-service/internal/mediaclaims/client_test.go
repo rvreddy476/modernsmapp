@@ -48,7 +48,7 @@ func TestClaimSendsTheContractBody(t *testing.T) {
 
 // The exact strings media-service must register (claimKinds).
 func TestKindStrings(t *testing.T) {
-	want := []string{"post_cover", "reel_draft", "event_cover"}
+	want := []string{"post_cover", "reel_draft", "event_cover", "post_draft_cover"}
 	if len(Kinds) != len(want) {
 		t.Fatalf("kinds = %v", Kinds)
 	}

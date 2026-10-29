@@ -52,3 +52,39 @@ func TestHoldingIDs(t *testing.T) {
 		t.Fatalf("order: %v", got)
 	}
 }
+
+// A composer draft holds its cover while it can still be edited or is on
+// its way to a post; published and deleted drafts hold nothing.
+func TestPostDraftLivenessRule(t *testing.T) {
+	if postDraftLiveSQL != `status IN ('draft', 'publishing', 'blocked')` {
+		t.Fatalf("post draft liveness is %q", postDraftLiveSQL)
+	}
+	if postDraftCoverSQL != `payload->>'cover_media_id'` {
+		t.Fatalf("post draft cover read is %q", postDraftCoverSQL)
+	}
+}
+
+func TestParseDraftCoverID(t *testing.T) {
+	id := uuid.New()
+	s := func(v string) *string { return &v }
+	if got := ParseDraftCoverID(s("  " + id.String() + " ")); got == nil || *got != id {
+		t.Fatalf("a padded uuid: %v", got)
+	}
+	for name, raw := range map[string]*string{
+		"absent": nil, "empty": s(""), "blank": s("  "), "not a uuid": s("nope"),
+		"the nil uuid": s(uuid.Nil.String()),
+	} {
+		if got := ParseDraftCoverID(raw); got != nil {
+			t.Fatalf("%s: %v, want none", name, got)
+		}
+	}
+}
+
+// One key per (kind, row): a draft and the post it publishes as (same id)
+// never wait on each other.
+func TestPostDraftCoverLockKeyIsNotThePosts(t *testing.T) {
+	id := uuid.New()
+	if mediaHolderLockKey(HolderPostDraftCover, id) == mediaHolderLockKey(HolderPostCover, id) {
+		t.Fatal("a composer draft and the post it published as share a lock key")
+	}
+}

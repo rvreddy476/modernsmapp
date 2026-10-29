@@ -126,3 +126,35 @@ func TestMediaClaimsIT_BackfillRepairAndOrphans(t *testing.T) {
 		t.Fatalf("the purged post's orphan claim survived: %q", got)
 	}
 }
+
+// Composer draft covers come out of the JSONB payload: a live draft's cover
+// is backfilled, a deleted one's released, under the post_draft_cover kind.
+func TestMediaClaimsIT_BackfillPostDraftCovers(t *testing.T) {
+	pool := openDB(t)
+	ctx := context.Background()
+	author, cover := uuid.New(), uuid.New()
+	live, deleted := uuid.New(), uuid.New()
+	payload := `{"text":"t","cover_media_id":"` + cover.String() + `"}`
+	for id, status := range map[uuid.UUID]string{live: "draft", deleted: "deleted"} {
+		if _, err := pool.Exec(ctx, `INSERT INTO post_drafts (id, author_id, payload, status) VALUES ($1, $2, $3::jsonb, $4)`,
+			id, author, payload, status); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM post_drafts WHERE id = ANY($1)`, []uuid.UUID{live, deleted})
+	})
+	var log []string
+	c := &fakeClaims{held: map[key]map[uuid.UUID]bool{}, missing: map[uuid.UUID]bool{}, log: &log}
+	c.held[key{mediaclaims.KindPostDraftCover, deleted}] = map[uuid.UUID]bool{cover: true}
+
+	if _, err := Run(ctx, postgres.New(pool), c, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.ids(mediaclaims.KindPostDraftCover, live); got != cover.String() {
+		t.Fatalf("the saved draft's cover was not backfilled: %q", got)
+	}
+	if got := c.ids(mediaclaims.KindPostDraftCover, deleted); got != "" {
+		t.Fatalf("the deleted draft kept its claim: %q", got)
+	}
+}

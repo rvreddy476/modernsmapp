@@ -295,8 +295,9 @@ func (s *Service) CreatePostDraft(ctx context.Context, authorID uuid.UUID, postT
 	}
 	// P1-4/P1-5: the draft row and its media reference set are written in
 	// ONE transaction — a successful response can never leave the
-	// reference table incomplete.
-	if err := s.pgStore.CreatePostDraft(ctx, d, payload.MediaIDs); err != nil {
+	// reference table incomplete. The payload's cover has no foreign key:
+	// it is claimed first (post_draft_cover_claims.go).
+	if err := s.createPostDraftClaimed(ctx, d, payload.MediaIDs, payloadDraftCover(payload)); err != nil {
 		return nil, err
 	}
 	return d, nil
@@ -318,24 +319,29 @@ func (s *Service) UpdatePostDraft(ctx context.Context, id, authorID uuid.UUID, p
 	if err := validateDraft(postType, payload); err != nil {
 		return nil, err
 	}
-	ok, err := s.pgStore.UpdatePostDraft(ctx, id, authorID, postType, rawPayload, scheduleAt, payload.MediaIDs)
+	var ok bool
+	err = s.updatePostDraftClaimed(ctx, id, authorID, payloadDraftCover(payload), func() error {
+		var werr error
+		ok, werr = s.draftRows().UpdatePostDraft(ctx, id, authorID, postType, rawPayload, scheduleAt, payload.MediaIDs)
+		return werr
+	})
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
 		// Distinguish "missing" from "not editable" for the client.
-		existing, gerr := s.pgStore.GetPostDraft(ctx, id, authorID)
+		existing, gerr := s.draftRows().GetPostDraft(ctx, id, authorID)
 		if gerr == nil && existing != nil {
 			return nil, ErrDraftNotEditable
 		}
 		return nil, ErrDraftNotFound
 	}
 	// The reference set was rewritten inside UpdatePostDraft's transaction.
-	return s.pgStore.GetPostDraft(ctx, id, authorID)
+	return s.draftRows().GetPostDraft(ctx, id, authorID)
 }
 
 func (s *Service) GetPostDraft(ctx context.Context, id, authorID uuid.UUID) (*postgres.PostDraft, error) {
-	d, err := s.pgStore.GetPostDraft(ctx, id, authorID)
+	d, err := s.draftRows().GetPostDraft(ctx, id, authorID)
 	if err != nil {
 		return nil, err
 	}
@@ -350,13 +356,15 @@ func (s *Service) ListPostDrafts(ctx context.Context, authorID uuid.UUID, limit 
 }
 
 func (s *Service) DeletePostDraft(ctx context.Context, id, authorID uuid.UUID) error {
-	ok, err := s.pgStore.DeletePostDraft(ctx, id, authorID)
+	ok, err := s.draftRows().DeletePostDraft(ctx, id, authorID)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return ErrDraftNotFound
 	}
+	// A deleted draft is never shown again: its cover claim goes.
+	s.settleMediaHolderBestEffort(ctx, postgres.HolderPostDraftCover, id)
 	return nil
 }
 
@@ -383,10 +391,20 @@ func (s *Service) PublishPostDraft(ctx context.Context, id, authorID uuid.UUID, 
 		// set so the atomic rewrite is a no-op rather than a wipe.
 		schedPayload, perr := parseDraftPayload(d.Payload)
 		var schedMedia []uuid.UUID
+		var schedCover *uuid.UUID
 		if perr == nil {
 			schedMedia = schedPayload.MediaIDs
+			schedCover = payloadDraftCover(schedPayload)
 		}
-		ok, err := s.pgStore.UpdatePostDraft(ctx, id, authorID, d.PostType, d.Payload, scheduleAt, schedMedia)
+		// The payload is re-sent, so the cover is the one the draft already
+		// names: under the protocol this changes no claim (a pre-claims
+		// draft's cover is claimed by cmd/media-claims' backfill).
+		var ok bool
+		err := s.updatePostDraftClaimed(ctx, id, authorID, schedCover, func() error {
+			var werr error
+			ok, werr = s.draftRows().UpdatePostDraft(ctx, id, authorID, d.PostType, d.Payload, scheduleAt, schedMedia)
+			return werr
+		})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -456,7 +474,7 @@ func (s *Service) publishDraftRow(ctx context.Context, d *postgres.PostDraft, in
 			// attempt. Resolve to it and finalize the draft.
 			existing, gerr := s.pgStore.GetPost(ctx, postID)
 			if gerr == nil && existing != nil {
-				s.pgStore.MarkPostDraftPublished(ctx, d.ID, existing.ID, d.ClaimToken) //nolint:errcheck
+				s.finishPostDraftPublish(ctx, d.ID, existing.ID, d.ClaimToken) //nolint:errcheck
 				return existing, nil
 			}
 		}
@@ -477,7 +495,7 @@ func (s *Service) publishDraftRow(ctx context.Context, d *postgres.PostDraft, in
 	// scheduling, exactly as it does on the immediate-publish path.
 	s.keepComposerDraftSound(ctx, post, payload)
 
-	if err := s.pgStore.MarkPostDraftPublished(ctx, d.ID, post.ID, d.ClaimToken); err != nil {
+	if err := s.finishPostDraftPublish(ctx, d.ID, post.ID, d.ClaimToken); err != nil {
 		// Post exists; the stale-claim reclaim will retry the finalize and
 		// hit the PK-conflict fast path above. Log, don't fail the publish.
 		slog.Error("draft publish: finalize failed", "draft_id", d.ID, "err", err)

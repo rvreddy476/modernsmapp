@@ -254,3 +254,65 @@ func TestMediaClaimsIT_ConcurrentCoverEditsNeverLeaveTheCoverUnclaimed(t *testin
 	}
 	sameIDs(t, "claims after the race", claims.held(postgres.HolderPostCover, post), final)
 }
+
+// A composer draft's cover through its whole life on the real schema: saved
+// (claimed), changed (moved), a stranger's cover refused, deleted
+// (released); and a published draft releases its own claim while the post
+// published under the same id keeps its post_cover claim.
+func TestMediaClaimsIT_PostDraftCoverLifecycle(t *testing.T) {
+	pool := openMediaClaimsServiceDB(t)
+	svc, claims := claimsITService(t, pool)
+	ctx := context.Background()
+	author, other := claimsITUser(t, pool), claimsITUser(t, pool)
+	c1 := claimsITAsset(t, pool, author, "image")
+	c2 := claimsITAsset(t, pool, author, "image")
+	theirs := claimsITAsset(t, pool, other, "image")
+	body := func(cover uuid.UUID) []byte { return []byte(`{"text":"d","cover_media_id":"` + cover.String() + `"}`) }
+
+	d, err := svc.CreatePostDraft(ctx, author, "", body(c1), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM post_drafts WHERE id = $1`, d.ID) })
+	sameIDs(t, "after save", claims.held(postgres.HolderPostDraftCover, d.ID), c1)
+
+	if _, err := svc.UpdatePostDraft(ctx, d.ID, author, "", body(c2), nil); err != nil {
+		t.Fatal(err)
+	}
+	sameIDs(t, "after the cover changed", claims.held(postgres.HolderPostDraftCover, d.ID), c2)
+
+	if _, err := svc.UpdatePostDraft(ctx, d.ID, author, "", body(theirs), nil); err == nil {
+		t.Fatal("a stranger's upload became a draft cover")
+	}
+	sameIDs(t, "after the refused cover", claims.held(postgres.HolderPostDraftCover, d.ID), c2)
+
+	if err := svc.DeletePostDraft(ctx, d.ID, author); err != nil {
+		t.Fatal(err)
+	}
+	if got := claims.held(postgres.HolderPostDraftCover, d.ID); len(got) != 0 {
+		t.Fatalf("a deleted draft kept its cover claim: %v", got)
+	}
+
+	// Publish: the post claims its cover under the draft's id, then the
+	// draft is finalised and settles its own claim.
+	p, err := svc.CreatePostDraft(ctx, author, "", body(c1), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _, _ = pool.Exec(context.Background(), `DELETE FROM post_drafts WHERE id = $1`, p.ID) })
+	claimed, err := postgres.New(pool).ClaimPostDraftForPublish(ctx, p.ID, author)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.setPostCoverClaimed(ctx, p.ID, c1, func() error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	sameIDs(t, "a publishing draft's claim", claims.held(postgres.HolderPostDraftCover, p.ID), c1)
+	if err := svc.finishPostDraftPublish(ctx, p.ID, p.ID, claimed.ClaimToken); err != nil {
+		t.Fatal(err)
+	}
+	if got := claims.held(postgres.HolderPostDraftCover, p.ID); len(got) != 0 {
+		t.Fatalf("a published draft kept its claim: %v", got)
+	}
+	sameIDs(t, "the post's cover claim", claims.held(postgres.HolderPostCover, p.ID), c1)
+}

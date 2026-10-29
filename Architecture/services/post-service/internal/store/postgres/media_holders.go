@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"strings"
 	"sync"
 
 	"github.com/google/uuid"
@@ -28,6 +29,9 @@ const (
 	HolderPostCover  = "post_cover"
 	HolderReelDraft  = "reel_draft"
 	HolderEventCover = "event_cover"
+	// HolderPostDraftCover: a composer draft's payload cover_media_id
+	// (post_drafts.payload is JSONB, so no foreign key can guard it).
+	HolderPostDraftCover = "post_draft_cover"
 )
 
 // MediaHolding is what one holder row holds right now. Live is false when the
@@ -46,6 +50,33 @@ type MediaHolding struct {
 // (post_media's foreign key, the post's own cover claim); a deleted one is
 // never shown. Every other state can still be edited and published.
 const reelDraftLiveSQL = `status NOT IN ('deleted', 'published')`
+
+// postDraftLiveSQL is the composer draft liveness rule: the states the
+// author can still edit or that are on their way to a post ('publishing').
+// A published draft hands its cover to the post (the post's own
+// post_cover claim, same id, different kind); a deleted one is never shown.
+const postDraftLiveSQL = `status IN ('draft', 'publishing', 'blocked')`
+
+// postDraftCoverSQL reads the payload's cover as text. It is parsed in Go
+// (ParseDraftCoverID), never cast in SQL: a draft saved before the cover was
+// validated may hold a value that is not a UUID, and one such row must not
+// fail the read.
+const postDraftCoverSQL = `payload->>'cover_media_id'`
+
+// ParseDraftCoverID is the cover a composer draft's payload names: the
+// cover_media_id text, trimmed, when it is a UUID; nil otherwise. The
+// service decides what a write will hold with this same function, so the
+// writers and the holder re-read always agree on the set.
+func ParseDraftCoverID(raw *string) *uuid.UUID {
+	if raw == nil {
+		return nil
+	}
+	id, err := uuid.Parse(strings.TrimSpace(*raw))
+	if err != nil || id == uuid.Nil {
+		return nil
+	}
+	return &id
+}
 
 // LockMediaHolder serialises every write that changes which media one holder
 // row names, for as long as the caller holds it. The claim protocol claims,
@@ -203,6 +234,11 @@ func (s *Store) MediaHeldBy(ctx context.Context, kind string, ref uuid.UUID) (Me
 			FROM reel_drafts WHERE id = $1`, ref).Scan(&a, &b, &h.Live)
 	case HolderEventCover:
 		err = s.db.QueryRow(ctx, `SELECT cover_media_id, TRUE FROM events WHERE id = $1`, ref).Scan(&a, &h.Live)
+	case HolderPostDraftCover:
+		var raw *string
+		err = s.db.QueryRow(ctx, `SELECT `+postDraftCoverSQL+`, `+postDraftLiveSQL+`
+			FROM post_drafts WHERE id = $1`, ref).Scan(&raw, &h.Live)
+		a = ParseDraftCoverID(raw)
 	default:
 		return h, fmt.Errorf("unknown media holder kind %q", kind)
 	}
@@ -230,6 +266,8 @@ func (s *Store) MediaHoldingPage(ctx context.Context, kind string, after uuid.UU
 	case HolderEventCover:
 		q = `SELECT id, cover_media_id, NULL::uuid, TRUE FROM events
 			WHERE cover_media_id IS NOT NULL AND id > $1 ORDER BY id LIMIT $2`
+	case HolderPostDraftCover:
+		return s.postDraftCoverPage(ctx, after, limit)
 	default:
 		return nil, fmt.Errorf("unknown media holder kind %q", kind)
 	}
@@ -246,6 +284,29 @@ func (s *Store) MediaHoldingPage(ctx context.Context, kind string, after uuid.UU
 			return nil, err
 		}
 		h.MediaIDs = holdingIDs(a, b)
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// postDraftCoverPage is MediaHoldingPage for composer drafts: every draft
+// whose payload names a cover, dead ones included. A cover that is not a
+// UUID holds nothing (its row's claims, if any, are released).
+func (s *Store) postDraftCoverPage(ctx context.Context, after uuid.UUID, limit int) ([]MediaHolding, error) {
+	rows, err := s.db.Query(ctx, `SELECT id, `+postDraftCoverSQL+`, `+postDraftLiveSQL+` FROM post_drafts
+		WHERE COALESCE(`+postDraftCoverSQL+`, '') <> '' AND id > $1 ORDER BY id LIMIT $2`, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("page media holders %s: %w", HolderPostDraftCover, err)
+	}
+	defer rows.Close()
+	var out []MediaHolding
+	for rows.Next() {
+		h := MediaHolding{Kind: HolderPostDraftCover}
+		var raw *string
+		if err := rows.Scan(&h.Ref, &raw, &h.Live); err != nil {
+			return nil, err
+		}
+		h.MediaIDs = holdingIDs(ParseDraftCoverID(raw), nil)
 		out = append(out, h)
 	}
 	return out, rows.Err()

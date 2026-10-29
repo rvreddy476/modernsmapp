@@ -20,6 +20,7 @@ import (
 //	posts.cover_media_id                        no FK  → claim  post_cover
 //	reel_drafts.media_id, reel_drafts.cover_... no FK  → claim  reel_draft
 //	events.cover_media_id                       no FK  → claim  event_cover
+//	post_drafts.payload → cover_media_id        JSONB  → claim  post_draft_cover
 //	video_series.cover_media_id                 FK (migration 012) → none
 //	post_media / post_draft_media / stories     FK RESTRICT (030, 032) → none
 //
@@ -50,7 +51,8 @@ import (
 // A claim pins an asset against its OWNER's delete, so only the writer's own
 // upload may be claimed: a stranger's id would let anyone stop anyone else
 // deleting their media. Post covers already pass verifyCoverOnWrite /
-// verifyCoverMedia; reel draft media and event covers pass verifyOwnMedia.
+// verifyCoverMedia; reel draft media and event covers pass verifyOwnMedia;
+// composer draft covers pass verifyDraftCover (the post cover rule).
 
 // MediaClaims is media-service's claim API (mediaclaims.Client).
 type MediaClaims interface {

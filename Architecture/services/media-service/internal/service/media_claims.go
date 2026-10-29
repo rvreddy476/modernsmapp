@@ -55,25 +55,28 @@ var claimKinds = map[string]map[string]claimLabel{
 		"business_page_cover":  {"page cover", "page covers"},
 	},
 	"post-service": {
-		"post_cover":  {"post cover", "post covers"},
-		"reel_draft":  {"reel draft", "reel drafts"},
-		"event_cover": {"event cover", "event covers"},
+		"post_cover":       {"post cover", "post covers"},
+		"reel_draft":       {"reel draft", "reel drafts"},
+		"event_cover":      {"event cover", "event covers"},
+		"post_draft_cover": {"draft cover", "draft covers"},
 	},
 	"community-service": {
 		"community_avatar": {"community picture", "community pictures"},
 		"community_banner": {"community banner", "community banners"},
 	},
 	"group-service": {
-		"group_avatar":      {"group picture", "group pictures"},
-		"group_cover":       {"group cover", "group covers"},
-		"group_event_cover": {"group event cover", "group event covers"},
+		"group_avatar":          {"group picture", "group pictures"},
+		"group_cover":           {"group cover", "group covers"},
+		"group_event_cover":     {"group event cover", "group event covers"},
+		"group_post_attachment": {"group post", "group posts"},
 	},
 	"qa-service": {
 		"qa_question": {"question", "questions"},
 		"qa_answer":   {"answer", "answers"},
 	},
 	"live-service-v2": {
-		"live_cover": {"live stream cover", "live stream covers"},
+		"live_cover":            {"live stream cover", "live stream covers"},
+		"live_recording_import": {"live stream recording", "live stream recordings"},
 	},
 	"monetization-service": {
 		"fundraiser_cover": {"fundraiser cover", "fundraiser covers"},
