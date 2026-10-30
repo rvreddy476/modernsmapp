@@ -467,9 +467,9 @@ var (
 	ctUUIDRe      = regexp.MustCompile(`[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}`)
 	ctOrderNumRe  = regexp.MustCompile(`ORD-\d{4}-(\d{6})`)
 	ctInvoiceNoRe = regexp.MustCompile(`INV-[0-9]{2}-[0-9]{2}-(\d+)`)
-	// A product slug the service made unique with a clock-derived five-digit
+	// A product slug the service made unique with a clock-derived (up to five-digit, unpadded)
 	// suffix (service.uniqueSlug). Seeded slugs carry no such suffix.
-	ctSlugRe = regexp.MustCompile(`"slug":"([a-z0-9-]+)-\d{5}"`)
+	ctSlugRe = regexp.MustCompile(`"slug":"([a-z0-9-]+)-\d{1,5}"`)
 )
 
 var (
