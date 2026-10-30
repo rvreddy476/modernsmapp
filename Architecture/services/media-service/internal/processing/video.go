@@ -3,8 +3,6 @@ package processing
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -124,7 +122,12 @@ type VideoMeta struct {
 	DurationFloat   float64 // precise duration in seconds
 	CodecVideo      string  // e.g. "h264", "hevc"
 	CodecAudio      string  // e.g. "aac", "opus"
-	FrameRate       float64 // e.g. 30.0, 59.94
+	FrameRate       float64 // r_frame_rate, e.g. 30.0, 59.94
+	// AvgFrameRate is ffprobe's avg_frame_rate: frames over duration. A
+	// variable-frame-rate file (a browser WebM) can report an r_frame_rate
+	// of 1000/1 with 30 real frames a second; this is the one the limits
+	// read. 0 when unknown.
+	AvgFrameRate float64
 }
 
 // ExtractThumbnail generates a JPEG thumbnail from a video at the given timestamp.
@@ -137,11 +140,13 @@ func ExtractThumbnail(ctx context.Context, inputPath, outputPath string, atSecon
 		"-vframes", "1",
 		"-vf", fmt.Sprintf("scale=%d:%d:force_original_aspect_ratio=decrease,pad=%d:%d:(ow-iw)/2:(oh-ih)/2", size, size, size, size),
 		"-q:v", "5",
+		"-map_metadata", "-1",
 		outputPath,
 	}
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if out, err := runFFmpeg(ctx, args...); err != nil {
+		return fmt.Errorf("ffmpeg thumbnail: %w: %s", err, lastLine(out))
+	}
+	return nil
 }
 
 func thumbnailTimestamp(durationSeconds float64) float64 {
@@ -204,18 +209,28 @@ func mp4TranscodeArgs(inputPath, outputPath string, maxHeight int, p mp4Profile)
 		"-c:v", "libx264", "-preset", p.Preset, "-crf", p.CRF,
 	}
 	args = append(args, keyframeArgs()...)
-	return append(args,
+	args = append(args,
 		"-c:a", "aac", "-b:a", "128k",
 		"-movflags", "+faststart",
-		outputPath,
 	)
+	args = append(args, stripMetadataArgs()...)
+	return append(args, outputPath)
+}
+
+// stripMetadataArgs drops every container, stream and chapter tag the
+// input carried (GPS location, device model, capture time, handler names)
+// from an output. Reels audit 2026-10-30, finding 4: the image pipeline
+// strips EXIF; video had no equivalent.
+func stripMetadataArgs() []string {
+	return []string{"-map_metadata", "-1", "-map_metadata:s", "-1", "-map_chapters", "-1"}
 }
 
 // TranscodeToMP4 transcodes a long video to a specific resolution.
 func TranscodeToMP4(ctx context.Context, inputPath, outputPath string, maxHeight int) error {
-	cmd := exec.CommandContext(ctx, "ffmpeg", mp4TranscodeArgs(inputPath, outputPath, maxHeight, longFormMP4Profile)...) //nolint:gosec // G204: fixed ffmpeg binary, argv without a shell; paths are worker-built temp files
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if out, err := runFFmpeg(ctx, mp4TranscodeArgs(inputPath, outputPath, maxHeight, longFormMP4Profile)...); err != nil {
+		return fmt.Errorf("ffmpeg %dp: %w: %s", maxHeight, err, lastLine(out))
+	}
+	return nil
 }
 
 // ProbeVideo extracts width, height, and duration from a video file.
@@ -227,7 +242,7 @@ func ProbeVideo(ctx context.Context, inputPath string) (*VideoMeta, error) {
 		"-of", "default=noprint_wrappers=1:nokey=1",
 		inputPath,
 	}
-	durOut, err := exec.CommandContext(ctx, "ffprobe", durArgs...).Output()
+	durOut, err := runFFprobe(ctx, durArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("ffprobe duration: %w", err)
 	}
@@ -246,7 +261,7 @@ func ProbeVideo(ctx context.Context, inputPath string) (*VideoMeta, error) {
 		"-of", "default=noprint_wrappers=1",
 		inputPath,
 	}
-	dimOut, err := exec.CommandContext(ctx, "ffprobe", dimArgs...).Output()
+	dimOut, err := runFFprobe(ctx, dimArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("ffprobe dimensions: %w", err)
 	}
@@ -257,30 +272,15 @@ func ProbeVideo(ctx context.Context, inputPath string) (*VideoMeta, error) {
 	codecArgs := []string{
 		"-v", "error",
 		"-select_streams", "v:0",
-		"-show_entries", "stream=codec_name,r_frame_rate",
+		"-show_entries", "stream=codec_name,r_frame_rate,avg_frame_rate",
 		"-of", "default=noprint_wrappers=1",
 		inputPath,
 	}
-	codecOut, _ := exec.CommandContext(ctx, "ffprobe", codecArgs...).Output()
-	codecVideo := ""
-	frameRate := 0.0
-	for _, line := range strings.Split(string(codecOut), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "codec_name=") {
-			codecVideo = strings.TrimPrefix(line, "codec_name=")
-		}
-		if strings.HasPrefix(line, "r_frame_rate=") {
-			frStr := strings.TrimPrefix(line, "r_frame_rate=")
-			frParts := strings.Split(frStr, "/")
-			if len(frParts) == 2 {
-				num, _ := strconv.ParseFloat(frParts[0], 64)
-				den, _ := strconv.ParseFloat(frParts[1], 64)
-				if den > 0 {
-					frameRate = num / den
-				}
-			}
-		}
+	codecOut, err := runFFprobe(ctx, codecArgs...)
+	if err != nil {
+		return nil, fmt.Errorf("ffprobe codec: %w", err)
 	}
+	codecVideo, frameRate, avgFrameRate := parseProbeCodec(string(codecOut))
 
 	audioArgs := []string{
 		"-v", "error",
@@ -289,7 +289,7 @@ func ProbeVideo(ctx context.Context, inputPath string) (*VideoMeta, error) {
 		"-of", "default=noprint_wrappers=1:nokey=1",
 		inputPath,
 	}
-	audioOut, _ := exec.CommandContext(ctx, "ffprobe", audioArgs...).Output()
+	audioOut, _ := runFFprobe(ctx, audioArgs...)
 	codecAudio := strings.TrimSpace(string(audioOut))
 
 	return &VideoMeta{
@@ -304,7 +304,42 @@ func ProbeVideo(ctx context.Context, inputPath string) (*VideoMeta, error) {
 		CodecVideo:      codecVideo,
 		CodecAudio:      codecAudio,
 		FrameRate:       frameRate,
+		AvgFrameRate:    avgFrameRate,
 	}, nil
+}
+
+// parseProbeCodec reads `stream=codec_name,r_frame_rate,avg_frame_rate`.
+func parseProbeCodec(out string) (codec string, rFrameRate, avgFrameRate float64) {
+	for _, line := range strings.Split(out, "\n") {
+		key, value, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		switch key {
+		case "codec_name":
+			codec = value
+		case "r_frame_rate":
+			rFrameRate = parseRational(value)
+		case "avg_frame_rate":
+			avgFrameRate = parseRational(value)
+		}
+	}
+	return codec, rFrameRate, avgFrameRate
+}
+
+// parseRational reads ffprobe's "num/den"; 0 when unknown ("0/0").
+func parseRational(v string) float64 {
+	num, den, ok := strings.Cut(v, "/")
+	if !ok {
+		f, _ := strconv.ParseFloat(v, 64)
+		return f
+	}
+	n, err1 := strconv.ParseFloat(num, 64)
+	d, err2 := strconv.ParseFloat(den, 64)
+	if err1 != nil || err2 != nil || d <= 0 {
+		return 0
+	}
+	return n / d
 }
 
 // ReelMaxDurationSeconds is the maximum duration (inclusive) for a video to be
@@ -338,9 +373,10 @@ const MinVideoResolution = 360
 // TranscodeToMP4Fast transcodes with ultrafast preset for reels where encode
 // speed matters more than compression ratio.
 func TranscodeToMP4Fast(ctx context.Context, inputPath, outputPath string, maxHeight int) error {
-	cmd := exec.CommandContext(ctx, "ffmpeg", mp4TranscodeArgs(inputPath, outputPath, maxHeight, reelMP4Profile)...) //nolint:gosec // G204: fixed ffmpeg binary, argv without a shell; paths are worker-built temp files
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
+	if out, err := runFFmpeg(ctx, mp4TranscodeArgs(inputPath, outputPath, maxHeight, reelMP4Profile)...); err != nil {
+		return fmt.Errorf("ffmpeg %dp: %w: %s", maxHeight, err, lastLine(out))
+	}
+	return nil
 }
 
 // TranscodeReel runs a reel-optimized pipeline: no 1080p/4K, faster preset, 720p cap.

@@ -43,6 +43,24 @@ import (
 // content for manual review; they must not treat it as safe.
 var ErrScanUnavailable = errors.New("content scan unavailable")
 
+// ErrScanInputRejected is the provider refusing the INPUT rather than
+// failing to answer: an image over the size limit, under the minimum
+// dimensions, or in a format it cannot read. It always travels together
+// with ErrScanUnavailable (no verdict, never safe), and it additionally
+// tells a retrying caller that the same bytes will be refused again (reels
+// audit 2026-10-30, finding 2: the worker re-ran the whole transcode on
+// every retry, forever).
+var ErrScanInputRejected = errors.New("content scan input rejected by provider")
+
+// isProviderInputRejection reports whether a Rekognition error is about
+// the image itself, which no retry changes.
+func isProviderInputRejection(err error) bool {
+	var tooLarge *rektypes.ImageTooLargeException
+	var badFormat *rektypes.InvalidImageFormatException
+	var badParam *rektypes.InvalidParameterException
+	return errors.As(err, &tooLarge) || errors.As(err, &badFormat) || errors.As(err, &badParam)
+}
+
 // RekognitionConfig tunes the scanner.
 type RekognitionConfig struct {
 	// MinConfidence is the percentage below which Rekognition's own findings
@@ -180,7 +198,11 @@ func (s *RekognitionScanner) ScanImage(ctx context.Context, data []byte) (ScanRe
 	if err != nil {
 		// Every provider error shape lands here: throttling, timeout,
 		// unsupported format, access denied, region outage. All unavailable,
-		// none safe.
+		// none safe. The input refusals are marked as such as well, so a
+		// caller that retries can tell "try later" from "never".
+		if isProviderInputRejection(err) {
+			return ScanResult{}, fmt.Errorf("%w: %w: %v", ErrScanUnavailable, ErrScanInputRejected, err)
+		}
 		return ScanResult{}, fmt.Errorf("%w: %v", ErrScanUnavailable, err)
 	}
 	if out == nil {

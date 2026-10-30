@@ -262,7 +262,7 @@ func TestHLSCopyArgsAreAStreamCopyWithTheSameNames(t *testing.T) {
 	joined := strings.Join(args, " ")
 	for _, want := range []string{
 		"-i /t/720p.mp4", "-c copy", "-f hls", "-hls_time 6", "-hls_playlist_type vod",
-		"-hls_segment_filename /h/720p_%03d.ts",
+		"-hls_segment_filename /h/720p_%03d.ts", "-map_metadata -1 -map_metadata:s -1 -map_chapters -1",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("copy args %q miss %q", joined, want)
@@ -278,10 +278,12 @@ func TestHLSCopyArgsAreAStreamCopyWithTheSameNames(t *testing.T) {
 	}
 }
 
-// The fallback is the pre-2026-09-29 encode, unchanged.
+// The fallback is the pre-2026-09-29 encode, plus the metadata strip
+// (reels audit 2026-10-30, finding 4).
 func TestHLSEncodeArgsAreTheOriginalLadderEncode(t *testing.T) {
 	got := strings.Join(hlsEncodeArgs("/in/o", "/h/720p.m3u8", "/h/720p_%03d.ts", defaultHLSVariants[1], "fast"), " ")
 	want := "-i /in/o -vf scale=-2:720 -c:v libx264 -preset fast -b:v 2500k -c:a aac -b:a 128k " +
+		"-map_metadata -1 -map_metadata:s -1 -map_chapters -1 " +
 		"-hls_time 6 -hls_playlist_type vod -hls_segment_filename /h/720p_%03d.ts /h/720p.m3u8 -y"
 	if got != want {
 		t.Fatalf("encode args\n got %s\nwant %s", got, want)
@@ -299,6 +301,7 @@ func TestMP4RenditionsForceKeyframesOnTheSegmentGrid(t *testing.T) {
 			"-force_key_frames expr:gte(t,n_forced*2)",
 			"-vf scale=-2:720", "-c:v libx264 -preset " + p.Preset + " -crf " + p.CRF,
 			"-c:a aac -b:a 128k", "-movflags +faststart",
+			"-map_metadata -1 -map_metadata:s -1 -map_chapters -1",
 		} {
 			if !strings.Contains(joined, want) {
 				t.Fatalf("mp4 args %q miss %q", joined, want)

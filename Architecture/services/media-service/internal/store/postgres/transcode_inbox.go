@@ -43,6 +43,35 @@ type TranscodeCompletion struct {
 // run decides them.
 var ErrTranscodeGenerationStale = errors.New("transcode completion is for a superseded generation")
 
+// ErrTranscodeAssetGone means the asset row no longer exists: the owner
+// deleted it, or a post purge removed it, while its transcode request was
+// queued or running (reels audit 2026-10-30, finding 1). It is a terminal
+// SKIP, not a failure and not poison: the inbox row is committed with
+// outcome TranscodeOutcomeSkippedGone so the delivery is applied, never
+// retried and never quarantined, and the offset can advance.
+var ErrTranscodeAssetGone = errors.New("transcode target asset no longer exists")
+
+// TranscodeOutcomeSkippedGone is the inbox outcome of a request whose asset
+// was deleted before it could be applied.
+const TranscodeOutcomeSkippedGone = "skipped_asset_gone"
+
+// RecordTranscodeSkipped records a delivery as applied without touching
+// any asset: the asset it names is gone. Idempotent (ON CONFLICT DO
+// NOTHING), so a redelivery of a skipped request is a no-op.
+func (s *MediaAssetStore) RecordTranscodeSkipped(ctx context.Context, eventID string, mediaAssetID uuid.UUID) error {
+	if eventID == "" {
+		return fmt.Errorf("record skipped transcode for %s: no event id", mediaAssetID)
+	}
+	if _, err := s.db.Exec(ctx, `
+		INSERT INTO media_transcode_inbox (event_id, media_asset_id, outcome)
+		VALUES ($1, $2, $3)
+		ON CONFLICT (event_id) DO NOTHING
+	`, eventID, mediaAssetID, TranscodeOutcomeSkippedGone); err != nil {
+		return fmt.Errorf("record skipped transcode for %s: %w", mediaAssetID, err)
+	}
+	return nil
+}
+
 // AlreadyApplied reports whether this event has a recorded terminal outcome.
 //
 // Checked before the expensive work, so a redelivery does not re-run ffmpeg
@@ -86,12 +115,13 @@ func (s *MediaAssetStore) CompleteTranscode(
 	defer func() { _ = tx.Rollback(ctx) }()
 
 	err = completeTranscodeTx(ctx, tx, eventID, mediaAssetID, outcome, hlsMasterKey, moderationStatus, completion)
-	if err != nil && !errors.Is(err, ErrTranscodeGenerationStale) {
+	if err != nil && !errors.Is(err, ErrTranscodeGenerationStale) && !errors.Is(err, ErrTranscodeAssetGone) {
 		return err
 	}
 	// A stale-generation completion still commits its inbox row: the
 	// delivery is applied (so it is never retried) while the asset itself is
-	// left to the current generation's run.
+	// left to the current generation's run. A completion for a deleted asset
+	// commits its inbox row (re-labelled skipped) for the same reason.
 	if cerr := tx.Commit(ctx); cerr != nil {
 		return fmt.Errorf("commit transcode completion: %w", cerr)
 	}
@@ -147,7 +177,7 @@ func completeTranscodeTx(
 		SELECT media_generation, file_type FROM media_assets WHERE id = $1 FOR UPDATE
 	`, mediaAssetID).Scan(&currentGeneration, &fileType); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return fmt.Errorf("update media asset %s: row not found", mediaAssetID)
+			return markInboxAssetGoneTx(ctx, tx, eventID, mediaAssetID)
 		}
 		return fmt.Errorf("lock media asset %s: %w", mediaAssetID, err)
 	}
@@ -190,7 +220,7 @@ func completeTranscodeTx(
 		return fmt.Errorf("update media asset %s: %w", mediaAssetID, err)
 	}
 	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("update media asset %s: row not found", mediaAssetID)
+		return markInboxAssetGoneTx(ctx, tx, eventID, mediaAssetID)
 	}
 
 	// A ready video of the current generation gets its fingerprint job in
@@ -216,6 +246,18 @@ func completeTranscodeTx(
 		return fmt.Errorf("insert transcode completion outbox: %w", err)
 	}
 	return nil
+}
+
+// markInboxAssetGoneTx re-labels the inbox row this transaction claimed as
+// a skip and reports ErrTranscodeAssetGone, which CompleteTranscode
+// commits.
+func markInboxAssetGoneTx(ctx context.Context, tx pgx.Tx, eventID string, mediaAssetID uuid.UUID) error {
+	if _, err := tx.Exec(ctx, `
+		UPDATE media_transcode_inbox SET outcome = $2 WHERE event_id = $1
+	`, eventID, TranscodeOutcomeSkippedGone); err != nil {
+		return fmt.Errorf("record skipped transcode for %s: %w", mediaAssetID, err)
+	}
+	return fmt.Errorf("%w: %s", ErrTranscodeAssetGone, mediaAssetID)
 }
 
 // OldestPendingTranscodeAge is the operational signal that the worker is alive

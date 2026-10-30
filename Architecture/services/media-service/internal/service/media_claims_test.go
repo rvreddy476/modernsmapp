@@ -151,7 +151,7 @@ func TestOwnerDeleteRoutesTheStoreAnswer(t *testing.T) {
 	if j := strings.Index(body[1:], "\nfunc "); j >= 0 {
 		body = body[:j+1]
 	}
-	m, b := strings.Index(body, "if err := ownerDeleteStoreError(err); err != nil {\n\t\treturn err\n\t}"), strings.Index(body, "s.blobStore.DeleteObject(")
+	m, b := strings.Index(body, "if err := ownerDeleteStoreError(err); err != nil {\n\t\treturn err\n\t}"), strings.Index(body, "s.reclaimBlobs(")
 	if m < 0 || b < 0 || m > b {
 		t.Fatalf("DeleteMedia must return ownerDeleteStoreError(err) before deleting blobs (at %d, %d)", m, b)
 	}

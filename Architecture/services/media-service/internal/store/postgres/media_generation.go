@@ -33,6 +33,13 @@ const (
 // re-confirm), the source is 'confirmed', and the original's ETag is
 // recorded when the caller has it. Replaces the bare UpdateStatus
 // (…,"uploaded") call in ConfirmUpload.
+//
+// Only an asset still at 'pending_upload' or 'uploaded' moves (reels audit
+// 2026-10-30, finding 12). The status was reset unconditionally, so a late
+// confirm racing a finished transcode moved 'ready' back to 'uploaded' and
+// on to 'processing', where the asset sat until the stall sweeper noticed.
+// A row in any other state is ErrUploadAlreadyConfirmed: the caller re-reads
+// it and answers idempotently.
 func (s *MediaAssetStore) MarkUploadConfirmed(ctx context.Context, id uuid.UUID, originalETag string) error {
 	tag, err := s.db.Exec(ctx, `
 		UPDATE media_assets
@@ -42,15 +49,20 @@ func (s *MediaAssetStore) MarkUploadConfirmed(ctx context.Context, id uuid.UUID,
 		       original_etag        = COALESCE(original_etag, NULLIF($3, '')),
 		       updated_at           = NOW()
 		 WHERE id = $1
+		   AND processing_status IN ('pending_upload', 'uploaded')
 	`, id, UploadTimeConfirmed, originalETag)
 	if err != nil {
 		return fmt.Errorf("mark upload confirmed for %s: %w", id, err)
 	}
 	if tag.RowsAffected() != 1 {
-		return fmt.Errorf("mark upload confirmed for %s: row not found", id)
+		return fmt.Errorf("mark upload confirmed for %s: %w", id, ErrUploadAlreadyConfirmed)
 	}
 	return nil
 }
+
+// ErrUploadAlreadyConfirmed: MarkUploadConfirmed found the asset past the
+// confirm step (another confirm won the race), or gone.
+var ErrUploadAlreadyConfirmed = errors.New("upload is no longer awaiting confirmation")
 
 // bumpMediaGenerationTx advances the asset's generation under the caller's
 // row lock and retires everything the previous generation produced for

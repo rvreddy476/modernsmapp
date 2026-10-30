@@ -7,7 +7,6 @@ import (
 	"log"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -47,7 +46,7 @@ const hlsMaxCopiedSegmentSeconds = float64(hlsSegmentSeconds + keyframeIntervalS
 type ffmpegRunner func(ctx context.Context, args []string) ([]byte, error)
 
 func execFFmpeg(ctx context.Context, args []string) ([]byte, error) {
-	return exec.CommandContext(ctx, "ffmpeg", args...).CombinedOutput()
+	return runFFmpeg(ctx, args...)
 }
 
 type hlsRungMethod string
@@ -108,6 +107,7 @@ func hlsCopyArgs(renditionPath, outputM3U8, segmentPattern string) []string {
 	return []string{
 		"-y", "-i", renditionPath,
 		"-c", "copy",
+		"-map_metadata", "-1", "-map_metadata:s", "-1", "-map_chapters", "-1",
 		"-f", "hls",
 		"-hls_time", strconv.Itoa(hlsSegmentSeconds),
 		"-hls_playlist_type", "vod",
@@ -125,6 +125,7 @@ func hlsEncodeArgs(inputPath, outputM3U8, segmentPattern string, v HLSVariant, p
 		"-c:v", "libx264", "-preset", preset,
 		"-b:v", v.VideoBitrate,
 		"-c:a", "aac", "-b:a", v.AudioBitrate,
+		"-map_metadata", "-1", "-map_metadata:s", "-1", "-map_chapters", "-1",
 		"-hls_time", strconv.Itoa(hlsSegmentSeconds),
 		"-hls_playlist_type", "vod",
 		"-hls_segment_filename", segmentPattern,

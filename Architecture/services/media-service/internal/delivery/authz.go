@@ -508,10 +508,13 @@ type Gate struct {
 	// downloads is the per-post download authority (download.go). Nil
 	// leaves every non-owner download unresolved, never allowed.
 	downloads DownloadAuthorizer
+	// cache reuses protected signatures for most of their life
+	// (sign_cache.go). Authorization is never cached.
+	cache *signCache
 }
 
 func NewGate(signer URLSigner, authz ContentAuthorizer) *Gate {
-	return &Gate{signer: signer, authz: authz}
+	return &Gate{signer: signer, authz: authz, cache: newSignCache()}
 }
 
 // URLFor returns a delivery URL for objectKey, or an error.
@@ -534,7 +537,7 @@ func (g *Gate) URLFor(ctx context.Context, viewerID, mediaID, objectKey string) 
 	if err := g.authz.Authorize(ctx, viewerID, mediaID); err != nil {
 		return "", err
 	}
-	return g.signer.SignProtected(objectKey, MaxProtectedTTL, time.Now())
+	return g.signProtected(objectKey, MaxProtectedTTL, time.Now())
 }
 
 // AuthorizeAsset runs the asset-level half of the gate and stops there: may
@@ -609,12 +612,49 @@ func (g *Gate) URLsForAsset(ctx context.Context, viewerID, mediaID string, keys 
 		if ClassForKey(key) == ClassPublic {
 			u, err = g.signer.PublicURL(key)
 		} else {
-			u, err = g.signer.SignProtected(key, MaxProtectedTTL, now)
+			u, err = g.signProtected(key, MaxProtectedTTL, now)
 		}
 		if err != nil {
 			// Reported, not skipped. A silently dropped variant is how a
 			// signing misconfiguration turns into "video will not play" with
 			// no error anywhere.
+			return nil, fmt.Errorf("%w: sign %s: %v", ErrDeliveryUnresolved, name, err)
+		}
+		out[name] = u
+	}
+	return out, nil
+}
+
+// HLSURLsForAsset is URLsForAsset for one HLS media playlist: one
+// authorization for the asset, then every HLS segment key signed for
+// segmentTTL (HLSSegmentTTL of the video) and every other key for
+// MaxProtectedTTL. See sign_cache.go for why segments live longer.
+func (g *Gate) HLSURLsForAsset(ctx context.Context, viewerID, mediaID string, keys map[string]string, segmentTTL time.Duration) (map[string]string, error) {
+	if g == nil || g.signer == nil {
+		return nil, fmt.Errorf("%w: delivery gate not configured", ErrDeliveryUnresolved)
+	}
+	if len(keys) == 0 {
+		return map[string]string{}, nil
+	}
+	if err := g.AuthorizeAsset(ctx, viewerID, mediaID, keys); err != nil {
+		return nil, err
+	}
+	now := time.Now()
+	out := make(map[string]string, len(keys))
+	for name, key := range keys {
+		var (
+			u   string
+			err error
+		)
+		switch {
+		case ClassForKey(key) == ClassPublic:
+			u, err = g.signer.PublicURL(key)
+		case IsHLSSegmentKey(key):
+			u, err = g.signSegment(key, segmentTTL, now)
+		default:
+			u, err = g.signProtected(key, MaxProtectedTTL, now)
+		}
+		if err != nil {
 			return nil, fmt.Errorf("%w: sign %s: %v", ErrDeliveryUnresolved, name, err)
 		}
 		out[name] = u
@@ -688,7 +728,7 @@ func (g *Gate) URLsForAssets(ctx context.Context, viewerID string, assets map[st
 			if ClassForKey(key) == ClassPublic {
 				u, err = g.signer.PublicURL(key)
 			} else if allowed[mediaID] {
-				u, err = g.signer.SignProtected(key, MaxProtectedTTL, now)
+				u, err = g.signProtected(key, MaxProtectedTTL, now)
 			} else {
 				denied = true
 				break

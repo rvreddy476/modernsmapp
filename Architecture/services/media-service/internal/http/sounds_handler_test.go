@@ -738,9 +738,11 @@ func TestExtractAudioSharesTheEnsurePath(t *testing.T) {
 
 // soundKeys is every key a sound carries: contract 1.4, and the fields the
 // row carried before it (genre and sample_rate when the row has them), and
-// cover_url (trending sounds, 2026-10-24).
+// cover_url (trending sounds, 2026-10-24), and available_for_new_posts
+// (reels audit 2026-10-30, 13; unavailable_reason is omitted while it is
+// true).
 var soundKeys = []string{
-	"artist", "cover_url", "created_at", "creator_user_id", "duration_ms", "id", "is_original", "license_type",
+	"artist", "available_for_new_posts", "cover_url", "created_at", "creator_user_id", "duration_ms", "id", "is_original", "license_type",
 	"sample_rate", "source_media_id", "source_post_id", "source_reel_id", "status", "title",
 	"updated_at", "usage_count",
 }

@@ -72,7 +72,7 @@ func scanTrendingTrack(dest []any, a *AudioTrack, l *LibraryFacts) []any {
 		&a.ID, &a.SourceMediaID, &a.SourceReelID, &a.Title, &a.Artist, &a.Genre,
 		&a.AudioKey, &a.WaveformKey, &a.DurationMs, &a.SampleRate, &a.Status, &a.IsOriginal,
 		&a.LicenseType, &a.UsageCount, &a.UseCount, &a.CreatorUserID,
-		&a.LibraryID, &a.CreatedAt, &a.UpdatedAt, &a.LibraryCoverURL,
+		&a.LibraryID, &a.CreatedAt, &a.UpdatedAt, &a.LibraryCoverURL, &a.ReuseBlock,
 		&l.Present, &l.IsActive, &l.WithdrawnAt, &l.LicenseExpiresAt,
 	)
 }

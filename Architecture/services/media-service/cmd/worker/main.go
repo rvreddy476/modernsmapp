@@ -24,6 +24,7 @@ import (
 	"github.com/atpost/shared/transport"
 	"github.com/buckket/go-blurhash"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
@@ -170,6 +171,14 @@ func main() {
 
 	go startMetricsServer()
 
+	// Scratch left by a job that was OOM-killed or evicted (finding 14).
+	// Nothing in this process uses it yet: the consumer starts below.
+	if n := sweepStaleScratch(activeConfig.scratchDir); n > 0 {
+		log.Printf("Removed %d stale transcode scratch director(ies) from %s", n, activeConfig.scratchDir)
+	}
+	log.Printf("Transcode policy: max %d attempts per message, max original %d bytes, limits %+v",
+		activeConfig.maxAttempts, activeConfig.maxOriginalBytes, activeConfig.limits)
+
 	// Transcode lease sweeper (migration 021): re-queues assets whose job
 	// died mid-transcode, fails them after the attempts cap. Runs beside the
 	// consumer loop; the tracker tells it whether this worker is busy.
@@ -261,51 +270,99 @@ func processMessage(ctx context.Context, m kafka.Message, pgStore *postgres.Medi
 		return permanentTranscode(fmt.Errorf("parse media_asset_id: %w", err))
 	}
 
+	env := transcodeEnv{store: pgStore, blobs: blobStore, scanner: scanner, cfg: activeConfig}
 	// Cheap replay check before expensive work. The guarantee is the inbox
 	// primary key inside CompleteTranscode; this only avoids re-running ffmpeg
 	// over an asset another replica already finished.
 	return pgStore.WithTranscodeEventLock(ctx, envelope.EventID, func() error {
-		return processTranscodeLocked(ctx, envelope, payload, mediaAssetID, pgStore, blobStore, scanner)
+		var blobs prefixCleaner
+		if blobStore != nil {
+			blobs = blobStore
+		}
+		return processTranscodeLocked(ctx, envelope, payload, mediaAssetID, pgStore, blobs,
+			func(ctx context.Context, subject *transcodeSubject, budget *jobBudget, moderation *string) error {
+				return transcodeVideo(ctx, env, subject, payload, budget, moderation)
+			})
 	})
 }
 
+// lockedStore is what processTranscodeLocked needs from the store.
+type lockedStore interface {
+	mediaReader
+	requestLookup
+	heartbeatStamper
+	AlreadyApplied(ctx context.Context, eventID string) (bool, error)
+	RecordTranscodeSkipped(ctx context.Context, eventID string, mediaAssetID uuid.UUID) error
+	GetTranscodeTiming(ctx context.Context, id uuid.UUID) (postgres.TranscodeTiming, error)
+	CompleteTranscode(ctx context.Context, eventID string, mediaAssetID uuid.UUID, outcome, hlsMasterKey,
+		moderationStatus string, completion postgres.TranscodeCompletion) error
+	ActivatePendingSlot(ctx context.Context, mediaAssetID uuid.UUID) error
+}
+
+// transcodeRun is one transcode of a resolved subject (transcodeVideo in
+// production). It sets *moderation on success and extends budget once it
+// knows the video's duration.
+type transcodeRun func(ctx context.Context, subject *transcodeSubject, budget *jobBudget, moderation *string) error
+
 func processTranscodeLocked(ctx context.Context, envelope events.EventEnvelope,
 	payload postgres.TranscodeRequestPayload, mediaAssetID uuid.UUID,
-	pgStore *postgres.MediaAssetStore, blobStore *blob.Store, scanner processing.Scanner) error {
-	if done, err := pgStore.AlreadyApplied(ctx, envelope.EventID); err != nil {
+	store lockedStore, blobs prefixCleaner, run transcodeRun) error {
+	if done, err := store.AlreadyApplied(ctx, envelope.EventID); err != nil {
 		return fmt.Errorf("inbox lookup: %w", err)
 	} else if done {
 		log.Printf("Transcode for media %s already applied; skipping", payload.MediaAssetID)
 		return nil
 	}
-	if superseded, current := supersededDelivery(ctx, pgStore, mediaAssetID, envelope.EventID); superseded {
+	if superseded, current := supersededDelivery(ctx, store, mediaAssetID, envelope.EventID); superseded {
 		log.Printf("Transcode event %q for media %s superseded by re-queued event %q; skipping", //nolint:gosec // G706: the event ids are %q-quoted; the media id is a parsed uuid
 			envelope.EventID, mediaAssetID, current)
 		return nil
+	}
+
+	// The asset as its ROW describes it (findings 1 and 13). A request
+	// for an asset that was deleted while it waited is recorded and
+	// skipped: before, the download's NotFound became a terminal failure
+	// that could not be written (no row), was retried forever, and stalled
+	// the partition.
+	subject, err := resolveTranscodeSubject(ctx, store, mediaAssetID, payload)
+	if errors.Is(err, errAssetGone) {
+		return skipGoneAsset(ctx, store, envelope.EventID, mediaAssetID)
+	}
+	if err != nil {
+		return err
 	}
 
 	log.Printf("Processing video transcode for media %s (generation %d)", payload.MediaAssetID, payload.MediaGeneration)
 
 	// Readiness metrics (P-16): queue wait now, confirm→ready at the end.
 	// A failed read costs the observation, never the job.
-	timing, timingErr := pgStore.GetTranscodeTiming(ctx, mediaAssetID)
+	timing, timingErr := store.GetTranscodeTiming(ctx, mediaAssetID)
 	if timingErr != nil {
 		log.Printf("Warning: transcode timing for %s not read: %v", payload.MediaAssetID, timingErr)
 	} else {
 		observeQueueWait(timing.RequestedAt, time.Now())
 	}
 
-	// The lease: stamped now and every heartbeatInterval until this returns.
-	// A failed stamp is logged inside and never fails the job.
-	stopHeartbeat := startTranscodeHeartbeat(ctx, pgStore, mediaAssetID, heartbeatInterval)
+	// The lease: stamped now and every heartbeatInterval until this returns,
+	// or until the job is past its budget (finding 3). A failed stamp is
+	// logged inside and never fails the job.
+	budget := &jobBudget{}
+	stopHeartbeat := startBudgetedHeartbeat(ctx, store, mediaAssetID, heartbeatInterval, budget)
 	defer stopHeartbeat()
 
 	transcodeStart := time.Now()
 	moderationResult := ""
-	transcodeErr := transcodeVideo(ctx, mediaAssetID, payload, pgStore, blobStore, scanner, &moderationResult)
+	transcodeErr := run(ctx, subject, budget, &moderationResult)
 	transcodeDuration.Observe(time.Since(transcodeStart).Seconds())
 
 	if transcodeErr != nil {
+		if ctx.Err() == nil && assetGone(ctx, store, mediaAssetID) {
+			// Deleted while it ran (an FK failure on the variants, a
+			// vanished original): not a failure of the upload.
+			transcodeTotal.WithLabelValues("skipped").Inc()
+			cleanupGoneAsset(ctx, blobs, subject)
+			return skipGoneAsset(ctx, store, envelope.EventID, mediaAssetID)
+		}
 		transcodeTotal.WithLabelValues("failure").Inc()
 		log.Printf("Transcode failed for %s: %v", payload.MediaAssetID, transcodeErr)
 
@@ -318,12 +375,16 @@ func processTranscodeLocked(ctx context.Context, envelope events.EventEnvelope,
 				payload.MediaAssetID, transcodeErr)
 		}
 		// Terminal: record it durably, and record it as NOT publishable.
-		if err := pgStore.CompleteTranscode(ctx, envelope.EventID, mediaAssetID,
+		if err := store.CompleteTranscode(ctx, envelope.EventID, mediaAssetID,
 			"failed", "", "manual_review", postgres.TranscodeCompletion{
 				ProcessingStatus: "failed", ModerationStatus: "manual_review",
 				MediaGeneration: payload.MediaGeneration,
 			}); err != nil {
 			if errors.Is(err, postgres.ErrTranscodeAlreadyApplied) {
+				return nil
+			}
+			if errors.Is(err, postgres.ErrTranscodeAssetGone) { // deleted before its failure was recorded
+				cleanupGoneAsset(ctx, blobs, subject)
 				return nil
 			}
 			if errors.Is(err, postgres.ErrTranscodeGenerationStale) {
@@ -338,19 +399,21 @@ func processTranscodeLocked(ctx context.Context, envelope events.EventEnvelope,
 		}
 		return nil
 	}
-	transcodeTotal.WithLabelValues("success").Inc()
 
 	// Read back what transcode wrote so the completion event can carry it.
-	asset, fetchErr := pgStore.GetMedia(ctx, mediaAssetID)
+	asset, fetchErr := store.GetMedia(ctx, mediaAssetID)
+	if errors.Is(fetchErr, pgx.ErrNoRows) || (fetchErr == nil && asset == nil) {
+		transcodeTotal.WithLabelValues("skipped").Inc()
+		cleanupGoneAsset(ctx, blobs, subject)
+		return skipGoneAsset(ctx, store, envelope.EventID, mediaAssetID)
+	}
 	if fetchErr != nil {
 		// This used to be ignored, and the moderation status then defaulted to
 		// "passed" — so a failed read-back PUBLISHED unreviewed media. The read
 		// is now required.
 		return fmt.Errorf("read back media %s after transcode: %w", payload.MediaAssetID, fetchErr)
 	}
-	if asset == nil {
-		return fmt.Errorf("media %s vanished during transcode", payload.MediaAssetID)
-	}
+	transcodeTotal.WithLabelValues("success").Inc()
 
 	// THE SAFETY DEFAULT. There is no "passed" fallback: if the scan did not
 	// produce a verdict, the asset goes to manual review. Decision 001 A1.1 —
@@ -373,7 +436,7 @@ func processTranscodeLocked(ctx context.Context, envelope events.EventEnvelope,
 		thumbURL = *asset.ThumbnailURL
 	}
 
-	if err := pgStore.CompleteTranscode(ctx, envelope.EventID, mediaAssetID,
+	if err := store.CompleteTranscode(ctx, envelope.EventID, mediaAssetID,
 		"ready", asset.HLSMasterKey, modStatus, postgres.TranscodeCompletion{
 			ProcessingStatus: "ready",
 			HLSMasterURL:     hlsURL,
@@ -384,6 +447,12 @@ func processTranscodeLocked(ctx context.Context, envelope events.EventEnvelope,
 		}); err != nil {
 		if errors.Is(err, postgres.ErrTranscodeAlreadyApplied) {
 			log.Printf("Transcode for media %s completed by another replica", payload.MediaAssetID)
+			return nil
+		}
+		if errors.Is(err, postgres.ErrTranscodeAssetGone) { // deleted before completion
+			// Deleted between the read-back and the completion: the inbox row
+			// is recorded as a skip; what this run uploaded is removed.
+			cleanupGoneAsset(ctx, blobs, subject)
 			return nil
 		}
 		if errors.Is(err, postgres.ErrTranscodeGenerationStale) {
@@ -400,12 +469,29 @@ func processTranscodeLocked(ctx context.Context, envelope events.EventEnvelope,
 		observeReadyLatency(timing.UploadConfirmedAt, time.Now(), "ready")
 	}
 	if modStatus == "passed" {
-		if err := pgStore.ActivatePendingSlot(ctx, mediaAssetID); err != nil {
+		if err := store.ActivatePendingSlot(ctx, mediaAssetID); err != nil {
 			log.Printf("Warning: failed to activate pending media slots for %s: %v", payload.MediaAssetID, err)
 		}
 	}
 	log.Printf("Transcode completed for media %s (hls=%t, moderation=%s)",
 		payload.MediaAssetID, hlsURL != "", modStatus)
+	return nil
+}
+
+// assetGone reports whether the asset row is now absent. A failed read is
+// "not known to be gone": the caller keeps its own classification.
+func assetGone(ctx context.Context, store mediaReader, id uuid.UUID) bool {
+	m, err := store.GetMedia(ctx, id)
+	return errors.Is(err, pgx.ErrNoRows) || errors.Is(err, postgres.ErrMediaNotFound) || (err == nil && m == nil)
+}
+
+// skipGoneAsset records a request for a deleted asset as applied. The
+// offset may then advance; a failure to record is transient.
+func skipGoneAsset(ctx context.Context, store lockedStore, eventID string, mediaAssetID uuid.UUID) error {
+	if err := store.RecordTranscodeSkipped(ctx, eventID, mediaAssetID); err != nil {
+		return fmt.Errorf("record skipped transcode: %w", err)
+	}
+	log.Printf("Transcode for media %s skipped: the asset was deleted", mediaAssetID)
 	return nil
 }
 
@@ -424,7 +510,8 @@ func permanentTranscode(err error) error { return &permanentTranscodeError{err: 
 // stall the partition forever, and a database outage must not permanently kill
 // a perfectly good video. Anything not explicitly marked unprocessable is
 // treated as transient, because the cost of an extra retry is far below the
-// cost of destroying a user's upload.
+// cost of destroying a user's upload. The retry loop's attempts cap is the
+// backstop for a deterministic error misclassified as transient.
 func isPermanentTranscodeFailure(err error) bool {
 	var perm *permanentTranscodeError
 	return errors.As(err, &perm)
@@ -441,8 +528,13 @@ func permanentUnlessCancelled(ctx context.Context, err error) error {
 	return permanentTranscode(err)
 }
 
-// handleUntilDurable retries a message until its effect is durably recorded.
-// Reports whether the message may now be committed; false means the context was
+// activeConfig is the worker's transcode policy, read from the environment
+// once.
+var activeConfig = loadWorkerConfig(os.Getenv)
+
+// handleUntilDurable retries a message until its effect is durably recorded,
+// at most activeConfig.maxAttempts times (retryUntilDurable). Reports
+// whether the message may now be committed; false means the context was
 // cancelled first and the offset must be left where it is.
 func handleUntilDurable(
 	ctx context.Context,
@@ -451,108 +543,175 @@ func handleUntilDurable(
 	blobStore *blob.Store,
 	scanner processing.Scanner,
 ) bool {
-	backoff := 2 * time.Second
-	const maxBackoff = 2 * time.Minute
-	for attempt := 1; ; attempt++ {
-		err := processMessage(ctx, m, pgStore, blobStore, scanner)
-		if err == nil {
-			return true
-		}
-		if ctx.Err() != nil {
-			return false
-		}
-
-		// Poison input: committing past a message that can never succeed is the
-		// lesser harm. The alternative blocks every transcode queued behind it
-		// on this partition forever. Logged at a level an operator can alert
-		// on rather than dropped silently.
-		if isPermanentTranscodeFailure(err) {
-			if qerr := pgStore.QuarantineTranscode(ctx, m, err); qerr != nil {
-				log.Printf("Failed to quarantine poison transcode; offset NOT committed: %v", qerr)
-				err = fmt.Errorf("durable poison quarantine: %w", qerr)
-			} else {
-				log.Printf("PERMANENTLY UNDELIVERABLE transcode message partition=%d offset=%d: %v "+
-					"(durably quarantined; committing so the partition is not stalled)", m.Partition, m.Offset, err)
-				return true
-			}
-		}
-
-		log.Printf("Transcode effect failed (attempt %d, partition=%d offset=%d), "+
-			"offset NOT committed, retrying in %s: %v", attempt, m.Partition, m.Offset, backoff, err)
-		select {
-		case <-ctx.Done():
-			return false
-		case <-time.After(backoff):
-		}
-		if backoff < maxBackoff {
-			if backoff *= 2; backoff > maxBackoff {
-				backoff = maxBackoff
-			}
-		}
-	}
+	return retryUntilDurable(ctx, m,
+		func() error { return processMessage(ctx, m, pgStore, blobStore, scanner) },
+		pgStore.QuarantineTranscode,
+		retryPolicy{maxAttempts: activeConfig.maxAttempts, initialBackoff: 2 * time.Second, maxBackoff: 2 * time.Minute})
 }
 
-func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgres.TranscodeRequestPayload, pgStore *postgres.MediaAssetStore, blobStore *blob.Store, scanner processing.Scanner, moderationResult *string) error {
+// transcodeEnv is what one transcode works with.
+type transcodeEnv struct {
+	store   *postgres.MediaAssetStore
+	blobs   *blob.Store
+	scanner processing.Scanner
+	cfg     workerConfig
+}
+
+// errJobBudgetExceeded: the transcode ran past processing.TranscodeJobBudget.
+var errJobBudgetExceeded = errors.New("transcode exceeded its time budget")
+
+// transcodeVideo runs one transcode and classifies its end: a job that ran
+// out of its own budget while the worker is alive is terminal (the same
+// input would run out again), not a retry.
+func transcodeVideo(ctx context.Context, env transcodeEnv, subject *transcodeSubject,
+	payload postgres.TranscodeRequestPayload, budget *jobBudget, moderationResult *string) error {
+	var jobCtx context.Context = ctx
+	cancelJob := func() {}
+	defer func() { cancelJob() }()
+	setDeadline := func(d time.Duration) context.Context {
+		cancelJob()
+		var c context.Context
+		c, cancelJob = context.WithTimeout(ctx, d)
+		budget.set(time.Now().Add(d))
+		jobCtx = c
+		return c
+	}
+	err := runTranscode(ctx, env, subject, payload, setDeadline, moderationResult)
+	return classifyJobEnd(ctx, jobCtx, err)
+}
+
+// classifyJobEnd makes a failure terminal when the job's own deadline
+// ended it while the worker (parent) is still running.
+func classifyJobEnd(parent, job context.Context, err error) error {
+	if err != nil && parent.Err() == nil && errors.Is(job.Err(), context.DeadlineExceeded) {
+		return permanentTranscode(fmt.Errorf("%w: %v", errJobBudgetExceeded, err))
+	}
+	return err
+}
+
+// runTranscode is the pipeline. setDeadline replaces the job's deadline
+// (measured from now) and returns the context bounded by it.
+func runTranscode(parent context.Context, env transcodeEnv, subject *transcodeSubject,
+	payload postgres.TranscodeRequestPayload, setDeadline func(time.Duration) context.Context,
+	moderationResult *string) error {
+	pgStore, blobStore, scanner := env.store, env.blobs, env.scanner
+	mediaAssetID := subject.ID
+
 	// 1+2. Stream the original from object storage straight into a temp
-	// file. Long videos have no size or length limit (founder, 2026-10-21),
-	// so the original is never read into memory: the worker container runs
-	// under a 2G limit and a multi-GiB io.ReadAll would be OOM-killed. The
-	// temp volume needs room for the original plus every rendition and the
-	// HLS ladder (roughly 2-3x the original for a long video).
-	tmpDir, err := os.MkdirTemp("", "transcode-"+payload.MediaAssetID)
+	// file. Long videos have no size limit of their own, so the original is
+	// never read into memory: the worker container runs under a 2G limit and
+	// a multi-GiB io.ReadAll would be OOM-killed. The temp volume needs room
+	// for the original plus every rendition and the HLS ladder (roughly 2-3x
+	// the original), which checkOriginalBeforeDownload verifies first.
+	tmpDir, err := os.MkdirTemp(env.cfg.scratchDir, "transcode-"+mediaAssetID.String())
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
+	statCtx, cancel := context.WithTimeout(parent, s3MetadataCall)
+	info, err := blobStore.StatObject(statCtx, subject.StorageKey)
+	cancel()
+	if err != nil {
+		if errors.Is(err, blob.ErrObjectNotFound) {
+			return permanentTranscode(fmt.Errorf("stat original: %w", err))
+		}
+		return fmt.Errorf("stat original: %w", err)
+	}
+	// The ETag pin (finding 6). An operator rotation re-run rewrites the
+	// original itself, so it is not pinned to the upload's ETag.
+	pinned := *subject
+	if payload.RotateDegrees != 0 {
+		pinned.OriginalETag = ""
+	}
+	space, spaceKnown := scratchSpaceOf(tmpDir)
+	if err := checkOriginalBeforeDownload(info, &pinned, env.cfg.maxOriginalBytes, space, spaceKnown); err != nil {
+		return err
+	}
+
+	// Download, bounded, and conditional on the ETag just checked: a
+	// replace between the stat and the GET is refused, not transcoded.
+	ctx := setDeadline(s3Timeout(info.Size) + 2*processing.ProbeTimeout + 10*time.Minute)
 	inputPath := tmpDir + "/original"
-	if _, err := blobStore.DownloadObjectToFile(ctx, payload.StorageKey, inputPath); err != nil {
+	pin := pinned.OriginalETag
+	if pin == "" {
+		pin = info.ETag
+	}
+	dlCtx, cancel := context.WithTimeout(ctx, s3Timeout(info.Size))
+	_, err = blobStore.DownloadObjectToFileIfMatch(dlCtx, subject.StorageKey, inputPath, pin)
+	cancel()
+	if err != nil {
 		if errors.Is(err, blob.ErrObjectNotFound) {
 			return permanentTranscode(fmt.Errorf("download original: %w", err))
 		}
-		return fmt.Errorf("download original: %w", err)
+		return classifyDownloadError(parent, err)
+	}
+
+	// The bytes must be the container the upload declared (finding 7), and
+	// one ffmpeg is allowed to open at all.
+	sniffed, err := processing.SniffVideoFile(inputPath)
+	if err != nil {
+		return fmt.Errorf("read original header: %w", err)
+	}
+	if err := checkSniffedContainer(subject.MimeType, sniffed); err != nil {
+		return err
 	}
 
 	// 2b. Operator rotation override (reprocess only). The pixels are
 	// sideways and the container says nothing about it; stamp the display
 	// rotation onto a stream-copied original and work from that. The tagged
-	// copy REPLACES the original object under the same key, so a player
-	// that opens the original (playback_kind "original") is upright too,
-	// and a later plain re-run reads the rotation from the file itself.
+	// copy REPLACES the original object under the same key, so the uploader
+	// opening the original sees it upright too, and a later plain re-run
+	// reads the rotation from the file itself.
 	if payload.RotateDegrees != 0 {
 		rotatedPath := tmpDir + "/original_rotated.mp4"
 		if err := processing.ApplyDisplayRotation(ctx, inputPath, rotatedPath, payload.RotateDegrees); err != nil {
-			return permanentUnlessCancelled(ctx, fmt.Errorf("apply rotation override: %w", err))
+			return permanentUnlessCancelled(parent, fmt.Errorf("apply rotation override: %w", err))
 		}
-		rotatedSize, err := blobStore.UploadFile(ctx, payload.StorageKey, rotatedPath, payload.MimeType)
+		upCtx, cancel := context.WithTimeout(ctx, s3Timeout(info.Size))
+		rotated, err := blobStore.UploadFileInfo(upCtx, subject.StorageKey, rotatedPath, subject.MimeType)
+		cancel()
 		if err != nil {
 			return fmt.Errorf("replace original with rotated copy: %w", err)
 		}
-		if err := pgStore.UpdateMediaFileSize(ctx, mediaAssetID, rotatedSize); err != nil {
+		if err := pgStore.RecordOriginalRewrite(ctx, mediaAssetID, rotated.ETag, rotated.Size); err != nil {
 			return fmt.Errorf("update original size: %w", err)
 		}
 		log.Printf("Rotation override %d° applied to original of media %s (%d bytes)", //nolint:gosec // G706: an int, a parsed uuid and an int64; nothing can forge a log line
-			payload.RotateDegrees, mediaAssetID, rotatedSize)
+			payload.RotateDegrees, mediaAssetID, rotated.Size)
 		inputPath = rotatedPath
 	}
 
-	// 3. Create transcoding job records before running FFmpeg
-	type jobEntry struct {
-		name  string
-		jobID uuid.UUID
-	}
-	var jobEntries []jobEntry
-
-	// Probe video to determine source resolution for job creation
+	// 3. Probe, and refuse what is outside the limits before any encode
+	// (finding 3). The refusal is terminal and says why: a failed
+	// "limits" transcoding job carries the reason, and GET
+	// /v1/media/:id/status lists it.
 	meta, err := processing.ProbeVideo(ctx, inputPath)
 	if err != nil {
-		return permanentUnlessCancelled(ctx, fmt.Errorf("probe video: %w", err))
+		return permanentUnlessCancelled(parent, fmt.Errorf("probe video: %w", err))
 	}
+	if lerr := processing.CheckVideoLimits(meta, env.cfg.limits); lerr != nil {
+		recordRefusal(ctx, pgStore, mediaAssetID, lerr)
+		transcodeTotal.WithLabelValues("refused").Inc()
+		return permanentTranscode(lerr)
+	}
+
+	// From here the job has its real budget: every ffmpeg call is bounded
+	// by FFmpegCallTimeout of the duration, and the whole job by
+	// TranscodeJobBudget, past which the heartbeat stops renewing the lease.
+	ctx = processing.WithToolTimeout(
+		setDeadline(processing.TranscodeJobBudget(meta.DurationFloat)),
+		processing.FFmpegCallTimeout(meta.DurationFloat))
 
 	// Determine if this is a reel (short-form video): ≤ 10 minutes and
 	// portrait/square. Landscape is long-form at any length.
 	isReel := processing.IsShortFormEncode(meta)
 
+	type jobEntry struct {
+		name  string
+		jobID uuid.UUID
+	}
+	var jobEntries []jobEntry
 	qualityHeights := []struct {
 		name   string
 		height int
@@ -596,7 +755,7 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 		for _, je := range jobEntries {
 			_ = pgStore.UpdateTranscodingJob(ctx, je.jobID, "failed", nil, nil, &errMsg)
 		}
-		return permanentUnlessCancelled(ctx, fmt.Errorf("transcode: %w", err))
+		return permanentUnlessCancelled(parent, fmt.Errorf("transcode: %w", err))
 	}
 
 	// 4b. Storyboard (MTube seek preview, 2026-09-27): a sprite sheet plus
@@ -609,14 +768,15 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 			if ctx.Err() != nil {
 				return sbErr
 			}
-			log.Printf("Warning: storyboard for media %s not generated: %v", payload.MediaAssetID, sbErr)
+			log.Printf("Warning: storyboard for media %s not generated: %v", mediaAssetID, sbErr)
 		} else {
 			outputs = append(outputs, sb...)
 		}
 	}
 
-	// 5. Upload variants to MinIO and update job records
-	baseKey := strings.TrimSuffix(payload.StorageKey, "/original")
+	// 5. Upload variants and update job records. Keys derive from the
+	// ROW's storage key (finding 13).
+	baseKey := strings.TrimSuffix(subject.StorageKey, "/original")
 	var variants []postgres.MediaVariant
 
 	for _, out := range outputs {
@@ -627,7 +787,7 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 		objectKey := fmt.Sprintf("%s/%s", baseKey, objectName)
 		// Streamed from disk: a 1080p/4K rendition of an hours-long video is
 		// GiBs and must not be read into memory first.
-		sz, err := blobStore.UploadFile(ctx, objectKey, out.FilePath, out.Mime)
+		sz, err := uploadFileBounded(ctx, blobStore, objectKey, out.FilePath, out.Mime)
 		if err != nil {
 			return fmt.Errorf("upload transcode variant %s: %w", out.Name, err)
 		}
@@ -673,7 +833,7 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 		return fmt.Errorf("prune stale variants: %w", err)
 	} else {
 		for _, key := range stale {
-			if err := blobStore.DeleteObject(ctx, key); err != nil {
+			if err := deleteObjectBounded(ctx, blobStore, key); err != nil {
 				log.Printf("Warning: stale variant object %s for %s not deleted: %v", key, mediaAssetID, err) //nolint:gosec // G706: object key read back from our own variant rows; media id is a parsed uuid
 			}
 		}
@@ -714,8 +874,8 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 	}
 
 	// 9. Populate URL fields
-	originalURL := payload.StorageKey
-	cdnURL := fmt.Sprintf("/%s/%s", "media", payload.StorageKey)
+	originalURL := subject.StorageKey
+	cdnURL := fmt.Sprintf("/%s/%s", "media", subject.StorageKey)
 	var thumbnailURL *string
 	for _, v := range variants {
 		if v.Name == "thumb_150" {
@@ -729,7 +889,7 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 	}
 
 	// 10. Generate HLS adaptive bitrate variants
-	hlsDir, err := os.MkdirTemp("", "hls-"+payload.MediaAssetID)
+	hlsDir, err := os.MkdirTemp(env.cfg.scratchDir, "hls-"+mediaAssetID.String())
 	if err != nil {
 		return fmt.Errorf("create HLS temp dir: %w", err)
 	}
@@ -747,17 +907,17 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 		},
 	)
 	if hlsErr != nil {
-		return permanentUnlessCancelled(ctx, fmt.Errorf("generate HLS variants: %w", hlsErr))
+		return permanentUnlessCancelled(parent, fmt.Errorf("generate HLS variants: %w", hlsErr))
 	}
-	masterKey := fmt.Sprintf("%s/hls/master.m3u8", strings.TrimSuffix(payload.StorageKey, "/original"))
+	masterKey := baseKey + "/hls/master.m3u8"
 	masterData, err := os.ReadFile(masterPath)
 	if err != nil {
 		return fmt.Errorf("read HLS master: %w", err)
 	}
-	if err := blobStore.UploadObject(ctx, masterKey, masterData, "application/x-mpegURL"); err != nil {
+	if err := uploadBytesBounded(ctx, blobStore, masterKey, masterData, "application/x-mpegURL"); err != nil {
 		return fmt.Errorf("upload HLS master: %w", err)
 	}
-	hlsPrefix := fmt.Sprintf("%s/hls/", strings.TrimSuffix(payload.StorageKey, "/original"))
+	hlsPrefix := baseKey + "/hls/"
 	uploadedHLS := map[string]bool{masterKey: true}
 	for _, f := range variantFiles {
 		rel := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(f, hlsDir), "/"), "\\")
@@ -771,21 +931,24 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 		if err != nil {
 			return fmt.Errorf("read HLS file %s: %w", f, err)
 		}
-		if err := blobStore.UploadObject(ctx, key, fData, contentType); err != nil {
+		if err := uploadBytesBounded(ctx, blobStore, key, fData, contentType); err != nil {
 			return fmt.Errorf("upload HLS file %s: %w", key, err)
 		}
 	}
 	// A re-run with a shorter ladder leaves the old rung's playlist and
 	// segments behind; nothing references them once the new master is up,
 	// so drop them. Listing an empty prefix on a first run costs one call.
-	if existing, err := blobStore.ListObjectKeys(ctx, hlsPrefix); err != nil {
+	listCtx, cancel := context.WithTimeout(ctx, s3MetadataCall)
+	existing, err := blobStore.ListObjectKeys(listCtx, hlsPrefix)
+	cancel()
+	if err != nil {
 		log.Printf("Warning: could not list HLS prefix %s for cleanup: %v", hlsPrefix, err)
 	} else {
 		for _, key := range existing {
 			if uploadedHLS[key] {
 				continue
 			}
-			if err := blobStore.DeleteObject(ctx, key); err != nil {
+			if err := deleteObjectBounded(ctx, blobStore, key); err != nil {
 				log.Printf("Warning: stale HLS object %s not deleted: %v", key, err) //nolint:gosec // G706: object key listed from our own HLS prefix in the media bucket
 			}
 		}
@@ -793,7 +956,7 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 	if err := pgStore.UpdateHLSMasterKey(ctx, mediaAssetID, masterKey); err != nil {
 		return fmt.Errorf("store HLS master key: %w", err)
 	}
-	log.Printf("HLS generation completed for media %s", payload.MediaAssetID)
+	log.Printf("HLS generation completed for media %s", mediaAssetID)
 
 	// 10b. Content-safety scan — frame-sample the original and run each
 	// frame through the scanner. A single unsafe frame rejects the video.
@@ -801,14 +964,19 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 	// Approval has no default. Only a completed provider verdict can set
 	// "passed"; extraction/provider/store uncertainty remains retryable and
 	// never produces ready-and-publishable media.
+	//
+	// The sample is proportional to the duration (finding 10): one frame
+	// every few seconds, capped, each downscaled under the provider's
+	// image limit (finding 2).
 	moderationStatus := "manual_review"
-	if frames, frErr := processing.ExtractFrames(ctx, inputPath, tmpDir, 5); frErr != nil {
-		return permanentUnlessCancelled(ctx, fmt.Errorf("extract frames for safety scan: %w", frErr))
+	frameCount := processing.ScanFrameCount(meta.DurationFloat)
+	if frames, frErr := processing.ExtractFramesAt(ctx, inputPath, tmpDir, meta.DurationFloat, frameCount); frErr != nil {
+		return permanentUnlessCancelled(parent, fmt.Errorf("extract frames for safety scan: %w", frErr))
 	} else if res, scanErr := processing.ScanVideoFrames(ctx, scanner, frames); scanErr != nil {
-		return fmt.Errorf("scan video frames: %w", scanErr)
+		return classifyScanError(scanErr)
 	} else if !res.IsSafe {
 		moderationStatus = "rejected"
-		log.Printf("Content scan REJECTED media %s: %s", payload.MediaAssetID, res.Reason)
+		log.Printf("Content scan REJECTED media %s: %s", mediaAssetID, res.Reason)
 	} else {
 		if err := recordVideoScanLabels(ctx, pgStore, mediaAssetID, scanner, res); err != nil {
 			return err
@@ -821,6 +989,68 @@ func transcodeVideo(ctx context.Context, mediaAssetID uuid.UUID, payload postgre
 	*moderationResult = moderationStatus
 
 	return nil
+}
+
+// checkSniffedContainer refuses (permanently) an original whose bytes are
+// not the container its declared MIME names, or not one ffmpeg may open.
+func checkSniffedContainer(declaredMIME, sniffed string) error {
+	if want := processing.DeclaredVideoContainer(declaredMIME); want == "" || sniffed != want {
+		return permanentTranscode(fmt.Errorf("%w: declared %q, bytes are %q",
+			processing.ErrInputFormatRefused, declaredMIME, sniffed))
+	}
+	return nil
+}
+
+// classifyScanError: the provider refusing the frame itself (too large,
+// unreadable, under the minimum size) is permanent, since the same frame is
+// refused on every retry (finding 2); anything else (throttling, outage) is
+// a transient "no verdict yet".
+func classifyScanError(err error) error {
+	if errors.Is(err, processing.ErrScanInputRejected) {
+		return permanentTranscode(fmt.Errorf("scan video frames: %w", err))
+	}
+	return fmt.Errorf("scan video frames: %w", err)
+}
+
+// recordRefusal writes the limit a video broke as a failed "limits"
+// transcoding job, so the status route can say why the upload failed.
+// Best-effort: the terminal failure is recorded either way.
+func recordRefusal(ctx context.Context, store *postgres.MediaAssetStore, mediaID uuid.UUID, refusal error) {
+	jobID := uuid.New()
+	if err := store.CreateTranscodingJob(ctx, &postgres.TranscodingJob{
+		ID: jobID, MediaAssetID: mediaID, TargetQuality: "limits", Status: "queued",
+	}); err != nil {
+		log.Printf("Warning: refusal of media %s not recorded: %v", mediaID, err)
+		return
+	}
+	msg := refusal.Error()
+	if err := store.UpdateTranscodingJob(ctx, jobID, "failed", nil, nil, &msg); err != nil {
+		log.Printf("Warning: refusal of media %s not recorded: %v", mediaID, err)
+	}
+}
+
+// uploadFileBounded / uploadBytesBounded / deleteObjectBounded are the
+// worker's blob writes with a per-call deadline (finding 14).
+func uploadFileBounded(ctx context.Context, blobs *blob.Store, key, path, mime string) (int64, error) {
+	var size int64
+	if st, err := os.Stat(path); err == nil {
+		size = st.Size()
+	}
+	c, cancel := context.WithTimeout(ctx, s3Timeout(size))
+	defer cancel()
+	return blobs.UploadFile(c, key, path, mime)
+}
+
+func uploadBytesBounded(ctx context.Context, blobs *blob.Store, key string, data []byte, mime string) error {
+	c, cancel := context.WithTimeout(ctx, s3Timeout(int64(len(data))))
+	defer cancel()
+	return blobs.UploadObject(c, key, data, mime)
+}
+
+func deleteObjectBounded(ctx context.Context, blobs *blob.Store, key string) error {
+	c, cancel := context.WithTimeout(ctx, s3MetadataCall)
+	defer cancel()
+	return blobs.DeleteObject(c, key)
 }
 
 // selectScanner picks the content-safety scanner and refuses unsafe defaults

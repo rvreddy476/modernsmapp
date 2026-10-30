@@ -30,6 +30,12 @@ externalSecret:
   secretStoreName: azure-key-vault
 env:
   ENV: staging
+  # Reels audit 2026-10-30: the transcode worker refuses an original larger
+  # than this before downloading it. The worker's scratch is a 20Gi emptyDir
+  # here and needs ~3x the original (renditions + HLS); statfs cannot see an
+  # emptyDir sizeLimit, so the cap is what keeps a huge upload from getting
+  # the pod evicted. 6 GiB. (Default 16 GiB fits prod's 50Gi scratch.)
+  MEDIA_WORKER_MAX_ORIGINAL_BYTES: "6442450944"
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   JWT_RS256_KID: rsa-1

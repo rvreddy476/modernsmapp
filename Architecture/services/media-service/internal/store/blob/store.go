@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -236,6 +238,37 @@ func (s *Store) GeneratePresignedPutURL(ctx context.Context, objectKey string, e
 	return s.presignClient.PresignedPutObject(ctx, s.bucket, objectKey, expiry)
 }
 
+// GeneratePresignedPutURLFor is GeneratePresignedPutURL with the object's
+// Content-Type and Content-Length SIGNED into the request (reels audit
+// 2026-10-30, finding 5). The old URL signed only the host, so the holder
+// could PUT any bytes with any Content-Type, text/html included, onto the
+// media origin. A PUT carrying another type or another length now fails
+// the store's signature check. The client must send exactly these two
+// headers (PresignedPutHeaders).
+func (s *Store) GeneratePresignedPutURLFor(ctx context.Context, objectKey string, expiry time.Duration, contentType string, size int64) (*url.URL, error) {
+	h, err := PresignedPutHeaders(contentType, size)
+	if err != nil {
+		return nil, err
+	}
+	return s.presignClient.PresignHeader(ctx, http.MethodPut, s.bucket, objectKey, expiry, url.Values{}, h)
+}
+
+// PresignedPutHeaders are the headers GeneratePresignedPutURLFor signs and
+// the uploading client must send.
+func PresignedPutHeaders(contentType string, size int64) (http.Header, error) {
+	contentType = strings.TrimSpace(contentType)
+	if contentType == "" || strings.ContainsAny(contentType, "\r\n") {
+		return nil, fmt.Errorf("blob: presigned PUT needs a content type")
+	}
+	if size <= 0 {
+		return nil, fmt.Errorf("blob: presigned PUT needs a positive size, got %d", size)
+	}
+	h := http.Header{}
+	h.Set("Content-Type", contentType)
+	h.Set("Content-Length", strconv.FormatInt(size, 10))
+	return h, nil
+}
+
 func (s *Store) GeneratePresignedGetURL(ctx context.Context, objectKey string, expiry time.Duration) (*url.URL, error) {
 	reqParams := make(url.Values)
 	return s.presignClient.PresignedGetObject(ctx, s.bucket, objectKey, expiry, reqParams)
@@ -366,6 +399,41 @@ func (s *Store) DownloadObjectToFile(ctx context.Context, objectKey, path string
 	return n, nil
 }
 
+// DownloadObjectToFileIfMatch is DownloadObjectToFile pinned to an ETag:
+// the read is a conditional GET (If-Match), so an object replaced after
+// the caller recorded etag is refused with ErrObjectChanged instead of
+// downloaded (reels audit 2026-10-30, finding 6). An empty etag is an
+// error: the caller has nothing to pin to and must decide that itself.
+func (s *Store) DownloadObjectToFileIfMatch(ctx context.Context, objectKey, path, etag string) (int64, error) {
+	if strings.TrimSpace(etag) == "" {
+		return 0, fmt.Errorf("blob: conditional download of %s without an etag", objectKey)
+	}
+	opts := minio.GetObjectOptions{}
+	if err := opts.SetMatchETag(etag); err != nil {
+		return 0, fmt.Errorf("blob: set if-match for %s: %w", objectKey, err)
+	}
+	obj, err := s.client.GetObject(ctx, s.bucket, objectKey, opts)
+	if err != nil {
+		return 0, conditionalObjectError(objectKey, err)
+	}
+	defer obj.Close()
+	if _, err := obj.Stat(); err != nil {
+		return 0, conditionalObjectError(objectKey, err)
+	}
+	n, err := copyToFile(path, obj)
+	if err != nil {
+		return n, conditionalObjectError(objectKey, err)
+	}
+	return n, nil
+}
+
+func conditionalObjectError(objectKey string, err error) error {
+	if minio.ToErrorResponse(err).Code == "PreconditionFailed" {
+		return fmt.Errorf("%w: %s", ErrObjectChanged, objectKey)
+	}
+	return normalizeObjectError(objectKey, err)
+}
+
 // copyToFile is DownloadObjectToFile's streaming half, split out so it can
 // be tested without an object store. io.Copy moves the bytes through a
 // small fixed buffer (or the platform's file ReadFrom), never the whole
@@ -384,6 +452,18 @@ func copyToFile(path string, r io.Reader) (int64, error) {
 		return n, err
 	}
 	return n, nil
+}
+
+// UploadFileInfo is UploadFile answering the stored object's size AND
+// ETag, for a caller that pins later reads to what it wrote.
+func (s *Store) UploadFileInfo(ctx context.Context, objectKey, path, contentType string) (ObjectInfo, error) {
+	info, err := s.client.FPutObject(ctx, s.bucket, objectKey, path, minio.PutObjectOptions{
+		ContentType: contentType,
+	})
+	if err != nil {
+		return ObjectInfo{}, fmt.Errorf("failed to upload file to object %s: %w", objectKey, err)
+	}
+	return ObjectInfo{Size: info.Size, ContentType: contentType, ETag: info.ETag}, nil
 }
 
 // UploadFile streams a local file into the bucket at objectKey and returns

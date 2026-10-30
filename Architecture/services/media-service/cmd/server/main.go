@@ -584,6 +584,19 @@ func (s localBlobSigner) SignProtected(key string, ttl time.Duration, _ time.Tim
 	return u.String(), nil
 }
 
+// SignProtectedSegment is the development form of the long HLS segment
+// signature (delivery.SegmentSigner), under the same rule as CloudFront's.
+func (s localBlobSigner) SignProtectedSegment(key string, ttl time.Duration, _ time.Time) (string, error) {
+	if err := delivery.CheckSegmentTTL(key, ttl); err != nil {
+		return "", err
+	}
+	u, err := s.store.GeneratePresignedGetURL(context.Background(), key, ttl)
+	if err != nil {
+		return "", err
+	}
+	return u.String(), nil
+}
+
 // SignProtectedDownload marks the presigned URL as an attachment
 // (delivery.DownloadSigner) for GET /v1/media/:id/download.
 func (s localBlobSigner) SignProtectedDownload(key string, ttl time.Duration, _ time.Time, filename string) (string, error) {

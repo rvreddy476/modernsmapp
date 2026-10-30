@@ -23,7 +23,8 @@ import (
 //
 //	POST /v1/audio-library/:id/use   signed in
 //	  200 {data: {"audio_track_id": "<uuid>", "sound": Sound}}
-//	  404 NOT_FOUND         no such library row, or it is inactive / withdrawn
+//	  404 NOT_FOUND         no such library row, or it is inactive / withdrawn,
+//	                        or its licence has expired (license_expires_at)
 //	  422 NOT_STORED        the row's audio is neither a storage key nor https
 //	  503 SOUND_UNAVAILABLE the store failed; retry
 //
@@ -119,7 +120,11 @@ func (l *LibrarySounds) Use(ctx context.Context, userID, libraryID uuid.UUID) (*
 		}
 		return nil, fmt.Errorf("%w: materialise: %v", ErrLibrarySoundUnavailable, err)
 	}
-	if track == nil || track.Status != "ready" || track.AudioKey == "" {
+	// AvailableForNewPosts, not Status alone: a row materialised before
+	// its licence lapsed (or before a withdraw) still exists and is still
+	// 'ready' so old posts keep playing it, and must not be re-answered
+	// for a new one (reels audit 2026-10-30, 13).
+	if track == nil || !track.AvailableForNewPosts() || track.AudioKey == "" {
 		return nil, ErrLibrarySoundNotFound
 	}
 	return track, nil

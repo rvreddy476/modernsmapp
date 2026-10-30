@@ -3,8 +3,6 @@ package processing
 import (
 	"context"
 	"fmt"
-	"os"
-	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -128,10 +126,8 @@ func ApplyDisplayRotation(ctx context.Context, inputPath, outputPath string, deg
 		"-f", "mp4",
 		outputPath,
 	}
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ffmpeg display_rotation remux: %w", err)
+	if out, err := runFFmpeg(ctx, args...); err != nil {
+		return fmt.Errorf("ffmpeg display_rotation remux: %w: %s", err, lastLine(out))
 	}
 	return nil
 }

@@ -170,17 +170,47 @@ func GenerateWaveform(ctx context.Context, inputPath, outputDir string, numBins 
 // ExtractFrames extracts multiple frames from a video at equal intervals.
 // Returns paths to the extracted JPEG files.
 func ExtractFrames(ctx context.Context, inputPath, outputDir string, numFrames int) ([]string, error) {
-	if numFrames <= 0 {
-		numFrames = 5
-	}
-
 	// Get video duration
 	meta, err := ProbeVideo(ctx, inputPath)
 	if err != nil {
 		return nil, fmt.Errorf("probe video for frames: %w", err)
 	}
+	return ExtractFramesAt(ctx, inputPath, outputDir, meta.DurationFloat, numFrames)
+}
 
-	durationSec := meta.DurationFloat
+// ScanFrameMaxSide is the longest side of a frame sampled for the content
+// scan. Frames used to be extracted at full source resolution: a noisy 4K
+// or 8K frame is a JPEG over Rekognition's 5 MB inline limit, which the
+// provider refuses on every retry (reels audit 2026-10-30, finding 2).
+// 1280 px keeps a frame well under the limit and far above what the
+// moderation model looks at.
+const ScanFrameMaxSide = 1280
+
+// scanFrameScale bounds the longest side to ScanFrameMaxSide without ever
+// upscaling, for portrait and landscape alike.
+var scanFrameScale = fmt.Sprintf(
+	"scale='if(gte(iw,ih),min(%d,iw),-2)':'if(gte(iw,ih),-2,min(%d,ih))'",
+	ScanFrameMaxSide, ScanFrameMaxSide)
+
+// scanFrameArgs extracts one downscaled frame at timestamp.
+func scanFrameArgs(inputPath, outPath string, timestamp float64) []string {
+	return []string{
+		"-y", "-ss", fmt.Sprintf("%.2f", timestamp),
+		"-i", inputPath,
+		"-vframes", "1",
+		"-vf", scanFrameScale,
+		"-q:v", "3",
+		outPath,
+	}
+}
+
+// ExtractFramesAt is ExtractFrames for a video whose duration the caller
+// already probed: numFrames frames at equal intervals, each downscaled to
+// ScanFrameMaxSide.
+func ExtractFramesAt(ctx context.Context, inputPath, outputDir string, durationSec float64, numFrames int) ([]string, error) {
+	if numFrames <= 0 {
+		numFrames = 5
+	}
 	if durationSec <= 0 {
 		return nil, fmt.Errorf("video has no positive duration")
 	}
@@ -192,16 +222,7 @@ func ExtractFrames(ctx context.Context, inputPath, outputDir string, numFrames i
 		timestamp := interval * float64(i)
 		outPath := filepath.Join(outputDir, fmt.Sprintf("frame_%02d.jpg", i))
 
-		args := []string{
-			"-y", "-ss", fmt.Sprintf("%.2f", timestamp),
-			"-i", inputPath,
-			"-vframes", "1",
-			"-q:v", "3",
-			outPath,
-		}
-
-		cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-		if out, cmdErr := cmd.CombinedOutput(); cmdErr != nil {
+		if out, cmdErr := runFFmpeg(ctx, scanFrameArgs(inputPath, outPath, timestamp)...); cmdErr != nil {
 			return paths, fmt.Errorf("extract frame %d: %w\n%s", i, cmdErr, out)
 		}
 		paths = append(paths, outPath)

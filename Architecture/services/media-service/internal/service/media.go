@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/atpost/media-service/internal/captions"
@@ -217,7 +218,17 @@ type InitUploadResponse struct {
 	UploadURL string    `json:"upload_url"`
 	ObjectKey string    `json:"object_key"`
 	ExpiresAt time.Time `json:"expires_at"`
+	// UploadHeaders are the headers the PUT must carry, exactly: they are
+	// signed into upload_url (Content-Type = the declared MIME,
+	// Content-Length = the declared size; reels audit 2026-10-30, finding
+	// 5). A PUT with any other value is refused by the object store.
+	UploadHeaders map[string]string `json:"upload_headers"`
 }
+
+// presignedPutExpiry is how long a simple-upload PUT URL is valid. It is
+// also the window in which the original can still be replaced by its
+// uploader after confirm (originalUnchanged).
+const presignedPutExpiry = 15 * time.Minute
 
 // ValidateUpload checks size and mime constraints for the given file type and subtype.
 func ValidateUpload(fileType, mediaSubtype, mimeType string, fileSizeBytes int64) error {
@@ -303,11 +314,22 @@ func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, me
 
 	mediaID := uuid.New()
 	storageKey := fmt.Sprintf("user/%s/%s/original", userID, mediaID)
-	expiry := 15 * time.Minute
+	expiry := presignedPutExpiry
 
-	url, err := s.blobStore.GeneratePresignedPutURL(ctx, storageKey, expiry)
+	// Content-Type and Content-Length are signed into the URL (finding 5):
+	// the object store refuses a PUT of any other type or length, so the
+	// holder cannot store text/html on the media origin.
+	url, err := s.blobStore.GeneratePresignedPutURLFor(ctx, storageKey, expiry, mimeType, fileSizeBytes)
 	if err != nil {
 		return nil, err
+	}
+	signedHeaders, err := blob.PresignedPutHeaders(mimeType, fileSizeBytes)
+	if err != nil {
+		return nil, err
+	}
+	uploadHeaders := make(map[string]string, len(signedHeaders))
+	for k := range signedHeaders {
+		uploadHeaders[k] = signedHeaders.Get(k)
 	}
 
 	// P1-7: decorative and a description are mutually exclusive.
@@ -337,10 +359,11 @@ func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, me
 	}
 
 	return &InitUploadResponse{
-		MediaID:   mediaID,
-		UploadURL: url.String(),
-		ObjectKey: storageKey,
-		ExpiresAt: time.Now().Add(expiry),
+		MediaID:       mediaID,
+		UploadURL:     url.String(),
+		ObjectKey:     storageKey,
+		ExpiresAt:     time.Now().Add(expiry),
+		UploadHeaders: uploadHeaders,
 	}, nil
 }
 
@@ -381,6 +404,15 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 	if info.Size != media.FileSizeBytes {
 		return nil, fmt.Errorf("%w: declared=%d actual=%d", ErrUploadSizeMismatch, media.FileSizeBytes, info.Size)
 	}
+	// The stored Content-Type must be the declared one (finding 5). The PUT
+	// URL signs it now; this also catches an object written another way.
+	if !uploadedTypeMatches(media, info) {
+		if updateErr := s.pgStore.UpdateStatus(ctx, mediaID, "rejected"); updateErr != nil {
+			return nil, fmt.Errorf("reject mistyped upload and persist status: %w", updateErr)
+		}
+		return nil, fmt.Errorf("%w: stored content type %q is not the declared %q",
+			ErrUploadIntegrity, info.ContentType, media.MimeType)
+	}
 
 	// Magic-byte validation reads at most 64 bytes. A storage read failure is
 	// not an approval; confirmation is retried with no state change.
@@ -395,16 +427,7 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 	if err != nil {
 		return nil, fmt.Errorf("read uploaded object header: %w", err)
 	}
-	valid := false
-	switch media.FileType {
-	case "video":
-		_, valid = processing.ValidateVideoMagicBytes(headerData)
-	case "image":
-		_, valid = processing.ValidateImageMagicBytes(headerData)
-	case "audio":
-		_, valid = processing.ValidateAudioMagicBytes(headerData)
-	}
-	if !valid {
+	if !uploadHeaderValid(media.FileType, media.MimeType, headerData) {
 		if updateErr := s.pgStore.UpdateStatus(ctx, mediaID, "rejected"); updateErr != nil {
 			return nil, fmt.Errorf("reject invalid %s and persist status: %w", media.FileType, updateErr)
 		}
@@ -416,6 +439,12 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 	// PUT and the resumable path (CompleteResumableUpload ends here), with
 	// the ETag the object store reported for the original.
 	if err := s.pgStore.MarkUploadConfirmed(ctx, mediaID, info.ETag); err != nil {
+		if errors.Is(err, postgres.ErrUploadAlreadyConfirmed) {
+			// Another confirm moved the asset on between our read and this
+			// write (finding 12). Answer what it is now, as the early
+			// return above would have.
+			return s.confirmedAnswer(ctx, mediaID)
+		}
 		return nil, err
 	}
 
@@ -496,6 +525,54 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 	}
 
 	return media, nil
+}
+
+// confirmedAnswer is the idempotent answer to a confirm that lost the race
+// to another one: the asset as it stands, or the state error.
+func (s *Service) confirmedAnswer(ctx context.Context, mediaID uuid.UUID) (*postgres.MediaAsset, error) {
+	media, err := s.pgStore.GetMedia(ctx, mediaID)
+	if err != nil {
+		return nil, err
+	}
+	switch media.ProcessingStatus {
+	case "processing", "ready":
+		return media, nil
+	default:
+		return nil, fmt.Errorf("%w: media is %s", ErrUploadState, media.ProcessingStatus)
+	}
+}
+
+// uploadedTypeMatches: the stored object's Content-Type is the declared
+// MIME (finding 5).
+func uploadedTypeMatches(media *postgres.MediaAsset, info blob.ObjectInfo) bool {
+	return sameMIME(info.ContentType, media.MimeType)
+}
+
+// uploadHeaderValid checks an upload's first bytes against its file type
+// and, for a video, against the container its declared MIME names
+// (finding 7): "video/mp4" carrying AVI or Matroska bytes passed the magic
+// check before, and ffmpeg then probed whatever it was.
+func uploadHeaderValid(fileType, declaredMIME string, head []byte) bool {
+	valid := false
+	switch fileType {
+	case "video":
+		_, valid = processing.ValidateVideoMagicBytes(head)
+		valid = valid && processing.VideoContainerMatches(declaredMIME, head)
+	case "image":
+		_, valid = processing.ValidateImageMagicBytes(head)
+	case "audio":
+		_, valid = processing.ValidateAudioMagicBytes(head)
+	}
+	return valid
+}
+
+// sameMIME compares two Content-Type values by media type alone,
+// case-insensitively, ignoring parameters.
+func sameMIME(a, b string) bool {
+	norm := func(v string) string {
+		return strings.ToLower(strings.TrimSpace(strings.Split(v, ";")[0]))
+	}
+	return norm(a) != "" && norm(a) == norm(b)
 }
 
 // processImage handles synchronous image processing (resize + upload variants).
@@ -695,7 +772,36 @@ func choosePlayback(fileType, hlsURL string, urls map[string]string) (url, kind 
 	if orig := urls["original"]; orig != "" {
 		return orig, PlaybackKindOriginal
 	}
+	// A viewer who is not handed the original (finding 4) still plays a
+	// ready video without a ladder from its best progressive rendition.
+	// The kind stays "original": to every client it means "a progressive
+	// file, not a playlist", which a rendition is.
+	for _, name := range playbackRenditionLadder {
+		if u := urls[name]; u != "" {
+			return u, PlaybackKindOriginal
+		}
+	}
 	return "", ""
+}
+
+// playbackRenditionLadder is the order a viewer who may not have a video's
+// original is given a rendition in its place (choosePlayback, and
+// /serve/original).
+var playbackRenditionLadder = []string{"720p", "480p", "360p", "1080p", "4k"}
+
+// bestRenditionKey is the object key of the first rendition of the ladder
+// the asset has, or "".
+func bestRenditionKey(variants []postgres.MediaVariant) string {
+	byName := make(map[string]string, len(variants))
+	for _, v := range variants {
+		byName[v.Name] = v.ObjectKey
+	}
+	for _, name := range playbackRenditionLadder {
+		if k := byName[name]; k != "" {
+			return k
+		}
+	}
+	return ""
 }
 
 // GetMediaURL returns authorized delivery URLs for a media item and all its
@@ -730,12 +836,25 @@ func (s *Service) GetMediaURL(ctx context.Context, viewerID, mediaID uuid.UUID) 
 		return anonymousURLResponse(media), nil
 	}
 
-	keys := map[string]string{"original": media.StorageKey}
+	keys := map[string]string{}
+	if s.originalServable(ctx, media, viewerID) {
+		keys["original"] = media.StorageKey
+	}
 	for _, v := range media.Variants {
 		keys[v.Name] = v.ObjectKey
 	}
 	if media.HLSMasterKey != "" {
 		keys["hls"] = media.HLSMasterKey
+	}
+	if len(keys) == 0 {
+		// Nothing servable to this viewer yet (a processing video that is
+		// not theirs) is still an audience decision, made over the
+		// original's key: URLsForAsset answers an empty key set without
+		// asking anyone.
+		if err := s.gate.AuthorizeAsset(ctx, viewerID.String(), mediaID.String(),
+			map[string]string{"original": media.StorageKey}); err != nil {
+			return nil, err
+		}
 	}
 
 	// One authorization for the asset, then every key signed.
@@ -767,7 +886,7 @@ func (s *Service) GetMediaURL(ctx context.Context, viewerID, mediaID uuid.UUID) 
 			PlaybackKind: playbackKind,
 		}
 		if playbackURL != "" {
-			expires := time.Now().UTC().Add(delivery.MaxProtectedTTL)
+			expires := time.Now().UTC().Add(delivery.GuaranteedProtectedTTL)
 			res.ExpiresAt = &expires
 		}
 		return res, nil
@@ -781,7 +900,7 @@ func (s *Service) GetMediaURL(ctx context.Context, viewerID, mediaID uuid.UUID) 
 		hlsURL = hlsPlaylistURL(media.ID, "master.m3u8")
 	}
 	delete(urls, "hls")
-	expires := time.Now().UTC().Add(delivery.MaxProtectedTTL)
+	expires := time.Now().UTC().Add(delivery.GuaranteedProtectedTTL)
 	playbackURL, playbackKind := choosePlayback(media.FileType, hlsURL, urls)
 
 	return &MediaURLResponse{
@@ -864,7 +983,13 @@ func (s *Service) GetHLSPlaylist(ctx context.Context, viewerID, mediaID uuid.UUI
 	// URLsForAsset is the authorization choke point. Including the playlist
 	// key makes even an empty playlist require a resolved permission decision;
 	// child segment URLs are then signed after that same single decision.
-	urls, err := s.gate.URLsForAsset(ctx, viewerID.String(), mediaID.String(), keys)
+	//
+	// Segments are signed to outlive a realistic play session of this
+	// video (delivery.HLSSegmentTTL, finding 9): a VOD playlist is never
+	// reloaded, so a 5-minute segment signature broke every reel played
+	// or paused past five minutes.
+	urls, err := s.gate.HLSURLsForAsset(ctx, viewerID.String(), mediaID.String(), keys,
+		delivery.HLSSegmentTTL(media.DurationMsValue()))
 	if err != nil {
 		return nil, err
 	}
@@ -958,6 +1083,21 @@ func (s *Service) GetMediaVariantURL(ctx context.Context, viewerID, mediaID uuid
 		return s.deliveryURL(ctx, viewerID, mediaID, key)
 	}
 	if variant == "original" {
+		if !s.originalServable(ctx, asset, viewerID) {
+			// A video's uploaded file is its uploader's alone (findings 4 and
+			// 6): anyone else asking for "original" gets the best rendition,
+			// which carries no capture metadata and was cut from the bytes
+			// that were scanned. No rendition yet: nothing to serve.
+			variants, err := s.pgStore.GetVariants(ctx, mediaID)
+			if err != nil {
+				return "", err
+			}
+			key := bestRenditionKey(variants)
+			if key == "" {
+				return "", delivery.ErrDeliveryDenied
+			}
+			return s.deliveryURL(ctx, viewerID, mediaID, key)
+		}
 		return s.deliveryURL(ctx, viewerID, mediaID, asset.StorageKey)
 	}
 
@@ -1022,6 +1162,7 @@ func (s *Service) BatchMediaURLs(ctx context.Context, viewerID uuid.UUID, ids []
 	// Anonymous assets never get signed URLs; they are answered separately
 	// below with this service's own serve paths.
 	anonymous := map[uuid.UUID]*postgres.MediaAsset{}
+	denyOriginal := map[uuid.UUID]bool{}
 	assetKeys := make(map[string]map[string]string, len(medias))
 	for i := range medias {
 		if medias[i].AccessScope == postgres.AccessScopeAnonymous {
@@ -1036,12 +1177,23 @@ func (s *Service) BatchMediaURLs(ctx context.Context, viewerID uuid.UUID, ids []
 			// Lane D6: omitted exactly like a denial below.
 			continue
 		}
-		keys := map[string]string{"original": m.StorageKey}
+		keys := map[string]string{}
+		if batchIncludesOriginal(&m, viewerID) {
+			keys["original"] = m.StorageKey
+		}
 		for _, v := range m.Variants {
 			keys[v.Name] = v.ObjectKey
 		}
 		if m.HLSMasterKey != "" {
 			keys["hls"] = m.HLSMasterKey
+		}
+		if len(keys) == 0 {
+			// Authorized over the original's key, signed nothing: an asset
+			// with no servable key is still an audience decision.
+			keys["original"] = m.StorageKey
+			if !batchIncludesOriginal(&m, viewerID) {
+				denyOriginal[m.ID] = true
+			}
 		}
 
 		assetKeys[m.ID.String()] = keys
@@ -1073,6 +1225,9 @@ func (s *Service) BatchMediaURLs(ctx context.Context, viewerID uuid.UUID, ids []
 				"status", m.ProcessingStatus)
 			continue // resolved denial — omit without revealing existence
 		}
+		if denyOriginal[m.ID] {
+			delete(urls, "original")
+		}
 
 		if m.ProcessingStatus != "ready" {
 			// Permitted content, but asset processing is not yet ready for URL delivery.
@@ -1098,7 +1253,7 @@ func (s *Service) BatchMediaURLs(ctx context.Context, viewerID uuid.UUID, ids []
 				PlaybackKind: playbackKind,
 			}
 			if playbackURL != "" {
-				expires := time.Now().UTC().Add(delivery.MaxProtectedTTL)
+				expires := time.Now().UTC().Add(delivery.GuaranteedProtectedTTL)
 				res.ExpiresAt = &expires
 			}
 			result[m.ID] = res
@@ -1110,7 +1265,7 @@ func (s *Service) BatchMediaURLs(ctx context.Context, viewerID uuid.UUID, ids []
 			hlsURL = hlsPlaylistURL(m.ID, "master.m3u8")
 		}
 		delete(urls, "hls")
-		expires := time.Now().UTC().Add(delivery.MaxProtectedTTL)
+		expires := time.Now().UTC().Add(delivery.GuaranteedProtectedTTL)
 		playbackURL, playbackKind := choosePlayback(m.FileType, hlsURL, urls)
 		result[m.ID] = &MediaURLResponse{
 			MediaID:      m.ID,
@@ -1130,6 +1285,88 @@ func (s *Service) BatchMediaURLs(ctx context.Context, viewerID uuid.UUID, ids []
 
 	return result, nil
 }
+
+// ─── Original delivery (reels audit 2026-10-30, findings 4 and 6) ───
+
+// batchIncludesOriginal decides whether POST /v1/media/batch, which needs
+// no sign-in, signs an asset's original. Never a video's (finding 4): the
+// viewer plays the HLS ladder or a rendition, and the original is the
+// uploader's file. The one exception is the uploader's OWN video while it
+// is still processing, the instant-publish preview of what they just
+// uploaded. Every other kind keeps its original (an image original is
+// already re-encoded without EXIF).
+func batchIncludesOriginal(m *postgres.MediaAsset, viewerID uuid.UUID) bool {
+	if m.FileType != "video" {
+		return true
+	}
+	return viewerID != uuid.Nil && viewerID == m.UploaderID && m.ProcessingStatus != "ready"
+}
+
+// originalServable decides whether viewerID may be handed media's original
+// object. Anything but a video: yes (decided by the gate as before). A
+// video: only to its uploader, and only while the stored object is still
+// the one that was confirmed (finding 6).
+//
+// WHY VIEWERS NO LONGER GET A VIDEO'S ORIGINAL (finding 4). A phone
+// MP4/MOV carries the capture location, the device and the time, and the
+// original was signed for every authorised viewer, the signed-out batch
+// route included. Two fixes were possible: rewrite the original without
+// metadata in the worker, or stop handing it out. The second is both
+// safer and cheaper. Safer, because viewers then only ever receive bytes
+// the worker produced from the scanned original (renditions and the HLS
+// ladder, written with -map_metadata -1), so a replace-after-scan of the
+// original (finding 6) cannot reach them either; an in-place rewrite would
+// still serve whatever sits at a key the upload URL can overwrite.
+// Cheaper, because the renditions already exist: no extra ffmpeg pass, no
+// second copy in storage. The uploader still gets their own file.
+func (s *Service) originalServable(ctx context.Context, media *postgres.MediaAsset, viewerID uuid.UUID) bool {
+	if media.FileType != "video" {
+		return true
+	}
+	if viewerID == uuid.Nil || viewerID != media.UploaderID {
+		return false
+	}
+	if media.OriginalETag == "" {
+		// Confirmed before upload identity was recorded (migration 022):
+		// nothing to compare, and it is the uploader's own file.
+		return true
+	}
+	return s.originalUnchanged(ctx, media)
+}
+
+// originalUnchanged reports whether the stored original still has the ETag
+// recorded for it (media.OriginalETag, non-empty). The simple-upload PUT URL stays valid for
+// presignedPutExpiry after init and confirm does not revoke it, so an
+// uploader could replace a scanned, approved original with anything. A
+// positive answer obtained after that window closed can never change
+// again (nothing but the worker writes the key, and the worker records a
+// new ETag), so it is remembered; a mismatch or a failed read refuses.
+func (s *Service) originalUnchanged(ctx context.Context, media *postgres.MediaAsset) bool {
+	cacheKey := media.ID.String() + "|" + media.OriginalETag
+	if _, ok := verifiedOriginals.Load(cacheKey); ok {
+		return true
+	}
+	checkedAt := time.Now()
+	info, err := s.objectReader().StatObject(ctx, media.StorageKey)
+	if err != nil {
+		slog.WarnContext(ctx, "media: original not verifiable; not serving it", "media_id", media.ID, "error", err)
+		return false
+	}
+	if info.ETag != media.OriginalETag {
+		slog.WarnContext(ctx, "media: original changed after it was confirmed; refusing it",
+			"media_id", media.ID)
+		return false
+	}
+	if checkedAt.After(media.CreatedAt.Add(presignedPutExpiry + time.Minute)) {
+		verifiedOriginals.Store(cacheKey, struct{}{})
+	}
+	return true
+}
+
+// verifiedOriginals remembers (media id, etag) pairs verified after the
+// upload URL expired. Bounded by the number of distinct video originals a
+// process serves; an entry is a few dozen bytes.
+var verifiedOriginals sync.Map
 
 // ─── Delete ────────────────────────────────────────────────────────
 
@@ -1193,19 +1430,73 @@ func (s *Service) DeleteOrphanMedia(ctx context.Context, mediaID uuid.UUID) erro
 // reclaimBlobs deletes objects and clears their reclaim rows. Any failure
 // leaves the row in place for the sweeper to retry.
 func (s *Service) reclaimBlobs(ctx context.Context, objectKeys []string) {
+	reclaimKeys(ctx, s.blobStore, s.pgStore, objectKeys)
+}
+
+// reclaimBlobStore / reclaimRecorder are what reclaimKeys needs.
+type reclaimBlobStore interface {
+	DeleteObject(ctx context.Context, objectKey string) error
+	ListObjectKeys(ctx context.Context, prefix string) ([]string, error)
+}
+
+type reclaimRecorder interface {
+	RecordBlobReclaimFailure(ctx context.Context, objectKey, reason string) error
+	ClearBlobReclaim(ctx context.Context, objectKey string) error
+}
+
+// reclaimKeys deletes each object, or, for an asset prefix
+// ("user/<uuid>/<uuid>/", postgres.IsAssetPrefix), everything under it:
+// the HLS ladder, storyboard, audio tracks and anything else the asset
+// produced that has no row (finding 8). A key ending in "/" that is not
+// exactly one asset's prefix is never expanded: it is recorded as a
+// failure and left for an operator. Any failure leaves the reclaim row for
+// the sweeper to retry.
+func reclaimKeys(ctx context.Context, blobs reclaimBlobStore, rec reclaimRecorder, objectKeys []string) {
 	for _, key := range objectKeys {
 		if key == "" {
 			continue
 		}
-		if err := s.blobStore.DeleteObject(ctx, key); err != nil {
-			slog.Warn("orphan delete: blob removal failed (will retry)", "key", key, "error", err)
-			_ = s.pgStore.RecordBlobReclaimFailure(ctx, key, err.Error())
+		var err error
+		switch {
+		case postgres.IsAssetPrefix(key):
+			err = deletePrefix(ctx, blobs, key)
+		case strings.HasSuffix(key, "/"):
+			err = fmt.Errorf("refusing to reclaim %q: not a single asset's prefix", key)
+		default:
+			err = blobs.DeleteObject(ctx, key)
+		}
+		if err != nil {
+			slog.Warn("blob reclaim: removal failed (will retry)", "key", key, "error", err)
+			_ = rec.RecordBlobReclaimFailure(ctx, key, err.Error())
 			continue
 		}
-		if err := s.pgStore.ClearBlobReclaim(ctx, key); err != nil {
-			slog.Warn("orphan delete: reclaim row cleanup failed", "key", key, "error", err)
+		if err := rec.ClearBlobReclaim(ctx, key); err != nil {
+			slog.Warn("blob reclaim: reclaim row cleanup failed", "key", key, "error", err)
 		}
 	}
+}
+
+// deletePrefix removes every object under one asset prefix.
+func deletePrefix(ctx context.Context, blobs reclaimBlobStore, prefix string) error {
+	keys, err := blobs.ListObjectKeys(ctx, prefix)
+	if err != nil {
+		return err
+	}
+	var failed int
+	var last error
+	for _, k := range keys {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		if err := blobs.DeleteObject(ctx, k); err != nil {
+			failed++
+			last = err
+		}
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d of %d objects under %s not deleted: %w", failed, len(keys), prefix, last)
+	}
+	return nil
 }
 
 // StartBlobReclaimWorker drains media_blob_reclaim. Without it a transient
@@ -1220,6 +1511,7 @@ func (s *Service) StartBlobReclaimWorker(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
+				s.expireResumableUploads(ctx)
 				keys, err := s.pgStore.PendingBlobReclaims(ctx, 200)
 				if err != nil {
 					slog.Error("blob reclaim: list failed", "error", err)
@@ -1253,14 +1545,37 @@ func (s *Service) DeleteMedia(ctx context.Context, mediaID uuid.UUID, userID uui
 		return err
 	}
 
-	// 3. Delete blobs from storage (best-effort, don't fail the request)
-	for _, key := range objectKeys {
-		if err := s.blobStore.DeleteObject(ctx, key); err != nil {
-			slog.Warn("Failed to delete blob", "key", key, "error", err)
-		}
-	}
+	// 3. Delete blobs from storage. Every key, and the asset's whole
+	// prefix (the HLS ladder has no rows), was recorded in
+	// media_blob_reclaim by the same transaction that removed the rows, so
+	// a failure here is retried by the reclaim worker instead of leaking
+	// (finding 8). The request does not wait on a retry.
+	s.reclaimBlobs(ctx, objectKeys)
 
 	return nil
+}
+
+// expireResumableUploads closes resumable sessions past their expiry and
+// aborts their multipart uploads on the object store (finding 14:
+// CleanupExpiredUploads had no caller). Best-effort: an abort that fails
+// is logged; S3's lifecycle rule is the backstop in production.
+func (s *Service) expireResumableUploads(ctx context.Context) {
+	expired, err := s.pgStore.ExpireResumableUploads(ctx, 200)
+	if err != nil {
+		slog.Error("resumable expiry: sweep failed", "error", err)
+		return
+	}
+	for _, e := range expired {
+		if e.StorageUploadID == "" {
+			continue
+		}
+		if err := s.blobStore.AbortMultipartUpload(ctx, e.ObjectKey, e.StorageUploadID); err != nil {
+			slog.Warn("resumable expiry: abort failed", "upload_id", e.UploadID, "error", err)
+		}
+	}
+	if len(expired) > 0 {
+		slog.Info("resumable expiry sweep", "expired", len(expired))
+	}
 }
 
 // ─── Status ────────────────────────────────────────────────────────

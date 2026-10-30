@@ -87,6 +87,49 @@ func (s *MediaAssetStore) CleanupExpiredUploads(ctx context.Context) (int64, err
 	return tag.RowsAffected(), nil
 }
 
+// ExpiredUpload is one resumable session ExpireResumableUploads closed:
+// what the caller needs to abort its multipart upload on the object store.
+type ExpiredUpload struct {
+	UploadID        uuid.UUID
+	ObjectKey       string
+	StorageUploadID string
+}
+
+// ExpireResumableUploads marks every open session past its expiry
+// 'expired' and returns them, at most limit per call, so the caller can
+// abort the object store's half (reels audit 2026-10-30, finding 14:
+// CleanupExpiredUploads had no caller, and MinIO/dev keep incomplete
+// multipart parts forever). A session is returned by exactly one call:
+// the UPDATE moves it out of the open states.
+func (s *MediaAssetStore) ExpireResumableUploads(ctx context.Context, limit int) ([]ExpiredUpload, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := s.db.Query(ctx, `
+		UPDATE resumable_uploads SET status = 'expired', updated_at = NOW()
+		 WHERE upload_id IN (
+		       SELECT upload_id FROM resumable_uploads
+		        WHERE status IN ('initiated', 'uploading') AND expires_at < NOW()
+		        ORDER BY expires_at
+		        LIMIT $1
+		        FOR UPDATE SKIP LOCKED)
+		RETURNING upload_id, object_key, COALESCE(storage_upload_id, '')
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ExpiredUpload
+	for rows.Next() {
+		var e ExpiredUpload
+		if err := rows.Scan(&e.UploadID, &e.ObjectKey, &e.StorageUploadID); err != nil {
+			return nil, err
+		}
+		out = append(out, e)
+	}
+	return out, rows.Err()
+}
+
 // UploadPartRecord is one stored part of a resumable multipart upload.
 type UploadPartRecord struct {
 	PartNumber int    `json:"part_number"`

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -146,8 +145,7 @@ func formatFloat(f float64) string {
 // the files are stored under.
 func GenerateStoryboard(ctx context.Context, inputPath, tmpDir string, plan StoryboardPlan) ([]TranscodeOutput, error) {
 	jpgPath := filepath.Join(tmpDir, StoryboardJPGObject)
-	cmd := exec.CommandContext(ctx, "ffmpeg", StoryboardFFmpegArgs(inputPath, jpgPath, plan)...) //nolint:gosec // G204: fixed ffmpeg binary, argv without a shell; paths are worker-built temp files
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := runFFmpeg(ctx, StoryboardFFmpegArgs(inputPath, jpgPath, plan)...); err != nil {
 		return nil, fmt.Errorf("ffmpeg storyboard failed: %w\n%s", err, out)
 	}
 	vttPath := filepath.Join(tmpDir, StoryboardVTTObject)

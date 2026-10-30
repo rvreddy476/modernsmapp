@@ -108,7 +108,17 @@ func (r *RecordReads) SearchAudioForViewer(ctx context.Context, viewerID uuid.UU
 	if err != nil {
 		return nil, fmt.Errorf("search audio: %w", err)
 	}
-	return r.audibleTo(ctx, viewerID, tracks)
+	// Search is how a creator finds a sound to put on a new post, so a
+	// withdrawn, switched-off or licence-expired library sound is left out
+	// (reels audit 2026-10-30, 13). Its own page (AudioTrackForViewer)
+	// still answers, with available_for_new_posts false.
+	usable := tracks[:0]
+	for _, t := range tracks {
+		if t.ReuseBlock == "" {
+			usable = append(usable, t)
+		}
+	}
+	return r.audibleTo(ctx, viewerID, usable)
 }
 
 // audibleTo keeps the sounds viewerID may hear, in order. Several sounds of
@@ -149,15 +159,26 @@ func (r *RecordReads) audibleTo(ctx context.Context, viewerID uuid.UUID, tracks 
 	return out, nil
 }
 
+// ErrSoundUnavailableForNewPosts: the caller may hear the sound, but it may
+// not go on a new post: a library sound that was withdrawn or switched off,
+// or whose licence has expired (reels audit 2026-10-30, 13). Posts that
+// already carry it keep playing it. HTTP: 410 SOUND_UNAVAILABLE.
+var ErrSoundUnavailableForNewPosts = errors.New("sound is not available for new posts")
+
 // UseAudioTrackAsViewer is POST /v1/audio/:audioId/use: the use is counted
 // only for a sound the caller may hear, and a sound they may not is the same
-// answer as one that does not exist.
+// answer as one that does not exist. A sound they may hear but that may not
+// go on a new post is ErrSoundUnavailableForNewPosts, and nothing is counted.
 func (r *RecordReads) UseAudioTrackAsViewer(ctx context.Context, viewerID, audioID uuid.UUID) error {
 	if viewerID == uuid.Nil {
 		return delivery.ErrDeliveryDenied
 	}
-	if _, err := r.AudioTrackForViewer(ctx, viewerID, audioID); err != nil {
+	track, err := r.AudioTrackForViewer(ctx, viewerID, audioID)
+	if err != nil {
 		return err
+	}
+	if !track.AvailableForNewPosts() {
+		return fmt.Errorf("%w: %s", ErrSoundUnavailableForNewPosts, track.ReuseBlock)
 	}
 	if err := r.store.IncrementAudioUsageCount(ctx, audioID); err != nil {
 		return fmt.Errorf("count audio use: %w", err)

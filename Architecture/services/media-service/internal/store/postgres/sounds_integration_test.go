@@ -131,7 +131,10 @@ func applySoundMigration(t *testing.T, pool *pgxpool.Pool) {
 		strings.Replace(audioLibraryDDL, "CREATE TABLE audio_library", "CREATE TABLE IF NOT EXISTS audio_library", 1)); err != nil {
 		t.Fatalf("create audio_library: %v", err)
 	}
-	for _, file := range []string{"024_sound_per_source.sql", "028_library_sounds.sql"} {
+	// Every sound read also computes whether a library sound may go on a
+	// new post from withdrawn_at / license_expires_at (reels audit
+	// 2026-10-30, 13), which migration 029 adds on every real database.
+	for _, file := range []string{"024_sound_per_source.sql", "028_library_sounds.sql", "029_admin_sound_library.sql"} {
 		applyMediaMigration(t, pool, file)
 	}
 }

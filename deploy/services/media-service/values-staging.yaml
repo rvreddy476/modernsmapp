@@ -66,6 +66,12 @@ env:
   MEDIA_SCANNER_ENABLED: "true"
   MEDIA_SCANNER_ALLOW_STUB: "false"
   MEDIA_SCANNER_BACKEND: rekognition
+  # Reels audit 2026-10-30: the transcode worker refuses an original larger
+  # than this before downloading it. The worker's scratch is a 20Gi emptyDir
+  # here and needs ~3x the original (renditions + HLS); statfs cannot see an
+  # emptyDir sizeLimit, so the cap is what keeps a huge upload from getting
+  # the pod evicted. 6 GiB. (Default 16 GiB fits prod's 50Gi scratch.)
+  MEDIA_WORKER_MAX_ORIGINAL_BYTES: "6442450944"
   # Lane D5: internal face comparison for dating selfie verification, on the
   # same IRSA Rekognition client. The role needs rekognition:DetectFaces and
   # rekognition:CompareFaces, or every comparison answers 503.

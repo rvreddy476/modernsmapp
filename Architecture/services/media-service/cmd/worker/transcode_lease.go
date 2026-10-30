@@ -65,6 +65,16 @@ type heartbeatStamper interface {
 // in fact alive, which costs a duplicate request; failing the job would cost
 // the upload.
 func startTranscodeHeartbeat(ctx context.Context, store heartbeatStamper, mediaID uuid.UUID, interval time.Duration) (stop func()) {
+	return startBudgetedHeartbeat(ctx, store, mediaID, interval, nil)
+}
+
+// startBudgetedHeartbeat is startTranscodeHeartbeat that stops extending
+// the lease once the job is past its budget (reels audit 2026-10-30,
+// finding 3). The heartbeat used to keep a never-ending job's lease fresh
+// forever, so the stall sweeper could never reclaim it. Past the budget
+// the lease goes stale like a dead job's and the sweeper takes over. A nil
+// budget never expires.
+func startBudgetedHeartbeat(ctx context.Context, store heartbeatStamper, mediaID uuid.UUID, interval time.Duration, budget *jobBudget) (stop func()) {
 	stamp := func() {
 		sctx, cancel := context.WithTimeout(ctx, heartbeatWriteTimeout)
 		defer cancel()
@@ -85,6 +95,10 @@ func startTranscodeHeartbeat(ctx context.Context, store heartbeatStamper, mediaI
 			case <-hbCtx.Done():
 				return
 			case <-t.C:
+				if budget.exceeded(time.Now()) {
+					log.Printf("Transcode of media %s is past its time budget; heartbeat stopped, the lease will go stale", mediaID)
+					return
+				}
 				stamp()
 			}
 		}

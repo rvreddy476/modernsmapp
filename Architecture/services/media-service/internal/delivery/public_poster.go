@@ -58,5 +58,5 @@ func (g *Gate) URLForVariant(ctx context.Context, viewerID, mediaID, variant, ob
 	if err := poster.AuthorizePoster(ctx, viewerID, mediaID); err != nil {
 		return "", err
 	}
-	return g.signer.SignProtected(objectKey, MaxProtectedTTL, time.Now())
+	return g.signProtected(objectKey, MaxProtectedTTL, time.Now())
 }

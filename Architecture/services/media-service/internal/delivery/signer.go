@@ -154,8 +154,15 @@ func (s *Signer) SignProtected(key string, ttl time.Duration, now time.Time) (st
 // is part of the policy) with a canned policy. Shared by SignProtected and
 // SignProtectedDownload (download.go) so there is one signing routine.
 func (s *Signer) signResource(resource string, ttl time.Duration, now time.Time) (string, error) {
-	if ttl <= 0 || ttl > MaxProtectedTTL {
-		return "", fmt.Errorf("delivery: ttl %s outside (0, %s]", ttl, MaxProtectedTTL)
+	return s.signResourceUpTo(resource, ttl, MaxProtectedTTL, now)
+}
+
+// signResourceUpTo is signResource with the ttl ceiling named by the
+// caller: MaxProtectedTTL everywhere except HLS segments
+// (SignProtectedSegment, MaxHLSSegmentTTL).
+func (s *Signer) signResourceUpTo(resource string, ttl, maxTTL time.Duration, now time.Time) (string, error) {
+	if ttl <= 0 || ttl > maxTTL {
+		return "", fmt.Errorf("delivery: ttl %s outside (0, %s]", ttl, maxTTL)
 	}
 	expires := now.Add(ttl).Unix()
 

@@ -53,6 +53,28 @@ type AudioTrack struct {
 	// of a platform sound; nil on every other sound. On the wire only as
 	// cover_url, and only when it is https (CoverURL).
 	LibraryCoverURL *string `json:"-"`
+	// ReuseBlock says why a platform library sound may no longer be put on
+	// a NEW post, from its audio_library row: SoundReuseWithdrawn,
+	// SoundReuseInactive or SoundReuseLicenseExpired; "" when it may (and
+	// on every extracted sound). Status is untouched by it, so posts that
+	// already play the sound keep playing it (reels audit 2026-10-30, 13).
+	ReuseBlock string `json:"-"`
+}
+
+// Why a library sound is unavailable for new posts (AudioTrack.ReuseBlock,
+// unavailable_reason on the wire).
+const (
+	SoundReuseWithdrawn      = "withdrawn"
+	SoundReuseInactive       = "inactive"
+	SoundReuseLicenseExpired = "license_expired"
+)
+
+// AvailableForNewPosts reports whether a new post may attach or "use" this
+// sound: it is ready, and, for a library sound, its library row is active,
+// not withdrawn and inside its licence. Playback of a post that already
+// carries the sound is NOT decided here (Status is).
+func (a AudioTrack) AvailableForNewPosts() bool {
+	return a.Status == "ready" && a.ReuseBlock == ""
 }
 
 // soundCoverVariant is the still of a source video a sound's cover is: the
@@ -102,10 +124,38 @@ func (a AudioTrack) MarshalJSON() ([]byte, error) {
 		row
 		SourcePostID *uuid.UUID `json:"source_post_id"`
 		CoverURL     *string    `json:"cover_url"`
-	}{row: row(a), SourcePostID: a.SourceReelID, CoverURL: a.CoverURL()}
+		// Reels audit 2026-10-30, 13: whether a new post may use the sound,
+		// and why not. Existing posts keep playing it whatever this says.
+		AvailableForNewPosts bool   `json:"available_for_new_posts"`
+		UnavailableReason    string `json:"unavailable_reason,omitempty"`
+	}{row: row(a), SourcePostID: a.SourceReelID, CoverURL: a.CoverURL(),
+		AvailableForNewPosts: a.AvailableForNewPosts(), UnavailableReason: a.unavailableReason()}
 	sound.UsageCount = a.WireUsageCount()
 	return json.Marshal(sound)
 }
+
+// unavailableReason is the wire reason a sound may not go on a new post:
+// the library block, else "not_ready" for a sound that is not ready.
+func (a AudioTrack) unavailableReason() string {
+	if a.ReuseBlock != "" {
+		return a.ReuseBlock
+	}
+	if a.Status != "ready" {
+		return "not_ready"
+	}
+	return ""
+}
+
+// audioTrackReuseBlock computes AudioTrack.ReuseBlock from the sound's
+// library row (NULL library_id, or no row: ""). Withdrawn wins over
+// inactive (a withdrawn row is always inactive, CHECK in migration 029);
+// an expired licence blocks even a row an admin left active.
+const audioTrackReuseBlock = `COALESCE((SELECT CASE
+		           WHEN al.withdrawn_at IS NOT NULL THEN '` + SoundReuseWithdrawn + `'
+		           WHEN NOT al.is_active THEN '` + SoundReuseInactive + `'
+		           WHEN al.license_expires_at IS NOT NULL AND al.license_expires_at <= NOW() THEN '` + SoundReuseLicenseExpired + `'
+		           ELSE '' END
+		      FROM audio_library al WHERE al.id = library_id), '')`
 
 // audioTrackCols is the one column list of every sound read, in
 // scanSound's order. audio_key is NULL on a row post-service wrote, and
@@ -114,7 +164,8 @@ const audioTrackCols = `id, source_media_id, source_reel_id, title, artist, genr
 		       COALESCE(audio_key, ''), waveform_key, duration_ms, sample_rate, status, is_original,
 		       license_type, COALESCE(usage_count, 0), COALESCE(use_count, 0), creator_user_id,
 		       library_id, created_at, updated_at,
-		       (SELECT al.cover_url FROM audio_library al WHERE al.id = library_id)`
+		       (SELECT al.cover_url FROM audio_library al WHERE al.id = library_id),
+		       ` + audioTrackReuseBlock
 
 // audioTrackUses is the counter the lists order by: the one the wire carries.
 const audioTrackUses = `GREATEST(COALESCE(usage_count, 0), COALESCE(use_count, 0))`
@@ -124,7 +175,7 @@ func scanSound(row pgx.Row, a *AudioTrack) error {
 		&a.ID, &a.SourceMediaID, &a.SourceReelID, &a.Title, &a.Artist, &a.Genre,
 		&a.AudioKey, &a.WaveformKey, &a.DurationMs, &a.SampleRate, &a.Status, &a.IsOriginal,
 		&a.LicenseType, &a.UsageCount, &a.UseCount, &a.CreatorUserID,
-		&a.LibraryID, &a.CreatedAt, &a.UpdatedAt, &a.LibraryCoverURL,
+		&a.LibraryID, &a.CreatedAt, &a.UpdatedAt, &a.LibraryCoverURL, &a.ReuseBlock,
 	)
 }
 
@@ -301,6 +352,12 @@ const audioLibrarySelectCols = `l.id, l.title, l.artist, l.duration_ms, l.wavefo
     l.source, l.source_post_id, l.source_user_id, ` + audioLibraryUses + `, l.is_trending, l.is_licensed,
     COALESCE(l.language, ''), l.genre, l.mood, l.is_active, t.id, l.created_at`
 
+// audioLibraryLicensed keeps library rows inside their licence: a sound
+// whose license_expires_at has passed is not offered, previewed or
+// materialised for a new post (reels audit 2026-10-30, 13), even while an
+// admin has not yet switched it off.
+const audioLibraryLicensed = `(l.license_expires_at IS NULL OR l.license_expires_at > NOW())`
+
 // audioLibraryFrom joins each row to its materialised sound (at most one:
 // uq_audio_tracks_library). A withdrawn sound is not joined.
 const audioLibraryFrom = ` FROM audio_library l
@@ -331,7 +388,7 @@ func scanAudioLibraryRows(rows pgx.Rows) ([]AudioLibraryTrack, error) {
 func (s *MediaAssetStore) GetAudioLibraryTrack(ctx context.Context, id uuid.UUID) (*AudioLibraryTrack, error) {
 	t := &AudioLibraryTrack{}
 	err := scanAudioLibraryTrack(
-		s.db.QueryRow(ctx, `SELECT `+audioLibrarySelectCols+audioLibraryFrom+` WHERE l.id = $1 AND l.is_active = TRUE`, id),
+		s.db.QueryRow(ctx, `SELECT `+audioLibrarySelectCols+audioLibraryFrom+` WHERE l.id = $1 AND l.is_active = TRUE AND `+audioLibraryLicensed, id),
 		t,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -371,13 +428,13 @@ func (s *MediaAssetStore) GetTrendingAudioLibrary(ctx context.Context, genre *st
 	if genre != nil && *genre != "" {
 		rows, err = s.db.Query(ctx, `
 			SELECT `+audioLibrarySelectCols+audioLibraryFrom+`
-			WHERE l.is_active = TRUE AND l.genre = $3
+			WHERE l.is_active = TRUE AND `+audioLibraryLicensed+` AND l.genre = $3
 			ORDER BY `+audioLibraryUses+` DESC, l.created_at DESC, l.id LIMIT $1 OFFSET $2`,
 			limit, offset, *genre)
 	} else {
 		rows, err = s.db.Query(ctx, `
 			SELECT `+audioLibrarySelectCols+audioLibraryFrom+`
-			WHERE l.is_active = TRUE
+			WHERE l.is_active = TRUE AND `+audioLibraryLicensed+`
 			ORDER BY `+audioLibraryUses+` DESC, l.created_at DESC, l.id LIMIT $1 OFFSET $2`,
 			limit, offset)
 	}
@@ -392,7 +449,7 @@ func (s *MediaAssetStore) GetTrendingAudioLibrary(ctx context.Context, genre *st
 func (s *MediaAssetStore) SearchAudioLibrary(ctx context.Context, query string, limit, offset int) ([]AudioLibraryTrack, error) {
 	rows, err := s.db.Query(ctx, `
 		SELECT `+audioLibrarySelectCols+audioLibraryFrom+`
-		WHERE l.is_active = TRUE AND (l.title ILIKE $3 OR l.artist ILIKE $3)
+		WHERE l.is_active = TRUE AND `+audioLibraryLicensed+` AND (l.title ILIKE $3 OR l.artist ILIKE $3)
 		ORDER BY `+audioLibraryUses+` DESC, l.id LIMIT $1 OFFSET $2`,
 		limit, offset, "%"+query+"%")
 	if err != nil {
@@ -423,7 +480,8 @@ func (s *MediaAssetStore) EnsureLibrarySound(ctx context.Context, libraryID uuid
 		       l.title, l.artist, COALESCE(l.genre, ''), $3, l.duration_ms, 'ready', FALSE, TRUE,
 		       CASE WHEN l.is_licensed THEN 'licensed' ELSE 'standard' END, NOW(), NOW()
 		  FROM audio_library l
-		 WHERE l.id = $2 AND l.is_active = TRUE
+		 WHERE l.id = $2 AND l.is_active = TRUE AND l.withdrawn_at IS NULL
+		   AND (l.license_expires_at IS NULL OR l.license_expires_at > NOW())
 		ON CONFLICT (library_id) WHERE library_id IS NOT NULL DO NOTHING
 	`, uuid.New(), libraryID, audioKey); err != nil {
 		return nil, err

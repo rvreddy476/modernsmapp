@@ -163,6 +163,11 @@ func (h *Handler) UseAudioTrack(c *gin.Context) {
 
 	// Only a sound the caller may hear can be counted as used by them.
 	if err := h.recordsSvc().UseAudioTrackAsViewer(c.Request.Context(), deliveryViewer(c), audioID); err != nil {
+		if errors.Is(err, service.ErrSoundUnavailableForNewPosts) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusGone, "SOUND_UNAVAILABLE",
+				"This sound can no longer be added to new posts", nil)
+			return
+		}
 		if errors.Is(err, delivery.ErrDeliveryDenied) || errors.Is(err, delivery.ErrDeliveryUnresolved) {
 			writeDeliveryErrorAs(c, err, "Audio track not found")
 			return

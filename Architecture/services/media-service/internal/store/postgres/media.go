@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -61,6 +62,11 @@ type MediaAsset struct {
 	ModerationScanner  string     `json:"-"`
 	AccessScope        string     `json:"-"`
 	MetadataStrippedAt *time.Time `json:"-"`
+	// OriginalETag is the ETag of the original as confirmed (or as the
+	// worker rewrote it without metadata). Never serialized. The delivery
+	// path compares it with the stored object before signing a video
+	// original (reels audit 2026-10-30, finding 6). Read by GetMedia only.
+	OriginalETag string `json:"-"`
 }
 
 type MediaVariant struct {
@@ -129,13 +135,15 @@ func (s *MediaAssetStore) GetMedia(ctx context.Context, id uuid.UUID) (*MediaAss
 		SELECT id, uploader_id, file_type, media_subtype, mime_type, file_size_bytes, storage_bucket, storage_key, processing_status, COALESCE(moderation_status, 'pending'),
 		       width, height, duration_seconds, duration_ms, blurhash, alt_text, COALESCE(alt_decorative,FALSE), original_url, cdn_url, thumbnail_url,
 		       COALESCE(hls_master_key, ''), is_vertical, created_at, updated_at,
-		       moderation_labels, COALESCE(moderation_scanner, ''), COALESCE(access_scope, ''), metadata_stripped_at
+		       moderation_labels, COALESCE(moderation_scanner, ''), COALESCE(access_scope, ''), metadata_stripped_at,
+		       COALESCE(original_etag, '')
 		FROM media_assets WHERE id = $1
 	`, id).Scan(
 		&m.ID, &m.UploaderID, &m.FileType, &m.MediaSubtype, &m.MimeType, &m.FileSizeBytes, &m.StorageBucket, &m.StorageKey, &m.ProcessingStatus, &m.ModerationStatus,
 		&m.Width, &m.Height, &m.DurationSeconds, &m.DurationMs, &m.Blurhash, &m.AltText, &m.AltDecorative, &m.OriginalURL, &m.CdnURL, &m.ThumbnailURL,
 		&m.HLSMasterKey, &m.IsVertical, &m.CreatedAt, &m.UpdatedAt,
 		&m.ModerationLabels, &m.ModerationScanner, &m.AccessScope, &m.MetadataStrippedAt,
+		&m.OriginalETag,
 	)
 	if err != nil {
 		return nil, err
@@ -351,7 +359,11 @@ func (s *MediaAssetStore) GetTranscodingJobs(ctx context.Context, mediaAssetID u
 // ─── Delete ────────────────────────────────────────────────────────
 
 // DeleteMedia removes a media asset and all its variants and transcoding jobs.
-// Returns the list of object keys that were associated (for blob cleanup).
+// Returns the list of object keys that were associated (for blob cleanup),
+// ending with the asset's prefix (user/<uploader>/<id>/, see
+// AssetPrefixForKey) when its key has the standard shape. Every returned
+// key is also recorded in media_blob_reclaim in the same transaction, so
+// a delete that fails after commit is retried by the reclaim worker.
 //
 // Refused while another service holds a claim on the asset (media_claims,
 // migration 031): *MediaInUseError, which unwraps to ErrMediaInUse. The row is
@@ -404,6 +416,30 @@ func (s *MediaAssetStore) DeleteMedia(ctx context.Context, id uuid.UUID) ([]stri
 	rows.Close()
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("fetch variant keys: %w", err)
+	}
+
+	// 3b. Record every key, and the asset's whole prefix, for the blob
+	// reclaim worker IN THIS TRANSACTION (reels audit 2026-10-30, finding
+	// 8). The HLS master, child playlists and every segment are not variant
+	// rows, and the blob deletes after commit were best-effort with no
+	// record: a reel the owner deleted kept its ladder in storage forever,
+	// and one failed delete leaked an object for good. The rows go only
+	// together with the record of what to remove.
+	reclaim := append([]string(nil), objectKeys...)
+	if prefix, ok := AssetPrefixForKey(storageKey); ok {
+		reclaim = append(reclaim, prefix)
+		objectKeys = append(objectKeys, prefix)
+	}
+	for _, key := range reclaim {
+		if key == "" {
+			continue
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO media_blob_reclaim (object_key, media_id) VALUES ($1, $2)
+			ON CONFLICT (object_key) DO NOTHING
+		`, key, id); err != nil {
+			return nil, fmt.Errorf("record blob reclaim: %w", err)
+		}
 	}
 
 	// 4. Delete in correct FK order within the same transaction.
@@ -631,4 +667,48 @@ func (s *MediaAssetStore) UpdateMediaFileSize(ctx context.Context, id uuid.UUID,
 		UPDATE media_assets SET file_size_bytes = $1, updated_at = NOW() WHERE id = $2
 	`, sizeBytes, id)
 	return err
+}
+
+// RecordOriginalRewrite records that the worker itself rewrote the
+// original (an operator rotation override): its new size and the ETag the
+// replace-after-confirm check (reels audit 2026-10-30, finding 6) must now
+// compare against.
+func (s *MediaAssetStore) RecordOriginalRewrite(ctx context.Context, id uuid.UUID, etag string, sizeBytes int64) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE media_assets
+		   SET file_size_bytes = $2, original_etag = NULLIF($3, ''), updated_at = NOW()
+		 WHERE id = $1
+	`, id, sizeBytes, etag)
+	return err
+}
+
+// AssetPrefixForKey returns the storage prefix that holds everything one
+// asset produced (original, renditions, thumbnails, storyboard, the HLS
+// ladder, audio tracks): "user/<uploader uuid>/<media uuid>/" for an
+// original at "user/<uploader uuid>/<media uuid>/original". ok is false
+// for any other shape: a prefix reclaim deletes everything under it, so it
+// is only ever derived from exactly this layout (see IsAssetPrefix).
+func AssetPrefixForKey(storageKey string) (string, bool) {
+	prefix, ok := strings.CutSuffix(storageKey, "original")
+	if !ok || !IsAssetPrefix(prefix) {
+		return "", false
+	}
+	return prefix, true
+}
+
+// IsAssetPrefix reports whether key is exactly one asset's prefix,
+// "user/<uuid>/<uuid>/". The reclaim worker deletes a whole prefix only
+// when this holds; anything broader ("user/", "user/<uuid>/") never
+// matches.
+func IsAssetPrefix(key string) bool {
+	parts := strings.Split(key, "/")
+	if len(parts) != 4 || parts[0] != "user" || parts[3] != "" {
+		return false
+	}
+	for _, p := range parts[1:3] {
+		if _, err := uuid.Parse(p); err != nil || len(p) != 36 {
+			return false
+		}
+	}
+	return true
 }
