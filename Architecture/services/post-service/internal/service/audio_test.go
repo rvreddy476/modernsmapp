@@ -25,6 +25,17 @@ type fakeAudioStore struct {
 	sourcesErr error
 	primary    map[uuid.UUID]uuid.UUID
 	primaryErr error
+	// reuseBlock is each library row's new-use verdict (keyed by library
+	// id); reuseErr fails that read.
+	reuseBlock map[uuid.UUID]string
+	reuseErr   error
+}
+
+func (f *fakeAudioStore) LibrarySoundReuseBlock(_ context.Context, libraryID uuid.UUID) (string, error) {
+	if f.reuseErr != nil {
+		return "", f.reuseErr
+	}
+	return f.reuseBlock[libraryID], nil
 }
 
 func (f *fakeAudioStore) GetAudioTrack(_ context.Context, id uuid.UUID) (*postgres.AudioTrack, error) {

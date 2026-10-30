@@ -20,6 +20,10 @@ type ReelFeedItem struct {
 }
 
 // GetReelFeed returns personalized reel candidates for a user.
+//
+// No route serves it since 2026-10-30: GET /v1/reels/feed answers 410
+// (http/reel_feed.go; it never ran the author gate). It is kept only while
+// tests still name it; the reels feed is feed-service's GET /v1/feed/reels.
 // Uses a simple chronological feed with seen suppression via Redis set.
 func (s *Service) GetReelFeed(ctx context.Context, userID uuid.UUID, limit int, cursor string) ([]ReelFeedItem, string, error) {
 	if limit <= 0 || limit > 50 {

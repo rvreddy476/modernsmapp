@@ -97,7 +97,7 @@ func TestPostReactionRoutes_RefuseEmoji(t *testing.T) {
 			for _, rt := range []struct{ path, body string }{
 				{"/v1/posts/" + id + "/reactions", `{"reaction":"` + emoji + `"}`},
 				{"/v1/posts/" + id + "/react", `{"reaction_type":"` + emoji + `"}`},
-				{"/v1/reels/" + id + "/react", `{"reaction":"` + emoji + `"}`},
+				// /v1/reels/:id/react retired 2026-10-30 (410, reel_legacy_gone_test.go).
 			} {
 				code, env, body := heartCall(t, router, http.MethodPost, rt.path, rt.body)
 				if code != http.StatusBadRequest || env.Error == nil || env.Error.Code != "REACTION_NOT_ALLOWED" {
@@ -121,7 +121,7 @@ func TestPostReactionRoutes_AcceptTheHeart(t *testing.T) {
 	for _, rt := range []struct{ path, body string }{
 		{"/v1/posts/" + id + "/reactions", `{"reaction":"like"}`},
 		{"/v1/posts/" + id + "/react", `{"reaction_type":"like"}`},
-		{"/v1/reels/" + id + "/react", `{"reaction":"like"}`},
+		// /v1/reels/:id/react retired 2026-10-30 (410, reel_legacy_gone_test.go).
 	} {
 		func() {
 			defer func() { _ = recover() }() // a nil Scylla store past the guard
@@ -162,8 +162,7 @@ func TestRepostRoutes_RefuseReels(t *testing.T) {
 			{"/v1/posts/" + id + "/repost", `{"type":"quote","quote_text":"so good"}`},
 			{"/v1/posts/" + id + "/share", `{"share_type":"repost"}`},
 			{"/v1/posts/" + id + "/share", `{"share_type":"quote","quote_text":"so good"}`},
-			{"/v1/reels/" + id + "/share", `{"share_type":"repost"}`},
-			{"/v1/reels/" + id + "/share", `{"share_type":"quote"}`},
+			// /v1/reels/:id/share retired 2026-10-30 (410, reel_legacy_gone_test.go).
 		} {
 			code, env, body := heartCall(t, router, http.MethodPost, rt.path, rt.body)
 			if code != http.StatusBadRequest || env.Error == nil || env.Error.Code != "REPOST_NOT_ALLOWED" {

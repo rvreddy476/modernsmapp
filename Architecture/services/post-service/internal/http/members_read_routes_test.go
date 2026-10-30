@@ -279,8 +279,7 @@ func TestCommentsOnMembersOnlyPostRefuseNonMembers(t *testing.T) {
 		{"GET", "/v1/posts/" + gp + "/comments", "", false},
 		{"GET", "/v1/posts/" + gp + "/comments/around/" + other, "", false},
 		{"POST", "/v1/posts/" + gp + "/comments", `{"text":"hi"}`, true},
-		{"GET", "/v1/reels/" + gp + "/comments", "", false},
-		{"POST", "/v1/reels/" + gp + "/comments", `{"text":"hi"}`, true},
+		// /v1/reels/:id/comments retired 2026-10-30 (410, reel_legacy_gone_test.go).
 		{"POST", "/v1/comments/" + cid + "/reply", `{"text":"hi"}`, true},
 		{"POST", "/v1/comments/" + cid + "/dislike", "", true},
 	}

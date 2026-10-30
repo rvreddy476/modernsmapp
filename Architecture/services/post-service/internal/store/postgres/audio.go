@@ -2,10 +2,12 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // AudioTrack is a sound as post-service needs it: enough to decide whether
@@ -77,6 +79,48 @@ func (s *Store) GetAudioTrack(ctx context.Context, id uuid.UUID) (*AudioTrack, e
 		return nil, err
 	}
 	return &t, nil
+}
+
+// Why a platform library sound may not go on a NEW post (reels audit
+// 2026-10-30): the same words and the same order media-service answers as
+// unavailable_reason (its AudioTrack.ReuseBlock). "" = it may.
+const (
+	SoundReuseWithdrawn      = "withdrawn"
+	SoundReuseInactive       = "inactive"
+	SoundReuseLicenseExpired = "license_expired"
+)
+
+// LibrarySoundReuseBlock reads, from the sound's audio_library row, why a
+// library sound may no longer be put on a new post: withdrawn wins over
+// inactive, and an expired licence blocks a row an admin left active. ""
+// when it may, and when there is no row (as media-service reads it).
+// Withdrawing a sound for new uses leaves audio_tracks.status 'ready' so
+// the posts that already play it keep playing; this is the new-use rule.
+//
+// audio_library is media-service's table, in the database both services
+// share. A database without it (a post-service-only test database) has no
+// library row for any sound, which reads as media-service reads a missing
+// row: "". A read that fails is the caller's to refuse on.
+func (s *Store) LibrarySoundReuseBlock(ctx context.Context, libraryID uuid.UUID) (string, error) {
+	var hasLibrary bool
+	if err := s.db.QueryRow(ctx, `SELECT to_regclass('audio_library') IS NOT NULL`).Scan(&hasLibrary); err != nil {
+		return "", err
+	}
+	if !hasLibrary {
+		return "", nil
+	}
+	var block string
+	err := s.db.QueryRow(ctx, `
+		SELECT CASE
+		           WHEN withdrawn_at IS NOT NULL THEN '`+SoundReuseWithdrawn+`'
+		           WHEN NOT is_active THEN '`+SoundReuseInactive+`'
+		           WHEN license_expires_at IS NOT NULL AND license_expires_at <= NOW() THEN '`+SoundReuseLicenseExpired+`'
+		           ELSE '' END
+		  FROM audio_library WHERE id = $1`, libraryID).Scan(&block)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return block, err
 }
 
 // GetAudioTracksByIDs reads the sounds a page of posts plays, in one round

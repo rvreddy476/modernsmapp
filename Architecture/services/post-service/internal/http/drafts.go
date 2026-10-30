@@ -64,7 +64,7 @@ func (h *Handler) CreateDraft(c *gin.Context) {
 	if err != nil {
 		// The source asset is the author's own, claimed with media-service
 		// (service/media_claims.go): 403 / 422 / 503.
-		if writeOwnMediaError(c, err) {
+		if writeOwnMediaError(c, err) || writeReelDraftFieldError(c, err) {
 			return
 		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -137,6 +137,10 @@ func (h *Handler) UpdateDraft(c *gin.Context) {
 		case errors.Is(err, service.ErrInvalidDraftSound) || errors.Is(err, service.ErrInvalidLocationPlaceID) ||
 			errors.Is(err, service.ErrInvalidDraftContentType):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+		// visibility, remix_setting, comment_access, caption: the create
+		// route's codes; scheduling a draft without a video: 400
+		// DRAFT_NEEDS_VIDEO (schedule_at is INVALID_PUBLISH_AT, above).
+		case writeReelDraftFieldError(c, err):
 		default:
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
@@ -252,6 +256,7 @@ func (h *Handler) PublishDraft(c *gin.Context) {
 func writeReelDraftPublishError(c *gin.Context, err error) {
 	switch {
 	case writeStandingError(c, err):
+	case writeReelDraftFieldError(c, err):
 	case writeCoverMediaError(c, err):
 	case writeDistributionError(c, err):
 	case writeCreateGuardError(c, err):
@@ -259,4 +264,27 @@ func writeReelDraftPublishError(c *gin.Context, err error) {
 	default:
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 	}
+}
+
+// writeReelDraftFieldError answers a draft value CreatePost would refuse
+// (service/reel_draft_queue.go) with the create route's code, and a reel
+// draft without a video with 400 DRAFT_NEEDS_VIDEO; false when err is none
+// of them.
+func writeReelDraftFieldError(c *gin.Context, err error) bool {
+	ctx := c.Request.Context()
+	switch {
+	case errors.Is(err, service.ErrDraftNeedsVideo):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "DRAFT_NEEDS_VIDEO", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidVisibility):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_VISIBILITY", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidRemixSetting):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_REMIX_SETTING", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidCommentAccess):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_COMMENT_ACCESS", err.Error(), nil)
+	case errors.Is(err, service.ErrTextTooLong):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "TEXT_TOO_LONG", err.Error(), nil)
+	default:
+		return false
+	}
+	return true
 }

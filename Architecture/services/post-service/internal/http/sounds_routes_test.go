@@ -57,6 +57,14 @@ type soundRouteStore struct {
 	posts   map[uuid.UUID]*postgres.Post
 	sources map[uuid.UUID][]postgres.SoundSourcePost
 	listed  []soundRouteList
+	// reuseBlock is each library row's new-use verdict, by library id.
+	reuseBlock map[uuid.UUID]string
+}
+
+func (s *soundRouteStore) LibrarySoundReuseBlock(_ context.Context, libraryID uuid.UUID) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reuseBlock[libraryID], nil
 }
 
 type soundRouteList struct {
@@ -990,5 +998,30 @@ func TestDraftPatchRefusesAMalformedSound(t *testing.T) {
 		w := httptest.NewRecorder()
 		router.ServeHTTP(w, req)
 		wantSoundError(t, w, http.StatusBadRequest, "INVALID_REQUEST")
+	}
+}
+
+// Reels audit 2026-10-30: a reel that plays a library sound withdrawn for
+// new uses answers 422 SOUND_NOT_AVAILABLE {reason}, and nothing is made in
+// its place.
+func TestUseSoundLibrarySoundNoLongerAvailable(t *testing.T) {
+	r := newSoundRig(t)
+	lib, sound := uuid.New(), uuid.New()
+	r.store.tracks[sound] = &postgres.AudioTrack{ID: sound, Title: "Monsoon Groove", DurationMs: 30000,
+		Status: "ready", IsPublic: true, LibraryID: &lib}
+	r.store.posts[sxReelA].AudioTrackID = &sound
+	r.store.reuseBlock = map[uuid.UUID]string{lib: "license_expired"}
+	w := r.use(sxReelA, &fxViewer)
+	wantSoundError(t, w, http.StatusUnprocessableEntity, "SOUND_NOT_AVAILABLE")
+	var env struct {
+		Error struct {
+			Details map[string]string `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &env); err != nil || env.Error.Details["reason"] != "license_expired" {
+		t.Fatalf("details: %s (%v)", w.Body.String(), err)
+	}
+	if r.media.calls != 0 {
+		t.Fatalf("media-service was asked %d times for a sound that is no longer available", r.media.calls)
 	}
 }

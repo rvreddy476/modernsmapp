@@ -30,6 +30,17 @@ type fakeSoundStore struct {
 	reads     int // GetAudioTracksByIDs calls
 	posts     map[uuid.UUID]*postgres.Post
 	sources   map[uuid.UUID][]postgres.SoundSourcePost
+	// reuseBlock is each library row's new-use verdict (keyed by library
+	// id); reuseErr fails that read.
+	reuseBlock map[uuid.UUID]string
+	reuseErr   error
+}
+
+func (f *fakeSoundStore) LibrarySoundReuseBlock(_ context.Context, libraryID uuid.UUID) (string, error) {
+	if f.reuseErr != nil {
+		return "", f.reuseErr
+	}
+	return f.reuseBlock[libraryID], nil
 }
 
 func (f *fakeSoundStore) GetAudioTracksByIDs(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]*postgres.AudioTrack, error) {

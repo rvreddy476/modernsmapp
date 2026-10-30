@@ -46,11 +46,17 @@ type useSoundResponse struct {
 func writeSoundError(c *gin.Context, err error) bool {
 	ctx := c.Request.Context()
 	var refusal *service.SoundRefusal
+	var unavailable *service.SoundUnavailableError
 	switch {
 	case errors.Is(err, service.ErrSoundNotFound):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, "NOT_FOUND", "Sound not found", nil)
 	case errors.As(err, &refusal):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusUnprocessableEntity, refusal.Code, refusal.Message(), nil)
+	case errors.As(err, &unavailable):
+		// A library sound withdrawn, switched off or out of licence: posts
+		// that play it keep it, a new one may not use it.
+		api.ErrorWithContext(ctx, c.Writer, http.StatusUnprocessableEntity, "SOUND_NOT_AVAILABLE",
+			"This sound is no longer available for new posts", map[string]string{"reason": unavailable.Reason})
 	case errors.Is(err, service.ErrSoundReuseNotAllowed):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "SOUND_REUSE_NOT_ALLOWED", "The creator has turned off reuse of this sound", nil)
 	case errors.Is(err, service.ErrSoundRateLimited):
@@ -72,7 +78,9 @@ func writeSoundError(c *gin.Context, err error) bool {
 // 401 UNAUTHORIZED signed out; 400 INVALID_ID; 404 NOT_FOUND for a post the
 // viewer may not open (and the age gate's answers, exactly as
 // GET /v1/posts/:postId gives them); 422 NOT_A_REEL | NOT_READY | TOO_LONG;
-// 403 SOUND_REUSE_NOT_ALLOWED when the creator turned reuse off; 429
+// 422 SOUND_NOT_AVAILABLE {reason: withdrawn | inactive | license_expired}
+// for a sound that may no longer go on a new post; 403
+// SOUND_REUSE_NOT_ALLOWED when the creator turned reuse off; 429
 // RATE_LIMITED; 503 SOUND_UNAVAILABLE when media-service or a decision
 // could not answer.
 func (h *Handler) UseSound(c *gin.Context) {

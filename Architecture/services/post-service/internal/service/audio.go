@@ -30,7 +30,9 @@ import (
 // THE RULE for attaching: a post may play a sound its author may hear, and
 // may reuse.
 //
-//  1. The sound exists and is ready.
+//  1. The sound exists and is ready, and, for a library sound, may still
+//     be used on new posts (not withdrawn, inactive or out of licence:
+//     newSoundUseRefusal).
 //  2. A private sound (is_public = false) is its creator's alone (M10).
 //  3. A post does not add its OWN video's sound: it already plays it. That
 //     is not a refusal; nothing is linked and nothing is counted.
@@ -67,7 +69,51 @@ var (
 	// ErrSoundReuseNotAllowed: a reel the sound comes from has turned reuse
 	// off, and the actor is not its author.
 	ErrSoundReuseNotAllowed = errors.New("the creator has turned off reuse of this sound")
+	// ErrSoundNotAvailable: the sound may no longer be put on a new post (a
+	// library sound withdrawn, switched off or out of licence, or one
+	// media-service answers as unavailable). Posts that already play it
+	// keep playing it. Always a *SoundUnavailableError, which names why.
+	ErrSoundNotAvailable = errors.New("this sound is no longer available for new posts")
 )
+
+// SoundUnavailableError is ErrSoundNotAvailable with its reason: one of
+// postgres.SoundReuse* (media-service's unavailable_reason words), or what
+// media-service said.
+type SoundUnavailableError struct {
+	Reason string
+}
+
+func (e *SoundUnavailableError) Error() string {
+	return ErrSoundNotAvailable.Error() + " (" + e.Reason + ")"
+}
+
+func (e *SoundUnavailableError) Is(target error) bool { return target == ErrSoundNotAvailable }
+
+// libraryReuseReader reads the new-use rule of a library sound.
+type libraryReuseReader interface {
+	LibrarySoundReuseBlock(ctx context.Context, libraryID uuid.UUID) (string, error)
+}
+
+// newSoundUseRefusal is the rule for putting a sound on a NEW post, past
+// "it is ready" (reels audit 2026-10-30): a platform library sound whose
+// library row is withdrawn, inactive or past its licence is refused with a
+// *SoundUnavailableError. Withdrawing for new uses leaves the sound
+// 'ready' so existing posts keep playing it; this is what stops new ones.
+// A row that cannot be read refuses too (ErrSoundUnavailable): an unknown
+// licence is not a licence. Any other sound has no library row to ask.
+func newSoundUseRefusal(ctx context.Context, store libraryReuseReader, t *postgres.AudioTrack) error {
+	if !t.IsLibrarySound() {
+		return nil
+	}
+	block, err := store.LibrarySoundReuseBlock(ctx, *t.LibraryID)
+	if err != nil {
+		return fmt.Errorf("%w: library sound: %v", ErrSoundUnavailable, err)
+	}
+	if block != "" {
+		return &SoundUnavailableError{Reason: block}
+	}
+	return nil
+}
 
 // remixDisallow is the remix_setting that withdraws a reel's audio from
 // reuse; 'allow' and 'allow_audio_only' both permit it.
@@ -81,6 +127,7 @@ type audioTrackStore interface {
 	IncrementAudioUseCount(ctx context.Context, id uuid.UUID) error
 	SoundSourcePosts(ctx context.Context, sourcePostID, mediaID *uuid.UUID) ([]postgres.SoundSourcePost, error)
 	PrimaryVideoMediaID(ctx context.Context, postID uuid.UUID) (*uuid.UUID, error)
+	libraryReuseReader
 }
 
 func (s *Service) audioStore() audioTrackStore {
@@ -153,6 +200,11 @@ func (s *Service) AttachAudioToPost(ctx context.Context, actorID, postID, audioT
 		if track.CreatorUserID == nil || *track.CreatorUserID != actorID {
 			return nil, ErrAudioTrackPrivate
 		}
+	}
+	// A library sound withdrawn, switched off or out of licence is not
+	// put on a new post (newSoundUseRefusal).
+	if err := newSoundUseRefusal(ctx, s.audioStore(), track); err != nil {
+		return nil, err
 	}
 	// A platform library sound has no media and no source reel: it is
 	// public and every author may hear and reuse it (rules 4 and 5).

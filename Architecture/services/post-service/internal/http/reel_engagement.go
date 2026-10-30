@@ -12,317 +12,63 @@ import (
 	"github.com/google/uuid"
 )
 
-// RegisterReelEngagementRoutes adds reel-specific engagement endpoints.
+// RegisterReelEngagementRoutes adds the reel routes that remain, and the
+// retired ones (410 Gone).
 func (h *Handler) RegisterReelEngagementRoutes(r *gin.Engine) {
 	reels := r.Group("/v1/reels")
 	{
-		reels.POST("/:reelId/react", h.ReactToReel)
-		reels.DELETE("/:reelId/react", h.UnreactToReel)
-		reels.GET("/:reelId/react/me", h.GetReelReaction)
-		reels.POST("/:reelId/comments", h.AddReelComment)
-		reels.GET("/:reelId/comments", h.ListReelComments)
-		reels.POST("/:reelId/share", h.ShareReel)
-		reels.POST("/:reelId/save", h.SaveReel)
-		reels.DELETE("/:reelId/save", h.UnsaveReel)
-		reels.GET("/:reelId/saved", h.IsReelSaved)
+		for _, g := range retiredReelRoutes {
+			reels.Handle(g.method, g.path, retiredReelRoute(g))
+		}
 		// Retired 2026-09-11 (plan 5B, issue M-13): answers 410 Gone. See
 		// ReelViewGone.
 		reels.POST("/:reelId/view", h.ReelViewGone)
-		reels.GET("/:reelId/counts", h.GetReelCounts)
 		reels.POST("/batch/counts", h.BatchGetReelCounts)
 		reels.GET("/saved", h.ListSavedReels)
 		reels.GET("/liked", h.GetUserReelLikes)
 	}
 }
 
-// ─── Request types ──────────────────────────────────────────────────
-
-type reactToReelRequest struct {
-	Reaction string `json:"reaction" binding:"required"`
+// retiredReelRoutes are the legacy per-reel engagement routes (retired
+// 2026-10-30, audit MEDIUM 6). They kept a second engagement store in
+// Scylla beside the canonical /v1/posts one: comments with no rate limit,
+// idempotency, moderation, notification, delete or report, listed for the
+// current month only; read-then-write counters that double-counted a
+// double tap and could go negative; a like the post's own count never saw;
+// shares with no rate limit or dedup. No first-party client calls them
+// (Android uses /v1/posts/:id/*). Each answers 410 with its replacement
+// named, as POST /:reelId/view does, so an old client gets a deliberate
+// answer rather than a 404 it might retry.
+var retiredReelRoutes = []retiredReelRouteSpec{
+	{http.MethodPost, "/:reelId/react", "POST /v1/posts/{postId}/react"},
+	{http.MethodDelete, "/:reelId/react", "POST /v1/posts/{postId}/react"},
+	{http.MethodGet, "/:reelId/react/me", "GET /v1/posts/{postId} (viewer_reaction)"},
+	{http.MethodPost, "/:reelId/comments", "POST /v1/posts/{postId}/comments"},
+	{http.MethodGet, "/:reelId/comments", "GET /v1/posts/{postId}/comments"},
+	{http.MethodPost, "/:reelId/share", "POST /v1/posts/{postId}/share"},
+	{http.MethodPost, "/:reelId/save", "POST /v1/posts/{postId}/bookmark"},
+	{http.MethodDelete, "/:reelId/save", "DELETE /v1/posts/{postId}/bookmark"},
+	{http.MethodGet, "/:reelId/saved", "GET /v1/posts/{postId} (viewer state)"},
+	{http.MethodGet, "/:reelId/counts", "GET /v1/posts/{postId} (counts)"},
 }
 
-type addReelCommentRequest struct {
-	Text string `json:"text" binding:"required"`
+type retiredReelRouteSpec struct {
+	method, path, replacement string
 }
 
-type shareReelRequest struct {
-	ShareType string `json:"share_type"`
+// retiredReelRoute answers a retired route: 410 ROUTE_RETIRED with the
+// replacement, before anything is read or written.
+func retiredReelRoute(g retiredReelRouteSpec) gin.HandlerFunc {
+	msg := g.method + " /v1/reels" + strings.ReplaceAll(g.path, ":reelId", "{reelId}") +
+		" has been retired; use " + g.replacement
+	return func(c *gin.Context) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusGone, "ROUTE_RETIRED", msg,
+			map[string]string{"replacement": g.replacement})
+	}
 }
 
 type batchReelCountsRequest struct {
 	ReelIDs []string `json:"reel_ids" binding:"required"`
-}
-
-// ─── Handlers ───────────────────────────────────────────────────────
-
-func (h *Handler) ReactToReel(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	reelID, err := uuid.Parse(c.Param("reelId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid reel ID", nil)
-		return
-	}
-
-	var req reactToReelRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
-	}
-
-	// The post detail's read gate (read_gate.go, 2026-09-29).
-	if !h.requirePostReadable(c, reelID, &userID) {
-		return
-	}
-	if err := h.svc.ReactToReel(c.Request.Context(), reelID, userID, req.Reaction); err != nil {
-		if writeHeartOnlyError(c, err) {
-			return
-		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"}, nil)
-}
-
-func (h *Handler) UnreactToReel(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	reelID, err := uuid.Parse(c.Param("reelId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid reel ID", nil)
-		return
-	}
-
-	if err := h.svc.UnreactToReel(c.Request.Context(), reelID, userID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"}, nil)
-}
-
-func (h *Handler) GetReelReaction(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	reelID, err := uuid.Parse(c.Param("reelId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid reel ID", nil)
-		return
-	}
-
-	// The post detail's read gate (read_gate.go, 2026-09-29).
-	if !h.requirePostReadable(c, reelID, &userID) {
-		return
-	}
-	reaction, err := h.svc.GetReelReaction(c.Request.Context(), reelID, userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"reaction": reaction}, nil)
-}
-
-func (h *Handler) AddReelComment(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	reelID, err := uuid.Parse(c.Param("reelId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid reel ID", nil)
-		return
-	}
-
-	var req addReelCommentRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
-		return
-	}
-	if strings.TrimSpace(req.Text) == "" {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "comment text cannot be blank", nil)
-		return
-	}
-
-	// The post detail's read gate (read_gate.go, 2026-09-29).
-	if !h.requirePostReadable(c, reelID, &userID) {
-		return
-	}
-	commentID, err := h.svc.AddReelComment(c.Request.Context(), reelID, userID, req.Text)
-	if err != nil {
-		switch {
-		case writeMembersOnlyError(c, err):
-		case errors.Is(err, service.ErrCommentsRestricted):
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_RESTRICTED", "Only friends can comment on this post", nil)
-		case errors.Is(err, service.ErrCommentsFollowersOnly):
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_FOLLOWERS_ONLY", "Only followers can comment on this post", nil)
-		case errors.Is(err, service.ErrCommentsDisabled):
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "COMMENTS_DISABLED", "Comments are disabled on this post", nil)
-		case errors.Is(err, service.ErrPostNotFound), errors.Is(err, service.ErrPostNotVisible):
-			// Non-enumerating: a denial that confirms existence is a leak.
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "POST_NOT_FOUND", "post not found", nil)
-		default:
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		}
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusCreated, map[string]string{"comment_id": commentID.String()}, nil)
-}
-
-func (h *Handler) ListReelComments(c *gin.Context) {
-	reelID, err := uuid.Parse(c.Param("reelId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid reel ID", nil)
-		return
-	}
-
-	limit := 20
-	if l, err := strconv.Atoi(c.DefaultQuery("limit", "20")); err == nil && l > 0 {
-		limit = l
-	}
-
-	// The post detail's read gate (read_gate.go, 2026-09-29).
-	if !h.requirePostReadable(c, reelID, optionalCallerID(c)) {
-		return
-	}
-	comments, err := h.svc.ListReelComments(c.Request.Context(), reelID, optionalCallerID(c), limit)
-	if err != nil {
-		if writeMembersOnlyError(c, err) {
-			return
-		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	if comments == nil {
-		api.JSON(c.Writer, http.StatusOK, []struct{}{}, nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, comments, nil)
-}
-
-func (h *Handler) ShareReel(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	reelID, err := uuid.Parse(c.Param("reelId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid reel ID", nil)
-		return
-	}
-
-	var req shareReelRequest
-	// Body is optional; ignore bind errors for empty body.
-	_ = c.ShouldBindJSON(&req)
-	if req.ShareType == "" {
-		req.ShareType = "direct"
-	}
-
-	// The post detail's read gate (read_gate.go, 2026-09-29).
-	if !h.requirePostReadable(c, reelID, &userID) {
-		return
-	}
-	if err := h.svc.ShareReel(c.Request.Context(), reelID, userID, req.ShareType); err != nil {
-		if writeHeartOnlyError(c, err) {
-			return
-		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"}, nil)
-}
-
-func (h *Handler) SaveReel(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	reelID, err := uuid.Parse(c.Param("reelId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid reel ID", nil)
-		return
-	}
-
-	// The post detail's read gate (read_gate.go, 2026-09-29).
-	if !h.requirePostReadable(c, reelID, &userID) {
-		return
-	}
-	if err := h.svc.SaveReel(c.Request.Context(), reelID, userID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"}, nil)
-}
-
-func (h *Handler) UnsaveReel(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	reelID, err := uuid.Parse(c.Param("reelId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid reel ID", nil)
-		return
-	}
-
-	if err := h.svc.UnsaveReel(c.Request.Context(), reelID, userID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"}, nil)
-}
-
-func (h *Handler) IsReelSaved(c *gin.Context) {
-	userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
-		return
-	}
-
-	reelID, err := uuid.Parse(c.Param("reelId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid reel ID", nil)
-		return
-	}
-
-	// The post detail's read gate (read_gate.go, 2026-09-29).
-	if !h.requirePostReadable(c, reelID, &userID) {
-		return
-	}
-	saved, err := h.svc.IsReelSaved(c.Request.Context(), reelID, userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]bool{"saved": saved}, nil)
 }
 
 // ReelViewGone answers the retired POST /v1/reels/:reelId/view.
@@ -339,26 +85,6 @@ func (h *Handler) ReelViewGone(c *gin.Context) {
 	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusGone, "ROUTE_RETIRED",
 		"POST /v1/reels/{reelId}/view has been retired; views are measured from play_start/watch_heartbeat/play_end events sent to POST /v1/analytics/events",
 		map[string]string{"replacement": "POST /v1/analytics/events"})
-}
-
-func (h *Handler) GetReelCounts(c *gin.Context) {
-	reelID, err := uuid.Parse(c.Param("reelId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid reel ID", nil)
-		return
-	}
-
-	// The post detail's read gate (read_gate.go, 2026-09-29).
-	if !h.requirePostReadable(c, reelID, optionalCallerID(c)) {
-		return
-	}
-	counts, err := h.svc.GetReelCounts(c.Request.Context(), reelID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, counts, nil)
 }
 
 func (h *Handler) BatchGetReelCounts(c *gin.Context) {

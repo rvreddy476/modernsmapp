@@ -7,6 +7,11 @@ import (
 	"github.com/google/uuid"
 )
 
+// The per-reel methods below (react, comment, share, save, counts) back
+// the legacy /v1/reels/:reelId/* routes, which answer 410 since 2026-10-30
+// (http/reel_engagement.go). No route reaches them; they are kept only
+// while tests still name them. Use the /v1/posts/:postId/* methods.
+
 // ReactToReel adds a reaction to a reel. The liked list's record is written
 // first (liked_reels.go); both writes are idempotent, so a failure is an
 // error the client retries.

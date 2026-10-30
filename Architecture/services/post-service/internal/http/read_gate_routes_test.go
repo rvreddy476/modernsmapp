@@ -48,14 +48,9 @@ func gatedRoutes(post, other uuid.UUID) []gatedRoute {
 		{"POST", "/v1/videos/" + p + "/progress", `{"position_ms":1000,"duration_ms":0}`, true},
 		{"GET", "/v1/videos/" + p + "/progress", "", true},
 		{"POST", "/v1/saved", `{"target_type":"post","target_id":"` + p + `"}`, true},
-		{"POST", "/v1/reels/" + p + "/react", `{"reaction":"like"}`, true},
-		{"GET", "/v1/reels/" + p + "/react/me", "", true},
-		{"POST", "/v1/reels/" + p + "/comments", `{"text":"hi"}`, true},
-		{"GET", "/v1/reels/" + p + "/comments", "", false},
-		{"POST", "/v1/reels/" + p + "/share", `{}`, true},
-		{"POST", "/v1/reels/" + p + "/save", "", true},
-		{"GET", "/v1/reels/" + p + "/saved", "", true},
-		{"GET", "/v1/reels/" + p + "/counts", "", false},
+		// The legacy /v1/reels/:id/* routes were retired on 2026-10-30:
+		// they answer 410 without reading the post at all, which
+		// TestRetiredReelRoutesNeverReachThePost holds them to.
 		{"GET", "/v1/posts/" + p + "/end-screens", "", false},
 		{"GET", "/v1/posts/" + p + "/cards", "", false},
 	}

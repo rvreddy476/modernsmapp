@@ -175,6 +175,7 @@ type soundStore interface {
 	SoundSourcePosts(ctx context.Context, sourcePostID, mediaID *uuid.UUID) ([]postgres.SoundSourcePost, error)
 	GetPost(ctx context.Context, id uuid.UUID) (*postgres.Post, error)
 	ListPostsBySound(ctx context.Context, soundID uuid.UUID, exclude *uuid.UUID, limit int, cursor string) ([]postgres.Post, string, error)
+	libraryReuseReader
 }
 
 // sounds is the store behind the sound reads; nil when there is none, and
@@ -207,6 +208,11 @@ type MediaSound struct {
 	UsageCount    int        `json:"usage_count"`
 	SourcePostID  *uuid.UUID `json:"source_post_id"`
 	CreatorUserID *uuid.UUID `json:"creator_user_id"`
+	// AvailableForNewPosts and UnavailableReason are media-service's
+	// new-use verdict (reels audit 2026-10-30). Absent (an older
+	// media-service) reads as available; Status still has to be ready.
+	AvailableForNewPosts *bool  `json:"available_for_new_posts"`
+	UnavailableReason    string `json:"unavailable_reason"`
 }
 
 // soundSource makes sure a video has its one sound and returns it.
@@ -436,6 +442,12 @@ func (s *Service) UseSound(ctx context.Context, viewerID, postID uuid.UUID) (*Po
 		track, err := s.soundForViewer(ctx, &viewerID, *p.AudioTrackID)
 		switch {
 		case err == nil:
+			// A library sound withdrawn, switched off or out of licence is
+			// refused, not swapped for the reel's own audio: the viewer
+			// asked for this sound.
+			if err := newSoundUseRefusal(ctx, store, track); err != nil {
+				return nil, err
+			}
 			sources, err := store.SoundSourcePosts(ctx, track.SourcePostID, track.MediaID)
 			if err != nil {
 				return nil, fmt.Errorf("%w: consent: %v", ErrSoundUnavailable, err)
@@ -480,6 +492,13 @@ func (s *Service) UseSound(ctx context.Context, viewerID, postID uuid.UUID) (*Po
 	}
 	if made.Status != "" && made.Status != audioTrackReady {
 		return nil, &SoundRefusal{Code: SoundCodeNotReady}
+	}
+	if made.AvailableForNewPosts != nil && !*made.AvailableForNewPosts {
+		reason := made.UnavailableReason
+		if reason == "" {
+			reason = "unavailable"
+		}
+		return nil, &SoundUnavailableError{Reason: reason}
 	}
 	return &PostSound{
 		ID: made.ID, Title: made.Title, Artist: made.Artist, DurationMs: made.DurationMs,
@@ -701,9 +720,17 @@ func (s *Service) hydrateSoundPosts(ctx context.Context, viewerID *uuid.UUID, po
 	// Members-only rows: redacted for this viewer (members_read.go). The
 	// sound page and the origin card both come through here.
 	s.redactDetailsForViewer(ctx, viewerID, details)
+	// The view counts in one batched call for the page (at most 51 ids, one
+	// analytics request under viewCountTimeout), never one call per reel:
+	// a cold page of 50 used to make 50 sequential calls of up to 1.5 s.
+	ids := make([]uuid.UUID, len(details))
+	for i := range details {
+		ids[i] = details[i].Post.ID
+	}
+	views := s.fetchViewCounts(ctx, ids)
 	ptrs := make([]*PostDetail, len(details))
 	for i := range details {
-		details[i].ViewCount = s.getViewCount(ctx, details[i].Post.ID)
+		details[i].ViewCount = views[details[i].Post.ID]
 		ptrs[i] = &details[i]
 	}
 	attachViewer := uuid.Nil

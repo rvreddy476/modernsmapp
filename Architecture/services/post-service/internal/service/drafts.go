@@ -299,9 +299,16 @@ func draftPublishUpdates(input *UpdateDraftInput, updates map[string]interface{}
 
 // CreateDraft creates a new reel draft.
 func (s *Service) CreateDraft(ctx context.Context, input *CreateDraftInput) (*postgres.ReelDraft, error) {
-	vis := input.Visibility
+	vis := strings.ToLower(strings.TrimSpace(input.Visibility))
 	if vis == "" {
 		vis = "public"
+	}
+	// CreatePost's rules, so a draft is never born unpublishable.
+	if !createVisibilityAllowed(vis) {
+		return nil, ErrInvalidVisibility
+	}
+	if err := validateDraftCaption(input.Caption); err != nil {
+		return nil, err
 	}
 
 	draft := &postgres.ReelDraft{
@@ -370,6 +377,22 @@ func (s *Service) UpdateDraft(ctx context.Context, draftID uuid.UUID, authorID u
 	if err := draftActionUpdates(input, updates); err != nil {
 		return nil, err
 	}
+	// visibility, remix_setting, comment_access, caption and schedule_at
+	// under CreatePost's rules (reel_draft_queue.go).
+	schedules, err := draftFieldUpdates(input, s.clock(), updates)
+	if err != nil {
+		return nil, err
+	}
+	if schedules {
+		// A reel is its video: a draft without one cannot be scheduled.
+		d, err := s.GetDraft(ctx, draftID, authorID)
+		if err != nil {
+			return nil, err
+		}
+		if d.MediaID == nil {
+			return nil, ErrDraftNeedsVideo
+		}
+	}
 	if draftSetsCredits(input) {
 		storedKind := ""
 		if input.ContentType == nil {
@@ -386,14 +409,8 @@ func (s *Service) UpdateDraft(ctx context.Context, draftID uuid.UUID, authorID u
 	if input.Title != nil {
 		updates["title"] = *input.Title
 	}
-	if input.Caption != nil {
-		updates["caption"] = *input.Caption
-	}
 	if input.Tags != nil {
 		updates["tags"] = input.Tags
-	}
-	if input.Visibility != nil {
-		updates["visibility"] = *input.Visibility
 	}
 	if input.TopicID != nil {
 		updates["topic_id"] = *input.TopicID
@@ -443,9 +460,6 @@ func (s *Service) UpdateDraft(ctx context.Context, draftID uuid.UUID, authorID u
 	if input.AllowEmbedding != nil {
 		updates["allow_embedding"] = *input.AllowEmbedding
 	}
-	if input.RemixSetting != nil {
-		updates["remix_setting"] = *input.RemixSetting
-	}
 	if input.LikesEnabled != nil {
 		updates["likes_enabled"] = *input.LikesEnabled
 	}
@@ -454,9 +468,6 @@ func (s *Service) UpdateDraft(ctx context.Context, draftID uuid.UUID, authorID u
 	}
 	if input.CommentModeration != nil {
 		updates["comment_moderation"] = *input.CommentModeration
-	}
-	if input.CommentAccess != nil {
-		updates["comment_access"] = *input.CommentAccess
 	}
 	if input.RecordingDate != nil {
 		if *input.RecordingDate != "" {
@@ -505,21 +516,11 @@ func (s *Service) UpdateDraft(ctx context.Context, draftID uuid.UUID, authorID u
 			newCover = &id
 		}
 	}
-	if input.ScheduleAt != nil {
-		if *input.ScheduleAt != "" {
-			t, err := time.Parse(time.RFC3339, *input.ScheduleAt)
-			if err == nil {
-				updates["schedule_at"] = t
-			}
-		}
-	}
-
 	if len(updates) == 0 {
 		return s.GetDraft(ctx, draftID, authorID)
 	}
 
 	write := func() error { return s.pgStore.UpdateDraft(ctx, draftID, authorID, updates) }
-	var err error
 	if newCover != nil {
 		// A new cover is the author's own, claimed before the row names it;
 		// the one it replaces is released after (media_claims_writers.go).
@@ -534,7 +535,9 @@ func (s *Service) UpdateDraft(ctx context.Context, draftID uuid.UUID, authorID u
 	if err != nil {
 		return nil, fmt.Errorf("update draft: %w", err)
 	}
-	return s.pgStore.GetDraft(ctx, draftID)
+	// The author's own read: the store's author filter made a stranger's
+	// patch a no-op, and this must not hand them the draft either.
+	return s.GetDraft(ctx, draftID, authorID)
 }
 
 // ListDrafts returns the author's drafts with cursor pagination.
@@ -570,11 +573,16 @@ func (s *Service) PublishDraft(ctx context.Context, draftID uuid.UUID, authorID 
 		return nil, fmt.Errorf("draft has been deleted")
 	}
 
-	// If scheduling, just update the schedule_at and return
+	// If scheduling, just update the schedule_at and return. The time is
+	// inside the create window and the draft must be publishable as it
+	// stands, so the worker is never handed one it will refuse.
 	if scheduleAt != nil && *scheduleAt != "" {
-		t, err := time.Parse(time.RFC3339, *scheduleAt)
+		t, err := parseDraftSchedule(*scheduleAt, s.clock())
 		if err != nil {
-			return nil, fmt.Errorf("invalid schedule_at: %w", err)
+			return nil, err
+		}
+		if err := validateReelDraftForPublish(draft); err != nil {
+			return nil, err
 		}
 		updates := map[string]interface{}{
 			"schedule_at": t,
@@ -590,6 +598,9 @@ func (s *Service) PublishDraft(ctx context.Context, draftID uuid.UUID, authorID 
 	// Author standing before anything is built (publish_standing.go):
 	// 403 AUTHOR_SUSPENDED or 503 STANDING_UNAVAILABLE, never a post.
 	if err := s.requirePublishStanding(ctx, authorID); err != nil {
+		return nil, err
+	}
+	if err := validateReelDraftForPublish(draft); err != nil {
 		return nil, err
 	}
 
@@ -749,8 +760,10 @@ func classifyUnsaidDraft(durationSeconds, width, height int) string {
 }
 
 // PublishScheduledDrafts claims due reel drafts (SKIP LOCKED — safe with
-// multiple worker replicas) and publishes each. Transient failures release
-// the claim for the next tick; the draft-id-as-post-id idempotency makes
+// multiple worker replicas) and publishes each. A refusal of the draft
+// itself has already parked it (publishClaimedReelDraft); any other
+// failure returns it with a next attempt time (reel_draft_queue.go), which
+// is a no-op for a parked draft. The draft-id-as-post-id idempotency makes
 // crash retries produce exactly one post.
 func (s *Service) PublishScheduledDrafts(ctx context.Context) (int, error) {
 	drafts, err := s.pgStore.ClaimDueReelDrafts(ctx, time.Now().UTC(), staleClaimAfter, 50)
@@ -762,7 +775,14 @@ func (s *Service) PublishScheduledDrafts(ctx context.Context) (int, error) {
 	for _, draft := range drafts {
 		_, pubErr := s.publishClaimedReelDraft(ctx, draft.ID, draft.AuthorID)
 		if pubErr != nil {
-			s.pgStore.ReleaseReelDraftClaim(ctx, draft.ID) //nolint:errcheck
+			parked, derr := s.pgStore.DeferReelDraftPublish(ctx, draft.ID, reelDraftRetryPlan(time.Now().UTC()))
+			if derr != nil {
+				// The claim goes stale and is reclaimed (staleClaimAfter).
+				slog.Warn("reel draft publish: could not defer the draft", "draft_id", draft.ID, "err", derr)
+			} else if parked {
+				slog.Warn("reel draft publish: parked after repeated failures",
+					"draft_id", draft.ID, "attempts", maxReelDraftPublishAttempts, "err", pubErr)
+			}
 			continue
 		}
 		published++
@@ -794,8 +814,12 @@ func (s *Service) publishClaimedReelDraft(ctx context.Context, draftID, authorID
 		return nil, serr
 	}
 	publishPostID := draft.ID
-	input := reelDraftPostInput(draft, authorID, s.unsaidDraftKind(ctx, draft))
-	post, err := s.CreatePost(ctx, input)
+	// The stored draft against the publish rules first (reel_draft_queue.go).
+	err = validateReelDraftForPublish(draft)
+	var post *postgres.Post
+	if err == nil {
+		post, err = s.CreatePost(ctx, reelDraftPostInput(draft, authorID, s.unsaidDraftKind(ctx, draft)))
+	}
 	if err != nil {
 		if postgres.IsUniqueViolation(err) {
 			if existing, gerr := s.pgStore.GetPost(ctx, publishPostID); gerr == nil && existing != nil {
@@ -804,23 +828,14 @@ func (s *Service) publishClaimedReelDraft(ctx context.Context, draftID, authorID
 				return existing, nil
 			}
 		}
-		// A tier that is no longer the author's is terminal: park the draft
-		// (the author re-arms it by editing) rather than retry it forever.
-		// An unreachable monetization-service is transient: the caller
-		// releases the claim. Neither publishes the post open.
-		if errors.Is(err, ErrInvalidTier) {
-			s.pgStore.MarkReelDraftBlocked(ctx, draftID, BlockReasonInvalidTier) //nolint:errcheck
-		}
-		// An action the author may not add (not eligible, unsafe, a rule
-		// the saved URL no longer passes) is terminal the same way; the
-		// safety check being unavailable is transient.
-		if IsTerminalActionError(err) {
-			s.pgStore.MarkReelDraftBlocked(ctx, draftID, BlockReasonActionRefused) //nolint:errcheck
-		}
-		// Long-video uploads paused, or a members-only tier on a video the
-		// copyright title review would hold: terminal until the author acts.
-		if IsTerminalCopyrightError(err) {
-			s.pgStore.MarkReelDraftBlocked(ctx, draftID, copyrightBlockReason(err)) //nolint:errcheck
+		// A refusal of the draft itself — a value CreatePost refuses, no
+		// video, media that is gone, a tier that is no longer the
+		// author's, an Action or copyright refusal — is the same on every
+		// retry: park it with the reason (the author re-arms it by editing)
+		// rather than retry it forever. Anything else is transient: the
+		// caller defers it with backoff. Neither publishes the post open.
+		if reason, terminal := reelDraftBlockReason(err); terminal {
+			s.pgStore.MarkReelDraftBlocked(ctx, draftID, reason) //nolint:errcheck
 		}
 		return nil, fmt.Errorf("publish claimed draft: %w", err)
 	}
