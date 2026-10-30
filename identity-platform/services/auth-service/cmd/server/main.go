@@ -255,8 +255,15 @@ func main() {
 	}()
 	go purgeAcks.Run(ctx)
 
+	// 4d. Session janitor: deletes sessions dead for 30 days, in bounded
+	// batches (store.PurgeDeadSessions). Safe on every replica (SKIP LOCKED).
+	go service.NewSessionJanitor(authStore, logger).Start(ctx)
+
 	// 5. Server
 	r := gin.New()
+	// Body cap first: the rate limiters and idempotency middleware read the
+	// whole body, so the limit must be in place before any of them runs.
+	r.Use(internalhttp.BodyLimitMiddleware(internalhttp.MaxRequestBodyBytes))
 	// Phase F3.7 — tracing middleware runs first so the span context
 	// is available to RequestID + Logger downstream. Same ordering
 	// as the Architecture-side services.
@@ -289,6 +296,12 @@ func main() {
 		PreviousSecret: cfg.JWTSecretPrevious,
 		RSAPublic:      authSvc.AccessTokenPublicKey(),
 		RSAKID:         cfg.AccessTokenRS256KID,
+		// Production: RS256 only, with the gateway's iss/aud/typ/sub/sid
+		// rules. JWT_SECRET is mounted into many services; in production it
+		// must not be able to mint a token this service accepts.
+		Production: cfg.Production,
+		Issuer:     cfg.JWTIssuer,
+		Audience:   cfg.JWTAudience,
 	}
 	authMW := internalhttp.AuthMiddlewareWithKeys(jwtKeys, rdb)
 	csrfMW := internalhttp.RequireCSRFMiddleware()
@@ -299,10 +312,7 @@ func main() {
 	authHandler.RegisterWebAuthnRoutes(r, authMW, csrfMW) // no-op unless built with -tags webauthn
 	authHandler.RegisterDocsRoutes(r)
 
-	srv := &http.Server{
-		Addr:    ":" + cfg.HTTPPort,
-		Handler: r,
-	}
+	srv := internalhttp.NewServer(":"+cfg.HTTPPort, r)
 
 	go func() {
 		logger.Info("starting auth-service", "port", cfg.HTTPPort)

@@ -73,14 +73,7 @@ func (t *redisThrottle) Allow(
 		return true, 0, nil
 	}
 
-	pipe := t.rdb.Pipeline()
-	incr := pipe.Incr(ctx, key)
-	pipe.Expire(ctx, key, window)
-	if _, err := pipe.Exec(ctx); err != nil {
-		return false, window, err
-	}
-
-	count, err := incr.Result()
+	count, err := fixedWindowIncr.Run(ctx, t.rdb, []string{key}, window.Milliseconds()).Int64()
 	if err != nil {
 		return false, window, err
 	}
@@ -96,6 +89,65 @@ func (t *redisThrottle) Allow(
 	}
 	return false, ttl, nil
 }
+
+// fixedWindowIncr counts one event in a FIXED window.
+//
+// The expiry is set only when the counter is created (or has somehow lost its
+// TTL), never on later hits. The old pipeline ran EXPIRE on every request,
+// denied ones included, so the window slid: one request every 14 minutes kept
+// a 15-minute lock on a victim's account forever, at almost no cost to the
+// attacker. With a fixed window the lock ends when the window that started it
+// ends, however many requests arrive in between. One script, so the INCR and
+// the first EXPIRE cannot be split by a crash into a counter that never expires.
+var fixedWindowIncr = redis.NewScript(`
+local c = redis.call('INCR', KEYS[1])
+if c == 1 or redis.call('PTTL', KEYS[1]) < 0 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+return c
+`)
+
+// allowAttempt charges one attempt against a per-identity budget and returns
+// an *ErrThrottled when the budget is spent. A Redis error denies (fail
+// closed), like every other limiter here. No throttle configured allows.
+func (s *Service) allowAttempt(ctx context.Context, key string, limit int64, window time.Duration, reason string) error {
+	if s.throttle == nil {
+		return nil
+	}
+	allowed, retryAfter, err := s.throttle.Allow(ctx, key, limit, window)
+	if err != nil {
+		s.log.Warn("attempt throttle unavailable — denying",
+			"event", "auth_attempt_denied", "reason", "throttle_error", "limit", reason, "err", err)
+		return &ErrThrottled{RetryAfter: window, Reason: "throttle_unavailable"}
+	}
+	if !allowed {
+		s.log.Warn("attempt denied by per-account limit",
+			"event", "auth_attempt_denied", "reason", reason,
+			"retry_after_seconds", int(retryAfter.Seconds()))
+		return &ErrThrottled{RetryAfter: retryAfter, Reason: reason}
+	}
+	return nil
+}
+
+// Per-ACCOUNT attempt budgets for secrets a caller can guess.
+//
+// Each is keyed on a user id the SERVER resolved (from a verification token,
+// a pending 2FA token or the bearer session), so rotating source IPs does not
+// buy more guesses, and re-issuing a code or a token does not reset the count:
+// the counter lives in its own fixed window, not on the code row.
+const (
+	// Email verification: OTP_MAX_ATTEMPTS per code, and this many per
+	// account however many codes are resent.
+	emailVerifyPerHour     int64 = 10
+	emailVerifyPerDay      int64 = 30
+	emailVerifyHourWindow        = time.Hour
+	emailVerifyDayWindow         = 24 * time.Hour
+	twoFAVerifyLimit       int64 = 10
+	twoFAVerifyWindow            = 15 * time.Minute
+	twoFAPendingFailLimit  int64 = 5
+	passwordReverifyLimit  int64 = 5
+	passwordReverifyWindow       = 15 * time.Minute
+)
 
 // Resend limits. Deliberately tight: a verification resend sends mail to a
 // third party's inbox, so the blast radius of a permissive limit is someone

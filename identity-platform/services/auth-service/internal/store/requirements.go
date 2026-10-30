@@ -38,7 +38,10 @@ var SchemaRequirements = []schemaguard.Requirement{
 	// path (Kafka acks consumer) drops messages on error and would otherwise
 	// silently discard every ack.
 	{Table: "auth.account_purge_acks", Columns: []string{"user_id", "service", "acked_at"}},
-	{Table: "auth.sessions"},
+	// family_id is read by RevokeSessionFamily; refresh_token_history is
+	// written inside every rotation, so its absence would fail every refresh.
+	{Table: "auth.sessions", Columns: []string{"refresh_token_hash", "family_id", "revoked_at", "expires_at"}},
+	{Table: "auth.refresh_token_history", Columns: []string{"refresh_token_hash", "session_id", "family_id"}},
 	{Table: "auth.otp_codes", Columns: []string{"otp_hash", "attempts", "expires_at"}},
 	{Table: "auth.verification_transactions", Columns: []string{"token_hash", "consumed_at", "expires_at"}},
 	{Table: "auth.registration_consents"},
@@ -53,7 +56,9 @@ var SchemaRequirements = []schemaguard.Requirement{
 	// Added by this workstream. Their absence is exactly the failure mode the
 	// guard exists for: registration enqueues into email_delivery_jobs inside
 	// its transaction, so a missing table breaks every signup.
-	{Table: "auth.email_delivery_jobs", Columns: []string{"sent_at", "next_attempt_at", "attempts"}},
+	// failed_at: the relay's claim filters on it, and a missing column would
+	// fail every claim, silently stopping verification-email retries.
+	{Table: "auth.email_delivery_jobs", Columns: []string{"sent_at", "next_attempt_at", "attempts", "failed_at"}},
 	{Table: "auth.idempotency_keys", Columns: []string{"request_hash", "response_body", "expires_at"}},
 
 	// Cross-schema reads. auth-service does not own these, which is why they

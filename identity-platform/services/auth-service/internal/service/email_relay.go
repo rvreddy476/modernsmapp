@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"math"
 	"time"
@@ -16,6 +17,7 @@ import (
 type EmailJobStore interface {
 	FetchDueEmailJobs(ctx context.Context, limit int) ([]store.EmailJob, error)
 	MarkEmailJobSent(ctx context.Context, id int64) error
+	MarkEmailJobFailed(ctx context.Context, id int64, lastErr string) error
 	RescheduleEmailJob(ctx context.Context, id int64, nextAttempt time.Time, lastErr string) error
 	EmailJobBacklog(ctx context.Context) (int, time.Time, error)
 }
@@ -38,12 +40,18 @@ type EmailJobRelay struct {
 }
 
 const (
-	// A job that has failed this many times is left in the queue but stops
-	// being retried on the fast cadence — the backoff cap does that — so it
-	// remains visible for an operator rather than being silently dropped.
+	// Backoff doubles from the base to the cap; emailJobMaxAttempts below
+	// ends it.
 	emailJobBaseBackoff = 30 * time.Second
 	emailJobMaxBackoff  = 30 * time.Minute
 	emailJobBatch       = 25
+
+	// emailJobMaxAttempts bounds retries (M4, registration audit). With the
+	// 30 s doubling backoff capped at 30 min this is roughly a day of trying,
+	// after which the job is abandoned (failed_at) rather than retried for
+	// ever. The account can still be verified: a pending login issues a
+	// fresh verification token and resend sends a new code.
+	emailJobMaxAttempts = 12
 
 	// Crossing either bound means new registrants are not being contacted.
 	emailBacklogWarnCount = 50
@@ -91,6 +99,32 @@ func (r *EmailJobRelay) ProcessOnce(ctx context.Context) {
 
 	for _, job := range jobs {
 		if err := r.send(ctx, job.UserID); err != nil {
+			// Nothing to send: the account verified (through a resend, say)
+			// after this job was queued. That is the job's purpose achieved,
+			// so it is closed as done, not retried as a failure.
+			if errors.Is(err, ErrEmailAlreadyVerified) {
+				if markErr := r.store.MarkEmailJobSent(ctx, job.ID); markErr != nil {
+					r.log.Error("email job already satisfied but not closed",
+						"event", "email_relay_mark_failed", "job_id", job.ID, "err", markErr)
+				}
+				r.log.Info("verification email no longer needed — account already verified",
+					"event", "email_relay_already_verified", "job_id", job.ID)
+				continue
+			}
+			// No retry can succeed, or the retry budget is spent: abandon.
+			if errors.Is(err, ErrEmailUndeliverable) || job.Attempts+1 >= emailJobMaxAttempts {
+				if markErr := r.store.MarkEmailJobFailed(ctx, job.ID, err.Error()); markErr != nil {
+					r.log.Error("failed to abandon email job",
+						"event", "email_relay_abandon_failed", "job_id", job.ID, "err", markErr)
+				}
+				r.log.Warn("verification email abandoned",
+					"event", "email_relay_abandoned",
+					"job_id", job.ID,
+					"attempts", job.Attempts+1,
+					"permanent", errors.Is(err, ErrEmailUndeliverable),
+					"err", err)
+				continue
+			}
 			next := time.Now().Add(backoffFor(job.Attempts))
 			if rescheduleErr := r.store.RescheduleEmailJob(ctx, job.ID, next, err.Error()); rescheduleErr != nil {
 				r.log.Error("failed to reschedule email job",

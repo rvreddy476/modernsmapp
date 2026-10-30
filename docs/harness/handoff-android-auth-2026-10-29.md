@@ -49,6 +49,17 @@ The audit with every file and line is
 6. **L7.** A wrong partner-phone OTP shows the OTP message, not
    "That email or password isn't right".
 7. **L9.** The verify-email resend timer survives rotation correctly.
+8. **Google sign-in must send an ID token (blocking; do this first).** The
+   server closed an account-takeover hole: `POST /v1/auth/oauth/google/token`
+   no longer accepts a Google *access* token. It now requires
+   `{"id_token": "<Google ID token>"}`, verified against Google's keys and
+   our client ids, and answers 400 `ID_TOKEN_REQUIRED` to the old body.
+   `GoogleAuthorizationFlow.kt` must read `id_token` from Google's token
+   response (the scope already includes `openid`) and send it; update
+   `OAuthTokenRequestDto` and the Android tests to match. Until this ships,
+   Google sign-in on Android fails. The deploy also needs
+   `OAUTH_GOOGLE_ID_TOKEN_AUDIENCES` set to the Android OAuth client id
+   (founder), or the route answers 503 `OAUTH_UNAVAILABLE`.
 
 Report: files, the `android.sh --full` RESULT block, mutations killed/total,
 and anything only the founder can confirm on a device.

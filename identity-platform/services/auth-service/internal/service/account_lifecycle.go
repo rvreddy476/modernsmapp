@@ -120,7 +120,15 @@ func (s *Service) applyLoginLifecycle(ctx context.Context, user *store.User) err
 // reverifyPassword loads the user and compares the supplied password.
 // Failures are uniformly ErrInvalidPassword so the endpoint does not become
 // an oracle for account state.
+//
+// M9 (login audit): it is rate limited per account, sharing its budget with
+// Disable2FA, so a stolen short-lived access token cannot grind the password
+// through deactivate/delete at bcrypt speed. A denial is an *ErrThrottled.
 func (s *Service) reverifyPassword(ctx context.Context, userID uuid.UUID, password string) (*store.User, error) {
+	if err := s.allowAttempt(ctx, "pwd_reverify_rl:"+userID.String(),
+		passwordReverifyLimit, passwordReverifyWindow, "password_reverify"); err != nil {
+		return nil, err
+	}
 	user, err := s.store.GetUserByID(ctx, userID)
 	if err != nil {
 		return nil, err

@@ -147,21 +147,26 @@ func (s *Service) Disable2FA(ctx context.Context, userID uuid.UUID, password, co
 		return errors.New("2FA is not enabled")
 	}
 
-	// Verify password
-	if user.PasswordHash == "" {
-		return errors.New("user has no password set")
+	// M9 (login audit): this re-check of the password had no limit at all, so
+	// a stolen 15-minute access token could grind the account password at
+	// bcrypt speed, and the answer said WHICH factor was wrong ("invalid
+	// password" vs "invalid TOTP code"), confirming a password hit without
+	// the TOTP. Now: a per-account budget shared with every password
+	// re-check, one answer for either factor, and the TOTP is burned against
+	// replay like on every other TOTP path.
+	if err := s.allowAttempt(ctx, "pwd_reverify_rl:"+userID.String(),
+		passwordReverifyLimit, passwordReverifyWindow, "password_reverify"); err != nil {
+		return err
 	}
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
-		return errors.New("invalid password")
+	if user.PasswordHash == "" ||
+		bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)) != nil {
+		return ErrInvalidCredentials
 	}
-
-	// Verify TOTP code
-	secret, err := s.store.Get2FASecret(ctx, userID)
-	if err != nil {
-		return fmt.Errorf("failed to get 2FA secret: %w", err)
-	}
-	if !totp.Validate(code, secret) {
-		return errors.New("invalid TOTP code")
+	if err := s.verifyTOTPOnce(ctx, userID, code); err != nil {
+		if errors.Is(err, ErrInvalidOTP) || errors.Is(err, ErrTOTPReplay) {
+			return ErrInvalidCredentials
+		}
+		return err
 	}
 
 	// Disable 2FA
@@ -174,6 +179,27 @@ func (s *Service) Disable2FA(ctx context.Context, userID uuid.UUID, password, co
 
 	s.log.Info("2FA disabled", "user_id", userID)
 	return nil
+}
+
+// ErrInvalidCredentials is the one answer when a password re-check with a
+// second factor fails, whichever factor was wrong.
+var ErrInvalidCredentials = errors.New("invalid password or code")
+
+// burnPendingAfterFailures counts a wrong code against one pending 2FA token
+// and deletes the token once twoFAPendingFailLimit wrong codes have been
+// tried with it: the password step has to be passed again for more guesses,
+// and those are still bounded by the per-account cap.
+func (s *Service) burnPendingAfterFailures(ctx context.Context, pendingToken string, userID uuid.UUID) {
+	failKey := pendingSessionPrefix + "fail:" + pendingToken
+	n, err := s.rdb.Incr(ctx, failKey).Result()
+	if err == nil && n == 1 {
+		s.rdb.Expire(ctx, failKey, pendingSessionTTL)
+	}
+	if err != nil || n >= twoFAPendingFailLimit {
+		// A counting failure burns the token too: fail closed.
+		s.rdb.Del(ctx, pendingSessionPrefix+pendingToken, failKey)
+		s.rdb.SRem(ctx, pendingByUserSetPrefix+userID.String(), pendingToken)
+	}
 }
 
 // Verify2FA validates a TOTP code or recovery code during login and creates a full session.
@@ -203,6 +229,17 @@ func (s *Service) Verify2FA(ctx context.Context, userID uuid.UUID, code, pending
 		return nil, errors.New("user ID mismatch")
 	}
 
+	// H4 (login audit): a per-ACCOUNT cap. The route's limiter is per IP only
+	// (the body names no identifier), and anyone holding the password can
+	// mint fresh pending tokens, so without this a 6-digit TOTP could be
+	// ground from rotating IPs. Charged only once the pending token has
+	// resolved to this account, so a caller who merely knows a user id
+	// cannot spend (and lock) someone else's budget.
+	if err := s.allowAttempt(ctx, "2fa_verify_rl:"+userID.String(),
+		twoFAVerifyLimit, twoFAVerifyWindow, "2fa_verify"); err != nil {
+		return nil, err
+	}
+
 	// Try TOTP first (validated and burned against replay in one place,
 	// shared with anomaly step-up and admin step-up), then a recovery code.
 	amr := withAMR(pending.AMR, AMROTP)
@@ -219,6 +256,7 @@ func (s *Service) Verify2FA(ctx context.Context, userID uuid.UUID, code, pending
 			return nil, fmt.Errorf("failed to check recovery code: %w", err)
 		}
 		if !used {
+			s.burnPendingAfterFailures(ctx, pendingToken, parsedUserID)
 			return nil, errors.New("invalid 2FA code")
 		}
 	default:

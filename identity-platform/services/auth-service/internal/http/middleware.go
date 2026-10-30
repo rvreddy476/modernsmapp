@@ -22,6 +22,8 @@ import (
 type AccessClaims struct {
 	jwt.RegisteredClaims
 	SessionID string `json:"sid"`
+	// TokenType is `typ`; production requires accesstoken.AccessTokenType.
+	TokenType string `json:"typ"`
 	// Admin session claims (A2); see pkg/accesstoken.Claims for meaning.
 	AuthTime int64    `json:"auth_time,omitempty"`
 	AMR      []string `json:"amr,omitempty"`
@@ -141,6 +143,53 @@ type JWTKeySet struct {
 	// endpoints accept the tokens it mints. HS256 stays accepted in parallel.
 	RSAPublic *rsa.PublicKey
 	RSAKID    string
+
+	// Production switches verification to the API gateway's rules: RS256
+	// only (HS256 is refused even with a valid JWT_SECRET signature, because
+	// that secret is mounted into many other services), exp required, iss
+	// equal to Issuer, aud containing Audience, typ "access", a UUID sub and
+	// a UUID sid. Outside production HS256 stays accepted for local tooling.
+	Production bool
+	Issuer     string
+	Audience   string
+}
+
+// productionClockSkew matches the gateway's leeway on exp and nbf.
+const productionClockSkew = 60 * time.Second
+
+// parserOptions returns the golang-jwt options for this key set.
+func (k JWTKeySet) parserOptions() []jwt.ParserOption {
+	if !k.Production {
+		return nil
+	}
+	return []jwt.ParserOption{
+		jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}),
+		jwt.WithIssuer(k.Issuer),
+		jwt.WithAudience(k.Audience),
+		jwt.WithExpirationRequired(),
+		jwt.WithLeeway(productionClockSkew),
+	}
+}
+
+// productionClaimsOK applies the claim rules golang-jwt has no option for.
+// Always true outside production.
+func (k JWTKeySet) productionClaimsOK(claims *AccessClaims) bool {
+	if !k.Production {
+		return true
+	}
+	if k.Issuer == "" || k.Audience == "" || k.RSAPublic == nil {
+		return false // misconfigured production verifier: refuse everything
+	}
+	if claims.TokenType != accesstoken.AccessTokenType {
+		return false
+	}
+	if _, err := uuid.Parse(claims.Subject); err != nil {
+		return false
+	}
+	if _, err := uuid.Parse(claims.SessionID); err != nil {
+		return false
+	}
+	return true
 }
 
 func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
@@ -226,6 +275,9 @@ func authMiddlewareFor(keys JWTKeySet, rdb *redis.Client, read func(*gin.Context
 			kid, _ := t.Header["kid"].(string)
 			switch t.Method.(type) {
 			case *jwt.SigningMethodHMAC:
+				if keys.Production {
+					return nil, fmt.Errorf("HS256 is not accepted in production")
+				}
 				secret, ok := keys.secretFor(kid)
 				if !ok {
 					return nil, fmt.Errorf("unknown kid: %s", kid)
@@ -242,8 +294,8 @@ func authMiddlewareFor(keys JWTKeySet, rdb *redis.Client, read func(*gin.Context
 			default:
 				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 			}
-		})
-		if err != nil || !token.Valid {
+		}, keys.parserOptions()...)
+		if err != nil || !token.Valid || !keys.productionClaimsOK(claims) {
 			api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid access token", nil, nil)
 			c.Abort()
 			return

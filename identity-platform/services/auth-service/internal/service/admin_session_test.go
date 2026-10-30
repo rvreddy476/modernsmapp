@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,6 +34,9 @@ type adminSessionStore struct {
 	byID          map[uuid.UUID]*store.Session
 	candidates    []store.HolderCandidate
 	forceAudits   []store.RoleAudit
+	// mu guards byID and rotated for the concurrent-refresh tests.
+	mu      sync.Mutex
+	rotated map[string]uuid.UUID // rotated-away refresh hash -> session
 }
 
 func newAdminSessionStore() *adminSessionStore {
@@ -61,10 +65,14 @@ func (a *adminSessionStore) Get2FASecret(_ context.Context, uid uuid.UUID) (stri
 func (a *adminSessionStore) CreateSession(ctx context.Context, sess *store.Session) error {
 	cp := *sess
 	cp.IsActive = true
+	a.mu.Lock()
 	a.byID[sess.ID] = &cp
+	a.mu.Unlock()
 	return a.fakeAnomalyStore.CreateSession(ctx, sess)
 }
 func (a *adminSessionStore) GetSessionByID(_ context.Context, id uuid.UUID) (*store.Session, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	if s, ok := a.byID[id]; ok {
 		cp := *s
 		return &cp, nil
@@ -72,6 +80,8 @@ func (a *adminSessionStore) GetSessionByID(_ context.Context, id uuid.UUID) (*st
 	return nil, nil
 }
 func (a *adminSessionStore) GetSessionByRefreshTokenHash(_ context.Context, h string) (*store.Session, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	for _, s := range a.byID {
 		if s.RefreshToken == h {
 			cp := *s
@@ -80,12 +90,53 @@ func (a *adminSessionStore) GetSessionByRefreshTokenHash(_ context.Context, h st
 	}
 	return nil, nil
 }
-func (a *adminSessionStore) RotateSessionWithFingerprint(_ context.Context, id uuid.UUID, h, _ string, exp time.Time, _ bool) error {
-	a.byID[id].RefreshToken = h
-	a.byID[id].ExpiresAt = exp
-	return nil
+
+// RotateSessionWithFingerprint mirrors the store's conditional UPDATE: it
+// rotates only while the row holds oldHash and is live, and remembers the
+// hash it replaced for reuse detection.
+func (a *adminSessionStore) RotateSessionWithFingerprint(_ context.Context, id uuid.UUID, oldHash, newHash, _ string, exp time.Time, _ bool) (bool, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s, ok := a.byID[id]
+	if !ok || s.RefreshToken != oldHash || s.RevokedAt != nil || !s.IsActive {
+		return false, nil
+	}
+	s.RefreshToken = newHash
+	s.ExpiresAt = exp
+	if a.rotated == nil {
+		a.rotated = map[string]uuid.UUID{}
+	}
+	a.rotated[oldHash] = id
+	return true, nil
+}
+func (a *adminSessionStore) RecordLoginAnomaly(ctx context.Context, userID uuid.UUID, atype, ip, ua, deviceID, country string, risk int, challenged bool, metadata map[string]any) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.fakeAnomalyStore.RecordLoginAnomaly(ctx, userID, atype, ip, ua, deviceID, country, risk, challenged, metadata)
+}
+func (a *adminSessionStore) LookupRotatedRefreshToken(_ context.Context, h string) (*uuid.UUID, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if id, ok := a.rotated[h]; ok {
+		return &id, nil
+	}
+	return nil, nil
+}
+func (a *adminSessionStore) RevokeSessionFamily(_ context.Context, id uuid.UUID) ([]uuid.UUID, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	s, ok := a.byID[id]
+	if !ok || s.RevokedAt != nil {
+		return nil, nil
+	}
+	now := time.Now()
+	s.RevokedAt = &now
+	s.IsActive = false
+	return []uuid.UUID{id}, nil
 }
 func (a *adminSessionStore) RevokeSession(_ context.Context, id uuid.UUID) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
 	now := time.Now()
 	a.byID[id].RevokedAt = &now
 	a.byID[id].IsActive = false

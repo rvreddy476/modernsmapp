@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -18,6 +19,7 @@ type fakeEmailJobStore struct {
 	attempts map[int64]int
 	nextDue  map[int64]time.Time
 	lastErr  map[int64]string
+	failed   map[int64]bool
 	nextID   int64
 	fetchErr error
 }
@@ -29,6 +31,7 @@ func newFakeEmailJobStore() *fakeEmailJobStore {
 		attempts: map[int64]int{},
 		nextDue:  map[int64]time.Time{},
 		lastErr:  map[int64]string{},
+		failed:   map[int64]bool{},
 	}
 }
 
@@ -47,7 +50,7 @@ func (f *fakeEmailJobStore) FetchDueEmailJobs(_ context.Context, limit int) ([]s
 	}
 	var out []store.EmailJob
 	for id, j := range f.jobs {
-		if f.sent[id] || time.Now().Before(f.nextDue[id]) {
+		if f.sent[id] || f.failed[id] || time.Now().Before(f.nextDue[id]) {
 			continue
 		}
 		job := *j
@@ -65,6 +68,13 @@ func (f *fakeEmailJobStore) MarkEmailJobSent(_ context.Context, id int64) error 
 	return nil
 }
 
+func (f *fakeEmailJobStore) MarkEmailJobFailed(_ context.Context, id int64, lastErr string) error {
+	f.attempts[id]++
+	f.failed[id] = true
+	f.lastErr[id] = lastErr
+	return nil
+}
+
 func (f *fakeEmailJobStore) RescheduleEmailJob(_ context.Context, id int64, next time.Time, lastErr string) error {
 	f.attempts[id]++
 	f.nextDue[id] = next
@@ -75,7 +85,7 @@ func (f *fakeEmailJobStore) RescheduleEmailJob(_ context.Context, id int64, next
 func (f *fakeEmailJobStore) EmailJobBacklog(_ context.Context) (int, time.Time, error) {
 	count := 0
 	for id := range f.jobs {
-		if !f.sent[id] {
+		if !f.sent[id] && !f.failed[id] {
 			count++
 		}
 	}
@@ -208,5 +218,74 @@ func TestBackoffIsBoundedAndGrowing(t *testing.T) {
 	}
 	if got := backoffFor(-5); got < emailJobBaseBackoff {
 		t.Fatalf("negative attempts produced %s", got)
+	}
+}
+
+// M4 (registration audit): a job whose account has since verified is DONE.
+// It used to be rescheduled forever, because "email already verified" came
+// back as a send error.
+func TestRelayClosesJobWhenAccountAlreadyVerified(t *testing.T) {
+	fake := newFakeEmailJobStore()
+	jobID := fake.enqueue(uuid.New())
+	relay := NewEmailJobRelay(fake, func(context.Context, uuid.UUID) error {
+		return ErrEmailAlreadyVerified
+	}, nil, time.Second)
+
+	relay.ProcessOnce(context.Background())
+
+	if !fake.sent[jobID] {
+		t.Fatal("job for an already-verified account was not closed as done")
+	}
+	if fake.failed[jobID] || fake.attempts[jobID] != 0 {
+		t.Fatalf("already-verified was treated as a failure (failed=%v attempts=%d)",
+			fake.failed[jobID], fake.attempts[jobID])
+	}
+}
+
+// M4: a permanent failure is abandoned at once, not retried.
+func TestRelayAbandonsUndeliverableJob(t *testing.T) {
+	fake := newFakeEmailJobStore()
+	jobID := fake.enqueue(uuid.New())
+	sends := 0
+	relay := NewEmailJobRelay(fake, func(context.Context, uuid.UUID) error {
+		sends++
+		return fmt.Errorf("%w: stored address is not valid", ErrEmailUndeliverable)
+	}, nil, time.Second)
+
+	relay.ProcessOnce(context.Background())
+	fake.nextDue[jobID] = time.Now().Add(-time.Second)
+	relay.ProcessOnce(context.Background())
+
+	if !fake.failed[jobID] {
+		t.Fatal("undeliverable job was not abandoned")
+	}
+	if sends != 1 {
+		t.Fatalf("undeliverable job was tried %d times, want 1", sends)
+	}
+}
+
+// M4: a transient failure is retried, but only emailJobMaxAttempts times.
+func TestRelayGivesUpAfterMaxAttempts(t *testing.T) {
+	fake := newFakeEmailJobStore()
+	jobID := fake.enqueue(uuid.New())
+	sends := 0
+	relay := NewEmailJobRelay(fake, func(context.Context, uuid.UUID) error {
+		sends++
+		return errors.New("ses: throttled")
+	}, nil, time.Second)
+
+	for i := 0; i < emailJobMaxAttempts+5; i++ {
+		fake.nextDue[jobID] = time.Now().Add(-time.Second)
+		relay.ProcessOnce(context.Background())
+	}
+
+	if sends != emailJobMaxAttempts {
+		t.Fatalf("transient failure tried %d times, want exactly %d", sends, emailJobMaxAttempts)
+	}
+	if !fake.failed[jobID] {
+		t.Fatal("job not abandoned after the retry budget was spent")
+	}
+	if fake.sent[jobID] {
+		t.Fatal("abandoned job was recorded as sent")
 	}
 }

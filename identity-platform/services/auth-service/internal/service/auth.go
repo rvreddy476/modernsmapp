@@ -16,6 +16,7 @@ import (
 	"net"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/atpost/identity-auth-service/internal/config"
@@ -49,6 +50,10 @@ type Service struct {
 	// See throttle.go — the HTTP middleware cannot do this because it runs
 	// before the verification token is exchanged for a user id.
 	throttle Throttle
+	// Google ID-token signing keys for the mobile OAuth route
+	// (oauth_idtoken.go). Created on first use; tests install their own.
+	googleKeysOnce sync.Once
+	googleKeySet   *googleKeySet
 }
 
 // SetThrottle installs the abuse limiter. Separate from New so tests can
@@ -128,8 +133,13 @@ type Store interface {
 	GetSessionByRefreshTokenHash(ctx context.Context, refreshTokenHash string) (*store.Session, error)
 	GetSessionByID(ctx context.Context, sessionID uuid.UUID) (*store.Session, error)
 	ListActiveSessions(ctx context.Context, userID uuid.UUID) ([]store.Session, error)
-	RotateSessionRefreshToken(ctx context.Context, sessionID uuid.UUID, refreshTokenHash string, expiresAt time.Time) error
-	RotateSessionWithFingerprint(ctx context.Context, sessionID uuid.UUID, refreshTokenHash, ip string, expiresAt time.Time, anomalyFlagged bool) error
+	// RotateSessionWithFingerprint rotates ONLY while the row still holds
+	// oldHash and is live; rotated=false means a concurrent refresh or a
+	// logout won, and nothing may be issued.
+	RotateSessionWithFingerprint(ctx context.Context, sessionID uuid.UUID, oldHash, newHash, ip string, expiresAt time.Time, anomalyFlagged bool) (bool, error)
+	// Refresh-token reuse detection (sessions_rotation.go).
+	LookupRotatedRefreshToken(ctx context.Context, refreshTokenHash string) (*uuid.UUID, error)
+	RevokeSessionFamily(ctx context.Context, sessionID uuid.UUID) ([]uuid.UUID, error)
 	RevokeSession(ctx context.Context, sessionID uuid.UUID) error
 	RevokeAllSessions(ctx context.Context, userID uuid.UUID) (int64, error)
 	// A13 — login anomaly audit trail
@@ -161,7 +171,9 @@ type Store interface {
 	RecordConsentTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, c store.RegistrationConsent) error
 	ActivateVerifiedAccount(ctx context.Context, userID uuid.UUID) error
 	IsAccountPendingVerification(ctx context.Context, userID uuid.UUID) (bool, error)
-	ConsumeRecoveryAndSetPassword(ctx context.Context, userID uuid.UUID, otpKey, purpose string, verify func(string) bool, newPasswordHash string) error
+	// maxAttempts: wrong codes are counted under the row lock and the code is
+	// deleted at the cap (store.ConsumeRecoveryAndSetPassword).
+	ConsumeRecoveryAndSetPassword(ctx context.Context, userID uuid.UUID, otpKey, purpose string, verify func(string) bool, newPasswordHash string, maxAttempts int) error
 	// CLB-3: the credential that lets a PENDING account finish signing up.
 	// Verify and resend are public routes, so the account they act on must be
 	// named by something the server issued rather than by the caller.
@@ -443,6 +455,36 @@ func (s *Service) RegisterWithPassword(ctx context.Context, phone, email, passwo
 // mandatory and enforced here, at the service layer, so a second handler
 // cannot reintroduce the bypass.
 func (s *Service) RegisterWithConsent(ctx context.Context, phone, email, password, firstName, lastName, dob, gender string, consent RegistrationConsent) (*AuthResponse, error) {
+	// M1 (registration audit): one normal form for the email, so case and
+	// whitespace variants are one account, and junk like "foo" is refused
+	// here instead of becoming a pending account whose email job can never
+	// be delivered.
+	normEmail, err := NormalizeEmail(email)
+	if err != nil {
+		return nil, err
+	}
+	email = normEmail
+
+	// H2 (registration audit): the phone is format-checked and then DROPPED.
+	//
+	// It used to be stored unvalidated and unverified in the UNIQUE phone
+	// column, and login/reset tried that column first, so registering
+	// phone="victim@gmail.com" hijacked the victim's email sign-in and
+	// recovery, and registering a real number squatted it for good.
+	// Registration verifies the email only; nothing here can prove the caller
+	// owns the number, so it must not claim it. Dropping it (rather than
+	// parking it in a pending column) is the safer of the two options: no
+	// second unverified identity exists anywhere, and no client sends a phone
+	// on this route today (Android's RegisterRequestDto has none). A number
+	// is attached later through a flow that verifies it. A malformed value is
+	// still refused so a client learns its input is wrong.
+	if strings.TrimSpace(phone) != "" {
+		if _, err := NormalizePhoneE164(phone); err != nil {
+			return nil, err
+		}
+	}
+	phone = ""
+
 	if err := validatePassword(password); err != nil {
 		return nil, err
 	}
@@ -587,16 +629,11 @@ func (s *Service) RegisterWithConsent(ctx context.Context, phone, email, passwor
 }
 
 func (s *Service) LoginWithPassword(ctx context.Context, identifier, password, deviceID, platform, ip, userAgent string) (*AuthResponse, error) {
-	user, err := s.store.GetUserByPhone(ctx, identifier)
+	// The column is chosen from the identifier's shape: an email-shaped value
+	// is never matched against the phone column (H2, registration audit).
+	user, err := s.lookupUserByIdentifier(ctx, identifier)
 	if err != nil {
 		return nil, err
-	}
-
-	if user == nil {
-		user, err = s.store.GetUserByEmail(ctx, identifier)
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	if user == nil {
@@ -739,7 +776,17 @@ func (s *Service) refreshSessionOfKind(ctx context.Context, refreshToken, ip, us
 	if err != nil {
 		return nil, err
 	}
-	if sess == nil || sess.RevokedAt != nil {
+	if sess == nil {
+		// Not the current token of any session. If it WAS one, it has been
+		// used once already: whoever holds it now is replaying a stolen or
+		// leaked token, and the holder of the rotated token cannot be told
+		// apart from the thief. Burn the whole family.
+		if err := s.revokeOnRefreshReuse(ctx, refreshTokenHash, ip, userAgent); err != nil {
+			return nil, err
+		}
+		return nil, errors.New("invalid refresh token")
+	}
+	if sess.RevokedAt != nil {
 		return nil, errors.New("invalid refresh token")
 	}
 	if sessionKindOf(sess) != kind {
@@ -833,8 +880,15 @@ func (s *Service) refreshSessionOfKind(ctx context.Context, refreshToken, ip, us
 	if err != nil {
 		return nil, err
 	}
-	if err := s.store.RotateSessionWithFingerprint(ctx, sess.ID, hashToken(newRefreshToken), ip, newExpiresAt, false); err != nil {
+	rotated, err := s.store.RotateSessionWithFingerprint(ctx, sess.ID, refreshTokenHash, hashToken(newRefreshToken), ip, newExpiresAt, false)
+	if err != nil {
 		return nil, err
+	}
+	if !rotated {
+		// The row no longer holds the presented hash, or is no longer live:
+		// a concurrent refresh with the same token won, or logout landed
+		// between the read and this write. Either way nothing is issued.
+		return nil, errors.New("invalid refresh token")
 	}
 
 	// Low-risk anomaly: specific IP changed but stayed within the same
@@ -1130,16 +1184,10 @@ func maskPhone(phone string) string {
 
 // ForgotPassword sends a password reset OTP to the user's phone or email.
 func (s *Service) ForgotPassword(ctx context.Context, identifier string) error {
-	// Find user by phone or email
-	user, err := s.store.GetUserByPhone(ctx, identifier)
+	// Shape-based lookup, never phone-first (H2, registration audit).
+	user, err := s.lookupUserByIdentifier(ctx, identifier)
 	if err != nil {
 		return err
-	}
-	if user == nil {
-		user, err = s.store.GetUserByEmail(ctx, identifier)
-		if err != nil {
-			return err
-		}
 	}
 	if user == nil {
 		// Don't reveal whether the user exists
@@ -1213,22 +1261,16 @@ func (s *Service) ForgotPassword(ctx context.Context, identifier string) error {
 // Everything now happens in one transaction, and the password is validated
 // and hashed BEFORE the code is consumed.
 func (s *Service) ResetPassword(ctx context.Context, identifier, code, newPassword string) error {
-	user, err := s.store.GetUserByPhone(ctx, identifier)
-	if err != nil {
-		return err
-	}
-	if user == nil {
-		user, err = s.store.GetUserByEmail(ctx, identifier)
-		if err != nil {
-			return err
-		}
-	}
-	if user == nil {
-		return errors.New("invalid credentials")
-	}
-
-	// Validate and hash BEFORE consuming anything. A rejected password must
-	// leave the code usable.
+	// M4 (login audit): reset must not say whether an account exists.
+	//
+	// The password used to be validated AFTER the lookup, so a weak password
+	// answered 400 RESET_FAILED for an unknown identifier and 422
+	// WEAK_PASSWORD for a real one, and only real accounts paid for a bcrypt
+	// hash. Now the password is validated and hashed FIRST, for every caller,
+	// and an unknown account (or one without an email) pays the same code
+	// comparison a real one does and gets the same error as a wrong code.
+	// A rejected password still leaves a real user's code usable: nothing has
+	// been read or consumed yet.
 	if err := validatePassword(newPassword); err != nil {
 		return err
 	}
@@ -1237,12 +1279,23 @@ func (s *Service) ResetPassword(ctx context.Context, identifier, code, newPasswo
 		return err
 	}
 
+	// Shape-based lookup, never phone-first (H2, registration audit).
+	user, err := s.lookupUserByIdentifier(ctx, identifier)
+	if err != nil {
+		return err
+	}
+
 	// Recovery is EMAIL-ONLY, matching ForgotPassword. Keying off the phone
 	// here is what broke recovery for every user who had both.
-	if user.Email == nil || strings.TrimSpace(*user.Email) == "" {
-		return errors.New("invalid credentials")
+	if user == nil || user.Email == nil || strings.TrimSpace(*user.Email) == "" {
+		_ = bcrypt.CompareHashAndPassword(dummyCodeHash(), []byte(code))
+		return ErrResetCodeInvalid
 	}
 	otpKey := *user.Email
+
+	// M5: the sessions the transaction below will revoke, so their live
+	// access tokens can be killed in the revocation cache after it commits.
+	live := s.liveSessionIDs(ctx, user.ID)
 
 	// One transaction: consume the code, set the password, revoke sessions.
 	err = s.store.ConsumeRecoveryAndSetPassword(
@@ -1251,13 +1304,15 @@ func (s *Service) ResetPassword(ctx context.Context, identifier, code, newPasswo
 			return bcrypt.CompareHashAndPassword([]byte(storedHash), []byte(code)) == nil
 		},
 		string(hash),
+		s.otpMaxAttempts(),
 	)
 	if err != nil {
 		if errors.Is(err, store.ErrRecoveryCodeInvalid) {
-			return errors.New("invalid or expired code")
+			return ErrResetCodeInvalid
 		}
 		return err
 	}
+	s.cacheRevokeAll(ctx, live)
 
 	// A16: wipe any in-flight pending-2FA sessions. An attacker who already
 	// cleared step 1 and is sitting on a pending_token within its Redis TTL
@@ -1276,6 +1331,32 @@ func (s *Service) ResetPassword(ctx context.Context, identifier, code, newPasswo
 
 // --- Email/Phone Verification ---
 
+var (
+	// ErrEmailAlreadyVerified: there is nothing to send. The email relay
+	// treats it as DONE, not as a failure to retry (M4, registration audit).
+	ErrEmailAlreadyVerified = errors.New("email already verified")
+	// ErrEmailUndeliverable: no send can ever succeed for this account (it
+	// is gone, has no email, or the stored address is not an address). The
+	// relay abandons the job instead of retrying it forever.
+	ErrEmailUndeliverable = errors.New("verification email cannot be delivered")
+	// ErrResetCodeInvalid is the single answer for every failed reset: wrong,
+	// expired, spent or capped code, and an account that does not exist.
+	ErrResetCodeInvalid = errors.New("invalid or expired code")
+	// ErrVerifyCodeInvalid is the single answer for a failed email code.
+	ErrVerifyCodeInvalid = errors.New("invalid or expired code")
+)
+
+// dummyCodeHash is compared against when there is no real code to compare,
+// so a reset for an unknown account costs what one for a real account does.
+// Same cost as store.SaveOTP (bcrypt.DefaultCost).
+var dummyCodeHash = sync.OnceValue(func() []byte {
+	h, err := bcrypt.GenerateFromPassword([]byte("not-a-real-code"), bcrypt.DefaultCost)
+	if err != nil {
+		panic(err)
+	}
+	return h
+})
+
 // RequestEmailVerification sends a verification OTP to the user's email.
 func (s *Service) RequestEmailVerification(ctx context.Context, userID uuid.UUID) error {
 	user, err := s.store.GetUserByID(ctx, userID)
@@ -1283,13 +1364,16 @@ func (s *Service) RequestEmailVerification(ctx context.Context, userID uuid.UUID
 		return err
 	}
 	if user == nil {
-		return errors.New("user not found")
+		return fmt.Errorf("%w: user not found", ErrEmailUndeliverable)
 	}
 	if user.Email == nil || *user.Email == "" {
-		return errors.New("no email on account")
+		return fmt.Errorf("%w: no email on account", ErrEmailUndeliverable)
 	}
 	if user.EmailVerified {
-		return errors.New("email already verified")
+		return ErrEmailAlreadyVerified
+	}
+	if _, err := NormalizeEmail(*user.Email); err != nil {
+		return fmt.Errorf("%w: stored address is not valid", ErrEmailUndeliverable)
 	}
 
 	otp, err := s.generateOTP()
@@ -1365,6 +1449,87 @@ func (s *Service) VerifyEmailWithTransaction(ctx context.Context, transaction, c
 	return s.activateVerifiedAccount(ctx, userID)
 }
 
+// verifyEmailCode checks the emailed code and consumes it on success.
+//
+// H1 (registration audit): wrong guesses were counted and then ignored, so a
+// squatter who registered someone else's address could grind the 6-digit code
+// from rotating IPs, activate the account, and later be linked to the real
+// owner's Google sign-in. Now, as VerifyOTP does:
+//
+//   - a per-ACCOUNT budget is charged first (emailVerifyPerHour/PerDay). It
+//     is keyed on the user id, in its own fixed window, so neither a resend
+//     (which stores a fresh code with attempts=0) nor a fresh verification
+//     token from a pending login buys more guesses;
+//   - a code that has reached OTP_MAX_ATTEMPTS is refused and deleted;
+//   - a wrong guess is counted, and the code is deleted when the count reaches
+//     the cap. A failure to count refuses, rather than allowing an uncounted
+//     guess.
+func (s *Service) verifyEmailCode(ctx context.Context, userID uuid.UUID, code string) error {
+	user, err := s.store.GetUserByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if user == nil {
+		return errors.New("user not found")
+	}
+	if user.Email == nil {
+		return errors.New("no email on account")
+	}
+
+	if err := s.allowAttempt(ctx, "email_verify_rl:hour:"+userID.String(),
+		emailVerifyPerHour, emailVerifyHourWindow, "email_verify_hourly"); err != nil {
+		return err
+	}
+	if err := s.allowAttempt(ctx, "email_verify_rl:day:"+userID.String(),
+		emailVerifyPerDay, emailVerifyDayWindow, "email_verify_daily"); err != nil {
+		return err
+	}
+
+	return s.checkCappedOTP(ctx, *user.Email, "email_verify", code)
+}
+
+// checkCappedOTP verifies code against the live (key, purpose) OTP under the
+// OTP_MAX_ATTEMPTS cap, deleting the code on success and at the cap.
+func (s *Service) checkCappedOTP(ctx context.Context, key, purpose, code string) error {
+	otp, err := s.store.GetOTP(ctx, key, purpose)
+	if err != nil {
+		return err
+	}
+	if otp == nil {
+		return ErrVerifyCodeInvalid
+	}
+	if otp.Attempts >= s.otpMaxAttempts() {
+		_ = s.store.DeleteOTP(ctx, otp.ID)
+		return ErrVerifyCodeInvalid
+	}
+
+	if err := bcrypt.CompareHashAndPassword([]byte(otp.Hash), []byte(code)); err != nil {
+		attempts, incErr := s.store.IncrementOTPAttempts(ctx, otp.ID)
+		if incErr != nil {
+			return fmt.Errorf("count verification attempt: %w", incErr)
+		}
+		if attempts >= s.otpMaxAttempts() {
+			_ = s.store.DeleteOTP(ctx, otp.ID)
+		}
+		return ErrVerifyCodeInvalid
+	}
+
+	_ = s.store.DeleteOTP(ctx, otp.ID)
+	return nil
+}
+
+// defaultOTPMaxAttempts matches config's OTP_MAX_ATTEMPTS default.
+const defaultOTPMaxAttempts = 5
+
+// otpMaxAttempts is the per-code wrong-guess cap. An unset (zero) value
+// means the default, never "refuse every code" and never "unlimited".
+func (s *Service) otpMaxAttempts() int {
+	if s.cfg == nil || s.cfg.OTPMaxAttempts <= 0 {
+		return defaultOTPMaxAttempts
+	}
+	return s.cfg.OTPMaxAttempts
+}
+
 // ResendVerificationWithTransaction re-sends the code for the account the
 // credential names. It does NOT consume the credential: a user waiting on a
 // slow mail provider may legitimately ask more than once, and burning their
@@ -1388,7 +1553,17 @@ func (s *Service) ResendVerificationWithTransaction(ctx context.Context, transac
 		return err
 	}
 
-	return s.RequestEmailVerification(ctx, userID)
+	if err := s.RequestEmailVerification(ctx, userID); err != nil {
+		return err
+	}
+	// M2 (registration audit): the code just sent is now the live one. A job
+	// still queued from a failed first send must not make the relay send
+	// another code that would replace it while the user is typing this one.
+	if markErr := s.store.MarkUserEmailJobsSent(ctx, userID); markErr != nil {
+		s.log.Warn("resend: verification sent but queued job not closed — relay may send another code",
+			"event", "email_job_mark_failed", "user_id", userID, "err", markErr)
+	}
+	return nil
 }
 
 // VerifyEmail verifies by user id. CLB-3 moved the public entry point to
@@ -1399,36 +1574,6 @@ func (s *Service) VerifyEmail(ctx context.Context, userID uuid.UUID, code string
 		return err
 	}
 	return s.activateVerifiedAccount(ctx, userID)
-}
-
-// verifyEmailCode checks the emailed code and consumes it on success.
-func (s *Service) verifyEmailCode(ctx context.Context, userID uuid.UUID, code string) error {
-	user, err := s.store.GetUserByID(ctx, userID)
-	if err != nil {
-		return err
-	}
-	if user == nil {
-		return errors.New("user not found")
-	}
-	if user.Email == nil {
-		return errors.New("no email on account")
-	}
-
-	otp, err := s.store.GetOTP(ctx, *user.Email, "email_verify")
-	if err != nil {
-		return err
-	}
-	if otp == nil {
-		return errors.New("invalid or expired code")
-	}
-
-	if err := bcrypt.CompareHashAndPassword([]byte(otp.Hash), []byte(code)); err != nil {
-		s.store.IncrementOTPAttempts(ctx, otp.ID)
-		return errors.New("invalid or expired code")
-	}
-
-	_ = s.store.DeleteOTP(ctx, otp.ID)
-	return nil
 }
 
 // activateVerifiedAccount performs the one-time pending → active transition.
@@ -1445,6 +1590,12 @@ func (s *Service) activateVerifiedAccount(ctx context.Context, userID uuid.UUID)
 			return s.store.MarkEmailVerified(ctx, userID)
 		}
 		return fmt.Errorf("activate account: %w", err)
+	}
+	// Verified: nothing left to send. Close any queued job so the relay does
+	// not mail a code for an account that no longer needs one (M2/M4).
+	if err := s.store.MarkUserEmailJobsSent(ctx, userID); err != nil {
+		s.log.Warn("activated but queued verification job not closed",
+			"event", "email_job_mark_failed", "user_id", userID, "err", err)
 	}
 	return nil
 }
@@ -1486,20 +1637,11 @@ func (s *Service) VerifyPhone(ctx context.Context, userID uuid.UUID, code string
 		return errors.New("no phone on account")
 	}
 
-	otp, err := s.store.GetOTP(ctx, user.Phone, "phone_verify")
-	if err != nil {
+	// Same cap as email verification (H1, registration audit). The route is
+	// retired, but the method must not be a capless verifier if re-enabled.
+	if err := s.checkCappedOTP(ctx, user.Phone, "phone_verify", code); err != nil {
 		return err
 	}
-	if otp == nil {
-		return errors.New("invalid or expired code")
-	}
-
-	if err := bcrypt.CompareHashAndPassword([]byte(otp.Hash), []byte(code)); err != nil {
-		s.store.IncrementOTPAttempts(ctx, otp.ID)
-		return errors.New("invalid or expired code")
-	}
-
-	_ = s.store.DeleteOTP(ctx, otp.ID)
 	return s.store.MarkPhoneVerified(ctx, userID)
 }
 

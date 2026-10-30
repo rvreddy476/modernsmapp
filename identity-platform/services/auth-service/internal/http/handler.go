@@ -110,9 +110,9 @@ type AuthService interface {
 	Disable2FA(ctx context.Context, userID uuid.UUID, password, code string) error
 	Verify2FA(ctx context.Context, userID uuid.UUID, code, pendingToken string) (*service.AuthResponse, error)
 	// OAuth
-	GetOAuthRedirectURL(ctx context.Context, provider string) (string, error)
-	HandleOAuthCallback(ctx context.Context, provider, code, state string) (*service.OAuthCallbackResult, error)
-	HandleOAuthToken(ctx context.Context, provider, accessToken string) (*service.OAuthCallbackResult, error)
+	GetOAuthRedirectURL(ctx context.Context, provider string) (*service.OAuthStart, error)
+	HandleOAuthCallback(ctx context.Context, provider, code, state, binding string) (*service.OAuthCallbackResult, error)
+	HandleOAuthToken(ctx context.Context, provider, idToken string) (*service.OAuthCallbackResult, error)
 	// A5: OAuth pre-creation OTP-signup flow.
 	CompleteOAuthSignup(ctx context.Context, pendingToken, phone string) error
 	VerifyOAuthSignup(ctx context.Context, pendingToken, otp, deviceID, platform, ip, userAgent string) (*service.AuthResponse, error)
@@ -691,12 +691,29 @@ func (h *Handler) Register(c *gin.Context) {
 	// SR-6: EMAIL is the launch identifier. Phone registration is retired
 	// because no SMS delivery exists — a phone-only account could never
 	// receive a verification or recovery code, so it could never be recovered.
-	if req.Email == "" {
+	if strings.TrimSpace(req.Email) == "" {
 		api.Error(c.Writer, http.StatusBadRequest, "EMAIL_REQUIRED",
 			"An email address is required. Phone registration is not available: "+
 				"SMS delivery is not enabled, so a phone-only account could never "+
 				"receive a verification or password-reset code.", nil, nil)
 		return
+	}
+	// M1/H2 (registration audit): one normal form, checked at the boundary.
+	// The service re-checks (a second handler cannot skip it); this gives the
+	// client a field-specific code before any other validation runs.
+	if norm, err := service.NormalizeEmail(req.Email); err != nil {
+		api.Error(c.Writer, http.StatusUnprocessableEntity, "INVALID_EMAIL",
+			"Enter a valid email address.", nil, nil)
+		return
+	} else {
+		req.Email = norm
+	}
+	if strings.TrimSpace(req.Phone) != "" {
+		if _, err := service.NormalizePhoneE164(req.Phone); err != nil {
+			api.Error(c.Writer, http.StatusUnprocessableEntity, "INVALID_PHONE",
+				service.ErrInvalidPhone.Error(), nil, nil)
+			return
+		}
 	}
 
 	if req.Password == "" {
@@ -780,6 +797,10 @@ func (h *Handler) Register(c *gin.Context) {
 		switch {
 		case errors.Is(err, store.ErrUserExists):
 			api.Error(c.Writer, http.StatusConflict, "USER_EXISTS", "User already exists", nil, nil)
+		case errors.Is(err, service.ErrInvalidEmail):
+			api.Error(c.Writer, http.StatusUnprocessableEntity, "INVALID_EMAIL", "Enter a valid email address.", nil, nil)
+		case errors.Is(err, service.ErrInvalidPhone):
+			api.Error(c.Writer, http.StatusUnprocessableEntity, "INVALID_PHONE", err.Error(), nil, nil)
 		case errors.Is(err, service.ErrPasswordTooShort) || errors.Is(err, service.ErrPasswordTooWeak):
 			api.Error(c.Writer, http.StatusUnprocessableEntity, "WEAK_PASSWORD", err.Error(), nil, nil)
 		// SR-6: the age and consent failures carry their own codes and the
@@ -937,12 +958,26 @@ func (h *Handler) Refresh(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, resp, nil)
 }
 
+// Logout revokes the session named by the refresh token. Web clients carry it
+// in the refresh_token cookie; mobile clients send {"refresh_token": "..."} in
+// the body, as /refresh accepts, because an app's cookie jar does not survive
+// a process restart and logout would otherwise revoke nothing server-side.
+// When both are present and differ, both are revoked: each is a credential the
+// caller holds and wants dead. A missing or unknown token is still 200.
 func (h *Handler) Logout(c *gin.Context) {
-	refreshToken, _ := c.Cookie(refreshTokenCookieName)
-	if err := h.svc.Logout(c.Request.Context(), refreshToken); err != nil {
-		h.log.Error("logout failed", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
-		return
+	cookieToken, _ := c.Cookie(refreshTokenCookieName)
+	var body struct {
+		RefreshToken string `json:"refresh_token"`
+	}
+	if c.Request.ContentLength != 0 {
+		_ = c.ShouldBindJSON(&body)
+	}
+	for _, refreshToken := range uniqueNonEmpty(cookieToken, body.RefreshToken) {
+		if err := h.svc.Logout(c.Request.Context(), refreshToken); err != nil {
+			h.log.Error("logout failed", "err", err, "request_id", RequestIDFromContext(c))
+			api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+			return
+		}
 	}
 	h.clearAuthCookies(c)
 	api.JSON(c.Writer, http.StatusOK, gin.H{"status": "ok"}, nil)
@@ -1088,13 +1123,27 @@ func (h *Handler) ForgotPassword(c *gin.Context) {
 		return
 	}
 
-	if err := h.svc.ForgotPassword(c.Request.Context(), req.Identifier); err != nil {
-		h.log.Error("forgot-password failed", "err", err, "identifier", maskIdentifier(req.Identifier), "request_id", RequestIDFromContext(c))
-		// Always return 200 to prevent user enumeration
-	}
+	// M4 / L1 (login audit): the answer is always the same 200, and now so
+	// is the TIME it takes. For a real account the work is a bcrypt hash of
+	// the code plus a mail-provider call; for an unknown one it was nothing,
+	// so the response time said whether the account existed. The work runs
+	// after the response, on a context detached from the request (so the
+	// client hanging up does not cancel the send) with its own deadline.
+	identifier, requestID := req.Identifier, RequestIDFromContext(c)
+	workCtx := context.WithoutCancel(c.Request.Context())
+	go func() {
+		ctx, cancel := context.WithTimeout(workCtx, forgotPasswordWorkTimeout)
+		defer cancel()
+		if err := h.svc.ForgotPassword(ctx, identifier); err != nil {
+			h.log.Error("forgot-password failed", "err", err, "identifier", maskIdentifier(identifier), "request_id", requestID)
+		}
+	}()
 
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"message": "If the account exists, a reset code has been sent"}, nil)
 }
+
+// forgotPasswordWorkTimeout bounds the detached reset-code send.
+const forgotPasswordWorkTimeout = 30 * time.Second
 
 type ResetPasswordRequest struct {
 	Identifier  string `json:"identifier" binding:"required"`
@@ -1147,6 +1196,13 @@ func (h *Handler) VerifyEmail(c *gin.Context) {
 	}
 
 	if err := h.svc.VerifyEmailWithTransaction(c.Request.Context(), req.VerificationToken, req.Code); err != nil {
+		// The per-account attempt budget is spent. Like the resend quota this
+		// is only reachable with a valid token, so saying "wait" reveals
+		// nothing, and it stops a real user retrying in a loop.
+		if writeIfThrottled(c, err, "Too many verification attempts. Please wait before trying again.") {
+			h.log.Warn("email verification throttled", "request_id", RequestIDFromContext(c))
+			return
+		}
 		// One response for every failure — invalid credential, wrong purpose,
 		// expired, replayed, wrong code. Distinguishing them would let a
 		// caller probe which credentials and accounts exist.
@@ -1444,6 +1500,23 @@ func maskPhone(phone string) string {
 		return strings.Repeat("*", len(trimmed))
 	}
 	return strings.Repeat("*", len(trimmed)-2) + trimmed[len(trimmed)-2:]
+}
+
+// writeIfThrottled answers 429 with Retry-After when err is a service
+// *ErrThrottled, and reports whether it did.
+func writeIfThrottled(c *gin.Context, err error, message string) bool {
+	throttled, ok := service.AsThrottled(err)
+	if !ok {
+		return false
+	}
+	retryAfter := int(throttled.RetryAfter.Seconds())
+	if retryAfter < 1 {
+		retryAfter = 1
+	}
+	c.Header("Retry-After", strconv.Itoa(retryAfter))
+	api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", message,
+		map[string]any{"retry_after_seconds": retryAfter}, nil)
+	return true
 }
 
 func maskEmail(email string) string {

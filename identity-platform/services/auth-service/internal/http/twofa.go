@@ -75,7 +75,14 @@ func (h *Handler) Disable2FA(c *gin.Context) {
 
 	if err := h.svc.Disable2FA(c.Request.Context(), userID, req.Password, req.Code); err != nil {
 		h.log.Warn("2FA disable failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "2FA_DISABLE_FAILED", err.Error(), nil, nil)
+		if writeIfThrottled(c, err, "Too many attempts. Try again later.") {
+			return
+		}
+		// M9 (login audit): never err.Error() here. It used to say "invalid
+		// password" or "invalid TOTP code", confirming a correct password to
+		// someone without the second factor.
+		api.Error(c.Writer, http.StatusBadRequest, "2FA_DISABLE_FAILED",
+			"Could not disable two-factor authentication. Check your password and code.", nil, nil)
 		return
 	}
 
@@ -105,6 +112,9 @@ func (h *Handler) Verify2FA(c *gin.Context) {
 	resp, err := h.svc.Verify2FA(c.Request.Context(), userID, req.Code, req.PendingToken)
 	if err != nil {
 		h.log.Warn("2FA verification failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
+		if writeIfThrottled(c, err, "Too many two-factor attempts. Try again later.") {
+			return
+		}
 		api.Error(c.Writer, http.StatusUnauthorized, "AUTH_FAILED", "2FA verification failed", nil, nil)
 		return
 	}

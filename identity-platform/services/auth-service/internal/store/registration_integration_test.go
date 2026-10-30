@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"sync"
 	"testing"
 	"time"
 
@@ -335,7 +336,7 @@ func TestRecoveryConsumesCodeSetsPasswordAndRevokesSessionsAtomically(t *testing
 	seedResetCode(t, pool, email, "123456", 5*time.Minute)
 
 	if err := s.ConsumeRecoveryAndSetPassword(
-		ctx, id, email, "password_reset", verifier("123456"), "new-hash"); err != nil {
+		ctx, id, email, "password_reset", verifier("123456"), "new-hash", 5); err != nil {
 		t.Fatalf("recovery: %v", err)
 	}
 
@@ -378,7 +379,7 @@ func TestWrongCodeChangesNothingAndLeavesTheCodeUsable(t *testing.T) {
 	seedResetCode(t, pool, email, "123456", 5*time.Minute)
 
 	err := s.ConsumeRecoveryAndSetPassword(
-		ctx, id, email, "password_reset", verifier("000000"), "new-hash")
+		ctx, id, email, "password_reset", verifier("000000"), "new-hash", 5)
 	if !errors.Is(err, ErrRecoveryCodeInvalid) {
 		t.Fatalf("got %v, want ErrRecoveryCodeInvalid", err)
 	}
@@ -410,7 +411,7 @@ func TestExpiredCodeIsRefused(t *testing.T) {
 	seedResetCode(t, pool, email, "123456", -1*time.Minute) // already expired
 
 	err := s.ConsumeRecoveryAndSetPassword(
-		ctx, id, email, "password_reset", verifier("123456"), "new-hash")
+		ctx, id, email, "password_reset", verifier("123456"), "new-hash", 5)
 	if !errors.Is(err, ErrRecoveryCodeInvalid) {
 		t.Fatalf("an EXPIRED code was accepted: %v", err)
 	}
@@ -431,11 +432,11 @@ func TestRecoveryCodeCannotBeReplayed(t *testing.T) {
 	seedResetCode(t, pool, email, "123456", 5*time.Minute)
 
 	if err := s.ConsumeRecoveryAndSetPassword(
-		ctx, id, email, "password_reset", verifier("123456"), "first-hash"); err != nil {
+		ctx, id, email, "password_reset", verifier("123456"), "first-hash", 5); err != nil {
 		t.Fatalf("first reset: %v", err)
 	}
 	err := s.ConsumeRecoveryAndSetPassword(
-		ctx, id, email, "password_reset", verifier("123456"), "second-hash")
+		ctx, id, email, "password_reset", verifier("123456"), "second-hash", 5)
 	if !errors.Is(err, ErrRecoveryCodeInvalid) {
 		t.Fatalf("the code was replayable: %v", err)
 	}
@@ -471,8 +472,77 @@ func TestRecoveryFindsTheCodeForAnAccountWithBothPhoneAndEmail(t *testing.T) {
 	seedResetCode(t, pool, email, "123456", 5*time.Minute)
 
 	if err := s.ConsumeRecoveryAndSetPassword(
-		ctx, id, email, "password_reset", verifier("123456"), "new-hash"); err != nil {
+		ctx, id, email, "password_reset", verifier("123456"), "new-hash", 5); err != nil {
 		t.Fatalf("recovery failed for an account with BOTH a phone and an email: %v\n"+
 			"This is the population most likely to have a complete profile.", err)
+	}
+}
+
+// H3 (registration audit) / H1 (login audit): wrong reset codes are COUNTED
+// under the row lock, the code survives until the cap, and is deleted at it,
+// after which even the right code fails.
+func TestRecoveryWrongCodesAreCountedAndTheCodeDiesAtTheCap(t *testing.T) {
+	pool := authPool(t)
+	s := New(pool)
+	ctx := context.Background()
+	email := "cap-" + uuid.NewString() + "@example.com"
+	id := seedUser(t, pool, email)
+	seedResetCode(t, pool, email, "123456", 5*time.Minute)
+
+	const max = 3
+	for i := 1; i <= max; i++ {
+		err := s.ConsumeRecoveryAndSetPassword(ctx, id, email, "password_reset", verifier("000000"), "x", max)
+		if !errors.Is(err, ErrRecoveryCodeInvalid) {
+			t.Fatalf("wrong code %d: %v", i, err)
+		}
+		var n, attempts int
+		_ = pool.QueryRow(ctx, `SELECT COUNT(*), COALESCE(MAX(attempts),0) FROM auth.otp_codes
+			WHERE phone=$1 AND purpose='password_reset'`, email).Scan(&n, &attempts)
+		if i < max && (n != 1 || attempts != i) {
+			t.Fatalf("after %d wrong codes: rows=%d attempts=%d, want 1 row with attempts=%d", i, n, attempts, i)
+		}
+		if i == max && n != 0 {
+			t.Fatalf("code still present after %d wrong codes (the cap)", max)
+		}
+	}
+	err := s.ConsumeRecoveryAndSetPassword(ctx, id, email, "password_reset", verifier("123456"), "new-hash", max)
+	if !errors.Is(err, ErrRecoveryCodeInvalid) {
+		t.Fatalf("the right code worked after the cap: %v", err)
+	}
+	var hash string
+	_ = pool.QueryRow(ctx, `SELECT password_hash FROM auth.users WHERE user_id=$1`, id).Scan(&hash)
+	if hash != "old-hash" {
+		t.Fatal("password changed after the attempt cap was reached")
+	}
+}
+
+// Parallel wrong guesses are serialised by FOR UPDATE and cannot overshoot.
+func TestRecoveryParallelGuessesCannotExceedTheCap(t *testing.T) {
+	pool := authPool(t)
+	s := New(pool)
+	ctx := context.Background()
+	email := "par-" + uuid.NewString() + "@example.com"
+	id := seedUser(t, pool, email)
+	seedResetCode(t, pool, email, "123456", 5*time.Minute)
+
+	const max = 5
+	var compares int64
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = s.ConsumeRecoveryAndSetPassword(ctx, id, email, "password_reset", func(string) bool {
+				mu.Lock()
+				compares++
+				mu.Unlock()
+				return false
+			}, "x", max)
+		}()
+	}
+	wg.Wait()
+	if compares > max {
+		t.Fatalf("%d codes were compared for a code capped at %d", compares, max)
 	}
 }

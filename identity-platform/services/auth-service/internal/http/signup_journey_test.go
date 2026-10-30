@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -231,8 +232,10 @@ func newJourneyEnvWithRedis(t *testing.T, rdb *redis.Client) *journeyEnv {
 		pool:   pool,
 		mail:   mail,
 		email:  "clb3-" + suffix + "@example.test",
-		phone:  "+9199" + suffix[:8],
-		pass:   "Journey!Passw0rd-" + suffix[:6],
+		// E.164 digits: /register now refuses a non-E.164 phone, and the
+		// hex suffix contains letters.
+		phone: fmt.Sprintf("+9199%08d", time.Now().UnixNano()%100000000),
+		pass:  "Journey!Passw0rd-" + suffix[:6],
 	}
 	t.Cleanup(func() { env.cleanup(t) })
 	return env

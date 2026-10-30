@@ -702,3 +702,113 @@ ALTER TABLE auth.sessions
 ALTER TABLE auth.sessions
     ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'consumer'
         CONSTRAINT sessions_kind_check CHECK (kind IN ('consumer', 'admin'));
+
+-- ---------------------------------------------------------------------------
+-- Sessions: refresh-token lookup index, rotation history, cleanup indexes.
+-- (Unnumbered on purpose; append-only like every section above.)
+--
+-- Every /refresh, /logout and admin refresh looks a session up by
+-- refresh_token_hash, which had no index: a sequential scan over a table with
+-- one row per login, never deleted. CONCURRENTLY so building it on a large
+-- live table does not block logins; BootstrapSchema runs each statement on its
+-- own, outside a transaction, which CONCURRENTLY requires. Not UNIQUE: the
+-- hashes are of 256-bit random tokens, and a duplicate left by old test data
+-- must not stop the service from booting.
+-- ---------------------------------------------------------------------------
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_refresh_token_hash
+    ON auth.sessions(refresh_token_hash);
+
+-- Bounded cleanup (store.PurgeDeadSessions) deletes sessions that expired or
+-- were revoked more than the retention period ago; these keep it off a scan.
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_expires_at
+    ON auth.sessions(expires_at);
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_sessions_revoked_at
+    ON auth.sessions(revoked_at) WHERE revoked_at IS NOT NULL;
+
+-- Refresh-token reuse detection. Each rotation records the hash it replaced.
+-- A refresh that presents one of these is a replay of a token that was
+-- already used once, so the whole session family is revoked. Rows go with
+-- their session (ON DELETE CASCADE), so the session purge bounds this table.
+CREATE TABLE IF NOT EXISTS auth.refresh_token_history (
+    refresh_token_hash TEXT PRIMARY KEY,
+    session_id UUID NOT NULL REFERENCES auth.sessions(session_id) ON DELETE CASCADE,
+    family_id UUID,
+    rotated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_refresh_token_history_session
+    ON auth.refresh_token_history(session_id);
+
+-- ---------------------------------------------------------------------------
+-- Registration, verification codes and email delivery hardening.
+-- (Unnumbered on purpose; append-only like every section above.)
+-- ---------------------------------------------------------------------------
+
+-- Case-insensitive email uniqueness.
+--
+-- auth.users.email is TEXT UNIQUE, which is case-sensitive, so
+-- "Alice@Gmail.com" and "alice@gmail.com" could be two accounts, and a user
+-- who registered with capitals could not log in or reset in lowercase. The
+-- service now stores emails lowercased and looks them up with lower(email);
+-- this index makes the database refuse a case-variant duplicate as well.
+--
+-- FAILS LOUDLY, NEVER MERGES. If case-variant duplicates already exist the
+-- block below raises and the service refuses to boot. Two such rows are two
+-- people's data (or one person's two accounts), and choosing which survives
+-- is a support decision, not something a migration may do silently. To find
+-- them:
+--   SELECT lower(email), array_agg(user_id ORDER BY created_at)
+--   FROM auth.users WHERE email IS NOT NULL
+--   GROUP BY lower(email) HAVING count(*) > 1;
+-- Resolve each by hand (rename the losing row's email, e.g. append
+-- '+dup-<user_id>'), then redeploy. The check is skipped once the index
+-- exists, so it costs a full scan only until the first successful boot.
+DO $$
+DECLARE
+    dup_groups INT;
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_indexes
+               WHERE schemaname = 'auth' AND indexname = 'uq_users_email_lower') THEN
+        RETURN;
+    END IF;
+    SELECT count(*) INTO dup_groups FROM (
+        SELECT lower(email) FROM auth.users
+        WHERE email IS NOT NULL
+        GROUP BY lower(email) HAVING count(*) > 1
+    ) d;
+    IF dup_groups > 0 THEN
+        RAISE EXCEPTION 'auth.users has % email address(es) that differ only by letter case; refusing to add uq_users_email_lower. Resolve them by hand (see database/setup.sql); accounts are never merged automatically.', dup_groups;
+    END IF;
+END $$;
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_users_email_lower
+    ON auth.users (lower(email)) WHERE email IS NOT NULL;
+
+-- One live code per (key, purpose).
+--
+-- SaveOTP was DELETE-then-INSERT in two autocommit statements over a
+-- non-unique index, so concurrent sends could leave two rows and the accepted
+-- code was whichever row Postgres returned. SaveOTP is now an upsert on this
+-- unique index. Codes are short-lived and single-use, so collapsing existing
+-- duplicates to the newest row (the one most recently emailed) loses nothing
+-- an account owns; it is a no-op once the index exists.
+DELETE FROM auth.otp_codes o
+USING auth.otp_codes newer
+WHERE o.phone = newer.phone
+  AND o.purpose = newer.purpose
+  AND (o.created_at, o.id::text) < (newer.created_at, newer.id::text)
+  AND NOT EXISTS (SELECT 1 FROM pg_indexes
+                  WHERE schemaname = 'auth' AND indexname = 'uq_otp_codes_phone_purpose');
+
+CREATE UNIQUE INDEX IF NOT EXISTS uq_otp_codes_phone_purpose
+    ON auth.otp_codes (phone, purpose);
+
+-- Email jobs get a terminal failure state.
+--
+-- A job that could never be delivered (bad address, permanent provider
+-- refusal, too many attempts) was retried every 30 minutes forever. failed_at
+-- abandons it while keeping the row and last_error for an operator. The
+-- existing partial index idx_email_delivery_jobs_due (sent_at IS NULL) still
+-- serves the relay's claim; abandoned rows are filtered after the index scan
+-- and are bounded by the attempt cap.
+ALTER TABLE auth.email_delivery_jobs
+    ADD COLUMN IF NOT EXISTS failed_at TIMESTAMPTZ;

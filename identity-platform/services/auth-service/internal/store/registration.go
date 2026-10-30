@@ -157,13 +157,26 @@ var ErrRecoveryCodeInvalid = errors.New("invalid or expired code")
 //
 // verify is called with the stored hash while the row is locked, so a
 // concurrent second attempt cannot consume the same code.
+//
+// H3 (registration audit) / H1 (login audit): a wrong code is COUNTED, under
+// the same row lock, and the code is deleted once maxAttempts wrong guesses
+// have been made. The old comment said "attempt limiting is handled by the
+// rate limiter in front", and that limiter read a body field no client sends,
+// so a 6-digit reset code could be ground from rotating IPs. Counting under
+// FOR UPDATE means parallel guesses are serialised and cannot overshoot the
+// cap. maxAttempts <= 0 is treated as 1: a misconfigured cap must not mean
+// "unlimited".
 func (s *Store) ConsumeRecoveryAndSetPassword(
 	ctx context.Context,
 	userID uuid.UUID,
 	otpKey, purpose string,
 	verify func(storedHash string) bool,
 	newPasswordHash string,
+	maxAttempts int,
 ) error {
+	if maxAttempts <= 0 {
+		maxAttempts = 1
+	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("recovery: begin: %w", err)
@@ -175,13 +188,14 @@ func (s *Store) ConsumeRecoveryAndSetPassword(
 	var otpID uuid.UUID
 	var otpHash string
 	var expiresAt time.Time
+	var attempts int
 	err = tx.QueryRow(ctx, `
-		SELECT id, otp_hash, expires_at
+		SELECT id, otp_hash, expires_at, attempts
 		FROM auth.otp_codes
 		WHERE phone = $1 AND purpose = $2
 		ORDER BY created_at DESC
 		LIMIT 1
-		FOR UPDATE`, otpKey, purpose).Scan(&otpID, &otpHash, &expiresAt)
+		FOR UPDATE`, otpKey, purpose).Scan(&otpID, &otpHash, &expiresAt, &attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrRecoveryCodeInvalid
 	}
@@ -191,9 +205,34 @@ func (s *Store) ConsumeRecoveryAndSetPassword(
 	if time.Now().After(expiresAt) {
 		return ErrRecoveryCodeInvalid
 	}
+	if attempts >= maxAttempts {
+		// Spent before this request (a row left by an older build that did not
+		// delete at the cap). Delete it now and refuse, without comparing.
+		if _, err := tx.Exec(ctx, `DELETE FROM auth.otp_codes WHERE id = $1`, otpID); err != nil {
+			return fmt.Errorf("recovery: delete spent code: %w", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("recovery: commit spent code: %w", err)
+		}
+		return ErrRecoveryCodeInvalid
+	}
 	if !verify(otpHash) {
-		// Wrong code: the row is NOT consumed, so the user can retry with the
-		// real one. Attempt limiting is handled by the rate limiter in front.
+		// Wrong code: nothing about the account changes, and the code stays
+		// usable for the real owner UNTIL the cap. The count is committed
+		// even though the reset failed; that is the point of counting.
+		if err := tx.QueryRow(ctx, `
+			UPDATE auth.otp_codes SET attempts = attempts + 1
+			WHERE id = $1 RETURNING attempts`, otpID).Scan(&attempts); err != nil {
+			return fmt.Errorf("recovery: count attempt: %w", err)
+		}
+		if attempts >= maxAttempts {
+			if _, err := tx.Exec(ctx, `DELETE FROM auth.otp_codes WHERE id = $1`, otpID); err != nil {
+				return fmt.Errorf("recovery: delete code at cap: %w", err)
+			}
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return fmt.Errorf("recovery: commit attempt: %w", err)
+		}
 		return ErrRecoveryCodeInvalid
 	}
 

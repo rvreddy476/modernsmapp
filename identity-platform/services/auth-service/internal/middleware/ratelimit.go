@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -98,7 +99,8 @@ func OTPRateLimit(rdb *redis.Client) gin.HandlerFunc {
 // A12: previously `/forgot-password` was an open public POST with no
 // gate — an attacker could spam SMS/email to any target until the
 // provider blocked the account, locking the victim out. Identifier is
-// read from the JSON body (phone or email). Reset tokens themselves
+// read from the JSON body (`identifier`, else `email`, else `phone`; see
+// bodyIdentifier). Reset tokens themselves
 // remain server-issued and short-lived; this is the upstream throttle.
 func PasswordResetRateLimit(rdb *redis.Client) gin.HandlerFunc {
 	return func(c *gin.Context) {
@@ -109,17 +111,7 @@ func PasswordResetRateLimit(rdb *redis.Client) gin.HandlerFunc {
 		bodyBytes, _ := io.ReadAll(c.Request.Body)
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
-		var req struct {
-			Email string `json:"email"`
-			Phone string `json:"phone"`
-		}
-		json.Unmarshal(bodyBytes, &req)
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-		identifier := req.Email
-		if identifier == "" {
-			identifier = req.Phone
-		}
+		identifier := bodyIdentifier(bodyBytes)
 		ip := c.ClientIP()
 
 		// 3 per identifier per hour
@@ -155,13 +147,6 @@ func LoginRateLimit(rdb *redis.Client) gin.HandlerFunc {
 		bodyBytes, _ := io.ReadAll(c.Request.Body)
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
 
-		var req struct {
-			Identifier string `json:"identifier"` // phone or email
-			Phone      string `json:"phone"`
-		}
-		json.Unmarshal(bodyBytes, &req)
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
 		ip := c.ClientIP()
 		ipKey := fmt.Sprintf("login_rl_ip:%s", ip)
 		if !allow(c.Request.Context(), rdb, ipKey, 10, 900*time.Second) {
@@ -172,11 +157,7 @@ func LoginRateLimit(rdb *redis.Client) gin.HandlerFunc {
 			return
 		}
 
-		identifier := req.Identifier
-		if identifier == "" {
-			identifier = req.Phone
-		}
-		if identifier != "" {
+		if identifier := bodyIdentifier(bodyBytes); identifier != "" {
 			idKey := fmt.Sprintf("login_rl_id:%s", identifier)
 			if !allow(c.Request.Context(), rdb, idKey, 5, 900*time.Second) {
 				c.Header("Retry-After", "900")
@@ -267,18 +248,51 @@ const refreshLimitPerToken = 60
 // password-reset — all at once. Now fails CLOSED: any Redis error is
 // logged at WARN and the request is denied. Matches the fail-closed
 // fix already shipped in notification-service HS5 and call-service C4.
+//
+// M1 (login audit): the window is FIXED. EXPIRE used to run on every request,
+// denied ones included, so the window slid: one request every 14 minutes kept
+// an identifier locked out of login and password reset forever. The expiry is
+// now set only when the counter is created, in the same script as the INCR.
 func allow(ctx context.Context, rdb *redis.Client, key string, limit int64, window time.Duration) bool {
-	pipe := rdb.Pipeline()
-	incr := pipe.Incr(ctx, key)
-	pipe.Expire(ctx, key, window)
-	if _, err := pipe.Exec(ctx); err != nil {
+	count, err := fixedWindowIncr.Run(ctx, rdb, []string{key}, window.Milliseconds()).Int64()
+	if err != nil {
 		slog.Warn("auth rate limiter Redis error — failing closed", "key", key, "err", err)
 		return false
 	}
-	count, err := incr.Result()
-	if err != nil {
-		slog.Warn("auth rate limiter INCR result error — failing closed", "key", key, "err", err)
-		return false
-	}
 	return count <= limit
+}
+
+// fixedWindowIncr: INCR, and PEXPIRE only on the first hit of a window (or a
+// counter that somehow lost its TTL, so it can never become permanent).
+var fixedWindowIncr = redis.NewScript(`
+local c = redis.call('INCR', KEYS[1])
+if c == 1 or redis.call('PTTL', KEYS[1]) < 0 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+return c
+`)
+
+// bodyIdentifier returns the account identifier a request body names, in its
+// limiter-key form: the first non-empty of `identifier`, `email`, `phone`,
+// trimmed and lowercased.
+//
+// H1/H4 (login audit): the per-account caps read only some of these. The
+// password-reset limiter read `email`/`phone` while every client sends
+// `identifier`, and the login limiter read `identifier`/`phone` while /login
+// and the admin console also accept `email`, so a body using the other field
+// got only the per-IP cap. Normalising matters for the same reason: "Victim@X"
+// and "victim@x " are one account and must be one bucket.
+func bodyIdentifier(body []byte) string {
+	var req struct {
+		Identifier string `json:"identifier"`
+		Email      string `json:"email"`
+		Phone      string `json:"phone"`
+	}
+	_ = json.Unmarshal(body, &req)
+	for _, v := range []string{req.Identifier, req.Email, req.Phone} {
+		if v = strings.ToLower(strings.TrimSpace(v)); v != "" {
+			return v
+		}
+	}
+	return ""
 }

@@ -448,11 +448,14 @@ func (f *fakeAnomalyStore) GetSessionByID(_ context.Context, _ uuid.UUID) (*stor
 func (f *fakeAnomalyStore) ListActiveSessions(_ context.Context, _ uuid.UUID) ([]store.Session, error) {
 	return nil, nil
 }
-func (f *fakeAnomalyStore) RotateSessionRefreshToken(_ context.Context, _ uuid.UUID, _ string, _ time.Time) error {
-	return nil
+func (f *fakeAnomalyStore) RotateSessionWithFingerprint(_ context.Context, _ uuid.UUID, _, _, _ string, _ time.Time, _ bool) (bool, error) {
+	return true, nil
 }
-func (f *fakeAnomalyStore) RotateSessionWithFingerprint(_ context.Context, _ uuid.UUID, _, _ string, _ time.Time, _ bool) error {
-	return nil
+func (f *fakeAnomalyStore) LookupRotatedRefreshToken(_ context.Context, _ string) (*uuid.UUID, error) {
+	return nil, nil
+}
+func (f *fakeAnomalyStore) RevokeSessionFamily(_ context.Context, _ uuid.UUID) ([]uuid.UUID, error) {
+	return nil, nil
 }
 func (f *fakeAnomalyStore) RevokeSession(_ context.Context, _ uuid.UUID) error { return nil }
 func (f *fakeAnomalyStore) RevokeAllSessions(_ context.Context, _ uuid.UUID) (int64, error) {
@@ -555,7 +558,7 @@ func (f *fakeAnomalyStore) ActivateVerifiedAccount(_ context.Context, _ uuid.UUI
 func (f *fakeAnomalyStore) IsAccountPendingVerification(_ context.Context, _ uuid.UUID) (bool, error) {
 	return false, nil
 }
-func (f *fakeAnomalyStore) ConsumeRecoveryAndSetPassword(_ context.Context, _ uuid.UUID, _, _ string, _ func(string) bool, _ string) error {
+func (f *fakeAnomalyStore) ConsumeRecoveryAndSetPassword(_ context.Context, _ uuid.UUID, _, _ string, _ func(string) bool, _ string, _ int) error {
 	return nil
 }
 

@@ -51,6 +51,10 @@ func (h *Handler) bindAccountControl(c *gin.Context) (uuid.UUID, string, bool) {
 // writeAccountControlError maps the service sentinels. Everything else is a
 // 500 with no detail.
 func (h *Handler) writeAccountControlError(c *gin.Context, action string, userID uuid.UUID, err error) {
+	if writeIfThrottled(c, err, "Too many password attempts. Try again later.") {
+		h.log.Warn(action+" refused: password re-check limit", "user_id", userID, "request_id", RequestIDFromContext(c))
+		return
+	}
 	switch {
 	case errors.Is(err, service.ErrInvalidPassword):
 		h.log.Warn(action+" refused: password mismatch", "user_id", userID, "request_id", RequestIDFromContext(c))

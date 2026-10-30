@@ -2,7 +2,10 @@ package service
 
 import (
 	"context"
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/identity-auth-service/internal/config"
 	"github.com/atpost/identity-auth-service/internal/store"
 	"github.com/atpost/identity-shared/events"
 	"github.com/redis/go-redis/v9"
@@ -71,6 +75,9 @@ type pendingOAuthClaims struct {
 var googleEndpoint = oauth2.Endpoint{
 	AuthURL:  "https://accounts.google.com/o/oauth2/v2/auth",
 	TokenURL: "https://oauth2.googleapis.com/token",
+	// Pinned: with AuthStyleAutoDetect the library retries a failed
+	// exchange in the other style, sending the code (and secret) twice.
+	AuthStyle: oauth2.AuthStyleInParams,
 }
 
 // Apple OAuth2 endpoint.
@@ -95,26 +102,106 @@ type OAuthUserInfo struct {
 	EmailVerified bool   `json:"email_verified"`
 }
 
-// GetOAuthRedirectURL generates the OAuth authorization URL for the given provider.
-func (s *Service) GetOAuthRedirectURL(ctx context.Context, provider string) (string, error) {
+// OAuthStart is the start of a browser OAuth flow: the provider URL to
+// redirect to, and the browser-binding secret the handler sets in a
+// short-lived HttpOnly cookie. The callback is accepted only from the browser
+// that holds that cookie.
+type OAuthStart struct {
+	URL     string
+	Binding string
+}
+
+// ErrOAuthStateInvalid: unknown, expired, already used, for another
+// provider, or presented by a browser that did not start the flow.
+var ErrOAuthStateInvalid = errors.New("invalid or expired OAuth state")
+
+// oauthState is what the state key holds in Redis.
+type oauthState struct {
+	Provider    string `json:"provider"`
+	BindingHash string `json:"binding_hash"`
+	// Verifier is the PKCE code verifier; empty for a provider without PKCE.
+	Verifier string `json:"verifier,omitempty"`
+}
+
+// oauthPKCE reports whether the provider takes a PKCE code challenge.
+// Google and GitHub do; Apple's authorization endpoint does not.
+func oauthPKCE(provider string) bool {
+	return provider == "google" || provider == "github"
+}
+
+func bindingHash(binding string) string {
+	sum := sha256.Sum256([]byte(binding))
+	return hex.EncodeToString(sum[:])
+}
+
+// GetOAuthRedirectURL starts a browser OAuth flow (M7). The state is single
+// use and stored server-side together with a hash of a browser-binding secret
+// and, where the provider supports it, a PKCE verifier. Without the binding,
+// an attacker could start a flow with their own provider account and send the
+// victim the callback link: the victim's browser would be signed in to the
+// attacker's account (login CSRF), and whatever they then saved would land
+// there.
+func (s *Service) GetOAuthRedirectURL(ctx context.Context, provider string) (*OAuthStart, error) {
 	cfg, err := s.oauthConfig(provider)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 
-	state, err := generateOpaqueToken(16)
+	state, err := generateOpaqueToken(32)
 	if err != nil {
-		return "", fmt.Errorf("failed to generate state: %w", err)
+		return nil, fmt.Errorf("failed to generate state: %w", err)
 	}
-
-	// Store state in Redis
-	key := oauthStatePrefix + state
-	if err := s.rdb.Set(ctx, key, provider, oauthStateTTL).Err(); err != nil {
-		return "", fmt.Errorf("failed to store oauth state: %w", err)
+	binding, err := generateOpaqueToken(32)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate state binding: %w", err)
 	}
+	rec := oauthState{Provider: provider, BindingHash: bindingHash(binding)}
+	opts := []oauth2.AuthCodeOption{oauth2.AccessTypeOffline}
+	if oauthPKCE(provider) {
+		rec.Verifier = oauth2.GenerateVerifier()
+		opts = append(opts, oauth2.S256ChallengeOption(rec.Verifier))
+	}
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.rdb.Set(ctx, oauthStatePrefix+state, raw, oauthStateTTL).Err(); err != nil {
+		return nil, fmt.Errorf("failed to store oauth state: %w", err)
+	}
+	return &OAuthStart{URL: cfg.AuthCodeURL(state, opts...), Binding: binding}, nil
+}
 
-	url := cfg.AuthCodeURL(state, oauth2.AccessTypeOffline)
-	return url, nil
+// consumeOAuthState takes the state out of Redis atomically (GETDEL), so a
+// replayed or concurrently replayed callback finds nothing, and checks the
+// provider and the browser binding.
+func (s *Service) consumeOAuthState(ctx context.Context, provider, state, binding string) (*oauthState, error) {
+	if state == "" || binding == "" {
+		return nil, ErrOAuthStateInvalid
+	}
+	raw, err := s.rdb.GetDel(ctx, oauthStatePrefix+state).Result()
+	if err != nil {
+		if errors.Is(err, redis.Nil) {
+			return nil, ErrOAuthStateInvalid
+		}
+		return nil, fmt.Errorf("failed to validate oauth state: %w", err)
+	}
+	var rec oauthState
+	if err := json.Unmarshal([]byte(raw), &rec); err != nil || rec.BindingHash == "" {
+		return nil, ErrOAuthStateInvalid
+	}
+	if rec.Provider != provider {
+		return nil, ErrOAuthStateInvalid
+	}
+	if subtle.ConstantTimeCompare([]byte(rec.BindingHash), []byte(bindingHash(binding))) != 1 {
+		return nil, ErrOAuthStateInvalid
+	}
+	return &rec, nil
+}
+
+// oauthHTTPContext gives the oauth2 library's outbound calls (code exchange,
+// userinfo) a client with a timeout instead of http.DefaultClient.
+func oauthHTTPContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, oauth2.HTTPClient, &http.Client{Timeout: oauthHTTPTimeout})
 }
 
 // OAuthCallbackResult represents either a fully-completed OAuth login
@@ -130,20 +217,12 @@ type OAuthCallbackResult struct {
 
 // HandleOAuthCallback exchanges the authorization code for tokens, fetches user info,
 // and creates or links the user account.
-func (s *Service) HandleOAuthCallback(ctx context.Context, provider, code, state string) (*OAuthCallbackResult, error) {
-	// Validate state
-	key := oauthStatePrefix + state
-	storedProvider, err := s.rdb.Get(ctx, key).Result()
+// binding is the value of the browser-binding cookie the redirect set.
+func (s *Service) HandleOAuthCallback(ctx context.Context, provider, code, state, binding string) (*OAuthCallbackResult, error) {
+	rec, err := s.consumeOAuthState(ctx, provider, state, binding)
 	if err != nil {
-		if errors.Is(err, redis.Nil) {
-			return nil, errors.New("invalid or expired OAuth state")
-		}
-		return nil, fmt.Errorf("failed to validate oauth state: %w", err)
+		return nil, err
 	}
-	if storedProvider != provider {
-		return nil, errors.New("OAuth state provider mismatch")
-	}
-	s.rdb.Del(ctx, key)
 
 	// Exchange code for token
 	cfg, err := s.oauthConfig(provider)
@@ -151,7 +230,12 @@ func (s *Service) HandleOAuthCallback(ctx context.Context, provider, code, state
 		return nil, err
 	}
 
-	token, err := cfg.Exchange(ctx, code)
+	ctx = oauthHTTPContext(ctx)
+	var exchangeOpts []oauth2.AuthCodeOption
+	if rec.Verifier != "" {
+		exchangeOpts = append(exchangeOpts, oauth2.VerifierOption(rec.Verifier))
+	}
+	token, err := cfg.Exchange(ctx, code, exchangeOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to exchange code: %w", err)
 	}
@@ -165,15 +249,33 @@ func (s *Service) HandleOAuthCallback(ctx context.Context, provider, code, state
 	return s.loginOrRegisterOAuth(ctx, provider, userInfo)
 }
 
-// HandleOAuthToken validates a provider-issued token directly (for mobile apps).
-func (s *Service) HandleOAuthToken(ctx context.Context, provider, accessToken string) (*OAuthCallbackResult, error) {
-	token := &oauth2.Token{AccessToken: accessToken}
-	userInfo, err := s.fetchOAuthUserInfo(ctx, provider, token)
-	if err != nil {
-		return nil, fmt.Errorf("failed to fetch user info: %w", err)
+// HandleOAuthToken signs a mobile app in with a provider ID token (C1). Only
+// Google is accepted: the token must verify against Google's keys and name one
+// of this service's client ids as its audience. See oauth_idtoken.go.
+func (s *Service) HandleOAuthToken(ctx context.Context, provider, idToken string) (*OAuthCallbackResult, error) {
+	if provider != "google" {
+		return nil, ErrOAuthTokenProviderUnsupported
 	}
-
+	audiences := s.googleIDTokenAudiences()
+	if len(audiences) == 0 {
+		return nil, ErrOAuthNotConfigured
+	}
+	userInfo, err := verifyGoogleIDToken(oauthHTTPContext(ctx), s.googleKeys(), idToken, audiences, time.Now())
+	if err != nil {
+		return nil, err
+	}
 	return s.loginOrRegisterOAuth(ctx, provider, userInfo)
+}
+
+// oauthLoginGate applies the password path's account rules to an existing
+// account signing in through a provider (M6): a pending (unverified) account
+// is refused, a deactivated one is reactivated, a deletion inside its window
+// is cancelled, and one past its window or purged is refused.
+func (s *Service) oauthLoginGate(ctx context.Context, user *store.User) error {
+	if user.AccountStatus == store.AccountStatusPendingVerification {
+		return ErrEmailNotVerified
+	}
+	return s.applyLoginLifecycle(ctx, user)
 }
 
 // loginOrRegisterOAuth finds an existing user by provider + email, or
@@ -191,6 +293,9 @@ func (s *Service) loginOrRegisterOAuth(ctx context.Context, provider string, inf
 		return nil, fmt.Errorf("failed to look up user: %w", err)
 	}
 	if user != nil {
+		if err := s.oauthLoginGate(ctx, user); err != nil {
+			return nil, err
+		}
 		auth, err := s.createSessionForUser(ctx, user, []string{AMRFederated}, "oauth", provider, "", "")
 		if err != nil {
 			return nil, err
@@ -224,6 +329,10 @@ func (s *Service) loginOrRegisterOAuth(ctx context.Context, provider string, inf
 		// provider first.
 		if !info.EmailVerified {
 			return nil, errors.New("oauth provider did not assert email_verified; cannot link to existing account")
+		}
+		// Gate BEFORE linking, so a refused account is not left linked.
+		if gateErr := s.oauthLoginGate(ctx, user); gateErr != nil {
+			return nil, gateErr
 		}
 		if err := s.store.LinkOAuthProvider(ctx, user.ID, provider); err != nil {
 			return nil, fmt.Errorf("failed to link OAuth provider: %w", err)
@@ -518,7 +627,23 @@ func (s *Service) VerifyOAuthSignup(ctx context.Context, pendingToken, otpCode, 
 // oauthConfig returns the oauth2.Config for the given provider.
 func (s *Service) oauthConfig(provider string) (*oauth2.Config, error) {
 	if s.cfg.OAuth == nil {
-		return nil, errors.New("OAuth is not configured")
+		return nil, ErrOAuthNotConfigured
+	}
+	// Fail closed: a provider with no client id or secret is off, rather than
+	// sending users to the provider with an empty client_id.
+	var pc config.OAuthProviderConfig
+	switch provider {
+	case "google":
+		pc = s.cfg.OAuth.Google
+	case "github":
+		pc = s.cfg.OAuth.GitHub
+	case "apple":
+		pc = s.cfg.OAuth.Apple
+	default:
+		return nil, fmt.Errorf("unsupported OAuth provider: %s", provider)
+	}
+	if strings.TrimSpace(pc.ClientID) == "" || strings.TrimSpace(pc.ClientSecret) == "" {
+		return nil, ErrOAuthNotConfigured
 	}
 
 	switch provider {
@@ -566,8 +691,12 @@ func (s *Service) fetchOAuthUserInfo(ctx context.Context, provider string, token
 }
 
 func (s *Service) fetchGoogleUserInfo(ctx context.Context, token *oauth2.Token) (*OAuthUserInfo, error) {
-	cfg, _ := s.oauthConfig("google")
+	cfg, err := s.oauthConfig("google")
+	if err != nil {
+		return nil, err
+	}
 	client := cfg.Client(ctx, token)
+	client.Timeout = oauthHTTPTimeout
 
 	resp, err := client.Get("https://www.googleapis.com/oauth2/v2/userinfo")
 	if err != nil {
@@ -611,8 +740,12 @@ func (s *Service) fetchGoogleUserInfo(ctx context.Context, token *oauth2.Token) 
 }
 
 func (s *Service) fetchGitHubUserInfo(ctx context.Context, token *oauth2.Token) (*OAuthUserInfo, error) {
-	cfg, _ := s.oauthConfig("github")
+	cfg, err := s.oauthConfig("github")
+	if err != nil {
+		return nil, err
+	}
 	client := cfg.Client(ctx, token)
+	client.Timeout = oauthHTTPTimeout
 
 	resp, err := client.Get("https://api.github.com/user")
 	if err != nil {

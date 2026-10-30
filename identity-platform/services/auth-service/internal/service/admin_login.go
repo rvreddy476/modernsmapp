@@ -150,14 +150,10 @@ func (s *Service) AdminLogin(ctx context.Context, identifier, password, ip, user
 	if identifier == "" || password == "" {
 		return nil, ErrAdminInvalidCredentials
 	}
-	user, err := s.store.GetUserByPhone(ctx, identifier)
+	// Shape-based lookup, never phone-first (H2, registration audit).
+	user, err := s.lookupUserByIdentifier(ctx, identifier)
 	if err != nil {
 		return nil, err
-	}
-	if user == nil {
-		if user, err = s.store.GetUserByEmail(ctx, identifier); err != nil {
-			return nil, err
-		}
 	}
 	if user == nil || user.PasswordHash == "" {
 		return nil, ErrAdminInvalidCredentials

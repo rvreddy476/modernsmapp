@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-shared/api"
 	"github.com/gin-gonic/gin"
 )
@@ -16,14 +17,44 @@ func (h *Handler) OAuthRedirect(c *gin.Context) {
 		return
 	}
 
-	url, err := h.svc.GetOAuthRedirectURL(c.Request.Context(), provider)
+	start, err := h.svc.GetOAuthRedirectURL(c.Request.Context(), provider)
 	if err != nil {
+		if errors.Is(err, service.ErrOAuthNotConfigured) {
+			api.Error(c.Writer, http.StatusServiceUnavailable, "OAUTH_UNAVAILABLE", "Sign-in with this provider is not available", nil, nil)
+			return
+		}
 		h.log.Error("OAuth redirect failed", "err", err, "provider", provider, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to generate OAuth URL", nil, nil)
 		return
 	}
 
-	c.Redirect(http.StatusTemporaryRedirect, url)
+	h.setOAuthBindingCookie(c, start.Binding, oauthBindingMaxAge)
+	c.Redirect(http.StatusTemporaryRedirect, start.URL)
+}
+
+// The browser-binding cookie ties an OAuth callback to the browser that
+// started the flow (M7). HttpOnly so script cannot read it; SameSite=Lax so it
+// rides on the provider's top-level redirect back to the callback; scoped to
+// the OAuth routes; lives as long as the state does.
+const (
+	oauthBindingCookieName = "oauth_binding"
+	oauthBindingCookiePath = "/v1/auth/oauth"
+	oauthBindingMaxAge     = 5 * 60
+)
+
+func (h *Handler) setOAuthBindingCookie(c *gin.Context, value string, maxAge int) {
+	if maxAge < 0 {
+		value = ""
+	}
+	http.SetCookie(c.Writer, &http.Cookie{
+		Name:     oauthBindingCookieName,
+		Value:    value,
+		Path:     oauthBindingCookiePath,
+		MaxAge:   maxAge,
+		HttpOnly: true,
+		Secure:   h.cfg.CookieSecure,
+		SameSite: http.SameSiteLaxMode,
+	})
 }
 
 func (h *Handler) OAuthCallback(c *gin.Context) {
@@ -45,7 +76,10 @@ func (h *Handler) OAuthCallback(c *gin.Context) {
 		return
 	}
 
-	result, err := h.svc.HandleOAuthCallback(c.Request.Context(), provider, code, state)
+	binding, _ := c.Cookie(oauthBindingCookieName)
+	// Single use whatever the outcome: the state is consumed server-side.
+	h.setOAuthBindingCookie(c, "", -1)
+	result, err := h.svc.HandleOAuthCallback(c.Request.Context(), provider, code, state, binding)
 	if err != nil {
 		h.log.Error("OAuth callback failed", "err", err, "provider", provider, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusUnauthorized, "AUTH_FAILED", "OAuth authentication failed", nil, nil)
@@ -72,8 +106,13 @@ func (h *Handler) OAuthCallback(c *gin.Context) {
 	c.Redirect(http.StatusTemporaryRedirect, h.cfg.FrontendURL+"/auth/callback")
 }
 
+// OAuthTokenRequest is the body of POST /v1/auth/oauth/:provider/token.
+// IDToken is the provider's OpenID Connect ID token (Google only). The
+// provider ACCESS token this route used to take in `token` is refused: it does
+// not say which app it was issued to (C1).
 type OAuthTokenRequest struct {
-	Token string `json:"token" binding:"required"`
+	IDToken string `json:"id_token"`
+	Token   string `json:"token"`
 }
 
 func (h *Handler) OAuthToken(c *gin.Context) {
@@ -89,10 +128,18 @@ func (h *Handler) OAuthToken(c *gin.Context) {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
 		return
 	}
+	if req.IDToken == "" {
+		api.Error(c.Writer, http.StatusBadRequest, "ID_TOKEN_REQUIRED",
+			"Send the provider's ID token in id_token; access tokens are not accepted", nil, nil)
+		return
+	}
 
-	result, err := h.svc.HandleOAuthToken(c.Request.Context(), provider, req.Token)
+	result, err := h.svc.HandleOAuthToken(c.Request.Context(), provider, req.IDToken)
 	if err != nil {
-		h.log.Error("OAuth token login failed", "err", err, "provider", provider, "request_id", RequestIDFromContext(c))
+		if h.writeOAuthLoginRefusal(c, err) {
+			return
+		}
+		h.log.Warn("OAuth token login failed", "err", err, "provider", provider, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusUnauthorized, "AUTH_FAILED", "OAuth authentication failed", nil, nil)
 		return
 	}
@@ -171,6 +218,26 @@ func (h *Handler) OAuthVerifySignup(c *gin.Context) {
 
 	h.setAuthCookies(c, resp.Tokens)
 	api.JSON(c.Writer, http.StatusCreated, resp, nil)
+}
+
+// writeOAuthLoginRefusal maps the refusals a client can act on to their own
+// status and code, matching the password login. Reports whether it wrote.
+func (h *Handler) writeOAuthLoginRefusal(c *gin.Context, err error) bool {
+	switch {
+	case errors.Is(err, service.ErrOAuthTokenProviderUnsupported):
+		api.Error(c.Writer, http.StatusBadRequest, "OAUTH_PROVIDER_UNSUPPORTED", err.Error(), nil, nil)
+	case errors.Is(err, service.ErrOAuthNotConfigured):
+		api.Error(c.Writer, http.StatusServiceUnavailable, "OAUTH_UNAVAILABLE", "Sign-in with this provider is not available", nil, nil)
+	case errors.Is(err, service.ErrEmailNotVerified):
+		api.Error(c.Writer, http.StatusForbidden, "EMAIL_NOT_VERIFIED", err.Error(), nil, nil)
+	case errors.Is(err, service.ErrAccountPurged):
+		api.Error(c.Writer, http.StatusForbidden, "ACCOUNT_PURGED", err.Error(), nil, nil)
+	case errors.Is(err, service.ErrAccountPendingPurge):
+		api.Error(c.Writer, http.StatusForbidden, "ACCOUNT_PENDING_PURGE", err.Error(), nil, nil)
+	default:
+		return false
+	}
+	return true
 }
 
 func validateOAuthProvider(provider string) error {
