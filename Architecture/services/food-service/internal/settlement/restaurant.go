@@ -9,6 +9,9 @@
 //	GST passthrough = GST on SUPPLIER-liable restaurant lines only
 //	TCS             = supplier-liable taxable value x FOOD_TCS_RATE_BP      [adviser Q10]
 //	refund share    = the restaurant's share of processed refunds
+//	substitution    = an approved cheaper substitution lowers net supply (and
+//	                  the GST on it) by what was not supplied; its refund is
+//	                  carried here, never again as a refund share
 //	payout          = net - commission - commission GST + passthrough - TCS - refund share
 //
 // The platform fee, the delivery fee and s.9(5) GST (which the platform pays)
@@ -82,6 +85,12 @@ type Order struct {
 	// CommissionBP is the commission percentage snapshot in basis points.
 	CommissionBP         int64
 	ProcessedRefundPaise int64
+	// SubstitutionSupplyPaise and SubstitutionTaxPaise are what approved
+	// substitutions took off the order (positive, ex-tax supply and its GST).
+	// ProcessedRefundPaise must NOT include the substitution refunds: they
+	// are settled here, wholly against the restaurant's supply.
+	SubstitutionSupplyPaise int64
+	SubstitutionTaxPaise    int64
 	// Breakdown is nil for an order placed before B3; such an order passes no
 	// GST through and has no TCS base.
 	Breakdown *pricing.Breakdown
@@ -95,7 +104,10 @@ type OrderLine struct {
 	GSTPassthroughPaise int64  `json:"gst_passthrough_paise"`
 	TCSBasePaise        int64  `json:"tcs_base_paise"`
 	RefundSharePaise    int64  `json:"refund_share_paise"`
-	HasTaxBreakdown     bool   `json:"has_tax_breakdown"`
+	// SubstitutionCreditPaise is the supply (ex-tax) not supplied because of
+	// approved cheaper substitutions; NetSupplyPaise is already net of it.
+	SubstitutionCreditPaise int64 `json:"substitution_credit_paise,omitempty"`
+	HasTaxBreakdown         bool  `json:"has_tax_breakdown"`
 }
 
 // Line is one restaurant's settlement for a period.
@@ -108,7 +120,9 @@ type Line struct {
 	TCSBasePaise        int64 `json:"tcs_base_paise"`
 	TCSPaise            int64 `json:"tcs_paise"`
 	RefundSharePaise    int64 `json:"refund_share_paise"`
-	PayoutPaise         int64 `json:"payout_paise"`
+	// SubstitutionCreditPaise totals OrderLine.SubstitutionCreditPaise.
+	SubstitutionCreditPaise int64 `json:"substitution_credit_paise,omitempty"`
+	PayoutPaise             int64 `json:"payout_paise"`
 	// Positive amounts recover a prior paid period's late refund. Negative
 	// amounts credit previously unpaid supply. The original paid row is immutable.
 	PriorPeriodAdjustmentPaise int64  `json:"prior_period_adjustment_paise"`
@@ -159,16 +173,26 @@ func refundShare(refund, share, final int64) int64 {
 	return int64(parts[0])
 }
 
+func nonNegative(v int64) int64 {
+	if v < 0 {
+		return 0
+	}
+	return v
+}
+
 // ComputeRestaurant settles one restaurant's orders for a period.
 func ComputeRestaurant(orders []Order, rules Rules) Line {
 	line := Line{Rules: rules, NeedsAdviserConfirmation: true}
 	for _, o := range orders {
 		ol := OrderLine{OrderID: o.OrderID, HasTaxBreakdown: o.Breakdown != nil}
-		ol.NetSupplyPaise = o.ItemSubtotalPaise + o.AddonTotalPaise + o.PackagingFeePaise - o.RestaurantDiscountPaise
+		subSupply, subTax := nonNegative(o.SubstitutionSupplyPaise), nonNegative(o.SubstitutionTaxPaise)
+		ol.SubstitutionCreditPaise = subSupply
+		ol.NetSupplyPaise = o.ItemSubtotalPaise + o.AddonTotalPaise + o.PackagingFeePaise - o.RestaurantDiscountPaise - subSupply
 		ol.CommissionPaise = Commission(ol.NetSupplyPaise, o.CommissionBP)
 		if o.Breakdown == nil {
 			line.OrdersWithoutTaxBreakdown++
 		} else {
+			var orderS95 int64
 			for _, l := range o.Breakdown.Lines {
 				switch {
 				case l.Supplier == string(gst.SupplierRestaurant) && l.Liability == string(gst.LiabilitySupplier):
@@ -177,13 +201,25 @@ func ComputeRestaurant(orders []Order, rules Rules) Line {
 						ol.TCSBasePaise += l.TaxablePaise
 					}
 				case l.Supplier == string(gst.SupplierRestaurant) && l.Liability == string(gst.LiabilityECOSection95):
-					line.ExcludedSection95GSTPaise += l.TaxPaise
+					orderS95 += l.TaxPaise
 				case l.Supplier == string(gst.SupplierPlatform):
 					line.ExcludedPlatformOwnGSTPaise += l.TaxPaise
 				}
 			}
+			// The GST on what was not supplied leaves with it: from the
+			// restaurant's passthrough (and TCS base) when it is liable,
+			// otherwise from the s.9(5) GST the platform pays.
+			passthroughCut := min(subTax, ol.GSTPassthroughPaise)
+			ol.GSTPassthroughPaise -= passthroughCut
+			if passthroughCut > 0 {
+				ol.TCSBasePaise -= min(subSupply, ol.TCSBasePaise)
+			}
+			line.ExcludedSection95GSTPaise += orderS95 - min(subTax-passthroughCut, orderS95)
 		}
-		ol.RefundSharePaise = refundShare(o.ProcessedRefundPaise, ol.NetSupplyPaise+ol.GSTPassthroughPaise, o.FinalAmountPaise)
+		// The order's paid total is what the customer keeps paying after the
+		// substitution refunds; other refunds are split against it.
+		ol.RefundSharePaise = refundShare(o.ProcessedRefundPaise, ol.NetSupplyPaise+ol.GSTPassthroughPaise,
+			o.FinalAmountPaise-subSupply-subTax)
 
 		line.OrderCount++
 		line.NetSupplyPaise += ol.NetSupplyPaise
@@ -191,6 +227,7 @@ func ComputeRestaurant(orders []Order, rules Rules) Line {
 		line.GSTPassthroughPaise += ol.GSTPassthroughPaise
 		line.TCSBasePaise += ol.TCSBasePaise
 		line.RefundSharePaise += ol.RefundSharePaise
+		line.SubstitutionCreditPaise += ol.SubstitutionCreditPaise
 		line.ExcludedPlatformFeePaise += o.PlatformFeePaise
 		line.ExcludedDeliveryFeePaise += o.DeliveryFeePaise
 		line.Orders = append(line.Orders, ol)

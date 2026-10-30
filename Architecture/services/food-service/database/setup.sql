@@ -173,6 +173,56 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Audit 2026-10-30 M4: boot-time DDL must not take heavy locks on hot tables
+-- when nothing changed. Dropping and re-creating a trigger or a CHECK
+-- constraint takes a table lock that queues every order read and write behind
+-- any long reader, so both now happen only when the object is missing or its
+-- definition changed. (BootstrapSchema also skips the whole script when its
+-- fingerprint is unchanged, and runs it with lock_timeout 5s.)
+
+-- food.ensure_updated_at_trigger creates the BEFORE UPDATE updated_at trigger
+-- only when it is missing or calls another function. Reading pg_trigger
+-- takes no table lock.
+CREATE OR REPLACE FUNCTION food.ensure_updated_at_trigger(p_table regclass, p_trigger name)
+RETURNS void AS $$
+DECLARE
+    v_fn oid;
+BEGIN
+    SELECT tgfoid INTO v_fn FROM pg_trigger
+    WHERE tgrelid = p_table AND tgname = p_trigger AND NOT tgisinternal;
+    IF FOUND AND v_fn = 'food.set_updated_at()'::regprocedure THEN
+        RETURN;
+    END IF;
+    IF FOUND THEN
+        EXECUTE format('DROP TRIGGER %I ON %s', p_trigger, p_table);
+    END IF;
+    EXECUTE format('CREATE TRIGGER %I BEFORE UPDATE ON %s FOR EACH ROW EXECUTE FUNCTION food.set_updated_at()',
+        p_trigger, p_table);
+END;
+$$ LANGUAGE plpgsql;
+
+-- food.ensure_check_constraint (re)creates a CHECK constraint only when it is
+-- missing or its expression changed. The applied expression's md5 is kept as
+-- the constraint's comment; an existing constraint without that comment (one
+-- added before this guard) is re-added once and tagged.
+CREATE OR REPLACE FUNCTION food.ensure_check_constraint(p_table regclass, p_name name, p_check text)
+RETURNS void AS $$
+DECLARE
+    v_oid oid;
+    v_tag text := 'setup.sql:' || md5(p_check);
+BEGIN
+    SELECT oid INTO v_oid FROM pg_constraint WHERE conrelid = p_table AND conname = p_name;
+    IF FOUND AND obj_description(v_oid, 'pg_constraint') IS NOT DISTINCT FROM v_tag THEN
+        RETURN;
+    END IF;
+    IF FOUND THEN
+        EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', p_table, p_name);
+    END IF;
+    EXECUTE format('ALTER TABLE %s ADD CONSTRAINT %I CHECK (%s)', p_table, p_name, p_check);
+    EXECUTE format('COMMENT ON CONSTRAINT %I ON %s IS %L', p_name, p_table, v_tag);
+END;
+$$ LANGUAGE plpgsql;
+
 -- ============================================================
 -- RESTAURANT PARTNER AND RESTAURANTS
 -- ============================================================
@@ -196,10 +246,7 @@ CREATE TABLE IF NOT EXISTS food.restaurant_partners (
 CREATE INDEX IF NOT EXISTS ix_food_restaurant_partners_owner ON food.restaurant_partners(owner_user_id);
 CREATE INDEX IF NOT EXISTS ix_food_restaurant_partners_status ON food.restaurant_partners(status);
 
-DROP TRIGGER IF EXISTS trg_restaurant_partners_updated_at ON food.restaurant_partners;
-CREATE TRIGGER trg_restaurant_partners_updated_at
-BEFORE UPDATE ON food.restaurant_partners
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.restaurant_partners', 'trg_restaurant_partners_updated_at');
 
 CREATE TABLE IF NOT EXISTS food.restaurants (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -245,10 +292,7 @@ CREATE INDEX IF NOT EXISTS ix_food_restaurants_status ON food.restaurants(status
 CREATE INDEX IF NOT EXISTS ix_food_restaurants_city ON food.restaurants(city);
 CREATE INDEX IF NOT EXISTS ix_food_restaurants_location ON food.restaurants(latitude, longitude);
 
-DROP TRIGGER IF EXISTS trg_restaurants_updated_at ON food.restaurants;
-CREATE TRIGGER trg_restaurants_updated_at
-BEFORE UPDATE ON food.restaurants
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.restaurants', 'trg_restaurants_updated_at');
 
 CREATE TABLE IF NOT EXISTS food.restaurant_documents (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -295,10 +339,7 @@ CREATE TABLE IF NOT EXISTS food.restaurant_operating_hours (
 
 CREATE INDEX IF NOT EXISTS ix_food_operating_hours_restaurant_day ON food.restaurant_operating_hours(restaurant_id, day_of_week);
 
-DROP TRIGGER IF EXISTS trg_operating_hours_updated_at ON food.restaurant_operating_hours;
-CREATE TRIGGER trg_operating_hours_updated_at
-BEFORE UPDATE ON food.restaurant_operating_hours
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.restaurant_operating_hours', 'trg_operating_hours_updated_at');
 
 CREATE TABLE IF NOT EXISTS food.restaurant_service_areas (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -336,10 +377,7 @@ CREATE TABLE IF NOT EXISTS food.service_areas (
 
 CREATE INDEX IF NOT EXISTS ix_food_service_areas_active_city ON food.service_areas(is_active, city);
 
-DROP TRIGGER IF EXISTS trg_service_areas_updated_at ON food.service_areas;
-CREATE TRIGGER trg_service_areas_updated_at
-BEFORE UPDATE ON food.service_areas
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.service_areas', 'trg_service_areas_updated_at');
 
 -- ============================================================
 -- CUISINES AND MENU
@@ -374,10 +412,7 @@ CREATE TABLE IF NOT EXISTS food.menu_categories (
 
 CREATE INDEX IF NOT EXISTS ix_food_menu_categories_restaurant ON food.menu_categories(restaurant_id);
 
-DROP TRIGGER IF EXISTS trg_menu_categories_updated_at ON food.menu_categories;
-CREATE TRIGGER trg_menu_categories_updated_at
-BEFORE UPDATE ON food.menu_categories
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.menu_categories', 'trg_menu_categories_updated_at');
 
 CREATE TABLE IF NOT EXISTS food.menu_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -407,10 +442,7 @@ CREATE INDEX IF NOT EXISTS ix_food_menu_items_restaurant ON food.menu_items(rest
 CREATE INDEX IF NOT EXISTS ix_food_menu_items_category ON food.menu_items(category_id);
 CREATE INDEX IF NOT EXISTS ix_food_menu_items_available ON food.menu_items(is_available, is_active);
 
-DROP TRIGGER IF EXISTS trg_menu_items_updated_at ON food.menu_items;
-CREATE TRIGGER trg_menu_items_updated_at
-BEFORE UPDATE ON food.menu_items
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.menu_items', 'trg_menu_items_updated_at');
 
 CREATE TABLE IF NOT EXISTS food.menu_item_variants (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -481,10 +513,7 @@ CREATE INDEX IF NOT EXISTS ix_food_delivery_partners_status ON food.delivery_par
 CREATE INDEX IF NOT EXISTS ix_food_delivery_partners_city ON food.delivery_partners(city);
 CREATE INDEX IF NOT EXISTS ix_food_delivery_partners_online ON food.delivery_partners(is_online);
 
-DROP TRIGGER IF EXISTS trg_delivery_partners_updated_at ON food.delivery_partners;
-CREATE TRIGGER trg_delivery_partners_updated_at
-BEFORE UPDATE ON food.delivery_partners
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.delivery_partners', 'trg_delivery_partners_updated_at');
 
 CREATE TABLE IF NOT EXISTS food.delivery_partner_availability (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -552,10 +581,7 @@ CREATE TABLE IF NOT EXISTS food.customer_addresses (
 
 CREATE INDEX IF NOT EXISTS ix_food_customer_addresses_user ON food.customer_addresses(user_id, is_deleted);
 
-DROP TRIGGER IF EXISTS trg_customer_addresses_updated_at ON food.customer_addresses;
-CREATE TRIGGER trg_customer_addresses_updated_at
-BEFORE UPDATE ON food.customer_addresses
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.customer_addresses', 'trg_customer_addresses_updated_at');
 
 CREATE TABLE IF NOT EXISTS food.carts (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -569,10 +595,7 @@ CREATE TABLE IF NOT EXISTS food.carts (
 
 CREATE INDEX IF NOT EXISTS ix_food_carts_user ON food.carts(user_id);
 
-DROP TRIGGER IF EXISTS trg_carts_updated_at ON food.carts;
-CREATE TRIGGER trg_carts_updated_at
-BEFORE UPDATE ON food.carts
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.carts', 'trg_carts_updated_at');
 
 CREATE TABLE IF NOT EXISTS food.cart_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -592,13 +615,15 @@ CREATE INDEX IF NOT EXISTS ix_food_cart_items_cart ON food.cart_items(cart_id);
 -- Keep the customer's variant selection even if a merchant removes that
 -- variant (the live FK is SET NULL). Checkout must refuse, not base-price it.
 ALTER TABLE food.cart_items ADD COLUMN IF NOT EXISTS selected_variant_id UUID;
-UPDATE food.cart_items SET selected_variant_id = variant_id
-WHERE selected_variant_id IS NULL AND variant_id IS NOT NULL;
+-- One-off backfill (M4): the UPDATE runs only while a row still needs it.
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM food.cart_items WHERE selected_variant_id IS NULL AND variant_id IS NOT NULL) THEN
+        UPDATE food.cart_items SET selected_variant_id = variant_id
+        WHERE selected_variant_id IS NULL AND variant_id IS NOT NULL;
+    END IF;
+END $$;
 
-DROP TRIGGER IF EXISTS trg_cart_items_updated_at ON food.cart_items;
-CREATE TRIGGER trg_cart_items_updated_at
-BEFORE UPDATE ON food.cart_items
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.cart_items', 'trg_cart_items_updated_at');
 
 CREATE TABLE IF NOT EXISTS food.cart_item_addons (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -643,10 +668,7 @@ CREATE INDEX IF NOT EXISTS ix_food_coupons_code ON food.coupons(code);
 CREATE INDEX IF NOT EXISTS ix_food_coupons_restaurant ON food.coupons(restaurant_id);
 CREATE INDEX IF NOT EXISTS ix_food_coupons_active ON food.coupons(is_active, starts_at, ends_at);
 
-DROP TRIGGER IF EXISTS trg_coupons_updated_at ON food.coupons;
-CREATE TRIGGER trg_coupons_updated_at
-BEFORE UPDATE ON food.coupons
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.coupons', 'trg_coupons_updated_at');
 
 -- ============================================================
 -- ORDERS
@@ -706,10 +728,7 @@ CREATE INDEX IF NOT EXISTS ix_food_orders_status ON food.orders(status);
 CREATE INDEX IF NOT EXISTS ix_food_orders_payment_status ON food.orders(payment_status);
 CREATE INDEX IF NOT EXISTS ix_food_orders_created ON food.orders(created_at DESC);
 
-DROP TRIGGER IF EXISTS trg_orders_updated_at ON food.orders;
-CREATE TRIGGER trg_orders_updated_at
-BEFORE UPDATE ON food.orders
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.orders', 'trg_orders_updated_at');
 
 CREATE TABLE IF NOT EXISTS food.order_items (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -781,10 +800,7 @@ CREATE TABLE IF NOT EXISTS food.payments (
 CREATE INDEX IF NOT EXISTS ix_food_payments_order ON food.payments(order_id);
 CREATE INDEX IF NOT EXISTS ix_food_payments_provider_payment ON food.payments(provider_payment_id);
 
-DROP TRIGGER IF EXISTS trg_payments_updated_at ON food.payments;
-CREATE TRIGGER trg_payments_updated_at
-BEFORE UPDATE ON food.payments
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.payments', 'trg_payments_updated_at');
 
 CREATE TABLE IF NOT EXISTS food.refunds (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -832,10 +848,7 @@ CREATE TABLE IF NOT EXISTS food.delivery_assignments (
 CREATE INDEX IF NOT EXISTS ix_food_assignments_partner_status ON food.delivery_assignments(delivery_partner_id, status);
 CREATE INDEX IF NOT EXISTS ix_food_assignments_status ON food.delivery_assignments(status);
 
-DROP TRIGGER IF EXISTS trg_delivery_assignments_updated_at ON food.delivery_assignments;
-CREATE TRIGGER trg_delivery_assignments_updated_at
-BEFORE UPDATE ON food.delivery_assignments
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.delivery_assignments', 'trg_delivery_assignments_updated_at');
 
 CREATE TABLE IF NOT EXISTS food.delivery_tracking_events (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -923,10 +936,7 @@ CREATE TABLE IF NOT EXISTS food.restaurant_settlements (
 CREATE INDEX IF NOT EXISTS ix_food_restaurant_settlements_restaurant ON food.restaurant_settlements(restaurant_id, period_start, period_end);
 CREATE INDEX IF NOT EXISTS ix_food_restaurant_settlements_status ON food.restaurant_settlements(status);
 
-DROP TRIGGER IF EXISTS trg_restaurant_settlements_updated_at ON food.restaurant_settlements;
-CREATE TRIGGER trg_restaurant_settlements_updated_at
-BEFORE UPDATE ON food.restaurant_settlements
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.restaurant_settlements', 'trg_restaurant_settlements_updated_at');
 
 CREATE TABLE IF NOT EXISTS food.delivery_partner_settlements (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -950,10 +960,7 @@ CREATE TABLE IF NOT EXISTS food.delivery_partner_settlements (
 CREATE INDEX IF NOT EXISTS ix_food_delivery_settlements_partner ON food.delivery_partner_settlements(delivery_partner_id, period_start, period_end);
 CREATE INDEX IF NOT EXISTS ix_food_delivery_settlements_status ON food.delivery_partner_settlements(status);
 
-DROP TRIGGER IF EXISTS trg_delivery_partner_settlements_updated_at ON food.delivery_partner_settlements;
-CREATE TRIGGER trg_delivery_partner_settlements_updated_at
-BEFORE UPDATE ON food.delivery_partner_settlements
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.delivery_partner_settlements', 'trg_delivery_partner_settlements_updated_at');
 
 -- ============================================================
 -- SUPPORT, AUDIT, IDEMPOTENCY
@@ -1308,10 +1315,31 @@ CREATE TABLE IF NOT EXISTS food.order_substitutions (
 CREATE INDEX IF NOT EXISTS ix_food_substitutions_order ON food.order_substitutions(order_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS ix_food_substitutions_status ON food.order_substitutions(status);
 
-DROP TRIGGER IF EXISTS trg_food_substitutions_updated_at ON food.order_substitutions;
-CREATE TRIGGER trg_food_substitutions_updated_at
-BEFORE UPDATE ON food.order_substitutions
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.order_substitutions', 'trg_food_substitutions_updated_at');
+
+-- Audit 2026-10-30 M2: a substitution's price difference is integer paise,
+-- computed by the server from the menu and the order line (never the
+-- partner's float price_diff, which stays only as a derived display column):
+--   supply_diff_paise  (suggested - original unit price) x quantity, ex-tax
+--   tax_diff_paise     the GST on that difference at the line's rate
+--   price_diff_paise   supply + tax; what the customer is owed when negative
+-- A positive difference is refused (there is no re-charge path). Approving a
+-- negative one queues a partial refund (refund_id) in the same transaction;
+-- settlement and the invoice read approved rows. Rows written before this
+-- carry NULL and move no money. Guarded so a booted database takes no lock.
+DO $$ BEGIN
+    IF (SELECT COUNT(*) FROM pg_attribute
+        WHERE attrelid = 'food.order_substitutions'::regclass AND NOT attisdropped
+          AND attname IN ('price_diff_paise', 'supply_diff_paise', 'tax_diff_paise', 'refund_id')) < 4 THEN
+        ALTER TABLE food.order_substitutions
+            ADD COLUMN IF NOT EXISTS price_diff_paise  BIGINT,
+            ADD COLUMN IF NOT EXISTS supply_diff_paise BIGINT,
+            ADD COLUMN IF NOT EXISTS tax_diff_paise    BIGINT,
+            ADD COLUMN IF NOT EXISTS refund_id         UUID REFERENCES food.refunds(id) ON DELETE SET NULL;
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS ix_food_substitutions_refund
+    ON food.order_substitutions(refund_id) WHERE refund_id IS NOT NULL;
 
 -- ─── B3: menu moderation ──────────────────────────────────────────────
 --
@@ -1426,10 +1454,7 @@ CREATE INDEX IF NOT EXISTS ix_food_tickets_customer ON food.support_tickets(cust
 CREATE INDEX IF NOT EXISTS ix_food_tickets_status   ON food.support_tickets(status);
 CREATE INDEX IF NOT EXISTS ix_food_tickets_order    ON food.support_tickets(order_id) WHERE order_id IS NOT NULL;
 
-DROP TRIGGER IF EXISTS trg_food_tickets_updated_at ON food.support_tickets;
-CREATE TRIGGER trg_food_tickets_updated_at
-BEFORE UPDATE ON food.support_tickets
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.support_tickets', 'trg_food_tickets_updated_at');
 
 CREATE TABLE IF NOT EXISTS food.ticket_messages (
     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1460,10 +1485,7 @@ CREATE INDEX IF NOT EXISTS ix_food_refunds_order    ON food.refund_requests(orde
 CREATE INDEX IF NOT EXISTS ix_food_refunds_customer ON food.refund_requests(customer_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS ix_food_refunds_status   ON food.refund_requests(status);
 
-DROP TRIGGER IF EXISTS trg_food_refunds_updated_at ON food.refund_requests;
-CREATE TRIGGER trg_food_refunds_updated_at
-BEFORE UPDATE ON food.refund_requests
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.refund_requests', 'trg_food_refunds_updated_at');
 
 -- ─── B7: item-level reviews ───────────────────────────────────────────
 --
@@ -1707,19 +1729,16 @@ ALTER TABLE food.restaurants
 
 -- The restaurant tax categories of shared/gst (rows supplied by the
 -- RESTAURANT). TestSetupSQLTaxCategoryCheckMatchesRateTable fails when this
--- list and gst.DefaultRateTable() drift. Dropped and re-added so a changed
--- list takes effect on the next boot.
-ALTER TABLE food.restaurants DROP CONSTRAINT IF EXISTS ck_food_restaurant_tax_category;
-ALTER TABLE food.restaurants ADD CONSTRAINT ck_food_restaurant_tax_category
-    CHECK (tax_category IS NULL OR tax_category IN ('CLOUD_KITCHEN_TAKEAWAY','OUTDOOR_CATERING','OUTDOOR_CATERING_SPECIFIED_PREMISES','RESTAURANT_SPECIFIED_PREMISES','RESTAURANT_STANDALONE'));
+-- list and gst.DefaultRateTable() drift. Re-added (through the M4 guard)
+-- only when the list changes, so a changed list takes effect on the next boot.
+SELECT food.ensure_check_constraint('food.restaurants', 'ck_food_restaurant_tax_category',
+    $chk$tax_category IS NULL OR tax_category IN ('CLOUD_KITCHEN_TAKEAWAY','OUTDOOR_CATERING','OUTDOOR_CATERING_SPECIFIED_PREMISES','RESTAURANT_SPECIFIED_PREMISES','RESTAURANT_STANDALONE')$chk$);
 
 -- A sealed PAN is all or nothing: blob, key version, lookup hash and mask.
-ALTER TABLE food.restaurants DROP CONSTRAINT IF EXISTS ck_food_restaurant_pan_sealed;
-ALTER TABLE food.restaurants ADD CONSTRAINT ck_food_restaurant_pan_sealed
-    CHECK (
+SELECT food.ensure_check_constraint('food.restaurants', 'ck_food_restaurant_pan_sealed', $chk$
         (pan_sealed IS NULL AND pan_key_version IS NULL AND pan_lookup IS NULL AND pan_masked IS NULL)
         OR (pan_sealed IS NOT NULL AND pan_key_version > 0 AND pan_lookup IS NOT NULL AND pan_masked IS NOT NULL)
-    );
+    $chk$);
 
 CREATE INDEX IF NOT EXISTS ix_food_restaurants_pan_lookup
     ON food.restaurants(pan_lookup) WHERE pan_lookup IS NOT NULL;
@@ -1757,10 +1776,7 @@ CREATE TABLE IF NOT EXISTS food.payout_accounts (
 
 CREATE INDEX IF NOT EXISTS ix_food_payout_accounts_lookup ON food.payout_accounts(account_lookup);
 
-DROP TRIGGER IF EXISTS trg_payout_accounts_updated_at ON food.payout_accounts;
-CREATE TRIGGER trg_payout_accounts_updated_at
-BEFORE UPDATE ON food.payout_accounts
-FOR EACH ROW EXECUTE FUNCTION food.set_updated_at();
+SELECT food.ensure_updated_at_trigger('food.payout_accounts', 'trg_payout_accounts_updated_at');
 
 -- ============================================================
 -- WAVE 1 B3: GST TOTALS, INVOICES AND SETTLEMENTS IN PAISE
@@ -1788,17 +1804,22 @@ ALTER TABLE food.orders
 
 -- Orders written before B3 get paise derived from their NUMERIC columns. Only
 -- rows still without paise are touched, so a re-run is a no-op. Readers also
--- COALESCE to the NUMERIC value for a row inserted between boots.
-UPDATE food.orders SET
-    item_subtotal_paise  = ROUND(item_subtotal * 100)::bigint,
-    addon_total_paise    = ROUND(addon_total * 100)::bigint,
-    packaging_fee_paise  = ROUND(packaging_fee * 100)::bigint,
-    delivery_fee_paise   = ROUND(delivery_fee * 100)::bigint,
-    platform_fee_paise   = ROUND(platform_fee * 100)::bigint,
-    tax_total_paise      = ROUND(tax_total * 100)::bigint,
-    discount_total_paise = ROUND((restaurant_discount + coupon_discount) * 100)::bigint,
-    final_amount_paise   = ROUND(final_amount * 100)::bigint
-WHERE final_amount_paise IS NULL;
+-- COALESCE to the NUMERIC value for a row inserted between boots. M4: the
+-- UPDATE runs only while such a row exists.
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM food.orders WHERE final_amount_paise IS NULL) THEN
+        UPDATE food.orders SET
+            item_subtotal_paise  = ROUND(item_subtotal * 100)::bigint,
+            addon_total_paise    = ROUND(addon_total * 100)::bigint,
+            packaging_fee_paise  = ROUND(packaging_fee * 100)::bigint,
+            delivery_fee_paise   = ROUND(delivery_fee * 100)::bigint,
+            platform_fee_paise   = ROUND(platform_fee * 100)::bigint,
+            tax_total_paise      = ROUND(tax_total * 100)::bigint,
+            discount_total_paise = ROUND((restaurant_discount + coupon_discount) * 100)::bigint,
+            final_amount_paise   = ROUND(final_amount * 100)::bigint
+        WHERE final_amount_paise IS NULL;
+    END IF;
+END $$;
 
 -- A NUMERIC money column must equal its paise column exactly. Added once; the
 -- backfill above runs first, so existing rows satisfy it.
@@ -1832,7 +1853,12 @@ ALTER TABLE food.order_item_addons
 -- keep series LEGACY. The key becomes (series, financial_year).
 ALTER TABLE food.invoice_sequences
     ADD COLUMN IF NOT EXISTS series VARCHAR(60) NOT NULL DEFAULT 'LEGACY';
-ALTER TABLE food.invoice_sequences DROP CONSTRAINT IF EXISTS invoice_sequences_pkey;
+DO $$ BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint
+               WHERE conrelid = 'food.invoice_sequences'::regclass AND conname = 'invoice_sequences_pkey') THEN
+        ALTER TABLE food.invoice_sequences DROP CONSTRAINT invoice_sequences_pkey;
+    END IF;
+END $$;
 CREATE UNIQUE INDEX IF NOT EXISTS uq_food_invoice_sequences_series_year
     ON food.invoice_sequences(series, financial_year);
 
@@ -1914,12 +1940,10 @@ ALTER TABLE food.delivery_partner_documents
     ADD COLUMN IF NOT EXISTS number_masked TEXT;
 
 -- Sealed is all or nothing (blob, key version, mask); a lookup needs a blob.
-ALTER TABLE food.delivery_partner_documents DROP CONSTRAINT IF EXISTS ck_food_delivery_docs_number_sealed;
-ALTER TABLE food.delivery_partner_documents ADD CONSTRAINT ck_food_delivery_docs_number_sealed
-    CHECK (
+SELECT food.ensure_check_constraint('food.delivery_partner_documents', 'ck_food_delivery_docs_number_sealed', $chk$
         (number_sealed IS NULL AND number_key_version IS NULL AND number_lookup IS NULL AND number_masked IS NULL)
         OR (number_sealed IS NOT NULL AND number_key_version > 0 AND number_masked IS NOT NULL)
-    );
+    $chk$);
 
 -- One driving licence or vehicle RC cannot back two delivery partners.
 CREATE UNIQUE INDEX IF NOT EXISTS uq_food_delivery_docs_number_lookup
@@ -1928,15 +1952,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_food_delivery_docs_number_lookup
 
 -- One active selfie per partner. Older duplicates written before B4 are
 -- retired (EXPIRED) first, newest kept, so the index can be built.
-UPDATE food.delivery_partner_documents d
-SET status = 'EXPIRED'
-WHERE d.document_type = 'SELFIE' AND d.status IN ('PENDING', 'APPROVED')
-  AND EXISTS (
-    SELECT 1 FROM food.delivery_partner_documents n
-    WHERE n.delivery_partner_id = d.delivery_partner_id
-      AND n.document_type = 'SELFIE' AND n.status IN ('PENDING', 'APPROVED')
-      AND (n.created_at, n.id) > (d.created_at, d.id)
-  );
+-- M4: only until the unique index exists; after that no duplicate can exist.
+DO $$ BEGIN
+    IF to_regclass('food.uq_food_delivery_docs_active_selfie') IS NULL THEN
+        UPDATE food.delivery_partner_documents d
+        SET status = 'EXPIRED'
+        WHERE d.document_type = 'SELFIE' AND d.status IN ('PENDING', 'APPROVED')
+          AND EXISTS (
+            SELECT 1 FROM food.delivery_partner_documents n
+            WHERE n.delivery_partner_id = d.delivery_partner_id
+              AND n.document_type = 'SELFIE' AND n.status IN ('PENDING', 'APPROVED')
+              AND (n.created_at, n.id) > (d.created_at, d.id)
+          );
+    END IF;
+END $$;
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_food_delivery_docs_active_selfie
     ON food.delivery_partner_documents(delivery_partner_id)

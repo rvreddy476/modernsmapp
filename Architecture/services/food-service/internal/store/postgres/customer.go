@@ -245,7 +245,7 @@ func (s *Store) ApplyCoupon(ctx context.Context, userID uuid.UUID, code string) 
 	if len(cart.Items) == 0 {
 		return nil, ErrCartEmpty
 	}
-	if _, err := s.validateCoupon(ctx, code, cart.RestaurantID, rupees(cartItemsPaise(cart))); err != nil {
+	if _, err := s.validateCouponQuery(ctx, s.db, code, cart.RestaurantID, cartItemsPaise(cart), userID); err != nil {
 		return nil, err
 	}
 	if _, err := s.db.Exec(ctx, `
@@ -504,11 +504,11 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 			cart.CouponCode = in.CouponCode
 		}
 		if cart.CouponCode != "" {
-			discount, err := s.validateCouponTx(ctx, tx, cart.CouponCode, cart.RestaurantID, rupees(cartItemsPaise(cart)))
+			discount, err := s.validateCouponTx(ctx, tx, cart.CouponCode, cart.RestaurantID, cartItemsPaise(cart), userID)
 			if err != nil {
 				return nil, err
 			}
-			discountPaise = int64(math.Round(discount * 100))
+			discountPaise = discount
 			couponCode = cart.CouponCode
 		}
 	}
@@ -583,7 +583,7 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 			coupon_code, commission_percentage_snapshot, commission_amount,
 			estimated_preparation_minutes, estimated_delivery_minutes, customer_instruction,
 			metadata, tax_breakdown, needs_adviser_confirmation,
-			eta_at, eta_source, eta_computed_at
+			eta_at, eta_source, eta_computed_at, accept_deadline_at
 		)
 		VALUES (
 			$1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,
@@ -594,7 +594,11 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 			$20, $21, ($22::bigint)::numeric / 100,
 			$23, $24, $25,
 			$26::jsonb, $27::jsonb, $28,
-			NOW() + make_interval(secs => $29::float8), $30, NOW()
+			NOW() + make_interval(secs => $29::float8), $30, NOW(),
+			-- Audit L1: an order born CONFIRMED (cash on delivery) gets the
+			-- restaurant's accept deadline too, so the SLA worker can reject it.
+			CASE WHEN $6 = 'CONFIRMED'::food.order_status THEN NOW() + COALESCE(
+				(SELECT sla_accept_seconds FROM food.restaurants WHERE id = $4), 180) * INTERVAL '1 second' END
 		)
 	`, orderID, orderNumber, userID, *cart.RestaurantID, address.ID, status, paymentStatus, paymentMethod,
 		restaurantName, restaurantAddressJSON, deliveryAddressJSON,
@@ -950,8 +954,8 @@ func (s *Store) loadCart(ctx context.Context, q interface {
 			return nil, err
 		}
 		if cart.CouponCode != "" && s.pricingCfg.CouponsEnabled {
-			if discount, err := s.validateCouponQuery(ctx, q, cart.CouponCode, cart.RestaurantID, rupees(cartItemsPaise(&cart))); err == nil {
-				discountPaise = int64(math.Round(discount * 100))
+			if discount, err := s.validateCouponQuery(ctx, q, cart.CouponCode, cart.RestaurantID, cartItemsPaise(&cart), cart.UserID); err == nil {
+				discountPaise = discount
 			}
 		}
 	}
@@ -963,61 +967,63 @@ func (s *Store) loadCart(ctx context.Context, q interface {
 	return &cart, nil
 }
 
-func (s *Store) validateCoupon(ctx context.Context, code string, restaurantID *uuid.UUID, subtotal float64) (float64, error) {
-	return s.validateCouponQuery(ctx, s.db, code, restaurantID, subtotal)
-}
-
-func (s *Store) validateCouponTx(ctx context.Context, tx pgx.Tx, code string, restaurantID *uuid.UUID, subtotal float64) (float64, error) {
+func (s *Store) validateCouponTx(ctx context.Context, tx pgx.Tx, code string, restaurantID *uuid.UUID, subtotalPaise int64, userID uuid.UUID) (int64, error) {
 	// Reserve usage under the coupon row lock until order+redemption commit.
 	// Lock every case-equivalent legacy row in deterministic order and refuse
 	// ambiguous codes rather than applying or incrementing a different coupon.
+	// The lock also serialises the per-user count (audit L2).
 	rows, err := tx.Query(ctx, `SELECT id FROM food.coupons WHERE UPPER(code)=UPPER($1) ORDER BY id FOR UPDATE`, code)
-	if err != nil { return 0, err }
+	if err != nil {
+		return 0, err
+	}
 	count := 0
-	for rows.Next() { count++ }
+	for rows.Next() {
+		count++
+	}
 	err = rows.Err()
 	rows.Close()
-	if err != nil { return 0, err }
-	if count != 1 { return 0, ErrCouponInvalid }
-	return s.validateCouponQuery(ctx, tx, code, restaurantID, subtotal)
-}
-
-func (s *Store) validateCouponQuery(ctx context.Context, q interface {
-	QueryRow(context.Context, string, ...any) pgx.Row
-}, code string, restaurantID *uuid.UUID, subtotal float64) (float64, error) {
-	var couponType string
-	var value, maxDiscount, minOrder float64
-	var couponRestaurant *uuid.UUID
-	if err := q.QueryRow(ctx, `
-		SELECT coupon_type::text, discount_value::float8,
-			COALESCE(max_discount_amount, discount_value)::float8,
-			min_order_amount::float8, restaurant_id
-		FROM food.coupons
-		WHERE UPPER(code) = UPPER($1)
-			AND is_active = TRUE
-			AND starts_at <= NOW()
-			AND ends_at >= NOW()
-			AND (total_usage_limit IS NULL OR used_count < total_usage_limit)
-	`, code).Scan(&couponType, &value, &maxDiscount, &minOrder, &couponRestaurant); err != nil {
+	if err != nil {
+		return 0, err
+	}
+	if count != 1 {
 		return 0, ErrCouponInvalid
 	}
-	if subtotal < minOrder {
+	return s.validateCouponQuery(ctx, tx, code, restaurantID, subtotalPaise, userID)
+}
+
+// validateCouponQuery returns the coupon's discount on subtotalPaise in
+// integer paise (audit L2: no float maths), refusing a coupon the user has
+// already redeemed per_user_usage_limit times. Redemptions of cancelled or
+// rejected orders are released (releaseCouponRedemptionTx), so they do not
+// count.
+func (s *Store) validateCouponQuery(ctx context.Context, q interface {
+	QueryRow(context.Context, string, ...any) pgx.Row
+}, code string, restaurantID *uuid.UUID, subtotalPaise int64, userID uuid.UUID) (int64, error) {
+	var c CouponTerms
+	var couponRestaurant *uuid.UUID
+	var perUserLimit, userRedemptions int64
+	if err := q.QueryRow(ctx, `
+		SELECT c.coupon_type::text, ROUND(c.discount_value * 100)::bigint,
+			ROUND(COALESCE(c.max_discount_amount, c.discount_value) * 100)::bigint,
+			ROUND(c.min_order_amount * 100)::bigint, c.restaurant_id, c.per_user_usage_limit::bigint,
+			(SELECT COUNT(*) FROM food.coupon_redemptions r WHERE r.coupon_id = c.id AND r.user_id = $2)::bigint
+		FROM food.coupons c
+		WHERE UPPER(c.code) = UPPER($1)
+			AND c.is_active = TRUE
+			AND c.starts_at <= NOW()
+			AND c.ends_at >= NOW()
+			AND (c.total_usage_limit IS NULL OR c.used_count < c.total_usage_limit)
+	`, code, userID).Scan(&c.Type, &c.ValueHundredths, &c.MaxDiscountPaise, &c.MinOrderPaise, &couponRestaurant,
+		&perUserLimit, &userRedemptions); err != nil {
 		return 0, ErrCouponInvalid
 	}
 	if couponRestaurant != nil && (restaurantID == nil || *couponRestaurant != *restaurantID) {
 		return 0, ErrCouponInvalid
 	}
-	discount := value
-	if couponType == "PERCENTAGE" {
-		discount = subtotal * value / 100
+	if perUserLimit > 0 && userRedemptions >= perUserLimit {
+		return 0, ErrCouponInvalid
 	}
-	if discount > maxDiscount {
-		discount = maxDiscount
-	}
-	if discount > subtotal {
-		discount = subtotal
-	}
-	return roundMoney(discount), nil
+	return CouponDiscountPaise(c, subtotalPaise)
 }
 
 func (s *Store) getAddressTx(ctx context.Context, tx pgx.Tx, userID, addressID uuid.UUID) (*Address, error) {
@@ -1091,8 +1097,10 @@ func (s *Store) lockGenericIdempotency(ctx context.Context, tx pgx.Tx, userID uu
 	if key == "" {
 		return nil, false, nil
 	}
-	claimed, err := tx.Exec(ctx, `INSERT INTO food.idempotency_keys (user_id,key,locked_until)
-		VALUES ($1,$2,NOW()+INTERVAL '2 minutes') ON CONFLICT (user_id,key) DO NOTHING`, userID, key)
+	// Audit L5: the key is bound to this request (idempotency_fingerprint.go).
+	hash := genericIdempotencyHash(ctx, userID)
+	claimed, err := tx.Exec(ctx, `INSERT INTO food.idempotency_keys (user_id,key,request_hash,locked_until)
+		VALUES ($1,$2,NULLIF($3,''),NOW()+INTERVAL '2 minutes') ON CONFLICT (user_id,key) DO NOTHING`, userID, key, hash)
 	if err != nil {
 		return nil, false, err
 	}
@@ -1101,21 +1109,25 @@ func (s *Store) lockGenericIdempotency(ctx context.Context, tx pgx.Tx, userID uu
 	}
 	var responseBody []byte
 	var completedAt *time.Time
+	var savedHash string
 	err = tx.QueryRow(ctx, `
-		SELECT response_body, completed_at
+		SELECT response_body, completed_at, COALESCE(request_hash, '')
 		FROM food.idempotency_keys
 		WHERE user_id = $1 AND key = $2
 		FOR UPDATE
-	`, userID, key).Scan(&responseBody, &completedAt)
+	`, userID, key).Scan(&responseBody, &completedAt, &savedHash)
 	if errors.Is(err, pgx.ErrNoRows) {
 		_, err = tx.Exec(ctx, `
-			INSERT INTO food.idempotency_keys (user_id, key, locked_until)
-			VALUES ($1, $2, NOW() + INTERVAL '2 minutes')
-		`, userID, key)
+			INSERT INTO food.idempotency_keys (user_id, key, request_hash, locked_until)
+			VALUES ($1, $2, NULLIF($3, ''), NOW() + INTERVAL '2 minutes')
+		`, userID, key, hash)
 		return nil, false, err
 	}
 	if err != nil {
 		return nil, false, err
+	}
+	if idempotencyRequestMismatch(savedHash, hash) {
+		return nil, false, errGenericIdempotencyMismatch
 	}
 	if completedAt == nil {
 		return nil, true, ErrIdempotencyInProgress

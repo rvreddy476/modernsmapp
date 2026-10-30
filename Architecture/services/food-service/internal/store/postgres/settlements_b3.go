@@ -131,9 +131,18 @@ func loadSettlementOrdersWindowTx(ctx context.Context, tx pgx.Tx, start, end tim
 			COALESCE((
 				SELECT SUM(ROUND(rf.amount * 100)::bigint) FROM food.refunds rf
 				WHERE rf.order_id = o.id AND rf.status = 'PROCESSED'
+					AND NOT EXISTS (SELECT 1 FROM food.order_substitutions sr WHERE sr.refund_id = rf.id)
 			), 0)::bigint,
+			COALESCE(sub.supply_paise, 0)::bigint, COALESCE(sub.tax_paise, 0)::bigint,
 			o.tax_breakdown
 		FROM food.orders o
+		LEFT JOIN LATERAL (
+			-- Audit M2: approved cheaper substitutions, settled against the
+			-- restaurant's supply (their refunds are excluded above).
+			SELECT SUM(-os.supply_diff_paise) AS supply_paise, SUM(-os.tax_diff_paise) AS tax_paise
+			FROM food.order_substitutions os
+			WHERE os.order_id = o.id AND os.status = 'approved' AND os.price_diff_paise < 0
+		) sub ON TRUE
 		WHERE o.delivered_at IS NOT NULL
 			AND o.payment_status IN ('CAPTURED', 'REFUND_PENDING', 'PARTIALLY_REFUNDED', 'REFUNDED')
 			AND o.status IN ('DELIVERED', 'REFUND_PENDING', 'REFUNDED')
@@ -158,7 +167,7 @@ func loadSettlementOrdersWindowTx(ctx context.Context, tx pgx.Tx, start, end tim
 		var raw []byte
 		if err := rows.Scan(&rid, &oid, &o.ItemSubtotalPaise, &o.AddonTotalPaise, &o.PackagingFeePaise,
 			&o.RestaurantDiscountPaise, &o.PlatformFeePaise, &o.DeliveryFeePaise, &o.FinalAmountPaise,
-			&o.CommissionBP, &o.ProcessedRefundPaise, &raw); err != nil {
+			&o.CommissionBP, &o.ProcessedRefundPaise, &o.SubstitutionSupplyPaise, &o.SubstitutionTaxPaise, &raw); err != nil {
 			return nil, err
 		}
 		o.OrderID = oid.String()
@@ -174,7 +183,7 @@ func loadSettlementOrdersWindowTx(ctx context.Context, tx pgx.Tx, start, end tim
 		}
 		g := &groups[len(groups)-1]
 		g.orders = append(g.orders, o)
-		g.grossPaise += o.FinalAmountPaise
+		g.grossPaise += o.FinalAmountPaise - o.SubstitutionSupplyPaise - o.SubstitutionTaxPaise
 	}
 	return groups, rows.Err()
 }

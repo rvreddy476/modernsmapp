@@ -37,11 +37,11 @@ func (f *batchFakeStore) GetBatchForOrderForPartner(_ context.Context, userID, o
 	return f.batch, nil
 }
 
-// TestGetBatchForOrder_OnlyAssignedPartnerOrAdmin is the batch IDOR fix: the
-// batch detail (sibling order ids, sequence) is visible to the partner
-// assigned to the order and to admins. Everyone else gets the same 404 a
+// TestGetBatchForOrder_OnlyAssignedPartner is the batch IDOR fix: the
+// batch detail (sibling order ids, sequence) is visible on this route to the
+// partner assigned to the order only. Everyone else gets the same 404 a
 // solo order gets, so existence does not leak.
-func TestGetBatchForOrder_OnlyAssignedPartnerOrAdmin(t *testing.T) {
+func TestGetBatchForOrder_OnlyAssignedPartner(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	orderID := uuid.New()
 	assigned := uuid.New()
@@ -65,8 +65,12 @@ func TestGetBatchForOrder_OnlyAssignedPartnerOrAdmin(t *testing.T) {
 		{name: "stranger gets 404", userID: uuid.New(), want: http.StatusNotFound},
 		{name: "customer-ish stranger with food scope gets 404", userID: uuid.New(), scopes: "profile food:read", want: http.StatusNotFound},
 		{name: "assigned partner gets 200", userID: assigned, want: http.StatusOK},
-		{name: "admin gets 200", userID: uuid.New(), scopes: "admin", want: http.StatusOK},
-		{name: "superadmin gets 200", userID: uuid.New(), scopes: "superadmin", want: http.StatusOK},
+		// Audit M3: a consumer session's X-Scopes grants nothing here; admins
+		// read the batch on the admin-service token route
+		// (TestAdminGetBatchForOrder_TokenOnly).
+		{name: "X-Scopes admin gets 404", userID: uuid.New(), scopes: "admin", want: http.StatusNotFound},
+		{name: "X-Scopes superadmin gets 404", userID: uuid.New(), scopes: "superadmin", want: http.StatusNotFound},
+		{name: "X-Scopes moderator gets 404", userID: uuid.New(), scopes: "moderator", want: http.StatusNotFound},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

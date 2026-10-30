@@ -262,7 +262,10 @@ func (s *Store) GetMenu(ctx context.Context, restaurantID uuid.UUID) ([]MenuCate
 			i.is_recommended,
 			i.tax_percentage::float8
 		FROM food.menu_categories c
-		JOIN food.menu_items i ON i.category_id = c.id
+		-- Audit H1: an item shows only under a category of its own
+		-- restaurant, so a row already mis-linked to a rival's category
+		-- stays off the rival's menu.
+		JOIN food.menu_items i ON i.category_id = c.id AND i.restaurant_id = c.restaurant_id
 		WHERE c.restaurant_id = $1
 			AND c.is_active = TRUE
 			AND i.is_active = TRUE

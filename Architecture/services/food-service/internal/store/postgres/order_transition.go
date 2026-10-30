@@ -99,6 +99,11 @@ func transitionOrderTx(ctx context.Context, tx pgx.Tx, tr OrderTransition) error
 		if err := closeOpenAssignmentsTx(ctx, tx, tr.OrderID); err != nil {
 			return err
 		}
+		// Audit L2: an order that dies before delivery gives its coupon use
+		// back in the same transaction.
+		if err := releaseCouponRedemptionTx(ctx, tx, tr.OrderID); err != nil {
+			return err
+		}
 	}
 	eventType := tr.Event
 	if eventType == "" {

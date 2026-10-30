@@ -185,9 +185,10 @@ func (c *Consumer) apply(ctx context.Context, env *events.EventEnvelope, p field
 			"event_amount_minor", ev.AmountMinor, "detail", d.Detail)
 		return nil
 	case OutcomeLateCapture:
-		slog.Error("food: LATE CAPTURE on an order that will not be fulfilled — refund required",
+		// The refund was queued in the applying transaction (food.refunds
+		// PENDING); notify submits it now and the SLA worker resubmits it.
+		slog.Warn("food: LATE CAPTURE on an order that will not be fulfilled — refund queued",
 			"order_id", orderID, "event_id", env.EventID, "detail", d.Detail)
-		return nil
 	}
 	slog.Info("food: payment event applied",
 		"event_type", env.EventType, "order_id", orderID, "event_id", env.EventID, "outcome", d.Outcome)

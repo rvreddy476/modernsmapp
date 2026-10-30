@@ -25,10 +25,12 @@ func (s *Service) ListMyTickets(ctx context.Context, customerID uuid.UUID) ([]po
 }
 
 // AppendTicketMessage adds a message to a ticket. Visibility:
-// the customer who created the ticket OR an admin may post. We trust
-// the handler to assert admin via X-Scopes before calling with
-// isAdmin=true.
+// the customer who created the ticket OR an admin may post. isAdmin is set
+// only by the admin-service token routes (audit M3), never from X-Scopes.
 func (s *Service) AppendTicketMessage(ctx context.Context, ticketID, authorID uuid.UUID, isAdmin bool, body string) (*postgres.TicketMessage, error) {
+	if err := ValidateMessageBody(body); err != nil {
+		return nil, err
+	}
 	t, _, err := s.store.GetTicketWithMessages(ctx, ticketID)
 	if err != nil {
 		return nil, err

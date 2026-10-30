@@ -92,7 +92,9 @@ func TestNormalizedHoursFeedOpenAt(t *testing.T) {
 // TestSetupSQLTaxCategoryCheckMatchesRateTable keeps the database CHECK and
 // shared/gst from drifting: the CHECK lists exactly the restaurant categories.
 func TestSetupSQLTaxCategoryCheckMatchesRateTable(t *testing.T) {
-	re := regexp.MustCompile(`(?s)ck_food_restaurant_tax_category\s+CHECK\s*\(\s*tax_category IS NULL OR tax_category IN \(([^)]*)\)`)
+	// The CHECK is applied through food.ensure_check_constraint (audit M4),
+	// which re-adds it only when this expression changes.
+	re := regexp.MustCompile(`(?s)'ck_food_restaurant_tax_category',\s*\$chk\$\s*tax_category IS NULL OR tax_category IN \(([^)]*)\)`)
 	m := re.FindStringSubmatch(database.SetupSQL)
 	if m == nil {
 		t.Fatalf("setup.sql has no ck_food_restaurant_tax_category CHECK")

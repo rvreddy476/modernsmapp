@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"strings"
 
 	"github.com/atpost/food-service/internal/onboarding"
 	"github.com/atpost/food-service/internal/store/postgres"
@@ -21,11 +22,40 @@ func (s *Service) WithMediaBaseURL(base string) *Service {
 }
 
 // resolveMenuImage turns an uploaded dish photo's media id into the URL the
-// item stores. Without a media id, image_url is used as given.
-func (s *Service) resolveMenuImage(in *postgres.MenuItemInput) {
+// item stores. Without a media id, image_url must be platform media (audit
+// L6): a media id or its serve URL, which is normalised to the media id and
+// the URL MediaServeURL writes. currentURL is the item's stored image on an
+// update (empty on create): sending it back unchanged is allowed, so an
+// item saved before L6 with another host's URL can still be edited.
+func (s *Service) resolveMenuImage(in *postgres.MenuItemInput, currentURL string) error {
 	if in.ImageMediaID != nil {
 		in.ImageURL = onboarding.MediaServeURL(s.mediaBaseURL, *in.ImageMediaID)
+		return nil
 	}
+	raw := strings.TrimSpace(in.ImageURL)
+	if raw == "" {
+		in.ImageURL = ""
+		return nil
+	}
+	if id, ok := onboarding.ParsePlatformMediaRef(s.mediaBaseURL, raw); ok {
+		in.ImageMediaID = &id
+		in.ImageURL = onboarding.MediaServeURL(s.mediaBaseURL, id)
+		return nil
+	}
+	if currentURL != "" && raw == currentURL {
+		return nil
+	}
+	return onboarding.ImageURLError("image_url")
+}
+
+// menuImageNeedsCurrent reports whether an update's image must be compared
+// with the stored one: only a non-empty image_url that is not platform media.
+func (s *Service) menuImageNeedsCurrent(in postgres.MenuItemInput) bool {
+	if in.ImageMediaID != nil || strings.TrimSpace(in.ImageURL) == "" {
+		return false
+	}
+	_, ok := onboarding.ParsePlatformMediaRef(s.mediaBaseURL, in.ImageURL)
+	return !ok
 }
 
 func (s *Service) GetRestaurantReadiness(ctx context.Context, ownerID, restaurantID uuid.UUID) (*postgres.RestaurantReadiness, error) {

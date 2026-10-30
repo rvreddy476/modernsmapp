@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"math"
 	"strings"
 	"unicode/utf8"
@@ -27,6 +28,11 @@ const (
 	CodeMenuPriceMismatch       = "FOOD_MENU_PRICE_MISMATCH"
 	CodeAddonGroupSelectInvalid = "FOOD_ADDON_GROUP_SELECT_INVALID"
 )
+
+// ErrMenuCategoryNotFound: the category named for a new menu item is not an
+// active category of that same restaurant (audit H1). HTTP 404
+// FOOD_MENU_CATEGORY_NOT_FOUND.
+var ErrMenuCategoryNotFound = errors.New("menu category not found for this restaurant")
 
 // maxMenuPricePaise is the largest NUMERIC(12,2) amount, in paise.
 const maxMenuPricePaise int64 = 999_999_999_999

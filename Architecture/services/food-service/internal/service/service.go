@@ -129,7 +129,8 @@ type Store interface {
 	RecentCustomerCancellations(ctx context.Context, windowHours int) ([]postgres.CustomerCancellationsRow, error)
 	AppendOrderMessage(ctx context.Context, orderID, authorID uuid.UUID, authorRole, body string) (*postgres.OrderMessage, error)
 	ListOrderMessages(ctx context.Context, orderID uuid.UUID) ([]postgres.OrderMessage, error)
-	MarkMessageRead(ctx context.Context, messageID, userID uuid.UUID, role string) error
+	MarkMessageRead(ctx context.Context, orderID, messageID, userID uuid.UUID, role string) error
+	OrderMessageOrderID(ctx context.Context, messageID uuid.UUID) (uuid.UUID, error)
 	OrderPartyMembership(ctx context.Context, orderID, userID uuid.UUID) (*postgres.OrderPartyMembership, error)
 	GenerateRestaurantSettlementFile(ctx context.Context, adminID uuid.UUID, from, to time.Time) (*postgres.SettlementFile, error)
 	GenerateDeliverySettlementFile(ctx context.Context, adminID uuid.UUID, from, to time.Time) (*postgres.SettlementFile, error)
@@ -700,12 +701,24 @@ func (s *Service) DeleteMenuCategory(ctx context.Context, ownerID, categoryID uu
 }
 
 func (s *Service) CreateMenuItem(ctx context.Context, ownerID, restaurantID, categoryID uuid.UUID, in postgres.MenuItemInput) (*postgres.MenuItem, error) {
-	s.resolveMenuImage(&in)
+	if err := s.resolveMenuImage(&in, ""); err != nil {
+		return nil, err
+	}
 	return s.store.CreateMenuItem(ctx, ownerID, restaurantID, categoryID, in)
 }
 
 func (s *Service) UpdateMenuItem(ctx context.Context, ownerID, itemID uuid.UUID, in postgres.MenuItemInput) (*postgres.MenuItem, error) {
-	s.resolveMenuImage(&in)
+	current := ""
+	if s.menuImageNeedsCurrent(in) {
+		item, err := s.store.GetPartnerMenuItem(ctx, ownerID, itemID)
+		if err != nil {
+			return nil, err
+		}
+		current = item.ImageURL
+	}
+	if err := s.resolveMenuImage(&in, current); err != nil {
+		return nil, err
+	}
 	return s.store.UpdateMenuItem(ctx, ownerID, itemID, in)
 }
 
@@ -747,6 +760,12 @@ func (s *Service) RespondToSubstitution(ctx context.Context, customerID, subID u
 	sub, err := s.store.RespondToSubstitution(ctx, customerID, subID, response)
 	if err != nil {
 		return nil, err
+	}
+	// Audit M2: approving a cheaper substitute queued the refund of the
+	// difference in the same transaction; submit it now (the SLA worker
+	// resubmits on failure).
+	if sub.RefundID != nil {
+		s.submitRejectedOrderRefund(ctx, sub.OrderID, "substitution price difference")
 	}
 	eventType := "food.order.substitution_" + response // approved / declined / cancelled
 	s.emit(ctx, "food.order."+sub.OrderID.String(), eventType, sub)
@@ -920,6 +939,9 @@ func (s *Service) AdminCancelOrder(ctx context.Context, adminID, orderID uuid.UU
 	if err != nil {
 		return nil, err
 	}
+	// Audit M1: a paid order's refund was requested in the cancelling
+	// transaction; submit it now (the SLA worker resubmits on failure).
+	s.submitRejectedOrderRefund(ctx, orderID, "admin cancelled the order")
 	// Kafka: the cancelling transaction wrote food.order.cancelled and closed
 	// the delivery assignment.
 	s.publishOrderRealtime(ctx, o, foodevents.OrderCancelled)

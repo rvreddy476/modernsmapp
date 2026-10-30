@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"github.com/atpost/shared/partnerwork"
 	"strings"
@@ -229,7 +230,7 @@ func (s *Store) UpdateMenuCategory(ctx context.Context, ownerID, categoryID uuid
 	var count int
 	if err := s.db.QueryRow(ctx, `
 		SELECT id, name, COALESCE(description, ''), sort_order,
-			(SELECT COUNT(*) FROM food.menu_items i WHERE i.category_id = c.id AND i.is_active)::int
+			(SELECT COUNT(*) FROM food.menu_items i WHERE i.category_id = c.id AND i.restaurant_id = c.restaurant_id AND i.is_active)::int
 		FROM food.menu_categories c
 		WHERE id = $1
 	`, categoryID).Scan(&category.ID, &category.Name, &category.Description, &category.SortOrder, &count); err != nil {
@@ -267,23 +268,35 @@ func (s *Store) CreateMenuItem(ctx context.Context, ownerID, restaurantID, categ
 	if in.PreparationMinutes <= 0 {
 		in.PreparationMinutes = 20
 	}
+	// Audit H1: the category must be an active category of this same
+	// restaurant, checked inside the insert. A category of another
+	// restaurant (its id is public on every menu read) inserts nothing and
+	// is ErrMenuCategoryNotFound, so an item can never be filed under a
+	// rival's menu.
 	var item MenuItem
-	if err := s.db.QueryRow(ctx, `
+	err := s.db.QueryRow(ctx, `
 		INSERT INTO food.menu_items (
 			restaurant_id, category_id, name, description, food_type, base_price,
 			discount_price, image_url, preparation_minutes, is_recommended, tax_percentage, media_id
 		)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+		SELECT c.restaurant_id, c.id, $3,$4,$5,$6,$7,$8,$9,$10,$11,$12
+		FROM food.menu_categories c
+		JOIN food.restaurants r ON r.id = c.restaurant_id
+		WHERE c.id = $2 AND c.restaurant_id = $1 AND r.owner_user_id = $13 AND c.is_active
 		RETURNING id, restaurant_id, category_id, name, COALESCE(description, ''),
 			food_type::text, base_price::float8, COALESCE(discount_price, 0)::float8,
 			COALESCE(image_url, ''), preparation_minutes, is_available,
 			is_recommended, tax_percentage::float8, media_id
 	`, restaurantID, categoryID, in.Name, in.Description, foodType, in.BasePrice,
 		in.DiscountPrice, in.ImageURL, in.PreparationMinutes, in.IsRecommended,
-		in.TaxPercentage, in.ImageMediaID).Scan(&item.ID, &item.RestaurantID, &item.CategoryID, &item.Name,
+		in.TaxPercentage, in.ImageMediaID, ownerID).Scan(&item.ID, &item.RestaurantID, &item.CategoryID, &item.Name,
 		&item.Description, &item.FoodType, &item.BasePrice, &item.DiscountPrice,
 		&item.ImageURL, &item.PreparationMinutes, &item.IsAvailable, &item.IsRecommended,
-		&item.TaxPercentage, &item.ImageMediaID); err != nil {
+		&item.TaxPercentage, &item.ImageMediaID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrMenuCategoryNotFound
+	}
+	if err != nil {
 		return nil, err
 	}
 	item.FillPaise()
@@ -470,6 +483,31 @@ func (s *Store) UpsertDeliveryPartner(ctx context.Context, userID uuid.UUID, in 
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
+	// Audit M6: a reviewed rider's identity (name, phone, vehicle) is what
+	// ops approved and what customers see. Read the row under lock and
+	// refuse a change to any of those fields once the rider has passed
+	// review; the profile save is otherwise unchanged.
+	var current riderIdentity
+	var currentStatus string
+	err = tx.QueryRow(ctx, `
+		SELECT status::text, full_name, phone, COALESCE(vehicle_type, ''), COALESCE(vehicle_number, '')
+		FROM food.delivery_partners
+		WHERE user_id = $1
+		FOR UPDATE
+	`, userID).Scan(&currentStatus, &current.FullName, &current.Phone, &current.VehicleType, &current.VehicleNumber)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		// First save: the insert below creates it PENDING_REVIEW.
+	case err != nil:
+		return nil, err
+	default:
+		if err := checkRiderIdentityChange(currentStatus, current, riderIdentity{
+			FullName: in.FullName, Phone: in.Phone, VehicleType: in.VehicleType, VehicleNumber: in.VehicleNumber,
+		}); err != nil {
+			return nil, err
+		}
+	}
+
 	var partner DeliveryPartner
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO food.delivery_partners (
@@ -541,8 +579,15 @@ func (s *Store) SetDeliveryAvailability(ctx context.Context, userID uuid.UUID, o
 	}
 	var partnerID uuid.UUID
 	if err := tx.QueryRow(ctx, `
-		UPDATE food.delivery_partners
-		SET is_online = $2, status = (CASE WHEN $2 THEN 'ACTIVE' ELSE 'OFFLINE' END)::food.delivery_partner_status
+		UPDATE food.delivery_partners dp
+		SET is_online = $2,
+			-- Audit L4: going offline mid-job keeps ACTIVE (the presence
+			-- worker's on_job rule): no new offers, but the rider can still
+			-- finish and verify the job they hold.
+			status = (CASE
+				WHEN $2 THEN 'ACTIVE'
+				WHEN dp.status = 'ACTIVE' AND `+riderOnJobSQL+` THEN 'ACTIVE'
+				ELSE 'OFFLINE' END)::food.delivery_partner_status
 		WHERE user_id = $1 AND status IN ('APPROVED', 'ACTIVE', 'OFFLINE')
 		RETURNING id
 	`, userID, online).Scan(&partnerID); err != nil {
@@ -597,7 +642,9 @@ func (s *Store) DeliveryUpdateAssignment(ctx context.Context, userID, assignment
 	if err != nil {
 		return nil, err
 	}
-	if partner.Status != "ACTIVE" {
+	// Audit L4: a rider who toggled offline still steps the job they hold
+	// (the query below is scoped to their own assignment).
+	if !riderMayWorkHeldJob(partner.Status) {
 		return nil, ErrDeliveryPartnerNotActive
 	}
 	tx, err := s.db.Begin(ctx)
@@ -1142,9 +1189,26 @@ func (s *Store) AdminCancelOrder(ctx context.Context, adminID, orderID uuid.UUID
 	}); err != nil {
 		return nil, err
 	}
-	if err := writeAdminAudit(ctx, tx, adminID, "order.cancel", "order", &orderID, map[string]any{
+	// Audit M1: a paid order's refund is requested in this same transaction,
+	// through the durable refund writer customer cancel uses (order ->
+	// REFUND_PENDING, food.refunds PENDING). The admin takes the edge: the
+	// state table lets only an admin move CANCELLED_BY_ADMIN on. An unpaid
+	// order only cancels; a late capture on it is refunded by the consumer.
+	refund, err := requestCapturedRefundTx(ctx, tx, refundRequest{
+		OrderID: orderID, From: orderstate.CancelledByAdmin, Reason: "admin cancelled the order",
+		Actor: orderstate.ActorAdmin, ChangedBy: &adminID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	audit := map[string]any{
 		"from_status": fromStatus, "to_status": string(orderstate.CancelledByAdmin), "reason": reason,
-	}); err != nil {
+	}
+	if refund != nil {
+		audit["refund_id"] = refund.RefundID.String()
+		audit["refund_amount_minor"] = refund.AmountMinor
+	}
+	if err := writeAdminAudit(ctx, tx, adminID, "order.cancel", "order", &orderID, audit); err != nil {
 		return nil, err
 	}
 	order, err := s.getOrderTx(ctx, tx, userID, orderID, true)

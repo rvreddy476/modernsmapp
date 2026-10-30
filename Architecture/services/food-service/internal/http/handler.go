@@ -43,13 +43,16 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// Token-only admin family for admin-service, registered on the engine
 	// OUTSIDE the internal-key group: the key is no evidence of who is
 	// calling, the admin-service token is (admin_token.go).
-	h.registerAdminRoutes(r.Group(InternalAdminPrefix), h.requireAdminToken)
+	// idempotencyFingerprint binds every Idempotency-Key to its request
+	// (audit L5).
+	h.registerAdminRoutes(r.Group(InternalAdminPrefix, idempotencyFingerprint()), h.requireAdminToken)
 	r.GET(InternalAdminPrefix+"/stats", h.requireAdminToken(PermStatsRead), h.GetAdminStats)
 
 	v1 := r.Group("/v1/food")
 	if h.internalKey != "" {
 		v1.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
 	}
+	v1.Use(idempotencyFingerprint())
 	{
 		v1.GET("/home", h.Home)
 		v1.GET("/cuisines", h.ListCuisines)
@@ -1201,6 +1204,10 @@ func (h *Handler) CreateMenuItem(c *gin.Context) {
 			writeOnboardingError(c, err)
 			return
 		}
+		if errors.Is(err, postgres.ErrMenuCategoryNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "FOOD_MENU_CATEGORY_NOT_FOUND", err.Error(), nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_MENU_ITEM_CREATE_FAILED", err.Error(), nil)
 		return
 	}
@@ -1421,6 +1428,13 @@ func (h *Handler) UpsertDeliveryPartner(c *gin.Context) {
 		VehicleType: body.VehicleType, VehicleNumber: body.VehicleNumber, City: body.City,
 	})
 	if err != nil {
+		// Audit M6: a reviewed rider's name, phone and vehicle are frozen.
+		var locked *postgres.RiderIdentityLockedError
+		if errors.As(err, &locked) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, postgres.CodeDeliveryProfileLocked,
+				locked.Error(), map[string]any{"fields": locked.Fields, "status": locked.Status})
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_DELIVERY_PROFILE_FAILED", err.Error(), nil)
 		return
 	}
@@ -1597,6 +1611,11 @@ func (h *Handler) UpdateDeliveryLocation(c *gin.Context) {
 		Latitude: body.Latitude, Longitude: body.Longitude, AccuracyMeters: body.AccuracyMeters, Heading: body.Heading,
 	})
 	if err != nil {
+		// Audit L3: a refused rider (403) and an impossible jump (422) keep
+		// their own codes.
+		if writeKnownError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_DELIVERY_LOCATION_FAILED", err.Error(), nil)
 		return
 	}

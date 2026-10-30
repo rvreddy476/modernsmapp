@@ -269,6 +269,11 @@ func (h *Handler) registerAdminRoutes(g *gin.RouterGroup, gate func(perms ...str
 	g.GET("/orders/:orderId", gate(PermOrdersRead), h.AdminGetOrder)
 	g.POST("/orders/:orderId/cancel", gate(PermOrdersCancel), h.AdminCancelOrder)
 	g.POST("/orders/:orderId/refund", gate(PermRefundIssue), h.AdminRefundOrder)
+	// Order chat and batch detail for support (audit M3): the consumer
+	// routes no longer honour X-Scopes.
+	g.GET("/orders/:orderId/messages", gate(PermOrdersRead), h.AdminListOrderMessages)
+	g.POST("/orders/:orderId/messages", gate(PermTicketsAct), h.AdminPostOrderMessage)
+	g.GET("/orders/:orderId/batch", gate(PermOrdersRead), h.AdminGetBatchForOrder)
 	g.GET("/refunds", gate(PermRefundsRead), h.AdminListRefunds)
 	g.POST("/refunds/:refundId/decide", gate(PermRefundIssue), h.AdminDecideRefund)
 
@@ -288,6 +293,8 @@ func (h *Handler) registerAdminRoutes(g *gin.RouterGroup, gate func(perms ...str
 	g.DELETE("/item-reviews/:reviewId", gate(PermReviewsModerate), h.AdminHideItemReview)
 	g.GET("/support/tickets", gate(PermTicketsAct), h.AdminListTickets)
 	g.POST("/support/tickets/:ticketId/status", gate(PermTicketsAct), h.AdminSetTicketStatus)
+	g.GET("/support/tickets/:ticketId", gate(PermTicketsAct), h.AdminGetTicket)
+	g.POST("/support/tickets/:ticketId/messages", gate(PermTicketsAct), h.AdminAppendTicketMessage)
 
 	// Catalogue of offers and where food delivers.
 	g.GET("/coupons", gate(PermCouponsManage), h.AdminListCoupons)

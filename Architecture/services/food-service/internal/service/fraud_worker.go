@@ -20,21 +20,53 @@ import (
 	"github.com/google/uuid"
 )
 
+// fraudPassInterval is how often the fraud pass runs.
+const fraudPassInterval = 6 * time.Hour
+
 func (s *Service) StartFraudScoreWorker(ctx context.Context) {
-	ticker := time.NewTicker(6 * time.Hour)
+	ticker := time.NewTicker(fraudPassInterval)
 	defer ticker.Stop()
 	slog.Info("food-service: fraud score worker started")
-	// Run once immediately so dev environments populate the table
-	// without waiting six hours.
-	s.runFraudPass(ctx)
+	// Audit 2026-10-30 L6: the boot pass no longer runs on every replica.
+	// It runs only when no pass wrote a score within one interval (so a dev
+	// environment still populates the table at once), and every pass runs on
+	// one replica at a time under an advisory lock.
+	s.runFraudBootPass(ctx)
 	for {
 		select {
 		case <-ctx.Done():
 			slog.Info("food-service: fraud score worker stopped")
 			return
 		case <-ticker.C:
-			s.runFraudPass(ctx)
+			s.runFraudPassExclusive(ctx)
 		}
+	}
+}
+
+func (s *Service) runFraudBootPass(ctx context.Context) {
+	if _, err := s.runExclusive(ctx, workerFraud, func(ctx context.Context) error {
+		if r, ok := s.store.(fraudPassRecorder); ok {
+			last, err := r.LatestFraudScoreAt(ctx)
+			if err != nil {
+				return err
+			}
+			if !fraudBootPassDue(last, time.Now(), fraudPassInterval) {
+				return nil
+			}
+		}
+		s.runFraudPass(ctx)
+		return nil
+	}); err != nil {
+		slog.Warn("food-service: fraud boot pass skipped", "error", err)
+	}
+}
+
+func (s *Service) runFraudPassExclusive(ctx context.Context) {
+	if _, err := s.runExclusive(ctx, workerFraud, func(ctx context.Context) error {
+		s.runFraudPass(ctx)
+		return nil
+	}); err != nil {
+		slog.Warn("food-service: fraud pass skipped", "error", err)
 	}
 }
 

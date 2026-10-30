@@ -350,6 +350,11 @@ func (s *Service) OnPaymentEventApplied(ctx context.Context, a payments.Applied)
 		eventType = "food.order.payment_failed"
 	case payments.EffectRefund, payments.EffectPartialRefund:
 		eventType = "food.order.refunded"
+	case payments.EffectLateCaptureRefund:
+		// Audit M1: the refund of a capture on a closed order was queued in
+		// the applying transaction; submit it now (the SLA worker retries).
+		s.submitRejectedOrderRefund(ctx, a.OrderID, "payment captured on an order that will not be fulfilled")
+		return
 	default:
 		return
 	}

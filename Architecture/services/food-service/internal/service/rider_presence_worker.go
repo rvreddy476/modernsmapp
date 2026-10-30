@@ -52,6 +52,12 @@ func (s *Service) runRiderPresencePass(ctx context.Context, tick int) {
 	} else if len(ids) > 0 {
 		slog.Info("food-service: switched silent riders offline", "count", len(ids))
 	}
+	// Audit L4: a rider silent before pickup loses the job back to dispatch.
+	if n, err := s.ReleaseSilentRiderJobs(ctx); err != nil {
+		slog.Warn("food-service: silent rider job release failed", "error", err)
+	} else if n > 0 {
+		slog.Info("food-service: returned silent riders' jobs to dispatch", "count", n)
+	}
 	if tick%locationPurgeEveryTicks != 0 {
 		return
 	}

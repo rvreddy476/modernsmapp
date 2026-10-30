@@ -479,7 +479,7 @@ func (s *Store) partnerMenuCategories(ctx context.Context, restaurantID uuid.UUI
 			i.base_price::float8, COALESCE(i.discount_price, 0)::float8, COALESCE(i.image_url, ''),
 			i.preparation_minutes, i.is_available, i.is_recommended, i.tax_percentage::float8, i.media_id
 		FROM food.menu_categories c
-		LEFT JOIN food.menu_items i ON i.category_id = c.id AND i.is_active = TRUE
+		LEFT JOIN food.menu_items i ON i.category_id = c.id AND i.restaurant_id = c.restaurant_id AND i.is_active = TRUE
 		WHERE c.restaurant_id = $1 AND c.is_active = TRUE
 		ORDER BY c.sort_order, c.name, c.id, i.is_recommended DESC, i.name, i.id
 	`, restaurantID)

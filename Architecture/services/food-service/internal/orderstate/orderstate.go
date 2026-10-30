@@ -106,7 +106,8 @@ var table = map[edge]map[Actor]struct{}{
 	// Pickup completes only through the restaurant-side OTP verify.
 	{DeliveryAssigned, PickedUp}: actors(ActorRestaurant),
 	// The assigned partner releases the job; the order goes back to the queue.
-	{DeliveryAssigned, DeliveryAssigning}: actors(ActorDeliveryPartner),
+	// Audit L4: the system releases the job of a rider silent before pickup.
+	{DeliveryAssigned, DeliveryAssigning}: actors(ActorDeliveryPartner, ActorSystem),
 	{DeliveryAssigned, CancelledByAdmin}:  actors(ActorAdmin),
 
 	{PickedUp, OutForDelivery}:   actors(ActorDeliveryPartner, ActorSystem),

@@ -33,6 +33,12 @@ func (s *Service) GetOrderInvoice(ctx context.Context, userID, orderID uuid.UUID
 		Buyer:            foodinvoice.Party{Name: d.BuyerName, AddressLine: d.BuyerAddrLine, City: d.BuyerCity, State: d.BuyerState},
 		FinalAmountPaise: d.FinalAmountPaise,
 	}
+	for _, sub := range d.Substitutions {
+		data.Substitutions = append(data.Substitutions, foodinvoice.Substitution{
+			ItemRef: sub.ItemRef, OriginalName: sub.OriginalName, SuggestedName: sub.SuggestedName,
+			SupplyDiffPaise: sub.SupplyDiffPaise, TaxDiffPaise: sub.TaxDiffPaise, PriceDiffPaise: sub.PriceDiffPaise,
+		})
+	}
 	if d.Breakdown == nil {
 		num := d.InvoiceNumber
 		if num == "" {

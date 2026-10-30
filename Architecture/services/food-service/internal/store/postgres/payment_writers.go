@@ -191,6 +191,23 @@ func (s *Store) CreatePaymentIntent(ctx context.Context, userID, orderID uuid.UU
 		if (status != orderstate.Placed && status != orderstate.PaymentPending) || paymentTaken(paymentStatus) {
 			return nil, fmt.Errorf("%w: order is %s, payment %s", ErrCODNotAllowed, status, paymentStatus)
 		}
+		// Audit L1: once an online intent exists upstream the customer can
+		// still complete it, and that capture would be recorded as
+		// already_paid on a COD order (paid online and again in cash). Food
+		// cannot cancel a payments-service intent, so the switch is refused
+		// as soon as an online attempt was started (provider payments-service,
+		// set before the intent is opened) or an intent id is attached.
+		var onlineIntent bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM food.payments
+				WHERE order_id = $1
+				  AND (COALESCE(provider_payment_id, '') <> '' OR provider = 'payments-service'))
+		`, orderID).Scan(&onlineIntent); err != nil {
+			return nil, err
+		}
+		if onlineIntent {
+			return nil, fmt.Errorf("%w: an online payment was already started for this order", ErrCODNotAllowed)
+		}
 	} else if !awaitingPayment(status) || paymentTaken(paymentStatus) {
 		return nil, fmt.Errorf("%w: order is %s, payment %s", ErrPaymentNotAllowedFromState, status, paymentStatus)
 	}

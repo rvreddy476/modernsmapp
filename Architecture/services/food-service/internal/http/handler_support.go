@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
@@ -66,8 +65,15 @@ func (h *Handler) ListMyTickets(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, gin.H{"tickets": rows}, nil)
 }
 
-// GetTicket — GET /v1/food/support/tickets/:ticketId
-func (h *Handler) GetTicket(c *gin.Context) {
+// GetTicket — GET /v1/food/support/tickets/:ticketId (the customer who
+// raised it). Admins read tickets only on the admin-service token route
+// (AdminGetTicket); X-Scopes grants nothing here (audit M3).
+func (h *Handler) GetTicket(c *gin.Context) { h.getTicket(c, false) }
+
+// AdminGetTicket — GET <admin>/support/tickets/:ticketId (food:tickets.act).
+func (h *Handler) AdminGetTicket(c *gin.Context) { h.getTicket(c, true) }
+
+func (h *Handler) getTicket(c *gin.Context, isAdmin bool) {
 	uid, ok := h.requireUser(c)
 	if !ok {
 		return
@@ -77,7 +83,6 @@ func (h *Handler) GetTicket(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_TICKET_ID", err.Error(), nil)
 		return
 	}
-	isAdmin := isAdminScope(c.GetHeader("X-Scopes"))
 	t, msgs, err := h.svc.GetTicket(c.Request.Context(), uid, tid, isAdmin)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "TICKET_VIEW_FAILED", err.Error(), nil)
@@ -92,7 +97,14 @@ type AppendMessageRequest struct {
 }
 
 // AppendTicketMessage — POST /v1/food/support/tickets/:ticketId/messages
-func (h *Handler) AppendTicketMessage(c *gin.Context) {
+// (the customer who raised it).
+func (h *Handler) AppendTicketMessage(c *gin.Context) { h.appendTicketMessage(c, false) }
+
+// AdminAppendTicketMessage — POST <admin>/support/tickets/:ticketId/messages
+// (food:tickets.act); the message is stored as the admin's.
+func (h *Handler) AdminAppendTicketMessage(c *gin.Context) { h.appendTicketMessage(c, true) }
+
+func (h *Handler) appendTicketMessage(c *gin.Context, isAdmin bool) {
 	uid, ok := h.requireUser(c)
 	if !ok {
 		return
@@ -102,14 +114,15 @@ func (h *Handler) AppendTicketMessage(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_TICKET_ID", err.Error(), nil)
 		return
 	}
-	var req AppendMessageRequest
-	if err := c.BindJSON(&req); err != nil || strings.TrimSpace(req.Body) == "" {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "body required", nil)
+	body, ok := bindMessageBody(c)
+	if !ok {
 		return
 	}
-	isAdmin := isAdminScope(c.GetHeader("X-Scopes"))
-	m, err := h.svc.AppendTicketMessage(c.Request.Context(), tid, uid, isAdmin, req.Body)
+	m, err := h.svc.AppendTicketMessage(c.Request.Context(), tid, uid, isAdmin, body)
 	if err != nil {
+		if writeChatError(c, err) {
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "TICKET_APPEND_FAILED", err.Error(), nil)
 		return
 	}
@@ -238,10 +251,6 @@ func (h *Handler) AdminDecideRefund(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"refund_id": rid.String(), "status": req.Status}, nil)
-}
-
-func isAdminScope(scopes string) bool {
-	return hasAnyScope(scopes, "admin", "superadmin", "moderator")
 }
 
 func writeSupportError(c *gin.Context, err error) bool {

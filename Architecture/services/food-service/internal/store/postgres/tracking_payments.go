@@ -155,6 +155,12 @@ func (s *Store) UpdateDeliveryLocation(ctx context.Context, userID uuid.UUID, in
 	}
 	defer tx.Rollback(ctx)
 
+	// Audit L3: only an ACTIVE rider (or one still on a job) may report a
+	// position, and never one implying an impossible speed.
+	if err := guardRiderPingTx(ctx, tx, partner.ID, in.Latitude, in.Longitude); err != nil {
+		return nil, err
+	}
+
 	res := &DeliveryLocationResult{
 		DeliveryPartnerID: partner.ID, AssignmentIDs: []uuid.UUID{},
 		Latitude: in.Latitude, Longitude: in.Longitude, AccuracyMeters: in.AccuracyMeters, Heading: in.Heading,

@@ -275,3 +275,59 @@ unit test each, `scripts/verify/android.sh --fast :module` while working.
 | Stock adjust replay | same response + header `Idempotent-Replayed: true` |
 
 Unit tests for each; report the `android.sh --full` RESULT block.
+
+## Seventh Android lane: food — Feast, kitchen and rider apps (30 Oct 2026)
+
+Audit: [audit-2026-10-30-food-android.md](audit-2026-10-30-food-android.md)
+(server side: [audit-2026-10-30-food-backend.md](audit-2026-10-30-food-backend.md),
+fixed on this branch). Modules: `feature/feast`, `feature/kitchen`,
+`feature/rider`, `app-kitchen`, `app-rider`. One item at a time, unit test
+each, `scripts/verify/android.sh --fast :module` while working.
+
+1. **H1 riders miss offers in the background**: `app-rider`'s manifest
+   removes the push service and nothing posts to `rider_job_offer`. Restore
+   FCM for the rider app (founder: `GOOGLE_SERVICES_JSON`), post a
+   high-priority full-screen-intent notification on a job offer, and keep
+   the Home list as the in-app view.
+2. **H2 kitchen order detail has no items**: call the existing
+   `GET /v1/food/partner/orders/{orderId}` from `KitchenApi` (golden-pinned
+   on the server) instead of searching the order list; drop the stale
+   "route missing" comment.
+3. **M1 Feast checkout timeout**: on a timeout / 5xx keep the idempotency
+   key and resubmit the same request (the server returns the committed
+   order); never reset to an empty cart while an order from this attempt may
+   exist; add a "pay for pending order" path. **M2** disable "Go offline"
+   while holding a job (the server now keeps an on-job rider ACTIVE and lets
+   them verify). **M3** the server now answers a repeated accept by the same
+   rider with 200 — treat it as success. **M4** kitchen new-order alarm: a
+   foreground service (or FCM) so Android doesn't freeze it; **M5** build
+   the Preparing / Awaiting pickup boards from status-filtered queries, not
+   the latest 100.
+4. **Lows**: L1 offer countdown from the server's `expires_at` minus a
+   server-time offset; L2 re-read the cart after an address change and
+   compare the bill with the amount charged; L3 cancel the kitchen alarm
+   after a restart; L4 `FLAG_SECURE` on bank, PAN/GSTIN, documents and selfie
+   screens and mask the re-entered account number; L5 stop polling in the
+   background; L6 treat a lost delivery-code response by re-reading the job;
+   L7 https-only rider app links with real hosts; L8 the smaller items in
+   the audit.
+
+**Server contract changes on this branch (food-service, admin-service):**
+
+| Case | Now |
+|---|---|
+| Menu item in a category of another restaurant | 404 `FOOD_MENU_CATEGORY_NOT_FOUND` |
+| Menu `image_url` | must be platform media (media id or `/v1/media/<id>/serve…`), else 422 `FOOD_IMAGE_URL_INVALID`; an unchanged legacy URL may be resent. The kitchen editor types a URL by hand — upload the photo through media-service instead |
+| Order chat by a non-party (incl. a rider before accepting / after delivery) | 403 `FOOD_ORDER_CHAT_FORBIDDEN`; mark-read of another order's message 404 `FOOD_ORDER_MESSAGE_NOT_FOUND` |
+| Chat / ticket message blank or over 2000 chars | 400 `FOOD_MESSAGE_BODY_INVALID` |
+| Approved rider changes name, phone or vehicle | 409 `FOOD_DELIVERY_PROFILE_LOCKED` (`details.fields`) |
+| Reused `Idempotency-Key` with a different request | 409 `FOOD_IDEMPOTENCY_PAYLOAD_MISMATCH`; keyed body over 1 MB 413 |
+| Substitution that raises the price | 422 `FOOD_SUBSTITUTION_PRICE_INCREASE`; free text needs `price_diff_paise` ≤ 0; cheaper ones refund the difference |
+| Admin cancels a paid order | order goes to `REFUND_PENDING` |
+| Rider location ping from a non-active rider / implausible jump | 403 `FOOD_DELIVERY_PARTNER_NOT_ACTIVE` / 422 `FOOD_DELIVERY_LOCATION_IMPLAUSIBLE` |
+| Rider goes offline while on a job | stays ACTIVE (online off) and can finish the job |
+| Repeated offer accept by the same rider | 200 |
+| COD switch after an online attempt | 409 `FOOD_COD_NOT_ALLOWED_FROM_STATE` |
+| Invoice | optional `adjustments`, `net_payable_paise` |
+
+Unit tests for each; report the `android.sh --full` RESULT block.

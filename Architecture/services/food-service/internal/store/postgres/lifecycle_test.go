@@ -229,7 +229,10 @@ func TestAcceptDeliveryOfferTx_CancelledOrderLeavesNoAssignment(t *testing.T) {
 	if n != 0 {
 		t.Fatalf("orphan assignment created on a cancelled order")
 	}
-	assertOrderStatus(t, s, orderID, "CANCELLED_BY_ADMIN")
+	// The fixture order is paid (CAPTURED), so since audit M1 the admin
+	// cancel also requests its refund in the same transaction.
+	assertHistoryChain(t, s, orderID, "DELIVERY_ASSIGNING", []string{"CANCELLED_BY_ADMIN", "REFUND_PENDING"})
+	assertOrderStatus(t, s, orderID, "REFUND_PENDING")
 }
 
 func TestCancelOrder_GuardedWithHistory(t *testing.T) {
@@ -381,6 +384,15 @@ func TestPlaceOrder_CODWritesRiderPayoutAndDistanceETA(t *testing.T) {
 	// prep 20 + ceil(2.9 km / 20 km/h * 60) = 20 + 9.
 	if order.EstimatedDeliveryMins != 29 {
 		t.Fatalf("estimated_delivery_minutes = %d, want 29", order.EstimatedDeliveryMins)
+	}
+	// Audit L1: a COD order is born CONFIRMED and gets the accept deadline
+	// (restaurant SLA, default 180 s), so the SLA worker can reject it.
+	var secs float64
+	if err := s.db.QueryRow(ctx, `SELECT EXTRACT(EPOCH FROM accept_deadline_at - placed_at)::float8 FROM food.orders WHERE id = $1`, order.ID).Scan(&secs); err != nil {
+		t.Fatalf("COD order has no accept deadline: %v", err)
+	}
+	if secs < 170 || secs > 190 {
+		t.Fatalf("COD accept deadline %v s after placing, want ~180", secs)
 	}
 }
 

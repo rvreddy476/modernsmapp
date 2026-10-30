@@ -34,15 +34,25 @@ func (s *Service) StartDeliveryDispatchWorker(ctx context.Context) {
 			slog.Info("food-service: delivery dispatch worker stopped")
 			return
 		case <-ticker.C:
-			if n, err := s.store.ExpireDeliveryOffers(ctx); err != nil {
-				slog.Warn("food-service: expire offers failed", "error", err)
-			} else if n > 0 {
-				slog.Info("food-service: expired stale delivery offers", "count", n)
-			}
-			if err := s.dispatchPendingOrders(ctx); err != nil {
-				slog.Warn("food-service: dispatch pending failed", "error", err)
-			}
+			s.runDispatchTick(ctx)
 		}
+	}
+}
+
+// runDispatchTick is one dispatch pass. Audit 2026-10-30 L3: it runs on one
+// replica at a time (advisory lock); the others skip the tick, so the
+// candidate scan (bounding box, LIMIT 500) is not multiplied by the replica
+// count every 2 s. Offer writes were already safe across replicas.
+func (s *Service) runDispatchTick(ctx context.Context) {
+	if _, err := s.runExclusive(ctx, workerDispatch, func(ctx context.Context) error {
+		if n, err := s.store.ExpireDeliveryOffers(ctx); err != nil {
+			slog.Warn("food-service: expire offers failed", "error", err)
+		} else if n > 0 {
+			slog.Info("food-service: expired stale delivery offers", "count", n)
+		}
+		return s.dispatchPendingOrders(ctx)
+	}); err != nil {
+		slog.Warn("food-service: dispatch pending failed", "error", err)
 	}
 }
 
@@ -301,6 +311,10 @@ func (s *Service) AcceptDeliveryOffer(ctx context.Context, userID, offerID uuid.
 	// signal to fall through to legacy.
 	batch, partnerID, batchErr := s.store.AcceptBatchOfferTx(ctx, userID, offerID)
 	if batchErr == nil && batch != nil {
+		if batch.Replayed {
+			// A retried accept (lost response): already done, nothing to send.
+			return nil
+		}
 		for _, m := range batch.Members {
 			if _, _, cerr := s.store.EnsureDeliveryCodes(ctx, m.OrderID); cerr != nil {
 				slog.Warn("food-service: ensure codes failed (batch)",
@@ -325,6 +339,9 @@ func (s *Service) AcceptDeliveryOffer(ctx context.Context, userID, offerID uuid.
 	offer, err := s.store.AcceptDeliveryOfferTx(ctx, userID, offerID)
 	if err != nil {
 		return err
+	}
+	if offer.Replayed {
+		return nil
 	}
 	if _, _, cerr := s.store.EnsureDeliveryCodes(ctx, offer.OrderID); cerr != nil {
 		slog.Warn("food-service: ensure codes failed", "order_id", offer.OrderID, "error", cerr)

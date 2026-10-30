@@ -76,6 +76,32 @@ type Data struct {
 	LegacyInvoiceNumber     string
 	FinalAmountPaise        int64
 	Legacy                  []LegacyItem
+	// Substitutions are the approved substitutions that changed the price
+	// (audit M2). The tax lines stay as charged; each one is shown against
+	// its line and as a credit that was refunded.
+	Substitutions []Substitution
+}
+
+// Substitution is one approved substitution with a price difference, in
+// integer paise (negative = the customer is owed it).
+type Substitution struct {
+	// ItemRef is the breakdown ref of the substituted order line.
+	ItemRef         string
+	OriginalName    string
+	SuggestedName   string
+	SupplyDiffPaise int64
+	TaxDiffPaise    int64
+	PriceDiffPaise  int64
+}
+
+// Adjustment is a credit on the invoice for an approved substitution.
+type Adjustment struct {
+	Ref             string `json:"ref,omitempty"`
+	Description     string `json:"description"`
+	TaxablePaise    int64  `json:"taxable_paise"`
+	TaxPaise        int64  `json:"tax_paise"`
+	TotalPaise      int64  `json:"total_paise"`
+	RefundedToBuyer bool   `json:"refunded_to_buyer"`
 }
 
 type Line struct {
@@ -128,6 +154,12 @@ type Document struct {
 	AdviserMarker                string    `json:"adviser_marker,omitempty"`
 	Legacy                       bool      `json:"legacy"`
 	Notes                        []string  `json:"notes"`
+	// Adjustments and NetPayablePaise (audit M2): credits for approved
+	// cheaper substitutions, refunded to the buyer. GrandTotalPaise stays the
+	// amount charged; NetPayablePaise is what the buyer pays in the end. Both
+	// are absent when there is no credit, so such an invoice is unchanged.
+	Adjustments     []Adjustment `json:"adjustments,omitempty"`
+	NetPayablePaise int64        `json:"net_payable_paise,omitempty"`
 }
 
 func ratePercent(bp int32) string { return fmt.Sprintf("%d.%02d", bp/100, bp%100) }
@@ -186,6 +218,7 @@ func Build(d Data) (*Document, error) {
 			doc.GrandTotalPaise = d.FinalAmountPaise
 		}
 		doc.AdviserMarker = AdviserMarker
+		applySubstitutions(doc, d.Substitutions)
 		return doc, nil
 	}
 
@@ -263,7 +296,39 @@ func Build(d Data) (*Document, error) {
 	if doc.NeedsAdviserConfirmation {
 		doc.AdviserMarker = AdviserMarker
 	}
+	applySubstitutions(doc, d.Substitutions)
 	return doc, nil
+}
+
+// applySubstitutions names each substituted line after what was supplied and
+// adds one credit per price difference. Nothing is added for a difference of
+// zero; a positive difference never reaches here (it is refused).
+func applySubstitutions(doc *Document, subs []Substitution) {
+	net := doc.GrandTotalPaise
+	for _, sub := range subs {
+		for si := range doc.Sections {
+			for li := range doc.Sections[si].Lines {
+				l := &doc.Sections[si].Lines[li]
+				if sub.ItemRef != "" && l.Ref == sub.ItemRef {
+					l.Description = sub.SuggestedName + " (substituted for " + sub.OriginalName + ")"
+				}
+			}
+		}
+		if sub.PriceDiffPaise >= 0 {
+			continue
+		}
+		doc.Adjustments = append(doc.Adjustments, Adjustment{
+			Ref:          sub.ItemRef,
+			Description:  "Substitution credit: " + sub.SuggestedName + " supplied for " + sub.OriginalName,
+			TaxablePaise: sub.SupplyDiffPaise, TaxPaise: sub.TaxDiffPaise, TotalPaise: sub.PriceDiffPaise,
+			RefundedToBuyer: true,
+		})
+		net += sub.PriceDiffPaise
+	}
+	if len(doc.Adjustments) > 0 {
+		doc.NetPayablePaise = net
+		doc.Notes = append(doc.Notes, "A substituted item cost less than the item ordered; the difference is refunded to the original payment method.")
+	}
 }
 
 func rupees(p int64) string {
@@ -297,6 +362,7 @@ table{width:100%;border-collapse:collapse;font-size:11px}th,td{padding:6px;borde
 {{range .Notes}}<p class="note">{{.}}</p>{{end}}
 {{end}}
 <h2>Amount paid: {{rupees .GrandTotalPaise}}</h2>
+{{if .Adjustments}}<table><tbody>{{range .Adjustments}}<tr><td>{{.Description}}</td><td class="num">{{rupees .TotalPaise}}</td></tr>{{end}}<tr class="total"><td>Net payable after substitution credits</td><td class="num">{{rupees .NetPayablePaise}}</td></tr></tbody></table>{{end}}
 {{range .Notes}}<p class="note">{{.}}</p>{{end}}
 {{if .AdviserMarker}}<div class="marker">{{.AdviserMarker}}</div>{{end}}
 </body></html>`))

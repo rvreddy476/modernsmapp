@@ -187,7 +187,8 @@ type DeliveryVerification struct {
 // restaurant enters the rider's pickup code. Sets delivery_verified_at and
 // moves the order to DELIVERED.
 //
-// Only the ACTIVE partner who holds assignmentID may verify it (anyone else
+// Only the ACTIVE (since audit L4 also OFFLINE) partner who holds
+// assignmentID may verify it (anyone else
 // gets pgx.ErrNoRows), only after pickup, and only while fewer than
 // MaxDeliveryCodeAttempts wrong codes were entered; a wrong code is counted
 // and committed before the refusal is returned.
@@ -196,7 +197,9 @@ func (s *Store) RiderVerifyDeliveryCode(ctx context.Context, riderUserID, assign
 	if err != nil {
 		return nil, err
 	}
-	if partner.Status != "ACTIVE" {
+	// Audit L4: a rider who toggled offline at the door can still verify the
+	// job they hold; a suspended or unreviewed one cannot.
+	if !riderMayWorkHeldJob(partner.Status) {
 		return nil, ErrDeliveryPartnerNotActive
 	}
 	tx, err := s.db.Begin(ctx)

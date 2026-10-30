@@ -338,6 +338,11 @@ func TestRecordOrderETA_GuardedAndShownToTheCustomer(t *testing.T) {
 	if _, err := s.db.Exec(ctx, `UPDATE food.delivery_assignments SET location_published_at = NOW() - INTERVAL '6 seconds' WHERE order_id = $1`, orderID); err != nil {
 		t.Fatal(err)
 	}
+	// The next ping is ~1.1 km on; age the last one a minute so the move is a
+	// believable speed (audit L3 drops faster-than-150-km/h jumps).
+	if _, err := s.db.Exec(ctx, `UPDATE food.delivery_partner_locations SET recorded_at = recorded_at - INTERVAL '1 minute' WHERE delivery_partner_id = $1`, partnerID); err != nil {
+		t.Fatal(err)
+	}
 	res, err = s.UpdateDeliveryLocation(ctx, user, LocationUpdate{Latitude: 12.976, Longitude: 77.63})
 	if err != nil {
 		t.Fatal(err)

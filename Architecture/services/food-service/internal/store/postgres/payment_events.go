@@ -144,6 +144,8 @@ func (s *Store) applyPaymentEffectTx(ctx context.Context, tx pgx.Tx, ev payments
 		err = settleRefundTx(ctx, tx, refundSettlement{
 			OrderID: snap.OrderID, OrderStatus: snap.Status, PaymentID: paymentID, AmountMinor: ev.AmountMinor, CommandID: ev.CommandID, ProviderRefundID: ev.ProviderRefundID,
 		})
+	case payments.EffectLateCaptureRefund:
+		_, err = requestLateCaptureRefundTx(ctx, tx, snap.OrderID, snap.Status, paymentID, ev.IntentID)
 	}
 	if err != nil {
 		return fmt.Errorf("apply %s (%s): %w", ev.EventType, d.Outcome, err)

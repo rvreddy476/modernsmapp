@@ -312,9 +312,28 @@ func TestCreatePaymentIntent_CODOnlyFromPlacedOrPending(t *testing.T) {
 		t.Fatalf("COD over a captured payment: err = %v", err)
 	}
 
+	// Audit L1: once an online intent exists, COD is refused (the customer
+	// could still pay online and then pay again in cash).
+	withIntent, c3, _ := seedPaymentOrder(t, s, "PAYMENT_PENDING", "PENDING")
+	if _, err := s.CreatePaymentIntent(ctx, c3, withIntent, "COD", "", uuid.NewString()); !errors.Is(err, ErrCODNotAllowed) {
+		t.Fatalf("COD over an online intent: err = %v, want ErrCODNotAllowed", err)
+	}
+	if status, _, _ := readPaymentState(t, s, withIntent); status != "PAYMENT_PENDING" {
+		t.Fatalf("refused COD moved the order to %s", status)
+	}
+
+	// A pending order whose payment row never reached payments-service may
+	// still switch to COD.
 	orderID, customerID, _ := seedPaymentOrder(t, s, "PAYMENT_PENDING", "PENDING")
+	if _, err := s.db.Exec(ctx, `UPDATE food.payments SET provider = NULL, provider_payment_id = NULL WHERE order_id = $1`, orderID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := s.CreatePaymentIntent(ctx, customerID, orderID, "COD", "", uuid.NewString()); err != nil {
 		t.Fatalf("COD from PAYMENT_PENDING: %v", err)
+	}
+	var deadlineSet bool
+	if err := s.db.QueryRow(ctx, `SELECT accept_deadline_at IS NOT NULL FROM food.orders WHERE id = $1`, orderID).Scan(&deadlineSet); err != nil || !deadlineSet {
+		t.Fatalf("COD-confirmed order has no accept deadline (%v)", err)
 	}
 	status, orderPay, _ := readPaymentState(t, s, orderID)
 	if status != "CONFIRMED" || orderPay != "NOT_REQUIRED" {

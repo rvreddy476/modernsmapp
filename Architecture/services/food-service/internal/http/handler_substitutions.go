@@ -1,12 +1,14 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/atpost/food-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // ProposeSubstitutionRequest is the partner request body. Either
@@ -16,8 +18,34 @@ type ProposeSubstitutionRequest struct {
 	OriginalItemID    uuid.UUID  `json:"original_item_id"`
 	SuggestedItemID   *uuid.UUID `json:"suggested_item_id,omitempty"`
 	SuggestedItemName *string    `json:"suggested_item_name,omitempty"`
-	PriceDiff         float64    `json:"price_diff"`
-	Note              *string    `json:"note,omitempty"`
+	// PriceDiff is the legacy float; it is never used as money (audit M2).
+	// A non-zero value without price_diff_paise is refused.
+	PriceDiff float64 `json:"price_diff"`
+	// PriceDiffPaise is the per-unit difference of a free-text suggestion in
+	// integer paise (<= 0). With suggested_item_id the server prices the item
+	// from the menu and ignores it.
+	PriceDiffPaise *int64  `json:"price_diff_paise,omitempty"`
+	Note           *string `json:"note,omitempty"`
+}
+
+// substitutionError writes the stable code for a substitution refusal.
+func substitutionError(c *gin.Context, fallback string, err error) {
+	status, code := http.StatusBadRequest, fallback
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		status, code = http.StatusNotFound, "SUBSTITUTION_NOT_FOUND"
+	case errors.Is(err, postgres.ErrSubstitutionPriceIncrease):
+		status, code = http.StatusUnprocessableEntity, "FOOD_SUBSTITUTION_PRICE_INCREASE"
+	case errors.Is(err, postgres.ErrSubstitutionPricePaiseRequired):
+		status, code = http.StatusUnprocessableEntity, "FOOD_SUBSTITUTION_PRICE_PAISE_REQUIRED"
+	case errors.Is(err, postgres.ErrSubstitutionItemInvalid):
+		status, code = http.StatusUnprocessableEntity, "FOOD_SUBSTITUTION_ITEM_INVALID"
+	case errors.Is(err, postgres.ErrSubstitutionNotAllowed):
+		status, code = http.StatusConflict, "FOOD_SUBSTITUTION_NOT_ALLOWED"
+	case errors.Is(err, postgres.ErrSubstitutionRefundUnavailable):
+		status, code = http.StatusConflict, "FOOD_SUBSTITUTION_REFUND_UNAVAILABLE"
+	}
+	api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, err.Error(), nil)
 }
 
 // PartnerProposeSubstitution — POST /v1/food/partner/orders/:orderId/substitutions
@@ -46,11 +74,12 @@ func (h *Handler) PartnerProposeSubstitution(c *gin.Context) {
 		SuggestedItemID:   req.SuggestedItemID,
 		SuggestedItemName: req.SuggestedItemName,
 		PriceDiff:         req.PriceDiff,
+		PriceDiffPaise:    req.PriceDiffPaise,
 		Note:              req.Note,
 		ProposedBy:        uid,
 	})
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "SUBSTITUTION_PROPOSE_FAILED", err.Error(), nil)
+		substitutionError(c, "SUBSTITUTION_PROPOSE_FAILED", err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, sub, nil)
@@ -79,7 +108,7 @@ func (h *Handler) RespondSubstitution(c *gin.Context) {
 	}
 	sub, err := h.svc.RespondToSubstitution(c.Request.Context(), uid, subID, req.Response)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "SUBSTITUTION_RESPOND_FAILED", err.Error(), nil)
+		substitutionError(c, "SUBSTITUTION_RESPOND_FAILED", err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, sub, nil)

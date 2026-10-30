@@ -22,7 +22,13 @@ type DeliveryOffer struct {
 	RespondedAt       *string   `json:"responded_at,omitempty"`
 	RejectReason      *string   `json:"reject_reason,omitempty"`
 	CreatedAt         string    `json:"created_at"`
+	// Replayed is true when this accept repeated one the same partner had
+	// already made (Android audit M3): nothing was written.
+	Replayed bool `json:"-"`
 }
+
+// liveAssignmentStatuses are the assignment statuses of a job a rider holds.
+const liveAssignmentStatuses = `('ASSIGNED', 'ACCEPTED', 'ARRIVED_AT_RESTAURANT', 'PICKED_UP', 'ARRIVED_AT_CUSTOMER')`
 
 // ListUnassignedReadyOrders returns orders that are waiting for a
 // delivery offer fan-out. We treat `DELIVERY_ASSIGNING` as the queue
@@ -176,6 +182,22 @@ func (s *Store) AcceptDeliveryOfferTx(ctx context.Context, userID, offerID uuid.
 	`, offerID, partnerID).Scan(&offer.ID, &offer.OrderID, &offer.DeliveryPartnerID, &offer.Status,
 		&offer.DistanceKM, &offer.ExpiresAt, &offer.RespondedAt, &offer.RejectReason, &offer.CreatedAt, &expired); err != nil {
 		return nil, err
+	}
+	if offer.Status == "accepted" {
+		// Android audit M3: the accept response was lost and the app
+		// retried. The same partner still holding the job gets success with
+		// no second write; anything else keeps the refusal below.
+		var held bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM food.delivery_assignments
+				WHERE order_id = $1 AND delivery_partner_id = $2 AND status IN `+liveAssignmentStatuses+`)
+		`, offer.OrderID, partnerID).Scan(&held); err != nil {
+			return nil, err
+		}
+		if held {
+			offer.Replayed = true
+			return &offer, nil
+		}
 	}
 	if offer.Status != "pending" {
 		return nil, fmt.Errorf("offer not pending: %s", offer.Status)

@@ -22,6 +22,9 @@ type DeliveryBatch struct {
 	AssignedAt   *string       `json:"assigned_at,omitempty"`
 	CompletedAt  *string       `json:"completed_at,omitempty"`
 	Members      []BatchMember `json:"members,omitempty"`
+	// Replayed is true when this accept repeated one the same partner had
+	// already made (Android audit M3): nothing was written.
+	Replayed bool `json:"-"`
 }
 
 // BatchMember is one order's slot within a batch.
@@ -226,6 +229,40 @@ func (s *Store) AcceptBatchOfferTx(ctx context.Context, userID, offerID uuid.UUI
 		SELECT status::text FROM food.delivery_offers WHERE id = $1 FOR UPDATE
 	`, offerID).Scan(&offerStatus); err != nil {
 		return nil, uuid.Nil, fmt.Errorf("offer lookup: %w", err)
+	}
+	if offerStatus == "accepted" && batchStatus == "assigned" {
+		// Android audit M3: a retried accept by the partner who already holds
+		// every member returns the batch, with no second write. Checked before
+		// the expiry: a replay may come after the offer's window.
+		var members []BatchMember
+		var notHeld int
+		rows, err := tx.Query(ctx, `
+			SELECT order_id, COALESCE(batch_sequence, 0),
+				(delivery_partner_id IS DISTINCT FROM $2 OR status NOT IN `+liveAssignmentStatuses+`)
+			FROM food.delivery_assignments WHERE batch_id = $1 ORDER BY batch_sequence ASC
+		`, batchID, partnerID)
+		if err != nil {
+			return nil, uuid.Nil, err
+		}
+		for rows.Next() {
+			var m BatchMember
+			var other bool
+			if err := rows.Scan(&m.OrderID, &m.Sequence, &other); err != nil {
+				rows.Close()
+				return nil, uuid.Nil, err
+			}
+			if other {
+				notHeld++
+			}
+			members = append(members, m)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			return nil, uuid.Nil, err
+		}
+		if notHeld == 0 && len(members) > 0 {
+			return &DeliveryBatch{ID: batchID, RestaurantID: restaurantID, Status: "assigned", Members: members, Replayed: true}, partnerID, nil
+		}
 	}
 	// Check wall-clock time AFTER acquiring the row lock. NOW() would use
 	// transaction start and could accept an offer that expired while waiting.

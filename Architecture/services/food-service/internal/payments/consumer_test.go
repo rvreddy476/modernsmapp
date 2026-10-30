@@ -182,7 +182,7 @@ func TestHandle_OutcomeClassification(t *testing.T) {
 		{"duplicate is a quiet no-op", Applied{Decision: Decision{Outcome: OutcomeDuplicate}}, nil, false, false, false},
 		{"unknown order goes to the DLQ", Applied{Decision: Decision{Outcome: OutcomeOrderNotFound}}, nil, true, true, false},
 		{"amount mismatch is recorded, not retried, not announced", Applied{Decision: Decision{Outcome: OutcomeAmountMismatch}}, nil, false, false, false},
-		{"late capture is recorded, not announced", Applied{Decision: Decision{Outcome: OutcomeLateCapture}}, nil, false, false, false},
+		{"late capture queues its refund and notifies so it is submitted", Applied{Decision: Decision{Outcome: OutcomeLateCapture, Effect: EffectLateCaptureRefund}}, nil, false, false, true},
 		{"already paid does not re-announce", Applied{Decision: Decision{Outcome: OutcomeAlreadyPaid}}, nil, false, false, false},
 		{"marked failed announces", Applied{Decision: Decision{Outcome: OutcomeMarkedFailed, Effect: EffectMarkFailed}}, nil, false, false, true},
 		{"transient store failure is retried", Applied{}, errors.New("connection reset"), false, true, false},

@@ -47,6 +47,20 @@ type InvoiceData struct {
 	Lines map[string]InvoiceLineRef
 
 	Items []InvoiceItem
+
+	// Substitutions are the approved substitutions with a paise price
+	// difference (audit M2).
+	Substitutions []InvoiceSubstitution
+}
+
+// InvoiceSubstitution is one approved, priced substitution.
+type InvoiceSubstitution struct {
+	ItemRef         string
+	OriginalName    string
+	SuggestedName   string
+	SupplyDiffPaise int64
+	TaxDiffPaise    int64
+	PriceDiffPaise  int64
 }
 
 // InvoiceItem mirrors one line on the invoice.
@@ -105,6 +119,30 @@ func (s *Store) GetInvoiceData(ctx context.Context, userID, orderID uuid.UUID) (
 		return nil, err
 	}
 	if err := s.loadInvoiceLines(ctx, d, rawBreakdown); err != nil {
+		return nil, err
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT original_item_id, original_item_name, COALESCE(suggested_item_name, ''),
+			supply_diff_paise, tax_diff_paise, price_diff_paise
+		FROM food.order_substitutions
+		WHERE order_id = $1 AND status = 'approved' AND price_diff_paise IS NOT NULL
+		ORDER BY created_at
+	`, orderID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var itemID uuid.UUID
+		var sub InvoiceSubstitution
+		if err := rows.Scan(&itemID, &sub.OriginalName, &sub.SuggestedName,
+			&sub.SupplyDiffPaise, &sub.TaxDiffPaise, &sub.PriceDiffPaise); err != nil {
+			return nil, err
+		}
+		sub.ItemRef = orderItemRef(itemID)
+		d.Substitutions = append(d.Substitutions, sub)
+	}
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	return d, nil

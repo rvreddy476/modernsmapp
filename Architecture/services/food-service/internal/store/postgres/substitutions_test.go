@@ -46,8 +46,10 @@ func TestProposeAndAcceptSubstitution_HappyPath(t *testing.T) {
 		OrderID:           orderID,
 		OriginalItemID:    originalItemID,
 		SuggestedItemName: &suggestedName,
-		PriceDiff:         20,
-		ProposedBy:        ownerID,
+		// Audit M2: a free-text substitute states its difference in integer
+		// paise; a dearer one is refused (TestSubstitution_PriceIncreaseRefused).
+		PriceDiffPaise: ptrInt64(0),
+		ProposedBy:     ownerID,
 	})
 	if err != nil {
 		t.Fatalf("propose: %v", err)

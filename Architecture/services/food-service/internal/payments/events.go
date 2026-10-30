@@ -46,6 +46,11 @@ const (
 	// EffectPartialRefund: payment PARTIALLY_REFUNDED; order status unchanged
 	// (food.order_status has no partial state).
 	EffectPartialRefund
+	// EffectLateCaptureRefund: a capture landed on an order that will not be
+	// fulfilled. The payment is recorded CAPTURED then REFUND_PENDING and a
+	// durable food.refunds row for the whole capture is queued; the order
+	// status is not changed (it is never revived).
+	EffectLateCaptureRefund
 )
 
 // Event is a payments-service event about a food order, reduced to the fields
@@ -143,8 +148,9 @@ func decideSucceeded(o OrderSnapshot, ev Event) Decision {
 		return Decision{Outcome: OutcomeAlreadyPaid, Detail: "order already " + o.Status}
 	}
 	// Cancelled, rejected, refunded, failed, draft: the customer has been
-	// charged for an order nobody will cook. Never revive it.
-	return Decision{Outcome: OutcomeLateCapture, Detail: "captured on a " + o.Status + " order"}
+	// charged for an order nobody will cook. Never revive it; queue the
+	// refund of the capture in the same transaction (audit M1).
+	return Decision{Outcome: OutcomeLateCapture, Effect: EffectLateCaptureRefund, Detail: "captured on a " + o.Status + " order"}
 }
 
 func decideFailed(o OrderSnapshot) Decision {
