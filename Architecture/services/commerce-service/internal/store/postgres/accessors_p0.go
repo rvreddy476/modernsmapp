@@ -59,6 +59,12 @@ type AddressRow struct {
 	State      string
 	PostalCode string
 	Country    string
+
+	// Deleted: the buyer removed it from their address book but orders
+	// reference it, so it was hidden rather than deleted (L5, migration 049).
+	// GetAddressRow still returns it, for a legacy order's fulfilment; a new
+	// quote or checkout must not use it.
+	Deleted bool
 }
 
 // GetAddressRow loads one address. Ownership is checked by the CALLER —
@@ -82,7 +88,8 @@ func (s *Store) GetAddressRow(ctx context.Context, id uuid.UUID) (*AddressRow, e
 func (s *Store) GetAddressRowsByUser(ctx context.Context, userID uuid.UUID) ([]*AddressRow, error) {
 	rows, err := s.db.Query(ctx,
 		`SELECT `+addressRowColumns+` FROM customer_addresses
-		  WHERE user_id = $1 ORDER BY is_default DESC, created_at DESC`, userID)
+		  WHERE user_id = $1 AND deleted_at IS NULL
+		  ORDER BY is_default DESC, created_at DESC`, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +112,8 @@ const addressRowColumns = `
 	COALESCE(address_line_1,''), COALESCE(address_line_2,''), COALESCE(landmark,''),
 	contact_name_enc, phone_enc, address_line_1_enc, address_line_2_enc, landmark_enc,
 	COALESCE(pii_key_version,0),
-	COALESCE(city,''), COALESCE(state,''), COALESCE(postal_code,''), COALESCE(country,'IN')`
+	COALESCE(city,''), COALESCE(state,''), COALESCE(postal_code,''), COALESCE(country,'IN'),
+	deleted_at IS NOT NULL`
 
 func scanAddressRow(row interface{ Scan(...any) error }, a *AddressRow) error {
 	return row.Scan(
@@ -114,7 +122,8 @@ func scanAddressRow(row interface{ Scan(...any) error }, a *AddressRow) error {
 		&a.ContactName, &a.Phone, &a.AddressLine1, &a.AddressLine2, &a.Landmark,
 		&a.ContactNameEnc, &a.PhoneEnc, &a.AddressLine1Enc, &a.AddressLine2Enc, &a.LandmarkEnc,
 		&a.KeyVersion,
-		&a.City, &a.State, &a.PostalCode, &a.Country)
+		&a.City, &a.State, &a.PostalCode, &a.Country,
+		&a.Deleted)
 }
 
 // ContentFingerprint identifies the delivery content of this row EXACTLY as

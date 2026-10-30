@@ -1762,7 +1762,7 @@ func (s *Store) UpdateAddress(ctx context.Context, id, userID uuid.UUID, addr *C
 			address_line_2_enc=$17, landmark_enc=$18,
 			pii_key_version=$19, lookup_hash=NULLIF($20,''),
 			updated_at=NOW()
-		WHERE id=$1 AND user_id=$2`,
+		WHERE id=$1 AND user_id=$2 AND deleted_at IS NULL`,
 		id, userID, name, phone, line1, line2,
 		landmark, addr.City, addr.State, addr.Country, addr.PostalCode,
 		addr.AddressType, addr.IsDefault,
@@ -1779,15 +1779,61 @@ func (s *Store) UpdateAddress(ctx context.Context, id, userID uuid.UUID, addr *C
 	return nil
 }
 
+// ErrAddressNotFound: no live address with that id belongs to the caller.
+var ErrAddressNotFound = errors.New("address not found")
+
+// DeleteAddress removes a saved address from the caller's address book.
+//
+// L5 (audit 2026-10-30): an address an order (or a return pickup, or an
+// organisation) references cannot be removed, because those foreign keys have
+// no ON DELETE. It used to fail with a raw FK error. Now the row is removed
+// when nothing references it, and otherwise hidden (deleted_at): the address
+// book, the default pincode, update, set-default and checkout all skip it,
+// while orders keep their snapshot (and a legacy order without one still
+// reaches the row). The reported result is the same either way: it is gone
+// from the address book.
 func (s *Store) DeleteAddress(ctx context.Context, id, userID uuid.UUID) error {
-	tag, err := s.db.Exec(ctx, `DELETE FROM customer_addresses WHERE id=$1 AND user_id=$2`, id, userID)
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return fmt.Errorf("address not found")
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var live bool
+	if err := tx.QueryRow(ctx,
+		`SELECT TRUE FROM customer_addresses WHERE id=$1 AND user_id=$2 AND deleted_at IS NULL FOR UPDATE`,
+		id, userID).Scan(&live); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrAddressNotFound
+		}
+		return err
 	}
-	return nil
+
+	// Try the hard delete under a savepoint, so a foreign-key refusal from
+	// any referencing table leaves the transaction usable for the soft one.
+	sp, err := tx.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	_, err = sp.Exec(ctx, `DELETE FROM customer_addresses WHERE id=$1 AND user_id=$2`, id, userID)
+	switch {
+	case err == nil:
+		if err := sp.Commit(ctx); err != nil {
+			return err
+		}
+	case pgCode(err) == sqlStateForeignKeyViolation:
+		if err := sp.Rollback(ctx); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE customer_addresses SET deleted_at = NOW(), is_default = FALSE, updated_at = NOW()
+			  WHERE id=$1 AND user_id=$2`, id, userID); err != nil {
+			return err
+		}
+	default:
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 // SetDefaultAddress atomically clears any existing default and sets the given address as default.
@@ -1800,7 +1846,7 @@ func (s *Store) SetDefaultAddress(ctx context.Context, id, userID uuid.UUID) err
 	if _, err := tx.Exec(ctx, `UPDATE customer_addresses SET is_default=false WHERE user_id=$1`, userID); err != nil {
 		return err
 	}
-	tag, err := tx.Exec(ctx, `UPDATE customer_addresses SET is_default=true WHERE id=$1 AND user_id=$2`, id, userID)
+	tag, err := tx.Exec(ctx, `UPDATE customer_addresses SET is_default=true WHERE id=$1 AND user_id=$2 AND deleted_at IS NULL`, id, userID)
 	if err != nil {
 		return err
 	}

@@ -2021,7 +2021,13 @@ func (h *Handler) SellerRespondToReview(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "response cannot be empty", nil)
 		return
 	}
-	r, err := h.svc.AddSellerResponseToReview(c.Request.Context(), reviewID, actorID, req.Response)
+	// L2 (audit 2026-10-30): reviews carry a sellers.id, so the caller's user
+	// id is resolved to their seller before the comparison.
+	seller, ok := h.sellerForCaller(c, actorID)
+	if !ok {
+		return
+	}
+	r, err := h.svc.AddSellerResponseToReview(c.Request.Context(), reviewID, seller.ID, req.Response)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrReviewNotFound):

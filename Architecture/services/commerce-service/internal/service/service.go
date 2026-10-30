@@ -2850,19 +2850,12 @@ func (s *Service) bookReturnPickup(ctx context.Context, r *postgres.ReturnReques
 		slog.Warn("return pickup: get order failed", "return_id", r.ID, "error", err)
 		return
 	}
-	// Pickup is the customer's delivery address (where the goods are now).
-	if order.DeliveryAddressID == nil {
-		slog.Warn("return pickup: order has no delivery address", "order_id", order.ID)
-		return
-	}
-	row, err := s.store.GetAddressRow(ctx, *order.DeliveryAddressID)
-	if err != nil {
-		slog.Warn("return pickup: address lookup failed", "error", err)
-		return
-	}
-	// Opened, not read from plaintext: after the cutover the plaintext is ''
-	// and the courier would be sent to collect from nobody at no street.
-	addr, err := s.openAddressRow(ctx, row)
+	// Pickup is the customer's delivery address (where the goods are now):
+	// the order's snapshot, where they were delivered, not the saved address
+	// as edited since (M5, audit 2026-10-30). Opened, not read from
+	// plaintext: after the cutover the plaintext is '' and the courier would
+	// be sent to collect from nobody at no street.
+	addr, err := s.orderFulfilmentAddress(ctx, order)
 	if err != nil {
 		slog.Error("return pickup: the delivery address could not be opened",
 			"order_id", order.ID, "error", err)
@@ -3193,18 +3186,32 @@ func (s *Service) GetProductAttributes(ctx context.Context, productID uuid.UUID)
 // AddSellerResponseToReview lets the seller of a reviewed product attach
 // a public response. Phase 2.4. Only the seller may respond; the response
 // timestamp is set on first write and overwritten on a subsequent edit.
-func (s *Service) AddSellerResponseToReview(ctx context.Context, reviewID, actorID uuid.UUID, response string) (*postgres.Review, error) {
+//
+// sellerID is the caller's sellers.id, resolved from their user id by the
+// handler (sellerForCaller). L2 (audit 2026-10-30): this used to receive the
+// caller's USER id and compare it with reviews.seller_id, a sellers.id, so
+// the two never matched and every seller was refused.
+func (s *Service) AddSellerResponseToReview(ctx context.Context, reviewID, sellerID uuid.UUID, response string) (*postgres.Review, error) {
 	r, err := s.store.GetReviewByID(ctx, reviewID)
 	if err != nil || r == nil {
 		return nil, ErrReviewNotFound
 	}
-	if r.SellerID != actorID {
-		return nil, ErrNotReviewSeller
+	if err := checkReviewSeller(r, sellerID); err != nil {
+		return nil, err
 	}
 	if err := s.store.SetSellerResponse(ctx, reviewID, response); err != nil {
 		return nil, err
 	}
 	return s.store.GetReviewByID(ctx, reviewID)
+}
+
+// checkReviewSeller refuses anyone but the seller the review is about.
+// sellerID is a sellers.id, never a user id.
+func checkReviewSeller(r *postgres.Review, sellerID uuid.UUID) error {
+	if sellerID == uuid.Nil || r.SellerID != sellerID {
+		return ErrNotReviewSeller
+	}
+	return nil
 }
 
 // ─── Addresses ───────────────────────────────────────────────

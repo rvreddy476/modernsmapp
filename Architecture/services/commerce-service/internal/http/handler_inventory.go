@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/atpost/commerce-service/internal/service"
 	"github.com/atpost/commerce-service/internal/store/postgres"
@@ -57,12 +58,23 @@ func (h *Handler) AdjustStock(c *gin.Context) {
 			"INVALID_BODY", "delta is required (positive to restock, negative to write down)", nil)
 		return
 	}
+	// Optional Idempotency-Key (Android audit 2026-10-30 M3). A delta whose
+	// response was lost is retried by the app; with the same key the retry
+	// answers the first result and moves nothing. Without the header the
+	// route behaves as before.
+	idem := strings.TrimSpace(c.GetHeader("Idempotency-Key"))
+	if len(idem) > maxStockIdempotencyKeyLen {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			"INVALID_IDEMPOTENCY_KEY", "the Idempotency-Key header is too long", nil)
+		return
+	}
 
 	level, err := h.svc.AdjustStock(c.Request.Context(), userID, service.AdjustStockInput{
-		VariantID: variantID,
-		Delta:     *body.Delta,
-		Reason:    body.Reason,
-		Notes:     body.Notes,
+		VariantID:      variantID,
+		Delta:          *body.Delta,
+		Reason:         body.Reason,
+		Notes:          body.Notes,
+		IdempotencyKey: idem,
 	})
 	if err != nil {
 		if errors.Is(err, service.ErrNoSellerProfile) {
@@ -73,8 +85,14 @@ func (h *Handler) AdjustStock(c *gin.Context) {
 		writeCommerceError(c, err)
 		return
 	}
+	if level.Replayed {
+		c.Header("Idempotent-Replayed", "true")
+	}
 	api.JSON(c.Writer, http.StatusOK, level, nil)
 }
+
+// maxStockIdempotencyKeyLen bounds the stored key. A UUID is 36.
+const maxStockIdempotencyKeyLen = 128
 
 // GetStock GET /v1/commerce/seller/variants/:variantId/stock
 //

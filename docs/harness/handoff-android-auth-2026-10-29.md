@@ -228,3 +228,50 @@ message-service) so a removed member is not told "isn't available yet",
 and `oldPath()` at ~851 is not tried for a membership refusal.
 
 Unit tests for each; report the `android.sh --full` RESULT block.
+
+## Sixth Android lane: commerce (30 Oct 2026)
+
+Audit: [audit-2026-10-30-commerce-android.md](audit-2026-10-30-commerce-android.md)
+(server side: [audit-2026-10-30-commerce-backend.md](audit-2026-10-30-commerce-backend.md),
+fixed on this branch). Work in `mobile/android` only; one item at a time,
+unit test each, `scripts/verify/android.sh --fast :module` while working.
+
+1. **H1 dead "Try again" after a failed checkout** (`CheckoutViewModel.kt`
+   ~406-436, `CheckoutScreen.kt` ~224-229): on an ambiguous failure
+   (timeout, 5xx, network) keep the phase `Submitting` and resubmit with the
+   SAME idempotency key so the server returns the order it already made; on
+   a quote failure re-quote. Never show "Your bag is empty" while an order
+   from this attempt may exist.
+2. **M1** disable `MethodRow` while Place order is in flight, and never drop
+   a payment-sheet result (`CheckoutScreen.kt` ~456-469,
+   `CheckoutViewModel.kt` ~204-215, 377-403). **M2** show the real reason
+   payment couldn't open (sold out etc.). **M3** send an `Idempotency-Key`
+   (one per user edit, reused on retry) on `PATCH seller/variants/{id}/stock`
+   (`StockViewModel.kt` ~124-153, `CommerceApi.kt` ~1173); the server now
+   honours it (409 `IDEMPOTENCY_CONFLICT` on key reuse with a different
+   body, 400 `INVALID_IDEMPOTENCY_KEY` over 128 chars). **M4** seller
+   documents: until media-service gets a private `document` kind, accept
+   images only (drop `application/pdf` from the picker and ask for a photo).
+   **M5** show the upload rate limit (429) as "too many uploads, try again
+   in an hour", not "could not start". **M6** cancel the in-flight search
+   when the query changes (`StoreBrowseViewModel.kt` ~102-147).
+3. **Lows**: L1 bag-row update rollback scoped to its own row; L2 don't
+   derive the breakdown on the client; L3 map `ADDRESS_NOT_FOUND` to an
+   address message; L4 `FLAG_SECURE` on the payout screen; L5 prefill only
+   an empty name field; L6 bound price input length; L7 skip the 180 s
+   "Confirming" when no sheet opened; L8 no raw Razorpay errors in logcat,
+   file lookups off the main thread, currency symbol from the currency
+   field, fix the golden fixture's trailing newline.
+
+**Server contract changes on this branch:**
+
+| Case | Now |
+|---|---|
+| Payment retry when the order's coupon is used up | 422 `COUPON_USED_UP` (order stays `payment_failed`) |
+| `commerce.order.refunded` | only when fully refunded; payload adds `amount_minor`, `refunded_total_minor`, `order_total_minor`, `refund_id`, `fully_refunded` |
+| Partial refund | new event `commerce.order.partially_refunded`; order may stay `refund_pending` |
+| Review response by a user with no seller account | 403 `NO_SELLER` |
+| Delete an address used by an order | 204; the address disappears from the book |
+| Stock adjust replay | same response + header `Idempotent-Replayed: true` |
+
+Unit tests for each; report the `android.sh --full` RESULT block.

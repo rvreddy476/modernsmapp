@@ -325,7 +325,7 @@ func (s *Store) Checkout(ctx context.Context, p CheckoutParams) (*CheckoutResult
 		        COALESCE(address_line_1,''), COALESCE(address_line_2,''),
 		        address_line_1_enc, address_line_2_enc,
 		        COALESCE(city,''), COALESCE(state,''), COALESCE(postal_code,'')
-		   FROM customer_addresses WHERE id = $1 FOR SHARE`, p.AddressID).
+		   FROM customer_addresses WHERE id = $1 AND deleted_at IS NULL FOR SHARE`, p.AddressID).
 		Scan(&addrOwner, &addrLine1, &addrLine2, &addrLine1Enc, &addrLine2Enc,
 			&addrCity, &addrState, &addrPostal)
 	if err != nil {

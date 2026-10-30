@@ -444,7 +444,11 @@ func TestC1OrderEventsCarryTheirParties(t *testing.T) {
 	c1WantKeys(t, "cancelled", e.outboxPayload("commerce.order.cancelled", ctOPending), with("ORD-2026-010005"))
 
 	// refunded (was {order_id, intent_id}).
-	if err := store.SettleRefund(ctx, ctORefund, "c1-intent"); err != nil {
+	// The full order amount (134800), so this settles as fully refunded.
+	if _, err := store.SettleRefund(ctx, postgres.RefundEvent{
+		EventID: "c1-refunded-" + uuid.NewString(), OrderID: ctORefund, IntentID: "c1-intent",
+		RefundID: "rfnd_c1_" + uuid.NewString(), AmountMinor: money.Paise(134800), ProviderStatus: "refunded",
+	}); err != nil {
 		t.Fatal(err)
 	}
 	c1WantKeys(t, "refunded", e.outboxPayload("commerce.order.refunded", ctORefund), with("ORD-2026-010004"))

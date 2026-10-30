@@ -194,8 +194,8 @@ func (c *P0PaymentsConsumer) OnFailed(ctx context.Context, env *events.EventEnve
 }
 
 // OnRefunded settles a refund.
-func (c *P0PaymentsConsumer) OnRefunded(ctx context.Context, _ *events.EventEnvelope, ev paymentevents.Refunded) error {
-	return c.applyRefund(ctx, ev)
+func (c *P0PaymentsConsumer) OnRefunded(ctx context.Context, env *events.EventEnvelope, ev paymentevents.Refunded) error {
+	return c.applyRefund(ctx, env, ev)
 }
 
 func (c *P0PaymentsConsumer) applyPayment(ctx context.Context, env *events.EventEnvelope, p paymentevents.Payment,
@@ -272,20 +272,76 @@ func (c *P0PaymentsConsumer) applyPayment(ctx context.Context, env *events.Event
 	}
 }
 
-func (c *P0PaymentsConsumer) applyRefund(ctx context.Context, p paymentevents.Refunded) error {
-	// A refund event is keyed on the intent, because payments can refund an
-	// intent commerce did not initiate.
-	if p.ID == "" {
+// refundSettler is the store half of applyRefund, an interface so the
+// filter and error mapping can be tested without a database.
+type refundSettler interface {
+	SettleRefund(ctx context.Context, ev postgres.RefundEvent) (postgres.RefundSettlement, error)
+}
+
+// applyRefund settles payment.refunded (audit 2026-10-30 M2).
+//
+// The previous version's only filter was "reference_id parses as a UUID", so
+// every food, dating, rider, doorstep and membership refund (all UUID
+// references) ran a settlement against a non-existent order id. It now acts
+// only on reference_type "order", like applyPayment, and the store checks the
+// refund with paymentevents.CheckRefund, records its amount, decides full
+// versus partial from the cumulative sum and dedupes by event and refund id.
+func (c *P0PaymentsConsumer) applyRefund(ctx context.Context, env *events.EventEnvelope, p paymentevents.Refunded) error {
+	return applyRefundWith(ctx, c.store, c.obs, env, p)
+}
+
+func applyRefundWith(ctx context.Context, store refundSettler, obs Observer, env *events.EventEnvelope, p paymentevents.Refunded) error {
+	if p.ReferenceType != "order" { // M2: commerce orders only
 		return nil
 	}
 	orderID, err := uuid.Parse(p.ReferenceID)
 	if err != nil {
-		// Not an order reference (a food refund, say). Nothing to do.
-		return nil
+		slog.Warn("commerce: refund event has an unparseable order reference",
+			"reference_id", p.ReferenceID)
+		return sharedkafka.Permanent(fmt.Errorf("unprocessable refund event %s", env.EventID))
 	}
-	if err := c.store.SettleRefund(ctx, orderID, p.ID); err != nil {
+	ev := postgres.RefundEvent{
+		EventID:        env.EventID,
+		OrderID:        orderID,
+		IntentID:       p.Intent(),
+		RefundID:       p.ProviderRefundID,
+		AmountMinor:    money.Paise(p.AmountMinor),
+		ProviderStatus: p.Status,
+	}
+	res, err := store.SettleRefund(ctx, ev)
+	switch {
+	case err == nil:
+		if res.Duplicate {
+			if obs != nil {
+				obs.DuplicateSuppressed(env.EventID)
+			}
+			return nil
+		}
+		if obs != nil {
+			obs.Applied(env.EventType)
+		}
+		slog.Info("commerce: refund settled", "order_id", orderID, "intent_id", ev.IntentID,
+			"refund_minor", ev.AmountMinor.Int64(), "refunded_total_minor", res.RefundedTotal.Int64(),
+			"fully_refunded", res.Full, "payment_status", res.PaymentStatus)
+		return nil
+	case errors.Is(err, postgres.ErrDuplicatePaymentEvt):
+		if obs != nil {
+			obs.DuplicateSuppressed(env.EventID)
+		}
+		return nil
+	case errors.Is(err, postgres.ErrAmountMismatch):
+		if obs != nil {
+			obs.AmountMismatch(orderID, ev.AmountMinor.Int64(), 0)
+		}
+		slog.Error("commerce: REFUND MISMATCH — refund not applied to the order",
+			"order_id", orderID, "event_id", env.EventID,
+			"refund_minor", ev.AmountMinor.Int64(), "error", err)
+		return sharedkafka.Permanent(fmt.Errorf("unprocessable refund event %s", env.EventID))
+	case errors.Is(err, postgres.ErrOrderNotFoundP0):
+		slog.Error("commerce: refund event references an unknown order",
+			"order_id", orderID, "event_id", env.EventID)
+		return sharedkafka.Permanent(fmt.Errorf("unprocessable refund event %s", env.EventID))
+	default:
 		return fmt.Errorf("settle refund for order %s: %w", orderID, err)
 	}
-	slog.Info("commerce: refund settled", "order_id", orderID, "intent_id", p.ID)
-	return nil
 }

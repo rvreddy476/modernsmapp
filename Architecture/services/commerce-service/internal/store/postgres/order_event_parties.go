@@ -30,6 +30,8 @@ var orderEventsCarryingParties = map[string]bool{
 	"commerce.order.payment_failed": true,
 	"commerce.order.cancelled":      true,
 	"commerce.order.refunded":       true,
+	// A refund that does not yet cover the order (audit 2026-10-30 M2).
+	"commerce.order.partially_refunded": true,
 }
 
 // OrderEventParties is who an order event concerns.

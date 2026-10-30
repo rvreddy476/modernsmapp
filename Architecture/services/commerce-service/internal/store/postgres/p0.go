@@ -304,6 +304,11 @@ func (s *Store) ApplyPaymentFailed(ctx context.Context, e PaymentEvent) error {
 		if err := releaseReservationsTx(ctx, tx, e.OrderID, "checkout_release_payment_failed"); err != nil {
 			return err
 		}
+		// M3 (audit 2026-10-30): the coupon use goes back with the stock. A
+		// retry re-claims it (RetryPaymentReservation).
+		if _, err := releaseCouponTx(ctx, tx, e.OrderID); err != nil {
+			return err
+		}
 		if _, err := tx.Exec(ctx,
 			`UPDATE orders SET status = 'payment_failed', payment_status = 'failed', updated_at = NOW()
 			  WHERE id = $1`, e.OrderID); err != nil {
@@ -515,6 +520,13 @@ func (s *Store) CancelOrder(ctx context.Context, orderID, actorID uuid.UUID, act
 	if err := releaseReservationsTx(ctx, tx, orderID, "checkout_release_cancel"); err != nil {
 		return err
 	}
+	// M3 (audit 2026-10-30): an order cancelled before any money was taken
+	// gives its coupon use back. A paid order keeps it.
+	if releasesCouponOnCancel(payStatus) {
+		if _, err := releaseCouponTx(ctx, tx, orderID); err != nil {
+			return err
+		}
+	}
 
 	// If stock was already committed (the order was paid), give it back.
 	if payStatus == "paid" {
@@ -692,32 +704,7 @@ func (s *Store) MarkRefundFailed(ctx context.Context, id uuid.UUID, reason strin
 	return err
 }
 
-// SettleRefund marks a refund confirmed by the payments refund event.
-func (s *Store) SettleRefund(ctx context.Context, orderID uuid.UUID, intentID string) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-	if _, err := tx.Exec(ctx, `SELECT set_config('commerce.actor_type','system',true)`); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE order_refund_commands SET status = 'succeeded', settled_at = NOW(), updated_at = NOW()
-		  WHERE order_id = $1 AND status <> 'succeeded'`, orderID); err != nil {
-		return err
-	}
-	if _, err := tx.Exec(ctx,
-		`UPDATE orders SET payment_status = 'refunded', updated_at = NOW() WHERE id = $1`, orderID); err != nil {
-		return err
-	}
-	if err := enqueueOutboxTx(ctx, tx, "commerce.order.refunded", orderID.String(), map[string]any{
-		"order_id": orderID, "intent_id": intentID,
-	}); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
-}
+// SettleRefund lives in refund_settlement.go (audit 2026-10-30 M2).
 
 // OldestUnsettledRefundAge feeds the refund-pending-age alarm.
 func (s *Store) OldestUnsettledRefundAge(ctx context.Context) (time.Duration, error) {
@@ -801,6 +788,11 @@ func (s *Store) expireOne(ctx context.Context, orderID uuid.UUID) error {
 		return nil // paid or cancelled while we queued
 	}
 	if err := releaseReservationsTx(ctx, tx, orderID, "checkout_release_expiry"); err != nil {
+		return err
+	}
+	// M3 (audit 2026-10-30): an expired order never paid; its coupon use
+	// returns to the coupon and the buyer.
+	if _, err := releaseCouponTx(ctx, tx, orderID); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx,

@@ -194,17 +194,15 @@ func (s *Service) DeliveryJobContact(ctx context.Context, user, id uuid.UUID) (m
 	if seller.Phone != nil {
 		out["pickup_phone"] = *seller.Phone
 	}
-	if order.DeliveryAddressID != nil {
-		row, err := s.store.GetAddressRow(ctx, *order.DeliveryAddressID)
-		if err != nil {
-			return nil, err
-		}
-		address, err := s.openAddressRow(ctx, row)
-		if err != nil {
-			return nil, err
-		}
+	// M5 (audit 2026-10-30): the partner reaches the recipient the order was
+	// placed for (its snapshot), not whoever the saved address names today.
+	address, err := s.orderFulfilmentAddress(ctx, order)
+	switch {
+	case err == nil:
 		out["customer_name"] = address.ContactName
 		out["customer_phone"] = address.Phone
+	case !errors.Is(err, errOrderHasNoAddress):
+		return nil, err
 	}
 	return out, nil
 }

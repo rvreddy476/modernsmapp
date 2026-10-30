@@ -69,6 +69,12 @@ type StockAdjustment struct {
 	Delta     int       // +restock, -writedown; never an absolute total
 	Reason    string    // inventory_adjustments.reason_code
 	Notes     string
+
+	// IdempotencyKey is the request's Idempotency-Key, "" when it sent none.
+	// With a key, a retry of the same request answers the level the first
+	// one left and moves nothing; the same key on a different request is
+	// ErrIdempotencyConflict (Android audit 2026-10-30 M3).
+	IdempotencyKey string
 }
 
 // StockLevel is what a variant's stock looks like after an adjustment.
@@ -77,6 +83,10 @@ type StockLevel struct {
 	TotalQty    int       `json:"total_qty"`
 	ReservedQty int       `json:"reserved_qty"`
 	Available   int       `json:"available"`
+
+	// Replayed: this answers a retried request whose adjustment already
+	// applied; nothing moved this time.
+	Replayed bool `json:"-"`
 }
 
 // AdjustStock applies a signed delta to a variant's stock in one transaction,
@@ -94,6 +104,32 @@ func (s *Store) AdjustStock(ctx context.Context, adj StockAdjustment) (*StockLev
 		return nil, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
+
+	// Idempotency, the way checkout does it: serialise on (seller, key) for
+	// the rest of the transaction, then look the key up. Two retries racing
+	// each other queue here, and the second finds the first's row.
+	if adj.IdempotencyKey != "" {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+			"stock:"+adj.SellerID.String()+":"+adj.IdempotencyKey); err != nil {
+			return nil, fmt.Errorf("commerce: claim stock idempotency key: %w", err)
+		}
+		prev, err := adjustmentByKey(ctx, tx, adj.SellerID, adj.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+		if prev != nil {
+			if !prev.sameRequest(adj) {
+				return nil, ErrIdempotencyConflict
+			}
+			return &StockLevel{
+				VariantID:   adj.VariantID,
+				TotalQty:    prev.totalAfter,
+				ReservedQty: prev.reservedAfter,
+				Available:   prev.totalAfter - prev.reservedAfter,
+				Replayed:    true,
+			}, nil
+		}
+	}
 
 	// Ownership, from the product — not from the denormalised copy on
 	// inventory_items. A variant with no inventory row still resolves here,
@@ -154,9 +190,11 @@ func (s *Store) AdjustStock(ctx context.Context, adj StockAdjustment) (*StockLev
 
 	if _, err = tx.Exec(ctx, `
 		INSERT INTO inventory_adjustments
-		    (variant_id, seller_id, delta, reason_code, notes, created_by)
-		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6)`,
-		adj.VariantID, owner, adj.Delta, adj.Reason, adj.Notes, nullUUID(adj.ActorID)); err != nil {
+		    (variant_id, seller_id, delta, reason_code, notes, created_by,
+		     idempotency_key, total_after, reserved_after)
+		VALUES ($1,$2,$3,$4,NULLIF($5,''),$6,NULLIF($7,''),$8,$9)`,
+		adj.VariantID, owner, adj.Delta, adj.Reason, adj.Notes, nullUUID(adj.ActorID),
+		adj.IdempotencyKey, newTotal, reserved); err != nil {
 		return nil, err
 	}
 
@@ -180,6 +218,46 @@ func (s *Store) AdjustStock(ctx context.Context, adj StockAdjustment) (*StockLev
 		ReservedQty: reserved,
 		Available:   newTotal - reserved,
 	}, nil
+}
+
+// priorAdjustment is the adjustment an Idempotency-Key already produced.
+type priorAdjustment struct {
+	variantID     uuid.UUID
+	delta         int
+	reason        string
+	notes         string
+	totalAfter    int
+	reservedAfter int
+}
+
+// sameRequest reports whether adj repeats the request that produced p.
+func (p *priorAdjustment) sameRequest(adj StockAdjustment) bool {
+	return p.variantID == adj.VariantID && p.delta == adj.Delta &&
+		p.reason == adj.Reason && p.notes == adj.Notes
+}
+
+// adjustmentByKey finds the seller's adjustment made under key, or nil.
+func adjustmentByKey(ctx context.Context, tx pgx.Tx, sellerID uuid.UUID, key string) (*priorAdjustment, error) {
+	var p priorAdjustment
+	var totalAfter, reservedAfter *int
+	err := tx.QueryRow(ctx, `
+		SELECT variant_id, delta, reason_code, COALESCE(notes,''), total_after, reserved_after
+		  FROM inventory_adjustments
+		 WHERE seller_id = $1 AND idempotency_key = $2`, sellerID, key).
+		Scan(&p.variantID, &p.delta, &p.reason, &p.notes, &totalAfter, &reservedAfter)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	if totalAfter != nil {
+		p.totalAfter = *totalAfter
+	}
+	if reservedAfter != nil {
+		p.reservedAfter = *reservedAfter
+	}
+	return &p, nil
 }
 
 // StockFor reads a variant's current level, ownership-checked.

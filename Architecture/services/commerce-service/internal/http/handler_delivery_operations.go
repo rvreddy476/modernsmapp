@@ -39,7 +39,10 @@ func (h *Handler) registerDeliveryOperations(g *gin.RouterGroup, r *gin.Engine) 
 	a.POST("/support/:ticketId/resolve", h.AdminResolveDeliverySupport)
 }
 func (h *Handler) GetDeliverySellerLocation(c *gin.Context) {
-	u, _ := getUserID(c)
+	u, ok := getUserID(c)
+	if !ok {
+		return // L3 (audit 2026-10-30): getUserID already wrote the 401
+	}
 	id, ok := parseUUID(c, "sellerId")
 	if !ok {
 		return
@@ -55,12 +58,18 @@ func deliveryResult(c *gin.Context, result any, err error) {
 	api.JSON(c.Writer, 200, result, nil)
 }
 func (h *Handler) GetDeliveryAvailability(c *gin.Context) {
-	u, _ := getUserID(c)
+	u, ok := getUserID(c)
+	if !ok {
+		return // L3 (audit 2026-10-30): getUserID already wrote the 401
+	}
 	v, e := h.svc.DeliveryAvailability(c.Request.Context(), u)
 	deliveryResult(c, v, e)
 }
 func (h *Handler) PutDeliveryAvailability(c *gin.Context) {
-	u, _ := getUserID(c)
+	u, ok := getUserID(c)
+	if !ok {
+		return // L3 (audit 2026-10-30): getUserID already wrote the 401
+	}
 	var v postgres.DeliveryAvailability
 	if c.ShouldBindJSON(&v) != nil {
 		deliveryError(c, postgres.ErrDeliveryInvalid)
@@ -73,12 +82,18 @@ func (h *Handler) PutDeliveryAvailability(c *gin.Context) {
 	h.GetDeliveryAvailability(c)
 }
 func (h *Handler) GetDeliveryOffers(c *gin.Context) {
-	u, _ := getUserID(c)
+	u, ok := getUserID(c)
+	if !ok {
+		return // L3 (audit 2026-10-30): getUserID already wrote the 401
+	}
 	v, e := h.svc.DeliveryOffers(c.Request.Context(), u)
 	deliveryResult(c, v, e)
 }
 func (h *Handler) decideDeliveryOffer(c *gin.Context, accept bool) {
-	u, _ := getUserID(c)
+	u, ok := getUserID(c)
+	if !ok {
+		return // L3 (audit 2026-10-30): getUserID already wrote the 401
+	}
 	id, ok := parseUUID(c, "offerId")
 	if !ok {
 		return
@@ -89,12 +104,18 @@ func (h *Handler) decideDeliveryOffer(c *gin.Context, accept bool) {
 func (h *Handler) AcceptDeliveryOffer(c *gin.Context)  { h.decideDeliveryOffer(c, true) }
 func (h *Handler) DeclineDeliveryOffer(c *gin.Context) { h.decideDeliveryOffer(c, false) }
 func (h *Handler) GetDeliveryJobs(c *gin.Context) {
-	u, _ := getUserID(c)
+	u, ok := getUserID(c)
+	if !ok {
+		return // L3 (audit 2026-10-30): getUserID already wrote the 401
+	}
 	v, e := h.svc.DeliveryJobs(c.Request.Context(), &u)
 	deliveryResult(c, v, e)
 }
 func (h *Handler) GetCurrentDeliveryJob(c *gin.Context) {
-	u, _ := getUserID(c)
+	u, ok := getUserID(c)
+	if !ok {
+		return // L3 (audit 2026-10-30): getUserID already wrote the 401
+	}
 	rows, e := h.svc.DeliveryJobs(c.Request.Context(), &u)
 	if e != nil {
 		deliveryError(c, e)
@@ -110,7 +131,10 @@ func (h *Handler) GetCurrentDeliveryJob(c *gin.Context) {
 	deliveryResult(c, none, nil)
 }
 func (h *Handler) GetDeliveryJob(c *gin.Context) {
-	u, _ := getUserID(c)
+	u, ok := getUserID(c)
+	if !ok {
+		return // L3 (audit 2026-10-30): getUserID already wrote the 401
+	}
 	id, ok := parseUUID(c, "jobId")
 	if !ok {
 		return
@@ -119,7 +143,10 @@ func (h *Handler) GetDeliveryJob(c *gin.Context) {
 	deliveryResult(c, v, e)
 }
 func (h *Handler) GetDeliveryJobContact(c *gin.Context) {
-	u, _ := getUserID(c)
+	u, ok := getUserID(c)
+	if !ok {
+		return // L3 (audit 2026-10-30): getUserID already wrote the 401
+	}
 	id, ok := parseUUID(c, "jobId")
 	if !ok {
 		return
@@ -128,7 +155,10 @@ func (h *Handler) GetDeliveryJobContact(c *gin.Context) {
 	deliveryResult(c, v, e)
 }
 func (h *Handler) transitionDelivery(c *gin.Context, action string) {
-	u, _ := getUserID(c)
+	u, ok := getUserID(c)
+	if !ok {
+		return // L3 (audit 2026-10-30): getUserID already wrote the 401
+	}
 	id, ok := parseUUID(c, "jobId")
 	if !ok {
 		return
@@ -149,7 +179,10 @@ func (h *Handler) PickupDeliveryJob(c *gin.Context)  { h.transitionDelivery(c, "
 func (h *Handler) DeliverDeliveryJob(c *gin.Context) { h.transitionDelivery(c, "deliver") }
 func (h *Handler) FailDeliveryJob(c *gin.Context)    { h.transitionDelivery(c, "failed") }
 func (h *Handler) SupportDeliveryJob(c *gin.Context) {
-	u, _ := getUserID(c)
+	u, ok := getUserID(c)
+	if !ok {
+		return // L3 (audit 2026-10-30): getUserID already wrote the 401
+	}
 	id, ok := parseUUID(c, "jobId")
 	if !ok {
 		return
@@ -164,12 +197,18 @@ func (h *Handler) SupportDeliveryJob(c *gin.Context) {
 	deliveryResult(c, gin.H{"submitted": true}, h.svc.DeliverySupport(c.Request.Context(), u, id, b.Reason))
 }
 func (h *Handler) GetDeliveryEarnings(c *gin.Context) {
-	u, _ := getUserID(c)
+	u, ok := getUserID(c)
+	if !ok {
+		return // L3 (audit 2026-10-30): getUserID already wrote the 401
+	}
 	v, e := h.svc.DeliveryEarnings(c.Request.Context(), u)
 	deliveryResult(c, v, e)
 }
 func (h *Handler) putDeliveryLocation(c *gin.Context, kind, param string) {
-	u, _ := getUserID(c)
+	u, ok := getUserID(c)
+	if !ok {
+		return // L3 (audit 2026-10-30): getUserID already wrote the 401
+	}
 	id, ok := parseUUID(c, param)
 	if !ok {
 		return
@@ -188,7 +227,10 @@ func (h *Handler) PutDeliverySellerLocation(c *gin.Context) {
 	h.putDeliveryLocation(c, "seller", "sellerId")
 }
 func (h *Handler) SellerDeliveryReady(c *gin.Context) {
-	u, _ := getUserID(c)
+	u, ok := getUserID(c)
+	if !ok {
+		return // L3 (audit 2026-10-30): getUserID already wrote the 401
+	}
 	id, ok := parseUUID(c, "jobId")
 	if !ok {
 		return
@@ -197,7 +239,10 @@ func (h *Handler) SellerDeliveryReady(c *gin.Context) {
 	deliveryResult(c, gin.H{"pickup_code": code}, e)
 }
 func (h *Handler) GetDeliveryCustomerCode(c *gin.Context) {
-	u, _ := getUserID(c)
+	u, ok := getUserID(c)
+	if !ok {
+		return // L3 (audit 2026-10-30): getUserID already wrote the 401
+	}
 	id, ok := parseUUID(c, "jobId")
 	if !ok {
 		return
@@ -267,7 +312,10 @@ func (h *Handler) AdminResolveDeliverySupport(c *gin.Context) {
 }
 
 func (h *Handler) UpdateDeliveryLocation(c *gin.Context) {
-	u, _ := getUserID(c)
+	u, ok := getUserID(c)
+	if !ok {
+		return // L3 (audit 2026-10-30): getUserID already wrote the 401
+	}
 	var l postgres.DeliveryLocation
 	if c.ShouldBindJSON(&l) != nil {
 		deliveryError(c, postgres.ErrDeliveryConfigInvalid)
@@ -280,7 +328,10 @@ func (h *Handler) UpdateDeliveryLocation(c *gin.Context) {
 	h.GetDeliveryAvailability(c)
 }
 func (h *Handler) GetOrderDeliveryJobs(c *gin.Context) {
-	u, _ := getUserID(c)
+	u, ok := getUserID(c)
+	if !ok {
+		return // L3 (audit 2026-10-30): getUserID already wrote the 401
+	}
 	id, ok := parseUUID(c, "orderId")
 	if !ok {
 		return

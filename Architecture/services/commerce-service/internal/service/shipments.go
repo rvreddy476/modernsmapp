@@ -130,25 +130,19 @@ func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID
 		return nil, fmt.Errorf("order has no items")
 	}
 
-	var dropAddr courier.Address
-	if order.DeliveryAddressID != nil {
-		row, err := s.store.GetAddressRow(ctx, *order.DeliveryAddressID)
-		if err != nil {
-			return nil, fmt.Errorf("get delivery address: %w", err)
-		}
-		// Opened, not read from plaintext: after the PII cutover the plaintext
-		// columns are '', and booking against them sends a parcel with no
-		// recipient, phone or street.
-		addr, err := s.openAddressRow(ctx, row)
-		if err != nil {
-			return nil, fmt.Errorf("open delivery address: %w", err)
-		}
-		dropAddr = courier.Address{
-			Name: addr.ContactName, Phone: addr.Phone,
-			Line1: addr.AddressLine1, Line2: addr.AddressLine2,
-			City: addr.City, State: addr.State,
-			Postal: addr.PostalCode, Country: addr.Country,
-		}
+	// M5 (audit 2026-10-30): the courier is booked to the address the
+	// order was quoted and paid for, its sealed snapshot, never the live
+	// saved address the buyer can edit after payment. Opened, not read from
+	// plaintext: after the PII cutover the plaintext columns are ''.
+	addr, err := s.orderFulfilmentAddress(ctx, order)
+	if err != nil {
+		return nil, fmt.Errorf("delivery address: %w", err)
+	}
+	dropAddr := courier.Address{
+		Name: addr.ContactName, Phone: addr.Phone,
+		Line1: addr.AddressLine1, Line2: addr.AddressLine2,
+		City: addr.City, State: addr.State,
+		Postal: addr.PostalCode, Country: addr.Country,
 	}
 
 	// Group items by seller. Stable order: first occurrence wins so
@@ -733,26 +727,20 @@ func (s *Service) draftInvoice(ctx context.Context, orderID uuid.UUID, order *po
 	}
 	draft := &invoiceDraft{sellerID: sellerID}
 
+	// M5 (audit 2026-10-30): the ship-to is the order's snapshot, so it
+	// agrees with the place of supply the tax was computed for. A failure is
+	// logged and the ship-to left blank, as a failed lookup always was.
 	var shipTo invoice.Address
-	if order.DeliveryAddressID != nil {
-		if row, err := s.store.GetAddressRow(ctx, *order.DeliveryAddressID); err == nil {
-			// Opened for the same reason as the shipment drop address. A
-			// failure is logged and the ship-to left blank, as a failed lookup
-			// always was — but no longer silently.
-			if addr, openErr := s.openAddressRow(ctx, row); openErr == nil {
-				shipTo = invoice.Address{
-					Line1: addr.AddressLine1, Line2: addr.AddressLine2,
-					City: addr.City, State: addr.State,
-					Postal: addr.PostalCode, Country: addr.Country,
-				}
-			} else {
-				draft.shipToErr = openErr
-				slog.Error("invoice: the delivery address could not be opened",
-					"order_id", order.ID, "error", openErr)
-			}
-		} else {
-			draft.shipToErr = fmt.Errorf("read delivery address: %w", err)
+	if addr, err := s.orderFulfilmentAddress(ctx, order); err == nil {
+		shipTo = invoice.Address{
+			Line1: addr.AddressLine1, Line2: addr.AddressLine2,
+			City: addr.City, State: addr.State,
+			Postal: addr.PostalCode, Country: addr.Country,
 		}
+	} else if !errors.Is(err, errOrderHasNoAddress) {
+		draft.shipToErr = err
+		slog.Error("invoice: the delivery address could not be opened",
+			"order_id", order.ID, "error", err)
 	}
 
 	inv := invoice.Invoice{

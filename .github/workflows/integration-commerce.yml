@@ -99,6 +99,19 @@ jobs:
           grep -q '"/v1/commerce/orders/checkout"' "$H" || { echo "::error::the legacy checkout left FencedRoutes, but money-exempt markers still cite it"; BAD=1; }
           grep -q '"/v1/commerce/returns"' "$H" || { echo "::error::returns left FencedPrefixes, but money-exempt markers still cite it"; BAD=1; }
           grep -q '"/v1/commerce/payout"' "$H" || { echo "::error::payout left FencedPrefixes, but money-exempt markers still cite it"; BAD=1; }
+          grep -q '"/v1/commerce/seller/earnings"' "$H" || { echo "::error::seller earnings left FencedPrefixes, but money-exempt markers still cite it"; BAD=1; }
+          grep -q '"/v1/commerce/seller/cod-remittances"' "$H" || { echo "::error::COD remittances left FencedPrefixes, but money-exempt markers still cite it"; BAD=1; }
+          # The named greps above pin today's fences. This loop pins any fence
+          # a marker cites later: every path written after "fenced at" in a
+          # money-exempt marker must still appear, quoted, in handler_p0.go.
+          N=0
+          while IFS= read -r p; do
+            [ -n "$p" ] || continue
+            N=$((N+1))
+            grep -qF "\"$p\"" "$H" || { echo "::error::a money-exempt marker cites the fence $p, which is no longer in handler_p0.go"; BAD=1; }
+          done < <(grep -rhoE --include='*.go' 'money-exempt:.*fenced at /v1/[A-Za-z0-9/_:-]*[A-Za-z0-9_-]' Architecture/services/commerce-service Architecture/services/payments-service \
+                   | sed -E 's#.*fenced at (/v1/[A-Za-z0-9/_:-]*[A-Za-z0-9_-]).*#\1#' | sort -u)
+          [ "$N" -gt 0 ] || { echo "::error::no money-exempt marker cites a fence; the extraction above no longer matches the marker format"; BAD=1; }
           # And every marker must actually carry a reason.
           if grep -rn --include='*.go' 'money-exempt:[[:space:]]*$' Architecture/services/commerce-service Architecture/services/payments-service; then
             echo "::error::a money-exempt marker has no stated reason"

@@ -23,6 +23,8 @@ type AdjustStockInput struct {
 	Delta     int
 	Reason    string
 	Notes     string
+	// IdempotencyKey is the request's Idempotency-Key header, "" for none.
+	IdempotencyKey string
 }
 
 // StockAdjustReasons are the reason codes a seller may use.
@@ -71,6 +73,8 @@ func (s *Service) AdjustStock(ctx context.Context, actorUserID uuid.UUID, in Adj
 		Delta:     in.Delta,
 		Reason:    reason,
 		Notes:     strings.TrimSpace(in.Notes),
+		// Android audit 2026-10-30 M3: a retried +50 applies once.
+		IdempotencyKey: strings.TrimSpace(in.IdempotencyKey),
 	})
 }
 

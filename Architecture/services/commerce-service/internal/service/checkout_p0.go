@@ -526,6 +526,11 @@ func (s *Service) loadAddressWithRow(ctx context.Context, userID, addressID uuid
 		// checked ownership; it stored whatever id it was handed.
 		return nil, nil, postgres.ErrAddressNotOwned
 	}
+	if row.Deleted {
+		// L5: removed from the address book (kept only for the orders that
+		// reference it). Nothing new is quoted or placed to it.
+		return nil, nil, postgres.ErrAddressNotOwned
+	}
 	if s.pii == nil {
 		return nil, nil, fmt.Errorf("commerce: PII cipher is not configured")
 	}

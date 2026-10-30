@@ -97,6 +97,12 @@ func (s *Store) RetryPaymentReservation(ctx context.Context, orderID, userID uui
 	if len(oos) > 0 {
 		return 0, &OutOfStockError{Lines: oos}
 	}
+	// M3 (audit 2026-10-30): the payment failure released the order's coupon
+	// use. The retry keeps the checkout price, so it must hold the use again,
+	// or refuse (ErrCouponExhausted) and leave the order payment_failed.
+	if err := reclaimCouponTx(ctx, tx, orderID, userID); err != nil {
+		return 0, err
+	}
 	if err := reserveLinesTx(ctx, tx, orderID, userID, lines); err != nil {
 		return 0, err
 	}

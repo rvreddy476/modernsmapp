@@ -303,7 +303,7 @@ func (s *Store) ReviewVotesOf(ctx context.Context, userID uuid.UUID, reviewIDs [
 func (s *Store) DefaultAddressPincode(ctx context.Context, userID uuid.UUID) (pin string, ok bool, err error) {
 	err = s.db.QueryRow(ctx, `
 		SELECT COALESCE(postal_code,'') FROM customer_addresses
-		 WHERE user_id = $1
+		 WHERE user_id = $1 AND deleted_at IS NULL
 		 ORDER BY is_default DESC, created_at DESC
 		 LIMIT 1`, userID).Scan(&pin)
 	if errors.Is(err, pgx.ErrNoRows) {
