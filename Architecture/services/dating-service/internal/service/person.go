@@ -401,19 +401,43 @@ func (s *Service) canViewPerson(ctx context.Context, viewerID, targetID uuid.UUI
 }
 
 // inCurrentDeck reports whether targetID sits in the viewer's current deck.
-// The cached deck answers when there is one; otherwise today's deck is
-// computed (and cached) exactly as GET /pulse/today would.
+// The cached batch answers when there is one: it holds every card served from
+// it that has not been acted on. Without one (no Redis, the batch expired or
+// was invalidated) there is no record of what was served, and a recomputed
+// deck is a fresh random sample cut to the remaining allowance (audit L3), so
+// it can miss the very card the client is holding. The answer is then
+// deterministic instead: does the target pass this viewer's deck query
+// (deckQuery — every visibility rule, their preferences and filters, not
+// passed or acted on) and the other side's dealbreakers. Someone who could
+// never be in the viewer's deck is still refused.
 func (s *Service) inCurrentDeck(ctx context.Context, viewerID, targetID uuid.UUID) (bool, error) {
-	deck := s.readPulseCache(ctx, viewerID)
-	if deck == nil {
-		computed, err := s.GetPulseToday(ctx, viewerID)
-		if err != nil {
-			return false, err
+	if deck := s.readPulseCache(ctx, viewerID); deck != nil {
+		for _, card := range deck.Data {
+			if card.CandidateID == targetID {
+				return true, nil
+			}
 		}
-		deck = computed
+		return false, nil
 	}
-	for _, card := range deck.Data {
-		if card.CandidateID == targetID {
+	return s.deckEligible(ctx, viewerID, targetID)
+}
+
+// deckEligible reports whether targetID passes the viewer's deck query and
+// the target's dealbreakers — the deck's own rules for one candidate, with no
+// sampling, ordering or allowance involved.
+func (s *Service) deckEligible(ctx context.Context, viewerID, targetID uuid.UUID) (bool, error) {
+	q, viewerProfile, err := s.deckQuery(ctx, viewerID)
+	if err != nil {
+		return false, err
+	}
+	q.OnlyIDs = []uuid.UUID{targetID}
+	q.Limit = 1
+	candidates, err := s.store.FetchCandidates(ctx, q)
+	if err != nil {
+		return false, fmt.Errorf("deck eligibility: %w", err)
+	}
+	for _, c := range s.dropByTheirDealbreakers(ctx, viewerProfile, candidates) {
+		if c.UserID == targetID {
 			return true, nil
 		}
 	}

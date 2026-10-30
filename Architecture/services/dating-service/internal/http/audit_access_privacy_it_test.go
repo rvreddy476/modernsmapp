@@ -108,3 +108,25 @@ func TestL4HTTP_HiddenNoteNeverSentRevealOnRequest(t *testing.T) {
 		}
 	}
 }
+
+// H1 x L3 regression: the served-card check must not draw a fresh random
+// deck. With one card of the allowance left and two equally ranked
+// candidates, the card served is a coin flip; with no cached batch (this rig
+// has no Redis) the pass check used to recompute the deck, cut it to that one
+// card and refuse the served card half the time (CI: TestM1DeckContracts
+// "pass: status 404 CANDIDATE_UNAVAILABLE"). Eight viewers make the old
+// behaviour fail with probability 1 - 2^-8; the fix is deterministic.
+func TestH1HTTP_ServedCardIsPassableWithoutACachedDeck(t *testing.T) {
+	for i := 0; i < 8; i++ {
+		d := newM1Deck(t, m1Config(1, 1))
+		d.candidate()
+		d.candidate()
+		ids, _ := d.deck()
+		if len(ids) != 1 {
+			t.Fatalf("round %d: deck = %v, want exactly the one card the allowance leaves", i, ids)
+		}
+		for served := range ids {
+			d.pass(served) // fails the round on anything but 200
+		}
+	}
+}

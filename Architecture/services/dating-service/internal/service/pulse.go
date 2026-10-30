@@ -377,21 +377,22 @@ func (s *Service) InvalidateDecksForCandidate(ctx context.Context, candidateID u
 	}
 }
 
-// computePulseToday is the real matching pipeline.
-func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*PulseResponse, error) {
-	// 1. Load viewer state.
+// deckQuery builds the viewer's deck query: their preferences, both halves
+// of the gender rule, distance, verified-only and the pass filters. The deck
+// (computePulseToday) and the served-card check (inCurrentDeck) share it, so
+// "could this card be in the viewer's deck" never drifts from the deck.
+func (s *Service) deckQuery(ctx context.Context, viewerID uuid.UUID) (store.CandidateQuery, *store.Profile, error) {
+	// Load viewer state.
 	viewerProfile, err := s.viewerProfile(ctx, viewerID)
 	if err != nil && !errors.Is(err, store.ErrProfileNotFound) {
-		return nil, fmt.Errorf("load viewer profile: %w", err)
+		return store.CandidateQuery{}, nil, fmt.Errorf("load viewer profile: %w", err)
 	}
 	prefs, err := s.store.GetPreferences(ctx, viewerID)
 	if err != nil {
-		return nil, fmt.Errorf("load viewer preferences: %w", err)
+		return store.CandidateQuery{}, nil, fmt.Errorf("load viewer preferences: %w", err)
 	}
-	viewerTune, _ := s.store.GetTune(ctx, viewerID) // ignore not-found
-	viewerEcho, _ := s.store.GetEchoCache(ctx, viewerID)
 
-	// 2. Build the candidate query from prefs.
+	// Build the candidate query from prefs.
 	q := store.CandidateQuery{
 		ViewerID:      viewerID,
 		ExcludePassed: true,
@@ -437,6 +438,18 @@ func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*P
 	// Mechanic M6: verified only and the pass filters apply to a pass
 	// holder only while the flag is on; with it off, the pilot's free toggle.
 	s.applyDeckFilters(ctx, viewerID, &q, privacyVerifiedOnly)
+	return q, viewerProfile, nil
+}
+
+// computePulseToday is the real matching pipeline.
+func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*PulseResponse, error) {
+	// 1-2. Viewer state and the candidate query (shared with inCurrentDeck).
+	q, viewerProfile, err := s.deckQuery(ctx, viewerID)
+	if err != nil {
+		return nil, err
+	}
+	viewerTune, _ := s.store.GetTune(ctx, viewerID) // ignore not-found
+	viewerEcho, _ := s.store.GetEchoCache(ctx, viewerID)
 
 	// 3. Fetch candidates.
 	candidates, err := s.store.FetchCandidates(ctx, q)
