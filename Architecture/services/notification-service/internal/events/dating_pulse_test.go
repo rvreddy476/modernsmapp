@@ -87,8 +87,12 @@ func TestDatingScamAlertIsAnActorlessSafetyAlert(t *testing.T) {
 	if a.Title != "Safety notice" {
 		t.Fatalf("title = %q", a.Title)
 	}
-	if want := "Ravi, who you matched with on Pulse, was removed for scam behaviour. " + scamWarning; a.Body != want {
+	// Lock-screen copy (audit M2): the removed person is never named.
+	if want := "Someone you matched with on Pulse was removed for scam behaviour. " + scamWarning; a.Body != want {
 		t.Fatalf("body = %q\nwant %q", a.Body, want)
+	}
+	if strings.Contains(a.Title+a.Body, "Ravi") {
+		t.Fatalf("scam alert names the removed person: %q / %q", a.Title, a.Body)
 	}
 	if want := "dating_scam_alert:" + match.String() + ":" + recipient.String(); a.Identity != want {
 		t.Fatalf("identity = %q, want %q", a.Identity, want)
@@ -125,20 +129,21 @@ func TestDatingPulseNamesAreTrimmedAndCapped(t *testing.T) {
 	long := strings.Repeat("é", 60)
 	capped := strings.Repeat("é", 40)
 
+	// A scam alert never carries the name at all (lock-screen privacy,
+	// audit M2), however it arrives.
 	f := &fakePulseNotifier{}
-	if err := dispatchPulse(t, f, pulseEnvelope(t, events.EventDatingScamAlert,
-		scamPayload(uuid.NewString(), uuid.NewString(), "  Ravi  "))); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(f.alerts[0].Body, "Ravi, who") {
-		t.Fatalf("untrimmed name: %q", f.alerts[0].Body)
-	}
-	if err := dispatchPulse(t, f, pulseEnvelope(t, events.EventDatingScamAlert,
-		scamPayload(uuid.NewString(), uuid.NewString(), long))); err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasPrefix(f.alerts[1].Body, capped+", who") {
-		t.Fatalf("name not capped at 40 runes: %q", f.alerts[1].Body)
+	for i, name := range []string{"  Ravi  ", long} {
+		if err := dispatchPulse(t, f, pulseEnvelope(t, events.EventDatingScamAlert,
+			scamPayload(uuid.NewString(), uuid.NewString(), name))); err != nil {
+			t.Fatal(err)
+		}
+		a := f.alerts[i]
+		if strings.Contains(a.Title+a.Body, "Ravi") || strings.Contains(a.Title+a.Body, "é") {
+			t.Fatalf("scam alert carries the name: %q / %q", a.Title, a.Body)
+		}
+		if want := "Someone you matched with on Pulse was removed for scam behaviour. " + scamWarning; a.Body != want {
+			t.Fatalf("body = %q\nwant %q", a.Body, want)
+		}
 	}
 
 	if err := dispatchPulse(t, f, pulseEnvelope(t, events.EventDatingDateCheckinDue,
@@ -176,8 +181,10 @@ func TestDatingDateCheckinNotification(t *testing.T) {
 	if want := time.Date(2026, 10, 2, 21, 0, 0, 0, time.UTC); !n.CreatedAt.Equal(want) {
 		t.Fatalf("created at = %s, want due_at", n.CreatedAt)
 	}
+	// Lock-screen copy (audit M2): the name is kept on the notice but never
+	// rendered into the push.
 	r := service.RenderDatingCheckin(n)
-	if r.Title != "How did it go?" || r.Body != "Tell us how your date with Asha went. It takes a moment." {
+	if r.Title != "How did it go?" || r.Body != "Tell us how your date went. It takes a moment." {
 		t.Fatalf("copy = %q / %q", r.Title, r.Body)
 	}
 }

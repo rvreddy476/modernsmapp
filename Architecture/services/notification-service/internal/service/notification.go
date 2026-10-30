@@ -478,9 +478,9 @@ func notifTitleBody(notifType string) (string, string) {
 	// Pulse mechanics (dating_pulse.go). The named copy rides a render
 	// override; this is the anonymous fallback.
 	case DatingScamAlertType:
-		return DatingScamAlertCopy("")
+		return DatingScamAlertCopy()
 	case DatingDateCheckinType:
-		return DatingDateCheckinCopy("")
+		return DatingDateCheckinCopy()
 	default:
 		return "New Notification", "You have a new notification"
 	}

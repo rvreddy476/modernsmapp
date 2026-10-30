@@ -56,7 +56,7 @@ func parseRecipientAndMatch(event, recipientID, matchID string) (uuid.UUID, uuid
 }
 
 // datingScamAlert maps a scam-alert payload to its safety alert. The removed
-// person is never the actor: the alert names them in the copy only.
+// person is never the actor and is never named in the push copy.
 func datingScamAlert(raw json.RawMessage) (service.SafetyAlert, error) {
 	var e datingScamAlertPayload
 	if err := unmarshalPayload(raw, &e); err != nil {
@@ -66,7 +66,8 @@ func datingScamAlert(raw json.RawMessage) (service.SafetyAlert, error) {
 	if err != nil {
 		return service.SafetyAlert{}, err
 	}
-	title, body := service.DatingScamAlertCopy(service.CleanDatingFirstName(e.RemovedFirstName))
+	// The copy never names the removed person (lock-screen privacy, M2).
+	title, body := service.DatingScamAlertCopy()
 	issuedAt := e.IssuedAt
 	if issuedAt.IsZero() {
 		issuedAt = time.Now().UTC()

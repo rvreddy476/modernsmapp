@@ -53,29 +53,26 @@ func CleanDatingFirstName(name string) string {
 	return name
 }
 
-// DatingScamAlertCopy is the push title and body for a scam alert. name must
-// already be cleaned; an empty name gives the anonymous copy.
-func DatingScamAlertCopy(name string) (title, body string) {
-	if name == "" {
-		return datingScamAlertTitle, datingScamAlertNoName
-	}
-	return datingScamAlertTitle, name + ", who you matched with on Pulse, was removed for scam behaviour. " + datingScamAlertWarning
+// DatingScamAlertCopy is the push title and body for a scam alert. It never
+// names the removed person: a push is readable on the lock screen before the
+// phone is unlocked (audit M2), and the safety centre the alert opens has the
+// details.
+func DatingScamAlertCopy() (title, body string) {
+	return datingScamAlertTitle, datingScamAlertNoName
 }
 
-// DatingDateCheckinCopy is the push title and body for a date check-in. name
-// must already be cleaned; an empty name gives the anonymous copy.
-func DatingDateCheckinCopy(name string) (title, body string) {
-	if name == "" {
-		return datingDateCheckinTitle, datingDateCheckinNoName
-	}
-	return datingDateCheckinTitle, "Tell us how your date with " + name + " went. It takes a moment."
+// DatingDateCheckinCopy is the push title and body for a date check-in. It
+// never names the other person, for the same lock-screen reason; the match
+// the deep link opens shows who.
+func DatingDateCheckinCopy() (title, body string) {
+	return datingDateCheckinTitle, datingDateCheckinNoName
 }
 
 // DatingCheckinNotification is one person's "how did it go?" notice.
 type DatingCheckinNotification struct {
 	RecipientID uuid.UUID
 	MatchID     uuid.UUID
-	FirstName   string // cleaned; "" when unknown
+	FirstName   string // cleaned; "" when unknown; never in push copy (M2)
 	DeepLink    string
 	CreatedAt   time.Time
 	// Identity keys the idempotent inbox write so a redelivered event does
@@ -85,7 +82,7 @@ type DatingCheckinNotification struct {
 
 // RenderDatingCheckin is the push copy and the per-match collapse key.
 func RenderDatingCheckin(n DatingCheckinNotification) RenderOverride {
-	title, body := DatingDateCheckinCopy(n.FirstName)
+	title, body := DatingDateCheckinCopy()
 	return RenderOverride{
 		Title:       title,
 		Body:        body,
@@ -95,7 +92,7 @@ func RenderDatingCheckin(n DatingCheckinNotification) RenderOverride {
 
 // CreateDatingCheckinNotification delivers a date check-in through the
 // ordinary resolution path (suppression, master push toggle, quiet hours). No
-// actor: the other person is named in the copy only.
+// actor, and the push copy names nobody.
 func (s *Service) CreateDatingCheckinNotification(ctx context.Context, n DatingCheckinNotification) error {
 	if s.recipientSuppressed(ctx, n.RecipientID, DatingDateCheckinType) {
 		return nil

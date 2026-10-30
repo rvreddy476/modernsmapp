@@ -96,9 +96,32 @@ const AndroidTTLDataKey = "android_ttl"
 // 2) publish the channel to clients: a foreground push the app draws itself
 // uses the same channel, and so the same tone, as a background one the
 // system draws. Every other type keeps the key transport-only.
+//
+// Dating pushes (IsDatingType) keep it too: the app draws a foreground
+// dating push on the same private "dating" channel the system uses in the
+// background, so a user who silenced Dating silences both.
 var channelInDataTypes = map[string]bool{
 	"dm":              true,
 	"message_request": true,
+}
+
+// DatingAndroidChannel is the Android app's Dating notification channel id
+// (NotificationChannelSpec.DATING, id "dating"). That channel is private on
+// the lock screen; a dating push without it lands on Firebase's fallback
+// channel, which is not.
+const DatingAndroidChannel = "dating"
+
+// IsDatingType reports whether a notification type belongs to Pulse
+// (dating). Dating types are named "dating.<area>.<event>" (spark, match,
+// safety, ...) or, for the Pulse mechanics notices, "dating_<notice>"
+// (dating_scam_alert, dating_date_checkin).
+func IsDatingType(notifType string) bool {
+	return strings.HasPrefix(notifType, "dating.") || strings.HasPrefix(notifType, "dating_")
+}
+
+// keepsChannelInData is channelInDataTypes plus every dating type.
+func keepsChannelInData(notifType string) bool {
+	return channelInDataTypes[notifType] || IsDatingType(notifType)
 }
 
 // highPriorityTypes are operational pushes that must wake a Dozing device: a
@@ -117,6 +140,14 @@ var highPriorityTypes = map[string]bool{
 	// Doorstep customer whose picked professional is gone (B1): a 30-minute
 	// choice window before an automatic full refund (contract priority: high).
 	"doorstep.booking.pro_unavailable": true,
+	// Dating safety (audit H1): a member who pressed panic, or started
+	// sharing their live location, needs their trusted contact to see it
+	// now, not at the next Doze maintenance window.
+	"dating.safety.panic.trusted_contact": true,
+	"dating.safety.location_shared":       true,
+	// The safety team's page for a panic: a responder who sees it late
+	// cannot act on it.
+	"dating.safety.panic.responder": true,
 }
 
 // BuildFCMMessage shapes one FCM v1 `message` object. Exported (and pure) so
@@ -124,7 +155,7 @@ var highPriorityTypes = map[string]bool{
 func BuildFCMMessage(token, title, body string, data map[string]string) map[string]interface{} {
 	channelID, hasChannel := data[AndroidChannelDataKey]
 	ttl, hasTTL := data[AndroidTTLDataKey]
-	keepChannel := channelInDataTypes[data["type"]]
+	keepChannel := keepsChannelInData(data["type"])
 	if (hasChannel && !keepChannel) || hasTTL {
 		stripped := make(map[string]string, len(data))
 		for k, v := range data {

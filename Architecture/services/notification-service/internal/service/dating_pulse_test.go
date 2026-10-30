@@ -10,19 +10,18 @@ import (
 
 func TestDatingPulseCopy(t *testing.T) {
 	const warning = "Never send money, gift cards or codes to anyone you met here."
+	// Neither notice names a person (lock-screen privacy, audit M2).
 	cases := []struct {
 		name, title, body string
-		copy              func(string) (string, string)
+		copy              func() (string, string)
 	}{
-		{"Ravi", "Safety notice", "Ravi, who you matched with on Pulse, was removed for scam behaviour. " + warning, DatingScamAlertCopy},
-		{"", "Safety notice", "Someone you matched with on Pulse was removed for scam behaviour. " + warning, DatingScamAlertCopy},
-		{"Asha", "How did it go?", "Tell us how your date with Asha went. It takes a moment.", DatingDateCheckinCopy},
-		{"", "How did it go?", "Tell us how your date went. It takes a moment.", DatingDateCheckinCopy},
+		{"scam alert", "Safety notice", "Someone you matched with on Pulse was removed for scam behaviour. " + warning, DatingScamAlertCopy},
+		{"date check-in", "How did it go?", "Tell us how your date went. It takes a moment.", DatingDateCheckinCopy},
 	}
 	for _, tc := range cases {
-		title, body := tc.copy(tc.name)
+		title, body := tc.copy()
 		if title != tc.title || body != tc.body {
-			t.Errorf("name %q: %q / %q\nwant %q / %q", tc.name, title, body, tc.title, tc.body)
+			t.Errorf("%s: %q / %q\nwant %q / %q", tc.name, title, body, tc.title, tc.body)
 		}
 	}
 }
@@ -110,8 +109,14 @@ func TestRenderDatingCheckinPushData(t *testing.T) {
 	n := DatingCheckinNotification{RecipientID: recipient, MatchID: match, FirstName: "Asha",
 		DeepLink: "/dating/matches/" + match.String() + "?checkin=1"}
 	title, body, data := buildPushData(recipient, DatingDateCheckinType, DatingMatchEntityType, match, n.DeepLink, RenderDatingCheckin(n))
-	if title != "How did it go?" || body != "Tell us how your date with Asha went. It takes a moment." {
+	if title != "How did it go?" || body != "Tell us how your date went. It takes a moment." {
 		t.Fatalf("copy = %q / %q", title, body)
+	}
+	if strings.Contains(title+body+data["title"]+data["body"], "Asha") {
+		t.Fatalf("check-in push names the date: %q / %q / %v", title, body, data)
+	}
+	if data["android_channel_id"] != "dating" {
+		t.Fatalf("check-in channel = %q, want the private dating channel", data["android_channel_id"])
 	}
 	if data["type"] != "dating_date_checkin" || data["entity_type"] != "dating_match" ||
 		data["entity_id"] != match.String() || data["deep_link"] != n.DeepLink {

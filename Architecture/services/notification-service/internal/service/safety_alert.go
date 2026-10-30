@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/atpost/notification-service/internal/push"
 	"github.com/atpost/notification-service/internal/store/postgres"
 	"github.com/atpost/notification-service/internal/store/scylla"
 	"github.com/google/uuid"
@@ -81,18 +82,33 @@ func (s *Service) CreateSafetyAlertNotification(ctx context.Context, a SafetyAle
 	if err != nil {
 		return fmt.Errorf("safety alert device lookup: %w", err)
 	}
-	data := map[string]string{
-		"type":         a.NotifType,
-		"entity_id":    a.EntityID.String(),
-		"deep_link":    a.DeepLink,
-		"collapse_key": a.Identity,
-	}
+	data := safetyAlertPushData(a)
 	for _, t := range tokens {
 		if err := s.pusher.Send(ctx, t.PushToken, t.Platform, a.Title, a.Body, data); err != nil {
 			slog.Warn("safety alert push failed", "type", a.NotifType, "platform", t.Platform, "error", err)
 		}
 	}
 	return nil
+}
+
+// safetyAlertPushData is a safety alert's device push data. title and body
+// repeat the notification copy because the Android app draws a foreground
+// push itself from data alone and drops one without a title (audit H1).
+// Every safety alert is a dating alert today, so it names the app's private
+// "dating" channel (audit M2); a non-dating type would carry no channel.
+func safetyAlertPushData(a SafetyAlert) map[string]string {
+	data := map[string]string{
+		"type":         a.NotifType,
+		"entity_id":    a.EntityID.String(),
+		"deep_link":    a.DeepLink,
+		"collapse_key": a.Identity,
+		"title":        a.Title,
+		"body":         a.Body,
+	}
+	if push.IsDatingType(a.NotifType) {
+		data[push.AndroidChannelDataKey] = push.DatingAndroidChannel
+	}
+	return data
 }
 
 // ClaimEventDedup records a processed event id; true exactly once per id.

@@ -36,6 +36,15 @@ const (
 	NotifDatingLocationShared      = "dating.safety.location_shared"
 )
 
+// Lock-screen copy for the trusted-contact alerts. A push is readable before
+// the phone is unlocked, so it never names the member or says where they are.
+const (
+	datingPanicContactTitle   = "Someone who trusts you needs help"
+	datingPanicContactBody    = "Open the app to check on them."
+	datingLocationSharedTitle = "A live location was shared with you"
+	datingLocationSharedBody  = "Open the app to see it."
+)
+
 // Ops alert kinds.
 const (
 	OpsAlertDatingPanicPaged          = "dating_panic_paged"
@@ -200,23 +209,19 @@ func processDatingPanic(ctx context.Context, deps datingSafetyDeps, raw json.Raw
 
 	notified := 0
 	if pctx != nil {
-		name := strings.TrimSpace(pctx.FirstName)
-		title := name + " triggered a safety alert"
-		if name == "" {
-			title = "Someone who trusts you triggered a safety alert"
-		}
 		for _, tc := range pctx.TrustedContacts {
 			contact, err := uuid.Parse(tc.UserID)
 			if err != nil || contact == user {
 				continue
 			}
 			deepLink := "/dating/safety/alerts/" + incident.String()
-			body := "Check on them now."
 			if tc.Latitude != nil && tc.Longitude != nil {
 				// Only a contact the user opted in to share the point with.
 				deepLink += fmt.Sprintf("?lat=%.6f&lng=%.6f", *tc.Latitude, *tc.Longitude)
-				body = "Check on them now. Tap to see where they were."
 			}
+			// The copy names nobody on the lock screen (audit M2): who needs
+			// help and where stay behind the tap, in the deep link and the
+			// inbox row (the member is the actor).
 			if err := deps.SendSafetyAlert(ctx, service.SafetyAlert{
 				Recipient:  contact,
 				Actor:      user,
@@ -224,8 +229,8 @@ func processDatingPanic(ctx context.Context, deps datingSafetyDeps, raw json.Raw
 				EntityType: "dating_panic",
 				EntityID:   incident,
 				DeepLink:   deepLink,
-				Title:      title,
-				Body:       body,
+				Title:      datingPanicContactTitle,
+				Body:       datingPanicContactBody,
 				CreatedAt:  createdAt,
 				Identity:   "dating_panic:" + incident.String() + ":contact:" + contact.String(),
 			}); err != nil {
@@ -293,15 +298,12 @@ func processDatingLocationShared(ctx context.Context, deps datingSafetyDeps, raw
 	if first, derr := deps.ClaimEventDedup(ctx, datingSafetyDedupID("dating.safety.location_shared", share)); derr == nil && !first {
 		return nil
 	}
-	name := strings.TrimSpace(deps.FirstName(ctx, sharer))
-	title := name + " is sharing their live location with you"
-	if name == "" {
-		title = "Someone is sharing their live location with you"
-	}
 	startedAt := e.StartedAt
 	if startedAt.IsZero() {
 		startedAt = time.Now().UTC()
 	}
+	// The copy names nobody on the lock screen (audit M2); the sharer is the
+	// actor, so the app shows who after unlock.
 	return deps.SendSafetyAlert(ctx, service.SafetyAlert{
 		Recipient:  recipient,
 		Actor:      sharer,
@@ -309,8 +311,8 @@ func processDatingLocationShared(ctx context.Context, deps datingSafetyDeps, raw
 		EntityType: "dating_location_share",
 		EntityID:   share,
 		DeepLink:   "/dating/safety/shared-locations/" + share.String(),
-		Title:      title,
-		Body:       "Tap to see where they are until the share ends.",
+		Title:      datingLocationSharedTitle,
+		Body:       datingLocationSharedBody,
 		CreatedAt:  startedAt,
 		Identity:   "dating_location_share:" + share.String() + ":" + recipient.String(),
 	})

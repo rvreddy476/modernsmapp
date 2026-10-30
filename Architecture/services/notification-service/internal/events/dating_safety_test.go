@@ -145,8 +145,16 @@ func TestDatingPanicPagesRespondersAndTrustedContacts(t *testing.T) {
 		t.Fatalf("trusted contact notifications = %d, want 2", len(contacts))
 	}
 	for _, a := range contacts {
-		if a.Title != "Asha triggered a safety alert" {
-			t.Fatalf("contact title = %q", a.Title)
+		// Lock-screen copy (audit M2): the push names nobody and says
+		// nothing about where; the deep link and actor carry the details.
+		if a.Title != "Someone who trusts you needs help" || a.Body != "Open the app to check on them." {
+			t.Fatalf("contact copy = %q / %q", a.Title, a.Body)
+		}
+		if strings.Contains(a.Title+a.Body, "Asha") {
+			t.Fatalf("contact copy names the member: %q / %q", a.Title, a.Body)
+		}
+		if a.Actor != user {
+			t.Fatalf("contact actor = %s, want the member %s", a.Actor, user)
 		}
 		if !strings.HasPrefix(a.DeepLink, "/dating/safety/alerts/"+incident.String()) {
 			t.Fatalf("contact deep link = %q", a.DeepLink)
@@ -263,9 +271,16 @@ func TestDatingLocationSharedNotifiesRecipientWithoutCoordinates(t *testing.T) {
 		t.Fatalf("alerts = %d, want 1 (the redelivery is ignored)", len(deps.alerts))
 	}
 	a := deps.alerts[0]
-	if a.Recipient != recipient || a.Title != "Asha is sharing their live location with you" ||
+	if a.Recipient != recipient || a.Actor != sharer ||
 		a.DeepLink != "/dating/safety/shared-locations/"+share.String() {
 		t.Fatalf("alert = %+v", a)
+	}
+	// Lock-screen copy (audit M2): the sharer is never named in the push.
+	if a.Title != "A live location was shared with you" || a.Body != "Open the app to see it." {
+		t.Fatalf("copy = %q / %q", a.Title, a.Body)
+	}
+	if strings.Contains(a.Title+a.Body, "Asha") {
+		t.Fatalf("copy names the sharer: %q / %q", a.Title, a.Body)
 	}
 }
 

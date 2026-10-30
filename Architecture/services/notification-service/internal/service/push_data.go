@@ -53,6 +53,13 @@ func buildPushData(userID uuid.UUID, notifType, entityType string, entityID uuid
 			data[push.AndroidChannelDataKey] = ChatChannelMessages
 		}
 	}
+	// Every dating push names the app's private "dating" channel (audit M2):
+	// without it a background push is drawn on Firebase's fallback channel,
+	// which shows the whole notification on the lock screen and ignores the
+	// user's Dating channel settings.
+	if push.IsDatingType(notifType) && data[push.AndroidChannelDataKey] == "" {
+		data[push.AndroidChannelDataKey] = push.DatingAndroidChannel
+	}
 	// Collapse key so repeated notifications (e.g. many likes) replace each
 	// other on the device instead of flooding.
 	ck := render.CollapseKey
