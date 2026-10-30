@@ -46,7 +46,8 @@ func (h *Handler) setOAuthBindingCookie(c *gin.Context, value string, maxAge int
 	if maxAge < 0 {
 		value = ""
 	}
-	http.SetCookie(c.Writer, &http.Cookie{
+	// Secure follows CookieSecure, which config forces on in production.
+	http.SetCookie(c.Writer, &http.Cookie{ //nolint:gosec // G124: HttpOnly and SameSite=Lax are set; Secure is config-forced in production
 		Name:     oauthBindingCookieName,
 		Value:    value,
 		Path:     oauthBindingCookiePath,

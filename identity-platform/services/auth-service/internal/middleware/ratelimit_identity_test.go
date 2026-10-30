@@ -108,7 +108,9 @@ func TestLimiterWindowDoesNotSlide(t *testing.T) {
 // A counter must never be left without an expiry, or it is a permanent lock.
 func TestLimiterCounterAlwaysExpires(t *testing.T) {
 	r, mr := limiterEngine(t, PasswordResetRateLimit)
-	mr.Set("pwreset_rl:id:victim@example.com", "1") // a counter that lost its TTL
+	if err := mr.Set("pwreset_rl:id:victim@example.com", "1"); err != nil { // a counter that lost its TTL
+		t.Fatalf("seed counter: %v", err)
+	}
 	hitFrom(r, "10.3.0.1", `{"identifier":"victim@example.com"}`)
 	if ttl := mr.TTL("pwreset_rl:id:victim@example.com"); ttl <= 0 {
 		t.Fatalf("counter has no expiry (ttl %v): it would lock the account forever", ttl)

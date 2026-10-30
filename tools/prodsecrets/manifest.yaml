@@ -168,6 +168,11 @@ secrets:
     jwt_secret_previous: shared:jwt_secret_previous
     jwt_kid_previous: shared:jwt_kid_previous
     jwt_public_key_pem: copy:platform-auth#jwt_public_key_pem
+    # RS256 rotation: the previous public key and its kid, accepted alongside
+    # the current one by kid. Empty until the first rotation; see
+    # pkg/tokenpolicy/verify.go for the order.
+    jwt_public_key_pem_previous: prompt-optional:Previous RS256 public key PEM for JWT rotation (empty until the first rotation)
+    jwt_rs256_kid_previous: prompt-optional:Previous RS256 kid for JWT rotation (empty until the first rotation)
 
   identity-auth-service:
     postgres_dsn: dsn:identity_db/identity_auth
