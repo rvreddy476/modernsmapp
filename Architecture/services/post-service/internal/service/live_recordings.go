@@ -33,13 +33,20 @@ func (s *Service) GetLiveRecordings(ctx context.Context, viewerID *uuid.UUID, li
 	viewableAuthor := s.canViewPosts(ctx, viewerID, authorIDs)
 
 	details := make([]PostDetail, 0, len(posts))
+	kept := make([]uuid.UUID, 0, len(posts))
 	for _, p := range posts {
 		if (viewerID == nil || *viewerID != p.AuthorID) && !viewableAuthor[p.AuthorID] {
 			continue
 		}
 		post := p
-		counts, _ := s.countsForPost(ctx, p.ID)
-		details = append(details, PostDetail{Post: &post, Counts: counts})
+		details = append(details, PostDetail{Post: &post})
+		kept = append(kept, p.ID)
+	}
+	// The page's counts in two round trips, not two per row (tube audit
+	// M7).
+	counts := s.pageCounts(ctx, kept)
+	for i := range details {
+		details[i].Counts = counts[details[i].Post.ID]
 	}
 
 	details, err = s.attachMediaStateToDetails(ctx, details, viewerID)
@@ -51,11 +58,15 @@ func (s *Service) GetLiveRecordings(ctx context.Context, viewerID *uuid.UUID, li
 	// A shelf of many authors, unlike a profile grid: each card needs its
 	// channel and view count, so both ride along (the same best-effort
 	// attach trending and my-uploads do; the row type is unchanged).
+	//
+	// View counts: one batched call for the page under one deadline (M7).
+	// They used to be fetched row by row, each with its own 1.5 s timeout,
+	// so a hung analytics-service held a 50-row shelf for over a minute.
 	ptrs := make([]*PostDetail, len(details))
 	for i := range details {
-		details[i].ViewCount = s.getViewCount(ctx, details[i].Post.ID)
 		ptrs[i] = &details[i]
 	}
+	s.attachPageViewCounts(ctx, ptrs)
 	attachViewer := uuid.Nil
 	if viewerID != nil {
 		attachViewer = *viewerID

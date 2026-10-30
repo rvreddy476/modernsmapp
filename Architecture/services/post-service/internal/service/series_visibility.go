@@ -45,18 +45,28 @@ func (s *Service) viewablePostSet(ctx context.Context, ids []uuid.UUID, viewerID
 	return out
 }
 
-// visibleVideoEpisodes drops the episodes the viewer may not open.
-func (s *Service) visibleVideoEpisodes(ctx context.Context, eps []postgres.VideoSeriesEpisode, viewerID *uuid.UUID) []postgres.VideoSeriesEpisode {
+// visibleVideoEpisodes drops the episodes the viewer may not open, and any
+// episode that is not the series creator's own video (tube audit H2: rows
+// written before the add refused them). One batched read for the whole list
+// (viewablePostAuthors, M8), not a single-post read per episode: the watch
+// page asks this on every load.
+func (s *Service) visibleVideoEpisodes(ctx context.Context, eps []postgres.VideoSeriesEpisode, viewerID *uuid.UUID, creatorID uuid.UUID) []postgres.VideoSeriesEpisode {
 	ids := make([]uuid.UUID, len(eps))
 	for i, ep := range eps {
 		ids[i] = ep.PostID
 	}
-	ok := s.viewablePostSet(ctx, ids, viewerID)
+	authors := s.viewablePostAuthors(ctx, ids, viewerID)
 	out := make([]postgres.VideoSeriesEpisode, 0, len(eps))
 	for _, ep := range eps {
-		if ok[ep.PostID] {
-			out = append(out, ep)
+		author, ok := authors[ep.PostID]
+		if !ok {
+			continue
 		}
+		// uuid.Nil: a unit rig's single-post gate, which knows no author.
+		if author != uuid.Nil && author != creatorID {
+			continue
+		}
+		out = append(out, ep)
 	}
 	return out
 }

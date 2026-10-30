@@ -7,6 +7,7 @@ import (
 
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // Video series: visibility, duplicate episodes and removal (2026-09-10).
@@ -47,6 +48,26 @@ type fakeVideoSeriesStore struct {
 	includeUnpublishedSeen []bool
 	// patches records every UpdateVideoSeries that reached the store.
 	patches []postgres.VideoSeriesPatch
+	// postAuthors answers GetPostAuthorID (tube audit H2). A post absent
+	// from it was written by the one creator the fixture's series share, so
+	// the fixtures written before H2 keep meaning what they meant.
+	postAuthors map[uuid.UUID]uuid.UUID
+}
+
+func (f *fakeVideoSeriesStore) GetPostAuthorID(_ context.Context, postID uuid.UUID) (uuid.UUID, error) {
+	if a, ok := f.postAuthors[postID]; ok {
+		return a, nil
+	}
+	creators := map[uuid.UUID]bool{}
+	for _, vs := range f.series {
+		creators[vs.CreatorID] = true
+	}
+	if len(creators) == 1 {
+		for c := range creators {
+			return c, nil
+		}
+	}
+	return uuid.Nil, pgx.ErrNoRows
 }
 
 func (f *fakeVideoSeriesStore) GetVideoSeries(_ context.Context, id uuid.UUID) (*postgres.VideoSeries, error) {

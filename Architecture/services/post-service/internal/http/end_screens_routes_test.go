@@ -157,8 +157,18 @@ func (f *esAuthoring) GetPlaylist(_ context.Context, id uuid.UUID) (*postgres.Pl
 func (f *esAuthoring) ListPlaylistsByCreator(context.Context, uuid.UUID, bool, int, int) ([]postgres.Playlist, error) {
 	return nil, nil
 }
-func (f *esAuthoring) GetPlaylistItems(_ context.Context, id uuid.UUID) ([]postgres.PlaylistItem, error) {
-	return f.items[id], nil
+func (f *esAuthoring) GetPlaylistItems(_ context.Context, id uuid.UUID, page postgres.PlaylistItemsPage) ([]postgres.PlaylistItem, error) {
+	var out []postgres.PlaylistItem
+	for _, it := range f.items[id] {
+		if page.AfterPosition != nil && it.Position <= *page.AfterPosition {
+			continue
+		}
+		if page.Limit > 0 && len(out) == page.Limit {
+			break
+		}
+		out = append(out, it)
+	}
+	return out, nil
 }
 func (f *esAuthoring) GetVideoMetadata(context.Context, uuid.UUID) (*postgres.VideoMetadata, error) {
 	return nil, nil

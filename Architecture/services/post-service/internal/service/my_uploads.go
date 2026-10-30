@@ -378,10 +378,15 @@ func (s *Service) enrichUploads(ctx context.Context, posts []postgres.Post) []Up
 		slog.Warn("my uploads: restriction overlay failed", "error", err)
 	}
 
+	// The page's counts and view counts once each (tube audit M7), not
+	// per row: a hung analytics-service used to cost every row its own
+	// 1.5 s timeout, one after another.
+	pageCounts := s.pageCounts(ctx, postIDs)
+	views := s.pageViewCounts(ctx, postIDs)
 	details := make([]UploadDetail, len(posts))
 	for i, p := range posts {
 		post := p
-		counts, _ := s.countsForPost(ctx, p.ID)
+		counts := pageCounts[p.ID]
 		d := UploadDetail{
 			PostDetail:       PostDetail{Post: &post, Counts: counts},
 			VideoMetadata:    videoMeta[p.ID],
@@ -395,7 +400,7 @@ func (s *Service) enrichUploads(ctx context.Context, posts []postgres.Post) []Up
 		if counts != nil {
 			d.CommentCount = counts.Comments
 		}
-		d.ViewCount = s.getViewCount(ctx, p.ID)
+		d.ViewCount = views[p.ID]
 		details[i] = d
 	}
 	// Tube: the channel card on the author's own long videos.

@@ -133,7 +133,7 @@ func (f *hubAuthoringStore) GetPlaylist(context.Context, uuid.UUID) (*postgres.P
 func (f *hubAuthoringStore) ListPlaylistsByCreator(context.Context, uuid.UUID, bool, int, int) ([]postgres.Playlist, error) {
 	return nil, nil
 }
-func (f *hubAuthoringStore) GetPlaylistItems(context.Context, uuid.UUID) ([]postgres.PlaylistItem, error) {
+func (f *hubAuthoringStore) GetPlaylistItems(context.Context, uuid.UUID, postgres.PlaylistItemsPage) ([]postgres.PlaylistItem, error) {
 	return nil, nil
 }
 func (f *hubAuthoringStore) GetVideoMetadata(context.Context, uuid.UUID) (*postgres.VideoMetadata, error) {

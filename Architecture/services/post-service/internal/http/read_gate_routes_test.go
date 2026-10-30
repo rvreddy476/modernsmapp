@@ -217,6 +217,11 @@ func (f *gateSeriesStore) DeleteVideoSeriesEpisodeByPost(context.Context, uuid.U
 	return false, nil
 }
 
+// GetPostAuthorID: every episode here is the series creator's own video.
+func (f *gateSeriesStore) GetPostAuthorID(context.Context, uuid.UUID) (uuid.UUID, error) {
+	return f.series.CreatorID, nil
+}
+
 type gateFlickStore struct {
 	series *postgres.FlickSeries
 	items  []postgres.FlickSeriesItem

@@ -112,6 +112,11 @@ const MaxSeriesEpisodes = 50
 // and is never refused on this ground.
 var ErrVideoSeriesFull = errors.New("video series is full")
 
+// ErrEpisodeNotByCreator is returned when the post to add was not written
+// by the series creator (tube audit H2): a series is its creator's own
+// videos, so nobody can attach their series to someone else's video.
+var ErrEpisodeNotByCreator = errors.New("episode post is not the series creator's")
+
 // AddEpisodeToVideoSeries inserts a new episode and recomputes the series
 // episode_count in a single tx.
 //
@@ -135,11 +140,22 @@ func (s *Store) AddEpisodeToVideoSeries(ctx context.Context, seriesID, postID uu
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	var locked uuid.UUID
-	if err := tx.QueryRow(ctx, `SELECT id FROM video_series WHERE id = $1 FOR UPDATE`, seriesID).Scan(&locked); err != nil {
+	var creatorID uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT creator_id FROM video_series WHERE id = $1 FOR UPDATE`, seriesID).Scan(&creatorID); err != nil {
 		// The service has already answered "no such series" by the time we
 		// are here; ErrNoRows would mean it vanished between the two reads.
 		return nil, err
+	}
+	// H2: the post must be the creator's own (a post's author never
+	// changes, so this read inside the series lock is final).
+	var ownPost bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM posts WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL)`,
+		postID, creatorID).Scan(&ownPost); err != nil {
+		return nil, err
+	}
+	if !ownPost {
+		return nil, ErrEpisodeNotByCreator
 	}
 	var count int
 	var occupied bool
@@ -275,6 +291,7 @@ func (s *Store) GetVideoSeriesEpisodes(ctx context.Context, seriesID uuid.UUID, 
 		SELECT e.series_id, e.post_id, e.episode_num, e.title, e.added_at
 		FROM video_series_episodes e
 		WHERE e.series_id = $1
+		  AND ` + episodeByCreatorSQL + `
 		ORDER BY e.episode_num ASC`
 	if !includeUnpublished {
 		q = `
@@ -284,6 +301,7 @@ func (s *Store) GetVideoSeriesEpisodes(ctx context.Context, seriesID uuid.UUID, 
 		WHERE e.series_id = $1
 		  AND p.deleted_at IS NULL
 		  AND p.publish_at IS NULL
+		  AND ` + episodeByCreatorSQL + `
 		ORDER BY e.episode_num ASC`
 	}
 	rows, err := s.db.Query(ctx, q, seriesID)
@@ -300,17 +318,30 @@ func (s *Store) GetVideoSeriesEpisodes(ctx context.Context, seriesID uuid.UUID, 
 // file one video under two collections); the watch page shows one, and the
 // one the creator added most recently is the best guess at the one they
 // mean. Uses idx_video_series_episodes_post.
+//
+// Only series by the post's own author are memberships (tube audit H2):
+// a row that links a stranger's series to this video is never answered.
 func (s *Store) FindSeriesMembershipsByPost(ctx context.Context, postID uuid.UUID) ([]VideoSeriesEpisode, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT series_id, post_id, episode_num, title, added_at
-		FROM video_series_episodes WHERE post_id = $1
-		ORDER BY added_at DESC, series_id ASC`, postID)
+		SELECT e.series_id, e.post_id, e.episode_num, e.title, e.added_at
+		FROM video_series_episodes e
+		JOIN video_series vs ON vs.id = e.series_id
+		JOIN posts p ON p.id = e.post_id
+		WHERE e.post_id = $1 AND vs.creator_id = p.author_id
+		ORDER BY e.added_at DESC, e.series_id ASC`, postID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	return scanVideoSeriesEpisodes(rows)
 }
+
+// episodeByCreatorSQL keeps an episode row (alias e) unless its post was
+// written by someone other than the series creator (tube audit H2). A row
+// whose post row is missing still lists for the owner, as before.
+const episodeByCreatorSQL = `NOT EXISTS (
+		SELECT 1 FROM posts ep JOIN video_series evs ON evs.id = e.series_id
+		WHERE ep.id = e.post_id AND ep.author_id <> evs.creator_id)`
 
 func scanVideoSeriesEpisodes(rows pgx.Rows) ([]VideoSeriesEpisode, error) {
 	var eps []VideoSeriesEpisode

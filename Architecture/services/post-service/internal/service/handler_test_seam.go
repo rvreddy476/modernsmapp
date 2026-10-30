@@ -121,6 +121,10 @@ type HandlerTestDeps struct {
 	// that rate-limit unusable, as before).
 	RepostTarget func(ctx context.Context, postID uuid.UUID) (*postgres.Post, error)
 	RateLimiter  *engagement.RateLimiter
+	// The tube audit (tube_audit.go): the playlist add's store and the
+	// chapters store.
+	PlaylistItems playlistItemWriter
+	Chapters      chapterStore
 }
 
 // CreditProfile is one identity-profile account as the credit reads name it.
@@ -192,5 +196,7 @@ func NewForHandlerTests(d HandlerTestDeps) *Service {
 	}
 	s.hiddenAuthors = d.HiddenAuthors
 	s.authoringOwners = d.Authoring
+	s.playlistItemsSeam = d.PlaylistItems
+	s.chapterStoreSeam = d.Chapters
 	return s
 }

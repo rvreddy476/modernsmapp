@@ -70,7 +70,7 @@ func (f *fakeAuthoringStore) ListPlaylistsByCreator(_ context.Context, creatorID
 	return out, nil
 }
 
-func (f *fakeAuthoringStore) GetPlaylistItems(_ context.Context, _ uuid.UUID) ([]postgres.PlaylistItem, error) {
+func (f *fakeAuthoringStore) GetPlaylistItems(_ context.Context, _ uuid.UUID, _ postgres.PlaylistItemsPage) ([]postgres.PlaylistItem, error) {
 	return f.items, nil
 }
 
@@ -186,7 +186,8 @@ func TestPlaylistItemWritesRefuseNonOwner(t *testing.T) {
 		call func(s *Service) error
 	}{
 		{"AddPlaylistItem", func(s *Service) error {
-			return s.AddPlaylistItem(context.Background(), attacker, playlistID, postID, 0)
+			_, err := s.AddPlaylistItem(context.Background(), attacker, playlistID, postID, nil)
+			return err
 		}},
 		{"RemovePlaylistItem", func(s *Service) error {
 			return s.RemovePlaylistItem(context.Background(), attacker, playlistID, postID)
@@ -206,7 +207,7 @@ func TestPlaylistItemWritesRefuseNonOwner(t *testing.T) {
 
 func TestPlaylistItemWritesRefuseMissingPlaylist(t *testing.T) {
 	store := &fakeAuthoringStore{playlist: nil}
-	err := newAuthoringService(store).AddPlaylistItem(context.Background(), uuid.New(), uuid.New(), uuid.New(), 0)
+	_, err := newAuthoringService(store).AddPlaylistItem(context.Background(), uuid.New(), uuid.New(), uuid.New(), nil)
 	if !errors.Is(err, ErrPlaylistNotFound) {
 		t.Fatalf("missing playlist: err=%v want ErrPlaylistNotFound", err)
 	}

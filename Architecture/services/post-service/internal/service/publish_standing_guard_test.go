@@ -71,7 +71,7 @@ var publicationEntryPoints = map[string]publicationEntry{
 	"PublishPostDraft":           {file: "post_drafts.go", via: "publishDraftRow"},
 	"publishDraftRow":            {file: "post_drafts.go", via: "draftPublishStanding"},
 	"draftPublishStanding":       {file: "post_drafts.go", gate: gateBoth},
-	"PublishScheduledPostDrafts": {file: "post_drafts.go", via: "publishDraftRow"},
+	"PublishScheduledPostDrafts": {file: "post_draft_queue.go", via: "publishDraftRow"},
 
 	"PublishScheduled": {file: "schedule.go", gate: gateBoth},
 	"ReschedulePost":   {file: "schedule.go", via: "PublishScheduled"},

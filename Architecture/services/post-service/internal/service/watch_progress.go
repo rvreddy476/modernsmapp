@@ -16,24 +16,54 @@ const watchProgressTTL = 90 * 24 * time.Hour
 // ErrWatchProgressNotFound: the viewer has never reported progress on the post.
 var ErrWatchProgressNotFound = errors.New("watch progress not found")
 
-// SaveWatchProgress upserts watch progress in both the DB and Redis cache.
+// watchProgressWriter is the progress write's store slice (*postgres.Store).
+type watchProgressWriter interface {
+	UpsertWatchProgress(ctx context.Context, wp *postgres.WatchProgress) (bool, error)
+}
+
+func (s *Service) watchProgressWrites() watchProgressWriter {
+	if s.watchProgressSeam != nil {
+		return s.watchProgressSeam
+	}
+	return s.pgStore
+}
+
+// watchProgressMirrorTimeout bounds the Redis mirror write.
+const watchProgressMirrorTimeout = 500 * time.Millisecond
+
+// SaveWatchProgress upserts watch progress in the DB, then mirrors the row
+// as stored to Redis.
+//
+// Tube audit L3: the database is the record. A Redis error after the row
+// was written used to fail the request (a 500 for a save that succeeded);
+// the mirror is now best effort, logged, under its own short deadline. A
+// report older than the stored one (ClientSentAt) is not applied by the
+// store, and wp then carries the stored row, which is also what is
+// mirrored, so the cache never moves backwards either.
 func (s *Service) SaveWatchProgress(ctx context.Context, wp *postgres.WatchProgress) error {
-	if err := s.pgStore.UpsertWatchProgress(ctx, wp); err != nil {
+	applied, err := s.watchProgressWrites().UpsertWatchProgress(ctx, wp)
+	if err != nil {
 		return err
 	}
-
-	// Mirror to Redis hash for fast reads.
+	if !applied || s.rdb == nil {
+		return nil
+	}
+	mctx, cancel := context.WithTimeout(ctx, watchProgressMirrorTimeout)
+	defer cancel()
 	key := fmt.Sprintf("watch_progress:%s:%s", wp.UserID, wp.PostID)
 	fields := map[string]interface{}{
 		"position_ms":     wp.PositionMs,
-		"last_watched_at": time.Now().UTC().Format(time.RFC3339),
+		"last_watched_at": wp.LastWatchedAt.UTC().Format(time.RFC3339),
 		"completed":       wp.Completed,
 	}
 	pipe := s.rdb.Pipeline()
-	pipe.HSet(ctx, key, fields)
-	pipe.Expire(ctx, key, watchProgressTTL)
-	_, err := pipe.Exec(ctx)
-	return err
+	pipe.HSet(mctx, key, fields)
+	pipe.Expire(mctx, key, watchProgressTTL)
+	if _, err := pipe.Exec(mctx); err != nil {
+		slog.WarnContext(ctx, "watch progress: redis mirror not written; the database row stands",
+			"user", wp.UserID, "post_id", wp.PostID, "err", err)
+	}
+	return nil
 }
 
 // GetWatchProgress tries Redis first, falls back to DB.
@@ -202,18 +232,60 @@ func attachContinueWatchingPosts(rows []postgres.WatchProgress, posts map[uuid.U
 // post's author. The store DELETEs every existing chapter first, so an
 // unauthorised call here erases a creator's set — the check has to come
 // before the write, and has to fail closed. See video_authoring_authz.go.
+//
+// The list is then held to the chapter rules (tube audit L2,
+// validateChapters) and each thumbnail to the cover rule, before anything
+// is written. A duplicate index is ErrDuplicateChapterIndex (400) here and,
+// should one ever reach the primary key, there too.
 func (s *Service) SaveChapters(ctx context.Context, callerID, postID uuid.UUID, chapters []postgres.MediaChapter) error {
 	if err := s.requirePostAuthor(ctx, callerID, postID); err != nil {
 		return err
 	}
-	return s.pgStore.SaveChapters(ctx, postID, chapters)
+	store := s.chapterRows()
+	if store == nil {
+		return ErrAuthoringStoreUnavailable
+	}
+	durationMs, err := s.chapterVideoDurationMs(ctx, postID)
+	if err != nil {
+		return err
+	}
+	if err := validateChapters(chapters, durationMs); err != nil {
+		return err
+	}
+	if err := s.normalizeChapterThumbnails(ctx, callerID, chapters); err != nil {
+		return err
+	}
+	if err := store.SaveChapters(ctx, postID, chapters); err != nil {
+		if postgres.IsUniqueViolation(err) {
+			return fmt.Errorf("%w: %v", ErrDuplicateChapterIndex, err)
+		}
+		return err
+	}
+	return nil
 }
 
 // GetChapters delegates to the store. The caller has run the post's read
-// gate (GET /v1/posts/:postId/chapters).
+// gate and its members-only gate (GET /v1/posts/:postId/chapters).
 func (s *Service) GetChapters(ctx context.Context, postID uuid.UUID) ([]postgres.MediaChapter, error) {
-	if s.pgStore == nil {
+	store := s.chapterRows()
+	if store == nil {
 		return nil, ErrAuthoringStoreUnavailable
 	}
-	return s.pgStore.GetChapters(ctx, postID)
+	return store.GetChapters(ctx, postID)
+}
+
+// GetChaptersForViewer is GET /v1/posts/:postId/chapters after the read gate
+// (tube audit M2): the members-only gate, exactly as the post detail applies
+// it. A non-member's detail of a members-only video carries no chapters
+// (members_read.go clears them on a redacted row), so this answers the same
+// empty list; titles and timestamps are body content. A gate lookup that
+// fails is an error, never the chapters.
+func (s *Service) GetChaptersForViewer(ctx context.Context, postID uuid.UUID, viewerID *uuid.UUID) ([]postgres.MediaChapter, error) {
+	if err := s.postMembersGate(ctx, postID, viewerID); err != nil {
+		if errors.Is(err, ErrMembersOnly) {
+			return []postgres.MediaChapter{}, nil
+		}
+		return nil, err
+	}
+	return s.GetChapters(ctx, postID)
 }

@@ -179,12 +179,31 @@ func validateDraft(postType string, payload *PostDraftPayload) error {
 	} else if strings.TrimSpace(payload.Text) == "" && len(payload.MediaIDs) == 0 {
 		return fmt.Errorf("%w: draft needs text or media", ErrInvalidDraft)
 	}
+	// CreatePost's title and text rules, on save (tube audit H1): a long
+	// video with no title, or a text over the limit, used to be saved and
+	// scheduled, and then refused at every tick of the publish worker.
+	if err := validateDraftTitleAndText(postType, payload); err != nil {
+		return err
+	}
 	// The distribution policy is validated on save so the author learns
 	// about an unsupported policy immediately, not at 2am publish time.
 	if _, err := ParseDistributionPolicy(payload.Distribution); err != nil {
 		return err
 	}
 	return validateDraftDetails(postType, payload)
+}
+
+// validateDraftTitleAndText is CreatePost's ValidateTitle (for the kind
+// the draft publishes as) and MaxPostTextRunes ceiling on a draft. Each
+// refusal wraps ErrInvalidDraft and the create route's own error.
+func validateDraftTitleAndText(postType string, payload *PostDraftPayload) error {
+	if err := ValidateTitle(draftPayloadKind(postType, payload), strings.TrimSpace(payload.Title)); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidDraft, err)
+	}
+	if err := validateDraftCaption(payload.Text); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidDraft, err)
+	}
+	return nil
 }
 
 // validateDraftDetails applies the details screen's rules
@@ -478,16 +497,14 @@ func (s *Service) publishDraftRow(ctx context.Context, d *postgres.PostDraft, in
 				return existing, nil
 			}
 		}
-		// Content rejection (spam et al) and a tier that is not the
-		// author's any more are terminal → blocked with reason; infra
-		// errors (monetization unreachable included) are transient →
-		// release for retry. Neither ever publishes the post open.
-		if strings.Contains(err.Error(), "content rejected") || errors.Is(err, ErrInvalidTier) || IsTerminalActionError(err) ||
-			IsTerminalCopyrightError(err) {
-			s.pgStore.MarkPostDraftBlocked(ctx, d.ID, err.Error(), d.ClaimToken) //nolint:errcheck
-		} else {
-			s.pgStore.ReleasePostDraftClaim(ctx, d.ID, d.ClaimToken) //nolint:errcheck
-		}
+		// A refusal of the draft itself (a value CreatePost refuses, media
+		// that is gone, spam, a tier that is not the author's any more, an
+		// Action or copyright refusal) is the same on every retry: parked
+		// with the reason. Anything else (infra, monetization unreachable)
+		// is transient: released for the author, or deferred with backoff
+		// by the worker (post_draft_queue.go). Neither ever publishes the
+		// post open.
+		s.settleFailedDraftPublish(ctx, d, err, interactive)
 		return nil, err
 	}
 
@@ -525,24 +542,6 @@ func (s *Service) keepComposerDraftSound(ctx context.Context, post *postgres.Pos
 	ApplySoundLink(post, link)
 }
 
-// PublishScheduledPostDrafts is the worker tick: claim due drafts
-// (SKIP LOCKED, multi-replica safe) and publish each.
-func (s *Service) PublishScheduledPostDrafts(ctx context.Context) (int, error) {
-	claimed, err := s.pgStore.ClaimDuePostDrafts(ctx, time.Now().UTC(), staleClaimAfter, 50)
-	if err != nil {
-		return 0, fmt.Errorf("claim due drafts: %w", err)
-	}
-	published := 0
-	for i := range claimed {
-		if _, err := s.publishDraftRow(ctx, &claimed[i], false); err != nil {
-			slog.Warn("scheduled draft publish failed", "draft_id", claimed[i].ID, "err", err)
-			continue
-		}
-		published++
-	}
-	return published, nil
-}
-
 // draftPublishStanding applies the standing choke point to one claimed
 // composer draft and settles the claim: a refusal parks the draft as
 // blocked with a reason the composer can show; an unknown releases the
@@ -577,7 +576,12 @@ func (s *Service) draftPublishStanding(ctx context.Context, d *postgres.PostDraf
 		s.pgStore.MarkPostDraftBlocked(ctx, d.ID, reason, d.ClaimToken) //nolint:errcheck
 		return err
 	default:
-		s.pgStore.ReleasePostDraftClaim(ctx, d.ID, d.ClaimToken) //nolint:errcheck
+		// Left claimed: the worker defers it with a next attempt time
+		// (post_draft_queue.go), so a draft waiting on standing no longer
+		// takes a place in the claim window on every tick (tube audit H1).
+		if err == nil {
+			err = ErrStandingUnknown
+		}
 		return err
 	}
 }

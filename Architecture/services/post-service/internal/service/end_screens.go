@@ -982,7 +982,7 @@ func (r *endScreenResolver) playlist(ctx context.Context, id uuid.UUID) *EndScre
 	}
 	// No cover: the first item this viewer may open lends its thumbnail, so
 	// a private item's frame is never shown to someone who cannot open it.
-	items, err := r.s.authoringOwners.GetPlaylistItems(ctx, p.ID)
+	items, err := r.s.authoringOwners.GetPlaylistItems(ctx, p.ID, postgres.PlaylistItemsPage{Limit: endScreenResolveTries})
 	if err == nil {
 		for i, it := range items {
 			if i >= endScreenResolveTries {

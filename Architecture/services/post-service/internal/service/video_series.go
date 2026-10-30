@@ -96,6 +96,11 @@ var (
 	// ErrVideoSeriesTitleRequired: create refuses an empty title, so a patch
 	// must not be the way to end up with one.
 	ErrVideoSeriesTitleRequired = errors.New("title is required")
+	// ErrEpisodeNotCreatorsVideo is the 403 for adding someone else's post
+	// as an episode (tube audit H2): a series is its creator's own videos.
+	ErrEpisodeNotCreatorsVideo = errors.New("forbidden: only your own videos can be episodes of your series")
+	// ErrEpisodePostNotFound: the post to add does not exist (or is deleted).
+	ErrEpisodePostNotFound = errors.New("post not found")
 )
 
 // videoSeriesStore is the slice of the Postgres store these decisions need.
@@ -114,12 +119,19 @@ type videoSeriesStore interface {
 	DeleteVideoSeries(ctx context.Context, id uuid.UUID) error
 	DeleteVideoSeriesEpisodeByNum(ctx context.Context, seriesID uuid.UUID, episodeNum int) (bool, error)
 	DeleteVideoSeriesEpisodeByPost(ctx context.Context, seriesID, postID uuid.UUID) (bool, error)
+	// GetPostAuthorID is the post's author (pgx.ErrNoRows for a missing or
+	// deleted post): an episode must be the series creator's own video (H2).
+	GetPostAuthorID(ctx context.Context, postID uuid.UUID) (uuid.UUID, error)
 }
 
 // CreateVideoSeries creates a new video series owned by creatorID.
 func (s *Service) CreateVideoSeries(ctx context.Context, vs *postgres.VideoSeries) error {
 	if vs.Title == "" {
 		return fmt.Errorf("title is required")
+	}
+	// M3: the cover is the creator's own finished image.
+	if err := s.verifySeriesCover(ctx, vs.CreatorID, vs.CoverMediaID); err != nil {
+		return err
 	}
 	return s.pgStore.CreateVideoSeries(ctx, vs)
 }
@@ -167,6 +179,13 @@ func (s *Service) GetVideoSeries(ctx context.Context, id uuid.UUID, callerID *uu
 			return nil, ErrVideoSeriesPrivate
 		}
 	}
+	// L1 (tube audit): a series is its creator's surface. A viewer the
+	// creator blocked, or a stranger to a private account, reads none of
+	// it, as for the creator's posts; answered as a missing series so it
+	// confirms nothing.
+	if !isVideoSeriesOwner(vs, callerID) && !s.canViewAuthor(ctx, callerID, vs.CreatorID) {
+		return nil, ErrVideoSeriesNotFound
+	}
 	return vs, nil
 }
 
@@ -183,6 +202,10 @@ func (s *Service) ListVideoSeriesByCreator(ctx context.Context, creatorID uuid.U
 	}
 	if callerID != nil && *callerID == creatorID {
 		return all, nil
+	}
+	// L1: nothing of a creator the caller may not view.
+	if !s.canViewAuthor(ctx, callerID, creatorID) {
+		return []postgres.VideoSeries{}, nil
 	}
 	return visibleVideoSeries(all), nil
 }
@@ -208,6 +231,14 @@ func (s *Service) AddEpisodeToVideoSeries(ctx context.Context, callerID, seriesI
 	if _, err := s.requireVideoSeriesOwner(ctx, callerID, seriesID); err != nil {
 		return nil, err
 	}
+	// H2 (tube audit): only the creator's own videos. A stranger's popular
+	// video used to be accepted, and the newest series wins the watch page,
+	// so anyone could put their series title, episode labels and a Next
+	// button on someone else's video. Guarded again inside the store's
+	// transaction.
+	if err := s.requireOwnEpisodePost(ctx, callerID, postID); err != nil {
+		return nil, err
+	}
 	// Asked here as well as guarded in the store's transaction so the error
 	// can name the episode the post already holds; the store's WHERE NOT
 	// EXISTS is what actually closes the race.
@@ -221,8 +252,25 @@ func (s *Service) AddEpisodeToVideoSeries(ctx context.Context, callerID, seriesI
 		return nil, ErrEpisodePostDuplicate
 	case errors.Is(err, postgres.ErrVideoSeriesFull):
 		return nil, ErrVideoSeriesFull
+	case errors.Is(err, postgres.ErrEpisodeNotByCreator):
+		return nil, ErrEpisodeNotCreatorsVideo
 	}
 	return ep, err
+}
+
+// requireOwnEpisodePost establishes that creatorID wrote postID.
+func (s *Service) requireOwnEpisodePost(ctx context.Context, creatorID, postID uuid.UUID) error {
+	author, err := s.videoSeries.GetPostAuthorID(ctx, postID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return ErrEpisodePostNotFound
+		}
+		return fmt.Errorf("lookup episode author: %w", err)
+	}
+	if author != creatorID {
+		return ErrEpisodeNotCreatorsVideo
+	}
+	return nil
 }
 
 // GetVideoSeriesEpisodes returns the episodes of a video series, behind the
@@ -242,7 +290,7 @@ func (s *Service) GetVideoSeriesEpisodes(ctx context.Context, seriesID uuid.UUID
 	if err != nil || owner {
 		return eps, err
 	}
-	return s.visibleVideoEpisodes(ctx, eps, callerID), nil
+	return s.visibleVideoEpisodes(ctx, eps, callerID, vs.CreatorID), nil
 }
 
 func isVideoSeriesOwner(vs *postgres.VideoSeries, callerID *uuid.UUID) bool {
@@ -255,6 +303,10 @@ func (s *Service) UpdateVideoSeries(ctx context.Context, callerID, seriesID uuid
 		return nil, ErrVideoSeriesTitleRequired
 	}
 	if _, err := s.requireVideoSeriesOwner(ctx, callerID, seriesID); err != nil {
+		return nil, err
+	}
+	// M3: a new cover is the owner's own finished image.
+	if err := s.verifySeriesCover(ctx, callerID, patch.CoverMediaID); err != nil {
 		return nil, err
 	}
 	vs, err := s.videoSeries.UpdateVideoSeries(ctx, seriesID, patch)
@@ -320,6 +372,20 @@ func (s *Service) GetPostSeries(ctx context.Context, postID uuid.UUID, callerID 
 	if err != nil {
 		return nil, err
 	}
+	if len(memberships) == 0 {
+		return nil, ErrPostNotInSeries
+	}
+	// H2 (tube audit): only a series by the video's own author is shown on
+	// it. Rows written before the add refused strangers' videos are skipped
+	// here (and deleted by migration 081), so nobody else's series can take
+	// over this video's panel and Next button.
+	author, err := s.videoSeries.GetPostAuthorID(ctx, postID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, ErrPostNotInSeries
+		}
+		return nil, err
+	}
 	for _, m := range memberships {
 		vs, err := s.loadVideoSeries(ctx, m.SeriesID)
 		if errors.Is(err, ErrVideoSeriesNotFound) {
@@ -329,6 +395,9 @@ func (s *Service) GetPostSeries(ctx context.Context, postID uuid.UUID, callerID 
 		}
 		if err != nil {
 			return nil, err
+		}
+		if vs.CreatorID != author {
+			continue
 		}
 		owner := isVideoSeriesOwner(vs, callerID)
 		if !vs.IsPublic && !owner {
@@ -342,7 +411,7 @@ func (s *Service) GetPostSeries(ctx context.Context, postID uuid.UUID, callerID 
 			// The same drop as GET /v1/video-series/:id/episodes: an
 			// episode the caller may not open is not listed, and is never
 			// a prev / next either.
-			episodes = s.visibleVideoEpisodes(ctx, episodes, callerID)
+			episodes = s.visibleVideoEpisodes(ctx, episodes, callerID, vs.CreatorID)
 		}
 		current, ok := findEpisodeByPost(episodes, postID)
 		if !ok {

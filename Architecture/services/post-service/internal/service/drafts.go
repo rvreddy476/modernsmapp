@@ -766,16 +766,27 @@ func classifyUnsaidDraft(durationSeconds, width, height int) string {
 // is a no-op for a parked draft. The draft-id-as-post-id idempotency makes
 // crash retries produce exactly one post.
 func (s *Service) PublishScheduledDrafts(ctx context.Context) (int, error) {
-	drafts, err := s.pgStore.ClaimDueReelDrafts(ctx, time.Now().UTC(), staleClaimAfter, 50)
+	q := s.reelDraftQueue()
+	drafts, err := q.ClaimDueReelDrafts(ctx, time.Now().UTC(), staleClaimAfter, 50)
 	if err != nil {
 		return 0, fmt.Errorf("claim scheduled reel drafts: %w", err)
 	}
 
 	published := 0
 	for _, draft := range drafts {
-		_, pubErr := s.publishClaimedReelDraft(ctx, draft.ID, draft.AuthorID)
+		// Each publish under its own deadline (tube audit M10): one hung
+		// dependency costs this draft, not the rest of the tick.
+		pubErr := s.withDraftDeadline(ctx, func(dctx context.Context) error {
+			if s.publishReelDraftSeam != nil {
+				return s.publishReelDraftSeam(dctx, draft.ID, draft.AuthorID)
+			}
+			_, perr := s.publishClaimedReelDraft(dctx, draft.ID, draft.AuthorID)
+			return perr
+		})
 		if pubErr != nil {
-			parked, derr := s.pgStore.DeferReelDraftPublish(ctx, draft.ID, reelDraftRetryPlan(time.Now().UTC()))
+			sctx, cancel := settleContext(ctx)
+			parked, derr := q.DeferReelDraftPublish(sctx, draft.ID, reelDraftRetryPlan(time.Now().UTC()))
+			cancel()
 			if derr != nil {
 				// The claim goes stale and is reclaimed (staleClaimAfter).
 				slog.Warn("reel draft publish: could not defer the draft", "draft_id", draft.ID, "err", derr)
@@ -835,7 +846,9 @@ func (s *Service) publishClaimedReelDraft(ctx context.Context, draftID, authorID
 		// rather than retry it forever. Anything else is transient: the
 		// caller defers it with backoff. Neither publishes the post open.
 		if reason, terminal := reelDraftBlockReason(err); terminal {
-			s.pgStore.MarkReelDraftBlocked(ctx, draftID, reason) //nolint:errcheck
+			sctx, cancel := settleContext(ctx)
+			s.pgStore.MarkReelDraftBlocked(sctx, draftID, reason) //nolint:errcheck
+			cancel()
 		}
 		return nil, fmt.Errorf("publish claimed draft: %w", err)
 	}

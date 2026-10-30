@@ -169,9 +169,16 @@ func (s *Store) UpdatePostDraft(ctx context.Context, id, authorID uuid.UUID, pos
 	}
 	defer tx.Rollback(ctx)
 
+	// A new schedule_at, or reviving a parked draft, starts the publish
+	// backoff afresh (migration 080); an edit that keeps the time keeps it.
+	// Every CASE reads the row as it was before this UPDATE.
 	tag, err := tx.Exec(ctx, `
 		UPDATE post_drafts
 		SET post_type = $3, payload = $4, schedule_at = $5,
+		    publish_attempts = CASE WHEN status = 'blocked' OR schedule_at IS DISTINCT FROM $5
+		                            THEN 0 ELSE publish_attempts END,
+		    next_attempt_at  = CASE WHEN status = 'blocked' OR schedule_at IS DISTINCT FROM $5
+		                            THEN NULL ELSE next_attempt_at END,
 		    status = 'draft', blocked_reason = NULL, updated_at = NOW()
 		WHERE id = $1 AND author_id = $2 AND status IN ('draft','blocked')`,
 		id, authorID, postType, payload, scheduleAt)
@@ -209,12 +216,17 @@ func (s *Store) DeletePostDraft(ctx context.Context, id, authorID uuid.UUID) (bo
 func (s *Store) ClaimDuePostDrafts(ctx context.Context, now time.Time, staleAfter time.Duration, limit int) ([]PostDraft, error) {
 	// A fresh token per claim — a reclaim invalidates the dead worker's
 	// token, so its late finalize/block cannot take effect (Codex P1-3).
+	//
+	// A draft whose last attempt failed transiently waits for
+	// next_attempt_at (migration 080) and is ordered by it, so drafts that
+	// keep failing never hold the front of the queue (tube audit H1).
 	rows, err := s.db.Query(ctx, `
 		WITH due AS (
 			SELECT id FROM post_drafts
-			WHERE (status = 'draft' AND schedule_at IS NOT NULL AND schedule_at <= $1)
+			WHERE (status = 'draft' AND schedule_at IS NOT NULL AND schedule_at <= $1
+			       AND (next_attempt_at IS NULL OR next_attempt_at <= $1))
 			   OR (status = 'publishing' AND claimed_at < $2)
-			ORDER BY schedule_at ASC
+			ORDER BY COALESCE(next_attempt_at, schedule_at) ASC
 			LIMIT $3
 			FOR UPDATE SKIP LOCKED
 		)
@@ -318,6 +330,57 @@ func (s *Store) ReleasePostDraftClaim(ctx context.Context, id uuid.UUID, token *
 		WHERE id = $1 AND status = 'publishing'
 		  AND ($2::uuid IS NULL OR claim_token = $2)`, id, token)
 	return err
+}
+
+// PostDraftRetryPlan decides what happens to a claimed composer draft
+// whose publication failed transiently, given the number of failed
+// attempts including this one: try again at retryAt, or park it with
+// blockReason (non-empty) when it has failed too often. The reel queue's
+// ReelDraftRetryPlan, for post_drafts.
+type PostDraftRetryPlan func(attempts int) (retryAt time.Time, blockReason string)
+
+// DeferPostDraftPublish returns a claimed composer draft after a transient
+// publish failure (migration 080): counted, and either back to 'draft' with
+// its next attempt time or, when plan says so, parked as 'blocked'.
+// Conditional on the claim, like MarkPostDraftBlocked: a draft already
+// parked, published, edited back or reclaimed by another worker is left
+// alone (parked=false, nil).
+func (s *Store) DeferPostDraftPublish(ctx context.Context, id uuid.UUID, token *uuid.UUID, plan PostDraftRetryPlan) (parked bool, err error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	var attempts int
+	err = tx.QueryRow(ctx, `
+		SELECT publish_attempts FROM post_drafts
+		WHERE id = $1 AND status = 'publishing' AND ($2::uuid IS NULL OR claim_token = $2)
+		FOR UPDATE`, id, token).Scan(&attempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	attempts++
+	retryAt, reason := plan(attempts)
+	if reason != "" {
+		_, err = tx.Exec(ctx, `
+			UPDATE post_drafts
+			SET status = 'blocked', blocked_reason = $2, publish_attempts = $3, next_attempt_at = NULL,
+			    claim_token = NULL, claimed_at = NULL, updated_at = NOW()
+			WHERE id = $1`, id, reason, attempts)
+	} else {
+		_, err = tx.Exec(ctx, `
+			UPDATE post_drafts
+			SET status = 'draft', publish_attempts = $2, next_attempt_at = $3,
+			    claim_token = NULL, claimed_at = NULL, updated_at = NOW()
+			WHERE id = $1`, id, attempts, retryAt)
+	}
+	if err != nil {
+		return false, err
+	}
+	return reason != "", tx.Commit(ctx)
 }
 
 // RecordDraftMedia records the media a draft references, so deletion can

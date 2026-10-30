@@ -683,8 +683,12 @@ func main() {
 		_ = rdb.Del(ctx, "post:body:"+id).Err()
 	}).Start(consumerCtx)
 
-	// 12b. Scheduled draft publish worker (every 60 seconds)
-	go func() {
+	// 12b. Scheduled draft publish workers (every 60 seconds). The reel
+	// queue and the composer queue tick on their own goroutines, and each
+	// draft publishes under its own deadline (tube audit M10), so a hung
+	// dependency in one queue never stalls the other. Both claim with FOR
+	// UPDATE SKIP LOCKED: safe to run in every replica.
+	runDraftWorker := func(name string, tick func(context.Context) (int, error)) {
 		ticker := time.NewTicker(60 * time.Second)
 		defer ticker.Stop()
 		for {
@@ -692,24 +696,18 @@ func main() {
 			case <-consumerCtx.Done():
 				return
 			case <-ticker.C:
-				n, err := postSvc.PublishScheduledDrafts(consumerCtx)
+				n, err := tick(consumerCtx)
 				if err != nil {
-					slog.Error("scheduled reel draft publish error", "error", err)
+					slog.Error("scheduled "+name+" draft publish error", "error", err)
 				} else if n > 0 {
-					slog.Info("published scheduled reel drafts", "count", n)
-				}
-				// Module 1 P0-5: generalized composer drafts share the tick.
-				// Both claim with FOR UPDATE SKIP LOCKED — safe to run in
-				// every replica.
-				n, err = postSvc.PublishScheduledPostDrafts(consumerCtx)
-				if err != nil {
-					slog.Error("scheduled post draft publish error", "error", err)
-				} else if n > 0 {
-					slog.Info("published scheduled post drafts", "count", n)
+					slog.Info("published scheduled "+name+" drafts", "count", n)
 				}
 			}
 		}
-	}()
+	}
+	go runDraftWorker("reel", postSvc.PublishScheduledDrafts)
+	// Module 1 P0-5: generalized composer drafts.
+	go runDraftWorker("post", postSvc.PublishScheduledPostDrafts)
 
 	// 13. Graceful shutdown
 	if err := server.Run(r, server.Config{

@@ -79,7 +79,7 @@ func TestSystemPlaylistRefusesGenericWrites(t *testing.T) {
 	if err := svc.DeletePlaylist(ctx, owner, system.ID); !errors.Is(err, ErrSystemPlaylist) {
 		t.Fatalf("delete: err=%v want ErrSystemPlaylist", err)
 	}
-	if err := svc.AddPlaylistItem(ctx, owner, system.ID, uuid.New(), 0); !errors.Is(err, ErrSystemPlaylist) {
+	if _, err := svc.AddPlaylistItem(ctx, owner, system.ID, uuid.New(), nil); !errors.Is(err, ErrSystemPlaylist) {
 		t.Fatalf("add item: err=%v want ErrSystemPlaylist", err)
 	}
 	if err := svc.RemovePlaylistItem(ctx, owner, system.ID, uuid.New()); !errors.Is(err, ErrSystemPlaylist) {

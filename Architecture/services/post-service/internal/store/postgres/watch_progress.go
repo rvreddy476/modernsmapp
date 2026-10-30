@@ -22,24 +22,54 @@ type WatchProgress struct {
 	// LastWatchedAt is the row's last_watched_at; on the wire it is
 	// `updated_at` (the Tube contract, 2026-09-05).
 	LastWatchedAt time.Time `json:"updated_at"`
+	// ClientSentAt is when the player took this report (sent_at_ms), the
+	// order reports are applied in (L3). Write-only: never on the wire.
+	ClientSentAt *time.Time `json:"-"`
 }
 
 // UpsertWatchProgress inserts or updates a watch_progress row and reads the
 // stored row back into wp, so the response carries the kept duration and the
 // real updated_at rather than what the client happened to send.
-func (s *Store) UpsertWatchProgress(ctx context.Context, wp *WatchProgress) error {
-	return s.db.QueryRow(ctx, `
-		INSERT INTO watch_progress (user_id, post_id, position_ms, duration_ms, percent_watched, completed, last_watched_at)
-		VALUES ($1, $2, $3, $4, $5, $6, NOW())
+//
+// wp.ClientSentAt orders the reports (tube audit L3, migration 081): a
+// heartbeat that arrives after a newer one was stored (a retry, two tabs, a
+// slow network) is not applied, so a late report can never move the resume
+// point backwards. applied is false then, and wp carries the stored row. A
+// report without the time (an older client) is applied as before.
+func (s *Store) UpsertWatchProgress(ctx context.Context, wp *WatchProgress) (applied bool, err error) {
+	err = s.db.QueryRow(ctx, `
+		INSERT INTO watch_progress (user_id, post_id, position_ms, duration_ms, percent_watched, completed, last_watched_at, client_sent_at)
+		VALUES ($1, $2, $3, $4, $5, $6, NOW(), $7)
 		ON CONFLICT (user_id, post_id) DO UPDATE SET
 			position_ms     = EXCLUDED.position_ms,
 			duration_ms     = COALESCE(NULLIF(EXCLUDED.duration_ms, 0), watch_progress.duration_ms),
 			percent_watched = EXCLUDED.percent_watched,
 			completed       = EXCLUDED.completed,
-			last_watched_at = NOW()
-		RETURNING duration_ms, last_watched_at`,
-		wp.UserID, wp.PostID, wp.PositionMs, wp.DurationMs, wp.PercentWatched, wp.Completed,
-	).Scan(&wp.DurationMs, &wp.LastWatchedAt)
+			last_watched_at = NOW(),
+			client_sent_at  = COALESCE(EXCLUDED.client_sent_at, watch_progress.client_sent_at)
+		WHERE EXCLUDED.client_sent_at IS NULL
+		   OR watch_progress.client_sent_at IS NULL
+		   OR EXCLUDED.client_sent_at >= watch_progress.client_sent_at
+		RETURNING position_ms, duration_ms, percent_watched, completed, last_watched_at`,
+		wp.UserID, wp.PostID, wp.PositionMs, wp.DurationMs, wp.PercentWatched, wp.Completed, wp.ClientSentAt,
+	).Scan(&wp.PositionMs, &wp.DurationMs, &wp.PercentWatched, &wp.Completed, &wp.LastWatchedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// The conflict's WHERE refused a stale report: answer what is kept.
+		stored, gerr := s.GetWatchProgress(ctx, wp.UserID, wp.PostID)
+		if gerr != nil {
+			return false, gerr
+		}
+		if stored != nil {
+			sent := wp.ClientSentAt
+			*wp = *stored
+			wp.ClientSentAt = sent
+		}
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // GetWatchProgress retrieves a single watch_progress row. Returns nil, nil if not found.

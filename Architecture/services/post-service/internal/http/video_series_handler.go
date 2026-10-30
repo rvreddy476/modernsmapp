@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/post-service/internal/store/postgres"
@@ -58,6 +59,29 @@ func writeVideoAuthoringError(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrInvalidSystemPlaylistKind):
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusBadRequest, "INVALID_KIND", err.Error(), nil)
+	// The tube audit's refusals (2026-10-30): a post listed twice and a
+	// full playlist (M1, M4), a cursor or cover_url this service did not
+	// issue (M4, L4), and the chapter rules (L2) — a duplicate index used to
+	// reach the primary key and come back as a 500.
+	case errors.Is(err, service.ErrPlaylistItemExists):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusConflict, "PLAYLIST_ITEM_EXISTS", err.Error(), nil)
+	case errors.Is(err, service.ErrPlaylistFull):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusConflict, "PLAYLIST_FULL", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidPlaylistCursor):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusBadRequest, "INVALID_CURSOR", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidPlaylistCover):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusBadRequest, "INVALID_COVER_URL", err.Error(), nil)
+	case errors.Is(err, service.ErrDuplicateChapterIndex):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusBadRequest, "DUPLICATE_CHAPTER_INDEX", err.Error(), nil)
+	case errors.Is(err, service.ErrInvalidChapters):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusBadRequest, "INVALID_CHAPTERS", err.Error(), nil)
+	case writeCoverMediaError(c, err):
 	default:
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -191,7 +215,7 @@ func (h *Handler) CreateVideoSeries(c *gin.Context) {
 	}
 
 	if err := h.svc.CreateVideoSeries(c.Request.Context(), vs); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		writeVideoSeriesError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, vs, nil)
@@ -225,6 +249,15 @@ func writeVideoSeriesError(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrVideoSeriesTitleRequired):
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil)
+	// Tube audit H2: a series is its creator's own videos.
+	case errors.Is(err, service.ErrEpisodeNotCreatorsVideo):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusForbidden, "NOT_OWN_VIDEO", err.Error(), nil)
+	case errors.Is(err, service.ErrEpisodePostNotFound):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+	// M3: the cover is the creator's own finished image.
+	case writeCoverMediaError(c, err):
 	default:
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
@@ -558,7 +591,7 @@ func (h *Handler) CreatePlaylist(c *gin.Context) {
 	}
 
 	if err := h.svc.CreatePlaylist(c.Request.Context(), p); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		writeVideoAuthoringError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, p, nil)
@@ -596,9 +629,12 @@ func (h *Handler) DeletePlaylist(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusNoContent, nil, nil)
 }
 
+// addPlaylistItemRequest: position is optional (tube audit M1). Absent
+// appends; a position inside the list inserts there and moves the rest
+// down. It used to default to 0 and overwrite whatever was at the top.
 type addPlaylistItemRequest struct {
 	PostID   string `json:"post_id" binding:"required"`
-	Position int    `json:"position"`
+	Position *int   `json:"position"`
 }
 
 func (h *Handler) AddPlaylistItem(c *gin.Context) {
@@ -622,11 +658,13 @@ func (h *Handler) AddPlaylistItem(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
 		return
 	}
-	if err := h.svc.AddPlaylistItem(c.Request.Context(), userID, playlistID, postID, req.Position); err != nil {
+	item, err := h.svc.AddPlaylistItem(c.Request.Context(), userID, playlistID, postID, req.Position)
+	if err != nil {
 		writeVideoAuthoringError(c, err)
 		return
 	}
-	api.JSON(c.Writer, http.StatusCreated, gin.H{"playlist_id": playlistID, "post_id": postID, "position": req.Position}, nil)
+	// The position the row actually holds, not the one asked for.
+	api.JSON(c.Writer, http.StatusCreated, gin.H{"playlist_id": playlistID, "post_id": postID, "position": item.Position}, nil)
 }
 
 func (h *Handler) RemovePlaylistItem(c *gin.Context) {
@@ -652,6 +690,9 @@ func (h *Handler) RemovePlaylistItem(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusNoContent, nil, nil)
 }
 
+// legacyPlaylistItemsLimit bounds the un-paged read older clients make.
+const legacyPlaylistItemsLimit = 500
+
 func (h *Handler) GetPlaylistItems(c *gin.Context) {
 	playlistID, err := uuid.Parse(c.Param("playlistId"))
 	if err != nil {
@@ -667,15 +708,50 @@ func (h *Handler) GetPlaylistItems(c *gin.Context) {
 	// working, and a client no longer has to follow every playlist read with
 	// POST /v1/posts/batch to draw one row. It is that same helper doing the
 	// hydration, so the two shapes cannot drift.
-	items, err := h.svc.GetPlaylistItemsHydrated(c.Request.Context(), playlistID, optionalCallerID(c))
+	//
+	// Paged (tube audit M4): ?limit= (default 50, at most 100) and ?cursor=
+	// (meta.next_cursor of the previous page). The body is still the array.
+	after, err := service.ParsePlaylistItemsCursor(c.Query("cursor"))
 	if err != nil {
 		writeVideoAuthoringError(c, err)
 		return
 	}
+	// Clients released before paging (web libraryApi, Android
+	// VideoLibraryApi) send neither limit nor cursor and draw whatever comes
+	// back as the whole playlist. For them the server walks the pages itself,
+	// still hydrating one page at a time, up to legacyPlaylistItemsLimit, so
+	// a normal playlist isn't silently cut to its first page.
+	legacy := c.Query("limit") == "" && c.Query("cursor") == ""
+	page := postgres.PlaylistItemsPage{AfterPosition: after, Limit: pageLimit(c.Query("limit"), service.DefaultPlaylistItemsPage, postgres.MaxPlaylistItemsPage)}
+	if legacy {
+		page.Limit = postgres.MaxPlaylistItemsPage
+	}
+	items, next, err := h.svc.GetPlaylistItemsHydrated(c.Request.Context(), playlistID, optionalCallerID(c), page)
+	if err != nil {
+		writeVideoAuthoringError(c, err)
+		return
+	}
+	for legacy && next != "" && len(items) < legacyPlaylistItemsLimit {
+		page.AfterPosition, err = service.ParsePlaylistItemsCursor(next)
+		if err != nil {
+			writeVideoAuthoringError(c, err)
+			return
+		}
+		more, n, err := h.svc.GetPlaylistItemsHydrated(c.Request.Context(), playlistID, optionalCallerID(c), page)
+		if err != nil {
+			writeVideoAuthoringError(c, err)
+			return
+		}
+		items, next = append(items, more...), n
+	}
 	if items == nil {
 		items = []service.PlaylistItemDetail{}
 	}
-	api.JSON(c.Writer, http.StatusOK, items, nil)
+	var meta *api.Meta
+	if next != "" {
+		meta = &api.Meta{NextCursor: next}
+	}
+	api.JSON(c.Writer, http.StatusOK, items, meta)
 }
 
 type updatePlaylistRequest struct {
@@ -859,10 +935,13 @@ func (h *Handler) GetChapters(c *gin.Context) {
 	}
 	// The detail's gate (2026-09-29): a private post's chapter titles are
 	// its content.
-	if !h.requirePostReadable(c, postID, optionalCallerID(c)) {
+	viewer := optionalCallerID(c)
+	if !h.requirePostReadable(c, postID, viewer) {
 		return
 	}
-	chapters, err := h.svc.GetChapters(c.Request.Context(), postID)
+	// And the members-only gate, as the detail applies it (tube audit M2):
+	// a non-member gets no chapters, the same as the detail shows them.
+	chapters, err := h.svc.GetChaptersForViewer(c.Request.Context(), postID, viewer)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
@@ -882,10 +961,30 @@ func (h *Handler) GetChapters(c *gin.Context) {
 // previous progress row) so percent_watched is real rather than 0%, and the
 // store keeps the last known value. completed=true is honored as sent;
 // otherwise it is derived from the 90% rule.
+//
+// sent_at_ms (optional, tube audit L3) is when the player took the report,
+// in Unix milliseconds: a report older than the stored one is not applied,
+// so a late heartbeat cannot move the resume point backwards. A time ahead
+// of the server's clock is taken as now (clampProgressSentAt), so a device
+// whose clock runs fast cannot lock out the user's other devices.
 type saveWatchProgressRequest struct {
-	PositionMs int   `json:"position_ms"`
-	DurationMs int   `json:"duration_ms"`
-	Completed  *bool `json:"completed"`
+	PositionMs int    `json:"position_ms"`
+	DurationMs int    `json:"duration_ms"`
+	Completed  *bool  `json:"completed"`
+	SentAtMs   *int64 `json:"sent_at_ms"`
+}
+
+// clampProgressSentAt turns sent_at_ms into the ordering time: nil when
+// absent or not positive, and never later than now.
+func clampProgressSentAt(sentAtMs *int64, now time.Time) *time.Time {
+	if sentAtMs == nil || *sentAtMs <= 0 {
+		return nil
+	}
+	t := time.UnixMilli(*sentAtMs).UTC()
+	if t.After(now) {
+		t = now.UTC()
+	}
+	return &t
 }
 
 func (h *Handler) SaveWatchProgress(c *gin.Context) {
@@ -928,6 +1027,7 @@ func (h *Handler) SaveWatchProgress(c *gin.Context) {
 		DurationMs:     durationMs,
 		PercentWatched: pct,
 		Completed:      completed,
+		ClientSentAt:   clampProgressSentAt(req.SentAtMs, time.Now()),
 	}
 
 	if err := h.svc.SaveWatchProgress(c.Request.Context(), wp); err != nil {

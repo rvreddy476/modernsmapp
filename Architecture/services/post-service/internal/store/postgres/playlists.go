@@ -160,6 +160,15 @@ func (s *Store) MovePlaylistItem(ctx context.Context, playlistID, postID uuid.UU
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
+	// The parent row first (tube audit M1), as AddPlaylistItem does: the
+	// item rows' FOR UPDATE below locks only the rows that exist, so an add
+	// committing between that read and the DELETE was deleted and never
+	// re-inserted.
+	var locked uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT id FROM playlists WHERE id = $1 FOR UPDATE`, playlistID).Scan(&locked); err != nil {
+		return nil, err
+	}
+
 	rows, err := tx.Query(ctx, `
 		SELECT post_id, added_at FROM playlist_items
 		WHERE playlist_id = $1 ORDER BY position ASC, added_at ASC
@@ -235,29 +244,101 @@ func (s *Store) DeletePlaylist(ctx context.Context, id uuid.UUID) error {
 	return err
 }
 
-// AddPlaylistItem inserts a playlist item and increments item_count in a single tx.
-func (s *Store) AddPlaylistItem(ctx context.Context, playlistID, postID uuid.UUID, position int) error {
+// ErrPlaylistItemExists: the post is already in the playlist (tube audit
+// M1). A playlist lists a video once.
+var ErrPlaylistItemExists = errors.New("post is already in this playlist")
+
+// MaxPlaylistItems caps a user playlist (tube audit M4). 5,000 is the
+// figure the large video platforms use for a hand-built playlist; it is far
+// above anything a person curates by hand, and it bounds the two costs that
+// grow with a playlist: MovePlaylistItem rewrites the whole ordering inside
+// one transaction, and the add's count runs under the playlist's row lock.
+// Reads are paged (GetPlaylistItems), so the cap is not what keeps a read
+// cheap. The system collections (Queue, Loved) are filled by the server
+// and are not capped here; their reads are paged the same way.
+const MaxPlaylistItems = 5000
+
+// ErrPlaylistFull: the add would grow the playlist past its cap (M4).
+var ErrPlaylistFull = errors.New("playlist is full")
+
+// AddPlaylistItem adds postID to a user playlist and returns the row as
+// stored, in one transaction (tube audit M1).
+//
+// It used to INSERT at the client's position with ON CONFLICT (playlist_id,
+// position) DO UPDATE SET post_id: an add with no position (the handler's
+// default 0) or at an occupied one silently replaced the video there, two
+// devices adding at once both computed the same position and the second
+// overwrote the first, and nothing stopped one post appearing twice. Now
+// the system playlists' pattern (AddToSystemPlaylist):
+//
+//   - the parent playlists row is locked first (FOR UPDATE), which
+//     serialises every add, move and remove on this playlist;
+//   - a post already in the playlist is ErrPlaylistItemExists, never a
+//     second row (and a unique index backs it, migration 081);
+//   - the count is read under the lock, so the maxItems cap is exact;
+//   - position nil (or at or past the end) appends at MAX+1; a position
+//     inside the list inserts there and shifts the rows at and after it
+//     down by one. Nothing is ever overwritten.
+//
+// The shift is two statements because the (playlist_id, position) primary
+// key is not deferrable and "position + 1" can collide with itself
+// mid-statement: rows move to distinct negatives first, then back up by
+// one. Positions are never negative otherwise (the service refuses them
+// and migration 081 renumbered the rows from 0).
+func (s *Store) AddPlaylistItem(ctx context.Context, playlistID, postID uuid.UUID, position *int, maxItems int) (*PlaylistItem, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
-	_, err = tx.Exec(ctx, `
+	var locked uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT id FROM playlists WHERE id = $1 FOR UPDATE`, playlistID).Scan(&locked); err != nil {
+		return nil, err
+	}
+	var count, next int
+	var present bool
+	if err := tx.QueryRow(ctx, `
+		SELECT COUNT(*), COALESCE(MAX(position) + 1, 0), COALESCE(bool_or(post_id = $2), FALSE)
+		FROM playlist_items WHERE playlist_id = $1`, playlistID, postID).Scan(&count, &next, &present); err != nil {
+		return nil, err
+	}
+	if present {
+		return nil, ErrPlaylistItemExists
+	}
+	if maxItems > 0 && count >= maxItems {
+		return nil, ErrPlaylistFull
+	}
+	at := next
+	if position != nil && *position >= 0 && *position < next {
+		at = *position
+		if _, err := tx.Exec(ctx, `
+			UPDATE playlist_items SET position = -(position + 1)
+			WHERE playlist_id = $1 AND position >= $2`, playlistID, at); err != nil {
+			return nil, err
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE playlist_items SET position = -position
+			WHERE playlist_id = $1 AND position < 0`, playlistID); err != nil {
+			return nil, err
+		}
+	}
+	item := &PlaylistItem{PlaylistID: playlistID, PostID: postID, Position: at}
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO playlist_items (playlist_id, post_id, position)
 		VALUES ($1, $2, $3)
-		ON CONFLICT (playlist_id, position) DO UPDATE SET post_id = EXCLUDED.post_id`,
-		playlistID, postID, position)
-	if err != nil {
-		return err
+		RETURNING added_at`, playlistID, postID, at).Scan(&item.AddedAt); err != nil {
+		if IsUniqueViolation(err) {
+			return nil, ErrPlaylistItemExists
+		}
+		return nil, err
 	}
-	_, err = tx.Exec(ctx,
+	if _, err := tx.Exec(ctx,
 		`UPDATE playlists SET item_count = (SELECT COUNT(*) FROM playlist_items WHERE playlist_id = $1), updated_at = NOW() WHERE id = $1`,
-		playlistID)
-	if err != nil {
-		return err
+		playlistID); err != nil {
+		return nil, err
 	}
-	return tx.Commit(ctx)
+	return item, tx.Commit(ctx)
 }
 
 // RemovePlaylistItem deletes a playlist item by playlist+post and decrements item_count in a single tx.
@@ -268,6 +349,10 @@ func (s *Store) RemovePlaylistItem(ctx context.Context, playlistID, postID uuid.
 	}
 	defer tx.Rollback(ctx) //nolint:errcheck
 
+	// The parent row first, like the add and the move (M1).
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM playlists WHERE id = $1 FOR UPDATE`, playlistID); err != nil {
+		return err
+	}
 	_, err = tx.Exec(ctx, `DELETE FROM playlist_items WHERE playlist_id = $1 AND post_id = $2`, playlistID, postID)
 	if err != nil {
 		return err
@@ -281,12 +366,29 @@ func (s *Store) RemovePlaylistItem(ctx context.Context, playlistID, postID uuid.
 	return tx.Commit(ctx)
 }
 
-// GetPlaylistItems returns all items in a playlist ordered by position.
-func (s *Store) GetPlaylistItems(ctx context.Context, playlistID uuid.UUID) ([]PlaylistItem, error) {
+// PlaylistItemsPage is one keyset page of a playlist's items (tube audit
+// M4): the rows after AfterPosition (nil = from the start), at most Limit.
+type PlaylistItemsPage struct {
+	AfterPosition *int
+	Limit         int
+}
+
+// MaxPlaylistItemsPage bounds one read of a playlist's items.
+const MaxPlaylistItemsPage = 100
+
+// GetPlaylistItems returns one page of a playlist's items ordered by
+// position. It used to load every row, and every viewer of a big public
+// playlist (or a heavy user's Loved) paid for all of them.
+func (s *Store) GetPlaylistItems(ctx context.Context, playlistID uuid.UUID, page PlaylistItemsPage) ([]PlaylistItem, error) {
+	limit := page.Limit
+	if limit <= 0 || limit > MaxPlaylistItemsPage {
+		limit = MaxPlaylistItemsPage
+	}
 	rows, err := s.db.Query(ctx, `
 		SELECT playlist_id, post_id, position, added_at
-		FROM playlist_items WHERE playlist_id = $1
-		ORDER BY position ASC`, playlistID)
+		FROM playlist_items WHERE playlist_id = $1 AND ($2::int IS NULL OR position > $2)
+		ORDER BY position ASC
+		LIMIT $3`, playlistID, page.AfterPosition, limit)
 	if err != nil {
 		return nil, err
 	}

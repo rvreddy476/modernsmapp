@@ -81,7 +81,8 @@ type videoAuthoringStore interface {
 	// decision, so it must fail closed when the store is unwired and it must
 	// be testable without a live database.
 	ListPlaylistsByCreator(ctx context.Context, creatorID uuid.UUID, ownerView bool, limit, offset int) ([]postgres.Playlist, error)
-	GetPlaylistItems(ctx context.Context, playlistID uuid.UUID) ([]postgres.PlaylistItem, error)
+	// GetPlaylistItems is one keyset page of the items (tube audit M4).
+	GetPlaylistItems(ctx context.Context, playlistID uuid.UUID, page postgres.PlaylistItemsPage) ([]postgres.PlaylistItem, error)
 	GetVideoMetadata(ctx context.Context, postID uuid.UUID) (*postgres.VideoMetadata, error)
 }
 

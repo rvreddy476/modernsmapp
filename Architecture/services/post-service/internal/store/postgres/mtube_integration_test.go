@@ -359,7 +359,7 @@ func TestMTubeSystemPlaylistsAreOnePerOwnerAndIdempotent(t *testing.T) {
 	if !in {
 		t.Fatal("viewer_queued false after add")
 	}
-	items, _ := r.store.GetPlaylistItems(ctx, q1.ID)
+	items, _ := r.store.GetPlaylistItems(ctx, q1.ID, postgres.PlaylistItemsPage{})
 	if len(items) != 2 || items[0].PostID != post.ID || items[1].Position != 1 {
 		t.Fatalf("items: %+v", items)
 	}

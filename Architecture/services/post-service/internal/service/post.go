@@ -121,6 +121,10 @@ type Service struct {
 	// (post_draft_cover_claims.go). *postgres.Store; nil falls back to
 	// pgStore.
 	postDraftRows postDraftRows
+	// The scheduled-draft workers' seams (post_draft_queue.go).
+	draftQueueSeams
+	// The tube audit's seams (tube_audit.go, 2026-10-30).
+	tubeAuditSeams
 
 	// purgeAfter is the "Recently deleted" window: a soft-deleted post can
 	// be restored until deleted_at + purgeAfter, after which the purge
@@ -2209,66 +2213,15 @@ func (s *Service) loadPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID 
 		reactions = s.pageReactions(ctx, ids, *viewerID)
 	}
 
-	// Private accounts: ONE graph round trip for the page's distinct authors
-	// (≤100 per call, 3s cache). Fanout wrote these timeline rows without
-	// consulting the author's account_visibility, and a follower who was
-	// removed — or a viewer who never followed a since-private author —
-	// must not read them here. Fail-closed: an unresolved author is dropped.
-	authorSet := make(map[uuid.UUID]struct{}, len(posts))
-	authorIDs := make([]uuid.UUID, 0, len(posts))
-	for _, p := range posts {
-		if viewerID != nil && *viewerID == p.AuthorID {
-			continue
-		}
-		if _, ok := authorSet[p.AuthorID]; !ok {
-			authorSet[p.AuthorID] = struct{}{}
-			authorIDs = append(authorIDs, p.AuthorID)
-		}
-	}
-	viewableAuthor := s.canViewPosts(ctx, viewerID, authorIDs)
-	ageOK := s.ageAllowance(ctx, viewerID)
-	edges := s.followEdgesOfRestrictedPosts(ctx, posts, viewerID)
+	// Every visibility drop (private accounts, per-post audience, review
+	// status, media state, the age gate) in a fixed number of round trips
+	// for the page: batchVisibility.
+	visible := s.batchVisibility(ctx, posts, viewerID)
 
 	result := make(map[uuid.UUID]*PostDetail, len(posts))
 	for _, p := range posts {
 		post := p // copy to avoid pointer reuse
-
-		if viewerID == nil || *viewerID != post.AuthorID {
-			if !viewableAuthor[post.AuthorID] {
-				continue
-			}
-			// Per-post visibility: the same rule as the direct read
-			// (viewerMayViewPost), so the batch is never a way round it.
-			// This used to drop only `private` and trust the fan-out
-			// recipient set for `followers` — but this route is reachable
-			// by any signed-in user with a post id, and a timeline row
-			// outlives an unfollow whose purge failed. Private sharing
-			// stays a single-post gate: a share list is never listed.
-			if !batchVisibilityAllowsEdges(post.Visibility, edges[post.AuthorID]) {
-				continue
-			}
-		}
-
-		// reels/posttube item 5: hide non-approved posts (flagged /
-		// rejected / pending) from everyone but the author — mirrors the
-		// GetPost gate so feed hydration never surfaces moderated-out
-		// content even when fanout already wrote a recipient timeline row.
-		if post.EffectiveReviewStatus() != "" && !strings.EqualFold(post.EffectiveReviewStatus(), "approved") {
-			if viewerID == nil || *viewerID != post.AuthorID {
-				continue
-			}
-		}
-
-		// Instant publish: a post whose media is not yet ready+passed is
-		// the author's alone. Feed fanout wrote the follower timeline rows
-		// at create time; this is where they stay hidden until the media
-		// lands (feed-service mirrors it at its hydration tail).
-		if hiddenFromViewer(&post, viewerID) {
-			continue
-		}
-		// Creator Hub: an age-restricted post leaves feed hydration for
-		// anonymous / under-18 / unknown-age viewers (age_gate.go).
-		if !ageOK(&post) {
+		if !visible(&post) {
 			continue
 		}
 
@@ -2318,6 +2271,72 @@ func (s *Service) loadPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID 
 	s.attachSounds(ctx, viewerID, page)
 
 	return result, nil
+}
+
+// batchVisibility is the batch read's per-post drop, shared by
+// loadPostsByIDs and viewablePostAuthors (series_visibility.go) so the two
+// can never disagree. posts must already carry their media state
+// (attachMediaState). One graph round trip for the page's authors, one for
+// the follow edges of restricted posts, one age lookup.
+func (s *Service) batchVisibility(ctx context.Context, posts []postgres.Post, viewerID *uuid.UUID) func(*postgres.Post) bool {
+	// Private accounts: ONE graph round trip for the page's distinct authors
+	// (≤100 per call, 3s cache). Fanout wrote these timeline rows without
+	// consulting the author's account_visibility, and a follower who was
+	// removed — or a viewer who never followed a since-private author —
+	// must not read them here. Fail-closed: an unresolved author is dropped.
+	authorSet := make(map[uuid.UUID]struct{}, len(posts))
+	authorIDs := make([]uuid.UUID, 0, len(posts))
+	for _, p := range posts {
+		if viewerID != nil && *viewerID == p.AuthorID {
+			continue
+		}
+		if _, ok := authorSet[p.AuthorID]; !ok {
+			authorSet[p.AuthorID] = struct{}{}
+			authorIDs = append(authorIDs, p.AuthorID)
+		}
+	}
+	viewableAuthor := s.canViewPosts(ctx, viewerID, authorIDs)
+	ageOK := s.ageAllowance(ctx, viewerID)
+	edges := s.followEdgesOfRestrictedPosts(ctx, posts, viewerID)
+
+	return func(post *postgres.Post) bool {
+		if viewerID == nil || *viewerID != post.AuthorID {
+			if !viewableAuthor[post.AuthorID] {
+				return false
+			}
+			// Per-post visibility: the same rule as the direct read
+			// (viewerMayViewPost), so the batch is never a way round it.
+			// This used to drop only `private` and trust the fan-out
+			// recipient set for `followers` — but this route is reachable
+			// by any signed-in user with a post id, and a timeline row
+			// outlives an unfollow whose purge failed. Private sharing
+			// stays a single-post gate: a share list is never listed.
+			if !batchVisibilityAllowsEdges(post.Visibility, edges[post.AuthorID]) {
+				return false
+			}
+		}
+
+		// reels/posttube item 5: hide non-approved posts (flagged /
+		// rejected / pending) from everyone but the author — mirrors the
+		// GetPost gate so feed hydration never surfaces moderated-out
+		// content even when fanout already wrote a recipient timeline row.
+		if post.EffectiveReviewStatus() != "" && !strings.EqualFold(post.EffectiveReviewStatus(), "approved") {
+			if viewerID == nil || *viewerID != post.AuthorID {
+				return false
+			}
+		}
+
+		// Instant publish: a post whose media is not yet ready+passed is
+		// the author's alone. Feed fanout wrote the follower timeline rows
+		// at create time; this is where they stay hidden until the media
+		// lands (feed-service mirrors it at its hydration tail).
+		if hiddenFromViewer(post, viewerID) {
+			return false
+		}
+		// Creator Hub: an age-restricted post leaves feed hydration for
+		// anonymous / under-18 / unknown-age viewers (age_gate.go).
+		return ageOK(post)
+	}
 }
 
 // GetAuthorCounts returns post counts grouped by content type.
