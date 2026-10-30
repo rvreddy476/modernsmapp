@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"fmt"
-	"strings"
 
 	"github.com/google/uuid"
 )
@@ -17,25 +16,7 @@ type CreateTopicParams struct {
 	IsFeatured    bool       `json:"is_featured"`
 }
 
-func (s *Store) CreateTopic(ctx context.Context, p CreateTopicParams) (*Topic, error) {
-	t := &Topic{}
-	slug := p.Slug
-	if slug == "" {
-		slug = strings.ToLower(strings.ReplaceAll(p.Name, " ", "-"))
-	}
-	err := s.db.QueryRow(ctx, `
-		INSERT INTO topics (name, slug, description, icon_url, parent_topic_id, is_featured)
-		VALUES ($1, $2, $3, $4, $5, $6)
-		RETURNING id, name, slug, description, icon_url, parent_topic_id,
-		          question_count, follower_count, is_featured, created_at`,
-		p.Name, slug, p.Description, p.IconURL, p.ParentTopicID, p.IsFeatured,
-	).Scan(&t.ID, &t.Name, &t.Slug, &t.Description, &t.IconURL, &t.ParentTopicID,
-		&t.QuestionCount, &t.FollowerCount, &t.IsFeatured, &t.CreatedAt)
-	if err != nil {
-		return nil, fmt.Errorf("create topic: %w", err)
-	}
-	return t, nil
-}
+// Topic writes are admin-console only (admin_topics.go, audit M3).
 
 func (s *Store) GetTopic(ctx context.Context, topicID uuid.UUID) (*Topic, error) {
 	t := &Topic{}
@@ -97,17 +78,7 @@ func (s *Store) ListTopics(ctx context.Context, limit, offset int, featuredOnly 
 	return scanTopics(rows)
 }
 
-func (s *Store) UpdateTopic(ctx context.Context, topicID uuid.UUID, p CreateTopicParams) (*Topic, error) {
-	_, err := s.db.Exec(ctx, `
-		UPDATE topics SET name = $2, description = $3, icon_url = $4, is_featured = $5
-		WHERE id = $1`, topicID, p.Name, p.Description, p.IconURL, p.IsFeatured)
-	if err != nil {
-		return nil, fmt.Errorf("update topic: %w", err)
-	}
-	return s.GetTopic(ctx, topicID)
-}
-
-func (s *Store) ListQuestionsByTopic(ctx context.Context, topicID uuid.UUID, sortBy string, limit, offset int) ([]QuestionSummary, error) {
+func (s *Store) ListQuestionsByTopic(ctx context.Context, topicID uuid.UUID, viewerID *uuid.UUID, sortBy string, limit, offset int) ([]QuestionSummary, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -123,7 +94,8 @@ func (s *Store) ListQuestionsByTopic(ctx context.Context, topicID uuid.UUID, sor
 		       COALESCE(q.is_anonymous, false)
 		FROM questions q JOIN question_topics qt ON q.id = qt.question_id
 		WHERE qt.topic_id = $1 AND q.deleted_at IS NULL AND q.status != 'deleted'
-		ORDER BY %s LIMIT $2 OFFSET $3`, orderBy), topicID, limit, offset)
+		  AND %s
+		ORDER BY %s LIMIT $2 OFFSET $3`, questionVisibleSQL("q", "$4"), orderBy), topicID, limit, offset, viewerID)
 	if err != nil {
 		return nil, err
 	}

@@ -20,7 +20,8 @@
 // what it checked, and the actor is signed.
 //
 // The LEGACY /v1/qa/admin/* routes (QA_MODERATOR_USER_IDS + X-User-ID) are
-// untouched and do not accept tokens.
+// retired (audit M1): they answer 410 QA_MODERATION_MOVED, and the
+// allowlist is no longer read.
 package http
 
 import (
@@ -58,7 +59,7 @@ const (
 // to qa. Deployment registers admin-service with exactly these ops.
 var AdminPermissions = []string{
 	PermStatsRead, PermReportsRead, PermReportsAct, PermQuestionsModerate, PermQuestionsMerge,
-	PermAnswersModerate, PermCommentsModerate, PermAuditRead,
+	PermAnswersModerate, PermCommentsModerate, PermAuditRead, PermTopicsManage,
 }
 
 // Error codes for the token path.
@@ -87,6 +88,8 @@ type AdminStore interface {
 	AdminMarkDuplicate(ctx context.Context, actor, questionID, duplicateOfID uuid.UUID, reportID *uuid.UUID, reason string) (*store.ModerationAction, error)
 	ListModerationActionsFiltered(ctx context.Context, targetID, actorID *uuid.UUID, actionType string, limit, offset int) ([]store.ModerationAction, error)
 	AdminStats(ctx context.Context) (*store.AdminStats, error)
+	AdminCreateTopic(ctx context.Context, actor uuid.UUID, p store.CreateTopicParams, reason string) (*store.Topic, error)
+	AdminUpdateTopic(ctx context.Context, actor, topicID uuid.UUID, u store.AdminTopicUpdate, reason string) (*store.Topic, error)
 }
 
 // WithServiceAuth installs the service-token verifier (ServiceCallersFromEnv).
@@ -206,6 +209,8 @@ var AdminRoutes = []AdminRoute{
 	{Method: http.MethodPost, Path: "/answers/:answerId/hide", Permission: PermAnswersModerate},
 	{Method: http.MethodPost, Path: "/comments/:commentId/hide", Permission: PermCommentsModerate},
 	{Method: http.MethodGet, Path: "/actions", Permission: PermAuditRead},
+	{Method: http.MethodPost, Path: "/topics", Permission: PermTopicsManage},
+	{Method: http.MethodPatch, Path: "/topics/:topicId", Permission: PermTopicsManage},
 }
 
 // registerAdminTokenRoutes mounts the token-only family on the engine,
@@ -224,6 +229,8 @@ func (h *Handler) registerAdminTokenRoutes(r *gin.Engine) {
 		"POST /answers/:answerId/hide":          h.adminHide("answer", "answerId"),
 		"POST /comments/:commentId/hide":        h.adminHide("comment", "commentId"),
 		"GET /actions":                          h.AdminListActions,
+		"POST /topics":                          h.AdminCreateTopic,
+		"PATCH /topics/:topicId":                h.AdminUpdateTopic,
 	}
 	g := r.Group(InternalAdminPrefix)
 	for _, rt := range AdminRoutes {

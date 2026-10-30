@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 )
 
 type Consumer struct {
-	reader *kafka.Reader
+	reader messageReader
 	store  *store.Store
 	rdb    *redis.Client
 	// eraser is the account erasure (store.AnonymizeUser); nil means store.
@@ -22,7 +23,34 @@ type Consumer struct {
 	// media releases what erased questions and answers held; nil releases
 	// nothing (WithMediaRelease).
 	media MediaReleaser
+	// deadLetters parks an event that keeps failing; nil means store.
+	deadLetters DeadLetterStore
+	// maxAttempts is how many times one event is tried before it is parked.
+	maxAttempts int
+	// backoff is the first retry delay (doubled up to maxBackoff).
+	backoff    time.Duration
+	maxBackoff time.Duration
 }
+
+// messageReader is the part of *kafka.Reader the consumer uses.
+type messageReader interface {
+	FetchMessage(ctx context.Context) (kafka.Message, error)
+	CommitMessages(ctx context.Context, msgs ...kafka.Message) error
+	Close() error
+}
+
+// DeadLetterStore parks a platform event the consumer gave up on
+// (store.RecordPlatformEventDeadLetter).
+type DeadLetterStore interface {
+	RecordPlatformEventDeadLetter(ctx context.Context, topic string, partition int, offset int64, eventType string, value []byte, attempts int, lastErr string) error
+}
+
+// Retry policy for a failing platform event (audit M8).
+const (
+	DefaultMaxAttempts = 10
+	defaultBackoff     = time.Second
+	defaultMaxBackoff  = time.Minute
+)
 
 // UserEraser is the store's account erasure.
 type UserEraser interface {
@@ -63,29 +91,135 @@ func NewConsumerWithDialer(brokers []string, groupID string, s *store.Store, rdb
 	return &Consumer{reader: reader, store: s, rdb: rdb}
 }
 
+// Start consumes platform-events until ctx ends.
+//
+// Audit M8: it used ReadMessage, which commits the offset before the event
+// is processed, and only logged a failure, so an account erasure or a
+// community ban that met a Postgres failover was lost for good. Now each
+// event is fetched, applied (retried with back-off while it fails), and
+// only then committed. An event that still fails after maxAttempts is
+// parked in qa_platform_event_dead_letters and then committed, so one
+// poison message cannot hold the partition forever; if even parking fails
+// (the database is down), the event keeps being retried and the offset
+// stays where it is. Every handler is idempotent, so a redelivery after a
+// crash between apply and commit is harmless.
 func (c *Consumer) Start(ctx context.Context) {
 	slog.Info("qa-service consumer listening on platform-events")
 	for {
-		m, err := c.reader.ReadMessage(ctx)
+		m, err := c.reader.FetchMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				slog.Info("consumer shutting down")
 				return
 			}
-			slog.Error("consumer read error", "error", err)
-			time.Sleep(2 * time.Second)
+			slog.Error("consumer fetch error", "error", err)
+			if !sleepCtx(ctx, 2*time.Second) {
+				return
+			}
 			continue
 		}
-		if err := c.processMessage(ctx, m); err != nil {
-			slog.Warn("failed to process message", "error", err)
+		if !c.handleUntilSettled(ctx, m) {
+			return // shutting down; the offset stays uncommitted
 		}
+		if err := c.reader.CommitMessages(ctx, m); err != nil {
+			// The event is applied; a redelivery re-applies it harmlessly.
+			slog.Error("consumer commit error", "error", err, "partition", m.Partition, "offset", m.Offset)
+		}
+	}
+}
+
+// handleUntilSettled applies m until it succeeds, is known to be
+// unprocessable, or is parked as a dead letter. It returns false only when
+// ctx ends first (the caller must not commit).
+func (c *Consumer) handleUntilSettled(ctx context.Context, m kafka.Message) bool {
+	maxAttempts := c.maxAttempts
+	if maxAttempts <= 0 {
+		maxAttempts = DefaultMaxAttempts
+	}
+	delay, maxDelay := c.backoff, c.maxBackoff
+	if delay <= 0 {
+		delay = defaultBackoff
+	}
+	if maxDelay <= 0 {
+		maxDelay = defaultMaxBackoff
+	}
+	for attempt := 1; ; attempt++ {
+		err := c.processMessage(ctx, m)
+		if err == nil {
+			return true
+		}
+		if ctx.Err() != nil {
+			return false
+		}
+		var bad permanentError
+		if errors.As(err, &bad) {
+			// Undecodable or malformed: no retry can apply it.
+			slog.Warn("qa platform event is malformed; skipping", "error", err, "partition", m.Partition, "offset", m.Offset)
+			return true
+		}
+		slog.Warn("qa platform event failed; holding the offset",
+			"error", err, "attempt", attempt, "partition", m.Partition, "offset", m.Offset)
+		if attempt >= maxAttempts {
+			dlErr := c.deadLetter(ctx, m, attempt, err)
+			if dlErr == nil {
+				slog.Error("qa platform event parked as a dead letter after its retries",
+					"partition", m.Partition, "offset", m.Offset, "attempts", attempt)
+				return true
+			}
+			slog.Error("qa platform event could not be parked; retrying", "error", dlErr)
+		}
+		if !sleepCtx(ctx, delay) {
+			return false
+		}
+		if delay *= 2; delay > maxDelay {
+			delay = maxDelay
+		}
+	}
+}
+
+func (c *Consumer) deadLetter(ctx context.Context, m kafka.Message, attempts int, cause error) error {
+	var dl DeadLetterStore = c.deadLetters
+	if dl == nil {
+		if c.store == nil {
+			return errors.New("no dead-letter store")
+		}
+		dl = c.store
+	}
+	var envelope events.EventEnvelope
+	_ = json.Unmarshal(m.Value, &envelope)
+	return dl.RecordPlatformEventDeadLetter(ctx, m.Topic, m.Partition, m.Offset, envelope.EventType, m.Value, attempts, cause.Error())
+}
+
+// permanentError marks an event no retry can apply (bad JSON, bad ids).
+type permanentError struct{ err error }
+
+func (e permanentError) Error() string { return e.err.Error() }
+func (e permanentError) Unwrap() error { return e.err }
+
+// permanent wraps err as unprocessable.
+func permanent(err error) error {
+	if err == nil {
+		return nil
+	}
+	return permanentError{err}
+}
+
+// sleepCtx waits d, or reports false when ctx ends first.
+func sleepCtx(ctx context.Context, d time.Duration) bool {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-t.C:
+		return true
 	}
 }
 
 func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	var envelope events.EventEnvelope
 	if err := json.Unmarshal(m.Value, &envelope); err != nil {
-		return err
+		return permanent(err)
 	}
 
 	switch envelope.EventType {
@@ -113,12 +247,12 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 func (c *Consumer) handleUserDeletionRequested(ctx context.Context, envelope events.EventEnvelope) error {
 	var payload events.UserDeletionRequestedPayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-		return err
+		return permanent(err)
 	}
 
 	userID, err := uuid.Parse(payload.UserID)
 	if err != nil {
-		return err
+		return permanent(err)
 	}
 
 	slog.Info("processing GDPR deletion for user in qa-service", "user_id", userID)

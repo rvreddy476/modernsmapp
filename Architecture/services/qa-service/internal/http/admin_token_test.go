@@ -24,8 +24,10 @@ const adminTestInternalKey = "qa-admin-token-test-key"
 
 // adminFakeStore records the actor each admin call receives.
 type adminFakeStore struct {
-	actors []uuid.UUID
-	reads  int
+	actors  []uuid.UUID
+	reads   int
+	topics  []store.CreateTopicParams
+	updates []store.AdminTopicUpdate
 }
 
 func (f *adminFakeStore) rec(actor uuid.UUID) (*store.ModerationAction, error) {
@@ -71,6 +73,18 @@ func (f *adminFakeStore) ListModerationActionsFiltered(context.Context, *uuid.UU
 func (f *adminFakeStore) AdminStats(context.Context) (*store.AdminStats, error) {
 	f.reads++
 	return &store.AdminStats{OpenReportsByReason: map[string]int{}}, nil
+}
+
+func (f *adminFakeStore) AdminCreateTopic(_ context.Context, actor uuid.UUID, p store.CreateTopicParams, _ string) (*store.Topic, error) {
+	f.actors = append(f.actors, actor)
+	f.topics = append(f.topics, p)
+	return &store.Topic{ID: uuid.New(), Name: p.Name, IconURL: p.IconURL, IsFeatured: p.IsFeatured}, nil
+}
+
+func (f *adminFakeStore) AdminUpdateTopic(_ context.Context, actor, id uuid.UUID, u store.AdminTopicUpdate, _ string) (*store.Topic, error) {
+	f.actors = append(f.actors, actor)
+	f.updates = append(f.updates, u)
+	return &store.Topic{ID: id}, nil
 }
 
 type adminTokenRig struct {
@@ -203,7 +217,7 @@ func uuidParams(path string) string {
 
 // adminWriteJSON is a body every token-path write accepts.
 func adminWriteJSON() string {
-	return `{"reason":"IT reason","merge_into_id":"` + uuid.NewString() + `","duplicate_of_id":"` + uuid.NewString() + `"}`
+	return `{"reason":"IT reason","name":"IT topic ` + uuid.NewString()[:8] + `","merge_into_id":"` + uuid.NewString() + `","duplicate_of_id":"` + uuid.NewString() + `"}`
 }
 
 func answerHidePath() string {
@@ -226,6 +240,8 @@ func expectedAdminRoutes() map[string]string {
 		"POST /answers/:answerId/hide":          PermAnswersModerate,
 		"POST /comments/:commentId/hide":        PermCommentsModerate,
 		"GET /actions":                          PermAuditRead,
+		"POST /topics":                          PermTopicsManage,
+		"PATCH /topics/:topicId":                PermTopicsManage,
 	}
 }
 
@@ -250,7 +266,7 @@ func TestAdminToken_EveryWriteRecordsAct(t *testing.T) {
 	rg := newAdminTokenRig(t)
 	var writes int
 	for _, ri := range rg.r.Routes() {
-		if ri.Method != http.MethodPost || !strings.HasPrefix(ri.Path, InternalAdminPrefix+"/") {
+		if ri.Method == http.MethodGet || !strings.HasPrefix(ri.Path, InternalAdminPrefix+"/") {
 			continue
 		}
 		perm := expectedAdminRoutes()[ri.Method+" "+strings.TrimPrefix(ri.Path, InternalAdminPrefix)]
@@ -263,8 +279,8 @@ func TestAdminToken_EveryWriteRecordsAct(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 8 {
-		t.Fatalf("checked %d write routes, want 8", writes)
+	if writes != 10 {
+		t.Fatalf("checked %d write routes, want 10", writes)
 	}
 }
 
@@ -417,38 +433,49 @@ func TestAdminToken_NoVerifierRefuses(t *testing.T) {
 	}
 }
 
-// The LEGACY allowlist gate is unchanged: key required, a moderator named in
-// QA_MODERATOR_USER_IDS passes the gate, anyone else is refused, and a token
-// does not open it. (The DB-backed legacy write is in the integration test.)
-func TestAdminToken_LegacyAllowlistUnchanged(t *testing.T) {
+// legacyAdminRoutes is every route the retired /v1/qa/admin group had.
+var legacyAdminRoutes = []struct{ method, path string }{
+	{http.MethodGet, "/v1/qa/admin/reports"},
+	{http.MethodGet, "/v1/qa/admin/reports/:id"},
+	{http.MethodPost, "/v1/qa/admin/reports/:id/resolve"},
+	{http.MethodPost, "/v1/qa/admin/reports/:id/dismiss"},
+	{http.MethodPost, "/v1/qa/admin/questions/:id/hide"},
+	{http.MethodPost, "/v1/qa/admin/questions/:id/lock"},
+	{http.MethodPost, "/v1/qa/admin/questions/:id/merge"},
+	{http.MethodPost, "/v1/qa/admin/questions/:id/duplicate"},
+	{http.MethodPost, "/v1/qa/admin/answers/:id/hide"},
+	{http.MethodPost, "/v1/qa/admin/comments/:id/hide"},
+	{http.MethodGet, "/v1/qa/admin/actions"},
+}
+
+// The LEGACY allowlist group is retired (audit M1): every one of its routes
+// answers 410 QA_MODERATION_MOVED to anyone, a user named in
+// QA_MODERATOR_USER_IDS and an admin-service token included, and none
+// reaches a store. Moderation is the token family only.
+func TestAdminToken_LegacyGroupRetired(t *testing.T) {
 	moderator := uuid.New()
 	t.Setenv("QA_MODERATOR_USER_IDS", moderator.String())
 	rg := newAdminTokenRig(t)
-	path := "/v1/qa/admin/questions/" + uuid.NewString() + "/merge"
-
-	if w := adminServe(rg.r, http.MethodPost, path, `{"merge_into_id":"bad"}`, gatewayUser(uuid.New())); w.Code != http.StatusForbidden || errorCode(t, w) != "NOT_MODERATOR" {
-		t.Fatalf("legacy non-moderator: status=%d code=%q, want 403 NOT_MODERATOR", w.Code, errorCode(t, w))
+	tok := rg.mint(t, rg.admin, AudienceQA, AdminPermissions, rg.actor.String())
+	for _, rt := range legacyAdminRoutes {
+		path := uuidParams(rt.path)
+		for name, hdr := range map[string]map[string]string{
+			"allowlisted moderator": gatewayUser(moderator),
+			"stranger":              gatewayUser(uuid.New()),
+			"admin-service token": func() map[string]string {
+				h := gatewayUser(moderator)
+				h[ServiceAuthHeader] = "Bearer " + tok
+				return h
+			}(),
+		} {
+			w := adminServe(rg.r, rt.method, path, adminWriteJSON(), hdr)
+			if w.Code != http.StatusGone || errorCode(t, w) != CodeModerationMoved {
+				t.Fatalf("%s %s as %s: status=%d code=%q, want 410 %s", rt.method, path, name, w.Code, errorCode(t, w), CodeModerationMoved)
+			}
+		}
 	}
-	// Past the gate the handler validates the body: 400 proves admission
-	// without touching the (absent) database.
-	if w := adminServe(rg.r, http.MethodPost, path, `{"merge_into_id":"bad"}`, gatewayUser(moderator)); w.Code != http.StatusBadRequest {
-		t.Fatalf("legacy moderator: status=%d body=%s, want 400 from the handler", w.Code, w.Body.String())
-	}
-	noKey := gatewayUser(moderator)
-	delete(noKey, "X-Internal-Service-Key")
-	if w := adminServe(rg.r, http.MethodPost, path, `{"merge_into_id":"bad"}`, noKey); w.Code != http.StatusUnauthorized && w.Code != http.StatusForbidden {
-		t.Fatalf("legacy without the internal key: status=%d, want refused", w.Code)
-	}
-	tokOnly := bearer(rg.mint(t, rg.admin, AudienceQA, AdminPermissions, rg.actor.String()))
-	tokOnly["X-Internal-Service-Key"] = adminTestInternalKey
-	if w := adminServe(rg.r, http.MethodPost, path, `{"merge_into_id":"bad"}`, tokOnly); w.Code != http.StatusUnauthorized {
-		t.Fatalf("legacy with only a token: status=%d, want 401 (the legacy path takes no tokens)", w.Code)
-	}
-
-	t.Setenv("QA_MODERATOR_USER_IDS", "")
-	closed := adminTokenRouter(t, &adminFakeStore{}, rg.v)
-	if w := adminServe(closed, http.MethodPost, path, `{"merge_into_id":"bad"}`, gatewayUser(moderator)); w.Code != http.StatusForbidden || errorCode(t, w) != "MODERATION_DISABLED" {
-		t.Fatalf("legacy with no allowlist: status=%d code=%q, want 403 MODERATION_DISABLED", w.Code, errorCode(t, w))
+	if len(rg.st.actors) != 0 || rg.st.reads != 0 {
+		t.Fatalf("a retired legacy route reached the store")
 	}
 }
 

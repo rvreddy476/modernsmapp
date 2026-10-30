@@ -9,6 +9,7 @@ import (
 
 	"github.com/atpost/qa-service/database"
 	qaevents "github.com/atpost/qa-service/internal/events"
+	"github.com/atpost/qa-service/internal/qaevent"
 	"github.com/atpost/qa-service/internal/http"
 	"github.com/atpost/qa-service/internal/mediaclaims"
 	"github.com/atpost/qa-service/internal/mediaclient"
@@ -19,6 +20,7 @@ import (
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
+	"github.com/atpost/shared/outbox"
 	"github.com/atpost/shared/server"
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
@@ -85,6 +87,14 @@ func main() {
 	}
 	slog.Info("qa schema ready")
 
+	// Search and follow indexes, built CONCURRENTLY in the background on one
+	// replica (audit M6/M7): queries work without them, only slower.
+	go func() {
+		if err := pgstore.BuildConcurrentIndexes(ctx, dbPool, database.ConcurrentIndexes); err != nil {
+			slog.Error("qa online index build failed; it is retried on the next boot", "error", err)
+		}
+	}()
+
 	// 5. Prometheus metrics
 	httpMetrics := metrics.NewHTTPMetrics("qa-service")
 	dbMetrics := metrics.NewDBPoolMetrics("qa-service", "postgres")
@@ -115,10 +125,24 @@ func main() {
 		slog.Warn("qa-service: MEDIA_SERVICE_URL or INTERNAL_SERVICE_KEY not set — questions that carry media are refused with 503 MEDIA_UNAVAILABLE")
 	}
 
-	// 8. Kafka producer
-	producer := qaevents.NewProducerWithDialer(kafkaBrokers, kafkaTopic, kafkaDialer)
+	// 8. Events: every Q&A event is written to qa.outbox_events (in the
+	// write's own transaction where the store owns the write) and relayed to
+	// the topic by the outbox publisher (audit L2). Leased claims and an
+	// advisory lock keep replicas from double-publishing.
+	producer := qaevents.NewProducer(dbPool)
 	qaSvc.SetProducer(producer)
-	slog.Info("kafka producer initialized", "topic", kafkaTopic)
+	outboxCtx, cancelOutbox := context.WithCancel(ctx)
+	outboxPublisher := outbox.New(dbPool, outbox.Config{
+		DBSchema:     qaevent.OutboxSchema,
+		KafkaBrokers: strings.Join(kafkaBrokers, ","),
+		DefaultTopic: kafkaTopic,
+	})
+	go outboxPublisher.Run(outboxCtx)
+	slog.Info("outbox publisher started", "table", qaevent.OutboxTable, "topic", kafkaTopic)
+
+	// Community answer/contributor counts are recounted off the write path
+	// (audit M7).
+	go qaStore.RunCommunityStatsRefresher(outboxCtx, store.CommunityStatsInterval)
 
 	// 9. Kafka consumer (GDPR)
 	consumer := qaevents.NewConsumerWithDialer(kafkaBrokers, "qa-service-consumer", qaStore, rdb, kafkaDialer).
@@ -175,6 +199,7 @@ func main() {
 		ShutdownTimeout: 10 * time.Second,
 		OnShutdown: func() {
 			cancelConsumer()
+			cancelOutbox()
 			if err := producer.Close(); err != nil {
 				slog.Warn("failed to close kafka producer", "error", err)
 			}

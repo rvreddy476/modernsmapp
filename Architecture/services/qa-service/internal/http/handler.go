@@ -1,8 +1,9 @@
 package http
 
 import (
+	"errors"
+	"log/slog"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 
@@ -12,12 +13,12 @@ import (
 	"github.com/atpost/shared/servicetoken"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 type Handler struct {
-	svc           *service.Service
-	internalKey   string
-	moderatorIDs  map[uuid.UUID]struct{}
+	svc         *service.Service
+	internalKey string
 	// verifier admits admin-service tokens on /v1/qa/internal/admin/*
 	// (admin_token.go); nil accepts none.
 	verifier *servicetoken.Verifier
@@ -26,51 +27,7 @@ type Handler struct {
 }
 
 func New(svc *service.Service) *Handler {
-	return &Handler{svc: svc, moderatorIDs: parseModeratorIDs()}
-}
-
-// parseModeratorIDs reads QA_MODERATOR_USER_IDS (comma-separated UUIDs)
-// and builds a set used by requireModerator. Empty/unset means no one
-// is a moderator — the entire moderation surface is closed except via
-// the internal-key gate. Audit CQ4: previously the moderation handlers
-// (ListReports, HideQuestion, LockQuestion, MergeQuestion, ...) had no
-// role check at all. A proper fix needs cross-service role lookup
-// against user-service; this allowlist is a stopgap that ships now and
-// lets operators name moderators via env.
-func parseModeratorIDs() map[uuid.UUID]struct{} {
-	raw := strings.TrimSpace(os.Getenv("QA_MODERATOR_USER_IDS"))
-	if raw == "" {
-		return nil
-	}
-	set := make(map[uuid.UUID]struct{})
-	for _, part := range strings.Split(raw, ",") {
-		id, err := uuid.Parse(strings.TrimSpace(part))
-		if err == nil {
-			set[id] = struct{}{}
-		}
-	}
-	return set
-}
-
-// requireModerator gates a moderation handler. Returns true on success.
-// If QA_MODERATOR_USER_IDS is empty, every caller is rejected with 403
-// rather than fail-open — explicit deny beats silent admin escalation.
-func (h *Handler) requireModerator(c *gin.Context) bool {
-	userID, ok := getUserID(c)
-	if !ok {
-		return false
-	}
-	if h.moderatorIDs == nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "MODERATION_DISABLED",
-			"moderation surface is not configured on this deployment", nil)
-		return false
-	}
-	if _, ok := h.moderatorIDs[userID]; !ok {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NOT_MODERATOR",
-			"only moderators can perform this action", nil)
-		return false
-	}
-	return true
+	return &Handler{svc: svc}
 }
 
 // WithInternalKey sets the shared internal-service-key required on every
@@ -110,7 +67,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		qa.GET("/topics", h.ListTopics)
 		qa.GET("/topics/:topicId", h.GetTopic)
 		qa.GET("/topics/slug/:slug", h.GetTopicBySlug)
-		qa.POST("/topics", h.CreateTopic)
+		qa.POST("/topics", retired(CodeTopicCreateMoved, "topics are created in the admin console"))
 		qa.GET("/topics/:topicId/questions", h.GetTopicQuestions)
 		qa.GET("/topics/:topicId/contributors", h.GetTopContributors)
 
@@ -197,23 +154,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			communities.GET("/:communityId/qa-settings", h.GetCommunityQASettings)
 			communities.PUT("/:communityId/qa-settings", h.UpdateCommunityQASettings)
 			communities.GET("/:communityId/topics/popular", h.GetCommunityPopularTopics)
+			// The approval queue of communities that require approval (H2).
+			communities.POST("/:communityId/questions/:questionId/approve", h.ApproveCommunityQuestion)
+			communities.POST("/:communityId/questions/:questionId/reject", h.RejectCommunityQuestion)
 		}
 
-		// Admin moderation
-		admin := qa.Group("/admin")
-		{
-			admin.GET("/reports", h.ListReports)
-			admin.GET("/reports/:reportId", h.GetReport)
-			admin.POST("/reports/:reportId/resolve", h.ResolveReport)
-			admin.POST("/reports/:reportId/dismiss", h.DismissReport)
-			admin.POST("/questions/:questionId/hide", h.HideQuestion)
-			admin.POST("/questions/:questionId/lock", h.LockQuestion)
-			admin.POST("/questions/:questionId/merge", h.MergeQuestion)
-			admin.POST("/questions/:questionId/duplicate", h.MarkDuplicate)
-			admin.POST("/answers/:answerId/hide", h.HideAnswer)
-			admin.POST("/comments/:commentId/hide", h.HideComment)
-			admin.GET("/actions", h.ListModerationActions)
-		}
+		// The legacy moderation group (QA_MODERATOR_USER_IDS + X-User-ID)
+		// is retired (audit M1): moderation is the admin console, through
+		// admin-service tokens on /v1/qa/internal/admin (admin_token.go).
+		qa.Any("/admin/*path", retired(CodeModerationMoved, "moderation moved to the admin console"))
 	}
 }
 
@@ -283,6 +232,25 @@ func parsePagination(c *gin.Context) (limit, offset int) {
 	return
 }
 
+// Codes for retired routes (410).
+const (
+	CodeModerationMoved  = "QA_MODERATION_MOVED"
+	CodeTopicCreateMoved = "QA_TOPIC_CREATE_MOVED"
+)
+
+// retired answers a route that no longer exists here with 410 and a code.
+func retired(code, msg string) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusGone, code, msg, nil)
+	}
+}
+
+// respondServiceError maps a service or store refusal to its status by the
+// message prefix ("invalid: ", "forbidden: ", "not_found: ", "conflict: ",
+// "rate_limited: ") and sends only the text after it. Anything else is an
+// internal failure: the detail (SQL text, constraint names, SQLSTATEs) is
+// logged, and the client gets defaultCodeName with a fixed message (audit
+// L1).
 func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCodeName string) {
 	if err == nil {
 		return
@@ -290,20 +258,32 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 	if writeMediaError(c, err) {
 		return
 	}
-
+	ctx := c.Request.Context()
 	msg := err.Error()
-	if detail, ok := strings.CutPrefix(msg, "invalid: "); ok {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", detail, nil)
+	for _, m := range []struct {
+		prefix string
+		status int
+		code   string
+	}{
+		{"invalid: ", http.StatusBadRequest, "INVALID_REQUEST"},
+		{"forbidden: ", http.StatusForbidden, "FORBIDDEN"},
+		{"not_found: ", http.StatusNotFound, "NOT_FOUND"},
+		{"conflict: ", http.StatusConflict, "CONFLICT"},
+		{"rate_limited: ", http.StatusTooManyRequests, "RATE_LIMITED"},
+	} {
+		if detail, ok := strings.CutPrefix(msg, m.prefix); ok {
+			api.ErrorWithContext(ctx, c.Writer, m.status, m.code, detail, nil)
+			return
+		}
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, "NOT_FOUND", "not found", nil)
 		return
 	}
-	if detail, ok := strings.CutPrefix(msg, "forbidden: "); ok {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", detail, nil)
-		return
+	slog.ErrorContext(ctx, "qa: request failed", "path", c.Request.URL.Path, "code", defaultCodeName, "error", err)
+	message := "the request could not be completed"
+	if defaultCode == http.StatusNotFound {
+		message = "not found"
 	}
-	if detail, ok := strings.CutPrefix(msg, "not_found: "); ok {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", detail, nil)
-		return
-	}
-
-	api.ErrorWithContext(c.Request.Context(), c.Writer, defaultCode, defaultCodeName, msg, nil)
+	api.ErrorWithContext(ctx, c.Writer, defaultCode, defaultCodeName, message, nil)
 }

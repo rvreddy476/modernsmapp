@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -15,6 +16,13 @@ import (
 // any), compute the score/up/down deltas in-app, and apply them with
 // a single arithmetic UPDATE — O(1) per vote regardless of total
 // votes on the target.
+//
+// Audit 2026-10-30 H1/M2: the read of the prior vote is serialized per
+// (voter, target) by a transaction-scoped advisory lock, so two concurrent
+// first votes cannot both read "no vote" and count twice; the reputation a
+// transition pays (or reverses) is written in the same transaction; and the
+// caller learns whether anything changed, so a repeated vote neither pays
+// nor notifies.
 
 // voteDelta returns (score_delta, up_delta, down_delta) for a transition
 // from oldVote -> newVote. Either side may be empty ("") meaning no
@@ -29,66 +37,130 @@ func voteDelta(oldVote, newVote string) (int, int, int) {
 		downOf[newVote] - downOf[oldVote]
 }
 
-// readAndUpsertVote reads any existing vote, then UPSERTs the new one,
-// returning the previous vote_type ("" if no prior vote). Caller uses
-// the result to compute and apply a counter delta.
-func readAndUpsertVote(ctx context.Context, tx pgx.Tx, table, userCol, targetCol string, userID, targetID uuid.UUID, voteType string) (string, error) {
-	var existing string
-	err := tx.QueryRow(ctx,
-		`SELECT vote_type FROM `+table+` WHERE `+userCol+` = $1 AND `+targetCol+` = $2`,
-		userID, targetID).Scan(&existing)
-	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return "", err
-	}
-	_, err = tx.Exec(ctx,
-		`INSERT INTO `+table+` (`+userCol+`, `+targetCol+`, vote_type) VALUES ($1, $2, $3)
-		 ON CONFLICT (`+userCol+`, `+targetCol+`) DO UPDATE SET vote_type = EXCLUDED.vote_type`,
-		userID, targetID, voteType)
-	return existing, err
+// VoteResult is what one vote call did. Previous == Current means nothing
+// changed: no counter moved, no reputation was paid, nothing to notify.
+type VoteResult struct {
+	Previous string
+	Current  string
+	// AuthorID is the target's author.
+	AuthorID uuid.UUID
 }
 
-func (s *Store) VoteQuestion(ctx context.Context, userID, questionID uuid.UUID, voteType string) error {
+// Changed reports whether the call changed the caller's vote.
+func (r VoteResult) Changed() bool { return r.Previous != r.Current }
+
+// voteKind names one votable table family.
+type voteKind struct {
+	name        string // "question", "answer", "comment": reputation source type
+	votes       string // vote rows
+	targetCol   string // the vote rows' target column
+	target      string // the target table
+	upDownCount bool   // the target keeps upvote_count/downvote_count
+}
+
+var (
+	questionVotes = voteKind{"question", "question_votes", "question_id", "questions", true}
+	answerVotes   = voteKind{"answer", "answer_votes", "answer_id", "answers", true}
+	commentVotes  = voteKind{"comment", "answer_comment_votes", "comment_id", "answer_comments", false}
+)
+
+// ErrOwnContent refuses a vote on the voter's own question, answer or comment.
+var ErrOwnContent = refuse(ErrForbidden, "cannot vote on your own content")
+
+// voteAllowed refuses casting a vote on one's own content; taking a vote
+// back is always allowed.
+func voteAllowed(newVote string, author, voter uuid.UUID) error {
+	if newVote != "" && author == voter {
+		return ErrOwnContent
+	}
+	return nil
+}
+
+// applyVote moves userID's vote on targetID to newVote ("" removes it).
+func (s *Store) applyVote(ctx context.Context, k voteKind, userID, targetID uuid.UUID, newVote string) (VoteResult, error) {
+	res := VoteResult{Current: newVote}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return err
+		return res, err
 	}
-	defer tx.Rollback(ctx)
-	old, err := readAndUpsertVote(ctx, tx, "question_votes", "user_id", "question_id", userID, questionID, voteType)
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	// One writer per (voter, target): the prior vote read below is then
+	// the committed state, even for a missing row (M2).
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+		fmt.Sprintf("qa-vote:%s:%s:%s", k.name, userID, targetID)); err != nil {
+		return res, err
+	}
+
+	// A new vote needs a live target; a removal also reverses a vote on a
+	// target that has since been deleted.
+	authorSQL := `SELECT author_id FROM ` + k.target + ` WHERE id = $1`
+	if newVote != "" {
+		authorSQL += ` AND deleted_at IS NULL`
+	}
+	err = tx.QueryRow(ctx, authorSQL, targetID).Scan(&res.AuthorID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		if newVote == "" {
+			res.Current = ""
+			return res, nil
+		}
+		return res, refuse(ErrNotFound, k.name+" not found")
+	}
 	if err != nil {
-		return err
+		return res, err
 	}
-	ds, du, dd := voteDelta(old, voteType)
-	if ds != 0 || du != 0 || dd != 0 {
-		if _, err := tx.Exec(ctx,
-			`UPDATE questions SET vote_score = vote_score + $2, upvote_count = upvote_count + $3, downvote_count = downvote_count + $4 WHERE id = $1`,
-			questionID, ds, du, dd); err != nil {
-			return err
+	if err := voteAllowed(newVote, res.AuthorID, userID); err != nil {
+		return res, err
+	}
+
+	err = tx.QueryRow(ctx, `SELECT vote_type FROM `+k.votes+` WHERE user_id = $1 AND `+k.targetCol+` = $2`,
+		userID, targetID).Scan(&res.Previous)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return res, err
+	}
+	if !res.Changed() {
+		return res, nil
+	}
+
+	if newVote == "" {
+		_, err = tx.Exec(ctx, `DELETE FROM `+k.votes+` WHERE user_id = $1 AND `+k.targetCol+` = $2`, userID, targetID)
+	} else {
+		_, err = tx.Exec(ctx,
+			`INSERT INTO `+k.votes+` (user_id, `+k.targetCol+`, vote_type) VALUES ($1, $2, $3)
+			 ON CONFLICT (user_id, `+k.targetCol+`) DO UPDATE SET vote_type = EXCLUDED.vote_type`,
+			userID, targetID, newVote)
+	}
+	if err != nil {
+		return res, err
+	}
+
+	ds, du, dd := voteDelta(res.Previous, newVote)
+	if k.upDownCount {
+		_, err = tx.Exec(ctx,
+			`UPDATE `+k.target+` SET vote_score = vote_score + $2, upvote_count = upvote_count + $3, downvote_count = downvote_count + $4 WHERE id = $1`,
+			targetID, ds, du, dd)
+	} else {
+		_, err = tx.Exec(ctx, `UPDATE `+k.target+` SET vote_score = vote_score + $2 WHERE id = $1`, targetID, ds)
+	}
+	if err != nil {
+		return res, err
+	}
+
+	src := targetID
+	for _, ev := range VoteReputation(k.name, res.Previous, newVote) {
+		if err := addReputationTx(ctx, tx, res.AuthorID, ev.EventType, ev.Points, k.name, &src); err != nil {
+			return res, err
 		}
 	}
-	return tx.Commit(ctx)
+	return res, tx.Commit(ctx)
 }
 
-func (s *Store) RemoveQuestionVote(ctx context.Context, userID, questionID uuid.UUID) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	var existing string
-	err = tx.QueryRow(ctx, `DELETE FROM question_votes WHERE user_id = $1 AND question_id = $2 RETURNING vote_type`, userID, questionID).Scan(&existing)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return tx.Commit(ctx)
-	}
-	if err != nil {
-		return err
-	}
-	ds, du, dd := voteDelta(existing, "")
-	if _, err := tx.Exec(ctx,
-		`UPDATE questions SET vote_score = vote_score + $2, upvote_count = upvote_count + $3, downvote_count = downvote_count + $4 WHERE id = $1`,
-		questionID, ds, du, dd); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+func (s *Store) VoteQuestion(ctx context.Context, userID, questionID uuid.UUID, voteType string) (VoteResult, error) {
+	return s.applyVote(ctx, questionVotes, userID, questionID, voteType)
+}
+
+func (s *Store) RemoveQuestionVote(ctx context.Context, userID, questionID uuid.UUID) (VoteResult, error) {
+	return s.applyVote(ctx, questionVotes, userID, questionID, "")
 }
 
 func (s *Store) GetUserQuestionVote(ctx context.Context, userID, questionID uuid.UUID) (*string, error) {
@@ -100,48 +172,12 @@ func (s *Store) GetUserQuestionVote(ctx context.Context, userID, questionID uuid
 	return &voteType, nil
 }
 
-func (s *Store) VoteAnswer(ctx context.Context, userID, answerID uuid.UUID, voteType string) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	old, err := readAndUpsertVote(ctx, tx, "answer_votes", "user_id", "answer_id", userID, answerID, voteType)
-	if err != nil {
-		return err
-	}
-	ds, du, dd := voteDelta(old, voteType)
-	if ds != 0 || du != 0 || dd != 0 {
-		if _, err := tx.Exec(ctx,
-			`UPDATE answers SET vote_score = vote_score + $2, upvote_count = upvote_count + $3, downvote_count = downvote_count + $4 WHERE id = $1`,
-			answerID, ds, du, dd); err != nil {
-			return err
-		}
-	}
-	return tx.Commit(ctx)
+func (s *Store) VoteAnswer(ctx context.Context, userID, answerID uuid.UUID, voteType string) (VoteResult, error) {
+	return s.applyVote(ctx, answerVotes, userID, answerID, voteType)
 }
 
-func (s *Store) RemoveAnswerVote(ctx context.Context, userID, answerID uuid.UUID) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	var existing string
-	err = tx.QueryRow(ctx, `DELETE FROM answer_votes WHERE user_id = $1 AND answer_id = $2 RETURNING vote_type`, userID, answerID).Scan(&existing)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return tx.Commit(ctx)
-	}
-	if err != nil {
-		return err
-	}
-	ds, du, dd := voteDelta(existing, "")
-	if _, err := tx.Exec(ctx,
-		`UPDATE answers SET vote_score = vote_score + $2, upvote_count = upvote_count + $3, downvote_count = downvote_count + $4 WHERE id = $1`,
-		answerID, ds, du, dd); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+func (s *Store) RemoveAnswerVote(ctx context.Context, userID, answerID uuid.UUID) (VoteResult, error) {
+	return s.applyVote(ctx, answerVotes, userID, answerID, "")
 }
 
 func (s *Store) GetUserAnswerVote(ctx context.Context, userID, answerID uuid.UUID) (*string, error) {
@@ -153,44 +189,12 @@ func (s *Store) GetUserAnswerVote(ctx context.Context, userID, answerID uuid.UUI
 	return &voteType, nil
 }
 
-func (s *Store) VoteComment(ctx context.Context, userID, commentID uuid.UUID, voteType string) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	old, err := readAndUpsertVote(ctx, tx, "answer_comment_votes", "user_id", "comment_id", userID, commentID, voteType)
-	if err != nil {
-		return err
-	}
-	ds, _, _ := voteDelta(old, voteType)
-	if ds != 0 {
-		if _, err := tx.Exec(ctx,
-			`UPDATE answer_comments SET vote_score = vote_score + $2 WHERE id = $1`, commentID, ds); err != nil {
-			return err
-		}
-	}
-	return tx.Commit(ctx)
+// VoteComment refuses a vote on the voter's own comment (audit L4), like
+// questions and answers.
+func (s *Store) VoteComment(ctx context.Context, userID, commentID uuid.UUID, voteType string) (VoteResult, error) {
+	return s.applyVote(ctx, commentVotes, userID, commentID, voteType)
 }
 
-func (s *Store) RemoveCommentVote(ctx context.Context, userID, commentID uuid.UUID) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	var existing string
-	err = tx.QueryRow(ctx, `DELETE FROM answer_comment_votes WHERE user_id = $1 AND comment_id = $2 RETURNING vote_type`, userID, commentID).Scan(&existing)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return tx.Commit(ctx)
-	}
-	if err != nil {
-		return err
-	}
-	ds, _, _ := voteDelta(existing, "")
-	if _, err := tx.Exec(ctx,
-		`UPDATE answer_comments SET vote_score = vote_score + $2 WHERE id = $1`, commentID, ds); err != nil {
-		return err
-	}
-	return tx.Commit(ctx)
+func (s *Store) RemoveCommentVote(ctx context.Context, userID, commentID uuid.UUID) (VoteResult, error) {
+	return s.applyVote(ctx, commentVotes, userID, commentID, "")
 }

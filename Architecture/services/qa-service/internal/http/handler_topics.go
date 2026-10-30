@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/atpost/qa-service/internal/store"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 )
@@ -15,7 +14,7 @@ func (h *Handler) ListTopics(c *gin.Context) {
 
 	topics, err := h.svc.ListTopics(c.Request.Context(), limit, offset, featuredOnly)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, topics, nil)
@@ -50,20 +49,8 @@ func (h *Handler) GetTopicBySlug(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, topic, nil)
 }
 
-func (h *Handler) CreateTopic(c *gin.Context) {
-	var body store.CreateTopicParams
-	if err := c.ShouldBindJSON(&body); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
-		return
-	}
-
-	topic, err := h.svc.CreateTopic(c.Request.Context(), body)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "CREATE_FAILED", err.Error(), nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusCreated, topic, nil)
-}
+// Topic writes are the admin console (admin_topics.go, audit M3);
+// POST /v1/qa/topics answers 410.
 
 func (h *Handler) GetTopicQuestions(c *gin.Context) {
 	topicID, ok := parseUUID(c, "topicId")
@@ -73,9 +60,9 @@ func (h *Handler) GetTopicQuestions(c *gin.Context) {
 	limit, offset := parsePagination(c)
 	sortBy := c.DefaultQuery("sort", "newest")
 
-	questions, err := h.svc.GetTopicQuestions(c.Request.Context(), topicID, sortBy, limit, offset)
+	questions, err := h.svc.GetTopicQuestions(c.Request.Context(), topicID, optionalUserID(c), sortBy, limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -95,7 +82,7 @@ func (h *Handler) GetTopContributors(c *gin.Context) {
 
 	contributors, err := h.svc.GetTopContributors(c.Request.Context(), topicID, limit)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, contributors, nil)

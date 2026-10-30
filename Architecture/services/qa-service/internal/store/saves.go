@@ -31,6 +31,7 @@ func (s *Store) GetSavedQuestions(ctx context.Context, userID uuid.UUID, limit, 
 		       COALESCE(q.is_anonymous, false)
 		FROM questions q JOIN question_saves qs ON q.id = qs.question_id
 		WHERE qs.user_id = $1 AND q.deleted_at IS NULL
+		  AND `+questionVisibleSQL("q", "$1")+`
 		ORDER BY qs.created_at DESC LIMIT $2 OFFSET $3`, userID, limit, offset)
 	if err != nil {
 		return nil, err
@@ -58,7 +59,9 @@ func (s *Store) GetSavedAnswers(ctx context.Context, userID uuid.UUID, limit, of
 		       a.is_best, a.is_accepted, a.comment_count, a.reference_count, a.created_at, a.updated_at,
 		       COALESCE(a.is_anonymous, false)
 		FROM answers a JOIN answer_saves sa ON a.id = sa.answer_id
+		JOIN questions q ON q.id = a.question_id
 		WHERE sa.user_id = $1 AND a.deleted_at IS NULL
+		  AND `+questionVisibleSQL("q", "$1")+`
 		ORDER BY sa.created_at DESC LIMIT $2 OFFSET $3`, userID, limit, offset)
 	if err != nil {
 		return nil, err

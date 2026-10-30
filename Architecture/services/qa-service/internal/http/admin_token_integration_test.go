@@ -1,7 +1,8 @@
 // DB-backed admin-service token tests (admin console Wave 2 — Content apps,
 // Q&A): every token-path write lands with exactly one moderation_actions row
 // whose actor is the token's signed act claim, in the same transaction; the
-// legacy allowlist route still writes; the stats route counts what is seeded.
+// retired legacy allowlist route writes nothing; the stats route counts what
+// is seeded.
 // Requires TEST_PG_DSN on a database whose name ends in "_test" (qa_it_test);
 // skipped when unset.
 package http
@@ -338,9 +339,10 @@ func TestAdminTokenIT_EveryWriteRecordsActOnce(t *testing.T) {
 	}
 }
 
-// The LEGACY allowlist route still works on a real database, with the
-// X-User-ID moderator as the actor.
-func TestAdminTokenIT_LegacyAllowlistLockStillWrites(t *testing.T) {
+// The LEGACY allowlist route is retired (audit M1): even for a user named
+// in QA_MODERATOR_USER_IDS it answers 410 and writes nothing on a real
+// database; the question stays open and gets no moderation row.
+func TestAdminTokenIT_LegacyAllowlistLockRetired(t *testing.T) {
 	moderator := uuid.New()
 	t.Setenv("QA_MODERATOR_USER_IDS", moderator.String())
 	rg, pool := setupAdminTokenIT(t)
@@ -348,15 +350,74 @@ func TestAdminTokenIT_LegacyAllowlistLockStillWrites(t *testing.T) {
 	hdr := gatewayUser(moderator)
 	delete(hdr, "X-Internal-Service-Key")
 	w := adminServe(rg.r, http.MethodPost, "/v1/qa/admin/questions/"+q.String()+"/lock", `{"reason":"legacy"}`, hdr)
+	if w.Code != http.StatusGone || errorCode(t, w) != CodeModerationMoved {
+		t.Fatalf("legacy lock: status=%d body=%s, want 410 %s", w.Code, w.Body.String(), CodeModerationMoved)
+	}
+	if rows := actionRowsFor(t, pool, q); len(rows) != 0 {
+		t.Fatalf("a retired legacy lock wrote %d moderation rows", len(rows))
+	}
+	var status string
+	if err := pool.QueryRow(context.Background(), `SELECT status FROM questions WHERE id = $1`, q).Scan(&status); err != nil || status != "open" {
+		t.Fatalf("question after a retired legacy lock: status=%q err=%v, want open", status, err)
+	}
+}
+
+// Topics are written only by the token family (audit M3), each with its
+// moderation row; an icon that is not platform media is refused before the
+// store; a name taken twice conflicts.
+func TestAdminTokenIT_Topics(t *testing.T) {
+	rg, pool := setupAdminTokenIT(t)
+	ctx := context.Background()
+	name := "IT topic " + uuid.NewString()[:8]
+	media := uuid.New()
+
+	if w := itCall(t, rg, PermTopicsManage, http.MethodPost, "/topics",
+		`{"reason":"IT","name":"`+name+`","icon_url":"https://evil.example/pixel.png"}`); w.Code != http.StatusBadRequest || errorCode(t, w) != CodeTopicIconInvalid {
+		t.Fatalf("foreign icon: status=%d code=%q, want 400 %s", w.Code, errorCode(t, w), CodeTopicIconInvalid)
+	}
+	var n int
+	if err := pool.QueryRow(ctx, `SELECT count(*) FROM topics WHERE name = $1`, name).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("a refused topic was stored: n=%d err=%v", n, err)
+	}
+
+	w := itCall(t, rg, PermTopicsManage, http.MethodPost, "/topics",
+		`{"reason":"IT","name":"`+name+`","icon_url":"`+media.String()+`","is_featured":true}`)
 	if w.Code != http.StatusOK {
-		t.Fatalf("legacy lock: status=%d body=%s", w.Code, w.Body.String())
+		t.Fatalf("create topic: status=%d body=%s", w.Code, w.Body.String())
 	}
-	rows := actionRowsFor(t, pool, q)
-	if len(rows) != 1 || rows[0].Actor != moderator || rows[0].Action != store.ActionLock {
-		t.Fatalf("legacy rows = %+v, want one lock by %s", rows, moderator)
+	var topic store.Topic
+	if err := json.Unmarshal(envelopeData(t, w), &topic); err != nil {
+		t.Fatal(err)
 	}
-	if w := adminServe(rg.r, http.MethodPost, "/v1/qa/admin/questions/"+q.String()+"/lock", `{"reason":"legacy"}`, gatewayUser(uuid.New())); w.Code != http.StatusForbidden {
-		t.Fatalf("legacy non-moderator: status=%d, want 403", w.Code)
+	if topic.IconURL != "/v1/media/"+media.String()+"/serve" || !topic.IsFeatured {
+		t.Fatalf("created topic = %+v, want the serve path and featured", topic)
+	}
+	rows := actionRowsFor(t, pool, topic.ID)
+	if len(rows) != 1 || rows[0].Actor != rg.actor || rows[0].Action != store.ActionTopicCreate {
+		t.Fatalf("topic create rows = %+v, want one %s by act", rows, store.ActionTopicCreate)
+	}
+	if w := itCall(t, rg, PermTopicsManage, http.MethodPost, "/topics", `{"reason":"IT","name":"`+name+`"}`); w.Code != http.StatusConflict {
+		t.Fatalf("duplicate topic name: status=%d body=%s, want 409", w.Code, w.Body.String())
+	}
+
+	w = itCall(t, rg, PermTopicsManage, http.MethodPatch, "/topics/"+topic.ID.String(), `{"reason":"IT","is_featured":false}`)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unfeature: status=%d body=%s", w.Code, w.Body.String())
+	}
+	var featured bool
+	if err := pool.QueryRow(ctx, `SELECT is_featured FROM topics WHERE id = $1`, topic.ID).Scan(&featured); err != nil || featured {
+		t.Fatalf("topic still featured: %v err=%v", featured, err)
+	}
+	if rows := actionRowsFor(t, pool, topic.ID); len(rows) != 2 || rows[1].Action != store.ActionTopicUpdate {
+		t.Fatalf("topic rows after update = %+v", rows)
+	}
+	if w := itCall(t, rg, PermTopicsManage, http.MethodPatch, "/topics/"+uuid.NewString(), `{"reason":"IT","is_featured":true}`); w.Code != http.StatusNotFound {
+		t.Fatalf("update a missing topic: status=%d, want 404", w.Code)
+	}
+
+	// The public create route is gone, signed in or not.
+	if w := adminServe(rg.r, http.MethodPost, "/v1/qa/topics", `{"name":"x","is_featured":true}`, gatewayUser(uuid.New())); w.Code != http.StatusGone {
+		t.Fatalf("public topic create: status=%d, want 410", w.Code)
 	}
 }
 

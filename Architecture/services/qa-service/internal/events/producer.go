@@ -2,290 +2,234 @@ package events
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
+	"errors"
 	"log/slog"
 	"time"
 
+	"github.com/atpost/qa-service/internal/qaevent"
 	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
-	"github.com/segmentio/kafka-go"
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Producer writes the Q&A events that are not enqueued inside a store
+// transaction to the outbox (qaevent, audit L2). It used to write to Kafka
+// from a detached goroutine with a 5 s timeout, so a shutdown or a broker
+// hiccup lost the event; now each call inserts a qa.outbox_events row and
+// shared/outbox.Publisher relays it.
+//
+// Question/answer creation and edits and comment creation are enqueued by
+// the store in the same transaction as the write (store/outbox.go) and have
+// no method here, so nothing can publish them twice.
+//
+// The call happens after the service's write committed, so a crash in
+// between still loses the event; the paths that matter for user-visible
+// state (above) are transactional.
 type Producer struct {
-	writer *kafka.Writer
+	enqueue enqueueFunc
+	authors AuthorLookup
 }
 
-func NewProducer(brokers []string, topic string) *Producer {
-	return NewProducerWithDialer(brokers, topic, nil)
+type enqueueFunc func(ctx context.Context, eventType, partitionKey string, actor *uuid.UUID, payload any) error
+
+// AuthorLookup resolves the recipients the payloads carry (H4/M10:
+// notification-service used to look them up through the public API, which
+// masks anonymous authors and refuses private-community questions).
+type AuthorLookup interface {
+	// QuestionAuthor is the question's author and whether it is anonymous.
+	QuestionAuthor(ctx context.Context, questionID uuid.UUID) (uuid.UUID, bool, error)
+	// AnswerAuthor is the answer's author and whether it is anonymous.
+	AnswerAuthor(ctx context.Context, answerID uuid.UUID) (uuid.UUID, bool, error)
 }
 
-func NewProducerWithDialer(brokers []string, topic string, dialer *kafka.Dialer) *Producer {
-	w := kafka.NewWriter(kafka.WriterConfig{
-		Brokers:  brokers,
-		Topic:    topic,
-		Balancer: &kafka.LeastBytes{},
-		Dialer:   dialer,
-	})
-	return &Producer{writer: w}
+// NewProducer returns a producer that writes to qa.outbox_events on db.
+func NewProducer(db *pgxpool.Pool) *Producer {
+	return &Producer{
+		enqueue: func(ctx context.Context, eventType, key string, actor *uuid.UUID, payload any) error {
+			return qaevent.EnqueuePool(ctx, db, eventType, key, actor, payload)
+		},
+		authors: pgAuthors{db: db},
+	}
 }
 
-func (p *Producer) PublishQuestionCreated(ctx context.Context, questionID, authorID uuid.UUID, title string) error {
-	return p.publish(ctx, events.EventQAQuestionCreated, &authorID, QuestionCreatedPayload{
-		QuestionID: questionID.String(), AuthorID: authorID.String(), Title: title, CreatedAt: time.Now(),
-	})
+// pgAuthors reads authors straight from the Q&A tables (any status: a
+// recipient is still the author of a closed question).
+type pgAuthors struct{ db *pgxpool.Pool }
+
+func (p pgAuthors) QuestionAuthor(ctx context.Context, id uuid.UUID) (uuid.UUID, bool, error) {
+	var author uuid.UUID
+	var anon bool
+	err := p.db.QueryRow(ctx, `SELECT author_id, COALESCE(is_anonymous, false) FROM questions WHERE id = $1`, id).Scan(&author, &anon)
+	return author, anon, err
 }
 
-func (p *Producer) PublishQuestionUpdated(ctx context.Context, questionID, authorID uuid.UUID) error {
-	return p.publish(ctx, events.EventQAQuestionUpdated, &authorID, QuestionUpdatedPayload{
-		QuestionID: questionID.String(), AuthorID: authorID.String(), UpdatedAt: time.Now(),
-	})
+func (p pgAuthors) AnswerAuthor(ctx context.Context, id uuid.UUID) (uuid.UUID, bool, error) {
+	var author uuid.UUID
+	var anon bool
+	err := p.db.QueryRow(ctx, `SELECT author_id, COALESCE(is_anonymous, false) FROM answers WHERE id = $1`, id).Scan(&author, &anon)
+	return author, anon, err
 }
 
 func (p *Producer) PublishQuestionDeleted(ctx context.Context, questionID, actorID uuid.UUID) error {
-	return p.publish(ctx, events.EventQAQuestionDeleted, &actorID, QuestionDeletedPayload{
+	return p.publish(ctx, events.EventQAQuestionDeleted, qaevent.QuestionKey(questionID), &actorID, QuestionDeletedPayload{
 		QuestionID: questionID.String(), ActorID: actorID.String(), DeletedAt: time.Now(),
 	})
 }
 
 func (p *Producer) PublishQuestionClosed(ctx context.Context, questionID, closedBy uuid.UUID, reason string) error {
-	return p.publish(ctx, events.EventQAQuestionClosed, &closedBy, QuestionClosedPayload{
+	return p.publish(ctx, events.EventQAQuestionClosed, qaevent.QuestionKey(questionID), &closedBy, QuestionClosedPayload{
 		QuestionID: questionID.String(), ClosedBy: closedBy.String(), Reason: reason, ClosedAt: time.Now(),
 	})
 }
 
-func (p *Producer) PublishAnswerCreated(ctx context.Context, answerID, questionID, authorID uuid.UUID) error {
-	return p.publish(ctx, events.EventQAAnswerCreated, &authorID, AnswerCreatedPayload{
-		AnswerID: answerID.String(), QuestionID: questionID.String(), AuthorID: authorID.String(), CreatedAt: time.Now(),
-	})
-}
-
-func (p *Producer) PublishAnswerUpdated(ctx context.Context, answerID, authorID uuid.UUID) error {
-	return p.publish(ctx, events.EventQAAnswerUpdated, &authorID, AnswerUpdatedPayload{
-		AnswerID: answerID.String(), AuthorID: authorID.String(), UpdatedAt: time.Now(),
-	})
-}
-
 func (p *Producer) PublishAnswerDeleted(ctx context.Context, answerID, actorID uuid.UUID) error {
-	return p.publish(ctx, events.EventQAAnswerDeleted, &actorID, AnswerDeletedPayload{
+	return p.publish(ctx, events.EventQAAnswerDeleted, "answer:"+answerID.String(), &actorID, AnswerDeletedPayload{
 		AnswerID: answerID.String(), ActorID: actorID.String(), DeletedAt: time.Now(),
 	})
 }
 
+// PublishBestAnswerSelected also records whether the selector (the question's
+// author) asked anonymously, so the answerer's notification does not name
+// them (H4).
 func (p *Producer) PublishBestAnswerSelected(ctx context.Context, questionID, answerID, selectorID, answerAuthorID uuid.UUID) error {
-	return p.publish(ctx, events.EventQABestAnswerSelected, &selectorID, BestAnswerSelectedPayload{
+	_, selectorAnon, err := p.questionAuthor(ctx, questionID)
+	if err != nil {
+		// Unknown: treat as anonymous rather than risk naming them.
+		selectorAnon = true
+	}
+	return p.publish(ctx, events.EventQABestAnswerSelected, qaevent.QuestionKey(questionID), qaevent.ActorFor(selectorID, selectorAnon), BestAnswerSelectedPayload{
 		QuestionID: questionID.String(), AnswerID: answerID.String(),
-		SelectorID: selectorID.String(), AnswerAuthorID: answerAuthorID.String(), SelectedAt: time.Now(),
+		SelectorID: selectorID.String(), SelectorAnonymous: selectorAnon,
+		AnswerAuthorID: qaevent.IDString(answerAuthorID), SelectedAt: time.Now(),
 	})
 }
 
-func (p *Producer) PublishCommentCreated(ctx context.Context, commentID, answerID, authorID uuid.UUID) error {
-	return p.publish(ctx, events.EventQAAnswerCommentCreated, &authorID, CommentCreatedPayload{
-		CommentID: commentID.String(), AnswerID: answerID.String(), AuthorID: authorID.String(), CreatedAt: time.Now(),
-	})
-}
-
+// PublishQuestionVoted carries the question's author as the recipient.
 func (p *Producer) PublishQuestionVoted(ctx context.Context, questionID, voterID uuid.UUID, voteType string) error {
-	return p.publish(ctx, events.EventQAQuestionVoted, &voterID, VotePayload{
-		TargetID: questionID.String(), VoterID: voterID.String(), VoteType: voteType, VotedAt: time.Now(),
+	author, _, _ := p.questionAuthor(ctx, questionID)
+	return p.publish(ctx, events.EventQAQuestionVoted, qaevent.QuestionKey(questionID), &voterID, VotePayload{
+		TargetID: questionID.String(), VoterID: voterID.String(), VoteType: voteType,
+		TargetAuthorID: qaevent.IDString(author), VotedAt: time.Now(),
 	})
 }
 
+// PublishAnswerVoted carries the answer's author as the recipient.
 func (p *Producer) PublishAnswerVoted(ctx context.Context, answerID, voterID uuid.UUID, voteType string) error {
-	return p.publish(ctx, events.EventQAAnswerVoted, &voterID, VotePayload{
-		TargetID: answerID.String(), VoterID: voterID.String(), VoteType: voteType, VotedAt: time.Now(),
+	author, _, _ := p.answerAuthor(ctx, answerID)
+	return p.publish(ctx, events.EventQAAnswerVoted, "answer:"+answerID.String(), &voterID, VotePayload{
+		TargetID: answerID.String(), VoterID: voterID.String(), VoteType: voteType,
+		TargetAuthorID: qaevent.IDString(author), VotedAt: time.Now(),
 	})
 }
 
 func (p *Producer) PublishAnswerRequested(ctx context.Context, requestID, questionID, requesterID, requestedUserID uuid.UUID) error {
-	return p.publish(ctx, events.EventQAAnswerRequested, &requesterID, AnswerRequestedPayload{
+	return p.publish(ctx, events.EventQAAnswerRequested, qaevent.QuestionKey(questionID), &requesterID, AnswerRequestedPayload{
 		RequestID: requestID.String(), QuestionID: questionID.String(),
 		RequesterID: requesterID.String(), RequestedUserID: requestedUserID.String(), RequestedAt: time.Now(),
 	})
 }
 
 func (p *Producer) PublishReputationChanged(ctx context.Context, userID uuid.UUID, eventType string, points, newScore int) error {
-	return p.publish(ctx, events.EventQAReputationChanged, &userID, ReputationChangedPayload{
+	return p.publish(ctx, events.EventQAReputationChanged, qaevent.UserKey(userID), &userID, ReputationChangedPayload{
 		UserID: userID.String(), EventType: eventType, Points: points, NewScore: newScore, ChangedAt: time.Now(),
 	})
 }
 
 func (p *Producer) PublishModerationAction(ctx context.Context, actionID, actorID uuid.UUID, targetType string, targetID uuid.UUID, actionType string) error {
-	return p.publish(ctx, events.EventQAModerationAction, &actorID, ModerationActionPayload{
+	return p.publish(ctx, events.EventQAModerationAction, targetType+":"+targetID.String(), &actorID, ModerationActionPayload{
 		ActionID: actionID.String(), ActorID: actorID.String(),
 		TargetType: targetType, TargetID: targetID.String(), ActionType: actionType, ActedAt: time.Now(),
 	})
 }
 
+// PublishQuestionPinned carries the question's author as the recipient.
 func (p *Producer) PublishQuestionPinned(ctx context.Context, questionID, communityID, actorID uuid.UUID, pinned bool) error {
-	return p.publish(ctx, events.EventQAQuestionPinned, &actorID, QuestionPinnedPayload{
-		QuestionID:  questionID.String(),
-		CommunityID: communityID.String(),
-		ActorID:     actorID.String(),
-		Pinned:      pinned,
-		At:          time.Now(),
+	author, _, _ := p.questionAuthor(ctx, questionID)
+	return p.publish(ctx, events.EventQAQuestionPinned, qaevent.QuestionKey(questionID), &actorID, QuestionPinnedPayload{
+		QuestionID:       questionID.String(),
+		CommunityID:      communityID.String(),
+		ActorID:          actorID.String(),
+		Pinned:           pinned,
+		QuestionAuthorID: qaevent.IDString(author),
+		At:               time.Now(),
 	})
 }
 
 func (p *Producer) PublishQuestionReported(ctx context.Context, reportID, questionID, reporterID uuid.UUID, reason string) error {
-	return p.publish(ctx, events.EventQAQuestionReported, &reporterID, ReportedPayload{
+	return p.publish(ctx, events.EventQAQuestionReported, qaevent.QuestionKey(questionID), &reporterID, ReportedPayload{
 		ReportID: reportID.String(), TargetID: questionID.String(),
 		ReporterID: reporterID.String(), Reason: reason, ReportedAt: time.Now(),
 	})
 }
 
 func (p *Producer) PublishAnswerReported(ctx context.Context, reportID, answerID, reporterID uuid.UUID, reason string) error {
-	return p.publish(ctx, events.EventQAAnswerReported, &reporterID, ReportedPayload{
+	return p.publish(ctx, events.EventQAAnswerReported, "answer:"+answerID.String(), &reporterID, ReportedPayload{
 		ReportID: reportID.String(), TargetID: answerID.String(),
 		ReporterID: reporterID.String(), Reason: reason, ReportedAt: time.Now(),
 	})
 }
 
-// publish serializes the envelope synchronously and writes to Kafka
-// asynchronously. Audit HQ1: every Publish* method previously blocked
-// the request on broker ACK (50-200 ms x several hot-path call sites
-// in CreateQuestion / CreateAnswer / SelectBestAnswer). Downstream
-// consumers tolerate at-least-once + duplicates.
-func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload any) error {
-	payloadBytes, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("failed to marshal payload: %w", err)
+func (p *Producer) questionAuthor(ctx context.Context, id uuid.UUID) (uuid.UUID, bool, error) {
+	if p.authors == nil {
+		return uuid.Nil, false, errNoLookup
 	}
-	var actorStr *string
-	if actorID != nil {
-		s := actorID.String()
-		actorStr = &s
+	author, anon, err := p.authors.QuestionAuthor(ctx, id)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("qa-events: question author lookup failed", "question_id", id, "error", err)
 	}
-	envelope := events.NewEnvelope(ctx, eventType, actorStr, payloadBytes)
-	envelopeBytes, err := json.Marshal(envelope)
-	if err != nil {
-		return fmt.Errorf("failed to marshal envelope: %w", err)
+	return author, anon, err
+}
+
+func (p *Producer) answerAuthor(ctx context.Context, id uuid.UUID) (uuid.UUID, bool, error) {
+	if p.authors == nil {
+		return uuid.Nil, false, errNoLookup
 	}
-	msg := kafka.Message{
-		Key:   []byte(envelope.EventID),
-		Value: envelopeBytes,
+	author, anon, err := p.authors.AnswerAuthor(ctx, id)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		slog.Warn("qa-events: answer author lookup failed", "answer_id", id, "error", err)
 	}
-	go func() {
-		writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		if err := p.writer.WriteMessages(writeCtx, msg); err != nil {
-			slog.Warn("qa-events: async Kafka publish failed",
-				"event_type", eventType, "event_id", envelope.EventID, "err", err)
-		}
-	}()
+	return author, anon, err
+}
+
+var errNoLookup = errors.New("qa-events: no author lookup")
+
+// publish inserts the event into the outbox. Callers ignore the error (an
+// event never fails the request it reports), so it is logged here.
+func (p *Producer) publish(ctx context.Context, eventType, partitionKey string, actor *uuid.UUID, payload any) error {
+	if p == nil || p.enqueue == nil {
+		return nil
+	}
+	// The request may be cancelled the moment it answers; the insert must
+	// still happen.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if err := p.enqueue(ctx, eventType, partitionKey, actor, payload); err != nil {
+		slog.Warn("qa-events: outbox insert failed", "event_type", eventType, "error", err)
+		return err
+	}
 	return nil
 }
 
-func (p *Producer) Close() error {
-	return p.writer.Close()
-}
+// Close is kept for main's shutdown hook; the outbox needs no flush.
+func (p *Producer) Close() error { return nil }
 
-// --- Payload types ---
+// --- Payload types (the contract lives in qaevent) ---
 
-type QuestionCreatedPayload struct {
-	QuestionID string    `json:"question_id"`
-	AuthorID   string    `json:"author_id"`
-	Title      string    `json:"title"`
-	CreatedAt  time.Time `json:"created_at"`
-}
-
-type QuestionUpdatedPayload struct {
-	QuestionID string    `json:"question_id"`
-	AuthorID   string    `json:"author_id"`
-	UpdatedAt  time.Time `json:"updated_at"`
-}
-
-type QuestionDeletedPayload struct {
-	QuestionID string    `json:"question_id"`
-	ActorID    string    `json:"actor_id"`
-	DeletedAt  time.Time `json:"deleted_at"`
-}
-
-type QuestionClosedPayload struct {
-	QuestionID string    `json:"question_id"`
-	ClosedBy   string    `json:"closed_by"`
-	Reason     string    `json:"reason"`
-	ClosedAt   time.Time `json:"closed_at"`
-}
-
-type AnswerCreatedPayload struct {
-	AnswerID   string    `json:"answer_id"`
-	QuestionID string    `json:"question_id"`
-	AuthorID   string    `json:"author_id"`
-	CreatedAt  time.Time `json:"created_at"`
-}
-
-type AnswerUpdatedPayload struct {
-	AnswerID  string    `json:"answer_id"`
-	AuthorID  string    `json:"author_id"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-type AnswerDeletedPayload struct {
-	AnswerID  string    `json:"answer_id"`
-	ActorID   string    `json:"actor_id"`
-	DeletedAt time.Time `json:"deleted_at"`
-}
-
-type BestAnswerSelectedPayload struct {
-	QuestionID     string    `json:"question_id"`
-	AnswerID       string    `json:"answer_id"`
-	SelectorID     string    `json:"selector_id"`
-	AnswerAuthorID string    `json:"answer_author_id"`
-	SelectedAt     time.Time `json:"selected_at"`
-}
-
-type CommentCreatedPayload struct {
-	CommentID string    `json:"comment_id"`
-	AnswerID  string    `json:"answer_id"`
-	AuthorID  string    `json:"author_id"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-type VotePayload struct {
-	TargetID string    `json:"target_id"`
-	VoterID  string    `json:"voter_id"`
-	VoteType string    `json:"vote_type"`
-	VotedAt  time.Time `json:"voted_at"`
-}
-
-type AnswerRequestedPayload struct {
-	RequestID       string    `json:"request_id"`
-	QuestionID      string    `json:"question_id"`
-	RequesterID     string    `json:"requester_id"`
-	RequestedUserID string    `json:"requested_user_id"`
-	RequestedAt     time.Time `json:"requested_at"`
-}
-
-type ReputationChangedPayload struct {
-	UserID    string    `json:"user_id"`
-	EventType string    `json:"event_type"`
-	Points    int       `json:"points"`
-	NewScore  int       `json:"new_score"`
-	ChangedAt time.Time `json:"changed_at"`
-}
-
-type ModerationActionPayload struct {
-	ActionID   string    `json:"action_id"`
-	ActorID    string    `json:"actor_id"`
-	TargetType string    `json:"target_type"`
-	TargetID   string    `json:"target_id"`
-	ActionType string    `json:"action_type"`
-	ActedAt    time.Time `json:"acted_at"`
-}
-
-type QuestionPinnedPayload struct {
-	QuestionID  string    `json:"question_id"`
-	CommunityID string    `json:"community_id"`
-	ActorID     string    `json:"actor_id"`
-	Pinned      bool      `json:"pinned"`
-	At          time.Time `json:"at"`
-}
-
-type ReportedPayload struct {
-	ReportID   string    `json:"report_id"`
-	TargetID   string    `json:"target_id"`
-	ReporterID string    `json:"reporter_id"`
-	Reason     string    `json:"reason"`
-	ReportedAt time.Time `json:"reported_at"`
-}
+type (
+	QuestionCreatedPayload    = qaevent.QuestionCreatedPayload
+	QuestionUpdatedPayload    = qaevent.QuestionUpdatedPayload
+	QuestionDeletedPayload    = qaevent.QuestionDeletedPayload
+	QuestionClosedPayload     = qaevent.QuestionClosedPayload
+	AnswerCreatedPayload      = qaevent.AnswerCreatedPayload
+	AnswerUpdatedPayload      = qaevent.AnswerUpdatedPayload
+	AnswerDeletedPayload      = qaevent.AnswerDeletedPayload
+	BestAnswerSelectedPayload = qaevent.BestAnswerSelectedPayload
+	CommentCreatedPayload     = qaevent.CommentCreatedPayload
+	VotePayload               = qaevent.VotePayload
+	AnswerRequestedPayload    = qaevent.AnswerRequestedPayload
+	ReputationChangedPayload  = qaevent.ReputationChangedPayload
+	ModerationActionPayload   = qaevent.ModerationActionPayload
+	QuestionPinnedPayload     = qaevent.QuestionPinnedPayload
+	ReportedPayload           = qaevent.ReportedPayload
+)

@@ -18,7 +18,7 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 
 	questions, err := h.svc.GetHomeFeed(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -27,9 +27,9 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 func (h *Handler) GetTrendingFeed(c *gin.Context) {
 	limit, offset := parsePagination(c)
 
-	questions, err := h.svc.GetTrendingQuestions(c.Request.Context(), limit, offset)
+	questions, err := h.svc.GetTrendingQuestions(c.Request.Context(), optionalUserID(c), limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -47,9 +47,9 @@ func (h *Handler) GetUnansweredFeed(c *gin.Context) {
 	}
 	limit, offset := parsePagination(c)
 
-	questions, err := h.svc.GetUnansweredQuestions(c.Request.Context(), topicID, limit, offset)
+	questions, err := h.svc.GetUnansweredQuestions(c.Request.Context(), topicID, optionalUserID(c), limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -64,7 +64,7 @@ func (h *Handler) GetFollowingFeed(c *gin.Context) {
 
 	questions, err := h.svc.GetFollowingFeed(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -79,7 +79,7 @@ func (h *Handler) GetForYouFeed(c *gin.Context) {
 
 	questions, err := h.svc.GetForYouFeed(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -110,9 +110,9 @@ func (h *Handler) GetLocalFeed(c *gin.Context) {
 	}
 	limit, offset := parsePagination(c)
 
-	questions, err := h.svc.GetLocalFeed(c.Request.Context(), lat, lng, radiusKm, limit, offset)
+	questions, err := h.svc.GetLocalFeed(c.Request.Context(), optionalUserID(c), lat, lng, radiusKm, limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -127,7 +127,7 @@ func (h *Handler) GetAnswerQueue(c *gin.Context) {
 
 	questions, err := h.svc.GetAnswerQueue(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)

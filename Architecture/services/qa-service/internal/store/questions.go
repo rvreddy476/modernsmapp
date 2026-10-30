@@ -2,14 +2,19 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/atpost/qa-service/internal/qarender"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
+// CreateQuestionParams is a new question. BodyHTML is accepted for client
+// compatibility and ignored: body_html is always rendered from Body
+// (qarender, audit H3).
 type CreateQuestionParams struct {
 	// ID, when set by the service, is the new question's id: its media is
 	// claimed against it before the row exists. Never from the request.
@@ -28,6 +33,9 @@ type CreateQuestionParams struct {
 	IsAnonymous bool       `json:"is_anonymous,omitempty"`
 }
 
+// UpdateQuestionParams is an edit. BodyHTML is accepted for client
+// compatibility and ignored: body_html is always rendered from Body
+// (qarender, audit H3).
 type UpdateQuestionParams struct {
 	Title    *string `json:"title,omitempty"`
 	Body     *string `json:"body,omitempty"`
@@ -78,7 +86,7 @@ func (s *Store) CreateQuestion(ctx context.Context, authorID uuid.UUID, p Create
 	_, err = tx.Exec(ctx, `
 		INSERT INTO questions (id, author_id, community_id, title, body, body_html, slug, language, visibility, status, is_anonymous)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-		id, authorID, p.CommunityID, p.Title, p.Body, p.BodyHTML, slug, lang, vis, status, p.IsAnonymous,
+		id, authorID, p.CommunityID, p.Title, p.Body, qarender.BodyHTML(p.Body), slug, lang, vis, status, p.IsAnonymous,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("insert question: %w", err)
@@ -110,8 +118,9 @@ func (s *Store) CreateQuestion(ctx context.Context, authorID uuid.UUID, p Create
 		authorID,
 	)
 
+	communityType := ""
 	if p.CommunityID != nil {
-		var communityName, communityType string
+		var communityName string
 		if err := tx.QueryRow(ctx, `
 			SELECT name, community_type
 			FROM qa_communities
@@ -142,6 +151,11 @@ func (s *Store) CreateQuestion(ctx context.Context, authorID uuid.UUID, p Create
 		if err := s.bumpCommunityTopicAffinityForQuestionTx(ctx, tx, *p.CommunityID, topicIDs); err != nil {
 			return nil, err
 		}
+	}
+
+	// qa.question.created commits with the row (audit L2).
+	if err := enqueueQuestionCreated(ctx, tx, id, authorID, p.CommunityID, p.Title, status, communityType, p.IsAnonymous); err != nil {
+		return nil, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {
@@ -189,6 +203,7 @@ func (s *Store) GetQuestion(ctx context.Context, questionID uuid.UUID) (*Questio
 	if err != nil {
 		return nil, fmt.Errorf("get question: %w", err)
 	}
+	q.BodyHTML = qarender.BodyHTML(q.Body) // never the stored column (H3)
 
 	if communityIDText != "" {
 		communityID, err := uuid.Parse(communityIDText)
@@ -211,46 +226,143 @@ func (s *Store) GetQuestion(ctx context.Context, questionID uuid.UUID) (*Questio
 	return q, nil
 }
 
+// GetQuestionBySlug resolves a question link. The slug is fixed when the
+// question is created and never changes on edit (audit L3), so a link keeps
+// working. Links minted before that fix (when an edit regenerated the slug)
+// still resolve through the id prefix every slug ends with.
 func (s *Store) GetQuestionBySlug(ctx context.Context, slug string) (*Question, error) {
 	var id uuid.UUID
 	err := s.db.QueryRow(ctx, `SELECT id FROM questions WHERE slug = $1 AND deleted_at IS NULL`, slug).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		id, err = s.questionIDBySlugSuffix(ctx, slug)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("get question by slug: %w", err)
 	}
 	return s.GetQuestion(ctx, id)
 }
 
-func (s *Store) UpdateQuestion(ctx context.Context, questionID uuid.UUID, p UpdateQuestionParams) (*Question, error) {
-	sets := []string{}
-	args := []any{}
-	idx := 1
+// questionIDBySlugSuffix finds the one live question whose id starts with the
+// 12 hex digits a slug ends with (generateSlug). The prefix becomes an id
+// range, so the lookup is a primary-key range scan. Two matches are refused:
+// a link never resolves to a guess.
+func (s *Store) questionIDBySlugSuffix(ctx context.Context, slug string) (uuid.UUID, error) {
+	lo, hi, ok := slugIDRange(slug)
+	if !ok {
+		return uuid.Nil, pgx.ErrNoRows
+	}
+	rows, err := s.db.Query(ctx, `
+		SELECT id FROM questions
+		WHERE id BETWEEN $1 AND $2 AND deleted_at IS NULL
+		LIMIT 2`, lo, hi)
+	if err != nil {
+		return uuid.Nil, err
+	}
+	defer rows.Close()
+	var found []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return uuid.Nil, err
+		}
+		found = append(found, id)
+	}
+	if err := rows.Err(); err != nil {
+		return uuid.Nil, err
+	}
+	if len(found) != 1 {
+		return uuid.Nil, pgx.ErrNoRows
+	}
+	return found[0], nil
+}
 
-	if p.Title != nil {
-		sets = append(sets, fmt.Sprintf("title = $%d", idx))
-		args = append(args, *p.Title)
-		idx++
-		sets = append(sets, fmt.Sprintf("slug = $%d", idx))
-		args = append(args, generateSlug(*p.Title, questionID))
-		idx++
+// slugIDRange turns a slug's trailing 12-hex-digit id prefix into the range
+// of ids that start with it.
+func slugIDRange(slug string) (lo, hi uuid.UUID, ok bool) {
+	i := strings.LastIndex(slug, "-")
+	suffix := slug[i+1:]
+	if len(suffix) != slugIDDigits {
+		return uuid.Nil, uuid.Nil, false
 	}
-	if p.Body != nil {
-		sets = append(sets, fmt.Sprintf("body = $%d", idx))
-		args = append(args, *p.Body)
-		idx++
+	for _, r := range suffix {
+		if !(r >= '0' && r <= '9') && !(r >= 'a' && r <= 'f') {
+			return uuid.Nil, uuid.Nil, false
+		}
 	}
-	if p.BodyHTML != nil {
-		sets = append(sets, fmt.Sprintf("body_html = $%d", idx))
-		args = append(args, *p.BodyHTML)
-		idx++
+	toUUID := func(hex32 string) (uuid.UUID, bool) {
+		u, err := uuid.Parse(hex32[0:8] + "-" + hex32[8:12] + "-" + hex32[12:16] + "-" + hex32[16:20] + "-" + hex32[20:32])
+		return u, err == nil
 	}
-	if len(sets) == 0 {
+	lo, okLo := toUUID(suffix + strings.Repeat("0", 32-slugIDDigits))
+	hi, okHi := toUUID(suffix + strings.Repeat("f", 32-slugIDDigits))
+	return lo, hi, okLo && okHi
+}
+
+// slugIDDigits is how many hex digits of the id a slug ends with.
+const slugIDDigits = 12
+
+// UpdateQuestion edits a question's title and/or body (audit L3):
+//   - the slug is NOT regenerated, so every existing link keeps working;
+//   - the replaced title and body are kept as a question_revisions row,
+//     written in the same transaction as the edit;
+//   - body_html is rendered from the body (qarender, audit H3); the
+//     client's BodyHTML is ignored;
+//   - qa.question.updated commits with the edit (audit L2).
+//
+// An edit that changes nothing writes nothing.
+func (s *Store) UpdateQuestion(ctx context.Context, questionID uuid.UUID, p UpdateQuestionParams) (*Question, error) {
+	if p.Title == nil && p.Body == nil {
 		return s.GetQuestion(ctx, questionID)
 	}
-	sets = append(sets, "updated_at = now()")
-	args = append(args, questionID)
-	query := fmt.Sprintf("UPDATE questions SET %s WHERE id = $%d AND deleted_at IS NULL", strings.Join(sets, ", "), idx)
-	if _, err := s.db.Exec(ctx, query, args...); err != nil {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var oldTitle, oldBody string
+	var authorID uuid.UUID
+	var anonymous bool
+	if err := tx.QueryRow(ctx, `
+		SELECT title, body, author_id, COALESCE(is_anonymous, false)
+		FROM questions WHERE id = $1 AND deleted_at IS NULL
+		FOR UPDATE`, questionID,
+	).Scan(&oldTitle, &oldBody, &authorID, &anonymous); err != nil {
 		return nil, fmt.Errorf("update question: %w", err)
+	}
+	title, body := oldTitle, oldBody
+	if p.Title != nil {
+		title = *p.Title
+	}
+	if p.Body != nil {
+		body = *p.Body
+	}
+	if title == oldTitle && body == oldBody {
+		if err := tx.Commit(ctx); err != nil {
+			return nil, err
+		}
+		return s.GetQuestion(ctx, questionID)
+	}
+
+	var revisionID uuid.UUID
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO question_revisions (question_id, editor_id, title, body)
+		VALUES ($1, $2, $3, $4)
+		RETURNING id`, questionID, authorID, oldTitle, oldBody,
+	).Scan(&revisionID); err != nil {
+		return nil, fmt.Errorf("record question revision: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		UPDATE questions SET title = $2, body = $3, body_html = $4, updated_at = now()
+		WHERE id = $1`, questionID, title, body, qarender.BodyHTML(body),
+	); err != nil {
+		return nil, fmt.Errorf("update question: %w", err)
+	}
+	if err := enqueueQuestionUpdated(ctx, tx, questionID, authorID, revisionID, anonymous); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
 	}
 	return s.GetQuestion(ctx, questionID)
 }
@@ -313,13 +425,10 @@ func (s *Store) ListQuestions(ctx context.Context, viewerID *uuid.UUID, p ListQu
 		conditions = append(conditions, "q.answer_count = 0")
 	}
 
-	if viewerID != nil {
-		conditions = append(conditions, fmt.Sprintf("(q.community_id IS NULL OR qc.community_type NOT IN ('private', 'invite') OR qcm.user_id = $%d)", idx))
-		args = append(args, *viewerID)
-		idx++
-	} else {
-		conditions = append(conditions, "(q.community_id IS NULL OR qc.community_type NOT IN ('private', 'invite'))")
-	}
+	// One visibility rule (visibility.go, audit H5).
+	conditions = append(conditions, questionVisibleSQL("q", fmt.Sprintf("$%d", idx)))
+	args = append(args, viewerID)
+	idx++
 
 	args = append(args, p.Limit, p.Offset)
 	limitIdx := idx
@@ -337,11 +446,9 @@ func (s *Store) ListQuestions(ctx context.Context, viewerID *uuid.UUID, p ListQu
 		FROM questions q
 		LEFT JOIN question_community_context qcc ON qcc.question_id = q.id
 		LEFT JOIN qa_communities qc ON qc.id = q.community_id
-		LEFT JOIN qa_community_members qcm ON qcm.community_id = q.community_id AND qcm.user_id = %s
 		WHERE %s
 		ORDER BY %s
 		LIMIT $%d OFFSET $%d`,
-		viewerJoinArg(viewerID, idx-1),
 		strings.Join(conditions, " AND "),
 		orderBy,
 		limitIdx, offsetIdx,
@@ -355,15 +462,21 @@ func (s *Store) ListQuestions(ctx context.Context, viewerID *uuid.UUID, p ListQu
 	return scanQuestionSummariesWithCommunity(rows)
 }
 
-func (s *Store) ListQuestionsByAuthor(ctx context.Context, authorID uuid.UUID, limit, offset int) ([]QuestionSummary, error) {
+// ListQuestionsByAuthor is a profile's question list. The author sees every
+// live question of theirs, anonymous and awaiting approval included. Anyone
+// else never sees an anonymous one (audit H4), nor one they could not see
+// (H5).
+func (s *Store) ListQuestionsByAuthor(ctx context.Context, authorID uuid.UUID, viewerID *uuid.UUID, limit, offset int) ([]QuestionSummary, error) {
 	if limit <= 0 {
 		limit = 20
 	}
+	self := viewerID != nil && *viewerID == authorID
 	rows, err := s.db.Query(ctx, `
-		SELECT id, author_id, title, slug, status, vote_score, answer_count, view_count, is_answered, created_at,
-		       COALESCE(is_anonymous, false)
-		FROM questions WHERE author_id = $1 AND deleted_at IS NULL
-		ORDER BY created_at DESC LIMIT $2 OFFSET $3`, authorID, limit, offset)
+		SELECT q.id, q.author_id, q.title, q.slug, q.status, q.vote_score, q.answer_count, q.view_count, q.is_answered, q.created_at,
+		       COALESCE(q.is_anonymous, false)
+		FROM questions q WHERE q.author_id = $1 AND q.deleted_at IS NULL
+		  AND ($5 OR (NOT COALESCE(q.is_anonymous, false) AND `+questionVisibleSQL("q", "$4")+`))
+		ORDER BY q.created_at DESC LIMIT $2 OFFSET $3`, authorID, limit, offset, viewerID, self)
 	if err != nil {
 		return nil, err
 	}
@@ -394,20 +507,6 @@ func (s *Store) IncrementQuestionViewCount(ctx context.Context, questionID uuid.
 		}
 	}
 	return tx.Commit(ctx)
-}
-
-func (s *Store) CloseQuestion(ctx context.Context, questionID, closedBy uuid.UUID, reason string) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE questions SET status = 'closed', closed_by = $2, closed_reason = $3, updated_at = now()
-		WHERE id = $1 AND deleted_at IS NULL`, questionID, closedBy, reason)
-	return err
-}
-
-func (s *Store) ReopenQuestion(ctx context.Context, questionID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE questions SET status = 'open', closed_by = NULL, closed_reason = NULL, updated_at = now()
-		WHERE id = $1 AND deleted_at IS NULL`, questionID)
-	return err
 }
 
 func (s *Store) SetQuestionTopics(ctx context.Context, questionID uuid.UUID, topicIDs []string) error {
@@ -523,16 +622,22 @@ func (s *Store) addQuestionMediaTx(ctx context.Context, exec dbtx, questionID uu
 	return nil
 }
 
-func (s *Store) GetSimilarQuestions(ctx context.Context, title string, limit int) ([]QuestionSummary, error) {
+func (s *Store) GetSimilarQuestions(ctx context.Context, title string, viewerID *uuid.UUID, limit int) ([]QuestionSummary, error) {
 	if limit <= 0 {
 		limit = 5
+	}
+	// Indexed title match (search_match.go, audit M6).
+	tsq := SearchText(title)
+	if tsq == "" {
+		return nil, nil
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT id, author_id, title, slug, status, vote_score, answer_count, view_count, is_answered, created_at,
 		       COALESCE(is_anonymous, false)
-		FROM questions
-		WHERE deleted_at IS NULL AND status = 'open' AND title ILIKE '%' || $1 || '%'
-		ORDER BY vote_score DESC LIMIT $2`, title, limit)
+		FROM questions q
+		WHERE deleted_at IS NULL AND status = 'open' AND `+titleMatchSQL("q", "$1")+`
+		  AND `+questionVisibleSQL("q", "$3")+`
+		ORDER BY vote_score DESC LIMIT $2`, tsq, limit, viewerID)
 	if err != nil {
 		return nil, err
 	}
@@ -540,21 +645,24 @@ func (s *Store) GetSimilarQuestions(ctx context.Context, title string, limit int
 	return scanQuestionSummaries(rows)
 }
 
-// SearchQuestions performs a trigram/ILIKE title match with optional
-// community + topic filters. Results are ordered by relevance (similarity)
-// with a fallback to vote_score so the search still works without the
-// pg_trgm extension installed.
-func (s *Store) SearchQuestions(ctx context.Context, q string, communityID, topicID *uuid.UUID, limit, offset int) ([]QuestionSummary, error) {
+// SearchQuestions matches every word of q as a word prefix in the title or
+// body through the full-text GIN index (search_match.go, audit M6), with
+// optional community and topic filters, best voted first.
+func (s *Store) SearchQuestions(ctx context.Context, q string, communityID, topicID, viewerID *uuid.UUID, limit, offset int) ([]QuestionSummary, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 
+	tsq := SearchText(q)
+	if tsq == "" {
+		return nil, nil
+	}
 	conditions := []string{
 		"q.deleted_at IS NULL",
 		"q.status != 'deleted'",
-		"(q.title ILIKE '%' || $1 || '%' OR q.body ILIKE '%' || $1 || '%')",
+		searchMatchSQL("q", "$1"),
 	}
-	args := []any{q}
+	args := []any{tsq}
 	idx := 2
 
 	if communityID != nil {
@@ -567,6 +675,10 @@ func (s *Store) SearchQuestions(ctx context.Context, q string, communityID, topi
 		args = append(args, *topicID)
 		idx++
 	}
+	// One visibility rule (visibility.go, audit H5).
+	conditions = append(conditions, questionVisibleSQL("q", fmt.Sprintf("$%d", idx)))
+	args = append(args, viewerID)
+	idx++
 
 	args = append(args, limit, offset)
 	limitIdx := idx
@@ -577,7 +689,7 @@ func (s *Store) SearchQuestions(ctx context.Context, q string, communityID, topi
 		       COALESCE(q.is_anonymous, false)
 		FROM questions q
 		WHERE %s
-		ORDER BY (CASE WHEN q.title ILIKE $1 || '%%' THEN 1 ELSE 0 END) DESC, q.vote_score DESC, q.created_at DESC
+		ORDER BY q.vote_score DESC, q.created_at DESC
 		LIMIT $%d OFFSET $%d`,
 		strings.Join(conditions, " AND "), limitIdx, offsetIdx,
 	)
@@ -663,45 +775,8 @@ func (s *Store) updateCommunityQuestionStatsTx(ctx context.Context, exec dbtx, c
 		return err
 	}
 
-	return s.refreshCommunityContributorCountTx(ctx, exec, communityID)
-}
-
-func (s *Store) refreshCommunityContributorCountTx(ctx context.Context, exec dbtx, communityID uuid.UUID) error {
-	var contributorCount int
-	if err := exec.QueryRow(ctx, `
-		SELECT COUNT(*) FROM (
-			SELECT q.author_id AS user_id
-			FROM questions q
-			WHERE q.community_id = $1 AND q.deleted_at IS NULL AND q.status != 'deleted'
-			UNION
-			SELECT a.author_id AS user_id
-			FROM answers a
-			JOIN questions q ON q.id = a.question_id
-			WHERE q.community_id = $1 AND q.deleted_at IS NULL AND a.deleted_at IS NULL
-		) contributors`,
-		communityID,
-	).Scan(&contributorCount); err != nil {
-		return err
-	}
-
-	if _, err := exec.Exec(ctx, `
-		UPDATE community_qa_settings
-		SET unique_contributors_count = $2,
-		    updated_at = now()
-		WHERE community_id = $1`,
-		communityID, contributorCount,
-	); err != nil {
-		return err
-	}
-
-	_, err := exec.Exec(ctx, `
-		UPDATE qa_communities
-		SET qa_contributor_count = $2,
-		    updated_at = now()
-		WHERE id = $1`,
-		communityID, contributorCount,
-	)
-	return err
+	// The contributor count is recounted in the background (audit M7).
+	return markCommunityStatsStaleTx(ctx, exec, communityID)
 }
 
 func (s *Store) bumpCommunityTopicAffinityForQuestionTx(ctx context.Context, exec dbtx, communityID uuid.UUID, topicIDs []string) error {
@@ -763,13 +838,6 @@ func (s *Store) bumpCommunityTopicViewCountTx(ctx context.Context, exec dbtx, co
 	return rows.Err()
 }
 
-func viewerJoinArg(viewerID *uuid.UUID, viewerIdx int) string {
-	if viewerID == nil {
-		return "NULL"
-	}
-	return fmt.Sprintf("$%d", viewerIdx)
-}
-
 func generateSlug(title string, id uuid.UUID) string {
 	slug := strings.ToLower(title)
 	slug = strings.Map(func(r rune) rune {
@@ -794,7 +862,7 @@ func generateSlug(title string, id uuid.UUID) string {
 	// without bloating URL length materially. The full UUID stays the
 	// canonical identifier (questions.id), so the slug suffix is just
 	// for URL uniqueness + readability.
-	short := strings.ReplaceAll(id.String(), "-", "")[:12]
+	short := strings.ReplaceAll(id.String(), "-", "")[:slugIDDigits]
 	return slug + "-" + short
 }
 

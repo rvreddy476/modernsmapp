@@ -198,14 +198,17 @@ func (h *Handler) GetSimilarQuestions(c *gin.Context) {
 	}
 	limit := 5
 	if v := c.Query("limit"); v != "" {
-		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= 20 {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 && n <= maxSimilarLimit {
 			limit = n
 		}
 	}
+	if !h.allowSearch(c) { // audit M6
+		return
+	}
 
-	questions, err := h.svc.FindSimilarQuestions(c.Request.Context(), title, limit)
+	questions, err := h.svc.FindSimilarQuestions(c.Request.Context(), clipSearchQuery(title), optionalUserID(c), limit)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -218,9 +221,9 @@ func (h *Handler) GetMyQuestions(c *gin.Context) {
 	}
 	limit, offset := parsePagination(c)
 
-	questions, err := h.svc.ListQuestionsByAuthor(c.Request.Context(), userID, limit, offset)
+	questions, err := h.svc.ListQuestionsByAuthor(c.Request.Context(), userID, &userID, limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)

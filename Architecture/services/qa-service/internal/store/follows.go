@@ -6,20 +6,31 @@ import (
 	"github.com/google/uuid"
 )
 
+// FollowQuestion follows a question and moves follow_count by the change,
+// in one statement (audit M7: the count used to be recomputed with a
+// COUNT(*) that the (user_id, question_id) key cannot serve, a scan of every
+// follow on every follow). A repeat follow changes nothing.
 func (s *Store) FollowQuestion(ctx context.Context, userID, questionID uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO question_follows (user_id, question_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, userID, questionID)
-	if err == nil {
-		_, _ = s.db.Exec(ctx, `UPDATE questions SET follow_count = (SELECT count(*) FROM question_follows WHERE question_id = $1) WHERE id = $1`, questionID)
-	}
+		WITH ins AS (
+			INSERT INTO question_follows (user_id, question_id) VALUES ($1, $2)
+			ON CONFLICT DO NOTHING
+			RETURNING question_id
+		)
+		UPDATE questions SET follow_count = follow_count + 1
+		WHERE id IN (SELECT question_id FROM ins)`, userID, questionID)
 	return err
 }
 
+// UnfollowQuestion removes a follow and moves follow_count by the change.
 func (s *Store) UnfollowQuestion(ctx context.Context, userID, questionID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM question_follows WHERE user_id = $1 AND question_id = $2`, userID, questionID)
-	if err == nil {
-		_, _ = s.db.Exec(ctx, `UPDATE questions SET follow_count = (SELECT count(*) FROM question_follows WHERE question_id = $1) WHERE id = $1`, questionID)
-	}
+	_, err := s.db.Exec(ctx, `
+		WITH del AS (
+			DELETE FROM question_follows WHERE user_id = $1 AND question_id = $2
+			RETURNING question_id
+		)
+		UPDATE questions SET follow_count = GREATEST(follow_count - 1, 0)
+		WHERE id IN (SELECT question_id FROM del)`, userID, questionID)
 	return err
 }
 
@@ -35,19 +46,29 @@ func (s *Store) GetQuestionFollowCount(ctx context.Context, questionID uuid.UUID
 	return count, err
 }
 
+// FollowTopic follows a topic and moves follower_count by the change (the
+// same M7 fix as FollowQuestion: topic_follows is keyed (user_id, topic_id)).
 func (s *Store) FollowTopic(ctx context.Context, userID, topicID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `INSERT INTO topic_follows (user_id, topic_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, userID, topicID)
-	if err == nil {
-		_, _ = s.db.Exec(ctx, `UPDATE topics SET follower_count = (SELECT count(*) FROM topic_follows WHERE topic_id = $1) WHERE id = $1`, topicID)
-	}
+	_, err := s.db.Exec(ctx, `
+		WITH ins AS (
+			INSERT INTO topic_follows (user_id, topic_id) VALUES ($1, $2)
+			ON CONFLICT DO NOTHING
+			RETURNING topic_id
+		)
+		UPDATE topics SET follower_count = follower_count + 1
+		WHERE id IN (SELECT topic_id FROM ins)`, userID, topicID)
 	return err
 }
 
+// UnfollowTopic removes a follow and moves follower_count by the change.
 func (s *Store) UnfollowTopic(ctx context.Context, userID, topicID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM topic_follows WHERE user_id = $1 AND topic_id = $2`, userID, topicID)
-	if err == nil {
-		_, _ = s.db.Exec(ctx, `UPDATE topics SET follower_count = (SELECT count(*) FROM topic_follows WHERE topic_id = $1) WHERE id = $1`, topicID)
-	}
+	_, err := s.db.Exec(ctx, `
+		WITH del AS (
+			DELETE FROM topic_follows WHERE user_id = $1 AND topic_id = $2
+			RETURNING topic_id
+		)
+		UPDATE topics SET follower_count = GREATEST(follower_count - 1, 0)
+		WHERE id IN (SELECT topic_id FROM del)`, userID, topicID)
 	return err
 }
 

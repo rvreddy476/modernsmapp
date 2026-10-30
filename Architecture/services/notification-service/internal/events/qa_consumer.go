@@ -14,9 +14,11 @@ import (
 	"github.com/google/uuid"
 )
 
-// qaClient is a small read-only HTTP client over qa-service used to look up
-// the author_id for events whose payload only carries the question/answer ID.
-// We make this lookup so the producer payloads can stay narrow.
+// qaClient is a small read-only HTTP client over qa-service's public reads,
+// used only for events published before qa-service put the recipient in the
+// payload (see qaDelivery below). It cannot see anonymous authors (masked)
+// or private-community questions (403), which is why the payloads carry the
+// recipient now.
 type qaClient struct {
 	baseURL     string
 	internalKey string
@@ -132,105 +134,222 @@ func decodeJSON(r io.Reader, v any) ([]byte, error) {
 // Returns true when the event was handled (so the parent consumer doesn't
 // fall through to the default branch).
 func (c *Consumer) handleQAEvent(ctx context.Context, envelope events.EventEnvelope) (bool, error) {
+	var lookup qaAuthorLookup = lazyQAClient{}
+	var d *qaDelivery
+	var err error
 	switch envelope.EventType {
 	case events.EventQAAnswerCreated:
-		return true, c.handleQAAnswerCreated(ctx, envelope.Payload)
+		d, err = qaAnswerCreatedDelivery(ctx, envelope.Payload, lookup)
 	case events.EventQABestAnswerSelected:
-		return true, c.handleQABestAnswerSelected(ctx, envelope.Payload)
+		d, err = qaBestAnswerDelivery(ctx, envelope.Payload, lookup)
 	case events.EventQAAnswerCommentCreated:
-		return true, c.handleQAAnswerCommentCreated(ctx, envelope.Payload)
+		d, err = qaCommentCreatedDelivery(ctx, envelope.Payload, lookup)
 	case events.EventQAAnswerRequested:
-		return true, c.handleQAAnswerRequested(ctx, envelope.Payload)
+		d, err = qaAnswerRequestedDelivery(envelope.Payload)
 	case events.EventQAQuestionVoted:
-		return true, c.handleQAQuestionVoted(ctx, envelope.Payload)
+		d, err = qaVoteDelivery(ctx, envelope.Payload, lookup, false)
 	case events.EventQAAnswerVoted:
-		return true, c.handleQAAnswerVoted(ctx, envelope.Payload)
+		d, err = qaVoteDelivery(ctx, envelope.Payload, lookup, true)
 	case events.EventQAQuestionPinned:
-		return true, c.handleQAQuestionPinned(ctx, envelope.Payload)
+		d, err = qaQuestionPinnedDelivery(ctx, envelope.Payload, lookup)
 	case events.EventQAQuestionReported, events.EventQAAnswerReported:
 		// V1: log and skip — moderation queue is admin-only.
 		slog.Info("qa moderation report received", "event_type", envelope.EventType)
 		return true, nil
+	default:
+		return false, nil
 	}
-	return false, nil
+	if err != nil || d == nil {
+		return true, err
+	}
+	return true, c.service.CreateNotification(ctx, d.Recipient, d.Actor, d.Type, d.EntityType, d.EntityID, d.DeepLink, d.At)
+}
+
+// ── Recipients and actors (Q&A audit H4 and M10, 30 Oct 2026) ──────────────
+//
+// qa-service now puts the recipient in every payload (question_author_id,
+// answer_author_id, target_author_id) and says when the acting user posted
+// anonymously (is_anonymous on answer.created, selector_anonymous on
+// best_selected). The consumer used to look the recipient up through
+// qa-service's public GET, which masks an anonymous author to the nil id and
+// refuses a private-community question, so askers of those questions were
+// never told about answers, votes or pins; and it named an anonymous
+// answerer (or an anonymous asker accepting an answer) as the actor.
+//
+// Now an anonymous actor is never named: the notification is sent with no
+// actor ("Someone answered your question"). Events from before the change
+// (no recipient field) fall back to the old lookup; when that lookup cannot
+// tell whether the actor was anonymous, the actor is left out.
+
+// qaDelivery is one notification to write.
+type qaDelivery struct {
+	Recipient  uuid.UUID
+	Actor      uuid.UUID // uuid.Nil: no actor is named
+	Type       string
+	EntityType string
+	EntityID   uuid.UUID
+	DeepLink   string
+	At         time.Time
+}
+
+// qaAuthorLookup is the legacy recipient lookup (qaClient).
+type qaAuthorLookup interface {
+	getQuestion(ctx context.Context, id string) (*qaQuestionResponse, error)
+	getAnswer(ctx context.Context, id string) (*qaAnswerResponse, error)
+}
+
+// lazyQAClient builds the HTTP client only when a legacy event needs it.
+type lazyQAClient struct{}
+
+func (lazyQAClient) getQuestion(ctx context.Context, id string) (*qaQuestionResponse, error) {
+	return newQAClient().getQuestion(ctx, id)
+}
+
+func (lazyQAClient) getAnswer(ctx context.Context, id string) (*qaAnswerResponse, error) {
+	return newQAClient().getAnswer(ctx, id)
+}
+
+// parseID parses a payload id; "" or garbage is uuid.Nil.
+func parseID(s string) uuid.UUID {
+	id, err := uuid.Parse(s)
+	if err != nil {
+		return uuid.Nil
+	}
+	return id
+}
+
+// legacyQuestionAuthor is the question's author by lookup, or uuid.Nil.
+func legacyQuestionAuthor(ctx context.Context, lookup qaAuthorLookup, questionID, event string) uuid.UUID {
+	q, err := lookup.getQuestion(ctx, questionID)
+	if err != nil || q == nil {
+		slog.Warn("qa: legacy question author lookup failed", "event", event, "question_id", questionID, "error", err)
+		return uuid.Nil
+	}
+	return parseID(q.AuthorID)
+}
+
+// legacyAnswerAuthor is the answer's author by lookup, or uuid.Nil.
+func legacyAnswerAuthor(ctx context.Context, lookup qaAuthorLookup, answerID, event string) uuid.UUID {
+	a, err := lookup.getAnswer(ctx, answerID)
+	if err != nil || a == nil {
+		slog.Warn("qa: legacy answer author lookup failed", "event", event, "answer_id", answerID, "error", err)
+		return uuid.Nil
+	}
+	return parseID(a.AuthorID)
+}
+
+// notifiable reports whether recipient should be told about actorUser's
+// action: someone to tell, and not their own action.
+func notifiable(recipient, actorUser uuid.UUID) bool {
+	return recipient != uuid.Nil && recipient != actorUser
+}
+
+// namedActor is actorUser, or no actor when they acted anonymously.
+func namedActor(actorUser uuid.UUID, anonymous bool) uuid.UUID {
+	if anonymous {
+		return uuid.Nil
+	}
+	return actorUser
 }
 
 type qaAnswerCreatedPayload struct {
-	AnswerID   string    `json:"answer_id"`
-	QuestionID string    `json:"question_id"`
-	AuthorID   string    `json:"author_id"`
-	CreatedAt  time.Time `json:"created_at"`
+	AnswerID         string    `json:"answer_id"`
+	QuestionID       string    `json:"question_id"`
+	AuthorID         string    `json:"author_id"`
+	IsAnonymous      *bool     `json:"is_anonymous"`
+	QuestionAuthorID string    `json:"question_author_id"`
+	CreatedAt        time.Time `json:"created_at"`
 }
 
-func (c *Consumer) handleQAAnswerCreated(ctx context.Context, raw json.RawMessage) error {
+func qaAnswerCreatedDelivery(ctx context.Context, raw json.RawMessage, lookup qaAuthorLookup) (*qaDelivery, error) {
 	var e qaAnswerCreatedPayload
 	if err := unmarshalPayload(raw, &e); err != nil {
-		return err
+		return nil, err
 	}
-	answererID, _ := uuid.Parse(e.AuthorID)
-	questionID, _ := uuid.Parse(e.QuestionID)
-
-	q, err := newQAClient().getQuestion(ctx, e.QuestionID)
-	if err != nil || q == nil || q.AuthorID == "" {
-		slog.Warn("qa: lookup question for AnswerCreated failed", "question_id", e.QuestionID, "error", err)
-		return nil
+	answererID := parseID(e.AuthorID)
+	recipient := parseID(e.QuestionAuthorID)
+	anonymous := e.IsAnonymous != nil && *e.IsAnonymous
+	if e.QuestionAuthorID == "" { // legacy event
+		recipient = legacyQuestionAuthor(ctx, lookup, e.QuestionID, "answer.created")
+		if e.IsAnonymous == nil {
+			// The old payload never said; the public answer read masks an
+			// anonymous author. Unknown means do not name them.
+			a, err := lookup.getAnswer(ctx, e.AnswerID)
+			anonymous = err != nil || a == nil || a.IsAnonymous || parseID(a.AuthorID) == uuid.Nil
+		}
 	}
-	questionAuthorID, _ := uuid.Parse(q.AuthorID)
-	if questionAuthorID == uuid.Nil || questionAuthorID == answererID {
-		return nil
+	if !notifiable(recipient, answererID) {
+		return nil, nil
 	}
-	deepLink := fmt.Sprintf("/qa/questions/%s", e.QuestionID)
-	return c.service.CreateNotification(ctx, questionAuthorID, answererID, "qa.answer.created", "qa_question", questionID, deepLink, e.CreatedAt)
+	return &qaDelivery{
+		Recipient: recipient, Actor: namedActor(answererID, anonymous),
+		Type: "qa.answer.created", EntityType: "qa_question", EntityID: parseID(e.QuestionID),
+		DeepLink: fmt.Sprintf("/qa/questions/%s", e.QuestionID), At: e.CreatedAt,
+	}, nil
 }
 
 type qaBestAnswerPayload struct {
-	QuestionID     string    `json:"question_id"`
-	AnswerID       string    `json:"answer_id"`
-	SelectorID     string    `json:"selector_id"`
-	AnswerAuthorID string    `json:"answer_author_id"`
-	SelectedAt     time.Time `json:"selected_at"`
+	QuestionID        string    `json:"question_id"`
+	AnswerID          string    `json:"answer_id"`
+	SelectorID        string    `json:"selector_id"`
+	SelectorAnonymous *bool     `json:"selector_anonymous"`
+	AnswerAuthorID    string    `json:"answer_author_id"`
+	SelectedAt        time.Time `json:"selected_at"`
 }
 
-func (c *Consumer) handleQABestAnswerSelected(ctx context.Context, raw json.RawMessage) error {
+func qaBestAnswerDelivery(ctx context.Context, raw json.RawMessage, lookup qaAuthorLookup) (*qaDelivery, error) {
 	var e qaBestAnswerPayload
 	if err := unmarshalPayload(raw, &e); err != nil {
-		return err
+		return nil, err
 	}
-	answerAuthorID, _ := uuid.Parse(e.AnswerAuthorID)
-	selectorID, _ := uuid.Parse(e.SelectorID)
-	answerID, _ := uuid.Parse(e.AnswerID)
-	if answerAuthorID == uuid.Nil || answerAuthorID == selectorID {
-		return nil
+	selectorID := parseID(e.SelectorID)
+	recipient := parseID(e.AnswerAuthorID)
+	if recipient == uuid.Nil {
+		recipient = legacyAnswerAuthor(ctx, lookup, e.AnswerID, "best_selected")
 	}
-	deepLink := fmt.Sprintf("/qa/questions/%s#answer-%s", e.QuestionID, e.AnswerID)
-	return c.service.CreateNotification(ctx, answerAuthorID, selectorID, "qa.answer.best_selected", "qa_answer", answerID, deepLink, e.SelectedAt)
+	if !notifiable(recipient, selectorID) {
+		return nil, nil
+	}
+	anonymous := e.SelectorAnonymous != nil && *e.SelectorAnonymous
+	if e.SelectorAnonymous == nil {
+		// Legacy event: the selector is the question's author; an anonymous
+		// question reads back with a masked author. Unknown: do not name.
+		q, err := lookup.getQuestion(ctx, e.QuestionID)
+		anonymous = err != nil || q == nil || q.IsAnonymous || parseID(q.AuthorID) == uuid.Nil
+	}
+	return &qaDelivery{
+		Recipient: recipient, Actor: namedActor(selectorID, anonymous),
+		Type: "qa.answer.best_selected", EntityType: "qa_answer", EntityID: parseID(e.AnswerID),
+		DeepLink: fmt.Sprintf("/qa/questions/%s#answer-%s", e.QuestionID, e.AnswerID), At: e.SelectedAt,
+	}, nil
 }
 
 type qaCommentCreatedPayload struct {
-	CommentID string    `json:"comment_id"`
-	AnswerID  string    `json:"answer_id"`
-	AuthorID  string    `json:"author_id"`
-	CreatedAt time.Time `json:"created_at"`
+	CommentID      string    `json:"comment_id"`
+	AnswerID       string    `json:"answer_id"`
+	AuthorID       string    `json:"author_id"`
+	AnswerAuthorID string    `json:"answer_author_id"`
+	CreatedAt      time.Time `json:"created_at"`
 }
 
-func (c *Consumer) handleQAAnswerCommentCreated(ctx context.Context, raw json.RawMessage) error {
+func qaCommentCreatedDelivery(ctx context.Context, raw json.RawMessage, lookup qaAuthorLookup) (*qaDelivery, error) {
 	var e qaCommentCreatedPayload
 	if err := unmarshalPayload(raw, &e); err != nil {
-		return err
+		return nil, err
 	}
-	commenterID, _ := uuid.Parse(e.AuthorID)
-	answerID, _ := uuid.Parse(e.AnswerID)
-	a, err := newQAClient().getAnswer(ctx, e.AnswerID)
-	if err != nil || a == nil || a.AuthorID == "" {
-		slog.Warn("qa: lookup answer for CommentCreated failed", "answer_id", e.AnswerID, "error", err)
-		return nil
+	commenterID := parseID(e.AuthorID)
+	recipient := parseID(e.AnswerAuthorID)
+	if e.AnswerAuthorID == "" {
+		recipient = legacyAnswerAuthor(ctx, lookup, e.AnswerID, "comment.created")
 	}
-	answerAuthorID, _ := uuid.Parse(a.AuthorID)
-	if answerAuthorID == uuid.Nil || answerAuthorID == commenterID {
-		return nil
+	if !notifiable(recipient, commenterID) {
+		return nil, nil
 	}
-	deepLink := fmt.Sprintf("/qa/answers/%s", e.AnswerID)
-	return c.service.CreateNotification(ctx, answerAuthorID, commenterID, "qa.answer.comment.created", "qa_answer", answerID, deepLink, e.CreatedAt)
+	return &qaDelivery{
+		Recipient: recipient, Actor: commenterID,
+		Type: "qa.answer.comment.created", EntityType: "qa_answer", EntityID: parseID(e.AnswerID),
+		DeepLink: fmt.Sprintf("/qa/answers/%s", e.AnswerID), At: e.CreatedAt,
+	}, nil
 }
 
 type qaAnswerRequestedPayload struct {
@@ -241,102 +360,90 @@ type qaAnswerRequestedPayload struct {
 	RequestedAt     time.Time `json:"requested_at"`
 }
 
-func (c *Consumer) handleQAAnswerRequested(ctx context.Context, raw json.RawMessage) error {
+func qaAnswerRequestedDelivery(raw json.RawMessage) (*qaDelivery, error) {
 	var e qaAnswerRequestedPayload
 	if err := unmarshalPayload(raw, &e); err != nil {
-		return err
+		return nil, err
 	}
-	requestedID, _ := uuid.Parse(e.RequestedUserID)
-	requesterID, _ := uuid.Parse(e.RequesterID)
-	questionID, _ := uuid.Parse(e.QuestionID)
-	if requestedID == uuid.Nil || requestedID == requesterID {
-		return nil
+	requestedID, requesterID := parseID(e.RequestedUserID), parseID(e.RequesterID)
+	if !notifiable(requestedID, requesterID) {
+		return nil, nil
 	}
-	deepLink := fmt.Sprintf("/qa/questions/%s", e.QuestionID)
-	return c.service.CreateNotification(ctx, requestedID, requesterID, "qa.answer.requested", "qa_question", questionID, deepLink, e.RequestedAt)
+	return &qaDelivery{
+		Recipient: requestedID, Actor: requesterID,
+		Type: "qa.answer.requested", EntityType: "qa_question", EntityID: parseID(e.QuestionID),
+		DeepLink: fmt.Sprintf("/qa/questions/%s", e.QuestionID), At: e.RequestedAt,
+	}, nil
 }
 
 type qaVotePayload struct {
-	TargetID string    `json:"target_id"`
-	VoterID  string    `json:"voter_id"`
-	VoteType string    `json:"vote_type"`
-	VotedAt  time.Time `json:"voted_at"`
+	TargetID       string    `json:"target_id"`
+	VoterID        string    `json:"voter_id"`
+	VoteType       string    `json:"vote_type"`
+	TargetAuthorID string    `json:"target_author_id"`
+	VotedAt        time.Time `json:"voted_at"`
 }
 
-func (c *Consumer) handleQAQuestionVoted(ctx context.Context, raw json.RawMessage) error {
+func qaVoteDelivery(ctx context.Context, raw json.RawMessage, lookup qaAuthorLookup, onAnswer bool) (*qaDelivery, error) {
 	var e qaVotePayload
 	if err := unmarshalPayload(raw, &e); err != nil {
-		return err
+		return nil, err
 	}
 	if e.VoteType != "up" {
-		return nil
+		return nil, nil
 	}
-	voterID, _ := uuid.Parse(e.VoterID)
-	questionID, _ := uuid.Parse(e.TargetID)
-	q, err := newQAClient().getQuestion(ctx, e.TargetID)
-	if err != nil || q == nil || q.AuthorID == "" {
-		slog.Warn("qa: lookup question for QuestionVoted failed", "question_id", e.TargetID, "error", err)
-		return nil
+	voterID := parseID(e.VoterID)
+	recipient := parseID(e.TargetAuthorID)
+	if e.TargetAuthorID == "" {
+		if onAnswer {
+			recipient = legacyAnswerAuthor(ctx, lookup, e.TargetID, "answer.voted")
+		} else {
+			recipient = legacyQuestionAuthor(ctx, lookup, e.TargetID, "question.voted")
+		}
 	}
-	questionAuthorID, _ := uuid.Parse(q.AuthorID)
-	if questionAuthorID == uuid.Nil || questionAuthorID == voterID {
-		return nil
+	if !notifiable(recipient, voterID) {
+		return nil, nil
 	}
-	deepLink := fmt.Sprintf("/qa/questions/%s", e.TargetID)
-	return c.service.CreateNotification(ctx, questionAuthorID, voterID, "qa.question.voted", "qa_question", questionID, deepLink, e.VotedAt)
-}
-
-func (c *Consumer) handleQAAnswerVoted(ctx context.Context, raw json.RawMessage) error {
-	var e qaVotePayload
-	if err := unmarshalPayload(raw, &e); err != nil {
-		return err
+	d := &qaDelivery{
+		Recipient: recipient, Actor: voterID,
+		Type: "qa.question.voted", EntityType: "qa_question", EntityID: parseID(e.TargetID),
+		DeepLink: fmt.Sprintf("/qa/questions/%s", e.TargetID), At: e.VotedAt,
 	}
-	if e.VoteType != "up" {
-		return nil
+	if onAnswer {
+		d.Type, d.EntityType, d.DeepLink = "qa.answer.voted", "qa_answer", fmt.Sprintf("/qa/answers/%s", e.TargetID)
 	}
-	voterID, _ := uuid.Parse(e.VoterID)
-	answerID, _ := uuid.Parse(e.TargetID)
-	a, err := newQAClient().getAnswer(ctx, e.TargetID)
-	if err != nil || a == nil || a.AuthorID == "" {
-		slog.Warn("qa: lookup answer for AnswerVoted failed", "answer_id", e.TargetID, "error", err)
-		return nil
-	}
-	answerAuthorID, _ := uuid.Parse(a.AuthorID)
-	if answerAuthorID == uuid.Nil || answerAuthorID == voterID {
-		return nil
-	}
-	deepLink := fmt.Sprintf("/qa/answers/%s", e.TargetID)
-	return c.service.CreateNotification(ctx, answerAuthorID, voterID, "qa.answer.voted", "qa_answer", answerID, deepLink, e.VotedAt)
+	return d, nil
 }
 
 type qaQuestionPinnedPayload struct {
-	QuestionID  string    `json:"question_id"`
-	CommunityID string    `json:"community_id"`
-	ActorID     string    `json:"actor_id"`
-	Pinned      bool      `json:"pinned"`
-	At          time.Time `json:"at"`
+	QuestionID       string    `json:"question_id"`
+	CommunityID      string    `json:"community_id"`
+	ActorID          string    `json:"actor_id"`
+	Pinned           bool      `json:"pinned"`
+	QuestionAuthorID string    `json:"question_author_id"`
+	At               time.Time `json:"at"`
 }
 
-func (c *Consumer) handleQAQuestionPinned(ctx context.Context, raw json.RawMessage) error {
+func qaQuestionPinnedDelivery(ctx context.Context, raw json.RawMessage, lookup qaAuthorLookup) (*qaDelivery, error) {
 	var e qaQuestionPinnedPayload
 	if err := unmarshalPayload(raw, &e); err != nil {
-		return err
+		return nil, err
 	}
 	// Only notify on pin events, not unpin.
 	if !e.Pinned {
-		return nil
+		return nil, nil
 	}
-	actorID, _ := uuid.Parse(e.ActorID)
-	questionID, _ := uuid.Parse(e.QuestionID)
-	q, err := newQAClient().getQuestion(ctx, e.QuestionID)
-	if err != nil || q == nil || q.AuthorID == "" {
-		slog.Warn("qa: lookup question for QuestionPinned failed", "question_id", e.QuestionID, "error", err)
-		return nil
+	actorID := parseID(e.ActorID)
+	recipient := parseID(e.QuestionAuthorID)
+	if e.QuestionAuthorID == "" {
+		recipient = legacyQuestionAuthor(ctx, lookup, e.QuestionID, "question.pinned")
 	}
-	questionAuthorID, _ := uuid.Parse(q.AuthorID)
-	if questionAuthorID == uuid.Nil || questionAuthorID == actorID {
-		return nil
+	if !notifiable(recipient, actorID) {
+		return nil, nil
 	}
-	deepLink := fmt.Sprintf("/qa/questions/%s", e.QuestionID)
-	return c.service.CreateNotification(ctx, questionAuthorID, actorID, "qa.question.pinned", "qa_question", questionID, deepLink, e.At)
+	return &qaDelivery{
+		Recipient: recipient, Actor: actorID,
+		Type: "qa.question.pinned", EntityType: "qa_question", EntityID: parseID(e.QuestionID),
+		DeepLink: fmt.Sprintf("/qa/questions/%s", e.QuestionID), At: e.At,
+	}, nil
 }

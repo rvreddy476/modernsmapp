@@ -94,20 +94,17 @@ func (s *Service) getCommunityAccess(ctx context.Context, communityID uuid.UUID,
 	return community, role, settings, nil
 }
 
+// ensureQuestionVisible applies the one visibility rule (access.go, audit
+// H5): community membership, and a question awaiting approval only to its
+// author and its community's moderators.
 func (s *Service) ensureQuestionVisible(ctx context.Context, q *store.Question, viewerID *uuid.UUID) error {
-	if q == nil || q.CommunityID == nil {
-		return nil
-	}
-	_, _, _, err := s.getCommunityAccess(ctx, *q.CommunityID, viewerID)
+	_, err := s.questionAccess(ctx, q, viewerID)
 	return err
 }
 
 func (s *Service) EnsureQuestionVisible(ctx context.Context, questionID uuid.UUID, viewerID *uuid.UUID) error {
-	q, err := s.store.GetQuestion(ctx, questionID)
-	if err != nil {
-		return fmt.Errorf("not_found: question not found")
-	}
-	return s.ensureQuestionVisible(ctx, q, viewerID)
+	_, _, err := s.visibleQuestion(ctx, questionID, viewerID)
+	return err
 }
 
 func (s *Service) ListQuestions(ctx context.Context, viewerID *uuid.UUID, topicSlug string, communityID *uuid.UUID, scope, sortBy, status string, limit, offset int) ([]store.QuestionSummary, error) {

@@ -182,3 +182,46 @@ func (h *Handler) UnpinCommunityQuestion(c *gin.Context) {
 		"is_pinned":    false,
 	}, nil)
 }
+
+// ApproveCommunityQuestion — POST /communities/:communityId/questions/:questionId/approve.
+// A moderator of the community opens a question awaiting approval (H2).
+func (h *Handler) ApproveCommunityQuestion(c *gin.Context) { h.decidePendingQuestion(c, true) }
+
+// RejectCommunityQuestion — POST /communities/:communityId/questions/:questionId/reject.
+// A moderator of the community removes a question awaiting approval.
+func (h *Handler) RejectCommunityQuestion(c *gin.Context) { h.decidePendingQuestion(c, false) }
+
+func (h *Handler) decidePendingQuestion(c *gin.Context, approve bool) {
+	communityID, ok := parseUUID(c, "communityId")
+	if !ok {
+		return
+	}
+	questionID, ok := parseUUID(c, "questionId")
+	if !ok {
+		return
+	}
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := c.ShouldBindJSON(&body); err != nil && err != io.EOF {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "body must be JSON", nil)
+		return
+	}
+	if err := h.svc.DecidePendingQuestion(c.Request.Context(), communityID, questionID, userID, approve, body.Reason); err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "UPDATE_FAILED")
+		return
+	}
+	status := "open"
+	if !approve {
+		status = "rejected"
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]any{
+		"community_id": communityID,
+		"question_id":  questionID,
+		"status":       status,
+	}, nil)
+}

@@ -18,7 +18,7 @@ func (h *Handler) GetMyProfile(c *gin.Context) {
 
 	profile, err := h.svc.GetOrCreateProfile(c.Request.Context(), userID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, profile, nil)
@@ -52,7 +52,7 @@ func (h *Handler) UpdateProfile(c *gin.Context) {
 
 	profile, err := h.svc.UpdateProfile(c.Request.Context(), userID, body)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "UPDATE_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "UPDATE_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, profile, nil)
@@ -65,9 +65,9 @@ func (h *Handler) GetReputationHistory(c *gin.Context) {
 	}
 	limit, offset := parsePagination(c)
 
-	events, err := h.svc.GetReputationHistory(c.Request.Context(), targetID, limit, offset)
+	events, err := h.svc.GetReputationHistory(c.Request.Context(), targetID, optionalUserID(c), limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, events, nil)
@@ -81,7 +81,7 @@ func (h *Handler) GetBadges(c *gin.Context) {
 
 	badges, err := h.svc.GetBadges(c.Request.Context(), targetID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, badges, nil)
@@ -94,9 +94,10 @@ func (h *Handler) GetUserQuestions(c *gin.Context) {
 	}
 	limit, offset := parsePagination(c)
 
-	questions, err := h.svc.ListQuestionsByAuthor(c.Request.Context(), targetID, limit, offset)
+	// Anonymous questions are listed only to their author (audit H4).
+	questions, err := h.svc.ListQuestionsByAuthor(c.Request.Context(), targetID, optionalUserID(c), limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, questions, nil)
@@ -109,9 +110,10 @@ func (h *Handler) GetUserAnswers(c *gin.Context) {
 	}
 	limit, offset := parsePagination(c)
 
-	answers, err := h.svc.Store().ListAnswersByAuthor(c.Request.Context(), targetID, limit, offset)
+	// Anonymous answers are listed only to their author (audit H4).
+	answers, err := h.svc.ListAnswersByAuthor(c.Request.Context(), targetID, optionalUserID(c), limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, answers, nil)
@@ -136,7 +138,7 @@ func (h *Handler) GetLeaderboard(c *gin.Context) {
 
 	profiles, err := h.svc.GetLeaderboard(c.Request.Context(), topicID, limit)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, profiles, nil)

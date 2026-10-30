@@ -2,13 +2,17 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/atpost/qa-service/internal/qarender"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
-func (s *Store) CreateAnswer(ctx context.Context, questionID, authorID uuid.UUID, body, bodyHTML string, isAnonymous bool) (*Answer, error) {
+// CreateAnswer stores a new answer. body_html is always rendered from body
+// (qarender, audit H3); the client's HTML argument is ignored.
+func (s *Store) CreateAnswer(ctx context.Context, questionID, authorID uuid.UUID, body, _ string, isAnonymous bool) (*Answer, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -21,7 +25,7 @@ func (s *Store) CreateAnswer(ctx context.Context, questionID, authorID uuid.UUID
 		VALUES ($1, $2, $3, $4, $5)
 		RETURNING id, question_id, author_id, body, body_html, vote_score, upvote_count, downvote_count,
 		          is_best, is_accepted, comment_count, reference_count, created_at, updated_at, COALESCE(is_anonymous, false)`,
-		questionID, authorID, body, bodyHTML, isAnonymous,
+		questionID, authorID, body, qarender.BodyHTML(body), isAnonymous,
 	).Scan(&a.ID, &a.QuestionID, &a.AuthorID, &a.Body, &a.BodyHTML, &a.VoteScore,
 		&a.UpvoteCount, &a.DownvoteCount, &a.IsBest, &a.IsAccepted,
 		&a.CommentCount, &a.ReferenceCount, &a.CreatedAt, &a.UpdatedAt, &a.IsAnonymous)
@@ -48,6 +52,16 @@ func (s *Store) CreateAnswer(ctx context.Context, questionID, authorID uuid.UUID
 		}
 	}
 
+	// qa.answer.created commits with the row and names the question's author
+	// as the recipient (audit L2, M10).
+	var questionAuthorID uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT author_id FROM questions WHERE id = $1`, questionID).Scan(&questionAuthorID); err != nil {
+		return nil, fmt.Errorf("load question author: %w", err)
+	}
+	if err := enqueueAnswerCreated(ctx, tx, a, questionAuthorID); err != nil {
+		return nil, err
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
@@ -67,48 +81,104 @@ func (s *Store) GetAnswer(ctx context.Context, answerID uuid.UUID) (*Answer, err
 	if err != nil {
 		return nil, fmt.Errorf("get answer: %w", err)
 	}
+	a.BodyHTML = qarender.BodyHTML(a.Body) // never the stored column (H3)
 	refs, _ := s.GetAnswerReferences(ctx, answerID)
 	a.References = refs
 	return a, nil
 }
 
-func (s *Store) UpdateAnswer(ctx context.Context, answerID uuid.UUID, body, bodyHTML string) (*Answer, error) {
-	_, err := s.db.Exec(ctx, `
-		UPDATE answers SET body = $2, body_html = $3, updated_at = now()
-		WHERE id = $1 AND deleted_at IS NULL`, answerID, body, bodyHTML)
+// UpdateAnswer rewrites an answer's body (audit L3, H3, L2): the replaced
+// body is kept as an answer_revisions row in the same transaction, body_html
+// is rendered from the body (the client's HTML argument is ignored), and
+// qa.answer.updated commits with the edit. An edit that changes nothing
+// writes nothing.
+func (s *Store) UpdateAnswer(ctx context.Context, answerID uuid.UUID, body, _ string) (*Answer, error) {
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var oldBody string
+	var questionID, authorID uuid.UUID
+	var anonymous bool
+	if err := tx.QueryRow(ctx, `
+		SELECT body, question_id, author_id, COALESCE(is_anonymous, false)
+		FROM answers WHERE id = $1 AND deleted_at IS NULL
+		FOR UPDATE`, answerID,
+	).Scan(&oldBody, &questionID, &authorID, &anonymous); err != nil {
 		return nil, fmt.Errorf("update answer: %w", err)
+	}
+	if body != oldBody {
+		var revisionID uuid.UUID
+		if err := tx.QueryRow(ctx, `
+			INSERT INTO answer_revisions (answer_id, editor_id, body)
+			VALUES ($1, $2, $3)
+			RETURNING id`, answerID, authorID, oldBody,
+		).Scan(&revisionID); err != nil {
+			return nil, fmt.Errorf("record answer revision: %w", err)
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE answers SET body = $2, body_html = $3, updated_at = now()
+			WHERE id = $1`, answerID, body, qarender.BodyHTML(body)); err != nil {
+			return nil, fmt.Errorf("update answer: %w", err)
+		}
+		if err := enqueueAnswerUpdated(ctx, tx, answerID, questionID, authorID, revisionID, anonymous); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
 	}
 	return s.GetAnswer(ctx, answerID)
 }
 
-func (s *Store) DeleteAnswer(ctx context.Context, answerID uuid.UUID) error {
-	var questionID uuid.UUID
-	var communityIDText string
-	err := s.db.QueryRow(ctx, `
-		SELECT a.question_id, COALESCE(q.community_id::text, '')
-		FROM answers a
-		JOIN questions q ON q.id = a.question_id
-		WHERE a.id = $1`, answerID,
-	).Scan(&questionID, &communityIDText)
+func (s *Store) DeleteAnswer(ctx context.Context, answerID, actorID uuid.UUID) (bool, error) {
+	var questionID, authorID uuid.UUID
+	var deleted bool
+	err := s.db.QueryRow(ctx, `SELECT question_id, author_id, deleted_at IS NOT NULL FROM answers WHERE id = $1`, answerID).
+		Scan(&questionID, &authorID, &deleted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, refuse(ErrNotFound, "answer not found")
+	}
 	if err != nil {
-		return err
+		return false, err
+	}
+	if authorID != actorID {
+		return false, refuse(ErrForbidden, "only the answer author can delete it")
+	}
+	if deleted {
+		return false, nil
 	}
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
-		return err
+		return false, err
 	}
-	defer tx.Rollback(ctx)
-	_, _ = tx.Exec(ctx, `UPDATE answers SET deleted_at = now() WHERE id = $1`, answerID)
-	_, _ = tx.Exec(ctx, `UPDATE questions SET answer_count = GREATEST(answer_count - 1, 0), updated_at = now() WHERE id = $1`, questionID)
-	if communityIDText != "" {
-		if communityID, parseErr := uuid.Parse(communityIDText); parseErr == nil {
-			if err := s.syncCommunityAnswerStatsTx(ctx, tx, communityID); err != nil {
-				return err
-			}
+	defer func() { _ = tx.Rollback(ctx) }()
+	// The question row first, like every accept change (best_answer.go).
+	var communityID *uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT community_id FROM questions WHERE id = $1 FOR UPDATE`, questionID).Scan(&communityID); err != nil {
+		return false, err
+	}
+	tag, err := tx.Exec(ctx, `UPDATE answers SET deleted_at = now() WHERE id = $1 AND author_id = $2 AND deleted_at IS NULL`, answerID, actorID)
+	if err != nil {
+		return false, err
+	}
+	if tag.RowsAffected() == 0 {
+		return false, nil // a concurrent delete won; it moved the counters
+	}
+	if _, err := tx.Exec(ctx, `UPDATE questions SET answer_count = GREATEST(answer_count - 1, 0), updated_at = now() WHERE id = $1`, questionID); err != nil {
+		return false, err
+	}
+	if err := releaseBestAnswerTx(ctx, tx, questionID, answerID); err != nil {
+		return false, err
+	}
+	if communityID != nil {
+		if err := s.syncCommunityAnswerStatsTx(ctx, tx, *communityID); err != nil {
+			return false, err
 		}
 	}
-	return tx.Commit(ctx)
+	return true, tx.Commit(ctx)
 }
 
 func (s *Store) ListAnswersByQuestion(ctx context.Context, questionID uuid.UUID, sortBy string, limit, offset int) ([]Answer, error) {
@@ -135,37 +205,6 @@ func (s *Store) ListAnswersByQuestion(ctx context.Context, questionID uuid.UUID,
 	}
 	defer rows.Close()
 	return scanAnswers(rows)
-}
-
-func (s *Store) SelectBestAnswer(ctx context.Context, questionID, answerID uuid.UUID) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	_, _ = tx.Exec(ctx, `UPDATE answers SET is_best = false WHERE question_id = $1 AND is_best = true`, questionID)
-	_, _ = tx.Exec(ctx, `UPDATE answers SET is_best = true WHERE id = $1`, answerID)
-	_, _ = tx.Exec(ctx, `UPDATE questions SET best_answer_id = $2, is_answered = true, updated_at = now() WHERE id = $1`, questionID, answerID)
-
-	var authorID uuid.UUID
-	_ = tx.QueryRow(ctx, `SELECT author_id FROM answers WHERE id = $1`, answerID).Scan(&authorID)
-	_, _ = tx.Exec(ctx, `
-		INSERT INTO qa_profiles (user_id, best_answer_count) VALUES ($1, 1)
-		ON CONFLICT (user_id) DO UPDATE SET best_answer_count = qa_profiles.best_answer_count + 1, updated_at = now()`,
-		authorID)
-
-	return tx.Commit(ctx)
-}
-
-func (s *Store) UnselectBestAnswer(ctx context.Context, questionID uuid.UUID) error {
-	tx, err := s.db.Begin(ctx)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback(ctx)
-	_, _ = tx.Exec(ctx, `UPDATE answers SET is_best = false WHERE question_id = $1 AND is_best = true`, questionID)
-	_, _ = tx.Exec(ctx, `UPDATE questions SET best_answer_id = NULL, is_answered = false, updated_at = now() WHERE id = $1`, questionID)
-	return tx.Commit(ctx)
 }
 
 func (s *Store) AddAnswerReferences(ctx context.Context, answerID uuid.UUID, refs []AnswerReference) error {
@@ -197,14 +236,23 @@ func (s *Store) GetAnswerReferences(ctx context.Context, answerID uuid.UUID) ([]
 	return results, nil
 }
 
-func (s *Store) ListAnswersByAuthor(ctx context.Context, authorID uuid.UUID, limit, offset int) ([]Answer, error) {
+// ListAnswersByAuthor is a profile's answer list. The author sees every live
+// answer of theirs on a live question. Anyone else never sees an anonymous
+// answer (audit H4), nor one on a question they could not see (H5).
+func (s *Store) ListAnswersByAuthor(ctx context.Context, authorID uuid.UUID, viewerID *uuid.UUID, limit, offset int) ([]Answer, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	self := viewerID != nil && *viewerID == authorID
 	rows, err := s.db.Query(ctx, `
-		SELECT id, question_id, author_id, body, body_html, vote_score,
-		       upvote_count, downvote_count, is_best, is_accepted,
-		       comment_count, reference_count, created_at, updated_at,
-		       COALESCE(is_anonymous, false)
-		FROM answers WHERE author_id = $1 AND deleted_at IS NULL
-		ORDER BY created_at DESC LIMIT $2 OFFSET $3`, authorID, limit, offset)
+		SELECT a.id, a.question_id, a.author_id, a.body, a.body_html, a.vote_score,
+		       a.upvote_count, a.downvote_count, a.is_best, a.is_accepted,
+		       a.comment_count, a.reference_count, a.created_at, a.updated_at,
+		       COALESCE(a.is_anonymous, false)
+		FROM answers a JOIN questions q ON q.id = a.question_id
+		WHERE a.author_id = $1 AND a.deleted_at IS NULL AND q.deleted_at IS NULL
+		  AND ($5 OR (NOT COALESCE(a.is_anonymous, false) AND `+questionVisibleSQL("q", "$4")+`))
+		ORDER BY a.created_at DESC LIMIT $2 OFFSET $3`, authorID, limit, offset, viewerID, self)
 	if err != nil {
 		return nil, fmt.Errorf("list answers by author: %w", err)
 	}
@@ -221,54 +269,19 @@ func scanAnswers(rows pgx.Rows) ([]Answer, error) {
 			&a.CommentCount, &a.ReferenceCount, &a.CreatedAt, &a.UpdatedAt, &a.IsAnonymous); err != nil {
 			return nil, err
 		}
+		a.BodyHTML = qarender.BodyHTML(a.Body) // never the stored column (H3)
 		results = append(results, a)
 	}
 	return results, nil
 }
 
+// syncCommunityAnswerStatsTx records that a community's answer and
+// contributor counts changed. It no longer recounts inside the caller's
+// transaction (audit M7): it stamps the community for the background
+// recount (community_stats.go), which takes no lock when the community is
+// already stamped.
 func (s *Store) syncCommunityAnswerStatsTx(ctx context.Context, exec dbtx, communityID uuid.UUID) error {
-	var answerCount int
-	if err := exec.QueryRow(ctx, `
-		SELECT COUNT(*)
-		FROM answers a
-		JOIN questions q ON q.id = a.question_id
-		WHERE q.community_id = $1 AND q.deleted_at IS NULL AND a.deleted_at IS NULL`,
-		communityID,
-	).Scan(&answerCount); err != nil {
-		return err
-	}
-
-	if _, err := exec.Exec(ctx, `
-		INSERT INTO community_qa_settings (community_id)
-		VALUES ($1)
-		ON CONFLICT (community_id) DO NOTHING`,
-		communityID,
-	); err != nil {
-		return err
-	}
-
-	if _, err := exec.Exec(ctx, `
-		UPDATE community_qa_settings
-		SET total_answers_count = $2,
-		    updated_at = now()
-		WHERE community_id = $1`,
-		communityID, answerCount,
-	); err != nil {
-		return err
-	}
-
-	if _, err := exec.Exec(ctx, `
-		UPDATE qa_communities
-		SET qa_answer_count = $2,
-		    last_qa_activity_at = now(),
-		    updated_at = now()
-		WHERE id = $1`,
-		communityID, answerCount,
-	); err != nil {
-		return err
-	}
-
-	return s.refreshCommunityContributorCountTx(ctx, exec, communityID)
+	return markCommunityStatsStaleTx(ctx, exec, communityID)
 }
 
 func (s *Store) bumpCommunityTopicAnswerCountTx(ctx context.Context, exec dbtx, communityID, questionID uuid.UUID) error {

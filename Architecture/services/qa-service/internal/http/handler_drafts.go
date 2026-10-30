@@ -19,6 +19,22 @@ type questionDraftRequest struct {
 	Tags        []string `json:"tags"`
 	TopicIDs    []string `json:"topicIds"`
 	IsAnonymous bool     `json:"isAnonymous,omitempty"`
+	// snake_case spellings the web client sends (audit M10); used when the
+	// camelCase field is absent.
+	CommunityIDSnake *string  `json:"community_id,omitempty"`
+	TopicIDsSnake    []string `json:"topic_ids,omitempty"`
+	IsAnonymousSnake bool     `json:"is_anonymous,omitempty"`
+}
+
+// normalize folds the snake_case spellings into the camelCase fields.
+func (r *questionDraftRequest) normalize() {
+	if r.CommunityID == nil {
+		r.CommunityID = r.CommunityIDSnake
+	}
+	if len(r.TopicIDs) == 0 {
+		r.TopicIDs = r.TopicIDsSnake
+	}
+	r.IsAnonymous = r.IsAnonymous || r.IsAnonymousSnake
 }
 
 func (h *Handler) UpsertQuestionDraft(c *gin.Context) {
@@ -32,6 +48,7 @@ func (h *Handler) UpsertQuestionDraft(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
+	body.normalize()
 
 	params := store.UpsertQuestionDraftParams{
 		AuthorID:    userID,
@@ -87,7 +104,7 @@ func (h *Handler) ListQuestionDrafts(c *gin.Context) {
 
 	drafts, err := h.svc.ListQuestionDrafts(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]any{
@@ -124,6 +141,9 @@ type answerDraftRequest struct {
 	QuestionID  string  `json:"questionId"`
 	Body        string  `json:"body"`
 	IsAnonymous bool    `json:"isAnonymous,omitempty"`
+	// snake_case spellings the web client sends (audit M10).
+	QuestionIDSnake  string `json:"question_id,omitempty"`
+	IsAnonymousSnake bool   `json:"is_anonymous,omitempty"`
 }
 
 func (h *Handler) UpsertAnswerDraft(c *gin.Context) {
@@ -137,6 +157,8 @@ func (h *Handler) UpsertAnswerDraft(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
 		return
 	}
+	body.QuestionID = firstNonEmpty(body.QuestionID, body.QuestionIDSnake)
+	body.IsAnonymous = body.IsAnonymous || body.IsAnonymousSnake
 
 	if body.QuestionID == "" {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "questionId is required", nil)
@@ -178,7 +200,7 @@ func (h *Handler) ListAnswerDrafts(c *gin.Context) {
 
 	drafts, err := h.svc.ListAnswerDrafts(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "QUERY_FAILED", err.Error(), nil)
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]any{

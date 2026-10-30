@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/atpost/qa-service/internal/store"
 	"github.com/atpost/shared/events"
@@ -50,16 +51,16 @@ type communityMemberRoleChangedPayload struct {
 func (c *Consumer) handleCommunityCreated(ctx context.Context, envelope events.EventEnvelope) error {
 	var payload communityCreatedPayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-		return err
+		return permanent(err)
 	}
 
 	communityID, err := uuid.Parse(payload.CommunityID)
 	if err != nil {
-		return err
+		return permanent(err)
 	}
 	ownerID, err := uuid.Parse(payload.OwnerID)
 	if err != nil {
-		return err
+		return permanent(err)
 	}
 
 	return c.store.UpsertCommunity(ctx, store.MirroredCommunity{
@@ -74,12 +75,12 @@ func (c *Consumer) handleCommunityCreated(ctx context.Context, envelope events.E
 func (c *Consumer) handleCommunityUpdated(ctx context.Context, envelope events.EventEnvelope) error {
 	var payload communityUpdatedPayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-		return err
+		return permanent(err)
 	}
 
 	communityID, err := uuid.Parse(payload.CommunityID)
 	if err != nil {
-		return err
+		return permanent(err)
 	}
 
 	if payload.Name == "" && payload.CommunityType == "" {
@@ -88,7 +89,13 @@ func (c *Consumer) handleCommunityUpdated(ctx context.Context, envelope events.E
 
 	current, err := c.store.GetCommunity(ctx, communityID)
 	if err != nil {
-		return nil
+		// An update for a community this mirror never saw is not an error;
+		// a database failure is, and is retried (audit M8: it used to be
+		// dropped).
+		if strings.Contains(err.Error(), "community not found") {
+			return nil
+		}
+		return err
 	}
 	if payload.Name != "" {
 		current.Name = payload.Name
@@ -102,12 +109,12 @@ func (c *Consumer) handleCommunityUpdated(ctx context.Context, envelope events.E
 func (c *Consumer) handleCommunityDeleted(ctx context.Context, envelope events.EventEnvelope) error {
 	var payload communityDeletedPayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-		return err
+		return permanent(err)
 	}
 
 	communityID, err := uuid.Parse(payload.CommunityID)
 	if err != nil {
-		return err
+		return permanent(err)
 	}
 	return c.store.DeleteCommunitySync(ctx, communityID)
 }
@@ -115,16 +122,16 @@ func (c *Consumer) handleCommunityDeleted(ctx context.Context, envelope events.E
 func (c *Consumer) handleCommunityMemberJoined(ctx context.Context, envelope events.EventEnvelope) error {
 	var payload communityMemberJoinedPayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-		return err
+		return permanent(err)
 	}
 
 	communityID, err := uuid.Parse(payload.CommunityID)
 	if err != nil {
-		return err
+		return permanent(err)
 	}
 	userID, err := uuid.Parse(payload.UserID)
 	if err != nil {
-		return err
+		return permanent(err)
 	}
 	return c.store.UpsertCommunityMember(ctx, communityID, userID, "member")
 }
@@ -132,16 +139,16 @@ func (c *Consumer) handleCommunityMemberJoined(ctx context.Context, envelope eve
 func (c *Consumer) handleCommunityMemberLeft(ctx context.Context, envelope events.EventEnvelope) error {
 	var payload communityMemberLeftPayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-		return err
+		return permanent(err)
 	}
 
 	communityID, err := uuid.Parse(payload.CommunityID)
 	if err != nil {
-		return err
+		return permanent(err)
 	}
 	userID, err := uuid.Parse(payload.UserID)
 	if err != nil {
-		return err
+		return permanent(err)
 	}
 	return c.store.RemoveCommunityMember(ctx, communityID, userID)
 }
@@ -149,16 +156,16 @@ func (c *Consumer) handleCommunityMemberLeft(ctx context.Context, envelope event
 func (c *Consumer) handleCommunityMemberBanned(ctx context.Context, envelope events.EventEnvelope) error {
 	var payload communityMemberBannedPayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-		return err
+		return permanent(err)
 	}
 
 	communityID, err := uuid.Parse(payload.CommunityID)
 	if err != nil {
-		return err
+		return permanent(err)
 	}
 	userID, err := uuid.Parse(payload.UserID)
 	if err != nil {
-		return err
+		return permanent(err)
 	}
 	return c.store.UpsertCommunityMember(ctx, communityID, userID, "banned")
 }
@@ -166,16 +173,16 @@ func (c *Consumer) handleCommunityMemberBanned(ctx context.Context, envelope eve
 func (c *Consumer) handleCommunityMemberRoleChanged(ctx context.Context, envelope events.EventEnvelope) error {
 	var payload communityMemberRoleChangedPayload
 	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
-		return err
+		return permanent(err)
 	}
 
 	communityID, err := uuid.Parse(payload.CommunityID)
 	if err != nil {
-		return err
+		return permanent(err)
 	}
 	userID, err := uuid.Parse(payload.UserID)
 	if err != nil {
-		return err
+		return permanent(err)
 	}
 	return c.store.UpsertCommunityMember(ctx, communityID, userID, payload.NewRole)
 }

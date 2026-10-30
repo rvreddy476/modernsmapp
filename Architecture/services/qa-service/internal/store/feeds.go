@@ -7,18 +7,22 @@ import (
 	"github.com/google/uuid"
 )
 
-func (s *Store) GetTrendingQuestions(ctx context.Context, limit, offset int) ([]QuestionSummary, error) {
+// Every feed applies the one visibility rule (visibility.go, audit H5) for
+// its viewer; nil is a signed-out caller.
+
+func (s *Store) GetTrendingQuestions(ctx context.Context, viewerID *uuid.UUID, limit, offset int) ([]QuestionSummary, error) {
 	if limit <= 0 {
 		limit = 20
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT id, author_id, title, slug, status, vote_score, answer_count, view_count, is_answered, created_at,
 		       COALESCE(is_anonymous, false)
-		FROM questions
+		FROM questions q
 		WHERE deleted_at IS NULL AND status = 'open'
 		  AND created_at > now() - interval '7 days'
+		  AND `+questionVisibleSQL("q", "$3")+`
 		ORDER BY (vote_score + answer_count * 2 + view_count * 0.1) DESC
-		LIMIT $1 OFFSET $2`, limit, offset)
+		LIMIT $1 OFFSET $2`, limit, offset, viewerID)
 	if err != nil {
 		return nil, err
 	}
@@ -26,7 +30,7 @@ func (s *Store) GetTrendingQuestions(ctx context.Context, limit, offset int) ([]
 	return scanQuestionSummaries(rows)
 }
 
-func (s *Store) GetUnansweredQuestions(ctx context.Context, topicID *uuid.UUID, limit, offset int) ([]QuestionSummary, error) {
+func (s *Store) GetUnansweredQuestions(ctx context.Context, topicID, viewerID *uuid.UUID, limit, offset int) ([]QuestionSummary, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -36,7 +40,8 @@ func (s *Store) GetUnansweredQuestions(ctx context.Context, topicID *uuid.UUID, 
 			       COALESCE(q.is_anonymous, false)
 			FROM questions q JOIN question_topics qt ON q.id = qt.question_id
 			WHERE qt.topic_id = $1 AND q.answer_count = 0 AND q.status = 'open' AND q.deleted_at IS NULL
-			ORDER BY q.created_at DESC LIMIT $2 OFFSET $3`, *topicID, limit, offset)
+			  AND `+questionVisibleSQL("q", "$4")+`
+			ORDER BY q.created_at DESC LIMIT $2 OFFSET $3`, *topicID, limit, offset, viewerID)
 		if err != nil {
 			return nil, err
 		}
@@ -46,8 +51,9 @@ func (s *Store) GetUnansweredQuestions(ctx context.Context, topicID *uuid.UUID, 
 	rows, err := s.db.Query(ctx, `
 		SELECT id, author_id, title, slug, status, vote_score, answer_count, view_count, is_answered, created_at,
 		       COALESCE(is_anonymous, false)
-		FROM questions WHERE answer_count = 0 AND status = 'open' AND deleted_at IS NULL
-		ORDER BY created_at DESC LIMIT $1 OFFSET $2`, limit, offset)
+		FROM questions q WHERE answer_count = 0 AND status = 'open' AND deleted_at IS NULL
+		  AND `+questionVisibleSQL("q", "$3")+`
+		ORDER BY created_at DESC LIMIT $1 OFFSET $2`, limit, offset, viewerID)
 	if err != nil {
 		return nil, err
 	}
@@ -68,6 +74,7 @@ func (s *Store) GetFollowingFeed(ctx context.Context, userID uuid.UUID, limit, o
 		LEFT JOIN contributor_follows cf ON q.author_id = cf.followed_id AND cf.follower_id = $1
 		WHERE q.deleted_at IS NULL AND q.status != 'deleted'
 		  AND (tf.user_id IS NOT NULL OR cf.follower_id IS NOT NULL)
+		  AND `+questionVisibleSQL("q", "$1")+`
 		ORDER BY q.created_at DESC LIMIT $2 OFFSET $3`, userID, limit, offset)
 	if err != nil {
 		return nil, err
@@ -90,6 +97,7 @@ func (s *Store) GetForYouFeed(ctx context.Context, userID uuid.UUID, limit, offs
 		JOIN qa_profiles p ON p.user_id = $1
 		WHERE q.deleted_at IS NULL AND q.status = 'open'
 		  AND t.name = ANY(p.expertise_areas)
+		  AND `+questionVisibleSQL("q", "$1")+`
 		ORDER BY q.created_at DESC LIMIT $2 OFFSET $3`, userID, limit, offset)
 	if err != nil {
 		return nil, err
@@ -98,7 +106,7 @@ func (s *Store) GetForYouFeed(ctx context.Context, userID uuid.UUID, limit, offs
 	results, _ := scanQuestionSummaries(rows)
 	if len(results) < limit {
 		// fallback to trending
-		extra, _ := s.GetTrendingQuestions(ctx, limit-len(results), 0)
+		extra, _ := s.GetTrendingQuestions(ctx, &userID, limit-len(results), 0)
 		results = append(results, extra...)
 	}
 	return results, nil
@@ -107,7 +115,7 @@ func (s *Store) GetForYouFeed(ctx context.Context, userID uuid.UUID, limit, offs
 func (s *Store) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit, offset int) ([]QuestionSummary, error) {
 	// Mix of followed + recent popular
 	following, _ := s.GetFollowingFeed(ctx, userID, limit/2, 0)
-	trending, _ := s.GetTrendingQuestions(ctx, limit/2, 0)
+	trending, _ := s.GetTrendingQuestions(ctx, &userID, limit/2, 0)
 	seen := map[uuid.UUID]bool{}
 	var results []QuestionSummary
 	for _, q := range following {
@@ -145,6 +153,7 @@ func (s *Store) GetAnswerQueue(ctx context.Context, userID uuid.UUID, limit, off
 		JOIN qa_profiles p ON p.user_id = $1
 		WHERE q.deleted_at IS NULL AND q.status = 'open' AND q.answer_count = 0
 		  AND t.name = ANY(p.expertise_areas)
+		  AND `+questionVisibleSQL("q", "$1")+`
 		ORDER BY q.created_at DESC LIMIT $2 OFFSET $3`, userID, limit, offset)
 	if err != nil {
 		return nil, err
@@ -153,7 +162,7 @@ func (s *Store) GetAnswerQueue(ctx context.Context, userID uuid.UUID, limit, off
 	return scanQuestionSummaries(rows)
 }
 
-func (s *Store) GetLocalFeed(ctx context.Context, lat, lng float64, radiusKm int, limit, offset int) ([]QuestionSummary, error) {
+func (s *Store) GetLocalFeed(ctx context.Context, viewerID *uuid.UUID, lat, lng float64, radiusKm int, limit, offset int) ([]QuestionSummary, error) {
 	if limit <= 0 {
 		limit = 20
 	}
@@ -171,8 +180,9 @@ func (s *Store) GetLocalFeed(ctx context.Context, lat, lng float64, radiusKm int
 		WHERE q.deleted_at IS NULL AND q.status = 'open'
 		  AND ls.latitude BETWEEN $1 - %f AND $1 + %f
 		  AND ls.longitude BETWEEN $2 - %f AND $2 + %f
-		ORDER BY q.created_at DESC LIMIT $3 OFFSET $4`, latDelta, latDelta, lngDelta, lngDelta),
-		lat, lng, limit, offset)
+		  AND %s
+		ORDER BY q.created_at DESC LIMIT $3 OFFSET $4`, latDelta, latDelta, lngDelta, lngDelta, questionVisibleSQL("q", "$5")),
+		lat, lng, limit, offset, viewerID)
 	if err != nil {
 		return nil, err
 	}
@@ -180,45 +190,4 @@ func (s *Store) GetLocalFeed(ctx context.Context, lat, lng float64, radiusKm int
 	return scanQuestionSummaries(rows)
 }
 
-// Erased is what one AnonymizeUser removed: the questions and answers it
-// deleted, whose media claims the caller releases afterwards.
-type Erased struct {
-	QuestionIDs []uuid.UUID
-	AnswerIDs   []uuid.UUID
-}
-
-// GDPR cleanup
-func (s *Store) AnonymizeUser(ctx context.Context, userID uuid.UUID) (Erased, error) {
-	var out Erased
-	_, _ = s.db.Exec(ctx, `UPDATE qa_profiles SET display_name = 'Deleted User', bio = '', expertise_areas = '{}', updated_at = now() WHERE user_id = $1`, userID)
-	out.QuestionIDs, _ = s.updateReturningIDs(ctx, `UPDATE questions SET deleted_at = now(), status = 'deleted' WHERE author_id = $1 AND deleted_at IS NULL RETURNING id`, userID)
-	out.AnswerIDs, _ = s.updateReturningIDs(ctx, `UPDATE answers SET deleted_at = now() WHERE author_id = $1 AND deleted_at IS NULL RETURNING id`, userID)
-	_, _ = s.db.Exec(ctx, `UPDATE answer_comments SET deleted_at = now() WHERE author_id = $1 AND deleted_at IS NULL`, userID)
-	_, _ = s.db.Exec(ctx, `DELETE FROM question_votes WHERE user_id = $1`, userID)
-	_, _ = s.db.Exec(ctx, `DELETE FROM answer_votes WHERE user_id = $1`, userID)
-	_, _ = s.db.Exec(ctx, `DELETE FROM answer_comment_votes WHERE user_id = $1`, userID)
-	_, _ = s.db.Exec(ctx, `DELETE FROM question_follows WHERE user_id = $1`, userID)
-	_, _ = s.db.Exec(ctx, `DELETE FROM topic_follows WHERE user_id = $1`, userID)
-	_, _ = s.db.Exec(ctx, `DELETE FROM contributor_follows WHERE follower_id = $1 OR followed_id = $1`, userID)
-	_, _ = s.db.Exec(ctx, `DELETE FROM question_saves WHERE user_id = $1`, userID)
-	_, _ = s.db.Exec(ctx, `DELETE FROM answer_saves WHERE user_id = $1`, userID)
-	return out, nil
-}
-
-// updateReturningIDs runs an UPDATE ... RETURNING id and collects the ids.
-func (s *Store) updateReturningIDs(ctx context.Context, sql string, args ...any) ([]uuid.UUID, error) {
-	rows, err := s.db.Query(ctx, sql, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	var ids []uuid.UUID
-	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
-			return ids, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
-}
+// Erased and AnonymizeUser live in erasure.go (audit M8).

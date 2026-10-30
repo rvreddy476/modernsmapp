@@ -10,9 +10,10 @@ import (
 )
 
 // SearchQuestions implements GET /v1/qa/search?q=&community_id=&topic_id=&limit=&offset=
-// V1 reuses the trigram-style title match used by the similar-questions feature.
+// Full-text, indexed, bounded and rate limited for signed-out callers
+// (search_limit.go, store/search_match.go; audit M6).
 func (h *Handler) SearchQuestions(c *gin.Context) {
-	q := strings.TrimSpace(c.Query("q"))
+	q := clipSearchQuery(strings.TrimSpace(c.Query("q")))
 	if len(q) < 2 {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_PARAM", "q must be at least 2 characters", nil)
 		return
@@ -38,9 +39,12 @@ func (h *Handler) SearchQuestions(c *gin.Context) {
 		topicID = &parsed
 	}
 
-	limit, offset := parsePagination(c)
+	limit, offset := clampSearchPage(parsePagination(c))
+	if !h.allowSearch(c) {
+		return
+	}
 
-	questions, err := h.svc.SearchQuestions(c.Request.Context(), q, communityID, topicID, limit, offset)
+	questions, err := h.svc.SearchQuestions(c.Request.Context(), q, communityID, topicID, optionalUserID(c), limit, offset)
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return

@@ -2,19 +2,28 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
+// CreateAnswerRequest records one request; a requester asks a given user
+// about a given question once (audit M4, unique index
+// uq_answer_requests_once). A repeat is a conflict and records nothing.
 func (s *Store) CreateAnswerRequest(ctx context.Context, questionID, requesterID, requestedUserID uuid.UUID) (*AnswerRequest, error) {
 	r := &AnswerRequest{}
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO answer_requests (question_id, requester_id, requested_user_id)
 		VALUES ($1, $2, $3)
+		ON CONFLICT (question_id, requester_id, requested_user_id) DO NOTHING
 		RETURNING id, question_id, requester_id, requested_user_id, status, created_at`,
 		questionID, requesterID, requestedUserID,
 	).Scan(&r.ID, &r.QuestionID, &r.RequesterID, &r.RequestedUserID, &r.Status, &r.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, refuse(ErrConflict, "you have already asked this person to answer this question")
+	}
 	if err != nil {
 		return nil, fmt.Errorf("create answer request: %w", err)
 	}

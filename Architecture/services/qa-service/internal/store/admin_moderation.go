@@ -3,14 +3,11 @@ package store
 // Admin console (Wave 2 — Content apps, Q&A): the moderation writes behind
 // the token-only family /v1/qa/internal/admin/* (http/admin_token.go).
 //
-// The LEGACY /v1/qa/admin/* writes (moderation.go) run the change and the
-// moderation_actions insert as separate statements and ignore both errors, so
-// a change can land without its audit row (or the reverse) and a missing
-// target still answers 200. These methods do each change and its one
-// moderation_actions row in ONE transaction, refuse a missing or already
-// moderated target, and take the actor from the caller (the signed act claim
-// of an admin-service token, never a header). The legacy methods are left
-// as they were.
+// These methods do each change and its one moderation_actions row in ONE
+// transaction, refuse a missing or already moderated target, and take the
+// actor from the caller (the signed act claim of an admin-service token,
+// never a header). The legacy /v1/qa/admin/* writes, which ignored their
+// errors and ran outside a transaction, were retired (audit M1).
 
 import (
 	"context"
@@ -171,6 +168,11 @@ func (s *Store) AdminHideContent(ctx context.Context, actor uuid.UUID, targetTyp
 				return err
 			}
 			if _, err := tx.Exec(ctx, `UPDATE questions SET answer_count = GREATEST(answer_count - 1, 0), updated_at = now() WHERE id = $1`, questionID); err != nil {
+				return err
+			}
+			// A hidden accepted answer is no longer accepted, and what the
+			// accept paid is reversed (audit M9).
+			if err := releaseBestAnswerTx(ctx, tx, questionID, targetID); err != nil {
 				return err
 			}
 			if communityID != nil {

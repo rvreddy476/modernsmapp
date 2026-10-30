@@ -1,7 +1,59 @@
 -- =============================================================================
 -- QA-SERVICE — Q&A domain schema
 -- Bootstrap on startup via embed.go → BootstrapSchema
+--
+-- Boot without relocking hot tables (Q&A backend audit M5, 30 Oct 2026):
+-- postgres.BootstrapSchema applies this script only when its sha256 changed,
+-- under qa-service's advisory lock, in one transaction with a lock_timeout.
+-- When it does run, it must still not take heavy locks it does not need:
+--   - columns are added through qa_ensure_column, which reads the catalog
+--     first (ALTER TABLE ... ADD COLUMN IF NOT EXISTS takes ACCESS EXCLUSIVE
+--     before it checks);
+--   - CHECK constraints go through qa_ensure_check_constraint, which
+--     re-adds one only when it is missing or its expression changed, and then
+--     NOT VALID (no scan under the ACCESS EXCLUSIVE lock); BootstrapSchema
+--     validates it after the commit, which takes only SHARE UPDATE EXCLUSIVE;
+--   - indexes on large tables that are new are built CONCURRENTLY outside
+--     this script (database/concurrent_indexes.go);
+--   - new tables and one-off changes go in database/migrations (run once).
+-- internal/store/postgres/bootstrap_guard_test.go keeps the unguarded forms out.
 -- =============================================================================
+
+-- qa_ensure_column adds a column only when the catalog lacks it, so a boot
+-- that finds it present takes no lock on the table.
+CREATE OR REPLACE FUNCTION qa_ensure_column(p_table regclass, p_column name, p_definition text)
+RETURNS void AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_attribute
+        WHERE attrelid = p_table AND attname = p_column AND NOT attisdropped
+    ) THEN
+        EXECUTE format('ALTER TABLE %s ADD COLUMN IF NOT EXISTS %I %s', p_table, p_column, p_definition);
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
+-- qa_ensure_check_constraint (re)creates a CHECK constraint only when it is
+-- missing or its expression changed. The applied expression's md5 is kept
+-- as the constraint's comment; an existing constraint without that comment
+-- (one added before this guard) is re-added once, NOT VALID, and tagged.
+CREATE OR REPLACE FUNCTION qa_ensure_check_constraint(p_table regclass, p_name name, p_check text)
+RETURNS void AS $$
+DECLARE
+    v_oid oid;
+    v_tag text := 'setup.sql:' || md5(p_check);
+BEGIN
+    SELECT oid INTO v_oid FROM pg_constraint WHERE conrelid = p_table AND conname = p_name;
+    IF FOUND AND obj_description(v_oid, 'pg_constraint') IS NOT DISTINCT FROM v_tag THEN
+        RETURN;
+    END IF;
+    IF FOUND THEN
+        EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', p_table, p_name);
+    END IF;
+    EXECUTE format('ALTER TABLE %s ADD CONSTRAINT %I CHECK (%s) NOT VALID', p_table, p_name, p_check);
+    EXECUTE format('COMMENT ON CONSTRAINT %I ON %s IS %L', p_name, p_table, v_tag);
+END;
+$$ LANGUAGE plpgsql;
 
 -- ---------------------------------------------------------------------------
 -- Core: Profiles, Topics, Questions, Answers, Comments
@@ -35,13 +87,13 @@ CREATE TABLE IF NOT EXISTS topics (
 );
 
 -- Idempotent migrations: add columns that may be missing from earlier schema versions
-ALTER TABLE topics ADD COLUMN IF NOT EXISTS description    TEXT    NOT NULL DEFAULT '';
-ALTER TABLE topics ADD COLUMN IF NOT EXISTS icon_url       TEXT    NOT NULL DEFAULT '';
-ALTER TABLE topics ADD COLUMN IF NOT EXISTS question_count INT     NOT NULL DEFAULT 0;
-ALTER TABLE topics ADD COLUMN IF NOT EXISTS follower_count INT     NOT NULL DEFAULT 0;
-ALTER TABLE topics ADD COLUMN IF NOT EXISTS is_featured    BOOLEAN NOT NULL DEFAULT false;
+SELECT qa_ensure_column('topics', 'description',    $def$TEXT    NOT NULL DEFAULT ''$def$);
+SELECT qa_ensure_column('topics', 'icon_url',       $def$TEXT    NOT NULL DEFAULT ''$def$);
+SELECT qa_ensure_column('topics', 'question_count', $def$INT     NOT NULL DEFAULT 0$def$);
+SELECT qa_ensure_column('topics', 'follower_count', $def$INT     NOT NULL DEFAULT 0$def$);
+SELECT qa_ensure_column('topics', 'is_featured',    $def$BOOLEAN NOT NULL DEFAULT false$def$);
 -- Alias parent_topic_id → parent_id for stores that use the canonical column name
-ALTER TABLE topics ADD COLUMN IF NOT EXISTS parent_topic_id UUID REFERENCES topics(id) ON DELETE SET NULL;
+SELECT qa_ensure_column('topics', 'parent_topic_id', $def$UUID REFERENCES topics(id) ON DELETE SET NULL$def$);
 
 CREATE TABLE IF NOT EXISTS qa_communities (
     id                     UUID PRIMARY KEY,
@@ -117,11 +169,9 @@ CREATE TABLE IF NOT EXISTS questions (
     deleted_at      TIMESTAMPTZ
 );
 
-ALTER TABLE questions ADD COLUMN IF NOT EXISTS community_id UUID REFERENCES qa_communities(id) ON DELETE SET NULL;
-ALTER TABLE questions DROP CONSTRAINT IF EXISTS questions_status_check;
-ALTER TABLE questions
-    ADD CONSTRAINT questions_status_check
-    CHECK (status IN ('open','closed','merged','deleted','pending_approval'));
+SELECT qa_ensure_column('questions', 'community_id', $def$UUID REFERENCES qa_communities(id) ON DELETE SET NULL$def$);
+SELECT qa_ensure_check_constraint('questions', 'questions_status_check', $chk$
+    status IN ('open','closed','merged','deleted','pending_approval')$chk$);
 
 CREATE TABLE IF NOT EXISTS question_topics (
     question_id UUID NOT NULL REFERENCES questions(id) ON DELETE CASCADE,
@@ -413,9 +463,9 @@ CREATE INDEX IF NOT EXISTS idx_cta_community_affinity ON community_topic_affinit
 -- ---------------------------------------------------------------------------
 -- Anonymity (idempotent column adds)
 -- ---------------------------------------------------------------------------
-ALTER TABLE questions ADD COLUMN IF NOT EXISTS is_anonymous BOOLEAN NOT NULL DEFAULT false;
-ALTER TABLE answers   ADD COLUMN IF NOT EXISTS is_anonymous BOOLEAN NOT NULL DEFAULT false;
-ALTER TABLE community_qa_settings ADD COLUMN IF NOT EXISTS anonymity_enabled BOOLEAN NOT NULL DEFAULT false;
+SELECT qa_ensure_column('questions', 'is_anonymous', $def$BOOLEAN NOT NULL DEFAULT false$def$);
+SELECT qa_ensure_column('answers', 'is_anonymous', $def$BOOLEAN NOT NULL DEFAULT false$def$);
+SELECT qa_ensure_column('community_qa_settings', 'anonymity_enabled', $def$BOOLEAN NOT NULL DEFAULT false$def$);
 
 -- ---------------------------------------------------------------------------
 -- Drafts: server-backed save & resume for questions and answers
