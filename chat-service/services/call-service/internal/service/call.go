@@ -39,13 +39,16 @@ var (
 	// refused server-side — the one-live-call invariant must not depend on
 	// clients simply not calling those routes.
 	ErrGroupCallsDisabled = errors.New("group calls are not available")
-	ErrAlreadyAudioVideo = errors.New("call already has video enabled")
-	ErrMaxParticipants   = errors.New("call has reached maximum participants")
+	ErrAlreadyAudioVideo  = errors.New("call already has video enabled")
+	ErrMaxParticipants    = errors.New("call has reached maximum participants")
 )
 
 // Service is the business logic layer for calls.
 type Service struct {
-	store       *postgres.CallStore
+	store *postgres.CallStore
+	// extras is store, seen through the narrow interface call_extras.go
+	// uses (a fake in unit tests).
+	extras      extrasStore
 	sfuProvider sfu.SFUProvider
 	rateLimiter *RateLimiter
 	policy      *CallPolicy
@@ -170,6 +173,7 @@ func New(
 	}
 	return &Service{
 		store:                 store,
+		extras:                store,
 		sfuProvider:           sfuProvider,
 		rateLimiter:           rateLimiter,
 		policy:                policy,

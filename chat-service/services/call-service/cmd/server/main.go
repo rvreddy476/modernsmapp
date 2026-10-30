@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -17,8 +19,8 @@ import (
 	"github.com/atpost/chat-call-service/internal/relationship"
 	"github.com/atpost/chat-call-service/internal/service"
 	"github.com/atpost/chat-call-service/internal/sfu"
-	"github.com/atpost/chat-call-service/internal/turn"
 	"github.com/atpost/chat-call-service/internal/store/postgres"
+	"github.com/atpost/chat-call-service/internal/turn"
 	"github.com/atpost/chat-shared/accessauth"
 	"github.com/atpost/chat-shared/logging"
 	"github.com/atpost/chat-shared/transport"
@@ -209,7 +211,9 @@ func main() {
 		logger.Info("call mute disabled: CHAT_POSTGRES_DSN unset")
 	}
 
-	handler := callhttp.New(svc, logger).WithCallsEnabled(cfg.CallsEnabled)
+	handler := callhttp.New(svc, logger).
+		WithCallsEnabled(cfg.CallsEnabled).
+		WithInternalServiceKey(cfg.InternalServiceKey)
 
 	// 6. Outbox Relay (background)
 	// Account control (auth-service 30-day deletion): on
@@ -255,6 +259,13 @@ func main() {
 	timeoutWorker := service.NewRingingTimeoutWorker(store, svc, logger, cfg.RingTimeoutSeconds)
 	go timeoutWorker.Start(ctx)
 
+	// 7b. Signaling-authorization refresh (audit M6). The pair key ws-gateway
+	// checks expires after callauth.DefaultTTL; this keeps it alive for as
+	// long as the database says the call is active and both sides are still
+	// in it, and never re-creates a key the call's end already cleared.
+	authRefresher := service.NewSignalingAuthRefresher(store, rdb, logger, 0)
+	go authRefresher.Start(ctx)
+
 	// 8. HTTP Server
 	r := gin.New()
 	r.Use(callhttp.RequestIDMiddleware())
@@ -268,6 +279,8 @@ func main() {
 		PreviousSecret: cfg.JWTSecretPrevious,
 		AccessKeys:     authKeys,
 		Policy:         authPolicy,
+		// Admits the AI pipeline to /internal/v1/calls/* without a user JWT.
+		InternalServiceKey: cfg.InternalServiceKey,
 	}, logger))
 
 	proxies := cfg.TrustedProxies
@@ -281,9 +294,44 @@ func main() {
 
 	handler.RegisterRoutes(r)
 
+	// Audit L1: gin's Run has no timeouts, so anything reaching the pod
+	// directly could hold a connection open indefinitely.
+	httpServer := newHTTPServer(":"+cfg.HTTPPort, r)
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		defer cancel()
+		if err := httpServer.Shutdown(shutdownCtx); err != nil {
+			logger.Warn("http shutdown failed", "err", err)
+		}
+	}()
+
 	logger.Info("starting call-service", "port", cfg.HTTPPort)
-	if err := r.Run(":" + cfg.HTTPPort); err != nil {
+	if err := httpServer.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		logger.Error("failed to run server", "err", err)
 		os.Exit(1)
+	}
+}
+
+const (
+	readHeaderTimeout = 5 * time.Second
+	readTimeout       = 15 * time.Second
+	// writeTimeout covers the slowest handler: a join mints SFU and TURN
+	// credentials over the network before it answers.
+	writeTimeout    = 30 * time.Second
+	idleTimeout     = 60 * time.Second
+	shutdownTimeout = 10 * time.Second
+)
+
+// newHTTPServer is the call-service listener with every timeout set.
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: readHeaderTimeout,
+		ReadTimeout:       readTimeout,
+		WriteTimeout:      writeTimeout,
+		IdleTimeout:       idleTimeout,
+		MaxHeaderBytes:    1 << 20,
 	}
 }

@@ -14,6 +14,9 @@ import (
 )
 
 const (
+	internalServiceKeyHeader = "X-Internal-Service-Key"
+	internalRoutePrefix      = "/internal/v1/calls/"
+
 	requestIDHeader = "X-Request-Id"
 	requestIDKey    = "request_id"
 	userIDKey       = "user_id"
@@ -118,6 +121,11 @@ type JWTKeySet struct {
 	PreviousSecret string
 	AccessKeys     accessauth.KeySet
 	Policy         accessauth.Policy
+	// InternalServiceKey admits service callers to /internal/v1/calls/*
+	// without a user JWT. The route group checks the key again
+	// (Handler.requireInternalKey), so a JWT holder who reaches the group
+	// without the key is still refused.
+	InternalServiceKey string
 }
 
 func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
@@ -145,6 +153,11 @@ func AuthMiddlewareWithKeys(keys JWTKeySet, log *slog.Logger) gin.HandlerFunc {
 	}
 	return func(c *gin.Context) {
 		if strings.HasSuffix(c.Request.URL.Path, "/health") {
+			c.Next()
+			return
+		}
+		if strings.HasPrefix(c.Request.URL.Path, internalRoutePrefix) &&
+			internalKeyMatches(strings.TrimSpace(keys.InternalServiceKey), c.GetHeader(internalServiceKeyHeader)) {
 			c.Next()
 			return
 		}

@@ -21,9 +21,9 @@ func (h *Handler) GenerateCallLink(c *gin.Context) {
 	}
 
 	var req struct {
-		CallSessionID string `json:"call_session_id" binding:"required"`
-		ExpiresInHours int   `json:"expires_in_hours"`
-		LobbyEnabled  bool   `json:"lobby_enabled"`
+		CallSessionID  string `json:"call_session_id" binding:"required"`
+		ExpiresInHours int    `json:"expires_in_hours"`
+		LobbyEnabled   bool   `json:"lobby_enabled"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
@@ -215,13 +215,11 @@ func (h *Handler) GetCallSummary(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, result, nil)
 }
 
-// CreateCallSummary handles POST /v1/calls/:callId/summary
+// CreateCallSummary handles POST /internal/v1/calls/:callId/summary. It is
+// service-only (X-Internal-Service-Key, see RegisterRoutes): the stored row
+// is shown to every participant as the platform's AI summary, so no user
+// may write it.
 func (h *Handler) CreateCallSummary(c *gin.Context) {
-	_, ok := getUserID(c, h.log)
-	if !ok {
-		return
-	}
-
 	callID, err := uuid.Parse(c.Param("callId"))
 	if err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PARAM", "Invalid call ID", nil, nil)

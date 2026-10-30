@@ -145,3 +145,50 @@ func (s *CallStore) MarkAllParticipantsLeft(ctx context.Context, callID uuid.UUI
 	)
 	return err
 }
+
+// SignalingPair is one initiator↔participant pair of an active call whose
+// ws-gateway signaling authorization (chat-shared/callauth) is still owed.
+type SignalingPair struct {
+	CallID        uuid.UUID
+	InitiatorID   uuid.UUID
+	ParticipantID uuid.UUID
+}
+
+// maxSignalingPairs bounds one refresh sweep. Calls are capped at
+// MAX_CALL_DURATION_MINUTES and group calls are fenced, so live pairs are
+// far fewer; the bound only keeps a runaway table from stalling the sweep.
+const maxSignalingPairs = 10000
+
+// ListActiveSignalingPairs returns every initiator↔participant pair of an
+// ACTIVE call where the participant is still in the call (joined or
+// reconnecting) and the initiator has not left or been removed (audit M6).
+// An ended call, or a side that left, is not listed, so its authorization is
+// never re-armed and expires on its own if the end-of-call Clear was lost.
+func (s *CallStore) ListActiveSignalingPairs(ctx context.Context) ([]SignalingPair, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT cs.id, cs.initiator_user_id, p.user_id
+		FROM calls.call_sessions cs
+		JOIN calls.call_participants p ON p.call_session_id = cs.id
+		JOIN calls.call_participants host
+		  ON host.call_session_id = cs.id AND host.user_id = cs.initiator_user_id
+		WHERE cs.state = 'active'
+		  AND p.user_id <> cs.initiator_user_id
+		  AND p.join_state IN ('joined', 'reconnecting')
+		  AND host.join_state NOT IN ('left', 'removed')
+		ORDER BY cs.id, p.user_id
+		LIMIT $1`, maxSignalingPairs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var pairs []SignalingPair
+	for rows.Next() {
+		var p SignalingPair
+		if err := rows.Scan(&p.CallID, &p.InitiatorID, &p.ParticipantID); err != nil {
+			return nil, err
+		}
+		pairs = append(pairs, p)
+	}
+	return pairs, rows.Err()
+}

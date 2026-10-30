@@ -1,9 +1,11 @@
 package http
 
 import (
+	"crypto/subtle"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/atpost/chat-call-service/internal/service"
 	"github.com/atpost/chat-shared/api"
@@ -16,6 +18,10 @@ type Handler struct {
 	svc          *service.Service
 	log          *slog.Logger
 	callsEnabled bool
+	// internalServiceKey gates /internal/v1/calls (service-to-service
+	// writes such as the AI call summary). Empty refuses every internal
+	// request: there is no unauthenticated fallback.
+	internalServiceKey string
 }
 
 func New(svc *service.Service, log *slog.Logger) *Handler {
@@ -28,6 +34,35 @@ func New(svc *service.Service, log *slog.Logger) *Handler {
 func (h *Handler) WithCallsEnabled(enabled bool) *Handler {
 	h.callsEnabled = enabled
 	return h
+}
+
+// WithInternalServiceKey wires the shared X-Internal-Service-Key that the
+// /internal/v1/calls routes require.
+func (h *Handler) WithInternalServiceKey(key string) *Handler {
+	h.internalServiceKey = strings.TrimSpace(key)
+	return h
+}
+
+// requireInternalKey refuses any request that does not carry the configured
+// internal service key. The api-gateway never routes /internal/* from the
+// edge (internalroutes.IsInternalPath), so this is reached only in-cluster;
+// the key check makes a user JWT alone worthless here even so.
+func (h *Handler) requireInternalKey(c *gin.Context) {
+	if !internalKeyMatches(h.internalServiceKey, c.GetHeader(internalServiceKeyHeader)) {
+		api.Error(c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "internal service key required", nil, nil)
+		c.Abort()
+		return
+	}
+	c.Next()
+}
+
+// internalKeyMatches is a constant-time comparison that never accepts an
+// unconfigured (empty) key.
+func internalKeyMatches(configured, presented string) bool {
+	if configured == "" || presented == "" {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(presented), []byte(configured)) == 1
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
@@ -72,9 +107,18 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/:callId/reminders", h.SetCallReminder)
 		v1.DELETE("/:callId/reminders", h.DeleteCallReminder)
 
-		// AI summaries
+		// AI summaries. Participants read; only the AI pipeline writes, and
+		// it writes through the internal group below (audit H1: a user-facing
+		// POST let any caller forge the "AI summary" another participant sees).
 		v1.GET("/:callId/summary", h.GetCallSummary)
-		v1.POST("/:callId/summary", h.CreateCallSummary)
+	}
+
+	// Service-only routes. Not gated on callsEnabled: a summary for a call
+	// that already happened stays writable while the kill switch is off.
+	internal := r.Group("/internal/v1/calls")
+	internal.Use(h.requireInternalKey)
+	{
+		internal.POST("/:callId/summary", h.CreateCallSummary)
 	}
 }
 
@@ -450,8 +494,10 @@ func (h *Handler) handleServiceError(c *gin.Context, err error) {
 		service.ErrTargetUnavailable:
 		api.Error(c.Writer, http.StatusConflict, "CONFLICT", err.Error(), nil, nil)
 	case service.ErrCallRateLimitExceeded, service.ErrInviteRateLimitExceeded,
-		service.ErrJoinRateLimitExceeded, service.ErrRingAntiSpam:
+		service.ErrJoinRateLimitExceeded, service.ErrRingAntiSpam, service.ErrLinkLookupRateExceeded:
 		api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMIT", err.Error(), nil, nil)
+	case service.ErrLobbyNotSupported:
+		api.Error(c.Writer, http.StatusBadRequest, "LOBBY_NOT_SUPPORTED", err.Error(), nil, nil)
 	case service.ErrCallNotAllowed:
 		// ONE generic refusal for block/privacy/circle — distinguishing
 		// them would leak the callee's block state. Previously these

@@ -16,6 +16,7 @@ var (
 	ErrInviteRateLimitExceeded = errors.New("invite rate limit exceeded: max 100 invites per day")
 	ErrJoinRateLimitExceeded   = errors.New("join rate limit exceeded: max 5 joins per minute")
 	ErrRingAntiSpam            = errors.New("anti-spam: too many unanswered calls to this user, cooldown active")
+	ErrLinkLookupRateExceeded  = errors.New("call link rate limit exceeded: max 10 lookups per minute")
 	// ErrRateLimiterUnavailable surfaces when Redis itself is sick.
 	// We reject the request rather than allow it through (fail-closed)
 	// so a Redis blip can't be used to amplify spam — the trade-off
@@ -49,6 +50,13 @@ func (r *RateLimiter) CheckInviteRate(ctx context.Context, userID uuid.UUID) err
 func (r *RateLimiter) CheckJoinRate(ctx context.Context, userID uuid.UUID, callID uuid.UUID) error {
 	key := fmt.Sprintf("rl:call:join:%s:%s", userID, callID)
 	return r.checkLimit(ctx, key, 5, time.Minute)
+}
+
+// CheckLinkLookupRate enforces 10 call-link lookups/minute per user, across
+// all calls, so link tokens cannot be enumerated (audit L3).
+func (r *RateLimiter) CheckLinkLookupRate(ctx context.Context, userID uuid.UUID) error {
+	key := fmt.Sprintf("rl:call:link:%s", userID)
+	return r.checkLimitErr(ctx, key, 10, time.Minute, ErrLinkLookupRateExceeded)
 }
 
 // CheckRingAntiSpam enforces 3 unanswered calls in 5 minutes → 30 minute cooldown.
@@ -92,6 +100,22 @@ func (r *RateLimiter) CheckRingAntiSpam(ctx context.Context, callerID, targetID 
 func (r *RateLimiter) ClearRingCounter(ctx context.Context, callerID, targetID uuid.UUID) {
 	ringKey := fmt.Sprintf("rl:call:ring:%s:%s", callerID, targetID)
 	r.rdb.Del(ctx, ringKey)
+}
+
+// checkLimitErr is checkLimit with an explicit over-limit error.
+func (r *RateLimiter) checkLimitErr(ctx context.Context, key string, maxCount int64, window time.Duration, over error) error {
+	pipe := r.rdb.Pipeline()
+	incrCmd := pipe.Incr(ctx, key)
+	pipe.Expire(ctx, key, window)
+	if _, err := pipe.Exec(ctx); err != nil {
+		slog.Warn("rate limiter: checkLimit pipeline failed; failing closed",
+			"key", key, "err", err)
+		return ErrRateLimiterUnavailable
+	}
+	if incrCmd.Val() > maxCount {
+		return over
+	}
+	return nil
 }
 
 func (r *RateLimiter) checkLimit(ctx context.Context, key string, maxCount int64, window time.Duration) error {

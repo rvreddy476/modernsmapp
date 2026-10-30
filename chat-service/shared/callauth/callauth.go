@@ -18,8 +18,12 @@
 //
 // Key shape `call:auth:<lo>:<hi>` (alphabetically sorted user IDs)
 // so writers and readers don't need to agree on direction. TTL
-// bounds memory if the writer crashes without cleanup; 1 hour is
-// longer than any 1:1 call.
+// bounds memory if the writer crashes without cleanup. A call can
+// outlive the TTL (audit M6: MAX_CALL_DURATION_MINUTES is 4 h), so
+// call-service re-arms the TTL of an `active` pair with Refresh while
+// its database still shows the call active and both sides in it.
+// Refresh only extends a key that exists for the same call, so it can
+// never revive authorization that Clear removed when the call ended.
 
 package callauth
 
@@ -86,6 +90,56 @@ func Set(ctx context.Context, rdb *redis.Client, a, b uuid.UUID, callID uuid.UUI
 		return err
 	}
 	return rdb.Set(ctx, PairKey(a, b), payload, DefaultTTL).Err()
+}
+
+// refreshScript extends the TTL of KEYS[1] only when it still holds an
+// `active` tuple for call ARGV[1]. It never creates a key: once Clear has
+// run (call ended), or a different call owns the pair, nothing happens.
+// The payload is the json.Marshal of State, whose field order and quoting
+// are fixed, so plain substring matches are exact.
+var refreshScript = redis.NewScript(`
+local raw = redis.call("GET", KEYS[1])
+if not raw then
+  return 0
+end
+if not string.find(raw, ARGV[1], 1, true) then
+  return 0
+end
+if not string.find(raw, ARGV[2], 1, true) then
+  return 0
+end
+return redis.call("PEXPIRE", KEYS[1], ARGV[3])
+`)
+
+// Refresh re-arms the TTL of the pair's authorization, but only while it is
+// the `active` tuple of callID. It returns false when there was nothing to
+// extend (no key, a ringing tuple, or another call's tuple). ttl <= 0 means
+// DefaultTTL.
+func Refresh(ctx context.Context, rdb *redis.Client, a, b uuid.UUID, callID uuid.UUID, ttl time.Duration) (bool, error) {
+	if rdb == nil {
+		return false, errors.New("callauth: nil redis client")
+	}
+	if ttl <= 0 {
+		ttl = DefaultTTL
+	}
+	callField, err := json.Marshal(map[string]string{"call_id": callID.String()})
+	if err != nil {
+		return false, err
+	}
+	stateField, err := json.Marshal(map[string]string{"state": StateActive})
+	if err != nil {
+		return false, err
+	}
+	// Strip the braces: `"call_id":"<id>"` and `"state":"active"`.
+	n, err := refreshScript.Run(ctx, rdb, []string{PairKey(a, b)},
+		string(callField[1:len(callField)-1]),
+		string(stateField[1:len(stateField)-1]),
+		ttl.Milliseconds(),
+	).Int()
+	if err != nil {
+		return false, err
+	}
+	return n == 1, nil
 }
 
 // Clear removes the auth tuple. Call-service does this on CallEnded

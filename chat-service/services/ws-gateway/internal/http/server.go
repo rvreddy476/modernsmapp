@@ -10,6 +10,7 @@ import (
 	nethttp "net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/atpost/chat-shared/callauth"
@@ -40,7 +41,31 @@ type ServerOptions struct {
 	// entitled subscribe is exactly the owner-checked design this flag was
 	// waiting for — message-service validates membership and signs the room
 	// token; this gateway only verifies it.
+	//
+	// Audit L2: every scoped room is now owner-checked before a subscribe
+	// or a publish (scoped_rooms.go). The authorizers below decide; a nil
+	// one refuses its room kind outright, so turning this flag on without
+	// wiring them opens nothing.
 	EnableScopedRooms bool
+
+	// CallRoomAuthorizer admits call:<id> (subscribe_call and call room
+	// signalling) for participants still in a live call.
+	CallRoomAuthorizer ScopedRoomAuthorizer
+	// UpdateRoomAuthorizer admits update:<id> (subscribe_update).
+	UpdateRoomAuthorizer ScopedRoomAuthorizer
+	// GroupPostRoomAuthorizer admits group_post:<id> (subscribe_group_post,
+	// group_post_typing).
+	GroupPostRoomAuthorizer ScopedRoomAuthorizer
+
+	// Audit M5 (conn_limits.go). MaxConnsPerUser caps live sockets per user
+	// across replicas: zero means defaultMaxConnsPerUser, negative disables.
+	// MaxConnsPerProcess caps sockets on this replica; zero or negative is
+	// unlimited. FrameRate / FrameBurst are the per-socket inbound token
+	// bucket; zero means the defaults.
+	MaxConnsPerUser    int
+	MaxConnsPerProcess int
+	FrameRate          float64
+	FrameBurst         int
 
 	// EntitlementSecret verifies owner-issued conversation-room tokens
 	// (chat-shared/roomauth). Empty disables `conversation.subscribe`.
@@ -147,6 +172,8 @@ type Server struct {
 	// activity is the connection-counted online + last-active store.
 	activity *presence.RedisStore
 	fanout   *presenceFanout
+	// openConns counts this replica's live sockets (MaxConnsPerProcess).
+	openConns atomic.Int64
 }
 
 func NewServer(rdb *redis.Client, log *slog.Logger, opts ServerOptions) *Server {
@@ -169,6 +196,9 @@ func NewServer(rdb *redis.Client, log *slog.Logger, opts ServerOptions) *Server 
 		// reject — asymmetric DoS surface. 10 KB matches the HTTP
 		// path (8 KB + envelope overhead).
 		opts.MaxMessageSize = 10 * 1024
+	}
+	if opts.MaxConnsPerUser == 0 {
+		opts.MaxConnsPerUser = defaultMaxConnsPerUser
 	}
 
 	store := presence.NewRedisStore(rdb, presence.Options{})
@@ -248,6 +278,31 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 		return
 	}
 
+	// Audit M5: bound sockets per replica and per user BEFORE the upgrade,
+	// so a refused client gets a plain HTTP status and costs no Redis
+	// PubSub connection.
+	if !s.acquireProcessSlot() {
+		s.log.Warn("websocket refused: process connection cap", "user_id", userID, "cap", s.opts.MaxConnsPerProcess)
+		nethttp.Error(w, "too many connections", nethttp.StatusServiceUnavailable)
+		return
+	}
+	defer s.releaseProcessSlot()
+
+	connID := uuid.NewString()
+	admitted, err := s.admitUserConnection(r.Context(), userID.String(), connID, time.Now())
+	if err != nil {
+		// Fail closed: the socket needs Redis for everything it does.
+		s.log.Warn("websocket refused: connection cap check failed", "err", err, "user_id", userID)
+		nethttp.Error(w, "temporarily unavailable", nethttp.StatusServiceUnavailable)
+		return
+	}
+	if !admitted {
+		s.log.Warn("websocket refused: per-user connection cap", "user_id", userID, "cap", s.opts.MaxConnsPerUser)
+		nethttp.Error(w, "too many connections", nethttp.StatusTooManyRequests)
+		return
+	}
+	defer s.releaseUserConnection(context.Background(), userID.String(), connID)
+
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		s.log.Warn("websocket upgrade failed", "err", err, "user_id", userID)
@@ -278,7 +333,6 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	// so one closed tab no longer marks a still-connected phone offline, and
 	// last-active is stamped on connect / heartbeat / disconnect. The legacy
 	// presence:{userID} marker is still written for its readers.
-	connID := uuid.NewString()
 	becameOnline, err := s.activity.ConnectionOpened(ctx, userID.String(), connID, time.Now())
 	if err != nil {
 		s.log.Warn("failed to set presence on connect", "err", err, "user_id", userID)
@@ -423,6 +477,9 @@ func (s *Server) serveConnection(
 	// Live-room grants are per connection, so a reconnect starts empty and
 	// every subscribe on the new socket re-asks live-service-v2.
 	liveGrants := newLiveRoomGrants()
+	// Scoped rooms (call/update/group_post) the owner admitted, keyed by
+	// channel (scoped_rooms.go).
+	scopedGrants := newPostRoomGrants(scopedRoomGrantTTL)
 
 	queue := newTypingQueue()
 	typing := s.newConnTypingTracker(queue, userID, subs)
@@ -435,9 +492,9 @@ func (s *Server) serveConnection(
 	// connection left on is turned off.
 	defer typing.StopAll()
 
-	go s.readLoop(ctx, cancel, conn, pubsub, outbound, userID, subs, postGrants, liveGrants, typing, connID, bearerToken)
+	go s.readLoop(ctx, cancel, conn, pubsub, outbound, userID, subs, postGrants, liveGrants, scopedGrants, typing, connID, bearerToken)
 	go s.redisLoop(ctx, cancel, pubsub, outbound, userID, subs)
-	go s.reconcileRoomSubscriptions(ctx, pubsub, outbound, userID, subs, postGrants, liveGrants)
+	go s.reconcileRoomSubscriptions(ctx, pubsub, outbound, userID, subs, postGrants, liveGrants, scopedGrants, bearerToken)
 	s.writeLoop(ctx, cancel, conn, outbound, userID)
 
 	_ = conn.Close()
@@ -455,7 +512,7 @@ func (s *Server) serveConnection(
 // tick (P-8 e, postrooms.go): those are re-asked of post-service over HTTP,
 // so they get the 5-minute cadence and a per-sweep bound rather than the
 // 30-second Redis sweep.
-func (s *Server) reconcileRoomSubscriptions(ctx context.Context, pubsub *redis.PubSub, outbound chan<- []byte, userID uuid.UUID, subs *roomSubscriptions, postGrants, liveGrants *postRoomGrants) {
+func (s *Server) reconcileRoomSubscriptions(ctx context.Context, pubsub *redis.PubSub, outbound chan<- []byte, userID uuid.UUID, subs *roomSubscriptions, postGrants, liveGrants, scopedGrants *postRoomGrants, bearerToken string) {
 	interval := s.opts.SubscriptionReconcileInterval
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -498,6 +555,10 @@ func (s *Server) reconcileRoomSubscriptions(ctx context.Context, pubsub *redis.P
 				// the gateway never renews on its own (hidden_chats.go).
 				offer(outbound, subscriptionFrame("subscription_expired", convID, ""))
 			}
+			// Scoped rooms (audit L2): re-ask the owner for every held
+			// call/update/group_post room on the same tick as the grant TTL.
+			evicted := s.recheckScopedRooms(ctx, scopedGrants, userID, bearerToken, time.Now(), scopedRoomRecheckBatch)
+			s.evictScopedRooms(ctx, pubsub, outbound, userID, evicted)
 		case <-postTicker.C:
 			if !s.opts.EnablePostRooms {
 				continue
@@ -564,8 +625,14 @@ var roomSignalingTypes = map[string]bool{
 	"call_recording_stopped":   true,
 }
 
-func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, pubsub *redis.PubSub, outbound chan<- []byte, userID uuid.UUID, subs *roomSubscriptions, postGrants, liveGrants *postRoomGrants, typing *typingTracker, connID string, bearerToken string) {
+func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, pubsub *redis.PubSub, outbound chan<- []byte, userID uuid.UUID, subs *roomSubscriptions, postGrants, liveGrants, scopedGrants *postRoomGrants, typing *typingTracker, connID string, bearerToken string) {
 	defer cancel()
+
+	// Audit M5: per-socket inbound token bucket. Every frame costs at
+	// least a JSON parse and most cost Redis round trips (signalling is a
+	// GET plus a PUBLISH), so a flood is dropped before any of that.
+	limiter := newFrameLimiter(s.opts.FrameRate, s.opts.FrameBurst, time.Now())
+	var dropped int
 
 	conn.SetReadLimit(s.opts.MaxMessageSize)
 	_ = conn.SetReadDeadline(time.Now().Add(s.opts.PongWait))
@@ -574,6 +641,7 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 		// and last-active on every pong, so a missed disconnect is bounded
 		// by GlobalUserTTL (90s). ~once every 54s per connection.
 		_ = s.activity.ConnectionHeartbeat(ctx, userID.String(), connID, time.Now())
+		s.refreshUserConnection(ctx, userID.String(), connID, time.Now())
 		return conn.SetReadDeadline(time.Now().Add(s.opts.PongWait))
 	})
 
@@ -586,6 +654,14 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 			return
 		}
 		if len(raw) == 0 {
+			continue
+		}
+		if !limiter.allow(time.Now()) {
+			dropped++
+			if dropped == 1 || dropped%500 == 0 {
+				s.log.Warn("websocket inbound frame rate exceeded; dropping",
+					"user_id", userID, "dropped", dropped)
+			}
 			continue
 		}
 
@@ -717,17 +793,19 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 			continue
 		case "subscribe_call":
 			callID, _ := envelope["call_id"].(string)
-			if callID != "" {
-				channel := fmt.Sprintf("call:%s", callID)
-				if err := pubsub.Subscribe(ctx, channel); err != nil {
-					s.log.Warn("call room subscribe failed", "err", err, "user_id", userID, "call_id", callID)
-				}
+			channel, ok := s.mayUseScopedRoom(ctx, scopedGrants, scopedRoomCall, userID, bearerToken, callID, time.Now())
+			if !ok {
+				s.log.Info("call room subscribe refused", "user_id", userID, "call_id", callID)
+				continue
+			}
+			if err := pubsub.Subscribe(ctx, channel); err != nil {
+				s.log.Warn("call room subscribe failed", "err", err, "user_id", userID, "call_id", callID)
 			}
 			continue
 		case "unsubscribe_call":
 			callID, _ := envelope["call_id"].(string)
-			if callID != "" {
-				channel := fmt.Sprintf("call:%s", callID)
+			if channel, ok := scopedRoomChannel(scopedRoomCall, callID); ok {
+				scopedGrants.revoke(channel)
 				if err := pubsub.Unsubscribe(ctx, channel); err != nil {
 					s.log.Warn("call room unsubscribe failed", "err", err, "user_id", userID, "call_id", callID)
 				}
@@ -750,17 +828,19 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 			continue
 		case "subscribe_update":
 			updateID, _ := envelope["update_id"].(string)
-			if updateID != "" {
-				channel := fmt.Sprintf("update:%s", updateID)
-				if err := pubsub.Subscribe(ctx, channel); err != nil {
-					s.log.Warn("update room subscribe failed", "err", err, "user_id", userID, "update_id", updateID)
-				}
+			channel, ok := s.mayUseScopedRoom(ctx, scopedGrants, scopedRoomUpdate, userID, bearerToken, updateID, time.Now())
+			if !ok {
+				s.log.Info("update room subscribe refused", "user_id", userID, "update_id", updateID)
+				continue
+			}
+			if err := pubsub.Subscribe(ctx, channel); err != nil {
+				s.log.Warn("update room subscribe failed", "err", err, "user_id", userID, "update_id", updateID)
 			}
 			continue
 		case "unsubscribe_update":
 			updateID, _ := envelope["update_id"].(string)
-			if updateID != "" {
-				channel := fmt.Sprintf("update:%s", updateID)
+			if channel, ok := scopedRoomChannel(scopedRoomUpdate, updateID); ok {
+				scopedGrants.revoke(channel)
 				if err := pubsub.Unsubscribe(ctx, channel); err != nil {
 					s.log.Warn("update room unsubscribe failed", "err", err, "user_id", userID, "update_id", updateID)
 				}
@@ -768,25 +848,30 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 			continue
 		case "subscribe_group_post":
 			postID, _ := envelope["post_id"].(string)
-			if postID != "" {
-				channel := fmt.Sprintf("group_post:%s", postID)
-				if err := pubsub.Subscribe(ctx, channel); err != nil {
-					s.log.Warn("group post room subscribe failed", "err", err, "user_id", userID, "post_id", postID)
-				}
+			channel, ok := s.mayUseScopedRoom(ctx, scopedGrants, scopedRoomGroupPost, userID, bearerToken, postID, time.Now())
+			if !ok {
+				s.log.Info("group post room subscribe refused", "user_id", userID, "post_id", postID)
+				continue
+			}
+			if err := pubsub.Subscribe(ctx, channel); err != nil {
+				s.log.Warn("group post room subscribe failed", "err", err, "user_id", userID, "post_id", postID)
 			}
 			continue
 		case "unsubscribe_group_post":
 			postID, _ := envelope["post_id"].(string)
-			if postID != "" {
-				channel := fmt.Sprintf("group_post:%s", postID)
+			if channel, ok := scopedRoomChannel(scopedRoomGroupPost, postID); ok {
+				scopedGrants.revoke(channel)
 				if err := pubsub.Unsubscribe(ctx, channel); err != nil {
 					s.log.Warn("group post room unsubscribe failed", "err", err, "user_id", userID, "post_id", postID)
 				}
 			}
 			continue
 		case "group_post_typing":
-			postID, _ := envelope["post_id"].(string)
-			if postID != "" {
+			rawPostID, _ := envelope["post_id"].(string)
+			// Publishing into a room needs the same owner yes as joining it.
+			channel, ok := s.mayUseScopedRoom(ctx, scopedGrants, scopedRoomGroupPost, userID, bearerToken, rawPostID, time.Now())
+			if ok {
+				postID := strings.TrimPrefix(channel, scopedRoomGroupPost+":")
 				// Broadcast "someone is typing" to the group post room. NO identity:
 				// the author of an anonymous group post is masked on every other
 				// surface, and this gateway cannot know which posts are anonymous,
@@ -794,7 +879,6 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 				// their id leaked. Client-supplied fields are dropped too, so a
 				// sender cannot smuggle an id in.
 				relay := groupPostTypingFrame(postID)
-				channel := fmt.Sprintf("group_post:%s", postID)
 				if pubErr := s.rdb.Publish(ctx, channel, string(relay)).Err(); pubErr != nil {
 					s.log.Warn("group post typing relay failed", "err", pubErr, "user_id", userID, "post_id", postID)
 				}
@@ -849,11 +933,14 @@ func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *
 		// Room signaling: broadcast to all call participants via call:{callID}
 		if roomSignalingTypes[msgType] {
 			callID, _ := envelope["call_id"].(string)
-			if callID == "" {
+			// Audit L2: only a participant the call's owner vouches for
+			// may publish into its room.
+			roomChannel, allowed := s.mayUseScopedRoom(ctx, scopedGrants, scopedRoomCall, userID, bearerToken, callID, time.Now())
+			if !allowed {
+				s.log.Info("call room signalling refused", "user_id", userID, "call_id", callID, "type", msgType)
 				continue
 			}
-			channel := fmt.Sprintf("call:%s", callID)
-			if pubErr := s.rdb.Publish(ctx, channel, string(relay)).Err(); pubErr != nil {
+			if pubErr := s.rdb.Publish(ctx, roomChannel, string(relay)).Err(); pubErr != nil {
 				s.log.Warn("call room relay failed", "err", pubErr, "user_id", userID, "call_id", callID)
 			}
 			continue

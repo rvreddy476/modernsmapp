@@ -105,6 +105,15 @@ func main() {
 		EntitlementFetcher: httpapi.NewHTTPEntitlementFetcher(cfg.MessageServiceURL, nil),
 		PresencePeers:      presencePeers,
 		PresenceVisibility: presenceVisibility,
+		// Audit M5: socket and inbound-frame bounds.
+		MaxConnsPerUser:    cfg.WSMaxConnsPerUser,
+		MaxConnsPerProcess: cfg.WSMaxConnsPerProcess,
+		FrameRate:          float64(cfg.WSFrameRate),
+		FrameBurst:         cfg.WSFrameBurst,
+		// Audit L2: owner check for call:<id> rooms. EnableScopedRooms is
+		// still not set, so this is dormant; update/group_post rooms have no
+		// owner route yet and stay refused even if the flag is turned on.
+		CallRoomAuthorizer: callRoomAuthorizer(cfg.CallServiceURL),
 	})
 	logger.Info("realtime rooms", "post_rooms", cfg.PostRoomsEnabled, "live_rooms", cfg.LiveRoomsEnabled, "conversation_frames", cfg.ConversationFramesEnabled)
 
@@ -130,4 +139,13 @@ func main() {
 		logger.Error("failed to run ws-gateway", "err", err)
 		os.Exit(1)
 	}
+}
+
+// callRoomAuthorizer is nil (refuse every call room) when no call-service
+// URL is configured.
+func callRoomAuthorizer(baseURL string) httpapi.ScopedRoomAuthorizer {
+	if baseURL == "" {
+		return nil
+	}
+	return httpapi.NewHTTPCallRoomAuthorizer(baseURL, nil)
 }

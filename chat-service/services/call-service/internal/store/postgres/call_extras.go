@@ -39,17 +39,18 @@ type CallSummary struct {
 // Call Links
 // ---------------------------------------------------------------------------
 
-// CreateCallLink generates a shareable token and sets it on the call session.
-// Returns the generated token.
-func (s *CallStore) CreateCallLink(ctx context.Context, callSessionID uuid.UUID, expiresAt time.Time, lobbyEnabled bool) (string, error) {
-	token := uuid.New().String()[:8]
+// CreateCallLink sets the caller-minted token on the call session and returns
+// it ("" when the session does not exist). The service mints the token from
+// crypto/rand; lobby_enabled is always written false because no lobby is
+// enforced (the service refuses a request for one).
+func (s *CallStore) CreateCallLink(ctx context.Context, callSessionID uuid.UUID, token string, expiresAt time.Time) (string, error) {
 	var result string
 	err := s.db.QueryRow(ctx, `
 		UPDATE calls.call_sessions
-		SET link_token = $1, link_expires_at = $2, lobby_enabled = $3
-		WHERE id = $4
+		SET link_token = $1, link_expires_at = $2, lobby_enabled = FALSE
+		WHERE id = $3
 		RETURNING link_token`,
-		token, expiresAt, lobbyEnabled, callSessionID,
+		token, expiresAt, callSessionID,
 	).Scan(&result)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", nil

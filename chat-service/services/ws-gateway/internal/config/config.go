@@ -61,6 +61,20 @@ type Config struct {
 	PresenceFanoutEnabled bool
 	ChatPostgresDSN       string
 	GraphServiceURL       string
+
+	// Audit M5 connection and frame limits (see internal/http/conn_limits.go).
+	// WS_MAX_CONNS_PER_USER: live sockets per user across replicas (default
+	// 10, negative disables). WS_MAX_CONNS_PER_PROCESS: sockets on one
+	// replica (default 5000, 0 = unlimited). WS_FRAME_RATE / WS_FRAME_BURST:
+	// inbound frames per socket per second and burst (default 20 / 60).
+	WSMaxConnsPerUser    int
+	WSMaxConnsPerProcess int
+	WSFrameRate          int
+	WSFrameBurst         int
+
+	// CallServiceURL is the owner check for call:<id> rooms (audit L2). Used
+	// only when scoped rooms are enabled; empty refuses every call room.
+	CallServiceURL string
 }
 
 func (c *Config) ValidateProduction(production bool) error {
@@ -113,6 +127,11 @@ func Load() *Config {
 		PresenceFanoutEnabled:     getEnvBool("WS_PRESENCE_FANOUT_ENABLED", true),
 		ChatPostgresDSN:           getEnv("CHAT_POSTGRES_DSN", ""),
 		GraphServiceURL:           getEnv("GRAPH_SERVICE_URL", "http://graph-service:8083"),
+		WSMaxConnsPerUser:         int(getEnvInt64("WS_MAX_CONNS_PER_USER", 10)),
+		WSMaxConnsPerProcess:      int(getEnvInt64("WS_MAX_CONNS_PER_PROCESS", 5000)),
+		WSFrameRate:               int(getEnvInt64("WS_FRAME_RATE", 20)),
+		WSFrameBurst:              int(getEnvInt64("WS_FRAME_BURST", 60)),
+		CallServiceURL:            getEnv("CALL_SERVICE_URL", ""),
 	}
 }
 
