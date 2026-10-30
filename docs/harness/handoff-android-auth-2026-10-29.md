@@ -90,3 +90,34 @@ paging/media modules they use. The audit with exact lines is
    ~556-568).
 
 Unit tests for each; report the `android.sh --full` RESULT block.
+
+---
+
+## Third Android lane: reels (30 Oct 2026)
+
+Run after the feed lane. Scope: the Android reels modules (player, pager,
+create/upload flow, studio preview, chat shared-reels viewer). The audit with
+exact lines is `docs/harness/audit-2026-10-30-reels-create-android.md`
+(Android section). Also check playback against the server change that
+lengthens HLS segment signatures; until it ships, re-prepare on a 403. Fix:
+
+1. **Reel upload stuck on "Preparing" after process death.** The Photo Picker
+   grant is gone, the first URI lookup throws `SecurityException`
+   (`MediaSourceResolver.kt` ~37-38, ~52-53; `ReelPublishStore.kt` ~318;
+   `ReelPublishPipeline.kt` ~120-126), and the worker crashes on every launch,
+   cancelling the publishes behind it. Catch lookup errors and end the step
+   as unreadable with a message; copy the video (or keep a lasting permission)
+   before queueing; wrap the worker run in a catch-all that records a failure.
+2. **Chat shared-reels viewer** (`SharedReelsViewer.kt` ~163-167, ~177;
+   `MediaModule.kt` ~124): the first reel never starts (play before the player
+   exists, no tap-to-play), reels are always muted (volume 0 never raised),
+   and playback doesn't pause in the background.
+3. **Reel studio preview keeps playing with sound in the background**
+   (`ReelPreviewPlayer.kt` ~32, `ReelStudioScreen.kt` ~165-167): pause on stop.
+4. **Reels comes back frozen after backgrounding** (`ReelsScreen.kt`
+   ~1834-1851, ~1135): resume on start, or show the play glyph so one tap plays.
+5. **Small uploads (<100 MB) aren't resumed or retried**
+   (`ReelMediaUploads.kt` ~97-126): retry transient network failures
+   automatically, and don't re-upload the whole file when only confirm failed.
+
+Unit tests for each; report the `android.sh --full` RESULT block.
