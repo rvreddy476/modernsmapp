@@ -134,15 +134,28 @@ func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID
 	// order was quoted and paid for, its sealed snapshot, never the live
 	// saved address the buyer can edit after payment. Opened, not read from
 	// plaintext: after the PII cutover the plaintext columns are ''.
+	//
+	// An order with neither a snapshot nor an address row books with an
+	// empty drop address, exactly as before M5: a seller shipping with their
+	// own carrier (manual courier) needs none, and a courier integration
+	// that does need one refuses the booking itself. Any other failure, in
+	// particular a snapshot that cannot be opened, refuses here and never
+	// falls back to the editable live row.
+	var dropAddr courier.Address
 	addr, err := s.orderFulfilmentAddress(ctx, order)
-	if err != nil {
+	switch {
+	case err == nil:
+		dropAddr = courier.Address{
+			Name: addr.ContactName, Phone: addr.Phone,
+			Line1: addr.AddressLine1, Line2: addr.AddressLine2,
+			City: addr.City, State: addr.State,
+			Postal: addr.PostalCode, Country: addr.Country,
+		}
+	case errors.Is(err, errOrderHasNoAddress):
+		slog.Warn("shipment: order has no delivery address; booking without a drop address",
+			"order_id", order.ID)
+	default:
 		return nil, fmt.Errorf("delivery address: %w", err)
-	}
-	dropAddr := courier.Address{
-		Name: addr.ContactName, Phone: addr.Phone,
-		Line1: addr.AddressLine1, Line2: addr.AddressLine2,
-		City: addr.City, State: addr.State,
-		Postal: addr.PostalCode, Country: addr.Country,
 	}
 
 	// Group items by seller. Stable order: first occurrence wins so
