@@ -141,17 +141,17 @@ func (s *Service) requireGroupRole(ctx context.Context, conversationID, actorID 
 		return nil, "", err
 	}
 	if conv == nil {
-		return nil, "", errors.New("conversation not found")
+		return nil, "", notFound("conversation not found")
 	}
 	if conv.Type != "group" {
-		return nil, "", errors.New("not a group conversation")
+		return nil, "", invalidInput("not a group conversation")
 	}
 	role, err := s.convStore.GetMemberRole(ctx, conversationID, actorID)
 	if err != nil {
 		return nil, "", err
 	}
 	if role == "" {
-		return nil, "", errors.New("not a conversation member")
+		return nil, "", ErrNotMember
 	}
 	for _, allowed := range roles {
 		if role == allowed {
@@ -310,13 +310,13 @@ type CreateGroupResult struct {
 func (s *Service) CreateGroupWithPolicy(ctx context.Context, creatorID uuid.UUID, title string, memberIDs []uuid.UUID, idempotencyKey string) (*CreateGroupResult, error) {
 	title = strings.TrimSpace(title)
 	if title == "" {
-		return nil, errors.New("group title is required")
+		return nil, invalidInput("group title is required")
 	}
 	if utf8.RuneCountInString(title) > groupTitleMaxRunes {
-		return nil, fmt.Errorf("group title exceeds %d characters", groupTitleMaxRunes)
+		return nil, invalidInputf("group title exceeds %d characters", groupTitleMaxRunes)
 	}
 	if len(memberIDs) < 1 {
-		return nil, errors.New("at least one other member is required")
+		return nil, invalidInput("at least one other member is required")
 	}
 	if len(memberIDs) >= GroupMemberCap {
 		return nil, postgres.ErrGroupFull
@@ -456,7 +456,7 @@ func (s *Service) RemoveMemberGoverned(ctx context.Context, actorID, conversatio
 			if armErr := s.settleRevocation(ctx, conversationID, targetID, gen, false); armErr != nil {
 				return armErr
 			}
-			return errors.New("target user is not a conversation member")
+			return invalidInput("target user is not a conversation member")
 		}
 		return err
 	}
@@ -486,10 +486,10 @@ func (s *Service) LeaveConversation(ctx context.Context, userID, conversationID 
 		return err
 	}
 	if conv == nil {
-		return errors.New("conversation not found")
+		return notFound("conversation not found")
 	}
 	if conv.Type != "group" {
-		return errors.New("leave applies to group conversations")
+		return invalidInput("leave applies to group conversations")
 	}
 	// Role, member count and the sever are one store transaction (P0-5): a
 	// join that lands between an advisory count and the sever would let the
@@ -535,7 +535,7 @@ func (s *Service) TransferOwnershipGoverned(ctx context.Context, actorID, conver
 		return err
 	}
 	if actorID == newOwnerID {
-		return errors.New("you already own this group")
+		return invalidInput("you already own this group")
 	}
 	if err := s.groupStore().TransferOwnership(ctx, conversationID, actorID, newOwnerID); err != nil {
 		return err
@@ -555,14 +555,14 @@ func (s *Service) SetMemberRoleGoverned(ctx context.Context, actorID, conversati
 		return err
 	}
 	if targetID == actorID {
-		return errors.New("use ownership transfer to change the owner")
+		return invalidInput("use ownership transfer to change the owner")
 	}
 	oldRole, err := s.convStore.GetMemberRole(ctx, conversationID, targetID)
 	if err != nil {
 		return err
 	}
 	if oldRole == "" {
-		return errors.New("target user is not a conversation member")
+		return invalidInput("target user is not a conversation member")
 	}
 	if oldRole == role {
 		return nil // idempotent
@@ -598,17 +598,17 @@ func (s *Service) UpdateGroupInfoGoverned(ctx context.Context, actorID, conversa
 	if title != nil {
 		trimmed := strings.TrimSpace(*title)
 		if trimmed == "" {
-			return errors.New("group title cannot be empty")
+			return invalidInput("group title cannot be empty")
 		}
 		if utf8.RuneCountInString(trimmed) > groupTitleMaxRunes {
-			return fmt.Errorf("group title exceeds %d characters", groupTitleMaxRunes)
+			return invalidInputf("group title exceeds %d characters", groupTitleMaxRunes)
 		}
 		title = &trimmed
 	}
 	if description != nil {
 		trimmed := strings.TrimSpace(*description)
 		if utf8.RuneCountInString(trimmed) > groupDescriptionMaxRunes {
-			return fmt.Errorf("group description exceeds %d characters", groupDescriptionMaxRunes)
+			return invalidInputf("group description exceeds %d characters", groupDescriptionMaxRunes)
 		}
 		description = &trimmed
 	}
@@ -650,17 +650,17 @@ func (s *Service) AcceptGroupInvitation(ctx context.Context, userID, invitationI
 		return err
 	}
 	if inv == nil {
-		return errors.New("invitation not found")
+		return notFound("invitation not found")
 	}
 	if inv.InviteeID != userID {
-		return errors.New("only the invitee can accept this invitation")
+		return forbidden("only the invitee can accept this invitation")
 	}
 	switch inv.Status {
 	case "accepted":
 		return nil // idempotent
 	case "pending":
 	default:
-		return fmt.Errorf("invitation is %s", inv.Status)
+		return conflictf("invitation is %s", inv.Status)
 	}
 
 	// Roster block check at ACCEPT time (P0-5): the roster may have gained a
@@ -670,7 +670,7 @@ func (s *Service) AcceptGroupInvitation(ctx context.Context, userID, invitationI
 		return err
 	}
 	if blocked {
-		return errors.New("this group cannot be joined")
+		return ErrInviteJoinBlocked
 	}
 
 	// Membership FIRST, then the status flip: a crash between the two leaves
@@ -707,16 +707,16 @@ func (s *Service) DeclineGroupInvitation(ctx context.Context, userID, invitation
 		return err
 	}
 	if inv == nil {
-		return errors.New("invitation not found")
+		return notFound("invitation not found")
 	}
 	if inv.InviteeID != userID {
-		return errors.New("only the invitee can decline this invitation")
+		return forbidden("only the invitee can decline this invitation")
 	}
 	if inv.Status == "declined" {
 		return nil
 	}
 	if inv.Status != "pending" {
-		return fmt.Errorf("invitation is %s", inv.Status)
+		return conflictf("invitation is %s", inv.Status)
 	}
 	if _, err := s.groupStore().ResolveGroupInvitation(ctx, invitationID, "declined"); err != nil {
 		return err

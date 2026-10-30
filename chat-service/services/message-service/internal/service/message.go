@@ -14,7 +14,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/atpost/chat-message-service/internal/purge"
 	"github.com/atpost/chat-message-service/internal/ratelimit"
 	"github.com/atpost/chat-message-service/internal/store/postgres"
 	"github.com/atpost/chat-message-service/internal/store/scylla"
@@ -393,7 +392,7 @@ func (s *Service) GetConversationPresence(ctx context.Context, userID, convID uu
 		return nil, err
 	}
 	if !ok {
-		return nil, errors.New("not a member of this conversation")
+		return nil, ErrNotMember
 	}
 
 	const smallGroupCap = 100
@@ -498,7 +497,7 @@ func (s *Service) checkRateLimit(ctx context.Context, limit ratelimit.Limit, use
 
 func (s *Service) CreateDirectConversation(ctx context.Context, userID, otherID uuid.UUID, idempotencyKey string) (*ConversationResponse, error) {
 	if userID == otherID {
-		return nil, errors.New("cannot create conversation with self")
+		return nil, invalidInput("cannot create conversation with self")
 	}
 
 	// The ACTOR's own chat pause blocks new conversations they initiate
@@ -634,10 +633,10 @@ func (s *Service) CreateDirectConversation(ctx context.Context, userID, otherID 
 func (s *Service) CreateDatingMatchConversation(ctx context.Context, userA, userB, matchID uuid.UUID, opts DatingMatchOptions) (*ConversationResponse, error) {
 	firstMovers := opts.FirstMovers
 	if userA == userB {
-		return nil, errors.New("dating-match conversation requires two distinct users")
+		return nil, invalidInput("dating-match conversation requires two distinct users")
 	}
 	if matchID == uuid.Nil {
-		return nil, errors.New("match_id is required")
+		return nil, invalidInput("match_id is required")
 	}
 	if err := validateFirstMovers(userA, userB, firstMovers); err != nil {
 		return nil, err
@@ -669,7 +668,7 @@ func (s *Service) CreateDatingMatchConversation(ctx context.Context, userA, user
 // match.closed / match.expired lands.
 func (s *Service) CloseDatingMatchConversation(ctx context.Context, matchID uuid.UUID) error {
 	if matchID == uuid.Nil {
-		return errors.New("match_id is required")
+		return invalidInput("match_id is required")
 	}
 	return s.convStore.MarkConversationClosedByMatch(ctx, matchID)
 }
@@ -684,7 +683,7 @@ func (s *Service) CloseDatingMatchConversation(ctx context.Context, matchID uuid
 // fails closed on them.
 func (s *Service) HasOpenDatingMatch(ctx context.Context, userA, userB uuid.UUID) (bool, error) {
 	if userA == uuid.Nil || userB == uuid.Nil {
-		return false, errors.New("two user ids are required")
+		return false, invalidInput("two user ids are required")
 	}
 	if userA == userB {
 		return false, nil
@@ -750,10 +749,10 @@ func (s *Service) checkMessagePermission(ctx context.Context, actorID, targetID 
 
 func (s *Service) CreateGroupConversation(ctx context.Context, userID uuid.UUID, title string, memberIDs []uuid.UUID, idempotencyKey string) (*ConversationResponse, error) {
 	if title == "" {
-		return nil, errors.New("group title is required")
+		return nil, invalidInput("group title is required")
 	}
 	if len(memberIDs) < 1 {
-		return nil, errors.New("at least one other member is required")
+		return nil, invalidInput("at least one other member is required")
 	}
 
 	req := struct {
@@ -794,7 +793,7 @@ func (s *Service) GetConversation(ctx context.Context, userID, conversationID uu
 		return nil, err
 	}
 	if !ok {
-		return nil, errors.New("not a conversation member")
+		return nil, ErrNotMember
 	}
 	return s.getConversationResponseFor(ctx, userID, conversationID)
 }
@@ -884,10 +883,10 @@ func (s *Service) AddMember(ctx context.Context, userID, conversationID, targetU
 		return err
 	}
 	if conv == nil {
-		return errors.New("conversation not found")
+		return notFound("conversation not found")
 	}
 	if conv.Type != "group" {
-		return errors.New("can only add members to group conversations")
+		return invalidInput("can only add members to group conversations")
 	}
 
 	role, err := s.convStore.GetMemberRole(ctx, conversationID, userID)
@@ -895,14 +894,14 @@ func (s *Service) AddMember(ctx context.Context, userID, conversationID, targetU
 		return err
 	}
 	if role != "admin" {
-		return errors.New("only admins can add members")
+		return forbidden("only admins can add members")
 	}
 	targetIsMember, err := s.convStore.CheckMembership(ctx, conversationID, targetUserID)
 	if err != nil {
 		return err
 	}
 	if targetIsMember {
-		return errors.New("user is already a conversation member")
+		return conflict("user is already a conversation member")
 	}
 
 	// Blocker-2 final correction: even this legacy (currently unrouted)
@@ -935,7 +934,7 @@ func (s *Service) ManagedAddGroupMember(ctx context.Context, conversationID, use
 		return err
 	}
 	if conversation == nil || conversation.Type != "group" {
-		return errors.New("managed group conversation not found")
+		return notFound("managed group conversation not found")
 	}
 	// Blocker-2 final correction: the legacy AddMember took no conversation
 	// lock, so a managed add could race a removal outside the generation
@@ -953,7 +952,7 @@ func (s *Service) ManagedRemoveGroupMember(ctx context.Context, conversationID, 
 		return err
 	}
 	if conversation == nil || conversation.Type != "group" {
-		return errors.New("managed group conversation not found")
+		return notFound("managed group conversation not found")
 	}
 	// Final-verification P0-4: this path severed through the legacy store
 	// and acknowledged success with no revocation, leaving the removed
@@ -968,24 +967,24 @@ func (s *Service) RemoveMember(ctx context.Context, userID, conversationID, targ
 		return err
 	}
 	if conv == nil {
-		return errors.New("conversation not found")
+		return notFound("conversation not found")
 	}
 	if conv.Type != "group" {
-		return errors.New("can only remove members from group conversations")
+		return invalidInput("can only remove members from group conversations")
 	}
 	requesterIsMember, err := s.convStore.CheckMembership(ctx, conversationID, userID)
 	if err != nil {
 		return err
 	}
 	if !requesterIsMember {
-		return errors.New("not a conversation member")
+		return ErrNotMember
 	}
 	targetIsMember, err := s.convStore.CheckMembership(ctx, conversationID, targetUserID)
 	if err != nil {
 		return err
 	}
 	if !targetIsMember {
-		return errors.New("target user is not a conversation member")
+		return invalidInput("target user is not a conversation member")
 	}
 	targetRole, err := s.convStore.GetMemberRole(ctx, conversationID, targetUserID)
 	if err != nil {
@@ -999,7 +998,7 @@ func (s *Service) RemoveMember(ctx context.Context, userID, conversationID, targ
 			return err
 		}
 		if role != "admin" {
-			return errors.New("only admins can remove other members")
+			return forbidden("only admins can remove other members")
 		}
 	}
 	if targetRole == "admin" {
@@ -1014,7 +1013,7 @@ func (s *Service) RemoveMember(ctx context.Context, userID, conversationID, targ
 			}
 		}
 		if adminCount <= 1 {
-			return errors.New("cannot remove the last admin")
+			return conflict("cannot remove the last admin")
 		}
 	}
 
@@ -1041,10 +1040,10 @@ func (s *Service) UpdateTitle(ctx context.Context, userID, conversationID uuid.U
 		return err
 	}
 	if conv == nil {
-		return errors.New("conversation not found")
+		return notFound("conversation not found")
 	}
 	if conv.Type != "group" {
-		return errors.New("can only update title of group conversations")
+		return invalidInput("can only update title of group conversations")
 	}
 
 	role, err := s.convStore.GetMemberRole(ctx, conversationID, userID)
@@ -1052,7 +1051,7 @@ func (s *Service) UpdateTitle(ctx context.Context, userID, conversationID uuid.U
 		return err
 	}
 	if role != "admin" {
-		return errors.New("only admins can update title")
+		return forbidden("only admins can update title")
 	}
 
 	return s.convStore.UpdateTitle(ctx, conversationID, title)
@@ -1097,27 +1096,11 @@ func (s *Service) SendMessage(ctx context.Context, userID, conversationID uuid.U
 	})
 }
 
-// SendRich is the one send pipeline (chat parity §2.1): SendMessage is the
-// legacy positional wrapper. Every gate below applies to every type.
-func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID, in SendInput) (*MessageResponse, error) {
-	msgType, text, mediaID, postID, replyTo, idempotencyKey := in.Type, in.Text, in.MediaID, in.PostID, in.ReplyTo, in.IdempotencyKey
-	if strings.TrimSpace(idempotencyKey) == "" {
-		return nil, ErrIdempotencyKeyRequired
-	}
-	if err := validateSendInput(in); err != nil {
-		return nil, err
-	}
-	// A post card runs every gate below unchanged — membership (blocks sever
-	// it), chat pause on either side, dating closure / first move, rate limit
-	// and the message-request rules. Who-can-message was decided when the
-	// conversation was opened; a post is just another message in it.
-	ok, err := s.convStore.CheckMembership(ctx, conversationID, userID)
-	if err != nil {
-		return nil, err
-	}
-	if !ok {
-		return nil, errors.New("not a conversation member")
-	}
+// contentGates are the send gates that apply to anything a member puts in
+// front of the others, so a send and an edit (H2) refuse the same things.
+// The caller has already checked membership. It returns the conversation's
+// dating meta for the first-move gate.
+func (s *Service) contentGates(ctx context.Context, userID, conversationID uuid.UUID) (*postgres.ConversationMeta, error) {
 	// Chat pause (directive §3.2, P0-1 correction): a paused SENDER sends
 	// nothing; a paused direct RECIPIENT receives nothing new. Both read the
 	// LOCAL policy projection — no HTTP on the hot path when the projection
@@ -1164,6 +1147,35 @@ func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID
 				return nil, ErrMessagingNotAllowed
 			}
 		}
+	}
+
+	return meta, nil
+}
+
+// SendRich is the one send pipeline (chat parity §2.1): SendMessage is the
+// legacy positional wrapper. Every gate below applies to every type.
+func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID, in SendInput) (*MessageResponse, error) {
+	msgType, text, mediaID, postID, replyTo, idempotencyKey := in.Type, in.Text, in.MediaID, in.PostID, in.ReplyTo, in.IdempotencyKey
+	if strings.TrimSpace(idempotencyKey) == "" {
+		return nil, ErrIdempotencyKeyRequired
+	}
+	if err := validateSendInput(in); err != nil {
+		return nil, err
+	}
+	// A post card runs every gate below unchanged — membership (blocks sever
+	// it), chat pause on either side, dating closure / first move, rate limit
+	// and the message-request rules. Who-can-message was decided when the
+	// conversation was opened; a post is just another message in it.
+	ok, err := s.convStore.CheckMembership(ctx, conversationID, userID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrNotMember
+	}
+	meta, err := s.contentGates(ctx, userID, conversationID)
+	if err != nil {
+		return nil, err
 	}
 
 	req := struct {
@@ -1282,8 +1294,8 @@ func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID
 				if containsLink(text) {
 					return nil, fmt.Errorf("%w: links are not allowed", ErrRequestFirstMessageInvalid)
 				}
-				if utf8.RuneCountInString(text) > 500 {
-					return nil, fmt.Errorf("%w: exceeds 500 characters", ErrRequestFirstMessageInvalid)
+				if utf8.RuneCountInString(text) > requestFirstMessageMaxRunes {
+					return nil, fmt.Errorf("%w: exceeds %d characters", ErrRequestFirstMessageInvalid, requestFirstMessageMaxRunes)
 				}
 				firstRequestMessage = true
 			}
@@ -1488,7 +1500,7 @@ func (s *Service) GetMessages(ctx context.Context, userID, conversationID uuid.U
 		return nil, nil, err
 	}
 	if !ok {
-		return nil, nil, errors.New("not a conversation member")
+		return nil, nil, ErrNotMember
 	}
 
 	messages, nextCursor, err := s.msgStore.GetMessages(ctx, conversationID, cursor, limit)
@@ -1613,37 +1625,49 @@ func (s *Service) EditMessage(
 ) (*scylla.Message, error) {
 	newText = strings.TrimSpace(newText)
 	if newText == "" {
-		return nil, errors.New("message text is required")
+		return nil, invalidInput("message text is required")
 	}
-	// Deliberately no length cap here: the send path has none either (the
-	// 500-rune rule applies only to a first message in a request), and a
-	// limit on edit that send does not enforce would strand long messages.
+	// The same cap as send (H4): the edited text rides the MessageEdited
+	// event and every member's frame, so it can never be larger than a
+	// message could be when it was sent.
+	if utf8.RuneCountInString(newText) > MessageTextMaxRunes {
+		return nil, fmt.Errorf("%w: text exceeds %d characters", ErrInvalidMessageContent, MessageTextMaxRunes)
+	}
 
 	ok, err := s.convStore.CheckMembership(ctx, conversationID, userID)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		return nil, errors.New("not a conversation member")
+		return nil, ErrNotMember
 	}
 
-	msg, err := s.msgStore.GetMessage(ctx, conversationID, bucket, ts, messageID)
-	if err != nil {
+	// An edit puts new content in front of the other members, so it runs
+	// the send gates that judge content (H2): chat pause on either side of
+	// a DM, a closed dating match, and the message-request rules below.
+	if _, err := s.contentGates(ctx, userID, conversationID); err != nil {
 		return nil, err
 	}
-	if msg == nil || msg.IsDeleted {
-		return nil, errors.New("message not found")
+	if err := s.editRequestRules(ctx, conversationID, newText); err != nil {
+		return nil, err
+	}
+
+	// The same visibility check as the parity routes (C3): an expired
+	// disappearing message, or one outside the editor's history, is gone.
+	msg, err := s.visibleMessageAt(ctx, userID, conversationID, messageID, bucket, ts)
+	if err != nil {
+		return nil, err
 	}
 
 	// Author only. A group admin may DELETE someone else's message; rewriting
 	// it would be putting words in their mouth, which is a different power.
 	if msg.SenderID != userID {
-		return nil, errors.New("not allowed to edit this message")
+		return nil, forbidden("not allowed to edit this message")
 	}
 	// A media message carries its meaning in the attachment, not in a text
 	// column that happens to be empty.
 	if msg.Type != "" && msg.Type != "text" {
-		return nil, errors.New("only text messages can be edited")
+		return nil, invalidInput("only text messages can be edited")
 	}
 
 	editedAt := time.Now().UTC()
@@ -1706,20 +1730,54 @@ func (s *Service) EditMessage(
 	return msg, nil
 }
 
+// editRequestRules applies the message-request rules to an edit (H2). While
+// the conversation is a request, the only message in it is the sender's one
+// allowed first message, so its edit obeys the same rules: plain text, no
+// link, at most 500 characters. A request that is no longer pending (ignored,
+// blocked, reported, expired) takes no edits at all, just as it takes no
+// further messages.
+func (s *Service) editRequestRules(ctx context.Context, conversationID uuid.UUID, newText string) error {
+	conv, err := s.convStore.GetConversation(ctx, conversationID)
+	if err != nil {
+		return err
+	}
+	if conv == nil || !conv.IsRequest {
+		return nil
+	}
+	mr, err := s.convStore.GetMessageRequestByConversation(ctx, conversationID)
+	if err != nil {
+		return err
+	}
+	if mr == nil || mr.Status != "pending" || (!mr.ExpiresAt.IsZero() && !mr.ExpiresAt.After(time.Now())) {
+		return ErrAwaitingRequestAcceptance
+	}
+	if containsLink(newText) {
+		return fmt.Errorf("%w: links are not allowed", ErrRequestFirstMessageInvalid)
+	}
+	if utf8.RuneCountInString(newText) > requestFirstMessageMaxRunes {
+		return fmt.Errorf("%w: exceeds %d characters", ErrRequestFirstMessageInvalid, requestFirstMessageMaxRunes)
+	}
+	return nil
+}
+
+// requestFirstMessageMaxRunes caps the single message allowed in a pending
+// message request (send and edit alike).
+const requestFirstMessageMaxRunes = 500
+
 func (s *Service) DeleteMessage(ctx context.Context, userID, conversationID, messageID uuid.UUID, bucket string, ts time.Time) error {
 	ok, err := s.convStore.CheckMembership(ctx, conversationID, userID)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		return errors.New("not a conversation member")
+		return ErrNotMember
 	}
 	msg, err := s.msgStore.GetMessage(ctx, conversationID, bucket, ts, messageID)
 	if err != nil {
 		return err
 	}
 	if msg == nil || msg.IsDeleted {
-		return errors.New("message not found")
+		return ErrMessageNotFound
 	}
 	authorized := msg.SenderID == userID
 	if !authorized {
@@ -1728,7 +1786,7 @@ func (s *Service) DeleteMessage(ctx context.Context, userID, conversationID, mes
 			return err
 		}
 		if conv == nil {
-			return errors.New("conversation not found")
+			return notFound("conversation not found")
 		}
 		if conv.Type == "group" {
 			role, err := s.convStore.GetMemberRole(ctx, conversationID, userID)
@@ -1741,7 +1799,7 @@ func (s *Service) DeleteMessage(ctx context.Context, userID, conversationID, mes
 		}
 	}
 	if !authorized {
-		return errors.New("not allowed to delete this message")
+		return ErrNotPermittedDelete
 	}
 
 	// MP-LB-1 WRITE-AHEAD: the durable preview-repair obligation is committed
@@ -1841,16 +1899,13 @@ func (s *Service) ToggleReaction(ctx context.Context, userID, conversationID, me
 		return nil, err
 	}
 	if !ok {
-		return nil, errors.New("not a conversation member")
+		return nil, ErrNotMember
 	}
 
-	// Verify the message exists
-	msg, err := s.msgStore.GetMessage(ctx, conversationID, bucket, ts, messageID)
-	if err != nil {
+	// The same visibility check as the parity routes (C3): no reacting to
+	// an expired disappearing message, or one outside the member's history.
+	if _, err := s.visibleMessageAt(ctx, userID, conversationID, messageID, bucket, ts); err != nil {
 		return nil, err
-	}
-	if msg == nil || msg.IsDeleted {
-		return nil, errors.New("message not found")
 	}
 
 	// Check if reaction already exists to determine toggle direction
@@ -1955,38 +2010,7 @@ func (s *Service) StartOutboxRelay(ctx context.Context) {
 }
 
 func (s *Service) processOutbox(ctx context.Context) {
-	events, err := s.convStore.FetchUnpublishedOutboxEvents(ctx, 50)
-	if err != nil {
-		s.log.Error("failed to fetch outbox events", "err", err)
-		return
-	}
-
-	for _, e := range events {
-		if e.EventType == purge.EventUserPurgeAcked {
-			// Account control ack rides the same durable outbox but lands on
-			// platform.purge-acks.v1. Left unpublished (retried) when no ack
-			// producer is configured — never dropped.
-			if s.purgeAckProducer == nil {
-				s.log.Error("purge ack outbox row has no purge-acks producer; leaving unpublished", "event_id", e.ID)
-				continue
-			}
-			if err := s.purgeAckProducer.PublishRaw(ctx, e.EventType, purge.AckUserID(e.Payload), e.Payload); err != nil {
-				s.log.Error("failed to publish purge ack", "err", err, "event_id", e.ID)
-				continue
-			}
-			if err := s.convStore.MarkOutboxEventPublished(ctx, e.ID); err != nil {
-				s.log.Error("failed to mark purge ack published", "err", err, "event_id", e.ID)
-			}
-			continue
-		}
-		if err := s.producer.PublishRaw(ctx, e.EventType, "", e.Payload); err != nil {
-			s.log.Error("failed to publish outbox event", "err", err, "event_id", e.ID, "event_type", e.EventType)
-			continue
-		}
-		if err := s.convStore.MarkOutboxEventPublished(ctx, e.ID); err != nil {
-			s.log.Error("failed to mark outbox event published", "err", err, "event_id", e.ID)
-		}
-	}
+	s.relayOutbox(ctx)
 }
 
 // --- Helpers ---
@@ -1997,7 +2021,7 @@ func (s *Service) getConversationResponse(ctx context.Context, convID uuid.UUID)
 		return nil, err
 	}
 	if conv == nil {
-		return nil, errors.New("conversation not found")
+		return nil, notFound("conversation not found")
 	}
 	members, err := s.convStore.GetMembers(ctx, convID)
 	if err != nil {
@@ -2289,7 +2313,7 @@ func (s *Service) SetTyping(ctx context.Context, userID, conversationID uuid.UUI
 		return err
 	}
 	if !ok {
-		return errors.New("not a member of this conversation")
+		return ErrNotMember
 	}
 	// Typing is an ACTOR-side disclosure (directive §3.2 setting 7): the
 	// sender's own toggle gates it, a paused sender publishes nothing, and an
@@ -2345,7 +2369,7 @@ func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID
 		return err
 	}
 	if !ok {
-		return errors.New("not a member of this conversation")
+		return ErrNotMember
 	}
 
 	now := time.Now().UTC()
@@ -2390,6 +2414,15 @@ func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID
 		return nil
 	}
 
+	// L6: the frame names a message of THIS conversation, or nothing is
+	// forwarded. The client's string used to be echoed verbatim to the
+	// other member, whatever it held. The read itself (cursor, unread
+	// reset) above still counts.
+	receiptMsgID, ok := s.receiptMessageID(ctx, conversationID, messageID)
+	if !ok {
+		return nil
+	}
+
 	// Dating mechanic M9: a gated dating conversation delivers the frame
 	// only to members dating allows to see receipts.
 	gated := false
@@ -2401,7 +2434,7 @@ func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID
 		"payload": map[string]interface{}{
 			"conversation_id": conversationID.String(),
 			"user_id":         userID.String(),
-			"message_id":      messageID,
+			"message_id":      receiptMsgID.String(),
 			"read_at":         now.Format(time.RFC3339Nano),
 			// Ticks: the recipient's read watermark (= read_at in a DM).
 			"read_up_to": now.Format(time.RFC3339Nano),
@@ -2422,6 +2455,23 @@ func (s *Service) MarkRead(ctx context.Context, userID, conversationID uuid.UUID
 		publishPersonal(ctx, s.rdb, m, payload)
 	}
 	return nil
+}
+
+// receiptMessageID parses a read receipt's message_id and confirms the
+// message belongs to conversationID (its durable delivery record). Anything
+// else — not a UUID, another conversation's message, no record — is false.
+func (s *Service) receiptMessageID(ctx context.Context, conversationID uuid.UUID, raw string) (uuid.UUID, bool) {
+	id, err := uuid.Parse(raw)
+	if err != nil || id == uuid.Nil {
+		return uuid.Nil, false
+	}
+	if _, _, err := s.locateMessage(ctx, conversationID, id, nil); err != nil {
+		if !errors.Is(err, ErrMessageNotFound) {
+			s.log.Warn("read receipt: message lookup failed", "err", err, "conversation_id", conversationID)
+		}
+		return uuid.Nil, false
+	}
+	return id, true
 }
 
 // (discloseReceiptTo — graph's see_read_receipts for connections_only —

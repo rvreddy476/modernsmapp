@@ -21,7 +21,8 @@ type DisappearingService interface {
 }
 
 // writeDisappearingError maps a timer change failure: 400 for a value
-// outside the allowed set, 403 for a group member who is not owner/admin.
+// outside the allowed set, 403 for a group member who is not owner/admin,
+// and the shared mapping (writeServiceError) for everything else.
 func (h *Handler) writeDisappearingError(c *gin.Context, err error) {
 	switch {
 	case errors.Is(err, service.ErrInvalidDisappearTimer):
@@ -29,7 +30,6 @@ func (h *Handler) writeDisappearingError(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrNotPermittedRole):
 		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "only the group owner or an admin can change disappearing messages", nil, nil)
 	default:
-		h.log.Warn("failed to update disappearing timer", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to update disappearing timer", err)
 	}
 }

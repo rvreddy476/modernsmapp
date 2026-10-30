@@ -520,6 +520,7 @@ func TestTimerChangeRules(t *testing.T) {
 
 type pinStore struct {
 	*governanceFake
+	*parityLookup        // L5: a pin names a message of the conversation
 	MessengerExtrasStore // nil: only the pin methods below are reached
 	pins                 map[uuid.UUID]postgres.ConversationPin
 }
@@ -548,11 +549,12 @@ func TestUnpinRequiresMembershipAndAPinOfThatConversation(t *testing.T) {
 	f.conversations[convB] = &postgres.Conversation{ID: convB, Type: "direct"}
 	f.roles[convA] = map[uuid.UUID]string{member: "member"}
 	f.roles[convB] = map[uuid.UUID]string{member: "member", outsider: "member"}
-	store := &pinStore{governanceFake: f, pins: map[uuid.UUID]postgres.ConversationPin{}}
-	svc := &Service{convStore: store, msgStore: &previewMsgStore{}, rdb: offlineRedis(), log: slog.Default()}
+	msg := scylla.Message{MsgID: uuid.New(), ConversationID: convA, SenderID: member, Ts: time.Now().UTC(), Type: "text"}
+	store := &pinStore{governanceFake: f, parityLookup: newParityLookup(msg), pins: map[uuid.UUID]postgres.ConversationPin{}}
+	svc := &Service{convStore: store, msgStore: &previewMsgStore{target: &msg}, rdb: offlineRedis(), log: slog.Default()}
 	ctx := context.Background()
 
-	pin, err := svc.PinMessageSvc(ctx, member, convA, uuid.New())
+	pin, err := svc.PinMessageSvc(ctx, member, convA, msg.MsgID)
 	if err != nil {
 		t.Fatal(err)
 	}

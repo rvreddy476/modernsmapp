@@ -144,11 +144,11 @@ func (s *Service) CreateInviteLink(ctx context.Context, actorID, conversationID 
 		ttl = DefaultInviteLinkTTL
 	}
 	if ttl > maxInviteLinkTTL {
-		return nil, fmt.Errorf("expires_in cannot exceed %d days", int(maxInviteLinkTTL.Hours()/24))
+		return nil, invalidInputf("expires_in cannot exceed %d days", int(maxInviteLinkTTL.Hours()/24))
 	}
 	if maxUses != nil {
 		if *maxUses < 0 {
-			return nil, errors.New("max_uses cannot be negative")
+			return nil, invalidInput("max_uses cannot be negative")
 		}
 		if *maxUses == 0 {
 			maxUses = nil

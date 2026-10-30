@@ -454,7 +454,7 @@ func (s *Service) clearForMe(ctx context.Context, userID, convID uuid.UUID, hide
 	return nil
 }
 
-// ErrNotMember is the parity routes' membership refusal (404 on the wire,
+// ErrNotMember is every membership refusal (404 NOT_FOUND on the wire,
 // so a route never confirms a conversation exists).
 var ErrNotMember = errors.New("not a conversation member")
 

@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
+	nethttp "net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -72,6 +74,15 @@ func main() {
 		os.Exit(1)
 	}
 	logger.Info("chat schema ready")
+	// Online index builds (audit L9): CREATE INDEX CONCURRENTLY cannot run
+	// in the bootstrap transaction, so migrations/020 is applied here, one
+	// statement at a time, in the background (one replica builds; readiness
+	// never waits on a build).
+	go func() {
+		if err := pgStore.BuildConcurrentIndexes(ctx, dbPool, database.ConcurrentIndexes, logger); err != nil {
+			logger.Error("online index build failed; retried on next boot", "err", err)
+		}
+	}()
 	logger.Info("connected to Postgres")
 
 	// 2. ScyllaDB
@@ -207,6 +218,9 @@ func main() {
 		Keep:     cfg.OutboxRetention,
 		Interval: cfg.OutboxRetentionInterval,
 	})
+	// Retention (audit M1/M8): expired idempotency keys are purged and old
+	// completed delivery intents drop their member list.
+	go svc.StartStateRetentionWorker(ctx, service.StateRetention{})
 	go svc.StartMessageDeliveryRepairWorker(ctx)
 	// Dating lane D4: tells dating-service a dating conversation got its
 	// first message (durable, retried; never on the send path).
@@ -264,8 +278,17 @@ func main() {
 
 	handler.RegisterRoutes(r)
 
+	srv := http.NewServer(":"+cfg.HTTPPort, r)
+	go func() {
+		<-ctx.Done()
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			logger.Warn("http server shutdown", "err", err)
+		}
+	}()
 	logger.Info("starting message-service", "port", cfg.HTTPPort)
-	if err := r.Run(":" + cfg.HTTPPort); err != nil {
+	if err := srv.ListenAndServe(); err != nil && !errors.Is(err, nethttp.ErrServerClosed) {
 		logger.Error("failed to run server", "err", err)
 		os.Exit(1)
 	}

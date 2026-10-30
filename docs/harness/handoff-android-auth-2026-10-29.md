@@ -160,3 +160,71 @@ Run after the reels lane. Scope: `mobile/android/feature/tube`, plus the
    buffer profile for long video).
 
 Unit tests for each; report the `android.sh --full` RESULT block.
+
+## Fifth Android lane: chat (30 Oct 2026)
+
+Audit: [audit-2026-10-30-chat-android.md](audit-2026-10-30-chat-android.md)
+(server side: [audit-2026-10-30-chat-backend.md](audit-2026-10-30-chat-backend.md),
+fixed on this branch). Work in `mobile/android` only; one item at a time,
+unit test each, `scripts/verify/android.sh --fast :module` while working.
+
+1. **H1 socket dies in the foreground** (`ChatSocket.connect`,
+   `ChatSessionManager.runLoop`, `ChatForegroundPresence`,
+   `suppressForegroundNotification`): refresh the token before the first
+   connect, treat a null token / 401 / 403 as "refresh and retry with
+   backoff" while signed in (stop only on sign-out), and suppress a
+   foreground `dm` push only while the socket is actually connected.
+2. **H2 disappearing messages stay on the device**: add `expires_at` to
+   `MessageDto` and the cache entity (Room migration), filter expired rows
+   in every cache query and in `mergeConfirmed`, and purge expired rows on
+   open and on a timer. The server already sends `expires_at` and hides
+   expired messages on every read.
+3. **M1 send classification**: retry `409 IDEMPOTENCY_IN_PROGRESS` with the
+   same key; treat `503 UNAVAILABLE` as retryable. The server no longer
+   answers infrastructure failures with 400 (see the table below).
+4. **M2** keep the loaded pages and scroll position across a reconnect
+   (fetch only what is newer than the newest message held). **M3** do not
+   suspend inside the socket event `collect` (launch the refresh), and do
+   not drop frames silently (`trySend` failure → resync). **M4** add the
+   missing `.asReversed()` in the offline fallback. **M5** `flowOn(Dispatchers.Default)`
+   for the inbox/requests JSON decode.
+5. **Lows**: L1 page the cached Requests list and prune it; L2 encrypt the
+   chat database (SQLCipher or EncryptedFile key) and clear the image cache
+   on sign-out; L3 cancel posted chat notifications on sign-out.
+
+**Server contract changes on this branch (message-service, call-service,
+ws-gateway); the client must handle them:**
+
+| Case | Before | Now |
+|---|---|---|
+| Not a member (history, send, edit, delete, react, typing, read, settings, pins, requests, scheduled, star, group, invite) | 400 `INVALID_REQUEST` + raw error | 404 `NOT_FOUND` |
+| Infrastructure failure | 400 `INVALID_REQUEST` | 503 `UNAVAILABLE` (retry) |
+| Closed dating match | 400 | 409 `MATCH_CLOSED` |
+| Media not allowed | 400 | 422 `MEDIA_NOT_ALLOWED` |
+| Role / not your message / not allowed | 400 | 403 `FORBIDDEN` |
+| Already a member, last admin, already resolved, owner must transfer | 400 | 409 `CONFLICT` |
+| Message or folder not found | 400 | 404 `NOT_FOUND` |
+| Edit over 2000 chars | — | 400 `BAD_REQUEST` |
+| Edit in a pending request with a link or over 500 chars | — | 422 `INVALID_REQUEST_MESSAGE` |
+| Edit while chat paused | — | 403 `MESSAGING_NOT_ALLOWED` |
+| Edit or react on an expired message | — | 404 |
+| Body over 64 KiB (send, edit, schedule) | — | 413 `PAYLOAD_TOO_LARGE` |
+| More than 100 pending scheduled messages | — | 400 |
+| Pin/unpin by a plain group member | allowed | 403 `FORBIDDEN` (hide pin in the long-press menu unless owner/admin; `ChatPins.kt` says "any member may pin") |
+| WebSocket connect over 10 sockets per user | — | 429 before upgrade (back off; don't hot-loop) |
+| WebSocket frames over 20/s (burst 60) | — | dropped |
+| Read-receipt frames | any id | only real message ids of that conversation |
+
+Codes the app already parses are unchanged (`INVITE_NOT_FOUND`,
+`INVITE_NOT_LIVE`, `JOIN_NOT_ALLOWED`, `GROUP_FULL`, `MESSAGING_NOT_ALLOWED`,
+`CHAT_LOCKED`, `INVALID_REQUEST_MESSAGE`, `RATE_LIMITED`, `IDEMPOTENCY_*`).
+
+**Watch out:** `ChatParity.isMissingRoute()` reads any 404 as "route not
+shipped yet". It is used in `ChatSettingsScreen.kt` (~320, ~333, ~851),
+`InboxLists.kt` ~109, `ChatThreadViewModel.kt` ~1038 and
+`RequestsFolder.kt` ~125. A not-a-member 404 now reaches these: tell the two
+apart by the error code (a missing route has no `NOT_FOUND` envelope from
+message-service) so a removed member is not told "isn't available yet",
+and `oldPath()` at ~851 is not tried for a membership refusal.
+
+Unit tests for each; report the `android.sh --full` RESULT block.

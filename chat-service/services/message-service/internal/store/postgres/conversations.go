@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"sort"
 	"time"
 
 	"github.com/atpost/chat-message-service/internal/contentcrypt"
@@ -53,8 +54,11 @@ type Member struct {
 }
 
 type OutboxEvent struct {
-	ID        int64           `json:"id"`
-	EventType string          `json:"event_type"`
+	ID        int64  `json:"id"`
+	EventType string `json:"event_type"`
+	// DedupeKey is the row's dedupe key ("" for a legacy row); the relay
+	// derives the stable Kafka event id from it.
+	DedupeKey string          `json:"dedupe_key,omitempty"`
 	Payload   json.RawMessage `json:"payload"`
 	CreatedAt time.Time       `json:"created_at"`
 }
@@ -854,45 +858,72 @@ func (s *ConversationStore) sealOutboxPayload(ctx context.Context, eventType, de
 	return s.sealJSON(ctx, contentcrypt.ScopeOutboxPayload, contentcrypt.OutboxRow(eventType, dedupeKey), data)
 }
 
-// FetchUnpublishedOutboxEvents returns queued events with their payloads
-// opened. A row whose payload does not open is left unpublished and logged
-// by id (never by content), so one bad row cannot stall the relay.
+// FetchUnpublishedOutboxEvents claims up to limit queued events for this
+// relay and returns them in id order with their payloads opened (audit H3,
+// 30 Oct 2026).
+//
+// The claim is an UPDATE of claimed_until over rows picked with FOR UPDATE
+// SKIP LOCKED, so two replicas polling at once never get the same row, and a
+// relay that dies mid-publish only holds its rows for the lease
+// (outboxClaimLease) before another relay takes them. Dead-lettered rows
+// (failed_at set, audit H4) are never claimed again.
+//
+// A row whose payload does not open is not returned; it is logged by id
+// (never by content) and counted as a failed attempt, so after
+// OutboxMaxAttempts it is dead-lettered instead of being claimed forever.
 func (s *ConversationStore) FetchUnpublishedOutboxEvents(ctx context.Context, limit int) ([]OutboxEvent, error) {
-	rows, err := s.db.Query(ctx, `SELECT id, event_type, COALESCE(dedupe_key, ''), payload, created_at FROM chat.outbox_events WHERE published_at IS NULL ORDER BY id LIMIT $1`, limit)
+	rows, err := s.db.Query(ctx, claimOutboxEventsSQL, limit, outboxClaimLease.Seconds())
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
 	var out []OutboxEvent
+	var unopened []int64
 	for rows.Next() {
 		var e OutboxEvent
-		var dedupeKey string
-		if err := rows.Scan(&e.ID, &e.EventType, &dedupeKey, &e.Payload, &e.CreatedAt); err != nil {
+		if err := rows.Scan(&e.ID, &e.EventType, &e.DedupeKey, &e.Payload, &e.CreatedAt); err != nil {
 			return nil, err
 		}
-		opened, err := s.openJSON(ctx, contentcrypt.ScopeOutboxPayload, contentcrypt.OutboxRow(e.EventType, dedupeKey), e.Payload)
+		opened, err := s.openJSON(ctx, contentcrypt.ScopeOutboxPayload, contentcrypt.OutboxRow(e.EventType, e.DedupeKey), e.Payload)
 		if err != nil {
 			s.logger().Error("field encryption: outbox payload did not open; left unpublished", "event_id", e.ID, "event_type", e.EventType, "err", err)
+			unopened = append(unopened, e.ID)
 			continue
 		}
 		e.Payload = opened
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	rows.Close()
+	for _, id := range unopened {
+		if _, err := s.RecordOutboxEventFailure(ctx, id, OutboxFailure{Reason: "payload did not open", Counted: true}); err != nil {
+			s.logger().Error("failed to record outbox open failure", "event_id", id, "err", err)
+		}
+	}
+	// RETURNING carries no order; the relay publishes in id order.
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out, nil
 }
 
 func (s *ConversationStore) MarkOutboxEventPublished(ctx context.Context, id int64) error {
-	_, err := s.db.Exec(ctx, `UPDATE chat.outbox_events SET published_at = NOW() WHERE id = $1`, id)
+	_, err := s.db.Exec(ctx, `UPDATE chat.outbox_events SET published_at = NOW(), claimed_until = NULL WHERE id = $1`, id)
 	return err
 }
 
 // --- Idempotency ---
 
+// CheckIdempotencyKey returns the stored key. It does not filter on
+// expires_at: CreateIdempotencyKey takes over an expired row itself (audit
+// M1), so a row it refused is either live or a tombstone (see
+// idempotencyTombstoneSQL), and a tombstone must keep reporting "in
+// progress" rather than the 500 "exists but was not found".
 func (s *ConversationStore) CheckIdempotencyKey(ctx context.Context, key string) (*IdempotencyResult, error) {
 	var requestHash string
 	var response json.RawMessage
-	err := s.db.QueryRow(ctx, `SELECT request_hash, response FROM chat.idempotency_keys WHERE key = $1 AND expires_at > NOW()`, key).Scan(&requestHash, &response)
+	err := s.db.QueryRow(ctx, `SELECT request_hash, response FROM chat.idempotency_keys WHERE key = $1`, key).Scan(&requestHash, &response)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -908,16 +939,78 @@ func (s *ConversationStore) CheckIdempotencyKey(ctx context.Context, key string)
 	return &IdempotencyResult{RequestHash: requestHash, Response: response}, nil
 }
 
+// IdempotencyInProgressLease is how long a key without a response (its
+// request still running) blocks retries. Past it the owner is presumed
+// crashed and a retry with the same request takes the key over (audit M1:
+// it used to block for the key's whole 24 h life).
+const IdempotencyInProgressLease = 2 * time.Minute
+
+// idempotencyTombstoneSQL is true for a key whose message was unsent or
+// disappeared: the response was nulled on purpose (disappearing.go) so a
+// late retry reports "in progress" instead of returning the vanished text,
+// and re-running the send would re-broadcast it. Such a key is never taken
+// over and never purged. It references the row as k.
+const idempotencyTombstoneSQL = `(k.response IS NULL AND EXISTS (
+		SELECT 1 FROM chat.message_delivery_intents i
+		WHERE i.idempotency_key = k.key AND i.completed_at IS NOT NULL))`
+
+// CreateIdempotencyKey reserves key for a request and reports whether this
+// caller owns it. Besides a fresh insert, the caller takes over (audit M1):
+//   - an expired key (expires_at passed), for any request, and
+//   - an in-progress key (no response) older than IdempotencyInProgressLease
+//     for the same request hash: its owner crashed before saving a result.
+//
+// Neither applies to a tombstone (idempotencyTombstoneSQL).
 func (s *ConversationStore) CreateIdempotencyKey(ctx context.Context, key, requestHash string) (bool, error) {
 	tag, err := s.db.Exec(ctx, `
-		INSERT INTO chat.idempotency_keys (key, request_hash, response)
+		INSERT INTO chat.idempotency_keys AS k (key, request_hash, response)
 		VALUES ($1, $2, NULL)
-		ON CONFLICT (key) DO NOTHING
-	`, key, requestHash)
+		ON CONFLICT (key) DO UPDATE
+		SET request_hash = EXCLUDED.request_hash, response = NULL,
+		    created_at = NOW(), expires_at = NOW() + INTERVAL '24 hours'
+		WHERE (k.expires_at <= NOW()
+		       OR (k.response IS NULL AND k.request_hash = EXCLUDED.request_hash
+		           AND k.created_at < NOW() - make_interval(secs => $3::float8)))
+		  AND NOT `+idempotencyTombstoneSQL+`
+	`, key, requestHash, IdempotencyInProgressLease.Seconds())
 	if err != nil {
 		return false, err
 	}
 	return tag.RowsAffected() > 0, nil
+}
+
+// PurgeExpiredIdempotencyKeys deletes up to limit keys whose expires_at is
+// before `before` and returns how many went (audit M1: nothing ever deleted
+// them). Expired tombstones are not deleted — deleting one would let a late
+// retry re-run an unsent send — but moved to expires_at = 'infinity' so the
+// next pass does not scan them again.
+func (s *ConversationStore) PurgeExpiredIdempotencyKeys(ctx context.Context, before time.Time, limit int) (int64, error) {
+	if limit <= 0 {
+		return 0, nil
+	}
+	if _, err := s.db.Exec(ctx, `
+		UPDATE chat.idempotency_keys SET expires_at = 'infinity'
+		WHERE key IN (
+			SELECT k.key FROM chat.idempotency_keys k
+			WHERE k.expires_at < $1 AND `+idempotencyTombstoneSQL+`
+			ORDER BY k.expires_at
+			LIMIT $2
+		)`, before, limit); err != nil {
+		return 0, err
+	}
+	tag, err := s.db.Exec(ctx, `
+		DELETE FROM chat.idempotency_keys
+		WHERE key IN (
+			SELECT k.key FROM chat.idempotency_keys k
+			WHERE k.expires_at < $1 AND NOT `+idempotencyTombstoneSQL+`
+			ORDER BY k.expires_at
+			LIMIT $2
+			FOR UPDATE SKIP LOCKED
+		)`, before, limit)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 func (s *ConversationStore) SaveIdempotencyResponse(ctx context.Context, key, requestHash string, response interface{}) error {

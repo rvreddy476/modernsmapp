@@ -148,8 +148,18 @@ func TestDatingMatchExtrasEndToEnd(t *testing.T) {
 		// The channel, not ReceiveMessage with a deadline: a timed-out read
 		// can leave the subscription unusable for the next wait.
 		frames := sub.Channel()
+		// L6: a read receipt is forwarded only for a message of this
+		// conversation, so the read names one a has sent (its durable
+		// delivery record is what the service checks).
+		readMsgID, readTs := uuid.New(), time.Now().UTC().Truncate(time.Microsecond)
+		if _, err := pool.Exec(ctx, `INSERT INTO chat.message_delivery_intents (idempotency_key, request_hash,
+			conversation_id, sender_id, message_id, bucket, message_ts, message_type, member_ids, completed_at)
+			VALUES ($1, 'h', $2, $3, $4, $5, $6, 'text', $7, now())`,
+			"it-"+readMsgID.String(), convID, a, readMsgID, readTs.Format("200601"), readTs, []uuid.UUID{a, b}); err != nil {
+			t.Fatal(err)
+		}
 		frame := func() bool {
-			if err := svc.MarkRead(ctx, b, convID, uuid.NewString()); err != nil {
+			if err := svc.MarkRead(ctx, b, convID, readMsgID.String()); err != nil {
 				t.Fatal(err)
 			}
 			select {

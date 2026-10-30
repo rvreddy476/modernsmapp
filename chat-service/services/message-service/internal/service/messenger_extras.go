@@ -78,7 +78,7 @@ func (s *Service) GetSettings(ctx context.Context, userID, convID uuid.UUID) (*p
 		return nil, err
 	}
 	if !ok {
-		return nil, errors.New("not a conversation member")
+		return nil, ErrNotMember
 	}
 	cs, err := s.extrasStore().GetConversationSettings(ctx, convID, userID)
 	if err != nil {
@@ -103,7 +103,7 @@ func (s *Service) UpdateSettings(ctx context.Context, settings *postgres.Convers
 		return err
 	}
 	if !ok {
-		return errors.New("not a conversation member")
+		return ErrNotMember
 	}
 	return s.extrasStore().UpsertConversationSettings(ctx, settings)
 }
@@ -116,7 +116,7 @@ func (s *Service) ListByLabel(ctx context.Context, userID uuid.UUID, label strin
 
 func (s *Service) CreateFolder(ctx context.Context, userID uuid.UUID, name, icon string, sortOrder int) (*postgres.ChatFolder, error) {
 	if name == "" {
-		return nil, errors.New("folder name is required")
+		return nil, invalidInput("folder name is required")
 	}
 	f := &postgres.ChatFolder{
 		UserID:    userID,
@@ -133,10 +133,10 @@ func (s *Service) GetFolder(ctx context.Context, userID, folderID uuid.UUID) (*p
 		return nil, err
 	}
 	if f == nil {
-		return nil, errors.New("folder not found")
+		return nil, notFound("folder not found")
 	}
 	if f.UserID != userID {
-		return nil, errors.New("folder not found")
+		return nil, notFound("folder not found")
 	}
 	return f, nil
 }
@@ -151,7 +151,7 @@ func (s *Service) DeleteFolder(ctx context.Context, userID, folderID uuid.UUID) 
 		return err
 	}
 	if f == nil || f.UserID != userID {
-		return errors.New("folder not found")
+		return notFound("folder not found")
 	}
 	return s.extrasStore().DeleteChatFolder(ctx, folderID)
 }
@@ -162,14 +162,14 @@ func (s *Service) AddToFolder(ctx context.Context, userID, folderID, conversatio
 		return err
 	}
 	if f == nil || f.UserID != userID {
-		return errors.New("folder not found")
+		return notFound("folder not found")
 	}
 	ok, err := s.convStore.CheckMembership(ctx, conversationID, userID)
 	if err != nil {
 		return err
 	}
 	if !ok {
-		return errors.New("not a conversation member")
+		return ErrNotMember
 	}
 	return s.extrasStore().AddConversationToFolder(ctx, folderID, conversationID)
 }
@@ -180,7 +180,7 @@ func (s *Service) RemoveFromFolder(ctx context.Context, userID, folderID, conver
 		return err
 	}
 	if f == nil || f.UserID != userID {
-		return errors.New("folder not found")
+		return notFound("folder not found")
 	}
 	return s.extrasStore().RemoveConversationFromFolder(ctx, folderID, conversationID)
 }
@@ -191,20 +191,23 @@ func (s *Service) GetFolderConversations(ctx context.Context, userID, folderID u
 		return nil, err
 	}
 	if f == nil || f.UserID != userID {
-		return nil, errors.New("folder not found")
+		return nil, notFound("folder not found")
 	}
 	return s.extrasStore().GetFolderConversations(ctx, folderID)
 }
 
 // --- Pins ---
 
+// PinMessageSvc pins a message the caller can see (L5). The caller must be
+// allowed to change pins (requirePinRights) and the message must belong to
+// convID and be visible to them (visibleMessage: live, not expired, inside
+// their history). The 3-pin cap is enforced under a row lock in the store.
 func (s *Service) PinMessageSvc(ctx context.Context, userID, convID, messageID uuid.UUID) (*postgres.ConversationPin, error) {
-	ok, err := s.convStore.CheckMembership(ctx, convID, userID)
-	if err != nil {
+	if err := s.requirePinRights(ctx, userID, convID); err != nil {
 		return nil, err
 	}
-	if !ok {
-		return nil, errors.New("not a conversation member")
+	if _, err := s.visibleMessage(ctx, userID, convID, messageID, nil); err != nil {
+		return nil, err
 	}
 	pin, err := s.extrasStore().PinMessage(ctx, convID, messageID, userID)
 	if err != nil {
@@ -214,21 +217,54 @@ func (s *Service) PinMessageSvc(ctx context.Context, userID, convID, messageID u
 	return pin, nil
 }
 
-// ErrPinNotFound is a pin id that does not exist in the conversation named
-// by the route (including a real pin of ANOTHER conversation).
-var ErrPinNotFound = errors.New("pin not found")
-
-// UnpinMessageSvc removes a pin. The caller must be an active member of
-// convID and the pin must belong to convID; otherwise ErrNotMember /
-// ErrPinNotFound (both 404), and nothing is deleted. Before this check any
-// signed-in user holding a pin id could unpin in any chat.
-func (s *Service) UnpinMessageSvc(ctx context.Context, userID, convID, pinID uuid.UUID) error {
+// requirePinRights is who may change a conversation's pins: an active
+// member, never while the conversation is still a message request (the
+// requester could otherwise pin over the recipient's screen before they
+// accept), and in a group only the owner or an admin — the same rung of the
+// role ladder that edits the group's info.
+func (s *Service) requirePinRights(ctx context.Context, userID, convID uuid.UUID) error {
 	ok, err := s.convStore.CheckMembership(ctx, convID, userID)
 	if err != nil {
 		return err
 	}
 	if !ok {
 		return ErrNotMember
+	}
+	conv, err := s.convStore.GetConversation(ctx, convID)
+	if err != nil {
+		return err
+	}
+	if conv == nil {
+		return ErrNotMember
+	}
+	if conv.IsRequest {
+		return ErrAwaitingRequestAcceptance
+	}
+	if conv.Type == "direct" {
+		return nil
+	}
+	role, err := s.convStore.GetMemberRole(ctx, convID, userID)
+	if err != nil {
+		return err
+	}
+	if role != "owner" && role != "admin" {
+		return ErrNotPermittedRole
+	}
+	return nil
+}
+
+// ErrPinNotFound is a pin id that does not exist in the conversation named
+// by the route (including a real pin of ANOTHER conversation).
+var ErrPinNotFound = errors.New("pin not found")
+
+// UnpinMessageSvc removes a pin. The caller must be an active member of
+// convID and the pin must belong to convID; otherwise ErrNotMember /
+// ErrPinNotFound (both 404), and nothing is deleted. Pin rights
+// (requirePinRights) apply as on pin. Before this check any
+// signed-in user holding a pin id could unpin in any chat.
+func (s *Service) UnpinMessageSvc(ctx context.Context, userID, convID, pinID uuid.UUID) error {
+	if err := s.requirePinRights(ctx, userID, convID); err != nil {
+		return err
 	}
 	pin, err := s.extrasStore().UnpinMessage(ctx, convID, pinID)
 	if err != nil {
@@ -268,7 +304,7 @@ func (s *Service) GetPins(ctx context.Context, userID, convID uuid.UUID) ([]post
 		return nil, err
 	}
 	if !ok {
-		return nil, errors.New("not a conversation member")
+		return nil, ErrNotMember
 	}
 	return s.extrasStore().GetConversationPins(ctx, convID)
 }
@@ -297,7 +333,7 @@ func (s *Service) AcceptRequest(ctx context.Context, userID, convID uuid.UUID) e
 		return err
 	}
 	if !ok {
-		return errors.New("not a conversation member")
+		return ErrNotMember
 	}
 
 	mr, err := s.convStore.GetMessageRequestByConversation(ctx, convID)
@@ -305,7 +341,7 @@ func (s *Service) AcceptRequest(ctx context.Context, userID, convID uuid.UUID) e
 		return err
 	}
 	if mr != nil && mr.ReceiverID != userID {
-		return errors.New("only the recipient can accept this request")
+		return forbidden("only the recipient can accept this request")
 	}
 
 	if err := s.extrasStore().AcceptMessageRequest(ctx, convID); err != nil {
@@ -334,7 +370,7 @@ func (s *Service) DeclineRequest(ctx context.Context, userID, convID uuid.UUID) 
 		return err
 	}
 	if !ok {
-		return errors.New("not a conversation member")
+		return ErrNotMember
 	}
 
 	mr, err := s.convStore.GetMessageRequestByConversation(ctx, convID)
@@ -342,7 +378,7 @@ func (s *Service) DeclineRequest(ctx context.Context, userID, convID uuid.UUID) 
 		return err
 	}
 	if mr != nil && mr.ReceiverID != userID {
-		return errors.New("only the recipient can decline this request")
+		return forbidden("only the recipient can decline this request")
 	}
 
 	if err := s.extrasStore().DeclineMessageRequest(ctx, convID); err != nil {
@@ -375,10 +411,10 @@ func (s *Service) BlockRequest(ctx context.Context, userID, convID uuid.UUID) er
 		return err
 	}
 	if mr == nil {
-		return errors.New("no message request for this conversation")
+		return notFound("no message request for this conversation")
 	}
 	if mr.ReceiverID != userID {
-		return errors.New("only the recipient can block this request")
+		return forbidden("only the recipient can block this request")
 	}
 	if mr.Status == "blocked" {
 		return nil // idempotent — status flips only after sever+revocation succeeded
@@ -415,10 +451,10 @@ func (s *Service) ReportRequest(ctx context.Context, userID, convID uuid.UUID) e
 		return err
 	}
 	if mr == nil {
-		return errors.New("no message request for this conversation")
+		return notFound("no message request for this conversation")
 	}
 	if mr.ReceiverID != userID {
-		return errors.New("only the recipient can report this request")
+		return forbidden("only the recipient can report this request")
 	}
 	if mr.Status == "reported" {
 		return nil // idempotent — status flips only after sever+revocation succeeded
@@ -452,7 +488,7 @@ func (s *Service) StarMessageSvc(ctx context.Context, userID, convID, messageID 
 		return nil, err
 	}
 	if !ok {
-		return nil, errors.New("not a conversation member")
+		return nil, ErrNotMember
 	}
 	return s.extrasStore().StarMessage(ctx, userID, convID, messageID, preview)
 }
@@ -486,12 +522,18 @@ func (s *Service) GetLatestBackup(ctx context.Context, userID uuid.UUID) (*postg
 // --- Scheduled Messages ---
 
 func (s *Service) CreateScheduledMessage(ctx context.Context, convID, senderID uuid.UUID, msgType, content string, mediaID *uuid.UUID, sendAt time.Time) (*postgres.ScheduledMessage, error) {
+	// H4: the send rules (2000-rune cap, known type) apply when the message
+	// is scheduled, not only when the worker sends it hours later — an
+	// oversized row would otherwise sit in the queue and fail every attempt.
+	if err := validateMessageContent(msgType, content, mediaID, nil); err != nil {
+		return nil, err
+	}
 	ok, err := s.convStore.CheckMembership(ctx, convID, senderID)
 	if err != nil {
 		return nil, err
 	}
 	if !ok {
-		return nil, errors.New("not a conversation member")
+		return nil, ErrNotMember
 	}
 	var contentPtr *string
 	if content != "" {
@@ -505,7 +547,12 @@ func (s *Service) CreateScheduledMessage(ctx context.Context, convID, senderID u
 		MediaID:        mediaID,
 		SendAt:         sendAt,
 	}
-	return s.extrasStore().CreateScheduledMessage(ctx, m)
+	created, err := s.extrasStore().CreateScheduledMessage(ctx, m)
+	if errors.Is(err, postgres.ErrScheduledMessageLimit) {
+		// M2: per-user cap on pending scheduled messages (400).
+		return nil, invalidInput(err.Error())
+	}
+	return created, err
 }
 
 func (s *Service) CancelScheduledMessageSvc(ctx context.Context, userID, msgID uuid.UUID) error {
@@ -518,7 +565,7 @@ func (s *Service) ListScheduledMessagesSvc(ctx context.Context, userID, convID u
 		return nil, err
 	}
 	if !ok {
-		return nil, errors.New("not a conversation member")
+		return nil, ErrNotMember
 	}
 	return s.extrasStore().ListScheduledMessages(ctx, convID, userID)
 }

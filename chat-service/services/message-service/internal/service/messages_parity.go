@@ -105,6 +105,15 @@ func (s *Service) visibleMessage(ctx context.Context, userID, convID, msgID uuid
 	if err != nil {
 		return nil, err
 	}
+	return s.visibleMessageAt(ctx, userID, convID, msgID, bucket, ts)
+}
+
+// visibleMessageAt is visibleMessage for a caller that already holds the
+// message's partition key (bucket and ts) and has checked membership: the
+// legacy edit and reaction routes, whose bodies carry both. The visibility
+// rules are the same ones: live, not expired, inside the member's history,
+// not deleted for them.
+func (s *Service) visibleMessageAt(ctx context.Context, userID, convID, msgID uuid.UUID, bucket string, ts time.Time) (*scylla.Message, error) {
 	msg, err := s.msgStore.GetMessage(ctx, convID, bucket, ts, msgID)
 	if err != nil {
 		return nil, err
@@ -578,7 +587,7 @@ func (s *Service) SetTypingState(ctx context.Context, userID, convID uuid.UUID, 
 		return err
 	}
 	if !ok {
-		return errors.New("not a member of this conversation")
+		return ErrNotMember
 	}
 	if p := s.GetChatPolicy(ctx, userID); !p.Known || p.ChatPaused || !p.SendTypingIndicators || s.isHidden(ctx, userID) {
 		return nil

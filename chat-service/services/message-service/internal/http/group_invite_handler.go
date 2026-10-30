@@ -1,13 +1,11 @@
 package http
 
 import (
-	"errors"
 	"net/http"
 	"strings"
 	"time"
 
 	"github.com/atpost/chat-message-service/internal/service"
-	store "github.com/atpost/chat-message-service/internal/store/postgres"
 	"github.com/atpost/chat-shared/api"
 	"github.com/gin-gonic/gin"
 )
@@ -19,32 +17,6 @@ import (
 type CreateInviteLinkRequest struct {
 	ExpiresInSeconds int64 `json:"expires_in_seconds"`
 	MaxUses          *int  `json:"max_uses"`
-}
-
-// writeGroupError maps governance errors shared by the group endpoints.
-// Returns true when handled.
-func writeGroupError(c *gin.Context, err error) bool {
-	switch {
-	case errors.Is(err, service.ErrNotPermittedRole):
-		api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
-	case errors.Is(err, service.ErrRateLimited):
-		api.Error(c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil, nil)
-	case errors.Is(err, service.ErrInviteLinkNotFound):
-		api.Error(c.Writer, http.StatusNotFound, "INVITE_NOT_FOUND", err.Error(), nil, nil)
-	case errors.Is(err, service.ErrInviteLinkNotLive):
-		api.Error(c.Writer, http.StatusGone, "INVITE_NOT_LIVE", err.Error(), nil, nil)
-	case errors.Is(err, service.ErrInviteJoinBlocked):
-		api.Error(c.Writer, http.StatusForbidden, "JOIN_NOT_ALLOWED", err.Error(), nil, nil)
-	case errors.Is(err, store.ErrGroupFull):
-		api.Error(c.Writer, http.StatusConflict, "GROUP_FULL", err.Error(), nil, nil)
-	case errors.Is(err, service.ErrMediaNotAllowed):
-		api.Error(c.Writer, http.StatusUnprocessableEntity, "MEDIA_NOT_ALLOWED", err.Error(), nil, nil)
-	case err != nil && (strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "not a conversation member")):
-		api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil, nil)
-	default:
-		return false
-	}
-	return true
 }
 
 // CreateInviteLink — POST /v1/chat/conversations/:id/invite-link (owner/admin).
@@ -66,11 +38,7 @@ func (h *Handler) CreateInviteLink(c *gin.Context) {
 	}
 	link, err := h.svc.CreateInviteLink(c.Request.Context(), userID, convID, time.Duration(req.ExpiresInSeconds)*time.Second, req.MaxUses)
 	if err != nil {
-		h.log.Warn("failed to create invite link", "err", err, "request_id", RequestIDFromContext(c))
-		if writeGroupError(c, err) {
-			return
-		}
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to create invite link", err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusCreated, link, nil)
@@ -88,10 +56,7 @@ func (h *Handler) GetInviteLink(c *gin.Context) {
 	}
 	link, err := h.svc.GetInviteLink(c.Request.Context(), userID, convID)
 	if err != nil {
-		if writeGroupError(c, err) {
-			return
-		}
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to read invite link", err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, link, nil)
@@ -108,10 +73,7 @@ func (h *Handler) RevokeInviteLink(c *gin.Context) {
 		return
 	}
 	if err := h.svc.RevokeInviteLink(c.Request.Context(), userID, convID); err != nil {
-		if writeGroupError(c, err) {
-			return
-		}
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to revoke invite link", err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "revoked"}, nil)
@@ -138,10 +100,7 @@ func (h *Handler) PreviewInvite(c *gin.Context) {
 	}
 	preview, err := h.svc.PreviewInvite(c.Request.Context(), userID, code)
 	if err != nil {
-		if writeGroupError(c, err) {
-			return
-		}
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load invite", nil, nil)
+		h.writeServiceError(c, "failed to load invite", err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, preview, nil)
@@ -159,11 +118,7 @@ func (h *Handler) JoinByInvite(c *gin.Context) {
 	}
 	conv, err := h.svc.JoinByInvite(c.Request.Context(), userID, code)
 	if err != nil {
-		h.log.Warn("invite join failed", "err", err, "request_id", RequestIDFromContext(c))
-		if writeGroupError(c, err) {
-			return
-		}
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "invite join failed", err)
 		return
 	}
 	// Hidden chats: re-joining a group the caller hid returns it redacted.

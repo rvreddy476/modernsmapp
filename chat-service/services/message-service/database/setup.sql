@@ -772,3 +772,34 @@ CREATE TABLE IF NOT EXISTS chat.hidden_chat_tokens (
     last_used_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_hidden_chat_tokens_user ON chat.hidden_chat_tokens(user_id);
+
+-- ===== 019: outbox claims and dead letters, scheduler leases (30 Oct 2026) =====
+-- See migrations/019_outbox_claims_and_scheduler_leases.sql for the full
+-- rationale (live-table safety, requeueing a dead letter). Indexes for these
+-- tables are built outside this transaction: migrations/020_concurrent_indexes.sql.
+DO $$
+DECLARE
+    prev_lock_timeout TEXT := current_setting('lock_timeout');
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'chat' AND table_name = 'outbox_events' AND column_name = 'failed_at'
+    ) THEN
+        PERFORM set_config('lock_timeout', '5s', true);
+        ALTER TABLE chat.outbox_events
+            ADD COLUMN IF NOT EXISTS claimed_until TIMESTAMPTZ,
+            ADD COLUMN IF NOT EXISTS attempts      INT NOT NULL DEFAULT 0,
+            ADD COLUMN IF NOT EXISTS last_error    TEXT,
+            ADD COLUMN IF NOT EXISTS failed_at     TIMESTAMPTZ;
+        PERFORM set_config('lock_timeout', prev_lock_timeout, true);
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'chat' AND table_name = 'scheduled_messages' AND column_name = 'claimed_until'
+    ) THEN
+        PERFORM set_config('lock_timeout', '5s', true);
+        ALTER TABLE chat.scheduled_messages
+            ADD COLUMN IF NOT EXISTS claimed_until TIMESTAMPTZ;
+        PERFORM set_config('lock_timeout', prev_lock_timeout, true);
+    END IF;
+END $$;

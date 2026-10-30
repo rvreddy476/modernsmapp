@@ -48,17 +48,22 @@ var ErrInvalidMessageContent = errors.New("invalid message content")
 // message worker, the dating first-move path). The handler checks the same
 // rules first for a clean 400.
 //
-// Text and media keep exactly the rules they had before post cards existed
-// (the handler owns "text required" / "media_id required" and the 2000-rune
-// cap; scheduled messages have never had a cap). What is new is enforced here
-// for every caller: post_id rides only on a post, a post carries a non-nil
-// post_id and no attachment, its caption obeys the text cap, and an unknown
-// type is refused instead of being stored verbatim.
+// The handler owns "text required" / "media_id required". Enforced here for
+// every caller: the 2000-rune text cap on every type (scheduled messages
+// included, H4), post_id rides only on a post, a post carries a non-nil
+// post_id and no attachment, and an unknown type is refused instead of being
+// stored verbatim.
 func validateMessageContent(msgType, text string, mediaID, postID *uuid.UUID) error {
 	switch msgType {
 	case MessageTypeText, MessageTypeMedia:
 		if postID != nil {
 			return fmt.Errorf("%w: post_id is only allowed on post messages", ErrInvalidMessageContent)
+		}
+		// H4: the cap holds for every caller, not only the HTTP binding —
+		// the scheduled-message worker sends through here, and an
+		// oversized text would ride MessageCreated past Kafka's 1 MiB limit.
+		if utf8.RuneCountInString(text) > MessageTextMaxRunes {
+			return fmt.Errorf("%w: text exceeds %d characters", ErrInvalidMessageContent, MessageTextMaxRunes)
 		}
 	case MessageTypePost:
 		if postID == nil || *postID == uuid.Nil {

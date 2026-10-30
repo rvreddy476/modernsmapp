@@ -80,7 +80,7 @@ type datingTurnsStore interface {
 // before letting the user send another spark.
 func (s *Service) DatingTurnsOwed(ctx context.Context, userID uuid.UUID) (int, error) {
 	if userID == uuid.Nil {
-		return 0, fmt.Errorf("user id is required")
+		return 0, invalidInput("user id is required")
 	}
 	st, ok := s.convStore.(datingTurnsStore)
 	if !ok {

@@ -157,14 +157,14 @@ func (s *Service) SetDisappearingTimer(ctx context.Context, actorID, conversatio
 		return nil, err
 	}
 	if !ok {
-		return nil, errors.New("not a conversation member")
+		return nil, ErrNotMember
 	}
 	conv, err := s.convStore.GetConversation(ctx, conversationID)
 	if err != nil {
 		return nil, err
 	}
 	if conv == nil {
-		return nil, errors.New("conversation not found")
+		return nil, notFound("conversation not found")
 	}
 	if conv.Type != "direct" {
 		if _, _, err := s.requireGroupRole(ctx, conversationID, actorID, "owner", "admin"); err != nil {

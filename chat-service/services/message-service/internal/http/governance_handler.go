@@ -1,8 +1,10 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 
+	"github.com/atpost/chat-message-service/internal/service"
 	"github.com/atpost/chat-shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -21,8 +23,7 @@ func (h *Handler) LeaveConversation(c *gin.Context) {
 		return
 	}
 	if err := h.svc.LeaveConversation(c.Request.Context(), userID, convID); err != nil {
-		h.log.Warn("failed to leave conversation", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to leave conversation", err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "left"}, nil)
@@ -52,8 +53,7 @@ func (h *Handler) TransferOwnership(c *gin.Context) {
 		return
 	}
 	if err := h.svc.TransferOwnershipGoverned(c.Request.Context(), userID, convID, newOwnerID); err != nil {
-		h.log.Warn("failed to transfer ownership", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to transfer ownership", err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ownership transferred"}, nil)
@@ -83,8 +83,7 @@ func (h *Handler) SetMemberRole(c *gin.Context) {
 		return
 	}
 	if err := h.svc.SetMemberRoleGoverned(c.Request.Context(), userID, convID, targetID, req.Role); err != nil {
-		h.log.Warn("failed to set member role", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to set member role", err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "role updated"}, nil)
@@ -115,8 +114,7 @@ func (h *Handler) AcceptGroupInvitation(c *gin.Context) {
 		return
 	}
 	if err := h.svc.AcceptGroupInvitation(c.Request.Context(), userID, invitationID); err != nil {
-		h.log.Warn("failed to accept invitation", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to accept invitation", err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "invitation accepted"}, nil)
@@ -133,8 +131,7 @@ func (h *Handler) DeclineGroupInvitation(c *gin.Context) {
 		return
 	}
 	if err := h.svc.DeclineGroupInvitation(c.Request.Context(), userID, invitationID); err != nil {
-		h.log.Warn("failed to decline invitation", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to decline invitation", err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "invitation declined"}, nil)
@@ -150,8 +147,7 @@ func (h *Handler) BlockMessageRequest(c *gin.Context) {
 		return
 	}
 	if err := h.svc.BlockRequest(c.Request.Context(), userID, convID); err != nil {
-		h.log.Warn("failed to block message request", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to block message request", err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "request blocked"}, nil)
@@ -167,8 +163,7 @@ func (h *Handler) ReportMessageRequest(c *gin.Context) {
 		return
 	}
 	if err := h.svc.ReportRequest(c.Request.Context(), userID, convID); err != nil {
-		h.log.Warn("failed to report message request", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to report message request", err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "request reported"}, nil)
@@ -187,8 +182,14 @@ func (h *Handler) IssueSubscription(c *gin.Context) {
 	}
 	entitlement, err := h.svc.IssueSubscriptionEntitlement(c.Request.Context(), userID, convID)
 	if err != nil {
-		h.log.Warn("failed to issue subscription entitlement", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusForbidden, "SUBSCRIPTION_DENIED", err.Error(), nil, nil)
+		// A non-member keeps the 403 SUBSCRIPTION_DENIED clients act on; an
+		// outage is a retryable 503, never a denial.
+		if errors.Is(err, service.ErrNotMember) {
+			h.log.Warn("subscription entitlement refused", "err", err, "request_id", RequestIDFromContext(c))
+			api.Error(c.Writer, http.StatusForbidden, "SUBSCRIPTION_DENIED", "not a conversation member", nil, nil)
+			return
+		}
+		h.writeServiceError(c, "failed to issue subscription entitlement", err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, entitlement, nil)

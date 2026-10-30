@@ -178,9 +178,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.DELETE("/conversations/:id/members/:userId", h.RemoveMember)
 		v1.PUT("/conversations/:id", h.UpdateConversation)
 		// Messages
-		v1.POST("/conversations/:id/messages", h.SendMessage)
+		v1.POST("/conversations/:id/messages", limitBody(MaxMessageBodyBytes), h.SendMessage)
 		v1.GET("/conversations/:id/messages", h.GetMessages)
-		v1.PATCH("/conversations/:id/messages/:messageId", h.EditMessage)
+		v1.PATCH("/conversations/:id/messages/:messageId", limitBody(MaxMessageBodyBytes), h.EditMessage)
 		v1.DELETE("/conversations/:id/messages/:messageId", h.DeleteMessage)
 		v1.PUT("/conversations/:id/messages/:messageId/reactions", h.ToggleReaction)
 		// Typing & Read receipts
@@ -248,7 +248,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/backup/latest", h.GetLatestChatBackup)
 
 		// Scheduled messages
-		v1.POST("/conversations/:id/scheduled", h.CreateScheduledMessage)
+		v1.POST("/conversations/:id/scheduled", limitBody(MaxMessageBodyBytes), h.CreateScheduledMessage)
 		v1.DELETE("/scheduled/:msgId", h.CancelScheduledMessage)
 		v1.GET("/conversations/:id/scheduled", h.ListScheduledMessages)
 
@@ -437,14 +437,7 @@ func (h *Handler) CreateDirectConversation(c *gin.Context) {
 
 	conv, err := h.svc.CreateDirectConversation(c.Request.Context(), userID, otherID, idempotencyKey)
 	if err != nil {
-		if handled := writeIdempotencyError(c, err); handled {
-			return
-		}
-		if handled := writeMessagingError(c, err); handled {
-			return
-		}
-		h.log.Error("failed to create direct conversation", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to create direct conversation", err)
 		return
 	}
 	// Hidden chats: opening a DM the caller hid returns it redacted (no
@@ -489,11 +482,7 @@ func (h *Handler) CreateGroupConversation(c *gin.Context) {
 	// compatible with existing clients); per-target outcomes ride in `meta`.
 	result, err := h.svc.CreateGroupWithPolicy(c.Request.Context(), userID, req.Title, memberIDs, idempotencyKey)
 	if err != nil {
-		if handled := writeIdempotencyError(c, err); handled {
-			return
-		}
-		h.log.Error("failed to create group conversation", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to create group conversation", err)
 		return
 	}
 
@@ -518,8 +507,7 @@ func (h *Handler) GetConversation(c *gin.Context) {
 
 	conv, err := h.svc.GetConversation(c.Request.Context(), userID, convID)
 	if err != nil {
-		h.log.Warn("failed to get conversation", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to get conversation", err)
 		return
 	}
 
@@ -607,8 +595,7 @@ func (h *Handler) AddMember(c *gin.Context) {
 
 	outcome, err := h.svc.AddMemberWithPolicy(c.Request.Context(), userID, convID, targetID)
 	if err != nil {
-		h.log.Warn("failed to add member", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to add member", err)
 		return
 	}
 
@@ -634,8 +621,7 @@ func (h *Handler) RemoveMember(c *gin.Context) {
 	}
 
 	if err := h.svc.RemoveMemberGoverned(c.Request.Context(), userID, convID, targetID); err != nil {
-		h.log.Warn("failed to remove member", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to remove member", err)
 		return
 	}
 
@@ -680,11 +666,7 @@ func (h *Handler) UpdateConversation(c *gin.Context) {
 	}
 
 	if err := h.svc.UpdateGroupInfoGoverned(c.Request.Context(), userID, convID, req.Title, avatarID, req.Description); err != nil {
-		h.log.Warn("failed to update conversation", "err", err, "request_id", RequestIDFromContext(c))
-		if writeGroupError(c, err) {
-			return
-		}
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to update conversation", err)
 		return
 	}
 
@@ -746,7 +728,7 @@ func (h *Handler) SendMessage(c *gin.Context) {
 
 	var req SendMessageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
+		writeBindError(c, err)
 		return
 	}
 
@@ -802,14 +784,7 @@ func (h *Handler) SendMessage(c *gin.Context) {
 		msg, err = h.svc.SendMessage(c.Request.Context(), userID, convID, req.Type, req.Text, req.MediaID, req.PostID, replyTo, idempotencyKey)
 	}
 	if err != nil {
-		if handled := writeIdempotencyError(c, err); handled {
-			return
-		}
-		if handled := writeMessagingError(c, err); handled {
-			return
-		}
-		h.log.Error("failed to send message", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to send message", err)
 		return
 	}
 
@@ -845,8 +820,7 @@ func (h *Handler) GetMessages(c *gin.Context) {
 
 	msgs, nextCursor, err := h.svc.GetMessages(c.Request.Context(), userID, convID, cursor, limit)
 	if err != nil {
-		h.log.Error("failed to get messages", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to get messages", err)
 		return
 	}
 
@@ -878,7 +852,8 @@ type DeleteMessageRequest struct {
 // `timestamp` is accepted as an alias for `ts` because that is the field
 // name the web client has always sent.
 type EditMessageRequest struct {
-	Text      string     `json:"text" binding:"required"`
+	// Same cap as send (H2/H4); the service enforces it too.
+	Text      string     `json:"text" binding:"required,max=2000"`
 	Bucket    string     `json:"bucket"`
 	Ts        *time.Time `json:"ts"`
 	Timestamp *time.Time `json:"timestamp"`
@@ -911,7 +886,7 @@ func (h *Handler) EditMessage(c *gin.Context) {
 
 	var req EditMessageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
+		writeBindError(c, err)
 		return
 	}
 	ts := req.Ts
@@ -925,8 +900,7 @@ func (h *Handler) EditMessage(c *gin.Context) {
 
 	msg, err := h.svc.EditMessage(c.Request.Context(), userID, convID, msgID, bucketFor(req.Bucket, *ts), *ts, req.Text)
 	if err != nil {
-		h.log.Warn("edit message failed", "err", err, "message_id", msgID, "user_id", userID)
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "edit message failed", err)
 		return
 	}
 
@@ -980,8 +954,7 @@ func (h *Handler) DeleteMessage(c *gin.Context) {
 	}
 
 	if err := h.svc.DeleteMessage(c.Request.Context(), userID, convID, msgID, bucketFor(req.Bucket, req.Ts), req.Ts); err != nil {
-		h.log.Error("failed to delete message", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to delete message", err)
 		return
 	}
 
@@ -1020,8 +993,7 @@ func (h *Handler) ToggleReaction(c *gin.Context) {
 
 	result, err := h.svc.ToggleReaction(c.Request.Context(), userID, convID, msgID, req.Bucket, req.Ts, req.Emoji)
 	if err != nil {
-		h.log.Warn("failed to toggle reaction", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to toggle reaction", err)
 		return
 	}
 
@@ -1041,8 +1013,8 @@ func (h *Handler) GetConversationPresence(c *gin.Context) {
 	}
 	resp, err := h.svc.GetConversationPresence(c.Request.Context(), userID, convID)
 	if err != nil {
-		if err.Error() == "not a member of this conversation" {
-			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil, nil)
+		if errors.Is(err, service.ErrNotMember) {
+			api.Error(c.Writer, http.StatusForbidden, "FORBIDDEN", "not a member of this conversation", nil, nil)
 			return
 		}
 		h.log.Warn("failed to read presence", "err", err, "request_id", RequestIDFromContext(c))
@@ -1167,7 +1139,7 @@ func (h *Handler) CreateDatingMatchConversation(c *gin.Context) {
 	if err != nil {
 		h.log.Warn("dating-match conversation create failed", "err", err, "match_id", matchID,
 			"request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil, nil)
+		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "could not create the dating-match conversation", nil, nil)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, resp, nil)
@@ -1425,8 +1397,7 @@ func (h *Handler) SetTyping(c *gin.Context) {
 		err = h.svc.SetTyping(c.Request.Context(), userID, convID)
 	}
 	if err != nil {
-		h.log.Warn("failed to set typing", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to set typing", err)
 		return
 	}
 
@@ -1454,8 +1425,7 @@ func (h *Handler) MarkRead(c *gin.Context) {
 	}
 
 	if err := h.svc.MarkRead(c.Request.Context(), userID, convID, req.MessageID); err != nil {
-		h.log.Warn("failed to mark read", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to mark read", err)
 		return
 	}
 

@@ -1,7 +1,6 @@
 package http
 
 import (
-	"errors"
 	"net/http"
 	"strconv"
 	"time"
@@ -27,8 +26,7 @@ func (h *Handler) GetConversationSettings(c *gin.Context) {
 
 	settings, err := h.svc.GetSettings(c.Request.Context(), userID, convID)
 	if err != nil {
-		h.log.Warn("failed to get conversation settings", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to get conversation settings", err)
 		return
 	}
 
@@ -86,7 +84,7 @@ func (h *Handler) UpdateConversationSettings(c *gin.Context) {
 	// Fetch current settings first, then merge
 	current, err := h.svc.GetSettings(c.Request.Context(), userID, convID)
 	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to read conversation settings", err)
 		return
 	}
 
@@ -147,8 +145,7 @@ func (h *Handler) UpdateConversationSettings(c *gin.Context) {
 	}
 
 	if err := h.svc.UpdateSettings(c.Request.Context(), current); err != nil {
-		h.log.Warn("failed to update conversation settings", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to update conversation settings", err)
 		return
 	}
 
@@ -182,8 +179,7 @@ func (h *Handler) CreateChatFolder(c *gin.Context) {
 
 	folder, err := h.svc.CreateFolder(c.Request.Context(), userID, req.Name, icon, req.SortOrder)
 	if err != nil {
-		h.log.Error("failed to create chat folder", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to create chat folder", err)
 		return
 	}
 
@@ -220,8 +216,7 @@ func (h *Handler) DeleteChatFolder(c *gin.Context) {
 	}
 
 	if err := h.svc.DeleteFolder(c.Request.Context(), userID, folderID); err != nil {
-		h.log.Warn("failed to delete chat folder", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to delete chat folder", err)
 		return
 	}
 
@@ -258,8 +253,7 @@ func (h *Handler) AddConversationToFolder(c *gin.Context) {
 	}
 
 	if err := h.svc.AddToFolder(c.Request.Context(), userID, folderID, convID); err != nil {
-		h.log.Warn("failed to add conversation to folder", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to add conversation to folder", err)
 		return
 	}
 
@@ -287,8 +281,7 @@ func (h *Handler) RemoveConversationFromFolder(c *gin.Context) {
 	}
 
 	if err := h.svc.RemoveFromFolder(c.Request.Context(), userID, folderID, convID); err != nil {
-		h.log.Warn("failed to remove conversation from folder", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to remove conversation from folder", err)
 		return
 	}
 
@@ -325,8 +318,7 @@ func (h *Handler) PinMessage(c *gin.Context) {
 
 	pin, err := h.svc.PinMessageSvc(c.Request.Context(), userID, convID, messageID)
 	if err != nil {
-		h.log.Warn("failed to pin message", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to pin message", err)
 		return
 	}
 
@@ -351,14 +343,7 @@ func (h *Handler) UnpinMessage(c *gin.Context) {
 	}
 
 	if err := h.svc.UnpinMessageSvc(c.Request.Context(), userID, convID, pinID); err != nil {
-		// Not a member, or a pin of another conversation: the same 404, so
-		// the route never confirms that a pin id exists elsewhere.
-		if errors.Is(err, service.ErrNotMember) || errors.Is(err, service.ErrPinNotFound) {
-			api.Error(c.Writer, http.StatusNotFound, "NOT_FOUND", "pin not found", nil, nil)
-			return
-		}
-		h.log.Warn("failed to unpin message", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to unpin message", err)
 		return
 	}
 
@@ -377,8 +362,7 @@ func (h *Handler) GetConversationPins(c *gin.Context) {
 
 	pins, err := h.svc.GetPins(c.Request.Context(), userID, convID)
 	if err != nil {
-		h.log.Warn("failed to get conversation pins", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to get conversation pins", err)
 		return
 	}
 
@@ -451,8 +435,7 @@ func (h *Handler) AcceptMessageRequest(c *gin.Context) {
 	}
 
 	if err := h.svc.AcceptRequest(c.Request.Context(), userID, convID); err != nil {
-		h.log.Warn("failed to accept message request", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to accept message request", err)
 		return
 	}
 
@@ -470,8 +453,7 @@ func (h *Handler) DeclineMessageRequest(c *gin.Context) {
 	}
 
 	if err := h.svc.DeclineRequest(c.Request.Context(), userID, convID); err != nil {
-		h.log.Warn("failed to decline message request", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to decline message request", err)
 		return
 	}
 
@@ -506,8 +488,7 @@ func (h *Handler) StarMessage(c *gin.Context) {
 
 	starred, err := h.svc.StarMessageSvc(c.Request.Context(), userID, convID, messageID, req.MessagePreview)
 	if err != nil {
-		h.log.Warn("failed to star message", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to star message", err)
 		return
 	}
 
@@ -528,8 +509,7 @@ func (h *Handler) UnstarMessage(c *gin.Context) {
 	}
 
 	if err := h.svc.UnstarMessageSvc(c.Request.Context(), userID, messageID); err != nil {
-		h.log.Warn("failed to unstar message", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to unstar message", err)
 		return
 	}
 
@@ -613,8 +593,9 @@ func (h *Handler) GetLatestChatBackup(c *gin.Context) {
 // --- Scheduled Messages ---
 
 type CreateScheduledMessageRequest struct {
-	Type    string     `json:"type" binding:"required,oneof=text media"`
-	Content string     `json:"content"`
+	Type string `json:"type" binding:"required,oneof=text media"`
+	// Same cap as send (H4); the service enforces it too.
+	Content string     `json:"content" binding:"max=2000"`
 	MediaID *uuid.UUID `json:"media_id"`
 	SendAt  time.Time  `json:"send_at" binding:"required"`
 }
@@ -631,7 +612,7 @@ func (h *Handler) CreateScheduledMessage(c *gin.Context) {
 
 	var req CreateScheduledMessageRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid request body", err.Error(), nil)
+		writeBindError(c, err)
 		return
 	}
 
@@ -642,8 +623,7 @@ func (h *Handler) CreateScheduledMessage(c *gin.Context) {
 
 	msg, err := h.svc.CreateScheduledMessage(c.Request.Context(), convID, userID, req.Type, req.Content, req.MediaID, req.SendAt)
 	if err != nil {
-		h.log.Warn("failed to create scheduled message", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to create scheduled message", err)
 		return
 	}
 
@@ -664,8 +644,7 @@ func (h *Handler) CancelScheduledMessage(c *gin.Context) {
 	}
 
 	if err := h.svc.CancelScheduledMessageSvc(c.Request.Context(), userID, msgID); err != nil {
-		h.log.Warn("failed to cancel scheduled message", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to cancel scheduled message", err)
 		return
 	}
 
@@ -684,8 +663,7 @@ func (h *Handler) ListScheduledMessages(c *gin.Context) {
 
 	msgs, err := h.svc.ListScheduledMessagesSvc(c.Request.Context(), userID, convID)
 	if err != nil {
-		h.log.Warn("failed to list scheduled messages", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeServiceError(c, "failed to list scheduled messages", err)
 		return
 	}
 

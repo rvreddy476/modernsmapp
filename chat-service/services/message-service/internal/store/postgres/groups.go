@@ -29,6 +29,10 @@ var ErrRoleNotPermitted = errors.New("role does not permit this group mutation")
 // membership row.
 var ErrNotAMember = errors.New("target user is not a conversation member")
 
+// ErrNewOwnerNotMember is returned by TransferOwnership when the named new
+// owner holds no active membership row.
+var ErrNewOwnerNotMember = errors.New("new owner must be an active member")
+
 // ErrOwnerMustTransferStore is returned by LeaveGoverned when the owner tries
 // to leave a group that still has other active members.
 var ErrOwnerMustTransferStore = errors.New("transfer ownership before leaving the group")
@@ -535,7 +539,7 @@ func (s *ConversationStore) TransferOwnership(ctx context.Context, conversationI
 	`, conversationID, toUserID).Scan(&toRole)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
-			return errors.New("new owner must be an active member")
+			return ErrNewOwnerNotMember
 		}
 		return err
 	}

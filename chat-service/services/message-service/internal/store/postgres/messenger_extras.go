@@ -3,6 +3,8 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
+	"sort"
 	"time"
 
 	"github.com/atpost/chat-message-service/internal/contentcrypt"
@@ -356,19 +358,51 @@ func (s *ConversationStore) GetFolderConversations(ctx context.Context, folderID
 
 // --- Pins ---
 
+// MaxPinsPerConversation is the pin cap per conversation.
+const MaxPinsPerConversation = 3
+
+// ErrPinLimitReached is a pin past MaxPinsPerConversation.
+var ErrPinLimitReached = errors.New("maximum 3 pinned messages per conversation")
+
+// PinMessage pins messageID in convID. The count and the insert run in one
+// transaction holding the conversation row lock (the same lock object as
+// the member cap), so two concurrent pins can no longer both read count = 2
+// and overshoot the cap. Pinning an already pinned message returns the
+// existing pin instead of a duplicate row that would use up the cap.
 func (s *ConversationStore) PinMessage(ctx context.Context, convID, messageID, pinnedBy uuid.UUID) (*ConversationPin, error) {
-	// Enforce max 3 pins per conversation
-	var count int
-	err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM chat.conversation_pins WHERE conversation_id = $1`, convID).Scan(&count)
+	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
 	}
-	if count >= 3 {
-		return nil, errors.New("maximum 3 pinned messages per conversation")
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	var locked uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT id FROM chat.conversations WHERE id = $1 FOR UPDATE`, convID).Scan(&locked); err != nil {
+		return nil, err
 	}
 
 	var pin ConversationPin
-	err = s.db.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
+		SELECT id, conversation_id, message_id, pinned_by, pinned_at
+		FROM chat.conversation_pins WHERE conversation_id = $1 AND message_id = $2
+		ORDER BY pinned_at ASC LIMIT 1
+	`, convID, messageID).Scan(&pin.ID, &pin.ConversationID, &pin.MessageID, &pin.PinnedBy, &pin.PinnedAt)
+	if err == nil {
+		return &pin, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+
+	var count int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM chat.conversation_pins WHERE conversation_id = $1`, convID).Scan(&count); err != nil {
+		return nil, err
+	}
+	if count >= MaxPinsPerConversation {
+		return nil, ErrPinLimitReached
+	}
+
+	err = tx.QueryRow(ctx, `
 		INSERT INTO chat.conversation_pins (conversation_id, message_id, pinned_by)
 		VALUES ($1, $2, $3)
 		RETURNING id, conversation_id, message_id, pinned_by, pinned_at
@@ -376,6 +410,9 @@ func (s *ConversationStore) PinMessage(ctx context.Context, convID, messageID, p
 		&pin.ID, &pin.ConversationID, &pin.MessageID, &pin.PinnedBy, &pin.PinnedAt,
 	)
 	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	return &pin, nil
@@ -692,9 +729,22 @@ func (s *ConversationStore) GetLatestChatBackup(ctx context.Context, userID uuid
 
 // --- Scheduled Messages ---
 
+// MaxPendingScheduledPerUser caps the scheduled messages one user may have
+// pending at once (audit M2, 30 Oct 2026). Without it one account could
+// queue 100,000 messages for the same minute and starve everyone else's.
+const MaxPendingScheduledPerUser = 100
+
+// ErrScheduledMessageLimit is a schedule past MaxPendingScheduledPerUser.
+var ErrScheduledMessageLimit = fmt.Errorf("too many pending scheduled messages (limit %d)", MaxPendingScheduledPerUser)
+
 // CreateScheduledMessage stores a message to send later, its content sealed.
 // The id is drawn here rather than by the database because the content is
 // bound to it.
+//
+// The pending-count check and the insert are one statement inside a
+// transaction that holds a per-sender advisory lock, so two concurrent
+// requests cannot both pass the cap. ErrScheduledMessageLimit when the
+// sender already has MaxPendingScheduledPerUser pending.
 func (s *ConversationStore) CreateScheduledMessage(ctx context.Context, m *ScheduledMessage) (*ScheduledMessage, error) {
 	if m.ID == uuid.Nil {
 		m.ID = uuid.New()
@@ -703,16 +753,32 @@ func (s *ConversationStore) CreateScheduledMessage(ctx context.Context, m *Sched
 	if err != nil {
 		return nil, err
 	}
-	err = s.db.QueryRow(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('chat.scheduled_messages:' || $1::text, 0))`, m.SenderID.String()); err != nil {
+		return nil, err
+	}
+	err = tx.QueryRow(ctx, `
 		INSERT INTO chat.scheduled_messages (id, conversation_id, sender_id, type, content, media_id, send_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		SELECT $1, $2, $3, $4, $5, $6, $7
+		WHERE (SELECT COUNT(*) FROM chat.scheduled_messages
+		       WHERE sender_id = $3 AND status = 'pending') < $8
 		RETURNING id, conversation_id, sender_id, type, content, media_id, send_at, status,
 		          attempt_count, next_attempt_at, last_error, failed_at, created_at
-	`, m.ID, m.ConversationID, m.SenderID, m.Type, content, m.MediaID, m.SendAt).Scan(
+	`, m.ID, m.ConversationID, m.SenderID, m.Type, content, m.MediaID, m.SendAt, MaxPendingScheduledPerUser).Scan(
 		&m.ID, &m.ConversationID, &m.SenderID, &m.Type, &m.Content, &m.MediaID, &m.SendAt, &m.Status,
 		&m.AttemptCount, &m.NextAttemptAt, &m.LastError, &m.FailedAt, &m.CreatedAt,
 	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrScheduledMessageLimit
+	}
 	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	if err := s.openScheduled(ctx, m); err != nil {
@@ -741,15 +807,54 @@ func (s *ConversationStore) CancelScheduledMessage(ctx context.Context, id, send
 	return err
 }
 
+// Scheduled-message claiming (audit M2, 30 Oct 2026).
+const (
+	// ScheduledClaimLease is how long a claimed row is reserved for the
+	// replica sending it; a replica that dies mid-send releases its rows
+	// when the lease runs out.
+	ScheduledClaimLease = 2 * time.Minute
+	// ScheduledPerSenderPerClaim is the most rows one sender gets in one
+	// claim, so one sender's backlog cannot fill a whole batch. It also
+	// keeps a sender under the send path's DM rate limit.
+	ScheduledPerSenderPerClaim = 10
+	// scheduledClaimWindow bounds how many of the earliest due rows one
+	// claim looks at (in multiples of the limit) before picking fairly.
+	scheduledClaimWindow = 20
+)
+
+// GetPendingScheduledMessages claims up to limit due scheduled messages for
+// this replica and returns them, earliest due first.
+//
+// Fairness and replicas: the earliest due rows not leased by another replica
+// are locked with FOR UPDATE SKIP LOCKED (so concurrent claims never share a
+// row), at most ScheduledPerSenderPerClaim per sender are picked, and the
+// picked rows get a ScheduledClaimLease. Each sender's backlog is capped at
+// MaxPendingScheduledPerUser, so the look-ahead window always spans many
+// senders.
 func (s *ConversationStore) GetPendingScheduledMessages(ctx context.Context, before time.Time, limit int) ([]ScheduledMessage, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, conversation_id, sender_id, type, content, media_id, send_at, status,
-		       attempt_count, next_attempt_at, last_error, failed_at, created_at
-		FROM chat.scheduled_messages
-		WHERE status = 'pending' AND COALESCE(next_attempt_at, send_at) <= $1
-		ORDER BY COALESCE(next_attempt_at, send_at) ASC
-		LIMIT $2
-	`, before, limit)
+		WITH due AS (
+			SELECT id, sender_id, COALESCE(next_attempt_at, send_at) AS due_at
+			FROM chat.scheduled_messages
+			WHERE status = 'pending' AND COALESCE(next_attempt_at, send_at) <= $1
+			  AND (claimed_until IS NULL OR claimed_until <= NOW())
+			ORDER BY COALESCE(next_attempt_at, send_at)
+			LIMIT $3
+			FOR UPDATE SKIP LOCKED
+		), ranked AS (
+			SELECT id, due_at,
+			       row_number() OVER (PARTITION BY sender_id ORDER BY due_at, id) AS rn
+			FROM due
+		), picked AS (
+			SELECT id FROM ranked WHERE rn <= $4 ORDER BY due_at, id LIMIT $2
+		)
+		UPDATE chat.scheduled_messages m
+		SET claimed_until = NOW() + make_interval(secs => $5::float8)
+		FROM picked
+		WHERE m.id = picked.id
+		RETURNING m.id, m.conversation_id, m.sender_id, m.type, m.content, m.media_id, m.send_at, m.status,
+		          m.attempt_count, m.next_attempt_at, m.last_error, m.failed_at, m.created_at
+	`, before, limit, limit*scheduledClaimWindow, ScheduledPerSenderPerClaim, ScheduledClaimLease.Seconds())
 	if err != nil {
 		return nil, err
 	}
@@ -768,13 +873,25 @@ func (s *ConversationStore) GetPendingScheduledMessages(ctx context.Context, bef
 		}
 		out = append(out, m)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// RETURNING carries no order.
+	sort.SliceStable(out, func(i, j int) bool { return scheduledDue(out[i]).Before(scheduledDue(out[j])) })
+	return out, nil
+}
+
+func scheduledDue(m ScheduledMessage) time.Time {
+	if m.NextAttemptAt != nil {
+		return *m.NextAttemptAt
+	}
+	return m.SendAt
 }
 
 func (s *ConversationStore) MarkScheduledMessageSent(ctx context.Context, id uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE chat.scheduled_messages
-		SET status = 'sent', last_error = NULL, next_attempt_at = NULL
+		SET status = 'sent', last_error = NULL, next_attempt_at = NULL, claimed_until = NULL
 		WHERE id = $1 AND status = 'pending'
 	`, id)
 	return err
@@ -796,7 +913,8 @@ func (s *ConversationStore) RecordScheduledMessageFailure(ctx context.Context, i
 		    next_attempt_at = CASE
 		        WHEN attempt_count + 1 >= $3 THEN NULL
 		        ELSE NOW() + LEAST(INTERVAL '5 minutes', INTERVAL '15 seconds' * power(2, attempt_count)::int)
-		    END
+		    END,
+		    claimed_until = NULL
 		WHERE id = $1 AND status = 'pending'
 	`, id, failure, maxAttempts)
 	return err

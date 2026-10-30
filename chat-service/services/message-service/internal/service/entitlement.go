@@ -46,7 +46,7 @@ func (s *Service) IssueSubscriptionEntitlement(ctx context.Context, userID, conv
 		return nil, err
 	}
 	if !ok {
-		return nil, errors.New("not a conversation member")
+		return nil, ErrNotMember
 	}
 	// The membership generation (re-verification P0-4, hardened by the final
 	// verification): tokens carry the active row's SEQUENCE generation —
@@ -58,7 +58,7 @@ func (s *Service) IssueSubscriptionEntitlement(ctx context.Context, userID, conv
 	gen, err := s.groupStore().GetMemberGen(ctx, conversationID, userID)
 	if err != nil {
 		if errors.Is(err, postgres.ErrNotAMember) {
-			return nil, errors.New("not a conversation member")
+			return nil, ErrNotMember
 		}
 		return nil, err
 	}

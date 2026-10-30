@@ -132,7 +132,11 @@ func TestSendPostServiceRefusalsMapLikeText(t *testing.T) {
 		{service.ErrAwaitingRequestAcceptance, http.StatusConflict},
 		{service.ErrMessagingNotAllowed, http.StatusForbidden},
 		{fmt.Errorf("%w: post_id is required", service.ErrInvalidMessageContent), http.StatusBadRequest},
-		{errors.New("not a conversation member"), http.StatusBadRequest},
+		// C1: a membership refusal is the shared sentinel and a 404 (the
+		// parity shape); an unclassified failure is a retryable 503, never
+		// a 400 a client would treat as final.
+		{service.ErrNotMember, http.StatusNotFound},
+		{errors.New("pgx: connection reset"), http.StatusServiceUnavailable},
 	}
 	for _, tc := range cases {
 		w := postSend(t, sendRouter(&stubSendService{err: tc.err}), body)

@@ -152,7 +152,7 @@ type directChatStateStore interface {
 // propagate; graph-service fails closed on them.
 func (s *Service) DirectChatAccepted(ctx context.Context, userA, userB uuid.UUID) (bool, error) {
 	if userA == uuid.Nil || userB == uuid.Nil {
-		return false, errors.New("two user ids are required")
+		return false, invalidInput("two user ids are required")
 	}
 	if userA == userB {
 		return false, nil

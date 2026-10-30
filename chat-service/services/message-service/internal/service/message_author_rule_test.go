@@ -42,6 +42,9 @@ func authorRuleFixture(convType string, sender uuid.UUID, members map[uuid.UUID]
 	f.roles[convID] = map[uuid.UUID]string{}
 	for userID, role := range members {
 		f.roles[convID][userID] = role
+		// Edit runs the send gates (H2): every member's chat policy must be
+		// known and not paused for an edit to go through.
+		f.freshPolicy(userID, false)
 	}
 	msg := &scylla.Message{
 		MsgID: uuid.New(), ConversationID: convID, SenderID: sender,
