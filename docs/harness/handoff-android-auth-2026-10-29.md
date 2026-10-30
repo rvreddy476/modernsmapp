@@ -121,3 +121,42 @@ lengthens HLS segment signatures; until it ships, re-prepare on a 403. Fix:
    automatically, and don't re-upload the whole file when only confirm failed.
 
 Unit tests for each; report the `android.sh --full` RESULT block.
+
+---
+
+## Fourth Android lane: long videos / Tube (30 Oct 2026)
+
+Run after the reels lane. Scope: `mobile/android/feature/tube`, plus the
+`core/media` and `core/feed` pieces it uses. The audit with exact lines is
+`docs/harness/audit-2026-10-30-tube-android.md`. Fix:
+
+1. **H1, any playback error leaves the player dead, including expired
+   segment URLs (403).** Server segment URLs now live 2x the duration +
+   15 min (max 2 h), so a 2.5 h video or a long pause hits 403.
+   `WatchViewModel.kt` ~339-366 has no `onPlayerError`, and `togglePlay`
+   (~754-762) never calls `prepare()`. Add `onPlayerError` that rebuilds the
+   media source (fetching the playlists again), prepares, seeks back and caps
+   attempts; make Play call `prepare()` when idle with an error; show an
+   error state with Retry (`WatchControls.kt` ~217, `VideoLoading.kt` ~297-302).
+2. **H2, privacy: account A's History / Watch later / Liked shows in B's
+   Up next after sign-out and sign-in.** `TubeQueue.kt` ~21-31 is a singleton
+   never cleared. Add a sign-out teardown task (`AuthRepository.kt` ~309) that
+   clears it, or key it by viewer id. Mutation-check this guard.
+3. **M1** audio focus and becoming-noisy handling (`MediaModule.kt`
+   ~113-125, `WatchViewModel.kt` ~296-299). **M2** stacked Watch screens each
+   keep a prepared player (`TubeNavigation.kt` ~263, `WatchViewModel.kt`
+   ~831-839): `stop()` on stop and re-prepare on start, or single-top.
+   **M3** analytics view not reopened after backgrounding (`WatchViewModel.kt`
+   ~831-839, `WatchScreen.kt` ~669-679), so creators lose credited views.
+   **M4** a long upload stops for good after ~31 s offline
+   (`ResumableUploader.kt` ~241, ~295-323, `ReelPublishWorker.kt` ~115-117):
+   return `Result.retry()` while a resumable session exists. **M5** page
+   Collections / Watch later / Liked (`VideoLibraryRepository.kt` ~136-145)
+   and bound `HashtagPostHydrator.kt` ~75-78 concurrency; the server now caps
+   and paginates playlist items.
+4. **Lows L1-L7** as listed in the audit (old video playing behind
+   "Loading", membership-reload race, sheets drawn into PiP, Clear all undone
+   by Load more, age-restriction message, per-account history pause, a longer
+   buffer profile for long video).
+
+Unit tests for each; report the `android.sh --full` RESULT block.
