@@ -19,10 +19,9 @@ import (
 // over the title. Each search word must match the start of a word in the
 // question ("sal" finds "salary"), in any order.
 //
-// The search text is reduced to letters and digits (SearchText) and bounded
-// in words and length; the database splits it with the same parser as the
-// document and quotes every lexeme, so nothing the caller sends is ever
-// parsed as tsquery syntax.
+// The search text is reduced to letters and digits and bounded in words and
+// length (SearchTerms), so nothing the caller sends is ever parsed as
+// tsquery syntax (PrefixTSQuery).
 
 const (
 	// maxSearchTerms bounds the words one query matches on.
@@ -60,14 +59,26 @@ func SearchText(q string) string {
 	return strings.Join(SearchTerms(q), " ")
 }
 
-// prefixQuerySQL turns the search text in arg into a tsquery that matches
-// every word as a word prefix. The words are split by the same text search
-// parser that built the indexed document (so "1e5abc" or "tok-42" split the
-// same way on both sides), each lexeme is quoted (never parsed as tsquery
-// syntax) and suffixed with :*, and at most maxSearchTerms are used.
+// PrefixTSQuery is the to_tsquery text for q: every word of SearchTerms as
+// a word prefix ("w:*"), all required; "" when there is nothing to search
+// for. The words are letters and digits only, so the text carries no
+// tsquery syntax beyond what this adds; to_tsquery then runs each word
+// through the same parser as the indexed document (a word it splits, such
+// as "1e5abc", becomes adjacent lexemes on both sides).
+func PrefixTSQuery(q string) string {
+	terms := SearchTerms(q)
+	for i, t := range terms {
+		terms[i] = t + ":*"
+	}
+	return strings.Join(terms, " & ")
+}
+
+// prefixQuerySQL is the tsquery for the PrefixTSQuery text bound at arg.
+// to_tsquery(regconfig, text) is immutable, so with a bound parameter the
+// predicate is a plain indexable "document @@ constant" (the earlier
+// subquery form kept the planner off the GIN index in CI).
 func prefixQuerySQL(arg string) string {
-	return `(SELECT string_agg(quote_literal(l.lexeme) || ':*', ' & ') FROM (SELECT lexeme FROM unnest(to_tsvector('simple', ` +
-		arg + `)) LIMIT ` + fmt.Sprint(maxSearchTerms) + `) l)::tsquery`
+	return "to_tsquery('simple', " + arg + ")"
 }
 
 // searchMatchSQL is the indexed title-and-body predicate over alias for the

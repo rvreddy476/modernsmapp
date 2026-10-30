@@ -169,3 +169,24 @@ func (s *Store) recountCommunityStats(ctx context.Context, communityID uuid.UUID
 	}
 	return tx.Commit(ctx)
 }
+
+// questionTopicIDsTx reads a question's topic ids and closes the rows before
+// returning, so the caller may write on the same transaction (a pgx
+// connection cannot run a statement while a result set is still open: "conn
+// busy"; it broke every answer and every view in a community).
+func questionTopicIDsTx(ctx context.Context, exec dbtx, questionID uuid.UUID) ([]uuid.UUID, error) {
+	rows, err := exec.Query(ctx, `SELECT topic_id FROM question_topics WHERE question_id = $1`, questionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	return ids, rows.Err()
+}

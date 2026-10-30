@@ -40,18 +40,24 @@ func TestSearchTextIsBoundedAndInert(t *testing.T) {
 }
 
 func TestSearchPredicatesUseTheIndexedExpressions(t *testing.T) {
-	if got := searchMatchSQL("q", "$1"); !strings.HasPrefix(got, "to_tsvector('simple', left(coalesce(q.title, '') || ' ' || coalesce(q.body, ''), 100000)) @@ (SELECT") {
+	if got := searchMatchSQL("q", "$1"); !strings.HasPrefix(got, "to_tsvector('simple', left(coalesce(q.title, '') || ' ' || coalesce(q.body, ''), 100000)) @@ to_tsquery('simple', $1)") {
 		t.Fatalf("search predicate %q", got)
 	}
-	if got := titleMatchSQL("q", "$2"); !strings.HasPrefix(got, "to_tsvector('simple', coalesce(q.title, '')) @@ (SELECT") {
+	if got := titleMatchSQL("q", "$2"); !strings.HasPrefix(got, "to_tsvector('simple', coalesce(q.title, '')) @@ to_tsquery('simple', $2)") {
 		t.Fatalf("title predicate %q", got)
 	}
-	// The caller's text only ever reaches to_tsvector as a bind parameter,
-	// and every lexeme is quoted before it becomes a tsquery.
-	q := prefixQuerySQL("$7")
-	for _, want := range []string{"to_tsvector('simple', $7)", "quote_literal(l.lexeme) || ':*'", "LIMIT 8", ")::tsquery"} {
-		if !strings.Contains(q, want) {
-			t.Errorf("prefix query %q lacks %q", q, want)
+	// The caller's text only ever reaches to_tsquery as a bind parameter.
+	if q := prefixQuerySQL("$7"); q != "to_tsquery('simple', $7)" {
+		t.Errorf("prefix query %q", q)
+	}
+	cases := map[string]string{
+		"How to cook Rice?":        "how:* & to:* & cook:* & rice:*",
+		"a & b | !c ) ( ' : * <->": "a:* & b:* & c:*",
+		"!!!":                      "",
+	}
+	for in, want := range cases {
+		if got := PrefixTSQuery(in); got != want {
+			t.Errorf("PrefixTSQuery(%q) = %q, want %q", in, got, want)
 		}
 	}
 }

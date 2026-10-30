@@ -181,20 +181,33 @@ func TestContentIT_OnlineIndexesAreBuiltAndUsed(t *testing.T) {
 	if _, err := tx.Exec(r.ctx, `SET LOCAL enable_seqscan = off`); err != nil {
 		t.Fatal(err)
 	}
-	var plan strings.Builder
-	rows, err := tx.Query(r.ctx, `EXPLAIN SELECT q.id FROM questions q WHERE q.deleted_at IS NULL AND `+searchMatchSQL("q", "$1"), "salary")
-	if err != nil {
-		t.Fatalf("explain: %v", err)
+	// With sequential scans priced out, the planner takes the index only if
+	// the predicate can use it at all; on a near-empty CI table it would
+	// otherwise rightly prefer a scan. Both search predicates are checked.
+	explain := func(name, pred string) {
+		t.Helper()
+		var plan strings.Builder
+		rows, err := tx.Query(r.ctx, `EXPLAIN SELECT q.id FROM questions q WHERE q.deleted_at IS NULL AND `+pred, PrefixTSQuery("salary"))
+		if err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				t.Fatalf("explain row: %v", err)
+			}
+			plan.WriteString(line + "\n")
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
+			t.Fatalf("explain: %v", err)
+		}
+		if !strings.Contains(plan.String(), name) {
+			t.Fatalf("search does not use %s:\n%s", name, plan.String())
+		}
 	}
-	for rows.Next() {
-		var line string
-		_ = rows.Scan(&line)
-		plan.WriteString(line + "\n")
-	}
-	rows.Close()
-	if !strings.Contains(plan.String(), "idx_questions_search_tsv") {
-		t.Fatalf("search does not use its index:\n%s", plan.String())
-	}
+	explain("idx_questions_search_tsv", searchMatchSQL("q", "$1"))
+	explain("idx_questions_title_tsv", titleMatchSQL("q", "$1"))
 }
 
 // M6: words match as prefixes in title or body, in any order; LIKE

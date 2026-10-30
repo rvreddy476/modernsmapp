@@ -285,17 +285,13 @@ func (s *Store) syncCommunityAnswerStatsTx(ctx context.Context, exec dbtx, commu
 }
 
 func (s *Store) bumpCommunityTopicAnswerCountTx(ctx context.Context, exec dbtx, communityID, questionID uuid.UUID) error {
-	rows, err := exec.Query(ctx, `SELECT topic_id FROM question_topics WHERE question_id = $1`, questionID)
+	// Read every topic first: an Exec on the transaction while its rows
+	// are still open fails with "conn busy".
+	topicIDs, err := questionTopicIDsTx(ctx, exec, questionID)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var topicID uuid.UUID
-		if err := rows.Scan(&topicID); err != nil {
-			return err
-		}
+	for _, topicID := range topicIDs {
 		if _, err := exec.Exec(ctx, `
 			INSERT INTO community_topic_affinity (community_id, topic_id, answer_count, affinity_score)
 			VALUES ($1, $2, 1, 0.5)
@@ -312,5 +308,5 @@ func (s *Store) bumpCommunityTopicAnswerCountTx(ctx context.Context, exec dbtx, 
 			return err
 		}
 	}
-	return rows.Err()
+	return nil
 }

@@ -627,7 +627,7 @@ func (s *Store) GetSimilarQuestions(ctx context.Context, title string, viewerID 
 		limit = 5
 	}
 	// Indexed title match (search_match.go, audit M6).
-	tsq := SearchText(title)
+	tsq := PrefixTSQuery(title)
 	if tsq == "" {
 		return nil, nil
 	}
@@ -653,7 +653,7 @@ func (s *Store) SearchQuestions(ctx context.Context, q string, communityID, topi
 		limit = 20
 	}
 
-	tsq := SearchText(q)
+	tsq := PrefixTSQuery(q)
 	if tsq == "" {
 		return nil, nil
 	}
@@ -808,17 +808,13 @@ func (s *Store) bumpCommunityTopicAffinityForQuestionTx(ctx context.Context, exe
 }
 
 func (s *Store) bumpCommunityTopicViewCountTx(ctx context.Context, exec dbtx, communityID, questionID uuid.UUID) error {
-	rows, err := exec.Query(ctx, `SELECT topic_id FROM question_topics WHERE question_id = $1`, questionID)
+	// Read every topic first: an Exec on the transaction while its rows
+	// are still open fails with "conn busy".
+	topicIDs, err := questionTopicIDsTx(ctx, exec, questionID)
 	if err != nil {
 		return err
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var topicID uuid.UUID
-		if err := rows.Scan(&topicID); err != nil {
-			return err
-		}
+	for _, topicID := range topicIDs {
 		if _, err := exec.Exec(ctx, `
 			INSERT INTO community_topic_affinity (community_id, topic_id, view_count, affinity_score)
 			VALUES ($1, $2, 1, 0.05)
@@ -835,7 +831,7 @@ func (s *Store) bumpCommunityTopicViewCountTx(ctx context.Context, exec dbtx, co
 			return err
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 func generateSlug(title string, id uuid.UUID) string {
