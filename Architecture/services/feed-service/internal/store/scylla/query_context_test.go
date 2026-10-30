@@ -4,6 +4,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -14,16 +16,20 @@ import (
 // between — ignores the context.
 func TestEveryQueryCarriesTheContext(t *testing.T) {
 	fset := token.NewFileSet()
-	pkgs, err := parser.ParseDir(fset, ".", nil, 0)
+	names, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
 	}
 	checked := 0
-	for _, pkg := range pkgs {
-		for name, file := range pkg.Files {
-			if len(name) > 8 && name[len(name)-8:] == "_test.go" {
-				continue
-			}
+	for _, name := range names {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		file, err := parser.ParseFile(fset, name, nil, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		{
 			ast.Inspect(file, func(n ast.Node) bool {
 				call, ok := n.(*ast.CallExpr)
 				if !ok {
