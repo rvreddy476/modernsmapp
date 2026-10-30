@@ -4,7 +4,6 @@ import (
 	"context"
 	"log"
 	"strings"
-	"sync"
 
 	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/google/uuid"
@@ -47,13 +46,14 @@ func batchVisibilityAllowsEdges(visibility string, edges followEdges) bool {
 	}
 }
 
-// followedAuthorsLookupConcurrency bounds the graph lookups one batch page
-// may have in flight.
-const followedAuthorsLookupConcurrency = 8
+// relationshipBatchMax mirrors graph-service's per-call ceiling on
+// POST /v1/graph/relationships/batch (store.MaxRelationshipBatch); a larger
+// batch is refused with 400, never truncated, so the caller chunks.
+const relationshipBatchMax = 100
 
 // followedAuthorsOfFollowersPosts answers "does the viewer follow this
 // author" for every author of a `followers` post on the page that the viewer
-// did not write — one graph lookup per distinct author, run concurrently.
+// did not write — one batched graph lookup for the page's authors.
 // An author whose lookup fails is absent from the result, so their
 // followers-only posts are dropped: fail closed, as in viewerMayViewPost.
 // An anonymous viewer follows nobody.
@@ -84,10 +84,14 @@ func restrictedAudience(visibility string) bool {
 }
 
 // followEdgesOfRestrictedPosts is followedAuthorsOfFollowersPosts for both
-// restricted audiences: one graph lookup per distinct author of a followers
-// or friends post the viewer did not write, run concurrently, answering both
-// edges. An author whose lookup fails is absent from the result, so their
-// restricted posts are dropped: fail closed. An anonymous viewer has no edges.
+// restricted audiences: the viewer's edges with every distinct author of a
+// followers or friends post the viewer did not write, answering both edges.
+//
+// One POST /v1/graph/relationships/batch per 100 authors (2026-10-30 audit
+// B8) instead of one GET /v1/graph/relationship per author. Fail closed: a
+// chunk whose call fails, an author the graph did not answer for, and an
+// author with a block in either direction are all absent from the result, so
+// their restricted posts are dropped. An anonymous viewer has no edges.
 func (s *Service) followEdgesOfRestrictedPosts(ctx context.Context, posts []postgres.Post, viewerID *uuid.UUID) map[uuid.UUID]followEdges {
 	out := map[uuid.UUID]followEdges{}
 	if viewerID == nil {
@@ -108,28 +112,37 @@ func (s *Service) followEdgesOfRestrictedPosts(ctx context.Context, posts []post
 	if len(authors) == 0 {
 		return out
 	}
-
-	var (
-		mu  sync.Mutex
-		wg  sync.WaitGroup
-		sem = make(chan struct{}, followedAuthorsLookupConcurrency)
-	)
-	for _, author := range authors {
-		wg.Add(1)
-		sem <- struct{}{}
-		go func(author uuid.UUID) {
-			defer wg.Done()
-			defer func() { <-sem }()
-			follows, followedBy, err := s.fetchFollowEdges(ctx, *viewerID, author)
-			if err != nil {
-				log.Printf("Warning: batch visibility graph lookup failed; hiding restricted posts by %s: %v", author, err)
-				return
-			}
-			mu.Lock()
-			out[author] = followEdges{follows: follows, followedBy: followedBy}
-			mu.Unlock()
-		}(author)
+	if s.graphServiceURL == "" {
+		// No policy configured: the dev-rig rule fetchFollowEdges applies.
+		for _, author := range authors {
+			out[author] = followEdges{follows: true, followedBy: true}
+		}
+		return out
 	}
-	wg.Wait()
+
+	client := s.privacyGraphClient()
+	for start := 0; start < len(authors); start += relationshipBatchMax {
+		end := start + relationshipBatchMax
+		if end > len(authors) {
+			end = len(authors)
+		}
+		chunk := authors[start:end]
+		ids := make([]string, len(chunk))
+		for i, id := range chunk {
+			ids[i] = id.String()
+		}
+		rels, err := client.RelationshipBatch(ctx, viewerID.String(), ids)
+		if err != nil {
+			log.Printf("Warning: batch visibility graph lookup failed; hiding restricted posts by %d authors: %v", len(chunk), err)
+			continue
+		}
+		for _, author := range chunk {
+			rel, ok := rels[author.String()]
+			if !ok || rel.Blocked || rel.BlockedBy {
+				continue
+			}
+			out[author] = followEdges{follows: rel.Follows, followedBy: rel.FollowedBy}
+		}
+	}
 	return out
 }

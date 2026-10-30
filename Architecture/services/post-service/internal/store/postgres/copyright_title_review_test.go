@@ -55,6 +55,8 @@ type titleTx struct {
 	auditPrev       []string
 	// insertedAnnounce is the announce_on_clear the review INSERT wrote.
 	insertedAnnounce bool
+	// visibility is every post.visibility_changed written (2026-10-30).
+	visibility []PostVisibilityChangedEvent
 }
 
 func (t *titleTx) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
@@ -139,8 +141,18 @@ func (t *titleTx) Exec(_ context.Context, sql string, args ...any) (pgconn.Comma
 				return pgconn.CommandTag{}, err
 			}
 			t.reviewEvents = append(t.reviewEvents, p)
+		case events.EventPostVisibilityChanged:
+			var p PostVisibilityChangedEvent
+			if err := json.Unmarshal(args[3].([]byte), &p); err != nil {
+				return pgconn.CommandTag{}, err
+			}
+			t.visibility = append(t.visibility, p)
 		}
 		return pgconn.NewCommandTag("INSERT 0 1"), nil
+	case strings.HasPrefix(sql, "SAVEPOINT "), strings.HasPrefix(sql, "ROLLBACK TO SAVEPOINT "),
+		strings.HasPrefix(sql, "RELEASE SAVEPOINT "):
+		// channelIDForAuthorTx's guard around the channel read.
+		return pgconn.NewCommandTag(""), nil
 	}
 	return pgconn.CommandTag{}, fmt.Errorf("unexpected exec: %s", sql)
 }
@@ -187,6 +199,21 @@ func (r titleScan) Scan(dest ...any) error {
 		*dest[0].(**string) = &owner
 		*dest[1].(**string) = &ref
 		return nil
+	case strings.Contains(r.sql, "SELECT author_id, content_type, visibility, created_at, deleted_at IS NOT NULL, publish_at"):
+		// emitVisibilityNarrowedTx's read (visibility_events.go).
+		*dest[0].(*uuid.UUID) = r.t.authorID
+		*dest[1].(*string) = "long_video"
+		*dest[2].(*string) = "public"
+		*dest[3].(*time.Time) = time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+		*dest[4].(*bool) = r.t.deleted
+		*dest[5].(**time.Time) = nil
+		if r.t.scheduled {
+			at := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+			*dest[5].(**time.Time) = &at
+		}
+		return nil
+	case strings.Contains(r.sql, "SELECT id FROM channels WHERE user_id = $1"):
+		return pgx.ErrNoRows // the author has no channel
 	case strings.Contains(r.sql, "SELECT author_id, deleted_at IS NOT NULL"):
 		*dest[0].(*uuid.UUID) = r.t.authorID
 		*dest[1].(*bool) = r.t.deleted

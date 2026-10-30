@@ -29,7 +29,11 @@ func (s *Service) countsForPost(ctx context.Context, postID uuid.UUID) (*scylla.
 	if err != nil {
 		return nil, err
 	}
-	rows, err := s.pgStore.GetEngagementCountRows(ctx, []uuid.UUID{postID})
+	store := s.engagementRowReads()
+	if store == nil {
+		return counts, nil
+	}
+	rows, err := store.GetEngagementCountRows(ctx, []uuid.UUID{postID})
 	if err != nil {
 		return nil, fmt.Errorf("load comment count: %w", err)
 	}
@@ -42,13 +46,19 @@ func (s *Service) countsForPost(ctx context.Context, postID uuid.UUID) (*scylla.
 // integration rigs that run without Scylla, M7_SCYLLA_HOSTS unset) reads
 // zero likes, as countsForSoundPosts does, instead of dereferencing a nil
 // store; cmd/server always wires one.
+//
+// A Scylla error degrades to zero likes, logged, rather than failing the
+// read (2026-10-30 audit B6): the post body is PostgreSQL's and is fine; a
+// degraded counter cluster must not turn every direct open into a 500.
 func (s *Service) likeCountsForPost(ctx context.Context, postID uuid.UUID) (*scylla.Counts, error) {
-	if s.scyllaStore == nil {
+	reads := s.counterReads()
+	if reads == nil {
 		return &scylla.Counts{}, nil
 	}
-	counts, err := s.scyllaStore.GetCounts(ctx, postID)
+	counts, err := reads.GetCounts(ctx, postID)
 	if err != nil {
-		return nil, err
+		slog.WarnContext(ctx, "post like count unavailable; serving 0", "post_id", postID, "err", err)
+		return &scylla.Counts{}, nil
 	}
 	if counts == nil {
 		counts = &scylla.Counts{}
@@ -60,10 +70,102 @@ func (s *Service) likeCountsForPost(ctx context.Context, postID uuid.UUID) (*scy
 // none). Without a counter store there is nothing stored to read; see
 // likeCountsForPost.
 func (s *Service) viewerStoredReaction(ctx context.Context, postID, viewerID uuid.UUID) (string, error) {
-	if s.scyllaStore == nil {
+	reads := s.counterReads()
+	if reads == nil {
 		return "", nil
 	}
-	return s.scyllaStore.GetReaction(ctx, postID, viewerID)
+	return reads.GetReaction(ctx, postID, viewerID)
+}
+
+// counterReadStore is the Scylla read slice: counts and the viewer's
+// reaction, one post or a page. *scylla.InteractionStore satisfies it;
+// counterReadSeam replaces it in tests.
+type counterReadStore interface {
+	GetCounts(ctx context.Context, postID uuid.UUID) (*scylla.Counts, error)
+	GetReaction(ctx context.Context, postID, userID uuid.UUID) (string, error)
+	BatchGetCounts(ctx context.Context, postIDs []uuid.UUID) (map[uuid.UUID]*scylla.Counts, error)
+	BatchGetReactions(ctx context.Context, postIDs []uuid.UUID, userID uuid.UUID) (map[uuid.UUID]string, error)
+}
+
+// counterReads is the seam, else the Scylla store, else nil (no counter
+// store: zero likes, no reactions).
+func (s *Service) counterReads() counterReadStore {
+	if s.counterReadSeam != nil {
+		return s.counterReadSeam
+	}
+	if s.scyllaStore != nil {
+		return s.scyllaStore
+	}
+	return nil
+}
+
+// engagementRowStore is the PostgreSQL engagement-count read.
+type engagementRowStore interface {
+	GetEngagementCountRows(ctx context.Context, postIDs []uuid.UUID) (map[uuid.UUID]postgres.EngagementCountRow, error)
+}
+
+func (s *Service) engagementRowReads() engagementRowStore {
+	if s.engagementRowSeam != nil {
+		return s.engagementRowSeam
+	}
+	if s.pgStore != nil {
+		return s.pgStore
+	}
+	return nil
+}
+
+// pageCounts is the counts of a page of posts in two round trips — Scylla's
+// like counters for the page (bounded fan-out in the store) and PostgreSQL's
+// comment / share / save rows in one query — instead of two per row. It
+// never fails the page: either half that errors is logged and reads zero.
+// Every id has a non-nil Counts.
+func (s *Service) pageCounts(ctx context.Context, ids []uuid.UUID) map[uuid.UUID]*scylla.Counts {
+	out := make(map[uuid.UUID]*scylla.Counts, len(ids))
+	if len(ids) == 0 {
+		return out
+	}
+	if reads := s.counterReads(); reads != nil {
+		got, err := reads.BatchGetCounts(ctx, ids)
+		if err != nil {
+			slog.WarnContext(ctx, "page like counts unavailable; serving 0", "posts", len(ids), "err", err)
+		} else {
+			for id, c := range got {
+				if c != nil {
+					out[id] = c
+				}
+			}
+		}
+	}
+	var rows map[uuid.UUID]postgres.EngagementCountRow
+	if store := s.engagementRowReads(); store != nil {
+		var err error
+		rows, err = store.GetEngagementCountRows(ctx, ids)
+		if err != nil {
+			slog.WarnContext(ctx, "page engagement counts unavailable; serving 0", "posts", len(ids), "err", err)
+			rows = nil
+		}
+	}
+	overlayEngagementRows(ids, out, rows)
+	return out
+}
+
+// pageReactions is the viewer's stored reaction on each post of a page.
+// A Scylla error degrades to "no reaction shown", logged, never a failed
+// page (2026-10-30 audit B6).
+func (s *Service) pageReactions(ctx context.Context, ids []uuid.UUID, viewerID uuid.UUID) map[uuid.UUID]string {
+	reads := s.counterReads()
+	if reads == nil || len(ids) == 0 {
+		return map[uuid.UUID]string{}
+	}
+	got, err := reads.BatchGetReactions(ctx, ids, viewerID)
+	if err != nil {
+		slog.WarnContext(ctx, "viewer reactions unavailable; serving none", "posts", len(ids), "err", err)
+		return map[uuid.UUID]string{}
+	}
+	if got == nil {
+		got = map[uuid.UUID]string{}
+	}
+	return got
 }
 
 // overlayCommentCounts replaces the comment figure in a Scylla batch with the

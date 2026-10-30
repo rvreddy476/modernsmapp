@@ -244,6 +244,12 @@ func openOwnerHoldTx(ctx context.Context, tx pgx.Tx, in OwnerMatchInput, authorI
 		// fail rather than report a hold that was not placed.
 		return nil, fmt.Errorf("owner match: a review appeared for post %s", in.PostID)
 	}
+	// The hold (or block) lands on a post that may already be in feeds:
+	// every viewer's cached copy goes (visibility_events.go). A scheduled
+	// post owes nothing; the helper skips it.
+	if err := emitVisibilityNarrowedTx(ctx, tx, in.PostID, VisibilityReasonCopyright); err != nil {
+		return nil, err
+	}
 	state := TitleReviewPending
 	if hold.AutoBlock {
 		state = TitleReviewBlocked

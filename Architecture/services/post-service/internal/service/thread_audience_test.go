@@ -19,11 +19,24 @@ import (
 //  2. only one block direction was consulted, so a viewer who had blocked
 //     the author still received the author's restricted content.
 
-// stubGraph serves a fixed relationship payload.
+// stubGraph serves a fixed relationship payload. The account gate
+// (POST /v1/internal/graph/can, view_posts) allows every target, so these
+// tests pin the thread gate's own relationship checks in isolation;
+// thread_gate_test.go drives the account gate's denials.
 func stubGraph(t *testing.T, rel map[string]bool) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/v1/internal/graph/can" {
+			var req canRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			data := map[string]bool{}
+			for _, id := range req.TargetIDs {
+				data[id] = true
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+			return
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": rel})
 	}))
 	t.Cleanup(srv.Close)

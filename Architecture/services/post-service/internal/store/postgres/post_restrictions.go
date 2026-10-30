@@ -261,6 +261,13 @@ func (s *Store) ApplyPostRestriction(ctx context.Context, in RestrictionCommand)
 		if err := BumpSearchRevAndEmitTx(ctx, tx, in.PostID); err != nil {
 			return nil, err
 		}
+		// A hold placed: every viewer's cached copy goes
+		// (visibility_events.go), in this transaction.
+		if restrictionNarrows(changed, next) {
+			if err := emitVisibilityNarrowedTx(ctx, tx, in.PostID, restrictionReason(in.Source)); err != nil {
+				return nil, err
+			}
+		}
 	} else if err := tx.QueryRow(ctx, `SELECT active_restriction_count, effective_review_status FROM posts WHERE id = $1`, in.PostID).Scan(&count, &effective); err != nil {
 		return nil, err
 	}

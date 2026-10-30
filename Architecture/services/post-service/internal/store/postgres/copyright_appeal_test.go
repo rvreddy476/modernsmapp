@@ -182,6 +182,10 @@ func TestOwnerHold_OwesTheAnnouncementOnlyWhileScheduled(t *testing.T) {
 		if tx.insertedAnnounce != c.scheduled {
 			t.Errorf("scheduled=%v %s: announce_on_clear=%v, want %v", c.scheduled, c.policy, tx.insertedAnnounce, c.scheduled)
 		}
+		// A scheduled post was never fanned out: no feed cache to drop.
+		if want := map[bool]int{true: 0, false: 1}[c.scheduled]; len(tx.visibility) != want {
+			t.Errorf("scheduled=%v %s: %d visibility events, want %d", c.scheduled, c.policy, len(tx.visibility), want)
+		}
 	}
 }
 

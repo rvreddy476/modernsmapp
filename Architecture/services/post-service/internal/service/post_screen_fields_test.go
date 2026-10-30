@@ -183,8 +183,9 @@ func TestNormalizeCreateEnum_DefaultsAndLowercases(t *testing.T) {
 // ── friends audience ─────────────────────────────────────────────────────
 
 // friendsGraph answers /v1/internal/graph/can (everyone may view everyone)
-// and /v1/graph/relationship from edges["viewer|author"] = {follows,
-// followed_by}; a pair listed in broken answers 502.
+// and /v1/graph/relationship and /v1/graph/relationships/batch from
+// edges["viewer|author"] = {follows, followed_by}; a pair listed in broken
+// answers 502 (single) or is left out of the map (batch).
 type friendsGraph struct {
 	mu     sync.Mutex
 	edges  map[string][2]bool
@@ -216,6 +217,27 @@ func newFriendsGraph(t *testing.T) (*friendsGraph, *httptest.Server) {
 				return
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"follows": e[0], "followed_by": e[1]}})
+		case "/v1/graph/relationships/batch":
+			// graph-service's raw map; a broken pair is left out of it
+			// (unresolved), as graph-service never answers for it.
+			var req struct {
+				ViewerID  string   `json:"viewer_id"`
+				TargetIDs []string `json:"target_ids"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			out := map[string]any{}
+			g.mu.Lock()
+			for _, target := range req.TargetIDs {
+				key := req.ViewerID + "|" + target
+				g.asked[key]++
+				if g.broken[key] {
+					continue
+				}
+				e := g.edges[key]
+				out[target] = map[string]any{"follows": e[0], "followed_by": e[1]}
+			}
+			g.mu.Unlock()
+			_ = json.NewEncoder(w).Encode(out)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}

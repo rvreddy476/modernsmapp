@@ -36,6 +36,17 @@ func TestApplyPostAccessStateCoversEveryRevocableField(t *testing.T) {
 	if !cached.IsScheduled {
 		t.Error("is_scheduled not derived from the canonical publish_at")
 	}
+	// The members-only gate (2026-10-30 audit B4): set after the body was
+	// cached, and cleared after it was cached gated.
+	tier := uuid.New()
+	applyPostAccessState(cached, &postgres.PostAccessState{ReviewStatus: "approved", Visibility: "public", TierRequiredID: &tier})
+	if cached.TierRequiredID == nil || *cached.TierRequiredID != tier {
+		t.Errorf("tier_required_id not revalidated: %v", cached.TierRequiredID)
+	}
+	applyPostAccessState(cached, &postgres.PostAccessState{ReviewStatus: "approved", Visibility: "public"})
+	if cached.TierRequiredID != nil {
+		t.Errorf("a cleared gate stayed on the cached body: %v", cached.TierRequiredID)
+	}
 
 	// The other direction: a body cached while scheduled reads live once the
 	// worker has cleared publish_at.

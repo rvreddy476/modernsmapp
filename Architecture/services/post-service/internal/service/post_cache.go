@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/atpost/post-service/internal/store/postgres"
@@ -37,55 +38,109 @@ import (
 const (
 	postCacheKeyPrefix = "post:body:"
 	postCacheTTL       = 5 * time.Minute
+	// postCacheRedisTimeout bounds every Redis call this cache makes
+	// (2026-10-30 audit B10). The cache is best-effort: an unreachable Redis
+	// that drops packets must cost a read this long, then Postgres — not the
+	// client's dial / read timeouts times its retries.
+	postCacheRedisTimeout = 100 * time.Millisecond
 )
+
+// postCacheCtx is ctx bounded by postCacheRedisTimeout.
+func postCacheCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(ctx, postCacheRedisTimeout)
+}
+
+// postCacheRedis is the client the body cache talks to: the service's Redis
+// (same address, auth and TLS), in its own small pool with every wait bounded
+// by postCacheRedisTimeout and no retries. The shared client keeps go-redis'
+// defaults (5 s dial, 3 s read, 3 retries, a 30 s pool wait) and ignores
+// context deadlines, which suits the engagement paths but would let a
+// best-effort cache hold every direct open for seconds. nil without Redis.
+func (s *Service) postCacheRedis() *redis.Client {
+	if s.rdb == nil {
+		return nil
+	}
+	s.postCacheOnce.Do(func() {
+		opt := *s.rdb.Options()
+		opt.ContextTimeoutEnabled = true
+		opt.MaxRetries = -1 // -1 disables retries (0 means the default 3)
+		opt.DialTimeout = postCacheRedisTimeout
+		opt.ReadTimeout = postCacheRedisTimeout
+		opt.WriteTimeout = postCacheRedisTimeout
+		opt.PoolTimeout = postCacheRedisTimeout
+		opt.PoolSize = 0 // the default for the host, not the shared pool's
+		s.postCacheRDB = redis.NewClient(&opt)
+	})
+	return s.postCacheRDB
+}
 
 // getCachedPostBody returns the immutable post body for `id`,
 // preferring Redis. Cache misses fall through to the DB and are
 // re-cached on success. nil-Redis is supported (returns DB result
 // directly) so unit tests don't need to mock anything.
 func (s *Service) getCachedPostBody(ctx context.Context, id uuid.UUID) (*postgres.Post, error) {
-	if s.rdb != nil {
+	store := s.listReads()
+	if store == nil {
+		return nil, ErrAuthoringStoreUnavailable
+	}
+	if rdb := s.postCacheRedis(); rdb != nil {
 		key := postCacheKey(id)
-		if raw, err := s.rdb.Get(ctx, key).Bytes(); err == nil {
+		rctx, cancel := postCacheCtx(ctx)
+		raw, err := rdb.Get(rctx, key).Bytes()
+		cancel()
+		if err == nil {
 			var p postgres.Post
 			if jsonErr := json.Unmarshal(raw, &p); jsonErr == nil {
 				// A moderation/deletion transaction may commit while Redis is
 				// unavailable, leaving an approved body in cache. Revalidate the
 				// minimal revocable state against the canonical database before
 				// returning any cache hit. Failure is fail-closed, never stale-read.
-				state, stateErr := s.pgStore.GetPostAccessState(ctx, id)
+				state, stateErr := store.GetPostAccessState(ctx, id)
 				if stateErr != nil {
 					return nil, stateErr
 				}
 				if state == nil || state.Deleted {
-					_ = s.rdb.Del(ctx, key).Err()
+					s.dropPostCacheKey(ctx, key)
 					return nil, nil
 				}
 				applyPostAccessState(&p, state)
 				return &p, nil
 			}
 			// Corrupt entry: drop it so the next read repopulates.
-			_ = s.rdb.Del(ctx, key).Err()
+			s.dropPostCacheKey(ctx, key)
 		} else if !errors.Is(err, redis.Nil) {
-			// Redis transport error — log via fall-through, don't fail
-			// the read. The cache is best-effort.
-			_ = err
+			// Redis transport error or timeout: fall through to Postgres,
+			// don't fail the read. The cache is best-effort.
+			slog.DebugContext(ctx, "post body cache read failed; reading Postgres", "post_id", id, "err", err)
 		}
 	}
 
-	p, err := s.pgStore.GetPost(ctx, id)
+	p, err := store.GetPost(ctx, id)
 	if err != nil {
 		return nil, err
 	}
 	if p == nil {
 		return nil, nil
 	}
-	if s.rdb != nil {
+	if rdb := s.postCacheRedis(); rdb != nil {
 		if data, jsonErr := json.Marshal(p); jsonErr == nil {
-			_ = s.rdb.Set(ctx, postCacheKey(id), data, postCacheTTL).Err()
+			wctx, cancel := postCacheCtx(ctx)
+			_ = rdb.Set(wctx, postCacheKey(id), data, postCacheTTL).Err()
+			cancel()
 		}
 	}
 	return p, nil
+}
+
+// dropPostCacheKey deletes one cache key, bounded like every cache call.
+func (s *Service) dropPostCacheKey(ctx context.Context, key string) {
+	rdb := s.postCacheRedis()
+	if rdb == nil {
+		return
+	}
+	dctx, cancel := postCacheCtx(ctx)
+	defer cancel()
+	_ = rdb.Del(dctx, key).Err()
 }
 
 // applyPostAccessState overwrites the revocable fields of a cached body with
@@ -94,7 +149,8 @@ func (s *Service) getCachedPostBody(ctx context.Context, id uuid.UUID) (*postgre
 // the schedule (hiddenWhileScheduled reads PublishAt; IsScheduled is the
 // wire-only mirror deriveScheduled sets at scan time), and the active
 // restriction count that turns the effective status "restricted"
-// (migration 056; the cached JSON never carries it).
+// (migration 056; the cached JSON never carries it), and the members-only
+// gate the redaction reads (tier_required_id, 2026-10-30 audit B4).
 func applyPostAccessState(p *postgres.Post, state *postgres.PostAccessState) {
 	p.ReviewStatus = state.ReviewStatus
 	p.ActiveRestrictionCount = state.ActiveRestrictionCount
@@ -102,6 +158,7 @@ func applyPostAccessState(p *postgres.Post, state *postgres.PostAccessState) {
 	p.AgeRestricted = state.AgeRestricted
 	p.PublishAt = state.PublishAt
 	p.IsScheduled = state.PublishAt != nil
+	p.TierRequiredID = state.TierRequiredID
 }
 
 // InvalidatePostBodyCache drops the cached body for one post. Called
@@ -110,7 +167,7 @@ func (s *Service) InvalidatePostBodyCache(ctx context.Context, id uuid.UUID) {
 	if s.rdb == nil {
 		return
 	}
-	_ = s.rdb.Del(ctx, postCacheKey(id)).Err()
+	s.dropPostCacheKey(ctx, postCacheKey(id))
 }
 
 // postCacheKey returns the Redis key for one post's body cache.

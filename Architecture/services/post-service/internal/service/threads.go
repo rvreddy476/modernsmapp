@@ -252,17 +252,27 @@ func (s *Service) CreateThread(ctx context.Context, input *CreateThreadInput) ([
 
 // GetThread returns the ordered, visible entries of the thread containing
 // postID (any entry deep-links to full context — P0-8 acceptance).
-// Visibility: private/followers-scoped threads are only returned to the
-// author here; follower-scope refinement rides on the standard read path.
+//
+// A thread never shows what GET /v1/posts/:id would hide (2026-10-30 audit
+// B1): the thread gate starts with the direct read's own gate
+// (viewerMayViewPost: private account, blocks either way, deactivated
+// author, the post's audience), then every entry passes the processing /
+// scheduled gate and the 18+ gate as it would on its own. An entry the
+// viewer may not see is left out; when the requested entry is one of them,
+// or nothing is left, the answer is the same 404 as the direct read.
 func (s *Service) GetThread(ctx context.Context, postID uuid.UUID, viewerID *uuid.UUID) ([]postgres.Post, error) {
-	p, err := s.pgStore.GetPost(ctx, postID)
+	store := s.listReads()
+	if store == nil {
+		return nil, ErrAuthoringStoreUnavailable
+	}
+	p, err := store.GetPost(ctx, postID)
 	if err != nil {
 		return nil, err
 	}
 	if p == nil || p.ThreadRootID == nil {
 		return nil, ErrPostNotFound
 	}
-	entries, err := s.pgStore.GetThreadPosts(ctx, *p.ThreadRootID)
+	entries, err := store.GetThreadPosts(ctx, *p.ThreadRootID)
 	if err != nil {
 		return nil, err
 	}
@@ -276,26 +286,88 @@ func (s *Service) GetThread(ctx context.Context, postID uuid.UUID, viewerID *uui
 	if !s.canViewThread(ctx, &entries[0], viewerID) {
 		return nil, ErrPostNotFound
 	}
+	entries, err = s.threadEntriesVisibleTo(ctx, &entries[0], entries, viewerID)
+	if err != nil {
+		return nil, err
+	}
+	if !threadHasEntry(entries, postID) {
+		return nil, ErrPostNotFound
+	}
 	// Members-only entries: redacted for this viewer (members_read.go).
 	s.redactPostRowsForViewer(ctx, viewerID, entries)
 	return entries, nil
 }
 
-// canViewThread applies the same visibility rules a single post read
-// uses: public is open; the author always sees their own; followers /
-// trusted / close_friends consult graph-service; private is the author
-// and the users on the root's private share list.
+// threadEntriesVisibleTo applies the direct read's per-post gates to every
+// entry: the live media state and the processing / scheduled gate
+// (hiddenFromViewer), the 18+ gate (ageAllowance, one age lookup at most),
+// and — for an entry whose audience was edited away from the root's — that
+// entry's own audience (viewerMayViewPost). The order is kept.
+func (s *Service) threadEntriesVisibleTo(ctx context.Context, root *postgres.Post, entries []postgres.Post, viewerID *uuid.UUID) ([]postgres.Post, error) {
+	ptrs := make([]*postgres.Post, len(entries))
+	for i := range entries {
+		ptrs[i] = &entries[i]
+	}
+	if err := s.attachMediaState(ctx, ptrs); err != nil {
+		return nil, err
+	}
+	ageOK := s.ageAllowance(ctx, viewerID)
+	out := make([]postgres.Post, 0, len(entries))
+	for i := range entries {
+		e := &entries[i]
+		if !isOwnPost(viewerID, e.AuthorID) {
+			if !strings.EqualFold(e.EffectiveReviewStatus(), "approved") {
+				continue
+			}
+			if e.AuthorID != root.AuthorID || !strings.EqualFold(e.Visibility, root.Visibility) {
+				if !s.viewerMayViewPost(ctx, e, viewerID) {
+					continue
+				}
+			}
+		}
+		if hiddenFromViewer(e, viewerID) {
+			continue
+		}
+		if !ageOK(e) {
+			continue
+		}
+		out = append(out, *e)
+	}
+	return out, nil
+}
+
+func threadHasEntry(entries []postgres.Post, postID uuid.UUID) bool {
+	for i := range entries {
+		if entries[i].ID == postID {
+			return true
+		}
+	}
+	return false
+}
+
+// canViewThread is the thread's gate on its root: exactly the direct
+// read's (viewerMayViewPost — the author always; the account gate, which
+// covers a private account, blocks in either direction and a deactivated
+// author, for everyone else, signed out included; then the root's
+// audience: public / unlisted open, followers / friends from the graph,
+// private to its share list, the retired audiences author-only), and on
+// top of it the relationship lookup's block check for every restricted
+// audience. Fail closed: an unavailable graph denies.
 func (s *Service) canViewThread(ctx context.Context, root *postgres.Post, viewerID *uuid.UUID) bool {
-	if root.Visibility == "public" || root.Visibility == "unlisted" {
+	if !s.viewerMayViewPost(ctx, root, viewerID) {
+		return false
+	}
+	if isOwnPost(viewerID, root.AuthorID) {
+		return true
+	}
+	if root.Visibility == "public" || root.Visibility == "unlisted" || root.Visibility == "" {
 		// unlisted is reachable by direct link (which this is) but is
-		// excluded from feeds/search elsewhere.
+		// excluded from feeds/search elsewhere. The account gate above has
+		// already applied blocks and private accounts.
 		return true
 	}
 	if viewerID == nil {
 		return false
-	}
-	if *viewerID == root.AuthorID {
-		return true
 	}
 	// One lookup serves both the block check and the audience check.
 	// Fail-closed: an unavailable graph denies restricted content.

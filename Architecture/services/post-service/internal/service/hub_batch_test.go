@@ -734,6 +734,18 @@ func TestUploadDescriptionIsTheFirst200Runes(t *testing.T) {
 func TestCanViewThreadHonoursTheShareList(t *testing.T) {
 	author, shared, blocked, stranger := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/internal/graph/can" {
+			// The account gate: graph-service denies view_posts across a
+			// block, and answers every other viewer (a public account).
+			var req canRequest
+			_ = json.NewDecoder(r.Body).Decode(&req)
+			data := map[string]bool{}
+			for _, id := range req.TargetIDs {
+				data[id] = req.ViewerID != blocked.String()
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": data})
+			return
+		}
 		rel := map[string]bool{"follows": true}
 		if r.URL.Query().Get("user_id") == blocked.String() {
 			rel["blocked_by"] = true

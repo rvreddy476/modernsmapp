@@ -217,9 +217,14 @@ func (s *Service) FollowedHashtagPosts(ctx context.Context, viewerID uuid.UUID, 
 // decorateHashtagDetails is the hashtag page's per-row counts and media
 // state (GetPostsByHashtag).
 func (s *Service) decorateHashtagDetails(ctx context.Context, details []PostDetail) ([]PostDetail, error) {
+	ids := make([]uuid.UUID, len(details))
 	for i := range details {
-		counts, _ := s.countsForPost(ctx, details[i].Post.ID)
-		details[i].Counts = counts
+		ids[i] = details[i].Post.ID
+	}
+	// One batched counts read for the page (comment_counts.go pageCounts).
+	counts := s.pageCounts(ctx, ids)
+	for i := range details {
+		details[i].Counts = counts[details[i].Post.ID]
 	}
 	return s.attachMediaStateToDetails(ctx, details, nil)
 }

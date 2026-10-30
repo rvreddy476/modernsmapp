@@ -227,6 +227,13 @@ func (s *Store) ModeratePost(ctx context.Context, in ModeratePostInput) (*Modera
 		if err := BumpSearchRevAndEmitTx(ctx, tx, in.PostID); err != nil {
 			return nil, err
 		}
+		// A takedown of a visible post: every viewer's cached copy goes
+		// (visibility_events.go), in this transaction.
+		if moderationNarrows(current, resulting) {
+			if err := emitVisibilityNarrowedTx(ctx, tx, in.PostID, VisibilityReasonModeration); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	if err := tx.QueryRow(ctx, `SELECT created_at FROM post_moderation_decisions WHERE decision_id=$1`, in.DecisionID).Scan(&decision.CreatedAt); err != nil {

@@ -34,6 +34,8 @@ type gateTx struct {
 	queries  []string
 	payloads []events.PostSearchEligibilityChangedPayload
 	types    []string
+	// visibility is every post.visibility_changed written (2026-10-30).
+	visibility []PostVisibilityChangedEvent
 }
 
 type gateRow struct {
@@ -65,12 +67,24 @@ func (t *gateTx) Exec(_ context.Context, sql string, args ...any) (pgconn.Comman
 		return pgconn.NewCommandTag(fmt.Sprintf("UPDATE %d", t.updated)), nil
 	case strings.Contains(sql, "INSERT INTO post_outbox_events"):
 		t.types = append(t.types, args[0].(string))
+		if args[0].(string) == events.EventPostVisibilityChanged {
+			var v PostVisibilityChangedEvent
+			if err := json.Unmarshal(args[3].([]byte), &v); err != nil {
+				return pgconn.CommandTag{}, err
+			}
+			t.visibility = append(t.visibility, v)
+			return pgconn.NewCommandTag("INSERT 0 1"), nil
+		}
 		var p events.PostSearchEligibilityChangedPayload
 		if err := json.Unmarshal(args[3].([]byte), &p); err != nil {
 			return pgconn.CommandTag{}, err
 		}
 		t.payloads = append(t.payloads, p)
 		return pgconn.NewCommandTag("INSERT 0 1"), nil
+	case strings.HasPrefix(sql, "SAVEPOINT "), strings.HasPrefix(sql, "ROLLBACK TO SAVEPOINT "),
+		strings.HasPrefix(sql, "RELEASE SAVEPOINT "):
+		// channelIDForAuthorTx's guard around the channel read.
+		return pgconn.NewCommandTag(""), nil
 	}
 	return pgconn.CommandTag{}, fmt.Errorf("unexpected exec: %s", sql)
 }
@@ -90,6 +104,27 @@ func (r gateScan) Scan(dest ...any) error {
 	if strings.Contains(r.sql, "SELECT EXISTS (SELECT 1 FROM posts WHERE id = $1)") && len(dest) == 1 {
 		*dest[0].(*bool) = !r.t.missing
 		return nil
+	}
+	if strings.Contains(r.sql, "SELECT tier_required_id FROM posts WHERE id = $1 FOR UPDATE") {
+		// The gate before the write, under the row lock.
+		if r.t.missing {
+			return pgx.ErrNoRows
+		}
+		*dest[0].(**uuid.UUID) = r.t.row.tier
+		return nil
+	}
+	if strings.Contains(r.sql, "SELECT author_id, content_type, visibility, created_at, deleted_at IS NOT NULL, publish_at") {
+		// emitVisibilityNarrowedTx's read (visibility_events.go).
+		*dest[0].(*uuid.UUID) = r.t.row.author
+		*dest[1].(*string) = r.t.row.contentType
+		*dest[2].(*string) = r.t.row.visibility
+		*dest[3].(*time.Time) = time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC)
+		*dest[4].(*bool) = false
+		*dest[5].(**time.Time) = nil
+		return nil
+	}
+	if strings.Contains(r.sql, "SELECT id FROM channels WHERE user_id = $1") {
+		return pgx.ErrNoRows // the author has no channel
 	}
 	if !strings.Contains(r.sql, "SET search_rev = search_rev + 1") {
 		return fmt.Errorf("unexpected query: %s", r.sql)
@@ -137,11 +172,17 @@ func TestMembershipGateWriteEmitsEligibilityWithTier(t *testing.T) {
 	if err != nil || !changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
-	if len(tx.queries) != 1 {
-		t.Fatalf("search_rev bumped %d times; want once", len(tx.queries))
+	if n := countContaining(tx.queries, "SET search_rev = search_rev + 1"); n != 1 {
+		t.Fatalf("search_rev bumped %d times; want once", n)
 	}
 	if len(tx.payloads) != 1 || tx.types[0] != events.PostSearchEligibilityChanged {
 		t.Fatalf("outbox: types %v payloads %d; want one %s", tx.types, len(tx.payloads), events.PostSearchEligibilityChanged)
+	}
+	// 2026-10-30: a gate added drops the post from every viewer's feed
+	// cache (post.visibility_changed, reason membership_gate).
+	if len(tx.visibility) != 1 || tx.visibility[0].Reason != VisibilityReasonMembershipGate ||
+		tx.visibility[0].PostID != post.String() || tx.visibility[0].NewVisibility != "public" {
+		t.Fatalf("visibility events %+v; want one membership_gate", tx.visibility)
 	}
 	p := tx.payloads[0]
 	if p.PostID != post.String() || p.TierRequiredID != tier.String() || p.SearchRev != 5 {
@@ -171,6 +212,32 @@ func TestMembershipGateClearEmitsEligibilityWithoutTier(t *testing.T) {
 	if strings.Contains(string(raw), "tier_required_id") {
 		t.Fatalf("an open post's event carries tier_required_id: %s", raw)
 	}
+	if len(tx.visibility) != 0 {
+		t.Fatalf("clearing a gate widens; it emitted %+v", tx.visibility)
+	}
+	// Changing the gate to another tier narrows again; the same tier again
+	// changes nothing the feed holds.
+	t1, t2 := uuid.New(), uuid.New()
+	change := newGateTx()
+	change.row.tier = &t1
+	if _, err := setPostMembershipGateTx(context.Background(), change, post, &t2); err != nil || len(change.visibility) != 1 {
+		t.Fatalf("changed gate: events %+v err %v", change.visibility, err)
+	}
+	same := newGateTx()
+	same.row.tier = &t1
+	if _, err := setPostMembershipGateTx(context.Background(), same, post, &t1); err != nil || len(same.visibility) != 0 {
+		t.Fatalf("same gate: events %+v err %v", same.visibility, err)
+	}
+}
+
+func countContaining(xs []string, sub string) int {
+	n := 0
+	for _, x := range xs {
+		if strings.Contains(x, sub) {
+			n++
+		}
+	}
+	return n
 }
 
 // No such post: nothing bumped, nothing emitted.
@@ -183,8 +250,8 @@ func TestMembershipGateWriteOnAMissingPostEmitsNothing(t *testing.T) {
 	if err != nil || changed {
 		t.Fatalf("changed=%v err=%v", changed, err)
 	}
-	if len(tx.payloads) != 0 {
-		t.Fatalf("a missing post emitted: payloads %v", tx.payloads)
+	if len(tx.payloads) != 0 || len(tx.visibility) != 0 {
+		t.Fatalf("a missing post emitted: payloads %v visibility %v", tx.payloads, tx.visibility)
 	}
 	for _, q := range tx.queries {
 		if strings.Contains(q, "search_rev") {
@@ -204,8 +271,8 @@ func TestMembershipGateRefusedOnAHeldPost(t *testing.T) {
 	if !errors.Is(err, ErrPostCopyrightHeld) || changed {
 		t.Fatalf("changed=%v err=%v, want ErrPostCopyrightHeld", changed, err)
 	}
-	if len(tx.payloads) != 0 || tx.row.tier != nil {
-		t.Fatalf("a held post was gated: tier %v payloads %v", tx.row.tier, tx.payloads)
+	if len(tx.payloads) != 0 || tx.row.tier != nil || len(tx.visibility) != 0 {
+		t.Fatalf("a held post was gated: tier %v payloads %v visibility %v", tx.row.tier, tx.payloads, tx.visibility)
 	}
 
 	clear := newGateTx()

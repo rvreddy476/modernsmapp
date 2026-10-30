@@ -1431,7 +1431,12 @@ func (s *Store) BatchIsBookmarked(ctx context.Context, userID uuid.UUID, postIDs
 	return result, rows.Err()
 }
 
-// GetBookmarks returns paginated bookmarked posts for a user. contentTypes,
+// GetBookmarks returns paginated bookmarked posts for a user: live posts,
+// and of other people's only the viewer-eligible ones (effectively approved,
+// not scheduled; 2026-10-30 audit B3) — a save never outlives a moderation
+// verdict or a copyright hold. The saver's own posts are kept whatever their
+// state, as on every other surface their author reads. The account and
+// audience gates are the service's. contentTypes,
 // when non-empty, keeps only posts of those types (the Tube "You" page
 // asks for long_video alone; the same filter GetRecentPosts takes). The
 // limit is clamped to 100 rather than reset to the default, so a client
@@ -1462,7 +1467,8 @@ func (s *Store) GetBookmarks(ctx context.Context, userID uuid.UUID, contentTypes
 			FROM saved_items si
 			WHERE si.target_type = 'post' AND si.user_id = $1` + scopeCond + `
 		) b ON b.target_id = p.id
-		WHERE b.user_id = $1 AND p.deleted_at IS NULL`
+		WHERE b.user_id = $1 AND p.deleted_at IS NULL
+		  AND (p.author_id = $1 OR (` + viewerApproved("p") + ` AND p.publish_at IS NULL))`
 
 	if len(contentTypes) > 0 {
 		query += fmt.Sprintf(` AND p.content_type = ANY($%d)`, argIdx)
@@ -1679,6 +1685,13 @@ func (s *Store) SetPostMembershipGate(ctx context.Context, postID uuid.UUID, tie
 // a hold landing between a read and this write cannot be raced. Clearing a
 // gate is always allowed. ErrPostCopyrightHeld when refused.
 func setPostMembershipGateTx(ctx context.Context, tx pgx.Tx, postID uuid.UUID, tierID *uuid.UUID) (bool, error) {
+	// The gate as it stands, under the row lock, so the visibility event
+	// below fires only when this write added or changed it.
+	var before *uuid.UUID
+	if err := tx.QueryRow(ctx, `SELECT tier_required_id FROM posts WHERE id = $1 FOR UPDATE`, postID).Scan(&before); err != nil &&
+		!errors.Is(err, pgx.ErrNoRows) {
+		return false, err
+	}
 	tag, err := tx.Exec(ctx,
 		`UPDATE posts SET tier_required_id = $2, updated_at = NOW()
 		 WHERE id = $1 AND ($2::uuid IS NULL OR active_restriction_count = 0)`,
@@ -1701,6 +1714,13 @@ func setPostMembershipGateTx(ctx context.Context, tx pgx.Tx, postID uuid.UUID, t
 	}
 	if err := BumpSearchRevAndEmitTx(ctx, tx, postID); err != nil {
 		return false, err
+	}
+	// A members-only gate added or changed: every non-member's cached copy
+	// goes (visibility_events.go), in this transaction.
+	if gateNarrows(before, tierID) {
+		if err := emitVisibilityNarrowedTx(ctx, tx, postID, VisibilityReasonMembershipGate); err != nil {
+			return false, err
+		}
 	}
 	return true, nil
 }

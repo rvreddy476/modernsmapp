@@ -93,7 +93,9 @@ func (s *InteractionStore) Unreact(ctx context.Context, postID, userID uuid.UUID
 // GetReaction returns the viewer's reaction type for a post, or empty string if none.
 func (s *InteractionStore) GetReaction(ctx context.Context, postID, userID uuid.UUID) (string, error) {
 	var reaction string
-	if err := s.session.Query(`SELECT reaction FROM reactions_by_post WHERE post_id = ? AND user_id = ?`, postID.String(), userID.String()).Scan(&reaction); err != nil {
+	// WithContext: an abandoned or timed-out request releases its gocql
+	// connection now, not at gocql's own timeout (2026-10-30 audit B6).
+	if err := s.session.Query(`SELECT reaction FROM reactions_by_post WHERE post_id = ? AND user_id = ?`, postID.String(), userID.String()).WithContext(ctx).Scan(&reaction); err != nil {
 		if err == gocql.ErrNotFound {
 			return "", nil
 		}
@@ -164,11 +166,11 @@ func (s *InteractionStore) AddComment(ctx context.Context, postID uuid.UUID, use
 	if err := s.session.Query(`
 		INSERT INTO comments_by_post (post_id, bucket, ts, comment_id, author_id, text, is_deleted)
 		VALUES (?, ?, now(), ?, ?, ?, false)
-	`, pid, bucket, commentID.String(), userID.String(), text).Exec(); err != nil {
+	`, pid, bucket, commentID.String(), userID.String(), text).WithContext(ctx).Exec(); err != nil {
 		return uuid.Nil, err
 	}
 
-	if err := s.session.Query(`UPDATE post_counters SET comment_count = comment_count + 1 WHERE post_id = ?`, pid).Exec(); err != nil {
+	if err := s.session.Query(`UPDATE post_counters SET comment_count = comment_count + 1 WHERE post_id = ?`, pid).WithContext(ctx).Exec(); err != nil {
 		return uuid.Nil, err
 	}
 
@@ -187,7 +189,7 @@ func (s *InteractionStore) ListComments(ctx context.Context, postID uuid.UUID, l
 		WHERE post_id = ? AND bucket = ?
 		ORDER BY ts DESC
 		LIMIT ?
-	`, postID.String(), bucket, limit).Iter()
+	`, postID.String(), bucket, limit).WithContext(ctx).Iter()
 
 	var comments []Comment
 	var idStr, authorStr string
@@ -218,7 +220,8 @@ type Counts struct {
 
 func (s *InteractionStore) GetCounts(ctx context.Context, postID uuid.UUID) (*Counts, error) {
 	var c Counts
-	if err := s.session.Query(`SELECT like_count, comment_count FROM post_counters WHERE post_id = ?`, postID.String()).Scan(&c.Likes, &c.Comments); err != nil {
+	// WithContext, as GetReaction (2026-10-30 audit B6).
+	if err := s.session.Query(`SELECT like_count, comment_count FROM post_counters WHERE post_id = ?`, postID.String()).WithContext(ctx).Scan(&c.Likes, &c.Comments); err != nil {
 		if err == gocql.ErrNotFound {
 			return &Counts{}, nil
 		}

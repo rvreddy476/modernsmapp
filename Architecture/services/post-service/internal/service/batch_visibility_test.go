@@ -46,19 +46,32 @@ func TestFollowedAuthorsOfFollowersPosts_AsksOnlyForFollowersPostsAndFailsClosed
 	viewer, followed, notFollowed, broken, publicOnly := uuid.New(), uuid.New(), uuid.New(), uuid.New(), uuid.New()
 	var mu sync.Mutex // lookups run concurrently
 	asked := map[string]int{}
+	// POST /v1/graph/relationships/batch (graph-service's raw map shape). A
+	// target the graph cannot answer for is left out of the map, which the
+	// caller must read as unresolved.
 	graph := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		other := r.URL.Query().Get("other_id")
-		mu.Lock()
-		asked[other]++
-		mu.Unlock()
-		switch other {
-		case followed.String():
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"follows": true}})
-		case notFollowed.String():
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"follows": false}})
-		default:
-			w.WriteHeader(http.StatusBadGateway)
+		if r.URL.Path != "/v1/graph/relationships/batch" {
+			w.WriteHeader(http.StatusNotFound)
+			return
 		}
+		var req struct {
+			ViewerID  string   `json:"viewer_id"`
+			TargetIDs []string `json:"target_ids"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		out := map[string]any{}
+		mu.Lock()
+		for _, other := range req.TargetIDs {
+			asked[other]++
+			switch other {
+			case followed.String():
+				out[other] = map[string]any{"follows": true}
+			case notFollowed.String():
+				out[other] = map[string]any{"follows": false}
+			}
+		}
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(out)
 	}))
 	t.Cleanup(graph.Close)
 

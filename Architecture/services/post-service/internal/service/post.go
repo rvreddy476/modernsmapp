@@ -341,6 +341,20 @@ type Service struct {
 	// (COPYRIGHT_AUTO_BLOCK_ENABLED=false, migration 075): matches go to a
 	// reviewer instead of being blocked by the system.
 	autoBlockDisabled bool
+
+	// Feed read paths (list_reads.go, 2026-10-30), each nil-safe and set only
+	// by tests: listReadSeam stands in for the Postgres store on the thread,
+	// trending and saved reads; counterReadSeam for Scylla's count and
+	// reaction reads; engagementRowSeam for the PostgreSQL engagement rows;
+	// pollSeam for the batched poll reads.
+	listReadSeam      listReadStore
+	counterReadSeam   counterReadStore
+	engagementRowSeam engagementRowStore
+	pollSeam          pollBatchStore
+	// postCacheRDB is the body cache's own bounded Redis client, built from
+	// rdb's options on first use (post_cache.go postCacheRedis).
+	postCacheOnce sync.Once
+	postCacheRDB  *redis.Client
 }
 
 func New(pg *postgres.Store, scylla *scylla.InteractionStore, rdb *redis.Client) *Service {
@@ -1903,9 +1917,12 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 
 	// Enrich with viewer-specific state
 	if viewerID != nil {
+		// A Scylla error shows no reaction (logged) rather than failing
+		// the open (2026-10-30 audit B6); the body is PostgreSQL's.
 		stored, err := s.viewerStoredReaction(ctx, id, *viewerID)
 		if err != nil {
-			return nil, fmt.Errorf("load viewer reaction: %w", err)
+			slog.WarnContext(ctx, "viewer reaction unavailable; serving none", "post_id", id, "err", err)
+			stored = ""
 		}
 		// An old emoji reads as the heart (heart_only.go).
 		applyViewerReaction(detail, stored)
@@ -2039,10 +2056,8 @@ func (s *Service) GetPostsByAuthorFiltered(ctx context.Context, f AuthorListFilt
 		}
 	}()
 
-	// Merge counts from Scylla for each visible post
-	details := make([]PostDetail, 0, len(posts))
-	for _, p := range posts {
-		post := p // copy to avoid pointer reuse
+	visible := make([]postgres.Post, 0, len(posts))
+	for _, post := range posts {
 		if !isAuthor && !profileGridAllows(post.Visibility, viewerFollows, viewerMutual) {
 			continue
 		}
@@ -2051,15 +2066,10 @@ func (s *Service) GetPostsByAuthorFiltered(ctx context.Context, f AuthorListFilt
 		if f.MembersOnly && post.TierRequiredID == nil {
 			continue
 		}
-		counts, _ := s.countsForPost(ctx, p.ID)
-		if post.ContentType == "poll" {
-			poll, err := s.pgStore.GetPoll(ctx, post.ID)
-			if err == nil && poll != nil {
-				post.Poll = poll
-			}
-		}
-		details = append(details, PostDetail{Post: &post, Counts: counts})
+		visible = append(visible, post)
 	}
+	// Counts and polls for the page in batched reads (list_reads.go).
+	details := s.pageDetails(ctx, viewerID, visible)
 
 	// Instant publish (processing.go): overlay live media state, drop what
 	// this viewer may not see while it processes.
@@ -2101,23 +2111,17 @@ func (s *Service) GetRecentPosts(ctx context.Context, viewerID *uuid.UUID, exclu
 	}
 	viewableAuthor := s.canViewPosts(ctx, viewerID, authorIDs)
 
-	details := make([]PostDetail, 0, len(posts))
+	visible := make([]postgres.Post, 0, len(posts))
 	for _, p := range posts {
 		if viewerID == nil || *viewerID != p.AuthorID {
 			if !viewableAuthor[p.AuthorID] {
 				continue
 			}
 		}
-		post := p
-		counts, _ := s.countsForPost(ctx, p.ID)
-		if post.ContentType == "poll" {
-			poll, err := s.pgStore.GetPoll(ctx, post.ID)
-			if err == nil && poll != nil {
-				post.Poll = poll
-			}
-		}
-		details = append(details, PostDetail{Post: &post, Counts: counts})
+		visible = append(visible, p)
 	}
+	// Counts and polls for the page in batched reads (list_reads.go).
+	details := s.pageDetails(ctx, viewerID, visible)
 
 	// Instant publish (processing.go): overlay live media state, drop what
 	// this viewer may not see while it processes.
@@ -2196,19 +2200,13 @@ func (s *Service) loadPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID 
 	// Scylla partitions reactions and counters by post. The store helper runs
 	// those independent point reads with bounded concurrency, so one slow
 	// partition cannot turn this into a serial page-length latency chain.
-	countsByPost, err := s.scyllaStore.BatchGetCounts(ctx, ids)
-	if err != nil {
-		return nil, fmt.Errorf("load post counts: %w", err)
-	}
-	if err := s.overlayCommentCounts(ctx, ids, countsByPost); err != nil {
-		return nil, err
-	}
+	// A counter or reaction error degrades (zero counts, no reaction,
+	// logged) instead of failing the page (2026-10-30 audit B6): every feed
+	// hydrates through here, and the bodies are PostgreSQL's.
+	countsByPost := s.pageCounts(ctx, ids)
 	reactions := map[uuid.UUID]string{}
 	if viewerID != nil {
-		reactions, err = s.scyllaStore.BatchGetReactions(ctx, ids, *viewerID)
-		if err != nil {
-			return nil, fmt.Errorf("load viewer reactions: %w", err)
-		}
+		reactions = s.pageReactions(ctx, ids, *viewerID)
 	}
 
 	// Private accounts: ONE graph round trip for the page's distinct authors
@@ -2303,19 +2301,6 @@ func (s *Service) loadPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID 
 			}
 		}
 
-		// Enrich with poll data if post is a poll
-		if post.ContentType == "poll" {
-			poll, err := s.pgStore.GetPoll(ctx, post.ID)
-			if err == nil && poll != nil {
-				if viewerID != nil {
-					votes, _ := s.pgStore.GetUserPollVotes(ctx, post.ID, *viewerID)
-					poll.ViewerVotes = votes
-				}
-				post.Poll = poll
-				detail.Post = &post
-			}
-		}
-
 		applyLikeCountPrivacy(detail, viewerID, false)
 		result[post.ID] = detail
 	}
@@ -2323,9 +2308,13 @@ func (s *Service) loadPostsByIDs(ctx context.Context, ids []uuid.UUID, viewerID 
 	// The sounds the page plays: one read and one audience decision for
 	// every row (sounds.go). Never a reason to fail the page.
 	page := make([]*PostDetail, 0, len(result))
+	pagePosts := make([]*postgres.Post, 0, len(result))
 	for _, detail := range result {
 		page = append(page, detail)
+		pagePosts = append(pagePosts, detail.Post)
 	}
+	// Polls on the page: two batched reads, not two per poll row.
+	s.attachPolls(ctx, viewerID, pagePosts)
 	s.attachSounds(ctx, viewerID, page)
 
 	return result, nil
@@ -2606,17 +2595,29 @@ func (s *Service) RemoveBookmark(ctx context.Context, userID, postID uuid.UUID) 
 // a page of long videos is a full page, not a page of everything with the
 // flicks removed afterwards. scope narrows it to one saved collection or the
 // default one (saved_collections.go; the zero scope is every saved post).
+//
+// A save outlives every later change to the post and its author, so the
+// list applies the viewer gate other lists do (2026-10-30 audit B3): the
+// store keeps live, effectively approved rows (the saver's own excepted),
+// and postsVisibleToViewer drops what the saver may no longer see — an
+// author who blocked them or went private, an audience they left, a
+// deactivated author. The row stays in saved_items: it comes back if the
+// post becomes visible to them again.
 func (s *Service) GetBookmarks(ctx context.Context, userID uuid.UUID, contentTypes []string, limit int, cursor string, scope postgres.SavedScope) ([]PostDetail, string, error) {
-	posts, nextCursor, err := s.pgStore.GetBookmarks(ctx, userID, contentTypes, limit, cursor, scope)
+	store := s.listReads()
+	if store == nil {
+		return nil, "", ErrAuthoringStoreUnavailable
+	}
+	posts, nextCursor, err := store.GetBookmarks(ctx, userID, contentTypes, limit, cursor, scope)
 	if err != nil {
 		return nil, "", err
 	}
+	posts = s.postsVisibleToViewer(ctx, &userID, posts)
 
-	details := make([]PostDetail, len(posts))
-	for i, p := range posts {
-		post := p
-		counts, _ := s.countsForPost(ctx, p.ID)
-		details[i] = PostDetail{Post: &post, Counts: counts, IsBookmarked: true}
+	// Counts and polls for the page in batched reads (list_reads.go).
+	details := s.pageDetails(ctx, &userID, posts)
+	for i := range details {
+		details[i].IsBookmarked = true
 	}
 
 	// Instant publish (processing.go): the bookmarker is the viewer.
@@ -3914,12 +3915,8 @@ func (s *Service) GetPostsByHashtag(ctx context.Context, viewerID *uuid.UUID, ha
 
 	posts = s.hashtagPostsVisibleTo(ctx, viewerID, posts)
 
-	details := make([]PostDetail, 0, len(posts))
-	for _, p := range posts {
-		post := p
-		counts, _ := s.countsForPost(ctx, p.ID)
-		details = append(details, PostDetail{Post: &post, Counts: counts})
-	}
+	// Counts and polls for the page in batched reads (list_reads.go).
+	details := s.pageDetails(ctx, viewerID, posts)
 
 	// Instant publish (processing.go): public discovery surface with no
 	// viewer — a still-processing post is nobody's to see here.
@@ -3939,20 +3936,25 @@ func (s *Service) GetPostsByHashtag(ctx context.Context, viewerID *uuid.UUID, ha
 // or more content types. Used by the Posttube/Reels "Trending" tabs and the
 // general discover surface. cursor is the same opaque base64 string used by
 // the hashtag top sort.
-// viewerID is used only to label the channel card (its subscribed state);
-// it does NOT widen what the page returns — trending is public rows only,
-// selected in SQL.
+//
+// The store lists public, viewer-eligible rows (ViewerEligibleSQL: live,
+// effectively approved — no pending, flagged, rejected or held post); the
+// author gate — private accounts the viewer does not follow, blocks in
+// either direction, deactivated authors — is postsVisibleToViewer, the same
+// fail-closed choke point GetRecentPosts and the hashtag page use
+// (2026-10-30 audit B2). viewerID nil is the signed-out stranger.
 func (s *Service) GetTrendingPosts(ctx context.Context, contentTypes []string, limit int, cursor string, viewerID *uuid.UUID) ([]PostDetail, string, error) {
-	posts, nextCursor, err := s.pgStore.GetTrendingPosts(ctx, contentTypes, limit, cursor)
+	store := s.listReads()
+	if store == nil {
+		return nil, "", ErrAuthoringStoreUnavailable
+	}
+	posts, nextCursor, err := store.GetTrendingPosts(ctx, contentTypes, limit, cursor)
 	if err != nil {
 		return nil, "", err
 	}
-	details := make([]PostDetail, len(posts))
-	for i, p := range posts {
-		post := p
-		counts, _ := s.countsForPost(ctx, p.ID)
-		details[i] = PostDetail{Post: &post, Counts: counts}
-	}
+	posts = s.postsVisibleToViewer(ctx, viewerID, posts)
+	// Counts and polls for the page in batched reads (list_reads.go).
+	details := s.pageDetails(ctx, viewerID, posts)
 	// Instant publish (processing.go): public discovery surface with no
 	// viewer — a still-processing post is nobody's to see here.
 	details, err = s.attachMediaStateToDetails(ctx, details, nil)

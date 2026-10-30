@@ -99,8 +99,13 @@ func TestNoCommentCountShardAndOneReadSource(t *testing.T) {
 	if strings.Contains(src, "s.scyllaStore.GetCounts(") {
 		t.Fatal("a read still takes counts straight from Scylla post_counters, whose comment_count nothing writes")
 	}
-	if !strings.Contains(src, "s.overlayCommentCounts(ctx, ids, countsByPost)") {
+	// The batch read takes its counts from pageCounts (comment_counts.go),
+	// which overlays the PostgreSQL figures on Scylla's for the whole page.
+	if !strings.Contains(src, "countsByPost := s.pageCounts(ctx, ids)") {
 		t.Fatal("the batch read (what the feed hydrates from) does not overlay the PostgreSQL comment count")
+	}
+	if body := srcOf(t, "comment_counts.go", "pageCounts"); !strings.Contains(body, "overlayEngagementRows(ids, out, rows)") {
+		t.Fatal("pageCounts does not overlay the PostgreSQL comment count")
 	}
 	for _, f := range []string{"my_uploads.go"} {
 		b, _ := os.ReadFile(f)

@@ -146,6 +146,10 @@ func TestOwnerMatch_BlockWithNoReview(t *testing.T) {
 	if got := strings.Join(tx.historyActs, ","); got != "hold,auto_block,owner_match" || !strings.Contains(tx.historyNotes[2], "reference=fp-123") {
 		t.Fatalf("history = %s %v", got, tx.historyNotes)
 	}
+	// 2026-10-30: the block drops the post from every viewer's feed cache.
+	if len(tx.visibility) != 1 || tx.visibility[0].Reason != VisibilityReasonCopyright || tx.visibility[0].AuthorID != tx.authorID.String() {
+		t.Fatalf("visibility events = %+v, want one copyright", tx.visibility)
+	}
 }
 
 func TestOwnerMatch_MuteHoldsForReview(t *testing.T) {
@@ -159,6 +163,9 @@ func TestOwnerMatch_MuteHoldsForReview(t *testing.T) {
 	}
 	if execIndex(tx.execs, "SET state = 'blocked'") >= 0 {
 		t.Fatal("a mute request blocked the video")
+	}
+	if len(tx.visibility) != 1 || tx.visibility[0].Reason != VisibilityReasonCopyright {
+		t.Fatalf("a hold must drop the post from feed caches: %+v", tx.visibility)
 	}
 	// The kill switch's review policy: a plain hold, no reason.
 	tx = &titleTx{reviewInserted: 1, effective: ReviewStatusRestricted, authorID: uuid.New()}

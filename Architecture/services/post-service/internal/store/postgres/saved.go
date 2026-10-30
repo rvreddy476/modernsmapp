@@ -184,7 +184,12 @@ func (s *Store) GetTrendingPosts(ctx context.Context, contentTypes []string, lim
 	selectList := strings.Join(cols, ", ")
 
 	args := []interface{}{limit + 1}
-	conds := []string{"p.deleted_at IS NULL", "p.visibility = 'public'", "p.publish_at IS NULL"}
+	// Viewer eligibility (2026-10-30 audit B2): live, not scheduled and
+	// EFFECTIVELY approved — a pending, flagged, rejected or held
+	// (copyright / safety restriction) post is never ranked here. The
+	// author gate (private accounts, blocks, deactivated authors) is the
+	// service's (postsVisibleToViewer).
+	conds := []string{ViewerEligibleSQL("p"), "p.visibility = 'public'"}
 
 	if len(contentTypes) > 0 {
 		args = append(args, contentTypes)

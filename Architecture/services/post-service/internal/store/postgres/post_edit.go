@@ -271,18 +271,29 @@ func (s *Store) UpdatePostFields(ctx context.Context, postID, actorID uuid.UUID,
 		// carry the visibility it publishes with.
 		if after.PublishAt == nil {
 			old, _ := vis.From.(string)
-			if err := InsertOutboxEventTx(ctx, tx, events.EventPostVisibilityChanged, "post", postID, events.PostVisibilityChangedPayload{
-				PostID:        postID.String(),
-				AuthorID:      after.AuthorID.String(),
-				ContentType:   after.ContentType,
-				OldVisibility: old,
-				NewVisibility: after.Visibility,
-				CreatedAt:     after.CreatedAt,
-				ChangedAt:     time.Now().UTC(),
-				ChannelID:     channelIDForAuthorTx(ctx, tx, after.AuthorID),
+			if err := InsertOutboxEventTx(ctx, tx, events.EventPostVisibilityChanged, "post", postID, PostVisibilityChangedEvent{
+				PostVisibilityChangedPayload: events.PostVisibilityChangedPayload{
+					PostID:        postID.String(),
+					AuthorID:      after.AuthorID.String(),
+					ContentType:   after.ContentType,
+					OldVisibility: old,
+					NewVisibility: after.Visibility,
+					CreatedAt:     after.CreatedAt,
+					ChangedAt:     time.Now().UTC(),
+					ChannelID:     channelIDForAuthorTx(ctx, tx, after.AuthorID),
+				},
+				Reason: VisibilityReasonAudience,
 			}); err != nil {
 				return nil, fmt.Errorf("emit visibility change on edit: %w", err)
 			}
+		}
+	}
+	// A members-only gate added or changed by the edit: every non-member's
+	// cached copy goes (visibility_events.go). The helper skips a scheduled
+	// post.
+	if tierChanged(changes) && gateNarrows(before.TierRequiredID, after.TierRequiredID) {
+		if err := emitVisibilityNarrowedTx(ctx, tx, postID, VisibilityReasonMembershipGate); err != nil {
+			return nil, err
 		}
 	}
 	// Offline copies (2026-10-02, offline_copies.go), in this transaction:
