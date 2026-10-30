@@ -178,12 +178,16 @@ func TestContentIT_OnlineIndexesAreBuiltAndUsed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback(r.ctx) }()
-	if _, err := tx.Exec(r.ctx, `SET LOCAL enable_seqscan = off`); err != nil {
-		t.Fatal(err)
+	// On a near-empty CI table the planner rightly prefers reading the whole
+	// table, by a sequential scan or a full scan of any small index (it chose
+	// idx_questions_slug with the search as a filter). With both priced out,
+	// a GIN bitmap scan is chosen only if the predicate can use the index at
+	// all. Both search predicates are checked.
+	for _, set := range []string{"enable_seqscan", "enable_indexscan", "enable_indexonlyscan"} {
+		if _, err := tx.Exec(r.ctx, `SET LOCAL `+set+` = off`); err != nil {
+			t.Fatal(err)
+		}
 	}
-	// With sequential scans priced out, the planner takes the index only if
-	// the predicate can use it at all; on a near-empty CI table it would
-	// otherwise rightly prefer a scan. Both search predicates are checked.
 	explain := func(name, pred string) {
 		t.Helper()
 		var plan strings.Builder
