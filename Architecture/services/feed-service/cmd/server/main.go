@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/atpost/feed-service/database"
@@ -74,6 +76,11 @@ func main() {
 	cluster.Consistency = gocql.Quorum
 	cluster.NumConns = 10
 	cluster.MaxPreparedStmts = 1000
+	// Audit L7: gocql's default per-query timeout is 11 s, and one home
+	// read walks up to twelve month buckets in turn. A query normally
+	// answers in milliseconds; FEED_SCYLLA_TIMEOUT (a Go duration) bounds
+	// a degraded one, default 3 s.
+	cluster.Timeout = durationEnv("FEED_SCYLLA_TIMEOUT", 3*time.Second)
 	scyllaSession, err := cluster.CreateSession()
 	if err != nil {
 		slog.Error("failed to connect to scylladb", "error", err)
@@ -155,11 +162,20 @@ func main() {
 	// service key. The handler supports the middleware but main.go
 	// previously never wired the env var, leaving every endpoint
 	// callable directly without going through the API gateway.
-	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+	//
+	// Audit M5: in a deployed environment a missing key is now fatal. One
+	// typo in a manifest used to leave every route trusting X-User-Id from
+	// any pod on the network, with only a warning in the log.
+	key, err := internalKeyFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("feed-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
+	if key != "" {
 		feedHandler.WithInternalKey(key)
 		slog.Info("feed-service: internal-service-key gate enabled")
 	} else {
-		slog.Warn("feed-service: INTERNAL_SERVICE_KEY not set — every /v1/feed endpoint is unauthenticated. Do not run this configuration in production.")
+		slog.Warn("feed-service: INTERNAL_SERVICE_KEY not set — every /v1/feed endpoint is unauthenticated (local/dev only).")
 	}
 
 	// Consumers stop on this context at shutdown, before their readers are
@@ -287,4 +303,31 @@ func collectDBPoolStats(ctx context.Context, pool *pgxpool.Pool, m *metrics.DBPo
 			})
 		}
 	}
+}
+
+// internalKeyFromEnv returns INTERNAL_SERVICE_KEY, or an error when it is
+// empty in a deployed environment (ENV / APP_ENV / DEPLOY_ENV naming prod,
+// production, staging or qa). Only a local or dev run (none of those set,
+// or set to anything else) may start without it.
+func internalKeyFromEnv(getenv func(string) string) (string, error) {
+	key := strings.TrimSpace(getenv("INTERNAL_SERVICE_KEY"))
+	if key != "" {
+		return key, nil
+	}
+	for _, name := range []string{"ENV", "APP_ENV", "DEPLOY_ENV"} {
+		switch strings.ToLower(strings.TrimSpace(getenv(name))) {
+		case "prod", "production", "staging", "qa":
+			return "", fmt.Errorf("INTERNAL_SERVICE_KEY is required when %s=%s: every /v1/feed route would trust X-User-Id from any caller", name, getenv(name))
+		}
+	}
+	return "", nil
+}
+
+// durationEnv reads a Go duration ("3s", "500ms") from key, falling back on
+// an empty, malformed or non-positive value.
+func durationEnv(key string, fallback time.Duration) time.Duration {
+	if d, err := time.ParseDuration(os.Getenv(key)); err == nil && d > 0 {
+		return d
+	}
+	return fallback
 }

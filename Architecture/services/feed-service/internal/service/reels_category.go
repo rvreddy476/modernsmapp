@@ -53,6 +53,9 @@ const maxReelCategoryWindowsWhileEmpty = 3 * maxCategoryWindows
 // (authors the viewer follows, fail closed) and, as there, forbids the
 // discovery fill.
 func (s *Service) GetReelCategoryPage(ctx context.Context, userID uuid.UUID, limit int, before, category string, followingOnly bool) ([]HydratedPost, string, error) {
+	// One block set and following list for every window of the page
+	// (audit M3): the windows share this request's memo.
+	ctx = WithRequestMemo(ctx)
 	// The block set the timeline windows resolved, reused by the fill. A
 	// nil set is a real answer (blocks nobody), so resolution is tracked
 	// separately.

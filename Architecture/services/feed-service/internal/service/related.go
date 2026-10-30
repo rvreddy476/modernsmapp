@@ -348,7 +348,7 @@ func (s *Service) fetchPostsByAuthor(ctx context.Context, viewerID, authorID uui
 	req.Header.Set("X-Internal-Service-Key", os.Getenv("INTERNAL_SERVICE_KEY"))
 	req.Header.Set("X-User-Id", viewerID.String())
 
-	resp, err := s.postClient.Do(req)
+	resp, err := s.postFor(ctx).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("post-service request failed: %w", err)
 	}

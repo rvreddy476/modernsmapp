@@ -143,17 +143,16 @@ func (s *Service) canViewAuthors(ctx context.Context, viewerID uuid.UUID, author
 			out[a] = allowed
 			s.apCache[authorPrivacyKey(viewerID, a)] = authorPrivacyEntry{allowed: allowed, expires: now.Add(authorPrivacyCacheTTL)}
 		}
-		if len(s.apCache) > 50000 {
-			for k, e := range s.apCache {
-				if now.After(e.expires) {
-					delete(s.apCache, k)
-				}
-			}
-		}
+		boundTTLMap(s.apCache, authorPrivacyCacheMaxEntries, now, func(e authorPrivacyEntry) time.Time { return e.expires })
 		s.apMu.Unlock()
 	}
 	return out, nil
 }
+
+// authorPrivacyCacheMaxEntries caps the (viewer, author) privacy cache.
+// boundTTLMap trims it to 90% when it passes the cap, so the sweep under
+// apMu runs once per 5k writes rather than on every write (audit L9).
+const authorPrivacyCacheMaxEntries = 50000
 
 // fetchCanViewPosts is one call to graph-service's can endpoint. Any
 // non-200, transport failure or malformed body is an error — an empty map

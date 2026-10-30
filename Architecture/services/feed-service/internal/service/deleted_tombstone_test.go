@@ -1,9 +1,12 @@
 package service
 
 import (
+	"context"
 	"testing"
 
+	"github.com/alicebob/miniredis/v2"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 // Soft delete hides a post from feed hydration (2026-09-04).
@@ -50,5 +53,40 @@ func TestMergeHydratedItems_DropsPostsMissingFromBatch(t *testing.T) {
 	out := (&Service{}).mergeHydratedItems(items, batch, nil, viewer)
 	if len(out) != 1 || out[0].ID != live {
 		t.Fatalf("merged = %+v, want only the live post: a deleted post must never be rendered from its timeline row", out)
+	}
+}
+
+// Audit H1: a stale-marked post is a cache miss for every viewer, exactly
+// like a tombstoned one, while its neighbours stay cached.
+func TestFilterDeletedFromCache_StaleMarkedRowIsAMiss(t *testing.T) {
+	mr := miniredis.RunT(t)
+	s := &Service{rdb: redis.NewClient(&redis.Options{Addr: mr.Addr()})}
+	fresh, stale, deleted := uuid.New(), uuid.New(), uuid.New()
+	if err := s.MarkPostStale(context.Background(), stale); err != nil {
+		t.Fatal(err)
+	}
+	if err := mr.Set(DeletedTombstoneKey(deleted), "1"); err != nil {
+		t.Fatal(err)
+	}
+	cached := map[uuid.UUID]HydratedPost{
+		fresh:   {ID: fresh, Visibility: "public"},
+		stale:   {ID: stale, Visibility: "public"},
+		deleted: {ID: deleted, Visibility: "public"},
+	}
+	got := s.filterDeletedFromCache(context.Background(), cached)
+	if _, ok := got[stale]; ok {
+		t.Fatal("a stale-marked post was served from the hydration cache")
+	}
+	if _, ok := got[deleted]; ok {
+		t.Fatal("a tombstoned post was served from the hydration cache")
+	}
+	if _, ok := got[fresh]; !ok {
+		t.Fatal("an unmarked post was dropped from the cache")
+	}
+	if ttl := mr.TTL(StaleMarkerKey(stale)); ttl != StaleMarkerTTL {
+		t.Fatalf("stale marker TTL = %v, want %v", ttl, StaleMarkerTTL)
+	}
+	if StaleMarkerTTL <= hydrationCacheTTL {
+		t.Fatalf("stale marker TTL %v must outlive the hydration cache TTL %v", StaleMarkerTTL, hydrationCacheTTL)
 	}
 }

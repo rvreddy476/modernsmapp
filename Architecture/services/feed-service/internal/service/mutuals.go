@@ -138,7 +138,9 @@ func (s *Service) warmMutualFollows(ctx context.Context, viewerID uuid.UUID) {
 	// outlive the response it was triggered by, or it would be cancelled
 	// the moment the feed is written and never actually complete.
 	go func() {
-		bg, cancel := context.WithTimeout(context.WithoutCancel(ctx), mutualWarmTimeout)
+		// Background traffic (traffic.go): the warmer pages the whole
+		// follower list and must never trip the request path's breaker.
+		bg, cancel := context.WithTimeout(WithBackgroundTraffic(context.WithoutCancel(ctx)), mutualWarmTimeout)
 		defer cancel()
 		if err := s.refreshMutualFollows(bg, viewerID); err != nil {
 			log.Printf("mutual-follows warm failed for %s: %v", viewerID, err)

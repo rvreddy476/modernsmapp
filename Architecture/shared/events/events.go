@@ -975,7 +975,26 @@ type PostVisibilityChangedPayload struct {
 	ChangedAt     time.Time `json:"changed_at"`
 	// ChannelID, as on PostCreated: the subscriber leg of a re-fan-out.
 	ChannelID string `json:"channel_id,omitempty"`
+	// Reason says why the post's readability changed (additive, 2026-10-30):
+	//   VisibilityChangeAudience        the owner edited the visibility;
+	//                                   Old/NewVisibility differ
+	//   VisibilityChangeModeration      a moderator takedown or restore
+	//   VisibilityChangeCopyright       a copyright block or clear
+	//   VisibilityChangeMembershipGate  a members-tier gate added or removed
+	// For every reason but audience, OldVisibility == NewVisibility == the
+	// post's current visibility: consumers re-check who may read the post
+	// (feed-service drops every viewer's cached copy) and do not re-derive
+	// its audience. Empty from older producers.
+	Reason string `json:"reason,omitempty"`
 }
+
+// Reasons on PostVisibilityChangedPayload.Reason.
+const (
+	VisibilityChangeAudience       = "audience"
+	VisibilityChangeModeration     = "moderation"
+	VisibilityChangeCopyright      = "copyright"
+	VisibilityChangeMembershipGate = "membership_gate"
+)
 
 // PostPurgedPayload is the HARD delete: the post's rows are gone and the
 // listed media assets (those no other post referenced) have been handed to

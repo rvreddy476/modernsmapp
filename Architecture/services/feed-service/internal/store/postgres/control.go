@@ -112,3 +112,31 @@ func (s *MetaStore) GetMutedUserIDs(ctx context.Context, userID uuid.UUID) ([]st
 	}
 	return ids, rows.Err()
 }
+
+// ActiveFeedMutes returns the viewer's active /v1/feed/mute entries split
+// for the feed's filters: muted user ids (malformed ids are skipped) and
+// muted topic / hashtag words. One indexed read (idx_feed_mutes_user).
+func (s *MetaStore) ActiveFeedMutes(ctx context.Context, userID uuid.UUID) (users []uuid.UUID, words []string, err error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT target_type, target_id FROM feed_mutes
+		WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > NOW())`,
+		userID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var typ, id string
+		if err := rows.Scan(&typ, &id); err != nil {
+			return nil, nil, err
+		}
+		if typ == "user" {
+			if u, err := uuid.Parse(id); err == nil {
+				users = append(users, u)
+			}
+			continue
+		}
+		words = append(words, id)
+	}
+	return users, words, rows.Err()
+}

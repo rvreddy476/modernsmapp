@@ -348,7 +348,7 @@ func (s *Service) fetchRelationships(ctx context.Context, viewerID uuid.UUID, ta
 			req.Header.Set("X-Internal-Service-Key", key)
 		}
 
-		resp, err := s.graphClient.Do(req)
+		resp, err := s.graphFor(ctx).Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("graph-service request failed: %w", err)
 		}

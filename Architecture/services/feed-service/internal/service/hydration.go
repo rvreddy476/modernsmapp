@@ -29,6 +29,13 @@ func hydrationCacheKey(viewerID, postID uuid.UUID) string {
 	return fmt.Sprintf("feed:hydrate:%s:%s", viewerID, postID)
 }
 
+// hydrationIndexKey is the per-viewer set of post ids with a cached
+// hydration row, so invalidateViewerHydrationCache needs no keyspace SCAN.
+// It lives as long as the newest row it lists.
+func hydrationIndexKey(viewerID uuid.UUID) string {
+	return fmt.Sprintf("feed:hydrate-idx:%s", viewerID)
+}
+
 // HydratedPost is the fully enriched post returned to the frontend.
 type HydratedPost struct {
 	ID             uuid.UUID       `json:"id"`
@@ -397,13 +404,19 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 		// Unlisted / private posts are never listed to anyone but their
 		// author — see listingvisibility.go.
 		merged = applyListingVisibilityFilter(viewerID, merged)
+		// A repost row's author is the reposter; the ORIGINAL author's
+		// block/mute standing is checked here (repostfilter.go).
+		merged, err := s.applyRepostOriginalAuthorFilter(ctx, viewerID, merged)
+		if err != nil {
+			return nil, err
+		}
 		// Viewer keyword filter ("Filter keywords"): every surface — home,
 		// reels, flicks, videos, watch — funnels through HydratePosts, so
 		// applying it here is the one place no surface can bypass. It runs
 		// before render enrichment so dropped posts cost no profile/media
 		// fetches, and it FAILS CLOSED like block/mute: a failed lookup is
 		// an error, never an unfiltered page.
-		merged, err := s.applyKeywordHideFilter(ctx, viewerID, merged)
+		merged, err = s.applyKeywordHideFilter(ctx, viewerID, merged)
 		if err != nil {
 			return nil, err
 		}
@@ -421,6 +434,9 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 		merged, err = s.applyFeedbackFilter(ctx, viewerID, merged)
 		if err != nil {
 			return nil, err
+		}
+		if visibilityOnly(ctx) {
+			return merged, nil // the pill needs the verdict, not the render
 		}
 		s.enrichViewCounts(ctx, merged)
 		s.enrichReasons(ctx, merged, viewerID)
@@ -455,7 +471,7 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 		req.Header.Set("X-Internal-Service-Key", key)
 	}
 
-	resp, err := s.postClient.Do(req)
+	resp, err := s.postFor(ctx).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("post-service batch request failed: %w", err)
 	}
@@ -495,6 +511,12 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 	merged = applyProcessingFilter(viewerID, merged)
 	// Listing visibility — same step as the cache-only path above.
 	merged = applyListingVisibilityFilter(viewerID, merged)
+	// Reposts of a blocked / muted original author — same step as the
+	// cache-only path above.
+	merged, err = s.applyRepostOriginalAuthorFilter(ctx, viewerID, merged)
+	if err != nil {
+		return nil, err
+	}
 	// Viewer keyword filter — same step as the cache-only path above; see
 	// that comment. Fail-closed by design.
 	merged, err = s.applyKeywordHideFilter(ctx, viewerID, merged)
@@ -510,6 +532,9 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 	merged, err = s.applyFeedbackFilter(ctx, viewerID, merged)
 	if err != nil {
 		return nil, err
+	}
+	if visibilityOnly(ctx) {
+		return merged, nil // the pill needs the verdict, not the render
 	}
 	s.enrichViewCounts(ctx, merged)
 	s.enrichReasons(ctx, merged, viewerID)
@@ -862,6 +887,7 @@ func (s *Service) storeHydratedCache(viewerID uuid.UUID, fresh map[string]Hydrat
 		ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 		defer cancel()
 		pipe := s.rdb.Pipeline()
+		indexed := false
 		for idStr, hp := range fresh {
 			pid, err := uuid.Parse(idStr)
 			if err != nil {
@@ -884,6 +910,11 @@ func (s *Service) storeHydratedCache(viewerID uuid.UUID, fresh map[string]Hydrat
 				continue
 			}
 			pipe.Set(ctx, hydrationCacheKey(viewerID, pid), data, hydrationCacheTTL)
+			pipe.SAdd(ctx, hydrationIndexKey(viewerID), pid.String())
+			indexed = true
+		}
+		if indexed {
+			pipe.Expire(ctx, hydrationIndexKey(viewerID), hydrationCacheTTL)
 		}
 		if _, err := pipe.Exec(ctx); err != nil {
 			log.Printf("[feed-hydrate] cache SET failed: %v", err)

@@ -274,12 +274,13 @@ func (s *Service) fetchSubscribedOwners(ctx context.Context, viewerID uuid.UUID)
 	return nil, fmt.Errorf("subscribed owners for %s: more than %d pages", viewerID, maxSubscribedOwnerPages)
 }
 
-// eachChannelSubscriber pages post-service's internal
-// /internal/channels/{channelId}/subscriber-ids and hands every id to fn as
-// it arrives, so the caller holds one page at a time. Returns the first
-// page error; ids already delivered stay delivered.
-func (s *Service) eachChannelSubscriber(ctx context.Context, channelID uuid.UUID, fn func(uuid.UUID)) error {
-	after := ""
+// eachChannelSubscriberPage pages post-service's internal
+// /internal/channels/{channelId}/subscriber-ids from `after` ("" = the
+// start) and hands each page to fn with the cursor of the next page and
+// whether there is one, so the caller holds one page at a time and can
+// record its position (FanoutPost's chunk progress). Returns the first
+// page or fn error; pages already handed over stay handed over.
+func (s *Service) eachChannelSubscriberPage(ctx context.Context, channelID uuid.UUID, after string, fn func(ids []uuid.UUID, next string, more bool) error) error {
 	for page := 0; page < maxSubscriberPages; page++ {
 		url := fmt.Sprintf("%s/internal/channels/%s/subscriber-ids?limit=%d", s.postServiceURL, channelID, subscriberPageSize)
 		if after != "" {
@@ -289,10 +290,11 @@ func (s *Service) eachChannelSubscriber(ctx context.Context, channelID uuid.UUID
 		if err != nil {
 			return fmt.Errorf("subscribers of channel %s: %w", channelID, err)
 		}
-		for _, id := range ids {
-			fn(id)
+		more = more && next != "" && next != after
+		if err := fn(ids, next, more); err != nil {
+			return fmt.Errorf("subscribers of channel %s: %w", channelID, err)
 		}
-		if !more || next == "" || next == after {
+		if !more {
 			return nil
 		}
 		after = next
@@ -314,7 +316,7 @@ func (s *Service) getInternalIDPage(ctx context.Context, url, field string) (ids
 	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
 		req.Header.Set("X-Internal-Service-Key", key)
 	}
-	resp, err := s.postClient.Do(req)
+	resp, err := s.postFor(ctx).Do(req)
 	if err != nil {
 		return nil, "", false, fmt.Errorf("post-service request failed: %w", err)
 	}

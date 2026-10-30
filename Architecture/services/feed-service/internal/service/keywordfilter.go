@@ -30,6 +30,11 @@ import (
 // A keyword added in trust-safety takes effect within a minute.
 const keywordFilterCacheTTL = 60 * time.Second
 
+// keywordCacheMaxEntries caps the keyword cache (audit M4): one entry per
+// viewer, so without a cap every viewer since the process started stayed
+// in memory. 100k viewers is a few MB; past it, boundTTLMap evicts.
+const keywordCacheMaxEntries = 100000
+
 type keywordCacheEntry struct {
 	keywords []string
 	expires  time.Time
@@ -59,6 +64,7 @@ func (s *Service) getFilterKeywords(ctx context.Context, viewerID uuid.UUID) ([]
 		s.kwCache = make(map[uuid.UUID]keywordCacheEntry)
 	}
 	s.kwCache[viewerID] = keywordCacheEntry{keywords: keywords, expires: now.Add(keywordFilterCacheTTL)}
+	boundTTLMap(s.kwCache, keywordCacheMaxEntries, now, func(e keywordCacheEntry) time.Time { return e.expires })
 	s.kwMu.Unlock()
 	return keywords, nil
 }
@@ -107,6 +113,14 @@ func (s *Service) applyKeywordHideFilter(ctx context.Context, viewerID uuid.UUID
 	keywords, err := s.getFilterKeywords(ctx, viewerID)
 	if err != nil {
 		return nil, fmt.Errorf("feed unavailable: keyword filters could not be resolved: %w", err)
+	}
+	// Topics and hashtags muted through /v1/feed/mute (feedmutes.go).
+	mutes, err := s.feedMutes(ctx, viewerID)
+	if err != nil {
+		return nil, fmt.Errorf("feed unavailable: feed mutes could not be resolved: %w", err)
+	}
+	if len(mutes.words) > 0 {
+		keywords = append(append(make([]string, 0, len(keywords)+len(mutes.words)), keywords...), mutes.words...)
 	}
 	return filterPostsByKeywords(posts, keywords), nil
 }

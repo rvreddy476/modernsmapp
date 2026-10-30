@@ -174,6 +174,7 @@ func filterHydratedByCategory(posts []HydratedPost, category string) []HydratedP
 // way, suppresses the fill the same way, and additionally leaves the page
 // in timeline order: that tab promises newest first, never a ranking.
 func (s *Service) GetLongVideoCategoryPage(ctx context.Context, userID uuid.UUID, limit int, before, category string, followingOnly, subscribedOnly bool) ([]HydratedPost, string, error) {
+	ctx = WithRequestMemo(ctx) // one block set for every window (audit M3)
 	// The category surface is the filtered surface with only a category
 	// set (tube_page.go, MTube 2026-09-27): one collection loop, one fill
 	// rule and one ranking step for every Tube narrowing, so a chip or a
@@ -188,6 +189,7 @@ func (s *Service) GetLongVideoCategoryPage(ctx context.Context, userID uuid.UUID
 // narrowed the same way and left in timeline order. No discovery fill: the
 // watch surface never had one.
 func (s *Service) GetVideoFeedCategoryPage(ctx context.Context, userID uuid.UUID, limit int, before string, followingOnly, subscribedOnly bool, category string) ([]HydratedPost, string, error) {
+	ctx = WithRequestMemo(ctx) // one block set for every window (audit M3)
 	fetch := func(ctx context.Context, before string, limit int) ([]FeedItem, string, error) {
 		items, next, _, err := s.videoTimelineWindow(ctx, userID, limit, before, followingOnly, subscribedOnly)
 		return items, next, err

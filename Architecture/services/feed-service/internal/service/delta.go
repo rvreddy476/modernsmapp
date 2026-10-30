@@ -131,7 +131,7 @@ func (s *Service) deltaHome(ctx context.Context, userID uuid.UUID, since time.Ti
 	}
 	var following []uuid.UUID
 	if followingOnly {
-		if following, err = s.fetchFollowing(ctx, userID); err != nil {
+		if following, err = s.viewerFollowing(ctx, userID); err != nil {
 			return nil, fmt.Errorf("delta following filter: %w", err)
 		}
 	}
@@ -159,7 +159,52 @@ func (s *Service) deltaHome(ctx context.Context, userID uuid.UUID, since time.Ti
 	if s.GetLongVideoFrequency(ctx, userID) == "hidden" {
 		fresh = s.applyLongVideoFrequency(fresh, "hidden", false)
 	}
-	return s.dropTombstoned(ctx, fresh), nil
+	return s.openableForPill(ctx, userID, s.dropTombstoned(ctx, fresh))
+}
+
+type visibilityOnlyKey struct{}
+
+// visibilityOnly reports whether HydratePosts should stop after its
+// filters: the caller wants which posts the viewer may open, not the
+// profiles, media URLs, view counts and reasons a rendered page needs.
+func visibilityOnly(ctx context.Context) bool {
+	v, _ := ctx.Value(visibilityOnlyKey{}).(bool)
+	return v
+}
+
+// openableForPill keeps only the items the viewer could actually open
+// (audit L6). The pill used to count raw timeline rows: a reel still
+// processing, a post a moderator took down, one written before its author
+// went private, a members-only or now-unlisted post — each made the pill
+// say "1 new" and newest_anchor point at a post the refresh never showed.
+// The items now go through HydratePosts' whole verdict (post-service's
+// batch, processing, listing visibility, keywords, privacy, "Not
+// interested"), without the render enrichment. Fails like the page does:
+// an error is an error, never an unfiltered count.
+func (s *Service) openableForPill(ctx context.Context, viewerID uuid.UUID, items []FeedItem) ([]FeedItem, error) {
+	if len(items) == 0 {
+		return items, nil
+	}
+	visible, err := s.HydratePosts(context.WithValue(ctx, visibilityOnlyKey{}, true), items, viewerID)
+	if err != nil {
+		return nil, fmt.Errorf("feed delta: visibility check: %w", err)
+	}
+	return keepHydrated(items, visible), nil
+}
+
+// keepHydrated returns the items whose post survived hydration.
+func keepHydrated(items []FeedItem, visible []HydratedPost) []FeedItem {
+	ok := make(map[uuid.UUID]struct{}, len(visible))
+	for _, p := range visible {
+		ok[p.ID] = struct{}{}
+	}
+	out := make([]FeedItem, 0, len(items))
+	for _, it := range items {
+		if _, keep := ok[it.PostID]; keep {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 // freshForPill is deltaHome's pure step: items newer than `since`, not the
@@ -206,7 +251,7 @@ func (s *Service) deltaContentType(ctx context.Context, userID uuid.UUID, conten
 	if fresh, err = s.applyHiddenAuthorFilter(ctx, fresh); err != nil {
 		return nil, err
 	}
-	return s.dropTombstoned(ctx, fresh), nil
+	return s.openableForPill(ctx, userID, s.dropTombstoned(ctx, fresh))
 }
 
 // dropTombstoned removes posts soft-deleted since their timeline rows were

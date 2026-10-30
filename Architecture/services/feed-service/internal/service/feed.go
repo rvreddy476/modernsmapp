@@ -13,7 +13,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/atpost/feed-service/internal/ranking"
@@ -47,6 +46,9 @@ type Service struct {
 	mediaClient   *http.Client
 	userClient    *http.Client
 	trustClient   *http.Client
+	// fanout holds the background-traffic clients (traffic.go): the Kafka
+	// fan-out and the warmers never share a breaker with a user request.
+	fanout fanoutClients
 	// analyticsClient reads view counts; vcCache is the 60 s in-process
 	// cache in front of it — see view_counts.go.
 	analyticsClient *http.Client
@@ -80,6 +82,8 @@ type Service struct {
 	timelines timelineWriter
 	windows   timelineReader
 	celebs    celebStore
+	// reposts removes an undone repost's rows (UndoRepostFanout).
+	reposts repostRemover
 }
 
 // timelineWriter is the slice of the Scylla store FanoutPost needs.
@@ -149,6 +153,7 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 		mediaClient:         httpclient.NewWithBreaker(5*time.Second, "feed->media"),
 		userClient:          httpclient.NewWithBreaker(5*time.Second, "feed->user"),
 		trustClient:         httpclient.NewWithBreaker(5*time.Second, "feed->trust-safety"),
+		fanout:              newFanoutClients(),
 		kwCache:             make(map[uuid.UUID]keywordCacheEntry),
 		lvTiers:             loadLVTiers(),
 		celeb:               loadCelebConfig(),
@@ -163,6 +168,7 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 	if scylla != nil {
 		svc.timelines = scylla
 		svc.windows = scylla
+		svc.reposts = scylla
 	}
 	return svc
 }
@@ -448,7 +454,7 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	// Following tabs: an unresolved graph is an error, never a page under
 	// a heading that promises friends.
 	if circleOnly {
-		friends, err := s.fetchCircleMembers(ctx, userID)
+		friends, err := s.viewerConnections(ctx, userID)
 		if err != nil {
 			log.Printf("circle_only filter: failed to fetch friends for %s: %v", userID, err)
 			return HomeFeedResult{}, fmt.Errorf("home circle filter: %w", err)
@@ -476,7 +482,7 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	// Same two rules as circle_only above: resolved unconditionally, and
 	// failing closed rather than serving the unfiltered timeline.
 	if followingOnly {
-		following, err := s.fetchFollowing(ctx, userID)
+		following, err := s.viewerFollowing(ctx, userID)
 		if err != nil {
 			log.Printf("following_only filter: failed to fetch follows for %s: %v", userID, err)
 			return HomeFeedResult{}, fmt.Errorf("home following filter: %w", err)
@@ -743,7 +749,7 @@ func (s *Service) applyFollowingFilter(ctx context.Context, userID uuid.UUID, ca
 	if len(candidates) == 0 {
 		return candidates, nil
 	}
-	following, err := s.fetchFollowing(ctx, userID)
+	following, err := s.viewerFollowing(ctx, userID)
 	if err != nil {
 		log.Printf("%s following_only: failed to fetch follows for %s: %v", surface, userID, err)
 		return nil, fmt.Errorf("%s following filter: %w", surface, err)
@@ -1138,186 +1144,178 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 	// §11 step 12). Independent of celeb status: the circle is small (≤10) so
 	// a push is always cheap, and the pull model would not reliably surface a
 	// restricted-audience post.
+	//
+	// Audit M6: a failed close-friends fetch or write used to log and
+	// return nil, so the consumer committed the event and the circle never
+	// got the post. Both now fail the event so it is retried.
 	if visibility == "trusted" {
 		if !s.closeFriendsPostsEnabled(ctx, authorID) {
 			return nil // toggle off — post stays on the author's own timeline
 		}
 		closeFriends, err := s.fetchCloseFriends(ctx, authorID)
 		if err != nil {
-			log.Printf("Failed to fetch close friends for trusted fanout: %v", err)
-			return nil
+			return fmt.Errorf("trusted fanout of post %s: fetch close friends, will be retried: %w", postID, err)
 		}
+		recipients := make([]uuid.UUID, 0, len(closeFriends))
 		for _, recipientID := range closeFriends {
-			if recipientID == authorID {
-				continue // already pushed above
+			if recipientID != authorID { // already pushed above
+				recipients = append(recipients, recipientID)
 			}
-			if err := s.timelines.AddToHomeTimeline(ctx, recipientID, postID, authorID, createdAt, contentType); err != nil {
-				log.Printf("Failed to push trusted post to timeline for user %s: %v", recipientID, err)
-			}
+		}
+		if err := s.pushChunk(ctx, recipients, postID, authorID, createdAt, contentType); err != nil {
+			return fmt.Errorf("trusted fanout of post %s incomplete, will be retried: %w", postID, err)
 		}
 		return nil
 	}
 
-	// 3. Check Celeb Status
+	// 3. Check Celeb Status. IsCeleb fails safe (an unreadable flag is an
+	// error, never "not celeb"), and so does this: the event is retried
+	// rather than a celeb's post pushed to every follower.
 	isCeleb, err := s.celebs.IsCeleb(ctx, authorID)
 	if err != nil {
 		return err
 	}
+	friends := strings.EqualFold(strings.TrimSpace(visibility), "friends")
 
-	// 4. Collect unique recipient IDs from followers + circle members.
+	// 3a. Celeb threshold (celebpull.go): an author this large switches to
+	// the pull model now — flagged, and this post is not pushed to
+	// followers; GetHomeFeed pulls it. Asked of graph-service's follower
+	// count first, so a celeb is recognised before one row is pushed; the
+	// follower leg's running count below is the fallback when the count is
+	// unavailable. Only with pull enabled, or the post would reach nobody.
+	if !isCeleb && s.celebThresholdOn() {
+		if n, ok := s.followerCount(ctx, authorID); ok && n >= s.celeb.threshold {
+			isCeleb = s.flagCeleb(ctx, authorID, n)
+		}
+	}
+
+	// 4. Followers, then connections, chunk by chunk (fanout_chunks.go):
+	// each graph page and its writes is one unit with its progress saved,
+	// so a failure retries only the failed chunk and memory is one page.
+	// Skipped entirely for a celeb (pull model): only the subscriber leg
+	// below can add anyone.
 	//
-	// Audit HF5: previously the follower fetch and the circle-member
-	// fetch ran serially even though they hit independent services
-	// (graph-service vs profile-service). Run them in parallel — for
-	// a non-celeb author with 5k followers + 200 friends, the wall
-	// clock used to be ~50 graph pages + ~1 profile call back-to-back;
-	// now those overlap.
-	//
-	// Skipped entirely for a celeb (pull model): the set stays empty and
-	// only the subscriber leg below can add anyone.
-	//
-	// A failed fetch no longer just logs and carries on with whoever was
-	// reached: everyone who WAS resolved still gets the row now, and the
-	// error is returned at the end so the consumer retries the event and
-	// the rest arrive. That is safe because every write here upserts
-	// (scylla.TimelineTS); a retry rewrites the rows that landed.
+	// A failed leg does not stop the others: everyone who CAN be reached
+	// still gets the row now, and the error is returned at the end so the
+	// consumer retries the event and the rest arrive. That is safe because
+	// every write here upserts (scylla.TimelineTS).
 	var incomplete []error
-	recipientSet := make(map[uuid.UUID]struct{})
+	prog := s.loadFanoutProgress(ctx, postID)
+	dedupe := newRecipientDedupe()
+	dedupe.first(authorID) // the author's own row is already written
+	write := func(ids []uuid.UUID) error {
+		fresh := make([]uuid.UUID, 0, len(ids))
+		for _, id := range ids {
+			if dedupe.first(id) {
+				fresh = append(fresh, id)
+			}
+		}
+		return s.pushChunk(ctx, fresh, postID, authorID, createdAt, contentType)
+	}
 	if !isCeleb {
-		type fetchResult struct {
-			ids []uuid.UUID
-			err error
-			tag string
-		}
-		results := make(chan fetchResult, 2)
-		go func() {
-			ids, err := s.fetchFollowers(ctx, authorID)
-			results <- fetchResult{ids: ids, err: err, tag: "followers"}
-		}()
-		go func() {
-			ids, err := s.fetchCircleMembers(ctx, authorID)
-			results <- fetchResult{ids: ids, err: err, tag: "circle"}
-		}()
-		followerCount := 0
-		var followerIDs []uuid.UUID
-		for i := 0; i < 2; i++ {
-			r := <-results
-			if r.err != nil {
-				log.Printf("Failed to fetch %s for fanout: %v", r.tag, r.err)
-				incomplete = append(incomplete, fmt.Errorf("fetch %s: %w", r.tag, r.err))
-				continue
-			}
-			if r.tag == "followers" {
-				followerCount = len(r.ids)
-				followerIDs = r.ids
-			}
-			for _, id := range r.ids {
-				recipientSet[id] = struct{}{}
-			}
-		}
-
-		// Celeb threshold (celebpull.go): an author this large switches to
-		// the pull model now — flagged, and this post is not pushed to
-		// followers; GetHomeFeed pulls it. Only with pull enabled, or the
-		// post would reach nobody.
-		if s.celeb.pull && s.celeb.threshold > 0 && followerCount >= s.celeb.threshold {
-			if marker, ok := s.celebs.(celebMarker); ok {
-				if err := marker.SetCelebStatus(ctx, authorID, true); err != nil {
-					log.Printf("celeb flag for %s (%d followers) failed; pushing as before: %v", authorID, followerCount, err)
-				} else {
-					log.Printf("author %s reached %d followers: flagged celeb, pull model from now on", authorID, followerCount)
-					isCeleb = true
-					recipientSet = make(map[uuid.UUID]struct{})
-				}
-			}
-		}
-
-		// 4a. Friends (mutual follows, 2026-10-18): only followers the author
-		// follows back get the row. Circle members and one-way followers do
-		// not - post-service's batch would hide the post from them, but the
-		// row would still light their Following dot (delta.go) for a post they
-		// can never open. Fail closed: no following list, no rows; the error
-		// is returned so the event is retried.
-		if strings.EqualFold(strings.TrimSpace(visibility), "friends") && !isCeleb {
+		// 4a. Friends (mutual follows, 2026-10-18): only followers the
+		// author follows back get the row. Circle members and one-way
+		// followers do not - post-service's batch would hide the post from
+		// them, but the row would still light their Following dot
+		// (delta.go) for a post they can never open. Fail closed: no
+		// following list, no rows; the error is returned so the event is
+		// retried.
+		var followedByAuthor map[uuid.UUID]struct{}
+		followerLeg := true
+		if friends {
 			following, err := s.fetchFollowing(ctx, authorID)
 			if err != nil {
 				incomplete = append(incomplete, fmt.Errorf("fetch following for friends fanout: %w", err))
-				recipientSet = make(map[uuid.UUID]struct{})
+				followerLeg = false
 			} else {
-				recipientSet = mutualRecipients(followerIDs, following)
-			}
-		}
-	}
-
-	// 5. Push to all recipients' Home Timelines.
-	//
-	// Audit CF4: previously a sequential loop — a non-celeb author
-	// with 100k followers blocked the Kafka consumer goroutine on
-	// 100k serial Scylla writes. Real "celeb" status (gates the pull
-	// model) is already short-circuited above; this path is the
-	// "almost-celeb" tier. Parallelize through a bounded worker pool
-	// so total wall-clock is concurrency-bounded but per-event Scylla
-	// load can't explode beyond the worker count.
-	const fanoutWorkers = 16
-	recipientCh := make(chan uuid.UUID, fanoutWorkers*4)
-	var fanoutWG sync.WaitGroup
-	var failedWrites atomic.Int64
-	for w := 0; w < fanoutWorkers; w++ {
-		fanoutWG.Add(1)
-		go func() {
-			defer fanoutWG.Done()
-			for recipientID := range recipientCh {
-				if err := s.timelines.AddToHomeTimeline(ctx, recipientID, postID, authorID, createdAt, contentType); err != nil {
-					log.Printf("Failed to push to timeline for user %s: %v", recipientID, err)
-					failedWrites.Add(1)
-					fanoutWrites.WithLabelValues("failed").Inc()
-					continue
+				followedByAuthor = make(map[uuid.UUID]struct{}, len(following))
+				for _, id := range following {
+					followedByAuthor[id] = struct{}{}
 				}
-				fanoutWrites.WithLabelValues("ok").Inc()
 			}
-		}()
-	}
-	for recipientID := range recipientSet {
-		if recipientID == authorID {
-			continue // already pushed above
 		}
-		recipientCh <- recipientID
+		pageFilter := func(seen int, ids []uuid.UUID) ([]uuid.UUID, error) {
+			if s.celebThresholdOn() && seen >= s.celeb.threshold && s.flagCeleb(ctx, authorID, seen) {
+				return nil, errCelebThresholdReached
+			}
+			if !friends {
+				return ids, nil
+			}
+			kept := make([]uuid.UUID, 0, len(ids))
+			for _, id := range ids {
+				if _, ok := followedByAuthor[id]; ok {
+					kept = append(kept, id)
+				}
+			}
+			return kept, nil
+		}
+		if followerLeg {
+			err := s.graphLeg(ctx, prog, "followers", "followers", authorID, pageFilter, write)
+			switch {
+			case errors.Is(err, errCelebThresholdReached):
+				isCeleb = true
+			case err != nil:
+				log.Printf("Follower fanout of post %s incomplete: %v", postID, err)
+				incomplete = append(incomplete, err)
+			}
+		}
+		if !isCeleb && !friends {
+			if err := s.graphLeg(ctx, prog, "connections", "connections", authorID, nil, write); err != nil {
+				log.Printf("Connection fanout of post %s incomplete: %v", postID, err)
+				incomplete = append(incomplete, err)
+			}
+		}
 	}
 
-	// 6. Subscriber leg (long videos with a channel): the channel's
-	// subscribers, through the same bounded pool, skipping anyone the
-	// follower/circle set already covered. The pages stream straight into
-	// the pool rather than being collected first, so a channel with many
-	// subscribers costs memory proportional to one page, not to the
-	// channel. A post-service failure here is returned with the others
-	// below: the rows already written are upserts, so the retry it causes
-	// rewrites them rather than duplicating them.
-	if channelID != uuid.Nil && isLongVideoContentType(contentType) && !strings.EqualFold(strings.TrimSpace(visibility), "friends") {
-		err := s.eachChannelSubscriber(ctx, channelID, func(subscriberID uuid.UUID) {
-			if subscriberID == authorID {
-				return
+	// 5. Subscriber leg (long videos with a channel): the channel's
+	// subscribers, chunk by chunk like the graph legs, skipping anyone a
+	// graph leg already covered. A post-service failure here is returned
+	// with the others below.
+	if channelID != uuid.Nil && isLongVideoContentType(contentType) && !friends && !prog.done("subscribers") {
+		err := s.eachChannelSubscriberPage(ctx, channelID, prog.cursor("subscribers"), func(ids []uuid.UUID, next string, more bool) error {
+			if err := write(ids); err != nil {
+				return err
 			}
-			if _, covered := recipientSet[subscriberID]; covered {
-				return
+			if more {
+				prog.save(ctx, "subscribers", next)
+			} else {
+				prog.finish(ctx, "subscribers")
 			}
-			recipientSet[subscriberID] = struct{}{} // a subscriber listed twice is still one row
-			recipientCh <- subscriberID
+			return nil
 		})
 		if err != nil {
 			log.Printf("Subscriber fanout for channel %s (post %s) incomplete: %v", channelID, postID, err)
-			incomplete = append(incomplete, fmt.Errorf("fetch channel subscribers: %w", err))
+			incomplete = append(incomplete, fmt.Errorf("channel subscribers: %w", err))
 		}
 	}
 
-	close(recipientCh)
-	fanoutWG.Wait()
-	if n := failedWrites.Load(); n > 0 {
-		incomplete = append(incomplete, fmt.Errorf("%d timeline write(s) failed", n))
-	}
 	if len(incomplete) > 0 {
 		return fmt.Errorf("fanout of post %s incomplete, will be retried: %w", postID, errors.Join(incomplete...))
 	}
+	prog.clear(ctx)
 	return nil
+}
+
+// celebThresholdOn reports whether FanoutPost may flag an author celeb by
+// follower count: only with the pull read path on, or the post would reach
+// nobody.
+func (s *Service) celebThresholdOn() bool {
+	return s.celeb.pull && s.celeb.threshold > 0
+}
+
+// flagCeleb marks the author celeb and reports whether that took. A
+// failure leaves them on the push model for this post.
+func (s *Service) flagCeleb(ctx context.Context, authorID uuid.UUID, followers int) bool {
+	marker, ok := s.celebs.(celebMarker)
+	if !ok {
+		return false
+	}
+	if err := marker.SetCelebStatus(ctx, authorID, true); err != nil {
+		log.Printf("celeb flag for %s (%d followers) failed; pushing as before: %v", authorID, followers, err)
+		return false
+	}
+	log.Printf("author %s reached %d followers: flagged celeb, pull model from now on", authorID, followers)
+	return true
 }
 
 // isLongVideoContentType names the two spellings the catalogue uses for
@@ -1347,7 +1345,7 @@ func isLongVideoContentType(contentType string) bool {
 // cursor advanced, and fill slots went to authors the viewer had excluded.
 // Same fail-closed rule as applyFeedbackFilter; a service built without a
 // feedback store (tests) has nothing to add.
-func (s *Service) resolveBlockedSet(ctx context.Context, userID uuid.UUID) (map[uuid.UUID]struct{}, error) {
+func (s *Service) resolveBlockedSetUncached(ctx context.Context, userID uuid.UUID) (map[uuid.UUID]struct{}, error) {
 	ids, err := s.getBlockedAndMuted(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("feed unavailable: block/mute state could not be resolved: %w", err)
@@ -1355,6 +1353,19 @@ func (s *Service) resolveBlockedSet(ctx context.Context, userID uuid.UUID) (map[
 	set := blockedSetOf(ids)
 	if s.feedback == nil {
 		return set, nil
+	}
+	// Accounts muted through /v1/feed/mute (feedmutes.go, audit L1).
+	mutes, err := s.feedMutes(ctx, userID)
+	if err != nil {
+		return nil, fmt.Errorf("feed unavailable: feed mutes could not be resolved: %w", err)
+	}
+	if len(mutes.users) > 0 {
+		if set == nil {
+			set = make(map[uuid.UUID]struct{}, len(mutes.users))
+		}
+		for _, id := range mutes.users {
+			set[id] = struct{}{}
+		}
 	}
 	muted, err := s.feedback.MutedAuthorIDs(ctx, userID)
 	if err != nil {
@@ -1419,7 +1430,7 @@ func (s *Service) getBlockedAndMuted(ctx context.Context, userID uuid.UUID) ([]u
 	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
 		req.Header.Set("X-Internal-Service-Key", key)
 	}
-	resp, err := s.graphClient.Do(req)
+	resp, err := s.graphFor(ctx).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1459,7 +1470,7 @@ func (s *Service) fetchCloseFriends(ctx context.Context, userID uuid.UUID) ([]uu
 	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
 		req.Header.Set("X-Internal-Service-Key", key)
 	}
-	resp, err := s.graphClient.Do(req)
+	resp, err := s.graphFor(ctx).Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -1493,7 +1504,7 @@ func (s *Service) closeFriendsPostsEnabled(ctx context.Context, userID uuid.UUID
 	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
 		req.Header.Set("X-Internal-Service-Key", key)
 	}
-	resp, err := s.userClient.Do(req)
+	resp, err := s.userFor(ctx).Do(req)
 	if err != nil {
 		return true // fail-open
 	}
@@ -1515,108 +1526,13 @@ func (s *Service) closeFriendsPostsEnabled(ctx context.Context, userID uuid.UUID
 // fetchFollowers calls graph-service to get the follower list for a user.
 // It paginates through all results (max 100 per page).
 func (s *Service) fetchFollowers(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
-	var allFollowers []uuid.UUID
-	offset := 0
-	limit := 100
-
-	for {
-		url := fmt.Sprintf("%s/v1/graph/followers/%s?limit=%d&offset=%d", s.graphURL, userID.String(), limit, offset)
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return nil, fmt.Errorf("create request: %w", err)
-		}
-		// Forward the internal-service key so graph-service's CG2 gate
-		// accepts the request when configured.
-		if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
-			req.Header.Set("X-Internal-Service-Key", key)
-		}
-
-		resp, err := s.graphClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("graph-service request failed: %w", err)
-		}
-
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return nil, fmt.Errorf("read response body: %w", err)
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("graph-service returned %d: %s", resp.StatusCode, string(body))
-		}
-
-		var envelope struct {
-			Data []uuid.UUID `json:"data"`
-		}
-		if err := json.Unmarshal(body, &envelope); err != nil {
-			return nil, fmt.Errorf("unmarshal followers: %w", err)
-		}
-
-		allFollowers = append(allFollowers, envelope.Data...)
-
-		// If we got fewer than limit, we've fetched all pages
-		if len(envelope.Data) < limit {
-			break
-		}
-		offset += limit
-	}
-
-	return allFollowers, nil
+	return s.graphIDList(ctx, "followers", userID)
 }
 
 // fetchFollowing calls graph-service for the list of user IDs the viewer
 // follows (one-way), used by the home feed's following_only filter.
 func (s *Service) fetchFollowing(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
-	var allFollowing []uuid.UUID
-	offset := 0
-	limit := 100
-
-	for {
-		url := fmt.Sprintf("%s/v1/graph/following/%s?limit=%d&offset=%d", s.graphURL, userID.String(), limit, offset)
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return nil, fmt.Errorf("create request: %w", err)
-		}
-		// Forward the internal-service key so graph-service's CG2 gate
-		// accepts the request when configured.
-		if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
-			req.Header.Set("X-Internal-Service-Key", key)
-		}
-
-		resp, err := s.graphClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("graph-service request failed: %w", err)
-		}
-
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return nil, fmt.Errorf("read response body: %w", err)
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("graph-service returned %d: %s", resp.StatusCode, string(body))
-		}
-
-		var envelope struct {
-			Data []uuid.UUID `json:"data"`
-		}
-		if err := json.Unmarshal(body, &envelope); err != nil {
-			return nil, fmt.Errorf("unmarshal following: %w", err)
-		}
-
-		allFollowing = append(allFollowing, envelope.Data...)
-
-		if len(envelope.Data) < limit {
-			break
-		}
-		offset += limit
-	}
-
-	return allFollowing, nil
+	return s.graphIDList(ctx, "following", userID)
 }
 
 // fetchCircleMembers returns the author's connections ("friends"). The friend
@@ -1625,54 +1541,7 @@ func (s *Service) fetchFollowing(ctx context.Context, userID uuid.UUID) ([]uuid.
 // use — NOT the retired profile-service friends endpoint (which now returns
 // nothing, so a post never reached the author's friends). Mirrors fetchFollowers.
 func (s *Service) fetchCircleMembers(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
-	var allMembers []uuid.UUID
-	offset := 0
-	limit := 100
-
-	for {
-		url := fmt.Sprintf("%s/v1/graph/connections/%s?limit=%d&offset=%d", s.graphURL, userID.String(), limit, offset)
-
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-		if err != nil {
-			return nil, fmt.Errorf("create request: %w", err)
-		}
-		// Forward the internal-service key so graph-service's CG2 gate
-		// accepts the request when configured.
-		if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
-			req.Header.Set("X-Internal-Service-Key", key)
-		}
-
-		resp, err := s.graphClient.Do(req)
-		if err != nil {
-			return nil, fmt.Errorf("graph-service request failed: %w", err)
-		}
-
-		body, err := io.ReadAll(resp.Body)
-		resp.Body.Close()
-		if err != nil {
-			return nil, fmt.Errorf("read response body: %w", err)
-		}
-
-		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("graph-service returned %d: %s", resp.StatusCode, string(body))
-		}
-
-		var envelope struct {
-			Data []uuid.UUID `json:"data"`
-		}
-		if err := json.Unmarshal(body, &envelope); err != nil {
-			return nil, fmt.Errorf("unmarshal connections: %w", err)
-		}
-
-		allMembers = append(allMembers, envelope.Data...)
-
-		if len(envelope.Data) < limit {
-			break
-		}
-		offset += limit
-	}
-
-	return allMembers, nil
+	return s.graphIDList(ctx, "connections", userID)
 }
 
 // getRecentPublicPosts fetches recent public posts from post-service as a cold-start fallback
@@ -1707,7 +1576,7 @@ func (s *Service) getRecentPublicPostsFor(ctx context.Context, viewerID *uuid.UU
 		req.Header.Set("X-User-Id", viewerID.String())
 	}
 
-	resp, err := s.postClient.Do(req)
+	resp, err := s.postFor(ctx).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("post-service request failed: %w", err)
 	}
@@ -1773,51 +1642,63 @@ func feedItemsToCandidates(items []FeedItem) []ranking.Candidate {
 
 // FanoutQuestion writes a Q&A question into the author's followers' home
 // timelines using content_type = "qa_question". Mirrors FanoutPost but
-// without the celeb/visibility short-circuits — Q&A questions always
-// fan out to followers (community-scoped questions are filtered at read
-// time by the feed hydrator, which respects community visibility).
+// without the visibility short-circuits — Q&A questions always fan out to
+// followers (community-scoped questions are filtered at read time by the
+// feed hydrator, which respects community visibility).
+//
+// Audit M6: a failed graph fetch or timeline write used to be logged and
+// the event committed, so followers never saw the question. Both are now
+// returned so the event is retried, through FanoutPost's chunked legs.
 func (s *Service) FanoutQuestion(ctx context.Context, questionID, authorID uuid.UUID, createdAt time.Time) error {
 	const ct = "qa_question"
 
 	// 1. Author timeline + author's own home timeline
-	if err := s.scyllaStore.AddToAuthorTimeline(ctx, authorID, questionID, createdAt, ct); err != nil {
+	if err := s.timelines.AddToAuthorTimeline(ctx, authorID, questionID, createdAt, ct); err != nil {
 		return err
 	}
-	if err := s.scyllaStore.AddToHomeTimeline(ctx, authorID, questionID, authorID, createdAt, ct); err != nil {
-		log.Printf("FanoutQuestion: failed to push to author's home timeline: %v", err)
+	if err := s.timelines.AddToHomeTimeline(ctx, authorID, questionID, authorID, createdAt, ct); err != nil {
+		return fmt.Errorf("FanoutQuestion: author's home timeline: %w", err)
 	}
+	// 2-3. Followers + connections, unless the author is a celeb.
+	return s.fanoutToFollowersAndConnections(ctx, questionID, authorID, createdAt, ct)
+}
 
-	// 2. Stop early for celebs (pull model — same rule as FanoutPost).
-	isCeleb, err := s.pgStore.IsCeleb(ctx, authorID)
-	if err == nil && isCeleb {
+// fanoutToFollowersAndConnections pushes one row (post postID, attributed to
+// rowAuthor) to rowAuthor's followers and connections, chunk by chunk with
+// FanoutPost's progress, dedupe and bounded writes. A celeb (pull model)
+// gets nothing pushed; an unreadable celeb flag is an error. Any failed
+// chunk is returned so the event is retried and resumes there.
+func (s *Service) fanoutToFollowersAndConnections(ctx context.Context, postID, rowAuthor uuid.UUID, createdAt time.Time, ct string) error {
+	isCeleb, err := s.celebs.IsCeleb(ctx, rowAuthor)
+	if err != nil {
+		return fmt.Errorf("%s fanout of %s: celeb flag: %w", ct, postID, err)
+	}
+	if isCeleb {
 		return nil
 	}
-
-	// 3. Followers + circle members.
-	recipientSet := make(map[uuid.UUID]struct{})
-	if followerIDs, err := s.fetchFollowers(ctx, authorID); err == nil {
-		for _, id := range followerIDs {
-			recipientSet[id] = struct{}{}
+	prog := s.loadFanoutProgress(ctx, postID)
+	dedupe := newRecipientDedupe()
+	dedupe.first(rowAuthor)
+	write := func(ids []uuid.UUID) error {
+		fresh := make([]uuid.UUID, 0, len(ids))
+		for _, id := range ids {
+			if dedupe.first(id) {
+				fresh = append(fresh, id)
+			}
 		}
-	} else {
-		log.Printf("FanoutQuestion: fetch followers failed: %v", err)
+		return s.pushChunk(ctx, fresh, postID, rowAuthor, createdAt, ct)
 	}
-	if friendIDs, err := s.fetchCircleMembers(ctx, authorID); err == nil {
-		for _, id := range friendIDs {
-			recipientSet[id] = struct{}{}
-		}
-	} else {
-		log.Printf("FanoutQuestion: fetch circle members failed: %v", err)
-	}
-
-	for recipientID := range recipientSet {
-		if recipientID == authorID {
-			continue
-		}
-		if err := s.scyllaStore.AddToHomeTimeline(ctx, recipientID, questionID, authorID, createdAt, ct); err != nil {
-			log.Printf("FanoutQuestion: push to timeline for user %s failed: %v", recipientID, err)
+	var incomplete []error
+	for _, leg := range []string{"followers", "connections"} {
+		if err := s.graphLeg(ctx, prog, leg, leg, rowAuthor, nil, write); err != nil {
+			log.Printf("%s fanout of %s: %s leg incomplete: %v", ct, postID, leg, err)
+			incomplete = append(incomplete, err)
 		}
 	}
+	if len(incomplete) > 0 {
+		return fmt.Errorf("%s fanout of %s incomplete, will be retried: %w", ct, postID, errors.Join(incomplete...))
+	}
+	prog.clear(ctx)
 	return nil
 }
 
@@ -1830,67 +1711,57 @@ func (s *Service) MarkQuestionDeleted(ctx context.Context, questionID uuid.UUID)
 
 // FanoutRepost distributes a repost into the reposter's followers' home timelines.
 // The feed entry points to the original post but is attributed to the reposter.
+//
+// Audit M6: a failed follower or connection fetch, or a failed write, used
+// to be logged and the event committed, so followers never got the repost.
+// They are now returned so the event is retried (chunked, resumable).
 func (s *Service) FanoutRepost(ctx context.Context, repostID, originalPostID, reposterID uuid.UUID, createdAt time.Time, visibility string) error {
 	// 1. Add to reposter's own home timeline so they see it
-	if err := s.scyllaStore.AddToHomeTimeline(ctx, reposterID, originalPostID, reposterID, createdAt, "repost"); err != nil {
-		log.Printf("Failed to push repost to reposter's home timeline: %v", err)
+	if err := s.timelines.AddToHomeTimeline(ctx, reposterID, originalPostID, reposterID, createdAt, "repost"); err != nil {
+		return fmt.Errorf("repost %s: reposter's home timeline: %w", repostID, err)
 	}
 
-	// 2. Check celeb status — if celeb, stop (pull model)
-	isCeleb, err := s.pgStore.IsCeleb(ctx, reposterID)
-	if err != nil {
-		return err
-	}
-	if isCeleb {
-		return nil
-	}
-
-	// 3. Only fan out public/default visibility reposts
+	// 2. Only fan out public/default visibility reposts
 	if visibility == "private" {
 		return nil
 	}
 
-	// 4. Collect followers + friends
-	recipientSet := make(map[uuid.UUID]struct{})
-
-	followerIDs, err := s.fetchFollowers(ctx, reposterID)
-	if err != nil {
-		log.Printf("Failed to fetch followers for repost fanout: %v", err)
-	} else {
-		for _, id := range followerIDs {
-			recipientSet[id] = struct{}{}
-		}
-	}
-
-	friendIDs, err := s.fetchCircleMembers(ctx, reposterID)
-	if err != nil {
-		log.Printf("Failed to fetch circle members for repost fanout: %v", err)
-	} else {
-		for _, id := range friendIDs {
-			recipientSet[id] = struct{}{}
-		}
-	}
-
-	// 5. Push to all recipients' home timelines
-	for recipientID := range recipientSet {
-		if recipientID == reposterID {
-			continue
-		}
-		if err := s.scyllaStore.AddToHomeTimeline(ctx, recipientID, originalPostID, reposterID, createdAt, "repost"); err != nil {
-			log.Printf("Failed to push repost to timeline for user %s: %v", recipientID, err)
-		}
-	}
-
-	return nil
+	// 3-4. Followers + connections (nothing for a celeb: pull model).
+	return s.fanoutToFollowersAndConnections(ctx, originalPostID, reposterID, createdAt, "repost")
 }
 
-// UndoRepostFanout marks a repost as deleted in Redis so feed hydration skips it.
-func (s *Service) UndoRepostFanout(ctx context.Context, repostID, originalPostID uuid.UUID) error {
-	// Mark repost as deleted in Redis for 24h — feed hydration will filter it out
-	deletedKey := fmt.Sprintf("repost:deleted:%s", repostID)
-	if err := s.rdb.Set(ctx, deletedKey, "1", 24*time.Hour).Err(); err != nil {
-		log.Printf("Failed to mark repost deleted in Redis: %v", err)
+// repostRemover deletes the home-timeline rows a repost fan-out wrote; the
+// Scylla TimelineStore implements it.
+type repostRemover interface {
+	DeleteRepostFromTimelines(ctx context.Context, originalPostID, reposterID uuid.UUID) ([]uuid.UUID, error)
+}
+
+// UndoRepostFanout takes an undone repost out of every follower's home feed
+// (audit M1). It used to write repost:deleted:<id>, which nothing read, so
+// "X reposted this" stayed in every follower's feed for the row TTL. The
+// rows FanoutRepost wrote (post_id = original, author_id = reposter,
+// content_type = repost) are found through the original post's reverse
+// index and deleted, and those owners' cached hydration rows are dropped.
+// Rows the original author's own fan-out wrote are untouched. An error is
+// returned so the event is retried; the delete is idempotent.
+func (s *Service) UndoRepostFanout(ctx context.Context, repostID, originalPostID, reposterID uuid.UUID) error {
+	if s.reposts == nil {
+		return fmt.Errorf("undo repost %s: no timeline store", repostID)
 	}
+	owners, err := s.reposts.DeleteRepostFromTimelines(ctx, originalPostID, reposterID)
+	if err != nil {
+		return fmt.Errorf("undo repost %s: %w", repostID, err)
+	}
+	if s.rdb != nil && len(owners) > 0 {
+		keys := make([]string, 0, len(owners))
+		for _, o := range owners {
+			keys = append(keys, hydrationCacheKey(o, originalPostID))
+		}
+		if err := s.rdb.Del(ctx, keys...).Err(); err != nil {
+			log.Printf("undo repost %s: hydration cache invalidation failed: %v", repostID, err)
+		}
+	}
+	log.Printf("undo repost %s: removed %d follower row(s) of original %s", repostID, len(owners), originalPostID)
 	return nil
 }
 

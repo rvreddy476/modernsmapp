@@ -2,6 +2,7 @@ package scylla
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"os"
@@ -160,7 +161,7 @@ func (s *TimelineStore) AddToHomeTimeline(ctx context.Context, userID uuid.UUID,
 	if err := s.session.Query(`
 		INSERT INTO home_timeline_by_user (user_id, bucket, ts, post_id, author_id, created_at, content_type)
 		VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL ?
-	`, toGocql(userID), b, ts, toGocql(postID), toGocql(authorID), createdAt, contentType, ttl).Exec(); err != nil {
+	`, toGocql(userID), b, ts, toGocql(postID), toGocql(authorID), createdAt, contentType, ttl).WithContext(ctx).Exec(); err != nil {
 		return err
 	}
 	// Best-effort: a reverse-index write failure leaves the timeline
@@ -171,7 +172,7 @@ func (s *TimelineStore) AddToHomeTimeline(ctx context.Context, userID uuid.UUID,
 	_ = s.session.Query(`
 		INSERT INTO timeline_index_by_post_v2 (post_id, shard, timeline_kind, owner_id, bucket, ts)
 		VALUES (?, ?, 'home', ?, ?, ?) USING TTL ?
-	`, toGocql(postID), IndexShard(userID), toGocql(userID), b, ts, ttl).Exec()
+	`, toGocql(postID), IndexShard(userID), toGocql(userID), b, ts, ttl).WithContext(ctx).Exec()
 	return nil
 }
 
@@ -188,13 +189,13 @@ func (s *TimelineStore) AddToAuthorTimeline(ctx context.Context, authorID uuid.U
 	if err := s.session.Query(`
 		INSERT INTO author_timeline_by_author (author_id, bucket, ts, post_id, created_at, content_type)
 		VALUES (?, ?, ?, ?, ?, ?) USING TTL ?
-	`, toGocql(authorID), b, ts, toGocql(postID), createdAt, contentType, ttl).Exec(); err != nil {
+	`, toGocql(authorID), b, ts, toGocql(postID), createdAt, contentType, ttl).WithContext(ctx).Exec(); err != nil {
 		return err
 	}
 	_ = s.session.Query(`
 		INSERT INTO timeline_index_by_post_v2 (post_id, shard, timeline_kind, owner_id, bucket, ts)
 		VALUES (?, ?, 'author', ?, ?, ?) USING TTL ?
-	`, toGocql(postID), IndexShard(authorID), toGocql(authorID), b, ts, ttl).Exec()
+	`, toGocql(postID), IndexShard(authorID), toGocql(authorID), b, ts, ttl).WithContext(ctx).Exec()
 	return nil
 }
 
@@ -436,19 +437,53 @@ func (s *TimelineStore) GetHomeTimelineByContentTypesBefore(ctx context.Context,
 		beforeUUID = &parsed
 		start = parsed.Time().UTC()
 	}
+	query := func(bucketID int, before *gocql.UUID, n int) ([]FeedItem, error) {
+		return s.queryHomeTimelineBucketCursor(ctx, userID, bucketID, before, n)
+	}
+	return collectByContentTypes(query, start, beforeUUID, typeSet, limit)
+}
+
+// maxContentTypeReads bounds the bucket reads one content-type window may
+// make (each at most 1000 rows). Paging within a month (below) needs more
+// reads than one per month, so the old one-read-per-month budget
+// (maxTimelineBucketLookback) is not enough; this one still keeps a viewer
+// whose months are full of other content types from scanning without end.
+const maxContentTypeReads = 4 * maxTimelineBucketLookback
+
+// bucketReader reads up to n rows of one month bucket strictly below
+// `before` (nil = from the newest), newest first.
+type bucketReader func(bucketID int, before *gocql.UUID, n int) ([]FeedItem, error)
+
+// collectByContentTypes walks the home timeline from `start` (below
+// firstBefore when set), newest first, keeping rows whose content type is
+// in typeSet, until limit rows are kept.
+//
+// Audit H4 (2026-10-30): it used to read each month ONCE with LIMIT
+// fetchLimit and then move to the previous month even when that read came
+// back full. A month with more rows than fetchLimit (e.g. 400 home rows,
+// reels at positions 10, 50, 350, 380) lost every match past the first
+// read: the page filled from the previous month, its cursor landed there,
+// and the next page started below it, so those reels were never served on
+// reels, Tube or the category surfaces, and the pill undercounted. Now a
+// month is paged with ts < last row's key until a SHORT read says it is
+// exhausted, and only then does the walk step to the previous month, the
+// way collectHomeTimeline and GetAuthorTimelineBefore already did.
+func collectByContentTypes(read bucketReader, start time.Time, firstBefore *gocql.UUID, typeSet map[string]struct{}, limit int) ([]FeedItem, error) {
 	current := monthStart(start)
-	firstBefore := beforeUUID
+	before := firstBefore
 	items := make([]FeedItem, 0, limit)
-	for i := 0; i < maxTimelineBucketLookback && len(items) < limit; i++ {
+	months, reads := 0, 0
+	for months < maxTimelineBucketLookback && reads < maxContentTypeReads && len(items) < limit {
 		fetchLimit := (limit - len(items)) * 5
 		if fetchLimit > 1000 {
 			fetchLimit = 1000
 		}
 
-		batch, err := s.queryHomeTimelineBucketCursor(ctx, userID, bucket(current), firstBefore, fetchLimit)
+		batch, err := read(bucket(current), before, fetchLimit)
 		if err != nil {
 			return nil, err
 		}
+		reads++
 
 		for _, item := range batch {
 			if _, ok := typeSet[item.ContentType]; !ok {
@@ -460,8 +495,19 @@ func (s *TimelineStore) GetHomeTimelineByContentTypesBefore(ctx context.Context,
 			}
 		}
 
-		current = current.AddDate(0, -1, 0)
-		firstBefore = nil
+		if len(batch) < fetchLimit {
+			// Short read: this month is exhausted.
+			current = current.AddDate(0, -1, 0)
+			before = nil
+			months++
+			continue
+		}
+		// Full read: more of this month lies below its last row.
+		last, err := gocql.ParseUUID(batch[len(batch)-1].CursorToken)
+		if err != nil {
+			return nil, fmt.Errorf("timeline row without a key: %w", err)
+		}
+		before = &last
 	}
 
 	return items, nil
@@ -819,7 +865,7 @@ func (s *TimelineStore) DeleteAuthorTimelineEntry(ctx context.Context, authorID,
 		SELECT ts FROM author_timeline_by_author
 		WHERE author_id = ? AND bucket = ?
 		ORDER BY ts DESC
-	`, toGocql(authorID), bucket).Iter()
+	`, toGocql(authorID), bucket).WithContext(ctx).Iter()
 
 	var ts gocql.UUID
 	found := false
@@ -828,7 +874,7 @@ func (s *TimelineStore) DeleteAuthorTimelineEntry(ctx context.Context, authorID,
 	iter2 := s.session.Query(`
 		SELECT ts, post_id FROM author_timeline_by_author
 		WHERE author_id = ? AND bucket = ?
-	`, toGocql(authorID), bucket).Iter()
+	`, toGocql(authorID), bucket).WithContext(ctx).Iter()
 
 	for iter2.Scan(&ts, &pid) {
 		if uuid.UUID(pid) == postID {
@@ -855,7 +901,7 @@ func (s *TimelineStore) RecordInteraction(ctx context.Context, userID, postID uu
 	return s.session.Query(`
 		INSERT INTO user_post_interactions (user_id, post_id) VALUES (?, ?)`,
 		toGocql(userID), toGocql(postID),
-	).Exec()
+	).WithContext(ctx).Exec()
 }
 
 // CheckInteractions returns the subset of postIDs that the user has
@@ -877,7 +923,7 @@ func (s *TimelineStore) CheckInteractions(ctx context.Context, userID uuid.UUID,
 		SELECT post_id FROM user_post_interactions
 		WHERE user_id = ? AND post_id IN ?`,
 		toGocql(userID), gocqlIDs,
-	).Iter()
+	).WithContext(ctx).Iter()
 
 	var pid gocql.UUID
 	for iter.Scan(&pid) {
@@ -938,4 +984,68 @@ func (s *TimelineStore) DeletePostFromTimelines(ctx context.Context, postID uuid
 		return owners, err
 	}
 	return owners, nil
+}
+
+// DeleteRepostFromTimelines removes the home rows a repost fan-out wrote:
+// rows of originalPostID whose author_id is the reposter and whose
+// content_type is "repost" (FanoutRepost's shape). They are found through
+// the original post's reverse index; each candidate home row is read back
+// on its full primary key to check the author and type, so the original
+// author's own fan-out rows and other people's reposts stay. The matching
+// index rows go with them (a stale index row would let a later
+// UpdatePostContentType resurrect the row as a ghost). Returns the owners
+// whose row was deleted. Idempotent.
+func (s *TimelineStore) DeleteRepostFromTimelines(ctx context.Context, originalPostID, reposterID uuid.UUID) ([]uuid.UUID, error) {
+	gPost := toGocql(originalPostID)
+	gReposter := toGocql(reposterID)
+	rows, err := s.postIndex(ctx, gPost)
+	if err != nil {
+		return nil, err
+	}
+	var owners []uuid.UUID
+	for _, r := range rows {
+		if r.kind != "home" {
+			continue
+		}
+		var author gocql.UUID
+		var contentType *string
+		err := s.session.Query(`
+			SELECT author_id, content_type FROM home_timeline_by_user
+			WHERE user_id = ? AND bucket = ? AND ts = ?
+		`, r.owner, r.b, r.ts).WithContext(ctx).Scan(&author, &contentType)
+		if errors.Is(err, gocql.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			return owners, err
+		}
+		if !isRepostRow(author, contentType, gReposter) {
+			continue
+		}
+		if err := s.session.Query(`
+			DELETE FROM home_timeline_by_user WHERE user_id = ? AND bucket = ? AND ts = ?
+		`, r.owner, r.b, r.ts).WithContext(ctx).Exec(); err != nil {
+			return owners, err
+		}
+		if err := s.session.Query(`
+			DELETE FROM timeline_index_by_post_v2
+			WHERE post_id = ? AND shard = ? AND timeline_kind = 'home' AND owner_id = ? AND bucket = ? AND ts = ?
+		`, gPost, IndexShard(uuid.UUID(r.owner)), r.owner, r.b, r.ts).WithContext(ctx).Exec(); err != nil {
+			return owners, err
+		}
+		if err := s.session.Query(`
+			DELETE FROM timeline_index_by_post
+			WHERE post_id = ? AND timeline_kind = 'home' AND owner_id = ? AND bucket = ? AND ts = ?
+		`, gPost, r.owner, r.b, r.ts).WithContext(ctx).Exec(); err != nil {
+			return owners, err
+		}
+		owners = append(owners, uuid.UUID(r.owner))
+	}
+	return owners, nil
+}
+
+// isRepostRow reports whether a home row (author, content_type) is the
+// reposter's repost row. Pure, so the selection rule is pinned by a test.
+func isRepostRow(author gocql.UUID, contentType *string, reposter gocql.UUID) bool {
+	return author == reposter && contentType != nil && *contentType == "repost"
 }

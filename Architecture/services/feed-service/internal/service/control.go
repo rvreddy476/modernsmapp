@@ -33,37 +33,29 @@ func (s *Service) UnhidePost(ctx context.Context, userID, postID uuid.UUID) erro
 
 // MuteTarget mutes a user, topic, or hashtag for the given user.
 func (s *Service) MuteTarget(ctx context.Context, userID uuid.UUID, targetType, targetID string, expiresAt *time.Time) error {
-	validTypes := map[string]bool{"user": true, "topic": true, "hashtag": true}
-	if !validTypes[targetType] {
-		return fmt.Errorf("invalid target_type: must be user, topic, or hashtag")
-	}
-	if err := s.pgStore.MuteTarget(ctx, userID, targetType, targetID, expiresAt); err != nil {
+	// The feed reads feed_mutes on every request (feedmutes.go); the Redis
+	// sets this used to write were never read, so they are gone.
+	if err := validateMuteTarget(targetType, targetID); err != nil {
 		return err
 	}
-	// Cache muted targets for fast feed filtering
-	if targetType == "user" {
-		key := fmt.Sprintf("muted_users:%s", userID.String())
-		s.rdb.SAdd(ctx, key, targetID)
-		s.rdb.Expire(ctx, key, time.Hour)
-	} else {
-		key := fmt.Sprintf("muted_topics:%s", userID.String())
-		s.rdb.SAdd(ctx, key, targetID)
-		s.rdb.Expire(ctx, key, time.Hour)
+	if err := muteExpiry(expiresAt, time.Now()); err != nil {
+		return err
 	}
-	return nil
+	if targetType != "user" {
+		targetID = normalizeMuteWord(targetID)
+	}
+	return s.pgStore.MuteTarget(ctx, userID, targetType, targetID, expiresAt)
 }
 
 // UnmuteTarget removes a mute for the given user.
 func (s *Service) UnmuteTarget(ctx context.Context, userID uuid.UUID, targetType, targetID string) error {
-	if err := s.pgStore.UnmuteTarget(ctx, userID, targetType, targetID); err != nil {
-		return err
+	if verr := validateMuteTarget(targetType, targetID); verr != nil {
+		return verr
 	}
-	if targetType == "user" {
-		s.rdb.SRem(ctx, fmt.Sprintf("muted_users:%s", userID.String()), targetID)
-	} else {
-		s.rdb.SRem(ctx, fmt.Sprintf("muted_topics:%s", userID.String()), targetID)
+	if targetType != "user" {
+		targetID = normalizeMuteWord(targetID)
 	}
-	return nil
+	return s.pgStore.UnmuteTarget(ctx, userID, targetType, targetID)
 }
 
 // GetMutedTargets returns all active (non-expired) mutes for the given user.

@@ -159,37 +159,37 @@ func (s *Service) ListMutedAuthors(ctx context.Context, viewerID uuid.UUID) ([]p
 }
 
 // invalidateViewerHydrationCache drops EVERY hydrated row cached for the
-// viewer (feed:hydrate:{viewer}:*). An author answer has no post id to
-// target, and the cached rows carry no author-mute state, so the whole
-// per-viewer set goes. Correctness does not rest on this: applyFeedbackFilter
-// re-checks cached rows at the tail either way. It keeps the un-mute
-// honest (the next page is rebuilt with fresh viewer state) and is
-// best-effort — a SCAN bounded by a short timeout, errors logged.
+// viewer. An author answer has no post id to target, and the cached rows
+// carry no author-mute state, so the whole per-viewer set goes.
+// Correctness does not rest on this: applyFeedbackFilter re-checks cached
+// rows at the tail either way. It keeps the un-mute honest (the next page
+// is rebuilt with fresh viewer state) and is best-effort, errors logged.
+//
+// Audit L4: this used to SCAN the shared keyspace for feed:hydrate:<viewer>:*
+// on the request path. storeHydratedCache now records every post it caches
+// for a viewer in a small per-viewer set (hydrationIndexKey) that lives as
+// long as the rows, so the rows are found with one SMEMBERS.
 func (s *Service) invalidateViewerHydrationCache(ctx context.Context, viewerID uuid.UUID) {
 	if s.rdb == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, 500*time.Millisecond)
 	defer cancel()
-	pattern := hydrationCacheKey(viewerID, uuid.Nil)
-	pattern = pattern[:len(pattern)-len(uuid.Nil.String())] + "*"
-	var cursor uint64
-	for {
-		keys, next, err := s.rdb.Scan(ctx, cursor, pattern, 500).Result()
-		if err != nil {
-			log.Printf("[feed-feedback] hydration cache SCAN failed for viewer %s: %v", viewerID, err)
-			return
+	idx := hydrationIndexKey(viewerID)
+	members, err := s.rdb.SMembers(ctx, idx).Result()
+	if err != nil {
+		log.Printf("[feed-feedback] hydration cache index read failed for viewer %s: %v", viewerID, err)
+		return
+	}
+	keys := make([]string, 0, len(members)+1)
+	for _, m := range members {
+		if pid, err := uuid.Parse(m); err == nil {
+			keys = append(keys, hydrationCacheKey(viewerID, pid))
 		}
-		if len(keys) > 0 {
-			if err := s.rdb.Del(ctx, keys...).Err(); err != nil {
-				log.Printf("[feed-feedback] hydration cache DEL failed for viewer %s: %v", viewerID, err)
-				return
-			}
-		}
-		if next == 0 {
-			return
-		}
-		cursor = next
+	}
+	keys = append(keys, idx)
+	if err := s.rdb.Del(ctx, keys...).Err(); err != nil {
+		log.Printf("[feed-feedback] hydration cache DEL failed for viewer %s: %v", viewerID, err)
 	}
 }
 
@@ -308,7 +308,7 @@ func (s *Service) lookupPost(ctx context.Context, viewerID, postID uuid.UUID) (*
 	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
 		req.Header.Set("X-Internal-Service-Key", key)
 	}
-	resp, err := s.postClient.Do(req)
+	resp, err := s.postFor(ctx).Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("post-service batch request failed: %w", err)
 	}

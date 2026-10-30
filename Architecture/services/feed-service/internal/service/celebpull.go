@@ -8,6 +8,7 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -24,28 +25,55 @@ import (
 // flagging an account by hand would have made its posts vanish from every
 // follower's feed.
 //
-// With FEED_CELEB_PULL=true:
+// With the pull model on (the default since 2026-10-30, audit H3):
 //   - GetHomeFeed merges the author timelines of the celebs the viewer
 //     follows into the timeline read, before any filter, by timeline key
 //     (author and home rows of one post share scylla.TimelineTS), so the
 //     page window and its cursor work unchanged;
 //   - FanoutPost flags an author celeb once their follower count reaches
-//     FEED_CELEB_FOLLOWER_THRESHOLD (0 = never automatically) and from then
-//     on pushes nothing to followers (subscribers of a long video's channel
-//     still get theirs).
+//     FEED_CELEB_FOLLOWER_THRESHOLD and from then on pushes nothing to
+//     followers (subscribers of a long video's channel still get theirs).
 //
-// Both are off by default: turning pull on is safe at any time (it only
-// adds rows), but the threshold must not be set without it.
+// Defaults and why:
+//   - FEED_CELEB_PULL: on. Set it to "false" to go back to push-only; the
+//     threshold is then ignored (a flagged author with pull off would reach
+//     nobody). Turning pull on is safe at any time: it only adds rows.
+//   - FEED_CELEB_FOLLOWER_THRESHOLD: 10,000 (defaultCelebThreshold); "0"
+//     turns the automatic flag off. 10,000 is a push of 10,000 rows (100
+//     graph pages) per post, a few seconds on one partition, which is the
+//     most one event should cost. It is also graph-service's offset cap
+//     (HG2: GET /followers refuses offset > 10,000), so an author past it
+//     could not be pushed to by offset paging anyway; a larger value is
+//     clamped to that cap for the same reason.
 
 type celebConfig struct {
 	pull      bool
 	threshold int
 }
 
+// defaultCelebThreshold is the follower count at which an author moves to
+// the pull model when FEED_CELEB_FOLLOWER_THRESHOLD is unset.
+const defaultCelebThreshold = 10000
+
+// maxCelebThreshold is graph-service's follower-list offset cap: the
+// fan-out cannot page past it, so the threshold may not exceed it.
+const maxCelebThreshold = 10000
+
 func loadCelebConfig() celebConfig {
-	c := celebConfig{pull: os.Getenv("FEED_CELEB_PULL") == "true"}
-	if n, err := strconv.Atoi(os.Getenv("FEED_CELEB_FOLLOWER_THRESHOLD")); err == nil && n > 0 {
-		c.threshold = n
+	return parseCelebConfig(os.Getenv("FEED_CELEB_PULL"), os.Getenv("FEED_CELEB_FOLLOWER_THRESHOLD"))
+}
+
+// parseCelebConfig applies the defaults above to the two variables' raw
+// values. Pure, so the defaults are pinned by a test.
+func parseCelebConfig(pullRaw, thresholdRaw string) celebConfig {
+	c := celebConfig{pull: !strings.EqualFold(strings.TrimSpace(pullRaw), "false"), threshold: defaultCelebThreshold}
+	if raw := strings.TrimSpace(thresholdRaw); raw != "" {
+		if n, err := strconv.Atoi(raw); err == nil && n >= 0 {
+			c.threshold = n
+		}
+	}
+	if c.threshold > maxCelebThreshold {
+		c.threshold = maxCelebThreshold
 	}
 	return c
 }
@@ -83,7 +111,7 @@ func (s *Service) followedCelebs(ctx context.Context, viewerID uuid.UUID) ([]uui
 	if s.pgStore == nil {
 		return nil, nil
 	}
-	following, err := s.fetchFollowing(ctx, viewerID)
+	following, err := s.viewerFollowing(ctx, viewerID)
 	if err != nil {
 		return nil, err
 	}

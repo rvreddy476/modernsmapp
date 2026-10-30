@@ -191,7 +191,7 @@ func (s *Service) resolveChipScope(ctx context.Context, viewerID uuid.UUID, chip
 		if err != nil {
 			return nil, fmt.Errorf("chip %s: watch history could not be resolved: %w", chip, err)
 		}
-		following, err := s.fetchFollowing(ctx, viewerID)
+		following, err := s.viewerFollowing(ctx, viewerID)
 		if err != nil {
 			return nil, fmt.Errorf("chip %s: follow graph could not be resolved: %w", chip, err)
 		}
@@ -246,7 +246,7 @@ func (s *Service) fetchWatchHistory(ctx context.Context, viewerID uuid.UUID) ([]
 		req.Header.Set("X-Internal-Service-Key", os.Getenv("INTERNAL_SERVICE_KEY"))
 		req.Header.Set("X-User-Id", viewerID.String())
 
-		resp, err := s.postClient.Do(req)
+		resp, err := s.postFor(ctx).Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("post-service request failed: %w", err)
 		}

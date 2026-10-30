@@ -2,8 +2,11 @@ package postgres
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -24,9 +27,19 @@ func (s *MetaStore) DB() *pgxpool.Pool {
 func (s *MetaStore) IsCeleb(ctx context.Context, authorID uuid.UUID) (bool, error) {
 	var isCeleb bool
 	err := s.db.QueryRow(ctx, `SELECT is_celeb FROM celeb_authors WHERE author_id = $1`, authorID).Scan(&isCeleb)
-	if err != nil {
-		// If not found, assume false (safe default)
+	return celebAnswer(isCeleb, err)
+}
+
+// celebAnswer turns the celeb_authors lookup into an answer (audit L5). No
+// row means "not celeb"; any other error is returned, never read as "not
+// celeb": the PostRestored and visibility-change re-fan-outs would push a
+// celeb's post to every follower on a Postgres blip. The callers retry.
+func celebAnswer(isCeleb bool, err error) (bool, error) {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("celeb flag: %w", err)
 	}
 	return isCeleb, nil
 }

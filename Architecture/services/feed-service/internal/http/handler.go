@@ -9,6 +9,7 @@ import (
 	"log"
 	"log/slog"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -46,11 +47,38 @@ func (h *Handler) WithRedis(rdb *redis.Client) *Handler {
 	return h
 }
 
+// DefaultRequestDeadline bounds one feed request end to end (audit L7):
+// every upstream call has its own 5 s timeout and Scylla its own, but a
+// home read walks many buckets and several upstreams in turn, so without
+// an overall deadline a degraded dependency could hold a request for
+// minutes. FEED_REQUEST_DEADLINE (a Go duration) overrides it.
+const DefaultRequestDeadline = 15 * time.Second
+
+func requestDeadline() time.Duration {
+	if d, err := time.ParseDuration(os.Getenv("FEED_REQUEST_DEADLINE")); err == nil && d > 0 {
+		return d
+	}
+	return DefaultRequestDeadline
+}
+
+// withRequestDeadline puts a deadline on every request's context, and a
+// per-request memo (service.WithRequestMemo) that lets the windows of one
+// page share their block set and following list.
+func withRequestDeadline(d time.Duration) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx, cancel := context.WithTimeout(c.Request.Context(), d)
+		defer cancel()
+		c.Request = c.Request.WithContext(service.WithRequestMemo(ctx))
+		c.Next()
+	}
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// Apply internal service key enforcement to all /v1 routes.
 	if h.internalKey != "" {
 		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
 	}
+	r.Use(withRequestDeadline(requestDeadline()))
 	// MF5: per-user feed rate limit. 120 req/min per user (sustained
 	// 2/sec) — generous for legitimate tab-switching + pull-to-refresh,
 	// blocks scrape bursts. Keyed on X-User-Id; requests without one
@@ -192,6 +220,18 @@ func (h *Handler) GetHomeFeed(c *gin.Context) {
 // and it carries upstream URLs and statuses ("graph-service returned 502:
 // …", "home following filter: …") that are nobody's business outside the
 // cluster.
+// muteError answers a failed mute / unmute (audit L8): a refused target is
+// a 400 with the service's own fixed wording, anything else (a database
+// error) is logged and answered with the generic 500 — never the raw error
+// text.
+func muteError(c *gin.Context, err error) {
+	if errors.Is(err, service.ErrInvalidMute) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_MUTE", err.Error(), nil)
+		return
+	}
+	internalError(c, err)
+}
+
 func internalError(c *gin.Context, err error) {
 	slog.ErrorContext(c.Request.Context(), "feed request failed", "path", c.FullPath(), "error", err)
 	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR",
@@ -781,6 +821,16 @@ func (h *Handler) GetMutedAuthors(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, authors, nil)
 }
 
+// rateLimitScript counts one request and arms the window atomically: the
+// first request (count 1) sets the window's expiry, and a counter found
+// without one (TTL -1) is re-armed. Returns the count.
+var rateLimitScript = redis.NewScript(`
+local n = redis.call('INCR', KEYS[1])
+if n == 1 or redis.call('PTTL', KEYS[1]) == -1 then
+  redis.call('PEXPIRE', KEYS[1], ARGV[1])
+end
+return n`)
+
 // feedRateLimit enforces a per-user 120 req/min cap on the feed
 // surface. Redis sliding-window via INCR+EXPIRE (same pattern as
 // notification autocomplete, see HS3). Skips when X-User-Id is empty
@@ -803,7 +853,14 @@ func (h *Handler) feedRateLimit() gin.HandlerFunc {
 		ctx, cancel := context.WithTimeout(c.Request.Context(), 200*time.Millisecond)
 		defer cancel()
 		key := fmt.Sprintf("feed_rl:%s", userID)
-		n, err := h.rdb.Incr(ctx, key).Result()
+		// INCR and the window's EXPIRE run as ONE script (audit M2): with two
+		// calls, an EXPIRE lost to a timeout, a Redis blip or a pod dying in
+		// between left the counter with no TTL, and the user got 429 on
+		// every feed route for good once it passed the limit. The script
+		// also re-arms a key it finds without a TTL, healing any counter a
+		// previous version left behind. The window opens on the first
+		// request and is NOT pushed back by later ones.
+		n, err := rateLimitScript.Run(ctx, h.rdb, []string{key}, int64(window/time.Millisecond)).Int64()
 		if err != nil {
 			// Fail-OPEN on Redis blip: feed is not security-critical
 			// (no money, no auth), and dropping every request during a
@@ -811,15 +868,6 @@ func (h *Handler) feedRateLimit() gin.HandlerFunc {
 			slog.Warn("feed rate limit: redis error — failing open", "err", err)
 			c.Next()
 			return
-		}
-		// The window opens on the first request and is NOT pushed back by
-		// later ones. Re-arming EXPIRE on every request (as before) meant a
-		// client that never paused for a full minute never got its count
-		// reset.
-		if n == 1 {
-			if err := h.rdb.Expire(ctx, key, window).Err(); err != nil {
-				slog.Warn("feed rate limit: could not arm window", "err", err)
-			}
 		}
 		if n > limit {
 			c.Header("Retry-After", "60")
@@ -911,7 +959,7 @@ func (h *Handler) MuteTarget(c *gin.Context) {
 		return
 	}
 	if err := h.svc.MuteTarget(c.Request.Context(), userID, req.TargetType, req.TargetID, req.ExpiresAt); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "MUTE_ERROR", err.Error(), nil)
+		muteError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)
@@ -932,7 +980,7 @@ func (h *Handler) UnmuteTarget(c *gin.Context) {
 		return
 	}
 	if err := h.svc.UnmuteTarget(c.Request.Context(), userID, req.TargetType, req.TargetID); err != nil {
-		internalError(c, err)
+		muteError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, gin.H{"ok": true}, nil)

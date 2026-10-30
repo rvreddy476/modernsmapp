@@ -188,3 +188,80 @@ func discoveredIDs(items []FeedItem) []string {
 	}
 	return out
 }
+
+// Audit L3: the offered set is trimmed by age and by size on every page.
+func TestDiscoveryOfferedSetIsBounded(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	viewer := uuid.New()
+	key := discoverySeenKey(viewer)
+	now := time.Now()
+	stale := uuid.NewString()
+	if _, err := mr.ZAdd(key, float64(now.Add(-discoverySeenTTL-time.Hour).Unix()), stale); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < discoverySeenMax+100; i++ {
+		if _, err := mr.ZAdd(key, float64(now.Add(-time.Minute).Unix()), uuid.NewString()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	postSvc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{
+			{"id": uuid.NewString(), "author_id": uuid.NewString(), "created_at": now, "content_type": "post"},
+		}})
+	}))
+	defer postSvc.Close()
+	graph := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []string{}})
+	}))
+	defer graph.Close()
+	s := &Service{rdb: rdb, postServiceURL: postSvc.URL, postClient: postSvc.Client(), graphURL: graph.URL, graphClient: graph.Client()}
+	if got := s.discoveryFor(context.Background(), viewer, nil, 1, nil, false); len(got) != 1 {
+		t.Fatalf("discovery = %v, want one post", discoveredIDs(got))
+	}
+	members, err := rdb.ZRange(context.Background(), key, 0, -1).Result()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(members) > discoverySeenMax {
+		t.Fatalf("offered set holds %d posts, cap %d", len(members), discoverySeenMax)
+	}
+	for _, m := range members {
+		if m == stale {
+			t.Fatal("a post offered more than discoverySeenTTL ago is still in the set")
+		}
+	}
+}
+
+// Audit L3: an offer older than discoverySeenTTL leaves the set even when
+// the set is far below its size cap.
+func TestDiscoveryOfferedSetDropsOldOffers(t *testing.T) {
+	mr := miniredis.RunT(t)
+	rdb := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	viewer := uuid.New()
+	key := discoverySeenKey(viewer)
+	now := time.Now()
+	stale, recent := uuid.NewString(), uuid.NewString()
+	_, _ = mr.ZAdd(key, float64(now.Add(-discoverySeenTTL-time.Hour).Unix()), stale)
+	_, _ = mr.ZAdd(key, float64(now.Add(-time.Hour).Unix()), recent)
+	postSvc := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []map[string]any{
+			{"id": uuid.NewString(), "author_id": uuid.NewString(), "created_at": now, "content_type": "post"},
+		}})
+	}))
+	defer postSvc.Close()
+	graph := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": []string{}})
+	}))
+	defer graph.Close()
+	s := &Service{rdb: rdb, postServiceURL: postSvc.URL, postClient: postSvc.Client(), graphURL: graph.URL, graphClient: graph.Client()}
+	if got := s.discoveryFor(context.Background(), viewer, nil, 1, nil, false); len(got) != 1 {
+		t.Fatalf("discovery = %v, want one post", discoveredIDs(got))
+	}
+	if _, err := rdb.ZScore(context.Background(), key, stale).Result(); err == nil {
+		t.Fatal("an offer older than the TTL was kept")
+	}
+	if _, err := rdb.ZScore(context.Background(), key, recent).Result(); err != nil {
+		t.Fatal("a recent offer was dropped")
+	}
+}

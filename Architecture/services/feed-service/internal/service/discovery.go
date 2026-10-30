@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 // Out-of-network discovery on the ranked For You page (audit F-29).
@@ -48,6 +49,8 @@ const (
 	discoveryPoolTTL  = 2 * time.Minute
 	discoveryPoolSize = 100
 	discoverySeenTTL  = 48 * time.Hour
+	// discoverySeenMax bounds the offered set: five pool's worth of posts.
+	discoverySeenMax  = 5 * discoveryPoolSize
 	followingCacheTTL = 5 * time.Minute
 	// maxDiscoveryShare caps FEED_DISCOVERY_SHARE: For You stays mostly
 	// the viewer's own network.
@@ -80,8 +83,11 @@ func FollowingKey(viewerID uuid.UUID) string {
 	return fmt.Sprintf("feed:following:%s", viewerID)
 }
 
+// discoverySeenKey is a sorted set (post id scored by offer time). The v2
+// in the name keeps it apart from the plain sets earlier builds wrote under
+// the old key, which simply expire.
 func discoverySeenKey(viewerID uuid.UUID) string {
-	return fmt.Sprintf("feed:discovery:seen:%s", viewerID)
+	return fmt.Sprintf("feed:discovery:seen:v2:%s", viewerID)
 }
 
 // discoveryAllowed: the ranked For You page only. A narrowed tab promises
@@ -174,7 +180,10 @@ func (s *Service) discoveryFor(ctx context.Context, viewerID uuid.UUID, page []F
 			velocity[p.PostID] = scores[i]
 		}
 	}
-	members, err := s.rdb.SMembers(ctx, discoverySeenKey(viewerID)).Result()
+	now := time.Now()
+	members, err := s.rdb.ZRangeByScore(ctx, discoverySeenKey(viewerID), &redis.ZRangeBy{
+		Min: strconv.FormatInt(now.Add(-discoverySeenTTL).Unix(), 10), Max: "+inf",
+	}).Result()
 	if err != nil {
 		log.Printf("discovery: offered set unavailable for %s, page served without it: %v", viewerID, err)
 		return nil
@@ -227,13 +236,21 @@ func (s *Service) discoveryFor(ctx context.Context, viewerID uuid.UUID, page []F
 		return nil
 	}
 
-	served := make([]interface{}, len(ranked))
+	// The offered set is a sorted set scored by when each post was offered
+	// (audit L3): entries older than discoverySeenTTL are trimmed and at
+	// most discoverySeenMax newest are kept, so an active viewer's set no
+	// longer grows without end while the key's expiry is re-armed on every
+	// page.
+	served := make([]redis.Z, len(ranked))
 	for i, r := range ranked {
-		served[i] = r.PostID.String()
+		served[i] = redis.Z{Score: float64(now.Unix()), Member: r.PostID.String()}
 	}
+	key := discoverySeenKey(viewerID)
 	pipe := s.rdb.Pipeline()
-	pipe.SAdd(ctx, discoverySeenKey(viewerID), served...)
-	pipe.Expire(ctx, discoverySeenKey(viewerID), discoverySeenTTL)
+	pipe.ZAdd(ctx, key, served...)
+	pipe.ZRemRangeByScore(ctx, key, "-inf", "("+strconv.FormatInt(now.Add(-discoverySeenTTL).Unix(), 10))
+	pipe.ZRemRangeByRank(ctx, key, 0, -int64(discoverySeenMax)-1)
+	pipe.Expire(ctx, key, discoverySeenTTL)
 	if _, err := pipe.Exec(ctx); err != nil {
 		log.Printf("discovery: could not remember offered posts for %s: %v", viewerID, err)
 	}
@@ -283,15 +300,9 @@ func (s *Service) discoveryPool(ctx context.Context) ([]FeedItem, error) {
 // followingSet is the set of accounts the viewer follows, cached for
 // followingCacheTTL (follow and unfollow events drop it).
 func (s *Service) followingSet(ctx context.Context, viewerID uuid.UUID) (map[uuid.UUID]struct{}, error) {
-	var ids []uuid.UUID
-	raw, err := s.rdb.Get(ctx, FollowingKey(viewerID)).Bytes()
-	if err != nil || json.Unmarshal(raw, &ids) != nil {
-		if ids, err = s.fetchFollowing(ctx, viewerID); err != nil {
-			return nil, err
-		}
-		if raw, err := json.Marshal(ids); err == nil {
-			s.rdb.Set(ctx, FollowingKey(viewerID), raw, followingCacheTTL)
-		}
+	ids, err := s.viewerFollowing(ctx, viewerID)
+	if err != nil {
+		return nil, err
 	}
 	out := make(map[uuid.UUID]struct{}, len(ids))
 	for _, id := range ids {

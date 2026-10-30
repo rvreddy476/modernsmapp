@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/atpost/feed-service/internal/service"
@@ -80,6 +81,24 @@ func (c *Consumer) handlePostDeleted(ctx context.Context, envelope events.EventE
 // new visibility calls for: the author's rows only for unlisted / private,
 // the full audience for public / followers. Both steps are idempotent, so a
 // retry is safe.
+//
+// Stale marker (audit H1, 2026-10-30): post-service also publishes this
+// event for changes that are not an owner's visibility edit, named by
+// `reason` (events.VisibilityChange*): "moderation" (a takedown),
+// "copyright" (a block) and "membership_gate" (a members-tier gate), each
+// with old == new == the post's current visibility. Every one of them
+// means "this post must be re-checked for every viewer", and the
+// per-viewer hydration cache cannot know who those viewers are (it also
+// holds rows for discovery, cold-start and celeb-pull viewers the reverse
+// index never names). So the first thing written is the post's stale
+// marker, which makes every cached row a miss until it expires. A failure
+// to write it fails the event, so it is retried.
+//
+// Only an audience change re-derives the timeline rows (rederiveAudience):
+// reason "audience", or no reason (an older producer) with old != new. For
+// any other reason the rows are already right for the audience;
+// post-service's batch answer decides what each viewer sees, and the
+// marker makes sure it is asked.
 func (c *Consumer) handlePostVisibilityChanged(ctx context.Context, envelope events.EventEnvelope) error {
 	var event events.PostVisibilityChangedPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
@@ -90,6 +109,24 @@ func (c *Consumer) handlePostVisibilityChanged(ctx context.Context, envelope eve
 	if err != nil {
 		return fmt.Errorf("PostVisibilityChanged: bad post_id %q: %w", event.PostID, err)
 	}
+	if err := c.markStale(ctx, postID); err != nil {
+		return fmt.Errorf("PostVisibilityChanged: %w", err)
+	}
+	if !rederiveAudience(event.Reason, event.OldVisibility, event.NewVisibility) {
+		log.Printf("Processing PostVisibilityChanged: post=%s re-check only (reason=%q, visibility %q -> %q)",
+			event.PostID, event.Reason, event.OldVisibility, event.NewVisibility)
+		return nil
+	}
+	if c.rederive != nil { // tests observe the audience branch here
+		return c.rederive(ctx, event)
+	}
+	return c.rederiveVisibility(ctx, postID, event)
+}
+
+// rederiveVisibility removes every timeline row of the post and fans it out
+// again for its new visibility — the audience-change branch of
+// handlePostVisibilityChanged. Both steps are idempotent.
+func (c *Consumer) rederiveVisibility(ctx context.Context, postID uuid.UUID, event events.PostVisibilityChangedPayload) error {
 	authorID, err := uuid.Parse(event.AuthorID)
 	if err != nil {
 		return fmt.Errorf("PostVisibilityChanged: bad author_id %q: %w", event.AuthorID, err)
@@ -119,8 +156,70 @@ func (c *Consumer) handlePostVisibilityChanged(ctx context.Context, envelope eve
 	if err := c.service.FanoutPost(ctx, postID, authorID, createdAt, contentType, event.NewVisibility, channelID); err != nil {
 		return fmt.Errorf("PostVisibilityChanged: re-fan-out %s: %w", postID, err)
 	}
-	log.Printf("Processing PostVisibilityChanged: post=%s %s -> %s timeline_rows_removed=%d",
-		event.PostID, event.OldVisibility, event.NewVisibility, removed)
+	log.Printf("Processing PostVisibilityChanged: post=%s %s -> %s reason=%q timeline_rows_removed=%d",
+		event.PostID, event.OldVisibility, event.NewVisibility, event.Reason, removed)
+	return nil
+}
+
+// rederiveAudience reports whether a visibility_changed event calls for
+// removing and re-fanning-out the post's timeline rows: only an audience
+// change does. reason "audience" with a new visibility to fan out to, or
+// (an older producer) no reason and a visibility that really changed.
+// Moderation, copyright, membership-gate and any reason this consumer does
+// not know are re-check only.
+func rederiveAudience(reason, oldVis, newVis string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case events.VisibilityChangeAudience:
+		return strings.TrimSpace(newVis) != ""
+	case "":
+		return !visibilityUnchanged(oldVis, newVis)
+	default:
+		return false
+	}
+}
+
+// visibilityUnchanged reports whether a visibility_changed event leaves the
+// post's audience where it was, so only the re-check (stale marker) is due.
+// An empty new visibility is a producer that is announcing a moderation or
+// gate change, not an edit: re-deriving rows from "" would fan out nothing.
+func visibilityUnchanged(oldVis, newVis string) bool {
+	n := strings.ToLower(strings.TrimSpace(newVis))
+	return n == "" || n == strings.ToLower(strings.TrimSpace(oldVis))
+}
+
+// markStale writes the post's stale marker (service.StaleMarkerKey): every
+// viewer's cached hydration row for it is a miss until the marker expires.
+func (c *Consumer) markStale(ctx context.Context, postID uuid.UUID) error {
+	if c.rdb == nil {
+		return nil
+	}
+	if err := c.rdb.Set(ctx, service.StaleMarkerKey(postID), "1", service.StaleMarkerTTL).Err(); err != nil {
+		return fmt.Errorf("stale marker %s: %w", postID, err)
+	}
+	return nil
+}
+
+// handlePostCopyrightReview applies post.copyright_review.changed. Every
+// state changes who may watch the post — pending and blocked hide it,
+// cleared shows it again — so each one writes the stale marker and nothing
+// else: post-service's batch answer is the gate, and the marker makes
+// every viewer's cached row go back and ask it. A malformed post id fails
+// the event (retried, then the DLQ) rather than leaving a blocked video in
+// caches.
+func (c *Consumer) handlePostCopyrightReview(ctx context.Context, envelope events.EventEnvelope) error {
+	var event events.PostCopyrightReviewPayload
+	payloadBytes, _ := json.Marshal(envelope.Payload)
+	if err := json.Unmarshal(payloadBytes, &event); err != nil {
+		return err
+	}
+	postID, err := uuid.Parse(event.PostID)
+	if err != nil {
+		return fmt.Errorf("PostCopyrightReview: bad post_id %q: %w", event.PostID, err)
+	}
+	if markErr := c.markStale(ctx, postID); markErr != nil {
+		return fmt.Errorf("PostCopyrightReview: %w", markErr)
+	}
+	log.Printf("Processing PostCopyrightReview: post=%s state=%s reason=%q", event.PostID, event.State, event.Reason)
 	return nil
 }
 

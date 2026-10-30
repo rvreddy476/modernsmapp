@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	"github.com/atpost/feed-service/internal/service"
@@ -45,13 +46,18 @@ type Consumer struct {
 	service       *service.Service
 	rdb           *redis.Client
 	timelineStore *scylla.TimelineStore
+	// deadline bounds each event's handler; 0 means DefaultEventDeadline.
+	deadline time.Duration
+	// rederive, when set (tests only), replaces the audience-change branch
+	// of handlePostVisibilityChanged (rederiveVisibility).
+	rederive func(ctx context.Context, event events.PostVisibilityChangedPayload) error
 }
 
 // NewConsumer builds the consumer for one topic. An empty dlqTopic disables
 // the DLQ: a message whose retries are spent then blocks its partition until
 // it succeeds (shared/kafka retryDurable) instead of being skipped.
 func NewConsumer(brokers []string, groupID, topic, dlqTopic string, svc *service.Service, rdb *redis.Client, ts *scylla.TimelineStore, m *metrics.KafkaConsumerMetrics) *Consumer {
-	c := &Consumer{service: svc, rdb: rdb, timelineStore: ts}
+	c := &Consumer{service: svc, rdb: rdb, timelineStore: ts, deadline: eventDeadline()}
 	c.inner = sharedkafka.NewConsumer(sharedkafka.ConsumerConfig{
 		Brokers:  brokers,
 		GroupID:  groupID,
@@ -82,7 +88,44 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	return c.dispatch(ctx, envelope)
 }
 
+// DefaultEventDeadline bounds one event's handler (audit H3). The shared
+// consumer handles one message at a time per partition, so a handler with
+// no deadline (a huge fan-out, a hung upstream) held up every PostDeleted,
+// unfollow purge and visibility change behind it. A fan-out that runs out
+// of time returns an error; the consumer retries it, and the chunk
+// progress FanoutPost records lets the retry resume where it stopped.
+// FEED_EVENT_DEADLINE overrides it (a Go duration, e.g. "90s").
+const DefaultEventDeadline = 2 * time.Minute
+
+// eventDeadline reads FEED_EVENT_DEADLINE, falling back to the default on
+// an empty, malformed or non-positive value.
+func eventDeadline() time.Duration {
+	if d, err := time.ParseDuration(os.Getenv("FEED_EVENT_DEADLINE")); err == nil && d > 0 {
+		return d
+	}
+	return DefaultEventDeadline
+}
+
+// eventContext is the context every handler runs under: the per-event
+// deadline, the background-traffic mark (every upstream call made for an
+// event uses the fan-out clients and breakers, never the request path's —
+// traffic.go, audit H2) and the event id that keys FanoutPost's chunk
+// progress (a retry of THIS event resumes; a later event for the same post
+// starts fresh).
+func (c *Consumer) eventContext(ctx context.Context, envelope events.EventEnvelope) (context.Context, context.CancelFunc) {
+	deadline := c.deadline
+	if deadline <= 0 {
+		deadline = DefaultEventDeadline
+	}
+	ctx, cancel := context.WithTimeout(ctx, deadline)
+	ctx = service.WithBackgroundTraffic(ctx)
+	ctx = service.WithFanoutKey(ctx, envelope.EventID)
+	return ctx, cancel
+}
+
 func (c *Consumer) dispatch(ctx context.Context, envelope events.EventEnvelope) error {
+	ctx, cancel := c.eventContext(ctx, envelope)
+	defer cancel()
 	switch envelope.EventType {
 	case events.PostCreated:
 		return c.handlePostCreated(ctx, envelope)
@@ -123,6 +166,9 @@ func (c *Consumer) dispatch(ctx context.Context, envelope events.EventEnvelope) 
 
 	case events.EventPostVisibilityChanged:
 		return c.handlePostVisibilityChanged(ctx, envelope)
+
+	case events.EventPostCopyrightReview:
+		return c.handlePostCopyrightReview(ctx, envelope)
 
 	case events.HandleChanged:
 		return c.handleHandleChanged(ctx, envelope)
@@ -723,10 +769,15 @@ func (c *Consumer) handlePostRepostUndone(ctx context.Context, envelope events.E
 		return err
 	}
 
+	reposterID, err := uuid.Parse(event.ReposterUserID)
+	if err != nil {
+		return fmt.Errorf("PostRepostUndone: bad reposter_user_id %q: %w", event.ReposterUserID, err)
+	}
+
 	log.Printf("Processing PostRepostUndone: repost=%s original=%s reposter=%s",
 		event.RepostID, event.OriginalPostID, event.ReposterUserID)
 
-	return c.service.UndoRepostFanout(ctx, repostID, originalPostID)
+	return c.service.UndoRepostFanout(ctx, repostID, originalPostID, reposterID)
 }
 
 func (c *Consumer) Close() error {
