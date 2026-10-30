@@ -158,6 +158,39 @@ func (s *WatchStore) GetViewerHistory(ctx context.Context, viewerID, contentID u
 	return count, nil
 }
 
+// The retention and demographics charts read one content item's
+// watch_sessions partition (audit M9). A viral video keeps up to 90 days
+// of sessions there (the table TTL) — millions of rows — and the studio
+// drawer used to read every one of them on every open. Each chart read
+// is now bounded three ways:
+//
+//   - chartScanLimit rows at most. watch_sessions clusters on session_id,
+//     a random UUID, so the first N rows of the partition are a uniform
+//     sample of its sessions, not the oldest or newest N. Shares and
+//     retention ratios from the sample are unbiased estimates; counts are
+//     the sample's (see Sampled). Below the limit nothing changes.
+//   - chartQueryTimeout for the whole scan, so a slow replica cannot hold
+//     a request (and a pod connection) open indefinitely.
+//   - chartPageSize rows per page, so the driver never buffers a whole
+//     large partition at once.
+//
+// The HTTP layer caches each result for a few minutes on top of this
+// (internal/http chartCache), so a creator refreshing the drawer does not
+// rescan. A time window is not used: watch_sessions has no time key, and
+// filtering on created_at would read the whole partition anyway.
+const (
+	chartScanLimit    = 50_000
+	chartPageSize     = 5_000
+	chartQueryTimeout = 5 * time.Second
+)
+
+// rowScanner is the slice of *gocql.Iter the chart accumulators need, so
+// they are testable without a cluster.
+type rowScanner interface {
+	Scan(dest ...interface{}) bool
+	Close() error
+}
+
 // RetentionPoint is one bucket of the audience-retention curve:
 // the share of sessions still watching at SecondOffset seconds in.
 type RetentionPoint struct {
@@ -166,16 +199,29 @@ type RetentionPoint struct {
 	SessionCount  int64   `json:"session_count"`
 }
 
-// GetRetentionCurve walks every watch session for contentID and
-// builds the audience-retention histogram. Returns one point per
+// GetRetentionCurve builds the audience-retention histogram from at most
+// chartScanLimit of the content's watch sessions. Returns one point per
 // `bucketSec` seconds, capped at `maxBuckets` so the response stays
-// bounded for long videos.
+// bounded for long videos; sampled is true when the partition held more
+// sessions than were read.
 //
 // Algorithm: histogram[ floor(watched_ms / 1000 / bucketSec) ]++,
 // then cumulative-from-the-tail to get "still watching" at each
 // bucket. Per-session, not per-viewer — re-watches lift the curve,
 // matching the way YouTube/TikTok show retention.
-func (s *WatchStore) GetRetentionCurve(ctx context.Context, contentID uuid.UUID, bucketSec int64, maxBuckets int) ([]RetentionPoint, error) {
+func (s *WatchStore) GetRetentionCurve(ctx context.Context, contentID uuid.UUID, bucketSec int64, maxBuckets int) ([]RetentionPoint, bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, chartQueryTimeout)
+	defer cancel()
+	iter := s.session.Query(
+		`SELECT watched_ms FROM social_analytics.watch_sessions WHERE content_id = ? LIMIT ?`,
+		cql(contentID), chartScanLimit+1,
+	).WithContext(ctx).PageSize(chartPageSize).Iter()
+	return retentionFromRows(iter, bucketSec, maxBuckets, chartScanLimit)
+}
+
+// retentionFromRows reads up to limit watched_ms values (one more is
+// read only to learn that there were more) and builds the curve.
+func retentionFromRows(rows rowScanner, bucketSec int64, maxBuckets, limit int) ([]RetentionPoint, bool, error) {
 	if bucketSec <= 0 {
 		bucketSec = 1
 	}
@@ -183,15 +229,15 @@ func (s *WatchStore) GetRetentionCurve(ctx context.Context, contentID uuid.UUID,
 		maxBuckets = 600
 	}
 
-	iter := s.session.Query(
-		`SELECT watched_ms FROM social_analytics.watch_sessions WHERE content_id = ?`,
-		cql(contentID),
-	).WithContext(ctx).Iter()
-
 	hist := make([]int64, maxBuckets+1)
 	var total int64
 	var watchedMS int64
-	for iter.Scan(&watchedMS) {
+	sampled := false
+	for rows.Scan(&watchedMS) {
+		if total >= int64(limit) { // retention
+			sampled = true // retention
+			break
+		}
 		if watchedMS < 0 {
 			watchedMS = 0
 		}
@@ -202,11 +248,11 @@ func (s *WatchStore) GetRetentionCurve(ctx context.Context, contentID uuid.UUID,
 		hist[bucket]++
 		total++
 	}
-	if err := iter.Close(); err != nil {
-		return nil, err
+	if err := rows.Close(); err != nil {
+		return nil, false, err
 	}
 	if total == 0 {
-		return nil, nil
+		return nil, false, nil
 	}
 
 	// Cumulative-from-tail: sessions with watched_ms in bucket b
@@ -226,7 +272,7 @@ func (s *WatchStore) GetRetentionCurve(ctx context.Context, contentID uuid.UUID,
 			break
 		}
 	}
-	return out, nil
+	return out, sampled, nil
 }
 
 // DemographicBucket is one slice of an audience-distribution chart:
@@ -242,35 +288,54 @@ type DemographicBucket struct {
 // drawer renders: a top-N breakdown by country and by surface
 // (Home / Profile / Posttube etc.) for one piece of content. Both
 // dimensions live on watch_sessions, so the whole rollup is one
-// partition scan.
+// bounded partition read.
+//
+// Sampled is true when the content has more than chartScanLimit sessions
+// and the figures come from a uniform sample of them: the shares are
+// estimates, and TotalSessions / UniqueViewers / Count are the sample's,
+// i.e. lower bounds. Omitted (false) otherwise, so the response for an
+// ordinary video is unchanged.
 type AudienceDemographics struct {
-	TotalSessions  int64               `json:"total_sessions"`
-	UniqueViewers  int64               `json:"unique_viewers"`
-	TopCountries   []DemographicBucket `json:"top_countries"`
-	TopSurfaces    []DemographicBucket `json:"top_surfaces"`
+	TotalSessions int64               `json:"total_sessions"`
+	UniqueViewers int64               `json:"unique_viewers"`
+	TopCountries  []DemographicBucket `json:"top_countries"`
+	TopSurfaces   []DemographicBucket `json:"top_surfaces"`
+	Sampled       bool                `json:"sampled,omitempty"`
 }
 
-// GetAudienceDemographics walks every watch_session for one
-// content_id and returns the country + surface distributions.
-// `topN` caps each dimension's slice (default 10, max 50). Sessions
-// with empty country / surface are bucketed under "unknown" so the
-// total adds up cleanly.
+// GetAudienceDemographics returns the country + surface distributions of
+// at most chartScanLimit of the content's watch sessions. `topN` caps
+// each dimension's slice (default 10, max 50). Sessions with empty
+// country / surface are bucketed under "unknown" so the total adds up
+// cleanly.
 func (s *WatchStore) GetAudienceDemographics(ctx context.Context, contentID uuid.UUID, topN int) (*AudienceDemographics, error) {
+	ctx, cancel := context.WithTimeout(ctx, chartQueryTimeout)
+	defer cancel()
+	iter := s.session.Query(
+		`SELECT viewer_id, country, surface FROM social_analytics.watch_sessions WHERE content_id = ? LIMIT ?`,
+		cql(contentID), chartScanLimit+1,
+	).WithContext(ctx).PageSize(chartPageSize).Iter()
+	return demographicsFromRows(iter, topN, chartScanLimit)
+}
+
+// demographicsFromRows reads up to limit (viewer, country, surface) rows
+// (one more only to learn that there were more) and builds the breakdown.
+func demographicsFromRows(rows rowScanner, topN, limit int) (*AudienceDemographics, error) {
 	if topN <= 0 || topN > 50 {
 		topN = 10
 	}
-	iter := s.session.Query(
-		`SELECT viewer_id, country, surface FROM social_analytics.watch_sessions WHERE content_id = ?`,
-		cql(contentID),
-	).WithContext(ctx).Iter()
-
 	countries := map[string]int64{}
 	surfaces := map[string]int64{}
 	uniqueViewers := map[uuid.UUID]struct{}{}
 	var total int64
 	var viewerID gocql.UUID
 	var country, surface string
-	for iter.Scan(&viewerID, &country, &surface) {
+	sampled := false
+	for rows.Scan(&viewerID, &country, &surface) {
+		if total >= int64(limit) { // demographics
+			sampled = true // demographics
+			break
+		}
 		if country == "" {
 			country = "unknown"
 		}
@@ -282,7 +347,7 @@ func (s *WatchStore) GetAudienceDemographics(ctx context.Context, contentID uuid
 		uniqueViewers[gouuid(viewerID)] = struct{}{}
 		total++
 	}
-	if err := iter.Close(); err != nil {
+	if err := rows.Close(); err != nil {
 		return nil, err
 	}
 
@@ -291,6 +356,7 @@ func (s *WatchStore) GetAudienceDemographics(ctx context.Context, contentID uuid
 		UniqueViewers: int64(len(uniqueViewers)),
 		TopCountries:  topBuckets(countries, total, topN),
 		TopSurfaces:   topBuckets(surfaces, total, topN),
+		Sampled:       sampled,
 	}, nil
 }
 

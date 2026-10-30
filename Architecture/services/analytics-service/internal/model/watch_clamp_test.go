@@ -56,3 +56,34 @@ func TestClampWatchedIsMonotonic(t *testing.T) {
 		t.Fatalf("final clamped total = %d, want 105000", prev)
 	}
 }
+
+// Audit M6: the server-duration clamp. 5% slack, capped at 1s, per pass.
+func TestClampToServerDuration(t *testing.T) {
+	cases := []struct {
+		name                  string
+		reported, server, lps int64
+		want                  int64
+		wantClamped           bool
+	}{
+		{"a long video gets one second", 7_200_000, 60_000, 0, 61_000, true},
+		{"a short clip gets five percent", 200_000, 2_000, 20, 44_100, true},
+		{"within the slack is untouched", 60_900, 60_000, 0, 60_900, false},
+		{"exactly the slack is untouched", 61_000, 60_000, 0, 61_000, false},
+		{"loops multiply the slackened pass", 300_000, 60_000, 2, 183_000, true},
+		{"unknown server duration passes through", 130_000, 0, 3, 130_000, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, clamped := ClampToServerDuration(tc.reported, tc.server, tc.lps)
+			if got != tc.want || clamped != tc.wantClamped {
+				t.Fatalf("ClampToServerDuration(%d, %d, %d) = %d, %v; want %d, %v",
+					tc.reported, tc.server, tc.lps, got, clamped, tc.want, tc.wantClamped)
+			}
+		})
+	}
+	for server, want := range map[int64]int64{0: 0, -5: 0, 2_000: 100, 20_000: 1_000, 19_980: 999, 7_200_000: 1_000} {
+		if got := ServerDurationTolerance(server); got != want {
+			t.Fatalf("ServerDurationTolerance(%d)=%d want %d", server, got, want)
+		}
+	}
+}

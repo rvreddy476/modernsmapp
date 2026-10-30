@@ -126,6 +126,8 @@ func runPlaybackFixture(t *testing.T, f playbackFixture) {
 	if err := r.store.UpsertContentOwnership(r.ctx, pgstore.ContentOwnership{
 		ContentID: r.content, CreatorID: r.creator, ContentType: f.Content.ContentType,
 		CreatedAt: r.now.Add(-2 * time.Hour),
+		// The fixture's content block is the server's truth (audit M6).
+		MediaDurationMS: f.Content.DurationMS,
 	}); err != nil {
 		t.Fatal(err)
 	}

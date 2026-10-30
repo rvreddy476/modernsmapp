@@ -20,16 +20,18 @@ func TestLoopedPlayEndIsClampedNotDropped(t *testing.T) {
 		"content_id": testContent.String(), "session_id": testSession.String(),
 		"content_duration_ms": 2_000, "watched_ms_total": 200_000,
 		"max_continuous_watch_ms": 1_500, "loop_count": 60, "end_reason": "swipe_next",
-	}), testOwnership("flick"))
+	}), measuredOwnership("flick", 2_000))
 	if err != nil {
 		t.Fatalf("a 100x-looped 2s flick was rejected: %v", err)
 	}
 	if got := norm.Attributes["loop_count"]; got != 20 {
 		t.Fatalf("loop_count=%v want capped to 20", got)
 	}
-	// 2s x (20 loops + 1) = 42s is the most those loops can account for.
-	if got := norm.Attributes["watched_ms_total"]; got != int64(42_000) {
-		t.Fatalf("watched_ms_total=%v want clamped to 42000", got)
+	// (2s + 100ms tolerance) x (20 loops + 1) = 44.1s is the most those
+	// loops can account for on the raw row; the session row is clamped to
+	// the exact 2s x 21 = 42s on upsert (sessions_integration_test).
+	if got := norm.Attributes["watched_ms_total"]; got != int64(44_100) {
+		t.Fatalf("watched_ms_total=%v want clamped to 44100", got)
 	}
 	if got := norm.Attributes["watched_ms_reported"]; got != int64(200_000) {
 		t.Fatalf("watched_ms_reported=%v want the client's 200000 kept for audit", got)
@@ -47,7 +49,7 @@ func TestLoopedPlayEndIsClampedNotDropped(t *testing.T) {
 		"content_id": testContent.String(), "session_id": testSession.String(),
 		"content_duration_ms": 5_000, "watched_ms_total": 17_000,
 		"loop_count": 3, "end_reason": "swipe_next",
-	}), testOwnership("flick"))
+	}), measuredOwnership("flick", 5_000))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -85,19 +87,21 @@ func TestHeartbeatTotalIsClampedLikePlayEnd(t *testing.T) {
 		"content_id": testContent.String(), "session_id": testSession.String(),
 		"content_duration_ms": 5_000, "watched_ms_total": 130_000, "watched_ms_increment": 5_000,
 		"playhead_position_ms": 5_000, "loop_count": 25,
-	}), testOwnership("flick"))
+	}), measuredOwnership("flick", 5_000))
 	if err != nil {
 		t.Fatalf("a looped heartbeat carrying its duration was rejected: %v", err)
 	}
-	// 5s x (20 capped loops + 1) = 105s is the most those loops can account for.
-	if got := norm.Attributes["watched_ms_total"]; got != int64(105_000) {
-		t.Fatalf("watched_ms_total=%v want clamped to 105000", got)
+	// (5s + 250ms tolerance) x (20 capped loops + 1) = 110.25s is the most
+	// those loops can account for; the session upsert clamps to the exact
+	// 5s x 21 against its own snapshot.
+	if got := norm.Attributes["watched_ms_total"]; got != int64(110_250) {
+		t.Fatalf("watched_ms_total=%v want clamped to 110250", got)
 	}
 	if got := norm.Attributes["watched_ms_reported"]; got != int64(130_000) {
 		t.Fatalf("watched_ms_reported=%v want the client's 130000 kept for audit", got)
 	}
-	if norm.Session.WatchedMS != 105_000 || norm.Session.WatchedMSReported != 130_000 {
-		t.Fatalf("session update carries %d/%d, want 105000/130000", norm.Session.WatchedMS, norm.Session.WatchedMSReported)
+	if norm.Session.WatchedMS != 110_250 || norm.Session.WatchedMSReported != 130_000 {
+		t.Fatalf("session update carries %d/%d, want 110250/130000", norm.Session.WatchedMS, norm.Session.WatchedMSReported)
 	}
 	if norm.Session.LoopCount != 20 || norm.Session.ContentDurationMS != 5_000 {
 		t.Fatalf("session update loops=%d duration=%d, want 20 and 5000 so the row's GREATEST sees them", norm.Session.LoopCount, norm.Session.ContentDurationMS)
@@ -108,12 +112,13 @@ func TestHeartbeatTotalIsClampedLikePlayEnd(t *testing.T) {
 		"content_id": testContent.String(), "session_id": testSession.String(),
 		"content_duration_ms": 30_000, "watched_ms_total": 40_000, "watched_ms_increment": 5_000,
 		"playhead_position_ms": 30_000,
-	}), testOwnership("flick"))
+	}), measuredOwnership("flick", 30_000))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if norm.Attributes["watched_ms_total"] != int64(30_000) || norm.Attributes["watched_ms_reported"] != int64(40_000) {
-		t.Fatalf("rewatch heartbeat: %v / %v, want 30000 / 40000", norm.Attributes["watched_ms_total"], norm.Attributes["watched_ms_reported"])
+	// 30s + 1s tolerance (5% capped at 1s).
+	if norm.Attributes["watched_ms_total"] != int64(31_000) || norm.Attributes["watched_ms_reported"] != int64(40_000) {
+		t.Fatalf("rewatch heartbeat: %v / %v, want 31000 / 40000", norm.Attributes["watched_ms_total"], norm.Attributes["watched_ms_reported"])
 	}
 
 	// No duration on the heartbeat (the web contract): nothing to clamp
@@ -164,7 +169,7 @@ func TestSelfViewIsNotADisplayView(t *testing.T) {
 		"viewer_id": uuid.New().String(),
 	}
 
-	self, err := normalizeEvent(testCreator, model.EventPlayEnd, decode(t, payload), testOwnership("flick"))
+	self, err := normalizeEvent(testCreator, model.EventPlayEnd, decode(t, payload), measuredOwnership("flick", 60_000))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +183,7 @@ func TestSelfViewIsNotADisplayView(t *testing.T) {
 		t.Fatal("the playback rule must still call it a display view; exclusion is the aggregator's job")
 	}
 
-	other, err := normalizeEvent(testViewer, model.EventPlayEnd, decode(t, payload), testOwnership("flick"))
+	other, err := normalizeEvent(testViewer, model.EventPlayEnd, decode(t, payload), measuredOwnership("flick", 60_000))
 	if err != nil {
 		t.Fatal(err)
 	}

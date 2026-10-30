@@ -127,3 +127,17 @@ func TestSessionUpdateWithoutSessionIDIsRefused(t *testing.T) {
 		t.Fatalf("a non-playback event (nil Session) must be a no-op, got %v", err)
 	}
 }
+
+// Audit M6: ingest snapshots only the server-measured duration onto a
+// session, so a row without one never qualifies, however much watch time
+// or percent it claims.
+func TestSessionWithoutADurationNeverQualifies(t *testing.T) {
+	row := &PlaybackSession{ContentType: "flick", WatchedMS: 60_000, PercentViewed: 100, PercentCovered: 100, LoopCount: 3}
+	if isDisplay, score := sessionFlags(row); isDisplay || score != 0 {
+		t.Fatalf("no duration: display=%v score=%v want false / 0", isDisplay, score)
+	}
+	row.ContentDurationMS = 60_000
+	if isDisplay, score := sessionFlags(row); !isDisplay || score != 1 {
+		t.Fatalf("with the server duration: display=%v score=%v want true / 1", isDisplay, score)
+	}
+}

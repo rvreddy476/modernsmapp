@@ -396,7 +396,15 @@ func deriveSessionMeasures(row *PlaybackSession) {
 // weighted view count in the aggregates sums. A self-view keeps its
 // honest flag here — the aggregators exclude it — so dashboards still
 // see the creator's own plays.
+//
+// A row with no content duration cannot qualify (audit M6). Ingest only
+// ever snapshots the server-measured duration onto the session, so 0
+// means the server did not know it, and a view is never awarded on the
+// client's word alone.
 func sessionFlags(row *PlaybackSession) (isDisplayView bool, viewScore float64) {
+	if row.ContentDurationMS <= 0 {
+		return false, 0
+	}
 	isDisplayView = model.IsDisplayView(row.ContentType, row.ContentDurationMS, row.WatchedMS, row.PercentViewed, row.LoopCount)
 	if !isDisplayView {
 		return false, 0

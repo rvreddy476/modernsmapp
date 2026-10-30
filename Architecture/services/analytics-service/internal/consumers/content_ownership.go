@@ -140,7 +140,35 @@ func (c *ContentOwnershipConsumer) applyCreated(ctx context.Context, envelope ev
 	return c.store.UpsertContentOwnership(ctx, pgstore.ContentOwnership{
 		ContentID: contentID, CreatorID: creatorID,
 		ContentType: contentType, CreatedAt: createdAt, EligibleFrom: eligibleFrom,
+		MediaDurationMS: createdDurationMS(payload),
 	})
+}
+
+// maxMediaDurationMS bounds a producer duration the same way ingest bounds
+// a client one (12 h). Anything beyond it is a producer fault and reads as
+// unknown rather than as a duration a view could be judged against.
+const maxMediaDurationMS = int64(12 * time.Hour / time.Millisecond)
+
+// measuredDurationMS normalises a producer-measured duration: positive and
+// within maxMediaDurationMS, else 0 (unknown).
+func measuredDurationMS(ms int64) int64 {
+	if ms <= 0 || ms > maxMediaDurationMS {
+		return 0
+	}
+	return ms
+}
+
+// createdDurationMS is the server-measured duration PostCreated carries
+// (audit M6): duration_ms when the producer set it, else the older
+// duration_seconds. Both are post-service's reading of media_assets — what
+// transcode measured — and never anything a viewer's client said. A post
+// created while its video is still processing carries 0; the eligibility
+// event that publishes it once transcode is done carries the duration.
+func createdDurationMS(p events.PostCreatedPayload) int64 {
+	if ms := measuredDurationMS(int64(p.DurationMs)); ms > 0 {
+		return ms
+	}
+	return measuredDurationMS(int64(p.DurationSeconds) * 1000)
 }
 
 // canonicalOrQuarantined resolves the kind the ownership row will carry.
@@ -254,6 +282,11 @@ func (c *ContentOwnershipConsumer) applyEligibility(ctx context.Context, envelop
 		Rev:           payload.SearchRev,
 		AllowEqualRev: true,
 		IgnoreRev:     payload.SearchRev <= 0 && payload.Deleted,
+		// post-service reads the measured duration from media_assets in the
+		// transaction that emits this event (search_eligibility.go); it is
+		// how a video published while still processing reaches analytics
+		// with a duration once transcode has measured it (audit M6).
+		MediaDurationMS: measuredDurationMS(int64(payload.DurationMs)),
 	})
 }
 

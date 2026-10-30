@@ -32,7 +32,7 @@ func TestLiveIngestPersistsEveryEventTypeAndDedupesOnReplay(t *testing.T) {
 	content, session := uuid.New(), uuid.New()
 	if err := store.UpsertContentOwnership(ctx, pgstore.ContentOwnership{
 		ContentID: content, CreatorID: creator, ContentType: "long_video",
-		CreatedAt: time.Now().Add(-time.Hour),
+		CreatedAt: time.Now().Add(-time.Hour), MediaDurationMS: 200_000,
 	}); err != nil {
 		t.Fatal(err)
 	}

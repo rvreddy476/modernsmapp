@@ -53,6 +53,10 @@ type ContentEligibility struct {
 	Rev           int64
 	AllowEqualRev bool
 	IgnoreRev     bool
+	// MediaDurationMS is the measured duration the event carried
+	// (migration 015); 0 leaves the row's value alone. It rides the same
+	// revision gate, so a stale event cannot rewrite it.
+	MediaDurationMS int64
 }
 
 // RecordContentTypeExclusion upserts the quarantine row. Re-seeing the
@@ -93,7 +97,8 @@ func (s *Store) ClearContentTypeExclusion(ctx context.Context, contentID uuid.UU
 // signal to commit past the record rather than retry it.
 func (s *Store) ApplyContentEligibility(ctx context.Context, e ContentEligibility) (applied bool, err error) {
 	command, err := s.db.Exec(ctx, applyContentEligibilitySQL,
-		e.ContentID, e.CreatorID, e.State, e.EffectiveFrom, e.Rev, e.AllowEqualRev, e.IgnoreRev)
+		e.ContentID, e.CreatorID, e.State, e.EffectiveFrom, e.Rev, e.AllowEqualRev, e.IgnoreRev,
+		e.MediaDurationMS)
 	if err != nil {
 		return false, err
 	}
@@ -113,6 +118,7 @@ const applyContentEligibilitySQL = `
 		        WHEN $3 = 'eligible' AND eligibility_state <> 'eligible' THEN $4
 		        ELSE eligibility_eligible_from END,
 		    eligibility_rev = GREATEST(eligibility_rev, $5),
+		    media_duration_ms = CASE WHEN $8::bigint > 0 THEN $8::bigint ELSE media_duration_ms END,
 		    projected_at = NOW()
 		WHERE content_id = $1 AND creator_id = $2
 		  AND (

@@ -42,6 +42,12 @@ type ContentOwnership struct {
 	// when post-service withheld the PostCreated of a post held for
 	// copyright review, so no day before the clear earns. nil: no floor.
 	EligibleFrom *time.Time
+	// MediaDurationMS is the server-measured length of the content's
+	// longest video (migration 015), from PostCreated or the eligibility
+	// event post-service emits once transcode has measured it. 0 means
+	// unknown. It — never the client's content_duration_ms — is what a
+	// playback event is clamped and qualified against (audit M6).
+	MediaDurationMS int64
 }
 
 var ErrContentNotProjected = errors.New("content ownership is not projected")
@@ -116,15 +122,21 @@ func (s *Store) InsertBatch(ctx context.Context, events []Event) error {
 func (s *Store) UpsertContentOwnership(ctx context.Context, ownership ContentOwnership) error {
 	command, err := s.db.Exec(ctx, `
 		INSERT INTO analytics.content_ownership
-			(content_id, creator_id, content_type, created_at, projected_at, eligibility_eligible_from)
-		VALUES ($1, $2, $3, $4, NOW(), $5)
+			(content_id, creator_id, content_type, created_at, projected_at, eligibility_eligible_from, media_duration_ms)
+		VALUES ($1, $2, $3, $4, NOW(), $5, GREATEST($6::bigint, 0))
 		ON CONFLICT (content_id) DO UPDATE SET
 			content_type = EXCLUDED.content_type,
 			projected_at = NOW(),
 			-- A floor only ever rises (GREATEST ignores NULL).
-			eligibility_eligible_from = GREATEST(analytics.content_ownership.eligibility_eligible_from, EXCLUDED.eligibility_eligible_from)
+			eligibility_eligible_from = GREATEST(analytics.content_ownership.eligibility_eligible_from, EXCLUDED.eligibility_eligible_from),
+			-- A replayed PostCreated from before transcode carries no
+			-- duration; it must not erase one that has since been measured.
+			media_duration_ms = CASE WHEN EXCLUDED.media_duration_ms > 0
+			                         THEN EXCLUDED.media_duration_ms
+			                         ELSE analytics.content_ownership.media_duration_ms END
 		WHERE analytics.content_ownership.creator_id = EXCLUDED.creator_id`,
-		ownership.ContentID, ownership.CreatorID, ownership.ContentType, ownership.CreatedAt, ownership.EligibleFrom)
+		ownership.ContentID, ownership.CreatorID, ownership.ContentType, ownership.CreatedAt, ownership.EligibleFrom,
+		ownership.MediaDurationMS)
 	if err != nil {
 		return err
 	}
@@ -162,10 +174,11 @@ func (s *Store) UpdateContentType(ctx context.Context, contentID, creatorID uuid
 func (s *Store) GetContentOwnership(ctx context.Context, contentID uuid.UUID) (ContentOwnership, error) {
 	var ownership ContentOwnership
 	err := s.db.QueryRow(ctx, `
-		SELECT content_id, creator_id, content_type, created_at
+		SELECT content_id, creator_id, content_type, created_at, media_duration_ms
 		FROM analytics.content_ownership
 		WHERE content_id = $1`, contentID).Scan(
-		&ownership.ContentID, &ownership.CreatorID, &ownership.ContentType, &ownership.CreatedAt)
+		&ownership.ContentID, &ownership.CreatorID, &ownership.ContentType, &ownership.CreatedAt,
+		&ownership.MediaDurationMS)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ContentOwnership{}, ErrContentNotProjected
 	}

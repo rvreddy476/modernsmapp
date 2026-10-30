@@ -28,6 +28,15 @@ func testOwnership(contentType string) postgres.ContentOwnership {
 	}
 }
 
+// measuredOwnership is testOwnership after post-service has projected the
+// server-measured duration (migration 015). The tests that model an honest
+// client give it the same duration the client reports.
+func measuredOwnership(contentType string, durationMS int64) postgres.ContentOwnership {
+	o := testOwnership(contentType)
+	o.MediaDurationMS = durationMS
+	return o
+}
+
 func decode(t *testing.T, payload map[string]any) *clientEvent {
 	t.Helper()
 	raw, err := json.Marshal(payload)
@@ -232,7 +241,7 @@ func TestPlayEndDerivesPercentViewedAndDisplayViewFromTheProjection(t *testing.T
 		"content_id": testContent.String(), "session_id": testSession.String(),
 		"content_duration_ms": 60_000, "watched_ms_total": 45_000,
 		"loop_count": 0, "end_reason": "ended",
-	}), testOwnership("reel"))
+	}), measuredOwnership("reel", 60_000))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +257,7 @@ func TestPlayEndDerivesPercentViewedAndDisplayViewFromTheProjection(t *testing.T
 		"content_id": testContent.String(), "session_id": testSession.String(),
 		"content_duration_ms": 600_000, "watched_ms_total": 2_000,
 		"loop_count": 0, "end_reason": "swipe_next",
-	}), testOwnership("long_video"))
+	}), measuredOwnership("long_video", 600_000))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -261,7 +270,7 @@ func TestPlayEndDerivesPercentViewedAndDisplayViewFromTheProjection(t *testing.T
 		"content_id": testContent.String(), "session_id": testSession.String(),
 		"content_duration_ms": 5_000, "watched_ms_total": 17_000,
 		"loop_count": 3, "end_reason": "swipe_next",
-	}), testOwnership("reel"))
+	}), measuredOwnership("reel", 5_000))
 	if err != nil {
 		t.Fatal(err)
 	}

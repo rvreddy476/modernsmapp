@@ -31,3 +31,42 @@ func ClampWatched(reportedMS, durationMS, loops int64) (clampedMS int64, wasClam
 	}
 	return reportedMS, false
 }
+
+// ServerDurationToleranceMaxMS caps the slack a watch total is allowed
+// over the server-measured duration, per pass, before it is clamped
+// (audit M6). post-service's duration can be whole seconds
+// (duration_seconds) where the player measures milliseconds, so an honest
+// full watch may read a fraction of a second longer than the server's
+// figure. The slack is 5% of the duration up to this cap, so a 2s clip
+// gets 100ms, not a 50% bonus. It only ever affects watch time:
+// percent_viewed is computed against the exact server duration and capped
+// at 100, and the session row is clamped to the exact duration again on
+// upsert (postgres.applySessionUpdate).
+const ServerDurationToleranceMaxMS = 1000
+
+// ServerDurationTolerance is the per-pass slack for a server duration:
+// min(5% of it, ServerDurationToleranceMaxMS); 0 for an unknown duration.
+func ServerDurationTolerance(serverDurationMS int64) int64 {
+	if serverDurationMS <= 0 {
+		return 0
+	}
+	tol := serverDurationMS / 20
+	if tol > ServerDurationToleranceMaxMS {
+		tol = ServerDurationToleranceMaxMS
+	}
+	return tol
+}
+
+// ClampToServerDuration bounds a reported watch total by the server-known
+// duration plus its tolerance, per pass:
+//
+//	watched_ms <= (server_duration_ms + tolerance) x (loop_count + 1)
+//
+// An unknown server duration (<= 0) leaves the total untouched; the
+// caller must then not qualify the view (see IngestService).
+func ClampToServerDuration(reportedMS, serverDurationMS, loops int64) (clampedMS int64, wasClamped bool) {
+	if serverDurationMS <= 0 {
+		return reportedMS, false
+	}
+	return ClampWatched(reportedMS, serverDurationMS+ServerDurationTolerance(serverDurationMS), loops)
+}

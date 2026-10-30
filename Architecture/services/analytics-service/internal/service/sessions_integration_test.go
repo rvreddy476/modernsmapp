@@ -52,7 +52,7 @@ func newSessionRig(t *testing.T) *sessionRig {
 	}
 	if err := store.UpsertContentOwnership(ctx, pgstore.ContentOwnership{
 		ContentID: r.content, CreatorID: r.creator, ContentType: model.ContentTypeFlick,
-		CreatedAt: r.now.Add(-time.Hour),
+		CreatedAt: r.now.Add(-time.Hour), MediaDurationMS: rigDurationMS,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -291,6 +291,7 @@ func TestLoopedSessionIsClampedOnTheWire(t *testing.T) {
 	short := uuid.New()
 	if err := r.store.UpsertContentOwnership(r.ctx, pgstore.ContentOwnership{
 		ContentID: short, CreatorID: r.creator, ContentType: model.ContentTypeFlick, CreatedAt: r.now.Add(-time.Hour),
+		MediaDurationMS: 2_000,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -321,5 +322,71 @@ func TestSelfViewIsStampedOnTheSessionRow(t *testing.T) {
 	row := r.session(t, session)
 	if !row.IsSelfView {
 		t.Fatal("creator's own session was not stamped is_self_view")
+	}
+}
+
+// Audit M6 end to end: a scripted client claims a two-hour long video is
+// 2s long and watched all 2s. The session row, which the post-cutover
+// rollup pays from, is judged against the server's two hours.
+func TestClaimedShortDurationIsNotAPaidViewOnTheWire(t *testing.T) {
+	r := newSessionRig(t)
+	long := uuid.New()
+	const twoHours = int64(2 * 60 * 60 * 1000)
+	if err := r.store.UpsertContentOwnership(r.ctx, pgstore.ContentOwnership{
+		ContentID: long, CreatorID: r.creator, ContentType: model.ContentTypeLongVideo,
+		CreatedAt: r.now.Add(-time.Hour), MediaDurationMS: twoHours,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r.content = long
+	session := uuid.New()
+	batch := []EventDTO{
+		r.event(model.EventPlayStart, session, r.now.Add(-3*time.Second), map[string]any{"content_duration_ms": 2_000, "start_method": "tap"}),
+		r.event(model.EventPlayEnd, session, r.now, map[string]any{
+			"content_duration_ms": 2_000, "watched_ms_total": 2_000,
+			"max_continuous_watch_ms": 2_000, "loop_count": 0, "end_reason": "ended",
+		}),
+	}
+	if result := r.ingest(t, batch); result.Accepted != 2 {
+		t.Fatalf("accepted=%d want 2", result.Accepted)
+	}
+	row := r.session(t, session)
+	if row.ContentDurationMS != twoHours {
+		t.Fatalf("session duration=%d want the server's %d", row.ContentDurationMS, twoHours)
+	}
+	if row.IsDisplayView || row.ViewScore != 0 {
+		t.Fatalf("2s of a two-hour video: display=%v score=%v want false / 0", row.IsDisplayView, row.ViewScore)
+	}
+	if row.PercentViewed > 0.1 {
+		t.Fatalf("percent_viewed=%v want 2s of two hours", row.PercentViewed)
+	}
+}
+
+// With no server duration the session is counted but never qualifies.
+func TestUnknownDurationSessionIsUnqualifiedOnTheWire(t *testing.T) {
+	r := newSessionRig(t)
+	pending := uuid.New()
+	if err := r.store.UpsertContentOwnership(r.ctx, pgstore.ContentOwnership{
+		ContentID: pending, CreatorID: r.creator, ContentType: model.ContentTypeFlick,
+		CreatedAt: r.now.Add(-time.Hour),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r.content = pending
+	session := uuid.New()
+	end := r.event(model.EventPlayEnd, session, r.now, map[string]any{
+		"content_duration_ms": 30_000, "watched_ms_total": 30_000,
+		"max_continuous_watch_ms": 30_000, "loop_count": 0, "end_reason": "ended",
+	})
+	if result := r.ingest(t, []EventDTO{end}); result.Accepted != 1 {
+		t.Fatalf("accepted=%d want 1: an unknown duration must not lose the event", result.Accepted)
+	}
+	row := r.session(t, session)
+	if row.ContentDurationMS != 0 || row.IsDisplayView || row.ViewScore != 0 || row.PercentViewed != 0 {
+		t.Fatalf("unverified session: duration=%d display=%v score=%v percent=%v",
+			row.ContentDurationMS, row.IsDisplayView, row.ViewScore, row.PercentViewed)
+	}
+	if row.FinalizeReason == nil || *row.FinalizeReason != pgstore.FinalizePlayEnd {
+		t.Fatalf("the session must still be closed by its play_end: %+v", row.FinalizeReason)
 	}
 }

@@ -30,6 +30,7 @@ func TestLiveIngestUsesCanonicalAttributionAndDurableDedupe(t *testing.T) {
 	session := uuid.New()
 	if err := store.UpsertContentOwnership(ctx, pgstore.ContentOwnership{
 		ContentID: content, CreatorID: creator, ContentType: "long_video", CreatedAt: time.Now().Add(-time.Hour),
+		MediaDurationMS: 60_000,
 	}); err != nil {
 		t.Fatal(err)
 	}

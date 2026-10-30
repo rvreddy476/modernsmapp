@@ -1,6 +1,8 @@
 package http
 
 import (
+	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -13,22 +15,46 @@ import (
 	"github.com/google/uuid"
 )
 
+// watchCharts is the slice of the Scylla watch store the retention and
+// demographics endpoints read; an interface so the cache in front of it
+// is testable without a cluster.
+type watchCharts interface {
+	GetRetentionCurve(ctx context.Context, contentID uuid.UUID, bucketSec int64, maxBuckets int) ([]scylla.RetentionPoint, bool, error)
+	GetAudienceDemographics(ctx context.Context, contentID uuid.UUID, topN int) (*scylla.AudienceDemographics, error)
+}
+
 type DashboardHandler struct {
 	aggStore   *postgres.AggregateStore
-	watchStore *scylla.WatchStore
+	watchStore watchCharts
+	charts     *chartCache
+	// owns is the ownership check behind every per-content route;
+	// aggStore.OwnsContent outside tests.
+	owns func(ctx context.Context, creatorID, contentID uuid.UUID) (bool, error)
 }
 
 func NewDashboardHandler(aggStore *postgres.AggregateStore) *DashboardHandler {
-	return &DashboardHandler{aggStore: aggStore}
+	return &DashboardHandler{
+		aggStore: aggStore,
+		charts:   newChartCache(chartCacheTTL, chartCacheMaxEntries),
+		owns:     aggStore.OwnsContent,
+	}
 }
 
 // WithWatchStore wires the scylla watch-session store, used by the
 // retention-curve endpoint. Optional — nil means /retention returns
 // 503 with a clear "scylla unavailable" message.
 func (h *DashboardHandler) WithWatchStore(ws *scylla.WatchStore) *DashboardHandler {
-	h.watchStore = ws
+	if ws != nil {
+		h.watchStore = ws
+	}
 	return h
 }
+
+// sampledHeader tells the studio a chart was computed from a sample of a
+// very large partition (audit M9); see scylla.chartScanLimit. The
+// retention body is a bare array, so the flag rides as a header there and
+// on demographics alike.
+const sampledHeader = "X-Analytics-Sampled"
 
 func (h *DashboardHandler) RegisterRoutes(v1 *gin.RouterGroup) {
 	dash := v1.Group("/dashboard")
@@ -79,7 +105,10 @@ func (h *DashboardHandler) GetContentRetention(c *gin.Context) {
 		}
 	}
 
-	curve, err := h.watchStore.GetRetentionCurve(c.Request.Context(), contentID, bucketSec, maxBuckets)
+	key := fmt.Sprintf("retention|%s|%d|%d", contentID, bucketSec, maxBuckets)
+	value, sampled, err := h.charts.get(c.Request.Context(), key, func(ctx context.Context) (any, bool, error) {
+		return h.watchStore.GetRetentionCurve(ctx, contentID, bucketSec, maxBuckets)
+	})
 	if err != nil {
 		// The response stays opaque (this is a private, per-content
 		// surface), but the cause has to reach the operator: a bare
@@ -89,8 +118,12 @@ func (h *DashboardHandler) GetContentRetention(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to compute retention curve", nil)
 		return
 	}
+	curve, _ := value.([]scylla.RetentionPoint)
 	if curve == nil {
 		curve = []scylla.RetentionPoint{}
+	}
+	if sampled {
+		c.Writer.Header().Set(sampledHeader, "true") // retention
 	}
 	api.JSON(c.Writer, http.StatusOK, curve, nil)
 }
@@ -119,13 +152,23 @@ func (h *DashboardHandler) GetContentDemographics(c *gin.Context) {
 			topN = n
 		}
 	}
-	dem, err := h.watchStore.GetAudienceDemographics(c.Request.Context(), contentID, topN)
+	key := fmt.Sprintf("demographics|%s|%d", contentID, topN)
+	value, sampled, err := h.charts.get(c.Request.Context(), key, func(ctx context.Context) (any, bool, error) {
+		dem, err := h.watchStore.GetAudienceDemographics(ctx, contentID, topN)
+		if err != nil || dem == nil {
+			return dem, false, err
+		}
+		return dem, dem.Sampled, nil
+	})
 	if err != nil {
 		slog.Error("audience demographics failed", "content_id", contentID.String(), "error", err)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to compute demographics", nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, dem, nil)
+	if sampled {
+		c.Writer.Header().Set(sampledHeader, "true") // demographics
+	}
+	api.JSON(c.Writer, http.StatusOK, value, nil)
 }
 
 func (h *DashboardHandler) GetOverview(c *gin.Context) {
@@ -248,7 +291,7 @@ func (h *DashboardHandler) GetCreatorTrend(c *gin.Context) {
 // The decision lives in requireOwnedContentID (content_insights.go) so the
 // MTube content route and these share one implementation.
 func (h *DashboardHandler) requireOwnedContent(c *gin.Context) (uuid.UUID, bool) {
-	return requireOwnedContentID(c, h.aggStore.OwnsContent)
+	return requireOwnedContentID(c, h.owns)
 }
 
 func writePrivateContentNotFound(c *gin.Context) {

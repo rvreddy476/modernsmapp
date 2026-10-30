@@ -368,6 +368,15 @@ func normalizeEvent(actorID uuid.UUID, eventType string, raw *clientEvent, owner
 
 	isSelfView := actorID != uuid.Nil && actorID == ownership.CreatorID
 
+	// The duration every playback figure is judged against is the one
+	// post-service measured (audit M6), carried on the ownership
+	// projection. The client's content_duration_ms is validated for shape
+	// and kept as content_duration_reported_ms, nothing more: a scripted
+	// client claiming a two-hour video is 2s long must not turn 2s of
+	// watching into a full, 100%-scored paid view.
+	serverDurationMS := ownership.MediaDurationMS
+	durationKnown := serverDurationMS > 0
+
 	attrs := map[string]any{
 		"content_id":   ownership.ContentID.String(),
 		"creator_id":   ownership.CreatorID.String(),
@@ -422,13 +431,15 @@ func normalizeEvent(actorID uuid.UUID, eventType string, raw *clientEvent, owner
 		if raw.InitialBufferMS < 0 || raw.InitialBufferMS > maxHeartbeatIncrementMS {
 			return nil, errors.New("invalid initial_buffer_ms")
 		}
-		attrs["content_duration_ms"] = raw.ContentDurationMS
+		stampDuration(attrs, serverDurationMS, raw.ContentDurationMS)
 		attrs["start_method"] = normalizeStartMethod(raw.StartMethod)
 		attrs["is_muted"] = raw.IsMuted
 		attrs["is_autoplay"] = raw.IsAutoplay
 		attrs["time_to_first_frame_ms"] = raw.TimeToFirstFrameMS
 		attrs["initial_buffer_ms"] = raw.InitialBufferMS
-		session.ContentDurationMS = raw.ContentDurationMS
+		// The session snapshots only a server duration; 0 (unknown)
+		// leaves it unable to qualify (postgres.sessionFlags).
+		session.ContentDurationMS = serverDurationMS // play_start
 		norm.Session = session
 
 	case model.EventWatchHeartbeat:
@@ -478,8 +489,17 @@ func normalizeEvent(actorID uuid.UUID, eventType string, raw *clientEvent, owner
 			if err := validDuration(raw.ContentDurationMS); err != nil {
 				return nil, err
 			}
+		}
+		switch {
+		case durationKnown:
+			watchedMS, _ = model.ClampToServerDuration(raw.WatchedMSTotal, serverDurationMS, int64(loopCount)) // heartbeat
+
+			session.ContentDurationMS = serverDurationMS // heartbeat
+		case raw.ContentDurationMS != 0:
+			// Unknown server duration: the client's figure may still
+			// bound its own watch time (it can only lower it), but it
+			// never reaches the session, so nothing qualifies on it.
 			watchedMS, _ = model.ClampWatched(raw.WatchedMSTotal, raw.ContentDurationMS, int64(loopCount))
-			session.ContentDurationMS = raw.ContentDurationMS
 		}
 		attrs["watched_ms_increment"] = raw.WatchedMSIncrement
 		attrs["watched_ms_total"] = watchedMS
@@ -541,31 +561,42 @@ func normalizeEvent(actorID uuid.UUID, eventType string, raw *clientEvent, owner
 		if loopCount > maxLoopCount {
 			loopCount = maxLoopCount
 		}
-		watchedMS, _ := model.ClampWatched(raw.WatchedMSTotal, raw.ContentDurationMS, int64(loopCount))
+		//
+		// Judged against the server duration (audit M6). With none
+		// known the view is counted UNQUALIFIED — no display view, no
+		// percent_viewed, so no view score — rather than deferred: the
+		// common unknown case is a video still processing, which only its
+		// author can play (a self-view, never paid) and which is
+		// ineligible until the eligibility event that carries the
+		// duration publishes it. The watch time is still bounded by the
+		// client's own claim, which can only lower it.
+		var watchedMS int64
+		var percentViewed float64
+		isDisplayView := false
+		if durationKnown {
+			watchedMS, _ = model.ClampToServerDuration(raw.WatchedMSTotal, serverDurationMS, int64(loopCount)) // play_end
+			percentViewed = float64(watchedMS) / float64(serverDurationMS) * 100
+			if percentViewed > 100 {
+				percentViewed = 100
+			}
+			isDisplayView = model.IsDisplayView(ownership.ContentType, serverDurationMS, watchedMS, percentViewed, loopCount)
+		} else {
+			watchedMS, _ = model.ClampWatched(raw.WatchedMSTotal, raw.ContentDurationMS, int64(loopCount))
+			unverifiedDurationViews.Inc()
+		}
 		maxContinuousMS := raw.MaxContinuousWatchMS
 		if maxContinuousMS > watchedMS {
 			maxContinuousMS = watchedMS
 		}
-		percentViewed := float64(watchedMS) / float64(raw.ContentDurationMS) * 100
-		if percentViewed > 100 {
-			percentViewed = 100
-		}
-		isDisplayView := model.IsDisplayView(
-			ownership.ContentType,
-			raw.ContentDurationMS,
-			watchedMS,
-			percentViewed,
-			loopCount,
-		)
 		attrs["watched_ms_total"] = watchedMS
 		attrs["watched_ms_reported"] = raw.WatchedMSTotal
 		attrs["max_continuous_watch_ms"] = maxContinuousMS
-		attrs["content_duration_ms"] = raw.ContentDurationMS
+		stampDuration(attrs, serverDurationMS, raw.ContentDurationMS)
 		attrs["percent_viewed"] = percentViewed
 		attrs["loop_count"] = loopCount
 		attrs["end_reason"] = normalizeEndReason(raw.EndReason)
 		attrs["is_display_view"] = isDisplayView
-		session.ContentDurationMS = raw.ContentDurationMS
+		session.ContentDurationMS = serverDurationMS // play_end
 		session.WatchedMS = watchedMS
 		session.WatchedMSReported = raw.WatchedMSTotal
 		session.MaxContinuousMS = maxContinuousMS
@@ -595,6 +626,25 @@ func normalizeEvent(actorID uuid.UUID, eventType string, raw *clientEvent, owner
 	}
 
 	return norm, nil
+}
+
+// unverifiedDurationViews counts play_end events judged with no server
+// duration on the ownership projection, and therefore counted unqualified
+// (audit M6). A steady rate on content that is not still processing means
+// the duration is not reaching analytics: check migration 015's backfill
+// and the eligibility events.
+var unverifiedDurationViews = promauto.NewCounter(prometheus.CounterOpts{
+	Name: "analytics_play_end_unverified_duration_total",
+	Help: "play_end events with no server-known media duration, counted as unqualified views.",
+})
+
+// stampDuration records which duration a playback event was judged
+// against. content_duration_ms is the server's (0 when unknown); the
+// client's claim is kept beside it for audit and never decides anything.
+func stampDuration(attrs map[string]any, serverDurationMS, reportedMS int64) {
+	attrs["content_duration_ms"] = serverDurationMS
+	attrs["content_duration_reported_ms"] = reportedMS
+	attrs["duration_verified"] = serverDurationMS > 0
 }
 
 func validDuration(durationMS int64) error {
