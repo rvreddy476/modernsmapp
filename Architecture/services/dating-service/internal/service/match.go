@@ -450,16 +450,10 @@ func (s *Service) CloseMatch(ctx context.Context, matchID, closedBy uuid.UUID) e
 	if closedBy != m.UserA && closedBy != m.UserB {
 		return fmt.Errorf("forbidden: only a participant may close this match")
 	}
-	closed, err := s.store.CloseMatchWithReason(ctx, matchID, closedBy, store.CloseReasonUnmatch, nil)
-	if err != nil {
-		return err
-	}
-	if s.producer != nil {
-		if perr := s.producer.PublishMatchClosed(ctx, closed.ID, closedBy, closed.UserA, closed.UserB); perr != nil {
-			slog.Warn("publish match.closed after unmatch failed; match closed", "match_id", closed.ID, "error", perr)
-		}
-	}
-	return nil
+	// dating.match.closed commits with the close through the outbox (audit
+	// H2), so chat closes the conversation even if this request dies now.
+	_, err = s.store.CloseMatchWithReason(ctx, matchID, closedBy, store.CloseReasonUnmatch, nil)
+	return err
 }
 
 // uuidStrings renders ids for a JSON body; nil stays nil (omitted).

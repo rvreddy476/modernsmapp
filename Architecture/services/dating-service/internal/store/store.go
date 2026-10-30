@@ -39,6 +39,9 @@ type Store struct {
 	// hideKnownEnabled switches "hide from people I know" (mechanic M16,
 	// hide_known.go) in discovery.
 	hideKnownEnabled bool
+	// requireIdentityDOB admits only identity-sourced birth dates to
+	// discovery (visibility.go, audit L4).
+	requireIdentityDOB bool
 }
 
 // New returns a Store backed by the given pool.

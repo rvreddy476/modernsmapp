@@ -157,7 +157,7 @@ func openMatchesBetween(t *testing.T, st *store.Store, a, b uuid.UUID) int {
 }
 
 func TestD3_BlockClosesMatchEmitsEventAndSeversPair(t *testing.T) {
-	svc, st, rec := newD3Svc(t)
+	svc, st, _ := newD3Svc(t)
 	ctx := context.Background()
 	a, b := uuid.New(), uuid.New()
 	seedActiveProfile(t, st, a)
@@ -169,8 +169,6 @@ func TestD3_BlockClosesMatchEmitsEventAndSeversPair(t *testing.T) {
 	if err := st.AddStash(ctx, b, a, time.Time{}); err != nil {
 		t.Fatalf("stash b->a: %v", err)
 	}
-	before := len(rec.events(t))
-
 	if err := svc.Block(ctx, a, b); err != nil {
 		t.Fatalf("block: %v", err)
 	}
@@ -182,8 +180,10 @@ func TestD3_BlockClosesMatchEmitsEventAndSeversPair(t *testing.T) {
 	if m.Status != "closed" || m.ClosedBy == nil || *m.ClosedBy != a {
 		t.Fatalf("match after block = status %s closed_by %v; want closed by the blocker", m.Status, m.ClosedBy)
 	}
+	// Audit H2: both events commit with the block in dating.outbox_events
+	// (the relay publishes them), not on the request path.
 	var closedEvent, blockedEvent bool
-	for _, ev := range rec.events(t)[before:] {
+	for _, ev := range outboxEventsMentioning(t, st, mid, a, b) {
 		switch ev.EventType {
 		case "dating.match.closed":
 			var p struct {
@@ -203,7 +203,7 @@ func TestD3_BlockClosesMatchEmitsEventAndSeversPair(t *testing.T) {
 			if err := json.Unmarshal(ev.Payload, &p); err != nil {
 				t.Fatalf("decode user.blocked payload: %v", err)
 			}
-			blockedEvent = p.BlockerID == a.String() && p.BlockedID == b.String()
+			blockedEvent = blockedEvent || (p.BlockerID == a.String() && p.BlockedID == b.String())
 		}
 	}
 	if !closedEvent {

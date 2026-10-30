@@ -32,9 +32,11 @@ const (
 	CodeSelfieFrameBurstUnsupported = "SELFIE_FRAME_BURST_UNSUPPORTED"
 	CodeSelfieChallengeRequired     = "SELFIE_CHALLENGE_REQUIRED"
 	CodeSelfieChallengeInvalid      = "SELFIE_CHALLENGE_INVALID"
-	CodePrimaryPhotoNotApproved     = "PRIMARY_PHOTO_NOT_APPROVED"
-	CodeSelfieAttemptsExceeded      = "SELFIE_ATTEMPTS_EXCEEDED"
-	CodeSelfieMediaNotFound         = "SELFIE_MEDIA_NOT_FOUND"
+	// CodeAadhaarAlreadyLinked: the DigiLocker subject verifies another account (audit M1).
+	CodeAadhaarAlreadyLinked    = "AADHAAR_ALREADY_LINKED"
+	CodePrimaryPhotoNotApproved = "PRIMARY_PHOTO_NOT_APPROVED"
+	CodeSelfieAttemptsExceeded  = "SELFIE_ATTEMPTS_EXCEEDED"
+	CodeSelfieMediaNotFound     = "SELFIE_MEDIA_NOT_FOUND"
 	// CodeSelfieMediaNotReady (409) — the video exists but media-service
 	// has not finished processing it; the same upload can be retried.
 	CodeSelfieMediaNotReady      = "MEDIA_NOT_READY"
@@ -54,6 +56,10 @@ func (h *Handler) respondVerificationError(c *gin.Context, err error) {
 	ctx := c.Request.Context()
 	w := c.Writer
 	switch {
+	case errors.Is(err, store.ErrAadhaarAlreadyLinked):
+		// Audit M1: one Aadhaar verifies one dating account.
+		api.ErrorWithContext(ctx, w, http.StatusConflict, CodeAadhaarAlreadyLinked,
+			"this Aadhaar already verifies another account", nil)
 	case errors.Is(err, store.ErrSelfieChallengeInvalid):
 		api.ErrorWithContext(ctx, w, http.StatusBadRequest, CodeSelfieChallengeInvalid,
 			"the selfie challenge is unknown, expired, already used or not yours; request a new one", nil)
@@ -227,7 +233,7 @@ func (h *Handler) SubmitSelfie(c *gin.Context) {
 }
 
 // ListSelfieReviews — GET /v1/dating/admin/verification/selfie/pending?limit=
-// (requireAdmin). Selfies awaiting a moderator with the video and primary
+// (requireAdminToken). Selfies awaiting a moderator with the video and primary
 // photo media ids, the blink count, the similarity, the provider and why
 // they were routed.
 func (h *Handler) ListSelfieReviews(c *gin.Context) {
@@ -246,7 +252,7 @@ type reviewSelfieRequest struct {
 }
 
 // ReviewSelfie — POST /v1/dating/admin/verification/selfie/:userId/review
-// {decision: approve|reject, reason?} (requireAdmin). Approve is a pass
+// {decision: approve|reject, reason?} (requireAdminToken). Approve is a pass
 // (pending_selfie → active through the status writer); reject is a fail.
 // Audited with the admin's gateway-derived id.
 func (h *Handler) ReviewSelfie(c *gin.Context) {

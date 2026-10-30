@@ -205,8 +205,11 @@ func (s *Service) PutCommentFilter(ctx context.Context, userID uuid.UUID, in Com
 }
 
 // markHiddenNotes sets NoteHidden on the recipient's incoming sparks whose
-// note their filter hides. A filter that cannot be read hides only unkind
-// notes (the default).
+// note their filter hides, and (audit L4) drops the note text from those
+// sparks: a hidden note is never sent in a list, so the filter does not
+// depend on the client folding it. The recipient reads one on purpose with
+// GET /sparks/:id/note (RevealSparkNote). A filter that cannot be read hides
+// only unkind notes (the default).
 func (s *Service) markHiddenNotes(ctx context.Context, recipientID uuid.UUID, sparks []*store.Spark) {
 	if !s.mechanics.KindCheck {
 		return
@@ -215,20 +218,69 @@ func (s *Service) markHiddenNotes(ctx context.Context, recipientID uuid.UUID, sp
 	if err != nil {
 		f = store.CommentFilter{FilterUnkind: true}
 	}
+	applyNoteFilter(f, sparks)
+}
+
+// applyNoteFilter marks each spark whose note f hides and removes its text.
+func applyNoteFilter(f store.CommentFilter, sparks []*store.Spark) {
 	for _, sp := range sparks {
-		if sp == nil || sp.Note == nil || strings.TrimSpace(*sp.Note) == "" {
+		if sp == nil || sp.Note == nil {
 			continue
 		}
-		if f.FilterUnkind && len(unkindReasons(*sp.Note)) > 0 {
-			sp.NoteHidden = NoteHiddenUnkind
-			continue
-		}
-		lower := strings.ToLower(*sp.Note)
-		for _, w := range f.Words {
-			if strings.Contains(lower, w) {
-				sp.NoteHidden = NoteHiddenYourWords
-				break
-			}
+		if reason := noteHiddenReason(f, *sp.Note); reason != "" {
+			sp.NoteHidden = reason
+			sp.Note = nil
 		}
 	}
+}
+
+// noteHiddenReason is why filter f hides note: NoteHiddenUnkind,
+// NoteHiddenYourWords, or "" when it does not.
+func noteHiddenReason(f store.CommentFilter, note string) string {
+	if strings.TrimSpace(note) == "" {
+		return ""
+	}
+	if f.FilterUnkind && len(unkindReasons(note)) > 0 {
+		return NoteHiddenUnkind
+	}
+	lower := strings.ToLower(note)
+	for _, w := range f.Words {
+		if strings.Contains(lower, w) {
+			return NoteHiddenYourWords
+		}
+	}
+	return ""
+}
+
+// SparkNote is the body of GET /v1/dating/sparks/:id/note.
+type SparkNote struct {
+	SparkID uuid.UUID `json:"spark_id"`
+	Note    string    `json:"note"`
+}
+
+// RevealSparkNote returns an incoming spark's note to its recipient when
+// they ask to read it (the "tap to read" on a note their filter hid). Only
+// the recipient of a live spark (not declined, sender not blocked either
+// way) whom the liked-you gate lets see the sender; anyone else, and a spark
+// with no note, is store.ErrSparkNotFound.
+func (s *Service) RevealSparkNote(ctx context.Context, sparkID, recipientID uuid.UUID) (*SparkNote, error) {
+	if sparkID == uuid.Nil || recipientID == uuid.Nil {
+		return nil, store.ErrSparkNotFound
+	}
+	sp, err := s.store.GetSpark(ctx, sparkID)
+	if err != nil {
+		return nil, err
+	}
+	if sp.ToUserID != recipientID || sp.DeclinedAt != nil || sp.Note == nil || strings.TrimSpace(*sp.Note) == "" {
+		return nil, store.ErrSparkNotFound
+	}
+	if blocked, err := s.store.IsBlockedEitherWay(ctx, recipientID, sp.FromUserID); err != nil {
+		return nil, err
+	} else if blocked {
+		return nil, store.ErrSparkNotFound
+	}
+	if !s.likedYouUnlocked(ctx, recipientID) {
+		return nil, store.ErrSparkNotFound
+	}
+	return &SparkNote{SparkID: sp.ID, Note: *sp.Note}, nil
 }

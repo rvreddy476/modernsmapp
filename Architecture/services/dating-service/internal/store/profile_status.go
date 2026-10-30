@@ -305,7 +305,9 @@ func NextProfileStatus(cur ProfileStatusState, ev ProfileEvent, actor ProfileAct
 // transaction: lock the row, compute the edge, check onboarding evidence
 // (dating_onboarding_step in setup.sql), and write guarded on the exact
 // state that was read. Returns the profile as written (including a
-// soft-deleted one), or ErrProfileNotFound when no row exists.
+// soft-deleted one), or ErrProfileNotFound when no row exists. A profile
+// that ends suspended, restricted or deleted has its open matches closed in the same
+// transaction (closeOpenMatchesForUserTx, audit H2).
 func (s *Store) TransitionProfileStatus(ctx context.Context, userID uuid.UUID, ev ProfileEvent, actor ProfileActor) (*Profile, error) {
 	if userID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: user_id required")
@@ -376,6 +378,18 @@ func (s *Store) TransitionProfileStatus(ctx context.Context, userID uuid.UUID, e
 		}
 		if tag.RowsAffected() != 1 {
 			return nil, ErrProfileStatusConflict
+		}
+	}
+	// Audit H2: a suspended, restricted (including under 18) or deleted
+	// profile chats with nobody. Its open
+	// matches close in this transaction, each with dating.match.closed in
+	// the outbox, so chat-service closes the conversations whenever the
+	// status commits. Runs on an unchanged status too (a repeated
+	// suspension, a redelivered deletion): idempotent, and it closes a
+	// match a legacy suspension left open.
+	if reason := chatClosureReasonForStatus(next.Status); reason != "" {
+		if _, err := closeOpenMatchesForUserTx(ctx, tx, userID, reason); err != nil {
+			return nil, fmt.Errorf("profile transition %s: %w", ev, err)
 		}
 	}
 

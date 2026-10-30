@@ -263,6 +263,11 @@ func TestD7Store_MigrationSnapsExistingRowsIdempotently(t *testing.T) {
 		t.Fatal(err)
 	}
 	for run := 1; run <= 2; run++ {
+		// An unchanged script is skipped at boot (audit M4); forget the
+		// fingerprint so each run re-applies it, as a changed script would.
+		if err := database.ForgetSchemaFingerprint(ctx, s.db); err != nil {
+			t.Fatalf("forget fingerprint run %d: %v", run, err)
+		}
 		if err := database.BootstrapSchema(ctx, s.db); err != nil {
 			t.Fatalf("bootstrap run %d: %v", run, err)
 		}

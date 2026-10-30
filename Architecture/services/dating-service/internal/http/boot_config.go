@@ -452,7 +452,8 @@ func envFlag(getenv func(string) string, key string, def bool) (bool, error) {
 //	DATING_PAST_MATCH_REPORT_ENABLED    ended matches, to report (M19)
 //	DATING_SCAM_ALERT_ENABLED           warn matches of a suspended scammer (M17)
 //	DATING_DATE_CHECKIN_ENABLED         how did the date go (M14)
-//	DATING_SCREEN_PROTECTION_ENABLED    Android blocks screenshots of people (M18)
+//	DATING_SCREEN_PROTECTION_ENABLED    Android blocks screenshots of people (M18);
+//	                                    default ON everywhere (a privacy guard)
 //	DATING_HIDE_KNOWN_ENABLED           hide from my Momentum connections (M16)
 //	DATING_KIND_CHECK_ENABLED           kind-message check + comment filter (M13)
 //	DATING_MEDIA_PROMPTS_ENABLED        voice/video prompt answers (M15)
@@ -523,7 +524,10 @@ func ResolveMechanicsConfig(getenv func(string) string) (service.MechanicsConfig
 	if cfg.DateCheckin, err = envFlag(getenv, "DATING_DATE_CHECKIN_ENABLED", def); err != nil {
 		return cfg, err
 	}
-	if cfg.ScreenProtection, err = envFlag(getenv, "DATING_SCREEN_PROTECTION_ENABLED", def); err != nil {
+	// Android dating audit M3: screen protection is a privacy guard, not a
+	// mechanic being rolled out, so it is ON in every environment unless
+	// explicitly set to false.
+	if cfg.ScreenProtection, err = envFlag(getenv, "DATING_SCREEN_PROTECTION_ENABLED", true); err != nil {
 		return cfg, err
 	}
 	if cfg.HideKnown, err = envFlag(getenv, "DATING_HIDE_KNOWN_ENABLED", def); err != nil {

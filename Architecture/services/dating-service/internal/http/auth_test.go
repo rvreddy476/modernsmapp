@@ -101,44 +101,63 @@ var adminRoutes = []struct{ method, path, body string }{
 	{http.MethodPost, "/v1/dating/photos/" + uuid.NewString() + "/moderation", `{"status":"approved"}`},
 }
 
-// Every admin route and photo moderation: anonymous → 401, a plain user
-// holding the gateway-injected key → 403 ADMIN_SCOPE_REQUIRED. A forged
-// X-Admin-Id or a look-alike scope changes nothing.
+// Every admin route and photo moderation (audit H3): without an
+// admin-service token the request is refused 401 ADMIN_SERVICE_TOKEN_REQUIRED
+// whatever the gateway says about the caller — anonymous, a plain user, a
+// look-alike scope, or a consumer session holding the admin, moderator or
+// superadmin ladder scope. A forged X-Admin-Id or X-Admin-Role changes
+// nothing.
 func TestAdminRoutes_RefuseAnonymousAndPlainUsers(t *testing.T) {
 	r := newAuthRouter(t, testInternalKey, nil)
 	user := uuid.New()
 	for _, rt := range adminRoutes {
 		t.Run(rt.method+" "+rt.path, func(t *testing.T) {
 			w := serve(r, rt.method, rt.path, rt.body, map[string]string{headerInternalKey: testInternalKey})
-			if w.Code != http.StatusUnauthorized || errorCode(t, w) != CodeAuthRequired {
-				t.Fatalf("anonymous: status=%d code=%q body=%s, want 401 %s", w.Code, errorCode(t, w), w.Body.String(), CodeAuthRequired)
+			if w.Code != http.StatusUnauthorized || errorCode(t, w) != CodeAdminTokenRequired {
+				t.Fatalf("anonymous: status=%d code=%q body=%s, want 401 %s", w.Code, errorCode(t, w), w.Body.String(), CodeAdminTokenRequired)
 			}
 
 			for _, scopes := range []string{"", "feed:read dating:write", "administrator", "Admin"} {
 				hdr := gatewayUser(user, scopes)
 				hdr["X-Admin-Id"] = uuid.NewString() // never trusted
 				w = serve(r, rt.method, rt.path, rt.body, hdr)
-				if w.Code != http.StatusForbidden || errorCode(t, w) != CodeAdminScopeRequired {
-					t.Fatalf("user scopes=%q: status=%d code=%q body=%s, want 403 %s",
-						scopes, w.Code, errorCode(t, w), w.Body.String(), CodeAdminScopeRequired)
+				if w.Code != http.StatusUnauthorized || errorCode(t, w) != CodeAdminTokenRequired {
+					t.Fatalf("user scopes=%q: status=%d code=%q body=%s, want 401 %s",
+						scopes, w.Code, errorCode(t, w), w.Body.String(), CodeAdminTokenRequired)
 				}
 			}
 		})
 	}
 }
 
-func TestHasAdminScope(t *testing.T) {
-	for scopes, want := range map[string]bool{
-		"":                          false,
-		"user":                      false,
-		"administrator moderators":  false,
-		"admin":                     true,
-		"feed:read moderator":       true,
-		"superadmin":                true,
-		"  dating:write   admin   ": true,
-	} {
-		if got := hasAdminScope(scopes); got != want {
-			t.Errorf("hasAdminScope(%q)=%v want %v", scopes, got, want)
+// Audit H3: the ladder scopes identity leaves on a consumer session (admin,
+// moderator, superadmin) used to admit the caller to every admin route with
+// no per-route permission — including panic GPS reveal, suspension and
+// selfie review. They admit nobody now, on either admin mount.
+func TestAdminRoutes_GatewayAdminScopesAdmitNobody(t *testing.T) {
+	r := newAuthRouter(t, testInternalKey, nil)
+	routes := append([]struct{ method, path, body string }{}, adminRoutes...)
+	for _, rt := range adminRoutes {
+		if strings.HasPrefix(rt.path, "/v1/dating/admin/") {
+			routes = append(routes, struct{ method, path, body string }{rt.method, InternalAdminPrefix + strings.TrimPrefix(rt.path, "/v1/dating/admin"), rt.body})
+		}
+	}
+	routes = append(routes,
+		struct{ method, path, body string }{http.MethodGet, "/v1/dating/admin/verification/selfie/pending", ""},
+		struct{ method, path, body string }{http.MethodPost, "/v1/dating/admin/verification/selfie/" + uuid.NewString() + "/review", `{"decision":"approve"}`},
+		struct{ method, path, body string }{http.MethodGet, "/v1/dating/admin/clips/pending", ""},
+		struct{ method, path, body string }{http.MethodPost, "/v1/dating/admin/clips/review", `{}`},
+	)
+	for _, rt := range routes {
+		for _, scopes := range []string{"admin", "moderator", "superadmin", "superadmin admin moderator"} {
+			hdr := gatewayUser(uuid.New(), scopes)
+			hdr[headerAdminRole] = "superadmin"
+			hdr["X-Admin-Id"] = uuid.NewString()
+			w := serve(r, rt.method, rt.path, rt.body, hdr)
+			if w.Code != http.StatusUnauthorized || errorCode(t, w) != CodeAdminTokenRequired {
+				t.Fatalf("%s %s scopes=%q: status=%d code=%q body=%s, want 401 %s",
+					rt.method, rt.path, scopes, w.Code, errorCode(t, w), w.Body.String(), CodeAdminTokenRequired)
+			}
 		}
 	}
 }

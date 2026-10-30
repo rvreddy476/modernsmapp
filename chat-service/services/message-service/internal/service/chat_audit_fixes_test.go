@@ -196,8 +196,10 @@ func TestEditAppliesTheSendGates(t *testing.T) {
 		t.Fatalf("an edit at exactly the cap: err=%v edits=%d", err, fx.msgs.edits)
 	}
 	fx = setup()
-	open := &postgres.ConversationMeta{SourceApp: "dating"}
+	matchID := uuid.New()
+	open := &postgres.ConversationMeta{SourceApp: "dating", MatchID: &matchID}
 	fx.conv.meta = open
+	fx.svc.datingMatchState = &stubDatingState{open: true} // dating reports the match open (audit H2 gate)
 	if err := edit(fx, "hello"); err != nil {
 		t.Fatalf("an open dating match: %v", err)
 	}

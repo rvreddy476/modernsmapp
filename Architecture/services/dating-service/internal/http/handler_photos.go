@@ -170,8 +170,9 @@ func (h *Handler) UpdatePhoto(c *gin.Context) {
 }
 
 // SetPhotoModerationStatus — POST /v1/dating/photos/:id/moderation
-// Admin / moderator only (requireAdmin): a plain user holding the
-// gateway-injected key gets 403, so nobody approves their own photo.
+// admin-service token with dating:photos.review only (requireAdminToken): a
+// user holding the gateway-injected key gets 401, so nobody approves their
+// own photo.
 // Body: {status: "approved"|"rejected"|"pending", reason?: string}.
 // Triggers deck-cache invalidation + profile-state transition + (on
 // rejection) photo.moderation_rejected event.

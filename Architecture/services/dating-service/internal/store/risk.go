@@ -84,7 +84,8 @@ func (s *Store) GetAccountRisk(ctx context.Context, userID uuid.UUID) (*AccountR
 // UpsertAccountRisk inserts or refreshes the user's risk row. The
 // last_evaluated_at + updated_at stamps are server-side NOW() so the
 // sweeper's "older than 1h" predicate stays honest regardless of the
-// caller's clock.
+// caller's clock. A level that blocks chat (RiskLevelBlocksChat) closes the
+// user's open matches in the same transaction (audit H2).
 func (s *Store) UpsertAccountRisk(ctx context.Context, r *AccountRisk) error {
 	if r == nil || r.UserID == uuid.Nil {
 		return fmt.Errorf("invalid: account risk row required")
@@ -105,7 +106,12 @@ func (s *Store) UpsertAccountRisk(ctx context.Context, r *AccountRisk) error {
 	if len(raw) == 0 {
 		raw = []byte("{}")
 	}
-	_, err = s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("upsert account risk: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	_, err = tx.Exec(ctx, `
         INSERT INTO dating_account_risk
             (user_id, risk_score, risk_level, signals, last_evaluated_at, updated_at)
         VALUES ($1, $2, $3, $4::jsonb, NOW(), NOW())
@@ -118,6 +124,19 @@ func (s *Store) UpsertAccountRisk(ctx context.Context, r *AccountRisk) error {
 		r.UserID, r.RiskScore, r.RiskLevel, raw)
 	if err != nil {
 		return fmt.Errorf("upsert account risk: %w", err)
+	}
+	// Audit H2: chat_hold, admin_review and suspend stop the user chatting.
+	// Their open matches close in this transaction, each with
+	// dating.match.closed in the outbox, so chat-service closes the
+	// conversations. Every recompute at such a level re-runs it
+	// (idempotent: nothing open, nothing closed or enqueued).
+	if RiskLevelBlocksChat(r.RiskLevel) {
+		if _, err := closeOpenMatchesForUserTx(ctx, tx, r.UserID, CloseReasonRiskHold); err != nil {
+			return fmt.Errorf("upsert account risk: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("upsert account risk: commit: %w", err)
 	}
 	return nil
 }

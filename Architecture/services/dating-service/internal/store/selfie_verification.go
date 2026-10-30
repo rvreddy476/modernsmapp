@@ -90,6 +90,9 @@ type SelfieDecision struct {
 	FramesAnalysed *int
 	Provider       string
 	Reason         string
+	// ReferenceMediaID is the approved primary photo the video was compared
+	// with; a pass is bound to it (audit M1, CheckSelfieBinding).
+	ReferenceMediaID *uuid.UUID
 }
 
 func lockSelfieUser(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
@@ -275,8 +278,9 @@ func (s *Store) FinishSelfieAttempt(ctx context.Context, userID, attemptID, vide
 		}
 		if _, err := tx.Exec(ctx, `
             INSERT INTO dating_verifications
-                (user_id, selfie_status, selfie_score, selfie_at, selfie_provider, selfie_media_id, selfie_blinks, selfie_review_reason)
-            VALUES ($1, $2, $3, now(), NULLIF($4, ''), $5, $6, $7)
+                (user_id, selfie_status, selfie_score, selfie_at, selfie_provider, selfie_media_id, selfie_blinks, selfie_review_reason,
+                 selfie_reference_media_id)
+            VALUES ($1, $2, $3, now(), NULLIF($4, ''), $5, $6, $7, $8)
             ON CONFLICT (user_id) DO UPDATE
                 SET selfie_status        = EXCLUDED.selfie_status,
                     selfie_score         = EXCLUDED.selfie_score,
@@ -286,9 +290,12 @@ func (s *Store) FinishSelfieAttempt(ctx context.Context, userID, attemptID, vide
                     selfie_blinks        = EXCLUDED.selfie_blinks,
                     selfie_review_reason = EXCLUDED.selfie_review_reason,
                     selfie_reviewed_by   = NULL,
-                    selfie_reviewed_at   = NULL
+                    selfie_reviewed_at   = NULL,
+                    selfie_reference_media_id = EXCLUDED.selfie_reference_media_id,
+                    selfie_rebind_media_id    = NULL,
+                    selfie_rebind_status      = NULL
                 WHERE dating_verifications.selfie_status IS DISTINCT FROM 'passed'`,
-			userID, d.Outcome, d.Similarity, d.Provider, videoMediaID, d.Blinks, reviewReason); err != nil {
+			userID, d.Outcome, d.Similarity, d.Provider, videoMediaID, d.Blinks, reviewReason, d.ReferenceMediaID); err != nil {
 			return fmt.Errorf("selfie finish: verification: %w", err)
 		}
 	}
@@ -316,7 +323,8 @@ func (s *Store) ListPendingSelfieReviews(ctx context.Context, limit int) ([]*Sel
 	}
 	rows, err := s.db.Query(ctx, `
         SELECT v.user_id, COALESCE(p.profile_status, ''), v.selfie_score, v.selfie_blinks, v.selfie_provider,
-               v.selfie_review_reason,
+               CASE WHEN v.selfie_rebind_status = 'pending' THEN '`+SelfieReasonPrimaryPhotoChanged+`'
+                    ELSE v.selfie_review_reason END,
                (SELECT a.instruction FROM dating_selfie_attempts a
                  WHERE a.user_id = v.user_id AND a.outcome = 'pending_review'
                  ORDER BY a.created_at DESC LIMIT 1),
@@ -328,6 +336,7 @@ func (s *Store) ListPendingSelfieReviews(ctx context.Context, limit int) ([]*Sel
         FROM dating_verifications v
         LEFT JOIN dating_profiles p ON p.user_id = v.user_id
         WHERE v.selfie_status = 'pending_review'
+           OR (v.selfie_status = 'passed' AND v.selfie_rebind_status = 'pending')
         ORDER BY v.selfie_at ASC NULLS LAST
         LIMIT $1`, limit)
 	if err != nil {
@@ -365,15 +374,36 @@ func (s *Store) ResolveSelfieReview(ctx context.Context, userID, adminID uuid.UU
 	if err := lockSelfieUser(ctx, tx, userID); err != nil {
 		return err
 	}
+	// Audit M1: a pass bound to the primary photo the moderator saw.
 	tag, err := tx.Exec(ctx, `
         UPDATE dating_verifications
-        SET selfie_status = $3, selfie_at = now(), selfie_reviewed_by = $2, selfie_reviewed_at = now()
+        SET selfie_status = $3, selfie_at = now(), selfie_reviewed_by = $2, selfie_reviewed_at = now(),
+            selfie_reference_media_id = CASE WHEN $3 = 'passed' THEN `+approvedPrimaryMediaSQL("$1")+` ELSE NULL END
         WHERE user_id = $1 AND selfie_status = 'pending_review'`, userID, adminID, status)
 	if err != nil {
 		return fmt.Errorf("selfie review: verification: %w", err)
 	}
 	if tag.RowsAffected() != 1 {
-		return ErrSelfieNotPendingReview
+		// Audit M1: or a re-review after the primary photo changed. The
+		// liveness pass stands either way (selfie_status stays 'passed');
+		// approve binds it to the current primary, reject keeps the badge
+		// off until the primary changes again.
+		rebind := `selfie_rebind_status = 'rejected'`
+		if approve {
+			rebind = `selfie_reference_media_id = ` + approvedPrimaryMediaSQL("$1") + `,
+                selfie_rebind_media_id = NULL, selfie_rebind_status = NULL`
+		}
+		tag, err = tx.Exec(ctx, `
+            UPDATE dating_verifications
+            SET selfie_reviewed_by = $2, selfie_reviewed_at = now(), `+rebind+`
+            WHERE user_id = $1 AND selfie_status = 'passed' AND selfie_rebind_status = 'pending'`, userID, adminID)
+		if err != nil {
+			return fmt.Errorf("selfie review: rebind: %w", err)
+		}
+		if tag.RowsAffected() != 1 {
+			return ErrSelfieNotPendingReview
+		}
+		return tx.Commit(ctx)
 	}
 	if _, err := tx.Exec(ctx, `
         UPDATE dating_selfie_attempts
@@ -399,4 +429,151 @@ func (s *Store) CountSelfieAttemptsInWindow(ctx context.Context, userID uuid.UUI
 		return 0, fmt.Errorf("selfie: count attempts in window: %w", err)
 	}
 	return n, nil
+}
+
+// SelfieReasonPrimaryPhotoChanged is the review-queue reason for a passed
+// selfie whose approved primary photo changed since (audit M1).
+const SelfieReasonPrimaryPhotoChanged = "PRIMARY_PHOTO_CHANGED"
+
+// Selfie binding states (dating_verifications.selfie_rebind_status).
+const (
+	SelfieRebindPending  = "pending"
+	SelfieRebindRejected = "rejected"
+	// SelfieRebindAwaitingPhoto: no approved primary photo right now; the
+	// badge is off and the re-review starts once one is approved.
+	SelfieRebindAwaitingPhoto = "awaiting_photo"
+)
+
+// approvedPrimaryMediaSQL is the media id of the user's approved primary
+// photo (NULL when there is none); user is a SQL uuid expression.
+func approvedPrimaryMediaSQL(user string) string {
+	return `(SELECT ph.media_id FROM dating_photos ph
+                WHERE ph.user_id = ` + user + ` AND ph.is_primary AND ph.moderation_status = 'approved'
+                ORDER BY ph.created_at DESC LIMIT 1)`
+}
+
+// SelfieBinding is what CheckSelfieBinding did.
+type SelfieBinding string
+
+const (
+	// SelfieBindingNone: no passed selfie, or nothing changed.
+	SelfieBindingNone SelfieBinding = ""
+	// SelfieBindingAdopted: a pass from before binding existed was bound to
+	// the current primary photo (first sight).
+	SelfieBindingAdopted SelfieBinding = "adopted"
+	// SelfieBindingWithdrawn: the primary photo changed; the badge is off.
+	SelfieBindingWithdrawn SelfieBinding = "withdrawn"
+	// SelfieBindingRestored: the primary is the bound photo again.
+	SelfieBindingRestored SelfieBinding = "restored"
+)
+
+// selfieBindingStep is the pure decision CheckSelfieBinding applies, given
+// the bound photo (reference), the current approved primary (current, nil
+// when none), the photo a pending/rejected re-review is about (rebindMedia)
+// and its status. It returns the new reference, rebind media and rebind
+// status, and the outcome.
+func selfieBindingStep(reference, current, rebindMedia *uuid.UUID, rebindStatus string) (newRef, newRebindMedia *uuid.UUID, newStatus string, out SelfieBinding) {
+	same := func(a, b *uuid.UUID) bool { return (a == nil && b == nil) || (a != nil && b != nil && *a == *b) }
+	switch {
+	case reference == nil && current == nil:
+		return nil, nil, "", SelfieBindingNone
+	case reference == nil:
+		// A pass from before binding: adopt today's primary.
+		return current, nil, "", SelfieBindingAdopted
+	case same(reference, current):
+		if rebindStatus == "" {
+			return reference, nil, "", SelfieBindingNone
+		}
+		return reference, nil, "", SelfieBindingRestored
+	case current == nil:
+		// No approved primary: badge off, nothing to review yet.
+		return reference, nil, SelfieRebindAwaitingPhoto, withdrawnUnless(rebindStatus != "")
+	case same(rebindMedia, current) && rebindStatus != "":
+		// Already queued (or declined) for this very photo.
+		return reference, rebindMedia, rebindStatus, SelfieBindingNone
+	default:
+		return reference, current, SelfieRebindPending, SelfieBindingWithdrawn
+	}
+}
+
+func withdrawnUnless(already bool) SelfieBinding {
+	if already {
+		return SelfieBindingNone
+	}
+	return SelfieBindingWithdrawn
+}
+
+// CheckSelfieBinding keeps the selfie badge bound to the photo it was
+// checked against (audit M1). Call it after any change to the user's photos.
+// For a passed selfie: when the approved primary photo is no longer the
+// bound one, the badge is withdrawn at once (trust_tier → phone) and the
+// stored video goes to the moderator queue against the new primary
+// (selfie_rebind_status 'pending', reason PRIMARY_PHOTO_CHANGED); when the
+// bound photo is primary again, the badge comes back. selfie_status stays
+// 'passed' throughout — the person did pass liveness; what is in question is
+// whether the photos are theirs. Not a passed selfie: nothing.
+func (s *Store) CheckSelfieBinding(ctx context.Context, userID uuid.UUID) (SelfieBinding, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return SelfieBindingNone, fmt.Errorf("selfie binding: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if err := lockSelfieUser(ctx, tx, userID); err != nil {
+		return SelfieBindingNone, err
+	}
+	var status, rebindStatus *string
+	var reference, rebindMedia, current *uuid.UUID
+	err = tx.QueryRow(ctx, `
+        SELECT v.selfie_status, v.selfie_reference_media_id, v.selfie_rebind_media_id, v.selfie_rebind_status,
+               `+approvedPrimaryMediaSQL("v.user_id")+`
+        FROM dating_verifications v WHERE v.user_id = $1
+        FOR UPDATE`, userID).Scan(&status, &reference, &rebindMedia, &rebindStatus, &current)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return SelfieBindingNone, nil
+	}
+	if err != nil {
+		return SelfieBindingNone, fmt.Errorf("selfie binding: read: %w", err)
+	}
+	if status == nil || *status != SelfieStatusPassed {
+		return SelfieBindingNone, nil
+	}
+	rs := ""
+	if rebindStatus != nil {
+		rs = *rebindStatus
+	}
+	newRef, newRebind, newStatus, out := selfieBindingStep(reference, current, rebindMedia, rs)
+	if _, err := tx.Exec(ctx, `
+        UPDATE dating_verifications
+        SET selfie_reference_media_id = $2, selfie_rebind_media_id = $3, selfie_rebind_status = NULLIF($4, ''),
+            selfie_at = CASE WHEN $5 THEN now() ELSE selfie_at END
+        WHERE user_id = $1`, userID, newRef, newRebind, newStatus, out == SelfieBindingWithdrawn); err != nil {
+		return SelfieBindingNone, fmt.Errorf("selfie binding: write: %w", err)
+	}
+	if newStatus != "" {
+		// The badge is off while the binding is in question.
+		if _, err := tx.Exec(ctx, `
+            UPDATE dating_profiles SET trust_tier = 'phone', updated_at = now()
+            WHERE user_id = $1 AND trust_tier IN ('selfie','aadhaar')`, userID); err != nil {
+			return SelfieBindingNone, fmt.Errorf("selfie binding: withdraw badge: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return SelfieBindingNone, fmt.Errorf("selfie binding: commit: %w", err)
+	}
+	return out, nil
+}
+
+// SelfieBadgeBound reports whether the user's badge may show: false while a
+// passed selfie's binding to the primary photo is in question (audit M1).
+func (s *Store) SelfieBadgeBound(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var inQuestion bool
+	err := s.db.QueryRow(ctx, `
+        SELECT selfie_rebind_status IS NOT NULL FROM dating_verifications WHERE user_id = $1`, userID).Scan(&inQuestion)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return true, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("selfie badge bound: %w", err)
+	}
+	return !inQuestion, nil
 }

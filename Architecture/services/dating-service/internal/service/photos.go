@@ -340,10 +340,14 @@ func (s *Service) PhotoImageURL(ctx context.Context, viewerID, photoID uuid.UUID
 	return u, err
 }
 
-// syncPhotoState drops every cached deck that shows the user and moves the
+// syncPhotoState re-checks the selfie badge's binding to the primary photo
+// (audit M1), drops every cached deck that shows the user and moves the
 // profile's photo step to what the photos now support: photo_revoked when no
 // approved primary remains (a no-op otherwise), then the onboarding advance.
 func (s *Service) syncPhotoState(ctx context.Context, userID uuid.UUID) {
+	// Audit M1: the selfie badge follows the primary photo it was checked
+	// against; before the deck drop, so rebuilt decks see the new tier.
+	s.checkSelfieBinding(ctx, userID)
 	s.InvalidateDecksForCandidate(ctx, userID)
 	_, err := s.store.TransitionProfileStatus(ctx, userID, store.ProfileEventPhotoRevoked, store.ProfileActorSystem)
 	switch {

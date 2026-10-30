@@ -117,25 +117,35 @@ func (h *Handler) RevokeVouch(c *gin.Context) {
 
 // ListVouchesFor — GET /v1/dating/vouches/for/:userId[?status=].
 //
-// Anyone other than the vouchee sees ONLY the public-displayable
-// (status='accepted') subset; their ?status= is ignored, so pending and
-// declined vouches never leak. The vouchee (gateway-set X-User-Id equal to
-// :userId) may filter by any status and defaults to accepted.
+// The vouchee (gateway-set X-User-Id equal to :userId) sees their own
+// vouches and may filter by any status (default accepted).
+//
+// Anyone else (audit M3): only a caller who may see the vouchee's card gets
+// an answer — their accepted vouches, without the voucher's identity
+// (service.PublicVouch); ?status= is ignored. Everyone else, anonymous
+// callers and user ids with no profile included, gets 404
+// CANDIDATE_UNAVAILABLE, so the route is no longer an oracle for who has a
+// dating profile or who vouched for them.
 func (h *Handler) ListVouchesFor(c *gin.Context) {
 	target, ok := parseUUID(c, "userId")
 	if !ok {
 		return
 	}
-	status := "accepted"
 	viewer := uuid.Nil
 	if v, err := uuid.Parse(c.GetHeader(headerUserID)); err == nil {
 		viewer = v
-		if v == target {
-			status = c.DefaultQuery("status", "accepted")
-		}
 	}
-	// Lane D3: the viewer's blocks filter the list too.
-	out, err := h.svc.ListVouchesFor(c.Request.Context(), viewer, target, status)
+	if viewer != uuid.Nil && viewer == target {
+		// Lane D3: the viewer's blocks filter the list too.
+		out, err := h.svc.ListVouchesFor(c.Request.Context(), viewer, target, c.DefaultQuery("status", "accepted"))
+		if err != nil {
+			respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+			return
+		}
+		api.JSON(c.Writer, http.StatusOK, out, nil)
+		return
+	}
+	out, err := h.svc.ListPublicVouchesFor(c.Request.Context(), viewer, target)
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return

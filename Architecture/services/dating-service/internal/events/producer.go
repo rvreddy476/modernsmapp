@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/atpost/dating-service/internal/store"
 	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
@@ -223,13 +224,11 @@ type MatchQuietPayload struct {
 	QuietAt time.Time `json:"quiet_at"`
 }
 
-type MatchClosedPayload struct {
-	MatchID  string    `json:"match_id"`
-	ClosedBy string    `json:"closed_by"`
-	UserA    string    `json:"user_a"`
-	UserB    string    `json:"user_b"`
-	ClosedAt time.Time `json:"closed_at"`
-}
+// MatchClosedPayload is dating.match.closed. One definition with the
+// outbox writer (store.MatchClosedEvent): closures commit the event through
+// dating.outbox_events (audit H2); PublishMatchClosed remains for the
+// duplicate cleanup and the purge.
+type MatchClosedPayload = store.MatchClosedEvent
 
 func (p *Producer) PublishMatchFormed(ctx context.Context, matchID, userA, userB, conversationID uuid.UUID) error {
 	return p.publish(ctx, events.EventDatingMatchFormed, &userA, MatchFormedPayload{
@@ -684,11 +683,9 @@ type PremiumPaymentFailurePayload struct {
 	OccurredAt time.Time `json:"occurred_at"`
 }
 
-type UserBlockedPayload struct {
-	BlockerID string    `json:"blocker_id"`
-	BlockedID string    `json:"blocked_id"`
-	BlockedAt time.Time `json:"blocked_at"`
-}
+// UserBlockedPayload is dating.user.blocked (store.UserBlockedEvent). A
+// block enqueues it in its own transaction (store.BlockUserAndSever).
+type UserBlockedPayload = store.UserBlockedEvent
 
 func (p *Producer) PublishMatchQuietNotify(ctx context.Context, matchID, userA, userB uuid.UUID) error {
 	return p.publish(ctx, events.EventDatingMatchQuietNotify, &userA, MatchQuietNotifyPayload{

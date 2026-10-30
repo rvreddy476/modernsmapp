@@ -156,9 +156,24 @@ func (s *Service) CompleteAadhaarFlow(ctx context.Context, userID uuid.UUID, cod
 	if assertion == nil || assertion.Reference == "" {
 		return nil, fmt.Errorf("digilocker: empty assertion")
 	}
+	// Audit M1: the badge is bound to the person. Without the partner's
+	// stable subject there is nothing to bind, so nothing is recorded.
+	if assertion.Subject == "" {
+		return nil, fmt.Errorf("digilocker: assertion has no subject")
+	}
 	docHash := digilocker.HashDocumentType(assertion.DocumentType)
-	if err := s.store.RecordAadhaarVerification(ctx, userID, assertion.Reference, docHash); err != nil {
+	if err := s.store.BindAadhaarVerification(ctx, userID, assertion.Reference, docHash, assertion.Subject); err != nil {
+		if errors.Is(err, store.ErrAadhaarAlreadyLinked) || errors.Is(err, store.ErrPIINotConfigured) {
+			return nil, err
+		}
 		return nil, fmt.Errorf("persist verification: %w", err)
+	}
+	// While a changed primary photo awaits the selfie re-review the badge
+	// stays off; the review restores the right tier (completeSelfiePass).
+	if bound, err := s.store.SelfieBadgeBound(ctx, userID); err != nil {
+		return nil, err
+	} else if !bound {
+		return &AadhaarFlowResult{Verified: true, TrustTier: "phone", IssuedAt: assertion.IssuedAt}, nil
 	}
 	if err := s.store.UpdateTrustTier(ctx, userID, "aadhaar"); err != nil {
 		return nil, fmt.Errorf("bump trust tier: %w", err)
@@ -447,6 +462,9 @@ func (s *Service) SubmitSelfie(ctx context.Context, userID, videoMediaID, challe
 
 	reviewFirst := start.PriorVerdicts == 0 && s.selfieHighRisk(ctx, userID)
 	decision, clientReason := decideSelfie(cfg, res, reviewFirst)
+	// Audit M1: the verdict is about this photo; a pass is bound to it.
+	ref := primary.MediaID
+	decision.ReferenceMediaID = &ref
 	// The verdict writes the video onto dating_verifications (unless a pass
 	// is already there): claimed before, settled after (media_claims.go).
 	settle, err := s.claimVerificationVideo(ctx, userID, videoMediaID)
@@ -556,13 +574,7 @@ func (s *Service) selfieHighRisk(ctx context.Context, userID uuid.UUID) bool {
 // status machine. A restricted/suspended profile keeps its hold (only its
 // remembered step advances). Returns the resulting trust tier.
 func (s *Service) completeSelfiePass(ctx context.Context, userID uuid.UUID) string {
-	tier := "selfie"
-	v, _ := s.store.GetVerification(ctx, userID)
-	if v != nil && v.AadhaarStatus != nil && *v.AadhaarStatus == "verified" {
-		tier = "aadhaar"
-	} else if err := s.store.UpdateTrustTier(ctx, userID, "selfie"); err != nil {
-		slog.Warn("selfie: bump trust tier failed", "user_id", userID, "error", err)
-	}
+	tier := s.restoreBadgeTier(ctx, userID)
 	if s.producer != nil {
 		if perr := s.producer.PublishVerificationCompleted(ctx, userID, "selfie", tier); perr != nil {
 			slog.Warn("publish verification.completed failed", "error", perr)
@@ -572,6 +584,41 @@ func (s *Service) completeSelfiePass(ctx context.Context, userID uuid.UUID) stri
 		slog.Warn("profile state: advance onboarding after selfie failed", "user_id", userID, "error", err)
 	}
 	return tier
+}
+
+// restoreBadgeTier sets the badge a passed selfie earns — 'aadhaar' when
+// Aadhaar is also verified, 'selfie' otherwise — and returns it. It is also
+// what puts the badge back after a selfie re-review (audit M1): the tier was
+// lowered to 'phone' meanwhile, so 'aadhaar' is written too, not assumed.
+func (s *Service) restoreBadgeTier(ctx context.Context, userID uuid.UUID) string {
+	tier := "selfie"
+	v, _ := s.store.GetVerification(ctx, userID)
+	if v != nil && v.AadhaarStatus != nil && *v.AadhaarStatus == "verified" {
+		tier = "aadhaar"
+	}
+	if err := s.store.UpdateTrustTier(ctx, userID, tier); err != nil {
+		slog.Warn("selfie: bump trust tier failed", "user_id", userID, "tier", tier, "error", err)
+	}
+	return tier
+}
+
+// checkSelfieBinding keeps the selfie badge bound to the primary photo it
+// was checked against (audit M1, store.CheckSelfieBinding): a changed
+// primary withdraws the badge and queues a moderator re-review; the bound
+// photo coming back restores it. Best effort, logged: a photo change never
+// fails because of it, and the next photo change re-checks.
+func (s *Service) checkSelfieBinding(ctx context.Context, userID uuid.UUID) {
+	out, err := s.store.CheckSelfieBinding(ctx, userID)
+	if err != nil {
+		slog.Warn("selfie binding check failed", "user_id", userID, "error", err)
+		return
+	}
+	switch out {
+	case store.SelfieBindingWithdrawn:
+		slog.Info("selfie badge withdrawn: primary photo changed; queued for re-review", "user_id", userID)
+	case store.SelfieBindingRestored:
+		s.restoreBadgeTier(ctx, userID)
+	}
 }
 
 // ListSelfieReviews is the moderator queue (GET /v1/dating/admin/verification/selfie/pending).

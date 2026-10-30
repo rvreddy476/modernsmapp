@@ -125,6 +125,13 @@ func (s *Service) RewindLastPass(ctx context.Context, viewerID uuid.UUID) (*Rewi
 	if err := s.requireNotBlocked(ctx, viewerID, candidateID); err != nil {
 		return nil, err
 	}
+	// Audit H1: and still visible to the caller under the discovery rule
+	// (not paused or hidden since, not held, gender both ways).
+	if visible, err := s.store.CandidateVisibleTo(ctx, viewerID, candidateID); err != nil {
+		return nil, err
+	} else if !visible {
+		return nil, ErrCandidateUnavailable
+	}
 	limit := s.rewindLimit(ctx, viewerID)
 	if err := s.store.RewindPass(ctx, viewerID, candidateID, limit); err != nil {
 		if errors.Is(err, store.ErrRewindLimited) {

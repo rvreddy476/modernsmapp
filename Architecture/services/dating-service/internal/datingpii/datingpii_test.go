@@ -130,3 +130,30 @@ func TestNilCryptoFailsClosed(t *testing.T) {
 		t.Fatalf("nil fingerprint err = %v", err)
 	}
 }
+
+// Audit M1: the Aadhaar subject lookup is a keyed, stable hash — the same
+// subject always maps to the same value, different subjects do not collide,
+// the subject never appears in it, and an empty subject is refused (it would
+// collide for everyone).
+func TestAadhaarSubjectLookup(t *testing.T) {
+	c := testCrypto(t)
+	a1, err := c.AadhaarSubjectLookup("digilocker-subject-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a2, _ := c.AadhaarSubjectLookup("digilocker-subject-1")
+	b, _ := c.AadhaarSubjectLookup("digilocker-subject-2")
+	if a1 == "" || a1 != a2 || a1 == b || strings.Contains(a1, "digilocker-subject") {
+		t.Fatalf("lookup a1=%q a2=%q b=%q", a1, a2, b)
+	}
+	if fp, _ := c.FingerprintLookup("digilocker-subject-1"); fp == a1 {
+		t.Fatalf("aadhaar lookup shares the fingerprint domain")
+	}
+	if _, err := c.AadhaarSubjectLookup("  "); err == nil {
+		t.Fatalf("empty subject accepted")
+	}
+	var none *Crypto
+	if _, err := none.AadhaarSubjectLookup("x"); !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("unconfigured: err=%v", err)
+	}
+}

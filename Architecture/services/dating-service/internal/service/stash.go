@@ -3,7 +3,6 @@ package service
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -23,12 +22,11 @@ func (s *Service) AddStash(ctx context.Context, userID, candidateID uuid.UUID) (
 	if userID == candidateID {
 		return nil, fmt.Errorf("invalid: cannot stash yourself")
 	}
-	// Validate that the candidate exists. A missing profile is a 400, not 500.
-	if _, err := s.store.GetProfile(ctx, candidateID); err != nil {
-		if errors.Is(err, store.ErrProfileNotFound) {
-			return nil, fmt.Errorf("not_found: candidate profile not found")
-		}
-		return nil, fmt.Errorf("load candidate profile: %w", err)
+	// Audit H1: stash only someone the caller was served or can otherwise
+	// see. A missing, hidden or blocked profile is the same 404
+	// CANDIDATE_UNAVAILABLE, so stashing cannot probe for a profile.
+	if err := s.requireActionableCandidate(ctx, userID, candidateID); err != nil {
+		return nil, err
 	}
 	// Lane D3: a block removed any stash both ways; don't allow a new one.
 	if err := s.requireNotBlocked(ctx, userID, candidateID); err != nil {

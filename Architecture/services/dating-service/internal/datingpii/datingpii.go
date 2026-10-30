@@ -41,6 +41,9 @@ const (
 
 	LookupDomainDeviceFingerprint = "dating_device_fingerprint"
 	LookupDomainIP                = "dating_ip"
+	// LookupDomainAadhaarSubject hashes the DigiLocker subject id so one
+	// Aadhaar can badge one account (audit M1). Lookup only, never sealed.
+	LookupDomainAadhaarSubject = "dating_aadhaar_subject"
 
 	EnvKeys       = "DATING_PII_KEYS"
 	EnvLookupSalt = "DATING_PII_LOOKUP_SALT"
@@ -110,6 +113,7 @@ type Crypto struct {
 	export    *pii.Sealer
 	fpLookup  *pii.LookupHasher
 	ipLookup  *pii.LookupHasher
+	aadhaar   *pii.LookupHasher
 }
 
 // New builds the sealers and hashers. Every version is registered for every
@@ -150,6 +154,9 @@ func New(ctx context.Context, keys []VersionedKey, salt []byte) (*Crypto, error)
 		return nil, fmt.Errorf("%s rejected: %w", EnvLookupSalt, err)
 	}
 	if c.ipLookup, err = pii.NewLookupHasher(salt, LookupDomainIP, lowerTrim); err != nil {
+		return nil, fmt.Errorf("%s rejected: %w", EnvLookupSalt, err)
+	}
+	if c.aadhaar, err = pii.NewLookupHasher(salt, LookupDomainAadhaarSubject, trimOnly); err != nil {
 		return nil, fmt.Errorf("%s rejected: %w", EnvLookupSalt, err)
 	}
 	return c, nil
@@ -252,6 +259,18 @@ func (c *Crypto) IPLookup(ip string) (string, error) {
 		return "", ErrNotConfigured
 	}
 	return c.ipLookup.Hash(ip)
+}
+
+// AadhaarSubjectLookup is the keyed lookup hash of a DigiLocker subject id
+// (audit M1). An empty subject is refused: it would collide for everyone.
+func (c *Crypto) AadhaarSubjectLookup(subject string) (string, error) {
+	if c == nil {
+		return "", ErrNotConfigured
+	}
+	if strings.TrimSpace(subject) == "" {
+		return "", errors.New("aadhaar subject is empty")
+	}
+	return c.aadhaar.Hash(subject)
 }
 
 // OpenDeviceSignal opens a fingerprint or IP blob.

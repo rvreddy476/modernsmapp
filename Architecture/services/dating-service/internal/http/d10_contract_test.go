@@ -362,6 +362,8 @@ func TestD10Contracts(t *testing.T) {
 		user, candidate := uuid.New(), uuid.New()
 		seedD10Profile(t, st, user)
 		seedD10Profile(t, st, candidate)
+		// Audit H1: a stash is on someone in the caller's deck.
+		pairInDeck(t, st, user, candidate)
 		labels := map[uuid.UUID]string{user: "<user>", candidate: "<candidate>"}
 		assertContract(t, contractDo(r, http.MethodPost, "/v1/dating/stash", `{"candidate_id":"`+candidate.String()+`"}`, user),
 			http.StatusCreated, "stash_post_201", labels)

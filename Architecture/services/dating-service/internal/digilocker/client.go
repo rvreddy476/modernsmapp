@@ -30,6 +30,11 @@ type Assertion struct {
 	DocumentType string
 	// IssuedAt is the moment the partner reports the assertion was issued.
 	IssuedAt time.Time
+	// Subject is the partner's STABLE identifier for the person behind the
+	// Aadhaar (the same for every sign-in by that person, unlike Reference).
+	// Never stored: dating keeps only a keyed hash, to bind one Aadhaar to
+	// one account (audit M1). Never the Aadhaar number.
+	Subject string
 }
 
 // HashDocumentType returns the lowercase hex SHA-256 of the doc-type label.
@@ -70,6 +75,9 @@ func (m *MockClient) ExchangeCode(_ context.Context, code, _ string) (*Assertion
 		Reference:    "mock-ref-" + code,
 		DocumentType: "AADHAAR-XML",
 		IssuedAt:     time.Now().UTC(),
+		// One person per code, so two accounts using the same code look
+		// like the same Aadhaar.
+		Subject: "mock-subject-" + code,
 	}, nil
 }
 
@@ -120,6 +128,8 @@ type partnerExchangeResponse struct {
 	Reference    string `json:"reference"`
 	DocumentType string `json:"document_type"`
 	IssuedAt     string `json:"issued_at"`
+	// SubjectID is the partner's stable per-person id (audit M1).
+	SubjectID string `json:"subject_id"`
 	// NB: aadhaar_number is intentionally not represented here.
 }
 
@@ -178,5 +188,6 @@ func (h *HTTPClient) ExchangeCode(ctx context.Context, code, state string) (*Ass
 		Reference:    parsed.Reference,
 		DocumentType: docType,
 		IssuedAt:     issued,
+		Subject:      parsed.SubjectID,
 	}, nil
 }

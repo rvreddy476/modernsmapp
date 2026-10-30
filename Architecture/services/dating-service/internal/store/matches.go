@@ -342,7 +342,8 @@ func (s *Store) CloseMatch(ctx context.Context, matchID, closedBy uuid.UUID) err
 // CloseMatchWithReason is the match close path. It closes one open match
 // (status, closed_by, closed_at, close_reason) and returns the closed row.
 //
-//   - unmatch: also deletes the pair's sparks both ways.
+//   - unmatch: also deletes the pair's sparks both ways and enqueues
+//     dating.match.closed in dating.outbox_events (audit H2).
 //   - duplicate: closes only while another open match for the same pair
 //     remains (so the last open match is never closed) and keeps the sparks,
 //     which belong to the match that stays open.
@@ -381,6 +382,12 @@ func (s *Store) CloseMatchWithReason(ctx context.Context, matchID, closedBy uuid
 	}
 	if reason == CloseReasonUnmatch {
 		if _, err := deleteSparksBetween(ctx, tx, m.UserA, m.UserB); err != nil {
+			return nil, err
+		}
+		// Audit H2: dating.match.closed commits with the close, so chat
+		// closes the conversation even if the request dies after commit.
+		// (The duplicate cleanup publishes from beforeCommit instead.)
+		if err := enqueueMatchClosed(ctx, tx, m, closedBy, reason); err != nil {
 			return nil, err
 		}
 	}

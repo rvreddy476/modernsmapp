@@ -42,6 +42,8 @@ type selfieHTTPEnv struct {
 	svc  *service.Service
 	st   *store.Store
 	pool *pgxpool.Pool
+	// rg signs the admin-service tokens the review routes need (audit H3).
+	rg *adminTokenRig
 }
 
 func setupSelfieHTTP(t *testing.T) *selfieHTTPEnv {
@@ -73,8 +75,10 @@ func setupSelfieHTTP(t *testing.T) *selfieHTTPEnv {
 	svc.SetMediaClaims(newStubClaims())
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	New(svc).WithInternalKey(testInternalKey).RegisterRoutes(r)
-	return &selfieHTTPEnv{r: r, svc: svc, st: st, pool: pool}
+	rg := newAdminTokenRig(t)
+	New(svc).WithInternalKey(testInternalKey).WithServiceAuth(rg.v).RegisterRoutes(r)
+	rg.r = r
+	return &selfieHTTPEnv{r: r, svc: svc, st: st, pool: pool, rg: rg}
 }
 
 // closeSelfieReviewAtCleanup rejects the user's selfie review if it is still
@@ -165,6 +169,26 @@ func (e *selfieHTTPEnv) do(t *testing.T, method, path string, user uuid.UUID, sc
 	if scopes != "" {
 		req.Header.Set("X-Scopes", scopes)
 	}
+	w := httptest.NewRecorder()
+	e.r.ServeHTTP(w, req)
+	var out map[string]any
+	_ = json.Unmarshal(w.Body.Bytes(), &out)
+	return w.Code, out
+}
+
+// doAdmin calls an admin route as admin-service does for admin: a token for
+// dating:selfie.review whose acting admin is admin.
+func (e *selfieHTTPEnv) doAdmin(t *testing.T, method, path string, admin uuid.UUID, body any) (int, map[string]any) {
+	t.Helper()
+	payload := ""
+	if body != nil {
+		raw, _ := json.Marshal(body)
+		payload = string(raw)
+	}
+	req := httptest.NewRequest(method, path, strings.NewReader(payload))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Service-Key", testInternalKey)
+	req.Header.Set(ServiceAuthHeader, "Bearer "+e.rg.mint(t, e.rg.admin, AudienceDating, []string{PermSelfieReview}, admin.String()))
 	w := httptest.NewRecorder()
 	e.r.ServeHTTP(w, req)
 	var out map[string]any
@@ -288,13 +312,18 @@ func TestSelfieHTTP_ReviewQueueIsAdminOnly(t *testing.T) {
 	}
 	backdateSelfieReview(t, e.pool, user)
 	reviewPath := "/v1/dating/admin/verification/selfie/" + user.String() + "/review"
-	if code, _ := e.do(t, http.MethodGet, "/v1/dating/admin/verification/selfie/pending", user, "", nil); code != http.StatusForbidden {
+	if code, _ := e.do(t, http.MethodGet, "/v1/dating/admin/verification/selfie/pending", user, "", nil); code != http.StatusUnauthorized {
 		t.Fatalf("queue as a user: %d", code)
 	}
-	if code, _ := e.do(t, http.MethodPost, reviewPath, user, "user", map[string]string{"decision": "approve"}); code != http.StatusForbidden {
+	if code, _ := e.do(t, http.MethodPost, reviewPath, user, "user", map[string]string{"decision": "approve"}); code != http.StatusUnauthorized {
 		t.Fatalf("self-approval: %d", code)
 	}
-	code, env := e.do(t, http.MethodGet, "/v1/dating/admin/verification/selfie/pending?limit=200", admin, "moderator", nil)
+	// Audit H3: a consumer session with the moderator ladder scope is not
+	// an admin credential.
+	if code, _ := e.do(t, http.MethodPost, reviewPath, admin, "moderator", map[string]string{"decision": "approve"}); code != http.StatusUnauthorized {
+		t.Fatalf("consumer-session moderator approval: %d", code)
+	}
+	code, env := e.doAdmin(t, http.MethodGet, "/v1/dating/admin/verification/selfie/pending?limit=200", admin, nil)
 	if code != http.StatusOK {
 		t.Fatalf("queue as moderator: %d %v", code, env)
 	}
@@ -308,11 +337,11 @@ func TestSelfieHTTP_ReviewQueueIsAdminOnly(t *testing.T) {
 	if !found {
 		t.Fatalf("user missing from the review queue (or without blinks/instruction)")
 	}
-	code, env = e.do(t, http.MethodPost, reviewPath, admin, "moderator", map[string]string{"decision": "approve", "reason": "same person"})
+	code, env = e.doAdmin(t, http.MethodPost, reviewPath, admin, map[string]string{"decision": "approve", "reason": "same person"})
 	if code != http.StatusOK || dataOf(t, env)["profile_status"] != "active" {
 		t.Fatalf("approve: %d %v", code, env)
 	}
-	if code, env := e.do(t, http.MethodPost, reviewPath, admin, "moderator", map[string]string{"decision": "approve"}); code != http.StatusConflict || codeOf(env) != CodeSelfieNotPendingReview {
+	if code, env := e.doAdmin(t, http.MethodPost, reviewPath, admin, map[string]string{"decision": "approve"}); code != http.StatusConflict || codeOf(env) != CodeSelfieNotPendingReview {
 		t.Fatalf("second approve: %d %v", code, env)
 	}
 }

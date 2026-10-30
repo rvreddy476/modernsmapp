@@ -153,16 +153,14 @@ func (h *Handler) authorizeAdminToken(c *gin.Context, perms []string) bool {
 }
 
 // adminMay reports whether the admitted caller may take an action that needs
-// perm, answering 403 when not. A token caller may only do what its signed
-// scope names; the LEGACY scopes path has no per-permission detail and keeps
-// today's all-or-nothing admin reach.
+// perm, answering 403 when not. A caller may only do what its signed token
+// scope names. A request that reached a handler without admitted token
+// permissions (no admin gate ran) may do nothing: fail closed.
 func adminMay(c *gin.Context, perm string) bool {
-	v, ok := c.Get(ctxAdminTokenPerms)
-	if !ok {
-		return true
-	}
-	if granted, _ := v.(map[string]bool); granted[perm] {
-		return true
+	if v, ok := c.Get(ctxAdminTokenPerms); ok {
+		if granted, _ := v.(map[string]bool); granted[perm] {
+			return true
+		}
 	}
 	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, CodeAdminPermissionScope,
 		"the token does not carry the permission this action requires", gin.H{"required": perm})

@@ -25,6 +25,20 @@ const (
 	ShareRecipientMatch          = "match"
 )
 
+// liveShareRecipientPredicate is true while the share's recipient is still
+// someone the sharer may share with: always for a trusted contact, and for a
+// match only while the pair has an open match (audit 2026-10-30 M2). The
+// close itself also stops the share (trigger
+// dating_matches_stop_location_shares, setup.sql); this read-side check
+// covers rows from before the trigger and any path that bypasses it.
+func liveShareRecipientPredicate(alias string) string {
+	return `(` + alias + `.recipient_kind <> '` + ShareRecipientMatch + `' OR EXISTS (
+            SELECT 1 FROM dating_matches lsm
+            WHERE lsm.user_a = LEAST(` + alias + `.user_id, ` + alias + `.recipient_id)
+              AND lsm.user_b = GREATEST(` + alias + `.user_id, ` + alias + `.recipient_id)
+              AND lsm.status IN ` + openMatchStatuses + `))`
+}
+
 // ErrLocationShareNotFound is returned when a share is missing, not the
 // caller's, expired or stopped. One answer for all of them.
 var ErrLocationShareNotFound = errors.New("not_found: location share not found")
@@ -129,8 +143,9 @@ func (s *Store) CreateLocationShare(ctx context.Context, userID, recipientID uui
 }
 
 // GetLocationShareForRecipient returns the share with its point only to its
-// recipient, only while unexpired and not stopped, and only while the pair
-// is not blocked either way.
+// recipient, only while unexpired and not stopped, only while the pair is
+// not blocked either way, and, for a share to a match, only while the pair
+// still has an open match.
 func (s *Store) GetLocationShareForRecipient(ctx context.Context, shareID, recipientID uuid.UUID) (*LocationShare, error) {
 	if shareID == uuid.Nil || recipientID == uuid.Nil {
 		return nil, ErrLocationShareNotFound
@@ -142,6 +157,7 @@ func (s *Store) GetLocationShareForRecipient(ctx context.Context, shareID, recip
           AND ls.stopped_at IS NULL
           AND ls.expires_at > now()
           AND (ls.location_sealed IS NOT NULL OR (ls.latitude IS NOT NULL AND ls.longitude IS NOT NULL))
+          AND `+liveShareRecipientPredicate("ls")+`
           AND NOT `+blockedPairPredicate("ls.user_id", "ls.recipient_id"), shareID, recipientID))
 }
 
@@ -195,6 +211,7 @@ func (s *Store) ListActiveSharesByUser(ctx context.Context, userID uuid.UUID) ([
         WHERE ls.user_id = $1
           AND ls.stopped_at IS NULL
           AND ls.expires_at > now()
+          AND `+liveShareRecipientPredicate("ls")+`
           AND NOT `+blockedPairPredicate("ls.user_id", "ls.recipient_id")+`
         ORDER BY ls.expires_at DESC
         LIMIT 100`, userID)
@@ -214,6 +231,7 @@ func (s *Store) ListActiveSharesForRecipient(ctx context.Context, recipientID uu
           AND ls.stopped_at IS NULL
           AND ls.expires_at > now()
           AND (ls.location_sealed IS NOT NULL OR (ls.latitude IS NOT NULL AND ls.longitude IS NOT NULL))
+          AND `+liveShareRecipientPredicate("ls")+`
           AND NOT `+blockedPairPredicate("ls.user_id", "ls.recipient_id")+`
         ORDER BY ls.expires_at DESC
         LIMIT 100`, recipientID)

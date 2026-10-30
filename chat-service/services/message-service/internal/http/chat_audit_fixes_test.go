@@ -123,6 +123,7 @@ func TestServiceErrorsMapToStatusAndCodeAtTheRoutes(t *testing.T) {
 		{service.ErrAwaitingRequestAcceptance, http.StatusConflict, "AWAITING_REQUEST_ACCEPTANCE"},
 		{service.ErrMessagingNotAllowed, http.StatusForbidden, "MESSAGING_NOT_ALLOWED"},
 		{service.ErrMatchClosed, http.StatusConflict, "MATCH_CLOSED"},
+		{service.ErrMatchOnHold, http.StatusConflict, "MATCH_ON_HOLD"}, // dating audit H2: reversible review hold
 		{service.ErrNotPermittedRole, http.StatusForbidden, "FORBIDDEN"},
 		{service.ErrIdempotencyInProgress, http.StatusConflict, "IDEMPOTENCY_IN_PROGRESS"},
 		{fmt.Errorf("%w: text exceeds 2000 characters", service.ErrInvalidMessageContent), http.StatusBadRequest, "BAD_REQUEST"},

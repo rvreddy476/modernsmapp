@@ -236,7 +236,32 @@ func (s *Service) ComputeRisk(ctx context.Context, userID uuid.UUID) (*store.Acc
 	if err := s.store.UpsertAccountRisk(ctx, row); err != nil {
 		return nil, err
 	}
+	s.afterRiskEvaluated(ctx, userID, level)
 	return row, nil
+}
+
+// riskLevelHidesFromDiscovery reports whether a risk level keeps the account
+// out of other people's decks (store FetchCandidates' risk filter).
+func riskLevelHidesFromDiscovery(level string) bool {
+	switch level {
+	case store.RiskLevelHideFromDiscovery, store.RiskLevelChatHold,
+		store.RiskLevelAdminReview, store.RiskLevelSuspend:
+		return true
+	}
+	return false
+}
+
+// afterRiskEvaluated drops every cached deck that shows the user once their
+// level hides them from discovery (audit 2026-10-30 L1). With deck refill off
+// a cached deck is served for up to a day without re-filtering, so without
+// this an escalated account stayed in others' decks until the cache expired.
+// Run on every evaluation at a hiding level (not only the crossing): it is a
+// reverse-index read that finds nothing once the decks are gone, and it also
+// repairs an invalidation that failed on an earlier pass.
+func (s *Service) afterRiskEvaluated(ctx context.Context, userID uuid.UUID, level string) {
+	if riskLevelHidesFromDiscovery(level) {
+		s.InvalidateDecksForCandidate(ctx, userID)
+	}
 }
 
 // GetUserRiskLevel is the cheap lookup other code paths call before

@@ -631,14 +631,17 @@ func (s *Service) GetPulseNebulaPassed(ctx context.Context, viewerID uuid.UUID, 
 		matched = map[uuid.UUID]struct{}{}
 	}
 
-	cands := make([]*store.CandidateProfile, 0, len(passes))
-	ids := make([]uuid.UUID, 0, len(passes))
+	// Audit L3: one query for the page, not one per pass.
+	passed := make([]uuid.UUID, 0, len(passes))
 	for _, p := range passes {
-		c, err := s.store.GetCandidateForViewer(ctx, viewerID, p.CandidateID)
-		if err != nil || c == nil {
-			continue
-		}
-		cands = append(cands, c)
+		passed = append(passed, p.CandidateID)
+	}
+	cands, err := s.store.GetCandidatesForViewer(ctx, viewerID, passed)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]uuid.UUID, 0, len(cands))
+	for _, c := range cands {
 		ids = append(ids, c.UserID)
 	}
 	prompts, photos := s.detailFor(ctx, ids)
@@ -678,7 +681,9 @@ func (s *Service) PassCandidate(ctx context.Context, viewerID, candidateID uuid.
 }
 
 // PassCandidateFrom is a pass from a named surface; only a deck pass spends a
-// deck card.
+// deck card. Refused with ErrCandidateUnavailable unless the candidate is
+// actionable for the viewer (audit H1), and with ErrUnderage for a caller
+// who is not a verified adult.
 func (s *Service) PassCandidateFrom(ctx context.Context, viewerID, candidateID uuid.UUID, reason, source string) (*PassResult, error) {
 	isDeck, ok := deckSource(source)
 	if !ok {
@@ -693,6 +698,15 @@ func (s *Service) PassCandidateFrom(ctx context.Context, viewerID, candidateID u
 	if len(reason) > MaxPassReasonLen {
 		return nil, ErrPassReasonTooLong
 	}
+	// Audit H1: a pass is an action on someone the caller was shown, not on
+	// any user id. The caller must be an adult with a profile, and the
+	// candidate someone they may act on (requireActionableCandidate).
+	if err := s.requireAdult(ctx, viewerID); err != nil {
+		return nil, err
+	}
+	if err := s.requirePassable(ctx, viewerID, candidateID); err != nil {
+		return nil, err
+	}
 	passedAt, err := s.store.RecordPass(ctx, viewerID, candidateID, reason)
 	if err != nil {
 		return nil, err
@@ -706,6 +720,37 @@ func (s *Service) PassCandidateFrom(ctx context.Context, viewerID, candidateID u
 		CandidateID:   candidateID,
 		CooldownUntil: passedAt.Add(store.PassCooldown).UTC(),
 	}, nil
+}
+
+// requirePassable: the candidate must be actionable for the viewer, or the
+// viewer's pass on them must already stand — the pass removed them from the
+// deck, and a client retry of the same pass is answered the same way.
+func (s *Service) requirePassable(ctx context.Context, viewerID, candidateID uuid.UUID) error {
+	standing, err := s.store.HasStandingPass(ctx, viewerID, candidateID)
+	if err != nil {
+		return err
+	}
+	if standing {
+		return nil
+	}
+	return s.requireActionableCandidate(ctx, viewerID, candidateID)
+}
+
+// requireActionableCandidate is the gate for an action keyed by a candidate
+// id (pass, stash): the candidate must be someone the viewer was actually
+// served or can otherwise see — canViewPerson: in their current deck or
+// picks, an open match, or an incoming spark they may see. Anything else,
+// a missing profile included, is the one ErrCandidateUnavailable (404), so
+// the action can never be used to probe for a profile.
+func (s *Service) requireActionableCandidate(ctx context.Context, viewerID, candidateID uuid.UUID) error {
+	ok, err := s.canViewPerson(ctx, viewerID, candidateID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrCandidateUnavailable
+	}
+	return nil
 }
 
 // removeFromCachedDeck rewrites the viewer's cached deck without the

@@ -557,6 +557,10 @@ func (s *Store) PurgeUserDataWithOutcome(ctx context.Context, userID uuid.UUID) 
 	if err := exec(`DELETE FROM dating_sparks   WHERE from_user_id = $1 OR to_user_id = $1`, userID); err != nil {
 		return nil, err
 	}
+	// Audit L2: mutual-spark retry markers for the pair go with the sparks.
+	if err := exec(`DELETE FROM dating_pending_matches WHERE user_a = $1 OR user_b = $1`, userID); err != nil {
+		return nil, err
+	}
 	if err := exec(`DELETE FROM dating_stashes  WHERE user_id = $1`, userID); err != nil {
 		return nil, err
 	}

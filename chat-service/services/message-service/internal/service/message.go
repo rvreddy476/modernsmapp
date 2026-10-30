@@ -316,6 +316,11 @@ type Service struct {
 	// conversations' first messages (Dating lane D4).
 	datingServiceURL string
 	httpClient       *http.Client
+	// datingMatchState answers whether a dating match's members may still
+	// chat (dating backend audit H2 send gate, dating_match_gate.go); nil
+	// asks dating-service over HTTP. datingStates caches the answers.
+	datingMatchState datingMatchStateChecker
+	datingStates     datingMatchStateCache
 
 	// Chat parity (lane B1). nowFn pins the clock in tests; searchServiceURL
 	// empty means /v1/chat/search returns no people or messages;
@@ -1123,8 +1128,16 @@ func (s *Service) contentGates(ctx context.Context, userID, conversationID uuid.
 	if err != nil {
 		return nil, err
 	}
-	if meta != nil && meta.SourceApp == "dating" && meta.ClosedAt != nil {
-		return nil, ErrMatchClosed
+	if meta != nil && meta.SourceApp == "dating" {
+		if meta.ClosedAt != nil {
+			return nil, ErrMatchClosed
+		}
+		// Audit H2: closed_at waits on an event. Until it lands, dating's
+		// authoritative state decides (suspension, chat hold, deletion,
+		// block, unmatch), through a short cache; it fails closed.
+		if err := s.requireOpenDatingMatch(ctx, meta.MatchID); err != nil {
+			return nil, err
+		}
 	}
 	// Direct-recipient pause (P0-1 correction): look up the other member's
 	// projected policy. Lookup errors propagate — swallowing them turned a

@@ -479,11 +479,11 @@ func (s *Service) MeetCheckInAt(ctx context.Context, meetID, userID uuid.UUID, s
 // Block records the dating_blocks row and severs the pair in the same
 // transaction (open match closed, sparks and stashes deleted both ways),
 // clears both users' deck caches, propagates to graph-service (best
-// effort), and emits the block events plus dating.match.closed for each
-// match it closed. Unblocking restores nothing.
+// effort), and emits dating.block.created. dating.user.blocked and
+// dating.match.closed for each closed match commit with the block through
+// the outbox (audit H2). Unblocking restores nothing.
 func (s *Service) Block(ctx context.Context, userID, targetID uuid.UUID) error {
-	outcome, err := s.store.BlockUserAndSever(ctx, userID, targetID)
-	if err != nil {
+	if _, err := s.store.BlockUserAndSever(ctx, userID, targetID); err != nil {
 		return err
 	}
 	// Lane D3: either deck may hold the other user for up to 24h. Drop
@@ -507,20 +507,11 @@ func (s *Service) Block(ctx context.Context, userID, targetID uuid.UUID) error {
 		if perr := s.producer.PublishBlockCreated(ctx, userID, targetID); perr != nil {
 			slog.Error("publish block.created failed; row persisted", "user_id", userID, "error", perr)
 		}
-		// Phase 1 — chat-service listens for dating.user.blocked to
-		// sever any existing dating_match conversation between the
-		// pair. Persist already succeeded; failure here is logged.
-		if perr := s.producer.PublishUserBlocked(ctx, userID, targetID); perr != nil {
-			slog.Error("publish user.blocked failed; row persisted", "user_id", userID, "error", perr)
-		}
-		// Lane D3: chat-service closes the dating conversation on
-		// dating.match.closed by match_id (dating_consumer.go).
-		for _, m := range outcome.ClosedMatches {
-			if perr := s.producer.PublishMatchClosed(ctx, m.ID, userID, m.UserA, m.UserB); perr != nil {
-				slog.Error("publish match.closed after block failed; match closed", "match_id", m.ID, "error", perr)
-			}
-		}
 	}
+	// dating.user.blocked and dating.match.closed (which chat-service
+	// closes the pair's conversations on) were enqueued in the block's own
+	// transaction (store.BlockUserAndSever, audit H2) and are relayed from
+	// dating.outbox_events; nothing here can lose them.
 	return nil
 }
 

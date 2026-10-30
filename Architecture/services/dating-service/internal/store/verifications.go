@@ -19,6 +19,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // Verification is one row of dating_verifications.
@@ -85,7 +86,9 @@ func (s *Store) RecordSelfieAttempt(ctx context.Context, userID uuid.UUID, score
 	return nil
 }
 
-// RecordAadhaarVerification persists the DigiLocker outcome for userID.
+// RecordAadhaarVerification persists the DigiLocker outcome for userID
+// WITHOUT binding it to a person. Fixtures and data repair only: the live
+// flow uses BindAadhaarVerification (audit M1).
 //
 // DPDP Act compliant — see PULSE_DATING_SPEC.md §15.8
 // digilockerRef is the opaque partner assertion id; docTypeHash is the
@@ -114,6 +117,63 @@ func (s *Store) RecordAadhaarVerification(ctx context.Context, userID uuid.UUID,
 		return fmt.Errorf("record aadhaar verification: %w", err)
 	}
 	return nil
+}
+
+// ErrAadhaarAlreadyLinked: the DigiLocker subject already verifies another
+// dating account (audit M1). Maps to 409 AADHAAR_ALREADY_LINKED.
+var ErrAadhaarAlreadyLinked = errors.New("conflict: this Aadhaar already verifies another account")
+
+// aadhaarSubjectIndex is the unique index that binds one subject to one
+// account (setup.sql).
+const aadhaarSubjectIndex = "uq_dating_verifications_aadhaar_subject"
+
+// BindAadhaarVerification is RecordAadhaarVerification for the live
+// DigiLocker flow (audit M1): it also stores the keyed lookup hash of the
+// partner's stable subject id — never the id, never the Aadhaar number — so
+// one Aadhaar can mark one account 'aadhaar'. A subject that already
+// verifies another account is ErrAadhaarAlreadyLinked and nothing is
+// written; the same account verifying again with the same subject is fine.
+// Without the PII keys it is ErrPIINotConfigured (fail closed).
+func (s *Store) BindAadhaarVerification(ctx context.Context, userID uuid.UUID, digilockerRef, docTypeHash, subject string) error {
+	if userID == uuid.Nil {
+		return fmt.Errorf("invalid: user_id required")
+	}
+	if digilockerRef == "" || docTypeHash == "" {
+		return fmt.Errorf("invalid: digilocker_ref and doc_type_hash required")
+	}
+	if subject == "" {
+		return fmt.Errorf("invalid: the DigiLocker assertion carries no subject")
+	}
+	if s.pii == nil {
+		return ErrPIINotConfigured
+	}
+	subjectHash, err := s.pii.AadhaarSubjectLookup(subject)
+	if err != nil {
+		return fmt.Errorf("hash aadhaar subject: %w", err)
+	}
+	_, err = s.db.Exec(ctx, `
+        INSERT INTO dating_verifications (user_id, aadhaar_status, aadhaar_at, digilocker_ref, doc_type_hash, aadhaar_subject_hash)
+        VALUES ($1, 'verified', now(), $2, $3, $4)
+        ON CONFLICT (user_id) DO UPDATE
+            SET aadhaar_status       = 'verified',
+                aadhaar_at           = now(),
+                digilocker_ref       = EXCLUDED.digilocker_ref,
+                doc_type_hash        = EXCLUDED.doc_type_hash,
+                aadhaar_subject_hash = EXCLUDED.aadhaar_subject_hash`,
+		userID, digilockerRef, docTypeHash, subjectHash)
+	if isUniqueViolation(err, aadhaarSubjectIndex) {
+		return ErrAadhaarAlreadyLinked
+	}
+	if err != nil {
+		return fmt.Errorf("bind aadhaar verification: %w", err)
+	}
+	return nil
+}
+
+// isUniqueViolation reports whether err is a unique violation on index.
+func isUniqueViolation(err error, index string) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == index
 }
 
 // GetVerification fetches a row or returns ErrVerificationNotFound.

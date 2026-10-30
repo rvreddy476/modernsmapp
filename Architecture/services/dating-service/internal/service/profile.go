@@ -17,6 +17,14 @@ import (
 // PRODUCTION_GAP_ANALYSIS.md — adult-only platform.
 var ErrUnderage = errors.New("dating requires a verified birth date and age 18+")
 
+// ErrIdentityDOBRequired (audit L4): identity holds no birth date for the
+// user, so there is nothing trusted to gate on — a client-supplied birth
+// date is never accepted while an identity reader is configured. It is an
+// ErrUnderage (errors.Is) for every caller that only asks "adult or not";
+// the HTTP layer answers 403 IDENTITY_DOB_REQUIRED so the app can send the
+// user to add their birth date to their account instead of a dating form.
+var ErrIdentityDOBRequired = fmt.Errorf("%w: add your birth date to your account first", ErrUnderage)
+
 // ErrProfileRestricted is returned when a moderator-restricted profile
 // attempts to take an outbound action (new spark, new chat). The
 // "forbidden:" prefix maps to a 403 in the HTTP layer. §P1-1.
@@ -78,6 +86,11 @@ type IdentityBasicsClient interface {
 // SetIdentityBasicsClient wires the identity reader.
 func (s *Service) SetIdentityBasicsClient(c IdentityBasicsClient) {
 	s.identityClient = c
+	// Audit L4: with identity wired, discovery admits identity birth dates
+	// only, the same rule requireAdult applies to the actor.
+	if s.store != nil {
+		s.store.SetRequireIdentityDOB(c != nil)
+	}
 }
 
 // requireAdult returns ErrUnderage when the user's profile is missing
@@ -91,6 +104,12 @@ func (s *Service) requireAdult(ctx context.Context, userID uuid.UUID) error {
 	}
 	if p == nil || p.BirthDate == nil {
 		return ErrUnderage
+	}
+	// Audit L4: with an identity reader configured, only identity's birth
+	// date counts. A legacy client-supplied one (the old interim rule) is
+	// replaced by identity's on the user's next profile save, or refused.
+	if !s.trustsBirthDateSource(p.DOBSource) {
+		return ErrIdentityDOBRequired
 	}
 	if ageYears(*p.BirthDate, time.Now()) < MinDatingAgeYears {
 		return ErrUnderage
@@ -286,7 +305,9 @@ func (s *Service) UpsertProfile(ctx context.Context, userID uuid.UUID, p store.U
 		prior = nil
 	}
 
-	dobLocked := prior != nil && prior.BirthDate != nil
+	// A birth date on file is locked only when it is one this deployment
+	// trusts (audit L4: with an identity reader, identity's only).
+	dobLocked := prior != nil && prior.BirthDate != nil && s.trustsBirthDateSource(prior.DOBSource)
 	identity, err := s.identityBasicsFor(ctx, userID, dobLocked)
 	if err != nil {
 		return nil, err
@@ -294,8 +315,11 @@ func (s *Service) UpsertProfile(ctx context.Context, userID uuid.UUID, p store.U
 
 	// P0-5: the profile needs an 18+ birth date. Refused before anything
 	// is written.
-	dob, dobSource := effectiveBirthDate(prior, p.BirthDate, identity)
+	dob, dobSource := effectiveBirthDate(prior, p.BirthDate, identity, s.identityClient != nil)
 	if dob == nil {
+		if s.identityClient != nil {
+			return nil, ErrIdentityDOBRequired
+		}
 		return nil, ErrUnderage
 	}
 	if ageYears(*dob, time.Now()) < MinDatingAgeYears {
@@ -385,10 +409,25 @@ func (s *Service) restrictUnderageProfile(ctx context.Context, userID uuid.UUID,
 	return ErrUnderage
 }
 
+// trustsBirthDateSource reports whether a birth date stored with source may
+// gate: any source in local/dev without an identity reader (the interim
+// client rule), identity's sources only otherwise (audit L4).
+func (s *Service) trustsBirthDateSource(source *string) bool {
+	if s.identityClient == nil {
+		return true
+	}
+	return source != nil && store.IsIdentityBirthDateSource(*source)
+}
+
 // effectiveBirthDate picks the birth date to gate on and where to write it
 // from. An empty source means nothing is written (a birth date already on
 // file is locked). identity is nil when there is no identity answer.
-func effectiveBirthDate(prior *store.Profile, client *time.Time, identity *IdentityBasics) (*time.Time, string) {
+//
+// requireIdentity (an identity reader is configured, i.e. every deployment
+// but local/dev without one; audit L4): a client birth date is never used,
+// and a birth date on file counts only when identity supplied it. Without
+// an identity birth date the result is nil and the caller refuses.
+func effectiveBirthDate(prior *store.Profile, client *time.Time, identity *IdentityBasics, requireIdentity bool) (*time.Time, string) {
 	if identity != nil && identity.Found && identity.BirthDate != nil {
 		d := *identity.BirthDate
 		switch identity.DOBSource {
@@ -397,6 +436,12 @@ func effectiveBirthDate(prior *store.Profile, client *time.Time, identity *Ident
 		case IdentityDOBSourceProfile:
 			return &d, store.BasicsSourceIdentityProfile
 		}
+	}
+	if requireIdentity {
+		if prior != nil && prior.BirthDate != nil && prior.DOBSource != nil && store.IsIdentityBirthDateSource(*prior.DOBSource) {
+			return prior.BirthDate, ""
+		}
+		return nil, ""
 	}
 	if prior != nil && prior.BirthDate != nil {
 		return prior.BirthDate, ""

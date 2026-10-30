@@ -8,6 +8,53 @@
 -- gen_random_bytes (profile cohort_salt) and gen_random_uuid come from pgcrypto.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
+-- Audit 2026-10-30 M4: this script runs at boot, so it must not take heavy
+-- locks on hot tables when nothing changed. database.BootstrapSchema runs it
+-- under dating-service's migrationrunner advisory lock (one replica or worker
+-- binary at a time), skips it entirely when its sha256 matches
+-- dating_schema_bootstrap, and otherwise applies it in one transaction with
+-- SET LOCAL lock_timeout = 5s. Inside it:
+--   - CHECK constraints go through dating_ensure_check_constraint, which
+--     re-adds one only when it is missing or its expression changed, and then
+--     NOT VALID (no scan under the ACCESS EXCLUSIVE lock); BootstrapSchema
+--     validates it after the commit, which takes only SHARE UPDATE EXCLUSIVE;
+--   - triggers and NOT NULLs are changed only when the catalog differs;
+--   - one-off backfills run only when a row needs them (DO ... IF EXISTS).
+-- dating_schema_bootstrap_guard_test.go keeps the unguarded forms out.
+
+-- dating_ensure_check_constraint (re)creates a CHECK constraint only when it
+-- is missing or its expression changed. The applied expression's md5 is kept
+-- as the constraint's comment; an existing constraint without that comment
+-- (one added before this guard) is re-added once, NOT VALID, and tagged.
+CREATE OR REPLACE FUNCTION dating_ensure_check_constraint(p_table regclass, p_name name, p_check text)
+RETURNS void AS $$
+DECLARE
+    v_oid oid;
+    v_tag text := 'setup.sql:' || md5(p_check);
+BEGIN
+    SELECT oid INTO v_oid FROM pg_constraint WHERE conrelid = p_table AND conname = p_name;
+    IF FOUND AND obj_description(v_oid, 'pg_constraint') IS NOT DISTINCT FROM v_tag THEN
+        RETURN;
+    END IF;
+    IF FOUND THEN
+        EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', p_table, p_name);
+    END IF;
+    EXECUTE format('ALTER TABLE %s ADD CONSTRAINT %I CHECK (%s) NOT VALID', p_table, p_name, p_check);
+    EXECUTE format('COMMENT ON CONSTRAINT %I ON %s IS %L', p_name, p_table, v_tag);
+END;
+$$ LANGUAGE plpgsql;
+
+-- dating_drop_constraint_if_present drops a constraint only when the catalog
+-- has it, so a boot that finds it gone takes no table lock.
+CREATE OR REPLACE FUNCTION dating_drop_constraint_if_present(p_table regclass, p_name name)
+RETURNS void AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = p_table AND conname = p_name) THEN
+        EXECUTE format('ALTER TABLE %s DROP CONSTRAINT %I', p_table, p_name);
+    END IF;
+END;
+$$ LANGUAGE plpgsql;
+
 -- ---------------------------------------------------------------------------
 -- Profiles
 -- ---------------------------------------------------------------------------
@@ -517,30 +564,16 @@ ALTER TABLE dating_profiles
 CREATE INDEX IF NOT EXISTS idx_dating_profiles_status_active
     ON dating_profiles(profile_status) WHERE profile_status = 'active';
 
--- §P1-1: re-assert the CHECK constraint on every boot. The
--- ADD COLUMN IF NOT EXISTS above is a no-op once the column exists,
--- which means deployed databases initialised before 'pending_review'
--- was added to the IN-list still carry the older constraint. Drop +
--- re-add (named explicitly) is idempotent and cheap.
-DO $$
-BEGIN
-    -- Postgres auto-generates the constraint name as
-    -- dating_profiles_profile_status_check when the CHECK is declared
-    -- inline. Drop it (IF EXISTS — safe on fresh installs and on
-    -- environments that already have the named constraint) and re-add
-    -- under a stable name so the next boot is a true no-op.
-    ALTER TABLE dating_profiles
-        DROP CONSTRAINT IF EXISTS dating_profiles_profile_status_check;
-    ALTER TABLE dating_profiles
-        DROP CONSTRAINT IF EXISTS dating_profiles_status_chk;
-    ALTER TABLE dating_profiles
-        ADD CONSTRAINT dating_profiles_status_chk
-        CHECK (profile_status IN
-          ('draft','pending_photo','pending_selfie','pending_review',
-           'active','paused','restricted','suspended','deleted'));
-EXCEPTION WHEN duplicate_object THEN
-    NULL;
-END $$;
+-- §P1-1: the CHECK constraint under a stable name. The ADD COLUMN IF NOT
+-- EXISTS above is a no-op once the column exists, so databases initialised
+-- before 'pending_review' was added to the IN-list still carry the older
+-- inline constraint (auto-named dating_profiles_profile_status_check); it is
+-- dropped when present. Audit M4: both steps touch the table only when the
+-- catalog differs, so an unchanged boot takes no lock on dating_profiles.
+SELECT dating_ensure_check_constraint('dating_profiles', 'dating_profiles_status_chk', $chk$
+    profile_status IN ('draft','pending_photo','pending_selfie','pending_review',
+                       'active','paused','restricted','suspended','deleted')$chk$);
+SELECT dating_drop_constraint_if_present('dating_profiles', 'dating_profiles_profile_status_check');
 
 -- ---------------------------------------------------------------------------
 -- Lane D2 — guarded status machine + identity-sourced basics.
@@ -557,21 +590,12 @@ END $$;
 ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS prior_status      TEXT;
 ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS dob_source        TEXT;
 ALTER TABLE dating_profiles ADD COLUMN IF NOT EXISTS first_name_source TEXT;
-DO $$
-BEGIN
-    ALTER TABLE dating_profiles DROP CONSTRAINT IF EXISTS dating_profiles_prior_status_chk;
-    ALTER TABLE dating_profiles ADD CONSTRAINT dating_profiles_prior_status_chk
-        CHECK (prior_status IS NULL OR prior_status IN ('draft','pending_photo','pending_selfie','active'));
-    ALTER TABLE dating_profiles DROP CONSTRAINT IF EXISTS dating_profiles_dob_source_chk;
-    ALTER TABLE dating_profiles ADD CONSTRAINT dating_profiles_dob_source_chk
-        CHECK (dob_source IS NULL OR dob_source IN
-               ('identity','identity_registration','identity_profile','client'));
-    ALTER TABLE dating_profiles DROP CONSTRAINT IF EXISTS dating_profiles_first_name_source_chk;
-    ALTER TABLE dating_profiles ADD CONSTRAINT dating_profiles_first_name_source_chk
-        CHECK (first_name_source IS NULL OR first_name_source IN ('identity','client'));
-EXCEPTION WHEN duplicate_object THEN
-    NULL;
-END $$;
+SELECT dating_ensure_check_constraint('dating_profiles', 'dating_profiles_prior_status_chk', $chk$
+    prior_status IS NULL OR prior_status IN ('draft','pending_photo','pending_selfie','active')$chk$);
+SELECT dating_ensure_check_constraint('dating_profiles', 'dating_profiles_dob_source_chk', $chk$
+    dob_source IS NULL OR dob_source IN ('identity','identity_registration','identity_profile','client')$chk$);
+SELECT dating_ensure_check_constraint('dating_profiles', 'dating_profiles_first_name_source_chk', $chk$
+    first_name_source IS NULL OR first_name_source IN ('identity','client')$chk$);
 
 -- The onboarding step the database evidence supports. The transition writer
 -- refuses an onboarding step beyond it:
@@ -615,46 +639,91 @@ $fn$;
 -- (suspended ones included) to 'paused'; both are gone.
 --
 -- (1) soft-deleted rows are 'deleted'.
-UPDATE dating_profiles SET profile_status = 'deleted'
-    WHERE deleted_at IS NOT NULL AND profile_status <> 'deleted';
+DO $bf$
+BEGIN
+    IF EXISTS (SELECT 1 FROM dating_profiles WHERE deleted_at IS NOT NULL AND profile_status <> 'deleted') THEN
+        UPDATE dating_profiles SET profile_status = 'deleted'
+            WHERE deleted_at IS NOT NULL AND profile_status <> 'deleted';
+    END IF;
+END $bf$;
 -- (2) a legacy pause flag on an onboarding/active row becomes 'paused',
 --     remembering the step.
-UPDATE dating_profiles SET prior_status = profile_status, profile_status = 'paused'
-    WHERE paused AND deleted_at IS NULL
-      AND profile_status IN ('draft','pending_photo','pending_selfie','active');
+DO $bf$
+BEGIN
+    IF EXISTS (SELECT 1 FROM dating_profiles WHERE paused AND deleted_at IS NULL
+                  AND profile_status IN ('draft','pending_photo','pending_selfie','active')) THEN
+        UPDATE dating_profiles SET prior_status = profile_status, profile_status = 'paused'
+            WHERE paused AND deleted_at IS NULL
+              AND profile_status IN ('draft','pending_photo','pending_selfie','active');
+    END IF;
+END $bf$;
 -- (3) a 'paused' status always carries the flag.
-UPDATE dating_profiles SET paused = true
-    WHERE profile_status = 'paused' AND NOT paused;
+DO $bf$
+BEGIN
+    IF EXISTS (SELECT 1 FROM dating_profiles WHERE profile_status = 'paused' AND NOT paused) THEN
+        UPDATE dating_profiles SET paused = true
+            WHERE profile_status = 'paused' AND NOT paused;
+    END IF;
+END $bf$;
 -- (4) unsafe legacy activation: an 'active' step without an approved primary
 --     photo or a passed selfie goes back to the step its evidence supports.
-UPDATE dating_profiles p SET profile_status = dating_onboarding_step(p.user_id)
-    WHERE p.profile_status = 'active'
-      AND (NOT EXISTS (SELECT 1 FROM dating_photos ph WHERE ph.user_id = p.user_id
-                         AND ph.is_primary AND ph.moderation_status = 'approved')
-           OR NOT EXISTS (SELECT 1 FROM dating_verifications v WHERE v.user_id = p.user_id
-                         AND v.selfie_status = 'passed'));
-UPDATE dating_profiles p SET prior_status = dating_onboarding_step(p.user_id)
-    WHERE p.prior_status = 'active'
-      AND (NOT EXISTS (SELECT 1 FROM dating_photos ph WHERE ph.user_id = p.user_id
-                         AND ph.is_primary AND ph.moderation_status = 'approved')
-           OR NOT EXISTS (SELECT 1 FROM dating_verifications v WHERE v.user_id = p.user_id
-                         AND v.selfie_status = 'passed'));
+DO $bf$
+BEGIN
+    IF EXISTS (SELECT 1 FROM dating_profiles p WHERE p.profile_status = 'active'
+                  AND (NOT EXISTS (SELECT 1 FROM dating_photos ph WHERE ph.user_id = p.user_id
+                  AND ph.is_primary AND ph.moderation_status = 'approved')
+                  OR NOT EXISTS (SELECT 1 FROM dating_verifications v WHERE v.user_id = p.user_id
+                  AND v.selfie_status = 'passed'))) THEN
+        UPDATE dating_profiles p SET profile_status = dating_onboarding_step(p.user_id)
+            WHERE p.profile_status = 'active'
+              AND (NOT EXISTS (SELECT 1 FROM dating_photos ph WHERE ph.user_id = p.user_id
+                                 AND ph.is_primary AND ph.moderation_status = 'approved')
+                   OR NOT EXISTS (SELECT 1 FROM dating_verifications v WHERE v.user_id = p.user_id
+                                 AND v.selfie_status = 'passed'));
+    END IF;
+END $bf$;
+DO $bf$
+BEGIN
+    IF EXISTS (SELECT 1 FROM dating_profiles p WHERE p.prior_status = 'active'
+                  AND (NOT EXISTS (SELECT 1 FROM dating_photos ph WHERE ph.user_id = p.user_id
+                  AND ph.is_primary AND ph.moderation_status = 'approved')
+                  OR NOT EXISTS (SELECT 1 FROM dating_verifications v WHERE v.user_id = p.user_id
+                  AND v.selfie_status = 'passed'))) THEN
+        UPDATE dating_profiles p SET prior_status = dating_onboarding_step(p.user_id)
+            WHERE p.prior_status = 'active'
+              AND (NOT EXISTS (SELECT 1 FROM dating_photos ph WHERE ph.user_id = p.user_id
+                                 AND ph.is_primary AND ph.moderation_status = 'approved')
+                   OR NOT EXISTS (SELECT 1 FROM dating_verifications v WHERE v.user_id = p.user_id
+                                 AND v.selfie_status = 'passed'));
+    END IF;
+END $bf$;
 -- (5) paused/held rows with no remembered step get one: 'active' when an
 --     approved primary photo and a passed selfie exist, else the evidence step.
-UPDATE dating_profiles p SET prior_status = CASE
-        WHEN EXISTS (SELECT 1 FROM dating_photos ph WHERE ph.user_id = p.user_id
-                       AND ph.is_primary AND ph.moderation_status = 'approved')
-         AND EXISTS (SELECT 1 FROM dating_verifications v WHERE v.user_id = p.user_id
-                       AND v.selfie_status = 'passed')
-        THEN 'active'
-        ELSE dating_onboarding_step(p.user_id)
-    END
-    WHERE p.prior_status IS NULL
-      AND p.profile_status IN ('paused','pending_review','restricted','suspended');
+DO $bf$
+BEGIN
+    IF EXISTS (SELECT 1 FROM dating_profiles p WHERE p.prior_status IS NULL
+                  AND p.profile_status IN ('paused','pending_review','restricted','suspended')) THEN
+        UPDATE dating_profiles p SET prior_status = CASE
+                WHEN EXISTS (SELECT 1 FROM dating_photos ph WHERE ph.user_id = p.user_id
+                               AND ph.is_primary AND ph.moderation_status = 'approved')
+                 AND EXISTS (SELECT 1 FROM dating_verifications v WHERE v.user_id = p.user_id
+                               AND v.selfie_status = 'passed')
+                THEN 'active'
+                ELSE dating_onboarding_step(p.user_id)
+            END
+            WHERE p.prior_status IS NULL
+              AND p.profile_status IN ('paused','pending_review','restricted','suspended');
+    END IF;
+END $bf$;
 -- (6) a birth date already on file from before dob_source existed was
 --     client-supplied: record that, which also locks it.
-UPDATE dating_profiles SET dob_source = 'client'
-    WHERE birth_date IS NOT NULL AND dob_source IS NULL;
+DO $bf$
+BEGIN
+    IF EXISTS (SELECT 1 FROM dating_profiles WHERE birth_date IS NOT NULL AND dob_source IS NULL) THEN
+        UPDATE dating_profiles SET dob_source = 'client'
+            WHERE birth_date IS NOT NULL AND dob_source IS NULL;
+    END IF;
+END $bf$;
 
 -- ---------------------------------------------------------------------------
 -- §P0-8 — dating_admin_audit (append-only log of every admin action).
@@ -690,10 +759,26 @@ CREATE OR REPLACE FUNCTION dating_admin_audit_immutable() RETURNS trigger AS $$
 BEGIN
     RAISE EXCEPTION 'dating_admin_audit is append-only';
 END $$ LANGUAGE plpgsql;
-DROP TRIGGER IF EXISTS dating_admin_audit_no_update ON dating_admin_audit;
-CREATE TRIGGER dating_admin_audit_no_update
-    BEFORE UPDATE OR DELETE ON dating_admin_audit
-    FOR EACH ROW EXECUTE FUNCTION dating_admin_audit_immutable();
+-- Created only when missing or pointing elsewhere (audit M4: DROP TRIGGER
+-- takes a table lock on every boot).
+DO $trg$
+DECLARE
+    v_fn oid;
+BEGIN
+    SELECT tgfoid INTO v_fn FROM pg_trigger
+    WHERE tgrelid = 'dating_admin_audit'::regclass
+      AND tgname = 'dating_admin_audit_no_update' AND NOT tgisinternal;
+    IF FOUND AND v_fn = 'dating_admin_audit_immutable()'::regprocedure THEN
+        RETURN;
+    END IF;
+    IF FOUND THEN
+        DROP TRIGGER dating_admin_audit_no_update ON dating_admin_audit;
+    END IF;
+    CREATE TRIGGER dating_admin_audit_no_update
+        BEFORE UPDATE OR DELETE ON dating_admin_audit
+        FOR EACH ROW EXECUTE FUNCTION dating_admin_audit_immutable();
+END
+$trg$;
 
 -- ---------------------------------------------------------------------------
 -- §P0-7 Phase A — Fake-account risk scoring.
@@ -795,24 +880,8 @@ ALTER TABLE dating_photos
     ADD COLUMN IF NOT EXISTS media_checked_at  TIMESTAMPTZ,
     ADD COLUMN IF NOT EXISTS face_count        INT;
 
-DO $d6$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conrelid = 'dating_photos'::regclass
-          AND conname = 'dating_photos_moderation_status_check'
-          AND pg_get_constraintdef(oid) LIKE '%pending_review%'
-    ) THEN
-        BEGIN
-            ALTER TABLE dating_photos DROP CONSTRAINT IF EXISTS dating_photos_moderation_status_check;
-            ALTER TABLE dating_photos ADD CONSTRAINT dating_photos_moderation_status_check
-                CHECK (moderation_status IN ('pending','pending_review','approved','rejected'));
-        EXCEPTION WHEN duplicate_object THEN
-            NULL; -- another replica's boot added it first
-        END;
-    END IF;
-END
-$d6$;
+SELECT dating_ensure_check_constraint('dating_photos', 'dating_photos_moderation_status_check', $chk$
+    moderation_status IN ('pending','pending_review','approved','rejected')$chk$);
 
 CREATE INDEX IF NOT EXISTS idx_dating_photos_media_recheck
     ON dating_photos (media_checked_at NULLS FIRST)
@@ -960,6 +1029,29 @@ CREATE INDEX IF NOT EXISTS idx_dating_verifications_selfie_review
     ON dating_verifications(selfie_at)
     WHERE selfie_status = 'pending_review';
 
+-- Audit M1 (2026-10-30) — verification bound to the person.
+--   aadhaar_subject_hash   keyed lookup hash (DATING_PII_LOOKUP_SALT) of the
+--                          DigiLocker partner's stable subject id; the id
+--                          itself, like the Aadhaar number, is never stored.
+--                          Unique: one Aadhaar badges one dating account.
+--   selfie_reference_media_id  the approved primary photo a passed selfie
+--                          was checked against.
+--   selfie_rebind_media_id / selfie_rebind_status  the primary changed after
+--                          the pass: the badge (trust_tier) is withdrawn and a
+--                          moderator re-reviews the stored video against the
+--                          new primary ('pending'), or declined it
+--                          ('rejected'). selfie_status stays 'passed'.
+ALTER TABLE dating_verifications ADD COLUMN IF NOT EXISTS aadhaar_subject_hash      TEXT;
+ALTER TABLE dating_verifications ADD COLUMN IF NOT EXISTS selfie_reference_media_id UUID;
+ALTER TABLE dating_verifications ADD COLUMN IF NOT EXISTS selfie_rebind_media_id    UUID;
+ALTER TABLE dating_verifications ADD COLUMN IF NOT EXISTS selfie_rebind_status      TEXT;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_dating_verifications_aadhaar_subject
+    ON dating_verifications(aadhaar_subject_hash)
+    WHERE aadhaar_subject_hash IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_dating_verifications_selfie_rebind
+    ON dating_verifications(user_id)
+    WHERE selfie_rebind_status = 'pending';
+
 CREATE TABLE IF NOT EXISTS dating_selfie_challenges (
     id              UUID        PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id         UUID        NOT NULL,
@@ -1063,17 +1155,31 @@ BEGIN
 END
 $fn$;
 
-UPDATE dating_profiles
-SET latitude         = dating_snap_coordinate(latitude),
-    longitude        = dating_snap_coordinate(longitude),
-    location_geohash = dating_geohash_encode(dating_snap_coordinate(latitude), dating_snap_coordinate(longitude), 7)
-WHERE latitude IS NOT NULL AND longitude IS NOT NULL
-  AND (latitude  <> dating_snap_coordinate(latitude)
-    OR longitude <> dating_snap_coordinate(longitude)
-    OR location_geohash IS DISTINCT FROM
-       dating_geohash_encode(dating_snap_coordinate(latitude), dating_snap_coordinate(longitude), 7));
-UPDATE dating_profiles SET location_geohash = NULL
-WHERE (latitude IS NULL OR longitude IS NULL) AND location_geohash IS NOT NULL;
+DO $bf$
+BEGIN
+    IF EXISTS (SELECT 1 FROM dating_profiles WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+                  AND (latitude  <> dating_snap_coordinate(latitude)
+                  OR longitude <> dating_snap_coordinate(longitude)
+                  OR location_geohash IS DISTINCT FROM
+                  dating_geohash_encode(dating_snap_coordinate(latitude), dating_snap_coordinate(longitude), 7))) THEN
+        UPDATE dating_profiles
+        SET latitude         = dating_snap_coordinate(latitude),
+            longitude        = dating_snap_coordinate(longitude),
+            location_geohash = dating_geohash_encode(dating_snap_coordinate(latitude), dating_snap_coordinate(longitude), 7)
+        WHERE latitude IS NOT NULL AND longitude IS NOT NULL
+          AND (latitude  <> dating_snap_coordinate(latitude)
+            OR longitude <> dating_snap_coordinate(longitude)
+            OR location_geohash IS DISTINCT FROM
+               dating_geohash_encode(dating_snap_coordinate(latitude), dating_snap_coordinate(longitude), 7));
+    END IF;
+END $bf$;
+DO $bf$
+BEGIN
+    IF EXISTS (SELECT 1 FROM dating_profiles WHERE (latitude IS NULL OR longitude IS NULL) AND location_geohash IS NOT NULL) THEN
+        UPDATE dating_profiles SET location_geohash = NULL
+        WHERE (latitude IS NULL OR longitude IS NULL) AND location_geohash IS NOT NULL;
+    END IF;
+END $bf$;
 
 CREATE TABLE IF NOT EXISTS dating_location_changes (
     user_id    UUID        NOT NULL,
@@ -1142,16 +1248,26 @@ $d7$;
 -- (INVALID_GENDER / INVALID_INTERESTED_IN_GENDER), so this runs once and the
 -- class of row does not come back.
 -- ---------------------------------------------------------------------------
-UPDATE dating_profiles
-SET gender = CASE lower(btrim(gender)) WHEN 'female' THEN 'woman' ELSE 'man' END,
-    updated_at = now()
-WHERE lower(btrim(gender)) IN ('female', 'male');
+DO $bf$
+BEGIN
+    IF EXISTS (SELECT 1 FROM dating_profiles WHERE lower(btrim(gender)) IN ('female', 'male')) THEN
+        UPDATE dating_profiles
+        SET gender = CASE lower(btrim(gender)) WHEN 'female' THEN 'woman' ELSE 'man' END,
+            updated_at = now()
+        WHERE lower(btrim(gender)) IN ('female', 'male');
+    END IF;
+END $bf$;
 
-UPDATE dating_preferences
-SET interested_in_gender = CASE lower(btrim(interested_in_gender))
-                               WHEN 'female' THEN 'woman' ELSE 'man' END,
-    updated_at = now()
-WHERE lower(btrim(interested_in_gender)) IN ('female', 'male');
+DO $bf$
+BEGIN
+    IF EXISTS (SELECT 1 FROM dating_preferences WHERE lower(btrim(interested_in_gender)) IN ('female', 'male')) THEN
+        UPDATE dating_preferences
+        SET interested_in_gender = CASE lower(btrim(interested_in_gender))
+                                       WHEN 'female' THEN 'woman' ELSE 'man' END,
+            updated_at = now()
+        WHERE lower(btrim(interested_in_gender)) IN ('female', 'male');
+    END IF;
+END $bf$;
 
 
 -- ---------------------------------------------------------------------------
@@ -1214,28 +1330,41 @@ CREATE INDEX IF NOT EXISTS idx_dating_panic_incidents_retain
 
 -- Legacy panic rows in dating_safety_events carried the coordinates in
 -- details. Copy each into an incident once, then strip the coordinates.
-INSERT INTO dating_panic_incidents (user_id, source, latitude, longitude, context,
-    first_triggered_at, last_triggered_at, created_at, status,
-    acknowledged_at, acknowledged_by, legacy_event_id)
-SELECT e.user_id, 'legacy',
-       CASE WHEN jsonb_typeof(e.details->'latitude') = 'number'
-             AND jsonb_typeof(e.details->'longitude') = 'number'
-            THEN (e.details->>'latitude')::double precision END,
-       CASE WHEN jsonb_typeof(e.details->'latitude') = 'number'
-             AND jsonb_typeof(e.details->'longitude') = 'number'
-            THEN (e.details->>'longitude')::double precision END,
-       COALESCE(CASE WHEN jsonb_typeof(e.details) = 'object'
-                     THEN e.details - 'latitude' - 'longitude' END, '{}'::jsonb),
-       e.created_at, e.created_at, e.created_at,
-       CASE WHEN e.acknowledged_at IS NULL THEN 'open' ELSE 'acknowledged' END,
-       e.acknowledged_at, e.acknowledged_by, e.id
-FROM dating_safety_events e
-WHERE e.kind = 'panic'
-ON CONFLICT (legacy_event_id) DO NOTHING;
-UPDATE dating_safety_events
-SET details = details - 'latitude' - 'longitude'
-WHERE kind = 'panic' AND jsonb_typeof(details) = 'object'
-  AND (details ? 'latitude' OR details ? 'longitude');
+DO $bf$
+BEGIN
+    IF EXISTS (SELECT 1 FROM dating_safety_events e
+               WHERE e.kind = 'panic'
+                 AND NOT EXISTS (SELECT 1 FROM dating_panic_incidents i WHERE i.legacy_event_id = e.id)) THEN
+        INSERT INTO dating_panic_incidents (user_id, source, latitude, longitude, context,
+            first_triggered_at, last_triggered_at, created_at, status,
+            acknowledged_at, acknowledged_by, legacy_event_id)
+        SELECT e.user_id, 'legacy',
+               CASE WHEN jsonb_typeof(e.details->'latitude') = 'number'
+                     AND jsonb_typeof(e.details->'longitude') = 'number'
+                    THEN (e.details->>'latitude')::double precision END,
+               CASE WHEN jsonb_typeof(e.details->'latitude') = 'number'
+                     AND jsonb_typeof(e.details->'longitude') = 'number'
+                    THEN (e.details->>'longitude')::double precision END,
+               COALESCE(CASE WHEN jsonb_typeof(e.details) = 'object'
+                             THEN e.details - 'latitude' - 'longitude' END, '{}'::jsonb),
+               e.created_at, e.created_at, e.created_at,
+               CASE WHEN e.acknowledged_at IS NULL THEN 'open' ELSE 'acknowledged' END,
+               e.acknowledged_at, e.acknowledged_by, e.id
+        FROM dating_safety_events e
+        WHERE e.kind = 'panic'
+        ON CONFLICT (legacy_event_id) DO NOTHING;
+    END IF;
+END $bf$;
+DO $bf$
+BEGIN
+    IF EXISTS (SELECT 1 FROM dating_safety_events WHERE kind = 'panic' AND jsonb_typeof(details) = 'object'
+                  AND (details ? 'latitude' OR details ? 'longitude')) THEN
+        UPDATE dating_safety_events
+        SET details = details - 'latitude' - 'longitude'
+        WHERE kind = 'panic' AND jsonb_typeof(details) = 'object'
+          AND (details ? 'latitude' OR details ? 'longitude');
+    END IF;
+END $bf$;
 
 CREATE TABLE IF NOT EXISTS dating_trusted_contacts (
     user_id                 UUID        NOT NULL,
@@ -1396,8 +1525,20 @@ CREATE INDEX IF NOT EXISTS idx_dating_consent_log_user_type
 -- expires_at is NOT NULL: a NULL used to mean "forever" to IsPremium. Rows
 -- that relied on it are closed at their start (inactive) before the
 -- constraint is set; the dev database held none on 2026-09-16.
-UPDATE dating_premium_subscriptions SET expires_at = started_at WHERE expires_at IS NULL;
-ALTER TABLE dating_premium_subscriptions ALTER COLUMN expires_at SET NOT NULL;
+DO $bf$
+BEGIN
+    IF EXISTS (SELECT 1 FROM dating_premium_subscriptions WHERE expires_at IS NULL) THEN
+        UPDATE dating_premium_subscriptions SET expires_at = started_at WHERE expires_at IS NULL;
+    END IF;
+END $bf$;
+DO $nn$
+BEGIN
+    IF NOT (SELECT attnotnull FROM pg_attribute
+            WHERE attrelid = 'dating_premium_subscriptions'::regclass AND attname = 'expires_at') THEN
+        ALTER TABLE dating_premium_subscriptions ALTER COLUMN expires_at SET NOT NULL;
+    END IF;
+END
+$nn$;
 
 -- One row per purchase. The (user_id, idempotency_key) pair makes
 -- POST /v1/dating/premium/purchases idempotent. granted_seconds /
@@ -1537,19 +1678,8 @@ CREATE TABLE IF NOT EXISTS dating_super_spark_balances (
 ALTER TABLE dating_premium_purchases ADD COLUMN IF NOT EXISTS units_granted INT NOT NULL DEFAULT 0;
 ALTER TABLE dating_premium_purchases ADD COLUMN IF NOT EXISTS units_revoked INT NOT NULL DEFAULT 0;
 
-DO $$
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_constraint
-        WHERE conrelid = 'dating_premium_purchases'::regclass
-          AND conname = 'dating_premium_purchases_product_check'
-          AND pg_get_constraintdef(oid) LIKE '%super_spark_5%'
-    ) THEN
-        ALTER TABLE dating_premium_purchases DROP CONSTRAINT IF EXISTS dating_premium_purchases_product_check;
-        ALTER TABLE dating_premium_purchases ADD CONSTRAINT dating_premium_purchases_product_check
-            CHECK (product IN ('pass_30d','pass_90d','pass_365d','boost','super_spark_5','super_spark_15'));
-    END IF;
-END $$;
+SELECT dating_ensure_check_constraint('dating_premium_purchases', 'dating_premium_purchases_product_check', $chk$
+    product IN ('pass_30d','pass_90d','pass_365d','boost','super_spark_5','super_spark_15')$chk$);
 
 -- ---------------------------------------------------------------------------
 -- Pulse mechanics M5 — first move (DATING_FIRST_MOVE_ENABLED).
@@ -1809,3 +1939,89 @@ BEGIN
 END $m15$;
 CREATE INDEX IF NOT EXISTS idx_dating_prompts_clip_status
     ON dating_prompts(clip_status, clip_checked_at) WHERE clip_media_id IS NOT NULL;
+
+-- ---------------------------------------------------------------------------
+-- Audit 2026-10-30 L2 — a mutual spark whose match formation fails is retried.
+--
+-- dating_pending_matches: one row per pair (canonical user_a < user_b) whose
+-- second spark found mutual interest. Written before the match is formed and
+-- removed when it is; a failure (a transient error before the match row is
+-- inserted, which the saga reconciler cannot see) leaves it for
+-- service.RetryPendingMatches, which re-checks the sparks both ways and forms
+-- the match. Claimed with FOR UPDATE SKIP LOCKED and a lease on
+-- next_attempt_at, so replicas never retry the same pair at once. A pair that
+-- is no longer mutual, or can no longer match (blocked, a profile held or
+-- gone), is dropped; one still failing after the attempt cap gets failed_at
+-- (requeue: UPDATE dating_pending_matches SET failed_at = NULL, attempts = 0,
+-- next_attempt_at = now() WHERE ...). Purged with the user's sparks.
+-- ---------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS dating_pending_matches (
+    user_a          UUID        NOT NULL,
+    user_b          UUID        NOT NULL,
+    spark_target    JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    attempts        INT         NOT NULL DEFAULT 0,
+    next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    last_error      TEXT,
+    failed_at       TIMESTAMPTZ,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_a, user_b),
+    CHECK (user_a < user_b)
+);
+CREATE INDEX IF NOT EXISTS idx_dating_pending_matches_due
+    ON dating_pending_matches(next_attempt_at) WHERE failed_at IS NULL;
+
+-- ---------------------------------------------------------------------------
+-- Audit 2026-10-30 M2 — a live location share to a match ends with the match.
+--
+-- A share with recipient_kind = 'match' was readable until it expired (up to
+-- the configured maximum) even after an unmatch. Now, in the SAME
+-- transaction as any close of the pair's last open match (unmatch, block,
+-- expiry, duplicate cleanup, or any closure another path adds), the pair's
+-- live match shares are stopped and their point cleared, both directions.
+-- A trigger rather than a call in each close path, so no closure can skip it.
+-- A duplicate close that leaves another open match for the pair keeps the
+-- share. Trusted-contact shares are untouched. The reads
+-- (store.GetLocationShareForRecipient and the share lists) also require an
+-- open match for a 'match' share, which covers rows from before this trigger.
+-- The trigger is created only when missing (audit M4).
+-- ---------------------------------------------------------------------------
+CREATE OR REPLACE FUNCTION dating_stop_match_location_shares() RETURNS trigger AS $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM dating_matches o
+               WHERE o.user_a = NEW.user_a AND o.user_b = NEW.user_b
+                 AND o.status IN ('matched','conversing','quiet')) THEN
+        RETURN NULL;
+    END IF;
+    UPDATE dating_location_shares
+    SET stopped_at = COALESCE(stopped_at, now()),
+        latitude = NULL, longitude = NULL, location_sealed = NULL
+    WHERE recipient_kind = 'match'
+      AND ((user_id = NEW.user_a AND recipient_id = NEW.user_b)
+        OR (user_id = NEW.user_b AND recipient_id = NEW.user_a))
+      AND (stopped_at IS NULL OR location_sealed IS NOT NULL
+           OR latitude IS NOT NULL OR longitude IS NOT NULL);
+    RETURN NULL;
+END
+$$ LANGUAGE plpgsql;
+
+DO $trg$
+DECLARE
+    v_fn oid;
+BEGIN
+    SELECT tgfoid INTO v_fn FROM pg_trigger
+    WHERE tgrelid = 'dating_matches'::regclass
+      AND tgname = 'dating_matches_stop_location_shares' AND NOT tgisinternal;
+    IF FOUND AND v_fn = 'dating_stop_match_location_shares()'::regprocedure THEN
+        RETURN;
+    END IF;
+    IF FOUND THEN
+        DROP TRIGGER dating_matches_stop_location_shares ON dating_matches;
+    END IF;
+    CREATE TRIGGER dating_matches_stop_location_shares
+        AFTER UPDATE OF status ON dating_matches
+        FOR EACH ROW
+        WHEN (OLD.status IN ('matched','conversing','quiet')
+              AND NEW.status NOT IN ('matched','conversing','quiet'))
+        EXECUTE FUNCTION dating_stop_match_location_shares();
+END
+$trg$;

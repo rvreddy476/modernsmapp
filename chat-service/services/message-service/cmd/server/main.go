@@ -208,6 +208,8 @@ func main() {
 	// match.closed / match.expired so the send-path gate refuses new
 	// messages (P0-3/P0-9 in dating/PRODUCTION_GAP_ANALYSIS.md).
 	datingConsumer := events.NewDatingConsumerWithDialer(cfg.KafkaBrokers, cfg.DatingKafkaTopic, cfg.DatingKafkaGroupID, kafkaDialer, convStore, logger)
+	// Dating audit H2: a closure drops the send gate's cached match state.
+	datingConsumer.SetMatchStateInvalidator(svc.InvalidateDatingMatchState)
 	go datingConsumer.Start(ctx)
 
 	// 7. Outbox Relay (background)

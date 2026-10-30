@@ -25,6 +25,7 @@ import (
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
+	"github.com/atpost/shared/outbox"
 	"github.com/atpost/shared/server"
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
@@ -432,9 +433,22 @@ func main() {
 
 	consumer := datingevents.NewConsumerWithDialer(kafkaBrokers, "dating-service-consumer", datingStore, kafkaDialer)
 	consumer.SetLayer2Processor(datingSvc)
+	consumer.SetDeckInvalidator(datingSvc) // audit L1: platform deletion drops cached decks
 	consumerCtx, cancelConsumer := context.WithCancel(ctx)
 	go consumer.Start(consumerCtx)
 	slog.Info("kafka consumer started")
+
+	// Audit H2: the chat closures (dating.match.closed, dating.user.blocked)
+	// commit with their state change in dating.outbox_events (database
+	// migration 001); this relay publishes them to the dating topic. Leased
+	// claims and an advisory lock keep replicas from double-publishing.
+	outboxPublisher := outbox.New(dbPool, outbox.Config{
+		DBSchema:     store.OutboxSchema,
+		KafkaBrokers: strings.Join(kafkaBrokers, ","),
+		DefaultTopic: kafkaTopic,
+	})
+	go outboxPublisher.Run(consumerCtx)
+	slog.Info("outbox publisher started", "table", store.OutboxTable, "topic", kafkaTopic)
 
 	// Account control (auth-service 30-day deletion): pause the dating
 	// profile on user.deactivated / user.deletion_scheduled, resume on the
@@ -480,6 +494,9 @@ func main() {
 	// Without this, a brief chat-service blip silently loses mutual
 	// matches forever.
 	go service.NewMatchSagaReconciler(datingSvc).Start(consumerCtx)
+	// Audit L2: mutual sparks whose match formation failed before the match
+	// row existed are retried from dating_pending_matches.
+	go datingSvc.StartPendingMatchRetrier(consumerCtx)
 
 	// Lane D6: re-read media-service for photos not confirmed within the
 	// recheck interval (a takedown or a vanished asset rejects the photo and

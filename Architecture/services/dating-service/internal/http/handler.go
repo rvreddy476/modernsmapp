@@ -39,9 +39,10 @@ func New(svc *service.Service) *Handler {
 // P0-2 finding in PRODUCTION_GAP_ANALYSIS.md.
 //
 // The key does NOT identify the caller: the gateway injects it on every
-// proxied request, user or anonymous. Admin routes additionally require a
-// gateway-set admin scope (requireAdmin) and the internal family requires a
-// service credential with no user identity (requireServiceCaller).
+// proxied request, user or anonymous. Admin routes additionally require an
+// admin-service token carrying the route's permission (requireAdminToken),
+// and the internal family requires a service credential with no user
+// identity (requireServiceCaller).
 //
 // Empty key disables the gate. main.go refuses to boot without a key unless
 // ENV is local/dev (ResolveInternalKey).
@@ -64,6 +65,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	r.GET(InternalRiskPath, h.requireServiceCaller(OpRiskRead), h.GetAccountRisk)
 	// Lane D8 — notification-service's paging context for one panic incident.
 	r.GET(InternalPanicNotifyContextPath, h.requireServiceCaller(OpSafetyPanicNotify), h.GetPanicNotifyContext)
+	// Audit H2 — message-service's dating send gate (handler_chat_state.go).
+	r.GET(InternalMatchChatStatePath, h.requireServiceCaller(OpMatchChatState), h.GetMatchChatState)
 
 	// Everything else sits behind the internal-service-key gate.
 	v1 := r.Group("")
@@ -111,9 +114,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.GET("/photos/:id/blurred", h.GetPhotoImage(service.PhotoVariantBlurred))
 		// Admin / moderator moderation flip. Drives deck-cache
 		// invalidation + profile-state transition +
-		// photo.moderation_rejected event. Requires the admin scope, so a
-		// user cannot approve their own photo.
-		dating.POST("/photos/:id/moderation", h.requireAdmin(PermPhotosReview), h.SetPhotoModerationStatus)
+		// photo.moderation_rejected event. Requires an admin-service token
+		// with dating:photos.review (audit H3), so a user cannot approve
+		// their own photo and a consumer-session scope admits nobody.
+		dating.POST("/photos/:id/moderation", h.requireAdminToken(PermPhotosReview), h.SetPhotoModerationStatus)
 
 		dating.GET("/prompts/catalog", h.GetPromptCatalog)
 		dating.GET("/prompts", h.ListPrompts)
@@ -164,6 +168,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.POST("/sparks/:id/decline", h.DeclineSpark)
 		// Lane D10 — the recipient sparks back and the match forms.
 		dating.POST("/sparks/:id/accept", h.AcceptSpark)
+		// Mechanic M13 / audit L4 — read a note the comment filter hid.
+		dating.GET("/sparks/:id/note", h.RevealSparkNote)
 
 		// Lane D10 — the compact card for one person, for a current match,
 		// an incoming spark or someone in the viewer's deck. 404 otherwise.
@@ -270,17 +276,14 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.GET("/consents", h.GetConsents)
 		dating.PUT("/consents/:type", h.PutConsent)
 
-		// §P0-8 admin queues for the /admin/dating console. The
-		// gateway does NOT admin-gate these paths (they have no
-		// "/internal/" segment), so dating checks the gateway-set
-		// scopes itself: every route requires admin|moderator|superadmin.
-		//
-		// Admin console Wave 2: each route also names its permission, and a
-		// request carrying an admin-service token is judged by that token
-		// alone (requireAdmin, admin_token.go). admin-service itself calls
-		// the token-only mirror under InternalAdminPrefix below.
+		// §P0-8 admin queues, kept at their old /v1/dating/admin paths for
+		// one more release. Audit H3 (2026-10-30): they are gated exactly
+		// like the token-only family below — an admin-service token with the
+		// route's permission — and no longer admit a consumer session whose
+		// gateway-set scopes hold admin, moderator or superadmin. The console
+		// calls InternalAdminPrefix through admin-service.
 		admin := dating.Group("/admin")
-		h.registerAdminRoutes(admin, h.requireAdmin)
+		h.registerAdminRoutes(admin, h.requireAdminToken)
 	}
 
 	// Token-only admin family for admin-service: the same handlers, outside
@@ -298,8 +301,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 }
 
 // registerAdminRoutes declares the admin console routes once, with the
-// permission each needs, under whichever gate the caller passes: requireAdmin
-// (token or LEGACY gateway scopes) or requireAdminToken (token only).
+// permission each needs, under the gate the caller passes (requireAdminToken
+// for both mounts since audit H3).
 //
 //	GET  /reports                              dating:reports.read
 //	POST /reports/:id/action                   dating:reports.act, or dating:users.ban for suspend/reinstate
@@ -397,6 +400,13 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 	// P0-5: surface the underage gate as 403 AGE_REQUIRED so mobile +
 	// web can render the "complete your birth date / 18+ required"
 	// flow rather than dumping the raw message.
+	// Audit L4: identity holds no birth date for the user; a client one is
+	// not accepted. Distinct from AGE_REQUIRED so the app sends the user to
+	// their account settings rather than a dating birth-date form.
+	if errors.Is(err, service.ErrIdentityDOBRequired) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "IDENTITY_DOB_REQUIRED", err.Error(), nil)
+		return
+	}
 	if errors.Is(err, service.ErrUnderage) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "AGE_REQUIRED", err.Error(), nil)
 		return

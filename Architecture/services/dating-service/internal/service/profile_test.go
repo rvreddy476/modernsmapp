@@ -413,10 +413,13 @@ func TestUpsertProfile_IdentityProfileDOBAcceptedAndLocked(t *testing.T) {
 	}
 }
 
-// TestUpsertProfile_IdentityWithoutDOBUsesInterimClientRule: identity
-// dob_source=none and identity 404 both fall back to the client lock-once rule.
-func TestUpsertProfile_IdentityWithoutDOBUsesInterimClientRule(t *testing.T) {
-	svc, _, cleanup := newSvcForTest(t)
+// TestUpsertProfile_IdentityWithoutDOBRefusesClientBirthDate (audit L4):
+// with an identity reader configured, identity dob_source=none and identity
+// 404 no longer fall back to the client's birth date. The save is refused
+// with ErrIdentityDOBRequired (an ErrUnderage) and nothing is written, for
+// an adult client date and an under-18 one alike.
+func TestUpsertProfile_IdentityWithoutDOBRefusesClientBirthDate(t *testing.T) {
+	svc, st, cleanup := newSvcForTest(t)
 	defer cleanup()
 	ctx := context.Background()
 	for name, answer := range map[string]*IdentityBasics{
@@ -424,26 +427,42 @@ func TestUpsertProfile_IdentityWithoutDOBUsesInterimClientRule(t *testing.T) {
 		"404":             {Found: false},
 	} {
 		svc.SetIdentityBasicsClient(&stubIdentityBasics{basics: answer})
-		user := uuid.New()
-		first := time.Date(1995, 1, 1, 0, 0, 0, 0, time.UTC)
-		p, err := svc.UpsertProfile(ctx, user, store.UpsertProfileParams{BirthDate: &first})
-		if err != nil {
-			t.Fatalf("%s: first upsert: %v", name, err)
+		for _, dob := range []time.Time{time.Date(1995, 1, 1, 0, 0, 0, 0, time.UTC), time.Now().AddDate(-17, 0, 0)} {
+			user := uuid.New()
+			_, err := svc.UpsertProfile(ctx, user, store.UpsertProfileParams{BirthDate: &dob})
+			if !errors.Is(err, ErrIdentityDOBRequired) || !errors.Is(err, ErrUnderage) {
+				t.Fatalf("%s, client %s: err=%v, want ErrIdentityDOBRequired", name, dob.Format("2006-01-02"), err)
+			}
+			if _, err := st.GetProfile(ctx, user); !errors.Is(err, store.ErrProfileNotFound) {
+				t.Fatalf("%s: a refused profile must not be written (get err=%v)", name, err)
+			}
 		}
-		if !sameDay(p.BirthDate, first) || deref(p.DOBSource) != store.BasicsSourceClient {
-			t.Fatalf("%s: birth_date=%v source=%s, want client 1995-01-01", name, p.BirthDate, deref(p.DOBSource))
-		}
-		changed := time.Date(1985, 6, 6, 0, 0, 0, 0, time.UTC)
-		if p, err = svc.UpsertProfile(ctx, user, store.UpsertProfileParams{BirthDate: &changed}); err != nil {
-			t.Fatalf("%s: second upsert: %v", name, err)
-		}
-		if !sameDay(p.BirthDate, first) {
-			t.Fatalf("%s: client birth date changed to %v; it must stay locked", name, p.BirthDate)
-		}
-		young := time.Now().AddDate(-17, 0, 0)
-		if _, err := svc.UpsertProfile(ctx, uuid.New(), store.UpsertProfileParams{BirthDate: &young}); !errors.Is(err, ErrUnderage) {
-			t.Fatalf("%s: under-18 client birth date: err=%v, want ErrUnderage", name, err)
-		}
+	}
+}
+
+// TestRequireAdult_ClientBirthDateNotTrustedWithIdentity (audit L4): a
+// profile whose birth date was locked under the old interim client rule is
+// not an adult for the age gate once identity is wired; in local/dev without
+// identity it still is.
+func TestRequireAdult_ClientBirthDateNotTrustedWithIdentity(t *testing.T) {
+	svc, st, cleanup := newSvcForTest(t)
+	defer cleanup()
+	ctx := context.Background()
+	user := uuid.New()
+	seedActiveClientDOBProfile(t, st, user)
+	if err := svc.requireAdult(ctx, user); err != nil {
+		t.Fatalf("no identity reader (local/dev): err=%v, want the client birth date accepted", err)
+	}
+	svc.SetIdentityBasicsClient(&stubIdentityBasics{basics: identityNoDOB("")})
+	if err := svc.requireAdult(ctx, user); !errors.Is(err, ErrIdentityDOBRequired) {
+		t.Fatalf("identity wired: err=%v, want ErrIdentityDOBRequired", err)
+	}
+	// Identity unreachable: the client birth date is not locked, so the save
+	// asks identity and is refused rather than trusting it.
+	svc.SetIdentityBasicsClient(&stubIdentityBasics{err: ErrIdentityTransient})
+	bio := "hello"
+	if _, err := svc.UpsertProfile(ctx, user, store.UpsertProfileParams{Bio: &bio}); !errors.Is(err, ErrIdentityUnavailable) {
+		t.Fatalf("identity down with a client birth date: err=%v, want ErrIdentityUnavailable", err)
 	}
 }
 
@@ -481,9 +500,9 @@ func TestUpsertProfile_IdentityDown(t *testing.T) {
 		t.Fatalf("bare row got a birth date while identity was down: %v", p.BirthDate)
 	}
 
-	// Locked profile: later update proceeds.
+	// Locked (identity) profile: later update proceeds.
 	user := uuid.New()
-	svc.SetIdentityBasicsClient(&stubIdentityBasics{basics: identityNoDOB("")})
+	svc.SetIdentityBasicsClient(&stubIdentityBasics{basics: identityAnswer("", adult, IdentityDOBSourceRegistration)})
 	if _, err := svc.UpsertProfile(ctx, user, store.UpsertProfileParams{BirthDate: &adult}); err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -497,19 +516,21 @@ func TestUpsertProfile_IdentityDown(t *testing.T) {
 	if p.Bio != bio {
 		t.Fatalf("bio=%q, want the update applied", p.Bio)
 	}
-	if !sameDay(p.BirthDate, adult) || deref(p.DOBSource) != store.BasicsSourceClient {
-		t.Fatalf("birth_date=%v source=%s, want the locked client 1990-01-01", p.BirthDate, deref(p.DOBSource))
+	if !sameDay(p.BirthDate, adult) || deref(p.DOBSource) != store.BasicsSourceIdentityRegistration {
+		t.Fatalf("birth_date=%v source=%s, want the locked identity 1990-01-01", p.BirthDate, deref(p.DOBSource))
 	}
 }
 
 // TestUpsertProfile_IdentityFirstNameWinsOverClient: identity's first name is
-// stored even when identity has no birth date, and a later client first name
-// never replaces it.
+// stored over the client's, and a later client first name never replaces it
+// (even when identity later answers 404). Since audit L4 identity must also
+// hold the birth date, so it supplies one here (profile source).
 func TestUpsertProfile_IdentityFirstNameWinsOverClient(t *testing.T) {
 	svc, _, cleanup := newSvcForTest(t)
 	defer cleanup()
 	ctx := context.Background()
-	svc.SetIdentityBasicsClient(&stubIdentityBasics{basics: identityNoDOB(" Priya ")})
+	idDOB := time.Date(1994, 4, 4, 0, 0, 0, 0, time.UTC)
+	svc.SetIdentityBasicsClient(&stubIdentityBasics{basics: identityAnswer(" Priya ", idDOB, IdentityDOBSourceProfile)})
 
 	user := uuid.New()
 	dob := time.Date(1995, 1, 1, 0, 0, 0, 0, time.UTC)
@@ -521,8 +542,8 @@ func TestUpsertProfile_IdentityFirstNameWinsOverClient(t *testing.T) {
 	if deref(p.FirstName) != "Priya" || deref(p.FirstNameSource) != store.BasicsSourceIdentity {
 		t.Fatalf("first_name=%q source=%s, want identity Priya", deref(p.FirstName), deref(p.FirstNameSource))
 	}
-	if deref(p.DOBSource) != store.BasicsSourceClient {
-		t.Fatalf("dob_source=%s, want client (identity had no birth date)", deref(p.DOBSource))
+	if !sameDay(p.BirthDate, idDOB) || deref(p.DOBSource) != store.BasicsSourceIdentityProfile {
+		t.Fatalf("birth_date=%v dob_source=%s, want identity_profile 1994-04-04 (the client date is ignored)", p.BirthDate, deref(p.DOBSource))
 	}
 
 	svc.SetIdentityBasicsClient(&stubIdentityBasics{basics: &IdentityBasics{Found: false}})

@@ -260,8 +260,12 @@ func (s *Store) TouchPhotoMediaCheck(ctx context.Context, photoID uuid.UUID) err
 // PhotoAudienceFacts is what the photo image route decides on.
 type PhotoAudienceFacts struct {
 	// OwnerVisible: the owner's profile exists, is not deleted or suspended,
-	// neither side has blocked the other, and it is not incognito toward the
-	// viewer.
+	// neither side has blocked the other, it is not incognito toward the
+	// viewer, and (audit L4) it is out in the open — active, not paused,
+	// visible_to_public — unless the viewer has an open match with the
+	// owner. A match keeps the photos while the owner pauses or hides,
+	// except for a restricted (under-18 hold) owner, whose photos go to
+	// nobody.
 	OwnerVisible bool
 	// Matched: an open match (matched, conversing, quiet) between the two.
 	Matched bool
@@ -271,21 +275,33 @@ type PhotoAudienceFacts struct {
 	BlurUntilMatch bool
 }
 
+// openMatchPredicate is true when viewer and owner (SQL uuid expressions)
+// have an open match (matched, conversing, quiet).
+func openMatchPredicate(viewer, owner string) string {
+	return `EXISTS (SELECT 1 FROM dating_matches m
+                    WHERE m.user_a = LEAST(` + viewer + `, ` + owner + `)
+                      AND m.user_b = GREATEST(` + viewer + `, ` + owner + `)
+                      AND m.status IN ('matched','conversing','quiet'))`
+}
+
+// photoOwnerVisiblePredicate is PhotoAudienceFacts.OwnerVisible as SQL.
+func photoOwnerVisiblePredicate(viewer, owner string) string {
+	return `EXISTS (SELECT 1 FROM dating_profiles p
+                    WHERE p.user_id = ` + owner + `
+                      AND p.deleted_at IS NULL
+                      AND p.profile_status NOT IN ('suspended','deleted','restricted')
+                      AND NOT ` + blockedPairPredicate(viewer, "p.user_id") + `
+                      AND ` + incognitoVisiblePredicate("p", viewer) + `
+                      AND (` + profileListedPredicate("p") + ` OR ` + openMatchPredicate(viewer, owner) + `))`
+}
+
 // PhotoAudience reads the audience facts for viewer looking at owner.
 func (s *Store) PhotoAudience(ctx context.Context, viewerID, ownerID uuid.UUID) (*PhotoAudienceFacts, error) {
 	f := &PhotoAudienceFacts{}
 	err := s.db.QueryRow(ctx, `
         SELECT
-            EXISTS (SELECT 1 FROM dating_profiles p
-                    WHERE p.user_id = $2::uuid
-                      AND p.deleted_at IS NULL
-                      AND p.profile_status NOT IN ('suspended','deleted')
-                      AND NOT `+blockedPairPredicate("$1::uuid", "p.user_id")+`
-                      AND `+incognitoVisiblePredicate("p", "$1::uuid")+`),
-            EXISTS (SELECT 1 FROM dating_matches m
-                    WHERE m.user_a = LEAST($1::uuid, $2::uuid)
-                      AND m.user_b = GREATEST($1::uuid, $2::uuid)
-                      AND m.status IN ('matched','conversing','quiet')),
+            `+photoOwnerVisiblePredicate("$1::uuid", "$2::uuid")+`,
+            `+openMatchPredicate("$1::uuid", "$2::uuid")+`,
             EXISTS (SELECT 1 FROM dating_sparks sp
                     WHERE sp.from_user_id = $2::uuid AND sp.to_user_id = $1::uuid),
             COALESCE((SELECT p.blur_photos_until_match OR p.blur_mode

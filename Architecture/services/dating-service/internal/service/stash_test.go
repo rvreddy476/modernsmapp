@@ -3,6 +3,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"os"
 	"testing"
 
@@ -35,6 +36,15 @@ func TestStashService_AddRemoveList(t *testing.T) {
 	user, cand := uuid.New(), uuid.New()
 	seedProfile(t, st, user)
 	seedProfile(t, st, cand)
+	// Audit H1: only someone the user may see can be stashed; an open match
+	// is one such relationship.
+	matchID, _, err := st.CreateOrGetOpenMatch(context.Background(), user, cand, nil)
+	if err != nil {
+		t.Fatalf("seed match: %v", err)
+	}
+	if err := st.MarkMatchActive(context.Background(), matchID, uuid.New()); err != nil {
+		t.Fatalf("activate match: %v", err)
+	}
 
 	if _, err := svc.AddStash(context.Background(), user, cand); err != nil {
 		t.Fatalf("add: %v", err)
@@ -62,6 +72,25 @@ func TestStashService_AddRejectsSelf(t *testing.T) {
 	seedProfile(t, st, user)
 	if _, err := svc.AddStash(context.Background(), user, user); err == nil {
 		t.Fatalf("expected error for stashing self")
+	}
+}
+
+// Audit H1: a profile the user was never shown (here: one with no
+// relationship to them at all) cannot be stashed, and the refusal is the
+// same ErrCandidateUnavailable as for a user id with no profile.
+func TestStashService_AddRejectsUnseenCandidate(t *testing.T) {
+	svc, st, cleanup := newStashSvc(t)
+	defer cleanup()
+	user, unseen := uuid.New(), uuid.New()
+	seedProfile(t, st, user)
+	seedProfile(t, st, unseen)
+	for _, id := range []uuid.UUID{unseen, uuid.New()} {
+		if _, err := svc.AddStash(context.Background(), user, id); !errors.Is(err, ErrCandidateUnavailable) {
+			t.Fatalf("stash %s: err=%v, want ErrCandidateUnavailable", id, err)
+		}
+	}
+	if out, _ := svc.ListStash(context.Background(), user); len(out) != 0 {
+		t.Fatalf("refused stash was written: %d rows", len(out))
 	}
 }
 

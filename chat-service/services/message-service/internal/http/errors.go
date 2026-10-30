@@ -67,6 +67,11 @@ func writeClassifiedError(c *gin.Context, err error) bool {
 		status, code = http.StatusUnprocessableEntity, "MEDIA_NOT_ALLOWED"
 	case errors.Is(err, store.ErrGroupFull):
 		status, code = http.StatusConflict, "GROUP_FULL"
+	case errors.Is(err, service.ErrMatchOnHold):
+		// Dating audit H2: a member is held for review. Reversible, but a
+		// 409 on purpose: clients park a 4xx send for the user to retry and
+		// never auto-deliver it to someone under review (a 503 would).
+		status, code = http.StatusConflict, "MATCH_ON_HOLD"
 	case errors.Is(err, service.ErrMatchClosed):
 		status, code = http.StatusConflict, "MATCH_CLOSED"
 	case errors.Is(err, service.ErrOwnerMustTransfer), errors.Is(err, store.ErrOwnerRequired),

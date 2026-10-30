@@ -12,11 +12,11 @@ import (
 )
 
 // Admin read-side handlers for /admin/dating console (PRODUCTION_GAP_
-// ANALYSIS.md §P0-8). Every route is registered behind requireAdmin
-// (auth.go): the gateway does NOT admin-gate /v1/dating/admin, so the
-// internal key proves nothing and dating checks the gateway-set scopes
-// itself. Mutating handlers record the admitted admin's X-User-Id as the
-// audit actor (adminActor); X-Admin-Id is never read.
+// ANALYSIS.md §P0-8). Every route is registered behind requireAdminToken
+// (admin_token.go): the gateway does NOT admin-gate /v1/dating/admin, so the
+// internal key proves nothing and neither do gateway-set scopes (audit H3).
+// Mutating handlers record the token's signed acting admin as the audit
+// actor (adminActor); X-Admin-Id is never read.
 
 // ListReports — GET /v1/dating/admin/reports?status=&category=&limit=&offset=
 func (h *Handler) ListReports(c *gin.Context) {
@@ -147,8 +147,8 @@ func ReportActionPermission(action string) string {
 // to their remembered step), which fires deck-cache invalidation
 // downstream. A refused edge returns 409 PROFILE_TRANSITION_NOT_ALLOWED.
 //
-// The dating_admin_audit actor is the admin's gateway-derived X-User-Id
-// (requireAdmin). No actor → the action is refused.
+// The dating_admin_audit actor is the admin named in the admin-service
+// token (requireAdminToken). No actor → the action is refused.
 func (h *Handler) ActOnReport(c *gin.Context) {
 	adminID, ok := adminActor(c)
 	if !ok {
@@ -191,9 +191,9 @@ func (h *Handler) ActOnReport(c *gin.Context) {
 // request" in-app. Idempotent: second ack hits the already-acked
 // branch in the store and short-circuits without re-emitting.
 //
-// Admin scope required (requireAdmin). The admin's gateway-derived
-// X-User-Id is the acknowledged_by actor and the dating_admin_audit
-// actor; no actor → the acknowledgement is refused.
+// Admin-service token required (requireAdminToken). The token's acting
+// admin is the acknowledged_by actor and the dating_admin_audit actor; no
+// actor → the acknowledgement is refused.
 func (h *Handler) AcknowledgePanic(c *gin.Context) {
 	adminID, ok := adminActor(c)
 	if !ok {

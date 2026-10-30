@@ -40,6 +40,15 @@ type DatingConsumer struct {
 	reader *kafka.Reader
 	store  DatingReconciler
 	log    *slog.Logger
+	// invalidate drops the send gate's cached state of a match once its
+	// closure is applied (dating backend audit H2). Optional.
+	invalidate func(matchID uuid.UUID)
+}
+
+// SetMatchStateInvalidator wires the send gate's cache invalidation
+// (service.Service.InvalidateDatingMatchState).
+func (c *DatingConsumer) SetMatchStateInvalidator(fn func(matchID uuid.UUID)) {
+	c.invalidate = fn
 }
 
 func NewDatingConsumer(brokers []string, topic, groupID string, store DatingReconciler, logger *slog.Logger) *DatingConsumer {
@@ -116,8 +125,13 @@ func (c *DatingConsumer) processMessage(ctx context.Context, message kafka.Messa
 		if err != nil {
 			return true, err
 		}
+		// Idempotent: a redelivered or duplicated closure (the outbox relay
+		// is at-least-once) keeps the first closed_at.
 		if err := c.store.MarkConversationClosedByMatch(ctx, matchID); err != nil {
 			return false, err
+		}
+		if c.invalidate != nil {
+			c.invalidate(matchID)
 		}
 		c.log.Info("closed dating conversation for match", "match_id", matchID, "event_type", envelope.EventType)
 	case datingUserBlocked:

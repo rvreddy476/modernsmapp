@@ -361,7 +361,7 @@ func TestD8_ReportInvalidReasonRefused(t *testing.T) {
 }
 
 func TestD8_ReportAutoBlocksAndClosesMatch(t *testing.T) {
-	svc, st, rec := newD3Svc(t)
+	svc, st, _ := newD3Svc(t)
 	ctx := context.Background()
 	a, b := uuid.New(), uuid.New()
 	seedActiveProfile(t, st, a)
@@ -382,13 +382,8 @@ func TestD8_ReportAutoBlocksAndClosesMatch(t *testing.T) {
 	if err != nil || m.Status != "closed" {
 		t.Fatalf("match after report = %+v err=%v, want closed", m, err)
 	}
-	closed := false
-	for _, e := range eventsOfType(t, rec, "dating.match.closed") {
-		if strings.Contains(string(e.Payload), matchID.String()) {
-			closed = true
-		}
-	}
-	if !closed {
+	// Audit H2: the auto-block commits dating.match.closed in the outbox.
+	if outboxMatchClosed(t, st, matchID) == 0 {
 		t.Fatalf("no dating.match.closed for the reported match")
 	}
 }

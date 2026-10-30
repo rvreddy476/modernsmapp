@@ -8,10 +8,10 @@
 //     X-Admin-Role and re-derives them from the verified JWT. It also
 //     injects X-Internal-Service-Key on EVERY proxied request, so the key
 //     alone proves nothing about who the caller is.
-//   - Admins and moderators: end users whose gateway-set X-Scopes carries
-//     admin, moderator or superadmin (the gateway's scopeAllows semantics).
-//     requireAdmin gates every /admin route and photo moderation on that,
-//     and the audit actor is their gateway-derived X-User-Id.
+//   - Admins and moderators, only ever through admin-service: it resolves
+//     the admin's permissions and calls dating with a service token signed
+//     for that one permission (admin_token.go). Gateway-set scopes on a
+//     consumer session are never an admin credential.
 //   - Sibling services calling the /v1/dating/internal family. They carry
 //     no end-user identity. requireServiceCaller admits a service token
 //     (X-Service-Authorization, shared/servicetoken, audience "dating") or,
@@ -76,88 +76,30 @@ const (
 // Stable error codes callers can branch on.
 const (
 	CodeAuthRequired              = "AUTH_REQUIRED"
-	CodeAdminScopeRequired        = "ADMIN_SCOPE_REQUIRED"
 	CodeUserCallerRefused         = "USER_CALLER_REFUSED"
 	CodeServiceCredentialRequired = "SERVICE_CREDENTIAL_REQUIRED"
 	CodeServiceTokenRejected      = "SERVICE_TOKEN_REJECTED"
 	CodeEndpointMoved             = "ENDPOINT_MOVED"
 )
 
-// adminScopes are the platform roles that may use the dating admin console.
-// Same set the gateway admits on /internal/ paths.
-var adminScopes = []string{"superadmin", "admin", "moderator"}
-
 const (
 	ctxAdminActor    = "dating_admin_actor"
 	ctxServiceCaller = "dating_service_caller"
 )
 
-// hasAdminScope reports whether a space-separated scopes list holds an
-// admin role. Empty list → never.
-func hasAdminScope(scopes string) bool {
-	for _, s := range strings.Fields(scopes) {
-		for _, want := range adminScopes {
-			if s == want {
-				return true
-			}
-		}
-	}
-	return false
-}
+// Admin routes (audit H3, 2026-10-30). Every admin route — the token-only
+// family under InternalAdminPrefix, the older /v1/dating/admin mount and
+// photo moderation — is gated by requireAdminToken (admin_token.go): an
+// admin-service token carrying the route's permission and the acting admin.
+//
+// There used to be a LEGACY branch here that admitted any gateway-proxied
+// request whose X-Scopes held admin, moderator or superadmin, and never
+// looked at per-route permissions. identity keeps those ladder scopes on a
+// consumer session, so a social-side moderator could read panic GPS or
+// suspend dating users from the consumer app. It is gone: gateway scopes,
+// X-Admin-Role and X-Admin-Id admit nobody to an admin route.
 
-// requireAdmin gates one admin route. perms[0] is the route's permission;
-// any further perms are ones the handler may narrow to per action (a report
-// suspension needs dating:users.ban, not dating:reports.act).
-//
-// Two ways in, never mixed:
-//
-//   - A service token in X-Service-Authorization. The request is judged
-//     ONLY by the token (admin_token.go): the gateway identity headers, the
-//     scopes and the internal key are ignored, and the audit actor is the
-//     token's signed "act" claim.
-//   - LEGACY, no token: a gateway-set identity that is a valid user id AND
-//     gateway-set scopes that include an admin role. No identity → 401;
-//     identity without the scope → 403 ADMIN_SCOPE_REQUIRED. The console
-//     moves to admin-service; this path stays for compatibility until then.
-//
-// X-Admin-Id is deliberately NOT read: the gateway never sets it, so any
-// value there was chosen by whoever sent the request.
-func (h *Handler) requireAdmin(perms ...string) gin.HandlerFunc {
-	if len(perms) == 0 {
-		panic("dating: requireAdmin needs the route's permission")
-	}
-	return func(c *gin.Context) {
-		if rawServiceToken(c) != "" {
-			if !h.authorizeAdminToken(c, perms) {
-				c.Abort()
-				return
-			}
-			c.Next()
-			return
-		}
-		raw := strings.TrimSpace(c.GetHeader(headerUserID))
-		if raw == "" {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, CodeAuthRequired, "authentication required", nil)
-			c.Abort()
-			return
-		}
-		id, err := uuid.Parse(raw)
-		if err != nil || id == uuid.Nil {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, CodeAuthRequired, "invalid user id", nil)
-			c.Abort()
-			return
-		}
-		if !hasAdminScope(c.GetHeader(headerScopes)) {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, CodeAdminScopeRequired, "admin or moderator scope required", nil)
-			c.Abort()
-			return
-		}
-		c.Set(ctxAdminActor, id)
-		c.Next()
-	}
-}
-
-// adminActor returns the admin user id requireAdmin admitted. A handler
+// adminActor returns the admin user id requireAdminToken admitted. A handler
 // reached without it refuses the action (401) — an admin action with no
 // accountable actor never lands.
 func adminActor(c *gin.Context) (uuid.UUID, bool) {

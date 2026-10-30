@@ -268,10 +268,16 @@ func (s *Service) createSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 
 	// Mutual-Spark check: did `toUserID` Spark `fromUserID` since the
 	// pair's last match closed (and not have it declined)?
+	target := map[string]any{
+		"target_kind": targetKind,
+		"target_ref":  targetRef,
+	}
 	mutual, herr := s.store.HasReverseSparks(ctx, fromUserID, toUserID)
 	if herr != nil {
-		// We log but don't fail — the Spark itself was persisted.
+		// We log but don't fail — the Spark itself was persisted. Audit L2:
+		// the retrier re-checks the pair, so a mutual spark is not lost.
 		slog.Warn("has reverse sparks failed", "error", herr)
+		s.recordPendingMatch(ctx, fromUserID, toUserID, target)
 		return sp, nil, nil
 	}
 	if !mutual {
@@ -279,18 +285,18 @@ func (s *Service) createSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 	}
 
 	// Mutual: form the match (saga). Pass spark target as JSON metadata.
-	target := map[string]any{
-		"target_kind": targetKind,
-		"target_ref":  targetRef,
-	}
+	// Audit L2: the durable marker goes first, so a failure below (even one
+	// before the match row exists) is retried by RetryPendingMatches.
+	s.recordPendingMatch(ctx, fromUserID, toUserID, target)
 	match, ferr := s.FormMatch(ctx, fromUserID, toUserID, target)
 	if ferr != nil {
 		// Match formation failed (e.g. message-service unreachable). The
-		// Spark stays persisted so a retry has a chance to complete the
-		// match later.
+		// Spark and the pending-match marker stay, so the retrier (or, once
+		// the match row exists, the saga reconciler) completes the match.
 		slog.Warn("form match after mutual spark failed", "error", ferr)
 		return sp, nil, nil
 	}
+	s.clearPendingMatch(ctx, fromUserID, toUserID)
 
 	// Emit spark.matched alongside match.formed (which the match service
 	// already emitted internally).

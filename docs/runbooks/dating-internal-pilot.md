@@ -10,7 +10,7 @@ Every command below runs in **Git Bash** from `C:\workspace\modernsmapp` unless 
 
 ## 0. Before you start: admin access
 
-**Nobody holds an admin or moderator scope today.** `SUPERADMIN_USER_IDS`, `ADMIN_USER_IDS` and `MODERATOR_USER_IDS` on identity-auth are empty, and `auth.user_roles` has no rows. No access token therefore carries a scope. Through the gateway, every `/v1/dating/admin/*` route and `POST /v1/dating/photos/:id/moderation` answer **403 `ADMIN_SCOPE_REQUIRED`**.
+**Nobody holds an admin or moderator scope today.** `SUPERADMIN_USER_IDS`, `ADMIN_USER_IDS` and `MODERATOR_USER_IDS` on identity-auth are empty, and `auth.user_roles` has no rows. No access token therefore carries a scope. Consumer sessions no longer reach any dating admin route: every `/v1/dating/admin/*` route and `POST /v1/dating/photos/:id/moderation` answer **401 `ADMIN_SERVICE_TOKEN_REQUIRED`** and take only admin-service tokens (reach them through the admin console at `/v1/admin/dating/*`).
 
 ### 0.1 Grant a moderator (founder decision; this is a privilege grant)
 

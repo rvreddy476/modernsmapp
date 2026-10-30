@@ -222,10 +222,16 @@ func (s *Store) BlockUser(ctx context.Context, userID, targetUserID uuid.UUID) e
 // BlockUserAndSever inserts the dating_blocks row (idempotent on
 // (user_id, blocked_id)) and, in the same transaction, closes any open
 // match between the pair (closed_by = the blocker), deletes the pair's
-// sparks in both directions and removes stashes in both directions. The
-// closed matches are returned so the caller emits dating.match.closed after
-// commit. Unblocking restores none of it. Propagation to graph-service and
-// cache invalidation are the service layer's job.
+// sparks in both directions and removes stashes in both directions.
+//
+// Audit H2: the same transaction enqueues dating.user.blocked and one
+// dating.match.closed per closed match in dating.outbox_events, so chat
+// closes the pair's conversations whenever the block commits, whatever
+// happens to the request afterwards. A repeated block enqueues
+// dating.user.blocked again (chat applies it idempotently, and it heals a
+// block made before the outbox existed). Unblocking restores none of it.
+// Propagation to graph-service and cache invalidation are the service
+// layer's job.
 func (s *Store) BlockUserAndSever(ctx context.Context, userID, targetUserID uuid.UUID) (*BlockOutcome, error) {
 	if userID == uuid.Nil || targetUserID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: user ids required")
@@ -279,6 +285,14 @@ func (s *Store) BlockUserAndSever(ctx context.Context, userID, targetUserID uuid
 		return nil, fmt.Errorf("remove stashes on block: %w", err)
 	}
 	out.StashesDeleted = tag.RowsAffected()
+	if err := enqueueUserBlocked(ctx, tx, userID, targetUserID); err != nil {
+		return nil, err
+	}
+	for _, m := range out.ClosedMatches {
+		if err := enqueueMatchClosed(ctx, tx, m, userID, CloseReasonBlock); err != nil {
+			return nil, err
+		}
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit block: %w", err)
 	}

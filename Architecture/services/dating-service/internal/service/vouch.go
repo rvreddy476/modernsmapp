@@ -229,6 +229,56 @@ func (s *Service) ListVouchesFor(ctx context.Context, viewerID, voucheeID uuid.U
 	return vouches, nil
 }
 
+// PublicVouch is an accepted vouch as someone other than the vouchee sees it
+// on the vouchee's card (audit M3): what the friend said and how they know
+// the person, never who the friend is. voucher_id names a platform account
+// (and community_id a community) that would tie a dating profile to the
+// vouchee's social circle, so both stay with the vouchee.
+type PublicVouch struct {
+	ID           uuid.UUID `json:"id"`
+	VoucheeID    uuid.UUID `json:"vouchee_id"`
+	Relationship *string   `json:"relationship,omitempty"`
+	Note         *string   `json:"note,omitempty"`
+	Status       string    `json:"status"`
+	CreatedAt    time.Time `json:"created_at"`
+}
+
+// ListPublicVouchesFor is GET /vouches/for/:userId for anyone but the
+// vouchee (audit M3). Only a viewer who may see the vouchee's card
+// (canViewPerson: their deck, picks, an open match or an incoming spark)
+// gets an answer — at most MaxVouchesDisplayedPerProfile accepted vouches,
+// as PublicVouch. Anyone else, an anonymous caller and a user id with no
+// dating profile alike, gets ErrCandidateUnavailable (404), so the route
+// tells nobody whether a profile exists.
+func (s *Service) ListPublicVouchesFor(ctx context.Context, viewerID, voucheeID uuid.UUID) ([]PublicVouch, error) {
+	if viewerID == uuid.Nil || voucheeID == uuid.Nil || viewerID == voucheeID {
+		return nil, ErrCandidateUnavailable
+	}
+	if err := s.requireActionableCandidate(ctx, viewerID, voucheeID); err != nil {
+		return nil, err
+	}
+	vouches, err := s.ListVouchesFor(ctx, viewerID, voucheeID, "accepted")
+	if err != nil {
+		return nil, err
+	}
+	return publicVouches(vouches), nil
+}
+
+// publicVouches projects accepted vouches to PublicVouch.
+func publicVouches(vouches []*store.Vouch) []PublicVouch {
+	out := make([]PublicVouch, 0, len(vouches))
+	for _, v := range vouches {
+		if v == nil || v.Status != "accepted" {
+			continue
+		}
+		out = append(out, PublicVouch{
+			ID: v.ID, VoucheeID: v.VoucheeID, Relationship: v.Relationship, Note: v.Note,
+			Status: v.Status, CreatedAt: v.CreatedAt,
+		})
+	}
+	return out
+}
+
 // ListVouchesSent returns the caller's sent vouches, leaving out vouchees
 // blocked either way or with a deleted or suspended profile.
 func (s *Service) ListVouchesSent(ctx context.Context, voucherID uuid.UUID) ([]*store.Vouch, error) {

@@ -38,7 +38,7 @@ func TestD8HTTP_AdminPanicListHasNoCoordinatesDetailIsAudited(t *testing.T) {
 	admin := uuid.New()
 	id := out.Incident.ID.String()
 
-	list := serve(env.r, http.MethodGet, "/v1/dating/admin/safety/panic?limit=200", "", gatewayUser(admin, "moderator"))
+	list := serve(env.r, http.MethodGet, "/v1/dating/admin/safety/panic?limit=200", "", env.adminHeaders(t, admin, PermPanicRead))
 	if list.Code != http.StatusOK {
 		t.Fatalf("list: status=%d body=%s", list.Code, list.Body.String())
 	}
@@ -53,7 +53,18 @@ func TestD8HTTP_AdminPanicListHasNoCoordinatesDetailIsAudited(t *testing.T) {
 		t.Fatalf("list wrote %d audit rows", n)
 	}
 
-	detail := serve(env.r, http.MethodGet, "/v1/dating/admin/safety/panic/"+id, "", gatewayUser(admin, "moderator"))
+	// Audit H3: a consumer-session moderator gets nothing, not even the
+	// audit row; the GPS needs dating:panic.reveal.
+	if w := serve(env.r, http.MethodGet, "/v1/dating/admin/safety/panic/"+id, "", gatewayUser(admin, "moderator")); w.Code != http.StatusUnauthorized {
+		t.Fatalf("consumer moderator detail: status=%d body=%s, want 401", w.Code, w.Body.String())
+	}
+	if w := serve(env.r, http.MethodGet, "/v1/dating/admin/safety/panic/"+id, "", env.adminHeaders(t, admin, PermPanicRead)); w.Code != http.StatusForbidden {
+		t.Fatalf("panic.read token on detail: status=%d body=%s, want 403", w.Code, w.Body.String())
+	}
+	if n := len(auditFor(t, env.st, "panic_incident:"+id)); n != 0 {
+		t.Fatalf("refused detail views wrote %d audit rows", n)
+	}
+	detail := serve(env.r, http.MethodGet, "/v1/dating/admin/safety/panic/"+id, "", env.adminHeaders(t, admin, PermPanicReveal))
 	if detail.Code != http.StatusOK {
 		t.Fatalf("detail: status=%d body=%s", detail.Code, detail.Body.String())
 	}
@@ -67,11 +78,11 @@ func TestD8HTTP_AdminPanicListHasNoCoordinatesDetailIsAudited(t *testing.T) {
 	if len(rows) != 1 || rows[0].Action != "panic_viewed" || rows[0].ActorAdminID != admin || rows[0].TargetUserID != user {
 		t.Fatalf("detail audit rows=%d actor=%v, want 1 panic_viewed by %s", len(rows), actorOf(rows), admin)
 	}
-	if w := serve(env.r, http.MethodGet, "/v1/dating/admin/safety/panic/"+id, "", gatewayUser(uuid.New(), "")); w.Code != http.StatusForbidden {
-		t.Fatalf("plain user detail: status=%d, want 403", w.Code)
+	if w := serve(env.r, http.MethodGet, "/v1/dating/admin/safety/panic/"+id, "", gatewayUser(uuid.New(), "")); w.Code != http.StatusUnauthorized {
+		t.Fatalf("plain user detail: status=%d, want 401", w.Code)
 	}
 
-	resolve := serve(env.r, http.MethodPost, "/v1/dating/admin/safety/panic/"+id+"/resolve", `{"note":"called the user; safe"}`, gatewayUser(admin, "admin"))
+	resolve := serve(env.r, http.MethodPost, "/v1/dating/admin/safety/panic/"+id+"/resolve", `{"note":"called the user; safe"}`, env.adminHeaders(t, admin, PermPanicAct))
 	if resolve.Code != http.StatusOK || !strings.Contains(resolve.Body.String(), `"status":"resolved"`) || strings.Contains(resolve.Body.String(), "12.97") {
 		t.Fatalf("resolve: status=%d body=%s", resolve.Code, resolve.Body.String())
 	}
@@ -96,7 +107,7 @@ func TestD8HTTP_AdminReportActionMismatchedTarget409(t *testing.T) {
 		t.Fatalf("seed report: %v", err)
 	}
 	body := `{"action":"suspend","target_user_id":"` + bystander.String() + `"}`
-	w := serve(env.r, http.MethodPost, "/v1/dating/admin/reports/"+report.ID.String()+"/action", body, gatewayUser(uuid.New(), "admin"))
+	w := serve(env.r, http.MethodPost, "/v1/dating/admin/reports/"+report.ID.String()+"/action", body, env.adminHeaders(t, uuid.New(), PermReportsAct, PermUsersBan))
 	if w.Code != http.StatusConflict || errorCode(t, w) != "REPORT_TARGET_MISMATCH" {
 		t.Fatalf("status=%d body=%s, want 409 REPORT_TARGET_MISMATCH", w.Code, w.Body.String())
 	}

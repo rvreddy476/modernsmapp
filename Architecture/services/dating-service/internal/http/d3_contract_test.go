@@ -110,6 +110,8 @@ func TestD3Contracts(t *testing.T) {
 		viewer, candidate := uuid.New(), uuid.New()
 		mustSeedActiveProfile(t, st, viewer)
 		mustSeedActiveProfile(t, st, candidate)
+		// Audit H1: a pass is on someone in the caller's deck.
+		pairInDeck(t, st, viewer, candidate)
 		rec := contractDo(r, http.MethodPost, "/v1/dating/pulse/"+candidate.String()+"/pass", `{"reason":"not_my_type"}`, viewer)
 		assertContract(t, rec, http.StatusOK, "pulse_pass_post_200", map[uuid.UUID]string{viewer: "<viewer>", candidate: "<candidate>"})
 		// Idempotent: a repeat answers the same contract.

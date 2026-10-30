@@ -157,6 +157,32 @@ func (h *Handler) DeclineSpark(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, gin.H{"declined": true, "spark_id": sparkID.String()}, nil)
 }
 
+// RevealSparkNote — GET /v1/dating/sparks/:id/note. The recipient reads an
+// incoming spark's note that their comment filter hid (mechanic M13; audit
+// L4: the lists no longer carry a hidden note's text). Anyone else, a
+// declined or blocked spark, one without a note, or a caller the liked-you
+// gate locks get 404 NOT_FOUND.
+func (h *Handler) RevealSparkNote(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	sparkID, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	out, err := h.svc.RevealSparkNote(c.Request.Context(), sparkID, userID)
+	if err != nil {
+		if errors.Is(err, store.ErrSparkNotFound) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "spark not found", nil)
+			return
+		}
+		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
 // AcceptSpark — POST /v1/dating/sparks/:id/accept.
 //
 // The recipient sparks back, which forms the match through the ordinary

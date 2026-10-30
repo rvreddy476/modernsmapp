@@ -241,13 +241,64 @@ func TestAdminToken_SuspendNeedsUsersBan(t *testing.T) {
 	}
 }
 
-// The LEGACY path is unchanged for a request with no token: admin scopes
-// still reach the handler.
-func TestAdminToken_LegacyScopesStillWork(t *testing.T) {
+// Audit H3: the old /v1/dating/admin mount no longer admits gateway scopes.
+// A consumer-session moderator asking for panic GPS is refused before the
+// handler runs, and the same request with an admin-service token for
+// dating:panic.reveal is admitted — so the mount is gated exactly like the
+// token-only family, permission included.
+func TestAdminToken_LegacyMountNeedsTheToken(t *testing.T) {
 	rg := newAdminTokenRig(t)
-	w := serve(rg.r, http.MethodGet, "/v1/dating/admin/safety/panic/not-a-uuid", "", gatewayUser(uuid.New(), "moderator"))
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("legacy admin: status=%d body=%s, want 400 (admitted)", w.Code, w.Body.String())
+	const path = "/v1/dating/admin/safety/panic/not-a-uuid"
+	w := serve(rg.r, http.MethodGet, path, "", gatewayUser(uuid.New(), "moderator"))
+	if w.Code != http.StatusUnauthorized || errorCode(t, w) != CodeAdminTokenRequired {
+		t.Fatalf("consumer moderator: status=%d code=%q body=%s, want 401 %s", w.Code, errorCode(t, w), w.Body.String(), CodeAdminTokenRequired)
+	}
+	readOnly := rg.mint(t, rg.admin, AudienceDating, []string{PermPanicRead}, rg.actor.String())
+	hdr := bearer(readOnly)
+	hdr[headerInternalKey] = testInternalKey
+	if w := serve(rg.r, http.MethodGet, path, "", hdr); w.Code != http.StatusForbidden || errorCode(t, w) != CodeAdminPermissionScope {
+		t.Fatalf("panic.read token on reveal: status=%d code=%q, want 403 %s", w.Code, errorCode(t, w), CodeAdminPermissionScope)
+	}
+	reveal := rg.mint(t, rg.admin, AudienceDating, []string{PermPanicReveal}, rg.actor.String())
+	hdr = bearer(reveal)
+	hdr[headerInternalKey] = testInternalKey
+	if w := serve(rg.r, http.MethodGet, path, "", hdr); w.Code != http.StatusBadRequest {
+		t.Fatalf("panic.reveal token: status=%d body=%s, want 400 (admitted)", w.Code, w.Body.String())
+	}
+}
+
+// Every route on the old mount names the same permission as its token-only
+// twin, so a token without it is refused there too.
+func TestAdminToken_EveryLegacyRouteNeedsItsPermission(t *testing.T) {
+	rg := newAdminTokenRig(t)
+	perms := map[string]string{}
+	for _, ri := range rg.r.Routes() {
+		if strings.HasPrefix(ri.Path, InternalAdminPrefix+"/") {
+			perms[ri.Method+" "+strings.TrimPrefix(ri.Path, InternalAdminPrefix)] = ri.Path
+		}
+	}
+	seen := 0
+	for _, ri := range rg.r.Routes() {
+		if !strings.HasPrefix(ri.Path, "/v1/dating/admin/") {
+			continue
+		}
+		key := ri.Method + " " + strings.TrimPrefix(ri.Path, "/v1/dating/admin")
+		if _, ok := perms[key]; !ok {
+			t.Fatalf("legacy admin route %s %s has no token-only twin", ri.Method, ri.Path)
+		}
+		seen++
+		path := strings.NewReplacer(":id", uuid.NewString(), ":userId", uuid.NewString()).Replace(ri.Path)
+		// A token for an unrelated product permission only.
+		tok := rg.mint(t, rg.admin, AudienceDating, []string{PermStatsRead}, rg.actor.String())
+		hdr := bearer(tok)
+		hdr[headerInternalKey] = testInternalKey
+		w := serve(rg.r, ri.Method, path, `{"action":"dismiss"}`, hdr)
+		if w.Code != http.StatusForbidden || errorCode(t, w) != CodeAdminPermissionScope {
+			t.Fatalf("%s %s with only stats.read: status=%d code=%q, want 403 %s", ri.Method, ri.Path, w.Code, errorCode(t, w), CodeAdminPermissionScope)
+		}
+	}
+	if seen < 12 {
+		t.Fatalf("checked %d legacy admin routes, want every one (>= 12)", seen)
 	}
 }
 

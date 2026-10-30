@@ -233,6 +233,9 @@ func newDatingFixture(t *testing.T, datingURL string, dating bool) *datingFixtur
 		internalServiceKey: testInternalKey,
 		datingServiceURL:   datingURL,
 		httpClient:         &http.Client{Timeout: 2 * time.Second},
+		// The audit H2 send gate: dating reports every match open here
+		// (dating_match_gate_test.go covers the gate itself).
+		datingMatchState: &stubDatingState{open: true},
 	}
 	return &datingFixture{svc: svc, store: st, convID: convID, matchID: matchID, userA: a, userB: b}
 }

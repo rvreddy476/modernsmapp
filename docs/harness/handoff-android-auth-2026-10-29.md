@@ -331,3 +331,48 @@ each, `scripts/verify/android.sh --fast :module` while working.
 | Invoice | optional `adjustments`, `net_payable_paise` |
 
 Unit tests for each; report the `android.sh --full` RESULT block.
+
+## Eighth Android lane: dating (30 Oct 2026)
+
+Audit: [audit-2026-10-30-dating-android.md](audit-2026-10-30-dating-android.md)
+(server side: [audit-2026-10-30-dating-backend.md](audit-2026-10-30-dating-backend.md),
+fixed on this branch). Work in `feature/dating` and the notification /
+nav code it uses. One item at a time, unit test each,
+`scripts/verify/android.sh --fast :module` while working.
+
+1. **H1 safety pushes go nowhere**: route the trusted-contact panic alert
+   and the live-location-share push to a screen that shows the incident /
+   shared point (`UsNavHost.kt` ~731). The server now sends `title`/`body`
+   in `data`, high priority, channel `dating`, and lock-screen copy that
+   names no one; show the details only after unlock.
+2. **M1** live location: refresh the shared point while sharing and show
+   "shared at". **M2** map every dating type (`dating.*`, `dating_*`) to the
+   DATING channel in `NotificationChannelSpec.forType`. **M3** screenshot
+   protection: treat a failed `/client-config` read as ON
+   (`ScreenProtection.kt` ~62-70; the server default is now ON) and add it
+   to Safety, past matches, report and every match chat. **M4** trusted
+   contacts: no silent `share_location_on_panic=true`
+   (`DatingRepository.kt` ~363) — wait for the founder's decision; until
+   then send false and fix the copy that says only the safety team sees it.
+3. **Lows**: L1 clear `DatingSession` on sign-out and on profile deletion;
+   L2 ask for coarse location; L3 keep the premium idempotency key across a
+   5xx and mint a new one per pass; L4 read open matches with paging, not
+   `status=all` under the 200 cap; L5 after "Report and block" leave the
+   chat; L6 the smaller items.
+
+**Server contract changes on this branch:**
+
+| Case | Now |
+|---|---|
+| Pass / stash a candidate you were never served | 404 `CANDIDATE_UNAVAILABLE` |
+| `GET /vouches/for/:userId` for someone you can't see | 404 `CANDIDATE_UNAVAILABLE`; viewers see relationship + note, never `voucher_id` / `community_id` |
+| Hidden spark note | `note` is omitted in incoming sparks and liked-you; fetch it with `GET /v1/dating/sparks/:id/note` on tap. **Sync the golden** `src/test/resources/contracts/sparks_incoming_get_200_note_hidden.json` from `Architecture/services/dating-service/internal/http/testdata/contracts/` together with this change |
+| Saving a profile with no identity birth date | 403 `IDENTITY_DOB_REQUIRED` (client birth dates are no longer trusted) |
+| Aadhaar already linked to another account | 409 `AADHAAR_ALREADY_LINKED` |
+| Primary photo changed after a selfie pass | badge drops to phone until a moderator re-checks |
+| Send / edit in a dating chat that is closed (block, unmatch, suspension, deletion, restriction, risk hold) | 409 `MATCH_CLOSED` within 15 s |
+| Send / edit while either member is under review | 409 `MATCH_ON_HOLD` — show "chat paused", keep the draft; it reopens when the review clears |
+| Live location share after unmatch / block | 404 |
+| `screen_protection` in client config | true by default |
+
+Unit tests for each; report the `android.sh --full` RESULT block.

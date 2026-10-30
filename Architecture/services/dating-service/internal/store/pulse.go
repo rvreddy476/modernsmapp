@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"time"
 
@@ -236,55 +237,14 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 	if limit <= 0 {
 		limit = 50
 	}
-	args := []any{q.ViewerID}
-	where := []string{
-		`p.user_id <> $1`,
-		// §P1-1 profile-status gate: only fully-activated profiles
-		// surface in discovery. The legacy boolean filters below stay
-		// as belt-and-braces during the rollout.
-		`p.profile_status = 'active'`,
-		`p.deleted_at IS NULL`,
-		`p.paused = false`,
-		`p.visible_to_public = true`,
-		// P0-5: absolute age floor — no candidate without a verifiable
-		// birth_date AND a computed age of 18+ enters discovery,
-		// regardless of the viewer's preference window. Closes the
-		// "candidate age = 0" leak from the gap analysis.
-		`p.birth_date IS NOT NULL`,
-		`EXTRACT(YEAR FROM AGE(p.birth_date)) >= 18`,
-		// P0-6: candidate must have at least one approved photo. The
-		// SELECT in candidateSelectCols already filters the primary
-		// photo to approved-only; this EXISTS clause guarantees the
-		// candidate has one rather than relying on the LEFT-JOIN-style
-		// scalar subquery returning NULL.
-		// Lane D6: a match_only / sparked_only primary no longer hides the
-		// profile — the viewer gets its server-blurred image instead.
-		`EXISTS (SELECT 1 FROM dating_photos ph
-		    WHERE ph.user_id = p.user_id
-		      AND ph.is_primary = true
-		      AND ph.moderation_status = 'approved')`,
-		// Mutual block filter — neither side has blocked the other.
-		`NOT ` + blockedPairPredicate("$1", "p.user_id"),
-		// §P0-7 Phase A: drop candidates whose enforcement level
-		// removes them from discovery. Rows with no risk record (the
-		// vast majority before the sweeper has run) implicitly pass
-		// because LEFT JOIN'd rar.risk_level is NULL and `IS NOT
-		// DISTINCT FROM` would be over-engineering — we just check
-		// for the four restrictive levels.
-		`NOT EXISTS (SELECT 1 FROM dating_account_risk rar
-		    WHERE rar.user_id = p.user_id
-		      AND rar.risk_level IN
-		          ('hide_from_discovery','chat_hold','admin_review','suspend'))`,
-		// §P1-3 (schema doc): an incognito profile appears only to
-		// people IT has sparked. The viewer sparking the incognito
-		// profile reveals nothing.
-		incognitoVisiblePredicate("p", "$1"),
-	}
-	// Mechanic M16: people who know each other, when either hides from
-	// people they know, stay apart.
-	if s.hideKnownEnabled {
-		where = append(where, `NOT `+hideKnownPredicate("$1", "p.user_id"))
-	}
+	// Audit H1: the visibility rule (status, pause, visible_to_public, 18+,
+	// approved primary photo, blocks, risk, incognito, the two-way gender
+	// rule, hide-known) is candidateVisibleClauses, shared with every other
+	// surface that shows a profile. The viewer's gender halves come from the
+	// query (the service resolves them from the viewer's preferences and
+	// profile); "" applies no filter on that side.
+	args := []any{q.ViewerID, q.GenderFilter, q.ViewerGender}
+	where := s.candidateVisibleClauses("p", "$1", viewerGender{wants: "$2::text", gender: "$3::text"})
 	// Decline cooldown: a candidate who declined one of the viewer's sparks
 	// stays out of the viewer's deck for the cooldown. One-directional.
 	args = append(args, s.declineCutoff())
@@ -303,24 +263,6 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 	if q.MaxAge > 0 {
 		args = append(args, q.MaxAge)
 		where = append(where, fmt.Sprintf(`EXTRACT(YEAR FROM AGE(p.birth_date)) <= $%d`, len(args)))
-	}
-	if q.GenderFilter != "" {
-		args = append(args, q.GenderFilter)
-		where = append(where, fmt.Sprintf(`p.gender = $%d`, len(args)))
-	}
-	// Lane D10: the gender rule runs BOTH ways. The viewer's preference
-	// filters the candidate's gender (above); this filters the candidate's
-	// own preference by the viewer's gender. A candidate with no
-	// preferences row, an empty preference or "everyone" admits anyone; any
-	// other value must equal the viewer's gender exactly. Skipped when the
-	// viewer has no gender on their profile — there is nothing to compare,
-	// and an empty deck would be worse than an unfiltered one.
-	if q.ViewerGender != "" {
-		args = append(args, q.ViewerGender)
-		where = append(where, fmt.Sprintf(`(NOT EXISTS (SELECT 1 FROM dating_preferences cp WHERE cp.user_id = p.user_id)
-		    OR EXISTS (SELECT 1 FROM dating_preferences cp
-		        WHERE cp.user_id = p.user_id
-		          AND COALESCE(NULLIF(btrim(cp.interested_in_gender), ''), 'everyone') IN ('everyone', $%d)))`, len(args)))
 	}
 	if len(q.IntentFilter) > 0 {
 		args = append(args, q.IntentFilter)
@@ -387,11 +329,22 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 				// Each cell adds one parameter to keep the planner
 				// happy with prepared-statement caching.
 				ors := make([]string, 0, len(cells))
+				firstCellArg := len(args) + 1
 				for _, c := range cells {
 					args = append(args, c+"%")
 					ors = append(ors, fmt.Sprintf("%s LIKE $%d", s.effectiveCol("p", "location_geohash", "geohash"), len(args)))
 				}
 				where = append(where, "("+strings.Join(ors, " OR ")+")")
+				// Audit L3: with travel on, the effective geohash above is a
+				// COALESCE over a correlated subquery, which no index can
+				// serve, so every active profile was scanned. This driver
+				// narrows the set first with two indexed branches — home
+				// geohash (idx_dating_profiles_geohash_prefix) and trip
+				// destination — and the exact effective check above then
+				// decides (a traveller's home cell no longer counts).
+				if s.travelEnabled {
+					where = append(where, travelGeoDriverPredicate(firstCellArg, len(cells)))
+				}
 			}
 		}
 	}
@@ -405,15 +358,16 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 		}
 	}
 
-	// Larger inner scan, randomised so subsequent calls vary, then top-N by random.
+	// Audit L3: a bounded random sample instead of ORDER BY random() over
+	// every match (which evaluated random() for, and sorted, the whole
+	// filtered set — a metro at precision 4 is ~120 km square). The window
+	// starts at a random user id and walks the primary key, wrapping round
+	// once, so each call reads at most the window and calls still vary; the
+	// window is shuffled below so its key order never shows in the deck.
 	args = append(args, limit*4) // over-fetch so distance pruning + diversity have headroom
-	sql := `
-        SELECT ` + s.candidateCols() + `
-        FROM dating_profiles p
-        LEFT JOIN dating_tunes t ON t.user_id = p.user_id
-        ` + whereClause + `
-        ORDER BY random()
-        LIMIT $` + fmt.Sprintf("%d", len(args))
+	limitArg := len(args)
+	args = append(args, uuid.New())
+	sql := candidateSampleSQL(s.candidateCols(), whereClause, len(args), limitArg)
 
 	rows, err := s.db.Query(ctx, sql, args...)
 	if err != nil {
@@ -421,12 +375,22 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 	}
 	defer rows.Close()
 
-	out := make([]CandidateProfile, 0, limit)
+	sampled := make([]*CandidateProfile, 0, limit*4)
 	for rows.Next() {
 		c, err := s.scanCandidate(ctx, rows)
 		if err != nil {
 			return nil, err
 		}
+		sampled = append(sampled, c)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// Deck order only, not a secret.
+	rand.Shuffle(len(sampled), func(i, j int) { sampled[i], sampled[j] = sampled[j], sampled[i] }) //nolint:gosec // G404: deck order, not security
+
+	out := make([]CandidateProfile, 0, limit)
+	for _, c := range sampled {
 		// Distance hard-filter (post-query — haversine without PostGIS), on
 		// the snapped points. The radius is exclusive, so a step that is also
 		// a bucket edge (5, 10, 25 km) admits exactly the buckets below it.
@@ -439,7 +403,48 @@ func (s *Store) FetchCandidates(ctx context.Context, q CandidateQuery) ([]Candid
 		}
 		out = append(out, *c)
 	}
-	return out, rows.Err()
+	return out, nil
+}
+
+// candidateSampleSQL is FetchCandidates' bounded random window (audit L3):
+// up to $limitArg candidates with user_id >= the random pivot $pivotArg in
+// key order, then, wrapping round, from the start of the key space. Each
+// branch can stop at its LIMIT instead of sorting the whole filtered set.
+func candidateSampleSQL(cols, whereClause string, pivotArg, limitArg int) string {
+	branch := func(cmp string) string {
+		return `(SELECT ` + cols + `
+        FROM dating_profiles p
+        LEFT JOIN dating_tunes t ON t.user_id = p.user_id
+        ` + whereClause + `
+          AND p.user_id ` + cmp + fmt.Sprintf(` $%d::uuid
+        ORDER BY p.user_id
+        LIMIT $%d)`, pivotArg, limitArg)
+	}
+	return `
+        SELECT * FROM (` + branch(">=") + `
+        UNION ALL
+        ` + branch("<") + `) sample
+        LIMIT ` + fmt.Sprintf("$%d", limitArg)
+}
+
+// travelGeoDriverPredicate restricts candidates to those whose home geohash
+// (indexed) or active-or-upcoming trip destination falls in one of the n
+// cells bound to $first.. (audit L3). It is a superset of the exact
+// travel-aware cell check, which stays in the WHERE clause.
+func travelGeoDriverPredicate(first, n int) string {
+	home := make([]string, 0, n)
+	trip := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		home = append(home, fmt.Sprintf("gp.location_geohash LIKE $%d", first+i))
+		trip = append(trip, fmt.Sprintf("tr.geohash LIKE $%d", first+i))
+	}
+	return `p.user_id IN (
+        SELECT gp.user_id FROM dating_profiles gp
+        WHERE gp.deleted_at IS NULL AND gp.location_geohash IS NOT NULL
+          AND (` + strings.Join(home, " OR ") + `)
+        UNION
+        SELECT tr.user_id FROM dating_travel tr
+        WHERE tr.ended_at IS NULL AND (` + strings.Join(trip, " OR ") + `))`
 }
 
 // scanCandidate scans a candidate and opens its sealed community (lane D9).
@@ -480,19 +485,17 @@ func incognitoVisiblePredicate(alias, viewer string) string {
 }
 
 // GetCandidateForViewer returns one CandidateProfile as `viewerID` may see
-// it (used by Nebula). No row when the profile is deleted or suspended, the
-// pair is blocked either way, or the profile is incognito and has not
-// sparked the viewer.
+// it (Nebula, rewind). No row unless the profile passes the full visibility
+// rule discovery applies (candidateVisibleClauses, audit H1): a paused,
+// hidden, under-review, restricted (under-18), risk-hidden, blocked or
+// gender-excluded profile is never loaded for a card.
 func (s *Store) GetCandidateForViewer(ctx context.Context, viewerID, userID uuid.UUID) (*CandidateProfile, error) {
 	row := s.db.QueryRow(ctx, `
         SELECT `+s.candidateCols()+`
         FROM dating_profiles p
         LEFT JOIN dating_tunes t ON t.user_id = p.user_id
         WHERE p.user_id = $2
-          AND p.deleted_at IS NULL
-          AND p.profile_status NOT IN ('suspended','deleted')
-          AND NOT `+blockedPairPredicate("$1::uuid", "p.user_id")+`
-          AND `+incognitoVisiblePredicate("p", "$1::uuid"), viewerID, userID)
+          AND `+andClauses(s.candidateVisibleClauses("p", "$1::uuid", viewerGenderFromDB("$1::uuid"))), viewerID, userID)
 	return s.scanCandidate(ctx, row)
 }
 
@@ -634,8 +637,9 @@ func (s *Store) RecordPass(ctx context.Context, userID, candidateID uuid.UUID, r
 }
 
 // ListPassedCandidates returns the user's most-recent passes (paged, max
-// `limit`), skipping candidates blocked either way or whose profile is
-// deleted, suspended or gone. Used by GET /v1/dating/pulse/nebula?filter=passed.
+// `limit`), keeping only candidates the user may still see under the full
+// visibility rule (candidateVisiblePredicate, audit H1). Used by
+// GET /v1/dating/pulse/nebula?filter=passed.
 func (s *Store) ListPassedCandidates(ctx context.Context, userID uuid.UUID, limit, offset int) ([]PassedCandidate, error) {
 	if limit <= 0 || limit > 100 {
 		limit = 100
@@ -648,8 +652,7 @@ func (s *Store) ListPassedCandidates(ctx context.Context, userID uuid.UUID, limi
         FROM dating_passes dp
         WHERE dp.user_id = $1
           AND dp.rewound_at IS NULL
-          AND NOT `+blockedPairPredicate("dp.user_id", "dp.candidate_id")+`
-          AND `+visibleProfilePredicate("dp.candidate_id")+`
+          AND `+s.candidateVisiblePredicate("dp.candidate_id", "$1::uuid")+`
         ORDER BY dp.passed_at DESC
         LIMIT $2 OFFSET $3`, userID, limit, offset)
 	if err != nil {

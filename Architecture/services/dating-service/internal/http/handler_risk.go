@@ -1,7 +1,7 @@
 // HTTP handlers for §P0-7 Phase A account-risk surface.
 //
 //   - GET /v1/dating/admin/risk?level=&limit=&offset= — admin queue read
-//     (requireAdmin).
+//     (requireAdminToken).
 //   - GET /v1/dating/internal/risk/:userId — service-only lookup for
 //     cross-service gates (requireServiceCaller(OpRiskRead)). The old
 //     /v1/dating/risk/:userId path answers 410.

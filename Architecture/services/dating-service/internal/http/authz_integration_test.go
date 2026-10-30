@@ -26,6 +26,18 @@ type authzEnv struct {
 	r    *gin.Engine
 	st   *store.Store
 	pool *pgxpool.Pool
+	// rg signs admin-service tokens the router verifies (audit H3: every
+	// admin route, on either mount, needs one).
+	rg *adminTokenRig
+}
+
+// adminHeaders is what admin-service sends for one admin: a token for perms
+// whose acting admin is admin, plus the key the gateway would stamp.
+func (e *authzEnv) adminHeaders(t *testing.T, admin uuid.UUID, perms ...string) map[string]string {
+	t.Helper()
+	h := bearer(e.rg.mint(t, e.rg.admin, AudienceDating, perms, admin.String()))
+	h[headerInternalKey] = testInternalKey
+	return h
 }
 
 func setupAuthzIT(t *testing.T) *authzEnv {
@@ -56,11 +68,13 @@ func setupAuthzIT(t *testing.T) *authzEnv {
 	svc := service.New(st, nil)
 	svc.SetMessageClient(&stubMessageClient{})
 
+	rg := newAdminTokenRig(t)
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(gin.Recovery())
-	New(svc).WithInternalKey(testInternalKey).RegisterRoutes(r)
-	return &authzEnv{r: r, st: st, pool: pool}
+	New(svc).WithInternalKey(testInternalKey).WithServiceAuth(rg.v).RegisterRoutes(r)
+	rg.r = r
+	return &authzEnv{r: r, st: st, pool: pool, rg: rg}
 }
 
 func seedProfile(t *testing.T, st *store.Store, id uuid.UUID) {
@@ -86,19 +100,24 @@ func auditFor(t *testing.T, st *store.Store, resource string) []*store.AdminAudi
 	return out
 }
 
-// assertAdminGate runs the anonymous → 401 and plain user → 403 legs of one
-// admin mutation, then the admin leg, and returns the admin response.
-func assertAdminGate(t *testing.T, env *authzEnv, method, path, body string, admin uuid.UUID, scope string) {
+// assertAdminGate runs the refusal legs of one admin route — anonymous, a
+// plain user, and (audit H3) a consumer session holding the admin,
+// moderator and superadmin ladder scopes, each 401 without an admin-service
+// token — then the admin leg with a token for perm naming admin, and checks
+// it answers 200.
+func assertAdminGate(t *testing.T, env *authzEnv, method, path, body string, admin uuid.UUID, perm string) {
 	t.Helper()
 	w := serve(env.r, method, path, body, map[string]string{headerInternalKey: testInternalKey})
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("anonymous %s: status=%d body=%s, want 401", path, w.Code, w.Body.String())
 	}
-	w = serve(env.r, method, path, body, gatewayUser(uuid.New(), "feed:read"))
-	if w.Code != http.StatusForbidden || errorCode(t, w) != CodeAdminScopeRequired {
-		t.Fatalf("plain user %s: status=%d body=%s, want 403 %s", path, w.Code, w.Body.String(), CodeAdminScopeRequired)
+	for _, scopes := range []string{"feed:read", "moderator", "admin", "superadmin"} {
+		w = serve(env.r, method, path, body, gatewayUser(admin, scopes))
+		if w.Code != http.StatusUnauthorized || errorCode(t, w) != CodeAdminTokenRequired {
+			t.Fatalf("consumer session scopes=%q %s: status=%d body=%s, want 401 %s", scopes, path, w.Code, w.Body.String(), CodeAdminTokenRequired)
+		}
 	}
-	hdr := gatewayUser(admin, scope)
+	hdr := env.adminHeaders(t, admin, perm)
 	hdr["X-Admin-Id"] = uuid.NewString() // a forged actor must not be recorded
 	w = serve(env.r, method, path, body, hdr)
 	if w.Code != http.StatusOK {
@@ -115,14 +134,14 @@ func TestAuthzIT_ReportAction_AuditActorIsAdmin(t *testing.T) {
 	}
 	admin := uuid.New()
 	path := "/v1/dating/admin/reports/" + report.ID.String() + "/action"
-	assertAdminGate(t, env, http.MethodPost, path, `{"action":"dismiss"}`, admin, "admin")
+	assertAdminGate(t, env, http.MethodPost, path, `{"action":"dismiss"}`, admin, PermReportsAct)
 
 	rows := auditFor(t, env.st, "report:"+report.ID.String())
 	if len(rows) != 1 {
 		t.Fatalf("audit rows for report = %d, want exactly 1 (refused requests must not audit)", len(rows))
 	}
 	if rows[0].ActorAdminID != admin {
-		t.Fatalf("audit actor = %s, want the admin's gateway user id %s", rows[0].ActorAdminID, admin)
+		t.Fatalf("audit actor = %s, want the token's acting admin %s", rows[0].ActorAdminID, admin)
 	}
 }
 
@@ -139,8 +158,8 @@ func TestAuthzIT_PhotoModeration_OwnerCannotApprove(t *testing.T) {
 
 	// The owner, through the gateway, tries to approve their own photo.
 	w := serve(env.r, http.MethodPost, path, `{"status":"approved"}`, gatewayUser(owner, ""))
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("owner self-approve: status=%d body=%s, want 403", w.Code, w.Body.String())
+	if w.Code != http.StatusUnauthorized {
+		t.Fatalf("owner self-approve: status=%d body=%s, want 401", w.Code, w.Body.String())
 	}
 	var status string
 	if err := env.pool.QueryRow(ctx, `SELECT moderation_status FROM dating_photos WHERE id=$1`, photo.ID).Scan(&status); err != nil {
@@ -151,7 +170,7 @@ func TestAuthzIT_PhotoModeration_OwnerCannotApprove(t *testing.T) {
 	}
 
 	moderator := uuid.New()
-	assertAdminGate(t, env, http.MethodPost, path, `{"status":"approved"}`, moderator, "moderator")
+	assertAdminGate(t, env, http.MethodPost, path, `{"status":"approved"}`, moderator, PermPhotosReview)
 	rows := auditFor(t, env.st, "photo:"+photo.ID.String())
 	if len(rows) != 1 || rows[0].ActorAdminID != moderator {
 		t.Fatalf("photo audit rows=%d actor=%v, want 1 row by %s", len(rows), actorOf(rows), moderator)
@@ -168,7 +187,7 @@ func TestAuthzIT_PanicAck_Audited(t *testing.T) {
 	}
 	panicID := out.Incident.ID
 	admin := uuid.New()
-	assertAdminGate(t, env, http.MethodPost, "/v1/dating/admin/safety/panic/"+panicID.String()+"/ack", "", admin, "superadmin")
+	assertAdminGate(t, env, http.MethodPost, "/v1/dating/admin/safety/panic/"+panicID.String()+"/ack", "", admin, PermPanicAct)
 
 	rows := auditFor(t, env.st, "panic_incident:"+panicID.String())
 	if len(rows) != 1 || rows[0].ActorAdminID != admin || rows[0].Action != "panic_acknowledged" || rows[0].TargetUserID != user {
@@ -186,14 +205,14 @@ func TestAuthzIT_PanicAck_Audited(t *testing.T) {
 func TestAuthzIT_AdminReadRoutes(t *testing.T) {
 	env := setupAuthzIT(t)
 	admin := uuid.New()
-	for _, path := range []string{
-		"/v1/dating/admin/reports",
-		"/v1/dating/admin/safety/panic",
-		"/v1/dating/admin/photos/pending",
-		"/v1/dating/admin/audit",
-		"/v1/dating/admin/risk",
+	for path, perm := range map[string]string{
+		"/v1/dating/admin/reports":        PermReportsRead,
+		"/v1/dating/admin/safety/panic":   PermPanicRead,
+		"/v1/dating/admin/photos/pending": PermPhotosReview,
+		"/v1/dating/admin/audit":          PermAuditRead,
+		"/v1/dating/admin/risk":           PermRiskRead,
 	} {
-		assertAdminGate(t, env, http.MethodGet, path, "", admin, "admin")
+		assertAdminGate(t, env, http.MethodGet, path, "", admin, perm)
 	}
 }
 
@@ -292,9 +311,68 @@ func TestAuthzIT_VouchVisibility(t *testing.T) {
 		}
 	}
 
+	// Audit M3: someone who cannot see the vouchee's card — a stranger, an
+	// anonymous caller — gets the same 404 as for a user id with no dating
+	// profile at all, whatever ?status= says.
+	refused := func(who, path string, hdr map[string]string) {
+		t.Helper()
+		w := serve(env.r, http.MethodGet, path, "", hdr)
+		if w.Code != http.StatusNotFound || errorCode(t, w) != "CANDIDATE_UNAVAILABLE" {
+			t.Fatalf("%s GET %s: status=%d body=%s, want 404 CANDIDATE_UNAVAILABLE", who, path, w.Code, w.Body.String())
+		}
+		if strings.Contains(w.Body.String(), acceptedBy.String()) || strings.Contains(w.Body.String(), `"d1"`) {
+			t.Fatalf("%s: refusal leaks a vouch: %s", who, w.Body.String())
+		}
+	}
 	for _, status := range []string{"pending", "declined", "", "accepted"} {
-		onlyAccepted("stranger status="+status, list(status, gatewayUser(stranger, "")))
-		onlyAccepted("anonymous status="+status, list(status, map[string]string{headerInternalKey: testInternalKey}))
+		path := "/v1/dating/vouches/for/" + vouchee.String()
+		if status != "" {
+			path += "?status=" + url.QueryEscape(status)
+		}
+		refused("stranger status="+status, path, gatewayUser(stranger, ""))
+		refused("anonymous status="+status, path, map[string]string{headerInternalKey: testInternalKey})
+	}
+	refused("no profile", "/v1/dating/vouches/for/"+uuid.NewString(), gatewayUser(stranger, ""))
+
+	// A viewer who may see the card (an open match) gets the accepted vouch
+	// only — relationship and note, never the voucher's identity.
+	matched := uuid.New()
+	seedProfile(t, env.st, matched)
+	matchID, _, err := env.st.CreateOrGetOpenMatch(ctx, matched, vouchee, nil)
+	if err != nil {
+		t.Fatalf("seed match: %v", err)
+	}
+	if err := env.st.MarkMatchActive(ctx, matchID, uuid.New()); err != nil {
+		t.Fatalf("activate match: %v", err)
+	}
+	for _, status := range []string{"pending", "declined", ""} {
+		path := "/v1/dating/vouches/for/" + vouchee.String()
+		if status != "" {
+			path += "?status=" + url.QueryEscape(status)
+		}
+		w := serve(env.r, http.MethodGet, path, "", gatewayUser(matched, ""))
+		if w.Code != http.StatusOK {
+			t.Fatalf("match status=%s: status=%d body=%s", status, w.Code, w.Body.String())
+		}
+		var got struct {
+			Data []map[string]any `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(got.Data) != 1 || got.Data[0]["status"] != "accepted" || got.Data[0]["relationship"] != "friend" || got.Data[0]["note"] != "d1" {
+			t.Fatalf("match status=%s: got %v, want the one accepted vouch with its note", status, got.Data)
+		}
+		for _, key := range []string{"voucher_id", "community_id"} {
+			if _, ok := got.Data[0][key]; ok {
+				t.Fatalf("match view carries %q: %s", key, w.Body.String())
+			}
+		}
+		for _, id := range []uuid.UUID{acceptedBy, pendingBy, declinedBy} {
+			if strings.Contains(w.Body.String(), id.String()) {
+				t.Fatalf("match view names a voucher: %s", w.Body.String())
+			}
+		}
 	}
 
 	owner := gatewayUser(vouchee, "")

@@ -19,6 +19,14 @@ type Layer2Processor interface {
 	ProcessLayer2(ctx context.Context, messageID, conversationID uuid.UUID, snippet string) error
 }
 
+// DeckInvalidator drops cached decks (the service's InvalidatePulseCache and
+// InvalidateDecksForCandidate). An interface so this package does not import
+// the service package.
+type DeckInvalidator interface {
+	InvalidatePulseCache(ctx context.Context, viewerID uuid.UUID)
+	InvalidateDecksForCandidate(ctx context.Context, candidateID uuid.UUID)
+}
+
 // Consumer listens on platform-events for cross-service lifecycle signals
 // + the dating-events topic for the moderation layer-2 work queue.
 //
@@ -29,6 +37,7 @@ type Consumer struct {
 	datingReader   *kafka.Reader
 	store          *store.Store
 	layer2         Layer2Processor
+	decks          DeckInvalidator
 }
 
 // NewConsumer constructs a Consumer with the default dialer.
@@ -61,6 +70,12 @@ func NewConsumerWithDialer(brokers []string, groupID string, s *store.Store, dia
 // SetLayer2Processor injects the moderation layer-2 handler.
 func (c *Consumer) SetLayer2Processor(p Layer2Processor) {
 	c.layer2 = p
+}
+
+// SetDeckInvalidator injects the deck-cache invalidation used after a
+// platform deletion (audit 2026-10-30 L1).
+func (c *Consumer) SetDeckInvalidator(d DeckInvalidator) {
+	c.decks = d
 }
 
 // Start blocks until ctx is cancelled. Two readers run in parallel.
@@ -144,6 +159,12 @@ func (c *Consumer) handleUserDeletionRequested(ctx context.Context, envelope eve
 	if err := c.store.SoftDeleteProfile(ctx, userID); err != nil {
 		slog.Warn("dating-service: failed to soft-delete profile", "user_id", userID, "error", err)
 		return err
+	}
+	// Audit L1: the deleted user leaves every cached deck now, not when the
+	// 24 h cache expires, and their own deck goes too.
+	if c.decks != nil {
+		c.decks.InvalidatePulseCache(ctx, userID)
+		c.decks.InvalidateDecksForCandidate(ctx, userID)
 	}
 	return nil
 }
