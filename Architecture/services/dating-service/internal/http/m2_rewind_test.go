@@ -86,6 +86,7 @@ func TestM2RewindContracts(t *testing.T) {
 	d := newM1Deck(t, m2Config())
 	first, second := d.candidate(), d.candidate()
 	labels := map[uuid.UUID]string{d.viewer: "<viewer>", first: "<candidate>", second: "<second>"}
+	d.dealt(first, second)
 
 	assertContract(t, d.rewind(), http.StatusConflict, "pulse_rewind_409_nothing_to_undo", labels)
 
@@ -131,6 +132,7 @@ func TestM2ContractFixturesWellFormed(t *testing.T) {
 func TestRewindBringsThePassedCardBack(t *testing.T) {
 	d := newM1Deck(t, m2Config())
 	a := d.candidate()
+	d.dealt(a)
 	d.pass(a)
 	if ids, _ := d.deck(); ids[a] {
 		t.Fatalf("a passed candidate is still in the deck")
@@ -155,6 +157,7 @@ func TestRewindIsOneStepNeverAChain(t *testing.T) {
 	d := newM1Deck(t, m2Config())
 	d.grantPass()
 	a, b := d.candidate(), d.candidate()
+	d.dealt(a, b)
 	d.pass(a)
 	d.pass(b)
 	if got := d.mustRewind(); got != b {
@@ -172,6 +175,7 @@ func TestRewindNeverUndoesASpark(t *testing.T) {
 	d := newM1Deck(t, m2Config())
 	d.grantPass()
 	passed, sparked := d.candidate(), d.candidate()
+	d.dealt(passed, sparked)
 	d.pass(passed)
 	d.spark(sparked)
 	d.wantRefusal(d.rewind(), http.StatusConflict, "REWIND_NOTHING_TO_UNDO")
@@ -189,6 +193,7 @@ func TestRewindNeverUndoesASpark(t *testing.T) {
 func TestRewindFreeAllowanceIsOneADay(t *testing.T) {
 	d := newM1Deck(t, m2Config())
 	a := d.candidate()
+	d.dealt(a)
 	d.pass(a)
 	d.mustRewind()
 	d.pass(a)
@@ -213,6 +218,7 @@ func TestRewindPassHolderIsNotLimited(t *testing.T) {
 	d := newM1Deck(t, m2Config())
 	d.grantPass()
 	a := d.candidate()
+	d.dealt(a)
 	for i := 0; i < 3; i++ {
 		d.pass(a)
 		rec := d.rewind()
@@ -230,6 +236,7 @@ func TestRewindPassHolderIsNotLimited(t *testing.T) {
 func TestRewindRefusesABlockedCandidate(t *testing.T) {
 	d := newM1Deck(t, m2Config())
 	a := d.candidate()
+	d.dealt(a)
 	d.pass(a)
 	rec := contractDo(d.env.r, http.MethodPost, "/v1/dating/safety/block", `{"target_user_id":"`+d.viewer.String()+`"}`, a)
 	if rec.Code != http.StatusOK {

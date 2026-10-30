@@ -112,7 +112,29 @@ func (s *Service) SetGraphProvider(p matcher.GraphProvider) {
 // PULSE_COHORT_GATE flip applies immediately on the next request — we do
 // not want a gated user to see a stale Pulse from the cache. Conversely,
 // users who are inside the rollout get the cache-backed fast path.
+//
+// Audit H1: the cards returned are recorded as dealt (store.RecordDeckServed),
+// the durable record inCurrentDeck checks before an action keyed by a
+// candidate id. A failed write is logged, not returned: the deck still shows,
+// and the cards are only not yet actionable by id.
 func (s *Service) GetPulseToday(ctx context.Context, viewerID uuid.UUID) (*PulseResponse, error) {
+	resp, err := s.pulseToday(ctx, viewerID)
+	if err != nil || resp == nil || len(resp.Data) == 0 {
+		return resp, err
+	}
+	ids := make([]uuid.UUID, 0, len(resp.Data))
+	for _, card := range resp.Data {
+		ids = append(ids, card.CandidateID)
+	}
+	if rerr := s.store.RecordDeckServed(ctx, viewerID, ids); rerr != nil {
+		slog.Warn("deck served record failed", "viewer_id", viewerID, "error", rerr)
+	}
+	return resp, nil
+}
+
+// pulseToday builds (or reads from cache) the viewer's deck without recording
+// it as dealt. GetPulseToday is the one caller that hands it to the client.
+func (s *Service) pulseToday(ctx context.Context, viewerID uuid.UUID) (*PulseResponse, error) {
 	// P0-5: viewer must be a verified adult to see the discovery deck.
 	// Surface as CohortGated so the client renders the same
 	// "complete your profile" empty state instead of a hard error —
@@ -379,8 +401,7 @@ func (s *Service) InvalidateDecksForCandidate(ctx context.Context, candidateID u
 
 // deckQuery builds the viewer's deck query: their preferences, both halves
 // of the gender rule, distance, verified-only and the pass filters. The deck
-// (computePulseToday) and the served-card check (inCurrentDeck) share it, so
-// "could this card be in the viewer's deck" never drifts from the deck.
+// (computePulseToday) is its one user today.
 func (s *Service) deckQuery(ctx context.Context, viewerID uuid.UUID) (store.CandidateQuery, *store.Profile, error) {
 	// Load viewer state.
 	viewerProfile, err := s.viewerProfile(ctx, viewerID)
@@ -443,7 +464,7 @@ func (s *Service) deckQuery(ctx context.Context, viewerID uuid.UUID) (store.Cand
 
 // computePulseToday is the real matching pipeline.
 func (s *Service) computePulseToday(ctx context.Context, viewerID uuid.UUID) (*PulseResponse, error) {
-	// 1-2. Viewer state and the candidate query (shared with inCurrentDeck).
+	// 1-2. Viewer state and the candidate query.
 	q, viewerProfile, err := s.deckQuery(ctx, viewerID)
 	if err != nil {
 		return nil, err

@@ -244,3 +244,57 @@ func TestCheckSelfieBinding_PrimaryChangeWithdrawsBadge(t *testing.T) {
 		t.Fatalf("selfie status = %+v (%v), want passed throughout", v, err)
 	}
 }
+
+// H1: the dealt record is per viewer and pair, refreshed on re-serving,
+// bounded by the window, and goes with a purged profile on either side.
+func TestDeckServed_RecordWindowAndPurge(t *testing.T) {
+	s, cleanup := privacyTestStore(t)
+	defer cleanup()
+	ctx := context.Background()
+	viewer, dealt, other, stranger := uuid.New(), uuid.New(), uuid.New(), uuid.New()
+	for _, id := range []uuid.UUID{viewer, dealt, other, stranger} {
+		ensureProfileForTest(t, s, id)
+	}
+	was := func(v, c uuid.UUID) bool {
+		t.Helper()
+		ok, err := s.WasDealt(ctx, v, c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return ok
+	}
+	if err := s.RecordDeckServed(ctx, viewer, []uuid.UUID{dealt, other}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordDeckServed(ctx, viewer, []uuid.UUID{dealt}); err != nil { // re-served: no duplicate
+		t.Fatalf("re-serve: %v", err)
+	}
+	if !was(viewer, dealt) || !was(viewer, other) {
+		t.Fatalf("dealt cards not recorded")
+	}
+	if was(viewer, stranger) || was(dealt, viewer) {
+		t.Fatalf("a card never dealt (or dealt to someone else) counts as dealt")
+	}
+	// Past the window: not dealt any more, and pruned on the next deal.
+	if _, err := s.db.Exec(ctx, `UPDATE dating_deck_served SET served_at = now() - make_interval(secs => $3)
+        WHERE user_id = $1 AND candidate_id = $2`, viewer, other, DeckServedWindow.Seconds()+60); err != nil {
+		t.Fatal(err)
+	}
+	if was(viewer, other) {
+		t.Fatalf("a card dealt before the window still counts")
+	}
+	if err := s.RecordDeckServed(ctx, viewer, []uuid.UUID{dealt}); err != nil {
+		t.Fatal(err)
+	}
+	var rows int
+	if err := s.db.QueryRow(ctx, `SELECT count(*) FROM dating_deck_served WHERE user_id = $1`, viewer).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("rows after prune = %d (%v), want 1", rows, err)
+	}
+	// A purge removes the rows on both sides.
+	if _, err := s.PurgeUserData(ctx, dealt); err != nil {
+		t.Fatalf("purge: %v", err)
+	}
+	if was(viewer, dealt) {
+		t.Fatalf("purged profile still recorded as dealt")
+	}
+}

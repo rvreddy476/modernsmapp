@@ -400,48 +400,26 @@ func (s *Service) canViewPerson(ctx context.Context, viewerID, targetID uuid.UUI
 	return s.inCurrentDeck(ctx, viewerID, targetID)
 }
 
-// inCurrentDeck reports whether targetID sits in the viewer's current deck.
-// The cached batch answers when there is one: it holds every card served from
-// it that has not been acted on. Without one (no Redis, the batch expired or
-// was invalidated) there is no record of what was served, and a recomputed
-// deck is a fresh random sample cut to the remaining allowance (audit L3), so
-// it can miss the very card the client is holding. The answer is then
-// deterministic instead: does the target pass this viewer's deck query
-// (deckQuery — every visibility rule, their preferences and filters, not
-// passed or acted on) and the other side's dealbreakers. Someone who could
-// never be in the viewer's deck is still refused.
+// inCurrentDeck reports whether targetID is a deck card the viewer was dealt
+// and can still see (audit H1). "Dealt" is the durable record GET /pulse/today
+// writes (store.RecordDeckServed), not the Redis batch and never a recomputed
+// deck: a recompute is a fresh random sample cut to the remaining allowance
+// (audit L3), which can both refuse the card the client is holding and admit
+// one it was never shown. A card dealt in the window stays actionable after
+// the cached batch expires; a deck-eligible stranger never dealt is refused.
+// A standing pass takes the card out of the deck, as it always did (a
+// retried pass is admitted earlier, by requirePassable; a rewound pass no
+// longer stands). The visibility rule (store.CandidateVisibleTo) still
+// applies, so someone who paused, hid or blocked since being dealt is refused.
 func (s *Service) inCurrentDeck(ctx context.Context, viewerID, targetID uuid.UUID) (bool, error) {
-	if deck := s.readPulseCache(ctx, viewerID); deck != nil {
-		for _, card := range deck.Data {
-			if card.CandidateID == targetID {
-				return true, nil
-			}
-		}
-		return false, nil
-	}
-	return s.deckEligible(ctx, viewerID, targetID)
-}
-
-// deckEligible reports whether targetID passes the viewer's deck query and
-// the target's dealbreakers — the deck's own rules for one candidate, with no
-// sampling, ordering or allowance involved.
-func (s *Service) deckEligible(ctx context.Context, viewerID, targetID uuid.UUID) (bool, error) {
-	q, viewerProfile, err := s.deckQuery(ctx, viewerID)
-	if err != nil {
+	dealt, err := s.store.WasDealt(ctx, viewerID, targetID)
+	if err != nil || !dealt {
 		return false, err
 	}
-	q.OnlyIDs = []uuid.UUID{targetID}
-	q.Limit = 1
-	candidates, err := s.store.FetchCandidates(ctx, q)
-	if err != nil {
-		return false, fmt.Errorf("deck eligibility: %w", err)
+	if passed, err := s.store.HasStandingPass(ctx, viewerID, targetID); err != nil || passed {
+		return false, err
 	}
-	for _, c := range s.dropByTheirDealbreakers(ctx, viewerProfile, candidates) {
-		if c.UserID == targetID {
-			return true, nil
-		}
-	}
-	return false, nil
+	return s.store.CandidateVisibleTo(ctx, viewerID, targetID)
 }
 
 // GetPersonCard returns the compact card for one person, or

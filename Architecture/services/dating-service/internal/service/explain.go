@@ -171,9 +171,10 @@ func (s *Service) ExplainCandidate(ctx context.Context, viewerID, targetID uuid.
 
 // candidateInCurrentDeck reports whether targetID is a card in the viewer's
 // current deck: the cached deck, or (on a miss) the deck computed for today,
-// which GetPulseToday caches. A gated viewer's deck is empty.
+// which pulseToday caches. A gated viewer's deck is empty. It does not record
+// the deck as dealt: explaining a card is not serving one.
 func (s *Service) candidateInCurrentDeck(ctx context.Context, viewerID, targetID uuid.UUID) (bool, error) {
-	deck, err := s.GetPulseToday(ctx, viewerID)
+	deck, err := s.pulseToday(ctx, viewerID)
 	if err != nil {
 		return false, err
 	}

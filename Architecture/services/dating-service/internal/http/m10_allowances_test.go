@@ -47,6 +47,7 @@ func (d *m1Deck) allowances() map[string]map[string]any {
 func TestM10AllowancesContracts(t *testing.T) {
 	d := newM1Deck(t, m10Config())
 	a, b := d.candidate(), d.candidate()
+	d.dealt(a, b)
 	d.spark(a)
 	d.pass(b)
 	assertContract(t, contractDo(d.env.r, http.MethodGet, "/v1/dating/allowances", ``, d.viewer),
@@ -99,6 +100,7 @@ func TestAllowancesFollowUseAndThePass(t *testing.T) {
 	if before["deck"]["remaining_today"] != float64(25) || before["rewind"]["remaining_today"] != float64(1) || before["super_spark"]["remaining_today"] != float64(1) {
 		t.Fatalf("fresh allowances = %v", before)
 	}
+	d.dealt(a, b)
 	d.mustSuperSpark(a)
 	d.pass(b)
 	d.mustRewind()

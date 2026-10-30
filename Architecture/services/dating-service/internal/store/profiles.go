@@ -582,6 +582,9 @@ func (s *Store) PurgeUserDataWithOutcome(ctx context.Context, userID uuid.UUID) 
 	if err := exec(`DELETE FROM dating_deck_ledger WHERE user_id = $1 OR candidate_id = $1`, userID); err != nil {
 		return nil, err
 	}
+	if err := exec(`DELETE FROM dating_deck_served WHERE user_id = $1 OR candidate_id = $1`, userID); err != nil {
+		return nil, err
+	}
 	if err := exec(`DELETE FROM dating_rewind_ledger WHERE user_id = $1 OR candidate_id = $1`, userID); err != nil {
 		return nil, err
 	}

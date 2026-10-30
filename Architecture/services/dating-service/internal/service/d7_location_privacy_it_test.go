@@ -238,7 +238,11 @@ func TestD7_ExplainOnlyForCandidatesInTheCurrentDeck(t *testing.T) {
 			t.Fatalf("explain %s: err=%v, want ErrCandidateUnavailable", name, err)
 		}
 	}
-	// Passed, the candidate has left the deck.
+	// Passed, the candidate has left the deck. The pass acts on the deck the
+	// client was dealt (audit H1), so deal it first.
+	if _, err := svc.GetPulseToday(ctx, viewer); err != nil {
+		t.Fatalf("deal deck: %v", err)
+	}
 	if _, err := svc.PassCandidate(ctx, viewer, inDeck, ""); err != nil {
 		t.Fatalf("pass: %v", err)
 	}

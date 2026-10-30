@@ -98,6 +98,19 @@ func (d *m1Deck) deck() (map[uuid.UUID]bool, map[string]any) {
 	return ids, body.Meta
 }
 
+// dealt deals the deck (the client's GET /pulse/today) and fails unless every
+// id was in it. Audit H1: a pass acts only on a card the viewer was dealt, so
+// a test passes what the deck showed, as the app does.
+func (d *m1Deck) dealt(ids ...uuid.UUID) {
+	d.t.Helper()
+	got, _ := d.deck()
+	for _, id := range ids {
+		if !got[id] {
+			d.t.Fatalf("candidate %s was not dealt: deck = %v", id, got)
+		}
+	}
+}
+
 func (d *m1Deck) spark(to uuid.UUID) {
 	d.t.Helper()
 	rec := contractDo(d.env.r, http.MethodPost, "/v1/dating/sparks", sparkBody(to, "m1"), d.viewer)
@@ -287,6 +300,7 @@ func TestDeckPassHolderGetsThePassAllowance(t *testing.T) {
 func TestDeckRefillOffKeepsThePilotDeck(t *testing.T) {
 	d := newM1Deck(t, service.MechanicsConfig{DeckRefill: false, DeckDailyLimitFree: 1})
 	a, b := d.candidate(), d.candidate()
+	d.dealt(a, b)
 	d.pass(a)
 	ids, meta := d.deck()
 	if !ids[b] || ids[a] {

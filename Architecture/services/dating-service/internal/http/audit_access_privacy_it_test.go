@@ -29,6 +29,16 @@ func pairInDeck(t *testing.T, st *store.Store, viewer, candidate uuid.UUID) {
 	}
 }
 
+// dealTo deals viewer's deck (GET /pulse/today, the client's own fetch) and
+// fails unless candidate was dealt: audit H1 lets a pass, stash or person
+// card act only on a card the viewer was dealt.
+func dealTo(t *testing.T, r http.Handler, viewer, candidate uuid.UUID) {
+	t.Helper()
+	if !deckIDs(t, r, viewer)[candidate] {
+		t.Fatalf("candidate %s was not dealt to the viewer", candidate)
+	}
+}
+
 func nebulaIDs(t *testing.T, d *m1Deck) map[uuid.UUID]bool {
 	t.Helper()
 	rec := contractDo(d.env.r, http.MethodGet, "/v1/dating/pulse/nebula", ``, d.viewer)
@@ -67,6 +77,7 @@ func TestH1HTTP_PassNeedsAServedCandidateAndNebulaHidesPaused(t *testing.T) {
 	// A served candidate: the pass lands, a retry answers the same, Nebula
 	// shows them — until they pause.
 	served := d.candidate()
+	d.dealt(served)
 	d.pass(served)
 	d.pass(served)
 	if !nebulaIDs(t, d)[served] {

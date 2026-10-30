@@ -452,7 +452,9 @@ func TestD3_PassExcludesFromNextDeckAndCachedDeck(t *testing.T) {
 		}
 		return false
 	}
-	deck, err := svc.computePulseToday(ctx, viewer)
+	// The deck the client is dealt (GetPulseToday records the cards dealt;
+	// audit H1 lets a pass act only on a dealt card).
+	deck, err := svc.GetPulseToday(ctx, viewer)
 	if err != nil {
 		t.Fatalf("deck: %v", err)
 	}

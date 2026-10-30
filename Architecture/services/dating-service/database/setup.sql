@@ -1623,6 +1623,22 @@ CREATE TABLE IF NOT EXISTS dating_deck_ledger (
 CREATE INDEX IF NOT EXISTS idx_dating_deck_ledger_user
     ON dating_deck_ledger(user_id, acted_at DESC);
 
+-- Audit H1 — dating_deck_served: the cards GET /pulse/today returned to each
+--   viewer in the last 24 hours. An action keyed by a candidate id (pass,
+--   stash, the person card) needs the card to have been dealt; this row is
+--   that record, so it outlives the Redis deck cache and is never re-sampled.
+--   One row per pair (re-serving refreshes served_at); a viewer's stale rows
+--   are pruned when the next deck is dealt, and a profile purge deletes both
+--   sides.
+CREATE TABLE IF NOT EXISTS dating_deck_served (
+    user_id      UUID        NOT NULL,
+    candidate_id UUID        NOT NULL,
+    served_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (user_id, candidate_id)
+);
+CREATE INDEX IF NOT EXISTS idx_dating_deck_served_candidate
+    ON dating_deck_served(candidate_id);
+
 -- ---------------------------------------------------------------------------
 -- Pulse mechanics M2 — rewind (DATING_REWIND_ENABLED): undo the last pass.
 --
