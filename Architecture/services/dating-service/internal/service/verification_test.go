@@ -45,6 +45,9 @@ func newVerificationSvc(t *testing.T) (*Service, *store.Store, *redis.Client, fu
 		t.Fatalf("connect: %v", err)
 	}
 	st := store.New(pool)
+	// Audit M1: the Aadhaar subject is stored as a keyed hash, so the rig
+	// carries the module's fixed test key ring (lane D9), as newD3Svc does.
+	st.SetPII(testPII(t))
 	// Use a redis client only when REDIS_ADDR is set; otherwise tests that
 	// require Redis will skip.
 	var rdb *redis.Client

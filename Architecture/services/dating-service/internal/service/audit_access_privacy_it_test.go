@@ -23,11 +23,21 @@ func TestAadhaarFlow_OnePersonOneAccount(t *testing.T) {
 	seedActiveProfile(t, st, second)
 	code := "same-person-" + uuid.NewString()[:8] // the mock maps one code to one subject
 
-	out, err := svc.CompleteAadhaarFlow(ctx, first, code, "state-1")
+	// Each account starts its own flow, so the one-shot state check (live
+	// when the rig has Redis) passes and only the subject binding decides.
+	startFor := func(id uuid.UUID) string {
+		t.Helper()
+		start, err := svc.StartAadhaarFlow(ctx, id)
+		if err != nil {
+			t.Fatalf("start: %v", err)
+		}
+		return start.State
+	}
+	out, err := svc.CompleteAadhaarFlow(ctx, first, code, startFor(first))
 	if err != nil || out.TrustTier != "aadhaar" {
 		t.Fatalf("first account: %+v %v", out, err)
 	}
-	if _, err := svc.CompleteAadhaarFlow(ctx, second, code, "state-2"); !errors.Is(err, store.ErrAadhaarAlreadyLinked) {
+	if _, err := svc.CompleteAadhaarFlow(ctx, second, code, startFor(second)); !errors.Is(err, store.ErrAadhaarAlreadyLinked) {
 		t.Fatalf("second account: err=%v, want ErrAadhaarAlreadyLinked", err)
 	}
 	if p, err := st.GetProfile(ctx, second); err != nil || p.TrustTier == "aadhaar" {
