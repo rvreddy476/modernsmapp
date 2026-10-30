@@ -40,8 +40,8 @@ func foodCase(rt productRoute) (string, []reqOpt) {
 
 func TestFoodRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 	rg := newProductsRig(t, true)
-	if len(FoodRoutes) != 54 {
-		t.Fatalf("FoodRoutes has %d entries, want 54", len(FoodRoutes))
+	if len(FoodRoutes) != 59 {
+		t.Fatalf("FoodRoutes has %d entries, want 59", len(FoodRoutes))
 	}
 	for _, rt := range FoodRoutes {
 		t.Run(rt.operation+" "+rt.method+" "+rt.path, func(t *testing.T) {

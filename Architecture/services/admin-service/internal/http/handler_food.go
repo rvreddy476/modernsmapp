@@ -117,6 +117,13 @@ var FoodRoutes = []productRoute{
 	{method: http.MethodDelete, path: "/item-reviews/:reviewId", operation: "food.item_review.hide", permission: permFoodReviewsModerate, targetType: "food_item_review"},
 	{method: http.MethodGet, path: "/support/tickets", operation: "food.tickets.list", permission: permFoodTicketsAct},
 	{method: http.MethodPost, path: "/support/tickets/:ticketId/status", operation: "food.ticket.status", permission: permFoodTicketsAct, targetType: "food_ticket"},
+	// Order chat, ticket threads and batch detail moved off consumer X-Scopes
+	// onto these token routes (food backend audit M3).
+	{method: http.MethodGet, path: "/support/tickets/:ticketId", operation: "food.ticket.read", permission: permFoodTicketsAct, targetType: "food_ticket"},
+	{method: http.MethodPost, path: "/support/tickets/:ticketId/messages", operation: "food.ticket.message", permission: permFoodTicketsAct, targetType: "food_ticket"},
+	{method: http.MethodGet, path: "/orders/:orderId/messages", operation: "food.order.messages", permission: permFoodOrdersRead, targetType: "food_order"},
+	{method: http.MethodPost, path: "/orders/:orderId/messages", operation: "food.order.message", permission: permFoodTicketsAct, targetType: "food_order"},
+	{method: http.MethodGet, path: "/orders/:orderId/batch", operation: "food.order.batch", permission: permFoodOrdersRead, targetType: "food_order"},
 
 	{method: http.MethodGet, path: "/coupons", operation: "food.coupons.list", permission: permFoodCouponsManage},
 	{method: http.MethodPost, path: "/coupons", operation: "food.coupon.create", permission: permFoodCouponsManage},
