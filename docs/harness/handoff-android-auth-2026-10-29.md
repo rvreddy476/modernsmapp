@@ -63,3 +63,30 @@ The audit with every file and line is
 
 Report: files, the `android.sh --full` RESULT block, mutations killed/total,
 and anything only the founder can confirm on a device.
+
+---
+
+## Second Android lane: home feed and reels (30 Oct 2026)
+
+Run this as its own lane after the login lane above. Scope:
+`mobile/android/feature/feed` (and the reels screen it shares), plus the core
+paging/media modules they use. The audit with exact lines is
+`docs/harness/audit-2026-10-30-feed-reads-android.md` (Android section). Fix:
+
+1. **Deleting your just-published post doesn't remove it.** The post pinned
+   at the top after publishing (`_head` in `FeedViewModel.kt` ~200-201,
+   ~249-253, ~274-289, drawn by `FeedScreen.kt` ~248; `_live` in
+   `ReelsViewModel.kt` ~352, ~385, ~464, ~516-523) ignores delete, hide and
+   edit, so a deleted post keeps showing and playing at the top. Apply delete,
+   hide and edit to these pinned items exactly as to paged items.
+2. **Memory grows for the whole session.** `FeedPager.kt` ~21-27 sets no
+   Paging `maxSize`, and the Home tabs never end. Set `maxSize` (and keep
+   `enablePlaceholders` consistent with it) so old pages are dropped.
+3. **Low:** `MediaDeliveryCache.kt` ~26-34 never evicts expired entries;
+   follow status for every loaded author is re-requested on every page, and
+   failures retry every time (`FeedViewModel.kt` ~493-498, ~591-593,
+   `FollowGraph.kt` ~63-87); a failed pull-to-refresh with posts on screen
+   shows nothing, so offline looks like up to date (`FeedScreen.kt` ~346-353,
+   ~556-568).
+
+Unit tests for each; report the `android.sh --full` RESULT block.
