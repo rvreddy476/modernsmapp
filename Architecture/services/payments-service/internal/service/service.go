@@ -337,7 +337,7 @@ func (s *Service) InitiatePayment(ctx context.Context, in InitiateInput) (*postg
 		}
 	}
 
-	s.publishEvent(ctx, "payment.initiated", res.Intent.PayerID.String(), res.Intent)
+	s.publishEvent(ctx, "payment.initiated", res.Intent.PayerID.String(), res.Intent.ID.String(), res.Intent)
 	return res.Intent, nil
 }
 
@@ -569,7 +569,7 @@ func (s *Service) UpdateStatus(ctx context.Context, id uuid.UUID, oldStatus, new
 	} else if newStatus == "failed" {
 		eventType = "payment.failed"
 	}
-	s.publishEvent(ctx, eventType, actorID.String(), intent)
+	s.publishEvent(ctx, eventType, actorID.String(), intent.ID.String(), intent)
 	return intent, nil
 }
 
@@ -898,7 +898,7 @@ func (s *Service) UpdateStatusByProviderRef(ctx context.Context, providerRef, ne
 	// new_status} payload went out — which the commerce consumer drops
 	// for lack of a reference. Every webhook-driven order confirmation
 	// was lost that way.
-	s.publishEvent(ctx, eventType, "", intent)
+	s.publishEvent(ctx, eventType, "", intent.ID.String(), intent)
 }
 
 // ApplyWebhookRefund settles a refund.processed webhook from Razorpay.
@@ -985,14 +985,18 @@ func (s *Service) ApplyWebhookRefund(ctx context.Context, paymentID, orderProvid
 
 	intent.Status = newStatus
 	intent.RefundedAmountMinor = newRefundedTotal
-	s.publishEvent(ctx, "payment.refunded", "", intent)
+	s.publishEvent(ctx, "payment.refunded", "", intent.ID.String(), intent)
 	slog.Info("webhook refund: applied",
 		"intent_id", intent.ID, "refund_id", refundProviderRef,
 		"amount_minor", amountMinor, "new_status", newStatus,
 		"refunded_total_minor", newRefundedTotal)
 }
 
-func (s *Service) publishEvent(ctx context.Context, eventType, key string, payload any) {
+// publishEvent writes one intent event to the outbox. actor, when it is a
+// user id, becomes the envelope's ActorUserID; partitionKey (the intent
+// id) keys the Kafka message, so one intent's events stay in order across
+// the relay (commerce audit M4).
+func (s *Service) publishEvent(ctx context.Context, eventType, actor, partitionKey string, payload any) {
 	data, err := json.Marshal(payload)
 	if err != nil {
 		slog.Error("failed to marshal event", "event_type", eventType, "error", err)
@@ -1007,9 +1011,9 @@ func (s *Service) publishEvent(ctx context.Context, eventType, key string, paylo
 		OccurredAt: time.Now().UTC(),
 		Payload:    data,
 	}
-	if key != "" {
-		if _, err := uuid.Parse(key); err == nil {
-			k := key
+	if actor != "" {
+		if _, err := uuid.Parse(actor); err == nil {
+			k := actor
 			envelope.ActorUserID = &k
 		}
 	}
@@ -1026,7 +1030,7 @@ func (s *Service) publishEvent(ctx context.Context, eventType, key string, paylo
 	if s.store == nil {
 		return
 	}
-	if err := s.store.EnqueueOutboxEvent(ctx, eventType, key, value); err != nil {
+	if err := s.store.EnqueueOutboxEvent(ctx, eventType, partitionKey, value); err != nil {
 		slog.Error("failed to enqueue outbox event", "event_type", eventType, "error", err)
 	}
 }
