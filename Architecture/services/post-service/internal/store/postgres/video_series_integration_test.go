@@ -103,12 +103,17 @@ func TestVideoSeries_EpisodeReadHidesUnpublishedFromNonOwners(t *testing.T) {
 	past := now.Add(-time.Hour)
 	future := now.Add(time.Hour)
 	live := insertSeriesPost(t, pool, creator, nil, nil)
-	deleted := insertSeriesPost(t, pool, creator, &past, nil)
+	deleted := insertSeriesPost(t, pool, creator, nil, nil)
 	scheduled := insertSeriesPost(t, pool, creator, nil, &future)
 	for n, p := range map[int]uuid.UUID{1: live, 2: deleted, 3: scheduled} {
 		if _, err := st.AddEpisodeToVideoSeries(ctx, vs.ID, p, n, nil); err != nil {
 			t.Fatalf("add episode %d: %v", n, err)
 		}
+	}
+	// A deleted post cannot be added (tube audit H2); this one is deleted
+	// after it became an episode.
+	if _, err := pool.Exec(ctx, `UPDATE posts SET deleted_at = $2 WHERE id = $1`, deleted, past); err != nil {
+		t.Fatalf("delete episode post: %v", err)
 	}
 
 	nums := func(eps []postgres.VideoSeriesEpisode) []int {

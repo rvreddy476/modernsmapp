@@ -315,6 +315,12 @@ func TestPublishStandingIT_ComposerDraft(t *testing.T) {
 		t.Fatalf("worker unknown must release: %+v", got)
 	}
 	ck.add(standingBlockAfter)
+	// The queue's own backoff (migration 080) waits on the database clock;
+	// the 24 h pass for it too.
+	if _, err := pool.Exec(ctx, `UPDATE post_drafts SET next_attempt_at = next_attempt_at - $2 * interval '1 second' WHERE id = $1`,
+		d4.ID, int64(standingBlockAfter/time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := svc.PublishScheduledPostDrafts(ctx); err != nil {
 		t.Fatal(err)
 	}
