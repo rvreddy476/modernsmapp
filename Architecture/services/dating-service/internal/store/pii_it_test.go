@@ -170,6 +170,13 @@ func TestD9_ExactPointsSealedAtRest(t *testing.T) {
 		}
 	}
 
+	// A 'match' share is readable only while the pair has an open match
+	// (audit 2026-10-30 M2), as ShareLocation requires when it creates one.
+	ensureProfileForTest(t, s, user)
+	ensureProfileForTest(t, s, other)
+	if _, _, err := s.CreateOrGetOpenMatch(ctx, user, other, nil); err != nil {
+		t.Fatalf("seed open match: %v", err)
+	}
 	share, err := s.CreateLocationShare(ctx, user, other, ShareRecipientMatch, lat, lng, 3600e9)
 	if err != nil || share.Latitude == nil || *share.Latitude != lat {
 		t.Fatalf("share = %+v err=%v", share, err)
