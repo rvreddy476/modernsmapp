@@ -2,12 +2,10 @@ package outbox
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 	"strings"
 	"time"
 
-	"github.com/atpost/shared/o11y/trace"
 	"github.com/atpost/shared/transport"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -41,13 +39,41 @@ type Config struct {
 	// weaker guarantee deliberately and visibly, not so the platform can
 	// drift back into it silently.
 	LeaderAcksOnly bool
+	// ClaimLease is how long a claimed row is reserved for the relay that
+	// claimed it. Default: 30s.
+	ClaimLease time.Duration
+	// MaxAttempts is how many counted failures (the broker refuses the
+	// record) a row gets before it is dead-lettered. Default: 10.
+	MaxAttempts int
 }
 
 // Publisher polls outbox_events and publishes to Kafka.
+//
+// Commerce backend audit M4 (30 Oct 2026). Every replica used to read the
+// same unpublished rows with a plain SELECT and publish them, so with two
+// replicas each event went out twice; and the LeastBytes balancer ignored
+// the partition key, so two events of one order could land on different
+// partitions and be consumed out of order. The relay (relay.go) now:
+//
+//   - runs a pass only on the replica holding a per-table advisory lock, so
+//     the events of one key reach Kafka in id order across replicas;
+//   - claims rows with a lease (FOR UPDATE SKIP LOCKED), so even two relays
+//     never publish the same row while the lease runs;
+//   - publishes each claimed batch in one WriteMessages call with the Hash
+//     balancer keyed by partition_key and a short BatchTimeout;
+//   - stamps each message with a stable event id (header "event_id");
+//   - dead-letters a row that can never be published (failed_at), and ends
+//     the pass on a broker outage so the next pass retries in order.
+//
+// The claim columns come from a per-service migration. Against a table that
+// does not have them yet the publisher runs in legacy mode: same lock, same
+// batch and balancer, plain SELECT, no dead letters.
 type Publisher struct {
-	db    *pgxpool.Pool
-	cfg   Config
-	table string
+	db      *pgxpool.Pool
+	cfg     Config
+	table   string
+	lockKey int64
+	store   relayStore
 }
 
 // New creates a Publisher ready to Run.
@@ -58,11 +84,21 @@ func New(db *pgxpool.Pool, cfg Config) *Publisher {
 	if cfg.BatchSize == 0 {
 		cfg.BatchSize = 100
 	}
+	if cfg.ClaimLease <= 0 {
+		cfg.ClaimLease = defaultClaimLease
+	}
+	if cfg.MaxAttempts <= 0 {
+		cfg.MaxAttempts = defaultMaxAttempts
+	}
 	table := "outbox_events"
 	if cfg.DBSchema != "" {
 		table = cfg.DBSchema + ".outbox_events"
 	}
-	return &Publisher{db: db, cfg: cfg, table: table}
+	p := &Publisher{db: db, cfg: cfg, table: table, lockKey: relayLockKey(table)}
+	if db != nil {
+		p.store = newPGStore(db, cfg.DBSchema, table, p.lockKey)
+	}
+	return p
 }
 
 // Run starts the polling loop; blocks until ctx is cancelled.
@@ -77,23 +113,15 @@ func (p *Publisher) Run(ctx context.Context) {
 		slog.Error("outbox publisher kafka brokers not configured", "table", p.table)
 		return
 	}
-	// A3: RequireAll by default. The publisher marks a row published as
-	// soon as WriteMessages returns, so the ack it waits for IS the
-	// durability guarantee for that event. Waiting only for the leader
-	// makes "published" a lie the moment that leader fails.
-	acks := kafka.RequireAll
+	if p.store == nil {
+		slog.Error("outbox publisher has no database", "table", p.table)
+		return
+	}
 	if p.cfg.LeaderAcksOnly {
-		acks = kafka.RequireOne
 		slog.Warn("outbox publisher running with leader-only acks; an unreplicated leader failure will lose events",
 			"table", p.table, "topic", p.cfg.DefaultTopic)
 	}
-	writer := kafka.NewWriter(kafka.WriterConfig{
-		Brokers:      brokers,
-		Topic:        p.cfg.DefaultTopic,
-		Balancer:     &kafka.LeastBytes{},
-		RequiredAcks: int(acks),
-		Dialer:       dialer,
-	})
+	writer := kafka.NewWriter(writerConfig(brokers, p.cfg, dialer))
 	defer writer.Close()
 
 	ticker := time.NewTicker(p.cfg.PollInterval)
@@ -107,86 +135,45 @@ func (p *Publisher) Run(ctx context.Context) {
 			slog.Info("outbox publisher stopped", "table", p.table)
 			return
 		case <-ticker.C:
-			if err := p.sweep(ctx, writer); err != nil {
-				slog.Error("outbox sweep failed", "table", p.table, "error", err)
-			}
+			p.pass(ctx, writer)
 		}
 	}
 }
 
-type outboxRow struct {
-	ID           int64
-	EventType    string
-	PartitionKey string
-	Payload      json.RawMessage
-}
-
-func (p *Publisher) sweep(ctx context.Context, writer *kafka.Writer) error {
-	rows, err := p.db.Query(ctx,
-		`SELECT id, event_type, partition_key, payload
-		 FROM `+p.table+`
-		 WHERE published_at IS NULL
-		 ORDER BY id ASC
-		 LIMIT $1`,
-		p.cfg.BatchSize,
-	)
-	if err != nil {
-		return err
+// writerConfig is the Kafka writer the relay publishes through.
+func writerConfig(brokers []string, cfg Config, dialer *kafka.Dialer) kafka.WriterConfig {
+	// A3: RequireAll by default. The publisher marks a row published as
+	// soon as WriteMessages returns, so the ack it waits for IS the
+	// durability guarantee for that event. Waiting only for the leader
+	// makes "published" a lie the moment that leader fails.
+	acks := kafka.RequireAll
+	if cfg.LeaderAcksOnly {
+		acks = kafka.RequireOne
 	}
-	defer rows.Close()
-
-	var events []outboxRow
-	for rows.Next() {
-		var r outboxRow
-		if err := rows.Scan(&r.ID, &r.EventType, &r.PartitionKey, &r.Payload); err != nil {
-			return err
-		}
-		events = append(events, r)
+	batch := cfg.BatchSize
+	if batch <= 0 {
+		batch = 100
 	}
-	if err := rows.Err(); err != nil {
-		return err
+	return kafka.WriterConfig{
+		Brokers: brokers,
+		Topic:   cfg.DefaultTopic,
+		// M4: Hash, not LeastBytes. LeastBytes ignores Message.Key, so the
+		// partition_key the services set (order id, intent id) did nothing
+		// and one aggregate's events could be consumed out of order. Hash
+		// (FNV-1a, Sarama-compatible) sends one key to one partition; a nil
+		// key still round-robins.
+		Balancer: &kafka.Hash{},
+		// kafka-go's default BatchTimeout is 1 s and a synchronous
+		// WriteMessages waits for it. The relay hands a whole claimed batch
+		// to one call; the short timeout bounds how long a partly filled
+		// partition batch waits.
+		BatchTimeout: writerBatchTimeout,
+		BatchSize:    batch,
+		BatchBytes:   MaxMessageBytes,
+		WriteTimeout: 10 * time.Second,
+		RequiredAcks: int(acks),
+		Dialer:       dialer,
 	}
-
-	if len(events) == 0 {
-		return nil
-	}
-
-	msgs := make([]kafka.Message, 0, len(events))
-	ids := make([]int64, 0, len(events))
-	for _, e := range events {
-		// Phase F3.3 — inject W3C trace context into the message
-		// headers so consumers can link their child spans back to the
-		// transaction that produced the event. We don't have the
-		// originating request context here (events are read off the
-		// outbox table), so the span will be a fresh top-level one
-		// rooted at the publisher; the value is downstream linkage,
-		// not a one-trace-end-to-end story.
-		headers := []kafka.Header{
-			{Key: "event_type", Value: []byte(e.EventType)},
-		}
-		trace.InjectKafkaHeaders(ctx, &headers)
-		msgs = append(msgs, kafka.Message{
-			Key:     []byte(e.PartitionKey),
-			Value:   e.Payload,
-			Headers: headers,
-		})
-		ids = append(ids, e.ID)
-	}
-
-	if err := writer.WriteMessages(ctx, msgs...); err != nil {
-		return err
-	}
-
-	_, err = p.db.Exec(ctx,
-		`UPDATE `+p.table+` SET published_at = NOW() WHERE id = ANY($1)`,
-		ids,
-	)
-	if err != nil {
-		slog.Warn("outbox: failed to mark published", "count", len(ids), "error", err)
-	}
-
-	slog.Debug("outbox sweep done", "table", p.table, "count", len(ids))
-	return nil
 }
 
 // Queuer provides transactional outbox insert capability.
