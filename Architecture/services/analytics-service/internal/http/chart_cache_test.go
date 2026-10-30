@@ -124,11 +124,17 @@ func TestChartCacheIsBounded(t *testing.T) {
 	val := func(v any) func(context.Context) (any, bool, error) {
 		return func(context.Context) (any, bool, error) { return v, false, nil }
 	}
-	c.get(context.Background(), "a", val("a"))
+	get := func(key string) {
+		t.Helper()
+		if _, _, err := c.get(context.Background(), key, val(key)); err != nil {
+			t.Fatalf("get %s: %v", key, err)
+		}
+	}
+	get("a")
 	clock.t = clock.t.Add(time.Second)
-	c.get(context.Background(), "b", val("b"))
+	get("b")
 	clock.t = clock.t.Add(time.Second)
-	c.get(context.Background(), "c", val("c"))
+	get("c")
 	if len(c.entries) != 2 {
 		t.Fatalf("entries=%d want 2", len(c.entries))
 	}
@@ -136,7 +142,7 @@ func TestChartCacheIsBounded(t *testing.T) {
 		t.Fatal("the oldest entry survived eviction")
 	}
 	clock.t = clock.t.Add(2 * time.Minute)
-	c.get(context.Background(), "d", val("d"))
+	get("d")
 	if len(c.entries) != 1 {
 		t.Fatalf("expired entries were not dropped: %d left", len(c.entries))
 	}
