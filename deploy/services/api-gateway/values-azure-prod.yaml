@@ -47,6 +47,11 @@ env:
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   JWT_RS256_KID: rsa-1
   CORS_ORIGINS: https://cleestudio.com,https://app.cleestudio.com
+  # Audit M1: one ingress-nginx hop appends the client to X-Forwarded-For;
+  # the gateway reads that entry and ignores X-Real-IP and any hop the client
+  # wrote. Its pod address is not known in advance, so a hop count rather
+  # than a CIDR list.
+  GATEWAY_TRUSTED_PROXY_HOPS: "1"
   AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
   PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098
   USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082

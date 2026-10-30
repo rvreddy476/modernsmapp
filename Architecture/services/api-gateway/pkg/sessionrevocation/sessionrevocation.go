@@ -153,6 +153,24 @@ func counterValue(c prometheus.Counter) float64 {
 // not configured outside production); main.go refuses to start that way in
 // production.
 func Middleware(checker Checker, next http.Handler) http.Handler {
+	return MiddlewareWithOptions(checker, Options{}, next)
+}
+
+// Options adjusts Middleware.
+type Options struct {
+	// AnonymousOnRevoked names requests on which a revoked session is
+	// DROPPED rather than refused: the request continues as anonymous.
+	// Audit H1: on the public sign-in routes (login, refresh, ...) a 401
+	// for a revoked session's leftover cookie kept the user from signing in
+	// again until that cookie expired. Both fields must be set to apply.
+	AnonymousOnRevoked func(*http.Request) bool
+	// Anonymize removes the identity the token middleware attached and
+	// returns the request to continue with.
+	Anonymize func(*http.Request) *http.Request
+}
+
+// MiddlewareWithOptions is Middleware with Options.
+func MiddlewareWithOptions(checker Checker, opts Options, next http.Handler) http.Handler {
 	if checker == nil {
 		return next
 	}
@@ -182,6 +200,10 @@ func Middleware(checker Checker, next http.Handler) http.Handler {
 				return
 			}
 			next.ServeHTTP(w, r)
+			return
+		}
+		if revoked && opts.AnonymousOnRevoked != nil && opts.Anonymize != nil && opts.AnonymousOnRevoked(r) {
+			next.ServeHTTP(w, opts.Anonymize(r))
 			return
 		}
 		if revoked {

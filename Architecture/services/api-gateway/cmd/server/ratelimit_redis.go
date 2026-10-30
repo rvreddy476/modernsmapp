@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"github.com/atpost/api-gateway/pkg/clientip"
 )
 
 // H5 — shared-Redis rate limiter. The in-memory token-bucket store in
@@ -95,24 +97,16 @@ func redisRateLimitMiddleware(rl *redisRateLimiter, next http.Handler) http.Hand
 	})
 }
 
-// clientIPForRateLimit centralises the same XFF / X-Real-IP / RemoteAddr
-// fallback the in-memory limiter uses so the two paths can't disagree.
+// clientIPForRateLimit is the key both limiters count against, so the two
+// paths can't disagree.
+//
+// Audit M1: it used to prefer X-Real-IP and then the leftmost
+// X-Forwarded-For entry, both written by the client, so a fresh value per
+// request was a fresh bucket. It now reads only what pkg/clientip resolved
+// from the TCP peer and the configured trusted proxies (or the bare peer when
+// that middleware did not run). No header is read here.
 func clientIPForRateLimit(r *http.Request) string {
-	ip := r.RemoteAddr
-	if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
-		ip = strings.TrimSpace(realIP)
-	} else if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if idx := strings.Index(xff, ","); idx != -1 {
-			ip = strings.TrimSpace(xff[:idx])
-		} else {
-			ip = strings.TrimSpace(xff)
-		}
-	}
-	// Strip port if present (RemoteAddr includes port).
-	if host, _, err := splitHostPortLenient(ip); err == nil {
-		ip = host
-	}
-	return ip
+	return clientip.FromRequest(r)
 }
 
 // splitHostPortLenient mirrors net.SplitHostPort but is lenient about

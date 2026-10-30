@@ -8,7 +8,6 @@ import (
 	"log"
 	"log/slog"
 	"math/rand"
-	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -26,10 +25,13 @@ import (
 	"golang.org/x/time/rate"
 
 	"github.com/atpost/api-gateway/pkg/adminsession"
+	"github.com/atpost/api-gateway/pkg/clientip"
 	"github.com/atpost/api-gateway/pkg/disabledprefixes"
 	"github.com/atpost/api-gateway/pkg/edgeheaders"
 	"github.com/atpost/api-gateway/pkg/edgelimits"
 	"github.com/atpost/api-gateway/pkg/internalroutes"
+	"github.com/atpost/api-gateway/pkg/metricsgate"
+	"github.com/atpost/api-gateway/pkg/publicauth"
 	"github.com/atpost/api-gateway/pkg/routepolicy"
 	"github.com/atpost/api-gateway/pkg/sessionrevocation"
 	"github.com/atpost/api-gateway/pkg/tokenpolicy"
@@ -82,14 +84,34 @@ func main() {
 	// can also verify RS256 tokens minted by auth-service's private key. HS256
 	// stays active in parallel so existing tokens are unaffected. The RSA key's
 	// kid is JWT_RS256_KID (must match what auth-service stamps).
-	if pubPEM := env("JWT_PUBLIC_KEY_PEM", ""); pubPEM != "" {
-		pub, perr := parseRSAPublicKeyPEM(pubPEM)
-		if perr != nil {
-			slog.Error("failed to parse JWT_PUBLIC_KEY_PEM", "err", perr)
-			os.Exit(1)
+	//
+	// Audit M2: JWT_PUBLIC_KEY_PEM_PREVIOUS + JWT_RS256_KID_PREVIOUS add the
+	// outgoing key for a rotation window; tokens are picked by kid and an
+	// unknown kid is still refused. See tokenpolicy.RSAKeysFromEnv for the
+	// rotation order.
+	rsaKeys, rsaErr := tokenpolicy.RSAKeysFromEnv(os.Getenv)
+	if rsaErr != nil {
+		slog.Error("refusing to start: invalid RS256 key configuration", "err", rsaErr)
+		os.Exit(1)
+	}
+	if rsaKeys != nil {
+		jwtKeys.rsaKeys = rsaKeys
+		kids := make([]string, 0, len(rsaKeys))
+		for kid := range rsaKeys {
+			kids = append(kids, kid)
 		}
-		jwtKeys.rsaKeys = map[string]*rsa.PublicKey{env("JWT_RS256_KID", "rsa-1"): pub}
-		slog.Info("RS256 token verification enabled", "kid", env("JWT_RS256_KID", "rsa-1"))
+		slog.Info("RS256 token verification enabled", "kids", kids)
+	}
+
+	// Audit M1: which proxies may tell the gateway the client's address.
+	trustedProxies, proxyErr := clientip.FromEnv(os.Getenv)
+	if proxyErr != nil {
+		slog.Error("refusing to start: invalid trusted proxy configuration", "error", proxyErr)
+		os.Exit(1)
+	}
+	if !trustedProxies.TrustsProxies() {
+		slog.Warn("no trusted proxy configured (" + clientip.EnvTrustedCIDRs + " / " + clientip.EnvTrustedHops +
+			"): rate limits key on the TCP peer; behind a load balancer every client then shares its bucket")
 	}
 
 	// M3-P0-2: load and validate the edge token policy. In production this
@@ -149,7 +171,20 @@ func main() {
 	// which all shared/o11y/metrics constructors register against, so
 	// scraping /metrics on the gateway also exposes its own HTTP-side
 	// counters once we wrap upstream calls.
-	promHandler := promhttp.Handler()
+	//
+	// Audit L1: never to the internet. With METRICS_ADDR it moves to its own
+	// listener and the public one stops serving it; without, the public
+	// listener answers only requests that did not come through a proxy
+	// (pkg/metricsgate).
+	promHandler, metricsSrv := metricsWiring(metricsgate.ListenAddr(os.Getenv), promhttp.Handler())
+	if metricsSrv != nil {
+		go func() {
+			if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				log.Fatalf("metrics listener: %v", err)
+			}
+		}()
+		slog.Info("metrics served on the internal listener only", "addr", metricsSrv.Addr)
+	}
 	reviewerPublicEnabled := strings.EqualFold(env("REVIEWER_PUBLIC_ENABLED", "false"), "true")
 	// Built products with no working client on any platform keep their public
 	// prefixes closed until a client exists: unreviewed surface is attack
@@ -245,7 +280,7 @@ func main() {
 	)
 	// Security sweep #18: request bodies on non-upload routes are capped at
 	// the edge (edgelimits). Inside CORS so a browser can read the 413.
-	handler := corsMiddleware(allowedOrigins, edgelimits.LimitBody(edgelimits.MaxBodyBytes, tracedCore))
+	handler := edgeHandler(allowedOrigins, trustedProxies, tracedCore)
 
 	// Add a recovery middleware wrapper
 	recoveryHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -273,6 +308,25 @@ func main() {
 	log.Fatal(edgelimits.NewServer(":"+port, recoveryHandler).ListenAndServe())
 }
 
+// metricsWiring decides where /metrics is served (audit L1). With an internal
+// address it returns no public handler and the internal server; without, a
+// public handler that refuses anything that came through a proxy.
+func metricsWiring(internalAddr string, prom http.Handler) (public http.Handler, internal *http.Server) {
+	if internalAddr != "" {
+		return nil, metricsgate.NewServer(internalAddr, prom)
+	}
+	return metricsgate.Handler(prom), nil
+}
+
+// edgeHandler wraps the traced chain in the transport-level layers: CORS
+// outermost so headers are present on every response, then the body cap
+// (security sweep #18; inside CORS so a browser can read the 413), then the
+// client address (audit M1), which must run before the rate limiter reads it
+// and before anything forwards the client's own X-Forwarded-For.
+func edgeHandler(allowedOrigins []string, proxies clientip.Resolver, inner http.Handler) http.Handler {
+	return corsMiddleware(allowedOrigins, edgelimits.LimitBody(edgelimits.MaxBodyBytes, clientip.Middleware(proxies, inner)))
+}
+
 // edgeChain is the per-request middleware order, kept in one function so
 // the tests exercise exactly what main wires:
 //
@@ -288,7 +342,27 @@ func edgeChain(keys jwtKeySet, policy tokenpolicy.Policy, rateLimit func(http.Ha
 		jwtExtractMiddleware(keys, policy,
 			rateLimit(
 				internalroutes.Middleware(
-					sessionrevocation.Middleware(checker, core)))))
+					sessionrevocation.MiddlewareWithOptions(checker, revocationOptions, core)))))
+}
+
+// revocationOptions lets a revoked session's leftover credential fall back to
+// anonymous on the public sign-in routes (audit H1), as a failed
+// verification does in jwtExtractMiddleware.
+var revocationOptions = sessionrevocation.Options{
+	AnonymousOnRevoked: func(r *http.Request) bool {
+		return publicauth.IsPublic(r.URL.Path) && !adminsession.IsAdminRequest(r)
+	},
+	Anonymize: anonymize,
+}
+
+// anonymize removes every identity jwtExtractMiddleware attached: the
+// trusted headers and the context values only it can set.
+func anonymize(r *http.Request) *http.Request {
+	stripInboundIdentityHeaders(r)
+	stampGraphWriteSource(r)
+	ctx := context.WithValue(r.Context(), verifiedUserIDKey{}, "")
+	ctx = sessionrevocation.WithSessionID(ctx, "")
+	return r.WithContext(ctx)
 }
 
 // newRoute builds the reverse proxy for one route prefix. The Director sets
@@ -306,6 +380,8 @@ func newRoute(prefix string, target *url.URL, internalKey string) route {
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
 		internalroutes.ApplyKey(req, stamp, internalKey)
+		// Audit L3: only auth-service gets the refresh cookies.
+		edgeheaders.StripRefreshCookies(req, prefix)
 		otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
 	}
 	// Otel transport on the proxy gives us a client span per
@@ -717,7 +793,8 @@ func serveReviewerLaunchGate(w http.ResponseWriter, r *http.Request, enabled boo
 // X-Device-Id to the proxied request.
 // Requests without a Bearer token are passed through unchanged so that
 // unauthenticated (public) endpoints continue to work normally.
-// Requests with an invalid or expired token receive HTTP 401.
+// Requests with an invalid or expired token receive HTTP 401, except on the
+// public sign-in routes (pkg/publicauth), where they continue anonymously.
 // jwtKeySet — C7. Active is used for signing (auth-service only); both are
 // accepted on verify so a kid rotation has a window where prior tokens stay
 // valid. A token with no `kid` header (legacy, pre-C7) falls back to active.
@@ -939,7 +1016,17 @@ func jwtExtractMiddleware(keys jwtKeySet, policy tokenpolicy.Policy, next http.H
 			next.ServeHTTP(w, r)
 			return
 		}
+		// Audit H1: on the public sign-in routes a credential that fails is
+		// treated as no credential, so an expired access_token cookie cannot
+		// block the refresh that replaces it. Nothing is stamped, so this is
+		// exactly the anonymous request the caller could send anyway. Every
+		// other path keeps the strict 401 below.
+		publicAuth := !adminPath && publicauth.IsPublic(r.URL.Path)
 		identity, err := tokenpolicy.Verify(token, keys.toKeySet(), policy, time.Now())
+		if err != nil && publicAuth {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusUnauthorized)
@@ -950,6 +1037,11 @@ func jwtExtractMiddleware(keys jwtKeySet, policy tokenpolicy.Policy, next http.H
 		// — even one with admin_mfa=true — is refused. And an admin session
 		// is refused everywhere else, so it cannot stand in for a consumer one.
 		if adminPath != (identity.SessionKind == adminsession.KindAdmin) {
+			if publicAuth {
+				// An admin token on a public sign-in route: ignored, as above.
+				next.ServeHTTP(w, r)
+				return
+			}
 			adminsession.Refuse(w, http.StatusUnauthorized, adminsession.CodeWrongSession, "Wrong session for this path")
 			return
 		}
@@ -1016,18 +1108,31 @@ type rateLimiterEntry struct {
 }
 
 // rateLimiterStore is a thread-safe store of per-key token-bucket limiters.
+//
+// Audit M1: the store is bounded. It used to grow by one entry per distinct
+// key and shed them only after ten idle minutes, so a sender cycling keys
+// grew gateway memory without limit. At maxEntries, get first drops every
+// entry idle longer than a full refill (such a bucket is indistinguishable
+// from a new one, so nothing is lost), and only if that frees nothing evicts
+// one arbitrary entry.
 type rateLimiterStore struct {
-	mu       sync.Mutex
-	limiters map[string]*rateLimiterEntry
-	r        float64
-	b        int
+	mu         sync.Mutex
+	limiters   map[string]*rateLimiterEntry
+	r          float64
+	b          int
+	maxEntries int
 }
+
+// defaultRateLimiterMaxEntries bounds each in-memory store: about 200 bytes
+// an entry, so tens of megabytes at most per store.
+const defaultRateLimiterMaxEntries = 100_000
 
 func newRateLimiterStore(r float64, b int) *rateLimiterStore {
 	s := &rateLimiterStore{
-		limiters: make(map[string]*rateLimiterEntry),
-		r:        r,
-		b:        b,
+		limiters:   make(map[string]*rateLimiterEntry),
+		r:          r,
+		b:          b,
+		maxEntries: defaultRateLimiterMaxEntries,
 	}
 	go func() {
 		ticker := time.NewTicker(5 * time.Minute)
@@ -1049,13 +1154,48 @@ func newRateLimiterStore(r float64, b int) *rateLimiterStore {
 func (s *rateLimiterStore) get(key string) *rate.Limiter {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	now := time.Now()
 	if e, ok := s.limiters[key]; ok {
-		e.lastSeen = time.Now()
+		e.lastSeen = now
 		return e.limiter
 	}
+	if s.maxEntries > 0 && len(s.limiters) >= s.maxEntries {
+		s.makeRoomLocked(now)
+	}
 	l := rate.NewLimiter(rate.Limit(s.r), s.b)
-	s.limiters[key] = &rateLimiterEntry{limiter: l, lastSeen: time.Now()}
+	s.limiters[key] = &rateLimiterEntry{limiter: l, lastSeen: now}
 	return l
+}
+
+// makeRoomLocked frees at least one slot. Caller holds s.mu.
+func (s *rateLimiterStore) makeRoomLocked(now time.Time) {
+	refill := time.Second
+	if s.r > 0 {
+		refill = time.Duration(float64(s.b) / s.r * float64(time.Second))
+	}
+	for k, e := range s.limiters {
+		if now.Sub(e.lastSeen) > refill {
+			delete(s.limiters, k)
+		}
+	}
+	// Leave at least 1% free so the next inserts do not each pay for a full
+	// sweep; if idle entries did not free that much, evict arbitrary ones.
+	target := s.maxEntries - s.maxEntries/100
+	if target >= s.maxEntries {
+		target = s.maxEntries - 1
+	}
+	for k := range s.limiters {
+		if len(s.limiters) <= target {
+			return
+		}
+		delete(s.limiters, k)
+	}
+}
+
+func (s *rateLimiterStore) size() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.limiters)
 }
 
 // rateLimitMiddleware enforces per-IP (100 rps, burst 200) and per-user
@@ -1067,20 +1207,9 @@ func rateLimitMiddleware(next http.Handler) http.Handler {
 	ipStore := newRateLimiterStore(float64(ipRate), ipRate*2)
 	userStore := newRateLimiterStore(float64(userRate), userRate*2)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := r.RemoteAddr
-		if realIP := r.Header.Get("X-Real-IP"); realIP != "" {
-			ip = strings.TrimSpace(realIP)
-		} else if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if idx := strings.Index(xff, ","); idx != -1 {
-				ip = strings.TrimSpace(xff[:idx])
-			} else {
-				ip = strings.TrimSpace(xff)
-			}
-		}
-		// Strip port if present (RemoteAddr includes port)
-		if host, _, err := net.SplitHostPort(ip); err == nil {
-			ip = host
-		}
+		// Audit M1: the resolved client address, never a client-written
+		// header (see clientIPForRateLimit and pkg/clientip).
+		ip := clientIPForRateLimit(r)
 		if !ipStore.get(ip).Allow() {
 			w.Header().Set("Retry-After", "1")
 			w.Header().Set("Content-Type", "application/json")
@@ -1142,6 +1271,10 @@ func requestIDMiddleware(next http.Handler) http.Handler {
 func corsMiddleware(allowedOrigins []string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		origin := r.Header.Get("Origin")
+		// Audit L2: the answer depends on Origin (reflected ACAO, or none), so
+		// a shared cache must key on it. Sent on every response, allowed or
+		// not, because the absence of ACAO is origin-specific too.
+		w.Header().Add("Vary", "Origin")
 		if origin != "" && isAllowedOrigin(origin, allowedOrigins) {
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Access-Control-Allow-Credentials", "true")

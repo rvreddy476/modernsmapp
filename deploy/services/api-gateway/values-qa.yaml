@@ -83,6 +83,12 @@ env:
   # cannot set an Authorization header). Exact allowlist, never a prefix.
   GATEWAY_QUERY_TOKEN_PATHS: /v1/ws
   CORS_ORIGINS: https://qa.cleestudio.com,https://admin-qa.cleestudio.com
+  # Audit M1: the per-IP rate limit takes the client address from the TCP
+  # peer and walks X-Forwarded-For back only across these ranges: the VPC
+  # CIDR the ALB's ENIs sit in (target-type ip). X-Real-IP and any hop the
+  # client wrote are ignored. Unset, every client behind the ALB would share
+  # one bucket. Must match the VPC CIDR (infra/terraform/envs/qa/variables.tf vpc_cidr default).
+  GATEWAY_TRUSTED_PROXY_CIDRS: "10.40.0.0/16"
 
   # ── Launch switches (plan §3, contract) ──────────────────────────────────
   # Groups: closed at the edge until reviewed for launch (security sweep

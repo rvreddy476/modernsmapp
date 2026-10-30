@@ -45,6 +45,12 @@ externalSecret:
     # RS256 verification (public key). In production the gateway accepts RS256
     # ONLY and refuses to start without this.
     - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
+    # Audit M2, RS256 rotation window (not wired yet): the gateway also
+    # accepts JWT_PUBLIC_KEY_PEM_PREVIOUS + JWT_RS256_KID_PREVIOUS, picked by
+    # kid. Uncomment only once tools/prodsecrets writes these properties
+    # (an ExternalSecret naming a missing property fails the whole sync):
+    # - { secretKey: JWT_PUBLIC_KEY_PEM_PREVIOUS, remoteRef: jwt_public_key_pem_previous }
+    # - { secretKey: JWT_RS256_KID_PREVIOUS, remoteRef: jwt_rs256_kid_previous }
     # ElastiCache AUTH token (the address is a value below, not a secret).
     - { secretKey: REDIS_ADDR, remoteRef: redis_addr }
     - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
@@ -74,6 +80,12 @@ env:
   # cannot set an Authorization header). Exact allowlist, never a prefix.
   GATEWAY_QUERY_TOKEN_PATHS: /v1/ws
   CORS_ORIGINS: https://app.cleestudio.com,https://cleestudio.com,https://admin.cleestudio.com
+  # Audit M1: the per-IP rate limit takes the client address from the TCP
+  # peer and walks X-Forwarded-For back only across these ranges: the VPC
+  # CIDR the ALB's ENIs sit in (target-type ip). X-Real-IP and any hop the
+  # client wrote are ignored. Unset, every client behind the ALB would share
+  # one bucket. Must match the VPC CIDR (infra/terraform/envs/prod/main.tf vpc_cidr).
+  GATEWAY_TRUSTED_PROXY_CIDRS: "10.30.0.0/16"
 
   # ── Launch switches (plan §3, contract) ──────────────────────────────────
   # Groups: closed at the edge until reviewed for launch (security sweep

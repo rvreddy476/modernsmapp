@@ -82,6 +82,12 @@ env:
   JWT_RS256_KID: rsa-1
   REDIS_ADDR: redis-master.observability.svc.cluster.local:6379 # H5 fleet-wide rate limit
   CORS_ORIGINS: https://staging.cleestudio.com,https://app.staging.cleestudio.com
+  # Audit M1: the per-IP rate limit takes the client address from the TCP
+  # peer and walks X-Forwarded-For back only across these ranges: the VPC
+  # CIDR the ALB's ENIs sit in (target-type ip). X-Real-IP and any hop the
+  # client wrote are ignored. Unset, every client behind the ALB would share
+  # one bucket. Must match the VPC CIDR (infra/terraform/envs/staging/main.tf vpc_cidr).
+  GATEWAY_TRUSTED_PROXY_CIDRS: "10.20.0.0/16"
   # Upstream service URLs — every prefix the gateway routes to.
   AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
   PROFILE_SERVICE_URL: http://identity-profile-service.atpost.svc.cluster.local:8098

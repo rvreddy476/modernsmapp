@@ -134,3 +134,44 @@ func TestSessionIDCannotComeFromAHeader(t *testing.T) {
 		t.Fatal("a session id appeared without WithSessionID")
 	}
 }
+
+// Audit H1: on the paths Options names, a revoked session is dropped and the
+// request continues anonymously; everywhere else it is still refused.
+func TestRevokedSessionAnonymousOnlyWhereAllowed(t *testing.T) {
+	mr, checker := newChecker(t)
+	if err := mr.Set("sess_revoked:"+sid, "1"); err != nil {
+		t.Fatal(err)
+	}
+	opts := Options{
+		AnonymousOnRevoked: func(r *http.Request) bool { return r.URL.Path == "/v1/auth/login" },
+		Anonymize: func(r *http.Request) *http.Request {
+			r.Header.Del("X-User-Id")
+			return r.WithContext(WithSessionID(r.Context(), ""))
+		},
+	}
+	run := func(path string) (int, bool, string, string) {
+		var reached bool
+		var user, gotSID string
+		h := MiddlewareWithOptions(checker, opts, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			reached, user, gotSID = true, r.Header.Get("X-User-Id"), SessionID(r.Context())
+			w.WriteHeader(http.StatusOK)
+		}))
+		req := httptest.NewRequest(http.MethodPost, path, nil)
+		req.Header.Set("X-User-Id", "victim")
+		req = req.WithContext(WithSessionID(req.Context(), sid))
+		res := httptest.NewRecorder()
+		h.ServeHTTP(res, req)
+		return res.Code, reached, user, gotSID
+	}
+	if code, reached, user, s := run("/v1/auth/login"); code != http.StatusOK || !reached || user != "" || s != "" {
+		t.Errorf("login with revoked cookie: status %d reached %v user %q sid %q, want 200 anonymous", code, reached, user, s)
+	}
+	if code, reached, _, _ := run("/v1/feed/home"); code != http.StatusUnauthorized || reached {
+		t.Errorf("feed with revoked session: status %d reached %v, want 401 refused", code, reached)
+	}
+	// A live session on the allowed path keeps its identity.
+	mr.Del("sess_revoked:" + sid)
+	if code, _, user, s := run("/v1/auth/login"); code != http.StatusOK || user != "victim" || s != sid {
+		t.Errorf("live session on login: status %d user %q sid %q, want identity kept", code, user, s)
+	}
+}
