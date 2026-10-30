@@ -444,13 +444,18 @@ func TestAdminCancelClosesTheAssignment(t *testing.T) {
 	if err := s.VerifyPickupCode(ctx, owner, orderID, pickup); !errors.Is(err, ErrAssignmentNotReady) {
 		t.Fatalf("pickup on a cancelled assignment: %v", err)
 	}
+	// The seeded order is paid, so the admin cancel also queues its refund
+	// (food backend audit M1) in the same transaction.
 	rows := readOrderOutbox(t, s, orderID)
-	if got := outboxTypes(rows); got != foodevents.OrderCancelled {
-		t.Fatalf("events = %s, want %s", got, foodevents.OrderCancelled)
+	want := foodevents.OrderCancelled + "," + foodevents.OrderRefundRequested
+	if got := outboxTypes(rows); got != want {
+		t.Fatalf("events = %s, want %s", got, want)
 	}
 	assertAddressed(t, rows, orderID, customerID, owner)
-	if strings.Contains(rows[0].Raw, "ops") {
-		t.Fatalf("admin's free-text reason travelled: %s", rows[0].Raw)
+	for _, r := range rows {
+		if strings.Contains(r.Raw, "ops") {
+			t.Fatalf("admin's free-text reason travelled in %s: %s", r.EventType, r.Raw)
+		}
 	}
 }
 
