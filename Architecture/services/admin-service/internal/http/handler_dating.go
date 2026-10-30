@@ -64,6 +64,10 @@ var DatingRoutes = []datingRoute{
 	{http.MethodPost, "/reports/:reportId/enforce", "dating.report.enforce", permDatingUsersBan, true},
 	{http.MethodGet, "/photos/pending", "dating.photos.pending", permDatingPhotosReview, false},
 	{http.MethodPost, "/photos/:photoId/decision", "dating.photo.decide", permDatingPhotosReview, false},
+	// Prompt-clip moderation was reachable only through the retired consumer
+	// scope path (dating backend audit H3).
+	{http.MethodGet, "/clips/pending", "dating.clips.pending", permDatingPhotosReview, false},
+	{http.MethodPost, "/clips/review", "dating.clip.review", permDatingPhotosReview, false},
 	{http.MethodGet, "/selfies/pending", "dating.selfies.pending", permDatingSelfieReview, false},
 	{http.MethodPost, "/selfies/:userId/decision", "dating.selfie.decide", permDatingSelfieReview, false},
 	{http.MethodGet, "/panic", "dating.panic.list", permDatingPanicRead, false},
@@ -93,6 +97,8 @@ func (h *Handler) RegisterDatingRoutes(r *gin.Engine, dc *service.ProductClient)
 		"dating.selfies.pending": h.datingForward(dc, http.MethodGet, fixed("/verification/selfie/pending"),
 			passQuery("limit"), "", ""),
 		"dating.selfie.decide": h.datingSelfieDecision(dc),
+		"dating.clips.pending": h.datingForward(dc, http.MethodGet, fixed("/clips/pending"), passQuery("limit"), "", ""),
+		"dating.clip.review":   h.datingClipReview(dc),
 		"dating.panic.list":    h.datingForward(dc, http.MethodGet, fixed("/safety/panic"), passQuery("status", "limit", "offset"), "", ""),
 		"dating.panic.reveal": h.datingForward(dc, http.MethodGet, idPath("incidentId", "/safety/panic/", ""),
 			nil, "panic_incident", "incidentId"),
@@ -268,6 +274,32 @@ func (h *Handler) datingSelfieDecision(dc *service.ProductClient) gin.HandlerFun
 		info.set("decision", body.Decision)
 		h.datingCall(c, dc, http.MethodPost, "/verification/selfie/"+id.String()+"/review", nil,
 			map[string]string{"decision": body.Decision, "reason": body.Reason})
+	}
+}
+
+// datingClipReview forwards a prompt-clip decision. The clip is keyed by
+// its owner and prompt, so the audit target is the owner.
+func (h *Handler) datingClipReview(dc *service.ProductClient) gin.HandlerFunc {
+	return func(c *gin.Context) {
+		ctx := c.Request.Context()
+		var body struct {
+			UserID   uuid.UUID `json:"user_id"`
+			PromptID int       `json:"prompt_id"`
+			Decision string    `json:"decision"`
+			Reason   string    `json:"reason"`
+		}
+		if err := c.ShouldBindJSON(&body); err != nil || body.UserID == uuid.Nil {
+			api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, CodeInvalidID, "Invalid clip review", nil)
+			return
+		}
+		info := auditFrom(c)
+		info.targetType, info.targetID, info.reason = "dating_prompt_clip", body.UserID.String(), body.Reason
+		info.set("decision", body.Decision)
+		out := map[string]any{"user_id": body.UserID, "prompt_id": body.PromptID, "decision": body.Decision}
+		if body.Reason != "" {
+			out["reason"] = body.Reason
+		}
+		h.datingCall(c, dc, http.MethodPost, "/clips/review", nil, out)
 	}
 }
 

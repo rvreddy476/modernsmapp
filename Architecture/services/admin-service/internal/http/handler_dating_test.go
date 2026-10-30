@@ -140,14 +140,16 @@ func concrete(rt datingRoute) (path, body string) {
 		body = `{"decision":"approve"}`
 	case "dating.panic.resolve":
 		body = `{"note":"called the user"}`
+	case "dating.clip.review":
+		body = `{"user_id":"` + uuid.NewString() + `","prompt_id":1,"decision":"approve"}`
 	}
 	return path, body
 }
 
 func TestDatingRoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 	rg := newDatingRig(t, true)
-	if len(DatingRoutes) != 14 {
-		t.Fatalf("DatingRoutes has %d entries, want 14", len(DatingRoutes))
+	if len(DatingRoutes) != 16 {
+		t.Fatalf("DatingRoutes has %d entries, want 16", len(DatingRoutes))
 	}
 	for _, rt := range DatingRoutes {
 		t.Run(rt.operation, func(t *testing.T) {
