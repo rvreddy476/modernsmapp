@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"sync"
 	"time"
 
 	"github.com/atpost/graph-service/internal/permission"
@@ -284,6 +285,113 @@ func (s *Service) fetchPrivacy(ctx context.Context, userID uuid.UUID) permission
 		s.rdb.Set(ctx, cacheKey, data, PrivacyCacheTTL)
 	}
 	return p
+}
+
+// Batch privacy fetch bounds (CanBatch). identity-platform's user-service
+// has no batch settings endpoint (only GET /v1/users/:id/settings), so the
+// uncached targets of one batch are fetched concurrently instead of one after
+// another: 20 uncached authors behind a slow identity used to take 20 serial
+// round trips and blow post-service's 5 s budget, emptying the home feed.
+const (
+	// PrivacyFetchConcurrency caps in-flight settings GETs per batch.
+	PrivacyFetchConcurrency = 10
+	// PrivacyFetchTimeout bounds each settings GET.
+	PrivacyFetchTimeout = 1500 * time.Millisecond
+	// PrivacyBatchBudget bounds the whole batch's privacy phase. It is
+	// further capped at half of the caller's remaining deadline so the
+	// answer still reaches the caller in time.
+	PrivacyBatchBudget = 2500 * time.Millisecond
+)
+
+// fetchPrivacyBatch returns a privacy snapshot for every id. Cache hits come
+// from one Redis MGET; misses are fetched concurrently (at most
+// [PrivacyFetchConcurrency] in flight, each bounded by [PrivacyFetchTimeout],
+// all bounded by [PrivacyBatchBudget]). Any id whose privacy cannot be read in
+// time gets strictPrivacyDefaults (fail closed) on its own; one slow or
+// failing target never fails the batch or the other targets.
+func (s *Service) fetchPrivacyBatch(ctx context.Context, ids []uuid.UUID) map[uuid.UUID]permission.Privacy {
+	out := make(map[uuid.UUID]permission.Privacy, len(ids))
+	uniq := make([]uuid.UUID, 0, len(ids))
+	for _, id := range ids {
+		if _, seen := out[id]; seen {
+			continue
+		}
+		out[id] = strictPrivacyDefaults()
+		uniq = append(uniq, id)
+	}
+	if len(uniq) == 0 {
+		return out
+	}
+
+	misses := uniq
+	if s.rdb != nil {
+		keys := make([]string, len(uniq))
+		for i, id := range uniq {
+			keys[i] = "privacy:" + id.String()
+		}
+		if vals, err := s.rdb.MGet(ctx, keys...).Result(); err == nil && len(vals) == len(uniq) {
+			misses = misses[:0:0]
+			for i, v := range vals {
+				str, ok := v.(string)
+				var p permission.Privacy
+				if ok && json.Unmarshal([]byte(str), &p) == nil {
+					out[uniq[i]] = p
+					continue
+				}
+				misses = append(misses, uniq[i])
+			}
+		}
+	}
+	if len(misses) == 0 || s.userServiceURL == "" {
+		return out
+	}
+
+	budget := PrivacyBatchBudget
+	if dl, ok := ctx.Deadline(); ok {
+		if half := time.Until(dl) / 2; half < budget {
+			budget = half
+		}
+	}
+	batchCtx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	var (
+		mu  sync.Mutex
+		wg  sync.WaitGroup
+		sem = make(chan struct{}, PrivacyFetchConcurrency)
+	)
+	for _, id := range misses {
+		select {
+		case sem <- struct{}{}:
+		case <-batchCtx.Done():
+			// Budget spent before this target got a slot: it keeps the
+			// strict default.
+			log.Printf("[graph] privacy batch budget spent, strict defaults for %s", id)
+			continue
+		}
+		wg.Add(1)
+		go func(id uuid.UUID) {
+			defer wg.Done()
+			defer func() { <-sem }()
+			callCtx, callCancel := context.WithTimeout(batchCtx, PrivacyFetchTimeout)
+			defer callCancel()
+			p, err := s.fetchPrivacyFromUserService(callCtx, id)
+			if err != nil {
+				log.Printf("[graph] privacy fetch failed for %s, using strict defaults: %v", id, err)
+				return
+			}
+			mu.Lock()
+			out[id] = p
+			mu.Unlock()
+			if s.rdb != nil {
+				if data, err := json.Marshal(p); err == nil {
+					s.rdb.Set(context.WithoutCancel(ctx), "privacy:"+id.String(), data, PrivacyCacheTTL)
+				}
+			}
+		}(id)
+	}
+	wg.Wait()
+	return out
 }
 
 func (s *Service) fetchPrivacyFromUserService(ctx context.Context, userID uuid.UUID) (permission.Privacy, error) {

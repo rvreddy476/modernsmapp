@@ -202,22 +202,35 @@ func IsCanBatchAction(action permission.Action) bool {
 
 // CanBatch answers "may viewer do <action> to each target" for the content
 // services (post/feed/comment). Facts come from one relationship batch;
-// privacy comes from the per-target snapshot. A privacy-fetch failure yields
-// the strict defaults, which the matrix resolves to DENY for comment, mention
-// and tag and to follower-only for view_posts — never to a grant. The viewer
-// always passes against themselves.
+// privacy for every target is read in one concurrent, time-bounded pass
+// (fetchPrivacyBatch). A privacy-fetch failure or timeout for a target yields
+// the strict defaults for that target alone, which the matrix resolves to
+// DENY for comment, mention and tag and to follower-only for view_posts —
+// never to a grant. The viewer always passes against themselves.
 func (s *Service) CanBatch(ctx context.Context, viewerID uuid.UUID, action permission.Action, targetIDs []uuid.UUID) (map[string]bool, error) {
 	if !IsCanBatchAction(action) {
 		return nil, ErrUnsupportedCanAction
 	}
-	out := make(map[string]bool, len(targetIDs))
 	if len(targetIDs) == 0 {
-		return out, nil
+		return map[string]bool{}, nil
 	}
 	rels, err := s.store.GetRelationshipBatch(ctx, viewerID, targetIDs)
 	if err != nil {
 		return nil, err
 	}
+	return s.resolveCanBatch(ctx, viewerID, action, targetIDs, rels), nil
+}
+
+// resolveCanBatch is CanBatch after the relationship read.
+func (s *Service) resolveCanBatch(ctx context.Context, viewerID uuid.UUID, action permission.Action, targetIDs []uuid.UUID, rels map[uuid.UUID]store.Relationship) map[string]bool {
+	out := make(map[string]bool, len(targetIDs))
+	others := make([]uuid.UUID, 0, len(targetIDs))
+	for _, targetID := range targetIDs {
+		if targetID != viewerID {
+			others = append(others, targetID)
+		}
+	}
+	privacy := s.fetchPrivacyBatch(ctx, others)
 	for _, targetID := range targetIDs {
 		if targetID == viewerID {
 			out[targetID.String()] = true
@@ -230,7 +243,11 @@ func (s *Service) CanBatch(ctx context.Context, viewerID uuid.UUID, action permi
 			ActorFollowsTarget: r.Follows,
 			TargetFollowsActor: r.FollowedBy,
 		}
-		out[targetID.String()] = permission.Resolve(action, facts, s.fetchPrivacy(ctx, targetID)).Allowed
+		p, ok := privacy[targetID]
+		if !ok {
+			p = strictPrivacyDefaults()
+		}
+		out[targetID.String()] = permission.Resolve(action, facts, p).Allowed
 	}
-	return out, nil
+	return out
 }
