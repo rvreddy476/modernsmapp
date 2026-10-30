@@ -2744,7 +2744,7 @@ services:
       SERVICE_CALLERS: ${QA_SERVICE_CALLERS:-}
       SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
       SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
-      SERVICE_CALLER_ADMIN_SERVICE_OPS: qa:stats.read,qa:reports.read,qa:reports.act,qa:questions.moderate,qa:questions.merge,qa:answers.moderate,qa:comments.moderate,qa:audit.read
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: qa:stats.read,qa:reports.read,qa:reports.act,qa:questions.moderate,qa:questions.merge,qa:answers.moderate,qa:comments.moderate,qa:topics.manage,qa:audit.read
     ports:
       - "8108:8108"
     depends_on:

@@ -288,6 +288,8 @@ var catalogue = map[string][]entry{
 		p("questions.merge", mod),
 		p("answers.moderate", mod),
 		p("comments.moderate", mod),
+		// topics.manage: topic create/feature/icon (Q&A audit M3).
+		p("topics.manage", mod),
 		p("audit.read", audr),
 	},
 	AppChat: {

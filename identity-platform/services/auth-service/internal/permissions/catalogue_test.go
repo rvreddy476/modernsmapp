@@ -310,6 +310,7 @@ var consolePermissionHolders = map[string][]string{
 	"qa:reports.act":          {roles.Moderator},
 	"qa:questions.merge":      {roles.Moderator},
 	"qa:comments.moderate":    {roles.Moderator},
+	"qa:topics.manage":        {roles.Moderator},
 	"qa:audit.read":           {roles.Auditor},
 	"chat:stats.read":         {roles.Moderator, roles.Support},
 	"chat:reports.read":       {roles.Moderator, roles.Support},

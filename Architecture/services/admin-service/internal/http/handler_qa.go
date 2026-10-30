@@ -20,6 +20,7 @@ const (
 	permQAAnswersModerate   = "qa:answers.moderate"
 	permQACommentsModerate  = "qa:comments.moderate" // NEW
 	permQAAuditRead         = "qa:audit.read"
+	permQATopicsManage      = "qa:topics.manage" // NEW (Q&A audit M3)
 )
 
 const (
@@ -45,6 +46,9 @@ var QARoutes = []productRoute{
 	{method: http.MethodPost, path: "/answers/:answerId/hide", operation: "qa.answer.hide", permission: permQAAnswersModerate, targetType: "qa_answer"},
 	{method: http.MethodPost, path: "/comments/:commentId/hide", operation: "qa.comment.hide", permission: permQACommentsModerate, targetType: "qa_comment"},
 	{method: http.MethodGet, path: "/actions", operation: "qa.audit.list", permission: permQAAuditRead},
+	// Topic create and edit moved off the consumer route (Q&A audit M3).
+	{method: http.MethodPost, path: "/topics", operation: "qa.topic.create", permission: permQATopicsManage, targetType: "qa_topic"},
+	{method: http.MethodPatch, path: "/topics/:topicId", operation: "qa.topic.update", permission: permQATopicsManage, targetType: "qa_topic"},
 }
 
 // RegisterQARoutes adds the Q&A dashboard under /v1/admin/qa.

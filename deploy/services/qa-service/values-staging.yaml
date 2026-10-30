@@ -63,6 +63,6 @@ env:
   # Admin console (see externalSecret above for the order): uncomment
   # together with SERVICE_CALLER_ADMIN_SERVICE_PUBKEY / _KID.
   # SERVICE_CALLERS: 'admin-service'
-  # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'qa:stats.read,qa:reports.read,qa:reports.act,qa:questions.moderate,qa:questions.merge,qa:answers.moderate,qa:comments.moderate,qa:audit.read'
+  # SERVICE_CALLER_ADMIN_SERVICE_OPS: 'qa:stats.read,qa:reports.read,qa:reports.act,qa:questions.moderate,qa:questions.merge,qa:answers.moderate,qa:comments.moderate,qa:topics.manage,qa:audit.read'
 ingress:
   enabled: false

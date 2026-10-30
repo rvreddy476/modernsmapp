@@ -55,7 +55,7 @@ var (
 	pagesAll = []string{permSocialStatsRead, permSocialPagesModerate, permSocialPagesSuspend, permSocialPagesDisable, permSocialDocumentsReview}
 	qaAll    = []string{
 		permQAStatsRead, permQAReportsRead, permQAReportsAct, permQAQuestionsModerate, permQAQuestionsMerge,
-		permQAAnswersModerate, permQACommentsModerate, permQAAuditRead,
+		permQAAnswersModerate, permQACommentsModerate, permQAAuditRead, permQATopicsManage,
 	}
 	channelAll   = []string{permChatStatsRead, permChatReportsRead, permChatReportsAct, permChatChannelsModerate}
 	groupAll     = []string{permChatStatsRead, permChatReportsRead, permChatReportsAct}

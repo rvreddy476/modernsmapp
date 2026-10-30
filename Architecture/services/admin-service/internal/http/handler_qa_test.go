@@ -24,8 +24,8 @@ func qaCase(rt productRoute) string {
 
 func TestQARoutes_EachRequiresItsPermission_AndSignsForIt(t *testing.T) {
 	rg := newProductsRig(t, true)
-	if len(QARoutes) != 12 {
-		t.Fatalf("QARoutes has %d entries, want 12", len(QARoutes))
+	if len(QARoutes) != 14 {
+		t.Fatalf("QARoutes has %d entries, want 14", len(QARoutes))
 	}
 	for _, rt := range QARoutes {
 		t.Run(rt.operation+" "+rt.method+" "+rt.path, func(t *testing.T) {
