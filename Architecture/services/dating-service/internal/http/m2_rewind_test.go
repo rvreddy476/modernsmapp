@@ -99,7 +99,9 @@ func TestM2RewindContracts(t *testing.T) {
 	assertContract(t, d.rewind(), http.StatusTooManyRequests, "pulse_rewind_429_limit_reached", labels)
 
 	off := newM1Deck(t, service.MechanicsConfig{DeckRefill: true})
-	off.pass(off.candidate())
+	offCard := off.candidate()
+	off.dealt(offCard) // audit H1: a pass acts on a dealt card
+	off.pass(offCard)
 	assertContract(t, off.rewind(), http.StatusNotFound, "pulse_rewind_404_not_enabled", map[uuid.UUID]string{off.viewer: "<viewer>"})
 }
 
