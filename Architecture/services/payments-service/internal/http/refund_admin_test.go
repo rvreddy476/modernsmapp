@@ -389,53 +389,123 @@ func TestRefundAdminRoutes_DevAcceptsTheInternalKey(t *testing.T) {
 	}
 }
 
-// Production changes only the two operator routes. A legacy internal-key caller
-// on the rest of the /internal family gets exactly what it gets outside
-// production.
-func TestInternalRoutes_ProductionKeepsTheLegacyKeyElsewhere(t *testing.T) {
+// H1 (audit 2026-10-30): production refuses the legacy internal key on the two
+// money-moving service routes, intent creation and refund, as it does on the
+// operator routes. A legacy caller on the rest of the /internal family (read,
+// list, verify) gets exactly what it gets outside production.
+func TestInternalRoutes_ProductionRefusesTheLegacyKeyOnMoneyRoutesOnly(t *testing.T) {
 	type step struct {
 		name   string
 		status int
 		code   string
 	}
-	run := func(production bool) []step {
+	run := func(production bool) ([]step, *fakeService) {
 		fake := newFake()
 		caller := newCommerceCaller(t)
 		r := newRouter(t, fake, routerOpts{internalKey: testInternalKey, caller: &caller, production: production})
+		// A paid commerce intent that already exists, so the read-side steps
+		// do not depend on the legacy create succeeding.
+		refID := uuid.New()
+		paid := &postgres.PaymentIntent{ID: uuid.New(), PayerID: uuid.New(), PayeeID: uuid.New(), Status: "succeeded",
+			ReferenceType: "order", ReferenceID: refID, AmountMinorRaw: 90000, ProviderRef: "order_stub_1",
+			OwnerDomain: "commerce-service", ApplicationID: "mstore"}
+		fake.intents[paid.ID] = paid
 		var out []step
 		record := func(name string, w *httptest.ResponseRecorder) {
 			out = append(out, step{name, w.Code, errorCode(t, w.Body.Bytes())})
 		}
-		refID := uuid.New()
 		create := []byte(`{"payer_id":"` + uuid.NewString() + `","payee_id":"` + uuid.NewString() +
-			`","reference_type":"order","reference_id":"` + refID.String() +
+			`","reference_type":"order","reference_id":"` + uuid.NewString() +
 			`","amount_minor":90000,"currency":"INR","method":"upi","idempotency_key":"legacy-create-1","application_id":"mstore"}`)
-		w := do(r, http.MethodPost, "/v1/payments/internal/intents", create, withKey(uuid.Nil))
-		record("create", w)
-		var env struct {
-			Data struct {
-				ID uuid.UUID `json:"id"`
-			} `json:"data"`
-		}
-		_ = json.Unmarshal(w.Body.Bytes(), &env)
-		id := env.Data.ID.String()
+		record("create", do(r, http.MethodPost, "/v1/payments/internal/intents", create, withKey(uuid.Nil)))
+		id := paid.ID.String()
 		record("read", do(r, http.MethodGet, "/v1/payments/internal/intents/"+id, nil, withKey(uuid.Nil)))
 		record("list", do(r, http.MethodGet, "/v1/payments/internal/intents?ref_type=order&ref_id="+refID.String(), nil, withKey(uuid.Nil)))
+		record("verify", do(r, http.MethodPost, "/v1/payments/internal/intents/"+id+"/verify",
+			[]byte(`{"razorpay_order_id":"order_stub_1","razorpay_payment_id":"pay_1","razorpay_signature":"sig"}`), withKey(uuid.Nil)))
 		record("refund", do(r, http.MethodPost, "/v1/payments/internal/intents/"+id+"/refund",
 			[]byte(`{"reason":"customer cancelled","application_id":"mstore"}`), withKey(uuid.Nil)))
-		return out
+		return out, fake
 	}
-	dev, prod := run(false), run(true)
-	want := map[string]int{"create": http.StatusCreated, "read": http.StatusOK, "list": http.StatusOK, "refund": http.StatusAccepted}
-	if len(dev) != len(prod) {
-		t.Fatalf("dev ran %d steps, production %d", len(dev), len(prod))
+	dev, devFake := run(false)
+	prod, prodFake := run(true)
+	wantDev := map[string]int{"create": http.StatusCreated, "read": http.StatusOK, "list": http.StatusOK,
+		"verify": http.StatusOK, "refund": http.StatusAccepted}
+	refusedInProd := map[string]bool{"create": true, "refund": true}
+	if len(dev) != len(prod) || len(dev) != len(wantDev) {
+		t.Fatalf("dev ran %d steps, production %d, want %d", len(dev), len(prod), len(wantDev))
 	}
 	for i := range prod {
-		if prod[i] != dev[i] {
-			t.Errorf("%s: production = %+v, dev = %+v; production must not change this route", prod[i].name, prod[i], dev[i])
+		name := prod[i].name
+		if dev[i].status != wantDev[name] {
+			t.Errorf("%s: dev status = %d, want %d (code %q)", name, dev[i].status, wantDev[name], dev[i].code)
 		}
-		if prod[i].status != want[prod[i].name] {
-			t.Errorf("%s: status = %d, want %d (code %q)", prod[i].name, prod[i].status, want[prod[i].name], prod[i].code)
+		if refusedInProd[name] {
+			if prod[i].status != http.StatusForbidden || prod[i].code != CodeServiceTokenRequired {
+				t.Errorf("%s: production = %+v, want 403 %s: the legacy key must not move money in production",
+					name, prod[i], CodeServiceTokenRequired)
+			}
+			continue
+		}
+		if prod[i] != dev[i] {
+			t.Errorf("%s: production = %+v, dev = %+v; production must not change this route", name, prod[i], dev[i])
+		}
+	}
+	if len(devFake.refunds) != 1 || len(devFake.initiations) != 1 {
+		t.Fatalf("dev: refunds=%d initiations=%d, want 1/1", len(devFake.refunds), len(devFake.initiations))
+	}
+	if len(prodFake.refunds) != 0 || len(prodFake.initiations) != 0 {
+		t.Fatalf("production: refunds=%d initiations=%d reached the service, want 0/0",
+			len(prodFake.refunds), len(prodFake.initiations))
+	}
+}
+
+// H1: a service token still opens intents and refunds in production; only the
+// legacy key is refused.
+func TestInternalRoutes_ProductionAdmitsServiceTokensOnMoneyRoutes(t *testing.T) {
+	fake := newFake()
+	caller := newCommerceCaller(t)
+	r := newRouter(t, fake, routerOpts{internalKey: testInternalKey, caller: &caller, production: true})
+	create, _ := json.Marshal(map[string]any{
+		"payer_id": uuid.New(), "payee_id": uuid.New(), "reference_type": "order", "reference_id": uuid.New(),
+		"amount_minor": 90000, "method": "upi", "idempotency_key": "order:tok", "application_id": "mstore",
+	})
+	w := do(r, http.MethodPost, "/v1/payments/internal/intents", create, caller.header(t, servicetoken.OpIntentCreate))
+	if w.Code != http.StatusCreated {
+		t.Fatalf("token create: status = %d body=%s", w.Code, w.Body.String())
+	}
+	var env struct {
+		Data struct {
+			ID uuid.UUID `json:"id"`
+		} `json:"data"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &env)
+	fake.intents[env.Data.ID].Status = "succeeded"
+	w = do(r, http.MethodPost, "/v1/payments/internal/intents/"+env.Data.ID.String()+"/refund",
+		[]byte(`{"reason":"cancel","amount_minor":90000,"idempotency_key":"cancel:x","application_id":"mstore"}`),
+		caller.header(t, servicetoken.OpRefundCreate))
+	if w.Code != http.StatusAccepted || len(fake.refunds) != 1 || fake.refunds[0].CallerDomain != "commerce-service" {
+		t.Fatalf("token refund: status = %d refunds=%+v body=%s", w.Code, fake.refunds, w.Body.String())
+	}
+}
+
+// H1: the user-facing family's only credential is the shared key, so its
+// intent creation is closed in production and unchanged elsewhere.
+func TestUserIntentCreation_RefusedInProduction(t *testing.T) {
+	body, _ := json.Marshal(map[string]any{
+		"payee_id": uuid.New(), "reference_type": "food_order", "reference_id": uuid.New(),
+		"amount_minor": 90000, "method": "upi", "idempotency_key": "food:1", "application_id": "feast",
+	})
+	for _, production := range []bool{false, true} {
+		fake := newFake()
+		r := newRouter(t, fake, routerOpts{internalKey: testInternalKey, production: production})
+		w := do(r, http.MethodPost, "/v1/payments/intents", body, withKey(uuid.New()))
+		switch {
+		case production && (w.Code != http.StatusForbidden || errorCode(t, w.Body.Bytes()) != CodeServiceTokenRequired || len(fake.initiations) != 0):
+			t.Fatalf("production: status = %d initiations=%d body=%s, want 403 %s and nothing created",
+				w.Code, len(fake.initiations), w.Body.String(), CodeServiceTokenRequired)
+		case !production && (w.Code != http.StatusCreated || len(fake.initiations) != 1):
+			t.Fatalf("dev: status = %d initiations=%d body=%s, want 201", w.Code, len(fake.initiations), w.Body.String())
 		}
 	}
 }

@@ -357,7 +357,10 @@ func TestApplicationRegistryPutEndToEnd(t *testing.T) {
 	v := servicetoken.NewVerifier(servicetoken.AudiencePayments)
 	admin := itRegister(t, v, "ops-console", "o1", []string{servicetoken.OpIntentRead, OpApplicationAdmin}, []string{servicetoken.RefOrder})
 	prod := appItRouter(t, svc, v, true, nil)
-	dev := appItRouter(t, svc, v, false, nil)
+	// H1: a legacy refund's domain is the one owning the application it names;
+	// this test application belongs to food-service, as a deployment's
+	// SERVICE_CALLER_FOOD_SERVICE_APPLICATIONS would say.
+	dev := appItRouter(t, svc, v, false, map[string][]string{"food-service": {key}})
 	operator := map[string]string{"X-User-Id": "app-it-operator-" + uuid.NewString()[:8]}
 	audits := func() int64 {
 		var n int64

@@ -146,6 +146,11 @@ func (f *fakeService) RequestRefund(_ context.Context, req service.RefundRequest
 	if p, ok := f.intents[req.IntentID]; ok && p.ApplicationID != req.ApplicationID {
 		return nil, postgres.ErrApplicationMismatch
 	}
+	// Mirrors CreateRefundCommand: the caller's domain must be the intent's
+	// owner, and neither may be blank.
+	if p, ok := f.intents[req.IntentID]; ok && (req.CallerDomain == "" || p.OwnerDomain == "" || p.OwnerDomain != req.CallerDomain) {
+		return nil, postgres.ErrNotOwnerDomain
+	}
 	f.refunds = append(f.refunds, req)
 	return &postgres.RefundCommand{ID: uuid.New(), IntentID: req.IntentID, AmountMinor: req.AmountMinor, Status: "pending",
 		ApplicationID: req.ApplicationID}, nil
@@ -671,6 +676,27 @@ func TestRouteSplit_LegacyInternalKey(t *testing.T) {
 			t.Fatalf("refund request = %+v", got)
 		}
 	})
+	t.Run("the legacy refund's domain is the named application's, never copied from the intent", func(t *testing.T) {
+		// An intent whose owner is not the domain of its application. The
+		// application check passes (feast == feast), so only the owner-domain
+		// comparison can refuse it; copying the intent's own owner into the
+		// request, as before, made that comparison always pass.
+		odd, _ := fake.InitiatePayment(context.Background(), service.InitiateInput{PayerID: payer, PayeeID: payee,
+			ReferenceType: "order", ReferenceID: uuid.New(), AmountMinor: 50000, OwnerDomain: "commerce-service",
+			Method: "upi", ApplicationID: "feast"})
+		odd.Status = "succeeded"
+		before := len(fake.refunds)
+		w := do(r, http.MethodPost, "/v1/payments/internal/intents/"+odd.ID.String()+"/refund",
+			[]byte(`{"reason":"support:43","application_id":"feast"}`), withKey(payer))
+		if w.Code == http.StatusAccepted || len(fake.refunds) != before {
+			t.Fatalf("status = %d refunds=%d body=%s, want refused", w.Code, len(fake.refunds), w.Body.String())
+		}
+		w = do(r, http.MethodPost, "/v1/payments/internal/intents/"+intent.ID.String()+"/refund",
+			[]byte(`{"reason":"support:44","application_id":"nobody-owns-this"}`), withKey(payer))
+		if w.Code != http.StatusNotFound || len(fake.refunds) != before {
+			t.Fatalf("unknown application: status = %d refunds=%d body=%s, want 404", w.Code, len(fake.refunds), w.Body.String())
+		}
+	})
 	t.Run("a service token still works alongside the fallback", func(t *testing.T) {
 		body, _ := json.Marshal(map[string]any{
 			"payer_id": payer, "payee_id": payee, "reference_type": "order", "reference_id": uuid.New(),
@@ -681,6 +707,36 @@ func TestRouteSplit_LegacyInternalKey(t *testing.T) {
 			t.Fatalf("status = %d body=%s", w.Code, w.Body.String())
 		}
 	})
+}
+
+// TestLegacyDomainForApplication pins the only domain a legacy internal-key
+// refund can claim: the one owning the application it names.
+func TestLegacyDomainForApplication(t *testing.T) {
+	for app, want := range map[string]string{
+		"mstore": "commerce-service", "feast": "food-service", "dating": "dating-service",
+		"mopedu": "rider-service", "doorstep": "doorstep-service", "memberships": "monetization-service",
+		" feast ": "food-service", "": "", "unknown": "",
+	} {
+		if got := legacyDomainForApplication(app); got != want {
+			t.Errorf("legacyDomainForApplication(%q) = %q, want %q", app, got, want)
+		}
+	}
+}
+
+// A test or newly registered application is owned by the one service the
+// deployment allows it; two such services own nothing.
+func TestLegacyCallerDomain_FromTheCallerAllowlist(t *testing.T) {
+	h := New(newFake()).WithCallerApplications(map[string][]string{
+		"food-service": {"feast", "it_app"}, "commerce-service": {"mstore", "shared_app"}, "rider-service": {"shared_app"},
+	})
+	for app, want := range map[string]string{
+		"it_app": "food-service", "mstore": "commerce-service", "feast": "food-service",
+		"shared_app": "", "unknown": "", "": "",
+	} {
+		if got := h.legacyCallerDomain(app); got != want {
+			t.Errorf("legacyCallerDomain(%q) = %q, want %q", app, got, want)
+		}
+	}
 }
 
 // TestIsParty pins the ownership predicate the user-facing handlers rely on.

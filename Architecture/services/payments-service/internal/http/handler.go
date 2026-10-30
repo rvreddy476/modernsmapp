@@ -57,6 +57,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/payments-service/internal/config"
 	"github.com/atpost/payments-service/internal/gateway"
 	"github.com/atpost/payments-service/internal/service"
 	"github.com/atpost/payments-service/internal/store/postgres"
@@ -70,6 +71,10 @@ import (
 
 // ServiceAuthHeader carries the caller's service token.
 const ServiceAuthHeader = "X-Service-Authorization"
+
+// MaxWebhookBodyBytes caps the provider webhook body (L4). It is read in full
+// before the signature is verified, on a route no gateway fronts.
+const MaxWebhookBodyBytes int64 = 1 << 20
 
 // Service is the slice of *service.Service the HTTP layer depends on.
 // Declared as an interface so the handler tests can drive the webhook /
@@ -205,7 +210,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) error {
 		v1.Use(h.refuseWithoutInternalKey())
 	}
 	{
-		v1.POST("/intents", h.InitiateUserPayment)
+		// H1: the shared key alone opens an intent for any payer here, so
+		// production refuses it; intents are opened on /internal with a
+		// service token.
+		v1.POST("/intents", h.refuseUserIntentInProduction(), h.InitiateUserPayment)
 		v1.GET("/intents/:id", h.GetIntentForUser)
 		v1.GET("/intents", h.ListByReferenceForUser)
 		v1.POST("/holds/:intentId/release", h.ReleaseHold)
@@ -221,11 +229,15 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) error {
 	internal := r.Group("/v1/payments/internal")
 	internal.Use(h.requireServiceCredential())
 	{
-		internal.POST("/intents", h.requireOp(servicetoken.OpIntentCreate), h.InitiatePayment)
+		// H1: money-moving service routes refuse the platform-wide legacy key
+		// in production, as the operator routes below do. Every caller of
+		// these two mints a service token in production (paymentsclient
+		// refuses the legacy key outside local/dev).
+		internal.POST("/intents", h.refuseLegacyKeyInProduction(servicetoken.OpIntentCreate), h.requireOp(servicetoken.OpIntentCreate), h.InitiatePayment)
 		internal.GET("/intents/:id", h.requireOp(servicetoken.OpIntentRead), h.GetIntent)
 		internal.GET("/intents", h.requireOp(servicetoken.OpIntentRead), h.ListByReference)
 		internal.POST("/intents/:id/verify", h.requireOp(servicetoken.OpIntentRead), h.VerifyIntent)
-		internal.POST("/intents/:id/refund", h.requireOp(servicetoken.OpRefundCreate), h.InitiateRefund)
+		internal.POST("/intents/:id/refund", h.refuseLegacyKeyInProduction(servicetoken.OpRefundCreate), h.requireOp(servicetoken.OpRefundCreate), h.InitiateRefund)
 
 		// Operator routes for refunds the worker parked in needs_attention
 		// (refund_admin.go). Same family gate; a token needs OpRefundAdmin,
@@ -264,6 +276,28 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) error {
 }
 
 // ─── Credentials ─────────────────────────────────────────────────────
+
+// refuseUserIntentInProduction closes POST /v1/payments/intents in production
+// (H1). The family's only credential is the platform-wide internal key, held
+// by dozens of services, and with it any of them could open an intent for any
+// payer. No caller uses this route (commerce, food, dating, rider, doorstep
+// and monetization all open intents on /internal); outside production it keeps
+// serving the local stack.
+func (h *Handler) refuseUserIntentInProduction() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if h.production {
+			slog.Warn("payments: user-facing intent creation refused in production; "+
+				"open the intent on /v1/payments/internal with a service token",
+				"method", c.Request.Method, "route", c.FullPath())
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, CodeServiceTokenRequired,
+				"payment intents are opened on /v1/payments/internal with a service token carrying "+
+					servicetoken.OpIntentCreate+"; the internal service key is not accepted in production", nil)
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
 
 // refuseWithoutInternalKey is the user-facing gate when no internal key is
 // configured: the family needs a forwarding service to vouch for the user,
@@ -391,6 +425,57 @@ var legacyOwnerDomains = map[string]string{
 	servicetoken.RefDoorstepBooking:    "doorstep-service",     // a Doorstep booking (migration 015)
 	servicetoken.RefDoorstepExtras:     "doorstep-service",     // a Doorstep extras bill (migration 015)
 	servicetoken.RefCreatorMembership:  "monetization-service", // a paid creator membership period (migration 016)
+}
+
+// legacyDomainForApplication is the domain that owns an application, from
+// the two reference-type tables above (mstore → commerce-service, feast →
+// food-service, ...). A legacy internal-key caller names its application, and
+// this is the only domain it can claim; "" for an unknown or blank one.
+func legacyDomainForApplication(appID string) string {
+	appID = strings.TrimSpace(appID)
+	if appID == "" {
+		return ""
+	}
+	domain := ""
+	for refType, app := range legacyApplications {
+		if app != appID {
+			continue
+		}
+		d, ok := legacyOwnerDomains[refType]
+		if !ok || (domain != "" && domain != d) {
+			return "" // ambiguous: an application is not one domain's
+		}
+		domain = d
+	}
+	return domain
+}
+
+// legacyCallerDomain is the domain a legacy internal-key refund acts for. The
+// key carries no identity, so it is the domain owning the application the
+// caller names: a product application's fixed domain, otherwise the one
+// service this deployment allows that application
+// (SERVICE_CALLER_<NAME>_APPLICATIONS). Never the intent's own owner, which
+// would make the store's owner check compare the intent with itself. "" when
+// no single domain owns the application.
+func (h *Handler) legacyCallerDomain(appID string) string {
+	if d := legacyDomainForApplication(appID); d != "" {
+		return d
+	}
+	appID = strings.TrimSpace(appID)
+	if appID == "" {
+		return ""
+	}
+	owner := ""
+	for caller, apps := range h.callerApps {
+		if !config.Allows(apps, appID) {
+			continue
+		}
+		if owner != "" && owner != caller {
+			return ""
+		}
+		owner = caller
+	}
+	return owner
 }
 
 func ownerDomainForReference(refType string) string {
@@ -898,6 +983,9 @@ func (h *Handler) InitiateRefund(c *gin.Context) {
 	}
 	c.ShouldBindJSON(&body) //nolint:errcheck
 
+	// H1: CallerDomain is the CALLER's domain and the store compares it with
+	// the intent's owner_domain. It is never copied from the intent: that made
+	// the comparison an intent agreeing with itself, which always passes.
 	req := service.RefundRequest{
 		IntentID:               id,
 		AmountMinor:            body.AmountMinor,
@@ -906,6 +994,10 @@ func (h *Handler) InitiateRefund(c *gin.Context) {
 		CallerDomain:           callerDomain(c),
 	}
 	if isLegacyCaller(c) {
+		// Outside production only (refuseLegacyKeyInProduction). The key
+		// carries no identity, so the caller's domain is the one owning the
+		// application it names; with none named there is no domain and the
+		// request is refused below.
 		intent, err := h.svc.GetIntent(c.Request.Context(), id)
 		if err != nil {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "intent not found", nil)
@@ -917,10 +1009,7 @@ func (h *Handler) InitiateRefund(c *gin.Context) {
 		if req.ProviderIdempotencyKey == "" {
 			req.ProviderIdempotencyKey = "legacy:" + id.String() + ":" + strings.TrimSpace(body.Reason)
 		}
-		req.CallerDomain = intent.OwnerDomain
-		if req.CallerDomain == "" {
-			req.CallerDomain = ownerDomainForReference(intent.ReferenceType)
-		}
+		req.CallerDomain = h.legacyCallerDomain(body.ApplicationID)
 	} else {
 		if req.AmountMinor <= 0 {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "amount_minor must be positive", nil)
@@ -941,6 +1030,14 @@ func (h *Handler) InitiateRefund(c *gin.Context) {
 			return
 		}
 		req.ApplicationID = appID
+	}
+	if req.CallerDomain == "" {
+		// A legacy caller naming an application no domain owns. 404, as
+		// ownsIntent answers a cross-domain caller.
+		slog.Warn("payments: refund refused: the caller has no domain to own the intent",
+			"intent_id", id, "application_id", req.ApplicationID)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "intent not found", nil)
+		return
 	}
 	cmd, err := h.svc.RequestRefund(c.Request.Context(), req)
 	if err != nil {
@@ -1055,8 +1152,18 @@ func (h *Handler) HandleWebhook(c *gin.Context) {
 		c.Status(http.StatusServiceUnavailable)
 		return
 	}
-	body, err := io.ReadAll(c.Request.Body)
+	// L4: this route is public (the PSP calls it directly, not through the
+	// gateway's 10 MB cap) and the body is read before the signature can be
+	// checked, so cap it here. A real Razorpay event is a few KiB.
+	body, err := io.ReadAll(http.MaxBytesReader(c.Writer, c.Request.Body, MaxWebhookBodyBytes))
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			slog.Warn("payments: webhook body over the cap refused before verification",
+				"provider", h.provider.Name(), "limit_bytes", MaxWebhookBodyBytes)
+			c.Status(http.StatusRequestEntityTooLarge)
+			return
+		}
 		c.Status(http.StatusBadRequest)
 		return
 	}

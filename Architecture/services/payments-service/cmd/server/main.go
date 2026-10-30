@@ -287,8 +287,11 @@ func main() {
 			"INTERNAL_SERVICE_KEY from any caller (Commerce P0 A2 not in force). Register callers to close this.")
 	case cfg.InternalKey != "":
 		handler.WithInternalKey(cfg.InternalKey)
-		slog.Info("payments-service: internal-service-key gate enabled for user-facing routes; " +
-			"legacy internal-key callers admitted on /internal alongside service tokens")
+		// H1: in production the key opens no intent and requests no refund
+		// (handler.go refuseLegacyKeyInProduction / refuseUserIntentInProduction).
+		slog.Info("payments-service: internal-service-key gate enabled for user-facing routes; "+
+			"legacy internal-key callers admitted on /internal alongside service tokens",
+			"legacy_key_moves_money", !isProd)
 	default:
 		slog.Warn("payments-service: INTERNAL_SERVICE_KEY not set — the user-facing /v1/payments family is closed " +
 			"and only service-token callers can reach /v1/payments/internal.")

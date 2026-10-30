@@ -240,13 +240,17 @@ func (s *Store) ApplyWebhookAtomically(ctx context.Context, e WebhookEffect) (*P
 	}
 
 	// Lock the intent so a concurrent verify/refund cannot interleave.
+	// settledPaymentID is the provider payment that already settled it, if
+	// any (M1: a different one arriving later is a second charge).
 	var intent PaymentIntent
+	var settledPaymentID string
 	err = tx.QueryRow(ctx,
 		`SELECT id, payer_id, payee_id, reference_type, reference_id,
 		        amount, COALESCE(amount_minor,0), currency, method, status,
 		        COALESCE(provider_ref,''), COALESCE(upi_intent_url,''),
 		        idempotency_key, COALESCE(refunded_amount_minor,0),
-		        created_at, updated_at, COALESCE(application_id,''), COALESCE(channel,'')
+		        created_at, updated_at, COALESCE(application_id,''), COALESCE(channel,''),
+		        COALESCE(provider_payment_id,'')
 		   FROM payments.payment_intents
 		  WHERE provider = $1 AND provider_order_id = $2
 		  FOR UPDATE`,
@@ -254,7 +258,8 @@ func (s *Store) ApplyWebhookAtomically(ctx context.Context, e WebhookEffect) (*P
 		&intent.ID, &intent.PayerID, &intent.PayeeID, &intent.ReferenceType, &intent.ReferenceID,
 		&intent.Amount, &intent.AmountMinorRaw, &intent.Currency, &intent.Method, &intent.Status,
 		&intent.ProviderRef, &intent.UPIIntentURL, &intent.IdempotencyKey, &intent.RefundedAmountMinor,
-		&intent.CreatedAt, &intent.UpdatedAt, &intent.ApplicationID, &intent.Channel)
+		&intent.CreatedAt, &intent.UpdatedAt, &intent.ApplicationID, &intent.Channel,
+		&settledPaymentID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrIntentNotFound
@@ -274,12 +279,34 @@ func (s *Store) ApplyWebhookAtomically(ctx context.Context, e WebhookEffect) (*P
 		// order's stock — so the capture is recorded as needing a refund, in
 		// this transaction, before the inbox row commits. If that write
 		// fails, the whole event rolls back and the provider retries.
-		lateCaptureRecorded := false
-		if intent.Status == "failed" && e.NewStatus == "succeeded" {
-			lateCaptureRecorded, err = recordLateCaptureTx(ctx, tx, &intent, e)
+		//
+		// M1: the other is a SECOND, distinct capture on an intent that is
+		// already paid — a double tap on a slow UPI collect, or a late
+		// authorisation on the same provider order. The buyer has paid twice;
+		// the second payment is recorded as owed back exactly like a late
+		// capture on a failed intent. An exact redelivery (payment.captured
+		// again, or order.paid, for the payment that settled the intent)
+		// carries the SAME payment id and stays a no-op.
+		lateCaptureRecorded, duplicateCaptureRecorded := false, false
+		switch {
+		case intent.Status == "failed" && e.NewStatus == "succeeded":
+			lateCaptureRecorded, err = recordLateCaptureTx(ctx, tx, &intent, e, reasonLateCaptureAfterFailed)
 			if err != nil {
 				return nil, err
 			}
+		case isDuplicateCapture(intent.Status, settledPaymentID, e):
+			duplicateCaptureRecorded, err = recordLateCaptureTx(ctx, tx, &intent, e, reasonDuplicateCapture)
+			if err != nil {
+				return nil, err
+			}
+		case e.NewStatus == "succeeded" && paidStatuses[intent.Status] && strings.TrimSpace(settledPaymentID) == "" &&
+			strings.TrimSpace(e.ProviderPaymentID) != "":
+			// Paid with no payment id on record, so this capture cannot be told
+			// apart from the one that settled it. Loud, not silent.
+			slog.Warn("payments: capture on a paid intent that holds no provider payment id; cannot tell a duplicate "+
+				"from a redelivery, nothing recorded",
+				"intent_id", intent.ID, "provider", e.Provider, "provider_payment_id", e.ProviderPaymentID,
+				"event_id", e.EventID)
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return nil, err
@@ -289,6 +316,14 @@ func (s *Store) ApplyWebhookAtomically(ctx context.Context, e WebhookEffect) (*P
 				"(recorded in payments.refund_required; not issued automatically)",
 				"intent_id", intent.ID, "provider", e.Provider, "provider_order_id", e.ProviderOrderID,
 				"provider_payment_id", lateCapturePaymentKey(e), "event_id", e.EventID,
+				"amount_minor", e.AmountMinor, "currency", e.Currency)
+		}
+		if duplicateCaptureRecorded {
+			slog.Error("payments: DUPLICATE CAPTURE ON A PAID INTENT — the buyer paid twice and a refund is required "+
+				"(recorded in payments.refund_required; not issued automatically)",
+				"intent_id", intent.ID, "status", intent.Status, "provider", e.Provider,
+				"provider_order_id", e.ProviderOrderID, "settled_payment_id", settledPaymentID,
+				"provider_payment_id", e.ProviderPaymentID, "event_id", e.EventID,
 				"amount_minor", e.AmountMinor, "currency", e.Currency)
 		}
 		return &intent, nil
@@ -422,9 +457,37 @@ func lateCapturePaymentKey(e WebhookEffect) string {
 	return "event:" + e.EventID
 }
 
-// recordLateCaptureTx writes the durable needs-refund marker for a capture on
-// a FAILED intent, inside the caller's transaction. It reports whether a NEW
-// marker was written.
+// refund_required reasons. A late capture lands on an intent the reconciler
+// finalised FAILED; a duplicate capture is a second, distinct provider payment
+// on an intent another payment already settled (M1).
+const (
+	reasonLateCaptureAfterFailed = "late_capture_after_failed"
+	reasonDuplicateCapture       = "duplicate_capture"
+)
+
+// paidStatuses are the intent states a capture has already settled.
+var paidStatuses = map[string]bool{
+	"succeeded": true, "partially_refunded": true, "refunded": true, "disputed": true,
+}
+
+// isDuplicateCapture reports whether e is a SECOND capture on an intent that a
+// different provider payment already settled: the event drives succeeded, the
+// intent is paid, and both payment ids are known and differ. The same payment
+// announced again (a redelivered payment.captured, or order.paid, which repeats
+// the payment id) is not one; neither is a capture whose id is unknown on
+// either side, because it cannot be told apart from the original.
+func isDuplicateCapture(intentStatus, settledPaymentID string, e WebhookEffect) bool {
+	if e.NewStatus != "succeeded" || !paidStatuses[intentStatus] {
+		return false
+	}
+	settled, incoming := strings.TrimSpace(settledPaymentID), strings.TrimSpace(e.ProviderPaymentID)
+	return settled != "" && incoming != "" && settled != incoming
+}
+
+// recordLateCaptureTx writes the durable needs-refund marker for a capture the
+// intent cannot accept (a late capture on a FAILED intent, or a duplicate
+// capture on a paid one), inside the caller's transaction. It reports whether a
+// NEW marker was written.
 //
 // Dedupe is on (provider, provider_payment_id), not on the event: Razorpay
 // announces one capture as both payment.captured and order.paid, under
@@ -433,31 +496,40 @@ func lateCapturePaymentKey(e WebhookEffect) string {
 //
 // No provider refund is issued here. Whether to refund late captures
 // automatically is an operator decision; this row is what they act on.
-func recordLateCaptureTx(ctx context.Context, tx pgx.Tx, intent *PaymentIntent, e WebhookEffect) (bool, error) {
+func recordLateCaptureTx(ctx context.Context, tx pgx.Tx, intent *PaymentIntent, e WebhookEffect, reason string) (bool, error) {
 	key := lateCapturePaymentKey(e)
 	tag, err := tx.Exec(ctx,
 		`INSERT INTO payments.refund_required
 		     (intent_id, provider, provider_order_id, provider_payment_id, event_id,
 		      amount_minor, currency, reason, application_id)
-		 VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),'late_capture_after_failed',
+		 VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8,
 		         (SELECT application_id FROM payments.payment_intents WHERE id = $1))
 		 ON CONFLICT (provider, provider_payment_id) DO NOTHING`,
-		intent.ID, e.Provider, e.ProviderOrderID, key, e.EventID, e.AmountMinor, e.Currency)
+		intent.ID, e.Provider, e.ProviderOrderID, key, e.EventID, e.AmountMinor, e.Currency, reason)
 	if err != nil {
-		return false, fmt.Errorf("payments: record late capture on failed intent %s: %w", intent.ID, err)
+		return false, fmt.Errorf("payments: record %s on %s intent %s: %w", reason, intent.Status, intent.ID, err)
 	}
 	if tag.RowsAffected() == 0 {
 		return false, nil // this payment is already recorded as owed back
 	}
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO payments.payment_audit_log (intent_id, event, old_status, new_status, metadata)
-		 VALUES ($1,'late_capture_refund_required',$2,$2,$3)`,
-		intent.ID, intent.Status,
+		 VALUES ($1,$2,$3,$3,$4)`,
+		intent.ID, auditEventForRefundRequired(reason), intent.Status,
 		[]byte(fmt.Sprintf(`{"provider":%q,"event_id":%q,"provider_payment_id":%q,"amount_minor":%d}`,
 			e.Provider, e.EventID, key, e.AmountMinor))); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// auditEventForRefundRequired names the payment_audit_log event for a marker.
+// A late capture keeps the name it has always had.
+func auditEventForRefundRequired(reason string) string {
+	if reason == reasonDuplicateCapture {
+		return "duplicate_capture_refund_required"
+	}
+	return "late_capture_refund_required"
 }
 
 // transitionAllowed mirrors the state machine already enforced in
