@@ -203,7 +203,8 @@ func TestContentIT_OnlineIndexesAreBuiltAndUsed(t *testing.T) {
 			t.Fatalf("explain: %v", err)
 		}
 		if !strings.Contains(plan.String(), name) {
-			t.Fatalf("search does not use %s:\n%s", name, plan.String())
+			// One line: CI summaries keep only a failure's first line.
+			t.Fatalf("search does not use %s: plan: %s", name, strings.ReplaceAll(strings.TrimSpace(plan.String()), "\n", " | "))
 		}
 	}
 	explain("idx_questions_search_tsv", searchMatchSQL("q", "$1"))
