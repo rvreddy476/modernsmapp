@@ -224,8 +224,11 @@ func TestRiderPayoutIsTheSettlementFigure(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Delivery settlements bucket by the India business day (delivered_at in
+	// Asia/Kolkata); CURRENT_DATE is the session's (UTC) date and differs
+	// from 18:30 to 24:00 UTC.
 	var today string
-	if err := s.db.QueryRow(ctx, `SELECT CURRENT_DATE::text`).Scan(&today); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT (NOW() AT TIME ZONE 'Asia/Kolkata')::date::text`).Scan(&today); err != nil {
 		t.Fatal(err)
 	}
 	noRestaurant := uuid.New() // settle this rider only

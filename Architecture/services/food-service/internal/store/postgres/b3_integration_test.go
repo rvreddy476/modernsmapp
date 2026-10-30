@@ -287,8 +287,11 @@ func TestAdminGenerateSettlements_PaysTheRestaurantItsSupplyOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// The generator buckets orders by the India business day (placed_at in
+	// Asia/Kolkata), so the period must be that day, not the session's (UTC)
+	// date: from 18:30 to 24:00 UTC the two differ and no order matched.
 	var day string
-	if err := s.db.QueryRow(ctx, `SELECT placed_at::date::text FROM food.orders WHERE id = $1`, aOrder).Scan(&day); err != nil {
+	if err := s.db.QueryRow(ctx, `SELECT (placed_at AT TIME ZONE 'Asia/Kolkata')::date::text FROM food.orders WHERE id = $1`, aOrder).Scan(&day); err != nil {
 		t.Fatal(err)
 	}
 	for _, rid := range []uuid.UUID{aRestaurant, bRestaurant} {
