@@ -44,7 +44,9 @@ func adminKey() string { return "audio-library/" + uuid.NewString() + ".m4a" }
 func TestAdminSoundMigrationBackfillsLegacyRowsOnce(t *testing.T) {
 	for name, shape := range soundShapes() {
 		t.Run(name, func(t *testing.T) {
-			store, exec := librarySchema(t, shape)
+			// The legacy rows must exist before 029 runs: its backfill runs
+			// once, in the transaction that adds first_activated_at.
+			store, exec := librarySchemaBefore029(t, shape)
 			ctx := context.Background()
 			licensed, retired, original, upload := uuid.New(), uuid.New(), uuid.New(), uuid.New()
 			exec(`INSERT INTO audio_library (id, title, duration_ms, audio_url, source, is_licensed)

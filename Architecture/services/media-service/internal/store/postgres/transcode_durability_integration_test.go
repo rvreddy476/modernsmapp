@@ -113,14 +113,21 @@ func TestLiveCompletionStateInboxAndEventAreOneCommit(t *testing.T) {
 		t.Fatalf("status=%s moderation=%s inbox=%d outbox=%d", status, moderation, inbox, outbox)
 	}
 
+	// A completion for an asset that no longer exists (deleted mid-queue)
+	// is a recorded SKIP, not a failure (reels audit 2026-10-30, finding 1:
+	// the rollback left the delivery unapplied and the worker retried it
+	// forever, stalling the partition). The inbox row is committed as
+	// skipped_asset_gone; no completion event is published for an asset
+	// that does not exist.
 	missingID, missingEvent := uuid.New(), uuid.NewString()
-	if err := store.CompleteTranscode(ctx, missingEvent, missingID, "ready", "", "passed", completion); err == nil {
-		t.Fatal("missing media completion unexpectedly committed")
+	if err := store.CompleteTranscode(ctx, missingEvent, missingID, "ready", "", "passed", completion); !errors.Is(err, ErrTranscodeAssetGone) {
+		t.Fatalf("missing media completion = %v, want ErrTranscodeAssetGone", err)
 	}
-	_ = pool.QueryRow(ctx, `SELECT count(*) FROM media_transcode_inbox WHERE event_id=$1`, missingEvent).Scan(&inbox)
+	var outcome string
+	_ = pool.QueryRow(ctx, `SELECT count(*), COALESCE(max(outcome), '') FROM media_transcode_inbox WHERE event_id=$1`, missingEvent).Scan(&inbox, &outcome)
 	_ = pool.QueryRow(ctx, `SELECT count(*) FROM media_event_outbox WHERE event_id=$1`, missingEvent+":completed").Scan(&outbox)
-	if inbox != 0 || outbox != 0 {
-		t.Fatalf("failed completion was partial: inbox=%d outbox=%d", inbox, outbox)
+	if inbox != 1 || outcome != TranscodeOutcomeSkippedGone || outbox != 0 {
+		t.Fatalf("missing-asset completion: inbox=%d outcome=%q outbox=%d, want 1 %q 0", inbox, outcome, outbox, TranscodeOutcomeSkippedGone)
 	}
 }
 

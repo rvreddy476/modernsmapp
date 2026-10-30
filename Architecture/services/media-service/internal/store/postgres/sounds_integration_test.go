@@ -124,6 +124,17 @@ func soundSchema(t *testing.T, shape string) *pgxpool.Pool {
 // transaction.
 func applySoundMigration(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
+	applySoundMigrationThrough028(t, pool)
+	// Every sound read also computes whether a library sound may go on a
+	// new post from withdrawn_at / license_expires_at (reels audit
+	// 2026-10-30, 13), which migration 029 adds on every real database.
+	applyMediaMigration(t, pool, "029_admin_sound_library.sql")
+}
+
+// applySoundMigrationThrough028 is applySoundMigration without 029, for
+// a schema that must still look pre-029 (librarySchemaBefore029).
+func applySoundMigrationThrough028(t *testing.T, pool *pgxpool.Pool) {
+	t.Helper()
 	// Every sound read selects its library row's cover_url (trending
 	// sounds, 2026-10-24), so the schema has audio_library as migration 006
 	// creates it on every real database.
@@ -131,10 +142,7 @@ func applySoundMigration(t *testing.T, pool *pgxpool.Pool) {
 		strings.Replace(audioLibraryDDL, "CREATE TABLE audio_library", "CREATE TABLE IF NOT EXISTS audio_library", 1)); err != nil {
 		t.Fatalf("create audio_library: %v", err)
 	}
-	// Every sound read also computes whether a library sound may go on a
-	// new post from withdrawn_at / license_expires_at (reels audit
-	// 2026-10-30, 13), which migration 029 adds on every real database.
-	for _, file := range []string{"024_sound_per_source.sql", "028_library_sounds.sql", "029_admin_sound_library.sql"} {
+	for _, file := range []string{"024_sound_per_source.sql", "028_library_sounds.sql"} {
 		applyMediaMigration(t, pool, file)
 	}
 }

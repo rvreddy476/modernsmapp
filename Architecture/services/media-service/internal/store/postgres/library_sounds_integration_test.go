@@ -47,8 +47,20 @@ CREATE TABLE audio_library (
 
 func librarySchema(t *testing.T, shape string) (*MediaAssetStore, func(sql string, args ...any)) {
 	t.Helper()
+	store, exec := librarySchemaBefore029(t, shape)
+	applyMediaMigration(t, store.db, "029_admin_sound_library.sql")
+	return store, exec
+}
+
+// librarySchemaBefore029 is librarySchema as it stood before the admin
+// library migration: for the test of that migration's one-time backfill,
+// which must insert its legacy rows BEFORE 029 runs. Sound reads need 029
+// (audioTrackReuseBlock), so nothing reads through the store until the
+// caller applies it.
+func librarySchemaBefore029(t *testing.T, shape string) (*MediaAssetStore, func(sql string, args ...any)) {
+	t.Helper()
 	pool := soundSchema(t, shape+audioLibraryDDL)
-	applySoundMigration(t, pool)
+	applySoundMigrationThrough028(t, pool)
 	// The runner applies a file once; a replay must be harmless.
 	applyMediaMigration(t, pool, "028_library_sounds.sql")
 	exec := func(sql string, args ...any) {
