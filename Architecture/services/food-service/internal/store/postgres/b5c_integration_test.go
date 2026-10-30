@@ -181,10 +181,47 @@ func TestOrderEventsCommitWithTheirTransition(t *testing.T) {
 		}
 	}
 	for _, r := range rows {
-		if strings.Contains(r.Raw, pickup) || strings.Contains(r.Raw, delivery) {
+		if jsonCarriesValue(t, r.Raw, pickup) || jsonCarriesValue(t, r.Raw, delivery) {
 			t.Fatalf("%s carries a code value: %s", r.EventType, r.Raw)
 		}
 	}
+}
+
+// jsonCarriesValue reports whether any value in the JSON document (a string,
+// or a number written the same way) is exactly code. The codes are four
+// digits, so a substring search also matched digit runs inside ids and
+// timestamps and failed at random.
+func jsonCarriesValue(t *testing.T, raw, code string) bool {
+	t.Helper()
+	dec := json.NewDecoder(strings.NewReader(raw))
+	dec.UseNumber()
+	var doc any
+	if err := dec.Decode(&doc); err != nil {
+		t.Fatalf("decode outbox payload: %v", err)
+	}
+	var walk func(v any) bool
+	walk = func(v any) bool {
+		switch x := v.(type) {
+		case map[string]any:
+			for _, e := range x {
+				if walk(e) {
+					return true
+				}
+			}
+		case []any:
+			for _, e := range x {
+				if walk(e) {
+					return true
+				}
+			}
+		case string:
+			return x == code
+		case json.Number:
+			return x.String() == code
+		}
+		return false
+	}
+	return walk(doc)
 }
 
 // Placement is an INSERT, not a transition: PlaceOrder writes
