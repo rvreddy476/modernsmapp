@@ -441,6 +441,11 @@ services:
       # kid refuses boot, so the kid keeps the products' default.
       ADMIN_SERVICE_TOKEN_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
       ADMIN_SERVICE_TOKEN_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      # Google sign-in with an ID token (Android, lane 1): comma-separated
+      # client ids a token's aud may name; the Android app's id goes here.
+      # Both empty = the id_token route accepts no token.
+      OAUTH_GOOGLE_CLIENT_ID: ${OAUTH_GOOGLE_CLIENT_ID:-}
+      OAUTH_GOOGLE_ID_TOKEN_AUDIENCES: ${OAUTH_GOOGLE_ID_TOKEN_AUDIENCES:-}
     ports:
       - "8081:8081"
     # identity-auth provisions the shared identity base tables (auth.*, plus
