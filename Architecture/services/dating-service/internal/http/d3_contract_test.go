@@ -173,10 +173,13 @@ func TestD3Contracts(t *testing.T) {
 		// Audit H1: each side is dealt the other, so the refusal below is
 		// the decline, and the decliner's spark (not a reply: the incoming
 		// spark is declined) is on a card the decliner was dealt.
-		dealCards(t, r, st, sender, decliner)
-		// The decliner's deck leaves out someone whose spark they declined,
-		// so a deck fetch can't deal the sender to them; record the deal the
-		// way a fetch would (the decliner did see the sender's card).
+		// Neither deck can deal the other any more (the sender already
+		// sparked the decliner, and the decliner declined that spark), so a
+		// deck fetch can't make these deals; record them the way a fetch
+		// would — each did see the other's card.
+		if err := st.RecordDeckServed(ctx, sender, []uuid.UUID{decliner}); err != nil {
+			t.Fatalf("record deal: %v", err)
+		}
 		if err := st.RecordDeckServed(ctx, decliner, []uuid.UUID{sender}); err != nil {
 			t.Fatalf("record deal: %v", err)
 		}
