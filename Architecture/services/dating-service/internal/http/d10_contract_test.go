@@ -55,6 +55,9 @@ var d10Fixtures = []string{
 	"trusted_contacts_get_200",
 	"trusted_contacts_get_200_profile_gone",
 	"trusted_contact_put_200",
+	"trusted_contact_patch_422_consent_required",
+	"trusted_contact_patch_200",
+	"trusted_contact_patch_200_revoked",
 	"share_location_post_200",
 	"share_location_get_200",
 	"share_location_delete_200",
@@ -404,8 +407,16 @@ func TestD10Contracts(t *testing.T) {
 		if err := st.MarkMatchActive(ctx, matchID, uuid.New()); err != nil {
 			t.Fatalf("activate: %v", err)
 		}
+		// Audit 2026-10-30 M4: the add the current app sends (always true)
+		// is stored NOT sharing; the PATCH without the consent version is
+		// refused with the copy to show; with it, sharing is on.
 		assertContract(t, contractDo(r, http.MethodPut, "/v1/dating/safety/trusted-contacts/"+contact.String(),
 			`{"share_location_on_panic":true}`, user), http.StatusOK, "trusted_contact_put_200", labels)
+		assertContract(t, contractDo(r, http.MethodPatch, "/v1/dating/safety/trusted-contacts/"+contact.String(),
+			`{"share_location_on_panic":true}`, user), http.StatusUnprocessableEntity, "trusted_contact_patch_422_consent_required", labels)
+		assertContract(t, contractDo(r, http.MethodPatch, "/v1/dating/safety/trusted-contacts/"+contact.String(),
+			`{"share_location_on_panic":true,"consent_version":"`+store.PanicLocationConsentVersion+`"}`, user),
+			http.StatusOK, "trusted_contact_patch_200", labels)
 		assertContract(t, contractDo(r, http.MethodGet, "/v1/dating/safety/trusted-contacts", ``, user),
 			http.StatusOK, "trusted_contacts_get_200", labels)
 
@@ -430,6 +441,10 @@ func TestD10Contracts(t *testing.T) {
 			http.StatusOK, "shared_location_get_200", shareLabels)
 		assertContract(t, contractDo(r, http.MethodDelete, "/v1/dating/safety/share-location/"+shareID.String(), ``, user),
 			http.StatusOK, "share_location_delete_200", shareLabels)
+
+		// Revoking is the same PATCH with false, no version needed.
+		assertContract(t, contractDo(r, http.MethodPatch, "/v1/dating/safety/trusted-contacts/"+contact.String(),
+			`{"share_location_on_panic":false}`, user), http.StatusOK, "trusted_contact_patch_200_revoked", labels)
 	})
 
 	t.Run("trusted_contact_profile_gone", func(t *testing.T) {
@@ -445,7 +460,7 @@ func TestD10Contracts(t *testing.T) {
 		if err := st.MarkMatchActive(ctx, matchID, uuid.New()); err != nil {
 			t.Fatalf("activate: %v", err)
 		}
-		if _, _, err := st.UpsertTrustedContact(ctx, user, contact, true); err != nil {
+		if _, _, err := st.UpsertTrustedContact(ctx, user, contact, false); err != nil {
 			t.Fatalf("trusted contact: %v", err)
 		}
 		if err := st.SoftDeleteProfile(ctx, contact); err != nil {

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
@@ -120,51 +121,87 @@ func TestD8HTTP_PanicNotifyContextIsServiceOnlyAndOptInScoped(t *testing.T) {
 	env := setupAuthzIT(t)
 	ctx := context.Background()
 	user, opted, notOpted := uuid.New(), uuid.New(), uuid.New()
+	legacy, stale := uuid.New(), uuid.New()
 	seedProfile(t, env.st, user)
 	lat, lng := 12.971599, 77.594566
 	out, err := env.st.RecordPanicIncident(ctx, store.RecordPanicParams{UserID: user, Source: store.PanicSourcePanic, Latitude: &lat, Longitude: &lng})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := env.st.UpsertTrustedContact(ctx, user, opted, true); err != nil {
+	// opted: added, then the explicit consent action (audit 2026-10-30 M4).
+	if _, _, err := env.st.UpsertTrustedContact(ctx, user, opted, false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.st.SetPanicLocationConsent(ctx, user, opted, store.PanicLocationConsentVersion, store.PanicLocationConsentCopy); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := env.st.UpsertTrustedContact(ctx, user, notOpted, false); err != nil {
+		t.Fatal(err)
+	}
+	// legacy: what the old app left behind, the flag with no consent record
+	// (also what an old pod could still write mid-rollout). stale: consent
+	// to a copy version that no longer counts. Neither gets the point.
+	if _, err := env.pool.Exec(ctx, `
+		INSERT INTO dating_trusted_contacts (user_id, contact_id, share_location_on_panic, location_consent_at, location_consent_version)
+		VALUES ($1, $2, true, NULL, NULL), ($1, $3, true, now(), 'panic_location_v0')`, user, legacy, stale); err != nil {
 		t.Fatal(err)
 	}
 	path := "/v1/dating/internal/safety/panic/" + out.Incident.ID.String() + "/notify-context"
 	if w := serve(env.r, http.MethodGet, path, "", gatewayUser(uuid.New(), "admin")); w.Code != http.StatusForbidden {
 		t.Fatalf("gateway user on notify context: status=%d, want 403", w.Code)
 	}
-	w := serve(env.r, http.MethodGet, path, "", map[string]string{headerInternalKey: testInternalKey})
-	if w.Code != http.StatusOK {
-		t.Fatalf("service call: status=%d body=%s", w.Code, w.Body.String())
+	type contactPoint struct {
+		UserID    uuid.UUID `json:"user_id"`
+		Latitude  *float64  `json:"latitude"`
+		Longitude *float64  `json:"longitude"`
 	}
-	var resp struct {
-		Data struct {
-			TrustedContacts []struct {
-				UserID    uuid.UUID `json:"user_id"`
-				Latitude  *float64  `json:"latitude"`
-				Longitude *float64  `json:"longitude"`
-			} `json:"trusted_contacts"`
-		} `json:"data"`
+	notifyContext := func() []contactPoint {
+		t.Helper()
+		w := serve(env.r, http.MethodGet, path, "", map[string]string{headerInternalKey: testInternalKey})
+		if w.Code != http.StatusOK {
+			t.Fatalf("service call: status=%d body=%s", w.Code, w.Body.String())
+		}
+		var resp struct {
+			Data struct {
+				TrustedContacts []contactPoint `json:"trusted_contacts"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatal(err)
+		}
+		if len(resp.Data.TrustedContacts) != 4 {
+			t.Fatalf("contacts = %s, want all four paged", w.Body.String())
+		}
+		return resp.Data.TrustedContacts
 	}
-	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
-		t.Fatal(err)
-	}
-	if len(resp.Data.TrustedContacts) != 2 {
-		t.Fatalf("contacts = %s", w.Body.String())
-	}
-	for _, c := range resp.Data.TrustedContacts {
+	for _, c := range notifyContext() {
 		switch c.UserID {
 		case opted:
-			if c.Latitude == nil || *c.Latitude != lat {
-				t.Fatalf("opted-in contact lacks the point: %s", w.Body.String())
+			if c.Latitude == nil || *c.Latitude != lat || c.Longitude == nil || *c.Longitude != lng {
+				t.Fatalf("consented contact lacks the point: %+v", c)
 			}
-		case notOpted:
+		case notOpted, legacy, stale:
 			if c.Latitude != nil || c.Longitude != nil {
-				t.Fatalf("contact who did not opt in got the point: %s", w.Body.String())
+				t.Fatalf("contact %s without a current consent got the point", c.UserID)
 			}
+		default:
+			t.Fatalf("unexpected contact %s", c.UserID)
 		}
+	}
+
+	// The member revokes; the next page carries no point for that contact.
+	if w := serve(env.r, http.MethodPatch, "/v1/dating/safety/trusted-contacts/"+opted.String(),
+		`{"share_location_on_panic":false}`, gatewayUser(user, "")); w.Code != http.StatusOK {
+		t.Fatalf("revoke: status=%d body=%s", w.Code, w.Body.String())
+	}
+	for _, c := range notifyContext() {
+		if c.Latitude != nil || c.Longitude != nil {
+			t.Fatalf("contact %s still gets the point after the revoke", c.UserID)
+		}
+	}
+	var revokedAt *time.Time
+	if err := env.pool.QueryRow(ctx, `SELECT location_consent_revoked_at FROM dating_trusted_contacts WHERE user_id = $1 AND contact_id = $2`,
+		user, opted).Scan(&revokedAt); err != nil || revokedAt == nil {
+		t.Fatalf("revoke not recorded: %v err=%v", revokedAt, err)
 	}
 }

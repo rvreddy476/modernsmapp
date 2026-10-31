@@ -137,8 +137,12 @@ func TestTrustedContactsCarryPersonCards(t *testing.T) {
 	}
 	// Seeded at the store, so eligibility is not what this test is about.
 	for _, id := range []uuid.UUID{contact, gone} {
-		if _, _, err := st.UpsertTrustedContact(ctx, user, id, true); err != nil {
+		if _, _, err := st.UpsertTrustedContact(ctx, user, id, false); err != nil {
 			t.Fatalf("seed trusted contact: %v", err)
+		}
+		// Location on panic is on only with a recorded consent (audit M4).
+		if _, err := st.SetPanicLocationConsent(ctx, user, id, store.PanicLocationConsentVersion, store.PanicLocationConsentCopy); err != nil {
+			t.Fatalf("seed panic location consent: %v", err)
 		}
 	}
 	// The second contact's profile is gone (deleted or purged).

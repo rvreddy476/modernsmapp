@@ -225,9 +225,11 @@ func TestD8_TrustedContactMustBeConnectionOrMatch(t *testing.T) {
 	if _, err := svc.SetTrustedContact(ctx, user, friends[2], false); !errors.Is(err, store.ErrTrustedContactLimit) {
 		t.Fatalf("fourth trusted contact: err=%v, want ErrTrustedContactLimit", err)
 	}
-	// Updating an existing contact is not a new one.
-	if tc, err := svc.SetTrustedContact(ctx, user, friends[0], true); err != nil || !tc.ShareLocationOnPanic {
-		t.Fatalf("update existing contact: %+v err=%v", tc, err)
+	// Updating an existing contact is not a new one. It cannot turn
+	// location-on-panic on either: that needs the explicit consent action
+	// (audit 2026-10-30 M4; m4_panic_location_consent_it_test.go).
+	if tc, err := svc.SetTrustedContact(ctx, user, friends[0], true); err != nil || tc.ShareLocationOnPanic {
+		t.Fatalf("update existing contact: %+v err=%v, want ok and not sharing", tc, err)
 	}
 	conns.err = errors.New("graph down")
 	if err := svc.RemoveTrustedContact(ctx, user, friends[1]); err != nil {

@@ -1378,6 +1378,34 @@ CREATE TABLE IF NOT EXISTS dating_trusted_contacts (
 CREATE INDEX IF NOT EXISTS idx_dating_trusted_contacts_contact
     ON dating_trusted_contacts(contact_id);
 
+-- Audit 2026-10-30 M4 (founder decision 31 Oct): a trusted contact gets the
+-- exact panic location only after the member's explicit, per-contact
+-- consent (PATCH /v1/dating/safety/trusted-contacts/:id). The consent record
+-- is when, which copy version, and the copy itself; revoked_at keeps when it
+-- was last withdrawn. Nullable with no default, so ADD COLUMN is a catalog
+-- change only (no rewrite, no scan). The panic gate is
+-- store.TrustedContact.SharesPanicLocation: flag AND consent AND a current
+-- copy version, so a row without a consent record never gets the point.
+ALTER TABLE dating_trusted_contacts
+    ADD COLUMN IF NOT EXISTS location_consent_at         TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS location_consent_version    TEXT,
+    ADD COLUMN IF NOT EXISTS location_consent_copy       TEXT,
+    ADD COLUMN IF NOT EXISTS location_consent_revoked_at TIMESTAMPTZ;
+-- Existing rows have no consent record (the old app set the flag for every
+-- contact without asking), so they are not opted in: clear the flag once.
+-- Guarded, so a boot with nothing to fix writes nothing. A pod still on the
+-- old code may set the flag again during a rollout; the gate ignores a flag
+-- without consent, so that row still gets no location.
+DO $bf$
+BEGIN
+    IF EXISTS (SELECT 1 FROM dating_trusted_contacts
+               WHERE share_location_on_panic AND location_consent_at IS NULL) THEN
+        UPDATE dating_trusted_contacts
+        SET share_location_on_panic = false
+        WHERE share_location_on_panic AND location_consent_at IS NULL;
+    END IF;
+END $bf$;
+
 CREATE TABLE IF NOT EXISTS dating_location_shares (
     id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id        UUID        NOT NULL,

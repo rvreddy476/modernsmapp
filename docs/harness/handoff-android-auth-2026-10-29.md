@@ -389,3 +389,22 @@ refund" instead (`POST /v1/food/support/tickets` with `order_id`, then
 `ticket_id`). Re-sync the Feast golden fixtures from
 `Architecture/services/food-service/internal/http/testdata/contracts/`
 (five gained `can_cancel`; new `order_cancel_post_409_after_preparing.json`).
+
+### Dating lane addendum (31 Oct 2026): panic location is per-contact opt-in
+
+Founder decision (dating Android audit M4). Replaces item 2 M4 above.
+- Adding a trusted contact (PUT) never shares location; stop sending
+  `share_location_on_panic=true` on add (the server stores false anyway).
+- Show a per-contact switch with the consent text from GET
+  `/v1/dating/safety/trusted-contacts` (`panic_location_consent.text`).
+  Turning it on: `PATCH /v1/dating/safety/trusted-contacts/:contactId`
+  `{"share_location_on_panic": true, "consent_version": <panic_location_consent.version>}`;
+  turning it off: `{"share_location_on_panic": false}`. A missing or old
+  version answers 422 `PANIC_LOCATION_CONSENT_REQUIRED` with
+  `details.consent_version` / `consent_text` — show the text and ask again.
+- Contacts carry `location_consent_at` and `location_consent_version`;
+  `share_location_on_panic` is the effective value.
+- Fix the copy that says only the safety team sees the location.
+- Re-sync `trusted_contacts_get_200*.json` and `trusted_contact_put_200.json`
+  and add the three `trusted_contact_patch_*` fixtures from
+  `Architecture/services/dating-service/internal/http/testdata/contracts/`.

@@ -54,7 +54,18 @@ func (h *Handler) ListTrustedContacts(c *gin.Context) {
 		respondServiceError(c, err, http.StatusInternalServerError, "TRUSTED_CONTACTS_FAILED")
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, gin.H{"items": items, "max": store.MaxTrustedContacts}, nil)
+	api.JSON(c.Writer, http.StatusOK, gin.H{
+		"items":                  items,
+		"max":                    store.MaxTrustedContacts,
+		"panic_location_consent": panicLocationConsentCopy(),
+	}, nil)
+}
+
+// panicLocationConsentCopy is the wording the app shows with each contact's
+// "send them my location if I press panic" switch, and the version it
+// sends back when the member turns it on.
+func panicLocationConsentCopy() gin.H {
+	return gin.H{"version": store.PanicLocationConsentVersion, "text": store.PanicLocationConsentCopy}
 }
 
 type trustedContactRequest struct {
@@ -64,6 +75,12 @@ type trustedContactRequest struct {
 // PutTrustedContact — PUT /v1/dating/safety/trusted-contacts/:contactId.
 // Body (optional): {share_location_on_panic}. The contact must be an
 // accepted connection or a current match; at most three.
+//
+// Audit 2026-10-30 M4: this never turns location-on-panic on. A new contact
+// is stored with share_location_on_panic=false even when the body says
+// true (not refused, so the current app keeps working); the response shows
+// the stored false. false on an existing contact withdraws consent. Use
+// PATCH with consent_version to turn it on.
 func (h *Handler) PutTrustedContact(c *gin.Context) {
 	userID, ok := getUserID(c)
 	if !ok {
@@ -81,6 +98,49 @@ func (h *Handler) PutTrustedContact(c *gin.Context) {
 		}
 	}
 	tc, err := h.svc.SetTrustedContact(c.Request.Context(), userID, contactID, body.ShareLocationOnPanic)
+	if err != nil {
+		respondServiceError(c, err, http.StatusInternalServerError, "TRUSTED_CONTACT_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, tc, nil)
+}
+
+type trustedContactPatchRequest struct {
+	ShareLocationOnPanic *bool `json:"share_location_on_panic"`
+	// ConsentVersion is the panic_location_consent.version the member was
+	// shown and agreed to. Required (and must be current) to turn sharing on.
+	ConsentVersion string `json:"consent_version"`
+}
+
+// PatchTrustedContact — PATCH /v1/dating/safety/trusted-contacts/:contactId.
+// Body: {share_location_on_panic, consent_version?}. The explicit
+// per-contact consent action (audit 2026-10-30 M4):
+//   - true + consent_version equal to the current
+//     panic_location_consent.version records the consent (time, version,
+//     copy) and turns sharing on; a missing or stale version is 422
+//     PANIC_LOCATION_CONSENT_REQUIRED with the current version and text;
+//   - false revokes; it applies to the next panic.
+//
+// The contact must already be set (404 NOT_FOUND otherwise).
+func (h *Handler) PatchTrustedContact(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	contactID, ok := parseUUID(c, "contactId")
+	if !ok {
+		return
+	}
+	var body trustedContactPatchRequest
+	if err := c.ShouldBindJSON(&body); err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
+		return
+	}
+	if body.ShareLocationOnPanic == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "share_location_on_panic is required", nil)
+		return
+	}
+	tc, err := h.svc.SetTrustedContactPanicLocation(c.Request.Context(), userID, contactID, *body.ShareLocationOnPanic, body.ConsentVersion)
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "TRUSTED_CONTACT_FAILED")
 		return

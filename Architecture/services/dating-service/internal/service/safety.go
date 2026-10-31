@@ -38,6 +38,11 @@ var (
 	// ErrReportTargetMismatch: an admin action named a user other than the
 	// report's target.
 	ErrReportTargetMismatch = errors.New("the action's target is not the report's target")
+	// ErrPanicLocationConsentRequired: turning on "send my location on
+	// panic" for a contact needs the member's explicit consent to the
+	// current copy (store.PanicLocationConsentVersion), sent with the
+	// request. Audit 2026-10-30 M4.
+	ErrPanicLocationConsentRequired = errors.New("sharing your location on panic needs your explicit consent to the current wording")
 	// ErrInvalidReportReason: the reason is not one of store.ReportReasons.
 	ErrInvalidReportReason = errors.New("invalid: report reason must be one of " + strings.Join(store.ReportReasons, ", "))
 )
@@ -275,9 +280,16 @@ func (s *Service) ListTrustedContacts(ctx context.Context, userID uuid.UUID) ([]
 	return out, nil
 }
 
-// SetTrustedContact adds contactID as a trusted contact (or updates the
-// location opt-in). The contact must not be blocked either way and must be
-// a current match or an accepted connection; the cap is store.MaxTrustedContacts.
+// SetTrustedContact adds contactID as a trusted contact. The contact must
+// not be blocked either way and must be a current match or an accepted
+// connection; the cap is store.MaxTrustedContacts.
+//
+// Location on panic (audit 2026-10-30 M4): an add NEVER turns it on. A new
+// contact is stored not sharing, whatever shareLocationOnPanic says (the
+// current app always sends true and is not refused for it); turning it on
+// is the separate consent action, SetTrustedContactPanicLocation. On an
+// existing contact, shareLocationOnPanic=false withdraws any consent and
+// true leaves the recorded state alone.
 func (s *Service) SetTrustedContact(ctx context.Context, userID, contactID uuid.UUID, shareLocationOnPanic bool) (*store.TrustedContact, error) {
 	if userID == uuid.Nil || contactID == uuid.Nil {
 		return nil, fmt.Errorf("invalid: user and contact ids required")
@@ -295,8 +307,41 @@ func (s *Service) SetTrustedContact(ctx context.Context, userID, contactID uuid.
 	if !ok {
 		return nil, ErrTrustedContactNotEligible
 	}
-	tc, _, err := s.store.UpsertTrustedContact(ctx, userID, contactID, shareLocationOnPanic)
+	tc, _, err := s.store.UpsertTrustedContact(ctx, userID, contactID, !shareLocationOnPanic)
 	return tc, err
+}
+
+// SetTrustedContactPanicLocation is the explicit, per-contact consent action
+// for sending contactID the member's exact location when they press panic.
+//
+//   - share=true needs consentVersion to be the current copy version
+//     (store.PanicLocationConsentVersion), which the app shows with the
+//     switch; anything else is ErrPanicLocationConsentRequired and nothing
+//     is written. The contact must be set, not blocked, and still eligible.
+//     The consent is recorded with its time, version and copy.
+//   - share=false revokes, always (even if the pair has since blocked or
+//     the match ended): the next panic sends this contact no location.
+func (s *Service) SetTrustedContactPanicLocation(ctx context.Context, userID, contactID uuid.UUID, share bool, consentVersion string) (*store.TrustedContact, error) {
+	if userID == uuid.Nil || contactID == uuid.Nil {
+		return nil, fmt.Errorf("invalid: user and contact ids required")
+	}
+	if !share {
+		return s.store.RevokePanicLocationConsent(ctx, userID, contactID)
+	}
+	if !store.PanicLocationConsentAccepted(consentVersion) {
+		return nil, ErrPanicLocationConsentRequired
+	}
+	if err := s.requireNotBlocked(ctx, userID, contactID); err != nil {
+		return nil, err
+	}
+	ok, err := s.isEligibleTrustedContact(ctx, userID, contactID)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, ErrTrustedContactNotEligible
+	}
+	return s.store.SetPanicLocationConsent(ctx, userID, contactID, store.PanicLocationConsentVersion, store.PanicLocationConsentCopy)
 }
 
 // isEligibleTrustedContact: a current match, else an accepted connection
@@ -778,8 +823,8 @@ func (s *Service) LinkPendingReportGrievances(ctx context.Context, limit int) (i
 // ── Internal: panic notification context ────────────────────────────────────
 
 // PanicNotifyContact is one trusted contact to notify. The point is present
-// only when the user opted in to share it with that contact and the
-// incident has one.
+// only when the user recorded consent to share it with that contact and the
+// incident has one (panicNotifyContact).
 type PanicNotifyContact struct {
 	UserID    uuid.UUID `json:"user_id"`
 	Latitude  *float64  `json:"latitude,omitempty"`
@@ -826,13 +871,22 @@ func (s *Service) PanicNotifyContext(ctx context.Context, incidentID uuid.UUID) 
 		return nil, err
 	}
 	for _, tc := range contacts {
-		c := PanicNotifyContact{UserID: tc.ContactID}
-		if tc.ShareLocationOnPanic && inc.HasLocation() {
-			c.Latitude, c.Longitude = inc.Latitude, inc.Longitude
-		}
-		out.TrustedContacts = append(out.TrustedContacts, c)
+		out.TrustedContacts = append(out.TrustedContacts, panicNotifyContact(tc, inc))
 	}
 	return out, nil
+}
+
+// panicNotifyContact is one contact's paging entry. The exact point goes in
+// only when the member recorded consent for THIS contact under a current
+// copy version (store.TrustedContact.SharesPanicLocation) and the incident
+// has a point; everyone else is paged without it. Read when paging, so a
+// revoke before then is honoured.
+func panicNotifyContact(tc *store.TrustedContact, inc *store.PanicIncident) PanicNotifyContact {
+	c := PanicNotifyContact{UserID: tc.ContactID}
+	if tc.SharesPanicLocation() && inc.HasLocation() {
+		c.Latitude, c.Longitude = inc.Latitude, inc.Longitude
+	}
+	return c
 }
 
 // ── Live location: the two list views (lane D10) ────────────────────────────

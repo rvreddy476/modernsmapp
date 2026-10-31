@@ -151,3 +151,61 @@ func TestBootstrapIT_ReapplyKeepsConstraintsAndConcurrentBootsSucceed(t *testing
 		t.Fatalf("bogus profile_status: err = %v; want check_violation", err)
 	}
 }
+
+// Audit 2026-10-30 M4 (founder decision 31 Oct): rows the old app wrote with
+// share_location_on_panic=true and no consent record are not opted in; the
+// boot clears the flag once. A row with a recorded consent keeps it, and a
+// second apply writes nothing (updated_at untouched).
+func TestBootstrapIT_TrustedContactsWithoutConsentAreNotOptedIn(t *testing.T) {
+	pool := bootstrapITPool(t)
+	ctx := context.Background()
+	var user, legacy, consented string
+	if err := pool.QueryRow(ctx, `SELECT gen_random_uuid()::text, gen_random_uuid()::text, gen_random_uuid()::text`).
+		Scan(&user, &legacy, &consented); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_, _ = pool.Exec(context.Background(), `DELETE FROM dating_trusted_contacts WHERE user_id = $1`, user)
+	})
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO dating_trusted_contacts (user_id, contact_id, share_location_on_panic, location_consent_at, location_consent_version, location_consent_copy)
+		VALUES ($1, $2, true, NULL, NULL, NULL), ($1, $3, true, now(), 'panic_location_v1', 'copy')`,
+		user, legacy, consented); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	type row struct {
+		share   bool
+		updated string
+	}
+	read := func(contact string) row {
+		t.Helper()
+		var r row
+		if err := pool.QueryRow(ctx, `SELECT share_location_on_panic, updated_at::text FROM dating_trusted_contacts
+			WHERE user_id = $1 AND contact_id = $2`, user, contact).Scan(&r.share, &r.updated); err != nil {
+			t.Fatalf("read %s: %v", contact, err)
+		}
+		return r
+	}
+	consentedBefore := read(consented)
+	var afterFirst row
+	for run := 1; run <= 2; run++ {
+		if err := ForgetSchemaFingerprint(ctx, pool); err != nil {
+			t.Fatalf("forget fingerprint run %d: %v", run, err)
+		}
+		if err := BootstrapSchema(ctx, pool); err != nil {
+			t.Fatalf("bootstrap run %d: %v", run, err)
+		}
+		l := read(legacy)
+		if l.share {
+			t.Fatalf("run %d: a row with no consent record is still opted in", run)
+		}
+		if run == 1 {
+			afterFirst = l
+		} else if l.updated != afterFirst.updated {
+			t.Fatalf("second apply rewrote the row (%s -> %s)", afterFirst.updated, l.updated)
+		}
+		if c := read(consented); !c.share || c.updated != consentedBefore.updated {
+			t.Fatalf("run %d: consented row changed: %+v (was %+v)", run, c, consentedBefore)
+		}
+	}
+}

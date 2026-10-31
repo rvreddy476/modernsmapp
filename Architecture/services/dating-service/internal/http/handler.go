@@ -233,6 +233,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// match) and live location to a trusted contact or current match.
 		dating.GET("/safety/trusted-contacts", h.ListTrustedContacts)
 		dating.PUT("/safety/trusted-contacts/:contactId", h.PutTrustedContact)
+		dating.PATCH("/safety/trusted-contacts/:contactId", h.PatchTrustedContact)
 		dating.DELETE("/safety/trusted-contacts/:contactId", h.DeleteTrustedContact)
 		dating.GET("/safety/share-location", h.ListMyLocationShares)
 		dating.POST("/safety/share-location", h.PostShareLocation)
@@ -765,6 +766,13 @@ func respondServiceError(c *gin.Context, err error, defaultCode int, defaultCode
 	}
 	if errors.Is(err, service.ErrTrustedContactNotEligible) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "TRUSTED_CONTACT_NOT_ELIGIBLE", err.Error(), nil)
+		return
+	}
+	// Audit 2026-10-30 M4: location on panic needs consent to the current
+	// copy; the details carry it so the app can show it and resend.
+	if errors.Is(err, service.ErrPanicLocationConsentRequired) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "PANIC_LOCATION_CONSENT_REQUIRED", err.Error(),
+			map[string]any{"consent_version": store.PanicLocationConsentVersion, "consent_text": store.PanicLocationConsentCopy})
 		return
 	}
 	if errors.Is(err, store.ErrTrustedContactLimit) {
