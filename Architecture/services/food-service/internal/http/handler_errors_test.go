@@ -54,6 +54,8 @@ func TestLifecycleErrorMapping(t *testing.T) {
 			fmt.Errorf("%w: order is no longer CONFIRMED", postgres.ErrOrderStatusConflict), http.StatusConflict, "FOOD_ORDER_STATUS_CONFLICT"},
 		{"cancel not allowed", http.MethodPost, "/v1/food/orders/" + orderID + "/cancel", `{}`,
 			fmt.Errorf("%w: x", postgres.ErrOrderTransitionNotAllowed), http.StatusConflict, "FOOD_ORDER_TRANSITION_NOT_ALLOWED"},
+		{"cancel after preparing", http.MethodPost, "/v1/food/orders/" + orderID + "/cancel", `{}`,
+			fmt.Errorf("%w (order is PREPARING)", postgres.ErrCustomerCancelAfterPreparing), http.StatusConflict, "FOOD_CANCEL_AFTER_PREPARING"},
 		{"bare picked-up", http.MethodPost, "/v1/food/delivery/assignments/" + orderID + "/picked-up", `{}`,
 			postgres.ErrDeliveryOTPRequired, http.StatusConflict, "FOOD_DELIVERY_OTP_REQUIRED"},
 		{"inactive partner", http.MethodPost, "/v1/food/delivery/assignments/" + orderID + "/accept", `{}`,

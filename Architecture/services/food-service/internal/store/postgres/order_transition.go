@@ -18,6 +18,11 @@ var (
 	// ErrOrderStatusConflict: the order is no longer in the status the writer
 	// read (a concurrent writer won). HTTP 409 FOOD_ORDER_STATUS_CONFLICT.
 	ErrOrderStatusConflict = errors.New("order status changed concurrently")
+	// ErrCustomerCancelAfterPreparing: the customer tried to cancel an order
+	// the restaurant has started preparing (audit M5). HTTP 409
+	// FOOD_CANCEL_AFTER_PREPARING; the customer raises a support refund
+	// request instead.
+	ErrCustomerCancelAfterPreparing = orderstate.ErrCustomerCancelAfterPreparing
 	// ErrDeliveryOTPRequired: pickup and delivery complete only through the
 	// OTP verifies. HTTP 409 FOOD_DELIVERY_OTP_REQUIRED.
 	ErrDeliveryOTPRequired = errors.New("pickup and delivery are completed only by OTP verification")

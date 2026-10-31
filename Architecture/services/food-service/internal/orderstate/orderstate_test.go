@@ -29,7 +29,13 @@ func TestValidate(t *testing.T) {
 		// cannot reach DELIVERED (store.deliveryOTPRequired).
 		{"delivery is the rider entering the customer's code", ActorDeliveryPartner, OutForDelivery, Delivered, true},
 		{"customer cannot mark their own order delivered", ActorCustomer, OutForDelivery, Delivered, false},
-		{"customer cancels while preparing", ActorCustomer, Preparing, CancelledByCustomer, true},
+		{"customer cancels before the kitchen starts", ActorCustomer, Confirmed, CancelledByCustomer, true},
+		{"customer cancels a placed order", ActorCustomer, Placed, CancelledByCustomer, true},
+		// Audit M5 (founder, option a): no customer cancel once PREPARING.
+		{"customer cannot cancel while preparing", ActorCustomer, Preparing, CancelledByCustomer, false},
+		{"customer cannot cancel when ready for pickup", ActorCustomer, ReadyForPickup, CancelledByCustomer, false},
+		{"admin still cancels while preparing", ActorAdmin, Preparing, CancelledByAdmin, true},
+		{"restaurant still rejects a confirmed order", ActorRestaurant, Confirmed, RestaurantRejected, true},
 		{"customer cannot cancel once assigned", ActorCustomer, DeliveryAssigned, CancelledByCustomer, false},
 		{"admin cancels in flight", ActorAdmin, OutForDelivery, CancelledByAdmin, true},
 		{"admin cannot cancel delivered", ActorAdmin, Delivered, CancelledByAdmin, false},

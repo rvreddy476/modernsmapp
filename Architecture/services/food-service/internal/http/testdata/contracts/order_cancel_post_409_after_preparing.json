@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_CANCEL_AFTER_PREPARING",
+    "message": "the restaurant has started preparing this order; request a refund through support instead (order is PREPARING)"
+  },
+  "meta": {}
+}

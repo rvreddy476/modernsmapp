@@ -24,6 +24,9 @@ type errorMapping struct {
 // stable HTTP answers. Order matters only where one error could wrap another.
 var lifecycleErrors = []errorMapping{
 	{postgres.ErrOrderStatusConflict, http.StatusConflict, "FOOD_ORDER_STATUS_CONFLICT"},
+	// Audit M5: a customer cancel after the kitchen started. The client shows
+	// "request a refund" (POST /v1/food/refunds) instead.
+	{postgres.ErrCustomerCancelAfterPreparing, http.StatusConflict, "FOOD_CANCEL_AFTER_PREPARING"},
 	{postgres.ErrOrderTransitionNotAllowed, http.StatusConflict, "FOOD_ORDER_TRANSITION_NOT_ALLOWED"},
 	{postgres.ErrDeliveryOTPRequired, http.StatusConflict, "FOOD_DELIVERY_OTP_REQUIRED"},
 	{postgres.ErrAssignmentNotReady, http.StatusConflict, "FOOD_DELIVERY_ASSIGNMENT_NOT_READY"},

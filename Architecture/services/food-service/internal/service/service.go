@@ -507,7 +507,19 @@ func (s *Service) PlaceOrder(ctx context.Context, userID uuid.UUID, in postgres.
 	}
 	// Kafka: the placing transaction wrote food.order.placed to the outbox.
 	s.publishOrderRealtime(ctx, o, foodevents.OrderPlaced)
-	return o, nil
+	return customerOrderView(o), nil
+}
+
+// customerOrderView returns a copy of o carrying the customer's capabilities
+// (can_cancel, audit M5). Only customer responses go through it.
+func customerOrderView(o *postgres.Order) *postgres.Order {
+	if o == nil {
+		return nil
+	}
+	v := *o
+	canCancel := orderstate.CustomerCanCancel(v.Status)
+	v.CanCancel = &canCancel
+	return &v
 }
 
 // publishOrderRealtime sends an order change to the live screens: the
@@ -525,11 +537,22 @@ func (s *Service) publishOrderRealtime(ctx context.Context, o *postgres.Order, e
 }
 
 func (s *Service) ListOrders(ctx context.Context, userID uuid.UUID) ([]postgres.Order, error) {
-	return s.store.ListOrders(ctx, userID)
+	orders, err := s.store.ListOrders(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+	for i := range orders {
+		orders[i] = *customerOrderView(&orders[i])
+	}
+	return orders, nil
 }
 
 func (s *Service) GetOrder(ctx context.Context, userID, orderID uuid.UUID) (*postgres.Order, error) {
-	return s.store.GetOrder(ctx, userID, orderID)
+	o, err := s.store.GetOrder(ctx, userID, orderID)
+	if err != nil {
+		return nil, err
+	}
+	return customerOrderView(o), nil
 }
 
 func (s *Service) GetOrderTracking(ctx context.Context, userID, orderID uuid.UUID) (map[string]any, error) {
@@ -625,7 +648,7 @@ func (s *Service) CancelOrder(ctx context.Context, userID, orderID uuid.UUID, re
 	// SLA worker resubmits it if this submission fails.
 	s.submitRejectedOrderRefund(ctx, orderID, "customer cancelled the order")
 	s.publishOrderRealtime(ctx, o, foodevents.OrderCancelled)
-	return o, nil
+	return customerOrderView(o), nil
 }
 
 func (s *Service) RateRestaurant(ctx context.Context, userID, orderID uuid.UUID, rating int, review string) (map[string]any, error) {

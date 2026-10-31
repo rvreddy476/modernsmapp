@@ -93,9 +93,12 @@ var table = map[edge]map[Actor]struct{}{
 	{Confirmed, CancelledByRestaurant}: actors(ActorRestaurant),
 	{Confirmed, CancelledByAdmin}:      actors(ActorAdmin),
 
-	{Preparing, ReadyForPickup}:      actors(ActorRestaurant),
-	{Preparing, CancelledByCustomer}: actors(ActorCustomer),
-	{Preparing, CancelledByAdmin}:    actors(ActorAdmin),
+	// Audit M5 (founder, option a): the customer's own cancel ends at
+	// CONFIRMED. Once the kitchen has started (PREPARING or later) there is
+	// no customer edge; the customer raises a support refund request and an
+	// admin decides the amount (CustomerCancel names the refusal).
+	{Preparing, ReadyForPickup}:   actors(ActorRestaurant),
+	{Preparing, CancelledByAdmin}: actors(ActorAdmin),
 
 	{ReadyForPickup, DeliveryAssigning}: actors(ActorSystem),
 	{ReadyForPickup, CancelledByAdmin}:  actors(ActorAdmin),
@@ -134,6 +137,43 @@ var table = map[edge]map[Actor]struct{}{
 	{RestaurantRejected, RefundPending}: actors(ActorAdmin, ActorSystem),
 	{Delivered, RefundPending}:          actors(ActorAdmin),
 	{RefundPending, Refunded}:           actors(ActorPayment),
+}
+
+// ErrCustomerCancelAfterPreparing is returned when a customer asks to cancel
+// an order the restaurant has already started preparing (audit M5). The
+// customer is directed to a support refund request instead. HTTP 409
+// FOOD_CANCEL_AFTER_PREPARING.
+var ErrCustomerCancelAfterPreparing = errors.New("the restaurant has started preparing this order; request a refund through support instead")
+
+// kitchenStarted are the statuses the restaurant has moved an order into once
+// the food is being made, up to and including delivery. A customer cancel
+// from any of them is refused with ErrCustomerCancelAfterPreparing.
+var kitchenStarted = map[string]bool{
+	Preparing:         true,
+	ReadyForPickup:    true,
+	DeliveryAssigning: true,
+	DeliveryAssigned:  true,
+	PickedUp:          true,
+	OutForDelivery:    true,
+	Delivered:         true,
+}
+
+// CustomerCancel is the guard for a customer's own cancel from `from`. It
+// returns ErrCustomerCancelAfterPreparing once the kitchen has started, and
+// otherwise whatever the transition table says (nil from PLACED and
+// CONFIRMED; ErrTransitionNotAllowed from unpaid or already-ended orders).
+func CustomerCancel(from string) error {
+	if kitchenStarted[from] {
+		return fmt.Errorf("%w (order is %s)", ErrCustomerCancelAfterPreparing, from)
+	}
+	return Validate(ActorCustomer, from, CancelledByCustomer)
+}
+
+// CustomerCanCancel reports whether the customer may cancel an order in
+// `status` themselves. Clients read it as can_cancel to show or hide the
+// cancel button.
+func CustomerCanCancel(status string) bool {
+	return CustomerCancel(status) == nil
 }
 
 // EdgeExists reports whether from -> to is a transition at all, regardless of

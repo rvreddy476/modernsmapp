@@ -215,7 +215,7 @@ func (s *Service) ConfirmPayment(ctx context.Context, in ConfirmPaymentInput) (*
 			return nil, err
 		}
 		s.emitPaymentEvent(ctx, "food.order.payment_succeeded", o.ID, o.RestaurantID, o)
-		return &ConfirmPaymentResult{State: PaymentStatePaid, Verified: true, Order: o}, nil
+		return &ConfirmPaymentResult{State: PaymentStatePaid, Verified: true, Order: customerOrderView(o)}, nil
 	}
 
 	if in.RazorpayOrderID == "" || in.RazorpayPaymentID == "" || in.RazorpaySignature == "" {
@@ -258,7 +258,7 @@ func (s *Service) confirmResult(ctx context.Context, in ConfirmPaymentInput, sta
 	if err != nil {
 		return nil, err
 	}
-	return &ConfirmPaymentResult{State: state, Verified: verified, Order: o}, nil
+	return &ConfirmPaymentResult{State: state, Verified: verified, Order: customerOrderView(o)}, nil
 }
 
 // AdminRefundOrder requests a refund. The store moves a full refund to

@@ -376,3 +376,16 @@ nav code it uses. One item at a time, unit test each,
 | `screen_protection` in client config | true by default |
 
 Unit tests for each; report the `android.sh --full` RESULT block.
+
+### Food lane addendum (31 Oct 2026): customer cancel only before cooking
+
+Founder decision (food audit M5, option a). Customer cancel works only from
+PLACED or CONFIRMED; from PREPARING on (including delivered) the server
+answers **409 `FOOD_CANCEL_AFTER_PREPARING`** and nothing changes. Customer
+order responses (place, list, detail, cancel, payment confirm) carry
+`can_cancel`: hide the cancel button when it is false and offer "Request a
+refund" instead (`POST /v1/food/support/tickets` with `order_id`, then
+`POST /v1/food/refunds` with `order_id`, `amount`, `reason`, optional
+`ticket_id`). Re-sync the Feast golden fixtures from
+`Architecture/services/food-service/internal/http/testdata/contracts/`
+(five gained `can_cancel`; new `order_cancel_post_409_after_preparing.json`).

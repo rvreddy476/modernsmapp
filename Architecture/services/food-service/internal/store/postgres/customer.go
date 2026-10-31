@@ -763,14 +763,25 @@ func (s *Store) CancelOrder(ctx context.Context, userID, orderID uuid.UUID, reas
 		return nil, err
 	}
 	defer tx.Rollback(ctx)
-	order, err := s.getOrderTx(ctx, tx, userID, orderID, false)
-	if err != nil {
+	// Lock the customer's order row before deciding, so a restaurant moving it
+	// to PREPARING at the same moment is seen here and answered with the
+	// after-preparing refusal rather than a status conflict.
+	var fromStatus string
+	if err := tx.QueryRow(ctx, `
+		SELECT status::text FROM food.orders WHERE id = $1 AND user_id = $2 FOR UPDATE
+	`, orderID, userID).Scan(&fromStatus); err != nil {
 		return nil, err
 	}
-	// orderstate allows the customer to cancel from PLACED, CONFIRMED and
-	// PREPARING only; the guard refuses everything else.
+	// Audit M5 (founder, option a): the customer cancels from PLACED and
+	// CONFIRMED only. From PREPARING on the refusal is
+	// ErrCustomerCancelAfterPreparing and the customer raises a support refund
+	// request (POST /refunds) that an admin decides; everything else is
+	// refused by the transition table.
+	if err := orderstate.CustomerCancel(fromStatus); err != nil {
+		return nil, err
+	}
 	if err := transitionOrderTx(ctx, tx, OrderTransition{
-		OrderID: orderID, From: order.Status, To: orderstate.CancelledByCustomer,
+		OrderID: orderID, From: fromStatus, To: orderstate.CancelledByCustomer,
 		Actor: orderstate.ActorCustomer, ChangedBy: &userID, Reason: reason,
 	}); err != nil {
 		return nil, err

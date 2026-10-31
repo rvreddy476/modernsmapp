@@ -31,7 +31,8 @@
     ],
     "delivery_code": "7390",
     "eta_at": "2026-09-13T06:52:00Z",
-    "eta_source": "google"
+    "eta_source": "google",
+    "can_cancel": false
   },
   "meta": {}
 }

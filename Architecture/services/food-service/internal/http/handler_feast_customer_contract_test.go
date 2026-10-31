@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"math"
 	"net/http"
 	"os"
@@ -33,6 +34,9 @@ var (
 	ctFeastGroup      = uuid.MustParse("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0046")
 	ctFeastSoldOut    = uuid.MustParse("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0047")
 	ctFeastAssignment = uuid.MustParse("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0048")
+	// ctFeastPreparing is an order the restaurant is already preparing: the
+	// customer's cancel is refused (audit M5).
+	ctFeastPreparing = uuid.MustParse("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0049")
 )
 
 // The customer's Home pin, and a point well outside every restaurant's range.
@@ -155,7 +159,11 @@ func (f *feastContractStore) ListOrders(ctx context.Context, _ uuid.UUID) ([]pos
 	return []postgres.Order{*o}, nil
 }
 
-func (f *feastContractStore) CancelOrder(ctx context.Context, _, _ uuid.UUID, reason string) (*postgres.Order, error) {
+func (f *feastContractStore) CancelOrder(ctx context.Context, _, orderID uuid.UUID, reason string) (*postgres.Order, error) {
+	if orderID == ctFeastPreparing {
+		// As the store answers: orderstate.CustomerCancel on a PREPARING row.
+		return nil, fmt.Errorf("%w (order is PREPARING)", postgres.ErrCustomerCancelAfterPreparing)
+	}
 	o := ctFeastOrder(ctx)
 	o.Status, o.PaymentStatus = "CANCELLED_BY_CUSTOMER", "PENDING"
 	o.History = []postgres.OrderStatusHistory{
@@ -212,6 +220,7 @@ var feastCustomerFixtures = []string{
 	"addresses_get_200", "address_post_201",
 	"cart_item_post_201", "cart_item_post_422_out_of_range",
 	"order_place_201", "orders_get_200", "order_cancel_post_200", "order_tracking_get_200",
+	"order_cancel_post_409_after_preparing",
 }
 
 func TestFeastCustomerContracts(t *testing.T) {
@@ -242,6 +251,10 @@ func TestFeastCustomerContracts(t *testing.T) {
 		{"orders_get_200", http.MethodGet, "/v1/food/orders", ``, http.StatusOK},
 		{"order_cancel_post_200", http.MethodPost, order + "/cancel", `{"reason":"changed my mind"}`, http.StatusOK},
 		{"order_tracking_get_200", http.MethodGet, order + "/tracking", ``, http.StatusOK},
+		// Audit M5: once PREPARING the customer is sent to a support refund
+		// request (POST /v1/food/refunds) instead.
+		{"order_cancel_post_409_after_preparing", http.MethodPost, "/v1/food/orders/" + ctFeastPreparing.String() + "/cancel",
+			`{"reason":"eta slipped"}`, http.StatusConflict},
 	}
 	if len(cases) != len(feastCustomerFixtures) {
 		t.Fatalf("cases %d, fixtures listed %d", len(cases), len(feastCustomerFixtures))

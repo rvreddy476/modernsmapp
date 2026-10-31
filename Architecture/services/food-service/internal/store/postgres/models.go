@@ -225,6 +225,11 @@ type Order struct {
 	// ETAVisible.
 	ETAAt     string `json:"eta_at,omitempty"`
 	ETASource string `json:"eta_source,omitempty"`
+	// CanCancel (audit M5) tells the customer app whether to show the cancel
+	// button: true only while the customer may still cancel (PLACED,
+	// CONFIRMED). Set by the service on customer responses only, so partner,
+	// kitchen and admin shapes omit it.
+	CanCancel *bool `json:"can_cancel,omitempty"`
 }
 
 type WalletPaymentChargeDetails struct {

@@ -23,7 +23,8 @@
         },
         "estimated_preparation_minutes": 20,
         "estimated_delivery_minutes": 29,
-        "placed_at": "2026-09-13T06:30:00Z"
+        "placed_at": "2026-09-13T06:30:00Z",
+        "can_cancel": true
       }
     ]
   },

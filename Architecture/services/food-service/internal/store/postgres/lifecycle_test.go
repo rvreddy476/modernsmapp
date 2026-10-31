@@ -258,8 +258,8 @@ func TestCancelOrder_GuardedWithHistory(t *testing.T) {
 	}
 	// A customer cannot cancel once the food is on its way.
 	onWay, _, c2 := seedOrderWithItem(t, s, "OUT_FOR_DELIVERY")
-	if _, err := s.CancelOrder(ctx, c2, onWay, "late"); err == nil {
-		t.Fatal("cancel from OUT_FOR_DELIVERY accepted")
+	if _, err := s.CancelOrder(ctx, c2, onWay, "late"); !errors.Is(err, ErrCustomerCancelAfterPreparing) {
+		t.Fatalf("cancel from OUT_FOR_DELIVERY: want ErrCustomerCancelAfterPreparing, got %v", err)
 	}
 	assertOrderStatus(t, s, onWay, "OUT_FOR_DELIVERY")
 }
