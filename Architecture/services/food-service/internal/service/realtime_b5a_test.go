@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -349,11 +350,48 @@ func assertNoOTPs(t *testing.T, where string, events []capturedEvent) {
 			t.Fatalf("%s %s on %s carries %s: %s", where, ev.eventType, ev.topic, field, ev.raw)
 		}
 		for _, code := range []string{"4821", "7390"} {
-			if strings.Contains(string(ev.raw), code) {
+			if jsonCarriesValue(t, ev.raw, code) {
 				t.Fatalf("%s %s on %s carries a code value: %s", where, ev.eventType, ev.topic, ev.raw)
 			}
 		}
 	}
+}
+
+// jsonCarriesValue reports whether any value in the JSON document (a
+// string, or a number written the same way) is exactly code. The codes are
+// four digits, so a substring search also matched digit runs inside the
+// random ids in the payload and failed at random.
+func jsonCarriesValue(t *testing.T, raw []byte, code string) bool {
+	t.Helper()
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.UseNumber()
+	var doc any
+	if err := dec.Decode(&doc); err != nil {
+		t.Fatalf("decode event payload: %v", err)
+	}
+	var walk func(v any) bool
+	walk = func(v any) bool {
+		switch x := v.(type) {
+		case map[string]any:
+			for _, e := range x {
+				if walk(e) {
+					return true
+				}
+			}
+		case []any:
+			for _, e := range x {
+				if walk(e) {
+					return true
+				}
+			}
+		case string:
+			return x == code
+		case json.Number:
+			return x.String() == code
+		}
+		return false
+	}
+	return walk(doc)
 }
 
 func countEvents(events []capturedEvent, eventType string) int {
