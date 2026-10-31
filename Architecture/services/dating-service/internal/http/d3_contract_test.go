@@ -174,7 +174,12 @@ func TestD3Contracts(t *testing.T) {
 		// the decline, and the decliner's spark (not a reply: the incoming
 		// spark is declined) is on a card the decliner was dealt.
 		dealCards(t, r, st, sender, decliner)
-		dealCards(t, r, st, decliner, sender)
+		// The decliner's deck leaves out someone whose spark they declined,
+		// so a deck fetch can't deal the sender to them; record the deal the
+		// way a fetch would (the decliner did see the sender's card).
+		if err := st.RecordDeckServed(ctx, decliner, []uuid.UUID{sender}); err != nil {
+			t.Fatalf("record deal: %v", err)
+		}
 		rec = contractDo(r, http.MethodPost, "/v1/dating/sparks", sparkBody(decliner, "p1"), sender)
 		assertContract(t, rec, http.StatusNotFound, "spark_create_404_candidate_unavailable", map[uuid.UUID]string{sender: "<sender>", decliner: "<recipient>"})
 		// One-directional: the decliner can still spark the sender.
