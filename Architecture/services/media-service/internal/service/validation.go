@@ -78,7 +78,7 @@ var allowedAudioMIME = map[string]bool{
 }
 
 // ValidateUploadMIME checks that contentType is in the allow-list for the given
-// mediaType ("video", "image", or "audio"). Unknown mediaTypes are passed through.
+// mediaType ("video", "image", "audio" or "document"). Unknown mediaTypes are passed through.
 func ValidateUploadMIME(contentType string, mediaType string) error {
 	ct := strings.ToLower(strings.Split(contentType, ";")[0])
 	switch mediaType {
@@ -93,6 +93,10 @@ func ValidateUploadMIME(contentType string, mediaType string) error {
 	case "audio":
 		if !allowedAudioMIME[ct] {
 			return fmt.Errorf("invalid audio type: %s", ct)
+		}
+	case FileTypeDocument:
+		if !allowedDocumentMIME[ct] {
+			return fmt.Errorf("invalid document type: %s", ct)
 		}
 	}
 	return nil

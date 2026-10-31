@@ -76,6 +76,9 @@ type Service struct {
 	// uploadLimit is the per-user upload limiter every upload init calls;
 	// nil means CheckUploadRateLimit (ratelimit.go). A seam for tests.
 	uploadLimit func(ctx context.Context, userID uuid.UUID) error
+	// documentUploadLimit is the per-user DOCUMENT upload limiter (its own
+	// budget, document.go); nil means CheckDocumentUploadRateLimit.
+	documentUploadLimit func(ctx context.Context, userID uuid.UUID) error
 }
 
 // checkUploadLimit is what InitUpload and InitResumableUpload call.
@@ -232,6 +235,12 @@ const presignedPutExpiry = 15 * time.Minute
 
 // ValidateUpload checks size and mime constraints for the given file type and subtype.
 func ValidateUpload(fileType, mediaSubtype, mimeType string, fileSizeBytes int64) error {
+	// A document is checked whole, before the subtype rules below: a
+	// "document" declaring subtype avatar must not take the avatar branch,
+	// which only asks for an image/ prefix.
+	if fileType == FileTypeDocument {
+		return validateDocumentUpload(mediaSubtype, mimeType, fileSizeBytes)
+	}
 	// Check subtype-specific limits first
 	switch mediaSubtype {
 	case "avatar":
@@ -302,8 +311,22 @@ func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, me
 		return nil, err
 	}
 
-	// Per-user upload rate limit (Redis sliding window)
-	if err := s.checkUploadLimit(ctx, userID); err != nil {
+	// Per-user upload rate limit (Redis sliding window). A document is
+	// validated whole first, so a refused document spends nothing, and then
+	// counts against its own budget only (document.go).
+	if fileType == FileTypeDocument {
+		if err := ValidateUpload(fileType, mediaSubtype, mimeType, fileSizeBytes); err != nil {
+			return nil, err
+		}
+		if err := s.checkDocumentUploadLimit(ctx, userID); err != nil {
+			return nil, err
+		}
+		mediaSubtype = "general"
+		mimeType = normaliseMIME(mimeType)
+		// A document carries no description, and no composer lease: it is
+		// never a reclamation candidate once confirmed.
+		altText, decorative, uploadPurpose = "", false, ""
+	} else if err := s.checkUploadLimit(ctx, userID); err != nil {
 		return nil, err
 	}
 
@@ -506,6 +529,24 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 			return nil, err
 		}
 
+	case media.FileType == FileTypeDocument:
+		// No scan, no renditions, no transcode: the verified original is the
+		// whole document (document.go). The ETag pinned above is what the
+		// document-bytes route serves against, so a confirm without one is
+		// not a confirm.
+		if info.ETag == "" {
+			return nil, fmt.Errorf("%w: the object store reported no ETag for a document", ErrUploadIntegrity)
+		}
+		if err := s.pgStore.MarkDocumentReady(ctx, mediaID); err != nil {
+			if errors.Is(err, postgres.ErrDocumentNotConfirmable) {
+				// A concurrent confirm finished it first: answer what it is.
+				return s.confirmedAnswer(ctx, mediaID)
+			}
+			return nil, err
+		}
+		media.ProcessingStatus = "ready"
+		media.ModerationStatus = "passed"
+
 	case media.FileType == "video":
 		// State and work intent are one PostgreSQL commit. Kafka is drained
 		// from the outbox, so confirm never succeeds after merely hoping a
@@ -516,8 +557,8 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 		media.ProcessingStatus = "processing"
 
 	default:
-		// Unreachable while file_type is validated to image/video/audio and
-		// each has a case above. If a fourth type is ever added without one,
+		// Unreachable while file_type is validated to image/video/audio/
+		// document and each has a case above. If another type is added without one,
 		// say so instead of returning 200 over an asset left at 'uploaded'
 		// that every downstream gate will then refuse.
 		return nil, fmt.Errorf("%w: no processing path for file_type=%q media_subtype=%q",
@@ -562,6 +603,8 @@ func uploadHeaderValid(fileType, declaredMIME string, head []byte) bool {
 		_, valid = processing.ValidateImageMagicBytes(head)
 	case "audio":
 		_, valid = processing.ValidateAudioMagicBytes(head)
+	case FileTypeDocument:
+		valid = DocumentMagicMatches(declaredMIME, head)
 	}
 	return valid
 }
@@ -820,7 +863,7 @@ func (s *Service) GetMediaURL(ctx context.Context, viewerID, mediaID uuid.UUID) 
 	if err != nil {
 		return nil, err
 	}
-	if DatingScopeDenies(media, viewerID) {
+	if ViewerReadDenies(media, viewerID) {
 		return nil, delivery.ErrDeliveryDenied
 	}
 	if s.gate == nil {
@@ -934,7 +977,7 @@ func (s *Service) GetHLSPlaylist(ctx context.Context, viewerID, mediaID uuid.UUI
 	if err != nil {
 		return nil, err
 	}
-	if DatingScopeDenies(media, viewerID) {
+	if ViewerReadDenies(media, viewerID) {
 		return nil, delivery.ErrDeliveryDenied
 	}
 	if media.HLSMasterKey == "" {
@@ -1064,7 +1107,8 @@ func (s *Service) GetMediaVariantURL(ctx context.Context, viewerID, mediaID uuid
 	if err != nil {
 		return "", err
 	}
-	if DatingScopeDenies(asset, viewerID) {
+	// A private document is refused here to everyone (document.go).
+	if ViewerReadDenies(asset, viewerID) {
 		return "", delivery.ErrDeliveryDenied
 	}
 	// An anonymous asset is never a signed object URL (the key names the
@@ -1173,8 +1217,9 @@ func (s *Service) BatchMediaURLs(ctx context.Context, viewerID uuid.UUID, ids []
 		if anonymous[m.ID] != nil {
 			continue
 		}
-		if DatingScopeDenies(&m, viewerID) {
-			// Lane D6: omitted exactly like a denial below.
+		if ViewerReadDenies(&m, viewerID) {
+			// Lane D6 and private documents: omitted exactly like a denial
+			// below.
 			continue
 		}
 		keys := map[string]string{}

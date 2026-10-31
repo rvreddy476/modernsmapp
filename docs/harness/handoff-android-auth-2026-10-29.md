@@ -408,3 +408,22 @@ Founder decision (dating Android audit M4). Replaces item 2 M4 above.
 - Re-sync `trusted_contacts_get_200*.json` and `trusted_contact_put_200.json`
   and add the three `trusted_contact_patch_*` fixtures from
   `Architecture/services/dating-service/internal/http/testdata/contracts/`.
+
+### Commerce lane addendum (31 Oct 2026): private KYC document uploads
+
+Replaces item 2 M4 above ("images only"). Seller KYC documents can now be
+PDF, JPEG or PNG through media-service's private `document` kind:
+1. `POST /v1/media/init` `{"file_type":"document","mime_type":"application/pdf"|"image/jpeg"|"image/png","file_size_bytes":N}`
+   (no `media_subtype`, or `general`). 415 `UNSUPPORTED_MEDIA_TYPE`,
+   413 `FILE_TOO_LARGE` over 10 MiB, 429 `RATE_LIMITED`
+   (`Retry-After: 86400`) after 20 documents a day — show these plainly.
+2. PUT the file to `upload_url` with `upload_headers`.
+3. `POST /v1/media/confirm` — answers `ready` at once; bytes that are not
+   the declared type are rejected (409 `UPLOAD_INTEGRITY_ERROR`).
+4. Send the `media_id` in the KYC documents call as today.
+Never try to display a document afterwards: every viewer route answers 404,
+including to the uploader. Document uploads have their own daily budget, so
+KYC no longer competes with product photos (fixes M5's shared limit).
+The server accepts `image` and `document` for new KYC uploads until the
+founder sets `COMMERCE_KYC_REQUIRE_DOCUMENT_KIND=true` after this app
+release ships.

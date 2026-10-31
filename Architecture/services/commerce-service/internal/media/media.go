@@ -196,6 +196,14 @@ const (
 // All five, every time. A partial check is the shape that let a rejected asset
 // onto a listing.
 func (c *Client) VerifyOwned(ctx context.Context, mediaID, uploaderID uuid.UUID, kind Kind) error {
+	return c.VerifyOwnedOneOf(ctx, mediaID, uploaderID, kind)
+}
+
+// VerifyOwnedOneOf is VerifyOwned where more than one kind is acceptable (a
+// KYC document already on file may be a legacy image; a new one must be a
+// document). No kinds, or KindAny among them, accepts any type. Every other
+// condition is VerifyOwned's, unchanged.
+func (c *Client) VerifyOwnedOneOf(ctx context.Context, mediaID, uploaderID uuid.UUID, kinds ...Kind) error {
 	asset, err := c.Get(ctx, mediaID)
 	if err != nil {
 		return err
@@ -211,10 +219,23 @@ func (c *Client) VerifyOwned(ctx context.Context, mediaID, uploaderID uuid.UUID,
 	if asset.ModerationStatus != "passed" {
 		return fmt.Errorf("%w (%s)", ErrMediaNotPassed, asset.ModerationStatus)
 	}
-	if kind != KindAny && !strings.EqualFold(asset.FileType, string(kind)) {
-		return fmt.Errorf("%w: got %s, want %s", ErrMediaWrongKind, asset.FileType, kind)
+	if !kindAccepted(asset.FileType, kinds) {
+		return fmt.Errorf("%w: got %s, want %v", ErrMediaWrongKind, asset.FileType, kinds)
 	}
 	return nil
+}
+
+// kindAccepted: fileType is one of kinds (or kinds accept any).
+func kindAccepted(fileType string, kinds []Kind) bool {
+	if len(kinds) == 0 {
+		return true
+	}
+	for _, k := range kinds {
+		if k == KindAny || strings.EqualFold(fileType, string(k)) {
+			return true
+		}
+	}
+	return false
 }
 
 // VerifyAllOwned checks several ids, and reports the FIRST refusal.

@@ -129,6 +129,10 @@ env:
   COMMERCE_PLATFORM_COUPONS_ENABLED: "false"
   # Listings are approved by a person in production (compose auto-approves).
   COMMERCE_PRODUCT_AUTO_APPROVE: "false"
+  # KYC uploads (31 Oct 2026): "false" lets a new KYC document be an image
+  # (today's Android app) or a private PDF/JPEG/PNG document. Flip to "true"
+  # after the Android release that uploads KYC as file_type=document ships.
+  COMMERCE_KYC_REQUIRE_DOCUMENT_KIND: "false"
   # The nickname of the pickup address registered in the Shiprocket account.
   SHIPROCKET_PICKUP_LOCATION: Primary
 

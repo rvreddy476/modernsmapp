@@ -14,6 +14,7 @@ package service
 // row, never from the request.
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -75,8 +76,10 @@ type SellerDocumentImage struct {
 //
 // Errors: postgres.ErrSellerDocumentNotFound when the document is not this
 // seller's (or does not exist); ErrDocumentImageUnavailable when there is no
-// image to show; media.ErrMediaUnavailable, media.ErrNotAnImage and
-// media.ErrImageTooLarge from the fetch.
+// image to show; media.ErrMediaUnavailable, media.ErrNotAnImage,
+// media.ErrImageTooLarge, media.ErrNotADocument and media.ErrDocumentTooLarge
+// from the fetch (openKYCMedia: a document through document-bytes, a legacy
+// image through image-bytes).
 //
 // Logs one line per open with the seller, the document and the acting admin —
 // ids only, nothing a document says.
@@ -113,7 +116,7 @@ func (s *Service) AdminOpenSellerDocumentSide(ctx context.Context, sellerID, doc
 	if err != nil {
 		return nil, err
 	}
-	body, contentType, err := s.media.FetchImageBytes(ctx, mediaID)
+	body, contentType, err := s.openKYCMedia(ctx, mediaID)
 	if err != nil {
 		if errors.Is(err, media.ErrMediaNotFound) {
 			return nil, ErrDocumentImageUnavailable
@@ -122,6 +125,51 @@ func (s *Service) AdminOpenSellerDocumentSide(ctx context.Context, sellerID, doc
 	}
 	slog.InfoContext(ctx, "commerce: KYC document image opened for an admin",
 		"seller_id", sellerID, "document_id", documentID, "document_type", doc.DocumentType,
-		"back", back, "actor", actor)
+		"back", back, "actor", actor, "content_type", contentType)
 	return &SellerDocumentImage{Body: body, ContentType: contentType, DocumentType: doc.DocumentType}, nil
+}
+
+// kycMediaSource names the media-service read a KYC upload is opened with.
+type kycMediaSource int
+
+const (
+	kycFromDocumentBytes kycMediaSource = iota // a private document: PDF, JPEG or PNG, as uploaded
+	kycFromImageBytes                          // a legacy image upload: re-encoded, EXIF stripped
+)
+
+// kycSourceFor picks the read for an asset's file type. Only the two kinds a
+// KYC row can hold are opened; anything else is not a document to show.
+func kycSourceFor(fileType string) (kycMediaSource, bool) {
+	switch fileType {
+	case string(media.KindDocument):
+		return kycFromDocumentBytes, true
+	case string(media.KindImage):
+		return kycFromImageBytes, true
+	}
+	return 0, false
+}
+
+// openKYCMedia opens one KYC upload for the reviewer: a document through
+// media-service's document-bytes route, a legacy image through image-bytes.
+// The kind comes from media-service's own record, never from the request.
+func (s *Service) openKYCMedia(ctx context.Context, mediaID uuid.UUID) (io.ReadCloser, string, error) {
+	if s.media == nil {
+		return nil, "", fmt.Errorf("%w: no media-service client is configured", media.ErrMediaUnavailable)
+	}
+	asset, err := s.media.Get(ctx, mediaID)
+	if err != nil {
+		return nil, "", err
+	}
+	source, ok := kycSourceFor(asset.FileType)
+	if !ok {
+		return nil, "", media.ErrMediaNotFound
+	}
+	if source == kycFromImageBytes {
+		return s.media.FetchImageBytes(ctx, mediaID)
+	}
+	data, contentType, err := s.media.FetchDocumentBytes(ctx, mediaID)
+	if err != nil {
+		return nil, "", err
+	}
+	return io.NopCloser(bytes.NewReader(data)), contentType, nil
 }

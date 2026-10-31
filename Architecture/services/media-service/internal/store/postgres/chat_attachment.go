@@ -12,7 +12,8 @@ import (
 var ErrChatAttachmentReservationDenied = errors.New("chat attachment reservation denied")
 
 // ReserveChatAttachment atomically validates and pins one canonical asset for
-// a chat send. The foreign key takes a key-share lock on media_assets; a
+// a chat send. A private document (file_type 'document', seller KYC) is never
+// a chat attachment: it is refused here like an asset that does not exist. The foreign key takes a key-share lock on media_assets; a
 // concurrent physical delete either wins before this insert (and the insert
 // fails closed) or waits and is refused by the committed reference.
 func (s *MediaAssetStore) ReserveChatAttachment(ctx context.Context, referenceID, uploaderID, mediaID uuid.UUID) error {
@@ -28,6 +29,7 @@ func (s *MediaAssetStore) ReserveChatAttachment(ctx context.Context, referenceID
 		FROM media_assets
 		WHERE id=$2 AND uploader_id=$3
 		  AND processing_status='ready' AND moderation_status='passed'
+		  AND file_type <> 'document'
 		ON CONFLICT (reference_id) DO NOTHING
 	`, referenceID, mediaID, uploaderID)
 	if err != nil {
@@ -41,6 +43,7 @@ func (s *MediaAssetStore) ReserveChatAttachment(ctx context.Context, referenceID
 		JOIN media_assets a ON a.id=r.media_id
 		WHERE r.reference_id=$1
 		  AND a.processing_status='ready' AND a.moderation_status='passed'
+		  AND a.file_type <> 'document'
 	`, referenceID).Scan(&reservedMediaID, &reservedUploaderID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrChatAttachmentReservationDenied

@@ -29,7 +29,8 @@ import (
 // HeadForViewer walks the same steps Service.GetMediaVariantURL and
 // Service.StreamAnonymous walk, through the same functions:
 //
-//   - DatingScopeDenies — a dating photo is its uploader's alone;
+//   - ViewerReadDenies — a dating photo is its uploader's alone, a private
+//     document nobody's (document.go);
 //   - an anonymous-scoped asset: authorizeCaptionRead, the call
 //     StreamAnonymous makes (uploader short-circuit, moderation, then the
 //     content authorities);
@@ -165,7 +166,7 @@ func (h *ServeHeads) HeadForViewer(ctx context.Context, viewerID, mediaID uuid.U
 	if media == nil {
 		return nil, delivery.ErrDeliveryDenied
 	}
-	if DatingScopeDenies(media, viewerID) {
+	if ViewerReadDenies(media, viewerID) {
 		return nil, delivery.ErrDeliveryDenied
 	}
 

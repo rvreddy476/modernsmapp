@@ -84,6 +84,13 @@ func (s *Service) InitResumableUpload(ctx context.Context, userID uuid.UUID, fil
 	// No total size cap for video here (founder, 2026-10-21); ValidateUpload
 	// still caps images. The chunk plan refuses only what S3's part limit
 	// cannot hold.
+	//
+	// A document is a simple upload only: its budget, its confirm path and its
+	// size cap are the init route's (document.go). The handler binds
+	// image|video; this is the backstop.
+	if fileType == FileTypeDocument {
+		return nil, fmt.Errorf("a document cannot use the resumable upload")
+	}
 	if err := ValidateUpload(fileType, "general", mimeType, totalBytes); err != nil {
 		return nil, err
 	}

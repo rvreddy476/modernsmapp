@@ -4,7 +4,9 @@ package http
 
 // The reviewer's view of a seller's KYC documents, over the real token routes
 // and a real database, with media-service stood in by an httptest server that
-// answers GET /v1/media/internal/:mediaId/image-bytes to the pinned shape.
+// answers GET /v1/media/internal/:mediaId/image-bytes and …/document-bytes to
+// the pinned shapes, and GET /v1/media/:id (the record commerce reads to pick
+// between them).
 //
 //	COMMERCE_TEST_DSN=.../commerce_it_test go test -tags=integration ./internal/http/ -run SellerDocsIT -v
 
@@ -30,21 +32,60 @@ import (
 
 var docJPEG = append([]byte{0xFF, 0xD8, 0xFF, 0xE0}, bytes.Repeat([]byte("pan-card"), 512)...)
 
-// docMedia is media-service's image-bytes route. It records every call.
+// docPDF is a private KYC document as media-service's document-bytes serves it.
+var docPDF = []byte("%PDF-1.7\n1 0 obj << /Type /Catalog >> endobj\ntrailer << >>\n%%EOF\n")
+
+// docMedia is media-service's byte routes and its record route. calls records
+// every byte read (image-bytes, document-bytes); records counts the record
+// reads separately, so the byte-read assertions stay exact.
 type docMedia struct {
 	mu      sync.Mutex
 	calls   []string
 	headers []http.Header
+	records int
 	// per media id: "ok" (default), "404", "svg", "500"
 	mode map[string]string
+	// per media id: the file_type the record names; "image" by default.
+	kind map[string]string
 }
 
 func (m *docMedia) handler(w http.ResponseWriter, r *http.Request) {
+	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	// v1 media <id>: the record, answered for every id as a ready, passed
+	// asset of the configured kind.
+	if len(parts) == 3 && parts[1] == "media" && r.Method == http.MethodGet {
+		m.mu.Lock()
+		m.records++
+		kind := m.kind[parts[2]]
+		m.mu.Unlock()
+		if kind == "" {
+			kind = "image"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+			"id": parts[2], "uploader_id": uuid.NewString(), "file_type": kind,
+			"processing_status": "ready", "moderation_status": "passed",
+		}})
+		return
+	}
 	m.mu.Lock()
 	m.calls = append(m.calls, r.URL.Path)
 	m.headers = append(m.headers, r.Header.Clone())
 	m.mu.Unlock()
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
+	// v1 media internal <id> document-bytes
+	if len(parts) == 5 && parts[2] == "internal" && parts[4] == "document-bytes" && r.Method == http.MethodGet {
+		switch m.mode[parts[3]] {
+		case "404":
+			w.WriteHeader(http.StatusNotFound)
+		case "html":
+			w.Header().Set("Content-Type", "application/pdf")
+			_, _ = w.Write([]byte("<html><script>alert(1)</script></html>"))
+		default:
+			w.Header().Set("Content-Type", "application/pdf")
+			_, _ = w.Write(docPDF)
+		}
+		return
+	}
 	// v1 media internal <id> image-bytes
 	if len(parts) != 5 || parts[2] != "internal" || parts[4] != "image-bytes" || r.Method != http.MethodGet {
 		http.NotFound(w, r)
@@ -92,14 +133,24 @@ func newDocRig(t *testing.T) *docRig {
 	if err != nil {
 		t.Fatal(err)
 	}
-	dm := &docMedia{mode: map[string]string{}}
+	dm := &docMedia{mode: map[string]string{}, kind: map[string]string{}}
 	srv := httptest.NewServer(http.HandlerFunc(dm.handler))
 	t.Cleanup(srv.Close)
 	cipher, err := pii.New(devKeyProvider{}, []byte("seller-docs-slt!"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := service.New(postgres.New(edgePool), nil, "").WithPII(cipher).WithMedia(media.New(srv.URL, "media-internal-key"))
+	// commerce's own media token: document-bytes is never called without it.
+	_, mediaPriv, err := servicetoken.GenerateKeypair()
+	if err != nil {
+		t.Fatal(err)
+	}
+	mediaSigner, err := media.ServiceTokenSigner("c1", mediaPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := service.New(postgres.New(edgePool), nil, "").WithPII(cipher).
+		WithMedia(media.New(srv.URL, "media-internal-key").WithServiceToken(mediaSigner))
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
 	r.Use(FenceMiddleware())
@@ -306,5 +357,73 @@ func TestSellerDocsIT_ImageRefusals(t *testing.T) {
 	w := rg.get(t, InternalAdminPrefix+"/sellers/"+s.seller.String()+"/documents/"+s.cheque.String()+"/image", PermSellersRead)
 	if w.Code != http.StatusForbidden {
 		t.Errorf("a sellers.read token opened a KYC image: %d", w.Code)
+	}
+}
+
+// A private KYC document (31 Oct 2026): read through document-bytes with
+// commerce's token, and handed on as an attachment under a sandboxing CSP,
+// never inline.
+func TestSellerDocsIT_PDFDocumentStreamsAsAnAttachment(t *testing.T) {
+	rg := newDocRig(t)
+	s := seedSellerDocs(t)
+	rg.media.kind[s.panMedia.String()] = "document"
+	w := rg.get(t, InternalAdminPrefix+"/sellers/"+s.seller.String()+"/documents/"+s.pan.String()+"/image", PermKYCVerify)
+	if w.Code != http.StatusOK {
+		t.Fatalf("document: %d %s", w.Code, w.Body.String())
+	}
+	if !bytes.Equal(w.Body.Bytes(), docPDF) {
+		t.Fatalf("got %d bytes, want the %d-byte PDF", w.Body.Len(), len(docPDF))
+	}
+	for k, want := range map[string]string{
+		"Content-Type":            "application/pdf",
+		"Content-Disposition":     `attachment; filename="document.pdf"`,
+		"Cache-Control":           "no-store, private",
+		"X-Content-Type-Options":  "nosniff",
+		"Content-Security-Policy": "default-src 'none'; sandbox",
+	} {
+		if got := w.Header().Get(k); got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+	if len(rg.media.calls) != 1 || rg.media.calls[0] != "/v1/media/internal/"+s.panMedia.String()+"/document-bytes" {
+		t.Fatalf("media byte reads = %v, want exactly the PAN card's document-bytes", rg.media.calls)
+	}
+	h := rg.media.headers[0]
+	if h.Get("X-Internal-Service-Key") != "media-internal-key" || !strings.HasPrefix(h.Get("X-Service-Authorization"), "Bearer ") {
+		t.Error("document-bytes was called without both the internal key and commerce's service token")
+	}
+	for _, k := range []string{"X-User-Id", "X-Verified-User-Id", "X-Scopes", "X-Admin-Role"} {
+		if _, present := h[http.CanonicalHeaderKey(k)]; present {
+			t.Errorf("media-service received %s", k)
+		}
+	}
+}
+
+func TestSellerDocsIT_PDFDocumentRefusals(t *testing.T) {
+	rg := newDocRig(t)
+	s := seedSellerDocs(t)
+	open := func() *httptest.ResponseRecorder {
+		return rg.get(t, InternalAdminPrefix+"/sellers/"+s.seller.String()+"/documents/"+s.pan.String()+"/image", PermKYCVerify)
+	}
+	rg.media.kind[s.panMedia.String()] = "document"
+
+	rg.media.mode[s.panMedia.String()] = "html"
+	if w := open(); w.Code != http.StatusBadGateway || !strings.Contains(w.Body.String(), "DOCUMENT_IMAGE_INVALID") ||
+		strings.Contains(w.Body.String(), "<script>") {
+		t.Errorf("HTML labelled PDF: %d %s, want 502 DOCUMENT_IMAGE_INVALID and no HTML passed on", w.Code, w.Body.String())
+	}
+	rg.media.mode[s.panMedia.String()] = "404"
+	if w := open(); w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "DOCUMENT_IMAGE_UNAVAILABLE") {
+		t.Errorf("no servable document: %d %s, want 404 DOCUMENT_IMAGE_UNAVAILABLE", w.Code, w.Body.String())
+	}
+	// A kind a KYC row cannot hold is never opened.
+	rg.media.mode[s.panMedia.String()] = ""
+	rg.media.kind[s.panMedia.String()] = "video"
+	before := len(rg.media.calls)
+	if w := open(); w.Code != http.StatusNotFound || !strings.Contains(w.Body.String(), "DOCUMENT_IMAGE_UNAVAILABLE") {
+		t.Errorf("a video: %d %s, want 404 DOCUMENT_IMAGE_UNAVAILABLE", w.Code, w.Body.String())
+	}
+	if len(rg.media.calls) != before {
+		t.Errorf("a video asset was read through a byte route: %v", rg.media.calls[before:])
 	}
 }

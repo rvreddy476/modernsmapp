@@ -45,3 +45,11 @@ fixed on `codex/module-01-02-launch-safety`. Q&A stays closed at the gateway
 | Search | whole-word prefix matching, ordered by votes then date |
 | Community counts | may lag by up to 30 s |
 | Answer requests | `target_user_id` and `response: accept/decline` are accepted |
+
+## Admin console: seller KYC documents can be PDFs (31 Oct 2026)
+
+`GET` on the seller KYC document view (admin console → commerce) may now
+answer `application/pdf` as well as image/jpeg, png or webp, with
+`Content-Disposition: attachment` and a sandboxing CSP. When the type is
+PDF, save the blob as a download or render it in the page with pdf.js on a
+canvas; do not navigate to it or put it in an iframe. Images are unchanged.

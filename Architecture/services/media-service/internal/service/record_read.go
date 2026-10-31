@@ -104,9 +104,11 @@ func authorizeMediaRecord(ctx context.Context, gate *delivery.Gate, media *postg
 		return delivery.ErrDeliveryDenied
 	}
 	if viewerID != uuid.Nil && viewerID == media.UploaderID {
+		// The uploader's own record, documents included: it carries the
+		// status a client polls after confirm and no URL.
 		return nil
 	}
-	if DatingScopeDenies(media, viewerID) || AnonymousScopeDenies(media, viewerID) {
+	if ViewerReadDenies(media, viewerID) || AnonymousScopeDenies(media, viewerID) {
 		return delivery.ErrDeliveryDenied
 	}
 	if gate == nil {

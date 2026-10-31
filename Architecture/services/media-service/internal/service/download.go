@@ -52,9 +52,10 @@ func pickDownloadObject(media *postgres.MediaAsset) (key, variant string) {
 
 // downloadScopeDenies reports the assets that are never a download, for
 // anyone: a dating photo has no audience outside dating-service's own URL,
-// and an anonymous attachment's key names its uploader.
+// a private document has none at all (document.go), and an anonymous
+// attachment's key names its uploader.
 func downloadScopeDenies(media *postgres.MediaAsset, viewerID uuid.UUID) bool {
-	return DatingScopeDenies(media, viewerID) || media.AccessScope == postgres.AccessScopeAnonymous
+	return ViewerReadDenies(media, viewerID) || media.AccessScope == postgres.AccessScopeAnonymous
 }
 
 // downloadVerdict is the whole decision for a viewer: the uploader may

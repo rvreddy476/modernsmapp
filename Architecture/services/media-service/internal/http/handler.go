@@ -73,6 +73,11 @@ type Handler struct {
 	// that route (local/dev only, decided in main).
 	imageBytesVerifier  serviceTokenVerifier
 	imageBytesLegacyKey bool
+	// documentBytes backs GET /v1/media/internal/:mediaId/document-bytes
+	// (document_bytes_handler.go); nil means the service's reader. Its caller
+	// check uses imageBytesVerifier / imageBytesLegacyKey with its own
+	// operation and issuer set.
+	documentBytes documentBytesService
 	// recordings backs POST /v1/media/internal/recordings/import
 	// (recording_import_handler.go); nil leaves the route unregistered.
 	// recordingsVerifier / recordingsLegacyKey are its caller check, the
@@ -219,6 +224,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 			// bytes of a ready image, for commerce-service only
 			// (image_bytes_handler.go). Never a URL.
 			internal.GET(ImageBytesRoute, refuseGatewayIdentity(), h.requireImageBytesCaller(), h.GetImageBytes)
+			// Private documents (31 Oct 2026): a seller KYC document's
+			// verified bytes, PDF or image, for commerce-service only
+			// (document_bytes_handler.go). Never a URL.
+			internal.GET(DocumentBytesRoute, refuseGatewayIdentity(), h.requireDocumentBytesCaller(), h.GetDocumentBytes)
 			internal.POST("/:mediaId/doorstep-photo", refuseGatewayIdentity(), h.requireDoorstepPhotoCaller(), h.PrepareDoorstepPhoto)
 			// Live recordings (2026-10-01): live-service-v2 registers a
 			// finished stream's egress MP4 as the host's video
@@ -267,7 +276,9 @@ func (h *Handler) HealthCheck(c *gin.Context) {
 }
 
 type InitUploadRequest struct {
-	FileType      string `json:"file_type" binding:"required,oneof=image video audio"`
+	// document: a private document (seller KYC), never served to a viewer
+	// (service/document.go).
+	FileType      string `json:"file_type" binding:"required,oneof=image video audio document"`
 	MediaSubtype  string `json:"media_subtype"`
 	MimeType      string `json:"mime_type" binding:"required"`
 	FileSizeBytes int64  `json:"file_size_bytes" binding:"required,min=1"`
@@ -312,10 +323,16 @@ func (h *Handler) InitUpload(c *gin.Context) {
 				map[string]any{"max_simple_upload_bytes": service.MaxSimpleVideoUploadBytes, "resumable_init": "/v1/media/upload/resumable/init"})
 		case strings.Contains(msg, "file too large"):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", msg, nil)
-		case strings.Contains(msg, "invalid video type") || strings.Contains(msg, "invalid image type"):
+		case strings.Contains(msg, "invalid video type") || strings.Contains(msg, "invalid image type") ||
+			strings.Contains(msg, "invalid document type"):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE", msg, nil)
 		case strings.Contains(msg, "upload rate limit exceeded"):
-			c.Header("Retry-After", "3600")
+			retryAfter := "3600"
+			if req.FileType == service.FileTypeDocument {
+				// The document budget is per day (service/document.go).
+				retryAfter = "86400"
+			}
+			c.Header("Retry-After", retryAfter)
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", msg, nil)
 		default:
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", msg, nil)

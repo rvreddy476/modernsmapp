@@ -5,7 +5,8 @@ package http
 //	GET /v1/commerce/internal/admin/sellers/:sellerId/documents
 //	    → {"data":[{"id","document_type","verification_status","uploaded_at","viewable","back_viewable"}]}
 //	GET /v1/commerce/internal/admin/sellers/:sellerId/documents/:documentId/image
-//	    → the image bytes, inline, never cached
+//	    → the document bytes, never cached: an image (JPEG/PNG/WebP) inline,
+//	      a PDF as an attachment; both under a sandboxing CSP
 //
 // Both carry commerce:kyc.verify. Registered ONLY in the token family: the
 // admin console reaches commerce through admin-service's signed token, and the
@@ -85,16 +86,36 @@ func (h *Handler) AdminSellerDocumentImage(c *gin.Context) {
 		return
 	}
 
-	hdr := c.Writer.Header()
-	hdr.Set("Content-Type", img.ContentType)
-	hdr.Set("Content-Length", strconv.Itoa(len(raw)))
-	hdr.Set("Content-Disposition", "inline")
-	hdr.Set("Cache-Control", "no-store, private")
-	hdr.Set("X-Content-Type-Options", "nosniff")
+	setDocumentViewHeaders(c.Writer.Header(), img.ContentType, len(raw))
 	c.Writer.WriteHeader(http.StatusOK)
 	if _, err := io.Copy(c.Writer, bytes.NewReader(raw)); err != nil {
 		slog.WarnContext(ctx, "commerce: writing a KYC document image", "document_id", documentID, "error", err)
 	}
+}
+
+// DocumentViewCSP sandboxes whatever a document view returns: opened
+// directly, a PDF (or a polyglot posing as one) can run no script, load
+// nothing and is a unique origin.
+const DocumentViewCSP = "default-src 'none'; sandbox"
+
+// documentDisposition: an image is shown inline on the console's canvas, as
+// before; a PDF is an attachment, so no browser renders it in the console's
+// own origin by navigating to this response.
+func documentDisposition(contentType string) string {
+	if contentType == media.DocumentTypePDF {
+		return `attachment; filename="document.pdf"`
+	}
+	return "inline"
+}
+
+// setDocumentViewHeaders sets every header of a 200 document view.
+func setDocumentViewHeaders(hdr http.Header, contentType string, length int) {
+	hdr.Set("Content-Type", contentType)
+	hdr.Set("Content-Length", strconv.Itoa(length))
+	hdr.Set("Content-Disposition", documentDisposition(contentType))
+	hdr.Set("Cache-Control", "no-store, private")
+	hdr.Set("X-Content-Type-Options", "nosniff")
+	hdr.Set("Content-Security-Policy", DocumentViewCSP)
 }
 
 func writeDocumentImageError(c *gin.Context, err error) {
@@ -108,7 +129,8 @@ func writeDocumentImageError(c *gin.Context, err error) {
 	case errors.Is(err, postgres.ErrActorRequired):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, CodeAdminActorRequired,
 			"the token does not name the acting admin", nil)
-	case errors.Is(err, media.ErrNotAnImage), errors.Is(err, media.ErrImageTooLarge):
+	case errors.Is(err, media.ErrNotAnImage), errors.Is(err, media.ErrImageTooLarge),
+		errors.Is(err, media.ErrNotADocument), errors.Is(err, media.ErrDocumentTooLarge):
 		slog.WarnContext(ctx, "commerce: media-service returned an unusable document image", "error", err)
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadGateway, "DOCUMENT_IMAGE_INVALID",
 			"the stored image could not be served", nil)

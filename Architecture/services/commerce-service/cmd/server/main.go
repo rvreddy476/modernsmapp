@@ -334,6 +334,14 @@ func main() {
 	svc.WithProductAutoApprove(productAutoApprove)
 	slog.Info("product auto-approve", "enabled", productAutoApprove)
 
+	// KYC media kind (31 Oct 2026). Off (the default, and every values file
+	// until the Android release that uploads KYC as file_type=document
+	// ships): a new KYC upload may be a private document or an image. Only
+	// the exact value "true" requires the document kind for new uploads.
+	kycRequireDocument := service.KYCRequireDocumentKind(env("COMMERCE_KYC_REQUIRE_DOCUMENT_KIND", ""))
+	svc.WithKYCRequireDocumentKind(kycRequireDocument)
+	slog.Info("kyc document kind required", "enabled", kycRequireDocument)
+
 	// Platform coupons (migration 038). Founder, 1 Oct 2026: built, and OFF
 	// until the tax adviser confirms GST on a platform-funded discount. Only
 	// the exact value "true" turns them on; absent, empty or anything else is

@@ -202,7 +202,7 @@ func (h *Handler) GetImageBytes(c *gin.Context) {
 //	SERVICE_CALLERS=commerce-service
 //	SERVICE_CALLER_COMMERCE_SERVICE_KID=c1
 //	SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY=<base64 ed25519 public key>
-//	SERVICE_CALLER_COMMERCE_SERVICE_OPS=media:image-bytes.read
+//	SERVICE_CALLER_COMMERCE_SERVICE_OPS=media:image-bytes.read,media:document-bytes.read
 //	SERVICE_CALLER_DOORSTEP_SERVICE_KID=doorstep-1
 //	SERVICE_CALLER_DOORSTEP_SERVICE_PUBKEY=<base64 ed25519 public key>
 //	SERVICE_CALLER_DOORSTEP_SERVICE_OPS=media:image-bytes.read

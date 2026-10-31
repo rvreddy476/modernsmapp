@@ -80,7 +80,7 @@ func captionReadLocalVerdict(media *postgres.MediaAsset, viewerID uuid.UUID) cap
 	if media == nil {
 		return captionReadDenied
 	}
-	if DatingScopeDenies(media, viewerID) {
+	if ViewerReadDenies(media, viewerID) {
 		return captionReadDenied
 	}
 	if viewerID != uuid.Nil && viewerID == media.UploaderID {

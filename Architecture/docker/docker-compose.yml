@@ -963,7 +963,7 @@ services:
       SERVICE_CALLERS: ${MEDIA_SERVICE_CALLERS:-commerce-service,live-service-v2}
       SERVICE_CALLER_COMMERCE_SERVICE_KID: ${SERVICE_CALLER_COMMERCE_SERVICE_KID:-c1}
       SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY: ${SERVICE_CALLER_COMMERCE_SERVICE_PUBKEY:-}
-      SERVICE_CALLER_COMMERCE_SERVICE_OPS: media:image-bytes.read
+      SERVICE_CALLER_COMMERCE_SERVICE_OPS: media:image-bytes.read,media:document-bytes.read
       # Doorstep professional documents (4 Oct 2026): doorstep-service signs
       # its call to the same image-bytes route; this one scope only. The same
       # public half payments-service verifies (gitignored .env). Takes effect
@@ -1947,6 +1947,10 @@ services:
       # Dev only: a complete listing from an APPROVED shop is approved on
       # submit (moderation log actor system:auto_approve). No values file sets it.
       COMMERCE_PRODUCT_AUTO_APPROVE: ${COMMERCE_PRODUCT_AUTO_APPROVE:-true}
+      # KYC uploads: "false" accepts an image or a private document for a new
+      # KYC upload (today's Android app uploads images). Flip to "true" after
+      # the Android release that uploads KYC as file_type=document ships.
+      COMMERCE_KYC_REQUIRE_DOCUMENT_KIND: ${COMMERCE_KYC_REQUIRE_DOCUMENT_KIND:-false}
       COMMERCE_PLATFORM_COUPONS_ENABLED: "false"
       SHIPROCKET_EMAIL: ${SHIPROCKET_EMAIL:-}
       SHIPROCKET_PASSWORD: ${SHIPROCKET_PASSWORD:-}

@@ -153,12 +153,73 @@ func (s *Service) SaveDocuments(ctx context.Context, userID uuid.UUID, docs []po
 	// Every document, before any of them is stored. A partial write here
 	// would leave a KYC set that is half verified and half not, and the
 	// reviewer cannot tell which half.
+	//
+	// 31 Oct 2026: KYC media is media-service's private `document` kind
+	// (PDF, JPEG or PNG; never served to a viewer, read back only through the
+	// token-gated document-bytes route) or, until the switch is flipped, an
+	// image (kycMediaKinds). An id already on this seller's KYC rows may stay
+	// the image it was uploaded as, so a resubmitted step keeps working.
+	if err := s.verifyKYCMedia(ctx, userID, sel.ID, docs); err != nil {
+		return err
+	}
+	return s.store.SaveOnboardingCompliance(ctx, sel.ID, docs)
+}
+
+// kycMediaKinds is what a KYC media id may be. Never a video, never "any".
+//
+//   - requireDocument off (COMMERCE_KYC_REQUIRE_DOCUMENT_KIND unset/false,
+//     the default until the Android release that uploads documents ships):
+//     a document or an image.
+//   - requireDocument on: a NEW id must be a document; an id already on the
+//     seller's KYC rows may still be the image it was uploaded as.
+func kycMediaKinds(id uuid.UUID, onFile map[uuid.UUID]bool, requireDocument bool) []media.Kind {
+	if !requireDocument || onFile[id] {
+		return []media.Kind{media.KindDocument, media.KindImage}
+	}
+	return []media.Kind{media.KindDocument}
+}
+
+// verifyKYCMedia verifies every front and back of docs against
+// kycMediaKinds. With no media client (local dev) it logs and accepts, as
+// verifyMedia does.
+func (s *Service) verifyKYCMedia(ctx context.Context, userID, sellerID uuid.UUID, docs []postgres.SellerDocument) error {
+	var ids []uuid.UUID
 	for i := range docs {
-		if err := s.verifyMedia(ctx, userID, media.KindAny, &docs[i].MediaID, docs[i].BackMediaID); err != nil {
+		for _, id := range []*uuid.UUID{&docs[i].MediaID, docs[i].BackMediaID} {
+			if id != nil && *id != uuid.Nil {
+				ids = append(ids, *id)
+			}
+		}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	if s.media == nil {
+		ptrs := make([]*uuid.UUID, len(ids))
+		for i := range ids {
+			ptrs[i] = &ids[i]
+		}
+		return s.verifyMedia(ctx, userID, media.KindDocument, ptrs...)
+	}
+	// Only the strict rule asks what is on file; the default accepts an image
+	// for every id anyway.
+	var onFile map[uuid.UUID]bool
+	if s.kycRequireDocumentKind {
+		read := s.kycOnFile
+		if read == nil {
+			read = s.store.SellerDocumentMediaIDs
+		}
+		var err error
+		if onFile, err = read(ctx, sellerID); err != nil {
+			return fmt.Errorf("reading the KYC documents on file: %w", err)
+		}
+	}
+	for _, id := range ids {
+		if err := s.media.VerifyOwnedOneOf(ctx, id, userID, kycMediaKinds(id, onFile, s.kycRequireDocumentKind)...); err != nil {
 			return err
 		}
 	}
-	return s.store.SaveOnboardingCompliance(ctx, sel.ID, docs)
+	return nil
 }
 
 // SaveFulfillment saves step 6 fields.

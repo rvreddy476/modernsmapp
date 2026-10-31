@@ -1,6 +1,7 @@
 package http
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"errors"
@@ -52,6 +53,21 @@ const (
 // kycImageTypes are the only types a KYC document is (media-service refuses
 // anything else at upload); an SVG or HTML answer is never relayed.
 var kycImageTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/webp": true}
+
+// kycPDFType is a seller KYC document uploaded as a private PDF (31 Oct 2026).
+const kycPDFType = "application/pdf"
+
+// pdfMagic is how every PDF begins.
+var pdfMagic = []byte("%PDF-")
+
+// kycSellerDocumentTypes are what a seller KYC view relays: the images above,
+// and a PDF. (Doorstep professional documents stay images: kycImageTypes.)
+var kycSellerDocumentTypes = map[string]bool{"image/jpeg": true, "image/png": true, "image/webp": true, kycPDFType: true}
+
+// kycPDFDisposition replaces kycViewHeaders' "inline" for a PDF: the browser
+// saves it rather than rendering it in the console's origin. The sandboxing
+// CSP, no-store and nosniff still apply.
+const kycPDFDisposition = `attachment; filename="document.pdf"`
 
 // kycViewHeaders are set on every streamed document, exactly as pinned.
 var kycViewHeaders = [][2]string{
@@ -247,7 +263,7 @@ func (h *Handler) viewSellerKYCDocument(p product) gin.HandlerFunc {
 		h.relayDocumentImage(c, p, info, service.ProductRequest{
 			Method: http.MethodGet, Path: "/sellers/" + seller + "/documents/" + document + "/image", RawQuery: rawQuery,
 			Permission: perm, Actor: actorFrom(c),
-		}, kycImageTypes, notFound, "kyc document stream ended early", "seller_id", seller, "document_id", document)
+		}, kycSellerDocumentTypes, notFound, "kyc document stream ended early", "seller_id", seller, "document_id", document)
 	}
 }
 
@@ -324,6 +340,21 @@ func (h *Handler) relayDocumentImage(c *gin.Context, p product, info *auditInfo,
 		upstreamError(c, info, 0, "The owning service returned an empty document")
 		return
 	}
+	if mt == kycPDFType {
+		// A PDF is relayed only if it IS one: the first bytes, checked before
+		// the audit row and the first byte out. An HTML page labelled
+		// application/pdf is refused like any other unsupported answer.
+		br := bufio.NewReaderSize(body, 512)
+		head, _ := br.Peek(len(pdfMagic))
+		if !bytes.Equal(head, pdfMagic) {
+			info.outcome = postgres.AuditOutcomeFailure
+			info.set("error", "unsupported content type")
+			api.ErrorWithContext(ctx, c.Writer, http.StatusBadGateway, CodeDocumentUnsupported,
+				"The owning service returned something that is not a document image", nil)
+			return
+		}
+		body = br
+	}
 
 	// The audit row, before the first byte.
 	if err := h.gate.recordNow(c, info, http.StatusOK); err != nil {
@@ -342,6 +373,9 @@ func (h *Handler) relayDocumentImage(c *gin.Context, p product, info *auditInfo,
 	hdr.Set("Content-Length", strconv.FormatInt(length, 10))
 	for _, kv := range kycViewHeaders {
 		hdr.Set(kv[0], kv[1])
+	}
+	if mt == kycPDFType {
+		hdr.Set("Content-Disposition", kycPDFDisposition)
 	}
 	c.Status(http.StatusOK)
 	c.Writer.WriteHeaderNow()

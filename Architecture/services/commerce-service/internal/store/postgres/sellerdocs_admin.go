@@ -99,3 +99,31 @@ func (s *Store) SellerDocumentForAdmin(ctx context.Context, sellerID, documentID
 	}
 	return &d, nil
 }
+
+// SellerDocumentMediaIDs is every media id (front and back) the seller's KYC
+// rows hold right now. Onboarding uses it to tell a document already on file
+// — which may be a legacy image upload — from a new one, which must be the
+// private document kind (service.SaveDocuments).
+func (s *Store) SellerDocumentMediaIDs(ctx context.Context, sellerID uuid.UUID) (map[uuid.UUID]bool, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT media_id, back_media_id
+		  FROM seller_documents
+		 WHERE seller_id = $1`, sellerID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[uuid.UUID]bool{}
+	for rows.Next() {
+		var front, back *uuid.UUID
+		if err := rows.Scan(&front, &back); err != nil {
+			return nil, err
+		}
+		for _, id := range []*uuid.UUID{front, back} {
+			if id != nil && *id != uuid.Nil {
+				out[*id] = true
+			}
+		}
+	}
+	return out, rows.Err()
+}

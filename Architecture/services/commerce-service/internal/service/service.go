@@ -123,6 +123,11 @@ type Service struct {
 	payoutCfg PayoutConfig
 	// productAutoApprove — see WithProductAutoApprove.
 	productAutoApprove bool
+	// kycRequireDocumentKind — see WithKYCRequireDocumentKind.
+	kycRequireDocumentKind bool
+	// kycOnFile reads the media ids on a seller's KYC rows; nil means the
+	// store (SellerDocumentMediaIDs). A seam for the unit tests.
+	kycOnFile func(ctx context.Context, sellerID uuid.UUID) (map[uuid.UUID]bool, error)
 
 	// productViewCounter shards products.view_count across Redis so a
 	// trending product taking 100k+ views/hour doesn't bottleneck on a
@@ -3535,6 +3540,24 @@ func (s *Service) WithMedia(c *media.Client) *Service {
 // distinguishable from a reviewed one afterwards.
 func (s *Service) WithProductAutoApprove(on bool) *Service {
 	s.productAutoApprove = on
+	return s
+}
+
+// WithKYCRequireDocumentKind decides what a NEW KYC media id may be
+// (COMMERCE_KYC_REQUIRE_DOCUMENT_KIND, onboarding.go kycMediaKinds). Off (the
+// default): media-service's private `document` kind or an image, so the
+// Android app that uploads KYC as images keeps working. On: a new id must be
+// a `document`; ids already on the seller's rows may still be images. A video
+// is refused either way.
+// KYCRequireDocumentKind reads COMMERCE_KYC_REQUIRE_DOCUMENT_KIND: only the
+// exact value "true" turns the strict rule on; absent, empty, "false" or
+// anything else leaves it off, so a typo never refuses the current app.
+func KYCRequireDocumentKind(value string) bool {
+	return value == "true"
+}
+
+func (s *Service) WithKYCRequireDocumentKind(on bool) *Service {
+	s.kycRequireDocumentKind = on
 	return s
 }
 
