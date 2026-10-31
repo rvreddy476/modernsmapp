@@ -437,13 +437,29 @@ func (s *Service) filterPresenceDisclosure(ctx context.Context, requesterID uuid
 	if len(ids) == 0 {
 		return ids
 	}
-	filtered := make([]string, 0, len(ids))
-	for _, raw := range ids {
+	parsed := make([]uuid.UUID, len(ids))
+	valid := make([]bool, len(ids))
+	ask := make([]uuid.UUID, 0, len(ids))
+	for i, raw := range ids {
 		id, err := uuid.Parse(raw)
 		if err != nil {
 			continue
 		}
-		if id == requesterID || s.discloseOnlineTo(ctx, requesterID, id) {
+		parsed[i], valid[i] = id, true
+		if id != requesterID {
+			ask = append(ask, id)
+		}
+	}
+	var visible map[uuid.UUID]bool
+	if len(ask) > 0 {
+		visible = s.discloseOnlineToMany(ctx, requesterID, ask)
+	}
+	filtered := make([]string, 0, len(ids))
+	for i, raw := range ids {
+		if !valid[i] {
+			continue
+		}
+		if parsed[i] == requesterID || visible[parsed[i]] {
 			filtered = append(filtered, raw)
 		}
 	}
@@ -2568,13 +2584,25 @@ func (s *Service) GetPresence(ctx context.Context, requesterID uuid.UUID, userID
 		}
 	}
 
+	// Only targets that are actually online (and not hidden) need a
+	// disclosure decision; they are resolved in one batched graph lookup
+	// (audit L10) instead of one serial call each.
 	presence := make(map[string]bool, len(userIDs))
+	ask := make([]uuid.UUID, 0, len(userIDs))
 	for i, id := range userIDs {
 		online := results[i] != nil && !hidden[id]
-		if online && id != requesterID {
-			online = s.discloseOnlineTo(ctx, requesterID, id)
-		}
 		presence[id.String()] = online
+		if online && id != requesterID {
+			ask = append(ask, id)
+		}
+	}
+	if len(ask) > 0 {
+		visible := s.discloseOnlineToMany(ctx, requesterID, ask)
+		for _, id := range ask {
+			if !visible[id] {
+				presence[id.String()] = false
+			}
+		}
 	}
 	return presence, nil
 }
@@ -2584,11 +2612,11 @@ func (s *Service) discloseOnlineTo(ctx context.Context, viewerID, targetID uuid.
 	if s.rdb == nil {
 		return s.checkVisibilityPermission(ctx, viewerID, targetID, "see_online_status")
 	}
-	cacheKey := "onlinevis:" + viewerID.String() + ":" + targetID.String()
+	cacheKey := onlineVisibilityCacheKey(viewerID, targetID)
 	if cached, err := s.rdb.Get(ctx, cacheKey).Result(); err == nil {
 		return cached == "1"
 	}
-	allowed := s.checkVisibilityPermission(ctx, viewerID, targetID, "see_online_status")
+	allowed := s.checkVisibilityPermission(ctx, viewerID, targetID, actionSeeOnlineStatus)
 	value := "0"
 	if allowed {
 		value = "1"

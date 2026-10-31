@@ -10,26 +10,20 @@ import (
 /*
 	Connection and frame limits (audit M5).
 
-	Each socket holds its own Redis PubSub connection, so one account opening
-	sockets in a loop could exhaust Redis maxclients for every service that
-	shares it. Three bounds now apply:
+	Each socket used to hold its own Redis PubSub connection, so one account
+	opening sockets in a loop could exhaust Redis maxclients for every service
+	that shares it. Sockets now share one PubSub connection per process
+	(pubsub_hub.go), and three bounds still apply, because a socket also costs
+	presence, connection-count and signalling round trips:
 
 	  - per user: at most MaxConnsPerUser live sockets across every gateway
 	    replica, counted in Redis (wsconns:<user>, a ZSET of connID ->
 	    expiry). Admission is one Lua script, so concurrent connects cannot
 	    both squeeze in. Entries are refreshed on every pong and removed on
 	    close; a crashed replica's entries expire after wsConnEntryTTL.
-	  - per process: at most MaxConnsPerProcess sockets on this replica,
-	    which bounds this replica's Redis connections however many users
-	    connect.
+	  - per process: at most MaxConnsPerProcess sockets on this replica.
 	  - per socket: a token bucket on inbound frames; a frame over the rate
 	    is dropped before it costs any Redis round trip.
-
-	Sharing one PubSub connection per process would remove the per-socket
-	Redis connection entirely, but every room type subscribes and
-	unsubscribes on the per-socket PubSub (conversation, post, live, call
-	rooms), so that is a router rewrite, not a limit; the caps above bound
-	the cost in the meantime.
 */
 
 const (

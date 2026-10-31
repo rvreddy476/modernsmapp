@@ -84,6 +84,7 @@ func (f *fakeLiveService) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type liveHarness struct {
 	t      *testing.T
 	rdb    *redis.Client
+	server *Server
 	live   *fakeLiveService
 	wsURL  string
 	secret string
@@ -109,9 +110,11 @@ func newLiveHarness(t *testing.T, mutate func(*ServerOptions)) *liveHarness {
 	if mutate != nil {
 		mutate(&opts)
 	}
-	srv := httptest.NewServer(NewServer(rdb, nil, opts).Routes())
+	server := NewServer(rdb, nil, opts)
+	t.Cleanup(server.Close)
+	srv := httptest.NewServer(server.Routes())
 	t.Cleanup(srv.Close)
-	return &liveHarness{t: t, rdb: rdb, live: live, wsURL: "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/ws/connect", secret: secret}
+	return &liveHarness{t: t, rdb: rdb, server: server, live: live, wsURL: "ws" + strings.TrimPrefix(srv.URL, "http") + "/v1/ws/connect", secret: secret}
 }
 
 func (h *liveHarness) dial(user uuid.UUID) *websocket.Conn {
@@ -153,6 +156,25 @@ func (h *liveHarness) waitSubscribers(channel string, want int64) {
 		}
 		if time.Now().After(deadline) {
 			h.t.Fatalf("%s has %d subscribers, want %d", channel, got[channel], want)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// waitLocalSubscribers waits until exactly want sockets on this gateway hold
+// channel in the shared pub/sub hub. Redis sees one subscription per process
+// however many local sockets share it (audit M5), so per-socket claims are
+// proved here, against the hub's own registry.
+func (h *liveHarness) waitLocalSubscribers(channel string, want int) {
+	h.t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		got := h.server.hub.localSubscribers(channel)
+		if got == want {
+			return
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatalf("%s is held by %d local sockets, want %d", channel, got, want)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

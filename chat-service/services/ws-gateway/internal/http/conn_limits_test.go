@@ -143,16 +143,22 @@ func TestWSPerUserConnectionCap(t *testing.T) {
 	user := uuid.New()
 	first := h.dial(user)
 	h.dial(user)
-	h.waitSubscribers("chat:"+user.String(), 2)
+	// Two local sockets share the process's one Redis subscription.
+	h.waitLocalSubscribers("chat:"+user.String(), 2)
+	h.waitSubscribers("chat:"+user.String(), 1)
 
 	if _, status := dialStatus(t, h, user); status != http.StatusTooManyRequests {
 		t.Fatalf("third socket: status %d, want 429", status)
 	}
-	if n := h.rdb.PubSubNumSub(context.Background(), "chat:"+user.String()).Val()["chat:"+user.String()]; n != 2 {
-		t.Fatalf("refused socket still opened a subscription (%d)", n)
+	if n := h.server.hub.localSubscribers("chat:" + user.String()); n != 2 {
+		t.Fatalf("refused socket still registered a subscription (%d)", n)
+	}
+	if n := h.rdb.PubSubNumSub(context.Background(), "chat:"+user.String()).Val()["chat:"+user.String()]; n != 1 {
+		t.Fatalf("refused socket changed the Redis subscription count (%d)", n)
 	}
 
 	_ = first.Close()
+	h.waitLocalSubscribers("chat:"+user.String(), 1)
 	h.waitSubscribers("chat:"+user.String(), 1)
 	deadline := time.Now().Add(3 * time.Second)
 	for {

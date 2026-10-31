@@ -218,7 +218,9 @@ func TestWSScopedCallRoomRequiresOwnerCheck(t *testing.T) {
 	// Member: subscribes and publishes.
 	in := h.dial(member)
 	h.send(in, map[string]any{"type": "subscribe_call", "call_id": call})
-	h.waitSubscribers("call:"+call, 2) // the spy + the member, never the outsider
+	h.waitSubscribers("call:"+call, 2) // the spy + this gateway's shared connection
+	// Locally, only the member's socket holds the room, never the outsider's.
+	h.waitLocalSubscribers("call:"+call, 1)
 	h.send(in, map[string]any{"type": "call_join", "call_id": call})
 
 	msg := receiveWithin(t, spy, time.Second)

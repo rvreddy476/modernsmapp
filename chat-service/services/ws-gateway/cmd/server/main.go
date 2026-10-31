@@ -115,6 +115,9 @@ func main() {
 		// owner route yet and stay refused even if the flag is turned on.
 		CallRoomAuthorizer: callRoomAuthorizer(cfg.CallServiceURL),
 	})
+	// Defers run last-in first-out: the shared pub/sub hub closes before the
+	// Redis client it uses.
+	defer server.Close()
 	logger.Info("realtime rooms", "post_rooms", cfg.PostRoomsEnabled, "live_rooms", cfg.LiveRoomsEnabled, "conversation_frames", cfg.ConversationFramesEnabled)
 
 	httpServer := &http.Server{

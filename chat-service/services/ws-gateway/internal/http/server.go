@@ -174,6 +174,9 @@ type Server struct {
 	fanout   *presenceFanout
 	// openConns counts this replica's live sockets (MaxConnsPerProcess).
 	openConns atomic.Int64
+	// hub is this process's single Redis pub/sub connection, shared by
+	// every socket (audit M5, pubsub_hub.go).
+	hub *pubsubHub
 }
 
 func NewServer(rdb *redis.Client, log *slog.Logger, opts ServerOptions) *Server {
@@ -209,6 +212,7 @@ func NewServer(rdb *redis.Client, log *slog.Logger, opts ServerOptions) *Server 
 		pres:     store,
 		activity: store,
 		fanout:   newPresenceFanout(opts.PresencePeers, opts.PresenceVisibility, rdb, log),
+		hub:      newPubsubHub(rdb, log),
 	}
 	s.upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
@@ -220,6 +224,10 @@ func NewServer(rdb *redis.Client, log *slog.Logger, opts ServerOptions) *Server 
 	}
 	return s
 }
+
+// Close releases the process's shared Redis pub/sub connection. Call it after
+// the HTTP server has stopped taking sockets.
+func (s *Server) Close() { s.hub.Close() }
 
 func (s *Server) Routes() nethttp.Handler {
 	mux := nethttp.NewServeMux()
@@ -303,13 +311,37 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 	}
 	defer s.releaseUserConnection(context.Background(), userID.String(), connID)
 
+	// Subscribe to the user's personal channel. Notifications used to ride
+	// this multiplex too via `notify:<userID>`, but the realtime-transport
+	// split moved them to a dedicated SSE channel
+	// (notification-service /v1/notifications/stream) per README §1 and §17.
+	// Privacy boundary: the public-beta gateway subscribes only to the
+	// authenticated user's personal channel. Global feed/presence channels
+	// and client-selected rooms previously let any connected account observe
+	// data unrelated to its feed, block, visibility, or membership policy.
+	//
+	// Audit M5: the socket registers with the process's shared pub/sub hub
+	// instead of opening its own Redis connection, and does so BEFORE the
+	// upgrade: Subscribe returns once Redis has acknowledged the channel, so
+	// an upgraded socket never misses a frame published right after connect,
+	// and a socket that cannot subscribe is refused with a plain status.
+	chatChannel := fmt.Sprintf("chat:%s", userID.String())
+	pubsub := s.hub.newSubscriber()
+	defer func() {
+		_ = pubsub.Close()
+	}()
+	if err := pubsub.Subscribe(r.Context(), chatChannel); err != nil {
+		s.log.Error("redis subscribe failed", "err", err, "user_id", userID, "channel", chatChannel)
+		nethttp.Error(w, "temporarily unavailable", nethttp.StatusServiceUnavailable)
+		return
+	}
+
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		s.log.Warn("websocket upgrade failed", "err", err, "user_id", userID)
 		return
 	}
 
-	chatChannel := fmt.Sprintf("chat:%s", userID.String())
 	ctx, cancel := context.WithCancel(r.Context())
 	defer cancel()
 
@@ -351,27 +383,6 @@ func (s *Server) handleWS(w nethttp.ResponseWriter, r *nethttp.Request) {
 			s.announcePresence(userID)
 		}
 	}()
-
-	// Subscribe to chat messages, new posts, post interaction updates,
-	// and presence changes. Notifications used to ride this multiplex
-	// too via `notify:<userID>`, but the realtime-transport split
-	// moved them to a dedicated SSE channel
-	// (notification-service /v1/notifications/stream) per README §1
-	// and §17. Keeping the subscription here would burn Redis fan-out
-	// bandwidth per connected client with no consumer.
-	// Privacy boundary: the public-beta gateway subscribes only to the
-	// authenticated user's personal channel. Global feed/presence channels and
-	// client-selected rooms previously let any connected account observe data
-	// unrelated to its feed, block, visibility, or membership policy.
-	pubsub := s.rdb.Subscribe(ctx, chatChannel)
-	defer func() {
-		_ = pubsub.Close()
-	}()
-	if _, err := pubsub.Receive(ctx); err != nil {
-		s.log.Error("redis subscribe failed", "err", err, "user_id", userID, "channel", chatChannel)
-		_ = conn.Close()
-		return
-	}
 
 	s.log.Info("websocket connected", "user_id", userID, "channel", chatChannel, "client_ip", s.readClientIP(r))
 	s.serveConnection(ctx, cancel, conn, pubsub, userID, connID, readBearerToken(r, s.opts.AllowQueryToken))
@@ -466,7 +477,7 @@ func (s *Server) serveConnection(
 	ctx context.Context,
 	cancel context.CancelFunc,
 	conn *websocket.Conn,
-	pubsub *redis.PubSub,
+	pubsub *hubSubscriber,
 	userID uuid.UUID,
 	connID string,
 	bearerToken string,
@@ -512,7 +523,7 @@ func (s *Server) serveConnection(
 // tick (P-8 e, postrooms.go): those are re-asked of post-service over HTTP,
 // so they get the 5-minute cadence and a per-sweep bound rather than the
 // 30-second Redis sweep.
-func (s *Server) reconcileRoomSubscriptions(ctx context.Context, pubsub *redis.PubSub, outbound chan<- []byte, userID uuid.UUID, subs *roomSubscriptions, postGrants, liveGrants, scopedGrants *postRoomGrants, bearerToken string) {
+func (s *Server) reconcileRoomSubscriptions(ctx context.Context, pubsub *hubSubscriber, outbound chan<- []byte, userID uuid.UUID, subs *roomSubscriptions, postGrants, liveGrants, scopedGrants *postRoomGrants, bearerToken string) {
 	interval := s.opts.SubscriptionReconcileInterval
 	if interval <= 0 {
 		interval = 30 * time.Second
@@ -625,7 +636,7 @@ var roomSignalingTypes = map[string]bool{
 	"call_recording_stopped":   true,
 }
 
-func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, pubsub *redis.PubSub, outbound chan<- []byte, userID uuid.UUID, subs *roomSubscriptions, postGrants, liveGrants, scopedGrants *postRoomGrants, typing *typingTracker, connID string, bearerToken string) {
+func (s *Server) readLoop(ctx context.Context, cancel context.CancelFunc, conn *websocket.Conn, pubsub *hubSubscriber, outbound chan<- []byte, userID uuid.UUID, subs *roomSubscriptions, postGrants, liveGrants, scopedGrants *postRoomGrants, typing *typingTracker, connID string, bearerToken string) {
 	defer cancel()
 
 	// Audit M5: per-socket inbound token bucket. Every frame costs at
@@ -1004,7 +1015,7 @@ func (s *Server) betaRoomGateRejects(msgType string) bool {
 func (s *Server) redisLoop(
 	ctx context.Context,
 	cancel context.CancelFunc,
-	pubsub *redis.PubSub,
+	pubsub *hubSubscriber,
 	outbound chan<- []byte,
 	userID uuid.UUID,
 	subs *roomSubscriptions,
@@ -1015,6 +1026,12 @@ func (s *Server) redisLoop(
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-pubsub.Done():
+			// The shared hub could not hand this socket a frame without
+			// waiting: the same slow-client close as a full outbound buffer
+			// below, so one stalled socket never holds up the others.
+			s.log.Warn("websocket fell behind the pubsub hub; closing slow client", "user_id", userID)
 			return
 		case msg, ok := <-ch:
 			if !ok {
