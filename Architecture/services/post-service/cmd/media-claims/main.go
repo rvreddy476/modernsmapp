@@ -1,6 +1,7 @@
 // media-claims reconciles media-service's claims with the media ids
 // post-service's non-FK columns hold — post covers, reel draft media, event
-// covers (internal/claimsync has the rules).
+// covers, composer draft covers, video series covers and playlist covers
+// (internal/claimsync has the rules).
 //
 //	media-claims            dry run: read every row, send nothing, print the counts
 //	media-claims -apply     claim what live rows hold, release what dead or gone rows held

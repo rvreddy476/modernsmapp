@@ -133,7 +133,9 @@ func (s *Service) CreateVideoSeries(ctx context.Context, vs *postgres.VideoSerie
 	if err := s.verifySeriesCover(ctx, vs.CreatorID, vs.CoverMediaID); err != nil {
 		return err
 	}
-	return s.pgStore.CreateVideoSeries(ctx, vs)
+	// The cover is media-claimed before the row names it
+	// (tube_cover_claims.go).
+	return s.createVideoSeriesClaimed(ctx, vs)
 }
 
 // loadVideoSeries fetches a series, failing closed when there is no store.
@@ -290,7 +292,7 @@ func (s *Service) GetVideoSeriesEpisodes(ctx context.Context, seriesID uuid.UUID
 	if err != nil || owner {
 		return eps, err
 	}
-	return s.visibleVideoEpisodes(ctx, eps, callerID, vs.CreatorID), nil
+	return s.visibleVideoEpisodes(ctx, eps, callerID, vs.CreatorID, uuid.Nil), nil
 }
 
 func isVideoSeriesOwner(vs *postgres.VideoSeries, callerID *uuid.UUID) bool {
@@ -309,15 +311,9 @@ func (s *Service) UpdateVideoSeries(ctx context.Context, callerID, seriesID uuid
 	if err := s.verifySeriesCover(ctx, callerID, patch.CoverMediaID); err != nil {
 		return nil, err
 	}
-	vs, err := s.videoSeries.UpdateVideoSeries(ctx, seriesID, patch)
-	if err != nil {
-		return nil, err
-	}
-	if vs == nil {
-		// Deleted between the ownership read and the update.
-		return nil, ErrVideoSeriesNotFound
-	}
-	return vs, nil
+	// A new cover is claimed before the row names it, the old one released
+	// after (tube_cover_claims.go).
+	return s.updateVideoSeriesClaimed(ctx, seriesID, patch)
 }
 
 // ── the watch page: which series is this post in? ──────────────────────────
@@ -410,8 +406,10 @@ func (s *Service) GetPostSeries(ctx context.Context, postID uuid.UUID, callerID 
 		if !owner {
 			// The same drop as GET /v1/video-series/:id/episodes: an
 			// episode the caller may not open is not listed, and is never
-			// a prev / next either.
-			episodes = s.visibleVideoEpisodes(ctx, episodes, callerID, vs.CreatorID)
+			// a prev / next either. Nor is an unlisted one, except the
+			// video being watched, which the caller holds the link of
+			// (unlisted_listing.go).
+			episodes = s.visibleVideoEpisodes(ctx, episodes, callerID, vs.CreatorID, postID)
 		}
 		current, ok := findEpisodeByPost(episodes, postID)
 		if !ok {
@@ -482,7 +480,8 @@ func (s *Service) DeleteVideoSeries(ctx context.Context, callerID, seriesID uuid
 	if _, err := s.requireVideoSeriesOwner(ctx, callerID, seriesID); err != nil {
 		return err
 	}
-	return s.videoSeries.DeleteVideoSeries(ctx, seriesID)
+	// The cover's claim goes with the row (tube_cover_claims.go).
+	return s.deleteVideoSeriesClaimed(ctx, seriesID)
 }
 
 // DeleteVideoSeriesEpisodeByNum removes the episode at episodeNum. Leaves a

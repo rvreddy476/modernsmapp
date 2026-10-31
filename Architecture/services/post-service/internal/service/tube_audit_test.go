@@ -277,10 +277,10 @@ func TestEpisodeListsUseOneBatchedReadAndDropForeignVideos(t *testing.T) {
 	s.videoSeries = store
 	calls := 0
 	var asked []uuid.UUID
-	s.viewablePostsSeam = func(_ context.Context, ids []uuid.UUID, _ *uuid.UUID) (map[uuid.UUID]uuid.UUID, error) {
+	s.viewablePostsSeam = func(_ context.Context, ids []uuid.UUID, _ *uuid.UUID) (map[uuid.UUID]viewablePost, error) {
 		calls++
 		asked = ids
-		return map[uuid.UUID]uuid.UUID{mine1: owner, mine2: owner, theirs: stranger}, nil
+		return map[uuid.UUID]viewablePost{mine1: {AuthorID: owner}, mine2: {AuthorID: owner}, theirs: {AuthorID: stranger}}, nil
 	}
 	eps, err := s.GetVideoSeriesEpisodes(context.Background(), id, &stranger)
 	if err != nil {
@@ -293,7 +293,7 @@ func TestEpisodeListsUseOneBatchedReadAndDropForeignVideos(t *testing.T) {
 		t.Fatalf("episodes %+v; want the creator's own two visible videos", eps)
 	}
 	// A failed batch read lists nothing (fail closed).
-	s.viewablePostsSeam = func(context.Context, []uuid.UUID, *uuid.UUID) (map[uuid.UUID]uuid.UUID, error) {
+	s.viewablePostsSeam = func(context.Context, []uuid.UUID, *uuid.UUID) (map[uuid.UUID]viewablePost, error) {
 		return nil, errors.New("db down")
 	}
 	if eps, _ := s.GetVideoSeriesEpisodes(context.Background(), id, &stranger); len(eps) != 0 {
@@ -370,9 +370,15 @@ func TestSeriesCoverMustBeTheCreatorsOwnImage(t *testing.T) {
 	if len(store.patches) != 0 {
 		t.Fatal("a refused cover reached the store")
 	}
+	// Since 31 Oct a series cover is media-claimed (tube_cover_claims.go),
+	// so the accepted cover needs the claim client, and is claimed.
+	claims := newFakeClaims()
+	s.mediaHolders = newFakeHolders(claims.log)
+	s.SetMediaClaims(claims)
 	if _, err := s.UpdateVideoSeries(context.Background(), owner, id, postgres.VideoSeriesPatch{CoverMediaID: &mine}); err != nil {
 		t.Fatalf("the creator's own image: %v", err)
 	}
+	sameIDs(t, "series cover claims", claims.held(postgres.HolderVideoSeriesCover, id), mine)
 	// Create runs the same check before the store (pgStore is nil here: a
 	// cover that slipped through would panic rather than pass).
 	err := s.CreateVideoSeries(context.Background(), &postgres.VideoSeries{CreatorID: owner, Title: "x", CoverMediaID: &theirs})

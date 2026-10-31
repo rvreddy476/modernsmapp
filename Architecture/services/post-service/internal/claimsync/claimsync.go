@@ -6,8 +6,9 @@
 // The claim protocol (internal/service/media_claims.go) is live only for
 // writes made after it shipped, and its releases are best effort:
 //
-//   - BACKFILL: every post cover, reel draft and event cover written before
-//     the protocol names media with no claim, so its owner can still delete
+//   - BACKFILL: every post cover, reel draft, event cover, composer draft
+//     cover, video series cover and playlist cover written before its kind
+//     was claimed names media with no claim, so its owner can still delete
 //     it out from under the row;
 //   - REPAIR: a release that failed (media-service down after the write)
 //     leaves a stale claim, which refuses the owner a delete they are

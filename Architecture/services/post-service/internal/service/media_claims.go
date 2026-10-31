@@ -21,7 +21,8 @@ import (
 //	reel_drafts.media_id, reel_drafts.cover_... no FK  → claim  reel_draft
 //	events.cover_media_id                       no FK  → claim  event_cover
 //	post_drafts.payload → cover_media_id        JSONB  → claim  post_draft_cover
-//	video_series.cover_media_id                 FK (migration 012) → none
+//	video_series.cover_media_id                 FK SET NULL (081) → claim  video_series_cover
+//	playlists.cover_url (/v1/media/<id>/serve)  TEXT   → claim  playlist_cover
 //	post_media / post_draft_media / stories     FK RESTRICT (030, 032) → none
 //
 // # The protocol (media-service internal/store/postgres/media_claims.go)
@@ -52,7 +53,8 @@ import (
 // upload may be claimed: a stranger's id would let anyone stop anyone else
 // deleting their media. Post covers already pass verifyCoverOnWrite /
 // verifyCoverMedia; reel draft media and event covers pass verifyOwnMedia;
-// composer draft covers pass verifyDraftCover (the post cover rule).
+// composer draft covers pass verifyDraftCover (the post cover rule); series
+// and playlist covers pass verifyOwnImage (tube_cover_claims.go).
 
 // MediaClaims is media-service's claim API (mediaclaims.Client).
 type MediaClaims interface {

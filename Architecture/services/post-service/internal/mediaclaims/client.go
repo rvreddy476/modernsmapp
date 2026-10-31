@@ -12,6 +12,13 @@
 //	events.cover_media_id        (migration 010: plain UUID)
 //	post_drafts.payload          (migration 026: JSONB; its cover_media_id
 //	                              key is a media id no column can constrain)
+//	playlists.cover_url          (migration 012: TEXT, the serve path
+//	                              /v1/media/<id>/serve since migration 081)
+//
+// and one that has a foreign key that no longer refuses anything:
+//
+//	video_series.cover_media_id  (migration 081 made it ON DELETE SET NULL,
+//	                              so the owner's delete cleared the cover)
 //
 // A plain UUID write takes no lock on the media row, so the uploader's
 // DELETE /v1/media/{id} could remove an asset one of these rows still shows.
@@ -21,8 +28,7 @@
 // The rest of post-service's media references are already guarded by a real
 // foreign key, which media-service turns into the same 409, so they take no
 // claim: post_media.media_id and post_draft_media.media_id (migration 030,
-// ON DELETE RESTRICT), stories.media_id (migration 032, RESTRICT) and
-// video_series.cover_media_id (migration 012, REFERENCES media_assets(id)).
+// ON DELETE RESTRICT) and stories.media_id (migration 032, RESTRICT).
 // Inserting a row with a foreign key takes KEY SHARE on the media row, which
 // is exactly the lock a claim takes, so those are as race-safe as a claim.
 //
@@ -66,10 +72,16 @@ const (
 	// the SAME id; the post's cover is then held under KindPostCover, a
 	// different (kind, ref), so neither releases the other.
 	KindPostDraftCover = "post_draft_cover"
+	// KindVideoSeriesCover: video_series.cover_media_id, ref = series id
+	// (founder, 31 Oct 2026: series covers are claimed like other media).
+	KindVideoSeriesCover = "video_series_cover"
+	// KindPlaylistCover: the media id in playlists.cover_url
+	// (/v1/media/<id>/serve), ref = playlist id.
+	KindPlaylistCover = "playlist_cover"
 )
 
 // Kinds is every kind post-service claims, in a stable order.
-var Kinds = []string{KindPostCover, KindReelDraft, KindEventCover, KindPostDraftCover}
+var Kinds = []string{KindPostCover, KindReelDraft, KindEventCover, KindPostDraftCover, KindVideoSeriesCover, KindPlaylistCover}
 
 var (
 	// ErrNotFound: media-service has no such asset (code MEDIA_NOT_FOUND).

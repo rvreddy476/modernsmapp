@@ -116,10 +116,13 @@ func (h *Handler) ListProductTagsByPost(c *gin.Context) {
 	if !ok {
 		return
 	}
-	if !h.requirePostReadable(c, postID, optionalCallerID(c)) {
+	viewer := optionalCallerID(c)
+	if !h.requirePostReadable(c, postID, viewer) {
 		return
 	}
-	tags, err := h.svc.ListProductTagsByPost(c.Request.Context(), postID)
+	// A members-only video's tags are its members' and its author's; anyone
+	// else gets an empty list (31 Oct 2026, tube_members_extras.go).
+	tags, err := h.svc.ListProductTagsForViewer(c.Request.Context(), postID, viewer)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusInternalServerError, "INTERNAL", err.Error(), nil)

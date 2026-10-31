@@ -158,3 +158,52 @@ func TestMediaClaimsIT_BackfillPostDraftCovers(t *testing.T) {
 		t.Fatalf("the deleted draft kept its claim: %q", got)
 	}
 }
+
+// Series and playlist covers come out of their own tables: a series'
+// cover_media_id and a playlist's cover_url serve path are backfilled under
+// their kinds; a playlist cover that is not a serve path holds nothing.
+func TestMediaClaimsIT_BackfillSeriesAndPlaylistCovers(t *testing.T) {
+	pool := openDB(t)
+	ctx := context.Background()
+	creator, cover := uuid.New(), uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id) VALUES ($1) ON CONFLICT DO NOTHING`, creator); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO media_assets (id, uploader_id, file_type, processing_status) VALUES ($1, $2, 'image', 'ready')`,
+		cover, creator); err != nil {
+		t.Fatal(err)
+	}
+	series, playlist, odd := uuid.New(), uuid.New(), uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO video_series (id, creator_id, title, cover_media_id) VALUES ($1, $2, 's', $3)`,
+		series, creator, cover); err != nil {
+		t.Fatal(err)
+	}
+	for id, url := range map[uuid.UUID]string{playlist: "/v1/media/" + cover.String() + "/serve", odd: "not-a-serve-path"} {
+		if _, err := pool.Exec(ctx, `INSERT INTO playlists (id, creator_id, title, cover_url) VALUES ($1, $2, 'p', $3)`,
+			id, creator, url); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = pool.Exec(bg, `DELETE FROM playlists WHERE id = ANY($1)`, []uuid.UUID{playlist, odd})
+		_, _ = pool.Exec(bg, `DELETE FROM video_series WHERE id = $1`, series)
+		_, _ = pool.Exec(bg, `DELETE FROM media_assets WHERE id = $1`, cover)
+	})
+	var log []string
+	c := &fakeClaims{held: map[key]map[uuid.UUID]bool{}, missing: map[uuid.UUID]bool{}, log: &log}
+	c.held[key{mediaclaims.KindPlaylistCover, odd}] = map[uuid.UUID]bool{cover: true}
+
+	if _, err := Run(ctx, postgres.New(pool), c, true); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.ids(mediaclaims.KindVideoSeriesCover, series); got != cover.String() {
+		t.Fatalf("the series cover was not backfilled: %q", got)
+	}
+	if got := c.ids(mediaclaims.KindPlaylistCover, playlist); got != cover.String() {
+		t.Fatalf("the playlist cover was not backfilled: %q", got)
+	}
+	if got := c.ids(mediaclaims.KindPlaylistCover, odd); got != "" {
+		t.Fatalf("a playlist cover that is not a serve path kept its claim: %q", got)
+	}
+}

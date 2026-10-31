@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"hash/fnv"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -32,6 +33,14 @@ const (
 	// HolderPostDraftCover: a composer draft's payload cover_media_id
 	// (post_drafts.payload is JSONB, so no foreign key can guard it).
 	HolderPostDraftCover = "post_draft_cover"
+	// HolderVideoSeriesCover: video_series.cover_media_id. It has a foreign
+	// key, but migration 081 made it ON DELETE SET NULL, so it no longer
+	// refuses the owner's delete; the claim does (founder, 31 Oct 2026).
+	HolderVideoSeriesCover = "video_series_cover"
+	// HolderPlaylistCover: playlists.cover_url, a TEXT column holding the
+	// platform serve path /v1/media/<id>/serve (tube audit L4), so no
+	// foreign key can guard it.
+	HolderPlaylistCover = "playlist_cover"
 )
 
 // MediaHolding is what one holder row holds right now. Live is false when the
@@ -72,6 +81,32 @@ func ParseDraftCoverID(raw *string) *uuid.UUID {
 		return nil
 	}
 	id, err := uuid.Parse(strings.TrimSpace(*raw))
+	if err != nil || id == uuid.Nil {
+		return nil
+	}
+	return &id
+}
+
+// playlistCoverPath is the stored shape of a playlist cover, the same
+// pattern migration 081 kept (anything else was cleared there): this
+// platform's serve path of one media id, optionally with a variant.
+var playlistCoverPath = regexp.MustCompile(`^/v1/media/([0-9a-fA-F-]{36})/serve(?:/[a-z0-9_-]+)?$`)
+
+// ParsePlaylistCoverID is the media id a stored playlist cover_url names:
+// the id in /v1/media/<id>/serve, trimmed; nil for no cover, an empty one
+// ("" = borrow the first item's thumbnail), or anything else. The service
+// decides what a write will hold with this same function, so the writers
+// and the holder re-read always agree on the set. Parsed in Go, never cast
+// in SQL, so one odd row cannot fail a page.
+func ParsePlaylistCoverID(raw *string) *uuid.UUID {
+	if raw == nil {
+		return nil
+	}
+	m := playlistCoverPath.FindStringSubmatch(strings.TrimSpace(*raw))
+	if m == nil {
+		return nil
+	}
+	id, err := uuid.Parse(m[1])
 	if err != nil || id == uuid.Nil {
 		return nil
 	}
@@ -239,6 +274,12 @@ func (s *Store) MediaHeldBy(ctx context.Context, kind string, ref uuid.UUID) (Me
 		err = s.db.QueryRow(ctx, `SELECT `+postDraftCoverSQL+`, `+postDraftLiveSQL+`
 			FROM post_drafts WHERE id = $1`, ref).Scan(&raw, &h.Live)
 		a = ParseDraftCoverID(raw)
+	case HolderVideoSeriesCover:
+		err = s.db.QueryRow(ctx, `SELECT cover_media_id, TRUE FROM video_series WHERE id = $1`, ref).Scan(&a, &h.Live)
+	case HolderPlaylistCover:
+		var raw *string
+		err = s.db.QueryRow(ctx, `SELECT cover_url, TRUE FROM playlists WHERE id = $1`, ref).Scan(&raw, &h.Live)
+		a = ParsePlaylistCoverID(raw)
 	default:
 		return h, fmt.Errorf("unknown media holder kind %q", kind)
 	}
@@ -268,6 +309,11 @@ func (s *Store) MediaHoldingPage(ctx context.Context, kind string, after uuid.UU
 			WHERE cover_media_id IS NOT NULL AND id > $1 ORDER BY id LIMIT $2`
 	case HolderPostDraftCover:
 		return s.postDraftCoverPage(ctx, after, limit)
+	case HolderVideoSeriesCover:
+		q = `SELECT id, cover_media_id, NULL::uuid, TRUE FROM video_series
+			WHERE cover_media_id IS NOT NULL AND id > $1 ORDER BY id LIMIT $2`
+	case HolderPlaylistCover:
+		return s.playlistCoverPage(ctx, after, limit)
 	default:
 		return nil, fmt.Errorf("unknown media holder kind %q", kind)
 	}
@@ -307,6 +353,30 @@ func (s *Store) postDraftCoverPage(ctx context.Context, after uuid.UUID, limit i
 			return nil, err
 		}
 		h.MediaIDs = holdingIDs(ParseDraftCoverID(raw), nil)
+		out = append(out, h)
+	}
+	return out, rows.Err()
+}
+
+// playlistCoverPage is MediaHoldingPage for playlists: every playlist with
+// a cover_url, parsed in Go. A value that is not a serve path holds nothing
+// (its row's claims, if any, are released). A playlist row is live while it
+// exists; a deleted one is gone, and the orphan pass releases its claim.
+func (s *Store) playlistCoverPage(ctx context.Context, after uuid.UUID, limit int) ([]MediaHolding, error) {
+	rows, err := s.db.Query(ctx, `SELECT id, cover_url FROM playlists
+		WHERE COALESCE(btrim(cover_url), '') <> '' AND id > $1 ORDER BY id LIMIT $2`, after, limit)
+	if err != nil {
+		return nil, fmt.Errorf("page media holders %s: %w", HolderPlaylistCover, err)
+	}
+	defer rows.Close()
+	var out []MediaHolding
+	for rows.Next() {
+		h := MediaHolding{Kind: HolderPlaylistCover, Live: true}
+		var raw *string
+		if err := rows.Scan(&h.Ref, &raw); err != nil {
+			return nil, err
+		}
+		h.MediaIDs = holdingIDs(ParsePlaylistCoverID(raw), nil)
 		out = append(out, h)
 	}
 	return out, rows.Err()

@@ -127,6 +127,12 @@ func (s *Service) ListUserReposts(ctx context.Context, userID uuid.UUID, viewerI
 		if original == nil || original.Post == nil {
 			continue
 		}
+		// Someone's reposts tab is a listing shown to others: an unlisted
+		// original is listed only to its own author (unlisted_listing.go).
+		// The reposter's own view keeps it: it is their list.
+		if !isSelf && !listedTo(original.Post.Visibility, original.Post.AuthorID, viewerID) {
+			continue
+		}
 		items = append(items, UserRepostItem{
 			RepostID:       r.ID,
 			Type:           r.RepostType,

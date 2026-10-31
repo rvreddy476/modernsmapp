@@ -145,7 +145,10 @@ func sameIDs(t *testing.T, what string, got []uuid.UUID, want ...uuid.UUID) {
 func TestHolderKindsMatchClaimKinds(t *testing.T) {
 	if postgres.HolderPostCover != mediaclaims.KindPostCover ||
 		postgres.HolderReelDraft != mediaclaims.KindReelDraft ||
-		postgres.HolderEventCover != mediaclaims.KindEventCover {
+		postgres.HolderEventCover != mediaclaims.KindEventCover ||
+		postgres.HolderPostDraftCover != mediaclaims.KindPostDraftCover ||
+		postgres.HolderVideoSeriesCover != mediaclaims.KindVideoSeriesCover ||
+		postgres.HolderPlaylistCover != mediaclaims.KindPlaylistCover {
 		t.Fatal("the store's holder kinds and the claim kinds media-service registers have drifted")
 	}
 	if mediaclaims.Claimant != "post-service" {

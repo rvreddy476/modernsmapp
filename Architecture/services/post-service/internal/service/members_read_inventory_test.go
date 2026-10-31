@@ -78,6 +78,7 @@ var membersReadExempt = map[string]string{
 	"pageDetails":                 "loader: batched counts + polls inside the list reads, each of which redacts",
 	"detailPosts":                 "loader: pointer view of a page for the page-wide helpers, never serialised",
 	"threadEntriesVisibleTo":      "loader: per-entry gate inside GetThread, which redacts",
+	"authorGridRows":              "loader: the profile grid's row drop inside GetPostsByAuthorFiltered, which redacts",
 }
 
 // commentEntryPoints must reach the comment thread's members gate.

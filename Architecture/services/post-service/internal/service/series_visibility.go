@@ -50,20 +50,28 @@ func (s *Service) viewablePostSet(ctx context.Context, ids []uuid.UUID, viewerID
 // written before the add refused them). One batched read for the whole list
 // (viewablePostAuthors, M8), not a single-post read per episode: the watch
 // page asks this on every load.
-func (s *Service) visibleVideoEpisodes(ctx context.Context, eps []postgres.VideoSeriesEpisode, viewerID *uuid.UUID, creatorID uuid.UUID) []postgres.VideoSeriesEpisode {
+//
+// An episode list is a listing (founder, 31 Oct 2026): an unlisted episode is
+// listed to its author alone (unlisted_listing.go), except current, the post
+// the viewer is watching through its link (the watch page's series panel);
+// uuid.Nil names none.
+func (s *Service) visibleVideoEpisodes(ctx context.Context, eps []postgres.VideoSeriesEpisode, viewerID *uuid.UUID, creatorID, current uuid.UUID) []postgres.VideoSeriesEpisode {
 	ids := make([]uuid.UUID, len(eps))
 	for i, ep := range eps {
 		ids[i] = ep.PostID
 	}
-	authors := s.viewablePostAuthors(ctx, ids, viewerID)
+	posts := s.viewablePostAuthors(ctx, ids, viewerID)
 	out := make([]postgres.VideoSeriesEpisode, 0, len(eps))
 	for _, ep := range eps {
-		author, ok := authors[ep.PostID]
+		p, ok := posts[ep.PostID]
 		if !ok {
 			continue
 		}
 		// uuid.Nil: a unit rig's single-post gate, which knows no author.
-		if author != uuid.Nil && author != creatorID {
+		if p.AuthorID != uuid.Nil && p.AuthorID != creatorID {
+			continue
+		}
+		if ep.PostID != current && !listedTo(p.Visibility, p.AuthorID, viewerID) {
 			continue
 		}
 		out = append(out, ep)
@@ -102,10 +110,12 @@ func (s *Service) GetSeriesEpisodes(ctx context.Context, seriesID uuid.UUID, vie
 	for i, it := range items {
 		ids[i] = it.PostID
 	}
-	ok := s.viewablePostSet(ctx, ids, viewerID)
+	// One batched read (viewablePostAuthors); a listing, so an unlisted
+	// episode is its author's alone (unlisted_listing.go).
+	posts := s.viewablePostAuthors(ctx, ids, viewerID)
 	out := make([]postgres.FlickSeriesItem, 0, len(items))
 	for _, it := range items {
-		if ok[it.PostID] {
+		if p, ok := posts[it.PostID]; ok && listedTo(p.Visibility, p.AuthorID, viewerID) {
 			out = append(out, it)
 		}
 	}

@@ -358,3 +358,75 @@ func TestMediaClaimsIT_PostDraftCoverIsReadFromThePayload(t *testing.T) {
 		t.Fatalf("a legacy cover must be paged holding nothing (its claims go): %+v ok=%v", h, ok)
 	}
 }
+
+// Series and playlist covers (founder, 31 Oct 2026): create keeps the id the
+// cover claim named; the holder re-read and the pager read the series'
+// cover_media_id and the media id inside the playlist's cover_url serve
+// path; a gone row is not live and holds nothing.
+func TestMediaClaimsIT_SeriesAndPlaylistCovers(t *testing.T) {
+	pool := openMediaClaimsDB(t)
+	s := store.New(pool)
+	ctx := context.Background()
+	creator := claimsITUser(t, pool)
+	cover := uuid.New()
+	if _, err := pool.Exec(ctx, `INSERT INTO media_assets (id, uploader_id, file_type, processing_status) VALUES ($1, $2, 'image', 'ready')`,
+		cover, creator); err != nil {
+		t.Fatal(err)
+	}
+	seriesID, playlistID, emptyID := uuid.New(), uuid.New(), uuid.New()
+	vs := &store.VideoSeries{ID: seriesID, CreatorID: creator, Title: "s", CoverMediaID: &cover, IsPublic: true}
+	if err := s.CreateVideoSeries(ctx, vs); err != nil {
+		t.Fatal(err)
+	}
+	path := "/v1/media/" + cover.String() + "/serve"
+	pl := &store.Playlist{ID: playlistID, CreatorID: creator, Title: "p", CoverURL: &path, Visibility: "public"}
+	if err := s.CreatePlaylist(ctx, pl); err != nil {
+		t.Fatal(err)
+	}
+	empty := ""
+	if err := s.CreatePlaylist(ctx, &store.Playlist{ID: emptyID, CreatorID: creator, Title: "e", CoverURL: &empty, Visibility: "public"}); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		bg := context.Background()
+		_, _ = pool.Exec(bg, `DELETE FROM playlists WHERE id = ANY($1)`, []uuid.UUID{playlistID, emptyID})
+		_, _ = pool.Exec(bg, `DELETE FROM video_series WHERE id = $1`, seriesID)
+		_, _ = pool.Exec(bg, `DELETE FROM media_assets WHERE id = $1`, cover)
+	})
+	if vs.ID != seriesID || pl.ID != playlistID {
+		t.Fatalf("create ids = %s / %s, want the ids the claims named", vs.ID, pl.ID)
+	}
+	for kind, ref := range map[string]uuid.UUID{store.HolderVideoSeriesCover: seriesID, store.HolderPlaylistCover: playlistID} {
+		h, err := s.MediaHeldBy(ctx, kind, ref)
+		if err != nil || !h.Live || len(h.MediaIDs) != 1 || h.MediaIDs[0] != cover {
+			t.Fatalf("%s: %+v err=%v, want live holding the cover", kind, h, err)
+		}
+		if h, err := s.MediaHeldBy(ctx, kind, uuid.New()); err != nil || h.Live || len(h.MediaIDs) != 0 {
+			t.Fatalf("%s gone row: %+v err=%v", kind, h, err)
+		}
+		seen := map[uuid.UUID]store.MediaHolding{}
+		after := uuid.Nil
+		for {
+			page, err := s.MediaHoldingPage(ctx, kind, after, 50)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, row := range page {
+				seen[row.Ref] = row
+			}
+			if len(page) < 50 {
+				break
+			}
+			after = page[len(page)-1].Ref
+		}
+		if row, ok := seen[ref]; !ok || !row.Live || len(row.MediaIDs) != 1 || row.MediaIDs[0] != cover {
+			t.Fatalf("%s: the row with a cover was not paged: %+v ok=%v", kind, row, ok)
+		}
+		if _, ok := seen[emptyID]; ok {
+			t.Fatalf("%s: a playlist with no cover was paged", kind)
+		}
+	}
+	if h, err := s.MediaHeldBy(ctx, store.HolderPlaylistCover, emptyID); err != nil || !h.Live || len(h.MediaIDs) != 0 {
+		t.Fatalf("an empty playlist cover: %+v err=%v", h, err)
+	}
+}

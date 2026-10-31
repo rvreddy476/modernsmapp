@@ -125,6 +125,8 @@ type Service struct {
 	draftQueueSeams
 	// The tube audit's seams (tube_audit.go, 2026-10-30).
 	tubeAuditSeams
+	// The 31 Oct founder decisions' seams (tube_cover_claims.go).
+	tubeDecisionSeams
 
 	// purgeAfter is the "Recently deleted" window: a soft-deleted post can
 	// be restored until deleted_at + purgeAfter, after which the purge
@@ -2060,18 +2062,7 @@ func (s *Service) GetPostsByAuthorFiltered(ctx context.Context, f AuthorListFilt
 		}
 	}()
 
-	visible := make([]postgres.Post, 0, len(posts))
-	for _, post := range posts {
-		if !isAuthor && !profileGridAllows(post.Visibility, viewerFollows, viewerMutual) {
-			continue
-		}
-		// The store filters on the gate; an open row is never on the
-		// members-only list whatever it answered.
-		if f.MembersOnly && post.TierRequiredID == nil {
-			continue
-		}
-		visible = append(visible, post)
-	}
+	visible := authorGridRows(posts, f.MembersOnly, viewerID, viewerFollows, viewerMutual)
 	// Counts and polls for the page in batched reads (list_reads.go).
 	details := s.pageDetails(ctx, viewerID, visible)
 
@@ -2084,6 +2075,30 @@ func (s *Service) GetPostsByAuthorFiltered(ctx context.Context, f AuthorListFilt
 	// Members-only rows: redacted for this viewer (members_read.go).
 	s.redactDetailsForViewer(ctx, viewerID, details)
 	return details, nextCursor, nil
+}
+
+// authorGridRows is the profile grid's per-row drop, pure: the audience rule
+// for anyone but the author (profileGridAllows, the graph asked lazily), the
+// listing rule for unlisted videos (listedTo: the author's alone in a
+// listing, though the link opens for anyone; unlisted_listing.go), and the
+// members shelf's own filter (the store filters on the gate; an open row is
+// never on the members-only list whatever it answered).
+func authorGridRows(posts []postgres.Post, membersOnly bool, viewerID *uuid.UUID, follows, mutual func() bool) []postgres.Post {
+	visible := make([]postgres.Post, 0, len(posts))
+	for _, post := range posts {
+		isAuthor := viewerID != nil && *viewerID == post.AuthorID
+		if !isAuthor && !profileGridAllows(post.Visibility, follows, mutual) {
+			continue
+		}
+		if !listedTo(post.Visibility, post.AuthorID, viewerID) {
+			continue
+		}
+		if membersOnly && post.TierRequiredID == nil {
+			continue
+		}
+		visible = append(visible, post)
+	}
+	return visible
 }
 
 // GetRecentPosts returns recent public posts from all users with engagement counts.

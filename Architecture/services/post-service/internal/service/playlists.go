@@ -100,7 +100,9 @@ func (s *Service) CreatePlaylist(ctx context.Context, p *postgres.Playlist) erro
 		return err
 	}
 	p.CoverURL = cover
-	return s.pgStore.CreatePlaylist(ctx, p)
+	// The cover is media-claimed before the row names it
+	// (tube_cover_claims.go).
+	return s.createPlaylistClaimed(ctx, p)
 }
 
 // GetPlaylist retrieves a playlist by ID, enforcing visibility: private playlists are
@@ -176,15 +178,9 @@ func (s *Service) UpdatePlaylist(ctx context.Context, callerID, playlistID uuid.
 		}
 		patch.CoverURL = cover
 	}
-	p, err := s.pgStore.UpdatePlaylist(ctx, playlistID, patch)
-	if err != nil {
-		return nil, err
-	}
-	if p == nil {
-		// Deleted between the ownership read and the update.
-		return nil, ErrPlaylistNotFound
-	}
-	return p, nil
+	// A new cover is claimed before the row names it, the old one released
+	// after (tube_cover_claims.go).
+	return s.updatePlaylistClaimed(ctx, playlistID, patch)
 }
 
 // MovePlaylistItem re-positions one post inside a playlist, owner only, and
@@ -212,7 +208,8 @@ func (s *Service) DeletePlaylist(ctx context.Context, callerID, playlistID uuid.
 	if err := s.requireUserPlaylistOwner(ctx, callerID, playlistID); err != nil {
 		return err
 	}
-	return s.pgStore.DeletePlaylist(ctx, playlistID)
+	// The cover's claim goes with the row (tube_cover_claims.go).
+	return s.deletePlaylistClaimed(ctx, playlistID)
 }
 
 // playlistItemWriter is the playlist add's store slice (*postgres.Store).
@@ -281,11 +278,25 @@ func (s *Service) GetPlaylistItems(ctx context.Context, playlistID uuid.UUID, ca
 // GetPlaylistItemsPage is one keyset page of the items behind GetPlaylist's
 // gate (M4). The page is clamped to 1..MaxPlaylistItemsPage.
 func (s *Service) GetPlaylistItemsPage(ctx context.Context, playlistID uuid.UUID, callerID *uuid.UUID, page postgres.PlaylistItemsPage) ([]postgres.PlaylistItem, error) {
-	if _, err := s.GetPlaylist(ctx, playlistID, callerID); err != nil {
-		return nil, err
+	items, _, err := s.playlistItemsPage(ctx, playlistID, callerID, page)
+	return items, err
+}
+
+// playlistItemsPage is GetPlaylistItemsPage, also reporting whether the
+// caller owns the playlist. Shown to anyone else, the page is a listing: an
+// unlisted video in it is listed only to its own author (unlisted_listing.go),
+// which the store applies in SQL so a page stays a full page.
+func (s *Service) playlistItemsPage(ctx context.Context, playlistID uuid.UUID, callerID *uuid.UUID, page postgres.PlaylistItemsPage) ([]postgres.PlaylistItem, bool, error) {
+	p, err := s.GetPlaylist(ctx, playlistID, callerID)
+	if err != nil {
+		return nil, false, err
 	}
+	owner := playlistOwnedBy(p, callerID)
 	page.Limit = clampPlaylistPage(page.Limit)
-	return s.authoringOwners.GetPlaylistItems(ctx, playlistID, page)
+	page.HideUnlisted = !owner
+	page.Viewer = callerID
+	items, err := s.authoringOwners.GetPlaylistItems(ctx, playlistID, page)
+	return items, owner, err
 }
 
 func clampPlaylistPage(limit int) int {
@@ -322,7 +333,7 @@ type PlaylistItemDetail struct {
 // next is the cursor of the following page, "" on the last one.
 func (s *Service) GetPlaylistItemsHydrated(ctx context.Context, playlistID uuid.UUID, callerID *uuid.UUID, page postgres.PlaylistItemsPage) (out []PlaylistItemDetail, next string, err error) {
 	page.Limit = clampPlaylistPage(page.Limit)
-	items, err := s.GetPlaylistItemsPage(ctx, playlistID, callerID, page)
+	items, owner, err := s.playlistItemsPage(ctx, playlistID, callerID, page)
 	if err != nil {
 		return nil, "", err
 	}
@@ -342,7 +353,14 @@ func (s *Service) GetPlaylistItemsHydrated(ctx context.Context, playlistID uuid.
 		return nil, "", err
 	}
 	for _, it := range items {
-		out = append(out, PlaylistItemDetail{PlaylistItem: it, Post: byID[it.PostID]})
+		post := byID[it.PostID]
+		// The store already left unlisted items out for a non-owner; this
+		// is the same rule on the row as hydrated, so a video made unlisted
+		// between the two reads is not listed either (unlisted_listing.go).
+		if !owner && post != nil && post.Post != nil && !listedTo(post.Post.Visibility, post.Post.AuthorID, callerID) {
+			continue
+		}
+		out = append(out, PlaylistItemDetail{PlaylistItem: it, Post: post})
 	}
 	return out, next, nil
 }

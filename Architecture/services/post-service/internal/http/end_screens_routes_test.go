@@ -139,6 +139,10 @@ type esAuthoring struct {
 	authors   map[uuid.UUID]uuid.UUID
 	playlists map[uuid.UUID]*postgres.Playlist
 	items     map[uuid.UUID][]postgres.PlaylistItem
+	// unlisted is each unlisted post with its author: the store's page
+	// shown to a non-owner leaves those out except for their author, as
+	// the SQL does (31 Oct 2026, unlisted_listing.go).
+	unlisted map[uuid.UUID]uuid.UUID
 }
 
 func (f *esAuthoring) GetPostAuthorID(_ context.Context, id uuid.UUID) (uuid.UUID, error) {
@@ -161,6 +165,9 @@ func (f *esAuthoring) GetPlaylistItems(_ context.Context, id uuid.UUID, page pos
 	var out []postgres.PlaylistItem
 	for _, it := range f.items[id] {
 		if page.AfterPosition != nil && it.Position <= *page.AfterPosition {
+			continue
+		}
+		if author, ok := f.unlisted[it.PostID]; ok && page.HideUnlisted && (page.Viewer == nil || *page.Viewer != author) {
 			continue
 		}
 		if page.Limit > 0 && len(out) == page.Limit {
@@ -269,6 +276,10 @@ type esRig struct {
 	views                map[uuid.UUID]int64
 	now                  time.Time
 	router               *gin.Engine
+	// tier gates `post` on a membership tier (nil = open); members is who
+	// holds it (31 Oct 2026: end screens and cards are the members').
+	tier    *uuid.UUID
+	members map[uuid.UUID]bool
 }
 
 // newESRig: owner's long video `post` (60 s), a public and a private video
@@ -298,7 +309,10 @@ func newESRig(t *testing.T) *esRig {
 			r.privList:   {ID: r.privList, CreatorID: r.owner, Title: "Drafts", Visibility: "private", Kind: "user"},
 			r.systemList: {ID: r.systemList, CreatorID: r.owner, Title: "Loved", Visibility: "public", Kind: "liked"},
 		}}
-	r.auth.items[r.playlist] = []postgres.PlaylistItem{{PlaylistID: r.playlist, PostID: r.ownPrivate}, {PlaylistID: r.playlist, PostID: r.ownVideo2}}
+	r.auth.items[r.playlist] = []postgres.PlaylistItem{{PlaylistID: r.playlist, PostID: r.ownPrivate}, {PlaylistID: r.playlist, PostID: r.ownVideo2},
+		{PlaylistID: r.playlist, PostID: r.ownVideo}}
+	r.auth.unlisted = map[uuid.UUID]uuid.UUID{r.ownVideo2: r.owner}
+	r.members = map[uuid.UUID]bool{}
 	r.chans = &esChannels{subs: map[[2]uuid.UUID]bool{}, byUser: map[uuid.UUID]*postgres.Channel{
 		r.owner: {ID: uuid.New(), UserID: r.owner, Name: "Raghu Builds", Handle: "raghu.builds", SubscriberCount: 1200},
 		r.other: {ID: uuid.New(), UserID: r.other, Name: "Other Channel", Handle: "other", SubscriberCount: 40},
@@ -341,6 +355,10 @@ func newESRig(t *testing.T) *esRig {
 				return &cp
 			}
 			return nil
+		},
+		PostGate: func(context.Context, uuid.UUID) (uuid.UUID, *uuid.UUID, error) { return r.owner, r.tier, nil },
+		OfflineEntitlement: func(_ context.Context, viewer uuid.UUID, _ *postgres.Post) (bool, error) {
+			return r.members[viewer], nil
 		},
 	}
 	r.router = gin.New()
@@ -858,8 +876,11 @@ func TestEndScreenViewerReadResolvesAndDrops(t *testing.T) {
 		if p := byID[kept["latest"].String()]["position"].(map[string]any); !closeTo(p["x"].(float64), 0.65) || !closeTo(p["y"].(float64), 0.1) {
 			t.Fatalf("legacy slot 1 drawn at %v", p)
 		}
-		if pl := byID[kept["playlist"].String()]["playlist"].(map[string]any); pl["thumbnail_url"] != "/t/2" || pl["item_count"].(float64) != 7 {
-			t.Fatalf("playlist block %v (the thumbnail must come from an item the viewer may open)", pl)
+		// The private item is skipped, and so is the unlisted one: the frame
+		// lists it, and a listing shows an unlisted video to its author
+		// alone (31 Oct 2026).
+		if pl := byID[kept["playlist"].String()]["playlist"].(map[string]any); pl["thumbnail_url"] != "/t/1" || pl["item_count"].(float64) != 7 {
+			t.Fatalf("playlist block %v (the thumbnail must come from a listed item the viewer may open)", pl)
 		}
 		ch := byID[kept["subscribe"].String()]["channel"].(map[string]any)
 		if ch["user_id"] != r.owner.String() || ch["is_subscribed"] != (caller != nil) {

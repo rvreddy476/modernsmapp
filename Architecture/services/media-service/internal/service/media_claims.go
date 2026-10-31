@@ -59,6 +59,10 @@ var claimKinds = map[string]map[string]claimLabel{
 		"reel_draft":       {"reel draft", "reel drafts"},
 		"event_cover":      {"event cover", "event covers"},
 		"post_draft_cover": {"draft cover", "draft covers"},
+		// Founder, 31 Oct 2026: series and playlist covers are claimed
+		// like every other cover.
+		"video_series_cover": {"series cover", "series covers"},
+		"playlist_cover":     {"playlist cover", "playlist covers"},
 	},
 	"community-service": {
 		"community_avatar": {"community picture", "community pictures"},

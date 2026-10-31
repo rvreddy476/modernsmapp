@@ -34,13 +34,19 @@ type VideoSeriesEpisode struct {
 	AddedAt    time.Time `json:"added_at"`
 }
 
-// CreateVideoSeries inserts a new video series and populates id, created_at, updated_at.
+// CreateVideoSeries inserts a new video series and populates created_at,
+// updated_at and, when the caller did not mint one, id. The service mints it
+// first when the series has a cover, so the cover's media claim can name the
+// row before it exists (kind video_series_cover, media_holders.go).
 func (s *Store) CreateVideoSeries(ctx context.Context, vs *VideoSeries) error {
+	if vs.ID == uuid.Nil {
+		vs.ID = uuid.New()
+	}
 	return s.db.QueryRow(ctx, `
-		INSERT INTO video_series (creator_id, channel_id, title, description, cover_media_id, trailer_post_id, is_complete, is_public)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO video_series (id, creator_id, channel_id, title, description, cover_media_id, trailer_post_id, is_complete, is_public)
+		VALUES ($9, $1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING id, created_at, updated_at`,
-		vs.CreatorID, vs.ChannelID, vs.Title, vs.Description, vs.CoverMediaID, vs.TrailerPostID, vs.IsComplete, vs.IsPublic,
+		vs.CreatorID, vs.ChannelID, vs.Title, vs.Description, vs.CoverMediaID, vs.TrailerPostID, vs.IsComplete, vs.IsPublic, vs.ID,
 	).Scan(&vs.ID, &vs.CreatedAt, &vs.UpdatedAt)
 }
 

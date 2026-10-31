@@ -345,3 +345,33 @@ func TestRunReconcilesPostDraftCovers(t *testing.T) {
 		t.Fatalf("report = %s", rep)
 	}
 }
+
+// Series and playlist covers (founder, 31 Oct 2026) are backfilled like
+// every other kind: a live row's cover is claimed, and a deleted series or
+// playlist (row gone) is found by the orphan pass and released.
+func TestRunReconcilesSeriesAndPlaylistCovers(t *testing.T) {
+	for _, kind := range []string{mediaclaims.KindVideoSeriesCover, mediaclaims.KindPlaylistCover} {
+		t.Run(kind, func(t *testing.T) {
+			src, c := rig()
+			live, gone := uuid.New(), uuid.New()
+			cover, old := uuid.New(), uuid.New()
+			src.row(kind, live, true, cover)
+			c.held[key{kind, live}] = map[uuid.UUID]bool{old: true} // a lost release
+			c.held[key{kind, gone}] = map[uuid.UUID]bool{cover: true}
+			src.refs = []postgres.ClaimedRef{{Kind: kind, Ref: gone}}
+			rep, err := Run(context.Background(), src, c, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := c.ids(kind, live); got != cover.String() {
+				t.Fatalf("live row claims = %q, want only its cover", got)
+			}
+			if got := c.ids(kind, gone); got != "" {
+				t.Fatalf("deleted row kept %q", got)
+			}
+			if rep.Claimed != 1 || rep.Released != 1 || rep.Orphans != 1 || rep.Failed != 0 {
+				t.Fatalf("report = %s", rep)
+			}
+		})
+	}
+}

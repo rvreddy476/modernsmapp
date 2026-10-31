@@ -41,8 +41,9 @@ var (
 // tubeAuditSeams are test seams; all nil in production.
 type tubeAuditSeams struct {
 	// viewablePostsSeam stands in for viewablePostAuthors' batch read
-	// (M8): the posts the viewer may open, each with its author.
-	viewablePostsSeam func(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) (map[uuid.UUID]uuid.UUID, error)
+	// (M8): the posts the viewer may open, each with its author and
+	// visibility.
+	viewablePostsSeam func(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) (map[uuid.UUID]viewablePost, error)
 	// playlistItemsSeam stands in for the playlist add's store (M1).
 	playlistItemsSeam playlistItemWriter
 	// chapterStoreSeam stands in for the chapters store (L2).
@@ -61,9 +62,12 @@ type tubeAuditSeams struct {
 // with the viewer is not listed (a share list is never listed), which is
 // the fail-closed side.
 //
+// Each answer carries the post's visibility too, so a listing can apply
+// listedTo (unlisted_listing.go) without another read.
+//
 // An error answers nothing: every id is dropped (fail closed).
-func (s *Service) viewablePostAuthors(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) map[uuid.UUID]uuid.UUID {
-	out := map[uuid.UUID]uuid.UUID{}
+func (s *Service) viewablePostAuthors(ctx context.Context, ids []uuid.UUID, viewerID *uuid.UUID) map[uuid.UUID]viewablePost {
+	out := map[uuid.UUID]viewablePost{}
 	if len(ids) == 0 {
 		return out
 	}
@@ -76,10 +80,10 @@ func (s *Service) viewablePostAuthors(ctx context.Context, ids []uuid.UUID, view
 	}
 	if s.readGate != nil {
 		// Unit rigs that drive the single-post gate: answer through it.
-		// The author is unknown there (uuid.Nil).
+		// The author and visibility are unknown there (uuid.Nil, "").
 		for id, ok := range s.viewablePostSet(ctx, ids, viewerID) {
 			if ok {
-				out[id] = uuid.Nil
+				out[id] = viewablePost{}
 			}
 		}
 		return out
@@ -101,10 +105,17 @@ func (s *Service) viewablePostAuthors(ctx context.Context, ids []uuid.UUID, view
 	visible := s.batchVisibility(ctx, posts, viewerID)
 	for i := range posts {
 		if visible(&posts[i]) {
-			out[posts[i].ID] = posts[i].AuthorID
+			out[posts[i].ID] = viewablePost{AuthorID: posts[i].AuthorID, Visibility: posts[i].Visibility}
 		}
 	}
 	return out
+}
+
+// viewablePost is viewablePostAuthors' answer for one post the viewer may
+// open.
+type viewablePost struct {
+	AuthorID   uuid.UUID
+	Visibility string
 }
 
 func uniqueIDs(ids []uuid.UUID) []uuid.UUID {

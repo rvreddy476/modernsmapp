@@ -125,6 +125,9 @@ type HandlerTestDeps struct {
 	// chapters store.
 	PlaylistItems playlistItemWriter
 	Chapters      chapterStore
+	// The 31 Oct founder decisions: the product-tag read behind
+	// GET /v1/posts/:postId/product-tags (tube_members_extras.go).
+	ProductTags func(ctx context.Context, postID uuid.UUID) ([]*postgres.PostProductTag, error)
 }
 
 // CreditProfile is one identity-profile account as the credit reads name it.
@@ -198,5 +201,6 @@ func NewForHandlerTests(d HandlerTestDeps) *Service {
 	s.authoringOwners = d.Authoring
 	s.playlistItemsSeam = d.PlaylistItems
 	s.chapterStoreSeam = d.Chapters
+	s.productTagListSeam = d.ProductTags
 	return s
 }

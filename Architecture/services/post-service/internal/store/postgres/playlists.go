@@ -48,11 +48,17 @@ func (s *Store) CreatePlaylist(ctx context.Context, p *Playlist) error {
 	// Always a user playlist: the system kinds are created by
 	// GetOrCreateSystemPlaylist alone.
 	p.Kind = PlaylistKindUser
+	// The service mints the id first when the playlist has a cover, so the
+	// cover's media claim can name the row before it exists (kind
+	// playlist_cover, media_holders.go).
+	if p.ID == uuid.Nil {
+		p.ID = uuid.New()
+	}
 	return s.db.QueryRow(ctx, `
-		INSERT INTO playlists (creator_id, channel_id, title, description, cover_url, visibility, kind)
-		VALUES ($1, $2, $3, $4, $5, $6, 'user')
+		INSERT INTO playlists (id, creator_id, channel_id, title, description, cover_url, visibility, kind)
+		VALUES ($7, $1, $2, $3, $4, $5, $6, 'user')
 		RETURNING id, created_at, updated_at`,
-		p.CreatorID, p.ChannelID, p.Title, p.Description, p.CoverURL, p.Visibility,
+		p.CreatorID, p.ChannelID, p.Title, p.Description, p.CoverURL, p.Visibility, p.ID,
 	).Scan(&p.ID, &p.CreatedAt, &p.UpdatedAt)
 }
 
@@ -371,10 +377,27 @@ func (s *Store) RemovePlaylistItem(ctx context.Context, playlistID, postID uuid.
 type PlaylistItemsPage struct {
 	AfterPosition *int
 	Limit         int
+	// HideUnlisted is set when the page is shown to someone other than
+	// the playlist's owner (founder, 31 Oct 2026): an unlisted video is
+	// then listed only to its own author, Viewer (nil = signed out).
+	// Applied in SQL, so a page stays a full page.
+	HideUnlisted bool
+	Viewer       *uuid.UUID
 }
 
 // MaxPlaylistItemsPage bounds one read of a playlist's items.
 const MaxPlaylistItemsPage = 100
+
+// playlistItemListedSQL is the listing rule for unlisted videos
+// (service.listedTo) on a playlist item, pi: with $4 set, an item whose post
+// is unlisted is kept only for its author ($5; NULL = signed out, nobody's
+// author). posts_visibility_check admits only the lower-case spelling, so
+// the compare is exact.
+const playlistItemListedSQL = `(NOT $4::boolean OR NOT EXISTS (
+		SELECT 1 FROM posts lp
+		WHERE lp.id = pi.post_id
+		  AND lp.visibility = 'unlisted'
+		  AND lp.author_id IS DISTINCT FROM $5::uuid))`
 
 // GetPlaylistItems returns one page of a playlist's items ordered by
 // position. It used to load every row, and every viewer of a big public
@@ -386,9 +409,10 @@ func (s *Store) GetPlaylistItems(ctx context.Context, playlistID uuid.UUID, page
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT playlist_id, post_id, position, added_at
-		FROM playlist_items WHERE playlist_id = $1 AND ($2::int IS NULL OR position > $2)
+		FROM playlist_items pi WHERE playlist_id = $1 AND ($2::int IS NULL OR position > $2)
+		  AND `+playlistItemListedSQL+`
 		ORDER BY position ASC
-		LIMIT $3`, playlistID, page.AfterPosition, limit)
+		LIMIT $3`, playlistID, page.AfterPosition, limit, page.HideUnlisted, page.Viewer)
 	if err != nil {
 		return nil, err
 	}

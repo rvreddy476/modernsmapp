@@ -88,3 +88,39 @@ func TestPostDraftCoverLockKeyIsNotThePosts(t *testing.T) {
 		t.Fatal("a composer draft and the post it published as share a lock key")
 	}
 }
+
+// A playlist cover is held as the media id inside its serve path; anything
+// else holds nothing (and so is never claimed, and its claims are released).
+func TestParsePlaylistCoverID(t *testing.T) {
+	id := uuid.New()
+	s := func(v string) *string { return &v }
+	for _, ok := range []string{"/v1/media/" + id.String() + "/serve", " /v1/media/" + id.String() + "/serve/thumb "} {
+		if got := ParsePlaylistCoverID(s(ok)); got == nil || *got != id {
+			t.Fatalf("%q: %v, want the id", ok, got)
+		}
+	}
+	for name, raw := range map[string]*string{
+		"absent": nil, "empty": s(""), "a bare id": s(id.String()),
+		"an external url": s("https://cdn.example/v1/media/" + id.String() + "/serve"),
+		"a query":         s("/v1/media/" + id.String() + "/serve?x=1"),
+		"the nil uuid":    s("/v1/media/" + uuid.Nil.String() + "/serve"),
+	} {
+		if got := ParsePlaylistCoverID(raw); got != nil {
+			t.Fatalf("%s: %v, want none", name, got)
+		}
+	}
+}
+
+// A series or playlist cover lock never waits on another kind's lock for the
+// same id.
+func TestTubeCoverLockKeysAreTheirOwn(t *testing.T) {
+	id := uuid.New()
+	keys := map[int64]string{}
+	for _, kind := range []string{HolderPostCover, HolderReelDraft, HolderEventCover, HolderPostDraftCover, HolderVideoSeriesCover, HolderPlaylistCover} {
+		k := mediaHolderLockKey(kind, id)
+		if other, dup := keys[k]; dup {
+			t.Fatalf("%s and %s share a lock key", kind, other)
+		}
+		keys[k] = kind
+	}
+}

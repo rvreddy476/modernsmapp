@@ -727,6 +727,15 @@ func (s *Service) GetEndScreensFor(ctx context.Context, postID uuid.UUID, viewer
 	if sub.MadeForKids && !owner {
 		return []EndScreenElement{}, nil
 	}
+	// Members-only video: its end screen is the members' (and the
+	// author's); anyone else gets none (tube_members_extras.go).
+	if !owner {
+		if screensOpen, err := s.membersExtrasOpen(ctx, postID, viewerID); err != nil {
+			return nil, err
+		} else if !screensOpen {
+			return []EndScreenElement{}, nil
+		}
+	}
 	rows, err := s.endScreens.GetEndScreens(ctx, postID)
 	if err != nil {
 		return nil, err
@@ -766,6 +775,15 @@ func (s *Service) GetVideoCardsFor(ctx context.Context, postID uuid.UUID, viewer
 	}
 	if sub.MadeForKids && !owner {
 		return []VideoCardView{}, nil
+	}
+	// Members-only video: its cards are the members' (and the author's);
+	// anyone else gets none (tube_members_extras.go).
+	if !owner {
+		if cardsOpen, err := s.membersExtrasOpen(ctx, postID, viewerID); err != nil {
+			return nil, err
+		} else if !cardsOpen {
+			return []VideoCardView{}, nil
+		}
 	}
 	rows, err := s.endScreens.GetVideoCards(ctx, postID)
 	if err != nil {
@@ -982,7 +1000,10 @@ func (r *endScreenResolver) playlist(ctx context.Context, id uuid.UUID) *EndScre
 	}
 	// No cover: the first item this viewer may open lends its thumbnail, so
 	// a private item's frame is never shown to someone who cannot open it.
-	items, err := r.s.authoringOwners.GetPlaylistItems(ctx, p.ID, postgres.PlaylistItemsPage{Limit: endScreenResolveTries})
+	// Nor an unlisted one's, to anyone but its author: the frame lists it
+	// (unlisted_listing.go).
+	items, err := r.s.authoringOwners.GetPlaylistItems(ctx, p.ID, postgres.PlaylistItemsPage{
+		Limit: endScreenResolveTries, HideUnlisted: !playlistOwnedBy(p, r.viewer), Viewer: r.viewer})
 	if err == nil {
 		for i, it := range items {
 			if i >= endScreenResolveTries {
