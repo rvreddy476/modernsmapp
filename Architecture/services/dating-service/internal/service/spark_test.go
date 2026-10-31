@@ -73,6 +73,7 @@ func TestSparkService_CreateSpark_HappyPath(t *testing.T) {
 
 	stub := &stubMessageClient{}
 	svc.SetMessageClient(stub)
+	dealCards(t, svc, st, from, to) // audit H1: a spark is on a dealt card
 
 	sp, matchID, err := svc.CreateSpark(context.Background(), from, to, "photo", "0", "love")
 	if err != nil {
@@ -99,7 +100,8 @@ func TestSparkService_MutualTriggersMatch(t *testing.T) {
 	stub := &stubMessageClient{}
 	svc.SetMessageClient(stub)
 
-	// b sparks a first.
+	// b sparks a first, from b's deck (audit H1); a sparks back.
+	dealCards(t, svc, st, b, a)
 	if _, _, err := svc.CreateSpark(context.Background(), b, a, "prompt", "p1", ""); err != nil {
 		t.Fatalf("first spark: %v", err)
 	}
@@ -125,6 +127,7 @@ func TestSparkService_MatchSagaCompensatesOnFailure(t *testing.T) {
 
 	stub := &stubMessageClient{failNext: true}
 	svc.SetMessageClient(stub)
+	dealCards(t, svc, st, b, a) // audit H1: b sparks a card b was dealt
 
 	if _, _, err := svc.CreateSpark(context.Background(), b, a, "prompt", "p1", ""); err != nil {
 		t.Fatalf("first: %v", err)
@@ -200,6 +203,7 @@ func TestSparkService_RevokeSpark_OwnerOnly(t *testing.T) {
 	seedActiveProfile(t, st, intruder)
 	seedActiveProfile(t, st, recipient)
 
+	dealCards(t, svc, st, owner, recipient) // audit H1
 	sp, _, err := svc.CreateSpark(context.Background(), owner, recipient, "photo", "0", "")
 	if err != nil {
 		t.Fatalf("create: %v", err)

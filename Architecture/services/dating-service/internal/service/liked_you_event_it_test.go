@@ -51,6 +51,7 @@ func TestLikedYou_SparkEventHidesTheSenderFromALockedRecipient(t *testing.T) {
 				d8Exec(t, st, `INSERT INTO dating_premium_subscriptions (user_id, plan, started_at, expires_at, source)
                     VALUES ($1, 'pass_30d', now(), now() + interval '10 days', 'test')`, to)
 			}
+			dealCards(t, svc, st, from, to) // audit H1: a spark is on a dealt card
 			if _, _, err := svc.CreateSpark(ctx, from, to, "prompt", "m4", "Loved your answer"); err != nil {
 				t.Fatalf("spark: %v", err)
 			}

@@ -38,6 +38,10 @@
 #   [sql-read]    read-only lookups: which media rows exist; verification counts.
 #   [sql-reset]   --reset deletes dating rows by deterministic id (the profile
 #                 DELETE route is a soft delete that a re-seed cannot undo).
+#   [sql-deal]    a spark needs a card dealt to the sender (audit H1). Each
+#                 sender fetches their deck first (GET /pulse/today, as the
+#                 app does); when the random deck does not hold the target,
+#                 one dating_deck_served row is seeded instead (see deal()).
 #   [redis]       deck caches for call_a/call_b are dropped so the verification
 #                 deck is computed from the seeded data, not a stale cache.
 # Everything else goes through dating-service routes: profiles, preferences,
@@ -361,6 +365,9 @@ WITH d AS (DELETE FROM dating_explain_ledger WHERE viewer_id IN (SELECT id FROM 
   INSERT INTO seed_counts SELECT 'dating_explain_ledger', count(*) FROM d;
 WITH d AS (DELETE FROM dating_spark_ledger WHERE from_user_id IN (SELECT id FROM seed_ids) RETURNING 1)
   INSERT INTO seed_counts SELECT 'dating_spark_ledger', count(*) FROM d;
+WITH d AS (DELETE FROM dating_deck_served WHERE user_id IN (SELECT id FROM seed_ids) OR candidate_id IN (SELECT id FROM seed_ids)
+   OR (user_id IN ('$CALL_A', '$CALL_B') AND candidate_id IN ('$CALL_A', '$CALL_B')) RETURNING 1)
+  INSERT INTO seed_counts SELECT 'dating_deck_served', count(*) FROM d;
 SQL
 )
   local t
@@ -402,8 +409,8 @@ SQL
   log "media purged: $purged (already absent: $gone)"
 
   # [redis] cached decks that could still show the removed profiles.
-  local keys=("dating:pulse:today:v3:$CALL_A" "dating:pulse:today:v3:$CALL_B")
-  for slug in "${SYNTH[@]}"; do keys+=("dating:pulse:today:v3:${UID_OF[$slug]}" "dating:deck_membership:${UID_OF[$slug]}"); done
+  local keys=("dating:pulse:today:v4:$CALL_A" "dating:pulse:today:v4:$CALL_B")
+  for slug in "${SYNTH[@]}"; do keys+=("dating:pulse:today:v4:${UID_OF[$slug]}" "dating:deck_membership:${UID_OF[$slug]}"); done
   redis_del "${keys[@]}"
   log "deck caches dropped"
   cat <<EOF
@@ -560,14 +567,41 @@ photo_ref() {
   [ -n "${PHOTO_ID[$1]}" ] || fail "no photo to spark on ($1)"
 }
 
-SPARKS_SENT=0 SPARKS_KEPT=0
-spark_once() { # FROM TO
+SPARKS_SENT=0 SPARKS_KEPT=0 DEALT_BY_DECK=0 DEALT_BY_SQL=0
+# deal FROM TO — audit H1: a spark acts only on someone the sender was shown
+# (a card dealt to them by GET /pulse/today, a pick, a match, or someone whose
+# spark they may see). The sender fetches their deck first, as the app does,
+# which records the cards it returns as dealt. The deck is a random sample
+# (at most seven cards, three per intent, cut to the daily allowance), and the
+# founder can change call_a/call_b's preferences in the app, so the target is
+# often not in it; then the deal is seeded directly:
+#   [sql-deal]  one dating_deck_served row (sender, target), exactly what
+#               GET /pulse/today writes for a card it returns. The spark itself
+#               still goes through the route, so every other gate, the match
+#               saga and the events run as for a real spark.
+deal() {
   local from=$1 to=$2
+  dating GET /v1/dating/pulse/today "${UID_OF[$from]}" ''
+  check 200 || fail "pulse today ($from)"
+  if [[ $BODY == *"\"candidate_id\":\"${UID_OF[$to]}\""* ]]; then DEALT_BY_DECK=$((DEALT_BY_DECK + 1)); return 0; fi
+  printf "INSERT INTO dating_deck_served (user_id, candidate_id, served_at) VALUES ('%s', '%s', now())
+  ON CONFLICT (user_id, candidate_id) DO UPDATE SET served_at = EXCLUDED.served_at;\n" "${UID_OF[$from]}" "${UID_OF[$to]}" | psql_app >/dev/null
+  DEALT_BY_SQL=$((DEALT_BY_SQL + 1))
+}
+spark_once() { # FROM TO
+  local from=$1 to=$2 ec
   dating GET "/v1/dating/sparks/incoming?limit=200" "${UID_OF[$to]}" ''
   check 200 || fail "list incoming sparks ($to)"
   if [[ $BODY == *"${UID_OF[$from]}"* ]]; then SPARKS_KEPT=$((SPARKS_KEPT + 1)); return 0; fi
   photo_ref "$to"
+  deal "$from" "$to"
   dating POST /v1/dating/sparks "${UID_OF[$from]}" "{\"to_user_id\":\"${UID_OF[$to]}\",\"target_kind\":\"photo\",\"target_ref\":\"${PHOTO_ID[$to]}\",\"note\":\"Dev seed spark\"}"
+  if check 404; then
+    jget ec "$BODY" code
+    # Dealt but still refused: the pair fails the shared visibility rule
+    # (e.g. a pilot's gender preference changed in the app). Skip the pair.
+    if [ "$ec" = CANDIDATE_UNAVAILABLE ]; then warn "spark $from -> $to refused (CANDIDATE_UNAVAILABLE): $to is not visible to $from under their current profiles/preferences; skipped"; return 0; fi
+  fi
   check 200 201 || fail "spark $from -> $to"
   SPARKS_SENT=$((SPARKS_SENT + 1))
 }
@@ -601,7 +635,7 @@ seed_social() {
   if [ "${STATUS[call_a]}" = active ] && [ "${STATUS[call_b]}" = active ]; then
     ensure_match call_a call_b
   fi
-  log "sparks sent: $SPARKS_SENT, already present: $SPARKS_KEPT"
+  log "sparks sent: $SPARKS_SENT, already present: $SPARKS_KEPT (dealt from the deck: $DEALT_BY_DECK, deal seeded [sql-deal]: $DEALT_BY_SQL)"
 
   step "Admin queue: one report, one panic (synthetic users)"
   dating GET "/v1/dating/admin/reports?limit=200" "$SEED_MODERATOR" '' admin
@@ -628,7 +662,7 @@ seed_social() {
 verify() {
   step "Verify (dating-service routes as the gateway would call them)"
   # [redis] a deck cached before the seed would hide the new profiles.
-  redis_del "dating:pulse:today:v3:$CALL_A" "dating:pulse:today:v3:$CALL_B"
+  redis_del "dating:pulse:today:v4:$CALL_A" "dating:pulse:today:v4:$CALL_B"
   local slug ids='' who deck buckets cards matches convs n
   for slug in "${SYNTH[@]}"; do ids+="'${UID_OF[$slug]}',"; done
   # [sql-read] there is no route that counts profiles.

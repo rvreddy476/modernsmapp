@@ -111,6 +111,15 @@ func (d *m1Deck) dealt(ids ...uuid.UUID) {
 	}
 }
 
+// deal deals each candidate to the viewer one at a time (dealCards), however
+// many cards the pool holds: the pilot and refilling decks keep at most three
+// cards of one intent per batch, so dealt cannot promise a fourth. Audit H1:
+// a spark or a Super Spark acts only on a card the viewer was dealt.
+func (d *m1Deck) deal(ids ...uuid.UUID) {
+	d.t.Helper()
+	dealCards(d.t, d.env.r, d.env.st, d.viewer, ids...)
+}
+
 func (d *m1Deck) spark(to uuid.UUID) {
 	d.t.Helper()
 	rec := contractDo(d.env.r, http.MethodPost, "/v1/dating/sparks", sparkBody(to, "m1"), d.viewer)
@@ -206,6 +215,7 @@ func TestDeckNeverRepeatsASparkedCandidate(t *testing.T) {
 func TestDeckNeverRepeatsAMatchedCandidate(t *testing.T) {
 	d := newM1Deck(t, m1Config(50, 50))
 	admirer := d.candidate()
+	dealCards(t, d.env.r, d.env.st, admirer, d.viewer) // audit H1: the admirer sparks a dealt card
 	rec := contractDo(d.env.r, http.MethodPost, "/v1/dating/sparks", sparkBody(d.viewer, "m1"), admirer)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("incoming spark: status %d body %s", rec.Code, rec.Body.String())

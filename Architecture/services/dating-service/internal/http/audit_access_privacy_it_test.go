@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -36,6 +37,44 @@ func dealTo(t *testing.T, r http.Handler, viewer, candidate uuid.UUID) {
 	t.Helper()
 	if !deckIDs(t, r, viewer)[candidate] {
 		t.Fatalf("candidate %s was not dealt to the viewer", candidate)
+	}
+}
+
+// dealCards deals each candidate to viewer through the client's own deck
+// fetch (GET /pulse/today) and fails unless it was dealt: audit H1 lets a
+// spark, a Super Spark, a pass, a stash or explain act only on a card the
+// viewer was dealt (or a pick, a match, an incoming spark). One candidate at
+// a time it becomes the only card (pairInDeck's unique gender; the pilot deck
+// keeps at most three cards of one intent); afterwards the candidates'
+// genders and the viewer's preference are put back (an unset preference as
+// "everyone", which the gender rule treats the same), so the test continues
+// from the state it built.
+func dealCards(t *testing.T, r http.Handler, st *store.Store, viewer uuid.UUID, candidates ...uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	prefs, err := st.GetPreferences(ctx, viewer)
+	if err != nil {
+		t.Fatalf("deal: viewer preferences: %v", err)
+	}
+	wants := "everyone"
+	if prefs.InterestedInGender != nil {
+		wants = *prefs.InterestedInGender
+	}
+	for _, c := range candidates {
+		cp, err := st.GetProfile(ctx, c)
+		if err != nil {
+			t.Fatalf("deal: candidate %s: %v", c, err)
+		}
+		pairInDeck(t, st, viewer, c)
+		dealTo(t, r, viewer, c)
+		if cp.Gender != nil {
+			if _, err := st.UpsertProfile(ctx, c, store.UpsertProfileParams{Gender: cp.Gender}); err != nil {
+				t.Fatalf("deal: restore candidate gender: %v", err)
+			}
+		}
+	}
+	if _, err := st.UpsertPreferences(ctx, viewer, store.UpsertPreferencesParams{InterestedInGender: &wants}); err != nil {
+		t.Fatalf("deal: restore viewer preference: %v", err)
 	}
 }
 
@@ -140,4 +179,52 @@ func TestH1HTTP_ServedCardIsPassableWithoutACachedDeck(t *testing.T) {
 			d.pass(served) // fails the round on anything but 200
 		}
 	}
+}
+
+// H1 follow-up: a spark, a Super Spark and explain on a deck-eligible
+// candidate the viewer was never dealt are the one 404 CANDIDATE_UNAVAILABLE
+// (the pass code), nothing is written and no allowance is spent. Dealt, all
+// three answer; hidden since, all three are refused again.
+func TestH1HTTP_SparkSuperSparkAndExplainNeedADealtCard(t *testing.T) {
+	d := newM1Deck(t, m3Config())
+	ctx := context.Background()
+	undealt := d.candidate() // in the viewer's pool, but the deck was never fetched
+	explain := func(id uuid.UUID) *httptest.ResponseRecorder {
+		return contractDo(d.env.r, http.MethodGet, "/v1/dating/pulse/"+id.String()+"/explain", ``, d.viewer)
+	}
+	for _, id := range []uuid.UUID{undealt, uuid.New()} {
+		d.wantRefusal(contractDo(d.env.r, http.MethodPost, "/v1/dating/sparks", sparkBody(id, "h1"), d.viewer), http.StatusNotFound, "CANDIDATE_UNAVAILABLE")
+		d.wantRefusal(d.superSpark(id, "h1"), http.StatusNotFound, "CANDIDATE_UNAVAILABLE")
+		d.wantRefusal(explain(id), http.StatusNotFound, "CANDIDATE_UNAVAILABLE")
+	}
+	if n := d.sparkCountTo(undealt); n != 0 {
+		t.Fatalf("refused sparks left %d spark(s)", n)
+	}
+	if used, _, err := d.env.st.SparkUsage(ctx, d.viewer); err != nil || used != 0 {
+		t.Fatalf("refused sparks spent the allowance: used=%d err=%v", used, err)
+	}
+	if used, _ := d.superUsage(); used != 0 {
+		t.Fatalf("a refused Super Spark was charged")
+	}
+	if was, err := d.env.st.WasDealt(ctx, d.viewer, undealt); err != nil || was {
+		t.Fatalf("explain dealt the card (%v, %v)", was, err)
+	}
+
+	// Dealt (the client's deck fetch): explain, spark and Super Spark answer.
+	d.dealt(undealt)
+	if rec := explain(undealt); rec.Code != http.StatusOK {
+		t.Fatalf("explain a dealt card: %d %s", rec.Code, rec.Body.String())
+	}
+	d.spark(undealt)
+	d.mustSuperSpark(undealt)
+
+	// Dealt, then hidden: refused again.
+	hidden := d.candidate()
+	d.dealt(hidden)
+	off := false
+	if _, err := d.env.st.UpsertProfile(ctx, hidden, store.UpsertProfileParams{VisibleToPublic: &off}); err != nil {
+		t.Fatalf("hide: %v", err)
+	}
+	d.wantRefusal(contractDo(d.env.r, http.MethodPost, "/v1/dating/sparks", sparkBody(hidden, "h1"), d.viewer), http.StatusNotFound, "CANDIDATE_UNAVAILABLE")
+	d.wantRefusal(explain(hidden), http.StatusNotFound, "CANDIDATE_UNAVAILABLE")
 }

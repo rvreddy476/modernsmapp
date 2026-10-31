@@ -83,10 +83,12 @@ func putFirstMove(r http.Handler, user uuid.UUID, body string) *httptest.Respons
 	return contractDo(r, http.MethodPut, "/v1/dating/first-move", body, user)
 }
 
-// matchWith makes the viewer and other match (other sparks first) and
-// returns the match id.
+// matchWith makes the viewer and other match (other sparks first, from
+// other's dealt deck — audit H1 — and the viewer sparks back) and returns the
+// match id.
 func (d *m1Deck) matchWith(other uuid.UUID) uuid.UUID {
 	d.t.Helper()
+	dealCards(d.t, d.env.r, d.env.st, other, d.viewer)
 	if rec := contractDo(d.env.r, http.MethodPost, "/v1/dating/sparks", sparkBody(d.viewer, "m5"), other); rec.Code != http.StatusCreated {
 		d.t.Fatalf("other sparks: %d %s", rec.Code, rec.Body.String())
 	}

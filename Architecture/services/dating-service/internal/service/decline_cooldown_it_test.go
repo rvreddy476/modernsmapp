@@ -59,6 +59,11 @@ func TestDeclineCooldown_SenderRefusedAndOffDeckThenRestored(t *testing.T) {
 		}
 		return resp
 	}
+	// Audit H1: each side sparks a card it was dealt. The decliner's spark
+	// back is not a reply to an incoming spark (that one is declined), so
+	// the decliner was dealt the sender too.
+	dealCards(t, svc, st, sender, decliner)
+	dealCards(t, svc, st, decliner, sender)
 
 	sp, _, err := svc.CreateSpark(ctx, sender, decliner, "photo", "0", "")
 	if err != nil {
@@ -193,6 +198,10 @@ func TestDeclineCooldown_LiftedWhenDeclinerSparksBack(t *testing.T) {
 		}
 		return resp
 	}
+	// Audit H1: both sides spark cards they were dealt (the decliner's
+	// spark is not a reply: the incoming one is declined).
+	dealCards(t, svc, st, sender, decliner)
+	dealCards(t, svc, st, decliner, sender)
 
 	sp, _, err := svc.CreateSpark(ctx, sender, decliner, "photo", "0", "")
 	if err != nil {
@@ -252,6 +261,9 @@ func TestDeclineCooldown_BlockAfterLiftStillBlocks(t *testing.T) {
 		if _, err := st.UpsertPreferences(ctx, sender, store.UpsertPreferencesParams{InterestedInGender: &gender}); err != nil {
 			t.Fatalf("set preference: %v", err)
 		}
+		// Audit H1: both sides spark cards they were dealt.
+		dealCards(t, svc, st, sender, decliner)
+		dealCards(t, svc, st, decliner, sender)
 		sp, _, err := svc.CreateSpark(ctx, sender, decliner, "photo", "0", "")
 		if err != nil {
 			t.Fatalf("spark: %v", err)
@@ -299,6 +311,7 @@ func TestDeclineCooldown_OverrideHonoured(t *testing.T) {
 		sender, decliner := uuid.New(), uuid.New()
 		seedActiveProfile(t, st, sender)
 		seedActiveProfile(t, st, decliner)
+		dealCards(t, svc, st, sender, decliner) // audit H1
 		sp, _, err := svc.CreateSpark(ctx, sender, decliner, "photo", "0", "")
 		if err != nil {
 			t.Fatalf("spark: %v", err)

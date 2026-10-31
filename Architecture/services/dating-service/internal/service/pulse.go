@@ -135,43 +135,12 @@ func (s *Service) GetPulseToday(ctx context.Context, viewerID uuid.UUID) (*Pulse
 // pulseToday builds (or reads from cache) the viewer's deck without recording
 // it as dealt. GetPulseToday is the one caller that hands it to the client.
 func (s *Service) pulseToday(ctx context.Context, viewerID uuid.UUID) (*PulseResponse, error) {
-	// P0-5: viewer must be a verified adult to see the discovery deck.
-	// Surface as CohortGated so the client renders the same
-	// "complete your profile" empty state instead of a hard error —
-	// the underage guard mirrors the cohort gate UX.
-	if err := s.requireAdult(ctx, viewerID); err != nil {
+	if s.deckViewerGated(ctx, viewerID) {
 		return &PulseResponse{
 			Data:        []PulseCard{},
 			Meta:        PulseMeta{GeneratedAt: time.Now().UTC(), Size: 0},
 			CohortGated: true,
 		}, nil
-	}
-	if s.isUserGated(ctx, viewerID) {
-		return &PulseResponse{
-			Data:        []PulseCard{},
-			Meta:        PulseMeta{GeneratedAt: time.Now().UTC(), Size: 0},
-			CohortGated: true,
-		}, nil
-	}
-	// §P0-7 Phase A: viewers under restrictive enforcement get an
-	// empty deck (same shape as the cohort gate). The candidate-side
-	// FetchCandidates filter handles the reciprocal "don't surface
-	// this account to others" half. Best-effort on lookup errors —
-	// see the spark-side rationale for why we don't fail open here.
-	if level, rerr := s.GetUserRiskLevel(ctx, viewerID); rerr == nil {
-		switch level {
-		case store.RiskLevelHideFromDiscovery,
-			store.RiskLevelChatHold,
-			store.RiskLevelAdminReview,
-			store.RiskLevelSuspend:
-			return &PulseResponse{
-				Data:        []PulseCard{},
-				Meta:        PulseMeta{GeneratedAt: time.Now().UTC(), Size: 0},
-				CohortGated: true,
-			}, nil
-		}
-	} else {
-		slog.Warn("pulse risk lookup failed", "viewer_id", viewerID, "error", rerr)
 	}
 	if s.mechanics.DeckRefill {
 		return s.pulseTodayRefill(ctx, viewerID)
@@ -186,6 +155,41 @@ func (s *Service) pulseToday(ctx context.Context, viewerID uuid.UUID) (*PulseRes
 	}
 	s.writePulseCache(ctx, viewerID, resp)
 	return resp, nil
+}
+
+// deckViewerGated reports whether the viewer gets the empty, CohortGated deck
+// instead of cards: not a verified adult with a profile (P0-5), outside the
+// soft-launch cohort (Sprint 6), or under restrictive risk enforcement
+// (§P0-7 Phase A). Explain (explain.go) applies the same gate, since a gated
+// viewer has no deck to ask about.
+func (s *Service) deckViewerGated(ctx context.Context, viewerID uuid.UUID) bool {
+	// P0-5: viewer must be a verified adult to see the discovery deck.
+	// Surface as CohortGated so the client renders the same
+	// "complete your profile" empty state instead of a hard error —
+	// the underage guard mirrors the cohort gate UX.
+	if err := s.requireAdult(ctx, viewerID); err != nil {
+		return true
+	}
+	if s.isUserGated(ctx, viewerID) {
+		return true
+	}
+	// §P0-7 Phase A: viewers under restrictive enforcement get an
+	// empty deck (same shape as the cohort gate). The candidate-side
+	// FetchCandidates filter handles the reciprocal "don't surface
+	// this account to others" half. Best-effort on lookup errors —
+	// see the spark-side rationale for why we don't fail open here.
+	if level, rerr := s.GetUserRiskLevel(ctx, viewerID); rerr == nil {
+		switch level {
+		case store.RiskLevelHideFromDiscovery,
+			store.RiskLevelChatHold,
+			store.RiskLevelAdminReview,
+			store.RiskLevelSuspend:
+			return true
+		}
+	} else {
+		slog.Warn("pulse risk lookup failed", "viewer_id", viewerID, "error", rerr)
+	}
+	return false
 }
 
 // emptyDeckRetryAfter is how long an empty cached deck is trusted before the
@@ -771,8 +775,8 @@ func (s *Service) requirePassable(ctx context.Context, viewerID, candidateID uui
 }
 
 // requireActionableCandidate is the gate for an action keyed by a candidate
-// id (pass, stash): the candidate must be someone the viewer was actually
-// served or can otherwise see — canViewPerson: in their current deck or
+// id (pass, stash, spark, Super Spark): the candidate must be someone the
+// viewer was actually served or can otherwise see — canViewPerson: in their current deck or
 // picks, an open match, or an incoming spark they may see. Anything else,
 // a missing profile included, is the one ErrCandidateUnavailable (404), so
 // the action can never be used to probe for a profile.

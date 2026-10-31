@@ -112,6 +112,7 @@ func TestHandler_CreateSpark(t *testing.T) {
 	from, to := uuid.New(), uuid.New()
 	mustSeedActiveProfile(t, st, from)
 	mustSeedActiveProfile(t, st, to)
+	dealCards(t, r, st, from, to) // audit H1: a spark is on a dealt card
 
 	body, _ := json.Marshal(map[string]string{
 		"to_user_id":  to.String(),

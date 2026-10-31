@@ -355,20 +355,47 @@ func (s *Service) detailFor(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID
 // never reveals a block.
 var ErrPersonNotVisible = ErrCandidateUnavailable
 
-// canViewPerson is THE access rule for the person card: the viewer must have
-// a current match with them, a live incoming spark from them, or have them
-// in their current deck. Blocks are enforced by the person query itself
-// (both directions) and by each of these three checks.
+// ActionLookups is what the actionable-candidate rule (canViewPerson,
+// inCurrentDeck) reads. *store.Store implements it; the seam exists so the
+// rule's branches are pinned by unit tests without a database.
+type ActionLookups interface {
+	IsBlockedEitherWay(ctx context.Context, a, b uuid.UUID) (bool, error)
+	HasOpenMatch(ctx context.Context, x, y uuid.UUID) (bool, error)
+	HasIncomingSparkFrom(ctx context.Context, viewerID, senderID uuid.UUID) (bool, error)
+	IsPremium(ctx context.Context, userID uuid.UUID) (bool, error)
+	InRecentPicks(ctx context.Context, userID, candidateID uuid.UUID) (bool, error)
+	WasDealt(ctx context.Context, userID, candidateID uuid.UUID) (bool, error)
+	HasStandingPass(ctx context.Context, viewerID, candidateID uuid.UUID) (bool, error)
+	CandidateVisibleTo(ctx context.Context, viewerID, candidateID uuid.UUID) (bool, error)
+}
+
+var _ ActionLookups = (*store.Store)(nil)
+
+// lookups is the store the actionable-candidate rule reads.
+func (s *Service) lookups() ActionLookups {
+	if s.actionLookups != nil {
+		return s.actionLookups
+	}
+	return s.store
+}
+
+// canViewPerson is THE access rule for the person card, and for every action
+// keyed by a candidate id (requireActionableCandidate: pass, stash, spark,
+// Super Spark): the viewer must have a current match with them, a live
+// incoming spark from them they may see, a recent daily pick of them, or a
+// card of them dealt and still visible (inCurrentDeck). Blocks are enforced
+// first, both directions.
 func (s *Service) canViewPerson(ctx context.Context, viewerID, targetID uuid.UUID) (bool, error) {
 	if viewerID == uuid.Nil || targetID == uuid.Nil || viewerID == targetID {
 		return false, nil
 	}
-	if blocked, err := s.store.IsBlockedEitherWay(ctx, viewerID, targetID); err != nil {
+	look := s.lookups()
+	if blocked, err := look.IsBlockedEitherWay(ctx, viewerID, targetID); err != nil {
 		return false, err
 	} else if blocked {
 		return false, nil
 	}
-	matched, err := s.store.HasOpenMatch(ctx, viewerID, targetID)
+	matched, err := look.HasOpenMatch(ctx, viewerID, targetID)
 	if err != nil {
 		return false, err
 	}
@@ -378,7 +405,7 @@ func (s *Service) canViewPerson(ctx context.Context, viewerID, targetID uuid.UUI
 	// An incoming spark opens the card only when the viewer may see who
 	// sparked them (mechanic M4).
 	if s.likedYouUnlocked(ctx, viewerID) {
-		sparked, err := s.store.HasIncomingSparkFrom(ctx, viewerID, targetID)
+		sparked, err := look.HasIncomingSparkFrom(ctx, viewerID, targetID)
 		if err != nil {
 			return false, err
 		}
@@ -389,7 +416,7 @@ func (s *Service) canViewPerson(ctx context.Context, viewerID, targetID uuid.UUI
 	// Mechanic M7: a daily pick opens the card too (picks are kept apart
 	// from the deck, so the deck check alone would refuse them).
 	if s.mechanics.Picks {
-		picked, err := s.store.InRecentPicks(ctx, viewerID, targetID)
+		picked, err := look.InRecentPicks(ctx, viewerID, targetID)
 		if err != nil {
 			return false, err
 		}
@@ -412,14 +439,15 @@ func (s *Service) canViewPerson(ctx context.Context, viewerID, targetID uuid.UUI
 // longer stands). The visibility rule (store.CandidateVisibleTo) still
 // applies, so someone who paused, hid or blocked since being dealt is refused.
 func (s *Service) inCurrentDeck(ctx context.Context, viewerID, targetID uuid.UUID) (bool, error) {
-	dealt, err := s.store.WasDealt(ctx, viewerID, targetID)
+	look := s.lookups()
+	dealt, err := look.WasDealt(ctx, viewerID, targetID)
 	if err != nil || !dealt {
 		return false, err
 	}
-	if passed, err := s.store.HasStandingPass(ctx, viewerID, targetID); err != nil || passed {
+	if passed, err := look.HasStandingPass(ctx, viewerID, targetID); err != nil || passed {
 		return false, err
 	}
-	return s.store.CandidateVisibleTo(ctx, viewerID, targetID)
+	return look.CandidateVisibleTo(ctx, viewerID, targetID)
 }
 
 // GetPersonCard returns the compact card for one person, or

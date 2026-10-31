@@ -170,6 +170,11 @@ func TestD3Contracts(t *testing.T) {
 		if _, err := st.DeclineSpark(ctx, sp.ID, decliner); err != nil {
 			t.Fatalf("decline: %v", err)
 		}
+		// Audit H1: each side is dealt the other, so the refusal below is
+		// the decline, and the decliner's spark (not a reply: the incoming
+		// spark is declined) is on a card the decliner was dealt.
+		dealCards(t, r, st, sender, decliner)
+		dealCards(t, r, st, decliner, sender)
 		rec = contractDo(r, http.MethodPost, "/v1/dating/sparks", sparkBody(decliner, "p1"), sender)
 		assertContract(t, rec, http.StatusNotFound, "spark_create_404_candidate_unavailable", map[uuid.UUID]string{sender: "<sender>", decliner: "<recipient>"})
 		// One-directional: the decliner can still spark the sender.
@@ -194,6 +199,7 @@ func TestD3Contracts(t *testing.T) {
 				t.Fatalf("seed spark %d: %v", i, err)
 			}
 		}
+		dealCards(t, r, st, from, to) // audit H1: the refusal is the allowance, not the card
 		rec := contractDo(r, http.MethodPost, "/v1/dating/sparks", sparkBody(to, "overflow"), from)
 		assertContract(t, rec, http.StatusTooManyRequests, "spark_create_429_rate_limited", map[uuid.UUID]string{from: "<sender>", to: "<recipient>"})
 	})

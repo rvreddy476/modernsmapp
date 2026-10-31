@@ -599,7 +599,9 @@ func TestSelfie_PendingSelfieProfileNotInDeckAndCannotSpark(t *testing.T) {
 	if res, err := svc.SubmitSelfie(ctx, pending, uuid.New(), newChallenge(t, svc, pending)); err != nil || res.ProfileStatus != store.ProfileStatusActive {
 		t.Fatalf("selfie pass = %+v, %v", res, err)
 	}
-	after, err := svc.computePulseToday(ctx, viewer)
+	// The deck the client is dealt (GetPulseToday records it): audit H1
+	// lets the spark below act only on a dealt card.
+	after, err := svc.GetPulseToday(ctx, viewer)
 	if err != nil {
 		t.Fatalf("deck after pass: %v", err)
 	}

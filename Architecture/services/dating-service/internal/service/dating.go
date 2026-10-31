@@ -20,6 +20,9 @@ import (
 // Service exposes high-level operations to the http layer.
 type Service struct {
 	store                *store.Store
+	// actionLookups, when set, replaces store for the actionable-candidate
+	// rule (person.go, audit H1). Unit tests only; nil reads store.
+	actionLookups ActionLookups
 	rdb                  *redis.Client
 	producer             *datingevents.Producer
 	graphProvider        matcher.GraphProvider

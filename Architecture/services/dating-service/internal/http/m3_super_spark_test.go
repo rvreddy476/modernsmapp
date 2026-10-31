@@ -98,6 +98,7 @@ func TestM3SuperSparkContracts(t *testing.T) {
 	d := newM1Deck(t, m3Config())
 	first, second := d.candidate(), d.candidate()
 	labels := map[uuid.UUID]string{d.viewer: "<viewer>", first: "<candidate>", second: "<second>"}
+	d.deal(first, second) // audit H1: Super Sparks are on dealt cards
 
 	assertContract(t, d.superSpark(first, "m3"), http.StatusCreated, "spark_create_post_201_super", labels)
 	assertContract(t, d.superSpark(second, "m3"), http.StatusTooManyRequests, "spark_create_429_super_limit_reached", labels)
@@ -107,6 +108,7 @@ func TestM3SuperSparkContracts(t *testing.T) {
 	other := uuid.New()
 	mustSeedActiveProfile(t, d.env.st, other)
 	labels[other] = "<other>"
+	dealCards(t, d.env.r, d.env.st, other, first) // audit H1
 	if rec := contractDo(d.env.r, http.MethodPost, "/v1/dating/sparks", sparkBody(first, "m3"), other); rec.Code != http.StatusCreated {
 		t.Fatalf("ordinary spark: status %d body %s", rec.Code, rec.Body.String())
 	}
@@ -147,6 +149,7 @@ func TestM3ContractFixturesWellFormed(t *testing.T) {
 func TestSuperSparkDailyAllowance(t *testing.T) {
 	d := newM1Deck(t, m3Config())
 	a, b := d.candidate(), d.candidate()
+	d.deal(a, b) // audit H1: the refusal below is the allowance, not the card
 	d.mustSuperSpark(a)
 	rec := d.superSpark(b, "m3")
 	d.wantRefusal(rec, http.StatusTooManyRequests, "SUPER_SPARK_LIMIT_REACHED")
@@ -174,6 +177,7 @@ func TestSuperSparkDailyAllowance(t *testing.T) {
 func TestSuperSparkSpendsThePurchasedBalance(t *testing.T) {
 	d := newM1Deck(t, m3Config())
 	a, b, c := d.candidate(), d.candidate(), d.candidate()
+	d.deal(a, b, c) // audit H1
 	d.giveSuperSparks(1)
 	d.mustSuperSpark(a)
 	if used, balance := d.superUsage(); used != 1 || balance != 1 {
@@ -191,6 +195,7 @@ func TestSuperSparkSpendsThePurchasedBalance(t *testing.T) {
 func TestSuperSparkSamePersonIsChargedOnce(t *testing.T) {
 	d := newM1Deck(t, m3Config())
 	a := d.candidate()
+	d.deal(a) // audit H1
 	d.giveSuperSparks(3)
 	d.mustSuperSpark(a)
 	d.mustSuperSpark(a)
@@ -206,6 +211,7 @@ func TestSuperSparkSamePersonIsChargedOnce(t *testing.T) {
 func TestSuperSparkPassHolderAllowance(t *testing.T) {
 	d := newM1Deck(t, m3Config())
 	a, b, c := d.candidate(), d.candidate(), d.candidate()
+	d.deal(a, b, c) // audit H1: the refusals below are the allowance
 	d.grantPass()
 	d.mustSuperSpark(a)
 	d.mustSuperSpark(b)
@@ -221,6 +227,7 @@ func TestSuperSparkPassHolderAllowance(t *testing.T) {
 func TestSuperSparkRefusesABlockedRecipient(t *testing.T) {
 	d := newM1Deck(t, m3Config())
 	a := d.candidate()
+	d.deal(a) // dealt before the block, so the refusal is the block (audit H1)
 	if rec := contractDo(d.env.r, http.MethodPost, "/v1/dating/safety/block", `{"target_user_id":"`+d.viewer.String()+`"}`, a); rec.Code != http.StatusOK {
 		t.Fatalf("block: status %d body %s", rec.Code, rec.Body.String())
 	}

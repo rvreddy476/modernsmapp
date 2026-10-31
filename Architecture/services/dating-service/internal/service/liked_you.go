@@ -75,7 +75,7 @@ func (s *Service) likedYouUnlocked(ctx context.Context, userID uuid.UUID) bool {
 	if !s.mechanics.LikedYouGate {
 		return true
 	}
-	premium, err := s.store.IsPremium(ctx, userID)
+	premium, err := s.lookups().IsPremium(ctx, userID)
 	if err != nil {
 		slog.Warn("liked you: premium lookup failed; keeping the grid locked", "user_id", userID, "error", err)
 		return false

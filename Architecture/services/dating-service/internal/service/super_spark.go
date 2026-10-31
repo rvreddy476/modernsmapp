@@ -1,6 +1,7 @@
 // Super Spark (mechanic M3, DATING_SUPER_SPARK_ENABLED): a spark the
 // recipient sees marked and first in their incoming list. It passes every
-// gate an ordinary spark passes (risk, age, profile status, block, decline
+// gate an ordinary spark passes (risk, age, profile status, block, dealt
+// card or other actionable relationship (audit H1), decline
 // cooldown, note moderation, the spark allowance) and then is charged: the
 // daily allowance first (MechanicsConfig.SuperSparkDailyLimitFree, or
 // ...Pass for a pass holder), then one purchased Super Spark. Packs are

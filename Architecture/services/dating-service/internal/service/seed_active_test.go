@@ -101,3 +101,63 @@ func driveProfile(t *testing.T, st *store.Store, id uuid.UUID, ev store.ProfileE
 	}
 	return p
 }
+
+// dealCards deals each candidate to viewer the way the app does — the
+// viewer's own deck fetch (GetPulseToday), which records the card as dealt —
+// and fails unless the candidate was in that deck. Audit H1: a pass, a stash,
+// a spark, a Super Spark and explain act only on a card the viewer was dealt
+// (or a pick, a match, an incoming spark), so a test sparks someone it dealt.
+//
+// To make each candidate the one card in the deck it gives the candidate a
+// gender nobody else holds and points the viewer's preference at it, one
+// candidate at a time (the pilot deck keeps at most three cards of one
+// intent), dropping any cached deck first. Afterwards both genders and the
+// viewer's preference are put back (an unset preference as "everyone", which
+// the gender rule treats the same) and the cached deck is dropped again, so
+// the test continues from the state it built.
+func dealCards(t *testing.T, svc *Service, st *store.Store, viewer uuid.UUID, candidates ...uuid.UUID) {
+	t.Helper()
+	ctx := context.Background()
+	prefs, err := st.GetPreferences(ctx, viewer)
+	if err != nil {
+		t.Fatalf("deal: viewer preferences: %v", err)
+	}
+	wants := InterestedInEveryone
+	if prefs.InterestedInGender != nil {
+		wants = *prefs.InterestedInGender
+	}
+	for _, c := range candidates {
+		cp, err := st.GetProfile(ctx, c)
+		if err != nil {
+			t.Fatalf("deal: candidate %s: %v", c, err)
+		}
+		gender := "deal-" + uuid.NewString()[:8]
+		if _, err := st.UpsertProfile(ctx, c, store.UpsertProfileParams{Gender: &gender}); err != nil {
+			t.Fatalf("deal: candidate gender: %v", err)
+		}
+		if _, err := st.UpsertPreferences(ctx, viewer, store.UpsertPreferencesParams{InterestedInGender: &gender}); err != nil {
+			t.Fatalf("deal: viewer preference: %v", err)
+		}
+		svc.InvalidatePulseCache(ctx, viewer)
+		deck, err := svc.GetPulseToday(ctx, viewer)
+		if err != nil {
+			t.Fatalf("deal: deck: %v", err)
+		}
+		dealt := false
+		for _, card := range deck.Data {
+			dealt = dealt || card.CandidateID == c
+		}
+		if !dealt {
+			t.Fatalf("deal: candidate %s was not in the viewer's deck (%d cards)", c, len(deck.Data))
+		}
+		if cp.Gender != nil {
+			if _, err := st.UpsertProfile(ctx, c, store.UpsertProfileParams{Gender: cp.Gender}); err != nil {
+				t.Fatalf("deal: restore candidate gender: %v", err)
+			}
+		}
+	}
+	if _, err := st.UpsertPreferences(ctx, viewer, store.UpsertPreferencesParams{InterestedInGender: &wants}); err != nil {
+		t.Fatalf("deal: restore viewer preference: %v", err)
+	}
+	svc.InvalidatePulseCache(ctx, viewer)
+}

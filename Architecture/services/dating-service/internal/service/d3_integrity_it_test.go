@@ -109,10 +109,13 @@ func newD3Svc(t *testing.T) (*Service, *store.Store, *recordingWriter) {
 	return svc, st, rec
 }
 
-// d3Match forms a match through two mutual sparks and returns its id.
+// d3Match forms a match through two mutual sparks and returns its id: b
+// sparks a from b's deck (audit H1: a spark is on a dealt card), and a sparks
+// back.
 func d3Match(t *testing.T, svc *Service, a, b uuid.UUID) uuid.UUID {
 	t.Helper()
 	ctx := context.Background()
+	dealCards(t, svc, svc.store, b, a)
 	if _, _, err := svc.CreateSpark(ctx, b, a, "photo", "0", ""); err != nil {
 		t.Fatalf("spark b->a: %v", err)
 	}
@@ -371,6 +374,10 @@ func TestD3_ConcurrentMutualSparksFormOneMatch(t *testing.T) {
 		a, b := uuid.New(), uuid.New()
 		seedActiveProfile(t, st, a)
 		seedActiveProfile(t, st, b)
+		// Both sparks race, so neither can count on being a spark back:
+		// each side was dealt the other (audit H1).
+		dealCards(t, svc, st, a, b)
+		dealCards(t, svc, st, b, a)
 
 		start := make(chan struct{})
 		var wg sync.WaitGroup
@@ -416,6 +423,9 @@ func TestD3_UnmatchRequiresTwoFreshSparks(t *testing.T) {
 	if n := sparksBetween(t, st, a, b); n != 0 {
 		t.Fatalf("unmatch kept %d sparks between the pair", n)
 	}
+	// The unmatch removed every spark, so a's fresh spark is from a's deck
+	// (audit H1); b's is a spark back.
+	dealCards(t, svc, st, a, b)
 	if _, mid, err := svc.CreateSpark(ctx, a, b, "photo", "0", ""); err != nil || mid != nil {
 		t.Fatalf("one fresh spark after unmatch: match=%v err=%v; want no match", mid, err)
 	}
@@ -510,6 +520,7 @@ func TestD3_DeclineHidesSparkAndNotifiesNobody(t *testing.T) {
 	sender, recipient := uuid.New(), uuid.New()
 	seedActiveProfile(t, st, sender)
 	seedActiveProfile(t, st, recipient)
+	dealCards(t, svc, st, sender, recipient) // audit H1
 	sp, _, err := svc.CreateSpark(ctx, sender, recipient, "photo", "0", "hi")
 	if err != nil {
 		t.Fatalf("spark: %v", err)
@@ -572,6 +583,9 @@ func TestD3_SparkRefusedToUnavailableRecipient(t *testing.T) {
 			from, to := uuid.New(), uuid.New()
 			seedActiveProfile(t, st, from)
 			seedActiveProfile(t, st, to)
+			// Dealt first, so the refusal is the recipient's state, not
+			// the audit H1 dealt-card rule.
+			dealCards(t, svc, st, from, to)
 			tc.mutate(t, to)
 			if _, _, err := svc.CreateSpark(ctx, from, to, "photo", "0", ""); !errors.Is(err, ErrCandidateUnavailable) {
 				t.Fatalf("spark to a %s recipient: err=%v, want ErrCandidateUnavailable", tc.name, err)
@@ -593,6 +607,7 @@ func TestD3_SparkRateLimitAtNPlusOne(t *testing.T) {
 	from, to := uuid.New(), uuid.New()
 	seedActiveProfile(t, st, from)
 	seedActiveProfile(t, st, to)
+	dealCards(t, svc, st, from, to) // audit H1
 	var first *store.Spark
 	for i := 0; i < DefaultSparkDailyLimit; i++ {
 		sp, _, err := svc.CreateSpark(ctx, from, to, "prompt", fmt.Sprintf("p%d", i), "")
@@ -623,6 +638,7 @@ func TestD3_SparkNoteWithContactDetailsRefused(t *testing.T) {
 	from, to := uuid.New(), uuid.New()
 	seedActiveProfile(t, st, from)
 	seedActiveProfile(t, st, to)
+	dealCards(t, svc, st, from, to) // audit H1: only the note is wrong
 	for i, note := range []string{"call me on 98765 43210", "write to asha.k@example.com", "more at https://example.org/me"} {
 		if _, _, err := svc.CreateSpark(ctx, from, to, "prompt", fmt.Sprintf("n%d", i), note); !errors.Is(err, ErrSparkNoteRefused) {
 			t.Fatalf("note %q: err=%v, want ErrSparkNoteRefused", note, err)

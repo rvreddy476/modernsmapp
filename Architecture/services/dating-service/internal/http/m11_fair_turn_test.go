@@ -50,6 +50,7 @@ func m11SparkBody(to uuid.UUID) string {
 func TestM11FairTurnContracts(t *testing.T) {
 	d, _ := newM11Deck(t, true, 6)
 	c := d.candidate()
+	d.deal(c) // audit H1: the refusal is the fair turn, not the card
 	labels := map[uuid.UUID]string{d.viewer: "<viewer>", c: "<candidate>"}
 	assertContract(t, contractDo(d.env.r, http.MethodGet, "/v1/dating/allowances", ``, d.viewer), http.StatusOK, "allowances_get_200_fair_turn", labels)
 	assertContract(t, contractDo(d.env.r, http.MethodPost, "/v1/dating/sparks", m11SparkBody(c), d.viewer), http.StatusConflict, "sparks_post_409_fair_turn_limit", labels)
@@ -88,6 +89,7 @@ func TestFairTurnPausesNewSparks(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			d, _ := newM11Deck(t, tc.on, tc.owed)
 			c := d.candidate()
+			d.deal(c) // audit H1: a spark is on a dealt card
 			if rec := contractDo(d.env.r, http.MethodPost, "/v1/dating/sparks", m11SparkBody(c), d.viewer); rec.Code != tc.want {
 				t.Fatalf("spark: %d %s, want %d", rec.Code, rec.Body.String(), tc.want)
 			}
@@ -100,7 +102,10 @@ func TestFairTurnPausesNewSparks(t *testing.T) {
 func TestFairTurnLetsAnswersThrough(t *testing.T) {
 	d, chat := newM11Deck(t, true, 0)
 	back, accepted := d.candidate(), d.candidate()
-	// Both sparked the viewer while the viewer owed nothing.
+	// Both sparked the viewer, from their own dealt decks (audit H1), while
+	// the viewer owed nothing.
+	dealCards(t, d.env.r, d.env.st, back, d.viewer)
+	dealCards(t, d.env.r, d.env.st, accepted, d.viewer)
 	if rec := contractDo(d.env.r, http.MethodPost, "/v1/dating/sparks", m11SparkBody(d.viewer), back); rec.Code != http.StatusCreated {
 		t.Fatalf("seed spark: %d %s", rec.Code, rec.Body.String())
 	}
@@ -125,8 +130,10 @@ func TestFairTurnLetsAnswersThrough(t *testing.T) {
 	if rec := contractDo(d.env.r, http.MethodPost, "/v1/dating/sparks/"+created.Data.Spark.ID.String()+"/accept", ``, d.viewer); rec.Code != http.StatusCreated {
 		t.Fatalf("accepting a spark was paused: %d %s", rec.Code, rec.Body.String())
 	}
-	// A new person is still paused.
-	if rec := contractDo(d.env.r, http.MethodPost, "/v1/dating/sparks", m11SparkBody(d.candidate()), d.viewer); rec.Code != http.StatusConflict {
+	// A new person, dealt to the viewer, is still paused.
+	fresh := d.candidate()
+	d.deal(fresh)
+	if rec := contractDo(d.env.r, http.MethodPost, "/v1/dating/sparks", m11SparkBody(fresh), d.viewer); rec.Code != http.StatusConflict {
 		t.Fatalf("a new spark went through over the limit: %d", rec.Code)
 	}
 }
@@ -136,6 +143,7 @@ func TestFairTurnFailsOpen(t *testing.T) {
 	d, chat := newM11Deck(t, true, 9)
 	chat.err = errors.New("chat down")
 	c := d.candidate()
+	d.deal(c) // audit H1
 	if rec := contractDo(d.env.r, http.MethodPost, "/v1/dating/sparks", m11SparkBody(c), d.viewer); rec.Code != http.StatusCreated {
 		t.Fatalf("spark during a chat outage: %d %s", rec.Code, rec.Body.String())
 	}

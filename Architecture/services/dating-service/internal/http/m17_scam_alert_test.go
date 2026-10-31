@@ -63,9 +63,11 @@ func (w *scamWriter) alerts(t *testing.T) map[uuid.UUID]datingevents.ScamAlertPa
 	return out
 }
 
-// matchPair makes a and b match (a sparks first).
+// matchPair makes a and b match (a sparks first, from a's dealt deck —
+// audit H1 — and b sparks back).
 func (d *m1Deck) matchPair(a, b uuid.UUID) {
 	d.t.Helper()
+	dealCards(d.t, d.env.r, d.env.st, a, b)
 	if rec := contractDo(d.env.r, http.MethodPost, "/v1/dating/sparks", sparkBody(b, "m17"), a); rec.Code != http.StatusCreated {
 		d.t.Fatalf("spark: %d %s", rec.Code, rec.Body.String())
 	}

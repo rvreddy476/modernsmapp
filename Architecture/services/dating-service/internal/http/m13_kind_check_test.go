@@ -65,6 +65,7 @@ func TestM13KindCheckContracts(t *testing.T) {
 	// (a fresh viewer, so it is the only one).
 	inc := newM1Deck(t, m13Config(true))
 	sender := inc.candidate()
+	dealCards(t, inc.env.r, inc.env.st, sender, inc.viewer) // audit H1
 	noted := contractDo(inc.env.r, http.MethodPost, "/v1/dating/sparks", `{"to_user_id":"`+inc.viewer.String()+`","target_kind":"prompt","target_ref":"m13","note":"you look stupid"}`, sender)
 	var created struct {
 		Data struct {
@@ -137,8 +138,11 @@ func (d *m1Deck) incomingNotes() map[uuid.UUID]string {
 	return out
 }
 
+// sparkWithNote: from (a pool candidate, so the gender rule lets them see
+// the viewer) sparks the viewer from their own dealt deck (audit H1).
 func (d *m1Deck) sparkWithNote(from uuid.UUID, note string) uuid.UUID {
 	d.t.Helper()
+	dealCards(d.t, d.env.r, d.env.st, from, d.viewer)
 	body, _ := json.Marshal(map[string]string{"to_user_id": d.viewer.String(), "target_kind": "prompt", "target_ref": uuid.NewString()[:8], "note": note})
 	rec := contractDo(d.env.r, http.MethodPost, "/v1/dating/sparks", string(body), from)
 	var out struct {

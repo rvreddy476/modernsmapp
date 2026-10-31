@@ -6,7 +6,7 @@
 // signals (distance, shared communities, shared interests) WITHOUT
 // exposing the numeric score or any internal abuse / risk signals.
 //
-// Lane D7: explain answers only for a candidate in the viewer's current deck,
+// Lane D7: explain answers only for a card dealt to the viewer (audit H1),
 // counts every request against a daily allowance, and conveys distance as a
 // bucket code and label only. Anyone else is CANDIDATE_UNAVAILABLE, so explain
 // can no longer measure an arbitrary user.
@@ -60,9 +60,10 @@ type ExplainReason struct {
 // (viewer -> target).
 //
 // Order: the request is counted against the viewer's daily allowance
-// (*store.ExplainRateLimitError past it), then the target must be in the
-// viewer's current deck — the cached one, or the deck computed for today —
-// and still available (not blocked either way, not suspended or deleted).
+// (*store.ExplainRateLimitError past it), then the target must be a card the
+// viewer was dealt (the durable record, audit H1) and may still see under the
+// shared visibility rule (not paused, hidden, held, blocked either way,
+// suspended or deleted).
 // Otherwise ErrCandidateUnavailable, the one refusal used everywhere.
 // Partial data (missing prefs, birth date, …) degrades to fewer reasons.
 func (s *Service) ExplainCandidate(ctx context.Context, viewerID, targetID uuid.UUID) (*CandidateExplanation, error) {
@@ -169,21 +170,19 @@ func (s *Service) ExplainCandidate(ctx context.Context, viewerID, targetID uuid.
 	return out, nil
 }
 
-// candidateInCurrentDeck reports whether targetID is a card in the viewer's
-// current deck: the cached deck, or (on a miss) the deck computed for today,
-// which pulseToday caches. A gated viewer's deck is empty. It does not record
-// the deck as dealt: explaining a card is not serving one.
+// candidateInCurrentDeck reports whether targetID is a card the viewer was
+// dealt and may still see — the same durable rule every action keyed by a
+// candidate id uses (inCurrentDeck, audit H1): the dealt record GET
+// /pulse/today writes, no standing pass, and the shared visibility rule. It
+// never reads or recomputes a deck, so it cannot refuse a card the client is
+// holding after the cached batch expired, nor admit one it was never shown.
+// A viewer the deck gates (deckViewerGated) has no deck and is refused. It
+// writes nothing: explaining a card is not dealing one.
 func (s *Service) candidateInCurrentDeck(ctx context.Context, viewerID, targetID uuid.UUID) (bool, error) {
-	deck, err := s.pulseToday(ctx, viewerID)
-	if err != nil {
-		return false, err
+	if s.deckViewerGated(ctx, viewerID) {
+		return false, nil
 	}
-	for _, card := range deck.Data {
-		if card.CandidateID == targetID {
-			return true, nil
-		}
-	}
-	return false, nil
+	return s.inCurrentDeck(ctx, viewerID, targetID)
 }
 
 // formatDistanceReason names the bucket, never a km figure.

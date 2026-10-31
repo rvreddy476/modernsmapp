@@ -154,6 +154,11 @@ func TestExplainCandidate_DistanceAndSharedInterest(t *testing.T) {
 		t.Fatalf("seed target echo: %v", err)
 	}
 	svc.InvalidatePulseCache(ctx, viewer)
+	// Explain answers for a card the viewer was dealt (audit H1): the
+	// client's deck fetch comes first, as in the app.
+	if deck, err := svc.GetPulseToday(ctx, viewer); err != nil || d7Card(deck, target) == nil {
+		t.Fatalf("deal deck: target dealt=%v err=%v", deck != nil && d7Card(deck, target) != nil, err)
+	}
 
 	out, err := svc.ExplainCandidate(ctx, viewer, target)
 	if err != nil {

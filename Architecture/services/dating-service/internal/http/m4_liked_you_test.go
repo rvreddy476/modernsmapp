@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/atpost/dating-service/internal/service"
+	"github.com/atpost/dating-service/internal/store"
 	"github.com/google/uuid"
 )
 
@@ -44,13 +45,20 @@ func (m *variantMedia) PhotoDeliveryURL(_ context.Context, _ uuid.UUID, _ uuid.U
 }
 
 // admirers seeds n people who spark the viewer; the first sends a Super
-// Spark, so the server lists it first.
+// Spark, so the server lists it first. Each admirer is someone the viewer
+// could want (the pool's gender, so the two-way gender rule lets them see
+// the viewer) and sparks the viewer from their own dealt deck (audit H1).
+// They have no location, so they never enter the viewer's deck.
 func (d *m1Deck) admirers(n int) []uuid.UUID {
 	d.t.Helper()
 	out := make([]uuid.UUID, 0, n)
 	for i := 0; i < n; i++ {
 		id := uuid.New()
 		mustSeedActiveProfile(d.t, d.env.st, id)
+		if _, err := d.env.st.UpsertProfile(context.Background(), id, store.UpsertProfileParams{Gender: &d.gender}); err != nil {
+			d.t.Fatalf("admirer gender: %v", err)
+		}
+		dealCards(d.t, d.env.r, d.env.st, id, d.viewer)
 		body := `{"to_user_id":"` + d.viewer.String() + `","target_kind":"prompt","target_ref":"m4","note":"Loved your answer"}`
 		if i == 0 {
 			body = `{"to_user_id":"` + d.viewer.String() + `","target_kind":"prompt","target_ref":"m4","note":"Loved your answer","super":true}`

@@ -216,6 +216,16 @@ func (s *Service) createSpark(ctx context.Context, fromUserID, toUserID uuid.UUI
 	if err := s.requireNotBlocked(ctx, fromUserID, toUserID); err != nil {
 		return nil, nil, err
 	}
+	// Audit H1: a spark is an action on someone the sender was shown, not
+	// on any user id — the same rule as a pass (requireActionableCandidate):
+	// a card dealt to the sender that they may still see, a daily pick, an
+	// open match, or someone whose spark they may see (sparking back).
+	// Anyone else is the same 404, and it is checked before the allowance
+	// below, so a refused spark spends neither the spark nor the Super
+	// Spark quota.
+	if err := s.requireActionableCandidate(ctx, fromUserID, toUserID); err != nil {
+		return nil, nil, err
+	}
 	// Decline cooldown: a sender whose spark the recipient declined within
 	// the cooldown gets the same refusal, so the decline is never revealed.
 	// One-directional: the decliner can still spark the sender, and doing so
