@@ -225,13 +225,13 @@ func TestServiceRefusesBadInputBeforeTheStore(t *testing.T) {
 
 	refusal(t, s.RespondToAnswerRequest(ctx, id, u, ""), "invalid: ")
 	refusal(t, s.RespondToAnswerRequest(ctx, id, u, "pending"), "invalid: ")
-	_, err := s.CreateReport(ctx, u, "profile", id, "spam", "")
+	_, _, err := s.CreateReport(ctx, u, "profile", id, "spam", "")
 	refusal(t, err, "invalid: ")
-	_, err = s.CreateReport(ctx, u, "answer", id, "  ", "")
+	_, _, err = s.CreateReport(ctx, u, "answer", id, "  ", "")
 	refusal(t, err, "invalid: ")
-	_, err = s.CreateReport(ctx, u, "answer", id, long(maxReportReasonLen+1), "")
+	_, _, err = s.CreateReport(ctx, u, "answer", id, long(maxReportReasonLen+1), "")
 	refusal(t, err, "invalid: ")
-	_, err = s.CreateReport(ctx, u, "answer", id, "spam", long(maxReportDetailLen+1))
+	_, _, err = s.CreateReport(ctx, u, "answer", id, "spam", long(maxReportDetailLen+1))
 	refusal(t, err, "invalid: ")
 	_, err = s.CreateComment(ctx, id, u, long(maxCommentLen+1))
 	refusal(t, err, "invalid: ")
@@ -253,4 +253,49 @@ func TestServiceRefusesBadInputBeforeTheStore(t *testing.T) {
 	refusal(t, s.VoteAnswer(ctx, u, id, "sideways"), "invalid: ")
 	refusal(t, s.VoteQuestion(ctx, u, id, ""), "invalid: ")
 	refusal(t, s.VoteComment(ctx, u, id, "UP"), "invalid: ")
+}
+
+// Reports: a target the reporter cannot see is the same 404 whatever hides
+// it; one's own content, or oneself, is refused; another error passes
+// through untouched (a 500, not a 404 that would hide an outage).
+func TestReportTargetDecision(t *testing.T) {
+	reporter, author := uuid.New(), uuid.New()
+	outage := errors.New("connection reset")
+	cases := []struct {
+		name       string
+		targetType string
+		owner      uuid.UUID
+		accessErr  error
+		want       string
+	}{
+		{"visible, someone else's answer", "answer", author, nil, ""},
+		{"visible, someone else's question", "question", author, nil, ""},
+		{"another user", "user", author, nil, ""},
+		{"missing answer", "answer", uuid.Nil, errors.New("not_found: answer not found"), "not_found: answer not found"},
+		{"private community question", "question", uuid.Nil, errors.New("forbidden: this question is in a private community"), "not_found: question not found"},
+		{"comment on a hidden answer", "comment", uuid.Nil, errors.New("not_found: question not found"), "not_found: comment not found"},
+		{"missing user", "user", uuid.Nil, errors.New("not_found: user not found"), "not_found: user not found"},
+		{"store outage", "answer", uuid.Nil, outage, "connection reset"},
+		{"own answer", "answer", reporter, nil, "invalid: you cannot report your own answer"},
+		{"own question", "question", reporter, nil, "invalid: you cannot report your own question"},
+		{"own comment", "comment", reporter, nil, "invalid: you cannot report your own comment"},
+		{"oneself", "user", reporter, nil, "invalid: you cannot report yourself"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			err := reportTargetDecision(c.targetType, reporter, c.owner, c.accessErr)
+			if c.want == "" {
+				if err != nil {
+					t.Fatalf("refused: %v", err)
+				}
+				return
+			}
+			if err == nil || err.Error() != c.want {
+				t.Fatalf("got %v, want %q", err, c.want)
+			}
+			if c.accessErr == outage && !errors.Is(err, outage) {
+				t.Fatalf("the outage error was rewrapped: %v", err)
+			}
+		})
+	}
 }

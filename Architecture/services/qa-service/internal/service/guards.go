@@ -94,6 +94,30 @@ func answerRequestDecision(status string, requester, target uuid.UUID) error {
 	return nil
 }
 
+// reportTargetDecision: a report names something the reporter can see and
+// did not write. accessErr is the visibility rule's answer for the reporter
+// (reportTargetOwner). Whatever hides the target (missing, deleted, awaiting
+// approval, in a private community the reporter is not in) is the same 404:
+// a 403 would confirm that hidden content exists. Reporting one's own
+// question, answer or comment, or oneself, is refused: the author can edit
+// or delete it, and a self-report only adds noise to the moderators' queue.
+func reportTargetDecision(targetType string, reporter, owner uuid.UUID, accessErr error) error {
+	if accessErr != nil {
+		msg := accessErr.Error()
+		if strings.HasPrefix(msg, "not_found: ") || strings.HasPrefix(msg, "forbidden: ") {
+			return fmt.Errorf("not_found: %s not found", targetType)
+		}
+		return accessErr
+	}
+	if owner == reporter {
+		if targetType == "user" {
+			return fmt.Errorf("invalid: you cannot report yourself")
+		}
+		return fmt.Errorf("invalid: you cannot report your own %s", targetType)
+	}
+	return nil
+}
+
 // Length caps (M4), in characters. The gateway's body limit is the only
 // other bound.
 const (

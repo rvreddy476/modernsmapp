@@ -2,11 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/atpost/qa-service/internal/store"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // Reads and engagement under the one visibility rule (audit H5, H4, M4).
@@ -140,30 +142,47 @@ func (s *Service) GetAnswerRequests(ctx context.Context, userID uuid.UUID, limit
 
 // --- Reports ---
 
-func (s *Service) CreateReport(ctx context.Context, reporterID uuid.UUID, targetType string, targetID uuid.UUID, reason, details string) (*store.ModerationReport, error) {
+// CreateReport files a report on something the reporter can see and did not
+// write. One open report per (reporter, target): a repeat while the first is
+// open returns that report with created false (the HTTP layer answers 200
+// instead of 201), writes nothing, and does not count against the daily
+// report limit. Once a moderator resolves or dismisses it, the reporter may
+// report the target again.
+func (s *Service) CreateReport(ctx context.Context, reporterID uuid.UUID, targetType string, targetID uuid.UUID, reason, details string) (*store.ModerationReport, bool, error) {
 	switch targetType {
 	case "question", "answer", "comment", "user":
 	default:
-		return nil, fmt.Errorf("invalid: target_type must be question, answer, comment or user")
+		return nil, false, fmt.Errorf("invalid: target_type must be question, answer, comment or user")
 	}
 	reason = strings.TrimSpace(reason)
 	if reason == "" {
-		return nil, fmt.Errorf("invalid: reason is required")
+		return nil, false, fmt.Errorf("invalid: reason is required")
 	}
 	if err := checkLen("reason", reason, maxReportReasonLen); err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if err := checkLen("details", details, maxReportDetailLen); err != nil {
-		return nil, err
+		return nil, false, err
+	}
+	owner, accessErr := s.reportTargetOwner(ctx, targetType, targetID, reporterID)
+	if err := reportTargetDecision(targetType, reporterID, owner, accessErr); err != nil {
+		return nil, false, err
+	}
+	existing, err := s.store.OpenReport(ctx, reporterID, targetType, targetID)
+	if err != nil {
+		return nil, false, err
+	}
+	if existing != nil {
+		return existing, false, nil
 	}
 	if err := s.checkRate(ctx, reporterID, reportRates); err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	report, err := s.store.CreateReport(ctx, reporterID, targetType, targetID, reason, details)
+	report, created, err := s.store.CreateReport(ctx, reporterID, targetType, targetID, reason, details)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	if s.producer != nil {
+	if created && s.producer != nil {
 		switch targetType {
 		case "question":
 			_ = s.producer.PublishQuestionReported(ctx, report.ID, targetID, reporterID, reason)
@@ -171,7 +190,44 @@ func (s *Service) CreateReport(ctx context.Context, reporterID uuid.UUID, target
 			_ = s.producer.PublishAnswerReported(ctx, report.ID, targetID, reporterID, reason)
 		}
 	}
-	return report, nil
+	return report, created, nil
+}
+
+// reportTargetOwner loads the reported target as reporter would see it
+// (the shared visibility rule, access.go) and returns who wrote it; for a
+// user target, the user. A user exists for Q&A when they have a Q&A profile
+// (the same record GET /profiles/:userId serves).
+func (s *Service) reportTargetOwner(ctx context.Context, targetType string, targetID, reporter uuid.UUID) (uuid.UUID, error) {
+	switch targetType {
+	case "question":
+		q, _, err := s.visibleQuestion(ctx, targetID, &reporter)
+		if err != nil {
+			return uuid.Nil, err
+		}
+		return q.AuthorID, nil
+	case "answer":
+		a, _, err := s.visibleAnswer(ctx, targetID, &reporter)
+		if err != nil {
+			return uuid.Nil, err
+		}
+		return a.AuthorID, nil
+	case "comment":
+		c, err := s.visibleComment(ctx, targetID, &reporter)
+		if err != nil {
+			return uuid.Nil, err
+		}
+		return c.AuthorID, nil
+	case "user":
+		p, err := s.store.GetQAProfile(ctx, targetID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return uuid.Nil, fmt.Errorf("not_found: user not found")
+		}
+		if err != nil {
+			return uuid.Nil, err
+		}
+		return p.UserID, nil
+	}
+	return uuid.Nil, fmt.Errorf("invalid: target_type must be question, answer, comment or user")
 }
 
 // --- Profile lists (H4) ---

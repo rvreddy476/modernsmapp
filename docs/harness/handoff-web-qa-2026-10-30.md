@@ -53,3 +53,12 @@ answer `application/pdf` as well as image/jpeg, png or webp, with
 `Content-Disposition: attachment` and a sandboxing CSP. When the type is
 PDF, save the blob as a download or render it in the page with pdf.js on a
 canvas; do not navigate to it or put it in an iframe. Images are unchanged.
+
+## Q&A reports are de-duplicated (31 Oct 2026)
+
+`POST /v1/qa/reports`: 201 for a new report; 200 with the reporter's
+existing open report when they report the same target again (original
+reason kept — show "You already reported this"); 404 `NOT_FOUND` when the
+target is missing or not visible to the reporter; 400 `INVALID_REQUEST`
+for reporting your own post or yourself. After a moderator closes a report
+the same user can report the target again (201).
