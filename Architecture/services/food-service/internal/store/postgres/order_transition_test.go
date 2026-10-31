@@ -105,10 +105,13 @@ func TestTransitionOrderTx_CancellationStampsOrder(t *testing.T) {
 func TestTransitionOrderTx_ConcurrentWritersOneWins(t *testing.T) {
 	s, cleanup := foodTestStore(t)
 	defer cleanup()
-	orderID, _, customer := seedOrderWithItem(t, s, "PREPARING")
+	orderID, _, _ := seedOrderWithItem(t, s, "PREPARING")
 	owner := readRestaurantOwner(t, s, orderID)
+	admin := uuid.New()
+	// A customer may no longer cancel from PREPARING (food audit M5, option
+	// a), so the race is between an admin cancel and the kitchen.
 	trs := []OrderTransition{
-		{OrderID: orderID, From: orderstate.Preparing, To: orderstate.CancelledByCustomer, Actor: orderstate.ActorCustomer, ChangedBy: &customer},
+		{OrderID: orderID, From: orderstate.Preparing, To: orderstate.CancelledByAdmin, Actor: orderstate.ActorAdmin, ChangedBy: &admin},
 		{OrderID: orderID, From: orderstate.Preparing, To: orderstate.ReadyForPickup, Actor: orderstate.ActorRestaurant, ChangedBy: &owner},
 	}
 	errs := make([]error, 2)

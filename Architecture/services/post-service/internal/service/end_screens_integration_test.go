@@ -283,8 +283,10 @@ func TestEndScreenReadDropsWhatTheViewerMayNotOpen(t *testing.T) {
 		t.Fatalf("latest for a minor: %+v want %s", v, pub)
 	}
 	// The collection's thumbnail never comes from an item the viewer may
-	// not open (the private first item is skipped).
-	if pl := got[ids["publist"]].Playlist; pl == nil || pl.ItemCount != 2 || pl.Title != "Builds" || pl.ThumbnailURL != "/thumb/unl" {
+	// not open (the private first item is skipped) nor from an unlisted one
+	// (founder decision, 31 Oct 2026: unlisted is never listed to others),
+	// so this playlist of a private and an unlisted video has none.
+	if pl := got[ids["publist"]].Playlist; pl == nil || pl.ItemCount != 2 || pl.Title != "Builds" || pl.ThumbnailURL != "" {
 		t.Fatalf("collection block %+v", pl)
 	}
 	if ch := got[ids["subscribe"]].Channel; ch == nil || ch.UserID != author || ch.Name != "Author Channel" {
