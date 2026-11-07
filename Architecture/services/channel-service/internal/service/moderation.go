@@ -108,8 +108,8 @@ func (s *Service) RemoveMember(ctx context.Context, channelID, actorID, targetID
 		// are out, and there is nothing to count or announce.
 		return nil
 	}
-	if err := s.adjustSubscriberCount(ctx, channelID, -1); err != nil {
-		slog.Warn("failed to decrement subscriber count", "error", err)
+	if err := s.refreshSubscriberCount(ctx, channelID); err != nil {
+		slog.Warn("failed to refresh subscriber count", "error", err)
 	}
 	if s.producer != nil {
 		if err := s.producer.PublishChannelUnsubscribed(ctx, channelID, targetID); err != nil {
@@ -138,8 +138,8 @@ func (s *Service) BanMember(ctx context.Context, channelID, actorID, targetID uu
 	// Every read counts non-banned rows only (store.CountSubscribers,
 	// ListSubscribers, the fan-out roster), so the materialised count has
 	// to shed the banned row too or it drifts upward forever.
-	if err := s.adjustSubscriberCount(ctx, channelID, -1); err != nil {
-		slog.Warn("failed to decrement subscriber count", "error", err)
+	if err := s.refreshSubscriberCount(ctx, channelID); err != nil {
+		slog.Warn("failed to refresh subscriber count", "error", err)
 	}
 	if s.producer != nil {
 		if err := s.producer.PublishChannelMemberBanned(ctx, channelID, targetID, actorID); err != nil {
@@ -167,8 +167,8 @@ func (s *Service) UnbanMember(ctx context.Context, channelID, actorID, targetID 
 		return fmt.Errorf("failed to unban member: %w", err)
 	}
 	if lifted {
-		if err := s.adjustSubscriberCount(ctx, channelID, 1); err != nil {
-			slog.Warn("failed to increment subscriber count", "error", err)
+		if err := s.refreshSubscriberCount(ctx, channelID); err != nil {
+			slog.Warn("failed to refresh subscriber count", "error", err)
 		}
 	}
 	return nil
@@ -270,6 +270,9 @@ func (s *Service) setChannelStatus(ctx context.Context, channelID uuid.UUID, sta
 	// without this a suspension would not take effect for a minute — the
 	// one thing an emergency switch must not do.
 	s.invalidateChannelMeta(ctx, channelID)
+	// Search drops a suspended channel only when it is told (internal key:
+	// no person acted, so no actor).
+	s.announceChannelStateByID(ctx, channelID, nil)
 	slog.Warn("channel status changed by moderation",
 		"channel_id", channelID, "status", status, "reason", reason)
 	return nil

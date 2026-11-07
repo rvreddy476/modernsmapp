@@ -17,3 +17,11 @@ var SetupSQL string
 //
 //go:embed migrations/001_backfill_reaction_count.sql
 var BackfillReactionCountSQL string
+
+// RecountSubscriberCountSQL is the one-off repair in
+// migrations/002_recount_subscriber_count.sql, which recomputes
+// broadcast_channels.subscriber_count from channel_members. Run by hand,
+// like 001; embedded so the integration test runs the exact text.
+//
+//go:embed migrations/002_recount_subscriber_count.sql
+var RecountSubscriberCountSQL string

@@ -28,6 +28,7 @@ import (
 	"github.com/atpost/shared/transport"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/segmentio/kafka-go"
 )
 
 func main() {
@@ -195,6 +196,35 @@ func main() {
 	).WithPostsByMedia(postClient)
 	go mediaConsumer.Start(consumerCtx)
 	slog.Info("started kafka consumer", "topic", mediaTopic, "group", "search-service-media-group")
+
+	// Broadcast channels (2026-11-07): channel-service publishes channel.*
+	// on its own topic, `channel-events`, which no consumer here read — so
+	// the channel handlers in the dispatcher never ran in a deployment, and
+	// channels_v1 changed only when the backfill ran. Its own group, so a
+	// stalled channel write never holds up posts. The group STARTS AT THE
+	// END of the topic: replaying the history would re-index channels from
+	// old id-only events (no handle, no status) over the backfill's
+	// documents. Run the channels backfill once after the first deploy.
+	// CHANNEL_KAFKA_TOPIC="-" disables.
+	//
+	// community-service's `community-events` is not consumed either; the
+	// community.* handlers are equally dead until a consumer is added the
+	// same way (COMMUNITY_KAFKA_TOPIC, off by default until its payloads are
+	// checked against community-service).
+	if channelTopic := env("CHANNEL_KAFKA_TOPIC", "channel-events"); channelTopic != "-" {
+		channelConsumer := events.NewConsumerFrom(
+			brokerList, "search-service-channel-group", channelTopic, searchStore, kafkaDialer, kafka.LastOffset,
+		)
+		go channelConsumer.Start(consumerCtx)
+		slog.Info("started kafka consumer", "topic", channelTopic, "group", "search-service-channel-group")
+	}
+	if communityTopic := env("COMMUNITY_KAFKA_TOPIC", "-"); communityTopic != "-" {
+		communityConsumer := events.NewConsumerFrom(
+			brokerList, "search-service-community-group", communityTopic, searchStore, kafkaDialer, kafka.LastOffset,
+		)
+		go communityConsumer.Start(consumerCtx)
+		slog.Info("started kafka consumer", "topic", communityTopic, "group", "search-service-community-group")
+	}
 
 	// Chat search (chat parity, 2026-10-18): chat-service's outbox topic
 	// feeds chat_messages_v1 (internal/events/chat.go). Its own group so a

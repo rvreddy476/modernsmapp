@@ -17,6 +17,16 @@ type Consumer struct {
 	reader *kafka.Reader
 	store  *store.Store
 	rdb    *redis.Client
+	// archived is told about each channel the deletion flow archives, so
+	// the new state is announced (channel.updated) and search drops it.
+	// Optional.
+	archived func(ctx context.Context, channelID uuid.UUID)
+}
+
+// WithArchivedHook sets the callback run after a channel is archived.
+func (c *Consumer) WithArchivedHook(f func(ctx context.Context, channelID uuid.UUID)) *Consumer {
+	c.archived = f
+	return c
 }
 
 func NewConsumer(brokers []string, groupID string, s *store.Store, rdb *redis.Client) *Consumer {
@@ -89,6 +99,10 @@ func (c *Consumer) handleUserDeletionRequested(ctx context.Context, envelope eve
 		for _, channelID := range orphanedChannels {
 			if err := c.store.ArchiveChannel(ctx, channelID); err != nil {
 				slog.Warn("failed to archive orphaned channel", "channel_id", channelID, "error", err)
+				continue
+			}
+			if c.archived != nil {
+				c.archived(ctx, channelID)
 			}
 		}
 	}

@@ -155,8 +155,9 @@ func TestCommunityCreated_PrivateIsNotIndexed(t *testing.T) {
 	}
 }
 
-// S-M4: channel.updated carries ids only, so it must not touch the
-// document (a full replace blanked channel_type and the channel vanished).
+// S-M4: an older, id-only channel.updated (before the snapshot, 2026-11-07)
+// must not touch the document (a full replace blanked channel_type and the
+// channel vanished).
 func TestChannelUpdated_LeavesTheDocumentAlone(t *testing.T) {
 	os := newRecordingOS(t)
 	c := os.consumer(t)

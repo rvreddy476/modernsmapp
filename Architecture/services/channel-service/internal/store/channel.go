@@ -418,22 +418,34 @@ const countSubscribersBatchSQL = `SELECT channel_id, COUNT(*) FROM channel_membe
 		WHERE channel_id = ANY($1) AND role <> 'banned'
 		GROUP BY channel_id`
 
-func (s *Store) IncrementSubscriberCount(ctx context.Context, channelID uuid.UUID, delta int) error {
-	query := `UPDATE broadcast_channels SET subscriber_count = subscriber_count + $2, updated_at = NOW() WHERE id = $1`
-	_, err := s.db.Exec(ctx, query, channelID, delta)
+// RecountSubscriberCounts sets subscriber_count from the roster for each
+// channel, in one statement (2026-11-07). It replaced an increment and an
+// absolute write of a Redis shard sum that was never seeded from Postgres
+// (service.refreshSubscriberCount has the history). A recount cannot drift:
+// running it twice, or concurrently with a join, lands on the roster.
+func (s *Store) RecountSubscriberCounts(ctx context.Context, channelIDs []uuid.UUID) error {
+	if len(channelIDs) == 0 {
+		return nil
+	}
+	_, err := s.db.Exec(ctx, recountSubscribersSQL, channelIDs)
 	return err
 }
 
-// SetSubscriberCount writes an absolute subscriber count. Used by the
-// sharded-counter flush worker: every flush interval it materializes
-// the sum across Redis shards back into broadcast_channels.subscriber_count.
-// The per-event IncrementSubscriberCount path stays for the Redis-less
-// fallback (dev loops + degraded-mode operation).
-func (s *Store) SetSubscriberCount(ctx context.Context, channelID uuid.UUID, total int64) error {
-	query := `UPDATE broadcast_channels SET subscriber_count = $2, updated_at = NOW() WHERE id = $1`
-	_, err := s.db.Exec(ctx, query, channelID, total)
-	return err
-}
+// recountSubscribersSQL counts the same rows every read counts (non-banned
+// members, CountSubscribersBatch) and writes only the rows that are wrong.
+// updated_at is deliberately NOT bumped: a derived counter changing is not
+// an edit to the channel, and clients sort and cache on that timestamp
+// (same rule as migrations/001).
+const recountSubscribersSQL = `UPDATE broadcast_channels b
+		SET subscriber_count = c.n
+		FROM (
+			SELECT ch.id,
+			       (SELECT COUNT(*) FROM channel_members m
+			         WHERE m.channel_id = ch.id AND m.role <> 'banned') AS n
+			FROM broadcast_channels ch
+			WHERE ch.id = ANY($1)
+		) c
+		WHERE b.id = c.id AND b.subscriber_count IS DISTINCT FROM c.n`
 
 func (s *Store) IncrementUpdateCount(ctx context.Context, channelID uuid.UUID, delta int) error {
 	query := `UPDATE broadcast_channels SET update_count = update_count + $2, updated_at = NOW() WHERE id = $1`
@@ -658,10 +670,39 @@ func (s *Store) scanChannels(ctx context.Context, query string, args ...any) ([]
 
 // --- GDPR helpers ---
 
+// RemoveUserFromAllChannels deletes the user's member rows and recounts
+// every channel they left, in one transaction. It used to delete only, so
+// each of those channels kept counting a person who no longer existed.
 func (s *Store) RemoveUserFromAllChannels(ctx context.Context, userID uuid.UUID) error {
-	query := `DELETE FROM channel_members WHERE user_id = $1`
-	_, err := s.db.Exec(ctx, query, userID)
-	return err
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
+
+	rows, err := tx.Query(ctx, `DELETE FROM channel_members WHERE user_id = $1 RETURNING channel_id`, userID)
+	if err != nil {
+		return err
+	}
+	var left []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return err
+		}
+		left = append(left, id)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(left) > 0 {
+		if _, err := tx.Exec(ctx, recountSubscribersSQL, left); err != nil {
+			return err
+		}
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) ListChannelsWhereUserIsOnlyOwner(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error) {
@@ -687,6 +728,8 @@ func (s *Store) ListChannelsWhereUserIsOnlyOwner(ctx context.Context, userID uui
 	return ids, rows.Err()
 }
 
+// ArchiveChannel sets status archived. The account-deletion consumer
+// announces the new state (events.Consumer) so search drops the channel.
 func (s *Store) ArchiveChannel(ctx context.Context, id uuid.UUID) error {
 	query := `UPDATE broadcast_channels SET status = 'archived', updated_at = NOW() WHERE id = $1`
 	_, err := s.db.Exec(ctx, query, id)

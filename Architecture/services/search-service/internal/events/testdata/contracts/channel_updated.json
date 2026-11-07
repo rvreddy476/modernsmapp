@@ -1,0 +1,20 @@
+{
+  "channel_id": "3f0c2a8e-6b1d-4c7a-9e2f-5a8b7c6d1e01",
+  "actor_id": "9b1e4c2a-7d3f-4e5a-8c6b-1a2b3c4d5e02",
+  "updated_at": "2026-11-07T10:30:00Z",
+  "channel": {
+    "channel_id": "3f0c2a8e-6b1d-4c7a-9e2f-5a8b7c6d1e01",
+    "owner_id": "9b1e4c2a-7d3f-4e5a-8c6b-1a2b3c4d5e02",
+    "handle": "riders",
+    "name": "Riders club",
+    "description": "",
+    "channel_type": "private",
+    "visibility": "private",
+    "category": "sports",
+    "is_verified": false,
+    "subscriber_count": 12,
+    "status": "suspended",
+    "created_at": "2026-10-01T08:00:00Z",
+    "updated_at": "2026-11-07T10:30:00Z"
+  }
+}

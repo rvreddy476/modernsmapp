@@ -83,13 +83,14 @@ type Service struct {
 	store    *store.Store
 	rdb      *redis.Client
 	producer *channelevents.Producer
-	// subscriberCounter shards broadcast_channels.subscriber_count across
-	// Redis so a celebrity channel with millions of subscribers doesn't
-	// pin the singleton row on every join/leave. Nil-safe — when Redis
-	// isn't configured the service falls back to the legacy per-event
-	// PG UPDATE (the hot-row path). Pattern mirrors community-service's
-	// memberCounter.
+	// subscriberCounter is used ONLY for its dirty set: a join or leave
+	// marks the channel, and the flush worker recounts the roster at most
+	// once per interval (refreshSubscriberCount). That keeps a celebrity
+	// channel's singleton row from being written on every join. Nil when
+	// Redis isn't configured: every change then recounts at once.
 	subscriberCounter *counters.Counter
+	// stateSeam replaces the producer for channel.updated in tests.
+	stateSeam channelStatePublisher
 	// policy is the communities launch-safety configuration (invite-only
 	// pilot, creator allowlist, kill switch). See policy.go; New() starts
 	// from DefaultCommunityPolicy so a caller that never calls
@@ -116,26 +117,40 @@ func New(s *store.Store, rdb *redis.Client) *Service {
 	return svc
 }
 
-// SubscriberCounter exposes the sharded counter so cmd/server can
-// attach a flush worker. Returns nil when Redis isn't configured.
+// SubscriberCounter exposes the dirty set so cmd/server can attach the
+// flush worker (which recounts; see refreshSubscriberCount). Returns nil
+// when Redis isn't configured.
 func (s *Service) SubscriberCounter() *counters.Counter {
 	return s.subscriberCounter
 }
 
-// adjustSubscriberCount routes increments/decrements through the
-// sharded counter when available, otherwise falls back to the legacy
-// per-event PG UPDATE. Failure inside the Redis path falls back to the
-// PG path so a hiccup on the buffer layer doesn't drop the increment.
-func (s *Service) adjustSubscriberCount(ctx context.Context, channelID uuid.UUID, delta int64) error {
+// refreshSubscriberCount brings broadcast_channels.subscriber_count back in
+// line with the roster after a join, leave, ban or unban.
+//
+// The roster is the truth: subscriber_count is the number of channel_members
+// rows that are not banned, the same number every read and the fan-out count.
+// It used to be the SUM of Redis shard deltas, written over the column by the
+// flush worker. Nothing ever seeded the shards from Postgres, so a channel's
+// first join after creation wrote 1 over the owner's 1 (the owner vanished
+// from the count), every channel with members from before the counter showed
+// only the joins since, a Redis flush reset every count to zero, and an
+// increment taken by the Postgres fallback was overwritten by the next flush.
+//
+// Now the delta is not counted anywhere. The channel is marked dirty and the
+// flush worker recounts it (store.RecountSubscriberCounts) — one indexed count
+// per dirty channel per interval, however many joins arrived, so the hot-row
+// protection stays. Without Redis, or when marking fails, it recounts at once.
+// Either way a wrong count heals on the channel's next change.
+func (s *Service) refreshSubscriberCount(ctx context.Context, channelID uuid.UUID) error {
 	if s.subscriberCounter != nil {
-		if err := s.subscriberCounter.Inc(ctx, channelID.String(), delta); err != nil {
-			slog.Warn("sharded subscriber counter inc failed; falling back to PG",
-				"channel_id", channelID, "delta", delta, "err", err)
-			return s.store.IncrementSubscriberCount(ctx, channelID, int(delta))
+		err := s.subscriberCounter.MarkDirty(ctx, channelID.String())
+		if err == nil {
+			return nil
 		}
-		return nil
+		slog.Warn("subscriber count: marking the channel dirty failed; recounting now",
+			"channel_id", channelID, "err", err)
 	}
-	return s.store.IncrementSubscriberCount(ctx, channelID, int(delta))
+	return s.store.RecountSubscriberCounts(ctx, []uuid.UUID{channelID})
 }
 
 func (s *Service) SetProducer(p *channelevents.Producer) {
@@ -295,7 +310,7 @@ func (s *Service) CreateChannel(ctx context.Context, ownerID uuid.UUID, params C
 
 	// Publish event
 	if s.producer != nil {
-		if err := s.producer.PublishChannelCreated(ctx, ch.ID, ownerID, ch.Name, ch.ChannelType); err != nil {
+		if err := s.producer.PublishChannelCreated(ctx, channelSnapshotOf(ch)); err != nil {
 			slog.Warn("failed to publish channel.created event", "error", err)
 		}
 	}
@@ -328,9 +343,10 @@ func (s *Service) withMembership(ctx context.Context, ch *store.BroadcastChannel
 // /my or /discover page.
 //
 // member_count stays the LIVE roster rather than subscriber_count:
-// subscriber_count is materialised from the sharded Redis counter, which is
-// never seeded from Postgres, so it is not a trustworthy total. When the
-// count query fails the stored value is shown rather than nothing.
+// subscriber_count is recounted from the same roster but only once per
+// flush interval (refreshSubscriberCount), and the grouped count is exact
+// at no extra cost per row. When the count query fails the stored value is
+// shown rather than nothing.
 func (s *Service) withMemberships(ctx context.Context, chs []store.BroadcastChannel, viewerID *uuid.UUID) []ChannelWithMembership {
 	out := make([]ChannelWithMembership, len(chs))
 	if len(chs) == 0 {
@@ -636,11 +652,7 @@ func (s *Service) UpdateChannel(ctx context.Context, channelID, actorID uuid.UUI
 		return nil, err
 	}
 
-	if s.producer != nil {
-		if err := s.producer.PublishChannelUpdated(ctx, channelID, actorID); err != nil {
-			slog.Warn("failed to publish channel.updated event", "error", err)
-		}
-	}
+	s.announceChannelState(ctx, ch, &actorID)
 
 	return ch, nil
 }
@@ -732,8 +744,8 @@ func (s *Service) Subscribe(ctx context.Context, channelID, userID uuid.UUID) er
 	// duplicate subscribes previously each ran the increment and drifted
 	// the counter forever.
 	if inserted {
-		if err := s.adjustSubscriberCount(ctx, channelID, 1); err != nil {
-			slog.Warn("failed to increment subscriber count", "error", err)
+		if err := s.refreshSubscriberCount(ctx, channelID); err != nil {
+			slog.Warn("failed to refresh subscriber count", "error", err)
 		}
 	}
 
@@ -767,8 +779,8 @@ func (s *Service) Unsubscribe(ctx context.Context, channelID, userID uuid.UUID) 
 		return nil
 	}
 
-	if err := s.adjustSubscriberCount(ctx, channelID, -1); err != nil {
-		slog.Warn("failed to decrement subscriber count", "error", err)
+	if err := s.refreshSubscriberCount(ctx, channelID); err != nil {
+		slog.Warn("failed to refresh subscriber count", "error", err)
 	}
 
 	if s.producer != nil {

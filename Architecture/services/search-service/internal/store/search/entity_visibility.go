@@ -127,3 +127,67 @@ func (s *Store) UpdateCommunityFields(ctx context.Context, communityID string, f
 	}
 	return nil
 }
+
+// ApplyChannelState writes a broadcast channel's full state, as carried by
+// channel.created / channel.updated since 2026-11-07 (channel-service's
+// ChannelSnapshot), and deletes the document instead when the channel is
+// no longer searchable: suspended, archived or deleted, or a type outside
+// the public set.
+//
+// A searchable channel is an update with an upsert, never a replace:
+//
+//   - "doc" overwrites every field the snapshot owns and leaves
+//     engagement_score alone, which the subscribe / unsubscribe events
+//     maintain (AddToEngagementScore);
+//   - "upsert" creates the whole document when there is none — a channel
+//     lifted out of suspension, or turned public, comes back into search
+//     without waiting on the backfill.
+//
+// Every field is written even when empty: the snapshot is the row, so an
+// empty description means the description was cleared.
+func (s *Store) ApplyChannelState(ctx context.Context, doc ChannelDoc) error {
+	if doc.ChannelID == "" {
+		return nil
+	}
+	if !ChannelSearchable(doc) {
+		return s.DeleteChannel(ctx, doc.ChannelID) // not searchable: out of the index
+	}
+	fields := map[string]any{
+		"channel_id":       doc.ChannelID,
+		"owner_id":         doc.OwnerID,
+		"handle":           doc.Handle,
+		"name":             doc.Name,
+		"description":      doc.Description,
+		"channel_type":     doc.ChannelType,
+		"category":         doc.Category,
+		"subscriber_count": doc.SubscriberCount,
+		"is_verified":      doc.IsVerified,
+		"status":           doc.Status,
+	}
+	if !doc.CreatedAt.IsZero() {
+		fields["created_at"] = doc.CreatedAt
+	}
+	if doc.EngagementScore == 0 {
+		doc.EngagementScore = computeEngagementScore(EntityChannels, engagementCounters{Subscribers: doc.SubscriberCount})
+	}
+	body, err := json.Marshal(map[string]any{"doc": fields, "upsert": doc})
+	if err != nil {
+		return err
+	}
+	retries := bulkRetries
+	req := opensearchapi.UpdateRequest{
+		Index:           IndexChannels,
+		DocumentID:      doc.ChannelID,
+		Body:            bytes.NewReader(body),
+		RetryOnConflict: &retries,
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("apply channel state %s: %s", doc.ChannelID, res.String())
+	}
+	return nil
+}

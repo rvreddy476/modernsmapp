@@ -3,12 +3,16 @@ package reindex
 // Rebuilding the Tube indices from post-service.
 //
 // tube_channels_v1 and tube_collections_v1 (store/search/tube.go) have no
-// event feed (account erasure and deactivation aside: purge_adapter.go): post-service publishes nothing when a channel is created or
-// renamed, or when a playlist is made, edited, or flipped private. This
-// walk over post-service's internal listing is therefore not the fallback
-// the users and products reindexes are — it is the ONLY way these indices
-// are populated, and running it is how they stay current until events
-// exist. It is cheap (two keyset walks) and safe on a live index (upserts
+// event feed that WRITES documents (account erasure and deactivation aside:
+// purge_adapter.go): search reads nothing when a channel is created or
+// renamed, or when a playlist is made or edited. Since 2026-11-07 a deleted
+// playlist, or one made unlisted or private, is REMOVED by its event
+// (tube.playlist.deleted / visibility_changed, consumer.go); this walk is
+// still what adds and updates, and its sweep is the backstop for
+// removals. This walk over post-service's internal listing is therefore
+// not the fallback the users and products reindexes are — it is the ONLY
+// way these indices are populated, and running it is how they stay current
+// until events exist. It is cheap (two keyset walks) and safe on a live index (upserts
 // by id), so it can be run on a schedule.
 //
 // VISIBILITY IS ENFORCED HERE, NOT ASSUMED. post-service lists every
@@ -147,11 +151,12 @@ func ReindexTube(ctx context.Context, client *postclient.Client, store *search.S
 		}
 	}
 
-	// Mark and sweep (S-M3): post-service hard-deletes playlists and
-	// publishes nothing, so a deleted playlist is simply never listed
-	// again. Only a walk that listed and wrote every row may sweep, and an
-	// empty listing never does: emptying an index because a listing came
-	// back blank is the outage-shaped failure this must not have.
+	// Mark and sweep (S-M3): a hard-deleted playlist is simply never listed
+	// again. tube.playlist.deleted removes it as it happens; the sweep is the
+	// backstop for an event that was lost or predates the event. Only a walk
+	// that listed and wrote every row may sweep, and an empty listing never
+	// does: emptying an index because a listing came back blank is the
+	// outage-shaped failure this must not have.
 	sweep := func(index string, fetched int, complete bool) int64 {
 		switch {
 		case !complete:

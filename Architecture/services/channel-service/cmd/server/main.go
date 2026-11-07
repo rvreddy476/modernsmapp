@@ -151,7 +151,8 @@ func main() {
 	slog.Info("kafka producer initialized", "topic", kafkaTopic)
 
 	// 9. Kafka consumer (GDPR)
-	consumer := channelevents.NewConsumerWithDialer(kafkaBrokers, "channel-service-consumer", channelStore, rdb, kafkaDialer)
+	consumer := channelevents.NewConsumerWithDialer(kafkaBrokers, "channel-service-consumer", channelStore, rdb, kafkaDialer).
+		WithArchivedHook(channelSvc.AnnounceSystemChange)
 	consumerCtx, cancelConsumer := context.WithCancel(ctx)
 	workerCtx, cancelWorker := context.WithCancel(ctx)
 
@@ -188,17 +189,19 @@ func main() {
 		slog.Warn("channel-service: communities disabled — schedule worker and fan-out worker NOT started; the GDPR consumer keeps running")
 	}
 
-	// Sharded-counter flush worker: drains Redis subscriber-count deltas
-	// every 10s and materializes the sum into broadcast_channels.subscriber_count.
-	// Removes per-subscribe contention on the singleton channel row at
-	// celebrity-channel scale. Matches the community member-count pattern.
+	// Subscriber-count flush worker: every 10s it takes the channels whose
+	// roster changed (the Redis dirty set) and recounts each one from
+	// channel_members. One write per busy channel per interval instead of one
+	// per join, and the count is the roster, not a Redis sum that was never
+	// seeded (service.refreshSubscriberCount). The worker passes the shard sum;
+	// it is ignored.
 	if sc := channelSvc.SubscriberCounter(); sc != nil {
-		flush := func(ctx context.Context, channelID string, total int64) error {
+		flush := func(ctx context.Context, channelID string, _ int64) error {
 			id, err := uuid.Parse(channelID)
 			if err != nil {
 				return err
 			}
-			return channelStore.SetSubscriberCount(ctx, id, total)
+			return channelStore.RecountSubscriberCounts(ctx, []uuid.UUID{id})
 		}
 		go counters.NewWorker(sc, flush, counters.WorkerOptions{}).Start(consumerCtx)
 		slog.Info("channel subscriber-count sharded flush worker started")

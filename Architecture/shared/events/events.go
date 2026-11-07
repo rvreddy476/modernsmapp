@@ -172,6 +172,15 @@ const (
 	// service back.
 	TubeChannelSubscribed   = "tube.channel.subscribed"   // payload: ChannelSubscriptionPayload
 	TubeChannelUnsubscribed = "tube.channel.unsubscribed" // payload: ChannelSubscriptionPayload
+
+	// Tube playlists leaving search (2026-11-07). post-service hard-deletes a
+	// playlist and lets its owner make one unlisted or private, and announced
+	// neither, so search kept advertising the title until the next reindex.
+	// Both go through the post-service outbox in the deleting / updating
+	// transaction. visibility_changed is emitted only when the visibility
+	// actually changes, in either direction.
+	TubePlaylistDeleted           = "tube.playlist.deleted"            // payload: TubePlaylistPayload
+	TubePlaylistVisibilityChanged = "tube.playlist.visibility_changed" // payload: TubePlaylistPayload
 )
 
 // v2.1 new event types
@@ -929,6 +938,18 @@ type ChannelPayload struct {
 	AvatarMediaID *string   `json:"avatar_media_id,omitempty"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// TubePlaylistPayload is the wire shape of tube.playlist.deleted and
+// tube.playlist.visibility_changed. Visibility is the playlist's visibility
+// after the change (on a delete, what it was when deleted); a consumer that
+// indexes public playlists removes the document unless it is "public".
+type TubePlaylistPayload struct {
+	PlaylistID         string    `json:"playlist_id"`
+	OwnerID            string    `json:"owner_id"`
+	Visibility         string    `json:"visibility"`
+	PreviousVisibility string    `json:"previous_visibility,omitempty"`
+	OccurredAt         time.Time `json:"occurred_at"`
 }
 
 // ChannelSubscriptionPayload is the wire shape of tube.channel.subscribed /

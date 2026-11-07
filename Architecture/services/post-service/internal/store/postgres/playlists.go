@@ -3,8 +3,10 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
+	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -126,9 +128,29 @@ type PlaylistPatch struct {
 
 // UpdatePlaylist applies the non-nil fields of patch and returns the row as
 // it now stands. Returns nil, nil when there is no such playlist.
+//
+// A change of visibility enqueues tube.playlist.visibility_changed in the
+// same transaction (2026-11-07): search indexes public playlists only, and
+// without the event a playlist made private stayed findable by its title
+// until the next reindex.
 func (s *Store) UpdatePlaylist(ctx context.Context, id uuid.UUID, patch PlaylistPatch) (*Playlist, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var previous string
+	err = tx.QueryRow(ctx, `SELECT visibility FROM playlists WHERE id = $1 FOR UPDATE`, id).Scan(&previous)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+
 	p := &Playlist{}
-	err := s.db.QueryRow(ctx, `
+	err = tx.QueryRow(ctx, `
 		UPDATE playlists SET
 			title       = COALESCE($2, title),
 			description = COALESCE($3, description),
@@ -139,10 +161,31 @@ func (s *Store) UpdatePlaylist(ctx context.Context, id uuid.UUID, patch Playlist
 		RETURNING id, creator_id, channel_id, title, description, cover_url, visibility, item_count, created_at, updated_at, kind`,
 		id, patch.Title, patch.Description, patch.Visibility, patch.CoverURL,
 	).Scan(&p.ID, &p.CreatorID, &p.ChannelID, &p.Title, &p.Description, &p.CoverURL, &p.Visibility, &p.ItemCount, &p.CreatedAt, &p.UpdatedAt, &p.Kind)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, nil
+	if err != nil {
+		return nil, err
 	}
-	return p, err
+
+	if p.Visibility != previous {
+		payload := tubePlaylistPayload(p.ID, p.CreatorID, p.Visibility, previous)
+		if err := InsertOutboxEventTx(ctx, tx, events.TubePlaylistVisibilityChanged, "playlist", p.ID, payload); err != nil {
+			return nil, fmt.Errorf("enqueue tube.playlist.visibility_changed: %w", err)
+		}
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+// tubePlaylistPayload builds the wire payload of both playlist events. Pure.
+func tubePlaylistPayload(id, ownerID uuid.UUID, visibility, previous string) events.TubePlaylistPayload {
+	return events.TubePlaylistPayload{
+		PlaylistID:         id.String(),
+		OwnerID:            ownerID.String(),
+		Visibility:         visibility,
+		PreviousVisibility: previous,
+		OccurredAt:         time.Now().UTC(),
+	}
 }
 
 // MovePlaylistItem moves one post to newPosition and returns the playlist's
@@ -244,10 +287,31 @@ func (s *Store) MovePlaylistItem(ctx context.Context, playlistID, postID uuid.UU
 	return items, nil
 }
 
-// DeletePlaylist removes a playlist by ID.
+// DeletePlaylist removes a playlist by ID and enqueues tube.playlist.deleted
+// in the same transaction (2026-11-07). It used to publish nothing, so
+// search kept the deleted playlist's document until a reindex swept it.
+// Deleting a playlist that is already gone is a no-op and enqueues nothing.
 func (s *Store) DeletePlaylist(ctx context.Context, id uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `DELETE FROM playlists WHERE id = $1`, id)
-	return err
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+
+	var ownerID uuid.UUID
+	var visibility string
+	err = tx.QueryRow(ctx, `DELETE FROM playlists WHERE id = $1 RETURNING creator_id, visibility`, id).Scan(&ownerID, &visibility)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	payload := tubePlaylistPayload(id, ownerID, visibility, "")
+	if err := InsertOutboxEventTx(ctx, tx, events.TubePlaylistDeleted, "playlist", id, payload); err != nil {
+		return fmt.Errorf("enqueue tube.playlist.deleted: %w", err)
+	}
+	return tx.Commit(ctx)
 }
 
 // ErrPlaylistItemExists: the post is already in the playlist (tube audit

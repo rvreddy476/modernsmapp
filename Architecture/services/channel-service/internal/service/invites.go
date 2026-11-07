@@ -319,8 +319,8 @@ func (s *Service) JoinByInvite(ctx context.Context, code string, userID uuid.UUI
 		return nil, fmt.Errorf("failed to join: %w", err)
 	}
 	if inserted {
-		if err := s.adjustSubscriberCount(ctx, ch.ID, 1); err != nil {
-			slog.Warn("failed to increment subscriber count", "error", err)
+		if err := s.refreshSubscriberCount(ctx, ch.ID); err != nil {
+			slog.Warn("failed to refresh subscriber count", "error", err)
 		}
 	}
 	if s.producer != nil {

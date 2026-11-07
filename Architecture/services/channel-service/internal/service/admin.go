@@ -87,6 +87,7 @@ func (s *Service) adminSetSuspended(ctx context.Context, actor, channelID uuid.U
 	// Same reason as setChannelStatus: the 60 s meta cache would otherwise
 	// keep a suspended channel visible.
 	s.invalidateChannelMeta(ctx, channelID)
+	s.announceChannelStateByID(ctx, channelID, &actor)
 	slog.Warn("channel status changed by admin console",
 		"channel_id", channelID, "status", out.Status, "actor_id", actor)
 	return out, nil

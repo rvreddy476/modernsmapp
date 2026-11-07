@@ -215,13 +215,23 @@ func NewConsumer(brokers []string, groupID string, topic string, store *search.S
 }
 
 func NewConsumerWithDialer(brokers []string, groupID string, topic string, store *search.Store, dialer *kafka.Dialer) *Consumer {
+	return NewConsumerFrom(brokers, groupID, topic, store, dialer, kafka.FirstOffset)
+}
+
+// NewConsumerFrom is NewConsumerWithDialer with the offset a NEW consumer
+// group starts at (kafka.FirstOffset or kafka.LastOffset). It matters only
+// the first time the group runs; afterwards the committed offset wins. A
+// consumer added for a topic with history it must not replay starts at
+// LastOffset and is seeded by the backfill instead.
+func NewConsumerFrom(brokers []string, groupID string, topic string, store *search.Store, dialer *kafka.Dialer, startOffset int64) *Consumer {
 	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:  brokers,
-		GroupID:  groupID,
-		Topic:    topic,
-		MinBytes: 10e3,
-		MaxBytes: 10e6,
-		Dialer:   dialer,
+		Brokers:     brokers,
+		GroupID:     groupID,
+		Topic:       topic,
+		MinBytes:    10e3,
+		MaxBytes:    10e6,
+		Dialer:      dialer,
+		StartOffset: startOffset,
 	})
 
 	// Audit HS2: configure a DLQ writer so failed messages don't fall
@@ -887,6 +897,10 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
 			return err
 		}
+		if p.Channel != nil {
+			return c.store.ApplyChannelState(ctx, p.Channel.doc(p.ChannelID))
+		}
+		// An older producer: the four fields below are all there is.
 		// Created active (channel-service default); IndexChannel deletes
 		// instead when the type is not public (S-M2).
 		return c.store.IndexChannel(ctx, search.ChannelDoc{
@@ -899,13 +913,11 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		})
 
 	case events.EventChannelUpdated:
-		// S-M4: channel-service's payload carries ids only, so there is
-		// nothing to write. It used to replace the whole document with
-		// {channel_id, created_at}, which blanked channel_type and made an
-		// edited channel vanish from search for good. The document is left
-		// as it is; the backfill brings edits in until the event carries the
-		// changed fields and status.
-		return nil
+		var p channelUpdatedPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.applyChannelUpdate(ctx, p)
 
 	case events.EventChannelDeleted:
 		var p channelDeletedPayload
@@ -931,6 +943,14 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 			return err
 		}
 		return c.store.AddToEngagementScore(ctx, search.IndexChannels, p.ChannelID, -1)
+
+	// --- Tube playlists (post-service outbox, 2026-11-07) ---
+	case events.TubePlaylistDeleted, events.TubePlaylistVisibilityChanged:
+		var p events.TubePlaylistPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.applyPlaylistRemoval(ctx, envelope.EventType, p)
 
 	// --- Products / Commerce ---
 	//
@@ -1027,11 +1047,57 @@ type channelCreatedPayload struct {
 	Name        string    `json:"name"`
 	ChannelType string    `json:"channel_type"`
 	CreatedAt   time.Time `json:"created_at"`
+	// Channel: as on channel.updated (absent on older events).
+	Channel *channelSnapshot `json:"channel,omitempty"`
 }
 
 type channelUpdatedPayload struct {
 	ChannelID string    `json:"channel_id"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// Channel is the whole row after the change (channel-service, since
+	// 2026-11-07). Absent on older events, which carried ids only.
+	Channel *channelSnapshot `json:"channel,omitempty"`
+}
+
+// channelSnapshot is channel-service's ChannelSnapshot: the row as
+// committed, every field current (an empty description is empty). Contract:
+// testdata/contracts/channel_updated.json, copied from channel-service.
+type channelSnapshot struct {
+	ChannelID       string    `json:"channel_id"`
+	OwnerID         string    `json:"owner_id"`
+	Handle          string    `json:"handle"`
+	Name            string    `json:"name"`
+	Description     string    `json:"description"`
+	ChannelType     string    `json:"channel_type"`
+	Visibility      string    `json:"visibility"`
+	Category        string    `json:"category"`
+	IsVerified      bool      `json:"is_verified"`
+	SubscriberCount int       `json:"subscriber_count"`
+	Status          string    `json:"status"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+}
+
+// doc converts the snapshot to the index document. The envelope's
+// channel_id is the fallback when the snapshot omits its own.
+func (s channelSnapshot) doc(envelopeChannelID string) search.ChannelDoc {
+	id := s.ChannelID
+	if id == "" {
+		id = envelopeChannelID
+	}
+	return search.ChannelDoc{
+		ChannelID:       id,
+		OwnerID:         s.OwnerID,
+		Handle:          s.Handle,
+		Name:            s.Name,
+		Description:     s.Description,
+		ChannelType:     s.ChannelType,
+		Category:        s.Category,
+		SubscriberCount: s.SubscriberCount,
+		IsVerified:      s.IsVerified,
+		CreatedAt:       s.CreatedAt,
+		Status:          s.Status,
+	}
 }
 
 type channelDeletedPayload struct {
@@ -1071,4 +1137,36 @@ func (c *Consumer) applyCommunityUpdate(ctx context.Context, p communityUpdatedP
 		fields["community_type"] = p.CommunityType
 	}
 	return c.store.UpdateCommunityFields(ctx, p.CommunityID, fields)
+}
+
+// applyChannelUpdate handles channel.updated. Since 2026-11-07 the event
+// carries the whole row (channelSnapshot), so it is applied like
+// community.updated: a channel that is no longer searchable (suspended,
+// archived, a non-public type) is removed, anything else is written field by
+// field (store.ApplyChannelState). An older, id-only event carries nothing
+// to write and leaves the document alone — replacing the document with ids
+// is what blanked channel_type and made edited channels vanish (S-M4).
+func (c *Consumer) applyChannelUpdate(ctx context.Context, p channelUpdatedPayload) error {
+	if p.Channel == nil {
+		return nil
+	}
+	return c.store.ApplyChannelState(ctx, p.Channel.doc(p.ChannelID))
+}
+
+// applyPlaylistRemoval handles the two playlist events. tube_collections_v1
+// holds public playlists only (reindex/tube.go), and these events are how a
+// playlist leaves it without waiting on the next reindex: a deleted one, or
+// one whose visibility is now anything but public, is removed.
+//
+// A playlist that BECOMES public is not written here: the event carries no
+// title or description, so the reindex brings it in. That direction can
+// wait; the other cannot, because the title was withdrawn by its owner.
+func (c *Consumer) applyPlaylistRemoval(ctx context.Context, eventType string, p events.TubePlaylistPayload) error {
+	if p.PlaylistID == "" {
+		return nil
+	}
+	if eventType == events.TubePlaylistDeleted || p.Visibility != "public" {
+		return c.store.DeleteTubeCollection(ctx, p.PlaylistID)
+	}
+	return nil
 }

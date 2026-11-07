@@ -102,24 +102,25 @@ func (p *Producer) PublishFanoutUpdate(ctx context.Context, channelID uuid.UUID,
 	})
 }
 
-func (p *Producer) PublishChannelCreated(ctx context.Context, channelID, ownerID uuid.UUID, name, channelType string) error {
-	payload := ChannelCreatedPayload{
-		ChannelID:   channelID.String(),
-		OwnerID:     ownerID.String(),
-		Name:        name,
-		ChannelType: channelType,
-		CreatedAt:   time.Now(),
+// PublishChannelCreated announces a new channel. The top-level fields are the
+// original contract; Channel carries the whole searchable state so a consumer
+// can index the handle and description too.
+func (p *Producer) PublishChannelCreated(ctx context.Context, snap ChannelSnapshot) error {
+	ownerID, err := uuid.Parse(snap.OwnerID)
+	if err != nil {
+		return fmt.Errorf("channel.created: owner id: %w", err)
 	}
-	return p.publish(ctx, EventChannelCreated, &ownerID, payload)
+	return p.publishKeyed(ctx, EventChannelCreated, &ownerID, snap.ChannelID,
+		NewChannelCreatedPayload(snap, time.Now()))
 }
 
-func (p *Producer) PublishChannelUpdated(ctx context.Context, channelID, actorID uuid.UUID) error {
-	payload := ChannelUpdatedPayload{
-		ChannelID: channelID.String(),
-		ActorID:   actorID.String(),
-		UpdatedAt: time.Now(),
-	}
-	return p.publish(ctx, EventChannelUpdated, &actorID, payload)
+// PublishChannelUpdated announces a channel's state after any change a
+// consumer may care about: an edit, a suspension or its lifting, an archive.
+// actorID is nil for a system change (the internal moderation key, the
+// account-deletion consumer).
+func (p *Producer) PublishChannelUpdated(ctx context.Context, snap ChannelSnapshot, actorID *uuid.UUID) error {
+	return p.publishKeyed(ctx, EventChannelUpdated, actorID, snap.ChannelID,
+		NewChannelUpdatedPayload(snap, actorID, time.Now()))
 }
 
 func (p *Producer) PublishChannelDeleted(ctx context.Context, channelID, actorID uuid.UUID) error {
@@ -128,7 +129,7 @@ func (p *Producer) PublishChannelDeleted(ctx context.Context, channelID, actorID
 		ActorID:   actorID.String(),
 		DeletedAt: time.Now(),
 	}
-	return p.publish(ctx, EventChannelDeleted, &actorID, payload)
+	return p.publishKeyed(ctx, EventChannelDeleted, &actorID, channelID.String(), payload)
 }
 
 func (p *Producer) PublishChannelSubscribed(ctx context.Context, channelID, userID uuid.UUID) error {
@@ -214,6 +215,19 @@ func (p *Producer) PublishChannelUpdateEchoed(ctx context.Context, channelID, up
 // at-least-once + duplicates, so a transient broker blip becomes a
 // logged warning rather than a user-facing failure.
 func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload any) error {
+	return p.publishKeyed(ctx, eventType, actorID, "", payload)
+}
+
+// publishKeyed is publish with an explicit partition key. The channel
+// lifecycle events (created, updated, deleted) are keyed by channel id so
+// they stay in order on one partition: a consumer that applies "suspended"
+// and then a stale "active" edit would put a suspended channel back in
+// search. An empty key falls back to the event id, which spreads the
+// high-volume events (subscribes, comments) across partitions.
+func (p *Producer) publishKeyed(ctx context.Context, eventType string, actorID *uuid.UUID, key string, payload any) error {
+	if p == nil || p.writer == nil {
+		return nil
+	}
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal payload: %w", err)
@@ -232,8 +246,11 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.
 		return fmt.Errorf("failed to marshal envelope: %w", err)
 	}
 
+	if key == "" {
+		key = envelope.EventID
+	}
 	msg := kafka.Message{
-		Key:   []byte(envelope.EventID),
+		Key:   []byte(key),
 		Value: envelopeBytes,
 	}
 	go func() {
@@ -379,18 +396,86 @@ const (
 
 // --- Payload types ---
 
+// ChannelSnapshot is a channel's consumer-facing state as committed, carried
+// whole on channel.created and channel.updated (2026-11-07). search-service
+// indexes from it: it used to get ids only on channel.updated and could not
+// apply an edit, a suspension or a change of type at all.
+//
+// It is a SNAPSHOT, not a diff: every field is the row's current value, so
+// an empty description means the description is empty. A consumer tells a
+// snapshot event from an older id-only one by the presence of the "channel"
+// object. Contract fixture: testdata/contracts/channel_updated.json.
+type ChannelSnapshot struct {
+	ChannelID   string `json:"channel_id"`
+	OwnerID     string `json:"owner_id"`
+	Handle      string `json:"handle"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// ChannelType is the authority for who may find the channel;
+	// Visibility (public|private) is the wire field derived from it.
+	ChannelType     string `json:"channel_type"`
+	Visibility      string `json:"visibility"`
+	Category        string `json:"category"`
+	IsVerified      bool   `json:"is_verified"`
+	SubscriberCount int64  `json:"subscriber_count"`
+	// Status: active | suspended | archived | deleted. Only active is
+	// servable.
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
 type ChannelCreatedPayload struct {
 	ChannelID   string    `json:"channel_id"`
 	OwnerID     string    `json:"owner_id"`
 	Name        string    `json:"name"`
 	ChannelType string    `json:"channel_type"`
 	CreatedAt   time.Time `json:"created_at"`
+	// Channel is the full state (added 2026-11-07; absent on older events).
+	Channel *ChannelSnapshot `json:"channel,omitempty"`
+}
+
+// NewChannelCreatedPayload fills the original top-level fields from the
+// snapshot, so a consumer of the old contract reads exactly what it did.
+func NewChannelCreatedPayload(snap ChannelSnapshot, now time.Time) ChannelCreatedPayload {
+	created := snap.CreatedAt
+	if created.IsZero() {
+		created = now
+	}
+	return ChannelCreatedPayload{
+		ChannelID:   snap.ChannelID,
+		OwnerID:     snap.OwnerID,
+		Name:        snap.Name,
+		ChannelType: snap.ChannelType,
+		CreatedAt:   created,
+		Channel:     &snap,
+	}
 }
 
 type ChannelUpdatedPayload struct {
-	ChannelID string    `json:"channel_id"`
+	ChannelID string `json:"channel_id"`
+	// ActorID is "" for a system change (no person acted).
 	ActorID   string    `json:"actor_id"`
 	UpdatedAt time.Time `json:"updated_at"`
+	// Channel is the full state after the change (added 2026-11-07; absent
+	// on older events, which carried the three fields above only).
+	Channel *ChannelSnapshot `json:"channel,omitempty"`
+}
+
+// NewChannelUpdatedPayload builds channel.updated from the snapshot.
+func NewChannelUpdatedPayload(snap ChannelSnapshot, actorID *uuid.UUID, now time.Time) ChannelUpdatedPayload {
+	out := ChannelUpdatedPayload{
+		ChannelID: snap.ChannelID,
+		UpdatedAt: now,
+		Channel:   &snap,
+	}
+	if actorID != nil {
+		out.ActorID = actorID.String()
+	}
+	if !snap.UpdatedAt.IsZero() {
+		out.UpdatedAt = snap.UpdatedAt
+	}
+	return out
 }
 
 type ChannelDeletedPayload struct {
