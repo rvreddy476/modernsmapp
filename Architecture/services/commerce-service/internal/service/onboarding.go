@@ -2,10 +2,16 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/atpost/commerce-service/internal/kyc"
 	"github.com/atpost/commerce-service/internal/media"
@@ -48,6 +54,13 @@ func (s *Service) StartOnboarding(ctx context.Context, in StartOnboardingInput) 
 	}
 	if !postgres.ValidSellScope(scope) {
 		return nil, fieldErr("sell_scope", ErrSellScopeInvalid)
+	}
+	// A business page is linked to the shop on approval, so the seller must
+	// own it. Checked before anything is stored (US-M3).
+	if in.BusinessPageID != nil {
+		if err := s.verifyBusinessPageOwner(ctx, in.UserID, *in.BusinessPageID); err != nil {
+			return nil, err
+		}
 	}
 
 	// Return existing draft if present
@@ -329,11 +342,16 @@ func (s *Service) AdminApproveSeller(ctx context.Context, sellerID, actorID uuid
 	if err := s.store.ApproveSellerByAdmin(ctx, sellerID, actorID, notes); err != nil {
 		return err
 	}
-	// Include business_page_id so user-service can activate the page
+	// business_page_id travels with the seller's user_id: user-service links
+	// the page only when that user owns it, and approves it only out of
+	// pending_review (audit US-M3).
 	payload := map[string]any{"seller_id": sellerID, "actor_id": actorID}
 	sel, err := s.store.GetSellerByID(ctx, sellerID)
-	if err == nil && sel.BusinessPageID != nil {
-		payload["business_page_id"] = *sel.BusinessPageID
+	if err == nil {
+		payload["user_id"] = sel.UserID
+		if sel.BusinessPageID != nil {
+			payload["business_page_id"] = *sel.BusinessPageID
+		}
 	}
 	s.publish(ctx, events.EventSellerApproved, payload)
 	// Every listing of this seller may have just become visible: tell search,
@@ -533,5 +551,72 @@ func (s *Service) AdminRequestProductChanges(ctx context.Context, productID, act
 		return err
 	}
 	s.publishProductVisibility(ctx, productID)
+	return nil
+}
+
+// ─── Business page ownership (audit US-M3) ───────────────────────
+
+// ErrBusinessPageNotOwned refuses a business_page_id that is not a page the
+// seller owns (or does not exist; the two are not told apart). The id used
+// to be stored from the request body unchecked, so a seller could name
+// someone else's page and have it linked to their shop on approval.
+var ErrBusinessPageNotOwned = errors.New("business_page_id is not a page you own")
+
+// ErrBusinessPageCheckUnavailable means the ownership check could not run.
+// The id is refused, never stored unchecked.
+var ErrBusinessPageCheckUnavailable = errors.New("business page ownership check unavailable")
+
+// userServiceBaseURL is the app user-service, the owner of business pages.
+// APP_USER_SERVICE_URL, not USER_SERVICE_URL: across this repo the latter
+// often names identity-user, which has no pages.
+func userServiceBaseURL() string {
+	if u := strings.TrimRight(strings.TrimSpace(os.Getenv("APP_USER_SERVICE_URL")), "/"); u != "" {
+		return u
+	}
+	return "http://user-service:8082"
+}
+
+// verifyBusinessPageOwner asks user-service's internal ownership route
+// whether userID owns pageID. It fails closed: no key, an unreachable
+// service or an unexpected answer refuses the id.
+func (s *Service) verifyBusinessPageOwner(ctx context.Context, userID, pageID uuid.UUID) error {
+	if s.internalServiceKey == "" {
+		return ErrBusinessPageCheckUnavailable
+	}
+	endpoint := fmt.Sprintf("%s/internal/pages/%s/owner", userServiceBaseURL(), url.PathEscape(pageID.String()))
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return ErrBusinessPageCheckUnavailable
+	}
+	req.Header.Set("X-Internal-Service-Key", s.internalServiceKey)
+	client := s.httpClient
+	if client == nil {
+		client = &http.Client{Timeout: 5 * time.Second}
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		slog.Warn("commerce: business page ownership check failed", "page_id", pageID, "error", err)
+		return ErrBusinessPageCheckUnavailable
+	}
+	defer resp.Body.Close()
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusNotFound:
+		return ErrBusinessPageNotOwned
+	default:
+		slog.Warn("commerce: business page ownership check refused", "page_id", pageID, "status", resp.StatusCode)
+		return ErrBusinessPageCheckUnavailable
+	}
+	var body struct {
+		Data struct {
+			UserID uuid.UUID `json:"user_id"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&body); err != nil {
+		return ErrBusinessPageCheckUnavailable
+	}
+	if body.Data.UserID == uuid.Nil || body.Data.UserID != userID {
+		return ErrBusinessPageNotOwned
+	}
 	return nil
 }

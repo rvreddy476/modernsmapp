@@ -562,6 +562,18 @@ func writeCommerceError(c *gin.Context, err error) {
 		return
 	}
 
+	// Onboarding's business-page ownership check (audit US-M3): someone
+	// else's page and a missing page read the same; a check that could not
+	// run is the server's problem, and the id was not stored.
+	if errors.Is(err, service.ErrBusinessPageNotOwned) {
+		api.ErrorWithContext(ctx, w, http.StatusNotFound, "BUSINESS_PAGE_NOT_FOUND", "business page not found", nil)
+		return
+	}
+	if errors.Is(err, service.ErrBusinessPageCheckUnavailable) {
+		api.ErrorWithContext(ctx, w, http.StatusServiceUnavailable, "BUSINESS_PAGE_CHECK_UNAVAILABLE", "could not check the business page; try again", nil)
+		return
+	}
+
 	// Coupons: the 422 refusals at quote and checkout, and the write errors
 	// of the seller and admin coupon routes (handler_coupons_offers.go).
 	if writeCouponError(c, err) {

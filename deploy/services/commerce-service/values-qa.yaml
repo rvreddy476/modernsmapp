@@ -117,6 +117,7 @@ env:
   # (grants `seller`): both identity-auth.
   AUTH_SERVICE_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
   IDENTITY_AUTH_URL: http://identity-auth-service.atpost.svc.cluster.local:8081
+  APP_USER_SERVICE_URL: http://user-service.atpost.svc.cluster.local:8082
   PAYMENTS_SERVICE_URL: http://payments-service.atpost.svc.cluster.local:8102
   MONETIZATION_SERVICE_URL: http://monetization-service.atpost.svc.cluster.local:8099
   # Media ownership verification: NOT optional in a deployed environment

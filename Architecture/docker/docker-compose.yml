@@ -1931,6 +1931,8 @@ services:
       # grants `seller`). Kept distinct so the two clients can be pointed
       # apart if identity ever splits contact lookup from role management.
       IDENTITY_AUTH_URL: http://identity-auth:8081
+      # App user-service owns business pages; onboarding checks page ownership.
+      APP_USER_SERVICE_URL: http://user-service:8082
       PAYMENTS_SERVICE_URL: http://payments-service:8102
       # Commerce speaks to payments with its own signed identity, not the
       # shared internal key (Commerce P0 A2). Key material lives in .env.
