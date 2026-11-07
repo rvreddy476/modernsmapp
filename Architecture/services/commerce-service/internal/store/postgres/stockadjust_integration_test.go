@@ -234,6 +234,35 @@ func TestStockCannotGoNegative(t *testing.T) {
 
 	if _, err := store.AdjustStock(ctx, f.adjust(-4, "theft")); err == nil {
 		t.Fatal("removed 4 units from a stock of 3")
+	} else if !errors.Is(err, ErrInsufficientStock) {
+		t.Fatalf("err = %v, want ErrInsufficientStock (answered 409, not 500)", err)
+	}
+	// No partial change: the total, the audit table and the ledger are as
+	// they were.
+	if n := totalOf(t, f.variantID); n != 3 {
+		t.Fatalf("total_qty = %d after a refused removal, want 3", n)
+	}
+	var audit, ledger int
+	_ = testPool.QueryRow(ctx, `SELECT count(*) FROM inventory_adjustments WHERE variant_id=$1`, f.variantID).Scan(&audit)
+	_ = testPool.QueryRow(ctx, `SELECT count(*) FROM inventory_ledger WHERE variant_id=$1 AND reason='seller_adjust'`, f.variantID).Scan(&ledger)
+	if audit != 0 || ledger != 0 {
+		t.Fatalf("a refused removal wrote %d audit and %d ledger rows", audit, ledger)
+	}
+}
+
+// A variant with no inventory row has nothing to remove: the same refusal.
+func TestRemovingFromAVariantWithNoInventoryRowIsInsufficientStock(t *testing.T) {
+	ctx := context.Background()
+	store := New(testPool)
+	f := newStockFixture(t, 0, 0)
+	mustExec(t, `DELETE FROM inventory_items WHERE variant_id=$1`, f.variantID)
+	if _, err := store.AdjustStock(ctx, f.adjust(-1, "damage")); !errors.Is(err, ErrInsufficientStock) {
+		t.Fatalf("err = %v, want ErrInsufficientStock", err)
+	}
+	var rows int
+	_ = testPool.QueryRow(ctx, `SELECT count(*) FROM inventory_items WHERE variant_id=$1`, f.variantID).Scan(&rows)
+	if rows != 0 {
+		t.Fatal("a refused removal created an inventory row")
 	}
 }
 

@@ -21,6 +21,7 @@ import (
 	"github.com/atpost/media-service/internal/store/blob"
 	"github.com/atpost/media-service/internal/store/postgres"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 var (
@@ -29,6 +30,11 @@ var (
 	ErrUploadSizeMismatch = errors.New("upload object size does not match the declared size")
 	ErrUploadState        = errors.New("upload cannot be confirmed in its current state")
 	ErrUploadIntegrity    = errors.New("upload metadata integrity check failed")
+	// ErrUploadNotFound: confirm named a media id that has no record.
+	ErrUploadNotFound = errors.New("upload not found")
+	// ErrUploadUnacceptable: the bytes are the declared type but break a
+	// content rule checked at confirm (a voice note's duration bounds).
+	ErrUploadUnacceptable = errors.New("upload content is not acceptable")
 )
 
 // checkUploadLimit is what InitUpload and InitResumableUpload call.
@@ -215,6 +221,9 @@ func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, me
 func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID uuid.UUID) (*postgres.MediaAsset, error) {
 	// 1. Fetch the record and verify ownership
 	media, err := s.pgStore.GetMedia(ctx, mediaID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("%w: %s", ErrUploadNotFound, mediaID)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -272,11 +281,11 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 	if err != nil {
 		return nil, fmt.Errorf("read uploaded object header: %w", err)
 	}
-	if !uploadHeaderValid(media.FileType, media.MimeType, headerData) {
+	if headerErr := uploadHeaderError(media.FileType, media.MimeType, headerData); headerErr != nil {
 		if updateErr := s.pgStore.UpdateStatus(ctx, mediaID, "rejected"); updateErr != nil {
 			return nil, fmt.Errorf("reject invalid %s and persist status: %w", media.FileType, updateErr)
 		}
-		return nil, fmt.Errorf("invalid %s file: magic bytes do not match declared MIME type", media.FileType)
+		return nil, headerErr
 	}
 
 	// 2. Update status to 'uploaded' and pin the upload-time identity
@@ -409,6 +418,20 @@ func (s *Service) confirmedAnswer(ctx context.Context, mediaID uuid.UUID) (*post
 // MIME (finding 5).
 func uploadedTypeMatches(media *postgres.MediaAsset, info blob.ObjectInfo) bool {
 	return sameMIME(info.ContentType, media.MimeType)
+}
+
+// uploadHeaderError is the confirm-time verdict on an upload's first bytes:
+// nil when they are the declared type, else ErrUploadIntegrity (409
+// UPLOAD_INTEGRITY_ERROR, the contract in
+// docs/harness/handoff-android-auth-2026-10-29.md). It used to be a bare
+// error, which the handler answered as 500 INTERNAL_ERROR, so a client could
+// not tell a mistyped file from an outage and retried a refusal.
+func uploadHeaderError(fileType, declaredMIME string, head []byte) error {
+	if uploadHeaderValid(fileType, declaredMIME, head) {
+		return nil
+	}
+	return fmt.Errorf("%w: invalid %s file: magic bytes do not match declared MIME type",
+		ErrUploadIntegrity, fileType)
 }
 
 // uploadHeaderValid checks an upload's first bytes against its file type

@@ -67,7 +67,7 @@ func (s *Service) processVoice(ctx context.Context, media *postgres.MediaAsset) 
 	meta, err := processing.ProbeAudio(ctx, localPath)
 	if err != nil || meta == nil {
 		_ = s.pgStore.UpdateStatus(ctx, media.ID, "rejected")
-		return fmt.Errorf("voice upload rejected: audio could not be decoded")
+		return fmt.Errorf("%w: voice upload rejected: audio could not be decoded", ErrUploadIntegrity)
 	}
 	durationSec := float64(meta.DurationMs) / 1000.0
 	if err := ValidateVoiceDuration(durationSec); err != nil {

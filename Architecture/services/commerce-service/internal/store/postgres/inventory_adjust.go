@@ -57,6 +57,10 @@ var (
 	// the units already promised to live orders.
 	ErrStockBelowReserved = errors.New("commerce: stock cannot fall below the units reserved for live orders")
 
+	// ErrInsufficientStock means the adjustment removes more units than the
+	// variant has. It was a bare error, answered 500.
+	ErrInsufficientStock = errors.New("commerce: cannot remove more units than are in stock")
+
 	// ErrZeroAdjustment means a delta of zero — nothing to record.
 	ErrZeroAdjustment = errors.New("commerce: a stock adjustment needs a non-zero delta")
 )
@@ -161,7 +165,7 @@ func (s *Store) AdjustStock(ctx context.Context, adj StockAdjustment) (*StockLev
 		// permanently unstockable. Only a restock can create one — there is
 		// nothing to write down.
 		if adj.Delta < 0 {
-			return nil, fmt.Errorf("commerce: variant %s has no stock to remove", adj.VariantID)
+			return nil, fmt.Errorf("%w: variant %s has no stock to remove", ErrInsufficientStock, adj.VariantID)
 		}
 		if _, err = tx.Exec(ctx, `
 			INSERT INTO inventory_items (id, variant_id, seller_id, total_qty, updated_at)
@@ -173,13 +177,15 @@ func (s *Store) AdjustStock(ctx context.Context, adj StockAdjustment) (*StockLev
 		return nil, err
 	}
 
-	newTotal := total + adj.Delta
-	if newTotal < 0 {
-		return nil, fmt.Errorf("commerce: cannot remove %d units from a stock of %d", -adj.Delta, total)
-	}
-	if newTotal < reserved {
-		return nil, fmt.Errorf("%w: %d reserved, adjustment would leave %d",
-			ErrStockBelowReserved, reserved, newTotal)
+	// A refusal returns before any write, and the deferred rollback drops the
+	// transaction: nothing moves, and the Idempotency-Key is NOT recorded.
+	// That is deliberate. A key promises "applied at most once"; a refusal
+	// applied nothing, so there is nothing to replay. A client that resends
+	// the key after a lost answer is re-checked against the stock as it is
+	// now, and Android spends the key on any definite answer anyway.
+	newTotal, err := stockAfter(total, reserved, adj.Delta)
+	if err != nil {
+		return nil, err
 	}
 
 	if _, err = tx.Exec(ctx, `
@@ -218,6 +224,22 @@ func (s *Store) AdjustStock(ctx context.Context, adj StockAdjustment) (*StockLev
 		ReservedQty: reserved,
 		Available:   newTotal - reserved,
 	}, nil
+}
+
+// stockAfter is the total a delta leaves, or the refusal: below zero is
+// ErrInsufficientStock (more removed than exists), below the reserved line is
+// ErrStockBelowReserved (the units are promised to live orders).
+func stockAfter(total, reserved, delta int) (int, error) {
+	newTotal := total + delta
+	if newTotal < 0 {
+		return 0, fmt.Errorf("%w: cannot remove %d units from a stock of %d",
+			ErrInsufficientStock, -delta, total)
+	}
+	if newTotal < reserved {
+		return 0, fmt.Errorf("%w: %d reserved, adjustment would leave %d",
+			ErrStockBelowReserved, reserved, newTotal)
+	}
+	return newTotal, nil
 }
 
 // priorAdjustment is the adjustment an Idempotency-Key already produced.

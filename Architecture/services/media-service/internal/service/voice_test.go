@@ -1,6 +1,7 @@
 package service
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/atpost/media-service/internal/processing"
@@ -47,6 +48,11 @@ func TestValidateVoiceDuration(t *testing.T) {
 			err := ValidateVoiceDuration(tc.seconds)
 			if tc.wantErr && err == nil {
 				t.Fatalf("expected rejection for %.1fs", tc.seconds)
+			}
+			// A rejection is the client's content, not an outage: confirm
+			// answers it as 422 UPLOAD_CONTENT_REJECTED, never 500.
+			if tc.wantErr && !errors.Is(err, ErrUploadUnacceptable) {
+				t.Fatalf("rejection for %.1fs is not ErrUploadUnacceptable: %v", tc.seconds, err)
 			}
 			if !tc.wantErr && err != nil {
 				t.Fatalf("unexpected rejection for %.1fs: %v", tc.seconds, err)

@@ -371,24 +371,37 @@ func (h *Handler) ConfirmUpload(c *gin.Context) {
 
 	res, err := h.svc.ConfirmUpload(c.Request.Context(), mediaID, userID)
 	if err != nil {
-		switch {
-		case errors.Is(err, service.ErrUploadForbidden):
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
-		case errors.Is(err, service.ErrUploadObjectAbsent):
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "UPLOAD_OBJECT_MISSING", err.Error(), nil)
-		case errors.Is(err, service.ErrUploadSizeMismatch):
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "UPLOAD_SIZE_MISMATCH", err.Error(), nil)
-		case errors.Is(err, service.ErrUploadState):
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "UPLOAD_STATE_CONFLICT", err.Error(), nil)
-		case errors.Is(err, service.ErrUploadIntegrity):
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "UPLOAD_INTEGRITY_ERROR", err.Error(), nil)
-		default:
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		}
+		status, code := confirmUploadError(err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, err.Error(), nil)
 		return
 	}
 
 	api.JSON(c.Writer, http.StatusOK, res, nil)
+}
+
+// confirmUploadError is the status and code POST /v1/media/confirm answers
+// for a ConfirmUpload error. Every refusal of the client's own upload is a
+// typed 4xx; only an unrecognised error (a store or object-store outage) is
+// 500, which a client may retry.
+func confirmUploadError(err error) (int, string) {
+	switch {
+	case errors.Is(err, service.ErrUploadNotFound):
+		return http.StatusNotFound, "NOT_FOUND"
+	case errors.Is(err, service.ErrUploadForbidden):
+		return http.StatusForbidden, "FORBIDDEN"
+	case errors.Is(err, service.ErrUploadObjectAbsent):
+		return http.StatusConflict, "UPLOAD_OBJECT_MISSING"
+	case errors.Is(err, service.ErrUploadSizeMismatch):
+		return http.StatusUnprocessableEntity, "UPLOAD_SIZE_MISMATCH"
+	case errors.Is(err, service.ErrUploadState):
+		return http.StatusConflict, "UPLOAD_STATE_CONFLICT"
+	case errors.Is(err, service.ErrUploadIntegrity):
+		return http.StatusConflict, "UPLOAD_INTEGRITY_ERROR"
+	case errors.Is(err, service.ErrUploadUnacceptable):
+		return http.StatusUnprocessableEntity, "UPLOAD_CONTENT_REJECTED"
+	default:
+		return http.StatusInternalServerError, "INTERNAL_ERROR"
+	}
 }
 
 func (h *Handler) GetMedia(c *gin.Context) {

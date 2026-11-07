@@ -108,3 +108,48 @@ func TestStockAdjust_KeysArePerSeller(t *testing.T) {
 		t.Fatalf("another seller's identical key: %+v %v", lvl, err)
 	}
 }
+
+// A refusal under a key is NOT stored, deliberately. The key promises "applied
+// at most once"; a refusal applied nothing, so there is nothing to replay. A
+// resend of the same key is checked against the stock as it is then, and
+// still applies at most once. (Android spends the key on any definite answer,
+// so in practice the key is never sent again.)
+func TestStockAdjust_ARefusalUnderAKeyIsNotRecorded(t *testing.T) {
+	ctx := context.Background()
+	store := New(testPool)
+	f := newStockFixture(t, 3, 0)
+	adj := f.adjust(-5, "damage")
+	adj.IdempotencyKey = "stock-" + uuid.NewString()
+
+	for i := 0; i < 2; i++ {
+		if _, err := store.AdjustStock(ctx, adj); !errors.Is(err, ErrInsufficientStock) {
+			t.Fatalf("attempt %d: err = %v, want ErrInsufficientStock", i+1, err)
+		}
+	}
+	var rows int
+	_ = testPool.QueryRow(ctx, `SELECT count(*) FROM inventory_adjustments
+	                             WHERE seller_id=$1 AND idempotency_key=$2`,
+		f.sellerID, adj.IdempotencyKey).Scan(&rows)
+	if rows != 0 {
+		t.Fatalf("a refused adjustment stored its key (%d rows)", rows)
+	}
+	if n := totalOf(t, f.variantID); n != 3 {
+		t.Fatalf("total_qty = %d, want 3", n)
+	}
+
+	// Restocked meanwhile: the same key now applies, once.
+	if _, err := store.AdjustStock(ctx, f.adjust(10, "purchase")); err != nil {
+		t.Fatal(err)
+	}
+	first, err := store.AdjustStock(ctx, adj)
+	if err != nil || first.Replayed || first.TotalQty != 8 {
+		t.Fatalf("resent key after restock: %+v %v", first, err)
+	}
+	again, err := store.AdjustStock(ctx, adj)
+	if err != nil || !again.Replayed || again.TotalQty != 8 {
+		t.Fatalf("second resend: %+v %v, want a replay", again, err)
+	}
+	if n := totalOf(t, f.variantID); n != 8 {
+		t.Fatalf("total_qty = %d, want 8 (-5 once)", n)
+	}
+}

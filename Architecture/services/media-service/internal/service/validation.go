@@ -152,13 +152,13 @@ func ValidateUploadSize(fileType string, size int64) error {
 // unverified duration.
 func ValidateVoiceDuration(durationSec float64) error {
 	if durationSec <= 0 {
-		return fmt.Errorf("voice duration could not be determined")
+		return fmt.Errorf("%w: voice duration could not be determined", ErrUploadUnacceptable)
 	}
 	if durationSec < MinVoiceDurationSec {
-		return fmt.Errorf("voice recording too short: %.1fs (min %ds)", durationSec, MinVoiceDurationSec)
+		return fmt.Errorf("%w: voice recording too short: %.1fs (min %ds)", ErrUploadUnacceptable, durationSec, MinVoiceDurationSec)
 	}
 	if durationSec > MaxVoiceDurationSec {
-		return fmt.Errorf("voice recording too long: %.1fs (max %ds)", durationSec, MaxVoiceDurationSec)
+		return fmt.Errorf("%w: voice recording too long: %.1fs (max %ds)", ErrUploadUnacceptable, durationSec, MaxVoiceDurationSec)
 	}
 	return nil
 }

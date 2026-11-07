@@ -4,6 +4,7 @@ package http
 
 import (
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -49,5 +50,30 @@ func TestStockAdjustRouteHonoursIdempotencyKey(t *testing.T) {
 	}
 	if got := total(); got != before+40 {
 		t.Fatalf("total_qty = %d, want %d", got, before+40)
+	}
+}
+
+// Removing more than exists, through the route: 409 INSUFFICIENT_STOCK, the
+// shelf unchanged, with or without a key.
+func TestStockAdjustRouteRefusesRemovingMoreThanExists(t *testing.T) {
+	e := newContractEnv(t)
+	path := "/v1/commerce/seller/variants/" + ctV1.String() + "/stock"
+	var before int
+	if err := e.pool.QueryRow(t.Context(), `SELECT total_qty FROM inventory_items WHERE variant_id=$1`, ctV1).Scan(&before); err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]any{"delta": -(before + 1), "reason": "damage"}
+	for _, headers := range []map[string]string{nil, {"Idempotency-Key": "stock-" + uuid.NewString()}} {
+		w := e.do(ctReq{method: http.MethodPatch, path: path, user: ctSellerUser, body: body, headers: headers})
+		if w.Code != http.StatusConflict || !strings.Contains(w.Body.String(), `"INSUFFICIENT_STOCK"`) {
+			t.Fatalf("headers %v: %d\n%s", headers, w.Code, w.Body.String())
+		}
+	}
+	var after int
+	if err := e.pool.QueryRow(t.Context(), `SELECT total_qty FROM inventory_items WHERE variant_id=$1`, ctV1).Scan(&after); err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Fatalf("total_qty = %d after refusals, want %d", after, before)
 	}
 }

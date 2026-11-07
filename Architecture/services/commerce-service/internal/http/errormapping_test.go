@@ -14,6 +14,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/atpost/commerce-service/internal/service"
@@ -124,4 +125,18 @@ func contains(haystack, needle string) bool {
 			}
 			return false
 		})()
+}
+
+// Removing more stock than exists is the seller's request meeting the shelf,
+// not an outage: 409 INSUFFICIENT_STOCK, beside STOCK_RESERVED. It fell
+// through to the 500 arm, and Android could not tell it from a lost answer.
+func TestRemovingMoreStockThanExistsIsAConflictNotAnOutage(t *testing.T) {
+	code, body := status(t, fmt.Errorf("%w: cannot remove 4 units from a stock of 3", postgres.ErrInsufficientStock))
+	if code != http.StatusConflict || !strings.Contains(body, `"INSUFFICIENT_STOCK"`) {
+		t.Fatalf("status %d, want 409 INSUFFICIENT_STOCK\n%s", code, body)
+	}
+	code, body = status(t, fmt.Errorf("%w: 4 reserved", postgres.ErrStockBelowReserved))
+	if code != http.StatusConflict || !strings.Contains(body, `"STOCK_RESERVED"`) {
+		t.Fatalf("status %d, want 409 STOCK_RESERVED\n%s", code, body)
+	}
 }

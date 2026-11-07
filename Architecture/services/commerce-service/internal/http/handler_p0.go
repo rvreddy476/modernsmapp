@@ -737,6 +737,11 @@ func writeCommerceError(c *gin.Context, err error) {
 		// from the chk_inv_reserved_le_total CHECK.
 		api.ErrorWithContext(ctx, w, http.StatusConflict, "STOCK_RESERVED",
 			"those units are reserved for orders being placed right now", nil)
+	case errors.Is(err, postgres.ErrInsufficientStock):
+		// 409 like STOCK_RESERVED: the request is well formed, the stock is
+		// not there to remove. It used to fall through to the 500 below.
+		api.ErrorWithContext(ctx, w, http.StatusConflict, "INSUFFICIENT_STOCK",
+			"you cannot remove more units than are in stock", nil)
 	case errors.Is(err, postgres.ErrZeroAdjustment), errors.Is(err, service.ErrInvalidStockReason):
 		api.ErrorWithContext(ctx, w, http.StatusBadRequest, "INVALID_ADJUSTMENT", err.Error(), nil)
 	case errors.Is(err, postgres.ErrNotOrderOwnerP0), errors.Is(err, service.ErrNotOrderOwner):
