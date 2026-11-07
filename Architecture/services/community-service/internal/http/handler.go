@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/atpost/community-service/internal/service"
 	"github.com/atpost/shared/api"
@@ -14,17 +15,19 @@ import (
 	"github.com/google/uuid"
 )
 
-// authorizeViewerFromHeader runs the visibility gate using the
-// X-User-Id header (may be empty for unauthenticated callers; the
-// service handles nil viewer cleanly). Returns nil iff the viewer is
-// allowed to read content from the community.
-func (h *Handler) authorizeViewerFromHeader(c *gin.Context, communityID uuid.UUID) error {
-	rawUser := c.GetHeader("X-User-Id")
-	var viewer *uuid.UUID
-	if u, err := uuid.Parse(rawUser); err == nil {
-		viewer = &u
+// viewerFromHeader reads the caller for a read a signed-out viewer may also
+// make. No header is anonymous (nil, which the access gate admits to public
+// communities only); a header that is present but not a uuid is refused with
+// 401, never read as anonymous.
+func viewerFromHeader(c *gin.Context) (*uuid.UUID, bool) {
+	if strings.TrimSpace(c.GetHeader("X-User-Id")) == "" {
+		return nil, true
 	}
-	return h.svc.AuthorizeViewer(c.Request.Context(), communityID, viewer)
+	id, ok := getUserID(c)
+	if !ok {
+		return nil, false
+	}
+	return &id, true
 }
 
 // writeAuthError maps service.AuthError sentinels onto the right HTTP
@@ -219,7 +222,7 @@ func parsePagination(c *gin.Context) (int, int) {
 }
 
 func handleServiceError(c *gin.Context, err error) {
-	if writeMediaError(c, err) {
+	if writeMediaError(c, err) || writeAuthError(c, err) {
 		return
 	}
 	msg := err.Error()
@@ -306,9 +309,9 @@ func (h *Handler) GetCommunity(c *gin.Context) {
 		return
 	}
 
-	var viewerID *uuid.UUID
-	if uid, err := uuid.Parse(c.GetHeader("X-User-Id")); err == nil {
-		viewerID = &uid
+	viewerID, ok := viewerFromHeader(c)
+	if !ok {
+		return
 	}
 
 	community, err := h.svc.GetCommunity(c.Request.Context(), communityID, viewerID)
@@ -444,17 +447,15 @@ func (h *Handler) ListMembers(c *gin.Context) {
 		return
 	}
 
-	// Audit CC3: previously returned full member list (incl. banned and
-	// pending) with no auth check on the caller. Treat the member list
-	// like any other community content: gate non-public communities
-	// behind active membership.
-	if err := h.authorizeViewerFromHeader(c, communityID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "community not found", nil)
+	// Audit CC3: the member list is community content, gated in the service
+	// like every other read (service/access.go).
+	viewer, ok := viewerFromHeader(c)
+	if !ok {
 		return
 	}
 
 	limit, offset := parsePagination(c)
-	members, err := h.svc.ListMembers(c.Request.Context(), communityID, limit, offset)
+	members, err := h.svc.ListMembers(c.Request.Context(), communityID, viewer, limit, offset)
 	if err != nil {
 		handleServiceError(c, err)
 		return
@@ -557,7 +558,11 @@ func (h *Handler) ListSpaces(c *gin.Context) {
 		return
 	}
 
-	spaces, err := h.svc.ListSpaces(c.Request.Context(), communityID)
+	viewer, ok := viewerFromHeader(c)
+	if !ok {
+		return
+	}
+	spaces, err := h.svc.ListSpaces(c.Request.Context(), communityID, viewer)
 	if err != nil {
 		handleServiceError(c, err)
 		return

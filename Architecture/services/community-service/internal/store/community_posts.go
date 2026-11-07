@@ -107,13 +107,16 @@ func (s *Store) GetCommunityPost(ctx context.Context, id uuid.UUID) (*CommunityP
 	return &p, err
 }
 
-func (s *Store) ListSpacePosts(ctx context.Context, spaceID uuid.UUID, limit, offset int) ([]CommunityPost, error) {
+// ListSpacePosts lists one space's posts. The community is in the WHERE as
+// well as the space: a post written into another community's space by id
+// before K-M2 was fixed is not listed there.
+func (s *Store) ListSpacePosts(ctx context.Context, communityID, spaceID uuid.UUID, limit, offset int) ([]CommunityPost, error) {
 	rows, err := s.db.Query(ctx, `SELECT id, community_id, space_id, author_id, content_type, title, body,
 		type_payload, attachments, tags, parent_post_id, thread_depth, reply_count,
 		is_pinned, is_announcement, is_featured, is_answered, accepted_answer_id, is_expert_answer,
 		status, spark_count, comment_count, echo_count, view_count, created_at, updated_at
-		FROM community_posts WHERE space_id = $1 AND status = 'published' AND parent_post_id IS NULL
-		ORDER BY is_pinned DESC, created_at DESC LIMIT $2 OFFSET $3`, spaceID, limit, offset)
+		FROM community_posts WHERE space_id = $1 AND community_id = $4 AND status = 'published' AND parent_post_id IS NULL
+		ORDER BY is_pinned DESC, created_at DESC LIMIT $2 OFFSET $3`, spaceID, limit, offset, communityID)
 	if err != nil {
 		return nil, err
 	}
@@ -182,26 +185,44 @@ func (s *Store) ListFeaturedPosts(ctx context.Context, communityID uuid.UUID, li
 	return posts, nil
 }
 
-func (s *Store) DeleteCommunityPost(ctx context.Context, id uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `UPDATE community_posts SET status = 'deleted', updated_at = NOW() WHERE id = $1`, id)
-	return err
+// The post mutations below name the community as well as the post. The
+// service checks the post against the path community first (service/access.go);
+// the SQL holds the same line, so a moderator of one community cannot act on
+// another's post by id (K-M2).
+
+func (s *Store) DeleteCommunityPost(ctx context.Context, communityID, id uuid.UUID) error {
+	return s.execOnePost(ctx, `UPDATE community_posts SET status = 'deleted', updated_at = NOW() WHERE id = $1 AND community_id = $2`, id, communityID)
 }
 
-func (s *Store) AcceptAnswer(ctx context.Context, postID, answerID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `UPDATE community_posts SET is_answered = TRUE, accepted_answer_id = $2, updated_at = NOW() WHERE id = $1`, postID, answerID)
-	return err
+// AcceptAnswer marks answerID as postID's accepted answer. The answer must be
+// a published reply to that post in the same community, or nothing changes.
+func (s *Store) AcceptAnswer(ctx context.Context, communityID, postID, answerID uuid.UUID) error {
+	return s.execOnePost(ctx, `UPDATE community_posts SET is_answered = TRUE, accepted_answer_id = $3, updated_at = NOW()
+		WHERE id = $1 AND community_id = $2
+		  AND EXISTS (SELECT 1 FROM community_posts a
+		              WHERE a.id = $3 AND a.parent_post_id = $1 AND a.community_id = $2 AND a.status = 'published')`,
+		postID, communityID, answerID)
 }
 
-func (s *Store) MarkFeatured(ctx context.Context, postID uuid.UUID, featured bool) error {
-	_, err := s.db.Exec(ctx, `UPDATE community_posts SET is_featured = $2, updated_at = NOW() WHERE id = $1`, postID, featured)
-	return err
+func (s *Store) MarkFeatured(ctx context.Context, communityID, postID uuid.UUID, featured bool) error {
+	return s.execOnePost(ctx, `UPDATE community_posts SET is_featured = $3, updated_at = NOW() WHERE id = $1 AND community_id = $2`, postID, communityID, featured)
 }
 
-func (s *Store) PinCommunityPost(ctx context.Context, postID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `UPDATE community_posts SET is_pinned = TRUE, updated_at = NOW() WHERE id = $1`, postID)
-	return err
+func (s *Store) PinCommunityPost(ctx context.Context, communityID, postID uuid.UUID) error {
+	return s.execOnePost(ctx, `UPDATE community_posts SET is_pinned = TRUE, updated_at = NOW() WHERE id = $1 AND community_id = $2`, postID, communityID)
 }
 
+// execOnePost runs a single-post UPDATE; no row matched is ErrNotFound.
+func (s *Store) execOnePost(ctx context.Context, query string, args ...any) error {
+	tag, err := s.db.Exec(ctx, query, args...)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}
 // --- Engagement ---
 
 func (s *Store) SparkCommunityPost(ctx context.Context, postID uuid.UUID, userID string, isSupernova bool) error {
@@ -258,9 +279,17 @@ func (s *Store) GetWikiPage(ctx context.Context, communityID uuid.UUID, slug str
 	return &w, err
 }
 
-func (s *Store) ListWikiPages(ctx context.Context, communityID uuid.UUID) ([]WikiPage, error) {
+// ListWikiPages returns one page of a community's wiki (it was unbounded, with
+// full content).
+func (s *Store) ListWikiPages(ctx context.Context, communityID uuid.UUID, limit, offset int) ([]WikiPage, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
 	rows, err := s.db.Query(ctx, `SELECT id, community_id, title, slug, content, content_html, category, is_pinned, created_by, updated_by, version, created_at, updated_at
-		FROM community_wiki_pages WHERE community_id = $1 ORDER BY is_pinned DESC, title ASC`, communityID)
+		FROM community_wiki_pages WHERE community_id = $1 ORDER BY is_pinned DESC, title ASC LIMIT $2 OFFSET $3`, communityID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -276,10 +305,17 @@ func (s *Store) ListWikiPages(ctx context.Context, communityID uuid.UUID) ([]Wik
 	return pages, nil
 }
 
-func (s *Store) UpdateWikiPage(ctx context.Context, id uuid.UUID, title, content, contentHTML string, updatedBy string) error {
-	_, err := s.db.Exec(ctx, `UPDATE community_wiki_pages SET title=$2, content=$3, content_html=$4, updated_by=$5, version=version+1, updated_at=NOW() WHERE id=$1`,
-		id, title, content, contentHTML, updatedBy)
-	return err
+// UpdateWikiPage edits a page of communityID; no row there is ErrNotFound.
+func (s *Store) UpdateWikiPage(ctx context.Context, communityID, id uuid.UUID, title, content, contentHTML string, updatedBy string) error {
+	tag, err := s.db.Exec(ctx, `UPDATE community_wiki_pages SET title=$2, content=$3, content_html=$4, updated_by=$5, version=version+1, updated_at=NOW() WHERE id=$1 AND community_id=$6`,
+		id, title, content, contentHTML, updatedBy, communityID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
 }
 
 // --- Sentinel ---

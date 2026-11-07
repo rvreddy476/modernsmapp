@@ -13,10 +13,25 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
+// statusPublisher is the part of the producer the consumer needs: a status
+// change made here must reach search and the other readers of
+// community.updated, or an archived community stays listed there.
+type statusPublisher interface {
+	PublishCommunityUpdated(ctx context.Context, communityID, actorID uuid.UUID, name, communityType, status string) error
+}
+
 type Consumer struct {
-	reader *kafka.Reader
-	store  *store.Store
-	rdb    *redis.Client
+	reader    *kafka.Reader
+	store     *store.Store
+	rdb       *redis.Client
+	publisher statusPublisher
+}
+
+// WithPublisher sets where status changes are announced. Without one an
+// archive still happens and is logged as unannounced.
+func (c *Consumer) WithPublisher(p statusPublisher) *Consumer {
+	c.publisher = p
+	return c
 }
 
 func NewConsumer(brokers []string, groupID string, s *store.Store, rdb *redis.Client) *Consumer {
@@ -89,7 +104,9 @@ func (c *Consumer) handleUserDeletionRequested(ctx context.Context, envelope eve
 		for _, communityID := range orphanedCommunities {
 			if err := c.store.ArchiveCommunity(ctx, communityID); err != nil {
 				slog.Warn("failed to archive orphaned community", "community_id", communityID, "error", err)
+				continue
 			}
+			c.announceStatus(ctx, communityID, userID)
 		}
 	}
 
@@ -104,4 +121,22 @@ func (c *Consumer) handleUserDeletionRequested(ctx context.Context, envelope eve
 
 func (c *Consumer) Close() error {
 	return c.reader.Close()
+}
+
+// announceStatus publishes community.updated with the community's status after
+// a status change made here (the GDPR archive). Before, the archive emitted
+// nothing, so search kept listing a community whose pages answer 404.
+func (c *Consumer) announceStatus(ctx context.Context, communityID, actorID uuid.UUID) {
+	if c.publisher == nil {
+		slog.Warn("community archived without a community.updated event: no publisher", "community_id", communityID)
+		return
+	}
+	comm, err := c.store.GetCommunityByID(ctx, communityID)
+	if err != nil {
+		slog.Warn("archived community could not be re-read for its event", "community_id", communityID, "error", err)
+		return
+	}
+	if err := c.publisher.PublishCommunityUpdated(ctx, communityID, actorID, comm.Name, comm.CommunityType, comm.Status); err != nil {
+		slog.Warn("failed to publish community.updated for an archived community", "community_id", communityID, "error", err)
+	}
 }

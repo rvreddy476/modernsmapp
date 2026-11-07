@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -76,28 +77,28 @@ var (
 	ErrNotPostAuthor        = &AuthError{Reason: "not_owner"}
 )
 
-// AuthorizeMembership returns nil if userID is an active (non-banned)
-// member of communityID; returns ErrNotCommunityMember / ErrMemberBanned
-// otherwise. Use this on every write that should require being in the
-// community (post creation, engagement on member-only content).
+// AuthorizeMembership returns the caller's row if userID is a member of
+// communityID (not pending, banned or suspended); ErrNotCommunityMember /
+// ErrMemberBanned / ErrCommunityNotFound otherwise. It is the access gate in
+// write mode (access.go).
 func (s *Service) AuthorizeMembership(ctx context.Context, communityID, userID uuid.UUID) (*store.CommunityMember, error) {
-	m, err := s.store.GetMember(ctx, communityID, userID)
+	acc, err := s.authorize(ctx, communityID, &userID, accessWrite)
 	if err != nil {
 		return nil, err
 	}
-	if m == nil {
-		return nil, ErrNotCommunityMember
+	if acc.member == nil {
+		// The owner with no member row (older databases): still the owner.
+		return &store.CommunityMember{CommunityID: communityID, UserID: userID, Role: acc.role}, nil
 	}
-	if m.Role == "banned" || m.Role == "suspended" {
-		return nil, ErrMemberBanned
-	}
-	return m, nil
+	m := *acc.member
+	m.Role = acc.role
+	return &m, nil
 }
 
 // AuthorizeRole returns nil if userID is a member of communityID with a
-// role at least `minRole`; otherwise returns ErrInsufficientRole (or
-// ErrNotCommunityMember / ErrMemberBanned for the precedent failures).
-// Used for moderation actions: pin, feature, ban, wiki edit, etc.
+// role at least `minRole`; otherwise returns ErrInsufficientRole (or the
+// gate's refusal). Used for moderation actions: pin, feature, ban, wiki
+// edit, etc.
 func (s *Service) AuthorizeRole(ctx context.Context, communityID, userID uuid.UUID, minRole string) (*store.CommunityMember, error) {
 	m, err := s.AuthorizeMembership(ctx, communityID, userID)
 	if err != nil {
@@ -109,27 +110,12 @@ func (s *Service) AuthorizeRole(ctx context.Context, communityID, userID uuid.UU
 	return m, nil
 }
 
-// AuthorizeViewer returns nil if userID may view content in communityID
-// (anyone for public/education, members only for private). Pass empty
-// userID for unauthenticated callers — only public communities pass.
+// AuthorizeViewer returns nil if userID may view content in communityID:
+// anyone for a public type (store.PublicCommunityTypes), members only
+// otherwise. Pass nil for unauthenticated callers. It is the access gate in
+// read mode (access.go).
 func (s *Service) AuthorizeViewer(ctx context.Context, communityID uuid.UUID, userID *uuid.UUID) error {
-	c, err := s.store.GetCommunityByID(ctx, communityID)
-	if err != nil {
-		return err
-	}
-	if c == nil {
-		return ErrNotCommunityMember
-	}
-	// Public / discovery-friendly types: anyone can read.
-	switch c.CommunityType {
-	case "public", "education", "professional":
-		return nil
-	}
-	// Private / invite-only / secret: require active membership.
-	if userID == nil {
-		return ErrNotCommunityMember
-	}
-	_, err = s.AuthorizeMembership(ctx, communityID, *userID)
+	_, err := s.authorize(ctx, communityID, userID, accessRead)
 	return err
 }
 
@@ -243,10 +229,6 @@ func (s *Service) invalidateMemberCache(ctx context.Context, communityID, userID
 
 func (s *Service) SetProducer(p *communityevents.Producer) {
 	s.producer = p
-}
-
-func (s *Service) Store() *store.Store {
-	return s.store
 }
 
 // --- Community CRUD ---
@@ -400,27 +382,6 @@ type CommunityWithMembership struct {
 	ViewerRole string `json:"viewer_role,omitempty"`
 }
 
-func (s *Service) GetCommunity(ctx context.Context, communityID uuid.UUID, viewerID *uuid.UUID) (*CommunityWithMembership, error) {
-	c, err := s.store.GetCommunityByID(ctx, communityID)
-	if err != nil {
-		return nil, err
-	}
-
-	result := &CommunityWithMembership{Community: c}
-
-	if viewerID != nil {
-		member, err := s.store.GetMember(ctx, communityID, *viewerID)
-		if err != nil {
-			slog.Warn("failed to get member state", "error", err)
-		}
-		if member != nil {
-			result.ViewerRole = member.Role
-		}
-	}
-
-	return result, nil
-}
-
 type UpdateCommunityParams struct {
 	Name            *string         `json:"name"`
 	Description     *string         `json:"description"`
@@ -443,12 +404,8 @@ type UpdateCommunityParams struct {
 }
 
 func (s *Service) UpdateCommunity(ctx context.Context, communityID, actorID uuid.UUID, params UpdateCommunityParams) (*store.Community, error) {
-	member, err := s.store.GetMember(ctx, communityID, actorID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check membership: %w", err)
-	}
-	if member == nil || !isAtLeast(member.Role, "admin") {
-		return nil, fmt.Errorf("forbidden: only admins and above can update the community")
+	if _, err := s.authorizeRoleOr(ctx, communityID, actorID, "admin", errors.New("forbidden: only admins and above can update the community")); err != nil {
+		return nil, err
 	}
 
 	// Every save rewrites the avatar and banner from this read, so every save
@@ -540,283 +497,12 @@ func (s *Service) UpdateCommunity(ctx context.Context, communityID, actorID uuid
 	}
 
 	if s.producer != nil {
-		if err := s.producer.PublishCommunityUpdated(ctx, communityID, actorID, c.Name, c.CommunityType); err != nil {
+		if err := s.producer.PublishCommunityUpdated(ctx, communityID, actorID, c.Name, c.CommunityType, c.Status); err != nil {
 			slog.Warn("failed to publish community.updated event", "error", err)
 		}
 	}
 
 	return c, nil
-}
-
-func (s *Service) DeleteCommunity(ctx context.Context, communityID, actorID uuid.UUID) error {
-	member, err := s.store.GetMember(ctx, communityID, actorID)
-	if err != nil {
-		return fmt.Errorf("failed to check membership: %w", err)
-	}
-	if member == nil || member.Role != "owner" {
-		return fmt.Errorf("forbidden: only the community owner can delete the community")
-	}
-
-	unlock, err := s.lockMediaHolder(ctx, communityID)
-	if err != nil {
-		return err
-	}
-	defer unlock()
-	if err := s.store.DeleteCommunity(ctx, communityID); err != nil {
-		return fmt.Errorf("failed to delete community: %w", err)
-	}
-	// A deleted community is never shown again (no restore path): its avatar
-	// and banner stop being held (media_claims.go).
-	s.releaseCommunityMedia(ctx, communityID)
-
-	if s.producer != nil {
-		if err := s.producer.PublishCommunityDeleted(ctx, communityID, actorID); err != nil {
-			slog.Warn("failed to publish community.deleted event", "error", err)
-		}
-	}
-
-	return nil
-}
-
-// --- Join / Leave ---
-
-func (s *Service) JoinCommunity(ctx context.Context, communityID, userID uuid.UUID, answers json.RawMessage) (*store.CommunityMember, *store.CommunityJoinRequest, error) {
-	c, err := s.store.GetCommunityByID(ctx, communityID)
-	if err != nil {
-		return nil, nil, err
-	}
-
-	existing, err := s.store.GetMember(ctx, communityID, userID)
-	if err != nil {
-		return nil, nil, fmt.Errorf("failed to check membership: %w", err)
-	}
-	if existing != nil {
-		if existing.Role == "banned" {
-			return nil, nil, fmt.Errorf("forbidden: you are banned from this community")
-		}
-		return nil, nil, fmt.Errorf("already a member of this community")
-	}
-
-	switch c.JoinMode {
-	case "open":
-		member := &store.CommunityMember{
-			CommunityID: communityID,
-			UserID:      userID,
-			Role:        "member",
-		}
-		inserted, err := s.store.AddMember(ctx, member)
-		if err != nil {
-			return nil, nil, fmt.Errorf("failed to join: %w", err)
-		}
-		// Audit HC1: only increment member_count on a genuinely new row
-		// — concurrent duplicate joins previously each ran
-		// IncrementMemberCount and drifted the counter upward.
-		if inserted {
-			if err := s.adjustMemberCount(ctx, communityID, 1); err != nil {
-				slog.Warn("failed to increment member count", "error", err)
-			}
-		}
-		// Bust the negative cache entry written by any prior viewer-side
-		// GetMember call, so the new member's next request sees their
-		// real role instead of the cached "_nil".
-		s.invalidateMemberCache(ctx, communityID, userID)
-		// Auto-follow default spaces (announcements, welcome, is_default)
-		if err := s.store.AutoFollowDefaultSpaces(ctx, communityID, userID); err != nil {
-			slog.Warn("failed to auto-follow default spaces", "community_id", communityID, "user_id", userID, "error", err)
-		}
-		if s.producer != nil {
-			if err := s.producer.PublishMemberJoined(ctx, communityID, userID); err != nil {
-				slog.Warn("failed to publish community.member.joined event", "error", err)
-			}
-		}
-		return member, nil, nil
-
-	case "request", "invite_only", "email_domain":
-		jr := &store.CommunityJoinRequest{
-			ID:          uuid.New(),
-			CommunityID: communityID,
-			UserID:      userID,
-			Answers:     answers,
-			Status:      "pending",
-		}
-		if err := s.store.CreateJoinRequest(ctx, jr); err != nil {
-			return nil, nil, fmt.Errorf("failed to create join request: %w", err)
-		}
-		return nil, jr, nil
-
-	default:
-		return nil, nil, fmt.Errorf("invalid: unknown join mode")
-	}
-}
-
-func (s *Service) LeaveCommunity(ctx context.Context, communityID, userID uuid.UUID) error {
-	member, err := s.store.GetMember(ctx, communityID, userID)
-	if err != nil {
-		return fmt.Errorf("failed to check membership: %w", err)
-	}
-	if member == nil {
-		return fmt.Errorf("not a member of this community")
-	}
-	if member.Role == "owner" {
-		return fmt.Errorf("forbidden: the owner cannot leave; delete the community instead")
-	}
-
-	if err := s.store.RemoveMember(ctx, communityID, userID); err != nil {
-		return fmt.Errorf("failed to leave: %w", err)
-	}
-
-	if err := s.adjustMemberCount(ctx, communityID, -1); err != nil {
-		slog.Warn("failed to decrement member count", "error", err)
-	}
-	s.invalidateMemberCache(ctx, communityID, userID)
-
-	if s.producer != nil {
-		if err := s.producer.PublishMemberLeft(ctx, communityID, userID); err != nil {
-			slog.Warn("failed to publish community.member.left event", "error", err)
-		}
-	}
-
-	return nil
-}
-
-// --- Members ---
-
-func (s *Service) ListMembers(ctx context.Context, communityID uuid.UUID, limit, offset int) ([]store.CommunityMember, error) {
-	return s.store.ListMembers(ctx, communityID, limit, offset)
-}
-
-func (s *Service) UpdateMemberRole(ctx context.Context, communityID, targetUserID, actorID uuid.UUID, newRole string) error {
-	if !validMemberRoles[newRole] {
-		return fmt.Errorf("invalid: role is not valid")
-	}
-
-	actor, err := s.store.GetMember(ctx, communityID, actorID)
-	if err != nil {
-		return fmt.Errorf("failed to check membership: %w", err)
-	}
-	if actor == nil || !isAtLeast(actor.Role, "admin") {
-		return fmt.Errorf("forbidden: only admins and above can change roles")
-	}
-
-	target, err := s.store.GetMember(ctx, communityID, targetUserID)
-	if err != nil {
-		return fmt.Errorf("failed to check target membership: %w", err)
-	}
-	if target == nil {
-		return fmt.Errorf("member not found")
-	}
-
-	// Cannot change role of someone at same or higher level
-	if roleLevel(target.Role) >= roleLevel(actor.Role) {
-		return fmt.Errorf("forbidden: cannot change role of someone at your level or above")
-	}
-	// Cannot promote above own level
-	if roleLevel(newRole) >= roleLevel(actor.Role) {
-		return fmt.Errorf("forbidden: cannot promote to your level or above")
-	}
-
-	if err := s.store.UpdateMemberRole(ctx, communityID, targetUserID, newRole); err != nil {
-		return err
-	}
-	s.invalidateMemberCache(ctx, communityID, targetUserID)
-
-	if s.producer != nil {
-		if err := s.producer.PublishMemberRoleChanged(ctx, communityID, targetUserID, actorID, newRole); err != nil {
-			slog.Warn("failed to publish community.member.role_changed event", "error", err)
-		}
-	}
-
-	return nil
-}
-
-func (s *Service) BanMember(ctx context.Context, communityID, targetUserID, actorID uuid.UUID, reason string) error {
-	actor, err := s.store.GetMember(ctx, communityID, actorID)
-	if err != nil {
-		return fmt.Errorf("failed to check membership: %w", err)
-	}
-	if actor == nil || !isAtLeast(actor.Role, "moderator") {
-		return fmt.Errorf("forbidden: only moderators and above can ban members")
-	}
-
-	target, err := s.store.GetMember(ctx, communityID, targetUserID)
-	if err != nil {
-		return fmt.Errorf("failed to check target membership: %w", err)
-	}
-	if target == nil {
-		return fmt.Errorf("member not found")
-	}
-	if roleLevel(target.Role) >= roleLevel(actor.Role) {
-		return fmt.Errorf("forbidden: cannot ban someone at your level or above")
-	}
-
-	if err := s.store.BanMember(ctx, communityID, targetUserID, actorID, reason); err != nil {
-		return fmt.Errorf("failed to ban member: %w", err)
-	}
-	s.invalidateMemberCache(ctx, communityID, targetUserID)
-
-	if err := s.adjustMemberCount(ctx, communityID, -1); err != nil {
-		slog.Warn("failed to decrement member count", "error", err)
-	}
-
-	// Log modlog entry
-	entry := &store.CommunityModlogEntry{
-		ID:          uuid.New(),
-		CommunityID: communityID,
-		ActorID:     actorID,
-		Action:      "ban_member",
-		TargetType:  "user",
-		TargetID:    targetUserID,
-		Reason:      &reason,
-	}
-	// Audit HC6: previously this swallowed the error with a Warn log so
-	// a ban/unban/role-change without an audit trail looked successful.
-	// The audit log is safety-critical — fail the action so the actor
-	// can retry and operators see the gap in metrics.
-	if err := s.store.AddModlogEntry(ctx, entry); err != nil {
-		return fmt.Errorf("failed to record moderation audit log: %w", err)
-	}
-
-	if s.producer != nil {
-		if err := s.producer.PublishMemberBanned(ctx, communityID, targetUserID, actorID); err != nil {
-			slog.Warn("failed to publish community.member.banned event", "error", err)
-		}
-	}
-
-	return nil
-}
-
-func (s *Service) UnbanMember(ctx context.Context, communityID, targetUserID, actorID uuid.UUID) error {
-	actor, err := s.store.GetMember(ctx, communityID, actorID)
-	if err != nil {
-		return fmt.Errorf("failed to check membership: %w", err)
-	}
-	if actor == nil || !isAtLeast(actor.Role, "moderator") {
-		return fmt.Errorf("forbidden: only moderators and above can unban members")
-	}
-
-	if err := s.store.UnbanMember(ctx, communityID, targetUserID); err != nil {
-		return err
-	}
-	s.invalidateMemberCache(ctx, communityID, targetUserID)
-
-	// Log modlog entry
-	entry := &store.CommunityModlogEntry{
-		ID:          uuid.New(),
-		CommunityID: communityID,
-		ActorID:     actorID,
-		Action:      "unban_member",
-		TargetType:  "user",
-		TargetID:    targetUserID,
-	}
-	// Audit HC6: previously this swallowed the error with a Warn log so
-	// a ban/unban/role-change without an audit trail looked successful.
-	// The audit log is safety-critical — fail the action so the actor
-	// can retry and operators see the gap in metrics.
-	if err := s.store.AddModlogEntry(ctx, entry); err != nil {
-		return fmt.Errorf("failed to record moderation audit log: %w", err)
-	}
-
-	return nil
 }
 
 // --- Spaces ---
@@ -831,12 +517,8 @@ type CreateSpaceParams struct {
 }
 
 func (s *Service) CreateSpace(ctx context.Context, communityID, creatorID uuid.UUID, params CreateSpaceParams) (*store.CommunitySpace, error) {
-	member, err := s.store.GetMember(ctx, communityID, creatorID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check membership: %w", err)
-	}
-	if member == nil || !isAtLeast(member.Role, "space_manager") {
-		return nil, fmt.Errorf("forbidden: only space managers and above can create spaces")
+	if _, err := s.authorizeRoleOr(ctx, communityID, creatorID, "space_manager", errors.New("forbidden: only space managers and above can create spaces")); err != nil {
+		return nil, err
 	}
 
 	if params.Name == "" {
@@ -893,10 +575,6 @@ func (s *Service) CreateSpace(ctx context.Context, communityID, creatorID uuid.U
 	return sp, nil
 }
 
-func (s *Service) ListSpaces(ctx context.Context, communityID uuid.UUID) ([]store.CommunitySpace, error) {
-	return s.store.ListSpaces(ctx, communityID)
-}
-
 type UpdateSpaceParams struct {
 	Name            *string    `json:"name"`
 	Description     *string    `json:"description"`
@@ -906,12 +584,8 @@ type UpdateSpaceParams struct {
 }
 
 func (s *Service) UpdateSpace(ctx context.Context, communityID, spaceID, actorID uuid.UUID, params UpdateSpaceParams) (*store.CommunitySpace, error) {
-	member, err := s.store.GetMember(ctx, communityID, actorID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check membership: %w", err)
-	}
-	if member == nil || !isAtLeast(member.Role, "space_manager") {
-		return nil, fmt.Errorf("forbidden: only space managers and above can update spaces")
+	if _, err := s.authorizeRoleOr(ctx, communityID, actorID, "space_manager", errors.New("forbidden: only space managers and above can update spaces")); err != nil {
+		return nil, err
 	}
 
 	sp, err := s.store.GetSpace(ctx, spaceID)
@@ -946,12 +620,8 @@ func (s *Service) UpdateSpace(ctx context.Context, communityID, spaceID, actorID
 }
 
 func (s *Service) DeleteSpace(ctx context.Context, communityID, spaceID, actorID uuid.UUID) error {
-	member, err := s.store.GetMember(ctx, communityID, actorID)
-	if err != nil {
-		return fmt.Errorf("failed to check membership: %w", err)
-	}
-	if member == nil || !isAtLeast(member.Role, "admin") {
-		return fmt.Errorf("forbidden: only admins and above can delete spaces")
+	if _, err := s.authorizeRoleOr(ctx, communityID, actorID, "admin", errors.New("forbidden: only admins and above can delete spaces")); err != nil {
+		return err
 	}
 
 	sp, err := s.store.GetSpace(ctx, spaceID)
@@ -980,12 +650,8 @@ func (s *Service) DeleteSpace(ctx context.Context, communityID, spaceID, actorID
 }
 
 func (s *Service) QuarantineSpace(ctx context.Context, communityID, spaceID, actorID uuid.UUID, reason string) error {
-	member, err := s.store.GetMember(ctx, communityID, actorID)
-	if err != nil {
-		return fmt.Errorf("failed to check membership: %w", err)
-	}
-	if member == nil || !isAtLeast(member.Role, "moderator") {
-		return fmt.Errorf("forbidden: only moderators and above can quarantine spaces")
+	if _, err := s.authorizeRoleOr(ctx, communityID, actorID, "moderator", errors.New("forbidden: only moderators and above can quarantine spaces")); err != nil {
+		return err
 	}
 
 	sp, err := s.store.GetSpace(ctx, spaceID)
@@ -1030,24 +696,16 @@ func (s *Service) QuarantineSpace(ctx context.Context, communityID, spaceID, act
 // --- Join Requests ---
 
 func (s *Service) ListJoinRequests(ctx context.Context, communityID, actorID uuid.UUID, limit, offset int) ([]store.CommunityJoinRequest, error) {
-	member, err := s.store.GetMember(ctx, communityID, actorID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check membership: %w", err)
-	}
-	if member == nil || !isAtLeast(member.Role, "moderator") {
-		return nil, fmt.Errorf("forbidden: only moderators and above can view join requests")
+	if _, err := s.authorizeRoleOr(ctx, communityID, actorID, "moderator", errors.New("forbidden: only moderators and above can view join requests")); err != nil {
+		return nil, err
 	}
 
 	return s.store.ListJoinRequests(ctx, communityID, limit, offset)
 }
 
 func (s *Service) ApproveRequest(ctx context.Context, communityID, requestID, actorID uuid.UUID) error {
-	member, err := s.store.GetMember(ctx, communityID, actorID)
-	if err != nil {
-		return fmt.Errorf("failed to check membership: %w", err)
-	}
-	if member == nil || !isAtLeast(member.Role, "moderator") {
-		return fmt.Errorf("forbidden: only moderators and above can approve requests")
+	if _, err := s.authorizeRoleOr(ctx, communityID, actorID, "moderator", errors.New("forbidden: only moderators and above can approve requests")); err != nil {
+		return err
 	}
 
 	jr, err := s.store.GetJoinRequest(ctx, requestID)
@@ -1106,12 +764,8 @@ func (s *Service) ApproveRequest(ctx context.Context, communityID, requestID, ac
 }
 
 func (s *Service) RejectRequest(ctx context.Context, communityID, requestID, actorID uuid.UUID) error {
-	member, err := s.store.GetMember(ctx, communityID, actorID)
-	if err != nil {
-		return fmt.Errorf("failed to check membership: %w", err)
-	}
-	if member == nil || !isAtLeast(member.Role, "moderator") {
-		return fmt.Errorf("forbidden: only moderators and above can reject requests")
+	if _, err := s.authorizeRoleOr(ctx, communityID, actorID, "moderator", errors.New("forbidden: only moderators and above can reject requests")); err != nil {
+		return err
 	}
 
 	jr, err := s.store.GetJoinRequest(ctx, requestID)
@@ -1132,12 +786,8 @@ func (s *Service) RejectRequest(ctx context.Context, communityID, requestID, act
 // --- Modlog ---
 
 func (s *Service) GetModLog(ctx context.Context, communityID, actorID uuid.UUID, limit, offset int) ([]store.CommunityModlogEntry, error) {
-	member, err := s.store.GetMember(ctx, communityID, actorID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to check membership: %w", err)
-	}
-	if member == nil || !isAtLeast(member.Role, "moderator") {
-		return nil, fmt.Errorf("forbidden: only moderators and above can view the modlog")
+	if _, err := s.authorizeRoleOr(ctx, communityID, actorID, "moderator", errors.New("forbidden: only moderators and above can view the modlog")); err != nil {
+		return nil, err
 	}
 
 	return s.store.ListModlog(ctx, communityID, limit, offset)

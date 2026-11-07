@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/atpost/community-service/internal/store"
 	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
@@ -41,14 +42,13 @@ func (p *Producer) PublishCommunityCreated(ctx context.Context, communityID, own
 	return p.publish(ctx, EventCommunityCreated, &ownerID, payload)
 }
 
-func (p *Producer) PublishCommunityUpdated(ctx context.Context, communityID, actorID uuid.UUID, name, communityType string) error {
-	payload := CommunityUpdatedPayload{
-		CommunityID:   communityID.String(),
-		ActorID:       actorID.String(),
-		Name:          name,
-		CommunityType: communityType,
-		UpdatedAt:     time.Now(),
-	}
+// PublishCommunityUpdated announces a change to a community, including a
+// change of status (the GDPR archive; any future suspension). status is the
+// community's status after the change; visibility is derived from its type by
+// the one public set (store.PublicCommunityTypes), so a consumer need not keep
+// its own copy of that list.
+func (p *Producer) PublishCommunityUpdated(ctx context.Context, communityID, actorID uuid.UUID, name, communityType, status string) error {
+	payload := NewCommunityUpdatedPayload(communityID, actorID, name, communityType, status)
 	return p.publish(ctx, EventCommunityUpdated, &actorID, payload)
 }
 
@@ -209,11 +209,36 @@ type CommunityCreatedPayload struct {
 }
 
 type CommunityUpdatedPayload struct {
-	CommunityID   string    `json:"community_id"`
-	ActorID       string    `json:"actor_id"`
-	Name          string    `json:"name,omitempty"`
-	CommunityType string    `json:"community_type,omitempty"`
-	UpdatedAt     time.Time `json:"updated_at"`
+	CommunityID   string `json:"community_id"`
+	ActorID       string `json:"actor_id"`
+	Name          string `json:"name,omitempty"`
+	CommunityType string `json:"community_type,omitempty"`
+	// Status is the community's status after the change: active, archived
+	// or suspended. A consumer that lists communities drops any that is not
+	// active.
+	Status string `json:"status,omitempty"`
+	// Visibility is "public" when anyone may read the community's content
+	// (store.PublicCommunityTypes) and "private" otherwise.
+	Visibility string    `json:"visibility,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// NewCommunityUpdatedPayload builds the payload; it is the only place the
+// visibility is derived.
+func NewCommunityUpdatedPayload(communityID, actorID uuid.UUID, name, communityType, status string) CommunityUpdatedPayload {
+	visibility := "private"
+	if store.IsPublicCommunityType(communityType) {
+		visibility = "public"
+	}
+	return CommunityUpdatedPayload{
+		CommunityID:   communityID.String(),
+		ActorID:       actorID.String(),
+		Name:          name,
+		CommunityType: communityType,
+		Status:        status,
+		Visibility:    visibility,
+		UpdatedAt:     time.Now(),
+	}
 }
 
 type CommunityDeletedPayload struct {

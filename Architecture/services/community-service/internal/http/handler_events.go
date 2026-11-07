@@ -7,7 +7,6 @@ import (
 	"github.com/atpost/community-service/internal/store"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
-	"github.com/google/uuid"
 )
 
 type CreateEventRequest struct {
@@ -20,21 +19,15 @@ type CreateEventRequest struct {
 	MaxAttendees int     `json:"max_attendees"`
 }
 
+// CreateEvent: moderators and above of the path community (K-M2). The gate
+// is in service.CreateEvent.
 func (h *Handler) CreateEvent(c *gin.Context) {
-	communityID, err := uuid.Parse(c.Param("communityId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil)
+	ids, ok := pathIDs(c, "communityId")
+	if !ok {
 		return
 	}
-
-	userID := c.GetHeader("X-User-ID")
-	if userID == "" {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "missing user id", nil)
-		return
-	}
-	uid, err := uuid.Parse(userID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid user id", nil)
+	actorID, ok := getUserID(c)
+	if !ok {
 		return
 	}
 
@@ -61,8 +54,6 @@ func (h *Handler) CreateEvent(c *gin.Context) {
 	}
 
 	event := &store.CommunityEvent{
-		CommunityID:  communityID,
-		CreatorID:    uid,
 		Title:        req.Title,
 		Description:  req.Description,
 		Location:     req.Location,
@@ -71,25 +62,32 @@ func (h *Handler) CreateEvent(c *gin.Context) {
 		MaxAttendees: req.MaxAttendees,
 	}
 
-	if err := h.svc.Store().CreateEvent(c.Request.Context(), event); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "CREATE_FAILED", err.Error(), nil)
+	if err := h.svc.CreateEvent(c.Request.Context(), ids[0], actorID, event); err != nil {
+		handleServiceError(c, err)
 		return
 	}
 
 	api.JSON(c.Writer, http.StatusCreated, event, nil)
 }
 
+// ListEvents: gated and paged (K-M1).
 func (h *Handler) ListEvents(c *gin.Context) {
-	communityID, err := uuid.Parse(c.Param("communityId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "invalid community id", nil)
+	ids, ok := pathIDs(c, "communityId")
+	if !ok {
 		return
 	}
-
-	events, err := h.svc.Store().ListEvents(c.Request.Context(), communityID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "LIST_FAILED", err.Error(), nil)
+	viewer, ok := viewerFromHeader(c)
+	if !ok {
 		return
+	}
+	limit, offset := parsePagination(c)
+	events, err := h.svc.ListEvents(c.Request.Context(), ids[0], viewer, limit, offset)
+	if err != nil {
+		handleServiceError(c, err)
+		return
+	}
+	if events == nil {
+		events = []store.CommunityEvent{}
 	}
 
 	api.JSON(c.Writer, http.StatusOK, events, nil)

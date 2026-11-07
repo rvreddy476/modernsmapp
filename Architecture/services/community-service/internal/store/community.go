@@ -173,7 +173,7 @@ func (s *Store) GetCommunityByID(ctx context.Context, id uuid.UUID) (*Community,
 		&c.MemberCount, &c.SpaceCount, &c.IsVerified, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("community not found")
+		return nil, ErrCommunityNotFound
 	}
 	return c, err
 }
@@ -194,7 +194,7 @@ func (s *Store) GetCommunityByHandle(ctx context.Context, handle string) (*Commu
 		&c.MemberCount, &c.SpaceCount, &c.IsVerified, &c.Status, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("community not found")
+		return nil, ErrCommunityNotFound
 	}
 	return c, err
 }
@@ -245,10 +245,10 @@ func (s *Store) DiscoverCommunities(ctx context.Context, limit, offset int) ([]C
 		latitude, longitude, location_name, rules, topic_tags,
 		member_count, space_count, is_verified, status, created_at, updated_at, deleted_at
 		FROM communities
-		WHERE status = 'active' AND community_type IN ('public','education','local','professional','fan','brand')
+		WHERE status = 'active' AND community_type = ANY($3)
 		ORDER BY member_count DESC, created_at DESC
 		LIMIT $1 OFFSET $2`
-	return s.scanCommunities(ctx, query, limit, offset)
+	return s.scanCommunities(ctx, query, limit, offset, PublicCommunityTypes)
 }
 
 func (s *Store) scanCommunities(ctx context.Context, query string, args ...any) ([]Community, error) {
@@ -325,11 +325,19 @@ func (s *Store) RemoveMember(ctx context.Context, communityID, userID uuid.UUID)
 	return err
 }
 
+// BanMember bans a row that is not already banned or suspended: a second ban
+// must not rewrite banned_by (K-L1), and two racing bans must not both count.
 func (s *Store) BanMember(ctx context.Context, communityID, userID, bannedBy uuid.UUID, reason string) error {
 	query := `UPDATE community_members SET role = 'banned', banned_at = NOW(), banned_by = $3, ban_reason = $4
-		WHERE community_id = $1 AND user_id = $2`
-	_, err := s.db.Exec(ctx, query, communityID, userID, bannedBy, reason)
-	return err
+		WHERE community_id = $1 AND user_id = $2 AND role NOT IN ('banned', 'suspended')`
+	tag, err := s.db.Exec(ctx, query, communityID, userID, bannedBy, reason)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("already banned")
+	}
+	return nil
 }
 
 func (s *Store) UnbanMember(ctx context.Context, communityID, userID uuid.UUID) error {
@@ -418,7 +426,7 @@ func (s *Store) GetSpace(ctx context.Context, id uuid.UUID) (*CommunitySpace, er
 		&sp.Name, &sp.Description, &sp.SortOrder, &sp.IsQuarantined, &sp.CreatedBy, &sp.CreatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("space not found")
+		return nil, ErrSpaceNotFound
 	}
 	return sp, err
 }
@@ -711,14 +719,22 @@ func (s *Store) CreateEvent(ctx context.Context, e *CommunityEvent) error {
 	).Scan(&e.ID, &e.RSVPCount, &e.CreatedAt)
 }
 
-func (s *Store) ListEvents(ctx context.Context, communityID uuid.UUID) ([]CommunityEvent, error) {
+// ListEvents returns one page of a community's events (it was unbounded).
+func (s *Store) ListEvents(ctx context.Context, communityID uuid.UUID, limit, offset int) ([]CommunityEvent, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
 	query := `
 		SELECT id, community_id, space_id, creator_id, title, description,
 			location, starts_at, ends_at, max_attendees, rsvp_count, created_at
 		FROM community_events
 		WHERE community_id = $1
-		ORDER BY starts_at ASC`
-	rows, err := s.db.Query(ctx, query, communityID)
+		ORDER BY starts_at ASC
+		LIMIT $2 OFFSET $3`
+	rows, err := s.db.Query(ctx, query, communityID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
@@ -735,4 +751,28 @@ func (s *Store) ListEvents(ctx context.Context, communityID uuid.UUID) ([]Commun
 		events = append(events, e)
 	}
 	return events, rows.Err()
+}
+
+// Not-found sentinels. The messages are the ones these reads always returned,
+// so callers that match on the text keep working.
+var (
+	ErrCommunityNotFound = errors.New("community not found")
+	ErrSpaceNotFound     = errors.New("space not found")
+)
+
+// PublicCommunityTypes is the ONE set of community types whose content anyone
+// may read (K-L2). Discover listed local, fan and brand communities as well,
+// whose own pages then refused a non-member: a list of doors that do not
+// open. The access gate (service/access.go), Discover and the visibility on
+// community.updated all read this.
+var PublicCommunityTypes = []string{"public", "education", "professional"}
+
+// IsPublicCommunityType reports whether t is in PublicCommunityTypes.
+func IsPublicCommunityType(t string) bool {
+	for _, p := range PublicCommunityTypes {
+		if t == p {
+			return true
+		}
+	}
+	return false
 }

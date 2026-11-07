@@ -124,7 +124,8 @@ func main() {
 	slog.Info("kafka producer initialized", "topic", kafkaTopic)
 
 	// 9. Kafka consumer (GDPR)
-	consumer := communityevents.NewConsumerWithDialer(kafkaBrokers, "community-service-consumer", communityStore, rdb, kafkaDialer)
+	consumer := communityevents.NewConsumerWithDialer(kafkaBrokers, "community-service-consumer", communityStore, rdb, kafkaDialer).
+		WithPublisher(producer)
 	consumerCtx, cancelConsumer := context.WithCancel(ctx)
 	go consumer.Start(consumerCtx)
 	slog.Info("kafka consumer started")
