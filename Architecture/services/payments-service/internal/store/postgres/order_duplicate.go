@@ -147,6 +147,19 @@ func duplicateOrderPaymentKey(dup orderIntent) string {
 	return OwedKeyIntentPrefix + dup.ID.String()
 }
 
+// alreadyOwedBack decides a duplicate whose payment key is already in
+// refund_required, recorded on intent owner. On the duplicate's own intent it
+// is a redelivery (nil). On another intent it is refused: one provider payment
+// owed back on two intents is a reconciliation break, and answering it as a
+// redelivery would acknowledge a duplicate nobody refunds as this intent's. It
+// has no I/O.
+func alreadyOwedBack(key string, owner, dup uuid.UUID) error {
+	if owner != dup {
+		return fmt.Errorf("%w: payment %s is already owed back on intent %s", ErrOrderDuplicateRefused, key, owner)
+	}
+	return nil
+}
+
 // OwedKeyIntentPrefix marks a refund_required key that is an intent, not a
 // provider payment: no provider can refund it.
 const OwedKeyIntentPrefix = "intent:"
@@ -217,8 +230,8 @@ func (s *Store) RecordOrderDuplicateCapture(ctx context.Context, ev OrderDuplica
 			dup.Provider, key).Scan(&owner); err != nil {
 			return false, err
 		}
-		if owner != dup.ID {
-			return false, fmt.Errorf("%w: payment %s is already owed back on intent %s", ErrOrderDuplicateRefused, key, owner)
+		if err := alreadyOwedBack(key, owner, dup.ID); err != nil {
+			return false, err
 		}
 		return false, tx.Commit(ctx)
 	}

@@ -317,7 +317,10 @@ func applyPaymentSucceededTx(ctx context.Context, tx pgx.Tx, e PaymentEvent) err
 	return nil
 }
 
-// ApplyPaymentFailed releases the hold so the stock returns to sale.
+// ApplyPaymentFailed releases the hold so the stock returns to sale, when the
+// failure is the order's own payment attempt (decideFailure). A failure that
+// is not changes nothing; its inbox row still commits, so it is acknowledged
+// rather than retried.
 func (s *Store) ApplyPaymentFailed(ctx context.Context, e PaymentEvent) error {
 	if e.EventID == "" {
 		return fmt.Errorf("payment event has no id")
@@ -332,15 +335,35 @@ func (s *Store) ApplyPaymentFailed(ctx context.Context, e PaymentEvent) error {
 		return err
 	}
 	return applyPaymentOnce(ctx, tx, e, func(ctx context.Context, tx pgx.Tx) error {
-		var status string
+		var (
+			status              string
+			payStatus           string
+			intentID            *string
+			lateCaptureRefunded bool
+		)
 		if err := tx.QueryRow(ctx,
-			`SELECT status FROM orders WHERE id = $1 FOR UPDATE`, e.OrderID).Scan(&status); err != nil {
+			`SELECT status, payment_status, payment_intent_id::text, late_capture_refund_id IS NOT NULL
+			   FROM orders WHERE id = $1 FOR UPDATE`, e.OrderID).
+			Scan(&status, &payStatus, &intentID, &lateCaptureRefunded); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return ErrOrderNotFoundP0
 			}
 			return err
 		}
-		if status != "payment_pending" {
+		boundIntent := ""
+		if intentID != nil {
+			boundIntent = *intentID
+		}
+		verdict := decideFailure(captureOrder{
+			Status: status, PaymentStatus: payStatus,
+			LateCaptureRefunded: lateCaptureRefunded, BoundIntent: boundIntent,
+		}, e)
+		if verdict != failureApplies {
+			if verdict != failureNotPending {
+				slog.WarnContext(ctx, "commerce: payment.failed is not this order's live attempt; the order is unchanged",
+					"order_id", e.OrderID, "intent_id", e.IntentID, "bound_intent_id", boundIntent,
+					"status", status, "payment_status", payStatus, "reason", verdict.String(), "event_id", e.EventID)
+			}
 			return nil // nothing to do; the inbox row still commits
 		}
 		if err := releaseReservationsTx(ctx, tx, e.OrderID, "checkout_release_payment_failed"); err != nil {
@@ -360,6 +383,82 @@ func (s *Store) ApplyPaymentFailed(ctx context.Context, e PaymentEvent) error {
 			"order_id": e.OrderID,
 		})
 	})
+}
+
+// failureVerdict is what one payment.failed does to its order.
+type failureVerdict int
+
+const (
+	// failureApplies: the order's own attempt failed. Release its stock and
+	// coupon use and move it to payment_failed, from which the buyer retries.
+	failureApplies failureVerdict = iota
+	// failureNotPending: the order is not waiting on a payment (already
+	// failed, cancelled, expired, or a COD order confirmed at checkout).
+	// Nothing to do; a redelivered failure lands here.
+	failureNotPending
+	// failureAfterCapture: a capture already landed on the order (its own
+	// payment, or a late capture being refunded). A failure cannot take that
+	// back: releasing the stock or the coupon of money already taken, or
+	// overwriting refund_pending with failed, would lose track of it.
+	failureAfterCapture
+	// failureOtherIntent: another attempt's intent failed while the order
+	// waits on the one bound to it, which may still capture.
+	failureOtherIntent
+	// failureUnbound: the failure names an intent while none is bound: an
+	// earlier attempt, unbound by a retry whose fresh intent is being opened.
+	failureUnbound
+)
+
+func (v failureVerdict) String() string {
+	switch v {
+	case failureApplies:
+		return "applies"
+	case failureNotPending:
+		return "order_not_payment_pending"
+	case failureAfterCapture:
+		return "capture_already_landed"
+	case failureOtherIntent:
+		return "another_attempts_intent"
+	case failureUnbound:
+		return "no_intent_bound"
+	}
+	return "unknown"
+}
+
+// decideFailure is the payment.failed decision table. It has no I/O.
+//
+// Identity is the payment intent, as in decideCapture. A failure fails the
+// order only when it is the order's live attempt: the order is
+// payment_pending, no capture has landed, and the failing intent is the bound
+// one. An event that states no intent cannot be told apart from the order's
+// own (differentIntent) and applies as it always did.
+//
+// No intent bound, and the failure names one: held, not failed. Commerce binds
+// an intent (BindPaymentIntent) before its handle is returned to the client,
+// so the buyer can only ever be paying a bound intent. An unbound order's
+// failing intent is therefore never the live attempt: it is an earlier one,
+// whose payment.failed arrived after RetryPaymentReservation unbound it and
+// while the retry's fresh intent is being opened, or one that was never handed
+// out. Failing the order on it would release the stock and coupon the retry
+// just re-held, and turn the retry's capture into a late-capture refund. Not
+// failing it costs at most the hold until the reservation expires, and the
+// expiry sweeper ends the order then if nothing pays it. A failure is the
+// absence of money, so waiting is safe; a capture is money, which is why
+// decideCapture takes one on an unbound order and this does not.
+func decideFailure(o captureOrder, e PaymentEvent) failureVerdict {
+	if captureLanded(o.PaymentStatus, o.LateCaptureRefunded) {
+		return failureAfterCapture
+	}
+	if o.Status != "payment_pending" {
+		return failureNotPending
+	}
+	if strings.TrimSpace(o.BoundIntent) == "" && strings.TrimSpace(e.IntentID) != "" {
+		return failureUnbound
+	}
+	if differentIntent(o.BoundIntent, e.IntentID) {
+		return failureOtherIntent
+	}
+	return failureApplies
 }
 
 // ─── Reservation release and commit (LB-21, LB-23) ───────────────────

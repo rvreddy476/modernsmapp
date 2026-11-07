@@ -165,3 +165,40 @@ func TestDuplicateOrderCaptureRefusals(t *testing.T) {
 		})
 	}
 }
+
+// P18: two intents of the order share one provider payment id, and that
+// payment is already owed back on the first. A report naming the second is
+// refused, not acknowledged as a redelivery, and writes nothing.
+func TestDuplicateOrderCaptureRefusesAPaymentOwedBackOnAnotherIntent(t *testing.T) {
+	ctx := context.Background()
+	const amt = 64000
+	svc := svcWith(t, newRWRazorpay(t).provider())
+	store := postgres.New(recPool)
+	order := uuid.New()
+	bound, _ := odPaidIntent(t, svc, order, amt, true)
+	first, payFirst := odPaidIntent(t, svc, order, amt, true)
+	second, _ := odPaidIntent(t, svc, order, amt, true)
+
+	if recorded, err := store.RecordOrderDuplicateCapture(ctx, odReport(order, first, bound, amt)); err != nil || !recorded {
+		t.Fatalf("record the first duplicate: %v, %v; want a new row", recorded, err)
+	}
+	if _, err := recPool.Exec(ctx,
+		`UPDATE payments.payment_intents SET provider_payment_id = $2 WHERE id = $1`, second.id, payFirst); err != nil {
+		t.Fatalf("share the payment id: %v", err)
+	}
+
+	recorded, err := store.RecordOrderDuplicateCapture(ctx, odReport(order, second, bound, amt))
+	if !errors.Is(err, postgres.ErrOrderDuplicateRefused) || recorded {
+		t.Fatalf("record = %v, %v; want ErrOrderDuplicateRefused (the payment is owed back on %s)", recorded, err, first.id)
+	}
+	if n := countBy(t, `SELECT count(*) FROM payments.refund_required WHERE intent_id = $1`, second.id); n != 0 {
+		t.Fatalf("refund_required rows for the second intent = %d, want 0", n)
+	}
+	if n := countBy(t, `SELECT count(*) FROM payments.refund_required WHERE provider_payment_id = $1`, payFirst); n != 1 {
+		t.Fatalf("rows for the shared payment = %d, want 1", n)
+	}
+	if n := countBy(t, `SELECT count(*) FROM payments.payment_audit_log
+	      WHERE intent_id = $1 AND event = 'duplicate_order_capture_refund_required'`, second.id); n != 0 {
+		t.Fatalf("a refused report wrote %d audit row(s)", n)
+	}
+}

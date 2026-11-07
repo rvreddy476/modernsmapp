@@ -2,6 +2,7 @@ package postgres
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -109,5 +110,25 @@ func TestDuplicateOrderPaymentKey(t *testing.T) {
 	}
 	if k := duplicateOrderPaymentKey(orderIntent{ID: id}); k != "intent:"+id.String() {
 		t.Fatalf("key = %q, want the intent when no payment id is held", k)
+	}
+}
+
+// P18: a duplicate whose payment is already owed back on ANOTHER intent (two
+// intents sharing one provider payment id) is refused, never acknowledged as
+// a redelivery. The same intent again is the redelivery.
+func TestAlreadyOwedBack(t *testing.T) {
+	dup, other := uuid.New(), uuid.New()
+	if err := alreadyOwedBack("pay_B", dup, dup); err != nil {
+		t.Fatalf("owed back on the duplicate itself: %v, want a redelivery (nil)", err)
+	}
+	err := alreadyOwedBack("pay_B", other, dup)
+	if !errors.Is(err, ErrOrderDuplicateRefused) {
+		t.Fatalf("owed back on another intent: %v, want ErrOrderDuplicateRefused", err)
+	}
+	if msg := err.Error(); !strings.Contains(msg, "pay_B") || !strings.Contains(msg, other.String()) {
+		t.Fatalf("refusal %q must name the payment and the intent it is owed on", msg)
+	}
+	if err := alreadyOwedBack("pay_B", uuid.Nil, dup); !errors.Is(err, ErrOrderDuplicateRefused) {
+		t.Fatalf("owed back on no intent: %v, want ErrOrderDuplicateRefused", err)
 	}
 }
