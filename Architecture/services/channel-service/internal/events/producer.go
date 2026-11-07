@@ -33,7 +33,10 @@ func NewProducerWithDialer(brokers []string, topic string, rdb *redis.Client, di
 	w := kafka.NewWriter(kafka.WriterConfig{
 		Brokers:  brokers,
 		Topic:    topic,
-		Balancer: &kafka.LeastBytes{},
+		// Hash, not LeastBytes: LeastBytes ignores the message key, so keying
+		// lifecycle events by channel id would order nothing (a stale edit could
+		// land after a suspension and re-list the channel in search).
+		Balancer: &kafka.Hash{},
 		Dialer:   dialer,
 	})
 	fw := kafka.NewWriter(kafka.WriterConfig{
