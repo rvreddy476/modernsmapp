@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -288,14 +289,25 @@ func main() {
 	// the cutover; unset once AccessTokenTTL has elapsed).
 	// RSAPublic/RSAKID let the service verify the RS256 tokens it mints (nil
 	// when signing is HS256). Derived from the loaded private key, so no extra
-	// public-key env is needed for the service's own endpoints.
+	// public-key env is needed for the service's own endpoints. During an RS256
+	// key rotation the replaced public key comes from the gateway's own
+	// variables (JWT_PUBLIC_KEY_PEM_PREVIOUS + JWT_RS256_KID_PREVIOUS); a
+	// half-set or ambiguous pair refuses to boot, like the gateway.
+	rsaPublic := authSvc.AccessTokenPublicKey()
+	rsaPrevious, err := internalhttp.PreviousRSAPublicKey(cfg.RS256PublicKeyPrevious, cfg.RS256KIDPrevious, cfg.AccessTokenRS256KID, rsaPublic)
+	if err != nil {
+		logger.Error("invalid previous RS256 key", "err", err)
+		os.Exit(1)
+	}
 	jwtKeys := internalhttp.JWTKeySet{
-		ActiveKID:      cfg.JWTKID,
-		ActiveSecret:   cfg.JWTSecret,
-		PreviousKID:    cfg.JWTKIDPrevious,
-		PreviousSecret: cfg.JWTSecretPrevious,
-		RSAPublic:      authSvc.AccessTokenPublicKey(),
-		RSAKID:         cfg.AccessTokenRS256KID,
+		ActiveKID:         cfg.JWTKID,
+		ActiveSecret:      cfg.JWTSecret,
+		PreviousKID:       cfg.JWTKIDPrevious,
+		PreviousSecret:    cfg.JWTSecretPrevious,
+		RSAPublic:         rsaPublic,
+		RSAKID:            cfg.AccessTokenRS256KID,
+		RSAPreviousPublic: rsaPrevious,
+		RSAPreviousKID:    strings.TrimSpace(cfg.RS256KIDPrevious),
 		// Production: RS256 only, with the gateway's iss/aud/typ/sub/sid
 		// rules. JWT_SECRET is mounted into many services; in production it
 		// must not be able to mint a token this service accepts.

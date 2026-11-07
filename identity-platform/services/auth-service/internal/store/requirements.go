@@ -41,7 +41,8 @@ var SchemaRequirements = []schemaguard.Requirement{
 	// family_id is read by RevokeSessionFamily; refresh_token_history is
 	// written inside every rotation, so its absence would fail every refresh.
 	{Table: "auth.sessions", Columns: []string{"refresh_token_hash", "family_id", "revoked_at", "expires_at"}},
-	{Table: "auth.refresh_token_history", Columns: []string{"refresh_token_hash", "session_id", "family_id"}},
+	// rotated_at and replaced_on_retry drive the refresh-reuse grace window.
+	{Table: "auth.refresh_token_history", Columns: []string{"refresh_token_hash", "session_id", "family_id", "rotated_at", "replaced_on_retry"}},
 	{Table: "auth.otp_codes", Columns: []string{"otp_hash", "attempts", "expires_at"}},
 	{Table: "auth.verification_transactions", Columns: []string{"token_hash", "consumed_at", "expires_at"}},
 	{Table: "auth.registration_consents"},

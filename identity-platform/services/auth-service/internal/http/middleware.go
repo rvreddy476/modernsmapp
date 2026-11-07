@@ -3,10 +3,14 @@ package http
 import (
 	"crypto/hmac"
 	"crypto/rsa"
+	"crypto/x509"
+	"encoding/pem"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"runtime/debug"
+	"strings"
 	"time"
 
 	"github.com/atpost/identity-auth-service/internal/service"
@@ -143,6 +147,13 @@ type JWTKeySet struct {
 	// endpoints accept the tokens it mints. HS256 stays accepted in parallel.
 	RSAPublic *rsa.PublicKey
 	RSAKID    string
+	// RSAPreviousPublic/RSAPreviousKID verify RS256 tokens signed with the
+	// key a rotation replaced, selected by kid only, so tokens minted before
+	// the switch keep working for one access-token TTL. Same variables as the
+	// gateway: JWT_PUBLIC_KEY_PEM_PREVIOUS and JWT_RS256_KID_PREVIOUS (see
+	// PreviousRSAPublicKey).
+	RSAPreviousPublic *rsa.PublicKey
+	RSAPreviousKID    string
 
 	// Production switches verification to the API gateway's rules: RS256
 	// only (HS256 is refused even with a valid JWT_SECRET signature, because
@@ -190,6 +201,75 @@ func (k JWTKeySet) productionClaimsOK(claims *AccessClaims) bool {
 		return false
 	}
 	return true
+}
+
+// rsaKeyFor picks the RS256 verification key by kid: the previous key only
+// for its own kid, the current key for its kid or a token with none.
+func (k JWTKeySet) rsaKeyFor(kid string) (*rsa.PublicKey, error) {
+	if k.RSAPublic == nil {
+		return nil, fmt.Errorf("RS256 not configured")
+	}
+	if kid != "" && k.RSAPreviousPublic != nil && kid == k.RSAPreviousKID {
+		return k.RSAPreviousPublic, nil
+	}
+	if k.RSAKID != "" && kid != "" && kid != k.RSAKID {
+		return nil, fmt.Errorf("unknown kid: %s", kid)
+	}
+	return k.RSAPublic, nil
+}
+
+// Rotation variables, named as the API gateway names them
+// (Architecture/services/api-gateway/pkg/tokenpolicy/verify.go).
+const (
+	EnvRSAPublicKeyPrevious = "JWT_PUBLIC_KEY_PEM_PREVIOUS"
+	EnvRSAKIDPrevious       = "JWT_RS256_KID_PREVIOUS"
+)
+
+// PreviousRSAPublicKey parses the previous RS256 public key for a rotation.
+// Both empty means no rotation in progress (nil, nil). As at the gateway, a
+// key without its kid, a kid without its key, a kid equal to the current one,
+// or a rotation key with no current RS256 key is an error: each would make
+// the kid lookup ambiguous or silently drop a key, so the service refuses to
+// start instead.
+func PreviousRSAPublicKey(pemValue, kid, currentKID string, current *rsa.PublicKey) (*rsa.PublicKey, error) {
+	pemValue, kid = strings.TrimSpace(pemValue), strings.TrimSpace(kid)
+	if pemValue == "" && kid == "" {
+		return nil, nil
+	}
+	if pemValue == "" || kid == "" {
+		return nil, fmt.Errorf("%s and %s must be set together", EnvRSAPublicKeyPrevious, EnvRSAKIDPrevious)
+	}
+	if current == nil {
+		return nil, fmt.Errorf("%s is set but RS256 signing (JWT_PRIVATE_KEY_PEM) is not", EnvRSAPublicKeyPrevious)
+	}
+	if kid == strings.TrimSpace(currentKID) {
+		return nil, fmt.Errorf("%s must differ from JWT_RS256_KID (%q): tokens are told apart by kid", EnvRSAKIDPrevious, kid)
+	}
+	pub, err := parseRSAPublicKeyPEM(pemValue)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", EnvRSAPublicKeyPrevious, err)
+	}
+	return pub, nil
+}
+
+// parseRSAPublicKeyPEM accepts a PKIX ("BEGIN PUBLIC KEY") or PKCS1 ("BEGIN
+// RSA PUBLIC KEY") key, as the gateway does, with newlines real or escaped as
+// \n the way JWT_PRIVATE_KEY_PEM may carry them.
+func parseRSAPublicKeyPEM(value string) (*rsa.PublicKey, error) {
+	block, _ := pem.Decode([]byte(strings.ReplaceAll(value, `\n`, "\n")))
+	if block == nil {
+		return nil, errors.New("no PEM block found in public key")
+	}
+	if pub, err := x509.ParsePKIXPublicKey(block.Bytes); err == nil {
+		if rsaPub, ok := pub.(*rsa.PublicKey); ok {
+			return rsaPub, nil
+		}
+		return nil, errors.New("PKIX key is not RSA")
+	}
+	if rsaPub, err := x509.ParsePKCS1PublicKey(block.Bytes); err == nil {
+		return rsaPub, nil
+	}
+	return nil, errors.New("unsupported RSA public key format")
 }
 
 func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
@@ -284,13 +364,7 @@ func authMiddlewareFor(keys JWTKeySet, rdb *redis.Client, read func(*gin.Context
 				}
 				return secret, nil
 			case *jwt.SigningMethodRSA:
-				if keys.RSAPublic == nil {
-					return nil, fmt.Errorf("RS256 not configured")
-				}
-				if keys.RSAKID != "" && kid != "" && kid != keys.RSAKID {
-					return nil, fmt.Errorf("unknown kid: %s", kid)
-				}
-				return keys.RSAPublic, nil
+				return keys.rsaKeyFor(kid)
 			default:
 				return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 			}
@@ -330,22 +404,6 @@ func authMiddlewareFor(keys JWTKeySet, rdb *redis.Client, read func(*gin.Context
 
 func RequireCSRFMiddleware() gin.HandlerFunc {
 	return identitymiddleware.RequireCSRF(csrfCookieName, "X-CSRF-Token")
-}
-
-func CORSMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		c.Writer.Header().Set("Access-Control-Allow-Origin", "*")
-		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
-		c.Writer.Header().Set("Access-Control-Allow-Headers", "Content-Type, Content-Length, Accept-Encoding, X-CSRF-Token, Authorization, accept, origin, Cache-Control, X-Requested-With, X-Request-Id, X-Client-Platform, X-Client-Version, X-Client-Source")
-		c.Writer.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS, GET, PUT, DELETE, PATCH")
-
-		if c.Request.Method == "OPTIONS" {
-			c.AbortWithStatus(204)
-			return
-		}
-
-		c.Next()
-	}
 }
 
 func RequireInternalServiceKey(secret string) gin.HandlerFunc {

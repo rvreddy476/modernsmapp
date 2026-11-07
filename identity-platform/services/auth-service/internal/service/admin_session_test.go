@@ -35,8 +35,17 @@ type adminSessionStore struct {
 	candidates    []store.HolderCandidate
 	forceAudits   []store.RoleAudit
 	// mu guards byID and rotated for the concurrent-refresh tests.
-	mu      sync.Mutex
-	rotated map[string]uuid.UUID // rotated-away refresh hash -> session
+	mu        sync.Mutex
+	rotated   map[string]*fakeRotation // rotated-away refresh hash -> history row
+	rotations int                      // orders history rows, like rotated_at
+}
+
+// fakeRotation is one auth.refresh_token_history row.
+type fakeRotation struct {
+	session uuid.UUID
+	at      time.Time
+	seq     int
+	onRetry bool
 }
 
 func newAdminSessionStore() *adminSessionStore {
@@ -95,32 +104,56 @@ func (a *adminSessionStore) GetSessionByRefreshTokenHash(_ context.Context, h st
 // rotates only while the row holds oldHash and is live, and remembers the
 // hash it replaced for reuse detection.
 func (a *adminSessionStore) RotateSessionWithFingerprint(_ context.Context, id uuid.UUID, oldHash, newHash, _ string, exp time.Time, _ bool) (bool, error) {
+	return a.rotate(id, oldHash, newHash, exp, false), nil
+}
+func (a *adminSessionStore) RotateSessionOnRetry(_ context.Context, id uuid.UUID, lostHash, newHash, _ string, exp time.Time) (bool, error) {
+	return a.rotate(id, lostHash, newHash, exp, true), nil
+}
+func (a *adminSessionStore) rotate(id uuid.UUID, oldHash, newHash string, exp time.Time, onRetry bool) bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	s, ok := a.byID[id]
 	if !ok || s.RefreshToken != oldHash || s.RevokedAt != nil || !s.IsActive {
-		return false, nil
+		return false
 	}
 	s.RefreshToken = newHash
 	s.ExpiresAt = exp
 	if a.rotated == nil {
-		a.rotated = map[string]uuid.UUID{}
+		a.rotated = map[string]*fakeRotation{}
 	}
-	a.rotated[oldHash] = id
-	return true, nil
+	a.rotations++
+	a.rotated[oldHash] = &fakeRotation{session: id, at: time.Now(), seq: a.rotations, onRetry: onRetry}
+	return true
+}
+
+// ageRotation moves a rotated-away hash's rotation d into the past.
+func (a *adminSessionStore) ageRotation(h string, d time.Duration) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.rotated[h].at = a.rotated[h].at.Add(-d)
 }
 func (a *adminSessionStore) RecordLoginAnomaly(ctx context.Context, userID uuid.UUID, atype, ip, ua, deviceID, country string, risk int, challenged bool, metadata map[string]any) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.fakeAnomalyStore.RecordLoginAnomaly(ctx, userID, atype, ip, ua, deviceID, country, risk, challenged, metadata)
 }
-func (a *adminSessionStore) LookupRotatedRefreshToken(_ context.Context, h string) (*uuid.UUID, error) {
+
+// LookupRotatedRefreshToken mirrors the store's query: the age of the
+// rotation and whether the same session has rotated since.
+func (a *adminSessionStore) LookupRotatedRefreshToken(_ context.Context, h string) (*store.RotatedRefreshToken, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if id, ok := a.rotated[h]; ok {
-		return &id, nil
+	r, ok := a.rotated[h]
+	if !ok {
+		return nil, nil
 	}
-	return nil, nil
+	rec := &store.RotatedRefreshToken{SessionID: r.session, Age: time.Since(r.at), ReplacedOnRetry: r.onRetry}
+	for _, other := range a.rotated {
+		if other.session == r.session && other.seq > r.seq {
+			rec.Superseded = true
+		}
+	}
+	return rec, nil
 }
 func (a *adminSessionStore) RevokeSessionFamily(_ context.Context, id uuid.UUID) ([]uuid.UUID, error) {
 	a.mu.Lock()

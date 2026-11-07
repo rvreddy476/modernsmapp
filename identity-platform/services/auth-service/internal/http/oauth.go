@@ -80,7 +80,8 @@ func (h *Handler) OAuthCallback(c *gin.Context) {
 	binding, _ := c.Cookie(oauthBindingCookieName)
 	// Single use whatever the outcome: the state is consumed server-side.
 	h.setOAuthBindingCookie(c, "", -1)
-	result, err := h.svc.HandleOAuthCallback(c.Request.Context(), provider, code, state, binding)
+	result, err := h.svc.HandleOAuthCallback(c.Request.Context(), provider, code, state, binding,
+		service.OAuthClient{IP: c.ClientIP(), UserAgent: c.Request.UserAgent()})
 	if err != nil {
 		h.log.Error("OAuth callback failed", "err", err, "provider", provider, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusUnauthorized, "AUTH_FAILED", "OAuth authentication failed", nil, nil)
@@ -110,10 +111,13 @@ func (h *Handler) OAuthCallback(c *gin.Context) {
 // OAuthTokenRequest is the body of POST /v1/auth/oauth/:provider/token.
 // IDToken is the provider's OpenID Connect ID token (Google only). The
 // provider ACCESS token this route used to take in `token` is refused: it does
-// not say which app it was issued to (C1).
+// not say which app it was issued to (C1). DeviceID and Platform are optional
+// and mean what they mean on /login: the install the session belongs to.
 type OAuthTokenRequest struct {
-	IDToken string `json:"id_token"`
-	Token   string `json:"token"`
+	IDToken  string `json:"id_token"`
+	Token    string `json:"token"`
+	DeviceID string `json:"device_id"`
+	Platform string `json:"platform"`
 }
 
 func (h *Handler) OAuthToken(c *gin.Context) {
@@ -135,9 +139,18 @@ func (h *Handler) OAuthToken(c *gin.Context) {
 		return
 	}
 
-	result, err := h.svc.HandleOAuthToken(c.Request.Context(), provider, req.IDToken)
+	result, err := h.svc.HandleOAuthToken(c.Request.Context(), provider, req.IDToken, service.OAuthClient{
+		IP:        c.ClientIP(),
+		UserAgent: c.Request.UserAgent(),
+		DeviceID:  req.DeviceID,
+		Platform:  req.Platform,
+	})
 	if err != nil {
-		if h.writeOAuthLoginRefusal(c, err) {
+		var stepUp *service.AuthResponse
+		if result != nil {
+			stepUp = result.Auth
+		}
+		if h.writeStepUpOutcome(c, stepUp, err) || h.writeOAuthLoginRefusal(c, err) {
 			return
 		}
 		h.log.Warn("OAuth token login failed", "err", err, "provider", provider, "request_id", RequestIDFromContext(c))
@@ -153,7 +166,11 @@ func (h *Handler) OAuthToken(c *gin.Context) {
 		return
 	}
 
-	h.setAuthCookies(c, result.Auth.Tokens)
+	// 2FA pending: the second factor comes first, and there are no tokens to
+	// set, exactly as for a password login.
+	if !result.Auth.Requires2FA {
+		h.setAuthCookies(c, result.Auth.Tokens)
+	}
 	api.JSON(c.Writer, http.StatusOK, result.Auth, nil)
 }
 
@@ -221,6 +238,11 @@ func (h *Handler) OAuthVerifySignup(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusCreated, resp, nil)
 }
 
+// CodeOAuthAccountNotFound: a provider sign-in proved the caller's address,
+// no account here uses it, and new accounts cannot be created through the
+// provider (OAUTH_NEW_ACCOUNT_ENABLED=false). The client offers sign-up.
+const CodeOAuthAccountNotFound = "OAUTH_ACCOUNT_NOT_FOUND"
+
 // writeOAuthLoginRefusal maps the refusals a client can act on to their own
 // status and code, matching the password login. Reports whether it wrote.
 func (h *Handler) writeOAuthLoginRefusal(c *gin.Context, err error) bool {
@@ -235,6 +257,12 @@ func (h *Handler) writeOAuthLoginRefusal(c *gin.Context, err error) bool {
 		api.Error(c.Writer, http.StatusForbidden, "ACCOUNT_PURGED", err.Error(), nil, nil)
 	case errors.Is(err, service.ErrAccountPendingPurge):
 		api.Error(c.Writer, http.StatusForbidden, "ACCOUNT_PENDING_PURGE", err.Error(), nil, nil)
+	case errors.Is(err, service.ErrOAuthNewAccountDisabled):
+		// The provider proved who the caller is, and no account here has that
+		// address: the client says "sign up first" instead of "try again".
+		// Telling the address's own verified owner reveals nothing.
+		api.Error(c.Writer, http.StatusNotFound, CodeOAuthAccountNotFound,
+			"No account uses this address yet. Sign up first, then sign in with this provider.", nil, nil)
 	default:
 		return false
 	}

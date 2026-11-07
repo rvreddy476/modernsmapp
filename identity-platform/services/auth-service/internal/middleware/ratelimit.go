@@ -136,41 +136,6 @@ func PasswordResetRateLimit(rdb *redis.Client) gin.HandlerFunc {
 	}
 }
 
-// LoginRateLimit limits login attempts: 10 per IP per 15 min AND 5 per identifier per 15 min.
-// If rdb is nil, rate limiting is skipped (useful in tests).
-func LoginRateLimit(rdb *redis.Client) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if rdb == nil {
-			c.Next()
-			return
-		}
-		bodyBytes, _ := io.ReadAll(c.Request.Body)
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(bodyBytes))
-
-		ip := c.ClientIP()
-		ipKey := fmt.Sprintf("login_rl_ip:%s", ip)
-		if !allow(c.Request.Context(), rdb, ipKey, 10, 900*time.Second) {
-			c.Header("Retry-After", "900")
-			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-				"error": gin.H{"code": "RATE_LIMITED", "message": "Too many login attempts. Try again later."},
-			})
-			return
-		}
-
-		if identifier := bodyIdentifier(bodyBytes); identifier != "" {
-			idKey := fmt.Sprintf("login_rl_id:%s", identifier)
-			if !allow(c.Request.Context(), rdb, idKey, 5, 900*time.Second) {
-				c.Header("Retry-After", "900")
-				c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
-					"error": gin.H{"code": "RATE_LIMITED", "message": "Too many login attempts. Try again later."},
-				})
-				return
-			}
-		}
-		c.Next()
-	}
-}
-
 // RefreshRateLimit bounds token refreshes PER REFRESH TOKEN, not per IP.
 //
 // Refresh used to sit behind LoginRateLimit (10 per IP per 15 min). Every

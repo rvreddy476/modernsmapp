@@ -812,3 +812,15 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_otp_codes_phone_purpose
 -- and are bounded by the attempt cap.
 ALTER TABLE auth.email_delivery_jobs
     ADD COLUMN IF NOT EXISTS failed_at TIMESTAMPTZ;
+
+-- Refresh-token reuse grace window.
+--
+-- A replay of a rotated-away refresh token revoked the whole session family,
+-- so a refresh whose response was lost (or two tabs refreshing at once)
+-- signed the user out everywhere. A replay within 30 seconds of the rotation,
+-- while the successor token is still unused, now rotates the session again
+-- (service.RefreshReuseGrace). The successor that retry replaces was never
+-- delivered; replaced_on_retry marks it so presenting it later is treated as
+-- reuse, never honoured as a retry itself.
+ALTER TABLE auth.refresh_token_history
+    ADD COLUMN IF NOT EXISTS replaced_on_retry BOOLEAN NOT NULL DEFAULT FALSE;

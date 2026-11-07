@@ -89,6 +89,15 @@ type Config struct {
 	// exact DOB + versioned consent bundle required by password registration.
 	OAuthNewAccountEnabled bool
 	RateLimitEnabled       bool
+	// Credential route limits (login, register, 2FA, OAuth sign-in), each
+	// action its own bucket: AUTH_RATE_LIMIT_PER_IP attempts per client IP
+	// (sized for carrier NAT, many users per address) and
+	// AUTH_RATE_LIMIT_PER_ACCOUNT per account, per AUTH_RATE_LIMIT_WINDOW.
+	// Zero (unset) takes the middleware defaults: 100 per IP, 5 per account,
+	// 15 minutes. See internal/middleware/credential_ratelimit.go.
+	AuthRateLimitPerIP      int
+	AuthRateLimitPerAccount int
+	AuthRateLimitWindow     time.Duration
 	// LoginAnomalyEnforce controls A13 anomaly enforcement at login.
 	// Allowed values:
 	//   "shadow"  — log anomaly + issue session (legacy behaviour, default).
@@ -121,6 +130,12 @@ type Config struct {
 	// stamped as the token `kid` and must match the verifiers' configured kid.
 	AccessTokenPrivateKeyPEM string
 	AccessTokenRS256KID      string
+	// Key rotation: the RS256 public key (and its kid) that the current key
+	// replaced, accepted on verify for tokens minted before the switch. Same
+	// variables as the API gateway; drop them one access-token TTL after the
+	// switch.
+	RS256PublicKeyPrevious string
+	RS256KIDPrevious       string
 	// RequireMFAForPrivileged (REQUIRE_MFA_FOR_PRIVILEGED) is INERT since the
 	// admin console A2 lane: role management and force logout now always
 	// require an admin MFA session plus a fresh step-up
@@ -215,6 +230,9 @@ func Load() *Config {
 		OAuth:                      LoadOAuth(),
 		OAuthNewAccountEnabled:     getEnvBool("OAUTH_NEW_ACCOUNT_ENABLED", false),
 		RateLimitEnabled:           getEnvBool("RATE_LIMIT_ENABLED", true),
+		AuthRateLimitPerIP:         getEnvInt("AUTH_RATE_LIMIT_PER_IP", 0),
+		AuthRateLimitPerAccount:    getEnvInt("AUTH_RATE_LIMIT_PER_ACCOUNT", 0),
+		AuthRateLimitWindow:        getEnvDuration("AUTH_RATE_LIMIT_WINDOW", 0),
 		LoginAnomalyEnforce:        strings.ToLower(getEnv("LOGIN_ANOMALY_ENFORCE", "shadow")),
 		MiniAppSessionTTL:          getEnvDuration("MINI_APP_SESSION_TTL", 5*time.Minute),
 		MiniAppSessionIssuer:       getEnv("MINI_APP_SESSION_ISSUER", "atpost-mini-app-runtime"),
@@ -225,6 +243,8 @@ func Load() *Config {
 		ScopeSuperadminUserIDs:     splitToSet(getEnv("SUPERADMIN_USER_IDS", "")),
 		AccessTokenPrivateKeyPEM:   getEnv("JWT_PRIVATE_KEY_PEM", ""),
 		AccessTokenRS256KID:        getEnv("JWT_RS256_KID", "rsa-1"),
+		RS256PublicKeyPrevious:     getEnv("JWT_PUBLIC_KEY_PEM_PREVIOUS", ""),
+		RS256KIDPrevious:           getEnv("JWT_RS256_KID_PREVIOUS", ""),
 		JWTIssuer:                  getEnv("JWT_ISSUER", "auth-service"),
 		JWTAudience:                getEnv("JWT_AUDIENCE", "atpost-api"),
 		Production:                 IsProductionEnv(),

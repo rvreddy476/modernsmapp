@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/sync/singleflight"
 )
 
 // Mobile OAuth sign-in (POST /v1/auth/oauth/:provider/token).
@@ -74,10 +75,14 @@ type googleKeySet struct {
 	client *http.Client
 	now    func() time.Time
 
+	// mu guards the cache only; it is never held across the HTTP fetch, so
+	// a slow Google response cannot stall sign-ins the cache can answer.
 	mu        sync.Mutex
 	keys      map[string]*rsa.PublicKey
 	expires   time.Time
 	lastFetch time.Time
+	// fetches collapses concurrent refreshes into one request.
+	fetches singleflight.Group
 }
 
 func newGoogleKeySet() *googleKeySet {
@@ -85,38 +90,77 @@ func newGoogleKeySet() *googleKeySet {
 }
 
 // key returns the public key for kid, refreshing the cache when it is stale
-// or does not know kid (Google rotates keys), at most once a minute.
+// or does not know kid (Google rotates keys), at most once a minute. Callers
+// that need a refresh share one fetch and wait for it, each only as long as
+// its own context allows.
 func (g *googleKeySet) key(ctx context.Context, kid string) (*rsa.PublicKey, error) {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	now := g.now()
-	if k, ok := g.keys[kid]; ok && now.Before(g.expires) {
+	k, known := g.keys[kid]
+	fresh := known && now.Before(g.expires)
+	stale := g.keys == nil || now.After(g.expires) || now.Sub(g.lastFetch) >= googleRefetchMinGap
+	g.mu.Unlock()
+	if fresh {
 		return k, nil
 	}
-	if g.keys == nil || now.After(g.expires) || now.Sub(g.lastFetch) >= googleRefetchMinGap {
-		if err := g.fetchLocked(ctx); err != nil {
-			return nil, err
+	if stale {
+		// The fetch outlives a caller that gives up: the others share it.
+		done := g.fetches.DoChan("keys", func() (any, error) {
+			return nil, g.refresh(context.WithoutCancel(ctx))
+		})
+		select {
+		case res := <-done:
+			if res.Err != nil {
+				return nil, res.Err
+			}
+		case <-ctx.Done():
+			return nil, ctx.Err()
 		}
 	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	if k, ok := g.keys[kid]; ok {
 		return k, nil
 	}
 	return nil, fmt.Errorf("unknown google signing key %q", kid)
 }
 
-func (g *googleKeySet) fetchLocked(ctx context.Context) error {
-	g.lastFetch = g.now()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.url, nil)
+// refresh fetches the key set and installs it, unless a fetch that finished
+// while this caller was deciding has just done so.
+func (g *googleKeySet) refresh(ctx context.Context) error {
+	g.mu.Lock()
+	now := g.now()
+	if g.keys != nil && now.Before(g.expires) && now.Sub(g.lastFetch) < googleRefetchMinGap {
+		g.mu.Unlock()
+		return nil
+	}
+	g.lastFetch = now
+	g.mu.Unlock()
+
+	keys, ttl, err := g.fetch(ctx)
 	if err != nil {
 		return err
 	}
+	g.mu.Lock()
+	g.keys = keys
+	g.expires = g.now().Add(ttl)
+	g.mu.Unlock()
+	return nil
+}
+
+// fetch downloads and parses Google's key set. It touches no cache state.
+func (g *googleKeySet) fetch(ctx context.Context) (map[string]*rsa.PublicKey, time.Duration, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.url, nil)
+	if err != nil {
+		return nil, 0, err
+	}
 	resp, err := g.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("fetch google keys: %w", err)
+		return nil, 0, fmt.Errorf("fetch google keys: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("fetch google keys: status %d", resp.StatusCode)
+		return nil, 0, fmt.Errorf("fetch google keys: status %d", resp.StatusCode)
 	}
 	var set struct {
 		Keys []struct {
@@ -127,7 +171,7 @@ func (g *googleKeySet) fetchLocked(ctx context.Context) error {
 		} `json:"keys"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&set); err != nil {
-		return fmt.Errorf("decode google keys: %w", err)
+		return nil, 0, fmt.Errorf("decode google keys: %w", err)
 	}
 	keys := map[string]*rsa.PublicKey{}
 	for _, k := range set.Keys {
@@ -141,11 +185,9 @@ func (g *googleKeySet) fetchLocked(ctx context.Context) error {
 		keys[k.Kid] = pub
 	}
 	if len(keys) == 0 {
-		return errors.New("google key set has no usable RSA keys")
+		return nil, 0, errors.New("google key set has no usable RSA keys")
 	}
-	g.keys = keys
-	g.expires = g.now().Add(cacheTTL(resp.Header.Get("Cache-Control")))
-	return nil
+	return keys, cacheTTL(resp.Header.Get("Cache-Control")), nil
 }
 
 func rsaKeyFromJWK(n, e string) (*rsa.PublicKey, error) {

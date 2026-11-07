@@ -111,8 +111,8 @@ type AuthService interface {
 	Verify2FA(ctx context.Context, userID uuid.UUID, code, pendingToken string) (*service.AuthResponse, error)
 	// OAuth
 	GetOAuthRedirectURL(ctx context.Context, provider string) (*service.OAuthStart, error)
-	HandleOAuthCallback(ctx context.Context, provider, code, state, binding string) (*service.OAuthCallbackResult, error)
-	HandleOAuthToken(ctx context.Context, provider, idToken string) (*service.OAuthCallbackResult, error)
+	HandleOAuthCallback(ctx context.Context, provider, code, state, binding string, client service.OAuthClient) (*service.OAuthCallbackResult, error)
+	HandleOAuthToken(ctx context.Context, provider, idToken string, client service.OAuthClient) (*service.OAuthCallbackResult, error)
 	// A5: OAuth pre-creation OTP-signup flow.
 	CompleteOAuthSignup(ctx context.Context, pendingToken, phone string) error
 	VerifyOAuthSignup(ctx context.Context, pendingToken, otp, deviceID, platform, ip, userAgent string) (*service.AuthResponse, error)
@@ -178,10 +178,26 @@ func New(svc AuthService, cfg *config.Config, logger *slog.Logger, rdb *redis.Cl
 	return h
 }
 
+// credentialLimit is the configured rate limit (AUTH_RATE_LIMIT_*) for one
+// consumer credential action, in that action's own bucket.
+func (h *Handler) credentialLimit(action middleware.CredentialAction) gin.HandlerFunc {
+	return middleware.CredentialRateLimit(h.rdb, action, middleware.CredentialLimits{
+		PerIP:      int64(h.cfg.AuthRateLimitPerIP),
+		PerAccount: int64(h.cfg.AuthRateLimitPerAccount),
+		Window:     h.cfg.AuthRateLimitWindow,
+	})
+}
+
+// strictCredentialLimit keeps the old 10-per-IP numbers for routes whose users
+// are not a carrier-NAT crowd (admin console, step-up, passkeys).
+func (h *Handler) strictCredentialLimit(action middleware.CredentialAction) gin.HandlerFunc {
+	return middleware.CredentialRateLimit(h.rdb, action, middleware.StrictCredentialLimits)
+}
+
 func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) {
 	v1 := r.Group("/v1/auth")
-	v1.POST("/partner/phone/request", middleware.LoginRateLimit(h.rdb), h.partnerPhoneRequest)
-	v1.POST("/partner/phone/verify", middleware.LoginRateLimit(h.rdb), h.partnerPhoneVerify)
+	v1.POST("/partner/phone/request", h.credentialLimit(middleware.ActionPartnerPhoneSend), h.partnerPhoneRequest)
+	v1.POST("/partner/phone/verify", h.credentialLimit(middleware.ActionPartnerPhoneCheck), h.partnerPhoneVerify)
 	{
 		// Public routes
 		// SR-6: RETIRED. These generated a code, stored it, and sent nothing —
@@ -189,19 +205,19 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		// arrive. The rate limiters stay in front of them so a client looping
 		// on the 410 still cannot hammer Redis. See retired_sms_routes.go.
 		v1.POST("/request-otp", middleware.OTPRateLimit(h.rdb), retiredSMSRoute)
-		v1.POST("/verify-otp", middleware.LoginRateLimit(h.rdb), retiredSMSRoute)
+		v1.POST("/verify-otp", h.strictCredentialLimit(middleware.ActionRetiredOTP), retiredSMSRoute)
 		// H2 (arch review): /register is direct password signup. Without a
 		// limit an attacker can spam-create accounts to exhaust handle/email
-		// namespace or burn captcha quotas. Reuse the login limiter (10/IP
-		// /15min, 5/identifier/15min) — same abuse surface.
+		// namespace or burn captcha quotas. The credential limiter, in a
+		// bucket of its own (see credentialLimit).
 		// Idempotency runs BEFORE the rate limiter: a client replaying a
 		// request it never saw the response to should get its original result
 		// back, not be counted again toward a limit it did not knowingly spend.
 		v1.POST("/register",
 			Idempotency(h.idempotency, "POST /v1/auth/register", h.log),
-			middleware.LoginRateLimit(h.rdb),
+			h.credentialLimit(middleware.ActionRegister),
 			h.Register)
-		v1.POST("/login", middleware.LoginRateLimit(h.rdb), h.Login)
+		v1.POST("/login", h.credentialLimit(middleware.ActionLogin), h.Login)
 		// H2: refresh-token flood is unlikely (long opaque tokens) but a
 		// stolen refresh could DoS the service before fingerprint mismatch
 		// burns the session. IP-only cap is cheap defence in depth.
@@ -212,24 +228,24 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 
 		// 2FA public route (called after login returns requires_2fa).
 		// H2: was unprotected — a 6-digit TOTP code is 10^6 attempts.
-		// LoginRateLimit (5/identifier/15min + 10/IP/15min) makes
-		// online brute force infeasible.
-		v1.POST("/2fa/verify", middleware.LoginRateLimit(h.rdb), h.Verify2FA)
+		// The per-account cap (5 per user_id per window) makes online brute
+		// force infeasible; the per-IP cap is sized for carrier NAT.
+		v1.POST("/2fa/verify", h.credentialLimit(middleware.ActionTwoFactor), h.Verify2FA)
 
 		// A13 — anomaly step-up. Public (the user is mid-login and
 		// doesn't have a session yet). Both endpoints consume a
 		// pending_token issued by Login/VerifyOTP when the risk band
 		// is high AND LOGIN_ANOMALY_ENFORCE=enforce. The /verify-email
 		// path is gated by the password-reset rate limiter (same
-		// abuse surface — email-OTP burn). The /verify-2fa path
-		// piggy-backs on the login limiter.
+		// abuse surface — email-OTP burn). The /verify-2fa path has a
+		// credential bucket of its own.
 		v1.POST("/anomaly/verify-email", middleware.PasswordResetRateLimit(h.rdb), h.AnomalyVerifyEmail)
-		v1.POST("/anomaly/verify-2fa", middleware.LoginRateLimit(h.rdb), h.AnomalyVerify2FA)
+		v1.POST("/anomaly/verify-2fa", h.credentialLimit(middleware.ActionAnomalyTwoFactor), h.AnomalyVerify2FA)
 
 		// OAuth routes (public)
 		v1.GET("/oauth/:provider", h.OAuthRedirect)
 		v1.GET("/oauth/:provider/callback", h.OAuthCallback)
-		v1.POST("/oauth/:provider/token", h.OAuthToken)
+		v1.POST("/oauth/:provider/token", h.credentialLimit(middleware.ActionOAuthToken), h.OAuthToken)
 		// A5: OAuth pre-creation OTP-signup flow — used when the
 		// provider didn't assert email_verified. complete-signup
 		// sends the OTP to the supplied phone; verify-signup
@@ -237,7 +253,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		// Reuse the OTP rate-limiter so this can't be abused for
 		// SMS-flood billing attacks.
 		v1.POST("/oauth/complete-signup", middleware.OTPRateLimit(h.rdb), h.OAuthCompleteSignup)
-		v1.POST("/oauth/verify-signup", middleware.LoginRateLimit(h.rdb), h.OAuthVerifySignup)
+		v1.POST("/oauth/verify-signup", h.credentialLimit(middleware.ActionOAuthVerifySignup), h.OAuthVerifySignup)
 		v1.GET("/.well-known/jwks.json", h.MiniAppJWKS)
 
 		// Password reset (public)
@@ -302,7 +318,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 
 			// Step-up (A2): re-verify TOTP, get a token with step_up_at.
 			// Login IP limiter here, plus a per-account limit in the service.
-			protected.POST("/step-up", middleware.LoginRateLimit(h.rdb), h.StepUp)
+			protected.POST("/step-up", h.strictCredentialLimit(middleware.ActionStepUp), h.StepUp)
 
 			// 2FA management (protected)
 			protected.POST("/2fa/setup", h.Setup2FA)
@@ -886,23 +902,7 @@ func (h *Handler) Login(c *gin.Context) {
 			api.Error(c.Writer, http.StatusForbidden, "EMAIL_NOT_VERIFIED", err.Error(), details, nil)
 			return
 		}
-		// A13 — anomaly step-up required. The service has already
-		// stashed the pending session + dispatched the email-OTP if
-		// applicable. Render a 200 with the step-up envelope so the
-		// UI can pivot without falling into the generic "auth failed"
-		// banner. We deliberately don't use 401 here because the
-		// password DID match — the request is now in a "halt for
-		// second channel" state, semantically closer to 2FA than a
-		// rejection.
-		if errors.Is(err, service.ErrAnomalyStepUpRequired) && resp != nil {
-			api.JSON(c.Writer, http.StatusOK, resp, nil)
-			return
-		}
-		if errors.Is(err, service.ErrAnomalyStepUpUnavailable) {
-			h.log.Warn("login refused: no anomaly step-up channel",
-				"identifier", maskIdentifier(identifier), "request_id", RequestIDFromContext(c))
-			api.Error(c.Writer, http.StatusUnauthorized, "STEP_UP_UNAVAILABLE",
-				"This sign-in looks unusual and your account has no recovery channel set up. Please contact support.", nil, nil)
+		if h.writeStepUpOutcome(c, resp, err) {
 			return
 		}
 		// Account control: terminal / past-window states. Only reachable
@@ -928,6 +928,29 @@ func (h *Handler) Login(c *gin.Context) {
 
 	h.setAuthCookies(c, resp.Tokens)
 	api.JSON(c.Writer, http.StatusOK, resp, nil)
+}
+
+// writeStepUpOutcome renders the A13 anomaly outcomes of a sign-in, password
+// or provider alike, and reports whether it wrote.
+//
+// Step-up required: the service has already stashed the pending session and
+// dispatched the email OTP where it can. The envelope goes out as a 200 so
+// the UI can pivot without falling into the generic "auth failed" banner; the
+// credential DID check out, so the request is halted for a second channel,
+// closer to 2FA than to a rejection. No step-up channel at all: a 401 the
+// client can explain.
+func (h *Handler) writeStepUpOutcome(c *gin.Context, resp *service.AuthResponse, err error) bool {
+	switch {
+	case errors.Is(err, service.ErrAnomalyStepUpRequired) && resp != nil:
+		api.JSON(c.Writer, http.StatusOK, resp, nil)
+	case errors.Is(err, service.ErrAnomalyStepUpUnavailable):
+		h.log.Warn("sign-in refused: no anomaly step-up channel", "request_id", RequestIDFromContext(c))
+		api.Error(c.Writer, http.StatusUnauthorized, "STEP_UP_UNAVAILABLE",
+			"This sign-in looks unusual and your account has no recovery channel set up. Please contact support.", nil, nil)
+	default:
+		return false
+	}
+	return true
 }
 
 func (h *Handler) Refresh(c *gin.Context) {

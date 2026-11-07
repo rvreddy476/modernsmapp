@@ -54,6 +54,16 @@ type Service struct {
 	// (oauth_idtoken.go). Created on first use; tests install their own.
 	googleKeysOnce sync.Once
 	googleKeySet   *googleKeySet
+	// refreshReuseGrace is RefreshReuseGrace; a field so a test can pin the
+	// no-grace behaviour of the rotation race it exercises.
+	refreshReuseGrace time.Duration
+	// comparePassword is bcrypt.CompareHashAndPassword; a field so a test can
+	// observe that every login path pays for one comparison.
+	comparePassword func(hash, password []byte) error
+	// dummyPasswordHash is compared against when there is no real hash, so an
+	// unknown account takes as long to refuse as a wrong password.
+	dummyPasswordHashOnce sync.Once
+	dummyPasswordHash     []byte
 }
 
 // SetThrottle installs the abuse limiter. Separate from New so tests can
@@ -137,8 +147,11 @@ type Store interface {
 	// oldHash and is live; rotated=false means a concurrent refresh or a
 	// logout won, and nothing may be issued.
 	RotateSessionWithFingerprint(ctx context.Context, sessionID uuid.UUID, oldHash, newHash, ip string, expiresAt time.Time, anomalyFlagged bool) (bool, error)
+	// RotateSessionOnRetry is the same conditional rotation for a grace-window
+	// retry; it marks the replaced, never-delivered token in the history.
+	RotateSessionOnRetry(ctx context.Context, sessionID uuid.UUID, lostHash, newHash, ip string, expiresAt time.Time) (bool, error)
 	// Refresh-token reuse detection (sessions_rotation.go).
-	LookupRotatedRefreshToken(ctx context.Context, refreshTokenHash string) (*uuid.UUID, error)
+	LookupRotatedRefreshToken(ctx context.Context, refreshTokenHash string) (*store.RotatedRefreshToken, error)
 	RevokeSessionFamily(ctx context.Context, sessionID uuid.UUID) ([]uuid.UUID, error)
 	RevokeSession(ctx context.Context, sessionID uuid.UUID) error
 	RevokeAllSessions(ctx context.Context, userID uuid.UUID) (int64, error)
@@ -216,6 +229,8 @@ func New(store Store, producer Producer, cfg *config.Config, logger *slog.Logger
 		rdb:                  rdb,
 		miniAppSessionSigner: miniAppSessionSigner,
 		throttle:             NewRedisThrottle(rdb),
+		refreshReuseGrace:    RefreshReuseGrace,
+		comparePassword:      bcrypt.CompareHashAndPassword,
 	}
 	// Opt-in RS256 access-token signing. Reuses the same PEM parser as the
 	// mini-app signer. A parse failure is fatal: misconfiguring the signing key
@@ -628,6 +643,19 @@ func (s *Service) RegisterWithConsent(ctx context.Context, phone, email, passwor
 	}, nil
 }
 
+// dummyPasswordHashValue is a bcrypt hash at this service's password cost,
+// made once, that no password matches.
+func (s *Service) dummyPasswordHashValue() []byte {
+	s.dummyPasswordHashOnce.Do(func() {
+		h, err := bcrypt.GenerateFromPassword([]byte("no-account-has-this-password"), s.cfg.BcryptCost)
+		if err != nil {
+			panic(fmt.Sprintf("dummy password hash: %v", err))
+		}
+		s.dummyPasswordHash = h
+	})
+	return s.dummyPasswordHash
+}
+
 func (s *Service) LoginWithPassword(ctx context.Context, identifier, password, deviceID, platform, ip, userAgent string) (*AuthResponse, error) {
 	// The column is chosen from the identifier's shape: an email-shaped value
 	// is never matched against the phone column (H2, registration audit).
@@ -636,11 +664,14 @@ func (s *Service) LoginWithPassword(ctx context.Context, identifier, password, d
 		return nil, err
 	}
 
-	if user == nil {
-		return nil, errors.New("invalid credentials")
-	}
-
-	if user.PasswordHash == "" {
+	if user == nil || user.PasswordHash == "" {
+		// No account, or one without a password (OAuth only): compare anyway,
+		// so the refusal takes as long as a wrong password and its timing does
+		// not say which addresses have accounts here.
+		_ = s.comparePassword(s.dummyPasswordHashValue(), []byte(password))
+		if user == nil {
+			return nil, errors.New("invalid credentials")
+		}
 		return nil, errors.New("user has no password set (try OTP login)")
 	}
 
@@ -665,7 +696,7 @@ func (s *Service) LoginWithPassword(ctx context.Context, identifier, password, d
 	// "invalid credentials" whether the account is pending, active, or absent,
 	// and a user who proves they own the account gets a fresh verification
 	// transaction instead of a dead end. No session is issued either way.
-	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(password)); err != nil {
+	if err := s.comparePassword([]byte(user.PasswordHash), []byte(password)); err != nil {
 		return nil, errors.New("invalid credentials")
 	}
 
@@ -776,15 +807,23 @@ func (s *Service) refreshSessionOfKind(ctx context.Context, refreshToken, ip, us
 	if err != nil {
 		return nil, err
 	}
+	retry := false
 	if sess == nil {
 		// Not the current token of any session. If it WAS one, it has been
-		// used once already: whoever holds it now is replaying a stolen or
-		// leaked token, and the holder of the rotated token cannot be told
-		// apart from the thief. Burn the whole family.
-		if err := s.revokeOnRefreshReuse(ctx, refreshTokenHash, ip, userAgent); err != nil {
+		// used once already. Moments after its rotation, from a session whose
+		// successor token is still unused, that is a client retrying a lost
+		// response: rotate the session again, from its current token, which
+		// cuts off the successor the client never received. Otherwise the
+		// holder of the rotated token cannot be told apart from a thief, and
+		// the whole family is burnt.
+		sess, err = s.resolveRotatedRefreshToken(ctx, refreshTokenHash, ip, userAgent)
+		if err != nil {
 			return nil, err
 		}
-		return nil, errors.New("invalid refresh token")
+		if sess == nil {
+			return nil, errors.New("invalid refresh token")
+		}
+		retry = true
 	}
 	if sess.RevokedAt != nil {
 		return nil, errors.New("invalid refresh token")
@@ -880,7 +919,14 @@ func (s *Service) refreshSessionOfKind(ctx context.Context, refreshToken, ip, us
 	if err != nil {
 		return nil, err
 	}
-	rotated, err := s.store.RotateSessionWithFingerprint(ctx, sess.ID, refreshTokenHash, hashToken(newRefreshToken), ip, newExpiresAt, false)
+	var rotated bool
+	if retry {
+		// Replace the session's current token, the successor the client never
+		// received, and only while the row still holds it.
+		rotated, err = s.store.RotateSessionOnRetry(ctx, sess.ID, sess.RefreshToken, hashToken(newRefreshToken), ip, newExpiresAt)
+	} else {
+		rotated, err = s.store.RotateSessionWithFingerprint(ctx, sess.ID, refreshTokenHash, hashToken(newRefreshToken), ip, newExpiresAt, false)
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -1782,7 +1828,8 @@ type anomalyProbeResult struct {
 func (s *Service) probeLoginAnomaly(ctx context.Context, userID, ip, deviceID string) anomalyProbeResult {
 	lastIPKey := fmt.Sprintf("last_ip:%s", userID)
 	lastIP, _ := s.rdb.Get(ctx, lastIPKey).Result()
-	isNewIP := lastIP != "" && lastIP != ip
+	// An empty ip is no signal, as on refresh: not a new address.
+	isNewIP := lastIP != "" && ip != "" && lastIP != ip
 
 	isNewDevice := false
 	if deviceID != "" {
@@ -1821,8 +1868,11 @@ func (s *Service) probeLoginAnomaly(ctx context.Context, userID, ip, deviceID st
 func (s *Service) applyAnomalySideEffects(ctx context.Context, userID, ip, deviceID, platform, userAgent string, probe anomalyProbeResult) {
 	lastIPKey := fmt.Sprintf("last_ip:%s", userID)
 	// Always refresh the cache — even on no-change logins this resets
-	// the TTL so a long-lived account keeps its baseline.
-	s.rdb.Set(ctx, lastIPKey, ip, 30*24*time.Hour)
+	// the TTL so a long-lived account keeps its baseline. Never with an
+	// empty ip: that would erase the baseline the next login is graded on.
+	if ip != "" {
+		s.rdb.Set(ctx, lastIPKey, ip, 30*24*time.Hour)
+	}
 
 	if !(probe.IsNewIP || probe.IsNewDevice) {
 		return

@@ -49,7 +49,7 @@ func rotatingIPs(r *gin.Engine, n int, body string) (firstDenied int) {
 // H4: /login and the admin console accept `email`; the per-account cap used to
 // read only `identifier`/`phone`.
 func TestLoginRateLimitCountsEmailField(t *testing.T) {
-	r, _ := limiterEngine(t, LoginRateLimit)
+	r, _ := limiterEngine(t, loginLimiter)
 	if n := rotatingIPs(r, 9, `{"email":"victim@example.com","password":"x"}`); n != 6 {
 		t.Fatalf("first denial at request %d, want 6 (5 per account, then 429)", n)
 	}
@@ -67,7 +67,7 @@ func TestPasswordResetRateLimitCountsIdentifierField(t *testing.T) {
 // Case and whitespace variants of one account share one bucket, and the
 // fields are interchangeable.
 func TestRateLimitIdentifierIsNormalised(t *testing.T) {
-	r, _ := limiterEngine(t, LoginRateLimit)
+	r, _ := limiterEngine(t, loginLimiter)
 	bodies := []string{
 		`{"identifier":"victim@example.com"}`,
 		`{"identifier":"Victim@Example.com"}`,
@@ -89,7 +89,7 @@ func TestRateLimitIdentifierIsNormalised(t *testing.T) {
 
 // M1: one request every 14 minutes kept an identifier locked forever.
 func TestLimiterWindowDoesNotSlide(t *testing.T) {
-	r, mr := limiterEngine(t, LoginRateLimit)
+	r, mr := limiterEngine(t, loginLimiter)
 	body := `{"identifier":"victim@example.com"}`
 	for i := 0; i < 6; i++ {
 		hitFrom(r, "10.2.0.1", body)
@@ -101,7 +101,7 @@ func TestLimiterWindowDoesNotSlide(t *testing.T) {
 	mr.FastForward(2 * time.Minute) // 16 minutes after the window opened
 	if code := hitFrom(r, "10.2.0.3", body); code != http.StatusOK {
 		t.Fatalf("identifier still locked after its 15-minute window ended: %d (ttl %v)",
-			code, mr.TTL("login_rl_id:victim@example.com"))
+			code, mr.TTL(credentialKey(ActionLogin.Name, "acct", accountDigest("victim@example.com"))))
 	}
 }
 

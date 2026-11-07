@@ -451,7 +451,10 @@ func (f *fakeAnomalyStore) ListActiveSessions(_ context.Context, _ uuid.UUID) ([
 func (f *fakeAnomalyStore) RotateSessionWithFingerprint(_ context.Context, _ uuid.UUID, _, _, _ string, _ time.Time, _ bool) (bool, error) {
 	return true, nil
 }
-func (f *fakeAnomalyStore) LookupRotatedRefreshToken(_ context.Context, _ string) (*uuid.UUID, error) {
+func (f *fakeAnomalyStore) RotateSessionOnRetry(_ context.Context, _ uuid.UUID, _, _, _ string, _ time.Time) (bool, error) {
+	return true, nil
+}
+func (f *fakeAnomalyStore) LookupRotatedRefreshToken(_ context.Context, _ string) (*store.RotatedRefreshToken, error) {
 	return nil, nil
 }
 func (f *fakeAnomalyStore) RevokeSessionFamily(_ context.Context, _ uuid.UUID) ([]uuid.UUID, error) {

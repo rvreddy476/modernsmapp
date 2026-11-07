@@ -52,7 +52,7 @@ func TestOAuthNewAccountGateStopsBothCreationBranchesBeforeSideEffects(t *testin
 				Name:          "New User",
 				Sub:           "provider-subject",
 				EmailVerified: tc.emailVerified,
-			})
+			}, OAuthClient{})
 			if !errors.Is(err, ErrOAuthNewAccountDisabled) {
 				t.Fatalf("error = %v, want ErrOAuthNewAccountDisabled", err)
 			}
@@ -89,7 +89,7 @@ func TestOAuthGateDoesNotBlockExistingLinkedAccountLogin(t *testing.T) {
 
 	result, err := baseService.loginOrRegisterOAuth(context.Background(), "google", &OAuthUserInfo{
 		Email: "linked@example.com", Sub: "linked-subject", EmailVerified: true,
-	})
+	}, OAuthClient{})
 	if err != nil || result == nil || result.Auth == nil || result.Auth.User.ID != linked.ID {
 		t.Fatalf("existing linked OAuth login = (%#v, %v), want authenticated user", result, err)
 	}
@@ -107,7 +107,7 @@ func TestOAuthGateDoesNotBlockVerifiedExistingAccountLink(t *testing.T) {
 
 	result, err := baseService.loginOrRegisterOAuth(context.Background(), "google", &OAuthUserInfo{
 		Email: "existing@example.com", Sub: "new-provider-subject", EmailVerified: true,
-	})
+	}, OAuthClient{})
 	if err != nil || result == nil || result.Auth == nil || result.Auth.User.ID != existing.ID {
 		t.Fatalf("existing account OAuth link = (%#v, %v), want authenticated user", result, err)
 	}

@@ -68,15 +68,15 @@ func (h *Handler) RegisterAdminSessionRoutes(r *gin.Engine, adminAuthMW gin.Hand
 	// The same limiters as the consumer login: 10/IP and 5/identifier per
 	// 15 min on both public steps, plus 5 TOTP attempts per account in the
 	// service.
-	g.POST("/login", middleware.LoginRateLimit(h.rdb), h.AdminSessionLogin)
-	g.POST("/verify-2fa", middleware.LoginRateLimit(h.rdb), h.AdminSessionVerify2FA)
+	g.POST("/login", h.strictCredentialLimit(middleware.ActionAdminLogin), h.AdminSessionLogin)
+	g.POST("/verify-2fa", h.strictCredentialLimit(middleware.ActionAdminTwoFactor), h.AdminSessionVerify2FA)
 	g.POST("/refresh", middleware.AdminRefreshRateLimit(h.rdb, adminRefreshCookieName), requireAdminCSRF(), h.AdminSessionRefresh)
 	// Logout needs no CSRF pair: SameSite=Strict already keeps the cookie off
 	// cross-site requests, and a sign-out must work even with a lost csrf
 	// cookie. It only ever ends an admin session.
 	g.POST("/logout", h.AdminSessionLogout)
 	g.GET("", adminAuthMW, h.AdminSessionStatus)
-	g.POST("/step-up", adminAuthMW, requireAdminCSRF(), middleware.LoginRateLimit(h.rdb), h.AdminSessionStepUp)
+	g.POST("/step-up", adminAuthMW, requireAdminCSRF(), h.strictCredentialLimit(middleware.ActionAdminStepUp), h.AdminSessionStepUp)
 }
 
 // requireAdminCSRF is the double submit for the admin cookies. It is enforced

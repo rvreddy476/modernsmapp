@@ -155,8 +155,8 @@ func (h *Handler) RegisterWebAuthnRoutes(r *gin.Engine, authMW, csrfMW gin.Handl
 	// limiter (10/IP + 5/identifier per 15 min). Before this, challenge
 	// minting and assertion attempts were bounded only by the gateway's
 	// generic per-IP limiter.
-	g.POST("/login/begin", middleware.LoginRateLimit(h.rdb), h.passkeyLoginBegin(wa))
-	g.POST("/login/finish", middleware.LoginRateLimit(h.rdb), h.passkeyLoginFinish(wa))
+	g.POST("/login/begin", h.strictCredentialLimit(middleware.ActionPasskeyLogin), h.passkeyLoginBegin(wa))
+	g.POST("/login/finish", h.strictCredentialLimit(middleware.ActionPasskeyLogin), h.passkeyLoginFinish(wa))
 }
 
 func callerUUID(c *gin.Context) (uuid.UUID, bool) {

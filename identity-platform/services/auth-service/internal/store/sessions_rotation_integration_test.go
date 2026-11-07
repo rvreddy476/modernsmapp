@@ -99,11 +99,29 @@ func TestSessionRotationIsConditionalOnOldHash(t *testing.T) {
 	if got == nil || got.ID != sess.ID {
 		t.Fatal("winning hash lost")
 	}
-	if sid, err := st.LookupRotatedRefreshToken(ctx, old); err != nil || sid == nil || *sid != sess.ID {
-		t.Fatalf("rotated-away hash not in history: %v %v", sid, err)
+	rec, err := st.LookupRotatedRefreshToken(ctx, old)
+	if err != nil || rec == nil || rec.SessionID != sess.ID {
+		t.Fatalf("rotated-away hash not in history: %v %v", rec, err)
 	}
-	if sid, _ := st.LookupRotatedRefreshToken(ctx, "never-issued"); sid != nil {
+	if rec.Superseded {
+		t.Fatal("the latest rotated-away hash reported superseded")
+	}
+	if rec.Age < 0 || rec.Age > time.Minute {
+		t.Fatalf("rotation age %v, want a few moments", rec.Age)
+	}
+	if rec, _ := st.LookupRotatedRefreshToken(ctx, "never-issued"); rec != nil {
 		t.Fatal("unknown hash found in history")
+	}
+
+	// Rotating the successor supersedes the first rotated-away hash only.
+	if ok, err := st.RotateSessionWithFingerprint(ctx, sess.ID, "new-1", "new-3", "1.1.1.1", time.Now().Add(time.Hour), false); err != nil || !ok {
+		t.Fatalf("second rotation: %v %v", ok, err)
+	}
+	if rec, _ := st.LookupRotatedRefreshToken(ctx, old); rec == nil || !rec.Superseded {
+		t.Fatalf("hash whose successor rotated is not superseded: %+v", rec)
+	}
+	if rec, _ := st.LookupRotatedRefreshToken(ctx, "new-1"); rec == nil || rec.Superseded {
+		t.Fatalf("latest rotated-away hash reported superseded: %+v", rec)
 	}
 }
 

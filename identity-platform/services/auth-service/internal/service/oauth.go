@@ -218,7 +218,7 @@ type OAuthCallbackResult struct {
 // HandleOAuthCallback exchanges the authorization code for tokens, fetches user info,
 // and creates or links the user account.
 // binding is the value of the browser-binding cookie the redirect set.
-func (s *Service) HandleOAuthCallback(ctx context.Context, provider, code, state, binding string) (*OAuthCallbackResult, error) {
+func (s *Service) HandleOAuthCallback(ctx context.Context, provider, code, state, binding string, client OAuthClient) (*OAuthCallbackResult, error) {
 	rec, err := s.consumeOAuthState(ctx, provider, state, binding)
 	if err != nil {
 		return nil, err
@@ -246,13 +246,13 @@ func (s *Service) HandleOAuthCallback(ctx context.Context, provider, code, state
 		return nil, fmt.Errorf("failed to fetch user info: %w", err)
 	}
 
-	return s.loginOrRegisterOAuth(ctx, provider, userInfo)
+	return s.loginOrRegisterOAuth(ctx, provider, userInfo, client)
 }
 
 // HandleOAuthToken signs a mobile app in with a provider ID token (C1). Only
 // Google is accepted: the token must verify against Google's keys and name one
 // of this service's client ids as its audience. See oauth_idtoken.go.
-func (s *Service) HandleOAuthToken(ctx context.Context, provider, idToken string) (*OAuthCallbackResult, error) {
+func (s *Service) HandleOAuthToken(ctx context.Context, provider, idToken string, client OAuthClient) (*OAuthCallbackResult, error) {
 	if provider != "google" {
 		return nil, ErrOAuthTokenProviderUnsupported
 	}
@@ -264,7 +264,7 @@ func (s *Service) HandleOAuthToken(ctx context.Context, provider, idToken string
 	if err != nil {
 		return nil, err
 	}
-	return s.loginOrRegisterOAuth(ctx, provider, userInfo)
+	return s.loginOrRegisterOAuth(ctx, provider, userInfo, client)
 }
 
 // oauthLoginGate applies the password path's account rules to an existing
@@ -278,11 +278,52 @@ func (s *Service) oauthLoginGate(ctx context.Context, user *store.User) error {
 	return s.applyLoginLifecycle(ctx, user)
 }
 
+// OAuthClient is what the HTTP layer knows about the caller of a provider
+// sign-in. It is recorded on the session and fed to the 2FA and anomaly gates
+// exactly as a password login's is: an empty IP used to read as "a new
+// address" against the user's last one.
+type OAuthClient struct {
+	IP        string
+	UserAgent string
+	// DeviceID is the client's own install id when it sends one; empty
+	// sessions are recorded under oauthDeviceID.
+	DeviceID string
+	// Platform is the client's platform (android, web); empty falls back to
+	// the provider name.
+	Platform string
+}
+
+// oauthDeviceID names the device of a provider session whose client sent no
+// install id.
+const oauthDeviceID = "oauth"
+
+// oauthSession opens a session for an account signing in through a provider.
+// The step-up envelope comes back with ErrAnomalyStepUpRequired so the
+// handler can render it, as for a password login.
+func (s *Service) oauthSession(ctx context.Context, user *store.User, provider string, client OAuthClient) (*OAuthCallbackResult, error) {
+	deviceID := strings.TrimSpace(client.DeviceID)
+	if deviceID == "" {
+		deviceID = oauthDeviceID
+	}
+	platform := strings.TrimSpace(client.Platform)
+	if platform == "" {
+		platform = provider
+	}
+	auth, err := s.createSessionForUser(ctx, user, []string{AMRFederated}, deviceID, platform, client.IP, client.UserAgent)
+	if err != nil {
+		if errors.Is(err, ErrAnomalyStepUpRequired) && auth != nil {
+			return &OAuthCallbackResult{Auth: auth}, err
+		}
+		return nil, err
+	}
+	return &OAuthCallbackResult{Auth: auth}, nil
+}
+
 // loginOrRegisterOAuth finds an existing user by provider + email, or
 // — when no user exists and the provider hasn't asserted email
 // verification — stashes the claims and returns a pending-signup
 // response instead of auto-creating an account (A5).
-func (s *Service) loginOrRegisterOAuth(ctx context.Context, provider string, info *OAuthUserInfo) (*OAuthCallbackResult, error) {
+func (s *Service) loginOrRegisterOAuth(ctx context.Context, provider string, info *OAuthUserInfo, client OAuthClient) (*OAuthCallbackResult, error) {
 	if info.Email == "" {
 		return nil, errors.New("OAuth provider did not return an email address")
 	}
@@ -296,11 +337,7 @@ func (s *Service) loginOrRegisterOAuth(ctx context.Context, provider string, inf
 		if err := s.oauthLoginGate(ctx, user); err != nil {
 			return nil, err
 		}
-		auth, err := s.createSessionForUser(ctx, user, []string{AMRFederated}, "oauth", provider, "", "")
-		if err != nil {
-			return nil, err
-		}
-		return &OAuthCallbackResult{Auth: auth}, nil
+		return s.oauthSession(ctx, user, provider, client)
 	}
 
 	// Existing user with this email but no OAuth link yet.
@@ -337,11 +374,7 @@ func (s *Service) loginOrRegisterOAuth(ctx context.Context, provider string, inf
 		if err := s.store.LinkOAuthProvider(ctx, user.ID, provider); err != nil {
 			return nil, fmt.Errorf("failed to link OAuth provider: %w", err)
 		}
-		auth, err := s.createSessionForUser(ctx, user, []string{AMRFederated}, "oauth", provider, "", "")
-		if err != nil {
-			return nil, err
-		}
-		return &OAuthCallbackResult{Auth: auth}, nil
+		return s.oauthSession(ctx, user, provider, client)
 	}
 
 	// Module 7: both new-account branches below bypass the launch eligibility
@@ -381,11 +414,7 @@ func (s *Service) loginOrRegisterOAuth(ctx context.Context, provider string, inf
 	}
 
 	s.log.Info("user registered via OAuth", "user_id", user.ID, "provider", provider, "email_verified", true)
-	auth, err := s.createSessionForUser(ctx, user, []string{AMRFederated}, "oauth", provider, "", "")
-	if err != nil {
-		return nil, err
-	}
-	return &OAuthCallbackResult{Auth: auth}, nil
+	return s.oauthSession(ctx, user, provider, client)
 }
 
 // createOAuthUserTx materialises a new OAuth-backed user inside a

@@ -112,7 +112,7 @@ func TestOAuthTokenAcceptsGoogleIDTokenForOurClient(t *testing.T) {
 	for _, aud := range []string{testAndroidClient, testWebClientID} {
 		c := googleClaims(*u.Email)
 		c["aud"] = aud
-		res, err := f.svc.HandleOAuthToken(context.Background(), "google", signGoogle(t, c, key))
+		res, err := f.svc.HandleOAuthToken(context.Background(), "google", signGoogle(t, c, key), OAuthClient{})
 		if err != nil || res.Auth == nil || res.Auth.Tokens.AccessToken == "" {
 			t.Fatalf("aud %s: valid ID token refused: %v", aud, err)
 		}
@@ -160,7 +160,7 @@ func TestOAuthTokenRefusesUnverifiableIDTokens(t *testing.T) {
 			default:
 				raw = signGoogle(t, c, key)
 			}
-			res, err := f.svc.HandleOAuthToken(context.Background(), "google", raw)
+			res, err := f.svc.HandleOAuthToken(context.Background(), "google", raw, OAuthClient{})
 			if err == nil || res != nil {
 				t.Fatalf("%s: token accepted", tc.name)
 			}
@@ -177,7 +177,7 @@ func TestOAuthTokenRefusesUnverifiableIDTokens(t *testing.T) {
 func TestOAuthTokenRefusesProvidersWithoutIDTokenVerification(t *testing.T) {
 	f := newOAuthFixture(t)
 	for _, p := range []string{"github", "apple"} {
-		if _, err := f.svc.HandleOAuthToken(context.Background(), p, "anything"); !errors.Is(err, ErrOAuthTokenProviderUnsupported) {
+		if _, err := f.svc.HandleOAuthToken(context.Background(), p, "anything", OAuthClient{}); !errors.Is(err, ErrOAuthTokenProviderUnsupported) {
 			t.Fatalf("%s: err = %v", p, err)
 		}
 	}
@@ -192,7 +192,7 @@ func TestOAuthTokenFailsClosedWhenUnconfigured(t *testing.T) {
 		f := newOAuthFixture(t)
 		f.svc.cfg.OAuth = oc
 		u := f.verifiedUser(t, store.AccountStatusActive)
-		if _, err := f.svc.HandleOAuthToken(context.Background(), "google", signGoogle(t, googleClaims(*u.Email), key)); !errors.Is(err, ErrOAuthNotConfigured) {
+		if _, err := f.svc.HandleOAuthToken(context.Background(), "google", signGoogle(t, googleClaims(*u.Email), key), OAuthClient{}); !errors.Is(err, ErrOAuthNotConfigured) {
 			t.Fatalf("%s: err = %v, want ErrOAuthNotConfigured", name, err)
 		}
 	}
@@ -242,7 +242,7 @@ func TestOAuthSignInAppliesLifecycleRules(t *testing.T) {
 					svc = New(linkedStore{f.st, u}, &fakeProducer{}, f.svc.cfg, f.svc.log, f.svc.rdb, nil)
 					svc.googleKeySet = f.svc.googleKeySet
 				}
-				res, err := svc.HandleOAuthToken(context.Background(), "google", signGoogle(t, googleClaims(*u.Email), key))
+				res, err := svc.HandleOAuthToken(context.Background(), "google", signGoogle(t, googleClaims(*u.Email), key), OAuthClient{})
 				if tc.wantErr != nil {
 					if !errors.Is(err, tc.wantErr) {
 						t.Fatalf("err = %v, want %v", err, tc.wantErr)
@@ -328,7 +328,7 @@ func TestOAuthCallbackSendsPKCEVerifierFromTheBoundBrowser(t *testing.T) {
 	f := newOAuthFixture(t)
 	_, got := fakeTokenEndpoint(t)
 	state, binding, challenge := startFlow(t, f)
-	_, err := f.svc.HandleOAuthCallback(context.Background(), "google", "code-1", state, binding)
+	_, err := f.svc.HandleOAuthCallback(context.Background(), "google", "code-1", state, binding, OAuthClient{})
 	if err == nil || errors.Is(err, ErrOAuthStateInvalid) {
 		t.Fatalf("expected the (fake) exchange to be attempted and fail, got %v", err)
 	}
@@ -354,7 +354,7 @@ func TestOAuthCallbackRefusesUnboundOrReplayedState(t *testing.T) {
 			_, got := fakeTokenEndpoint(t)
 			state, binding, _ := startFlow(t, f)
 			p, s, b := mk(state, binding)
-			if _, err := f.svc.HandleOAuthCallback(context.Background(), p, "code", s, b); !errors.Is(err, ErrOAuthStateInvalid) {
+			if _, err := f.svc.HandleOAuthCallback(context.Background(), p, "code", s, b, OAuthClient{}); !errors.Is(err, ErrOAuthStateInvalid) {
 				t.Fatalf("err = %v, want ErrOAuthStateInvalid", err)
 			}
 			if len(*got) != 0 {
@@ -373,7 +373,7 @@ func TestOAuthStateIsSingleUseUnderConcurrency(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _ = f.svc.HandleOAuthCallback(context.Background(), "google", "code", state, binding)
+			_, _ = f.svc.HandleOAuthCallback(context.Background(), "google", "code", state, binding, OAuthClient{})
 		}()
 	}
 	wg.Wait()

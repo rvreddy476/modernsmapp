@@ -38,9 +38,9 @@ func TestOTPRateLimitNilRedis(t *testing.T) {
 	}
 }
 
-// TestLoginRateLimitNilRedis verifies that LoginRateLimit(nil) calls c.Next() and does not block.
+// TestLoginRateLimitNilRedis verifies that the login limiter with no Redis calls c.Next() and does not block.
 func TestLoginRateLimitNilRedis(t *testing.T) {
-	r := newTestEngine(LoginRateLimit(nil), "/login")
+	r := newTestEngine(loginLimiter(nil), "/login")
 
 	body := []byte(`{"identifier":"user@example.com","phone":""}`)
 	req := httptest.NewRequest(http.MethodPost, "/login", bytes.NewReader(body))

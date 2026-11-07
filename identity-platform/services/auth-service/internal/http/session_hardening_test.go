@@ -134,25 +134,30 @@ type oauthStub struct {
 	gotBinding  string
 	callbackErr error
 	tokenErr    error
+	// tokenResult, when set, is returned alongside tokenErr.
+	tokenResult *service.OAuthCallbackResult
+	gotClient   service.OAuthClient
 }
 
 func (o *oauthStub) GetOAuthRedirectURL(_ context.Context, _ string) (*service.OAuthStart, error) {
 	return &service.OAuthStart{URL: "https://accounts.example/auth?state=s", Binding: "bind-secret"}, nil
 }
 
-func (o *oauthStub) HandleOAuthCallback(_ context.Context, _, _, _, binding string) (*service.OAuthCallbackResult, error) {
+func (o *oauthStub) HandleOAuthCallback(_ context.Context, _, _, _, binding string, client service.OAuthClient) (*service.OAuthCallbackResult, error) {
 	o.gotBinding = binding
+	o.gotClient = client
 	if o.callbackErr != nil {
 		return nil, o.callbackErr
 	}
 	return &service.OAuthCallbackResult{Auth: &service.AuthResponse{}}, nil
 }
 
-func (o *oauthStub) HandleOAuthToken(_ context.Context, _, idToken string) (*service.OAuthCallbackResult, error) {
+func (o *oauthStub) HandleOAuthToken(_ context.Context, _, idToken string, client service.OAuthClient) (*service.OAuthCallbackResult, error) {
 	o.tokenCalls++
 	o.gotIDToken = idToken
-	if o.tokenErr != nil {
-		return nil, o.tokenErr
+	o.gotClient = client
+	if o.tokenResult != nil || o.tokenErr != nil {
+		return o.tokenResult, o.tokenErr
 	}
 	return &service.OAuthCallbackResult{Auth: &service.AuthResponse{}}, nil
 }
@@ -196,6 +201,8 @@ func TestOAuthTokenPassesIDTokenAndMapsRefusals(t *testing.T) {
 		{service.ErrAccountPendingPurge, http.StatusForbidden, "ACCOUNT_PENDING_PURGE"},
 		{service.ErrAccountPurged, http.StatusForbidden, "ACCOUNT_PURGED"},
 		{service.ErrEmailNotVerified, http.StatusForbidden, "EMAIL_NOT_VERIFIED"},
+		{service.ErrOAuthNewAccountDisabled, http.StatusNotFound, CodeOAuthAccountNotFound},
+		{service.ErrAnomalyStepUpUnavailable, http.StatusUnauthorized, "STEP_UP_UNAVAILABLE"},
 	}
 	for _, tc := range cases {
 		o := &oauthStub{stubAuthService: &stubAuthService{}, tokenErr: tc.err}

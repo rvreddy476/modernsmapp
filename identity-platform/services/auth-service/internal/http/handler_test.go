@@ -266,10 +266,10 @@ func (s *stubAuthService) Verify2FA(_ context.Context, _ uuid.UUID, _, _ string)
 func (s *stubAuthService) GetOAuthRedirectURL(_ context.Context, _ string) (*service.OAuthStart, error) {
 	return &service.OAuthStart{}, nil
 }
-func (s *stubAuthService) HandleOAuthCallback(_ context.Context, _, _, _, _ string) (*service.OAuthCallbackResult, error) {
+func (s *stubAuthService) HandleOAuthCallback(_ context.Context, _, _, _, _ string, _ service.OAuthClient) (*service.OAuthCallbackResult, error) {
 	return nil, nil
 }
-func (s *stubAuthService) HandleOAuthToken(_ context.Context, _, _ string) (*service.OAuthCallbackResult, error) {
+func (s *stubAuthService) HandleOAuthToken(_ context.Context, _, _ string, _ service.OAuthClient) (*service.OAuthCallbackResult, error) {
 	return nil, nil
 }
 func (s *stubAuthService) CompleteOAuthSignup(_ context.Context, _, _ string) error {
