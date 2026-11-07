@@ -427,3 +427,15 @@ KYC no longer competes with product photos (fixes M5's shared limit).
 The server accepts `image` and `document` for new KYC uploads until the
 founder sets `COMMERCE_KYC_REQUIRE_DOCUMENT_KIND=true` after this app
 release ships.
+
+### Server codes added 8 Nov 2026 (for every Android lane)
+
+- `POST /v1/media/confirm`: wrong file bytes for the declared type answer
+  **409 `UPLOAD_INTEGRITY_ERROR`** for every file type (was 500); an unknown
+  or someone else's `media_id` answers **404 `NOT_FOUND`**; a voice note that
+  is unmeasurable, too short or too long answers **422
+  `UPLOAD_CONTENT_REJECTED`**. 500 now means a real outage only.
+- Seller stock adjust: removing more than the total (or from a variant with
+  no stock row) answers **409 `INSUFFICIENT_STOCK`** and changes nothing. A
+  refusal is never stored against the `Idempotency-Key`, so spending the key
+  on a definite answer is correct.
