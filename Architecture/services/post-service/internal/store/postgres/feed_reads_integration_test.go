@@ -89,6 +89,37 @@ func TestFeedReadsIT_TrendingListsOnlyViewerEligibleRows(t *testing.T) {
 	}
 }
 
+// Trending ranks only the window before its as-of time (2026-11-07): a post
+// older than TrendingWindow is never a candidate, however engaged.
+func TestFeedReadsIT_TrendingSkipsPostsOutsideTheWindow(t *testing.T) {
+	it := newRestrictionIT(t)
+	recent := it.seed("public", "approved", "post")
+	old := it.seed("public", "approved", "post")
+	it.exec(`UPDATE posts SET created_at = NOW() - interval '8 days' WHERE id=$1`, old)
+
+	listed := map[uuid.UUID]bool{}
+	cursor := ""
+	for page := 0; page < 500; page++ {
+		posts, next, err := it.s.GetTrendingPosts(it.ctx, []string{"post"}, 50, cursor)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range posts {
+			listed[p.ID] = true
+		}
+		if next == "" {
+			break
+		}
+		cursor = next
+	}
+	if !listed[recent] {
+		t.Fatal("trending lost a post inside the window")
+	}
+	if listed[old] {
+		t.Error("trending ranked a post older than the window")
+	}
+}
+
 func TestFeedReadsIT_BookmarksDropOthersIneligibleRowsAndKeepOwn(t *testing.T) {
 	it := newRestrictionIT(t)
 	saver := uuid.New()

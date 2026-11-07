@@ -27,6 +27,11 @@ type fakeListReads struct {
 	bookmarks []postgres.Post
 	access    map[uuid.UUID]*postgres.PostAccessState
 	getPosts  int
+
+	trendingPages map[string]listPage // by cursor; nil serves trending with "next"
+	bookmarkPages map[string]listPage // by cursor; nil serves bookmarks with no cursor
+	trendingReads []string            // the cursor of every trending read
+	byIDReads     int
 }
 
 func newFakeListReads() *fakeListReads {
@@ -54,11 +59,37 @@ func (f *fakeListReads) GetThreadPosts(_ context.Context, rootID uuid.UUID) ([]p
 	return append([]postgres.Post(nil), f.threads[rootID]...), nil
 }
 
-func (f *fakeListReads) GetTrendingPosts(context.Context, []string, int, string) ([]postgres.Post, string, error) {
+// listPage is one store page of a paged fake list: its rows and next cursor.
+type listPage struct {
+	posts []postgres.Post
+	next  string
+}
+
+func (f *fakeListReads) GetTrendingPosts(_ context.Context, _ []string, _ int, cursor string) ([]postgres.Post, string, error) {
+	f.trendingReads = append(f.trendingReads, cursor)
+	if f.trendingPages != nil {
+		p := f.trendingPages[cursor]
+		return append([]postgres.Post(nil), p.posts...), p.next, nil
+	}
 	return append([]postgres.Post(nil), f.trending...), "next", nil
 }
 
-func (f *fakeListReads) GetBookmarks(context.Context, uuid.UUID, []string, int, string, postgres.SavedScope) ([]postgres.Post, string, error) {
+func (f *fakeListReads) GetPostsByIDs(_ context.Context, ids []uuid.UUID) ([]postgres.Post, error) {
+	f.byIDReads++
+	var out []postgres.Post
+	for _, id := range ids {
+		if p := f.posts[id]; p != nil {
+			out = append(out, *p)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeListReads) GetBookmarks(_ context.Context, _ uuid.UUID, _ []string, _ int, cursor string, _ postgres.SavedScope) ([]postgres.Post, string, error) {
+	if f.bookmarkPages != nil {
+		p := f.bookmarkPages[cursor]
+		return append([]postgres.Post(nil), p.posts...), p.next, nil
+	}
 	return append([]postgres.Post(nil), f.bookmarks...), "", nil
 }
 

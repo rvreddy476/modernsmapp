@@ -33,9 +33,13 @@ func (s *Service) countsForPost(ctx context.Context, postID uuid.UUID) (*scylla.
 	if store == nil {
 		return counts, nil
 	}
+	// Like the Scylla half and pageCounts: a failed engagement-row read
+	// serves zero comments, shares and saves, logged, rather than failing
+	// GetPost — the post body is fine and the counts are decoration.
 	rows, err := store.GetEngagementCountRows(ctx, []uuid.UUID{postID})
 	if err != nil {
-		return nil, fmt.Errorf("load comment count: %w", err)
+		slog.WarnContext(ctx, "post engagement counts unavailable; serving 0", "post_id", postID, "err", err)
+		return counts, nil
 	}
 	applyEngagementRow(counts, rows[postID])
 	return counts, nil

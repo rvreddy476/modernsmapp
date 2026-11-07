@@ -75,6 +75,8 @@ var membersReadExempt = map[string]string{
 	"approvedPostsForMedia":       "loader: media byte gate (media_access.go), never serialised",
 	"evaluateOfflineCopies":       "loader: offline copy decision; the cards it feeds carry no body and the decision asks viewerEntitled itself",
 	"postsVisibleToViewer":        "loader: viewer gate inside GetTrendingPosts and GetBookmarks, which redact",
+	"trendingPage":                "loader: one store page of trending (first page cached) inside GetTrendingPosts, which redacts",
+	"stillTrendingInOrder":        "loader: re-read cached trending rows inside trendingPage; GetTrendingPosts redacts",
 	"pageDetails":                 "loader: batched counts + polls inside the list reads, each of which redacts",
 	"detailPosts":                 "loader: pointer view of a page for the page-wide helpers, never serialised",
 	"threadEntriesVisibleTo":      "loader: per-entry gate inside GetThread, which redacts",

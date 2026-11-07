@@ -157,56 +157,6 @@ func currentBucket() int {
 	return b
 }
 
-// AddComment inserts a comment and increments the counter.
-func (s *InteractionStore) AddComment(ctx context.Context, postID uuid.UUID, userID uuid.UUID, text string) (uuid.UUID, error) {
-	pid := postID.String()
-	bucket := currentBucket()
-	commentID := uuid.New()
-
-	if err := s.session.Query(`
-		INSERT INTO comments_by_post (post_id, bucket, ts, comment_id, author_id, text, is_deleted)
-		VALUES (?, ?, now(), ?, ?, ?, false)
-	`, pid, bucket, commentID.String(), userID.String(), text).WithContext(ctx).Exec(); err != nil {
-		return uuid.Nil, err
-	}
-
-	if err := s.session.Query(`UPDATE post_counters SET comment_count = comment_count + 1 WHERE post_id = ?`, pid).WithContext(ctx).Exec(); err != nil {
-		return uuid.Nil, err
-	}
-
-	return commentID, nil
-}
-
-// ListComments returns the latest comments for a post from the current bucket.
-func (s *InteractionStore) ListComments(ctx context.Context, postID uuid.UUID, limit int) ([]Comment, error) {
-	if limit <= 0 || limit > 50 {
-		limit = 20
-	}
-
-	bucket := currentBucket()
-	iter := s.session.Query(`
-		SELECT comment_id, author_id, text, toTimestamp(ts) FROM comments_by_post
-		WHERE post_id = ? AND bucket = ?
-		ORDER BY ts DESC
-		LIMIT ?
-	`, postID.String(), bucket, limit).WithContext(ctx).Iter()
-
-	var comments []Comment
-	var idStr, authorStr string
-	var text string
-	var createdAt time.Time
-	for iter.Scan(&idStr, &authorStr, &text, &createdAt) {
-		cID, _ := uuid.Parse(idStr)
-		aID, _ := uuid.Parse(authorStr)
-		comments = append(comments, Comment{ID: cID, AuthorID: aID, Text: text, CreatedAt: createdAt})
-	}
-	if err := iter.Close(); err != nil {
-		return nil, err
-	}
-
-	return comments, nil
-}
-
 type Counts struct {
 	Likes    int64 `json:"likes"`
 	Comments int64 `json:"comments"`

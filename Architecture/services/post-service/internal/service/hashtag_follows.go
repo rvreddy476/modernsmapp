@@ -177,7 +177,8 @@ func (s *Service) ListFollowedHashtags(ctx context.Context, userID uuid.UUID, li
 // FollowedHashtagPosts is the recent public posts with any tag the caller
 // follows, newest first, through the hashtag page's author gate and
 // members-only redaction. The page may hold fewer than limit posts when the
-// gate removed some; next_cursor still continues after the SQL page.
+// gate removed some; next_cursor still continues after the SQL page. A page
+// the gate empties reads on (visiblePage, list_pages.go).
 func (s *Service) FollowedHashtagPosts(ctx context.Context, viewerID uuid.UUID, limit int, cursor string) ([]PostDetail, string, error) {
 	st, err := s.followStore()
 	if err != nil {
@@ -190,21 +191,23 @@ func (s *Service) FollowedHashtagPosts(ctx context.Context, viewerID uuid.UUID, 
 	if len(tags) == 0 {
 		return []PostDetail{}, "", nil
 	}
-	posts, next, err := st.GetPostsByHashtags(ctx, tags, viewerID, limit, cursor, s.clock().Add(-followedPostsWindow))
-	if err != nil {
-		return nil, "", err
-	}
+	since := s.clock().Add(-followedPostsWindow)
 	viewer := viewerID
-	posts = s.hashtagPostsVisibleTo(ctx, &viewer, posts)
-	details := make([]PostDetail, 0, len(posts))
-	for i := range posts {
-		details = append(details, PostDetail{Post: &posts[i]})
-	}
-	if s.followedPostsDecorate != nil {
-		details, err = s.followedPostsDecorate(ctx, details)
-	} else {
-		details, err = s.decorateHashtagDetails(ctx, details)
-	}
+	details, next, err := visiblePage(cursor,
+		func(cur string) ([]postgres.Post, string, error) {
+			return st.GetPostsByHashtags(ctx, tags, viewerID, limit, cur, since)
+		},
+		func(posts []postgres.Post) ([]PostDetail, error) {
+			posts = s.hashtagPostsVisibleTo(ctx, &viewer, posts)
+			details := make([]PostDetail, 0, len(posts))
+			for i := range posts {
+				details = append(details, PostDetail{Post: &posts[i]})
+			}
+			if s.followedPostsDecorate != nil {
+				return s.followedPostsDecorate(ctx, details)
+			}
+			return s.decorateHashtagDetails(ctx, details)
+		})
 	if err != nil {
 		return nil, "", err
 	}

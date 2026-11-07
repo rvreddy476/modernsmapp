@@ -27,13 +27,15 @@ import (
 // stranger. The page's order is kept.
 
 // listReadStore is the store slice behind the thread, trending and saved
-// reads and the post-body cache. *postgres.Store satisfies it; listReadSeam
+// reads (GetPostsByIDs re-reads a cached trending page) and the post-body
+// cache. *postgres.Store satisfies it; listReadSeam
 // replaces it in tests.
 type listReadStore interface {
 	GetPost(ctx context.Context, id uuid.UUID) (*postgres.Post, error)
 	GetPostAccessState(ctx context.Context, postID uuid.UUID) (*postgres.PostAccessState, error)
 	GetThreadPosts(ctx context.Context, rootID uuid.UUID) ([]postgres.Post, error)
 	GetTrendingPosts(ctx context.Context, contentTypes []string, limit int, cursor string) ([]postgres.Post, string, error)
+	GetPostsByIDs(ctx context.Context, ids []uuid.UUID) ([]postgres.Post, error)
 	GetBookmarks(ctx context.Context, userID uuid.UUID, contentTypes []string, limit int, cursor string, scope postgres.SavedScope) ([]postgres.Post, string, error)
 }
 

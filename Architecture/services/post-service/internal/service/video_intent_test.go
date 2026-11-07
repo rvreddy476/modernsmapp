@@ -23,8 +23,12 @@ func TestResolveVideoContentTypeHonoursExplicitIntent(t *testing.T) {
 	}{
 		// The author's kind is the kind, whatever the frame or the clock says.
 		{"flick + landscape stays flick", "flick", short, 1920, 1080, "flick", true},
-		{"flick + long stays flick", "flick", long, 1080, 1920, "flick", true},
+		{"flick at exactly 10 minutes stays flick", "flick", flickMaxDurationSeconds, 1080, 1920, "flick", true},
 		{"legacy reel + landscape stays flick", "reel", short, 1920, 1080, "flick", true},
+		// ...within the Shorts cap (founder, 2026-10-21): a flick over 10
+		// minutes is a long video, the same cap PATCH refuses with.
+		{"flick over 10 minutes becomes long_video", "flick", long, 1080, 1920, "long_video", true},
+		{"legacy reel over 10 minutes becomes long_video", "reel", long, 1080, 1920, "long_video", true},
 		{"long_video + portrait short stays long_video", "long_video", short, 1080, 1920, "long_video", true},
 		{"long_video + square short stays long_video", "long_video", short, 1080, 1080, "long_video", true},
 		{"legacy video + portrait short stays long_video", "video", short, 1080, 1920, "long_video", true},
@@ -47,6 +51,21 @@ func TestResolveVideoContentTypeHonoursExplicitIntent(t *testing.T) {
 					tc.intent, tc.duration, tc.w, tc.h, got, explicit, tc.wantType, tc.wantExplicit)
 			}
 		})
+	}
+}
+
+// Create and PATCH apply one cap: whatever create posts as a flick, PATCH
+// would also accept as a flick, and what PATCH refuses create downgrades.
+func TestCreateAndPatchShareTheShortsCap(t *testing.T) {
+	for _, d := range []int{1, 599, 600, 601, 3 * 60 * 60} {
+		created, _ := resolveVideoContentType("flick", d, 1080, 1920)
+		patchErr := ValidateCategoryOverride(&postgres.VideoMetadata{DurationSeconds: float64(d), Orientation: "portrait"}, "flick")
+		if (created == "flick") != (patchErr == nil) {
+			t.Errorf("%d s: create made %q but PATCH flick err=%v", d, created, patchErr)
+		}
+		if ExceedsShortsCap(float64(d)) != (created == "long_video") {
+			t.Errorf("%d s: ExceedsShortsCap=%v but create made %q", d, ExceedsShortsCap(float64(d)), created)
+		}
 	}
 }
 

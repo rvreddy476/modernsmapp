@@ -193,7 +193,7 @@ func (c *MediaTranscodeConsumer) handle(ctx context.Context, env *events.EventEn
 		if err != nil {
 			slog.Warn("media transcode consumer: read post classification state failed",
 				"post_id", vm.PostID, "error", err)
-		} else if newType, keep := reclassifyDecision(st.ContentType, st.ContentTypeExplicit, measuredType); keep {
+		} else if newType, keep := reclassifyDecision(st.ContentType, st.ContentTypeExplicit, measuredType, duration); keep {
 			if st.ContentType != measuredType {
 				slog.Info("media transcode consumer: keeping author's kind",
 					"post_id", vm.PostID, "content_type", st.ContentType, "measured_type", measuredType,
@@ -246,6 +246,10 @@ func (c *MediaTranscodeConsumer) handle(ctx context.Context, env *events.EventEn
 // have, and keep=true when the current kind must stand regardless of the
 // measurement:
 //
+//   - except the Shorts cap (founder, 2026-10-21): a flick measured longer
+//     than 10 minutes becomes a long video, explicit or not. A flick posted
+//     before transcode measured it got past the cap at create; this is the
+//     same service.ExceedsShortsCap applied once the length is known;
 //   - an explicit kind (content_type_explicit) is the author's choice —
 //     flick stays flick, long_video stays long_video;
 //   - a flick is never downgraded even when the row predates the explicit
@@ -254,7 +258,10 @@ func (c *MediaTranscodeConsumer) handle(ctx context.Context, env *events.EventEn
 //     flick or long_video by a measurement, explicit flag or not — belt
 //     and braces over resolveVideoContentType reporting it explicit;
 //   - anything else — a non-explicit long_video — takes the measured type.
-func reclassifyDecision(current string, explicit bool, measured string) (newType string, keep bool) {
+func reclassifyDecision(current string, explicit bool, measured string, durationSeconds int) (newType string, keep bool) {
+	if current == postclassify.Flick && service.ExceedsShortsCap(float64(durationSeconds)) {
+		return postclassify.LongVideo, false
+	}
 	if explicit || current == postclassify.Flick || current == "post" {
 		return current, true
 	}

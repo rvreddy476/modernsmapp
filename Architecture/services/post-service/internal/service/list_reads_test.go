@@ -385,3 +385,28 @@ func TestFollowEdgesOfRestrictedPosts_OneBatchCallPerHundredAuthorsAndBlocksDeny
 		t.Error("a followed author's followers post was refused")
 	}
 }
+
+// The direct read degrades the same way (B6 leftover): a PostgreSQL
+// engagement-row error serves zero comments, shares and saves and keeps the
+// likes, instead of failing GetPost.
+func TestCountsForPost_DegradesOnEngagementRowError(t *testing.T) {
+	a := uuid.New()
+	counters := &fakeCounters{counts: map[uuid.UUID]*scylla.Counts{a: {Likes: 7}}}
+	rows := &fakeEngagementRows{rows: map[uuid.UUID]postgres.EngagementCountRow{a: {Comments: 3, Shares: 2, Saves: 1}}}
+	s := &Service{counterReadSeam: counters, engagementRowSeam: rows}
+
+	got, err := s.countsForPost(context.Background(), a)
+	if err != nil || got.Likes != 7 || got.Comments != 3 || got.Shares != 2 || got.Saves != 1 {
+		t.Fatalf("counts = %+v, err = %v", got, err)
+	}
+
+	counters.counts[a] = &scylla.Counts{Likes: 7} // the fake hands out its own pointer
+	rows.err = errors.New("pg: timeout")
+	got, err = s.countsForPost(context.Background(), a)
+	if err != nil {
+		t.Fatalf("an engagement-row error failed the read: %v", err)
+	}
+	if got == nil || got.Likes != 7 || got.Comments != 0 || got.Shares != 0 || got.Saves != 0 {
+		t.Fatalf("an engagement-row error must zero its figures and keep the likes, got %+v", got)
+	}
+}

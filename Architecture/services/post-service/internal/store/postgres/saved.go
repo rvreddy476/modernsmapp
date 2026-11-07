@@ -145,7 +145,13 @@ type hashtagTopCursor struct {
 	PostID string  `json:"post_id"`
 }
 
-const hashtagTopScoreExpr = `
+var hashtagTopScoreExpr = topScoreExpr("NOW()")
+
+// topScoreExpr is the engagement + freshness score with freshness measured
+// against now, a SQL expression: NOW() for the hashtag top sort, a bound
+// timestamptz parameter for trending (the cursor's as-of time).
+func topScoreExpr(now string) string {
+	return `
 	(COALESCE(c.like_count, 0) * 1
 	+ COALESCE(c.comment_count, 0) * 2
 	+ COALESCE(c.share_count, 0) * 3
@@ -153,11 +159,45 @@ const hashtagTopScoreExpr = `
 	+ COALESCE(c.views_count, 0) * 0.1
 	- COALESCE(c.reports_count, 0) * 5
 	+ CASE
-		WHEN p.created_at >= NOW() - INTERVAL '1 hour'  THEN 50
-		WHEN p.created_at >= NOW() - INTERVAL '6 hours' THEN 30
-		WHEN p.created_at >= NOW() - INTERVAL '24 hours' THEN 10
+		WHEN p.created_at >= ` + now + ` - INTERVAL '1 hour'  THEN 50
+		WHEN p.created_at >= ` + now + ` - INTERVAL '6 hours' THEN 30
+		WHEN p.created_at >= ` + now + ` - INTERVAL '24 hours' THEN 10
 		ELSE 0
 	  END)`
+}
+
+// TrendingWindow bounds the candidates /v1/posts/trending ranks: posts
+// created in the week before the page's as-of time. Without it every
+// request scored and sorted every public post ever made. The predicate is
+// a plain range on created_at under deleted_at IS NULL, which
+// idx_posts_not_deleted (migration 007) serves.
+const TrendingWindow = 7 * 24 * time.Hour
+
+// trendingCursor is the trending page cursor: the hashtag top sort's
+// {score, post_id} plus the as-of time every page of one scroll is scored
+// against. Scoring against NOW() made a post's score fall between page 1 and
+// page 2 (the freshness bonus steps down), so rows were skipped or repeated.
+// A cursor without as_of (issued before this field) is scored against now.
+type trendingCursor struct {
+	Score  float64   `json:"score"`
+	PostID string    `json:"post_id"`
+	AsOf   time.Time `json:"as_of"`
+}
+
+func encodeTrendingCursor(c trendingCursor) string {
+	b, _ := json.Marshal(c)
+	return base64.URLEncoding.EncodeToString(b)
+}
+
+func decodeTrendingCursor(s string) (trendingCursor, error) {
+	var cur trendingCursor
+	raw, err := base64.URLEncoding.DecodeString(s)
+	if err != nil {
+		return cur, err
+	}
+	err = json.Unmarshal(raw, &cur)
+	return cur, err
+}
 
 // GetTrendingPosts returns posts ranked by the same engagement score as the
 // hashtag "top" sort, optionally filtered by content_type. Used by the
@@ -166,54 +206,14 @@ const hashtagTopScoreExpr = `
 //
 // contentTypes nil means "any". Pass {"long_video"} for the Posttube
 // trending tab, {"flick"} for Reels, or {"long_video","flick"} for a blended
-// surface. Pagination uses the same base64({score, post_id}) cursor as the
-// hashtag top sort.
+// surface. Candidates are the TrendingWindow before the as-of time; the
+// cursor (trendingCursor) carries that time so every page of one scroll is
+// ranked the same way.
 func (s *Store) GetTrendingPosts(ctx context.Context, contentTypes []string, limit int, cursor string) ([]Post, string, error) {
 	if limit <= 0 || limit > 50 {
 		limit = 20
 	}
-
-	prefixedCols := strings.ReplaceAll(strings.ReplaceAll(postCols, "\n", " "), "  ", " ")
-	cols := make([]string, 0)
-	for _, c := range strings.Split(prefixedCols, ",") {
-		c = strings.TrimSpace(c)
-		if c != "" {
-			cols = append(cols, "p."+c)
-		}
-	}
-	selectList := strings.Join(cols, ", ")
-
-	args := []interface{}{limit + 1}
-	// Viewer eligibility (2026-10-30 audit B2): live, not scheduled and
-	// EFFECTIVELY approved — a pending, flagged, rejected or held
-	// (copyright / safety restriction) post is never ranked here. The
-	// author gate (private accounts, blocks, deactivated authors) is the
-	// service's (postsVisibleToViewer).
-	conds := []string{ViewerEligibleSQL("p"), "p.visibility = 'public'"}
-
-	if len(contentTypes) > 0 {
-		args = append(args, contentTypes)
-		conds = append(conds, fmt.Sprintf("p.content_type = ANY($%d)", len(args)))
-	}
-	if cursor != "" {
-		if cur, err := decodeHashtagTopCursor(cursor); err == nil {
-			postUUID, err2 := uuid.Parse(cur.PostID)
-			if err2 == nil {
-				args = append(args, cur.Score)
-				args = append(args, postUUID)
-				conds = append(conds, fmt.Sprintf("(%s, p.id) < ($%d, $%d)",
-					hashtagTopScoreExpr, len(args)-1, len(args)))
-			}
-		}
-	}
-	where := "WHERE " + strings.Join(conds, " AND ")
-
-	query := `SELECT ` + selectList + `, ` + hashtagTopScoreExpr + ` AS top_score
-		FROM posts p
-		LEFT JOIN post_engagement_counts c ON c.post_id = p.id
-		` + where + `
-		ORDER BY ` + hashtagTopScoreExpr + ` DESC, p.id DESC
-		LIMIT $1`
+	query, args, asOf := trendingQuery(contentTypes, limit, cursor, time.Now().UTC())
 
 	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {
@@ -227,7 +227,9 @@ func (s *Store) GetTrendingPosts(ctx context.Context, contentTypes []string, lim
 	}
 	var nextCursor string
 	if len(posts) > limit {
-		nextCursor = encodeHashtagTopCursor(scores[limit-1], posts[limit-1].ID.String())
+		nextCursor = encodeTrendingCursor(trendingCursor{
+			Score: scores[limit-1], PostID: posts[limit-1].ID.String(), AsOf: asOf,
+		})
 		posts = posts[:limit]
 	}
 
@@ -237,6 +239,65 @@ func (s *Store) GetTrendingPosts(ctx context.Context, contentTypes []string, lim
 		return nil, "", err
 	}
 	return posts, nextCursor, nil
+}
+
+// trendingQuery builds GetTrendingPosts' SQL. The as-of time is the cursor's
+// (a continued scroll) or now (a first page, or a cursor from before as_of
+// existed); it is $2, so the score, the window and the cursor comparison all
+// read one fixed time and never NOW().
+func trendingQuery(contentTypes []string, limit int, cursor string, now time.Time) (string, []any, time.Time) {
+	asOf := now
+	var cur *trendingCursor
+	if cursor != "" {
+		if c, err := decodeTrendingCursor(cursor); err == nil {
+			if _, err := uuid.Parse(c.PostID); err == nil {
+				cur = &c
+				if !c.AsOf.IsZero() {
+					asOf = c.AsOf.UTC()
+				}
+			}
+		}
+	}
+
+	prefixedCols := strings.ReplaceAll(strings.ReplaceAll(postCols, "\n", " "), "  ", " ")
+	cols := make([]string, 0)
+	for _, c := range strings.Split(prefixedCols, ",") {
+		c = strings.TrimSpace(c)
+		if c != "" {
+			cols = append(cols, "p."+c)
+		}
+	}
+	selectList := strings.Join(cols, ", ")
+
+	score := topScoreExpr("$2::timestamptz")
+	args := []any{limit + 1, asOf, asOf.Add(-TrendingWindow)}
+	// Viewer eligibility (2026-10-30 audit B2): live, not scheduled and
+	// EFFECTIVELY approved — a pending, flagged, rejected or held
+	// (copyright / safety restriction) post is never ranked here. The
+	// author gate (private accounts, blocks, deactivated authors) is the
+	// service's (postsVisibleToViewer). The window bounds the candidates
+	// to the week before the as-of time; a post created after it waits for
+	// the next scroll rather than shifting this one's pages.
+	conds := []string{
+		ViewerEligibleSQL("p"), "p.visibility = 'public'",
+		"p.created_at > $3", "p.created_at <= $2",
+	}
+	if len(contentTypes) > 0 {
+		args = append(args, contentTypes)
+		conds = append(conds, fmt.Sprintf("p.content_type = ANY($%d)", len(args)))
+	}
+	if cur != nil {
+		args = append(args, cur.Score, uuid.MustParse(cur.PostID))
+		conds = append(conds, fmt.Sprintf("(%s, p.id) < ($%d, $%d)", score, len(args)-1, len(args)))
+	}
+
+	query := `SELECT ` + selectList + `, ` + score + ` AS top_score
+		FROM posts p
+		LEFT JOIN post_engagement_counts c ON c.post_id = p.id
+		WHERE ` + strings.Join(conds, " AND ") + `
+		ORDER BY top_score DESC, p.id DESC
+		LIMIT $1`
+	return query, args, asOf
 }
 
 // GetPostsByHashtag returns posts containing a specific hashtag, paginated.

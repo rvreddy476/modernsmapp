@@ -929,6 +929,17 @@ func DetectAndStoreMentions(ctx context.Context, postID uuid.UUID, postType stri
 // postclassify.FlickMaxDurationSeconds — change it there, never here.
 const flickMaxDurationSeconds = postclassify.FlickMaxDurationSeconds
 
+// ExceedsShortsCap reports whether a measured duration is too long for a
+// Short (founder, 2026-10-21: Shorts run up to 10 minutes inclusive; longer
+// is a long video). It is the one cap every path applies: create
+// (resolveVideoContentType), the PATCH category override
+// (ValidateCategoryOverride), the measurement (ClassifyVideo) and the
+// transcode consumer's reclassification. An unknown duration (<= 0) does not
+// exceed it; the consumer applies it again once transcode measures the clip.
+func ExceedsShortsCap(durationSeconds float64) bool {
+	return durationSeconds > float64(flickMaxDurationSeconds)
+}
+
 // validContentTypes is the allowed set for content_type.
 // "voice" is Module 1 P0-6: a voice-only post (audio media + optional
 // text). Mixed voice carousels are deferred.
@@ -970,7 +981,7 @@ func (s *Service) gateVoiceReviewStatus(ctx context.Context, mediaID uuid.UUID) 
 // classifyVideoContentType returns "flick" or "long_video" based on duration and dimensions.
 // Legacy callers: "reel" maps to "flick", "video" maps to "long_video".
 func classifyVideoContentType(durationSeconds int) string {
-	if durationSeconds > 0 && durationSeconds <= flickMaxDurationSeconds {
+	if durationSeconds > 0 && !ExceedsShortsCap(float64(durationSeconds)) {
 		return "flick"
 	}
 	return "long_video"
@@ -983,7 +994,7 @@ func classifyVideoContentType(durationSeconds int) string {
 // resolveVideoContentType for the rule.
 func ClassifyVideo(durationSeconds float64, width, height int) (category, orientation string) {
 	orientation = deriveOrientation(width, height)
-	if durationSeconds <= float64(flickMaxDurationSeconds) && (orientation == "portrait" || orientation == "square") {
+	if !ExceedsShortsCap(durationSeconds) && (orientation == "portrait" || orientation == "square") {
 		return "flick", orientation
 	}
 	return "long_video", orientation
@@ -1011,9 +1022,12 @@ func deriveOrientation(width, height int) string {
 //
 // The rule (founder, 2026-09-04/05): a reel is what the author posted as a
 // reel; a video is what the author posted as a video. An explicit "flick"
-// stays a flick even when the frame is landscape or the clip runs long, and
-// an explicit "long_video" stays a long video even when the clip is portrait
-// and short — a vertical clip posted from Tube belongs in Tube, not Reels.
+// stays a flick even when the frame is landscape, but not when the clip runs
+// past the Shorts cap (founder, 2026-10-21): a flick over 10 minutes becomes
+// a long video, by the same ExceedsShortsCap the PATCH category override
+// refuses with, so create cannot post what PATCH forbids. An explicit
+// "long_video" stays a long video even when the clip is portrait and short —
+// a vertical clip posted from Tube belongs in Tube, not Reels.
 // Legacy "reel"/"video" spellings were folded into these before this runs.
 //
 // And a post is a post (founder, 2026-09-25, superseding the earlier rule's
@@ -1034,6 +1048,9 @@ func deriveOrientation(width, height int) string {
 func resolveVideoContentType(intent string, durationSeconds int, width, height int) (contentType string, explicit bool) {
 	switch intent {
 	case "flick", "reel":
+		if ExceedsShortsCap(float64(durationSeconds)) {
+			return "long_video", true
+		}
 		return "flick", true
 	case "long_video", "video":
 		return "long_video", true
@@ -1053,7 +1070,7 @@ func resolveVideoContentType(intent string, durationSeconds int, width, height i
 // allows (≤ flickMaxDurationSeconds, not landscape).
 func ValidateCategoryOverride(vm *postgres.VideoMetadata, requested string) error {
 	if requested == "flick" {
-		if vm.DurationSeconds > float64(flickMaxDurationSeconds) {
+		if ExceedsShortsCap(vm.DurationSeconds) {
 			return fmt.Errorf("cannot classify as flick: duration exceeds %ds", flickMaxDurationSeconds)
 		}
 		if vm.Orientation == "landscape" {
@@ -1896,15 +1913,10 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 		return nil, err
 	}
 
-	// Load poll if present
-	hasPoll, _ := s.pgStore.HasPoll(ctx, id)
-	if hasPoll {
-		poll, err := s.pgStore.GetPoll(ctx, id)
-		if err == nil && poll != nil {
-			if viewerID != nil {
-				votes, _ := s.pgStore.GetUserPollVotes(ctx, id, *viewerID)
-				poll.ViewerVotes = votes
-			}
+	// Load poll if present: the poll and the viewer's votes, as GET
+	// /v1/posts/:id/poll reads them (GetPoll). Best-effort, as before.
+	if hasPoll, _ := s.pgStore.HasPoll(ctx, id); hasPoll {
+		if poll, err := s.GetPoll(ctx, id, viewerID); err == nil && poll != nil {
 			p.Poll = poll
 		}
 	}
@@ -2555,51 +2567,6 @@ func (s *Service) invalidateFeedHydration(ctx context.Context, userID, postID uu
 	}
 }
 
-func (s *Service) AddComment(ctx context.Context, postID, userID uuid.UUID, text string) (uuid.UUID, error) {
-	commentID, err := s.scyllaStore.AddComment(ctx, postID, userID, text)
-	if err != nil {
-		return uuid.Nil, err
-	}
-
-	// Fire-and-forget: Kafka + Redis publish in background
-	go func() {
-		bgCtx := context.Background()
-
-		// Emit Kafka event
-		if s.producer != nil {
-			post, err := s.pgStore.GetPost(bgCtx, postID)
-			if err == nil && post != nil {
-				if err := s.producer.PublishCommentCreated(bgCtx, commentID, postID, post.AuthorID, userID, text); err != nil {
-					log.Printf("Warning: failed to publish CommentCreated event: %v", err)
-				}
-			}
-		}
-
-		// Publish real-time update for live feed viewers
-		counts, _ := s.countsForPost(bgCtx, postID)
-		if counts != nil {
-			signal, _ := json.Marshal(map[string]any{
-				"type": "post_update",
-				"payload": map[string]any{
-					"post_id":     postID.String(),
-					"update_type": "comment",
-					"actor_id":    userID.String(),
-					"comment_id":  commentID.String(),
-					"likes":       counts.Likes,
-					"comments":    counts.Comments,
-				},
-			})
-			s.rdb.Publish(bgCtx, "feed:post_update", signal)
-		}
-	}()
-
-	return commentID, nil
-}
-
-func (s *Service) ListComments(ctx context.Context, postID uuid.UUID, limit int) ([]scylla.Comment, error) {
-	return s.scyllaStore.ListComments(ctx, postID, limit)
-}
-
 // --- Bookmark methods ---
 
 func (s *Service) AddBookmark(ctx context.Context, userID, postID uuid.UUID) error {
@@ -2642,20 +2609,21 @@ func (s *Service) GetBookmarks(ctx context.Context, userID uuid.UUID, contentTyp
 	if store == nil {
 		return nil, "", ErrAuthoringStoreUnavailable
 	}
-	posts, nextCursor, err := store.GetBookmarks(ctx, userID, contentTypes, limit, cursor, scope)
-	if err != nil {
-		return nil, "", err
-	}
-	posts = s.postsVisibleToViewer(ctx, &userID, posts)
-
-	// Counts and polls for the page in batched reads (list_reads.go).
-	details := s.pageDetails(ctx, &userID, posts)
-	for i := range details {
-		details[i].IsBookmarked = true
-	}
-
-	// Instant publish (processing.go): the bookmarker is the viewer.
-	details, err = s.attachMediaStateToDetails(ctx, details, &userID)
+	// A page the gates empty reads on (list_pages.go).
+	details, nextCursor, err := visiblePage(cursor,
+		func(cur string) ([]postgres.Post, string, error) {
+			return store.GetBookmarks(ctx, userID, contentTypes, limit, cur, scope)
+		},
+		func(posts []postgres.Post) ([]PostDetail, error) {
+			posts = s.postsVisibleToViewer(ctx, &userID, posts)
+			// Counts and polls for the page in batched reads (list_reads.go).
+			details := s.pageDetails(ctx, &userID, posts)
+			for i := range details {
+				details[i].IsBookmarked = true
+			}
+			// Instant publish (processing.go): the bookmarker is the viewer.
+			return s.attachMediaStateToDetails(ctx, details, &userID)
+		})
 	if err != nil {
 		return nil, "", err
 	}
@@ -3942,19 +3910,19 @@ func (s *Service) GetPostsByHashtag(ctx context.Context, viewerID *uuid.UUID, ha
 	if sort == "top" {
 		mode = postgres.HashtagSortTop
 	}
-	posts, nextCursor, err := s.pgStore.GetPostsByHashtag(ctx, hashtag, limit, cursor, mode, contentTypes)
-	if err != nil {
-		return nil, "", err
-	}
-
-	posts = s.hashtagPostsVisibleTo(ctx, viewerID, posts)
-
-	// Counts and polls for the page in batched reads (list_reads.go).
-	details := s.pageDetails(ctx, viewerID, posts)
-
-	// Instant publish (processing.go): public discovery surface with no
-	// viewer — a still-processing post is nobody's to see here.
-	details, err = s.attachMediaStateToDetails(ctx, details, nil)
+	// A page the gates empty reads on (list_pages.go).
+	details, nextCursor, err := visiblePage(cursor,
+		func(cur string) ([]postgres.Post, string, error) {
+			return s.pgStore.GetPostsByHashtag(ctx, hashtag, limit, cur, mode, contentTypes)
+		},
+		func(posts []postgres.Post) ([]PostDetail, error) {
+			posts = s.hashtagPostsVisibleTo(ctx, viewerID, posts)
+			// Counts and polls for the page in batched reads (list_reads.go).
+			details := s.pageDetails(ctx, viewerID, posts)
+			// Instant publish (processing.go): public discovery surface with no
+			// viewer — a still-processing post is nobody's to see here.
+			return s.attachMediaStateToDetails(ctx, details, nil)
+		})
 	if err != nil {
 		return nil, "", err
 	}
@@ -3982,16 +3950,20 @@ func (s *Service) GetTrendingPosts(ctx context.Context, contentTypes []string, l
 	if store == nil {
 		return nil, "", ErrAuthoringStoreUnavailable
 	}
-	posts, nextCursor, err := store.GetTrendingPosts(ctx, contentTypes, limit, cursor)
-	if err != nil {
-		return nil, "", err
-	}
-	posts = s.postsVisibleToViewer(ctx, viewerID, posts)
-	// Counts and polls for the page in batched reads (list_reads.go).
-	details := s.pageDetails(ctx, viewerID, posts)
-	// Instant publish (processing.go): public discovery surface with no
-	// viewer — a still-processing post is nobody's to see here.
-	details, err = s.attachMediaStateToDetails(ctx, details, nil)
+	// The first page through a short cache; a page the gates empty reads on
+	// (list_pages.go).
+	details, nextCursor, err := visiblePage(cursor,
+		func(cur string) ([]postgres.Post, string, error) {
+			return s.trendingPage(ctx, store, contentTypes, limit, cur)
+		},
+		func(posts []postgres.Post) ([]PostDetail, error) {
+			posts = s.postsVisibleToViewer(ctx, viewerID, posts)
+			// Counts and polls for the page in batched reads (list_reads.go).
+			details := s.pageDetails(ctx, viewerID, posts)
+			// Instant publish (processing.go): public discovery surface with no
+			// viewer — a still-processing post is nobody's to see here.
+			return s.attachMediaStateToDetails(ctx, details, nil)
+		})
 	if err != nil {
 		return nil, "", err
 	}

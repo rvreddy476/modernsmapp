@@ -18,9 +18,9 @@ import (
 	postEvents "github.com/atpost/post-service/internal/events"
 	"github.com/atpost/post-service/internal/http"
 	"github.com/atpost/post-service/internal/mediaclaims"
+	"github.com/atpost/post-service/internal/places"
 	"github.com/atpost/post-service/internal/postpurge"
 	"github.com/atpost/post-service/internal/postschedule"
-	"github.com/atpost/post-service/internal/places"
 	"github.com/atpost/post-service/internal/purge"
 	"github.com/atpost/post-service/internal/reconcile"
 	"github.com/atpost/post-service/internal/service"
@@ -138,6 +138,12 @@ func main() {
 	cluster.Consistency = gocql.Quorum
 	cluster.NumConns = 10
 	cluster.MaxPreparedStmts = 1000
+	// 2026-10-30 audit B6: gocql's default per-query timeout is 11 s, so a
+	// degraded counter cluster held every GetPost and page for that long
+	// before the reads degraded to zero likes. A counter read answers in
+	// milliseconds; POST_SCYLLA_TIMEOUT (a Go duration) bounds a slow one,
+	// default 3 s, as feed-service's FEED_SCYLLA_TIMEOUT does.
+	cluster.Timeout = durationEnv("POST_SCYLLA_TIMEOUT", defaultScyllaTimeout)
 	scyllaSession, err := cluster.CreateSession()
 	if err != nil {
 		slog.Error("failed to connect to scylladb", "error", err)
@@ -727,6 +733,18 @@ func main() {
 		slog.Error("server error", "error", err)
 		os.Exit(1)
 	}
+}
+
+// defaultScyllaTimeout is the Scylla per-query timeout when
+// POST_SCYLLA_TIMEOUT is unset or not a positive duration.
+const defaultScyllaTimeout = 3 * time.Second
+
+// durationEnv is the positive Go duration in key, else fallback.
+func durationEnv(key string, fallback time.Duration) time.Duration {
+	if d, err := time.ParseDuration(os.Getenv(key)); err == nil && d > 0 {
+		return d
+	}
+	return fallback
 }
 
 func env(key, fallback string) string {

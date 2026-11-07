@@ -55,7 +55,10 @@ func TestFeedListingsKeepTheViewerPredicate(t *testing.T) {
 	for _, c := range []struct {
 		fn, want, why string
 	}{
-		{"GetTrendingPosts", `ViewerEligibleSQL("p")`, "trending ranked flagged, rejected, pending and held posts (audit B2)"},
+		{"trendingQuery", `ViewerEligibleSQL("p")`, "trending ranked flagged, rejected, pending and held posts (audit B2)"},
+		{"trendingQuery", `"p.created_at > $3"`, "trending scored every public post ever made on every request"},
+		{"trendingQuery", `topScoreExpr("$2::timestamptz")`, "trending scored pages against NOW(), so rows moved between pages"},
+		{"GetTrendingPosts", `trendingQuery(`, "GetTrendingPosts stopped building its SQL in trendingQuery"},
 		{"GetBookmarks", `viewerApproved("p")`, "saved listed someone else's flagged or held post (audit B3)"},
 		{"GetBookmarks", `p.publish_at IS NULL`, "saved listed someone else's scheduled post (audit B3)"},
 		{"GetBookmarks", `p.author_id = $1 OR`, "saved lost the saver's own posts"},
