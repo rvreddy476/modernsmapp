@@ -16,9 +16,11 @@ import com.us.android.core.profile.data.ProfileRepository
 import io.mockk.coEvery
 import io.mockk.coVerify
 import io.mockk.mockk
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.Test
 import java.io.IOException
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * Where a card's still comes from once a row has been through the hydrator:
@@ -137,6 +139,26 @@ class HashtagPostHydratorTest {
             "https://obj/vid/thumb.jpg",
         )
         coVerify(exactly = 1) { media.getDelivery("vid") }
+    }
+
+    /** Audit M5: a long list's lookups go out a few at a time, and every row still gets its still. */
+    @Test
+    fun `no more than eight lookups are on the wire at once, and every row is filled`() = runBlocking {
+        val inFlight = AtomicInteger()
+        val most = AtomicInteger()
+        coEvery { media.getDelivery(any()) } coAnswers {
+            most.accumulateAndGet(inFlight.incrementAndGet(), ::maxOf)
+            delay(5)
+            inFlight.decrementAndGet()
+            ApiEnvelope(data = videoDelivery.copy(mediaId = firstArg()))
+        }
+        val rows = (1..40).map { n -> item(hlsOnlyVideo.copy(mediaId = "vid$n"), coverId = null).copy(id = "p$n") }
+
+        val hydrated = hydrator.hydrate(rows)
+
+        assertThat(most.get()).isEqualTo(HashtagPostHydrator.MAX_LOOKUPS_IN_FLIGHT)
+        assertThat(hydrated.map { resolver.videoThumb(it).url }.toSet()).containsExactly("https://obj/vid/thumb.jpg")
+        coVerify(exactly = 40) { media.getDelivery(any()) }
     }
 
     @Test

@@ -22,6 +22,8 @@ dependencies {
     implementation(projects.core.ui)
     implementation(projects.core.network)
     implementation(projects.core.media)
+    // Who is signed in: the watch queue is kept per viewer (audit H2, 2026-11-07).
+    implementation(projects.core.auth)
     // The feed data seam: paging, hydration, the follow graph, and the shared
     // more / comments sheets.
     implementation(projects.core.feed)

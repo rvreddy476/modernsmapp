@@ -12,6 +12,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import javax.inject.Inject
 
 /**
@@ -71,9 +73,12 @@ class HashtagPostHydrator @Inject constructor(
         val coverIds = items.mapNotNull { it.coverIdToResolve() }
         val wantedDeliveries = (mediaIds + coverIds).distinct()
 
-        // Both batches start together; each id is fetched at most once.
-        val authorJobs = authorIds.map { id -> async { id to loadAuthor(id) } }
-        val mediaJobs = wantedDeliveries.map { id -> async { id to loadDelivery(id) } }
+        // Both batches start together; each id is fetched at most once, and
+        // no more than [MAX_LOOKUPS_IN_FLIGHT] at a time (audit M5): a list
+        // of 1,500 rows used to queue 1,500 reads on OkHttp at once.
+        val gate = Semaphore(MAX_LOOKUPS_IN_FLIGHT)
+        val authorJobs = authorIds.map { id -> async { id to gate.withPermit { loadAuthor(id) } } }
+        val mediaJobs = wantedDeliveries.map { id -> async { id to gate.withPermit { loadDelivery(id) } } }
         val authors = authorJobs.awaitAll().toMap()
         val deliveries = mediaJobs.awaitAll().toMap()
 
@@ -103,6 +108,11 @@ class HashtagPostHydrator @Inject constructor(
         // its image rather than the page failing. The error is not mapped
         // because nothing can act on it here.
         null
+    }
+
+    companion object {
+        /** Lookups on the wire at once for one page: past OkHttp's five per host, more only queue. */
+        const val MAX_LOOKUPS_IN_FLIGHT = 8
     }
 }
 

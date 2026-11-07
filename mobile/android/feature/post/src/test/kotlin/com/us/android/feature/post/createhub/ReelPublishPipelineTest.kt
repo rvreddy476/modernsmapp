@@ -996,6 +996,9 @@ class ReelPublishPipelineTest {
 
         assertThat(first).isInstanceOf(ReelPublishPipeline.Outcome.Failed::class.java)
         assertThat((first as ReelPublishPipeline.Outcome.Failed).retryable).isTrue()
+        // The network's, after parts 1-2 landed: the worker carries on by itself (M4).
+        assertThat(first.transient).isTrue()
+        assertThat(first.progressed).isTrue()
         val kept = h.store.record!!
         assertThat(kept.resumableSession?.uploadId).isEqualTo("up-1")
         assertThat(kept.failure?.retryable).isTrue()

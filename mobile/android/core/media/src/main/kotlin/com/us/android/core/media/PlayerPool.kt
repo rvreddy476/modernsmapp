@@ -193,7 +193,19 @@ class PlayerPool @Inject constructor(
  * startup latency for no stated reason.
  */
 interface PlayerFactory {
+    /** A player for short video: the Reels buffer, looping, silent until the surface says otherwise. */
     fun create(): ExoPlayer
+
+    /**
+     * A player for ONE long video watched with sound (Tube, 2026-11-07): the
+     * long-form buffer ([longFormLoadControl]), no loop, sound on, and the
+     * manners of a media app: it takes audio focus (a call or another app
+     * pauses or ducks it, and it pauses Spotify rather than playing over it)
+     * and pauses when headphones are unplugged or a headset drops.
+     *
+     * Defaults to [create] so a test factory need not care.
+     */
+    fun createLongForm(): ExoPlayer = create()
 }
 
 /**
@@ -214,6 +226,23 @@ internal fun reelsLoadControl(): DefaultLoadControl = DefaultLoadControl.Builder
         BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
     )
     .setPrioritizeTimeOverSizeThresholds(true)
+    .build()
+
+/**
+ * Buffering for a long video (2026-11-07): Media3's own long-form defaults,
+ * which buffer up to fifty seconds ahead, start after two and a half and
+ * resume after five. A viewer of a forty-minute video on a train is better
+ * served by headroom than by a first frame a quarter second sooner; with
+ * the Reels profile's ten seconds every dip in signal was a rebuffer.
+ */
+@OptIn(UnstableApi::class)
+internal fun longFormLoadControl(): DefaultLoadControl = DefaultLoadControl.Builder()
+    .setBufferDurationsMs(
+        DefaultLoadControl.DEFAULT_MIN_BUFFER_MS,
+        DefaultLoadControl.DEFAULT_MAX_BUFFER_MS,
+        DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS,
+        DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
+    )
     .build()
 
 private const val MIN_BUFFER_MS = 2_000

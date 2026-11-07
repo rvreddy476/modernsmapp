@@ -69,11 +69,19 @@ sealed interface ResumableOutcome {
      * finish (refused, expired, or a plan that does not fit the file) and the
      * caller must forget it, so the next attempt opens a fresh one; otherwise
      * the next attempt resumes it.
+     *
+     * [transient] (2026-11-07): the NETWORK ran out of retries, not the server
+     * refusing anything; the caller should try again by itself once the phone
+     * is back online, rather than wait for a tap. [progressed]: at least one
+     * part was confirmed during this call, so the upload is further on than
+     * when it started and a caller counting failed tries may start again.
      */
     data class Failed(
         val message: String,
         val retryable: Boolean,
         val discardSession: Boolean,
+        val transient: Boolean = false,
+        val progressed: Boolean = false,
     ) : ResumableOutcome
 }
 
@@ -128,7 +136,10 @@ class RetrofitResumableTransport @Inject constructor(
  * is refused (4xx) is not retried, because sending the same bytes again
  * gets the same answer. When the retries run out the outcome keeps the
  * session, so the next run asks the server which parts it already has and
- * sends only the rest. A resumed session that turns out to be dead
+ * sends only the rest. That outcome is [ResumableOutcome.Failed.transient]:
+ * these retries ride out a blip of about half a minute, and a longer loss of
+ * signal (a tunnel, a lift) is the caller's to wait out — the publish
+ * worker waits for the network and runs again by itself. A resumed session that turns out to be dead
  * (expired, unknown, refused) is replaced by ONE fresh `init` in the same
  * call before giving up.
  *
@@ -168,6 +179,21 @@ class ResumableUploader internal constructor(
     ): ResumableOutcome {
         require(totalBytes > 0L) { "nothing to upload" }
         val progress = ProgressGate(totalBytes, onProgress)
+        val outcome = uploadOnce(mimeType, totalBytes, source, resume, onSession, progress, fileType)
+        // Whether this call moved the upload on, whichever session it ran.
+        return if (outcome is ResumableOutcome.Failed) outcome.copy(progressed = progress.partsLanded > 0) else outcome
+    }
+
+    @Suppress("LongParameterList")
+    private suspend fun uploadOnce(
+        mimeType: String,
+        totalBytes: Long,
+        source: UploadSource,
+        resume: ResumableSession?,
+        onSession: suspend (ResumableSession) -> Unit,
+        progress: ProgressGate,
+        fileType: String,
+    ): ResumableOutcome {
         val resumable = resume?.takeIf { it.totalBytes == totalBytes && !it.isExpired(now()) }
         if (resumable != null) {
             val resumed = runSession(resumable, source, progress, resumed = true)
@@ -201,7 +227,7 @@ class ResumableUploader internal constructor(
                     discardSession = true,
                 ),
             )
-            is Attempt.Exhausted -> return Step.Stopped(failed(START_FAILED, discard = true))
+            is Attempt.Exhausted -> return Step.Stopped(failed(START_FAILED, discard = true, transient = true))
         }
         val session = ResumableSession(
             uploadId = init.uploadId,
@@ -246,8 +272,9 @@ class ResumableUploader internal constructor(
                 is Attempt.Ok -> Unit
                 // A refusal is the session's, not the network's: forget it.
                 is Attempt.Refused -> return failed(PART_FAILED, discard = true)
-                is Attempt.Exhausted -> return failed(PART_FAILED, discard = false)
+                is Attempt.Exhausted -> return failed(PART_FAILED, discard = false, transient = true)
             }
+            progress.partsLanded++
             confirmed += length
             progress.report(confirmed)
         }
@@ -268,7 +295,7 @@ class ResumableUploader internal constructor(
                 else -> Step.Done(result.value.uploadedParts.filter { it in 1..session.totalParts }.toSet())
             }
             is Attempt.Refused -> Step.Stopped(failed(RESUME_FAILED, discard = true))
-            is Attempt.Exhausted -> Step.Stopped(failed(RESUME_FAILED, discard = false))
+            is Attempt.Exhausted -> Step.Stopped(failed(RESUME_FAILED, discard = false, transient = true))
         }
 
     /**
@@ -280,7 +307,7 @@ class ResumableUploader internal constructor(
         when (val result = withRetries(progress) { transport.complete(session.uploadId) }) {
             is Attempt.Ok -> ResumableOutcome.Completed(result.value.id.ifBlank { session.mediaId })
             is Attempt.Refused -> failed(COMPLETE_FAILED, discard = false)
-            is Attempt.Exhausted -> failed(COMPLETE_FAILED, discard = false)
+            is Attempt.Exhausted -> failed(COMPLETE_FAILED, discard = false, transient = true)
         }
 
     // ── Retry ───────────────────────────────────────────────────────────
@@ -321,10 +348,11 @@ class ResumableUploader internal constructor(
     /**
      * Once a session exists every stop is worth a later try: the network
      * returns, and a refused session is replaced by a fresh one next time.
-     * Only a refused `init` (above) can be final.
+     * Only a refused `init` (above) can be final. [transient]: the retries ran
+     * out on the network, and the caller tries again by itself.
      */
-    private fun failed(message: String, discard: Boolean) =
-        ResumableOutcome.Failed(message = message, retryable = true, discardSession = discard)
+    private fun failed(message: String, discard: Boolean, transient: Boolean = false) =
+        ResumableOutcome.Failed(message = message, retryable = true, discardSession = discard, transient = transient)
 
     companion object {
         /** Tries per call — the first plus five retries. */
@@ -385,7 +413,8 @@ internal fun ResumableSession.partOffset(part: Int): Long = (part - 1).toLong() 
 internal fun ResumableSession.partLength(part: Int): Long = minOf(chunkSize, totalBytes - partOffset(part))
 
 /**
- * Monotonic progress, and the place the caller's abort is caught.
+ * One call's progress: monotonic bytes, the parts it landed, and the place
+ * the caller's abort is caught.
  *
  * Called from OkHttp's writer thread. A throw from the caller's callback is
  * remembered, then surfaced to OkHttp as an `IOException` (anything else
@@ -395,6 +424,9 @@ internal fun ResumableSession.partLength(part: Int): Long = minOf(chunkSize, tot
 private class ProgressGate(private val total: Long, private val sink: (Long, Long) -> Unit) {
     @Volatile var callerFailure: Throwable? = null
         private set
+
+    /** Parts the server confirmed during this call: the upload moved on. */
+    var partsLanded = 0
     private var reported = -1L
 
     @Suppress("TooGenericExceptionCaught")

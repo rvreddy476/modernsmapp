@@ -1,11 +1,13 @@
 package com.us.android.feature.tube.di
 
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.common.session.SessionTeardownTask
 import com.us.android.core.engagement.data.CommentActionsRepository
 import com.us.android.core.feed.data.credits.CreditRequest
 import com.us.android.core.feed.data.credits.CreditsRepository
 import com.us.android.core.network.Paged
 import com.us.android.feature.tube.data.CreditRequestsSource
+import com.us.android.feature.tube.data.TubeTeardown
 import com.us.android.feature.tube.data.VideoSeriesApi
 import com.us.android.feature.tube.data.WatchElementsApi
 import com.us.android.feature.tube.data.WatchProgressApi
@@ -15,6 +17,7 @@ import dagger.Module
 import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
+import dagger.multibindings.IntoSet
 import retrofit2.Retrofit
 import javax.inject.Singleton
 
@@ -22,6 +25,11 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object TubeModule {
+
+    /** Sign-out empties the watch queue and resets History's pause (2026-11-07). */
+    @Provides
+    @IntoSet
+    fun provideTubeTeardown(teardown: TubeTeardown): SessionTeardownTask = teardown
 
     @Provides
     @Singleton

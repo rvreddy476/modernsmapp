@@ -165,8 +165,12 @@ internal fun hlsExpiresAtMillis(headers: Map<String, List<String>>): Long? {
     return runCatching { OffsetDateTime.parse(value).toInstant().toEpochMilli() }.getOrNull()
 }
 
-/** A 403 anywhere in the causes: an object store refusing an expired signature. */
-internal fun PlaybackException.isExpiredSignature(): Boolean =
+/**
+ * A 403 anywhere in the causes: an object store refusing an expired signature.
+ * Public for the long-video player (2026-11-07), which also heals a signed
+ * MP4 by reading its address again; [HlsRefresh] heals HLS by itself.
+ */
+fun PlaybackException.isExpiredSignature(): Boolean =
     generateSequence<Throwable>(this) { it.cause }.take(MAX_CAUSE_DEPTH).any { cause ->
         (cause as? HttpDataSource.InvalidResponseCodeException)?.responseCode == HTTP_FORBIDDEN
     }

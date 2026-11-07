@@ -22,6 +22,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -55,12 +56,12 @@ import com.us.android.core.common.time.formatDuration
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.media.ui.VideoLoadState
-import com.us.android.core.ui.StageVolumeControl
 import com.us.android.core.media.ui.VideoLoadingOverlay
 import com.us.android.core.media.ui.rememberVideoLoadState
 import com.us.android.core.model.VideoChapter
 import com.us.android.core.model.chapterAt
 import com.us.android.core.model.chapterTicks
+import com.us.android.core.ui.StageVolumeControl
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
@@ -89,6 +90,8 @@ class WatchTransport(
     val onToggleFullscreen: () -> Unit,
     val onOpenSettings: () -> Unit,
     val onBack: () -> Unit,
+    /** Prepare again where the video was: a stall's Retry, and a failed player's (audit H1). */
+    val onRetry: () -> Unit = onTogglePlay,
 )
 
 /** The player's clock, polled while [polling] and held still otherwise. */
@@ -138,6 +141,8 @@ fun WatchPlayer(
     modifier: Modifier = Modifier,
     /** The video's chapters (2026-10-24): ticks on the seek bar and the playing one's name. */
     chapters: List<VideoChapter> = emptyList(),
+    /** The player stopped on an error nothing healed: the centre says so and offers Retry. */
+    failed: Boolean = false,
 ) {
     // The shared observer, read here rather than in the ViewModel: the
     // centre play/pause has to stand aside while it spins, which is a fact
@@ -205,18 +210,58 @@ fun WatchPlayer(
                 },
                 // The spinner takes the centre while it is there; two discs
                 // stacked on one another is how a control reads as broken.
-                busy = loadState != VideoLoadState.NONE,
+                busy = loadState != VideoLoadState.NONE || failed,
                 chapters = chapters,
             )
         }
         if (!controlsVisible) {
             ProgressLine(playhead = playhead, modifier = Modifier.align(Alignment.BottomCenter))
         }
+        if (failed) PlaybackFailedNote(onRetry = transport.onRetry, modifier = Modifier.align(Alignment.Center))
         // Last, so the stall's Retry is reachable: the tap layer above sits
-        // under it, and this box consumes nothing else.
-        VideoLoadingOverlay(state = loadState, onRetry = player::prepare)
+        // under it, and this box consumes nothing else. The Retry goes
+        // through the ViewModel, which prepares again where the video was.
+        VideoLoadingOverlay(state = loadState, onRetry = transport.onRetry)
     }
 }
+
+/**
+ * The player gave up (audit H1): an error nothing healed by itself. Said in
+ * the centre, where the play button was, with Retry; the frame under it is
+ * the last one drawn.
+ */
+@Composable
+private fun PlaybackFailedNote(onRetry: () -> Unit, modifier: Modifier = Modifier) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(UsTheme.radii.large))
+            .background(UsTheme.extended.stage.copy(alpha = PLATE_ALPHA))
+            .padding(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.l)
+            .testTag("watch_playback_failed"),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+    ) {
+        Text(
+            text = PLAYBACK_FAILED,
+            style = MaterialTheme.typography.labelLarge,
+            color = UsTheme.extended.onMedia,
+        )
+        Text(
+            text = "Retry",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = UsTheme.extended.accentSolid,
+            modifier = Modifier
+                .clip(CircleShape)
+                .clickable(onClick = onRetry)
+                .semantics { role = Role.Button }
+                .padding(horizontal = UsTheme.spacing.xl, vertical = UsTheme.spacing.s)
+                .testTag("watch_playback_retry"),
+        )
+    }
+}
+
+internal const val PLAYBACK_FAILED = "This video stopped playing."
 
 private enum class SkipHint { BACK, FORWARD }
 

@@ -2,9 +2,9 @@ package com.us.android.core.media.di
 
 import android.content.Context
 import androidx.annotation.OptIn
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.util.UnstableApi
-import com.us.android.core.media.DataSaverGate
-import com.us.android.core.media.DataSaverPolicy
 import androidx.media3.database.StandaloneDatabaseProvider
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
@@ -13,10 +13,13 @@ import androidx.media3.datasource.cache.LeastRecentlyUsedCacheEvictor
 import androidx.media3.datasource.cache.SimpleCache
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import com.us.android.core.media.DataSaverGate
+import com.us.android.core.media.DataSaverPolicy
 import com.us.android.core.media.MEDIA_CACHE_BYTES
 import com.us.android.core.media.PlayerFactory
 import com.us.android.core.media.PlaylistAwareDataSourceFactory
 import com.us.android.core.media.data.MediaApi
+import com.us.android.core.media.longFormLoadControl
 import com.us.android.core.media.reelsLoadControl
 import com.us.android.core.media.upload.MediaUploadApi
 import com.us.android.core.media.upload.ResumableUploadApi
@@ -109,20 +112,49 @@ object MediaModule {
     @Singleton
     fun providePlayerFactory(
         @ApplicationContext context: Context,
-    ): PlayerFactory = object : PlayerFactory {
-        override fun create(): ExoPlayer = ExoPlayer.Builder(context)
-            .setLoadControl(reelsLoadControl())
+    ): PlayerFactory = Media3PlayerFactory(context)
+}
+
+/**
+ * The app's [PlayerFactory]: two profiles over one builder, so every player
+ * of a kind is configured the same way.
+ */
+@OptIn(UnstableApi::class)
+internal class Media3PlayerFactory(private val context: Context) : PlayerFactory {
+
+    override fun create(): ExoPlayer = ExoPlayer.Builder(context)
+        .setLoadControl(reelsLoadControl())
+        .build()
+        .apply {
+            repeatMode = ExoPlayer.REPEAT_MODE_ONE
+            // Silent until a surface says otherwise. The feed's autoplay
+            // keeps it there — the feed is always muted — and Reels sets
+            // the volume from the viewer's stored choice of sound on every
+            // page (muted until they turn it on, founder 2026-09-30). A
+            // player that arrived loud would play a beat of audio before
+            // the surface's rule landed.
+            volume = 0f
+        }
+
+    override fun createLongForm(): ExoPlayer = ExoPlayer.Builder(context)
+        .setLoadControl(longFormLoadControl())
+        // A film, watched: focus is taken and handed back by Media3 itself
+        // (a call pauses it, a navigation prompt ducks it, another app's
+        // music stops), and an unplugged headset pauses rather than moving
+        // the sound to the speaker.
+        .setAudioAttributes(LONG_FORM_AUDIO, true)
+        .setHandleAudioBecomingNoisy(true)
+        .build()
+        .apply {
+            repeatMode = ExoPlayer.REPEAT_MODE_OFF
+            volume = 1f
+        }
+
+    private companion object {
+        val LONG_FORM_AUDIO: AudioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
             .build()
-            .apply {
-                repeatMode = ExoPlayer.REPEAT_MODE_ONE
-                // Silent until a surface says otherwise. The feed's autoplay
-                // keeps it there — the feed is always muted — and Reels sets
-                // the volume from the viewer's stored choice of sound on every
-                // page (muted until they turn it on, founder 2026-09-30). A
-                // player that arrived loud would play a beat of audio before
-                // the surface's rule landed.
-                volume = 0f
-            }
     }
 }
 

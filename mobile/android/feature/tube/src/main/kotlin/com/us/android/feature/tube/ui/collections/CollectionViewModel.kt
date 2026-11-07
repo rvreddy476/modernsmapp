@@ -25,6 +25,7 @@ import com.us.android.core.model.FeedItem
 import com.us.android.feature.tube.data.TubeQueue
 import com.us.android.feature.tube.navigation.TubeCollectionRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -60,6 +61,33 @@ fun visibleVideos(content: CollectionContent.Ready, library: VideoLibraryState):
     } else {
         content.videos
     }
+
+/**
+ * A collection's rows filled in after the first screen (audit M5): the
+ * filled rows by id, and the ids still waiting, which are not shown yet
+ * (a bare row has no name and no still).
+ */
+internal data class CollectionFilling(
+    val filled: Map<String, FeedItem> = emptyMap(),
+    val waiting: Set<String> = emptySet(),
+) {
+    /** [videos] as they should be drawn: filled where filled, waiting rows left out. */
+    fun applyTo(videos: List<FeedItem>): List<FeedItem> =
+        videos.mapNotNull { row -> if (row.id in waiting) null else filled[row.id] ?: row }
+
+    /** A new read of [rows]: those filled before stay shown until filled again; the rest wait. */
+    fun restartFor(rows: List<FeedItem>): CollectionFilling {
+        val ids = rows.mapTo(mutableSetOf()) { it.id }
+        val kept = filled.filterKeys { it in ids }
+        return CollectionFilling(filled = kept, waiting = ids - kept.keys)
+    }
+
+    /** [chunk] came back as [done]: shown from now on, whether or not every lookup worked. */
+    fun with(chunk: List<FeedItem>, done: List<FeedItem>): CollectionFilling = CollectionFilling(
+        filled = filled + done.associateBy { it.id },
+        waiting = waiting - chunk.mapTo(mutableSetOf()) { it.id },
+    )
+}
 
 /** What a collection's page may offer, by whose list it is (web `CollectionView`). */
 data class CollectionPermissions(
@@ -113,9 +141,22 @@ class CollectionViewModel @Inject constructor(
 
     private val loaded = MutableStateFlow<CollectionContent>(CollectionContent.Loading)
 
-    /** What the page shows: the list as read, less what the viewer has taken out of Watch later since. */
-    val content: StateFlow<CollectionContent> = combine(loaded, library.state) { content, state ->
-        if (content is CollectionContent.Ready) content.copy(videos = visibleVideos(content, state)) else content
+    /** The rows read bare, filled in a chunk at a time after the first screen (audit M5). */
+    private val filling = MutableStateFlow(CollectionFilling())
+    private var fillJob: Job? = null
+
+    /**
+     * What the page shows: the list as read, each row as filled in so far
+     * (one still waiting is not shown yet), less what the viewer has taken
+     * out of Watch later since.
+     */
+    val content: StateFlow<CollectionContent> = combine(loaded, library.state, filling) { content, state, fill ->
+        if (content is CollectionContent.Ready) {
+            val shown = content.copy(videos = fill.applyTo(content.videos))
+            shown.copy(videos = visibleVideos(shown, state))
+        } else {
+            content
+        }
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), CollectionContent.Loading)
 
     private val _message = MutableStateFlow<UsMessage?>(null)
@@ -161,8 +202,14 @@ class CollectionViewModel @Inject constructor(
             }
             _refreshing.value = false
             loaded.value = when (result) {
-                is AppResult.Success ->
-                    CollectionContent.Ready(result.data.collection, result.data.videos, result.data.order)
+                is AppResult.Success -> {
+                    fill(result.data.unhydrated)
+                    CollectionContent.Ready(
+                        result.data.collection,
+                        result.data.videos + result.data.unhydrated,
+                        result.data.order,
+                    )
+                }
                 is AppResult.Failure ->
                     // A refresh that fails keeps what was already read.
                     loaded.value as? CollectionContent.Ready ?: CollectionContent.Failed(
@@ -212,7 +259,9 @@ class CollectionViewModel @Inject constructor(
      */
     fun move(item: FeedItem, toIndex: Int) {
         val before = loaded.value as? CollectionContent.Ready ?: return
-        if (moving || !collectionPermissions(before.collection).canReorder) return
+        // A move waits for every row: it is planned against the rows on screen.
+        if (moving || filling.value.waiting.isNotEmpty()) return
+        if (!collectionPermissions(before.collection).canReorder) return
         val plan = planCollectionMove(before.order, before.videos, item.id, toIndex) ?: return
         moving = true
         loaded.value = before.copy(videos = plan.videos, order = plan.order)
@@ -314,6 +363,23 @@ class CollectionViewModel @Inject constructor(
     /** A row was tapped: the list becomes the watch screen's queue, so "Up next" is the rest of it. */
     fun onOpen(videos: List<FeedItem>) = queue.set(videos)
 
+    /**
+     * Fills [rows] in, [FILL_CHUNK] at a time, in list order. A refresh starts
+     * over; what an earlier read filled stays on screen until its row is
+     * filled again, so a list coming back to the front does not shrink.
+     */
+    private fun fill(rows: List<FeedItem>) {
+        fillJob?.cancel()
+        filling.update { it.restartFor(rows) }
+        if (rows.isEmpty()) return
+        fillJob = viewModelScope.launch {
+            rows.chunked(FILL_CHUNK).forEach { chunk ->
+                val done = source.hydrate(chunk)
+                filling.update { it.with(chunk, done) }
+            }
+        }
+    }
+
     private fun say(text: String) {
         _message.value = UsMessage(text = text, type = UsMessageType.Error)
     }
@@ -325,6 +391,9 @@ class CollectionViewModel @Inject constructor(
 
     private companion object {
         const val STOP_TIMEOUT_MILLIS = 5_000L
+
+        /** Rows filled in per read after the first screen. */
+        const val FILL_CHUNK = 24
     }
 }
 

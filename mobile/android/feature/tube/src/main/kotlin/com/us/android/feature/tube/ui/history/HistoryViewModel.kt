@@ -15,6 +15,7 @@ import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.feature.tube.data.TubeQueue
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -79,6 +80,13 @@ class HistoryViewModel @Inject constructor(
     /** Rows whose removal is on the wire; a second tap waits for the first. */
     private val removing = mutableSetOf<String>()
 
+    /**
+     * The reads in flight, kept so Clear all can drop them (audit L4): a page
+     * that lands after the clear would put cleared History back on screen.
+     */
+    private var refreshJob: Job? = null
+    private var appendJob: Job? = null
+
     init {
         viewModelScope.launch { pause.paused.collect { paused -> _state.update { it.copy(paused = paused) } } }
         refresh()
@@ -86,7 +94,8 @@ class HistoryViewModel @Inject constructor(
 
     /** Reads the first page again. Rows on screen stay while it does; only a first read shows the skeleton. */
     fun refresh() {
-        viewModelScope.launch {
+        refreshJob?.cancel()
+        refreshJob = viewModelScope.launch {
             val hadRows = _state.value.rows.isNotEmpty()
             _state.update { it.copy(refreshing = hadRows, loading = !hadRows, error = null) }
             when (val result = source.page(cursor = null)) {
@@ -125,7 +134,7 @@ class HistoryViewModel @Inject constructor(
         val cursor = current.nextCursor ?: return
         if (current.appending) return
         _state.update { it.copy(appending = true, appendFailed = false) }
-        viewModelScope.launch {
+        appendJob = viewModelScope.launch {
             when (val result = source.page(cursor)) {
                 is AppResult.Success -> _state.update { now ->
                     val known = now.rows.mapTo(mutableSetOf()) { it.postId }
@@ -180,7 +189,20 @@ class HistoryViewModel @Inject constructor(
     /** Every video out of History. The page empties at once; a refusal puts it all back and says so. */
     fun clearAll() {
         val before = _state.value
-        _state.update { it.copy(confirmingClear = false, rows = emptyList(), nextCursor = null, query = "") }
+        // A page still on its way is from the History being cleared.
+        refreshJob?.cancel()
+        appendJob?.cancel()
+        _state.update {
+            it.copy(
+                confirmingClear = false,
+                rows = emptyList(),
+                nextCursor = null,
+                query = "",
+                appending = false,
+                refreshing = false,
+                loading = false,
+            )
+        }
         viewModelScope.launch {
             when (val result = source.clear()) {
                 is AppResult.Success -> _message.value = UsMessage("History cleared", UsMessageType.Success)

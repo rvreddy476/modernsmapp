@@ -71,9 +71,16 @@ class ReelMediaUploads @Inject constructor(
         /**
          * [transient]: the network or the server's moment, not the file or
          * the request — the worker tries again by itself once the phone is
-         * back online (2026-11-07). Implies [retryable].
+         * back online (2026-11-07). Implies [retryable]. [progressed]: a
+         * resumable upload landed parts before it stopped, so it is further on
+         * than when the run began.
          */
-        data class Failed(val message: String, val retryable: Boolean, val transient: Boolean = false) : Outcome
+        data class Failed(
+            val message: String,
+            val retryable: Boolean,
+            val transient: Boolean = false,
+            val progressed: Boolean = false,
+        ) : Outcome
     }
 
     sealed interface Readiness {
@@ -221,7 +228,9 @@ class ReelMediaUploads @Inject constructor(
             is ResumableOutcome.Completed -> Outcome.Ready(outcome.mediaId)
             is ResumableOutcome.Failed -> {
                 if (outcome.discardSession) onSession(null)
-                Outcome.Failed(outcome.message, outcome.retryable)
+                // A lost network (2026-11-07) is retried by the worker, from the
+                // last confirmed part; a refusal waits for the user.
+                Outcome.Failed(outcome.message, outcome.retryable, outcome.transient, outcome.progressed)
             }
         }
     }

@@ -277,6 +277,37 @@ class VideoLibraryApiRequestTest {
         assertThat(contents.order).containsExactly("a", "hidden", "b").inOrder()
     }
 
+    /** Audit M5: a long list shows its first screen without waiting on every row's lookups. */
+    @Test
+    fun `a long list fills in its first rows and hands back the rest bare, in order`() {
+        val batches = mutableListOf<Int>()
+        val filling = VideoLibraryRepository(api, ErrorMapper(json)) { rows ->
+            batches += rows.size
+            rows.map { it.copy(text = "filled") }
+        }
+        val total = VideoLibraryRepository.FIRST_HYDRATED + 6
+        enqueue("""{"data":{"id":"c1","title":"Long","visibility":"private","kind":"user"}}""")
+        enqueue(
+            (0 until total).joinToString(",", """{"data":[""", "]}") { n ->
+                """{"post_id":"p$n","position":$n,"post":{"id":"p$n"}}"""
+            },
+        )
+
+        val contents = (runBlocking { filling.collection("c1") } as AppResult.Success).data
+
+        assertThat(batches).containsExactly(VideoLibraryRepository.FIRST_HYDRATED)
+        assertThat(contents.videos.map { it.text }.toSet()).containsExactly("filled")
+        assertThat(contents.videos.map { it.id })
+            .isEqualTo((0 until VideoLibraryRepository.FIRST_HYDRATED).map { "p$it" })
+        assertThat(contents.unhydrated.map { it.id })
+            .isEqualTo((VideoLibraryRepository.FIRST_HYDRATED until total).map { "p$it" })
+        assertThat(contents.unhydrated.map { it.text }.toSet()).doesNotContain("filled")
+        assertThat(contents.order).hasSize(total)
+
+        val rest = runBlocking { filling.hydrate(contents.unhydrated) }
+        assertThat(rest.map { it.text }.toSet()).containsExactly("filled")
+    }
+
     @Test
     fun `an edit is a PATCH carrying only what changed`() {
         enqueue(

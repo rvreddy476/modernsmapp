@@ -14,6 +14,7 @@ import com.us.android.core.model.FeedViewerState
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.network.Paged
 import com.us.android.core.testing.MainDispatcherRule
+import com.us.android.feature.tube.data.SignedIn
 import com.us.android.feature.tube.data.TubeQueue
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -46,11 +47,15 @@ class HistoryViewModelTest {
         var removeAnswer: AppResult<Unit> = AppResult.Success(Unit)
         var clearAnswer: AppResult<Unit> = AppResult.Success(Unit)
         var gate: CompletableDeferred<Unit>? = null
+
+        /** Holds every page read until completed, when given. */
+        var pageGate: CompletableDeferred<Unit>? = null
         val removed = mutableListOf<String>()
         var clears = 0
 
         override suspend fun page(cursor: String?): AppResult<Paged<WatchHistoryEntry>> {
             cursors += cursor
+            pageGate?.await()
             return pages.removeFirstOrNull() ?: AppResult.Failure(AppError.NoNetwork())
         }
 
@@ -105,7 +110,7 @@ class HistoryViewModelTest {
 
     private val source = FakeSource()
     private val pause = FakePause()
-    private val queue = TubeQueue()
+    private val queue = TubeQueue { SignedIn() }
 
     private fun viewModel() = HistoryViewModel(source, pause, resolver, queue)
 
@@ -239,6 +244,41 @@ class HistoryViewModelTest {
         assertThat(source.clears).isEqualTo(1)
     }
 
+    /** Audit L4: a page that lands after Clear all is from the History that was cleared. */
+    @Test
+    fun `a next page landing after clear all does not bring cleared rows back`() = runTest {
+        source.pages += page("a", "b", next = "c2")
+        source.pages += page("c", "d")
+        val vm = viewModel()
+        source.pageGate = CompletableDeferred()
+
+        vm.loadMore()
+        assertThat(vm.state.value.appending).isTrue()
+        vm.clearAll()
+        source.pageGate!!.complete(Unit)
+
+        assertThat(vm.state.value.rows).isEmpty()
+        assertThat(vm.state.value.appending).isFalse()
+        assertThat(vm.state.value.canLoadMore).isFalse()
+        assertThat(vm.state.value.isEmpty).isTrue()
+    }
+
+    @Test
+    fun `a refresh landing after clear all does not bring cleared rows back`() = runTest {
+        source.pages += page("a", "b")
+        source.pages += page("a", "b", "c")
+        val vm = viewModel()
+        source.pageGate = CompletableDeferred()
+
+        vm.refresh()
+        assertThat(vm.state.value.refreshing).isTrue()
+        vm.clearAll()
+        source.pageGate!!.complete(Unit)
+
+        assertThat(vm.state.value.rows).isEmpty()
+        assertThat(vm.state.value.refreshing).isFalse()
+    }
+
     @Test
     fun `a refused clear brings every row back`() = runTest {
         source.pages += page("a", "b", next = "c2")
@@ -285,7 +325,7 @@ class HistoryViewModelTest {
 
         vm.onOpen(vm.state.value.rows[1])
 
-        assertThat(queue.items.value.map { it.id }).containsExactly("b", "a", "c").inOrder()
+        assertThat(queue.listFor("b").map { it.id }).containsExactly("b", "a", "c").inOrder()
     }
 
     @Test

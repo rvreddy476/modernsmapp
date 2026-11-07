@@ -26,6 +26,16 @@ import kotlinx.coroutines.CancellationException
  * a timeout, the server's 5xx) is retried with WorkManager's backoff, up to
  * [AUTO_RETRIES] times, while the tile keeps its loader; the user taps
  * Retry only when that runs out or the failure is the file's or the form's.
+ *
+ * ## A LONG UPLOAD THAT KEEPS MOVING IS NEVER GIVEN UP ON (audit M4, 2026-11-07)
+ *
+ * A multi-GB long video goes up part by part for hours, and a phone loses
+ * signal more than three times in that (a lift, a tunnel). A transient
+ * failure AFTER parts landed in this run is not counted against
+ * [AUTO_RETRIES]: the run ends in [End.Continue], a fresh run that waits for
+ * the network and resumes from the last confirmed part. Each such run must
+ * land at least one part to earn the next, so it is bounded by the part
+ * count; a run that lands nothing falls back to the counted retries.
  */
 internal class ReelPublishRun(
     private val pipeline: suspend (PendingReelPublish, isDiscarded: () -> Boolean) -> ReelPublishPipeline.Outcome,
@@ -39,7 +49,11 @@ internal class ReelPublishRun(
         /** Done with this record for now; [failure] is the message when it stopped. */
         data class Finished(val postId: String? = null, val failure: String? = null) : End
 
-        /** The fallback poll is still waiting: append another run. */
+        /**
+         * Not done and not failed: append a fresh run. The fallback poll is
+         * still waiting, or a resumable upload moved on before the network
+         * went and picks up from its last part once it is back.
+         */
         data object Continue : End
 
         /** The network failed it: run again after the backoff. */
@@ -62,17 +76,26 @@ internal class ReelPublishRun(
             }
             ReelPublishPipeline.Outcome.Continue -> End.Continue
             ReelPublishPipeline.Outcome.Discarded -> End.Finished()
-            is ReelPublishPipeline.Outcome.Failed -> if (retriesAutomatically(outcome, attempt)) {
-                // Not a failure yet: the record must not say one, or the
-                // retried run would take it as finished and stop.
-                store.load(key)?.let { store.save(it.copy(failure = null)) }
-                tracker.update(key, ReelPublishState.Preparing)
-                End.RetryLater
-            } else {
-                tracker.update(key, ReelPublishState.Failed(outcome.message, outcome.retryable, outcome.needsChannel))
-                End.Finished(failure = outcome.message)
+            is ReelPublishPipeline.Outcome.Failed -> when {
+                continuesAfterProgress(outcome) -> notFailedYet(key, End.Continue)
+                retriesAutomatically(outcome, attempt) -> notFailedYet(key, End.RetryLater)
+                else -> {
+                    val failed = ReelPublishState.Failed(outcome.message, outcome.retryable, outcome.needsChannel)
+                    tracker.update(key, failed)
+                    End.Finished(failure = outcome.message)
+                }
             }
         }
+    }
+
+    /**
+     * The pipeline wrote the failure down; the record must not keep it, or the
+     * next run would take it as finished and stop. The tile keeps its loader.
+     */
+    private suspend fun notFailedYet(key: String, end: End): End {
+        store.load(key)?.let { store.save(it.copy(failure = null)) }
+        tracker.update(key, ReelPublishState.Preparing)
+        return end
     }
 
     @Suppress("TooGenericExceptionCaught") // The backstop: whatever a step throws, the queue must go on.
@@ -105,5 +128,9 @@ internal class ReelPublishRun(
         /** Whether [outcome] is retried without the user: the network's, and tries are left. */
         fun retriesAutomatically(outcome: ReelPublishPipeline.Outcome.Failed, attempt: Int): Boolean =
             outcome.transient && attempt < AUTO_RETRIES
+
+        /** Whether [outcome] starts a fresh, uncounted run: the network's, after the upload moved on. */
+        fun continuesAfterProgress(outcome: ReelPublishPipeline.Outcome.Failed): Boolean =
+            outcome.transient && outcome.progressed
     }
 }

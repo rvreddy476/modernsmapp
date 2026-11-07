@@ -45,11 +45,18 @@ data class VideoCollection(
  * A collection with what is in it, in the collection's own order. [order] is
  * EVERY row's post id by position, the ones the viewer may not see included:
  * the server's move route counts them, so a reorder is planned against it.
+ *
+ * [videos] are the first rows, ready to draw; [unhydrated] are the rest, in
+ * order after them, as the server sent them (no author, no stills). A list
+ * of 1,500 liked videos used to wait on 1,500 delivery reads before showing
+ * anything (audit M5); now the first screen is filled and the page fills the
+ * rest through [VideoCollectionSource.hydrate], a chunk at a time.
  */
 data class VideoCollectionContents(
     val collection: VideoCollection,
     val videos: List<FeedItem>,
     val order: List<String> = videos.map { it.id },
+    val unhydrated: List<FeedItem> = emptyList(),
 )
 
 /** An edit of a collection's details; null leaves a field as it is. */
@@ -76,6 +83,9 @@ interface VideoCollectionSource {
 
     /** Moves [postId] to the 0-based [position]; answers every row's post id in the server's new order. */
     suspend fun moveInCollection(collectionId: String, postId: String, position: Int): AppResult<List<String>>
+
+    /** Fills in rows read bare ([VideoCollectionContents.unhydrated]): authors, stills, covers. */
+    suspend fun hydrate(videos: List<FeedItem>): List<FeedItem> = videos
 }
 
 /**
@@ -133,17 +143,28 @@ class VideoLibraryRepository @Inject constructor(
             is AppResult.Failure -> list
         }
 
+    /**
+     * The collection's rows, the first [FIRST_HYDRATED] filled in. The route
+     * has no paging yet (`GetPlaylistItems` reads every row), so the rest
+     * come back bare for the page to fill as it goes.
+     */
     private suspend fun contentsOf(collection: VideoCollection): AppResult<VideoCollectionContents> =
         when (val rows = listApiCall(errorMapper) { api.items(collection.id) }) {
-            is AppResult.Success -> AppResult.Success(
-                VideoCollectionContents(
-                    collection = collection,
-                    videos = hydrator.hydrate(rows.data.toVideos()),
-                    order = rows.data.toOrder(),
-                ),
-            )
+            is AppResult.Success -> {
+                val videos = rows.data.toVideos()
+                AppResult.Success(
+                    VideoCollectionContents(
+                        collection = collection,
+                        videos = hydrator.hydrate(videos.take(FIRST_HYDRATED)),
+                        order = rows.data.toOrder(),
+                        unhydrated = videos.drop(FIRST_HYDRATED),
+                    ),
+                )
+            }
             is AppResult.Failure -> rows
         }
+
+    override suspend fun hydrate(videos: List<FeedItem>): List<FeedItem> = hydrator.hydrate(videos)
 
     /**
      * Title, description and/or visibility of a collection the viewer made
@@ -220,6 +241,9 @@ class VideoLibraryRepository @Inject constructor(
 
         /** The web asks for 50; nobody scrolls a picker further than that. */
         private const val COLLECTIONS_LIMIT = 50
+
+        /** Rows filled in before a collection is shown: about two screens of rows. */
+        const val FIRST_HYDRATED = 24
 
         /** Why a library write was refused, in words the screen can show. One wording for every surface. */
         fun errorMessage(error: AppError, fallback: String): String = when (error) {

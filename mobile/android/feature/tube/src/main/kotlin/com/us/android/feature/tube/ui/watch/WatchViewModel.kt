@@ -23,8 +23,6 @@ import com.us.android.core.engagement.data.EngagementRepository
 import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.feed.data.AudioTrack
 import com.us.android.core.feed.data.FeedRepository
-import com.us.android.core.feed.data.credits.CreditGenre
-import com.us.android.core.feed.data.credits.CreditsRepository
 import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.feed.data.PostEdits
 import com.us.android.core.feed.data.SubscriptionGraph
@@ -34,6 +32,8 @@ import com.us.android.core.feed.data.VideoLibraryStore
 import com.us.android.core.feed.data.VideoThumb
 import com.us.android.core.feed.data.activeAudioTrackId
 import com.us.android.core.feed.data.applyTo
+import com.us.android.core.feed.data.credits.CreditGenre
+import com.us.android.core.feed.data.credits.CreditsRepository
 import com.us.android.core.feed.data.playbackFor
 import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.feed.offline.OfflineLibrary
@@ -50,24 +50,24 @@ import com.us.android.core.media.applyCaption
 import com.us.android.core.media.captionChoice
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
-import com.us.android.core.model.MembersAccess
-import com.us.android.core.model.membersPlayback
 import com.us.android.core.model.FollowStatus
+import com.us.android.core.model.MembersAccess
 import com.us.android.core.model.NotifyOn
 import com.us.android.core.model.VideoCredits
+import com.us.android.core.model.membersPlayback
 import com.us.android.core.ui.UsAudioTrackOption
 import com.us.android.core.ui.UsReelQuality
-import com.us.android.feature.tube.data.SeriesEpisode
-import com.us.android.feature.tube.data.SeriesInfo
-import com.us.android.feature.tube.data.TubeQueue
-import com.us.android.feature.tube.data.VideoSeriesRepository
-import com.us.android.feature.tube.data.WatchProgressRepository
 import com.us.android.feature.tube.data.ElementEvent
 import com.us.android.feature.tube.data.ElementSurface
 import com.us.android.feature.tube.data.ImpressionLog
 import com.us.android.feature.tube.data.MediaHref
+import com.us.android.feature.tube.data.SeriesEpisode
+import com.us.android.feature.tube.data.SeriesInfo
+import com.us.android.feature.tube.data.TubeQueue
+import com.us.android.feature.tube.data.VideoSeriesRepository
 import com.us.android.feature.tube.data.WatchElements
 import com.us.android.feature.tube.data.WatchElementsRepository
+import com.us.android.feature.tube.data.WatchProgressRepository
 import com.us.android.feature.tube.navigation.WatchRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CoroutineScope
@@ -79,6 +79,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
@@ -105,7 +106,15 @@ sealed interface WatchContent {
          */
         val locked: Boolean = false,
     ) : WatchContent
-    data class Failed(val message: String) : WatchContent
+
+    /** [action]: what the page offers besides Back, when the refusal has a way through (L5). */
+    data class Failed(val message: String, val action: WatchFailureAction? = null) : WatchContent
+}
+
+/** What the failed watch screen offers besides Back. */
+enum class WatchFailureAction {
+    /** AGE_UNVERIFIED: the viewer's date of birth is missing; Edit profile is where it goes. */
+    CONFIRM_BIRTH_DATE,
 }
 
 /** The next episode on its way: [secondsLeft] ticks down once a second until it plays. */
@@ -145,11 +154,19 @@ data class Countdown(val next: SeriesEpisode, val secondsLeft: Int)
  *
  * ## WHAT IT OFFERS
  *
- * The list Tube home was showing ([TubeQueue]): "Up next" is the rows after
- * this one, offered under the player and on the end screen. A video opened
- * outside the list (a deep link, or a list refreshed underneath) is fetched
- * by id and offers the rest of the list. The video's series, when it has
- * one ([series]), is fetched beside the resume and never waited on.
+ * The list the viewer opened this video from ([TubeQueue]), taken once as
+ * the screen opens and only when it holds this video and was written by
+ * this viewer (audit H2): "Up next" is the rows after this one, offered
+ * under the player and on the end screen. A video picked on this screen
+ * that is not in the list (a series episode, a card) is fetched by id and
+ * offers the rest of the list. A video opened from somewhere that wrote no
+ * list (a notification, a profile) offers none. The video's series, when it
+ * has one ([series]), is fetched beside the resume and never waited on.
+ *
+ * ## THE PLAYER'S OWN LIFE
+ *
+ * Healing after an error, and letting go of the decoder behind another
+ * screen, are [WatchPlayback]'s; this class says what to play.
  */
 @HiltViewModel
 // Constructor injection of the surface's collaborators; a wrapper would add
@@ -206,17 +223,33 @@ class WatchViewModel @Inject constructor(
      */
     private var pendingStartMethod: PlayStartMethod = PlayStartMethod.TAP
 
-    private val _currentId = MutableStateFlow(savedStateHandle.toRoute<WatchRoute>().postId)
+    private val openedId = savedStateHandle.toRoute<WatchRoute>().postId
+
+    private val _currentId = MutableStateFlow(openedId)
 
     /** The post playing now; changes in place when the viewer picks from "Up next" or the next episode plays. */
     val currentId: StateFlow<String> = _currentId.asStateFlow()
 
+    /**
+     * What to load, and whether from the server: the opened video, a pick
+     * on this screen, or the same video read again after the viewer joined.
+     * ONE flow, collected latest (audit L2): a reload after Join used to run
+     * beside the main load, and whichever answered last owned the player.
+     * [seq] makes every request distinct, a re-read of the same id included.
+     */
+    private data class LoadRequest(val postId: String, val fromServer: Boolean, val seq: Int)
+
+    private val loads = MutableStateFlow(LoadRequest(openedId, fromServer = false, seq = 0))
+
     private val _content = MutableStateFlow<WatchContent>(WatchContent.Loading)
     val content: StateFlow<WatchContent> = _content.asStateFlow()
 
+    /** The list this screen was opened from, taken once (see the class note); empty when there was none. */
+    private val list: List<FeedItem> = queue.listFor(openedId)
+
     /** The rows after the current one in the list the viewer came from. */
-    val upNext: StateFlow<List<FeedItem>> = combine(queue.items, _currentId) { items, id -> upNext(items, id) }
-        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), emptyList())
+    val upNext: StateFlow<List<FeedItem>> = _currentId.map { id -> upNext(list, id) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), upNext(list, openedId))
 
     private val _genres = MutableStateFlow<List<CreditGenre>>(emptyList())
 
@@ -292,11 +325,23 @@ class WatchViewModel @Inject constructor(
     val countdown: StateFlow<Countdown?> = _countdown.asStateFlow()
     private var countdownJob: Job? = null
 
-    /** The one player. Released with the ViewModel — see the class note. */
-    val player: ExoPlayer = playerFactory.create().apply {
+    /**
+     * The one player. Released with the ViewModel — see the class note. The
+     * long-form profile (audit M1, L7): the long buffer, audio focus, and a
+     * pause when headphones come out.
+     */
+    val player: ExoPlayer = playerFactory.createLongForm().apply {
         repeatMode = Player.REPEAT_MODE_OFF
         volume = 1f
     }
+
+    private val watchPlayback = WatchPlayback(player, sources::create, viewModelScope, ::refreshedOriginal)
+
+    /** The player stopped on an error nothing healed (audit H1): the screen draws Retry. */
+    val playbackFailed: StateFlow<Boolean> = watchPlayback.failed
+
+    /** Set when the screen went behind something; the return opens a fresh view (audit M3). */
+    private var backgrounded = false
 
     private val _quality = MutableStateFlow<UsReelQuality>(UsReelQuality.Auto)
 
@@ -346,8 +391,10 @@ class WatchViewModel @Inject constructor(
         override fun onPlaybackStateChanged(playbackState: Int) {
             // Every transition, not only the one INTO ended: Replay seeks to
             // the top and the player goes through BUFFERING on its way back,
-            // which is when the poster has to come off the surface.
-            _ended.value = playbackState == Player.STATE_ENDED
+            // which is when the poster has to come off the surface. A video
+            // let go of on its last frame behind another screen is still
+            // ended: its end screen is what the viewer comes back to.
+            _ended.value = playbackState == Player.STATE_ENDED || watchPlayback.heldAtEnd
             if (playbackState == Player.STATE_ENDED) {
                 // Closed as `ended` BEFORE the countdown starts, so the
                 // completed view is attributed to this video rather than being
@@ -395,8 +442,9 @@ class WatchViewModel @Inject constructor(
         library.setViewer(follows.ownId)
         player.addListener(listener)
         // collectLatest: a pick from "Up next" while the last video's progress
-        // read is still in flight abandons that read rather than queueing.
-        viewModelScope.launch { _currentId.collectLatest { load(it) } }
+        // read is still in flight abandons that read rather than queueing,
+        // and so does the re-read after Join (L2).
+        viewModelScope.launch { loads.collectLatest { load(it.postId, it.fromServer) } }
         viewModelScope.launch {
             while (isActive) {
                 delay(REPORT_INTERVAL_MILLIS)
@@ -446,12 +494,7 @@ class WatchViewModel @Inject constructor(
         val dub = audio.dubPlayback(ready.item, language, tracks)
         val target = dub ?: base
         if (target == ready.playback) return
-        val position = player.currentPosition
-        val playing = player.playWhenReady
-        player.setMediaSource(sources.create(target))
-        player.prepare()
-        player.seekTo(position)
-        player.playWhenReady = playing
+        watchPlayback.prepare(target, positionMs = player.currentPosition, play = player.playWhenReady)
         _content.value = ready.copy(playback = target, offlineCopy = baseOffline && dub == null)
         player.applyQuality(if (dub == null) _quality.value else UsReelQuality.Auto)
     }
@@ -465,32 +508,42 @@ class WatchViewModel @Inject constructor(
         cancelCountdown()
         report()
         endWatchAnalytics(PlayEndReason.SWIPE_NEXT)
+        // Silent at once (audit L1): the next video may be fetched first, and
+        // the last one must not keep playing, with sound, under "Loading
+        // video" — nor reach its end there and start a countdown.
+        player.playWhenReady = false
         _currentId.value = postId
+        request(postId, fromServer = false)
     }
 
     /**
      * The viewer joined (paid memberships, 2026-10-23): read the video again
      * from the server — never from the list row that was redacted — and play
-     * it if the server now sends it whole.
+     * it if the server now sends it whole. Through the one load flow, so a
+     * pick made while this read is out wins (audit L2).
      */
-    fun reloadAfterUnlock() {
-        val postId = _currentId.value
-        viewModelScope.launch { load(postId, fromServer = true) }
-    }
+    fun reloadAfterUnlock() = request(_currentId.value, fromServer = true)
+
+    private fun request(postId: String, fromServer: Boolean) =
+        loads.update { last -> LoadRequest(postId, fromServer, last.seq + 1) }
 
     private suspend fun load(postId: String, fromServer: Boolean = false) {
+        // A countdown begun by the last video is not this one's (audit L1).
+        cancelCountdown()
         _content.value = WatchContent.Loading
         offline.ensureLoaded()
         // A copy stored on this device is what plays (2026-10-02), and it
         // opens from what was kept with it: no round trip, so none can fail.
         val stored = offline.playable(postId)
-        val listed = queue.items.value.firstOrNull { it.id == postId }.takeUnless { fromServer }
+        val listed = list.firstOrNull { it.id == postId }.takeUnless { fromServer }
         val kept = if (listed == null) stored.takeUnless { fromServer }?.toFeedItem() else null
-        val item = listed ?: kept ?: fetch(postId)
-        if (item == null) {
-            player.stop()
-            _content.value = WatchContent.Failed("We couldn't load this video.")
-            return
+        val item = listed ?: kept ?: when (val read = repository.post(postId)) {
+            is AppResult.Success -> read.data
+            is AppResult.Failure -> {
+                watchPlayback.clear()
+                _content.value = watchFailure(read.error)
+                return
+            }
         }
         if (showLockedIfMembersOnly(item)) return
         // A row fetched by id IS the post detail; a list row, and a kept one, is refreshed from it.
@@ -515,13 +568,10 @@ class WatchViewModel @Inject constructor(
         knowGenres(item)
         viewModelScope.launch { audio.ensure(item) }
         if (playback == null) {
-            player.stop()
-            player.clearMediaItems()
+            watchPlayback.clear()
             return
         }
-        player.setMediaSource(sources.create(playback))
-        player.prepare()
-        player.playWhenReady = true
+        watchPlayback.prepare(playback)
         startWatchAnalytics(item)
         resume(postId, item)
     }
@@ -533,8 +583,7 @@ class WatchViewModel @Inject constructor(
      */
     private fun showLockedIfMembersOnly(item: FeedItem): Boolean {
         if (item.membersPlayback(ownUserId) != MembersAccess.Locked) return false
-        player.stop()
-        player.clearMediaItems()
+        watchPlayback.clear()
         basePlayback = null
         _content.value = WatchContent.Ready(item = edits.edits.value.applyTo(item), playback = null, locked = true)
         launchKnowAuthor(item)
@@ -614,8 +663,7 @@ class WatchViewModel @Inject constructor(
             // The detail is the server's answer for THIS viewer: a membership
             // that ended since the list was read locks the video now.
             if (detail.membersPlayback(ownUserId) == MembersAccess.Locked) {
-                player.stop()
-                player.clearMediaItems()
+                watchPlayback.clear()
                 basePlayback = null
                 endWatchAnalytics(PlayEndReason.SWIPE_NEXT)
                 _content.update { current ->
@@ -635,6 +683,31 @@ class WatchViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * A signed MP4 whose address expired (audit H1): the post is read again
+     * for a fresh one, which becomes the video's own playback. Only the
+     * network original refreshes this way — a stored copy has nothing to
+     * sign, and a dub's address is not this read's to give. A read that
+     * fails, a video that locked or changed meanwhile, gives nothing, and the
+     * failure is left to show with Retry.
+     */
+    private suspend fun refreshedOriginal(stale: Playback): Playback? {
+        if (stale != basePlayback || baseOffline) return null
+        val postId = _currentId.value
+        val detail = fetch(postId) ?: return null
+        if (_currentId.value != postId || detail.membersPlayback(ownUserId) == MembersAccess.Locked) return null
+        val fresh = urlResolver.playbackFor(detail) ?: return null
+        basePlayback = fresh
+        _content.update { current ->
+            if (current is WatchContent.Ready && current.item.id == postId && current.playback == stale) {
+                current.copy(playback = fresh)
+            } else {
+                current
+            }
+        }
+        return fresh
     }
 
     /**
@@ -688,6 +761,9 @@ class WatchViewModel @Inject constructor(
      * Replay and the recommendations.
      */
     private fun startCountdown() {
+        // Only for the video on screen: an end reached while the next one is
+        // loading belongs to the last (audit L1).
+        if ((_content.value as? WatchContent.Ready)?.item?.id != _currentId.value) return
         val end = endOfVideo(_series.value, _currentId.value, autoplayNext.value)
         val next = (end as? EndOfVideo.Countdown)?.next ?: return
         countdownJob?.cancel()
@@ -747,19 +823,40 @@ class WatchViewModel @Inject constructor(
     // ── Transport ────────────────────────────────────────────────────────
 
     /**
-     * Play or pause; from the end, Replay. Replay sets `playWhenReady` rather
-     * than toggling it: at STATE_ENDED the player still holds the `true` it
-     * finished with, and a toggle would seek to the top and sit there paused.
+     * Play or pause; from the end, Replay; on a failed player, Retry (audit
+     * H1: a player on an error needs a prepare, and flipping `playWhenReady`
+     * did nothing at all). Replay sets `playWhenReady` rather than toggling
+     * it: at STATE_ENDED the player still holds the `true` it finished with,
+     * and a toggle would seek to the top and sit there paused.
      */
     fun togglePlay() {
         cancelCountdown()
-        if (player.playbackState == Player.STATE_ENDED) {
-            player.seekTo(0L)
-            player.playWhenReady = true
-            return
+        when (transportTap(failed = watchPlayback.failed.value, ended = _ended.value)) {
+            TransportTap.RETRY -> watchPlayback.retry()
+            TransportTap.REPLAY -> replay()
+            TransportTap.TOGGLE -> player.playWhenReady = !player.playWhenReady
         }
-        player.playWhenReady = !player.playWhenReady
     }
+
+    /** The failure's Retry: prepared again where the video was. */
+    fun retryPlayback() {
+        cancelCountdown()
+        watchPlayback.retry()
+    }
+
+    /**
+     * From the top. The view closed as `ended` when the video finished, so
+     * watching it again opens one of its own: unrecorded, a replay earned
+     * the creator nothing.
+     */
+    private fun replay() {
+        watchPlayback.replay()
+        if (watchSession == null) playableItem()?.let(::startWatchAnalytics)
+    }
+
+    /** The video on screen when it is one that plays: ready, not locked, with something to play. */
+    private fun playableItem(): FeedItem? =
+        (_content.value as? WatchContent.Ready)?.takeIf { !it.locked && it.playback != null }?.item
 
     /** ±10 s from a double-tap; clamped so a skip past the end lands on the end. */
     fun seekBy(deltaMillis: Long) {
@@ -836,6 +933,24 @@ class WatchViewModel @Inject constructor(
         // the background, and an unclosed view is a view the creator is never
         // paid for. Coming back to the foreground opens a fresh one.
         endWatchAnalytics(PlayEndReason.BACKGROUNDED)
+        backgrounded = true
+        // And the decoder goes (audit M2): a stopped screen under another
+        // Watch screen must not hold one the top screen may need.
+        watchPlayback.hold()
+    }
+
+    /**
+     * Back in front (audit M3): the video is prepared again where it was,
+     * paused, and a fresh view opens for it, so what is watched from here
+     * is counted and a like or a subscribe here is attributed. A video left
+     * on its end screen opens its view at Replay instead.
+     */
+    fun onForeground() {
+        watchPlayback.resume()
+        if (!backgrounded) return
+        backgrounded = false
+        if (watchSession != null || watchPlayback.heldAtEnd) return
+        playableItem()?.let(::startWatchAnalytics)
     }
 
     /**
@@ -967,7 +1082,7 @@ class WatchViewModel @Inject constructor(
         // `backgrounded`, which is a different signal about the app.
         endWatchAnalytics(PlayEndReason.PAUSED)
         player.removeListener(listener)
-        player.release()
+        watchPlayback.release()
     }
 
     private fun FeedItem.durationMs(): Long = media.firstOrNull { it.kind == VIDEO_KIND }?.durationMs ?: 0L

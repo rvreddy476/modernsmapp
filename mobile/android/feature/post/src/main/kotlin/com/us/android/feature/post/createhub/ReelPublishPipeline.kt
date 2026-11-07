@@ -96,12 +96,17 @@ class ReelPublishPipeline @Inject constructor(
         /** The user discarded the publish while it ran; nothing was persisted. */
         data object Discarded : Outcome
 
-        /** [transient]: the network's failure, which the worker retries by itself (2026-11-07). */
+        /**
+         * [transient]: the network's failure, which the worker retries by itself
+         * (2026-11-07). [progressed]: the video's resumable upload landed parts
+         * in this run before the network went, so it is further on than it was.
+         */
         data class Failed(
             val message: String,
             val retryable: Boolean,
             val needsChannel: Boolean = false,
             val transient: Boolean = false,
+            val progressed: Boolean = false,
         ) : Outcome
     }
 
@@ -193,7 +198,14 @@ class ReelPublishPipeline @Inject constructor(
                 ),
             )
             is ReelMediaUploads.Outcome.Failed ->
-                fail(run, current, outcome.message, outcome.retryable, transient = outcome.transient)
+                fail(
+                    run,
+                    current,
+                    outcome.message,
+                    outcome.retryable,
+                    transient = outcome.transient,
+                    progressed = outcome.progressed,
+                )
         }
     }
 
@@ -350,10 +362,11 @@ class ReelPublishPipeline @Inject constructor(
         retryable: Boolean,
         needsChannel: Boolean = false,
         transient: Boolean = false,
+        progressed: Boolean = false,
     ): Nothing {
         if (run.isDiscarded()) throw Stop(Outcome.Discarded)
         store.save(pending.copy(failure = PendingReelFailure(message, retryable, needsChannel)))
-        throw Stop(Outcome.Failed(message, retryable, needsChannel, transient))
+        throw Stop(Outcome.Failed(message, retryable, needsChannel, transient, progressed))
     }
 
     private fun AppError.isNotReady(): Boolean = this is AppError.Server && code == MEDIA_NOT_READY

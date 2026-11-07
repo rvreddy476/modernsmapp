@@ -218,11 +218,86 @@ class ResumableUploaderTest {
         val outcome = uploader(transport).run(file(25))
 
         assertThat(outcome).isEqualTo(
-            ResumableOutcome.Failed(ResumableUploader.PART_FAILED, retryable = true, discardSession = false),
+            ResumableOutcome.Failed(
+                ResumableUploader.PART_FAILED,
+                retryable = true,
+                discardSession = false,
+                // The network ran out, not the server: the worker tries again by itself (M4).
+                transient = true,
+                // Part 1 landed before part 2 lost the network.
+                progressed = true,
+            ),
         )
         assertThat(transport.partAttempts.count { it == 2 }).isEqualTo(ResumableUploader.MAX_ATTEMPTS)
         assertThat(transport.partAttempts).doesNotContain(3)
         assertThat(transport.completes).isEmpty()
+    }
+
+    @Test
+    fun `a network lost before any part lands is transient but has not moved the upload on`() = runTest {
+        val transport = FakeTransport(chunk = 10L)
+        transport.partFailures[1] = ArrayDeque(List(ResumableUploader.MAX_ATTEMPTS) { AppError.NoNetwork() })
+
+        val outcome = uploader(transport).run(file(25)) as ResumableOutcome.Failed
+
+        assertThat(outcome.transient).isTrue()
+        assertThat(outcome.progressed).isFalse()
+        assertThat(outcome.discardSession).isFalse()
+    }
+
+    @Test
+    fun `the next run after a lost network resumes from the last confirmed part`() = runTest {
+        // Run 1: part 1 lands, part 2 loses the network for good.
+        val first = FakeTransport(chunk = 10L)
+        first.partFailures[2] = ArrayDeque(List(ResumableUploader.MAX_ATTEMPTS) { AppError.NoNetwork() })
+        val recorder = Recorder()
+        val bytes = file(25)
+        uploader(first).run(bytes, recorder = recorder)
+        val kept = recorder.sessions.single()
+
+        // Run 2, the network back: the server says part 1 is in; only 2 and 3 go.
+        val second = FakeTransport(chunk = 10L).apply {
+            status = AppResult.Success(
+                ResumableStatusDto(uploadId = kept.uploadId, status = "uploading", uploadedParts = listOf(1)),
+            )
+        }
+        val source = RecordingSource(bytes)
+        val outcome = uploader(second).run(bytes, source, resume = kept)
+
+        assertThat(outcome).isEqualTo(ResumableOutcome.Completed(kept.mediaId))
+        assertThat(second.inits).isEmpty()
+        assertThat(second.partAttempts).containsExactly(2, 3).inOrder()
+        assertThat(source.openedAt).containsExactly(10L, 20L).inOrder()
+    }
+
+    @Test
+    fun `a status read or a complete lost on the network keeps the session and is transient`() = runTest {
+        val statusLost = FakeTransport(chunk = 10L).apply { status = AppResult.Failure(AppError.Timeout()) }
+        val resumed = uploader(statusLost).run(file(25), resume = stored) as ResumableOutcome.Failed
+        assertThat(resumed.message).isEqualTo(ResumableUploader.RESUME_FAILED)
+        assertThat(resumed.transient).isTrue()
+        assertThat(resumed.discardSession).isFalse()
+
+        val completeLost = FakeTransport(chunk = 10L).apply {
+            completeFailures = ArrayDeque(List(ResumableUploader.MAX_ATTEMPTS) { AppError.Server(503, null) })
+        }
+        val finished = uploader(completeLost).run(file(25)) as ResumableOutcome.Failed
+        assertThat(finished.message).isEqualTo(ResumableUploader.COMPLETE_FAILED)
+        assertThat(finished.transient).isTrue()
+        assertThat(finished.progressed).isTrue()
+        assertThat(finished.discardSession).isFalse()
+    }
+
+    @Test
+    fun `a refusal is never transient`() = runTest {
+        val refused = FakeTransport(chunk = 10L).apply {
+            completeFailures = ArrayDeque(listOf(AppError.Unknown(code = "PARTS_MISSING", statusCode = 409)))
+        }
+
+        val outcome = uploader(refused).run(file(25)) as ResumableOutcome.Failed
+
+        assertThat(outcome.transient).isFalse()
+        assertThat(outcome.retryable).isTrue()
     }
 
     @Test
@@ -262,7 +337,12 @@ class ResumableUploaderTest {
 
         val offline = FakeTransport().apply { initResult = AppResult.Failure(AppError.NoNetwork()) }
         assertThat(uploader(offline).run(file(25))).isEqualTo(
-            ResumableOutcome.Failed(ResumableUploader.START_FAILED, retryable = true, discardSession = true),
+            ResumableOutcome.Failed(
+                ResumableUploader.START_FAILED,
+                retryable = true,
+                discardSession = true,
+                transient = true,
+            ),
         )
         assertThat(offline.inits).hasSize(ResumableUploader.MAX_ATTEMPTS)
     }

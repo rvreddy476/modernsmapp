@@ -19,6 +19,7 @@ import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedViewerState
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.testing.MainDispatcherRule
+import com.us.android.feature.tube.data.SignedIn
 import com.us.android.feature.tube.data.TubeQueue
 import io.mockk.every
 import io.mockk.mockk
@@ -81,6 +82,16 @@ class CollectionViewModelTest {
             gate?.await()
             return requireNotNull(moveAnswer)
         }
+
+        /** Holds every fill-in until completed, when given. */
+        var fillGate: CompletableDeferred<Unit>? = null
+        val fills = mutableListOf<Int>()
+
+        override suspend fun hydrate(videos: List<FeedItem>): List<FeedItem> {
+            fills += videos.size
+            fillGate?.await()
+            return videos.map { it.copy(text = "filled") }
+        }
     }
 
     private class OkWrites : VideoLibraryWrites {
@@ -137,7 +148,7 @@ class CollectionViewModelTest {
             source = source,
             library = VideoLibraryStore(OkWrites()),
             urlResolver = resolver,
-            queue = TubeQueue(),
+            queue = TubeQueue { SignedIn() },
             follows = follows,
         )
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) { vm.content.collect {} }
@@ -191,6 +202,57 @@ class CollectionViewModelTest {
         source.contents = AppResult.Success(VideoCollectionContents(own, emptyList()))
 
         assertThat(viewModel().ready().videos).isEmpty()
+    }
+
+    /** 2 rows filled by the read, 30 more read bare (audit M5). */
+    private fun longContents(): AppResult<VideoCollectionContents> {
+        val bare = (0 until 30).map { video("r$it") }
+        val first = listOf(video("a"), video("b"))
+        return AppResult.Success(
+            VideoCollectionContents(own, first, order = (first + bare).map { it.id }, unhydrated = bare),
+        )
+    }
+
+    @Test
+    fun `a long list shows its first rows at once and the rest as they are filled in`() = runTest {
+        source.contents = longContents()
+        source.fillGate = CompletableDeferred()
+
+        val vm = viewModel()
+        // A bare row has no name and no still: it waits, off screen.
+        assertThat(vm.ready().videos.map { it.id }).containsExactly("a", "b").inOrder()
+
+        source.fillGate!!.complete(Unit)
+
+        assertThat(source.fills).containsExactly(24, 6).inOrder()
+        assertThat(vm.ready().videos.map { it.id }).isEqualTo(listOf("a", "b") + (0 until 30).map { "r$it" })
+        assertThat(vm.ready().videos.drop(2).map { it.text }.toSet()).containsExactly("filled")
+    }
+
+    @Test
+    fun `a move waits until every row is on screen`() = runTest {
+        source.contents = longContents()
+        source.fillGate = CompletableDeferred()
+        source.moveAnswer = AppResult.Success(listOf("b", "a"))
+        val vm = viewModel()
+
+        vm.move(video("a"), 1)
+
+        assertThat(source.calls.filter { it.startsWith("move") }).isEmpty()
+        assertThat(vm.ready().videos.map { it.id }).containsExactly("a", "b").inOrder()
+    }
+
+    @Test
+    fun `a refresh keeps the rows filled before on screen while it fills them again`() = runTest {
+        source.contents = longContents()
+        val vm = viewModel()
+        assertThat(vm.ready().videos).hasSize(32)
+
+        source.fillGate = CompletableDeferred()
+        vm.refresh()
+
+        assertThat(vm.ready().videos).hasSize(32)
+        assertThat(vm.ready().videos.drop(2).map { it.text }.toSet()).containsExactly("filled")
     }
 
     @Test

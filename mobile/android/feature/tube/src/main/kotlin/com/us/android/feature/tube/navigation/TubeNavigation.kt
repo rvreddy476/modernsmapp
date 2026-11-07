@@ -208,6 +208,11 @@ data class TubeDestinations(
     val onOpenTopics: () -> Unit = {},
     /** A topic tile: `:app` pushes [TubeTopicRoute]. */
     val onOpenTopic: (slug: String, label: String) -> Unit = { _, _ -> },
+    /**
+     * An age-restricted video and no date of birth on file (2026-11-07): `:app`
+     * opens Edit profile, where the date of birth is entered.
+     */
+    val onConfirmBirthDate: () -> Unit = {},
 ) {
     /** The bar's tap, resolved. */
     fun onBarAction(action: TubeBarAction) = when (action) {
@@ -243,6 +248,7 @@ fun NavGraphBuilder.tubeScreens(destinations: TubeDestinations) {
             onSearchName = destinations.onSearchVideos,
             onOpenChannel = destinations.onOpenChannel,
             onOpenCollection = destinations.onOpenCollection,
+            onConfirmBirthDate = destinations.onConfirmBirthDate,
         )
     }
 }

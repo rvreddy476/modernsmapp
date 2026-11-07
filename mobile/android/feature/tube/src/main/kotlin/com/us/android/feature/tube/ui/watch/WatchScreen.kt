@@ -5,13 +5,17 @@ import android.content.res.Configuration
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.LocalActivity
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.Stable
@@ -28,28 +32,28 @@ import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.hilt.navigation.compose.hiltViewModel
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import coil3.compose.AsyncImage
 import com.us.android.core.analytics.AnalyticsSurface
+import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.theme.UsTheme
-import com.us.android.core.feed.ui.action.ActionPill
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.engagement.data.likeCountOr
 import com.us.android.core.feed.data.VideoLibraryState
 import com.us.android.core.feed.data.offersSubscribe
 import com.us.android.core.feed.data.videoMediaId
 import com.us.android.core.feed.offline.OfflineState
+import com.us.android.core.feed.ui.action.ActionPill
+import com.us.android.core.feed.ui.action.openActionTarget
 import com.us.android.core.feed.ui.audio.AudioTracksSheet
 import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.copyright.CopyrightReviewPanel
@@ -60,14 +64,13 @@ import com.us.android.core.feed.ui.share.PostShareSheetHost
 import com.us.android.core.feed.ui.share.PostShareViewModel
 import com.us.android.core.media.PlaybackKind
 import com.us.android.core.media.ui.CaptionsOverlay
+import com.us.android.core.media.ui.ForegroundPlayback
 import com.us.android.core.memberships.ui.MembersOnlyLock
 import com.us.android.core.memberships.ui.MembersOnlyLockStyle
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.chapterIndexAt
-import com.us.android.core.feed.ui.action.openActionTarget
-import com.us.android.feature.tube.data.ElementTarget
 import com.us.android.core.ui.HideShellBottomBar
 import com.us.android.core.ui.PLAYBACK_SPEEDS
 import com.us.android.core.ui.UsCaptionOption
@@ -79,6 +82,7 @@ import com.us.android.core.ui.UsPostDeleteState
 import com.us.android.core.ui.UsReelMoreState
 import com.us.android.core.ui.reelQualityOptions
 import com.us.android.core.ui.rememberPostSharer
+import com.us.android.feature.tube.data.ElementTarget
 import com.us.android.feature.tube.data.SeriesInfo
 import com.us.android.feature.tube.ui.collections.CollectionPickerSheet
 
@@ -99,6 +103,10 @@ import com.us.android.feature.tube.ui.collections.CollectionPickerSheet
  * recommendation to say "Interested" about.
  */
 @Composable
+// One screen wiring a dozen collaborators; it was already past LongMethod
+// (baselined by its old signature, which the age gate's new destination
+// changed, audit L5). Splitting it is its own change.
+@Suppress("LongMethod")
 fun WatchScreen(
     onBack: () -> Unit,
     onOpenAuthor: (userId: String) -> Unit,
@@ -108,6 +116,8 @@ fun WatchScreen(
     onOpenChannel: (userId: String) -> Unit = {},
     /** An end-screen element or card for a collection (2026-10-24): that collection's page. */
     onOpenCollection: (collectionId: String) -> Unit = {},
+    /** An age-restricted video and no date of birth on file (L5): where the viewer adds it. */
+    onConfirmBirthDate: () -> Unit = {},
     viewModel: WatchViewModel = hiltViewModel(),
     more: PostMoreViewModel = hiltViewModel(),
     // The Share sheet's (2026-10-17): the screen's, so "Sent" is read here after the sheet has gone.
@@ -122,16 +132,12 @@ fun WatchScreen(
     val subscriptionEdges by viewModel.subscriptionEdges.collectAsStateWithLifecycle()
     val subscribeBusy by viewModel.subscribeBusy.collectAsStateWithLifecycle()
     val ended by viewModel.ended.collectAsStateWithLifecycle()
-    val moreMessage by more.message.collectAsStateWithLifecycle()
     val library by viewModel.library.collectAsStateWithLifecycle()
-    val actionMessage by viewModel.actionMessage.collectAsStateWithLifecycle()
-    val creditMessage by viewModel.creditMessage.collectAsStateWithLifecycle()
     val offlineState by viewModel.offlineState.collectAsStateWithLifecycle()
     var fullscreen by rememberSaveable { mutableStateOf(false) }
     val sheets = remember { WatchSheets() }
     val landscape = LocalConfiguration.current.orientation == Configuration.ORIENTATION_LANDSCAPE
     val playhead = rememberPlayhead(viewModel.player, polling = true)
-    val shareMessage by sharing.message.collectAsStateWithLifecycle()
     val share = rememberPostSharer()
     // The More sheet's Share opens Momentum's Share sheet (2026-10-17), as
     // Reels' does; its "More…" is the system chooser, counted once launched.
@@ -150,7 +156,9 @@ fun WatchScreen(
         onTogglePlay = viewModel::togglePlay,
     )
     FullscreenMode(fullscreen)
-    PauseOnBackground(viewModel)
+    // Behind something: paused, reported, and the decoder let go (M2); back
+    // in front: prepared again where it was, with a fresh view (M3).
+    ForegroundPlayback(pause = viewModel::onBackground, resume = viewModel::onForeground)
     BackHandler(enabled = fullscreen) { fullscreen = false }
 
     val transport = remember(viewModel, onBack) {
@@ -161,6 +169,7 @@ fun WatchScreen(
             onToggleFullscreen = { fullscreen = !fullscreen },
             onOpenSettings = { sheets.settingsOpen = true },
             onBack = { if (fullscreen) fullscreen = false else onBack() },
+            onRetry = viewModel::retryPlayback,
         )
     }
     val genres by viewModel.genres.collectAsStateWithLifecycle()
@@ -215,36 +224,35 @@ fun WatchScreen(
     ) {
         if (inWindow) {
             PictureInPicturePlayer(player = viewModel.player)
-        } else WatchBody(
-            onOpenTarget = onOpenTarget,
-            content = content,
-            fullscreen = fullscreen || landscape,
-            playhead = playhead,
-            transport = transport,
-            upNext = upNext,
-            series = series,
-            countdown = countdown,
-            ended = ended,
-            overlays = overlays,
-            library = library,
-            subscriptionEdges = subscriptionEdges,
-            subscribeBusy = subscribeBusy,
-            offlineState = offlineState,
-            viewModel = viewModel,
-            actions = actions,
-        )
-        // A refused Like, Dislike, Watch later or Save first; else what the More or Share sheet left behind.
-        UsMessageHost(
-            message = actionMessage ?: creditMessage ?: moreMessage ?: shareMessage,
-            onDismiss = {
-                viewModel.dismissActionMessage()
-                viewModel.dismissCreditMessage()
-                more.dismissMessage()
-                sharing.dismissMessage()
-            },
-        )
+        } else {
+            WatchBody(
+                onOpenTarget = onOpenTarget,
+                onConfirmBirthDate = onConfirmBirthDate,
+                content = content,
+                fullscreen = fullscreen || landscape,
+                playhead = playhead,
+                transport = transport,
+                upNext = upNext,
+                series = series,
+                countdown = countdown,
+                ended = ended,
+                overlays = overlays,
+                library = library,
+                subscriptionEdges = subscriptionEdges,
+                subscribeBusy = subscribeBusy,
+                offlineState = offlineState,
+                viewModel = viewModel,
+                actions = actions,
+            )
+        }
+        // Not in the picture-in-picture window (L3): it would cover the video.
+        if (!inWindow) WatchMessages(viewModel = viewModel, more = more, sharing = sharing)
     }
 
+    // The sheets are kept, not drawn, while the video is in the picture-in-
+    // picture window (L3): a sheet left open covered the tiny video. They are
+    // back as they were when the window opens out.
+    if (inWindow) return
     WatchSheetsHost(
         sheets = sheets,
         content = content,
@@ -289,6 +297,24 @@ private class WatchSheets {
 
     /** The owner's Audio tracks (2026-10-21): the media whose dubs are managed. */
     var audioFor by mutableStateOf<String?>(null)
+}
+
+/** A refused Like, Dislike, Watch later or Save first; else what the More or Share sheet left behind. */
+@Composable
+private fun BoxScope.WatchMessages(viewModel: WatchViewModel, more: PostMoreViewModel, sharing: PostShareViewModel) {
+    val actionMessage by viewModel.actionMessage.collectAsStateWithLifecycle()
+    val creditMessage by viewModel.creditMessage.collectAsStateWithLifecycle()
+    val moreMessage by more.message.collectAsStateWithLifecycle()
+    val shareMessage by sharing.message.collectAsStateWithLifecycle()
+    UsMessageHost(
+        message = actionMessage ?: creditMessage ?: moreMessage ?: shareMessage,
+        onDismiss = {
+            viewModel.dismissActionMessage()
+            viewModel.dismissCreditMessage()
+            more.dismissMessage()
+            sharing.dismissMessage()
+        },
+    )
 }
 
 /** The four sheets, mounted over the screen when asked for. */
@@ -437,37 +463,30 @@ private fun WatchBody(
     viewModel: WatchViewModel,
     actions: WatchDetailsActions,
     onOpenTarget: (ElementTarget) -> Unit = {},
+    onConfirmBirthDate: () -> Unit = {},
 ) {
-    if (fullscreen) {
+    // The one player, sized for where it is: the whole screen, or above the details.
+    val player: @Composable (Modifier) -> Unit = { modifier ->
         PlayerOrState(
             onOpenTarget = onOpenTarget,
+            onConfirmBirthDate = onConfirmBirthDate,
             content = content,
             playhead = playhead,
-            fullscreen = true,
+            fullscreen = fullscreen,
             transport = transport,
             upNext = upNext,
             countdown = countdown,
             ended = ended,
             viewModel = viewModel,
-            modifier = Modifier.fillMaxSize(),
+            modifier = modifier,
         )
+    }
+    if (fullscreen) {
+        player(Modifier.fillMaxSize())
         return
     }
     Column(modifier = Modifier.fillMaxSize()) {
-        PlayerOrState(
-            onOpenTarget = onOpenTarget,
-            content = content,
-            playhead = playhead,
-            fullscreen = false,
-            transport = transport,
-            upNext = upNext,
-            countdown = countdown,
-            ended = ended,
-            viewModel = viewModel,
-            modifier = Modifier
-                .fillMaxWidth()
-                .aspectRatio(LANDSCAPE),
-        )
+        player(Modifier.fillMaxWidth().aspectRatio(LANDSCAPE))
         val item = (content as? WatchContent.Ready)?.item ?: return
         val channelId = subscribeRef(item)
         val edge = subscriptionEdges[channelId]
@@ -557,11 +576,13 @@ private fun PlayerOrState(
     viewModel: WatchViewModel,
     modifier: Modifier = Modifier,
     onOpenTarget: (ElementTarget) -> Unit = {},
+    onConfirmBirthDate: () -> Unit = {},
 ) {
     val elements by viewModel.elements.collectAsStateWithLifecycle()
+    val playbackFailed by viewModel.playbackFailed.collectAsStateWithLifecycle()
     when (content) {
         WatchContent.Loading -> UsLoadingState(label = "Loading video", modifier = modifier)
-        is WatchContent.Failed -> UsErrorState(message = content.message, modifier = modifier, onRetry = null)
+        is WatchContent.Failed -> WatchFailed(content, onConfirmBirthDate = onConfirmBirthDate, modifier = modifier)
         // Members only (2026-10-23): the lock where the player goes; nothing plays.
         is WatchContent.Ready -> if (content.locked) {
             Box(modifier = modifier.background(UsTheme.extended.stage), contentAlignment = Alignment.Center) {
@@ -596,6 +617,7 @@ private fun PlayerOrState(
                 WatchPlayer(
                     player = viewModel.player,
                     playhead = playhead,
+                    failed = playbackFailed,
                     fullscreen = fullscreen,
                     transport = transport,
                     chapters = content.item.chapters,
@@ -637,6 +659,37 @@ private fun PlayerOrState(
 private val LOCK_BLUR = 28.dp
 
 /**
+ * The video could not be opened: the reason, and — when the refusal has a
+ * way through, a missing date of birth (L5) — the button that leads there.
+ * Back, at the top, is always the other way out.
+ */
+@Composable
+private fun WatchFailed(content: WatchContent.Failed, onConfirmBirthDate: () -> Unit, modifier: Modifier = Modifier) {
+    when (content.action) {
+        WatchFailureAction.CONFIRM_BIRTH_DATE -> Column(
+            modifier = modifier
+                .padding(UsTheme.spacing.pageHorizontal)
+                .testTag("watch_failed"),
+            verticalArrangement = Arrangement.Center,
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Text(
+                text = content.message,
+                style = MaterialTheme.typography.bodyLarge,
+                color = UsTheme.extended.textSecondary,
+                textAlign = TextAlign.Center,
+            )
+            UsButton(
+                text = "Confirm date of birth",
+                onClick = onConfirmBirthDate,
+                modifier = Modifier.padding(top = UsTheme.spacing.xxl),
+            )
+        }
+        null -> UsErrorState(message = content.message, modifier = modifier, onRetry = null)
+    }
+}
+
+/**
  * Fullscreen is an orientation: the Activity is turned to landscape and the
  * system bars are hidden (a swipe brings them back for a moment); leaving it
  * turns the Activity upright and shows the bars. When the screen is left
@@ -662,19 +715,6 @@ private fun FullscreenMode(fullscreen: Boolean) {
     }
     DisposableEffect(activity) {
         onDispose { activity.requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED }
-    }
-}
-
-/** The app went behind something: hold the frame and report the playhead. */
-@Composable
-private fun PauseOnBackground(viewModel: WatchViewModel) {
-    val owner = LocalLifecycleOwner.current
-    DisposableEffect(owner, viewModel) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_STOP) viewModel.onBackground()
-        }
-        owner.lifecycle.addObserver(observer)
-        onDispose { owner.lifecycle.removeObserver(observer) }
     }
 }
 

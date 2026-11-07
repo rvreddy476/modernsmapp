@@ -1368,6 +1368,8 @@ private fun NavGraphBuilder.tabDestinations(
             onOpenTrending = { navController.navigateToTubeTrending() },
             onOpenTopics = { navController.navigateToTubeTopics() },
             onOpenTopic = { slug, label -> navController.navigateToTubeTopic(slug, label) },
+            // An age-restricted video and no date of birth on file: Edit profile, where it goes.
+            onConfirmBirthDate = { navController.navigateToEditProfile() },
         ),
     )
 

@@ -4,6 +4,7 @@ import com.google.common.truth.Truth.assertThat
 import com.us.android.core.media.publish.ReelPublishState
 import com.us.android.core.media.publish.ReelPublishTracker
 import com.us.android.core.media.upload.PickedMedia
+import com.us.android.core.media.upload.ResumableUploader
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.test.runTest
 import org.junit.Test
@@ -110,6 +111,35 @@ class ReelPublishRunTest {
         assertThat(end).isEqualTo(ReelPublishRun.End.Finished(failure = failed.message))
         assertThat(store.records.single().failure).isNotNull()
         assertThat(tracker.stateOf("key-1")).isEqualTo(ReelPublishState.Failed(failed.message, retryable = true))
+    }
+
+    @Test
+    fun `a long upload that moved on before losing the network starts a fresh run, however many came before`() =
+        runTest {
+            val lost = ReelPublishPipeline.Outcome.Failed(
+                ResumableUploader.PART_FAILED,
+                retryable = true,
+                transient = true,
+                progressed = true,
+            )
+            store.save(pending.copy(failure = PendingReelFailure(lost.message, retryable = true)))
+
+            // Past the counted retries: an upload that keeps landing parts is not given up on (M4).
+            val end = runner { lost }.run(pending, attempt = ReelPublishRun.AUTO_RETRIES + 5)
+
+            assertThat(end).isEqualTo(ReelPublishRun.End.Continue)
+            assertThat(store.records.single().failure).isNull()
+            assertThat(tracker.stateOf("key-1")).isEqualTo(ReelPublishState.Preparing)
+        }
+
+    @Test
+    fun `a lost network that landed nothing is counted, and a refusal never continues`() {
+        val stuck = ReelPublishPipeline.Outcome.Failed("x", retryable = true, transient = true, progressed = false)
+        val refusedAfterParts = ReelPublishPipeline.Outcome.Failed("x", retryable = true, progressed = true)
+
+        assertThat(ReelPublishRun.continuesAfterProgress(stuck)).isFalse()
+        assertThat(ReelPublishRun.retriesAutomatically(stuck, attempt = ReelPublishRun.AUTO_RETRIES)).isFalse()
+        assertThat(ReelPublishRun.continuesAfterProgress(refusedAfterParts)).isFalse()
     }
 
     @Test
