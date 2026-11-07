@@ -10,15 +10,22 @@ class DoorstepOfferAlertCoordinatorTest {
     private val alerts = DoorstepOfferAlertCoordinator()
 
     @Test fun `offer pushes stay visible with app open or in background`() {
-        assertFalse(suppressForegroundNotification("doorstep.pro.offer.new", true))
-        assertFalse(suppressForegroundNotification("doorstep.pro.offer.new", false))
-        assertFalse(suppressForegroundNotification("doorstep.pro.application.approved", true))
+        assertFalse(suppressForegroundNotification("doorstep.pro.offer.new", true, chatSocketLive = true))
+        assertFalse(suppressForegroundNotification("doorstep.pro.offer.new", false, chatSocketLive = true))
+        assertFalse(suppressForegroundNotification("doorstep.pro.application.approved", true, chatSocketLive = true))
     }
 
-    @Test fun `chat foreground suppression is unchanged`() {
-        assertTrue(suppressForegroundNotification("dm", true))
-        assertTrue(suppressForegroundNotification("message_request", true))
-        assertFalse(suppressForegroundNotification("dm", false))
+    @Test fun `a foreground chat push is dropped only while the chat socket is live`() {
+        assertTrue(suppressForegroundNotification("dm", isForeground = true, chatSocketLive = true))
+        assertTrue(suppressForegroundNotification("message_request", isForeground = true, chatSocketLive = true))
+        assertFalse(suppressForegroundNotification("dm", isForeground = false, chatSocketLive = true))
+    }
+
+    @Test fun `a foreground chat push shows while the chat socket is down`() {
+        // Audit H1: a cold start before the first token refresh left the
+        // socket dead and every foreground chat push dropped.
+        assertFalse(suppressForegroundNotification("dm", isForeground = true, chatSocketLive = false))
+        assertFalse(suppressForegroundNotification("message_request", isForeground = true, chatSocketLive = false))
     }
 
     @Test fun `standalone foreground push can sound without a server offer card`() {

@@ -29,6 +29,9 @@ class ChatNotificationPrivacyTest {
     private lateinit var presenter: NotificationPresenter
     private lateinit var manager: NotificationManager
 
+    /** What the bound [ChatRealtimeLink] answers: is the chat session socket connected. */
+    private var chatSocketLive = true
+
     private val dmPush = mapOf(
         NotificationPresenter.KEY_TITLE to "New Message",
         NotificationPresenter.KEY_BODY to "You have a new message",
@@ -56,7 +59,12 @@ class ChatNotificationPrivacyTest {
         )
         NotificationChannelSpec.createAll(context, NotificationChannelSpec.MOMENTUM)
         foreground = AppForegroundState()
-        presenter = NotificationPresenter(context, foreground, DoorstepOfferAlertCoordinator())
+        presenter = NotificationPresenter(
+            context,
+            foreground,
+            DoorstepOfferAlertCoordinator(),
+            chatLink = java.util.Optional.of(ChatRealtimeLink { chatSocketLive }),
+        )
         manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
     }
 
@@ -84,10 +92,34 @@ class ChatNotificationPrivacyTest {
     @Test
     fun `a foreground chat push is suppressed — the socket already delivered it`() {
         foreground.isForeground = true
+        chatSocketLive = true
 
         presenter.present(dmPush)
 
         assertThat(shadowOf(manager).allNotifications).isEmpty()
+    }
+
+    @Test
+    fun `a foreground chat push shows while the chat socket is down — nothing else delivered it`() {
+        // Audit H1: cold start before the first token refresh, weak network,
+        // rejected credential. The push is then the only signal.
+        foreground.isForeground = true
+        chatSocketLive = false
+
+        presenter.present(dmPush)
+
+        assertThat(shadowOf(manager).allNotifications).hasSize(1)
+    }
+
+    @Test
+    fun `a foreground chat push shows when no chat link is bound`() {
+        // An app without chat binds nothing: nothing can have delivered it.
+        foreground.isForeground = true
+        val unbound = NotificationPresenter(context, foreground, DoorstepOfferAlertCoordinator())
+
+        unbound.present(dmPush)
+
+        assertThat(shadowOf(manager).allNotifications).hasSize(1)
     }
 
     @Test

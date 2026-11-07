@@ -216,8 +216,30 @@ class ChatRepository @Inject constructor(
             )
         }.mapValue { it.toDomain() }
 
-    suspend fun requests(): AppResult<List<Conversation>> =
-        listApiCall(errorMapper) { api.requests() }.mapList { it.toDomain() }
+    /** Every pending incoming request, paged (see [requestsListing]). */
+    suspend fun requests(): AppResult<List<Conversation>> = requestsListing().mapValue { it.items }
+
+    /**
+     * The pending incoming requests, page after page (audit L1: one unpaged
+     * read stopped at the server's default 20). [RequestsListing.complete]
+     * is true only when the last page said there is no more — the one case
+     * in which a row missing from the answer is certainly gone server-side.
+     */
+    suspend fun requestsListing(): AppResult<RequestsListing> {
+        val all = mutableListOf<Conversation>()
+        var cursor: String? = null
+        repeat(MAX_REQUEST_PAGES) {
+            when (val page = pagedApiCall(errorMapper) { api.requests(cursor = cursor) }) {
+                is AppResult.Failure ->
+                    return if (all.isEmpty()) page else AppResult.Success(RequestsListing(all, complete = false))
+                is AppResult.Success -> {
+                    all += page.data.items.map { it.toDomain() }
+                    cursor = page.data.nextCursor ?: return AppResult.Success(RequestsListing(all, complete = true))
+                }
+            }
+        }
+        return AppResult.Success(RequestsListing(all, complete = false))
+    }
 
     suspend fun acceptRequest(conversationId: String): AppResult<Unit> =
         apiCall(errorMapper) { api.acceptRequest(conversationId) }.mapValue { }
@@ -342,6 +364,9 @@ class ChatRepository @Inject constructor(
 
         /** 5 pages × the 100 cap: a 500-conversation inbox before truncation. */
         const val MAX_CONVERSATION_PAGES = 5
+
+        /** Requests read per sync: five pages of [REQUEST_SYNC_PAGE_LIMIT]. */
+        const val MAX_REQUEST_PAGES = 5
 
         fun newIdempotencyKey(): String = UUID.randomUUID().toString()
     }
@@ -542,7 +567,15 @@ data class Message(
     val edited: Boolean = false,
     /** History's `status` on the viewer's own message: `sent|delivered|read` (see [tickState]); null otherwise. */
     val receipt: String? = null,
+    /**
+     * Disappearing messages: when the server deletes this message, in epoch
+     * milliseconds; null when it never expires (audit H2).
+     */
+    val expiresAtMillis: Long? = null,
 ) {
+    /** True once [expiresAtMillis] has passed at [nowMillis]: the message must not be shown or kept. */
+    fun isExpiredAt(nowMillis: Long): Boolean = expiresAtMillis != null && expiresAtMillis <= nowMillis
+
     /** True when this row carries enough address to react/delete. */
     val addressable: Boolean get() = bucket.isNotBlank() && ts.isNotBlank()
 }
@@ -585,4 +618,12 @@ internal fun MessageDto.toDomain() = Message(
     deleted = deleted,
     edited = !editedAt.isNullOrBlank(),
     receipt = status?.takeIf { it.isNotBlank() },
+    expiresAtMillis = expiresAt?.let(::epochMillisOrNull),
 )
+
+/** An RFC 3339 instant in epoch milliseconds; null when it is not one. */
+internal fun epochMillisOrNull(value: String): Long? =
+    runCatching { java.time.OffsetDateTime.parse(value.trim()).toInstant().toEpochMilli() }.getOrNull()
+
+/** The pending requests a sync read, and whether that was all of them (see [ChatRepository.requestsListing]). */
+data class RequestsListing(val items: List<Conversation>, val complete: Boolean)

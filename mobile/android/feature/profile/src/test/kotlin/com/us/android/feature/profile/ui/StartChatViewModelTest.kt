@@ -85,7 +85,7 @@ class StartChatViewModelTest {
         override suspend fun conversation(conversationId: String): Nothing = error("not used")
 
         // Production chat pass surface — unused by this navigation test.
-        override suspend fun requests(): Nothing = error("not used")
+        override suspend fun requests(limit: Int, cursor: String?): Nothing = error("not used")
         override suspend fun acceptRequest(conversationId: String): Nothing = error("not used")
         override suspend fun declineRequest(conversationId: String): Nothing = error("not used")
         override suspend fun blockRequest(conversationId: String): Nothing = error("not used")

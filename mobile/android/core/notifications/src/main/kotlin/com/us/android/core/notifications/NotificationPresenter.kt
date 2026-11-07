@@ -41,6 +41,7 @@ class NotificationPresenter @Inject constructor(
     private val offerAlerts: DoorstepOfferAlertCoordinator,
     private val installedApp: Optional<PushApp> = Optional.empty(),
     private val inAppOffers: PartnerOfferInbox = PartnerOfferInbox(),
+    private val chatLink: Optional<ChatRealtimeLink> = Optional.empty(),
 ) {
     init { inAppOffers.attachStorage(context) }
 
@@ -77,10 +78,13 @@ class NotificationPresenter @Inject constructor(
             runCatching { java.util.UUID.fromString(offer.id) }.isSuccess
 
         // Push/socket de-duplication, client half: while the app is visible
-        // the session socket already delivered this chat message to the open
-        // surface. (Background chat pushes carry a `notification` block and
-        // are system-rendered without reaching this code at all.)
-        if (suppressForegroundNotification(type, foreground.isForeground)) return
+        // AND the session socket is connected, the socket already delivered
+        // this chat message (direct or group: both arrive as `dm`) to the
+        // open surface. With the socket down the push is the only signal, so
+        // it shows (audit H1). (Background chat pushes carry a `notification`
+        // block and are system-rendered without reaching this code at all.)
+        val chatSocketLive = chatLink.map { it.isLive() }.orElse(false)
+        if (suppressForegroundNotification(type, foreground.isForeground, chatSocketLive)) return
 
         if (!canPost()) return
 

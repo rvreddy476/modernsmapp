@@ -7,6 +7,7 @@ import com.us.android.core.chat.data.ChatStore
 import com.us.android.core.chat.data.MessageDto
 import com.us.android.core.chat.data.OutboxScheduler
 import com.us.android.core.chat.data.SendMessageRequest
+import com.us.android.core.chat.data.contractCode
 import com.us.android.core.chat.data.isRetryableSend
 import com.us.android.core.common.error.AppError
 import com.us.android.core.database.ChatConversationEntity
@@ -382,6 +383,27 @@ class ChatOutboxDrainTest {
         assertThat(AppError.Forbidden(code = "MESSAGING_NOT_ALLOWED").isRetryableSend()).isFalse()
         assertThat(AppError.NotFound().isRetryableSend()).isFalse()
         assertThat(AppError.Unknown(code = "X", statusCode = 422).isRetryableSend()).isFalse()
+    }
+
+    @Test
+    fun `a resend that overlapped the first attempt is retried, a request slot already taken is not`() {
+        // Audit M1: 409 IDEMPOTENCY_IN_PROGRESS — the first attempt under the
+        // same key is still being written; its replay returns the stored answer.
+        assertThat(AppError.Unknown(code = "IDEMPOTENCY_IN_PROGRESS", statusCode = 409).isRetryableSend()).isTrue()
+        // 409 AWAITING_REQUEST_ACCEPTANCE will not change on replay.
+        assertThat(AppError.Unknown(code = "AWAITING_REQUEST_ACCEPTANCE", statusCode = 409).isRetryableSend()).isFalse()
+        assertThat(AppError.Unknown(code = null, statusCode = 409).isRetryableSend()).isFalse()
+    }
+
+    @Test
+    fun `a parked send keeps the code the server refused it with`() {
+        assertThat(AppError.Unknown(code = "AWAITING_REQUEST_ACCEPTANCE", statusCode = 409).contractCode())
+            .isEqualTo("AWAITING_REQUEST_ACCEPTANCE")
+        assertThat(AppError.Forbidden(code = "MESSAGING_NOT_ALLOWED").contractCode()).isEqualTo("MESSAGING_NOT_ALLOWED")
+        assertThat(AppError.NotFound(code = "NOT_FOUND").contractCode()).isEqualTo("NOT_FOUND")
+        assertThat(AppError.InvalidRequest("bad").contractCode()).isEqualTo("INVALID_REQUEST")
+        assertThat(AppError.Unknown(code = " ", statusCode = 409).contractCode()).isNull()
+        assertThat(AppError.NoNetwork().contractCode()).isNull()
     }
 }
 

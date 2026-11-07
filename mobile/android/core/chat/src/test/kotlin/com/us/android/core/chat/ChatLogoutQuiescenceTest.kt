@@ -142,7 +142,8 @@ class ChatLogoutQuiescenceTest {
             )
         }
 
-        override suspend fun requests(): ApiEnvelope<List<ConversationDto>> = ApiEnvelope(data = emptyList())
+        override suspend fun requests(limit: Int, cursor: String?): ApiEnvelope<List<ConversationDto>> =
+            ApiEnvelope(data = emptyList())
     }
 
     /** Durable-marker fake: [commitWorks] models `commit()` returning false. */

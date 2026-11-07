@@ -25,6 +25,12 @@ class DoorstepOfferAlertCoordinator @Inject constructor() {
     }
 }
 
-/** Chat already has a visible conversation; service offers must alert in either app state. */
-internal fun suppressForegroundNotification(type: String?, isForeground: Boolean): Boolean =
-    isForeground && type in setOf("dm", "message_request")
+/**
+ * A chat push is dropped only while the app is visible AND its session socket
+ * is connected: then the socket has already delivered the message to the open
+ * surface. With the socket down (cold start before the first token refresh,
+ * weak network, rejected credential) the push is the only signal and shows
+ * (audit H1). Service offers must alert in either app state.
+ */
+internal fun suppressForegroundNotification(type: String?, isForeground: Boolean, chatSocketLive: Boolean): Boolean =
+    isForeground && chatSocketLive && type in setOf("dm", "message_request")

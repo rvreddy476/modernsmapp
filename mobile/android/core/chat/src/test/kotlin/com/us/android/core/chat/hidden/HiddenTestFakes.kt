@@ -79,7 +79,8 @@ internal class FakeChatDao : ChatDao {
 /** The inbox the fake server answers with. */
 internal class InboxApi(var inbox: List<ConversationDto> = emptyList()) : ChatApi by unscriptedChatApi() {
     override suspend fun conversations(limit: Int, cursor: String?): ApiEnvelope<List<ConversationDto>> = ApiEnvelope(data = inbox)
-    override suspend fun requests(): ApiEnvelope<List<ConversationDto>> = ApiEnvelope(data = emptyList())
+    override suspend fun requests(limit: Int, cursor: String?): ApiEnvelope<List<ConversationDto>> =
+        ApiEnvelope(data = emptyList())
 }
 
 internal object NoScrubOwed : ScrubRecoveryFlag {

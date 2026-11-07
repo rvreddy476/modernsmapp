@@ -88,6 +88,13 @@ data class ChatMessageEntity(
     val type: String? = null,
     val reactionsJson: String? = null,
     val extrasJson: String? = null,
+    /**
+     * Disappearing messages (schema v10): when the server deletes this
+     * message, in epoch milliseconds; null when it never expires. The
+     * server removes an expired message with a socket frame that a closed
+     * socket never hears, so the cache drops it on its own clock.
+     */
+    val expiresAtMillis: Long? = null,
 )
 
 @Entity(tableName = "chat_pending_send")
@@ -109,6 +116,12 @@ data class ChatPendingSendEntity(
     // process death with its own fields; null type is a text/media send.
     val type: String? = null,
     val extrasJson: String? = null,
+    /**
+     * Why a parked row was refused (schema v10): the server's error code
+     * (`AWAITING_REQUEST_ACCEPTANCE`, …), so the thread can say what went
+     * wrong instead of a generic "not sent". Null while queued.
+     */
+    val failureCode: String? = null,
 )
 
 @Dao

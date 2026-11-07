@@ -5,6 +5,7 @@ import android.content.SharedPreferences
 import com.us.android.core.common.session.SessionTeardownTask
 import com.us.android.core.notifications.data.DeviceApi
 import com.us.android.core.notifications.data.NotificationDeleteApi
+import com.us.android.core.notifications.data.NotificationShadeTeardown
 import com.us.android.core.notifications.data.NotificationsApi
 import com.us.android.core.notifications.data.PushApp
 import com.us.android.core.notifications.data.PushTeardown
@@ -122,4 +123,8 @@ abstract class NotificationsTeardownModule {
     @Binds
     @IntoSet
     abstract fun bindPushTeardown(impl: PushTeardown): SessionTeardownTask
+
+    @Binds
+    @IntoSet
+    abstract fun bindNotificationShadeTeardown(impl: NotificationShadeTeardown): SessionTeardownTask
 }

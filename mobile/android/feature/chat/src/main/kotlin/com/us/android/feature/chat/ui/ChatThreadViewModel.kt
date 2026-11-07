@@ -5,49 +5,49 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.auth.SessionStateProvider
+import com.us.android.core.chat.data.AWAITING_REQUEST_ACCEPTANCE
 import com.us.android.core.chat.data.ChatPinsSource
 import com.us.android.core.chat.data.ChatRepository
-import com.us.android.core.chat.data.MAX_PINS_PER_CONVERSATION
-import com.us.android.core.chat.data.PinnedMessage
-import com.us.android.core.chat.data.applyPinUpdate
-import com.us.android.core.chat.data.canPin
-import com.us.android.core.chat.data.nextPinIndex
-import com.us.android.core.chat.data.orderPins
 import com.us.android.core.chat.data.ChatSessionManager
 import com.us.android.core.chat.data.ChatSocketEvent
 import com.us.android.core.chat.data.ChatStore
 import com.us.android.core.chat.data.Conversation
 import com.us.android.core.chat.data.DELETE_SCOPE_EVERYONE
-import com.us.android.core.chat.data.DisappearTimer
 import com.us.android.core.chat.data.DELETE_SCOPE_ME
+import com.us.android.core.chat.data.DisappearTimer
+import com.us.android.core.chat.data.DurableSendResult
 import com.us.android.core.chat.data.ForwardOutcome
 import com.us.android.core.chat.data.GifInfo
+import com.us.android.core.chat.data.HiddenOutboxStatus
 import com.us.android.core.chat.data.MAX_FORWARD_TARGETS
+import com.us.android.core.chat.data.MAX_PINS_PER_CONVERSATION
+import com.us.android.core.chat.data.Message
 import com.us.android.core.chat.data.MessageReportReason
+import com.us.android.core.chat.data.PendingSend
+import com.us.android.core.chat.data.PinnedMessage
+import com.us.android.core.chat.data.ReplyRef
 import com.us.android.core.chat.data.RequestComposerRules
 import com.us.android.core.chat.data.RequestDraftProblem
 import com.us.android.core.chat.data.StickerInfo
 import com.us.android.core.chat.data.StickerPack
-import com.us.android.core.chat.data.TypedSend
-import com.us.android.core.chat.data.downsampleWaveform
-import com.us.android.core.chat.data.forwardSummary
-import com.us.android.core.chat.data.isMissingRoute
-import com.us.android.core.designsystem.component.UsMessage
-import com.us.android.core.designsystem.component.UsMessageType
-import kotlinx.coroutines.flow.first
-import com.us.android.core.chat.data.DurableSendResult
-import com.us.android.core.chat.data.Message
-import com.us.android.core.chat.data.PendingSend
-import com.us.android.core.chat.data.HiddenOutboxStatus
-import com.us.android.core.chat.data.ReplyRef
 import com.us.android.core.chat.data.TYPING_TTL_MILLIS
 import com.us.android.core.chat.data.ThreadController
 import com.us.android.core.chat.data.ThreadUiState
+import com.us.android.core.chat.data.TypedSend
+import com.us.android.core.chat.data.applyPinUpdate
+import com.us.android.core.chat.data.canPin
+import com.us.android.core.chat.data.downsampleWaveform
+import com.us.android.core.chat.data.forwardSummary
+import com.us.android.core.chat.data.isMissingRoute
 import com.us.android.core.chat.data.isValidMessage
+import com.us.android.core.chat.data.nextPinIndex
+import com.us.android.core.chat.data.orderPins
 import com.us.android.core.chat.data.sendDurably
 import com.us.android.core.common.chat.ConversationKindness
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.designsystem.component.UsMessage
+import com.us.android.core.designsystem.component.UsMessageType
 import com.us.android.core.media.upload.ChatAttachmentUploader
 import com.us.android.core.model.SessionState
 import com.us.android.core.notifications.NotificationPresenter
@@ -58,6 +58,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -181,14 +182,30 @@ data class ThreadRenderState(
         get() = RequestComposerRules.isOutgoingPending(conversation, viewerId) &&
             thread.messages.none { it.senderId.isNotBlank() && it.senderId != viewerId }
 
-    /** The request's one message is already sent or on its way. */
+    /**
+     * The request's one message is already sent or on its way — or the server
+     * says it already has one ([requestSlotTaken]), which this device may never
+     * have seen (sent from another device, or a send that raced this one).
+     */
     val requestMessageSent: Boolean
         get() = outgoingRequest &&
-            (thread.messages.any { it.senderId == viewerId && !it.deleted } || pendingSends.any { !it.failed })
+            (
+                thread.messages.any { it.senderId == viewerId && !it.deleted } ||
+                    pendingSends.any { !it.failed } ||
+                    requestSlotTaken
+                )
 
-    /** A request's one message that went and was refused (kept on the outbox, parked). */
+    /**
+     * A send the server refused with 409 `AWAITING_REQUEST_ACCEPTANCE`: the
+     * request's one message slot is already used. Not a content problem — the
+     * draft was fine — so it gets its own words, not [REQUEST_REFUSED].
+     */
+    val requestSlotTaken: Boolean
+        get() = outgoingRequest && pendingSends.any { it.failed && it.failureCode == AWAITING_REQUEST_ACCEPTANCE }
+
+    /** A request's one message that went and was refused for its content (kept on the outbox, parked). */
     val requestMessageRefused: Boolean
-        get() = outgoingRequest && pendingSends.any { it.failed }
+        get() = outgoingRequest && pendingSends.any { it.failed && it.failureCode != AWAITING_REQUEST_ACCEPTANCE }
 
     /** What is wrong with the draft as the request's message; null when nothing is. */
     val requestDraftProblem: RequestDraftProblem?
@@ -339,12 +356,17 @@ class ChatThreadViewModel @Inject constructor(
         // after logout must not cache old-account plaintext.
         val lease = store.acquireWriteLease() ?: return@launch
         val refreshed = controller.refresh()
-        if (refreshed.refreshError != null && refreshed.messages.isEmpty()) {
+        val failure = refreshed.refreshError
+        // Not a member any more (404, audit L4): nothing to fall back to — the
+        // screen says the conversation is not available, and offers no retry.
+        if (failure != null && refreshed.messages.isEmpty() && !failure.isThreadUnavailable()) {
             // Offline fallback: the cached tail renders instead of a blank
             // error screen; the banner says why it may be stale.
             val cached = store.recentCachedMessages(conversationId)
             if (cached.isNotEmpty()) {
-                cached.forEach { controller.onRealtimeMessage(it) }
+                // Oldest first (audit M4): each row is PREPENDED, so walking
+                // the newest-first read in order drew the thread upside down.
+                cached.asReversed().forEach { controller.onRealtimeMessage(it) }
                 _state.value = _state.value.copy(
                     thread = controller.snapshot(),
                     offline = true,
@@ -352,7 +374,7 @@ class ChatThreadViewModel @Inject constructor(
                 return@launch
             }
         }
-        store.cacheMessages(refreshed.messages, lease)
+        cacheHistory(refreshed.messages, lease)
         // The controller's CURRENT state, not the snapshot captured before
         // these awaits: a draft typed while the fetch was in flight must
         // survive the write-back (same draft-loss family as the send path).
@@ -360,6 +382,21 @@ class ChatThreadViewModel @Inject constructor(
         acknowledgeHistory()
         controller.markRead()
         store.clearUnread(conversationId)
+    }
+
+    /**
+     * Writes loaded history to the cache, then drops the cached rows the
+     * newest page proves gone (audit H2): a message deleted, unsent or expired
+     * on the server while no socket was listening kept its text on disk and
+     * came back in the offline view and after the next send.
+     */
+    private suspend fun cacheHistory(messages: List<Message>, lease: Long) {
+        store.cacheMessages(messages, lease)
+        // Only a page just read proves anything gone; a failed read proves nothing.
+        if (controller.snapshot().refreshError != null) return
+        controller.newestPage?.let { page ->
+            store.reconcileCachedPage(conversationId, page.messages, page.hasMore, lease)
+        }
     }
 
     /** History loaded: the newest message from somebody else reached this device (their second tick). */
@@ -708,8 +745,13 @@ class ChatThreadViewModel @Inject constructor(
      * [TYPING_IDLE_MILLIS] of quiet or on send. The socket frame goes first;
      * REST is the fallback when there is no live room. Server-side the
      * sender's privacy toggle decides whether anything is published.
+     *
+     * Typing follows the request side: a request the viewer sent and the
+     * other person has not accepted shows them nothing live — not even that
+     * someone is writing — so no frame goes (the server drops it too).
      */
     fun sendTyping() {
+        if (_state.value.outgoingRequest) return
         val now = System.currentTimeMillis()
         if (now - lastTypingStartMillis >= TYPING_RESEND_MILLIS) {
             lastTypingStartMillis = now
@@ -1142,26 +1184,31 @@ class ChatThreadViewModel @Inject constructor(
         observeKindness()
     }
 
+    /** The reconnect reconciliation in flight; a newer reconnect replaces it. */
+    private var reconcileJob: Job? = null
+
     private fun observeSession() = viewModelScope.launch {
         session.events.collect { event ->
             when (event) {
+                // Off the collector (audit M3): this collector holds up the
+                // session socket's every frame — messages and call signaling
+                // included — for as long as it takes, and a reconnect refresh
+                // on a weak network can take the whole 45 s call timeout.
                 is ChatSocketEvent.Connected -> {
-                    // Reconnect reconciliation: HTTP repairs whatever the
-                    // socket missed; the controller de-duplicates by id.
-                    // Same lease-before-fetch rule as refresh().
-                    val lease = store.acquireWriteLease()
-                    if (lease != null) {
-                        val refreshed = controller.refresh()
-                        store.cacheMessages(refreshed.messages, lease)
-                        _state.value = _state.value.copy(
-                            thread = controller.snapshot(),
-                            offline = false,
-                        )
-                        acknowledgeHistory()
-                    }
+                    reconcileJob?.cancel()
+                    reconcileJob = viewModelScope.launch { reconcileAfterReconnect() }
                 }
                 is ChatSocketEvent.Disconnected ->
                     _state.value = _state.value.copy(offline = true)
+                is ChatSocketEvent.MessageDeleted -> {
+                    // Unsent before its held echo was released: the echo
+                    // must not bring it back (see heldEchoes). The outbox row
+                    // it matched is left alone: the match is by text, so it may
+                    // be a different message, and its idempotent replay cannot
+                    // re-create this one (the store refuses forgotten ids).
+                    heldEchoes.remove(event.messageId)
+                    applySocketEvent(event)
+                }
                 is ChatSocketEvent.MessageReceived -> if (isEchoOfInFlightSend(event.message)) {
                     // Our own send coming back before its outbox row cleared:
                     // held, so it never draws a second bubble (see heldEchoes).
@@ -1173,6 +1220,21 @@ class ChatThreadViewModel @Inject constructor(
                 else -> applySocketEvent(event)
             }
         }
+    }
+
+    /**
+     * Reconnect reconciliation: HTTP repairs whatever the socket missed. The
+     * newest page is MERGED into the thread (audit M2) — older pages, the
+     * cursor and the reader's place survive the reconnect. Same
+     * lease-before-fetch rule as [refresh].
+     */
+    private suspend fun reconcileAfterReconnect() {
+        val lease = store.acquireWriteLease() ?: return
+        val refreshed = controller.refreshLatest()
+        if (refreshed.refreshError != null) return
+        cacheHistory(refreshed.messages, lease)
+        _state.value = _state.value.copy(thread = controller.snapshot(), offline = false)
+        acknowledgeHistory()
     }
 
     private suspend fun applySocketEvent(event: ChatSocketEvent) {
@@ -1320,7 +1382,28 @@ internal const val REQUEST_TEXT_ONLY =
 internal const val REQUEST_REFUSED =
     "Your message couldn't go with the request. Keep it to text, under 500 characters, with no links."
 
+/** The server refused a further message: the request already has its one (409 AWAITING_REQUEST_ACCEPTANCE). */
+internal fun requestSlotTakenText(recipient: String): String =
+    "This message didn't go: your request already has its message. You can send more once $recipient accepts."
+
 internal fun requestDraftProblemText(problem: RequestDraftProblem): String = when (problem) {
     RequestDraftProblem.TooLong -> "A request's message can be up to ${RequestComposerRules.MAX_CHARS} characters."
     RequestDraftProblem.HasLink -> "Links can't go in a request. Send them once it's accepted."
 }
+
+// ── a thread that cannot be read (audit L4) ────────────────────────────────
+
+/**
+ * The thread is not there for this viewer: message-service answers 404
+ * `NOT_FOUND` to a non-member (left, removed, or never in it) and to a
+ * conversation that does not exist. Retrying cannot change that, unlike a
+ * 503 `UNAVAILABLE` or no network.
+ */
+internal fun AppError.isThreadUnavailable(): Boolean = this is AppError.NotFound
+
+/** What the thread says when its history cannot be read. */
+internal fun threadLoadErrorText(error: AppError): String =
+    if (error.isThreadUnavailable()) THREAD_UNAVAILABLE_TEXT else "We couldn't load this conversation."
+
+internal const val THREAD_UNAVAILABLE_TEXT =
+    "This conversation isn't available. You may have left it or been removed."

@@ -1,29 +1,34 @@
 package com.us.android.core.chat.data
 
+import com.us.android.core.auth.SessionStateProvider
+import com.us.android.core.chat.hidden.HiddenOutboxCipher
+import com.us.android.core.chat.hidden.HiddenTokenStore
+import com.us.android.core.chat.hidden.withoutHiddenChats
+import com.us.android.core.common.error.AppError
 import com.us.android.core.database.ChatConversationEntity
 import com.us.android.core.database.ChatDao
 import com.us.android.core.database.ChatMessageEntity
 import com.us.android.core.database.ChatParityDao
 import com.us.android.core.database.ChatPendingSendEntity
 import com.us.android.core.database.scrubDeletedRowsFromDisk
+import com.us.android.core.model.SessionState
+import com.us.android.core.network.ErrorMapper
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.flowOf
-import com.us.android.core.chat.hidden.HiddenOutboxCipher
-import com.us.android.core.chat.hidden.HiddenTokenStore
-import com.us.android.core.chat.hidden.withoutHiddenChats
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
-import com.us.android.core.auth.SessionStateProvider
-import com.us.android.core.model.SessionState
 import javax.inject.Inject
 import javax.inject.Provider
 import javax.inject.Singleton
@@ -269,11 +274,21 @@ class ChatStore @Inject constructor(
     // DOMAIN types out, entities in: the Room schema stays private to the
     // data boundary, so a feature module never couples to a column.
 
-    fun conversationsFlow(): Flow<List<Conversation>> =
-        dao.conversations().combine(hiddenIds) { rows, ids -> rows.map { it.toDomainConversation() }.withoutHiddenChats(ids) }
+    fun conversationsFlow(): Flow<List<Conversation>> = inboxRows(dao.conversations())
 
-    fun requestsFlow(): Flow<List<Conversation>> =
-        dao.requests().combine(hiddenIds) { rows, ids -> rows.map { it.toDomainConversation() }.withoutHiddenChats(ids) }
+    fun requestsFlow(): Flow<List<Conversation>> = inboxRows(dao.requests())
+
+    /**
+     * The rows decoded OFF the main thread (audit M5): every realtime message,
+     * receipt or unread change rewrites the conversation table, and each
+     * rewrite decoded the members and extras JSON of up to 500 rows on the
+     * collector's thread — the UI's, for the chat home. An unchanged list is
+     * not emitted again.
+     */
+    private fun inboxRows(rows: Flow<List<ChatConversationEntity>>): Flow<List<Conversation>> =
+        rows.combine(hiddenIds) { entities, ids -> entities.map { it.toDomainConversation() }.withoutHiddenChats(ids) }
+            .distinctUntilChanged()
+            .flowOn(Dispatchers.Default)
 
     /** Unread conversations, hidden ones never counted (the same rows [conversationsFlow] shows). */
     fun unreadCount(): Flow<Int> = conversationsFlow().map { rows -> rows.count { it.hasUnread } }
@@ -290,8 +305,9 @@ class ChatStore @Inject constructor(
         // no lease is issued and the sync refuses immediately.
         val generation = acquireWriteLease() ?: return false
         val conversations = repository.conversations()
-        val requests = repository.requests()
-        val now = System.currentTimeMillis()
+        // Null when the read failed: then the cached Requests stay as they are.
+        val requests = (repository.requestsListing() as? com.us.android.core.common.result.AppResult.Success)?.data
+        val now = nowMillis()
         var ok = false
         // Pulse match chats belong to the dating feature (founder,
         // 2026-10-18), so they never enter the Messages cache — and a row an
@@ -300,13 +316,13 @@ class ChatStore @Inject constructor(
         // dot built on it stay dating-free without one.
         val datingIds = listOfNotNull(
             (conversations as? com.us.android.core.common.result.AppResult.Success)?.data,
-            (requests as? com.us.android.core.common.result.AppResult.Success)?.data,
+            requests?.items,
         ).flatten().filter { it.isDatingChat }.map { it.id }.distinct()
         // Hidden chats: a row the server marks `locked` (or this process knows
         // is hidden) never enters the cache, and an older copy of it goes.
         val hiddenNow = listOfNotNull(
             (conversations as? com.us.android.core.common.result.AppResult.Success)?.data,
-            (requests as? com.us.android.core.common.result.AppResult.Success)?.data,
+            requests?.items,
         ).flatten().filter { it.locked || isHidden(it.id) }.map { it.id }.distinct()
         hidden?.markLocked(hiddenNow)
         if (conversations is com.us.android.core.common.result.AppResult.Success) {
@@ -335,14 +351,10 @@ class ChatStore @Inject constructor(
                 .mapNotNull { row -> row.avatarUrl?.takeIf { it.isNotBlank() }?.let { row.id to it } }
                 .toMap()
         }
-        if (requests is com.us.android.core.common.result.AppResult.Success) {
-            guardedWrite(generation) {
-                dao.upsertConversations(
-                    requests.data.withoutDatingChats().filterNot { it.id in hiddenNow }.map { it.toEntity(isRequestList = true, now) },
-                )
-                datingIds.forEach { dao.deleteConversation(it) }
-            }
-        }
+        if (requests != null) cacheRequests(generation, requests, hiddenNow, datingIds, now)
+        // Disappearing messages whose timer ran out while no socket was
+        // listening (audit H2): their text leaves the disk now.
+        purgeExpiredMessages(generation)
         // The hidden ids just learned: a plain row an older build (or a send
         // before this process knew) queued for one of them is sealed now.
         if (hiddenNow.isNotEmpty()) sealHiddenOutbox(generation)
@@ -350,8 +362,42 @@ class ChatStore @Inject constructor(
         return ok
     }
 
+    /** [syncInbox]'s Requests half: the same dating and hidden rules as the inbox. */
+    private suspend fun cacheRequests(
+        generation: Long,
+        requests: RequestsListing,
+        hiddenNow: List<String>,
+        datingIds: List<String>,
+        now: Long,
+    ) {
+        guardedWrite(generation) {
+            val rows = requests.items.withoutDatingChats().filterNot { it.id in hiddenNow }
+            dao.upsertConversations(rows.map { it.toEntity(isRequestList = true, now) })
+            datingIds.forEach { dao.deleteConversation(it) }
+            // A request declined, withdrawn or blocked on another device
+            // leaves the cached Requests (audit L1). Only after a COMPLETE
+            // read: a partial one cannot say a row is gone.
+            if (requests.complete) parityDao?.pruneRequests(rows.map { it.id })
+        }
+    }
+
     fun markReconnectPending() {
         _reconnectPending.value = true
+    }
+
+    /** Wall-clock milliseconds, for disappearing-message expiry. A test seam. */
+    internal var nowMillis: () -> Long = System::currentTimeMillis
+
+    /**
+     * Drops every cached message whose disappearing timer has run out (audit
+     * H2). The server removes an expired message with a `message_deleted`
+     * frame, and the socket is closed whenever the app is in the background
+     * — so almost every expiry happens with nothing listening, and the text
+     * stayed on disk until sign-out.
+     */
+    suspend fun purgeExpiredMessages(lease: Long? = null) {
+        val extras = parityDao ?: return
+        guardedWrite(lease) { extras.deleteExpiredMessages(nowMillis()) }
     }
 
     /**
@@ -385,8 +431,30 @@ class ChatStore @Inject constructor(
 
     /** Removes one message row from the local cache after a server delete. */
     suspend fun removeCachedMessage(messageId: String) {
+        forget(messageId)
         guardedWrite { dao.deleteMessage(messageId) }
     }
+
+    /**
+     * Messages unsent, expired or deleted for me in this process, by id: no
+     * later copy may put one back in the cache. The one that would is a
+     * queued resend whose first attempt did land — its idempotent replay
+     * answers with the message the server has since unsent (and stripped
+     * from its own queues), and caching that answer resurrected it in the
+     * thread. Bounded; the oldest ids go first.
+     */
+    private val forgottenIds = object : LinkedHashMap<String, Unit>() {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Unit>?): Boolean =
+            size > FORGOTTEN_ID_LIMIT
+    }
+
+    private fun forget(messageId: String) {
+        if (messageId.isBlank()) return
+        synchronized(forgottenIds) { forgottenIds[messageId] = Unit }
+    }
+
+    /** True when [messageId] was unsent, expired or deleted here: it must not be cached again. */
+    fun isForgotten(messageId: String): Boolean = synchronized(forgottenIds) { messageId in forgottenIds }
 
     suspend fun clearUnread(conversationId: String) {
         guardedWrite {
@@ -407,7 +475,10 @@ class ChatStore @Inject constructor(
     suspend fun cacheMessages(messages: List<Message>, lease: Long? = null) {
         if (messages.isEmpty()) return
         guardedWrite(lease) {
-            val rows = messages.filter { it.id.isNotBlank() && !it.pending }.map { it.toEntity() }
+            // A page fetched before an unsend landed after it: the unsent row stays gone.
+            val rows = messages
+                .filter { it.id.isNotBlank() && !it.pending && !isForgotten(it.id) }
+                .map { it.toEntity() }
             dao.insertMessages(rows)
             // The insert keeps the first copy; the server-owned parts
             // (reactions, unsend, type details) follow the newest page.
@@ -417,9 +488,39 @@ class ChatStore @Inject constructor(
         }
     }
 
-    /** The offline fallback for an open thread. Newest first. */
-    suspend fun recentCachedMessages(conversationId: String, limit: Int = 50): List<Message> =
-        dao.recentMessages(conversationId, limit).map { it.toDomainMessage() }
+    /**
+     * The offline fallback for an open thread, newest first. A message whose
+     * disappearing timer has run out is never returned (audit H2) — and its
+     * row is purged, so its text does not wait for the next sync to leave.
+     */
+    suspend fun recentCachedMessages(conversationId: String, limit: Int = 50): List<Message> {
+        val now = nowMillis()
+        val cached = dao.recentMessages(conversationId, limit).map { it.toDomainMessage() }
+        val live = cached.filterNot { it.isExpiredAt(now) || isForgotten(it.id) }
+        if (live.size != cached.size) purgeExpiredMessages()
+        return live
+    }
+
+    /**
+     * Makes the cached thread agree with the newest history [page] the server
+     * just returned (audit H2): a cached row inside the page's time window
+     * that the server did not return was deleted, unsent or expired there,
+     * and goes here too. [hasMore] false means the page is the whole
+     * history, so every older row is inside the window as well. Rows newer
+     * than the page (arrived while it was in flight) are kept.
+     */
+    suspend fun reconcileCachedPage(
+        conversationId: String,
+        page: List<Message>,
+        hasMore: Boolean,
+        lease: Long? = null,
+    ) {
+        val extras = parityDao ?: return
+        val cached = dao.recentMessages(conversationId, RECONCILE_WINDOW).map { it.toDomainMessage() }
+        val gone = messagesMissingFromPage(cached, page, hasMore)
+        if (gone.isEmpty()) return
+        guardedWrite(lease) { extras.deleteMessages(gone) }
+    }
 
     /**
      * Applies one realtime message durably: the message row, the inbox
@@ -429,6 +530,8 @@ class ChatStore @Inject constructor(
      */
     suspend fun applyRealtimeMessage(message: Message) {
         if (message.id.isBlank() || message.conversationId.isBlank()) return
+        // Unsent or expired since: a late copy must not bring the text back.
+        if (isForgotten(message.id)) return
         val viewer = viewerId()
         // The server echoes every message to its sender too — the viewer's
         // other devices included. Their own message moves the row's preview
@@ -747,8 +850,13 @@ class ChatStore @Inject constructor(
         guardedWrite { dao.deleteConversation(conversationId) }
     }
 
-    /** A realtime unsend: the cached copy must not survive it. */
+    /**
+     * A realtime unsend (or a disappearing message's expiry): the cached copy
+     * must not survive it, and no later copy — a held echo, a queued resend's
+     * replayed answer — may write it back.
+     */
     suspend fun applyDeleted(messageId: String) {
+        forget(messageId)
         guardedWrite { dao.deleteMessage(messageId) }
     }
 
@@ -801,6 +909,7 @@ class ChatStore @Inject constructor(
                     replyToPreview = it.replyToPreview,
                     createdAtMillis = it.createdAtMillis,
                     failed = it.failed,
+                    failureCode = it.failureCode.takeIf { _ -> it.failed },
                     typed = it.extrasJson?.let { raw ->
                         runCatching { json.decodeFromString(TypedSend.serializer(), raw) }.getOrNull()
                     },
@@ -1007,8 +1116,9 @@ class ChatStore @Inject constructor(
                 val permanent = !result.error.isRetryableSend()
                 if (permanent || row.attempts + 1 >= MAX_SEND_ATTEMPTS) {
                     // Parked for an explicit user retry — never silently
-                    // dropped, never retried forever.
-                    guardedWrite(generation) { dao.markFailed(row.idempotencyKey) }
+                    // dropped, never retried forever. The server's reason
+                    // rides along, so the thread can say what went wrong.
+                    guardedWrite(generation) { park(row.idempotencyKey, result.error.contractCode()) }
                         ?: return SendAttempt.Halted
                     SendAttempt.Parked
                 } else {
@@ -1016,6 +1126,12 @@ class ChatStore @Inject constructor(
                 }
             }
         }
+    }
+
+    /** Parks an outbox row for the user, with the server's [code] when it gave one. Inside a guarded write. */
+    private suspend fun park(idempotencyKey: String, code: String?) {
+        val extras = parityDao
+        if (extras == null) dao.markFailed(idempotencyKey) else extras.markFailedWithCode(idempotencyKey, code)
     }
 
     /**
@@ -1032,7 +1148,9 @@ class ChatStore @Inject constructor(
      * Runs inside the caller's guarded write.
      */
     private suspend fun cacheConfirmedSend(message: Message) {
-        if (message.id.isBlank()) return
+        // Blank, or the replayed answer of a send that landed and was unsent
+        // since: the row is done (the caller completes it), the message stays gone.
+        if (message.id.isBlank() || isForgotten(message.id)) return
         val entity = message.toEntity()
         dao.insertMessages(listOf(entity))
         // The viewer's own message, confirmed: the inbox row says so now
@@ -1201,6 +1319,7 @@ class ChatStore @Inject constructor(
         type = type,
         reactionsJson = encodeReactions(reactions),
         extrasJson = CachedMessageExtras.of(this)?.let { json.encodeToString(CachedMessageExtras.serializer(), it) },
+        expiresAtMillis = expiresAtMillis,
     )
 
     private fun ChatMessageEntity.toDomainMessage() = Message(
@@ -1222,12 +1341,17 @@ class ChatStore @Inject constructor(
         (extras?.applyTo(base) ?: base).copy(
             type = type ?: base.type,
             reactions = decodeReactions(reactionsJson),
+            expiresAtMillis = expiresAtMillis,
         )
     }
 
     companion object {
         const val SEND_WORK_NAME = "chat-send-outbox"
         const val MAX_SEND_ATTEMPTS = 5
+        private const val FORGOTTEN_ID_LIMIT = 512
+
+        /** How many cached rows of a thread [reconcileCachedPage] compares with a fresh page. */
+        private const val RECONCILE_WINDOW = 200
         private const val PREVIEW_LENGTH = 140
 
         /** `last_message.own_status` values (CONTRACT §1), as [ownStatusLabel] reads them. */
@@ -1299,6 +1423,11 @@ internal data class CachedMember(
  * the server UNDERSTOOD and REFUSED — privacy, block, auth, validation. The
  * refusal will not change on replay, and retrying a privacy denial five
  * times is how a client turns a policy answer into background noise.
+ *
+ * One 4xx IS retryable: 409 `IDEMPOTENCY_IN_PROGRESS` (audit M1). The server
+ * is still writing the first request under the same key — a resend that
+ * overlapped a slow attempt — and a replay once that finishes returns the
+ * stored answer. Parking it showed "Not sent" for a delivered message.
  * Top-level so the outbox tests pin the classification table directly.
  */
 fun com.us.android.core.common.error.AppError.isRetryableSend(): Boolean = when (this) {
@@ -1312,7 +1441,7 @@ fun com.us.android.core.common.error.AppError.isRetryableSend(): Boolean = when 
 
     is com.us.android.core.common.error.AppError.Unknown -> {
         val status = statusCode
-        status == null || status >= HTTP_SERVER_ERROR
+        status == null || status >= HTTP_SERVER_ERROR || code == IDEMPOTENCY_IN_PROGRESS
     }
 
     is com.us.android.core.common.error.AppError.InvalidRequest,
@@ -1323,6 +1452,49 @@ fun com.us.android.core.common.error.AppError.isRetryableSend(): Boolean = when 
 }
 
 private const val HTTP_SERVER_ERROR = 500
+
+/** message-service: the first request under this idempotency key is still running. */
+private const val IDEMPOTENCY_IN_PROGRESS = "IDEMPOTENCY_IN_PROGRESS"
+
+/**
+ * The server's contract code for this failure, when the response carried one
+ * (`AWAITING_REQUEST_ACCEPTANCE`, `CHAT_LOCKED`, …): what a parked send keeps
+ * so the thread can explain it.
+ */
+fun AppError.contractCode(): String? = when (this) {
+    is AppError.Unknown -> code
+    is AppError.Forbidden -> code
+    is AppError.NotFound -> code
+    is AppError.AuthFailed -> code
+    is AppError.Server -> code
+    is AppError.InvalidRequest -> ErrorMapper.CODE_INVALID_REQUEST
+    else -> null
+}?.takeIf { it.isNotBlank() }
+
+/**
+ * The cached rows of one thread that a fresh newest [page] proves gone
+ * (deleted, unsent or expired on the server), by id. A row counts only when
+ * it falls inside the page's time window: no older than the page's oldest
+ * message (or any age, when [hasMore] is false and the page is the whole
+ * history) and no newer than its newest — a row newer than the page arrived
+ * while the page was in flight. Rows whose time cannot be read are kept.
+ */
+internal fun messagesMissingFromPage(cached: List<Message>, page: List<Message>, hasMore: Boolean): List<String> {
+    val returned = page.mapTo(mutableSetOf()) { it.id }
+    val times = page.mapNotNull { parseInstant(it.createdAt) }
+    // No readable time (an empty page included): the window is unknown, so
+    // nothing is proven gone — a row that arrived during the read included.
+    if (times.isEmpty()) return emptyList()
+    val newest = times.max()
+    val oldest = if (hasMore) times.min() else null
+    return cached.filter { row ->
+        if (row.id in returned || row.pending) return@filter false
+        val at = parseInstant(row.createdAt) ?: return@filter false
+        val notNewer = !at.isAfter(newest)
+        val notOlder = oldest == null || !at.isBefore(oldest)
+        notNewer && notOlder
+    }.map { it.id }
+}
 
 /** 403 `CHAT_LOCKED`: a hidden chat asked about without a live open token. */
 fun com.us.android.core.common.error.AppError.isChatLocked(): Boolean =
@@ -1367,4 +1539,13 @@ data class PendingSend(
     val failed: Boolean,
     /** A typed send's own fields (voice, sticker, gif …); null for text and photos. */
     val typed: TypedSend? = null,
+    /** Why a parked row was refused: the server's error code, when it gave one. Null while queued. */
+    val failureCode: String? = null,
 )
+
+/**
+ * message-service, 409: the pending request already carries its one message
+ * (the request slot is claimed atomically, so a second send is refused even
+ * when it raced the first, or came from another device).
+ */
+const val AWAITING_REQUEST_ACCEPTANCE = "AWAITING_REQUEST_ACCEPTANCE"

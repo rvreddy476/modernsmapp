@@ -84,4 +84,27 @@ interface ChatParityDao {
 
     @Query("DELETE FROM chat_conversation WHERE id = :conversationId")
     suspend fun deleteConversation(conversationId: String)
+
+    /**
+     * Drops request rows the server no longer lists (declined, withdrawn or
+     * blocked elsewhere) after a COMPLETE requests sync. Inbox rows are not
+     * touched — [pruneInbox] owns them.
+     */
+    @Query("DELETE FROM chat_conversation WHERE isRequest = 1 AND id NOT IN (:keep)")
+    suspend fun pruneRequests(keep: List<String>)
+
+    /**
+     * Disappearing messages (schema v10): every cached message whose server
+     * expiry has passed. Their text must not outlive the timer on disk.
+     */
+    @Query("DELETE FROM chat_message WHERE expiresAtMillis IS NOT NULL AND expiresAtMillis <= :nowMillis")
+    suspend fun deleteExpiredMessages(nowMillis: Long): Int
+
+    /** Drops the named cached messages (a thread page the server no longer returns them in). */
+    @Query("DELETE FROM chat_message WHERE id IN (:messageIds)")
+    suspend fun deleteMessages(messageIds: List<String>)
+
+    /** Parks an outbox row with the server's reason (schema v10). */
+    @Query("UPDATE chat_pending_send SET failed = 1, failureCode = :code WHERE idempotencyKey = :key")
+    suspend fun markFailedWithCode(key: String, code: String?)
 }

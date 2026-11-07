@@ -8,6 +8,7 @@ import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.PUT
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 /**
  * Who is in a community and how: join and leave, the viewer's mute, and
@@ -37,4 +38,22 @@ interface CommunityMembershipApi {
 
     @DELETE("v1/broadcast-channels/{id}/admins/{userId}")
     suspend fun removeAdmin(@Path("id") id: String, @Path("userId") userId: String)
+
+    /**
+     * The roster with roles (owner/admin only): every member who is not
+     * banned, newest first, `limit` at most 100 a page.
+     */
+    @GET("v1/broadcast-channels/{id}/subscribers")
+    suspend fun members(
+        @Path("id") id: String,
+        @Query("limit") limit: Int,
+        @Query("offset") offset: Int,
+    ): ApiEnvelope<List<CommunityMemberDto>>
 }
+
+/** One roster row (channel-service `ChannelMember`); only what the admin picker reads. */
+@kotlinx.serialization.Serializable
+data class CommunityMemberDto(
+    @kotlinx.serialization.SerialName("user_id") val userId: String = "",
+    val role: String = "",
+)

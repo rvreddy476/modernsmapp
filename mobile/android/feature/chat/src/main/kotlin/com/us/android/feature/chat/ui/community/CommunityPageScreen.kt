@@ -53,6 +53,7 @@ import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.designsystem.theme.UsTypeScale
+import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.chat.ui.home.ChatTogglePill
@@ -96,6 +97,12 @@ fun CommunityPageScreen(
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
             when {
                 state.loading -> UsLoadingState(label = "Loading community")
+                // A 404 is not a glitch to retry: the page is not there for this viewer.
+                state.unavailable -> UsEmptyState(
+                    title = "Community not available",
+                    detail = COMMUNITY_UNAVAILABLE_TEXT,
+                    modifier = Modifier.testTag("community_unavailable"),
+                )
                 community == null -> UsErrorState(
                     message = "This community couldn't be loaded.",
                     onRetry = viewModel::refresh,

@@ -125,11 +125,16 @@ class ChatStoreParityTest {
             prunes += keep
         }
         override suspend fun deleteConversation(conversationId: String) = Unit
+        override suspend fun pruneRequests(keep: List<String>) = Unit
+        override suspend fun deleteExpiredMessages(nowMillis: Long): Int = 0
+        override suspend fun deleteMessages(messageIds: List<String>) = Unit
+        override suspend fun markFailedWithCode(key: String, code: String?) = Unit
     }
 
     private class FakeApi(private val inbox: List<ConversationDto>) : ChatApi by unscriptedChat() {
         override suspend fun conversations(limit: Int, cursor: String?): ApiEnvelope<List<ConversationDto>> = ApiEnvelope(data = inbox)
-        override suspend fun requests(): ApiEnvelope<List<ConversationDto>> = ApiEnvelope(data = emptyList())
+        override suspend fun requests(limit: Int, cursor: String?): ApiEnvelope<List<ConversationDto>> =
+            ApiEnvelope(data = emptyList())
     }
 
     private class FakeParityApi : ChatParityApi by unscriptedParity() {

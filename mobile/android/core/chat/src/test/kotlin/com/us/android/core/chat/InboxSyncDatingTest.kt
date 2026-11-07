@@ -70,7 +70,8 @@ class InboxSyncDatingTest {
         override suspend fun conversations(limit: Int, cursor: String?): ApiEnvelope<List<ConversationDto>> =
             ApiEnvelope(data = inbox)
 
-        override suspend fun requests(): ApiEnvelope<List<ConversationDto>> = ApiEnvelope(data = pending)
+        override suspend fun requests(limit: Int, cursor: String?): ApiEnvelope<List<ConversationDto>> =
+            ApiEnvelope(data = pending)
     }
 
     private object NoScrubOwed : ScrubRecoveryFlag {

@@ -7,6 +7,7 @@ import com.us.android.core.chat.data.Community
 import com.us.android.core.chat.data.CommunityRepository
 import com.us.android.core.chat.data.CommunityUpdate
 import com.us.android.core.chat.data.CommunityUpdatesRepository
+import com.us.android.core.chat.data.isCommunityUnavailable
 import com.us.android.core.chat.data.reactionAfterTap
 import com.us.android.core.chat.data.withViewerReaction
 import com.us.android.core.common.result.AppResult
@@ -36,6 +37,12 @@ data class CommunityPageUiState(
     /** Set once the viewer left or the community was deleted; the screen closes. */
     val closed: Boolean = false,
     val loadFailed: Boolean = false,
+    /**
+     * The community is not there for this viewer (404): removed, suspended,
+     * or private and they are not a member. Nothing of it is shown — a page
+     * read earlier is dropped, so a member who was removed sees no more of it.
+     */
+    val unavailable: Boolean = false,
 )
 
 /**
@@ -67,14 +74,27 @@ class CommunityPageViewModel @Inject constructor(
         val id = _state.value.communityId
         val community = repository.community(id)
         val page = updates.page(id)
+        val unavailable = (community as? AppResult.Failure)?.error?.isCommunityUnavailable() == true
         _state.update { current ->
-            current.copy(
-                loading = false,
-                loadFailed = community is AppResult.Failure,
-                community = (community as? AppResult.Success)?.data ?: current.community,
-                updates = (page as? AppResult.Success)?.data?.items ?: current.updates,
-                nextCursor = (page as? AppResult.Success)?.data?.nextCursor,
-            )
+            if (unavailable) {
+                current.copy(
+                    loading = false,
+                    loadFailed = true,
+                    unavailable = true,
+                    community = null,
+                    updates = emptyList(),
+                    nextCursor = null,
+                )
+            } else {
+                current.copy(
+                    loading = false,
+                    loadFailed = community is AppResult.Failure,
+                    unavailable = false,
+                    community = (community as? AppResult.Success)?.data ?: current.community,
+                    updates = (page as? AppResult.Success)?.data?.items ?: current.updates,
+                    nextCursor = (page as? AppResult.Success)?.data?.nextCursor,
+                )
+            }
         }
     }
 

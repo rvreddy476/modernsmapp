@@ -112,9 +112,16 @@ interface ChatApi {
 
     // ── Production chat pass: requests, groups, invitations ─────────────
 
-    /** The recipient's pending message requests. */
+    /**
+     * One page of the recipient's pending message requests, newest first
+     * (audit L1): the server answers 20 by default, so an unpaged read
+     * cached only the first 20. [cursor] is `meta.next_cursor`, opaque.
+     */
     @GET("v1/chat/requests?direction=incoming")
-    suspend fun requests(): ApiEnvelope<List<ConversationDto>>
+    suspend fun requests(
+        @Query("limit") limit: Int = REQUEST_SYNC_PAGE_LIMIT,
+        @Query("cursor") cursor: String? = null,
+    ): ApiEnvelope<List<ConversationDto>>
 
     @POST("v1/chat/conversations/{id}/requests/accept")
     suspend fun acceptRequest(@Path("id") conversationId: String): ApiEnvelope<StatusDto>
@@ -629,6 +636,11 @@ data class MessageDto(
     @SerialName("edited_at") val editedAt: String? = null,
     /** History, the viewer's own messages only: `sent|delivered|read` (message ticks, 2026-10-22). */
     val status: String? = null,
+    /**
+     * A disappearing message's expiry (RFC 3339); absent when the chat has no
+     * timer. On every history page, send response and realtime frame.
+     */
+    @SerialName("expires_at") val expiresAt: String? = null,
 )
 
 const val TEXT_MESSAGE = "text"
@@ -649,3 +661,6 @@ const val CALL_MESSAGE = "call"
 
 /** The server's page cap for `GET /v1/chat/conversations`. */
 const val CONVERSATION_PAGE_LIMIT = 100
+
+/** The page size the inbox sync reads requests in (the route caps it at 100). */
+const val REQUEST_SYNC_PAGE_LIMIT = 100

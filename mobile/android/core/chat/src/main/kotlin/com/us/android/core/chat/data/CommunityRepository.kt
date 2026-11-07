@@ -123,6 +123,44 @@ private const val VALIDATION_ERROR = "VALIDATION_ERROR"
 private const val HTTP_CONFLICT = 409
 private const val HTTP_UNPROCESSABLE = 422
 
+/**
+ * Why an admin-roster change failed, in channel-service's words (7 Nov 2026):
+ * an admin must already be a member (422 `ADMIN_MUST_BE_MEMBER`), a banned
+ * member cannot be made one (422 `MEMBER_BANNED`), only the owner manages
+ * admins (403), and a private community answers a non-member 404.
+ */
+enum class CommunityAdminFailure { NotAMember, Banned, NotAllowed, Unavailable, Other }
+
+fun AppError.toCommunityAdminFailure(): CommunityAdminFailure = when {
+    contractCode() == ADMIN_MUST_BE_MEMBER -> CommunityAdminFailure.NotAMember
+    contractCode() == MEMBER_BANNED -> CommunityAdminFailure.Banned
+    this is AppError.Forbidden -> CommunityAdminFailure.NotAllowed
+    this is AppError.NotFound -> CommunityAdminFailure.Unavailable
+    else -> CommunityAdminFailure.Other
+}
+
+/**
+ * True when the community is not there FOR THIS VIEWER: deleted, suspended,
+ * or private and the viewer is not a member. channel-service answers all of
+ * them 404 on purpose — a private community's existence is not disclosed —
+ * so the client must not tell them apart either.
+ */
+fun AppError.isCommunityUnavailable(): Boolean = this is AppError.NotFound
+
+/**
+ * Who the owner may make an admin: a member who is not one already, not the
+ * owner and not banned (channel-service refuses anyone else with a 422).
+ * Order kept: the roster's own, newest member first.
+ */
+fun adminCandidatesOf(roster: List<CommunityMemberDto>): List<String> =
+    roster.filter { it.userId.isNotBlank() && it.role.lowercase() !in NOT_ADMIN_CANDIDATE_ROLES }
+        .map { it.userId }
+        .distinct()
+
+private val NOT_ADMIN_CANDIDATE_ROLES = setOf("owner", "admin", "banned")
+private const val ADMIN_MUST_BE_MEMBER = "ADMIN_MUST_BE_MEMBER"
+private const val MEMBER_BANNED = "MEMBER_BANNED"
+
 /** Communities over [CommunityApi], in [AppResult]. */
 @Singleton
 class CommunityRepository @Inject constructor(
@@ -195,6 +233,32 @@ class CommunityRepository @Inject constructor(
     suspend fun removeAdmin(id: String, userId: String): AppResult<Unit> =
         noContentApiCall(errorMapper) { membership.removeAdmin(id, userId) }
 
+    /**
+     * The members the owner may make admins ([adminCandidatesOf]), read from
+     * the roster a page at a time — up to [MAX_ROSTER_PAGES] pages of
+     * [ROSTER_PAGE], so a very large community offers its newest members.
+     * A page that fails after the first ends the read with what it has.
+     */
+    suspend fun adminCandidates(id: String): AppResult<List<String>> {
+        val roster = mutableListOf<CommunityMemberDto>()
+        var page = 0
+        var more = true
+        while (more && page < MAX_ROSTER_PAGES) {
+            when (val result = listApiCall(errorMapper) { membership.members(id, ROSTER_PAGE, page * ROSTER_PAGE) }) {
+                is AppResult.Success -> {
+                    roster += result.data
+                    more = result.data.size == ROSTER_PAGE
+                }
+                is AppResult.Failure -> {
+                    if (page == 0) return result
+                    more = false
+                }
+            }
+            page++
+        }
+        return AppResult.Success(adminCandidatesOf(roster))
+    }
+
     suspend fun report(id: String, reason: String, details: String): AppResult<Unit> =
         noContentApiCall(errorMapper) { api.report(id, ReportRequest(reason, details)) }
 
@@ -221,6 +285,10 @@ class CommunityRepository @Inject constructor(
 
     companion object {
         const val DISCOVER_PAGE = 20
+
+        /** channel-service caps a roster page at 100. */
+        const val ROSTER_PAGE = 100
+        const val MAX_ROSTER_PAGES = 5
     }
 }
 

@@ -141,7 +141,8 @@ class HiddenOutboxTest {
 
         var inbox: List<ConversationDto> = emptyList()
         override suspend fun conversations(limit: Int, cursor: String?): ApiEnvelope<List<ConversationDto>> = ApiEnvelope(data = inbox)
-        override suspend fun requests(): ApiEnvelope<List<ConversationDto>> = ApiEnvelope(data = emptyList())
+        override suspend fun requests(limit: Int, cursor: String?): ApiEnvelope<List<ConversationDto>> =
+            ApiEnvelope(data = emptyList())
     }
 
     /** Records the foreground drains the store asks for, so a test can run them. */

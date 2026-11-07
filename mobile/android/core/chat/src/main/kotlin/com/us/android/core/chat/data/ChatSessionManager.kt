@@ -1,12 +1,13 @@
 package com.us.android.core.chat.data
 
 import com.us.android.core.network.TokenProvider
+import com.us.android.core.network.TokenRefresher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -15,6 +16,7 @@ import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -28,9 +30,13 @@ import javax.inject.Singleton
  * own connection. The manager:
  *
  *  - owns the reconnect loop (full-jitter backoff via [reconnectDelayMillis]);
- *  - stops PERMANENTLY when the credential is rejected — a rejected token
- *    earns a rate limit, not a connection, and the next [start] (after
- *    re-auth) begins fresh;
+ *  - mints the access token before it connects (audit H1): at cold start
+ *    the session exists before its first token does, and a socket that went
+ *    out without one used to end for good, leaving the user offline and
+ *    their foreground pushes suppressed for the whole session;
+ *  - never retries a REJECTED credential as it is — a rejected token earns
+ *    a rate limit, not a connection. It waits for a different token (or one
+ *    due a refresh, or a [start]) and then connects again;
  *  - applies every message frame to the DURABLE store first, so the inbox
  *    cache and unread state advance even while no thread is open
  *    (CH-LB-4.6), then re-emits for whoever is on screen;
@@ -54,6 +60,13 @@ open class ChatSessionManager @Inject constructor(
     // Hidden chats (24 Oct 2026): a hidden chat's room is subscribed with
     // its open token, never an entitlement. Null in tests: nothing is hidden.
     private val hidden: com.us.android.core.chat.hidden.HiddenTokenStore? = null,
+    /**
+     * Mints the access token before a connect (audit H1/M2): none exists yet
+     * at cold start, and one near its end would be closed by the gateway
+     * seconds after the upgrade. Null in tests: the provider's token is used
+     * as it is.
+     */
+    private val tokenRefresher: TokenRefresher? = null,
 ) {
 
     /**
@@ -106,11 +119,26 @@ open class ChatSessionManager @Inject constructor(
     private val liveRooms = mutableSetOf<String>()
 
     /**
+     * Ends a wait early: a [start] while the loop backs off, or waits for a
+     * credential, means somebody wants chat NOW (a screen opened, the app
+     * came to the foreground). Conflated — one pending wake is enough.
+     */
+    private val wake = Channel<Unit>(Channel.CONFLATED)
+
+    /** Monotonic milliseconds, for how long a connection stayed up. A test seam. */
+    internal var elapsedMillis: () -> Long = { System.nanoTime() / NANOS_PER_MILLI }
+
+    /**
      * Starts (or restarts) the session socket. Idempotent — a second start
-     * while running is a no-op, so every screen may call it defensively.
+     * while running opens no second socket, so every screen may call it
+     * defensively; a loop that is waiting (backoff, or for a credential)
+     * connects again at once.
      */
     open fun start() {
-        if (sessionScope?.isActive == true) return
+        if (sessionScope?.isActive == true) {
+            wake.trySend(Unit)
+            return
+        }
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
         sessionScope = scope
         scope.launch {
@@ -121,9 +149,8 @@ open class ChatSessionManager @Inject constructor(
                 // and the socket MUST NOT start.
                 if (store.ensureReady()) runLoop(scope)
             } finally {
-                // The loop only returns on permanent credential rejection,
-                // failed readiness, or cancellation. Release the root so a
-                // later re-authentication start() begins fresh — an active
+                // The loop only returns on failed readiness or cancellation.
+                // Release the root so a later start() begins fresh — an active
                 // but childless supervisor previously swallowed every
                 // restart (F2-LB-1 gap 3).
                 endSession(scope)
@@ -273,76 +300,149 @@ open class ChatSessionManager @Inject constructor(
         var attempt = 0
         while (true) {
             _connection.value = ConnectionState.Connecting
-            var permanent = false
-            socket.connect { tokenProvider.currentAccessToken() }.collect { event ->
-                when (event) {
-                    is ChatSocketEvent.Connected -> {
-                        attempt = 0
-                        _connection.value = ConnectionState.Connected
-                        // Reconnect reconciliation (CH-LB-4.3): repair the
-                        // durable inbox from HTTP, then re-subscribe every
-                        // open room with a fresh entitlement. Children of the
-                        // session job, so stopAndJoin awaits them.
-                        scope.launch { store.syncInbox() }
-                        // The backend is reachable right now, whatever the OS
-                        // thinks of the network: send anything still queued
-                        // (fix pass 2 — the worker waits for a VALIDATED
-                        // network, which some reachable networks never are).
-                        store.drainNow()
-                        val rooms = synchronized(roomsLock) { subscribedRooms.toList() }
-                        rooms.forEach { scope.launch { sendSubscribe(it) } }
-                    }
-                    is ChatSocketEvent.Disconnected -> {
-                        permanent = event.permanent
-                        _connection.value = ConnectionState.Disconnected
-                        // A new connection must re-subscribe before typing frames flow again.
-                        synchronized(roomsLock) { liveRooms.clear() }
-                    }
-                    is ChatSocketEvent.MessageReceived -> {
-                        // Durable FIRST: the cache row and the unread flag
-                        // must survive even if nobody is collecting.
-                        store.applyRealtimeMessage(event.message)
-                        // This device has it: the sender's second tick.
-                        acknowledgeDelivered(
-                            event.message.conversationId,
-                            event.message.id,
-                            event.message.ts.ifBlank { null },
-                        )
-                    }
-                    is ChatSocketEvent.SubscriptionRevoked ->
-                        // Removed from the conversation: drop the room so no
-                        // reconnect re-subscribes it.
-                        synchronized(roomsLock) {
-                            subscribedRooms.remove(event.conversationId)
-                            liveRooms.remove(event.conversationId)
-                        }
-                    is ChatSocketEvent.RoomNotice -> onRoomNotice(scope, event)
-                    // Chat parity: durable first, like a message — the
-                    // cached thread must not resurrect an unsent message or
-                    // forget a reaction when it is next opened offline.
-                    is ChatSocketEvent.MessageDeleted -> store.applyDeleted(event.messageId)
-                    // DM consent: an expired request leaves the cached Requests.
-                    is ChatSocketEvent.MessageRequestRemoved -> store.removeRequest(event.conversationId)
-                    is ChatSocketEvent.ReactionChanged ->
-                        store.applyReaction(event.messageId, event.emoji, event.userId, event.added)
-                    // The peer read my last message: the inbox row's "Sent"
-                    // becomes "Seen" without waiting for the next sync.
-                    is ChatSocketEvent.ReadReceipt ->
-                        store.applyReadReceipt(event.conversationId, event.userId, event.messageId)
-                    else -> Unit
-                }
-                _events.emit(event)
-            }
-            if (permanent) {
-                // Rejected credential: stop until re-auth restarts us.
+            val token = connectToken()
+            if (token.isNullOrBlank()) {
+                // No credential YET (audit H1): a cold start before the first
+                // refresh, or a refresh that failed for a transient reason.
+                // Not a rejection, so the normal backoff applies.
                 _connection.value = ConnectionState.Disconnected
-                return
+                attempt++
+                pause(reconnectDelayMillis(attempt))
+                continue
             }
-            attempt++
-            delay(reconnectDelayMillis(attempt))
+            val outcome = connectOnce(scope, token)
+            _connection.value = ConnectionState.Disconnected
+            // Only a connection that STAYED up resets the backoff (audit M2):
+            // one the gateway closes right after the upgrade (a token inside
+            // its expiry skew) must not come back at the minimum delay forever.
+            attempt = if (outcome.stable) 1 else attempt + 1
+            if (outcome.rejected) {
+                awaitNewCredential(rejected = token)
+                attempt = 0
+            } else {
+                pause(reconnectDelayMillis(attempt))
+            }
             // On reconnect the store re-syncs from HTTP so anything missed
             // while offline is repaired from the durable source of truth.
             store.markReconnectPending()
         }
+    }
+
+    /** How one connection ended. */
+    private class ConnectOutcome(val rejected: Boolean, val stable: Boolean)
+
+    /**
+     * The token to connect with: the current one, refreshed first when the
+     * session has none yet (cold start) or it is near its end — the same rule
+     * every REST request follows. A failed refresh falls back to whatever is
+     * current, possibly nothing.
+     */
+    private suspend fun connectToken(): String? {
+        val current = tokenProvider.currentAccessToken()
+        val refresher = tokenRefresher ?: return current
+        if (!refresher.shouldRefreshBeforeRequest()) return current
+        return refresher.refreshIfStale(current) ?: tokenProvider.currentAccessToken()
+    }
+
+    /**
+     * After the gateway REJECTED [rejected] (401/403 on the upgrade, past the
+     * authenticator's own refresh): waits until there is a different token,
+     * the current one is due a refresh, or [start] asks again. Retrying the
+     * same credential earns a rate limit, not a connection; stopping for good
+     * left a signed-in user offline until they backgrounded the app.
+     */
+    private suspend fun awaitNewCredential(rejected: String) {
+        while (true) {
+            val current = tokenProvider.currentAccessToken()
+            if (!current.isNullOrBlank() && current != rejected) return
+            if (tokenRefresher?.shouldRefreshBeforeRequest() == true) return
+            if (pause(CREDENTIAL_RECHECK_MILLIS)) return
+        }
+    }
+
+    /**
+     * Waits [millis], or less when [start] is called meanwhile. A wake left
+     * over from before the wait is dropped first: whoever asked then was
+     * served by the connection that has just ended. True when woken early.
+     */
+    private suspend fun pause(millis: Long): Boolean {
+        wake.tryReceive()
+        return withTimeoutOrNull(millis) { wake.receive() } != null
+    }
+
+    private suspend fun connectOnce(scope: CoroutineScope, token: String): ConnectOutcome {
+        var rejected = false
+        var connectedAt: Long? = null
+        socket.connect { token }.collect { event ->
+            when (event) {
+                is ChatSocketEvent.Connected -> {
+                    connectedAt = elapsedMillis()
+                    _connection.value = ConnectionState.Connected
+                    // Reconnect reconciliation (CH-LB-4.3): repair the
+                    // durable inbox from HTTP, then re-subscribe every
+                    // open room with a fresh entitlement. Children of the
+                    // session job, so stopAndJoin awaits them.
+                    scope.launch { store.syncInbox() }
+                    // The backend is reachable right now, whatever the OS
+                    // thinks of the network: send anything still queued
+                    // (fix pass 2 — the worker waits for a VALIDATED
+                    // network, which some reachable networks never are).
+                    store.drainNow()
+                    val rooms = synchronized(roomsLock) { subscribedRooms.toList() }
+                    rooms.forEach { scope.launch { sendSubscribe(it) } }
+                }
+                is ChatSocketEvent.Disconnected -> {
+                    rejected = event.permanent
+                    _connection.value = ConnectionState.Disconnected
+                    // A new connection must re-subscribe before typing frames flow again.
+                    synchronized(roomsLock) { liveRooms.clear() }
+                }
+                is ChatSocketEvent.MessageReceived -> {
+                    // Durable FIRST: the cache row and the unread flag
+                    // must survive even if nobody is collecting.
+                    store.applyRealtimeMessage(event.message)
+                    // This device has it: the sender's second tick.
+                    acknowledgeDelivered(
+                        event.message.conversationId,
+                        event.message.id,
+                        event.message.ts.ifBlank { null },
+                    )
+                }
+                is ChatSocketEvent.SubscriptionRevoked ->
+                    // Removed from the conversation: drop the room so no
+                    // reconnect re-subscribes it.
+                    synchronized(roomsLock) {
+                        subscribedRooms.remove(event.conversationId)
+                        liveRooms.remove(event.conversationId)
+                    }
+                is ChatSocketEvent.RoomNotice -> onRoomNotice(scope, event)
+                // Chat parity: durable first, like a message — the
+                // cached thread must not resurrect an unsent message or
+                // forget a reaction when it is next opened offline.
+                is ChatSocketEvent.MessageDeleted -> store.applyDeleted(event.messageId)
+                // DM consent: an expired request leaves the cached Requests.
+                is ChatSocketEvent.MessageRequestRemoved -> store.removeRequest(event.conversationId)
+                is ChatSocketEvent.ReactionChanged ->
+                    store.applyReaction(event.messageId, event.emoji, event.userId, event.added)
+                // The peer read my last message: the inbox row's "Sent"
+                // becomes "Seen" without waiting for the next sync.
+                is ChatSocketEvent.ReadReceipt ->
+                    store.applyReadReceipt(event.conversationId, event.userId, event.messageId)
+                else -> Unit
+            }
+            _events.emit(event)
+        }
+        val stable = connectedAt?.let { elapsedMillis() - it >= STABLE_CONNECTION_MILLIS } == true
+        return ConnectOutcome(rejected = rejected, stable = stable)
+    }
+
+    internal companion object {
+        /** A connection up this long counts as healthy: the next drop backs off from the start. */
+        const val STABLE_CONNECTION_MILLIS = 10_000L
+
+        /** How often a rejected session looks again for a usable credential. */
+        const val CREDENTIAL_RECHECK_MILLIS = 30_000L
+
+        private const val NANOS_PER_MILLI = 1_000_000L
     }
 }

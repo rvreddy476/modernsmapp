@@ -144,15 +144,31 @@ class ThreadController(
         return state.copy(messages = state.messages.map { it.named() }).also { state = it }
     }
 
+    /**
+     * The newest page the server returned on the last successful [refresh] or
+     * [refreshLatest] — what the cache is reconciled against. Null until one
+     * succeeded.
+     */
+    var newestPage: NewestPage? = null
+        private set
+
+    /** True once a page of history came from the server (not only cached or realtime rows). */
+    private var historyLoaded = false
+
     suspend fun refresh(): ThreadUiState {
         state = state.copy(loading = true, refreshError = null)
         return when (val result = repository.messages(conversationId)) {
-            is AppResult.Success -> state.copy(
-                messages = result.data.items.map { it.named() },
-                nextCursor = result.data.nextCursor,
-                loading = false,
-                refreshError = null,
-            ).also { state = it }
+            is AppResult.Success -> {
+                val page = result.data.items.map { it.named() }
+                newestPage = NewestPage(page, hasMore = result.data.nextCursor != null)
+                historyLoaded = true
+                state.copy(
+                    messages = page,
+                    nextCursor = result.data.nextCursor,
+                    loading = false,
+                    refreshError = null,
+                ).also { state = it }
+            }
 
             is AppResult.Failure -> state.copy(
                 loading = false,
@@ -160,6 +176,41 @@ class ThreadController(
                 // populated thread must not blank someone's conversation.
                 refreshError = result.error,
             ).also { state = it }
+        }
+    }
+
+    /**
+     * Reconnect reconciliation (audit M2): fetches the newest page and MERGES
+     * it by id into what the thread holds, instead of replacing everything.
+     * Older pages stay loaded with their cursor, so a reader scrolled back
+     * (or jumped to a quoted message) keeps their place across the reconnect
+     * the gateway forces every token lifetime. A message the page proves
+     * deleted or expired leaves; one newer than the page stays.
+     *
+     * Falls back to [refresh] when no page was ever loaded, or when the page
+     * does not reach what the thread holds (more arrived offline than one
+     * page): a merge would leave a silent gap in the history.
+     */
+    suspend fun refreshLatest(): ThreadUiState {
+        if (!historyLoaded) return refresh()
+        return when (val result = repository.messages(conversationId)) {
+            is AppResult.Success -> {
+                val page = result.data.items.map { it.named() }
+                val hasMore = result.data.nextCursor != null
+                newestPage = NewestPage(page, hasMore)
+                val merged = mergeLatestPage(state.messages, page, hasMore)
+                state.copy(
+                    messages = merged ?: page,
+                    // Merged: the older pages held are still the ones the old
+                    // cursor continues from.
+                    nextCursor = if (merged == null) result.data.nextCursor else state.nextCursor,
+                    loading = false,
+                    refreshError = null,
+                ).also { state = it }
+            }
+
+            // Everything loaded stays; the next reconnect tries again.
+            is AppResult.Failure -> state.copy(refreshError = result.error).also { state = it }
         }
     }
 
@@ -593,3 +644,39 @@ fun List<ReactionSummary>.applyToggle(
  * someone typing after the server has already forgotten they were.
  */
 const val TYPING_TTL_MILLIS = 3_000L
+
+/** The newest history page a refresh read: its messages, newest first, and whether older ones exist. */
+data class NewestPage(val messages: List<Message>, val hasMore: Boolean)
+
+/**
+ * Merges a freshly read newest [page] into the thread's [current] list (both
+ * newest first), or returns null when they do not meet.
+ *
+ *  - a message in the page replaces the thread's copy (the server's wins);
+ *  - a message the page proves gone ([messagesMissingFromPage]) leaves;
+ *  - one newer than the page (arrived while it was in flight) stays on top;
+ *  - one older than the page stays below it, with whatever older pages were
+ *    loaded — the point of merging rather than replacing;
+ *  - a still-sending row stays first.
+ *
+ * Null — start over from the page — when [pageHasMore] is true, the thread
+ * holds older messages, and the page shares none of them: more arrived than
+ * one page holds, and keeping the old rows would hide a gap between them.
+ */
+internal fun mergeLatestPage(current: List<Message>, page: List<Message>, pageHasMore: Boolean): List<Message>? {
+    val pageIds = page.mapTo(HashSet()) { it.id }
+    val gone = messagesMissingFromPage(current, page, pageHasMore).toSet()
+    val pending = current.filter { it.pending }
+    val kept = current.filterNot { it.pending || it.id in pageIds || it.id in gone }
+    val newestInPage = page.mapNotNull { instantOf(it.createdAt) }.maxOrNull()
+    val (newer, older) = kept.partition { row ->
+        val at = instantOf(row.createdAt)
+        at != null && (newestInPage == null || at.isAfter(newestInPage))
+    }
+    val meets = current.any { !it.pending && it.id in pageIds }
+    if (pageHasMore && older.isNotEmpty() && !meets) return null
+    return pending + newer + page + older
+}
+
+private fun instantOf(value: String): java.time.Instant? =
+    runCatching { java.time.OffsetDateTime.parse(value).toInstant() }.getOrNull()

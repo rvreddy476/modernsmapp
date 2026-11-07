@@ -1,7 +1,9 @@
 package com.us.android.core.chat.data
 
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -269,6 +271,11 @@ open class ChatSocket(
      * [tokenProvider] is read at CONNECT time, not captured once: a reconnect
      * after a token refresh must present the new token, and a stale one would
      * be rejected forever.
+     *
+     * The buffer is UNBOUNDED (audit M3), so a slow collector can never make
+     * the listener's `trySend` fail: the default 64 slots silently dropped
+     * message, delete and call frames behind a burst of typing and presence.
+     * Frames arrive at human rates and the session applies each at once.
      */
     open fun connect(tokenProvider: () -> String?): Flow<ChatSocketEvent> = callbackFlow {
         val token = tokenProvider()
@@ -322,7 +329,7 @@ open class ChatSocket(
             active = null
             socket.close(NORMAL_CLOSURE, null)
         }
-    }
+    }.buffer(Channel.UNLIMITED)
 
     private companion object {
         const val CONNECT_PATH = "/v1/ws/connect"
@@ -447,6 +454,7 @@ private fun Message.withParityFields(payload: JsonObject): Message {
         location = typed.location,
         replyKind = typed.replyKind,
         media = typed.media,
+        expiresAtMillis = typed.expiresAtMillis,
     )
 }
 

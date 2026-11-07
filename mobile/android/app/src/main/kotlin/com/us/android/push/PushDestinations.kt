@@ -166,6 +166,36 @@ class PushDestinations @Inject constructor() {
 
         private const val MATCH_SEGMENTS = 3
 
+        /**
+         * The thread a chat (`dm`) push opens, or null when it names no
+         * conversation. Group messages arrive as `dm` too; only the deep link
+         * tells them apart — notification-service sends
+         * `/messenger?lane=groups&group=<id>` for a group and
+         * `/messenger?user=<sender>` for a direct chat. The thread is the
+         * push's conversation id (`entity_id` / `conversation_id`); the link's
+         * group id stands in only when the push carries none.
+         */
+        fun chatThreadOf(destination: PushDestination): ChatPushThread? {
+            val groupId = messengerGroupIdOf(destination.deepLink)
+            val conversationId = destination.entityId.trim().takeIf { it.isNotEmpty() } ?: groupId ?: return null
+            return ChatPushThread(conversationId, isGroup = groupId != null)
+        }
+
+        /** The `group` of `/messenger?lane=groups&group=<id>` (fragment ignored); null for any other link. */
+        fun messengerGroupIdOf(deepLink: String?): String? {
+            val link = deepLink?.trim()?.substringBefore('#') ?: return null
+            if (link.substringBefore('?').trimEnd('/') != MESSENGER_PATH) return null
+            val params = link.substringAfter('?', missingDelimiterValue = "")
+                .split('&')
+                .mapNotNull { pair -> pair.split('=', limit = 2).takeIf { it.size == 2 }?.let { it[0] to it[1] } }
+                .toMap()
+            if (params["lane"] != GROUPS_LANE) return null
+            return params["group"]?.trim()?.takeIf { it.isNotEmpty() }
+        }
+
+        private const val MESSENGER_PATH = "/messenger"
+        private const val GROUPS_LANE = "groups"
+
         // Mopedu pushes (2026-09-18): the customer's ride progress and payment.
         // Every one opens the ride screen, which asks the server for the active
         // ride (or its receipt) rather than trusting the push's payload.
@@ -271,4 +301,10 @@ data class PushDestination(
     val type: String,
     val entityId: String,
     val deepLink: String,
+)
+
+/** The chat thread a `dm` push opens: direct or group (see [PushDestinations.chatThreadOf]). */
+data class ChatPushThread(
+    val conversationId: String,
+    val isGroup: Boolean,
 )

@@ -649,8 +649,10 @@ private suspend fun NavHostController.openPushDestination(
     }
     if (com.us.android.core.model.CustomerNotification.service(destination.type) != null) return
     when (destination.type) {
-        "dm" -> if (destination.entityId.isNotBlank()) {
-            navigateToChatThread(destination.entityId, title = "")
+        // A group message is a `dm` push too; its deep link says group, and
+        // a group thread opened as direct would load as a one-to-one chat.
+        "dm" -> com.us.android.push.PushDestinations.chatThreadOf(destination)?.let { thread ->
+            navigateToChatThread(thread.conversationId, title = "", isGroup = thread.isGroup)
         }
         // A subscribed channel's upload (2026-09-12): the same target the
         // inbox row would resolve, so the shade and the inbox agree.

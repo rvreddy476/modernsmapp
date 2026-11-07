@@ -2,6 +2,7 @@ package com.us.android.feature.chat.ui
 
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.auth.SessionStateProvider
+import com.us.android.core.chat.data.AWAITING_REQUEST_ACCEPTANCE
 import com.us.android.core.chat.data.ChatPeer
 import com.us.android.core.chat.data.Conversation
 import com.us.android.core.chat.data.ConversationDto
@@ -49,6 +50,10 @@ class DmConsentRulesTest {
 
     private fun message(id: String, from: String) =
         Message(id = id, conversationId = "c", senderId = from, senderDisplayName = null, text = "hi", createdAt = "")
+
+    /** A send the server refused with [failureCode], parked as "Not sent". */
+    private fun parkedSend(failureCode: String) =
+        PendingSend("k", "c", "second", mediaId = null, createdAtMillis = 0, failed = true, failureCode = failureCode)
 
     private fun render(
         draft: String = "",
@@ -106,6 +111,34 @@ class DmConsentRulesTest {
         assertThat(refused.requestMessageRefused).isTrue()
         assertThat(refused.requestMessageSent).isFalse()
         assertThat(refused.canSend).isTrue()
+    }
+
+    @Test
+    fun `a second message refused because the request already has one says so and closes the composer`() {
+        // 409 AWAITING_REQUEST_ACCEPTANCE: the slot was taken — by a send that
+        // raced this one, or from another device this thread never saw.
+        val slotTaken = render(
+            draft = "and another thing",
+            pending = listOf(
+                parkedSend(failureCode = AWAITING_REQUEST_ACCEPTANCE),
+            ),
+        )
+        assertThat(slotTaken.requestSlotTaken).isTrue()
+        assertThat(slotTaken.requestMessageSent).isTrue()
+        assertThat(slotTaken.requestMessageRefused).isFalse()
+        assertThat(slotTaken.canSend).isFalse()
+        assertThat(requestSlotTakenText(slotTaken.requestRecipient)).isEqualTo(
+            "This message didn't go: your request already has its message. You can send more once @bravo accepts.",
+        )
+    }
+
+    @Test
+    fun `a content refusal is not mistaken for a taken slot`() {
+        val refused = render(
+            pending = listOf(parkedSend(failureCode = "INVALID_REQUEST_MESSAGE")),
+        )
+        assertThat(refused.requestSlotTaken).isFalse()
+        assertThat(refused.requestMessageRefused).isTrue()
     }
 
     @Test

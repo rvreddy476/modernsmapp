@@ -229,10 +229,32 @@ val MIGRATION_8_9 = object : Migration(SCHEMA_V8, SCHEMA_V9) {
     }
 }
 
+private const val SCHEMA_V10 = 10
+
+/**
+ * 9 → 10: chat audit fixes (2026-11-08). Two nullable columns, purely
+ * additive:
+ *
+ *  - `chat_message.expiresAtMillis`: a disappearing message's server expiry,
+ *    so the cache drops it on its own clock (audit H2) — the server's
+ *    `message_deleted` frame reaches only an open socket;
+ *  - `chat_pending_send.failureCode`: why a parked send was refused, so a
+ *    request's second message can say so (`AWAITING_REQUEST_ACCEPTANCE`).
+ *
+ * Rows cached before the upgrade read null: they never expire locally, and
+ * the next history page or sync replaces what the server still has.
+ */
+val MIGRATION_9_10 = object : Migration(SCHEMA_V9, SCHEMA_V10) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL("ALTER TABLE `chat_message` ADD COLUMN `expiresAtMillis` INTEGER")
+        db.execSQL("ALTER TABLE `chat_pending_send` ADD COLUMN `failureCode` TEXT")
+    }
+}
+
 val UsDatabaseMigrations: List<Migration> =
     listOf(
         MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6, MIGRATION_6_7, MIGRATION_7_8,
-        MIGRATION_8_9,
+        MIGRATION_8_9, MIGRATION_9_10,
     )
 
 /**

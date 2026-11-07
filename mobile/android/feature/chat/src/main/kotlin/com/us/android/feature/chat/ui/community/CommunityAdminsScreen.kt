@@ -6,6 +6,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Snackbar
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -38,11 +39,21 @@ fun CommunityAdminsScreen(
                 value = state.query,
                 onValueChange = viewModel::onQueryChange,
                 label = "Add an admin",
-                placeholder = "Search people by name or @username",
+                placeholder = "Search this community's members",
                 counter = if (state.searching) "Searching…" else null,
                 tag = "community_admins_search",
                 modifier = Modifier.padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.m),
             )
+            state.searchHint?.let { hint ->
+                Text(
+                    text = hint,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.textSecondary,
+                    modifier = Modifier
+                        .padding(horizontal = UsTheme.spacing.pageHorizontal)
+                        .testTag("community_admins_search_hint"),
+                )
+            }
             if (state.loading) {
                 UsLoadingState(label = "Loading admins")
                 return@Column

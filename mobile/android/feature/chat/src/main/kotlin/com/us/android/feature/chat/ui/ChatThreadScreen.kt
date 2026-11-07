@@ -230,10 +230,12 @@ fun ChatThreadScreen(
                     state.loading && state.messages.isEmpty() ->
                         UsLoadingState(label = "Loading messages")
 
-                    state.refreshError != null && state.messages.isEmpty() -> UsErrorState(
-                        message = "We couldn't load this conversation.",
-                        onRetry = viewModel::refresh,
-                    )
+                    state.refreshError != null && state.messages.isEmpty() -> {
+                        val error = checkNotNull(state.refreshError)
+                        // Not a member: a retry would only be refused again.
+                        val retry: (() -> Unit)? = if (error.isThreadUnavailable()) null else ({ viewModel.refresh() })
+                        UsErrorState(message = threadLoadErrorText(error), onRetry = retry)
+                    }
 
                     state.messages.isEmpty() && render.pendingSends.isEmpty() -> {
                         val intro = render.intro
@@ -1123,6 +1125,7 @@ private fun OutgoingRequestBanner(render: ThreadRenderState) {
             color = UsTheme.extended.textPrimary,
         )
         val warning = when {
+            render.requestSlotTaken -> requestSlotTakenText(render.requestRecipient)
             render.requestMessageRefused -> REQUEST_REFUSED
             problem != null -> requestDraftProblemText(problem)
             else -> null
