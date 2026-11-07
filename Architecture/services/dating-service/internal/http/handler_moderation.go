@@ -28,9 +28,10 @@ type scanRequest struct {
 // Internal-only. Response includes a "shadow_mode" flag so the caller can
 // confirm it must NOT act on action_taken in shadow.
 //
-// Same service-caller check as the internal family (authorizeServiceCaller):
-// X-Internal-Service-Key (the old X-Internal-Key header is gone), fails
-// closed when no key is configured, and refuses a gateway user identity.
+// Same service-caller check as the internal family (authorizeServiceCaller),
+// but token-only: this route sits on the public group the gateway stamps
+// with the internal key, so the key is never accepted here (8 Nov 2026). It
+// refuses a gateway user identity. No service calls it today.
 func (h *Handler) PostScanMessage(c *gin.Context) {
 	if !h.authorizeServiceCaller(c, OpModerationScan) {
 		return

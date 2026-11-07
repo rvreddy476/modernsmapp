@@ -46,8 +46,10 @@ func newAdminTokenRig(t *testing.T) *adminTokenRig {
 		"SERVICE_CALLER_NOTIFICATION_SERVICE_KID":    "n1",
 		"SERVICE_CALLER_NOTIFICATION_SERVICE_PUBKEY": nPub,
 		// Deliberately over-granted: even with the op registered, a caller
-		// other than admin-service must not reach an admin route.
-		"SERVICE_CALLER_NOTIFICATION_SERVICE_OPS": OpSafetyPanicNotify + "," + PermPanicReveal + "," + PermStatsRead,
+		// other than admin-service must not reach an admin route. Preview and
+		// risk let the integration tests reach the token-only service routes.
+		"SERVICE_CALLER_NOTIFICATION_SERVICE_OPS": OpSafetyPanicNotify + "," + PermPanicReveal + "," + PermStatsRead +
+			"," + OpProfilePreview + "," + OpRiskRead,
 	}
 	v, err := ServiceCallersFromEnv(func(k string) string { return env[k] })
 	if err != nil {

@@ -143,10 +143,12 @@ func (h *Handler) GetProfilePreview(c *gin.Context) {
 
 // GetProfilePreviewLegacy — GET /v1/dating/profile/:userId/preview.
 //
-// Retired path, kept for ONE release because notification-service still
-// calls it with the internal key. A request carrying a gateway-set user
-// identity is a proxied user and gets 410 pointing at the internal path;
-// a request without one must hold a service credential and is served.
+// Retired path. notification-service moved to InternalProfilePreviewPath.
+// A request carrying a gateway-set user identity is a proxied user and gets
+// 410 pointing at the internal path; a request without one must hold a
+// dating service token. The internal key is not accepted here (8 Nov 2026):
+// this route is on the public group the gateway stamps with the key, so an
+// anonymous edge request carried it too.
 func (h *Handler) GetProfilePreviewLegacy(c *gin.Context) {
 	if hasGatewayIdentity(c) {
 		movedTo(InternalProfilePreviewPath)(c)

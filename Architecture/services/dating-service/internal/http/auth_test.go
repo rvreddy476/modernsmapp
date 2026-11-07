@@ -163,11 +163,58 @@ func TestAdminRoutes_GatewayAdminScopesAdmitNobody(t *testing.T) {
 }
 
 // internalCases uses an unparseable id so an admitted request stops at 400
-// INVALID_ID inside the handler, before any store call.
+// INVALID_ID inside the handler, before any store call. These are the
+// internal-family routes whose callers still send the legacy key
+// (legacyKeyOps); chat-state and the panic notify context have their own
+// tests.
 var internalCases = []struct{ name, method, path, body, op string }{
 	{"preview", http.MethodGet, "/v1/dating/internal/profile/not-a-uuid/preview", "", OpProfilePreview},
 	{"first-message", http.MethodPost, "/v1/dating/internal/matches/not-a-uuid/first-message", `{"actor_id":"x"}`, OpMatchFirstMessage},
-	{"risk", http.MethodGet, "/v1/dating/internal/risk/not-a-uuid", "", OpRiskRead},
+}
+
+// tokenOnlyCases are the service routes the bare internal key never opens
+// (8 Nov 2026). Risk is in the internal family but no caller sends the key
+// for it; the scan and the legacy preview are on the public group the
+// gateway stamps with the key on every request, so the key proves nothing
+// there — the legacy preview even though its operation is a legacy-key one.
+// An admitted request stops at the handler's 400 (bad id or body).
+var tokenOnlyCases = []struct{ name, method, path, body, op string }{
+	{"internal risk", http.MethodGet, "/v1/dating/internal/risk/not-a-uuid", "", OpRiskRead},
+	{"moderation scan", http.MethodPost, "/v1/dating/moderation/scan", `{}`, OpModerationScan},
+	{"legacy preview", http.MethodGet, "/v1/dating/profile/not-a-uuid/preview", "", OpProfilePreview},
+}
+
+func TestServiceOnlyRoutes_RefuseTheBareKey(t *testing.T) {
+	for _, tc := range tokenOnlyCases {
+		t.Run(tc.name, func(t *testing.T) {
+			v, signer := mustCallerVerifier(t, tc.op)
+			r := newAuthRouter(t, testInternalKey, v)
+			// The right key alone is refused for want of a token.
+			w := serve(r, tc.method, tc.path, tc.body, map[string]string{headerInternalKey: testInternalKey})
+			if w.Code != http.StatusUnauthorized || errorCode(t, w) != CodeServiceTokenRequired {
+				t.Fatalf("key only: status=%d code=%q body=%s, want 401 %s",
+					w.Code, errorCode(t, w), w.Body.String(), CodeServiceTokenRequired)
+			}
+			// A wrong key or no credential is refused too. (On the public
+			// group the engine-wide key gate answers first, with its own code.)
+			for _, hdr := range []map[string]string{{headerInternalKey: "wrong"}, {}} {
+				if w := serve(r, tc.method, tc.path, tc.body, hdr); w.Code != http.StatusUnauthorized {
+					t.Fatalf("headers=%v: status=%d body=%s, want 401", hdr, w.Code, w.Body.String())
+				}
+			}
+			// A service token for the operation is admitted (the handler's 400).
+			// The public-group routes also sit behind the engine-wide key gate,
+			// so there the token rides with the key.
+			tok, err := signer.Mint(AudienceDating, "", []string{tc.op}, nil, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			hdr := map[string]string{ServiceAuthHeader: "Bearer " + tok, headerInternalKey: testInternalKey}
+			if w := serve(r, tc.method, tc.path, tc.body, hdr); w.Code != http.StatusBadRequest {
+				t.Fatalf("token: status=%d body=%s, want 400 from the handler", w.Code, w.Body.String())
+			}
+		})
+	}
 }
 
 func TestInternalRoutes_LegacyKey(t *testing.T) {
@@ -218,20 +265,33 @@ func TestInternalRoutes_FailClosedWithoutKey(t *testing.T) {
 		}
 	}
 	w := serve(r, http.MethodPost, "/v1/dating/moderation/scan", `{}`, nil)
-	if w.Code != http.StatusUnauthorized || errorCode(t, w) != CodeServiceCredentialRequired {
+	if w.Code != http.StatusUnauthorized || errorCode(t, w) != CodeServiceTokenRequired {
 		t.Fatalf("scan without key: status=%d code=%q, want 401 (was fail-open)", w.Code, errorCode(t, w))
 	}
 }
 
 func TestModerationScan_ServiceCallerOnly(t *testing.T) {
-	r := newAuthRouter(t, testInternalKey, nil)
+	v, signer := mustCallerVerifier(t, OpModerationScan)
+	r := newAuthRouter(t, testInternalKey, v)
 	w := serve(r, http.MethodPost, "/v1/dating/moderation/scan", `{}`, gatewayUser(uuid.New(), ""))
 	if w.Code != http.StatusForbidden || errorCode(t, w) != CodeUserCallerRefused {
 		t.Fatalf("user: status=%d code=%q, want 403", w.Code, errorCode(t, w))
 	}
+	// The key the gateway stamps on every /v1/dating request, anonymous ones
+	// included, no longer admits a caller here.
 	w = serve(r, http.MethodPost, "/v1/dating/moderation/scan", `{}`, map[string]string{headerInternalKey: testInternalKey})
+	if w.Code != http.StatusUnauthorized || errorCode(t, w) != CodeServiceTokenRequired {
+		t.Fatalf("key only: status=%d code=%q, want 401 %s", w.Code, errorCode(t, w), CodeServiceTokenRequired)
+	}
+	tok, err := signer.Mint(AudienceDating, "", []string{OpModerationScan}, nil, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	w = serve(r, http.MethodPost, "/v1/dating/moderation/scan", `{}`, map[string]string{
+		ServiceAuthHeader: "Bearer " + tok, headerInternalKey: testInternalKey,
+	})
 	if w.Code != http.StatusBadRequest {
-		t.Fatalf("service call: status=%d body=%s, want 400 (admitted, invalid message_id)", w.Code, w.Body.String())
+		t.Fatalf("service token: status=%d body=%s, want 400 (admitted, invalid message_id)", w.Code, w.Body.String())
 	}
 }
 
@@ -326,13 +386,13 @@ func TestOldPaths_GoneOrLegacyPreview(t *testing.T) {
 	if w.Code != http.StatusGone || !strings.Contains(w.Body.String(), InternalProfilePreviewPath) {
 		t.Fatalf("legacy preview as user: status=%d body=%s, want 410", w.Code, w.Body.String())
 	}
-	// … notification-service's key-only call is still served (400 here is
-	// the handler rejecting the id, i.e. admitted) …
+	// … the bare key no longer serves it (the gateway stamps that key on
+	// anonymous requests to this group) …
 	w = serve(r, http.MethodGet, "/v1/dating/profile/not-a-uuid/preview", "", map[string]string{headerInternalKey: testInternalKey})
-	if w.Code != http.StatusBadRequest {
-		t.Fatalf("legacy preview as service: status=%d body=%s, want 400 from the handler", w.Code, w.Body.String())
+	if w.Code != http.StatusUnauthorized || errorCode(t, w) != CodeServiceTokenRequired {
+		t.Fatalf("legacy preview with the key: status=%d body=%s, want 401 %s", w.Code, w.Body.String(), CodeServiceTokenRequired)
 	}
-	// … and without the key it is refused.
+	// … and without any credential it is refused.
 	if w := serve(r, http.MethodGet, "/v1/dating/profile/"+id+"/preview", "", nil); w.Code != http.StatusUnauthorized {
 		t.Fatalf("legacy preview without key: status=%d, want 401", w.Code)
 	}

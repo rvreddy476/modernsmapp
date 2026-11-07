@@ -81,9 +81,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.POST("/profile/pause", h.PostPause)
 		dating.DELETE("/profile", h.DeleteProfile)
 		// LEGACY path of the profile preview (moved to
-		// InternalProfilePreviewPath). Kept for one release for
-		// notification-service's internal-key call: served only when no
-		// gateway user identity is present, 410 otherwise.
+		// InternalProfilePreviewPath). 410 to a gateway user; otherwise a
+		// dating service token is required — never the internal key, which
+		// the gateway stamps on every request to this group.
 		dating.GET("/profile/:userId/preview", h.GetProfilePreviewLegacy)
 
 		// §P1-3 — Privacy controls (incognito, hide_last_active,

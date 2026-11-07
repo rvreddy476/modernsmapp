@@ -232,13 +232,27 @@ func TestAuthzIT_InternalPreviewAndRisk(t *testing.T) {
 	if _, err := env.pool.Exec(ctx, `UPDATE dating_profiles SET first_name='Asha' WHERE user_id=$1`, subject); err != nil {
 		t.Fatal(err)
 	}
-	serviceCall := map[string]string{headerInternalKey: testInternalKey}
+	keyCall := map[string]string{headerInternalKey: testInternalKey}
+	tokenCall := func(op string) map[string]string {
+		return bearer(env.rg.mint(t, env.rg.notifier, AudienceDating, []string{op}, ""))
+	}
 
-	for _, path := range []string{
-		"/v1/dating/internal/profile/" + subject.String() + "/preview",
-		"/v1/dating/profile/" + subject.String() + "/preview", // legacy, notification-service today
+	for _, tc := range []struct {
+		path        string
+		serviceCall map[string]string
+	}{
+		// The internal family still takes notification-service's legacy key.
+		{"/v1/dating/internal/profile/" + subject.String() + "/preview", keyCall},
+		// The retired path needs a token (8 Nov 2026); it is also behind the
+		// public group's engine-wide key gate, so the key rides along.
+		{"/v1/dating/profile/" + subject.String() + "/preview", func() map[string]string {
+			h := tokenCall(OpProfilePreview)
+			h[headerInternalKey] = testInternalKey
+			return h
+		}()},
 	} {
-		w := serve(env.r, http.MethodGet, path, "", serviceCall)
+		path := tc.path
+		w := serve(env.r, http.MethodGet, path, "", tc.serviceCall)
 		if w.Code != http.StatusOK || !strings.Contains(w.Body.String(), `"first_name":"Asha"`) {
 			t.Fatalf("service %s: status=%d body=%s, want 200 with first_name", path, w.Code, w.Body.String())
 		}
@@ -254,9 +268,16 @@ func TestAuthzIT_InternalPreviewAndRisk(t *testing.T) {
 		}
 	}
 
+	if w := serve(env.r, http.MethodGet, "/v1/dating/profile/"+subject.String()+"/preview", "", keyCall); w.Code != http.StatusUnauthorized || strings.Contains(w.Body.String(), "Asha") {
+		t.Fatalf("legacy preview with the bare key: status=%d body=%s, want 401 and no first name", w.Code, w.Body.String())
+	}
+
 	risk := "/v1/dating/internal/risk/" + subject.String()
-	if w := serve(env.r, http.MethodGet, risk, "", serviceCall); w.Code != http.StatusOK {
+	if w := serve(env.r, http.MethodGet, risk, "", tokenCall(OpRiskRead)); w.Code != http.StatusOK {
 		t.Fatalf("service risk: status=%d body=%s, want 200", w.Code, w.Body.String())
+	}
+	if w := serve(env.r, http.MethodGet, risk, "", keyCall); w.Code != http.StatusUnauthorized {
+		t.Fatalf("risk with the bare key: status=%d body=%s, want 401 (token-only)", w.Code, w.Body.String())
 	}
 	if w := serve(env.r, http.MethodGet, risk, "", gatewayUser(uuid.New(), "admin")); w.Code != http.StatusForbidden {
 		t.Fatalf("gateway admin on internal risk: status=%d, want 403", w.Code)

@@ -15,7 +15,8 @@
 //   - Sibling services calling the /v1/dating/internal family. They carry
 //     no end-user identity. requireServiceCaller admits a service token
 //     (X-Service-Authorization, shared/servicetoken, audience "dating") or,
-//     as the LEGACY fallback, the internal key — and refuses any request
+//     as the LEGACY fallback for the operations listed in legacyKeyOps and
+//     on the internal family only, the internal key — and refuses any request
 //     that carries a gateway-set user identity, because that is a user
 //     request the gateway proxied with the key attached.
 package http
@@ -79,7 +80,10 @@ const (
 	CodeUserCallerRefused         = "USER_CALLER_REFUSED"
 	CodeServiceCredentialRequired = "SERVICE_CREDENTIAL_REQUIRED"
 	CodeServiceTokenRejected      = "SERVICE_TOKEN_REJECTED"
-	CodeEndpointMoved             = "ENDPOINT_MOVED"
+	// CodeServiceTokenRequired: the route or operation takes a service token
+	// only; the legacy internal key is never enough there.
+	CodeServiceTokenRequired = "SERVICE_TOKEN_REQUIRED"
+	CodeEndpointMoved        = "ENDPOINT_MOVED"
 )
 
 const (
@@ -135,6 +139,35 @@ func (h *Handler) requireServiceCaller(op string) gin.HandlerFunc {
 	}
 }
 
+// internalFamilyPrefix is the route-pattern prefix of the service-only
+// family. The gateway refuses every edge path with an `internal` segment and
+// never stamps the key onto one, so a key seen on these routes did not ride
+// in on a user's request.
+const internalFamilyPrefix = "/v1/dating/internal/"
+
+// legacyKeyOps are the operations whose in-cluster callers still send only
+// the internal key (inventory 8 Nov 2026). Each entry is debt: when its
+// caller mints a dating service token (SERVICE_CALLERS), the entry goes.
+//
+// Not listed, so token-only: OpRiskRead and OpModerationScan, which no
+// service calls. The two routes outside the internal family — the moderation
+// scan and the retired /v1/dating/profile/:userId/preview — sit on the public
+// group the gateway stamps with the key on every user and anonymous request,
+// so the key proves nothing there; they are token-only whatever the op.
+var legacyKeyOps = map[string]bool{
+	OpProfilePreview:    true, // notification-service events/dating_consumer.go
+	OpSafetyPanicNotify: true, // notification-service events/dating_safety.go
+	OpMatchFirstMessage: true, // chat message-service service/dating_first_message.go
+	OpMatchChatState:    true, // chat message-service service/dating_match_gate.go
+}
+
+// legacyKeyAccepted reports whether the bare internal key may stand in for a
+// service token on this route and operation. It reads the matched route
+// pattern, not the request path, so no spelling of a path changes the answer.
+func legacyKeyAccepted(c *gin.Context, op string) bool {
+	return legacyKeyOps[op] && strings.HasPrefix(c.FullPath(), internalFamilyPrefix)
+}
+
 // authorizeServiceCaller admits a sibling-service call for one operation.
 //
 //  1. A request carrying a gateway-set user identity is refused (403
@@ -142,13 +175,17 @@ func (h *Handler) requireServiceCaller(op string) gin.HandlerFunc {
 //  2. A service token, when present, must verify for this audience and
 //     operation (403 SERVICE_TOKEN_REJECTED otherwise). A token is never
 //     "downgraded" to the key check.
-//  3. Otherwise the internal key is the LEGACY credential. It fails closed:
-//     no configured key admits nobody.
+//  3. Otherwise the internal key is the LEGACY credential, accepted only on
+//     the internal family and only for legacyKeyOps; every other route and
+//     operation answers 401 SERVICE_TOKEN_REQUIRED whatever key it carries
+//     (so the answer is no oracle for a guessed key). It fails closed: no
+//     configured key admits nobody.
 //
-// Residual (documented in the D1 report): the gateway injects the internal
-// key on anonymous requests too, and those carry no identity. The gateway's
-// /internal/ admin gate stops them on the new paths; on the legacy preview
-// path only a gateway-side auth requirement or retiring the path closes it.
+// This closes the residual the D1 report left open: the gateway stamps the
+// key on anonymous requests to /v1/dating/*, and those carry no identity, so
+// the key alone used to admit them to the moderation scan and the legacy
+// preview. The edge deny list (api-gateway internalroutes.ServiceOnlyRoutes)
+// was the only thing in the way.
 func (h *Handler) authorizeServiceCaller(c *gin.Context, op string) bool {
 	if hasGatewayIdentity(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, CodeUserCallerRefused,
@@ -169,6 +206,11 @@ func (h *Handler) authorizeServiceCaller(c *gin.Context, op string) bool {
 		}
 		c.Set(ctxServiceCaller, v.Issuer)
 		return true
+	}
+	if !legacyKeyAccepted(c, op) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, CodeServiceTokenRequired,
+			"this endpoint requires a service token; the internal key is not accepted", nil)
+		return false
 	}
 	if h.internalKey != "" && hmac.Equal([]byte(c.GetHeader(headerInternalKey)), []byte(h.internalKey)) {
 		c.Set(ctxServiceCaller, "legacy-internal-key")
