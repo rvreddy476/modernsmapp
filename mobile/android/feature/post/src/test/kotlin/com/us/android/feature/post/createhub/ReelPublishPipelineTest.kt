@@ -97,16 +97,27 @@ class ReelPublishPipelineTest {
         var statusCalls = 0
         private var nextId = 0
 
+        /** media-service over the transcode cap (2026-11-07): 413 VIDEO_TOO_LARGE for a video. */
+        var videoOverCap = false
+
+        /** Every confirm, by media id; [confirmFailures] answers the next ones, in order, before success. */
+        val confirms = mutableListOf<String>()
+        val confirmFailures = ArrayDeque<Throwable>()
+
         override suspend fun init(body: MediaInitRequest): ApiEnvelope<MediaInitDto> {
             inits += body
             if (body.fileType == refuseFileType) error("init refused for ${body.fileType}")
+            if (videoOverCap && body.fileType == "video") throw videoTooLarge()
             if (videoTooLargeForSimple && body.fileType == "video") throw useResumable()
             val id = "${body.fileType}-${++nextId}"
             return ApiEnvelope(MediaInitDto(mediaId = id, uploadUrl = "https://obj/put/$id"))
         }
 
-        override suspend fun confirm(body: MediaConfirmRequest): ApiEnvelope<MediaAssetDto> =
-            ApiEnvelope(MediaAssetDto(id = body.mediaId, processingStatus = "processing"))
+        override suspend fun confirm(body: MediaConfirmRequest): ApiEnvelope<MediaAssetDto> {
+            confirms += body.mediaId
+            confirmFailures.removeFirstOrNull()?.let { throw it }
+            return ApiEnvelope(MediaAssetDto(id = body.mediaId, processingStatus = "processing"))
+        }
 
         override suspend fun updateAltText(mediaId: String, body: MediaAltTextRequest): ApiEnvelope<MediaStatusDto> =
             ApiEnvelope(MediaStatusDto(mediaId = mediaId))
@@ -184,6 +195,11 @@ class ReelPublishPipelineTest {
         var shortBytes: Long? = null
         var videoBytes = 1_000L
         val stashed = mutableListOf<String>()
+        val released = mutableListOf<String>()
+
+        override fun releaseAccess(uri: String) {
+            released += uri
+        }
         override suspend fun stashVideo(uri: String, creationKey: String): StashResult {
             if (unreadable) return StashResult.Unreadable
             shortBytes?.let { return StashResult.NoSpace(it) }
@@ -1236,7 +1252,132 @@ class ReelPublishPipelineTest {
 
         assertThat(outcome.message).isEqualTo(CopyrightCopy.MEMBERS_ONLY_HELD)
     }
+
+    // ── The picker's grant (audit 2026-10-30, item 1) ───────────────────
+
+    @Test
+    fun `the grant kept on Post is let go once the copy is made`() = runTest {
+        val h = harness()
+
+        run(h, pending())
+
+        assertThat(h.files.released).containsExactly("content://video/1")
+    }
+
+    @Test
+    fun `an unreadable pick lets the grant go, and no room keeps it for the retry`() = runTest {
+        val unreadable = harness(files = FakeFiles().apply { unreadable = true })
+        run(unreadable, pending())
+        assertThat(unreadable.files.released).containsExactly("content://video/1")
+
+        val full = harness(files = FakeFiles().apply { shortBytes = 1L })
+        run(full, pending())
+        assertThat(full.files.released).isEmpty()
+    }
+
+    // ── Over the platform's cap (413 VIDEO_TOO_LARGE, 2026-11-07) ───────
+
+    @Test
+    fun `a video over the cap says so with the cap, once, and never falls back to resumable`() = runTest {
+        val api = FakeUploadApi().apply { videoOverCap = true }
+        val h = harness(api = api)
+
+        val outcome = run(h, pending())
+
+        assertThat(outcome).isEqualTo(
+            ReelPublishPipeline.Outcome.Failed("This video is too big to upload (max 16 GB).", retryable = false),
+        )
+        assertThat(api.inits).hasSize(1)
+        assertThat(h.resumable.inits).isEmpty()
+        assertThat(h.repository.requests).isEmpty()
+    }
+
+    // ── Small uploads: checkpointed and retried (audit item 10, lane item 5) ──
+
+    @Test
+    fun `a confirm lost to the network keeps the reserved id and is transient`() = runTest {
+        val api = FakeUploadApi().apply { confirmFailures += java.io.IOException("offline") }
+        val h = harness(api = api)
+
+        val outcome = run(h, pending()) as ReelPublishPipeline.Outcome.Failed
+
+        assertThat(outcome.retryable).isTrue()
+        assertThat(outcome.transient).isTrue()
+        assertThat(h.store.record?.reservedVideoId).isEqualTo("video-1")
+        assertThat(h.store.record?.confirmedVideoId).isNull()
+    }
+
+    @Test
+    fun `the retry confirms the reserved id and never sends the file again`() = runTest {
+        val api = FakeUploadApi().apply { confirmFailures += java.io.IOException("offline") }
+        val h = harness(api = api)
+        run(h, pending())
+
+        val outcome = run(h, h.store.record!!)
+
+        assertThat(outcome).isEqualTo(ReelPublishPipeline.Outcome.Published("post-1"))
+        // One video init for both runs: the second run only confirmed.
+        assertThat(api.inits.count { it.fileType == "video" }).isEqualTo(1)
+        assertThat(api.confirms.filter { it.startsWith("video") }).containsExactly("video-1", "video-1")
+        assertThat(h.repository.requests.single().mediaIds).containsExactly("video-1")
+        assertThat(h.store.record?.reservedVideoId).isNull()
+    }
+
+    @Test
+    fun `a reserved id the server never got bytes for is forgotten and the upload starts clean`() = runTest {
+        val api = FakeUploadApi()
+        val h = harness(api = api)
+        val stale = pending().copy(
+            videoPath = "/cache/key-1.video",
+            videoMimeType = "video/mp4",
+            reservedVideoId = "video-0",
+        )
+        api.confirmFailures += objectMissing()
+
+        val outcome = run(h, stale)
+
+        assertThat(outcome).isEqualTo(ReelPublishPipeline.Outcome.Published("post-1"))
+        assertThat(api.confirms.first()).isEqualTo("video-0")
+        assertThat(h.repository.requests.single().mediaIds).containsExactly("video-1")
+    }
+
+    @Test
+    fun `a confirm the server refuses is not retried by itself`() = runTest {
+        val api = FakeUploadApi().apply { confirmFailures += objectMissing() }
+        val h = harness(api = api)
+
+        val outcome = run(h, pending()) as ReelPublishPipeline.Outcome.Failed
+
+        assertThat(outcome.retryable).isTrue()
+        assertThat(outcome.transient).isFalse()
+        assertThat(h.store.record?.reservedVideoId).isNull()
+    }
+
+    @Test
+    fun `a refused start is the user's retry, not the worker's`() = runTest {
+        val refused = harness(api = FakeUploadApi().apply { refuseFileType = "video" })
+        val outcome = run(refused, pending()) as ReelPublishPipeline.Outcome.Failed
+        assertThat(outcome.message).isEqualTo(ReelMediaUploads.START_FAILED)
+        assertThat(outcome.transient).isFalse()
+    }
 }
+
+/** What media-service answers either init for a video over the worker's cap (2026-11-07). */
+private fun videoTooLarge(): HttpException = HttpException(
+    Response.error<Any>(
+        413,
+        """{"error":{"code":"VIDEO_TOO_LARGE","message":"video too large","details":{"max_bytes":17179869184}}}"""
+            .toResponseBody(),
+    ),
+)
+
+/** media-service's confirm when the object never landed whole. */
+private fun objectMissing(): HttpException = HttpException(
+    Response.error<Any>(
+        409,
+        """{"error":{"code":"UPLOAD_OBJECT_MISSING","message":"no object"}}""".toResponseBody(),
+    ),
+)
 
 /** What media-service answers a simple init over its single-PUT ceiling. */
 private fun useResumable(): HttpException = HttpException(

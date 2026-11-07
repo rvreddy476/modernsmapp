@@ -28,9 +28,16 @@ import javax.inject.Singleton
  */
 const val RESUMABLE_THRESHOLD_BYTES: Long = 100L * 1024L * 1024L
 
-/** Whether a refused simple `init` is the server asking for the resumable path. */
+/**
+ * Whether a refused simple `init` is the server asking for the resumable path:
+ * its code, or a 413 with no code at all (a server older than the code). A
+ * 413 with ANOTHER code refuses the file, not the route: [CODE_VIDEO_TOO_LARGE]
+ * (2026-11-07) is refused by the resumable route too, and falling back there
+ * only earned a second 413.
+ */
 fun AppError.asksForResumableUpload(): Boolean =
-    this is AppError.Unknown && (code == CODE_USE_RESUMABLE_UPLOAD || statusCode == HTTP_PAYLOAD_TOO_LARGE)
+    this is AppError.Unknown &&
+        (code == CODE_USE_RESUMABLE_UPLOAD || (code == null && statusCode == HTTP_PAYLOAD_TOO_LARGE))
 
 private const val HTTP_PAYLOAD_TOO_LARGE = 413
 
@@ -87,7 +94,7 @@ class RetrofitResumableTransport @Inject constructor(
     private val errorMapper: ErrorMapper,
 ) : ResumableUploadTransport {
     override suspend fun init(request: ResumableInitRequest): AppResult<ResumableInitDto> =
-        apiCall(errorMapper) { api.init(request) }
+        uploadInitCall(errorMapper) { api.init(request) }
 
     override suspend fun uploadPart(
         uploadId: String,
@@ -188,7 +195,8 @@ class ResumableUploader internal constructor(
             // The server refused THIS file; asking again gets the same answer.
             is Attempt.Refused -> return Step.Stopped(
                 ResumableOutcome.Failed(
-                    message = START_REFUSED,
+                    // Over the platform's cap (2026-11-07): say so, and the cap.
+                    message = result.error.videoTooLarge()?.message ?: START_REFUSED,
                     retryable = !result.error.isFinalRefusal(),
                     discardSession = true,
                 ),

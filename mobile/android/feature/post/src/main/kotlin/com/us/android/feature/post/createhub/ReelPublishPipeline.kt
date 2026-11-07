@@ -95,7 +95,14 @@ class ReelPublishPipeline @Inject constructor(
 
         /** The user discarded the publish while it ran; nothing was persisted. */
         data object Discarded : Outcome
-        data class Failed(val message: String, val retryable: Boolean, val needsChannel: Boolean = false) : Outcome
+
+        /** [transient]: the network's failure, which the worker retries by itself (2026-11-07). */
+        data class Failed(
+            val message: String,
+            val retryable: Boolean,
+            val needsChannel: Boolean = false,
+            val transient: Boolean = false,
+        ) : Outcome
     }
 
     /** Thrown internally to unwind to [run] with the failure already persisted. */
@@ -132,9 +139,13 @@ class ReelPublishPipeline @Inject constructor(
     private suspend fun stashVideo(run: Run, pending: PendingReelPublish): PendingReelPublish {
         if (pending.videoPath != null) return pending
         report(run, ReelPublishState.Preparing)
-        val stashed = when (val result = files.stashVideo(pending.videoUri, pending.creationKey)) {
+        val result = files.stashVideo(pending.videoUri, pending.creationKey)
+        // The copy is what uploads from here on, and an unreadable pick is
+        // picked again: either way the grant kept on Post has done its job.
+        if (result !is StashResult.NoSpace) files.releaseAccess(pending.videoUri)
+        val stashed = when (result) {
             is StashResult.Stashed -> result.video
-            StashResult.Unreadable -> fail(run, pending, "That video can't be read. Pick it again.", retryable = false)
+            StashResult.Unreadable -> fail(run, pending, UNREADABLE_MESSAGE, retryable = false)
             // Retryable: freeing space and tapping Retry is exactly the fix.
             is StashResult.NoSpace -> fail(run, pending, noSpaceMessage(result.shortBytes), retryable = true)
         }
@@ -144,7 +155,7 @@ class ReelPublishPipeline @Inject constructor(
     private suspend fun uploadVideo(run: Run, pending: PendingReelPublish): PendingReelPublish {
         if (pending.confirmedVideoId != null) return pending
         val picked = files.openVideo(pending.videoPath.orEmpty(), pending.videoMimeType.orEmpty())
-            ?: fail(run, pending, "That video can't be read. Pick it again.", retryable = false)
+            ?: fail(run, pending, UNREADABLE_MESSAGE, retryable = false)
         report(run, ReelPublishState.Uploading(0f))
         var lastPercent = -1
         // Updated by every session checkpoint, so the failure or the confirm
@@ -156,6 +167,8 @@ class ReelPublishPipeline @Inject constructor(
                 video = picked,
                 resume = pending.resumableSession,
                 onSession = { session -> current = checkpoint(run, current.copy(resumableSession = session)) },
+                reserved = pending.reservedVideoId,
+                onReserved = { id -> current = checkpoint(run, current.copy(reservedVideoId = id)) },
             ) { fraction ->
                 // A discarded publish stops the bytes here: the PUT fails, the
                 // step reports, and nothing of it is written back.
@@ -172,9 +185,15 @@ class ReelPublishPipeline @Inject constructor(
         return when (outcome) {
             is ReelMediaUploads.Outcome.Ready -> checkpoint(
                 run,
-                current.copy(confirmedVideoId = outcome.mediaId, processingSinceMillis = null, resumableSession = null),
+                current.copy(
+                    confirmedVideoId = outcome.mediaId,
+                    processingSinceMillis = null,
+                    resumableSession = null,
+                    reservedVideoId = null,
+                ),
             )
-            is ReelMediaUploads.Outcome.Failed -> fail(run, current, outcome.message, outcome.retryable)
+            is ReelMediaUploads.Outcome.Failed ->
+                fail(run, current, outcome.message, outcome.retryable, transient = outcome.transient)
         }
     }
 
@@ -190,7 +209,11 @@ class ReelPublishPipeline @Inject constructor(
         upload()
     } catch (e: IOException) {
         if (run.isDiscarded()) throw Stop(Outcome.Discarded)
-        ReelMediaUploads.Outcome.Failed(e.message ?: "The upload didn't finish. Try again.", retryable = true)
+        ReelMediaUploads.Outcome.Failed(
+            e.message ?: "The upload didn't finish. Try again.",
+            retryable = true,
+            transient = true,
+        )
     }
 
     private suspend fun uploadCover(run: Run, pending: PendingReelPublish): PendingReelPublish {
@@ -326,10 +349,11 @@ class ReelPublishPipeline @Inject constructor(
         message: String,
         retryable: Boolean,
         needsChannel: Boolean = false,
+        transient: Boolean = false,
     ): Nothing {
         if (run.isDiscarded()) throw Stop(Outcome.Discarded)
         store.save(pending.copy(failure = PendingReelFailure(message, retryable, needsChannel)))
-        throw Stop(Outcome.Failed(message, retryable, needsChannel))
+        throw Stop(Outcome.Failed(message, retryable, needsChannel, transient))
     }
 
     private fun AppError.isNotReady(): Boolean = this is AppError.Server && code == MEDIA_NOT_READY
@@ -358,6 +382,9 @@ class ReelPublishPipeline @Inject constructor(
         }
 
         private fun ceilDiv(value: Long, by: Long): Long = (value + by - 1) / by
+
+        /** The picked video is gone, or its grant lapsed (a process death before the copy). */
+        const val UNREADABLE_MESSAGE = "That video can't be read. Pick it again."
 
         /** post-service's refusal of a confirmed-but-untranscoded video. */
         const val MEDIA_NOT_READY = "MEDIA_NOT_READY"

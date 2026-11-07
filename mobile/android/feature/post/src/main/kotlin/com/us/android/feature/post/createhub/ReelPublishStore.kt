@@ -1,6 +1,8 @@
 package com.us.android.feature.post.createhub
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import com.us.android.core.common.di.Dispatcher
 import com.us.android.core.common.di.UsDispatcher
 import com.us.android.core.feed.data.credits.CreditInputDto
@@ -122,6 +124,13 @@ data class PendingReelPublish(
      */
     val resumableSession: ResumableSession? = null,
     /**
+     * A small video's reserved id (2026-11-07), saved before its single PUT
+     * and cleared once it is confirmed or must be forgotten. The next run
+     * confirms THIS id before uploading again, so a PUT that landed and a
+     * confirm that did not cost one call, not the whole file twice.
+     */
+    val reservedVideoId: String? = null,
+    /**
      * FALLBACK ONLY: when the pre-instant server's `MEDIA_NOT_READY` first
      * sent the pipeline polling — the 30-minute window runs from here.
      */
@@ -197,6 +206,17 @@ fun stashShortfall(sizeBytes: Long, freeBytes: Long): Long =
 interface ReelPublishFiles {
     /** Copy the picked video into app storage, when it can be read and there is room. */
     suspend fun stashVideo(uri: String, creationKey: String): StashResult
+
+    /**
+     * Keep read access to the picked [uri] past this process (2026-11-07),
+     * where its provider allows: the copy is made in the worker, which may
+     * run after a process death, and a Photo Picker grant dies with the
+     * process that picked. Best effort; a URI the app owns needs none.
+     */
+    fun keepAccess(uri: String) = Unit
+
+    /** Let [keepAccess]'s grant go: the copy is made, or the publish is over. */
+    fun releaseAccess(uri: String) = Unit
 
     /**
      * Where the studio's export lands for [creationKey] — the same place a
@@ -332,6 +352,17 @@ class AndroidReelPublishFiles @Inject constructor(
         StashResult.Stashed(StashedVideo(path = target.absolutePath, mimeType = picked.mimeType))
     }
 
+    // A provider that grants no persistable access (the app's own camera
+    // file, an in-app gallery MediaStore URI) throws: those outlive the
+    // process anyway, and a lapsed one ends as "can't be read", never a crash.
+    override fun keepAccess(uri: String) {
+        runCatching { context.contentResolver.takePersistableUriPermission(Uri.parse(uri), READ_GRANT) }
+    }
+
+    override fun releaseAccess(uri: String) {
+        runCatching { context.contentResolver.releasePersistableUriPermission(Uri.parse(uri), READ_GRANT) }
+    }
+
     override fun exportTarget(creationKey: String): String = File(dir, "$creationKey.video").absolutePath
 
     override suspend fun writeCover(bytes: ByteArray, creationKey: String): String? = withContext(io) {
@@ -377,5 +408,6 @@ class AndroidReelPublishFiles @Inject constructor(
     private companion object {
         const val DIR = "reel_publish"
         const val COPY_BUFFER_BYTES = 256 * 1024
+        const val READ_GRANT = Intent.FLAG_GRANT_READ_URI_PERMISSION
     }
 }

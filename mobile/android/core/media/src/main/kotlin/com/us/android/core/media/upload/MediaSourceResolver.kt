@@ -32,10 +32,17 @@ class AndroidMediaSourceResolver @Inject constructor(
 ) : MediaSourceResolver {
     private val resolver: ContentResolver = context.contentResolver
 
+    /**
+     * Null when the media cannot be looked up, a lapsed grant included. A
+     * Photo Picker URI is a grant to the process that picked it: after a
+     * process death `getType`/`query` THROW `SecurityException` rather than
+     * answering null (audit 2026-10-30), and the upload worker crashed on it
+     * at every launch. "Can't be read" is the answer either way.
+     */
     override fun resolve(uri: String): PickedMedia? {
         val parsed = runCatching { Uri.parse(uri) }.getOrNull() ?: return null
-        val mimeType = resolver.getType(parsed) ?: return null
-        val sizeBytes = querySize(parsed) ?: return null
+        val mimeType = lookup { resolver.getType(parsed) } ?: return null
+        val sizeBytes = lookup { querySize(parsed) } ?: return null
         if (sizeBytes <= 0L) return null
 
         return PickedMedia(
@@ -48,6 +55,14 @@ class AndroidMediaSourceResolver @Inject constructor(
             },
         )
     }
+
+    /**
+     * A provider's refusal, or its crash, as null. A provider may throw
+     * `SecurityException`, `IllegalArgumentException` (an unknown URI) or
+     * `IllegalStateException` (a closed cursor), and nothing here can act
+     * on the difference.
+     */
+    private inline fun <T> lookup(block: () -> T?): T? = runCatching(block).getOrNull()
 
     private fun querySize(uri: Uri): Long? =
         resolver.query(uri, arrayOf(OpenableColumns.SIZE), null, null, null)?.use { cursor ->

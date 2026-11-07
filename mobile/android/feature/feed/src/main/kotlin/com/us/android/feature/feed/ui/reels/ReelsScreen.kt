@@ -86,8 +86,6 @@ import androidx.paging.LoadState
 import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import coil3.compose.AsyncImage
-import com.us.android.core.memberships.ui.MembersOnlyLock
-import com.us.android.core.memberships.ui.MembersOnlyLockStyle
 import com.us.android.core.analytics.WatchProbe
 import com.us.android.core.common.time.formatRelativeTime
 import com.us.android.core.designsystem.component.UsHeaderCornerAction
@@ -96,8 +94,6 @@ import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
-import com.us.android.core.feed.ui.action.ActionPill
-import com.us.android.core.feed.ui.action.ActionPillStyle
 import com.us.android.core.engagement.data.EngagementOverlay
 import com.us.android.core.feed.data.AudioTrack
 import com.us.android.core.feed.data.videoMediaId
@@ -105,6 +101,8 @@ import com.us.android.core.feed.offline.OfflineEntry
 import com.us.android.core.feed.offline.OfflinePhase
 import com.us.android.core.feed.offline.OfflineState
 import com.us.android.core.feed.offline.WAITING_FOR_NETWORK
+import com.us.android.core.feed.ui.action.ActionPill
+import com.us.android.core.feed.ui.action.ActionPillStyle
 import com.us.android.core.feed.ui.audio.AudioTracksSheet
 import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.edit.PostEditSheet
@@ -121,9 +119,12 @@ import com.us.android.core.media.sound.ReelSoundPlayer
 import com.us.android.core.media.sound.SoundTrack
 import com.us.android.core.media.sound.appliedVolume
 import com.us.android.core.media.ui.CaptionsOverlay
+import com.us.android.core.media.ui.ForegroundPlayback
 import com.us.android.core.media.ui.OfflineCopyBadge
 import com.us.android.core.media.ui.OfflineSaveRing
 import com.us.android.core.media.ui.VideoLoadingIndicator
+import com.us.android.core.memberships.ui.MembersOnlyLock
+import com.us.android.core.memberships.ui.MembersOnlyLockStyle
 import com.us.android.core.model.ChannelSubscription
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FollowStatus
@@ -1135,6 +1136,12 @@ private fun ReelsPager(
     LaunchedEffect(view.mayPlay) {
         if (view.mayPlay) pool.playOnly(pagerState.settledPage) else pool.pauseAll()
     }
+    // Back from the background (Home, a notification, the share chooser):
+    // ReleaseOnLifecycle paused every player on ON_STOP, and nothing on
+    // screen changed, so the effect above never runs again — the reel came
+    // back frozen with no play glyph (audit 2026-10-30). It resumes as it
+    // was left: playing, unless the viewer held it paused.
+    ForegroundPlayback(resume = { if (view.mayPlay) pool.playOnly(pagerState.settledPage) })
 
     VerticalPager(
         state = pagerState,

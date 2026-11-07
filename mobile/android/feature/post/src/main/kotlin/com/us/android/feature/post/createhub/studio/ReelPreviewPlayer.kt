@@ -2,6 +2,8 @@ package com.us.android.feature.post.createhub.studio
 
 import android.content.Context
 import android.view.TextureView
+import androidx.media3.common.AudioAttributes
+import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
@@ -29,10 +31,16 @@ import androidx.media3.exoplayer.SeekParameters
 @UnstableApi
 class ReelPreviewPlayer(context: Context) {
 
-    val player: ExoPlayer = ExoPlayer.Builder(context).build().apply {
-        repeatMode = Player.REPEAT_MODE_ONE
-        setSeekParameters(SeekParameters.CLOSEST_SYNC)
-    }
+    // A media player like any other (audit 2026-10-30): it yields to a call
+    // or another app's audio, and stops when headphones are pulled.
+    val player: ExoPlayer = ExoPlayer.Builder(context)
+        .setAudioAttributes(PREVIEW_AUDIO, true)
+        .setHandleAudioBecomingNoisy(true)
+        .build()
+        .apply {
+            repeatMode = Player.REPEAT_MODE_ONE
+            setSeekParameters(SeekParameters.CLOSEST_SYNC)
+        }
 
     private var uri: String? = null
     private var look: ReelLook? = null
@@ -76,6 +84,11 @@ class ReelPreviewPlayer(context: Context) {
         player.seekTo(timeUs / MICROS_PER_MILLI)
     }
 
+    /** The screen went to the background: stop now, whatever the state says. */
+    fun pause() {
+        player.playWhenReady = false
+    }
+
     fun release() {
         player.clearVideoTextureView(view)
         player.release()
@@ -88,6 +101,11 @@ class ReelPreviewPlayer(context: Context) {
 
     private companion object {
         const val MICROS_PER_MILLI = 1_000L
+
+        val PREVIEW_AUDIO: AudioAttributes = AudioAttributes.Builder()
+            .setUsage(C.USAGE_MEDIA)
+            .setContentType(C.AUDIO_CONTENT_TYPE_MOVIE)
+            .build()
 
         /** A seek lands on the nearest sync frame, which may sit a little before the start handle. */
         const val SLACK_US = 1_500_000L

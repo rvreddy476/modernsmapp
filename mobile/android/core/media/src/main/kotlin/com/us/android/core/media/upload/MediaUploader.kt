@@ -74,7 +74,8 @@ class MediaUploader @Inject constructor(
         // The server binds `oneof=image video`; image stays the default so
         // every existing call site keeps its exact request.
         fileType: String = FILE_TYPE_IMAGE,
-    ): AppResult<MediaInitDto> = apiCall(errorMapper) {
+    ): AppResult<MediaInitDto> = uploadInitCall(errorMapper) {
+        // A 413 keeps its details here: VIDEO_TOO_LARGE names the cap.
         api.init(
             MediaInitRequest(
                 fileType = fileType,

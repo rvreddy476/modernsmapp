@@ -57,11 +57,15 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.media3.common.util.UnstableApi
 import com.us.android.core.designsystem.component.UsPillButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.designsystem.theme.UsTypeScale
+import com.us.android.core.media.ui.ForegroundPlayback
 import com.us.android.core.media.ui.VideoLoadState
 import com.us.android.core.media.ui.VideoLoadingOverlay
 import com.us.android.core.media.ui.rememberVideoLoadState
@@ -165,11 +169,24 @@ private fun StudioBody(edit: ReelEdit, state: StudioState, actions: StudioAction
     val player = remember { ReelPreviewPlayer(context) }
     DisposableEffect(player) { onDispose { player.release() } }
     LaunchedEffect(edit.sourceUri, edit.look, edit.speed, state.playing) { player.apply(edit, state.playing) }
+    // Home, or another app: the preview stops, sound and all (audit
+    // 2026-10-30), and is still paused on return — one tap plays. The
+    // player is told directly: the effect above cannot run while stopped.
+    ForegroundPlayback(
+        pause = {
+            player.pause()
+            actions.setPlaying(false)
+        },
+    )
     val latest by rememberUpdatedState(edit)
-    LaunchedEffect(Unit) {
-        while (true) {
-            player.keepInside(latest)
-            delay(LOOP_TICK_MILLIS)
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    LaunchedEffect(lifecycle) {
+        // The loop's seeks only while the screen is in front.
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            while (true) {
+                player.keepInside(latest)
+                delay(LOOP_TICK_MILLIS)
+            }
         }
     }
     Column(modifier = Modifier.fillMaxSize()) {

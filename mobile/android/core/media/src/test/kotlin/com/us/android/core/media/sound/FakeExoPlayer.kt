@@ -2,13 +2,19 @@
 
 package com.us.android.core.media.sound
 
+import android.net.Uri
 import androidx.annotation.OptIn
 import androidx.media3.common.C
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.Timeline
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSpec
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.analytics.AnalyticsListener
+import androidx.media3.exoplayer.source.LoadEventInfo
+import androidx.media3.exoplayer.source.MediaLoadData
 import androidx.media3.exoplayer.source.MediaSource
 import com.us.android.core.media.PlayerFactory
 import java.lang.reflect.InvocationHandler
@@ -40,6 +46,7 @@ internal class FakeExoPlayer(val name: String = "player") {
     /** Every write, in order: `volume=0.2`, `seekTo=6500`, `prepare`… */
     val calls = mutableListOf<String>()
     val listeners = mutableListOf<Player.Listener>()
+    val analytics = mutableListOf<AnalyticsListener>()
     val sources = mutableListOf<MediaSource>()
 
     val player: ExoPlayer = Proxy.newProxyInstance(
@@ -82,11 +89,29 @@ internal class FakeExoPlayer(val name: String = "player") {
         listeners.toList().forEach { it.onPlaybackParametersChanged(PlaybackParameters(speed)) }
     }
 
-    fun fail() {
-        val error = PlaybackException("scripted", null, PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS)
+    fun fail(
+        error: PlaybackException = PlaybackException("scripted", null, PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS),
+    ) {
         playbackState = Player.STATE_IDLE
         listeners.toList().forEach { it.onPlayerError(error) }
     }
+
+    /** The play state changed, as a user's or a pool's call to it reports. */
+    fun requestPlay(play: Boolean) {
+        playWhenReady = play
+        val reason = Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST
+        listeners.toList().forEach { it.onPlayWhenReadyChanged(play, reason) }
+    }
+
+    /** A load finished, with [headers] on its response: a playlist when [dataType] is the manifest's. */
+    fun loaded(headers: Map<String, List<String>>, dataType: Int = C.DATA_TYPE_MANIFEST) {
+        val info = LoadEventInfo(0L, DataSpec(Uri.EMPTY), Uri.EMPTY, headers, 0L, 0L, 0L)
+        val data = MediaLoadData(dataType)
+        analytics.toList().forEach { it.onLoadCompleted(eventTime(), info, data) }
+    }
+
+    private fun eventTime() =
+        AnalyticsListener.EventTime(0L, Timeline.EMPTY, 0, null, 0L, Timeline.EMPTY, 0, null, 0L, 0L)
 
     private fun position(ms: Long) = Player.PositionInfo(null, 0, null, null, 0, ms, ms, C.INDEX_UNSET, C.INDEX_UNSET)
 
@@ -109,7 +134,15 @@ internal class FakeExoPlayer(val name: String = "player") {
             "setRepeatMode" -> write("repeatMode=${args!![0]}") { repeatMode = args[0] as Int }
             "addListener" -> write("addListener") { listeners += args!![0] as Player.Listener }
             "removeListener" -> write("removeListener") { listeners -= args!![0] as Player.Listener }
-            "setMediaSource" -> write("setMediaSource") { sources += args!![0] as MediaSource }
+            // With a start position (a re-prepare in place) the call says where.
+            "setMediaSource" -> write(if (args!!.size > 1) "setMediaSource@${args[1]}" else "setMediaSource") {
+                sources += args[0] as MediaSource
+                (args.getOrNull(1) as? Long)?.let { positionMs = it }
+            }
+            "addAnalyticsListener" -> write("addAnalyticsListener") { analytics += args!![0] as AnalyticsListener }
+            "removeAnalyticsListener" -> write("removeAnalyticsListener") {
+                analytics -= args!![0] as AnalyticsListener
+            }
             "prepare" -> write("prepare") { playbackState = Player.STATE_BUFFERING }
             "stop" -> write("stop") { playbackState = Player.STATE_IDLE }
             "clearMediaItems" -> write("clearMediaItems") {}

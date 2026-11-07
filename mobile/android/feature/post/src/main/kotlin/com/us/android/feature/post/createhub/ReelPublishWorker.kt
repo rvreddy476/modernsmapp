@@ -3,6 +3,7 @@ package com.us.android.feature.post.createhub
 import android.content.Context
 import android.util.Log
 import androidx.hilt.work.HiltWorker
+import androidx.work.BackoffPolicy
 import androidx.work.Constraints
 import androidx.work.CoroutineWorker
 import androidx.work.ExistingWorkPolicy
@@ -38,6 +39,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Collections
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -96,26 +98,27 @@ class ReelPublishWorker @AssistedInject constructor(
         if (pending.failure != null && !retry) return Result.success()
         if (needsForeground(pending.confirmedVideoId != null, videoBytes(pending))) promoteToForeground()
 
-        return when (val outcome = pipeline.run(pending, isDiscarded = { discards.isDiscarded(key) })) {
-            is ReelPublishPipeline.Outcome.Published -> {
-                // The record as the pipeline left it, not as this run loaded
-                // it: the stashed copy's path was written by a checkpoint
-                // and would be missed (and leak) if read from `pending`.
-                val final = store.load(key) ?: pending
-                store.remove(key)
-                files.delete(listOf(final.videoPath, final.coverPath))
-                tracker.update(key, publishedState(outcome, final.publishAt))
-                Result.success(workDataOf(KEY_POST_ID to outcome.postId))
+        val run = ReelPublishRun(
+            pipeline = { record, isDiscarded -> pipeline.run(record, isDiscarded = isDiscarded) },
+            store = store,
+            files = files,
+            tracker = tracker,
+            discards = discards,
+        )
+        return when (val end = run.run(pending, attempt = runAttemptCount)) {
+            is ReelPublishRun.End.Finished -> when {
+                end.postId != null -> Result.success(workDataOf(KEY_POST_ID to end.postId))
+                end.failure != null -> Result.success(workDataOf(KEY_FAILURE_REASON to end.failure))
+                else -> Result.success()
             }
-            ReelPublishPipeline.Outcome.Continue -> {
+            ReelPublishRun.End.Continue -> {
                 enqueue(applicationContext, key)
                 Result.success()
             }
-            ReelPublishPipeline.Outcome.Discarded -> Result.success()
-            is ReelPublishPipeline.Outcome.Failed -> {
-                tracker.update(key, ReelPublishState.Failed(outcome.message, outcome.retryable, outcome.needsChannel))
-                Result.success(workDataOf(KEY_FAILURE_REASON to outcome.message))
-            }
+            // The same link waits out the backoff and the network
+            // constraint; the queue behind it waits with it, as it would
+            // have to without a connection anyway.
+            ReelPublishRun.End.RetryLater -> Result.retry()
         }
     }
 
@@ -164,6 +167,8 @@ class ReelPublishWorker @AssistedInject constructor(
         /** The one chain every publish joins the end of. */
         const val QUEUE_NAME = "reel-publish-queue"
 
+        private const val RETRY_BACKOFF_SECONDS = 30L
+
         /**
          * Append a run for [creationKey] to the queue. APPEND_OR_REPLACE:
          * after the current chain when one is still running, at once when
@@ -174,6 +179,8 @@ class ReelPublishWorker @AssistedInject constructor(
             val request = OneTimeWorkRequestBuilder<ReelPublishWorker>()
                 .setInputData(workDataOf(KEY_CREATION_KEY to creationKey, KEY_RETRY to retry))
                 .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
+                // A transient failure's retry (ReelPublishRun.AUTO_RETRIES): 30 s, 60 s, 120 s.
+                .setBackoffCriteria(BackoffPolicy.EXPONENTIAL, RETRY_BACKOFF_SECONDS, TimeUnit.SECONDS)
                 .build()
             WorkManager.getInstance(context)
                 .enqueueUniqueWork(QUEUE_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, request)
@@ -231,6 +238,9 @@ class ReelPublishController @Inject constructor(
     }
 
     override suspend fun enqueue(pending: PendingReelPublish) {
+        // The worker copies the pick, maybe after a process death: keep the
+        // grant to read it until then (released once copied, or discarded).
+        if (pending.videoPath == null) files.keepAccess(pending.videoUri)
         store.save(pending)
         // The preview first, then the state: the grid draws the pending
         // tile the moment the state turns active, and wants the cover then.
@@ -271,6 +281,7 @@ class ReelPublishController @Inject constructor(
                 return@launch
             }
             store.remove(creationKey)
+            if (pending.videoPath == null) files.releaseAccess(pending.videoUri)
             files.delete(listOf(pending.videoPath, pending.coverPath))
             tracker.reset(creationKey)
         }

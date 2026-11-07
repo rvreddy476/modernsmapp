@@ -101,5 +101,12 @@ sealed interface AppError {
          * a generic failure (2026-09-05).
          */
         val message: String? = null,
+        /**
+         * The envelope's `error.details`, primitives as their content, when
+         * something read them. Empty otherwise. Added 2026-11-07 for the
+         * upload `init`'s 413 `VIDEO_TOO_LARGE`, whose `details.max_bytes`
+         * the message must name; core:media reads it from the body today.
+         */
+        val details: Map<String, String> = emptyMap(),
     ) : AppError
 }

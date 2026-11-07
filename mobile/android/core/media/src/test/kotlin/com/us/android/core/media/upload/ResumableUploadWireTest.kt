@@ -1,6 +1,7 @@
 package com.us.android.core.media.upload
 
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.network.ErrorMapper
 import kotlinx.coroutines.runBlocking
@@ -187,5 +188,73 @@ class ResumableUploadWireTest {
 
         assertThat(result).isInstanceOf(AppResult.Failure::class.java)
         assertThat((result as AppResult.Failure).error.asksForResumableUpload()).isTrue()
+    }
+
+    // ── 413 VIDEO_TOO_LARGE (2026-11-07) ────────────────────────────────
+
+    private val tooLargeBody =
+        """{"error":{"code":"VIDEO_TOO_LARGE","message":"video too large: 20000000000 bytes (max 17179869184)",""" +
+            """"details":{"max_bytes":17179869184}},"meta":{"request_id":"req-9"}}"""
+
+    @Test
+    fun `the simple init's too-large keeps its code, request id and cap, and is no resumable switch`() = runBlocking {
+        enqueueJson(tooLargeBody, code = 413)
+        val simple = Retrofit.Builder()
+            .baseUrl(server.url("/"))
+            .client(client)
+            .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+            .build()
+            .create(MediaUploadApi::class.java)
+        val uploader = MediaUploader(simple, PresignedUploader(client), ErrorMapper(json))
+
+        val result = uploader.reserve("video/mp4", 20_000_000_000L, fileType = FILE_TYPE_VIDEO)
+
+        val error = (result as AppResult.Failure).error as AppError.Unknown
+        // The body was peeked, not consumed: the mapper still read all of it.
+        assertThat(error.code).isEqualTo(CODE_VIDEO_TOO_LARGE)
+        assertThat(error.requestId).isEqualTo("req-9")
+        assertThat(error.videoTooLarge()).isEqualTo(VideoTooLarge(maxBytes = 17_179_869_184L))
+        assertThat(error.asksForResumableUpload()).isFalse()
+    }
+
+    @Test
+    fun `the resumable init's too-large stops the upload with the cap, once, and not retryable`() = runBlocking {
+        enqueueJson(tooLargeBody, code = 413)
+        val uploader = ResumableUploader(RetrofitResumableTransport(api, ErrorMapper(json)))
+
+        val outcome = uploader.upload(
+            mimeType = "video/mp4",
+            totalBytes = 20_000_000_000L,
+            source = UploadSource { ByteArrayInputStream(ByteArray(0)) },
+            resume = null,
+            onSession = {},
+            onProgress = { _, _ -> },
+        )
+
+        assertThat(outcome).isEqualTo(
+            ResumableOutcome.Failed(
+                message = "This video is too big to upload (max 16 GB).",
+                retryable = false,
+                discardSession = true,
+            ),
+        )
+        assertThat(server.requestCount).isEqualTo(1)
+    }
+
+    @Test
+    fun `another 413 keeps no details it did not have and other failures are untouched`() = runBlocking {
+        enqueueJson("""{"error":{"code":"USE_RESUMABLE_UPLOAD","message":"too big for one PUT"}}""", code = 413)
+        enqueueJson("""{"error":{"code":"BAD_REQUEST","message":"no","details":{"field":"mime_type"}}}""", code = 400)
+        val transport = RetrofitResumableTransport(api, ErrorMapper(json))
+        val request = ResumableInitRequest(mimeType = "video/mp4", totalBytes = 1L)
+
+        val first = (transport.init(request) as AppResult.Failure).error as AppError.Unknown
+        val second = (transport.init(request) as AppResult.Failure).error as AppError.Unknown
+
+        assertThat(first.details).isEmpty()
+        assertThat(first.asksForResumableUpload()).isTrue()
+        // A 400's details are not this helper's to read.
+        assertThat(second.details).isEmpty()
+        assertThat(second.code).isEqualTo("BAD_REQUEST")
     }
 }

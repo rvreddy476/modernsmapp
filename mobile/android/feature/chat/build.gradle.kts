@@ -66,6 +66,9 @@ dependencies {
     // FollowGraph the feed and reels use, so an edge made here is already
     // applied when the same person scrolls past on Home.
     implementation(projects.core.feed)
+    // The shared-reels viewer (2026-11-07) plays with the viewer's Reels
+    // choice of sound and keeps a change to it, as the Reels rail does.
+    implementation(projects.core.datastore)
 
     implementation(libs.androidx.lifecycle.viewmodel.compose)
     implementation(libs.androidx.navigation.compose)

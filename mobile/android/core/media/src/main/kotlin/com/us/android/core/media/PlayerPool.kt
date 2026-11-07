@@ -99,7 +99,15 @@ class PlayerPool @Inject constructor(
         return prepare(player, pageIndex, playback, contentId)
     }
 
+    /**
+     * Each pooled player's [HlsRefresh] (2026-11-07): a reel paused or
+     * looping past its segment signatures re-prepares instead of freezing.
+     * Made with the player and kept while it is recycled.
+     */
+    private val refreshes = mutableMapOf<ExoPlayer, HlsRefresh>()
+
     private fun prepare(player: ExoPlayer, pageIndex: Int, playback: Playback, contentId: String?): ExoPlayer {
+        refreshes.getOrPut(player) { HlsRefresh(player, sources::create) }.prepared(playback)
         player.setMediaSource(sources.create(playback))
         player.applyDataSaver(dataSaver.active)
         player.prepare()
@@ -151,6 +159,8 @@ class PlayerPool @Inject constructor(
      * waste memory — it can stop the next video from playing at all.
      */
     fun release() {
+        refreshes.values.forEach { it.remove() }
+        refreshes.clear()
         players.values.forEach { it.release() }
         players.clear()
         playbacks.clear()

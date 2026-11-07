@@ -2,6 +2,7 @@ package com.us.android.feature.post.createhub
 
 import com.us.android.core.common.di.Dispatcher
 import com.us.android.core.common.di.UsDispatcher
+import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.media.upload.FILE_TYPE_IMAGE
 import com.us.android.core.media.upload.FILE_TYPE_VIDEO
@@ -19,6 +20,7 @@ import com.us.android.core.media.upload.ResumableSession
 import com.us.android.core.media.upload.ResumableUploader
 import com.us.android.core.media.upload.UploadSource
 import com.us.android.core.media.upload.asksForResumableUpload
+import com.us.android.core.media.upload.videoTooLarge
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -65,7 +67,13 @@ class ReelMediaUploads @Inject constructor(
          * confirmed on the server — readiness is [awaitVideoReady]'s answer.
          */
         data class Ready(val mediaId: String) : Outcome
-        data class Failed(val message: String, val retryable: Boolean) : Outcome
+
+        /**
+         * [transient]: the network or the server's moment, not the file or
+         * the request — the worker tries again by itself once the phone is
+         * back online (2026-11-07). Implies [retryable].
+         */
+        data class Failed(val message: String, val retryable: Boolean, val transient: Boolean = false) : Outcome
     }
 
     sealed interface Readiness {
@@ -89,24 +97,32 @@ class ReelMediaUploads @Inject constructor(
      *
      * [onSession] receives the resumable session to persist (null once it
      * must be forgotten), so a stopped worker resumes the same upload.
+     *
+     * The single PUT is checkpointed too (2026-11-07): [onReserved] receives
+     * the reserved id before a byte goes up (null once it must be
+     * forgotten), and a run handed that id back as [reserved] CONFIRMS it
+     * first. Bytes that landed before a failed confirm, or before the
+     * process died, are never sent twice and the first asset is not
+     * orphaned; the server's confirm checks the object is really there.
      */
+    @Suppress("LongParameterList") // The two checkpoints' ids and their callbacks; no bundle reads clearer.
     suspend fun uploadVideo(
         video: PickedMedia,
         resume: ResumableSession? = null,
         onSession: suspend (ResumableSession?) -> Unit = {},
+        reserved: String? = null,
+        onReserved: suspend (String?) -> Unit = {},
         onProgress: (Float) -> Unit,
     ): Outcome {
         if (resume != null || video.sizeBytes >= RESUMABLE_THRESHOLD_BYTES) {
             return uploadResumable(video, resume, onSession, onProgress)
         }
-        val init = when (val reserved = uploader.reserve(video.mimeType, video.sizeBytes, fileType = FILE_TYPE_VIDEO)) {
-            is AppResult.Failure -> return if (reserved.error.asksForResumableUpload()) {
-                uploadResumable(video, resume = null, onSession, onProgress)
-            } else {
-                Outcome.Failed("Couldn't start the upload. Check your connection.", true)
-            }
-            is AppResult.Success -> reserved.data
+        if (reserved != null) confirmReserved(reserved, onReserved)?.let { return it }
+        val init = when (val result = uploader.reserve(video.mimeType, video.sizeBytes, fileType = FILE_TYPE_VIDEO)) {
+            is AppResult.Failure -> return reserveRefused(result.error, video, onSession, onProgress)
+            is AppResult.Success -> result.data
         }
+        onReserved(init.mediaId)
         val put = withContext(io) {
             uploader.upload(
                 uploadUrl = init.uploadUrl,
@@ -116,13 +132,75 @@ class ReelMediaUploads @Inject constructor(
                 onProgress = { sent, total -> if (total > 0) onProgress(sent.toFloat() / total) },
             )
         }
-        if (put !is PresignedPutResult.Success) {
-            return Outcome.Failed("The upload didn't finish. Try again.", retryable = true)
+        putFailure(put, onReserved)?.let { return it }
+        return confirmOrKeep(init.mediaId, onReserved)
+    }
+
+    /**
+     * A previous run's reserved id: [Outcome.Ready] when its bytes are on the
+     * server, the network's failure when that cannot be told yet (the id is
+     * kept), and null — the id forgotten — when the server refused it (the
+     * object is missing or the wrong size: the PUT never landed whole), so
+     * the upload starts clean.
+     */
+    private suspend fun confirmReserved(mediaId: String, onReserved: suspend (String?) -> Unit): Outcome? =
+        when (val confirmed = uploader.confirm(mediaId)) {
+            is AppResult.Success -> Outcome.Ready(mediaId)
+            is AppResult.Failure -> if (confirmed.error.isTransient()) {
+                CONFIRM_FAILED
+            } else {
+                onReserved(null)
+                null
+            }
         }
-        if (uploader.confirm(init.mediaId) is AppResult.Failure) {
-            return Outcome.Failed("The server didn't confirm the upload. Try again.", retryable = true)
+
+    /**
+     * Null when the PUT landed. An expired signature forgets the id (it can
+     * never take these bytes); a refusal does too. A dropped connection
+     * KEEPS it: the bytes may have landed before the answer was lost, and
+     * the next run's confirm tells.
+     */
+    private suspend fun putFailure(put: PresignedPutResult, onReserved: suspend (String?) -> Unit): Outcome? =
+        when (put) {
+            PresignedPutResult.Success -> null
+            PresignedPutResult.UrlExpired -> {
+                onReserved(null)
+                PUT_FAILED
+            }
+            is PresignedPutResult.Failed -> {
+                val transient = put.isTransient()
+                if (!transient) onReserved(null)
+                PUT_FAILED.copy(transient = transient)
+            }
         }
-        return Outcome.Ready(init.mediaId)
+
+    /** The fresh upload's confirm; a network failure keeps the id for the next run. */
+    private suspend fun confirmOrKeep(mediaId: String, onReserved: suspend (String?) -> Unit): Outcome =
+        when (val confirmed = uploader.confirm(mediaId)) {
+            is AppResult.Success -> Outcome.Ready(mediaId)
+            is AppResult.Failure -> if (confirmed.error.isTransient()) {
+                CONFIRM_FAILED
+            } else {
+                onReserved(null)
+                CONFIRM_FAILED.copy(transient = false)
+            }
+        }
+
+    /**
+     * The simple `init` said no. Over the platform's cap (413
+     * `VIDEO_TOO_LARGE`, 2026-11-07) is final and says the cap — never the
+     * resumable fallback, which refuses it too. `USE_RESUMABLE_UPLOAD` is
+     * the fallback. Anything else is the start failing.
+     */
+    private suspend fun reserveRefused(
+        error: AppError,
+        video: PickedMedia,
+        onSession: suspend (ResumableSession?) -> Unit,
+        onProgress: (Float) -> Unit,
+    ): Outcome {
+        error.videoTooLarge()?.let { return Outcome.Failed(it.message, retryable = false) }
+        if (error.asksForResumableUpload()) return uploadResumable(video, resume = null, onSession, onProgress)
+        return Outcome.Failed(START_FAILED, retryable = true, transient = error.isTransient())
     }
 
     private suspend fun uploadResumable(
@@ -227,6 +305,26 @@ class ReelMediaUploads @Inject constructor(
 
     companion object {
         private const val COVER_MIME = "image/jpeg"
+
+        const val START_FAILED = "Couldn't start the upload. Check your connection."
+        private val PUT_FAILED =
+            Outcome.Failed("The upload didn't finish. Try again.", retryable = true, transient = true)
+        private val CONFIRM_FAILED =
+            Outcome.Failed("The server didn't confirm the upload. Try again.", retryable = true, transient = true)
+
+        private const val HTTP_REQUEST_TIMEOUT = 408
+        private const val HTTP_TOO_MANY_REQUESTS = 429
+        private const val HTTP_SERVER_ERROR = 500
+
+        /** The network, or the server's moment: a later try of the same request may land. */
+        internal fun AppError.isTransient(): Boolean = when (this) {
+            is AppError.NoNetwork, is AppError.Timeout, is AppError.Server, is AppError.RateLimited -> true
+            else -> false
+        }
+
+        /** No response (code 0: the connection dropped), a timeout, throttling, or the store's 5xx. */
+        internal fun PresignedPutResult.Failed.isTransient(): Boolean =
+            code == 0 || code == HTTP_REQUEST_TIMEOUT || code == HTTP_TOO_MANY_REQUESTS || code >= HTTP_SERVER_ERROR
 
         /** Long videos take this long on the dev machine; the worker chains runs to cover it. */
         const val VIDEO_READINESS_WINDOW_MILLIS = 30L * 60L * 1_000L
