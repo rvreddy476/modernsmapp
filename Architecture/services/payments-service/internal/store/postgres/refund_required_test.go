@@ -11,26 +11,37 @@ import (
 // refund of any other payment is refused. The DB half is proven in
 // service/refundrequired_rr_integration_test.go.
 func TestClassifyRefundTarget(t *testing.T) {
+	const none, dup, late = "", reasonDuplicateCapture, reasonLateCaptureAfterFailed
 	for _, tc := range []struct {
 		name            string
 		settled, refund string
-		owed            bool
+		owed            string // the owed row's reason, "" for none
 		want            refundTarget
 	}{
-		{"the settling payment", "pay_A", "pay_A", false, refundOfIntent},
-		{"the settling payment, surrounding blanks", " pay_A ", "pay_A", false, refundOfIntent},
-		{"the settling payment even if an owed row names it", "pay_A", "pay_A", true, refundOfIntent},
-		{"no payment id on the event (stub refunds)", "pay_A", "", false, refundOfIntent},
-		{"a recorded duplicate capture", "pay_A", "pay_B", true, refundOfOwedCapture},
-		{"a late capture on a failed intent with no payment", "", "pay_B", true, refundOfOwedCapture},
-		{"a payment nobody recorded", "pay_A", "pay_B", false, refundOfUnknownPayment},
-		{"legacy intent with no payment id: cannot tell", "", "pay_B", false, refundOfIntent},
+		{"the settling payment", "pay_A", "pay_A", none, refundOfIntent},
+		{"the settling payment, surrounding blanks", " pay_A ", "pay_A", none, refundOfIntent},
+		{"the settling payment even if an owed row names it", "pay_A", "pay_A", dup, refundOfIntent},
+		{"the settling payment even if a late-capture row names it", "pay_A", "pay_A", late, refundOfIntent},
+		{"no payment id on the event (stub refunds)", "pay_A", "", none, refundOfIntent},
+		{"a recorded duplicate capture", "pay_A", "pay_B", dup, refundOfOwedCapture},
+		{"a late capture on a failed intent with no payment", "", "pay_B", late, refundOfOwedCapture},
+		{"a payment nobody recorded", "pay_A", "pay_B", none, refundOfUnknownPayment},
+		{"legacy intent with no payment id: cannot tell", "", "pay_B", none, refundOfIntent},
+		// The whole intent is owed back because the order kept another: its
+		// own payment's refund settles the row, never the intent.
+		{"a duplicate order capture: the intent's own payment, owed back", "pay_A", "pay_A", reasonDuplicateOrderCapture, refundOfOwedCapture},
+		{"a duplicate order capture, surrounding blanks", " pay_A ", "pay_A", reasonDuplicateOrderCapture, refundOfOwedCapture},
+		{"a duplicate order capture, no payment id on the event", "pay_A", "", reasonDuplicateOrderCapture, refundOfIntent},
+		{"an owed row with no reason still counts as recorded", "pay_A", "pay_B", owedReason(&OwedCapture{}), refundOfOwedCapture},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := classifyRefundTarget(tc.settled, tc.refund, tc.owed); got != tc.want {
-				t.Fatalf("classifyRefundTarget(%q, %q, %v) = %v, want %v", tc.settled, tc.refund, tc.owed, got, tc.want)
+				t.Fatalf("classifyRefundTarget(%q, %q, %q) = %v, want %v", tc.settled, tc.refund, tc.owed, got, tc.want)
 			}
 		})
+	}
+	if owedReason(nil) != "" {
+		t.Fatal("no owed row must read as no reason")
 	}
 }
 

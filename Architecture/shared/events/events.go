@@ -222,6 +222,10 @@ const (
 	EventCommerceOrderDelivered = "commerce.order.delivered"
 	EventCommerceInvoiceIssued  = "commerce.invoice.issued"
 	EventCommerceSellerNewOrder = "commerce.seller.new_order"
+	// A second captured payment, on another intent, for an order whose own
+	// payment already landed. commerce-service writes it; payments-service
+	// refunds that payment. payload: CommerceOrderDuplicateCapturePayload
+	EventCommerceOrderDuplicateCapture = "commerce.order.duplicate_capture"
 
 	// Feature Flags
 	EventFlagEvaluated = "flag.evaluated" // payload: FlagEvaluatedPayload
@@ -537,6 +541,24 @@ type EventEnvelope struct {
 	TraceID     string          `json:"trace_id"`
 	ActorUserID *string         `json:"actor_user_id,omitempty"`
 	Payload     json.RawMessage `json:"payload"`
+}
+
+// CommerceOrderDuplicateCapturePayload is commerce.order.duplicate_capture:
+// the buyer paid an order twice, on two intents. IntentID is the duplicate
+// (the one to refund) and BoundIntentID the order's own payment, which is
+// never refunded on this event. AmountMinor is the duplicate's order value as
+// payment.succeeded stated it; RefundDueMinor is what commerce says is owed
+// back. payments-service refunds what that payment actually captured, from
+// its own ledger, and refuses an event its ledger does not bear out.
+type CommerceOrderDuplicateCapturePayload struct {
+	OrderID        string `json:"order_id"`
+	IntentID       string `json:"intent_id"`
+	BoundIntentID  string `json:"bound_intent_id"`
+	PayerID        string `json:"payer_id,omitempty"`
+	AmountMinor    int64  `json:"amount_minor"`
+	Currency       string `json:"currency"`
+	RefundDueMinor int64  `json:"refund_due_minor"`
+	Reason         string `json:"reason,omitempty"`
 }
 
 // UserRegisteredPayload definition.

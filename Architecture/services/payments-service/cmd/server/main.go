@@ -11,6 +11,7 @@ import (
 
 	"github.com/atpost/payments-service/database"
 	"github.com/atpost/payments-service/internal/config"
+	"github.com/atpost/payments-service/internal/consumers"
 	"github.com/atpost/payments-service/internal/gateway"
 	nethttp "github.com/atpost/payments-service/internal/http"
 	"github.com/atpost/payments-service/internal/service"
@@ -341,6 +342,18 @@ func main() {
 		go svc.RunRefundRequiredWorker(workerCtx, 30*time.Second)
 	}
 	slog.Info("payments: refund-required worker (late/duplicate captures)", "enabled", cfg.RefundRequiredWorker)
+
+	// commerce.order.duplicate_capture: a second paid intent on one commerce
+	// order is recorded in payments.refund_required, for the worker above to
+	// refund. Off unless PAYMENTS_DUPLICATE_CAPTURE_CONSUMER=true, or on a dev
+	// ENV with it unset.
+	if cfg.DuplicateCaptureConsumer {
+		commerceConsumer := consumers.NewCommerceConsumer(store, strings.Split(kafkaBrokers, ","),
+			metrics.NewKafkaConsumerMetrics("payments-service"))
+		go commerceConsumer.Start(workerCtx)
+		defer commerceConsumer.Close() //nolint:errcheck
+	}
+	slog.Info("payments: commerce duplicate-capture consumer", "enabled", cfg.DuplicateCaptureConsumer)
 
 	// LB-9: resolve payments the webhook never told us about, and surface
 	// ledger-vs-provider drift instead of letting it accumulate silently.

@@ -61,6 +61,15 @@ type Config struct {
 	// everywhere else (staging, prod, and QA, which runs as ENV=prod), so a
 	// production deploy turns it on explicitly.
 	RefundRequiredWorker bool
+
+	// DuplicateCaptureConsumer runs the commerce consumer
+	// (internal/consumers): commerce.order.duplicate_capture, a second paid
+	// intent on one order, is recorded in payments.refund_required for the
+	// refund-required worker to return. It writes the record only; no money
+	// moves unless RefundRequiredWorker is on too.
+	// PAYMENTS_DUPLICATE_CAPTURE_CONSUMER=true|false; unset follows the same
+	// rule as the worker: ON only on a dev ENV.
+	DuplicateCaptureConsumer bool
 }
 
 // DefaultFailedAttemptWindow applies when PAYMENTS_FAILED_ATTEMPT_WINDOW is
@@ -75,7 +84,10 @@ var (
 	// ErrInvalidRefundRequiredWorker refuses a flag value that is neither
 	// true nor false, rather than guessing whether money should move.
 	ErrInvalidRefundRequiredWorker = errors.New("PAYMENTS_REFUND_REQUIRED_WORKER must be true or false")
-	ErrNoGateway                   = errors.New("RAZORPAY_KEY_ID is required in production; set PAYMENTS_ALLOW_STUB=true for dev/test")
+	// ErrInvalidDuplicateCaptureConsumer is the same refusal for the
+	// commerce consumer's flag.
+	ErrInvalidDuplicateCaptureConsumer = errors.New("PAYMENTS_DUPLICATE_CAPTURE_CONSUMER must be true or false")
+	ErrNoGateway                       = errors.New("RAZORPAY_KEY_ID is required in production; set PAYMENTS_ALLOW_STUB=true for dev/test")
 	// ErrWebhookSecretRequired fires whenever the Razorpay gateway is
 	// selected without a webhook secret — regardless of PAYMENTS_ALLOW_STUB.
 	// Previously the secret check was keyed on the stub flag, so a deploy
@@ -128,11 +140,16 @@ func Resolve(getenv func(string) string) (Config, error) {
 		}
 		cfg.FailedAttemptWindow = d
 	}
-	on, err := refundRequiredWorker(getenv("PAYMENTS_REFUND_REQUIRED_WORKER"), getenv("ENV"))
+	on, err := devDefaultFlag(getenv("PAYMENTS_REFUND_REQUIRED_WORKER"), getenv("ENV"), ErrInvalidRefundRequiredWorker)
 	if err != nil {
 		return Config{}, err
 	}
 	cfg.RefundRequiredWorker = on
+	on, err = devDefaultFlag(getenv("PAYMENTS_DUPLICATE_CAPTURE_CONSUMER"), getenv("ENV"), ErrInvalidDuplicateCaptureConsumer)
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.DuplicateCaptureConsumer = on
 	allowStub := getenv("PAYMENTS_ALLOW_STUB") == "true"
 
 	switch {
@@ -152,9 +169,10 @@ func Resolve(getenv func(string) string) (Config, error) {
 	return cfg, nil
 }
 
-// refundRequiredWorker resolves PAYMENTS_REFUND_REQUIRED_WORKER: an explicit
-// true or false wins; unset is on for a dev ENV only.
-func refundRequiredWorker(raw, env string) (bool, error) {
+// devDefaultFlag resolves a money worker's flag (PAYMENTS_REFUND_REQUIRED_WORKER,
+// PAYMENTS_DUPLICATE_CAPTURE_CONSUMER): an explicit true or false wins; unset
+// is on for a dev ENV only; anything else is invalid.
+func devDefaultFlag(raw, env string, invalid error) (bool, error) {
 	switch strings.TrimSpace(raw) {
 	case "true":
 		return true, nil
@@ -167,5 +185,5 @@ func refundRequiredWorker(raw, env string) (bool, error) {
 		}
 		return false, nil
 	}
-	return false, fmt.Errorf("%w (got %q)", ErrInvalidRefundRequiredWorker, raw)
+	return false, fmt.Errorf("%w (got %q)", invalid, raw)
 }

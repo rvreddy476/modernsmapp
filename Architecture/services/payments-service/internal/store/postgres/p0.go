@@ -710,6 +710,16 @@ func (s *Store) CreateRefundCommand(
 	if status != "succeeded" && status != "partially_refunded" {
 		return nil, false, fmt.Errorf("payments: cannot refund an intent in status %s", status)
 	}
+	// A duplicate order capture is refunded through its refund_required row,
+	// whose refund webhook never books to the intent; a command here would
+	// ask the provider for the same money twice and settle neither cleanly.
+	// RecordOrderDuplicateCapture takes this lock and refuses an intent with
+	// anything reserved, so the two cannot interleave.
+	if owedBack, err := intentOwedBackTx(ctx, tx, intentID); err != nil {
+		return nil, false, err
+	} else if owedBack {
+		return nil, false, fmt.Errorf("%w: intent %s", ErrIntentOwedBack, intentID)
+	}
 	if refunded+reserved+amountMinor > amount {
 		return nil, false, ErrRefundExceedsRemaining
 	}
@@ -1349,7 +1359,7 @@ func (s *Store) ApplyRefundWebhookAtomically(ctx context.Context, e WebhookEffec
 		}
 		return false, "", err
 	}
-	switch classifyRefundTarget(settledPaymentID, e.ProviderPaymentID, owed != nil) {
+	switch classifyRefundTarget(settledPaymentID, e.ProviderPaymentID, owedReason(owed)) {
 	case refundOfOwedCapture:
 		recorded, err := applyOwedCaptureRefundTx(ctx, tx, owed, intentCurrency, e, providerRefundID)
 		if err != nil {

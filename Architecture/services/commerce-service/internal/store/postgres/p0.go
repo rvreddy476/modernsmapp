@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/atpost/commerce-service/internal/money"
+	"github.com/atpost/shared/events"
 	"github.com/atpost/shared/paymentevents"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -197,14 +198,28 @@ func applyPaymentSucceededTx(ctx context.Context, tx pgx.Tx, e PaymentEvent) err
 	}
 
 	// LB-5 / C6: the full tuple, not just the amount. Commerce compares only
-	// what the event states: a blank currency, nil payer or blank intent is
-	// not a mismatch (paymentevents.AllowUnstated).
+	// what the event states: a blank currency or nil payer is not a mismatch
+	// (paymentevents.AllowUnstated).
+	//
+	// The intent is not compared here: decideCapture has already decided it.
+	// A redelivery carries the bound intent; a capture that applies or is
+	// late is the first to land on this order and becomes its payment, even
+	// on an intent other than the one bound (the buyer paid on an earlier
+	// attempt before the later one confirmed). Comparing it here sent that
+	// money to the mismatch dead-letter queue, where nothing refunds it. What
+	// the intent check was for, a payment of another order settling this one,
+	// is refused below by bindCaptureIntentTx.
 	if err := paymentevents.CheckCapture(
-		paymentevents.Expected{AmountMinor: totalMinor.Int64(), Currency: currency, PayerID: customerID, IntentID: boundIntent},
+		paymentevents.Expected{AmountMinor: totalMinor.Int64(), Currency: currency, PayerID: customerID},
 		paymentevents.Observed{AmountMinor: e.AmountMinor.Int64(), Currency: e.Currency, PayerID: e.PayerID, IntentID: e.IntentID},
 		paymentevents.AllowUnstated,
 	); err != nil {
 		return fmt.Errorf("%w: %v", ErrAmountMismatch, err)
+	}
+	if verdict == captureApplies || verdict == captureLate {
+		if err := bindCaptureIntentTx(ctx, tx, e.OrderID, boundIntent, e.IntentID); err != nil {
+			return err
+		}
 	}
 
 	// The bank offer, recorded in this same transaction — after the capture
@@ -236,8 +251,14 @@ func applyPaymentSucceededTx(ctx context.Context, tx pgx.Tx, e PaymentEvent) err
 		// arriving for a dead order is a refund, never a confirmation — the
 		// guarded UPDATE in MarkOrderPaid enforces this on the client-confirm
 		// path, and this is the same rule on the webhook path.
+		//
+		// This branch runs once per order: a late capture lands the order's
+		// money (captureLanded), so its repeat is a redelivery and a capture
+		// on another intent after it is a duplicate. Before, both came back
+		// here, where the order-wide key silently dropped the second payment
+		// and the repeat moved a refunded order back to refund_pending.
 		if err := createRefundCommandTx(ctx, tx, e.OrderID, e.IntentID, e.AmountMinor,
-			"late_capture_after_expiry", "late-capture:"+e.OrderID.String()); err != nil {
+			"late_capture_after_expiry", lateCaptureKey(e.OrderID, e.IntentID)); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx,
@@ -647,10 +668,11 @@ const (
 	// captureRedelivered: the order's own payment again. No-op.
 	captureRedelivered
 	// captureDuplicate: a different payment for an order whose own payment
-	// already landed. Owed back, but not this order's money.
+	// (or recorded late capture) already landed. Owed back, but not this
+	// order's money: payments-service refunds it (recordDuplicateCaptureTx).
 	captureDuplicate
-	// captureLate: money for an order that can no longer take it (expired,
-	// or cancelled before it was paid). Refunded against the order.
+	// captureLate: the first money for an order that can no longer take it
+	// (expired, or cancelled before it was paid). Refunded against the order.
 	captureLate
 )
 
@@ -675,8 +697,15 @@ type captureOrder struct {
 // different payment is a different intent. orders.payment_id is not used: the
 // webhook writes the PSP order id there and the client-confirm path a payment
 // id, so comparing it would call a redelivery a duplicate.
+//
+// The rule: the first capture to land on an order is its payment, and its
+// intent is bound to the order (bindCaptureIntentTx); that holds whether the
+// order could still take it (applies) or not (late). Once a capture has
+// landed, the same intent again is a redelivery and any other intent is a
+// duplicate. A buyer who pays on two attempts before either confirms gets the
+// first applied and the second refunded, never one of them dead-lettered.
 func decideCapture(o captureOrder, e PaymentEvent) captureVerdict {
-	if ownCaptureApplied(o.PaymentStatus, o.LateCaptureRefunded) {
+	if captureLanded(o.PaymentStatus, o.LateCaptureRefunded) {
 		if differentIntent(o.BoundIntent, e.IntentID) {
 			return captureDuplicate
 		}
@@ -688,15 +717,77 @@ func decideCapture(o captureOrder, e PaymentEvent) captureVerdict {
 	return captureApplies
 }
 
-// ownCaptureApplied reports whether the order's own payment has already been
-// applied. moneyWasTaken covers paid and partially refunded orders. A refund
-// that is pending or done also started from a paid order, unless the late-
-// capture branch put it there for an order that was never paid.
-func ownCaptureApplied(paymentStatus string, lateCaptureRefunded bool) bool {
-	if moneyWasTaken(paymentStatus) {
+// captureLanded reports whether a capture has already been booked against the
+// order: its own payment (paid, or partially refunded), a refund that started
+// from one (pending or done), or a late capture recorded as owed back, which
+// is also refund_pending and then refunded. A late capture counts: before, it
+// did not, so its repeat took the late branch again and moved a refunded order
+// back to refund_pending, and a second late capture on another intent was
+// dropped by the late branch's key.
+func captureLanded(paymentStatus string, lateCaptureRecorded bool) bool {
+	if moneyWasTaken(paymentStatus) || lateCaptureRecorded {
 		return true
 	}
-	return (paymentStatus == "refund_pending" || paymentStatus == "refunded") && !lateCaptureRefunded
+	return paymentStatus == "refund_pending" || paymentStatus == "refunded"
+}
+
+// lateCaptureKey is the refund-command key of a late capture: one refund per
+// order and intent. A capture that states no intent keeps the order-wide key
+// it always had.
+func lateCaptureKey(orderID uuid.UUID, intentID string) string {
+	if intent := strings.ToLower(strings.TrimSpace(intentID)); intent != "" {
+		return "late-capture:" + orderID.String() + ":" + intent
+	}
+	return "late-capture:" + orderID.String()
+}
+
+// captureIntentToBind is the intent a capture that becomes the order's payment
+// binds to it. ok=false means nothing changes: the event states no intent, or
+// the one already bound. An intent id that is not a UUID is not a
+// payments-service intent and is refused.
+func captureIntentToBind(bound, incoming string) (id uuid.UUID, ok bool, err error) {
+	incoming = strings.TrimSpace(incoming)
+	switch {
+	case incoming == "":
+		return uuid.Nil, false, nil
+	case strings.TrimSpace(bound) != "" && !differentIntent(bound, incoming):
+		return uuid.Nil, false, nil // already bound
+	}
+	id, err = uuid.Parse(incoming)
+	if err != nil {
+		return uuid.Nil, false, fmt.Errorf("%w: intent %q is not a payment intent id", ErrAmountMismatch, incoming)
+	}
+	return id, true, nil
+}
+
+// bindCaptureIntentTx binds the intent of the capture that became the order's
+// payment, in the capture transaction: the cancel and refund paths act on the
+// bound intent, the refund settlement checks against it, and decideCapture
+// tells a redelivery from a duplicate by it. An intent already bound to a
+// DIFFERENT order is refused (ErrAmountMismatch): one order's payment must
+// never settle another, which is what comparing the capture's intent with the
+// bound one used to stand for.
+func bindCaptureIntentTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, bound, incoming string) error {
+	id, ok, err := captureIntentToBind(bound, incoming)
+	if err != nil || !ok {
+		return err
+	}
+	var elsewhere bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM orders WHERE payment_intent_id = $1 AND id <> $2)`,
+		id, orderID).Scan(&elsewhere); err != nil {
+		return err
+	}
+	if elsewhere {
+		return fmt.Errorf("%w: intent %s pays another order", ErrAmountMismatch, id)
+	}
+	if strings.TrimSpace(bound) != "" {
+		slog.WarnContext(ctx, "commerce: a capture on another attempt's intent landed first; it is now the order's payment",
+			"order_id", orderID, "intent_id", id, "previous_intent_id", bound)
+	}
+	_, err = tx.Exec(ctx,
+		`UPDATE orders SET payment_intent_id = $2, updated_at = NOW() WHERE id = $1`, orderID, id)
+	return err
 }
 
 // differentIntent reports whether two intent ids are both known and differ.
@@ -719,24 +810,37 @@ func differentIntent(bound, incoming string) bool {
 // owed for the order itself. No status change, no stock, no offer figures.
 //
 // What is written is the inbox row (by the caller) and a durable outbox
-// event naming the payment and the amount due back, logged at ERROR. Its
-// refund belongs with payments-service, which already returns duplicate
-// captures on one intent through refund_required.
+// event naming the payment and the amount due back, logged at ERROR.
+// payments-service consumes it (its internal/consumers) and refunds THAT
+// intent's payment through refund_required, reason duplicate_order_capture,
+// once per payment; it re-checks every figure against its own ledger and
+// refuses unless the bound intent is itself paid. The contract is
+// events.CommerceOrderDuplicateCapturePayload.
 func recordDuplicateCaptureTx(ctx context.Context, tx pgx.Tx, e PaymentEvent, boundIntent string) error {
 	slog.ErrorContext(ctx, "commerce: DUPLICATE CAPTURE — a second payment for an order that is already paid; "+
 		"the order is unchanged and the payment is owed back",
 		"order_id", e.OrderID, "intent_id", e.IntentID, "bound_intent_id", boundIntent,
 		"event_id", e.EventID, "amount_minor", e.AmountMinor.Int64(), "currency", e.Currency)
-	return enqueueOutboxTx(ctx, tx, "commerce.order.duplicate_capture", e.OrderID.String(), map[string]any{
-		"order_id":         e.OrderID,
-		"intent_id":        e.IntentID,
-		"bound_intent_id":  boundIntent,
-		"payer_id":         e.PayerID,
-		"amount_minor":     e.AmountMinor.Int64(),
-		"currency":         e.Currency,
-		"refund_due_minor": e.AmountMinor.Int64(),
-		"reason":           "a second payment for an order that is already paid",
-	})
+	return enqueueOutboxTx(ctx, tx, events.EventCommerceOrderDuplicateCapture, e.OrderID.String(),
+		duplicateCapturePayload(e, boundIntent))
+}
+
+// duplicateCapturePayload is the commerce.order.duplicate_capture payload.
+func duplicateCapturePayload(e PaymentEvent, boundIntent string) events.CommerceOrderDuplicateCapturePayload {
+	payer := ""
+	if e.PayerID != uuid.Nil {
+		payer = e.PayerID.String()
+	}
+	return events.CommerceOrderDuplicateCapturePayload{
+		OrderID:        e.OrderID.String(),
+		IntentID:       strings.TrimSpace(e.IntentID),
+		BoundIntentID:  strings.TrimSpace(boundIntent),
+		PayerID:        payer,
+		AmountMinor:    e.AmountMinor.Int64(),
+		Currency:       e.Currency,
+		RefundDueMinor: e.AmountMinor.Int64(),
+		Reason:         "a second payment for an order that is already paid",
+	}
 }
 
 // cancelRefundDue is what a cancellation must still refund: the order total

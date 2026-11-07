@@ -54,13 +54,22 @@ const (
 )
 
 // classifyRefundTarget decides what a refund event refunds from the intent's
-// captured payment id, the event's payment id and whether an owed-capture row
-// exists for the event's payment.
-func classifyRefundTarget(intentPaymentID, eventPaymentID string, owedRecorded bool) refundTarget {
+// captured payment id, the event's payment id and the reason of the
+// owed-capture row recorded for the event's payment ("" when none is).
+//
+// A duplicate order capture (order_duplicate.go) is the one owed row whose
+// payment IS the intent's settled payment: the whole intent is owed back
+// because the order kept another. Its refund settles the row and never the
+// intent, or payment.refunded would reach commerce's order ledger for money
+// that was never the order's.
+func classifyRefundTarget(intentPaymentID, eventPaymentID, owedReason string) refundTarget {
 	settled, refunded := strings.TrimSpace(intentPaymentID), strings.TrimSpace(eventPaymentID)
+	owedRecorded := owedReason != ""
 	switch {
 	case refunded == "":
 		return refundOfIntent // nothing to compare (the stub's own refunds)
+	case owedReason == reasonDuplicateOrderCapture:
+		return refundOfOwedCapture
 	case refunded == settled:
 		return refundOfIntent
 	case owedRecorded:
@@ -117,6 +126,17 @@ func scanOwedCapture(row pgx.Row, o *OwedCapture) error {
 
 // owedCaptureForRefundTx locks the owed-capture row for a refunded payment,
 // or returns nil when the payment id is blank or none is recorded.
+// owedReason is the reason of an owed-capture row, "" for none.
+func owedReason(o *OwedCapture) string {
+	if o == nil {
+		return ""
+	}
+	if r := strings.TrimSpace(o.Reason); r != "" {
+		return r
+	}
+	return "unspecified" // recorded all the same
+}
+
 func owedCaptureForRefundTx(ctx context.Context, tx pgx.Tx, provider, paymentID string) (*OwedCapture, error) {
 	if strings.TrimSpace(paymentID) == "" {
 		return nil, nil

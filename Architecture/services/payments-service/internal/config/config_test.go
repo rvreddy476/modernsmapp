@@ -233,3 +233,47 @@ func TestResolveRefundRequiredWorker(t *testing.T) {
 		})
 	}
 }
+
+// PAYMENTS_DUPLICATE_CAPTURE_CONSUMER: the same rule as the worker, resolved
+// on its own, so a deploy can record duplicate order captures before it lets
+// the worker refund them.
+func TestResolveDuplicateCaptureConsumer(t *testing.T) {
+	for _, tc := range []struct {
+		name, env, flag, worker string
+		want, wantWorker        bool
+	}{
+		{"dev compose: no ENV, unset", "", "", "", true, true},
+		{"local, unset", "local", "", "", true, true},
+		{"staging, unset", "staging", "", "", false, false},
+		{"prod, unset", "prod", "", "", false, false},
+		{"prod, consumer on, worker off", "prod", "true", "", true, false},
+		{"dev, consumer off, worker on", "dev", "false", "", false, true},
+		{"surrounding blanks", "", " false ", "", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{"PAYMENTS_ALLOW_STUB": "true", "ENV": tc.env,
+				"PAYMENTS_DUPLICATE_CAPTURE_CONSUMER": tc.flag, "PAYMENTS_REFUND_REQUIRED_WORKER": tc.worker}
+			if tc.env == "prod" {
+				env = map[string]string{"ENV": "prod", "SERVICE_CALLERS": "commerce-service",
+					"RAZORPAY_KEY_ID": "k", "RAZORPAY_KEY_SECRET": "s", "RAZORPAY_WEBHOOK_SECRET": "w",
+					"PAYMENTS_DUPLICATE_CAPTURE_CONSUMER": tc.flag, "PAYMENTS_REFUND_REQUIRED_WORKER": tc.worker}
+			}
+			cfg, err := Resolve(envMap(env))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.DuplicateCaptureConsumer != tc.want || cfg.RefundRequiredWorker != tc.wantWorker {
+				t.Fatalf("consumer/worker = %v/%v, want %v/%v",
+					cfg.DuplicateCaptureConsumer, cfg.RefundRequiredWorker, tc.want, tc.wantWorker)
+			}
+		})
+	}
+	for _, raw := range []string{"yes", "1", "TRUE"} {
+		t.Run("invalid "+raw, func(t *testing.T) {
+			_, err := Resolve(envMap(map[string]string{"PAYMENTS_ALLOW_STUB": "true", "PAYMENTS_DUPLICATE_CAPTURE_CONSUMER": raw}))
+			if !errors.Is(err, ErrInvalidDuplicateCaptureConsumer) {
+				t.Fatalf("err = %v, want ErrInvalidDuplicateCaptureConsumer", err)
+			}
+		})
+	}
+}

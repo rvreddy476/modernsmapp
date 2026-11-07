@@ -51,9 +51,10 @@ func routeOwedRefund(o postgres.OwedCapture, stubSettlement, haveProvider bool) 
 		return owedRoutePark, owedFailNoAmount
 	case o.RemainingMinor() == 0:
 		return owedRouteNothing, ""
-	case pay == "" || strings.HasPrefix(pay, "event:"):
-		// The capture event carried no payment id; the row is keyed by its
-		// event id, which no provider can refund.
+	case pay == "" || strings.HasPrefix(pay, "event:") || strings.HasPrefix(pay, postgres.OwedKeyIntentPrefix):
+		// The capture event carried no payment id, or the duplicate intent
+		// holds none; the row is keyed by the event or the intent, which no
+		// provider can refund.
 		return owedRoutePark, owedFailNoPaymentID
 	case gateway.IsStubOrderRef(o.ProviderOrderID):
 		if stubSettlement {

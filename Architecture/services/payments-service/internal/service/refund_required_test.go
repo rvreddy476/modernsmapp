@@ -29,6 +29,13 @@ func TestRouteOwedRefund(t *testing.T) {
 		{"no amount recorded", owed(func(o *postgres.OwedCapture) { o.AmountMinor = 0 }), false, true, owedRoutePark, owedFailNoAmount},
 		{"keyed by event, no payment id", owed(func(o *postgres.OwedCapture) { o.ProviderPaymentID = "event:evt_1" }), false, true, owedRoutePark, owedFailNoPaymentID},
 		{"blank payment id", owed(func(o *postgres.OwedCapture) { o.ProviderPaymentID = " " }), false, true, owedRoutePark, owedFailNoPaymentID},
+		{"a duplicate order capture keyed by its intent, no payment id",
+			owed(func(o *postgres.OwedCapture) {
+				o.ProviderPaymentID = postgres.OwedKeyIntentPrefix + "22222222-2222-4222-8222-222222222222"
+				o.Reason = "duplicate_order_capture"
+			}), false, true, owedRoutePark, owedFailNoPaymentID},
+		{"a duplicate order capture with its payment goes to the provider",
+			owed(func(o *postgres.OwedCapture) { o.Reason = "duplicate_order_capture" }), false, true, owedRouteProvider, ""},
 		{"no provider adapter", owed(nil), false, false, owedRoutePark, RefundFailNoProviderAdapter},
 		{"stub payment on a stub deployment", owed(func(o *postgres.OwedCapture) { o.ProviderOrderID = "order_stub_1" }), true, false, owedRouteStub, ""},
 		{"stub payment on a real provider", owed(func(o *postgres.OwedCapture) { o.ProviderOrderID = "order_stub_1" }), false, true, owedRoutePark, RefundFailStubOnRealProvider},
