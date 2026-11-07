@@ -10,12 +10,16 @@ import com.us.android.core.commerce.payment.PaymentAttempt
 import com.us.android.core.commerce.repository.CommerceError
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.commerce.repository.CommerceResult
+import com.us.android.core.commerce.repository.outcomeUnknown
 import com.us.android.core.payments.PaymentConfirmation
 import com.us.android.core.payments.PaymentCoordinator
 import com.us.android.core.payments.PaymentHandoff
 import com.us.android.core.payments.PaymentHandoffEvent
 import com.us.android.core.payments.PaymentPollPolicy
+import com.us.android.feature.commerce.ui.SESSION_EXPIRED_COPY
+import com.us.android.feature.commerce.ui.describe
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -206,25 +210,56 @@ class CheckoutViewModel @Inject constructor(
                     // must not restart the flow.
                     return@collect
                 }
+                // Audit M1: an event for the ACTIVE attempt is always acted
+                // on, whatever the screen shows. It used to be consumed and
+                // then dropped when the state had moved on, so a buyer who
+                // paid was never told.
                 handoff.consume(mine)
-
                 val orderNumber = when (val current = _state.value) {
                     is CheckoutUiState.OpeningPayment -> current.orderNumber
                     is CheckoutUiState.AwaitingConfirmation -> current.orderNumber
-                    else -> return@collect
+                    else -> saved.orderNumber
                 }
                 when (event) {
                     is PaymentHandoffEvent.SheetClosed ->
                         onPaymentSheetReturned(event.referenceId, orderNumber)
 
                     is PaymentHandoffEvent.Unavailable ->
-                        _state.value = CheckoutUiState.PaymentFailed(
-                            orderId = event.referenceId,
-                            orderNumber = orderNumber,
-                        )
+                        onPaymentUnavailable(event.referenceId, orderNumber, event.reason)
                 }
             }
         }
+    }
+
+    /**
+     * No sheet opened, so no money moved, and [reason] says why (audit M2).
+     *
+     * The order may no longer be awaiting payment at all (`ORDER_NOT_PAYABLE`:
+     * a webhook already marked it paid, or it lapsed). That is never "try
+     * paying again": the server is asked, exactly as after a sheet, so a buyer
+     * who already paid sees "Order confirmed" and nothing that invites a
+     * second payment.
+     */
+    private fun onPaymentUnavailable(orderId: String, orderNumber: String, reason: String) {
+        when (PaymentRefusal.of(reason)) {
+            PaymentRefusal.ReadOrder -> onPaymentSheetReturned(orderId, orderNumber)
+            PaymentRefusal.Final ->
+                _state.value = CheckoutUiState.PaymentFailed(orderId, orderNumber, reason = reason, canRetry = false)
+            PaymentRefusal.Retryable ->
+                _state.value = CheckoutUiState.PaymentFailed(orderId, orderNumber, reason = reason)
+        }
+    }
+
+    /**
+     * The screen is about to open the payment sheet for [attempt] (audit L7).
+     *
+     * Recorded here, not when the order was placed: the optional delivery
+     * pin sits between the two, and a process death there used to recover
+     * into 180 s of "Confirming your payment" for a sheet that never opened.
+     */
+    fun onPaymentSheetRequested(attempt: PaymentAttempt) {
+        if (attempt != activeAttempt) return
+        saved.phase = CheckoutContinuation.Phase.SheetRequested
     }
 
     /**
@@ -252,7 +287,7 @@ class CheckoutViewModel @Inject constructor(
         this.addressSummary = addressSummary
         saved.phase = CheckoutContinuation.Phase.Fresh
         _state.value = CheckoutUiState.Loading
-        viewModelScope.launch { requote() }
+        launchRequote()
     }
 
     /**
@@ -315,7 +350,10 @@ class CheckoutViewModel @Inject constructor(
                 saved.orderNumber = order.orderNumber
                 serverBreakdown = order.breakdown
                 _state.value = when (order.paymentStatus) {
-                    PaymentStatus.PAID -> CheckoutUiState.Paid(order.id, order.orderNumber)
+                    // A part refund (a return) is on a paid order; the order
+                    // screen shows the refund itself.
+                    PaymentStatus.PAID, PaymentStatus.PARTIALLY_REFUNDED ->
+                        CheckoutUiState.Paid(order.id, order.orderNumber)
                     PaymentStatus.FAILED -> CheckoutUiState.PaymentFailed(order.id, order.orderNumber)
                     PaymentStatus.REFUND_PENDING, PaymentStatus.REFUNDED ->
                         CheckoutUiState.Expired(order.id)
@@ -331,7 +369,7 @@ class CheckoutViewModel @Inject constructor(
                             // The order exists but no sheet was ever requested,
                             // so payment has not been attempted. Offer it as an
                             // explicit action, which mints a new attempt.
-                            CheckoutUiState.PaymentFailed(order.id, order.orderNumber)
+                            CheckoutUiState.PaymentFailed(order.id, order.orderNumber, attempted = false)
                         }
                     }
                 }
@@ -353,34 +391,70 @@ class CheckoutViewModel @Inject constructor(
             // Not enough survived to resubmit safely. Re-quote rather than
             // guess: no order is known to exist, so starting over is safe.
             saved.phase = CheckoutContinuation.Phase.Fresh
+            _state.value = CheckoutUiState.Loading
             requote()
             return
         }
+        submit(addr, quote, approved)
+    }
+
+    /**
+     * Sends the checkout under the current attempt key and applies the answer.
+     *
+     * Audit H1: a failure with no definite answer ([outcomeUnknown]: a
+     * timeout, a dropped connection, a 5xx) may sit on top of an order the
+     * server committed. The phase then STAYS
+     * [CheckoutContinuation.Phase.Submitting] and the only retry offered is
+     * the same request under the same key, which returns that order rather
+     * than making a second one. Only a definite refusal returns to Quoted.
+     */
+    private suspend fun submit(addressId: String, quoteId: String, approved: PriceBreakdown) {
+        saved.phase = CheckoutContinuation.Phase.Submitting
         val result = repo.checkout(
             idempotencyKey = attemptKey,
-            addressId = addr,
-            quoteId = quote,
+            addressId = addressId,
+            quoteId = quoteId,
             paymentMethod = method.wire,
             expectedTotal = approved.total,
         )
         when (result) {
-            is CommerceResult.Failure -> _state.value = mapFailure(result.error)
-            is CommerceResult.Success -> adoptPlacedOrder(
-                result.value.orderId,
-                result.value.orderNumber,
-                result.value.breakdown,
-            )
+            is CommerceResult.Success -> adoptPlacedOrder(result.value.orderId, result.value.orderNumber)
+            is CommerceResult.Failure -> if (result.error.outcomeUnknown()) {
+                _state.value = CheckoutUiState.Failed(UNKNOWN_OUTCOME_COPY, FailedAction.Resubmit)
+            } else {
+                // A definite refusal: no order was created.
+                saved.phase = CheckoutContinuation.Phase.Quoted
+                _state.value = mapFailure(result.error, retry = FailedAction.Requote)
+            }
         }
     }
 
-    /** Re-prices the cart and moves to [CheckoutUiState.Ready]. */
+    /** The one quote in flight; a newer request replaces it (audit M1). */
+    private var quoteJob: Job? = null
+
+    /** Starts a re-quote, cancelling one already in flight. */
+    private fun launchRequote() {
+        quoteJob?.cancel()
+        quoteJob = viewModelScope.launch { requote() }
+    }
+
+    /**
+     * Re-prices the cart and moves to [CheckoutUiState.Ready].
+     *
+     * Audit M1: the answer is applied only while the screen is still pricing
+     * (Loading, or Ready and not placing). A quote that returns after Place
+     * order went out must not overwrite an order being placed or paid for.
+     */
     private suspend fun requote() {
         val addr = addressId ?: return
-        when (val q = repo.quote(addr, couponCode, method.wire)) {
-            is CommerceResult.Failure -> _state.value = mapFailure(q.error)
+        val q = repo.quote(addr, couponCode, method.wire)
+        if (!stillPricing()) return
+        when (q) {
+            is CommerceResult.Failure -> _state.value = mapFailure(q.error, retry = FailedAction.Requote)
             is CommerceResult.Success -> {
                 quoteId = q.value.quoteId
                 serverBreakdown = q.value.breakdown
+                saved.phase = CheckoutContinuation.Phase.Quoted
                 _state.value = CheckoutUiState.Ready(
                     breakdown = q.value.breakdown,
                     addressId = addr,
@@ -392,19 +466,32 @@ class CheckoutViewModel @Inject constructor(
         }
     }
 
+    private fun stillPricing(): Boolean = when (val s = _state.value) {
+        CheckoutUiState.Loading -> true
+        is CheckoutUiState.Ready -> !s.placing
+        else -> false
+    }
+
     /**
      * The payment method is bound into the quote server-side, so changing it
      * re-quotes rather than editing the displayed price locally.
+     *
+     * Audit M1: only from Ready, and never while an order is being placed or
+     * a previous change is still being priced. Place order waits for the
+     * new quote.
      */
     fun selectMethod(m: PaymentMethod) {
-        if (m == method) return
+        val ready = _state.value as? CheckoutUiState.Ready ?: return
+        if (m == method || !ready.canChange) return
         method = m
-        viewModelScope.launch { requote() }
+        _state.value = ready.copy(paymentMethod = m, repricing = true)
+        launchRequote()
     }
 
     /** Step 2 (LB-14/LB-15): place the order at exactly the quoted total. */
     fun placeOrder() {
         val ready = _state.value as? CheckoutUiState.Ready ?: return
+        if (!ready.canChange) return
         val addr = addressId ?: return
         val quote = quoteId ?: return
         // The number submitted is the SERVER's, echoed back for checking. If
@@ -418,26 +505,29 @@ class CheckoutViewModel @Inject constructor(
         // where an order may or may not exist is exactly the one that needs
         // the same key resubmitted rather than a fresh checkout offered.
         saved.phase = CheckoutContinuation.Phase.Submitting
+        viewModelScope.launch { submit(addr, quote, approved) }
+    }
 
-        viewModelScope.launch {
-            val result = repo.checkout(
-                idempotencyKey = attemptKey,
-                addressId = addr,
-                quoteId = quote,
-                paymentMethod = method.wire,
-                expectedTotal = approved.total,
-            )
-            when (result) {
-                is CommerceResult.Failure -> {
-                    // No order was created, so this is not an in-flight
-                    // checkout any more.
-                    saved.phase = CheckoutContinuation.Phase.Quoted
-                    _state.value = mapFailure(result.error)
-                }
-
-                is CommerceResult.Success ->
-                    adoptPlacedOrder(result.value.orderId, result.value.orderNumber, result.value.breakdown)
+    /**
+     * The button on [CheckoutUiState.Failed] (audit H1): re-quote after a
+     * quote that failed in transit, or resend the SAME checkout under the
+     * SAME key after one that got no answer. Held while it runs.
+     */
+    fun retry() {
+        val failed = _state.value as? CheckoutUiState.Failed ?: return
+        if (failed.retrying) return
+        when (failed.action) {
+            FailedAction.Requote -> {
+                _state.value = CheckoutUiState.Loading
+                launchRequote()
             }
+
+            FailedAction.Resubmit -> {
+                _state.value = failed.copy(retrying = true)
+                viewModelScope.launch { resubmitUnderTheSameKey() }
+            }
+
+            FailedAction.BackToBag, FailedAction.ChangeAddress -> Unit
         }
     }
 
@@ -447,16 +537,21 @@ class CheckoutViewModel @Inject constructor(
      * Everything durable is persisted BEFORE the state changes, so a process
      * death between the two recovers to "an order exists" rather than to
      * "nothing happened".
+     *
+     * The breakdown kept is the server's QUOTE (audit L2): the checkout
+     * response carries no subtotal or discount, and the server has just
+     * checked the order against that quote's total.
      */
-    private fun adoptPlacedOrder(orderId: String, orderNumber: String, breakdown: PriceBreakdown) {
-        serverBreakdown = breakdown
+    private fun adoptPlacedOrder(orderId: String, orderNumber: String) {
         saved.orderId = orderId
         saved.orderNumber = orderNumber
         // C3-LB-4: a fresh attempt for this order. Minted here, before the
         // sheet can open, so an outcome can be matched to it.
         val attempt = PaymentAttempt(orderId = orderId, id = repo.newCheckoutKey())
         activeAttempt = attempt
-        saved.phase = CheckoutContinuation.Phase.SheetRequested
+        // Audit L7: the order exists; the sheet is not requested until the
+        // screen opens it (onPaymentSheetRequested).
+        saved.phase = CheckoutContinuation.Phase.OrderPlaced
         _state.value = CheckoutUiState.OpeningPayment(attempt = attempt, orderNumber = orderNumber)
     }
 
@@ -485,7 +580,7 @@ class CheckoutViewModel @Inject constructor(
         saved.clearAttempt()
         saved.phase = CheckoutContinuation.Phase.Fresh
         _state.value = CheckoutUiState.Loading
-        viewModelScope.launch { requote() }
+        launchRequote()
     }
 
     /**
@@ -504,7 +599,7 @@ class CheckoutViewModel @Inject constructor(
     /** The quote went stale (cart or address changed). Re-quote, do not retry. */
     fun requoteAfterStaleQuote() {
         _state.value = CheckoutUiState.Loading
-        viewModelScope.launch { requote() }
+        launchRequote()
     }
 
     /**
@@ -562,8 +657,15 @@ class CheckoutViewModel @Inject constructor(
         }
     }
 
+    /**
+     * A definite refusal, as the screen state that explains it.
+     *
+     * [retry] is what the button does for a failure that may pass on its own
+     * (a dropped quote, an unexpected answer): re-quote. Only [submit] ever
+     * offers [FailedAction.Resubmit], and only when the outcome is unknown.
+     */
     @Suppress("CyclomaticComplexMethod")
-    private fun mapFailure(error: CommerceError): CheckoutUiState = when (error) {
+    private fun mapFailure(error: CommerceError, retry: FailedAction): CheckoutUiState = when (error) {
         is CommerceError.PriceChanged -> CheckoutUiState.PriceChanged(
             lines = error.lines,
             newTotal = error.newTotal,
@@ -583,40 +685,61 @@ class CheckoutViewModel @Inject constructor(
             CheckoutUiState.RetryWithNewAttempt
         }
 
+        // Audit L3: the address was deleted (or never was the buyer's). The
+        // fix is a different address, not "Please try again".
+        CommerceError.AddressNotFound ->
+            CheckoutUiState.Failed(error.describe(), FailedAction.ChangeAddress)
+
+        // The bag carries the coupon; the bag is where it is changed.
+        is CommerceError.CouponRefused, CommerceError.CouponUnavailable ->
+            CheckoutUiState.Failed(error.describe(), FailedAction.BackToBag)
+
+        // The token could not be refreshed. Retrying here would only 401
+        // again; the app's session handling takes the buyer to sign in.
+        CommerceError.SessionExpired ->
+            CheckoutUiState.Failed(SESSION_EXPIRED_COPY, FailedAction.BackToBag)
+
         CommerceError.ProductUnavailable ->
-            CheckoutUiState.Failed("An item in your bag is no longer available.", retryable = false)
+            CheckoutUiState.Failed("An item in your bag is no longer available.", FailedAction.BackToBag)
 
         CommerceError.MultipleSellers ->
-            CheckoutUiState.Failed("Your bag has items from more than one seller.", retryable = false)
+            CheckoutUiState.Failed("Your bag has items from more than one seller.", FailedAction.BackToBag)
 
-        CommerceError.CouponUnavailable ->
-            CheckoutUiState.Failed("That coupon is no longer available.", retryable = true)
-
+        // Also what an idempotent replay of an order that was already placed
+        // can look like from here (the cart was emptied by that order).
         CommerceError.CartEmpty ->
-            CheckoutUiState.Failed("Your bag is empty.", retryable = false)
+            CheckoutUiState.Failed(CART_EMPTY_COPY, FailedAction.BackToBag)
 
         CommerceError.CodNotSupported ->
-            CheckoutUiState.Failed("Cash on delivery isn't available yet.", retryable = false)
+            CheckoutUiState.Failed("Cash on delivery isn't available yet.", FailedAction.BackToBag)
 
         CommerceError.CancelNotPermitted ->
-            CheckoutUiState.Failed("This order can no longer be cancelled.", retryable = false)
+            CheckoutUiState.Failed("This order can no longer be cancelled.", FailedAction.BackToBag)
 
         CommerceError.OrderNotFound ->
-            CheckoutUiState.Failed("We couldn't find that order.", retryable = false)
-
-        CommerceError.TryAgain ->
-            CheckoutUiState.Failed("Please try again.", retryable = true)
+            CheckoutUiState.Failed("We couldn't find that order.", FailedAction.BackToBag)
 
         // A checkout route that 404s is not a surface that may hide itself:
         // this app is talking to a server that cannot take the order, and
         // saying so beats a spinner that never resolves.
         CommerceError.NotAvailable ->
-            CheckoutUiState.Failed("Checkout is unavailable right now.", retryable = false)
+            CheckoutUiState.Failed("Checkout is unavailable right now.", FailedAction.BackToBag)
 
-        is CommerceError.Network ->
-            CheckoutUiState.Failed("Check your connection and try again.", retryable = true)
+        CommerceError.TryAgain -> CheckoutUiState.Failed("Please try again.", retry)
 
-        is CommerceError.Unexpected ->
-            CheckoutUiState.Failed("Something went wrong.", retryable = true)
+        is CommerceError.Network -> CheckoutUiState.Failed("Check your connection and try again.", retry)
+
+        is CommerceError.Unexpected -> CheckoutUiState.Failed("Something went wrong.", retry)
     }
 }
+
+/**
+ * Placing the order got no answer. The copy must not say "no order was
+ * made": one may have been, and the button resends the same request, which
+ * returns it rather than making a second (audit H1).
+ */
+internal const val UNKNOWN_OUTCOME_COPY =
+    "We didn't hear back about your order. Try again to check: it won't place a second order."
+
+internal const val CART_EMPTY_COPY =
+    "Your bag is empty. If you just placed an order, you'll find it in your orders."

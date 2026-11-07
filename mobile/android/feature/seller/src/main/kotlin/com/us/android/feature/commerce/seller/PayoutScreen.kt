@@ -40,6 +40,8 @@ fun PayoutScreen(
     viewModel: PayoutViewModel = hiltViewModel(),
 ) {
     val form by viewModel.form.collectAsStateWithLifecycle()
+    // Audit L4: a bank account number and IFSC are on this screen.
+    KeepOutOfScreenshots()
 
     UsScaffold(topBar = { MSellerPageBar(title = "Get paid", onBack = onBack) }) { padding ->
         Column(

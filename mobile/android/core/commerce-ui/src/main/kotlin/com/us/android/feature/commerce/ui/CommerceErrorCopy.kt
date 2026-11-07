@@ -1,6 +1,7 @@
 package com.us.android.feature.commerce.ui
 
 import com.us.android.core.commerce.repository.CommerceError
+import com.us.android.core.commerce.repository.CouponRefusal
 
 /**
  * Customer-facing copy for every typed commerce failure.
@@ -57,6 +58,8 @@ fun CommerceError.describe(): String = when (this) {
     CommerceError.CouponUnavailable ->
         "That coupon can't be used on this order."
 
+    is CommerceError.CouponRefused -> couponCopy()
+
     CommerceError.CartEmpty ->
         "Your bag is empty."
 
@@ -65,6 +68,12 @@ fun CommerceError.describe(): String = when (this) {
 
     CommerceError.OrderNotFound ->
         "We couldn't find that order."
+
+    CommerceError.AddressNotFound ->
+        "That delivery address isn't in your address book any more. Please choose another."
+
+    CommerceError.SessionExpired ->
+        SESSION_EXPIRED_COPY
 
     CommerceError.CancelNotPermitted ->
         "This order can no longer be cancelled."
@@ -86,6 +95,25 @@ fun CommerceError.describe(): String = when (this) {
         // log. A raw server code on screen is noise they cannot act on.
         "Something went wrong. Please try again."
 }
+
+/** A coupon refusal in the buyer's words, one sentence per server reason. */
+private fun CommerceError.CouponRefused.couponCopy(): String = when (reason) {
+    CouponRefusal.INVALID -> "That coupon code isn't valid."
+    CouponRefusal.NOT_YET_ACTIVE -> "That coupon isn't active yet."
+    CouponRefusal.EXPIRED -> "That coupon has expired."
+    CouponRefusal.MIN_ORDER ->
+        minOrder?.let { "This coupon needs an order of at least ${it.formatWithSymbol()}." }
+            ?: "Your order is below this coupon's minimum."
+    CouponRefusal.USED_UP -> "That coupon has been fully used."
+    CouponRefusal.NOT_APPLICABLE -> "That coupon doesn't apply to the items in your bag."
+    CouponRefusal.NOT_AVAILABLE -> "Coupons aren't available right now."
+}
+
+/**
+ * The one line for a 401 the app could not recover from. A session problem,
+ * said as one: never "not found", never "something went wrong".
+ */
+const val SESSION_EXPIRED_COPY = "You've been signed out. Sign in again to continue."
 
 /**
  * Whether retrying the SAME request unchanged is sensible.

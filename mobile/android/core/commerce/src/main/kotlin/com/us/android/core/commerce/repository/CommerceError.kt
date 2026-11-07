@@ -68,7 +68,21 @@ sealed interface CommerceError {
     /** D2: P0 carts hold one seller's items. */
     data object MultipleSellers : CommerceError
 
+    /** The older, reasonless `COUPON_UNAVAILABLE`. A current server says why: see [CouponRefused]. */
     data object CouponUnavailable : CommerceError
+
+    /**
+     * A coupon was refused, with the server's reason (422 `COUPON_*`).
+     *
+     * Quote and checkout can answer any of the six codes; the payment retry
+     * on a `payment_failed` order re-claims the order's coupon and can answer
+     * `COUPON_USED_UP`, `COUPON_INVALID` or `COUPON_EXPIRED`, leaving the
+     * order unpaid. [minOrder] is `COUPON_MIN_ORDER`'s `details.min_order_minor`.
+     */
+    data class CouponRefused(
+        val reason: CouponRefusal,
+        val minOrder: Paise? = null,
+    ) : CommerceError
 
     data object CartEmpty : CommerceError
 
@@ -76,6 +90,20 @@ sealed interface CommerceError {
     data object CodNotSupported : CommerceError
 
     data object OrderNotFound : CommerceError
+
+    /**
+     * The chosen delivery address is gone (`ADDRESS_NOT_FOUND`), deleted on
+     * another device, say. Its own case so checkout sends the buyer to pick
+     * an address rather than telling them an order could not be found.
+     */
+    data object AddressNotFound : CommerceError
+
+    /**
+     * A 401 that reached the app: the token authenticator already tried to
+     * refresh and could not, so the session is over. It is never "not found"
+     * and never a failed payment; the buyer has to sign in again.
+     */
+    data object SessionExpired : CommerceError
 
     data object CancelNotPermitted : CommerceError
 
@@ -140,6 +168,8 @@ data class FieldProblem(
  * [CommerceError.NotAvailable] (a bare 404, "no such route") is deliberately
  * not permanent here: the payment source treats it as "older server" and
  * falls back, and a poll that stops on it would strand a real payment.
+ * [CommerceError.SessionExpired] is not permanent either: a payment poll that
+ * stopped on it would end in "failed" for a payment nobody has read.
  */
 fun CommerceError.isPermanentRefusal(): Boolean = when (this) {
     CommerceError.OrderNotFound,
@@ -152,12 +182,44 @@ fun CommerceError.isPermanentRefusal(): Boolean = when (this) {
     else -> false
 }
 
+/**
+ * Whether a WRITE that failed this way may still have been applied.
+ *
+ * True when no definite answer came back: the connection broke or timed out
+ * (possibly after the server committed), the server failed with a 5xx or a
+ * status-less error, or it asked for the same request again (`TRY_AGAIN`).
+ * Only resending the same request under the same idempotency key is safe
+ * then; anything else risks doing it twice. A coded 4xx, a 401 and a bare
+ * 404 are definite refusals: nothing was applied.
+ */
+fun CommerceError.outcomeUnknown(): Boolean = when (this) {
+    is CommerceError.Network, CommerceError.TryAgain -> true
+    is CommerceError.Unexpected -> httpStatus == 0 || httpStatus >= HTTP_FIRST_SERVER_ERROR
+    else -> false
+}
+
+private const val HTTP_FIRST_SERVER_ERROR = 500
 private const val HTTP_BAD_REQUEST = 400
 private const val HTTP_LAST_CLIENT_ERROR = 499
 private const val HTTP_REQUEST_TIMEOUT = 408
 private const val HTTP_TOO_MANY_REQUESTS = 429
 private val HTTP_CLIENT_ERRORS = HTTP_BAD_REQUEST..HTTP_LAST_CLIENT_ERROR
 private val HTTP_TRANSIENT_CLIENT_ERRORS = setOf(HTTP_REQUEST_TIMEOUT, HTTP_TOO_MANY_REQUESTS)
+
+/** Why a coupon was refused, one per server code (commerce `coupons.go`). */
+enum class CouponRefusal(val wire: String) {
+    INVALID("COUPON_INVALID"),
+
+    /** `COUPON_INVALID` carrying `details.starts_at`: the coupon has not started. */
+    NOT_YET_ACTIVE("COUPON_INVALID"),
+    EXPIRED("COUPON_EXPIRED"),
+    MIN_ORDER("COUPON_MIN_ORDER"),
+    USED_UP("COUPON_USED_UP"),
+    NOT_APPLICABLE("COUPON_NOT_APPLICABLE"),
+
+    /** Platform coupons are switched off. */
+    NOT_AVAILABLE("COUPON_NOT_AVAILABLE"),
+}
 
 data class UnavailableLine(
     val variantId: String,

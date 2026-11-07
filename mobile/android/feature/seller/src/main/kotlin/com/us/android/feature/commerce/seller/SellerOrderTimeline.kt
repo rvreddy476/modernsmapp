@@ -87,6 +87,7 @@ fun SellerOrder.timeline(): List<TimelineEntry> {
     val rank = status.fulfilmentRank()
     val paid = paymentStatus == PaymentStatus.PAID ||
         paymentStatus == PaymentStatus.REFUND_PENDING ||
+        paymentStatus == PaymentStatus.PARTIALLY_REFUNDED ||
         paymentStatus == PaymentStatus.REFUNDED ||
         rank >= RANK_CONFIRMED
 

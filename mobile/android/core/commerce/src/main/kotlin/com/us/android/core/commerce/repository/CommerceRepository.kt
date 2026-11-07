@@ -519,14 +519,8 @@ class CommerceRepository @Inject constructor(
             CheckoutOutcome(
                 orderId = dto.orderId,
                 orderNumber = dto.orderNumber,
-                breakdown = PriceBreakdown(
-                    subtotal = dto.totalMinor - dto.shippingMinor,
-                    discount = Paise.ZERO,
-                    shipping = dto.shippingMinor,
-                    tax = dto.taxMinor,
-                    total = dto.totalMinor,
-                    currency = dto.currency,
-                ),
+                total = dto.totalMinor,
+                currency = dto.currency,
                 paymentIntentId = dto.paymentIntentId,
                 clientSession = dto.clientSession.orEmpty(),
             )
@@ -652,23 +646,35 @@ class CommerceRepository @Inject constructor(
      * total. The current figure is the server's business, read under a row
      * lock, precisely so two people adjusting at once cannot lose one
      * another's write.
+     *
+     * [idempotencyKey] is the caller's key for this ONE edit, resent
+     * unchanged on every retry, so a save whose response was lost cannot be
+     * applied twice. A replay answers the first application's level and is
+     * flagged [StockAdjustment.replayed].
      */
     suspend fun adjustStock(
         variantId: String,
         delta: Int,
         reason: StockReason,
         notes: String? = null,
-    ): CommerceResult<StockLevel> =
-        call {
+        idempotencyKey: String? = null,
+    ): CommerceResult<StockAdjustment> {
+        var replayed = false
+        return call {
             api.adjustStock(
                 variantId,
+                idempotencyKey,
                 AdjustStockRequest(
                     delta = delta,
                     reason = reason.wire,
                     notes = notes?.trim()?.takeIf { it.isNotBlank() },
                 ),
-            )
-        }.map(::toStock)
+            ).also { replayed = it.headers()[HEADER_IDEMPOTENT_REPLAYED].equals("true", ignoreCase = true) }
+        }.map { StockAdjustment(level = toStock(it), replayed = replayed) }
+    }
+
+    /** Mints the key for one stock edit. A UUID: well inside the server's 128 characters. */
+    fun newStockAdjustmentKey(): String = UUID.randomUUID().toString()
 
     /**
      * Saves the pickup point.
@@ -1106,6 +1112,14 @@ class CommerceRepository @Inject constructor(
             (details?.get("lines") as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
 
         fun JsonObject.text(key: String): String = (this[key] as? JsonPrimitive)?.contentOrNull.orEmpty()
+
+        // A 401 that got this far is one the token authenticator could not
+        // fix (a refresh that failed). Whatever its code, it is the session,
+        // never "not found" and never a payment outcome.
+        if (httpStatus == HTTP_UNAUTHORIZED) return CommerceError.SessionExpired
+
+        couponRefusal(code, details)?.let { return it }
+
         return when (code) {
             "OUT_OF_STOCK" -> CommerceError.OutOfStock(
                 lines().map { o ->
@@ -1143,13 +1157,14 @@ class CommerceRepository @Inject constructor(
             "COUPON_UNAVAILABLE" -> CommerceError.CouponUnavailable
             "CART_EMPTY" -> CommerceError.CartEmpty
             "COD_NOT_SUPPORTED" -> CommerceError.CodNotSupported
-            "ORDER_NOT_FOUND", "ADDRESS_NOT_FOUND" -> CommerceError.OrderNotFound
+            "ORDER_NOT_FOUND" -> CommerceError.OrderNotFound
+            "ADDRESS_NOT_FOUND" -> CommerceError.AddressNotFound
             "CANCEL_NOT_PERMITTED" -> CommerceError.CancelNotPermitted
             "TRY_AGAIN" -> CommerceError.TryAgain
             "IDEMPOTENCY_KEY_REQUIRED" ->
                 // A client bug, not a user-facing condition: the app must
                 // always send the header.
-                CommerceError.Unexpected(code, "checkout was sent without an Idempotency-Key")
+                CommerceError.Unexpected(code, "checkout was sent without an Idempotency-Key", httpStatus)
 
             else -> CommerceError.Unexpected(
                 code = code.orEmpty(),
@@ -1265,6 +1280,39 @@ const val PAGE_SIZE = 20
 /** A route this server does not have. See CommerceError.NotAvailable. */
 private const val HTTP_NOT_FOUND = 404
 
+/** Set on a stock adjustment the server had already applied under this key. */
+private const val HEADER_IDEMPOTENT_REPLAYED = "Idempotent-Replayed"
+
+/**
+ * A stock adjustment's answer: the level, and whether it was a replay of an
+ * edit already applied (the level is then the first application's, and may
+ * be older than what is on the shelf now).
+ */
+data class StockAdjustment(val level: StockLevel, val replayed: Boolean)
+
+/** A session the authenticator could not refresh. See CommerceError.SessionExpired. */
+private const val HTTP_UNAUTHORIZED = 401
+
+/**
+ * The 422 `COUPON_*` refusals (commerce `coupons.go`, `coupon_release.go`),
+ * or null for any other code. `COUPON_INVALID` with `details.starts_at` is a
+ * coupon that has not started yet, which the buyer is told as such.
+ */
+internal fun couponRefusal(code: String?, details: JsonObject?): CommerceError.CouponRefused? {
+    fun detail(key: String): String? = (details?.get(key) as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
+    val reason = when (code) {
+        "COUPON_INVALID" -> if (detail("starts_at") != null) CouponRefusal.NOT_YET_ACTIVE else CouponRefusal.INVALID
+        "COUPON_EXPIRED" -> CouponRefusal.EXPIRED
+        "COUPON_MIN_ORDER" -> CouponRefusal.MIN_ORDER
+        "COUPON_USED_UP" -> CouponRefusal.USED_UP
+        "COUPON_NOT_APPLICABLE" -> CouponRefusal.NOT_APPLICABLE
+        "COUPON_NOT_AVAILABLE" -> CouponRefusal.NOT_AVAILABLE
+        else -> return null
+    }
+    val minOrder = detail("min_order_minor")?.toLongOrNull()?.takeIf { it > 0L }?.let(::Paise)
+    return CommerceError.CouponRefused(reason, minOrder.takeIf { reason == CouponRefusal.MIN_ORDER })
+}
+
 /**
  * Whether a failure says "this server did not understand that request body",
  * which is the one condition the gallery attach retries in the older shape.
@@ -1279,11 +1327,20 @@ private fun CommerceError.isUnknownShape(): Boolean =
 
 private val UNKNOWN_SHAPE_CODES = setOf("INVALID_BODY", "ADD_MEDIA_FAILED")
 
-/** The result of a successful checkout. */
+/**
+ * The result of a successful checkout.
+ *
+ * Only the [total] the server committed, not a breakdown: the response has no
+ * subtotal or discount, and deriving them (`total - shipping`, discount zero)
+ * would be the client inventing money figures the moment a coupon exists. The
+ * breakdown on screen stays the server's QUOTE, which the checkout was
+ * validated against.
+ */
 data class CheckoutOutcome(
     val orderId: String,
     val orderNumber: String,
-    val breakdown: PriceBreakdown,
+    val total: Paise,
+    val currency: String,
     val paymentIntentId: String?,
     val clientSession: Map<String, String>,
 )

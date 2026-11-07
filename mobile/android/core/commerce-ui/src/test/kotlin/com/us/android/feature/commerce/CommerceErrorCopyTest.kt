@@ -3,9 +3,12 @@ package com.us.android.feature.commerce
 import com.us.android.core.commerce.model.Paise
 import com.us.android.core.commerce.repository.ChangedLine
 import com.us.android.core.commerce.repository.CommerceError
+import com.us.android.core.commerce.repository.CouponRefusal
 import com.us.android.core.commerce.repository.UnavailableLine
+import com.us.android.feature.commerce.ui.SESSION_EXPIRED_COPY
 import com.us.android.feature.commerce.ui.describe
 import com.us.android.feature.commerce.ui.isRetryable
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -112,5 +115,29 @@ class CommerceErrorCopyTest {
             listOf(UnavailableLine("v1", "p1", "Blue kettle", requested = 2, available = 0)),
         ).describe()
         assertTrue(copy.contains("Blue kettle"))
+    }
+
+    /** Android lane 6: every coupon reason the server sends has its own sentence. */
+    @Test
+    fun `each coupon refusal says what went wrong with the coupon`() {
+        val copies = CouponRefusal.entries.associateWith { CommerceError.CouponRefused(it).describe() }
+        assertEquals("one sentence per reason", CouponRefusal.entries.size, copies.values.toSet().size)
+        copies.values.forEach { copy ->
+            assertTrue(copy, copy.contains("coupon", ignoreCase = true))
+            assertFalse(copy, copy.contains("COUPON_"))
+        }
+        assertEquals(
+            "This coupon needs an order of at least ₹499.00.",
+            CommerceError.CouponRefused(CouponRefusal.MIN_ORDER, minOrder = Paise(49_900)).describe(),
+        )
+    }
+
+    @Test
+    fun `a signed-out session and a deleted address say so plainly`() {
+        assertEquals(SESSION_EXPIRED_COPY, CommerceError.SessionExpired.describe())
+        assertTrue(CommerceError.AddressNotFound.describe().contains("address"))
+        // Neither is a bare retry: the buyer has to sign in, or pick another address.
+        assertFalse(CommerceError.SessionExpired.isRetryable())
+        assertFalse(CommerceError.AddressNotFound.isRetryable())
     }
 }

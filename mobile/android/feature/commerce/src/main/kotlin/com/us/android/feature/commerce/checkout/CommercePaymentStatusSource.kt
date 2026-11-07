@@ -99,6 +99,9 @@ private val REFUND_DONE = setOf("refunded", "partially_refunded")
 /** Commerce's older payment status, as a reading. Internal so a test can pin it. */
 internal fun PaymentStatus.toReading(): PaymentStatusReading = when (this) {
     PaymentStatus.PAID -> PaymentStatusReading.Paid
+    // Part of a captured payment went back (a return): the order was paid
+    // and stands. Only a full refund ends a checkout as refunded.
+    PaymentStatus.PARTIALLY_REFUNDED -> PaymentStatusReading.Paid
     // A failed commerce payment keeps its order, and checkout offers
     // "Try payment again" on it.
     PaymentStatus.FAILED -> PaymentStatusReading.Failed(retryable = true)

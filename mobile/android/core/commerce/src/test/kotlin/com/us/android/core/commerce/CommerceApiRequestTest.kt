@@ -344,12 +344,23 @@ class CommerceApiRequestTest {
     fun `a stock adjustment patches the VARIANT's stock path with a signed delta`() {
         enqueue("""{"data":{"variant_id":"v-1","total_qty":12,"reserved_qty":2,"available":10}}""")
 
-        runBlocking { api.adjustStock("v-1", AdjustStockRequest(delta = -2, reason = "damage")) }
+        runBlocking { api.adjustStock("v-1", "key-1", AdjustStockRequest(delta = -2, reason = "damage")) }
 
         val request = server.takeRequest()
         assertThat(request.method).isEqualTo("PATCH")
         assertThat(request.target).isEqualTo("/v1/commerce/seller/variants/v-1/stock")
         assertThat(request.body!!.utf8()).isEqualTo("""{"delta":-2,"reason":"damage"}""")
+        // Audit M3: the edit's key travels as the header the server dedupes on.
+        assertThat(request.headers["Idempotency-Key"]).isEqualTo("key-1")
+    }
+
+    @Test
+    fun `a stock adjustment without a key sends no Idempotency-Key header`() {
+        enqueue("""{"data":{"variant_id":"v-1","total_qty":12,"reserved_qty":2,"available":10}}""")
+
+        runBlocking { api.adjustStock("v-1", null, AdjustStockRequest(delta = 1, reason = "purchase")) }
+
+        assertThat(server.takeRequest().headers["Idempotency-Key"]).isNull()
     }
 
     @Test

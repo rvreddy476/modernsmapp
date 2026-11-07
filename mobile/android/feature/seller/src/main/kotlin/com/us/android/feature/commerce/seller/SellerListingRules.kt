@@ -120,6 +120,11 @@ private val SELLER_COPY = mapOf(
     "PRICE_NOT_POSITIVE" to "Enter a price above zero.",
     // Migration 045: a books-only shop lists only books, at GST 0% (create, edit, submit).
     "SELLER_SCOPE_BOOKS_ONLY" to BOOKS_ONLY_LISTING_COPY,
+    // Onboarding with a business page (`business_page_id`): the page is not
+    // one this person manages, or the check could not be made (a 503 the
+    // seller can simply try again; the form stays open).
+    "BUSINESS_PAGE_NOT_FOUND" to BUSINESS_PAGE_NOT_FOUND_COPY,
+    "BUSINESS_PAGE_CHECK_UNAVAILABLE" to BUSINESS_PAGE_CHECK_UNAVAILABLE_COPY,
 )
 
 /**
@@ -165,3 +170,9 @@ fun submitProblem(productId: String, error: CommerceError) = SubmitProblem(
     message = error.describeForSeller(),
     gaps = error.listingGaps(),
 )
+
+internal const val BUSINESS_PAGE_NOT_FOUND_COPY =
+    "That business page isn't one you manage. Choose a page you're an admin of, or start without one."
+
+internal const val BUSINESS_PAGE_CHECK_UNAVAILABLE_COPY =
+    "We couldn't check your business page just now. Please try again."

@@ -12,6 +12,7 @@ import com.us.android.core.payments.PaymentHandoff
 import com.us.android.core.payments.PaymentHandoffEvent
 import com.us.android.core.payments.PaymentSession
 import com.us.android.core.payments.PaymentSheetResult
+import com.us.android.feature.commerce.ui.SESSION_EXPIRED_COPY
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -122,13 +123,53 @@ class CheckoutPaymentOpener @Inject constructor(
  * when it has gone. That is the one refusal a buyer can do something about
  * (order again), so it is named; everything else is a retry.
  */
-internal fun paymentOpenRefusal(error: CommerceError): String = when (error) {
-    is CommerceError.OutOfStock -> OUT_OF_STOCK_ON_RETRY
-    else -> "We couldn't start the payment. Please try again."
+internal fun paymentOpenRefusal(error: CommerceError): String = when {
+    error is CommerceError.OutOfStock -> OUT_OF_STOCK_ON_RETRY
+    // The retry re-claims the order's coupon (0a57631fd): used up, switched
+    // off or expired since the order was placed. The order stays unpaid.
+    error is CommerceError.CouponRefused -> COUPON_GONE_ON_RETRY
+    // Already paid (a webhook beat the retry), cancelled or expired: the
+    // server says re-read the order, which is what the screens do on this.
+    error is CommerceError.Unexpected && error.code == "ORDER_NOT_PAYABLE" -> ORDER_NOT_PAYABLE_ON_RETRY
+    error is CommerceError.SessionExpired -> SESSION_EXPIRED_COPY
+    else -> PAYMENT_OPEN_FAILED
+}
+
+/**
+ * What a refused payment opening means for the next step, read back from the
+ * one line [paymentOpenRefusal] gave it (the handoff bus carries the line).
+ */
+internal enum class PaymentRefusal {
+    /** Trying again cannot help: the order needs placing again. */
+    Final,
+
+    /** The order is no longer awaiting payment. Ask the server what it is. */
+    ReadOrder,
+
+    /** Anything else: payment can be tried again. */
+    Retryable,
+    ;
+
+    companion object {
+        fun of(reason: String): PaymentRefusal = when (reason) {
+            OUT_OF_STOCK_ON_RETRY, COUPON_GONE_ON_RETRY -> Final
+            ORDER_NOT_PAYABLE_ON_RETRY -> ReadOrder
+            else -> Retryable
+        }
+    }
 }
 
 internal const val OUT_OF_STOCK_ON_RETRY =
     "Those items have sold out since you ordered, so this order can't be paid for now."
+
+internal const val COUPON_GONE_ON_RETRY =
+    "The coupon on this order can't be used any more, so the order can't be paid for as it is. " +
+        "Please place a new order."
+
+internal const val ORDER_NOT_PAYABLE_ON_RETRY =
+    "This order isn't waiting for payment any more. Checking its status…"
+
+private const val PAYMENT_OPEN_FAILED = "We couldn't start the payment. Please try again."
 
 /**
  * The sheet session for a server payment handle, stamped as MStore's.

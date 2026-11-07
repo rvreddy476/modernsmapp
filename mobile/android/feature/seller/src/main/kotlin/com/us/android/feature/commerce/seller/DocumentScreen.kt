@@ -57,6 +57,8 @@ fun DocumentScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     LaunchedEffect(addressProof) { if (addressProof) viewModel.startAsAddressProof() }
+    // Audit L4: an identity document's number is typed on this screen.
+    KeepOutOfScreenshots()
 
     // A document is not always an image — a PAN card is often a PDF — so this
     // is the general file picker rather than the photo picker. The MIME filter

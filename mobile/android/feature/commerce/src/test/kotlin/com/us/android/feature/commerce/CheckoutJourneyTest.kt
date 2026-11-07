@@ -208,6 +208,7 @@ class CheckoutJourneyTest {
 
         override suspend fun adjustStock(
             variantId: String,
+            idempotencyKey: String?,
             body: AdjustStockRequest,
         ): Response<ApiEnvelope<StockDto>> = notUsed()
 
@@ -614,6 +615,7 @@ class ServerErrorCodeTest {
 
         override suspend fun adjustStock(
             variantId: String,
+            idempotencyKey: String?,
             body: AdjustStockRequest,
         ): Response<ApiEnvelope<StockDto>> = notUsed()
 

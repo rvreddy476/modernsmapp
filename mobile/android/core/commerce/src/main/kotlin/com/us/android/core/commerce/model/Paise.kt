@@ -80,14 +80,29 @@ value class Paise(val value: Long) : Comparable<Paise> {
         return if (negative) "-$body" else body
     }
 
-    /** "₹1,234.56", for display only. */
+    /** "₹1,234.56", for display only. Rupees; see [formatIn] for an amount that states its currency. */
     fun formatWithSymbol(): String = "₹${format()}"
+
+    /**
+     * The amount in the [currency] the server stated alongside it (audit L8).
+     *
+     * INR, the only currency commerce charges in today, prints as ₹. Any
+     * other code prints as its ISO code ("USD 12.00") rather than under a
+     * rupee sign it is not in: a wrong symbol on a money screen is a wrong
+     * amount. Blank is read as INR, which is what every server default says.
+     */
+    fun formatIn(currency: String): String {
+        val code = currency.trim().uppercase()
+        return if (code.isEmpty() || code == RUPEE_CODE) formatWithSymbol() else "$code ${format()}"
+    }
 
     companion object {
         val ZERO = Paise(0)
 
         /** 100 paise to the rupee. The one conversion factor in this type. */
         const val PAISE_PER_RUPEE = 100L
+
+        private const val RUPEE_CODE = "INR"
 
         /** For constants and config only, never for a user-entered amount. */
         fun ofRupees(rupees: Long) = Paise(rupees * PAISE_PER_RUPEE)

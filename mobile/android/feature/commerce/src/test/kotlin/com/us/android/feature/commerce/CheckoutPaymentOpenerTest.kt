@@ -126,6 +126,7 @@ class CheckoutPaymentOpenerTest {
             PaymentStatus.PAID to PaymentStatusReading.Paid,
             PaymentStatus.FAILED to PaymentStatusReading.Failed(reason = null, retryable = true),
             PaymentStatus.REFUND_PENDING to PaymentStatusReading.RefundPending,
+            PaymentStatus.PARTIALLY_REFUNDED to PaymentStatusReading.Paid,
             PaymentStatus.REFUNDED to PaymentStatusReading.Refunded,
             PaymentStatus.PENDING to PaymentStatusReading.Confirming,
             PaymentStatus.AWAITING_CONFIRMATION to PaymentStatusReading.Confirming,

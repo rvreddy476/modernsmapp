@@ -305,10 +305,18 @@ interface CommerceApi {
      * A "set stock to N" call is a lost-update generator: the screen renders
      * 42, two units sell while the seller is typing, they submit 52 meaning
      * "I added ten", and the two sold units are restored to the shelf.
+     *
+     * A delta applied twice is a doubled restock, so the request carries an
+     * `Idempotency-Key` (audit M3): one per seller edit, the SAME on every
+     * retry of it. The server answers a repeat with the first response and
+     * `Idempotent-Replayed: true`, refuses the key on a different body with
+     * 409 `IDEMPOTENCY_CONFLICT`, and one over 128 characters with 400
+     * `INVALID_IDEMPOTENCY_KEY`. Null sends no header.
      */
     @PATCH("v1/commerce/seller/variants/{variantId}/stock")
     suspend fun adjustStock(
         @Path("variantId") variantId: String,
+        @Header("Idempotency-Key") idempotencyKey: String?,
         @Body body: AdjustStockRequest,
     ): Response<ApiEnvelope<StockDto>>
 

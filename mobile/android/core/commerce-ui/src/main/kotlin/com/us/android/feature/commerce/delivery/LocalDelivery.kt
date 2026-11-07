@@ -36,15 +36,67 @@ internal interface LocalDeliveryApi {
 }
 
 internal fun JsonObject.text(key: String) = (get(key) as? JsonPrimitive)?.contentOrNull.orEmpty()
+
+/**
+ * A refused delivery call, already in the reader's words. [sessionEnded] is a
+ * 401: the token could not be refreshed, so the screen stops polling and asks
+ * for a sign-in rather than retrying every five seconds.
+ */
+internal class LocalDeliveryFailure(message: String, val sessionEnded: Boolean = false) : IllegalStateException(message)
+
+/**
+ * The line for a non-2xx delivery answer. Pure, for the table test.
+ *
+ * Every delivery route answers 401 `UNAUTHORIZED` without a session; that is
+ * a session problem, never "not found". A 404 `DELIVERY_NOT_FOUND` covers both
+ * "none" and "not yours" by design. A 5xx is the server's, worth a refresh.
+ * Any other refusal keeps the server's own sentence, as before.
+ */
+internal fun localDeliveryFailure(status: Int, code: String?, message: String?): LocalDeliveryFailure = when {
+    status == HTTP_UNAUTHORIZED -> LocalDeliveryFailure(DELIVERY_SIGNED_OUT, sessionEnded = true)
+    status == HTTP_NOT_FOUND && code == "DELIVERY_NOT_FOUND" ->
+        LocalDeliveryFailure("We couldn't find this delivery. Refresh to check again.")
+    status >= HTTP_SERVER_ERROR -> LocalDeliveryFailure(DELIVERY_UNAVAILABLE)
+    else -> LocalDeliveryFailure(message?.takeIf(String::isNotBlank) ?: DELIVERY_UNAVAILABLE)
+}
+
+internal const val DELIVERY_SIGNED_OUT = "You've been signed out. Sign in again to see delivery updates."
+private const val DELIVERY_UNAVAILABLE = "Couldn't check local delivery. Please refresh."
+private const val DELIVERY_CHECK_FAILED = "Couldn't check delivery. Please refresh."
+private const val HTTP_UNAUTHORIZED = 401
+private const val HTTP_NOT_FOUND = 404
+private const val HTTP_SERVER_ERROR = 500
+
 internal fun localData(response: Response<JsonObject>): JsonElement? {
     if (!response.isSuccessful) {
-        val message = response.errorBody()?.string()?.let { runCatching { Json.parseToJsonElement(it).jsonObject["error"]?.jsonObject?.text("message") }.getOrNull() }
-        throw IllegalStateException(message?.takeIf(String::isNotBlank) ?: "Couldn't check local delivery. Please refresh.")
+        val error = response.errorBody()?.string()?.let(::errorObject)
+        throw localDeliveryFailure(response.code(), error?.text("code"), error?.text("message"))
     }
     val body = response.body() ?: error("Delivery information is incomplete. Please refresh.")
     check(body.containsKey("data")) { "Delivery information is incomplete. Please refresh." }
     return body["data"].takeUnless { it is JsonNull }
 }
+
+/** The `error` object of an envelope body, or null when there is none. */
+private fun errorObject(body: String): JsonObject? =
+    runCatching { Json.parseToJsonElement(body).jsonObject["error"]?.jsonObject }.getOrNull()
+
+/**
+ * The state after a failed delivery call. A [LocalDeliveryFailure] is already
+ * reader copy (and a 401 ends polling); this file's own `check`/`error`
+ * lines are too. Anything else — a dropped connection, say — gets [fallback]
+ * rather than a raw exception message. Codes are hidden either way.
+ */
+internal fun LocalDeliveryState.withFailure(error: Exception, fallback: String): LocalDeliveryState = copy(
+    error = when (error) {
+        is LocalDeliveryFailure -> error.message
+        is IllegalStateException -> error.message
+        else -> null
+    } ?: fallback,
+    signedOut = (error as? LocalDeliveryFailure)?.sessionEnded == true || signedOut,
+    codes = emptyMap(),
+)
+
 internal fun canRevealDeliveryCode(status: String) = status == "assigned" || status == "picked_up"
 internal fun localDeliveryStatus(status: String): String = when(status) {
     "awaiting_ready" -> "Seller preparing your order"
@@ -57,8 +109,13 @@ internal fun localDeliveryStatus(status: String): String = when(status) {
     else -> "Check delivery status"
 }
 data class LocalDeliveryState(
-    val jobs: List<JsonObject> = emptyList(), val loading: Boolean = true,
-    val busy: Boolean = false, val error: String? = null, val codes: Map<String,String> = emptyMap(),
+    val jobs: List<JsonObject> = emptyList(),
+    val loading: Boolean = true,
+    val busy: Boolean = false,
+    val error: String? = null,
+    val codes: Map<String, String> = emptyMap(),
+    /** A 401 came back: polling stops until the reader asks again. */
+    val signedOut: Boolean = false,
 )
 @HiltViewModel
 class LocalDeliveryViewModel @Inject constructor(retrofit: Retrofit) : ViewModel() {
@@ -67,17 +124,25 @@ class LocalDeliveryViewModel @Inject constructor(retrofit: Retrofit) : ViewModel
     val state = mutable.asStateFlow()
     fun hideCodes() { mutable.update { it.copy(codes = emptyMap()) } }
     private var request: Job? = null
-    fun refresh(orderId: String, seller: Boolean) {
+
+    /**
+     * Reads the order's delivery jobs. The screen's poll passes [manual] false
+     * and stops once the session has ended; the Refresh button passes true.
+     */
+    fun refresh(orderId: String, seller: Boolean, manual: Boolean = false) {
         if (request?.isActive == true || mutable.value.busy) return
+        if (mutable.value.signedOut && !manual) return
         request = viewModelScope.launch {
             try {
                 val data = localData(api.jobs(orderId))
                 val jobs = (data as? JsonArray)?.map { it.jsonObject } ?: if(data == null) emptyList() else error("Delivery information is incomplete.")
                 // Do not fetch seller-only pickup codes until explicitly requested.
-                mutable.update { old -> old.copy(jobs = jobs, loading = false, error = null,
+                mutable.update { old -> old.copy(jobs = jobs, loading = false, error = null, signedOut = false,
                     codes = old.codes.filterKeys { id -> jobs.any { it.text("id") == id && if(seller) it.text("status") in setOf("unassigned","assigned") else canRevealDeliveryCode(it.text("status")) } }) }
             } catch(cancel: CancellationException) { throw cancel }
-            catch(error: Exception) { mutable.update { it.copy(loading = false, error = error.message ?: "Couldn't check delivery. Please refresh.", codes = emptyMap()) } }
+            catch(error: Exception) {
+                mutable.update { it.withFailure(error, DELIVERY_CHECK_FAILED).copy(loading = false) }
+            }
         }
     }
     fun reveal(orderId: String, jobId: String, seller: Boolean) = action(orderId, seller) {
@@ -97,7 +162,7 @@ class LocalDeliveryViewModel @Inject constructor(retrofit: Retrofit) : ViewModel
         viewModelScope.launch {
             try { block() }
             catch(cancel: CancellationException) { throw cancel }
-            catch(error: Exception) { mutable.update { it.copy(error = error.message ?: "Couldn't complete that request.",codes=emptyMap()) } }
+            catch(error: Exception) { mutable.update { it.withFailure(error, "Couldn't complete that request.") } }
             finally { mutable.update { it.copy(busy=false) }; if(mutable.value.error == null) refresh(orderId,seller) }
         }
     }
@@ -122,7 +187,14 @@ fun LocalOrderDeliveries(orderId: String, seller: Boolean = false, onLocalJobs: 
     if(state.jobs.isEmpty() && state.error == null) return
     Column(verticalArrangement=Arrangement.spacedBy(UsTheme.spacing.m)) {
         Text("Local deliveries",style=MaterialTheme.typography.titleMedium)
-        state.error?.let { Text(it,color=UsTheme.extended.statusWarning); UsSecondaryButton("Refresh deliveries",{vm.refresh(orderId,seller)},enabled=!state.busy) }
+        state.error?.let { message ->
+            Text(message, color = UsTheme.extended.statusWarning)
+            UsSecondaryButton(
+                text = "Refresh deliveries",
+                onClick = { vm.refresh(orderId, seller, manual = true) },
+                enabled = !state.busy,
+            )
+        }
         state.jobs.forEach { job ->
             val id = job.text("id");val status = job.text("status")
             UsSurfaceCard(Modifier.fillMaxWidth()) {

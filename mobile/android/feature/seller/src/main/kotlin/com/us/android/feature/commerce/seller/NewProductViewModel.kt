@@ -133,6 +133,10 @@ data class CreatedProduct(
  * Returns null for anything that is not a positive amount with at most two
  * decimal places — including "1.239", which is not a price a seller can charge
  * and must not be silently rounded into one.
+ *
+ * Audit L6: also null for more than [MAX_RUPEE_DIGITS] rupee digits. A pasted
+ * card or phone number is not a price, and the cap is what keeps the paise
+ * arithmetic below from ever wrapping round into a different positive price.
  */
 internal fun parseRupees(raw: String): Paise? {
     val parts = raw.trim().takeIf { it.isNotEmpty() }?.split('.') ?: return null
@@ -140,6 +144,7 @@ internal fun parseRupees(raw: String): Paise? {
 
     val rupees = parts[0].ifEmpty { "0" }
     if (!rupees.all(Char::isDigit)) return null
+    if (rupees.trimStart('0').length > MAX_RUPEE_DIGITS) return null
 
     val fraction = if (parts.size == 1) "00" else normaliseFraction(parts[1]) ?: return null
 
@@ -158,7 +163,10 @@ private fun normaliseFraction(raw: String): String? =
 internal fun Paise.asRupeeText(): String =
     String.format(Locale.ROOT, "%d.%02d", value / PAISE_PER_RUPEE, value % PAISE_PER_RUPEE)
 
-private const val PAISE_PER_RUPEE = 100
+private const val PAISE_PER_RUPEE = 100L
+
+/** ₹99,99,99,999: far above any listing, and ×100 is far below Long.MAX_VALUE. */
+internal const val MAX_RUPEE_DIGITS = 9
 private const val PAISE_DIGITS = 2
 private const val MAX_PARTS = 2
 

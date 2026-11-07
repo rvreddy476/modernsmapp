@@ -2,27 +2,32 @@ package com.us.android.feature.commerce.seller
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.us.android.core.commerce.model.ADDRESS_PROOF_TYPES
 import com.us.android.core.commerce.model.SellerDocument
 import com.us.android.core.commerce.model.SellerDocumentType
-import com.us.android.core.commerce.model.ADDRESS_PROOF_TYPES
 import com.us.android.core.commerce.model.imageOnly
 import com.us.android.core.commerce.model.provesAddress
 import com.us.android.core.commerce.model.twoSided
 import com.us.android.core.commerce.repository.CommerceError
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.commerce.repository.CommerceResult
+import com.us.android.core.common.di.Dispatcher
+import com.us.android.core.common.di.UsDispatcher
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.media.upload.FILE_TYPE_DOCUMENT
 import com.us.android.core.media.upload.MediaSourceResolver
 import com.us.android.core.media.upload.MediaUploader
 import com.us.android.core.media.upload.PickedMedia
 import com.us.android.core.media.upload.PresignedPutResult
 import com.us.android.feature.commerce.ui.describe
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 /**
@@ -155,6 +160,8 @@ class DocumentViewModel @Inject constructor(
     private val repo: CommerceRepository,
     private val uploader: MediaUploader,
     private val sources: MediaSourceResolver,
+    /** Where the picked file is resolved: a ContentResolver query, never on main (audit L8). */
+    @Dispatcher(UsDispatcher.IO) private val io: CoroutineDispatcher,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(DocumentUploadState())
@@ -189,9 +196,19 @@ class DocumentViewModel @Inject constructor(
         val picked = readPicked(uri) ?: return
 
         edit { it.copy(stage = DocumentUploadState.Stage.Starting, error = null, progress = null) }
-        val init = when (val r = uploader.reserve(mimeType = picked.mimeType, sizeBytes = picked.sizeBytes)) {
+        // The private `document` kind (31 Oct addendum): PDF, JPEG or PNG, kept
+        // out of every viewer route, on its own daily budget rather than the
+        // product photos' hourly one (audit M4, M5).
+        val init = when (
+            val r = uploader.reserve(
+                mimeType = picked.mimeType,
+                sizeBytes = picked.sizeBytes,
+                fileType = FILE_TYPE_DOCUMENT,
+            )
+        ) {
             is AppResult.Success -> r.data
-            is AppResult.Failure -> return fail("The upload could not start.")
+            is AppResult.Failure ->
+                return fail(documentUploadCopy(r.error, UploadStep.Reserve, "The upload could not start."))
         }
 
         edit { it.copy(stage = DocumentUploadState.Stage.Uploading) }
@@ -216,8 +233,9 @@ class DocumentViewModel @Inject constructor(
         }
 
         edit { it.copy(stage = DocumentUploadState.Stage.Confirming, progress = null) }
-        if (uploader.confirm(init.mediaId) is AppResult.Failure) {
-            return fail("The upload could not be confirmed.")
+        val confirmed = uploader.confirm(init.mediaId)
+        if (confirmed is AppResult.Failure) {
+            return fail(documentUploadCopy(confirmed.error, UploadStep.Confirm, "The upload could not be confirmed."))
         }
 
         // A voter ID or passport: the first file is the front. Held until the
@@ -268,8 +286,8 @@ class DocumentViewModel @Inject constructor(
      * whole upload: a 12 MB HEIC that is rejected on attach has cost the
      * seller their upload and told them nothing until it finished.
      */
-    private fun readPicked(uri: String): PickedMedia? {
-        val picked = sources.resolve(uri)
+    private suspend fun readPicked(uri: String): PickedMedia? {
+        val picked = withContext(io) { sources.resolve(uri) }
         val rejection = when {
             picked == null -> "That file could not be read."
             picked.mimeType !in AcceptedDocumentTypes ->
@@ -305,3 +323,6 @@ class DocumentViewModel @Inject constructor(
 internal val AcceptedDocumentTypes = setOf("image/jpeg", "image/png", "application/pdf")
 
 internal const val MAX_DOCUMENT_BYTES = 10L * 1024 * 1024
+
+/** Which media-service call refused an upload: the reservation, or the confirm after the bytes. */
+internal enum class UploadStep { Reserve, Confirm }

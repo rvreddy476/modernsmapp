@@ -166,6 +166,13 @@ const val FILE_TYPE_IMAGE = "image"
 const val FILE_TYPE_VIDEO = "video"
 
 /**
+ * A private document: seller KYC (31 Oct 2026). PDF, JPEG or PNG up to 10 MiB,
+ * 20 a day on its own budget. Every viewer route answers 404 for one,
+ * including to the uploader, so a client never tries to show it.
+ */
+const val FILE_TYPE_DOCUMENT = "document"
+
+/**
  * Voice posts — media-service Module 1 P0-6.
  *
  * The SERVICE layer accepts this: `ValidateUploadMIME` has an `audio` branch

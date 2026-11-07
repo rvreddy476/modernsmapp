@@ -411,7 +411,7 @@ class BooksOnlySellerTest {
     @Test
     fun `a voter ID is attached only with its back, both sides in one document`() = runTest(dispatcher) {
         val api = DocumentApi()
-        val vm = DocumentViewModel(CommerceRepository(api), uploader("front-1", "back-1"), sources)
+        val vm = DocumentViewModel(CommerceRepository(api), uploader("front-1", "back-1"), sources, dispatcher)
         vm.startAsAddressProof()
         assertThat(vm.state.value.type).isEqualTo(SellerDocumentType.VOTER_ID)
         var attached = 0
@@ -437,7 +437,7 @@ class BooksOnlySellerTest {
     @Test
     fun `a bill attaches at once, with no number and no back`() = runTest(dispatcher) {
         val api = DocumentApi()
-        val vm = DocumentViewModel(CommerceRepository(api), uploader("bill-1"), sources)
+        val vm = DocumentViewModel(CommerceRepository(api), uploader("bill-1"), sources, dispatcher)
         vm.setType(SellerDocumentType.ELECTRICITY_BILL)
         vm.setNumber("0012345678")
 

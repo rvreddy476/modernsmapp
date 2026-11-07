@@ -128,13 +128,14 @@ fun PriceBreakdownCard(
         modifier = modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
     ) {
-        AmountLine("Subtotal", breakdown.subtotal)
+        AmountLine("Subtotal", breakdown.subtotal, breakdown.currency)
         if (breakdown.discount > Paise.ZERO) {
-            AmountLine("Discount", Paise.ZERO - breakdown.discount)
+            AmountLine("Discount", Paise.ZERO - breakdown.discount, breakdown.currency)
         }
         AmountLine(
             label = "Delivery",
             amount = breakdown.shipping,
+            currency = breakdown.currency,
             // A free delivery is a fact worth stating plainly rather than
             // rendering as "₹0.00", which reads like a missing value.
             overrideText = "Free".takeIf { breakdown.shipping == Paise.ZERO },
@@ -149,10 +150,10 @@ fun PriceBreakdownCard(
                 .height(HAIRLINE)
                 .background(UsTheme.extended.borderSubtle),
         )
-        AmountLine("Total", breakdown.total, emphasise = true)
+        AmountLine("Total", breakdown.total, breakdown.currency, emphasise = true)
         if (breakdown.tax > Paise.ZERO) {
             Text(
-                text = "Includes ${breakdown.tax.formatWithSymbol()} GST",
+                text = "Includes ${breakdown.tax.formatIn(breakdown.currency)} GST",
                 style = MaterialTheme.typography.labelSmall,
                 color = UsTheme.extended.textSecondary,
             )
@@ -164,6 +165,7 @@ fun PriceBreakdownCard(
 private fun AmountLine(
     label: String,
     amount: Paise,
+    currency: String,
     emphasise: Boolean = false,
     overrideText: String? = null,
 ) {
@@ -181,7 +183,7 @@ private fun AmountLine(
             color = UsTheme.extended.textPrimary,
         )
         Text(
-            text = overrideText ?: amount.formatWithSymbol(),
+            text = overrideText ?: amount.formatIn(currency),
             style = if (emphasise) {
                 MaterialTheme.typography.titleSmall
             } else {

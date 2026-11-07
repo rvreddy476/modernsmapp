@@ -297,6 +297,7 @@ fun PaymentStatus.paymentLabel(): String = when (this) {
     PaymentStatus.PAID -> "Paid"
     PaymentStatus.FAILED -> "Payment failed"
     PaymentStatus.REFUND_PENDING -> "Refund on the way"
+    PaymentStatus.PARTIALLY_REFUNDED -> "Partly refunded"
     PaymentStatus.REFUNDED -> "Refunded"
     PaymentStatus.UNKNOWN -> "Updating"
 }

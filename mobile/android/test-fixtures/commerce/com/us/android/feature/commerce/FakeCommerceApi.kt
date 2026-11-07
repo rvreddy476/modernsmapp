@@ -166,6 +166,7 @@ open class FakeCommerceApi : CommerceApi {
 
     override suspend fun adjustStock(
         variantId: String,
+        idempotencyKey: String?,
         body: AdjustStockRequest,
     ): Response<ApiEnvelope<StockDto>> = unused()
 

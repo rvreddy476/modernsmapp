@@ -10,6 +10,7 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -91,8 +92,11 @@ class PayoutViewModel @Inject constructor(
         // cold.
         viewModelScope.launch {
             when (val r = repo.sellerProfile()) {
-                is CommerceResult.Success ->
-                    _form.value = _form.value.copy(accountHolderName = r.value.storeName)
+                // Audit L5: only into an empty field. The profile read can land
+                // after the seller has started typing, and their name wins.
+                is CommerceResult.Success -> _form.update { form ->
+                    if (form.accountHolderName.isBlank()) form.copy(accountHolderName = r.value.storeName) else form
+                }
 
                 is CommerceResult.Failure -> Unit // the form starts empty
             }
@@ -111,7 +115,7 @@ class PayoutViewModel @Inject constructor(
         viewModelScope.launch {
             when (val r = repo.savePayout(form.toAccount())) {
                 is CommerceResult.Failure ->
-                    _form.value = form.copy(saving = false, error = r.error.describe())
+                    _form.update { it.copy(saving = false, error = r.error.describe()) }
 
                 is CommerceResult.Success -> {
                     _form.value = form.copy(saving = false, saved = true)

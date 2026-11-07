@@ -543,6 +543,13 @@ enum class PaymentStatus {
     PAID,
     FAILED,
     REFUND_PENDING,
+
+    /**
+     * Part of the payment was refunded (a return, say) and the rest stands.
+     * NOT [REFUNDED]: "Refunded" for a part refund tells the buyer all of
+     * their money came back when only some did.
+     */
+    PARTIALLY_REFUNDED,
     REFUNDED,
     UNKNOWN;
 
@@ -552,7 +559,8 @@ enum class PaymentStatus {
             "paid" -> PAID
             "failed" -> FAILED
             "refund_pending" -> REFUND_PENDING
-            "refunded", "partially_refunded" -> REFUNDED
+            "partially_refunded" -> PARTIALLY_REFUNDED
+            "refunded" -> REFUNDED
             else -> UNKNOWN
         }
     }

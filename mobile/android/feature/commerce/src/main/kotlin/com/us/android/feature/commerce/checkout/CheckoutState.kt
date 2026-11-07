@@ -35,7 +35,16 @@ sealed interface CheckoutUiState {
         val quoteId: String,
         val paymentMethod: PaymentMethod,
         val placing: Boolean = false,
-    ) : CheckoutUiState
+        /**
+         * A changed payment method is being re-priced. Place order and the
+         * method rows wait for the server's new quote: the method is bound
+         * into the quote, so placing on the old one would be refused.
+         */
+        val repricing: Boolean = false,
+    ) : CheckoutUiState {
+        /** Audit M1: nothing that re-quotes may run while an order is being placed. */
+        val canChange: Boolean get() = !placing && !repricing
+    }
 
     /**
      * Blocking. The customer must see old → new and acknowledge before the
@@ -90,8 +99,26 @@ sealed interface CheckoutUiState {
 
     data class Paid(val orderId: String, val orderNumber: String) : CheckoutUiState
 
-    /** The payment failed. The order survives and can be retried. */
-    data class PaymentFailed(val orderId: String, val orderNumber: String) : CheckoutUiState
+    /**
+     * The order exists and is not paid. It survives, and payment can usually
+     * be tried again.
+     *
+     * [reason] is why payment could not be opened, in the buyer's words
+     * (audit M2: sold out since ordering, the coupon is used up, no session
+     * from the server, another sheet already open). Null after a payment
+     * that was tried and did not go through.
+     *
+     * [canRetry] is false when trying again cannot help: the stock or the
+     * coupon is gone, and the buyer needs a new order. [attempted] is false
+     * when no payment sheet was ever opened for this order (audit L7).
+     */
+    data class PaymentFailed(
+        val orderId: String,
+        val orderNumber: String,
+        val reason: String? = null,
+        val canRetry: Boolean = true,
+        val attempted: Boolean = true,
+    ) : CheckoutUiState
 
     /**
      * LB-22: the reservation lapsed before payment, so the order was
@@ -108,7 +135,43 @@ sealed interface CheckoutUiState {
      */
     data object RetryWithNewAttempt : CheckoutUiState
 
-    data class Failed(val message: String, val retryable: Boolean) : CheckoutUiState
+    /**
+     * A failure before any order is known to exist (or, for
+     * [FailedAction.Resubmit], one that may have created it), and what its
+     * one button does. [retrying] holds the button while a retry runs.
+     */
+    data class Failed(
+        val message: String,
+        val action: FailedAction,
+        val retrying: Boolean = false,
+    ) : CheckoutUiState {
+        val retryable: Boolean get() = action == FailedAction.Requote || action == FailedAction.Resubmit
+    }
+}
+
+/**
+ * What the button on [CheckoutUiState.Failed] does.
+ *
+ * Audit H1. The old screen wired every "Try again" to `placeOrder()`, which
+ * only runs from Ready, so the button did nothing; and a checkout whose
+ * response was lost was treated as "no order created".
+ */
+enum class FailedAction {
+    /** Nothing to retry: the bag needs changing. */
+    BackToBag,
+
+    /** The quote failed in transit: ask for a new one. */
+    Requote,
+
+    /**
+     * Placing the order got no definite answer, so an order may exist.
+     * Resend the SAME request under the SAME key; the server returns the
+     * order it already made rather than a second one.
+     */
+    Resubmit,
+
+    /** The delivery address is gone (audit L3): pick another. */
+    ChangeAddress,
 }
 
 /**

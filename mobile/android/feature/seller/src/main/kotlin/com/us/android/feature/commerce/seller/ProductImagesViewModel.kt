@@ -5,6 +5,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.commerce.repository.CommerceRepository
 import com.us.android.core.commerce.repository.CommerceResult
+import com.us.android.core.common.di.Dispatcher
+import com.us.android.core.common.di.UsDispatcher
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.media.upload.MediaSourceResolver
 import com.us.android.core.media.upload.MediaUploader
@@ -12,10 +14,12 @@ import com.us.android.core.media.upload.PickedMedia
 import com.us.android.core.media.upload.PresignedPutResult
 import com.us.android.feature.commerce.ui.describe
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import javax.inject.Inject
 
 /**
@@ -64,6 +68,8 @@ class ProductImagesViewModel @Inject constructor(
     private val uploader: MediaUploader,
     private val sources: MediaSourceResolver,
     private val savedState: SavedStateHandle,
+    /** Where the picked file is resolved: a ContentResolver query, never on main (audit L8). */
+    @Dispatcher(UsDispatcher.IO) private val io: CoroutineDispatcher,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ProductImagesState())
@@ -181,7 +187,9 @@ class ProductImagesViewModel @Inject constructor(
         edit(uri) { it.copy(total = picked.sizeBytes, uploaded = 0, error = null) }
         val init = when (val r = uploader.reserve(picked.mimeType, picked.sizeBytes)) {
             is AppResult.Success -> r.data
-            is AppResult.Failure -> return failImage(uri, "The upload could not start.")
+            // Audit M5: a refusal says which one; a rate limit says how long.
+            is AppResult.Failure ->
+                return failImage(uri, productImageUploadCopy(r.error, "The upload could not start."))
         }
 
         val put = uploader.upload(
@@ -218,8 +226,8 @@ class ProductImagesViewModel @Inject constructor(
      * round trip is a whole upload: an 18 MB HEIC rejected on attach has cost
      * the seller their upload and told them nothing until it finished.
      */
-    private fun readPicked(uri: String): PickedMedia? {
-        val picked = sources.resolve(uri)
+    private suspend fun readPicked(uri: String): PickedMedia? {
+        val picked = withContext(io) { sources.resolve(uri) }
         val rejection = when {
             picked == null -> "That file could not be read."
             picked.mimeType !in AcceptedImageTypes -> "Product photos must be JPEG, PNG or WebP."

@@ -231,6 +231,7 @@ class CheckoutProcessDeathTest {
 
         override suspend fun adjustStock(
             variantId: String,
+            idempotencyKey: String?,
             body: AdjustStockRequest,
         ): Response<ApiEnvelope<StockDto>> = notUsed()
 

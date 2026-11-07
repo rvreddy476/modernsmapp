@@ -95,7 +95,10 @@ fun CheckoutScreen(
     val opening = state as? CheckoutUiState.OpeningPayment
     LaunchedEffect(opening?.attempt) {
         val o = opening ?: return@LaunchedEffect
-        if (!requestDeliveryPin) onOpenPaymentSheet(o.attempt, o.orderNumber)
+        if (!requestDeliveryPin) {
+            viewModel.onPaymentSheetRequested(o.attempt)
+            onOpenPaymentSheet(o.attempt, o.orderNumber)
+        }
     }
 
     // C3-LB-4. If this screen goes away while a sheet is in flight, release
@@ -137,7 +140,8 @@ fun CheckoutScreen(
                 is CheckoutUiState.Ready -> {
                     UsSecondaryButton(
                         if(requestDeliveryPin) "Delivery map pin will be confirmed before payment" else "Add a delivery map pin (optional)",
-                        { requestDeliveryPin = !requestDeliveryPin }, enabled = !s.placing,
+                        { requestDeliveryPin = !requestDeliveryPin },
+                        enabled = s.canChange,
                     )
                     ReadyBody(state=s,onSelectMethod=viewModel::selectMethod,onPlaceOrder=viewModel::placeOrder,onChangeAddress=onChangeAddress)
                 }
@@ -170,7 +174,8 @@ fun CheckoutScreen(
                 is CheckoutUiState.OpeningPayment -> if(requestDeliveryPin) {
                     ConfirmDeliveryPin(s.orderId,addressSummary) {
                         requestDeliveryPin = false
-                        onOpenPaymentSheet(s.attempt,s.orderNumber)
+                        viewModel.onPaymentSheetRequested(s.attempt)
+                        onOpenPaymentSheet(s.attempt, s.orderNumber)
                     }
                 } else CenteredProgress("Opening payment…")
 
@@ -185,13 +190,15 @@ fun CheckoutScreen(
                 )
 
                 is CheckoutUiState.PaymentFailed -> BlockingBody(
-                    title = "Payment didn't go through",
-                    detail = "Order ${s.orderNumber} is still held for you. " +
-                        "You can try paying again.",
-                    primaryLabel = "Try payment again",
+                    // Audit L7: an order nobody has tried to pay for yet did
+                    // not "fail"; it is waiting.
+                    title = if (s.attempted) "Payment didn't go through" else "Complete your payment",
+                    // Audit M2: why payment could not open, when we know.
+                    detail = paymentFailedDetail(s),
+                    primaryLabel = if (s.canRetry) "Try payment again" else "Back to bag",
                     // C3-LB-4: the ViewModel mints a NEW attempt, so the
                     // failed one's late callback cannot settle this retry.
-                    onPrimary = viewModel::retryPayment,
+                    onPrimary = if (s.canRetry) viewModel::retryPayment else onEditBag,
                     secondaryLabel = "View order",
                     onSecondary = { onViewOrder(s.orderId) },
                 )
@@ -221,11 +228,23 @@ fun CheckoutScreen(
                     onPrimary = viewModel::acknowledgePriceChange,
                 )
 
+                // Audit H1: "Try again" re-quotes or resends the same order
+                // under the same key; it used to call placeOrder(), which does
+                // nothing outside Ready.
                 is CheckoutUiState.Failed -> BlockingBody(
                     title = "That didn't work",
                     detail = s.message,
-                    primaryLabel = if (s.retryable) "Try again" else "Back to bag",
-                    onPrimary = if (s.retryable) viewModel::placeOrder else onEditBag,
+                    primaryLabel = when (s.action) {
+                        FailedAction.Requote, FailedAction.Resubmit -> "Try again"
+                        FailedAction.ChangeAddress -> "Change address"
+                        FailedAction.BackToBag -> "Back to bag"
+                    },
+                    onPrimary = when (s.action) {
+                        FailedAction.Requote, FailedAction.Resubmit -> viewModel::retry
+                        FailedAction.ChangeAddress -> onChangeAddress
+                        FailedAction.BackToBag -> onEditBag
+                    },
+                    primaryLoading = s.retrying,
                 )
             }
         }
@@ -254,7 +273,7 @@ private fun ReadyBody(
         // The app's inline row action is a pill, not a text link — the same
         // control the notification rows use beside a name. Outlined, because
         // the ember belongs to "Place order".
-        UsPillButton(text = "Change", onClick = onChangeAddress, filled = false)
+        UsPillButton(text = "Change", onClick = onChangeAddress, filled = false, enabled = state.canChange)
     }
 
     SectionTitle("Payment method")
@@ -262,6 +281,7 @@ private fun ReadyBody(
         MethodRow(
             method = method,
             selected = method == state.paymentMethod,
+            enabled = state.canChange,
             onClick = { onSelectMethod(method) },
         )
     }
@@ -270,7 +290,7 @@ private fun ReadyBody(
     PriceBreakdownCard(breakdown = state.breakdown)
 
     Text(
-        text = "You'll be asked to pay ${state.breakdown.total.formatWithSymbol()}. " +
+        text = "You'll be asked to pay ${state.breakdown.total.formatIn(state.breakdown.currency)}. " +
             "Your order is confirmed only once we've verified the payment.",
         style = MaterialTheme.typography.labelSmall,
         color = UsTheme.extended.textSecondary,
@@ -279,8 +299,8 @@ private fun ReadyBody(
     UsButton(
         text = "Place order",
         onClick = onPlaceOrder,
-        loading = state.placing,
-        enabled = !state.placing,
+        loading = state.placing || state.repricing,
+        enabled = state.canChange,
         modifier = Modifier
             .fillMaxWidth()
             .padding(bottom = UsTheme.spacing.xxl),
@@ -429,6 +449,7 @@ private fun BlockingBody(
     onPrimary: () -> Unit,
     secondaryLabel: String? = null,
     onSecondary: (() -> Unit)? = null,
+    primaryLoading: Boolean = false,
 ) {
     SectionTitle(title)
     Text(
@@ -439,6 +460,8 @@ private fun BlockingBody(
     UsButton(
         text = primaryLabel,
         onClick = onPrimary,
+        loading = primaryLoading,
+        enabled = !primaryLoading,
         modifier = Modifier.fillMaxWidth(),
     )
     if (secondaryLabel != null && onSecondary != null) {
@@ -452,8 +475,16 @@ private fun BlockingBody(
     }
 }
 
+/** The body of [CheckoutUiState.PaymentFailed]: the server-side reason when there is one. */
+internal fun paymentFailedDetail(s: CheckoutUiState.PaymentFailed): String = when {
+    s.reason != null && !s.canRetry -> s.reason
+    s.reason != null -> "${s.reason} Order ${s.orderNumber} is still held for you."
+    !s.attempted -> "Order ${s.orderNumber} is placed and held for you. Pay to confirm it."
+    else -> "Order ${s.orderNumber} is still held for you. You can try paying again."
+}
+
 @Composable
-private fun MethodRow(method: PaymentMethod, selected: Boolean, onClick: () -> Unit) {
+private fun MethodRow(method: PaymentMethod, selected: Boolean, enabled: Boolean, onClick: () -> Unit) {
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -466,7 +497,7 @@ private fun MethodRow(method: PaymentMethod, selected: Boolean, onClick: () -> U
                 shape = RoundedCornerShape(UsTheme.radii.medium),
             )
             .background(UsTheme.extended.bgCard)
-            .pressScale(onClick = onClick, role = Role.RadioButton)
+            .pressScale(onClick = onClick, enabled = enabled, role = Role.RadioButton)
             .padding(UsTheme.spacing.l),
     ) {
         Text(

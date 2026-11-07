@@ -118,13 +118,24 @@ class BagViewModel @Inject constructor(
             message = null,
         )
         viewModelScope.launch {
-            when (val r = block()) {
-                is CommerceResult.Failure -> _state.value = current.copy(
-                    busyVariantIds = current.busyVariantIds - variantId,
-                    message = r.error.describe(),
-                )
+            val r = block()
+            // Audit L1: settle against the LATEST state, not the snapshot taken
+            // when this row started. Other rows may have started (or finished)
+            // since; their busy flags are theirs to clear.
+            // A reload that started meanwhile owns the screen; it will show
+            // the server's cart, which includes this change if it landed.
+            val latest = _state.value as? BagUiState.Content ?: return@launch
+            val stillBusy = latest.busyVariantIds - variantId
+            _state.value = when (r) {
+                is CommerceResult.Failure ->
+                    latest.copy(busyVariantIds = stillBusy, message = r.error.describe())
 
-                is CommerceResult.Success -> _state.value = r.value.toState()
+                is CommerceResult.Success ->
+                    if (r.value.items.isEmpty()) {
+                        BagUiState.Empty
+                    } else {
+                        BagUiState.Content(r.value, busyVariantIds = stillBusy)
+                    }
             }
         }
     }

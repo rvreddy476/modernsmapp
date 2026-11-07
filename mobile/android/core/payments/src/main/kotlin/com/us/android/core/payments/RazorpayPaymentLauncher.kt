@@ -197,7 +197,9 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher, PaymentRe
             // Not an error: a duplicate callback, or one arriving after the
             // buyer left. Dropping it is correct — the server is the record
             // of what happened, and the orders screen reads it.
-            Log.w(TAG, "razorpay delivered a result with no sheet in flight: $outcome")
+            // Audit L8: the kind and code only. A Failed carries the SDK's raw
+            // response (payment and order ids), which has no place in logcat.
+            Log.w(TAG, "razorpay delivered a result with no sheet in flight: ${outcome.logSummary()}")
             return
         }
         callback(outcome)
@@ -291,4 +293,15 @@ class RazorpayPaymentLauncher @Inject constructor() : PaymentLauncher, PaymentRe
             }
         }
     }
+}
+
+/**
+ * A [PaymentOutcome] as it may appear in a log: its kind and, for a failure,
+ * the SDK's numeric code. Never a message, a payment id or a reason string.
+ */
+internal fun PaymentOutcome.logSummary(): String = when (this) {
+    is PaymentOutcome.Succeeded -> "Succeeded"
+    is PaymentOutcome.Failed -> "Failed(code=${code ?: "none"})"
+    PaymentOutcome.Cancelled -> "Cancelled"
+    is PaymentOutcome.Unavailable -> "Unavailable"
 }

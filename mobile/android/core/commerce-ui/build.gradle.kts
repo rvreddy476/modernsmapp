@@ -7,6 +7,7 @@ plugins {
 android { namespace = "com.us.android.core.commerce.ui" }
 dependencies {
     testImplementation(projects.core.testing)
+    testImplementation(libs.retrofit.kotlinx.serialization)
     api(projects.core.commerce)
     implementation(projects.core.designsystem)
     implementation(projects.core.ui)

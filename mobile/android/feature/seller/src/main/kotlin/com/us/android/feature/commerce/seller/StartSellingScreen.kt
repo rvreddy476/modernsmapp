@@ -24,7 +24,6 @@ import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.feature.commerce.ui.CommerceNotice
 import com.us.android.feature.commerce.ui.MSellerPageBar
-import com.us.android.feature.commerce.ui.describe
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -66,7 +65,7 @@ class StartSellingViewModel @Inject constructor(
         viewModelScope.launch {
             when (val r = repo.startSelling(form.storeName, form.email)) {
                 is CommerceResult.Failure ->
-                    _form.value = form.copy(saving = false, error = r.error.describe())
+                    _form.value = form.copy(saving = false, error = r.error.describeForSeller())
 
                 is CommerceResult.Success -> {
                     _form.value = form.copy(saving = false)

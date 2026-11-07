@@ -10,6 +10,7 @@ import com.us.android.core.commerce.repository.CommerceResult
 import com.us.android.feature.commerce.ui.describe
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -99,10 +100,23 @@ class StoreBrowseViewModel @Inject constructor(
         }
     }
 
+    /**
+     * Audit M6: the one list request in flight, and the one page being
+     * appended to it. A new search cancels both, so an answer for an earlier
+     * query is never written over a newer one: typing "shoe" then "shirt"
+     * used to show shoes if "shoe" answered last. Everything after the
+     * request runs on the main thread, so a cancelled request cannot land.
+     */
+    private var loadJob: Job? = null
+    private var appendJob: Job? = null
+
     private fun load() {
+        loadJob?.cancel()
+        appendJob?.cancel()
+        val query = _query.value
         _state.value = StoreBrowseUiState.Loading
-        viewModelScope.launch {
-            when (val r = repo.products(query = _query.value, categoryId = categoryId)) {
+        loadJob = viewModelScope.launch {
+            when (val r = repo.products(query = query, categoryId = categoryId)) {
                 is CommerceResult.Failure -> _state.value = StoreBrowseUiState.Failed(
                     message = r.error.describe(),
                     retryable = r.error is CommerceError.Network || r.error is CommerceError.TryAgain,
@@ -111,7 +125,7 @@ class StoreBrowseViewModel @Inject constructor(
                 is CommerceResult.Success -> {
                     val page = r.value
                     _state.value = if (page.items.isEmpty()) {
-                        StoreBrowseUiState.Empty(_query.value, filtered = categoryId != null)
+                        StoreBrowseUiState.Empty(query, filtered = categoryId != null)
                     } else {
                         StoreBrowseUiState.Content(page.items, page.nextCursor)
                     }
@@ -125,22 +139,18 @@ class StoreBrowseViewModel @Inject constructor(
         val cursor = current.nextCursor ?: return
         if (current.appending) return
 
+        val query = _query.value
         _state.value = current.copy(appending = true, appendError = null)
-        viewModelScope.launch {
-            when (
-                val r = repo.products(
-                    query = _query.value,
-                    categoryId = categoryId,
-                    cursor = cursor,
-                )
-            ) {
-                is CommerceResult.Failure -> _state.value = current.copy(
-                    appending = false,
-                    appendError = r.error.describe(),
-                )
+        appendJob = viewModelScope.launch {
+            val r = repo.products(query = query, categoryId = categoryId, cursor = cursor)
+            // Settle against the LATEST list: a heart may have been toggled
+            // meanwhile. (A new search cancels this job, see [appendJob].)
+            val latest = _state.value as? StoreBrowseUiState.Content ?: return@launch
+            _state.value = when (r) {
+                is CommerceResult.Failure -> latest.copy(appending = false, appendError = r.error.describe())
 
-                is CommerceResult.Success -> _state.value = current.copy(
-                    items = (current.items + r.value.items).distinctBy { it.id },
+                is CommerceResult.Success -> latest.copy(
+                    items = (latest.items + r.value.items).distinctBy { it.id },
                     nextCursor = r.value.nextCursor,
                     appending = false,
                 )

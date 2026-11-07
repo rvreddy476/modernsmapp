@@ -233,4 +233,10 @@ private fun StockHeader(state: StockUiState.Content, onEditPrice: () -> Unit) {
             },
         )
     }
+
+    // A resent change the server had already saved (audit M3): no second
+    // "Added", because nothing was added twice.
+    state.notice?.let { notice ->
+        CommerceNotice(text = "$notice Stock is now ${state.level.total}.")
+    }
 }

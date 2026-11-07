@@ -14,6 +14,7 @@ import com.us.android.core.payments.PaymentHandoff
 import com.us.android.core.payments.PaymentHandoffEvent
 import com.us.android.feature.commerce.checkout.CommercePaymentStatusSource
 import com.us.android.feature.commerce.checkout.MSTORE_PAYMENT_APPLICATION_ID
+import com.us.android.feature.commerce.checkout.PaymentRefusal
 import com.us.android.feature.commerce.checkout.toSheetAttempt
 import com.us.android.feature.commerce.ui.describe
 import com.us.android.feature.commerce.ui.isRetryable
@@ -324,7 +325,16 @@ class OrderDetailViewModel @Inject constructor(
                     // Re-read rather than assuming a status. Cancelling a PAID
                     // order moves it to refund_pending, not cancelled, and the
                     // difference matters to the customer waiting for money back.
+                    // The refund shown is the server's payment_status; nothing
+                    // here works out whether or how much is refunded.
                     load()
+                    val after = _state.value as? OrderDetailUiState.Content ?: return@launch
+                    // A read that failed keeps the old order on screen; the
+                    // cancel itself was accepted, so say that much.
+                    _state.value = after.copy(
+                        cancelling = false,
+                        message = after.message?.let { CANCELLED_NOT_REFRESHED },
+                    )
                 }
             }
         }
@@ -365,13 +375,25 @@ class OrderDetailViewModel @Inject constructor(
                 handoff.consume(mine)
                 when (event) {
                     is PaymentHandoffEvent.SheetClosed -> pollPaymentStatus()
-                    is PaymentHandoffEvent.Unavailable -> {
-                        val current = _state.value as? OrderDetailUiState.Content ?: return@collect
-                        _state.value = current.copy(paying = false, message = event.reason)
-                    }
+                    is PaymentHandoffEvent.Unavailable -> onPaymentUnavailable(event.reason)
                 }
             }
         }
+    }
+
+    /**
+     * The intent was refused, so no sheet opened and no money moved.
+     *
+     * `ORDER_NOT_PAYABLE` means the order is no longer waiting for payment
+     * (a webhook already marked it paid, or it lapsed): the order is re-read
+     * and its own status is the answer, so a buyer who has paid is never
+     * invited to pay again. Any other refusal is shown as its one line.
+     */
+    private suspend fun onPaymentUnavailable(reason: String) {
+        if (PaymentRefusal.of(reason) == PaymentRefusal.ReadOrder) load()
+        val current = _state.value as? OrderDetailUiState.Content ?: return
+        val message = if (PaymentRefusal.of(reason) == PaymentRefusal.ReadOrder) null else reason
+        _state.value = current.copy(paying = false, message = message)
     }
 
     /**
@@ -406,3 +428,7 @@ class OrderDetailViewModel @Inject constructor(
         _state.value = current.copy(message = null)
     }
 }
+
+internal const val CANCELLED_NOT_REFRESHED =
+    "Your order is cancelled. We couldn't refresh it just now, so check back shortly for its " +
+        "latest status, including any refund."
