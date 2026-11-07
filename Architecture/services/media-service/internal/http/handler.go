@@ -385,10 +385,10 @@ func (h *Handler) ConfirmUpload(c *gin.Context) {
 // 500, which a client may retry.
 func confirmUploadError(err error) (int, string) {
 	switch {
-	case errors.Is(err, service.ErrUploadNotFound):
+	// Someone else's upload answers exactly like a missing one, so confirm
+	// can't be used to probe which media ids exist.
+	case errors.Is(err, service.ErrUploadNotFound), errors.Is(err, service.ErrUploadForbidden):
 		return http.StatusNotFound, "NOT_FOUND"
-	case errors.Is(err, service.ErrUploadForbidden):
-		return http.StatusForbidden, "FORBIDDEN"
 	case errors.Is(err, service.ErrUploadObjectAbsent):
 		return http.StatusConflict, "UPLOAD_OBJECT_MISSING"
 	case errors.Is(err, service.ErrUploadSizeMismatch):

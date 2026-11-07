@@ -22,7 +22,7 @@ func TestConfirmUploadErrorMapping(t *testing.T) {
 	}{
 		{"integrity", wrap(service.ErrUploadIntegrity), http.StatusConflict, "UPLOAD_INTEGRITY_ERROR"},
 		{"unknown id", wrap(service.ErrUploadNotFound), http.StatusNotFound, "NOT_FOUND"},
-		{"not the owner", wrap(service.ErrUploadForbidden), http.StatusForbidden, "FORBIDDEN"},
+		{"not the owner reads as missing", wrap(service.ErrUploadForbidden), http.StatusNotFound, "NOT_FOUND"},
 		{"object absent", wrap(service.ErrUploadObjectAbsent), http.StatusConflict, "UPLOAD_OBJECT_MISSING"},
 		{"size mismatch", wrap(service.ErrUploadSizeMismatch), http.StatusUnprocessableEntity, "UPLOAD_SIZE_MISMATCH"},
 		{"state", wrap(service.ErrUploadState), http.StatusConflict, "UPLOAD_STATE_CONFLICT"},
