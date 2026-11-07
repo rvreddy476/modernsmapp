@@ -106,8 +106,10 @@ for m in "${MODULES[@]}"; do
   # standalone tool) is refused in workspace mode ("directory prefix . does
   # not contain modules listed in go.work"): check it on its own go.mod.
   unset GOWORK
+  # Compare go.mod paths Go itself prints: on Windows `pwd -P` gives /c/...
+  # while go prints C:\..., so a shell path never matches.
   if [ "$(cd "$m" && go env GOWORK)" != "" ] &&
-    ! (cd "$m" && go list -m -f '{{.Dir}}' 2>/dev/null | grep -qxF "$(pwd -P)"); then
+    ! (cd "$m" && go list -m -f '{{.GoMod}}' 2>/dev/null | grep -qxF "$(go env GOMOD)"); then
     export GOWORK=off
   fi
   run_stage build "$name" "$m" go build -o /dev/null ./...

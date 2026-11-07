@@ -126,6 +126,13 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req SendRequest)
 	}
 	defer func() { _ = pgtx.Rollback(ctx) }()
 
+	// The idempotency check above is only a fast path: two concurrent calls
+	// with one key both pass it. Claim the key inside the debit tx.
+	if prior, err := s.store.ClaimIdempotencyKeyTx(ctx, pgtx, senderID, "send", req.IdempotencyKey); err != nil {
+		return nil, err
+	} else if prior != nil {
+		return &SendResult{TransactionID: prior.ID, Status: prior.Status, AmountPaise: prior.AmountPaise}, nil
+	}
 	if err := s.store.DebitAvailableTx(ctx, pgtx, senderID, req.AmountPaise); err != nil {
 		return nil, fmt.Errorf("debit sender: %w", err)
 	}
@@ -176,8 +183,11 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req SendRequest)
 	defer func() { _ = settleTx.Rollback(ctx) }()
 
 	bankRef := senderTx.ID.String()
-	if err := s.store.MarkSettled(ctx, settleTx, senderTx.ID, "succeeded", &bankRef, nil); err != nil {
+	if ok, err := s.store.MarkSettled(ctx, settleTx, senderTx.ID, "succeeded", &bankRef, nil); err != nil {
 		return nil, fmt.Errorf("mark sender succeeded: %w", err)
+	} else if !ok {
+		// Credit the recipient only when this call settled the sender row.
+		return nil, fmt.Errorf("mark sender succeeded: %w", errNoLongerPending)
 	}
 	if err := s.store.SettleDebitTx(ctx, settleTx, senderID, req.AmountPaise); err != nil {
 		return nil, fmt.Errorf("settle sender debit: %w", err)
@@ -222,9 +232,15 @@ func (s *Service) Send(ctx context.Context, senderID uuid.UUID, req SendRequest)
 	return res, nil
 }
 
+// errNoLongerPending means another call already settled the row, so this
+// call must not move the money that settling it would have moved.
+var errNoLongerPending = errors.New("transaction is no longer pending")
+
 // compensateSendFailure rolls back a sender debit when the bank transfer
 // fails. Best-effort logging on each step — we never want to silently drop a
-// reversal because the second leg threw.
+// reversal because the second leg threw. The row is marked failed first and
+// the debit reversed only when that call moved it out of pending, so a
+// compensation can never refund a debit twice or refund a settled one.
 func (s *Service) compensateSendFailure(ctx context.Context, userID, txID uuid.UUID, amountPaise int64, reason string) {
 	pgtx, err := s.store.DB().Begin(ctx)
 	if err != nil {
@@ -233,12 +249,17 @@ func (s *Service) compensateSendFailure(ctx context.Context, userID, txID uuid.U
 	}
 	defer func() { _ = pgtx.Rollback(ctx) }()
 
-	if err := s.store.ReverseDebitTx(ctx, pgtx, userID, amountPaise); err != nil {
-		slog.Error("wallet: compensate reverse debit failed", "tx", txID, "error", err)
+	ok, err := s.store.MarkSettled(ctx, pgtx, txID, "failed", nil, &reason)
+	if err != nil {
+		slog.Error("wallet: compensate mark failed failed", "tx", txID, "error", err)
 		return
 	}
-	if err := s.store.MarkSettled(ctx, pgtx, txID, "failed", nil, &reason); err != nil {
-		slog.Error("wallet: compensate mark failed failed", "tx", txID, "error", err)
+	if !ok {
+		slog.Error("wallet: compensate skipped, transaction no longer pending", "tx", txID)
+		return
+	}
+	if err := s.store.ReverseDebitTx(ctx, pgtx, userID, amountPaise); err != nil {
+		slog.Error("wallet: compensate reverse debit failed", "tx", txID, "error", err)
 		return
 	}
 	if err := pgtx.Commit(ctx); err != nil {
@@ -257,6 +278,11 @@ func (s *Service) sendToExternalPhone(ctx context.Context, senderID uuid.UUID, p
 	}
 	defer func() { _ = pgtx.Rollback(ctx) }()
 
+	if prior, err := s.store.ClaimIdempotencyKeyTx(ctx, pgtx, senderID, "send", req.IdempotencyKey); err != nil {
+		return nil, err
+	} else if prior != nil {
+		return &SendResult{TransactionID: prior.ID, Status: prior.Status, AmountPaise: prior.AmountPaise}, nil
+	}
 	if err := s.store.DebitAvailableTx(ctx, pgtx, senderID, req.AmountPaise); err != nil {
 		return nil, err
 	}
@@ -346,6 +372,11 @@ func (s *Service) MerchantDebit(ctx context.Context, userID uuid.UUID, amountPai
 	}
 	defer func() { _ = pgtx.Rollback(ctx) }()
 
+	if prior, err := s.store.ClaimIdempotencyKeyTx(ctx, pgtx, userID, "merchant_pay", idempotencyKey); err != nil {
+		return nil, err
+	} else if prior != nil {
+		return &SendResult{TransactionID: prior.ID, Status: prior.Status, AmountPaise: prior.AmountPaise}, nil
+	}
 	if err := s.store.DebitAvailableTx(ctx, pgtx, userID, amountPaise); err != nil {
 		return nil, fmt.Errorf("debit merchant: %w", err)
 	}
@@ -387,8 +418,10 @@ func (s *Service) MerchantDebit(ctx context.Context, userID uuid.UUID, amountPai
 	}
 	defer func() { _ = settleTx.Rollback(ctx) }()
 	bankRef := tx.ID.String()
-	if err := s.store.MarkSettled(ctx, settleTx, tx.ID, "succeeded", &bankRef, nil); err != nil {
+	if ok, err := s.store.MarkSettled(ctx, settleTx, tx.ID, "succeeded", &bankRef, nil); err != nil {
 		return nil, fmt.Errorf("mark merchant succeeded: %w", err)
+	} else if !ok {
+		return nil, fmt.Errorf("mark merchant succeeded: %w", errNoLongerPending)
 	}
 	if err := s.store.SettleDebitTx(ctx, settleTx, userID, amountPaise); err != nil {
 		return nil, fmt.Errorf("settle merchant debit: %w", err)
@@ -412,19 +445,26 @@ func (s *Service) MerchantDebit(ctx context.Context, userID uuid.UUID, amountPai
 // caller is the *internal* merchant service (e.g. dating-service when a
 // premium subscription is cancelled). DPDP: the reason field MUST NOT carry
 // PII; callers pass discriminator strings only.
+//
+// The original row is locked for the whole refund, so concurrent refunds of
+// one payment run one at a time, and each is checked against what earlier
+// refunds already returned: the sum of refunds never exceeds the payment.
 func (s *Service) Refund(ctx context.Context, originalTxID uuid.UUID, amountPaise int64, reason string) (*SendResult, error) {
 	if amountPaise <= 0 {
 		return nil, fmt.Errorf("invalid: amount must be positive")
 	}
-	original, err := s.store.GetTransactionByID(ctx, originalTxID)
+	pgtx, err := s.store.DB().Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin refund tx: %w", err)
+	}
+	defer func() { _ = pgtx.Rollback(ctx) }()
+
+	original, refunded, err := s.store.LockForRefundTx(ctx, pgtx, originalTxID)
 	if err != nil {
 		return nil, err
 	}
-	if original.Status != "succeeded" {
-		return nil, fmt.Errorf("invalid: original transaction is not succeeded (status=%s)", original.Status)
-	}
-	if amountPaise > original.AmountPaise {
-		return nil, fmt.Errorf("invalid: refund exceeds original amount")
+	if err := checkRefund(original, refunded, amountPaise); err != nil {
+		return nil, err
 	}
 
 	originalRef := ""
@@ -434,12 +474,6 @@ func (s *Service) Refund(ctx context.Context, originalTxID uuid.UUID, amountPais
 	if err := s.bank.Refund(ctx, originalRef, amountPaise); err != nil {
 		return nil, fmt.Errorf("bank refund: %w", err)
 	}
-
-	pgtx, err := s.store.DB().Begin(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("begin refund tx: %w", err)
-	}
-	defer func() { _ = pgtx.Rollback(ctx) }()
 
 	if err := s.store.CreditAvailableTx(ctx, pgtx, original.UserID, amountPaise); err != nil {
 		return nil, fmt.Errorf("credit refund: %w", err)
@@ -469,6 +503,24 @@ func (s *Service) Refund(ctx context.Context, originalTxID uuid.UUID, amountPais
 		slog.Warn("wallet: publish refund issued failed", "tx", tx.ID, "error", err)
 	}
 	return &SendResult{TransactionID: tx.ID, Status: "succeeded", AmountPaise: amountPaise}, nil
+}
+
+// checkRefund decides whether amountPaise may be refunded against original,
+// given refundedPaise already refunded against it. Only a succeeded merchant
+// payment (money that left the wallet) can be refunded: refunding a top-up,
+// a receive or a P2P send would credit money nobody paid back.
+func checkRefund(original *store.Transaction, refundedPaise, amountPaise int64) error {
+	if original.Type != "merchant_pay" || original.Direction != "debit" {
+		return fmt.Errorf("invalid: only a merchant payment can be refunded (type=%s)", original.Type)
+	}
+	if original.Status != "succeeded" {
+		return fmt.Errorf("invalid: original transaction is not succeeded (status=%s)", original.Status)
+	}
+	// Subtract rather than add: no overflow, and exact in paise.
+	if amountPaise > original.AmountPaise-refundedPaise {
+		return fmt.Errorf("invalid: refund exceeds the amount left to refund (left_paise=%d)", original.AmountPaise-refundedPaise)
+	}
+	return nil
 }
 
 // titleCase upper-cases the first ASCII letter of s. Avoids strings.Title

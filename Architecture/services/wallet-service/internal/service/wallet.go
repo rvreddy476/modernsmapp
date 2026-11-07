@@ -13,6 +13,7 @@ package service
 
 import (
 	"context"
+	"time"
 
 	"github.com/atpost/wallet-service/internal/bank"
 	"github.com/atpost/wallet-service/internal/store"
@@ -21,10 +22,23 @@ import (
 
 // Service is the wallet-service business-logic layer.
 type Service struct {
-	store    *store.Store
+	store *store.Store
+	// topUps is the same store seen through the slice the top-up confirm
+	// and expiry paths use, so unit tests can stand a fake in for it.
+	topUps   topUpStore
 	bank     bank.BankClient
 	producer EventPublisher
 	cfg      Config
+}
+
+// topUpStore is what ConfirmTopUp and ExpireStaleTopUps need from the store.
+// *store.Store implements it.
+type topUpStore interface {
+	GetTransaction(ctx context.Context, userID, txID uuid.UUID) (*store.Transaction, error)
+	SetUPIRef(ctx context.Context, txID uuid.UUID, upiRef string) error
+	SettleTopUp(ctx context.Context, txID uuid.UUID, bankRef string) (settled bool, err error)
+	ListPendingTopUpsOlderThan(ctx context.Context, cutoff time.Time, limit int) ([]store.Transaction, error)
+	ExpireTopUp(ctx context.Context, txID uuid.UUID, reason string) (expired bool, err error)
 }
 
 // Config tunes service-level constants. Defaults match v1 spec.
@@ -111,6 +125,7 @@ func New(s *store.Store, b bank.BankClient, cfg Config) *Service {
 	}
 	return &Service{
 		store:    s,
+		topUps:   s,
 		bank:     b,
 		producer: noopPublisher{},
 		cfg:      cfg,

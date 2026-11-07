@@ -38,7 +38,7 @@ func (s *Service) GetBalance(ctx context.Context, userID uuid.UUID) (*store.Bala
 	if time.Since(b.LastSyncedAt) > balanceLazyRefreshAge {
 		// Async refresh — caller does not wait. We deliberately decouple the
 		// fetch latency from the API latency; the bank may be slow.
-		go s.refreshFromBank(b.UserID, b.BankAccountRef)
+		go s.refreshFromBank(b.UserID, b.BankAccountRef, b.UpdatedAt)
 	}
 	return b, nil
 }
@@ -46,7 +46,7 @@ func (s *Service) GetBalance(ctx context.Context, userID uuid.UUID) (*store.Bala
 // refreshFromBank reads the live balance from the partner bank and updates
 // the mirror. Errors are logged but never propagated — the mirror is a
 // snapshot, not the truth.
-func (s *Service) refreshFromBank(userID uuid.UUID, ref string) {
+func (s *Service) refreshFromBank(userID uuid.UUID, ref string, seenUpdatedAt time.Time) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
 	paise, err := s.bank.GetBalance(ctx, ref)
@@ -54,8 +54,15 @@ func (s *Service) refreshFromBank(userID uuid.UUID, ref string) {
 		slog.Warn("wallet: bank balance refresh failed", "user_id", userID, "error", err)
 		return
 	}
-	if err := s.store.SetSynced(ctx, userID, paise); err != nil {
+	applied, err := s.store.SetSynced(ctx, userID, paise, seenUpdatedAt)
+	if err != nil {
 		slog.Warn("wallet: mirror refresh failed", "user_id", userID, "error", err)
+		return
+	}
+	if !applied {
+		// A credit or debit moved the row while the bank was being read;
+		// the next GetBalance refreshes from a newer bank figure.
+		slog.Info("wallet: mirror refresh skipped, row moved during bank read", "user_id", userID)
 	}
 }
 

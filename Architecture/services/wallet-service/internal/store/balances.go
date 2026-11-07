@@ -57,34 +57,35 @@ func (s *Store) GetBalance(ctx context.Context, userID uuid.UUID) (*Balance, err
 }
 
 // SetSynced refreshes the snapshot the mirror holds from a partner-bank read.
-// Used by the lazy-refresh path in service.GetBalance.
-func (s *Store) SetSynced(ctx context.Context, userID uuid.UUID, availablePaise int64) error {
+// Used by the lazy-refresh path in service.GetBalance. seenUpdatedAt is the
+// row's updated_at when the bank read began: if any credit or debit has
+// touched the row since, the bank figure is older than the mirror and is
+// dropped (applied=false) rather than overwriting that movement.
+func (s *Store) SetSynced(ctx context.Context, userID uuid.UUID, availablePaise int64, seenUpdatedAt time.Time) (applied bool, err error) {
 	const q = `
         UPDATE wallet.balances
         SET available_paise = $2,
             last_synced_at = now(),
             updated_at = now()
-        WHERE user_id = $1`
-	tag, err := s.db.Exec(ctx, q, userID, availablePaise)
+        WHERE user_id = $1 AND updated_at = $3`
+	tag, err := s.db.Exec(ctx, q, userID, availablePaise, seenUpdatedAt)
 	if err != nil {
-		return fmt.Errorf("set synced: %w", err)
+		return false, fmt.Errorf("set synced: %w", err)
 	}
-	if tag.RowsAffected() == 0 {
-		return ErrBalanceNotFound
-	}
-	return nil
+	return tag.RowsAffected() == 1, nil
 }
 
 // AdjustPendingIn changes the pending_in_paise counter atomically. Positive
 // delta = a top-up just started; negative delta = a top-up succeeded or
 // expired. Caller is responsible for the matching available_paise mutation.
-func (s *Store) AdjustPendingIn(ctx context.Context, userID uuid.UUID, delta int64) error {
+// Pass tx=nil for the pool, or the caller's tx to move with the status row.
+func (s *Store) AdjustPendingIn(ctx context.Context, tx pgx.Tx, userID uuid.UUID, delta int64) error {
 	const q = `
         UPDATE wallet.balances
         SET pending_in_paise = pending_in_paise + $2,
             updated_at = now()
         WHERE user_id = $1`
-	tag, err := s.db.Exec(ctx, q, userID, delta)
+	tag, err := s.runner(tx).Exec(ctx, q, userID, delta)
 	if err != nil {
 		return fmt.Errorf("adjust pending_in: %w", err)
 	}
@@ -96,8 +97,9 @@ func (s *Store) AdjustPendingIn(ctx context.Context, userID uuid.UUID, delta int
 
 // CreditAvailable adds amountPaise to the user's available balance and
 // decrements pending_in_paise by the same amount. Used when a top-up settles.
-// Both fields move atomically inside a single UPDATE.
-func (s *Store) CreditAvailable(ctx context.Context, userID uuid.UUID, amountPaise int64) error {
+// Both fields move atomically inside a single UPDATE. Pass tx=nil for the
+// pool, or the caller's tx (SettleTopUp credits inside the settle tx).
+func (s *Store) CreditAvailable(ctx context.Context, tx pgx.Tx, userID uuid.UUID, amountPaise int64) error {
 	if amountPaise <= 0 {
 		return fmt.Errorf("credit available: amount must be positive")
 	}
@@ -107,7 +109,7 @@ func (s *Store) CreditAvailable(ctx context.Context, userID uuid.UUID, amountPai
             pending_in_paise = GREATEST(pending_in_paise - $2, 0),
             updated_at = now()
         WHERE user_id = $1`
-	tag, err := s.db.Exec(ctx, q, userID, amountPaise)
+	tag, err := s.runner(tx).Exec(ctx, q, userID, amountPaise)
 	if err != nil {
 		return fmt.Errorf("credit available: %w", err)
 	}

@@ -4,6 +4,7 @@ package service
 import (
 	"context"
 	"os"
+	"sync"
 	"testing"
 
 	"github.com/atpost/wallet-service/database"
@@ -443,5 +444,126 @@ func TestSubmitPAN_RejectsBadFormat(t *testing.T) {
 	defer cleanup()
 	if _, err := svc.SubmitPAN(context.Background(), uuid.New(), "ABCD123"); err == nil {
 		t.Fatalf("expected rejection")
+	}
+}
+
+func TestConfirmTopUp_ConcurrentConfirmsCreditOnce_DB(t *testing.T) {
+	svc, _, cleanup := newTestService(t)
+	defer cleanup()
+	ctx := context.Background()
+	uid := uuid.New()
+	start, err := svc.StartTopUp(ctx, uid, 30000, "race-"+uuid.NewString())
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	ref := "UPI-race-" + uuid.NewString()
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := svc.ConfirmTopUp(ctx, uid, start.TransactionID, ref); err != nil {
+				t.Errorf("confirm: %v", err)
+			}
+		}()
+	}
+	wg.Wait()
+	b, _ := svc.Store().GetBalance(ctx, uid)
+	if b.AvailablePaise != 30000 || b.PendingInPaise != 0 {
+		t.Fatalf("available=%d pending_in=%d after 8 racing confirms, want 30000 and 0", b.AvailablePaise, b.PendingInPaise)
+	}
+}
+
+func TestConfirmTopUp_OneUPIRefCannotFundTwoTopUps(t *testing.T) {
+	svc, _, cleanup := newTestService(t)
+	defer cleanup()
+	ctx := context.Background()
+	uid := uuid.New()
+	ref := "UPI-once-" + uuid.NewString()
+	a, _ := svc.StartTopUp(ctx, uid, 5000, "a-"+uuid.NewString())
+	b, _ := svc.StartTopUp(ctx, uid, 5000, "b-"+uuid.NewString())
+	if _, err := svc.ConfirmTopUp(ctx, uid, a.TransactionID, ref); err != nil {
+		t.Fatalf("first: %v", err)
+	}
+	if _, err := svc.ConfirmTopUp(ctx, uid, b.TransactionID, ref); err == nil {
+		t.Fatalf("a second top-up confirmed with the same UPI ref must be refused")
+	}
+	bal, _ := svc.Store().GetBalance(ctx, uid)
+	if bal.AvailablePaise != 5000 {
+		t.Fatalf("available=%d, want 5000", bal.AvailablePaise)
+	}
+}
+
+func TestRefund_CannotExceedTheOriginalAcrossCalls(t *testing.T) {
+	svc, mock, cleanup := newTestService(t)
+	defer cleanup()
+	ctx := context.Background()
+	uid := uuid.New()
+	start, _ := svc.StartTopUp(ctx, uid, 10000, "tu-"+uuid.NewString())
+	if _, err := svc.ConfirmTopUp(ctx, uid, start.TransactionID, "UPI-"+uuid.NewString()); err != nil {
+		t.Fatalf("tu: %v", err)
+	}
+	sb, _ := svc.Store().GetBalance(ctx, uid)
+	mock.SeedBalance(sb.BankAccountRef, 10000)
+	debit, err := svc.MerchantDebit(ctx, uid, 3000, "pulse", "sub-"+uuid.NewString(), "md-"+uuid.NewString())
+	if err != nil {
+		t.Fatalf("debit: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	ok := 0
+	for i := 0; i < 5; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := svc.Refund(ctx, debit.TransactionID, 2000, "user_cancel"); err == nil {
+				mu.Lock()
+				ok++
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	if ok != 1 {
+		t.Fatalf("%d refunds of 2000 against a 3000 payment succeeded, want 1", ok)
+	}
+	if _, err := svc.Refund(ctx, start.TransactionID, 100, "x"); err == nil {
+		t.Fatalf("a top-up must not be refundable")
+	}
+	b, _ := svc.Store().GetBalance(ctx, uid)
+	if b.AvailablePaise != 9000 {
+		t.Fatalf("available=%d, want 9000", b.AvailablePaise)
+	}
+}
+
+func TestMerchantDebit_ConcurrentSameKeyDebitsOnce(t *testing.T) {
+	svc, mock, cleanup := newTestService(t)
+	defer cleanup()
+	ctx := context.Background()
+	uid := uuid.New()
+	start, _ := svc.StartTopUp(ctx, uid, 10000, "tu-"+uuid.NewString())
+	if _, err := svc.ConfirmTopUp(ctx, uid, start.TransactionID, "UPI-"+uuid.NewString()); err != nil {
+		t.Fatalf("tu: %v", err)
+	}
+	sb, _ := svc.Store().GetBalance(ctx, uid)
+	mock.SeedBalance(sb.BankAccountRef, 10000)
+
+	key := "md-race-" + uuid.NewString()
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = svc.MerchantDebit(ctx, uid, 1500, "pulse", "sub-race", key)
+		}()
+	}
+	wg.Wait()
+	b, _ := svc.Store().GetBalance(ctx, uid)
+	if b.AvailablePaise != 8500 {
+		t.Fatalf("available=%d after 6 same-key debits of 1500, want 8500", b.AvailablePaise)
+	}
+	if n := len(mock.Transfers()); n != 1 {
+		t.Fatalf("bank transfers=%d, want 1", n)
 	}
 }

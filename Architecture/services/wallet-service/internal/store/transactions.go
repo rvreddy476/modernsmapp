@@ -115,11 +115,28 @@ func (s *Store) InsertTransaction(ctx context.Context, tx pgx.Tx, in CreateTrans
 }
 
 // MarkSettled flips a pending row to a final status. Pass tx=nil for the
-// non-tx path. Idempotent: if the row is already settled the call is a
-// no-op (rowsAffected = 0 + the row exists).
-func (s *Store) MarkSettled(ctx context.Context, tx pgx.Tx, txID uuid.UUID, status string, bankRef *string, failureReason *string) error {
+// non-tx path. The update is conditional on status = 'pending', so exactly
+// one caller can make the transition and only that caller sees
+// transitioned=true. A replay against an already-settled row is not an
+// error but reports false: the caller must not move money on false.
+func (s *Store) MarkSettled(ctx context.Context, tx pgx.Tx, txID uuid.UUID, status string, bankRef *string, failureReason *string) (transitioned bool, err error) {
+	_, transitioned, err = s.settlePending(ctx, tx, txID, status, bankRef, failureReason)
+	return transitioned, err
+}
+
+// settledRow is what a pending->final transition hands back: whose money it
+// was and how much, read from the row itself rather than from the caller.
+type settledRow struct {
+	UserID      uuid.UUID
+	AmountPaise int64
+}
+
+// settlePending is the one conditional pending->final update. ok=false with
+// a nil error means the row exists but is no longer pending; a missing row
+// is ErrTransactionNotFound.
+func (s *Store) settlePending(ctx context.Context, tx pgx.Tx, txID uuid.UUID, status string, bankRef, failureReason *string) (settledRow, bool, error) {
 	if status != "succeeded" && status != "failed" && status != "reversed" && status != "pending_invite" {
-		return fmt.Errorf("invalid terminal status: %q", status)
+		return settledRow{}, false, fmt.Errorf("invalid terminal status: %q", status)
 	}
 	const q = `
         UPDATE wallet.transactions
@@ -127,22 +144,113 @@ func (s *Store) MarkSettled(ctx context.Context, tx pgx.Tx, txID uuid.UUID, stat
             bank_txn_ref = COALESCE($3, bank_txn_ref),
             failure_reason = $4,
             settled_at = now()
-        WHERE id = $1 AND status = 'pending'`
-	tag, err := s.runner(tx).Exec(ctx, q, txID, status, bankRef, failureReason)
-	if err != nil {
-		return fmt.Errorf("mark settled: %w", err)
+        WHERE id = $1 AND status = 'pending'
+        RETURNING user_id, amount_paise`
+	var row settledRow
+	err := s.runner(tx).QueryRow(ctx, q, txID, status, bankRef, failureReason).Scan(&row.UserID, &row.AmountPaise)
+	if err == nil {
+		return row, true, nil
 	}
-	if tag.RowsAffected() == 0 {
-		const probe = `SELECT 1 FROM wallet.transactions WHERE id = $1`
-		var x int
-		if err := s.runner(tx).QueryRow(ctx, probe, txID).Scan(&x); err != nil {
-			if errors.Is(err, pgx.ErrNoRows) {
-				return ErrTransactionNotFound
-			}
-			return fmt.Errorf("probe transaction: %w", err)
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return settledRow{}, false, fmt.Errorf("mark settled: %w", err)
+	}
+	const probe = `SELECT 1 FROM wallet.transactions WHERE id = $1`
+	var x int
+	if err := s.runner(tx).QueryRow(ctx, probe, txID).Scan(&x); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return settledRow{}, false, ErrTransactionNotFound
+		}
+		return settledRow{}, false, fmt.Errorf("probe transaction: %w", err)
+	}
+	return settledRow{}, false, nil
+}
+
+// ErrUPIRefAlreadyUsed is returned by SettleTopUp when a different top-up has
+// already been credited for the same UPI reference: one inbound UPI payment
+// credits one top-up, never two.
+var ErrUPIRefAlreadyUsed = errors.New("top-up: upi reference already credited to another top-up")
+
+// SettleTopUp marks a pending top-up succeeded AND credits its amount to the
+// owner's available balance in ONE database transaction. The settle is the
+// conditional update in settlePending, so when two confirms race only the
+// one that made the transition credits; the other gets settled=false and no
+// money moves. The amount credited is the row's own amount_paise.
+//
+// The row's upi_txn_ref (stored by SetUPIRef before the bank check) must not
+// already have credited another top-up. Refs are serialised with a
+// transaction-scoped advisory lock so two rows carrying the same ref cannot
+// both pass that check; a reused ref leaves the row pending (the expirer
+// fails it) and returns ErrUPIRefAlreadyUsed.
+func (s *Store) SettleTopUp(ctx context.Context, txID uuid.UUID, bankRef string) (settled bool, err error) {
+	pgtx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin settle top-up: %w", err)
+	}
+	defer func() { _ = pgtx.Rollback(ctx) }()
+
+	var upiRef *string
+	const refQ = `SELECT upi_txn_ref FROM wallet.transactions WHERE id = $1 AND type = 'top_up'`
+	if err := pgtx.QueryRow(ctx, refQ, txID).Scan(&upiRef); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, ErrTransactionNotFound
+		}
+		return false, fmt.Errorf("read top-up upi ref: %w", err)
+	}
+	if upiRef != nil {
+		if _, err := pgtx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('wallet.upi_ref:' || $1::text))`, *upiRef); err != nil {
+			return false, fmt.Errorf("lock upi ref: %w", err)
+		}
+		const usedQ = `
+            SELECT EXISTS (
+                SELECT 1 FROM wallet.transactions
+                WHERE type = 'top_up' AND status = 'succeeded'
+                  AND upi_txn_ref = $1 AND id <> $2)`
+		var reused bool
+		if err := pgtx.QueryRow(ctx, usedQ, *upiRef, txID).Scan(&reused); err != nil {
+			return false, fmt.Errorf("check upi ref reuse: %w", err)
+		}
+		if reused {
+			return false, ErrUPIRefAlreadyUsed
 		}
 	}
-	return nil
+
+	ref := bankRef
+	row, ok, err := s.settlePending(ctx, pgtx, txID, "succeeded", &ref, nil)
+	if err != nil || !ok {
+		return false, err
+	}
+	if err := s.CreditAvailable(ctx, pgtx, row.UserID, row.AmountPaise); err != nil {
+		return false, err
+	}
+	if err := pgtx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit settle top-up: %w", err)
+	}
+	return true, nil
+}
+
+// ExpireTopUp marks a pending top-up failed AND releases its pending_in_paise
+// in ONE database transaction, only when this call made the transition. A
+// top-up a concurrent confirm already settled reports expired=false and the
+// balance is left alone.
+func (s *Store) ExpireTopUp(ctx context.Context, txID uuid.UUID, reason string) (expired bool, err error) {
+	pgtx, err := s.db.Begin(ctx)
+	if err != nil {
+		return false, fmt.Errorf("begin expire top-up: %w", err)
+	}
+	defer func() { _ = pgtx.Rollback(ctx) }()
+
+	why := reason
+	row, ok, err := s.settlePending(ctx, pgtx, txID, "failed", nil, &why)
+	if err != nil || !ok {
+		return false, err
+	}
+	if err := s.AdjustPendingIn(ctx, pgtx, row.UserID, -row.AmountPaise); err != nil {
+		return false, err
+	}
+	if err := pgtx.Commit(ctx); err != nil {
+		return false, fmt.Errorf("commit expire top-up: %w", err)
+	}
+	return true, nil
 }
 
 // SetUPIRef stores the UPI Intent reference on a top-up transaction once the
@@ -304,6 +412,69 @@ func (s *Store) ListPendingTopUpsOlderThan(ctx context.Context, cutoff time.Time
 		out = append(out, *t)
 	}
 	return out, rows.Err()
+}
+
+// transactionColumns is the column list scanTransaction reads.
+const transactionColumns = `id, user_id, type, direction, amount_paise,
+               counterparty_user_id, counterparty_phone, counterparty_label,
+               merchant_service, merchant_ref,
+               status, bank_txn_ref, upi_txn_ref, failure_reason,
+               idempotency_key, created_at, settled_at`
+
+// ClaimIdempotencyKeyTx serialises money-moving calls that carry the same
+// (user, type, idempotency key) for the rest of tx, then returns the row an
+// earlier call already wrote under that key, or nil when this call is the
+// first. The wallet.idempotency lookup that callers make first is only a
+// fast path: two concurrent calls both miss it, and without this claim both
+// would debit. The lock is transaction-scoped (released on commit or
+// rollback), and the earlier call's row is visible once it has committed.
+func (s *Store) ClaimIdempotencyKeyTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID, txType, key string) (*Transaction, error) {
+	if key == "" {
+		return nil, fmt.Errorf("claim idempotency: key required")
+	}
+	const lockQ = `SELECT pg_advisory_xact_lock(hashtext('wallet.idem:' || $1::text || ':' || $2::text || ':' || $3::text))`
+	if _, err := tx.Exec(ctx, lockQ, userID.String(), txType, key); err != nil {
+		return nil, fmt.Errorf("lock idempotency key: %w", err)
+	}
+	q := `SELECT ` + transactionColumns + `
+        FROM wallet.transactions
+        WHERE user_id = $1 AND type = $2 AND idempotency_key = $3
+        ORDER BY created_at LIMIT 1`
+	t, err := scanTransaction(tx.QueryRow(ctx, q, userID, txType, key))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find prior transaction for key: %w", err)
+	}
+	return t, nil
+}
+
+// LockForRefundTx locks the original transaction row (FOR UPDATE) for the
+// rest of tx and returns it with the paise already refunded against it.
+// Holding the lock while the refund is checked, sent to the bank and
+// recorded is what stops two concurrent refunds from both passing the
+// "not more than the original" check.
+func (s *Store) LockForRefundTx(ctx context.Context, tx pgx.Tx, originalID uuid.UUID) (*Transaction, int64, error) {
+	q := `SELECT ` + transactionColumns + ` FROM wallet.transactions WHERE id = $1 FOR UPDATE`
+	original, err := scanTransaction(tx.QueryRow(ctx, q, originalID))
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, 0, ErrTransactionNotFound
+		}
+		return nil, 0, fmt.Errorf("lock original transaction: %w", err)
+	}
+	const sumQ = `
+        SELECT COALESCE(SUM(amount_paise), 0)::bigint
+        FROM wallet.transactions
+        WHERE user_id = $1 AND type = 'refund'
+          AND status IN ('pending', 'succeeded')
+          AND metadata->>'original_transaction_id' = $2`
+	var refunded int64
+	if err := tx.QueryRow(ctx, sumQ, original.UserID, originalID.String()).Scan(&refunded); err != nil {
+		return nil, 0, fmt.Errorf("sum prior refunds: %w", err)
+	}
+	return original, refunded, nil
 }
 
 func scanTransaction(row pgx.Row) (*Transaction, error) {

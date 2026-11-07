@@ -40,7 +40,6 @@ func main() {
 	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
 	partnerVPA := env("PARTNER_BANK_VPA", "atpostwallet@partnerbank")
 	poolBankRef := env("PARTNER_BANK_POOL_REF", "mock-ppi-pool")
-	bankPartner := strings.ToLower(env("BANK_PARTNER", "mock"))
 	digilockerBase := os.Getenv("DIGILOCKER_BASE_URL")
 	digilockerRedirect := env("DIGILOCKER_REDIRECT_URI", "https://atpost.app/wallet/kyc/aadhaar/callback")
 
@@ -103,22 +102,14 @@ func main() {
 
 	walletStore := store.New(dbPool)
 
-	// Partner-bank client. Default mock; production must explicitly opt in
-	// to icici via BANK_PARTNER=icici. Mirrors the dating-service Razorpay
-	// pattern (Sprint 5).
-	var bankClient bank.BankClient
-	switch bankPartner {
-	case "icici":
-		bankClient = bank.NewHTTPClient(
-			os.Getenv("ICICI_BASE_URL"),
-			os.Getenv("ICICI_API_KEY"),
-			os.Getenv("ICICI_BC_ID"),
-		)
-		slog.Info("partner bank client: icici (HTTP)")
-	default:
-		bankClient = bank.NewMockClient()
-		slog.Info("partner bank client: mock (set BANK_PARTNER=icici for production)")
+	// Partner-bank client: exactly icici, or mock on a dev environment.
+	// Anything else refuses to start (bank.FromEnv).
+	bankClient, bankPartner, err := bank.FromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("partner bank client refused", "error", err)
+		os.Exit(1)
 	}
+	slog.Info("partner bank client selected", "partner", bankPartner)
 
 	walletSvc := service.New(walletStore, bankClient, service.Config{
 		PartnerBankVPA: partnerVPA,

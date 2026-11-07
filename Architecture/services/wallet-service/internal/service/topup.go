@@ -64,9 +64,16 @@ func (s *Service) StartTopUp(ctx context.Context, userID uuid.UUID, amountPaise 
 		return nil, err
 	}
 
-	// Create the pending wallet.transactions row and bump pending_in_paise.
+	// Create the pending wallet.transactions row and bump pending_in_paise
+	// in one database transaction, so a row never exists without its
+	// pending_in (which SettleTopUp / ExpireTopUp later release).
+	pgtx, err := s.store.DB().Begin(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("begin top-up tx: %w", err)
+	}
+	defer func() { _ = pgtx.Rollback(ctx) }()
 	idem := idempotencyKey
-	tx, err := s.store.InsertTransaction(ctx, nil, store.CreateTransactionInput{
+	tx, err := s.store.InsertTransaction(ctx, pgtx, store.CreateTransactionInput{
 		UserID:         userID,
 		Type:           "top_up",
 		Direction:      "credit",
@@ -78,8 +85,11 @@ func (s *Service) StartTopUp(ctx context.Context, userID uuid.UUID, amountPaise 
 	if err != nil {
 		return nil, fmt.Errorf("insert top-up tx: %w", err)
 	}
-	if err := s.store.AdjustPendingIn(ctx, userID, amountPaise); err != nil {
+	if err := s.store.AdjustPendingIn(ctx, pgtx, userID, amountPaise); err != nil {
 		return nil, fmt.Errorf("bump pending_in: %w", err)
+	}
+	if err := pgtx.Commit(ctx); err != nil {
+		return nil, fmt.Errorf("commit top-up tx: %w", err)
 	}
 
 	expires := tx.CreatedAt.Add(time.Duration(s.cfg.TopUpExpirySeconds) * time.Second)
@@ -110,20 +120,23 @@ func (s *Service) StartTopUp(ctx context.Context, userID uuid.UUID, amountPaise 
 
 // ConfirmTopUp is called by the client after the UPI app reports success. We
 // verify with the partner bank that the inbound credit actually landed; if
-// it did, mirror the credit + emit an event. Idempotent on transactionID:
-// a second call with the same id returns success without double-crediting.
+// it did, settle the row and credit the mirror in one database transaction
+// (store.SettleTopUp) and emit an event after commit. Idempotent on
+// transactionID: only the call that moves the row out of pending credits,
+// so a replay or a concurrent second confirm returns the settled row and
+// credits nothing.
 func (s *Service) ConfirmTopUp(ctx context.Context, userID, txID uuid.UUID, upiTxnRef string) (*store.Transaction, error) {
 	if upiTxnRef == "" {
 		return nil, fmt.Errorf("invalid: upi_txn_ref required")
 	}
-	tx, err := s.store.GetTransaction(ctx, userID, txID)
+	tx, err := s.topUps.GetTransaction(ctx, userID, txID)
 	if err != nil {
 		return nil, err
 	}
 	if tx.Type != "top_up" {
 		return nil, fmt.Errorf("invalid: transaction is not a top-up")
 	}
-	// Idempotency: already-settled rows return as-is.
+	// Fast path for replays. Not the guard: SettleTopUp is.
 	if tx.Status == "succeeded" {
 		return tx, nil
 	}
@@ -131,7 +144,7 @@ func (s *Service) ConfirmTopUp(ctx context.Context, userID, txID uuid.UUID, upiT
 		return nil, fmt.Errorf("invalid: top-up already failed")
 	}
 
-	if err := s.store.SetUPIRef(ctx, txID, upiTxnRef); err != nil {
+	if err := s.topUps.SetUPIRef(ctx, txID, upiTxnRef); err != nil {
 		return nil, fmt.Errorf("record upi ref: %w", err)
 	}
 
@@ -147,40 +160,53 @@ func (s *Service) ConfirmTopUp(ctx context.Context, userID, txID uuid.UUID, upiT
 	}
 
 	bankRef := upiTxnRef
-	if err := s.store.MarkSettled(ctx, nil, txID, "succeeded", &bankRef, nil); err != nil {
-		return nil, fmt.Errorf("mark settled: %w", err)
+	settled, err := s.topUps.SettleTopUp(ctx, txID, bankRef)
+	if errors.Is(err, store.ErrUPIRefAlreadyUsed) {
+		return nil, fmt.Errorf("invalid: upi_txn_ref already credited to another top-up")
 	}
-	if err := s.store.CreditAvailable(ctx, userID, tx.AmountPaise); err != nil {
-		return nil, fmt.Errorf("credit available: %w", err)
+	if err != nil {
+		return nil, fmt.Errorf("settle top-up: %w", err)
 	}
-	if err := s.producer.PublishTopUpSucceeded(ctx, userID, txID, tx.AmountPaise, bankRef, upiTxnRef); err != nil {
-		slog.Warn("wallet: publish top-up succeeded failed", "tx", txID, "error", err)
-	}
-	out, err := s.store.GetTransaction(ctx, userID, txID)
+	out, err := s.topUps.GetTransaction(ctx, userID, txID)
 	if err != nil {
 		return nil, err
+	}
+	if !settled {
+		// Another call moved the row first. If it was a confirm, the money is
+		// already credited; if it was the expirer, the bank has the payment
+		// but the row is failed, which reconciliation must pick up.
+		if out.Status == "failed" {
+			slog.Error("wallet: verified UPI credit on a top-up that already expired; needs reconciliation", "tx", txID)
+			return nil, fmt.Errorf("invalid: top-up already failed")
+		}
+		return out, nil
+	}
+	if err := s.producer.PublishTopUpSucceeded(ctx, out.UserID, txID, out.AmountPaise, bankRef, upiTxnRef); err != nil {
+		slog.Warn("wallet: publish top-up succeeded failed", "tx", txID, "error", err)
 	}
 	return out, nil
 }
 
 // ExpireStaleTopUps marks pending top-ups older than the configured cutoff
-// as failed and refunds pending_in_paise. Run from cmd/expirer on a 5-minute
-// cadence. Returns the number of rows expired.
+// as failed and releases their pending_in_paise, each in one database
+// transaction (store.ExpireTopUp). A top-up a confirm settled after the list
+// was read is skipped untouched. Run from cmd/expirer on a 5-minute cadence.
+// Returns the number of rows expired.
 func (s *Service) ExpireStaleTopUps(ctx context.Context) (int, error) {
 	cutoff := time.Now().Add(-time.Duration(s.cfg.TopUpExpirySeconds) * time.Second)
-	stale, err := s.store.ListPendingTopUpsOlderThan(ctx, cutoff, 200)
+	stale, err := s.topUps.ListPendingTopUpsOlderThan(ctx, cutoff, 200)
 	if err != nil {
 		return 0, fmt.Errorf("list stale top-ups: %w", err)
 	}
 	expired := 0
 	for _, t := range stale {
 		reason := "expired_no_upi_credit"
-		if err := s.store.MarkSettled(ctx, nil, t.ID, "failed", nil, &reason); err != nil {
-			slog.Warn("wallet: mark expired top-up failed", "tx", t.ID, "error", err)
+		done, err := s.topUps.ExpireTopUp(ctx, t.ID, reason)
+		if err != nil {
+			slog.Warn("wallet: expire top-up failed", "tx", t.ID, "error", err)
 			continue
 		}
-		if err := s.store.AdjustPendingIn(ctx, t.UserID, -t.AmountPaise); err != nil {
-			slog.Warn("wallet: refund pending_in failed", "tx", t.ID, "error", err)
+		if !done {
 			continue
 		}
 		if err := s.producer.PublishTopUpFailed(ctx, t.UserID, t.ID, t.AmountPaise, reason); err != nil {
@@ -213,7 +239,7 @@ func (s *Service) topUpResultFromTransaction(ctx context.Context, txID uuid.UUID
 //
 //	upi://pay?pa=<vpa>&pn=<name>&am=<rupees>&tn=<txnNote>&cu=INR
 func buildUPIIntentURL(vpa, displayName string, amountPaise int64, txID uuid.UUID) string {
-	rupees := fmt.Sprintf("%.2f", float64(amountPaise)/100.0)
+	rupees := paiseToRupees(amountPaise)
 	q := url.Values{}
 	q.Set("pa", vpa)
 	q.Set("pn", displayName)
@@ -221,4 +247,11 @@ func buildUPIIntentURL(vpa, displayName string, amountPaise int64, txID uuid.UUI
 	q.Set("tn", txID.String())
 	q.Set("cu", "INR")
 	return "upi://pay?" + q.Encode()
+}
+
+// paiseToRupees formats a positive paise amount as rupees with exactly two
+// decimals ("123.45") using integer division, never a float, so the amount
+// the user's UPI app is asked to pay is exact at any size.
+func paiseToRupees(paise int64) string {
+	return fmt.Sprintf("%d.%02d", paise/100, paise%100)
 }

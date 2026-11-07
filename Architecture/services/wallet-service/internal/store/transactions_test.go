@@ -63,19 +63,25 @@ func TestMarkSettled_Idempotent(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 	bankRef := "BANK-1"
-	if err := s.MarkSettled(ctx, nil, tx.ID, "succeeded", &bankRef, nil); err != nil {
-		t.Fatalf("settle: %v", err)
+	ok, err := s.MarkSettled(ctx, nil, tx.ID, "succeeded", &bankRef, nil)
+	if err != nil || !ok {
+		t.Fatalf("settle: transitioned=%v err=%v, want true and nil", ok, err)
 	}
-	// Second call should not error — idempotent.
-	if err := s.MarkSettled(ctx, nil, tx.ID, "succeeded", &bankRef, nil); err != nil {
+	// Second call should not error — idempotent — and must report that it
+	// did not make the transition, so its caller moves no money.
+	ok, err = s.MarkSettled(ctx, nil, tx.ID, "succeeded", &bankRef, nil)
+	if err != nil {
 		t.Fatalf("idempotent settle: %v", err)
+	}
+	if ok {
+		t.Fatalf("second settle reported transitioned=true; only the first call may")
 	}
 }
 
 func TestMarkSettled_RejectsInvalidStatus(t *testing.T) {
 	s, cleanup := walletTestStore(t)
 	defer cleanup()
-	if err := s.MarkSettled(context.Background(), nil, uuid.New(), "weird", nil, nil); err == nil {
+	if _, err := s.MarkSettled(context.Background(), nil, uuid.New(), "weird", nil, nil); err == nil {
 		t.Fatalf("expected rejection of invalid status")
 	}
 }
@@ -83,7 +89,7 @@ func TestMarkSettled_RejectsInvalidStatus(t *testing.T) {
 func TestMarkSettled_NotFound(t *testing.T) {
 	s, cleanup := walletTestStore(t)
 	defer cleanup()
-	err := s.MarkSettled(context.Background(), nil, uuid.New(), "succeeded", nil, nil)
+	_, err := s.MarkSettled(context.Background(), nil, uuid.New(), "succeeded", nil, nil)
 	if !errors.Is(err, ErrTransactionNotFound) {
 		t.Fatalf("expected not-found; got %v", err)
 	}

@@ -271,6 +271,8 @@ services:
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:?set INTERNAL_SERVICE_KEY}
       PARTNER_BANK_VPA: ${PARTNER_BANK_VPA:?set PARTNER_BANK_VPA}
       BANK_PARTNER: ${BANK_PARTNER:?set BANK_PARTNER}
+      # Overrides the base file's ENV: dev, so the mock bank is refused here.
+      ENV: production
 
   bill-pay-service:
     <<: *transport_certs

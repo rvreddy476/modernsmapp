@@ -67,10 +67,10 @@ func TestCreditAvailable_DropsPendingIn(t *testing.T) {
 	if _, err := s.EnsureBalance(ctx, uid, "ref"); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	if err := s.AdjustPendingIn(ctx, uid, 5000); err != nil {
+	if err := s.AdjustPendingIn(ctx, nil, uid, 5000); err != nil {
 		t.Fatalf("adjust pending: %v", err)
 	}
-	if err := s.CreditAvailable(ctx, uid, 5000); err != nil {
+	if err := s.CreditAvailable(ctx, nil, uid, 5000); err != nil {
 		t.Fatalf("credit: %v", err)
 	}
 	b, _ := s.GetBalance(ctx, uid)
@@ -105,7 +105,7 @@ func TestDebitAvailableTx_Frozen(t *testing.T) {
 	if _, err := s.EnsureBalance(ctx, uid, "ref"); err != nil {
 		t.Fatalf("ensure: %v", err)
 	}
-	if err := s.CreditAvailable(ctx, uid, 1000); err != nil {
+	if err := s.CreditAvailable(ctx, nil, uid, 1000); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	if err := s.Freeze(ctx, uid, "test"); err != nil {

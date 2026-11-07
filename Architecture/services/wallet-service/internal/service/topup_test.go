@@ -52,3 +52,19 @@ func TestBuildUPIIntentURL_TenPaise(t *testing.T) {
 		t.Fatalf("expected 0.10; got %q", u.Query().Get("am"))
 	}
 }
+
+func TestPaiseToRupees_ExactWithoutFloats(t *testing.T) {
+	cases := map[int64]string{
+		1:                   "0.01",
+		10:                  "0.10",
+		100:                 "1.00",
+		12345:               "123.45",
+		900719925474099301:  "9007199254740993.01", // 2^53+1 rupees: a float64 rounds this
+		9223372036854775807: "92233720368547758.07",
+	}
+	for paise, want := range cases {
+		if got := paiseToRupees(paise); got != want {
+			t.Errorf("paiseToRupees(%d) = %q, want %q", paise, got, want)
+		}
+	}
+}
