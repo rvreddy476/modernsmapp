@@ -21,6 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/atpost/commerce-service/internal/money"
@@ -528,8 +529,11 @@ func (s *Store) CancelOrder(ctx context.Context, orderID, actorID uuid.UUID, act
 		}
 	}
 
-	// If stock was already committed (the order was paid), give it back.
-	if payStatus == "paid" {
+	// If stock was already committed (money was taken), give back what has not
+	// been given back already. A partially refunded order is still a paid one:
+	// a partial refund returns money, not goods, so its stock is still out.
+	tookMoney := moneyWasTaken(payStatus)
+	if tookMoney {
 		if err := restockPaidOrderTx(ctx, tx, orderID); err != nil {
 			return err
 		}
@@ -559,12 +563,26 @@ func (s *Store) CancelOrder(ctx context.Context, orderID, actorID uuid.UUID, act
 	// call failed — each of which reported success while no money moved and
 	// nothing remembered the debt. A refund is now a durable command in the
 	// same transaction as the cancellation, and a worker owns delivering it.
-	if payStatus == "paid" && totalMinor > 0 {
+	//
+	// The refund is what is still owed: the order total less what has already
+	// come back (settled refunds) and what an open command is already sending.
+	// Refunding the total of a partially refunded order would ask payments for
+	// more than is left; refunding nothing (the old `payStatus == "paid"`
+	// test) kept the buyer's remaining money.
+	var refundDue money.Paise
+	if tookMoney {
+		settled, owed, err := orderRefundedAndOwedTx(ctx, tx, orderID)
+		if err != nil {
+			return err
+		}
+		refundDue = cancelRefundDue(totalMinor, settled, owed)
+	}
+	if refundDue > 0 {
 		intent := ""
 		if intentID != nil {
 			intent = *intentID
 		}
-		if err := createRefundCommandTx(ctx, tx, orderID, intent, totalMinor,
+		if err := createRefundCommandTx(ctx, tx, orderID, intent, refundDue,
 			"cancel:"+reason, "cancel:"+orderID.String()); err != nil {
 			return err
 		}
@@ -580,19 +598,75 @@ func (s *Store) CancelOrder(ctx context.Context, orderID, actorID uuid.UUID, act
 		"user_id":      customerID,
 		"actor_type":   actorOr(actorType),
 		"reason":       reason,
-		"was_paid":     payStatus == "paid",
-		"refund_minor": totalMinor.Int64(),
+		"was_paid":     tookMoney,
+		"refund_minor": refundDue.Int64(),
 	}); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
 }
 
+// moneyWasTaken reports whether an order in this payment status holds the
+// buyer's money and committed stock: paid, or paid and then partly refunded.
+// It is the one test cancellation uses for both "restock" and "refund".
+//
+// refund_pending is deliberately not here. It means a refund command is
+// already open, and it is also the state a late capture on a dead order lands
+// in, where the stock was released and never committed; restocking that would
+// mint stock.
+func moneyWasTaken(paymentStatus string) bool {
+	return paymentStatus == "paid" || paymentStatus == "partially_refunded"
+}
+
+// cancelRefundDue is what a cancellation must still refund: the order total
+// less refunds already settled and refunds an open command is already
+// sending. Never negative; zero means nothing more is owed.
+func cancelRefundDue(total, settled, owed money.Paise) money.Paise {
+	due := total.Sub(settled).Sub(owed)
+	if due.IsNegative() {
+		return 0
+	}
+	return due
+}
+
+// orderRefundedAndOwedTx sums the order's settled refunds and the amounts of
+// its refund commands that are still on their way (pending, submitted, or
+// parked for a human: each of those is money its own command owes).
+func orderRefundedAndOwedTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID) (settled, owed money.Paise, err error) {
+	err = tx.QueryRow(ctx,
+		`SELECT (SELECT COALESCE(SUM(amount_minor),0) FROM order_refund_settlements WHERE order_id = $1),
+		        (SELECT COALESCE(SUM(amount_minor),0) FROM order_refund_commands
+		          WHERE order_id = $1 AND status IN ('pending','submitted','needs_attention'))`,
+		orderID).Scan(&settled, &owed)
+	return settled, owed, err
+}
+
+// restockReasons are the inventory_ledger reasons that put an order's
+// committed stock back on sale. Whatever they already returned is not
+// returned twice.
+var restockReasons = []string{"checkout_release_cancel", "return_restock"}
+
+// restockQty is how much of a line goes back on sale: what the order bought
+// less what has already come back. Never negative.
+func restockQty(bought, alreadyReturned int) int {
+	if q := bought - alreadyReturned; q > 0 {
+		return q
+	}
+	return 0
+}
+
 // restockPaidOrderTx returns committed stock for a paid order that is being
-// cancelled before dispatch.
+// cancelled before dispatch, less anything already put back for this order.
 func restockPaidOrderTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID) error {
 	rows, err := tx.Query(ctx,
-		`SELECT variant_id, quantity FROM order_items WHERE order_id = $1`, orderID)
+		`SELECT oi.variant_id, SUM(oi.quantity)::int,
+		        COALESCE((SELECT SUM(l.delta_total) FROM inventory_ledger l
+		                   WHERE l.order_id = $1 AND l.variant_id = oi.variant_id
+		                     AND l.delta_total > 0 AND l.reason = ANY($2)), 0)::int
+		   FROM order_items oi
+		  WHERE oi.order_id = $1
+		  GROUP BY oi.variant_id
+		  ORDER BY oi.variant_id`, orderID, restockReasons)
 	if err != nil {
 		return err
 	}
@@ -602,12 +676,17 @@ func restockPaidOrderTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID) error
 	}
 	var lines []line
 	for rows.Next() {
-		var l line
-		if err := rows.Scan(&l.variant, &l.qty); err != nil {
+		var (
+			l              line
+			bought, posted int
+		)
+		if err := rows.Scan(&l.variant, &bought, &posted); err != nil {
 			rows.Close()
 			return err
 		}
-		lines = append(lines, l)
+		if l.qty = restockQty(bought, posted); l.qty > 0 {
+			lines = append(lines, l)
+		}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -732,14 +811,22 @@ func (s *Store) OldestUnsettledRefundAge(ctx context.Context) (time.Duration, er
 //
 // Expiry is now terminal and durable. A late capture for an expired order is
 // handled in ApplyPaymentSucceeded, which refunds it instead of fulfilling.
+//
+// Candidates come oldest lapse first, and an order whose expiry fails is
+// pushed back (deferExpiry) rather than retried at the head of the next tick:
+// the old unordered LIMIT with a bare `continue` let a LIMIT's worth of
+// orders that fail every time starve every other lapsed hold (migration 053).
 func (s *Store) ExpireStaleOrders(ctx context.Context, limit int) (int, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT DISTINCT o.id
+		SELECT o.id
 		  FROM orders o
 		  JOIN inventory_reservations r ON r.order_id = o.id
 		 WHERE o.status = 'payment_pending'
 		   AND r.released_at IS NULL AND r.committed_at IS NULL
 		   AND r.expires_at < NOW()
+		   AND (o.expiry_next_attempt_at IS NULL OR o.expiry_next_attempt_at <= NOW())
+		 GROUP BY o.id
+		 ORDER BY MIN(r.expires_at), o.id
 		 LIMIT $1`, limit)
 	if err != nil {
 		return 0, err
@@ -761,12 +848,30 @@ func (s *Store) ExpireStaleOrders(ctx context.Context, limit int) (int, error) {
 	expired := 0
 	for _, id := range ids {
 		if err := s.expireOne(ctx, id); err != nil {
-			// One stuck order must not stop the sweep.
+			// One stuck order must not stop the sweep, nor hold a place at
+			// its head: it waits out a back-off and the rest go first.
+			attempts, derr := s.deferExpiry(ctx, id)
+			slog.Warn("commerce: could not expire a lapsed order; deferred",
+				"order_id", id, "attempts", attempts, "error", err, "defer_error", derr)
 			continue
 		}
 		expired++
 	}
 	return expired, nil
+}
+
+// deferExpiry counts a failed expiry and keeps the order out of the sweep
+// until its back-off has passed: one minute per failure, capped at fifteen.
+// It returns the new attempt count.
+func (s *Store) deferExpiry(ctx context.Context, orderID uuid.UUID) (int, error) {
+	var attempts int
+	err := s.db.QueryRow(ctx,
+		`UPDATE orders
+		    SET expiry_attempts = expiry_attempts + 1,
+		        expiry_next_attempt_at = NOW() + LEAST(expiry_attempts + 1, 15) * INTERVAL '1 minute'
+		  WHERE id = $1
+		RETURNING expiry_attempts`, orderID).Scan(&attempts)
+	return attempts, err
 }
 
 func (s *Store) expireOne(ctx context.Context, orderID uuid.UUID) error {

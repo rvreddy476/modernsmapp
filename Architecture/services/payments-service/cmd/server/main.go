@@ -333,6 +333,15 @@ func main() {
 	// key so a retry after an ambiguous timeout yields one refund.
 	go svc.RunRefundWorker(workerCtx, 15*time.Second)
 
+	// Migration 018: late and duplicate captures recorded in
+	// payments.refund_required are refunded to the buyer by this worker and
+	// resolved by the provider's signed refund webhook. Off unless
+	// PAYMENTS_REFUND_REQUIRED_WORKER=true, or on a dev ENV with it unset.
+	if cfg.RefundRequiredWorker {
+		go svc.RunRefundRequiredWorker(workerCtx, 30*time.Second)
+	}
+	slog.Info("payments: refund-required worker (late/duplicate captures)", "enabled", cfg.RefundRequiredWorker)
+
 	// LB-9: resolve payments the webhook never told us about, and surface
 	// ledger-vs-provider drift instead of letting it accumulate silently.
 	// With the stub gateway there is no provider to ask, so it stays off.

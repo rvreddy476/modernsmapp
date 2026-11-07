@@ -313,14 +313,14 @@ func (s *Store) ApplyWebhookAtomically(ctx context.Context, e WebhookEffect) (*P
 		}
 		if lateCaptureRecorded {
 			slog.Error("payments: LATE CAPTURE ON A FAILED INTENT — the intent is not revived and a refund is required "+
-				"(recorded in payments.refund_required; not issued automatically)",
+				"(recorded in payments.refund_required; the refund-required worker returns it when enabled)",
 				"intent_id", intent.ID, "provider", e.Provider, "provider_order_id", e.ProviderOrderID,
 				"provider_payment_id", lateCapturePaymentKey(e), "event_id", e.EventID,
 				"amount_minor", e.AmountMinor, "currency", e.Currency)
 		}
 		if duplicateCaptureRecorded {
 			slog.Error("payments: DUPLICATE CAPTURE ON A PAID INTENT — the buyer paid twice and a refund is required "+
-				"(recorded in payments.refund_required; not issued automatically)",
+				"(recorded in payments.refund_required; the refund-required worker returns it when enabled)",
 				"intent_id", intent.ID, "status", intent.Status, "provider", e.Provider,
 				"provider_order_id", e.ProviderOrderID, "settled_payment_id", settledPaymentID,
 				"provider_payment_id", e.ProviderPaymentID, "event_id", e.EventID,
@@ -494,8 +494,9 @@ func isDuplicateCapture(intentStatus, settledPaymentID string, e WebhookEffect) 
 // different event ids, and redelivers either. The inbox catches a redelivery
 // of the same event before this runs; the unique key catches the rest.
 //
-// No provider refund is issued here. Whether to refund late captures
-// automatically is an operator decision; this row is what they act on.
+// No provider refund is issued here, inside the capture transaction. The
+// refund-required worker (migration 018) refunds the row and the signed
+// refund webhook resolves it.
 func recordLateCaptureTx(ctx context.Context, tx pgx.Tx, intent *PaymentIntent, e WebhookEffect, reason string) (bool, error) {
 	key := lateCapturePaymentKey(e)
 	tag, err := tx.Exec(ctx,
@@ -1302,18 +1303,72 @@ func (s *Store) ApplyRefundWebhookAtomically(ctx context.Context, e WebhookEffec
 			e.ProviderOrderID, byOrder[0], e.ProviderPaymentID, byPayment[0])
 	}
 
+	// Migration 018: is the refunded payment one recorded as owed back (a
+	// duplicate or late capture)? Razorpay's refund entity carries the payment
+	// id and usually no order id, and an owed payment is on no intent's
+	// provider_payment_id, so this row is also how such a refund is
+	// attributed at all.
+	owed, err := owedCaptureForRefundTx(ctx, tx, e.Provider, e.ProviderPaymentID)
+	if err != nil {
+		return false, "", err
+	}
+
 	var intentID uuid.UUID
 	switch {
 	case len(byOrder) == 1:
 		intentID = byOrder[0]
 	case len(byPayment) == 1:
 		intentID = byPayment[0]
+	case owed != nil:
+		intentID = owed.IntentID
 	default:
 		// A refund we cannot attribute must roll the inbox row back so the
 		// provider keeps retrying — never be acknowledged.
 		return false, "", fmt.Errorf(
 			"%w: refund event %q names provider order %q / payment %q",
 			ErrIntentNotFound, e.EventID, e.ProviderOrderID, e.ProviderPaymentID)
+	}
+	if owed != nil && owed.IntentID != intentID {
+		return false, "", fmt.Errorf(
+			"%w: refund event %q resolves to intent %s, but payment %q is owed back on intent %s",
+			ErrAmbiguousRefundTarget, e.EventID, intentID, e.ProviderPaymentID, owed.IntentID)
+	}
+
+	// A refund books against the intent ONLY when it refunds the payment that
+	// settled the intent. This compared nothing: a refund of a duplicate
+	// capture, found by its provider order, credited the real order's intent,
+	// moved it to refunded and published payment.refunded — and commerce
+	// marked a still-paid order refunded.
+	var settledPaymentID, intentCurrency string
+	if err := tx.QueryRow(ctx,
+		`SELECT COALESCE(provider_payment_id,''), COALESCE(currency,'')
+		   FROM payments.payment_intents WHERE id = $1`, intentID).
+		Scan(&settledPaymentID, &intentCurrency); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false, "", ErrIntentNotFound
+		}
+		return false, "", err
+	}
+	switch classifyRefundTarget(settledPaymentID, e.ProviderPaymentID, owed != nil) {
+	case refundOfOwedCapture:
+		recorded, err := applyOwedCaptureRefundTx(ctx, tx, owed, intentCurrency, e, providerRefundID)
+		if err != nil {
+			return false, "", err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return false, "", err
+		}
+		if recorded {
+			slog.Info("payments: refund of an owed capture settled; the intent and its order are untouched",
+				"intent_id", intentID, "provider_payment_id", e.ProviderPaymentID,
+				"provider_refund_id", providerRefundID, "amount_minor", e.AmountMinor,
+				"refunded_minor", owed.RefundedMinor, "resolved", owed.Resolved)
+		}
+		return false, "", nil
+	case refundOfUnknownPayment:
+		return false, "", fmt.Errorf(
+			"%w: refund event %q refunds payment %q on intent %s, which was settled by %q",
+			ErrRefundOfUnrecordedPayment, e.EventID, e.ProviderPaymentID, intentID, settledPaymentID)
 	}
 
 	// C3-LB-1: a refund is a money-bearing event and was reaching the ledger

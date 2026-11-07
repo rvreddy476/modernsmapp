@@ -53,6 +53,14 @@ type Config struct {
 	// provider order carries offers and every capture is matched exactly as
 	// before offers existed.
 	OffersEnabled bool
+
+	// RefundRequiredWorker runs the refund-required worker (migration 018):
+	// captures recorded in payments.refund_required (late or duplicate) are
+	// refunded to the buyer automatically. PAYMENTS_REFUND_REQUIRED_WORKER=
+	// true|false; unset is ON only on a dev ENV ("", dev, local) and OFF
+	// everywhere else (staging, prod, and QA, which runs as ENV=prod), so a
+	// production deploy turns it on explicitly.
+	RefundRequiredWorker bool
 }
 
 // DefaultFailedAttemptWindow applies when PAYMENTS_FAILED_ATTEMPT_WINDOW is
@@ -64,7 +72,10 @@ var (
 	// is not positive. A zero window would finalise FAILED on the first
 	// failed attempt, which is exactly the lost-retry defect it exists for.
 	ErrInvalidFailedAttemptWindow = errors.New("PAYMENTS_FAILED_ATTEMPT_WINDOW must be a positive Go duration such as 15m")
-	ErrNoGateway = errors.New("RAZORPAY_KEY_ID is required in production; set PAYMENTS_ALLOW_STUB=true for dev/test")
+	// ErrInvalidRefundRequiredWorker refuses a flag value that is neither
+	// true nor false, rather than guessing whether money should move.
+	ErrInvalidRefundRequiredWorker = errors.New("PAYMENTS_REFUND_REQUIRED_WORKER must be true or false")
+	ErrNoGateway                   = errors.New("RAZORPAY_KEY_ID is required in production; set PAYMENTS_ALLOW_STUB=true for dev/test")
 	// ErrWebhookSecretRequired fires whenever the Razorpay gateway is
 	// selected without a webhook secret — regardless of PAYMENTS_ALLOW_STUB.
 	// Previously the secret check was keyed on the stub flag, so a deploy
@@ -117,6 +128,11 @@ func Resolve(getenv func(string) string) (Config, error) {
 		}
 		cfg.FailedAttemptWindow = d
 	}
+	on, err := refundRequiredWorker(getenv("PAYMENTS_REFUND_REQUIRED_WORKER"), getenv("ENV"))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg.RefundRequiredWorker = on
 	allowStub := getenv("PAYMENTS_ALLOW_STUB") == "true"
 
 	switch {
@@ -134,4 +150,22 @@ func Resolve(getenv func(string) string) (Config, error) {
 		return Config{}, ErrNoGateway
 	}
 	return cfg, nil
+}
+
+// refundRequiredWorker resolves PAYMENTS_REFUND_REQUIRED_WORKER: an explicit
+// true or false wins; unset is on for a dev ENV only.
+func refundRequiredWorker(raw, env string) (bool, error) {
+	switch strings.TrimSpace(raw) {
+	case "true":
+		return true, nil
+	case "false":
+		return false, nil
+	case "":
+		switch strings.TrimSpace(env) {
+		case "", "dev", "local":
+			return true, nil
+		}
+		return false, nil
+	}
+	return false, fmt.Errorf("%w (got %q)", ErrInvalidRefundRequiredWorker, raw)
 }

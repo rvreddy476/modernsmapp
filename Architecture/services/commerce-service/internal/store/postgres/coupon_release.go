@@ -23,6 +23,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -62,7 +63,9 @@ func releaseCouponTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID) (int, er
 // reclaimCouponTx re-claims the coupon an order was priced with, for a
 // payment retry. The order's price was fixed at checkout and is not
 // recomputed, so only the claim is repeated: one unit of capacity and the
-// buyer's use, refused with ErrCouponExhausted when either is gone. An order
+// buyer's use, refused with ErrCouponExhausted when either is gone, and with
+// ErrCouponInvalid or ErrCouponExpired when the coupon was switched off or
+// expired since checkout (reclaimRefusal). An order
 // with no coupon, or one whose use is still held (it failed before uses were
 // released), claims nothing.
 func reclaimCouponTx(ctx context.Context, tx pgx.Tx, orderID, userID uuid.UUID) error {
@@ -76,10 +79,13 @@ func reclaimCouponTx(ctx context.Context, tx pgx.Tx, orderID, userID uuid.UUID) 
 	var (
 		couponID   uuid.UUID
 		maxPerUser int
+		active     bool
+		expiresAt  *time.Time
+		now        time.Time
 	)
 	err := tx.QueryRow(ctx,
-		`SELECT id, max_uses_per_user FROM coupons WHERE code = $1 FOR UPDATE`, *code).
-		Scan(&couponID, &maxPerUser)
+		`SELECT id, max_uses_per_user, is_active, expires_at, NOW() FROM coupons WHERE code = $1 FOR UPDATE`, *code).
+		Scan(&couponID, &maxPerUser, &active, &expiresAt, &now)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ErrCouponExhausted
 	}
@@ -93,7 +99,16 @@ func reclaimCouponTx(ctx context.Context, tx pgx.Tx, orderID, userID uuid.UUID) 
 		return err
 	}
 	if held {
+		// The checkout's claim never lapsed, so the checkout's validation
+		// still stands.
 		return nil
+	}
+	// A new claim is a new use of the coupon: it must still be live. A
+	// coupon switched off or past its expiry since checkout refuses the
+	// retry with its own code (COUPON_INVALID / COUPON_EXPIRED) rather than
+	// selling at a discount nobody may claim any more.
+	if err := reclaimRefusal(active, expiresAt, now); err != nil {
+		return err
 	}
 	var used int
 	if err := tx.QueryRow(ctx,
@@ -117,4 +132,18 @@ func reclaimCouponTx(ctx context.Context, tx pgx.Tx, orderID, userID uuid.UUID) 
 		`INSERT INTO coupon_usages (coupon_id, user_id, order_id) VALUES ($1,$2,$3)
 		 ON CONFLICT DO NOTHING`, couponID, userID, orderID)
 	return err
+}
+
+// reclaimRefusal is why a payment retry may not re-claim its coupon, or nil:
+// the coupon was switched off (ErrCouponInvalid) or has expired
+// (ErrCouponExpired) since checkout. The price is not recomputed, so a retry
+// refuses rather than dropping the discount and charging a different amount.
+func reclaimRefusal(active bool, expiresAt *time.Time, now time.Time) error {
+	switch {
+	case !active:
+		return ErrCouponInvalid
+	case expiresAt != nil && !expiresAt.After(now):
+		return ErrCouponExpired
+	}
+	return nil
 }

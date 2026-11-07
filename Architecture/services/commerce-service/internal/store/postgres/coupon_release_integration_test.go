@@ -168,3 +168,43 @@ func TestCouponRelease_RetryRefusedWhenTheLastUseWasTaken(t *testing.T) {
 		t.Fatalf("a refused retry held stock: reserved = %d", reserved)
 	}
 }
+
+// A coupon switched off, or expired, after checkout: the retry is refused with
+// that coupon's code and the order stays payment_failed with nothing held.
+func TestCouponRelease_RetryRefusedWhenTheCouponIsNoLongerLive(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		change string
+		want   error
+	}{
+		{"switched off", `UPDATE coupons SET is_active = FALSE WHERE code = $1`, ErrCouponInvalid},
+		{"expired", `UPDATE coupons SET expires_at = NOW() - INTERVAL '1 minute' WHERE code = $1`, ErrCouponExpired},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			f, code, res := couponOrder(t, 5)
+			if err := f.store.ApplyPaymentFailed(ctx, PaymentEvent{
+				EventID: "evt-" + uuid.NewString(), EventType: "payment.failed", OrderID: res.OrderID,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			mustExec(t, tc.change, code)
+
+			_, err := f.store.RetryPaymentReservation(ctx, res.OrderID, f.userID)
+			if !errors.Is(err, tc.want) {
+				t.Fatalf("retry: err = %v, want %v", err, tc.want)
+			}
+			var status string
+			_ = testPool.QueryRow(ctx, `SELECT status FROM orders WHERE id=$1`, res.OrderID).Scan(&status)
+			if status != "payment_failed" {
+				t.Fatalf("status after refused retry = %q, want payment_failed", status)
+			}
+			if n := couponUses(t, code); n != 0 {
+				t.Fatalf("uses_count after a refused retry = %d, want 0", n)
+			}
+			if _, reserved := f.inventory(); reserved != 0 {
+				t.Fatalf("a refused retry held stock: reserved = %d", reserved)
+			}
+		})
+	}
+}

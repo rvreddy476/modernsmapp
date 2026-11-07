@@ -113,8 +113,16 @@ func deliveryError(c *gin.Context, err error) {
 	}
 	api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, message, nil)
 }
+
+// The delivery handlers below each refuse a request with no verified user
+// (401 from getUserID) rather than acting for uuid.Nil. The route group's
+// middleware already does so; this keeps a handler safe wherever it is
+// mounted.
 func (h *Handler) GetDeliveryProfile(c *gin.Context) {
-	user, _ := getUserID(c)
+	user, ok := getUserID(c)
+	if !ok {
+		return
+	}
 	p, err := h.svc.DeliveryProfile(c.Request.Context(), user)
 	if err != nil {
 		deliveryError(c, err)
@@ -123,6 +131,10 @@ func (h *Handler) GetDeliveryProfile(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, p, nil)
 }
 func (h *Handler) SaveDeliveryProfile(c *gin.Context) {
+	user, ok := getUserID(c)
+	if !ok {
+		return
+	}
 	var b struct {
 		FullName    string `json:"full_name"`
 		VehicleType string `json:"vehicle_type"`
@@ -131,7 +143,6 @@ func (h *Handler) SaveDeliveryProfile(c *gin.Context) {
 		deliveryError(c, postgres.ErrDeliveryInvalid)
 		return
 	}
-	user, _ := getUserID(c)
 	if err := h.svc.SaveDeliveryProfile(c.Request.Context(), user, b.FullName, b.VehicleType); err != nil {
 		deliveryError(c, err)
 		return
@@ -139,6 +150,10 @@ func (h *Handler) SaveDeliveryProfile(c *gin.Context) {
 	h.GetDeliveryProfile(c)
 }
 func (h *Handler) SaveDeliveryDocument(c *gin.Context) {
+	user, ok := getUserID(c)
+	if !ok {
+		return
+	}
 	var b struct {
 		MediaID uuid.UUID `json:"media_id"`
 	}
@@ -146,7 +161,6 @@ func (h *Handler) SaveDeliveryDocument(c *gin.Context) {
 		deliveryError(c, postgres.ErrDeliveryInvalid)
 		return
 	}
-	user, _ := getUserID(c)
 	if err := h.svc.SaveDeliveryDocument(c.Request.Context(), user, c.Param("kind"), b.MediaID); err != nil {
 		deliveryError(c, err)
 		return
@@ -154,7 +168,10 @@ func (h *Handler) SaveDeliveryDocument(c *gin.Context) {
 	h.GetDeliveryProfile(c)
 }
 func (h *Handler) SubmitDeliveryProfile(c *gin.Context) {
-	user, _ := getUserID(c)
+	user, ok := getUserID(c)
+	if !ok {
+		return
+	}
 	if err := h.svc.SubmitDeliveryProfile(c.Request.Context(), user); err != nil {
 		deliveryError(c, err)
 		return

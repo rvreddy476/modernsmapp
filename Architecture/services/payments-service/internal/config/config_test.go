@@ -189,3 +189,47 @@ func TestResolve(t *testing.T) {
 		})
 	}
 }
+
+// PAYMENTS_REFUND_REQUIRED_WORKER (migration 018): explicit true/false wins;
+// unset is ON for a dev ENV only, so prod, QA (ENV=prod) and staging stay OFF
+// until a deploy turns it on; anything else refuses to boot.
+func TestResolveRefundRequiredWorker(t *testing.T) {
+	for _, tc := range []struct {
+		name, env, flag string
+		want            bool
+	}{
+		{"dev compose: no ENV, unset", "", "", true},
+		{"dev, unset", "dev", "", true},
+		{"local, unset", "local", "", true},
+		{"staging, unset", "staging", "", false},
+		{"prod, unset", "prod", "", false},
+		{"prod, explicitly on", "prod", "true", true},
+		{"dev, explicitly off", "dev", "false", false},
+		{"surrounding blanks", "", " false ", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := map[string]string{"PAYMENTS_ALLOW_STUB": "true", "ENV": tc.env, "PAYMENTS_REFUND_REQUIRED_WORKER": tc.flag}
+			if tc.env == "prod" {
+				// Production refuses the stub; give it what it needs to boot.
+				env = map[string]string{"ENV": "prod", "SERVICE_CALLERS": "commerce-service",
+					"RAZORPAY_KEY_ID": "k", "RAZORPAY_KEY_SECRET": "s", "RAZORPAY_WEBHOOK_SECRET": "w",
+					"PAYMENTS_REFUND_REQUIRED_WORKER": tc.flag}
+			}
+			cfg, err := Resolve(envMap(env))
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.RefundRequiredWorker != tc.want {
+				t.Fatalf("RefundRequiredWorker = %v, want %v", cfg.RefundRequiredWorker, tc.want)
+			}
+		})
+	}
+	for _, raw := range []string{"yes", "1", "TRUE", "on"} {
+		t.Run("invalid "+raw, func(t *testing.T) {
+			_, err := Resolve(envMap(map[string]string{"PAYMENTS_ALLOW_STUB": "true", "PAYMENTS_REFUND_REQUIRED_WORKER": raw}))
+			if !errors.Is(err, ErrInvalidRefundRequiredWorker) {
+				t.Fatalf("err = %v, want ErrInvalidRefundRequiredWorker", err)
+			}
+		})
+	}
+}
