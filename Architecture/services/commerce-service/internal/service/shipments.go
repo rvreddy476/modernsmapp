@@ -116,7 +116,7 @@ func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID
 	// Ship if either: gateway has captured (payment_status=paid) OR this is a
 	// COD order whose payment is collected at delivery. COD orders carry
 	// payment_status=pending until the courier confirms collection — see the
-	// note in service.go Checkout() about why cod_pending isn't a real state.
+	// note in checkout.go Checkout() about why cod_pending isn't a real state.
 	isCOD := order.PaymentMethod != nil && *order.PaymentMethod == "cod"
 	if order.PaymentStatus != "paid" && !isCOD {
 		return nil, fmt.Errorf("order not ready to ship (payment_status=%s)", order.PaymentStatus)
