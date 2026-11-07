@@ -81,6 +81,31 @@ func (s *ReportStore) ListGrievancesByUser(ctx context.Context, userID uuid.UUID
 	`, userID, limit, offset)
 }
 
+// CountGrievancesByComplainantSince counts the grievances complainantID
+// lodged at or after since (the user-facing quota, service/grievance_quota.go).
+func (s *ReportStore) CountGrievancesByComplainantSince(ctx context.Context, complainantID uuid.UUID, since time.Time) (int, error) {
+	var n int
+	err := s.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM trust.grievances
+		WHERE complainant_id = $1 AND created_at >= $2
+	`, complainantID, since).Scan(&n)
+	return n, err
+}
+
+// HasActiveGrievanceAbout reports whether complainantID has a grievance about
+// aboutEntityID that is still open or acknowledged.
+func (s *ReportStore) HasActiveGrievanceAbout(ctx context.Context, complainantID, aboutEntityID uuid.UUID) (bool, error) {
+	var exists bool
+	err := s.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1 FROM trust.grievances
+			WHERE complainant_id = $1 AND about_entity_id = $2
+			  AND status IN ('open', 'acknowledged')
+		)
+	`, complainantID, aboutEntityID).Scan(&exists)
+	return exists, err
+}
+
 func (s *ReportStore) queryGrievances(ctx context.Context, query string, args ...interface{}) ([]Grievance, error) {
 	rows, err := s.db.Query(ctx, query, args...)
 	if err != nil {

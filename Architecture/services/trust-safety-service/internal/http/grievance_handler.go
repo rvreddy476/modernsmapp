@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -55,12 +56,45 @@ func (h *Handler) FileGrievance(c *gin.Context) {
 			return
 		}
 	}
-	g, err := h.svc.FileGrievance(c.Request.Context(), userID, req.Subject, req.AboutEntityType, req.AboutEntityID, req.Description)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+	// An officer filing on the admin-token route keeps the full row and is
+	// not bound by the complainant quota (audit TS-L1).
+	if viaAdminToken(c) {
+		g, err := h.cases.FileGrievance(c.Request.Context(), userID, req.Subject, req.AboutEntityType, req.AboutEntityID, req.Description)
+		if err != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+			return
+		}
+		api.JSON(c.Writer, http.StatusOK, g, nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, g, nil)
+	g, err := h.cases.FileUserGrievance(c.Request.Context(), userID, req.Subject, req.AboutEntityType, req.AboutEntityID, req.Description)
+	switch {
+	case errors.Is(err, service.ErrGrievanceRateLimited):
+		c.Header("Retry-After", "3600")
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", "Too many grievances. Please try again later.", nil)
+		return
+	case errors.Is(err, service.ErrActiveGrievanceExists):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "ACTIVE_GRIEVANCE_EXISTS", "You already have an open grievance about this item", nil)
+		return
+	case err != nil && strings.HasPrefix(err.Error(), "invalid subject"):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
+		return
+	case err != nil:
+		slog.Error("FileGrievance error", "error", err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to file grievance", nil)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, toUserGrievance(*g), nil)
+}
+
+// grievanceView is what this caller may see of a grievance: the full row for
+// an officer (admin token or admin scope), the complainant's view otherwise
+// (user_views.go, audit TS-M1).
+func grievanceView(c *gin.Context, g postgres.Grievance) any {
+	if adminAllowed(c) {
+		return g
+	}
+	return toUserGrievance(g)
 }
 
 // GetGrievance returns a grievance to its complainant or to an officer.
@@ -80,7 +114,7 @@ func (h *Handler) GetGrievance(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid grievance ID", nil)
 		return
 	}
-	g, err := h.svc.GetGrievance(c.Request.Context(), id)
+	g, err := h.cases.GetGrievance(c.Request.Context(), id)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Grievance not found", nil)
 		return
@@ -89,7 +123,7 @@ func (h *Handler) GetGrievance(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Not your grievance", nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, g, nil)
+	api.JSON(c.Writer, http.StatusOK, grievanceView(c, *g), nil)
 }
 
 // ListGrievances returns the caller's own grievances (?mine=true) or, for
@@ -110,25 +144,33 @@ func (h *Handler) ListGrievances(c *gin.Context) {
 	var list []postgres.Grievance
 	// ?mine=true is a user's own list; it has no meaning on the admin token path.
 	if c.Query("mine") == "true" && !token {
-		list, err = h.svc.ListMyGrievances(c.Request.Context(), userID, limit, offset)
-	} else {
-		if !adminAllowed(c) {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Grievance officer scope required", nil)
+		mine, err := h.cases.ListMyGrievances(c.Request.Context(), userID, limit, offset)
+		if err != nil {
+			slog.Error("ListMyGrievances error", "error", err)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list grievances", nil)
 			return
 		}
-		switch c.Query("overdue") {
-		case "true":
-			if c.Query("status") != "" {
-				api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "overdue cannot be combined with status", nil)
-				return
-			}
-			list, err = h.svc.ListOverdueGrievances(c.Request.Context(), limit, offset)
-		case "", "false":
-			list, err = h.svc.ListGrievances(c.Request.Context(), c.Query("status"), limit, offset)
-		default:
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "overdue must be true or false", nil)
+		// The complainant's view, whatever scopes ride along: this is
+		// their own list, not the officer queue.
+		api.JSON(c.Writer, http.StatusOK, toUserGrievances(mine), nil)
+		return
+	}
+	if !adminAllowed(c) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Grievance officer scope required", nil)
+		return
+	}
+	switch c.Query("overdue") {
+	case "true":
+		if c.Query("status") != "" {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "overdue cannot be combined with status", nil)
 			return
 		}
+		list, err = h.svc.ListOverdueGrievances(c.Request.Context(), limit, offset)
+	case "", "false":
+		list, err = h.svc.ListGrievances(c.Request.Context(), c.Query("status"), limit, offset)
+	default:
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "overdue must be true or false", nil)
+		return
 	}
 	if err != nil {
 		slog.Error("ListGrievances error", "error", err)

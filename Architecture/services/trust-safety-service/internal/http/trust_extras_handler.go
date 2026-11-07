@@ -254,16 +254,40 @@ func (h *Handler) SubmitVerificationRequest(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
-	vreq, err := h.svc.SubmitVerificationRequest(c.Request.Context(), userID, req.Type, req.Docs)
+	vreq, err := h.cases.SubmitVerificationRequest(c.Request.Context(), userID, req.Type, req.Docs)
 	if err != nil {
 		slog.Error("SubmitVerificationRequest", "err", err)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusCreated, vreq, nil)
+	api.JSON(c.Writer, http.StatusCreated, toUserVerification(*vreq), nil)
 }
 
+// AdminListVerificationRequests is GET /v1/verification-requests: the
+// review queue for an admin, or with ?mine=true the caller's own latest
+// request (audit TS-L3): {"items":[...]} with zero or one row in the
+// applicant's view (status, outcome, the reviewer's reason; never the
+// reviewer). ?mine=true has no meaning on the admin token path.
 func (h *Handler) AdminListVerificationRequests(c *gin.Context) {
+	if c.Query("mine") == "true" && !viaAdminToken(c) {
+		userID, err := uuid.Parse(c.GetHeader("X-User-Id"))
+		if err != nil || userID == uuid.Nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
+			return
+		}
+		own, err := h.cases.OwnVerificationRequest(c.Request.Context(), userID)
+		if err != nil {
+			slog.Error("OwnVerificationRequest", "err", err)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to load your verification request", nil)
+			return
+		}
+		items := []userVerification{}
+		if own != nil {
+			items = append(items, toUserVerification(*own))
+		}
+		api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": items}, nil)
+		return
+	}
 	if !adminAllowed(c) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "Admin scope required", nil)
 		return

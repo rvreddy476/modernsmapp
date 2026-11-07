@@ -129,6 +129,9 @@ type Service struct {
 	// reporterVolume overrides the per-reporter quota counter (reporter_quota.go);
 	// nil means store.
 	reporterVolume reporterVolume
+	// grievanceVolume overrides the grievance quota reads (grievance_quota.go);
+	// nil means store.
+	grievanceVolume grievanceVolume
 }
 
 func New(store *postgres.ReportStore, kafkaWriter *kafka.Writer) *Service {

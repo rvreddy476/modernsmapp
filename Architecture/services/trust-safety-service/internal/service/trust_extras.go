@@ -9,6 +9,7 @@ import (
 
 	"github.com/atpost/trust-safety-service/internal/store/postgres"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 var validVerificationTypes = map[string]bool{
@@ -186,6 +187,19 @@ func (s *Service) ReviewVerificationRequest(ctx context.Context, id uuid.UUID, s
 		return fmt.Errorf("invalid status: %s", status)
 	}
 	return s.extras.UpdateVerificationStatus(ctx, id, status, rejectionReason, &reviewedBy)
+}
+
+// OwnVerificationRequest is the applicant's latest verification request, or
+// nil when they never filed one (audit TS-L3).
+func (s *Service) OwnVerificationRequest(ctx context.Context, userID uuid.UUID) (*postgres.VerificationRequest, error) {
+	if s.extras == nil {
+		return nil, errors.New("verification requests are unavailable")
+	}
+	r, err := s.extras.GetUserVerificationRequest(ctx, userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	return r, err
 }
 
 func (s *Service) ListVerificationRequestsAdmin(ctx context.Context, status string, limit, offset int) ([]postgres.VerificationRequest, error) {

@@ -69,10 +69,14 @@ func (h *Handler) SubmitAppeal(c *gin.Context) {
 	}
 	appeal, err := h.appeals.SubmitAppeal(c.Request.Context(), userID, req.ContentType, req.ContentID, req.AppealReason, decisionID)
 	if err != nil {
+		if errors.Is(err, service.ErrAppealCopyrightCase) {
+			writeCopyrightCaseRedirect(c, req.ContentType, req.ContentID)
+			return
+		}
 		writeAppealError(c, "SubmitAppeal", err)
 		return
 	}
-	api.JSON(c.Writer, http.StatusCreated, appeal, nil)
+	api.JSON(c.Writer, http.StatusCreated, toUserAppeal(*appeal), nil)
 }
 
 func (h *Handler) AdminListAppeals(c *gin.Context) {
@@ -83,12 +87,14 @@ func (h *Handler) AdminListAppeals(c *gin.Context) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 			return
 		}
-		appeals, err := h.svc.ListUserAppeals(c.Request.Context(), userID)
+		appeals, err := h.cases.ListUserAppeals(c.Request.Context(), userID)
 		if err != nil {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, CodeAppealsUnavailable, "Appeals are temporarily unavailable", nil)
 			return
 		}
-		api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": appeals}, nil)
+		// The appellant's view (user_views.go, audit TS-M1): no reviewer, no
+		// reviewer's note, no decision ids.
+		api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": toUserAppeals(appeals)}, nil)
 		return
 	}
 	if !adminAllowed(c) {
@@ -139,6 +145,29 @@ func (h *Handler) ReviewAppeal(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "updated"}, nil)
 }
 
+// Audit TS-L2 (7 Nov 2026): a copyright-held post cannot be appealed, and
+// there is no counter-notice route anywhere in the platform. The 409 keeps
+// its code (clients branch on it) but sends the author to the grievance
+// route that does exist, with the body to file there: subject
+// intellectual_property, about the held content. The grievance officer
+// handles it under the IT Rules clock.
+const (
+	// GrievancePath is POST /v1/grievances (handler.go RegisterRoutes).
+	GrievancePath        = "/v1/grievances"
+	copyrightCaseMessage = "This decision is a copyright case and cannot be appealed. To dispute it, file a grievance with the grievance officer (subject intellectual_property) about this content."
+)
+
+func writeCopyrightCaseRedirect(c *gin.Context, contentType, contentID string) {
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, CodeAppealCopyrightCase, copyrightCaseMessage, map[string]any{
+		"grievance_path": GrievancePath,
+		"grievance": map[string]string{
+			"subject":           "intellectual_property",
+			"about_entity_type": contentType,
+			"about_entity_id":   contentID,
+		},
+	})
+}
+
 // writeAppealError maps an appeal failure to its one response. A refusal
 // that closed the appeal (superseded) or left it in flight (pending) says
 // so, because the console must show the state the appeal now has.
@@ -157,7 +186,7 @@ func writeAppealError(c *gin.Context, op string, err error) {
 	case errors.Is(err, postgres.ErrActiveAppealExists):
 		write(http.StatusConflict, CodeAppealActiveExists, "An active appeal already exists")
 	case errors.Is(err, service.ErrAppealCopyrightCase):
-		write(http.StatusConflict, CodeAppealCopyrightCase, "This decision is a copyright case; submit a counter-notice instead")
+		write(http.StatusConflict, CodeAppealCopyrightCase, copyrightCaseMessage)
 	case errors.Is(err, service.ErrAppealDecisionStale):
 		write(http.StatusConflict, CodeAppealDecisionStale, "The decision appealed is no longer the post's current decision")
 	case errors.Is(err, service.ErrAppealNotEligible):

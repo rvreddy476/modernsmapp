@@ -40,6 +40,9 @@ type Handler struct {
 	// messageReports files service-side message reports
 	// (message_reports_internal.go); svc by default, a fake in tests.
 	messageReports messageReportFiler
+	// cases answers a user's reads and filings of their own cases
+	// (user_cases.go); svc by default, a fake in tests.
+	cases userCasesAPI
 }
 
 func New(svc *service.Service) *Handler {
@@ -47,6 +50,7 @@ func New(svc *service.Service) *Handler {
 	if svc != nil {
 		h.standing = svc
 		h.appeals = svc
+		h.cases = svc
 	}
 	return h
 }
@@ -195,7 +199,7 @@ func (h *Handler) FileReport(c *gin.Context) {
 		return
 	}
 
-	report, err := h.svc.FileReportWith(c.Request.Context(), service.FileReportInput{
+	report, err := h.cases.FileReportWith(c.Request.Context(), service.FileReportInput{
 		ReporterID: userID, EntityType: req.EntityType, EntityRef: req.EntityID, Reason: req.Reason, Details: req.Details,
 		Evidence: req.Evidence.toService(service.EvidenceSourceReporter, conversationOf(req.EntityType, req.EntityID)),
 		// The user-facing route is the one the per-reporter cap guards
@@ -227,7 +231,8 @@ func (h *Handler) FileReport(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, report, nil)
+	// The reporter's view (user_views.go): no evidence provenance.
+	api.JSON(c.Writer, http.StatusOK, toUserReport(*report), nil)
 }
 
 func (h *Handler) ListReports(c *gin.Context) {
@@ -239,13 +244,15 @@ func (h *Handler) ListReports(c *gin.Context) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "UNAUTHORIZED", "Invalid user ID", nil)
 			return
 		}
-		reports, err := h.svc.ListOwnReports(c.Request.Context(), userID, limit, offset)
+		reports, err := h.cases.ListOwnReports(c.Request.Context(), userID, limit, offset)
 		if err != nil {
 			slog.Error("ListOwnReports error", "error", err)
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to list reports", nil)
 			return
 		}
-		api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": reports}, nil)
+		// The reporter's view (user_views.go, audit TS-M1): no assignee, no
+		// moderator notes, no evidence provenance.
+		api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": toUserReports(reports)}, nil)
 		return
 	}
 
