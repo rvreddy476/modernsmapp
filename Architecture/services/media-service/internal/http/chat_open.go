@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/atpost/media-service/internal/delivery"
+	"github.com/atpost/media-service/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -124,7 +125,7 @@ func carryChatOpen(c *gin.Context, mediaID uuid.UUID, body []byte) []byte {
 
 // hlsPlaylistService is the HLS playlist read; *service.Service satisfies it.
 type hlsPlaylistService interface {
-	GetHLSPlaylist(ctx context.Context, viewerID, mediaID uuid.UUID, playlist string) ([]byte, error)
+	GetHLSPlaylist(ctx context.Context, viewerID, mediaID uuid.UUID, playlist string) (*service.HLSPlaylist, error)
 }
 
 func (h *Handler) hlsSvc() hlsPlaylistService {

@@ -31,6 +31,14 @@ import (
 // its later segments. Segment URLs are now signed for HLSSegmentTTL, the
 // video's duration twice over plus a margin, capped at MaxHLSSegmentTTL.
 //
+// The cap was 2 h, so a long video (the worker transcodes up to 4 h) still
+// hit 403 after two hours of wall-clock playback (2026-11-07). It is now
+// 12 h, twice the longest video the worker accepts plus margin, so the
+// formula, not the cap, decides for every video the platform serves. A
+// player that outlives even that (a tab paused overnight) re-fetches the
+// child playlist once the X-HLS-Expires-At it was served has passed:
+// HLSURLsForAsset returns that instant and the playlist route sends it.
+//
 // THE TRADE-OFF. A segment signature cannot be revoked, so after a block or
 // a takedown a viewer who already loaded the playlist can keep fetching its
 // segments for up to that long (at most MaxHLSSegmentTTL) instead of five
@@ -49,8 +57,10 @@ const (
 	// expires_at values use it.
 	GuaranteedProtectedTTL = MaxProtectedTTL - SignatureReuseWindow
 
-	// MaxHLSSegmentTTL caps an HLS segment signature.
-	MaxHLSSegmentTTL = 2 * time.Hour
+	// MaxHLSSegmentTTL caps an HLS segment signature: 12 h, twice the
+	// worker's 4 h maximum (processing.DefaultMaxVideoDurationSeconds) plus
+	// margin.
+	MaxHLSSegmentTTL = 12 * time.Hour
 	// hlsSegmentTTLMargin is added to twice the duration: start-up, a
 	// pause, a re-buffer.
 	hlsSegmentTTLMargin = 15 * time.Minute
@@ -208,6 +218,16 @@ func (g *Gate) signProtected(key string, ttl time.Duration, now time.Time) (stri
 	}
 	g.cache.put(key, ttl, u, now.Add(ttl), now)
 	return u, nil
+}
+
+// segmentGuarantee is the least lifetime a segment URL that signSegment
+// signed at ttl has left when it is handed out, cache reuse included:
+// GuaranteedProtectedTTL when the segment falls back to MaxProtectedTTL.
+func (g *Gate) segmentGuarantee(ttl time.Duration) time.Duration {
+	if _, ok := g.signer.(SegmentSigner); !ok || ttl <= MaxProtectedTTL {
+		return GuaranteedProtectedTTL
+	}
+	return ttl - reuseWindow(ttl)
 }
 
 // signSegment signs one HLS segment for ttl when the signer supports long

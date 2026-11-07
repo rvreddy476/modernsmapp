@@ -111,7 +111,7 @@ func TestWorkerConfigFromEnvironment(t *testing.T) {
 		t.Fatalf("a bad value did not fall back: %v", cfg.limits.MaxFrameRate)
 	}
 	def := loadWorkerConfig(func(string) string { return "" })
-	if def.maxAttempts != defaultMaxAttempts || def.maxOriginalBytes != defaultMaxOriginalBytes ||
+	if def.maxAttempts != defaultMaxAttempts || def.maxOriginalBytes != processing.MaxVideoOriginalBytes ||
 		def.limits.MinShortSide != processing.MinVideoResolution {
 		t.Fatalf("defaults = %+v", def)
 	}

@@ -177,13 +177,15 @@ func TestCarryChatOpenOnHLSMasterChildren(t *testing.T) {
 type chatOpenPlaylists struct {
 	master string
 	opens  []delivery.ChatOpen
+	// expiresAt is the playlist's ExpiresAt (zero: nothing expires).
+	expiresAt time.Time
 }
 
-func (f *chatOpenPlaylists) GetHLSPlaylist(ctx context.Context, _, _ uuid.UUID, _ string) ([]byte, error) {
+func (f *chatOpenPlaylists) GetHLSPlaylist(ctx context.Context, _, _ uuid.UUID, _ string) (*service.HLSPlaylist, error) {
 	if open, ok := delivery.ChatOpenFrom(ctx); ok {
 		f.opens = append(f.opens, open)
 	}
-	return []byte(f.master), nil
+	return &service.HLSPlaylist{Body: []byte(f.master), ExpiresAt: f.expiresAt}, nil
 }
 
 func TestHLSMasterRouteCarriesChatOpenToChildren(t *testing.T) {

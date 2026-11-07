@@ -58,10 +58,6 @@ const (
 	// the stall sweeper re-queues it with a fresh request (and fails it
 	// after its own attempts cap), so nothing is lost silently.
 	defaultMaxAttempts = 8
-	// defaultMaxOriginalBytes: the worker scratch volume is 50 Gi in prod
-	// and needs the original plus every rendition and the HLS ladder
-	// (~2-3x the original).
-	defaultMaxOriginalBytes int64 = 16 << 30
 	// scratchHeadroom is how many times the original's size must be free
 	// on the scratch volume before the download starts.
 	scratchHeadroom = 3
@@ -74,10 +70,12 @@ func loadWorkerConfig(getenv func(string) string) workerConfig {
 	lim.MaxLongSide = envIntFrom(getenv, "MEDIA_MAX_VIDEO_LONG_SIDE", lim.MaxLongSide)
 	lim.MaxPixels = envIntFrom(getenv, "MEDIA_MAX_VIDEO_PIXELS", lim.MaxPixels)
 	lim.MaxFrameRate = envFloat(getenv, "MEDIA_MAX_VIDEO_FPS", lim.MaxFrameRate)
+	// maxOriginalBytes: the upload routes refuse at init with this same cap
+	// (processing.MaxVideoOriginalBytes is the one source of truth).
 	cfg := workerConfig{
 		maxAttempts:      envIntFrom(getenv, "MEDIA_TRANSCODE_MAX_ATTEMPTS", defaultMaxAttempts),
 		limits:           lim,
-		maxOriginalBytes: int64(envFloat(getenv, "MEDIA_WORKER_MAX_ORIGINAL_BYTES", float64(defaultMaxOriginalBytes))),
+		maxOriginalBytes: processing.VideoOriginalCap(getenv),
 		scratchDir:       os.TempDir(),
 	}
 	if cfg.maxAttempts < 1 {

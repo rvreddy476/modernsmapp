@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -102,6 +103,13 @@ func main() {
 	}
 	log.Printf("Content scanner: %s", scannerName)
 
+	// Which transcode classes this worker consumes (transcode_classes.go),
+	// refused here for the same reason: before any dependency.
+	classes, err := parseTranscodeClasses(os.Getenv(transcodeClassesEnv))
+	if err != nil {
+		log.Fatalf("Transcode classes: %v", err)
+	}
+
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
@@ -150,16 +158,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to configure Kafka dialer: %v\n", err)
 	}
-	// Kafka consumer
-	reader := kafka.NewReader(kafka.ReaderConfig{
-		Brokers:  brokers,
-		GroupID:  "media-transcode-worker",
-		Topic:    "media.events",
-		MinBytes: 10e3,
-		MaxBytes: 10e6,
-		Dialer:   kafkaDialer,
-	})
-
 	// Graceful shutdown
 	go func() {
 		sig := make(chan os.Signal, 1)
@@ -200,45 +198,62 @@ func main() {
 		scratchDir: os.TempDir(),
 	})
 
-	log.Println("Media transcode worker started, waiting for messages...")
+	log.Printf("Media transcode worker started (classes %v), waiting for messages...", classes)
 
-	// M4-P0-3 — THE OFFSET IS COMMITTED BY THIS LOOP, AND ONLY AFTER THE
-	// DURABLE EFFECT.
+	// M4-P0-3 — THE OFFSET IS COMMITTED BY THE CONSUMER LOOP (consume), AND
+	// ONLY AFTER THE DURABLE EFFECT.
 	//
 	// This used to call ReadMessage, which for a group reader commits the
 	// offset BEFORE returning the message. A transcode that then failed on a
 	// transient fault — blob store blip, database restart — was acknowledged
 	// and never retried, and the asset stayed stuck forever with no job.
 	//
-	// FetchMessage does not commit. CommitMessages below does, after
-	// CompleteTranscode has durably recorded the outcome.
-	for {
-		m, err := reader.FetchMessage(ctx)
-		if err != nil {
-			if ctx.Err() != nil {
-				break
+	// FetchMessage does not commit. CommitMessages does, after
+	// CompleteTranscode has durably recorded the outcome (or, for a long
+	// request the short consumer forwarded, after the long topic acked it).
+	//
+	// One loop per class (transcode_classes.go), so a reel never waits
+	// behind a long video in this process.
+	transcode := func(m kafka.Message) bool { return handleUntilDurable(ctx, m, pgStore, blobStore, scanner) }
+	var forward *kafka.Writer
+	var wg sync.WaitGroup
+	for _, class := range classes {
+		topic, group := consumerFor(class)
+		reader := kafka.NewReader(kafka.ReaderConfig{
+			Brokers:  brokers,
+			GroupID:  group,
+			Topic:    topic,
+			MinBytes: 10e3,
+			MaxBytes: 10e6,
+			Dialer:   kafkaDialer,
+		})
+		handle := transcode
+		if class == classShort {
+			forward = kafka.NewWriter(kafka.WriterConfig{
+				Brokers: brokers,
+				Topic:   longTopic,
+				// Same key, same partition for every delivery of one request.
+				Balancer:     &kafka.Hash{},
+				RequiredAcks: -1,
+				BatchSize:    1, // one request per write: no batch wait
+				Dialer:       kafkaDialer,
+			})
+			router := &longRouter{store: pgStore, blobs: blobStore, forward: forward}
+			handle = func(m kafka.Message) bool {
+				return router.forwardIfLong(ctx, m) || transcode(m)
 			}
-			log.Printf("Fetch error: %v\n", err)
-			continue
 		}
-
-		tracker.begin()
-		durable := handleUntilDurable(ctx, m, pgStore, blobStore, scanner)
-		tracker.end(time.Now())
-		if !durable {
-			// Shutting down mid-message. The offset is deliberately left
-			// uncommitted so the next owner of this partition redelivers it.
-			log.Println("Context cancelled before commit; stopping without committing")
-			break
-		}
-		if err := reader.CommitMessages(ctx, m); err != nil {
-			// The effect is durable and idempotent, so the redelivery this
-			// causes is absorbed by the inbox.
-			log.Printf("Commit error (message will be redelivered): %v", err)
-		}
+		wg.Add(1)
+		go func(name string) {
+			defer wg.Done()
+			consume(ctx, name, reader, tracker, handle)
+			_ = reader.Close()
+		}(string(class) + " " + topic)
 	}
-
-	_ = reader.Close()
+	wg.Wait()
+	if forward != nil {
+		_ = forward.Close()
+	}
 	log.Println("Worker stopped")
 }
 

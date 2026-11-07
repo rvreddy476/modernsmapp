@@ -1027,12 +1027,18 @@ services:
           cpus: '0.5'
           memory: 512M
 
-  media-worker:
+  media-worker: &media_worker
     build:
       context: ..
       dockerfile: services/media-service/Dockerfile.worker
-    environment:
+    environment: &media_worker_env
       <<: [*kafka_client_env]
+      # Transcode classes (2026-11-07): short (reels, <= 10 min) and long.
+      # The default runs both as separate consumer loops, so a reel never
+      # waits behind a long video on this one worker. To split them across
+      # containers: MEDIA_TRANSCODE_CLASSES=short plus
+      # `--profile split-transcode` (media-worker-long below).
+      MEDIA_TRANSCODE_CLASSES: ${MEDIA_TRANSCODE_CLASSES:-short,long}
       POSTGRES_DSN: *app_postgres_dsn
       MINIO_ENDPOINT: minio:9000
       MINIO_ACCESS_KEY: *minio_access_key
@@ -1066,6 +1072,17 @@ services:
         reservations:
           cpus: '0.5'
           memory: 512M
+
+  # A dedicated long-video transcoder (topic media.events.long, group
+  # media-transcode-worker-long). Opt-in: the default media-worker already
+  # consumes both classes. The devbox override has no block for it, so it
+  # would run against MinIO there; add one before enabling it on the devbox.
+  media-worker-long:
+    <<: *media_worker
+    profiles: ["split-transcode"]
+    environment:
+      <<: *media_worker_env
+      MEDIA_TRANSCODE_CLASSES: long
 
   mediamtx:
     image: bluenviron/mediamtx:latest
@@ -2084,7 +2101,11 @@ services:
       KAFKA_TOPIC: wallet-events
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
       PARTNER_BANK_VPA: ${PARTNER_BANK_VPA:-atpostwallet@partnerbank}
+      # The mock partner bank accepts any UPI reference as paid, so
+      # wallet-service refuses it unless ENV names local/dev/development/test
+      # (a blank ENV counts as production). This dev stack is dev.
       BANK_PARTNER: ${BANK_PARTNER:-mock}
+      ENV: dev
     ports:
       - "8114:8114"
     depends_on:

@@ -121,6 +121,8 @@ env:
   # here and needs ~3x the original (renditions + HLS); statfs cannot see an
   # emptyDir sizeLimit, so the cap is what keeps a huge upload from getting
   # the pod evicted. 6 GiB. (Default 16 GiB fits prod's 50Gi scratch.)
+  # The server reads it too (2026-11-07): both upload routes refuse a larger
+  # video at init with 413 VIDEO_TOO_LARGE, before any byte is uploaded.
   MEDIA_WORKER_MAX_ORIGINAL_BYTES: "6442450944"
   # Lane D5: dating / Mopedu selfie liveness + face compare on the same IRSA
   # Rekognition client (DetectFaces + CompareFaces, or every compare is 503).
@@ -180,3 +182,8 @@ worker:
       cpu: "3"
       memory: 4Gi
   scratchSizeLimit: 20Gi
+  # Transcode classes (2026-11-07): this one worker runs a short (reels)
+  # and a long consumer loop side by side, so a reel never waits behind a
+  # long video. Same value as prod.
+  env:
+    MEDIA_TRANSCODE_CLASSES: "short,long"

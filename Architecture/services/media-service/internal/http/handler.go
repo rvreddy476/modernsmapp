@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/atpost/media-service/internal/service"
 	"github.com/atpost/media-service/internal/store/postgres"
@@ -316,6 +317,8 @@ func (h *Handler) InitUpload(c *gin.Context) {
 	if err != nil {
 		msg := err.Error()
 		switch {
+		case errors.Is(err, service.ErrVideoTooLarge):
+			writeVideoTooLarge(c, err)
 		case errors.Is(err, service.ErrUseResumableUpload):
 			// Not a refusal of the file: too big for one PUT. The client
 			// switches to POST /v1/media/upload/resumable/init.
@@ -685,16 +688,27 @@ func (h *Handler) ServeHLSPlaylist(c *gin.Context) {
 }
 
 func (h *Handler) serveHLSPlaylist(c *gin.Context, mediaID uuid.UUID, playlist string) {
-	body, err := h.hlsSvc().GetHLSPlaylist(c.Request.Context(), deliveryViewer(c), mediaID, playlist)
+	pl, err := h.hlsSvc().GetHLSPlaylist(c.Request.Context(), deliveryViewer(c), mediaID, playlist)
 	if err != nil {
 		writeDeliveryError(c, err)
 		return
 	}
-	body = carryChatOpen(c, mediaID, body)
+	body := carryChatOpen(c, mediaID, pl.Body)
+	if !pl.ExpiresAt.IsZero() {
+		// When the signed segment URLs in this playlist stop working. A VOD
+		// playlist is never reloaded by a player on its own, so a client
+		// still playing then re-fetches the playlist (RFC 3339, UTC).
+		c.Header(HLSExpiresAtHeader, pl.ExpiresAt.UTC().Format(time.RFC3339))
+		c.Header("Access-Control-Expose-Headers", HLSExpiresAtHeader)
+	}
 	c.Header("Content-Type", "application/vnd.apple.mpegurl")
 	c.Header("Cache-Control", "private, no-store")
 	c.Data(http.StatusOK, "application/vnd.apple.mpegurl", body)
 }
+
+// HLSExpiresAtHeader carries service.HLSPlaylist.ExpiresAt on a media
+// playlist response. Absent when nothing in the playlist expires.
+const HLSExpiresAtHeader = "X-HLS-Expires-At"
 
 // DeleteOrphanMedia — DELETE /v1/media/internal/orphan/:mediaId
 //

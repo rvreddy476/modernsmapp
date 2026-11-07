@@ -279,10 +279,9 @@ func ValidateUpload(fileType, mediaSubtype, mimeType string, fileSizeBytes int64
 			return fmt.Errorf("invalid mime type for image: %s", mimeType)
 		}
 	case "video":
-		// No total size cap (founder, 2026-10-21: long videos have no size
-		// and no length limit). The simple path is bounded by
-		// ValidateUploadSize (5 GiB single PUT); the resumable path only by
-		// S3's part arithmetic (resumableChunkPlan).
+		// The size caps are not here: the simple path is bounded by
+		// ValidateUploadSize (5 GiB single PUT), and both paths by the
+		// worker's cap (validateVideoOriginalSize, ErrVideoTooLarge).
 		validMimes := map[string]bool{"video/mp4": true, "video/webm": true, "video/quicktime": true}
 		if !validMimes[mimeType] {
 			return fmt.Errorf("invalid mime type for video: %s", mimeType)
@@ -774,7 +773,9 @@ type MediaURLResponse struct {
 	// ExpiresAt tells native clients when the bounded delivery capability
 	// must be refreshed. Public variants may be stable, but using the same
 	// refresh boundary keeps one DTO valid when visibility later becomes
-	// protected and covers the signed HLS child/segment URLs.
+	// protected. hls_url itself is a route on this service and does not
+	// expire; the segment URLs inside its child playlists carry their own
+	// expiry in the playlist's X-HLS-Expires-At header (HLSPlaylist).
 	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 
 	// PlaybackURL / PlaybackKind (instant publish, 2026-09-04): the ONE URL
@@ -966,10 +967,23 @@ func hlsPlaylistURL(mediaID uuid.UUID, playlist string) string {
 	return fmt.Sprintf("/v1/media/%s/hls/%s", mediaID, playlist)
 }
 
+// HLSPlaylist is one rewritten playlist.
+type HLSPlaylist struct {
+	Body []byte
+	// ExpiresAt is when the first signed segment URL in Body stops working
+	// (delivery.Gate.HLSURLsForAsset): a player still playing then must
+	// re-fetch this playlist, because a VOD playlist is never reloaded on
+	// its own. Zero when nothing in Body expires (a master playlist, whose
+	// children are routes on this service; an anonymous asset, whose
+	// segments are streamed through it). The route sends it as the
+	// X-HLS-Expires-At header.
+	ExpiresAt time.Time
+}
+
 // GetHLSPlaylist authorizes an asset and rewrites its playlist into a graph a
 // native player can follow. Only generated basename playlists are accepted;
 // callers cannot turn this endpoint into an arbitrary bucket reader.
-func (s *Service) GetHLSPlaylist(ctx context.Context, viewerID, mediaID uuid.UUID, playlist string) ([]byte, error) {
+func (s *Service) GetHLSPlaylist(ctx context.Context, viewerID, mediaID uuid.UUID, playlist string) (*HLSPlaylist, error) {
 	if s.gate == nil {
 		return nil, fmt.Errorf("%w: delivery gate not configured", delivery.ErrDeliveryUnresolved)
 	}
@@ -1020,7 +1034,11 @@ func (s *Service) GetHLSPlaylist(ctx context.Context, viewerID, mediaID uuid.UUI
 		if err := s.gate.AuthorizeAsset(ctx, viewerID.String(), mediaID.String(), keys); err != nil {
 			return nil, err
 		}
-		return rewriteHLS(lines, playlist, mediaID, nil, true)
+		body, err := rewriteHLS(lines, playlist, mediaID, nil, true)
+		if err != nil {
+			return nil, err
+		}
+		return &HLSPlaylist{Body: body}, nil
 	}
 
 	// URLsForAsset is the authorization choke point. Including the playlist
@@ -1030,13 +1048,18 @@ func (s *Service) GetHLSPlaylist(ctx context.Context, viewerID, mediaID uuid.UUI
 	// Segments are signed to outlive a realistic play session of this
 	// video (delivery.HLSSegmentTTL, finding 9): a VOD playlist is never
 	// reloaded, so a 5-minute segment signature broke every reel played
-	// or paused past five minutes.
-	urls, err := s.gate.HLSURLsForAsset(ctx, viewerID.String(), mediaID.String(), keys,
+	// or paused past five minutes. Past even that, the client re-fetches
+	// at ExpiresAt.
+	urls, expiresAt, err := s.gate.HLSURLsForAsset(ctx, viewerID.String(), mediaID.String(), keys,
 		delivery.HLSSegmentTTL(media.DurationMsValue()))
 	if err != nil {
 		return nil, err
 	}
-	return rewriteHLS(lines, playlist, mediaID, urls, false)
+	body, err := rewriteHLS(lines, playlist, mediaID, urls, false)
+	if err != nil {
+		return nil, err
+	}
+	return &HLSPlaylist{Body: body, ExpiresAt: expiresAt}, nil
 }
 
 // GetMediaVariantURL returns an authorized delivery URL for one variant.

@@ -164,3 +164,13 @@ worker:
       cpu: "3"
       memory: 4Gi
   scratchSizeLimit: 50Gi
+  # Transcode classes (2026-11-07). Every request lands on media.events; the
+  # short loop forwards videos over 10 min (or of unknown length) to
+  # media.events.long, which the long loop consumes (group
+  # media-transcode-worker-long). Each replica runs BOTH loops, so a reel
+  # never waits behind a long video. A dedicated long-video Deployment
+  # (MEDIA_TRANSCODE_CLASSES=long, 1 replica, with these at "short") needs
+  # the chart to render a second worker; charts/atpost-service renders one.
+  # The topic must exist first: init-topics.sh / the MSK topics job.
+  env:
+    MEDIA_TRANSCODE_CLASSES: "short,long"

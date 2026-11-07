@@ -629,18 +629,25 @@ func (g *Gate) URLsForAsset(ctx context.Context, viewerID, mediaID string, keys 
 // authorization for the asset, then every HLS segment key signed for
 // segmentTTL (HLSSegmentTTL of the video) and every other key for
 // MaxProtectedTTL. See sign_cache.go for why segments live longer.
-func (g *Gate) HLSURLsForAsset(ctx context.Context, viewerID, mediaID string, keys map[string]string, segmentTTL time.Duration) (map[string]string, error) {
+//
+// expiresAt is the instant until which every signed segment URL in the
+// result stays valid, cache reuse included; the client re-fetches the
+// playlist after it. It is zero when no protected segment was signed (a
+// master playlist, public segments): nothing in the result then expires
+// mid-play.
+func (g *Gate) HLSURLsForAsset(ctx context.Context, viewerID, mediaID string, keys map[string]string, segmentTTL time.Duration) (urls map[string]string, expiresAt time.Time, err error) {
 	if g == nil || g.signer == nil {
-		return nil, fmt.Errorf("%w: delivery gate not configured", ErrDeliveryUnresolved)
+		return nil, time.Time{}, fmt.Errorf("%w: delivery gate not configured", ErrDeliveryUnresolved)
 	}
 	if len(keys) == 0 {
-		return map[string]string{}, nil
+		return map[string]string{}, time.Time{}, nil
 	}
 	if err := g.AuthorizeAsset(ctx, viewerID, mediaID, keys); err != nil {
-		return nil, err
+		return nil, time.Time{}, err
 	}
 	now := time.Now()
 	out := make(map[string]string, len(keys))
+	signedSegment := false
 	for name, key := range keys {
 		var (
 			u   string
@@ -651,15 +658,19 @@ func (g *Gate) HLSURLsForAsset(ctx context.Context, viewerID, mediaID string, ke
 			u, err = g.signer.PublicURL(key)
 		case IsHLSSegmentKey(key):
 			u, err = g.signSegment(key, segmentTTL, now)
+			signedSegment = true
 		default:
 			u, err = g.signProtected(key, MaxProtectedTTL, now)
 		}
 		if err != nil {
-			return nil, fmt.Errorf("%w: sign %s: %v", ErrDeliveryUnresolved, name, err)
+			return nil, time.Time{}, fmt.Errorf("%w: sign %s: %v", ErrDeliveryUnresolved, name, err)
 		}
 		out[name] = u
 	}
-	return out, nil
+	if signedSegment {
+		expiresAt = now.Add(g.segmentGuarantee(segmentTTL)).UTC()
+	}
+	return out, expiresAt, nil
 }
 
 // URLsForAssets is the true batch form used by feed hydration. It performs at

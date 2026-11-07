@@ -43,6 +43,10 @@ func (h *Handler) InitResumableUpload(c *gin.Context) {
 
 	resp, err := h.svc.InitResumableUpload(c.Request.Context(), userID, req.FileType, req.MimeType, req.TotalBytes)
 	if err != nil {
+		if errors.Is(err, service.ErrVideoTooLarge) {
+			writeVideoTooLarge(c, err)
+			return
+		}
 		if errors.Is(err, service.ErrResumableUploadTooLarge) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusRequestEntityTooLarge, "FILE_TOO_LARGE", err.Error(),
 				map[string]any{"max_bytes": service.MaxResumableUploadBytes})
@@ -53,6 +57,16 @@ func (h *Handler) InitResumableUpload(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, resp, nil)
+}
+
+// CodeVideoTooLarge: a video original over the cap the transcode worker
+// takes, refused at init on either upload route (413, details.max_bytes).
+// Not USE_RESUMABLE_UPLOAD: the other route refuses it too.
+const CodeVideoTooLarge = "VIDEO_TOO_LARGE"
+
+func writeVideoTooLarge(c *gin.Context, err error) {
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusRequestEntityTooLarge, CodeVideoTooLarge, err.Error(),
+		map[string]any{"max_bytes": service.VideoOriginalCap()})
 }
 
 func (h *Handler) GetResumableUploadStatus(c *gin.Context) {

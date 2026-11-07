@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/atpost/media-service/internal/processing"
 	"github.com/atpost/media-service/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -59,13 +60,31 @@ func TestInitUploadOverFiveGiBSaysUseResumable(t *testing.T) {
 	}
 }
 
-// Past 10,000 parts of 64 MiB the resumable init refuses with 413.
-func TestInitResumableUploadPastPartLimitIs413(t *testing.T) {
+// A video over the worker's cap is refused at init on BOTH routes with 413
+// VIDEO_TOO_LARGE and the cap, before a byte is uploaded (2026-11-07: the
+// resumable route took 625 GiB and the worker refused everything over
+// 16 GiB after the upload). Past 10,000 parts of 64 MiB is far beyond it.
+func TestInitUploadOverVideoCapIsVideoTooLarge(t *testing.T) {
 	r := uploadSizeRouter()
-	size := service.MaxResumableUploadBytes + 1
-	code, errCode, _ := postUploadInit(r, "/resumable/init",
-		`{"file_type":"video","mime_type":"video/mp4","total_bytes":`+strconv.FormatInt(size, 10)+`}`)
-	if code != http.StatusRequestEntityTooLarge || errCode != "FILE_TOO_LARGE" {
-		t.Fatalf("got %d %s, want 413 FILE_TOO_LARGE", code, errCode)
+	limit := processing.MaxVideoOriginalBytes
+	if service.VideoOriginalCap() != limit {
+		t.Fatalf("upload cap %d is not the worker's %d", service.VideoOriginalCap(), limit)
+	}
+	for _, size := range []int64{limit + 1, service.MaxResumableUploadBytes + 1} {
+		code, errCode, details := postUploadInit(r, "/resumable/init",
+			`{"file_type":"video","mime_type":"video/mp4","total_bytes":`+strconv.FormatInt(size, 10)+`}`)
+		if code != http.StatusRequestEntityTooLarge || errCode != "VIDEO_TOO_LARGE" {
+			t.Fatalf("resumable %d bytes: got %d %s, want 413 VIDEO_TOO_LARGE", size, code, errCode)
+		}
+		if details["max_bytes"] != float64(limit) {
+			t.Fatalf("resumable details = %v, want max_bytes %d", details, limit)
+		}
+		// The simple route says the same, not "use the resumable upload":
+		// that route would refuse it too.
+		code, errCode, details = postUploadInit(r, "/init",
+			`{"file_type":"video","mime_type":"video/mp4","file_size_bytes":`+strconv.FormatInt(size, 10)+`}`)
+		if code != http.StatusRequestEntityTooLarge || errCode != "VIDEO_TOO_LARGE" || details["max_bytes"] != float64(limit) {
+			t.Fatalf("simple %d bytes: got %d %s %v, want 413 VIDEO_TOO_LARGE", size, code, errCode, details)
+		}
 	}
 }

@@ -142,7 +142,9 @@ func TestOwnerDeleteRoutesTheStoreAnswer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	src := string(raw)
+	// A Windows checkout (core.autocrlf) has CRLF line endings; the pinned
+	// source below is written with \n.
+	src := strings.ReplaceAll(string(raw), "\r\n", "\n")
 	i := strings.Index(src, "func (s *Service) DeleteMedia(")
 	if i < 0 {
 		t.Fatal("DeleteMedia not found")

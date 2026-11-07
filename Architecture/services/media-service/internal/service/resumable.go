@@ -29,9 +29,9 @@ const (
 	chunkTargetParts = 9_000
 
 	// MaxResumableUploadBytes is the largest file the resumable path can
-	// take: 10,000 parts of 64 MiB = 625 GiB. Long videos have no size
-	// limit of their own (founder, 2026-10-21); this is only the arithmetic
-	// of S3 parts and Cloudflare's request cap.
+	// take: 10,000 parts of 64 MiB = 625 GiB. This is only the arithmetic
+	// of S3 parts and Cloudflare's request cap; a video is refused well
+	// below it, at the worker's cap (ErrVideoTooLarge).
 	MaxResumableUploadBytes int64 = maxChunkSize * maxUploadParts
 
 	resumableUploadTTL = 24 * time.Hour
@@ -81,15 +81,21 @@ type InitResumableUploadResponse struct {
 // InitResumableUpload creates a media asset record, opens an object-store
 // multipart upload, and records a resumable upload session.
 func (s *Service) InitResumableUpload(ctx context.Context, userID uuid.UUID, fileType, mimeType string, totalBytes int64) (*InitResumableUploadResponse, error) {
-	// No total size cap for video here (founder, 2026-10-21); ValidateUpload
-	// still caps images. The chunk plan refuses only what S3's part limit
-	// cannot hold.
+	// A video is capped at what the worker transcodes (ErrVideoTooLarge,
+	// processing.MaxVideoOriginalBytes): the chunk plan alone would take
+	// 625 GiB that the worker then refuses after the whole upload.
+	// ValidateUpload still caps images.
 	//
 	// A document is a simple upload only: its budget, its confirm path and its
 	// size cap are the init route's (document.go). The handler binds
 	// image|video; this is the backstop.
 	if fileType == FileTypeDocument {
 		return nil, fmt.Errorf("a document cannot use the resumable upload")
+	}
+	if fileType == "video" {
+		if err := validateVideoOriginalSize(totalBytes); err != nil {
+			return nil, err
+		}
 	}
 	if err := ValidateUpload(fileType, "general", mimeType, totalBytes); err != nil {
 		return nil, err

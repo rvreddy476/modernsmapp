@@ -51,6 +51,7 @@ topics=(
   "call.analytics"
   "platform-events"
   "media.events"
+  "media.events.long"
   "media.copyright.pairs"
   "atpost.channel.updates"
   "atpost.channel.notifications"

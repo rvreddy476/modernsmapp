@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/atpost/media-service/internal/processing"
 )
 
 // Reels audit 2026-10-30, findings 9 and 11.
@@ -123,20 +125,91 @@ func TestCacheIsBounded(t *testing.T) {
 }
 
 func TestHLSSegmentTTL(t *testing.T) {
+	const hourMs = 3_600_000
 	cases := map[int]time.Duration{
-		0:             hlsSegmentTTLUnknown,
-		30_000:        time.Minute + hlsSegmentTTLMargin,
-		600_000:       20*time.Minute + hlsSegmentTTLMargin,
-		4 * 3_600_000: MaxHLSSegmentTTL,
+		0:      hlsSegmentTTLUnknown,
+		-1:     hlsSegmentTTLUnknown,
+		1:      2*time.Millisecond + hlsSegmentTTLMargin,
+		30_000: time.Minute + hlsSegmentTTLMargin,
+		// The formula, 2x duration + margin, for every length up to the cap.
+		600_000:    20*time.Minute + hlsSegmentTTLMargin,
+		2 * hourMs: 4*time.Hour + hlsSegmentTTLMargin,
+		4 * hourMs: 8*time.Hour + hlsSegmentTTLMargin,
+		// Exactly at the cap, and past it.
+		(12*hourMs - int(hlsSegmentTTLMargin/time.Millisecond)) / 2: MaxHLSSegmentTTL,
+		6 * hourMs:  MaxHLSSegmentTTL,
+		48 * hourMs: MaxHLSSegmentTTL,
 	}
 	for ms, want := range cases {
 		if got := HLSSegmentTTL(ms); got != want {
 			t.Fatalf("HLSSegmentTTL(%d) = %s, want %s", ms, got, want)
 		}
 	}
+	if MaxHLSSegmentTTL != 12*time.Hour {
+		t.Fatalf("MaxHLSSegmentTTL = %s, want 12h", MaxHLSSegmentTTL)
+	}
 	// A 10-minute reel outlives a 10-minute session with a pause.
 	if HLSSegmentTTL(600_000) < 15*time.Minute {
 		t.Fatal("a 10-minute reel's segments expire mid-play")
+	}
+	// The longest video the worker transcodes (4 h) is still signed by the
+	// formula, not clipped by the cap: a 2 h cap broke it at 2 h of play.
+	longest := processing.DefaultMaxVideoDurationSeconds * 1000
+	if got := HLSSegmentTTL(longest); got != 2*time.Duration(longest)*time.Millisecond+hlsSegmentTTLMargin || got >= MaxHLSSegmentTTL {
+		t.Fatalf("HLSSegmentTTL(worker max %d ms) = %s, want 2x + margin under the cap", longest, got)
+	}
+}
+
+// The playlist names the instant its signed segments stop working, cache
+// reuse included, so a client can re-fetch it before then.
+func TestPlaylistExpiryIsTheLeastLifeAnySegmentHasLeft(t *testing.T) {
+	s := &countingSigner{}
+	g := NewGate(s, fakeAuthz{allow: true})
+	keys := map[string]string{
+		"playlist":    "user/u/m/hls/720p.m3u8",
+		"720p_000.ts": "user/u/m/hls/720p_000.ts",
+	}
+	ttl := 8 * time.Hour
+	before := time.Now()
+	urls, exp, err := g.HLSURLsForAsset(context.Background(), "v", "m", keys, ttl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now()
+	if exp.Before(before.Add(ttl-SignatureReuseWindow)) || exp.After(after.Add(ttl-SignatureReuseWindow)) {
+		t.Fatalf("expires_at %s, want now + %s", exp, ttl-SignatureReuseWindow)
+	}
+	if !exp.Before(expiresOf(t, urls["720p_000.ts"]).Add(time.Second)) {
+		t.Fatalf("expires_at %s is after the segment's own expiry %s", exp, expiresOf(t, urls["720p_000.ts"]))
+	}
+	// A reused signature (the cache) still has at least that much left.
+	_, exp2, err := g.HLSURLsForAsset(context.Background(), "v", "m", keys, ttl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.segs != 1 {
+		t.Fatalf("segment signatures = %d, want 1 (reused)", s.segs)
+	}
+	if exp2.Before(exp) {
+		t.Fatalf("second expires_at %s before the first %s", exp2, exp)
+	}
+
+	// A signer without long segments: the short guarantee.
+	short := NewGate(shortOnly{&countingSigner{}}, fakeAuthz{allow: true})
+	before = time.Now()
+	_, exp, err = short.HLSURLsForAsset(context.Background(), "v", "m", keys, ttl)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if exp.Before(before.Add(GuaranteedProtectedTTL)) || exp.After(time.Now().Add(GuaranteedProtectedTTL)) {
+		t.Fatalf("short-signer expires_at %s, want now + %s", exp, GuaranteedProtectedTTL)
+	}
+
+	// No protected segment (a master playlist): nothing expires mid-play.
+	_, exp, err = g.HLSURLsForAsset(context.Background(), "v", "m",
+		map[string]string{"playlist": "user/u/m/hls/master.m3u8"}, ttl)
+	if err != nil || !exp.IsZero() {
+		t.Fatalf("master playlist expires_at = %s, %v; want zero", exp, err)
 	}
 }
 
@@ -188,7 +261,7 @@ func TestPlaylistSignsSegmentsLongAndEverythingElseShort(t *testing.T) {
 		"720p_001.ts": "user/u/m/hls/720p_001.ts",
 	}
 	before := time.Now()
-	got, err := g.HLSURLsForAsset(context.Background(), "v", "m", keys, time.Hour)
+	got, _, err := g.HLSURLsForAsset(context.Background(), "v", "m", keys, time.Hour)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -206,7 +279,7 @@ func TestPlaylistSignsSegmentsLongAndEverythingElseShort(t *testing.T) {
 		t.Fatalf("segment signatures = %d, want 2", s.segs)
 	}
 	denied := NewGate(s, fakeAuthz{allow: false})
-	if got, err := denied.HLSURLsForAsset(context.Background(), "v", "m", keys, time.Hour); !errors.Is(err, ErrDeliveryDenied) || len(got) != 0 {
+	if got, _, err := denied.HLSURLsForAsset(context.Background(), "v", "m", keys, time.Hour); !errors.Is(err, ErrDeliveryDenied) || len(got) != 0 {
 		t.Fatalf("denied viewer got %v %v", got, err)
 	}
 }
@@ -215,7 +288,7 @@ func TestPlaylistSignsSegmentsLongAndEverythingElseShort(t *testing.T) {
 func TestSegmentsFallBackToShortTTLWithoutSegmentSigner(t *testing.T) {
 	g := NewGate(shortOnly{&countingSigner{}}, fakeAuthz{allow: true})
 	before := time.Now()
-	got, err := g.HLSURLsForAsset(context.Background(), "v", "m",
+	got, _, err := g.HLSURLsForAsset(context.Background(), "v", "m",
 		map[string]string{"a.ts": "user/u/m/hls/a_000.ts"}, time.Hour)
 	if err != nil {
 		t.Fatal(err)

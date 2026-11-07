@@ -3,7 +3,10 @@ package service
 import (
 	"errors"
 	"fmt"
+	"os"
 	"strings"
+
+	"github.com/atpost/media-service/internal/processing"
 )
 
 const (
@@ -16,16 +19,10 @@ const (
 	// MaxSimpleVideoUploadBytes is the largest video a simple upload takes:
 	// 5 GiB, S3's single-PUT maximum (founder, 2026-10-21, lifting the old
 	// 500 MB limit). A larger video is not refused — it must use the
-	// resumable (multipart) upload, which has no total cap for video; the
-	// error is ErrUseResumableUpload so clients can switch.
+	// resumable (multipart) upload; the error is ErrUseResumableUpload so
+	// clients can switch. Either route refuses a video over the cap the
+	// worker can transcode (videoOriginalCap, ErrVideoTooLarge).
 	MaxSimpleVideoUploadBytes int64 = 5 * 1024 * 1024 * 1024
-
-	// Reel duration constraints (seconds). NOT enforced anywhere (nothing
-	// reads them, 2026-10-21). The shorts boundary is
-	// postclassify.FlickMaxDurationSeconds (600 s); long videos have no
-	// maximum duration.
-	MaxReelDurationSec = 90
-	MinReelDurationSec = 3
 
 	// Voice post constraints (Module 1 P0-6). The duration ceiling is
 	// enforced server-side from the ffprobe result at confirm time — a
@@ -107,11 +104,37 @@ func ValidateUploadMIME(contentType string, mediaType string) error {
 // through POST /v1/media/upload/resumable/init.
 var ErrUseResumableUpload = errors.New("video too large for a simple upload: use the resumable upload")
 
+// ErrVideoTooLarge: a video original over the cap the transcode worker
+// takes (processing.MaxVideoOriginalBytes, or its environment override).
+// Refused at init on both upload routes, before a byte is uploaded; the HTTP
+// layer answers 413 VIDEO_TOO_LARGE with details.max_bytes.
+var ErrVideoTooLarge = errors.New("video too large")
+
+// videoOriginalCap is the cap in force, read once like the worker's
+// (processing.VideoOriginalCap: the same constant and the same variable).
+var videoOriginalCap = processing.VideoOriginalCap(os.Getenv)
+
+// VideoOriginalCap is the largest video original the upload routes accept;
+// 0 means no cap.
+func VideoOriginalCap() int64 { return videoOriginalCap }
+
+// validateVideoOriginalSize refuses a video the worker would refuse.
+func validateVideoOriginalSize(size int64) error {
+	if videoOriginalCap > 0 && size > videoOriginalCap {
+		return fmt.Errorf("%w: %d bytes (max %d)", ErrVideoTooLarge, size, videoOriginalCap)
+	}
+	return nil
+}
+
 // ValidateUploadSize is the simple-upload size gate. A video may be up to
-// MaxSimpleVideoUploadBytes (beyond that: ErrUseResumableUpload); anything
-// else up to MaxUploadSizeBytes.
+// MaxSimpleVideoUploadBytes (beyond that: ErrUseResumableUpload, unless it
+// is over the worker's cap: ErrVideoTooLarge); anything else up to
+// MaxUploadSizeBytes.
 func ValidateUploadSize(fileType string, size int64) error {
 	if fileType == "video" {
+		if err := validateVideoOriginalSize(size); err != nil {
+			return err
+		}
 		if size > MaxSimpleVideoUploadBytes {
 			return fmt.Errorf("%w: %d bytes (simple upload max %d)", ErrUseResumableUpload, size, MaxSimpleVideoUploadBytes)
 		}
