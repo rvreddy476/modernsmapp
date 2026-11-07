@@ -129,7 +129,7 @@ func (s *Store) EnsureSchema(ctx context.Context) error {
 // ─── Graph reads (app DB) ────────────────────────────────────
 
 // GetFriendIDs returns the user's friends, a friend being a MUTUAL follow —
-// the definition GetFriendsOfFriends and GetMutualFriendIDs use. It read the
+// the definition GetFriendsOfFriends and GetMutualFriendIDsBatch use. It read the
 // connections table until 24 Oct 2026; Connect was retired that day, so an
 // account made after it had no friends here and nobody's list could grow.
 //
@@ -1193,41 +1193,57 @@ func (s *Store) HiddenAmong(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID
 
 // ─── Mutual friend IDs (for API response) ────────────────────
 
-// GetMutualFriendIDs returns friends the viewer and candidate have in common
-// (the ids shown beside a suggestion's count), a friend being a MUTUAL follow
+// GetMutualFriendIDsBatch returns, for each candidate, up to perCandidate
+// friends the viewer and that candidate have in common (the ids shown beside
+// a suggestion's count), newest friend first. A friend is a MUTUAL follow
 // with each of them — the same definition GetFriendsOfFriends counts. Only
 // the viewer's newest FriendScanLimit followers are probed; hidden accounts
-// are never shown.
-func (s *Store) GetMutualFriendIDs(ctx context.Context, viewerID, candidateID uuid.UUID, limit int) ([]uuid.UUID, error) {
+// are never shown. A candidate with no friend in common is absent.
+//
+// One query for the whole page of candidates. It used to be one query per
+// candidate, so a page of 50 suggestions cost 50 round trips on a cache miss.
+func (s *Store) GetMutualFriendIDsBatch(ctx context.Context, viewerID uuid.UUID, candidateIDs []uuid.UUID, perCandidate int) (map[uuid.UUID][]uuid.UUID, error) {
+	result := make(map[uuid.UUID][]uuid.UUID)
+	if len(candidateIDs) == 0 || perCandidate <= 0 {
+		return result, nil
+	}
 	rows, err := s.appDB.Query(ctx, `
-		SELECT a.follower_id
-		FROM (
-			SELECT follower_id, created_at FROM follows
-			WHERE followee_id = $1
-			ORDER BY created_at DESC
-			LIMIT $4
-		) a
-		WHERE a.follower_id NOT IN ($1, $2)
-		  AND EXISTS (SELECT 1 FROM follows vb WHERE vb.follower_id = $1 AND vb.followee_id = a.follower_id)
-		  AND EXISTS (SELECT 1 FROM follows fc WHERE fc.follower_id = a.follower_id AND fc.followee_id = $2)
-		  AND EXISTS (SELECT 1 FROM follows cf WHERE cf.follower_id = $2 AND cf.followee_id = a.follower_id)
-		  AND NOT EXISTS (SELECT 1 FROM hidden_users h WHERE h.user_id = a.follower_id)
-		ORDER BY a.created_at DESC
-		LIMIT $3
-	`, viewerID, candidateID, limit, FriendScanLimit)
+		WITH vf AS (
+			SELECT a.follower_id AS friend_id, a.created_at
+			FROM (
+				SELECT follower_id, created_at FROM follows
+				WHERE followee_id = $1
+				ORDER BY created_at DESC
+				LIMIT $4
+			) a
+			WHERE a.follower_id <> $1
+			  AND EXISTS (SELECT 1 FROM follows vb WHERE vb.follower_id = $1 AND vb.followee_id = a.follower_id)
+			  AND NOT EXISTS (SELECT 1 FROM hidden_users h WHERE h.user_id = a.follower_id)
+		),
+		ranked AS (
+			SELECT c.candidate_id, vf.friend_id,
+			       ROW_NUMBER() OVER (PARTITION BY c.candidate_id ORDER BY vf.created_at DESC, vf.friend_id) AS rn
+			FROM (SELECT DISTINCT unnest($2::uuid[]) AS candidate_id) c
+			JOIN vf ON vf.friend_id <> c.candidate_id
+			WHERE EXISTS (SELECT 1 FROM follows fc WHERE fc.follower_id = vf.friend_id AND fc.followee_id = c.candidate_id)
+			  AND EXISTS (SELECT 1 FROM follows cf WHERE cf.follower_id = c.candidate_id AND cf.followee_id = vf.friend_id)
+		)
+		SELECT candidate_id, friend_id FROM ranked
+		WHERE rn <= $3
+		ORDER BY candidate_id, rn
+	`, viewerID, candidateIDs, perCandidate, FriendScanLimit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var ids []uuid.UUID
 	for rows.Next() {
-		var id uuid.UUID
-		if err := rows.Scan(&id); err != nil {
+		var candidate, friend uuid.UUID
+		if err := rows.Scan(&candidate, &friend); err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
+		result[candidate] = append(result[candidate], friend)
 	}
-	return ids, rows.Err()
+	return result, rows.Err()
 }
 
 // ─── Stale candidate rotation ────────────────────────────────

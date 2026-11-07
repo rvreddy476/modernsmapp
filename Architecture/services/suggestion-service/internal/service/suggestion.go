@@ -453,6 +453,15 @@ func (s *Service) candidatesToItems(ctx context.Context, viewerID uuid.UUID, can
 		profiles = map[uuid.UUID]*store.ProfileInfo{}
 	}
 
+	// Friends in common (up to 3 for display), one query for the page, and
+	// only for candidates that have any. Display only: an error leaves the
+	// ids off, as a failed per-candidate lookup used to.
+	mutualFriends, err := s.store.GetMutualFriendIDsBatch(ctx, viewerID, withMutualFriends(candidates), maxMutualFriendIDs)
+	if err != nil {
+		log.Printf("[suggestions] mutual friend batch fetch error: %v", err)
+		mutualFriends = map[uuid.UUID][]uuid.UUID{}
+	}
+
 	items := make([]SuggestionItem, 0, len(candidates))
 	for _, c := range candidates {
 		profile := profiles[c.CandidateID]
@@ -467,12 +476,8 @@ func (s *Service) candidatesToItems(ctx context.Context, viewerID uuid.UUID, can
 			GeneratedAt:       c.GeneratedAt.UTC().Format(time.RFC3339),
 		}
 
-		// Fetch mutual friend IDs (up to 3 for display)
-		if c.MutualFriendCount > 0 {
-			mfIDs, _ := s.store.GetMutualFriendIDs(ctx, viewerID, c.CandidateID, 3)
-			for _, mfid := range mfIDs {
-				item.MutualFriendIDs = append(item.MutualFriendIDs, mfid.String())
-			}
+		for _, mfid := range mutualFriends[c.CandidateID] {
+			item.MutualFriendIDs = append(item.MutualFriendIDs, mfid.String())
 		}
 
 		if profile != nil {
@@ -488,6 +493,22 @@ func (s *Service) candidatesToItems(ctx context.Context, viewerID uuid.UUID, can
 		items = append(items, item)
 	}
 	return items
+}
+
+// maxMutualFriendIDs is how many friends in common a suggestion names.
+const maxMutualFriendIDs = 3
+
+// withMutualFriends is the candidates worth asking about friends in common:
+// those whose stored count says they have any. The lookup used to be skipped
+// per candidate on the same test.
+func withMutualFriends(candidates []store.SuggestionCandidate) []uuid.UUID {
+	var ids []uuid.UUID
+	for _, c := range candidates {
+		if c.MutualFriendCount > 0 {
+			ids = append(ids, c.CandidateID)
+		}
+	}
+	return ids
 }
 
 func (s *Service) cacheItems(ctx context.Context, viewerID uuid.UUID, suggType string, items []SuggestionItem) {

@@ -39,7 +39,7 @@ func requireSQL(t *testing.T, fnName, sql, fragment, why string) {
 }
 
 func TestPYMKReadersNoLongerReadConnections(t *testing.T) {
-	for _, fn := range []string{"GetFriendsOfFriends", "GetMutualFriendIDs", "GetAllUsersWithFriends"} {
+	for _, fn := range []string{"GetFriendsOfFriends", "GetMutualFriendIDsBatch", "GetAllUsersWithFriends"} {
 		sql := flatSQL(t, fn)
 		if strings.Contains(sql, "connections") {
 			t.Errorf("%s still reads the retired connections table", fn)
@@ -88,22 +88,37 @@ func TestFriendsOfFriendsExcludesFollowedBlockedAndHidden(t *testing.T) {
 }
 
 func TestMutualFriendIDsAreMutualWithBothAndNotHidden(t *testing.T) {
-	const fn = "GetMutualFriendIDs"
+	const fn = "GetMutualFriendIDsBatch"
 	sql := flatSQL(t, fn)
 	requireSQL(t, fn, sql,
 		"EXISTS (SELECT 1 FROM follows vb WHERE vb.follower_id = $1 AND vb.followee_id = a.follower_id)",
 		"the shown friend must be followed back by the viewer")
 	requireSQL(t, fn, sql,
-		"EXISTS (SELECT 1 FROM follows fc WHERE fc.follower_id = a.follower_id AND fc.followee_id = $2)",
+		"EXISTS (SELECT 1 FROM follows fc WHERE fc.follower_id = vf.friend_id AND fc.followee_id = c.candidate_id)",
 		"the shown friend must follow the candidate")
 	requireSQL(t, fn, sql,
-		"EXISTS (SELECT 1 FROM follows cf WHERE cf.follower_id = $2 AND cf.followee_id = a.follower_id)",
+		"EXISTS (SELECT 1 FROM follows cf WHERE cf.follower_id = c.candidate_id AND cf.followee_id = vf.friend_id)",
 		"the candidate must follow the shown friend back")
 	requireSQL(t, fn, sql,
 		"NOT EXISTS (SELECT 1 FROM hidden_users h WHERE h.user_id = a.follower_id)",
 		"a hidden account must never be shown as a friend in common")
-	requireSQL(t, fn, sql, "NOT IN ($1, $2)",
-		"neither the viewer nor the candidate is their own friend in common")
+	requireSQL(t, fn, sql, "WHERE a.follower_id <> $1",
+		"the viewer is not their own friend in common")
+	requireSQL(t, fn, sql, "JOIN vf ON vf.friend_id <> c.candidate_id",
+		"a candidate is not their own friend in common")
+}
+
+// One query for a page of candidates, each capped at its own perCandidate:
+// the lookup used to run once per candidate (up to 50 round trips per page).
+func TestMutualFriendIDsAreOneQueryCappedPerCandidate(t *testing.T) {
+	const fn = "GetMutualFriendIDsBatch"
+	sql := flatSQL(t, fn)
+	requireSQL(t, fn, sql, "unnest($2::uuid[])",
+		"every candidate on the page must be answered by the same query")
+	requireSQL(t, fn, sql, "ROW_NUMBER() OVER (PARTITION BY c.candidate_id ORDER BY vf.created_at DESC",
+		"the cap must apply per candidate, newest friend first")
+	requireSQL(t, fn, sql, "WHERE rn <= $3",
+		"each candidate names at most perCandidate friends")
 }
 
 func TestBatchEnumeratesMutualFollowersAndSkipsHidden(t *testing.T) {
@@ -181,7 +196,7 @@ func TestPYMKScansAreBounded(t *testing.T) {
 		t.Fatalf("%s Query args %v: $3 must be FriendScanLimit and $4 FriendOfFriendScanLimit", fof, args)
 	}
 
-	const mf = "GetMutualFriendIDs"
+	const mf = "GetMutualFriendIDsBatch"
 	sql = flatSQL(t, mf)
 	requireSQL(t, mf, sql,
 		"SELECT follower_id, created_at FROM follows WHERE followee_id = $1 ORDER BY created_at DESC LIMIT $4",

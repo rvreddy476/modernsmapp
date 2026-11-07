@@ -176,10 +176,11 @@ func TestFollowGraphPYMKLive(t *testing.T) {
 		t.Fatalf("nil excludeIDs: %v, %v", nilGot, err)
 	}
 
-	ids, err := s.GetMutualFriendIDs(ctx, viewer, both, 10)
+	batch, err := s.GetMutualFriendIDsBatch(ctx, viewer, []uuid.UUID{both, viaHidden, fanOnly}, 10)
 	if err != nil {
-		t.Fatalf("GetMutualFriendIDs: %v", err)
+		t.Fatalf("GetMutualFriendIDsBatch: %v", err)
 	}
+	ids := batch[both]
 	seen := map[uuid.UUID]bool{}
 	for _, id := range ids {
 		seen[id] = true
@@ -187,8 +188,15 @@ func TestFollowGraphPYMKLive(t *testing.T) {
 	if len(ids) != 2 || !seen[friend1] || !seen[friend2] {
 		t.Fatalf("friends in common %v, want friend1 and friend2", ids)
 	}
-	if ids, _ := s.GetMutualFriendIDs(ctx, viewer, viaHidden, 10); len(ids) != 0 {
+	if ids := batch[viaHidden]; len(ids) != 0 {
 		t.Fatalf("a hidden friend was shown in common: %v", ids)
+	}
+	if ids := batch[fanOnly]; len(ids) != 0 {
+		t.Fatalf("a one-way fan of a friend shares no friend with the viewer, got %v", ids)
+	}
+	// The cap is per candidate.
+	if capped, err := s.GetMutualFriendIDsBatch(ctx, viewer, []uuid.UUID{both}, 1); err != nil || len(capped[both]) != 1 {
+		t.Fatalf("perCandidate=1: %v, %v", capped, err)
 	}
 
 	all, err := s.GetAllUsersWithFriends(ctx)
