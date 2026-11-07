@@ -189,6 +189,13 @@ func (s *Service) runFriendBatchForUser(ctx context.Context, viewerID uuid.UUID)
 
 	// 11. Batch load block propagation signals
 	blockByFriends, _ := s.store.GetBlockCountByFriendsBatch(ctx, viewerID, allCandidateIDs)
+	// 11b. Each candidate's overall block rate and PUBLIC life entries, one
+	// query each for the whole pool (they were two queries per candidate,
+	// about 4,000 per viewer, SG-M3). PUBLIC entries only: this is what the
+	// viewer gets TOLD about the candidate (SAME_SCHOOL / SAME_COMPANY and
+	// "Studied at X"). See store.GetPublicLifeEntries.
+	blockRates, _ := s.store.GetCandidateBlockRates(ctx, allCandidateIDs)
+	publicEntries, _ := s.store.GetPublicLifeEntries(ctx, allCandidateIDs)
 
 	// 12. Load dismiss patterns
 	dismissPatterns, _ := s.store.GetDismissPatterns(ctx, viewerID)
@@ -239,12 +246,10 @@ func (s *Service) runFriendBatchForUser(ctx context.Context, viewerID uuid.UUID)
 		followedAt, followsYou := followedYouAt[candidateID]
 		commonGroups := commonGroupCounts[candidateID]
 
-		// Check school/company overlap from candidate's life entries
-		// PUBLIC entries only: this is what the viewer gets TOLD about the
-		// candidate (SAME_SCHOOL / SAME_COMPANY and "Studied at X"). The
-		// viewer's own entries above may include private ones; a candidate's
-		// may not. See store.GetPublicLifeEntries.
-		candidateEntries, _ := s.store.GetPublicLifeEntries(ctx, candidateID)
+		// School/company overlap from the candidate's PUBLIC entries (loaded
+		// above). The viewer's own entries may include private ones; a
+		// candidate's may not.
+		candidateEntries := publicEntries[candidateID]
 		var sameSchool, sameCompany bool
 		var matchedSchool, matchedCompany string
 		for _, entry := range candidateEntries {
@@ -273,7 +278,7 @@ func (s *Service) runFriendBatchForUser(ctx context.Context, viewerID uuid.UUID)
 
 		// Safety signals
 		blockCount := blockByFriends[candidateID]
-		blockRate, _ := s.store.GetCandidateBlockRate(ctx, candidateID)
+		blockRate := blockRates[candidateID]
 
 		// Pair signals from ScyllaDB (nil-safe)
 		ps := pairSignals[candidateID]
@@ -574,22 +579,6 @@ func (s *Service) RunColdSignalsRefresh(ctx context.Context) error {
 // RunBatchForUser runs the friend batch for a single user (used for on-demand generation).
 func (s *Service) RunBatchForUser(ctx context.Context, viewerID uuid.UUID) error {
 	return s.runFriendBatchForUser(ctx, viewerID)
-}
-
-// RunFullBatch runs both friend and follow batches for all users.
-func (s *Service) RunFullBatch(ctx context.Context) error {
-	log.Println("[batch] Starting full batch run")
-	start := time.Now()
-
-	if err := s.RunFriendCandidatesFull(ctx); err != nil {
-		log.Printf("[batch] friend candidates error: %v", err)
-	}
-	if err := s.RunFollowCandidatesFull(ctx); err != nil {
-		log.Printf("[batch] follow candidates error: %v", err)
-	}
-
-	log.Printf("[batch] Full batch complete in %s", time.Since(start))
-	return nil
 }
 
 // ─── Helpers ─────────────────────────────────────────────────

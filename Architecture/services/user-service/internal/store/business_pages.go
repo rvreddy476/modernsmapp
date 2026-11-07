@@ -185,20 +185,6 @@ func (s *Store) CountActivePagesOwned(ctx context.Context, userID uuid.UUID) (in
 	return n, err
 }
 
-// SetBusinessPageSellerID links a seller to a business page.
-func (s *Store) SetBusinessPageSellerID(ctx context.Context, pageID, sellerID uuid.UUID) error {
-	_, err := s.db.Exec(ctx,
-		`UPDATE business_pages SET seller_id=$2, updated_at=NOW() WHERE id=$1`, pageID, sellerID)
-	return err
-}
-
-// ActivateBusinessPage sets a business page status to active.
-func (s *Store) ActivateBusinessPage(ctx context.Context, pageID uuid.UUID) error {
-	_, err := s.db.Exec(ctx,
-		`UPDATE business_pages SET status='active', updated_at=NOW() WHERE id=$1`, pageID)
-	return err
-}
-
 // GetBusinessPageByHandle returns a business page by handle, optionally with viewer's follow status.
 func (s *Store) GetBusinessPageByHandle(ctx context.Context, handle string, viewerID *uuid.UUID) (*BusinessPage, error) {
 	p, err := scanPage(s.db.QueryRow(ctx,
@@ -422,7 +408,7 @@ func (s *Store) GetUserBusinessPages(ctx context.Context, userID uuid.UUID) ([]B
 
 // DiscoverPages returns pages filtered by category and/or search query.
 func (s *Store) DiscoverPages(ctx context.Context, category, search string, limit, offset int) ([]BusinessPage, error) {
-	q := `SELECT ` + pageSelectCols + ` FROM business_pages WHERE status='active'`
+	q := `SELECT ` + pageSelectCols + ` FROM business_pages WHERE status='approved'`
 	args := []any{}
 	n := 1
 	if category != "" {

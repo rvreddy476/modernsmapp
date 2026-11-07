@@ -750,32 +750,38 @@ type LifeEntry struct {
 // visibility — see the note above for why the viewer's private entries
 // still count on their own side.
 func (s *Store) GetUserLifeEntries(ctx context.Context, userID uuid.UUID) ([]LifeEntry, error) {
-	return s.lifeEntries(ctx, userID, false)
+	byUser, err := s.lifeEntries(ctx, []uuid.UUID{userID}, false)
+	return byUser[userID], err
 }
 
-// GetPublicLifeEntries returns a CANDIDATE's schools and companies limited
-// to entries they made public. This is the only reader that may feed a
-// reason code or explain text about someone else.
-func (s *Store) GetPublicLifeEntries(ctx context.Context, userID uuid.UUID) ([]LifeEntry, error) {
-	return s.lifeEntries(ctx, userID, true)
+// GetPublicLifeEntries returns CANDIDATES' schools and companies limited to
+// entries they made public, keyed by candidate, in one query for the whole
+// pool (it was one query per candidate, SG-M3). This is the only reader that
+// may feed a reason code or explain text about someone else.
+func (s *Store) GetPublicLifeEntries(ctx context.Context, userIDs []uuid.UUID) (map[uuid.UUID][]LifeEntry, error) {
+	return s.lifeEntries(ctx, userIDs, true)
 }
 
-func (s *Store) lifeEntries(ctx context.Context, userID uuid.UUID, publicOnly bool) ([]LifeEntry, error) {
+func (s *Store) lifeEntries(ctx context.Context, userIDs []uuid.UUID, publicOnly bool) (map[uuid.UUID][]LifeEntry, error) {
+	result := make(map[uuid.UUID][]LifeEntry, len(userIDs))
+	if len(userIDs) == 0 {
+		return result, nil
+	}
 	query := `
-		SELECT data FROM profile.user_about
-		WHERE user_id = $1 AND section = 'life_entry'`
+		SELECT user_id, data FROM profile.user_about
+		WHERE user_id = ANY($1) AND section = 'life_entry'`
 	if publicOnly {
 		query += ` AND visibility = 'public'`
 	}
-	rows, err := s.identityDB.Query(ctx, query, userID)
+	rows, err := s.identityDB.Query(ctx, query, userIDs)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var entries []LifeEntry
 	for rows.Next() {
+		var userID uuid.UUID
 		var data map[string]interface{}
-		if err := rows.Scan(&data); err != nil {
+		if err := rows.Scan(&userID, &data); err != nil {
 			continue
 		}
 		entryType, _ := data["type"].(string)
@@ -785,10 +791,10 @@ func (s *Store) lifeEntries(ctx context.Context, userID uuid.UUID, publicOnly bo
 			if entryType == "company" || entryType == "work" {
 				t = "company"
 			}
-			entries = append(entries, LifeEntry{Type: t, Name: name})
+			result[userID] = append(result[userID], LifeEntry{Type: t, Name: name})
 		}
 	}
-	return entries, rows.Err()
+	return result, rows.Err()
 }
 
 // GetUsersByLifeEntry returns user IDs whose PUBLIC life_entry matches the
@@ -1119,17 +1125,70 @@ func (s *Store) GetBlockCountByFriendsBatch(ctx context.Context, viewerID uuid.U
 	return result, rows.Err()
 }
 
-// GetCandidateBlockRate returns the overall block rate for a candidate.
-func (s *Store) GetCandidateBlockRate(ctx context.Context, candidateID uuid.UUID) (float32, error) {
-	var blockCount, followerCount int
-	err := s.appDB.QueryRow(ctx, `
-		SELECT COALESCE((SELECT COUNT(*)::int FROM blocks WHERE blocked_id = $1), 0),
-		       COALESCE((SELECT follower_count FROM counts WHERE user_id = $1), 0)
-	`, candidateID).Scan(&blockCount, &followerCount)
-	if err != nil || followerCount == 0 {
-		return 0, err
+// GetCandidateBlockRates returns each candidate's overall block rate in one
+// query for the whole pool (it was a COUNT(*) per candidate, SG-M3). A
+// candidate with no followers rates 0, as before.
+func (s *Store) GetCandidateBlockRates(ctx context.Context, candidateIDs []uuid.UUID) (map[uuid.UUID]float32, error) {
+	result := make(map[uuid.UUID]float32, len(candidateIDs))
+	if len(candidateIDs) == 0 {
+		return result, nil
 	}
-	return float32(blockCount) / float32(followerCount+blockCount), nil
+	rows, err := s.appDB.Query(ctx, `
+		SELECT c.id,
+		       COALESCE(b.n, 0),
+		       COALESCE(ct.follower_count, 0)
+		FROM unnest($1::uuid[]) AS c(id)
+		LEFT JOIN (
+			SELECT blocked_id, COUNT(*)::int AS n FROM blocks
+			WHERE blocked_id = ANY($1) GROUP BY blocked_id
+		) b ON b.blocked_id = c.id
+		LEFT JOIN counts ct ON ct.user_id = c.id
+	`, candidateIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		var blockCount, followerCount int
+		if err := rows.Scan(&id, &blockCount, &followerCount); err != nil {
+			return nil, err
+		}
+		result[id] = BlockRate(blockCount, followerCount)
+	}
+	return result, rows.Err()
+}
+
+// BlockRate is blocks / (followers + blocks), or 0 for an account nobody
+// follows.
+func BlockRate(blockCount, followerCount int) float32 {
+	if followerCount == 0 {
+		return 0
+	}
+	return float32(blockCount) / float32(followerCount+blockCount)
+}
+
+// HiddenAmong returns which of ids are hidden accounts (deactivated or
+// scheduled for deletion; graph-service keeps hidden_users). One indexed
+// primary-key lookup for the whole page, used by the egress filter.
+func (s *Store) HiddenAmong(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]struct{}, error) {
+	result := make(map[uuid.UUID]struct{})
+	if len(ids) == 0 {
+		return result, nil
+	}
+	rows, err := s.appDB.Query(ctx, `SELECT user_id FROM hidden_users WHERE user_id = ANY($1)`, ids)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		result[id] = struct{}{}
+	}
+	return result, rows.Err()
 }
 
 // ─── Mutual friend IDs (for API response) ────────────────────
@@ -1184,14 +1243,6 @@ func (s *Store) RotateStaleCandidates(ctx context.Context) (int64, error) {
 		return 0, err
 	}
 	return tag.RowsAffected(), nil
-}
-
-// RemoveCandidateFromAllViewers removes a candidate from all viewers' pools.
-func (s *Store) RemoveCandidateFromAllViewers(ctx context.Context, candidateID uuid.UUID) error {
-	_, err := s.appDB.Exec(ctx, `
-		DELETE FROM suggestion_candidates WHERE candidate_id = $1
-	`, candidateID)
-	return err
 }
 
 // (GetActiveUsers was removed on 25 Oct 2026 with its one caller, the

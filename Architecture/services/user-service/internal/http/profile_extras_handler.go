@@ -16,17 +16,17 @@ func (h *Handler) registerProfileExtrasRoutes(r *gin.Engine) {
 	// Pins
 	v1.POST("/me/pins", h.PinContent)
 	v1.DELETE("/me/pins/:contentType/:contentId", h.UnpinContent)
-	v1.GET("/:userId/pins", h.GetPins)
+	v1.GET("/:userId/pins", h.requireServableUser, h.GetPins)
 
 	// Portfolio
 	v1.POST("/me/portfolio", h.AddPortfolioItem)
 	v1.PATCH("/me/portfolio/:id", h.UpdatePortfolioItem)
 	v1.DELETE("/me/portfolio/:id", h.DeletePortfolioItem)
-	v1.GET("/:userId/portfolio", h.GetPortfolio)
+	v1.GET("/:userId/portfolio", h.requireServableUser, h.GetPortfolio)
 
 	// QR Code
 	v1.GET("/me/qr", h.GetMyQRCode)
-	v1.POST("/:userId/qr/scan", h.TrackQRScan)
+	v1.POST("/:userId/qr/scan", h.requireServableUser, h.TrackQRScan)
 
 	// Digital Wellbeing (validated handlers in wellbeing_handler.go)
 	wh := newWellbeingHandler(h.store)

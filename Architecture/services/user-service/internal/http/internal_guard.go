@@ -14,7 +14,9 @@ package http
 
 import (
 	"crypto/subtle"
+	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
@@ -44,4 +46,36 @@ func requireInternalRouteKey(key string) gin.HandlerFunc {
 		}
 		c.Next()
 	}
+}
+
+// ErrInternalKeyRequired is why a production process refuses to start
+// without INTERNAL_SERVICE_KEY (audit X-L1): the /internal routes above fail
+// closed without it, so production would silently lose projection repair,
+// DLQ replay and subscriber fan-out.
+var ErrInternalKeyRequired = errors.New("INTERNAL_SERVICE_KEY is required in production for the /internal routes")
+
+// CheckInternalKeyConfig returns ErrInternalKeyRequired when the key is unset
+// in production, and nil otherwise (a dev process may run without it; its
+// /internal routes then answer 503).
+func CheckInternalKeyConfig(key string, getenv func(string) string) error {
+	if strings.TrimSpace(key) == "" && IsProduction(getenv) {
+		return ErrInternalKeyRequired
+	}
+	return nil
+}
+
+// IsProduction reports whether APP_ENV, ENVIRONMENT or ENV (the first one
+// set) names production. Same rule as group-service.
+func IsProduction(getenv func(string) string) bool {
+	for _, key := range []string{"APP_ENV", "ENVIRONMENT", "ENV"} {
+		switch strings.ToLower(strings.TrimSpace(getenv(key))) {
+		case "prod", "production":
+			return true
+		case "":
+			continue
+		default:
+			return false
+		}
+	}
+	return false
 }

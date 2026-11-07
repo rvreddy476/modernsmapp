@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"strconv"
 
-	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/atpost/suggestion-service/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -12,8 +11,7 @@ import (
 
 // Handler manages HTTP routes for the suggestion service.
 type Handler struct {
-	svc         *service.Service
-	internalKey string
+	svc *service.Service
 }
 
 // New creates a new Handler.
@@ -21,17 +19,12 @@ func New(svc *service.Service) *Handler {
 	return &Handler{svc: svc}
 }
 
-// WithInternalKey sets the internal service key.
-func (h *Handler) WithInternalKey(key string) *Handler {
-	h.internalKey = key
-	return h
-}
-
 // RegisterRoutes registers all suggestion endpoints.
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
-	if h.internalKey != "" {
-		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
-	}
+	// No internal-key gate: the gateway does not stamp the key on
+	// /v1/suggestions (user traffic never carries the credential that opens
+	// /internal), so a gate would refuse every request. The actor is the
+	// gateway-set X-User-Id; this service has no /internal routes.
 	v1 := r.Group("/v1/suggestions")
 	{
 		// Relationship-separation spec §2.4 — entityType-explicit routes:
@@ -49,7 +42,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/interstitial", h.GetInterstitialSuggestions)
 		v1.POST("/impression", h.LogImpression)
 		v1.POST("/action", h.RecordAction)
-		v1.GET("/batch", h.TriggerBatch)
 	}
 }
 
@@ -258,14 +250,6 @@ func (h *Handler) RecordAction(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"status": "action_recorded"}})
-}
-
-// TriggerBatch manually triggers a full batch recomputation.
-func (h *Handler) TriggerBatch(c *gin.Context) {
-	go func() {
-		h.svc.RunFullBatch(c.Request.Context())
-	}()
-	c.JSON(http.StatusAccepted, gin.H{"data": gin.H{"status": "batch_started"}})
 }
 
 // parseUserID extracts the authenticated user ID from the X-User-Id header.

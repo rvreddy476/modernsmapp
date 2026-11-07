@@ -23,11 +23,22 @@ type Service struct {
 	// than an unfiltered one, because an unfiltered list recommends accounts
 	// the viewer has blocked. See block_safety.go.
 	blocks BlockLookup
+	// egress backs the hidden-account and cooldown checks of filterEgress.
+	// The store in production; nil means the filter returns nothing.
+	egress egressReader
+	// genSlots bounds concurrent on-demand generation (ondemand.go);
+	// generate overrides the batch it runs, for tests.
+	genSlots chan struct{}
+	generate func(context.Context, uuid.UUID) error
 }
 
 // New creates a new Service.
 func New(s *store.Store, rdb *redis.Client) *Service {
-	return &Service{store: s, rdb: rdb}
+	svc := &Service{store: s, rdb: rdb, genSlots: make(chan struct{}, onDemandSlots)}
+	if s != nil {
+		svc.egress = s
+	}
+	return svc
 }
 
 // WithBlockLookup wires block safety onto every suggestion surface. Without
@@ -119,37 +130,36 @@ func (s *Service) GetSuggestions(ctx context.Context, viewerID uuid.UUID, suggTy
 	cacheKey := suggestionsCacheKey(viewerID, suggType)
 	offset := decodeCursor(cursor)
 
-	// 1. Try Redis cache
+	// 1. Try Redis cache. An empty list is cached too (briefly, see
+	// cacheItems), so a viewer with nothing stored does not reach Postgres on
+	// every request.
 	val, err := s.rdb.Get(ctx, cacheKey).Result()
 	if err == nil {
 		var items []SuggestionItem
-		if json.Unmarshal([]byte(val), &items) == nil && len(items) > 0 {
+		if json.Unmarshal([]byte(val), &items) == nil {
+			if len(items) == 0 {
+				return s.getPopularFallback(ctx, viewerID, suggType, limit, surface)
+			}
 			resp := s.paginateItems(items, suggType, offset, limit)
 			resp.Surface = surface
 			resp.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
 			// SR-7: the cache-hit path returns FIRST, so a filter applied only
-			// during generation would be bypassed on every cache hit. A block
-			// landing after this entry was written had no effect until the TTL
-			// expired — the platform kept recommending an account the viewer
-			// had blocked. Filtering happens here, at egress, on every path.
-			return s.filterBlocked(ctx, viewerID, resp), nil
+			// during generation would be bypassed on every cache hit. Filtering
+			// happens here, at egress, on every path.
+			return s.filterEgress(ctx, viewerID, resp), nil
 		}
 	}
 
 	// 2. Cache miss → read from DB
-	candidates, err := s.store.GetCandidates(ctx, viewerID, suggType, 50, 0)
-	if err != nil {
-		log.Printf("[suggestions] DB read error: %v", err)
+	candidates, readErr := s.store.GetCandidates(ctx, viewerID, suggType, 50, 0)
+	if readErr != nil {
+		log.Printf("[suggestions] DB read error: %v", readErr)
 	}
 
-	// 3. No candidates → on-demand batch (5s timeout)
-	if len(candidates) == 0 {
-		batchCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-		defer cancel()
-		if err := s.RunBatchForUser(batchCtx, viewerID); err != nil {
-			log.Printf("[suggestions] on-demand batch error: %v", err)
-		}
-		candidates, _ = s.store.GetCandidates(ctx, viewerID, suggType, 50, 0)
+	// 3. Nothing stored → ask for generation in the background (SG-M3). The
+	// batch never runs inside this request.
+	if len(candidates) == 0 && readErr == nil {
+		s.requestGeneration(viewerID, suggType)
 	}
 
 	// 3.5. "Follows you" is merged live on every cache miss: the batch runs
@@ -160,8 +170,12 @@ func (s *Service) GetSuggestions(ctx context.Context, viewerID uuid.UUID, suggTy
 		candidates = liveFollowsYou(ctx, s.store, viewerID, candidates, time.Now())
 	}
 
-	// 4. Still empty → popular users fallback
+	// 4. Still empty → popular users fallback, with the empty list cached
+	// briefly (a failed read is not cached).
 	if len(candidates) == 0 {
+		if readErr == nil {
+			s.cacheItems(ctx, viewerID, suggType, []SuggestionItem{})
+		}
 		return s.getPopularFallback(ctx, viewerID, suggType, limit, surface)
 	}
 
@@ -169,7 +183,7 @@ func (s *Service) GetSuggestions(ctx context.Context, viewerID uuid.UUID, suggTy
 	//
 	// SR-7: this comment used to claim it also filtered blocked users. It did
 	// not — there was no block lookup anywhere in this service. Blocks are now
-	// filtered at egress in filterBlocked, which covers every return path
+	// filtered at egress in filterEgress, which covers every return path
 	// including the cache hit above.
 	//
 	// People the viewer already follows are dropped too: a stored candidate
@@ -195,7 +209,7 @@ func (s *Service) GetSuggestions(ctx context.Context, viewerID uuid.UUID, suggTy
 	resp := s.paginateItems(items, suggType, offset, limit)
 	resp.Surface = surface
 	resp.GeneratedAt = time.Now().UTC().Format(time.RFC3339)
-	return s.filterBlocked(ctx, viewerID, resp), nil
+	return s.filterEgress(ctx, viewerID, resp), nil
 }
 
 // InterstitialTriggerFollow is the only interstitial trigger. "friend_accept"
@@ -257,7 +271,7 @@ func (s *Service) GetInterstitialSuggestions(ctx context.Context, viewerID uuid.
 	// SR-7: the interstitial surface fires immediately after an action — it is
 	// the one most likely to show a stale candidate, because it is built from
 	// mutual-friend lookups rather than the cached list.
-	return s.filterBlocked(ctx, viewerID, &SuggestionsResponse{
+	return s.filterEgress(ctx, viewerID, &SuggestionsResponse{
 		Type:        "friend",
 		Items:       items,
 		Surface:     "interstitial",
@@ -265,8 +279,16 @@ func (s *Service) GetInterstitialSuggestions(ctx context.Context, viewerID uuid.
 	}), nil
 }
 
-// LogImpressions records suggestion impressions.
+// maxImpressionItems caps one impression report (SG-L2). Each item is an
+// insert, so an unbounded list was an unbounded write fan-out per request;
+// 50 is more cards than one screen of suggestions shows.
+const maxImpressionItems = 50
+
+// LogImpressions records suggestion impressions, at most maxImpressionItems.
 func (s *Service) LogImpressions(ctx context.Context, viewerID uuid.UUID, req *ImpressionRequest) error {
+	if len(req.Items) > maxImpressionItems {
+		req.Items = req.Items[:maxImpressionItems]
+	}
 	var sessionID *uuid.UUID
 	if req.SessionID != "" {
 		if id, err := uuid.Parse(req.SessionID); err == nil {
@@ -352,9 +374,17 @@ func (s *Service) RecordAction(ctx context.Context, viewerID uuid.UUID, req *Act
 			// CooldownUntil nil = permanent
 		}
 		s.store.CreateCooldown(ctx, cd)
-		s.store.RemoveCandidateForViewer(ctx, viewerID, candidateID, req.Type)
-		s.store.RemoveCandidateFromAllViewers(ctx, candidateID)
-		s.invalidateCache(ctx, viewerID, req.Type)
+		// SG-M1: the caller's own lists only. This used to delete the
+		// candidate from EVERY viewer's candidates (a full-table scan), so
+		// anyone could erase a rival from "People you may know" platform-wide.
+		// A real block reaches the other side through graph-service's
+		// user.blocked event (events/consumer.go). Both types go: the
+		// cooldown is permanent, and the primary key makes each delete a
+		// point lookup.
+		for _, t := range []string{"friend", "follow"} {
+			s.store.RemoveCandidateForViewer(ctx, viewerID, candidateID, t)
+			s.invalidateCache(ctx, viewerID, t)
+		}
 
 	case "dismiss_category":
 		// Update dismiss pattern for the signal type
@@ -470,6 +500,11 @@ func (s *Service) cacheItems(ctx context.Context, viewerID uuid.UUID, suggType s
 	if suggType == "follow" {
 		ttl = 30 * time.Minute
 	}
+	if len(items) == 0 {
+		// SG-M3: an empty list is worth caching, but only briefly — a
+		// background generation may fill it within minutes.
+		ttl = emptyCacheTTL
+	}
 	s.rdb.Set(ctx, cacheKey, data, ttl)
 }
 
@@ -548,7 +583,7 @@ func (s *Service) getPopularFallback(ctx context.Context, viewerID uuid.UUID, su
 	// SR-7: the popular-users fallback is the path a NEW account hits, and it
 	// excluded only friends and followees. Nothing stopped it from
 	// recommending a popular account the viewer had blocked.
-	return s.filterBlocked(ctx, viewerID, &SuggestionsResponse{
+	return s.filterEgress(ctx, viewerID, &SuggestionsResponse{
 		Type:        suggType,
 		Items:       items,
 		Surface:     surface,

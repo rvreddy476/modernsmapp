@@ -207,17 +207,27 @@ func (c *Consumer) handleUserEndorsed(ctx context.Context, payload json.RawMessa
 	return nil
 }
 
-// handleSellerApproved activates the linked business page + sets seller_id on it.
+// sellerApprovedPayload is commerce.seller.approved as published by
+// commerce-service AdminApproveSeller. user_id is the seller's own account;
+// an event without it cannot prove ownership and links nothing.
+type sellerApprovedPayload struct {
+	SellerID       string `json:"seller_id"`
+	UserID         string `json:"user_id"`
+	ActorID        string `json:"actor_id"`
+	BusinessPageID string `json:"business_page_id"`
+}
+
+// handleSellerApproved links the approved seller to their own business page
+// and approves it only out of pending_review (audit US-M3, see
+// store/seller_approval.go). A page that is someone else's, missing, or in
+// any other status is never moved; the refusal is logged, not retried.
 func (c *Consumer) handleSellerApproved(ctx context.Context, payload json.RawMessage) error {
-	var p struct {
-		SellerID       string `json:"seller_id"`
-		BusinessPageID string `json:"business_page_id"`
-	}
+	var p sellerApprovedPayload
 	if err := json.Unmarshal(payload, &p); err != nil {
 		return fmt.Errorf("unmarshal seller.approved: %w", err)
 	}
 	if p.BusinessPageID == "" {
-		return nil // seller has no linked page — nothing to activate
+		return nil // seller has no linked page
 	}
 	pageID, err := uuid.Parse(p.BusinessPageID)
 	if err != nil {
@@ -227,13 +237,21 @@ func (c *Consumer) handleSellerApproved(ctx context.Context, payload json.RawMes
 	if err != nil {
 		return fmt.Errorf("invalid seller_id %q: %w", p.SellerID, err)
 	}
-	if err := c.svc.SetBusinessPageSellerID(ctx, pageID, sellerID); err != nil {
-		return fmt.Errorf("set seller_id on page %s: %w", pageID, err)
+	// A missing or malformed user_id stays uuid.Nil, which owns nothing.
+	sellerUserID, _ := uuid.Parse(p.UserID)
+	actorID, _ := uuid.Parse(p.ActorID)
+
+	outcome, err := c.svc.ApplySellerApproval(ctx, pageID, sellerID, sellerUserID, actorID)
+	if err != nil {
+		return fmt.Errorf("apply seller approval to page %s: %w", pageID, err)
 	}
-	if err := c.svc.ActivateBusinessPage(ctx, pageID); err != nil {
-		return fmt.Errorf("activate business page %s: %w", pageID, err)
+	switch outcome {
+	case store.SellerApprovalNotOwner, store.SellerApprovalPageMissing:
+		slog.Warn("seller approval did not touch the named business page",
+			"outcome", outcome, "page_id", pageID, "seller_id", sellerID, "seller_user_id", sellerUserID)
+	default:
+		slog.Info("seller approval applied to business page", "outcome", outcome, "page_id", pageID, "seller_id", sellerID)
 	}
-	slog.Info("activated business page after seller approval", "page_id", pageID, "seller_id", sellerID)
 	return nil
 }
 

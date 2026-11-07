@@ -40,6 +40,12 @@ type User struct {
 	IsVerified      bool       `json:"is_verified"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
+	// Unavailable is true while the account is deactivated or scheduled for
+	// deletion (users.hidden, from user.deactivated / user.deletion_scheduled)
+	// or soft-deleted (users.deleted_at, from user.deletion_requested). Such
+	// an account answers profile reads exactly like a missing one, except to
+	// its owner (profile_visibility.go). Never serialized.
+	Unavailable bool `json:"-"`
 }
 
 // UserLink represents a social/external link on a user's profile.
@@ -79,7 +85,8 @@ func New(db *pgxpool.Pool) *Store {
 const userColumns = `id, username, display_name, first_name, last_name, bio, dob, gender,
 	avatar_media_id, cover_media_id, category, profession, website, location,
 	pronouns, status_text, status_emoji, status_expires_at,
-	badge_flags, is_verified, created_at, updated_at`
+	badge_flags, is_verified, created_at, updated_at,
+	(hidden OR deleted_at IS NOT NULL)`
 
 func scanUser(row pgx.Row) (*User, error) {
 	var u User
@@ -88,6 +95,7 @@ func scanUser(row pgx.Row) (*User, error) {
 		&u.AvatarMediaID, &u.CoverMediaID, &u.Category, &u.Profession, &u.Website, &u.Location,
 		&u.Pronouns, &u.StatusText, &u.StatusEmoji, &u.StatusExpiresAt,
 		&u.BadgeFlags, &u.IsVerified, &u.CreatedAt, &u.UpdatedAt,
+		&u.Unavailable,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {

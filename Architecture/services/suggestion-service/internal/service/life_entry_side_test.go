@@ -18,11 +18,13 @@ func TestBatchUsesThePublicReaderForCandidates(t *testing.T) {
 	src := regexp.MustCompile(`(?m)//.*$`).ReplaceAllString(
 		regexp.MustCompile(`(?s)/\*.*?\*/`).ReplaceAllString(string(raw), " "), "")
 
-	if !strings.Contains(src, "GetPublicLifeEntries(ctx, candidateID)") {
+	// The candidate pool is read in one batch (SG-M3), still through the
+	// public reader.
+	if !strings.Contains(src, "GetPublicLifeEntries(ctx, allCandidateIDs)") {
 		t.Fatal("batch.go does not read a candidate's life entries through GetPublicLifeEntries; " +
 			"a private school would become SAME_SCHOOL and explain text for a stranger")
 	}
-	if strings.Contains(src, "GetUserLifeEntries(ctx, candidateID)") {
+	if strings.Contains(src, "GetUserLifeEntries(ctx, candidateID)") || strings.Contains(src, "GetUserLifeEntries(ctx, allCandidateIDs") {
 		t.Fatal("batch.go still reads a CANDIDATE's entries with the all-visibilities reader")
 	}
 	if !strings.Contains(src, "GetUserLifeEntries(ctx, viewerID)") {

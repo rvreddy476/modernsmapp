@@ -26,6 +26,7 @@ var internalGuardRoutes = []struct{ method, path string }{
 	{http.MethodGet, "/internal/dlq"},
 	{http.MethodPost, "/internal/dlq/1/replay"},
 	{http.MethodGet, "/internal/projection/health"},
+	{http.MethodGet, "/internal/pages/11111111-1111-1111-1111-111111111111/owner"},
 	{http.MethodGet, "/internal/channels/11111111-1111-1111-1111-111111111111/subscriber-ids"},
 }
 

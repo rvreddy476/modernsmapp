@@ -14,7 +14,6 @@ import (
 
 	"github.com/atpost/shared/api"
 	"github.com/atpost/shared/httpclient"
-	sharedmiddleware "github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/servicetoken"
 	"github.com/atpost/user-service/internal/events"
 	"github.com/atpost/user-service/internal/presence"
@@ -36,7 +35,6 @@ type Handler struct {
 	graphURL         string
 	presenceStore    presenceBackend
 	graphClient      *http.Client
-	internalKey      string
 	internalRouteKey string
 	dlqConsumer      *events.Consumer
 	// pageAdmins is the platform-admin allowlist for page lifecycle actions
@@ -79,11 +77,6 @@ func (h *Handler) isPageAdmin(c *gin.Context) bool {
 // list and replay parked events.
 func (h *Handler) WithDLQConsumer(c *events.Consumer) *Handler {
 	h.dlqConsumer = c
-	return h
-}
-
-func (h *Handler) WithInternalKey(key string) *Handler {
-	h.internalKey = key
 	return h
 }
 
@@ -162,9 +155,12 @@ func (h *Handler) ProjectionHealth(c *gin.Context) {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine) {
-	if h.internalKey != "" {
-		r.Use(sharedmiddleware.RequireInternalKey(h.internalKey))
-	}
+	// No engine-wide internal-key gate: the gateway does not stamp the key on
+	// /v1/users, /v1/pages or /v1/onboarding (user traffic must never carry the
+	// credential that opens /internal), so such a gate would refuse every user
+	// request. User routes trust the gateway-set X-User-Id; closing the
+	// in-cluster forgery of that header needs a gateway-signed identity, which
+	// is a platform design item, not a per-service key.
 
 	// Service-to-service routes — gated independently of the global key so
 	// they can be locked down even while /v1/* stays gateway-facing.
@@ -179,6 +175,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	internal.POST("/dlq/:id/replay", h.ReplayDLQ)
 	// Projection health: master vs. local counts, reconcile + DLQ status.
 	internal.GET("/projection/health", h.ProjectionHealth)
+	// Page ownership: commerce-service checks a seller's business_page_id
+	// before storing it (US-M3).
+	internal.GET("/pages/:pageId/owner", h.GetPageOwner)
 	// Module 1 P0-3: subscriber fan-out contract (internal-only —
 	// subscriber identities never reach a public route).
 	// SUPERSEDED 2026-09-12: post-service serves the same three routes with
@@ -198,8 +197,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	{
 		v1.GET("/by-username/:username", h.GetUserByUsername)
 		v1.GET("/:userId", h.GetUser)
-		v1.GET("/:userId/channels", h.GetUserChannels)
-		v1.GET("/:userId/links", h.GetUserLinks)
+		// Reads of another account by id 404 while it is deactivated or
+		// deletion-scheduled, as GetUser does (requireServableUser).
+		v1.GET("/:userId/channels", h.requireServableUser, h.GetUserChannels)
+		v1.GET("/:userId/links", h.requireServableUser, h.GetUserLinks)
 		// SR-3: RETIRED — profile-service is the canonical writer for these
 		// fields. See retired_profile_routes.go. The GET stays: a read is a
 		// projection, and only the write created the divergence.
@@ -210,8 +211,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.PUT("/me/settings", h.UpdateMySettings)
 
 		// About
-		v1.GET("/:userId/about", h.GetAbout)
-		v1.GET("/:userId/about/:section", h.GetAboutSection)
+		v1.GET("/:userId/about", h.requireServableUser, h.GetAbout)
+		v1.GET("/:userId/about/:section", h.requireServableUser, h.GetAboutSection)
 		v1.PUT("/me/about/:section", h.UpsertAboutItem)
 		v1.DELETE("/me/about/:section/:itemId", h.DeleteAboutItem)
 
@@ -219,12 +220,12 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.PATCH("/me/status", h.UpdateStatus)
 
 		// Reputation & Endorsements
-		v1.GET("/:userId/reputation", h.GetReputation)
-		v1.GET("/:userId/endorsements", h.GetEndorsements)
-		v1.POST("/:userId/endorse", h.EndorseUser)
+		v1.GET("/:userId/reputation", h.requireServableUser, h.GetReputation)
+		v1.GET("/:userId/endorsements", h.requireServableUser, h.GetEndorsements)
+		v1.POST("/:userId/endorse", h.requireServableUser, h.EndorseUser)
 
 		// Compatibility
-		v1.GET("/:userId/compatibility", h.GetCompatibility)
+		v1.GET("/:userId/compatibility", h.requireServableUser, h.GetCompatibility)
 
 		// Link Analytics
 		v1.POST("/links/:platform/click", h.TrackLinkClick)
@@ -325,8 +326,10 @@ func (h *Handler) GetUser(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
-	if u == nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "User not found", nil)
+	// A deactivated or deletion-scheduled account reads as missing to all but
+	// its owner and service callers (US-M1).
+	if !h.servable(c, u) {
+		respondUserNotFound(c)
 		return
 	}
 
@@ -347,8 +350,8 @@ func (h *Handler) GetUserByUsername(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
-	if u == nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "User not found", nil)
+	if !h.servable(c, u) {
+		respondUserNotFound(c)
 		return
 	}
 

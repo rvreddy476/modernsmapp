@@ -38,8 +38,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strings"
 
+	"github.com/atpost/shared/api"
 	"github.com/atpost/shared/servicetoken"
 	"github.com/atpost/user-service/internal/store"
 	"github.com/gin-gonic/gin"
@@ -128,6 +130,50 @@ func publicProfile(u *store.User) *store.User {
 	cp.DoB = nil
 	cp.Gender = nil
 	return &cp
+}
+
+// servable reports whether u may be returned to this caller at all. A
+// missing account never is. A deactivated, deletion-scheduled or soft-deleted
+// one (u.Unavailable) is served only to its owner and to a verified service
+// caller, the same callers that see private fields; everyone else gets the
+// exact 404 a missing account gets, so the two cannot be told apart.
+func (h *Handler) servable(c *gin.Context, u *store.User) bool {
+	if u == nil {
+		return false
+	}
+	return !u.Unavailable || h.mayReadPrivateProfile(c, u.ID)
+}
+
+// respondUserNotFound is the one answer for "no such account" on every
+// profile read.
+func respondUserNotFound(c *gin.Context) {
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "User not found", nil)
+}
+
+// requireServableUser guards the routes that read another account's profile
+// data by :userId (links, About, pins, portfolio, reputation, endorsements,
+// channels, compatibility, QR scan). They read their own tables, which keep
+// every row while an account is hidden, so without this a deactivated
+// account's links and About stayed public for the 30 days before purge. A
+// malformed id is left to the handler's own 400.
+func (h *Handler) requireServableUser(c *gin.Context) {
+	id, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		c.Next()
+		return
+	}
+	u, err := h.users.GetUser(c.Request.Context(), id)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "user lookup failed", nil)
+		c.Abort()
+		return
+	}
+	if !h.servable(c, u) {
+		respondUserNotFound(c)
+		c.Abort()
+		return
+	}
+	c.Next()
 }
 
 // profileFor is the one place a user object is shaped for its caller.

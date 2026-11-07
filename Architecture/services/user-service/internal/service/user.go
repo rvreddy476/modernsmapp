@@ -186,7 +186,51 @@ func (s *Service) ProjectionHealth(ctx context.Context) (*ProjectionHealthReport
 
 // SoftDeleteUser marks the app-level user record as deleted.
 func (s *Service) SoftDeleteUser(ctx context.Context, id uuid.UUID) error {
-	return s.store.SoftDeleteUser(ctx, id)
+	if err := s.store.SoftDeleteUser(ctx, id); err != nil {
+		return err
+	}
+	s.dropUserCard(ctx, id)
+	return nil
+}
+
+// SetUserHidden is the purge.Hider for account control: it flags the row and
+// drops the cached card, so a deactivated account stops answering profile
+// reads now rather than when a five-minute cache entry expires.
+func (s *Service) SetUserHidden(ctx context.Context, id uuid.UUID, hidden bool, reason string) error {
+	if err := s.store.SetUserHidden(ctx, id, hidden, reason); err != nil {
+		return err
+	}
+	s.dropUserCard(ctx, id)
+	return nil
+}
+
+func (s *Service) dropUserCard(ctx context.Context, id uuid.UUID) {
+	if s.rdb != nil {
+		s.rdb.Del(ctx, userCardKey(id))
+	}
+}
+
+func userCardKey(id uuid.UUID) string { return fmt.Sprintf("user:card:%s", id) }
+
+// cachedCard is the Redis form of a user card. Unavailable travels beside
+// the user because store.User never serializes it; an entry without "user"
+// (the pre-envelope format) reads as a miss.
+type cachedCard struct {
+	User        *store.User `json:"user"`
+	Unavailable bool        `json:"unavailable"`
+}
+
+func encodeCard(u *store.User) ([]byte, error) {
+	return json.Marshal(cachedCard{User: u, Unavailable: u.Unavailable})
+}
+
+func decodeCard(raw string) (*store.User, bool) {
+	var c cachedCard
+	if json.Unmarshal([]byte(raw), &c) != nil || c.User == nil {
+		return nil, false
+	}
+	c.User.Unavailable = c.Unavailable
+	return c.User, true
 }
 
 // CreateUser handles user creation from event.
@@ -231,12 +275,11 @@ func (s *Service) CreateUser(ctx context.Context, id uuid.UUID, username, phone,
 
 // GetUser returns user profile, trying cache first.
 func (s *Service) GetUser(ctx context.Context, id uuid.UUID) (*store.User, error) {
-	cacheKey := fmt.Sprintf("user:card:%s", id)
+	cacheKey := userCardKey(id)
 	val, err := s.rdb.Get(ctx, cacheKey).Result()
 	if err == nil {
-		var u store.User
-		if err := json.Unmarshal([]byte(val), &u); err == nil {
-			return &u, nil
+		if u, ok := decodeCard(val); ok {
+			return u, nil
 		}
 	}
 
@@ -249,7 +292,7 @@ func (s *Service) GetUser(ctx context.Context, id uuid.UUID) (*store.User, error
 	}
 
 	go func() {
-		data, _ := json.Marshal(u)
+		data, _ := encodeCard(u)
 		s.rdb.Set(context.Background(), cacheKey, data, 5*time.Minute)
 	}()
 
@@ -279,9 +322,8 @@ func (s *Service) GetUserByUsername(ctx context.Context, username string) (*stor
 	// Cache both username→UUID and full user card
 	go func() {
 		s.rdb.Set(context.Background(), nameKey, u.ID.String(), 5*time.Minute)
-		data, _ := json.Marshal(u)
-		cardKey := fmt.Sprintf("user:card:%s", u.ID)
-		s.rdb.Set(context.Background(), cardKey, data, 5*time.Minute)
+		data, _ := encodeCard(u)
+		s.rdb.Set(context.Background(), userCardKey(u.ID), data, 5*time.Minute)
 	}()
 
 	return u, nil
@@ -524,14 +566,10 @@ func (s *Service) GetUserBusinessPages(ctx context.Context, userID uuid.UUID) ([
 	return s.store.GetUserBusinessPages(ctx, userID)
 }
 
-// SetBusinessPageSellerID links a seller to a business page.
-func (s *Service) SetBusinessPageSellerID(ctx context.Context, pageID, sellerID uuid.UUID) error {
-	return s.store.SetBusinessPageSellerID(ctx, pageID, sellerID)
-}
-
-// ActivateBusinessPage sets a business page status to active.
-func (s *Service) ActivateBusinessPage(ctx context.Context, pageID uuid.UUID) error {
-	return s.store.ActivateBusinessPage(ctx, pageID)
+// ApplySellerApproval links an approved seller to their own business page and
+// approves it only out of pending_review. See store/seller_approval.go.
+func (s *Service) ApplySellerApproval(ctx context.Context, pageID, sellerID, sellerUserID, actorID uuid.UUID) (store.SellerApprovalOutcome, error) {
+	return s.store.ApplySellerApproval(ctx, pageID, sellerID, sellerUserID, actorID)
 }
 
 // --- Reputation & Endorsements ---

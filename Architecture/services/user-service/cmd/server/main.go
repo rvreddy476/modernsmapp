@@ -7,12 +7,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/atpost/shared/transport"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/server"
+	"github.com/atpost/shared/transport"
 	"github.com/atpost/user-service/database"
 	"github.com/atpost/user-service/internal/events"
 	"github.com/atpost/user-service/internal/http"
@@ -234,6 +234,10 @@ func main() {
 	}
 	presenceStore := presence.New(rdb)
 	userHandler := http.New(userSvc, presenceStore, userStore).WithInternalRoutes(internalKey)
+	if err := http.CheckInternalKeyConfig(internalKey, os.Getenv); err != nil {
+		slog.Error("refusing to start", "error", err)
+		os.Exit(1)
+	}
 	if internalKey == "" {
 		slog.Warn("user-service: INTERNAL_SERVICE_KEY not set — /internal/* routes answer 503 INTERNAL_KEY_NOT_CONFIGURED " +
 			"(projection repair, DLQ replay and subscriber fan-out are unavailable)")
@@ -284,7 +288,7 @@ func main() {
 	defer purgeAcks.Close()
 	lifecycle := purge.NewConsumer(strings.Split(kafkaBrokers, ","),
 		env("IDENTITY_KAFKA_TOPIC", "identity.events.v1"), "user-service-account-lifecycle", kafkaDialer,
-		purge.NewHandler("user-extras", userStore, purgeAcks, userStore, slog.Default()), slog.Default())
+		purge.NewHandler("user-extras", userStore, purgeAcks, userSvc, slog.Default()), slog.Default())
 	defer lifecycle.Close()
 	go lifecycle.Start(ctx)
 
