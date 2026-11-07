@@ -55,6 +55,11 @@ type ConversationStore interface {
 	CreateMessageRequest(ctx context.Context, convID, senderID, receiverID uuid.UUID) error
 	GetMessageRequestByConversation(ctx context.Context, convID uuid.UUID) (*postgres.MessageRequest, error)
 	SetMessageRequestPreview(ctx context.Context, convID uuid.UUID, preview string) error
+	// RedactUnsentMessageRecords is the Postgres half of unsend's content
+	// removal (postgres.ConversationStore.RedactUnsentMessageRecords). It
+	// was an optional interface, so a store without it unsent silently
+	// keeping every copy; it is required now.
+	RedactUnsentMessageRecords(ctx context.Context, conversationID, messageID uuid.UUID) error
 	UpdateMessageRequestStatus(ctx context.Context, convID uuid.UUID, status string) error
 	CreateGroupConversation(ctx context.Context, creatorID uuid.UUID, title string, memberIDs []uuid.UUID) (uuid.UUID, error)
 	GetConversation(ctx context.Context, id uuid.UUID) (*postgres.Conversation, error)
@@ -87,7 +92,7 @@ type ConversationStore interface {
 type MessageStore interface {
 	CreateMessage(ctx context.Context, msg *scylla.Message) error
 	GetMessage(ctx context.Context, conversationID uuid.UUID, bucket string, ts time.Time, msgID uuid.UUID) (*scylla.Message, error)
-	GetMessages(ctx context.Context, conversationID uuid.UUID, cursor *scylla.MessageCursor, limit int) ([]scylla.Message, *scylla.MessageCursor, error)
+	GetMessages(ctx context.Context, conversationID uuid.UUID, cursor *scylla.MessageCursor, limit int, oldestBucket string) ([]scylla.Message, *scylla.MessageCursor, error)
 	SoftDeleteMessage(ctx context.Context, conversationID uuid.UUID, bucket string, ts time.Time, msgID uuid.UUID) error
 	UpdateMessageText(ctx context.Context, conversationID uuid.UUID, bucket string, ts time.Time, msgID uuid.UUID, text string, editedAt time.Time) error
 	UpsertInbox(ctx context.Context, userID, conversationID, senderID uuid.UUID, text string, ts time.Time) error
@@ -1269,13 +1274,11 @@ func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID
 			if err != nil {
 				return nil, err
 			}
-			// A request past its 30-day expiry is closed even before the
-			// sweep marks it (zero ExpiresAt: an envelope without one).
-			if mr == nil || mr.Status != "pending" ||
-				(!mr.ExpiresAt.IsZero() && !mr.ExpiresAt.After(time.Now())) {
+			side := requestSideOf(mr, userID, time.Now())
+			if side == requestClosed {
 				return nil, ErrAwaitingRequestAcceptance
 			}
-			if userID != mr.SenderID {
+			if side == requestRecipient {
 				// REPLYING IS ACCEPTING.
 				//
 				// The recipient used to be refused here and told to tap
@@ -1301,7 +1304,9 @@ func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID
 				conv.IsRequest = false
 			} else {
 				if mr.Preview != "" {
-					// The one allowed first message was already sent.
+					// The one allowed first message was already sent. A fast
+					// path only: ReserveMessageDeliveryIntent's claim decides
+					// between sends racing past this check.
 					return nil, ErrAwaitingRequestAcceptance
 				}
 				// A post card is refused here exactly like a link: the
@@ -1404,6 +1409,13 @@ func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID
 		if err != nil {
 			if errors.Is(err, postgres.ErrDeliveryIntentConflict) {
 				return nil, ErrIdempotencyConflict
+			}
+			// The preview check above is only a fast path: parallel sends
+			// with different keys all pass it. The reservation's claim is
+			// the authority, and a send that lost it gets the same answer
+			// as any second message into a pending request.
+			if errors.Is(err, postgres.ErrRequestFirstMessageTaken) {
+				return nil, ErrAwaitingRequestAcceptance
 			}
 			return nil, err
 		}
@@ -1523,6 +1535,17 @@ func (s *Service) SendRich(ctx context.Context, userID, conversationID uuid.UUID
 	})
 }
 
+// historyOldestBucket is the oldest month bucket a conversation's messages can
+// be in: the month before it was created (one month of slack for an app
+// clock behind the database's at a month boundary). "" when unknown.
+func historyOldestBucket(conv *postgres.Conversation) string {
+	if conv == nil || conv.CreatedAt.IsZero() {
+		return ""
+	}
+	c := conv.CreatedAt.UTC()
+	return time.Date(c.Year(), c.Month()-1, 1, 0, 0, 0, 0, time.UTC).Format("200601")
+}
+
 func (s *Service) GetMessages(ctx context.Context, userID, conversationID uuid.UUID, cursor *scylla.MessageCursor, limit int) ([]MessageResponse, *scylla.MessageCursor, error) {
 	ok, err := s.convStore.CheckMembership(ctx, conversationID, userID)
 	if err != nil {
@@ -1531,8 +1554,13 @@ func (s *Service) GetMessages(ctx context.Context, userID, conversationID uuid.U
 	if !ok {
 		return nil, nil, ErrNotMember
 	}
+	conv, err := s.convStore.GetConversation(ctx, conversationID)
+	if err != nil {
+		return nil, nil, err
+	}
+	oldest := historyOldestBucket(conv)
 
-	messages, nextCursor, err := s.msgStore.GetMessages(ctx, conversationID, cursor, limit)
+	messages, nextCursor, err := s.msgStore.GetMessages(ctx, conversationID, cursor, limit, oldest)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1550,14 +1578,12 @@ func (s *Service) GetMessages(ctx context.Context, userID, conversationID uuid.U
 	// can come back short or empty while older history remains. Keep reading
 	// (bounded) so a run of hidden messages never looks like the start of
 	// the chat to a client that stops on an empty page.
+	// An empty read with a cursor is a bucket-only resume point (a run of
+	// empty months longer than one read's bucket budget): keep going from it.
 	for round := 0; round < 5 && len(messages) < limit && nextCursor != nil; round++ {
-		more, moreCursor, err := s.msgStore.GetMessages(ctx, conversationID, nextCursor, limit-len(messages))
+		more, moreCursor, err := s.msgStore.GetMessages(ctx, conversationID, nextCursor, limit-len(messages), oldest)
 		if err != nil {
 			return nil, nil, err
-		}
-		if len(more) == 0 {
-			nextCursor = nil
-			break
 		}
 		more, moreCursor, err = s.applyHistoryCutoff(ctx, userID, conversationID, more, moreCursor)
 		if err != nil {
@@ -1852,10 +1878,8 @@ func (s *Service) DeleteMessage(ctx context.Context, userID, conversationID, mes
 	// deleted and the client's retry runs both again (both are idempotent);
 	// the other order would leave a deleted message whose copies a retry
 	// can never reach ("message not found").
-	if r, ok := s.convStore.(unsentRecordRedactor); ok {
-		if err := r.RedactUnsentMessageRecords(ctx, conversationID, messageID); err != nil {
-			return fmt.Errorf("redact unsent message records: %w", err)
-		}
+	if err := s.convStore.RedactUnsentMessageRecords(ctx, conversationID, messageID); err != nil {
+		return fmt.Errorf("redact unsent message records: %w", err)
 	}
 
 	if err := s.msgStore.SoftDeleteMessage(ctx, conversationID, bucket, ts, messageID); err != nil {
@@ -2356,9 +2380,13 @@ func (s *Service) SetTyping(ctx context.Context, userID, conversationID uuid.UUI
 		return nil
 	}
 
-	// Set a short-lived key as typing indicator
-	typingKey := fmt.Sprintf("typing:%s:%s", conversationID, userID)
-	s.rdb.Set(ctx, typingKey, "1", 3*time.Second)
+	// DM consent: typing is the same right as writing. Nobody types into a
+	// closed request, and the requester of a pending one is a stranger to
+	// the recipient until accepted: they get their one message, never a live
+	// "typing…". The recipient may type (replying accepts).
+	if !s.mayTypeIn(ctx, userID, conversationID) {
+		return nil
+	}
 
 	// Broadcast to members
 	members, _ := s.convStore.GetMembers(ctx, conversationID)
@@ -2371,14 +2399,64 @@ func (s *Service) SetTyping(ctx context.Context, userID, conversationID uuid.UUI
 		},
 	})
 
+	// One pipelined round trip for the key and every member's frame (audit
+	// M4): one call per member made a keystroke in a large group cost a
+	// Redis round trip per member, and every member typing made it
+	// O(members²).
+	pipe := s.rdb.Pipeline()
+	pipe.Set(ctx, fmt.Sprintf("typing:%s:%s", conversationID, userID), "1", 3*time.Second)
 	for _, m := range members {
 		if m.UserID == userID {
 			continue
 		}
-		publishPersonal(ctx, s.rdb, m, payload)
+		publishPersonal(ctx, pipe, m, payload)
 	}
-
+	if _, err := pipe.Exec(ctx); err != nil {
+		s.log.Debug("typing fan-out failed", "err", err, "conversation_id", conversationID)
+	}
 	return nil
+}
+
+// mayTypeIn applies send's request rule (requestSideOf) to typing. Any
+// lookup failure is silence: typing is best-effort and silence is safe.
+func (s *Service) mayTypeIn(ctx context.Context, userID, conversationID uuid.UUID) bool {
+	conv, err := s.convStore.GetConversation(ctx, conversationID)
+	if err != nil || conv == nil {
+		return false
+	}
+	if !conv.IsRequest {
+		return true
+	}
+	mr, err := s.convStore.GetMessageRequestByConversation(ctx, conversationID)
+	if err != nil {
+		return false
+	}
+	return requestSideOf(mr, userID, time.Now()) == requestRecipient
+}
+
+// requestSide is who a member is in a request conversation, by the rule
+// send applies.
+type requestSide int
+
+const (
+	// requestClosed: no pending, unexpired request; nobody may write.
+	requestClosed requestSide = iota
+	// requestSender: the requester; one constrained first message only.
+	requestSender
+	// requestRecipient: the recipient; replying accepts the request.
+	requestRecipient
+)
+
+// requestSideOf: a request past its 30-day expiry is closed even before the
+// sweep marks it (zero ExpiresAt: an envelope without one).
+func requestSideOf(mr *postgres.MessageRequest, userID uuid.UUID, now time.Time) requestSide {
+	if mr == nil || mr.Status != "pending" || (!mr.ExpiresAt.IsZero() && !mr.ExpiresAt.After(now)) {
+		return requestClosed
+	}
+	if userID == mr.SenderID {
+		return requestSender
+	}
+	return requestRecipient
 }
 
 // MarkRead durably advances the reader's unread watermark, then broadcasts a

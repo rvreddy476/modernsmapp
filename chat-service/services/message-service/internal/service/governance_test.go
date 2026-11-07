@@ -77,6 +77,9 @@ func (f *governanceFake) GetMessageRequestByConversation(ctx context.Context, co
 func (f *governanceFake) SetMessageRequestPreview(context.Context, uuid.UUID, string) error {
 	return nil
 }
+func (f *governanceFake) RedactUnsentMessageRecords(context.Context, uuid.UUID, uuid.UUID) error {
+	return nil
+}
 func (f *governanceFake) UpdateMessageRequestStatus(ctx context.Context, convID uuid.UUID, status string) error {
 	if f.requestStatus == nil {
 		f.requestStatus = map[uuid.UUID]string{}

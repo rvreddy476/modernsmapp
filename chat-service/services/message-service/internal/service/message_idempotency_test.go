@@ -99,6 +99,9 @@ func (s *idempotencyConvStoreStub) GetMessageRequestByConversation(ctx context.C
 func (s *idempotencyConvStoreStub) SetMessageRequestPreview(ctx context.Context, convID uuid.UUID, preview string) error {
 	return errors.New("not implemented")
 }
+func (s *idempotencyConvStoreStub) RedactUnsentMessageRecords(context.Context, uuid.UUID, uuid.UUID) error {
+	return errors.New("not implemented")
+}
 func (s *idempotencyConvStoreStub) UpdateMessageRequestStatus(ctx context.Context, convID uuid.UUID, status string) error {
 	return errors.New("not implemented")
 }

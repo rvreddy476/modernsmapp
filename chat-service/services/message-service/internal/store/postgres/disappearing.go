@@ -2,9 +2,12 @@ package postgres
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"time"
 
+	"github.com/atpost/chat-message-service/internal/contentcrypt"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
@@ -158,7 +161,8 @@ func (s *ConversationStore) DeferMessageExpiry(ctx context.Context, messageID uu
 //     and translations of it;
 //   - the plaintext kept beside the message: the completed delivery intent's
 //     text, quote and rich payload, the cached idempotent response, and the
-//     text/preview inside the already-published MessageCreated outbox row;
+//     text/preview inside the MessageCreated outbox row, published or still
+//     queued;
 //   - deleted_at on the expiry row, so a retry skips all of the above.
 //
 // It returns the message's recipients at send time (for the Scylla inbox
@@ -221,7 +225,7 @@ func (s *ConversationStore) ExpireMessageRecords(ctx context.Context, e MessageE
 	}
 	statements = append(statements,
 		statement{`DELETE FROM chat.conversation_shared_items WHERE conversation_id = $1 AND message_id = $2`, []any{e.ConversationID, e.MessageID}},
-		statement{`DELETE FROM chat.message_media_references WHERE message_id = $1 AND conversation_id = $2`, []any{e.MessageID, e.ConversationID}},
+		statement{deleteMessageMediaReferenceSQL, []any{e.MessageID, e.ConversationID}},
 		statement{`DELETE FROM chat.starred_messages WHERE message_id = $1 AND conversation_id = $2`, []any{e.MessageID, e.ConversationID}},
 		statement{`DELETE FROM chat.conversation_pins WHERE message_id = $1 AND conversation_id = $2`, []any{e.MessageID, e.ConversationID}},
 		statement{`DELETE FROM chat.message_translations WHERE message_id = $1`, []any{e.MessageID}},
@@ -238,6 +242,10 @@ func (s *ConversationStore) ExpireMessageRecords(ctx context.Context, e MessageE
 		if _, err := tx.Exec(ctx, st.sql, st.args...); err != nil {
 			return nil, err
 		}
+	}
+	// A relay backlog (Kafka down) can still hold the row unpublished.
+	if err := s.stripQueuedMessageCreated(ctx, tx, "message-created:"+e.MessageID.String()); err != nil {
+		return nil, err
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, err
@@ -263,14 +271,21 @@ const stripPublishedMessageCreatedSQL = `UPDATE chat.outbox_events
 		                     ELSE '{}'::jsonb END
 		  WHERE dedupe_key = $1 AND published_at IS NOT NULL`
 
+// deleteMessageMediaReferenceSQL drops the canonical media reference of one
+// message ($1 message id, $2 conversation id). ViewerMayAccessChatMedia
+// grants download through these rows, so without it an unsent or expired
+// attachment stays downloadable by every member.
+const deleteMessageMediaReferenceSQL = `DELETE FROM chat.message_media_references WHERE message_id = $1 AND conversation_id = $2`
+
 // RedactUnsentMessageRecords is the Postgres side of unsend's content
 // removal (22 Oct 2026; Scylla's is SoftDeleteMessage), mirroring what the
 // disappearing-message path already did: the completed delivery intent's
 // text, quote and rich payload, the cached send response (a NULL response
 // makes a late retry of that key report "in progress" instead of returning
-// the text), the text and preview inside the published MessageCreated outbox
-// row, any translation of the message and the preview kept on stars of it
-// (the stars themselves stay). Idempotent; one transaction.
+// the text), the text and preview inside the MessageCreated outbox row
+// (published or still queued), any translation of the message, the preview
+// kept on stars of it (the stars themselves stay) and the attachment's media
+// reference, so the file is no longer served. Idempotent; one transaction.
 func (s *ConversationStore) RedactUnsentMessageRecords(ctx context.Context, conversationID, messageID uuid.UUID) error {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -297,6 +312,7 @@ func (s *ConversationStore) RedactUnsentMessageRecords(ctx context.Context, conv
 		{stripPublishedMessageCreatedSQL, []any{"message-created:" + messageID.String()}},
 		{`DELETE FROM chat.message_translations WHERE message_id = $1`, []any{messageID}},
 		{`UPDATE chat.starred_messages SET message_preview = NULL WHERE message_id = $1 AND conversation_id = $2`, []any{messageID, conversationID}},
+		{deleteMessageMediaReferenceSQL, []any{messageID, conversationID}},
 	}
 	if hasIntent {
 		statements = append(statements, statement{`UPDATE chat.idempotency_keys SET response = NULL WHERE key = $1`, []any{idempotencyKey}})
@@ -306,5 +322,54 @@ func (s *ConversationStore) RedactUnsentMessageRecords(ctx context.Context, conv
 			return err
 		}
 	}
+	if err := s.stripQueuedMessageCreated(ctx, tx, "message-created:"+messageID.String()); err != nil {
+		return err
+	}
 	return tx.Commit(ctx)
+}
+
+// selectQueuedOutboxRowSQL locks a not-yet-published outbox row by dedupe key
+// ($1). The relay claims with FOR UPDATE SKIP LOCKED, so it skips the row
+// while unsend rewrites it and publishes the rewritten payload afterwards.
+const selectQueuedOutboxRowSQL = `SELECT id, event_type, payload FROM chat.outbox_events
+		  WHERE dedupe_key = $1 AND published_at IS NULL FOR UPDATE`
+
+// stripQueuedMessageCreated removes the text and preview from a
+// MessageCreated row the relay has not published yet ($1 = its dedupe key),
+// inside the caller's transaction. stripPublishedMessageCreatedSQL covers a
+// published row in SQL; a queued one is usually sealed, so it is opened,
+// edited and sealed again here. The event itself still goes out (consumers
+// count and route on it), carrying no content. A payload that does not open
+// fails the unsend rather than leave the text queued for a later publish; the
+// client's retry runs everything again. A row the relay claimed just before
+// this lock is already in flight and is not reachable here.
+func (s *ConversationStore) stripQueuedMessageCreated(ctx context.Context, tx pgx.Tx, dedupeKey string) error {
+	var (
+		id        int64
+		eventType string
+		payload   []byte
+	)
+	err := tx.QueryRow(ctx, selectQueuedOutboxRowSQL, dedupeKey).Scan(&id, &eventType, &payload)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	opened, err := s.openJSON(ctx, contentcrypt.ScopeOutboxPayload, contentcrypt.OutboxRow(eventType, dedupeKey), payload)
+	if err != nil {
+		return fmt.Errorf("open queued message-created payload: %w", err)
+	}
+	var doc map[string]json.RawMessage
+	if err := json.Unmarshal(opened, &doc); err != nil {
+		return fmt.Errorf("decode queued message-created payload: %w", err)
+	}
+	delete(doc, "text")
+	delete(doc, "preview")
+	sealed, err := s.sealOutboxPayload(ctx, eventType, dedupeKey, doc)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `UPDATE chat.outbox_events SET payload = $2 WHERE id = $1 AND published_at IS NULL`, id, sealed)
+	return err
 }

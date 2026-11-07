@@ -158,6 +158,12 @@ type MessageCreatedPayload struct {
 	// to the MessageRequestCreated event that follows — the recipient asked
 	// to be told about the request, not buzzed twice for one message.
 	IsRequest bool `json:"is_request,omitempty"`
+	// ConversationType is chat.conversations.type ("direct" | "group"), the
+	// same name and values as on ConversationReported. notification-service
+	// picks the group or DM deep link from it. Optional: empty when the
+	// conversation could not be read, and the consumer then falls back to
+	// the recipient count.
+	ConversationType string `json:"conversation_type,omitempty"`
 	// RecipientIDs lists every conversation member except the sender so that
 	// notification-service can fan out without re-querying chat-service.
 	RecipientIDs []string `json:"recipient_ids"`

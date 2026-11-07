@@ -111,13 +111,11 @@ func LoadFromEnv() (KeySet, Policy, error) {
 		PreviousKID:    os.Getenv("JWT_KID_PREVIOUS"),
 		PreviousSecret: os.Getenv("JWT_SECRET_PREVIOUS"),
 	}
-	if raw := strings.TrimSpace(os.Getenv("JWT_PUBLIC_KEY_PEM")); raw != "" {
-		pub, err := ParseRSAPublicKeyPEM(raw)
-		if err != nil {
-			return keys, policy, fmt.Errorf("parse JWT_PUBLIC_KEY_PEM: %w", err)
-		}
-		keys.RSAKeys = map[string]*rsa.PublicKey{env("JWT_RS256_KID", "rsa-1"): pub}
+	rsaKeys, err := RSAKeysFromEnv(os.Getenv)
+	if err != nil {
+		return keys, policy, err
 	}
+	keys.RSAKeys = rsaKeys
 
 	if production {
 		switch {
@@ -135,6 +133,67 @@ func LoadFromEnv() (KeySet, Policy, error) {
 		}
 	}
 	return keys, policy, nil
+}
+
+// RS256 key environment variables: the same names and rules as the API
+// gateway (Architecture/services/api-gateway/pkg/tokenpolicy). The previous
+// pair exists for rotation: with one accepted key, whichever of auth-service
+// and chat deployed first broke the other, and every outstanding token
+// answered 401 "unknown token key".
+//
+// Rotation order: (1) add the NEW public key as current and move the old one
+// to the _PREVIOUS pair; (2) switch auth-service to sign with the new private
+// key and kid; (3) after one access-token TTL, drop the _PREVIOUS pair.
+// Tokens are selected by their `kid`; an unknown kid stays rejected, and a
+// token without a kid verifies only while exactly one key is configured.
+const (
+	EnvRSAPublicKey         = "JWT_PUBLIC_KEY_PEM"
+	EnvRSAKID               = "JWT_RS256_KID"
+	EnvRSAPublicKeyPrevious = "JWT_PUBLIC_KEY_PEM_PREVIOUS"
+	EnvRSAKIDPrevious       = "JWT_RS256_KID_PREVIOUS"
+	// DefaultRSAKID is the kid of the current key when JWT_RS256_KID is unset.
+	DefaultRSAKID = "rsa-1"
+)
+
+// RSAKeysFromEnv builds the RS256 key map from the current key and the
+// optional previous one. It returns nil when no current key is configured.
+// A previous key without its own kid, a previous kid equal to the current
+// one, or a previous key with no current key is an error: each would make the
+// kid lookup ambiguous or silently drop a key.
+func RSAKeysFromEnv(getenv func(string) string) (map[string]*rsa.PublicKey, error) {
+	curPEM := strings.TrimSpace(getenv(EnvRSAPublicKey))
+	prevPEM := strings.TrimSpace(getenv(EnvRSAPublicKeyPrevious))
+	prevKID := strings.TrimSpace(getenv(EnvRSAKIDPrevious))
+	if curPEM == "" {
+		if prevPEM != "" || prevKID != "" {
+			return nil, fmt.Errorf("%s is set without %s", EnvRSAPublicKeyPrevious, EnvRSAPublicKey)
+		}
+		return nil, nil
+	}
+	curKID := strings.TrimSpace(getenv(EnvRSAKID))
+	if curKID == "" {
+		curKID = DefaultRSAKID
+	}
+	cur, err := ParseRSAPublicKeyPEM(curPEM)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", EnvRSAPublicKey, err)
+	}
+	keys := map[string]*rsa.PublicKey{curKID: cur}
+	if prevPEM == "" && prevKID == "" {
+		return keys, nil
+	}
+	if prevPEM == "" || prevKID == "" {
+		return nil, fmt.Errorf("%s and %s must be set together", EnvRSAPublicKeyPrevious, EnvRSAKIDPrevious)
+	}
+	if prevKID == curKID {
+		return nil, fmt.Errorf("%s must differ from %s (%q): tokens are told apart by kid", EnvRSAKIDPrevious, EnvRSAKID, curKID)
+	}
+	prev, err := ParseRSAPublicKeyPEM(prevPEM)
+	if err != nil {
+		return nil, fmt.Errorf("parse %s: %w", EnvRSAPublicKeyPrevious, err)
+	}
+	keys[prevKID] = prev
+	return keys, nil
 }
 
 func Verify(raw string, keys KeySet, policy Policy, now time.Time) (Identity, error) {

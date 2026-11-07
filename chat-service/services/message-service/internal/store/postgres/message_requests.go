@@ -304,6 +304,7 @@ func upsertPendingRequest(ctx context.Context, tx pgx.Tx, conversationID, sender
 		SET sender_id = EXCLUDED.sender_id,
 		    receiver_id = EXCLUDED.receiver_id,
 		    preview = '',
+		    first_message_key = NULL, -- a fresh request has its own one message
 		    status = 'pending',
 		    risk_score = 0,
 		    created_at = EXCLUDED.created_at,

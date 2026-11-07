@@ -77,6 +77,21 @@ func (s *Service) mutedRecipients(ctx context.Context, conversationID uuid.UUID,
 	return out
 }
 
+// conversationTypeOf is the conversation's type for the MessageCreated event.
+// Fails open to "" (the field is optional; notification-service falls back
+// to the recipient count), so a lookup error never holds up a delivery.
+func (s *Service) conversationTypeOf(ctx context.Context, conversationID uuid.UUID) string {
+	conv, err := s.convStore.GetConversation(ctx, conversationID)
+	if err != nil || conv == nil {
+		if err != nil {
+			s.log.Warn("conversation type lookup failed; MessageCreated goes without it",
+				"err", err, "conversation_id", conversationID)
+		}
+		return ""
+	}
+	return conv.Type
+}
+
 func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.MessageDeliveryIntent) error {
 	message := &scylla.Message{
 		ConversationID:  intent.ConversationID,
@@ -165,12 +180,13 @@ func (s *Service) completeMessageDelivery(ctx context.Context, intent *postgres.
 		lockedSet[id] = true
 	}
 	created := sharedEvents.MessageCreatedPayload{
-		MessageID:      intent.MessageID.String(),
-		ConversationID: intent.ConversationID.String(),
-		SenderID:       intent.SenderID.String(),
-		Type:           intent.MessageType,
-		IsRequest:      intent.FirstRequest,
-		RecipientIDs:   recipients,
+		MessageID:        intent.MessageID.String(),
+		ConversationID:   intent.ConversationID.String(),
+		SenderID:         intent.SenderID.String(),
+		Type:             intent.MessageType,
+		IsRequest:        intent.FirstRequest,
+		ConversationType: s.conversationTypeOf(ctx, intent.ConversationID),
+		RecipientIDs:     recipients,
 		// Per-conversation mute is chat's state; it rides the event so the
 		// notifier never has to ask across the service boundary.
 		MutedRecipientIDs: s.mutedRecipients(ctx, intent.ConversationID, recipients),
@@ -292,12 +308,6 @@ func activeMemberIDs(members []postgres.Member) []uuid.UUID {
 		ids = append(ids, member.UserID)
 	}
 	return ids
-}
-
-// unsentRecordRedactor is the Postgres half of unsend's content removal
-// (postgres.ConversationStore.RedactUnsentMessageRecords).
-type unsentRecordRedactor interface {
-	RedactUnsentMessageRecords(ctx context.Context, conversationID, messageID uuid.UUID) error
 }
 
 // settleDelivery completes a reserved delivery intent — or, for a replay of

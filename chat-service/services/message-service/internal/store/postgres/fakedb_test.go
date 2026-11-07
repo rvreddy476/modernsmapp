@@ -20,6 +20,9 @@ type fakeDB struct {
 	// rows answers Query / QueryRow by SQL. nil rows for QueryRow is
 	// pgx.ErrNoRows.
 	rows func(sql string, args []any) [][]any
+	// execTag answers Exec with a command tag by SQL ("" or nil: "UPDATE 1"),
+	// so a test can play a conditional write that matched no row.
+	execTag func(sql string, args []any) string
 }
 
 type dbCall struct {
@@ -43,6 +46,11 @@ func (f *fakeDB) answer(sql string, args []any) [][]any {
 
 func (f *fakeDB) Exec(_ context.Context, sql string, args ...any) (pgconn.CommandTag, error) {
 	f.record("exec", sql, args)
+	if f.execTag != nil {
+		if tag := f.execTag(sql, args); tag != "" {
+			return pgconn.NewCommandTag(tag), nil
+		}
+	}
 	return pgconn.NewCommandTag("UPDATE 1"), nil
 }
 

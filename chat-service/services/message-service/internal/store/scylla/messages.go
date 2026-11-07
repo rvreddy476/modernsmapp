@@ -240,9 +240,28 @@ func (s *MessageStore) GetMessage(ctx context.Context, conversationID uuid.UUID,
 	return &m, nil
 }
 
-// GetMessages retrieves messages with cursor-based pagination across monthly buckets.
-// Walks backward through buckets until limit is reached or 12 months scanned.
-func (s *MessageStore) GetMessages(ctx context.Context, conversationID uuid.UUID, cursor *MessageCursor, limit int) ([]Message, *MessageCursor, error) {
+// HistoryBucketsPerRead bounds one GetMessages call: at most this many
+// monthly buckets are read, so a page over a long run of empty months stays
+// cheap. The returned cursor resumes where the scan stopped.
+const HistoryBucketsPerRead = 12
+
+// GetMessages reads live messages newest first, walking back through the
+// monthly buckets from the cursor's (the current month without one) until
+// limit messages are read, the scan passes oldestBucket, or
+// HistoryBucketsPerRead buckets were read.
+//
+// The next cursor is the last message when the page filled up. When the
+// bucket budget ran out first and older months remain (bucket >=
+// oldestBucket), it is a bucket-only resume point (zero Ts and MsgID): the
+// next read starts at the top of that bucket. A conversation quiet for more
+// than a year used to end paging there — 12 empty months returned an empty
+// page and no cursor, so older history was unreachable. Once the scan passes
+// oldestBucket the history is exhausted and the cursor is nil.
+//
+// oldestBucket "" means the conversation's start is unknown: the scan is
+// bounded by the budget alone and no resume point is returned (a client
+// paging on resume points could otherwise walk back forever).
+func (s *MessageStore) GetMessages(ctx context.Context, conversationID uuid.UUID, cursor *MessageCursor, limit int, oldestBucket string) ([]Message, *MessageCursor, error) {
 	var messages []Message
 	remaining := limit
 
@@ -250,17 +269,13 @@ func (s *MessageStore) GetMessages(ctx context.Context, conversationID uuid.UUID
 	if cursor != nil {
 		bucket = cursor.Bucket
 	}
+	olderLeft := func() bool { return bucket != "" && (oldestBucket == "" || bucket >= oldestBucket) }
 
 	convGocql := uuidToGocql(conversationID)
 
-	maxBuckets := 12
-	for i := 0; i < maxBuckets && remaining > 0; i++ {
-		if bucket == "" {
-			break
-		}
-
+	for i := 0; i < HistoryBucketsPerRead && remaining > 0 && olderLeft(); i++ {
 		var q *gocql.Query
-		if cursor != nil && i == 0 {
+		if cursor != nil && i == 0 && !cursor.Ts.IsZero() {
 			q = s.session.Query(`
 				SELECT conversation_id, bucket, ts, msg_id, sender_id, type, text, media_id, reply_to_id, reply_to_preview, reply_to_sender_id, post_id, extra, is_deleted, is_edited, edited_at, created_at
 				FROM messages
@@ -302,17 +317,32 @@ func (s *MessageStore) GetMessages(ctx context.Context, conversationID uuid.UUID
 		bucket = PrevBucket(bucket)
 	}
 
-	var nextCursor *MessageCursor
-	if len(messages) > 0 {
-		last := messages[len(messages)-1]
-		nextCursor = &MessageCursor{
-			Bucket: last.Bucket,
-			Ts:     last.Ts,
-			MsgID:  last.MsgID,
-		}
-	}
+	return messages, nextHistoryCursor(messages, remaining, bucket, oldestBucket), nil
+}
 
-	return messages, nextCursor, nil
+// nextHistoryCursor is GetMessages' next cursor (see there). bucket is the
+// first bucket the scan did not read.
+func nextHistoryCursor(messages []Message, remaining int, bucket, oldestBucket string) *MessageCursor {
+	switch {
+	case remaining <= 0 && len(messages) > 0:
+		// The page filled up; the last bucket read may hold more.
+		last := messages[len(messages)-1]
+		return &MessageCursor{Bucket: last.Bucket, Ts: last.Ts, MsgID: last.MsgID}
+	case oldestBucket == "":
+		// Unknown start: the pre-resume behaviour, a cursor only after a
+		// message.
+		if len(messages) == 0 {
+			return nil
+		}
+		last := messages[len(messages)-1]
+		return &MessageCursor{Bucket: last.Bucket, Ts: last.Ts, MsgID: last.MsgID}
+	case bucket != "" && bucket >= oldestBucket:
+		// Budget spent with older months left: every bucket read was read
+		// to the end, so resume at the top of the next one.
+		return &MessageCursor{Bucket: bucket}
+	default:
+		return nil // past the conversation's start: nothing older exists
+	}
 }
 
 // UpdateMessageText rewrites a message's text and stamps it as edited.

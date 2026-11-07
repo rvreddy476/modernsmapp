@@ -803,3 +803,22 @@ BEGIN
         PERFORM set_config('lock_timeout', prev_lock_timeout, true);
     END IF;
 END $$;
+
+-- ===== 021: one first message per message request (7 Nov 2026) =====
+-- See migrations/021_message_request_first_message_claim.sql. Nullable, so
+-- ADD COLUMN is catalog-only; it runs only while the column is missing, with
+-- the same 5 s lock_timeout as 019.
+DO $$
+DECLARE
+    prev_lock_timeout TEXT := current_setting('lock_timeout');
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = 'chat' AND table_name = 'message_requests' AND column_name = 'first_message_key'
+    ) THEN
+        PERFORM set_config('lock_timeout', '5s', true);
+        ALTER TABLE chat.message_requests
+            ADD COLUMN IF NOT EXISTS first_message_key TEXT;
+        PERFORM set_config('lock_timeout', prev_lock_timeout, true);
+    END IF;
+END $$;

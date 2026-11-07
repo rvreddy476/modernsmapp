@@ -145,6 +145,94 @@ func TestLoadFromEnvRefusesSymmetricSecretInProduction(t *testing.T) {
 	}
 }
 
+// Key rotation: chat accepts the current RS256 key and the previous one, each
+// only under its own kid (the gateway's JWT_PUBLIC_KEY_PEM_PREVIOUS /
+// JWT_RS256_KID_PREVIOUS pair), and production still refuses a symmetric
+// secret beside them.
+func TestLoadFromEnvAcceptsPreviousRSAKeyForRotation(t *testing.T) {
+	current, currentPEM := newRSAKeyPEM(t)
+	previous, previousPEM := newRSAKeyPEM(t)
+	foreign, _ := newRSAKeyPEM(t)
+
+	for _, key := range []string{"ENVIRONMENT", "ENV", "JWT_SECRET", "JWT_SECRET_PREVIOUS", "JWT_KID", "JWT_KID_PREVIOUS"} {
+		t.Setenv(key, "")
+	}
+	t.Setenv("APP_ENV", "production")
+	t.Setenv("JWT_ISSUER", "auth-service")
+	t.Setenv("JWT_AUDIENCE", "atpost-api")
+	t.Setenv(EnvRSAPublicKey, currentPEM)
+	t.Setenv(EnvRSAKID, "rsa-2")
+	t.Setenv(EnvRSAPublicKeyPrevious, previousPEM)
+	t.Setenv(EnvRSAKIDPrevious, "rsa-1")
+
+	keys, policy, err := LoadFromEnv()
+	if err != nil {
+		t.Fatalf("rotation config refused: %v", err)
+	}
+	now := time.Unix(1_800_000_000, 0)
+	claims := map[string]any{
+		"sub": "11111111-1111-4111-8111-111111111111",
+		"exp": now.Add(time.Hour).Unix(), "nbf": now.Unix(),
+		"iss": "auth-service", "aud": "atpost-api", "sid": "session-1", "typ": "access",
+	}
+	if _, err := Verify(signRS256KID(t, current, "rsa-2", claims), keys, policy, now); err != nil {
+		t.Fatalf("token signed by the current key rejected: %v", err)
+	}
+	if _, err := Verify(signRS256KID(t, previous, "rsa-1", claims), keys, policy, now); err != nil {
+		t.Fatalf("outstanding token signed by the previous key rejected: %v", err)
+	}
+	refused := map[string]string{
+		"previous key under the current kid": signRS256KID(t, previous, "rsa-2", claims),
+		"foreign key under the previous kid": signRS256KID(t, foreign, "rsa-1", claims),
+		"unknown kid":                        signRS256KID(t, current, "rsa-9", claims),
+		"no kid with two keys":               signRS256KID(t, current, "", claims),
+	}
+	for name, token := range refused {
+		if _, err := Verify(token, keys, policy, now); err == nil {
+			t.Errorf("%s: token accepted", name)
+		}
+	}
+
+	t.Setenv("JWT_SECRET", "a-symmetric-secret")
+	if _, _, err := LoadFromEnv(); err == nil {
+		t.Fatal("production boot accepted JWT_SECRET beside the rotation keys")
+	}
+}
+
+func TestRSAKeysFromEnvRefusesAmbiguousRotation(t *testing.T) {
+	_, currentPEM := newRSAKeyPEM(t)
+	_, previousPEM := newRSAKeyPEM(t)
+	cases := map[string]map[string]string{
+		"previous key without its kid": {EnvRSAPublicKey: currentPEM, EnvRSAPublicKeyPrevious: previousPEM},
+		"previous kid without its key": {EnvRSAPublicKey: currentPEM, EnvRSAKIDPrevious: "rsa-0"},
+		"previous kid equals current":  {EnvRSAPublicKey: currentPEM, EnvRSAKID: "rsa-1", EnvRSAPublicKeyPrevious: previousPEM, EnvRSAKIDPrevious: "rsa-1"},
+		"previous with no current key": {EnvRSAPublicKeyPrevious: previousPEM, EnvRSAKIDPrevious: "rsa-0"},
+		"unparseable previous key":     {EnvRSAPublicKey: currentPEM, EnvRSAPublicKeyPrevious: "not a pem", EnvRSAKIDPrevious: "rsa-0"},
+	}
+	for name, env := range cases {
+		if _, err := RSAKeysFromEnv(func(k string) string { return env[k] }); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+	keys, err := RSAKeysFromEnv(func(k string) string { return map[string]string{EnvRSAPublicKey: currentPEM}[k] })
+	if err != nil || len(keys) != 1 || keys[DefaultRSAKID] == nil {
+		t.Fatalf("single key: keys=%v err=%v, want only %q", keys, err, DefaultRSAKID)
+	}
+}
+
+func newRSAKeyPEM(t *testing.T) (*rsa.PrivateKey, string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalPKIXPublicKey(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return key, string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
+}
+
 func signHS256(t *testing.T, secret, kid string, claims map[string]any) string {
 	t.Helper()
 	header, _ := json.Marshal(map[string]any{"alg": "HS256", "kid": kid, "typ": "JWT"})
@@ -157,7 +245,17 @@ func signHS256(t *testing.T, secret, kid string, claims map[string]any) string {
 
 func signRS256(t *testing.T, key *rsa.PrivateKey, claims map[string]any) string {
 	t.Helper()
-	header, _ := json.Marshal(map[string]any{"alg": "RS256", "kid": "rsa-1", "typ": "JWT"})
+	return signRS256KID(t, key, "rsa-1", claims)
+}
+
+// signRS256KID signs with kid in the header; an empty kid leaves it out.
+func signRS256KID(t *testing.T, key *rsa.PrivateKey, kid string, claims map[string]any) string {
+	t.Helper()
+	head := map[string]any{"alg": "RS256", "typ": "JWT"}
+	if kid != "" {
+		head["kid"] = kid
+	}
+	header, _ := json.Marshal(head)
 	payload, _ := json.Marshal(claims)
 	input := base64.RawURLEncoding.EncodeToString(header) + "." + base64.RawURLEncoding.EncodeToString(payload)
 	digest := sha256.Sum256([]byte(input))

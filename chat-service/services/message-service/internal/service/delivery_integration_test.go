@@ -131,7 +131,7 @@ func TestScheduledMessageIsNotMarkedSentWhenDeliveryFails(t *testing.T) {
 func (*deliveryMessageStore) GetMessage(context.Context, uuid.UUID, string, time.Time, uuid.UUID) (*scylla.Message, error) {
 	return nil, nil
 }
-func (*deliveryMessageStore) GetMessages(context.Context, uuid.UUID, *scylla.MessageCursor, int) ([]scylla.Message, *scylla.MessageCursor, error) {
+func (*deliveryMessageStore) GetMessages(context.Context, uuid.UUID, *scylla.MessageCursor, int, string) ([]scylla.Message, *scylla.MessageCursor, error) {
 	return nil, nil, nil
 }
 func (*deliveryMessageStore) SoftDeleteMessage(context.Context, uuid.UUID, string, time.Time, uuid.UUID) error {

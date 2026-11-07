@@ -65,7 +65,9 @@ func (s *Service) applyHistoryCutoff(ctx context.Context, userID, convID uuid.UU
 		}
 		out = append(out, m)
 	}
-	if reachedCut {
+	// A resume point in a month before the cut-off's holds only cleared
+	// history; paging through those months would only return empty pages.
+	if reachedCut || (cut != nil && next != nil && next.Bucket < cut.UTC().Format("200601")) {
 		next = nil
 	}
 	return out, next, nil

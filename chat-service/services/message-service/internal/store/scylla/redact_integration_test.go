@@ -70,7 +70,7 @@ func TestRedactMessageWipesContentAndInboxProjection(t *testing.T) {
 	if !got.IsDeleted || got.Text != "" || got.MediaID != nil || got.PostID != nil || got.ReplyToPreview != "" || got.Extra != "" {
 		t.Fatalf("content survived redaction: %+v", got)
 	}
-	if page, _, err := store.GetMessages(ctx, conv, nil, 10); err != nil || len(page) != 0 {
+	if page, _, err := store.GetMessages(ctx, conv, nil, 10, ""); err != nil || len(page) != 0 {
 		t.Fatalf("a redacted message must not be served: %d (%v)", len(page), err)
 	}
 

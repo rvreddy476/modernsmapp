@@ -154,7 +154,7 @@ func (m *previewMsgStore) GetMessage(context.Context, uuid.UUID, string, time.Ti
 	return m.target, nil
 }
 
-func (m *previewMsgStore) GetMessages(_ context.Context, _ uuid.UUID, _ *scylla.MessageCursor, limit int) ([]scylla.Message, *scylla.MessageCursor, error) {
+func (m *previewMsgStore) GetMessages(_ context.Context, _ uuid.UUID, _ *scylla.MessageCursor, limit int, _ string) ([]scylla.Message, *scylla.MessageCursor, error) {
 	m.lastReadLim = limit
 	if m.getPageErr != nil {
 		return nil, nil, m.getPageErr

@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"time"
 
 	"github.com/atpost/chat-message-service/internal/ratelimit"
 	"github.com/atpost/chat-message-service/internal/store/postgres"
 	"github.com/google/uuid"
+	"github.com/redis/go-redis/v9"
 )
 
 // WhatsApp-style message ticks (founder, 22 Oct 2026).
@@ -506,6 +508,8 @@ func (s *Service) MarkDelivered(ctx context.Context, userID, convID uuid.UUID, m
 		msgIDStr = messageID.String()
 	}
 	direct := st.conv.Type == "direct"
+	frames := s.newReceiptFrames(st)
+	defer frames.flush(ctx, s.log)
 	for v, upTo := range aggregateMoves(eff, userID, oldEff, eff[userID]) {
 		payload := map[string]interface{}{
 			"conversation_id": convID.String(),
@@ -520,7 +524,7 @@ func (s *Service) MarkDelivered(ctx context.Context, userID, convID uuid.UUID, m
 		} else {
 			payload["aggregate"] = true
 		}
-		s.publishFrame(ctx, st, v, "delivery_receipt", payload)
+		frames.add(ctx, v, "delivery_receipt", payload)
 	}
 	return out, nil
 }
@@ -572,11 +576,13 @@ func (s *Service) publishGroupReadAggregate(ctx context.Context, convID, readerI
 	}
 	readerOn := readReceiptVisible(on, st.policies[readerID])
 	oldEff := readEff(receiptPeer{JoinedAt: readerJoined, Read: prevRead, ReadDisclosed: readerOn})
+	frames := s.newReceiptFrames(st)
+	defer frames.flush(ctx, s.log)
 	for v, upTo := range aggregateMoves(eff, readerID, oldEff, eff[readerID]) {
 		if receiptsOff(st.policies[v]) || !s.readGateOpen(ctx, st, v) {
 			continue
 		}
-		s.publishFrame(ctx, st, v, "read_receipt", map[string]interface{}{
+		frames.add(ctx, v, "read_receipt", map[string]interface{}{
 			"conversation_id": convID.String(),
 			"aggregate":       true,
 			"read_up_to":      upTo.UTC().Format(time.RFC3339Nano),
@@ -584,22 +590,58 @@ func (s *Service) publishGroupReadAggregate(ctx context.Context, convID, readerI
 	}
 }
 
-// publishFrame sends one receipt frame to a member's personal channel —
-// through personalChannel, so a member who hid the conversation gets none. A
-// recipient missing from the member list gets none either.
-func (s *Service) publishFrame(ctx context.Context, st *receiptState, userID uuid.UUID, typ string, payload map[string]interface{}) {
+// receiptFrames collects one fan-out's receipt frames on a single Redis
+// pipeline (audit M4). Each frame used to be its own round trip, found by a
+// scan of the member list, so a receipt in a large group cost O(members²)
+// work and one round trip per member. A nil *receiptFrames (no Redis) drops
+// every frame.
+type receiptFrames struct {
+	pipe   redis.Pipeliner
+	byID   map[uuid.UUID]postgres.Member
+	queued int
+}
+
+func (s *Service) newReceiptFrames(st *receiptState) *receiptFrames {
 	if s.rdb == nil || st == nil {
+		return nil
+	}
+	byID := make(map[uuid.UUID]postgres.Member, len(st.members))
+	for _, m := range st.members {
+		byID[m.UserID] = m
+	}
+	return &receiptFrames{pipe: s.rdb.Pipeline(), byID: byID}
+}
+
+// add queues one frame for a member's personal channel — through
+// personalChannel, so a member who hid the conversation gets none. A
+// recipient missing from the member list gets none either.
+func (f *receiptFrames) add(ctx context.Context, userID uuid.UUID, typ string, payload map[string]interface{}) {
+	if f == nil {
+		return
+	}
+	m, ok := f.byID[userID]
+	if !ok {
+		return
+	}
+	if _, ok := personalChannel(m); !ok {
 		return
 	}
 	raw, err := json.Marshal(map[string]interface{}{"type": typ, "payload": payload})
 	if err != nil {
 		return
 	}
-	for _, m := range st.members {
-		if m.UserID == userID {
-			publishPersonal(ctx, s.rdb, m, raw)
-			return
-		}
+	publishPersonal(ctx, f.pipe, m, raw)
+	f.queued++
+}
+
+// flush sends every queued frame in one round trip. Frames are best-effort
+// accelerations (the cursors are the truth), so a failure is only logged.
+func (f *receiptFrames) flush(ctx context.Context, log *slog.Logger) {
+	if f == nil || f.queued == 0 {
+		return
+	}
+	if _, err := f.pipe.Exec(ctx); err != nil {
+		log.Debug("receipt fan-out failed", "err", err, "frames", f.queued)
 	}
 }
 

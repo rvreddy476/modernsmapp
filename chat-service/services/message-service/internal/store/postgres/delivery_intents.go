@@ -75,12 +75,47 @@ func (s *ConversationStore) openIntent(ctx context.Context, intent *MessageDeliv
 	return nil
 }
 
+// ErrRequestFirstMessageTaken: a pending message request's one first message
+// was already claimed by another send (another idempotency key).
+var ErrRequestFirstMessageTaken = errors.New("message request first message already taken")
+
+// claimRequestFirstMessageSQL claims a pending request's single first message
+// for one send ($1 conversation, $2 idempotency key). It is one conditional
+// UPDATE, so concurrent sends serialise on the request row: the first to
+// commit wins and every other key re-evaluates the WHERE after the lock and
+// matches nothing. The same key matches again, so a retry of the winning send
+// still reserves; a request whose message landed before the claim column
+// existed (preview set, no key) is never claimable.
+const claimRequestFirstMessageSQL = `
+	UPDATE chat.message_requests SET first_message_key = $2
+	WHERE conversation_id = $1 AND status = 'pending'
+	  AND (first_message_key = $2 OR (first_message_key IS NULL AND preview = ''))`
+
+// ReserveMessageDeliveryIntent records the send's immutable delivery
+// identity. For a request's first message the claim and the intent commit in
+// one transaction, so at most one first message is ever reserved
+// (ErrRequestFirstMessageTaken for the rest) and a failed reservation never
+// leaves the request claimed.
 func (s *ConversationStore) ReserveMessageDeliveryIntent(ctx context.Context, intent MessageDeliveryIntent) (*MessageDeliveryIntent, error) {
 	text, replyPreview, extra, err := s.sealIntent(ctx, intent)
 	if err != nil {
 		return nil, err
 	}
-	_, err = s.db.Exec(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if intent.FirstRequest {
+		tag, err := tx.Exec(ctx, claimRequestFirstMessageSQL, intent.ConversationID, intent.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+		if tag.RowsAffected() == 0 {
+			return nil, ErrRequestFirstMessageTaken
+		}
+	}
+	_, err = tx.Exec(ctx, `
 		INSERT INTO chat.message_delivery_intents (
 			idempotency_key, request_hash, conversation_id, sender_id,
 			message_id, bucket, message_ts, message_type, message_text,
@@ -95,6 +130,9 @@ func (s *ConversationStore) ReserveMessageDeliveryIntent(ctx context.Context, in
 		intent.SourceApp, intent.MatchID, intent.ReplyToID, replyPreview, intent.ReplyToSenderID,
 		intent.PostID, extra)
 	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(ctx); err != nil {
 		return nil, err
 	}
 	reserved, err := s.GetMessageDeliveryIntent(ctx, intent.IdempotencyKey)

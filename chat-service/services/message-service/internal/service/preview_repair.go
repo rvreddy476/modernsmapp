@@ -97,7 +97,7 @@ func (s *Service) resolvePreviewRepair(ctx context.Context, o postgres.PreviewRe
 	// confirmed soft delete: the guarded rewrite below only fires if the
 	// preview still points at the obligation's timestamp.
 
-	msgs, _, err := s.msgStore.GetMessages(ctx, o.ConversationID, nil, previewRecomputeScan)
+	msgs, _, err := s.msgStore.GetMessages(ctx, o.ConversationID, nil, previewRecomputeScan, "")
 	if err != nil {
 		return previewRepairRetry, fmt.Errorf("find surviving preview: %w", err)
 	}

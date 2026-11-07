@@ -567,6 +567,7 @@ func (s *ConversationStore) CreateMessageRequest(ctx context.Context, convID, se
 		SET sender_id = EXCLUDED.sender_id,
 		    receiver_id = EXCLUDED.receiver_id,
 		    preview = '',
+		    first_message_key = NULL, -- a reopened request has its own one message
 		    status = 'pending',
 		    risk_score = 0,
 		    created_at = NOW(),
