@@ -13,7 +13,7 @@
 //
 // Flags:
 //
-//	-entity  posts|users|hashtags|products|communities|channels|all
+//	-entity  posts|users|hashtags|products|communities|channels|engagement-stubs|all
 //	-limit   max rows per entity (0 = unbounded — full reindex)
 //	-dry-run print the source rows we'd index but don't write to OpenSearch
 //
@@ -105,7 +105,7 @@ func postHashtags(stored []string, text string) []string {
 
 func main() {
 	var (
-		entity = flag.String("entity", "all", "posts|users|hashtags|products|communities|channels|all")
+		entity = flag.String("entity", "all", "posts|users|hashtags|products|communities|channels|engagement-stubs|all")
 		limit  = flag.Int("limit", 0, "max rows per entity (0 = unbounded)")
 		dry    = flag.Bool("dry-run", false, "skip writes to OpenSearch")
 	)
@@ -169,6 +169,8 @@ func runOne(
 		return backfillCommunities(ctx, store, appDSN, limit, dry)
 	case search.EntityChannels:
 		return backfillChannels(ctx, store, appDSN, limit, dry)
+	case entityEngagementStubs:
+		return purgeEngagementStubs(ctx, store, dry)
 	}
 	return 0, fmt.Errorf("unknown entity %q", entity)
 }
@@ -182,6 +184,7 @@ func expandEntity(s string) []string {
 			search.EntityProducts,
 			search.EntityCommunities,
 			search.EntityChannels,
+			entityEngagementStubs,
 		}
 	}
 	return strings.Split(s, ",")
@@ -880,8 +883,8 @@ func backfillCommunities(ctx context.Context, store *search.Store, dsn string, l
 	args := []any{}
 	q := `SELECT id::text, owner_id::text, handle, name, COALESCE(description,''),
 	             community_type, COALESCE(category,''), COALESCE(topic_tags, '{}'::text[]),
-	             COALESCE(member_count,0), COALESCE(is_verified,false), created_at, status
-	      FROM communities WHERE status != 'deleted' ORDER BY created_at DESC`
+	             COALESCE(member_count,0), COALESCE(is_verified,false), created_at, status, updated_at
+	      FROM communities ORDER BY created_at DESC`
 	if limit > 0 {
 		q += limitClause(limit, 1)
 		args = append(args, limit)
@@ -895,17 +898,21 @@ func backfillCommunities(ctx context.Context, store *search.Store, dsn string, l
 	count := 0
 	for rows.Next() {
 		var d search.CommunityDoc
+		var updatedAt time.Time
 		if err := rows.Scan(&d.CommunityID, &d.OwnerID, &d.Handle, &d.Name, &d.Description,
-			&d.CommunityType, &d.Category, &d.TopicTags, &d.MemberCount, &d.IsVerified, &d.CreatedAt, &d.Status); err != nil {
+			&d.CommunityType, &d.Category, &d.TopicTags, &d.MemberCount, &d.IsVerified, &d.CreatedAt, &d.Status, &updatedAt); err != nil {
 			return count, err
 		}
+		d.SourceVersion = search.SourceVersion(updatedAt)
 		if dry {
 			count++
 			continue
 		}
-		// IndexCommunity deletes a private, invite-only, suspended or
-		// archived community instead of writing it (S-M2).
-		if err := store.IndexCommunity(ctx, d); err != nil {
+		// In snapshot order, at the row's version: a private, invite-only,
+		// suspended or archived community becomes a tombstone and a deleted
+		// one a terminal tombstone (S-M2, entity_state.go), and an event
+		// newer than this read wins over it.
+		if err := store.ApplyCommunityState(ctx, d); err != nil {
 			slog.Warn("backfill communities: index failed", "id", d.CommunityID, "err", err)
 			continue
 		}
@@ -928,8 +935,8 @@ func backfillChannels(ctx context.Context, store *search.Store, dsn string, limi
 	args := []any{}
 	q := `SELECT id::text, owner_id::text, handle, name, COALESCE(description,''),
 	             channel_type, COALESCE(category,''), COALESCE(subscriber_count,0),
-	             COALESCE(is_verified,false), created_at, status
-	      FROM broadcast_channels WHERE status != 'deleted' ORDER BY created_at DESC`
+	             COALESCE(is_verified,false), created_at, status, updated_at
+	      FROM broadcast_channels ORDER BY created_at DESC`
 	if limit > 0 {
 		q += limitClause(limit, 1)
 		args = append(args, limit)
@@ -943,17 +950,18 @@ func backfillChannels(ctx context.Context, store *search.Store, dsn string, limi
 	count := 0
 	for rows.Next() {
 		var d search.ChannelDoc
+		var updatedAt time.Time
 		if err := rows.Scan(&d.ChannelID, &d.OwnerID, &d.Handle, &d.Name, &d.Description,
-			&d.ChannelType, &d.Category, &d.SubscriberCount, &d.IsVerified, &d.CreatedAt, &d.Status); err != nil {
+			&d.ChannelType, &d.Category, &d.SubscriberCount, &d.IsVerified, &d.CreatedAt, &d.Status, &updatedAt); err != nil {
 			return count, err
 		}
+		d.SourceVersion = search.SourceVersion(updatedAt)
 		if dry {
 			count++
 			continue
 		}
-		// IndexChannel deletes a non-public or non-active channel instead
-		// of writing it (S-M2).
-		if err := store.IndexChannel(ctx, d); err != nil {
+		// In snapshot order, at the row's version, as for communities.
+		if err := store.ApplyChannelState(ctx, d); err != nil {
 			slog.Warn("backfill channels: index failed", "id", d.ChannelID, "err", err)
 			continue
 		}
@@ -962,4 +970,26 @@ func backfillChannels(ctx context.Context, store *search.Store, dsn string, limi
 		}
 	}
 	return count, rows.Err()
+}
+
+// --- engagement stubs ------------------------------------------------------
+
+// entityEngagementStubs is not an index: it removes the documents
+// AddToEngagementScore used to create for entities with no document (a
+// stub holding only engagement_score, private communities and channels
+// included). Nothing creates them any more; one run after the deploy clears
+// what is left, and a re-run finds nothing.
+const entityEngagementStubs = "engagement-stubs"
+
+func purgeEngagementStubs(ctx context.Context, store *search.Store, dry bool) (int, error) {
+	if dry {
+		return 0, nil
+	}
+	removed, err := store.PurgeEngagementStubs(ctx)
+	total := 0
+	for index, n := range removed {
+		slog.Info("backfill engagement-stubs: removed", "index", index, "documents", n)
+		total += int(n)
+	}
+	return total, err
 }

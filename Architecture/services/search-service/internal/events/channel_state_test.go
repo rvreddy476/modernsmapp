@@ -40,7 +40,7 @@ func channelUpdated(t *testing.T, snap *channelSnapshot) kafka.Message {
 }
 
 // The fixture is channel-service's, byte for byte: a suspended private
-// channel. It must decode and remove the document.
+// channel. It must decode and hide the document at the row's version.
 func TestChannelUpdated_ContractFixtureRemovesASuspendedChannel(t *testing.T) {
 	raw, err := os.ReadFile("testdata/contracts/channel_updated.json")
 	if err != nil {
@@ -59,68 +59,77 @@ func TestChannelUpdated_ContractFixtureRemovesASuspendedChannel(t *testing.T) {
 	if err := c.processMessage(context.Background(), kafka.Message{Value: env}); err != nil {
 		t.Fatalf("processMessage: %v", err)
 	}
-	got := os.writes(search.IndexChannels)
-	if len(got) != 1 || got[0].method != http.MethodDelete {
-		t.Fatalf("a suspended channel: writes = %+v, want one delete", got)
+	w := wantOneRemoval(t, os.writes(search.IndexChannels), testChannelID, "remove")
+	if want := time.Date(2026, 11, 7, 10, 30, 0, 0, time.UTC).UnixMicro(); versionOf(w) != want {
+		t.Fatalf("version = %d, want the row's updated_at %d", versionOf(w), want)
 	}
 }
 
 // A channel that stops being searchable leaves search: suspended, archived,
-// deleted, or a type outside the public set.
+// or a type outside the public set (a tombstone), or deleted (for good).
 func TestChannelUpdated_NotSearchableRemovesTheDocument(t *testing.T) {
-	cases := map[string]func(s *channelSnapshot){
-		"suspended": func(s *channelSnapshot) { s.Status = "suspended" },
-		"archived":  func(s *channelSnapshot) { s.Status = "archived" },
-		"deleted":   func(s *channelSnapshot) { s.Status = "deleted" },
-		"private":   func(s *channelSnapshot) { s.ChannelType, s.Visibility = "private", "private" },
-		"paid":      func(s *channelSnapshot) { s.ChannelType, s.Visibility = "paid", "private" },
+	cases := map[string]struct {
+		mutate func(s *channelSnapshot)
+		op     string
+	}{
+		"suspended": {func(s *channelSnapshot) { s.Status = "suspended" }, "remove"},
+		"archived":  {func(s *channelSnapshot) { s.Status = "archived" }, "remove"},
+		"deleted":   {func(s *channelSnapshot) { s.Status = "deleted" }, "delete"},
+		"private":   {func(s *channelSnapshot) { s.ChannelType, s.Visibility = "private", "private" }, "remove"},
+		"paid":      {func(s *channelSnapshot) { s.ChannelType, s.Visibility = "paid", "private" }, "remove"},
 	}
-	for name, mutate := range cases {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			snap := activeSnapshot()
-			mutate(snap)
+			tc.mutate(snap)
 			os := newRecordingOS(t)
 			c := os.consumer(t)
 			if err := c.processMessage(context.Background(), channelUpdated(t, snap)); err != nil {
 				t.Fatalf("processMessage: %v", err)
 			}
-			got := os.writes(search.IndexChannels)
-			if len(got) != 1 || got[0].method != http.MethodDelete {
-				t.Fatalf("writes = %+v, want one delete", got)
+			w := wantOneRemoval(t, os.writes(search.IndexChannels), testChannelID, tc.op)
+			if tc.op == "remove" && versionOf(w) != snap.UpdatedAt.UnixMicro() {
+				t.Fatalf("version = %d, want the snapshot's %d", versionOf(w), snap.UpdatedAt.UnixMicro())
 			}
 		})
 	}
 }
 
-// A searchable channel is a field update with an upsert: the edit lands,
-// engagement_score (kept by subscribe events) is untouched, and a channel
-// with no document (just unsuspended, just made public) is created.
+// A searchable channel is an ordered field update with an upsert: the edit
+// lands, engagement_score (kept by subscribe events) is untouched, a
+// channel with no document (just unsuspended, just made public) is created,
+// and the version is the snapshot's own updated_at — not the envelope's,
+// which channelUpdated stamps with the test's clock.
 func TestChannelUpdated_SearchableIsAnUpsertOfEveryField(t *testing.T) {
 	os := newRecordingOS(t)
 	c := os.consumer(t)
-	if err := c.processMessage(context.Background(), channelUpdated(t, activeSnapshot())); err != nil {
+	snap := activeSnapshot()
+	if err := c.processMessage(context.Background(), channelUpdated(t, snap)); err != nil {
 		t.Fatalf("processMessage: %v", err)
 	}
 	got := os.writes(search.IndexChannels)
-	if len(got) != 1 || got[0].method != http.MethodPost || !strings.Contains(got[0].path, "/_update/"+testChannelID) {
-		t.Fatalf("writes = %+v, want one _update", got)
+	if len(got) != 1 || got[0].method != http.MethodPost || !strings.Contains(got[0].path, "/_update/"+testChannelID) || opOf(got[0]) != "upsert" {
+		t.Fatalf("writes = %+v, want one ordered upsert", got)
 	}
-	doc, _ := got[0].body["doc"].(map[string]any)
+	if versionOf(got[0]) != snap.UpdatedAt.UnixMicro() {
+		t.Fatalf("version = %d, want the snapshot's updated_at %d", versionOf(got[0]), snap.UpdatedAt.UnixMicro())
+	}
+	doc := fieldsOf(got[0])
 	for field, want := range map[string]any{
 		"name": "Riders club", "handle": "riders", "channel_type": "public", "status": search.StatusActive,
 		"owner_id": "9b1e4c2a-7d3f-4e5a-8c6b-1a2b3c4d5e02", "category": "sports", "subscriber_count": float64(12),
 		"description": "", // cleared, and the clear must be written
 	} {
 		if doc[field] != want {
-			t.Fatalf("doc[%q] = %v, want %v (doc %v)", field, doc[field], want, doc)
+			t.Fatalf("fields[%q] = %v, want %v (fields %v)", field, doc[field], want, doc)
 		}
 	}
 	if _, ok := doc["engagement_score"]; ok {
 		t.Fatalf("an edit must not reset engagement_score: %v", doc)
 	}
-	upsert, _ := got[0].body["upsert"].(map[string]any)
+	upsert := docOf(got[0])
 	if upsert["status"] != search.StatusActive || upsert["handle"] != "riders" || upsert["engagement_score"] == nil {
-		t.Fatalf("upsert = %v, want the whole document", upsert)
+		t.Fatalf("doc = %v, want the whole document", upsert)
 	}
 }
 
@@ -137,14 +146,14 @@ func TestChannelCreated_SnapshotIsApplied(t *testing.T) {
 		t.Fatalf("processMessage: %v", err)
 	}
 	got := os.writes(search.IndexChannels)
-	if len(got) != 1 || !strings.Contains(got[0].path, "/_update/") {
-		t.Fatalf("writes = %+v, want one _update", got)
+	if len(got) != 1 || opOf(got[0]) != "upsert" {
+		t.Fatalf("writes = %+v, want one ordered upsert", got)
 	}
-	if doc, _ := got[0].body["doc"].(map[string]any); doc["handle"] != "riders" {
-		t.Fatalf("doc = %v", got[0].body)
+	if doc := fieldsOf(got[0]); doc["handle"] != "riders" || versionOf(got[0]) != snap.UpdatedAt.UnixMicro() {
+		t.Fatalf("body = %v", got[0].body)
 	}
 
-	// Created private: never written.
+	// Created private: never written, only remembered.
 	os = newRecordingOS(t)
 	c = os.consumer(t)
 	snap.ChannelType = "private"
@@ -153,15 +162,12 @@ func TestChannelCreated_SnapshotIsApplied(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("processMessage: %v", err)
 	}
-	for _, w := range os.writes(search.IndexChannels) {
-		if w.method != http.MethodDelete {
-			t.Fatalf("a private channel was written: %s %s %v", w.method, w.path, w.body)
-		}
-	}
+	wantOneRemoval(t, os.writes(search.IndexChannels), testChannelID, "remove")
 }
 
 // An older channel-service sends channel.created with four fields; it still
-// indexes, active.
+// indexes, active, and unversioned (so it never overwrites a versioned
+// document). channel.deleted removes the channel for good.
 func TestChannelCreated_LegacyPayloadStillIndexes(t *testing.T) {
 	os := newRecordingOS(t)
 	c := os.consumer(t)
@@ -172,7 +178,19 @@ func TestChannelCreated_LegacyPayloadStillIndexes(t *testing.T) {
 		t.Fatalf("processMessage: %v", err)
 	}
 	got := os.writes(search.IndexChannels)
-	if len(got) != 1 || got[0].body["status"] != search.StatusActive || got[0].body["name"] != "Old" {
+	if len(got) != 1 || opOf(got[0]) != "upsert" || docOf(got[0])["status"] != search.StatusActive || docOf(got[0])["name"] != "Old" {
 		t.Fatalf("writes = %+v", got)
 	}
+	if versionOf(got[0]) != 0 {
+		t.Fatalf("a legacy event carried version %d", versionOf(got[0]))
+	}
+
+	os = newRecordingOS(t)
+	c = os.consumer(t)
+	if err := c.processMessage(context.Background(), msg(t, events.EventChannelDeleted, map[string]any{
+		"channel_id": testChannelID, "actor_id": "9b1e4c2a-7d3f-4e5a-8c6b-1a2b3c4d5e02", "deleted_at": time.Now(),
+	})); err != nil {
+		t.Fatalf("processMessage: %v", err)
+	}
+	wantOneRemoval(t, os.writes(search.IndexChannels), testChannelID, "delete")
 }

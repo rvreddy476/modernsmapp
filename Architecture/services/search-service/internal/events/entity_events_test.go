@@ -74,6 +74,59 @@ func (r *recordingOS) writes(index string) []recordedReq {
 	return out
 }
 
+// Every write to communities_v1 / channels_v1 is an ordered scripted
+// update (store/search/entity_state.go). paramsOf is its params; opOf its
+// op: upsert (write), remove (tombstone), delete (terminal tombstone) or
+// patch (legacy partial update); "" for any other request.
+func paramsOf(r recordedReq) map[string]any {
+	script, _ := r.body["script"].(map[string]any)
+	params, _ := script["params"].(map[string]any)
+	return params
+}
+
+func opOf(r recordedReq) string {
+	if r.method != http.MethodPost || !strings.Contains(r.path, "/_update/") {
+		return ""
+	}
+	op, _ := paramsOf(r)["op"].(string)
+	return op
+}
+
+// fieldsOf / docOf: what an upsert merges into a live document, and the
+// whole document it creates.
+func fieldsOf(r recordedReq) map[string]any {
+	m, _ := paramsOf(r)["fields"].(map[string]any)
+	return m
+}
+
+func docOf(r recordedReq) map[string]any {
+	m, _ := paramsOf(r)["doc"].(map[string]any)
+	return m
+}
+
+// versionOf is the snapshot version the write carries (0: unversioned).
+func versionOf(r recordedReq) int64 {
+	v, _ := paramsOf(r)["version"].(float64)
+	return int64(v)
+}
+
+// wantOneRemoval: exactly one write, an ordered removal of id with the op
+// given (remove or delete), carrying nothing but the id in its tombstone.
+func wantOneRemoval(t *testing.T, got []recordedReq, id, op string) recordedReq {
+	t.Helper()
+	if len(got) != 1 || opOf(got[0]) != op || !strings.HasSuffix(got[0].path, "/_update/"+id) {
+		t.Fatalf("writes = %+v, want one %s of %s", got, op, id)
+	}
+	tomb, _ := paramsOf(got[0])["tombstone"].(map[string]any)
+	if len(tomb) != 3 || tomb["removed"] != true || tomb["status"] != search.StatusRemoved {
+		t.Fatalf("tombstone = %v", tomb)
+	}
+	if len(fieldsOf(got[0])) != 0 || len(docOf(got[0])) != 0 {
+		t.Fatalf("a removal carries the entity's fields: %v", got[0].body)
+	}
+	return got[0]
+}
+
 const testCommunityID = "6f1c7c8e-4b8b-4e57-9a0e-0d5f2b8a1c11"
 
 // S-M4: community.updated is a partial update. A full replace dropped
@@ -91,13 +144,16 @@ func TestCommunityUpdated_IsAPartialUpdate(t *testing.T) {
 		t.Fatalf("writes to communities_v1 = %+v, want one partial update", got)
 	}
 	w := got[0]
-	if w.method != http.MethodPost || !strings.Contains(w.path, "/_update/") {
-		t.Fatalf("community.updated sent %s %s; a full replace drops owner_id, the handle and the counts", w.method, w.path)
+	if w.method != http.MethodPost || !strings.Contains(w.path, "/_update/") || opOf(w) != "patch" {
+		t.Fatalf("community.updated sent %s %s %v; a full replace drops owner_id, the handle and the counts", w.method, w.path, w.body)
 	}
 	if _, upsert := w.body["upsert"]; upsert {
 		t.Fatal("a partial update must never create a document")
 	}
-	doc, _ := w.body["doc"].(map[string]any)
+	if versionOf(w) != 0 {
+		t.Fatalf("an event without the row has no version; it carried %d", versionOf(w))
+	}
+	doc := fieldsOf(w)
 	if doc["name"] != "Riders club" || doc["community_type"] != "public" {
 		t.Fatalf("partial doc = %v", doc)
 	}
@@ -118,9 +174,9 @@ func TestCommunityUpdated_ToNonPublicTypeRemovesTheDocument(t *testing.T) {
 		})); err != nil {
 			t.Fatalf("processMessage: %v", err)
 		}
-		got := os.writes(search.IndexCommunities)
-		if len(got) != 1 || got[0].method != http.MethodDelete {
-			t.Fatalf("community turned %q: writes = %+v, want one delete", typ, got)
+		w := wantOneRemoval(t, os.writes(search.IndexCommunities), testCommunityID, "remove")
+		if versionOf(w) != 0 {
+			t.Fatalf("community turned %q: the envelope's updated_at is not a row version: %d", typ, versionOf(w))
 		}
 	}
 }
@@ -135,11 +191,7 @@ func TestCommunityCreated_PrivateIsNotIndexed(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("processMessage: %v", err)
 	}
-	for _, w := range os.writes(search.IndexCommunities) {
-		if w.method == http.MethodPut || (w.method == http.MethodPost && !strings.Contains(w.path, "_update")) {
-			t.Fatalf("a private community was written: %s %s %v", w.method, w.path, w.body)
-		}
-	}
+	wantOneRemoval(t, os.writes(search.IndexCommunities), testCommunityID, "remove")
 
 	os = newRecordingOS(t)
 	c = os.consumer(t)
@@ -150,8 +202,11 @@ func TestCommunityCreated_PrivateIsNotIndexed(t *testing.T) {
 		t.Fatalf("processMessage: %v", err)
 	}
 	got := os.writes(search.IndexCommunities)
-	if len(got) != 1 || got[0].body["status"] != search.StatusActive || got[0].body["owner_id"] == nil {
+	if len(got) != 1 || opOf(got[0]) != "upsert" || docOf(got[0])["status"] != search.StatusActive || docOf(got[0])["owner_id"] == nil {
 		t.Fatalf("a public community must be written active with its owner: %+v", got)
+	}
+	if versionOf(got[0]) != 0 {
+		t.Fatalf("an older created event has no version; it carried %d", versionOf(got[0]))
 	}
 }
 

@@ -1,13 +1,6 @@
 package search
 
-import (
-	"bytes"
-	"context"
-	"encoding/json"
-	"fmt"
-
-	"github.com/opensearch-project/opensearch-go/v2/opensearchapi"
-)
+import "context"
 
 // Who may find a community or a broadcast channel (audit 2026-11-07, S-M2).
 //
@@ -18,9 +11,9 @@ import (
 //
 // The rule is applied twice, because the two halves fail differently:
 //
-//   - at index time, in IndexCommunity / IndexChannel, which every writer
-//     (consumer and backfill) goes through: a document that is not
-//     searchable is deleted instead of written;
+//   - at index time, in ApplyCommunityState / ApplyChannelState, which every
+//     writer (consumer and backfill) goes through: a document that is not
+//     searchable becomes a tombstone (entity_state.go) instead;
 //   - at query time, in every query over the two indices: type in the
 //     public set AND status = active. A document without a status matches
 //     nothing (fail closed), so documents written before this field existed
@@ -73,146 +66,33 @@ func publicCommunityFilterAny() []map[string]any {
 	}
 }
 
-// IndexCommunity writes a community document, or deletes it when it is not
-// searchable (CommunitySearchable).
-func (s *Store) IndexCommunity(ctx context.Context, doc CommunityDoc) error {
-	if !CommunitySearchable(doc) {
-		return s.DeleteCommunity(ctx, doc.CommunityID)
-	}
-	if doc.EngagementScore == 0 {
-		doc.EngagementScore = computeEngagementScore(EntityCommunities, engagementCounters{Members: doc.MemberCount})
-	}
-	return s.indexDoc(ctx, IndexCommunities, doc.CommunityID, doc)
-}
-
-// IndexChannel writes a broadcast channel document, or deletes it when it
-// is not searchable (ChannelSearchable).
-func (s *Store) IndexChannel(ctx context.Context, doc ChannelDoc) error {
-	if !ChannelSearchable(doc) {
-		return s.DeleteChannel(ctx, doc.ChannelID)
-	}
-	if doc.EngagementScore == 0 {
-		doc.EngagementScore = computeEngagementScore(EntityChannels, engagementCounters{Subscribers: doc.SubscriberCount})
-	}
-	return s.indexDoc(ctx, IndexChannels, doc.ChannelID, doc)
-}
-
-// UpdateCommunityFields applies a partial update to one community document
-// (S-M4). community.updated carries only the name and type, and a full
-// replace dropped owner_id (so blocks on the owner stopped applying), the
-// handle, the counts and the status. A missing document stays missing: a
-// partial update never creates one.
-func (s *Store) UpdateCommunityFields(ctx context.Context, communityID string, fields map[string]any) error {
-	if communityID == "" || len(fields) == 0 {
-		return nil
-	}
-	body, err := json.Marshal(map[string]any{"doc": fields})
-	if err != nil {
-		return err
-	}
-	retries := bulkRetries
-	req := opensearchapi.UpdateRequest{
-		Index:           IndexCommunities,
-		DocumentID:      communityID,
-		Body:            bytes.NewReader(body),
-		RetryOnConflict: &retries,
-	}
-	res, err := req.Do(ctx, s.client)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() && res.StatusCode != 404 {
-		return fmt.Errorf("update community %s: %s", communityID, res.String())
-	}
-	return nil
-}
-
-// ApplyChannelState writes a broadcast channel's full state, as carried by
-// channel.created / channel.updated since 2026-11-07 (channel-service's
-// ChannelSnapshot), and deletes the document instead when the channel is
-// no longer searchable: suspended, archived or deleted, or a type outside
-// the public set.
+// ApplyCommunityState writes a community's full state — community-service's
+// CommunitySnapshot on community.created / community.updated, the backfill's
+// row, or an older producer's four created fields — in snapshot order
+// (entity_state.go): a write older than the stored one is dropped.
 //
-// A searchable channel is an update with an upsert, never a replace:
-//
-//   - "doc" overwrites every field the snapshot owns and leaves
-//     engagement_score alone, which the subscribe / unsubscribe events
-//     maintain (AddToEngagementScore);
-//   - "upsert" creates the whole document when there is none — a channel
-//     lifted out of suspension, or turned public, comes back into search
+//   - Deleted (status deleted): a terminal tombstone (DeleteCommunity).
+//   - Not searchable (archived, suspended, a type outside the public set):
+//     a tombstone at the snapshot's version (HideCommunity).
+//   - Searchable: the snapshot's fields are merged into a live document,
+//     leaving engagement_score alone (the member events keep it); a missing
+//     document, or a tombstone the snapshot is newer than, becomes the whole
+//     document, so a community made public again comes back into search
 //     without waiting on the backfill.
 //
 // Every field is written even when empty: the snapshot is the row, so an
-// empty description means the description was cleared.
-func (s *Store) ApplyChannelState(ctx context.Context, doc ChannelDoc) error {
-	if doc.ChannelID == "" {
-		return nil
-	}
-	if !ChannelSearchable(doc) {
-		return s.DeleteChannel(ctx, doc.ChannelID) // not searchable: out of the index
-	}
-	fields := map[string]any{
-		"channel_id":       doc.ChannelID,
-		"owner_id":         doc.OwnerID,
-		"handle":           doc.Handle,
-		"name":             doc.Name,
-		"description":      doc.Description,
-		"channel_type":     doc.ChannelType,
-		"category":         doc.Category,
-		"subscriber_count": doc.SubscriberCount,
-		"is_verified":      doc.IsVerified,
-		"status":           doc.Status,
-	}
-	if !doc.CreatedAt.IsZero() {
-		fields["created_at"] = doc.CreatedAt
-	}
-	if doc.EngagementScore == 0 {
-		doc.EngagementScore = computeEngagementScore(EntityChannels, engagementCounters{Subscribers: doc.SubscriberCount})
-	}
-	body, err := json.Marshal(map[string]any{"doc": fields, "upsert": doc})
-	if err != nil {
-		return err
-	}
-	retries := bulkRetries
-	req := opensearchapi.UpdateRequest{
-		Index:           IndexChannels,
-		DocumentID:      doc.ChannelID,
-		Body:            bytes.NewReader(body),
-		RetryOnConflict: &retries,
-	}
-	res, err := req.Do(ctx, s.client)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return fmt.Errorf("apply channel state %s: %s", doc.ChannelID, res.String())
-	}
-	return nil
-}
-
-// ApplyCommunityState writes a community's full state, as carried by
-// community.created / community.updated since 2026-11-08 (community-service's
-// CommunitySnapshot), and deletes the document instead when the community is
-// no longer searchable: archived, suspended or deleted, or a type outside the
-// public set. It is ApplyChannelState for communities:
-//
-//   - "doc" overwrites every field the snapshot owns and leaves
-//     engagement_score alone, which the member events maintain
-//     (AddToEngagementScore);
-//   - "upsert" creates the whole document when there is none, so a community
-//     made public again comes back into search without waiting on the
-//     backfill.
-//
-// Every field is written even when empty: the snapshot is the row, so an
-// empty description means the description was cleared.
+// empty description means the description was cleared. doc.SourceVersion is
+// the snapshot's version (SourceVersion of its updated_at); zero for an
+// older event, which then never overwrites a versioned document.
 func (s *Store) ApplyCommunityState(ctx context.Context, doc CommunityDoc) error {
 	if doc.CommunityID == "" {
 		return nil
 	}
+	if doc.Status == StatusDeleted {
+		return s.DeleteCommunity(ctx, doc.CommunityID)
+	}
 	if !CommunitySearchable(doc) {
-		return s.DeleteCommunity(ctx, doc.CommunityID) // not searchable: out of the index
+		return s.HideCommunity(ctx, doc.CommunityID, doc.SourceVersion)
 	}
 	tags := doc.TopicTags
 	if tags == nil {
@@ -237,24 +117,86 @@ func (s *Store) ApplyCommunityState(ctx context.Context, doc CommunityDoc) error
 	if doc.EngagementScore == 0 {
 		doc.EngagementScore = computeEngagementScore(EntityCommunities, engagementCounters{Members: doc.MemberCount})
 	}
-	body, err := json.Marshal(map[string]any{"doc": fields, "upsert": doc})
-	if err != nil {
-		return err
+	return s.writeEntity(ctx, communityTarget, entityWrite{
+		op: entityUpsert, id: doc.CommunityID, version: doc.SourceVersion,
+		fields: fields, doc: doc, engagement: doc.EngagementScore,
+	})
+}
+
+// HideCommunity takes a community out of search at the given version
+// (zero: unversioned) without forgetting it: a tombstone, so a stale
+// snapshot that still says active cannot bring it back (entity_state.go).
+func (s *Store) HideCommunity(ctx context.Context, communityID string, version int64) error {
+	return s.writeEntity(ctx, communityTarget, entityWrite{op: entityRemove, id: communityID, version: version})
+}
+
+// DeleteCommunity removes a deleted community for good: a terminal
+// tombstone that no later snapshot, however new, writes over.
+func (s *Store) DeleteCommunity(ctx context.Context, communityID string) error {
+	return s.writeEntity(ctx, communityTarget, entityWrite{op: entityDelete, id: communityID})
+}
+
+// UpdateCommunityFields applies a partial update to one community document
+// (S-M4), for community.updated from producers older than the snapshot,
+// which carry only the name, the type and the status. A full replace
+// dropped owner_id (so blocks on the owner stopped applying), the handle,
+// the counts and the status.
+//
+// It lands only on a live, unversioned document (entity_state.go, patch): a
+// missing document stays missing (there is no owner to write, and a
+// document without owner_id escapes the block filter), a tombstone stays a
+// tombstone (fields on it could make it match the public filter), and a
+// versioned document is newer than any event without a version.
+func (s *Store) UpdateCommunityFields(ctx context.Context, communityID string, fields map[string]any) error {
+	if communityID == "" || len(fields) == 0 {
+		return nil
 	}
-	retries := bulkRetries
-	req := opensearchapi.UpdateRequest{
-		Index:           IndexCommunities,
-		DocumentID:      doc.CommunityID,
-		Body:            bytes.NewReader(body),
-		RetryOnConflict: &retries,
+	return s.writeEntity(ctx, communityTarget, entityWrite{op: entityPatch, id: communityID, fields: fields})
+}
+
+// ApplyChannelState is ApplyCommunityState for broadcast channels:
+// channel-service's ChannelSnapshot on channel.created / channel.updated
+// (since 2026-11-07), the backfill's row, or an older producer's created
+// fields, applied in snapshot order. Deleted is a terminal tombstone; not
+// searchable (suspended, archived, a type outside the public set) is a
+// tombstone at the snapshot's version; searchable merges the fields into a
+// live document and leaves engagement_score to the subscribe / unsubscribe
+// events, or creates the whole document.
+func (s *Store) ApplyChannelState(ctx context.Context, doc ChannelDoc) error {
+	if doc.ChannelID == "" {
+		return nil
 	}
-	res, err := req.Do(ctx, s.client)
-	if err != nil {
-		return err
+	if doc.Status == StatusDeleted {
+		return s.DeleteChannel(ctx, doc.ChannelID)
 	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return fmt.Errorf("apply community state %s: %s", doc.CommunityID, res.String())
+	if !ChannelSearchable(doc) {
+		return s.writeEntity(ctx, channelTarget, entityWrite{op: entityRemove, id: doc.ChannelID, version: doc.SourceVersion})
 	}
-	return nil
+	fields := map[string]any{
+		"channel_id":       doc.ChannelID,
+		"owner_id":         doc.OwnerID,
+		"handle":           doc.Handle,
+		"name":             doc.Name,
+		"description":      doc.Description,
+		"channel_type":     doc.ChannelType,
+		"category":         doc.Category,
+		"subscriber_count": doc.SubscriberCount,
+		"is_verified":      doc.IsVerified,
+		"status":           doc.Status,
+	}
+	if !doc.CreatedAt.IsZero() {
+		fields["created_at"] = doc.CreatedAt
+	}
+	if doc.EngagementScore == 0 {
+		doc.EngagementScore = computeEngagementScore(EntityChannels, engagementCounters{Subscribers: doc.SubscriberCount})
+	}
+	return s.writeEntity(ctx, channelTarget, entityWrite{
+		op: entityUpsert, id: doc.ChannelID, version: doc.SourceVersion,
+		fields: fields, doc: doc, engagement: doc.EngagementScore,
+	})
+}
+
+// DeleteChannel removes a deleted channel for good: a terminal tombstone.
+func (s *Store) DeleteChannel(ctx context.Context, channelID string) error {
+	return s.writeEntity(ctx, channelTarget, entityWrite{op: entityDelete, id: channelID})
 }

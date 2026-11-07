@@ -188,7 +188,10 @@ func (s *Store) initEntityIndices() {
 				"is_verified":      { "type": "boolean" },
 				"engagement_score": { "type": "double" },
 				"created_at":       { "type": "date" },
-				"status":           { "type": "keyword" }
+				"status":           { "type": "keyword" },
+				"source_updated_us": { "type": "long" },
+				"removed":          { "type": "boolean" },
+				"deleted":          { "type": "boolean" }
 			}
 		}
 	}`)
@@ -209,7 +212,10 @@ func (s *Store) initEntityIndices() {
 				"is_verified":      { "type": "boolean" },
 				"engagement_score": { "type": "double" },
 				"created_at":       { "type": "date" },
-				"status":           { "type": "keyword" }
+				"status":           { "type": "keyword" },
+				"source_updated_us": { "type": "long" },
+				"removed":          { "type": "boolean" },
+				"deleted":          { "type": "boolean" }
 			}
 		}
 	}`)
@@ -218,4 +224,14 @@ func (s *Store) initEntityIndices() {
 	// documents without it match no query until the backfill rewrites them.
 	s.putFieldMapping(ctx, IndexCommunities, "status", "keyword")
 	s.putFieldMapping(ctx, IndexChannels, "status", "keyword")
+
+	// Snapshot order (2026-11-08, entity_state.go): the version and the two
+	// tombstone flags. Additive. A document written before them has no
+	// version, which the write script treats as unversioned: the first
+	// versioned snapshot (or the backfill) stamps one.
+	for _, index := range []string{IndexCommunities, IndexChannels} {
+		s.putFieldMapping(ctx, index, "source_updated_us", "long")
+		s.putFieldMapping(ctx, index, "removed", "boolean")
+		s.putFieldMapping(ctx, index, "deleted", "boolean")
+	}
 }

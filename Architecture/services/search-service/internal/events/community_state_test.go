@@ -51,15 +51,9 @@ func processOne(t *testing.T, m kafka.Message) []recordedReq {
 	return os.writes(search.IndexCommunities)
 }
 
-func wantOneDelete(t *testing.T, got []recordedReq) {
-	t.Helper()
-	if len(got) != 1 || got[0].method != http.MethodDelete || !strings.Contains(got[0].path, testCommunityID) {
-		t.Fatalf("writes = %+v, want one delete of the community", got)
-	}
-}
-
 // The fixture is community-service's, byte for byte: an education community
-// archived by the GDPR flow. It must decode and remove the document.
+// archived by the GDPR flow. It must decode and hide the document at the
+// row's version.
 func TestCommunityUpdated_ContractFixtureRemovesAnArchivedCommunity(t *testing.T) {
 	raw, err := os.ReadFile("testdata/contracts/community_updated.json")
 	if err != nil {
@@ -75,10 +69,13 @@ func TestCommunityUpdated_ContractFixtureRemovesAnArchivedCommunity(t *testing.T
 		t.Fatalf("decoded %+v / %+v", p, p.Community)
 	}
 	env, _ := json.Marshal(events.EventEnvelope{EventType: events.EventCommunityUpdated, Payload: raw})
-	wantOneDelete(t, processOne(t, kafka.Message{Value: env}))
+	w := wantOneRemoval(t, processOne(t, kafka.Message{Value: env}), testCommunityID, "remove")
+	if want := time.Date(2026, 11, 8, 10, 30, 0, 0, time.UTC).UnixMicro(); versionOf(w) != want {
+		t.Fatalf("version = %d, want the row's updated_at %d", versionOf(w), want)
+	}
 
-	// The same contract with the community active again is an upsert of the
-	// whole row: the owner and handle reach the document.
+	// The same contract with the community active again is an ordered
+	// upsert of the whole row: the owner and handle reach the document.
 	var generic map[string]any
 	_ = json.Unmarshal(raw, &generic)
 	generic["status"] = "active"
@@ -86,68 +83,79 @@ func TestCommunityUpdated_ContractFixtureRemovesAnArchivedCommunity(t *testing.T
 	active, _ := json.Marshal(generic)
 	env, _ = json.Marshal(events.EventEnvelope{EventType: events.EventCommunityUpdated, Payload: active})
 	got := processOne(t, kafka.Message{Value: env})
-	if len(got) != 1 || !strings.Contains(got[0].path, "/_update/"+testCommunityID) {
-		t.Fatalf("writes = %+v, want one _update", got)
+	if len(got) != 1 || opOf(got[0]) != "upsert" || !strings.Contains(got[0].path, "/_update/"+testCommunityID) {
+		t.Fatalf("writes = %+v, want one ordered upsert", got)
 	}
-	if doc, _ := got[0].body["doc"].(map[string]any); doc["owner_id"] != testCommunityOwner || doc["handle"] != "riders" {
-		t.Fatalf("doc = %v", got[0].body)
+	if doc := fieldsOf(got[0]); doc["owner_id"] != testCommunityOwner || doc["handle"] != "riders" {
+		t.Fatalf("fields = %v", got[0].body)
 	}
 }
 
 // A community that stops being searchable leaves search, whichever field
-// says so: the status, the visibility or the type.
+// says so: the status, the visibility or the type. Deleted is terminal.
 func TestCommunityUpdated_SnapshotNotSearchableRemovesTheDocument(t *testing.T) {
-	cases := map[string]func(s *communitySnapshot){
-		"archived":           func(s *communitySnapshot) { s.Status = "archived" },
-		"suspended":          func(s *communitySnapshot) { s.Status = "suspended" },
-		"deleted":            func(s *communitySnapshot) { s.Status = "deleted" },
-		"no status":          func(s *communitySnapshot) { s.Status = "" },
-		"private type":       func(s *communitySnapshot) { s.CommunityType, s.Visibility = "private", "private" },
-		"fan type":           func(s *communitySnapshot) { s.CommunityType, s.Visibility = "fan", "private" },
-		"private visibility": func(s *communitySnapshot) { s.Visibility = "private" },
+	cases := map[string]struct {
+		mutate func(s *communitySnapshot)
+		op     string
+	}{
+		"archived":           {func(s *communitySnapshot) { s.Status = "archived" }, "remove"},
+		"suspended":          {func(s *communitySnapshot) { s.Status = "suspended" }, "remove"},
+		"deleted":            {func(s *communitySnapshot) { s.Status = "deleted" }, "delete"},
+		"no status":          {func(s *communitySnapshot) { s.Status = "" }, "remove"},
+		"private type":       {func(s *communitySnapshot) { s.CommunityType, s.Visibility = "private", "private" }, "remove"},
+		"fan type":           {func(s *communitySnapshot) { s.CommunityType, s.Visibility = "fan", "private" }, "remove"},
+		"private visibility": {func(s *communitySnapshot) { s.Visibility = "private" }, "remove"},
 	}
-	for name, mutate := range cases {
+	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			snap := activeCommunitySnapshot()
-			mutate(snap)
+			c.mutate(snap)
 			// The top-level fields stay those of an active public community,
 			// so the snapshot alone must decide.
-			wantOneDelete(t, processOne(t, communityUpdated(t, communityUpdatedPayload{
+			w := wantOneRemoval(t, processOne(t, communityUpdated(t, communityUpdatedPayload{
 				Name: snap.Name, CommunityType: "education", Status: "active",
 				Visibility: "public", UpdatedAt: time.Now(), Community: snap,
-			})))
+			})), testCommunityID, c.op)
+			if c.op == "remove" && versionOf(w) != snap.UpdatedAt.UnixMicro() {
+				t.Fatalf("version = %d, want the snapshot's %d", versionOf(w), snap.UpdatedAt.UnixMicro())
+			}
 		})
 	}
 }
 
-// A searchable community is a field update with an upsert: the edit lands,
-// engagement_score (kept by member events) is untouched, and a community with
-// no document (just made public) is created whole, owner included.
+// A searchable community is an ordered field update with an upsert: the
+// edit lands, engagement_score (kept by member events) is untouched, and a
+// community with no document (just made public) is created whole, owner
+// included. The version is the snapshot's own updated_at, not the
+// envelope's.
 func TestCommunityUpdated_SnapshotSearchableIsAnUpsertOfEveryField(t *testing.T) {
 	snap := activeCommunitySnapshot()
 	got := processOne(t, communityUpdated(t, communityUpdatedPayload{
 		Name: snap.Name, CommunityType: snap.CommunityType, Status: snap.Status,
 		Visibility: snap.Visibility, UpdatedAt: time.Now(), Community: snap,
 	}))
-	if len(got) != 1 || got[0].method != http.MethodPost || !strings.Contains(got[0].path, "/_update/"+testCommunityID) {
-		t.Fatalf("writes = %+v, want one _update", got)
+	if len(got) != 1 || got[0].method != http.MethodPost || !strings.Contains(got[0].path, "/_update/"+testCommunityID) || opOf(got[0]) != "upsert" {
+		t.Fatalf("writes = %+v, want one ordered upsert", got)
 	}
-	doc, _ := got[0].body["doc"].(map[string]any)
+	if versionOf(got[0]) != snap.UpdatedAt.UnixMicro() {
+		t.Fatalf("version = %d, want the snapshot's updated_at %d", versionOf(got[0]), snap.UpdatedAt.UnixMicro())
+	}
+	doc := fieldsOf(got[0])
 	for field, want := range map[string]any{
 		"name": "Riders club", "handle": "riders", "community_type": "education", "status": search.StatusActive,
 		"owner_id": testCommunityOwner, "category": "sports", "member_count": float64(12),
 		"description": "", // cleared, and the clear must be written
 	} {
 		if doc[field] != want {
-			t.Fatalf("doc[%q] = %v, want %v (doc %v)", field, doc[field], want, doc)
+			t.Fatalf("fields[%q] = %v, want %v (fields %v)", field, doc[field], want, doc)
 		}
 	}
 	if _, ok := doc["engagement_score"]; ok {
 		t.Fatalf("an edit must not reset engagement_score: %v", doc)
 	}
-	upsert, _ := got[0].body["upsert"].(map[string]any)
+	upsert := docOf(got[0])
 	if upsert["status"] != search.StatusActive || upsert["owner_id"] != testCommunityOwner || upsert["engagement_score"] == nil {
-		t.Fatalf("upsert = %v, want the whole document", upsert)
+		t.Fatalf("doc = %v, want the whole document", upsert)
 	}
 }
 
@@ -163,22 +171,25 @@ func TestCommunityUpdated_StatusAndVisibilityFieldsAreHonoured(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			p.UpdatedAt = time.Now()
-			wantOneDelete(t, processOne(t, communityUpdated(t, p)))
+			wantOneRemoval(t, processOne(t, communityUpdated(t, p)), testCommunityID, "remove")
 		})
 	}
+	wantOneRemoval(t, processOne(t, communityUpdated(t, communityUpdatedPayload{
+		Name: "n", CommunityType: "public", Status: "deleted", Visibility: "public", UpdatedAt: time.Now(),
+	})), testCommunityID, "delete")
 
 	// Active and public: a partial update that writes the status and never
 	// creates a document (no owner to write).
 	got := processOne(t, communityUpdated(t, communityUpdatedPayload{
 		Name: "n", CommunityType: "professional", Status: "active", Visibility: "public", UpdatedAt: time.Now(),
 	}))
-	if len(got) != 1 || got[0].method != http.MethodPost || !strings.Contains(got[0].path, "/_update/") {
+	if len(got) != 1 || opOf(got[0]) != "patch" {
 		t.Fatalf("writes = %+v, want one partial update", got)
 	}
 	if _, upsert := got[0].body["upsert"]; upsert {
 		t.Fatal("a payload without the row must never create a document")
 	}
-	if doc, _ := got[0].body["doc"].(map[string]any); doc["status"] != "active" || doc["community_type"] != "professional" {
+	if doc := fieldsOf(got[0]); doc["status"] != "active" || doc["community_type"] != "professional" {
 		t.Fatalf("partial doc = %v", got[0].body)
 	}
 }
@@ -191,26 +202,22 @@ func TestCommunityCreated_SnapshotIsApplied(t *testing.T) {
 		CommunityID: testCommunityID, OwnerID: snap.OwnerID, Name: snap.Name, CommunityType: snap.CommunityType,
 		CreatedAt: snap.CreatedAt, Community: snap,
 	}))
-	if len(got) != 1 || !strings.Contains(got[0].path, "/_update/") {
-		t.Fatalf("writes = %+v, want one _update", got)
+	if len(got) != 1 || opOf(got[0]) != "upsert" {
+		t.Fatalf("writes = %+v, want one ordered upsert", got)
 	}
-	if doc, _ := got[0].body["doc"].(map[string]any); doc["handle"] != "riders" {
-		t.Fatalf("doc = %v", got[0].body)
+	if doc := fieldsOf(got[0]); doc["handle"] != "riders" || versionOf(got[0]) != snap.UpdatedAt.UnixMicro() {
+		t.Fatalf("body = %v", got[0].body)
 	}
 
 	snap.CommunityType, snap.Visibility = "private", "private"
-	for _, w := range processOne(t, msg(t, events.EventCommunityCreated, communityCreatedPayload{
+	wantOneRemoval(t, processOne(t, msg(t, events.EventCommunityCreated, communityCreatedPayload{
 		CommunityID: testCommunityID, Community: snap,
-	})) {
-		if w.method != http.MethodDelete {
-			t.Fatalf("a private community was written: %s %s %v", w.method, w.path, w.body)
-		}
-	}
+	})), testCommunityID, "remove")
 }
 
 // Every other event community-service publishes on community-events is
 // handled or deliberately ignored. The member events move the engagement
-// score of the community named in the payload; deleted removes it.
+// score of the community named in the payload; deleted removes it for good.
 func TestCommunityTopicEventsAreHandled(t *testing.T) {
 	for _, eventType := range []string{
 		events.EventCommunityMemberJoined, events.EventCommunityMemberLeft, events.EventCommunityMemberBanned,
@@ -221,10 +228,13 @@ func TestCommunityTopicEventsAreHandled(t *testing.T) {
 		if len(got) != 1 || !strings.Contains(got[0].path, "/_update/"+testCommunityID) {
 			t.Fatalf("%s: writes = %+v, want one engagement update", eventType, got)
 		}
+		if _, upsert := got[0].body["upsert"]; upsert {
+			t.Fatalf("%s: the engagement update creates a stub document: %v", eventType, got[0].body)
+		}
 	}
-	wantOneDelete(t, processOne(t, msg(t, events.EventCommunityDeleted, map[string]any{
+	wantOneRemoval(t, processOne(t, msg(t, events.EventCommunityDeleted, map[string]any{
 		"community_id": testCommunityID, "actor_id": testCommunityOwner, "deleted_at": time.Now(),
-	})))
+	})), testCommunityID, "delete")
 	for _, ignored := range []string{
 		events.EventCommunityMemberRoleChanged, events.EventCommunitySpaceCreated,
 		events.EventCommunitySpaceRemoved, events.EventCommunitySpaceQuarantined,

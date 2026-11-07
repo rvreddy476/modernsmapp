@@ -361,28 +361,30 @@ func TestAutocompleteCommunities_OnlyPublicActive(t *testing.T) {
 	}
 }
 
-func TestIndexCommunityAndChannel_DeleteWhatIsNotSearchable(t *testing.T) {
+func TestApplyCommunityAndChannelState_HideWhatIsNotSearchable(t *testing.T) {
 	store, rec := newRecordingStore(t)
 	ctx := context.Background()
-	if err := store.IndexCommunity(ctx, CommunityDoc{CommunityID: userA, CommunityType: "public", Status: "suspended"}); err != nil {
+	if err := store.ApplyCommunityState(ctx, CommunityDoc{CommunityID: userA, CommunityType: "public", Status: "suspended"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.IndexChannel(ctx, ChannelDoc{ChannelID: userB, ChannelType: "public", Status: "suspended"}); err != nil {
+	if err := store.ApplyChannelState(ctx, ChannelDoc{ChannelID: userB, ChannelType: "public", Status: "suspended"}); err != nil {
 		t.Fatal(err)
 	}
 	if got := rec.matching(http.MethodPut, "/_doc/"); len(got) != 0 {
 		t.Fatalf("a suspended community or channel was written: %s", got[0].path)
 	}
-	if len(rec.matching(http.MethodDelete, "/"+IndexCommunities+"/_doc/"+userA)) != 1 ||
-		len(rec.matching(http.MethodDelete, "/"+IndexChannels+"/_doc/"+userB)) != 1 {
-		t.Fatalf("not deleted: %+v", rec.reqs)
+	for index, id := range map[string]string{IndexCommunities: userA, IndexChannels: userB} {
+		got := rec.matching(http.MethodPost, "/"+index+"/_update/"+id)
+		if len(got) != 1 || !strings.Contains(string(got[0].raw), `"op":"remove"`) || strings.Contains(string(got[0].raw), `"op":"upsert"`) {
+			t.Fatalf("%s: not hidden: %+v", index, rec.reqs)
+		}
 	}
 }
 
 // ApplyCommunityState is the store-side half of community.updated: a
-// community that is not searchable is deleted, never upserted, whatever the
+// community that is not searchable is hidden, never upserted, whatever the
 // caller checked first.
-func TestApplyCommunityState_DeletesWhatIsNotSearchable(t *testing.T) {
+func TestApplyCommunityState_HidesWhatIsNotSearchable(t *testing.T) {
 	for name, doc := range map[string]CommunityDoc{
 		"archived":  {CommunityID: userA, OwnerID: userB, CommunityType: "public", Status: "archived"},
 		"private":   {CommunityID: userA, OwnerID: userB, CommunityType: "private", Status: StatusActive},
@@ -392,11 +394,12 @@ func TestApplyCommunityState_DeletesWhatIsNotSearchable(t *testing.T) {
 		if err := store.ApplyCommunityState(context.Background(), doc); err != nil {
 			t.Fatal(err)
 		}
-		if got := rec.matching(http.MethodPost, "/"+IndexCommunities+"/_update/"); len(got) != 0 {
-			t.Fatalf("%s: a community that is not searchable was upserted: %s", name, got[0].raw)
+		got := rec.matching(http.MethodPost, "/"+IndexCommunities+"/_update/"+userA)
+		if len(got) != 1 || !strings.Contains(string(got[0].raw), `"op":"remove"`) {
+			t.Fatalf("%s: not hidden: %+v", name, rec.reqs)
 		}
-		if len(rec.matching(http.MethodDelete, "/"+IndexCommunities+"/_doc/"+userA)) != 1 {
-			t.Fatalf("%s: not deleted: %+v", name, rec.reqs)
+		if strings.Contains(string(got[0].raw), userB) {
+			t.Fatalf("%s: a community that is not searchable sent its owner: %s", name, got[0].raw)
 		}
 	}
 
@@ -407,7 +410,7 @@ func TestApplyCommunityState_DeletesWhatIsNotSearchable(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := rec.matching(http.MethodPost, "/"+IndexCommunities+"/_update/"+userA)
-	if len(got) != 1 || !strings.Contains(string(got[0].raw), `"upsert"`) || !strings.Contains(string(got[0].raw), `"owner_id":"`+userB+`"`) {
+	if len(got) != 1 || !strings.Contains(string(got[0].raw), `"op":"upsert"`) || !strings.Contains(string(got[0].raw), `"owner_id":"`+userB+`"`) {
 		t.Fatalf("an active public community is not upserted with its owner: %+v", rec.reqs)
 	}
 }

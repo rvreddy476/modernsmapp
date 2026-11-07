@@ -437,6 +437,10 @@ type CommunityDoc struct {
 	// Status is community-service's status; only active is searchable
 	// (entity_visibility.go).
 	Status string `json:"status"`
+	// SourceVersion is the snapshot version this document was written at
+	// (SourceVersion of the row's updated_at); zero when unversioned. The
+	// write script stamps it (entity_state.go).
+	SourceVersion int64 `json:"source_updated_us,omitempty"`
 }
 
 // ChannelDoc represents one broadcast channel in channels_v1.
@@ -455,6 +459,8 @@ type ChannelDoc struct {
 	// Status is channel-service's status; only active is searchable
 	// (entity_visibility.go).
 	Status string `json:"status"`
+	// SourceVersion: as on CommunityDoc.
+	SourceVersion int64 `json:"source_updated_us,omitempty"`
 }
 
 // ProductDoc represents one product in products_v1. The original
@@ -1755,7 +1761,8 @@ func (s *Store) IndexHashtag(ctx context.Context, doc HashtagDoc) error {
 	return s.indexDoc(ctx, IndexHashtags, doc.Hashtag, doc)
 }
 
-// IndexCommunity and IndexChannel: entity_visibility.go.
+// Communities and broadcast channels are written, hidden and deleted in
+// snapshot order: entity_visibility.go and entity_state.go.
 
 // IndexProductDoc upserts a typed ProductDoc (the original IndexProduct
 // stays for legacy map[string]any callers).
@@ -1766,14 +1773,7 @@ func (s *Store) IndexProductDoc(ctx context.Context, doc ProductDoc) error {
 	return s.indexDoc(ctx, IndexProducts, doc.ProductID, doc)
 }
 
-// DeleteCommunity / DeleteChannel / DeleteProduct / DeleteHashtag —
-// idempotent removals (404 is not an error).
-func (s *Store) DeleteCommunity(ctx context.Context, id string) error {
-	return s.deleteDoc(ctx, IndexCommunities, id)
-}
-func (s *Store) DeleteChannel(ctx context.Context, id string) error {
-	return s.deleteDoc(ctx, IndexChannels, id)
-}
+// DeleteProduct / DeleteHashtag — idempotent removals (404 is not an error).
 func (s *Store) DeleteProduct(ctx context.Context, id string) error {
 	return s.deleteDoc(ctx, IndexProducts, id)
 }
@@ -1824,31 +1824,54 @@ func (s *Store) deleteDoc(ctx context.Context, index, id string) error {
 	return nil
 }
 
+// engagementScoreScript adds params.delta to engagement_score. A tombstone
+// (a removed post, community or channel) keeps no score: there is nothing
+// to rank, and a score is not what a tombstone is for.
+const engagementScoreScript = `
+if (ctx._source.removed == true) {
+  ctx.op = 'none';
+} else {
+  ctx._source.engagement_score = (ctx._source.engagement_score == null ? 0 : ctx._source.engagement_score) + params.delta;
+}
+`
+
+// engagementScoreBody is the _update body AddToEngagementScore sends. It has
+// no upsert, deliberately: see AddToEngagementScore.
+func engagementScoreBody(delta float64) map[string]any {
+	return map[string]any{
+		"script": map[string]any{
+			"lang":   "painless",
+			"source": engagementScoreScript,
+			"params": map[string]any{"delta": delta},
+		},
+	}
+}
+
 // AddToEngagementScore performs a scripted partial update that adds
 // `delta` to engagement_score on the named index. Used by the Kafka
 // consumer to apply real-time +1 / -1 / +N adjustments as
-// likes/comments/shares/etc fan in.
+// likes/comments/shares/follows/joins/subscribes fan in. `delta` may be
+// negative (e.g. reaction removed).
 //
-// `delta` may be negative (e.g. reaction removed). If the document
-// doesn't exist yet, the upsert path seeds it with engagement_score=delta;
-// this keeps the indexer eventually-consistent even if the lifecycle
-// event arrives before the *Created event.
+// Only an existing document is updated: a missing one is a 404, which is
+// not an error. It used to upsert a stub holding nothing but
+// engagement_score, for every entity search has no document for —
+// including private communities and channels, which are never indexed —
+// and those stubs only cluttered the index: no query matches them, and the
+// first real write replaces them or recomputes the score from the row's
+// counters anyway. Existing stubs are removed by the backfill
+// (`-entity engagement-stubs`, PurgeEngagementStubs).
 func (s *Store) AddToEngagementScore(ctx context.Context, index, docID string, delta float64) error {
 	if docID == "" {
 		return nil
 	}
-	body := map[string]any{
-		"script": map[string]any{
-			"source": "ctx._source.engagement_score = (ctx._source.engagement_score == null ? 0 : ctx._source.engagement_score) + params.delta",
-			"params": map[string]any{"delta": delta},
-		},
-		"upsert": map[string]any{"engagement_score": delta},
-	}
-	data, _ := json.Marshal(body)
+	data, _ := json.Marshal(engagementScoreBody(delta))
+	retries := bulkRetries
 	req := opensearchapi.UpdateRequest{
-		Index:      index,
-		DocumentID: docID,
-		Body:       bytes.NewReader(data),
+		Index:           index,
+		DocumentID:      docID,
+		Body:            bytes.NewReader(data),
+		RetryOnConflict: &retries,
 	}
 	res, err := req.Do(ctx, s.client)
 	if err != nil {

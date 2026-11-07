@@ -850,11 +850,11 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if p.Community != nil {
 			return c.applyCommunitySnapshot(ctx, p.CommunityID, *p.Community)
 		}
-		// An older producer: the four fields below are all there is.
-		// A community is created active (community-service default).
-		// IndexCommunity deletes instead of writing when the type is not
-		// public (S-M2).
-		return c.store.IndexCommunity(ctx, search.CommunityDoc{
+		// An older producer: the four fields below are all there is, and no
+		// version, so it never overwrites a versioned document. A community
+		// is created active (community-service default); a type outside the
+		// public set is hidden instead of written (S-M2).
+		return c.store.ApplyCommunityState(ctx, search.CommunityDoc{
 			CommunityID:   p.CommunityID,
 			OwnerID:       p.OwnerID,
 			Name:          p.Name,
@@ -904,10 +904,10 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if p.Channel != nil {
 			return c.store.ApplyChannelState(ctx, p.Channel.doc(p.ChannelID))
 		}
-		// An older producer: the four fields below are all there is.
-		// Created active (channel-service default); IndexChannel deletes
-		// instead when the type is not public (S-M2).
-		return c.store.IndexChannel(ctx, search.ChannelDoc{
+		// An older producer: the four fields below are all there is, and no
+		// version. Created active (channel-service default); a type outside
+		// the public set is hidden instead of written (S-M2).
+		return c.store.ApplyChannelState(ctx, search.ChannelDoc{
 			ChannelID:   p.ChannelID,
 			OwnerID:     p.OwnerID,
 			Name:        p.Name,
@@ -1073,7 +1073,9 @@ type communitySnapshot struct {
 }
 
 // doc converts the snapshot to the index document. The envelope's
-// community_id is the fallback when the snapshot omits its own.
+// community_id is the fallback when the snapshot omits its own. The
+// snapshot's own updated_at is its version, never the envelope's (an older
+// producer stamped that with its clock, not the row's).
 func (s communitySnapshot) doc(envelopeCommunityID string) search.CommunityDoc {
 	id := s.CommunityID
 	if id == "" {
@@ -1092,6 +1094,7 @@ func (s communitySnapshot) doc(envelopeCommunityID string) search.CommunityDoc {
 		IsVerified:    s.IsVerified,
 		CreatedAt:     s.CreatedAt,
 		Status:        s.Status,
+		SourceVersion: search.SourceVersion(s.UpdatedAt),
 	}
 }
 
@@ -1137,7 +1140,8 @@ type channelSnapshot struct {
 }
 
 // doc converts the snapshot to the index document. The envelope's
-// channel_id is the fallback when the snapshot omits its own.
+// channel_id is the fallback when the snapshot omits its own; the version
+// is the snapshot's updated_at, as for communities.
 func (s channelSnapshot) doc(envelopeChannelID string) search.ChannelDoc {
 	id := s.ChannelID
 	if id == "" {
@@ -1155,6 +1159,7 @@ func (s channelSnapshot) doc(envelopeChannelID string) search.ChannelDoc {
 		IsVerified:      s.IsVerified,
 		CreatedAt:       s.CreatedAt,
 		Status:          s.Status,
+		SourceVersion:   search.SourceVersion(s.UpdatedAt),
 	}
 }
 
@@ -1180,13 +1185,14 @@ func (c *Consumer) Close() error {
 // the member count and the status.
 //
 //   - With the row (since 2026-11-08): applied like a channel's
-//     (applyCommunitySnapshot): removed when not searchable, otherwise an
-//     update with an upsert.
-//   - Without it (older events): removed when any field it does carry says
-//     the community is not searchable (a status other than active, a private
-//     visibility, a type outside the public set); otherwise a partial update
-//     of those fields, which never creates a document — there is no owner to
-//     write, and a document without owner_id escapes the block filter.
+//     (applyCommunitySnapshot), in snapshot order: hidden when not
+//     searchable, otherwise written field by field or created.
+//   - Without it (older events, no version): hidden when any field it does
+//     carry says the community is not searchable (a status other than
+//     active, a private visibility, a type outside the public set);
+//     otherwise a partial update of those fields, which never creates a
+//     document — there is no owner to write, and a document without
+//     owner_id escapes the block filter — and never touches a versioned one.
 func (c *Consumer) applyCommunityUpdate(ctx context.Context, p communityUpdatedPayload) error {
 	if p.CommunityID == "" {
 		return nil
@@ -1195,7 +1201,7 @@ func (c *Consumer) applyCommunityUpdate(ctx context.Context, p communityUpdatedP
 		return c.applyCommunitySnapshot(ctx, p.CommunityID, *p.Community)
 	}
 	if communityFieldsHide(p.Status, p.Visibility, p.CommunityType) {
-		return c.store.DeleteCommunity(ctx, p.CommunityID)
+		return c.removeCommunity(ctx, p.CommunityID, p.Status, 0)
 	}
 	fields := map[string]any{}
 	if p.Name != "" {
@@ -1218,28 +1224,38 @@ func communityFieldsHide(status, visibility, communityType string) bool {
 		(communityType != "" && !search.IsPublicCommunityType(communityType))
 }
 
-// applyCommunitySnapshot writes a community's whole row, or removes it. The
-// snapshot's visibility is checked as well as its type and status: either
-// one saying private is enough to keep it out (fail closed if the two
-// producers' public sets ever disagree).
+// removeCommunity takes a community out of search: for good when its
+// status is deleted, otherwise as a tombstone at the given version.
+func (c *Consumer) removeCommunity(ctx context.Context, communityID, status string, version int64) error {
+	if status == search.StatusDeleted {
+		return c.store.DeleteCommunity(ctx, communityID)
+	}
+	return c.store.HideCommunity(ctx, communityID, version)
+}
+
+// applyCommunitySnapshot writes a community's whole row, or removes it, in
+// snapshot order. The snapshot's visibility is checked as well as its type
+// and status: either one saying private is enough to keep it out (fail
+// closed if the two producers' public sets ever disagree).
 func (c *Consumer) applyCommunitySnapshot(ctx context.Context, envelopeCommunityID string, s communitySnapshot) error {
 	doc := s.doc(envelopeCommunityID)
 	if doc.CommunityID == "" {
 		return nil
 	}
 	if communityFieldsHide(s.Status, s.Visibility, s.CommunityType) {
-		return c.store.DeleteCommunity(ctx, doc.CommunityID)
+		return c.removeCommunity(ctx, doc.CommunityID, s.Status, doc.SourceVersion)
 	}
 	return c.store.ApplyCommunityState(ctx, doc)
 }
 
 // applyChannelUpdate handles channel.updated. Since 2026-11-07 the event
 // carries the whole row (channelSnapshot), so it is applied like
-// community.updated: a channel that is no longer searchable (suspended,
-// archived, a non-public type) is removed, anything else is written field by
-// field (store.ApplyChannelState). An older, id-only event carries nothing
-// to write and leaves the document alone — replacing the document with ids
-// is what blanked channel_type and made edited channels vanish (S-M4).
+// community.updated, in snapshot order: a channel that is no longer
+// searchable (suspended, archived, a non-public type) is hidden, a deleted
+// one removed for good, anything else written field by field
+// (store.ApplyChannelState). An older, id-only event carries nothing to
+// write and leaves the document alone — replacing the document with ids is
+// what blanked channel_type and made edited channels vanish (S-M4).
 func (c *Consumer) applyChannelUpdate(ctx context.Context, p channelUpdatedPayload) error {
 	if p.Channel == nil {
 		return nil
