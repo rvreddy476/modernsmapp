@@ -5,6 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ---------------------------------------------------------------------------
@@ -38,8 +41,38 @@ var analyticsContractColumns = []string{
 	"view_score_total", "eligibility_state", "eligibility_effective_from", "updated_at",
 }
 
+// AnalyticsFinalityView is the second contract view: the day before which
+// analytics will never re-roll a day again (analytics migration 016).
+const AnalyticsFinalityView = "v_daily_rollup_finality_v1"
+
+// AnalyticsFinalityMigration names the analytics-service migration that
+// creates the finality view.
+const AnalyticsFinalityMigration = "analytics-service migration 016_daily_rollup_finality_view.sql"
+
 // ErrAnalyticsContractMissing is returned when the view does not exist.
 var ErrAnalyticsContractMissing = errors.New("ANALYTICS_CONTRACT_MISSING")
+
+// AnalyticsFinalBefore reads analytics.v_daily_rollup_finality_v1: every
+// day strictly before the returned date is final. ok is false when
+// analytics has no watermark yet (nothing is final). A missing view is
+// ErrAnalyticsContractMissing, never "everything is final".
+func (s *Store) AnalyticsFinalBefore(ctx context.Context) (finalBefore time.Time, ok bool, err error) {
+	var fb *time.Time
+	err = s.db.QueryRow(ctx, `SELECT final_before FROM analytics.`+AnalyticsFinalityView).Scan(&fb)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "42P01" { // undefined_table
+			return time.Time{}, false, fmt.Errorf("%w: analytics.%s does not exist; apply %s",
+				ErrAnalyticsContractMissing, AnalyticsFinalityView, AnalyticsFinalityMigration)
+		}
+		return time.Time{}, false, fmt.Errorf("read analytics finality: %w", err)
+	}
+	if fb == nil {
+		return time.Time{}, false, nil
+	}
+	t := fb.UTC()
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, time.UTC), true, nil
+}
 
 // CheckAnalyticsContract verifies that analytics.v_creator_daily_metrics_v1
 // exists and carries every column this service reads, and returns the

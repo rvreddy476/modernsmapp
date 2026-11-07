@@ -91,7 +91,7 @@ func TestIntegrationMediaHolderRowsListBothColumns(t *testing.T) {
 
 	// The real create refuses a media id, against the real table too.
 	if _, err := s.CreateFundraiser(ctx, &Fundraiser{CreatorID: uuid.New(), Type: "personal", Title: "t",
-		Description: "d", GoalAmount: 1, Currency: "INR", CoverMediaID: &cover}); !errors.Is(err, ErrMediaClaimRequired) {
+		Description: "d", GoalPaise: 100, Currency: "INR", CoverMediaID: &cover}); !errors.Is(err, ErrMediaClaimRequired) {
 		t.Fatalf("create with a cover = %v", err)
 	}
 }

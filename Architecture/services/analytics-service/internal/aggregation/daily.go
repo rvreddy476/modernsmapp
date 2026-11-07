@@ -60,6 +60,26 @@ func IsFrozen(day, now time.Time) bool {
 	return !dayEnd.Add(freezeWindow).After(now.UTC())
 }
 
+// FinalBefore is the finality rule monetization reads through
+// analytics.v_daily_rollup_finality_v1 (migration 016), in Go: every day
+// strictly before the returned day is final, because the catch-up walk
+// starts at the watermark and never goes back, and IsFrozen says the day's
+// window has closed. It is the earlier of the two, so neither alone can
+// finalise a day early. ok is false when there is no watermark yet:
+// nothing is final. The view and this function must agree; the test pins
+// both to IsFrozen.
+func FinalBefore(watermark time.Time, haveWatermark bool, now time.Time) (time.Time, bool) {
+	if !haveWatermark {
+		return time.Time{}, false
+	}
+	byClock := now.UTC().Truncate(24*time.Hour).AddDate(0, 0, -2)
+	w := watermark.UTC().Truncate(24 * time.Hour)
+	if w.Before(byClock) {
+		return w, true
+	}
+	return byClock, true
+}
+
 type DailyRollup struct {
 	pg  *pgxpool.Pool
 	rdb *redis.Client

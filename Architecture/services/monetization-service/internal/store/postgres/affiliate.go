@@ -30,13 +30,16 @@ type AffiliateLink struct {
 
 // AffiliateConversion records a purchase made through an affiliate link.
 type AffiliateConversion struct {
-	ID            uuid.UUID `json:"id"`
-	AffiliateID   uuid.UUID `json:"affiliate_id"`
-	OrderID       uuid.UUID `json:"order_id"`
-	BuyerID       uuid.UUID `json:"buyer_id"`
-	CommissionAmt float64   `json:"commission_amt"`
-	Status        string    `json:"status"`
-	CreatedAt     time.Time `json:"created_at"`
+	ID          uuid.UUID `json:"id"`
+	AffiliateID uuid.UUID `json:"affiliate_id"`
+	OrderID     uuid.UUID `json:"order_id"`
+	BuyerID     uuid.UUID `json:"buyer_id"`
+	// CommissionPaise is integer paise. The column is NUMERIC(8,2) rupees;
+	// it is written as paise / 100 and read back as ROUND(x * 100), both
+	// exact, so no float ever carries the money.
+	CommissionPaise int64     `json:"commission_paise"`
+	Status          string    `json:"status"`
+	CreatedAt       time.Time `json:"created_at"`
 }
 
 // ---------------------------------------------------------------------------
@@ -158,10 +161,10 @@ func (s *Store) RecordAffiliateConversion(ctx context.Context, c *AffiliateConve
 
 	err = tx.QueryRow(ctx, `
 		INSERT INTO affiliate_conversions (affiliate_id, order_id, buyer_id, commission_amt, status, created_at)
-		VALUES ($1, $2, $3, $4, 'pending', NOW())
-		RETURNING id, affiliate_id, order_id, buyer_id, commission_amt, status, created_at
-	`, c.AffiliateID, c.OrderID, c.BuyerID, c.CommissionAmt).Scan(
-		&c.ID, &c.AffiliateID, &c.OrderID, &c.BuyerID, &c.CommissionAmt, &c.Status, &c.CreatedAt,
+		VALUES ($1, $2, $3, ($4::BIGINT)::NUMERIC / 100, 'pending', NOW())
+		RETURNING id, affiliate_id, order_id, buyer_id, ROUND(commission_amt * 100)::BIGINT, status, created_at
+	`, c.AffiliateID, c.OrderID, c.BuyerID, c.CommissionPaise).Scan(
+		&c.ID, &c.AffiliateID, &c.OrderID, &c.BuyerID, &c.CommissionPaise, &c.Status, &c.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -170,9 +173,9 @@ func (s *Store) RecordAffiliateConversion(ctx context.Context, c *AffiliateConve
 	_, err = tx.Exec(ctx, `
 		UPDATE affiliate_links
 		SET conversion_count = conversion_count + 1,
-		    total_earned = total_earned + $2
+		    total_earned = total_earned + ($2::BIGINT)::NUMERIC / 100
 		WHERE id = $1
-	`, c.AffiliateID, c.CommissionAmt)
+	`, c.AffiliateID, c.CommissionPaise)
 	if err != nil {
 		return nil, err
 	}
@@ -186,7 +189,7 @@ func (s *Store) RecordAffiliateConversion(ctx context.Context, c *AffiliateConve
 // GetAffiliateConversions returns conversions for an affiliate link, ordered by created_at DESC.
 func (s *Store) GetAffiliateConversions(ctx context.Context, affiliateID uuid.UUID, limit, offset int) ([]AffiliateConversion, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, affiliate_id, order_id, buyer_id, commission_amt, status, created_at
+		SELECT id, affiliate_id, order_id, buyer_id, ROUND(commission_amt * 100)::BIGINT, status, created_at
 		FROM affiliate_conversions
 		WHERE affiliate_id = $1
 		ORDER BY created_at DESC
@@ -201,7 +204,7 @@ func (s *Store) GetAffiliateConversions(ctx context.Context, affiliateID uuid.UU
 	for rows.Next() {
 		var c AffiliateConversion
 		if err := rows.Scan(
-			&c.ID, &c.AffiliateID, &c.OrderID, &c.BuyerID, &c.CommissionAmt, &c.Status, &c.CreatedAt,
+			&c.ID, &c.AffiliateID, &c.OrderID, &c.BuyerID, &c.CommissionPaise, &c.Status, &c.CreatedAt,
 		); err != nil {
 			return nil, err
 		}

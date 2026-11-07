@@ -2,6 +2,7 @@ package http
 
 import (
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/atpost/monetization-service/internal/store/postgres"
@@ -14,19 +15,22 @@ import (
 // Request types
 // ---------------------------------------------------------------------------
 
+// Money on these routes is integer paise (review 2026-11-07).
 type CreateFundraiserRequest struct {
-	Type        string   `json:"type" binding:"required"`
-	Title       string   `json:"title" binding:"required"`
-	Description string   `json:"description" binding:"required"`
-	GoalAmount  float64  `json:"goal_amount" binding:"required"`
-	EndsAt      *string  `json:"ends_at"`
+	Type        string  `json:"type" binding:"required"`
+	Title       string  `json:"title" binding:"required"`
+	Description string  `json:"description" binding:"required"`
+	GoalPaise   int64   `json:"goal_paise" binding:"required"`
+	EndsAt      *string `json:"ends_at"`
 }
 
+// DonateRequest asks to donate. There is no payment field: a donation is
+// paid through payments-service and counts only on its signed event, never
+// on an id or amount the client states.
 type DonateRequest struct {
-	Amount          float64  `json:"amount" binding:"required"`
-	PaymentIntentID string   `json:"payment_intent_id" binding:"required"`
-	IsAnonymous     bool     `json:"is_anonymous"`
-	Message         *string  `json:"message"`
+	AmountPaise int64   `json:"amount_paise" binding:"required"`
+	IsAnonymous bool    `json:"is_anonymous"`
+	Message     *string `json:"message"`
 }
 
 // ---------------------------------------------------------------------------
@@ -55,11 +59,11 @@ func (h *Handler) CreateFundraiser(c *gin.Context) {
 		endsAt = &t
 	}
 
-	fundraiser, err := h.svc.CreateFundraiser(c.Request.Context(), userID, req.Type, req.Title, req.Description, req.GoalAmount, endsAt)
+	fundraiser, err := h.svc.CreateFundraiser(c.Request.Context(), userID, req.Type, req.Title, req.Description, req.GoalPaise, endsAt)
 	if err != nil {
 		switch err.Error() {
-		case "INVALID_GOAL: goal_amount must be greater than zero":
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_GOAL", "goal_amount must be greater than zero", nil)
+		case "INVALID_GOAL: goal_paise must be greater than zero":
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_GOAL", "goal_paise must be greater than zero", nil)
 		default:
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
@@ -151,6 +155,10 @@ func (h *Handler) PauseFundraiser(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "paused"}, nil)
 }
 
+// Donate records a PENDING donation and answers 202 with the payments
+// reference it must be paid under. Nothing about the fundraiser changes
+// here: the donation counts only when payments-service's signed
+// payment.succeeded event for that reference is applied.
 func (h *Handler) Donate(c *gin.Context) {
 	userID, ok := getUserID(c)
 	if !ok {
@@ -169,28 +177,27 @@ func (h *Handler) Donate(c *gin.Context) {
 		return
 	}
 
-	paymentIntentID, err := uuid.Parse(req.PaymentIntentID)
+	pending, err := h.svc.Donate(c.Request.Context(), fundraiserID, userID, req.AmountPaise, req.IsAnonymous, req.Message)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid payment_intent_id", nil)
-		return
-	}
-
-	donation, err := h.svc.Donate(c.Request.Context(), fundraiserID, userID, paymentIntentID, req.Amount, req.IsAnonymous, req.Message)
-	if err != nil {
-		switch err.Error() {
-		case "FUNDRAISER_NOT_FOUND":
+		switch {
+		case err.Error() == "FUNDRAISER_NOT_FOUND":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Fundraiser not found", nil)
-		case "INVALID_AMOUNT: donation must be greater than zero":
+		case err.Error() == "INVALID_AMOUNT: donation must be greater than zero":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_AMOUNT", "Donation amount must be greater than zero", nil)
+		case strings.HasPrefix(err.Error(), "FUNDRAISER_NOT_ACTIVE"):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "FUNDRAISER_NOT_ACTIVE", err.Error(), nil)
 		default:
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		}
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusCreated, donation, nil)
+	api.JSON(c.Writer, http.StatusAccepted, pending, nil)
 }
 
+// GetDonationsByFundraiser lists the donations that count. An anonymous
+// donor's id is shown only to that donor (X-User-Id); a signed-out caller
+// sees none.
 func (h *Handler) GetDonationsByFundraiser(c *gin.Context) {
 	fundraiserID, err := uuid.Parse(c.Param("fundraiserId"))
 	if err != nil {
@@ -200,13 +207,14 @@ func (h *Handler) GetDonationsByFundraiser(c *gin.Context) {
 
 	limit, offset := parsePagination(c)
 
-	donations, err := h.svc.GetDonationsByFundraiser(c.Request.Context(), fundraiserID, limit, offset)
+	viewer, err := uuid.Parse(c.GetHeader("X-User-Id"))
+	if err != nil {
+		viewer = uuid.Nil
+	}
+	donations, err := h.svc.GetDonationsByFundraiser(c.Request.Context(), viewer, fundraiserID, limit, offset)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
-	}
-	if donations == nil {
-		donations = []postgres.Donation{}
 	}
 
 	api.JSON(c.Writer, http.StatusOK, donations, nil)

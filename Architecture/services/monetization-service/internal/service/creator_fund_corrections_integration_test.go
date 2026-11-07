@@ -34,6 +34,7 @@ func cleanupCreatorMoney(ctx context.Context, t *testing.T, pool *pgxpool.Pool, 
 		_, _ = pool.Exec(ctx, `DELETE FROM transactions WHERE wallet_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM creator_ledger WHERE user_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_period_settlements WHERE creator_id = $1`, creator)
+		_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_revision_adjustments WHERE creator_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_earnings WHERE creator_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_carry WHERE creator_id = $1`, creator)
 		_, _ = pool.Exec(ctx, `DELETE FROM creator_fund_eligibility WHERE creator_id = $1`, creator)
@@ -777,15 +778,41 @@ func TestAccrualRecordsSkipReasons(t *testing.T) {
 		t.Errorf("row versioning: rate=%v band=%v rule=%q revision=%q", rateID, bandID, ruleVersion, revision)
 	}
 
-	// Inputs that change after the day was accrued are an error, not a
-	// silent no-op: that is the signal for a correction adjustment.
+	// Inputs that change after a FINAL day was accrued (2025 is long past
+	// analytics' window, so only a forced rewrite can do this) are not a
+	// silent no-op and no longer an error that fails the period: the
+	// difference is recorded once as a pending adjustment, priced at the
+	// row's own rate and multiplier, and nothing is credited by it.
 	if _, err := pool.Exec(ctx, `
 		UPDATE analytics.content_daily_summary SET views_display = views_display + 1, updated_at = NOW()
 		WHERE creator_id = $1 AND day_bucket = $2 AND content_type = 'flick'`, creator, day); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.AccrueCreatorFundDay(ctx, creator, day); !errors.Is(err, ErrInputRevisionChanged) {
-		t.Errorf("changed inputs on an accrued day: err = %v, want ErrInputRevisionChanged", err)
+	drifted, err := svc.AccrueCreatorFundDay(ctx, creator, day)
+	if err != nil {
+		t.Fatalf("changed inputs on a final, accrued day must not fail: %v", err)
+	}
+	if drifted.Accrued != 0 || drifted.Skipped[SkipRevisionDrift] != 1 {
+		t.Errorf("drifted run = %+v, want nothing accrued and revision_drift=1", drifted)
+	}
+	again, err := svc.AccrueCreatorFundDay(ctx, creator, day)
+	if err != nil || again.Skipped[SkipRevisionDrift] != 1 {
+		t.Fatalf("re-run over the same drift: %+v, %v", again, err)
+	}
+	var rows int
+	var deltaMicro, observedViews int64
+	var status string
+	if err := pool.QueryRow(ctx, `
+		SELECT COUNT(*) OVER (), delta_gross_micro_paise, observed_views, status
+		FROM creator_fund_revision_adjustments WHERE creator_id = $1 AND day_bucket = $2`,
+		creator, day).Scan(&rows, &deltaMicro, &observedViews, &status); err != nil {
+		t.Fatalf("read the pending adjustment: %v", err)
+	}
+	// One more flick view at 300 paise per 1000 at the neutral band is
+	// 300,000 micro-paise.
+	if rows != 1 || deltaMicro != 300_000 || observedViews != 5001 || status != "pending" {
+		t.Errorf("adjustment rows=%d delta=%d observed_views=%d status=%q, want 1 / 300000 / 5001 / pending",
+			rows, deltaMicro, observedViews, status)
 	}
 }
 

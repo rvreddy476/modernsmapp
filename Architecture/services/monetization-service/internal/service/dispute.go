@@ -54,9 +54,25 @@ func (s *Service) ListUserDisputes(ctx context.Context, userID uuid.UUID, limit,
 	return s.store.ListUserDisputes(ctx, userID, limit, offset)
 }
 
-// GetDispute returns a dispute by ID.
-func (s *Service) GetDispute(ctx context.Context, disputeID uuid.UUID) (*postgres.Dispute, error) {
-	return s.store.GetDispute(ctx, disputeID)
+// GetUserDispute returns a dispute only to the user it concerns: the one
+// who opened it, over their own transaction (CreateDispute refuses any
+// other). Anyone else gets nil, exactly as for an id that does not exist,
+// so the route cannot be used to learn which dispute ids are real. Admin
+// reads go through the admin-service token family, not this.
+func (s *Service) GetUserDispute(ctx context.Context, userID, disputeID uuid.UUID) (*postgres.Dispute, error) {
+	d, err := s.store.GetDispute(ctx, disputeID)
+	if err != nil {
+		return nil, err
+	}
+	return disputeVisibleTo(d, userID), nil
+}
+
+// disputeVisibleTo is the ownership gate: d when userID opened it, else nil.
+func disputeVisibleTo(d *postgres.Dispute, userID uuid.UUID) *postgres.Dispute {
+	if d == nil || userID == uuid.Nil || d.UserID != userID {
+		return nil
+	}
+	return d
 }
 
 // ListOpenDisputes returns open disputes for admin view.

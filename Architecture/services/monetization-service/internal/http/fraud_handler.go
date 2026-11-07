@@ -147,8 +147,10 @@ func (h *Handler) ListUserDisputes(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, disputes, nil)
 }
 
+// GetDisputeByID returns the caller's own dispute. Someone else's is a 404,
+// the same answer as an id that does not exist.
 func (h *Handler) GetDisputeByID(c *gin.Context) {
-	_, ok := getUserID(c)
+	userID, ok := getUserID(c)
 	if !ok {
 		return
 	}
@@ -159,7 +161,7 @@ func (h *Handler) GetDisputeByID(c *gin.Context) {
 		return
 	}
 
-	dispute, err := h.svc.GetDispute(c.Request.Context(), disputeID)
+	dispute, err := h.svc.GetUserDispute(c.Request.Context(), userID, disputeID)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return

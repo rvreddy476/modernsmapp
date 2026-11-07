@@ -141,9 +141,21 @@ func TestAccrualReadsOnlyTheContractView(t *testing.T) {
 	if len(rels) == 0 {
 		t.Fatal("the accrual executed no statement naming an analytics relation; the recorder is not seeing the service's queries")
 	}
+	// Two contract views and nothing else: the metrics (migration 012) and,
+	// since 2026-11-07, the finality line (migration 016) the accrual must
+	// consult before it prices a day. Both must be named.
+	contract := map[string]bool{postgres.AnalyticsContractView: false, postgres.AnalyticsFinalityView: false}
 	for _, r := range rels {
-		if r != "v_creator_daily_metrics_v1" {
-			t.Errorf("the accrual read analytics.%s directly; the only analytics relation it may name is the contract view v_creator_daily_metrics_v1 (relations seen: %v)", r, rels)
+		if _, ok := contract[r]; !ok {
+			t.Errorf("the accrual read analytics.%s directly; the only analytics relations it may name are the contract views %s and %s (relations seen: %v)",
+				r, postgres.AnalyticsContractView, postgres.AnalyticsFinalityView, rels)
+			continue
+		}
+		contract[r] = true
+	}
+	for view, seen := range contract {
+		if !seen {
+			t.Errorf("the accrual never read analytics.%s (relations seen: %v)", view, rels)
 		}
 	}
 	t.Logf("analytics relations named by the accrual: %v", rels)

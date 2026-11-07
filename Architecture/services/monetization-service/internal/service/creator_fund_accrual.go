@@ -60,13 +60,105 @@ const (
 	SkipNoRate          = "no_rate"
 	SkipBudgetExhausted = "budget_exhausted"
 	SkipBudgetCapped    = "budget_capped"
+	// SkipDayNotFinal: analytics may still re-roll the day (its 48-hour
+	// window is open). Nothing is written; a later run accrues it.
+	SkipDayNotFinal = "day_not_final"
+	// SkipRevisionDrift: an accrued, final day whose inputs moved anyway.
+	// The difference is recorded as a pending adjustment; nothing is
+	// repriced and the period is not failed.
+	SkipRevisionDrift = "revision_drift"
 )
 
-// ErrInputRevisionChanged is returned when a day that was already accrued
-// is measured again from analytics rows that no longer match the rows it
-// was priced from. The accrual refuses to pretend nothing happened; the
-// correction is an explicit adjustment (Phase 2A), never a rewrite.
+// ErrInputRevisionChanged describes an accrued day measured again from
+// analytics rows that no longer match the rows it was priced from. Since
+// the accrual prices only final days (2026-11-07), that is recorded as a
+// pending adjustment (recordRevisionDrift) instead of being returned; the
+// error text is what the adjustment and its log line describe.
 var ErrInputRevisionChanged = errors.New("INPUT_REVISION_CHANGED: the analytics rows behind an accrued day have changed since it was priced")
+
+// analyticsFinality is analytics' answer to "which days will never be
+// re-rolled again" (analytics.v_daily_rollup_finality_v1): every day
+// strictly before `before` is final. known=false means analytics has not
+// said yet, and nothing is final.
+type analyticsFinality struct {
+	before time.Time
+	known  bool
+}
+
+// dayFinal reports whether one UTC day is final.
+func (f analyticsFinality) dayFinal(day time.Time) bool {
+	return f.known && utcDay(day).Before(f.before)
+}
+
+// periodFinal reports whether every day of the period is final. End is
+// exclusive, so the last day End-1 is final exactly when End <= before.
+func (f analyticsFinality) periodFinal(p SettlementPeriod) bool {
+	return f.known && !p.End.After(f.before)
+}
+
+func (s *Service) analyticsFinality(ctx context.Context) (analyticsFinality, error) {
+	before, ok, err := s.store.AnalyticsFinalBefore(ctx)
+	if err != nil {
+		return analyticsFinality{}, err
+	}
+	return analyticsFinality{before: before, known: ok}, nil
+}
+
+// revisionDrift returns the pending adjustment for an accrued row whose
+// inputs no longer hash to its recorded revision, or nil when there is
+// nothing to record (no row, the same inputs, a reversed or unversioned
+// row; see checkInputRevision). Both sides are priced the same way, at
+// the row's own rate and quality multiplier and before the carry, so the
+// delta is the change in what was measured and nothing else.
+func revisionDrift(existing *postgres.CreatorFundEarning, g dailyInputGroup) *postgres.RevisionAdjustment {
+	if checkInputRevision(existing, g.Revision) == nil {
+		return nil
+	}
+	mult := existing.QualityMultiplierBps
+	if mult <= 0 {
+		mult = NeutralMultiplierBps
+	}
+	recorded := ComputeGrossMicroPaise(existing.ViewCount, existing.RpmPaise, mult)
+	observed := ComputeGrossMicroPaise(g.Metric.ViewCount, existing.RpmPaise, mult)
+	return &postgres.RevisionAdjustment{
+		EarningID:               existing.ID,
+		CreatorID:               existing.CreatorID,
+		DayBucket:               existing.DayBucket,
+		ContentType:             existing.ContentType,
+		RegionCode:              existing.RegionCode,
+		RecordedRevision:        existing.InputRevision,
+		ObservedRevision:        g.Revision,
+		RecordedViews:           existing.ViewCount,
+		ObservedViews:           g.Metric.ViewCount,
+		RecordedGrossMicroPaise: recorded,
+		ObservedGrossMicroPaise: observed,
+		DeltaGrossMicroPaise:    observed - recorded,
+	}
+}
+
+// settleExisting handles a group whose slot is already accrued: either
+// the same inputs (already_accrued) or moved inputs on a final day, which
+// is recorded once as a pending adjustment (revision_drift).
+func (s *Service) settleExisting(ctx context.Context, existing *postgres.CreatorFundEarning, g dailyInputGroup, res *DayAccrual) error {
+	adj := revisionDrift(existing, g)
+	if adj == nil {
+		res.skip(SkipAlreadyAccrued)
+		return nil
+	}
+	inserted, err := s.store.RecordRevisionAdjustment(ctx, adj)
+	if err != nil {
+		return fmt.Errorf("record revision adjustment for earning %s: %w", existing.ID, err)
+	}
+	if inserted {
+		slog.Warn("creator-fund accrual: a final day's analytics moved after it was priced; recorded a pending adjustment",
+			"error", ErrInputRevisionChanged, "earning_id", existing.ID, "creator_id", existing.CreatorID,
+			"day", existing.DayBucket.Format("2006-01-02"), "content_type", existing.ContentType,
+			"recorded_views", adj.RecordedViews, "observed_views", adj.ObservedViews,
+			"delta_gross_micro_paise", adj.DeltaGrossMicroPaise)
+	}
+	res.skip(SkipRevisionDrift)
+	return nil
+}
 
 var accrualSkipsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 	Namespace: "atpost",
@@ -80,6 +172,9 @@ var accrualSkipsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 type DayAccrual struct {
 	Accrued int            `json:"accrued"`
 	Skipped map[string]int `json:"skipped,omitempty"`
+	// NotFinal: analytics may still re-roll the day; nothing was read or
+	// written, and a later run accrues it.
+	NotFinal bool `json:"not_final,omitempty"`
 }
 
 func (d *DayAccrual) skip(reason string) {
@@ -95,6 +190,9 @@ type BatchAccrual struct {
 	Accrued  int            `json:"accrued"`
 	Skipped  map[string]int `json:"skipped,omitempty"`
 	Failed   int            `json:"failed"`
+	// NotFinal: the day is not final in analytics yet, so no creator was
+	// walked. Not a failure; the day is accrued by a later run.
+	NotFinal bool `json:"not_final,omitempty"`
 }
 
 // canonicalMonetizationType maps a raw analytics content type onto the
@@ -348,11 +446,29 @@ func warnUncappedOnce(periodKey, regionCode string) {
 
 // AccrueCreatorFundDay measures one creator's fund earnings for one UTC
 // day and records them, crediting nothing. Returns what it wrote and
-// every reason something was skipped. ErrInputRevisionChanged is returned
-// when an already-accrued day's inputs no longer match.
+// every reason something was skipped. A day analytics may still re-roll
+// is not measured at all (NotFinal); an accrued final day whose inputs
+// moved is recorded as a pending adjustment (revision_drift).
 func (s *Service) AccrueCreatorFundDay(ctx context.Context, creatorID uuid.UUID, day time.Time) (DayAccrual, error) {
+	fin, err := s.analyticsFinality(ctx)
+	if err != nil {
+		return DayAccrual{}, err
+	}
+	return s.accrueDay(ctx, creatorID, day, fin)
+}
+
+func (s *Service) accrueDay(ctx context.Context, creatorID uuid.UUID, day time.Time, fin analyticsFinality) (DayAccrual, error) {
 	day = utcDay(day)
 	var res DayAccrual
+
+	// Accrue a day only once analytics treats it as final. Inside the
+	// re-roll window a late view changes the rows, and a day priced from
+	// rows that then move was the 03:00 failure this replaced.
+	if !fin.dayFinal(day) {
+		res.NotFinal = true
+		res.skip(SkipDayNotFinal)
+		return res, nil
+	}
 
 	row, err := s.store.GetCreatorFundEligibility(ctx, creatorID)
 	if err != nil {
@@ -420,10 +536,9 @@ func (s *Service) AccrueCreatorFundDay(ctx context.Context, creatorID uuid.UUID,
 			return res, fmt.Errorf("slot check: %w", err)
 		}
 		if existing != nil {
-			if err := checkInputRevision(existing, g.Revision); err != nil {
+			if err := s.settleExisting(ctx, existing, g, &res); err != nil {
 				return res, err
 			}
-			res.skip(SkipAlreadyAccrued)
 			continue
 		}
 		rate, err := s.store.GetActiveRpmRate(ctx, m.ContentType, defaultRegionCode, day)
@@ -484,10 +599,9 @@ func (s *Service) AccrueCreatorFundDay(ctx context.Context, creatorID uuid.UUID,
 		}
 		if !outcome.Inserted {
 			// Lost the race with a parallel accrual; the row exists.
-			if err := checkInputRevision(outcome.Existing, g.Revision); err != nil {
+			if err := s.settleExisting(ctx, outcome.Existing, g, &res); err != nil {
 				return res, err
 			}
-			res.skip(SkipAlreadyAccrued)
 			continue
 		}
 		if outcome.Budget == nil {
@@ -529,14 +643,28 @@ func metricSkipLabel(reason string) string {
 // creator_id order, and accrues `day`. Per-creator errors are logged and
 // skipped; the order is what makes a budget cap land on the same creator
 // on every run.
+//
+// A day analytics may still re-roll walks nobody and returns NotFinal.
 func (s *Service) AccrueCreatorFundDayForAllEligible(ctx context.Context, day time.Time, log func(creatorID uuid.UUID, res DayAccrual, err error)) (BatchAccrual, error) {
+	fin, err := s.analyticsFinality(ctx)
+	if err != nil {
+		return BatchAccrual{}, err
+	}
+	return s.accrueDayForAllEligible(ctx, day, fin, log)
+}
+
+func (s *Service) accrueDayForAllEligible(ctx context.Context, day time.Time, fin analyticsFinality, log func(creatorID uuid.UUID, res DayAccrual, err error)) (BatchAccrual, error) {
 	var batch BatchAccrual
+	if !fin.dayFinal(day) {
+		batch.NotFinal = true
+		return batch, nil
+	}
 	creators, err := s.store.ListEligibleCreators(ctx)
 	if err != nil {
 		return batch, err
 	}
 	for _, id := range creators {
-		res, err := s.AccrueCreatorFundDay(ctx, id, day)
+		res, err := s.accrueDay(ctx, id, day, fin)
 		if log != nil {
 			log(id, res, err)
 		}
@@ -554,4 +682,42 @@ func (s *Service) AccrueCreatorFundDayForAllEligible(ctx context.Context, day ti
 		}
 	}
 	return batch, nil
+}
+
+// FinalDaysAccrual is what AccrueRecentFinalDays did.
+type FinalDaysAccrual struct {
+	// FinalBefore is analytics' finality line: every day before it is
+	// final. Zero when analytics has not said (nothing was accrued).
+	FinalBefore time.Time      `json:"final_before"`
+	Days        []time.Time    `json:"days"`
+	Batch       []BatchAccrual `json:"batch"`
+}
+
+// AccrueRecentFinalDays accrues, in day order, the lookbackDays most
+// recent days analytics treats as final. The nightly worker runs it: a
+// day becomes final about two days after it ends, and a run that was
+// missed, or a day whose rollup was late, is picked up by the next one
+// because every accrual is idempotent.
+func (s *Service) AccrueRecentFinalDays(ctx context.Context, lookbackDays int, log func(creatorID uuid.UUID, res DayAccrual, err error)) (FinalDaysAccrual, error) {
+	var out FinalDaysAccrual
+	if lookbackDays <= 0 {
+		lookbackDays = 1
+	}
+	fin, err := s.analyticsFinality(ctx)
+	if err != nil {
+		return out, err
+	}
+	if !fin.known {
+		return out, nil
+	}
+	out.FinalBefore = fin.before
+	for day := fin.before.AddDate(0, 0, -lookbackDays); day.Before(fin.before); day = day.AddDate(0, 0, 1) {
+		batch, err := s.accrueDayForAllEligible(ctx, day, fin, log)
+		if err != nil {
+			return out, fmt.Errorf("accrue %s: %w", day.Format("2006-01-02"), err)
+		}
+		out.Days = append(out.Days, day)
+		out.Batch = append(out.Batch, batch)
+	}
+	return out, nil
 }

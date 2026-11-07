@@ -11,18 +11,23 @@ import (
 	"github.com/google/uuid"
 )
 
-// runCreatorFundAccrual measures yesterday's fund earnings every day at
-// 03:00 UTC and records them as accruals. It moves NO money — that is the
-// whole point of the change: capture stays continuous, payment is
-// periodic. The 3-hour offset gives the analytics rollup worker (which
-// runs at midnight) time to land yesterday's content_daily_summary rows
-// before we read them. Re-running is safe because each (creator, day,
-// content_type, region) row is uniquely keyed.
+// accrualLookbackDays is how many of the most recent FINAL days each
+// nightly run accrues. One would do on a healthy night; a week means a
+// few missed runs, or an analytics rollup that was late to finalise, cost
+// nothing but a delay. Already-accrued days are a cheap no-op.
+const accrualLookbackDays = 7
+
+// runCreatorFundAccrual records fund accruals every day at 03:00 UTC. It
+// moves NO money: capture stays continuous, payment is periodic.
 //
-// The accrual is not load-bearing for correctness: the period settlement
-// accrues every day in its window itself before paying. This worker just
-// means a creator's dashboard fills in daily instead of jumping once a
-// month, and that the monthly run has almost nothing left to compute.
+// It no longer prices "yesterday". Analytics re-rolls each day every 15
+// minutes for 48 hours after it ends, and a day priced at 03:00 the next
+// morning was routinely re-rolled under it, which failed the creator's
+// whole period at settlement. It accrues only the days analytics says are
+// final (analytics.v_daily_rollup_finality_v1), so a creator's dashboard
+// fills in about two days behind instead of one, and the figures do not
+// move afterwards. Re-running is safe because each (creator, day,
+// content_type, region) row is uniquely keyed.
 func runCreatorFundAccrual(ctx context.Context, svc *service.Service) {
 	timer := time.NewTimer(durationUntilNext(3, 0))
 	for {
@@ -31,41 +36,43 @@ func runCreatorFundAccrual(ctx context.Context, svc *service.Service) {
 			timer.Stop()
 			return
 		case <-timer.C:
-			accrueCreatorFundYesterday(ctx, svc)
+			accrueCreatorFundFinalDays(ctx, svc)
 			timer.Reset(durationUntilNext(3, 0))
 		}
 	}
 }
 
-func accrueCreatorFundYesterday(ctx context.Context, svc *service.Service) {
-	yesterday := time.Now().UTC().AddDate(0, 0, -1)
-	day := time.Date(yesterday.Year(), yesterday.Month(), yesterday.Day(), 0, 0, 0, 0, time.UTC)
-
-	slog.Info("creator-fund accrual: starting", "day", day.Format("2006-01-02"))
+func accrueCreatorFundFinalDays(ctx context.Context, svc *service.Service) {
+	slog.Info("creator-fund accrual: starting", "lookback_days", accrualLookbackDays)
 
 	logRow := func(creatorID uuid.UUID, res service.DayAccrual, err error) {
 		if err != nil {
-			// ErrInputRevisionChanged lands here: an accrued day whose
-			// analytics rows moved. It is not retried; it is the trigger
-			// for a correction through the admin reversal route.
 			slog.Warn("creator-fund accrual: creator failed",
 				"creator_id", creatorID, "error", err)
 			return
 		}
-		if res.Accrued > 0 || len(res.Skipped) > 0 {
+		if res.Accrued > 0 || res.Skipped[service.SkipRevisionDrift] > 0 {
 			slog.Info("creator-fund accrual: recorded",
 				"creator_id", creatorID, "rows_accrued", res.Accrued, "skipped", res.Skipped)
 		}
 	}
 
-	batch, err := svc.AccrueCreatorFundDayForAllEligible(ctx, day, logRow)
+	out, err := svc.AccrueRecentFinalDays(ctx, accrualLookbackDays, logRow)
 	if err != nil {
 		slog.Error("creator-fund accrual: batch failed", "error", err)
 		return
 	}
-	slog.Info("creator-fund accrual: completed",
-		"day", day.Format("2006-01-02"), "rows_accrued", batch.Accrued,
-		"creators", batch.Creators, "failed", batch.Failed, "skipped", batch.Skipped)
+	if out.FinalBefore.IsZero() {
+		slog.Warn("creator-fund accrual: analytics has finalised no day yet; nothing accrued")
+		return
+	}
+	for i, day := range out.Days {
+		b := out.Batch[i]
+		slog.Info("creator-fund accrual: day completed",
+			"day", day.Format("2006-01-02"), "rows_accrued", b.Accrued,
+			"creators", b.Creators, "failed", b.Failed, "skipped", b.Skipped)
+	}
+	slog.Info("creator-fund accrual: completed", "final_before", out.FinalBefore.Format("2006-01-02"))
 }
 
 // runCreatorFundPeriodSettlement is the payment run — the thing the
@@ -151,6 +158,14 @@ func maybeSettleClosedPeriod(ctx context.Context, store *postgres.Store, svc *se
 		slog.Error("creator-fund settlement: batch failed", "period", period.Key, "error", err)
 		return
 	}
+	// Held periods whose suspension has been lifted, and any claim that
+	// partly failed, are paid here; the period run only ever looks at the
+	// period that just closed.
+	releaseHeldSettlements(ctx, svc)
+	if res.AwaitingFinalAnalytics {
+		slog.Info("creator-fund settlement: waiting for analytics to finalise the period", "period", period.Key)
+		return
+	}
 	if res.NewlyCreditedCreators == 0 {
 		// The steady state after the first successful run of a period.
 		slog.Debug("creator-fund settlement: period already settled",
@@ -163,6 +178,24 @@ func maybeSettleClosedPeriod(ctx context.Context, store *postgres.Store, svc *se
 		"creators_credited", res.NewlyCreditedCreators,
 		"credited_paise", res.CreditedPaise,
 		"period_gross_paise", res.GrossPaise)
+}
+
+func releaseHeldSettlements(ctx context.Context, svc *service.Service) {
+	res, err := svc.SettleReleasedHolds(ctx, 500, func(creatorID uuid.UUID, periodKey string, st *service.PeriodStatement, err error) {
+		if err != nil {
+			slog.Warn("creator-fund settlement: release failed",
+				"creator_id", creatorID, "period", periodKey, "error", err)
+		}
+	})
+	if err != nil {
+		slog.Error("creator-fund settlement: release sweep failed", "error", err)
+		return
+	}
+	if res.Released > 0 || res.Failed > 0 {
+		slog.Info("creator-fund settlement: released held periods",
+			"considered", res.Considered, "released", res.Released,
+			"credited_paise", res.CreditedPaise, "failed", res.Failed)
+	}
 }
 
 // settlementReadyAt is the earliest moment a closed period may be paid:

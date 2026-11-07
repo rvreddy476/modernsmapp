@@ -3,6 +3,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -80,7 +81,7 @@ type FundAccrualTotals struct {
 	NetPaise         int64
 	// RuleVersions is every distinct rule_version on the summed rows, sorted.
 	// One is the normal case; the statement lists whatever it finds.
-	RuleVersions     []string
+	RuleVersions []string
 }
 
 // PeriodClaim is the input to ClaimAndCreditPeriodAccruals. The three
@@ -100,6 +101,15 @@ type PeriodClaim struct {
 	CreatorWalletAccountID   uuid.UUID
 	PlatformFeeAccountID     uuid.UUID
 	ReferenceType            string
+
+	// HoldReason decides, from the creator's fund-eligibility status read
+	// under a share lock INSIDE the claim transaction, whether the period
+	// is held: a non-empty reason claims and credits nothing, and the
+	// accruals stay uncredited (owed, not lost) for a later run. Required:
+	// a nil HoldReason is refused rather than read as "never hold". The
+	// lock means a suspension committed before the claim is seen, and one
+	// racing it waits for the claim to commit.
+	HoldReason func(eligibilityStatus string) string
 }
 
 // ClaimedAccruals is what one settlement run actually took ownership of.
@@ -108,7 +118,12 @@ type ClaimedAccruals struct {
 	GrossPaise       int64
 	PlatformFeePaise int64
 	NetPaise         int64
+	// HeldReason is set when the claim was held and nothing moved.
+	HeldReason string
 }
+
+// ErrHoldPolicyRequired is returned by a claim with no HoldReason.
+var ErrHoldPolicyRequired = errors.New("CLAIM_HOLD_POLICY_REQUIRED: a period claim must say when it is held")
 
 // SumCreatorFundAccruals totals the settled fund accrual rows in
 // [start, end) for one creator and region.
@@ -226,6 +241,27 @@ func (s *Store) ClaimAndCreditPeriodAccruals(ctx context.Context, in PeriodClaim
 		return out, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
+
+	if in.HoldReason == nil {
+		return out, ErrHoldPolicyRequired
+	}
+	// Eligibility at SETTLE time, not just at accrual time: a creator
+	// suspended after their days accrued is held here. FOR SHARE so a
+	// concurrent suspension cannot commit between this read and the credit.
+	var status string
+	err = tx.QueryRow(ctx, `
+		SELECT status FROM creator_fund_eligibility WHERE creator_id = $1 FOR SHARE
+	`, in.CreatorID).Scan(&status)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return out, fmt.Errorf("read eligibility for the claim: %w", err)
+	}
+	if reason := in.HoldReason(status); reason != "" {
+		out.HeldReason = reason
+		if err := tx.Commit(ctx); err != nil {
+			return ClaimedAccruals{}, err
+		}
+		return out, nil
+	}
 
 	err = tx.QueryRow(ctx, `
 		WITH claimed AS (
@@ -498,14 +534,31 @@ func (s *Store) SumTipsToRecipientBetween(ctx context.Context, recipientID uuid.
 // credits (reference_type=”) on the same wallet — so the two streams
 // cannot double count each other.
 func (s *Store) SumSubscriptionEarningsBetween(ctx context.Context, creatorID uuid.UUID, from, to time.Time) (count int64, totalPaise int64, err error) {
+	// A partial membership refund debits the creator's wallet with a
+	// 'refund' / 'subscription_refund' transaction and leaves the earning
+	// row 'completed' (only a full refund marks it 'reversed', which drops
+	// it here). The refunded part is netted off the earning it refunds —
+	// same wallet, same payment reference — so the subscription line is
+	// what the creator actually kept, and matches the wallet. Counted in
+	// the earning's period, which is where the earning was counted.
 	err = s.db.QueryRow(ctx, `
-		SELECT COUNT(*)::BIGINT, COALESCE(SUM(amount), 0)::BIGINT
-		FROM transactions
-		WHERE wallet_id = $1
-		  AND type = 'earning'
-		  AND reference_type = 'subscription'
-		  AND status = 'completed'
-		  AND created_at >= $2 AND created_at < $3
+		SELECT COUNT(*)::BIGINT,
+		       COALESCE(SUM(GREATEST(e.amount - COALESCE(r.refunded, 0), 0)), 0)::BIGINT
+		FROM transactions e
+		LEFT JOIN LATERAL (
+			SELECT SUM(x.amount) AS refunded
+			FROM transactions x
+			WHERE x.wallet_id = e.wallet_id
+			  AND x.type = 'refund'
+			  AND x.reference_type = 'subscription_refund'
+			  AND x.reference_id = e.reference_id
+			  AND x.status = 'completed'
+		) r ON TRUE
+		WHERE e.wallet_id = $1
+		  AND e.type = 'earning'
+		  AND e.reference_type = 'subscription'
+		  AND e.status = 'completed'
+		  AND e.created_at >= $2 AND e.created_at < $3
 	`, creatorID, from, to).Scan(&count, &totalPaise)
 	return
 }

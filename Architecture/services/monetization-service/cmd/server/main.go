@@ -116,6 +116,17 @@ func main() {
 		os.Exit(1)
 	}
 	slog.Info("analytics contract view ready", "view", "analytics."+postgres.AnalyticsContractView, "columns", strings.Join(contractColumns, ","), "build_sha", buildinfo.SHA)
+	// The finality view is checked, not required: without it every accrual
+	// and settlement refuses with ANALYTICS_CONTRACT_MISSING (pricing and
+	// paying nothing) rather than pricing an open day, so a monetization
+	// image rolled out ahead of analytics migration 016 still serves reads.
+	if finalBefore, ok, err := postgres.New(dbPool).AnalyticsFinalBefore(ctx); err != nil {
+		slog.Error("analytics finality view unavailable: creator-fund accrual and settlement refuse until it exists",
+			"view", "analytics."+postgres.AnalyticsFinalityView, "error", err)
+	} else {
+		slog.Info("analytics finality view ready", "view", "analytics."+postgres.AnalyticsFinalityView,
+			"known", ok, "final_before", finalBefore.Format("2006-01-02"))
+	}
 
 	// 4. Redis is required only when financial mutations/workers are enabled.
 	// The Module 6 read-only creator ledger remains available during a Redis or
@@ -300,6 +311,13 @@ func main() {
 		if mode.StartWorkers {
 			go workers.StartAll(ctx, monetizationStore, monetizationProducer, monetizationSvc, payoutsEnabled)
 			slog.Warn("financial mutation workers enabled", "payouts_enabled", payoutsEnabled)
+			// The ONLY thing that counts a fundraiser donation: the signed
+			// payments event for application fundraisers, applied once.
+			// It follows the writes flag, as the donate route does.
+			donations := payments.NewDonationConsumer(monetizationSvc, kafkaBrokers, metrics.NewKafkaConsumerMetrics("monetization-service-donations"))
+			go donations.Start(ctx)
+			defer donations.Close()
+			slog.Warn("fundraiser donation payments consumer started", "group", payments.DonationConsumerGroup, "topic", payments.Topic)
 		}
 		if mode.StartMembershipWorkers {
 			go workers.StartMembershipWorkers(ctx, monetizationStore, monetizationProducer, monetizationSvc)

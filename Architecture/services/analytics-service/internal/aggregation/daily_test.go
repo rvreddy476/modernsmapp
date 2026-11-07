@@ -113,3 +113,49 @@ func TestDailyInsertHonoursTheEligibilityFloor(t *testing.T) {
 		}
 	}
 }
+
+// FinalBefore is the rule monetization prices on (migration 016's view).
+// A day it calls final must be frozen, so the catch-up walk can never
+// rewrite it; and the watermark can only hold finality back, never bring
+// it forward.
+func TestFinalBeforeNeverFinalisesAnOpenDay(t *testing.T) {
+	now := time.Date(2026, 11, 7, 3, 0, 0, 0, time.UTC)
+	today := time.Date(2026, 11, 7, 0, 0, 0, 0, time.UTC)
+
+	if _, ok := FinalBefore(time.Time{}, false, now); ok {
+		t.Fatal("no watermark yet must mean nothing is final")
+	}
+
+	// Watermark where the walk leaves it: the earliest open day.
+	fb, ok := FinalBefore(today.AddDate(0, 0, -2), true, now)
+	if !ok || !fb.Equal(today.AddDate(0, 0, -2)) {
+		t.Fatalf("final_before = %s, want %s", fb.Format("2006-01-02"), today.AddDate(0, 0, -2).Format("2006-01-02"))
+	}
+
+	// A watermark ahead of the clock (a hand edit, a skewed pod) must not
+	// finalise yesterday or the day before.
+	fb, _ = FinalBefore(today.AddDate(0, 0, 5), true, now)
+	if !fb.Equal(today.AddDate(0, 0, -2)) {
+		t.Fatalf("a future watermark finalised %s", fb.Format("2006-01-02"))
+	}
+
+	// A watermark the walk has not advanced (rollup down) holds days back.
+	stuck := today.AddDate(0, 0, -6)
+	fb, _ = FinalBefore(stuck, true, now)
+	if !fb.Equal(stuck) {
+		t.Fatalf("a stuck watermark must hold finality at %s, got %s", stuck.Format("2006-01-02"), fb.Format("2006-01-02"))
+	}
+
+	// Every day FinalBefore calls final is frozen, and the first day it
+	// does not is still open.
+	for h := 0; h < 24*4; h++ {
+		at := today.Add(time.Duration(h) * time.Hour)
+		fb, _ := FinalBefore(at.AddDate(0, 0, 30), true, at)
+		if !IsFrozen(fb.AddDate(0, 0, -1), at) {
+			t.Fatalf("at %s the last final day %s is not frozen", at, fb.AddDate(0, 0, -1).Format("2006-01-02"))
+		}
+		if IsFrozen(fb, at) {
+			t.Fatalf("at %s day %s is frozen but not yet final", at, fb.Format("2006-01-02"))
+		}
+	}
+}

@@ -305,6 +305,10 @@ type PeriodStatement struct {
 
 	Status    string    `json:"status"`
 	SettledAt time.Time `json:"settled_at"`
+	// HoldReason says why this run credited nothing although fund money
+	// is owed (Status "held"): the creator is suspended from the fund.
+	// The money stays in PendingPaise until the hold is lifted.
+	HoldReason string `json:"hold_reason,omitempty"`
 
 	// Persisted reports whether a settlement row exists. False means the
 	// period produced nothing at all for this creator (no views that
@@ -418,7 +422,10 @@ func ExplainStatement(s *PeriodStatement) string {
 		rupees(s.PlatformFeePaise))
 	fmt.Fprintf(&b, " Net to you: %s — %s paid by this settlement, %s already in your wallet (tips and subscriptions land the moment they happen).",
 		rupees(s.NetPaise), rupees(s.CreditedPaise), rupees(s.AlreadyCreditedPaise))
-	if s.PendingPaise > 0 {
+	switch {
+	case s.PendingPaise > 0 && s.HoldReason != "":
+		fmt.Fprintf(&b, " %s is on hold while your creator fund participation is suspended; it is not lost and is paid once the suspension is lifted.", rupees(s.PendingPaise))
+	case s.PendingPaise > 0:
 		fmt.Fprintf(&b, " %s is still pending and will be paid by the next run.", rupees(s.PendingPaise))
 	}
 	if s.FundReversedRows > 0 {
@@ -481,15 +488,87 @@ func signedRupees(paise int64) string {
 // and returns the stored statement with NewlyCredited=false. That is the
 // no-op, and it holds with tips present because tips were never a credit
 // this run could make.
+//
+// Two outcomes are deliberately not errors:
+//
+//   - a period with a day analytics may still re-roll is not settled at
+//     all: the statement comes back Status "awaiting_final_analytics",
+//     nothing persisted, and a later run settles it;
+//   - a creator suspended from the fund at settle time is HELD: the
+//     settlement row is written, nothing is credited, the accruals stay
+//     owed (pending_paise), and the release sweep pays them once the
+//     suspension is lifted.
 func (s *Service) SettleCreatorFundPeriod(ctx context.Context, creatorID uuid.UUID, period SettlementPeriod) (*PeriodStatement, error) {
+	return s.settleCreatorFundPeriod(ctx, creatorID, period, true)
+}
+
+// Statement statuses that are not a stored settlement status.
+const (
+	StatusAwaitingFinalAnalytics = "awaiting_final_analytics"
+	StatusHeld                   = "held"
+)
+
+// settlementHoldReason is the settle-time eligibility gate, evaluated by
+// the claim on the status it reads under lock. A suspended creator's
+// period is held: not paid, not lost. Every other status pays what was
+// accrued, because a day is only ever accrued while the creator was
+// eligible, and losing eligibility later does not unearn it.
+func settlementHoldReason(eligibilityStatus string) string {
+	if eligibilityStatus == "suspended" {
+		return "creator_fund_suspended"
+	}
+	return ""
+}
+
+func awaitingFinalStatement(creatorID uuid.UUID, period SettlementPeriod, fin analyticsFinality) *PeriodStatement {
+	st := &PeriodStatement{
+		CreatorID:   creatorID,
+		PeriodKey:   period.Key,
+		PeriodLabel: period.Label(),
+		PeriodStart: period.Start,
+		PeriodEnd:   period.End,
+		Cadence:     period.Cadence,
+		RegionCode:  defaultRegionCode,
+		Currency:    defaultEarningsCurrency,
+		Status:      StatusAwaitingFinalAnalytics,
+	}
+	if fin.known {
+		st.Explanation = fmt.Sprintf("%s is not settled yet: analytics has finalised the days before %s, and the period runs to %s.",
+			period.Label(), fin.before.Format("2 January 2006"), period.End.AddDate(0, 0, -1).Format("2 January 2006"))
+	} else {
+		st.Explanation = fmt.Sprintf("%s is not settled yet: analytics has not finalised any day.", period.Label())
+	}
+	return st
+}
+
+// settleCreatorFundPeriod is the settlement; accrue=false is the batch's
+// form, which has already accrued every day for every eligible creator
+// once and only pays here.
+func (s *Service) settleCreatorFundPeriod(ctx context.Context, creatorID uuid.UUID, period SettlementPeriod, accrue bool) (*PeriodStatement, error) {
 	if period.Key == "" || !period.End.After(period.Start) {
 		return nil, fmt.Errorf("INVALID_PERIOD: empty or inverted window")
 	}
 
+	fin, err := s.analyticsFinality(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return s.settlePeriodWithFinality(ctx, creatorID, period, fin, accrue)
+}
+
+func (s *Service) settlePeriodWithFinality(ctx context.Context, creatorID uuid.UUID, period SettlementPeriod, fin analyticsFinality, accrue bool) (*PeriodStatement, error) {
+	// 0. A period settles only when all its days are final. Otherwise it
+	//    waits; it does not fail.
+	if !fin.periodFinal(period) {
+		return awaitingFinalStatement(creatorID, period, fin), nil
+	}
+
 	// 1. Accrue the days. Cheap and idempotent when they are already done.
-	for _, day := range period.Days() {
-		if _, err := s.AccrueCreatorFundDay(ctx, creatorID, day); err != nil {
-			return nil, fmt.Errorf("accrue %s: %w", day.Format("2006-01-02"), err)
+	if accrue {
+		for _, day := range period.Days() {
+			if _, err := s.accrueDay(ctx, creatorID, day, fin); err != nil {
+				return nil, fmt.Errorf("accrue %s: %w", day.Format("2006-01-02"), err)
+			}
 		}
 	}
 
@@ -651,6 +730,7 @@ func (s *Service) SettleCreatorFundPeriod(ctx context.Context, creatorID uuid.UU
 		CreatorWalletAccountID:   creatorAcct.ID,
 		PlatformFeeAccountID:     feeAcct.ID,
 		ReferenceType:            periodSettlementReferenceType,
+		HoldReason:               settlementHoldReason,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("claim and credit accruals: %w", err)
@@ -685,6 +765,10 @@ func (s *Service) SettleCreatorFundPeriod(ctx context.Context, creatorID uuid.UU
 		return nil, fmt.Errorf("refresh settlement: %w", err)
 	}
 	st.Persisted = true
+	if claimed.HeldReason != "" {
+		st.Status = StatusHeld
+		st.HoldReason = claimed.HeldReason
+	}
 	st.Explanation = ExplainStatement(st)
 
 	if err := CheckStatementArithmetic(st); err != nil {
@@ -744,16 +828,41 @@ func toSettlementRow(id uuid.UUID, st *PeriodStatement) *postgres.PeriodSettleme
 // Accrual runs day by day across every eligible creator FIRST, in
 // creator_id order within each day — the same order the nightly worker
 // uses — so that under a budget cap the days that reach it are the same
-// whether the period was accrued nightly or back-filled here. The
-// per-creator settlement then finds every day already accrued and only
-// pays. A creator whose inputs moved surfaces ErrInputRevisionChanged
-// from their own settlement, which is where it is logged.
+// whether the period was accrued nightly or back-filled here. That is the
+// run's ONE accrual pass: the per-creator settlement then reads what is
+// accrued and only pays. A creator whose accrual failed in this pass is
+// not settled by it (their days may be incomplete); the next run retries.
+//
+// A period with a day analytics may still re-roll is not touched at all
+// (AwaitingFinalAnalytics), and a held creator counts in Held.
 func (s *Service) SettleCreatorFundPeriodForAll(ctx context.Context, period SettlementPeriod, log func(creatorID uuid.UUID, st *PeriodStatement, err error)) (PeriodBatchResult, error) {
 	var res PeriodBatchResult
 	res.Period = period
 
+	fin, err := s.analyticsFinality(ctx)
+	if err != nil {
+		return res, err
+	}
+	return s.settleAllWithFinality(ctx, period, fin, log)
+}
+
+func (s *Service) settleAllWithFinality(ctx context.Context, period SettlementPeriod, fin analyticsFinality, log func(creatorID uuid.UUID, st *PeriodStatement, err error)) (PeriodBatchResult, error) {
+	res := PeriodBatchResult{Period: period}
+	if !fin.periodFinal(period) {
+		res.AwaitingFinalAnalytics = true
+		return res, nil
+	}
+
+	accrualFailed := map[uuid.UUID]error{}
+	noteFailure := func(id uuid.UUID, _ DayAccrual, err error) {
+		if err != nil {
+			if _, seen := accrualFailed[id]; !seen {
+				accrualFailed[id] = err
+			}
+		}
+	}
 	for _, day := range period.Days() {
-		if _, err := s.AccrueCreatorFundDayForAllEligible(ctx, day, nil); err != nil {
+		if _, err := s.accrueDayForAllEligible(ctx, day, fin, noteFailure); err != nil {
 			return res, fmt.Errorf("accrue %s: %w", day.Format("2006-01-02"), err)
 		}
 	}
@@ -763,7 +872,15 @@ func (s *Service) SettleCreatorFundPeriodForAll(ctx context.Context, period Sett
 		return res, err
 	}
 	for _, id := range creators {
-		st, err := s.SettleCreatorFundPeriod(ctx, id, period)
+		if accErr, failed := accrualFailed[id]; failed {
+			err := fmt.Errorf("accrual failed in this run; period not settled: %w", accErr)
+			if log != nil {
+				log(id, nil, err)
+			}
+			res.Failed++
+			continue
+		}
+		st, err := s.settlePeriodWithFinality(ctx, id, period, fin, false)
 		if log != nil {
 			log(id, st, err)
 		}
@@ -774,6 +891,9 @@ func (s *Service) SettleCreatorFundPeriodForAll(ctx context.Context, period Sett
 		res.Considered++
 		if st == nil {
 			continue
+		}
+		if st.Status == StatusHeld {
+			res.Held++
 		}
 		if st.Persisted {
 			res.Statements++
@@ -801,6 +921,56 @@ type PeriodBatchResult struct {
 	GrossPaise            int64            `json:"period_gross_paise"`
 	NetPaise              int64            `json:"period_net_paise"`
 	Failed                int              `json:"failed"`
+	// Held counts creators whose fund money was held (suspended).
+	Held int `json:"creators_held"`
+	// AwaitingFinalAnalytics: some day of the period is not final in
+	// analytics yet; nothing was accrued or paid. Not a failure.
+	AwaitingFinalAnalytics bool `json:"awaiting_final_analytics,omitempty"`
+}
+
+// ReleaseResult is what one SettleReleasedHolds pass did.
+type ReleaseResult struct {
+	Considered    int   `json:"considered"`
+	Released      int   `json:"released"`
+	CreditedPaise int64 `json:"credited_paise"`
+	Failed        int   `json:"failed"`
+}
+
+// SettleReleasedHolds settles again every stored period settlement that
+// still owes fund money to a creator who is no longer suspended: a held
+// period whose hold was lifted, or a claim that partly failed. The days
+// are already accrued, so this only claims and pays. Idempotent; the
+// hourly settlement worker runs it after the period run.
+func (s *Service) SettleReleasedHolds(ctx context.Context, limit int, log func(creatorID uuid.UUID, periodKey string, st *PeriodStatement, err error)) (ReleaseResult, error) {
+	var res ReleaseResult
+	if limit <= 0 {
+		limit = 500
+	}
+	pending, err := s.store.ListReleasableSettlements(ctx, defaultRegionCode, limit)
+	if err != nil {
+		return res, err
+	}
+	for _, p := range pending {
+		res.Considered++
+		period, err := ParsePeriodKey(p.PeriodKey)
+		if err == nil {
+			var st *PeriodStatement
+			st, err = s.settleCreatorFundPeriod(ctx, p.CreatorID, period, false)
+			if log != nil {
+				log(p.CreatorID, p.PeriodKey, st, err)
+			}
+			if err == nil && st != nil && st.NewlyCredited {
+				res.Released++
+				res.CreditedPaise += st.NewlyCreditedPaise
+			}
+		} else if log != nil {
+			log(p.CreatorID, p.PeriodKey, nil, err)
+		}
+		if err != nil {
+			res.Failed++
+		}
+	}
+	return res, nil
 }
 
 // ---------------------------------------------------------------------------

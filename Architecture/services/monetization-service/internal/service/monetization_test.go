@@ -7,8 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atpost/monetization-service/internal/donation"
 	"github.com/atpost/monetization-service/internal/service"
 	"github.com/atpost/monetization-service/internal/store/postgres"
+	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -293,22 +295,45 @@ func (m *mockStore) UpdateFundraiserStatus(_ context.Context, id uuid.UUID, stat
 	return nil
 }
 
-func (m *mockStore) CreateDonation(_ context.Context, d *postgres.Donation) (*postgres.Donation, error) {
+// CreatePendingDonation mirrors the store: a pending row that touches
+// nothing on the fundraiser.
+func (m *mockStore) CreatePendingDonation(_ context.Context, d *postgres.Donation) (*postgres.Donation, error) {
 	if d.ID == uuid.Nil {
 		d.ID = uuid.New()
 	}
 	d.CreatedAt = time.Now()
+	d.Status = donation.StatusPending
 	m.donations = append(m.donations, d)
+	return d, nil
+}
 
-	// Update fundraiser raised_amount.
-	if f, ok := m.fundraisers[d.FundraiserID]; ok {
-		f.RaisedAmount += d.Amount
-		f.DonorCount++
-		if f.RaisedAmount >= f.GoalAmount {
-			f.Status = "completed"
+// applyDonationEvent mirrors Store.ApplyDonationPaymentEvent's effect
+// through the real decision table.
+func (m *mockStore) applyDonationEvent(ev donation.Event) donation.Decision {
+	var row *postgres.Donation
+	for _, d := range m.donations {
+		if d.ID == ev.DonationID {
+			row = d
 		}
 	}
-	return d, nil
+	if row == nil {
+		return donation.Decision{Outcome: donation.OutcomeDonationNotFound}
+	}
+	f := m.fundraisers[row.FundraiserID]
+	dec := donation.Decide(
+		donation.Donation{ID: row.ID, FundraiserID: row.FundraiserID, DonorID: row.DonorID, AmountPaise: row.AmountPaise,
+			RefundedPaise: row.RefundedPaise, Currency: row.Currency, Status: row.Status},
+		donation.Fundraiser{ID: f.ID, GoalPaise: f.GoalPaise, RaisedPaise: f.RaisedPaise, Status: f.Status},
+		ev)
+	if dec.Donation != nil {
+		row.Status, row.RefundedPaise = dec.Donation.Status, dec.Donation.RefundedPaise
+	}
+	f.RaisedPaise += dec.RaisedDeltaPaise
+	f.DonorCount += dec.DonorDelta
+	if dec.Complete {
+		f.Status = "completed"
+	}
+	return dec
 }
 
 func (m *mockStore) GetDonationsByFundraiser(_ context.Context, _ uuid.UUID, _, _ int) ([]postgres.Donation, error) {
@@ -510,58 +535,86 @@ func subscribe(ctx context.Context, store *mockStore, subscriberID, creatorID, t
 	return store.Subscribe(ctx, subscriberID, creatorID, tier.ID, tier.Name, tier.PricePaise, tier.Currency, idempotencyKey)
 }
 
-// TestDonation_UpdatesFundraiserTotal verifies that a donation increments the
-// fundraiser's raised_amount.
+// TestDonation_UpdatesFundraiserTotal verifies that a donation increments
+// the fundraiser's raised total — and, since 2026-11-07, that it does so
+// ONLY when payments-service's event for it is applied: asking to donate
+// moves nothing, and an event that is not this donation's payment moves
+// nothing.
 func TestDonation_UpdatesFundraiserTotal(t *testing.T) {
 	ctx := context.Background()
 	store := newMockStore()
 
 	fundraiserID := uuid.New()
 	donorID := uuid.New()
-	paymentIntentID := uuid.New()
 
-	// Create a fundraiser.
+	// Create a fundraiser with a Rs 1,000 goal.
 	fundraiser := &postgres.Fundraiser{
-		ID:           fundraiserID,
-		CreatorID:    uuid.New(),
-		Type:         "personal",
-		Title:        "Test Fund",
-		GoalAmount:   1000.0,
-		RaisedAmount: 0,
-		DonorCount:   0,
-		Currency:     "INR",
-		Status:       "active",
+		ID:          fundraiserID,
+		CreatorID:   uuid.New(),
+		Type:        "personal",
+		Title:       "Test Fund",
+		GoalPaise:   100_000,
+		RaisedPaise: 0,
+		DonorCount:  0,
+		Currency:    "INR",
+		Status:      "active",
 	}
 	store.fundraisers[fundraiserID] = fundraiser
 
-	donationAmount := 250.0
+	const donationPaise = int64(25_000)
 
-	// Create donation.
 	svc := newDonationService(store)
-	_, err := svc.donate(ctx, fundraiserID, donorID, paymentIntentID, donationAmount, false, nil)
+	pending, err := svc.donate(ctx, fundraiserID, donorID, donationPaise, false, nil)
 	if err != nil {
 		t.Fatalf("donate: %v", err)
 	}
+	if fundraiser.RaisedPaise != 0 || fundraiser.DonorCount != 0 {
+		t.Fatalf("asking to donate counted it: raised=%d donors=%d", fundraiser.RaisedPaise, fundraiser.DonorCount)
+	}
 
-	// Verify raised_amount updated.
-	updated := store.fundraisers[fundraiserID]
-	if updated.RaisedAmount != donationAmount {
-		t.Fatalf("expected raised_amount=%.2f, got %.2f", donationAmount, updated.RaisedAmount)
+	succeeded := func(eventID string, d *postgres.Donation, payer uuid.UUID, amount int64) donation.Event {
+		return donation.Event{EventID: eventID, EventType: events.EventPaymentSucceeded, IntentID: "pi_" + eventID,
+			DonationID: d.ID, PayerID: payer, AmountMinor: amount, Currency: "INR"}
 	}
-	if updated.DonorCount != 1 {
-		t.Fatalf("expected donor_count=1, got %d", updated.DonorCount)
+
+	// Someone else's payment, or the wrong amount, is not this donation's.
+	for _, ev := range []donation.Event{
+		succeeded("e-wrong-payer", pending, uuid.New(), donationPaise),
+		succeeded("e-wrong-amount", pending, donorID, donationPaise-1),
+	} {
+		if dec := store.applyDonationEvent(ev); dec.Outcome != donation.OutcomeMismatch {
+			t.Fatalf("%s: outcome %q, want mismatch", ev.EventID, dec.Outcome)
+		}
 	}
-	if updated.Status != "active" {
-		t.Fatalf("expected status=active (goal not yet reached), got %s", updated.Status)
+	if fundraiser.RaisedPaise != 0 {
+		t.Fatalf("a mismatched payment counted: raised=%d", fundraiser.RaisedPaise)
+	}
+
+	// The donor's own captured payment counts it, once.
+	if dec := store.applyDonationEvent(succeeded("e-1", pending, donorID, donationPaise)); dec.Outcome != donation.OutcomeCounted {
+		t.Fatalf("outcome %q, want counted", dec.Outcome)
+	}
+	if fundraiser.RaisedPaise != donationPaise {
+		t.Fatalf("expected raised_paise=%d, got %d", donationPaise, fundraiser.RaisedPaise)
+	}
+	if fundraiser.DonorCount != 1 {
+		t.Fatalf("expected donor_count=1, got %d", fundraiser.DonorCount)
+	}
+	if fundraiser.Status != "active" {
+		t.Fatalf("expected status=active (goal not yet reached), got %s", fundraiser.Status)
+	}
+	if dec := store.applyDonationEvent(succeeded("e-1-redelivered", pending, donorID, donationPaise)); dec.Outcome != donation.OutcomeAlreadyCounted || fundraiser.RaisedPaise != donationPaise {
+		t.Fatalf("a second capture event counted again: %q raised=%d", dec.Outcome, fundraiser.RaisedPaise)
 	}
 
 	// Donate enough to complete the fundraiser.
-	_, err = svc.donate(ctx, fundraiserID, donorID, uuid.New(), 800.0, false, nil)
+	second, err := svc.donate(ctx, fundraiserID, donorID, 80_000, false, nil)
 	if err != nil {
 		t.Fatalf("donate to completion: %v", err)
 	}
-	if store.fundraisers[fundraiserID].Status != "completed" {
-		t.Fatalf("expected fundraiser status=completed after reaching goal, got %s", store.fundraisers[fundraiserID].Status)
+	store.applyDonationEvent(succeeded("e-2", second, donorID, 80_000))
+	if fundraiser.Status != "completed" {
+		t.Fatalf("expected fundraiser status=completed after reaching goal, got %s", fundraiser.Status)
 	}
 }
 
@@ -574,8 +627,8 @@ func newDonationService(store *mockStore) *donationService {
 	return &donationService{store: store}
 }
 
-func (ds *donationService) donate(ctx context.Context, fundraiserID, donorID, paymentIntentID uuid.UUID, amount float64, isAnonymous bool, message *string) (*postgres.Donation, error) {
-	if amount <= 0 {
+func (ds *donationService) donate(ctx context.Context, fundraiserID, donorID uuid.UUID, amountPaise int64, isAnonymous bool, message *string) (*postgres.Donation, error) {
+	if amountPaise <= 0 {
 		return nil, errors.New("INVALID_AMOUNT")
 	}
 
@@ -591,15 +644,14 @@ func (ds *donationService) donate(ctx context.Context, fundraiserID, donorID, pa
 	}
 
 	d := &postgres.Donation{
-		FundraiserID:    fundraiserID,
-		DonorID:         donorID,
-		Amount:          amount,
-		Currency:        f.Currency,
-		PaymentIntentID: paymentIntentID,
-		IsAnonymous:     isAnonymous,
-		Message:         message,
+		FundraiserID: fundraiserID,
+		DonorID:      donorID,
+		AmountPaise:  amountPaise,
+		Currency:     f.Currency,
+		IsAnonymous:  isAnonymous,
+		Message:      message,
 	}
-	return ds.store.CreateDonation(ctx, d)
+	return ds.store.CreatePendingDonation(ctx, d)
 }
 
 // ---------------------------------------------------------------------------

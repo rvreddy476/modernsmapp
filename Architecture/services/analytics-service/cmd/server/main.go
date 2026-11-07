@@ -13,7 +13,6 @@ import (
 	"github.com/atpost/analytics-service/internal/consumers"
 	httpHandler "github.com/atpost/analytics-service/internal/http"
 	"github.com/atpost/analytics-service/internal/personalization"
-	"github.com/atpost/analytics-service/internal/scoring"
 	"github.com/atpost/analytics-service/internal/service"
 	pgstore "github.com/atpost/analytics-service/internal/store/postgres"
 	scyllaStore "github.com/atpost/analytics-service/internal/store/scylla"
@@ -230,10 +229,10 @@ func main() {
 		}
 	}
 
-	// 11. Start TrustFactor worker (10-min interval)
-	trustWorker := scoring.NewTrustFactorWorker(rdb, scyllaSession)
-	go trustWorker.Start(workerCtx)
-	slog.Info("trust factor worker started")
+	// 11. (retired) The TrustFactor worker scanned sess:anomaly:* keys that
+	// nothing writes and cached a score nothing read. Bot detection is a
+	// founder item; until it is designed, every session's trust factor is
+	// the 1.0 that ingest stamps (service/ingest.go).
 
 	// 12. Start hourly aggregator
 	// Both aggregators are handed the view-source resolver read above,

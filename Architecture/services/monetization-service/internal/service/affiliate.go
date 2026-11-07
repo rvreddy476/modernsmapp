@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
+	"math"
 
 	"github.com/atpost/monetization-service/internal/store/postgres"
 	"github.com/google/uuid"
@@ -52,10 +53,17 @@ func (s *Service) ListAffiliateLinks(ctx context.Context, creatorID uuid.UUID, l
 	return s.store.GetAffiliateLinksByCreator(ctx, creatorID, limit, offset)
 }
 
-// RecordAffiliateConversion records a conversion for the affiliate link identified by linkCode.
-// The commission amount is computed from the link's commission_pct applied to the order total,
-// falling back to commission_flat if set and pct is zero.
-func (s *Service) RecordAffiliateConversion(ctx context.Context, orderID, buyerID uuid.UUID, linkCode string, orderTotal float64) error {
+// RecordAffiliateConversion records a conversion for the affiliate link
+// identified by linkCode, for an order of orderTotalPaise (integer paise).
+// The commission is AffiliateCommissionPaise of it.
+//
+// NOTE (review 2026-11-07): nothing calls this. No order flow reports an
+// affiliate conversion yet, so no commission has ever been recorded by it;
+// it is kept, in integer paise, for the flow that will.
+func (s *Service) RecordAffiliateConversion(ctx context.Context, orderID, buyerID uuid.UUID, linkCode string, orderTotalPaise int64) error {
+	if orderTotalPaise <= 0 {
+		return fmt.Errorf("INVALID_ORDER_TOTAL: order_total_paise must be greater than zero")
+	}
 	link, err := s.store.GetAffiliateLinkByCode(ctx, linkCode)
 	if err != nil {
 		return err
@@ -67,22 +75,37 @@ func (s *Service) RecordAffiliateConversion(ctx context.Context, orderID, buyerI
 		return fmt.Errorf("AFFILIATE_LINK_INACTIVE")
 	}
 
-	// Compute commission amount.
-	var commissionAmt float64
-	if link.CommissionPct > 0 {
-		commissionAmt = orderTotal * float64(link.CommissionPct) / 100.0
-	} else if link.CommissionFlat != nil {
-		commissionAmt = *link.CommissionFlat
-	}
-
 	conv := &postgres.AffiliateConversion{
-		AffiliateID:   link.ID,
-		OrderID:       orderID,
-		BuyerID:       buyerID,
-		CommissionAmt: commissionAmt,
+		AffiliateID:     link.ID,
+		OrderID:         orderID,
+		BuyerID:         buyerID,
+		CommissionPaise: AffiliateCommissionPaise(orderTotalPaise, link.CommissionPct, link.CommissionFlat),
 	}
 	_, err = s.store.RecordAffiliateConversion(ctx, conv)
 	return err
+}
+
+// AffiliateCommissionPaise is the commission on an order, in integer
+// paise. The link stores its percentage as a REAL (5.0 = 5%) and its flat
+// commission as NUMERIC(8,2) rupees; each is converted ONCE, rounded to
+// the nearest basis point or paisa, and the money itself is integer
+// arithmetic: total x bps / 10000, truncated (the platform never rounds a
+// commission up). A percentage wins; a flat amount applies only when the
+// percentage is zero.
+func AffiliateCommissionPaise(orderTotalPaise int64, commissionPct float32, commissionFlat *float64) int64 {
+	if orderTotalPaise <= 0 {
+		return 0
+	}
+	if bps := int64(math.Round(float64(commissionPct) * 100)); bps > 0 {
+		if bps > 10_000 {
+			bps = 10_000
+		}
+		return orderTotalPaise/10_000*bps + orderTotalPaise%10_000*bps/10_000
+	}
+	if commissionFlat != nil && *commissionFlat > 0 {
+		return int64(math.Round(*commissionFlat * 100))
+	}
+	return 0
 }
 
 // ListAffiliateConversions returns paginated conversions for an affiliate link.
