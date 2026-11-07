@@ -14,7 +14,7 @@ import (
 
 // loginLimiter is the login action at its default limits.
 func loginLimiter(rdb *redis.Client) gin.HandlerFunc {
-	return CredentialRateLimit(rdb, ActionLogin, CredentialLimits{})
+	return CredentialRateLimit(rdb, testKeys, ActionLogin, CredentialLimits{})
 }
 
 // credentialEngine mounts several actions' limiters on one Redis, the way
@@ -26,7 +26,7 @@ func credentialEngine(t *testing.T, lim CredentialLimits, actions map[string]Cre
 	t.Cleanup(func() { _ = rdb.Close() })
 	r := gin.New()
 	for path, a := range actions {
-		r.POST(path, CredentialRateLimit(rdb, a, lim), func(c *gin.Context) { c.Status(http.StatusOK) })
+		r.POST(path, CredentialRateLimit(rdb, testKeys, a, lim), func(c *gin.Context) { c.Status(http.StatusOK) })
 	}
 	return r, mr
 }

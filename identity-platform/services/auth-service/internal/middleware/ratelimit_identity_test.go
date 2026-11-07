@@ -58,7 +58,7 @@ func TestLoginRateLimitCountsEmailField(t *testing.T) {
 // H1: every client sends `identifier` to forgot/reset; the cap used to read
 // only `email`/`phone`.
 func TestPasswordResetRateLimitCountsIdentifierField(t *testing.T) {
-	r, _ := limiterEngine(t, PasswordResetRateLimit)
+	r, _ := limiterEngine(t, passwordResetLimiter)
 	if n := rotatingIPs(r, 9, `{"identifier":"victim@example.com","code":"000000","new_password":"Aa1!aaaa"}`); n != 4 {
 		t.Fatalf("first denial at request %d, want 4 (3 per account, then 429)", n)
 	}
@@ -101,18 +101,18 @@ func TestLimiterWindowDoesNotSlide(t *testing.T) {
 	mr.FastForward(2 * time.Minute) // 16 minutes after the window opened
 	if code := hitFrom(r, "10.2.0.3", body); code != http.StatusOK {
 		t.Fatalf("identifier still locked after its 15-minute window ended: %d (ttl %v)",
-			code, mr.TTL(credentialKey(ActionLogin.Name, "acct", accountDigest("victim@example.com"))))
+			code, mr.TTL(credentialKey(ActionLogin.Name, "acct", testKeys.Digest("victim@example.com"))))
 	}
 }
 
 // A counter must never be left without an expiry, or it is a permanent lock.
 func TestLimiterCounterAlwaysExpires(t *testing.T) {
-	r, mr := limiterEngine(t, PasswordResetRateLimit)
-	if err := mr.Set("pwreset_rl:id:victim@example.com", "1"); err != nil { // a counter that lost its TTL
+	r, mr := limiterEngine(t, passwordResetLimiter)
+	if err := mr.Set("pwreset_rl:id:"+testKeys.Digest("victim@example.com"), "1"); err != nil { // a counter that lost its TTL
 		t.Fatalf("seed counter: %v", err)
 	}
 	hitFrom(r, "10.3.0.1", `{"identifier":"victim@example.com"}`)
-	if ttl := mr.TTL("pwreset_rl:id:victim@example.com"); ttl <= 0 {
+	if ttl := mr.TTL("pwreset_rl:id:" + testKeys.Digest("victim@example.com")); ttl <= 0 {
 		t.Fatalf("counter has no expiry (ttl %v): it would lock the account forever", ttl)
 	}
 }

@@ -45,7 +45,7 @@ import (
 // Phone is read from the JSON body field "phone". If rdb is nil, the
 // middleware is a no-op (test mode). Fails CLOSED on Redis errors via
 // the shared allow() helper.
-func OTPRateLimit(rdb *redis.Client) gin.HandlerFunc {
+func OTPRateLimit(rdb *redis.Client, keys IdentifierKeys) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if rdb == nil {
 			c.Next()
@@ -65,14 +65,16 @@ func OTPRateLimit(rdb *redis.Client) gin.HandlerFunc {
 		ctx := c.Request.Context()
 
 		if req.Phone != "" {
-			if !allow(ctx, rdb, fmt.Sprintf("otp_rl:%s", req.Phone), 5, 600*time.Second) {
+			// The number itself is never in a key (identifier_keys.go).
+			phone := keys.Digest(req.Phone)
+			if !allow(ctx, rdb, fmt.Sprintf("otp_rl:%s", phone), 5, 600*time.Second) {
 				c.Header("Retry-After", "600")
 				c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 					"error": gin.H{"code": "RATE_LIMITED", "message": "Too many OTP requests. Try again later."},
 				})
 				return
 			}
-			if !allow(ctx, rdb, fmt.Sprintf("otp_rl_day:%s", req.Phone), 30, 24*time.Hour) {
+			if !allow(ctx, rdb, fmt.Sprintf("otp_rl_day:%s", phone), 30, 24*time.Hour) {
 				c.Header("Retry-After", "3600")
 				c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 					"error": gin.H{"code": "RATE_LIMITED", "message": "Daily OTP limit reached for this number. Try again tomorrow."},
@@ -102,7 +104,7 @@ func OTPRateLimit(rdb *redis.Client) gin.HandlerFunc {
 // read from the JSON body (`identifier`, else `email`, else `phone`; see
 // bodyIdentifier). Reset tokens themselves
 // remain server-issued and short-lived; this is the upstream throttle.
-func PasswordResetRateLimit(rdb *redis.Client) gin.HandlerFunc {
+func PasswordResetRateLimit(rdb *redis.Client, keys IdentifierKeys) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		if rdb == nil {
 			c.Next()
@@ -116,7 +118,7 @@ func PasswordResetRateLimit(rdb *redis.Client) gin.HandlerFunc {
 
 		// 3 per identifier per hour
 		if identifier != "" {
-			if !allow(c.Request.Context(), rdb, fmt.Sprintf("pwreset_rl:id:%s", identifier), 3, time.Hour) {
+			if !allow(c.Request.Context(), rdb, fmt.Sprintf("pwreset_rl:id:%s", keys.Digest(identifier)), 3, time.Hour) {
 				c.Header("Retry-After", "3600")
 				c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 					"error": gin.H{"code": "RATE_LIMITED", "message": "Too many password reset requests for this account. Try again later."},

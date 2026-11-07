@@ -296,6 +296,21 @@ func (c *Config) ValidateForProduction() error {
 // Explicit local environment AND a strong server-only key are required. A
 // forgotten key in any other environment prevents startup, rather than
 // weakening authentication silently.
+// RateLimitKeySecret is the server secret the rate limiters key account
+// identifiers with (middleware.IdentifierKeys): the RS256 signing key, which
+// only this service holds and production requires, else the HS256 secret a
+// local or dev stack signs with. Blank when neither is set (unit tests): the
+// limiters then fall back to an unkeyed, domain-prefixed SHA-256.
+//
+// Rotating the chosen secret moves every per-account counter to a new key,
+// so the counters restart; the longest window is a day.
+func (c *Config) RateLimitKeySecret() string {
+	if s := strings.TrimSpace(c.AccessTokenPrivateKeyPEM); s != "" {
+		return s
+	}
+	return strings.TrimSpace(c.JWTSecret)
+}
+
 func (c *Config) AdminLocalPasswordLoginEnabled() bool {
 	return !c.Production && c.RuntimeEnvironment == "local" && len(c.AdminLocalPasswordLoginKey) >= 32
 }

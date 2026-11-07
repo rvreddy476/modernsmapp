@@ -22,9 +22,9 @@ func newTestEngine(mw gin.HandlerFunc, path string) *gin.Engine {
 	return r
 }
 
-// TestOTPRateLimitNilRedis verifies that OTPRateLimit(nil) calls c.Next() and does not block.
+// TestOTPRateLimitNilRedis verifies that OTPRateLimit(nil, IdentifierKeys{}) calls c.Next() and does not block.
 func TestOTPRateLimitNilRedis(t *testing.T) {
-	r := newTestEngine(OTPRateLimit(nil), "/request-otp")
+	r := newTestEngine(OTPRateLimit(nil, IdentifierKeys{}), "/request-otp")
 
 	body := []byte(`{"phone":"+911234567890"}`)
 	req := httptest.NewRequest(http.MethodPost, "/request-otp", bytes.NewReader(body))
@@ -75,7 +75,7 @@ func TestAllowHelperLogic(t *testing.T) {
 	// OTPRateLimit skips allow() entirely when rdb == nil.
 	// We exercise the nil path via a full round-trip rather than calling allow() directly
 	// because allow() requires a non-nil *redis.Client.
-	r := newTestEngine(OTPRateLimit(nil), "/otp")
+	r := newTestEngine(OTPRateLimit(nil, IdentifierKeys{}), "/otp")
 
 	req := httptest.NewRequest(http.MethodPost, "/otp", bytes.NewReader([]byte(`{"phone":"+1555000000"}`)))
 	req.Header.Set("Content-Type", "application/json")
@@ -92,7 +92,7 @@ func TestAllowHelperLogic(t *testing.T) {
 // TestOTPRateLimitPassesValidRequest verifies that a POST with valid phone JSON
 // returns 200 (not 429) when rdb is nil.
 func TestOTPRateLimitPassesValidRequest(t *testing.T) {
-	r := newTestEngine(OTPRateLimit(nil), "/request-otp")
+	r := newTestEngine(OTPRateLimit(nil, IdentifierKeys{}), "/request-otp")
 
 	body := []byte(`{"phone":"+911234567890"}`)
 	req := httptest.NewRequest(http.MethodPost, "/request-otp", bytes.NewReader(body))

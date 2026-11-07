@@ -51,6 +51,9 @@ type Handler struct {
 	// adminTokens verifies admin-service tokens for /v1/auth/internal/admin/*
 	// (admin_console.go). Nil: the family accepts nothing.
 	adminTokens *servicetoken.Verifier
+	// limiterKeys keys account identifiers in rate-limit counters, so no email
+	// address or phone number sits in a Redis key (middleware/identifier_keys.go).
+	limiterKeys middleware.IdentifierKeys
 }
 
 // SetIdempotencyStore installs the replay store. Separate from New so tests
@@ -168,6 +171,11 @@ func New(svc AuthService, cfg *config.Config, logger *slog.Logger, rdb *redis.Cl
 		rollout.FlagRegisterRequireGender: cfg.RegisterRequireGender,
 	})
 	h := &Handler{svc: svc, cfg: cfg, log: logger, rdb: rdb, flags: flags}
+	h.limiterKeys = middleware.NewIdentifierKeys(cfg.RateLimitKeySecret())
+	if !h.limiterKeys.Keyed() {
+		logger.Warn("rate limiters have no server secret (JWT_PRIVATE_KEY_PEM or JWT_SECRET); " +
+			"account identifiers are keyed by an unkeyed SHA-256")
+	}
 	// admin-service token verifier for the console family. A misconfigured
 	// key is fatal, like an unreadable JWT_PRIVATE_KEY_PEM: the Access page
 	// must not be silently disabled by a typo in a secret.
@@ -186,7 +194,7 @@ func New(svc AuthService, cfg *config.Config, logger *slog.Logger, rdb *redis.Cl
 // credentialLimit is the configured rate limit (AUTH_RATE_LIMIT_*) for one
 // consumer credential action, in that action's own bucket.
 func (h *Handler) credentialLimit(action middleware.CredentialAction) gin.HandlerFunc {
-	return middleware.CredentialRateLimit(h.rdb, action, middleware.CredentialLimits{
+	return middleware.CredentialRateLimit(h.rdb, h.limiterKeys, action, middleware.CredentialLimits{
 		PerIP:      int64(h.cfg.AuthRateLimitPerIP),
 		PerAccount: int64(h.cfg.AuthRateLimitPerAccount),
 		Window:     h.cfg.AuthRateLimitWindow,
@@ -196,7 +204,7 @@ func (h *Handler) credentialLimit(action middleware.CredentialAction) gin.Handle
 // strictCredentialLimit keeps the old 10-per-IP numbers for routes whose users
 // are not a carrier-NAT crowd (admin console, step-up, passkeys).
 func (h *Handler) strictCredentialLimit(action middleware.CredentialAction) gin.HandlerFunc {
-	return middleware.CredentialRateLimit(h.rdb, action, middleware.StrictCredentialLimits)
+	return middleware.CredentialRateLimit(h.rdb, h.limiterKeys, action, middleware.StrictCredentialLimits)
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) {
@@ -209,7 +217,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		// there is no SMS integration in this service, so the code could never
 		// arrive. The rate limiters stay in front of them so a client looping
 		// on the 410 still cannot hammer Redis. See retired_sms_routes.go.
-		v1.POST("/request-otp", middleware.OTPRateLimit(h.rdb), retiredSMSRoute)
+		v1.POST("/request-otp", middleware.OTPRateLimit(h.rdb, h.limiterKeys), retiredSMSRoute)
 		v1.POST("/verify-otp", h.strictCredentialLimit(middleware.ActionRetiredOTP), retiredSMSRoute)
 		// H2 (arch review): /register is direct password signup. Without a
 		// limit an attacker can spam-create accounts to exhaust handle/email
@@ -244,7 +252,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		// path is gated by the password-reset rate limiter (same
 		// abuse surface — email-OTP burn). The /verify-2fa path has a
 		// credential bucket of its own.
-		v1.POST("/anomaly/verify-email", middleware.PasswordResetRateLimit(h.rdb), h.AnomalyVerifyEmail)
+		v1.POST("/anomaly/verify-email", middleware.PasswordResetRateLimit(h.rdb, h.limiterKeys), h.AnomalyVerifyEmail)
 		v1.POST("/anomaly/verify-2fa", h.credentialLimit(middleware.ActionAnomalyTwoFactor), h.AnomalyVerify2FA)
 
 		// OAuth routes (public)
@@ -257,7 +265,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		// finalises the account creation once the OTP matches.
 		// Reuse the OTP rate-limiter so this can't be abused for
 		// SMS-flood billing attacks.
-		v1.POST("/oauth/complete-signup", middleware.OTPRateLimit(h.rdb), h.OAuthCompleteSignup)
+		v1.POST("/oauth/complete-signup", middleware.OTPRateLimit(h.rdb, h.limiterKeys), h.OAuthCompleteSignup)
 		v1.POST("/oauth/verify-signup", h.credentialLimit(middleware.ActionOAuthVerifySignup), h.OAuthVerifySignup)
 		v1.GET("/.well-known/jwks.json", h.MiniAppJWKS)
 
@@ -265,8 +273,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		// Audit A12: rate-limit both endpoints so an attacker can't spam
 		// SMS/email resets and lock the victim out via provider abuse.
 		// Reset tokens themselves remain server-issued and short-lived.
-		v1.POST("/forgot-password", middleware.PasswordResetRateLimit(h.rdb), h.ForgotPassword)
-		v1.POST("/reset-password", middleware.PasswordResetRateLimit(h.rdb), h.ResetPassword)
+		v1.POST("/forgot-password", middleware.PasswordResetRateLimit(h.rdb, h.limiterKeys), h.ForgotPassword)
+		v1.POST("/reset-password", middleware.PasswordResetRateLimit(h.rdb, h.limiterKeys), h.ResetPassword)
 
 		// CLB-3: email verification is PUBLIC and credential-scoped.
 		//
@@ -285,8 +293,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		// Rate limiting is the OTP limiter — the same one guarding every other
 		// code-sending path, so this cannot be turned into a mail-flood or a
 		// code-grinding surface.
-		v1.POST("/verify-email", middleware.OTPRateLimit(h.rdb), h.VerifyEmail)
-		v1.POST("/resend-verification", middleware.OTPRateLimit(h.rdb), h.ResendVerification)
+		v1.POST("/verify-email", middleware.OTPRateLimit(h.rdb, h.limiterKeys), h.VerifyEmail)
+		v1.POST("/resend-verification", middleware.OTPRateLimit(h.rdb, h.limiterKeys), h.ResendVerification)
 		// SR-6: RETIRED — no SMS delivery, so no phone code can arrive.
 		v1.POST("/verify-phone", retiredSMSRoute)
 

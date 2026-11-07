@@ -2,8 +2,6 @@ package middleware
 
 import (
 	"bytes"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -24,7 +22,8 @@ import (
 // register, 2FA and OAuth sign-up at once. Each action now has its own
 // bucket, the per-IP cap is sized for a shared address, and brute force
 // against one account is held by a per-account cap at the old strict limit,
-// keyed on a hash of the normalised identifier (never the raw value).
+// keyed on an HMAC of the normalised identifier (identifier_keys.go), never
+// the raw value.
 
 // CredentialLimits caps one credential action within Window. A zero field
 // takes its default (see Default*), so a zero CredentialLimits is the default.
@@ -91,7 +90,7 @@ var (
 // body names an account, lim.PerAccount per account, both per lim.Window
 // (fixed windows, failing closed on Redis errors; see allow). A nil rdb
 // disables limiting (tests).
-func CredentialRateLimit(rdb *redis.Client, action CredentialAction, lim CredentialLimits) gin.HandlerFunc {
+func CredentialRateLimit(rdb *redis.Client, keys IdentifierKeys, action CredentialAction, lim CredentialLimits) gin.HandlerFunc {
 	lim = lim.withDefaults()
 	retryAfter := strconv.Itoa(int(lim.Window / time.Second))
 	return func(c *gin.Context) {
@@ -106,7 +105,7 @@ func CredentialRateLimit(rdb *redis.Client, action CredentialAction, lim Credent
 		ok := allow(ctx, rdb, credentialKey(action.Name, "ip", c.ClientIP()), lim.PerIP, lim.Window)
 		if ok && action.Account != nil {
 			if account := action.Account(body); account != "" {
-				ok = allow(ctx, rdb, credentialKey(action.Name, "acct", accountDigest(account)), lim.PerAccount, lim.Window)
+				ok = allow(ctx, rdb, credentialKey(action.Name, "acct", keys.Digest(account)), lim.PerAccount, lim.Window)
 			}
 		}
 		if !ok {
@@ -122,13 +121,6 @@ func CredentialRateLimit(rdb *redis.Client, action CredentialAction, lim Credent
 
 func credentialKey(action, kind, value string) string {
 	return fmt.Sprintf("auth_rl:%s:%s:%s", action, kind, value)
-}
-
-// accountDigest is the Redis-key form of an account identifier: a SHA-256
-// prefix, so an email address or phone number never sits in a key.
-func accountDigest(account string) string {
-	sum := sha256.Sum256([]byte(account))
-	return hex.EncodeToString(sum[:16])
 }
 
 // bodyUserID is the account a 2FA verify names: its `user_id`, normalised.
