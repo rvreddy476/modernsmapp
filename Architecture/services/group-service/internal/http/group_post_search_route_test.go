@@ -151,7 +151,7 @@ that matched. So the handler must pass the value it got straight through and
 must not name the author at all.
 */
 func TestGroupPostSearchHandlerPassesTheMaskingTypeThrough(t *testing.T) {
-	body := codeOnly(handlerBody(t, "handler.go", "SearchGroupPostsV2"))
+	body := codeOnly(handlerBody(t, "handler_posts.go", "SearchGroupPostsV2"))
 
 	if !strings.Contains(body, "h.svc.SearchGroupPostsV2(") {
 		t.Fatal("the handler does not call the service")
@@ -174,7 +174,7 @@ func TestGroupPostSearchHandlerPassesTheMaskingTypeThrough(t *testing.T) {
 // An empty q is refused before anything is read, and refused the same way the
 // existing group search refuses it.
 func TestGroupPostSearchRequiresAQuery(t *testing.T) {
-	body := codeOnly(handlerBody(t, "handler.go", "SearchGroupPostsV2"))
+	body := codeOnly(handlerBody(t, "handler_posts.go", "SearchGroupPostsV2"))
 	gate := strings.Index(body, `strings.TrimSpace(c.Query("q")) == ""`)
 	if gate < 0 {
 		t.Fatal(`the handler does not refuse a blank q — a whitespace-only query reaches the store and matches nothing at the cost of a full request`)

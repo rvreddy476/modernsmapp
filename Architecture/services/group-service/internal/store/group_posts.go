@@ -318,8 +318,7 @@ func (s *Store) DiscoverGroupsForUser(ctx context.Context, userID uuid.UUID, gro
 			JOIN friends fr ON fr.fid = gm.user_id
 			WHERE gm.group_id = g.id
 		) f ON true
-		WHERE g.status = 'active'
-		  AND g.privacy_level IN ('public', 'restricted')
+		WHERE `+listableGroupSQL+`
 		  AND g.id NOT IN (SELECT group_id FROM my_groups)
 		  AND ($4 = '' OR g.group_type = $4)
 		ORDER BY score DESC, g.member_count DESC, g.created_at DESC

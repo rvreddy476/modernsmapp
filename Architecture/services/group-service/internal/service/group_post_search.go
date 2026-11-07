@@ -86,18 +86,18 @@ func (s *Service) readableGroupForSearch(ctx context.Context, actorID, groupID u
 	if err := s.checkGroupAccess(ctx, g, actorID); err != nil {
 		/*
 			checkGroupAccess returns two very different things through one
-			error: its policy refusal ("forbidden: not a member of this private
-			group") and any failure of the membership read underneath it.
+			error: its policy refusal (ErrGroupNotFound, ErrGroupBanned - see
+			access.go) and any failure of the membership read underneath it.
 
 			Only the refusal is collapsed. Reporting a database outage as
 			"group not found" would tell the user their group had been deleted,
 			and would hide a real incident behind a plausible 404 — so a
 			non-refusal error is returned as itself and becomes a 500.
 
-			Substring matching on "forbidden" is how this package's own error
-			taxonomy already works (see handleServiceError in internal/http).
+			isAccessRefusal names the gate's refusals and, as handleServiceError
+			in internal/http does, any other "forbidden".
 		*/
-		if strings.Contains(err.Error(), "forbidden") {
+		if isAccessRefusal(err) {
 			return nil, ErrGroupSearchUnavailable
 		}
 		return nil, err

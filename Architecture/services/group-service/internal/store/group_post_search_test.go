@@ -125,7 +125,7 @@ return but a 500. A lone `&` or `!` does the same. This covers the new endpoint
 AND SearchGroups, which carried the bug from the start and was fixed alongside.
 */
 func TestNoSearchPathUsesToTsquery(t *testing.T) {
-	for _, file := range []string{"group.go", "group_post_search.go"} {
+	for _, file := range []string{"group.go", "posts_v2.go", "group_post_search.go"} {
 		src := codeOnly(readFile(t, file))
 		if loc := bareToTsquery.FindStringIndex(src); loc != nil {
 			line := 1 + strings.Count(src[:loc[0]], "\n")
@@ -163,7 +163,7 @@ rather than a value of its own, so the two cannot drift.
 func TestGroupPostSearchExcludesDeletedAndPendingPosts(t *testing.T) {
 	const published = "p.status = 'published'"
 
-	feed := codeOnly(funcBody(t, "group.go", "ListGroupPostsV2"))
+	feed := codeOnly(funcBody(t, "posts_v2.go", "ListGroupPostsV2"))
 	if !strings.Contains(feed, published) {
 		t.Fatalf("the feed no longer filters on %q — this guard compares search against the feed and has lost its reference point", published)
 	}

@@ -49,7 +49,7 @@ func TestPostWritePathAppliesTheWordBlocklist(t *testing.T) {
 }
 
 func TestPostWritePathIsRateLimited(t *testing.T) {
-	body := funcSource(t, "group.go", "CreateGroupPostV2")
+	body := funcSource(t, "posts.go", "CreateGroupPostV2")
 	if !strings.Contains(body, "rl:group_post:") {
 		t.Fatal("CreateGroupPostV2 has no rate limit")
 	}
@@ -71,7 +71,7 @@ refuse "assignment", "class" and "passport". A moderation tool that fires on
 words nobody typed gets switched off, which is the same as not having one.
 */
 func TestBlocklistMatchesWholeWordsNotSubstrings(t *testing.T) {
-	body := funcSource(t, "group.go", "containsBlockedWord")
+	body := funcSource(t, "moderation.go", "containsBlockedWord")
 	if !strings.Contains(body, "FieldsFunc") {
 		t.Fatal("containsBlockedWord does not split the text into words — substring matching would refuse 'class' for a blocklist containing 'ass'")
 	}
@@ -89,7 +89,7 @@ after the ban. The moderator sees a success and the person keeps posting.
 */
 func TestEndingAMembershipInvalidatesTheMembershipCache(t *testing.T) {
 	for _, fn := range []string{"BanMember", "RemoveMember", "LeaveGroup"} {
-		body := funcSource(t, "group.go", fn)
+		body := funcSource(t, "membership.go", fn)
 		if !strings.Contains(body, "invalidateMembershipCache") {
 			t.Errorf("%s does not drop the gm: membership cache — the person keeps their cached membership for up to five minutes, which is a ban-evasion window for commenting", fn)
 		}
@@ -99,7 +99,7 @@ func TestEndingAMembershipInvalidatesTheMembershipCache(t *testing.T) {
 // A pending post is not in the group yet, so it must not be counted as one.
 // Before, every pending post inflated post_count and rejection never undid it.
 func TestPendingPostsAreNotCountedUntilApproved(t *testing.T) {
-	store := funcSourceIn(t, "../store/group.go", "CreateGroupPostV2")
+	store := funcSourceIn(t, "../store/posts_v2.go", "CreateGroupPostV2")
 	if !strings.Contains(store, `p.Status == "published"`) {
 		t.Fatal("store.CreateGroupPostV2 bumps post_count unconditionally — a post awaiting approval, or rejected, still counts toward the group's total")
 	}
@@ -115,7 +115,7 @@ func TestPendingPostsAreNotCountedUntilApproved(t *testing.T) {
 
 // The moderation queue reads group_posts, not the table nobody writes.
 func TestPendingPostsAreReadFromGroupPostsNotTheDeadQueue(t *testing.T) {
-	body := funcSourceIn(t, "../store/group.go", "ListPendingGroupPostsV2")
+	body := funcSourceIn(t, "../store/posts_v2.go", "ListPendingGroupPostsV2")
 	if strings.Contains(body, "post_approval_queue") {
 		t.Fatal("ListPendingGroupPostsV2 reads post_approval_queue — nothing writes that table (AddToApprovalQueue has no callers), so it would always return empty, which is the bug being fixed")
 	}
@@ -127,7 +127,7 @@ func TestPendingPostsAreReadFromGroupPostsNotTheDeadQueue(t *testing.T) {
 // A moderator of one group must not act on another group's post by id.
 func TestReviewingAPostChecksItBelongsToTheGroup(t *testing.T) {
 	for _, fn := range []string{"ApprovePendingPost", "RejectPendingPost"} {
-		body := funcSource(t, "group.go", fn)
+		body := funcSource(t, "moderation.go", fn)
 		if !strings.Contains(body, "post.GroupID != groupID") {
 			t.Errorf("%s does not check the post belongs to the group in the path — a moderator anywhere could approve a post in a group they cannot see", fn)
 		}

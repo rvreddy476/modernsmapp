@@ -62,12 +62,11 @@ func TestPostWriteChecksThenClaimsBeforeTheInsert(t *testing.T) {
 
 // Every path that stops a post being shown releases what it held.
 func TestPostDeletesReleaseTheirAttachments(t *testing.T) {
-	for _, c := range []struct{ fn, store, release string }{
-		{"DeleteGroupPostV2", "s.store.DeleteGroupPostV2(", "s.releasePostMedia(ctx, postID, p.Attachments)"},
-		{"RejectPendingPost", "s.store.RejectGroupPost(", "s.releasePostMedia(ctx, postID, post.Attachments)"},
-		{"DeleteGroupPost", "s.store.DeleteGroupPost(", "mediaclient.KindGroupPostAttachment"},
+	for _, c := range []struct{ file, fn, store, release string }{
+		{"posts.go", "DeleteGroupPostV2", "s.store.DeleteGroupPostV2(", "s.releasePostMedia(ctx, postID, p.Attachments)"},
+		{"moderation.go", "RejectPendingPost", "s.store.RejectGroupPost(", "s.releasePostMedia(ctx, postID, post.Attachments)"},
 	} {
-		body := codeOnly(funcSource(t, "group.go", c.fn))
+		body := codeOnly(funcSource(t, c.file, c.fn))
 		w, r := strings.Index(body, c.store), strings.Index(body, c.release)
 		if w < 0 || r < w {
 			t.Errorf("%s does not release its attachments after the write (write=%d release=%d)", c.fn, w, r)

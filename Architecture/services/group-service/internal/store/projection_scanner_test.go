@@ -23,7 +23,7 @@ the moment the two drift.
 */
 
 func TestGroupPostProjectionAndScannersAgree(t *testing.T) {
-	src := readFile(t, "group.go")
+	src := readFile(t, "posts_v2.go")
 
 	plain := countColumns(t, src, "const groupPostV2Columns = ")
 	qualified := countColumns(t, src, "const groupPostV2ColumnsP = ")
@@ -48,14 +48,14 @@ func TestGroupPostProjectionAndScannersAgree(t *testing.T) {
 // The anonymity columns specifically, since they are what this guard was
 // written for and a missing one leaks the real author rather than erroring.
 func TestAnonymityColumnsAreSelectedAndScanned(t *testing.T) {
-	src := readFile(t, "group.go")
+	src := readFile(t, "posts_v2.go")
 	for _, frag := range []string{"is_anonymous, anon_alias", "p.is_anonymous, p.anon_alias"} {
 		if !strings.Contains(src, frag) {
 			t.Errorf("projection is missing %q — a post read without them has IsAnonymous false and is emitted with its real author id", frag)
 		}
 	}
 	for _, fn := range []string{"scanGroupPostV2", "scanGroupPostV2WithViewer"} {
-		body := funcBody(t, "group.go", fn)
+		body := funcBody(t, "posts_v2.go", fn)
 		if !strings.Contains(body, "&p.IsAnonymous") || !strings.Contains(body, "&p.AnonAlias") {
 			t.Errorf("%s does not scan the anonymity columns", fn)
 		}
@@ -64,7 +64,7 @@ func TestAnonymityColumnsAreSelectedAndScanned(t *testing.T) {
 
 // The insert must write them, or an anonymous post is stored as a named one.
 func TestInsertWritesTheAnonymityColumns(t *testing.T) {
-	body := funcBody(t, "group.go", "CreateGroupPostV2")
+	body := funcBody(t, "posts_v2.go", "CreateGroupPostV2")
 	if !strings.Contains(body, "is_anonymous, anon_alias") {
 		t.Fatal("the INSERT column list omits is_anonymous/anon_alias — the flag is accepted by the service and dropped by the store, and the post is saved under the author's real name")
 	}
@@ -93,7 +93,7 @@ func countColumns(t *testing.T, src, decl string) int {
 
 func countScanArgs(t *testing.T, fn string) int {
 	t.Helper()
-	body := funcBody(t, "group.go", fn)
+	body := funcBody(t, "posts_v2.go", fn)
 	start := strings.Index(body, "row.Scan(")
 	if start < 0 {
 		t.Fatalf("%s does not call row.Scan", fn)

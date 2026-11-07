@@ -146,7 +146,7 @@ unconditionally would break every existing caller, including the mobile app
 which is explicitly not being changed.
 */
 func TestSinglePostStillReturnsTheBarePost(t *testing.T) {
-	sig := readSourceFile(t, "group.go")
+	sig := readSourceFile(t, "posts.go")
 	if !strings.Contains(sig, "func (s *Service) CreateGroupPostV2(ctx context.Context, actorID, groupID uuid.UUID, params CreateGroupPostV2Params) (*store.GroupPostV2, error)") {
 		t.Fatal("CreateGroupPostV2 no longer returns (*store.GroupPostV2, error) — every existing caller, including mobile, reads that shape")
 	}

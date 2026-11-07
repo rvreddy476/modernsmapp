@@ -2,6 +2,7 @@ package service
 
 import (
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -46,11 +47,26 @@ func TestDisplayRoleDerivesOwnerFromTheCreator(t *testing.T) {
 // Matched against comment-stripped source, so prose discussing the rule
 // cannot satisfy the assertion.
 func TestOwnerIsMintedInExactlyOnePlace(t *testing.T) {
-	raw, err := os.ReadFile("group.go")
+	// Every non-test file of the package, not one file: the group code is
+	// split by domain (groups.go, membership.go, ...), and a scan of one file
+	// would pass while a sibling minted "owner" on its own.
+	files, err := filepath.Glob("*.go")
 	if err != nil {
-		t.Fatalf("read group.go: %v", err)
+		t.Fatal(err)
 	}
-	src := codeOnly(string(raw))
+	var all strings.Builder
+	for _, name := range files {
+		if strings.HasSuffix(name, "_test.go") {
+			continue
+		}
+		raw, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		all.WriteString(string(raw))
+		all.WriteString("\n")
+	}
+	src := codeOnly(all.String())
 
 	/*
 		Assignments only. A plain substring search for '= "owner"' also matches
@@ -61,13 +77,13 @@ func TestOwnerIsMintedInExactlyOnePlace(t *testing.T) {
 	*/
 	mintsOwner := regexp.MustCompile(`[^=!<>]=\s*"owner"`)
 	if n := len(mintsOwner.FindAllString(src, -1)); n != 0 {
-		t.Errorf(`group.go assigns "owner" directly %d time(s); only displayRole may produce it, `+
+		t.Errorf(`the service package assigns "owner" directly %d time(s); only displayRole may produce it, `+
 			`or the cover and the members list drift apart again`, n)
 	}
 	if n := strings.Count(src, `return "owner"`); n != 1 {
-		t.Errorf(`group.go returns "owner" from %d place(s), want exactly 1 (displayRole)`, n)
+		t.Errorf(`the service package returns "owner" from %d place(s), want exactly 1 (displayRole)`, n)
 	}
-	if !strings.Contains(codeOnly(funcSource(t, "group.go", "displayRole")), `return "owner"`) {
+	if !strings.Contains(codeOnly(funcSource(t, "groups.go", "displayRole")), `return "owner"`) {
 		t.Error("the one place that mints \"owner\" is not displayRole")
 	}
 }
@@ -75,7 +91,7 @@ func TestOwnerIsMintedInExactlyOnePlace(t *testing.T) {
 // TestListMembersAppliesTheOwnerRule pins the call the Members tab actually
 // makes — the one that was missing the rule.
 func TestListMembersAppliesTheOwnerRule(t *testing.T) {
-	body := codeOnly(funcSource(t, "group.go", "ListMembers"))
+	body := codeOnly(funcSource(t, "membership.go", "ListMembers"))
 	if !strings.Contains(body, "displayRole(") {
 		t.Error("ListMembers does not call displayRole, so the group's creator renders as Admin " +
 			"in the Members tab while the cover calls them the owner")
@@ -89,7 +105,7 @@ func TestListMembersAppliesTheOwnerRule(t *testing.T) {
 // helper rather than a copy that can be edited independently.
 func TestGetGroupUsesTheSharedRule(t *testing.T) {
 	for _, fn := range []string{"GetGroup", "GetGroupByHandle"} {
-		body := codeOnly(funcSource(t, "group.go", fn))
+		body := codeOnly(funcSource(t, "groups.go", fn))
 		if !strings.Contains(body, "displayRole(") {
 			t.Errorf("%s derives the viewer's role without displayRole; "+
 				"a second copy of the rule is how this broke the first time", fn)

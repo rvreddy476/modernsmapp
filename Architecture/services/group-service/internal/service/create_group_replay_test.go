@@ -32,7 +32,7 @@ Structural rather than behavioural: this package's tests have no database, and
 the thing worth protecting is which statement comes first.
 */
 func TestCreateGroupAnswersReplayBeforeValidating(t *testing.T) {
-	body := funcSource(t, "group.go", "CreateGroup")
+	body := funcSource(t, "groups.go", "CreateGroup")
 
 	lookup := strings.Index(body, "FindGroupByIdempotencyKey")
 	if lookup < 0 {

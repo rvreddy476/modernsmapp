@@ -77,7 +77,7 @@ than silently leaving search with a copy of an old rule.
 func TestGroupPostSearchAppliesTheFeedsOwnReadRule(t *testing.T) {
 	const predicate = "s.checkGroupAccess("
 
-	feed := codeOnly(funcSource(t, "group.go", "GetGroupFeedV2"))
+	feed := codeOnly(funcSource(t, "posts.go", "GetGroupFeedV2"))
 	if !strings.Contains(feed, predicate) {
 		t.Fatalf("GetGroupFeedV2 no longer calls %s — this guard asserts search applies the FEED's rule and has lost its reference point", predicate)
 	}
@@ -170,7 +170,7 @@ in the results ships with its real author.
 func TestGroupPostSearchReturnsTheMaskingType(t *testing.T) {
 	const masking = "[]store.GroupPostV2"
 
-	feed := funcResults(t, "group.go", "GetGroupFeedV2")
+	feed := funcResults(t, "posts.go", "GetGroupFeedV2")
 	if !strings.Contains(feed, masking) {
 		t.Fatalf("GetGroupFeedV2 returns %s, not %s — this guard compares search against the feed and has lost its reference point", feed, masking)
 	}

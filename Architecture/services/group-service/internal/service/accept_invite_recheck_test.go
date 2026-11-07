@@ -22,7 +22,7 @@ import (
 func acceptInviteDecl(t *testing.T) *ast.FuncDecl {
 	t.Helper()
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, "group.go", nil, 0)
+	f, err := parser.ParseFile(fset, "invites.go", nil, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -31,7 +31,7 @@ func acceptInviteDecl(t *testing.T) *ast.FuncDecl {
 			return fn
 		}
 	}
-	t.Fatal("AcceptInvite not found in group.go — renamed? This guard would otherwise pass while checking nothing")
+	t.Fatal("AcceptInvite not found in invites.go — renamed? This guard would otherwise pass while checking nothing")
 	return nil
 }
 

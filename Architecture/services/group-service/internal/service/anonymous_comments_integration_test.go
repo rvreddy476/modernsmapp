@@ -5,6 +5,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -18,12 +19,12 @@ import (
 /*
 The anonymous author's own comment on their own post is the post's
 pseudonym on the wire — created and listed — and another member's comment
-is still theirs. The legacy feed masks the author the same way. And a
+is still theirs. The group feed masks the author the same way. And a
 private group's comments are for members only.
 
 Run: GROUP_POSTGRES_DSN=…/group_it_test go test -tags integration ./internal/service/ -run AnonymousComments -p 1
 */
-func TestAnonymousCommentsAndLegacyFeedAreMasked(t *testing.T) {
+func TestAnonymousCommentsAndTheFeedAreMasked(t *testing.T) {
 	dsn := os.Getenv("GROUP_POSTGRES_DSN")
 	if dsn == "" {
 		t.Fatal("GROUP_POSTGRES_DSN is required")
@@ -53,6 +54,7 @@ func TestAnonymousCommentsAndLegacyFeedAreMasked(t *testing.T) {
 		ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'published';
 		ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS is_anonymous BOOLEAN NOT NULL DEFAULT FALSE;
 		ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS anon_alias UUID;
+		ALTER TABLE group_posts ADD COLUMN IF NOT EXISTS cross_post_group_id UUID;
 		ALTER TABLE group_post_comments ADD COLUMN IF NOT EXISTS is_anonymous BOOLEAN NOT NULL DEFAULT FALSE;
 	`); err != nil {
 		t.Fatal(err)
@@ -119,26 +121,25 @@ func TestAnonymousCommentsAndLegacyFeedAreMasked(t *testing.T) {
 		t.Fatalf("the comment list lost the alias or the member: %s", b)
 	}
 
-	if _, err := svc.ListGroupPostComments(ctx, stranger, groupID, postID, 20, 0); err == nil || !strings.Contains(err.Error(), "not a member") {
+	// A stranger gets the answer a missing group gets (access.go), not a
+	// "not a member" that confirms the private group exists.
+	if _, err := svc.ListGroupPostComments(ctx, stranger, groupID, postID, 20, 0); !errors.Is(err, ErrGroupNotFound) {
 		t.Fatalf("a stranger read a private group's comments: err=%v", err)
 	}
 
-	// Legacy feed.
-	legacy, err := svc.store.ListGroupPosts(ctx, groupID, 20, 0)
+	// The feed. The legacy v1 feed (GET /:groupId/feed) was retired with the
+	// other v1 post routes (R-L1); the v2 feed is the one feed left, and it
+	// must mask the author the way the legacy one did.
+	feed, err := svc.GetGroupFeedV2(ctx, member, groupID, nil, 20, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
-	for _, p := range legacy {
-		if p.AuthorID == author.String() {
-			t.Fatal("the legacy feed names the anonymous author")
-		}
-		if p.AuthorID == alias.String() {
-			found = true
-		}
+	fb, _ := json.Marshal(feed)
+	if strings.Contains(string(fb), author.String()) {
+		t.Fatalf("the feed names the anonymous author: %s", fb)
 	}
-	if !found {
-		t.Fatal("the legacy feed did not carry the alias")
+	if !strings.Contains(string(fb), alias.String()) {
+		t.Fatalf("the feed did not carry the alias: %s", fb)
 	}
 
 	// Realtime/event payloads name the actor as the post knows them.

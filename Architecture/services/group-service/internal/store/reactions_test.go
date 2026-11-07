@@ -16,9 +16,9 @@ posts that have reactions.
 */
 
 var clientPostSurfaces = []struct{ file, name string }{
-	{"group.go", "GetGroupPostV2ForViewer"},
-	{"group.go", "ListPendingGroupPostsV2"},
-	{"group.go", "ListGroupPostsV2"},
+	{"posts_v2.go", "GetGroupPostV2ForViewer"},
+	{"posts_v2.go", "ListPendingGroupPostsV2"},
+	{"posts_v2.go", "ListGroupPostsV2"},
 	{"group_post_search.go", "SearchGroupPostsV2"},
 	{"group_posts.go", "ListMyGroupsFeed"},
 }
@@ -35,18 +35,18 @@ func TestEveryClientPostSurfaceAttachesReactionCounts(t *testing.T) {
 // The viewer's reaction rides the same LEFT JOIN as viewer_sparked, and the
 // viewer scanner reads it.
 func TestViewerReactionIsSelectedAndScanned(t *testing.T) {
-	src := readFile(t, "group.go")
+	src := readFile(t, "posts_v2.go")
 	if !strings.Contains(src, "vs.reaction AS viewer_reaction") {
 		t.Fatal("viewerEngagementColumns does not select vs.reaction — viewer_reaction is always null")
 	}
-	if !strings.Contains(funcBody(t, "group.go", "scanGroupPostV2WithViewer"), "&p.ViewerReaction") {
+	if !strings.Contains(funcBody(t, "posts_v2.go", "scanGroupPostV2WithViewer"), "&p.ViewerReaction") {
 		t.Fatal("scanGroupPostV2WithViewer does not scan ViewerReaction")
 	}
 }
 
 // The legacy heart is a 'like' row: one row shape, one count, no second table.
 func TestLegacySparkInsertsALikeRow(t *testing.T) {
-	body := funcBody(t, "group.go", "SparkGroupPost")
+	body := funcBody(t, "posts_v2.go", "SparkGroupPost")
 	if !strings.Contains(body, "'like'") {
 		t.Fatal("SparkGroupPost does not insert reaction 'like' explicitly — it would depend on the column default alone")
 	}

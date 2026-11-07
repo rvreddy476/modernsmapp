@@ -94,8 +94,8 @@ func TestEveryEngagementWritePassesTheGate(t *testing.T) {
 	for _, fn := range []struct{ file, name string }{
 		{"reactions.go", "SetGroupPostReaction"},
 		{"reactions.go", "RemoveGroupPostReaction"},
-		{"group.go", "SparkGroupPost"},
-		{"group.go", "UnsparkGroupPost"},
+		{"posts.go", "SparkGroupPost"},
+		{"posts.go", "UnsparkGroupPost"},
 	} {
 		body := codeOnly(funcSource(t, fn.file, fn.name))
 		if !strings.Contains(body, "s.engagementGate(") {

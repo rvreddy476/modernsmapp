@@ -206,7 +206,7 @@ func TestEachAliasIsDistinct(t *testing.T) {
 // The media grid has its own struct and does not pass through MarshalJSON,
 // so it is masked in SQL instead. This pins the query.
 func TestMediaListingMasksAnonymousAuthors(t *testing.T) {
-	body := funcBody(t, "group.go", "ListGroupMedia")
+	body := funcBody(t, "posts_v2.go", "ListGroupMedia")
 	if !strings.Contains(body, "CASE WHEN is_anonymous") {
 		t.Fatal("ListGroupMedia selects author_id unmasked — GroupMediaItem is its own struct and never reaches GroupPostV2.MarshalJSON, so an anonymous post with a photo would be named in the media tab while masked in the feed")
 	}

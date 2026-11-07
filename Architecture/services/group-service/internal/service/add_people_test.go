@@ -27,7 +27,7 @@ to two different actions and that the count comes back.
 */
 
 func TestDirectAddPermissionActuallyAddsTheMember(t *testing.T) {
-	body := funcSource(t, "group.go", "addOrInvite")
+	body := funcSource(t, "invites.go", "addOrInvite")
 
 	if !strings.Contains(body, "canAddToGroup") {
 		t.Fatal("addOrInvite no longer asks graph-service — a block would stop being honoured")
@@ -54,14 +54,14 @@ func TestDirectAddPermissionActuallyAddsTheMember(t *testing.T) {
 // A blocked or refusing target must be skipped silently. Naming them would
 // tell the inviter who blocked them, which is the thing a block hides.
 func TestRefusedTargetIsSkippedWithoutSayingWhy(t *testing.T) {
-	body := funcSource(t, "group.go", "addOrInvite")
+	body := funcSource(t, "invites.go", "addOrInvite")
 
 	tail := body[strings.Index(body, "default:"):]
 	if !strings.Contains(tail, "outcomeSkipped") {
 		t.Fatal("a refused target must fall through to outcomeSkipped, not an error naming them")
 	}
 
-	batch := funcSource(t, "group.go", "InviteUsersBatch")
+	batch := funcSource(t, "invites.go", "InviteUsersBatch")
 	if strings.Contains(batch, "ErrInviteNotPermitted") {
 		t.Fatal("the batch returns a not-permitted error — one refusal in fifty would tell the inviter exactly who blocked them")
 	}
@@ -73,7 +73,7 @@ func TestRefusedTargetIsSkippedWithoutSayingWhy(t *testing.T) {
 // The wire carries totals, never names: added and invited as id lists would
 // leak the skipped ones by subtraction.
 func TestAddPeopleResultCarriesCountsNotNames(t *testing.T) {
-	src := readSource(t, "group.go")
+	src := readSource(t, "invites.go")
 	decl := src[strings.Index(src, "type AddPeopleResult struct {"):]
 	decl = decl[:strings.Index(decl, "}")]
 
