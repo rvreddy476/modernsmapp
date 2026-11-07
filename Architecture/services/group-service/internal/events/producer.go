@@ -204,26 +204,6 @@ func (p *Producer) PublishGroupPostDeleted(ctx context.Context, groupID, postID,
 	return p.publish(ctx, events.GroupPostDeleted, &deletedBy, payload)
 }
 
-func (p *Producer) PublishGroupPostPinned(ctx context.Context, groupID, postID, pinnedBy uuid.UUID) error {
-	payload := events.GroupPostPinnedPayload{
-		GroupID:  groupID.String(),
-		PostID:   postID.String(),
-		PinnedBy: pinnedBy.String(),
-		PinnedAt: time.Now(),
-	}
-	return p.publish(ctx, events.GroupPostPinned, &pinnedBy, payload)
-}
-
-func (p *Producer) PublishGroupPostUnpinned(ctx context.Context, groupID, postID, unpinnedBy uuid.UUID) error {
-	payload := events.GroupPostUnpinnedPayload{
-		GroupID:    groupID.String(),
-		PostID:     postID.String(),
-		UnpinnedBy: unpinnedBy.String(),
-		UnpinnedAt: time.Now(),
-	}
-	return p.publish(ctx, events.GroupPostUnpinned, &unpinnedBy, payload)
-}
-
 func (p *Producer) PublishMemberBanLifted(ctx context.Context, groupID, userID, liftedBy uuid.UUID) error {
 	payload := events.MemberBanLiftedPayload{
 		GroupID:  groupID.String(),

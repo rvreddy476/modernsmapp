@@ -847,6 +847,10 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
 			return err
 		}
+		if p.Community != nil {
+			return c.applyCommunitySnapshot(ctx, p.CommunityID, *p.Community)
+		}
+		// An older producer: the four fields below are all there is.
 		// A community is created active (community-service default).
 		// IndexCommunity deletes instead of writing when the type is not
 		// public (S-M2).
@@ -1028,13 +1032,67 @@ type communityCreatedPayload struct {
 	Name          string    `json:"name"`
 	CommunityType string    `json:"community_type"`
 	CreatedAt     time.Time `json:"created_at"`
+	// Community: as on community.updated (absent on older events).
+	Community *communitySnapshot `json:"community,omitempty"`
 }
 
+// communityUpdatedPayload is community.updated in all three shapes it has
+// had: name and type only (before 2026-11-07), plus status and visibility
+// (2026-11-07), plus the whole row (2026-11-08). Contract:
+// testdata/contracts/community_updated.json, copied from community-service.
 type communityUpdatedPayload struct {
+	CommunityID   string `json:"community_id"`
+	Name          string `json:"name,omitempty"`
+	CommunityType string `json:"community_type,omitempty"`
+	// Status is the community's status after the change; Visibility is
+	// community-service's public|private, derived from the type.
+	Status     string    `json:"status,omitempty"`
+	Visibility string    `json:"visibility,omitempty"`
+	UpdatedAt  time.Time `json:"updated_at"`
+	// Community is the whole row after the change.
+	Community *communitySnapshot `json:"community,omitempty"`
+}
+
+// communitySnapshot is community-service's CommunitySnapshot: the row as
+// committed, every field current.
+type communitySnapshot struct {
 	CommunityID   string    `json:"community_id"`
-	Name          string    `json:"name,omitempty"`
-	CommunityType string    `json:"community_type,omitempty"`
+	OwnerID       string    `json:"owner_id"`
+	Handle        string    `json:"handle"`
+	Name          string    `json:"name"`
+	Description   string    `json:"description"`
+	CommunityType string    `json:"community_type"`
+	Visibility    string    `json:"visibility"`
+	Category      string    `json:"category"`
+	TopicTags     []string  `json:"topic_tags"`
+	MemberCount   int       `json:"member_count"`
+	IsVerified    bool      `json:"is_verified"`
+	Status        string    `json:"status"`
+	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+}
+
+// doc converts the snapshot to the index document. The envelope's
+// community_id is the fallback when the snapshot omits its own.
+func (s communitySnapshot) doc(envelopeCommunityID string) search.CommunityDoc {
+	id := s.CommunityID
+	if id == "" {
+		id = envelopeCommunityID
+	}
+	return search.CommunityDoc{
+		CommunityID:   id,
+		OwnerID:       s.OwnerID,
+		Handle:        s.Handle,
+		Name:          s.Name,
+		Description:   s.Description,
+		CommunityType: s.CommunityType,
+		Category:      s.Category,
+		TopicTags:     s.TopicTags,
+		MemberCount:   s.MemberCount,
+		IsVerified:    s.IsVerified,
+		CreatedAt:     s.CreatedAt,
+		Status:        s.Status,
+	}
 }
 
 type communityDeletedPayload struct {
@@ -1119,14 +1177,24 @@ func (c *Consumer) Close() error {
 // applyCommunityUpdate handles community.updated (S-M4). It used to
 // replace the whole document with the two fields the payload carries,
 // dropping owner_id (so blocks on the owner stopped applying), the handle,
-// the member count and the status. Now a type that is no longer public
-// removes the document, and anything else is a partial update of the
-// fields the event names.
+// the member count and the status.
+//
+//   - With the row (since 2026-11-08): applied like a channel's
+//     (applyCommunitySnapshot): removed when not searchable, otherwise an
+//     update with an upsert.
+//   - Without it (older events): removed when any field it does carry says
+//     the community is not searchable (a status other than active, a private
+//     visibility, a type outside the public set); otherwise a partial update
+//     of those fields, which never creates a document — there is no owner to
+//     write, and a document without owner_id escapes the block filter.
 func (c *Consumer) applyCommunityUpdate(ctx context.Context, p communityUpdatedPayload) error {
 	if p.CommunityID == "" {
 		return nil
 	}
-	if p.CommunityType != "" && !search.IsPublicCommunityType(p.CommunityType) {
+	if p.Community != nil {
+		return c.applyCommunitySnapshot(ctx, p.CommunityID, *p.Community)
+	}
+	if communityFieldsHide(p.Status, p.Visibility, p.CommunityType) {
 		return c.store.DeleteCommunity(ctx, p.CommunityID)
 	}
 	fields := map[string]any{}
@@ -1136,7 +1204,33 @@ func (c *Consumer) applyCommunityUpdate(ctx context.Context, p communityUpdatedP
 	if p.CommunityType != "" {
 		fields["community_type"] = p.CommunityType
 	}
+	if p.Status != "" {
+		fields["status"] = p.Status
+	}
 	return c.store.UpdateCommunityFields(ctx, p.CommunityID, fields)
+}
+
+// communityFieldsHide reports whether any of the fields an event carries
+// takes the community out of search. An absent field ("") says nothing.
+func communityFieldsHide(status, visibility, communityType string) bool {
+	return (status != "" && status != search.StatusActive) ||
+		(visibility != "" && visibility != "public") ||
+		(communityType != "" && !search.IsPublicCommunityType(communityType))
+}
+
+// applyCommunitySnapshot writes a community's whole row, or removes it. The
+// snapshot's visibility is checked as well as its type and status: either
+// one saying private is enough to keep it out (fail closed if the two
+// producers' public sets ever disagree).
+func (c *Consumer) applyCommunitySnapshot(ctx context.Context, envelopeCommunityID string, s communitySnapshot) error {
+	doc := s.doc(envelopeCommunityID)
+	if doc.CommunityID == "" {
+		return nil
+	}
+	if communityFieldsHide(s.Status, s.Visibility, s.CommunityType) {
+		return c.store.DeleteCommunity(ctx, doc.CommunityID)
+	}
+	return c.store.ApplyCommunityState(ctx, doc)
 }
 
 // applyChannelUpdate handles channel.updated. Since 2026-11-07 the event

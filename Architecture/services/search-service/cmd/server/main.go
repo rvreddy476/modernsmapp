@@ -207,10 +207,14 @@ func main() {
 	// documents. Run the channels backfill once after the first deploy.
 	// CHANNEL_KAFKA_TOPIC="-" disables.
 	//
-	// community-service's `community-events` is not consumed either; the
-	// community.* handlers are equally dead until a consumer is added the
-	// same way (COMMUNITY_KAFKA_TOPIC, off by default until its payloads are
-	// checked against community-service).
+	// Communities (2026-11-08): community-service publishes community.* on
+	// `community-events` (its KAFKA_TOPIC default). The payloads were checked
+	// against the handlers and pinned by a contract fixture
+	// (testdata/contracts/community_updated.json, copied from
+	// community-service). Same shape as channels: its own group, starting at
+	// the end of the topic (old name-and-type-only events would otherwise
+	// replay over the backfill's documents), and the communities backfill
+	// runs once after the first deploy. COMMUNITY_KAFKA_TOPIC="-" disables.
 	if channelTopic := env("CHANNEL_KAFKA_TOPIC", "channel-events"); channelTopic != "-" {
 		channelConsumer := events.NewConsumerFrom(
 			brokerList, "search-service-channel-group", channelTopic, searchStore, kafkaDialer, kafka.LastOffset,
@@ -218,7 +222,7 @@ func main() {
 		go channelConsumer.Start(consumerCtx)
 		slog.Info("started kafka consumer", "topic", channelTopic, "group", "search-service-channel-group")
 	}
-	if communityTopic := env("COMMUNITY_KAFKA_TOPIC", "-"); communityTopic != "-" {
+	if communityTopic := env("COMMUNITY_KAFKA_TOPIC", "community-events"); communityTopic != "-" {
 		communityConsumer := events.NewConsumerFrom(
 			brokerList, "search-service-community-group", communityTopic, searchStore, kafkaDialer, kafka.LastOffset,
 		)

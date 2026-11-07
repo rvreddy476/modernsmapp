@@ -9,11 +9,10 @@ DELETE /:groupId/channels/:channelId
 DELETE /:groupId/events/:eventId
 DELETE /:groupId/members/:userId
 DELETE /:groupId/members/:userId/ban
-DELETE /:groupId/posts/:postId
-DELETE /:groupId/posts/:postId/pin
 DELETE /:groupId/posts/v2/:postId
 DELETE /:groupId/posts/v2/:postId/comments/:commentId
 DELETE /:groupId/posts/v2/:postId/echo
+DELETE /:groupId/posts/v2/:postId/reaction
 DELETE /:groupId/posts/v2/:postId/spark
 DELETE /:groupId/posts/v2/:postId/stash
 DELETE /:groupId/wiki/:pageId
@@ -22,11 +21,9 @@ GET /by-handle/:handle
 GET /discover
 GET /feed
 GET /:groupId
-GET /:groupId/approval-queue
 GET /:groupId/channels
 GET /:groupId/events
 GET /:groupId/events/:eventId
-GET /:groupId/feed
 GET /:groupId/feed/v2
 GET /:groupId/invites
 GET /:groupId/join-requests
@@ -35,7 +32,10 @@ GET /:groupId/members
 GET /:groupId/members/banned
 GET /:groupId/members/:userId/stats
 GET /:groupId/posts/v2/:postId
+GET /:groupId/posts/v2/:postId/author
 GET /:groupId/posts/v2/:postId/comments
+GET /:groupId/posts/v2/pending
+GET /:groupId/posts/v2/search
 GET /:groupId/rules
 GET /:groupId/stats/contributors
 GET /:groupId/wiki
@@ -43,8 +43,6 @@ GET /:groupId/word-blocklist
 GET /invites/my
 GET /my
 GET /search
-POST /:groupId/approval-queue/:itemId/approve
-POST /:groupId/approval-queue/:itemId/reject
 POST /:groupId/archive
 POST /:groupId/channels
 POST /:groupId/events
@@ -56,10 +54,11 @@ POST /:groupId/join-requests/:requestId/approve
 POST /:groupId/join-requests/:requestId/reject
 POST /:groupId/leave
 POST /:groupId/members/:userId/ban
-POST /:groupId/posts
 POST /:groupId/posts/v2
+POST /:groupId/posts/v2/:postId/approve
 POST /:groupId/posts/v2/:postId/comments
 POST /:groupId/posts/v2/:postId/echo
+POST /:groupId/posts/v2/:postId/reject
 POST /:groupId/posts/v2/:postId/spark
 POST /:groupId/posts/v2/:postId/stash
 POST /:groupId/posts/v2/:postId/view
@@ -70,7 +69,7 @@ POST /invites/:inviteId/accept
 POST /invites/:inviteId/reject
 PUT /:groupId
 PUT /:groupId/members/:userId/role
-PUT /:groupId/posts/:postId/pin
+PUT /:groupId/posts/v2/:postId/reaction
 PUT /:groupId/rules
 PUT /:groupId/wiki/:pageId
 GROUP /v1/groups

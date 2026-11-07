@@ -191,3 +191,70 @@ func (s *Store) ApplyChannelState(ctx context.Context, doc ChannelDoc) error {
 	}
 	return nil
 }
+
+// ApplyCommunityState writes a community's full state, as carried by
+// community.created / community.updated since 2026-11-08 (community-service's
+// CommunitySnapshot), and deletes the document instead when the community is
+// no longer searchable: archived, suspended or deleted, or a type outside the
+// public set. It is ApplyChannelState for communities:
+//
+//   - "doc" overwrites every field the snapshot owns and leaves
+//     engagement_score alone, which the member events maintain
+//     (AddToEngagementScore);
+//   - "upsert" creates the whole document when there is none, so a community
+//     made public again comes back into search without waiting on the
+//     backfill.
+//
+// Every field is written even when empty: the snapshot is the row, so an
+// empty description means the description was cleared.
+func (s *Store) ApplyCommunityState(ctx context.Context, doc CommunityDoc) error {
+	if doc.CommunityID == "" {
+		return nil
+	}
+	if !CommunitySearchable(doc) {
+		return s.DeleteCommunity(ctx, doc.CommunityID) // not searchable: out of the index
+	}
+	tags := doc.TopicTags
+	if tags == nil {
+		tags = []string{}
+	}
+	fields := map[string]any{
+		"community_id":   doc.CommunityID,
+		"owner_id":       doc.OwnerID,
+		"handle":         doc.Handle,
+		"name":           doc.Name,
+		"description":    doc.Description,
+		"community_type": doc.CommunityType,
+		"category":       doc.Category,
+		"topic_tags":     tags,
+		"member_count":   doc.MemberCount,
+		"is_verified":    doc.IsVerified,
+		"status":         doc.Status,
+	}
+	if !doc.CreatedAt.IsZero() {
+		fields["created_at"] = doc.CreatedAt
+	}
+	if doc.EngagementScore == 0 {
+		doc.EngagementScore = computeEngagementScore(EntityCommunities, engagementCounters{Members: doc.MemberCount})
+	}
+	body, err := json.Marshal(map[string]any{"doc": fields, "upsert": doc})
+	if err != nil {
+		return err
+	}
+	retries := bulkRetries
+	req := opensearchapi.UpdateRequest{
+		Index:           IndexCommunities,
+		DocumentID:      doc.CommunityID,
+		Body:            bytes.NewReader(body),
+		RetryOnConflict: &retries,
+	}
+	res, err := req.Do(ctx, s.client)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("apply community state %s: %s", doc.CommunityID, res.String())
+	}
+	return nil
+}

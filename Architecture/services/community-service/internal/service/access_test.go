@@ -273,7 +273,6 @@ func TestEveryCommunityScopedMethodGoesThroughTheGate(t *testing.T) {
 		"LeaveCommunity": "own row only",
 		// Cache and media helpers called after the gate.
 		"adjustMemberCount":     "counter",
-		"getMemberCached":       "cache",
 		"invalidateMemberCache": "cache",
 		"lockMediaHolder":       "lock",
 		"releaseCommunityMedia": "after the owner-only delete",

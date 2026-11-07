@@ -58,8 +58,10 @@ func (s *Service) DeleteCommunity(ctx context.Context, communityID, actorID uuid
 
 // JoinCommunity joins or asks to join. It is not hidden behind the private
 // rule: a join request is how someone who was given a private community's id
-// gets in, as in channel-service. A community that is not active cannot be
-// joined, and a banned row is refused.
+// gets in, as in channel-service. A private community is never joined
+// directly, even when its row says "open" (effectiveJoinMode): the caller
+// gets a pending request. A community that is not active cannot be joined,
+// and a banned row is refused.
 func (s *Service) JoinCommunity(ctx context.Context, communityID, userID uuid.UUID, answers json.RawMessage) (*store.CommunityMember, *store.CommunityJoinRequest, error) {
 	c, err := s.store.GetCommunityByID(ctx, communityID)
 	if errors.Is(err, store.ErrCommunityNotFound) {
@@ -83,7 +85,7 @@ func (s *Service) JoinCommunity(ctx context.Context, communityID, userID uuid.UU
 		return nil, nil, fmt.Errorf("already a member of this community")
 	}
 
-	switch c.JoinMode {
+	switch effectiveJoinMode(c) {
 	case "open":
 		member := &store.CommunityMember{
 			CommunityID: communityID,
@@ -176,10 +178,15 @@ func (s *Service) LeaveCommunity(ctx context.Context, communityID, userID uuid.U
 
 // --- Members ---
 
-// ListMembers lists the members of a community the viewer may read.
+// ListMembers lists the members of a community the viewer may read. With
+// member_directory off, only its moderators and above see the list.
 func (s *Service) ListMembers(ctx context.Context, communityID uuid.UUID, viewerID *uuid.UUID, limit, offset int) ([]store.CommunityMember, error) {
-	if _, err := s.authorize(ctx, communityID, viewerID, accessRead); err != nil {
+	acc, err := s.authorize(ctx, communityID, viewerID, accessRead)
+	if err != nil {
 		return nil, err
+	}
+	if !memberDirectoryAllowed(acc.c, acc.role) {
+		return nil, ErrMemberDirectoryHidden
 	}
 	return s.store.ListMembers(ctx, communityID, limit, offset)
 }

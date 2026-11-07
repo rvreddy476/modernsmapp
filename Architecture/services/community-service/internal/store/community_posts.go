@@ -225,16 +225,25 @@ func (s *Store) execOnePost(ctx context.Context, query string, args ...any) erro
 }
 // --- Engagement ---
 
+// sparkPostSQL counts a spark only when it is the user's first on the post.
+// community_post_sparks is keyed (post_id, user_id), so a repeat insert does
+// nothing, and the count moves only when the insert returned a row: before,
+// the UPDATE ran on every call and one user could spark a post up without
+// limit. One statement, so a crash cannot leave a row without its count.
+const sparkPostSQL = `WITH spark AS (
+		INSERT INTO community_post_sparks (post_id, user_id, is_supernova) VALUES ($1, $2, $3)
+		ON CONFLICT (post_id, user_id) DO NOTHING
+		RETURNING 1
+	)
+	UPDATE community_posts SET spark_count = spark_count + $4
+	WHERE id = $1 AND EXISTS (SELECT 1 FROM spark)`
+
 func (s *Store) SparkCommunityPost(ctx context.Context, postID uuid.UUID, userID string, isSupernova bool) error {
 	weight := 1
 	if isSupernova {
 		weight = 5
 	}
-	_, err := s.db.Exec(ctx, `INSERT INTO community_post_sparks (post_id, user_id, is_supernova) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`, postID, userID, isSupernova)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(ctx, `UPDATE community_posts SET spark_count = spark_count + $2 WHERE id = $1`, postID, weight)
+	_, err := s.db.Exec(ctx, sparkPostSQL, postID, userID, isSupernova, weight)
 	return err
 }
 
@@ -246,12 +255,25 @@ func (s *Store) StashCommunityPost(ctx context.Context, postID uuid.UUID, userID
 	return nil
 }
 
+// ViewDedupWindow: a user's views of one post count once per window. The
+// views row (keyed post_id, user_id) holds the time of the last counted view.
+const ViewDedupWindow = 24 * time.Hour
+
+// recordViewSQL counts a view when it is the user's first on the post, or
+// their first since the window ran out; a repeat inside the window leaves
+// both the row and the count alone. Before, every call added one.
+const recordViewSQL = `WITH counted AS (
+		INSERT INTO community_post_views (post_id, user_id, viewed_at) VALUES ($1, $2, NOW())
+		ON CONFLICT (post_id, user_id) DO UPDATE SET viewed_at = NOW()
+		WHERE community_post_views.viewed_at IS NULL
+		   OR community_post_views.viewed_at < NOW() - make_interval(secs => $3)
+		RETURNING 1
+	)
+	UPDATE community_posts SET view_count = view_count + 1
+	WHERE id = $1 AND EXISTS (SELECT 1 FROM counted)`
+
 func (s *Store) RecordCommunityPostView(ctx context.Context, postID uuid.UUID, userID string) error {
-	_, err := s.db.Exec(ctx, `INSERT INTO community_post_views (post_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, postID, userID)
-	if err != nil {
-		return err
-	}
-	_, err = s.db.Exec(ctx, `UPDATE community_posts SET view_count = view_count + 1 WHERE id = $1`, postID)
+	_, err := s.db.Exec(ctx, recordViewSQL, postID, userID, ViewDedupWindow.Seconds())
 	return err
 }
 

@@ -17,7 +17,7 @@ import (
 // change made here must reach search and the other readers of
 // community.updated, or an archived community stays listed there.
 type statusPublisher interface {
-	PublishCommunityUpdated(ctx context.Context, communityID, actorID uuid.UUID, name, communityType, status string) error
+	PublishCommunityUpdated(ctx context.Context, c *store.Community, actorID uuid.UUID) error
 }
 
 type Consumer struct {
@@ -136,7 +136,7 @@ func (c *Consumer) announceStatus(ctx context.Context, communityID, actorID uuid
 		slog.Warn("archived community could not be re-read for its event", "community_id", communityID, "error", err)
 		return
 	}
-	if err := c.publisher.PublishCommunityUpdated(ctx, communityID, actorID, comm.Name, comm.CommunityType, comm.Status); err != nil {
+	if err := c.publisher.PublishCommunityUpdated(ctx, comm, actorID); err != nil {
 		slog.Warn("failed to publish community.updated for an archived community", "community_id", communityID, "error", err)
 	}
 }

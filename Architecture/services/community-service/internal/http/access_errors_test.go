@@ -34,6 +34,8 @@ func TestGateRefusalsMapToStatuses(t *testing.T) {
 		"ban placed above":             {service.ErrBanPlacedAbove, http.StatusForbidden},
 		"already banned":               {service.ErrAlreadyBanned, http.StatusConflict},
 		"role change on a ban":         {service.ErrTargetBanned, http.StatusUnprocessableEntity},
+		"member directory off":         {service.ErrMemberDirectoryHidden, http.StatusForbidden},
+		"private community open":       {service.ErrPrivateCommunityOpen, http.StatusUnprocessableEntity},
 	}
 	for name, tc := range cases {
 		w := httptest.NewRecorder()

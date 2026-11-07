@@ -272,3 +272,70 @@ func (s *Service) authorizeRoleOr(ctx context.Context, communityID, actorID uuid
 	}
 	return acc, err
 }
+
+// ─── Join modes (founder, 2026-09-12: private by default, invite-only) ──
+
+// privateJoinMode is the join mode a community outside the public set gets
+// when none is named, and what a stored "open" on one is read as. Joining it
+// files a join request a moderator approves (JoinCommunity); nobody joins it
+// directly by holding its id.
+const privateJoinMode = "invite_only"
+
+// ErrPrivateCommunityOpen: a private community cannot be open to join.
+var ErrPrivateCommunityOpen = errors.New("invalid: a private community cannot be open to join; use invite_only or request")
+
+// joinModeFor is the join mode a community of this type is created or saved
+// with. An empty request takes the default ("open" for a public type,
+// privateJoinMode otherwise); an explicit "open" on a private type is
+// contradictory and refused rather than silently changed.
+func joinModeFor(communityType, requested string) (string, error) {
+	public := store.IsPublicCommunityType(communityType)
+	if requested == "" {
+		if public {
+			return "open", nil
+		}
+		return privateJoinMode, nil
+	}
+	if requested == "open" && !public {
+		return "", ErrPrivateCommunityOpen
+	}
+	return requested, nil
+}
+
+// effectiveJoinMode is the join mode the join route applies. A private
+// community whose row still says "open" (created before the default changed,
+// or turned private without its join mode being touched) is never joined
+// directly: it takes requests.
+func effectiveJoinMode(c *store.Community) string {
+	if c.JoinMode == "open" && !communityIsPublic(c) {
+		return privateJoinMode
+	}
+	return c.JoinMode
+}
+
+// ─── Member directory ───────────────────────────────────────────────────
+
+// ErrMemberDirectoryHidden: member_directory=false keeps the member list to
+// the community's moderators and above (as group-service's
+// member_list_visible).
+var ErrMemberDirectoryHidden = errors.New("forbidden: this community's member list is visible to its moderators only")
+
+// memberDirectoryAllowed applies member_directory to the caller's standing.
+func memberDirectoryAllowed(c *store.Community, role string) bool {
+	return c.MemberDirectory || isAtLeast(role, "moderator")
+}
+
+// settleJoinMode is the save-time half of the rule: a save never leaves a
+// private community open to join. An "open" the caller named is refused; a
+// stored one (the type was just made private, or the row predates the
+// private default) becomes privateJoinMode.
+func settleJoinMode(c *store.Community, joinModeNamed bool) error {
+	if c.JoinMode != "open" || communityIsPublic(c) {
+		return nil
+	}
+	if joinModeNamed {
+		return ErrPrivateCommunityOpen
+	}
+	c.JoinMode = privateJoinMode
+	return nil
+}

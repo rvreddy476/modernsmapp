@@ -25,31 +25,29 @@ func NewProducerWithDialer(brokers []string, topic string, dialer *kafka.Dialer)
 	w := kafka.NewWriter(kafka.WriterConfig{
 		Brokers:  brokers,
 		Topic:    topic,
-		Balancer: &kafka.LeastBytes{},
+		// Hash, not LeastBytes: LeastBytes ignores the key, so keying the
+		// lifecycle events by community id would order nothing.
+		Balancer: &kafka.Hash{},
 		Dialer:   dialer,
 	})
 	return &Producer{writer: w}
 }
 
-func (p *Producer) PublishCommunityCreated(ctx context.Context, communityID, ownerID uuid.UUID, name, communityType string) error {
-	payload := CommunityCreatedPayload{
-		CommunityID:   communityID.String(),
-		OwnerID:       ownerID.String(),
-		Name:          name,
-		CommunityType: communityType,
-		CreatedAt:     time.Now(),
-	}
-	return p.publish(ctx, EventCommunityCreated, &ownerID, payload)
+// PublishCommunityCreated announces a new community, with the row as created.
+func (p *Producer) PublishCommunityCreated(ctx context.Context, c *store.Community) error {
+	payload := NewCommunityCreatedPayload(c, time.Now())
+	ownerID := c.OwnerID
+	return p.publishKeyed(ctx, EventCommunityCreated, &ownerID, payload.CommunityID, payload)
 }
 
 // PublishCommunityUpdated announces a change to a community, including a
-// change of status (the GDPR archive; any future suspension). status is the
-// community's status after the change; visibility is derived from its type by
-// the one public set (store.PublicCommunityTypes), so a consumer need not keep
-// its own copy of that list.
-func (p *Producer) PublishCommunityUpdated(ctx context.Context, communityID, actorID uuid.UUID, name, communityType, status string) error {
-	payload := NewCommunityUpdatedPayload(communityID, actorID, name, communityType, status)
-	return p.publish(ctx, EventCommunityUpdated, &actorID, payload)
+// change of status (the GDPR archive; any future suspension). c is the row
+// after the change; the payload carries its status, its visibility (derived
+// from the type by the one public set, store.PublicCommunityTypes, so a
+// consumer need not keep its own copy of that list) and the whole row.
+func (p *Producer) PublishCommunityUpdated(ctx context.Context, c *store.Community, actorID uuid.UUID) error {
+	payload := NewCommunityUpdatedPayload(c, actorID, time.Now())
+	return p.publishKeyed(ctx, EventCommunityUpdated, &actorID, payload.CommunityID, payload)
 }
 
 func (p *Producer) PublishCommunityDeleted(ctx context.Context, communityID, actorID uuid.UUID) error {
@@ -58,7 +56,7 @@ func (p *Producer) PublishCommunityDeleted(ctx context.Context, communityID, act
 		ActorID:     actorID.String(),
 		DeletedAt:   time.Now(),
 	}
-	return p.publish(ctx, EventCommunityDeleted, &actorID, payload)
+	return p.publishKeyed(ctx, EventCommunityDeleted, &actorID, payload.CommunityID, payload)
 }
 
 func (p *Producer) PublishMemberJoined(ctx context.Context, communityID, userID uuid.UUID) error {
@@ -146,6 +144,16 @@ func (p *Producer) PublishSpaceQuarantined(ctx context.Context, communityID, spa
 // at-least-once + duplicates via dedup; a dropped event becomes a
 // best-effort reconciliation problem rather than a user-facing failure.
 func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload any) error {
+	return p.publishKeyed(ctx, eventType, actorID, "", payload)
+}
+
+// publishKeyed is publish with a partition key. The lifecycle events
+// (created, updated, deleted) are keyed by community id so they land on one
+// partition in the order they were written: search applies "archived" and
+// must not then apply a stale "active" edit, which would upsert the
+// community back (search-service applyCommunitySnapshot). An empty key falls
+// back to the event id, which spreads the member and space events.
+func (p *Producer) publishKeyed(ctx context.Context, eventType string, actorID *uuid.UUID, key string, payload any) error {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("failed to marshal payload: %w", err)
@@ -164,8 +172,14 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.
 		return fmt.Errorf("failed to marshal envelope: %w", err)
 	}
 
+	if key == "" {
+		key = envelope.EventID
+	}
+	// Ordering is per partition and per write: two edits published within
+	// the same few milliseconds race in the goroutines below. Rare for a
+	// human edit; the communities backfill is the repair.
 	msg := kafka.Message{
-		Key:   []byte(envelope.EventID),
+		Key:   []byte(key),
 		Value: envelopeBytes,
 	}
 	go func() {
@@ -200,12 +214,93 @@ const (
 
 // --- Payload types ---
 
+// CommunitySnapshot is the community row as committed, every field current
+// (an empty description is empty, not "unchanged"). It rides
+// community.created and community.updated (2026-11-08) so a consumer writes
+// the whole document instead of guessing from a few fields: search upserts it,
+// which brings back a community that was made public again. Contract:
+// testdata/contracts/community_updated.json, copied byte for byte into
+// search-service.
+type CommunitySnapshot struct {
+	CommunityID string `json:"community_id"`
+	OwnerID     string `json:"owner_id"`
+	Handle      string `json:"handle"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	// CommunityType is the authority for who may find the community;
+	// Visibility (public|private) is the wire field derived from it.
+	CommunityType string   `json:"community_type"`
+	Visibility    string   `json:"visibility"`
+	Category      string   `json:"category"`
+	TopicTags     []string `json:"topic_tags"`
+	MemberCount   int64    `json:"member_count"`
+	IsVerified    bool     `json:"is_verified"`
+	// Status: active | suspended | archived | deleted. Only active is
+	// servable.
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// visibilityOf is the only place the wire visibility is derived.
+func visibilityOf(communityType string) string {
+	if store.IsPublicCommunityType(communityType) {
+		return "public"
+	}
+	return "private"
+}
+
+// SnapshotOf builds the snapshot from the row.
+func SnapshotOf(c *store.Community) CommunitySnapshot {
+	tags := c.TopicTags
+	if tags == nil {
+		tags = []string{}
+	}
+	return CommunitySnapshot{
+		CommunityID:   c.ID.String(),
+		OwnerID:       c.OwnerID.String(),
+		Handle:        c.Handle,
+		Name:          c.Name,
+		Description:   c.Description,
+		CommunityType: c.CommunityType,
+		Visibility:    visibilityOf(c.CommunityType),
+		Category:      c.Category,
+		TopicTags:     tags,
+		MemberCount:   c.MemberCount,
+		IsVerified:    c.IsVerified,
+		Status:        c.Status,
+		CreatedAt:     c.CreatedAt,
+		UpdatedAt:     c.UpdatedAt,
+	}
+}
+
 type CommunityCreatedPayload struct {
 	CommunityID   string    `json:"community_id"`
 	OwnerID       string    `json:"owner_id"`
 	Name          string    `json:"name"`
 	CommunityType string    `json:"community_type"`
 	CreatedAt     time.Time `json:"created_at"`
+	// Community is the full row (added 2026-11-08; absent on older events,
+	// which carried the four fields above only).
+	Community *CommunitySnapshot `json:"community,omitempty"`
+}
+
+// NewCommunityCreatedPayload keeps the original top-level fields for older
+// consumers and adds the snapshot.
+func NewCommunityCreatedPayload(c *store.Community, now time.Time) CommunityCreatedPayload {
+	snap := SnapshotOf(c)
+	created := c.CreatedAt
+	if created.IsZero() {
+		created = now
+	}
+	return CommunityCreatedPayload{
+		CommunityID:   snap.CommunityID,
+		OwnerID:       snap.OwnerID,
+		Name:          snap.Name,
+		CommunityType: snap.CommunityType,
+		CreatedAt:     created,
+		Community:     &snap,
+	}
 }
 
 type CommunityUpdatedPayload struct {
@@ -221,23 +316,24 @@ type CommunityUpdatedPayload struct {
 	// (store.PublicCommunityTypes) and "private" otherwise.
 	Visibility string    `json:"visibility,omitempty"`
 	UpdatedAt  time.Time `json:"updated_at"`
+	// Community is the full row after the change (added 2026-11-08; absent
+	// on older events).
+	Community *CommunitySnapshot `json:"community,omitempty"`
 }
 
-// NewCommunityUpdatedPayload builds the payload; it is the only place the
-// visibility is derived.
-func NewCommunityUpdatedPayload(communityID, actorID uuid.UUID, name, communityType, status string) CommunityUpdatedPayload {
-	visibility := "private"
-	if store.IsPublicCommunityType(communityType) {
-		visibility = "public"
-	}
+// NewCommunityUpdatedPayload builds community.updated from the row after the
+// change.
+func NewCommunityUpdatedPayload(c *store.Community, actorID uuid.UUID, now time.Time) CommunityUpdatedPayload {
+	snap := SnapshotOf(c)
 	return CommunityUpdatedPayload{
-		CommunityID:   communityID.String(),
+		CommunityID:   snap.CommunityID,
 		ActorID:       actorID.String(),
-		Name:          name,
-		CommunityType: communityType,
-		Status:        status,
-		Visibility:    visibility,
-		UpdatedAt:     time.Now(),
+		Name:          snap.Name,
+		CommunityType: snap.CommunityType,
+		Status:        snap.Status,
+		Visibility:    snap.Visibility,
+		UpdatedAt:     now,
+		Community:     &snap,
 	}
 }
 
