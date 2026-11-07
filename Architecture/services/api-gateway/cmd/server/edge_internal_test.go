@@ -34,6 +34,7 @@ type upstreamHit struct {
 	key      string
 	user     string
 	revision string
+	header   http.Header
 }
 
 type recordingUpstream struct {
@@ -47,7 +48,7 @@ func newRecordingUpstream(t *testing.T) *recordingUpstream {
 	u := &recordingUpstream{}
 	u.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		u.mu.Lock()
-		u.hits = append(u.hits, upstreamHit{path: r.URL.Path, key: r.Header.Get("X-Internal-Service-Key"), user: r.Header.Get("X-User-Id"), revision: r.Header.Get("X-Work-Revision")})
+		u.hits = append(u.hits, upstreamHit{path: r.URL.Path, key: r.Header.Get("X-Internal-Service-Key"), user: r.Header.Get("X-User-Id"), revision: r.Header.Get("X-Work-Revision"), header: r.Header.Clone()})
 		u.mu.Unlock()
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -266,6 +267,137 @@ func TestInternalKeyIsStampedOnlyForUpstreamsThatNeedIt(t *testing.T) {
 			if hits[0].key != want {
 				t.Errorf("%s (anonymous=%t): upstream saw key %q, want %q", c.path, anonymous, hits[0].key, want)
 			}
+		}
+	}
+}
+
+// forgedEdgeHeaders are credentials and identities a client might send to
+// pass as a service or another user. None may reach any upstream as sent.
+var forgedEdgeHeaders = map[string]string{
+	"X-Internal-Service-Key": edgeTestInternalKey, // even the right value
+	"X-Internal-Key":         edgeTestInternalKey,
+	"X-User-Id":              "99999999-9999-4999-8999-999999999999",
+	"X-Verified-User-Id":     "99999999-9999-4999-8999-999999999999",
+	"X-Scopes":               "superadmin admin moderator",
+	"X-Admin-Role":           "superadmin",
+	"X-Admin-Id":             "99999999-9999-4999-8999-999999999999",
+}
+
+// Every prefix in the real route table, through the real chain: the upstream
+// sees the gateway's key exactly when StampPolicy says so, never a client's
+// copy, and never a client-supplied identity.
+func TestEveryRoutePrefixStampsAndStripsByPolicy(t *testing.T) {
+	up := newRecordingUpstream(t)
+	gw := edgeGateway(t, up, nil)
+	const tokenUser = "33333333-3333-4333-8333-333333333333"
+	token := edgeToken(t, "user", "")
+
+	for _, rd := range routeDefinitions() {
+		for _, anonymous := range []bool{true, false} {
+			isAdmin := rd.prefix == "/v1/admin" || strings.HasPrefix(rd.prefix, "/v1/admin/")
+			if anonymous && isAdmin {
+				continue // no admin session: refused before routing
+			}
+			req := httptest.NewRequest(http.MethodGet, rd.prefix+"/stamp-probe", nil)
+			for name, value := range forgedEdgeHeaders {
+				req.Header.Set(name, value)
+			}
+			// Non-canonical spellings set outside the wire parser.
+			req.Header["x-internal-service-key"] = []string{"forged-lower"}
+			req.Header["x-user-id"] = []string{"99999999-9999-4999-8999-999999999999"}
+			switch {
+			case isAdmin:
+				req.AddCookie(&http.Cookie{Name: "admin_access_token", Value: adminEdgeToken(t, "admin", "")})
+			case !anonymous:
+				req.Header.Set("Authorization", "Bearer "+token)
+			}
+			res := httptest.NewRecorder()
+			gw.ServeHTTP(res, req)
+			hits := up.take()
+			if len(hits) != 1 {
+				t.Errorf("%s (anonymous=%t): status %d, %d upstream hits, want one", rd.prefix, anonymous, res.Code, len(hits))
+				continue
+			}
+			h := hits[0]
+			wantKey := ""
+			if internalroutes.ShouldStamp(rd.prefix) {
+				wantKey = edgeTestInternalKey
+			}
+			var keys []string
+			for name, vals := range h.header {
+				if strings.EqualFold(name, "X-Internal-Service-Key") {
+					keys = append(keys, vals...)
+				}
+			}
+			switch {
+			case wantKey == "" && len(keys) != 0:
+				t.Errorf("%s (anonymous=%t): upstream got key values %d, want none", rd.prefix, anonymous, len(keys))
+			case wantKey != "" && (len(keys) != 1 || keys[0] != wantKey):
+				t.Errorf("%s (anonymous=%t): upstream did not get exactly the gateway key (%d values)", rd.prefix, anonymous, len(keys))
+			}
+			wantUser := tokenUser
+			if anonymous {
+				wantUser = ""
+			}
+			var users []string
+			for name, vals := range h.header {
+				if strings.EqualFold(name, "X-User-Id") {
+					users = append(users, vals...)
+				}
+			}
+			if (wantUser == "" && len(users) != 0) || (wantUser != "" && (len(users) != 1 || users[0] != wantUser)) {
+				t.Errorf("%s (anonymous=%t): upstream X-User-Id %v, want %q", rd.prefix, anonymous, users, wantUser)
+			}
+			for _, name := range []string{"X-Internal-Key", "X-Verified-User-Id", "X-Scopes", "X-Admin-Role", "X-Admin-Id"} {
+				for _, v := range h.header.Values(name) {
+					if v == forgedEdgeHeaders[name] {
+						t.Errorf("%s (anonymous=%t): client-forged %s reached the upstream", rd.prefix, anonymous, name)
+					}
+				}
+			}
+		}
+	}
+}
+
+// The service-only routes on public prefixes are refused for every caller,
+// a forged key included, and never reach an upstream.
+func TestEdgeRefusesServiceOnlyRoutesForEveryCaller(t *testing.T) {
+	up := newRecordingUpstream(t)
+	gw := edgeGateway(t, up, nil)
+	callers := map[string]string{
+		"anonymous":  "",
+		"user":       edgeToken(t, "user", ""),
+		"superadmin": edgeToken(t, "superadmin admin moderator", ""),
+	}
+	for _, route := range internalroutes.ServiceOnlyRoutes {
+		p := strings.ReplaceAll(route.Pattern, "*", "11111111-1111-4111-8111-111111111111")
+		for name, token := range callers {
+			for _, method := range []string{http.MethodGet, http.MethodPost} {
+				req := httptest.NewRequest(method, p, strings.NewReader(`{}`))
+				if token != "" {
+					req.Header.Set("Authorization", "Bearer "+token)
+				}
+				req.Header.Set("X-Internal-Service-Key", edgeTestInternalKey)
+				res := httptest.NewRecorder()
+				gw.ServeHTTP(res, req)
+				if res.Code != http.StatusNotFound {
+					t.Errorf("%s %s %s: status %d, want 404", name, method, p, res.Code)
+				}
+			}
+		}
+	}
+	if hits := up.take(); len(hits) != 0 {
+		t.Fatalf("service-only routes reached an upstream: %+v", hits)
+	}
+	// Their user-facing neighbours still route.
+	token := edgeToken(t, "user", "")
+	for _, p := range []string{"/v1/search/users", "/v1/graph/connection-request/unfilter", "/v1/monetization/affiliate/links", "/v1/suggestions/people"} {
+		req := httptest.NewRequest(http.MethodGet, p, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		res := httptest.NewRecorder()
+		gw.ServeHTTP(res, req)
+		if res.Code != http.StatusOK || len(up.take()) != 1 {
+			t.Errorf("%s: status %d, want 200 and one upstream hit", p, res.Code)
 		}
 	}
 }

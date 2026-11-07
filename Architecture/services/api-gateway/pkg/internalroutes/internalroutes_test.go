@@ -158,7 +158,8 @@ func TestApplyKey(t *testing.T) {
 }
 
 func TestServiceOnlyUpstreamsAreNotStamped(t *testing.T) {
-	for _, p := range []string{"/v1/wallet", "/v1/billpay", "/v1/auth", "/v1/media", "/v1/audio", "/v1/audio-library", "/v1/chat", "/v1/calls", "/v1/ws"} {
+	for _, p := range []string{"/v1/wallet", "/v1/billpay", "/v1/auth", "/v1/media", "/v1/audio", "/v1/audio-library", "/v1/chat", "/v1/calls", "/v1/ws",
+		"/v1/flags", "/v1/admin/flags", "/v1/users", "/v1/pages", "/v1/onboarding", "/v1/suggestions"} {
 		if ShouldStamp(p) {
 			t.Errorf("%s: stamped, but its user routes do not need the internal key", p)
 		}

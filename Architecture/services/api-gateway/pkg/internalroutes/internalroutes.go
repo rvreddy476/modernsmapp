@@ -198,16 +198,112 @@ func Refuse(w http.ResponseWriter) {
 	_, _ = w.Write([]byte(`{"error":{"code":"NOT_FOUND","message":"Not found"}}`))
 }
 
-// Middleware refuses every internal path before anything downstream sees it.
-// It deliberately does not read scopes: no token opens these routes.
+// Middleware refuses every internal path, and every service-only route that
+// still lives on a public prefix, before anything downstream sees it. It
+// deliberately does not read scopes: no token opens these routes.
 func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if IsInternalRequest(r) {
+		if IsInternalRequest(r) || IsServiceOnlyRequest(r) {
 			Refuse(w)
 			return
 		}
 		next.ServeHTTP(w, r)
 	})
+}
+
+// ServiceOnlyRoute is a service-to-service route registered on a public
+// prefix, without an `internal` segment, on an upstream whose user traffic the
+// gateway still stamps with the internal key (or that trusts no identity at
+// all). Each one takes its subject from the request rather than X-User-Id, or
+// treats "key present, no identity" as a service caller — which an anonymous
+// edge request is. The edge refuses them for every caller; their real callers
+// are in-cluster and use the service URL directly.
+//
+// This is a stopgap per route until the upstream moves it under `/internal`
+// or behind a service token; then the entry goes and the generic internal
+// refusal covers it.
+type ServiceOnlyRoute struct {
+	// Pattern is a path whose segments are compared case-insensitively;
+	// `*` matches exactly one segment. A request matches when its
+	// path begins with every pattern segment, under any interpretation
+	// IsInternalRequest examines.
+	Pattern string
+	// Why names the upstream, the in-cluster caller and what an edge user
+	// could do with it.
+	Why string
+}
+
+// ServiceOnlyRoutes is the edge deny list (audit 7 Nov 2026). Every method is
+// refused: none of these paths has a user-facing method.
+var ServiceOnlyRoutes = []ServiceOnlyRoute{
+	{"/v1/search/users/bulk-sync",
+		"search-service: overwrites any user's search document (name, bio, avatar, is_verified, is_hidden) " +
+			"from the body, anonymous callers included; the id is spliced into the OpenSearch bulk NDJSON. No caller anywhere. The route is being deleted from search-service " +
+			"(7 Nov 2026); keep this entry until that ships everywhere, then drop it."},
+	{"/v1/graph/connection-request/filter",
+		"graph-service: marks any two users' pending request filtered from body sender_id/receiver_id, never reads " +
+			"X-User-Id; trust-safety-service calls it in-cluster."},
+	{"/v1/dating/moderation/scan",
+		"dating-service: authorizeServiceCaller admits the internal key when no identity is present, so an anonymous " +
+			"edge request writes moderation results for any sender_id and publishes moderation events."},
+	{"/v1/dating/profile/*/preview",
+		"dating-service: retired legacy path, same authorizeServiceCaller; an anonymous edge request reads any user's " +
+			"first name. notification-service now calls /v1/dating/internal/profile/:id/preview."},
+	{"/v1/monetization/affiliate/links/*",
+		"monetization-service: 'internal-only' link lookup by id with no identity check (creator_id, clicks, " +
+			"conversions, earnings); post-service and commerce-service call it in-cluster."},
+	{"/v1/suggestions/batch",
+		"suggestion-service: anonymous trigger of a full platform recomputation (RunFullBatch). No caller anywhere."},
+}
+
+// IsServiceOnlyRequest reports whether any interpretation of the request path
+// falls under a ServiceOnlyRoutes pattern.
+func IsServiceOnlyRequest(r *http.Request) bool {
+	return AnyRequestInterpretation(r, IsServiceOnlyPath)
+}
+
+// IsServiceOnlyPath reports whether one already-interpreted path falls under a
+// ServiceOnlyRoutes pattern.
+func IsServiceOnlyPath(p string) bool {
+	segs := pathSegments(p)
+	for _, route := range ServiceOnlyRoutes {
+		if segmentsHavePrefix(segs, pathSegments(route.Pattern)) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathSegments splits a path into lowercased, trimmed segments, drops empty
+// ones (so `//` and a trailing slash change nothing) and strips `;` path
+// parameters, the same way hasInternalSegment reads a segment.
+func pathSegments(p string) []string {
+	var out []string
+	for _, seg := range strings.Split(p, "/") {
+		seg = strings.TrimSpace(strings.ToLower(seg))
+		if seg == "" {
+			continue
+		}
+		// `x;p=1` reads as `x`; a bare `;p=1` stays a (now empty) segment, so
+		// it still fills a `*` the way an upstream router would bind it.
+		if i := strings.IndexByte(seg, ';'); i >= 0 {
+			seg = seg[:i]
+		}
+		out = append(out, seg)
+	}
+	return out
+}
+
+func segmentsHavePrefix(segs, pattern []string) bool {
+	if len(segs) < len(pattern) {
+		return false
+	}
+	for i, want := range pattern {
+		if want != "*" && segs[i] != want {
+			return false
+		}
+	}
+	return true
 }
 
 // InternalKeyHeader is the credential services accept from an in-cluster
@@ -226,10 +322,20 @@ const InternalKeyHeader = "X-Internal-Service-Key"
 // service's own `/internal` group (now refused at the edge) or is not
 // checked at all. Stamping it there handed the credential to anyone who
 // could reach a route on that host.
+//
+// Principle (7 Nov 2026): user traffic carries the user's identity — a
+// verified token turned into X-User-Id — and is never signed with the key
+// that unlocks `/internal` routes. Every `true` below is debt: the upstream
+// must move to a distinct gateway credential or the signed identity headers,
+// after which its prefix flips to false. A `true` must be re-proved by reading
+// the upstream's cmd/server wiring, not its handler package: three entries
+// were `true` because the handler HAD a key gate that main never switched on.
 var StampPolicy = map[string]bool{
-	// feature-flag-service: engine-wide RequireInternalKey.
-	"/v1/admin/flags": true,
-	"/v1/flags":       true,
+	// feature-flag-service: handler.RegisterRoutes installs RequireInternalKey
+	// only after WithInternalKey, and cmd/server/main.go never calls it, so
+	// no route reads the key. Stamping it only handed the credential over.
+	"/v1/admin/flags": false,
+	"/v1/flags":       false,
 
 	// identity-auth: the key guards only /v1/auth/internal/* (refused at the
 	// edge and by routepolicy). Login, refresh, me, sessions do not read it.
@@ -238,10 +344,14 @@ var StampPolicy = map[string]bool{
 	// identity-profile: engine-wide RequireInternalServiceKey.
 	"/v1/profiles": true,
 
-	// Architecture user-service: engine-wide RequireInternalKey.
-	"/v1/onboarding": true,
-	"/v1/pages":      true,
-	"/v1/users":      true,
+	// Architecture user-service: main.go wires only WithInternalRoutes, which
+	// gates /internal/* (refused at the edge) on its own guard; the engine-wide
+	// RequireInternalKey needs WithInternalKey, which is never called. User
+	// routes take the actor from X-User-Id and private profile fields need a
+	// service token, not the key.
+	"/v1/onboarding": false,
+	"/v1/pages":      false,
+	"/v1/users":      false,
 
 	// post-service (engine-wide RequireInternalKey): the Action button's
 	// public redirect read, GET /v1/links/:id (2026-10-23).
@@ -338,8 +448,10 @@ var StampPolicy = map[string]bool{
 	// monetization-service: engine-wide RequireInternalKey.
 	"/v1/monetization": true,
 
-	// suggestion-service: engine-wide RequireInternalKey.
-	"/v1/suggestions": true,
+	// suggestion-service: the handler's RequireInternalKey needs
+	// WithInternalKey, which cmd/server/main.go never calls; no route reads
+	// the key.
+	"/v1/suggestions": false,
 
 	// live-service-v2 (/v1/livestream group). `/v1/live` (v1) is retired:
 	// the gateway answers it 410 and proxies nothing.
