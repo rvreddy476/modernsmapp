@@ -49,10 +49,10 @@ func orDefaultClient(c *http.Client) *http.Client {
 // profile mirrors the subset of profile-service's Profile JSON that the
 // users_v1 index needs. Unknown fields are ignored by encoding/json.
 type profile struct {
-	UserID        string  `json:"user_id"`
-	Username      *string `json:"username"`
-	DisplayName   string  `json:"display_name"`
-	Bio           string  `json:"bio"`
+	UserID        string     `json:"user_id"`
+	Username      *string    `json:"username"`
+	DisplayName   string     `json:"display_name"`
+	Bio           string     `json:"bio"`
 	AvatarMediaID *string    `json:"avatar_media_id"`
 	IsVerified    bool       `json:"is_verified"`
 	CreatedAt     *time.Time `json:"created_at"`
@@ -197,6 +197,11 @@ func ReindexUsers(
 			docs = append(docs, doc)
 		}
 
+		// is_hidden is not set here: profile-service does not know the account
+		// lifecycle. BulkIndexUsers keeps a stored hide (bulk.go, S-M1), so a
+		// reindex over a live index cannot bring a deactivated account back.
+		// After a wipe nothing is stored; until identity serves the lifecycle
+		// state here, run cmd/backfill -entity users,posts, which reads it.
 		n, err := store.BulkIndexUsers(ctx, docs)
 		if err != nil {
 			// Log and continue — a partial reindex is better than none,

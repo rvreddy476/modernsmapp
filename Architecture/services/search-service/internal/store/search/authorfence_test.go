@@ -207,6 +207,7 @@ func TestIndexPostUnlessAuthorErased_WritesNothingWhenFenceStateIsUnknown(t *tes
 			PostID: "p1", AuthorID: "a1", Text: "should not be indexed",
 			Visibility: "public", ReviewStatus: "approved", SearchRev: 1,
 		},
+		Author: &AuthorVisibility{},
 	})
 	if err == nil {
 		t.Fatal("indexing must fail when erasure state is unknown")

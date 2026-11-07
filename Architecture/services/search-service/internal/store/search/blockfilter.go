@@ -126,10 +126,10 @@ func encodeQuery(ctx context.Context, q map[string]interface{}, idField string) 
 	// deletion): a hidden user, and every post by a hidden author, must
 	// never surface in search for ANY viewer — unconditional, unlike the
 	// private-account exclusion above, and block-list resolution aside.
-	// Applied to every query regardless of idField: is_hidden is mapped
-	// only on users_v1/posts_v1, so this term is a harmless no-op against
-	// indices (hashtags/communities/channels/products/messages) that never
-	// set it.
+	// Applied to every query regardless of idField: is_hidden is mapped on
+	// users_v1, posts_v1 and the two Tube indices (the owner's channel and
+	// playlists, owner_lifecycle.go), so this term is a harmless no-op
+	// against indices that never set it.
 	applyHiddenMustNot(q)
 	var buf bytes.Buffer
 	if err := json.NewEncoder(&buf).Encode(q); err != nil {

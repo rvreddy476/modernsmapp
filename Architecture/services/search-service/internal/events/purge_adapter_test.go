@@ -21,12 +21,14 @@ type fakeSearchEraser struct {
 	deletedUsers  []string
 	hiddenUsers   map[string]bool
 	hiddenAuthors map[string]bool
+	ownerErased   []string
+	ownerTube     map[string]bool
 
-	eraseErr, deleteErr, hideUserErr, hideAuthorErr error
+	eraseErr, deleteErr, hideUserErr, hideAuthorErr, ownerErr error
 }
 
 func newFakeSearchEraser() *fakeSearchEraser {
-	return &fakeSearchEraser{hiddenUsers: map[string]bool{}, hiddenAuthors: map[string]bool{}}
+	return &fakeSearchEraser{hiddenUsers: map[string]bool{}, hiddenAuthors: map[string]bool{}, ownerTube: map[string]bool{}}
 }
 
 func (f *fakeSearchEraser) EraseAuthorContent(_ context.Context, authorID string) error {
@@ -63,6 +65,22 @@ func (f *fakeSearchEraser) UpdatePostsAuthorHidden(_ context.Context, authorID s
 		return f.hideAuthorErr
 	}
 	f.hiddenAuthors[authorID] = hidden
+	return nil
+}
+
+func (f *fakeSearchEraser) UpdateOwnerTubeHidden(_ context.Context, ownerID string, hidden bool) error {
+	if f.ownerErr != nil {
+		return f.ownerErr
+	}
+	f.ownerTube[ownerID] = hidden
+	return nil
+}
+
+func (f *fakeSearchEraser) DeleteOwnerEntityDocs(_ context.Context, ownerID string) error {
+	if f.ownerErr != nil {
+		return f.ownerErr
+	}
+	f.ownerErased = append(f.ownerErased, ownerID)
 	return nil
 }
 
@@ -121,6 +139,9 @@ func TestPurgeStore_PurgeUser_ErasesEverythingAndIsIdempotent(t *testing.T) {
 	}
 	if len(se.chatErased) != 2 || se.chatErased[0] != id.String() {
 		t.Fatalf("expected the user's chat messages erased on every delivery, got %v", se.chatErased)
+	}
+	if len(se.ownerErased) != 2 || se.ownerErased[0] != id.String() {
+		t.Fatalf("expected the Tube channel, playlists, channels and communities they own erased on every delivery, got %v", se.ownerErased)
 	}
 	if len(analytics.purged) != 2 || analytics.purged[0] != id {
 		t.Fatalf("expected optional analytics store purged on every delivery, got %v", analytics.purged)
@@ -181,6 +202,9 @@ func TestPurgeStore_SetUserHidden_TogglesUserAndPosts(t *testing.T) {
 	if !se.hiddenAuthors[id.String()] {
 		t.Fatal("hide must flip every post by the author")
 	}
+	if !se.ownerTube[id.String()] {
+		t.Fatal("hide must flip their Tube channel and playlists: the channel carries their name and handle")
+	}
 
 	if err := p.SetUserHidden(context.Background(), id, false, "user.reactivated"); err != nil {
 		t.Fatal(err)
@@ -190,6 +214,23 @@ func TestPurgeStore_SetUserHidden_TogglesUserAndPosts(t *testing.T) {
 	}
 	if se.hiddenAuthors[id.String()] {
 		t.Fatal("unhide must flip every post by the author back")
+	}
+	if se.ownerTube[id.String()] {
+		t.Fatal("unhide must flip their Tube channel and playlists back")
+	}
+}
+
+// S-M3: a failure on the owned documents must fail the lifecycle step, so
+// the event is redelivered and the ack is never sent for a half erasure.
+func TestPurgeStore_OwnedDocsFailurePropagates(t *testing.T) {
+	se := newFakeSearchEraser()
+	se.ownerErr = errors.New("opensearch down")
+	p := &PurgeStore{search: se}
+	if err := p.PurgeUser(context.Background(), uuid.New()); err == nil {
+		t.Fatal("purge reported success while the owned channels and playlists were not erased")
+	}
+	if err := p.SetUserHidden(context.Background(), uuid.New(), true, "user.deactivated"); err == nil {
+		t.Fatal("hide reported success while the Tube channel stayed visible")
 	}
 }
 

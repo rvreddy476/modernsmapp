@@ -187,7 +187,8 @@ func (s *Store) initEntityIndices() {
 				"member_count":     { "type": "long" },
 				"is_verified":      { "type": "boolean" },
 				"engagement_score": { "type": "double" },
-				"created_at":       { "type": "date" }
+				"created_at":       { "type": "date" },
+				"status":           { "type": "keyword" }
 			}
 		}
 	}`)
@@ -207,8 +208,14 @@ func (s *Store) initEntityIndices() {
 				"subscriber_count": { "type": "long" },
 				"is_verified":      { "type": "boolean" },
 				"engagement_score": { "type": "double" },
-				"created_at":       { "type": "date" }
+				"created_at":       { "type": "date" },
+				"status":           { "type": "keyword" }
 			}
 		}
 	}`)
+
+	// S-M2 (2026-11-07): status on indices created before it. Additive;
+	// documents without it match no query until the backfill rewrites them.
+	s.putFieldMapping(ctx, IndexCommunities, "status", "keyword")
+	s.putFieldMapping(ctx, IndexChannels, "status", "keyword")
 }

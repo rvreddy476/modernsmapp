@@ -594,21 +594,20 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 			return err
 		}
 		doc := search.PostDoc{
-			PostID:          p.PostID,
-			AuthorID:        p.AuthorID,
-			AuthorIsPrivate: authorPrivate,
-			Text:            p.Text,
-			Hashtags:        extractHashtags(p.Text),
-			Visibility:      p.Visibility,
-			ReviewStatus:    p.ReviewStatus,
-			SearchRev:       rev,
-			CreatedAt:       p.CreatedAt,
-			ContentType:     p.ContentType,
-			PostType:        p.ContentType,
-			Title:           p.Title,
-			DurationMs:      postDurationMs(p.DurationMs, p.DurationSeconds),
-			MediaID:         firstMediaID(p.Media),
-			MediaKind:       firstMediaKind(p.Media),
+			PostID:       p.PostID,
+			AuthorID:     p.AuthorID,
+			Text:         p.Text,
+			Hashtags:     extractHashtags(p.Text),
+			Visibility:   p.Visibility,
+			ReviewStatus: p.ReviewStatus,
+			SearchRev:    rev,
+			CreatedAt:    p.CreatedAt,
+			ContentType:  p.ContentType,
+			PostType:     p.ContentType,
+			Title:        p.Title,
+			DurationMs:   postDurationMs(p.DurationMs, p.DurationSeconds),
+			MediaID:      firstMediaID(p.Media),
+			MediaKind:    firstMediaKind(p.Media),
 			// MTube filters: as the producer reports them (0 / false
 			// from a producer that does not yet). PostCreated is
 			// emitted at publish time, so its created_at is the best
@@ -619,10 +618,13 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		}
 		// Video credits (2026-10-23, credits.go): long videos only.
 		applyCreditFields(&doc, p.ContentType, p.PostCreditSearchFields)
+		// Author: private from the identity settings; hidden is not known
+		// here, so a stored lifecycle hide is kept (projection.go).
 		return c.store.IndexPostUnlessAuthorErased(ctx, search.PostProjection{
 			PostID: p.PostID,
 			Rev:    rev,
 			Doc:    doc,
+			Author: &search.AuthorVisibility{IsPrivate: authorPrivate},
 		})
 
 	case events.ReelViewed:
@@ -835,11 +837,15 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
 			return err
 		}
+		// A community is created active (community-service default).
+		// IndexCommunity deletes instead of writing when the type is not
+		// public (S-M2).
 		return c.store.IndexCommunity(ctx, search.CommunityDoc{
 			CommunityID:   p.CommunityID,
 			OwnerID:       p.OwnerID,
 			Name:          p.Name,
 			CommunityType: p.CommunityType,
+			Status:        search.StatusActive,
 			CreatedAt:     p.CreatedAt,
 		})
 
@@ -848,13 +854,7 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
 			return err
 		}
-		// Partial update; leaves counters intact.
-		return c.store.IndexCommunity(ctx, search.CommunityDoc{
-			CommunityID:   p.CommunityID,
-			Name:          p.Name,
-			CommunityType: p.CommunityType,
-			CreatedAt:     p.UpdatedAt,
-		})
+		return c.applyCommunityUpdate(ctx, p)
 
 	case events.EventCommunityDeleted:
 		var p communityDeletedPayload
@@ -887,23 +887,25 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
 			return err
 		}
+		// Created active (channel-service default); IndexChannel deletes
+		// instead when the type is not public (S-M2).
 		return c.store.IndexChannel(ctx, search.ChannelDoc{
 			ChannelID:   p.ChannelID,
 			OwnerID:     p.OwnerID,
 			Name:        p.Name,
 			ChannelType: p.ChannelType,
+			Status:      search.StatusActive,
 			CreatedAt:   p.CreatedAt,
 		})
 
 	case events.EventChannelUpdated:
-		var p channelUpdatedPayload
-		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
-			return err
-		}
-		return c.store.IndexChannel(ctx, search.ChannelDoc{
-			ChannelID: p.ChannelID,
-			CreatedAt: p.UpdatedAt,
-		})
+		// S-M4: channel-service's payload carries ids only, so there is
+		// nothing to write. It used to replace the whole document with
+		// {channel_id, created_at}, which blanked channel_type and made an
+		// edited channel vanish from search for good. The document is left
+		// as it is; the backfill brings edits in until the event carries the
+		// changed fields and status.
+		return nil
 
 	case events.EventChannelDeleted:
 		var p channelDeletedPayload
@@ -1046,4 +1048,27 @@ func (c *Consumer) Close() error {
 		_ = c.dlq.Close()
 	}
 	return c.reader.Close()
+}
+
+// applyCommunityUpdate handles community.updated (S-M4). It used to
+// replace the whole document with the two fields the payload carries,
+// dropping owner_id (so blocks on the owner stopped applying), the handle,
+// the member count and the status. Now a type that is no longer public
+// removes the document, and anything else is a partial update of the
+// fields the event names.
+func (c *Consumer) applyCommunityUpdate(ctx context.Context, p communityUpdatedPayload) error {
+	if p.CommunityID == "" {
+		return nil
+	}
+	if p.CommunityType != "" && !search.IsPublicCommunityType(p.CommunityType) {
+		return c.store.DeleteCommunity(ctx, p.CommunityID)
+	}
+	fields := map[string]any{}
+	if p.Name != "" {
+		fields["name"] = p.Name
+	}
+	if p.CommunityType != "" {
+		fields["community_type"] = p.CommunityType
+	}
+	return c.store.UpdateCommunityFields(ctx, p.CommunityID, fields)
 }

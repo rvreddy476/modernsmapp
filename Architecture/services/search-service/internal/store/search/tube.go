@@ -52,6 +52,9 @@ type TubeChannelDoc struct {
 	FollowerCount int       `json:"follower_count"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+	// ReindexedAt is when the Tube reindex last wrote this document. The
+	// sweep after a complete walk deletes what was not rewritten (S-M3).
+	ReindexedAt *time.Time `json:"reindexed_at,omitempty"`
 }
 
 // TubeCollectionDoc is one public playlist in tube_collections_v1.
@@ -66,6 +69,8 @@ type TubeCollectionDoc struct {
 	CoverURL     string    `json:"cover_url,omitempty"`
 	CreatedAt    time.Time `json:"created_at"`
 	UpdatedAt    time.Time `json:"updated_at"`
+	// ReindexedAt: see TubeChannelDoc.
+	ReindexedAt *time.Time `json:"reindexed_at,omitempty"`
 }
 
 // initTubeIndices creates the two tube indices when absent and layers the
@@ -89,7 +94,9 @@ func (s *Store) initTubeIndices(ctx context.Context) {
 				"avatar_media_id": { "type": "keyword" },
 				"follower_count":  { "type": "long" },
 				"created_at":      { "type": "date" },
-				"updated_at":      { "type": "date" }
+				"updated_at":      { "type": "date" },
+				"is_hidden":       { "type": "boolean" },
+				"reindexed_at":    { "type": "date" }
 			}
 		}
 	}`)
@@ -107,10 +114,19 @@ func (s *Store) initTubeIndices(ctx context.Context) {
 				"cover_media_id": { "type": "keyword" },
 				"cover_url":      { "type": "keyword", "index": false },
 				"created_at":     { "type": "date" },
-				"updated_at":     { "type": "date" }
+				"updated_at":     { "type": "date" },
+				"is_hidden":      { "type": "boolean" },
+				"reindexed_at":   { "type": "date" }
 			}
 		}
 	}`)
+
+	// S-M3 (2026-11-07): lifecycle suppression and the reindex sweep stamp,
+	// added to indices created before them. Additive and idempotent.
+	for _, index := range tubeOwnedIndices {
+		s.putPrivacyMapping(ctx, index, "is_hidden")
+		s.putFieldMapping(ctx, index, "reindexed_at", "date")
+	}
 }
 
 // putVideoFilterMapping adds the four video-filter fields (and
@@ -522,75 +538,9 @@ func (s *Store) RefreshIndex(ctx context.Context, index string) error {
 	return nil
 }
 
-// bulkIndexDocs is the shared bulk upsert: one _bulk call per
-// bulkChunkSize, per-item statuses parsed so a partial failure is counted
-// honestly (the BulkIndexUsers rule).
+// bulkIndexDocs is the Tube indices' bulk rewrite: ids checked as UUIDs,
+// action lines marshalled, and a stored is_hidden kept so a reindex never
+// brings back the channel or playlists of a deactivated account (bulk.go).
 func (s *Store) bulkIndexDocs(ctx context.Context, index string, ids []string, docs []any) (int, error) {
-	if len(docs) == 0 {
-		return 0, nil
-	}
-	if len(docs) > bulkChunkSize {
-		total := 0
-		for i := 0; i < len(docs); i += bulkChunkSize {
-			end := i + bulkChunkSize
-			if end > len(docs) {
-				end = len(docs)
-			}
-			n, err := s.bulkIndexDocs(ctx, index, ids[i:end], docs[i:end])
-			total += n
-			if err != nil {
-				return total, err
-			}
-		}
-		return total, nil
-	}
-	var buf bytes.Buffer
-	for i, doc := range docs {
-		if ids[i] == "" {
-			return 0, fmt.Errorf("bulk index %s: empty document id at position %d", index, i)
-		}
-		meta, _ := json.Marshal(map[string]any{"index": map[string]any{"_index": index, "_id": ids[i]}})
-		buf.Write(meta)
-		buf.WriteByte('\n')
-		data, err := json.Marshal(doc)
-		if err != nil {
-			return 0, err
-		}
-		buf.Write(data)
-		buf.WriteByte('\n')
-	}
-	res, err := s.client.Bulk(bytes.NewReader(buf.Bytes()), s.client.Bulk.WithContext(ctx))
-	if err != nil {
-		return 0, err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return 0, fmt.Errorf("bulk index %s error: %s", index, res.String())
-	}
-	var bulkResp struct {
-		Errors bool `json:"errors"`
-		Items  []map[string]struct {
-			Status int    `json:"status"`
-			Error  any    `json:"error,omitempty"`
-			ID     string `json:"_id"`
-		} `json:"items"`
-	}
-	if err := json.NewDecoder(res.Body).Decode(&bulkResp); err != nil {
-		slog.Warn("search: bulk index response unparseable, assuming success", "index", index, "error", err, "count", len(docs))
-		return len(docs), nil
-	}
-	if !bulkResp.Errors {
-		return len(docs), nil
-	}
-	succeeded := 0
-	for _, item := range bulkResp.Items {
-		for op, st := range item {
-			if st.Status >= 200 && st.Status < 300 {
-				succeeded++
-			} else {
-				slog.Warn("search: bulk doc failed", "index", index, "op", op, "id", st.ID, "status", st.Status, "error", st.Error)
-			}
-		}
-	}
-	return succeeded, nil
+	return s.bulkWrite(ctx, index, ids, docs, buildBulkKeepHiddenBody)
 }

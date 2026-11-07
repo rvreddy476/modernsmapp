@@ -428,7 +428,8 @@ func (s *Store) BulkIndexProductV2(ctx context.Context, docs []ProductV2Doc) (in
 	if len(docs) == 0 {
 		return 0, nil
 	}
-	var buf bytes.Buffer
+	ids := make([]string, 0, len(docs))
+	lines := make([]any, 0, len(docs))
 	for i := range docs {
 		if docs[i].ProductID == "" {
 			continue
@@ -440,23 +441,19 @@ func (s *Store) BulkIndexProductV2(ctx context.Context, docs []ProductV2Doc) (in
 			docs[i].EngagementScore = computeEngagementScore(EntityProducts,
 				engagementCounters{Views: docs[i].ViewCount, Purchases: docs[i].OrderCount})
 		}
-		meta, _ := json.Marshal(map[string]any{
-			"index": map[string]any{"_index": IndexProducts, "_id": docs[i].ProductID},
-		})
-		line, err := json.Marshal(docs[i])
-		if err != nil {
-			return 0, err
-		}
-		buf.Write(meta)
-		buf.WriteByte('\n')
-		buf.Write(line)
-		buf.WriteByte('\n')
+		ids = append(ids, docs[i].ProductID)
+		lines = append(lines, docs[i])
 	}
-	if buf.Len() == 0 {
+	if len(ids) == 0 {
 		return 0, nil
 	}
+	// Ids checked as UUIDs and action lines marshalled (bulk.go, S-H1).
+	body, err := buildBulkIndexBody(IndexProducts, ids, lines)
+	if err != nil {
+		return 0, err
+	}
 
-	req := opensearchapi.BulkRequest{Body: bytes.NewReader(buf.Bytes())}
+	req := opensearchapi.BulkRequest{Body: bytes.NewReader(body)}
 	res, err := req.Do(ctx, s.client)
 	if err != nil {
 		return 0, err

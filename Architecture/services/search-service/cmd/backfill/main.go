@@ -158,7 +158,7 @@ func runOne(
 ) (int, error) {
 	switch entity {
 	case search.EntityPosts:
-		return backfillPosts(ctx, store, appDSN, limit, dry)
+		return backfillPosts(ctx, store, appDSN, identityDSN, limit, dry)
 	case search.EntityUsers:
 		return backfillUsers(ctx, store, identityDSN, appDSN, limit, dry)
 	case search.EntityHashtags:
@@ -341,12 +341,22 @@ func rowSearchEligible(visibility, reviewStatus string, deleted, scheduled, memb
 // The ineligible→delete direction is what lets the post-cutover audit
 // assert zero ineligible indexed documents. Deletion is issued even in
 // -dry-run=false only; -dry-run reports what it would do.
-func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit int, dry bool) (int, error) {
+func backfillPosts(ctx context.Context, store *search.Store, dsn, identityDSN string, limit int, dry bool) (int, error) {
 	pool, err := connect(ctx, dsn, "POSTGRES_DSN")
 	if err != nil {
 		return 0, err
 	}
 	defer pool.Close()
+
+	// S-M1: every eligible document carries its author's is_hidden and
+	// author_is_private (visibility.go). Without both authorities the
+	// rebuild is refused rather than run.
+	var vis *visibilitySource
+	if !dry {
+		if vis, err = newVisibilitySource(ctx, identityDSN); err != nil {
+			return 0, fmt.Errorf("backfill posts: %w", err)
+		}
+	}
 
 	args := []any{}
 	// MTube filters (2026-09-27): height from post-service's video_metadata,
@@ -401,7 +411,7 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 	}
 	defer rows.Close()
 
-	var indexed, removed, skipped int
+	var indexed, removed, skipped, unresolved int
 	// Hashtag honesty counters, in the spirit of the product reindex's
 	// index_total/orphans: report what the run could NOT repair, not only
 	// what it wrote.
@@ -543,6 +553,14 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 			continue
 		}
 
+		author, err := vis.resolve(ctx, authorID)
+		if err != nil {
+			// Never guess "public": the next run, or the live path, writes it.
+			slog.Warn("backfill posts: author visibility unresolved; skipping post", "id", id, "author_id", authorID, "err", err)
+			unresolved++
+			continue
+		}
+
 		published := publishedAt
 		doc := search.PostDoc{
 			PostID:       id,
@@ -570,6 +588,7 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 			Rev:       searchRev,
 			Reproject: true,
 			Doc:       doc,
+			Author:    author,
 		})
 		if len(pending) >= viewCountBatch {
 			flush()
@@ -578,6 +597,7 @@ func backfillPosts(ctx context.Context, store *search.Store, dsn string, limit i
 	flush()
 	slog.Info("backfill posts: reconciled",
 		"indexed", indexed, "removed_ineligible", removed, "skipped_dry", skipped,
+		"skipped_visibility_unresolved", unresolved,
 		"documents_with_hashtags", withTags,
 		"hashtags_from_column_only", columnOnly)
 	if columnOnly > 0 {
@@ -644,6 +664,17 @@ func backfillUsers(ctx context.Context, store *search.Store, identityDSN, appDSN
 	// everywhere, and is left empty rather than guessed.
 	handles := loadUsernames(ctx, appDSN)
 
+	// S-M1: is_hidden and is_private from their authorities (visibility.go).
+	// A stored is_hidden also survives the write (bulk.go), but after a wipe
+	// there is nothing stored, so the lifecycle state is read here.
+	var vis *visibilitySource
+	if !dry {
+		if vis, err = newVisibilitySource(ctx, identityDSN); err != nil {
+			return 0, fmt.Errorf("backfill users: %w", err)
+		}
+	}
+	unresolved := 0
+
 	count := 0
 	missingUsername := 0
 	docs := make([]search.UserDoc, 0, 500)
@@ -667,6 +698,15 @@ func backfillUsers(ctx context.Context, store *search.Store, identityDSN, appDSN
 		if d.Username == "" {
 			d.Username = handles[d.UserID]
 		}
+		if !dry {
+			v, err := vis.resolve(ctx, d.UserID)
+			if err != nil {
+				slog.Warn("backfill users: account visibility unresolved; skipping user", "user_id", d.UserID, "err", err)
+				unresolved++
+				continue
+			}
+			d.IsPrivate, d.IsHidden = v.IsPrivate, v.IsHidden
+		}
 		if d.Username == "" {
 			missingUsername++
 		}
@@ -679,6 +719,9 @@ func backfillUsers(ctx context.Context, store *search.Store, identityDSN, appDSN
 	}
 	if err := flush(); err != nil {
 		slog.Warn("backfill users: final flush failed", "err", err)
+	}
+	if unresolved > 0 {
+		slog.Warn("backfill users: users skipped because their visibility could not be read; re-run", "count", unresolved)
 	}
 	if missingUsername > 0 {
 		slog.Warn("backfill users: indexed documents with no username — these users are unfindable by handle",
@@ -837,7 +880,7 @@ func backfillCommunities(ctx context.Context, store *search.Store, dsn string, l
 	args := []any{}
 	q := `SELECT id::text, owner_id::text, handle, name, COALESCE(description,''),
 	             community_type, COALESCE(category,''), COALESCE(topic_tags, '{}'::text[]),
-	             COALESCE(member_count,0), COALESCE(is_verified,false), created_at
+	             COALESCE(member_count,0), COALESCE(is_verified,false), created_at, status
 	      FROM communities WHERE status != 'deleted' ORDER BY created_at DESC`
 	if limit > 0 {
 		q += limitClause(limit, 1)
@@ -853,18 +896,22 @@ func backfillCommunities(ctx context.Context, store *search.Store, dsn string, l
 	for rows.Next() {
 		var d search.CommunityDoc
 		if err := rows.Scan(&d.CommunityID, &d.OwnerID, &d.Handle, &d.Name, &d.Description,
-			&d.CommunityType, &d.Category, &d.TopicTags, &d.MemberCount, &d.IsVerified, &d.CreatedAt); err != nil {
+			&d.CommunityType, &d.Category, &d.TopicTags, &d.MemberCount, &d.IsVerified, &d.CreatedAt, &d.Status); err != nil {
 			return count, err
 		}
 		if dry {
 			count++
 			continue
 		}
+		// IndexCommunity deletes a private, invite-only, suspended or
+		// archived community instead of writing it (S-M2).
 		if err := store.IndexCommunity(ctx, d); err != nil {
 			slog.Warn("backfill communities: index failed", "id", d.CommunityID, "err", err)
 			continue
 		}
-		count++
+		if search.CommunitySearchable(d) {
+			count++
+		}
 	}
 	return count, rows.Err()
 }
@@ -881,7 +928,7 @@ func backfillChannels(ctx context.Context, store *search.Store, dsn string, limi
 	args := []any{}
 	q := `SELECT id::text, owner_id::text, handle, name, COALESCE(description,''),
 	             channel_type, COALESCE(category,''), COALESCE(subscriber_count,0),
-	             COALESCE(is_verified,false), created_at
+	             COALESCE(is_verified,false), created_at, status
 	      FROM broadcast_channels WHERE status != 'deleted' ORDER BY created_at DESC`
 	if limit > 0 {
 		q += limitClause(limit, 1)
@@ -897,18 +944,22 @@ func backfillChannels(ctx context.Context, store *search.Store, dsn string, limi
 	for rows.Next() {
 		var d search.ChannelDoc
 		if err := rows.Scan(&d.ChannelID, &d.OwnerID, &d.Handle, &d.Name, &d.Description,
-			&d.ChannelType, &d.Category, &d.SubscriberCount, &d.IsVerified, &d.CreatedAt); err != nil {
+			&d.ChannelType, &d.Category, &d.SubscriberCount, &d.IsVerified, &d.CreatedAt, &d.Status); err != nil {
 			return count, err
 		}
 		if dry {
 			count++
 			continue
 		}
+		// IndexChannel deletes a non-public or non-active channel instead
+		// of writing it (S-M2).
 		if err := store.IndexChannel(ctx, d); err != nil {
 			slog.Warn("backfill channels: index failed", "id", d.ChannelID, "err", err)
 			continue
 		}
-		count++
+		if search.ChannelSearchable(d) {
+			count++
+		}
 	}
 	return count, rows.Err()
 }

@@ -77,6 +77,27 @@ const maxOrdinaryRev int64 = fenceRev - 1
 // the content is NOT indexed.
 var ErrRevisionOutOfDomain = errors.New("search: projection revision outside the ordinary domain")
 
+// ErrAuthorVisibilityUnresolved is returned for an eligible projection that
+// does not say whether its author is private or hidden. Fail closed: the
+// projection replaces the whole document, so a writer that does not know
+// would reset both flags to false and publish a private or deactivated
+// author's post (audit 2026-11-07, S-M1).
+var ErrAuthorVisibilityUnresolved = errors.New("search: eligible post projection without the author's visibility")
+
+// AuthorVisibility is the author's account state at write time. Every
+// eligible post write must carry it; ApplyPostProjection writes it over
+// the document's author_is_private and is_hidden.
+//
+// IsPrivate comes from the identity settings (privacyclient). IsHidden is
+// true when the writer knows the author is deactivated or scheduled for
+// deletion; false means "not known to be hidden", and a stored
+// is_hidden=true then survives the write. Only the lifecycle path
+// (UpdatePostsAuthorHidden) clears it.
+type AuthorVisibility struct {
+	IsPrivate bool
+	IsHidden  bool
+}
+
 // projectionRetries bounds OpenSearch's internal re-run of the script
 // when a concurrent writer wins the document lock first. Each retry
 // re-reads the current revision, so a retry cannot apply a stale write.
@@ -113,6 +134,9 @@ type PostProjection struct {
 	// erased, and a stored revision above the incoming one still wins.
 	// Ignored for removals and AutoRev writes.
 	Reproject bool
+	// Author is required on every eligible write (ErrAuthorVisibilityUnresolved).
+	// Ignored for removals.
+	Author *AuthorVisibility
 }
 
 // validate enforces the revision domain before anything is sent.
@@ -122,6 +146,9 @@ type PostProjection struct {
 // Eligible writes are strict and fail closed — refusing to index is
 // recoverable, indexing something that should have been hidden is not.
 func (p *PostProjection) validate() error {
+	if !p.Removed && p.Author == nil {
+		return fmt.Errorf("%w: post %s", ErrAuthorVisibilityUnresolved, p.PostID)
+	}
 	if p.AutoRev {
 		// The revision is computed inside OpenSearch; nothing to check.
 		return nil
@@ -150,6 +177,7 @@ if (ctx._source.containsKey('search_rev') && ctx._source.search_rev != null) {
 }
 boolean storedRemoved = ctx._source.containsKey('removed') && ctx._source.removed == true;
 boolean storedErased = ctx._source.containsKey('author_erased') && ctx._source.author_erased == true;
+boolean storedHidden = ctx._source.containsKey('is_hidden') && ctx._source.is_hidden == true;
 
 long incoming = params.rev;
 if (params.auto_rev) {
@@ -189,6 +217,12 @@ if (apply) {
     next.putAll(params.tombstone);
   } else {
     next.putAll(params.doc);
+  }
+  // The author's lifecycle hide survives every rewrite, a tombstone
+  // included, so a re-approval during the deactivation window stays
+  // hidden (S-M1). Only UpdatePostsAuthorHidden clears it.
+  if (storedHidden) {
+    next.put('is_hidden', true);
   }
   next.put('search_rev', incoming);
   // author_erased is sticky: it survives every later write to this
@@ -247,6 +281,8 @@ func (s *Store) ApplyPostProjection(ctx context.Context, p PostProjection) error
 			return fmt.Errorf("normalize post projection %s: %w", p.PostID, err)
 		}
 		docMap["removed"] = false
+		docMap["author_is_private"] = p.Author.IsPrivate
+		docMap["is_hidden"] = p.Author.IsHidden
 	}
 
 	body := map[string]any{

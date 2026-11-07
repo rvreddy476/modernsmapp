@@ -46,6 +46,7 @@ func TestOpenSearch_MissingDocumentProjectionCases(t *testing.T) {
 				Visibility: "public", ReviewStatus: "approved", SearchRev: 1,
 				CreatedAt: time.Now().UTC(),
 			},
+			Author: &search.AuthorVisibility{},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -102,7 +103,8 @@ func TestOpenSearch_MissingDocumentProjectionCases(t *testing.T) {
 
 		err := store.ApplyPostProjection(ctx, search.PostProjection{
 			PostID: id, Rev: 0,
-			Doc: search.PostDoc{PostID: id, Visibility: "public", ReviewStatus: "approved"},
+			Doc:    search.PostDoc{PostID: id, Visibility: "public", ReviewStatus: "approved"},
+			Author: &search.AuthorVisibility{},
 		})
 		if !errors.Is(err, search.ErrRevisionOutOfDomain) {
 			t.Fatalf("expected ErrRevisionOutOfDomain, got %v", err)
@@ -134,6 +136,7 @@ func TestOpenSearch_RevisionDomainBoundaryFailsClosed(t *testing.T) {
 				Visibility: "public", ReviewStatus: "approved", SearchRev: fence - 1,
 				CreatedAt: time.Now().UTC(),
 			},
+			Author: &search.AuthorVisibility{},
 		}); err != nil {
 			t.Fatalf("fenceRev-1 must be a valid ordinary revision: %v", err)
 		}
@@ -160,6 +163,7 @@ func TestOpenSearch_RevisionDomainBoundaryFailsClosed(t *testing.T) {
 					Visibility: "public", ReviewStatus: "approved", SearchRev: rev,
 					CreatedAt: time.Now().UTC(),
 				},
+				Author: &search.AuthorVisibility{},
 			})
 			if err == nil {
 				t.Fatalf("revision %d was accepted for an eligible write", rev)
@@ -257,6 +261,7 @@ func TestOpenSearch_ErasedMarkerRejectsNumericallyNewerApprovals(t *testing.T) {
 			Visibility: "public", ReviewStatus: "approved", SearchRev: 10,
 			CreatedAt: time.Now().UTC(),
 		},
+		Author: &search.AuthorVisibility{},
 	}); err != nil {
 		t.Fatalf("the write should be accepted by Go and rejected by the script: %v", err)
 	}
@@ -297,6 +302,7 @@ func TestOpenSearch_ErasedMarkerRejectsNumericallyNewerApprovals(t *testing.T) {
 			Visibility: "public", ReviewStatus: "approved", SearchRev: 30,
 			CreatedAt: time.Now().UTC(),
 		},
+		Author: &search.AuthorVisibility{},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -337,6 +343,7 @@ func TestOpenSearch_ConcurrentWriterCannotSurviveAuthorErasure(t *testing.T) {
 				Visibility: "public", ReviewStatus: "approved", SearchRev: 1,
 				CreatedAt: time.Now().UTC(),
 			},
+			Author: &search.AuthorVisibility{},
 		}); err != nil {
 			t.Fatalf("iteration %d seed: %v", i, err)
 		}
@@ -353,6 +360,7 @@ func TestOpenSearch_ConcurrentWriterCannotSurviveAuthorErasure(t *testing.T) {
 					Visibility: "public", ReviewStatus: "approved", SearchRev: 1,
 					CreatedAt: time.Now().UTC(),
 				},
+				Author: &search.AuthorVisibility{},
 			})
 		}()
 		go func() {
@@ -406,6 +414,7 @@ func TestOpenSearch_SweepSurvivesConcurrentProjectionChurn(t *testing.T) {
 				Visibility: "public", ReviewStatus: "approved", SearchRev: 1,
 				CreatedAt: time.Now().UTC(),
 			},
+			Author: &search.AuthorVisibility{},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -440,6 +449,7 @@ func TestOpenSearch_SweepSurvivesConcurrentProjectionChurn(t *testing.T) {
 						Visibility: "public", ReviewStatus: "approved", SearchRev: rev,
 						CreatedAt: time.Now().UTC(),
 					},
+					Author: &search.AuthorVisibility{},
 				})
 			}
 			rev++

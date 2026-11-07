@@ -87,28 +87,27 @@ func (c *Consumer) applySearchEligibility(ctx context.Context, p events.PostSear
 	// posts that were not; and the recheck inside this helper covers an
 	// erasure that lands while this very write is in flight.
 	// The projection script replaces the whole _source, so the author's
-	// current account_visibility must ride along or a re-approval would
-	// reset a private author's post to public.
+	// current account_visibility must ride along (PostProjection.Author) or
+	// a re-approval would reset a private author's post to public.
 	authorPrivate, err := c.authorIsPrivate(ctx, p.AuthorID)
 	if err != nil {
 		return err
 	}
 	doc := search.PostDoc{
-		PostID:          p.PostID,
-		AuthorID:        p.AuthorID,
-		AuthorIsPrivate: authorPrivate,
-		Text:            p.Text,
-		Hashtags:        extractHashtags(p.Text),
-		Visibility:      p.Visibility,
-		ReviewStatus:    p.ReviewStatus,
-		SearchRev:       p.SearchRev,
-		PostType:        p.ContentType,
-		ContentType:     p.ContentType,
-		CreatedAt:       p.CreatedAt,
-		Title:           p.Title,
-		DurationMs:      p.DurationMs,
-		MediaID:         firstMediaID(p.Media),
-		MediaKind:       firstMediaKind(p.Media),
+		PostID:       p.PostID,
+		AuthorID:     p.AuthorID,
+		Text:         p.Text,
+		Hashtags:     extractHashtags(p.Text),
+		Visibility:   p.Visibility,
+		ReviewStatus: p.ReviewStatus,
+		SearchRev:    p.SearchRev,
+		PostType:     p.ContentType,
+		ContentType:  p.ContentType,
+		CreatedAt:    p.CreatedAt,
+		Title:        p.Title,
+		DurationMs:   p.DurationMs,
+		MediaID:      firstMediaID(p.Media),
+		MediaKind:    firstMediaKind(p.Media),
 		// MTube filters, as on PostCreated (consumer.go).
 		Height:       p.Height,
 		HasSubtitles: p.HasSubtitles,
@@ -121,6 +120,7 @@ func (c *Consumer) applySearchEligibility(ctx context.Context, p events.PostSear
 		PostID: p.PostID,
 		Rev:    p.SearchRev,
 		Doc:    doc,
+		Author: &search.AuthorVisibility{IsPrivate: authorPrivate},
 	}); err != nil {
 		return fmt.Errorf("eligibility: index %s: %w", p.PostID, err)
 	}

@@ -46,6 +46,14 @@ func main() {
 	// production an https URL without credentials refuses to start: the
 	// domain would 401 every write and the index would silently stay empty.
 	production := search.IsProductionEnv()
+	// X-L1 (audit 2026-11-07): every handler reads the actor from X-User-Id,
+	// and only the internal key proves the caller is the gateway. Without it
+	// any pod that can reach this service can act as anyone, so production
+	// refuses to boot (group-service does the same).
+	if err := requireInternalKey(os.Getenv("INTERNAL_SERVICE_KEY"), production); err != nil {
+		slog.Error("refusing to start", "error", err)
+		os.Exit(1)
+	}
 	osCfg, err := search.ConfigFromEnv(nil, production)
 	if err != nil {
 		slog.Error("opensearch configuration rejected", "error", err)

@@ -105,6 +105,7 @@ func TestChannelSearch_ExcludesPrivateChannels(t *testing.T) {
 			"handle":       "riders_public",
 			"name":         "Riders",
 			"channel_type": public,
+			"status":       StatusActive,
 		}
 		if !docPassesFilter(t, clauses, doc) {
 			t.Fatalf("a channel_type=%q document is no longer returned by channel search", public)
@@ -115,6 +116,18 @@ func TestChannelSearch_ExcludesPrivateChannels(t *testing.T) {
 	// check; it must fail closed rather than leak.
 	if docPassesFilter(t, clauses, map[string]any{"channel_id": "c3", "name": "Riders"}) {
 		t.Fatal("a channel document with no channel_type must not be returned (fail closed)")
+	}
+
+	// S-M2: a suspended (or archived) public channel, and one written before
+	// status existed, are not returned either.
+	for _, status := range []string{"suspended", "archived", ""} {
+		doc := map[string]any{"channel_id": "c4", "name": "Riders", "channel_type": "public"}
+		if status != "" {
+			doc["status"] = status
+		}
+		if docPassesFilter(t, clauses, doc) {
+			t.Fatalf("a public channel with status %q is returned by channel search", status)
+		}
 	}
 }
 
@@ -137,6 +150,8 @@ func TestPublicChannelTypesMatchDiscover(t *testing.T) {
 // Fixing channels must not have disturbed the other entities: posts keep
 // their public+approved filter, and the entities that never had one still
 // do not (adding one to users/hashtags would silently empty those results).
+// Communities left this list on 2026-11-07 (S-M2): they now have their own
+// filter, pinned by TestCommunitySearch_OnlyPublicActiveCommunities.
 func TestOtherEntityFiltersUnchanged(t *testing.T) {
 	posts := boolFilterOf(t, buildFunctionScoreQuery(EntityPosts, "x", RankedSearchOptions{Limit: 10}))
 	if len(posts) != 2 {
@@ -149,9 +164,65 @@ func TestOtherEntityFiltersUnchanged(t *testing.T) {
 		t.Fatal("a public approved post no longer passes the posts filter")
 	}
 
-	for _, entity := range []string{EntityUsers, EntityHashtags, EntityProducts, EntityCommunities} {
+	for _, entity := range []string{EntityUsers, EntityHashtags, EntityProducts} {
 		if clauses := boolFilterOf(t, buildFunctionScoreQuery(entity, "x", RankedSearchOptions{Limit: 10})); len(clauses) != 0 {
 			t.Fatalf("entity %q unexpectedly gained a filter: %v", entity, clauses)
+		}
+	}
+}
+
+// S-M2: private and invite-only communities, and suspended or archived
+// ones, are not returned by the ranked search; a document without a type
+// or a status fails closed.
+func TestCommunitySearch_OnlyPublicActiveCommunities(t *testing.T) {
+	clauses := boolFilterOf(t, buildFunctionScoreQuery(EntityCommunities, "riders", RankedSearchOptions{Limit: 20}))
+	if len(clauses) == 0 {
+		t.Fatal("community search carries NO filter: a private community's name, handle and owner leak")
+	}
+	for _, typ := range []string{"public", "education", "professional"} {
+		if !docPassesFilter(t, clauses, map[string]any{"community_type": typ, "status": StatusActive}) {
+			t.Fatalf("an active %q community is no longer returned", typ)
+		}
+	}
+	for _, doc := range []map[string]any{
+		{"community_type": "private", "status": StatusActive},
+		{"community_type": "invite", "status": StatusActive},
+		{"community_type": "public", "status": "suspended"},
+		{"community_type": "public", "status": "archived"},
+		{"community_type": "public"},
+		{"status": StatusActive},
+	} {
+		if docPassesFilter(t, clauses, doc) {
+			t.Fatalf("community %v is returned by community search", doc)
+		}
+	}
+}
+
+// The index-time half: what may be written at all.
+func TestCommunityAndChannelSearchable(t *testing.T) {
+	if !CommunitySearchable(CommunityDoc{CommunityType: "public", Status: StatusActive}) {
+		t.Fatal("an active public community must be indexable")
+	}
+	for _, d := range []CommunityDoc{
+		{CommunityType: "private", Status: StatusActive},
+		{CommunityType: "invite", Status: StatusActive},
+		{CommunityType: "public", Status: "suspended"},
+		{CommunityType: "public"},
+	} {
+		if CommunitySearchable(d) {
+			t.Fatalf("community %+v must be deleted, not indexed", d)
+		}
+	}
+	if !ChannelSearchable(ChannelDoc{ChannelType: "public", Status: StatusActive}) {
+		t.Fatal("an active public channel must be indexable")
+	}
+	for _, d := range []ChannelDoc{
+		{ChannelType: "private", Status: StatusActive},
+		{ChannelType: "public", Status: "suspended"},
+		{ChannelType: "public"},
+	} {
+		if ChannelSearchable(d) {
+			t.Fatalf("channel %+v must be deleted, not indexed", d)
 		}
 	}
 }

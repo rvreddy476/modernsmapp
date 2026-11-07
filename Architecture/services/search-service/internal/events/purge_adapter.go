@@ -19,6 +19,11 @@ type searchEraser interface {
 	UpdatePostsAuthorHidden(ctx context.Context, authorID string, hidden bool) error
 	// DeleteChatMessagesBySender erases the user's chat_messages_v1 rows (chat.go).
 	DeleteChatMessagesBySender(ctx context.Context, senderID string) error
+	// UpdateOwnerTubeHidden and DeleteOwnerEntityDocs cover what the person
+	// owns beyond users and posts: their Tube channel and playlists, and
+	// their broadcast channels and communities (owner_lifecycle.go, S-M3).
+	UpdateOwnerTubeHidden(ctx context.Context, ownerID string, hidden bool) error
+	DeleteOwnerEntityDocs(ctx context.Context, ownerID string) error
 }
 
 // pgEraser is satisfied by both *postgres.AnalyticsStore and
@@ -62,7 +67,8 @@ func NewPurgeStore(s *search.Store, analytics *postgres.AnalyticsStore, extras *
 
 // PurgeUser erases every row/doc keyed by userID: the author's posts
 // (behind the permanent revision fence — see authorfence.go), the user
-// document, and — when wired — the user's saved searches, search history,
+// document, their Tube channel, playlists, broadcast channels and
+// communities, and — when wired — the user's saved searches, search history,
 // and analytics rows. Idempotent: a second call finds nothing left to
 // erase in any of these stores and returns nil, which is required because
 // auth-service re-emits user.purge_requested every 24h until it sees our
@@ -82,6 +88,10 @@ func (p *PurgeStore) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 	if err := p.search.DeleteChatMessagesBySender(ctx, id); err != nil {
 		return fmt.Errorf("purge: chat messages %s: %w", id, err)
 	}
+	// Their Tube channel carries their name, handle, bio and avatar.
+	if err := p.search.DeleteOwnerEntityDocs(ctx, id); err != nil {
+		return fmt.Errorf("purge: owned channels, playlists and communities %s: %w", id, err)
+	}
 	if p.extras != nil {
 		if err := p.extras.PurgeUser(ctx, userID); err != nil {
 			return fmt.Errorf("purge: extras (saved searches / history) %s: %w", id, err)
@@ -97,7 +107,8 @@ func (p *PurgeStore) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 
 // SetUserHidden implements unconditional hide/unhide (deactivate,
 // scheduled-deletion, reactivate, deletion-cancelled): the user document
-// and every post by them get is_hidden flipped, which the query-time
+// every post by them, and their Tube channel and playlists get is_hidden
+// flipped, which the query-time
 // must_not (blockfilter.go) then keeps out of every search surface for
 // every viewer.
 func (p *PurgeStore) SetUserHidden(ctx context.Context, userID uuid.UUID, hidden bool, reason string) error {
@@ -107,6 +118,9 @@ func (p *PurgeStore) SetUserHidden(ctx context.Context, userID uuid.UUID, hidden
 	}
 	if err := p.search.UpdatePostsAuthorHidden(ctx, id, hidden); err != nil {
 		return fmt.Errorf("purge: set posts author hidden=%v %s (%s): %w", hidden, id, reason, err)
+	}
+	if err := p.search.UpdateOwnerTubeHidden(ctx, id, hidden); err != nil {
+		return fmt.Errorf("purge: set tube channel and playlists hidden=%v %s (%s): %w", hidden, id, reason, err)
 	}
 	return nil
 }

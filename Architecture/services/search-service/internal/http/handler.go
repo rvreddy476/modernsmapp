@@ -134,7 +134,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("", h.UniversalSearch)
 		v1.GET("/users", h.SearchUsers)
 		v1.GET("/posts", h.SearchPosts)
-		v1.POST("/users/bulk-sync", h.BulkSyncUsers)
 		v1.GET("/hashtags", h.SearchHashtags)
 		v1.GET("/autocomplete", h.Autocomplete)
 		v1.POST("/click", h.RecordClick)
@@ -150,8 +149,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// The filter rail beside the product results. A static sibling of
 		// /products, not a child of a param, so there is no route conflict.
 		v1.GET("/products/facets", h.ProductFacets)
-		v1.GET("/events", h.SearchEvents)
-		v1.GET("/messages", h.SearchMessages)
 
 		// MTube (2026-09-27, handler_tube.go): Tube channels (post-service
 		// `channels`, not the broadcast channels_v1 entity) and public
@@ -209,25 +206,6 @@ func (h *Handler) SearchUsers(c *gin.Context) {
 	h.recordHistory(c, query, false)
 
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": h.userResults(c.Request.Context(), viewerFrom(c), results)}, nil)
-}
-
-func (h *Handler) BulkSyncUsers(c *gin.Context) {
-	var req struct {
-		Users []search.UserDoc `json:"users"`
-	}
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
-		return
-	}
-
-	count, err := h.store.BulkIndexUsers(c.Request.Context(), req.Users)
-	if err != nil {
-		slog.Error("BulkSyncUsers error", "error", err)
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Bulk sync failed", nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"indexed": count}, nil)
 }
 
 // SearchPosts handles GET /v1/search/posts?q=&type=&limit=.
@@ -878,75 +856,6 @@ func (h *Handler) SearchProducts(c *gin.Context) {
 	if err != nil {
 		slog.Error("SearchProducts error", "error", err)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Product search failed", nil)
-		return
-	}
-	if results == nil {
-		results = []map[string]any{}
-	}
-	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": results}, nil)
-}
-
-// SearchEvents handles GET /v1/search/events
-// Query params: q (required), limit (default: 20)
-func (h *Handler) SearchEvents(c *gin.Context) {
-	query := c.Query("q")
-	if errMsg := validateSearchQuery(query); errMsg != "" {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil)
-		return
-	}
-
-	limit := 20
-	if l := c.Query("limit"); l != "" {
-		if val, err := strconv.Atoi(l); err == nil && val > 0 && val <= 100 {
-			limit = val
-		}
-	}
-
-	results, err := h.store.SearchEvents(c.Request.Context(), query, limit)
-	if err != nil {
-		slog.Error("SearchEvents error", "error", err)
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Event search failed", nil)
-		return
-	}
-	h.recordHistory(c, query, false) // opt-in (?record=1)
-	if results == nil {
-		results = []map[string]any{}
-	}
-	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": results}, nil)
-}
-
-// SearchMessages handles GET /v1/search/messages
-// Query params: q (required), conv_id (optional), limit (default: 20)
-// Requires X-User-Id header.
-//
-// Legacy: behaviour unchanged, but this is NOT the chat search surface.
-// Chat search goes through message-service (GET /v1/chat/search), which
-// calls the internal GET /internal/v1/search/chat-messages
-// (handler_chat.go) and re-checks membership and clear/hide cut-offs.
-func (h *Handler) SearchMessages(c *gin.Context) {
-	userID, ok := requireUserID(c)
-	if !ok {
-		return
-	}
-
-	query := c.Query("q")
-	if errMsg := validateSearchQuery(query); errMsg != "" {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", errMsg, nil)
-		return
-	}
-
-	convID := c.Query("conv_id")
-	limit := 20
-	if l := c.Query("limit"); l != "" {
-		if val, err := strconv.Atoi(l); err == nil && val > 0 && val <= 100 {
-			limit = val
-		}
-	}
-
-	results, err := h.store.SearchMessages(c.Request.Context(), userID.String(), convID, query, limit)
-	if err != nil {
-		slog.Error("SearchMessages error", "error", err)
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Message search failed", nil)
 		return
 	}
 	if results == nil {

@@ -37,7 +37,7 @@ func TestProjectionValidate_RejectsEligibleWritesOutsideTheDomain(t *testing.T) 
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			p := PostProjection{PostID: "p1", Rev: tc.rev, Doc: PostDoc{PostID: "p1"}}
+			p := PostProjection{PostID: "p1", Rev: tc.rev, Doc: PostDoc{PostID: "p1"}, Author: &AuthorVisibility{}}
 			err := p.validate()
 			if err == nil {
 				t.Fatalf("revision %d was accepted for an eligible write; a value in the "+
@@ -52,7 +52,7 @@ func TestProjectionValidate_RejectsEligibleWritesOutsideTheDomain(t *testing.T) 
 
 func TestProjectionValidate_AcceptsTheOrdinaryDomain(t *testing.T) {
 	for _, rev := range []int64{1, 2, 1000, maxOrdinaryRev} {
-		p := PostProjection{PostID: "p1", Rev: rev, Doc: PostDoc{PostID: "p1"}}
+		p := PostProjection{PostID: "p1", Rev: rev, Doc: PostDoc{PostID: "p1"}, Author: &AuthorVisibility{}}
 		if err := p.validate(); err != nil {
 			t.Errorf("ordinary revision %d rejected: %v", rev, err)
 		}
@@ -133,6 +133,7 @@ func TestApplyPostProjection_RefusesOutOfDomainBeforeSendingAnything(t *testing.
 		PostID: "p1",
 		Rev:    fenceRev + 1, // reserved for permanent erasure
 		Doc:    PostDoc{PostID: "p1", Visibility: "public", ReviewStatus: "approved"},
+		Author: &AuthorVisibility{},
 	})
 	if !errors.Is(err, ErrRevisionOutOfDomain) {
 		t.Fatalf("expected ErrRevisionOutOfDomain, got %v", err)
@@ -146,7 +147,8 @@ func TestApplyPostProjection_RefusesOutOfDomainBeforeSendingAnything(t *testing.
 	// because nothing ever sends.
 	if err := store.ApplyPostProjection(context.Background(), PostProjection{
 		PostID: "p1", Rev: 1,
-		Doc: PostDoc{PostID: "p1", Visibility: "public", ReviewStatus: "approved"},
+		Doc:    PostDoc{PostID: "p1", Visibility: "public", ReviewStatus: "approved"},
+		Author: &AuthorVisibility{},
 	}); err != nil {
 		t.Fatalf("a valid projection was refused: %v", err)
 	}

@@ -123,33 +123,10 @@ func (s *Store) initIndices() {
 		}
 	}`)
 
-	// Events index
-	s.createIndexIfNotExists(ctx, "events_v1", `{
-		"settings": `+settings+`,
-		"mappings": {
-			"properties": {
-				"event_id":     { "type": "keyword" },
-				"title":        { "type": "text" },
-				"description":  { "type": "text" },
-				"starts_at":    { "type": "date" },
-				"status":       { "type": "keyword" }
-			}
-		}
-	}`)
-
-	// Messages index (search within chat)
-	s.createIndexIfNotExists(ctx, "messages_v1", `{
-		"settings": `+settings+`,
-		"mappings": {
-			"properties": {
-				"message_id":       { "type": "keyword" },
-				"conversation_id":  { "type": "keyword" },
-				"sender_id":        { "type": "keyword" },
-				"text":             { "type": "text", "analyzer": "english" },
-				"ts":               { "type": "date" }
-			}
-		}
-	}`)
+	// events_v1 and messages_v1 are no longer created (audit 2026-11-07,
+	// S-L1): nothing wrote either, and their two routes are gone. An
+	// existing cluster keeps the empty indices until an operator drops
+	// them. Chat search is chat_messages_v1 (chat_messages.go).
 
 	// products_v2 + the `products` alias. Created BEFORE initEntityIndices
 	// because everything below names the alias (IndexProducts), and a
@@ -457,6 +434,9 @@ type CommunityDoc struct {
 	IsVerified      bool      `json:"is_verified"`
 	EngagementScore float64   `json:"engagement_score"`
 	CreatedAt       time.Time `json:"created_at"`
+	// Status is community-service's status; only active is searchable
+	// (entity_visibility.go).
+	Status string `json:"status"`
 }
 
 // ChannelDoc represents one broadcast channel in channels_v1.
@@ -472,6 +452,9 @@ type ChannelDoc struct {
 	IsVerified      bool      `json:"is_verified"`
 	EngagementScore float64   `json:"engagement_score"`
 	CreatedAt       time.Time `json:"created_at"`
+	// Status is channel-service's status; only active is searchable
+	// (entity_visibility.go).
+	Status string `json:"status"`
 }
 
 // ProductDoc represents one product in products_v1. The original
@@ -499,28 +482,12 @@ type UniversalSearchResult struct {
 	Posts []PostDoc `json:"posts"`
 }
 
-// IndexUser
+// IndexUser rewrites one user document. It goes through the same
+// keep-hidden upsert as BulkIndexUsers (bulk.go), so a profile event never
+// brings a deactivated account back. No forced refresh (audit HS1): the
+// index refresh_interval surfaces the write within seconds.
 func (s *Store) IndexUser(ctx context.Context, doc UserDoc) error {
-	data, _ := json.Marshal(doc)
-	req := opensearchapi.IndexRequest{
-		Index:      "users_v1",
-		DocumentID: doc.UserID,
-		Body:       bytes.NewReader(data),
-		// Audit HS1: dropped Refresh: "true". Forcing a refresh on every
-		// write blocked the post-create / user-update path on
-		// OpenSearch's refresh cycle and starved the indexer. The
-		// index-level refresh_interval (set in createIndexIfNotExists)
-		// surfaces new docs within a few seconds — fine for search.
-	}
-	res, err := req.Do(ctx, s.client)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return fmt.Errorf("indexing error: %s", res.String())
-	}
-	return nil
+	return s.upsertKeepingHidden(ctx, IndexUsers, doc.UserID, doc)
 }
 
 // IndexPost
@@ -550,86 +517,13 @@ func (s *Store) IndexPost(ctx context.Context, doc PostDoc) error {
 // rejecting the body for size.
 const bulkChunkSize = 500
 
-// BulkIndexUsers indexes multiple users. Chunks at bulkChunkSize so a
-// large slice doesn't pin a multi-MB buffer in memory or risk OpenSearch
-// payload-size rejections. Returns the total successfully-indexed count
-// across all chunks; a chunk failure aborts the remaining chunks (the
-// returned count covers what landed before the failure).
+// BulkIndexUsers rewrites many user documents: chunked, every id checked
+// as a UUID and every action line marshalled (bulk.go), and a stored
+// is_hidden kept. Returns how many OpenSearch accepted; a chunk failure
+// stops the run and the count covers what landed before it.
 func (s *Store) BulkIndexUsers(ctx context.Context, docs []UserDoc) (int, error) {
-	if len(docs) == 0 {
-		return 0, nil
-	}
-	if len(docs) > bulkChunkSize {
-		total := 0
-		for i := 0; i < len(docs); i += bulkChunkSize {
-			end := i + bulkChunkSize
-			if end > len(docs) {
-				end = len(docs)
-			}
-			n, err := s.BulkIndexUsers(ctx, docs[i:end])
-			total += n
-			if err != nil {
-				return total, err
-			}
-		}
-		return total, nil
-	}
-
-	var buf bytes.Buffer
-	for _, doc := range docs {
-		meta := fmt.Sprintf(`{"index":{"_index":"users_v1","_id":"%s"}}`, doc.UserID)
-		buf.WriteString(meta)
-		buf.WriteByte('\n')
-		data, _ := json.Marshal(doc)
-		buf.Write(data)
-		buf.WriteByte('\n')
-	}
-
-	res, err := s.client.Bulk(
-		bytes.NewReader(buf.Bytes()),
-		s.client.Bulk.WithContext(ctx),
-		// Audit HS1: previously WithRefresh("true") — see IndexUser comment.
-	)
-	if err != nil {
-		return 0, err
-	}
-	defer res.Body.Close()
-
-	if res.IsError() {
-		return 0, fmt.Errorf("bulk index error: %s", res.String())
-	}
-
-	// Audit HS8: parse the per-doc bulk response so partial failures
-	// don't silently inflate the success count. OpenSearch returns
-	// HTTP 200 even when some items 4xx/5xx individually.
-	var bulkResp struct {
-		Errors bool `json:"errors"`
-		Items  []map[string]struct {
-			Status int    `json:"status"`
-			Error  any    `json:"error,omitempty"`
-			ID     string `json:"_id"`
-		} `json:"items"`
-	}
-	if err := json.NewDecoder(res.Body).Decode(&bulkResp); err != nil {
-		// Body parse failed but HTTP was 200 — fall back to assume
-		// success, but log so ops sees the visibility gap.
-		slog.Warn("search: bulk index response unparseable, assuming success", "error", err, "count", len(docs))
-		return len(docs), nil
-	}
-	if !bulkResp.Errors {
-		return len(docs), nil
-	}
-	succeeded := 0
-	for _, item := range bulkResp.Items {
-		for op, st := range item {
-			if st.Status >= 200 && st.Status < 300 {
-				succeeded++
-			} else {
-				slog.Warn("search: bulk doc failed", "op", op, "id", st.ID, "status", st.Status, "error", st.Error)
-			}
-		}
-	}
-	return succeeded, nil
+	ids, anys := toAnySlice(docs, func(d UserDoc) string { return d.UserID })
+	return s.bulkWrite(ctx, IndexUsers, ids, anys, buildBulkKeepHiddenBody)
 }
 
 // CountUsers returns the number of documents in users_v1. Used by the
@@ -1351,14 +1245,20 @@ func (s *Store) UpdatePostsAuthorPrivacy(ctx context.Context, authorID string, i
 }
 
 // UpdateUserHidden flips is_hidden on one users_v1 document. Account
-// control (auth-service deactivate / 30-day scheduled deletion): a missing
-// document is not an error — nothing is indexed for a user who never wrote
-// content, and unhide on a still-missing document is a no-op.
+// control (auth-service deactivate / 30-day scheduled deletion).
+//
+// Hiding a user who has no document yet writes a hidden stub, so a later
+// profile event or reindex (which keeps a stored is_hidden, bulk.go) cannot
+// create them visible. Unhiding a missing document is a no-op.
 func (s *Store) UpdateUserHidden(ctx context.Context, userID string, hidden bool) error {
 	if userID == "" {
 		return nil
 	}
-	body, _ := json.Marshal(map[string]any{"doc": map[string]any{"is_hidden": hidden}})
+	update := map[string]any{"doc": map[string]any{"is_hidden": hidden}}
+	if hidden {
+		update["upsert"] = map[string]any{"user_id": userID, "is_hidden": true}
+	}
+	body, _ := json.Marshal(update)
 	req := opensearchapi.UpdateRequest{
 		Index:      IndexUsers,
 		DocumentID: userID,
@@ -1377,9 +1277,12 @@ func (s *Store) UpdateUserHidden(ctx context.Context, userID string, hidden bool
 
 // UpdatePostsAuthorHidden rewrites is_hidden on EVERY posts_v1 document by
 // the author in one update_by_query, mirroring UpdatePostsAuthorPrivacy.
-// Conflicts proceed: a post re-indexed concurrently already carries the
-// fresh flag from its own lookup, so losing the race on that one document
-// is not a loss.
+//
+// The index is refreshed first, because _update_by_query sees only
+// refreshed documents (authorfence.go): a post written within the refresh
+// interval would otherwise stay visible. A version conflict fails the call
+// so the lifecycle event is redelivered: the conflicting writer read the
+// old flag, so the document it wrote may not carry the new one (2026-11-07).
 func (s *Store) UpdatePostsAuthorHidden(ctx context.Context, authorID string, hidden bool) error {
 	if authorID == "" {
 		return fmt.Errorf("update posts author hidden: empty author id")
@@ -1392,18 +1295,21 @@ func (s *Store) UpdatePostsAuthorHidden(ctx context.Context, authorID string, hi
 			"params": map[string]any{"v": hidden},
 		},
 	})
+	if err := s.RefreshPosts(ctx); err != nil {
+		return err
+	}
 	req := opensearchapi.UpdateByQueryRequest{
 		Index:     []string{IndexPosts},
 		Body:      bytes.NewReader(body),
 		Conflicts: "proceed",
 	}
-	res, err := req.Do(ctx, s.client)
+	out, _, err := s.doLifecycleQuery(ctx, req)
 	if err != nil {
-		return err
+		return fmt.Errorf("opensearch update_by_query author hidden error: %w", err)
 	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return fmt.Errorf("opensearch update_by_query author hidden error: %s", res.String())
+	if out.incomplete() {
+		return fmt.Errorf("update posts author %s hidden=%v: %d conflicts, %d failures, timed out %v; will retry",
+			authorID, hidden, out.VersionConflicts, len(out.Failures), out.TimedOut)
 	}
 	return nil
 }
@@ -1598,6 +1504,8 @@ func (s *Store) autocompleteCommunities(ctx context.Context, prefix string, limi
 					map[string]any{"match_phrase_prefix": map[string]any{"name": prefix}},
 				},
 				"minimum_should_match": 1,
+				// The same rule as the ranked search (S-M2, entity_visibility.go).
+				"filter": publicCommunityFilterAny(),
 			},
 		},
 		"sort":    []any{map[string]any{"engagement_score": map[string]any{"order": "desc"}}},
@@ -1718,46 +1626,6 @@ func (s *Store) IndexProduct(ctx context.Context, doc map[string]any) error {
 	return nil
 }
 
-// IndexEvent indexes an event document into events_v1.
-func (s *Store) IndexEvent(ctx context.Context, doc map[string]any) error {
-	id, _ := doc["event_id"].(string)
-	data, _ := json.Marshal(doc)
-	req := opensearchapi.IndexRequest{
-		Index:      "events_v1",
-		DocumentID: id,
-		Body:       bytes.NewReader(data),
-	}
-	res, err := req.Do(ctx, s.client)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return fmt.Errorf("index event error: %s", res.String())
-	}
-	return nil
-}
-
-// IndexMessage indexes a message document into messages_v1.
-func (s *Store) IndexMessage(ctx context.Context, doc map[string]any) error {
-	id, _ := doc["message_id"].(string)
-	data, _ := json.Marshal(doc)
-	req := opensearchapi.IndexRequest{
-		Index:      "messages_v1",
-		DocumentID: id,
-		Body:       bytes.NewReader(data),
-	}
-	res, err := req.Do(ctx, s.client)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return fmt.Errorf("index message error: %s", res.String())
-	}
-	return nil
-}
-
 // SearchProducts searches products by query text with optional category
 // filter and sort. Response shape is unchanged — raw _source maps, as it
 // has always returned.
@@ -1874,23 +1742,6 @@ func productSortClause(sortBy string) []interface{} {
 	}
 }
 
-// SearchEvents searches events by query text.
-func (s *Store) SearchEvents(ctx context.Context, query string, limit int) ([]map[string]any, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
-	q := map[string]interface{}{
-		"size": limit,
-		"query": map[string]interface{}{
-			"multi_match": map[string]interface{}{
-				"query":  query,
-				"fields": []string{"title^2", "description"},
-			},
-		},
-	}
-	return s.execGenericSearch(ctx, "events_v1", q)
-}
-
 // --- New-entity index/delete methods --------------------------------------
 
 // IndexHashtag upserts a hashtag document keyed by the lowercase tag.
@@ -1904,21 +1755,7 @@ func (s *Store) IndexHashtag(ctx context.Context, doc HashtagDoc) error {
 	return s.indexDoc(ctx, IndexHashtags, doc.Hashtag, doc)
 }
 
-// IndexCommunity upserts a community document keyed by community_id.
-func (s *Store) IndexCommunity(ctx context.Context, doc CommunityDoc) error {
-	if doc.EngagementScore == 0 {
-		doc.EngagementScore = computeEngagementScore(EntityCommunities, engagementCounters{Members: doc.MemberCount})
-	}
-	return s.indexDoc(ctx, IndexCommunities, doc.CommunityID, doc)
-}
-
-// IndexChannel upserts a channel document keyed by channel_id.
-func (s *Store) IndexChannel(ctx context.Context, doc ChannelDoc) error {
-	if doc.EngagementScore == 0 {
-		doc.EngagementScore = computeEngagementScore(EntityChannels, engagementCounters{Subscribers: doc.SubscriberCount})
-	}
-	return s.indexDoc(ctx, IndexChannels, doc.ChannelID, doc)
-}
+// IndexCommunity and IndexChannel: entity_visibility.go.
 
 // IndexProductDoc upserts a typed ProductDoc (the original IndexProduct
 // stays for legacy map[string]any callers).
@@ -2059,43 +1896,6 @@ func (s *Store) PurgeLegacyHashtagIndex(ctx context.Context) (int, error) {
 	return parsed.Deleted, nil
 }
 
-// IncrementHashtagUse increments a hashtag's use_count by 1 and its
-// engagement_score by 1 (same formula). Upserts a baseline doc if the
-// tag isn't yet known.
-func (s *Store) IncrementHashtagUse(ctx context.Context, hashtag string) error {
-	hashtag = strings.ToLower(strings.TrimSpace(hashtag))
-	if hashtag == "" {
-		return nil
-	}
-	body := map[string]any{
-		"script": map[string]any{
-			"source": "ctx._source.use_count = (ctx._source.use_count == null ? 0 : ctx._source.use_count) + 1; ctx._source.engagement_score = (ctx._source.engagement_score == null ? 0 : ctx._source.engagement_score) + 1; if (ctx._source.hashtag == null) { ctx._source.hashtag = params.h; ctx._source.hashtag_search = params.h; }",
-			"params": map[string]any{"h": hashtag},
-		},
-		"upsert": map[string]any{
-			"hashtag":          hashtag,
-			"hashtag_search":   hashtag,
-			"use_count":        1,
-			"engagement_score": 1,
-		},
-	}
-	data, _ := json.Marshal(body)
-	req := opensearchapi.UpdateRequest{
-		Index:      IndexHashtags,
-		DocumentID: hashtag,
-		Body:       bytes.NewReader(data),
-	}
-	res, err := req.Do(ctx, s.client)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() {
-		return fmt.Errorf("hashtag increment %s: %s", hashtag, res.String())
-	}
-	return nil
-}
-
 // --- Ranked / personalized search -----------------------------------------
 
 // RankedSearchOptions configures a function_score search.
@@ -2185,6 +1985,8 @@ func buildFunctionScoreQuery(entity, q string, opts RankedSearchOptions) map[str
 				"fields": []string{"name^3", "handle^2", "description", "topic_tags^2", "category"},
 			},
 		}
+		// Only public types and active status (S-M2, entity_visibility.go).
+		filter = append(filter, publicCommunityFilterAny()...)
 		affinityField = "owner_id"
 	case EntityChannels:
 		inner = map[string]any{
@@ -2198,6 +2000,7 @@ func buildFunctionScoreQuery(entity, q string, opts RankedSearchOptions) map[str
 		// filters to this set in SQL; search had no filter at all, so a
 		// private community was findable by name.
 		filter = append(filter, publicChannelFilterAny()...)
+		filter = append(filter, activeStatusFilter()) // suspended channels too (S-M2)
 		affinityField = "owner_id"
 	default:
 		inner = map[string]any{"match_all": map[string]any{}}
@@ -2325,49 +2128,4 @@ func (s *Store) rankedHashtagSearch(ctx context.Context, q string, opts RankedSe
 	// The aggregation returns the top N in one shot; there is no stable
 	// deep-paging cursor for it, so no next cursor is advertised.
 	return &RankedSearchResult{Items: items}, nil
-}
-
-// SearchMessages searches messages within an optional conversation for the given user.
-// SearchMessages is the legacy messages_v1 lookup behind the public
-// GET /v1/search/messages. Nothing writes messages_v1, and it only matches
-// the caller's own messages. It is NOT the chat search surface: chat search
-// goes through message-service (GET /v1/chat/search), which queries
-// chat_messages_v1 via SearchChatMessages (chat_messages.go) and re-checks
-// membership. Kept unchanged for any old client.
-func (s *Store) SearchMessages(ctx context.Context, userID, convID, query string, limit int) ([]map[string]any, error) {
-	if limit <= 0 || limit > 100 {
-		limit = 20
-	}
-
-	filters := []interface{}{
-		map[string]interface{}{
-			"bool": map[string]interface{}{
-				"should": []interface{}{
-					map[string]interface{}{"term": map[string]interface{}{"sender_id": userID}},
-				},
-				"minimum_should_match": 1,
-			},
-		},
-	}
-	if convID != "" {
-		filters = append(filters, map[string]interface{}{
-			"term": map[string]interface{}{"conversation_id": convID},
-		})
-	}
-
-	q := map[string]interface{}{
-		"size": limit,
-		"query": map[string]interface{}{
-			"bool": map[string]interface{}{
-				"must": map[string]interface{}{
-					"match": map[string]interface{}{"text": query},
-				},
-				"filter": filters,
-			},
-		},
-		"sort": []interface{}{
-			map[string]interface{}{"ts": map[string]interface{}{"order": "desc"}},
-		},
-	}
-	return s.execGenericSearch(ctx, "messages_v1", q)
 }

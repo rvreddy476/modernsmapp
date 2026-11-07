@@ -51,6 +51,7 @@ func TestOpenSearch_ConcurrentStaleApprovalNeverBeatsNewerRemoval(t *testing.T) 
 				Visibility: "public", ReviewStatus: "approved", SearchRev: 1,
 				CreatedAt: time.Now().UTC(),
 			},
+			Author: &search.AuthorVisibility{},
 		}); err != nil {
 			t.Fatalf("iteration %d baseline: %v", i, err)
 		}
@@ -68,6 +69,7 @@ func TestOpenSearch_ConcurrentStaleApprovalNeverBeatsNewerRemoval(t *testing.T) 
 					Visibility: "public", ReviewStatus: "approved", SearchRev: 2,
 					CreatedAt: time.Now().UTC(),
 				},
+				Author: &search.AuthorVisibility{},
 			})
 		}()
 		go func() {
@@ -134,6 +136,7 @@ func TestOpenSearch_EqualRevisionRemovalWinsTheTie(t *testing.T) {
 			Visibility: "public", ReviewStatus: "approved", SearchRev: 7,
 			CreatedAt: time.Now().UTC(),
 		},
+		Author: &search.AuthorVisibility{},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -396,6 +399,7 @@ func TestOpenSearch_SuppressionMatrixAcrossPostAndUserSurfaces(t *testing.T) {
 				Visibility: "public", ReviewStatus: "approved", SearchRev: 1,
 				CreatedAt: time.Now().UTC(),
 			},
+			Author: &search.AuthorVisibility{},
 		}); err != nil {
 			t.Fatal(err)
 		}
@@ -456,6 +460,7 @@ func postProjectionForTest(postID, authorID, marker string, rev int64) search.Po
 			Visibility: "public", ReviewStatus: "approved", SearchRev: rev,
 			CreatedAt: time.Now().UTC(),
 		},
+		Author: &search.AuthorVisibility{},
 	}
 }
 
@@ -481,14 +486,14 @@ func TestOpenSearch_ReprojectRewritesEligibleAtSameRevisionOnly(t *testing.T) {
 		Visibility: "public", ReviewStatus: "approved", SearchRev: 3,
 		CreatedAt: time.Now().UTC(),
 	}
-	if err := store.ApplyPostProjection(ctx, search.PostProjection{PostID: id, Rev: 3, Doc: base}); err != nil {
+	if err := store.ApplyPostProjection(ctx, search.PostProjection{PostID: id, Rev: 3, Doc: base, Author: &search.AuthorVisibility{}}); err != nil {
 		t.Fatal(err)
 	}
 	// Same revision, no Reproject: dropped (the old rule).
 	withTitle := base
 	withTitle.Title = "Reprojected title"
 	withTitle.ContentType = "long_video"
-	if err := store.ApplyPostProjection(ctx, search.PostProjection{PostID: id, Rev: 3, Doc: withTitle}); err != nil {
+	if err := store.ApplyPostProjection(ctx, search.PostProjection{PostID: id, Rev: 3, Doc: withTitle, Author: &search.AuthorVisibility{}}); err != nil {
 		t.Fatal(err)
 	}
 	_ = store.RefreshPosts(ctx)
@@ -496,7 +501,7 @@ func TestOpenSearch_ReprojectRewritesEligibleAtSameRevisionOnly(t *testing.T) {
 		t.Fatal("a same-revision write without Reproject was applied")
 	}
 	// Same revision WITH Reproject: applied.
-	if err := store.ApplyPostProjection(ctx, search.PostProjection{PostID: id, Rev: 3, Reproject: true, Doc: withTitle}); err != nil {
+	if err := store.ApplyPostProjection(ctx, search.PostProjection{PostID: id, Rev: 3, Reproject: true, Doc: withTitle, Author: &search.AuthorVisibility{}}); err != nil {
 		t.Fatal(err)
 	}
 	_ = store.RefreshPosts(ctx)
@@ -520,7 +525,7 @@ func TestOpenSearch_ReprojectRewritesEligibleAtSameRevisionOnly(t *testing.T) {
 	if found, _ := store.SearchPostsFiltered(ctx, token, nil, 10); len(found) != 0 {
 		t.Fatalf("removal at rev 4 did not land: %+v", found)
 	}
-	if err := store.ApplyPostProjection(ctx, search.PostProjection{PostID: id, Rev: 3, Reproject: true, Doc: withTitle}); err != nil {
+	if err := store.ApplyPostProjection(ctx, search.PostProjection{PostID: id, Rev: 3, Reproject: true, Doc: withTitle, Author: &search.AuthorVisibility{}}); err != nil {
 		t.Fatal(err)
 	}
 	_ = store.RefreshPosts(ctx)
@@ -528,7 +533,7 @@ func TestOpenSearch_ReprojectRewritesEligibleAtSameRevisionOnly(t *testing.T) {
 		t.Fatalf("reproject at rev 3 overtook the rev-4 removal: %+v", found)
 	}
 	// And a reproject at the SAME revision as a removal must not revive it.
-	if err := store.ApplyPostProjection(ctx, search.PostProjection{PostID: id, Rev: 4, Reproject: true, Doc: withTitle}); err != nil {
+	if err := store.ApplyPostProjection(ctx, search.PostProjection{PostID: id, Rev: 4, Reproject: true, Doc: withTitle, Author: &search.AuthorVisibility{}}); err != nil {
 		t.Fatal(err)
 	}
 	_ = store.RefreshPosts(ctx)
