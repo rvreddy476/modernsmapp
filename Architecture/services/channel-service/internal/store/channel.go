@@ -16,6 +16,20 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// BroadcastChannel is one broadcast_channels row.
+//
+// updated_at is the row's version (2026-11-08): search-service orders
+// channel snapshots by it in microseconds and drops one that is not newer
+// than what it holds. NOW() is the transaction's START time, so of two
+// writers where one waited on the other's row lock, the one that committed
+// last could carry the older stamp and search would drop the newer state
+// (a suspension, say). Every UPDATE of the row that sets updated_at
+// therefore writes
+//
+//	updated_at = GREATEST(clock_timestamp(), broadcast_channels.updated_at + interval '1 microsecond')
+//
+// which is strictly greater than the version it replaces, whatever the
+// clock does. updated_at_stamp_test.go holds every statement to it.
 type BroadcastChannel struct {
 	ID                    uuid.UUID  `json:"id"`
 	OwnerID               uuid.UUID  `json:"owner_id"`
@@ -226,26 +240,34 @@ func (s *Store) UpdateChannel(ctx context.Context, ch *BroadcastChannel) error {
 	// service that had set it would not have persisted it — the update was
 	// silently partial, and the settings screen's @username field could never
 	// take effect however many times Save was pressed.
+	//
+	// The columns this statement does not write come back from the row as
+	// committed (RETURNING), so the channel.updated snapshot built from ch is
+	// one version of the row: ch was read before the write, and a suspension
+	// committed in between must not ride out as 'active' under the new
+	// updated_at (search orders snapshots by it; see BroadcastChannel).
 	query := `UPDATE broadcast_channels SET
 		name = $2, description = $3, avatar_media_id = $4, banner_media_id = $5,
 		channel_type = $6, category = $7, language = $8, comment_mode = $9, reaction_mode = $10,
 		forward_allowed = $11, paid_access = $12, subscription_price_cents = $13,
 		post_schedule_enabled = $14, subscriber_count_visible = $15, allow_preview_posts = $16,
 		handle = $17,
-		updated_at = NOW()
+		updated_at = GREATEST(clock_timestamp(), broadcast_channels.updated_at + interval '1 microsecond')
 		WHERE id = $1 AND status != 'deleted'
-		RETURNING updated_at`
+		RETURNING owner_id, is_verified, subscriber_count, update_count, status,
+			created_at, updated_at, deleted_at`
 	return s.db.QueryRow(ctx, query,
 		ch.ID, ch.Name, ch.Description, ch.AvatarMediaID, ch.BannerMediaID,
 		ch.ChannelType, ch.Category, ch.Language, ch.CommentMode, ch.ReactionMode,
 		ch.ForwardAllowed, ch.PaidAccess, ch.SubscriptionPriceCents,
 		ch.PostScheduleEnabled, ch.SubscriberCountVisible, ch.AllowPreviewPosts,
 		ch.Handle,
-	).Scan(&ch.UpdatedAt)
+	).Scan(&ch.OwnerID, &ch.IsVerified, &ch.SubscriberCount, &ch.UpdateCount, &ch.Status,
+		&ch.CreatedAt, &ch.UpdatedAt, &ch.DeletedAt)
 }
 
 func (s *Store) DeleteChannel(ctx context.Context, id uuid.UUID) error {
-	query := `UPDATE broadcast_channels SET status = 'deleted', deleted_at = NOW(), updated_at = NOW() WHERE id = $1`
+	query := `UPDATE broadcast_channels SET status = 'deleted', deleted_at = NOW(), updated_at = GREATEST(clock_timestamp(), broadcast_channels.updated_at + interval '1 microsecond') WHERE id = $1`
 	_, err := s.db.Exec(ctx, query, id)
 	return err
 }
@@ -448,7 +470,7 @@ const recountSubscribersSQL = `UPDATE broadcast_channels b
 		WHERE b.id = c.id AND b.subscriber_count IS DISTINCT FROM c.n`
 
 func (s *Store) IncrementUpdateCount(ctx context.Context, channelID uuid.UUID, delta int) error {
-	query := `UPDATE broadcast_channels SET update_count = update_count + $2, updated_at = NOW() WHERE id = $1`
+	query := `UPDATE broadcast_channels SET update_count = update_count + $2, updated_at = GREATEST(clock_timestamp(), broadcast_channels.updated_at + interval '1 microsecond') WHERE id = $1`
 	_, err := s.db.Exec(ctx, query, channelID, delta)
 	return err
 }
@@ -731,7 +753,7 @@ func (s *Store) ListChannelsWhereUserIsOnlyOwner(ctx context.Context, userID uui
 // ArchiveChannel sets status archived. The account-deletion consumer
 // announces the new state (events.Consumer) so search drops the channel.
 func (s *Store) ArchiveChannel(ctx context.Context, id uuid.UUID) error {
-	query := `UPDATE broadcast_channels SET status = 'archived', updated_at = NOW() WHERE id = $1`
+	query := `UPDATE broadcast_channels SET status = 'archived', updated_at = GREATEST(clock_timestamp(), broadcast_channels.updated_at + interval '1 microsecond') WHERE id = $1`
 	_, err := s.db.Exec(ctx, query, id)
 	return err
 }

@@ -150,3 +150,19 @@ func TestLifecycleEventsAreKeyedByCommunity(t *testing.T) {
 		t.Error("a LeastBytes balancer ignores the partition key")
 	}
 }
+
+// The top-level updated_at is the row's version, not the publish time: a
+// consumer that reads it orders the event exactly as search orders the
+// snapshot (store.Community: updated_at is the row's version).
+func TestCommunityUpdatedTopLevelTimeIsTheRowVersion(t *testing.T) {
+	row := fixtureCommunity()
+	publish := row.UpdatedAt.Add(-time.Hour) // the clock is no authority
+	p := NewCommunityUpdatedPayload(row, uuid.New(), publish)
+	if !p.UpdatedAt.Equal(row.UpdatedAt) || !p.Community.UpdatedAt.Equal(row.UpdatedAt) {
+		t.Fatalf("updated_at = %v / snapshot %v, want the row's %v", p.UpdatedAt, p.Community.UpdatedAt, row.UpdatedAt)
+	}
+	row.UpdatedAt = time.Time{}
+	if p := NewCommunityUpdatedPayload(row, uuid.New(), publish); !p.UpdatedAt.Equal(publish) {
+		t.Fatalf("a row without updated_at falls back to the publish time: got %v", p.UpdatedAt)
+	}
+}

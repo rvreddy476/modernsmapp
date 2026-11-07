@@ -322,9 +322,14 @@ type CommunityUpdatedPayload struct {
 }
 
 // NewCommunityUpdatedPayload builds community.updated from the row after the
-// change.
+// change. The top-level updated_at is the row's own (its version), as on
+// channel.updated; the publish time is only a fallback for a row without one.
 func NewCommunityUpdatedPayload(c *store.Community, actorID uuid.UUID, now time.Time) CommunityUpdatedPayload {
 	snap := SnapshotOf(c)
+	updated := snap.UpdatedAt
+	if updated.IsZero() {
+		updated = now
+	}
 	return CommunityUpdatedPayload{
 		CommunityID:   snap.CommunityID,
 		ActorID:       actorID.String(),
@@ -332,7 +337,7 @@ func NewCommunityUpdatedPayload(c *store.Community, actorID uuid.UUID, now time.
 		CommunityType: snap.CommunityType,
 		Status:        snap.Status,
 		Visibility:    snap.Visibility,
-		UpdatedAt:     now,
+		UpdatedAt:     updated,
 		Community:     &snap,
 	}
 }

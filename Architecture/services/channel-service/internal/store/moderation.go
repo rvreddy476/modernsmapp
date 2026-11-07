@@ -80,7 +80,7 @@ func (s *Store) ListAllMembers(ctx context.Context, channelID uuid.UUID, limit, 
 // emergency disable; 'active' lifts it. Refuses to resurrect a deleted row.
 func (s *Store) SetChannelStatus(ctx context.Context, channelID uuid.UUID, status string) error {
 	tag, err := s.db.Exec(ctx,
-		`UPDATE broadcast_channels SET status = $2, updated_at = NOW() WHERE id = $1 AND status != 'deleted'`,
+		`UPDATE broadcast_channels SET status = $2, updated_at = GREATEST(clock_timestamp(), broadcast_channels.updated_at + interval '1 microsecond') WHERE id = $1 AND status != 'deleted'`,
 		channelID, status)
 	if err != nil {
 		return err

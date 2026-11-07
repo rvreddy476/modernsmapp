@@ -38,7 +38,7 @@ func (r *MemberCountReconciler) reconcile(ctx context.Context) {
 	_, err := r.db.Exec(ctx, `
 		UPDATE communities c
 		SET member_count = actual.cnt,
-		    updated_at = NOW()
+		    updated_at = GREATEST(clock_timestamp(), c.updated_at + interval '1 microsecond')
 		FROM (
 		    SELECT community_id, COUNT(*) AS cnt
 		    FROM community_members

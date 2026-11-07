@@ -93,7 +93,7 @@ func (w *FanoutWorker) publishScheduledUpdates(ctx context.Context) {
 		}
 
 		// 3. Increment channel update_count
-		countQuery := `UPDATE broadcast_channels SET update_count = update_count + 1, updated_at = NOW() WHERE id = $1`
+		countQuery := `UPDATE broadcast_channels SET update_count = update_count + 1, updated_at = GREATEST(clock_timestamp(), broadcast_channels.updated_at + interval '1 microsecond') WHERE id = $1`
 		if _, err := w.db.Exec(ctx, countQuery, u.ChannelID); err != nil {
 			w.logger.Warn("scheduler: failed to increment update_count",
 				"channel_id", u.ChannelID, "error", err)

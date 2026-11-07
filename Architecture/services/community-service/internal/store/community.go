@@ -12,6 +12,20 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Community is one communities row.
+//
+// updated_at is the row's version (2026-11-08): search-service orders
+// community snapshots by it in microseconds and drops one that is not newer
+// than what it holds. NOW() is the transaction's START time, so of two
+// writers where one waited on the other's row lock, the one that committed
+// last could carry the older stamp and search would drop the newer state
+// (an archive, say). Every UPDATE of the row that sets updated_at therefore
+// writes
+//
+//	updated_at = GREATEST(clock_timestamp(), communities.updated_at + interval '1 microsecond')
+//
+// which is strictly greater than the version it replaces, whatever the
+// clock does. updated_at_stamp_test.go holds every statement to it.
 type Community struct {
 	ID               uuid.UUID       `json:"id"`
 	OwnerID          uuid.UUID       `json:"owner_id"`
@@ -199,6 +213,11 @@ func (s *Store) GetCommunityByHandle(ctx context.Context, handle string) (*Commu
 	return c, err
 }
 
+// UpdateCommunity writes the editable fields. The columns it does not write
+// come back from the row as committed (RETURNING), so the community.updated
+// snapshot built from c is one version of the row: c was read before the
+// write, and an archive committed in between must not ride out as 'active'
+// under the new updated_at (search orders snapshots by it; see Community).
 func (s *Store) UpdateCommunity(ctx context.Context, c *Community) error {
 	query := `UPDATE communities SET
 		name = $2, description = $3, avatar_media_id = $4, banner_media_id = $5,
@@ -206,9 +225,11 @@ func (s *Store) UpdateCommunity(ctx context.Context, c *Community) error {
 		email_domain_gate = $10, join_questions = $11, member_directory = $12,
 		cross_space_bans = $13, max_sub_spaces = $14,
 		latitude = $15, longitude = $16, location_name = $17,
-		rules = $18, topic_tags = $19, updated_at = NOW()
+		rules = $18, topic_tags = $19,
+		updated_at = GREATEST(clock_timestamp(), communities.updated_at + interval '1 microsecond')
 		WHERE id = $1 AND status != 'deleted'
-		RETURNING updated_at`
+		RETURNING owner_id, handle, member_count, space_count, is_verified, status,
+			created_at, updated_at, deleted_at`
 	return s.db.QueryRow(ctx, query,
 		c.ID, c.Name, c.Description, c.AvatarMediaID, c.BannerMediaID,
 		c.CommunityType, c.Category, c.Language, c.JoinMode,
@@ -216,11 +237,12 @@ func (s *Store) UpdateCommunity(ctx context.Context, c *Community) error {
 		c.CrossSpaceBans, c.MaxSubSpaces,
 		c.Latitude, c.Longitude, c.LocationName,
 		c.Rules, c.TopicTags,
-	).Scan(&c.UpdatedAt)
+	).Scan(&c.OwnerID, &c.Handle, &c.MemberCount, &c.SpaceCount, &c.IsVerified, &c.Status,
+		&c.CreatedAt, &c.UpdatedAt, &c.DeletedAt)
 }
 
 func (s *Store) DeleteCommunity(ctx context.Context, id uuid.UUID) error {
-	query := `UPDATE communities SET status = 'deleted', deleted_at = NOW(), updated_at = NOW() WHERE id = $1`
+	query := `UPDATE communities SET status = 'deleted', deleted_at = NOW(), updated_at = GREATEST(clock_timestamp(), communities.updated_at + interval '1 microsecond') WHERE id = $1`
 	_, err := s.db.Exec(ctx, query, id)
 	return err
 }
@@ -380,7 +402,7 @@ func (s *Store) CountMembers(ctx context.Context, communityID uuid.UUID) (int64,
 }
 
 func (s *Store) IncrementMemberCount(ctx context.Context, communityID uuid.UUID, delta int) error {
-	query := `UPDATE communities SET member_count = member_count + $2, updated_at = NOW() WHERE id = $1`
+	query := `UPDATE communities SET member_count = member_count + $2, updated_at = GREATEST(clock_timestamp(), communities.updated_at + interval '1 microsecond') WHERE id = $1`
 	_, err := s.db.Exec(ctx, query, communityID, delta)
 	return err
 }
@@ -391,13 +413,13 @@ func (s *Store) IncrementMemberCount(ctx context.Context, communityID uuid.UUID,
 // to PG. Touches the same hot row as IncrementMemberCount but only
 // fires every ~10s per community instead of on every join.
 func (s *Store) SetMemberCount(ctx context.Context, communityID uuid.UUID, total int64) error {
-	query := `UPDATE communities SET member_count = $2, updated_at = NOW() WHERE id = $1`
+	query := `UPDATE communities SET member_count = $2, updated_at = GREATEST(clock_timestamp(), communities.updated_at + interval '1 microsecond') WHERE id = $1`
 	_, err := s.db.Exec(ctx, query, communityID, total)
 	return err
 }
 
 func (s *Store) IncrementSpaceCount(ctx context.Context, communityID uuid.UUID, delta int) error {
-	query := `UPDATE communities SET space_count = space_count + $2, updated_at = NOW() WHERE id = $1`
+	query := `UPDATE communities SET space_count = space_count + $2, updated_at = GREATEST(clock_timestamp(), communities.updated_at + interval '1 microsecond') WHERE id = $1`
 	_, err := s.db.Exec(ctx, query, communityID, delta)
 	return err
 }
@@ -691,7 +713,7 @@ func (s *Store) ListCommunitiesWhereUserIsOnlyOwner(ctx context.Context, userID 
 }
 
 func (s *Store) ArchiveCommunity(ctx context.Context, id uuid.UUID) error {
-	query := `UPDATE communities SET status = 'archived', updated_at = NOW() WHERE id = $1`
+	query := `UPDATE communities SET status = 'archived', updated_at = GREATEST(clock_timestamp(), communities.updated_at + interval '1 microsecond') WHERE id = $1`
 	_, err := s.db.Exec(ctx, query, id)
 	return err
 }

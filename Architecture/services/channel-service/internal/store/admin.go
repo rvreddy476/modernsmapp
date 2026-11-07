@@ -173,7 +173,7 @@ func (s *Store) AdminSetChannelSuspended(ctx context.Context, actor, channelID u
 	if current != from {
 		return nil, fmt.Errorf("channel is %s, not %s: %w", current, from, ErrAdminConflict)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE broadcast_channels SET status = $2, updated_at = NOW() WHERE id = $1`, channelID, to); err != nil {
+	if _, err := tx.Exec(ctx, `UPDATE broadcast_channels SET status = $2, updated_at = GREATEST(clock_timestamp(), broadcast_channels.updated_at + interval '1 microsecond') WHERE id = $1`, channelID, to); err != nil {
 		return nil, err
 	}
 	if err := writeChannelAdminAudit(ctx, tx, actor, action, "channel", channelID, reason,
