@@ -173,7 +173,34 @@ class HeaderContractTest {
 
         // The bearer header still comes from the in-memory token, not a cookie.
         get()
-        assertThat(server.takeRequest().headers["Authorization"])
+        val recorded = server.takeRequest()
+        assertThat(recorded.headers["Authorization"])
             .isEqualTo("Bearer access-token-1")
+        // And the session cookies never go back out (H1). The gateway reads an
+        // access_token cookie when a request has no bearer, and refresh has none.
+        assertThat(recorded.headers["Cookie"]).isEqualTo("csrf_token=csrf-1")
+    }
+
+    @Test
+    fun `the refresh call carries no access or refresh cookie`() {
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .addHeader("Set-Cookie", "access_token=expired-jwt; Path=/; HttpOnly")
+                .addHeader("Set-Cookie", "refresh_token=rt-secret; Path=/; HttpOnly")
+                .addHeader("Set-Cookie", "csrf_token=csrf-1; Path=/")
+                .body("{}")
+                .build(),
+        )
+        client.newCall(Request.Builder().url(server.url("/v1/auth/login")).build()).execute().close()
+        server.takeRequest()
+
+        post("/v1/auth/refresh")
+
+        val refresh = server.takeRequest()
+        assertThat(refresh.headers["Authorization"]).isNull()
+        val cookieHeader = refresh.headers["Cookie"].orEmpty()
+        assertThat(cookieHeader).doesNotContain("access_token")
+        assertThat(cookieHeader).doesNotContain("refresh_token")
     }
 }

@@ -2,7 +2,9 @@ package com.us.android.core.network.interceptor
 
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.network.TokenProvider
+import com.us.android.core.network.TokenRefresher
 import com.us.android.core.network.cookie.CsrfCookieStore
+import kotlinx.coroutines.runBlocking
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.Interceptor
@@ -89,19 +91,65 @@ class AuthInterceptor @Inject constructor(
      * gateway is 127.0.0.1:8080 and the object store is 127.0.0.1:9000, so a
      * host-only check would still leak the token to storage.
      */
-    private fun HttpUrl.isApiOrigin(): Boolean {
-        val api = config.baseUrl.toHttpUrlOrNull() ?: return false
-        return host == api.host && port == api.port
-    }
+    private fun HttpUrl.isApiOrigin(): Boolean = isApiOrigin(config)
 
     private companion object {
-        val NO_AUTH_PATHS = listOf(
-            "/v1/auth/partner/phone/request",
-            "/v1/auth/partner/phone/verify",
-            "/v1/auth/login",
-            "/v1/auth/register",
-            "/v1/auth/refresh",
-        )
+        val NO_AUTH_PATHS = AuthPaths.NO_AUTH
+    }
+}
+
+/** The token-minting endpoints: no bearer goes to them, and nothing refreshes before them. */
+internal object AuthPaths {
+    val NO_AUTH = listOf(
+        "/v1/auth/partner/phone/request",
+        "/v1/auth/partner/phone/verify",
+        "/v1/auth/login",
+        "/v1/auth/register",
+        "/v1/auth/refresh",
+    )
+}
+
+/** Host AND port of the configured API — see [AuthInterceptor] for why the port matters. */
+internal fun HttpUrl.isApiOrigin(config: ApiConfig): Boolean {
+    val api = config.baseUrl.toHttpUrlOrNull() ?: return false
+    return host == api.host && port == api.port
+}
+
+/**
+ * Mints the access token BEFORE a request instead of after its 401 (H2).
+ *
+ * After process death the access token (memory only) is gone while the
+ * refresh token is not. Without this, every call of a cold start goes out with
+ * no bearer, every one 401s, and every one parks in [TokenAuthenticator] at
+ * once. Here the first call refreshes (single-flight, on the session client)
+ * and the rest wait for that one result, so they leave carrying a token.
+ * Also covers a token near expiry. The reactive 401 path stays the guarantee.
+ *
+ * Sits just before [AuthInterceptor], so the bearer it attaches is the fresh one.
+ */
+@Singleton
+class ProactiveRefreshInterceptor @Inject constructor(
+    private val tokenProvider: TokenProvider,
+    private val tokenRefresher: TokenRefresher,
+    private val config: ApiConfig,
+) : Interceptor {
+    override fun intercept(chain: Interceptor.Chain): Response {
+        val request = chain.request()
+        val path = request.url.encodedPath
+        if (!request.url.isApiOrigin(config) || AuthPaths.NO_AUTH.any { path.endsWith(it) }) {
+            return chain.proceed(request)
+        }
+        // Read the token BEFORE asking whether it is stale. Read after, a
+        // token another call minted in between would be passed as the stale
+        // one and refreshed a second time.
+        val seen = tokenProvider.currentAccessToken()
+        if (tokenRefresher.shouldRefreshBeforeRequest()) {
+            // Same bridge, and the same safety argument, as TokenAuthenticator:
+            // the refresh runs on its own client and dispatcher. A failure is
+            // not fatal here; the request goes out and the 401 path decides.
+            runBlocking { tokenRefresher.refreshIfStale(seen) }
+        }
+        return chain.proceed(request)
     }
 }
 

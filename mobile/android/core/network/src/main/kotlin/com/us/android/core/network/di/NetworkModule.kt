@@ -6,6 +6,7 @@ import com.us.android.core.network.cookie.CsrfCookieStore
 import com.us.android.core.network.interceptor.AuthInterceptor
 import com.us.android.core.network.interceptor.ClientHeadersInterceptor
 import com.us.android.core.network.interceptor.CsrfInterceptor
+import com.us.android.core.network.interceptor.ProactiveRefreshInterceptor
 import com.us.android.core.network.interceptor.TracingInterceptor
 import com.us.android.core.network.retry.RetryConfig
 import com.us.android.core.network.retry.RetryInterceptor
@@ -14,6 +15,8 @@ import dagger.Provides
 import dagger.hilt.InstallIn
 import dagger.hilt.components.SingletonComponent
 import kotlinx.serialization.json.Json
+import okhttp3.Authenticator
+import okhttp3.Dispatcher
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.logging.HttpLoggingInterceptor
@@ -55,6 +58,21 @@ annotation class AuthenticatedClient
 @Qualifier
 @Retention(AnnotationRetention.RUNTIME)
 annotation class BareClient
+
+/**
+ * The client for `/v1/auth/refresh` and `/v1/auth/logout` only (H2, audit
+ * 2026-10-29), and the Retrofit built on it.
+ *
+ * It has its OWN dispatcher, its own timeouts and no authenticator. The
+ * [AuthenticatedClient]'s calls that 401 block inside `TokenAuthenticator`
+ * while they hold that client's per-host slots; a refresh queued behind them
+ * on the same dispatcher would never start, and the whole API host would hang
+ * until the process died. It shares the CSRF cookie jar, so the `csrf_token`
+ * a refresh sets is the one the next write echoes.
+ */
+@Qualifier
+@Retention(AnnotationRetention.BINARY)
+annotation class SessionClient
 
 @Module
 @InstallIn(SingletonComponent::class)
@@ -114,6 +132,46 @@ object NetworkModule {
 
     @Provides
     @Singleton
+    @SessionClient
+    fun provideSessionOkHttpClient(
+        clientHeadersInterceptor: ClientHeadersInterceptor,
+        loggingInterceptor: HttpLoggingInterceptor,
+        cookieJar: CsrfCookieStore,
+    ): OkHttpClient = OkHttpClient.Builder()
+        // A fresh Dispatcher, stated rather than implied: this is the property
+        // the whole client exists for.
+        .dispatcher(Dispatcher())
+        // Every 401'd call on the authenticated client waits for this one, so
+        // it must end, one way or the other, well inside their callTimeout.
+        .connectTimeout(SESSION_CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .readTimeout(SESSION_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .writeTimeout(SESSION_READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .callTimeout(SESSION_CALL_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .cookieJar(cookieJar)
+        .addInterceptor(clientHeadersInterceptor)
+        .addInterceptor(loggingInterceptor)
+        // No bearer (the refresh token in the body is the credential), no
+        // authenticator (a 401 here is the answer, never a reason to refresh),
+        // no retry (a replayed refresh rotates the token twice).
+        .authenticator(Authenticator.NONE)
+        .retryOnConnectionFailure(false)
+        .build()
+
+    @Provides
+    @Singleton
+    @SessionClient
+    fun provideSessionRetrofit(
+        @SessionClient client: OkHttpClient,
+        config: ApiConfig,
+        json: Json,
+    ): Retrofit = Retrofit.Builder()
+        .baseUrl(config.baseUrl.ensureTrailingSlash())
+        .client(client)
+        .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+        .build()
+
+    @Provides
+    @Singleton
     @AuthenticatedClient
     @Suppress("LongParameterList")
     fun provideOkHttpClient(
@@ -125,6 +183,7 @@ object NetworkModule {
         loggingInterceptor: HttpLoggingInterceptor,
         authenticator: TokenAuthenticator,
         cookieJar: CsrfCookieStore,
+        proactiveRefreshInterceptor: ProactiveRefreshInterceptor,
     ): OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .readTimeout(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
@@ -142,6 +201,8 @@ object NetworkModule {
         // that made a request slow.
         .addInterceptor(tracingInterceptor)
         .addInterceptor(clientHeadersInterceptor)
+        // Before auth, so a cold start mints the token the bearer then carries.
+        .addInterceptor(proactiveRefreshInterceptor)
         .addInterceptor(authInterceptor)
         .addInterceptor(csrfInterceptor)
         .addInterceptor(loggingInterceptor)
@@ -178,4 +239,8 @@ object NetworkModule {
     // Must exceed RetryConfig.totalBudgetMillis (10s) with room for the final
     // attempt, or the call is killed mid-retry and the budget is meaningless.
     private const val CALL_TIMEOUT_SECONDS = 45L
+
+    private const val SESSION_CONNECT_TIMEOUT_SECONDS = 10L
+    private const val SESSION_READ_TIMEOUT_SECONDS = 15L
+    private const val SESSION_CALL_TIMEOUT_SECONDS = 20L
 }

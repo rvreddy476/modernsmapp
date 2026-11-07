@@ -6,10 +6,9 @@ import kotlinx.coroutines.flow.StateFlow
 /**
  * Google sign-in for the app, as the Login screen sees it.
  *
- * The app ships no Google library (nothing in the offline Gradle cache, and
- * the server wants a provider ACCESS token that Credential Manager's ID token
- * is not), so this is the plain OAuth 2.0 authorization-code flow with PKCE,
- * run through the device's browser:
+ * The app ships no Google library (nothing in the offline Gradle cache), so
+ * this is the plain OAuth 2.0 authorization-code flow with PKCE, run through
+ * the device's browser:
  *
  *  1. [begin] mints a verifier and a `state`, and returns the authorization
  *     URL the screen opens with the system browser.
@@ -17,11 +16,12 @@ import kotlinx.coroutines.flow.StateFlow
  *     which the manifest routes to `MainActivity`; the activity hands the
  *     URI to [offerRedirect], whichever instance received it.
  *  3. The Login screen, watching [pendingRedirect], calls [complete], which
- *     checks `state`, exchanges the code for an access token and returns it
- *     for `AuthRepository.signInWithOAuth`.
+ *     checks `state`, exchanges the code and returns Google's ID token for
+ *     `AuthRepository.signInWithOAuth` (`POST /v1/auth/oauth/google/token`
+ *     `{"id_token": ...}`; the server refuses an access token).
  *
- * Only the access token leaves this interface. The verifier, the state and
- * the code never reach a screen, a log or the message host.
+ * Only the ID token leaves this interface. The verifier, the state, the code
+ * and Google's access token never reach a screen, a log or the message host.
  */
 interface GoogleSignIn {
 
@@ -41,7 +41,10 @@ interface GoogleSignIn {
      */
     fun offerRedirect(uri: String?): Boolean
 
-    /** Finishes the attempt that [redirect] belongs to. Consumes [pendingRedirect]. */
+    /**
+     * Finishes the attempt that [redirect] belongs to and yields Google's ID
+     * token. Consumes [pendingRedirect]. Never throws for a malformed redirect.
+     */
     suspend fun complete(redirect: String): AppResult<String>
 
     companion object {

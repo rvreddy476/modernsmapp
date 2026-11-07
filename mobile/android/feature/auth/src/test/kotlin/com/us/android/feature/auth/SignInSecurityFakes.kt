@@ -111,6 +111,8 @@ internal class FakeAuthApi : AuthApi {
     var completeSignupError: Throwable? = null
     var verifySignupResponse: AuthResponseDto = sessionResponse()
     var verifySignupError: Throwable? = null
+    var partnerVerifyResponse: AuthResponseDto = sessionResponse()
+    var partnerVerifyError: Throwable? = null
 
     val twoFactorRequests = mutableListOf<Verify2FARequestDto>()
     val stepUpEmailRequests = mutableListOf<StepUpVerifyRequestDto>()
@@ -177,7 +179,10 @@ internal class FakeAuthApi : AuthApi {
     // Not exercised by the sign-in security tests.
     override suspend fun requestPartnerPhone(body: PartnerPhoneRequestDto): ApiEnvelope<PartnerPhoneChallengeDto> =
         error("not used")
-    override suspend fun verifyPartnerPhone(body: PartnerPhoneVerifyDto): ApiEnvelope<AuthResponseDto> = error("not used")
+    override suspend fun verifyPartnerPhone(body: PartnerPhoneVerifyDto): ApiEnvelope<AuthResponseDto> {
+        partnerVerifyError?.let { throw it }
+        return ApiEnvelope(partnerVerifyResponse)
+    }
     override suspend fun register(idempotencyKey: String, body: RegisterRequestDto): ApiEnvelope<AuthResponseDto> =
         error("not used")
     override suspend fun refresh(body: RefreshRequestDto): ApiEnvelope<AuthResponseDto> = error("not used")
@@ -194,8 +199,10 @@ internal class FakeAuthApi : AuthApi {
 /** A scripted [GoogleSignIn]: the test decides availability and what the exchange yields. */
 internal class FakeGoogleSignIn(
     override val isAvailable: Boolean = true,
-    var completeResult: AppResult<String> = AppResult.Success("ya29.token"),
+    var completeResult: AppResult<String> = AppResult.Success(GOOGLE_ID_TOKEN),
 ) : GoogleSignIn {
+    /** Set to make [complete] throw, as a decoding bug or an unexpected runtime error would. */
+    var completeThrows: Throwable? = null
     private val _pending = MutableStateFlow<String?>(null)
     override val pendingRedirect: StateFlow<String?> = _pending
     var beginCount = 0
@@ -215,7 +222,13 @@ internal class FakeGoogleSignIn(
     override suspend fun complete(redirect: String): AppResult<String> {
         _pending.value = null
         completed += redirect
+        completeThrows?.let { throw it }
         return completeResult
+    }
+
+    companion object {
+        /** What the browser flow hands back: Google's ID token (a JWT), not its access token. */
+        const val GOOGLE_ID_TOKEN = "eyJhbGciOiJSUzI1NiJ9.google-id-token.sig"
     }
 }
 

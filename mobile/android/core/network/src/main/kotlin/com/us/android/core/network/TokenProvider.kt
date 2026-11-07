@@ -23,4 +23,22 @@ interface TokenRefresher {
      * requests that all 401 must produce one refresh, not eight.
      */
     suspend fun refresh(): String?
+
+    /**
+     * Refreshes only if [failedToken] is still the current token (L4).
+     *
+     * [failedToken] is what the failed request carried (null for none). If a
+     * different token is already current — another caller's refresh finished
+     * while this one waited, or the request went out before the first token
+     * of a cold start existed — that token is returned and no refresh runs,
+     * so a late 401 never rotates the refresh token a second time.
+     */
+    suspend fun refreshIfStale(failedToken: String?): String? = refresh()
+
+    /**
+     * True when the next request should not go out with the current token:
+     * none minted yet for a session that exists (cold start), or one close to
+     * expiry. Checked before every authenticated request; must be cheap.
+     */
+    fun shouldRefreshBeforeRequest(): Boolean = false
 }

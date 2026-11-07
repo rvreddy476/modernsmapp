@@ -8,6 +8,7 @@ import com.us.android.core.common.result.AppResult
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageType
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -55,8 +56,18 @@ class VerifyEmailViewModel @Inject constructor(
     val state: StateFlow<VerifyEmailUiState> = _state.asStateFlow()
 
     private var verificationToken: String = ""
+    private var startedFor: String? = null
+    private var cooldownJob: Job? = null
 
+    /**
+     * Called from the screen's `LaunchedEffect`, which runs again on every new
+     * composition — a rotation, a return to the screen. This ViewModel
+     * outlives those, so only the first call for a token starts the cooldown;
+     * a repeat must not reset it to 60 or start a second loop beside it (L9).
+     */
     fun start(token: String, email: String) {
+        if (startedFor == token) return
+        startedFor = token
         verificationToken = token
         _state.update { it.copy(email = email) }
         startResendCooldown()
@@ -128,7 +139,10 @@ class VerifyEmailViewModel @Inject constructor(
      * opaque 429 into something the user can wait out.
      */
     private fun startResendCooldown() {
-        viewModelScope.launch {
+        // One countdown at a time: a second loop beside the first would tick
+        // the same counter twice a second.
+        cooldownJob?.cancel()
+        cooldownJob = viewModelScope.launch {
             _state.update { it.copy(resendCooldownSeconds = RESEND_COOLDOWN_SECONDS) }
             while (_state.value.resendCooldownSeconds > 0) {
                 delay(ONE_SECOND_MILLIS)

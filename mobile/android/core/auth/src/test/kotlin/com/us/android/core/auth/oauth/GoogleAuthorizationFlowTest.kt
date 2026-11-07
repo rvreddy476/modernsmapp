@@ -36,6 +36,10 @@ class GoogleAuthorizationFlowTest {
     @After
     fun tearDown() = server.close()
 
+    /** Survives the flow object, as the encrypted prefs survive a process death. */
+    private val attemptStore = InMemoryOAuthAttemptStore()
+    private var nowMillis = 1_000_000L
+
     private fun flow(config: GoogleOAuthConfig? = this.config) = GoogleAuthorizationFlow(
         config = config,
         client = OkHttpClient(),
@@ -45,9 +49,16 @@ class GoogleAuthorizationFlowTest {
             token = server.url("/token").toString(),
         ),
         random = SecureRandom(),
+        attemptStore = attemptStore,
+        now = { nowMillis },
     )
 
-    private fun query(url: String): Map<String, String> = GoogleAuthorizationFlow.parseQuery(url)
+    private fun query(url: String): Map<String, String> = checkNotNull(GoogleAuthorizationFlow.parseQuery(url))
+
+    private fun tokenBody(idToken: String = "eyJ.id.token") =
+        MockResponse.Builder().code(200)
+            .body("""{"access_token":"ya29.access","expires_in":3599,"token_type":"Bearer","id_token":"$idToken"}""")
+            .build()
 
     @Test
     fun `the redirect scheme is the client id reversed`() {
@@ -130,19 +141,18 @@ class GoogleAuthorizationFlowTest {
     }
 
     @Test
-    fun `a good redirect exchanges the code with the PKCE verifier and yields the access token`() = runTest {
-        server.enqueue(
-            MockResponse.Builder().code(200)
-                .body("""{"access_token":"ya29.token","expires_in":3599,"token_type":"Bearer","id_token":"eyJ"}""")
-                .build(),
-        )
+    fun `a good redirect exchanges the code with the PKCE verifier and yields the ID token`() = runTest {
+        server.enqueue(tokenBody(idToken = "eyJhbGciOiJSUzI1NiJ9.claims.sig"))
         val flow = flow()
         val authorization = query(flow.begin())
         flow.offerRedirect(config.redirectUri + "?state=${authorization.getValue("state")}&code=4%2Fcode")
 
         val result = flow.complete(flow.pendingRedirect.value!!)
 
-        assertThat((result as AppResult.Success).data).isEqualTo("ya29.token")
+        // The server verifies an ID token's audience and refuses an access
+        // token (400 ID_TOKEN_REQUIRED), so only the ID token may come out.
+        assertThat((result as AppResult.Success).data).isEqualTo("eyJhbGciOiJSUzI1NiJ9.claims.sig")
+        assertThat(result.data).isNotEqualTo("ya29.access")
         assertThat(flow.pendingRedirect.value).isNull()
         val request = server.takeRequest()
         assertThat(request.target).isEqualTo("/token")
@@ -163,7 +173,7 @@ class GoogleAuthorizationFlowTest {
 
     @Test
     fun `an attempt is spent by its first exchange`() = runTest {
-        server.enqueue(MockResponse.Builder().code(200).body("""{"access_token":"t"}""").build())
+        server.enqueue(tokenBody())
         val flow = flow()
         val redirect = config.redirectUri + "?state=${query(flow.begin()).getValue("state")}&code=c"
 
@@ -187,6 +197,93 @@ class GoogleAuthorizationFlowTest {
         assertThat(((refused as AppResult.Failure).error as AppError.AuthFailed).code)
             .isEqualTo(GoogleSignIn.CODE_TOKEN_EXCHANGE)
         assertThat((empty as AppResult.Failure).error).isInstanceOf(AppError.Malformed::class.java)
+    }
+
+    @Test
+    fun `an access token without an ID token is not a sign-in`() = runTest {
+        // What Google answers when `openid` is missing from the scope: the
+        // access token alone is useless to the server, so it is never passed on.
+        server.enqueue(
+            MockResponse.Builder()
+                .code(200)
+                .body("""{"access_token":"ya29.access","token_type":"Bearer"}""")
+                .build(),
+        )
+        val flow = flow()
+
+        val result = flow.complete(config.redirectUri + "?state=${query(flow.begin()).getValue("state")}&code=c")
+
+        assertThat((result as AppResult.Failure).error).isInstanceOf(AppError.Malformed::class.java)
+    }
+
+    // ── L6: malformed redirects and process death ───────────────────────
+
+    @Test
+    fun `a malformed escape in the redirect is a refusal, not a crash`() = runTest {
+        assertThat(GoogleAuthorizationFlow.parseQuery("x:/r?code=%zz&state=s")).isNull()
+        assertThat(GoogleAuthorizationFlow.parseQuery("x:/r?code=abc%")).isNull()
+
+        val flow = flow()
+        val state = query(flow.begin()).getValue("state")
+
+        val bad = flow.complete(config.redirectUri + "?code=%zz&state=$state")
+        val trailing = flow.complete(config.redirectUri + "?state=$state&code=abc%")
+
+        assertThat(((bad as AppResult.Failure).error as AppError.AuthFailed).code)
+            .isEqualTo(GoogleSignIn.CODE_STATE_MISMATCH)
+        assertThat(((trailing as AppResult.Failure).error as AppError.AuthFailed).code)
+            .isEqualTo(GoogleSignIn.CODE_STATE_MISMATCH)
+        assertThat(server.requestCount).isEqualTo(0)
+
+        // A junk redirect does not spend the real attempt: Google's own
+        // redirect, arriving after it, still signs in.
+        server.enqueue(tokenBody())
+        val real = flow.complete(config.redirectUri + "?state=$state&code=c")
+        assertThat((real as AppResult.Success).data).isEqualTo("eyJ.id.token")
+    }
+
+    @Test
+    fun `the attempt survives a process death during the browser step`() = runTest {
+        server.enqueue(tokenBody())
+        val before = flow()
+        val authorization = query(before.begin())
+
+        // The process dies: a new flow object, nothing in memory, the store kept.
+        val after = flow()
+        nowMillis += 60_000L
+        val result = after.complete(config.redirectUri + "?state=${authorization.getValue("state")}&code=c")
+
+        assertThat((result as AppResult.Success).data).isEqualTo("eyJ.id.token")
+        val verifier = formOf(server.takeRequest().body!!.utf8()).getValue("code_verifier")
+        val challenge = Base64.getUrlEncoder().withoutPadding()
+            .encodeToString(MessageDigest.getInstance("SHA-256").digest(verifier.toByteArray(Charsets.US_ASCII)))
+        assertThat(challenge).isEqualTo(authorization["code_challenge"])
+        // Spent: the stored copy is gone too, so a replay finds nothing.
+        assertThat(attemptStore.load()).isNull()
+    }
+
+    @Test
+    fun `a restored attempt still has to match the state`() = runTest {
+        flow().begin()
+
+        val result = flow().complete(config.redirectUri + "?state=forged&code=c")
+
+        assertThat(((result as AppResult.Failure).error as AppError.AuthFailed).code)
+            .isEqualTo(GoogleSignIn.CODE_STATE_MISMATCH)
+        assertThat(server.requestCount).isEqualTo(0)
+    }
+
+    @Test
+    fun `a stored attempt older than its lifetime is dropped`() = runTest {
+        val state = query(flow().begin()).getValue("state")
+        nowMillis += GoogleAuthorizationFlow.ATTEMPT_TTL_MILLIS + 1
+
+        val result = flow().complete(config.redirectUri + "?state=$state&code=c")
+
+        assertThat(((result as AppResult.Failure).error as AppError.AuthFailed).code)
+            .isEqualTo(GoogleSignIn.CODE_STATE_MISMATCH)
+        assertThat(server.requestCount).isEqualTo(0)
+        assertThat(attemptStore.load()).isNull()
     }
 
     private fun formOf(body: String): Map<String, String> = body.split('&').associate { pair ->

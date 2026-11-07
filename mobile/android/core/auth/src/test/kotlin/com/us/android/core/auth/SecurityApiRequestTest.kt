@@ -210,14 +210,17 @@ class SecurityApiRequestTest {
     // ── OAuth ──────────────────────────────────────────────────────────
 
     @Test
-    fun `oauth token posts the access token to the provider route and a 200 is a session`() = runTest {
+    fun `oauth token posts the ID token as id_token to the provider route and a 200 is a session`() = runTest {
         enqueue(200, SESSION_BODY)
 
-        val result = repository(this).signInWithOAuth("google", "ya29.access")
+        val result = repository(this).signInWithOAuth("google", "eyJhbGciOiJSUzI1NiJ9.payload.sig")
 
         val request = server.takeRequest()
         assertThat(request.target).isEqualTo("/v1/auth/oauth/google/token")
-        assertThat(request.bodyText()).isEqualTo("""{"token":"ya29.access"}""")
+        // Exactly the body OAuthTokenRequest binds (oauth.go:114). The old
+        // `token` field is what the server now refuses with ID_TOKEN_REQUIRED,
+        // so it must not appear at all.
+        assertThat(request.bodyText()).isEqualTo("""{"id_token":"eyJhbGciOiJSUzI1NiJ9.payload.sig"}""")
         val outcome = (result as AppResult.Success).data as OAuthSignInOutcome.SignedIn
         assertThat(outcome.state).isEqualTo(SessionState.Authenticated("u1", "s1"))
     }
@@ -263,6 +266,28 @@ class SecurityApiRequestTest {
         val error = (repository(this).signInWithOAuth("google", "bad") as AppResult.Failure).error
 
         assertThat(error).isInstanceOf(AppError.AuthFailed::class.java)
+    }
+
+    @Test
+    fun `oauth token ID_TOKEN_REQUIRED and OAUTH_UNAVAILABLE keep their codes and have their own words`() = runTest {
+        enqueue(
+            400,
+            """{"error":{"code":"ID_TOKEN_REQUIRED","message":"Send the provider's ID token in id_token; """ +
+                """access tokens are not accepted"}}""",
+        )
+        enqueue(
+            503,
+            """{"error":{"code":"OAUTH_UNAVAILABLE","message":"Sign-in with this provider is not available"}}""",
+        )
+        val repository = repository(this)
+
+        val required = (repository.signInWithOAuth("google", "x") as AppResult.Failure).error
+        val unavailable = (repository.signInWithOAuth("google", "x") as AppResult.Failure).error
+
+        assertThat((required as AppError.Unknown).code).isEqualTo("ID_TOKEN_REQUIRED")
+        assertThat((unavailable as AppError.Server).code).isEqualTo("OAUTH_UNAVAILABLE")
+        assertThat(AuthErrorText.forOAuth(required)).contains("latest version")
+        assertThat(AuthErrorText.forOAuth(unavailable)).contains("Google sign-in isn't available right now")
     }
 
     @Test

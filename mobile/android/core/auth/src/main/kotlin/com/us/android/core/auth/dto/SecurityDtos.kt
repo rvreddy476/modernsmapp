@@ -44,12 +44,18 @@ data class ResetPasswordRequestDto(
 )
 
 /**
- * Mirrors OAuthTokenRequest (oauth.go:75). [token] is a provider ACCESS token,
- * not an ID token: the service hands it straight to Google's userinfo endpoint
- * (oauth.go:568), which an ID token cannot open.
+ * Mirrors OAuthTokenRequest (auth-service `internal/http/oauth.go:114`).
+ *
+ * [idToken] is Google's OpenID Connect ID token, sent as `id_token`. The
+ * server verifies it against Google's keys and checks that `aud` is one of our
+ * client ids (`OAUTH_GOOGLE_ID_TOKEN_AUDIENCES`), so a token Google issued to
+ * some other app cannot open an account here. The old body, a provider ACCESS
+ * token in `token`, is refused with 400 `ID_TOKEN_REQUIRED`: an access token
+ * does not say which app it was issued to. Nothing else goes in this body —
+ * in particular never an access token.
  */
 @Serializable
-data class OAuthTokenRequestDto(val token: String)
+data class OAuthTokenRequestDto(@SerialName("id_token") val idToken: String)
 
 /**
  * The 202 body of `POST /v1/auth/oauth/:provider/token` — service.OAuthPendingResponse

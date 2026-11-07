@@ -1,42 +1,74 @@
 package com.us.android.feature.auth.partner
 
+import android.os.SystemClock
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.ViewModel
-import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.viewModelScope
 import com.us.android.core.auth.*
 import com.us.android.core.auth.dto.*
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.designsystem.component.*
+import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.model.SessionState
+import com.us.android.feature.auth.login.LoginNavigation
+import com.us.android.feature.auth.stepup.StepUpRoute
+import com.us.android.feature.auth.twofactor.TwoFactorRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.Job
-import android.os.SystemClock
-import androidx.compose.ui.Alignment
-import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.unit.dp
-import com.us.android.core.designsystem.icon.UsIcons
 import java.util.UUID
 import javax.inject.Inject
 
 data class PartnerPhoneState(
-    val register: Boolean = false, val first: String = "", val last: String = "",
-    val gender: String = "", val phone: String = "", val consent: Boolean = false,
-    val code: String = "", val challenge: PartnerPhoneChallengeDto? = null,
-    val busy: Boolean = false, val cooldown: Int = 0, val error: String? = null,
+    val register: Boolean = false,
+    val first: String = "",
+    val last: String = "",
+    val gender: String = "",
+    val phone: String = "",
+    val consent: Boolean = false,
+    val code: String = "",
+    val challenge: PartnerPhoneChallengeDto? = null,
+    val busy: Boolean = false,
+    val cooldown: Int = 0,
+    val error: String? = null,
+    /** The code was right but the server wants a second step first (`requires_2fa` / `requires_step_up`). */
+    val pendingStep: LoginNavigation? = null,
 )
+
+/**
+ * Where a verified code goes when it is not yet a session — the same mapping
+ * as `LoginViewModel.applySession`, so a partner with 2FA or an unusual
+ * sign-in can finish instead of being stuck on the code screen (L7).
+ */
+internal fun partnerSignInStep(session: SessionState): LoginNavigation? = when (session) {
+    is SessionState.PendingTwoFactor -> LoginNavigation.TwoFactor(
+        userId = session.userId,
+        pendingToken = session.pendingToken,
+    )
+    is SessionState.PendingStepUp -> LoginNavigation.StepUp(
+        pendingToken = session.pendingToken,
+        methods = session.methods,
+    )
+    else -> null
+}
+
+private const val ADDITIONAL_VERIFICATION_TEXT =
+    "Additional account verification is required. Complete it before continuing."
 
 fun partnerPhoneError(s: PartnerPhoneState): String? = when {
     !Regex("[6-9][0-9]{9}").matches(s.phone) -> "Enter a valid 10-digit mobile number."
@@ -100,11 +132,30 @@ class PartnerPhoneViewModel @Inject constructor(private val auth: AuthRepository
         mutable.value = s.copy(busy = true, error = null)
         viewModelScope.launch {
             when (val r = auth.verifyPartnerPhone(challenge.challengeId, s.code, deviceId)) {
-                is AppResult.Failure -> mutable.value = mutable.value.copy(busy = false, error = AuthErrorText.forLogin(r.error))
-                is AppResult.Success -> mutable.value = mutable.value.copy(busy = false, code = "", error =
-                    if (r.data is SessionState.Authenticated) null else "Additional account verification is required. Complete it before continuing.")
+                // A wrong or expired code is 401 AUTH_FAILED: say so about the
+                // code, not about an email and password nobody typed here.
+                is AppResult.Failure -> mutable.value = mutable.value.copy(
+                    busy = false,
+                    error = AuthErrorText.forPhoneCode(r.error),
+                )
+                is AppResult.Success -> {
+                    val step = partnerSignInStep(r.data)
+                    val stuck = r.data !is SessionState.Authenticated && step == null
+                    mutable.value = mutable.value.copy(
+                        busy = false,
+                        code = "",
+                        pendingStep = step,
+                        error = if (stuck) ADDITIONAL_VERIFICATION_TEXT else null,
+                    )
+                }
             }
         }
+    }
+
+    /** Back from the 2FA / step-up screen: start again from the number. */
+    fun leavePendingStep() {
+        cooldownJob?.cancel()
+        mutable.value = mutable.value.copy(pendingStep = null, challenge = null, code = "", cooldown = 0, error = null)
     }
 }
 
@@ -112,8 +163,23 @@ class PartnerPhoneViewModel @Inject constructor(private val auth: AuthRepository
 fun PartnerPhoneRoute(viewModel: PartnerPhoneViewModel = hiltViewModel()) {
     val s by viewModel.state.collectAsStateWithLifecycle()
     val uri = androidx.compose.ui.platform.LocalUriHandler.current
-    PartnerPhoneScreen(s, viewModel::edit, viewModel::request, viewModel::verify, viewModel::changeNumber,
-        viewModel::switchMode, onPolicy = { uri.openUri("https://cleestudio.com/$it") })
+    // The second step is drawn in place: the partner apps host this route
+    // with no nav graph of their own. Success needs no navigation — the
+    // session flips to Authenticated and the host swaps the whole screen.
+    when (val step = s.pendingStep) {
+        is LoginNavigation.TwoFactor -> TwoFactorRoute(
+            userId = step.userId,
+            pendingToken = step.pendingToken,
+            onBackToLogin = viewModel::leavePendingStep,
+        )
+        is LoginNavigation.StepUp -> StepUpRoute(
+            pendingToken = step.pendingToken,
+            methods = step.methods,
+            onBackToLogin = viewModel::leavePendingStep,
+        )
+        else -> PartnerPhoneScreen(s, viewModel::edit, viewModel::request, viewModel::verify, viewModel::changeNumber,
+            viewModel::switchMode, onPolicy = { uri.openUri("https://cleestudio.com/$it") })
+    }
 }
 
 internal fun resendSeconds(deadline: Long, now: Long): Int = ((deadline - now).coerceAtLeast(0) + 999).div(1000).toInt()

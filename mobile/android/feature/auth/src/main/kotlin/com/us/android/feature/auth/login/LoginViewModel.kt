@@ -12,6 +12,7 @@ import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageType
 import com.us.android.core.model.SessionState
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -162,15 +163,24 @@ class LoginViewModel @Inject constructor(
     @Volatile
     private var exchanging = false
 
+    // An error boundary, deliberately: the redirect is a URI any app or link
+    // can hand MainActivity, and this runs in a collector that lives as long
+    // as the ViewModel. An exception escaping here would crash the app from
+    // the Login screen (L6); it ends as an ordinary failure message instead.
+    @Suppress("TooGenericExceptionCaught")
     private suspend fun finishGoogleSignIn(redirect: String) {
         exchanging = true
         _state.update { it.copy(isGoogleSubmitting = true, googleAuthUrl = null, message = null) }
         val outcome = try {
-            when (val token = googleSignIn.complete(redirect)) {
+            when (val idToken = googleSignIn.complete(redirect)) {
                 is AppResult.Success ->
-                    authRepository.signInWithOAuth(AuthRepository.OAUTH_PROVIDER_GOOGLE, token.data)
-                is AppResult.Failure -> AppResult.Failure(token.error)
+                    authRepository.signInWithOAuth(AuthRepository.OAUTH_PROVIDER_GOOGLE, idToken.data)
+                is AppResult.Failure -> AppResult.Failure(idToken.error)
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            AppResult.Failure(AppError.AuthFailed(code = GoogleSignIn.CODE_STATE_MISMATCH))
         } finally {
             exchanging = false
         }

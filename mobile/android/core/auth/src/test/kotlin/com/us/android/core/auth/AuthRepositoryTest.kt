@@ -45,18 +45,19 @@ class AuthRepositoryTest {
         scope: kotlinx.coroutines.CoroutineScope,
         teardownTasks: Set<SessionTeardownTask> = emptySet(),
     ): AuthRepository {
-        val api = Retrofit.Builder()
+        val retrofit = Retrofit.Builder()
             .baseUrl(server.url("/"))
             .client(OkHttpClient())
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()
-            .create(AuthApi::class.java)
+        val api = retrofit.create(AuthApi::class.java)
         val sessionManager = SessionManager(
             tokenStore = tokenStore,
             authApi = Provider { api },
             cookieStore = CsrfCookieStore(),
             telemetry = NoOpTelemetry,
             scope = scope,
+            sessionApi = Provider { retrofit.create(SessionTokenApi::class.java) },
         )
         return AuthRepository(api, sessionManager, ErrorMapper(json), teardownTasks, json)
     }
@@ -139,6 +140,26 @@ class AuthRepositoryTest {
 
         assertThat(result).isInstanceOf(AppResult.Success::class.java)
         assertThat(repository.sessionState.value).isEqualTo(SessionState.Unauthenticated)
+        assertThat(tokenStore.hasRefreshToken()).isFalse()
+    }
+
+    /**
+     * L8 / H1: the cookie jar no longer carries `refresh_token`, so the token
+     * to revoke goes in the body. A body-less logout is a 200 no-op
+     * server-side that leaves the 30-day refresh token valid.
+     */
+    @Test
+    fun `logout revokes the session server-side with the refresh token in the body`() = runTest {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "rt-device")
+        repository = buildRepository(this)
+        enqueue(200, """{"data":{"status":"ok"}}""")
+
+        repository.logout()
+
+        val request = server.takeRequest()
+        assertThat(request.method).isEqualTo("POST")
+        assertThat(request.target).isEqualTo("/v1/auth/logout")
+        assertThat(request.body!!.utf8()).isEqualTo("""{"refresh_token":"rt-device"}""")
         assertThat(tokenStore.hasRefreshToken()).isFalse()
     }
 

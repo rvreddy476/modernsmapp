@@ -3,6 +3,8 @@ package com.us.android.core.auth.di
 import com.us.android.core.auth.oauth.GoogleAuthorizationFlow
 import com.us.android.core.auth.oauth.GoogleOAuthConfig
 import com.us.android.core.auth.oauth.GoogleSignIn
+import com.us.android.core.auth.oauth.KeystoreOAuthAttemptStore
+import com.us.android.core.auth.oauth.OAuthAttemptStore
 import dagger.Binds
 import dagger.BindsOptionalOf
 import dagger.Module
@@ -29,4 +31,9 @@ abstract class OAuthModule {
     @Binds
     @Singleton
     abstract fun bindGoogleSignIn(impl: GoogleAuthorizationFlow): GoogleSignIn
+
+    /** The attempt in flight survives a process death during the browser step (L6). */
+    @Binds
+    @Singleton
+    abstract fun bindOAuthAttemptStore(impl: KeystoreOAuthAttemptStore): OAuthAttemptStore
 }

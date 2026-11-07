@@ -140,8 +140,31 @@ object AuthErrorText {
         is AppError.Unknown -> when (error.code) {
             OAUTH_SIGNUP_FAILED ->
                 "We couldn't use that phone number. Check it, or try a different one."
+            // 400: the body carried no ID token. Only an out-of-date build
+            // sends that, so the useful advice is to update.
+            ID_TOKEN_REQUIRED ->
+                "Google sign-in needs the latest version of the app. Update it, or sign in with your email."
             else -> "We couldn't sign you in with Google. Please try again."
         }
+        // 503: the server has no Google client configured for this app.
+        is AppError.Server -> when (error.code) {
+            OAUTH_UNAVAILABLE -> "Google sign-in isn't available right now. Sign in with your email instead."
+            else -> forLogin(error)
+        }
+        is AppError.RateLimited -> lockedOutText(error)
+        else -> forLogin(error)
+    }
+
+    /**
+     * A phone-code sign-in (`POST /v1/auth/partner/phone/verify`, and the
+     * code request before it). A wrong or expired code is 401 `AUTH_FAILED`
+     * (partner_phone.go:71) — on an OTP screen that must talk about the code,
+     * never about an email and password the person never typed.
+     */
+    fun forPhoneCode(error: AppError): String = when (error) {
+        is AppError.AuthFailed ->
+            "That code isn't right or has expired. Check it, or request a new code."
+        is AppError.InvalidRequest -> "Enter the six-digit code."
         is AppError.RateLimited -> lockedOutText(error)
         else -> forLogin(error)
     }
@@ -156,6 +179,8 @@ object AuthErrorText {
     private const val WEAK_PASSWORD = "WEAK_PASSWORD"
     private const val OAUTH_VERIFY_FAILED = "OAUTH_VERIFY_FAILED"
     private const val OAUTH_SIGNUP_FAILED = "OAUTH_SIGNUP_FAILED"
+    private const val ID_TOKEN_REQUIRED = "ID_TOKEN_REQUIRED"
+    private const val OAUTH_UNAVAILABLE = "OAUTH_UNAVAILABLE"
     private const val RESET_FAILED_TEXT =
         "That code didn't work. It may have expired — request a new one and try again."
 

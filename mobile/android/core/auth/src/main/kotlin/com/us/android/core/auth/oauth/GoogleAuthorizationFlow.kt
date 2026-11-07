@@ -34,7 +34,16 @@ import kotlin.coroutines.resumeWithException
  * Process-scoped on purpose. The browser may hand the redirect to a NEW
  * `MainActivity` instance (it launches the scheme from its own task), so the
  * attempt in flight — verifier and state — lives here, not in a ViewModel,
- * and whichever Login screen is on top can finish it.
+ * and whichever Login screen is on top can finish it. It is also written to
+ * [OAuthAttemptStore] (encrypted, [ATTEMPT_TTL_MILLIS]), because Android may
+ * kill the process while the consent page is up; the redirect then starts a
+ * fresh process that finds the attempt there instead of failing with a state
+ * mismatch.
+ *
+ * What comes back is Google's ID token, which the server verifies against
+ * Google's keys and our client ids. Never the access token: the server refuses
+ * it (400 `ID_TOKEN_REQUIRED`), because an access token does not say which app
+ * it was issued to.
  *
  * The exchange uses the bare OkHttp client: no auth interceptor (there is no
  * session yet), no CSRF cookie jar, no API-host retry policy. The client id is
@@ -48,6 +57,8 @@ class GoogleAuthorizationFlow internal constructor(
     private val json: Json,
     private val endpoints: GoogleEndpoints,
     private val random: SecureRandom,
+    private val attemptStore: OAuthAttemptStore = InMemoryOAuthAttemptStore(),
+    private val now: () -> Long = System::currentTimeMillis,
 ) : GoogleSignIn {
 
     @Inject
@@ -55,7 +66,8 @@ class GoogleAuthorizationFlow internal constructor(
         config: Optional<GoogleOAuthConfig>,
         @BareClient client: OkHttpClient,
         json: Json,
-    ) : this(config.orElse(null), client, json, GoogleEndpoints(), SecureRandom())
+        attemptStore: OAuthAttemptStore,
+    ) : this(config.orElse(null), client, json, GoogleEndpoints(), SecureRandom(), attemptStore)
 
     /** Google's hosts. Overridable so a test can point the exchange at MockWebServer. */
     data class GoogleEndpoints(
@@ -63,10 +75,8 @@ class GoogleAuthorizationFlow internal constructor(
         val token: String = "https://oauth2.googleapis.com/token",
     )
 
-    private class Attempt(val state: String, val codeVerifier: String)
-
     @Volatile
-    private var attempt: Attempt? = null
+    private var attempt: PendingOAuthAttempt? = null
 
     private val _pendingRedirect = MutableStateFlow<String?>(null)
     override val pendingRedirect: StateFlow<String?> = _pendingRedirect.asStateFlow()
@@ -77,7 +87,9 @@ class GoogleAuthorizationFlow internal constructor(
         val cfg = requireNotNull(config) { "Google sign-in is not configured" }
         val verifier = randomUrlSafe(VERIFIER_BYTES)
         val state = randomUrlSafe(STATE_BYTES)
-        attempt = Attempt(state, verifier)
+        val started = PendingOAuthAttempt(state, verifier, now())
+        attempt = started
+        attemptStore.save(started)
         _pendingRedirect.value = null
         val params = listOf(
             "client_id" to cfg.clientId,
@@ -105,21 +117,40 @@ class GoogleAuthorizationFlow internal constructor(
     override suspend fun complete(redirect: String): AppResult<String> {
         _pendingRedirect.value = null
         val cfg = config ?: return failed(GoogleSignIn.CODE_STATE_MISMATCH)
-        val current = attempt ?: return failed(GoogleSignIn.CODE_STATE_MISMATCH)
-        val query = parseQuery(redirect)
+        val current = currentAttempt() ?: return failed(GoogleSignIn.CODE_STATE_MISMATCH)
+        // A redirect another app or a tapped link can send us: a bad escape
+        // (`%zz`, a trailing `%`) is a refusal, never a crash, and it does not
+        // spend the real attempt still waiting for Google's redirect.
+        val query = parseQuery(redirect) ?: return failed(GoogleSignIn.CODE_STATE_MISMATCH)
         // Google names the refusal in `error`; `access_denied` is the person
         // closing the page or declining. Anything else is still a non-event
         // for the user, who gets the generic sentence.
         if (query.containsKey("error")) {
-            attempt = null
+            spend()
             return failed(GoogleSignIn.CODE_CANCELLED)
         }
         if (query["state"] != current.state) return failed(GoogleSignIn.CODE_STATE_MISMATCH)
         val code = query["code"].orEmpty()
         if (code.isBlank()) return failed(GoogleSignIn.CODE_STATE_MISMATCH)
         // One attempt, one exchange: a replayed redirect finds nothing.
-        attempt = null
+        spend()
         return exchange(cfg, code, current.codeVerifier)
+    }
+
+    /** The attempt in memory, else the one a dead process left behind, if still fresh. */
+    private fun currentAttempt(): PendingOAuthAttempt? {
+        val candidate = attempt ?: attemptStore.load() ?: return null
+        val age = now() - candidate.createdAtMillis
+        if (age < 0 || age > ATTEMPT_TTL_MILLIS) {
+            spend()
+            return null
+        }
+        return candidate
+    }
+
+    private fun spend() {
+        attempt = null
+        attemptStore.clear()
     }
 
     private suspend fun exchange(cfg: GoogleOAuthConfig, code: String, verifier: String): AppResult<String> {
@@ -131,24 +162,34 @@ class GoogleAuthorizationFlow internal constructor(
             .add("code_verifier", verifier)
             .build()
         val request = Request.Builder().url(endpoints.token).post(body).build()
-        val response = try {
-            client.newCall(request).await()
-        } catch (e: IOException) {
-            return AppResult.Failure(AppError.NoNetwork())
-        }
-        return response.use { res ->
-            val text = res.body?.string().orEmpty()
-            if (!res.isSuccessful) {
-                AppResult.Failure(AppError.AuthFailed(code = GoogleSignIn.CODE_TOKEN_EXCHANGE))
-            } else {
-                val token = runCatching { json.decodeFromString(TokenResponse.serializer(), text) }
-                    .getOrNull()?.accessToken.orEmpty()
-                if (token.isBlank()) {
-                    AppResult.Failure(AppError.Malformed("token response without access_token"))
+        // The body read is inside the try too: a connection dropped mid-body
+        // throws from string(), and that must be "offline", not a crash.
+        return try {
+            client.newCall(request).await().use { res ->
+                val text = res.body?.string().orEmpty()
+                if (res.isSuccessful) {
+                    idTokenFrom(text)
                 } else {
-                    AppResult.Success(token)
+                    AppResult.Failure(AppError.AuthFailed(code = GoogleSignIn.CODE_TOKEN_EXCHANGE))
                 }
             }
+        } catch (_: IOException) {
+            AppResult.Failure(AppError.NoNetwork())
+        }
+    }
+
+    /**
+     * The scope carries `openid`, so Google returns an ID token beside the
+     * access token. Only the ID token is read; the access token is never
+     * passed on.
+     */
+    private fun idTokenFrom(text: String): AppResult<String> {
+        val idToken = runCatching { json.decodeFromString(TokenResponse.serializer(), text) }
+            .getOrNull()?.idToken.orEmpty()
+        return if (idToken.isBlank()) {
+            AppResult.Failure(AppError.Malformed("token response without id_token"))
+        } else {
+            AppResult.Success(idToken)
         }
     }
 
@@ -167,9 +208,9 @@ class GoogleAuthorizationFlow internal constructor(
 
     private fun encode(value: String): String = URLEncoder.encode(value, "UTF-8").replace("+", "%20")
 
-    /** Mirrors Google's token response; only the access token is read. */
+    /** Mirrors Google's token response; only the ID token is read. */
     @Serializable
-    private data class TokenResponse(@SerialName("access_token") val accessToken: String = "")
+    private data class TokenResponse(@SerialName("id_token") val idToken: String = "")
 
     private suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation ->
         enqueue(
@@ -191,14 +232,25 @@ class GoogleAuthorizationFlow internal constructor(
         private const val VERIFIER_BYTES = 32
         private const val STATE_BYTES = 16
 
-        /** The redirect's query, decoded. Tolerates a fragment and a missing `?`. */
-        internal fun parseQuery(uri: String): Map<String, String> {
+        /** How long a started attempt may be finished, across a process death too. */
+        const val ATTEMPT_TTL_MILLIS = 10 * 60 * 1000L
+
+        /**
+         * The redirect's query, decoded. Tolerates a fragment and a missing
+         * `?`. Null when an escape is malformed (`%zz`, a trailing `%`):
+         * [URLDecoder] throws on those, and this URI comes from outside the app.
+         */
+        internal fun parseQuery(uri: String): Map<String, String>? {
             val query = uri.substringAfter('?', "").substringBefore('#')
             if (query.isBlank()) return emptyMap()
-            return query.split('&').filter { it.isNotBlank() }.associate { pair ->
-                val key = URLDecoder.decode(pair.substringBefore('='), "UTF-8")
-                val value = URLDecoder.decode(pair.substringAfter('=', ""), "UTF-8")
-                key to value
+            return try {
+                query.split('&').filter { it.isNotBlank() }.associate { pair ->
+                    val key = URLDecoder.decode(pair.substringBefore('='), "UTF-8")
+                    val value = URLDecoder.decode(pair.substringAfter('=', ""), "UTF-8")
+                    key to value
+                }
+            } catch (_: IllegalArgumentException) {
+                null
             }
         }
     }

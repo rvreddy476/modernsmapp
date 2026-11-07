@@ -136,6 +136,34 @@ class TokenAuthenticatorTest {
     }
 
     @Test
+    fun `the authenticator hands the refresher the token the failed request carried`() {
+        // L4: SessionManager.refreshIfStale skips the refresh when that token
+        // is no longer current. It can only do so if it is told which one failed.
+        val seen = mutableListOf<String?>()
+        val staleAware = object : TokenRefresher {
+            override suspend fun refresh(): String? = error("must not force a refresh")
+            override suspend fun refreshIfStale(failedToken: String?): String? {
+                seen += failedToken
+                return "already-fresh"
+            }
+        }
+        val l4Client = OkHttpClient.Builder()
+            .addInterceptor(AuthInterceptor(provider, testApiConfig(server)))
+            .authenticator(TokenAuthenticator(staleAware))
+            .build()
+        server.enqueue(MockResponse.Builder().code(401).body("{}").build())
+        server.enqueue(MockResponse.Builder().code(200).body("{}").build())
+
+        val code = l4Client.newCall(Request.Builder().url(server.url("/v1/feed/home")).build())
+            .execute().use { it.code }
+
+        assertThat(code).isEqualTo(200)
+        assertThat(seen).containsExactly("stale-token")
+        server.takeRequest()
+        assertThat(server.takeRequest().headers["Authorization"]).isEqualTo("Bearer already-fresh")
+    }
+
+    @Test
     fun `runBlocking inside the authenticator does not deadlock`() {
         // The Authenticator contract is synchronous while refresh is a
         // suspend function. This asserts the bridge actually completes.

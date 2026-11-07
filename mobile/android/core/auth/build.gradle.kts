@@ -23,4 +23,7 @@ dependencies {
     // does not leak onto this module's test classpath. Tests here build their
     // own Retrofit against MockWebServer and need it explicitly.
     testImplementation(libs.retrofit.kotlinx.serialization)
+    // RefreshUnderLoadTest builds the production client stack from
+    // NetworkModule, whose providers take the (implementation-scoped) logger.
+    testImplementation(libs.okhttp.logging)
 }

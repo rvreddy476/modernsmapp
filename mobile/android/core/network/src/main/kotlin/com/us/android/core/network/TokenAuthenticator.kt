@@ -16,10 +16,15 @@ import javax.inject.Singleton
  * interceptor would have to re-issue the call manually and get the
  * retry/redirect bookkeeping right by hand.
  *
- * `runBlocking` is correct here. OkHttp's Authenticator contract is
- * synchronous and this already runs on a background dispatcher thread, never
- * the main thread. Single-flight collapsing lives in the [TokenRefresher]
- * implementation, so N concurrent 401s produce one refresh.
+ * `runBlocking` is safe here ONLY because the refresh does not run on the
+ * client this authenticator serves (H2, audit 2026-10-29). Each 401'd call
+ * blocks in here while holding one of its dispatcher's per-host slots (five
+ * by default). A refresh queued on that same dispatcher waits for a slot that
+ * none of the blocked calls will ever release, and the API host is dead until
+ * the process dies. `:core:auth` therefore sends `/v1/auth/refresh` through
+ * the separate `@SessionClient` (its own dispatcher, its own timeouts, no
+ * authenticator). Single-flight collapsing lives in the [TokenRefresher], so
+ * N concurrent 401s produce one refresh.
  */
 @Singleton
 class TokenAuthenticator @Inject constructor(
@@ -39,11 +44,12 @@ class TokenAuthenticator @Inject constructor(
             ?.removePrefix("Bearer ")
             ?.trim()
 
-        val newToken = runBlocking { tokenRefresher.refresh() } ?: return null
+        // If another call already refreshed, this returns that token without a
+        // second refresh (L4).
+        val newToken = runBlocking { tokenRefresher.refreshIfStale(failedToken) } ?: return null
 
-        // Another thread may already have refreshed while this one waited. If
-        // the token changed, retry; if it did not, the refresh genuinely did
-        // not help and retrying would just 401 again.
+        // The token did not change: the refresh genuinely did not help and
+        // retrying would just 401 again.
         if (newToken == failedToken) return null
 
         return response.request.newBuilder()

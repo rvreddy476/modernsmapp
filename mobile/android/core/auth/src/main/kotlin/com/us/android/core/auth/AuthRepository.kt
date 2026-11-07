@@ -253,14 +253,14 @@ class AuthRepository @Inject constructor(
     }
 
     /**
-     * Signs in with a Google ACCESS token (not an ID token — see
+     * Signs in with a Google ID token (never an access token — see
      * [OAuthTokenRequestDto]). Three outcomes, by shape rather than by status:
      * a session (possibly `requires_2fa`, which [SessionManager] turns into
      * the pending state the two-step screen handles), or a pending signup
      * that needs a phone number first.
      */
-    suspend fun signInWithOAuth(provider: String, accessToken: String): AppResult<OAuthSignInOutcome> =
-        apiCall(errorMapper) { authApi.oauthToken(provider, OAuthTokenRequestDto(accessToken)) }
+    suspend fun signInWithOAuth(provider: String, idToken: String): AppResult<OAuthSignInOutcome> =
+        apiCall(errorMapper) { authApi.oauthToken(provider, OAuthTokenRequestDto(idToken = idToken)) }
             .map { raw ->
                 val pending = json.decodeFromJsonElement(OAuthPendingSignupDto.serializer(), raw)
                 if (pending.isPendingSignup) {
@@ -318,18 +318,13 @@ class AuthRepository @Inject constructor(
             }
         }
 
-        val result = try {
-            apiCall(errorMapper) { authApi.logout() }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (_: Throwable) {
-            AppResult.Success(Unit)
-        }
+        // Server-side revocation, with the refresh token in the body (L8): the
+        // cookie jar holds only csrf_token now, so a body-less logout would
+        // revoke nothing and leave the 30-day refresh token alive. Best
+        // effort — it never throws, and sign-out completes regardless.
+        sessionManager.revokeServerSession()
         sessionManager.clearSession()
-        return when (result) {
-            is AppResult.Success -> AppResult.Success(Unit)
-            is AppResult.Failure -> AppResult.Success(Unit)
-        }
+        return AppResult.Success(Unit)
     }
 
     /**

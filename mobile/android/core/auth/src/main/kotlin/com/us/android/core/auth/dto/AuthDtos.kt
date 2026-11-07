@@ -19,8 +19,19 @@ data class LoginRequestDto(
     val platform: String = "android",
 )
 
+/** `POST /v1/auth/refresh` body — the field `Refresh` binds (handler.go:938). */
 @Serializable
 data class RefreshRequestDto(
+    @SerialName("refresh_token") val refreshToken: String,
+)
+
+/**
+ * `POST /v1/auth/logout` body — the field `Logout` binds (handler.go:970).
+ * Without it the server has nothing to revoke: the app's cookie jar no longer
+ * carries `refresh_token` (H1), and the server answers 200 to an empty logout.
+ */
+@Serializable
+data class LogoutRequestDto(
     @SerialName("refresh_token") val refreshToken: String,
 )
 

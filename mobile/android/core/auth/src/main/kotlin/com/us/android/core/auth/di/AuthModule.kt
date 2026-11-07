@@ -3,9 +3,11 @@ package com.us.android.core.auth.di
 import com.us.android.core.auth.AuthApi
 import com.us.android.core.auth.KeystoreTokenStore
 import com.us.android.core.auth.SessionManager
+import com.us.android.core.auth.SessionTokenApi
 import com.us.android.core.auth.TokenStore
 import com.us.android.core.network.TokenProvider
 import com.us.android.core.network.TokenRefresher
+import com.us.android.core.network.di.SessionClient
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -29,6 +31,16 @@ object AuthModule {
     @Provides
     @Singleton
     fun provideAuthApi(retrofit: Retrofit): AuthApi = retrofit.create(AuthApi::class.java)
+
+    /**
+     * Refresh and logout, on the session client — NOT the authenticated one.
+     * A refresh on the authenticated client queues behind the very calls that
+     * are blocked waiting for it (H2).
+     */
+    @Provides
+    @Singleton
+    fun provideSessionTokenApi(@SessionClient retrofit: Retrofit): SessionTokenApi =
+        retrofit.create(SessionTokenApi::class.java)
 
     @Provides
     @Singleton

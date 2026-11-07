@@ -128,12 +128,17 @@ interface AuthApi {
     suspend fun resetPassword(@Body body: ResetPasswordRequestDto): ApiEnvelope<MessageDto>
 
     /**
-     * Signs in with a provider ACCESS token (oauth.go:84). Two success shapes:
-     * 200 with a normal [AuthResponseDto] (which may itself say
-     * `requires_2fa`), or 202 with an [OAuthPendingSignupDto] when the
-     * provider did not vouch for the email and no account exists. Decoded in
-     * `AuthRepository` from the raw object, because one Retrofit return type
-     * cannot name both. 401 `AUTH_FAILED` otherwise.
+     * Signs in with a Google ID token, `{"id_token": ...}` (oauth.go:119). Two
+     * success shapes: 200 with a normal [AuthResponseDto] (which may itself
+     * say `requires_2fa`), or 202 with an [OAuthPendingSignupDto] when no
+     * account exists yet. Decoded in `AuthRepository` from the raw object,
+     * because one Retrofit return type cannot name both.
+     *
+     * Refusals: 400 `ID_TOKEN_REQUIRED` (no `id_token` — the old access-token
+     * body), 400 `OAUTH_PROVIDER_UNSUPPORTED`, 503 `OAUTH_UNAVAILABLE` (no
+     * audiences configured server-side), 403 `EMAIL_NOT_VERIFIED` /
+     * `ACCOUNT_PURGED` / `ACCOUNT_PENDING_PURGE`, 401 `AUTH_FAILED` otherwise
+     * (signature, issuer, audience, expiry or `email_verified`).
      */
     @POST("v1/auth/oauth/{provider}/token")
     suspend fun oauthToken(

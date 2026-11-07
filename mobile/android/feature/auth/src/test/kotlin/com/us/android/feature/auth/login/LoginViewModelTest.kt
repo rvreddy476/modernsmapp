@@ -139,7 +139,8 @@ class LoginViewModelTest {
 
         assertThat(google.completed).containsExactly("com.googleusercontent.apps.1234:/oauth2redirect?code=c&state=s1")
         assertThat(api.oauthTokenRequests.single().first).isEqualTo("google")
-        assertThat(api.oauthTokenRequests.single().second.token).isEqualTo("ya29.token")
+        // The ID token goes to the server, in the field it binds (oauth.go:115).
+        assertThat(api.oauthTokenRequests.single().second.idToken).isEqualTo(FakeGoogleSignIn.GOOGLE_ID_TOKEN)
         assertThat(tokenStore.readRefreshToken()).isEqualTo("rt")
         assertThat(vm.state.value.isGoogleSubmitting).isFalse()
         assertThat(vm.state.value.navigation).isNull()
@@ -211,5 +212,37 @@ class LoginViewModelTest {
 
         assertThat(vm.state.value.message?.text).contains("couldn't sign you in with Google")
         assertThat(vm.state.value.isGoogleSubmitting).isFalse()
+    }
+
+    @Test
+    fun `a server with no Google client configured says Google sign-in is unavailable`() = runTest {
+        api.oauthTokenError = httpError(503, "OAUTH_UNAVAILABLE", "Sign-in with this provider is not available")
+        val google = FakeGoogleSignIn()
+        val vm = viewModel(this, google)
+        vm.signInWithGoogle()
+
+        google.offerRedirect("com.googleusercontent.apps.1234:/oauth2redirect?code=c&state=s1")
+
+        assertThat(vm.state.value.message?.text).contains("Google sign-in isn't available right now")
+        assertThat(vm.state.value.isGoogleSubmitting).isFalse()
+    }
+
+    @Test
+    fun `an exception while finishing the redirect is a message, not a crash`() = runTest {
+        val google = FakeGoogleSignIn().apply { completeThrows = IllegalArgumentException("bad escape") }
+        val vm = viewModel(this, google)
+        vm.signInWithGoogle()
+
+        google.offerRedirect("com.googleusercontent.apps.1234:/oauth2redirect?code=%zz&state=s1")
+
+        assertThat(vm.state.value.message?.text).contains("couldn't sign you in with Google")
+        assertThat(vm.state.value.isGoogleSubmitting).isFalse()
+        assertThat(api.oauthTokenRequests).isEmpty()
+        // The collector survived: the next redirect is still finished.
+        google.completeThrows = null
+        api.oauthTokenResponse = testJson.encodeToJsonElement(AuthResponseDto.serializer(), sessionResponse()) as JsonObject
+        vm.signInWithGoogle()
+        google.offerRedirect("com.googleusercontent.apps.1234:/oauth2redirect?code=c&state=s2")
+        assertThat(tokenStore.readRefreshToken()).isEqualTo("rt")
     }
 }

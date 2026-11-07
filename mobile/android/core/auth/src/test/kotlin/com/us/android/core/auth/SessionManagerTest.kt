@@ -4,9 +4,11 @@ import com.google.common.truth.Truth.assertThat
 import com.us.android.core.model.SessionState
 import com.us.android.core.network.cookie.CsrfCookieStore
 import com.us.android.core.telemetry.NoOpTelemetry
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
 import kotlinx.coroutines.test.runTest
@@ -20,6 +22,8 @@ import org.junit.Before
 import org.junit.Test
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import javax.inject.Provider
 
@@ -36,6 +40,7 @@ class SessionManagerTest {
     private lateinit var server: MockWebServer
     private lateinit var tokenStore: FakeTokenStore
     private lateinit var api: AuthApi
+    private lateinit var sessionApi: SessionTokenApi
     private val json = Json {
         ignoreUnknownKeys = true
         explicitNulls = false
@@ -46,23 +51,25 @@ class SessionManagerTest {
         server = MockWebServer()
         server.start()
         tokenStore = FakeTokenStore()
-        api = Retrofit.Builder()
+        val retrofit = Retrofit.Builder()
             .baseUrl(server.url("/"))
             .client(OkHttpClient())
             .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
             .build()
-            .create(AuthApi::class.java)
+        api = retrofit.create(AuthApi::class.java)
+        sessionApi = retrofit.create(SessionTokenApi::class.java)
     }
 
     @After
     fun tearDown() = server.close()
 
-    private fun manager(scope: TestScope) = SessionManager(
+    private fun manager(scope: CoroutineScope) = SessionManager(
         tokenStore = tokenStore,
-        authApi = Provider { api },
+        authApi = Provider { error("refresh and logout go through the session client") },
         cookieStore = CsrfCookieStore(),
         telemetry = NoOpTelemetry,
         scope = scope,
+        sessionApi = Provider { sessionApi },
     )
 
     private fun enqueue(code: Int, body: String) {
@@ -168,6 +175,11 @@ class SessionManagerTest {
 
         assertThat(sm.refresh()).isEqualTo("new-at")
         assertThat(tokenStore.readRefreshToken()).isEqualTo("new-rt")
+        val request = server.takeRequest()
+        assertThat(request.target).isEqualTo("/v1/auth/refresh")
+        // The field Refresh binds (handler.go:938); never a cookie (H1).
+        assertThat(request.body!!.utf8()).isEqualTo("""{"refresh_token":"old-rt"}""")
+        assertThat(request.headers["Cookie"]).isNull()
     }
 
     @Test
@@ -179,13 +191,7 @@ class SessionManagerTest {
         tokenStore = FakeTokenStore(userId = "u1", refreshToken = "old-rt")
         val dispatcher = StandardTestDispatcher(testScheduler)
         val scope = TestScope(dispatcher)
-        val sm = SessionManager(
-            tokenStore = tokenStore,
-            authApi = Provider { api },
-            cookieStore = CsrfCookieStore(),
-            telemetry = NoOpTelemetry,
-            scope = scope,
-        )
+        val sm = manager(scope)
 
         val hits = AtomicInteger(0)
         server.dispatcher = object : mockwebserver3.Dispatcher() {
@@ -268,5 +274,229 @@ class SessionManagerTest {
         assertThat(sm.state.value).isEqualTo(SessionState.Unauthenticated)
         assertThat(sm.currentAccessToken()).isNull()
         assertThat(tokenStore.hasRefreshToken()).isFalse()
+    }
+
+    // ── L4: a late 401 reuses a token that is already fresh ─────────────
+
+    @Test
+    fun `a 401 for a token that is no longer current reuses the current one without refreshing`() = runTest {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "rt")
+        val sm = manager(this)
+        sm.applyAuthResponse(json.decodeFromString(session("fresh-at", "rt")))
+
+        // The failed request carried an older token, or none at all (cold start).
+        assertThat(sm.refreshIfStale("old-at")).isEqualTo("fresh-at")
+        assertThat(sm.refreshIfStale(null)).isEqualTo("fresh-at")
+        assertThat(server.requestCount).isEqualTo(0)
+    }
+
+    @Test
+    fun `a 401 for the current token does refresh`() = runTest {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "rt")
+        val sm = manager(this)
+        sm.applyAuthResponse(json.decodeFromString(session("at-1", "rt")))
+        enqueue(200, """{"data":${session("at-2", "rt-2")}}""")
+
+        assertThat(sm.refreshIfStale("at-1")).isEqualTo("at-2")
+        assertThat(server.requestCount).isEqualTo(1)
+    }
+
+    // ── L5: the session generation ──────────────────────────────────────
+
+    @Test
+    fun `a refresh that lands after sign-out does not sign the person back in`() = runBlocking {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "rt")
+        val gate = HeldResponse(200, """{"data":${session("resurrected-at", "resurrected-rt")}}""")
+        server.dispatcher = gate
+        val sm = manager(CoroutineScope(Dispatchers.IO))
+
+        val pending = async(Dispatchers.IO) { sm.refresh() }
+        gate.awaitReceived()
+        sm.clearSession() // sign-out while the refresh is on the wire
+        gate.release()
+
+        assertThat(pending.await()).isNull()
+        assertThat(sm.state.value).isEqualTo(SessionState.Unauthenticated)
+        assertThat(sm.currentAccessToken()).isNull()
+        assertThat(tokenStore.hasRefreshToken()).isFalse()
+    }
+
+    @Test
+    fun `an old refresh rejected after a new sign-in does not wipe the new session`() = runBlocking {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "old-rt")
+        val gate = HeldResponse(401, """{"error":{"code":"AUTH_FAILED","message":"Authentication failed"}}""")
+        server.dispatcher = gate
+        val sm = manager(CoroutineScope(Dispatchers.IO))
+
+        val pending = async(Dispatchers.IO) { sm.refresh() }
+        gate.awaitReceived()
+        // The person signs in again (say as someone else) before the old answer arrives.
+        sm.applyAuthResponse(json.decodeFromString(session("new-at", "new-rt", userId = "u2")))
+        gate.release()
+
+        assertThat(pending.await()).isNull()
+        assertThat(sm.state.value).isEqualTo(SessionState.Authenticated("u2", "s1"))
+        assertThat(sm.currentAccessToken()).isEqualTo("new-at")
+        assertThat(tokenStore.readRefreshToken()).isEqualTo("new-rt")
+        assertThat(tokenStore.clearCount).isEqualTo(0)
+    }
+
+    @Test
+    fun `an old refresh's success after a new sign-in does not overwrite the new tokens`() = runBlocking {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "old-rt")
+        val gate = HeldResponse(200, """{"data":${session("old-session-at", "old-session-rt")}}""")
+        server.dispatcher = gate
+        val sm = manager(CoroutineScope(Dispatchers.IO))
+
+        val pending = async(Dispatchers.IO) { sm.refresh() }
+        gate.awaitReceived()
+        sm.applyAuthResponse(json.decodeFromString(session("new-at", "new-rt", userId = "u2")))
+        gate.release()
+
+        assertThat(pending.await()).isNull()
+        assertThat(sm.currentAccessToken()).isEqualTo("new-at")
+        assertThat(tokenStore.readRefreshToken()).isEqualTo("new-rt")
+        assertThat(tokenStore.userId).isEqualTo("u2")
+    }
+
+    @Test
+    fun `a refresh asked for after a new sign-in does not join the old session's refresh`() = runBlocking {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "old-rt")
+        val gate = HeldResponse(200, """{"data":${session("next-at", "next-rt", userId = "u2")}}""")
+        server.dispatcher = gate
+        val sm = manager(CoroutineScope(Dispatchers.IO))
+
+        val old = async(Dispatchers.IO) { sm.refresh() }
+        gate.awaitReceived()
+        sm.applyAuthResponse(json.decodeFromString(session("new-at", "new-rt", userId = "u2")))
+        val fresh = async(Dispatchers.IO) { sm.refresh() }
+        // Its own request, not a seat on the old one (which waits to be discarded).
+        gate.awaitSecondRequest()
+        gate.release()
+
+        assertThat(old.await()).isNull()
+        assertThat(fresh.await()).isEqualTo("next-at")
+        assertThat(sm.currentAccessToken()).isEqualTo("next-at")
+    }
+
+    // ── Server-side logout (L8 / H1) ────────────────────────────────────
+
+    @Test
+    fun `logout revokes server-side with the refresh token in the body`() = runTest {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "rt-to-revoke")
+        val sm = manager(this)
+        enqueue(200, """{"data":{"status":"ok"}}""")
+
+        sm.revokeServerSession()
+
+        val request = server.takeRequest()
+        assertThat(request.target).isEqualTo("/v1/auth/logout")
+        assertThat(request.body!!.utf8()).isEqualTo("""{"refresh_token":"rt-to-revoke"}""")
+    }
+
+    @Test
+    fun `logout with nothing to revoke makes no call, and a failing one never throws`() = runTest {
+        val sm = manager(this)
+        sm.revokeServerSession()
+        assertThat(server.requestCount).isEqualTo(0)
+
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "rt")
+        val again = manager(this)
+        enqueue(500, """{"error":{"code":"INTERNAL_ERROR","message":"boom"}}""")
+        again.revokeServerSession()
+        assertThat(server.requestCount).isEqualTo(1)
+    }
+
+    // ── Proactive refresh (H2) ──────────────────────────────────────────
+
+    @Test
+    fun `a cold start with a stored session asks for a token before the first request`() = runTest {
+        assertThat(manager(this).shouldRefreshBeforeRequest()).isFalse()
+
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "rt")
+        assertThat(manager(this).shouldRefreshBeforeRequest()).isTrue()
+    }
+
+    @Test
+    fun `a fresh token is used as is until 80 percent of its life, measured from adoption`() = runTest {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "rt")
+        val sm = manager(this)
+        var elapsed = 5_000L
+        sm.elapsedClock = { elapsed }
+        sm.wallClock = { java.time.Instant.parse("2026-08-16T12:00:00Z").toEpochMilli() }
+        // Expires in 15 minutes by the server's clock.
+        sm.applyAuthResponse(json.decodeFromString(session("at", "rt", expiresAt = "2026-08-16T12:15:00Z")))
+
+        assertThat(sm.shouldRefreshBeforeRequest()).isFalse()
+        elapsed += 11 * 60_000L
+        assertThat(sm.shouldRefreshBeforeRequest()).isFalse()
+        elapsed += 60_000L
+        assertThat(sm.shouldRefreshBeforeRequest()).isTrue()
+    }
+
+    @Test
+    fun `a device clock far ahead of the server does not make every request refresh`() = runTest {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "rt")
+        val sm = manager(this)
+        var elapsed = 0L
+        sm.elapsedClock = { elapsed }
+        // The device thinks the token expired an hour ago.
+        sm.wallClock = { java.time.Instant.parse("2026-08-16T13:15:00Z").toEpochMilli() }
+        sm.applyAuthResponse(json.decodeFromString(session("at", "rt", expiresAt = "2026-08-16T12:15:00Z")))
+
+        assertThat(sm.shouldRefreshBeforeRequest()).isFalse()
+        elapsed += 12 * 60_000L
+        assertThat(sm.shouldRefreshBeforeRequest()).isTrue()
+    }
+
+    @Test
+    fun `after a transient refresh failure requests stop refreshing up front for a while`() = runTest {
+        tokenStore = FakeTokenStore(userId = "u1", refreshToken = "rt")
+        val sm = manager(this)
+        var elapsed = 1_000L
+        sm.elapsedClock = { elapsed }
+        enqueue(503, """{"error":{"code":"UNAVAILABLE","message":"try later"}}""")
+
+        assertThat(sm.refresh()).isNull()
+
+        assertThat(sm.shouldRefreshBeforeRequest()).isFalse()
+        elapsed += 16_000L
+        assertThat(sm.shouldRefreshBeforeRequest()).isTrue()
+    }
+
+    private fun session(
+        accessToken: String,
+        refreshToken: String,
+        userId: String = "u1",
+        expiresAt: String = "2026-08-16T12:00:00Z",
+    ) = """{"tokens":{"access_token":"$accessToken","refresh_token":"$refreshToken",""" +
+        """"expires_at":"$expiresAt"},"user":{"id":"$userId"},"session_id":"s1"}"""
+
+    /** Answers once the test says so, so a test can act while the request is on the wire. */
+    private class HeldResponse(private val code: Int, private val body: String) : mockwebserver3.Dispatcher() {
+        private val received = CountDownLatch(1)
+        private val secondReceived = CountDownLatch(2)
+        private val released = CountDownLatch(1)
+
+        override fun dispatch(request: mockwebserver3.RecordedRequest): MockResponse {
+            received.countDown()
+            secondReceived.countDown()
+            released.await(WAIT_SECONDS, TimeUnit.SECONDS)
+            return MockResponse.Builder().code(code).body(body).build()
+        }
+
+        fun awaitReceived() = check(received.await(WAIT_SECONDS, TimeUnit.SECONDS)) { "refresh never arrived" }
+
+        /** Waits (bounded) for a second request; a caller that joined the first never sends one. */
+        fun awaitSecondRequest() {
+            secondReceived.await(SECOND_REQUEST_WAIT_SECONDS, TimeUnit.SECONDS)
+        }
+
+        fun release() = released.countDown()
+    }
+
+    private companion object {
+        const val WAIT_SECONDS = 10L
+        const val SECOND_REQUEST_WAIT_SECONDS = 3L
     }
 }
