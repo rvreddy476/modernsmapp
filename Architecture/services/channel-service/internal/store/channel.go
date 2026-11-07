@@ -12,6 +12,7 @@ import (
 	"github.com/atpost/channel-service/internal/mediaclient"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -251,18 +252,32 @@ func (s *Store) DeleteChannel(ctx context.Context, id uuid.UUID) error {
 
 // --- Member operations ---
 
+// ErrMemberBanned is AddMember's answer when the (channel, user) row is a
+// ban: a ban is never overwritten by a join (audit 2026-11-07, CH-M3).
+var ErrMemberBanned = errors.New("member is banned from this channel")
+
+// addMemberSQL inserts a member row. The conflict branch updates an existing
+// row EXCEPT a banned one: the WHERE makes a racing subscribe or invite
+// join unable to turn a ban back into a membership.
+const addMemberSQL = `INSERT INTO channel_members (channel_id, user_id, role, notify_on, paid)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (channel_id, user_id) DO UPDATE SET role = $3, notify_on = $4
+		WHERE channel_members.role <> 'banned'
+		RETURNING (xmax = 0) AS inserted`
+
 // AddMember inserts a member row. Returns true iff a NEW row was
 // added (false on re-subscribe / role change). Audit HCh1: callers
 // must gate IncrementSubscriberCount on this signal — the previous
 // ON CONFLICT DO UPDATE always succeeded so the count drifted upward
-// on every duplicate subscribe.
+// on every duplicate subscribe. A banned row is left alone and answers
+// ErrMemberBanned.
 func (s *Store) AddMember(ctx context.Context, m *ChannelMember) (bool, error) {
-	query := `INSERT INTO channel_members (channel_id, user_id, role, notify_on, paid)
-		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (channel_id, user_id) DO UPDATE SET role = $3, notify_on = $4
-		RETURNING (xmax = 0) AS inserted`
 	var inserted bool
-	if err := s.db.QueryRow(ctx, query, m.ChannelID, m.UserID, m.Role, m.NotifyOn, m.Paid).Scan(&inserted); err != nil {
+	err := s.db.QueryRow(ctx, addMemberSQL, m.ChannelID, m.UserID, m.Role, m.NotifyOn, m.Paid).Scan(&inserted)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, ErrMemberBanned
+	}
+	if err != nil {
 		return false, err
 	}
 	return inserted, nil
@@ -281,9 +296,38 @@ func (s *Store) GetMember(ctx context.Context, channelID, userID uuid.UUID) (*Ch
 	return m, err
 }
 
+// MembersOf returns the user's member rows for the given channels, keyed by
+// channel id, in one query (CH-L1: list pages used to look each row up
+// separately).
+func (s *Store) MembersOf(ctx context.Context, userID uuid.UUID, channelIDs []uuid.UUID) (map[uuid.UUID]ChannelMember, error) {
+	out := make(map[uuid.UUID]ChannelMember, len(channelIDs))
+	if len(channelIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, membersOfSQL, userID, channelIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var m ChannelMember
+		if err := rows.Scan(&m.ChannelID, &m.UserID, &m.Role, &m.NotifyOn, &m.MutedUntil, &m.SnoozedUntil, &m.Paid, &m.SubscribedAt); err != nil {
+			return nil, err
+		}
+		out[m.ChannelID] = m
+	}
+	return out, rows.Err()
+}
+
+const membersOfSQL = `SELECT channel_id, user_id, role, notify_on, muted_until, snoozed_until, paid, subscribed_at
+		FROM channel_members WHERE user_id = $1 AND channel_id = ANY($2)`
+
+// updateMemberRoleSQL never rewrites a banned row: promotion and demotion
+// must not lift a ban (only UnbanMember does).
+const updateMemberRoleSQL = `UPDATE channel_members SET role = $3 WHERE channel_id = $1 AND user_id = $2 AND role <> 'banned'`
+
 func (s *Store) UpdateMemberRole(ctx context.Context, channelID, userID uuid.UUID, role string) error {
-	query := `UPDATE channel_members SET role = $3 WHERE channel_id = $1 AND user_id = $2`
-	tag, err := s.db.Exec(ctx, query, channelID, userID, role)
+	tag, err := s.db.Exec(ctx, updateMemberRoleSQL, channelID, userID, role)
 	if err != nil {
 		return err
 	}
@@ -293,10 +337,18 @@ func (s *Store) UpdateMemberRole(ctx context.Context, channelID, userID uuid.UUI
 	return nil
 }
 
-func (s *Store) RemoveMember(ctx context.Context, channelID, userID uuid.UUID) error {
-	query := `DELETE FROM channel_members WHERE channel_id = $1 AND user_id = $2`
-	_, err := s.db.Exec(ctx, query, channelID, userID)
-	return err
+// removeMemberSQL deletes a membership but NEVER a ban (CH-M3): the ban
+// lives on this row, and deleting it on unsubscribe or removal erased the
+// ban and let the user rejoin.
+const removeMemberSQL = `DELETE FROM channel_members WHERE channel_id = $1 AND user_id = $2 AND role <> 'banned'`
+
+// RemoveMember deletes a non-banned member row. Returns whether a row went.
+func (s *Store) RemoveMember(ctx context.Context, channelID, userID uuid.UUID) (bool, error) {
+	tag, err := s.db.Exec(ctx, removeMemberSQL, channelID, userID)
+	if err != nil {
+		return false, err
+	}
+	return tag.RowsAffected() > 0, nil
 }
 
 func (s *Store) BanMember(ctx context.Context, channelID, userID uuid.UUID) error {
@@ -336,6 +388,35 @@ func (s *Store) CountSubscribers(ctx context.Context, channelID uuid.UUID) (int6
 	err := s.db.QueryRow(ctx, `SELECT COUNT(*) FROM channel_members WHERE channel_id = $1 AND role != 'banned'`, channelID).Scan(&count)
 	return count, err
 }
+
+// CountSubscribersBatch is CountSubscribers for a page of channels in one
+// grouped query (CH-L1). A channel with no non-banned rows is absent from
+// the map (its count is 0).
+func (s *Store) CountSubscribersBatch(ctx context.Context, channelIDs []uuid.UUID) (map[uuid.UUID]int64, error) {
+	out := make(map[uuid.UUID]int64, len(channelIDs))
+	if len(channelIDs) == 0 {
+		return out, nil
+	}
+	rows, err := s.db.Query(ctx, countSubscribersBatchSQL, channelIDs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id uuid.UUID
+		var n int64
+		if err := rows.Scan(&id, &n); err != nil {
+			return nil, err
+		}
+		out[id] = n
+	}
+	return out, rows.Err()
+}
+
+// The (channel_id, role) index serves this as an index-only count.
+const countSubscribersBatchSQL = `SELECT channel_id, COUNT(*) FROM channel_members
+		WHERE channel_id = ANY($1) AND role <> 'banned'
+		GROUP BY channel_id`
 
 func (s *Store) IncrementSubscriberCount(ctx context.Context, channelID uuid.UUID, delta int) error {
 	query := `UPDATE broadcast_channels SET subscriber_count = subscriber_count + $2, updated_at = NOW() WHERE id = $1`
@@ -486,39 +567,57 @@ func (s *Store) PublishScheduledUpdates(ctx context.Context) ([]ChannelUpdate, e
 
 // --- Query helpers ---
 
-func (s *Store) GetMyChannels(ctx context.Context, ownerID uuid.UUID, limit, offset int) ([]BroadcastChannel, error) {
-	query := `SELECT id, owner_id, handle, name, description, avatar_media_id, banner_media_id,
+// myChannelsSQL is the /my list (CH-L4): channels the user owns, plus those
+// they belong to without being banned, as ONE ordered page. The owner branch
+// covers owners whose member row is missing (older databases); the member
+// branch skips channels the user owns so nothing is listed twice. Both
+// branches list ACTIVE channels only, so the page is never short because a
+// suspended row was dropped after the LIMIT. Ties break on id so OFFSET
+// paging is stable.
+const myChannelsSQL = `SELECT id, owner_id, handle, name, description, avatar_media_id, banner_media_id,
 		channel_type, category, language, comment_mode, reaction_mode,
 		forward_allowed, paid_access, subscription_price_cents,
 		post_schedule_enabled, subscriber_count_visible, allow_preview_posts,
 		is_verified, subscriber_count, update_count, status, created_at, updated_at, deleted_at
-		FROM broadcast_channels WHERE owner_id = $1 AND status != 'deleted'
-		ORDER BY created_at DESC LIMIT $2 OFFSET $3`
-	return s.scanChannels(ctx, query, ownerID, limit, offset)
+		FROM (
+			SELECT bc.*, bc.created_at AS listed_at
+			FROM broadcast_channels bc
+			WHERE bc.owner_id = $1 AND bc.status = 'active'
+			UNION ALL
+			SELECT bc.*, cm.subscribed_at AS listed_at
+			FROM broadcast_channels bc
+			JOIN channel_members cm ON cm.channel_id = bc.id
+			WHERE cm.user_id = $1 AND cm.role <> 'banned' AND bc.owner_id <> $1 AND bc.status = 'active'
+		) mine
+		ORDER BY listed_at DESC, id DESC
+		LIMIT $2 OFFSET $3`
+
+// MyChannels pages the channels the user owns or belongs to (never banned).
+func (s *Store) MyChannels(ctx context.Context, userID uuid.UUID, limit, offset int) ([]BroadcastChannel, error) {
+	return s.scanChannels(ctx, myChannelsSQL, userID, limit, offset)
 }
 
-// GetSubscribedChannels returns channels a user is subscribed to (as member, not owner).
-func (s *Store) GetSubscribedChannels(ctx context.Context, userID uuid.UUID, limit, offset int) ([]BroadcastChannel, error) {
-	query := `SELECT bc.id, bc.owner_id, bc.handle, bc.name, bc.description, bc.avatar_media_id, bc.banner_media_id,
-		bc.channel_type, bc.category, bc.language, bc.comment_mode, bc.reaction_mode,
-		bc.forward_allowed, bc.paid_access, bc.subscription_price_cents,
-		bc.post_schedule_enabled, bc.subscriber_count_visible, bc.allow_preview_posts,
-		bc.is_verified, bc.subscriber_count, bc.update_count, bc.status, bc.created_at, bc.updated_at, bc.deleted_at
-		FROM broadcast_channels bc
-		INNER JOIN channel_members cm ON cm.channel_id = bc.id
-		WHERE cm.user_id = $1 AND bc.status != 'deleted'
-		ORDER BY cm.subscribed_at DESC LIMIT $2 OFFSET $3`
-	return s.scanChannels(ctx, query, userID, limit, offset)
-}
-
-// GetMemberRole returns the role of a user in a channel, or empty string if not a member.
+// GetMemberRole returns the role of a user in a channel, or empty string if
+// not a member. It also answers "" on a database error; a gate must use
+// MemberRole, which fails closed.
 func (s *Store) GetMemberRole(ctx context.Context, channelID, userID uuid.UUID) string {
+	role, _ := s.MemberRole(ctx, channelID, userID)
+	return role
+}
+
+// MemberRole returns the user's role in the channel, "" for no row, and the
+// error for anything else, so a gate never reads a failed lookup as "not a
+// member" (which on a public channel would admit a banned caller).
+func (s *Store) MemberRole(ctx context.Context, channelID, userID uuid.UUID) (string, error) {
 	var role string
 	err := s.db.QueryRow(ctx, `SELECT role FROM channel_members WHERE channel_id = $1 AND user_id = $2`, channelID, userID).Scan(&role)
-	if err != nil {
-		return ""
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
 	}
-	return role
+	if err != nil {
+		return "", err
+	}
+	return role, nil
 }
 
 func (s *Store) DiscoverChannels(ctx context.Context, limit, offset int) ([]BroadcastChannel, error) {
@@ -786,6 +885,15 @@ func (s *Store) ListCommentsSince(ctx context.Context, updateID uuid.UUID, since
 	return comments, rows.Err()
 }
 
+// addCommentSQL inserts a comment, and a reply only when its parent is a
+// comment on the SAME update: the parent id is caller input, and without
+// the EXISTS a reply could hang off any comment on the platform.
+const addCommentSQL = `INSERT INTO update_comments (id, update_id, author_id, body, parent_id, is_pinned, created_at)
+		SELECT $1::uuid, $2::uuid, $3::uuid, $4::text, $5::uuid, false, NOW()
+		WHERE $5::uuid IS NULL
+		   OR EXISTS (SELECT 1 FROM update_comments p WHERE p.id = $5 AND p.update_id = $2)
+		RETURNING created_at`
+
 func (s *Store) AddComment(ctx context.Context, updateID, userID uuid.UUID, body string, parentID *uuid.UUID) (*UpdateComment, error) {
 	c := &UpdateComment{
 		ID:       uuid.New(),
@@ -794,9 +902,11 @@ func (s *Store) AddComment(ctx context.Context, updateID, userID uuid.UUID, body
 		Body:     body,
 		ParentID: parentID,
 	}
-	query := `INSERT INTO update_comments (id, update_id, author_id, body, parent_id, is_pinned, created_at)
-		VALUES ($1, $2, $3, $4, $5, false, NOW()) RETURNING created_at`
-	if err := s.db.QueryRow(ctx, query, c.ID, updateID, userID, body, parentID).Scan(&c.CreatedAt); err != nil {
+	err := s.db.QueryRow(ctx, addCommentSQL, c.ID, updateID, userID, body, parentID).Scan(&c.CreatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, fmt.Errorf("not found: parent comment not found on this update")
+	}
+	if err != nil {
 		return nil, err
 	}
 	_, _ = s.db.Exec(ctx,
@@ -805,24 +915,27 @@ func (s *Store) AddComment(ctx context.Context, updateID, userID uuid.UUID, body
 	return c, nil
 }
 
-func (s *Store) DeleteComment(ctx context.Context, commentID, userID uuid.UUID, isOwner bool) error {
-	var query string
-	var args []any
-	if isOwner {
-		query = `DELETE FROM update_comments WHERE id = $1 RETURNING update_id`
-		args = []any{commentID}
-	} else {
-		query = `DELETE FROM update_comments WHERE id = $1 AND author_id = $2 RETURNING update_id`
-		args = []any{commentID, userID}
-	}
+// Comment delete and pin are scoped to the update in the path (audit
+// 2026-11-07, CH-M2). They used to match the comment id alone, so the
+// owner of ANY channel — authority checked against their own channel —
+// could delete or pin any comment platform-wide.
+const (
+	deleteCommentAsModeratorSQL = `DELETE FROM update_comments WHERE id = $1 AND update_id = $2`
+	deleteOwnCommentSQL         = `DELETE FROM update_comments WHERE id = $1 AND update_id = $2 AND author_id = $3`
+	pinCommentCheckSQL          = `SELECT 1 FROM update_comments WHERE id = $1 AND update_id = $2`
+	unpinUpdateCommentsSQL      = `UPDATE update_comments SET is_pinned = false WHERE update_id = $1 AND is_pinned`
+	pinCommentSQL               = `UPDATE update_comments SET is_pinned = true WHERE id = $1 AND update_id = $2`
+)
 
-	var updateID uuid.UUID
-	err := s.db.QueryRow(ctx, query, args...).Scan(&updateID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return fmt.Errorf("not found: comment not found or not authorized")
-	}
+// DeleteComment deletes one comment of updateID: any comment when
+// moderator, otherwise only the caller's own.
+func (s *Store) DeleteComment(ctx context.Context, commentID, updateID, userID uuid.UUID, moderator bool) error {
+	tag, err := s.deleteComment(ctx, commentID, updateID, userID, moderator)
 	if err != nil {
 		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("not found: comment not found or not authorized")
 	}
 	_, _ = s.db.Exec(ctx,
 		`UPDATE channel_updates SET comment_count = GREATEST(comment_count - 1, 0), updated_at = NOW() WHERE id = $1`,
@@ -830,21 +943,36 @@ func (s *Store) DeleteComment(ctx context.Context, commentID, userID uuid.UUID, 
 	return nil
 }
 
-func (s *Store) PinComment(ctx context.Context, commentID uuid.UUID) error {
-	// Get the update_id for this comment
-	var updateID uuid.UUID
-	err := s.db.QueryRow(ctx, `SELECT update_id FROM update_comments WHERE id = $1`, commentID).Scan(&updateID)
+func (s *Store) deleteComment(ctx context.Context, commentID, updateID, userID uuid.UUID, moderator bool) (pgconn.CommandTag, error) {
+	if moderator {
+		return s.db.Exec(ctx, deleteCommentAsModeratorSQL, commentID, updateID)
+	}
+	return s.db.Exec(ctx, deleteOwnCommentSQL, commentID, updateID, userID)
+}
+
+// PinComment makes commentID the one pinned comment of updateID, in one
+// transaction so a refused or failed pin never leaves the update unpinned.
+func (s *Store) PinComment(ctx context.Context, commentID, updateID uuid.UUID) error {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
+	var one int
+	err = tx.QueryRow(ctx, pinCommentCheckSQL, commentID, updateID).Scan(&one)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return fmt.Errorf("not found: comment not found")
 	}
 	if err != nil {
 		return err
 	}
-	// Unpin all other comments for this update
-	_, _ = s.db.Exec(ctx, `UPDATE update_comments SET is_pinned = false WHERE update_id = $1`, updateID)
-	// Pin the selected comment
-	_, err = s.db.Exec(ctx, `UPDATE update_comments SET is_pinned = true WHERE id = $1`, commentID)
-	return err
+	if _, err := tx.Exec(ctx, unpinUpdateCommentsSQL, updateID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, pinCommentSQL, commentID, updateID); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
 }
 
 func (s *Store) VoteOnPoll(ctx context.Context, updateID, userID uuid.UUID, optionIndexes []int) error {

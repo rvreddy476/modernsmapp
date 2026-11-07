@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -74,54 +75,9 @@ var (
 	ErrChannelNotSubscriber = &AuthError{Reason: "not_subscriber"}
 )
 
-// authorizeEngagement gates spark/stash/echo/view and similar actions.
-// Banned users always fail. Public channels accept anyone (Telegram-
-// style: read-only without subscribing); private/paid channels require
-// an active membership.
-func (s *Service) authorizeEngagement(ctx context.Context, channelID, userID uuid.UUID) error {
-	ch, err := s.store.GetChannelByID(ctx, channelID)
-	if err != nil {
-		return err
-	}
-	if ch == nil || !channelIsServable(ch.Status) {
-		return ErrChannelNotFound
-	}
-	role := s.store.GetMemberRole(ctx, channelID, userID)
-	if role == "banned" {
-		return ErrChannelMemberBanned
-	}
-	switch ch.ChannelType {
-	case "private", "paid":
-		if role == "" {
-			return ErrChannelNotSubscriber
-		}
-	}
-	return nil
-}
-
-// authorizeViewer is the read-side equivalent: public channels are
-// visible to anyone, private/paid require subscription. Pass nil
-// userID for unauthenticated.
-func (s *Service) authorizeViewer(ctx context.Context, channelID uuid.UUID, userID *uuid.UUID) error {
-	ch, err := s.store.GetChannelByID(ctx, channelID)
-	if err != nil {
-		return err
-	}
-	if ch == nil || !channelIsServable(ch.Status) {
-		return ErrChannelNotFound
-	}
-	switch ch.ChannelType {
-	case "private", "paid":
-		if userID == nil {
-			return ErrChannelNotSubscriber
-		}
-		role := s.store.GetMemberRole(ctx, channelID, *userID)
-		if role == "" || role == "banned" {
-			return ErrChannelNotSubscriber
-		}
-	}
-	return nil
-}
+// The read and engagement gates that used to live here (authorizeViewer,
+// authorizeEngagement) are one gate now: authorize and gateUpdate in
+// access.go (audit 2026-11-07, CH-M1).
 
 type Service struct {
 	store    *store.Store
@@ -359,26 +315,69 @@ type ChannelWithMembership struct {
 	CanPost bool `json:"can_post"`
 }
 
-// withMembership decorates a channel row for the viewer: role (owner wins
-// over the member row), mute state and the community wire fields.
+// withMembership decorates one channel row for the viewer. It is the
+// one-row case of withMemberships.
 func (s *Service) withMembership(ctx context.Context, ch *store.BroadcastChannel, viewerID *uuid.UUID) ChannelWithMembership {
+	return s.withMemberships(ctx, []store.BroadcastChannel{*ch}, viewerID)[0]
+}
+
+// withMemberships decorates a page of channels for the viewer in TWO
+// queries whatever the page size (audit 2026-11-07, CH-L1): one grouped
+// roster count and one lookup of the viewer's rows. It used to run a
+// COUNT(*) and a member lookup per row — about 40 queries for a 20-row
+// /my or /discover page.
+//
+// member_count stays the LIVE roster rather than subscriber_count:
+// subscriber_count is materialised from the sharded Redis counter, which is
+// never seeded from Postgres, so it is not a trustworthy total. When the
+// count query fails the stored value is shown rather than nothing.
+func (s *Service) withMemberships(ctx context.Context, chs []store.BroadcastChannel, viewerID *uuid.UUID) []ChannelWithMembership {
+	out := make([]ChannelWithMembership, len(chs))
+	if len(chs) == 0 {
+		return out
+	}
+	ids := make([]uuid.UUID, len(chs))
+	for i := range chs {
+		ids[i] = chs[i].ID
+	}
+	counts, err := s.store.CountSubscribersBatch(ctx, ids)
+	if err != nil {
+		slog.Warn("failed to count members", "error", err)
+		counts = nil
+	}
+	var members map[uuid.UUID]store.ChannelMember
+	if viewerID != nil {
+		if members, err = s.store.MembersOf(ctx, *viewerID, ids); err != nil {
+			slog.Warn("failed to get member state", "error", err)
+		}
+	}
+	for i := range chs {
+		var member *store.ChannelMember
+		if m, ok := members[chs[i].ID]; ok {
+			member = &m
+		}
+		live, counted := counts[chs[i].ID]
+		if counts != nil && !counted {
+			counted = true // the grouped count omits a channel with no rows
+		}
+		out[i] = decorateChannel(&chs[i], viewerID, member, live, counted)
+	}
+	return out
+}
+
+// decorateChannel is the pure part of withMemberships: role (the owner
+// outranks the member row), mute state and the community wire fields.
+func decorateChannel(ch *store.BroadcastChannel, viewerID *uuid.UUID, member *store.ChannelMember, liveCount int64, counted bool) ChannelWithMembership {
 	out := ChannelWithMembership{
 		BroadcastChannel: ch,
 		Visibility:       VisibilityOf(ch.ChannelType),
 		MemberCount:      ch.SubscriberCount,
 	}
-	// subscriber_count is materialised from the sharded Redis counter on a
-	// 10s flush; the community wire field is the live roster so a join is
-	// reflected in the very next read.
-	if live, err := s.store.CountSubscribers(ctx, ch.ID); err == nil {
-		out.MemberCount = live
+	if counted {
+		out.MemberCount = liveCount
 	}
 	if viewerID == nil {
 		return out
-	}
-	member, err := s.store.GetMember(ctx, ch.ID, *viewerID)
-	if err != nil {
-		slog.Warn("failed to get member state", "error", err)
 	}
 	switch {
 	case ch.OwnerID == *viewerID:
@@ -722,6 +721,9 @@ func (s *Service) Subscribe(ctx context.Context, channelID, userID uuid.UUID) er
 		NotifyOn:  "all",
 	}
 	inserted, err := s.store.AddMember(ctx, member)
+	if errors.Is(err, store.ErrMemberBanned) {
+		return ErrChannelMemberBanned // banned between the read above and the insert
+	}
 	if err != nil {
 		return fmt.Errorf("failed to subscribe: %w", err)
 	}
@@ -749,15 +751,20 @@ func (s *Service) Unsubscribe(ctx context.Context, channelID, userID uuid.UUID) 
 	if err != nil {
 		return fmt.Errorf("failed to check membership: %w", err)
 	}
-	if member == nil {
-		return fmt.Errorf("not a member of this channel")
-	}
-	if member.Role == "owner" {
-		return fmt.Errorf("forbidden: the owner cannot unsubscribe; delete the channel instead")
+	remove, err := guardLeave(member)
+	if err != nil || !remove {
+		return err
 	}
 
-	if err := s.store.RemoveMember(ctx, channelID, userID); err != nil {
+	// RemoveMember never deletes a banned row (store), so a ban landing
+	// between the read above and this delete still holds; nothing removed
+	// means nothing to count or announce.
+	removed, err := s.store.RemoveMember(ctx, channelID, userID)
+	if err != nil {
 		return fmt.Errorf("failed to unsubscribe: %w", err)
+	}
+	if !removed {
+		return nil
 	}
 
 	if err := s.adjustSubscriberCount(ctx, channelID, -1); err != nil {
@@ -771,6 +778,25 @@ func (s *Service) Unsubscribe(ctx context.Context, channelID, userID uuid.UUID) 
 	}
 
 	return nil
+}
+
+// guardLeave decides what leaving does to a member row (audit 2026-11-07,
+// CH-M3). A BANNED row is never deleted by leaving: the ban lives on that
+// row, so deleting it erased the ban, and the user rejoined through any
+// live invite or a plain subscribe (and each round drifted
+// subscriber_count down by one more, since BanMember already decremented).
+// Leaving while banned answers success and keeps the row — the user is
+// already out (hidden from /my, never notified), and the ban stays.
+func guardLeave(member *store.ChannelMember) (remove bool, err error) {
+	switch {
+	case member == nil:
+		return false, fmt.Errorf("not a member of this channel")
+	case member.Role == "owner":
+		return false, fmt.Errorf("forbidden: the owner cannot unsubscribe; delete the channel instead")
+	case member.Role == "banned":
+		return false, nil
+	}
+	return true, nil
 }
 
 func (s *Service) MuteChannel(ctx context.Context, channelID, userID uuid.UUID, mutedUntil *time.Time) error {
@@ -907,10 +933,7 @@ func (s *Service) ListUpdates(ctx context.Context, channelID uuid.UUID, viewerID
 	// Audit CCh2: previously returned every published update regardless
 	// of channel type — private/paid channel posts were readable by any
 	// caller. Run the read-side viewer gate before the listing.
-	if err := s.authorizeViewer(ctx, channelID, viewerID); err != nil {
-		return nil, false, err
-	}
-	ch, err := s.store.GetChannelByID(ctx, channelID)
+	_, role, err := s.authorize(ctx, channelID, viewerID, accessRead)
 	if err != nil {
 		return nil, false, err
 	}
@@ -922,7 +945,7 @@ func (s *Service) ListUpdates(ctx context.Context, channelID uuid.UUID, viewerID
 	if hasMore {
 		updates = updates[:limit]
 	}
-	views := s.decorateUpdates(ctx, viewerID, s.viewerCanPost(ctx, ch, viewerID), updates)
+	views := s.decorateUpdates(ctx, viewerID, isAtLeast(role, "admin"), updates)
 	return views, hasMore, nil
 }
 
@@ -1053,37 +1076,24 @@ func (s *Service) DeleteUpdate(ctx context.Context, channelID, updateID, actorID
 
 // --- Queries ---
 
-// GetMyChannels returns channels owned by the user AND channels they are subscribed to, with viewer_role.
+// GetMyChannels returns the channels the user owns or belongs to (never one
+// they are banned from), newest first, decorated with viewer_role.
+//
+// Audit 2026-11-07, CH-L4: this used to page owned and subscribed channels
+// separately with the same limit/offset and concatenate them, so a page held
+// up to 2×limit rows and page 2 skipped or repeated; and the subscribed read
+// had no ban filter, so a banned user still saw the community. It is one
+// query now (store.MyChannels) with a single ORDER BY and LIMIT.
 func (s *Service) GetMyChannels(ctx context.Context, userID uuid.UUID, limit, offset int) ([]ChannelWithMembership, error) {
-	// 1. Get owned channels
-	owned, err := s.store.GetMyChannels(ctx, userID, limit, offset)
+	channels, err := s.store.MyChannels(ctx, userID, limit, offset)
 	if err != nil {
 		return nil, err
 	}
-	// 2. Get subscribed channels
-	subscribed, err := s.store.GetSubscribedChannels(ctx, userID, limit, offset)
-	if err != nil {
-		return nil, err
-	}
-	// Emergency disable (2026-09-12): both reads only exclude 'deleted' in
-	// SQL, so a SUSPENDED community would still be listed here — for its
-	// owner too. A suspension switches a community off for everyone.
-	owned = servableChannels(owned)
-	subscribed = servableChannels(subscribed)
-
-	seen := make(map[uuid.UUID]bool)
-	result := []ChannelWithMembership{}
-	for i := range owned {
-		seen[owned[i].ID] = true
-		result = append(result, s.withMembership(ctx, &owned[i], &userID))
-	}
-	for i := range subscribed {
-		if seen[subscribed[i].ID] {
-			continue
-		}
-		result = append(result, s.withMembership(ctx, &subscribed[i], &userID))
-	}
-	return result, nil
+	// Emergency disable (2026-09-12): the query lists active channels only;
+	// this stays as the in-process backstop so a suspended community can
+	// never reach the list, for its owner either.
+	channels = servableChannels(channels)
+	return s.withMemberships(ctx, channels, &userID), nil
 }
 
 // DiscoverChannels returns public communities ordered by member count then
@@ -1098,35 +1108,25 @@ func (s *Service) DiscoverChannels(ctx context.Context, viewerID *uuid.UUID, q s
 	if hasMore {
 		channels = channels[:limit]
 	}
-	result := make([]ChannelWithMembership, len(channels))
-	for i := range channels {
-		result[i] = s.withMembership(ctx, &channels[i], viewerID)
-	}
-	return result, hasMore, nil
+	return s.withMemberships(ctx, channels, viewerID), hasMore, nil
 }
 
 // --- Engagement ---
 
-// Audit CCh1 + CCh4: spark/stash/echo/view previously skipped the
-// membership + banned-role check entirely — non-subscribers could
-// engage with private/paid channels, and banned users could keep
-// engaging on public channels. authorizeEngagement is the single gate
-// every engagement entry-point goes through.
+// Every route below acts on one update and starts with gateUpdate
+// (access.go): the caller may see the channel and is not banned, and the
+// update belongs to the channel in the path. Reads pass accessRead, member
+// writes accessWrite. Audit CCh1/CCh4 gated spark/stash/echo/view; audit
+// 2026-11-07 CH-M1 found comments, the comment delta, polls, RSVPs and
+// attendees outside any gate, so every route here now shares the one gate.
 
 // SparkUpdate is DEPRECATED on channels: an update carries an emoji reaction
 // and a share, nothing else. The route stays only until we know no shipped
 // client calls it, and a spark no longer contributes to reaction_count —
 // see the note on store.SparkUpdate.
 func (s *Service) SparkUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID, isSupernova bool) error {
-	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
+	if _, err := s.gateUpdate(ctx, channelID, updateID, &userID, accessWrite); err != nil {
 		return err
-	}
-	u, err := s.store.GetUpdate(ctx, updateID)
-	if err != nil {
-		return err
-	}
-	if u.ChannelID != channelID {
-		return fmt.Errorf("update not found")
 	}
 	return s.store.SparkUpdate(ctx, updateID, userID, isSupernova)
 }
@@ -1134,65 +1134,33 @@ func (s *Service) SparkUpdate(ctx context.Context, channelID, updateID, userID u
 // UnsparkUpdate is DEPRECATED with SparkUpdate, and likewise leaves
 // reaction_count alone.
 func (s *Service) UnsparkUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID) error {
-	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
+	if _, err := s.gateUpdate(ctx, channelID, updateID, &userID, accessWrite); err != nil {
 		return err
-	}
-	u, err := s.store.GetUpdate(ctx, updateID)
-	if err != nil {
-		return err
-	}
-	if u.ChannelID != channelID {
-		return fmt.Errorf("update not found")
 	}
 	return s.store.UnsparkUpdate(ctx, updateID, userID)
 }
 
 func (s *Service) StashUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID) error {
-	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
+	if _, err := s.gateUpdate(ctx, channelID, updateID, &userID, accessWrite); err != nil {
 		return err
-	}
-	u, err := s.store.GetUpdate(ctx, updateID)
-	if err != nil {
-		return err
-	}
-	if u.ChannelID != channelID {
-		return fmt.Errorf("update not found")
 	}
 	return s.store.StashUpdate(ctx, updateID, userID)
 }
 
 func (s *Service) UnstashUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID) error {
-	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
+	if _, err := s.gateUpdate(ctx, channelID, updateID, &userID, accessWrite); err != nil {
 		return err
-	}
-	u, err := s.store.GetUpdate(ctx, updateID)
-	if err != nil {
-		return err
-	}
-	if u.ChannelID != channelID {
-		return fmt.Errorf("update not found")
 	}
 	return s.store.UnstashUpdate(ctx, updateID, userID)
 }
 
 func (s *Service) EchoUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID, echoType string) error {
-	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
-		return err
-	}
-	u, err := s.store.GetUpdate(ctx, updateID)
+	ga, err := s.gateUpdate(ctx, channelID, updateID, &userID, accessWrite)
 	if err != nil {
 		return err
 	}
-	if u.ChannelID != channelID {
-		return fmt.Errorf("update not found")
-	}
-
 	// Enforce forward_allowed flag
-	ch, err := s.store.GetChannelByID(ctx, channelID)
-	if err != nil {
-		return err
-	}
-	if !ch.ForwardAllowed {
+	if !ga.ch.ForwardAllowed {
 		return fmt.Errorf("forbidden: forwarding disabled")
 	}
 
@@ -1216,75 +1184,49 @@ func (s *Service) EchoUpdate(ctx context.Context, channelID, updateID, userID uu
 }
 
 func (s *Service) UnechoUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID) error {
-	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
+	if _, err := s.gateUpdate(ctx, channelID, updateID, &userID, accessWrite); err != nil {
 		return err
-	}
-	u, err := s.store.GetUpdate(ctx, updateID)
-	if err != nil {
-		return err
-	}
-	if u.ChannelID != channelID {
-		return fmt.Errorf("update not found")
 	}
 	return s.store.UnechoUpdate(ctx, updateID, userID)
 }
 
 func (s *Service) RecordView(ctx context.Context, channelID, updateID, userID uuid.UUID) error {
-	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
+	if _, err := s.gateUpdate(ctx, channelID, updateID, &userID, accessWrite); err != nil {
 		return err
-	}
-	u, err := s.store.GetUpdate(ctx, updateID)
-	if err != nil {
-		return err
-	}
-	if u.ChannelID != channelID {
-		return fmt.Errorf("update not found")
 	}
 	return s.store.RecordView(ctx, updateID, userID)
 }
 
-func (s *Service) ListComments(ctx context.Context, channelID, updateID uuid.UUID, sort string, limit, offset int) ([]store.UpdateComment, error) {
-	u, err := s.store.GetUpdate(ctx, updateID)
-	if err != nil {
+func (s *Service) ListComments(ctx context.Context, channelID, updateID uuid.UUID, viewerID *uuid.UUID, sort string, limit, offset int) ([]store.UpdateComment, error) {
+	if _, err := s.gateUpdate(ctx, channelID, updateID, viewerID, accessRead); err != nil {
 		return nil, err
-	}
-	if u.ChannelID != channelID {
-		return nil, fmt.Errorf("update not found")
 	}
 	return s.store.ListComments(ctx, updateID, sort, limit, offset)
 }
 
-func (s *Service) ListCommentsSince(ctx context.Context, channelID, updateID uuid.UUID, since time.Time, limit int) ([]store.UpdateComment, error) {
-	_, err := s.store.GetChannelByID(ctx, channelID)
-	if err != nil {
+// ListCommentsSince is the /comments/delta route. It used to load the
+// channel, discard it, and read the comments of whatever update id it was
+// given, so any public channel id plus any update id returned that update's
+// thread. The gate now ties the update to the channel in the path.
+func (s *Service) ListCommentsSince(ctx context.Context, channelID, updateID uuid.UUID, viewerID *uuid.UUID, since time.Time, limit int) ([]store.UpdateComment, error) {
+	if _, err := s.gateUpdate(ctx, channelID, updateID, viewerID, accessRead); err != nil {
 		return nil, err
 	}
 	return s.store.ListCommentsSince(ctx, updateID, since, limit)
 }
 
 func (s *Service) AddComment(ctx context.Context, channelID, updateID, userID uuid.UUID, body string, parentID *uuid.UUID) (*store.UpdateComment, error) {
-	u, err := s.store.GetUpdate(ctx, updateID)
+	ga, err := s.gateUpdate(ctx, channelID, updateID, &userID, accessWrite)
 	if err != nil {
 		return nil, err
-	}
-	if u.ChannelID != channelID {
-		return nil, fmt.Errorf("update not found")
 	}
 	if body == "" {
 		return nil, fmt.Errorf("invalid: comment body is required")
 	}
-	// Community rule: members cannot reply. comment_mode=disabled (the
-	// default for new channels) refuses every comment, admins included.
-	ch, err := s.store.GetChannelByID(ctx, channelID)
-	if err != nil {
+	if err := commentAllowed(ga.ch.CommentMode, ga.role); err != nil {
 		return nil, err
 	}
-	if ch.CommentMode == "disabled" {
-		return nil, fmt.Errorf("forbidden: comments are disabled on this channel")
-	}
-	if ch.CommentMode == "subscribers_only" && s.store.GetMemberRole(ctx, channelID, userID) == "" {
-		return nil, fmt.Errorf("forbidden: only subscribers can comment on this channel")
-	}
+	// The store refuses a parent that is not a comment on this same update.
 	comment, err := s.store.AddComment(ctx, updateID, userID, body, parentID)
 	if err != nil {
 		return nil, err
@@ -1306,26 +1248,36 @@ func (s *Service) AddComment(ctx context.Context, channelID, updateID, userID uu
 	return comment, nil
 }
 
+// commentAllowed applies comment_mode. Community rule: members cannot
+// reply, so comment_mode=disabled (the default for new channels) refuses
+// every comment, admins included. role is the gate's effectiveRole, so the
+// owner counts as a member even without a member row.
+func commentAllowed(commentMode, role string) error {
+	switch commentMode {
+	case "disabled":
+		return fmt.Errorf("forbidden: comments are disabled on this channel")
+	case "subscribers_only":
+		if role == "" {
+			return fmt.Errorf("forbidden: only subscribers can comment on this channel")
+		}
+	}
+	return nil
+}
+
+// DeleteComment removes a comment of THIS update (audit 2026-11-07, CH-M2).
+// Moderators and above of this channel may delete any comment on its
+// updates; anyone else only their own. The authority used to come from the
+// path channel while the DELETE matched the comment id alone, so the owner
+// of any channel could delete any comment platform-wide. The store now
+// matches the comment on (id, update_id), and the gate ties the update to
+// the channel the authority came from.
 func (s *Service) DeleteComment(ctx context.Context, channelID, updateID, commentID, userID uuid.UUID) error {
-	// Check if user is the channel owner (can delete any comment)
-	ch, err := s.store.GetChannelByID(ctx, channelID)
+	ga, err := s.gateUpdate(ctx, channelID, updateID, &userID, accessRead)
 	if err != nil {
 		return err
 	}
-	isOwner := ch.OwnerID == userID
-
-	// Also check admin/moderator role
-	if !isOwner {
-		member, err := s.store.GetMember(ctx, channelID, userID)
-		if err != nil {
-			return fmt.Errorf("failed to check membership: %w", err)
-		}
-		if member != nil && isAtLeast(member.Role, "moderator") {
-			isOwner = true
-		}
-	}
-
-	if err := s.store.DeleteComment(ctx, commentID, userID, isOwner); err != nil {
+	moderator := isAtLeast(ga.role, "moderator")
+	if err := s.store.DeleteComment(ctx, commentID, updateID, userID, moderator); err != nil {
 		return err
 	}
 
@@ -1341,26 +1293,26 @@ func (s *Service) DeleteComment(ctx context.Context, channelID, updateID, commen
 	return nil
 }
 
+// PinComment pins one comment of THIS update (admins and above of this
+// channel). Scoped like DeleteComment (CH-M2): the store pins only a comment
+// whose update_id is the update in the path.
 func (s *Service) PinComment(ctx context.Context, channelID, updateID, commentID, userID uuid.UUID) error {
-	// Only admins+ can pin
-	member, err := s.store.GetMember(ctx, channelID, userID)
-	if err != nil {
-		return fmt.Errorf("failed to check membership: %w", err)
-	}
-	if member == nil || !isAtLeast(member.Role, "admin") {
-		return fmt.Errorf("forbidden: only admins and above can pin comments")
-	}
-	return s.store.PinComment(ctx, commentID)
-}
-
-func (s *Service) VoteOnPoll(ctx context.Context, channelID, updateID, userID uuid.UUID, optionIndexes []int) error {
-	u, err := s.store.GetUpdate(ctx, updateID)
+	ga, err := s.gateUpdate(ctx, channelID, updateID, &userID, accessRead)
 	if err != nil {
 		return err
 	}
-	if u.ChannelID != channelID {
-		return fmt.Errorf("update not found")
+	if !isAtLeast(ga.role, "admin") {
+		return fmt.Errorf("forbidden: only admins and above can pin comments")
 	}
+	return s.store.PinComment(ctx, commentID, updateID)
+}
+
+func (s *Service) VoteOnPoll(ctx context.Context, channelID, updateID, userID uuid.UUID, optionIndexes []int) error {
+	ga, err := s.gateUpdate(ctx, channelID, updateID, &userID, accessWrite)
+	if err != nil {
+		return err
+	}
+	u := ga.u
 	if u.UpdateType != "poll" {
 		return fmt.Errorf("invalid: this update is not a poll")
 	}
@@ -1400,12 +1352,8 @@ func (s *Service) VoteOnPoll(ctx context.Context, channelID, updateID, userID uu
 }
 
 func (s *Service) GetPollResults(ctx context.Context, channelID, updateID uuid.UUID, viewerID *uuid.UUID) (*store.PollResultsResponse, error) {
-	u, err := s.store.GetUpdate(ctx, updateID)
-	if err != nil {
+	if _, err := s.gateUpdate(ctx, channelID, updateID, viewerID, accessRead); err != nil {
 		return nil, err
-	}
-	if u.ChannelID != channelID {
-		return nil, fmt.Errorf("update not found")
 	}
 
 	results, err := s.store.GetPollResults(ctx, updateID)
@@ -1424,14 +1372,11 @@ func (s *Service) GetPollResults(ctx context.Context, channelID, updateID uuid.U
 }
 
 func (s *Service) RSVPEvent(ctx context.Context, channelID, updateID, userID uuid.UUID, status string) error {
-	u, err := s.store.GetUpdate(ctx, updateID)
+	ga, err := s.gateUpdate(ctx, channelID, updateID, &userID, accessWrite)
 	if err != nil {
 		return err
 	}
-	if u.ChannelID != channelID {
-		return fmt.Errorf("update not found")
-	}
-	if u.UpdateType != "event" {
+	if ga.u.UpdateType != "event" {
 		return fmt.Errorf("invalid: this update is not an event")
 	}
 
@@ -1443,13 +1388,9 @@ func (s *Service) RSVPEvent(ctx context.Context, channelID, updateID, userID uui
 	return s.store.RSVPEvent(ctx, updateID, userID, status)
 }
 
-func (s *Service) ListAttendees(ctx context.Context, channelID, updateID uuid.UUID, status string, limit, offset int) ([]store.EventAttendee, error) {
-	u, err := s.store.GetUpdate(ctx, updateID)
-	if err != nil {
+func (s *Service) ListAttendees(ctx context.Context, channelID, updateID uuid.UUID, viewerID *uuid.UUID, status string, limit, offset int) ([]store.EventAttendee, error) {
+	if _, err := s.gateUpdate(ctx, channelID, updateID, viewerID, accessRead); err != nil {
 		return nil, err
-	}
-	if u.ChannelID != channelID {
-		return nil, fmt.Errorf("update not found")
 	}
 	return s.store.ListAttendees(ctx, updateID, status, limit, offset)
 }

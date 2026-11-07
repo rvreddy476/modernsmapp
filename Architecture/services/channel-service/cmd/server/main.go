@@ -225,7 +225,14 @@ func main() {
 	// internal service key. The handler supports the middleware but
 	// main.go previously never wired the env var, so the gate was a
 	// no-op and every endpoint was directly reachable.
-	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
+	// Audit 2026-11-07, X-L1: in production an unset key is fatal, as in
+	// group-service (internal_key.go); it used to log a warning and serve.
+	key, err := internalKeyForBoot(os.Getenv)
+	if err != nil {
+		slog.Error("channel-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
+	if key != "" {
 		channelHandler.WithInternalKey(key)
 		slog.Info("channel-service: internal-service-key gate enabled")
 	} else {

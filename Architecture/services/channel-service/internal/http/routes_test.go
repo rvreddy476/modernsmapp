@@ -224,6 +224,9 @@ func TestPolicyErrorWireCodes(t *testing.T) {
 		{service.ErrCannotModerateOwner, http.StatusForbidden, "CANNOT_MODERATE_OWNER"},
 		{service.ErrCannotModeratePeerAdmin, http.StatusForbidden, "CANNOT_MODERATE_ADMIN"},
 		{service.ErrNotAMember, http.StatusNotFound, "NOT_FOUND"},
+		{service.ErrAdminMustBeMember, http.StatusUnprocessableEntity, "ADMIN_MUST_BE_MEMBER"},
+		{service.ErrMemberIsBanned, http.StatusUnprocessableEntity, "MEMBER_BANNED"},
+		{service.ErrUpdateNotFound, http.StatusNotFound, "NOT_FOUND"},
 	} {
 		w := httptest.NewRecorder()
 		c, _ := gin.CreateTestContext(w)

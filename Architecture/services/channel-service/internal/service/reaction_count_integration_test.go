@@ -59,7 +59,7 @@ func setupReactionCountIT(t *testing.T) (*Service, *store.Store, *pgxpool.Pool) 
 }
 
 // seedReactionChannel makes an active public channel so an anonymous viewer
-// passes authorizeViewer.
+// passes the read gate (access.go).
 func seedReactionChannel(t *testing.T, pool *pgxpool.Pool) uuid.UUID {
 	t.Helper()
 	var id uuid.UUID

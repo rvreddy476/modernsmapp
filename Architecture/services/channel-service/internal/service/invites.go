@@ -312,6 +312,9 @@ func (s *Service) JoinByInvite(ctx context.Context, code string, userID uuid.UUI
 	inserted, err := s.store.AddMember(ctx, &store.ChannelMember{
 		ChannelID: ch.ID, UserID: userID, Role: "subscriber", NotifyOn: "all",
 	})
+	if errors.Is(err, store.ErrMemberBanned) {
+		return nil, ErrChannelMemberBanned // banned between the read above and the insert
+	}
 	if err != nil {
 		return nil, fmt.Errorf("failed to join: %w", err)
 	}

@@ -93,15 +93,23 @@ func (s *Service) RemoveMember(ctx context.Context, channelID, actorID, targetID
 	if target == nil {
 		return ErrNotAMember
 	}
-	if err := s.store.RemoveMember(ctx, channelID, targetID); err != nil {
+	// The ban lives on the member row, so removing a banned member would
+	// erase the ban and let them straight back in (audit 2026-11-07, CH-M3).
+	// A banned user is already out; lifting the ban is UnbanMember's job.
+	if target.Role == "banned" {
+		return ErrMemberIsBanned
+	}
+	removed, err := s.store.RemoveMember(ctx, channelID, targetID)
+	if err != nil {
 		return fmt.Errorf("failed to remove member: %w", err)
 	}
-	// A banned row was already excluded from every count, so removing it
-	// must not decrement again. Matches store.CountSubscribers.
-	if target.Role != "banned" {
-		if err := s.adjustSubscriberCount(ctx, channelID, -1); err != nil {
-			slog.Warn("failed to decrement subscriber count", "error", err)
-		}
+	if !removed {
+		// Gone or banned between the read and the delete: either way they
+		// are out, and there is nothing to count or announce.
+		return nil
+	}
+	if err := s.adjustSubscriberCount(ctx, channelID, -1); err != nil {
+		slog.Warn("failed to decrement subscriber count", "error", err)
 	}
 	if s.producer != nil {
 		if err := s.producer.PublishChannelUnsubscribed(ctx, channelID, targetID); err != nil {

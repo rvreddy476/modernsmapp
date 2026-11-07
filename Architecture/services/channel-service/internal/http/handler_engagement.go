@@ -248,7 +248,7 @@ func (h *Handler) ListComments(c *gin.Context) {
 	sort := c.DefaultQuery("sort", "newest")
 	limit, offset := parsePagination(c)
 
-	comments, err := h.svc.ListComments(c.Request.Context(), channelID, updateID, sort, limit, offset)
+	comments, err := h.svc.ListComments(c.Request.Context(), channelID, updateID, optionalViewer(c), sort, limit, offset)
 	if err != nil {
 		handleServiceError(c, err)
 		return
@@ -477,7 +477,7 @@ func (h *Handler) ListCommentsDelta(c *gin.Context) {
 		limit = l
 	}
 
-	comments, err := h.svc.ListCommentsSince(c.Request.Context(), channelID, updateID, since, limit)
+	comments, err := h.svc.ListCommentsSince(c.Request.Context(), channelID, updateID, optionalViewer(c), since, limit)
 	if err != nil {
 		handleServiceError(c, err)
 		return
@@ -502,7 +502,7 @@ func (h *Handler) ListAttendees(c *gin.Context) {
 	status := c.Query("status")
 	limit, offset := parsePagination(c)
 
-	attendees, err := h.svc.ListAttendees(c.Request.Context(), channelID, updateID, status, limit, offset)
+	attendees, err := h.svc.ListAttendees(c.Request.Context(), channelID, updateID, optionalViewer(c), status, limit, offset)
 	if err != nil {
 		handleServiceError(c, err)
 		return

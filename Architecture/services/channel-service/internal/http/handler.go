@@ -311,6 +311,10 @@ func writePolicyError(c *gin.Context, err error) bool {
 		api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, "CANNOT_MODERATE_ADMIN", err.Error(), nil)
 	case errors.Is(err, service.ErrNotAMember):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+	case errors.Is(err, service.ErrAdminMustBeMember):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusUnprocessableEntity, "ADMIN_MUST_BE_MEMBER", err.Error(), nil)
+	case errors.Is(err, service.ErrMemberIsBanned):
+		api.ErrorWithContext(ctx, c.Writer, http.StatusUnprocessableEntity, "MEMBER_BANNED", err.Error(), nil)
 	default:
 		return false
 	}

@@ -39,8 +39,9 @@ type UpdatePublishedEvent struct {
 
 // subscriberRow represents a single channel subscriber fetched for fanout.
 type subscriberRow struct {
-	UserID   uuid.UUID
-	NotifyOn string
+	UserID     uuid.UUID
+	NotifyOn   string
+	MutedUntil *time.Time
 }
 
 // notificationMsg is produced to the channel notifications topic for push/websocket delivery.
@@ -184,15 +185,19 @@ func (w *FanoutWorker) handleUpdatePublished(ctx context.Context, event UpdatePu
 	channelID := p.ChannelID
 
 	const batchSize = 1000
-	offset := 0
+	// Keyset cursor over the (channel_id, user_id) primary key (CH-L2). An
+	// OFFSET over subscribed_at shifted whenever someone joined or left
+	// mid-run, so members were skipped or notified twice.
+	after := uuid.Nil
 	totalSubscribers := 0
 	totalNotifications := 0
+	now := time.Now()
 
 	for {
-		subscribers, err := w.fetchSubscriberBatch(ctx, channelID, batchSize, offset)
+		subscribers, err := w.fetchSubscriberBatch(ctx, channelID, after, batchSize)
 		if err != nil {
 			w.logger.Error("fanout: failed to fetch subscribers",
-				"channel_id", channelID, "offset", offset, "error", err)
+				"channel_id", channelID, "after", after, "error", err)
 			return
 		}
 		if len(subscribers) == 0 {
@@ -209,25 +214,8 @@ func (w *FanoutWorker) handleUpdatePublished(ctx context.Context, event UpdatePu
 			}
 			totalSubscribers++
 
-			sendNotification := false
-			sendFeed := true // always inject into feed
-
-			switch sub.NotifyOn {
-			case "all":
-				sendNotification = true
-			case "highlights":
-				// Only push for critical alerts under highlights
-				if p.UpdateType == "alert" && p.Severity == "critical" {
-					sendNotification = true
-				}
-			case "none":
-				// No notifications unless critical alert override
-			}
-
-			// Critical alert override: always notify regardless of preference
-			if p.UpdateType == "alert" && p.Severity == "critical" {
-				sendNotification = true
-			}
+			sendNotification := shouldPush(sub, p, now)
+			sendFeed := true // always inject into feed, muted or not
 
 			if sendNotification {
 				totalNotifications++
@@ -281,7 +269,7 @@ func (w *FanoutWorker) handleUpdatePublished(ctx context.Context, event UpdatePu
 		if len(subscribers) < batchSize {
 			break
 		}
-		offset += batchSize
+		after = subscribers[len(subscribers)-1].UserID
 	}
 
 	w.logger.Info("fanout complete",
@@ -337,17 +325,23 @@ func newFeedInjectMessage(p UpdatePublishedPayload, recipient uuid.UUID) kafka.M
 // per-channel emergency disable writes broadcast_channels.status =
 // 'suspended', and without this join a suspended community would keep
 // pushing notifications and injecting home-timeline rows.
-const subscriberBatchQuery = `SELECT cm.user_id, cm.notify_on
+//
+// It pages by keyset on the (channel_id, user_id) primary key (audit
+// 2026-11-07, CH-L2): an OFFSET over the unindexed subscribed_at moved under
+// joins and leaves during a run, so members were skipped or notified twice.
+// muted_until is selected so a muted member is not pushed (CH-M4, shouldPush).
+const subscriberBatchQuery = `SELECT cm.user_id, cm.notify_on, cm.muted_until
 		FROM channel_members cm
 		JOIN broadcast_channels bc ON bc.id = cm.channel_id
 		WHERE cm.channel_id = $1 AND cm.role != 'banned' AND bc.status = 'active'
-		ORDER BY cm.subscribed_at
-		LIMIT $2 OFFSET $3`
+		  AND cm.user_id > $2
+		ORDER BY cm.user_id
+		LIMIT $3`
 
-// fetchSubscriberBatch returns a page of non-banned subscribers for a
-// channel that is still active.
-func (w *FanoutWorker) fetchSubscriberBatch(ctx context.Context, channelID string, limit, offset int) ([]subscriberRow, error) {
-	rows, err := w.db.Query(ctx, subscriberBatchQuery, channelID, limit, offset)
+// fetchSubscriberBatch returns the next page of non-banned subscribers, after
+// the user id `after`, for a channel that is still active.
+func (w *FanoutWorker) fetchSubscriberBatch(ctx context.Context, channelID string, after uuid.UUID, limit int) ([]subscriberRow, error) {
+	rows, err := w.db.Query(ctx, subscriberBatchQuery, channelID, after, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query subscribers: %w", err)
 	}
@@ -356,12 +350,33 @@ func (w *FanoutWorker) fetchSubscriberBatch(ctx context.Context, channelID strin
 	var subs []subscriberRow
 	for rows.Next() {
 		var s subscriberRow
-		if err := rows.Scan(&s.UserID, &s.NotifyOn); err != nil {
+		if err := rows.Scan(&s.UserID, &s.NotifyOn, &s.MutedUntil); err != nil {
 			return nil, fmt.Errorf("scan subscriber: %w", err)
 		}
 		subs = append(subs, s)
 	}
 	return subs, rows.Err()
+}
+
+// shouldPush decides whether one subscriber is pushed for this update.
+//
+// A MUTE wins over everything, the critical-alert override included (audit
+// 2026-11-07, CH-M4): muting wrote channel_members.muted_until and only the
+// display flag read it, so the app said "muted" while every update still
+// pushed. Any admin can mark an alert critical, so letting the override
+// pierce a mute would give every community a way round it. A muted member
+// still gets the update in their feed; only the push stops.
+//
+// Otherwise notify_on applies: "all" pushes everything; "highlights" and
+// "none" push only a critical alert.
+func shouldPush(sub subscriberRow, p UpdatePublishedPayload, now time.Time) bool {
+	if sub.MutedUntil != nil && sub.MutedUntil.After(now) {
+		return false
+	}
+	if p.UpdateType == "alert" && p.Severity == "critical" {
+		return true
+	}
+	return sub.NotifyOn == "all"
 }
 
 // notifTitle returns a human-readable notification title.

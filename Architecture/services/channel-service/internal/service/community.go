@@ -195,17 +195,6 @@ func (s *Service) decorateUpdates(ctx context.Context, viewerID *uuid.UUID, canE
 	return out
 }
 
-// viewerCanPost reports owner/admin standing.
-func (s *Service) viewerCanPost(ctx context.Context, ch *store.BroadcastChannel, viewerID *uuid.UUID) bool {
-	if viewerID == nil {
-		return false
-	}
-	if ch.OwnerID == *viewerID {
-		return true
-	}
-	return isAtLeast(s.store.GetMemberRole(ctx, ch.ID, *viewerID), "admin")
-}
-
 // requireOwner loads the channel and asserts the actor owns it.
 //
 // The status gate is here, not at the call sites: a suspended community
@@ -268,14 +257,19 @@ func (s *Service) requireAdmin(ctx context.Context, channelID, actorID uuid.UUID
 
 // ListAdmins is visible to anyone who may view the channel.
 func (s *Service) ListAdmins(ctx context.Context, channelID uuid.UUID, viewerID *uuid.UUID) ([]store.ChannelMember, error) {
-	if err := s.authorizeViewer(ctx, channelID, viewerID); err != nil {
+	if _, _, err := s.authorize(ctx, channelID, viewerID, accessRead); err != nil {
 		return nil, err
 	}
 	return s.store.ListAdmins(ctx, channelID)
 }
 
-// AddAdmin promotes a member to admin (owner only). A non-member is joined
-// and promoted in one step.
+// AddAdmin promotes an existing member to admin (owner only).
+//
+// Audit 2026-11-07, CH-L3: a non-member used to be inserted straight in as
+// `admin`, which skipped everything joining enforces — the pilot participant
+// allowlist, the person's own consent to join, and any block between them.
+// The target must now have joined on their own (Subscribe or an invite, both
+// of which apply those gates) and not be banned; see guardPromote.
 func (s *Service) AddAdmin(ctx context.Context, channelID, actorID, targetID uuid.UUID) error {
 	ch, err := s.requireOwner(ctx, channelID, actorID)
 	if err != nil {
@@ -288,25 +282,29 @@ func (s *Service) AddAdmin(ctx context.Context, channelID, actorID, targetID uui
 	if err != nil {
 		return fmt.Errorf("failed to check membership: %w", err)
 	}
-	if member != nil && member.Role == "banned" {
-		return fmt.Errorf("invalid: unban the user before promoting them")
-	}
-	if member == nil {
-		inserted, err := s.store.AddMember(ctx, &store.ChannelMember{ChannelID: channelID, UserID: targetID, Role: "admin", NotifyOn: "all"})
-		if err != nil {
-			return fmt.Errorf("failed to add admin: %w", err)
-		}
-		if inserted {
-			if err := s.adjustSubscriberCount(ctx, channelID, 1); err != nil {
-				slog.Warn("failed to increment subscriber count", "error", err)
-			}
-		}
-		return nil
-	}
-	if member.Role == "admin" {
-		return nil // idempotent
+	promote, err := guardPromote(member)
+	if err != nil || !promote {
+		return err
 	}
 	return s.store.UpdateMemberRole(ctx, channelID, targetID, "admin")
+}
+
+// guardPromote is AddAdmin's rule on the target's member row: it must exist
+// (they joined themselves), must not be banned, and must not already be at
+// or above admin (admin is idempotent; an owner row is never demoted by a
+// "promotion").
+func guardPromote(member *store.ChannelMember) (promote bool, err error) {
+	switch {
+	case member == nil:
+		return false, ErrAdminMustBeMember
+	case member.Role == "banned":
+		return false, fmt.Errorf("invalid: unban the user before promoting them")
+	case member.Role == "owner":
+		return false, fmt.Errorf("invalid: the owner is already above admin")
+	case member.Role == "admin":
+		return false, nil // idempotent
+	}
+	return true, nil
 }
 
 // RemoveAdmin demotes an admin back to subscriber (owner only). Idempotent.
@@ -373,75 +371,56 @@ func (s *Service) ReactToUpdate(ctx context.Context, channelID, updateID, userID
 	if emoji == "" || utf8.RuneCountInString(emoji) > reactionEmojiMaxRunes || strings.ContainsAny(emoji, " \t\r\n") {
 		return nil, fmt.Errorf("invalid: emoji is required (at most %d characters, no whitespace)", reactionEmojiMaxRunes)
 	}
-	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
-		return nil, err
-	}
-	ch, err := s.store.GetChannelByID(ctx, channelID)
+	ga, err := s.gateUpdate(ctx, channelID, updateID, &userID, accessWrite)
 	if err != nil {
 		return nil, err
 	}
-	if ch.ReactionMode == "disabled" {
+	if ga.ch.ReactionMode == "disabled" {
 		return nil, fmt.Errorf("forbidden: reactions are disabled on this channel")
 	}
-	u, err := s.store.GetUpdate(ctx, updateID)
-	if err != nil {
-		return nil, err
-	}
-	if u.ChannelID != channelID || u.Status != "published" {
-		return nil, fmt.Errorf("update not found")
+	// Reactions land on published updates only, admins included.
+	if ga.u.Status != "published" {
+		return nil, ErrUpdateNotFound
 	}
 	if _, err := s.store.SetReaction(ctx, updateID, userID, emoji); err != nil {
 		return nil, err
 	}
-	return s.viewUpdate(ctx, ch, updateID, &userID)
+	return s.viewUpdate(ctx, ga.ch, updateID, &userID, ga.role)
 }
 
 // UnreactToUpdate removes the viewer's reaction. Idempotent.
 func (s *Service) UnreactToUpdate(ctx context.Context, channelID, updateID, userID uuid.UUID) (*UpdateView, error) {
-	if err := s.authorizeEngagement(ctx, channelID, userID); err != nil {
-		return nil, err
-	}
-	ch, err := s.store.GetChannelByID(ctx, channelID)
+	ga, err := s.gateUpdate(ctx, channelID, updateID, &userID, accessWrite)
 	if err != nil {
 		return nil, err
-	}
-	u, err := s.store.GetUpdate(ctx, updateID)
-	if err != nil {
-		return nil, err
-	}
-	if u.ChannelID != channelID {
-		return nil, fmt.Errorf("update not found")
 	}
 	if _, err := s.store.RemoveReaction(ctx, updateID, userID); err != nil {
 		return nil, err
 	}
-	return s.viewUpdate(ctx, ch, updateID, &userID)
+	return s.viewUpdate(ctx, ga.ch, updateID, &userID, ga.role)
 }
 
 // GetUpdate returns one decorated update for the viewer.
 func (s *Service) GetUpdate(ctx context.Context, channelID, updateID uuid.UUID, viewerID *uuid.UUID) (*UpdateView, error) {
-	if err := s.authorizeViewer(ctx, channelID, viewerID); err != nil {
-		return nil, err
-	}
-	ch, err := s.store.GetChannelByID(ctx, channelID)
+	ch, role, err := s.authorize(ctx, channelID, viewerID, accessRead)
 	if err != nil {
 		return nil, err
 	}
-	return s.viewUpdate(ctx, ch, updateID, viewerID)
+	return s.viewUpdate(ctx, ch, updateID, viewerID, role)
 }
 
-func (s *Service) viewUpdate(ctx context.Context, ch *store.BroadcastChannel, updateID uuid.UUID, viewerID *uuid.UUID) (*UpdateView, error) {
+// viewUpdate (re)reads one update and decorates it; role is the gate's
+// effectiveRole for the viewer. It re-reads rather than reusing the gate's
+// row so a reaction write is reflected in the answer.
+func (s *Service) viewUpdate(ctx context.Context, ch *store.BroadcastChannel, updateID uuid.UUID, viewerID *uuid.UUID, role string) (*UpdateView, error) {
 	u, err := s.store.GetUpdate(ctx, updateID)
 	if err != nil {
 		return nil, err
 	}
-	if u.ChannelID != ch.ID {
-		return nil, fmt.Errorf("update not found")
+	if err := updateVisible(u, ch.ID, role); err != nil {
+		return nil, err
 	}
-	if u.Status != "published" && !s.viewerCanPost(ctx, ch, viewerID) {
-		return nil, fmt.Errorf("update not found")
-	}
-	views := s.decorateUpdates(ctx, viewerID, s.viewerCanPost(ctx, ch, viewerID), []store.ChannelUpdate{*u})
+	views := s.decorateUpdates(ctx, viewerID, isAtLeast(role, "admin"), []store.ChannelUpdate{*u})
 	return &views[0], nil
 }
 
@@ -457,7 +436,9 @@ func (s *Service) Report(ctx context.Context, channelID uuid.UUID, updateID *uui
 	if utf8.RuneCountInString(details) > reportDetailsMaxRunes {
 		return nil, fmt.Errorf("invalid: details must be at most %d characters", reportDetailsMaxRunes)
 	}
-	if err := s.authorizeViewer(ctx, channelID, &reporterID); err != nil {
+	// accessReport: a ban on a public community does not stop a report
+	// about it (access.go).
+	if _, _, err := s.authorize(ctx, channelID, &reporterID, accessReport); err != nil {
 		return nil, err
 	}
 	if updateID != nil {
