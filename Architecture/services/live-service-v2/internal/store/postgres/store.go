@@ -409,15 +409,32 @@ func (s *Store) ListRecentChatMessages(ctx context.Context, streamID uuid.UUID, 
 
 // --- Chat moderation (Phase B) ---
 
-// MuteUser inserts (or no-ops if already present) a per-stream mute.
-// The PRIMARY KEY (stream_id, user_id) makes the UPSERT idempotent.
+// MuteUser inserts a per-stream mute, or makes mutedBy the owner of the one
+// already there (muted_at is kept). The PRIMARY KEY (stream_id, user_id)
+// makes the UPSERT idempotent. Who may take a mute over is the service's
+// rule (Service.Mute: a moderator never rewrites an existing mute).
 func (s *Store) MuteUser(ctx context.Context, streamID, userID, mutedBy uuid.UUID) error {
 	const q = `
         INSERT INTO live_chat_mutes (stream_id, user_id, muted_by)
         VALUES ($1, $2, $3)
-        ON CONFLICT (stream_id, user_id) DO NOTHING`
+        ON CONFLICT (stream_id, user_id) DO UPDATE SET muted_by = EXCLUDED.muted_by`
 	_, err := s.db.Exec(ctx, q, streamID, userID, mutedBy)
 	return err
+}
+
+// MutedBy is who placed userID's mute on the stream; found is false when
+// there is no mute.
+func (s *Store) MutedBy(ctx context.Context, streamID, userID uuid.UUID) (by uuid.UUID, found bool, err error) {
+	err = s.db.QueryRow(ctx,
+		`SELECT muted_by FROM live_chat_mutes WHERE stream_id = $1 AND user_id = $2`,
+		streamID, userID).Scan(&by)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	return by, true, nil
 }
 
 // UnmuteUser removes a mute. No error if the row does not exist.

@@ -102,8 +102,21 @@ func (s *Service) Ban(ctx context.Context, streamID, actorID, targetID uuid.UUID
 	if targetIsMod && role == RoleModerator {
 		return ErrNotCreator
 	}
-	if err := s.store.BanFromStream(ctx, streamID, targetID, actorID, reason); err != nil {
-		return err
+	// A moderator never rewrites a ban already in place: the row keeps its
+	// owner (and reason), so a moderator cannot take over the host's ban and
+	// then lift it (Unban).
+	write := true
+	if role == RoleModerator {
+		_, already, err := s.store.StreamBanBy(ctx, streamID, targetID)
+		if err != nil {
+			return err
+		}
+		write = !already
+	}
+	if write {
+		if err := s.store.BanFromStream(ctx, streamID, targetID, actorID, reason); err != nil {
+			return err
+		}
 	}
 	s.kick(ctx, st, targetID)
 	s.publish(ctx, streamID, EventModerationBan, map[string]any{
@@ -132,10 +145,49 @@ func (s *Service) kick(ctx context.Context, st *postgres.LiveStream, userID uuid
 	}
 }
 
-// Unban lifts a stream ban (host or moderator).
-func (s *Service) Unban(ctx context.Context, streamID, actorID, targetID uuid.UUID) error {
-	_, role, err := s.requireHostOrModerator(ctx, streamID, actorID)
+// moderatorMayLift: a moderator may lift only a ban or mute a moderator
+// placed: their own, or one by another current moderator. The host's, an
+// admin's (a resolved report) and a former moderator's are the host's to
+// lift.
+func (s *Service) moderatorMayLift(ctx context.Context, st *postgres.LiveStream, actorID, placedBy uuid.UUID) (bool, error) {
+	if placedBy == actorID {
+		return true, nil
+	}
+	if placedBy == uuid.Nil || placedBy == st.CreatorUserID {
+		return false, nil
+	}
+	return s.store.IsModerator(ctx, st.ID, placedBy)
+}
+
+// requireMayLift refuses a moderator lifting a ban or mute they may not
+// (ErrNotCreator, as for a moderator banning a moderator). The host may
+// lift anything; nothing in place is nothing to refuse.
+func (s *Service) requireMayLift(ctx context.Context, st *postgres.LiveStream, role string, actorID, placedBy uuid.UUID, found bool) error {
+	if role != RoleModerator || !found {
+		return nil
+	}
+	ok, err := s.moderatorMayLift(ctx, st, actorID, placedBy)
 	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrNotCreator
+	}
+	return nil
+}
+
+// Unban lifts a stream ban: the host any ban, a moderator only one a
+// moderator placed (moderatorMayLift).
+func (s *Service) Unban(ctx context.Context, streamID, actorID, targetID uuid.UUID) error {
+	st, role, err := s.requireHostOrModerator(ctx, streamID, actorID)
+	if err != nil {
+		return err
+	}
+	by, found, err := s.store.StreamBanBy(ctx, streamID, targetID)
+	if err != nil {
+		return err
+	}
+	if err := s.requireMayLift(ctx, st, role, actorID, by, found); err != nil {
 		return err
 	}
 	if err := s.store.UnbanFromStream(ctx, streamID, targetID); err != nil {

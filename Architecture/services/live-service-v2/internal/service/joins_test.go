@@ -3,6 +3,7 @@ package service
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -243,36 +244,49 @@ func TestViewerJoinedNotAfterEnd(t *testing.T) {
 // TestViewerJoinedRespectsRoomGate: a viewer blocked either way with the
 // host, banned from the stream or platform live-banned is not announced,
 // and neither is anyone while the gate cannot be decided.
+//
+// Since 7 Nov 2026 (audit LV-M1) a definite refusal also removes the
+// participant from the LiveKit room and does not count them (the old token
+// let them back in); an undecidable gate keeps the join, counted.
 func TestViewerJoinedRespectsRoomGate(t *testing.T) {
-	cases := map[string]func(r *rig, host, v uuid.UUID, st *postgres.LiveStream){
-		"blocked": func(r *rig, host, v uuid.UUID, _ *postgres.LiveStream) {
+	cases := map[string]struct {
+		setup   func(r *rig, host, v uuid.UUID, st *postgres.LiveStream)
+		refused bool
+	}{
+		"blocked": {func(r *rig, host, v uuid.UUID, _ *postgres.LiveStream) {
 			r.graph.blocked[v.String()+":"+host.String()] = true
-		},
-		"stream ban": func(r *rig, host, v uuid.UUID, st *postgres.LiveStream) {
+		}, true},
+		"stream ban": {func(r *rig, host, v uuid.UUID, st *postgres.LiveStream) {
 			if err := r.store.BanFromStream(ctx, st.ID, v, host, ""); err != nil {
 				t.Fatal(err)
 			}
-		},
-		"platform ban": func(r *rig, _, v uuid.UUID, _ *postgres.LiveStream) {
+		}, true},
+		"platform ban": {func(r *rig, _, v uuid.UUID, _ *postgres.LiveStream) {
 			r.store.PlatformBans[v] = postgres.PlatformBan{UserID: v}
-		},
-		"graph down": func(r *rig, _, _ uuid.UUID, _ *postgres.LiveStream) {
+		}, true},
+		"graph down": {func(r *rig, _, _ uuid.UUID, _ *postgres.LiveStream) {
 			r.graph.err = errors.New("graph-service is down")
-		},
+		}, false},
 	}
-	for name, setup := range cases {
+	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
 			r, host, st, _ := joinRig(t)
 			r.ev.allowAll = true
 			v := uuid.New()
-			setup(r, host, v, st)
+			tc.setup(r, host, v, st)
 			mustHook(t, r, joinEv(st, v.String()))
 			if n := joinedCount(r); n != 0 {
 				t.Fatalf("announced %d times", n)
 			}
-			// The presence itself is still recorded (the count is truthful).
-			if got := r.store.Stream(st.ID); got.ViewerCount != 1 {
-				t.Fatalf("viewer_count = %d, want 1", got.ViewerCount)
+			wantCount, wantRemoved := 1, []string(nil)
+			if tc.refused {
+				wantCount, wantRemoved = 0, []string{st.LiveKitRoom + "/" + v.String()}
+			}
+			if got := r.store.Stream(st.ID); got.ViewerCount != wantCount {
+				t.Fatalf("viewer_count = %d, want %d", got.ViewerCount, wantCount)
+			}
+			if fmt.Sprint(r.lk.removed) != fmt.Sprint(wantRemoved) {
+				t.Fatalf("removed = %v, want %v", r.lk.removed, wantRemoved)
 			}
 		})
 	}

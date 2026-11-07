@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"os"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	dbschema "github.com/atpost/live-service-v2/database"
+	"github.com/atpost/live-service-v2/internal/blockevents"
 	v2http "github.com/atpost/live-service-v2/internal/http"
 	"github.com/atpost/live-service-v2/internal/livekit"
 	"github.com/atpost/live-service-v2/internal/mediaclient"
@@ -38,6 +40,13 @@ func main() {
 
 	graphURL := env("GRAPH_SERVICE_URL", "")
 	internalKey := os.Getenv("INTERNAL_SERVICE_KEY")
+	// Without the key every v1 handler trusts X-User-Id from anyone who can
+	// reach the pod (audit X-L1): production refuses to boot, as
+	// group-service does.
+	if err := requireInternalKeyInProduction(internalKey, os.Getenv); err != nil {
+		slog.Error("live-v2: refusing to start", "error", err)
+		os.Exit(1)
+	}
 	mediaURL := os.Getenv("MEDIA_SERVICE_URL")
 
 	s3Endpoint := env("MINIO_ENDPOINT", "http://minio:9000")
@@ -271,6 +280,13 @@ func main() {
 	defer lifecycle.Close()
 	go lifecycle.Start(ctx)
 
+	// A block between a viewer and a live host removes the viewer from the
+	// room at once (service/blocks.go), from graph-service's UserBlocked.
+	blocks := blockevents.NewConsumer(kafkaBrokers, env("GRAPH_EVENTS_TOPIC", blockevents.DefaultTopic),
+		"live-service-v2-blocks", kafkaDialer, svc, slog.Default())
+	defer blocks.Close()
+	go blocks.Start(bgCtx)
+
 	handler := v2http.New(svc)
 	if internalKey != "" {
 		handler.WithInternalKey(internalKey)
@@ -363,4 +379,31 @@ func envDuration(key string, fallback time.Duration) time.Duration {
 	}
 	slog.Warn("live-v2: invalid duration; using the default", "key", key, "default", fallback.String())
 	return fallback
+}
+
+// errNoInternalKeyInProduction: INTERNAL_SERVICE_KEY is unset in production.
+var errNoInternalKeyInProduction = errors.New("INTERNAL_SERVICE_KEY is required in production; the v1 handlers trust gateway identity headers")
+
+// requireInternalKeyInProduction refuses an empty key when the environment
+// says production (group-service's rule: APP_ENV, ENVIRONMENT or ENV, the
+// first one set, is "prod" or "production").
+func requireInternalKeyInProduction(key string, getenv func(string) string) error {
+	if strings.TrimSpace(key) == "" && isProduction(getenv) {
+		return errNoInternalKeyInProduction
+	}
+	return nil
+}
+
+func isProduction(getenv func(string) string) bool {
+	for _, k := range []string{"APP_ENV", "ENVIRONMENT", "ENV"} {
+		switch strings.ToLower(strings.TrimSpace(getenv(k))) {
+		case "prod", "production":
+			return true
+		case "":
+			continue
+		default:
+			return false
+		}
+	}
+	return false
 }

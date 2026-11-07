@@ -243,6 +243,21 @@ func (s *Store) IsBannedFromStream(ctx context.Context, streamID, userID uuid.UU
 	return ok, err
 }
 
+// StreamBanBy is who placed userID's ban on the stream; found is false when
+// there is no ban.
+func (s *Store) StreamBanBy(ctx context.Context, streamID, userID uuid.UUID) (by uuid.UUID, found bool, err error) {
+	err = s.db.QueryRow(ctx,
+		`SELECT banned_by FROM live_stream_bans WHERE stream_id = $1 AND user_id = $2`,
+		streamID, userID).Scan(&by)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return uuid.Nil, false, nil
+	}
+	if err != nil {
+		return uuid.Nil, false, err
+	}
+	return by, true, nil
+}
+
 // ListStreamBans returns the stream's bans, newest first.
 func (s *Store) ListStreamBans(ctx context.Context, streamID uuid.UUID) ([]StreamBan, error) {
 	rows, err := s.db.Query(ctx, `

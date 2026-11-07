@@ -359,6 +359,9 @@ func (s *Service) applyPresence(ctx context.Context, st *postgres.LiveStream, id
 	if err != nil || userID == uuid.Nil {
 		return nil // not a user identity (e.g. an egress participant)
 	}
+	if present && s.refuseJoin(ctx, st, userID) {
+		return nil // removed from the room, and never counted
+	}
 	next, changed, joined, err := s.store.ApplyPresence(ctx, st.ID, userID, present)
 	if errors.Is(err, postgres.ErrNotFound) {
 		return nil
@@ -373,6 +376,30 @@ func (s *Service) applyPresence(ctx context.Context, st *postgres.LiveStream, id
 		s.announceJoin(ctx, next, userID)
 	}
 	return nil
+}
+
+// refuseJoin re-runs the room gate (MayWatch: visibility, blocks either way
+// with the host, stream ban, platform live ban) for a viewer LiveKit just
+// let in. A token outlives the decision it was minted on: a viewer banned
+// or blocked since then reconnects with it (every LiveKit client retries a
+// dropped connection). On a definite no the participant is removed from the
+// room and the join is not counted. An undecidable gate (graph-service or
+// the database down) lets the join stand, as before: the viewer passed the
+// gate when the token was minted, and the next decidable check catches up.
+func (s *Service) refuseJoin(ctx context.Context, st *postgres.LiveStream, userID uuid.UUID) bool {
+	if userID == st.CreatorUserID {
+		return false
+	}
+	ok, err := s.MayWatch(ctx, st.ID, userID)
+	if err != nil {
+		slog.WarnContext(ctx, "live-v2: room gate undecided on join; viewer kept", "stream_id", st.ID, "err", err)
+		return false
+	}
+	if ok {
+		return false
+	}
+	s.kick(ctx, st, userID)
+	return true
 }
 
 // viewerCountWindow: viewer.count goes out at most once per window per stream.

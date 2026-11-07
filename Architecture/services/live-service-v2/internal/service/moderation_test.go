@@ -88,7 +88,7 @@ func TestPin_ServiceFlow(t *testing.T) {
 	if err := svc.PinMessage(context.Background(), st.ID, creator, msg1.ID); err != nil {
 		t.Fatalf("PinMessage 1: %v", err)
 	}
-	got, err := svc.GetPinnedMessage(context.Background(), st.ID)
+	got, err := svc.GetPinnedMessage(context.Background(), st.ID, viewer)
 	if err != nil {
 		t.Fatalf("GetPinnedMessage: %v", err)
 	}
@@ -100,7 +100,7 @@ func TestPin_ServiceFlow(t *testing.T) {
 	if err := svc.PinMessage(context.Background(), st.ID, creator, msg2.ID); err != nil {
 		t.Fatalf("PinMessage 2: %v", err)
 	}
-	got2, err := svc.GetPinnedMessage(context.Background(), st.ID)
+	got2, err := svc.GetPinnedMessage(context.Background(), st.ID, viewer)
 	if err != nil {
 		t.Fatalf("GetPinnedMessage 2: %v", err)
 	}

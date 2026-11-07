@@ -14,6 +14,7 @@ package http
 import (
 	"crypto/subtle"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -330,6 +331,9 @@ func requireUUID(c *gin.Context, name string) (uuid.UUID, bool) {
 	return id, true
 }
 
+// internalErrorMessage is the whole message of every 500.
+const internalErrorMessage = "internal error"
+
 func writeServiceErr(c *gin.Context, err error) {
 	// Open mode's refusal carries what is missing: details.requirements is
 	// the eligibility list, the requirements that are not met.
@@ -411,7 +415,10 @@ func writeServiceErr(c *gin.Context, err error) {
 	case errors.Is(err, service.ErrMediaUnavailable):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "MEDIA_UNAVAILABLE", err.Error(), nil)
 	default:
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		// The detail (a wrapped LiveKit, Postgres or Redis error) is logged,
+		// never sent: it names internals a client has no use for.
+		slog.ErrorContext(c.Request.Context(), "live-v2: request failed", "method", c.Request.Method, "path", c.FullPath(), "err", err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", internalErrorMessage, nil)
 	}
 }
 
@@ -683,7 +690,7 @@ func (h *Handler) UnpinMessage(c *gin.Context) {
 		}
 		msgID = parsed
 	} else {
-		pinned, err := h.svc.GetPinnedMessage(c.Request.Context(), streamID)
+		pinned, err := h.svc.GetPinnedMessage(c.Request.Context(), streamID, hostID)
 		if err != nil {
 			writeModerationErr(c, err)
 			return
@@ -702,13 +709,14 @@ func (h *Handler) UnpinMessage(c *gin.Context) {
 }
 
 // GetPinnedMessage — GET /v1/livestream/streams/:id/chat/pinned
-// Any viewer may call this. Returns null when no message is pinned.
+// Anyone who may read the chat (ListChat's gate; signed out only on a public
+// stream). Returns null when no message is pinned.
 func (h *Handler) GetPinnedMessage(c *gin.Context) {
 	streamID, ok := requireUUID(c, "id")
 	if !ok {
 		return
 	}
-	pinned, err := h.svc.GetPinnedMessage(c.Request.Context(), streamID)
+	pinned, err := h.svc.GetPinnedMessage(c.Request.Context(), streamID, optionalUserID(c))
 	if err != nil {
 		writeModerationErr(c, err)
 		return

@@ -27,8 +27,10 @@ type MemStore struct {
 	// Now is the "database clock"; default time.Now.
 	Now func() time.Time
 
-	Streams       map[uuid.UUID]*postgres.LiveStream
-	Mutes         map[uuid.UUID]map[uuid.UUID]bool
+	Streams map[uuid.UUID]*postgres.LiveStream
+	Mutes   map[uuid.UUID]map[uuid.UUID]bool
+	// MuteOwners is who placed each mute (live_chat_mutes.muted_by).
+	MuteOwners    map[uuid.UUID]map[uuid.UUID]uuid.UUID
 	WordFilters   map[uuid.UUID]map[string]bool
 	Messages      map[uuid.UUID]*postgres.ChatMessage
 	Pinned        map[uuid.UUID]uuid.UUID
@@ -66,6 +68,7 @@ func New() *MemStore {
 		Now:           time.Now,
 		Streams:       map[uuid.UUID]*postgres.LiveStream{},
 		Mutes:         map[uuid.UUID]map[uuid.UUID]bool{},
+		MuteOwners:    map[uuid.UUID]map[uuid.UUID]uuid.UUID{},
 		WordFilters:   map[uuid.UUID]map[string]bool{},
 		Messages:      map[uuid.UUID]*postgres.ChatMessage{},
 		Pinned:        map[uuid.UUID]uuid.UUID{},
@@ -580,13 +583,19 @@ func (m *MemStore) removeLocked(streamID, messageID uuid.UUID) (bool, error) {
 
 // --- Phase B moderation ---
 
-func (m *MemStore) MuteUser(_ context.Context, streamID, userID, _ uuid.UUID) error {
+// MuteUser mutes userID, or makes mutedBy the owner of the mute already
+// there (the postgres UPSERT).
+func (m *MemStore) MuteUser(_ context.Context, streamID, userID, mutedBy uuid.UUID) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.Mutes[streamID] == nil {
 		m.Mutes[streamID] = map[uuid.UUID]bool{}
 	}
 	m.Mutes[streamID][userID] = true
+	if m.MuteOwners[streamID] == nil {
+		m.MuteOwners[streamID] = map[uuid.UUID]uuid.UUID{}
+	}
+	m.MuteOwners[streamID][userID] = mutedBy
 	return nil
 }
 
@@ -594,7 +603,30 @@ func (m *MemStore) UnmuteUser(_ context.Context, streamID, userID uuid.UUID) err
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.Mutes[streamID], userID)
+	delete(m.MuteOwners[streamID], userID)
 	return nil
+}
+
+// MutedBy is who placed userID's mute (uuid.Nil for a mute a test wrote
+// into Mutes by hand).
+func (m *MemStore) MutedBy(_ context.Context, streamID, userID uuid.UUID) (uuid.UUID, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.Mutes[streamID][userID] {
+		return uuid.Nil, false, nil
+	}
+	return m.MuteOwners[streamID][userID], true, nil
+}
+
+// StreamBanBy is who placed userID's stream ban.
+func (m *MemStore) StreamBanBy(_ context.Context, streamID, userID uuid.UUID) (uuid.UUID, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	b, ok := m.Bans[streamID][userID]
+	if !ok {
+		return uuid.Nil, false, nil
+	}
+	return b.BannedBy, true, nil
 }
 
 func (m *MemStore) IsUserMuted(_ context.Context, streamID, userID uuid.UUID) (bool, error) {

@@ -54,7 +54,7 @@ var (
 
 	// Launch safety (1 Oct 2026).
 	ErrLiveNotEnabled       = errors.New("going live is in a closed pilot")
-	ErrLiveBanned           = errors.New("you may not go live or chat on live streams")
+	ErrLiveBanned           = errors.New("you may not go live, watch or chat on live streams")
 	ErrBannedFromStream     = errors.New("you are banned from this stream")
 	ErrViewerBlocked        = errors.New("live stream not found") // a block hides the stream
 	ErrAuthorityUnavailable = errors.New("could not verify access right now")
@@ -87,7 +87,15 @@ const (
 	visibilityPaid      = "paid"
 
 	publisherTokenTTL = 12 * time.Hour
-	viewerTokenTTL    = 4 * time.Hour
+	// viewerTokenTTL bounds how long a viewer token lets anyone JOIN the room
+	// (LiveKit checks it only on connect; a connected viewer is kept alive by
+	// LiveKit's own token refresh). A ban or block also removes the
+	// participant at once (kick, and applyPresence's gate on every join), so
+	// this is the backstop, not the gate. A client that must connect after
+	// expires_at asks /viewer-token again, which re-runs the viewer gate. It
+	// must not be shorter than the web's cache of the answer (useViewerToken's
+	// 30 min staleTime), or a cached token would be refused on a return visit.
+	viewerTokenTTL = 30 * time.Minute
 	// relationshipCacheTTL bounds how long a follow/block answer is reused.
 	// The ws-gateway re-asks every 30s; a fresh block must land inside that.
 	relationshipCacheTTL = 15 * time.Second
@@ -146,6 +154,9 @@ type Store interface {
 	MuteUser(ctx context.Context, streamID, userID, mutedBy uuid.UUID) error
 	UnmuteUser(ctx context.Context, streamID, userID uuid.UUID) error
 	IsUserMuted(ctx context.Context, streamID, userID uuid.UUID) (bool, error)
+	// MutedBy / StreamBanBy: who placed the mute or ban (found=false: none).
+	MutedBy(ctx context.Context, streamID, userID uuid.UUID) (by uuid.UUID, found bool, err error)
+	StreamBanBy(ctx context.Context, streamID, userID uuid.UUID) (by uuid.UUID, found bool, err error)
 	ListMutedUsers(ctx context.Context, streamID uuid.UUID) ([]uuid.UUID, error)
 	AddWordFilter(ctx context.Context, streamID uuid.UUID, word string, addedBy uuid.UUID) error
 	RemoveWordFilter(ctx context.Context, streamID uuid.UUID, word string) error
@@ -515,15 +526,17 @@ func (s *Service) EndStream(ctx context.Context, streamID, creatorID uuid.UUID) 
 }
 
 // IssueViewerTokenResult is returned to viewers joining a stream.
+// ExpiresAt is when the token stops admitting a new connection.
 type IssueViewerTokenResult struct {
-	Token     string `json:"token"`
-	Room      string `json:"room"`
-	ServerURL string `json:"server_url"`
+	Token     string    `json:"token"`
+	Room      string    `json:"room"`
+	ServerURL string    `json:"server_url"`
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
-// IssueViewerToken runs the viewer gate (visibility, blocks, stream ban)
-// then mints a subscriber-only LiveKit token while the stream is on air
-// (starting, live or reconnecting).
+// IssueViewerToken runs the viewer gate (visibility, blocks, stream ban,
+// platform live ban) then mints a subscriber-only LiveKit token while the
+// stream is on air (starting, live or reconnecting).
 func (s *Service) IssueViewerToken(ctx context.Context, streamID, viewerID uuid.UUID) (*IssueViewerTokenResult, error) {
 	st, err := s.store.GetByID(ctx, streamID)
 	if err != nil {
@@ -532,6 +545,18 @@ func (s *Service) IssueViewerToken(ctx context.Context, streamID, viewerID uuid.
 	if err := s.authorizeViewer(ctx, st, viewerID); err != nil {
 		return nil, err
 	}
+	// A platform live ban covers watching, as it covers the real-time room
+	// (MayWatch). Fails closed. The host's own stream is not refused here:
+	// the ban itself stops a live-banned host's streams (AdminLiveBan).
+	if viewerID != st.CreatorUserID {
+		banned, err := s.store.IsPlatformBanned(ctx, viewerID)
+		if err != nil {
+			return nil, ErrAuthorityUnavailable
+		}
+		if banned {
+			return nil, ErrLiveBanned
+		}
+	}
 	if !onAir(st.Status) {
 		return nil, ErrStreamNotLive
 	}
@@ -539,6 +564,7 @@ func (s *Service) IssueViewerToken(ctx context.Context, streamID, viewerID uuid.
 	if err := s.checkViewerCap(ctx, st, viewerID); err != nil {
 		return nil, err
 	}
+	issuedAt := s.clock()
 	token, err := s.livekit.IssueViewerToken(ctx, st.LiveKitRoom, viewerID.String(), viewerTokenTTL)
 	if err != nil {
 		return nil, fmt.Errorf("livekit viewer token: %w", err)
@@ -547,6 +573,7 @@ func (s *Service) IssueViewerToken(ctx context.Context, streamID, viewerID uuid.
 		Token:     token,
 		Room:      st.LiveKitRoom,
 		ServerURL: s.livekit.ServerURL(),
+		ExpiresAt: issuedAt.Add(viewerTokenTTL).UTC(),
 	}, nil
 }
 
@@ -560,47 +587,26 @@ func chatOpen(status string) bool {
 	return status == postgres.StatusLive || status == postgres.StatusReconnecting
 }
 
-// ListLiveNow returns currently-live streams visible to viewerID.
-// Followers-only streams are filtered to creators the viewer follows.
-// Paid streams are skipped (not supported in v2).
+// ListLiveResult is one page of a stream listing.
 type ListLiveResult struct {
 	Streams    []*postgres.LiveStream `json:"streams"`
 	NextCursor string                 `json:"next_cursor,omitempty"`
 }
 
+// ListLiveNow returns currently-live streams visible to viewerID.
+// Followers-only streams are filtered to creators the viewer follows.
+// Paid streams are skipped (not supported in v2).
+//
+// It is the live list's own pager (pageLive, newest first, no filters): the
+// viewer's relationships are read in one batch per page, and the cursor
+// resumes after the last row READ, so a run of streams the viewer may not
+// see never ends the listing early (?status=all's live phase runs on it).
 func (s *Service) ListLiveNow(ctx context.Context, viewerID uuid.UUID, limit int, cursor string) (*ListLiveResult, error) {
-	if limit <= 0 || limit > 50 {
-		limit = 20
-	}
-	startedBefore, idBefore, err := parseCursor(cursor)
+	res, err := s.pageLive(ctx, viewerID, postgres.SortRecent, postgres.StreamFilter{}, pageLimit(limit), cursor)
 	if err != nil {
 		return nil, err
 	}
-	// Over-fetch a bit to compensate for filtering below.
-	streams, err := s.store.ListLive(ctx, postgres.ListLiveParams{
-		Limit:         limit * 2,
-		StartedBefore: startedBefore,
-		IDBefore:      idBefore,
-	})
-	if err != nil {
-		return nil, err
-	}
-	out := make([]*postgres.LiveStream, 0, limit)
-	for _, st := range streams {
-		if len(out) == limit {
-			break
-		}
-		if err := s.canSee(ctx, st, viewerID); err != nil {
-			continue
-		}
-		out = append(out, st)
-	}
-	out = s.decorate(ctx, viewerID, out)
-	res := &ListLiveResult{Streams: out}
-	if len(out) == limit && out[len(out)-1].StartedAt != nil {
-		last := out[len(out)-1]
-		res.NextCursor = encodeCursor(*last.StartedAt, last.ID)
-	}
+	res.Streams = s.decorate(ctx, viewerID, res.Streams)
 	return res, nil
 }
 
@@ -654,7 +660,7 @@ func (s *Service) ListScheduled(ctx context.Context, viewerID uuid.UUID, limit i
 	if s.now != nil {
 		now = s.now
 	}
-	batch := limit * 2 // over-fetch for the visibility filter, as ListLiveNow does
+	batch := limit * 2 // over-fetch for the visibility filter, as pageVisible does
 	streams, err := s.store.ListScheduled(ctx, postgres.ListScheduledParams{
 		Limit:          batch,
 		Now:            now().UTC(),
@@ -665,13 +671,14 @@ func (s *Service) ListScheduled(ctx context.Context, viewerID uuid.UUID, limit i
 		return nil, err
 	}
 	out := make([]*postgres.LiveStream, 0, limit)
-	var last *postgres.LiveStream // the last row read, visible or not
-	for _, st := range streams {
+	var last *postgres.LiveStream            // the last row read, visible or not
+	vis := s.visible(ctx, viewerID, streams) // one relationship batch, not a call per row
+	for i, st := range streams {
 		if len(out) == limit {
 			break
 		}
 		last = st
-		if err := s.canSee(ctx, st, viewerID); err != nil {
+		if !vis[i] {
 			continue
 		}
 		out = append(out, st)
@@ -883,6 +890,11 @@ func (s *Service) authorizeViewer(ctx context.Context, st *postgres.LiveStream, 
 	return nil
 }
 
+// relationshipCacheKey is relationshipCached's key for (viewer, creator).
+func relationshipCacheKey(viewerID, creatorID uuid.UUID) string {
+	return fmt.Sprintf("live_rel:%s:%s", viewerID, creatorID)
+}
+
 // relationshipCached wraps the graph-service call with a short Redis cache
 // keyed by (viewer, creator). An error is never cached.
 func (s *Service) relationshipCached(ctx context.Context, viewerID, creatorID uuid.UUID) (Relationship, error) {
@@ -892,7 +904,7 @@ func (s *Service) relationshipCached(ctx context.Context, viewerID, creatorID uu
 	if s.redis == nil {
 		return s.graph.Relationship(ctx, viewerID, creatorID)
 	}
-	cacheKey := fmt.Sprintf("live_rel:%s:%s", viewerID, creatorID)
+	cacheKey := relationshipCacheKey(viewerID, creatorID)
 	if v, err := s.redis.Get(ctx, cacheKey).Result(); err == nil && len(v) == 2 {
 		return Relationship{Follows: v[0] == '1', Blocked: v[1] == '1'}, nil
 	}
@@ -1112,8 +1124,20 @@ func (s *Service) Mute(ctx context.Context, streamID, actorID, targetUserID uuid
 	if targetUserID == st.CreatorUserID {
 		return ErrInvalidTarget
 	}
-	if err := s.store.MuteUser(ctx, streamID, targetUserID, actorID); err != nil {
-		return err
+	// The host's mute takes the row over; a moderator never rewrites a mute
+	// already in place, so it keeps its owner (Unmute's rule).
+	write := true
+	if role == RoleModerator {
+		_, already, err := s.store.MutedBy(ctx, streamID, targetUserID)
+		if err != nil {
+			return err
+		}
+		write = !already
+	}
+	if write {
+		if err := s.store.MuteUser(ctx, streamID, targetUserID, actorID); err != nil {
+			return err
+		}
 	}
 	s.publish(ctx, streamID, EventModerationMute, map[string]any{
 		"stream_id": streamID.String(),
@@ -1125,10 +1149,18 @@ func (s *Service) Mute(ctx context.Context, streamID, actorID, targetUserID uuid
 	return nil
 }
 
-// Unmute clears a mute. Emits moderation.unmute.
+// Unmute clears a mute: the host any mute, a moderator only one a moderator
+// placed (moderatorMayLift). Emits moderation.unmute.
 func (s *Service) Unmute(ctx context.Context, streamID, actorID, targetUserID uuid.UUID) error {
-	_, role, err := s.requireHostOrModerator(ctx, streamID, actorID)
+	st, role, err := s.requireHostOrModerator(ctx, streamID, actorID)
 	if err != nil {
+		return err
+	}
+	by, found, err := s.store.MutedBy(ctx, streamID, targetUserID)
+	if err != nil {
+		return err
+	}
+	if err := s.requireMayLift(ctx, st, role, actorID, by, found); err != nil {
 		return err
 	}
 	if err := s.store.UnmuteUser(ctx, streamID, targetUserID); err != nil {
@@ -1249,12 +1281,17 @@ func (s *Service) UnpinMessage(ctx context.Context, streamID, hostID, messageID 
 	return nil
 }
 
-// GetPinnedMessage returns the current pin (or nil) without a
-// creator check — viewers need to see the pinned banner too.
-func (s *Service) GetPinnedMessage(ctx context.Context, streamID uuid.UUID) (*postgres.ChatMessage, error) {
+// GetPinnedMessage returns the current pin (or nil) to anyone who may read
+// the chat: the same viewer gate as ListChat (visibility, blocks either way
+// with the host, stream ban). viewerID may be uuid.Nil for a signed-out
+// reader of a public stream. No creator check: viewers see the banner too.
+func (s *Service) GetPinnedMessage(ctx context.Context, streamID, viewerID uuid.UUID) (*postgres.ChatMessage, error) {
 	st, err := s.store.GetByID(ctx, streamID)
 	if err != nil {
 		return nil, mapStoreErr(err)
+	}
+	if err := s.authorizeViewer(ctx, st, viewerID); err != nil {
+		return nil, err // the pinned text and its author are chat: same gate
 	}
 	pinned, err := s.store.GetPinnedMessage(ctx, streamID)
 	if err != nil || pinned == nil {

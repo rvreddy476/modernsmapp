@@ -123,7 +123,7 @@ func TestChatAuthorOnPostFrameAndList(t *testing.T) {
 	if err := r.svc.PinMessage(ctx, st.ID, host, list[0].ID); err != nil {
 		t.Fatal(err)
 	}
-	pinned, err := r.svc.GetPinnedMessage(ctx, st.ID)
+	pinned, err := r.svc.GetPinnedMessage(ctx, st.ID, fan)
 	if err != nil || pinned == nil || !reflect.DeepEqual(authorOf(t, pinned), want[ghost]) {
 		t.Fatalf("pinned: %+v %v", pinned, err)
 	}
