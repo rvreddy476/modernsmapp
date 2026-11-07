@@ -14,7 +14,6 @@ GET /unread-count
 GET /v1/realtime/sse
 PATCH /preferences
 PATCH /read-all
-POST /bundle
 POST /devices
 POST /read
 POST /v1/read-marker
@@ -121,13 +120,6 @@ type UpdatePreferencesRequest struct {
 type RegisterDeviceRequest struct {
 	Platform  string `json:"platform" binding:"required,oneof=ios android web"`
 	PushToken string `json:"push_token" binding:"required"`
-}
-
-type BundleNotificationRequest struct {
-	UserID     string  `json:"user_id" binding:"required"`
-	ActorID    string  `json:"actor_id" binding:"required"`
-	BundleType string  `json:"bundle_type" binding:"required"`
-	RefID      *string `json:"ref_id"`
 }
 
 type UpdateNotifPreferencesRequest struct {
