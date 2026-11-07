@@ -3,7 +3,9 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"log"
 	"time"
 
@@ -45,6 +47,11 @@ type messageCreatedPayload struct {
 	Type           string    `json:"type"`
 	CreatedAt      time.Time `json:"created_at"`
 	RecipientIDs   []string  `json:"recipient_ids"`
+	// ConversationType is chat's conversations.type ("direct" | "group"),
+	// named as on chat's ConversationReported event. Optional: chat does not
+	// send it on MessageCreated yet, and without it a conversation with more
+	// than one recipient is a group (see conversationDeepLink).
+	ConversationType string `json:"conversation_type,omitempty"`
 	// IsRequest marks the first message of a message request. The
 	// MessageRequestCreated event that follows carries the notification for
 	// it; a "dm" row on top would tell the recipient about one message twice.
@@ -108,17 +115,17 @@ type messageRequestCreatedPayload struct {
 	OccurredAt     time.Time `json:"occurred_at"`
 }
 
-// ChatConsumer handles direct-message and message-request notification
-// events from the chat.events.v1 topic. Modeled on CallConsumer — a
-// separate consumer/group so chat-event lag never blocks social-event
-// notification delivery.
 // chatNotifier is the narrow slice of notification-service this consumer
 // actually uses. Extracting it (launch-backlog D-D3) is what makes the fan-out
 // rules — who gets a row, who gets a push — testable without Scylla, Redis and
 // a push transport.
+//
+// Each method returns an error only from its first durable step (the inbox
+// row write, or the device lookup for a hidden-chat push); realtime and push
+// failures after it are logged, not returned. That is what makes retrying
+// one recipient's delivery safe: a retry never re-sends a push that went out.
 type chatNotifier interface {
 	CreateNotification(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time) error
-	CreateNotificationWithoutPush(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time) error
 	// CreateChatMessageNotification is the "dm" row for one chat message: the
 	// recipient's show_message_preview and the message content pick the push
 	// copy, the data map gains conversation_id/message_id/alert_tone, and
@@ -129,14 +136,36 @@ type chatNotifier interface {
 	CreateHiddenChatMessagePush(ctx context.Context, userID uuid.UUID, muted bool) error
 }
 
-type ChatConsumer struct {
-	reader  *kafka.Reader
-	service chatNotifier
+// chatMessageSource is the broker seam: fetch and commit, exactly what
+// kafka.Reader provides, so tests drive the production Start loop.
+type chatMessageSource interface {
+	FetchMessage(ctx context.Context) (kafka.Message, error)
+	CommitMessages(ctx context.Context, msgs ...kafka.Message) error
 }
 
-func NewChatConsumer(brokers []string, groupID string, topic string, svc *service.Service) *ChatConsumer {
-	return NewChatConsumerWithDialer(brokers, groupID, topic, svc, nil)
+// ChatConsumer handles direct-message, group-message and message-request
+// notification events from the chat.events.v1 topic. A separate
+// consumer/group (like CallConsumer) so chat-event lag never blocks
+// social-event notification delivery.
+type ChatConsumer struct {
+	source  chatMessageSource
+	service chatNotifier
+	// retryBackoff is the base of the linear backoff between delivery
+	// attempts and between failed fetches. Zero (tests) retries at once.
+	retryBackoff time.Duration
+
+	reader *kafka.Reader // nil in tests; owned for Close()
 }
+
+// chatDeliveryAttempts bounds the retries of ONE recipient's delivery. A
+// chat push is worth retrying through a short outage, but not worth holding
+// the partition behind it: after the last attempt the failure is logged and
+// the message is committed. With chatRetryBackoff that is at most
+// 1+2+3+4 = 10 s of waiting per recipient.
+const (
+	chatDeliveryAttempts = 5
+	chatRetryBackoff     = time.Second
+)
 
 func NewChatConsumerWithDialer(brokers []string, groupID string, topic string, svc *service.Service, dialer *kafka.Dialer) *ChatConsumer {
 	reader := kafka.NewReader(kafka.ReaderConfig{
@@ -148,54 +177,136 @@ func NewChatConsumerWithDialer(brokers []string, groupID string, topic string, s
 		Dialer:   dialer,
 	})
 	return &ChatConsumer{
-		reader:  reader,
-		service: svc,
+		source:       reader,
+		service:      svc,
+		retryBackoff: chatRetryBackoff,
+		reader:       reader,
 	}
 }
 
+// Start consumes chat events: fetch, handle, commit.
+//
+//   - A fetch error never ends the loop: it is logged and retried with
+//     backoff. Only a cancelled context stops the consumer. (Before 7 Nov
+//     2026 one broker hiccup ended chat pushes until the next restart.)
+//   - A message is committed only once it has been handled: delivered, or
+//     given up on after chatDeliveryAttempts per failing recipient (logged).
+//   - Shutdown mid-retry commits nothing, so the broker redelivers.
+//   - A failed commit is logged and the loop goes on: the next commit on the
+//     partition covers this offset, and at worst the message is redelivered.
 func (c *ChatConsumer) Start(ctx context.Context) {
+	fetchFailures := 0
 	for {
-		m, err := c.reader.ReadMessage(ctx)
+		m, err := c.source.FetchMessage(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
-				log.Printf("chat consumer shutting down\n")
-			} else {
-				log.Printf("Chat consumer error: %v\n", err)
+				log.Printf("chat consumer: shutting down\n")
+				return
 			}
-			break
+			if errors.Is(err, io.EOF) {
+				// kafka.Reader answers io.EOF only once Close was called: it
+				// can never fetch again, so this is shutdown too.
+				log.Printf("chat consumer: reader closed, stopping\n")
+				return
+			}
+			fetchFailures++
+			log.Printf("chat consumer: fetch failed (attempt %d), retrying: %v\n", fetchFailures, err)
+			if !waitChatRetry(ctx, c.backoff(fetchFailures)) {
+				return
+			}
+			continue
 		}
+		fetchFailures = 0
 
 		if err := c.processMessage(ctx, m); err != nil {
-			log.Printf("Failed to process chat message: %v\n", err)
+			if ctx.Err() != nil {
+				return // shutdown mid-retry: leave it uncommitted for redelivery
+			}
+			log.Printf("chat consumer: gave up on message (partition %d, offset %d): %v\n", m.Partition, m.Offset, err)
+		}
+		if err := c.source.CommitMessages(ctx, m); err != nil {
+			if ctx.Err() != nil {
+				return
+			}
+			log.Printf("chat consumer: commit failed (partition %d, offset %d): %v\n", m.Partition, m.Offset, err)
 		}
 	}
 }
 
+// deliver runs one recipient's delivery, retrying a failure up to
+// chatDeliveryAttempts times. It returns nil on success, the context's error
+// if shutdown interrupts the retries, and otherwise the last failure.
+func (c *ChatConsumer) deliver(ctx context.Context, what string, send func(context.Context) error) error {
+	for attempt := 1; ; attempt++ {
+		err := send(ctx)
+		if err == nil {
+			return nil
+		}
+		if attempt >= chatDeliveryAttempts {
+			return fmt.Errorf("%s: gave up after %d attempts: %w", what, attempt, err)
+		}
+		log.Printf("chat consumer: %s failed (attempt %d of %d), retrying: %v\n", what, attempt, chatDeliveryAttempts, err)
+		if !waitChatRetry(ctx, c.backoff(attempt)) {
+			return ctx.Err()
+		}
+	}
+}
+
+// backoff is linear in the attempt number, capped like the call consumer's.
+func (c *ChatConsumer) backoff(attempt int) time.Duration {
+	d := c.retryBackoff * time.Duration(attempt)
+	if d > maxConsumeRetryBackoff {
+		d = maxConsumeRetryBackoff
+	}
+	return d
+}
+
+// waitChatRetry sleeps for d, or returns false as soon as ctx ends.
+func waitChatRetry(ctx context.Context, d time.Duration) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	if d <= 0 {
+		return true
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// processMessage handles one chat event. A malformed event is returned as an
+// error at once (retrying cannot fix it); a delivery failure is returned
+// only after deliver has used up its attempts.
 func (c *ChatConsumer) processMessage(ctx context.Context, m kafka.Message) error {
 	var envelope chatEnvelope
 	if err := json.Unmarshal(m.Value, &envelope); err != nil {
-		return err
+		return fmt.Errorf("decode chat envelope: %w", err)
 	}
 
 	switch envelope.EventType {
 	case chatEventMessageCreated:
 		var e messageCreatedPayload
 		if err := json.Unmarshal(envelope.Payload, &e); err != nil {
-			return err
+			return fmt.Errorf("decode %s payload: %w", envelope.EventType, err)
 		}
 		return c.handleMessageCreated(ctx, e)
 
 	case chatEventMessageRequestCreated:
 		var e messageRequestCreatedPayload
 		if err := json.Unmarshal(envelope.Payload, &e); err != nil {
-			return err
+			return fmt.Errorf("decode %s payload: %w", envelope.EventType, err)
 		}
 		return c.handleMessageRequestCreated(ctx, e)
 
 	case chatEventDatingMessageNew:
 		var e chatDatingMessageNewPayload
 		if err := json.Unmarshal(envelope.Payload, &e); err != nil {
-			return err
+			return fmt.Errorf("decode %s payload: %w", envelope.EventType, err)
 		}
 		return c.handleChatDatingMessageNew(ctx, e)
 
@@ -205,10 +316,13 @@ func (c *ChatConsumer) processMessage(ctx context.Context, m kafka.Message) erro
 	}
 }
 
-// handleMessageCreated fans out a DM notification to every recipient of a
-// new chat message, skipping the sender. Notifications carry entity type
-// "conversation" so the collapse-key logic groups every message in one
-// conversation into a single device notification.
+// handleMessageCreated fans out a "dm" notification to every recipient of a
+// new chat message (direct or group), skipping the sender. Notifications
+// carry entity type "conversation" so the collapse-key logic groups every
+// message in one conversation into a single device notification.
+//
+// Each recipient is delivered, and retried, on its own: one failing
+// recipient neither stops the others nor makes them receive it twice.
 func (c *ChatConsumer) handleMessageCreated(ctx context.Context, e messageCreatedPayload) error {
 	// The first message of a message request is announced by the
 	// MessageRequestCreated event, with the Accept / Decline / Block row. A
@@ -220,26 +334,18 @@ func (c *ChatConsumer) handleMessageCreated(ctx context.Context, e messageCreate
 	}
 	senderID, err := uuid.Parse(e.SenderID)
 	if err != nil {
-		return nil // bad payload — don't retry
+		return fmt.Errorf("%s: invalid sender_id %q", chatEventMessageCreated, e.SenderID)
 	}
 	conversationID, err := uuid.Parse(e.ConversationID)
 	if err != nil {
-		return nil
+		return fmt.Errorf("%s: invalid conversation_id %q", chatEventMessageCreated, e.ConversationID)
 	}
 
 	createdAt := e.CreatedAt
 	if createdAt.IsZero() {
 		createdAt = time.Now().UTC()
 	}
-	// "/messages/<id>" is not a route — the web app has only /messenger, so
-	// every message notification ever written led nowhere when tapped. Same
-	// defect as the "/messages/requests" link fixed below on 21 Sep; this is
-	// the other half of it.
-	//
-	// The messenger opens a direct conversation from ?user=<peer>, which it
-	// resolves to the conversation itself, so the sender is what the link
-	// needs to carry.
-	deepLink := fmt.Sprintf("/messenger?user=%s", senderID)
+	deepLink := conversationDeepLink(e, senderID, conversationID)
 
 	// Muted recipients still get the durable inbox row — mute silences the
 	// device, it does not hide the conversation — but no push is sent.
@@ -253,10 +359,14 @@ func (c *ChatConsumer) handleMessageCreated(ctx context.Context, e messageCreate
 		locked[id] = struct{}{}
 	}
 
-	var firstErr error
+	var failed []error
 	for _, ridStr := range e.RecipientIDs {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		recipientID, err := uuid.Parse(ridStr)
 		if err != nil {
+			failed = append(failed, fmt.Errorf("invalid recipient_id %q", ridStr))
 			continue
 		}
 		// Skip the sender — they don't get notified of their own message.
@@ -267,24 +377,55 @@ func (c *ChatConsumer) handleMessageCreated(ctx context.Context, e messageCreate
 		if _, hidden := locked[ridStr]; hidden {
 			// Hidden chat: nothing about the sender, the text or the
 			// conversation — and no inbox row, so no badge.
-			if err := c.service.CreateHiddenChatMessagePush(ctx, recipientID, isMuted); err != nil {
-				log.Printf("chat: failed to push hidden-chat notification: %v\n", err)
-				if firstErr == nil {
-					firstErr = err
-				}
-			}
-			continue
+			err = c.deliver(ctx, "hidden-chat push to "+ridStr, func(ctx context.Context) error {
+				return c.service.CreateHiddenChatMessagePush(ctx, recipientID, isMuted)
+			})
+		} else {
+			msg := e.pushFor(ridStr)
+			err = c.deliver(ctx, "dm notification to "+ridStr, func(ctx context.Context) error {
+				return c.service.CreateChatMessageNotification(
+					ctx, recipientID, senderID, conversationID, deepLink, createdAt, msg, isMuted,
+				)
+			})
 		}
-		if err := c.service.CreateChatMessageNotification(
-			ctx, recipientID, senderID, conversationID, deepLink, createdAt, e.pushFor(ridStr), isMuted,
-		); err != nil {
-			log.Printf("chat: failed to create dm notification for %s: %v\n", ridStr, err)
-			if firstErr == nil {
-				firstErr = err
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
 			}
+			failed = append(failed, err)
 		}
 	}
-	return firstErr
+	if len(failed) > 0 {
+		return fmt.Errorf("%s %s: %w", chatEventMessageCreated, e.MessageID, errors.Join(failed...))
+	}
+	return nil
+}
+
+// conversationDeepLink is where tapping a message notification lands.
+//
+// A direct conversation opens from /messenger?user=<sender>: the messenger
+// resolves the peer to the conversation ("/messages/<id>" was never a route).
+// A group must NOT use that link — it opened a DM with whoever wrote the
+// message. A group opens on the messenger's groups lane and names the
+// conversation, in the shape the channel links already use
+// (/messenger?lane=channels&channel=<id>). Android routes a "dm" push on its
+// conversation id (entity_id / conversation_id), not on this link.
+//
+// Chat does not send conversation_type on MessageCreated yet; until it does,
+// more than one recipient means a group (a direct conversation has exactly
+// one). A two-person group is the one case that still gets the direct link.
+func conversationDeepLink(e messageCreatedPayload, senderID, conversationID uuid.UUID) string {
+	group := len(e.RecipientIDs) > 1
+	switch e.ConversationType {
+	case "group":
+		group = true
+	case "direct":
+		group = false
+	}
+	if group {
+		return fmt.Sprintf("/messenger?lane=groups&group=%s", conversationID)
+	}
+	return fmt.Sprintf("/messenger?user=%s", senderID)
 }
 
 // handleMessageRequestCreated creates a single message-request
@@ -293,18 +434,18 @@ func (c *ChatConsumer) handleMessageCreated(ctx context.Context, e messageCreate
 func (c *ChatConsumer) handleMessageRequestCreated(ctx context.Context, e messageRequestCreatedPayload) error {
 	senderID, err := uuid.Parse(e.SenderID)
 	if err != nil {
-		return nil
+		return fmt.Errorf("%s: invalid sender_id %q", chatEventMessageRequestCreated, e.SenderID)
 	}
 	receiverID, err := uuid.Parse(e.ReceiverID)
 	if err != nil {
-		return nil
+		return fmt.Errorf("%s: invalid receiver_id %q", chatEventMessageRequestCreated, e.ReceiverID)
 	}
 	if receiverID == senderID {
 		return nil
 	}
 	conversationID, err := uuid.Parse(e.ConversationID)
 	if err != nil {
-		return nil
+		return fmt.Errorf("%s: invalid conversation_id %q", chatEventMessageRequestCreated, e.ConversationID)
 	}
 
 	occurredAt := e.OccurredAt
@@ -320,9 +461,11 @@ func (c *ChatConsumer) handleMessageRequestCreated(ctx context.Context, e messag
 	// request went nowhere.
 	deepLink := "/messenger?lane=requests"
 
-	return c.service.CreateNotification(
-		ctx, receiverID, senderID, "message_request", "conversation", conversationID, deepLink, occurredAt,
-	)
+	return c.deliver(ctx, "message-request notification to "+e.ReceiverID, func(ctx context.Context) error {
+		return c.service.CreateNotification(
+			ctx, receiverID, senderID, "message_request", "conversation", conversationID, deepLink, occurredAt,
+		)
+	})
 }
 
 // chatDatingMessageNewPayload is declared in dating_consumer.go (the
@@ -341,21 +484,28 @@ func (c *ChatConsumer) handleMessageRequestCreated(ctx context.Context, e messag
 func (c *ChatConsumer) handleChatDatingMessageNew(ctx context.Context, e chatDatingMessageNewPayload) error {
 	recipientID, senderID, matchID, deepLink, ok := datingNewMessageNotification(e)
 	if !ok {
-		return nil
+		return fmt.Errorf("%s: invalid recipient_id %q", chatEventDatingMessageNew, e.RecipientID)
 	}
 	if e.HiddenChat {
 		// Hidden chat: content-free push only, no match row.
-		return c.service.CreateHiddenChatMessagePush(ctx, recipientID, false)
+		return c.deliver(ctx, "dating hidden-chat push to "+e.RecipientID, func(ctx context.Context) error {
+			return c.service.CreateHiddenChatMessagePush(ctx, recipientID, false)
+		})
 	}
 	sentAt := e.SentAt
 	if sentAt.IsZero() {
 		sentAt = time.Now().UTC()
 	}
-	return c.service.CreateNotification(
-		ctx, recipientID, senderID, "dating.match.new_message", DatingNewMessageEntityType, matchID, deepLink, sentAt,
-	)
+	return c.deliver(ctx, "dating message notification to "+e.RecipientID, func(ctx context.Context) error {
+		return c.service.CreateNotification(
+			ctx, recipientID, senderID, "dating.match.new_message", DatingNewMessageEntityType, matchID, deepLink, sentAt,
+		)
+	})
 }
 
 func (c *ChatConsumer) Close() error {
+	if c.reader == nil {
+		return nil
+	}
 	return c.reader.Close()
 }

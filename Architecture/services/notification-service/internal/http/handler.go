@@ -58,7 +58,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/devices", h.RegisterDevice)
 		v1.DELETE("/devices/:id", h.UnregisterDevice)
 		v1.GET("/digests", h.GetDigests)
-		v1.POST("/bundle", h.BundleNotification)
+		// There is deliberately no POST /bundle (7 Nov 2026). It took user_id
+		// and actor_id from the body on a user-reachable route, so any
+		// signed-in user could push fake notifications to anyone; nothing
+		// called it. routes_test.go pins that it stays unrouted.
 		v1.GET("/preferences/detailed", h.GetNotifPreferences)
 		v1.PUT("/preferences/detailed", h.UpdateNotifPreferences)
 	}
@@ -383,52 +386,6 @@ func (h *Handler) GetDigests(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"items": digests}, nil)
-}
-
-// BundleNotificationRequest is the request body for POST /v1/notifications/bundle.
-type BundleNotificationRequest struct {
-	UserID     string  `json:"user_id" binding:"required"`
-	ActorID    string  `json:"actor_id" binding:"required"`
-	BundleType string  `json:"bundle_type" binding:"required"`
-	RefID      *string `json:"ref_id"`
-}
-
-// BundleNotification handles POST /v1/notifications/bundle (internal only).
-// It groups a notification event into a bundle to reduce noise.
-func (h *Handler) BundleNotification(c *gin.Context) {
-	var req BundleNotificationRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
-		return
-	}
-
-	userID, err := uuid.Parse(req.UserID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid user_id", nil)
-		return
-	}
-	actorID, err := uuid.Parse(req.ActorID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid actor_id", nil)
-		return
-	}
-
-	var refID *uuid.UUID
-	if req.RefID != nil && *req.RefID != "" {
-		parsed, parseErr := uuid.Parse(*req.RefID)
-		if parseErr != nil {
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid ref_id", nil)
-			return
-		}
-		refID = &parsed
-	}
-
-	if err := h.svc.BundleNotification(c.Request.Context(), userID, actorID, req.BundleType, refID); err != nil {
-		log.Printf("BundleNotification error: %v", err)
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to bundle notification", nil)
-		return
-	}
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"}, nil)
 }
 
 // GetNotifPreferences handles GET /v1/notifications/preferences (granular)
