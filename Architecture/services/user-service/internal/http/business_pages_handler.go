@@ -502,7 +502,8 @@ func (h *Handler) UnfollowPage(c *gin.Context) {
 
 type SubmitReviewRequest struct {
 	Rating     int    `json:"rating" binding:"required,min=1,max=5"`
-	ReviewText string `json:"review_text"`
+	// Capped in characters (validator counts runes), so a review stays a review.
+	ReviewText string `json:"review_text" binding:"max=2000"`
 }
 
 func (h *Handler) GetPageReviews(c *gin.Context) {
