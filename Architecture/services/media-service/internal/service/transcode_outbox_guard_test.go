@@ -12,7 +12,7 @@ import (
 // marks processing and then performs a best-effort direct Kafka publish.
 func TestVideoConfirmUsesTransactionalOutboxOnly(t *testing.T) {
 	_, here, _, _ := runtime.Caller(0)
-	b, err := os.ReadFile(filepath.Join(filepath.Dir(here), "media.go"))
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(here), "upload.go"))
 	if err != nil {
 		t.Fatal(err)
 	}

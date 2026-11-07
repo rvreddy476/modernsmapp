@@ -13,7 +13,7 @@ import (
 func confirmUploadBody(t *testing.T) string {
 	t.Helper()
 	_, here, _, _ := runtime.Caller(0)
-	b, err := os.ReadFile(filepath.Join(filepath.Dir(here), "media.go"))
+	b, err := os.ReadFile(filepath.Join(filepath.Dir(here), "upload.go"))
 	if err != nil {
 		t.Fatal(err)
 	}

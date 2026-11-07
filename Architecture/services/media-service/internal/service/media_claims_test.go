@@ -138,7 +138,7 @@ func TestReleaseExceptRefusesAnEmptyKeep(t *testing.T) {
 // behaviour is TestLiveMediaClaimHTTPContract in CI): the store's answer goes
 // through ownerDeleteStoreError before any blob is touched.
 func TestOwnerDeleteRoutesTheStoreAnswer(t *testing.T) {
-	raw, err := os.ReadFile("media.go")
+	raw, err := os.ReadFile("deletion.go")
 	if err != nil {
 		t.Fatal(err)
 	}
