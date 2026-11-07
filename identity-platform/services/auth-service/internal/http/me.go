@@ -188,7 +188,7 @@ func (h *Handler) ExportUserData(c *gin.Context) {
 	export, err := h.svc.ExportUserData(c.Request.Context(), userID)
 	if err != nil {
 		h.log.Error("export user data failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
-		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL_ERROR", "message": err.Error()}})
+		c.AbortWithStatusJSON(http.StatusInternalServerError, gin.H{"error": gin.H{"code": "INTERNAL_ERROR", "message": "Could not export your data. Try again later."}})
 		return
 	}
 	c.Header("Content-Disposition", "attachment; filename=data-export.json")
