@@ -805,7 +805,7 @@ func TestListingsAttachTheSound(t *testing.T) {
 // by their source: GetPost attaches the sound after the cache read, and
 // GetPostsByIDs attaches it to the page it returns.
 func TestPostReadsAttachTheSound(t *testing.T) {
-	src, err := os.ReadFile("post.go")
+	src, err := os.ReadFile("post_reads.go")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -813,7 +813,7 @@ func TestPostReadsAttachTheSound(t *testing.T) {
 		t.Helper()
 		start := strings.Index(string(src), signature)
 		if start < 0 {
-			t.Fatalf("post.go has no %q", signature)
+			t.Fatalf("post_reads.go has no %q", signature)
 		}
 		rest := string(src)[start:]
 		end := strings.Index(rest, "\n}\n")

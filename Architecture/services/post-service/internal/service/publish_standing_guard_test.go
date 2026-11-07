@@ -51,15 +51,16 @@ type publicationEntry struct {
 
 // publicationEntryPoints is the inventory: every function in this package
 // that makes content live on an author's behalf. The plan's thirteen call
-// sites are all here (post.go CreatePost / PublishVideo / CreateRepost;
+// sites are all here (post_create.go CreatePost; post_video_tools.go
+// PublishVideo; post_reposts.go CreateRepost;
 // drafts.go PublishDraft / PublishScheduledDrafts; schedule.go
 // PublishScheduled / ReschedulePost; postschedule/worker.go via
 // PublishScheduled; threads.go; live_vod.go; story_surface.go;
 // crosspost.go; post_drafts.go).
 var publicationEntryPoints = map[string]publicationEntry{
-	"CreatePost":         {file: "post.go", gate: gateInteractive},
+	"CreatePost":         {file: "post_create.go", gate: gateInteractive},
 	"CreateThread":       {file: "threads.go", gate: gateInteractive},
-	"CreateRepost":       {file: "post.go", gate: gateInteractive},
+	"CreateRepost":       {file: "post_reposts.go", gate: gateInteractive},
 	"CreateCrosspost":    {file: "crosspost.go", gate: gateInteractive},
 	"CreateStoryPending": {file: "story_surface.go", gate: gateInteractive},
 	"CreateLiveVODPost":  {file: "live_vod.go", gate: gateBackground},
@@ -75,7 +76,7 @@ var publicationEntryPoints = map[string]publicationEntry{
 
 	"PublishScheduled": {file: "schedule.go", gate: gateBoth},
 	"ReschedulePost":   {file: "schedule.go", via: "PublishScheduled"},
-	"PublishVideo":     {file: "post.go", via: "PublishScheduled"},
+	"PublishVideo":     {file: "post_video_tools.go", via: "PublishScheduled"},
 }
 
 // serviceSinks are the calls in THIS package that make content live. Any

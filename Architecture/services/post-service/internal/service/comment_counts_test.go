@@ -6,6 +6,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -57,12 +58,12 @@ func TestEveryCommentMutationMovesTheCountOnceAndAnnounces(t *testing.T) {
 		file, fn, change string
 		adjusts          int
 	}{
-		{"post.go", "CreateCommentPG", "CommentChangeCreated", 1},
-		{"post.go", "CreateReply", "CommentChangeReplied", 1},
-		{"post.go", "SoftDeleteComment", "CommentChangeDeleted", 1},
-		{"post.go", "EditComment", "CommentChangeEdited", 0},
-		{"post.go", "ToggleCommentLike", "CommentChangeReaction", 0},
-		{"post.go", "ToggleCommentDislike", "CommentChangeReaction", 0},
+		{"post_comments.go", "CreateCommentPG", "CommentChangeCreated", 1},
+		{"post_comments.go", "CreateReply", "CommentChangeReplied", 1},
+		{"post_comments.go", "SoftDeleteComment", "CommentChangeDeleted", 1},
+		{"post_comments.go", "EditComment", "CommentChangeEdited", 0},
+		{"post_comments.go", "ToggleCommentLike", "CommentChangeReaction", 0},
+		{"post_comments.go", "ToggleCommentDislike", "CommentChangeReaction", 0},
 		{"comment_reactions.go", "SetCommentReaction", "CommentChangeReaction", 0},
 		{"comment_reactions.go", "RemoveCommentReaction", "CommentChangeReaction", 0},
 		{"reports.go", "SetCommentModerationStatus", "CommentChangeModerated", 1},
@@ -81,15 +82,29 @@ func TestEveryCommentMutationMovesTheCountOnceAndAnnounces(t *testing.T) {
 		}
 	}
 	// A delete only leaves the count when the comment was in it.
-	if body := srcOf(t, "post.go", "SoftDeleteComment"); !strings.Contains(body, "if counted {") {
+	if body := srcOf(t, "post_comments.go", "SoftDeleteComment"); !strings.Contains(body, "if counted {") {
 		t.Error("SoftDeleteComment decrements without checking the comment was counted")
 	}
 }
 
 func TestNoCommentCountShardAndOneReadSource(t *testing.T) {
-	raw, err := os.ReadFile("post.go")
+	// post.go was split into post_*.go files (one per concern), so the
+	// absence checks below cover every non-test file in the package, which
+	// is a superset of the old post.go.
+	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
+	}
+	var raw []byte
+	for _, f := range files {
+		if strings.HasSuffix(f, "_test.go") {
+			continue
+		}
+		b, err := os.ReadFile(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw = append(append(raw, b...), '\n')
 	}
 	src := lineComment.ReplaceAllString(blockComment.ReplaceAllString(string(raw), " "), "")
 	if strings.Contains(src, `EntityKind: "post_comment_count"`) {
@@ -101,7 +116,7 @@ func TestNoCommentCountShardAndOneReadSource(t *testing.T) {
 	}
 	// The batch read takes its counts from pageCounts (comment_counts.go),
 	// which overlays the PostgreSQL figures on Scylla's for the whole page.
-	if !strings.Contains(src, "countsByPost := s.pageCounts(ctx, ids)") {
+	if !strings.Contains(srcOf(t, "post_reads.go", "loadPostsByIDs"), "countsByPost := s.pageCounts(ctx, ids)") {
 		t.Fatal("the batch read (what the feed hydrates from) does not overlay the PostgreSQL comment count")
 	}
 	if body := srcOf(t, "comment_counts.go", "pageCounts"); !strings.Contains(body, "overlayEngagementRows(ids, out, rows)") {

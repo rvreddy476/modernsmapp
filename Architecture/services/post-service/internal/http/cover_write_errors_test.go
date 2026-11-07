@@ -71,9 +71,10 @@ func TestWriteCoverMediaErrorAnswersLikeThePatchRoute(t *testing.T) {
 // where it is called. Read from the source, so dropping a call fails here.
 func TestCoverRefusalIsMappedOnEveryWritePath(t *testing.T) {
 	for file, funcs := range map[string][]string{
-		"handler.go":     {"CreatePost", "SetCoverFrame"},
-		"drafts.go":      {"writeReelDraftPublishError"},
-		"post_drafts.go": {"writePostDraftError"},
+		"create_post_handler.go": {"CreatePost"},
+		"video_tools_handler.go": {"SetCoverFrame"},
+		"drafts.go":              {"writeReelDraftPublishError"},
+		"post_drafts.go":         {"writePostDraftError"},
 	} {
 		parsed, err := parser.ParseFile(token.NewFileSet(), file, nil, 0)
 		if err != nil {

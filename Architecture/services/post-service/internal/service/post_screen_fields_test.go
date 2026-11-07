@@ -426,7 +426,7 @@ func TestCommentAccessAllows(t *testing.T) {
 // call in each one's body (same technique as viewer_eligibility_guard_test).
 func TestEveryCommentWriteEnforcesCommentAccess(t *testing.T) {
 	for file, funcs := range map[string][]string{
-		"post.go":            {"CreateCommentPG", "CreateReply"},
+		"post_comments.go":   {"CreateCommentPG", "CreateReply"},
 		"reel_engagement.go": {"AddReelComment"},
 	} {
 		src, err := os.ReadFile(file)
