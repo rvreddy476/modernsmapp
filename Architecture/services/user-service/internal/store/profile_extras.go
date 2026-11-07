@@ -226,14 +226,6 @@ func (s *Store) GetQRCode(ctx context.Context, userID uuid.UUID) (*ProfileQRCode
 	return &qr, nil
 }
 
-// IncrementQRScan atomically increments the scan_count for a user's QR code.
-func (s *Store) IncrementQRScan(ctx context.Context, userID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE profile_qr_codes SET scan_count = scan_count + 1 WHERE user_id = $1
-	`, userID)
-	return err
-}
-
 // --- Digital Wellbeing ---
 
 // UpsertWellbeing creates or replaces a user's digital wellbeing settings.

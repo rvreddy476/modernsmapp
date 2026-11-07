@@ -67,33 +67,3 @@ func (s *Store) GetAboutSection(ctx context.Context, userID uuid.UUID, section s
 	}
 	return items, rows.Err()
 }
-
-// UpsertAboutItem creates or updates an about item.
-func (s *Store) UpsertAboutItem(ctx context.Context, item *AboutItem) (*AboutItem, error) {
-	now := time.Now()
-	if item.ItemID == uuid.Nil {
-		item.ItemID = uuid.New()
-	}
-
-	var out AboutItem
-	err := s.db.QueryRow(ctx, `
-		INSERT INTO user_about (user_id, section, item_id, data, visibility, sort_order, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
-		ON CONFLICT (user_id, section, item_id) DO UPDATE
-		SET data = $4, visibility = $5, sort_order = $6, updated_at = $7
-		RETURNING user_id, section, item_id, data, visibility, sort_order, created_at, updated_at
-	`, item.UserID, item.Section, item.ItemID, item.Data, item.Visibility, item.SortOrder, now).
-		Scan(&out.UserID, &out.Section, &out.ItemID, &out.Data, &out.Visibility, &out.SortOrder, &out.CreatedAt, &out.UpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return &out, nil
-}
-
-// DeleteAboutItem removes a specific about item.
-func (s *Store) DeleteAboutItem(ctx context.Context, userID uuid.UUID, section string, itemID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
-		DELETE FROM user_about WHERE user_id = $1 AND section = $2 AND item_id = $3
-	`, userID, section, itemID)
-	return err
-}

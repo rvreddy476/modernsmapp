@@ -577,7 +577,8 @@ func (h *Handler) SubmitReview(c *gin.Context) {
 	}
 
 	if err := h.svc.SubmitReview(c.Request.Context(), r); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		status, code, msg := reviewErrorResponse(err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, msg, nil)
 		return
 	}
 
@@ -762,4 +763,21 @@ func (h *Handler) ListPageDocuments(c *gin.Context) {
 		docs = []store.PageDocument{}
 	}
 	api.JSON(c.Writer, http.StatusOK, docs, nil)
+}
+
+// reviewErrorResponse maps a SubmitReview refusal to its answer (US-L3). A
+// second review used to surface as a 500 carrying Postgres's message.
+func reviewErrorResponse(err error) (status int, code, message string) {
+	switch {
+	case errors.Is(err, store.ErrPageNotFound):
+		return http.StatusNotFound, "NOT_FOUND", "Page not found"
+	case errors.Is(err, store.ErrPageNotReviewable):
+		return http.StatusUnprocessableEntity, "PAGE_NOT_REVIEWABLE", "Only an approved page can be reviewed"
+	case errors.Is(err, store.ErrCannotReviewOwn):
+		return http.StatusForbidden, "CANNOT_REVIEW_OWN_PAGE", "You cannot review a page you own or manage"
+	case errors.Is(err, store.ErrAlreadyReviewed):
+		return http.StatusConflict, "ALREADY_REVIEWED", "You have already reviewed this page"
+	default:
+		return http.StatusInternalServerError, "INTERNAL_ERROR", "Could not save the review"
+	}
 }

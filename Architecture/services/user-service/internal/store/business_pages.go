@@ -17,35 +17,35 @@ type BusinessPage struct {
 	// Always "page" on this struct so clients can branch CTAs without
 	// guessing from the response shape. Users carry "user" on their
 	// User struct.
-	EntityType     string          `json:"entityType"`
-	ID             uuid.UUID       `json:"id"`
-	UserID         uuid.UUID       `json:"user_id"`
-	PageHandle     string          `json:"page_handle"`
-	PageName       string          `json:"page_name"`
-	Category       string          `json:"category"`
-	Description    string          `json:"description"`
-	Address        string          `json:"address,omitempty"`
-	Lat            *float64        `json:"lat,omitempty"`
-	Lng            *float64        `json:"lng,omitempty"`
-	BusinessHours  json.RawMessage `json:"business_hours,omitempty"`
-	Phone          string          `json:"phone,omitempty"`
-	Whatsapp       string          `json:"whatsapp,omitempty"`
-	BusinessEmail  string          `json:"business_email,omitempty"`
-	Services       json.RawMessage `json:"services,omitempty"`
-	PriceRange     string          `json:"price_range,omitempty"`
-	BookingURL     string          `json:"booking_url,omitempty"`
-	MenuURLs       json.RawMessage `json:"menu_urls,omitempty"`
-	Website        string          `json:"website,omitempty"`
-	CoverMediaID   string          `json:"cover_media_id,omitempty"`
-	AvatarMediaID  string          `json:"avatar_media_id,omitempty"`
-	IsVerified     bool            `json:"is_verified"`
-	AvgRating      float64         `json:"avg_rating"`
-	ReviewCount    int             `json:"review_count"`
-	FollowerCount  int             `json:"follower_count"`
-	IsFollowing    *bool           `json:"is_following,omitempty"`
-	FAQ            json.RawMessage `json:"faq,omitempty"`
-	Status         string          `json:"status"`
-	SellerID       *uuid.UUID      `json:"seller_id,omitempty"`
+	EntityType    string          `json:"entityType"`
+	ID            uuid.UUID       `json:"id"`
+	UserID        uuid.UUID       `json:"user_id"`
+	PageHandle    string          `json:"page_handle"`
+	PageName      string          `json:"page_name"`
+	Category      string          `json:"category"`
+	Description   string          `json:"description"`
+	Address       string          `json:"address,omitempty"`
+	Lat           *float64        `json:"lat,omitempty"`
+	Lng           *float64        `json:"lng,omitempty"`
+	BusinessHours json.RawMessage `json:"business_hours,omitempty"`
+	Phone         string          `json:"phone,omitempty"`
+	Whatsapp      string          `json:"whatsapp,omitempty"`
+	BusinessEmail string          `json:"business_email,omitempty"`
+	Services      json.RawMessage `json:"services,omitempty"`
+	PriceRange    string          `json:"price_range,omitempty"`
+	BookingURL    string          `json:"booking_url,omitempty"`
+	MenuURLs      json.RawMessage `json:"menu_urls,omitempty"`
+	Website       string          `json:"website,omitempty"`
+	CoverMediaID  string          `json:"cover_media_id,omitempty"`
+	AvatarMediaID string          `json:"avatar_media_id,omitempty"`
+	IsVerified    bool            `json:"is_verified"`
+	AvgRating     float64         `json:"avg_rating"`
+	ReviewCount   int             `json:"review_count"`
+	FollowerCount int             `json:"follower_count"`
+	IsFollowing   *bool           `json:"is_following,omitempty"`
+	FAQ           json.RawMessage `json:"faq,omitempty"`
+	Status        string          `json:"status"`
+	SellerID      *uuid.UUID      `json:"seller_id,omitempty"`
 	// Follow-Only Pages lifecycle fields (spec §3, §5.1).
 	PageType           string     `json:"page_type"`
 	VerificationStatus string     `json:"verification_status"`
@@ -360,7 +360,31 @@ func (s *Store) GetPageReviews(ctx context.Context, pageID uuid.UUID, cursor tim
 	return reviews, rows.Err()
 }
 
-// SubmitReview adds a review and recalculates the average rating.
+// Sentinel errors for a page review → mapped to HTTP codes by the handler.
+var (
+	ErrPageNotReviewable = fmt.Errorf("PAGE_NOT_REVIEWABLE")
+	ErrCannotReviewOwn   = fmt.Errorf("CANNOT_REVIEW_OWN_PAGE")
+	ErrAlreadyReviewed   = fmt.Errorf("ALREADY_REVIEWED")
+)
+
+// reviewRefusal is the review gate (US-L3), no I/O: only an approved page
+// takes reviews, and never from its owner or from an owner/admin on its
+// roster, the same people FollowPage refuses. Reviews used to be taken on a
+// page in any status, from anyone, its owner included.
+func reviewRefusal(status string, ownerID, reviewerID uuid.UUID, reviewerManagesPage bool) error {
+	if status != "approved" {
+		return ErrPageNotReviewable
+	}
+	if ownerID == reviewerID || reviewerManagesPage {
+		return ErrCannotReviewOwn
+	}
+	return nil
+}
+
+// SubmitReview adds a review to an approved page and recomputes its rating,
+// under a lock on the page row so the gate and the insert see one status.
+// A second review by the same person is ErrAlreadyReviewed (it used to be a
+// raw 500 carrying the unique-violation text).
 func (s *Store) SubmitReview(ctx context.Context, r *BusinessReview) error {
 	r.ID = uuid.New()
 	r.CreatedAt = time.Now()
@@ -371,11 +395,33 @@ func (s *Store) SubmitReview(ctx context.Context, r *BusinessReview) error {
 	}
 	defer tx.Rollback(ctx)
 
+	var status string
+	var ownerID uuid.UUID
+	if err := tx.QueryRow(ctx,
+		`SELECT status, user_id FROM business_pages WHERE id=$1 FOR UPDATE`, r.PageID).Scan(&status, &ownerID); err != nil {
+		if isNoRows(err) {
+			return ErrPageNotFound
+		}
+		return err
+	}
+	var managesPage bool
+	if err := tx.QueryRow(ctx,
+		`SELECT EXISTS(SELECT 1 FROM page_roles WHERE page_id=$1 AND user_id=$2
+		 AND role IN ('owner','admin') AND deleted_at IS NULL)`, r.PageID, r.ReviewerID).Scan(&managesPage); err != nil {
+		return err
+	}
+	if err := reviewRefusal(status, ownerID, r.ReviewerID, managesPage); err != nil {
+		return err
+	}
+
 	_, err = tx.Exec(ctx, `
 		INSERT INTO business_reviews (id, page_id, reviewer_id, rating, review_text, created_at)
 		VALUES ($1, $2, $3, $4, $5, $6)
 	`, r.ID, r.PageID, r.ReviewerID, r.Rating, r.ReviewText, r.CreatedAt)
 	if err != nil {
+		if isUniqueViolation(err) {
+			return ErrAlreadyReviewed
+		}
 		return err
 	}
 
@@ -434,10 +480,10 @@ func (s *Store) DiscoverPages(ctx context.Context, category, search string, limi
 
 // Sentinel errors for the follow flow → mapped to spec HTTP codes by handlers.
 var (
-	ErrPageNotFound     = fmt.Errorf("PAGE_NOT_FOUND")
+	ErrPageNotFound      = fmt.Errorf("PAGE_NOT_FOUND")
 	ErrPageNotFollowable = fmt.Errorf("PAGE_NOT_FOLLOWABLE")
-	ErrCannotFollowOwn  = fmt.Errorf("CANNOT_FOLLOW_OWN_PAGE")
-	ErrAlreadyFollowing = fmt.Errorf("ALREADY_FOLLOWING")
+	ErrCannotFollowOwn   = fmt.Errorf("CANNOT_FOLLOW_OWN_PAGE")
+	ErrAlreadyFollowing  = fmt.Errorf("ALREADY_FOLLOWING")
 )
 
 // FollowPage follows an approved page (spec §6.8). Enforces: page exists +

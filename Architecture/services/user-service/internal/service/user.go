@@ -384,16 +384,6 @@ func (s *Service) GetAboutSection(ctx context.Context, userID uuid.UUID, section
 	return filterAboutItems(items, access), nil
 }
 
-// UpsertAboutItem creates or updates an about item (owner only).
-func (s *Service) UpsertAboutItem(ctx context.Context, item *store.AboutItem) (*store.AboutItem, error) {
-	return s.store.UpsertAboutItem(ctx, item)
-}
-
-// DeleteAboutItem removes an about item (owner only).
-func (s *Service) DeleteAboutItem(ctx context.Context, userID uuid.UUID, section string, itemID uuid.UUID) error {
-	return s.store.DeleteAboutItem(ctx, userID, section, itemID)
-}
-
 func filterAboutMap(all map[string][]store.AboutItem, access ViewerAccess) map[string][]store.AboutItem {
 	result := make(map[string][]store.AboutItem, len(all))
 	for section, items := range all {
@@ -418,6 +408,10 @@ func filterAboutItems(items []store.AboutItem, access ViewerAccess) []store.Abou
 	return filtered
 }
 
+// canView decides one About item for a viewer who is not its owner. An
+// unknown visibility is private: the retired user-service write stored any
+// string, and a typo or a value from a newer writer must hide an item, never
+// publish it (US-L2).
 func canView(visibility string, access ViewerAccess) bool {
 	switch visibility {
 	case "public":
@@ -426,10 +420,8 @@ func canView(visibility string, access ViewerAccess) bool {
 		return access.IsFollower || access.IsFriend
 	case "friends":
 		return access.IsFriend
-	case "private":
+	default: // "private", and anything unknown
 		return false
-	default:
-		return true
 	}
 }
 
@@ -572,29 +564,13 @@ func (s *Service) ApplySellerApproval(ctx context.Context, pageID, sellerID, sel
 	return s.store.ApplySellerApproval(ctx, pageID, sellerID, sellerUserID, actorID)
 }
 
-// --- Reputation & Endorsements ---
+// --- Reputation ---
 
-// GetReputation returns a user's reputation.
+// GetReputation returns a user's reputation. The endorsement routes that fed
+// it are retired (internal/http/retired_social_routes.go); the user.endorsed
+// consumer still reads it.
 func (s *Service) GetReputation(ctx context.Context, userID uuid.UUID) (*store.UserReputation, error) {
 	return s.store.GetReputation(ctx, userID)
-}
-
-// EndorseUser creates an endorsement.
-func (s *Service) EndorseUser(ctx context.Context, e *store.Endorsement) error {
-	if e.FromUserID == e.ToUserID {
-		return fmt.Errorf("CANNOT_ENDORSE_SELF")
-	}
-	return s.store.CreateEndorsement(ctx, e)
-}
-
-// GetEndorsements returns all endorsements for a user.
-func (s *Service) GetEndorsements(ctx context.Context, userID uuid.UUID) ([]store.Endorsement, error) {
-	return s.store.GetEndorsements(ctx, userID)
-}
-
-// GetEndorsementSummary returns endorsement counts by skill.
-func (s *Service) GetEndorsementSummary(ctx context.Context, userID uuid.UUID) ([]store.SkillEndorsementSummary, error) {
-	return s.store.GetEndorsementSummary(ctx, userID)
 }
 
 // --- Status/Mood ---
@@ -618,43 +594,7 @@ func (s *Service) ClearExpiredStatuses(ctx context.Context) (int64, error) {
 
 // --- Link Analytics ---
 
-// TrackLinkClick increments click count for a user link.
-func (s *Service) TrackLinkClick(ctx context.Context, userID uuid.UUID, platform string) error {
-	return s.store.TrackLinkClick(ctx, userID, platform)
-}
-
 // GetLinkAnalytics returns click counts for a user's links.
 func (s *Service) GetLinkAnalytics(ctx context.Context, userID uuid.UUID) ([]store.LinkAnalytics, error) {
 	return s.store.GetLinkAnalytics(ctx, userID)
-}
-
-// GetCompatibility returns a compatibility score between two users.
-func (s *Service) GetCompatibility(ctx context.Context, userID, otherID uuid.UUID) (float64, error) {
-	myAbout, err := s.store.GetAllAbout(ctx, userID)
-	if err != nil {
-		return 0, err
-	}
-	otherAbout, err := s.store.GetAllAbout(ctx, otherID)
-	if err != nil {
-		return 0, err
-	}
-
-	sharedSections := 0
-	totalSections := 0
-	for section := range myAbout {
-		totalSections++
-		if _, ok := otherAbout[section]; ok {
-			sharedSections++
-		}
-	}
-	for section := range otherAbout {
-		if _, ok := myAbout[section]; !ok {
-			totalSections++
-		}
-	}
-
-	if totalSections == 0 {
-		return 0.5, nil
-	}
-	return float64(sharedSections) / float64(totalSections), nil
 }

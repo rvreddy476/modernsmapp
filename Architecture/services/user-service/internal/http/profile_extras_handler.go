@@ -26,7 +26,8 @@ func (h *Handler) registerProfileExtrasRoutes(r *gin.Engine) {
 
 	// QR Code
 	v1.GET("/me/qr", h.GetMyQRCode)
-	v1.POST("/:userId/qr/scan", h.requireServableUser, h.TrackQRScan)
+	// US-L4: the anonymous scan counter is RETIRED (retired_social_routes.go).
+	v1.POST("/:userId/qr/scan", h.requireServableUser, retiredUserRoute(whyCounterRetired, ""))
 
 	// Digital Wellbeing (validated handlers in wellbeing_handler.go)
 	wh := newWellbeingHandler(h.store)
@@ -252,21 +253,6 @@ func (h *Handler) GetMyQRCode(c *gin.Context) {
 	}
 
 	api.JSON(c.Writer, http.StatusOK, qr, nil)
-}
-
-func (h *Handler) TrackQRScan(c *gin.Context) {
-	userID, err := uuid.Parse(c.Param("userId"))
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid user ID", nil)
-		return
-	}
-
-	if err := h.svc.TrackQRScan(c.Request.Context(), userID); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
-		return
-	}
-
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "tracked"}, nil)
 }
 
 // --- Digital Wellbeing ---

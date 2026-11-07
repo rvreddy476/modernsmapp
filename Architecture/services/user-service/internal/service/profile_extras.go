@@ -87,11 +87,6 @@ func (s *Service) GetOrCreateQRCode(ctx context.Context, userID uuid.UUID, handl
 	return qr, nil
 }
 
-// TrackQRScan increments the scan count for a user's QR code.
-func (s *Service) TrackQRScan(ctx context.Context, userID uuid.UUID) error {
-	return s.store.IncrementQRScan(ctx, userID)
-}
-
 // --- Digital Wellbeing ---
 
 // GetWellbeing returns a user's wellbeing settings (or defaults if not set).

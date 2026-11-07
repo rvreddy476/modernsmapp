@@ -39,3 +39,17 @@ func TestAboutAudienceTable(t *testing.T) {
 		}
 	}
 }
+
+// US-L2: a visibility the table does not know reads as private to everyone
+// but the owner. It used to read as public.
+func TestAboutUnknownVisibilityIsPrivate(t *testing.T) {
+	items := []store.AboutItem{{Visibility: "Friends"}, {Visibility: "only-me"}, {Visibility: ""}}
+	for _, access := range []ViewerAccess{{}, {IsFollower: true}, {IsFollower: true, IsFriend: true}} {
+		if got := filterAboutItems(items, access); len(got) != 0 {
+			t.Fatalf("viewer %+v saw %d items with unknown visibilities, want none", access, len(got))
+		}
+	}
+	if got := filterAboutItems(items, ViewerAccess{IsSelf: true}); len(got) != len(items) {
+		t.Fatalf("the owner saw %d of their own %d items", len(got), len(items))
+	}
+}
