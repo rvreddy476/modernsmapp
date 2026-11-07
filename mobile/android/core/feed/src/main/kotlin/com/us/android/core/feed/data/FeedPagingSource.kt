@@ -29,6 +29,7 @@ import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
 import kotlinx.coroutines.CancellationException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 
 /**
  * One page of a feed as the paging source consumes it: already mapped to the
@@ -123,7 +124,7 @@ class FeedPagingSource(
             // First occurrence wins, so ordering is untouched.
             data = page.items.filter { emittedIds.add(it.id) },
             prevKey = null, // Feeds are forward-only; there is no previous page.
-            nextKey = page.nextCursor,
+            nextKey = nextKeyAfter(params.key, page),
         )
     } catch (e: CancellationException) {
         // Rethrown before the generic branch: swallowing it here would break
@@ -147,7 +148,36 @@ class FeedPagingSource(
      */
     override fun getRefreshKey(state: PagingState<String, FeedItem>): String? = null
 
+    /** Server pages in a row that came back with no row to show. */
+    private val emptyPagesInARow = AtomicInteger(0)
+
+    /**
+     * The key of the page after [page], loaded with [key]; null ends the list.
+     *
+     * An empty page with a cursor pages on (Paging asks again at once, while
+     * the reader is within the prefetch distance). Two things a misbehaving
+     * server could do with that are stopped here: echo the cursor it was
+     * given — Paging throws on a reused key, which would kill the feed — or
+     * send empty pages with fresh cursors without end, which would spin the
+     * radio for nothing. A page emptied only by de-duplication is not
+     * "empty" here: the server still sent rows, and the endless feed's
+     * fallback timeline legitimately repeats many of them.
+     */
+    private fun nextKeyAfter(key: String?, page: FeedPage): String? {
+        val next = page.nextCursor ?: return null
+        val empties = if (page.items.isEmpty()) {
+            emptyPagesInARow.incrementAndGet()
+        } else {
+            emptyPagesInARow.set(0)
+            0
+        }
+        return next.takeIf { it != key && empties < MAX_EMPTY_PAGES_IN_A_ROW }
+    }
+
     private companion object {
+        /** At this many empty pages in a row the list ends, cursor or not. */
+        const val MAX_EMPTY_PAGES_IN_A_ROW = 5
+
         /**
          * Paging's `loadSize` is three times the page size on the initial load.
          * The server accepted `limit=1` and `limit=2` in captures; no maximum
@@ -167,22 +197,21 @@ class FeedPagingSource(
  * base64 timeuuid; both are replayed verbatim and neither is ever parsed.
  *
  * The terminal page omits `meta` entirely rather than sending an empty
- * cursor, so an absent or blank value is the end. An empty page is also
- * treated as the end regardless of what `meta` says — otherwise a server that
- * always echoed a cursor would page forever. "Empty" is judged BEFORE the
- * deleted-row filter, so a page of nothing but deleted posts still pages on.
+ * cursor, so an absent or blank value is the end. An EMPTY page that still
+ * carries a cursor is not the end: the server's filters (blocks, privacy,
+ * moderation) can empty a page with more behind it, and stopping there cut
+ * the feed short. A server that pages on forever with nothing in it is
+ * stopped by [FeedPagingSource] instead — an echoed cursor, or too many
+ * empty pages in a row, ends the list.
  */
-internal fun ApiEnvelope<List<FeedItemDto>>.toFeedPage(): FeedPage {
-    val items = data.orEmpty()
-    return FeedPage(
-        // A soft-deleted post (`deleted_at` set) is never a row, whatever
-        // surface still carries it: the server's 30-day restore window is
-        // the author's, not the reader's.
-        items = items.filter { it.deletedAt.isBlank() }.map { it.toDomain() },
-        nextCursor = if (items.isEmpty()) null else meta?.nextCursor?.takeIf { it.isNotBlank() },
-        errorCode = error?.code,
-    )
-}
+internal fun ApiEnvelope<List<FeedItemDto>>.toFeedPage(): FeedPage = FeedPage(
+    // A soft-deleted post (`deleted_at` set) is never a row, whatever
+    // surface still carries it: the server's 30-day restore window is
+    // the author's, not the reader's.
+    items = data.orEmpty().filter { it.deletedAt.isBlank() }.map { it.toDomain() },
+    nextCursor = meta?.nextCursor?.takeIf { it.isNotBlank() },
+    errorCode = error?.code,
+)
 
 /** Carries a typed [AppError] through Paging's `Throwable`-shaped error channel. */
 class AppErrorException(val error: AppError) : Exception(error::class.simpleName)

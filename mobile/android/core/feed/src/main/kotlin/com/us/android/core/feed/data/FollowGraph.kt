@@ -1,5 +1,6 @@
 package com.us.android.core.feed.data
 
+import androidx.annotation.VisibleForTesting
 import com.us.android.core.auth.SessionStateProvider
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.model.FollowStatus
@@ -48,7 +49,14 @@ class FollowGraph @Inject constructor(
     val edges: StateFlow<Map<String, FollowStatus>> = _edges.asStateFlow()
 
     private val inFlight = mutableSetOf<String>()
+
+    /** Authors whose last lookup failed, and when they may be asked again. Guarded by [lock]. */
+    private val failures = mutableMapOf<String, LookupFailure>()
     private val lock = Mutex()
+
+    /** The clock the back-off reads; a test (here or in a feature that hydrates authors) moves it. */
+    @VisibleForTesting
+    var now: () -> Long = System::currentTimeMillis
 
     /** The signed-in user, or blank before the session resolves. */
     val ownId: String
@@ -56,33 +64,50 @@ class FollowGraph @Inject constructor(
 
     /**
      * Fetches the edge for every author not yet known. Each id is asked for
-     * once even when two pages hydrate at the same moment; a failed lookup is
-     * simply not recorded, so the button stays hidden rather than guessing.
+     * once even when two pages hydrate at the same moment. A failed lookup
+     * records no edge, so the button stays hidden rather than guessing, and
+     * that author is not asked again until a back-off has passed
+     * ([followLookupBackoffMillis]): a deleted account's 404 or a failing
+     * graph must not cost one request per author on every page.
      */
     suspend fun ensureKnown(authorIds: Collection<String>) {
         val viewer = ownId
         if (viewer.isBlank()) return
         val wanted = lock.withLock {
+            val at = now()
             authorIds.asSequence()
                 .filter { it.isNotBlank() && it != viewer }
                 .filter { it !in _edges.value && it !in inFlight }
+                .filter { id -> failures[id]?.let { it.retryAt <= at } ?: true }
                 .distinct()
                 .toList()
                 .also { inFlight += it }
         }
         if (wanted.isEmpty()) return
         try {
-            coroutineScope {
+            val answers = coroutineScope {
                 wanted.map { id -> async { id to profiles.relationship(viewer, id) } }.awaitAll()
-            }.forEach { (id, result) ->
-                if (result is AppResult.Success) {
-                    _edges.update { it + (id to result.data.followStatus) }
+            }
+            answers.forEach { (id, result) ->
+                if (result is AppResult.Success) _edges.update { it + (id to result.data.followStatus) }
+            }
+            lock.withLock {
+                val at = now()
+                answers.forEach { (id, result) ->
+                    if (result is AppResult.Success) {
+                        failures -= id
+                    } else {
+                        val count = (failures[id]?.count ?: 0) + 1
+                        failures[id] = LookupFailure(count, retryAt = at + followLookupBackoffMillis(count))
+                    }
                 }
             }
         } finally {
             lock.withLock { inFlight -= wanted.toSet() }
         }
     }
+
+    private data class LookupFailure(val count: Int, val retryAt: Long)
 
     /** Follows [authorId], optimistically. Returns the server's verdict. */
     suspend fun follow(authorId: String): AppResult<Unit> {
@@ -129,3 +154,20 @@ class FollowGraph @Inject constructor(
  */
 fun offersFollow(ownId: String, authorId: String, edge: FollowStatus?): Boolean =
     authorId.isNotBlank() && authorId != ownId && edge == FollowStatus.NONE
+
+/**
+ * How long an author whose relationship lookup has failed [failures] times
+ * in a row waits before it is asked again: 30 s, doubling, at most 10 min.
+ * Long enough that a page of failing authors is not re-asked on the next
+ * page; short enough that a graph that blipped recovers within a session.
+ */
+internal fun followLookupBackoffMillis(failures: Int): Long {
+    val doublings = (failures - 1).coerceIn(0, FOLLOW_BACKOFF_MAX_DOUBLINGS)
+    return (FOLLOW_BACKOFF_BASE_MILLIS shl doublings).coerceAtMost(FOLLOW_BACKOFF_MAX_MILLIS)
+}
+
+private const val FOLLOW_BACKOFF_BASE_MILLIS = 30_000L
+private const val FOLLOW_BACKOFF_MAX_MILLIS = 10L * 60L * 1000L
+
+/** Enough doublings to reach the ceiling; more would only overflow on the way. */
+private const val FOLLOW_BACKOFF_MAX_DOUBLINGS = 5

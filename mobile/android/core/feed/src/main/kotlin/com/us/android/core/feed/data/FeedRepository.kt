@@ -55,7 +55,7 @@ class FeedRepository @Inject constructor(
      * placeholder slots would be invented. A feed that renders grey rows for
      * items that may not exist is worse than one that simply ends.
      */
-    fun feed(query: FeedQuery): Flow<PagingData<FeedItem>> = pager { page(query, it.limit, it.cursor) }
+    fun feed(query: FeedQuery): Flow<PagingData<FeedItem>> = stagePager { page(query, it.limit, it.cursor) }
 
     /**
      * [feed], with each generation's FIRST page reported as it lands: true
@@ -66,8 +66,8 @@ class FeedRepository @Inject constructor(
      */
     @Suppress("TooGenericExceptionCaught") // Reported, then rethrown for the source to classify.
     fun feed(query: FeedQuery, onFirstPage: (loaded: Boolean) -> Unit): Flow<PagingData<FeedItem>> =
-        pager { request ->
-            if (request.cursor != null) return@pager page(query, request.limit, request.cursor)
+        stagePager { request ->
+            if (request.cursor != null) return@stagePager page(query, request.limit, request.cursor)
             val first = try {
                 page(query, request.limit, cursor = null)
             } catch (e: CancellationException) {
@@ -85,7 +85,7 @@ class FeedRepository @Inject constructor(
      * [fallback]'s pages ([endlessPage]). The full-screen Home feed's For
      * You and Following (2026-10-18).
      */
-    fun endlessFeed(primary: FeedQuery, fallback: FeedQuery): Flow<PagingData<FeedItem>> = pager { request ->
+    fun endlessFeed(primary: FeedQuery, fallback: FeedQuery): Flow<PagingData<FeedItem>> = stagePager { request ->
         endlessPage(
             cursor = request.cursor,
             primary = { cursor -> page(primary, request.limit, cursor) },
@@ -223,7 +223,15 @@ class FeedRepository @Inject constructor(
 
     /** The shared Pager — see [feedPager]; every list in the app pages the same way. */
     private fun pager(load: suspend (FeedPageRequest) -> FeedPage): Flow<PagingData<FeedItem>> =
-        feedPager(errorMapper, load)
+        feedPager(errorMapper, load = load)
+
+    /**
+     * The shared Pager bounded to [FEED_STAGE_MAX_SIZE]: the full-screen
+     * stages ([feed], [endlessFeed]) a session can scroll through for hours.
+     * A tag's posts stay unbounded, like every finite list.
+     */
+    private fun stagePager(load: suspend (FeedPageRequest) -> FeedPage): Flow<PagingData<FeedItem>> =
+        feedPager(errorMapper, maxSize = FEED_STAGE_MAX_SIZE, load = load)
 
     private companion object {
         /** The server clamps to 30; a phone screen shows about half that. */

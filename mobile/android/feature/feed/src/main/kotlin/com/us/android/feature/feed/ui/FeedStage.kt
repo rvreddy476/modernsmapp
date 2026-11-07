@@ -157,7 +157,7 @@ internal fun FeedStagePage(
         when {
             locked -> LockedStage(item, poster = state.poster, topInset = state.topInset, onUnlocked = onUnlocked)
             kind == StageKind.VIDEO -> if (state.playback != null) {
-                val player = remember(page, state.playback) { pool.acquire(page, state.playback) }
+                val player = remember(page, state.playback) { pool.acquire(page, state.playback, item.id) }
                 StageVideo(player = player, posterUrl = state.poster, aspect = state.pages.firstOrNull()?.aspectRatio)
             } else {
                 // Still processing: its poster, and a word on why it does not move.

@@ -8,10 +8,10 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.asPaddingValues
-import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.pager.PagerState
 import androidx.compose.foundation.pager.VerticalPager
@@ -50,6 +50,7 @@ import androidx.paging.compose.LazyPagingItems
 import androidx.paging.compose.collectAsLazyPagingItems
 import coil3.SingletonImageLoader
 import coil3.request.ImageRequest
+import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.theme.UsTheme
@@ -58,10 +59,10 @@ import com.us.android.core.engagement.data.bookmarkedOr
 import com.us.android.core.feed.data.offersFollow
 import com.us.android.core.feed.ui.comments.CommentsSheet
 import com.us.android.core.feed.ui.edit.FeedPostEditSheet
-import com.us.android.core.feed.ui.saved.CollectionTarget
-import com.us.android.core.feed.ui.saved.SaveToCollectionSheet
 import com.us.android.core.feed.ui.more.PostMoreSheetHost
 import com.us.android.core.feed.ui.more.PostMoreViewModel
+import com.us.android.core.feed.ui.saved.CollectionTarget
+import com.us.android.core.feed.ui.saved.SaveToCollectionSheet
 import com.us.android.core.feed.ui.share.PostShareSheetHost
 import com.us.android.core.feed.ui.share.PostShareViewModel
 import com.us.android.core.media.PlayerPool
@@ -286,7 +287,7 @@ internal fun FeedContent(
     // comments over it, not held by a tap.
     val allowed = rememberIsResumed() && commentsFor == null
     ReconcileHydration(items = items, viewModel = viewModel)
-    val refresher = rememberFeedRefresher(items, pagerState)
+    val refresher = rememberFeedRefresher(items, pagerState, hasHead = head != null)
     RefreshTriggers(refresher = refresher, reselected = reselected, pagerState = pagerState)
     LaunchedEffect(startOver) { if (startOver > 0) pagerState.scrollToPage(0) }
     // The post just published sits at page 0: the reader came back from
@@ -429,7 +430,7 @@ internal fun FeedContent(
         Column(modifier = headerPad.fillMaxWidth()) {
             EngagementFailureBar(failures, onRetry = viewModel::retryFailure, onDismiss = viewModel::dismissFailure)
         }
-        MoreSheetMessage(more, sharing)
+        FeedMessages(more, sharing, refresher)
     }
 
     shareFor?.let { item ->
@@ -508,7 +509,7 @@ private fun SettledPageEffects(
     LaunchedEffect(settled, pageCount, headId) {
         onSettled()
         val item = itemAt(settled)
-        val player = item?.let(playbackOf)?.let { pool.acquire(settled, it) }
+        val player = item?.let(playbackOf)?.let { pool.acquire(settled, it, item.id) }
         viewModel.onAutoplayChanged(item?.takeIf { player != null }, player?.let(::watchProbe), muted = false)
         // Data saver (2026-10-24): the newly settled video does not start by itself.
         if (currentPlaying && autoplay()) pool.playOnly(settled) else pool.pauseAll()
@@ -519,7 +520,7 @@ private fun SettledPageEffects(
             val video = playbackOf(next)
             // Two videos ahead buffered (the pool holds four players); every
             // warmed page's first photo decoded.
-            if (video != null && order < VIDEO_PRELOAD_AHEAD) pool.preload(page, video)
+            if (video != null && order < VIDEO_PRELOAD_AHEAD) pool.preload(page, video, next.id)
             mediaPages(next).firstOrNull()?.url?.let { url ->
                 loader.enqueue(ImageRequest.Builder(context).data(url).build())
             }
@@ -537,33 +538,70 @@ private fun SettledPageEffects(
     }
 }
 
-/** A refresh the reader asked for, and the trip back to the first post when it lands. */
-internal class FeedRefresher(private val items: LazyPagingItems<FeedItem>) {
+/**
+ * A refresh the reader asked for (a pull, the tab tapped again, a return
+ * after a long time away), the trip back to the first post when it lands,
+ * and what to say when it does not.
+ *
+ * A failed refresh with posts on screen keeps them — Paging holds the old
+ * list — so without [failure] nothing would change at all and an offline
+ * reader would take a stale feed for an up-to-date one. With nothing on
+ * screen the full error state says it instead, so no message is raised.
+ */
+internal class FeedRefresher(
+    private val reload: () -> Unit,
+    private val now: () -> Long = System::currentTimeMillis,
+) {
     var inFlight by mutableStateOf(false)
+        private set
+
+    /** Why the last refresh did not come, while there is something to say; null otherwise. */
+    var failure by mutableStateOf<UsMessage?>(null)
         private set
 
     fun refresh() {
         inFlight = true
-        items.refresh()
+        failure = null
+        reload()
     }
 
-    fun landed() {
-        inFlight = false
+    /**
+     * The list's refresh state moved. Returns true when the asked-for batch
+     * has landed, so the caller puts the reader on its first post.
+     */
+    fun onRefreshState(refresh: LoadState, postsOnScreen: Boolean): Boolean {
+        if (!inFlight) return false
+        return when (refresh) {
+            is LoadState.Loading -> false
+            is LoadState.NotLoading -> {
+                inFlight = false
+                true
+            }
+            is LoadState.Error -> {
+                inFlight = false
+                if (postsOnScreen) failure = UsMessage(text = refresh.error.feedMessage(), id = now())
+                false
+            }
+        }
+    }
+
+    fun dismissFailure() {
+        failure = null
     }
 }
 
 @Composable
-private fun rememberFeedRefresher(items: LazyPagingItems<FeedItem>, pagerState: PagerState): FeedRefresher {
-    val refresher = remember(items) { FeedRefresher(items) }
+private fun rememberFeedRefresher(
+    items: LazyPagingItems<FeedItem>,
+    pagerState: PagerState,
+    hasHead: Boolean,
+): FeedRefresher {
+    val refresher = remember(items) { FeedRefresher(reload = items::refresh) }
     // A fresh batch replaces what was ahead: once it is in, the reader is on its first post.
     val refresh = items.loadState.refresh
+    val postsOnScreen = items.itemCount > 0 || hasHead
     LaunchedEffect(refresh, refresher.inFlight) {
-        if (refresher.inFlight && refresh is LoadState.NotLoading) {
-            pagerState.scrollToPage(0)
-            refresher.landed()
-        } else if (refresher.inFlight && refresh is LoadState.Error) {
-            refresher.landed()
-        }
+        if (refresher.onRefreshState(refresh, postsOnScreen)) pagerState.scrollToPage(0)
     }
     return refresher
 }
@@ -609,18 +647,21 @@ private fun AppendRetryPage(state: LoadState, onRetry: () -> Unit) {
 }
 
 /**
- * What the more sheet left behind, once it has gone: "We'll show you fewer
- * posts like this", "Blocked @x", or the server's refusal.
+ * One line at a time over the stage: what the more sheet left behind, once
+ * it has gone ("We'll show you fewer posts like this", "Blocked @x", or the
+ * server's refusal), else why a refresh did not come ("You're offline…") —
+ * the same host Reels says its failed refresh in.
  */
 @Composable
-private fun BoxScope.MoreSheetMessage(more: PostMoreViewModel, sharing: PostShareViewModel) {
+private fun BoxScope.FeedMessages(more: PostMoreViewModel, sharing: PostShareViewModel, refresher: FeedRefresher) {
     val message by more.message.collectAsStateWithLifecycle()
     val shareMessage by sharing.message.collectAsStateWithLifecycle()
     UsMessageHost(
-        message = message ?: shareMessage,
+        message = message ?: shareMessage ?: refresher.failure,
         onDismiss = {
             more.dismissMessage()
             sharing.dismissMessage()
+            refresher.dismissFailure()
         },
     )
 }

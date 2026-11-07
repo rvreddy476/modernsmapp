@@ -27,7 +27,10 @@ suspend fun endlessPage(
         return page.copy(nextCursor = page.nextCursor?.let { FALLBACK_CURSOR_PREFIX + it })
     }
     val page = primary(cursor)
-    if (page.errorCode != null || page.nextCursor != null) return page
+    // A cursor echoed back is no way forward: the primary has ended, and the
+    // fallback carries on (the paging source would otherwise end the list).
+    val primaryEnded = page.nextCursor == null || page.nextCursor == cursor
+    if (page.errorCode != null || !primaryEnded) return page
     // The primary timeline has ended. An empty last page goes straight on to
     // the fallback's first, so a viewer with nothing in Following sees For
     // You at once rather than an empty screen and then a page.

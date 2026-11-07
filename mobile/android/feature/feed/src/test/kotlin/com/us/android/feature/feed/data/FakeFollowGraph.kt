@@ -44,8 +44,12 @@ internal class RecordingGraphApi(
     /** Throw on block, so the optimistic removal must be undone. */
     var blockFails: Boolean = false
 
+    /** Authors whose relationship lookup fails on the wire (a deleted account, a failing graph). */
+    val failingRelationships: MutableSet<String> = mutableSetOf()
+
     override suspend fun relationship(userId: String, otherId: String): ApiEnvelope<RelationshipDto> {
         relationshipRequests += userId to otherId
+        if (otherId in failingRelationships) throw java.io.IOException("offline")
         return ApiEnvelope(data = RelationshipDto(follows = follows[otherId] ?: false), meta = null)
     }
 

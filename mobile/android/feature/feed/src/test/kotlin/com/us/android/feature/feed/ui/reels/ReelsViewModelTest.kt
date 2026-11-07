@@ -33,6 +33,7 @@ import com.us.android.core.feed.data.GenerateAudioTrackRequest
 import com.us.android.core.feed.data.LibrarySoundUseDto
 import com.us.android.core.feed.data.LibraryTracksDto
 import com.us.android.core.feed.data.PollVoteRequest
+import com.us.android.core.feed.data.PostEditPatch
 import com.us.android.core.feed.data.PostEdits
 import com.us.android.core.feed.data.SoundReelsDto
 import com.us.android.core.feed.data.SoundRowDto
@@ -44,7 +45,6 @@ import com.us.android.core.feed.data.dto.FeedAuthorDto
 import com.us.android.core.feed.data.dto.FeedDeltaDto
 import com.us.android.core.feed.data.dto.FeedItemDto
 import com.us.android.core.feed.data.dto.FeedMediaDto
-import com.us.android.core.model.FeedQuery
 import com.us.android.core.feed.data.dto.FeedSoundDto
 import com.us.android.core.feed.offline.NoOfflineLibrary
 import com.us.android.core.feed.offline.OfflineCopy
@@ -72,6 +72,7 @@ import com.us.android.core.model.FeedCounts
 import com.us.android.core.model.FeedItem
 import com.us.android.core.model.FeedMedia
 import com.us.android.core.model.FeedPostControls
+import com.us.android.core.model.FeedQuery
 import com.us.android.core.model.FeedViewerState
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.ReelSound
@@ -336,6 +337,7 @@ class ReelsViewModelTest {
         val audioApi: FakeAudioTracksApi = FakeAudioTracksApi(),
         val audioLanguage: FakeAudioLanguageStore = FakeAudioLanguageStore(),
         val edits: PostEdits = PostEdits(),
+        val hidden: HiddenPosts = HiddenPosts(),
     )
 
     /** media-service's audio-tracks routes, answering one list for every video. */
@@ -387,7 +389,7 @@ class ReelsViewModelTest {
         soundStore = h.soundStore,
         autoScrollStore = h.autoScrollStore,
         offline = h.offline,
-        hidden = HiddenPosts(),
+        hidden = h.hidden,
         audio = VideoAudio(AudioTracksRepository(h.audioApi, ErrorMapper(json)), h.audioLanguage, resolver),
         edits = h.edits,
     )
@@ -1466,6 +1468,68 @@ class ReelsViewModelTest {
         settle()
 
         assertThat((vm.head.value as ReelsHead.Live).item.id).isEqualTo("mine")
+    }
+
+    /**
+     * Deleting the held reel from its own More sheet (which hides it through
+     * HiddenPosts) takes it out of the head slot at once — audit 2026-10-30,
+     * A1: it used to say "Post deleted" and keep playing at the top.
+     */
+    @Test
+    fun `a held reel that is deleted or hidden leaves the head`() = runTest {
+        val api = RecordingApi(post = reelDto("mine", authorId = "me"), feedPages = listOf(listOf("r1")))
+        val h = Harness(api = api)
+        val vm = viewModel(h)
+        backgroundScope.launch { vm.head.collect {} }
+        show(vm)
+        h.entry.open("mine")
+        vm.resolveEntry(listOf("r1"))
+        settle()
+        assertThat(vm.head.value).isInstanceOf(ReelsHead.Live::class.java)
+
+        h.hidden.hidePost("mine")
+        settle()
+        assertThat(vm.head.value).isNull()
+
+        // Restored from Recently deleted: it comes back, as a paged row would.
+        h.hidden.unhidePost("mine")
+        settle()
+        assertThat((vm.head.value as ReelsHead.Live).item.id).isEqualTo("mine")
+    }
+
+    @Test
+    fun `a held reel whose author is blocked leaves the head`() = runTest {
+        val api = RecordingApi(post = reelDto("from-feed", authorId = "a"), feedPages = listOf(listOf("r1")))
+        val h = Harness(api = api)
+        val vm = viewModel(h)
+        backgroundScope.launch { vm.head.collect {} }
+        show(vm)
+        h.entry.open("from-feed")
+        vm.resolveEntry(listOf("r1"))
+        settle()
+
+        h.hidden.hideAuthor("a")
+        settle()
+
+        assertThat(vm.head.value).isNull()
+    }
+
+    /** The owner's Edit shows on the held reel at once, as on a ranked one. */
+    @Test
+    fun `an edit to the held reel shows in the head`() = runTest {
+        val api = RecordingApi(post = reelDto("mine", authorId = "me"), feedPages = listOf(listOf("r1")))
+        val h = Harness(api = api)
+        val vm = viewModel(h)
+        backgroundScope.launch { vm.head.collect {} }
+        show(vm)
+        h.entry.open("mine")
+        vm.resolveEntry(listOf("r1"))
+        settle()
+
+        h.edits.record("mine", PostEditPatch(text = "new words"))
+        settle()
+
+        assertThat((vm.head.value as ReelsHead.Live).item.text).isEqualTo("new words")
     }
 
     // ── Follow ──────────────────────────────────────────────────────────

@@ -57,8 +57,19 @@ class PlayerPool @Inject constructor(
      * When the pool is full the least-recently-needed player is reclaimed
      * rather than a new one allocated. Reclaiming stops playback and clears
      * the media item, so the returned instance is always in a known state.
+     *
+     * A named video ([contentId]) already prepared at ANOTHER index is moved
+     * here rather than prepared again: the list's indices shifted under it —
+     * a bounded feed dropped its oldest page behind the reader, or a reel was
+     * pinned above page 0 — and the video on screen must keep playing from
+     * where it is, not restart from the top.
      */
     fun acquire(pageIndex: Int, playback: Playback, contentId: String? = null): ExoPlayer {
+        heldElsewhere(pageIndex, playback, contentId, contents, playbacks)?.let { from ->
+            players.swap(from, pageIndex)
+            playbacks.swap(from, pageIndex)
+            contents.swap(from, pageIndex)
+        }
         players[pageIndex]?.let { existing ->
             if (playbacks[pageIndex] == playback) {
                 if (contentId != null) contents[pageIndex] = contentId
@@ -219,3 +230,30 @@ val Player.isActuallyPlaying: Boolean
  * every re-prepare did before.
  */
 internal fun keepsPlace(before: String?, after: String?): Boolean = before != null && before == after
+
+/**
+ * The index whose player already holds [contentId] prepared with [playback],
+ * other than [pageIndex]; null when none does, or the caller named no video.
+ * Both must match: the same post with a new source (an audio track) is a
+ * re-prepare at its own index, never a move.
+ */
+internal fun heldElsewhere(
+    pageIndex: Int,
+    playback: Playback,
+    contentId: String?,
+    contents: Map<Int, String>,
+    playbacks: Map<Int, Playback>,
+): Int? {
+    if (contentId == null) return null
+    return contents.entries.firstOrNull { (index, held) ->
+        index != pageIndex && held == contentId && playbacks[index] == playback
+    }?.key
+}
+
+/** Exchanges what [a] and [b] map to; an absent entry moves as an absence. */
+internal fun <V : Any> MutableMap<Int, V>.swap(a: Int, b: Int) {
+    val atA = remove(a)
+    val atB = remove(b)
+    if (atB != null) put(a, atB)
+    if (atA != null) put(b, atA)
+}

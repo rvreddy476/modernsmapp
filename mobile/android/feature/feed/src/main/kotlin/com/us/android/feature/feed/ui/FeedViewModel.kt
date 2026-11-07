@@ -5,7 +5,6 @@ import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
 import androidx.paging.filter
-import androidx.paging.map
 import com.us.android.core.analytics.AnalyticsEventType
 import com.us.android.core.analytics.AnalyticsRecorder
 import com.us.android.core.analytics.AnalyticsSurface
@@ -27,10 +26,11 @@ import com.us.android.core.engagement.data.EngagementStore
 import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.feed.data.FeedRepository
 import com.us.android.core.feed.data.FollowGraph
-import com.us.android.core.feed.data.PostEdits
-import com.us.android.core.feed.data.applyTo
 import com.us.android.core.feed.data.KeywordFilter
-import com.us.android.core.feed.data.hides
+import com.us.android.core.feed.data.PostEdits
+import com.us.android.core.feed.data.RowOverlays
+import com.us.android.core.feed.data.rowOverlays
+import com.us.android.core.feed.data.through
 import com.us.android.core.media.FeedEntry
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.model.FeedItem
@@ -47,11 +47,14 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.emptyFlow
 import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.OffsetDateTime
@@ -198,7 +201,17 @@ class FeedViewModel @AssistedInject constructor(
      * 2026-09-05; this is the same slot for the home timeline.
      */
     private val _head = MutableStateFlow<FeedItem?>(null)
-    val head: StateFlow<FeedItem?> = _head.asStateFlow()
+
+    /** This session's hides, deletes, blocks and edits, laid over the paged rows and the head alike. */
+    private val sessionOverlays: Flow<RowOverlays> = rowOverlays(hidden.state, edits?.edits ?: flowOf(emptyMap()))
+
+    /**
+     * The pinned post as the reader should see it: gone once they delete or
+     * hide it (or block its author), with their edit once they save one —
+     * exactly what happens to the same post as a paged row.
+     */
+    val head: StateFlow<FeedItem?> = combine(_head, sessionOverlays) { pinned, laid -> pinned?.let(laid::view) }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(HEAD_STOP_TIMEOUT_MILLIS), null)
 
     /**
      * Bumped to start the Following tab over on a FRESH generation: picking
@@ -232,20 +245,13 @@ class FeedViewModel @AssistedInject constructor(
         } else {
             flow
         }
-    }.combine(hidden.state) { page, set ->
-        // "Not interested" and Block from the more sheet, applied at once as
-        // a filter over every page — the same overlay idea as engagement,
-        // because a PagingData row cannot be removed in place and a refresh
-        // would drop the reader to the top to remove one row.
-        if (set.isEmpty) page else page.filter { !set.hides(it) }
-    }.let { flow ->
-        // The owner's Edit post from the more sheet (2026-10-24): the new
-        // words on the card at once, as Reels does for an edited reel.
-        if (edits != null) {
-            flow.combine(edits.edits) { page, saved -> if (saved.isEmpty()) page else page.map { saved.applyTo(it) } }
-        } else {
-            flow
-        }
+    }.combine(sessionOverlays) { page, laid ->
+        // "Not interested", Delete and Block from the more sheet, and the
+        // owner's Edit post (2026-10-24), applied at once over every page —
+        // the same overlay idea as engagement, because a PagingData row
+        // cannot be changed in place and a refresh would drop the reader to
+        // the top to change one row. The pinned [head] goes through the same.
+        page.through(laid)
     }.combine(_head) { page, pinned ->
         // The pinned post is drawn above these rows, so it must not also be
         // one of them. The Reels tab does the same for the reel it is holding.
@@ -489,12 +495,16 @@ class FeedViewModel @AssistedInject constructor(
      * it to the store would hand it a stale `has_reacted=false` and retire a
      * confirmed like — the heart and count visibly reverting while the server
      * still holds the reaction.
+     *
+     * The same goes for the authors: only the new rows' are handed to the
+     * follow graph. The whole snapshot would re-ask every author already
+     * on screen on every page.
      */
     fun onAppendHydrated(items: List<FeedItem>) {
-        learnAuthors(items)
-        items.forEach { item ->
-            if (hydratedIds.add(item.id)) reconcile(item)
-        }
+        val fresh = items.filter { hydratedIds.add(it.id) }
+        if (fresh.isEmpty()) return
+        learnAuthors(fresh)
+        fresh.forEach(::reconcile)
     }
 
     private fun reconcile(item: FeedItem) = engagement.reconcile(
@@ -621,6 +631,9 @@ internal const val FOLLOWING_POLL_MILLIS = 60 * 1000L
 
 /** For You's fallback once it runs out: the plain newest-first home timeline. */
 private val NEWEST_FIRST = FeedQuery(FeedSurface.Home)
+
+/** How long the pinned post stays computed after the screen stops watching it: a rotation, not a visit. */
+private const val HEAD_STOP_TIMEOUT_MILLIS = 5_000L
 
 /** How many times the pinned post is asked for before the feed lets it go. */
 private const val PIN_FETCH_ATTEMPTS = 3

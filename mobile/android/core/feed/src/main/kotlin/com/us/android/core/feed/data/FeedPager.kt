@@ -16,15 +16,20 @@ import kotlinx.coroutines.flow.Flow
  * `enablePlaceholders = false`: the server never reports a total count, so
  * placeholder slots would be invented. A feed that renders grey rows for
  * items that may not exist is worse than one that simply ends.
+ *
+ * [maxSize] bounds how many rows the list holds; see [FEED_STAGE_MAX_SIZE]
+ * for the surfaces that set it. Unbounded is the default because a finite
+ * list (a profile grid, a playlist) must keep its top: feeds are
+ * forward-only (no `prevKey`), so a page dropped from the start can never
+ * be loaded again.
  */
-fun feedPager(errorMapper: ErrorMapper, load: suspend (FeedPageRequest) -> FeedPage): Flow<PagingData<FeedItem>> =
+fun feedPager(
+    errorMapper: ErrorMapper,
+    maxSize: Int = PagingConfig.MAX_SIZE_UNBOUNDED,
+    load: suspend (FeedPageRequest) -> FeedPage,
+): Flow<PagingData<FeedItem>> =
     Pager(
-        config = PagingConfig(
-            pageSize = FEED_PAGE_SIZE,
-            prefetchDistance = FEED_PREFETCH_DISTANCE,
-            enablePlaceholders = false,
-            initialLoadSize = FEED_PAGE_SIZE * FEED_INITIAL_LOAD_MULTIPLIER,
-        ),
+        config = feedPagingConfig(maxSize),
         pagingSourceFactory = {
             FeedPagingSource(
                 loader = { limit, cursor -> load(FeedPageRequest(limit, cursor)) },
@@ -33,7 +38,31 @@ fun feedPager(errorMapper: ErrorMapper, load: suspend (FeedPageRequest) -> FeedP
         },
     ).flow
 
+/**
+ * The shared configuration. Placeholders stay off with a bounded [maxSize]
+ * too: with no `prevKey` a dropped page is never reloaded, so a placeholder
+ * in its place would be a blank page the reader could scroll back into
+ * forever. Without them the dropped rows simply leave the list, and the
+ * pagers — keyed by post id — keep the reader on the post they are on.
+ */
+internal fun feedPagingConfig(maxSize: Int = PagingConfig.MAX_SIZE_UNBOUNDED) = PagingConfig(
+    pageSize = FEED_PAGE_SIZE,
+    prefetchDistance = FEED_PREFETCH_DISTANCE,
+    enablePlaceholders = false,
+    initialLoadSize = FEED_PAGE_SIZE * FEED_INITIAL_LOAD_MULTIPLIER,
+    maxSize = maxSize,
+)
+
 const val FEED_PAGE_SIZE = 15
+
+/**
+ * The most rows a full-screen stage feed holds: Home's For You and
+ * Following (which never end, see [endlessPage]), Friends and Reels. Ten
+ * pages; past it the oldest pages behind the reader are dropped, so a long
+ * session's heap stops growing with every post scrolled past. Scrolling
+ * back up stops at the oldest row still held, well over a hundred posts back.
+ */
+const val FEED_STAGE_MAX_SIZE = FEED_PAGE_SIZE * 10
 
 /** Start loading the next page five rows early, not at the very end. */
 private const val FEED_PREFETCH_DISTANCE = 5

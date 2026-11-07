@@ -5,7 +5,6 @@ import androidx.lifecycle.viewModelScope
 import androidx.paging.PagingData
 import androidx.paging.cachedIn
 import androidx.paging.filter
-import androidx.paging.map
 import com.us.android.core.analytics.AnalyticsEventType
 import com.us.android.core.analytics.AnalyticsRecorder
 import com.us.android.core.analytics.AnalyticsSurface
@@ -27,17 +26,17 @@ import com.us.android.core.engagement.data.HiddenPosts
 import com.us.android.core.engagement.data.postActionRefusalText
 import com.us.android.core.feed.data.AudioTrack
 import com.us.android.core.feed.data.FeedRepository
-import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.feed.data.FollowGraph
 import com.us.android.core.feed.data.PostEdits
+import com.us.android.core.feed.data.RowOverlays
 import com.us.android.core.feed.data.SoundsRepository
 import com.us.android.core.feed.data.SubscriptionGraph
 import com.us.android.core.feed.data.VideoAudio
 import com.us.android.core.feed.data.activeAudioTrackId
-import com.us.android.core.feed.data.applyTo
-import com.us.android.core.feed.data.hides
 import com.us.android.core.feed.data.playbackFor
+import com.us.android.core.feed.data.rowOverlays
 import com.us.android.core.feed.data.soundRefusalMessage
+import com.us.android.core.feed.data.through
 import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.feed.offline.OfflineCopy
 import com.us.android.core.feed.offline.OfflineLibrary
@@ -63,9 +62,9 @@ import com.us.android.core.model.FeedPostControls
 import com.us.android.core.model.FeedQuery
 import com.us.android.core.model.FollowStatus
 import com.us.android.core.model.MembersAccess
-import com.us.android.core.model.membersPlayback
 import com.us.android.core.model.ReelSound
 import com.us.android.core.model.canUseSound
+import com.us.android.core.model.membersPlayback
 import com.us.android.core.ui.SPEED_NORMAL
 import com.us.android.core.ui.UsAudioTrackOption
 import com.us.android.core.ui.UsCaptionOption
@@ -351,6 +350,13 @@ class ReelsViewModel @Inject constructor(
      */
     private val _live = MutableStateFlow<FeedItem?>(null)
 
+    /**
+     * This session's hides, deletes, blocks and edits, laid over the ranked
+     * reels and the held one alike: a reel deleted from its own More sheet
+     * leaves the head slot at once, and an edit shows there at once.
+     */
+    private val sessionOverlays: Flow<RowOverlays> = rowOverlays(hidden.state, edits.edits)
+
     // ── Refresh ─────────────────────────────────────────────────────────
 
     /** Which Pager the ranked reels come from; [refresh] moves it on. Declared before [items], which reads it. */
@@ -492,16 +498,11 @@ class ReelsViewModel @Inject constructor(
         .combine(_live) { page, live ->
             if (live == null) page else page.filter { it.id != live.id }
         }
-        .combine(hidden.state) { page, set ->
-            // "Not interested" and Block from the more sheet — removed at once,
-            // the same way the home feed removes them.
-            if (set.isEmpty) page else page.filter { !set.hides(it) }
-        }
-        .combine(edits.edits) { page, saved ->
-            // The owner's Edit from the more sheet (2026-10-21): the new words
-            // at once, on the reel they were made on.
-            if (saved.isEmpty()) page else page.map { saved.applyTo(it) }
-        }
+        // "Not interested", Delete and Block from the more sheet — removed at
+        // once, the same way the home feed removes them — and the owner's Edit
+        // (2026-10-21): the new words at once, on the reel they were made on.
+        // The held reel in [head] goes through the same overlays.
+        .combine(sessionOverlays) { page, laid -> page.through(laid) }
 
     /**
      * The slot above the feed, derived from the process-wide publish tracker
@@ -513,7 +514,8 @@ class ReelsViewModel @Inject constructor(
      * video posting (Tube, 2026-09-05) is not a reel and never sits here —
      * Tube home draws that one.
      */
-    val head: StateFlow<ReelsHead?> = combine(tracker.items, _live) { items, live ->
+    val head: StateFlow<ReelsHead?> = combine(tracker.items, _live, sessionOverlays) { items, held, laid ->
+        val live = held?.let(laid::view)
         // Several reels may be pending (2026-09-05); this slot shows the
         // OLDEST still in flight — the one uploading now — and the own
         // profile's grid shows them all.

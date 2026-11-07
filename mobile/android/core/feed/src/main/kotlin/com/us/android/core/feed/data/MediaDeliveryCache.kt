@@ -1,7 +1,6 @@
 package com.us.android.core.feed.data
 
 import com.us.android.core.media.data.MediaDeliveryDto
-import java.util.concurrent.ConcurrentHashMap
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -19,24 +18,53 @@ import javax.inject.Singleton
  *
  * A delivery with nothing to draw — still processing, no variants — is not
  * kept: the next hydration must ask again, or the still would never arrive.
+ *
+ * Bounded, because it is process-wide and every media id a session hydrates
+ * passes through it: an expired entry is removed when it is read, and past
+ * [maxEntries] the least recently used one goes. A dropped entry costs one
+ * more `GET /v1/media/{id}/url`, never a wrong picture.
  */
 @Singleton
-class MediaDeliveryCache @Inject constructor() {
+class MediaDeliveryCache internal constructor(private val maxEntries: Int) {
 
-    private val entries = ConcurrentHashMap<String, Entry>()
+    @Inject constructor() : this(MAX_ENTRIES)
 
-    fun get(mediaId: String, now: Long = System.currentTimeMillis()): MediaDeliveryDto? =
-        entries[mediaId]?.takeIf { it.freshUntil > now }?.delivery
+    /** Access-ordered, so the eldest entry is the least recently used. */
+    private val entries = object : LinkedHashMap<String, Entry>(INITIAL_CAPACITY, LOAD_FACTOR, true) {
+        override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Entry>): Boolean = size > maxEntries
+    }
+
+    fun get(mediaId: String, now: Long = System.currentTimeMillis()): MediaDeliveryDto? = synchronized(entries) {
+        val entry = entries[mediaId]
+        when {
+            entry == null -> null
+            entry.freshUntil > now -> entry.delivery
+            else -> {
+                // Stale: its URLs are about to expire, so it is gone, not kept for later.
+                entries.remove(mediaId)
+                null
+            }
+        }
+    }
 
     fun put(mediaId: String, delivery: MediaDeliveryDto, now: Long = System.currentTimeMillis()) {
         if (delivery.variants.isEmpty()) return
-        entries[mediaId] = Entry(delivery, freshUntil = now + TTL_MS)
+        synchronized(entries) { entries[mediaId] = Entry(delivery, freshUntil = now + TTL_MS) }
     }
+
+    /** How many entries are held; for tests. */
+    internal val size: Int get() = synchronized(entries) { entries.size }
 
     private data class Entry(val delivery: MediaDeliveryDto, val freshUntil: Long)
 
     private companion object {
         /** Signed variant URLs live five minutes; a minute's margin keeps a stale one off a card. */
         const val TTL_MS = 4L * 60L * 1000L
+
+        /** About thirty pages of rows with a cover each: far more than four minutes of scrolling shows. */
+        const val MAX_ENTRIES = 500
+
+        const val INITIAL_CAPACITY = 64
+        const val LOAD_FACTOR = 0.75f
     }
 }
