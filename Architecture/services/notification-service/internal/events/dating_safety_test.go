@@ -103,25 +103,24 @@ func panicEvent(t *testing.T, incident, user uuid.UUID) json.RawMessage {
 	return b
 }
 
-const optedLat, optedLng = 12.971599, 77.594566
-
-func float(v float64) *float64 { return &v }
-
 // The consumer pages every responder with no coordinates, and notifies each
-// trusted contact by first name — with the point only for the contact the
-// user opted in to share it with.
+// trusted contact with a deep link that carries only the alert id — even
+// the contact the member consented to share the point with, whose point
+// dating-service's notify context still carries: the app reads it from the
+// recipient-scoped GET /v1/dating/safety/alerts/:id instead.
 func TestDatingPanicPagesRespondersAndTrustedContacts(t *testing.T) {
 	incident, user := uuid.New(), uuid.New()
 	r1, r2 := uuid.New(), uuid.New()
 	opted, notOpted := uuid.New(), uuid.New()
 	deps := newFakeSafetyDeps()
 	deps.responders = []uuid.UUID{r1, r2}
-	deps.ctx = &datingPanicContext{
-		IncidentID: incident.String(), UserID: user.String(), FirstName: "Asha", Status: "open", HasLocation: true,
-		TrustedContacts: []datingPanicContact{
-			{UserID: opted.String(), Latitude: float(optedLat), Longitude: float(optedLng)},
-			{UserID: notOpted.String()},
-		},
+	// Decoded from the wire shape dating-service serves, point included.
+	notifyContext := fmt.Sprintf(`{"incident_id":%q,"user_id":%q,"first_name":"Asha","status":"open","has_location":true,
+		"trusted_contacts":[{"user_id":%q,"latitude":12.971599,"longitude":77.594566},{"user_id":%q}]}`,
+		incident, user, opted, notOpted)
+	deps.ctx = &datingPanicContext{}
+	if err := json.Unmarshal([]byte(notifyContext), deps.ctx); err != nil {
+		t.Fatal(err)
 	}
 	if err := processDatingPanic(context.Background(), deps, panicEvent(t, incident, user)); err != nil {
 		t.Fatalf("process: %v", err)
@@ -156,21 +155,17 @@ func TestDatingPanicPagesRespondersAndTrustedContacts(t *testing.T) {
 		if a.Actor != user {
 			t.Fatalf("contact actor = %s, want the member %s", a.Actor, user)
 		}
-		if !strings.HasPrefix(a.DeepLink, "/dating/safety/alerts/"+incident.String()) {
-			t.Fatalf("contact deep link = %q", a.DeepLink)
+		if a.DeepLink != "/dating/safety/alerts/"+incident.String() {
+			t.Fatalf("contact deep link = %q, want the alert id only", a.DeepLink)
 		}
-		hasPoint := strings.Contains(a.DeepLink, "lat=12.971599") && strings.Contains(a.DeepLink, "lng=77.594566")
-		switch a.Recipient {
-		case opted:
-			if !hasPoint {
-				t.Fatalf("opted-in contact did not get the point: %q", a.DeepLink)
-			}
-		case notOpted:
-			if blob := fmt.Sprintf("%+v", a); strings.Contains(blob, "12.97") || strings.Contains(blob, "lat=") {
-				t.Fatalf("contact who was not opted in got coordinates: %s", blob)
-			}
-		default:
+		if a.Recipient != opted && a.Recipient != notOpted {
 			t.Fatalf("notified an unexpected contact %s", a.Recipient)
+		}
+		// Neither the push nor the inbox row (both built from this alert)
+		// carries a coordinate, whoever the contact is.
+		if blob := fmt.Sprintf("%+v", a); strings.Contains(blob, "12.97") || strings.Contains(blob, "77.59") ||
+			strings.Contains(blob, "lat") || strings.Contains(blob, "lng") {
+			t.Fatalf("contact %s got coordinates: %s", a.Recipient, blob)
 		}
 	}
 

@@ -223,6 +223,10 @@ func (s *Store) UpdatePhoto(ctx context.Context, userID, photoID uuid.UUID, p Up
 	if err != nil {
 		return nil, err
 	}
+	// Audit M1: demoting the bound primary takes the badge off in this commit.
+	if err := withdrawUnboundSelfieTx(ctx, tx, userID); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit photo update: %w", err)
 	}
@@ -316,14 +320,26 @@ func (s *Store) CountApprovedPrimaryPhotos(ctx context.Context, userID uuid.UUID
 }
 
 // DeletePhoto removes the photo if it belongs to the user. Returns
-// ErrPhotoNotFound if nothing was deleted.
+// ErrPhotoNotFound if nothing was deleted. Deleting the photo a passed
+// selfie is bound to withdraws the badge in the same commit (audit M1).
 func (s *Store) DeletePhoto(ctx context.Context, userID, photoID uuid.UUID) error {
-	tag, err := s.db.Exec(ctx, `DELETE FROM dating_photos WHERE id = $1 AND user_id = $2`, photoID, userID)
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	tag, err := tx.Exec(ctx, `DELETE FROM dating_photos WHERE id = $1 AND user_id = $2`, photoID, userID)
 	if err != nil {
 		return fmt.Errorf("delete photo: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
 		return ErrPhotoNotFound
+	}
+	if err := withdrawUnboundSelfieTx(ctx, tx, userID); err != nil {
+		return err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("commit photo delete: %w", err)
 	}
 	return nil
 }

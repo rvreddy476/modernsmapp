@@ -512,18 +512,53 @@ func withdrawnUnless(already bool) SelfieBinding {
 // bound photo is primary again, the badge comes back. selfie_status stays
 // 'passed' throughout — the person did pass liveness; what is in question is
 // whether the photos are theirs. Not a passed selfie: nothing.
+//
+// The withdrawal also runs inside every transaction that changes a user's
+// photos (withdrawUnboundSelfieTx), so it never depends on this call; this
+// call is what restores or adopts a binding after the change commits.
 func (s *Store) CheckSelfieBinding(ctx context.Context, userID uuid.UUID) (SelfieBinding, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return SelfieBindingNone, fmt.Errorf("selfie binding: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
+	out, err := applySelfieBinding(ctx, tx, userID, false)
+	if err != nil {
+		return SelfieBindingNone, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return SelfieBindingNone, fmt.Errorf("selfie binding: commit: %w", err)
+	}
+	return out, nil
+}
+
+// withdrawUnboundSelfieTx is the safety half of CheckSelfieBinding (audit
+// M1), run in the transaction that changes the user's photos: when the
+// change takes away the face photo the selfie was matched against (the
+// bound primary replaced, demoted, rejected or deleted), the badge is off in
+// the same commit, or the photo change fails. Restoring a badge is left to
+// CheckSelfieBinding after the commit, so a failure there fails closed.
+func withdrawUnboundSelfieTx(ctx context.Context, tx pgx.Tx, userID uuid.UUID) error {
+	_, err := applySelfieBinding(ctx, tx, userID, true)
+	return err
+}
+
+// selfieBindingWrite reports whether applySelfieBinding writes the step's
+// outcome: always for the full check, only a withdrawal for the in-photo-
+// transaction half.
+func selfieBindingWrite(out SelfieBinding, withdrawOnly bool) bool {
+	return !withdrawOnly || out == SelfieBindingWithdrawn
+}
+
+// applySelfieBinding reads the user's binding under the selfie lock, takes
+// selfieBindingStep and writes it (only a withdrawal when withdrawOnly).
+func applySelfieBinding(ctx context.Context, tx pgx.Tx, userID uuid.UUID, withdrawOnly bool) (SelfieBinding, error) {
 	if err := lockSelfieUser(ctx, tx, userID); err != nil {
 		return SelfieBindingNone, err
 	}
 	var status, rebindStatus *string
 	var reference, rebindMedia, current *uuid.UUID
-	err = tx.QueryRow(ctx, `
+	err := tx.QueryRow(ctx, `
         SELECT v.selfie_status, v.selfie_reference_media_id, v.selfie_rebind_media_id, v.selfie_rebind_status,
                `+approvedPrimaryMediaSQL("v.user_id")+`
         FROM dating_verifications v WHERE v.user_id = $1
@@ -542,6 +577,9 @@ func (s *Store) CheckSelfieBinding(ctx context.Context, userID uuid.UUID) (Selfi
 		rs = *rebindStatus
 	}
 	newRef, newRebind, newStatus, out := selfieBindingStep(reference, current, rebindMedia, rs)
+	if !selfieBindingWrite(out, withdrawOnly) {
+		return SelfieBindingNone, nil
+	}
 	if _, err := tx.Exec(ctx, `
         UPDATE dating_verifications
         SET selfie_reference_media_id = $2, selfie_rebind_media_id = $3, selfie_rebind_status = NULLIF($4, ''),
@@ -556,9 +594,6 @@ func (s *Store) CheckSelfieBinding(ctx context.Context, userID uuid.UUID) (Selfi
             WHERE user_id = $1 AND trust_tier IN ('selfie','aadhaar')`, userID); err != nil {
 			return SelfieBindingNone, fmt.Errorf("selfie binding: withdraw badge: %w", err)
 		}
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return SelfieBindingNone, fmt.Errorf("selfie binding: commit: %w", err)
 	}
 	return out, nil
 }
@@ -576,4 +611,79 @@ func (s *Store) SelfieBadgeBound(ctx context.Context, userID uuid.UUID) (bool, e
 		return false, fmt.Errorf("selfie badge bound: %w", err)
 	}
 	return !inQuestion, nil
+}
+
+// Secondary photos and the badge (audit M1, architect decision 7 Nov).
+//
+// The liveness video is matched against the approved primary photo alone
+// (SelfieDecision.ReferenceMediaID), so:
+//   - a change that takes that photo away (replaced, demoted, rejected,
+//     deleted) withdraws the badge in the photo change's own transaction
+//     (withdrawUnboundSelfieTx) and queues a moderator re-review;
+//   - a photo ADDED after the match was never compared with the face. It
+//     does not withdraw the badge; it marks the profile "re-verify"
+//     (GET /v1/dating/verification/status selfie.reverify_suggested) so the
+//     app can ask for a fresh check. Photos already on the profile at the
+//     match are not marked.
+
+// SelfiePhotoFact is one approved photo of the user, for the re-verify mark.
+type SelfiePhotoFact struct {
+	MediaID   uuid.UUID
+	CreatedAt time.Time
+}
+
+// selfieReverifySuggested: a passed, still-bound selfie (no re-review open)
+// and an approved photo other than the matched one, added after the match.
+func selfieReverifySuggested(status, rebindStatus string, reference *uuid.UUID, matchedAt *time.Time, approved []SelfiePhotoFact) bool {
+	if status != SelfieStatusPassed || rebindStatus != "" || reference == nil || matchedAt == nil {
+		return false
+	}
+	for _, p := range approved {
+		if p.MediaID != *reference && p.CreatedAt.After(*matchedAt) {
+			return true
+		}
+	}
+	return false
+}
+
+// SelfieReverifySuggested reports the "re-verify" mark for userID.
+func (s *Store) SelfieReverifySuggested(ctx context.Context, userID uuid.UUID) (bool, error) {
+	var status, rebind *string
+	var reference *uuid.UUID
+	var matchedAt *time.Time
+	err := s.db.QueryRow(ctx, `
+        SELECT selfie_status, selfie_rebind_status, selfie_reference_media_id, selfie_at
+        FROM dating_verifications WHERE user_id = $1`, userID).Scan(&status, &rebind, &reference, &matchedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("selfie reverify: read: %w", err)
+	}
+	st, rs := "", ""
+	if status != nil {
+		st = *status
+	}
+	if rebind != nil {
+		rs = *rebind
+	}
+	rows, err := s.db.Query(ctx, `
+        SELECT media_id, created_at FROM dating_photos
+        WHERE user_id = $1 AND moderation_status = 'approved'`, userID)
+	if err != nil {
+		return false, fmt.Errorf("selfie reverify: photos: %w", err)
+	}
+	defer rows.Close()
+	var photos []SelfiePhotoFact
+	for rows.Next() {
+		var p SelfiePhotoFact
+		if err := rows.Scan(&p.MediaID, &p.CreatedAt); err != nil {
+			return false, fmt.Errorf("selfie reverify: scan photo: %w", err)
+		}
+		photos = append(photos, p)
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("selfie reverify: photos: %w", err)
+	}
+	return selfieReverifySuggested(st, rs, reference, matchedAt, photos), nil
 }

@@ -322,6 +322,8 @@ func envIntIn(getenv func(string) string, key string, lo, hi int, dst *int) erro
 //	                                   an incident is suspected abuse, not paged)
 //	DATING_REPORT_DAILY_LIMIT          1-100,  default 10 per reporter (rolling 24h)
 //	DATING_LOCATION_SHARE_MAX_MINUTES  15-480, default 120
+//	DATING_PANIC_ALERT_WINDOW_HOURS    1-72,   default 24 (how long a trusted
+//	                                   contact may open a panic alert)
 //
 // Any malformed value is an error, on which main refuses to start.
 func ResolveSafetyConfig(getenv func(string) string) (service.SafetyConfig, error) {
@@ -345,6 +347,11 @@ func ResolveSafetyConfig(getenv func(string) string) (service.SafetyConfig, erro
 	if cfg.LocationShareDefault > cfg.LocationShareMax {
 		cfg.LocationShareDefault = cfg.LocationShareMax
 	}
+	alertHours := int(cfg.PanicAlertWindow / time.Hour)
+	if err := envIntIn(getenv, "DATING_PANIC_ALERT_WINDOW_HOURS", 1, 72, &alertHours); err != nil {
+		return cfg, err
+	}
+	cfg.PanicAlertWindow = time.Duration(alertHours) * time.Hour
 	return cfg, nil
 }
 

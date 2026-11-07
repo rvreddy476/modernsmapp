@@ -40,6 +40,11 @@ type SelfieStatus struct {
 	AttemptsLeftToday int `json:"attempts_left_today"`
 	AttemptsPerDay    int `json:"attempts_per_day"`
 	WindowHours       int `json:"window_hours"`
+	// ReverifySuggested: the selfie passed and the badge stands, but a photo
+	// added since was never matched with the face (the match runs on the
+	// primary photo alone); the app may ask for a fresh check. Audit M1,
+	// store.SelfieReverifySuggested.
+	ReverifySuggested bool `json:"reverify_suggested"`
 }
 
 // VerificationStatus is what GET /v1/dating/verification/status returns.
@@ -115,6 +120,11 @@ func (s *Service) GetVerificationStatus(ctx context.Context, userID uuid.UUID) (
 		return nil, perr
 	}
 	out.Verified = verifiedTier(out.TrustTier)
+	if out.Selfie.State == SelfieStatePassed {
+		if out.Selfie.ReverifySuggested, err = s.store.SelfieReverifySuggested(ctx, userID); err != nil {
+			return nil, err
+		}
+	}
 	switch {
 	case out.Selfie.State == SelfieStatePassed:
 		out.NextStep = VerificationNextStepNone

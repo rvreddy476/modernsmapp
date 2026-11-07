@@ -7,6 +7,7 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"time"
 
@@ -246,6 +247,40 @@ func (h *Handler) GetSharedLocation(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, share, nil)
+}
+
+// GetSafetyAlert — GET /v1/dating/safety/alerts/:id. The panic alert a
+// trusted contact's notification opens (its deep link carries only this id).
+// Only a current trusted contact of the member, only inside the alert window
+// (DATING_PANIC_ALERT_WINDOW_HOURS). The exact point only with that
+// contact's recorded consent and while the alert is not resolved.
+//
+//	200 {alert_id, status, triggered_at, expires_at, location_shared,
+//	     location: {latitude, longitude} | null, person | null}
+//	404 SAFETY_ALERT_NOT_FOUND  no such alert, or the caller is not a recipient
+//	410 SAFETY_ALERT_EXPIRED    a recipient, after the window
+func (h *Handler) GetSafetyAlert(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	alertID, ok := parseUUID(c, "id")
+	if !ok {
+		return
+	}
+	out, err := h.svc.GetSafetyAlert(c.Request.Context(), userID, alertID)
+	switch {
+	case errors.Is(err, service.ErrSafetyAlertNotFound):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "SAFETY_ALERT_NOT_FOUND", err.Error(), nil)
+		return
+	case errors.Is(err, service.ErrSafetyAlertExpired):
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusGone, "SAFETY_ALERT_EXPIRED", err.Error(), nil)
+		return
+	case err != nil:
+		respondServiceError(c, err, http.StatusInternalServerError, "SAFETY_ALERT_FAILED")
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
 }
 
 // ── Meets ───────────────────────────────────────────────────────────────────

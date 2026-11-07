@@ -240,6 +240,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		dating.DELETE("/safety/share-location/:id", h.DeleteShareLocation)
 		dating.GET("/safety/shared-locations", h.ListSharedLocations)
 		dating.GET("/safety/shared-locations/:id", h.GetSharedLocation)
+		// A trusted contact opens a panic alert by id (its notification
+		// carries no coordinates).
+		dating.GET("/safety/alerts/:id", h.GetSafetyAlert)
 		dating.POST("/safety/meet", h.PostScheduleMeet)
 		dating.POST("/safety/meet/:id/check-in", h.PostMeetCheckIn)
 		dating.POST("/safety/block", h.PostBlock)

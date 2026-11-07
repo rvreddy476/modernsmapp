@@ -37,8 +37,15 @@ type DispatchCandidate struct {
 //
 // delivery_partners has no location timestamp of its own, so freshness comes
 // from the newest food.delivery_partner_locations row (indexed on
-// (delivery_partner_id, recorded_at DESC)). A bounding box prefilters in SQL;
-// rankCandidates applies the exact radius.
+// (delivery_partner_id, recorded_at DESC)).
+//
+// Bounded work (food audit L3): the candidate set is first the partners with
+// a fresh ping inside the pickup's bounding box (the recorded_at index scans
+// only the last MaxLocationAge of pings), and only those get the per-partner
+// latest-location and offers-today lookups. A partner whose latest ping is
+// fresh and in the box always has such a ping, so the prefilter drops nobody
+// the full scan would keep. At most dispatchCandidateCap rows reach
+// rankCandidates, which applies the exact radius and the ranking.
 func (s *Store) ListDispatchCandidates(ctx context.Context, q DispatchQuery) ([]DispatchCandidate, error) {
 	if q.RadiusKM <= 0 {
 		return nil, fmt.Errorf("dispatch radius must be positive")
@@ -47,28 +54,8 @@ func (s *Store) ListDispatchCandidates(ctx context.Context, q DispatchQuery) ([]
 		return nil, fmt.Errorf("dispatch location max age must be positive")
 	}
 	minLat, maxLat, minLng, maxLng := geo.BoundingBox(q.Lat, q.Lng, q.RadiusKM)
-	rows, err := s.db.Query(ctx, `
-		SELECT dp.id, dp.user_id, loc.latitude::float8, loc.longitude::float8, loc.recorded_at, h.n, h.last
-		FROM food.delivery_partners dp
-		JOIN LATERAL (
-			SELECT l.latitude, l.longitude, l.recorded_at
-			FROM food.delivery_partner_locations l
-			WHERE l.delivery_partner_id = dp.id
-			ORDER BY l.recorded_at DESC
-			LIMIT 1
-		) loc ON TRUE
-		LEFT JOIN LATERAL (SELECT count(*)::int n,max(created_at) last FROM food.delivery_offers
-		 WHERE delivery_partner_id=dp.id AND created_at>=date_trunc('day',clock_timestamp() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') h ON TRUE
-		WHERE dp.status = 'ACTIVE'
-		  AND dp.is_online = TRUE
-		  AND loc.recorded_at >= NOW() - make_interval(secs => $1::float8)
-		  AND loc.latitude::float8 BETWEEN $2::float8 AND $3::float8
-		  AND loc.longitude::float8 BETWEEN $4::float8 AND $5::float8
-		  AND NOT EXISTS (SELECT 1 FROM food.delivery_assignments a WHERE a.delivery_partner_id=dp.id AND a.status IN ('ASSIGNED','ACCEPTED','ARRIVED_AT_RESTAURANT','PICKED_UP','ARRIVED_AT_CUSTOMER'))
-		  AND (SELECT count(*) FROM food.delivery_offers f WHERE f.delivery_partner_id=dp.id AND f.status='pending' AND f.expires_at>clock_timestamp()) < $6
-		ORDER BY h.n,h.last NULLS FIRST,dp.id
-		LIMIT 500
-	`, q.MaxLocationAge.Seconds(), minLat, maxLat, minLng, maxLng, MaxPendingDeliveryOffers)
+	rows, err := s.db.Query(ctx, dispatchCandidatesSQL,
+		q.MaxLocationAge.Seconds(), minLat, maxLat, minLng, maxLng, MaxPendingDeliveryOffers, dispatchCandidateCap)
 	if err != nil {
 		return nil, fmt.Errorf("list dispatch candidates: %w", err)
 	}
@@ -86,6 +73,43 @@ func (s *Store) ListDispatchCandidates(ctx context.Context, q DispatchQuery) ([]
 	}
 	return rankCandidates(out, q.Lat, q.Lng, q.RadiusKM, q.Limit), nil
 }
+
+// dispatchCandidateCap bounds the rows one dispatch ranks.
+const dispatchCandidateCap = 500
+
+// dispatchCandidatesSQL: $1 max location age (s), $2..$5 the bounding box,
+// $6 MaxPendingDeliveryOffers, $7 dispatchCandidateCap. The near CTE is the
+// geo prefilter; every per-partner lookup joins on it.
+const dispatchCandidatesSQL = `
+		WITH near AS (
+			SELECT DISTINCT l.delivery_partner_id AS id
+			FROM food.delivery_partner_locations l
+			WHERE l.recorded_at >= NOW() - make_interval(secs => $1::float8)
+			  AND l.latitude::float8 BETWEEN $2::float8 AND $3::float8
+			  AND l.longitude::float8 BETWEEN $4::float8 AND $5::float8
+		)
+		SELECT dp.id, dp.user_id, loc.latitude::float8, loc.longitude::float8, loc.recorded_at, h.n, h.last
+		FROM near
+		JOIN food.delivery_partners dp ON dp.id = near.id
+		JOIN LATERAL (
+			SELECT l.latitude, l.longitude, l.recorded_at
+			FROM food.delivery_partner_locations l
+			WHERE l.delivery_partner_id = dp.id
+			ORDER BY l.recorded_at DESC
+			LIMIT 1
+		) loc ON TRUE
+		LEFT JOIN LATERAL (SELECT count(*)::int n,max(created_at) last FROM food.delivery_offers
+		 WHERE delivery_partner_id=dp.id AND created_at>=date_trunc('day',clock_timestamp() AT TIME ZONE 'Asia/Kolkata') AT TIME ZONE 'Asia/Kolkata') h ON TRUE
+		WHERE dp.status = 'ACTIVE'
+		  AND dp.is_online = TRUE
+		  AND loc.recorded_at >= NOW() - make_interval(secs => $1::float8)
+		  AND loc.latitude::float8 BETWEEN $2::float8 AND $3::float8
+		  AND loc.longitude::float8 BETWEEN $4::float8 AND $5::float8
+		  AND NOT EXISTS (SELECT 1 FROM food.delivery_assignments a WHERE a.delivery_partner_id=dp.id AND a.status IN ('ASSIGNED','ACCEPTED','ARRIVED_AT_RESTAURANT','PICKED_UP','ARRIVED_AT_CUSTOMER'))
+		  AND (SELECT count(*) FROM food.delivery_offers f WHERE f.delivery_partner_id=dp.id AND f.status='pending' AND f.expires_at>clock_timestamp()) < $6
+		ORDER BY h.n,h.last NULLS FIRST,dp.id
+		LIMIT $7
+	`
 
 // rankCandidates fills DistanceKM, drops anyone beyond radiusKM, sorts nearest
 // first and truncates to limit (limit <= 0 means no cap).

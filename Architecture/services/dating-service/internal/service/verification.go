@@ -602,11 +602,12 @@ func (s *Service) restoreBadgeTier(ctx context.Context, userID uuid.UUID) string
 	return tier
 }
 
-// checkSelfieBinding keeps the selfie badge bound to the primary photo it
-// was checked against (audit M1, store.CheckSelfieBinding): a changed
-// primary withdraws the badge and queues a moderator re-review; the bound
-// photo coming back restores it. Best effort, logged: a photo change never
-// fails because of it, and the next photo change re-checks.
+// checkSelfieBinding finishes the selfie binding after a photo change
+// (audit M1, store.CheckSelfieBinding). The withdrawal itself already
+// committed with the photo change (the store runs it in that transaction),
+// so this call only restores the badge when the bound photo is primary again
+// or binds a legacy pass. Best effort, logged: a failure here leaves the
+// badge off (fails closed) until the next photo change re-checks.
 func (s *Service) checkSelfieBinding(ctx context.Context, userID uuid.UUID) {
 	out, err := s.store.CheckSelfieBinding(ctx, userID)
 	if err != nil {

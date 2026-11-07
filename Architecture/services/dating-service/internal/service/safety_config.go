@@ -34,6 +34,9 @@ type SafetyConfig struct {
 	// PanicRepageMaxAge: the sweeper re-publishes a page that never reached
 	// Kafka only while the incident is younger than this.
 	PanicRepageMaxAge time.Duration
+	// PanicAlertWindow: how long after a panic its trusted contacts may open
+	// the alert (GET /v1/dating/safety/alerts/:id).
+	PanicAlertWindow time.Duration
 }
 
 // DefaultSafetyConfig is the lane D8 default set.
@@ -45,6 +48,7 @@ func DefaultSafetyConfig() SafetyConfig {
 		LocationShareDefault: 60 * time.Minute,
 		LocationShareMax:     120 * time.Minute,
 		PanicRepageMaxAge:    time.Hour,
+		PanicAlertWindow:     DefaultPanicAlertWindow,
 	}
 }
 
@@ -77,6 +81,9 @@ func (s *Service) safetyConfig() SafetyConfig {
 	}
 	if cfg.PanicRepageMaxAge <= 0 {
 		cfg.PanicRepageMaxAge = def.PanicRepageMaxAge
+	}
+	if cfg.PanicAlertWindow <= 0 {
+		cfg.PanicAlertWindow = def.PanicAlertWindow
 	}
 	return cfg
 }

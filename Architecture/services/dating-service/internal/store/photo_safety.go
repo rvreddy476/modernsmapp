@@ -148,6 +148,10 @@ func (s *Store) CreateModeratedPhoto(ctx context.Context, userID uuid.UUID, p Cr
 	if err != nil {
 		return nil, err
 	}
+	// Audit M1: a new primary takes the badge off in this commit.
+	if err := withdrawUnboundSelfieTx(ctx, tx, userID); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit photo insert: %w", err)
 	}
@@ -157,12 +161,19 @@ func (s *Store) CreateModeratedPhoto(ctx context.Context, userID uuid.UUID, p Cr
 // SetPhotoModerationDecision writes a moderation decision. changed is false
 // when the photo already carries exactly this status and reason (a duplicate
 // result): nothing is written and the caller must emit nothing. An automated
-// decision also advances the media recheck cursor.
+// decision also advances the media recheck cursor. A written decision that
+// takes away the photo a passed selfie is bound to withdraws the badge in the
+// same commit (audit M1).
 func (s *Store) SetPhotoModerationDecision(ctx context.Context, photoID uuid.UUID, d PhotoDecision) (*Photo, bool, error) {
 	if err := validPhotoDecision(d); err != nil {
 		return nil, false, err
 	}
-	row := s.db.QueryRow(ctx, `
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("begin tx: %w", err)
+	}
+	defer tx.Rollback(ctx) //nolint:errcheck
+	row := tx.QueryRow(ctx, `
         UPDATE dating_photos
         SET moderation_status = $2,
             moderation_reason = NULLIF($3, ''),
@@ -177,6 +188,7 @@ func (s *Store) SetPhotoModerationDecision(ctx context.Context, photoID uuid.UUI
 		photoID, d.Status, d.Reason, d.Source, labelsArg(d.Labels), d.FaceCount)
 	p, err := scanPhoto(row)
 	if errors.Is(err, ErrPhotoNotFound) {
+		_ = tx.Rollback(ctx)
 		cur, gerr := s.GetPhotoByID(ctx, photoID)
 		if gerr != nil {
 			return nil, false, gerr
@@ -185,6 +197,12 @@ func (s *Store) SetPhotoModerationDecision(ctx context.Context, photoID uuid.UUI
 	}
 	if err != nil {
 		return nil, false, err
+	}
+	if err := withdrawUnboundSelfieTx(ctx, tx, p.UserID); err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, fmt.Errorf("commit moderation decision: %w", err)
 	}
 	return p, true, nil
 }

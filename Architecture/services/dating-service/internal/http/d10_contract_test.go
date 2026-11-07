@@ -58,6 +58,10 @@ var d10Fixtures = []string{
 	"trusted_contact_patch_422_consent_required",
 	"trusted_contact_patch_200",
 	"trusted_contact_patch_200_revoked",
+	"safety_alert_get_200",
+	"safety_alert_get_200_location_shared",
+	"safety_alert_get_404_not_found",
+	"safety_alert_get_410_expired",
 	"share_location_post_200",
 	"share_location_get_200",
 	"share_location_delete_200",
@@ -468,6 +472,63 @@ func TestD10Contracts(t *testing.T) {
 		}
 		assertContract(t, contractDo(r, http.MethodGet, "/v1/dating/safety/trusted-contacts", ``, user),
 			http.StatusOK, "trusted_contacts_get_200_profile_gone", map[uuid.UUID]string{user: "<user>", contact: "<contact>"})
+	})
+
+	t.Run("safety_alert", func(t *testing.T) {
+		// The trusted contact's panic notification deep-links to
+		// /dating/safety/alerts/<id>; this route is the only place the point
+		// is served, and only with that contact's consent.
+		user, contact, stranger := uuid.New(), uuid.New(), uuid.New()
+		seedD10Profile(t, st, user)
+		seedD10Profile(t, st, contact)
+		matchID, _, err := st.CreateOrGetOpenMatch(ctx, user, contact, nil)
+		if err != nil {
+			t.Fatalf("match: %v", err)
+		}
+		if err := st.MarkMatchActive(ctx, matchID, uuid.New()); err != nil {
+			t.Fatalf("activate: %v", err)
+		}
+		if rec := contractDo(r, http.MethodPut, "/v1/dating/safety/trusted-contacts/"+contact.String(), ``, user); rec.Code != http.StatusOK {
+			t.Fatalf("trusted contact: %d %s", rec.Code, rec.Body.String())
+		}
+		rec := contractDo(r, http.MethodPost, "/v1/dating/safety/panic", `{"latitude":17.44,"longitude":78.39}`, user)
+		var panicked struct {
+			Data struct {
+				IncidentID string `json:"incident_id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &panicked); err != nil || rec.Code != http.StatusOK {
+			t.Fatalf("panic: %d %s", rec.Code, rec.Body.String())
+		}
+		alertID := uuid.MustParse(panicked.Data.IncidentID)
+		labels := map[uuid.UUID]string{user: "<user>", contact: "<contact>", alertID: "<alert>"}
+		path := "/v1/dating/safety/alerts/" + alertID.String()
+
+		assertContract(t, contractDo(r, http.MethodGet, path, ``, contact), http.StatusOK, "safety_alert_get_200", labels)
+		assertContract(t, contractDo(r, http.MethodGet, path, ``, stranger), http.StatusNotFound, "safety_alert_get_404_not_found", labels)
+		assertContract(t, contractDo(r, http.MethodGet, path, ``, user), http.StatusNotFound, "safety_alert_get_404_not_found", labels)
+
+		if rec := contractDo(r, http.MethodPatch, "/v1/dating/safety/trusted-contacts/"+contact.String(),
+			`{"share_location_on_panic":true,"consent_version":"`+store.PanicLocationConsentVersion+`"}`, user); rec.Code != http.StatusOK {
+			t.Fatalf("consent: %d %s", rec.Code, rec.Body.String())
+		}
+		assertContract(t, contractDo(r, http.MethodGet, path, ``, contact), http.StatusOK, "safety_alert_get_200_location_shared", labels)
+
+		// After the alert window: gone for the recipient, still not found
+		// for anyone else.
+		tx, err := st.BeginTx(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		if _, err := tx.Exec(ctx, `UPDATE dating_panic_incidents SET created_at = now() - interval '25 hours' WHERE id = $1`, alertID); err != nil {
+			_ = tx.Rollback(ctx)
+			t.Fatalf("age the alert: %v", err)
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit: %v", err)
+		}
+		assertContract(t, contractDo(r, http.MethodGet, path, ``, contact), http.StatusGone, "safety_alert_get_410_expired", labels)
+		assertContract(t, contractDo(r, http.MethodGet, path, ``, stranger), http.StatusNotFound, "safety_alert_get_404_not_found", labels)
 	})
 
 	t.Run("data_export", func(t *testing.T) {

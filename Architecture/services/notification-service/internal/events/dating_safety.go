@@ -5,10 +5,13 @@
 //
 //  1. claims the incident once (a redelivered event pages nobody again);
 //  2. reads dating-service's service-only notify context (first name,
-//     trusted contacts, and a point ONLY for contacts the user opted in);
+//     trusted contacts; a point it may carry is never decoded);
 //  3. pages the configured, staff-verified responders (no coordinates);
-//  4. notifies each trusted contact "<first name> triggered a safety alert",
-//     with the point in the deep link only when opted in;
+//  4. notifies each trusted contact with lock-screen copy that names nobody
+//     and a deep link that carries ONLY the alert id: the app reads the
+//     alert (and the point, if the member consented for that contact) from
+//     dating-service GET /v1/dating/safety/alerts/:id. No coordinates go in
+//     a push payload or an inbox row;
 //  5. writes an ops alert row and logs at ERROR, critically when no
 //     responder could be paged.
 //
@@ -67,10 +70,11 @@ type datingPanicPayload struct {
 	HasLocation bool      `json:"has_location"`
 }
 
+// datingPanicContact is one trusted contact to notify. dating-service's
+// notify context may still carry the consented point; it is deliberately not
+// decoded, so coordinates never reach a notification.
 type datingPanicContact struct {
-	UserID    string   `json:"user_id"`
-	Latitude  *float64 `json:"latitude,omitempty"`
-	Longitude *float64 `json:"longitude,omitempty"`
+	UserID string `json:"user_id"`
 }
 
 // datingPanicContext mirrors dating-service's service.PanicNotifyContext.
@@ -125,6 +129,13 @@ func (c *Consumer) handleDatingSafetyLocationShared(ctx context.Context, raw jso
 		return nil
 	}
 	return processDatingLocationShared(ctx, c.datingSafety, raw)
+}
+
+// datingSafetyAlertDeepLink is the trusted contact's deep link for a panic:
+// the alert id and nothing else. The app opens it with dating-service
+// GET /v1/dating/safety/alerts/:id.
+func datingSafetyAlertDeepLink(incident uuid.UUID) string {
+	return "/dating/safety/alerts/" + incident.String()
 }
 
 func datingSafetyDedupID(kind string, id uuid.UUID) uuid.UUID {
@@ -214,21 +225,17 @@ func processDatingPanic(ctx context.Context, deps datingSafetyDeps, raw json.Raw
 			if err != nil || contact == user {
 				continue
 			}
-			deepLink := "/dating/safety/alerts/" + incident.String()
-			if tc.Latitude != nil && tc.Longitude != nil {
-				// Only a contact the user opted in to share the point with.
-				deepLink += fmt.Sprintf("?lat=%.6f&lng=%.6f", *tc.Latitude, *tc.Longitude)
-			}
-			// The copy names nobody on the lock screen (audit M2): who needs
-			// help and where stay behind the tap, in the deep link and the
-			// inbox row (the member is the actor).
+			// The copy names nobody on the lock screen (audit M2) and the
+			// deep link carries only the alert id: who needs help (the member
+			// is the actor) and where are read behind the tap from the
+			// recipient-scoped, time-limited dating-service route.
 			if err := deps.SendSafetyAlert(ctx, service.SafetyAlert{
 				Recipient:  contact,
 				Actor:      user,
 				NotifType:  NotifDatingPanicTrustedContact,
 				EntityType: "dating_panic",
 				EntityID:   incident,
-				DeepLink:   deepLink,
+				DeepLink:   datingSafetyAlertDeepLink(incident),
 				Title:      datingPanicContactTitle,
 				Body:       datingPanicContactBody,
 				CreatedAt:  createdAt,

@@ -4,7 +4,8 @@
       "state": "passed",
       "attempts_left_today": 4,
       "attempts_per_day": 5,
-      "window_hours": 24
+      "window_hours": 24,
+      "reverify_suggested": false
     },
     "trust_tier": "selfie",
     "verified": true,
