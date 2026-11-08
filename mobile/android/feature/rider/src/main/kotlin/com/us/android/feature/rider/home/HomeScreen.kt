@@ -213,7 +213,13 @@ fun HomeScreen(
             }
             item { NavRow("Earnings", "Totals and past deliveries", onOpenEarnings, icon = UsIcons.CreditCard) }
             item { NavRow("Verification", "Documents, vehicle and bank account", onOpenVerification, icon = UsIcons.FileText) }
-            item { UsSecondaryButton(text = "Sign out", onClick = onSignOut, modifier = Modifier.fillMaxWidth()) }
+            item {
+                UsSecondaryButton(
+                    text = "Sign out",
+                    onClick = { if (viewModel.onSignOutTapped()) onSignOut() },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
         }
     }
 }
@@ -243,7 +249,13 @@ private fun DutyCard(state: HomeUiState, onGoOnline: () -> Unit, onGoOffline: ()
                     },
                     tone = if (state.lastPingOk == false) PillTone.Warning else PillTone.Positive,
                 )
-                UsSecondaryButton(text = "Go offline", onClick = onGoOffline, modifier = Modifier.fillMaxWidth())
+                if (state.onJob) InfoNote("You can go offline once this delivery is complete.")
+                UsSecondaryButton(
+                    text = "Go offline",
+                    onClick = onGoOffline,
+                    enabled = !state.onJob,
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
             DutyState.GoingOnline, DutyState.GoingOffline, DutyState.AwaitingPermission, DutyState.ShowingDisclosure ->
                 UsButton(text = "Go online", onClick = {}, loading = true, modifier = Modifier.fillMaxWidth())

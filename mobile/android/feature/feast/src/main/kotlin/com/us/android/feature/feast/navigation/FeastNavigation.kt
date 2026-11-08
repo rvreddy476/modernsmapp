@@ -40,8 +40,13 @@ data class FeastAddressesRoute(val picking: Boolean = false)
 @Serializable
 data object FeastAddAddressRoute
 
+/**
+ * Checkout. With [payOrderId] it pays an order that already exists and is
+ * still awaiting payment ("Pay now" on tracking and orders): a new attempt on
+ * the SAME order, never a new order (food audit M1).
+ */
 @Serializable
-data object FeastCheckoutRoute
+data class FeastCheckoutRoute(val payOrderId: String? = null, val payOrderNumber: String? = null)
 
 @Serializable
 data class FeastTrackingRoute(val orderId: String)
@@ -86,7 +91,7 @@ fun NavGraphBuilder.feastScreens(
             CartScreen(
                 onBack = navController::popBackStack,
                 onBrowse = { navController.popBackStack(FeastHomeRoute, inclusive = false) },
-                onCheckout = { navController.navigate(FeastCheckoutRoute) },
+                onCheckout = { navController.navigate(FeastCheckoutRoute()) },
             )
         }
 
@@ -128,6 +133,7 @@ fun NavGraphBuilder.feastScreens(
             OrderTrackingScreen(
                 onBack = navController::popBackStack,
                 onOpenInvoice = { navController.navigate(FeastInvoiceRoute(it)) },
+                onPayNow = { id, number -> navController.navigate(payNow(id, number)) },
             )
         }
 
@@ -135,6 +141,7 @@ fun NavGraphBuilder.feastScreens(
             OrdersScreen(
                 onBack = navController::popBackStack,
                 onOpenOrder = { navController.navigate(FeastTrackingRoute(it)) },
+                onPayNow = { id, number -> navController.navigate(payNow(id, number)) },
             )
         }
 
@@ -143,5 +150,8 @@ fun NavGraphBuilder.feastScreens(
         }
     }
 }
+
+private fun payNow(orderId: String, orderNumber: String) =
+    FeastCheckoutRoute(payOrderId = orderId, payOrderNumber = orderNumber)
 
 fun NavController.navigateToFeast() = navigate(FeastGraph)

@@ -61,6 +61,15 @@ sealed interface CadenceEffect {
 
     /** Stop updates, tell the server the rider is offline, stop the service. */
     data class GoOffline(val reason: OfflineReason) : CadenceEffect
+
+    /**
+     * No fix for [LocationCadence.NO_FIX_TIMEOUT_MILLIS] while a job is active: warn the rider and KEEP
+     * running. Going offline mid-delivery would freeze the customer's map and block the delivery code.
+     */
+    data object FixLostOnJob : CadenceEffect
+
+    /** A fix arrived again after [FixLostOnJob]. */
+    data object FixBack : CadenceEffect
 }
 
 /**
@@ -77,7 +86,9 @@ sealed interface CadenceEffect {
  *    dropped, and the service conflates pings so a slow network sends the
  *    newest fix, never a backlog;
  *  - auto-offline when toggled off, signed out, permission revoked, or
- *    [noFixTimeoutMillis] (2 min) pass without a fix.
+ *    [noFixTimeoutMillis] (2 min) pass without a fix while idle. On a job the
+ *    watchdog warns once ([CadenceEffect.FixLostOnJob]) and keeps the rider on
+ *    duty (food audit M2); once the job ends, the idle rule applies again.
  */
 class LocationCadence(
     private val clock: CadenceClock,
@@ -98,6 +109,7 @@ class LocationCadence(
     private var lastPinged: LocationFix? = null
     private var lastPingAt: Long = 0L
     private var lastFixAt: Long = 0L
+    private var fixLostWarned = false
 
     /** Going on duty. The no-fix watchdog starts now, so the first fix has two minutes to arrive. */
     fun start(onJob: Boolean): List<CadenceEffect> {
@@ -107,6 +119,7 @@ class LocationCadence(
         latest = null
         lastPinged = null
         lastFixAt = clock.nowMillis()
+        fixLostWarned = false
         return listOf(CadenceEffect.Request(spec))
     }
 
@@ -126,17 +139,22 @@ class LocationCadence(
         latest = fix
         val now = clock.nowMillis()
         lastFixAt = now
-        val previous = lastPinged ?: return listOf(ping(fix))
+        val recovered = if (fixLostWarned) listOf(CadenceEffect.FixBack) else emptyList()
+        fixLostWarned = false
+        val previous = lastPinged ?: return recovered + ping(fix)
         val sincePing = now - lastPingAt
         val due = sincePing >= spec.heartbeatMillis ||
             (sincePing >= spec.intervalMillis && distanceMeters(previous, fix) >= spec.minDistanceMeters)
-        return if (due) listOf(ping(fix)) else emptyList()
+        return if (due) recovered + ping(fix) else recovered
     }
 
     /** Called every second. Only the watchdog lives here: heartbeats ride on fresh fixes. */
     fun onTick(): List<CadenceEffect> {
-        if (!online) return emptyList()
-        return if (clock.nowMillis() - lastFixAt >= noFixTimeoutMillis) stop(OfflineReason.NO_FIX) else emptyList()
+        if (!online || clock.nowMillis() - lastFixAt < noFixTimeoutMillis) return emptyList()
+        if (!onJob) return stop(OfflineReason.NO_FIX)
+        if (fixLostWarned) return emptyList()
+        fixLostWarned = true
+        return listOf(CadenceEffect.FixLostOnJob)
     }
 
     fun onToggledOff(): List<CadenceEffect> = stop(OfflineReason.TOGGLED_OFF)

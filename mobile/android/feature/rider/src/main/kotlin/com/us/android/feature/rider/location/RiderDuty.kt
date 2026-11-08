@@ -9,6 +9,18 @@ import kotlinx.coroutines.flow.asStateFlow
 import javax.inject.Inject
 import javax.inject.Singleton
 
+/** Something the service tells the rider without changing whether they are on duty. */
+enum class DutyNotice {
+    /** The server would not take the rider offline (an active delivery, or no connection); still on duty. */
+    OFFLINE_REFUSED,
+
+    /** No location fix for two minutes during a delivery; still on duty, the customer's map is stale. */
+    FIX_LOST_ON_JOB,
+
+    /** A fix arrived again after [FIX_LOST_ON_JOB]. */
+    FIX_BACK,
+}
+
 sealed interface DutyStatus {
     data class Offline(val reason: OfflineReason?) : DutyStatus
 
@@ -36,6 +48,9 @@ class RiderDuty @Inject constructor() {
     private val _stopRequests = MutableSharedFlow<OfflineReason>(extraBufferCapacity = STOP_BUFFER)
     val stopRequests: SharedFlow<OfflineReason> = _stopRequests.asSharedFlow()
 
+    private val _notices = MutableSharedFlow<DutyNotice>(extraBufferCapacity = STOP_BUFFER)
+    val notices: SharedFlow<DutyNotice> = _notices.asSharedFlow()
+
     val isOnline: Boolean get() = _status.value is DutyStatus.Online
 
     /** Switches the cadence: 8 s / 15 m while a job is active. */
@@ -50,6 +65,10 @@ class RiderDuty @Inject constructor() {
 
     internal fun report(status: DutyStatus) {
         _status.value = status
+    }
+
+    internal fun notice(notice: DutyNotice) {
+        _notices.tryEmit(notice)
     }
 
     private companion object {

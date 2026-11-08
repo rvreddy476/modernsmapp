@@ -20,11 +20,13 @@ import com.us.android.feature.rider.kycui.SavedBankAccountCard
 import com.us.android.feature.rider.ui.InfoNote
 import com.us.android.feature.rider.ui.LoadingPane
 import com.us.android.feature.rider.ui.RiderScreen
+import com.us.android.feature.rider.ui.SecureScreen
 import com.us.android.feature.rider.ui.contentPadding
 
 @Composable
 fun PayoutScreen(onBack: () -> Unit, viewModel: PayoutViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    SecureScreen()
     RiderScreen(title = "Bank account", onBack = onBack, message = state.message, onDismissMessage = viewModel::dismissMessage) { padding ->
         if (state.loading) {
             LoadingPane()

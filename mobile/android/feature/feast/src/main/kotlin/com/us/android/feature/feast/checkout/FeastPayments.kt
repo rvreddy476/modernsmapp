@@ -5,6 +5,7 @@ import android.util.Log
 import com.us.android.core.food.network.OrderPaymentDto
 import com.us.android.core.food.network.PaymentIntentDto
 import com.us.android.core.food.repository.FeastRepository
+import com.us.android.core.food.repository.FoodError
 import com.us.android.core.food.repository.FoodResult
 import com.us.android.core.food.repository.serverMessage
 import com.us.android.core.payments.PaymentAttempt
@@ -120,7 +121,8 @@ class FeastPaymentOpener @Inject constructor(
         scope.launch {
             when (val result = repository.createPaymentIntent(request.orderId, attempt.id, request.method.wire)) {
                 is FoodResult.Failure -> {
-                    Log.w(TAG, "could not open Feast payment for ${request.orderId}: ${result.error}")
+                    // The error kind and code only: no order id, no server message (food audit L8).
+                    Log.w(TAG, "could not open a Feast payment: ${result.error.logCode()}")
                     handoff.publish(
                         PaymentHandoffEvent.Unavailable(
                             attempt = attempt,
@@ -169,3 +171,12 @@ internal fun PaymentIntentDto.toPaymentSession(orderNumber: String): PaymentSess
         description = "Feast order $orderNumber",
         merchantDisplayName = clientSession?.get(PaymentSession.CLIENT_SESSION_MERCHANT_DISPLAY_NAME),
     )
+
+/** What a release log may say about a failure: its kind and server code, never its message or ids. */
+internal fun FoodError.logCode(): String = when (this) {
+    is FoodError.Unexpected -> "Unexpected(${status ?: "-"}, ${code ?: "-"})"
+    is FoodError.InvalidField -> "InvalidField($code)"
+    is FoodError.Network -> "Network"
+    is FoodError.NotReady -> "NotReady"
+    else -> this::class.simpleName ?: "FoodError"
+}

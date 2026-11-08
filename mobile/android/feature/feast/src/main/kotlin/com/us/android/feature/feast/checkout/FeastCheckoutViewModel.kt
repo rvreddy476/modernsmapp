@@ -3,12 +3,14 @@ package com.us.android.feature.feast.checkout
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.us.android.core.food.model.Paise
 import com.us.android.core.food.network.FeastAddressDto
 import com.us.android.core.food.network.FeastOrderDto
 import com.us.android.core.food.network.PlaceOrderRequest
 import com.us.android.core.food.repository.FeastRepository
 import com.us.android.core.food.repository.FoodError
 import com.us.android.core.food.repository.FoodResult
+import com.us.android.core.food.repository.outcomeUnknown
 import com.us.android.core.food.repository.serverMessage
 import com.us.android.core.payments.InFlightPayment
 import com.us.android.core.payments.PaymentAttempt
@@ -46,6 +48,32 @@ sealed interface FeastCheckoutState {
         val placing: Boolean = false,
         /** The server's words when it refused the order (range, hours, pricing). */
         val refusal: String? = null,
+        /**
+         * The last Place order got no definite answer: the order may exist. The
+         * key, the address and the method are held until a resend under the
+         * same key settles it (food audit M1).
+         */
+        val awaitingOutcome: Boolean = false,
+    ) : FeastCheckoutState {
+        /** While the outcome is unknown the resend is always allowed: it is the same order. */
+        val canSubmit: Boolean get() = !placing && (awaitingOutcome || orderable)
+
+        private val orderable: Boolean get() = bill.payable && address != null
+    }
+
+    /**
+     * An order exists and nothing has been paid on it yet: "Pay now" from
+     * tracking or orders, a checkout restored after process death before the
+     * sheet opened, or a total the server re-priced. [amount] is the server's
+     * figure; [previousTotal] is the bill the customer saw, when it differs
+     * (food audit L2).
+     */
+    data class Unpaid(
+        val orderId: String,
+        val orderNumber: String,
+        val method: FeastPaymentMethod,
+        val amount: Paise?,
+        val previousTotal: Paise? = null,
     ) : FeastCheckoutState
 
     /** The sheet is being opened from the Activity. */
@@ -108,6 +136,10 @@ class FeastCheckoutViewModel @Inject constructor(
     private val statusSource = FeastPaymentStatusSource(repository)
     private val policy = PaymentPollPolicy()
 
+    /** "Pay now" for an order that already exists (`FeastCheckoutRoute.payOrderId`). */
+    private val payOrderId: String? = savedState.get<String>(ARG_PAY_ORDER_ID)?.takeIf { it.isNotBlank() }
+    private val payOrderNumber: String = savedState.get<String>(ARG_PAY_ORDER_NUMBER).orEmpty()
+
     private val _state = MutableStateFlow<FeastCheckoutState>(FeastCheckoutState.Loading)
     val state: StateFlow<FeastCheckoutState> = _state.asStateFlow()
 
@@ -118,28 +150,55 @@ class FeastCheckoutViewModel @Inject constructor(
         viewModelScope.launch { start() }
     }
 
+    /** Held while an unanswered Place order is outstanding: a different method is a different order body. */
     fun selectMethod(method: FeastPaymentMethod) {
-        _state.update { if (it is FeastCheckoutState.Ready && !it.placing) it.copy(method = method) else it }
+        _state.update {
+            if (it is FeastCheckoutState.Ready && !it.placing && !it.awaitingOutcome) it.copy(method = method) else it
+        }
     }
 
-    /** The address picked on the address screen, reflected when the customer comes back. */
+    /**
+     * The address picked on the address screen, reflected when the customer
+     * comes back, with the cart re-read so the bill is priced for it (food
+     * audit L2). Held, like the method, while an unanswered order is outstanding.
+     */
     fun refreshAddress() {
         val ready = _state.value as? FeastCheckoutState.Ready ?: return
+        if (ready.addressHeld) return
         viewModelScope.launch {
             val addresses = (repository.addresses() as? FoodResult.Success)?.value
             if (addresses != null) session.reconcileAddresses(addresses)
-            _state.update {
-                if (it is FeastCheckoutState.Ready) it.copy(address = session.address.value, refusal = null) else it
+            val picked = session.address.value
+            val changed = picked?.id != ready.address?.id
+            val repriced = if (changed) {
+                (repository.cart() as? FoodResult.Success)?.value?.takeIf { it.items.isNotEmpty() }
+            } else {
+                null
             }
-        }
-        if (ready.address?.id != session.address.value?.id) {
-            _state.value = ready.copy(address = session.address.value, refusal = null)
+            _state.update {
+                if (it !is FeastCheckoutState.Ready || it.addressHeld) return@update it
+                it.copy(
+                    address = picked,
+                    refusal = if (changed) null else it.refusal,
+                    bill = repriced?.let(CartBill::from) ?: it.bill,
+                    itemCount = repriced?.items?.sumOf { line -> line.quantity } ?: it.itemCount,
+                )
+            }
         }
     }
 
     fun placeOrder() {
         val ready = _state.value as? FeastCheckoutState.Ready ?: return
-        if (ready.placing || !ready.bill.payable) return
+        if (ready.placing) return
+        if (ready.awaitingOutcome) {
+            // The SAME body under the SAME key: the server answers with the
+            // order it already made, or makes it now.
+            val addressId = saved.addressId ?: return
+            _state.value = ready.copy(placing = true)
+            viewModelScope.launch { submit(addressId, saved.method, ready) }
+            return
+        }
+        if (!ready.bill.payable) return
         val address = ready.address
         if (address == null) {
             _state.value = ready.copy(refusal = "Add a delivery address to continue.")
@@ -155,11 +214,12 @@ class FeastCheckoutViewModel @Inject constructor(
         viewModelScope.launch { submit(address.id, ready.method, ready) }
     }
 
-    /** Pay again for the order that already exists: a NEW attempt, the SAME order. */
+    /** Pay for the order that already exists: a NEW attempt, the SAME order. */
     fun retryPayment(method: FeastPaymentMethod? = null) {
         val (orderId, orderNumber) = when (val s = _state.value) {
             is FeastCheckoutState.PaymentFailed -> s.orderId to s.orderNumber
             is FeastCheckoutState.StillConfirming -> s.orderId to s.orderNumber
+            is FeastCheckoutState.Unpaid -> s.orderId to s.orderNumber
             else -> return
         }
         confirmJob?.cancel()
@@ -172,12 +232,20 @@ class FeastCheckoutViewModel @Inject constructor(
 
     private suspend fun start() {
         when (saved.phase) {
-            FeastCheckoutContinuation.Phase.FRESH -> loadCart()
+            FeastCheckoutContinuation.Phase.FRESH -> if (payOrderId != null) payExisting(payOrderId) else loadCart()
             FeastCheckoutContinuation.Phase.SUBMITTING -> if (saved.orderId == null) resubmit() else resumeOrder()
             FeastCheckoutContinuation.Phase.SHEET_REQUESTED,
             FeastCheckoutContinuation.Phase.SETTLED,
             -> resumeOrder()
         }
+    }
+
+    /** Pay now: adopt the existing order and ask the server where its payment stands. */
+    private suspend fun payExisting(orderId: String) {
+        saved.orderId = orderId
+        saved.orderNumber = payOrderNumber
+        saved.phase = FeastCheckoutContinuation.Phase.SUBMITTING
+        resumeOrder()
     }
 
     private suspend fun loadCart() {
@@ -205,32 +273,53 @@ class FeastCheckoutViewModel @Inject constructor(
     }
 
     private suspend fun submit(addressId: String, method: FeastPaymentMethod, ready: FeastCheckoutState.Ready?) {
-        val result = repository.placeOrder(saved.orderKey { repository.newIdempotencyKey() }, PlaceOrderRequest(addressId, method.wire))
-        when (result) {
-            is FoodResult.Success -> adopt(result.value)
-            is FoodResult.Failure -> {
-                val error = result.error
-                saved.phase = FeastCheckoutContinuation.Phase.FRESH
-                // A definite refusal created no order, and the next attempt is
-                // a new decision: a new key. A network failure keeps the key —
-                // the order may exist, and a resend under the same key returns it.
-                if (error !is FoodError.Network) saved.clearOrderKey()
-                val refusal = ServiceabilityRules.fromRefusal(error)
-                if (refusal != null) {
-                    saved.restaurantId?.let { session.recordRefusal(it, addressId, refusal) }
-                }
-                val message = refusal?.message ?: when (error) {
-                    is FoodError.Network -> "Check your connection and try again."
-                    else -> error.serverMessage ?: "We couldn't place your order. Please try again."
-                }
-                _state.value = ready?.copy(placing = false, refusal = message) ?: FeastCheckoutState.Failed(message, retryable = true)
-            }
+        val key = saved.orderKey { repository.newIdempotencyKey() }
+        when (val result = repository.placeOrder(key, PlaceOrderRequest(addressId, method.wire))) {
+            is FoodResult.Success -> adopt(result.value, shownTotal = ready?.bill?.total)
+            is FoodResult.Failure ->
+                if (result.error.outcomeUnknown) awaitOutcome(ready) else refused(result.error, addressId, ready)
         }
     }
 
-    private fun adopt(order: FeastOrderDto) {
+    /**
+     * No definite answer (a lost response, a gateway 5xx, the same key still
+     * in flight): the order may exist and the cart may already be gone. Keep
+     * the phase, the key and the body; the next Place order resends them.
+     */
+    private fun awaitOutcome(ready: FeastCheckoutState.Ready?) {
+        _state.value = ready?.copy(placing = false, awaitingOutcome = true, refusal = OUTCOME_UNKNOWN)
+            ?: FeastCheckoutState.Failed(OUTCOME_UNKNOWN, retryable = true)
+    }
+
+    /** A definite 4xx refusal created no order: the next attempt is a new decision, with a new key. */
+    private fun refused(error: FoodError, addressId: String, ready: FeastCheckoutState.Ready?) {
+        saved.phase = FeastCheckoutContinuation.Phase.FRESH
+        saved.clearOrderKey()
+        val refusal = ServiceabilityRules.fromRefusal(error)
+        if (refusal != null) {
+            saved.restaurantId?.let { session.recordRefusal(it, addressId, refusal) }
+        }
+        val message = refusal?.message ?: when {
+            (error as? FoodError.Unexpected)?.code == PAYLOAD_MISMATCH -> PAYLOAD_MISMATCH_MESSAGE
+            else -> error.serverMessage ?: "We couldn't place your order. Please try again."
+        }
+        _state.value = ready?.copy(placing = false, awaitingOutcome = false, refusal = message)
+            ?: FeastCheckoutState.Failed(message, retryable = true)
+    }
+
+    /**
+     * The order exists. When the server priced it differently from the bill
+     * on screen, say so before any sheet opens (food audit L2); otherwise open
+     * payment straight away.
+     */
+    private fun adopt(order: FeastOrderDto, shownTotal: Paise?) {
         saved.orderId = order.id
         saved.orderNumber = order.orderNumber
+        val charged = order.money?.totalsPaise?.finalAmountPaise
+        if (charged != null && shownTotal != null && charged != shownTotal) {
+            _state.value = FeastCheckoutState.Unpaid(order.id, order.orderNumber, saved.method, charged, shownTotal)
+            return
+        }
         openPayment(order.id, order.orderNumber)
     }
 
@@ -306,14 +395,21 @@ class FeastCheckoutViewModel @Inject constructor(
         submit(addressId, saved.method, ready = null)
     }
 
-    /** An order exists. Ask the server what happened; never place again, never reopen a sheet. */
+    /**
+     * An order exists. Ask the server what happened; never place again, never
+     * reopen a sheet. With no attempt ever opened from this checkout there is
+     * nothing to confirm: the order is simply unpaid, and paying is offered.
+     */
     private suspend fun resumeOrder() {
         val orderId = saved.orderId ?: return loadCart()
         val orderNumber = saved.orderNumber
+        val attempted = saved.inFlight.attempt != null
         _state.value = FeastCheckoutState.Loading
         when (val result = repository.orderPayment(orderId)) {
-            // An order we cannot read right now: keep confirming; do not offer to place another.
-            is FoodResult.Failure -> confirm(orderId, orderNumber)
+            // An order we cannot read right now: keep confirming an attempt;
+            // never offer to place another.
+            is FoodResult.Failure ->
+                if (attempted) confirm(orderId, orderNumber) else _state.value = failure(result.error)
             is FoodResult.Success -> _state.value = when (result.value.toReading()) {
                 PaymentStatusReading.Paid -> settled(orderId, orderNumber)
                 is PaymentStatusReading.Failed -> FeastCheckoutState.PaymentFailed(orderId, orderNumber, saved.method, null)
@@ -323,6 +419,11 @@ class FeastCheckoutViewModel @Inject constructor(
                 PaymentStatusReading.Confirming,
                 is PaymentStatusReading.Unreachable,
                 -> {
+                    if (!attempted) {
+                        val amount = Paise(result.value.amountMinor).takeIf { it > Paise.ZERO }
+                        _state.value = FeastCheckoutState.Unpaid(orderId, orderNumber, saved.method, amount)
+                        return
+                    }
                     confirm(orderId, orderNumber)
                     return
                 }
@@ -337,6 +438,23 @@ class FeastCheckoutViewModel @Inject constructor(
 
     fun reload() {
         if (_state.value is FeastCheckoutState.Failed) viewModelScope.launch { start() }
+    }
+
+    /** The address may not change while an order is being sent, or while one may exist unanswered. */
+    private val FeastCheckoutState.Ready.addressHeld: Boolean get() = placing || awaitingOutcome
+
+    companion object {
+        /** Navigation argument names: `FeastCheckoutRoute`'s properties. */
+        const val ARG_PAY_ORDER_ID = "payOrderId"
+        const val ARG_PAY_ORDER_NUMBER = "payOrderNumber"
+
+        const val OUTCOME_UNKNOWN =
+            "We couldn't tell whether your order went through. Try again: it's the same order, " +
+                "so nothing is ordered or charged twice."
+        const val PAYLOAD_MISMATCH_MESSAGE =
+            "An earlier attempt at this order may already have gone through. Check Your orders before ordering again."
+
+        private const val PAYLOAD_MISMATCH = "FOOD_IDEMPOTENCY_PAYLOAD_MISMATCH"
     }
 }
 

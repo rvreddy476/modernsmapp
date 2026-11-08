@@ -454,6 +454,14 @@ data class FeastOrderDto(
     @SerialName("eta_at") val etaAt: String? = null,
     /** `google` or `haversine`. */
     @SerialName("eta_source") val etaSource: String? = null,
+    /**
+     * Whether the customer may cancel this order themselves (audit M5, founder
+     * decision 31 Oct): true only from PLACED or CONFIRMED. Once the kitchen
+     * has started the server refuses with 409 FOOD_CANCEL_AFTER_PREPARING and
+     * the customer requests a refund instead. Null from a server that predates
+     * the field.
+     */
+    @SerialName("can_cancel") val canCancel: Boolean? = null,
 )
 
 @Serializable
@@ -644,4 +652,53 @@ data class InvoiceLineDto(
     @SerialName("igst_paise") val igstPaise: Paise = Paise.ZERO,
     @SerialName("tax_paise") val taxPaise: Paise = Paise.ZERO,
     @SerialName("total_paise") val totalPaise: Paise = Paise.ZERO,
+)
+
+// ── Support: refund after the kitchen started (handler_support.go) ─────
+//
+// No golden fixture exists for these routes yet (server follow-up); the
+// shapes mirror postgres.Ticket and postgres.RefundRequest.
+
+/** `POST /v1/food/support/tickets`. [category] and [subject] are required. */
+@Serializable
+data class CreateSupportTicketRequest(
+    @SerialName("order_id") val orderId: String,
+    val category: String,
+    val subject: String,
+    val detail: String? = null,
+)
+
+@Serializable
+data class SupportTicketDto(
+    val id: String,
+    @SerialName("order_id") val orderId: String? = null,
+    val category: String = "",
+    val subject: String = "",
+    val status: String = "",
+    @SerialName("created_at") val createdAt: String? = null,
+)
+
+/**
+ * `POST /v1/food/refunds`. [amount] is float RUPEES on the wire, written from
+ * [Paise] as exact two-place decimal text (`649.12`), never through a Double.
+ * The server refuses anything above the order's remaining refundable balance.
+ */
+@Serializable
+data class CreateRefundRequest(
+    @SerialName("order_id") val orderId: String,
+    @Serializable(with = RupeesAsPaiseSerializer::class)
+    val amount: Paise,
+    val reason: String,
+    @SerialName("ticket_id") val ticketId: String? = null,
+)
+
+@Serializable
+data class RefundRequestDto(
+    val id: String,
+    @SerialName("order_id") val orderId: String = "",
+    @SerialName("ticket_id") val ticketId: String? = null,
+    @Serializable(with = RupeesAsPaiseSerializer::class)
+    val amount: Paise = Paise.ZERO,
+    /** `requested`, then `approved` or `rejected` by Feast support. */
+    val status: String = "",
 )

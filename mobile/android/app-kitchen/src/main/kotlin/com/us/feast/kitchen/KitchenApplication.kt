@@ -32,8 +32,9 @@ class KitchenApplication : Application() {
  *
  * There is no google-services.json for Feast Kitchen yet, so the Google Services
  * plugin is not applied (see build.gradle.kts), `google_app_id` is absent,
- * FirebaseApp never initialises and FCM is disabled. Nothing in the kitchen
- * calls FirebaseMessaging; this only says so, once per process.
+ * FirebaseApp never initialises and FCM is disabled: the `food_order_new` push
+ * (KitchenOrderPushHandler) cannot arrive. Nothing in the kitchen calls
+ * FirebaseMessaging; this only says so, once per process.
  */
 internal object FirebaseState {
 
@@ -48,7 +49,11 @@ internal object FirebaseState {
         if (logged) return
         logged = true
         if (!isConfigured(context)) {
-            Log.i(TAG, "FCM disabled: this build has no google-services.json. New-order alerts come from the in-app order queue.")
+            Log.i(
+                TAG,
+                "FCM disabled: this build has no google-services.json. " +
+                    "New-order alerts come from the in-app order queue only while it runs.",
+            )
         }
     }
 

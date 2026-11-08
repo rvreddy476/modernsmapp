@@ -4,6 +4,7 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -19,6 +20,7 @@ import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.food.model.toRupeeText
@@ -44,6 +46,7 @@ import com.us.android.feature.feast.ui.serverTotal
 fun OrdersScreen(
     onBack: () -> Unit,
     onOpenOrder: (String) -> Unit,
+    onPayNow: (orderId: String, orderNumber: String) -> Unit,
     viewModel: OrdersViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -70,14 +73,20 @@ fun OrdersScreen(
                 contentPadding = listPadding(padding),
                 verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
             ) {
-                items(state.orders, key = { it.id }) { order -> OrderRow(order, onClick = { onOpenOrder(order.id) }) }
+                items(state.orders, key = { it.id }) { order ->
+                    OrderRow(
+                        order = order,
+                        onClick = { onOpenOrder(order.id) },
+                        onPayNow = { onPayNow(order.id, order.orderNumber) },
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-private fun OrderRow(order: FeastOrderDto, onClick: () -> Unit) {
+private fun OrderRow(order: FeastOrderDto, onClick: () -> Unit, onPayNow: () -> Unit) {
     FeastCard(onClick = onClick) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -103,6 +112,10 @@ private fun OrderRow(order: FeastOrderDto, onClick: () -> Unit) {
                 color = UsTheme.extended.textSecondary,
                 maxLines = 2,
             )
+        }
+        if (OrderActions.canPayNow(order)) {
+            InfoNote("Payment pending. Your order is held for a few minutes.", tone = Tone.Warning)
+            UsButton(text = "Pay now", onClick = onPayNow, modifier = Modifier.fillMaxWidth())
         }
     }
 }

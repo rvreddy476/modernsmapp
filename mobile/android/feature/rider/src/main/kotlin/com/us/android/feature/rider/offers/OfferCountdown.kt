@@ -17,7 +17,7 @@ sealed interface OfferWindow {
     /** [remainingSeconds] rounded UP, so "1 s" shows until the expiry itself. */
     data class Open(val remainingSeconds: Long, val urgent: Boolean) : OfferWindow
 
-    /** The offer expired; the server has already moved it to the next rider. Accept is refused. */
+    /** The offer expired on the server's clock; it has moved to the next rider. Accept is greyed. */
     data object Expired : OfferWindow
 
     /** The expiry could not be read. Accept and reject stay available; the server decides. */
@@ -29,10 +29,11 @@ sealed interface OfferWindow {
 /**
  * The countdown to an offer's `expires_at`.
  *
- * Unlike the kitchen queue there is no server-computed "seconds left" on an
- * offer, so this reads the absolute expiry against the device clock. A device
- * clock that runs fast shows less time than there is; the server stays the
- * authority on accept either way.
+ * There is no server-computed "seconds left" on an offer, so the absolute
+ * expiry is read against the SERVER's clock: callers pass
+ * [ServerClockOffset.serverNow], never the bare device time (food audit L1).
+ * A device clock 20 s fast would otherwise grey every offer. The server stays
+ * the authority on accept either way; nothing here refuses a tap.
  */
 class OfferCountdown(
     val expiresAt: Instant?,
@@ -53,6 +54,23 @@ class OfferCountdown(
         private const val MILLIS_PER_SECOND = 1_000L
 
         fun of(rawExpiresAt: String?): OfferCountdown = OfferCountdown(rawExpiresAt?.let(ServerTime::parse))
+    }
+}
+
+/**
+ * The server's clock as this device sees it: the gap between a response's
+ * `Date` header and the device clock when that response arrived. The header
+ * has one-second resolution, so the estimate is up to a second behind: a
+ * countdown may show a second more than the server allows, never less.
+ */
+data class ServerClockOffset(val offset: Duration) {
+    fun serverNow(deviceNow: Instant): Instant = deviceNow.plus(offset)
+
+    companion object {
+        val NONE = ServerClockOffset(Duration.ZERO)
+
+        fun from(serverTime: Instant?, receivedAt: Instant): ServerClockOffset =
+            serverTime?.let { ServerClockOffset(Duration.between(receivedAt, it)) } ?: NONE
     }
 }
 

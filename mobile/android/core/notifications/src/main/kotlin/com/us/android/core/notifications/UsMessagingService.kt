@@ -33,6 +33,10 @@ class UsMessagingService : FirebaseMessagingService() {
     @Inject
     lateinit var chatDelivered: java.util.Optional<ChatPushDeliveredHook>
 
+    /** An app's own alarm for an operational push (Feast Kitchen's new order); bound only there. */
+    @Inject
+    lateinit var operational: java.util.Optional<OperationalPushHandler>
+
     /**
      * Fires on first launch, reinstall, data clear, and periodic rotation.
      *
@@ -71,6 +75,7 @@ class UsMessagingService : FirebaseMessagingService() {
             )
             return
         }
+        if (operational.isPresent && operational.get().onPush(data)) return
         // A chat message reached this device: the sender's second tick. The
         // hook only enqueues; the batched ack goes out on chat's own scope.
         // A hidden chat's push names no chat (and is never acked from here).

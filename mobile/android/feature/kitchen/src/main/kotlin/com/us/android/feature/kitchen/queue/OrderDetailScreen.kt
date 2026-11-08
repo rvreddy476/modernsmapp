@@ -114,11 +114,13 @@ private fun OrderDetailContent(
                         label = "Pickup code",
                         errorText = state.pickupError,
                         keyboardType = KeyboardType.Number,
+                        enabled = !state.pickupLocked,
                     )
                     UsButton(
                         text = "Confirm handover",
                         onClick = onVerifyPickup,
                         loading = state.verifying,
+                        enabled = !state.pickupLocked,
                         modifier = Modifier.fillMaxWidth(),
                     )
                 }

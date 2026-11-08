@@ -127,4 +127,18 @@ interface FeastApi {
         @Header("Idempotency-Key") idempotencyKey: String,
         @Body body: PaymentIntentRequest,
     ): Response<ApiEnvelope<PaymentIntentDto>>
+
+    // Support: a refund once the kitchen has started (customer cancel is refused then)
+
+    /** 201 with the ticket; 403 FOOD_SUPPORT_ORDER_FORBIDDEN for an order that is not the caller's. */
+    @POST("v1/food/support/tickets")
+    suspend fun createSupportTicket(@Body body: CreateSupportTicketRequest): Response<ApiEnvelope<SupportTicketDto>>
+
+    /**
+     * 201 with the request. 409 FOOD_REFUND_NOT_ELIGIBLE (no captured payment),
+     * 422 FOOD_REFUND_AMOUNT_INVALID (above the remaining balance, which an
+     * open request already counts against), 403 FOOD_SUPPORT_ORDER_FORBIDDEN.
+     */
+    @POST("v1/food/refunds")
+    suspend fun requestRefund(@Body body: CreateRefundRequest): Response<ApiEnvelope<RefundRequestDto>>
 }

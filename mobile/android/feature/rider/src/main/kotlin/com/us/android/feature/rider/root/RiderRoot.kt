@@ -62,7 +62,7 @@ fun RiderRoot(viewModel: RiderRootViewModel = hiltViewModel()) {
         RiderRootState.NotRider -> DeliveryWelcomeScreen(viewModel::becomeRider)
         RiderRootState.BecomingRider -> ProfileScreen(onBack = viewModel::cancelBecomingRider, onSaved = viewModel::load)
         RiderRootState.SessionExpired -> {
-            LaunchedEffect(Unit) { viewModel.signOut() }
+            LaunchedEffect(Unit) { viewModel.endExpiredSession() }
             RiderSplash()
         }
         is RiderRootState.Unavailable -> UsScaffold { padding ->

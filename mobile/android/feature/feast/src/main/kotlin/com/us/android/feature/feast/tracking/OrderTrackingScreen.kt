@@ -19,6 +19,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -38,10 +39,12 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.theme.MomentumWordmarkFontFamily
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.designsystem.theme.UsTypeScale
+import com.us.android.core.food.model.Paise
 import com.us.android.core.food.model.toRupeeText
 import com.us.android.feature.feast.cart.BillCard
 import com.us.android.feature.feast.ui.FeastCard
@@ -67,6 +70,7 @@ import java.time.Instant
 fun OrderTrackingScreen(
     onBack: () -> Unit,
     onOpenInvoice: (String) -> Unit,
+    onPayNow: (orderId: String, orderNumber: String) -> Unit,
     viewModel: OrderTrackingViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -94,6 +98,18 @@ fun OrderTrackingScreen(
             containerColor = UsTheme.extended.bgRaised,
             titleContentColor = UsTheme.extended.textPrimary,
             textContentColor = UsTheme.extended.textSecondary,
+        )
+    }
+
+    var askRefund by rememberSaveable { mutableStateOf(false) }
+    if (askRefund) {
+        RefundDialog(
+            total = state.order?.serverTotal(),
+            onDismiss = { askRefund = false },
+            onSend = { detail ->
+                askRefund = false
+                viewModel.requestRefund(detail)
+            },
         )
     }
 
@@ -180,6 +196,13 @@ fun OrderTrackingScreen(
                 state.bill?.takeIf { it.total != null }?.let { BillCard(it, title = "Bill") }
 
                 UsSecondaryButton(text = "View invoice", onClick = { onOpenInvoice(order.id) }, modifier = Modifier.fillMaxWidth())
+                if (state.canPayNow) {
+                    UsButton(
+                        text = "Pay now",
+                        onClick = { onPayNow(order.id, order.orderNumber) },
+                        modifier = Modifier.fillMaxWidth(),
+                    )
+                }
                 if (state.canCancel) {
                     UsSecondaryButton(
                         text = if (state.cancelling) "Cancelling…" else "Cancel order",
@@ -187,7 +210,15 @@ fun OrderTrackingScreen(
                         enabled = !state.cancelling,
                         modifier = Modifier.fillMaxWidth(),
                     )
+                } else if (state.canRequestRefund) {
+                    UsSecondaryButton(
+                        text = if (state.refunding) "Sending refund request…" else "Request a refund",
+                        onClick = { askRefund = true },
+                        enabled = !state.refunding,
+                        modifier = Modifier.fillMaxWidth(),
+                    )
                 }
+                if (state.refundRequested) InfoNote(OrderTrackingViewModel.REFUND_REQUESTED)
             }
         }
     }
@@ -280,3 +311,36 @@ private fun Timeline(view: TimelineView) {
         if (view.cancelled) InfoNote(view.cancelledText.orEmpty(), tone = Tone.Danger)
     }
 }
+
+/** What went wrong, in the customer's words; the amount is the server's total for the order. */
+@Composable
+private fun RefundDialog(total: Paise?, onDismiss: () -> Unit, onSend: (String) -> Unit) {
+    var detail by rememberSaveable { mutableStateOf("") }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Request a refund") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
+                Text(
+                    "The kitchen has started, so this order can't be cancelled. Feast support will review a refund" +
+                        (total?.let { " of up to ${it.toRupeeText()}" } ?: "") + " to your original payment method.",
+                )
+                OutlinedTextField(
+                    value = detail,
+                    onValueChange = { detail = it.take(MAX_DETAIL_CHARS) },
+                    label = { Text("What went wrong? (optional)") },
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSend(detail) }) { Text("Send request", color = UsTheme.extended.accentSolid) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Not now", color = UsTheme.extended.textMuted) } },
+        containerColor = UsTheme.extended.bgRaised,
+        titleContentColor = UsTheme.extended.textPrimary,
+        textContentColor = UsTheme.extended.textSecondary,
+    )
+}
+
+private const val MAX_DETAIL_CHARS = 500

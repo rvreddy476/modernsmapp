@@ -4,6 +4,8 @@ import android.app.Activity
 import com.us.android.core.food.model.Paise
 import com.us.android.core.food.network.AddCartItemRequest
 import com.us.android.core.food.network.CancelOrderRequest
+import com.us.android.core.food.network.CreateRefundRequest
+import com.us.android.core.food.network.CreateSupportTicketRequest
 import com.us.android.core.food.network.FeastAddressDto
 import com.us.android.core.food.network.FeastAddressRequest
 import com.us.android.core.food.network.FeastApi
@@ -20,7 +22,9 @@ import com.us.android.core.food.network.OrderPaymentDto
 import com.us.android.core.food.network.PaymentIntentDto
 import com.us.android.core.food.network.PaymentIntentRequest
 import com.us.android.core.food.network.PlaceOrderRequest
+import com.us.android.core.food.network.RefundRequestDto
 import com.us.android.core.food.network.StatusDto
+import com.us.android.core.food.network.SupportTicketDto
 import com.us.android.core.food.network.UpdateCartItemRequest
 import com.us.android.core.food.repository.FeastRepository
 import com.us.android.core.network.ApiEnvelope
@@ -91,6 +95,8 @@ class FakeFeastApi : FeastApi {
     var restaurant: FeastRestaurantDto = restaurant()
     var menu = FeastMenuDto()
     var cart: FeastCartDto = pricedCart()
+    var cartReads = 0
+        private set
     var addresses: List<FeastAddressDto> = listOf(pinnedAddress)
     var order = FeastOrderDto(id = "order-1", orderNumber = "FG1", restaurantId = "r-1", status = "PAYMENT_PENDING")
 
@@ -99,6 +105,7 @@ class FakeFeastApi : FeastApi {
 
     var placeOrderResponse: () -> Response<ApiEnvelope<FeastOrderDto>> = { ok(order) }
     val placeOrderKeys = mutableListOf<String>()
+    val placeOrderBodies = mutableListOf<PlaceOrderRequest>()
 
     /** Each payment-status read takes the next answer; the last one repeats. */
     val paymentAnswers = ArrayDeque<() -> Response<ApiEnvelope<OrderPaymentDto>>>()
@@ -123,7 +130,10 @@ class FakeFeastApi : FeastApi {
 
     override suspend fun menu(restaurantId: String) = ok(menu)
 
-    override suspend fun cart() = ok(cart)
+    override suspend fun cart(): Response<ApiEnvelope<FeastCartDto>> {
+        cartReads++
+        return ok(cart)
+    }
 
     override suspend fun addCartItem(body: AddCartItemRequest): Response<ApiEnvelope<FeastCartDto>> {
         addToCartRequests += body
@@ -146,16 +156,55 @@ class FakeFeastApi : FeastApi {
 
     override suspend fun placeOrder(idempotencyKey: String, body: PlaceOrderRequest): Response<ApiEnvelope<FeastOrderDto>> {
         placeOrderKeys += idempotencyKey
+        placeOrderBodies += body
         return placeOrderResponse()
     }
 
     override suspend fun orders() = ok(ItemsDto(listOf(order)))
 
-    override suspend fun order(orderId: String) = ok(order)
+    var orderReads = 0
+        private set
+    var trackingReads = 0
+        private set
 
-    override suspend fun tracking(orderId: String) = ok(FeastTrackingDto(orderId = orderId, status = order.status))
+    override suspend fun order(orderId: String): Response<ApiEnvelope<FeastOrderDto>> {
+        orderReads++
+        return ok(order)
+    }
 
-    override suspend fun cancelOrder(orderId: String, body: CancelOrderRequest) = ok(order)
+    override suspend fun tracking(orderId: String): Response<ApiEnvelope<FeastTrackingDto>> {
+        trackingReads++
+        return ok(FeastTrackingDto(orderId = orderId, status = order.status))
+    }
+
+    var cancelResponse: () -> Response<ApiEnvelope<FeastOrderDto>> = { ok(order) }
+    var cancelCalls = 0
+        private set
+
+    override suspend fun cancelOrder(orderId: String, body: CancelOrderRequest): Response<ApiEnvelope<FeastOrderDto>> {
+        cancelCalls++
+        return cancelResponse()
+    }
+
+    var ticketResponse: () -> Response<ApiEnvelope<SupportTicketDto>> =
+        { ok(SupportTicketDto(id = "ticket-1", orderId = order.id)) }
+    val ticketRequests = mutableListOf<CreateSupportTicketRequest>()
+
+    override suspend fun createSupportTicket(
+        body: CreateSupportTicketRequest,
+    ): Response<ApiEnvelope<SupportTicketDto>> {
+        ticketRequests += body
+        return ticketResponse()
+    }
+
+    var refundResponse: () -> Response<ApiEnvelope<RefundRequestDto>> =
+        { ok(RefundRequestDto(id = "refund-1", status = "requested")) }
+    val refundRequests = mutableListOf<CreateRefundRequest>()
+
+    override suspend fun requestRefund(body: CreateRefundRequest): Response<ApiEnvelope<RefundRequestDto>> {
+        refundRequests += body
+        return refundResponse()
+    }
 
     override suspend fun invoice(orderId: String): Response<ApiEnvelope<FeastInvoiceDto>> = refused(404, "FOOD_NOT_FOUND", "not found")
 

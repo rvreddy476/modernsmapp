@@ -35,4 +35,17 @@ class OfferCountdownTest {
         assertThat(unknown.at(expiry)).isEqualTo(OfferWindow.Unknown)
         assertThat(unknown.canRespond(expiry)).isTrue()
     }
+
+    @Test
+    fun `the server clock offset is the Date header against the device clock at receipt`() {
+        val received = Instant.parse("2026-09-13T06:34:30Z")
+
+        val fast = ServerClockOffset.from(serverTime = Instant.parse("2026-09-13T06:34:10Z"), receivedAt = received)
+        assertThat(fast.serverNow(received)).isEqualTo(Instant.parse("2026-09-13T06:34:10Z"))
+        val window = countdown.at(fast.serverNow(received.plusSeconds(5)))
+        assertThat(window).isEqualTo(OfferWindow.Open(45, urgent = false))
+
+        assertThat(ServerClockOffset.from(serverTime = null, receivedAt = received)).isEqualTo(ServerClockOffset.NONE)
+        assertThat(ServerClockOffset.NONE.serverNow(received)).isEqualTo(received)
+    }
 }

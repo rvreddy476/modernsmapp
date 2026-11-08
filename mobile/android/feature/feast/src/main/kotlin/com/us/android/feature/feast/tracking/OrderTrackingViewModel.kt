@@ -12,6 +12,9 @@ import com.us.android.core.food.repository.FoodResult
 import com.us.android.core.food.repository.serverMessage
 import com.us.android.core.realtime.RealtimeEvent
 import com.us.android.feature.feast.cart.CartBill
+import com.us.android.feature.feast.orders.OrderActions
+import com.us.android.feature.feast.orders.RefundOutcome
+import com.us.android.feature.feast.orders.RefundRequestFlow
 import com.us.android.feature.feast.ui.errorMessage
 import com.us.android.feature.feast.ui.successMessage
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -22,6 +25,9 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.withLock
@@ -38,14 +44,17 @@ data class TrackingUiState(
     /** The SSE stream is connected. When false the screen is kept fresh by polling. */
     val live: Boolean = false,
     val cancelling: Boolean = false,
+    /** A refund request is being sent, or was accepted for review on this visit. */
+    val refunding: Boolean = false,
+    val refundRequested: Boolean = false,
     val error: String? = null,
     val message: UsMessage? = null,
 ) {
     val order: FeastOrderDto? get() = model.order
-    val canCancel: Boolean get() = order?.status in CANCELLABLE
+    val canCancel: Boolean get() = order?.let(OrderActions::canCancel) == true
+    val canPayNow: Boolean get() = order?.let(OrderActions::canPayNow) == true
+    val canRequestRefund: Boolean get() = !refundRequested && order?.let(OrderActions::canRequestRefund) == true
 }
-
-private val CANCELLABLE = setOf("PLACED", "PAYMENT_PENDING", "CONFIRMED")
 
 /**
  * One order, live: the status timeline, the rider's position and ETA from
@@ -76,10 +85,32 @@ class OrderTrackingViewModel @Inject constructor(
 
     private var streamJob: Job? = null
     private var pollJob: Job? = null
+    private val refunds = RefundRequestFlow(repository)
 
     init {
         viewModelScope.launch {
             refresh()
+            followWhileShown()
+        }
+    }
+
+    /**
+     * The stream and the poll run only while the screen collects [state]
+     * (collectAsStateWithLifecycle stops at ON_STOP), so tracking left open in
+     * the background stops using the radio (food audit L5). Coming back
+     * re-reads the order before following again.
+     */
+    private suspend fun followWhileShown() {
+        var firstShow = true
+        _state.subscriptionCount.map { it > 0 }.distinctUntilChanged().collectLatest { shown ->
+            if (!shown) {
+                streamJob?.cancel()
+                pollJob?.cancel()
+                _state.update { it.copy(live = false) }
+                return@collectLatest
+            }
+            if (!firstShow) refresh()
+            firstShow = false
             if (isLive()) {
                 subscribe()
                 poll()
@@ -100,8 +131,34 @@ class OrderTrackingViewModel @Inject constructor(
                     applyOrder(result.value, tracking = null)
                     _state.update { it.copy(cancelling = false, message = successMessage("Order cancelled")) }
                 }
-                is FoodResult.Failure -> _state.update {
-                    it.copy(cancelling = false, message = errorMessage(describe(result.error)))
+                is FoodResult.Failure -> {
+                    val afterPreparing = (result.error as? FoodError.Unexpected)?.code == CANCEL_AFTER_PREPARING
+                    _state.update {
+                        it.copy(
+                            cancelling = false,
+                            message = errorMessage(if (afterPreparing) KITCHEN_STARTED else describe(result.error)),
+                        )
+                    }
+                    // The server's can_cancel is now false: re-read so Cancel gives way to a refund request.
+                    if (afterPreparing) refresh()
+                }
+            }
+        }
+    }
+
+    /** Files a refund request for the server's total under a support ticket. Feast support decides. */
+    fun requestRefund(detail: String?) {
+        val current = _state.value
+        val order = current.order ?: return
+        if (!current.canRequestRefund || current.refunding) return
+        _state.update { it.copy(refunding = true) }
+        viewModelScope.launch {
+            when (val outcome = refunds.submit(order, detail)) {
+                is RefundOutcome.Requested -> _state.update {
+                    it.copy(refunding = false, refundRequested = true, message = successMessage(REFUND_REQUESTED))
+                }
+                is RefundOutcome.Refused -> _state.update {
+                    it.copy(refunding = false, message = errorMessage(outcome.message))
                 }
             }
         }
@@ -206,9 +263,14 @@ class OrderTrackingViewModel @Inject constructor(
         else -> error.serverMessage ?: "Something went wrong. Please try again."
     }
 
-    private companion object {
-        const val POLL_MILLIS = 10_000L
-        const val RECONCILE_MILLIS = 30_000L
+    companion object {
+        const val KITCHEN_STARTED =
+            "The kitchen has already started on this order, so it can't be cancelled. You can request a refund instead."
+        const val REFUND_REQUESTED = "Refund requested. Feast support will review it and let you know."
+
+        private const val CANCEL_AFTER_PREPARING = "FOOD_CANCEL_AFTER_PREPARING"
+        private const val POLL_MILLIS = 10_000L
+        private const val RECONCILE_MILLIS = 30_000L
     }
 }
 

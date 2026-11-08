@@ -77,8 +77,13 @@ class RiderRepository @Inject constructor(
     suspend fun postLocation(request: DeliveryLocationRequest): FoodResult<DeliveryLocationDto> =
         foodCall(json) { api.postLocation(request) }
 
-    suspend fun offers(): FoodResult<List<DeliveryOfferDto>> =
-        foodCall(json) { api.offers() }.map { it.offers.orEmpty() }
+    /**
+     * The pending offers, with the server's clock when it answered. An offer
+     * lives 20 s on an absolute server deadline (`expires_at`); the countdown
+     * is measured against [ServerTimed.serverTime], not the device clock.
+     */
+    suspend fun offers(): FoodResult<ServerTimed<List<DeliveryOfferDto>>> =
+        foodCallTimed(json) { api.offers() }.map { ServerTimed(it.value.offers.orEmpty(), it.serverTime) }
 
     suspend fun acceptOffer(offerId: String): FoodResult<OfferResponseDto> = foodCall(json) { api.acceptOffer(offerId) }
 

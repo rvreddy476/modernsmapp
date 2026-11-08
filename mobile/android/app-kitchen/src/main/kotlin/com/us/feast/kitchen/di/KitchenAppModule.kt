@@ -2,11 +2,13 @@ package com.us.feast.kitchen.di
 
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.notifications.IncomingCallPushHandler
+import com.us.android.core.notifications.OperationalPushHandler
 import com.us.android.core.notifications.data.PushApp
 import com.us.android.core.telemetry.TelemetryConfig
 import com.us.android.feature.kitchen.queue.NewOrderAlert
 import com.us.feast.kitchen.BuildConfig
 import com.us.feast.kitchen.alert.KitchenNewOrderAlert
+import com.us.feast.kitchen.alert.KitchenOrderPushHandler
 import dagger.Binds
 import dagger.Module
 import dagger.Provides
@@ -44,7 +46,7 @@ object KitchenAppModule {
     /**
      * The kitchen has no calls. :core:notifications' FCM service needs this
      * binding to compile into the graph (Momentum gets it from :core:call, which
-     * the kitchen does not ship); the service itself is removed from the manifest.
+     * the kitchen does not ship); the FCM service ships in this app (KitchenOrderPushHandler).
      */
     @Provides
     @Singleton
@@ -66,4 +68,8 @@ abstract class KitchenAlertModule {
 
     @Binds
     abstract fun bindNewOrderAlert(impl: KitchenNewOrderAlert): NewOrderAlert
+
+    /** A data-only `food_order_new` push rings the alarm even while the queue is not running (audit M4). */
+    @Binds
+    abstract fun bindOperationalPushHandler(impl: KitchenOrderPushHandler): OperationalPushHandler
 }

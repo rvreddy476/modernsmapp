@@ -1,7 +1,10 @@
 package com.us.android.core.food.repository
 
+import com.us.android.core.food.model.Paise
 import com.us.android.core.food.network.AddCartItemRequest
 import com.us.android.core.food.network.CancelOrderRequest
+import com.us.android.core.food.network.CreateRefundRequest
+import com.us.android.core.food.network.CreateSupportTicketRequest
 import com.us.android.core.food.network.DeliveryPoint
 import com.us.android.core.food.network.FeastAddressDto
 import com.us.android.core.food.network.FeastAddressRequest
@@ -16,6 +19,8 @@ import com.us.android.core.food.network.OrderPaymentDto
 import com.us.android.core.food.network.PaymentIntentDto
 import com.us.android.core.food.network.PaymentIntentRequest
 import com.us.android.core.food.network.PlaceOrderRequest
+import com.us.android.core.food.network.RefundRequestDto
+import com.us.android.core.food.network.SupportTicketDto
 import com.us.android.core.food.network.UpdateCartItemRequest
 import com.us.android.core.network.ApiEnvelope
 import kotlinx.serialization.json.Json
@@ -105,12 +110,43 @@ class FeastRepository @Inject constructor(
     suspend fun createPaymentIntent(orderId: String, idempotencyKey: String, method: String): FoodResult<PaymentIntentDto> =
         call { api.createPaymentIntent(orderId, idempotencyKey, PaymentIntentRequest(method)) }
 
+    /** The ticket a refund request is filed under. Created once per request; reused on a retry. */
+    suspend fun createRefundTicket(
+        orderId: String,
+        orderNumber: String,
+        detail: String?,
+    ): FoodResult<SupportTicketDto> =
+        call {
+            api.createSupportTicket(
+                CreateSupportTicketRequest(
+                    orderId = orderId,
+                    category = REFUND_TICKET_CATEGORY,
+                    subject = "Refund request for order $orderNumber".trim(),
+                    detail = detail?.trim()?.takeIf { it.isNotEmpty() },
+                ),
+            )
+        }
+
+    /** [amount] is the server's own figure for the order; Feast support decides the request. */
+    suspend fun requestRefund(
+        orderId: String,
+        ticketId: String?,
+        amount: Paise,
+        reason: String,
+    ): FoodResult<RefundRequestDto> =
+        call {
+            api.requestRefund(
+                CreateRefundRequest(orderId = orderId, amount = amount, reason = reason, ticketId = ticketId),
+            )
+        }
+
     fun newIdempotencyKey(): String = UUID.randomUUID().toString()
 
     private suspend fun <T> call(block: suspend () -> Response<ApiEnvelope<T>>): FoodResult<T> = foodCall(json, block)
 
     private companion object {
         const val LIST_LIMIT = 50
+        const val REFUND_TICKET_CATEGORY = "refund"
     }
 }
 

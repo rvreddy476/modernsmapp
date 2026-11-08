@@ -21,10 +21,12 @@ import com.us.android.feature.kitchen.kycui.SavedBankAccountCard
 import com.us.android.feature.kitchen.ui.InfoNote
 import com.us.android.feature.kitchen.ui.KitchenScreen
 import com.us.android.feature.kitchen.ui.LoadingPane
+import com.us.android.feature.kitchen.ui.SecureScreen
 
 @Composable
 fun PayoutScreen(onBack: () -> Unit, viewModel: PayoutViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    SecureScreen()
     KitchenScreen(
         title = "Bank account",
         onBack = onBack,

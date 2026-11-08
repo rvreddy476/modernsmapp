@@ -1,5 +1,7 @@
 package com.us.android.feature.kitchen.queue
 
+import java.time.Duration
+
 /**
  * The looping new-order alert. Implemented by the application (it owns the
  * notification channel and the audio focus); the queue only says when.
@@ -11,6 +13,12 @@ interface NewOrderAlert {
     fun ring(waitingOrders: Int)
 
     fun silence()
+
+    /**
+     * A `food_order_new` push arrived: ring now, for at most [ringFor], before
+     * the queue has the order (see [PushRingHold]).
+     */
+    fun ringFromPush(ringFor: Duration)
 }
 
 object NewOrderAlertPolicy {

@@ -6,6 +6,7 @@ import android.content.Context
 import android.util.Log
 import com.us.android.core.notifications.NotificationChannelSpec
 import dagger.hilt.android.HiltAndroidApp
+import javax.inject.Inject
 
 /**
  * Feast Rider's application and Hilt root.
@@ -16,18 +17,21 @@ import dagger.hilt.android.HiltAndroidApp
  */
 @HiltAndroidApp
 class RiderApplication : Application() {
+    @Inject lateinit var pushRegistration: RiderPushRegistration
 
     override fun onCreate() {
         super.onCreate()
         NotificationChannelSpec.createAll(this, NotificationChannelSpec.RIDER)
         FirebaseState.logOnce(this)
+        pushRegistration.start()
     }
 }
 
 /**
  * Whether this build carries a Firebase configuration. There is no
- * google-services.json for Feast Rider yet, so FCM is disabled and job offers
- * arrive through the in-app realtime stream (and its polling fallback) only.
+ * google-services.json for Feast Rider yet, so FCM is disabled: job offers
+ * arrive through the in-app realtime stream (and its polling fallback), and
+ * RiderLocationService alerts them while the rider is on duty.
  */
 internal object FirebaseState {
 

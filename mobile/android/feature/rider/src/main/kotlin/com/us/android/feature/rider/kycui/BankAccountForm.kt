@@ -87,7 +87,8 @@ fun BankAccountForm(
             onValueChange = { onConfirmAccountNumberChange(it.filter(Char::isDigit).take(MAX_ACCOUNT_DIGITS)) },
             label = "Re-enter account number",
             errorText = errors[BankField.CONFIRM],
-            keyboardType = KeyboardType.Number,
+            isPassword = true,
+            keyboardType = KeyboardType.NumberPassword,
             enabled = enabled,
         )
         UsTextField(

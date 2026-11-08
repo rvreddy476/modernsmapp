@@ -38,6 +38,9 @@ sealed interface DutyEffect {
 
     /** Stop the service; it tells the server the rider is offline. */
     data object StopService : DutyEffect
+
+    /** Going offline was refused on the device: a delivery is active (food audit M2). */
+    data object RefusedOnJob : DutyEffect
 }
 
 /**
@@ -110,8 +113,13 @@ class GoOnlineFlow {
         }
     }
 
-    fun onGoOfflineTapped(): DutyEffect {
+    /**
+     * Never while [onJob]: going offline mid-delivery stops the customer's map,
+     * and food-service then refuses the delivery code (FOOD_DELIVERY_PARTNER_NOT_ACTIVE).
+     */
+    fun onGoOfflineTapped(onJob: Boolean): DutyEffect {
         if (state != DutyState.Online) return DutyEffect.None
+        if (onJob) return DutyEffect.RefusedOnJob
         state = DutyState.GoingOffline
         return DutyEffect.StopService
     }

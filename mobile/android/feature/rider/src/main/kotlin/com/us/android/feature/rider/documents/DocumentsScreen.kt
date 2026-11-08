@@ -35,11 +35,13 @@ import com.us.android.feature.rider.ui.PillTone
 import com.us.android.feature.rider.ui.RiderCard
 import com.us.android.feature.rider.ui.RiderPill
 import com.us.android.feature.rider.ui.RiderScreen
+import com.us.android.feature.rider.ui.SecureScreen
 import com.us.android.feature.rider.ui.contentPadding
 
 @Composable
 fun DocumentsScreen(onBack: () -> Unit, viewModel: DocumentsViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    SecureScreen()
     var picking by remember { mutableStateOf<DrivingDocument?>(null) }
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         val document = picking

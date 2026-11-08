@@ -81,9 +81,12 @@ fun FeastCheckoutScreen(
         bottomBar = {
             if (ready != null) {
                 BottomAction(
-                    label = ready.bill.total?.let { "Pay ${it.toRupeeText()} with ${ready.method.label}" } ?: "Pay",
+                    label = when {
+                        ready.awaitingOutcome -> "Try again"
+                        else -> ready.bill.total?.let { "Pay ${it.toRupeeText()} with ${ready.method.label}" } ?: "Pay"
+                    },
                     onClick = viewModel::placeOrder,
-                    enabled = ready.bill.payable && ready.address != null && !ready.placing,
+                    enabled = ready.canSubmit,
                     loading = ready.placing,
                     summary = if (ready.address == null) "Add a delivery address to continue" else null,
                 )
@@ -107,7 +110,8 @@ fun FeastCheckoutScreen(
                 verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
             ) {
                 SectionLabel("Deliver to")
-                FeastCard(onClick = onChangeAddress) {
+                // Held while an unanswered order is outstanding: a new address would be a different order.
+                FeastCard(onClick = if (s.awaitingOutcome) null else onChangeAddress) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(UsIcons.MapPin, contentDescription = null, tint = UsTheme.extended.accentSolid)
                         Spacer(Modifier.width(UsTheme.spacing.l))
@@ -124,10 +128,14 @@ fun FeastCheckoutScreen(
                                 )
                             }
                         }
-                        Text("Change", style = MaterialTheme.typography.labelLarge, color = UsTheme.extended.accentSolid)
+                        if (!s.awaitingOutcome) {
+                            Text("Change", style = MaterialTheme.typography.labelLarge, color = UsTheme.extended.accentSolid)
+                        }
                     }
                 }
-                s.refusal?.let { FeastCard { InfoNote(it, tone = Tone.Danger) } }
+                s.refusal?.let {
+                    FeastCard { InfoNote(it, tone = if (s.awaitingOutcome) Tone.Warning else Tone.Danger) }
+                }
 
                 SectionLabel("Pay with")
                 Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
@@ -136,6 +144,7 @@ fun FeastCheckoutScreen(
                             method = method,
                             selected = s.method == method,
                             onClick = { viewModel.selectMethod(method) },
+                            enabled = !s.awaitingOutcome,
                             modifier = Modifier.weight(1f),
                         )
                     }
@@ -145,6 +154,7 @@ fun FeastCheckoutScreen(
                 BillCard(s.bill)
                 InfoNote("Your order is confirmed only when the payment is — you'll see it here within moments.")
             }
+            is FeastCheckoutState.Unpaid -> UnpaidPane(s, onPay = viewModel::retryPayment, onViewOrders = onViewOrders)
             is FeastCheckoutState.OpeningPayment -> LoadingPane(label = "Opening ${s.request.method.label} payment…")
             is FeastCheckoutState.Confirming -> MessagePane(
                 title = "Confirming your payment",
@@ -198,15 +208,62 @@ fun FeastCheckoutScreen(
     }
 }
 
+/**
+ * An order that exists and is unpaid. When the server re-priced it, the new
+ * total is said here, before any sheet opens (food audit L2).
+ */
 @Composable
-private fun MethodChoice(method: FeastPaymentMethod, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier) {
+private fun UnpaidPane(
+    state: FeastCheckoutState.Unpaid,
+    onPay: (FeastPaymentMethod) -> Unit,
+    onViewOrders: () -> Unit,
+) {
+    val other = FeastPaymentMethod.entries.first { it != state.method }
+    val amount = state.amount?.toRupeeText()
+    val changed = state.previousTotal
+    MessagePane(
+        title = if (changed != null) "Your total has changed" else "Pay for order ${state.orderNumber}",
+        body = when {
+            changed != null && amount != null ->
+                "The restaurant's prices or charges changed while you were checking out. " +
+                    "Order ${state.orderNumber} now comes to $amount (it was ${changed.toRupeeText()})."
+            else ->
+                "Order ${state.orderNumber} is waiting for payment and is held for a few minutes. " +
+                    "If you already paid, it will be confirmed shortly: please don't pay twice."
+        },
+        icon = UsIcons.CreditCard,
+        primaryLabel = amount?.let { "Pay $it with ${state.method.label}" } ?: "Pay with ${state.method.label}",
+        onPrimary = { onPay(state.method) },
+        secondaryLabel = "Pay with ${other.label} instead",
+        onSecondary = { onPay(other) },
+        extra = {
+            Text(
+                "View your orders",
+                style = MaterialTheme.typography.labelLarge,
+                color = UsTheme.extended.textMuted,
+                modifier = Modifier
+                    .padding(top = UsTheme.spacing.xl)
+                    .clickable(onClick = onViewOrders),
+            )
+        },
+    )
+}
+
+@Composable
+private fun MethodChoice(
+    method: FeastPaymentMethod,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+) {
     val shape = RoundedCornerShape(UsTheme.radii.large)
     val border = if (selected) UsTheme.extended.accentSolid else UsTheme.extended.borderSubtle
     Row(
         modifier = modifier
             .clip(shape)
             .border(if (selected) 1.5.dp else 1.dp, border, shape)
-            .clickable(onClick = onClick)
+            .clickable(enabled = enabled, onClick = onClick)
             .padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.xl),
         verticalAlignment = Alignment.CenterVertically,
     ) {

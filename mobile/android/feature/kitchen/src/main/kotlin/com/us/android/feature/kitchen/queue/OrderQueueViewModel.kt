@@ -11,6 +11,8 @@ import com.us.android.core.food.repository.FoodResult
 import com.us.android.core.food.repository.KitchenOrderAction
 import com.us.android.core.food.repository.KitchenRepository
 import com.us.android.core.food.repository.code
+import com.us.android.core.food.repository.outcomeUnknown
+import com.us.android.core.notifications.NotificationUpdates
 import com.us.android.core.realtime.SseClient
 import com.us.android.feature.kitchen.navigation.restaurantId
 import com.us.android.feature.kitchen.ui.OrderStatusText
@@ -27,7 +29,6 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.Instant
-import java.util.UUID
 import javax.inject.Inject
 
 data class IncomingOrderUi(val order: KitchenOrderDto, val window: AcceptWindow)
@@ -40,6 +41,8 @@ data class OrdersUiState(
     val loaded: Boolean = false,
     val error: String? = null,
     val busyOrderIds: Set<String> = emptySet(),
+    /** The server lists only the latest [PARTNER_ORDER_LIST_LIMIT] orders; older active ones may be missing. */
+    val activeListTruncated: Boolean = false,
     val message: UsMessage? = null,
 )
 
@@ -47,15 +50,20 @@ data class OrdersUiState(
  * The live kitchen: incoming orders with their accept countdowns, orders being
  * cooked, and orders waiting for a rider.
  *
- * Runs for as long as the Kitchen home destination is on the back stack — also
- * while the app is in the background — because a kitchen that stops listening
- * when the screen dims misses orders. The looping alert follows
- * [NewOrderAlertPolicy]: it sounds while any order can still be accepted.
+ * Runs for as long as the Kitchen home destination is on the back stack. This
+ * is the FOREGROUND path only: once Android caches or freezes the process,
+ * nothing here runs, and the new-order alert comes from the `food_order_new`
+ * push instead (KitchenOrderPushHandler in :app-kitchen, food audit M4). The
+ * looping alert follows [NewOrderAlertPolicy]: it sounds while any order can
+ * still be accepted.
  *
- * Every transition carries an Idempotency-Key that is kept only while the
- * outcome is unknown (a network failure), so a retry of the same tap is safe
- * and a new tap is a new request.
+ * Every transition carries an Idempotency-Key from [TransitionKeys], kept only
+ * while the outcome is unknown, so a retry of the same tap is safe and a new
+ * tap is a new request.
  */
+// LongParameterList: the queue joins the list, its realtime stream, the clock, the alarm and
+// the push feed; each is a separate, separately faked dependency.
+@Suppress("LongParameterList")
 @HiltViewModel
 class OrderQueueViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
@@ -64,6 +72,7 @@ class OrderQueueViewModel @Inject constructor(
     tokens: RestaurantRealtimeTokens,
     private val clock: KitchenClock,
     private val alert: NewOrderAlert,
+    updates: NotificationUpdates,
 ) : ViewModel() {
 
     private val restaurantId = savedStateHandle.restaurantId()
@@ -76,7 +85,7 @@ class OrderQueueViewModel @Inject constructor(
     )
 
     private val countdowns = HashMap<String, AcceptCountdown>()
-    private val idempotencyKeys = HashMap<Pair<String, KitchenOrderAction>, String>()
+    private val keys = TransitionKeys()
     private var queued: List<KitchenOrderDto> = emptyList()
     private var lastFetchedAt: Instant? = null
 
@@ -86,6 +95,12 @@ class OrderQueueViewModel @Inject constructor(
     init {
         viewModelScope.launch { queue.run() }
         viewModelScope.launch { queue.state.collect { onSnapshot(it) } }
+        // A push says the server moved first: fetch now rather than at the next poll.
+        viewModelScope.launch {
+            updates.events.collect { type ->
+                if (type == NewOrderPush.TYPE || type.startsWith("food_kitchen_")) refresh()
+            }
+        }
         viewModelScope.launch {
             while (true) {
                 delay(TICK_MILLIS)
@@ -104,8 +119,8 @@ class OrderQueueViewModel @Inject constructor(
     }
 
     fun accept(orderId: String) {
-        val countdown = countdowns[orderId]
-        if (countdown != null && !countdown.canRespond(clock.now())) {
+        val retry = keys.isOutstanding(orderId, KitchenOrderAction.ACCEPT)
+        if (refuseAcceptLocally(countdowns[orderId], clock.now(), retryOfUnknownOutcome = retry)) {
             _state.update { it.copy(message = warning("Too late to accept — this order's time ran out.")) }
             publishIncoming()
             return
@@ -172,6 +187,7 @@ class OrderQueueViewModel @Inject constructor(
                 current.copy(
                     preparing = result.value.filter { it.status == OrderStatusText.PREPARING },
                     awaitingPickup = result.value.filter { it.status in OrderStatusText.AWAITING_PICKUP },
+                    activeListTruncated = result.value.size >= PARTNER_ORDER_LIST_LIMIT,
                 )
             }
         }
@@ -187,10 +203,8 @@ class OrderQueueViewModel @Inject constructor(
         if (orderId in _state.value.busyOrderIds) return
         _state.update { it.copy(busyOrderIds = it.busyOrderIds + orderId) }
         viewModelScope.launch {
-            val key = idempotencyKeys.getOrPut(orderId to action) { UUID.randomUUID().toString() }
-            val result = kitchen.transition(orderId, action, key, reason)
-            val outcomeUnknown = result is FoodResult.Failure && result.error is FoodError.Network
-            if (!outcomeUnknown) idempotencyKeys.remove(orderId to action)
+            val result = kitchen.transition(orderId, action, keys.keyFor(orderId, action), reason)
+            keys.settle(orderId, action, outcomeUnknown = result is FoodResult.Failure && result.error.outcomeUnknown)
             _state.update { current ->
                 current.copy(
                     busyOrderIds = current.busyOrderIds - orderId,
@@ -218,3 +232,6 @@ class OrderQueueViewModel @Inject constructor(
         const val TICK_MILLIS = 1_000L
     }
 }
+
+/** `ListPartnerOrders` answers at most this many, newest first, any status (food audit M5). */
+const val PARTNER_ORDER_LIST_LIMIT = 100

@@ -14,6 +14,7 @@ import io.mockk.coVerify
 import io.mockk.mockk
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
@@ -120,6 +121,8 @@ class ActiveJobRouteTest {
         val store = ViewModelStore()
         try {
             val vm = model(store)
+            // The screen is showing: the poll runs only while the state is collected (food audit L5).
+            backgroundScope.launch { vm.state.collect {} }
             val reply = CompletableDeferred<FoodResult<BatchRoutePreviewDto>>()
             coEvery { rider.previewBatchRoute(assignment.orderId) } coAnswers { reply.await() }
             runCurrent()
@@ -163,6 +166,7 @@ class ActiveJobRouteTest {
         val store = ViewModelStore()
         try {
             val vm = model(store)
+            backgroundScope.launch { vm.state.collect {} }
             val reply = CompletableDeferred<FoodResult<BatchRoutePreviewDto>>()
             coEvery { rider.previewBatchRoute(assignment.orderId) } coAnswers { reply.await() }
             runCurrent()

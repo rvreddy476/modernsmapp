@@ -24,4 +24,21 @@ class PartnerNotificationScopeTest {
             assertThat(acceptsInstalledAppNotification(PushApp.FEAST_KITCHEN, it)).isFalse()
         }
     }
+
+    @Test fun riderAcceptsOnlyItsOwnDeliveryMessages() {
+        listOf("food_delivery_offer", "food_delivery_order_updated", "food_delivery_document_reviewed").forEach {
+            assertThat(acceptsInstalledAppNotification(PushApp.FEAST_RIDER, it)).isTrue()
+        }
+        val others = listOf(
+            null,
+            "food_order_new",
+            "food_order_status",
+            "food_kitchen_order_updated",
+            "dm",
+            "doorstep.pro.offer.new",
+        )
+        others.forEach {
+            assertThat(acceptsInstalledAppNotification(PushApp.FEAST_RIDER, it)).isFalse()
+        }
+    }
 }

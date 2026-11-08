@@ -3,13 +3,14 @@ package com.us.android.feature.rider.job
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.designsystem.component.UsMessage
+import com.us.android.core.food.network.BatchRoutePreviewDto
 import com.us.android.core.food.network.DeliveryAssignmentDto
 import com.us.android.core.food.network.DeliveryBatchDto
-import com.us.android.core.food.network.BatchRoutePreviewDto
-import com.us.android.core.food.repository.FoodError
+import com.us.android.core.food.network.VerifyDeliveryDto
 import com.us.android.core.food.repository.FoodResult
 import com.us.android.core.food.repository.RiderAssignmentStep
 import com.us.android.core.food.repository.RiderRepository
+import com.us.android.core.food.repository.outcomeUnknown
 import com.us.android.feature.rider.location.RiderDuty
 import com.us.android.feature.rider.ui.asMessage
 import com.us.android.feature.rider.ui.error
@@ -17,13 +18,16 @@ import com.us.android.feature.rider.ui.success
 import com.us.android.feature.rider.ui.userMessage
 import com.us.android.feature.rider.ui.warning
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
@@ -56,9 +60,12 @@ data class ActiveJobUiState(
  * kitchen) → the kitchen verifies pickup → ride to the customer → enter the
  * customer's delivery code.
  *
- * Re-reads the assignment every [POLL_MILLIS] so the kitchen's pickup
- * verification moves the screen on without a tap. Every step carries an
- * Idempotency-Key kept only while the outcome is unknown (a network failure).
+ * Re-reads the assignment every [POLL_MILLIS] while the screen is collected, so
+ * the kitchen's pickup verification moves it on without a tap; in the
+ * background the location service's offer watch keeps the job state (food
+ * audit L5). Every step carries an Idempotency-Key kept only while the outcome
+ * is unknown. A delivery code whose answer is lost is resent, and a job that
+ * vanishes is looked up in history so the rider hears "Delivered" (L6).
  */
 @HiltViewModel
 class ActiveJobViewModel @Inject constructor(
@@ -77,11 +84,21 @@ class ActiveJobViewModel @Inject constructor(
     private var routeExpiry: Job? = null
     private var routeRevision = 0L
 
+    /** The job ended on this screen (delivered, released, not ours); a later empty poll says nothing more. */
+    private var concluded = false
+
     init {
         viewModelScope.launch {
-            while (true) {
-                load()
-                delay(POLL_MILLIS)
+            load()
+            var firstShow = true
+            _state.subscriptionCount.map { it > 0 }.distinctUntilChanged().collectLatest { visible ->
+                if (!visible) return@collectLatest
+                if (!firstShow) load()
+                firstShow = false
+                while (true) {
+                    delay(POLL_MILLIS)
+                    load()
+                }
             }
         }
     }
@@ -94,12 +111,12 @@ class ActiveJobViewModel @Inject constructor(
         viewModelScope.launch {
             val key = idempotencyKeys.getOrPut(assignment.id to step) { UUID.randomUUID().toString() }
             val result = rider.step(assignment.id, step, key)
-            if (!(result is FoodResult.Failure && result.error is FoodError.Network)) idempotencyKeys.remove(assignment.id to step)
+            if (result.answered) idempotencyKeys.remove(assignment.id to step)
             when (result) {
                 is FoodResult.Success -> {
                     if (step == RiderAssignmentStep.REJECT) {
                         duty.setOnJob(false)
-                        finished.trySend(Unit)
+                        conclude()
                     } else {
                         apply(result.value)
                         loadBatch(result.value)
@@ -129,13 +146,13 @@ class ActiveJobViewModel @Inject constructor(
         }
         _state.update { it.copy(verifying = true) }
         viewModelScope.launch {
-            val outcome = DeliveryCodeOutcome.from(rider.verifyDelivery(assignment.id, code))
+            val outcome = DeliveryCodeOutcome.from(verifyDelivery(assignment.id, code))
             _state.update { it.copy(verifying = false) }
             when (outcome) {
                 DeliveryCodeOutcome.Delivered -> {
                     duty.setOnJob(false)
                     _state.update { it.copy(message = success("Delivered. Nice work.")) }
-                    finished.trySend(Unit)
+                    conclude()
                 }
                 DeliveryCodeOutcome.WrongCode -> _state.update {
                     it.copy(code = "", codeError = "That code doesn't match. Ask the customer to read it again.")
@@ -149,7 +166,7 @@ class ActiveJobViewModel @Inject constructor(
                 DeliveryCodeOutcome.NotYourJob -> {
                     duty.setOnJob(false)
                     _state.update { it.copy(message = error("This job is no longer assigned to you.")) }
-                    finished.trySend(Unit)
+                    conclude()
                 }
                 DeliveryCodeOutcome.NotActive -> _state.update {
                     it.copy(message = error("Your rider account isn't active. Go online again or contact support."))
@@ -160,6 +177,33 @@ class ActiveJobViewModel @Inject constructor(
     }
 
     fun dismissMessage() = _state.update { it.copy(message = null) }
+
+    // food-service answers the same code again with "delivered" (delivery_proof.go), so a lost answer is
+    // resent with the SAME code rather than shown as a failure the rider cannot interpret.
+    private suspend fun verifyDelivery(assignmentId: String, code: String): FoodResult<VerifyDeliveryDto> {
+        var result = rider.verifyDelivery(assignmentId, code)
+        var retries = 0
+        while (result is FoodResult.Failure && result.error.outcomeUnknown && retries < VERIFY_RETRIES) {
+            retries++
+            delay(VERIFY_RETRY_MILLIS)
+            result = rider.verifyDelivery(assignmentId, code)
+        }
+        return result
+    }
+
+    // The job left `current`: delivered (perhaps by a code whose answer was lost), cancelled or reassigned.
+    // History says which, so the rider is never left wondering whether the delivery counted.
+    private suspend fun resolveVanished(previous: DeliveryAssignmentDto) {
+        if (concluded) return
+        val past = (rider.history() as? FoodResult.Success)?.value?.firstOrNull { it.id == previous.id }
+        val message = when {
+            past?.status == DELIVERED -> success("Delivered. Nice work.")
+            past != null -> error("This job is no longer assigned to you.")
+            else -> warning("This job is no longer assigned to you. Earnings shows whether it was delivered.")
+        }
+        _state.update { it.copy(message = message) }
+        conclude()
+    }
 
     /** Explicit per-order confirmation; suggestRoute never calls this. */
     fun confirmBatchOrder(orderId: String) {
@@ -175,7 +219,7 @@ class ActiveJobViewModel @Inject constructor(
             val step = RiderAssignmentStep.ACCEPT
             val key = idempotencyKeys.getOrPut(member.id to step) { UUID.randomUUID().toString() }
             val result = rider.step(member.id, step, key)
-            if (!(result is FoodResult.Failure && result.error is FoodError.Network)) idempotencyKeys.remove(member.id to step)
+            if (result.answered) idempotencyKeys.remove(member.id to step)
             if (result is FoodResult.Failure) _state.update { it.copy(message = result.error.asMessage()) }
             load()
             _state.update { it.copy(busy = false) }
@@ -228,6 +272,11 @@ class ActiveJobViewModel @Inject constructor(
         }
     }
 
+    private fun conclude() {
+        concluded = true
+        finished.trySend(Unit)
+    }
+
     private fun resetRoute() {
         routeRevision++
         routeJob?.cancel()
@@ -254,9 +303,11 @@ class ActiveJobViewModel @Inject constructor(
             is FoodResult.Success -> {
                 val assignment = result.value
                 if (assignment == null) {
+                    val previous = _state.value.assignment
                     resetRoute()
                     duty.setOnJob(false)
                     _state.update { it.copy(loading = false, assignment = null, actions = null, details = null, batch = null, batchJobs = emptyList()) }
+                    if (previous != null) resolveVanished(previous)
                 } else {
                     apply(assignment)
                     loadBatch(assignment)
@@ -291,6 +342,9 @@ class ActiveJobViewModel @Inject constructor(
         const val POLL_MILLIS = 10_000L
         /** The fixtures' codes are four digits (order_get_200_out_for_delivery: "7390"). */
         const val CODE_LENGTH = 4
+        const val VERIFY_RETRIES = 2
+        const val VERIFY_RETRY_MILLIS = 1_500L
+        const val DELIVERED = "DELIVERED"
     }
 }
 
@@ -298,3 +352,7 @@ private fun sameRouteContext(a: DeliveryAssignmentDto?, b: DeliveryAssignmentDto
     a?.id == b.id && a.orderId == b.orderId && a.status == b.status && a.orderStatus == b.orderStatus &&
         a.deliveryPartnerId == b.deliveryPartnerId && a.restaurantId == b.restaurantId &&
         a.restaurant == b.restaurant && a.drop == b.drop
+
+/** The server gave a definite answer, so the step's Idempotency-Key is spent; an unknown outcome keeps it. */
+private val FoodResult<*>.answered: Boolean
+    get() = !(this is FoodResult.Failure && this.error.outcomeUnknown)

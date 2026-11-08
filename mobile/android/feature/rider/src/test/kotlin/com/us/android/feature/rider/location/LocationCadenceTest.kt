@@ -104,10 +104,48 @@ class LocationCadenceTest {
 
     @Test
     fun `a first fix that never arrives also times out`() {
-        cadence.start(onJob = true)
+        cadence.start(onJob = false)
         at(119.0)
         assertThat(cadence.onTick()).isEmpty()
         at(120.0)
+        assertThat(cadence.onTick()).containsExactly(CadenceEffect.GoOffline(OfflineReason.NO_FIX))
+    }
+
+    @Test
+    fun `on a delivery two minutes without a fix warns once and keeps the rider on duty`() {
+        cadence.start(onJob = true)
+        at(10.0)
+        cadence.onFix(fix())
+
+        at(130.0)
+        assertThat(cadence.onTick()).containsExactly(CadenceEffect.FixLostOnJob)
+        at(200.0)
+        assertThat(cadence.onTick()).isEmpty()
+        assertThat(cadence.online).isTrue()
+
+        // The fix comes back: said once, and pinged at once.
+        at(201.0)
+        val back = cadence.onFix(fix(northMeters = 100.0))
+        assertThat(back.first()).isEqualTo(CadenceEffect.FixBack)
+        assertThat(back.filterIsInstance<CadenceEffect.Ping>()).hasSize(1)
+    }
+
+    @Test
+    fun `a first fix that never arrives on a delivery does not take the rider offline`() {
+        cadence.start(onJob = true)
+        at(120.0)
+        assertThat(cadence.onTick()).containsExactly(CadenceEffect.FixLostOnJob)
+        assertThat(cadence.online).isTrue()
+    }
+
+    @Test
+    fun `once the delivery ends, the idle no-fix rule applies again`() {
+        cadence.start(onJob = true)
+        at(130.0)
+        assertThat(cadence.onTick()).containsExactly(CadenceEffect.FixLostOnJob)
+
+        cadence.onJobChanged(false)
+        at(131.0)
         assertThat(cadence.onTick()).containsExactly(CadenceEffect.GoOffline(OfflineReason.NO_FIX))
     }
 

@@ -116,12 +116,25 @@ class GoOnlineFlowTest {
         val online = GoOnlineFlow()
         online.onGoOnlineTapped(true, true)
         online.onServerAvailability(true)
-        assertThat(online.onGoOfflineTapped()).isEqualTo(DutyEffect.StopService)
+        assertThat(online.onGoOfflineTapped(onJob = false)).isEqualTo(DutyEffect.StopService)
         online.onServiceStopped(OfflineReason.TOGGLED_OFF)
         assertThat(online.state).isEqualTo(DutyState.Offline())
 
         online.onServiceRunning()
         online.onServiceStopped(OfflineReason.NO_FIX)
         assertThat(online.state).isEqualTo(DutyState.Offline(OfflineReason.NO_FIX))
+    }
+
+    @Test
+    fun `a rider carrying an order cannot go offline, and stays online`() {
+        val flow = GoOnlineFlow()
+        flow.onGoOnlineTapped(true, true)
+        flow.onServerAvailability(true)
+
+        assertThat(flow.onGoOfflineTapped(onJob = true)).isEqualTo(DutyEffect.RefusedOnJob)
+        assertThat(flow.state).isEqualTo(DutyState.Online)
+
+        assertThat(flow.onGoOfflineTapped(onJob = false)).isEqualTo(DutyEffect.StopService)
+        assertThat(flow.state).isEqualTo(DutyState.GoingOffline)
     }
 }

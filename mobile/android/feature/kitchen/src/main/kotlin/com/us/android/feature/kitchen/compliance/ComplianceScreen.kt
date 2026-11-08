@@ -42,10 +42,12 @@ import com.us.android.feature.kitchen.ui.KitchenScreen
 import com.us.android.feature.kitchen.ui.LabeledValue
 import com.us.android.feature.kitchen.ui.PillTone
 import com.us.android.feature.kitchen.ui.SectionHeader
+import com.us.android.feature.kitchen.ui.SecureScreen
 
 @Composable
 fun ComplianceScreen(onBack: () -> Unit, viewModel: ComplianceViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    SecureScreen()
     KitchenScreen(
         title = "Tax details",
         onBack = onBack,

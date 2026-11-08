@@ -1,28 +1,21 @@
 package com.us.android.feature.rider.home
 
 import android.content.Context
-import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.food.model.Paise
 import com.us.android.core.food.network.DeliveryAssignmentDto
 import com.us.android.core.food.network.DeliveryOfferDto
-import com.us.android.core.food.realtime.FoodRealtimeScope
-import com.us.android.core.food.realtime.FoodRealtimeTokens
 import com.us.android.core.food.repository.FoodResult
 import com.us.android.core.food.repository.RiderRepository
-import com.us.android.core.realtime.SseClient
-import com.us.android.feature.rider.job.JobActions
+import com.us.android.feature.rider.location.DutyNotice
 import com.us.android.feature.rider.location.DutyStatus
 import com.us.android.feature.rider.location.OfflineReason
 import com.us.android.feature.rider.location.RiderDuty
-import com.us.android.feature.rider.navigation.requireArg
 import com.us.android.feature.rider.money.RiderMoney
-import com.us.android.feature.rider.offers.LiveOffers
 import com.us.android.feature.rider.offers.LiveTransport
-import com.us.android.feature.rider.offers.RiderLiveFeed
-import com.us.android.feature.rider.offers.RiderRealtimeTopics
+import com.us.android.feature.rider.offers.RiderOfferWatch
 import com.us.android.feature.rider.ui.asMessage
 import com.us.android.feature.rider.ui.explanation
 import com.us.android.feature.rider.ui.info
@@ -33,9 +26,11 @@ import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
-import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -50,6 +45,8 @@ data class HomeUiState(
     val offers: List<DeliveryOfferDto> = emptyList(),
     val job: DeliveryAssignmentDto? = null,
     val transport: LiveTransport = LiveTransport.CONNECTING,
+    /** A delivery is active: Go offline and sign out are held until it ends (food audit M2). */
+    val onJob: Boolean = false,
     val deliveriesToday: Int? = null,
     val earningsToday: Paise? = null,
     val message: UsMessage? = null,
@@ -89,46 +86,38 @@ class SharedPrefsLocationDisclosureStore @Inject constructor(
  * Home: the Go-online toggle ([GoOnlineFlow]), the live offers, the current
  * job and today's earnings.
  *
- * The feed runs for as long as Home is on the back stack, so an offer that
- * arrives while the rider is on another screen is already listed on return.
+ * Offers and the job come from [RiderOfferWatch], held only while Home is
+ * collected (food audit L5); the location service holds the same feed while
+ * the rider is on duty, so nothing is missed off screen and nothing polls off
+ * duty in the background.
  */
 @HiltViewModel
 class HomeViewModel @Inject constructor(
-    savedStateHandle: SavedStateHandle,
     private val rider: RiderRepository,
     private val duty: RiderDuty,
     private val disclosure: LocationDisclosureStore,
-    sseClient: SseClient,
-    tokens: FoodRealtimeTokens,
+    private val watch: RiderOfferWatch,
 ) : ViewModel() {
 
-    private val userId = savedStateHandle.requireArg("userId")
     private val flow = GoOnlineFlow()
 
-    private val feed = RiderLiveFeed(
-        refresh = { refreshOffersAndJob() },
-        subscribe = { source -> sseClient.connect(RiderRealtimeTopics.forRider(userId), source) },
-        tokenSource = tokens.forScope(FoodRealtimeScope.Delivery),
-        // Show a pushed offer at once; the refresh the same frame triggers stays the authority.
-        onMessage = { message -> _state.update { it.copy(offers = LiveOffers.upsert(it.offers, message)) } },
-    )
-
     private val _state = MutableStateFlow(HomeUiState())
-    val state: StateFlow<HomeUiState> = _state.asStateFlow()
+    val state: StateFlow<HomeUiState> = combine(_state, watch.observe(), duty.onJob) { home, live, onJob ->
+        home.copy(offers = live.offers, job = live.job, transport = live.transport, onJob = onJob)
+    }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), HomeUiState())
 
     private val _events = MutableSharedFlow<HomeEvent>(extraBufferCapacity = 4, onBufferOverflow = BufferOverflow.DROP_OLDEST)
     val events: SharedFlow<HomeEvent> = _events.asSharedFlow()
 
     init {
         viewModelScope.launch { loadProfile() }
-        viewModelScope.launch { feed.run() }
-        viewModelScope.launch { feed.transport.collect { t -> _state.update { it.copy(transport = t) } } }
         viewModelScope.launch { duty.status.collect(::onDutyStatus) }
+        viewModelScope.launch { duty.notices.collect(::onDutyNotice) }
         viewModelScope.launch { loadEarnings() }
     }
 
     fun refresh() {
-        feed.refreshNow()
+        watch.refreshNow()
         viewModelScope.launch { loadEarnings() }
     }
 
@@ -152,7 +141,14 @@ class HomeViewModel @Inject constructor(
     fun onPermissionResult(granted: Boolean, canAskAgain: Boolean) =
         perform(flow.onPermissionResult(granted, canAskAgain))
 
-    fun onGoOfflineTapped() = perform(flow.onGoOfflineTapped())
+    fun onGoOfflineTapped() = perform(flow.onGoOfflineTapped(onJob = duty.onJob.value))
+
+    /** Whether the rider may sign out now. Never mid-delivery (food audit M2); the screen says why. */
+    fun onSignOutTapped(): Boolean {
+        if (!duty.onJob.value) return true
+        _state.update { it.copy(message = warning(FINISH_FIRST)) }
+        return false
+    }
 
     private fun perform(effect: DutyEffect) {
         publishDuty()
@@ -166,6 +162,7 @@ class HomeViewModel @Inject constructor(
             }
             DutyEffect.StartService -> _events.tryEmit(HomeEvent.StartLocationService)
             DutyEffect.StopService -> duty.requestStop(OfflineReason.TOGGLED_OFF)
+            DutyEffect.RefusedOnJob -> _state.update { it.copy(message = warning(FINISH_FIRST)) }
         }
     }
 
@@ -189,6 +186,17 @@ class HomeViewModel @Inject constructor(
         publishDuty()
     }
 
+    private fun onDutyNotice(notice: DutyNotice) {
+        val text = when (notice) {
+            DutyNotice.OFFLINE_REFUSED ->
+                "You're still online: Feast couldn't take you offline. Finish any active delivery and try again."
+            DutyNotice.FIX_LOST_ON_JOB ->
+                "No GPS signal for two minutes. You're still on duty; move into the open so the customer can see you."
+            DutyNotice.FIX_BACK -> "GPS is back. The customer can see you again."
+        }
+        _state.update { it.copy(message = if (notice == DutyNotice.FIX_BACK) info(text) else warning(text)) }
+    }
+
     private fun publishDuty() {
         _state.update { it.copy(duty = flow.state) }
     }
@@ -210,22 +218,15 @@ class HomeViewModel @Inject constructor(
         }
     }
 
-    private suspend fun refreshOffersAndJob() {
-        val offers = rider.offers()
-        val job = rider.currentAssignment()
-        _state.update { current ->
-            current.copy(
-                offers = (offers as? FoodResult.Success)?.value ?: current.offers,
-                job = if (job is FoodResult.Success) job.value else current.job,
-            )
-        }
-        if (job is FoodResult.Success) duty.setOnJob(job.value?.let { JobActions.of(it).isActive } == true)
-    }
-
     private suspend fun loadEarnings() {
         val result = rider.earnings()
         if (result is FoodResult.Success) {
             _state.update { it.copy(deliveriesToday = result.value.deliveriesToday, earningsToday = RiderMoney.earnedToday(result.value)) }
         }
+    }
+
+    private companion object {
+        const val STOP_TIMEOUT_MILLIS = 5_000L
+        const val FINISH_FIRST = "Finish your delivery first. You stay online until it's delivered."
     }
 }

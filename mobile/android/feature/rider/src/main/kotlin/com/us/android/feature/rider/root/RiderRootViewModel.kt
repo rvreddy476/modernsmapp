@@ -84,8 +84,21 @@ class RiderRootViewModel @Inject constructor(
         deepLinks.consumed()
     }
 
-    /** Offline first — while the session can still tell the server — then sign out. */
+    /**
+     * The rider's own sign-out. Refused while a delivery is active (food audit
+     * M2): signing out takes the rider offline, which stops the customer's map
+     * and blocks the delivery code. Home says why and keeps the button greyed.
+     */
     fun signOut() {
+        if (duty.onJob.value) return
+        endSession()
+    }
+
+    /** The server already ended the session: there is nothing left to protect. */
+    fun endExpiredSession() = endSession()
+
+    /** Offline first — while the session can still tell the server — then sign out. */
+    private fun endSession() {
         viewModelScope.launch {
             if (duty.isOnline) {
                 rider.setAvailability(online = false)

@@ -32,11 +32,13 @@ import com.us.android.feature.kitchen.ui.KitchenPill
 import com.us.android.feature.kitchen.ui.KitchenScreen
 import com.us.android.feature.kitchen.ui.LabeledValue
 import com.us.android.feature.kitchen.ui.PillTone
+import com.us.android.feature.kitchen.ui.SecureScreen
 import com.us.android.feature.kitchen.ui.datePart
 
 @Composable
 fun FssaiScreen(onBack: () -> Unit, viewModel: FssaiViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    SecureScreen()
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
         if (uri != null) viewModel.onPhotoPicked(uri.toString())
     }

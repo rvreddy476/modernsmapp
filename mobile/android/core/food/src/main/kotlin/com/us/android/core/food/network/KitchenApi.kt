@@ -84,6 +84,15 @@ interface KitchenApi {
     @GET("v1/food/partner/restaurants/{restaurantId}/kitchen-queue")
     suspend fun kitchenQueue(@Path("restaurantId") restaurantId: String): Response<ApiEnvelope<KitchenQueueDto>>
 
+    /**
+     * One order WITH its items (handler_b8.go GetPartnerOrder; golden
+     * partner_order_get_200.json). 404 FOOD_NOT_FOUND unless the order is at
+     * one of the caller's restaurants. The restaurant list route never carries
+     * items, so the order detail reads this.
+     */
+    @GET("v1/food/partner/orders/{orderId}")
+    suspend fun getOrder(@Path("orderId") orderId: String): Response<ApiEnvelope<PartnerOrderDto>>
+
     /** CONFIRMED → PREPARING. */
     @POST("v1/food/partner/orders/{orderId}/accept")
     suspend fun acceptOrder(

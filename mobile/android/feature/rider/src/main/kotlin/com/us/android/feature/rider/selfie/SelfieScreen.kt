@@ -24,6 +24,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -46,12 +47,16 @@ import com.us.android.feature.rider.ui.MessagePane
 import com.us.android.feature.rider.ui.RiderCard
 import com.us.android.feature.rider.ui.RiderPill
 import com.us.android.feature.rider.ui.RiderScreen
+import com.us.android.feature.rider.ui.SecureScreen
 import com.us.android.feature.rider.ui.contentPadding
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun SelfieScreen(onBack: () -> Unit, viewModel: SelfieViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    SecureScreen()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var cameraGranted by remember { mutableStateOf(context.cameraGranted()) }
@@ -144,7 +149,11 @@ fun SelfieScreen(onBack: () -> Unit, viewModel: SelfieViewModel = hiltViewModel(
 
 @Composable
 private fun ShotPreview(shot: SelfieShot) {
-    val bitmap = remember(shot.path) { decodeUpright(shot.path) }
+    // Decoding a camera JPEG and reading its EXIF is disk work: off the main thread (audit L8).
+    val decoded by produceState<Bitmap?>(initialValue = null, shot.path) {
+        value = withContext(Dispatchers.IO) { decodeUpright(shot.path) }
+    }
+    val bitmap = decoded
     if (bitmap != null) {
         Image(
             bitmap = bitmap.asImageBitmap(),

@@ -262,9 +262,22 @@ fun hiddenChatSafePush(data: Map<String, String>): Map<String, String> {
     }
 }
 
-/** Delivery/service Partner is not a restaurant, seller or customer notification destination. */
-internal fun acceptsInstalledAppNotification(app: PushApp, type: String?): Boolean =
-    if (app == PushApp.FEAST_KITCHEN) type == "food_order_new" || type?.startsWith("food_kitchen_") == true || type?.startsWith("food.restaurant.") == true
-    else app != PushApp.PARTNER || type?.let {
-        it.startsWith("doorstep.pro.") || it.startsWith("food_delivery_") || it.startsWith("captain.") || it.startsWith("commerce.delivery.")
+/**
+ * Delivery/service Partner is not a restaurant, seller or customer notification destination.
+ * Feast Rider (food audit H1, now that it keeps the FCM service) presents only its own
+ * `food_delivery_*` pushes: never a customer's or a kitchen's.
+ */
+internal fun acceptsInstalledAppNotification(app: PushApp, type: String?): Boolean = when (app) {
+    PushApp.FEAST_KITCHEN ->
+        type == "food_order_new" ||
+            type?.startsWith("food_kitchen_") == true ||
+            type?.startsWith("food.restaurant.") == true
+    PushApp.FEAST_RIDER -> type?.startsWith("food_delivery_") == true
+    PushApp.PARTNER -> type?.let {
+        it.startsWith("doorstep.pro.") ||
+            it.startsWith("food_delivery_") ||
+            it.startsWith("captain.") ||
+            it.startsWith("commerce.delivery.")
     } == true
+    else -> true
+}

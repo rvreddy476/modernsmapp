@@ -72,7 +72,6 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <category android:name="android.intent.category.BROWSABLE" />
                 <data android:scheme="https" />
-                <data android:scheme="http" />
                 <data android:host="${riderAppLinkHost}" />
                 <data android:path="/rider/digilocker/return" />
                 <data android:pathPrefix="/rider/offers/" />
@@ -89,13 +88,14 @@
             android:foregroundServiceType="location" />
 
         <!--
-          Momentum's FCM service arrives with :core:notifications. It presents
-          Momentum's push types, none of which a rider receives, and FCM is off
-          (no google-services.json). Removed rather than left dormant.
+          :core:notifications' FCM service (UsMessagingService) is KEPT (food
+          audit H1): notification-service sends `food_delivery_offer` to the
+          feast_rider app, data-only and high priority, and the presenter draws
+          it on rider_job_offer with its countdown. PushApp.FEAST_RIDER limits
+          what it presents to food_delivery_* types. It stays dormant until
+          this app has a google-services.json; until then RiderLocationService
+          alerts offers from the in-app stream while the rider is on duty.
         -->
-        <service
-            android:name="com.us.android.core.notifications.UsMessagingService"
-            tools:node="remove" />
     </application>
 
 </manifest>

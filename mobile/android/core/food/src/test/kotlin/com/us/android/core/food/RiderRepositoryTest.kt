@@ -19,6 +19,7 @@ import org.junit.Test
 import retrofit2.Retrofit
 import retrofit2.converter.kotlinx.serialization.asConverterFactory
 import java.io.File
+import java.time.Instant
 
 /** The rider routes on the wire: paths, headers, bodies, and the "nothing yet" 404s read as null. */
 class RiderRepositoryTest {
@@ -118,7 +119,22 @@ class RiderRepositoryTest {
     fun `a null offers list reads as empty`() {
         enqueue("""{"data":{"offers":null}}""")
 
-        assertThat(runBlocking { repository.offers() }).isEqualTo(FoodResult.Success(emptyList<Any>()))
+        val inbox = runBlocking { repository.offers() } as FoodResult.Success
+        assertThat(inbox.value.value).isEmpty()
+    }
+
+    @Test
+    fun `offers carry the server clock from the Date header, so a countdown never reads the device clock`() {
+        server.enqueue(
+            MockResponse.Builder().code(200).addHeader("Content-Type", "application/json")
+                .addHeader("Date", "Sun, 08 Nov 2026 06:30:05 GMT")
+                .body(fixture("delivery_offers_me_get_200.json")).build(),
+        )
+
+        val inbox = runBlocking { repository.offers() } as FoodResult.Success
+
+        assertThat(inbox.value.serverTime).isEqualTo(Instant.parse("2026-11-08T06:30:05Z"))
+        assertThat(inbox.value.value).isNotEmpty()
     }
 
     @Test

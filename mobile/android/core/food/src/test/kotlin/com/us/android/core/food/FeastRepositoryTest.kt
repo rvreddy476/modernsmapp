@@ -209,4 +209,47 @@ class FeastRepositoryTest {
         assertThat(Paise(22_550).toShortRupeeText()).isEqualTo("₹225.50")
         assertThat(Paise(-500).toRupeeText()).isEqualTo("-₹5.00")
     }
+
+    @Test
+    fun `a refund ticket is filed against the order under the refund category`() {
+        val ticket = """{"id":"t-1","order_id":"o-1","category":"refund",""" +
+            """"subject":"Refund request for order FG1","status":"open"}"""
+        enqueue("""{"data":$ticket}""", code = 201)
+
+        val result = runBlocking { repository.createRefundTicket("o-1", "FG1", "  cold food  ") }
+
+        val request = server.takeRequest()
+        assertThat(request.method).isEqualTo("POST")
+        assertThat(request.target).isEqualTo("/v1/food/support/tickets")
+        val expected = """{"order_id":"o-1","category":"refund",""" +
+            """"subject":"Refund request for order FG1","detail":"cold food"}"""
+        assertThat(request.body?.utf8()).isEqualTo(expected)
+        assertThat((result as FoodResult.Success).value.id).isEqualTo("t-1")
+    }
+
+    @Test
+    fun `a refund request sends exact rupees and its ticket, and reads the amount back as paise`() {
+        val refund = """{"id":"rr-1","order_id":"o-1","ticket_id":"t-1","amount":649.12,"status":"requested"}"""
+        enqueue("""{"data":$refund}""", code = 201)
+
+        val result = runBlocking { repository.requestRefund("o-1", "t-1", Paise(64_912), "Kitchen had started") }
+
+        val request = server.takeRequest()
+        assertThat(request.target).isEqualTo("/v1/food/refunds")
+        assertThat(request.body?.utf8())
+            .isEqualTo("""{"order_id":"o-1","amount":649.12,"reason":"Kitchen had started","ticket_id":"t-1"}""")
+        assertThat((result as FoodResult.Success).value.amount).isEqualTo(Paise(64_912))
+    }
+
+    @Test
+    fun `a refund above what is left keeps the server's code`() {
+        enqueue(
+            """{"error":{"code":"FOOD_REFUND_AMOUNT_INVALID","message":"refund amount exceeds remaining balance"}}""",
+            code = 422,
+        )
+
+        val result = runBlocking { repository.requestRefund("o-1", null, Paise(64_912), "Kitchen had started") }
+
+        assertThat((result as FoodResult.Failure).error.code).isEqualTo("FOOD_REFUND_AMOUNT_INVALID")
+    }
 }

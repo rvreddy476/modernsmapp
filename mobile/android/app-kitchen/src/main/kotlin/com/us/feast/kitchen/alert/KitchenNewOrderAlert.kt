@@ -18,9 +18,12 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.us.android.core.notifications.NotificationChannelSpec
 import com.us.android.feature.kitchen.queue.NewOrderAlert
+import com.us.android.feature.kitchen.queue.PushRingHold
 import com.us.feast.kitchen.KitchenActivity
 import com.us.feast.kitchen.R
 import dagger.hilt.android.qualifiers.ApplicationContext
+import java.time.Duration
+import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -33,7 +36,9 @@ import javax.inject.Singleton
  * is opened or the orders are answered. Never both at once.
  *
  * Called by the order queue on every tick; each call is cheap and idempotent.
- * Main thread only (the queue's ViewModel scope).
+ * A `food_order_new` push rings it too ([ringFromPush]), before the queue has
+ * the order; [PushRingHold] keeps the stale queue from silencing that ring.
+ * Main thread only (the queue's ViewModel scope; the push handler posts here).
  */
 @Singleton
 class KitchenNewOrderAlert @Inject constructor(
@@ -42,8 +47,10 @@ class KitchenNewOrderAlert @Inject constructor(
 
     private var player: MediaPlayer? = null
     private var postedCount = NOT_POSTED
+    private val hold = PushRingHold()
 
     override fun ring(waitingOrders: Int) {
+        hold.queueRang()
         if (isForeground()) {
             cancelNotification()
             startLoop()
@@ -54,8 +61,20 @@ class KitchenNewOrderAlert @Inject constructor(
     }
 
     override fun silence() {
+        if (!hold.queueMaySilence(Instant.now())) return
         stopLoop()
         cancelNotification()
+    }
+
+    override fun ringFromPush(ringFor: Duration) {
+        hold.pushed(Instant.now())
+        if (isForeground()) {
+            cancelNotification()
+            startLoop()
+        } else {
+            stopLoop()
+            postNotification(waitingOrders = PUSHED, timeout = ringFor)
+        }
     }
 
     private fun isForeground(): Boolean =
@@ -95,8 +114,8 @@ class KitchenNewOrderAlert @Inject constructor(
     }
 
     @SuppressLint("MissingPermission") // checked below
-    private fun postNotification(waitingOrders: Int) {
-        if (waitingOrders == postedCount) return
+    private fun postNotification(waitingOrders: Int, timeout: Duration? = null) {
+        if (waitingOrders == postedCount && timeout == null) return
         val manager = NotificationManagerCompat.from(context)
         if (!manager.areNotificationsEnabled()) return
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
@@ -112,20 +131,22 @@ class KitchenNewOrderAlert @Inject constructor(
         )
         val notification = NotificationCompat.Builder(context, NotificationChannelSpec.KITCHEN_NEW_ORDER.id)
             .setSmallIcon(R.drawable.ic_stat_new_order)
-            .setContentTitle(if (waitingOrders == 1) "New order waiting" else "$waitingOrders new orders waiting")
+            .setContentTitle(if (waitingOrders <= 1) "New order waiting" else "$waitingOrders new orders waiting")
             .setContentText("Accept before the timer runs out.")
             .setCategory(NotificationCompat.CATEGORY_ALARM)
             .setPriority(NotificationCompat.PRIORITY_MAX)
             .setContentIntent(open)
             .setAutoCancel(true)
+            .apply { timeout?.let { setTimeoutAfter(it.toMillis()) } }
             .build()
             .apply { flags = flags or Notification.FLAG_INSISTENT }
         manager.notify(NOTIFICATION_ID, notification)
         postedCount = waitingOrders
     }
 
+    // Unconditional: a notification posted by an earlier process (killed while it looped) has no
+    // count here, and must still stop once every order is answered (food audit L3).
     private fun cancelNotification() {
-        if (postedCount == NOT_POSTED) return
         NotificationManagerCompat.from(context).cancel(NOTIFICATION_ID)
         postedCount = NOT_POSTED
     }
@@ -133,5 +154,8 @@ class KitchenNewOrderAlert @Inject constructor(
     private companion object {
         const val NOTIFICATION_ID = 4101
         const val NOT_POSTED = -1
+
+        /** A push-rung alarm: the queue's first count always replaces it. */
+        const val PUSHED = 0
     }
 }

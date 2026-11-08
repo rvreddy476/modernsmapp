@@ -83,6 +83,9 @@ class KitchenRepository @Inject constructor(
     suspend fun kitchenQueue(restaurantId: String): FoodResult<List<KitchenOrderDto>> =
         foodCall(json) { api.kitchenQueue(restaurantId) }.map { it.orders }
 
+    /** One order with its items; Failure(NotFound) when it is not this owner's. */
+    suspend fun order(orderId: String): FoodResult<PartnerOrderDto> = foodCall(json) { api.getOrder(orderId) }
+
     /** [idempotencyKey] must be reused when the SAME user action is retried. */
     suspend fun transition(
         orderId: String,

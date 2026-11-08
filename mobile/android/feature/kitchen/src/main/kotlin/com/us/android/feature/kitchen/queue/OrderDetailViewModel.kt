@@ -10,8 +10,8 @@ import com.us.android.core.food.repository.FoodResult
 import com.us.android.core.food.repository.KitchenOrderAction
 import com.us.android.core.food.repository.KitchenRepository
 import com.us.android.core.food.repository.code
+import com.us.android.core.food.repository.outcomeUnknown
 import com.us.android.feature.kitchen.navigation.requireArg
-import com.us.android.feature.kitchen.navigation.restaurantId
 import com.us.android.feature.kitchen.ui.asMessage
 import com.us.android.feature.kitchen.ui.success
 import com.us.android.feature.kitchen.ui.userMessage
@@ -31,6 +31,8 @@ data class OrderDetailUiState(
     val pickupCode: String = "",
     val pickupError: String? = null,
     val verifying: Boolean = false,
+    /** Too many wrong codes for this assignment: the server takes no more, so neither does the field. */
+    val pickupLocked: Boolean = false,
     val markingReady: Boolean = false,
     val message: UsMessage? = null,
 )
@@ -38,8 +40,8 @@ data class OrderDetailUiState(
 /**
  * One order: its items and bill, "mark ready", and the pickup handover.
  *
- * ROUTE GAP: there is no partner `GET /orders/:id`, so the order is found in
- * the restaurant's order list.
+ * The order is read by id (`GET /partner/orders/:id`), which carries its items:
+ * the restaurant's order list never does, and holds only the latest 100 orders.
  */
 @HiltViewModel
 class OrderDetailViewModel @Inject constructor(
@@ -48,7 +50,6 @@ class OrderDetailViewModel @Inject constructor(
     updates: com.us.android.core.notifications.NotificationUpdates = com.us.android.core.notifications.NotificationUpdates(),
 ) : ViewModel() {
 
-    private val restaurantId = savedStateHandle.restaurantId()
     private val orderId = savedStateHandle.requireArg("orderId")
     private var readyKey: String? = null
 
@@ -62,18 +63,15 @@ class OrderDetailViewModel @Inject constructor(
 
     fun load() {
         viewModelScope.launch {
-            when (val result = kitchen.orders(restaurantId)) {
-                is FoodResult.Success -> {
-                    val order = result.value.firstOrNull { it.id == orderId }
-                    _state.update {
-                        it.copy(
-                            loading = false,
-                            order = order ?: it.order,
-                            loadError = if (order == null && it.order == null) "This order is no longer in your list." else null,
-                        )
-                    }
+            when (val result = kitchen.order(orderId)) {
+                is FoodResult.Success -> _state.update {
+                    it.copy(loading = false, order = result.value, loadError = null)
                 }
-                is FoodResult.Failure -> _state.update { it.copy(loading = false, loadError = result.error.userMessage()) }
+                // A refresh that fails keeps the order already on screen; only a first load shows the error.
+                is FoodResult.Failure -> _state.update { current ->
+                    val shown = current.order != null
+                    current.copy(loading = false, loadError = if (shown) null else loadMessage(result.error))
+                }
             }
         }
     }
@@ -105,7 +103,7 @@ class OrderDetailViewModel @Inject constructor(
                     }
                 }
                 is FoodResult.Failure -> {
-                    if (result.error !is FoodError.Network) readyKey = null
+                    if (!result.error.outcomeUnknown) readyKey = null
                     _state.update { it.copy(markingReady = false, message = result.error.asMessage()) }
                     load()
                 }
@@ -114,6 +112,7 @@ class OrderDetailViewModel @Inject constructor(
     }
 
     fun verifyPickup() {
+        if (_state.value.verifying || _state.value.pickupLocked) return
         val code = _state.value.pickupCode.trim()
         if (code.isEmpty()) {
             _state.update { it.copy(pickupError = "Enter the code the rider shows you") }
@@ -132,6 +131,7 @@ class OrderDetailViewModel @Inject constructor(
                     val fieldMessage = pickupMessage(result.error)
                     current.copy(
                         verifying = false,
+                        pickupLocked = result.error.code == PICKUP_LOCKED,
                         pickupError = fieldMessage,
                         message = if (fieldMessage == null) result.error.asMessage() else null,
                     )
@@ -141,14 +141,20 @@ class OrderDetailViewModel @Inject constructor(
     }
 
     private fun pickupMessage(error: FoodError): String? = when {
+        error.code == PICKUP_LOCKED -> "Too many wrong codes for this order. Contact Feast support to hand it over."
         error.code == "FOOD_DELIVERY_ASSIGNMENT_NOT_READY" -> "No rider has this order yet. Wait for the rider to arrive."
         error.code == "PICKUP_VERIFY_FAILED" ||
             (error is FoodError.Unexpected && error.status == HTTP_BAD_REQUEST) -> "That code doesn't match. Ask the rider to read it again."
         else -> null
     }
 
+    private fun loadMessage(error: FoodError): String =
+        if (error is FoodError.NotFound) NOT_THIS_RESTAURANTS else error.userMessage()
+
     private companion object {
         const val MAX_CODE = 8
         const val HTTP_BAD_REQUEST = 400
+        const val PICKUP_LOCKED = "FOOD_PICKUP_CODE_ATTEMPTS_EXCEEDED"
+        const val NOT_THIS_RESTAURANTS = "This order isn't one of this restaurant's, or it no longer exists."
     }
 }

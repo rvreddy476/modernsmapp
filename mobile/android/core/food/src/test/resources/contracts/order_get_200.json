@@ -119,7 +119,8 @@
         "adviser_notice": "Tax rates pending adviser confirmation"
       },
       "needs_adviser_confirmation": true
-    }
+    },
+    "can_cancel": true
   },
   "meta": {}
 }

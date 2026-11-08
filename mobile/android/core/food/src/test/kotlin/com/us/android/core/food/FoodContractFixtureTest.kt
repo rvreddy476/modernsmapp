@@ -6,11 +6,14 @@ import com.us.android.core.food.model.Paise
 import com.us.android.core.food.network.AcceptingDto
 import com.us.android.core.food.network.ComplianceDto
 import com.us.android.core.food.network.DeliveryAssignmentDto
+import com.us.android.core.food.network.DeliveryDocumentDto
 import com.us.android.core.food.network.DeliveryEarningsDto
+import com.us.android.core.food.network.DeliveryKycDto
+import com.us.android.core.food.network.DeliveryLocationDto
 import com.us.android.core.food.network.DeliveryOffersDto
+import com.us.android.core.food.network.DigiLockerStartDto
 import com.us.android.core.food.network.DropAreaDto
 import com.us.android.core.food.network.DropSummaryDto
-import com.us.android.core.food.network.ItemsDto
 import com.us.android.core.food.network.FeastAddressDto
 import com.us.android.core.food.network.FeastCartDto
 import com.us.android.core.food.network.FeastInvoiceDto
@@ -18,23 +21,21 @@ import com.us.android.core.food.network.FeastMenuDto
 import com.us.android.core.food.network.FeastOrderDto
 import com.us.android.core.food.network.FeastRestaurantDto
 import com.us.android.core.food.network.FeastTrackingDto
-import com.us.android.core.food.network.OrderPaymentDto
-import com.us.android.core.food.network.PaymentIntentDto
-import com.us.android.core.food.network.DeliveryDocumentDto
-import com.us.android.core.food.network.DeliveryKycDto
-import com.us.android.core.food.network.DeliveryLocationDto
-import com.us.android.core.food.network.DigiLockerStartDto
-import com.us.android.core.food.network.RealtimeTokenDto
-import com.us.android.core.food.network.VerifyDeliveryDto
-import com.us.android.core.food.repository.code
 import com.us.android.core.food.network.FoodErrorEnvelopeDto
 import com.us.android.core.food.network.FssaiDto
+import com.us.android.core.food.network.ItemsDto
 import com.us.android.core.food.network.LocationDto
 import com.us.android.core.food.network.OperatingHoursDto
+import com.us.android.core.food.network.OrderPaymentDto
+import com.us.android.core.food.network.PartnerOrderDto
+import com.us.android.core.food.network.PaymentIntentDto
 import com.us.android.core.food.network.PayoutAccountDto
+import com.us.android.core.food.network.RealtimeTokenDto
 import com.us.android.core.food.network.RestaurantDocumentDto
 import com.us.android.core.food.network.SubmitDto
+import com.us.android.core.food.network.VerifyDeliveryDto
 import com.us.android.core.food.repository.FoodError
+import com.us.android.core.food.repository.code
 import com.us.android.core.network.ApiEnvelope
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
@@ -57,6 +58,7 @@ import java.io.File
 class FoodContractFixtureTest {
 
     private val strict = Json { ignoreUnknownKeys = false }
+    private val lenient = Json { ignoreUnknownKeys = true }
 
     private val contractsDir = File("src/test/resources/contracts")
 
@@ -409,6 +411,8 @@ class FoodContractFixtureTest {
             assertThat(it.etaAt).isNull()
             assertThat(it.items.single().lineTotalPaise).isEqualTo(Paise(50_000))
             assertThat(it.history.single().toStatus).isEqualTo("PLACED")
+            // Audit M5: CONFIRMED, the kitchen has not started.
+            assertThat(it.canCancel).isTrue()
         },
         "order_get_200_out_for_delivery.json" to data(FeastOrderDto.serializer()) {
             assertThat(it.status).isEqualTo("OUT_FOR_DELIVERY")
@@ -417,22 +421,43 @@ class FoodContractFixtureTest {
             assertThat(it.etaSource).isEqualTo("google")
             assertThat(it.money).isNull()
             assertThat(it.totals.finalAmount).isEqualTo(Paise(30_162))
+            assertThat(it.canCancel).isFalse()
         },
         "order_place_201.json" to data(FeastOrderDto.serializer()) {
             assertThat(it.status).isEqualTo("PAYMENT_PENDING")
             assertThat(it.money?.totalsPaise?.finalAmountPaise).isEqualTo(Paise(64_912))
             assertThat(it.history.single().toStatus).isEqualTo("PAYMENT_PENDING")
+            // Unpaid: the customer cannot cancel; the hold lapses on its own.
+            assertThat(it.canCancel).isFalse()
         },
         "orders_get_200.json" to data(ItemsDto.serializer(FeastOrderDto.serializer())) {
             val order = it.items.single()
             assertThat(order.status).isEqualTo("CONFIRMED")
             assertThat(order.totals.finalAmount).isEqualTo(Paise(64_912))
             assertThat(order.money).isNull()
+            assertThat(order.canCancel).isTrue()
         },
         "order_cancel_post_200.json" to data(FeastOrderDto.serializer()) {
             assertThat(it.status).isEqualTo("CANCELLED_BY_CUSTOMER")
             assertThat(it.history.map { h -> h.toStatus }).containsExactly("PAYMENT_PENDING", "CANCELLED_BY_CUSTOMER").inOrder()
         },
+        "order_cancel_post_409_after_preparing.json" to
+            coded("FOOD_CANCEL_AFTER_PREPARING", FoodError.Unexpected::class.java),
+
+        // ── Kitchen: one order (audit H2) and the pickup lockout (audit L8) ─
+        // PartnerOrderDto reads only what the kitchen shows; the route carries
+        // the full customer money block as well, so this one decodes the way
+        // production does (unknown keys ignored) and pins what the screen uses.
+        "partner_order_get_200.json" to lenientData(PartnerOrderDto.serializer()) {
+            assertThat(it.status).isEqualTo("CONFIRMED")
+            val item = it.items.single()
+            assertThat(item.name).isEqualTo("Paneer Tikka")
+            assertThat(item.quantity).isEqualTo(2)
+            assertThat(item.lineTotalPaise).isEqualTo(Paise(50_000))
+            assertThat(it.totals.finalAmount).isEqualTo(Paise(64_912))
+        },
+        "partner_verify_pickup_post_429_attempts_exceeded.json" to
+            coded("FOOD_PICKUP_CODE_ATTEMPTS_EXCEEDED", FoodError.Unexpected::class.java),
         "order_tracking_get_200.json" to data(FeastTrackingDto.serializer()) {
             assertThat(it.status).isEqualTo("OUT_FOR_DELIVERY")
             assertThat(it.deliveryLocation?.latitude).isEqualTo(12.9751)
@@ -541,6 +566,12 @@ class FoodContractFixtureTest {
 
     private fun <T> data(serializer: KSerializer<T>, check: (T) -> Unit): (String, String) -> Unit = { _, raw ->
         val envelope = strict.decodeFromString(ApiEnvelope.serializer(serializer), raw)
+        assertThat(envelope.error).isNull()
+        check(checkNotNull(envelope.data))
+    }
+
+    private fun <T> lenientData(serializer: KSerializer<T>, check: (T) -> Unit): (String, String) -> Unit = { _, raw ->
+        val envelope = lenient.decodeFromString(ApiEnvelope.serializer(serializer), raw)
         assertThat(envelope.error).isNull()
         check(checkNotNull(envelope.data))
     }

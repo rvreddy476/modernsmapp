@@ -27,9 +27,14 @@ import com.us.android.core.food.repository.RiderRepository
 import com.us.android.core.model.SessionState
 import com.us.android.core.notifications.NotificationChannelSpec
 import com.us.android.feature.rider.R
+import com.us.android.feature.rider.offers.OfferWatchHold
+import com.us.android.feature.rider.offers.RiderClock
+import com.us.android.feature.rider.offers.RiderOfferAlerts
+import com.us.android.feature.rider.offers.RiderOfferWatch
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -67,11 +72,23 @@ class RiderLocationService : Service() {
     @Inject
     lateinit var session: SessionStateProvider
 
+    /** The process's offer feed, held for as long as the rider is on duty (food audit H1). */
+    @Inject
+    lateinit var offers: RiderOfferWatch
+
+    @Inject
+    lateinit var offerAlerts: RiderOfferAlerts
+
+    @Inject
+    lateinit var clock: RiderClock
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val cadence = LocationCadence(clock = { SystemClock.elapsedRealtime() })
     private val pings = Channel<LocationFix>(Channel.CONFLATED)
     private var client: FusedLocationProviderClient? = null
     private var running = false
+    private var offerHold: OfferWatchHold? = null
+    private var offerAlerting: Job? = null
 
     private val callback = object : LocationCallback() {
         override fun onLocationResult(result: LocationResult) {
@@ -91,6 +108,7 @@ class RiderLocationService : Service() {
 
     override fun onDestroy() {
         client?.removeLocationUpdates(callback)
+        releaseOffers()
         if (running) duty.report(DutyStatus.Offline(cadence.offlineReason))
         scope.cancel()
         super.onDestroy()
@@ -119,6 +137,7 @@ class RiderLocationService : Service() {
             }
         }
         scope.launch { duty.onJob.collect { perform(cadence.onJobChanged(it)) } }
+        watchOffers()
         scope.launch {
             duty.stopRequests.collect { reason ->
                 perform(if (reason == OfflineReason.SIGNED_OUT) cadence.onSignedOut() else cadence.onToggledOff())
@@ -143,6 +162,8 @@ class RiderLocationService : Service() {
                 is CadenceEffect.Request -> requestUpdates(effect.spec)
                 is CadenceEffect.Ping -> pings.trySend(effect.fix)
                 is CadenceEffect.GoOffline -> goOffline(effect.reason)
+                CadenceEffect.FixLostOnJob -> duty.notice(DutyNotice.FIX_LOST_ON_JOB)
+                CadenceEffect.FixBack -> duty.notice(DutyNotice.FIX_BACK)
             }
         }
     }
@@ -167,18 +188,57 @@ class RiderLocationService : Service() {
         }
     }
 
+    // The rider's own "Go offline" asks the server FIRST and stops only on its yes (food audit M2): with
+    // partnerwork on, food-service refuses while a job is active, and stopping anyway would leave the
+    // server thinking the rider is online with no pings arriving. A refusal or no answer keeps the rider
+    // on duty, and Home says so. Every other reason (no fix, revoked, signed out) stops at once.
     private fun goOffline(reason: OfflineReason) {
+        if (reason != OfflineReason.TOGGLED_OFF) {
+            endDuty(reason, tellServer = reason != OfflineReason.SIGNED_OUT)
+            return
+        }
+        scope.launch {
+            val answer = withContext(NonCancellable) { rider.setAvailability(online = false) }
+            if (answer is FoodResult.Success) {
+                endDuty(reason, tellServer = false)
+            } else if (running) {
+                perform(cadence.start(onJob = duty.onJob.value))
+                duty.report(DutyStatus.Online(lastPingOk = null))
+                duty.notice(DutyNotice.OFFLINE_REFUSED)
+            }
+        }
+    }
+
+    private fun endDuty(reason: OfflineReason, tellServer: Boolean) {
         client?.removeLocationUpdates(callback)
         running = false
+        releaseOffers()
         duty.report(DutyStatus.Offline(reason))
         scope.launch {
             // After a sign-out the session is gone; Home already told the server.
-            if (reason != OfflineReason.SIGNED_OUT) {
-                withContext(NonCancellable) { rider.setAvailability(online = false) }
-            }
+            if (tellServer) withContext(NonCancellable) { rider.setAvailability(online = false) }
             ServiceCompat.stopForeground(this@RiderLocationService, ServiceCompat.STOP_FOREGROUND_REMOVE)
             stopSelf()
         }
+    }
+
+    // While on duty an offer must reach the rider whatever is on screen: a heads-up per new offer,
+    // taken down when it leaves the list, timed on the server's clock.
+    private fun watchOffers() {
+        if (offerHold == null) offerHold = offers.hold()
+        offerAlerting = scope.launch {
+            offers.state.collect { snapshot ->
+                offerAlerts.update(snapshot.offers, snapshot.clock.serverNow(clock.now()))
+            }
+        }
+    }
+
+    private fun releaseOffers() {
+        offerAlerting?.cancel()
+        offerAlerting = null
+        offerHold?.release()
+        offerHold = null
+        offerAlerts.clearAll()
     }
 
     private fun hasLocationPermission(): Boolean =
