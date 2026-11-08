@@ -11,10 +11,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
 import androidx.compose.foundation.layout.consumeWindowInsets
-import androidx.compose.foundation.layout.only
-import androidx.compose.foundation.layout.plus
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.only
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.plus
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.ScaffoldDefaults
@@ -54,8 +54,6 @@ import com.us.android.core.ui.ChromeVisibility
 import com.us.android.core.ui.LocalChromeVisibility
 import com.us.android.explore.ExploreScreen
 import com.us.android.explore.LauncherApp
-import com.us.android.features.navigateToProductUnavailable
-import com.us.android.features.productUnavailableScreen
 import com.us.android.feature.auth.login.LoginRoute
 import com.us.android.feature.auth.navigation.SignInSecurityDestinations
 import com.us.android.feature.auth.navigation.navigateToChangePassword
@@ -71,36 +69,32 @@ import com.us.android.feature.call.navigation.navigateToCallHistory
 import com.us.android.feature.call.navigation.navigateToCallSurface
 import com.us.android.feature.call.navigation.navigateToOutgoingCall
 import com.us.android.feature.chat.navigation.ChatHomeRoute
+import com.us.android.feature.chat.navigation.ChatParityDestinations
 import com.us.android.feature.chat.navigation.ChatRequestRoute
 import com.us.android.feature.chat.navigation.ChatThreadRoute
 import com.us.android.feature.chat.navigation.CommunityDestinations
 import com.us.android.feature.chat.navigation.CommunityPageRoute
 import com.us.android.feature.chat.navigation.GroupCreateRoute
+import com.us.android.feature.chat.navigation.HiddenChatsDestinations
 import com.us.android.feature.chat.navigation.JoinByLinkRoute
+import com.us.android.feature.chat.navigation.ThreadParityDestinations
 import com.us.android.feature.chat.navigation.chatHomeScreen
 import com.us.android.feature.chat.navigation.chatInboxScreen
 import com.us.android.feature.chat.navigation.chatListScreens
 import com.us.android.feature.chat.navigation.chatLockSettingsScreen
+import com.us.android.feature.chat.navigation.chatParityScreens
 import com.us.android.feature.chat.navigation.chatRequestScreen
 import com.us.android.feature.chat.navigation.chatThreadScreen
-import com.us.android.feature.chat.navigation.ChatParityDestinations
-import com.us.android.feature.chat.navigation.ThreadParityDestinations
-import com.us.android.feature.chat.navigation.chatParityScreens
-import com.us.android.feature.chat.navigation.navigateToArchivedChats
-import com.us.android.feature.chat.navigation.navigateToChatSettings
-import com.us.android.feature.chat.navigation.navigateToNewMessage
-import com.us.android.feature.chat.navigation.navigateToSharedReels
 import com.us.android.feature.chat.navigation.communityScreens
 import com.us.android.feature.chat.navigation.groupCreateScreen
 import com.us.android.feature.chat.navigation.groupScreens
+import com.us.android.feature.chat.navigation.hiddenChatsScreens
+import com.us.android.feature.chat.navigation.navigateToArchivedChats
 import com.us.android.feature.chat.navigation.navigateToChatHome
 import com.us.android.feature.chat.navigation.navigateToChatLockSettings
-import com.us.android.feature.chat.navigation.HiddenChatsDestinations
-import com.us.android.feature.chat.navigation.hiddenChatsScreens
-import com.us.android.feature.chat.navigation.navigateToHiddenChats
-import com.us.android.feature.chat.navigation.navigateToHiddenChatsSettings
 import com.us.android.feature.chat.navigation.navigateToChatRequest
 import com.us.android.feature.chat.navigation.navigateToChatRequestsList
+import com.us.android.feature.chat.navigation.navigateToChatSettings
 import com.us.android.feature.chat.navigation.navigateToChatThread
 import com.us.android.feature.chat.navigation.navigateToCommunity
 import com.us.android.feature.chat.navigation.navigateToCommunityAdmins
@@ -110,8 +104,12 @@ import com.us.android.feature.chat.navigation.navigateToCommunityPost
 import com.us.android.feature.chat.navigation.navigateToGroupAddMembers
 import com.us.android.feature.chat.navigation.navigateToGroupCreate
 import com.us.android.feature.chat.navigation.navigateToGroupInfo
+import com.us.android.feature.chat.navigation.navigateToHiddenChats
+import com.us.android.feature.chat.navigation.navigateToHiddenChatsSettings
 import com.us.android.feature.chat.navigation.navigateToInvitations
 import com.us.android.feature.chat.navigation.navigateToJoinByLink
+import com.us.android.feature.chat.navigation.navigateToNewMessage
+import com.us.android.feature.chat.navigation.navigateToSharedReels
 import com.us.android.feature.chat.ui.home.ChatHomeDestinations
 import com.us.android.feature.commerce.navigation.mSellerScreens
 import com.us.android.feature.commerce.navigation.mStoreScreens
@@ -120,8 +118,10 @@ import com.us.android.feature.commerce.navigation.navigateToMStore
 import com.us.android.feature.dating.navigation.datingScreens
 import com.us.android.feature.dating.navigation.navigateToDating
 import com.us.android.feature.dating.navigation.navigateToDatingMatch
+import com.us.android.feature.dating.navigation.navigateToDatingPanicAlert
 import com.us.android.feature.dating.navigation.navigateToDatingReport
 import com.us.android.feature.dating.navigation.navigateToDatingSafety
+import com.us.android.feature.dating.navigation.navigateToDatingSharedLocation
 import com.us.android.feature.dating.navigation.navigateToDatingSparks
 import com.us.android.feature.dating.premium.DatingPaymentRequest
 import com.us.android.feature.doorstep.navigation.doorstepScreens
@@ -135,16 +135,16 @@ import com.us.android.feature.feast.navigation.navigateToFeast
 import com.us.android.feature.feed.navigation.FeedRoute
 import com.us.android.feature.feed.navigation.FriendsFeedRoute
 import com.us.android.feature.feed.navigation.feedScreen
-import com.us.android.feature.feed.navigation.friendsFeedScreen
 import com.us.android.feature.feed.navigation.followedHashtagScreens
+import com.us.android.feature.feed.navigation.friendsFeedScreen
 import com.us.android.feature.feed.navigation.hashtagPostsScreen
 import com.us.android.feature.feed.navigation.navigateToFollowedHashtagPosts
 import com.us.android.feature.feed.navigation.navigateToFollowedHashtags
 import com.us.android.feature.feed.navigation.navigateToHashtagPosts
-import com.us.android.feature.feed.navigation.navigateToSound
 import com.us.android.feature.feed.navigation.navigateToReelsExplore
-import com.us.android.feature.feed.navigation.reelsExploreScreen
+import com.us.android.feature.feed.navigation.navigateToSound
 import com.us.android.feature.feed.navigation.navigateToTrendingSounds
+import com.us.android.feature.feed.navigation.reelsExploreScreen
 import com.us.android.feature.feed.navigation.reelsScreen
 import com.us.android.feature.feed.navigation.soundScreen
 import com.us.android.feature.feed.navigation.trendingSoundsScreen
@@ -174,14 +174,14 @@ import com.us.android.feature.post.createhub.CreateSheet
 import com.us.android.feature.post.createhub.CreateSurface
 import com.us.android.feature.post.navigation.CaptureRoute
 import com.us.android.feature.post.navigation.ComposerRoute
-import com.us.android.feature.post.navigation.captureScreen
-import com.us.android.feature.post.navigation.navigateToCapture
 import com.us.android.feature.post.navigation.CreateRoute
 import com.us.android.feature.post.navigation.PostRoute
 import com.us.android.feature.post.navigation.StudioRoute
+import com.us.android.feature.post.navigation.captureScreen
 import com.us.android.feature.post.navigation.composerScreen
 import com.us.android.feature.post.navigation.createHubScreen
 import com.us.android.feature.post.navigation.draftScreens
+import com.us.android.feature.post.navigation.navigateToCapture
 import com.us.android.feature.post.navigation.navigateToCreate
 import com.us.android.feature.post.navigation.navigateToDraft
 import com.us.android.feature.post.navigation.navigateToDrafts
@@ -232,22 +232,24 @@ import com.us.android.feature.tube.navigation.navigateToCreditRequests
 import com.us.android.feature.tube.navigation.navigateToTube
 import com.us.android.feature.tube.navigation.navigateToTubeChannel
 import com.us.android.feature.tube.navigation.navigateToTubeCollection
-import com.us.android.feature.tube.navigation.navigateToTubeHistory
-import com.us.android.feature.tube.navigation.navigateToTubeTopic
-import com.us.android.feature.tube.navigation.navigateToTubeTopics
-import com.us.android.feature.tube.navigation.navigateToTubeTrending
 import com.us.android.feature.tube.navigation.navigateToTubeCollections
+import com.us.android.feature.tube.navigation.navigateToTubeHistory
 import com.us.android.feature.tube.navigation.navigateToTubeOffline
 import com.us.android.feature.tube.navigation.navigateToTubeSaved
 import com.us.android.feature.tube.navigation.navigateToTubeScheduled
 import com.us.android.feature.tube.navigation.navigateToTubeTab
+import com.us.android.feature.tube.navigation.navigateToTubeTopic
+import com.us.android.feature.tube.navigation.navigateToTubeTopics
+import com.us.android.feature.tube.navigation.navigateToTubeTrending
 import com.us.android.feature.tube.navigation.navigateToWatch
 import com.us.android.feature.tube.navigation.tubeScreens
+import com.us.android.features.navigateToProductUnavailable
+import com.us.android.features.productUnavailableScreen
+import com.us.android.push.COPYRIGHT_TYPES
 import com.us.android.push.DatingPushTarget
 import com.us.android.push.DoorstepPushTarget
 import com.us.android.push.LiveOpen
 import com.us.android.push.MEMBERSHIP_TYPES
-import com.us.android.push.COPYRIGHT_TYPES
 import com.us.android.push.PushDestinations
 import com.us.android.push.TYPE_CREDIT_ACCEPTED
 import com.us.android.push.TYPE_CREDIT_REQUEST
@@ -706,18 +708,25 @@ private suspend fun NavHostController.openPushDestination(
         "incoming_call", "incoming_video_call" -> navigateToCallSurface()
         "missed_call" -> navigateToCallHistory()
         // Dating (Wave 3): a spark opens incoming sparks; a match opens the
-        // match; a message opens the match and continues into its chat.
+        // match; a message opens the match and continues into its chat; a
+        // trusted contact's panic alert or shared location opens that one.
         PushDestinations.TYPE_DATING_SPARK,
         PushDestinations.TYPE_DATING_MATCH,
         PushDestinations.TYPE_DATING_MESSAGE,
         PushDestinations.TYPE_DATING_FIRST_MESSAGE,
         PushDestinations.TYPE_DATING_SCAM_ALERT,
         PushDestinations.TYPE_DATING_DATE_CHECKIN,
+        PushDestinations.TYPE_DATING_PANIC_ALERT,
+        PushDestinations.TYPE_DATING_LOCATION_SHARED,
         -> when (val target = PushDestinations.datingTargetOf(destination)) {
             DatingPushTarget.IncomingSparks -> navigateToDatingSparks()
             DatingPushTarget.Safety -> navigateToDatingSafety()
             is DatingPushTarget.Match ->
                 navigateToDatingMatch(target.matchId, openChat = target.openChat, checkIn = target.checkIn)
+            // Audit H1: a trusted contact's alert and a shared location open by
+            // id; the screens read the person and the point from the server.
+            is DatingPushTarget.PanicAlert -> navigateToDatingPanicAlert(target.alertId)
+            is DatingPushTarget.SharedLocation -> navigateToDatingSharedLocation(target.shareId)
             null -> Unit
         }
         // Mopedu (2026-09-18): every ride push opens the ride screen, which
@@ -1013,6 +1022,11 @@ private fun NavGraphBuilder.tabDestinations(
         // Mechanic M9: the match screen's Voice/Video, the same edge as chat's.
         onStartCall = { peerUserId, peerName, video, conversationId ->
             navController.navigateToOutgoingCall(peerUserId, peerName, video, conversationId)
+        },
+        // Audit L5: a report sent from a Pulse chat leaves the report and the
+        // chat (the person is blocked now); from anywhere else, just the report.
+        onReportedFromChat = {
+            if (!navController.popBackStack<ChatThreadRoute>(inclusive = true)) navController.popBackStack()
         },
     )
 

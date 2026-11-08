@@ -56,4 +56,50 @@ class PushDestinationsDatingTest {
         assertThat(PushDestinations.datingMatchIdOf("/chat/matches/m-1")).isNull()
         assertThat(PushDestinations.datingMatchIdOf(null)).isNull()
     }
+
+    // ── Dating audit H1: a trusted contact's safety pushes ──────────────────
+
+    private val alertId = "0b6f3c1e-8a2d-4c7e-9f10-2a3b4c5d6e7f"
+    private val shareId = "5d6e7f0b-6f3c-4c7e-8a2d-9f102a3b4c1e"
+
+    private fun safetyId(link: String?) = datingSafetyIdOf(link, PushDestinations.ALERTS_SEGMENT)
+
+    @Test
+    fun `a panic alert opens that alert, by the id in its deep link`() {
+        assertThat(target(PANIC, alertId, "/dating/safety/alerts/$alertId"))
+            .isEqualTo(DatingPushTarget.PanicAlert(alertId))
+        // Query and fragment are ignored; an upper-case id is the same id.
+        assertThat(target(PANIC, "", "/dating/safety/alerts/${alertId.uppercase()}?from=push#top"))
+            .isEqualTo(DatingPushTarget.PanicAlert(alertId))
+        // No deep link: the entity id, which notification-service sets to the same incident id.
+        assertThat(target(PANIC, alertId, ""))
+            .isEqualTo(DatingPushTarget.PanicAlert(alertId))
+    }
+
+    @Test
+    fun `a shared location opens that share`() {
+        assertThat(target(SHARED, shareId, "/dating/safety/shared-locations/$shareId"))
+            .isEqualTo(DatingPushTarget.SharedLocation(shareId))
+        assertThat(target(SHARED, shareId, ""))
+            .isEqualTo(DatingPushTarget.SharedLocation(shareId))
+    }
+
+    @Test
+    fun `a safety push whose id is not a UUID, or names the other kind, opens nothing`() {
+        // The old panic link carried coordinates and no id.
+        assertThat(target(PANIC, "", "/dating/safety?lat=17.440000&lng=78.390000")).isNull()
+        assertThat(target(PANIC, "../matches", "/dating/safety/alerts/../matches")).isNull()
+        assertThat(target(PANIC, "abc", "/dating/safety/alerts/abc")).isNull()
+        assertThat(target(PANIC, "", "/dating/safety/alerts/$alertId/extra")).isNull()
+        // A link of the other kind is not trusted for this type, and the bad entity id adds nothing.
+        assertThat(target(PANIC, "x", "/dating/safety/shared-locations/$shareId")).isNull()
+        assertThat(target(SHARED, "x", "/dating/safety/alerts/$alertId")).isNull()
+        assertThat(target(SHARED, "", "/dating/other/shared-locations/$shareId")).isNull()
+        assertThat(safetyId(null)).isNull()
+        assertThat(safetyId("/dating/safety/alerts/")).isNull()
+        assertThat(safetyId("/dating/safety/alerts/1-2-3-4-5")).isNull()
+    }
 }
+
+private const val PANIC = "dating.safety.panic.trusted_contact"
+private const val SHARED = "dating.safety.location_shared"

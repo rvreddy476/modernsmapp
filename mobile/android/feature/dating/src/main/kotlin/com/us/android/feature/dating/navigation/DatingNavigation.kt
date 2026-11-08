@@ -17,7 +17,6 @@ import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.feature.dating.DatingCopy
 import com.us.android.feature.dating.OnboardingStep
 import com.us.android.feature.dating.filters.FiltersScreen
-import com.us.android.feature.dating.profile.AboutMeScreen
 import com.us.android.feature.dating.home.DatingHomeScreen
 import com.us.android.feature.dating.home.HomeTab
 import com.us.android.feature.dating.home.MatchDetailScreen
@@ -32,6 +31,8 @@ import com.us.android.feature.dating.premium.DatingPaymentRequest
 import com.us.android.feature.dating.premium.PremiumScreen
 import com.us.android.feature.dating.privacy.BlocksScreen
 import com.us.android.feature.dating.privacy.PrivacyScreen
+import com.us.android.feature.dating.profile.AboutMeScreen
+import com.us.android.feature.dating.safety.PanicAlertScreen
 import com.us.android.feature.dating.safety.ReportPersonScreen
 import com.us.android.feature.dating.safety.SafetyScreen
 import com.us.android.feature.dating.safety.SharedLocationScreen
@@ -74,6 +75,14 @@ data class DatingSafetyRoute(val shareWith: String? = null)
 @Serializable
 data class DatingSharedLocationRoute(val shareId: String)
 
+/**
+ * A trusted contact's panic alert (audit H1), opened from its push by the
+ * alert id alone — the push carries no name and no coordinates; the screen
+ * reads both from the server.
+ */
+@Serializable
+data class DatingPanicAlertRoute(val alertId: String)
+
 @Serializable
 data object DatingPremiumRoute
 
@@ -111,6 +120,9 @@ data class DatingReportRoute(val userId: String, val messageId: String? = null, 
  * from the match screen (mechanic M9) the same way, through `:app`.
  * [onOpenPayment] and [onAbandonPayment] are supplied by `:app`, whose
  * Activity the payment sheet opens onto; this module never names the provider.
+ * [onReportedFromChat] leaves the report AND the chat it was opened from once
+ * the report went through (audit L5): the person is blocked, so their chat is
+ * no place to come back to. `:app` owns it because the chat route is chat's.
  */
 fun NavGraphBuilder.datingScreens(
     navController: NavController,
@@ -118,6 +130,7 @@ fun NavGraphBuilder.datingScreens(
     onOpenPayment: (DatingPaymentRequest) -> Unit,
     onAbandonPayment: (DatingPaymentRequest) -> Unit,
     onStartCall: (peerUserId: String, peerName: String, video: Boolean, conversationId: String) -> Unit = { _, _, _, _ -> },
+    onReportedFromChat: () -> Unit = { navController.popBackStack() },
 ) {
     navigation<DatingGraph>(startDestination = DatingRootRoute()) {
         composable<DatingRootRoute> { entry ->
@@ -184,6 +197,8 @@ fun NavGraphBuilder.datingScreens(
             SharedLocationScreen(onBack = navController::popBackStack)
         }
 
+        composable<DatingPanicAlertRoute> { PanicAlertScreen(onBack = navController::popBackStack) }
+
         composable<DatingPremiumRoute> {
             PremiumScreen(onBack = navController::popBackStack, onOpenPayment = onOpenPayment, onAbandonPayment = onAbandonPayment)
         }
@@ -207,7 +222,7 @@ fun NavGraphBuilder.datingScreens(
         }
 
         composable<DatingReportRoute> {
-            ReportPersonScreen(onBack = navController::popBackStack)
+            ReportPersonScreen(onBack = navController::popBackStack, onReported = onReportedFromChat)
         }
     }
 }
@@ -299,6 +314,12 @@ fun NavController.navigateToDatingMatch(matchId: String, openChat: Boolean, chec
 
 /** The safety centre, as a scam-alert push (mechanic M17, deep link `/dating/safety`) opens it. */
 fun NavController.navigateToDatingSafety() = navigate(DatingSafetyRoute())
+
+/** A trusted contact's panic alert push (audit H1): [alertId] is the only thing the push carried. */
+fun NavController.navigateToDatingPanicAlert(alertId: String) = navigate(DatingPanicAlertRoute(alertId))
+
+/** A "shared where they were with you" push: that share, read from the server. */
+fun NavController.navigateToDatingSharedLocation(shareId: String) = navigate(DatingSharedLocationRoute(shareId))
 
 /** The report sheet for someone in a Pulse chat (mechanic M13): [messageId] is the message that bothered the viewer. */
 fun NavController.navigateToDatingReport(userId: String, messageId: String?, name: String?) =

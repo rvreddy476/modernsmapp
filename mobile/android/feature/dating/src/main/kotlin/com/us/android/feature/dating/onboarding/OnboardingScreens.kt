@@ -60,6 +60,7 @@ import com.us.android.feature.dating.OnboardingStep
 import com.us.android.feature.dating.clips.ClipCopy
 import com.us.android.feature.dating.clips.ClipRules
 import com.us.android.feature.dating.clips.ClipStatus
+import com.us.android.feature.dating.location.DatingLocationPermissions
 import com.us.android.feature.dating.location.LocationEffect
 import com.us.android.feature.dating.location.LocationStep
 import com.us.android.feature.dating.network.DatingProfileDto
@@ -302,7 +303,9 @@ private fun LocationStepContent(state: OnboardingUiState, viewModel: OnboardingV
             dismissLabel = "Not now",
             onConfirm = {
                 if (viewModel.onRationaleAccepted() == LocationEffect.RequestPermission) {
-                    launcher.launch(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION, Manifest.permission.ACCESS_FINE_LOCATION))
+                    // Audit L2: approximate only. The fix is a balanced one-shot the server
+                    // rounds to ~1 km; precise location is asked for only in Safety.
+                    launcher.launch(DatingLocationPermissions.ONBOARDING)
                 }
             },
             onDismiss = viewModel::onRationaleDismissed,

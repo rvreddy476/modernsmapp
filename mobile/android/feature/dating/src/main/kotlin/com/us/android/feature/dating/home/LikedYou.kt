@@ -153,6 +153,12 @@ class LikedYouViewModel @Inject constructor(
     val celebration: StateFlow<MatchCelebration?> = celebrations.state
     val hello: StateFlow<HelloTarget?> = celebrations.hello
 
+    /** Folded notes (mechanic M13) read on tap, by spark id. */
+    private val noteReveals = SparkNoteReveals(repository, viewModelScope)
+    val notes: StateFlow<Map<String, NoteReveal>> = noteReveals.state
+
+    fun revealNote(sparkId: String) = noteReveals.reveal(sparkId)
+
     init {
         refresh()
     }

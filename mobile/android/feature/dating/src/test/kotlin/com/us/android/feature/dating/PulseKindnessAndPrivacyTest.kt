@@ -35,6 +35,7 @@ import com.us.android.feature.dating.safety.ReportPersonViewModel
 import com.us.android.feature.dating.safety.ReportReason
 import com.us.android.feature.dating.safety.SafetyActions
 import com.us.android.feature.dating.safety.ScreenProtectionConfig
+import com.us.android.feature.dating.safety.ScreenProtectionViewModel
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.builtins.ListSerializer
 import org.junit.Rule
@@ -82,7 +83,7 @@ class PulseKindnessAndPrivacyTest {
         assertThat(api.kindChecks).isEmpty()
         assertThat(api.botheredWrites).isEmpty()
         // One look at the matches, then none until the interval has passed.
-        assertThat(api.calls.count { it == "matches" }).isEqualTo(1)
+        assertThat(api.calls.count { it == "matches:active" }).isEqualTo(1)
     }
 
     @Test
@@ -104,7 +105,7 @@ class PulseKindnessAndPrivacyTest {
         val k = kindness()
 
         assertThat(k.appliesTo("conv-m1")).isTrue()
-        assertThat(api.calls.count { it == "matches" }).isEqualTo(0)
+        assertThat(api.calls.count { it == "matches:active" }).isEqualTo(0)
     }
 
     @Test
@@ -116,7 +117,7 @@ class PulseKindnessAndPrivacyTest {
         k.conversationSource("conv-r", sourceApp = "dating", sourceId = "")
 
         assertThat(k.appliesTo("conv-p")).isTrue()
-        assertThat(api.calls.count { it == "matches" }).isEqualTo(0)
+        assertThat(api.calls.count { it == "matches:active" }).isEqualTo(0)
         assertThat(repository.matchForConversation("conv-q")).isNull()
         assertThat(repository.matchForConversation("conv-r")).isNull()
 
@@ -133,7 +134,7 @@ class PulseKindnessAndPrivacyTest {
         assertThat(k.appliesTo("conv-a")).isFalse()
         now += DatingConversationKindness.LOOKUP_INTERVAL_MS * 10
         assertThat(k.appliesTo("conv-b")).isFalse()
-        assertThat(api.calls.count { it == "matches" }).isEqualTo(1)
+        assertThat(api.calls.count { it == "matches:active" }).isEqualTo(1)
     }
 
     @Test
@@ -387,12 +388,14 @@ class PulseKindnessAndPrivacyTest {
         val vm = SparksViewModel(repository, session, safety, photoUrls())
 
         val row = (vm.state.value as ListState.Items<IncomingSparkUi>).items.single()
-        assertThat(row.note).isEqualTo("you look stupid")
+        // The server no longer sends a folded note's words in a list (its audit L4):
+        // the row folds on the reason alone, and the words are read on tap.
+        assertThat(row.note).isNull()
         assertThat(row.noteHidden).isEqualTo(NoteHidden.UNKIND)
     }
 
     @Test
-    fun `each note reason has its own words, an unknown one folds too, and no note is never folded`() {
+    fun `each note reason has its own words, an unknown one folds too, and a folded note needs no words`() {
         fun ui(note: String?, hidden: String?) =
             incomingSparkUi(sparkId = "s", fromUserId = "x", person = person("x"), note = note, superSpark = false, urls = photoUrls(), noteHidden = hidden)
 
@@ -400,7 +403,9 @@ class PulseKindnessAndPrivacyTest {
         assertThat(ui("hi", "something_new").noteHidden).isEqualTo(NoteHidden.OTHER)
         assertThat(ui("hi", "").noteHidden).isNull()
         assertThat(ui("hi", null).noteHidden).isNull()
-        assertThat(ui(null, "unkind").noteHidden).isNull()
+        // A folded note now arrives WITHOUT its words, and still folds.
+        assertThat(ui(null, "unkind").noteHidden).isEqualTo(NoteHidden.UNKIND)
+        assertThat(ui(null, null).noteHidden).isNull()
         assertThat(NoteHidden.entries.map { it.reason }.toSet()).hasSize(NoteHidden.entries.size)
     }
 
@@ -608,14 +613,34 @@ class PulseKindnessAndPrivacyTest {
     }
 
     @Test
-    fun `a failed config read means off, and is asked again`() = runTest {
+    fun `a failed config read means ON, is not cached, and is asked again`() = runTest {
+        // Audit M3: protection fails closed; only an explicit false turns it off.
         api.clientConfigResponse = { offline() }
         val config = ScreenProtectionConfig(repository, session)
 
-        assertThat(config.enabled()).isFalse()
-        api.clientConfigResponse = { ok(fixture("client_config_get_200.json", ClientConfigDto.serializer())) }
         assertThat(config.enabled()).isTrue()
+        api.clientConfigResponse = { ok(fixture("client_config_get_200_off.json", ClientConfigDto.serializer())) }
+        assertThat(config.enabled()).isFalse()
         assertThat(api.calls.count { it == "client-config" }).isEqualTo(2)
+    }
+
+    @Test
+    fun `a 5xx config read and a gateway 404 also mean ON`() = runTest {
+        api.clientConfigResponse = { refused(503, "UNAVAILABLE") }
+        assertThat(ScreenProtectionConfig(repository, session).enabled()).isTrue()
+        api.clientConfigResponse = { gatewayNotFound() }
+        assertThat(ScreenProtectionConfig(repository, session).enabled()).isTrue()
+    }
+
+    @Test
+    fun `a protected screen stays protected when the read fails, and lets go only on an explicit false`() = runTest {
+        api.clientConfigResponse = { offline() }
+        val failed = ScreenProtectionViewModel(ScreenProtectionConfig(repository, session))
+        assertThat(failed.enabled.value).isTrue()
+
+        api.clientConfigResponse = { ok(fixture("client_config_get_200_off.json", ClientConfigDto.serializer())) }
+        val off = ScreenProtectionViewModel(ScreenProtectionConfig(repository, session))
+        assertThat(off.enabled.value).isFalse()
     }
 
     @Test

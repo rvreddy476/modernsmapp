@@ -3,12 +3,18 @@
     "items": [
       {
         "contact_id": "<contact>",
-        "share_location_on_panic": true,
+        "share_location_on_panic": false,
+        "location_consent_at": null,
+        "location_consent_version": null,
         "created_at": "<timestamp>",
         "updated_at": "<timestamp>",
         "person": null
       }
     ],
-    "max": 3
+    "max": 3,
+    "panic_location_consent": {
+      "version": "panic_location_v1",
+      "text": "If I press panic, send this person my exact location along with the alert. I can turn this off at any time."
+    }
   }
 }

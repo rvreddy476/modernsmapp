@@ -1,0 +1,10 @@
+{
+  "data": {
+    "contact_id": "<contact>",
+    "share_location_on_panic": true,
+    "location_consent_at": "<timestamp>",
+    "location_consent_version": "panic_location_v1",
+    "created_at": "<timestamp>",
+    "updated_at": "<timestamp>"
+  }
+}

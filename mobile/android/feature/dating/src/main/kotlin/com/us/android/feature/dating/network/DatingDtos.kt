@@ -509,6 +509,8 @@ data class SelfieStatusDto(
     @SerialName("attempts_left_today") val attemptsLeftToday: Int = 0,
     @SerialName("attempts_per_day") val attemptsPerDay: Int = 0,
     @SerialName("window_hours") val windowHours: Int = 0,
+    /** A photo was added after a match while the badge stood: the server suggests a fresh selfie. */
+    @SerialName("reverify_suggested") val reverifySuggested: Boolean = false,
 )
 
 // ── Pulse (D3/D7; fixtures: pulse_today, pulse_explain, pulse_pass) ─────────
@@ -795,10 +797,19 @@ data class SparkDto(
     /** True on an incoming spark the caller may not see the sender of. Omitted otherwise. */
     val locked: Boolean = false,
     /**
-     * Mechanic M13: the recipient's comment filter tucks [note] away —
-     * `unkind` or `your_words`. Omitted otherwise. The note itself is still sent.
+     * Mechanic M13: the recipient's comment filter tucks the note away —
+     * `unkind` or `your_words`. Omitted otherwise. A hidden note's TEXT is not
+     * in the list ([note] is absent): it is read on tap from
+     * `GET /sparks/:id/note` ([SparkNoteDto]).
      */
     @SerialName("note_hidden") val noteHidden: String? = null,
+)
+
+/** `GET /sparks/:id/note` — a hidden note, to its recipient only (404 NOT_FOUND to anyone else). No fixture. */
+@Serializable
+data class SparkNoteDto(
+    @SerialName("spark_id") val sparkId: String = "",
+    val note: String = "",
 )
 
 // ── Who liked you (mechanic M4; fixtures liked_you_get_200_locked/_unlocked) ─
@@ -1229,12 +1240,32 @@ data class PanicDto(
 data class TrustedContactsDto(
     val items: List<TrustedContactDto> = emptyList(),
     val max: Int = 3,
+    /**
+     * The words shown with each contact's "send them my location if I press
+     * panic" switch, and the version sent back when the member turns it on
+     * (audit M4). Null from a server that predates per-contact consent: the
+     * switch is then not offered.
+     */
+    @SerialName("panic_location_consent") val panicLocationConsent: PanicLocationConsentDto? = null,
+)
+
+@Serializable
+data class PanicLocationConsentDto(
+    val version: String = "",
+    val text: String = "",
 )
 
 @Serializable
 data class TrustedContactDto(
     @SerialName("contact_id") val contactId: String = "",
+    /**
+     * The EFFECTIVE answer: this contact receives the exact panic point. True
+     * only after the member consented for this contact with the current
+     * wording (PATCH with `consent_version`); adding a contact never sets it.
+     */
     @SerialName("share_location_on_panic") val shareLocationOnPanic: Boolean = false,
+    @SerialName("location_consent_at") val locationConsentAt: String? = null,
+    @SerialName("location_consent_version") val locationConsentVersion: String? = null,
     @SerialName("created_at") val createdAt: String = "",
     @SerialName("updated_at") val updatedAt: String = "",
     /**
@@ -1245,9 +1276,54 @@ data class TrustedContactDto(
     val person: DatingPersonDto? = null,
 )
 
+/** PUT: adding a contact. Location on panic is never turned on here (the server stores false regardless). */
 @Serializable
 data class TrustedContactRequest(
-    @SerialName("share_location_on_panic") val shareLocationOnPanic: Boolean? = null,
+    @SerialName("share_location_on_panic") val shareLocationOnPanic: Boolean = false,
+)
+
+/**
+ * PATCH: the per-contact consent action. `true` needs [consentVersion] equal
+ * to the server's current `panic_location_consent.version` (else 422
+ * `PANIC_LOCATION_CONSENT_REQUIRED`); `false` revokes and carries no version.
+ */
+@Serializable
+data class TrustedContactPatchRequest(
+    @SerialName("share_location_on_panic") val shareLocationOnPanic: Boolean,
+    @SerialName("consent_version") val consentVersion: String? = null,
+)
+
+/** `details` of 422 `PANIC_LOCATION_CONSENT_REQUIRED`: the current wording to ask with again. */
+@Serializable
+data class PanicLocationConsentDetailsDto(
+    @SerialName("consent_text") val consentText: String = "",
+    @SerialName("consent_version") val consentVersion: String = "",
+)
+
+/**
+ * `GET /safety/alerts/:id` — a panic alert as ONE trusted contact may see it
+ * (fixtures safety_alert_get_*). [location] is the member's exact point only
+ * when they consented for this contact and the alert is not resolved;
+ * otherwise null and [locationShared] false. [person] is null when the
+ * contact may no longer see them. 404 `SAFETY_ALERT_NOT_FOUND` to anyone who
+ * is not a current trusted contact; 410 `SAFETY_ALERT_EXPIRED` after the window.
+ */
+@Serializable
+data class SafetyAlertDto(
+    @SerialName("alert_id") val alertId: String = "",
+    /** open | acknowledged | resolved */
+    val status: String = "",
+    @SerialName("triggered_at") val triggeredAt: String = "",
+    @SerialName("expires_at") val expiresAt: String = "",
+    @SerialName("location_shared") val locationShared: Boolean = false,
+    val location: SafetyAlertLocationDto? = null,
+    val person: DatingPersonDto? = null,
+)
+
+@Serializable
+data class SafetyAlertLocationDto(
+    val latitude: Double,
+    val longitude: Double,
 )
 
 @Serializable

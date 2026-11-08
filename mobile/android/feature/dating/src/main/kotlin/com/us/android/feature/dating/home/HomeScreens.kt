@@ -3,10 +3,10 @@ package com.us.android.feature.dating.home
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.defaultMinSize
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -14,9 +14,9 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -43,7 +43,6 @@ import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.feature.dating.safety.ProtectThisScreen
-import com.us.android.feature.dating.safety.ReportDraft
 import com.us.android.feature.dating.safety.ReportSheet
 import com.us.android.feature.dating.travel.TravelCopy
 import com.us.android.feature.dating.ui.ConfirmDialog
@@ -346,7 +345,7 @@ fun MatchDetailScreen(
     }
     var confirmUnmatch by remember { mutableStateOf(false) }
     var confirmBlock by remember { mutableStateOf(false) }
-    var reporting by remember { mutableStateOf(false) }
+    val reporting by viewModel.reporting.collectAsStateWithLifecycle()
 
     LaunchedEffect(chat) {
         chat?.let {
@@ -444,7 +443,7 @@ fun MatchDetailScreen(
                 }
                 UsSecondaryButton(text = "Unmatch", onClick = { confirmUnmatch = true }, modifier = Modifier.fillMaxWidth())
                 Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
-                    UsSecondaryButton(text = "Report", onClick = { reporting = true }, modifier = Modifier.weight(1f))
+                    UsSecondaryButton(text = "Report", onClick = viewModel::openReport, modifier = Modifier.weight(1f))
                     UsSecondaryButton(text = "Block", onClick = { confirmBlock = true }, modifier = Modifier.weight(1f))
                 }
             }
@@ -478,15 +477,14 @@ fun MatchDetailScreen(
             onDismiss = { confirmBlock = false },
         )
     }
-    if (reporting && loaded != null) {
+    val draft = reporting
+    if (draft != null && loaded != null) {
+        // Audit L6: the draft lives in the view model, so a failed send brings it back intact.
         ReportSheet(
-            initial = ReportDraft(targetId = loaded.match.otherUserId),
+            initial = draft,
             name = loaded.match.name,
-            onSubmit = {
-                reporting = false
-                viewModel.report(it)
-            },
-            onDismiss = { reporting = false },
+            onSubmit = viewModel::report,
+            onDismiss = viewModel::dismissReport,
         )
     }
     CheckInSheets(checkIn, checkIns)

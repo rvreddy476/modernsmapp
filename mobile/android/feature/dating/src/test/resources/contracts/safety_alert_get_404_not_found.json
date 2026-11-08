@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "SAFETY_ALERT_NOT_FOUND",
+    "message": "safety alert not found"
+  },
+  "meta": {}
+}

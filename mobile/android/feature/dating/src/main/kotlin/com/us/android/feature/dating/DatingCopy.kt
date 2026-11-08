@@ -20,6 +20,9 @@ object DatingCopy {
 
     const val GENERIC = "Something went wrong. Please try again."
     const val NETWORK = "Check your connection and try again."
+
+    /** Premium (audit L3): the purchase may exist, so only the same pass can be tried again. */
+    const val PREMIUM_RESEND = "We couldn't confirm your purchase. Tap Try again to finish it — you won't be charged twice."
     const val NOT_AVAILABLE_TITLE = "Dating isn't available for your account yet"
     const val NOT_AVAILABLE_BODY = "We're opening Dating to a small group first. When it's ready for you, it'll appear here."
 

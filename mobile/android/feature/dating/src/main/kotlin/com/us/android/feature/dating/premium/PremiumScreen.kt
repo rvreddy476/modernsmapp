@@ -126,7 +126,16 @@ fun PremiumScreen(
                         }
                     }
                 }
-                items(s.products, key = { it.id }) { product -> ProductCard(product, buying = s.buying == product.id, enabled = s.buying == null, onBuy = { viewModel.buy(product.id) }) }
+                items(s.products, key = { it.id }) { product ->
+                    // Audit L3: while a purchase may exist, only that pass can be tried again.
+                    ProductCard(
+                        product,
+                        buying = s.buying == product.id,
+                        enabled = s.buying == null && (s.resend == null || s.resend == product.id),
+                        label = if (s.resend == product.id) "Try again" else "Buy",
+                        onBuy = { viewModel.buy(product.id) },
+                    )
+                }
                 item { InfoNote("Passes don't renew automatically. We'll remind you before one ends.") }
             }
         }
@@ -134,7 +143,13 @@ fun PremiumScreen(
 }
 
 @Composable
-private fun ProductCard(product: PremiumProductDto, buying: Boolean, enabled: Boolean, onBuy: () -> Unit) {
+private fun ProductCard(
+    product: PremiumProductDto,
+    buying: Boolean,
+    enabled: Boolean,
+    label: String,
+    onBuy: () -> Unit,
+) {
     DatingCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
             androidx.compose.foundation.layout.Column(Modifier.weight(1f)) {
@@ -144,7 +159,7 @@ private fun ProductCard(product: PremiumProductDto, buying: Boolean, enabled: Bo
                 }
                 Text(rupees(product.amountMinor, product.currency), style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textSecondary)
             }
-            UsPillButton(text = "Buy", onClick = onBuy, enabled = enabled, busy = buying)
+            UsPillButton(text = label, onClick = onBuy, enabled = enabled, busy = buying)
         }
         FeatureList(featureLabels(product.features))
     }

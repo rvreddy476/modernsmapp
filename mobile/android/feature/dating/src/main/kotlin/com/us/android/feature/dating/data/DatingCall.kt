@@ -80,6 +80,24 @@ val DatingError.code: String?
         else -> null
     }
 
+/**
+ * Whether a write that failed this way may still have happened on the server:
+ * the network dropped, a 5xx (the gateway's 502/504 included) answered after
+ * the service may have committed, or a 2xx came back unreadable. A caller that
+ * sent an idempotency key keeps it for the resend; only a definite 4xx means
+ * nothing was created. Pure.
+ */
+fun DatingError.outcomeUnknown(): Boolean = when (this) {
+    is DatingError.Network -> true
+    // null: the body did not decode. 2xx: it succeeded but carried no data.
+    is DatingError.Unexpected -> status == null || status < HTTP_CLIENT_ERROR || status >= HTTP_SERVER_ERROR
+    is DatingError.Refused -> status >= HTTP_SERVER_ERROR
+    DatingError.NotAvailable, DatingError.Unauthorized, is DatingError.ConsentRequired -> false
+}
+
+private const val HTTP_CLIENT_ERROR = 400
+private const val HTTP_SERVER_ERROR = 500
+
 /** Reads a refusal's `details` as [serializer], or null. */
 fun <T> DatingError.detailsAs(json: Json, serializer: KSerializer<T>): T? {
     val details = (this as? DatingError.Refused)?.details ?: return null

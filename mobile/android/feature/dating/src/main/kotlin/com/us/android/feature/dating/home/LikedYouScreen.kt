@@ -83,6 +83,7 @@ internal fun LikedYouGrid(
     val state by viewModel.state.collectAsStateWithLifecycle()
     val upsell by viewModel.upsell.collectAsStateWithLifecycle()
     val busy by viewModel.busy.collectAsStateWithLifecycle()
+    val notes by viewModel.notes.collectAsStateWithLifecycle()
     var selectedId by remember { mutableStateOf<String?>(null) }
     var reporting by remember { mutableStateOf<IncomingSparkUi?>(null) }
 
@@ -113,6 +114,8 @@ internal fun LikedYouGrid(
         SparkSheet(
             tile = selected,
             busy = busy != null,
+            noteReveal = notes[selected.sparkId],
+            onRevealNote = { viewModel.revealNote(selected.sparkId) },
             onAccept = { viewModel.accept(selected) },
             onDecline = { viewModel.decline(selected) },
             onOpenProfile = {
@@ -334,9 +337,12 @@ private fun SuperStar(modifier: Modifier = Modifier) {
 /** An open tile's card: the same pre-match detail the deck shows, then Decline or Spark back. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
+@Suppress("LongParameterList") // the folded note (M13) needs its read and its trigger
 private fun SparkSheet(
     tile: LikedYouTile.Open,
     busy: Boolean,
+    noteReveal: NoteReveal?,
+    onRevealNote: () -> Unit,
     onAccept: () -> Unit,
     onDecline: () -> Unit,
     onOpenProfile: () -> Unit,
@@ -383,7 +389,15 @@ private fun SparkSheet(
             if (about.isNotBlank()) {
                 Text(about, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textMuted)
             }
-            spark.note?.let { SparkNote(sparkId = spark.sparkId, note = it, hidden = spark.noteHidden) }
+            if (spark.note != null || spark.noteHidden != null) {
+                SparkNote(
+                    sparkId = spark.sparkId,
+                    note = spark.note,
+                    hidden = spark.noteHidden,
+                    reveal = noteReveal,
+                    onReveal = onRevealNote,
+                )
+            }
             PersonDetailBody(spark.detail, rememberProfileOptions())
             Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m), modifier = Modifier.padding(top = UsTheme.spacing.m)) {
                 UsSecondaryButton(text = "Decline", enabled = !busy, onClick = onDecline, modifier = Modifier.weight(1f))
@@ -401,32 +415,46 @@ object SparkNoteCopy {
     const val FOLDED = "Their note is folded away"
     const val TAP_TO_READ = "Tap to read"
     const val FOLD_AGAIN = "Fold away"
+    const val OPENING = "Opening…"
+    const val GONE = "This note is no longer available."
+    const val TRY_AGAIN = "Tap to try again"
 }
 
 /**
  * A spark's note. One the viewer's comment filter hides arrives with a reason
- * and shows folded — the reason and "Tap to read" — until tapped; it can be
- * folded again. An ordinary note shows as it always has.
+ * and NO words, and shows folded — the reason and "Tap to read" — until tapped;
+ * the tap reads the words from the server ([onReveal]) and it can be folded
+ * again. An ordinary note shows as it always has.
  */
 @Composable
-internal fun SparkNote(sparkId: String, note: String, hidden: NoteHidden?) {
+internal fun SparkNote(
+    sparkId: String,
+    note: String?,
+    hidden: NoteHidden?,
+    reveal: NoteReveal?,
+    onReveal: () -> Unit,
+) {
     var open by rememberSaveable(sparkId) { mutableStateOf(false) }
     if (hidden == null) {
-        Text("“$note”", style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textSecondary)
+        note?.let { Text("“$it”", style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textSecondary) }
         return
     }
+    // An older server still sent the words beside the reason; use them rather than ask again.
+    val words = note ?: (reveal as? NoteReveal.Shown)?.text
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(UsTheme.radii.card))
             .background(UsTheme.extended.bgCardSolid)
-            .clickable { open = !open }
+            .clickable {
+                open = !open
+                if (open && words == null) onReveal()
+            }
             .padding(UsTheme.spacing.m),
         verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
     ) {
         if (open) {
-            Text("“$note”", style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textSecondary)
-            Text(SparkNoteCopy.FOLD_AGAIN, style = MaterialTheme.typography.labelMedium, color = UsTheme.extended.accentSolid)
+            OpenedNote(words, reveal)
         } else {
             Text(SparkNoteCopy.FOLDED, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textPrimary)
             Text(hidden.reason, style = MaterialTheme.typography.bodySmall, color = UsTheme.extended.textMuted)
@@ -441,3 +469,31 @@ private const val COLUMNS = 2
 private const val WIDE_COLUMNS = 3
 private const val TILE_RATIO = 0.78f
 private const val SCRIM_ALPHA = 0.72f
+
+/** An unfolded note: its words, or the read in flight, or why it could not be read. */
+@Composable
+private fun OpenedNote(words: String?, reveal: NoteReveal?) {
+    when {
+        words != null -> {
+            Text("“$words”", style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textSecondary)
+            Text(
+                SparkNoteCopy.FOLD_AGAIN,
+                style = MaterialTheme.typography.labelMedium,
+                color = UsTheme.extended.accentSolid,
+            )
+        }
+        reveal is NoteReveal.Failed -> {
+            Text(reveal.message, style = MaterialTheme.typography.bodyMedium, color = UsTheme.extended.textMuted)
+            Text(
+                SparkNoteCopy.TRY_AGAIN,
+                style = MaterialTheme.typography.labelMedium,
+                color = UsTheme.extended.accentSolid,
+            )
+        }
+        else -> Text(
+            SparkNoteCopy.OPENING,
+            style = MaterialTheme.typography.bodyMedium,
+            color = UsTheme.extended.textMuted,
+        )
+    }
+}

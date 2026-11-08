@@ -9,12 +9,15 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -38,6 +41,8 @@ import com.us.android.core.designsystem.component.UsChoiceRow
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.feature.dating.home.rememberNow
+import com.us.android.feature.dating.location.DatingLocationPermissions
 import com.us.android.feature.dating.location.LocationEffect
 import com.us.android.feature.dating.location.LocationStep
 import com.us.android.feature.dating.ui.ConfirmDialog
@@ -65,9 +70,12 @@ fun SafetyScreen(
     viewModel: SafetyViewModel = hiltViewModel(),
     pastMatches: PastMatchesViewModel = hiltViewModel(),
 ) {
+    // Audit M3: trusted contacts, recipients, shares and past matches are other people.
+    ProtectThisScreen()
     val state by viewModel.state.collectAsStateWithLifecycle()
     val past by pastMatches.state.collectAsStateWithLifecycle()
     val zone = remember { ZoneId.systemDefault() }
+    val now by rememberNow()
     val context = LocalContext.current
     var confirmPanic by remember { mutableStateOf(false) }
     var recipient by rememberSaveable { mutableStateOf(shareWith) }
@@ -96,7 +104,7 @@ fun SafetyScreen(
                     val panic = state.panic
                     if (panic == null) {
                         Text(
-                            "This alerts our safety team straight away. If you've allowed location, they'll see where you are.",
+                            SafetyCopy.PANIC_BODY,
                             style = MaterialTheme.typography.bodyMedium,
                             color = UsTheme.extended.textMuted,
                         )
@@ -124,6 +132,23 @@ fun SafetyScreen(
                             Text(contact.name, style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textPrimary, modifier = Modifier.weight(1f))
                             TextButton(onClick = { viewModel.removeContact(contact.userId) }) { Text("Remove", color = UsTheme.extended.textMuted) }
                         }
+                        // Audit M4: per contact, off until the member agrees to the wording for them.
+                        if (state.panicLocationConsent != null) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text(
+                                    SafetyCopy.PANIC_LOCATION_SWITCH,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = UsTheme.extended.textMuted,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Switch(
+                                    checked = contact.userId in state.panicLocationTo,
+                                    onCheckedChange = { on -> viewModel.setPanicLocation(contact.userId, on) },
+                                    enabled = !state.consentBusy,
+                                    colors = SwitchDefaults.colors(checkedTrackColor = UsTheme.extended.accentSolid),
+                                )
+                            }
+                        }
                     }
                     if (state.contacts.size < state.maxContacts) {
                         if (state.candidates.isEmpty()) {
@@ -140,12 +165,17 @@ fun SafetyScreen(
                 }
             }
 
-            item { SectionLabel("Share your live location") }
+            item { SectionLabel(SafetyCopy.SHARE_SECTION) }
             item {
                 DatingCard {
                     if (state.recipients.isEmpty()) {
-                        InfoNote("You can share your location with a match or a trusted contact.")
+                        InfoNote("You can share where you are with a match or a trusted contact.")
                     } else {
+                        Text(
+                            SafetyCopy.SHARE_HINT,
+                            style = MaterialTheme.typography.bodySmall,
+                            color = UsTheme.extended.textMuted,
+                        )
                         UsChoiceRow(
                             options = state.recipients.map { UsChoice(it.userId, it.name) },
                             selected = recipient,
@@ -160,7 +190,7 @@ fun SafetyScreen(
                             allowDeselect = false,
                         )
                         UsSecondaryButton(
-                            text = if (state.sharing) "Sharing…" else "Share my location",
+                            text = if (state.sharing) "Sharing…" else "Share where I am now",
                             enabled = recipient != null && !state.sharing,
                             modifier = Modifier.fillMaxWidth(),
                             onClick = { recipient?.let { viewModel.share(it, minutes) } },
@@ -171,7 +201,20 @@ fun SafetyScreen(
                     }
                     state.shares.forEach { share ->
                         Row(verticalAlignment = Alignment.CenterVertically) {
-                            Text("Sharing with ${share.recipientName}", style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textPrimary, modifier = Modifier.weight(1f))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "Sharing with ${share.recipientName}",
+                                    style = MaterialTheme.typography.bodyLarge,
+                                    color = UsTheme.extended.textPrimary,
+                                )
+                                sharedAtLabel(share.createdAt, now, zone)?.let {
+                                    Text(
+                                        it,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = UsTheme.extended.textMuted,
+                                    )
+                                }
+                            }
                             TextButton(onClick = { viewModel.stopShare(share.shareId) }) { Text("Stop", color = UsTheme.extended.statusDanger) }
                         }
                     }
@@ -184,12 +227,20 @@ fun SafetyScreen(
                     DatingCard {
                         state.sharedWithMe.forEach { share ->
                             Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    "${share.sharerName} is sharing their location",
-                                    style = MaterialTheme.typography.bodyLarge,
-                                    color = UsTheme.extended.textPrimary,
-                                    modifier = Modifier.weight(1f),
-                                )
+                                Column(Modifier.weight(1f)) {
+                                    Text(
+                                        SafetyCopy.sharedBy(share.sharerName),
+                                        style = MaterialTheme.typography.bodyLarge,
+                                        color = UsTheme.extended.textPrimary,
+                                    )
+                                    sharedAtLabel(share.createdAt, now, zone)?.let {
+                                        Text(
+                                            it,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = UsTheme.extended.textMuted,
+                                        )
+                                    }
+                                }
                                 TextButton(onClick = { onOpenSharedLocation(share.shareId) }) {
                                     Text("View", color = UsTheme.extended.accentSolid)
                                 }
@@ -216,7 +267,7 @@ fun SafetyScreen(
     if (confirmPanic) {
         ConfirmDialog(
             title = "Alert the safety team?",
-            body = "Our team will be told you need help right now.",
+            body = "Our safety team and your trusted contacts will be told you need help right now.",
             confirmLabel = "Send alert",
             destructive = true,
             onConfirm = {
@@ -226,15 +277,27 @@ fun SafetyScreen(
             onDismiss = { confirmPanic = false },
         )
     }
+    val consent = state.panicLocationConsent
+    if (state.askingConsentFor != null && consent != null) {
+        // Audit M4: the server's own wording, agreed to for this one contact.
+        ConfirmDialog(
+            title = SafetyCopy.CONSENT_TITLE.format(state.consentName ?: "this person"),
+            body = consent.text,
+            confirmLabel = SafetyCopy.CONSENT_CONFIRM,
+            dismissLabel = "Not now",
+            onConfirm = viewModel::confirmPanicLocation,
+            onDismiss = viewModel::dismissConsent,
+        )
+    }
     if (state.location == LocationStep.ExplainingPermission) {
         ConfirmDialog(
-            title = "Share your location?",
-            body = "Only the person you choose sees it, and only until the time runs out or you stop it.",
+            title = SafetyCopy.SHARE_RATIONALE_TITLE,
+            body = SafetyCopy.SHARE_RATIONALE_BODY,
             confirmLabel = "Continue",
             dismissLabel = "Not now",
             onConfirm = {
                 if (viewModel.onRationaleAccepted() == LocationEffect.RequestPermission) {
-                    launcher.launch(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION))
+                    launcher.launch(DatingLocationPermissions.SAFETY)
                 }
             },
             onDismiss = viewModel::onRationaleDismissed,
@@ -242,18 +305,26 @@ fun SafetyScreen(
     }
 }
 
-/** A location someone is sharing with me. Opened in the maps app; no coordinates are printed. */
+/**
+ * Where someone was when they shared it with me (audit M1: ONE point, so it
+ * says when, and never "live"). Opened in the maps app; no coordinates are printed.
+ */
 @Composable
 fun SharedLocationScreen(onBack: () -> Unit, viewModel: SharedLocationViewModel = hiltViewModel()) {
+    // Audit M3: someone's whereabouts.
+    ProtectThisScreen()
     val state by viewModel.state.collectAsStateWithLifecycle()
     val context = LocalContext.current
+    val zone = remember { ZoneId.systemDefault() }
+    val now by rememberNow()
     DatingScreen(title = "Shared location", onBack = onBack) { _ ->
         when (val s = state) {
             SharedLocationState.Loading -> LoadingPane()
             is SharedLocationState.Ended -> MessagePane(title = s.message, body = "", icon = UsIcons.MapPin, primaryLabel = "Back", onPrimary = onBack)
             is SharedLocationState.Live -> MessagePane(
-                title = "Live location shared with you",
-                body = "It stays available until the person stops sharing or the time runs out.",
+                title = SafetyCopy.SHARED_WITH_YOU_TITLE,
+                body = listOfNotNull(sharedAtLabel(s.share.createdAt, now, zone), SafetyCopy.SHARED_WITH_YOU_BODY)
+                    .joinToString("\n\n"),
                 icon = UsIcons.MapPin,
                 primaryLabel = "Open in maps",
                 onPrimary = {

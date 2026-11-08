@@ -21,6 +21,20 @@ import kotlin.coroutines.resume
 
 data class Coordinates(val latitude: Double, val longitude: Double)
 
+/**
+ * Which location permissions each Dating screen asks for (audit L2).
+ *
+ * Onboarding asks for APPROXIMATE only: its fix is a balanced one-shot that
+ * the server snaps to ~1 km, and asking for fine there pre-selects "Precise"
+ * and keeps it for the whole app. Only Safety — sharing where I am now, and
+ * the panic point — asks for precise, where it is the point of the feature.
+ */
+object DatingLocationPermissions {
+    val ONBOARDING: Array<String> = arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION)
+    val SAFETY: Array<String> =
+        arrayOf(Manifest.permission.ACCESS_FINE_LOCATION, Manifest.permission.ACCESS_COARSE_LOCATION)
+}
+
 sealed interface LocationStep {
     data object Idle : LocationStep
 

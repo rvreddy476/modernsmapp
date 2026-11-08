@@ -46,6 +46,7 @@ import com.us.android.feature.dating.network.DataExportDto
 import com.us.android.feature.dating.network.PrivacyDto
 import com.us.android.feature.dating.network.PrivacyUpdateRequest
 import com.us.android.feature.dating.premium.displayDate
+import com.us.android.feature.dating.safety.DatingTeardown
 import com.us.android.feature.dating.ui.ConfirmDialog
 import com.us.android.feature.dating.ui.DatingCard
 import com.us.android.feature.dating.ui.DatingScreen
@@ -95,6 +96,7 @@ class PrivacyViewModel @Inject constructor(
     private val repository: DatingRepository,
     private val session: DatingSession,
     @Dispatcher(UsDispatcher.IO) private val io: CoroutineDispatcher,
+    private val teardown: DatingTeardown,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(PrivacyUiState())
@@ -185,7 +187,10 @@ class PrivacyViewModel @Inject constructor(
     fun deleteProfile(reason: String?) = busy {
         when (val result = repository.deleteProfile(reason)) {
             is DatingResult.Success -> {
-                session.clear()
+                // The same teardown as sign-out (audit L1): the session, the
+                // stored kind-message answers, the conversation map and the
+                // screen-protection cache all go with the profile.
+                teardown.forgetLocalData()
                 _state.update { it.copy(deleted = true) }
             }
             is DatingResult.Failure -> _state.update { it.copy(message = DatingCopy.message(result.error)) }
@@ -228,6 +233,7 @@ data class BlocksUiState(
 @HiltViewModel
 class BlocksViewModel @Inject constructor(
     private val repository: DatingRepository,
+    private val session: DatingSession,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(BlocksUiState())
@@ -265,6 +271,9 @@ class BlocksViewModel @Inject constructor(
         viewModelScope.launch {
             when (val result = repository.unblock(userId)) {
                 is DatingResult.Success -> {
+                    // No longer hidden locally (audit L6): from now on the
+                    // server's lists decide whether they appear again.
+                    session.restorePerson(userId)
                     // Idempotent server-side: drop the row either way.
                     _state.update {
                         it.copy(

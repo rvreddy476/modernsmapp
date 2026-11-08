@@ -644,7 +644,10 @@ data class IncomingSparkUi(
     val superSpark: Boolean = false,
     /** Mechanic M8: "Visiting Pune" while they are on a trip, else null. */
     val visiting: String? = null,
-    /** Mechanic M13: why the viewer's comment filter folds [note] away; null shows it as it is. */
+    /**
+     * Mechanic M13: why the viewer's comment filter folds the note away; null
+     * shows [note] as it is. A folded note arrives without its words.
+     */
     val noteHidden: NoteHidden? = null,
 )
 
@@ -806,8 +809,9 @@ internal fun incomingSparkUi(
     detail = person?.detail.toUi(urls),
     superSpark = superSpark,
     visiting = visitingLabel(person?.travelling == true, person?.city),
-    // Only a note there is can be folded away.
-    noteHidden = NoteHidden.fromWire(noteHidden).takeIf { !note.isNullOrBlank() },
+    // The server leaves a folded note's words out (they are read on tap), so a
+    // folded note stands on its own reason, with or without text.
+    noteHidden = NoteHidden.fromWire(noteHidden),
 )
 
 data class MatchUi(
@@ -1066,11 +1070,42 @@ class MatchDetailViewModel @Inject constructor(
         }
     }
 
+    /**
+     * The open report sheet's draft, kept here rather than in the sheet (audit
+     * L6): a report that fails brings the sheet back with what was chosen and
+     * written, the way [com.us.android.feature.dating.safety.ReportPersonViewModel] does.
+     */
+    private val _reporting = MutableStateFlow<ReportDraft?>(null)
+    val reporting: StateFlow<ReportDraft?> = _reporting.asStateFlow()
+
+    private var reportSending = false
+
+    fun openReport() {
+        val other = (_state.value as? MatchDetailState.Loaded)?.match?.otherUserId ?: return
+        if (reportSending) return
+        _reporting.value = _reporting.value?.takeIf { it.targetId == other } ?: ReportDraft(targetId = other)
+    }
+
+    fun dismissReport() {
+        _reporting.value = null
+    }
+
     fun report(draft: ReportDraft) {
+        if (reportSending || draft.targetId.isBlank()) return
+        reportSending = true
+        _reporting.value = null
         viewModelScope.launch {
-            when (val result = safety.report(draft)) {
-                is DatingResult.Success -> _state.value = MatchDetailState.Gone("Thanks for telling us. We've blocked them for you.")
-                is DatingResult.Failure -> _message.value = reportFailure(result.error)
+            try {
+                when (val result = safety.report(draft)) {
+                    is DatingResult.Success -> _state.value = MatchDetailState.Gone("Thanks for telling us. We've blocked them for you.")
+                    is DatingResult.Failure -> {
+                        // The sheet comes back with what they chose, and says why.
+                        _reporting.value = draft
+                        _message.value = reportFailure(result.error)
+                    }
+                }
+            } finally {
+                reportSending = false
             }
         }
     }

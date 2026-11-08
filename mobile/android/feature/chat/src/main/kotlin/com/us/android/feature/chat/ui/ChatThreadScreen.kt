@@ -124,6 +124,8 @@ fun ChatThreadScreen(
     val cards by postCards.cards.collectAsStateWithLifecycle()
     val state = render.thread
     val hiddenChat = com.us.android.feature.chat.ui.hidden.LocalHiddenChat.current
+    // Dating audit M3: a Pulse match's chat is never screenshotted or snapshotted.
+    DatingChatProtection(protectsThread(render.conversation))
     val listState = rememberLazyListState()
     var cameraOpen by remember { mutableStateOf(false) }
     var locationOpen by remember { mutableStateOf(false) }

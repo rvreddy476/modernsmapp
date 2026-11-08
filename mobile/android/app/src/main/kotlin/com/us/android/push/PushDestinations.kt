@@ -131,6 +131,13 @@ class PushDestinations @Inject constructor() {
         const val TYPE_DATING_SCAM_ALERT = "dating_scam_alert"
         const val TYPE_DATING_DATE_CHECKIN = "dating_date_checkin"
 
+        // Safety pushes to a trusted contact (notification-service
+        // dating_safety.go). Ids only: the panic alert's point and the shared
+        // location are read from dating-service after unlock, never carried
+        // in the push.
+        const val TYPE_DATING_PANIC_ALERT = "dating.safety.panic.trusted_contact"
+        const val TYPE_DATING_LOCATION_SHARED = "dating.safety.location_shared"
+
         /**
          * Where a dating push lands, or null when it is not one / carries no
          * usable id. Pure string work, like [joinCodeOf].
@@ -141,6 +148,8 @@ class PushDestinations @Inject constructor() {
          *  - a message opens the match and continues into its chat. Only the
          *    deep link is trusted here: the two consumers put DIFFERENT ids in
          *    `entity_id` (a match id or a conversation id).
+         *  - a trusted contact's panic alert opens that alert, and a shared
+         *    location opens that share; both ids must be canonical UUIDs.
          */
         fun datingTargetOf(destination: PushDestination): DatingPushTarget? = when (destination.type) {
             TYPE_DATING_SPARK -> DatingPushTarget.IncomingSparks
@@ -153,6 +162,7 @@ class PushDestinations @Inject constructor() {
             TYPE_DATING_DATE_CHECKIN ->
                 (datingMatchIdOf(destination.deepLink) ?: destination.entityId.trim().takeIf { it.isNotEmpty() })
                     ?.let { DatingPushTarget.Match(it, openChat = false, checkIn = true) }
+            TYPE_DATING_PANIC_ALERT, TYPE_DATING_LOCATION_SHARED -> datingSafetyTargetOf(destination)
             else -> null
         }
 
@@ -165,6 +175,9 @@ class PushDestinations @Inject constructor() {
         }
 
         private const val MATCH_SEGMENTS = 3
+
+        const val ALERTS_SEGMENT = "alerts"
+        const val SHARED_LOCATIONS_SEGMENT = "shared-locations"
 
         /**
          * The thread a chat (`dm`) push opens, or null when it names no
@@ -294,6 +307,12 @@ sealed interface DatingPushTarget {
     data object Safety : DatingPushTarget
 
     data class Match(val matchId: String, val openChat: Boolean, val checkIn: Boolean = false) : DatingPushTarget
+
+    /** A trusted contact's panic alert, by incident id (a canonical UUID). */
+    data class PanicAlert(val alertId: String) : DatingPushTarget
+
+    /** A location someone shared with me, by share id (a canonical UUID). */
+    data class SharedLocation(val shareId: String) : DatingPushTarget
 }
 
 /** The routing triple a chat push carries. Ids only — never content. */
@@ -308,3 +327,36 @@ data class ChatPushThread(
     val conversationId: String,
     val isGroup: Boolean,
 )
+
+/** A canonical UUID, lower-cased; null for anything else. Ids from a push go into request paths. */
+/**
+ * The id in `/dating/safety/<kind>/{id}` (query and fragment ignored),
+ * only when it is a canonical UUID; null for anything else. The id
+ * goes into a request path, so nothing but a UUID is let through.
+ */
+internal fun datingSafetyIdOf(deepLink: String?, kind: String): String? {
+    val path = deepLink?.trim()?.substringBefore('?')?.substringBefore('#') ?: return null
+    val segments = path.split('/').filter { it.isNotBlank() }
+    if (segments.size != SAFETY_SEGMENTS || segments[0] != "dating" || segments[1] != "safety") return null
+    if (segments[2] != kind) return null
+    return canonicalUuid(segments.last())
+}
+
+private const val SAFETY_SEGMENTS = 4
+
+/**
+ * A trusted contact's safety push: the id from the deep link, else
+ * `entity_id` (notification-service sets both to the same id).
+ */
+private fun datingSafetyTargetOf(destination: PushDestination): DatingPushTarget? {
+    val alert = destination.type == PushDestinations.TYPE_DATING_PANIC_ALERT
+    val kind = if (alert) PushDestinations.ALERTS_SEGMENT else PushDestinations.SHARED_LOCATIONS_SEGMENT
+    val id = datingSafetyIdOf(destination.deepLink, kind)
+        ?: canonicalUuid(destination.entityId)
+        ?: return null
+    return if (alert) DatingPushTarget.PanicAlert(id) else DatingPushTarget.SharedLocation(id)
+}
+
+private fun canonicalUuid(raw: String?): String? = raw?.trim()?.takeIf { UUID_PATTERN.matches(it) }?.lowercase()
+
+private val UUID_PATTERN = Regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$")

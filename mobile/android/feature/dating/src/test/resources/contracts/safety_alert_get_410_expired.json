@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "SAFETY_ALERT_EXPIRED",
+    "message": "this safety alert has expired"
+  },
+  "meta": {}
+}

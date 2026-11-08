@@ -3,7 +3,7 @@ package com.us.android.feature.dating
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.di.NetworkModule
-import com.us.android.feature.dating.data.DatingError
+import com.us.android.core.payments.PaymentStatusReading
 import com.us.android.feature.dating.clips.ClipCopy
 import com.us.android.feature.dating.clips.ClipKind
 import com.us.android.feature.dating.clips.ClipRules
@@ -11,66 +11,89 @@ import com.us.android.feature.dating.clips.ClipStatus
 import com.us.android.feature.dating.clips.OwnClipUi
 import com.us.android.feature.dating.clips.PromptClipUi
 import com.us.android.feature.dating.clips.clipRefusal
-import com.us.android.feature.dating.network.ClipTooLongDetailsDto
-import com.us.android.feature.dating.network.PromptClipViewDto
+import com.us.android.feature.dating.data.DatingError
+import com.us.android.feature.dating.filters.Dealbreaker
+import com.us.android.feature.dating.filters.FiltersField
+import com.us.android.feature.dating.filters.FiltersRules
 import com.us.android.feature.dating.home.AllowanceUi
+import com.us.android.feature.dating.home.DateAgain
+import com.us.android.feature.dating.home.DateMet
 import com.us.android.feature.dating.home.DeckCopy
 import com.us.android.feature.dating.home.DeckUi
+import com.us.android.feature.dating.home.FairTurnUi
 import com.us.android.feature.dating.home.FirstMoveCopy
-import com.us.android.feature.dating.network.ExtendDto
-import com.us.android.feature.dating.network.FirstMoveSettingsDto
-import com.us.android.feature.dating.network.OpeningAnswerDto
-import com.us.android.feature.dating.home.onto
-import com.us.android.feature.dating.home.toUi
+import com.us.android.feature.dating.home.NoteHidden
 import com.us.android.feature.dating.home.PicksCopy
+import com.us.android.feature.dating.home.incomingSparkUi
+import com.us.android.feature.dating.home.onto
 import com.us.android.feature.dating.home.parseInstant
 import com.us.android.feature.dating.home.toCardUi
-import com.us.android.feature.dating.network.PicksDto
-import com.us.android.feature.dating.network.TravelCityDto
-import com.us.android.feature.dating.network.TravelDto
-import com.us.android.feature.dating.travel.TravelCopy
-import com.us.android.feature.dating.travel.TravelRules
-import java.time.Instant
-import java.time.ZoneId
+import com.us.android.feature.dating.home.toUi
+import com.us.android.feature.dating.location.Coordinates
 import com.us.android.feature.dating.network.AllowanceDto
 import com.us.android.feature.dating.network.AllowancesDto
 import com.us.android.feature.dating.network.AllowedDetailsDto
-import com.us.android.feature.dating.network.RewindDto
-import com.us.android.feature.dating.premium.packLabel
-import com.us.android.feature.dating.premium.activeFeatureLabels
-import com.us.android.feature.dating.premium.featureLabels
-import com.us.android.feature.dating.network.ReadReceiptsDto
 import com.us.android.feature.dating.network.AllowedIdsDetailsDto
-import com.us.android.feature.dating.network.OnboardingIncompleteDetailsDto
-import com.us.android.feature.dating.network.RangeDetailsDto
 import com.us.android.feature.dating.network.BlockedDto
 import com.us.android.feature.dating.network.BlocksDto
+import com.us.android.feature.dating.network.BotheredDto
+import com.us.android.feature.dating.network.ClientConfigDto
+import com.us.android.feature.dating.network.ClipTooLongDetailsDto
 import com.us.android.feature.dating.network.ClosedDto
+import com.us.android.feature.dating.network.CommentFilterDto
+import com.us.android.feature.dating.network.CommentFilterRefusalDetailsDto
 import com.us.android.feature.dating.network.ConsentRequiredDetailsDto
 import com.us.android.feature.dating.network.ConsentsDto
 import com.us.android.feature.dating.network.DataExportDto
+import com.us.android.feature.dating.network.DateCheckinDto
+import com.us.android.feature.dating.network.DateFeedbackDto
+import com.us.android.feature.dating.network.DateFeedbackRefusalDetailsDto
 import com.us.android.feature.dating.network.DatingErrorEnvelopeDto
 import com.us.android.feature.dating.network.DatingPersonDto
 import com.us.android.feature.dating.network.DatingPhotoDto
 import com.us.android.feature.dating.network.DatingProfileDto
 import com.us.android.feature.dating.network.ExplainDto
+import com.us.android.feature.dating.network.ExtendDto
+import com.us.android.feature.dating.network.FairTurnDetailsDto
+import com.us.android.feature.dating.network.FairTurnDto
+import com.us.android.feature.dating.network.FieldRefusalDetailsDto
+import com.us.android.feature.dating.network.FirstMoveSettingsDto
+import com.us.android.feature.dating.network.HideKnownDto
+import com.us.android.feature.dating.network.KindCheckDto
+import com.us.android.feature.dating.network.KindCheckRefusalDetailsDto
+import com.us.android.feature.dating.network.LikedYouDto
 import com.us.android.feature.dating.network.LocationRateLimitDetailsDto
 import com.us.android.feature.dating.network.MatchDto
 import com.us.android.feature.dating.network.MovedDetailsDto
 import com.us.android.feature.dating.network.MyLocationSharesDto
+import com.us.android.feature.dating.network.OnboardingIncompleteDetailsDto
+import com.us.android.feature.dating.network.OpeningAnswerDto
+import com.us.android.feature.dating.network.OptionDto
+import com.us.android.feature.dating.network.OptionRangeDto
 import com.us.android.feature.dating.network.PanicDto
+import com.us.android.feature.dating.network.PanicLocationConsentDetailsDto
 import com.us.android.feature.dating.network.PassDto
+import com.us.android.feature.dating.network.PastMatchPersonDto
+import com.us.android.feature.dating.network.PastMatchesDto
+import com.us.android.feature.dating.network.PicksDto
 import com.us.android.feature.dating.network.PreferencesDto
-import com.us.android.feature.dating.network.PromptAnswerDto
 import com.us.android.feature.dating.network.PremiumCatalogueDto
 import com.us.android.feature.dating.network.PremiumMeDto
 import com.us.android.feature.dating.network.PremiumPaymentDto
 import com.us.android.feature.dating.network.PremiumPurchaseRequest
 import com.us.android.feature.dating.network.PremiumPurchaseResultDto
 import com.us.android.feature.dating.network.PrivacyDto
+import com.us.android.feature.dating.network.ProfileOptionsDto
+import com.us.android.feature.dating.network.PromptAnswerDto
+import com.us.android.feature.dating.network.PromptClipViewDto
 import com.us.android.feature.dating.network.PulseTodayDto
+import com.us.android.feature.dating.network.RangeDetailsDto
 import com.us.android.feature.dating.network.RateLimitDetailsDto
+import com.us.android.feature.dating.network.ReadReceiptsDto
 import com.us.android.feature.dating.network.ReportResultDto
+import com.us.android.feature.dating.network.RewindDto
+import com.us.android.feature.dating.network.SafetyAlertDto
+import com.us.android.feature.dating.network.SafetyAlertLocationDto
 import com.us.android.feature.dating.network.SelfieChallengeDto
 import com.us.android.feature.dating.network.SelfieResultDto
 import com.us.android.feature.dating.network.ShareLocationDto
@@ -81,54 +104,37 @@ import com.us.android.feature.dating.network.SparkDeclineDto
 import com.us.android.feature.dating.network.SparkDto
 import com.us.android.feature.dating.network.StashDto
 import com.us.android.feature.dating.network.StopShareDto
+import com.us.android.feature.dating.network.TravelCityDto
+import com.us.android.feature.dating.network.TravelDto
 import com.us.android.feature.dating.network.TrustedContactDto
 import com.us.android.feature.dating.network.TrustedContactsDto
 import com.us.android.feature.dating.network.VerificationStatusDto
-import com.us.android.feature.dating.network.LikedYouDto
-import com.us.android.feature.dating.network.FieldRefusalDetailsDto
-import com.us.android.feature.dating.network.OptionDto
-import com.us.android.feature.dating.network.OptionRangeDto
-import com.us.android.feature.dating.network.ProfileOptionsDto
-import com.us.android.feature.dating.filters.Dealbreaker
-import com.us.android.feature.dating.filters.FiltersField
-import com.us.android.feature.dating.filters.FiltersRules
-import com.us.android.feature.dating.home.DateAgain
-import com.us.android.feature.dating.home.DateMet
-import com.us.android.feature.dating.home.FairTurnUi
-import com.us.android.feature.dating.network.DateCheckinDto
-import com.us.android.feature.dating.network.DateFeedbackDto
-import com.us.android.feature.dating.network.DateFeedbackRefusalDetailsDto
-import com.us.android.feature.dating.network.FairTurnDetailsDto
-import com.us.android.feature.dating.network.FairTurnDto
-import com.us.android.feature.dating.network.PastMatchPersonDto
-import com.us.android.feature.dating.network.PastMatchesDto
-import com.us.android.feature.dating.safety.PastMatchesCopy
-import com.us.android.feature.dating.profile.AboutMeField
-import com.us.android.feature.dating.profile.LifestyleBasic
-import com.us.android.feature.dating.profile.ProfileOptionsUi
 import com.us.android.feature.dating.photos.PhotoRules
+import com.us.android.feature.dating.premium.activeFeatureLabels
+import com.us.android.feature.dating.premium.featureLabels
+import com.us.android.feature.dating.premium.packLabel
 import com.us.android.feature.dating.premium.toReading
-import com.us.android.feature.dating.safety.MAX_TRUSTED_CONTACTS
-import com.us.android.feature.dating.selfie.SelfieOutcomes
-import com.us.android.feature.dating.selfie.SelfieState
-import com.us.android.core.payments.PaymentStatusReading
-import com.us.android.feature.dating.home.NoteHidden
-import com.us.android.feature.dating.network.BotheredDto
-import com.us.android.feature.dating.network.ClientConfigDto
-import com.us.android.feature.dating.network.CommentFilterDto
-import com.us.android.feature.dating.network.CommentFilterRefusalDetailsDto
-import com.us.android.feature.dating.network.HideKnownDto
-import com.us.android.feature.dating.network.KindCheckDto
-import com.us.android.feature.dating.network.KindCheckRefusalDetailsDto
 import com.us.android.feature.dating.privacy.CommentFilterCopy
 import com.us.android.feature.dating.privacy.CommentFilterRules
 import com.us.android.feature.dating.privacy.HideKnownCopy
+import com.us.android.feature.dating.profile.AboutMeField
+import com.us.android.feature.dating.profile.LifestyleBasic
+import com.us.android.feature.dating.profile.ProfileOptionsUi
 import com.us.android.feature.dating.safety.DatingConversationKindness
+import com.us.android.feature.dating.safety.MAX_TRUSTED_CONTACTS
+import com.us.android.feature.dating.safety.PastMatchesCopy
+import com.us.android.feature.dating.safety.toUi
+import com.us.android.feature.dating.selfie.SelfieOutcomes
+import com.us.android.feature.dating.selfie.SelfieState
+import com.us.android.feature.dating.travel.TravelCopy
+import com.us.android.feature.dating.travel.TravelRules
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import org.junit.Test
 import java.io.File
+import java.time.Instant
+import java.time.ZoneId
 
 /**
  * Every golden contract fixture from dating-service decodes into its DTO.
@@ -852,11 +858,24 @@ class DatingContractFixtureTest {
         },
         "sparks_incoming_get_200_note_hidden.json" to data(listSerializer(SparkDto.serializer())) {
             val spark = it.single()
-            // The note itself still arrives: the recipient may read it.
-            assertThat(spark.note).isEqualTo("you look stupid")
+            // The server's audit L4: a folded note's words never travel in a
+            // list; the recipient reads them on tap (GET /sparks/:id/note).
+            assertThat(spark.note).isNull()
             assertThat(spark.noteHidden).isEqualTo("unkind")
             assertThat(NoteHidden.fromWire(spark.noteHidden)).isEqualTo(NoteHidden.UNKIND)
             assertThat(checkNotNull(spark.person).firstName).isEqualTo("Asha")
+            // Still folded on screen, with the reason and no words.
+            val ui = incomingSparkUi(
+                spark.id,
+                spark.fromUserId,
+                spark.person,
+                spark.note,
+                spark.superSpark,
+                photoUrls(),
+                noteHidden = spark.noteHidden,
+            )
+            assertThat(ui.note).isNull()
+            assertThat(ui.noteHidden).isEqualTo(NoteHidden.UNKIND)
         },
         // ── Mechanic M16: hide from people I know ───────────────────────────
         "hide_known_get_200.json" to data(HideKnownDto.serializer()) {
@@ -965,7 +984,50 @@ class DatingContractFixtureTest {
             assertThat(it.expiresAt).isNotEmpty()
         },
         "trusted_contact_put_200.json" to data(TrustedContactDto.serializer()) {
+            // Audit M4: adding a contact never opts them in to the panic point.
+            assertThat(it.shareLocationOnPanic).isFalse()
+            assertThat(it.locationConsentAt).isNull()
+            assertThat(it.locationConsentVersion).isNull()
+        },
+        "trusted_contact_patch_200.json" to data(TrustedContactDto.serializer()) {
             assertThat(it.shareLocationOnPanic).isTrue()
+            assertThat(it.locationConsentAt).isEqualTo("<timestamp>")
+            assertThat(it.locationConsentVersion).isEqualTo("panic_location_v1")
+        },
+        "trusted_contact_patch_200_revoked.json" to data(TrustedContactDto.serializer()) {
+            assertThat(it.shareLocationOnPanic).isFalse()
+            assertThat(it.locationConsentAt).isNull()
+            assertThat(it.locationConsentVersion).isNull()
+        },
+        "trusted_contact_patch_422_consent_required.json" to error { error, name ->
+            assertThat(refusedCode(error)).isEqualTo("PANIC_LOCATION_CONSENT_REQUIRED")
+            val details = details(error, PanicLocationConsentDetailsDto.serializer(), name)
+            assertThat(details.consentVersion).isEqualTo("panic_location_v1")
+            assertThat(details.consentText).startsWith("If I press panic, send this person my exact location")
+        },
+        // ── Audit H1: a trusted contact opens a panic alert by id ───────────
+        "safety_alert_get_200.json" to data(SafetyAlertDto.serializer()) {
+            assertThat(it.alertId).isEqualTo("<alert>")
+            assertThat(it.status).isEqualTo("open")
+            assertThat(it.locationShared).isFalse()
+            assertThat(it.location).isNull()
+            assertThat(checkNotNull(it.person).firstName).isEqualTo("Asha")
+            val ui = it.toUi(photoUrls())
+            assertThat(ui.name).isEqualTo("Asha")
+            assertThat(ui.location).isNull()
+        },
+        "safety_alert_get_200_location_shared.json" to data(SafetyAlertDto.serializer()) {
+            assertThat(it.locationShared).isTrue()
+            assertThat(it.location).isEqualTo(SafetyAlertLocationDto(latitude = 17.44, longitude = 78.39))
+            assertThat(it.toUi(photoUrls()).location).isEqualTo(Coordinates(17.44, 78.39))
+        },
+        "safety_alert_get_404_not_found.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("SAFETY_ALERT_NOT_FOUND")
+            assertThat((error as DatingError.Refused).status).isEqualTo(404)
+        },
+        "safety_alert_get_410_expired.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("SAFETY_ALERT_EXPIRED")
+            assertThat((error as DatingError.Refused).status).isEqualTo(410)
         },
         "trusted_contacts_get_200.json" to data(TrustedContactsDto.serializer()) {
             assertThat(it.max).isEqualTo(MAX_TRUSTED_CONTACTS)
@@ -981,6 +1043,12 @@ class DatingContractFixtureTest {
             // compact card. The safety screens render NEITHER: who someone is
             // looking for is no part of reaching them in an emergency.
             assertThat(person.intent).isEqualTo("casual")
+            // Audit M4: the effective per-contact answer, and the wording to consent to.
+            assertThat(contact.shareLocationOnPanic).isTrue()
+            assertThat(contact.locationConsentVersion).isEqualTo("panic_location_v1")
+            val consent = checkNotNull(it.panicLocationConsent)
+            assertThat(consent.version).isEqualTo("panic_location_v1")
+            assertThat(consent.text).startsWith("If I press panic")
             // A safety surface carries no bio and no gallery.
             assertThat(person.detail).isNull()
         },
@@ -1073,6 +1141,8 @@ class DatingContractFixtureTest {
             assertThat(it.verified).isTrue()
             assertThat(it.trustTier).isEqualTo("selfie")
             assertThat(it.nextStep).isEqualTo("none")
+            // The selfie badge is withdrawn server-side (3c39a152d); a re-check is only suggested.
+            assertThat(it.selfie.reverifySuggested).isFalse()
         },
         // ── Mechanic M6: profile basics and filters ─────────────────────────
         "profile_options_get_200.json" to data(ProfileOptionsDto.serializer()) {

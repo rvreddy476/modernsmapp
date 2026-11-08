@@ -27,20 +27,24 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /*
- * Screen protection (mechanic M18).
+ * Screen protection (mechanic M18; dating Android audit M3).
  *
- * `GET /client-config` says whether Pulse's screens that show other people —
- * the deck, a profile, picks, who sparked you, the matches list and a match —
- * keep the window out of screenshots, screen recordings and the recents
- * snapshot (FLAG_SECURE). The chat is not one of them: the chat lock decides
- * that on its own.
+ * Pulse's screens that show other people — the deck, a profile, picks, who
+ * sparked you, the matches list and a match, the safety centre (trusted
+ * contacts, shares, past matches), a shared location, a panic alert and the
+ * report screen — keep the window out of screenshots, screen recordings and
+ * the recents snapshot (FLAG_SECURE). A Pulse match's chat holds the same
+ * flag from `:feature:chat` whenever the conversation is a Pulse chat.
  *
- * The config is read once per Dating session (each time Dating is opened) and
- * a failed read means off, tried again by the next protected screen. The flag
- * is held through the shared count in `:core:common` ([SecureWindow]), so
- * nested and overlapping screens — and the chat lock's own hold — are never
- * cleared by mistake: the flag goes only when the last holder lets go, and
- * only if the count was the one that set it.
+ * It FAILS CLOSED: protection is on while the answer is unknown and after a
+ * failed read; only an explicit `screen_protection: false` from
+ * `GET /client-config` turns it off. The server defaults the switch on in
+ * every environment. A false answer is cached for this Dating visit; a failed
+ * read is asked again by the next protected screen. The flag is held through
+ * the shared count in `:core:common` ([SecureWindow]), so nested and
+ * overlapping screens — and the chat lock's own hold — are never cleared by
+ * mistake: the flag goes only when the last holder lets go, and only if the
+ * count was the one that set it.
  */
 
 /** The client config's screen-protection switch, read once per Dating session. */
@@ -53,9 +57,12 @@ class ScreenProtectionConfig @Inject constructor(
 
     /** The visit the cached answer belongs to; -1 before any successful read. */
     private var readFor = -1
-    private var on = false
+    private var on = true
 
-    /** True when the server asks for protection. Any failure reads as off, and is asked again next time. */
+    /**
+     * False only when the server explicitly says so. Any failure reads as ON
+     * and is not cached, so the next protected screen asks again.
+     */
     suspend fun enabled(): Boolean = lock.withLock {
         val visit = session.visit
         if (readFor == visit) return@withLock on
@@ -65,21 +72,22 @@ class ScreenProtectionConfig @Inject constructor(
                 readFor = visit
                 on
             }
-            is DatingResult.Failure -> false
+            is DatingResult.Failure -> true
         }
     }
 
     /** Sign-out: nothing read for one account is kept for the next. */
     suspend fun forget() = lock.withLock {
         readFor = -1
-        on = false
+        on = true
     }
 }
 
 @HiltViewModel
 class ScreenProtectionViewModel @Inject constructor(config: ScreenProtectionConfig) : ViewModel() {
 
-    private val _enabled = MutableStateFlow(false)
+    /** On until the server's answer arrives: a screen is never shown unprotected while it is asked. */
+    private val _enabled = MutableStateFlow(true)
     val enabled: StateFlow<Boolean> = _enabled.asStateFlow()
 
     init {
@@ -88,9 +96,10 @@ class ScreenProtectionViewModel @Inject constructor(config: ScreenProtectionConf
 }
 
 /**
- * Keeps this window out of screenshots while the calling screen is shown and
- * the server asks for it. Place it once in each Pulse screen that shows other
- * people; nested or repeated placements are counted, never doubled up.
+ * Keeps this window out of screenshots while the calling screen is shown,
+ * unless the server explicitly switched protection off. Place it once in each
+ * Pulse screen that shows other people; nested or repeated placements are
+ * counted, never doubled up.
  */
 @Composable
 internal fun ProtectThisScreen(viewModel: ScreenProtectionViewModel = hiltViewModel()) {

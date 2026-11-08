@@ -56,6 +56,15 @@ class DatingSession @Inject constructor() {
 
     fun isRemoved(userId: String?): Boolean = userId != null && userId in _removed.value
 
+    /**
+     * Unblocked (audit L6): no longer filtered out locally. Nothing comes back
+     * by itself — the server decides what each list holds from now on, and an
+     * unblock restores no match, spark or conversation.
+     */
+    fun restorePerson(userId: String) {
+        _removed.update { it - userId }
+    }
+
     private val disabledMechanics = MutableStateFlow<Set<String>>(emptySet())
 
     /**
@@ -112,10 +121,18 @@ class DatingSession @Inject constructor() {
     /** The other participant of a match. */
     fun otherOf(userA: String, userB: String): String = if (userA == myUserId) userB else userA
 
-    /** Sign-out or profile deletion: nothing about anyone survives. */
+    /**
+     * Sign-out or profile deletion: nothing about anyone survives (audit L1) —
+     * not the profile or consents, not the people this account blocked or
+     * reported (another account on this phone must not have them hidden), not
+     * the mechanics switched off for it. The filter and travel counters and
+     * the visit count are change counters with nothing of the account in them,
+     * and stay monotonic so nothing reading them mistakes a reset for a change.
+     */
     fun clear() {
         _profile.value = null
         _consents.value = null
+        _removed.value = emptySet()
         disabledMechanics.value = emptySet()
     }
 }

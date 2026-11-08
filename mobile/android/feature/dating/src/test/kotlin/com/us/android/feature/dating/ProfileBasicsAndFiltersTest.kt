@@ -356,14 +356,24 @@ class ProfileBasicsAndFiltersTest {
     @Test
     fun `with the filters flag on, the privacy verified-only switch is not drawn`() = runTest {
         api.preferences = noPass()
-        val vm = PrivacyViewModel(repository, session, UnconfinedTestDispatcher(testScheduler))
+        val vm = PrivacyViewModel(
+            repository,
+            session,
+            UnconfinedTestDispatcher(testScheduler),
+            teardown(repository, session),
+        )
 
         assertThat(vm.state.value.verifiedOnlyInFilters).isTrue()
     }
 
     @Test
     fun `with the filters flag off, the privacy switch stays`() = runTest {
-        val vm = PrivacyViewModel(repository, session, UnconfinedTestDispatcher(testScheduler))
+        val vm = PrivacyViewModel(
+            repository,
+            session,
+            UnconfinedTestDispatcher(testScheduler),
+            teardown(repository, session),
+        )
 
         assertThat(vm.state.value.verifiedOnlyInFilters).isFalse()
     }

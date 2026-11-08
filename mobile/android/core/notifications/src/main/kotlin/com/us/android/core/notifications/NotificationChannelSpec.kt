@@ -632,6 +632,10 @@ enum class NotificationChannelSpec(
                 type?.startsWith("commerce.seller.") == true || type?.startsWith("seller.") == true -> PARTNER_BUSINESS
                 type?.startsWith("food.restaurant.") == true || type?.startsWith("food_delivery_") == true || type?.startsWith("food_kitchen_") == true -> FOOD_ORDERS
                 type?.startsWith("captain.") == true -> CAPTAIN_ACCOUNT
+                // Dating audit M2: every dating type — the check-in, the scam
+                // alert, the safety alerts, and any added later — is private
+                // on the dating channel, never on SOCIAL.
+                type?.startsWith("dating.") == true || type?.startsWith("dating_") == true -> DATING
                 else -> SOCIAL
             }
         }

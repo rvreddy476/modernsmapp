@@ -129,6 +129,16 @@ class NotificationPresenter @Inject constructor(
                     }
                 }
             }
+            .apply {
+                // Dating audit M2: the channel's lock-screen redaction alone is
+                // not enough (an OEM or a user setting can relax it), so every
+                // dating notification is PRIVATE itself, with a public version
+                // that names no person and no app inside the app.
+                if (channel == NotificationChannelSpec.DATING) {
+                    setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                    setPublicVersion(datingPublicVersion(channel))
+                }
+            }
             .apply { (if (actionable) offerIntent(data, "view") else tapIntent(data))?.let(::setContentIntent) }
             .build()
 
@@ -196,6 +206,13 @@ class NotificationPresenter @Inject constructor(
         Manifest.permission.POST_NOTIFICATIONS,
     ) == PackageManager.PERMISSION_GRANTED
 
+    /** What a locked screen shows for a dating notification: no name, no "Pulse", no dating words. */
+    private fun datingPublicVersion(channel: NotificationChannelSpec) = NotificationCompat.Builder(context, channel.id)
+        .setContentTitle(DATING_PUBLIC_TITLE)
+        .setContentText(DATING_PUBLIC_TEXT)
+        .setSmallIcon(android.R.drawable.ic_dialog_info)
+        .build()
+
     /**
      * A stable id per logical subject, so an updated notification REPLACES the
      * previous one instead of stacking. The subject is the entity id
@@ -220,6 +237,10 @@ class NotificationPresenter @Inject constructor(
         const val KEY_SUBJECT = "subject_id"
         const val KEY_ENTITY_ID = "entity_id"
         const val KEY_DEEP_LINK = "deep_link"
+
+        /** Dating audit M2: the lock-screen stand-in for every dating notification. */
+        const val DATING_PUBLIC_TITLE = "Momentum"
+        const val DATING_PUBLIC_TEXT = "New notification"
 
         /** Chat parity (CONTRACT §8): the conversation's tone and id on a chat push. */
         const val KEY_ALERT_TONE = "alert_tone"

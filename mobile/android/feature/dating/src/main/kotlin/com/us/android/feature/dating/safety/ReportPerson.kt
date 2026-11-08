@@ -1,5 +1,6 @@
 package com.us.android.feature.dating.safety
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.hilt.navigation.compose.hiltViewModel
@@ -95,11 +96,20 @@ class ReportPersonViewModel @Inject constructor(
 }
 
 @Composable
-fun ReportPersonScreen(onBack: () -> Unit, viewModel: ReportPersonViewModel = hiltViewModel()) {
+fun ReportPersonScreen(
+    onBack: () -> Unit,
+    onReported: () -> Unit = onBack,
+    viewModel: ReportPersonViewModel = hiltViewModel(),
+) {
+    // Audit M3: the report names and shows the person.
+    ProtectThisScreen()
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val sent = state.phase == ReportPersonPhase.SENT
+    // Once sent, every way back leaves the chat as well (audit L5).
+    BackHandler(enabled = sent, onBack = onReported)
     DatingScreen(
         title = ReportPersonCopy.TITLE,
-        onBack = onBack,
+        onBack = if (sent) onReported else onBack,
         message = state.message,
         onDismissMessage = viewModel::dismissMessage,
     ) {
@@ -116,7 +126,8 @@ fun ReportPersonScreen(onBack: () -> Unit, viewModel: ReportPersonViewModel = hi
                 body = ReportPersonCopy.SENT_BODY,
                 icon = UsIcons.HeartHandshake,
                 primaryLabel = ReportPersonCopy.DONE,
-                onPrimary = onBack,
+                // Audit L5: they are blocked now — leave their chat too, not just this screen.
+                onPrimary = onReported,
             )
             ReportPersonPhase.CLOSED -> MessagePane(
                 title = ReportPersonCopy.CLOSED_TITLE,

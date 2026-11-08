@@ -17,6 +17,7 @@ import com.us.android.feature.dating.data.DatingError
 import com.us.android.feature.dating.data.DatingRepository
 import com.us.android.feature.dating.data.DatingResult
 import com.us.android.feature.dating.data.code
+import com.us.android.feature.dating.data.outcomeUnknown
 import com.us.android.feature.dating.data.valueOrNull
 import com.us.android.feature.dating.network.PremiumMeDto
 import com.us.android.feature.dating.network.PremiumProductDto
@@ -42,6 +43,12 @@ sealed interface PremiumState {
         val me: PremiumMeDto?,
         val buying: String? = null,
         val notice: String? = null,
+        /**
+         * The pass whose purchase may already exist (a lost answer or a 5xx,
+         * audit L3): only it can be bought, which resends under the SAME key.
+         * Every other pass waits until that resend settles. Null otherwise.
+         */
+        val resend: String? = null,
     ) : PremiumState
 
     /** The sheet is being opened from the Activity. */
@@ -103,6 +110,8 @@ class PremiumViewModel @Inject constructor(
     fun buy(productId: String) {
         val ready = _state.value as? PremiumState.Ready ?: return
         if (ready.buying != null) return
+        // A purchase of another pass may exist under the kept key: only its resend is allowed.
+        if (ready.resend != null && ready.resend != productId) return
         val product = products.firstOrNull { it.id == productId } ?: return
         saved.productId = product.id
         saved.productName = product.name
@@ -168,15 +177,30 @@ class PremiumViewModel @Inject constructor(
             is DatingResult.Success -> adopt(result.value)
             is DatingResult.Failure -> {
                 val error = result.error
+                // Audit L3: the purchase may exist (network, a 5xx, payments
+                // briefly down): keep the key, stay SUBMITTING and offer only
+                // a resend of THIS pass, so the next tap returns that purchase
+                // instead of creating a second one or reusing the key for
+                // another product. Only a definite refusal created nothing.
+                if (purchaseOutcomeUnknown(error)) {
+                    saved.phase = PremiumContinuation.Phase.SUBMITTING
+                    val resend = saved.productId
+                    if (products.isEmpty()) products = repository.premiumCatalogue().valueOrNull()?.products.orEmpty()
+                    _state.value = PremiumState.Ready(
+                        products,
+                        null,
+                        notice = DatingCopy.PREMIUM_RESEND,
+                        resend = resend,
+                    )
+                    return
+                }
                 saved.phase = PremiumContinuation.Phase.FRESH
-                // A definite refusal created no purchase; a network failure keeps
-                // the key, because the purchase may exist and a resend returns it.
-                if (error !is DatingError.Network) saved.clearPurchase()
+                saved.clearPurchase()
                 if (error.code in UNAVAILABLE_CODES) {
                     _state.value = PremiumState.Unavailable
                     return
                 }
-                val notice = if (error is DatingError.Network) DatingCopy.NETWORK else DatingCopy.forError(error)
+                val notice = DatingCopy.forError(error)
                 if (products.isEmpty()) loadCatalogue(notice) else _state.value = PremiumState.Ready(products, null, notice = notice)
             }
         }
@@ -295,6 +319,27 @@ class PremiumViewModel @Inject constructor(
 
     private companion object {
         val UNAVAILABLE_CODES = setOf("PREMIUM_UNAVAILABLE", "PREMIUM_PAYMENTS_UNAVAILABLE")
+
+        /**
+         * Whether a purchase failure may have left a purchase behind (audit L3).
+         *  - unknown: the network, any 5xx without a definite code (a gateway
+         *    502/504 after dating-service committed), and 503
+         *    `PREMIUM_PAYMENTS_UNAVAILABLE`, whose own message says "retry
+         *    with the same idempotency_key";
+         *  - definite: every 4xx (409 `IDEMPOTENCY_KEY_REUSED` included: the
+         *    resend is locked to the same pass, so it can only come from a key
+         *    this screen did not mint, and resending it would only refuse
+         *    again), 503 `PREMIUM_UNAVAILABLE` (premium is off) and 502
+         *    `PREMIUM_PAYMENTS_REFUSED` (payments said no).
+         */
+        fun purchaseOutcomeUnknown(error: DatingError): Boolean = when (error.code) {
+            CODE_PAYMENTS_UNAVAILABLE -> true
+            in DEFINITE_SERVER_CODES -> false
+            else -> error.outcomeUnknown()
+        }
+
+        const val CODE_PAYMENTS_UNAVAILABLE = "PREMIUM_PAYMENTS_UNAVAILABLE"
+        val DEFINITE_SERVER_CODES = setOf("PREMIUM_UNAVAILABLE", "PREMIUM_PAYMENTS_REFUSED")
         const val STATUS_PAID = "paid"
         const val STATUS_FAILED = "failed"
         const val STATUS_REFUNDED = "refunded"

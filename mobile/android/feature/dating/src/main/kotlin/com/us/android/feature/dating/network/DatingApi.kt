@@ -198,6 +198,10 @@ interface DatingApi {
     @POST("v1/dating/sparks/{id}/decline")
     suspend fun declineSpark(@Path("id") id: String): Response<ApiEnvelope<SparkDeclineDto>>
 
+    /** A note the recipient's comment filter hid (mechanic M13): its text, on tap. 404 NOT_FOUND to anyone else. */
+    @GET("v1/dating/sparks/{id}/note")
+    suspend fun sparkNote(@Path("id") id: String): Response<ApiEnvelope<SparkNoteDto>>
+
     /**
      * Accepts an incoming spark: sparks back through the normal path. Idempotent;
      * 404 once declined; 403 LIKED_YOU_LOCKED on a locked spark (mechanic M4).
@@ -353,6 +357,13 @@ interface DatingApi {
     @DELETE("v1/dating/safety/trusted-contacts/{contactId}")
     suspend fun removeTrustedContact(@Path("contactId") contactId: String): Response<ApiEnvelope<RemovedDto>>
 
+    /** The per-contact panic-location consent (audit M4): grant with the current version, or revoke. */
+    @PATCH("v1/dating/safety/trusted-contacts/{contactId}")
+    suspend fun setPanicLocation(
+        @Path("contactId") contactId: String,
+        @Body body: TrustedContactPatchRequest,
+    ): Response<ApiEnvelope<TrustedContactDto>>
+
     @POST("v1/dating/safety/share-location")
     suspend fun shareLocation(@Body body: ShareLocationRequest): Response<ApiEnvelope<ShareLocationDto>>
 
@@ -370,6 +381,14 @@ interface DatingApi {
     /** Recipient only, while live; 404 once expired, stopped or not yours. */
     @GET("v1/dating/safety/shared-locations/{id}")
     suspend fun sharedLocation(@Path("id") id: String): Response<ApiEnvelope<SharedLocationDto>>
+
+    /**
+     * A panic alert, opened by the trusted contact its push went to (the push
+     * carries only this id). 404 SAFETY_ALERT_NOT_FOUND to anyone else; 410
+     * SAFETY_ALERT_EXPIRED after the alert window.
+     */
+    @GET("v1/dating/safety/alerts/{id}")
+    suspend fun safetyAlert(@Path("id") id: String): Response<ApiEnvelope<SafetyAlertDto>>
 
     // Data rights
 

@@ -29,7 +29,7 @@ class BlocksAndPreferencesTest {
             BlockedPersonDto(userId = "user-bad", firstName = "Asha", age = 30, blockedAt = "2026-09-14T10:00:00Z"),
             BlockedPersonDto(userId = "user-other", firstName = "Rhea", age = 28, blockedAt = "2026-09-15T10:00:00Z"),
         )
-        val vm = BlocksViewModel(repository)
+        val vm = BlocksViewModel(repository, session)
 
         assertThat(vm.state.value.blocked.map { it.userId }).containsExactly("user-bad", "user-other").inOrder()
         assertThat(vm.state.value.blocked.first().name).isEqualTo("Asha")
@@ -43,7 +43,7 @@ class BlocksAndPreferencesTest {
     @Test
     fun `unblocking says plainly that nothing is restored`() = runTest {
         api.blocked = listOf(BlockedPersonDto(userId = "user-bad", firstName = "Asha"))
-        val vm = BlocksViewModel(repository)
+        val vm = BlocksViewModel(repository, session)
 
         vm.unblock("user-bad")
 
@@ -56,7 +56,7 @@ class BlocksAndPreferencesTest {
     fun `unblocking someone already unblocked is not an error`() = runTest {
         // The route is idempotent: removed=false, and the row still goes.
         api.blocked = emptyList()
-        val vm = BlocksViewModel(repository)
+        val vm = BlocksViewModel(repository, session)
 
         vm.unblock("user-gone")
 
@@ -67,7 +67,7 @@ class BlocksAndPreferencesTest {
     @Test
     fun `a blocked person with no name still has a row to unblock`() = runTest {
         api.blocked = listOf(BlockedPersonDto(userId = "user-bad", firstName = ""))
-        val vm = BlocksViewModel(repository)
+        val vm = BlocksViewModel(repository, session)
 
         assertThat(vm.state.value.blocked.single().name).isEqualTo("Someone you blocked")
     }

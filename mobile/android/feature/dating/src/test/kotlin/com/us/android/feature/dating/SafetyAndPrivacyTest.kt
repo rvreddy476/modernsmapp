@@ -158,7 +158,9 @@ class SafetyAndPrivacyTest {
     @Test
     fun `withdrawing a consent sends granted false`() = runTest {
         api.granted += ConsentType.SENSITIVE_RELIGION
-        val vm = PrivacyViewModel(api.repository(), session, UnconfinedTestDispatcher(testScheduler))
+        val vm = api.repository().let { r ->
+            PrivacyViewModel(r, session, UnconfinedTestDispatcher(testScheduler), teardown(r, session))
+        }
 
         vm.setConsent(ConsentType.SENSITIVE_RELIGION, granted = false)
 
@@ -168,7 +170,9 @@ class SafetyAndPrivacyTest {
 
     @Test
     fun `a ready export downloads into the chosen file, and deleting clears everything`() = runTest {
-        val vm = PrivacyViewModel(api.repository(), session, UnconfinedTestDispatcher(testScheduler))
+        val vm = api.repository().let { r ->
+            PrivacyViewModel(r, session, UnconfinedTestDispatcher(testScheduler), teardown(r, session))
+        }
         val out = ByteArrayOutputStream()
 
         vm.download("export-1") { body -> body.byteStream().copyTo(out) }

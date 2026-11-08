@@ -3,9 +3,6 @@ package com.us.android.feature.dating.data
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.feature.dating.network.ActionSource
 import com.us.android.feature.dating.network.AllowancesDto
-import com.us.android.feature.dating.network.PicksDto
-import com.us.android.feature.dating.network.TravelDto
-import com.us.android.feature.dating.network.TravelRequest
 import com.us.android.feature.dating.network.AttachPhotoRequest
 import com.us.android.feature.dating.network.BlockRequest
 import com.us.android.feature.dating.network.BlockedDto
@@ -13,21 +10,16 @@ import com.us.android.feature.dating.network.BlocksDto
 import com.us.android.feature.dating.network.BotheredDto
 import com.us.android.feature.dating.network.BotheredRequest
 import com.us.android.feature.dating.network.ClientConfigDto
+import com.us.android.feature.dating.network.ClosedDto
 import com.us.android.feature.dating.network.CommentFilterDto
 import com.us.android.feature.dating.network.CommentFilterRequest
-import com.us.android.feature.dating.network.HideKnownDto
-import com.us.android.feature.dating.network.HideKnownRequest
-import com.us.android.feature.dating.network.KindCheckDto
-import com.us.android.feature.dating.network.KindCheckRequest
-import com.us.android.feature.dating.network.ClosedDto
 import com.us.android.feature.dating.network.ConsentRequest
 import com.us.android.feature.dating.network.ConsentsDto
 import com.us.android.feature.dating.network.DataExportDto
-import com.us.android.feature.dating.network.DatingApi
 import com.us.android.feature.dating.network.DateCheckinDto
 import com.us.android.feature.dating.network.DateFeedbackDto
 import com.us.android.feature.dating.network.DateFeedbackRequest
-import com.us.android.feature.dating.network.PastMatchesDto
+import com.us.android.feature.dating.network.DatingApi
 import com.us.android.feature.dating.network.DatingPersonDto
 import com.us.android.feature.dating.network.DatingPhotoDto
 import com.us.android.feature.dating.network.DatingProfileDto
@@ -36,16 +28,22 @@ import com.us.android.feature.dating.network.ExplainDto
 import com.us.android.feature.dating.network.ExtendDto
 import com.us.android.feature.dating.network.FirstMoveRequest
 import com.us.android.feature.dating.network.FirstMoveSettingsDto
-import com.us.android.feature.dating.network.OpeningAnswerDto
-import com.us.android.feature.dating.network.OpeningAnswerRequest
+import com.us.android.feature.dating.network.HideKnownDto
+import com.us.android.feature.dating.network.HideKnownRequest
+import com.us.android.feature.dating.network.KindCheckDto
+import com.us.android.feature.dating.network.KindCheckRequest
 import com.us.android.feature.dating.network.LikedYouDto
 import com.us.android.feature.dating.network.MatchDto
 import com.us.android.feature.dating.network.MyLocationSharesDto
+import com.us.android.feature.dating.network.OpeningAnswerDto
+import com.us.android.feature.dating.network.OpeningAnswerRequest
 import com.us.android.feature.dating.network.PanicDto
 import com.us.android.feature.dating.network.PanicRequest
 import com.us.android.feature.dating.network.PassDto
 import com.us.android.feature.dating.network.PassRequest
+import com.us.android.feature.dating.network.PastMatchesDto
 import com.us.android.feature.dating.network.PauseRequest
+import com.us.android.feature.dating.network.PicksDto
 import com.us.android.feature.dating.network.PreferencesDto
 import com.us.android.feature.dating.network.PreferencesRequest
 import com.us.android.feature.dating.network.PremiumCatalogueDto
@@ -67,6 +65,7 @@ import com.us.android.feature.dating.network.ReadReceiptsRequest
 import com.us.android.feature.dating.network.ReportRequest
 import com.us.android.feature.dating.network.ReportResultDto
 import com.us.android.feature.dating.network.RewindDto
+import com.us.android.feature.dating.network.SafetyAlertDto
 import com.us.android.feature.dating.network.SelfieChallengeDto
 import com.us.android.feature.dating.network.SelfieResultDto
 import com.us.android.feature.dating.network.SelfieSubmitRequest
@@ -77,12 +76,16 @@ import com.us.android.feature.dating.network.SharedWithMeDto
 import com.us.android.feature.dating.network.SparkCreatedDto
 import com.us.android.feature.dating.network.SparkDeclineDto
 import com.us.android.feature.dating.network.SparkDto
+import com.us.android.feature.dating.network.SparkNoteDto
 import com.us.android.feature.dating.network.SparkRequest
 import com.us.android.feature.dating.network.StashDto
 import com.us.android.feature.dating.network.StashRequest
 import com.us.android.feature.dating.network.StatusDto
 import com.us.android.feature.dating.network.StopShareDto
+import com.us.android.feature.dating.network.TravelDto
+import com.us.android.feature.dating.network.TravelRequest
 import com.us.android.feature.dating.network.TrustedContactDto
+import com.us.android.feature.dating.network.TrustedContactPatchRequest
 import com.us.android.feature.dating.network.TrustedContactRequest
 import com.us.android.feature.dating.network.TrustedContactsDto
 import com.us.android.feature.dating.network.UnblockedDto
@@ -249,6 +252,9 @@ class DatingRepository @Inject constructor(
 
     suspend fun declineSpark(sparkId: String): DatingResult<SparkDeclineDto> = call { api.declineSpark(sparkId) }
 
+    /** The text of a spark note the viewer's comment filter hid (mechanic M13), read on tap. */
+    suspend fun sparkNote(sparkId: String): DatingResult<SparkNoteDto> = call { api.sparkNote(sparkId) }
+
     /** Accepts an incoming spark by its id. Idempotent server-side. */
     suspend fun acceptSpark(sparkId: String): DatingResult<SparkCreatedDto> = call { api.acceptSpark(sparkId) }
 
@@ -267,8 +273,23 @@ class DatingRepository @Inject constructor(
 
     suspend fun stash(candidateId: String): DatingResult<StashDto> = call { api.stash(StashRequest(candidateId)) }
 
-    suspend fun matches(): DatingResult<List<MatchDto>> = list { api.matches() }.also { result ->
-        if (result is DatingResult.Success) result.value.forEach(::rememberConversation)
+    /**
+     * The caller's OPEN matches (`matched`, `conversing`, `quiet`), newest
+     * activity first within each bucket (audit L4). The server caps each read
+     * at 200 rows and `status=all` counts ended matches against that cap, so a
+     * long-time user's active matches fell off the end; each open bucket is
+     * read on its own instead — `active` (matched and conversing), then
+     * `quiet`. Ended matches (expired, closed) are Past matches' business.
+     * Either read failing fails the whole list: a half list is not shown as whole.
+     */
+    suspend fun matches(): DatingResult<List<MatchDto>> {
+        val active = list { api.matches(STATUS_ACTIVE) }
+        if (active is DatingResult.Failure) return active
+        val quiet = list { api.matches(STATUS_QUIET) }
+        if (quiet is DatingResult.Failure) return quiet
+        val open = (active.valueOrNull().orEmpty() + quiet.valueOrNull().orEmpty()).distinctBy { it.id }
+        open.forEach(::rememberConversation)
+        return DatingResult.Success(open)
     }
 
     suspend fun match(matchId: String): DatingResult<MatchDto> = call { api.match(matchId) }.also { result ->
@@ -359,8 +380,34 @@ class DatingRepository @Inject constructor(
 
     suspend fun trustedContacts(): DatingResult<TrustedContactsDto> = call { api.trustedContacts() }
 
+    /**
+     * Adds a trusted contact. It never shares the panic location (audit M4):
+     * that is the separate per-contact consent, [setPanicLocation].
+     */
     suspend fun addTrustedContact(userId: String): DatingResult<TrustedContactDto> =
-        call { api.addTrustedContact(userId, TrustedContactRequest(shareLocationOnPanic = true)) }
+        call { api.addTrustedContact(userId, TrustedContactRequest(shareLocationOnPanic = false)) }
+
+    /**
+     * Turns "send them my location if I press panic" on for [contactId] with
+     * the consent wording [consentVersion] the member was shown, or off (no
+     * version). A stale version answers 422 `PANIC_LOCATION_CONSENT_REQUIRED`.
+     */
+    suspend fun setPanicLocation(
+        contactId: String,
+        share: Boolean,
+        consentVersion: String?,
+    ): DatingResult<TrustedContactDto> = call {
+        api.setPanicLocation(
+            contactId,
+            TrustedContactPatchRequest(
+                shareLocationOnPanic = share,
+                consentVersion = consentVersion.takeIf { share },
+            ),
+        )
+    }
+
+    /** A panic alert, as the trusted contact its push went to may see it. */
+    suspend fun safetyAlert(alertId: String): DatingResult<SafetyAlertDto> = call { api.safetyAlert(alertId) }
 
     suspend fun removeTrustedContact(userId: String): DatingResult<Unit> =
         call { api.removeTrustedContact(userId) }.map { }
@@ -420,5 +467,9 @@ class DatingRepository @Inject constructor(
         private const val HTTP_NOT_FOUND = 404
         const val TARGET_PHOTO = "photo"
         const val PRIMARY_PHOTO_REF = "0"
+
+        /** `GET /matches?status=` buckets the server recognises (store.ListMatchesForUser). */
+        const val STATUS_ACTIVE = "active"
+        const val STATUS_QUIET = "quiet"
     }
 }

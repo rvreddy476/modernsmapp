@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "PANIC_LOCATION_CONSENT_REQUIRED",
+    "message": "sharing your location on panic needs your explicit consent to the current wording",
+    "details": {
+      "consent_text": "If I press panic, send this person my exact location along with the alert. I can turn this off at any time.",
+      "consent_version": "panic_location_v1"
+    }
+  },
+  "meta": {}
+}
