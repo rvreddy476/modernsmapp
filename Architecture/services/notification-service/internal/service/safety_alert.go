@@ -95,7 +95,8 @@ func (s *Service) CreateSafetyAlertNotification(ctx context.Context, a SafetyAle
 // repeat the notification copy because the Android app draws a foreground
 // push itself from data alone and drops one without a title (audit H1).
 // Every safety alert is a dating alert today, so it names the app's private
-// "dating" channel (audit M2); a non-dating type would carry no channel.
+// "dating" channel (audit M2), except a panic page, which names the Safety
+// alerts channel (8 Nov 2026); a non-dating type would carry no channel.
 func safetyAlertPushData(a SafetyAlert) map[string]string {
 	data := map[string]string{
 		"type":         a.NotifType,
@@ -106,7 +107,7 @@ func safetyAlertPushData(a SafetyAlert) map[string]string {
 		"body":         a.Body,
 	}
 	if push.IsDatingType(a.NotifType) {
-		data[push.AndroidChannelDataKey] = push.DatingAndroidChannel
+		data[push.AndroidChannelDataKey] = push.DatingChannelFor(a.NotifType)
 	}
 	return data
 }

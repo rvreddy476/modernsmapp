@@ -29,6 +29,7 @@ class MomentumChannelSetTest {
     @Test
     fun `Momentum's set includes customer and legacy seller channels`() {
         // "dating" joined on 2026-09-16 (Wave 3): Dating ships only in Momentum.
+        // "safety_alerts" joined on 2026-11-08: panic alerts, apart from Dating.
         // "ride_updates" joined on 2026-09-18: the Mopedu customer flow ships only in Momentum.
         // "live" joined on 2026-10-02: "{creator} is live".
         // "doorstep_updates" joined on 2026-10-04: the Doorstep customer flow ships only in Momentum.
@@ -36,7 +37,7 @@ class MomentumChannelSetTest {
         assertThat(NotificationChannelSpec.MOMENTUM.map { it.id })
             .containsExactly(
                 "calls", "messages", "messages_chime", "messages_pop", "messages_bell", "messages_silent",
-                "social", "new_videos", "live", "account", "dating", "ride_updates", "doorstep_updates", "partner_business",
+                "social", "new_videos", "live", "account", "dating", "safety_alerts", "ride_updates", "doorstep_updates", "partner_business",
             )
     }
 
@@ -52,7 +53,7 @@ class MomentumChannelSetTest {
         assertThat(manager.notificationChannels.map { it.id })
             .containsExactly(
                 "calls", "messages", "messages_chime", "messages_pop", "messages_bell", "messages_silent",
-                "social", "new_videos", "live", "account", "dating", "ride_updates", "doorstep_updates", "partner_business",
+                "social", "new_videos", "live", "account", "dating", "safety_alerts", "ride_updates", "doorstep_updates", "partner_business",
             )
     }
 }

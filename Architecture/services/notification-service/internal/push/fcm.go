@@ -111,6 +111,33 @@ var channelInDataTypes = map[string]bool{
 // channel, which is not.
 const DatingAndroidChannel = "dating"
 
+// SafetyAlertsAndroidChannel is the Android app's Safety alerts channel
+// (NotificationChannelSpec.SAFETY_ALERTS, id "safety_alerts"): HIGH and
+// private on the lock screen, apart from Dating, so muting Dating never
+// hides a friend's panic page (founder decision, 8 Nov 2026).
+const SafetyAlertsAndroidChannel = "safety_alerts"
+
+// panicPageTypes are the pages that go to the Safety alerts channel: a
+// trusted contact's alert and the safety team responder's page.
+var panicPageTypes = map[string]bool{
+	"dating.safety.panic.trusted_contact": true,
+	"dating.safety.panic.responder":       true,
+}
+
+// DatingChannelFor is the Android channel a dating push names: Safety
+// alerts for a panic page, the private Dating channel for every other
+// dating type, and "" for a type that is not a dating type.
+func DatingChannelFor(notifType string) string {
+	switch {
+	case panicPageTypes[notifType]:
+		return SafetyAlertsAndroidChannel
+	case IsDatingType(notifType):
+		return DatingAndroidChannel
+	default:
+		return ""
+	}
+}
+
 // IsDatingType reports whether a notification type belongs to Pulse
 // (dating). Dating types are named "dating.<area>.<event>" (spark, match,
 // safety, ...) or, for the Pulse mechanics notices, "dating_<notice>"

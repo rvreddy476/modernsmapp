@@ -12,13 +12,15 @@ import (
 // "dating" channel, and a safety alert carries its copy in data so the app
 // can draw it in the foreground.
 
-func TestSafetyAlertPushDataCarriesCopyAndDatingChannel(t *testing.T) {
+func TestSafetyAlertPushDataCarriesCopyAndItsChannel(t *testing.T) {
 	entity := uuid.New()
-	for _, typ := range []string{
-		"dating.safety.panic.trusted_contact",
-		"dating.safety.location_shared",
-		"dating.safety.panic.responder",
-		DatingScamAlertType,
+	// A panic page names the Safety alerts channel (8 Nov 2026); every other
+	// safety alert stays on the private dating channel.
+	for typ, wantChannel := range map[string]string{
+		"dating.safety.panic.trusted_contact": "safety_alerts",
+		"dating.safety.location_shared":       "dating",
+		"dating.safety.panic.responder":       "safety_alerts",
+		DatingScamAlertType:                   "dating",
 	} {
 		a := SafetyAlert{
 			Recipient: uuid.New(), NotifType: typ, EntityID: entity,
@@ -30,8 +32,8 @@ func TestSafetyAlertPushDataCarriesCopyAndDatingChannel(t *testing.T) {
 		if data["title"] != a.Title || data["body"] != a.Body {
 			t.Errorf("%s: data copy = %q / %q, want the notification copy", typ, data["title"], data["body"])
 		}
-		if data[push.AndroidChannelDataKey] != "dating" {
-			t.Errorf("%s: channel = %q, want dating", typ, data[push.AndroidChannelDataKey])
+		if data[push.AndroidChannelDataKey] != wantChannel {
+			t.Errorf("%s: channel = %q, want %s", typ, data[push.AndroidChannelDataKey], wantChannel)
 		}
 		if data["type"] != typ || data["entity_id"] != entity.String() ||
 			data["deep_link"] != a.DeepLink || data["collapse_key"] != a.Identity {
@@ -93,6 +95,15 @@ func TestBuildPushDataNonDatingTypesGetNoDatingChannel(t *testing.T) {
 		_, _, data := buildPushData(uuid.New(), typ, "post", uuid.New(), "/x", RenderOverride{})
 		if data[push.AndroidChannelDataKey] == "dating" {
 			t.Errorf("%s: got the dating channel", typ)
+		}
+	}
+}
+
+func TestBuildPushDataPanicPagesUseSafetyAlertsChannel(t *testing.T) {
+	for _, typ := range []string{"dating.safety.panic.trusted_contact", "dating.safety.panic.responder"} {
+		_, _, data := buildPushData(uuid.New(), typ, "dating_panic", uuid.New(), "/dating/safety/alerts/x", RenderOverride{})
+		if data[push.AndroidChannelDataKey] != "safety_alerts" {
+			t.Errorf("%s: channel = %q, want safety_alerts", typ, data[push.AndroidChannelDataKey])
 		}
 	}
 }

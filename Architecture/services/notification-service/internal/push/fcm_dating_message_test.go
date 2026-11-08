@@ -67,3 +67,36 @@ func TestIsDatingType(t *testing.T) {
 		}
 	}
 }
+
+// Founder decision 8 Nov 2026: a panic page goes to the Safety alerts channel,
+// apart from Dating, so muting Dating never hides it.
+func TestDatingChannelFor(t *testing.T) {
+	for typ, want := range map[string]string{
+		"dating.safety.panic.trusted_contact": "safety_alerts",
+		"dating.safety.panic.responder":       "safety_alerts",
+		"dating.safety.panic.acknowledged":    "dating",
+		"dating.safety.location_shared":       "dating",
+		"dating.spark.created":                "dating",
+		"dating_scam_alert":                   "dating",
+		"dm":                                  "",
+		"datingish":                           "",
+	} {
+		if got := DatingChannelFor(typ); got != want {
+			t.Errorf("DatingChannelFor(%q) = %q, want %q", typ, got, want)
+		}
+	}
+}
+
+func TestPanicPageKeepsSafetyAlertsChannelAndLiftsIt(t *testing.T) {
+	msg := BuildFCMMessage("tok", "t", "b", map[string]string{
+		"type": "dating.safety.panic.trusted_contact", AndroidChannelDataKey: SafetyAlertsAndroidChannel,
+	})
+	if data := msg["data"].(map[string]string); data[AndroidChannelDataKey] != "safety_alerts" {
+		t.Errorf("data channel %q, want safety_alerts", data[AndroidChannelDataKey])
+	}
+	android, _ := msg["android"].(map[string]interface{})
+	notification, _ := android["notification"].(map[string]string)
+	if notification["channel_id"] != "safety_alerts" || android["priority"] != "high" {
+		t.Errorf("android = %v, want channel safety_alerts at high priority", android)
+	}
+}

@@ -34,7 +34,6 @@ class DatingChannelTest {
             "dating.match.first_message",
             "dating_date_checkin",
             "dating_scam_alert",
-            "dating.safety.panic.trusted_contact",
             "dating.safety.location_shared",
             // A dating type this build does not know yet is still private.
             "dating.something_new",

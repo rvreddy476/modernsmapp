@@ -129,16 +129,7 @@ class NotificationPresenter @Inject constructor(
                     }
                 }
             }
-            .apply {
-                // Dating audit M2: the channel's lock-screen redaction alone is
-                // not enough (an OEM or a user setting can relax it), so every
-                // dating notification is PRIVATE itself, with a public version
-                // that names no person and no app inside the app.
-                if (channel == NotificationChannelSpec.DATING) {
-                    setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
-                    setPublicVersion(datingPublicVersion(channel))
-                }
-            }
+            .apply { redactOnLockScreen(channel) }
             .apply { (if (actionable) offerIntent(data, "view") else tapIntent(data))?.let(::setContentIntent) }
             .build()
 
@@ -206,12 +197,38 @@ class NotificationPresenter @Inject constructor(
         Manifest.permission.POST_NOTIFICATIONS,
     ) == PackageManager.PERMISSION_GRANTED
 
-    /** What a locked screen shows for a dating notification: no name, no "Pulse", no dating words. */
-    private fun datingPublicVersion(channel: NotificationChannelSpec) = NotificationCompat.Builder(context, channel.id)
-        .setContentTitle(DATING_PUBLIC_TITLE)
-        .setContentText(DATING_PUBLIC_TEXT)
-        .setSmallIcon(android.R.drawable.ic_dialog_info)
-        .build()
+    /**
+     * Dating audit M2: the channel's lock-screen redaction alone is not enough
+     * (an OEM or a user setting can relax it), so every dating notification is
+     * PRIVATE itself, with a public version that names no person and no app
+     * inside the app. Safety alerts (8 Nov): urgent, so the lock screen says
+     * there is one and to open the app, but never who needs help.
+     */
+    private fun NotificationCompat.Builder.redactOnLockScreen(channel: NotificationChannelSpec) {
+        when (channel) {
+            NotificationChannelSpec.DATING -> {
+                setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                setPublicVersion(publicVersion(channel, DATING_PUBLIC_TITLE, DATING_PUBLIC_TEXT))
+            }
+            NotificationChannelSpec.SAFETY_ALERTS -> {
+                setVisibility(NotificationCompat.VISIBILITY_PRIVATE)
+                setPublicVersion(publicVersion(channel, SAFETY_PUBLIC_TITLE, SAFETY_PUBLIC_TEXT))
+                setCategory(NotificationCompat.CATEGORY_ALARM)
+            }
+            else -> Unit
+        }
+    }
+
+    /**
+     * What a locked screen shows instead of the notification: for dating no
+     * name, no "Pulse", no dating words; for a safety alert only that there is one.
+     */
+    private fun publicVersion(channel: NotificationChannelSpec, title: String, text: String) =
+        NotificationCompat.Builder(context, channel.id)
+            .setContentTitle(title)
+            .setContentText(text)
+            .setSmallIcon(android.R.drawable.ic_dialog_info)
+            .build()
 
     /**
      * A stable id per logical subject, so an updated notification REPLACES the
@@ -241,6 +258,10 @@ class NotificationPresenter @Inject constructor(
         /** Dating audit M2: the lock-screen stand-in for every dating notification. */
         const val DATING_PUBLIC_TITLE = "Momentum"
         const val DATING_PUBLIC_TEXT = "New notification"
+
+        /** The lock-screen stand-in for a safety alert: urgent, but names nobody. */
+        const val SAFETY_PUBLIC_TITLE = "Safety alert"
+        const val SAFETY_PUBLIC_TEXT = "Open the app to check on them"
 
         /** Chat parity (CONTRACT §8): the conversation's tone and id on a chat push. */
         const val KEY_ALERT_TONE = "alert_tone"

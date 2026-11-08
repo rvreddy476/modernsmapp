@@ -252,6 +252,21 @@ enum class NotificationChannelSpec(
     ),
 
     /**
+     * Safety alerts (8 Nov 2026, founder decision): someone who trusts you
+     * pressed their panic button, or a member needs a safety responder. Its own
+     * HIGH channel, apart from DATING, so a person who mutes Dating still hears
+     * a friend asking for help. PRIVATE on the lock screen: the public version
+     * says only that there is a safety alert, never who.
+     */
+    SAFETY_ALERTS(
+        id = "safety_alerts",
+        title = "Safety alerts",
+        description = "When someone who trusts you presses their panic button",
+        importance = NotificationManager.IMPORTANCE_HIGH,
+        privateOnLockScreen = true,
+    ),
+
+    /**
      * Mopedu (2026-09-18): the customer's ride — captain assigned, arriving,
      * arrived, started, completed, cancelled, payment received. HIGH: "your
      * captain has arrived" is time-critical, and the customer is often not
@@ -419,6 +434,8 @@ enum class NotificationChannelSpec(
             ACCOUNT,
             // Dating ships only in Momentum (Wave 3, 2026-09-16).
             DATING,
+            // Panic alerts, apart from Dating so muting Dating never hides them (8 Nov).
+            SAFETY_ALERTS,
             // The Mopedu customer flow ships only in Momentum (2026-09-18).
             RIDE_UPDATES,
             // The Doorstep customer flow ships only in Momentum (2026-10-04).
@@ -583,6 +600,9 @@ enum class NotificationChannelSpec(
             // What notification-service's dating and chat consumers emit
             // (dating_consumer.go, chat_consumer.go), Wave 3 2026-09-16.
             "dating.spark.created", "dating.match.formed", "dating.match.new_message", "dating.match.first_message" -> DATING
+            // Panic pages (8 Nov): a trusted contact's alert and a safety responder's page.
+            // Listed before the dating prefix below, so they never fall to DATING.
+            "dating.safety.panic.trusted_contact", "dating.safety.panic.responder" -> SAFETY_ALERTS
             // Mopedu (2026-09-18): the customer's ride progress and payment,
             // and the captain's offer.
             "ride.assigned", "ride.arriving", "ride.arrived", "ride.started", "ride.completed", "ride.cancelled",

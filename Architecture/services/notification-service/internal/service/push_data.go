@@ -57,8 +57,9 @@ func buildPushData(userID uuid.UUID, notifType, entityType string, entityID uuid
 	// without it a background push is drawn on Firebase's fallback channel,
 	// which shows the whole notification on the lock screen and ignores the
 	// user's Dating channel settings.
+	// A panic page names the Safety alerts channel instead (8 Nov 2026).
 	if push.IsDatingType(notifType) && data[push.AndroidChannelDataKey] == "" {
-		data[push.AndroidChannelDataKey] = push.DatingAndroidChannel
+		data[push.AndroidChannelDataKey] = push.DatingChannelFor(notifType)
 	}
 	// Collapse key so repeated notifications (e.g. many likes) replace each
 	// other on the device instead of flooding.
