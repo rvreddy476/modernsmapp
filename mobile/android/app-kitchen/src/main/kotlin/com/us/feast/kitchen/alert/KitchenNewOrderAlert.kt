@@ -18,6 +18,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.us.android.core.notifications.NotificationChannelSpec
 import com.us.android.feature.kitchen.queue.NewOrderAlert
+import com.us.android.feature.kitchen.queue.NewOrderPush
 import com.us.android.feature.kitchen.queue.PushRingHold
 import com.us.feast.kitchen.KitchenActivity
 import com.us.feast.kitchen.R
@@ -66,14 +67,14 @@ class KitchenNewOrderAlert @Inject constructor(
         cancelNotification()
     }
 
-    override fun ringFromPush(ringFor: Duration) {
+    override fun ringFromPush(ringFor: Duration, deepLink: String?) {
         hold.pushed(Instant.now())
         if (isForeground()) {
             cancelNotification()
             startLoop()
         } else {
             stopLoop()
-            postNotification(waitingOrders = PUSHED, timeout = ringFor)
+            postNotification(waitingOrders = PUSHED, timeout = ringFor, deepLink = deepLink)
         }
     }
 
@@ -114,7 +115,7 @@ class KitchenNewOrderAlert @Inject constructor(
     }
 
     @SuppressLint("MissingPermission") // checked below
-    private fun postNotification(waitingOrders: Int, timeout: Duration? = null) {
+    private fun postNotification(waitingOrders: Int, timeout: Duration? = null, deepLink: String? = null) {
         if (waitingOrders == postedCount && timeout == null) return
         val manager = NotificationManagerCompat.from(context)
         if (!manager.areNotificationsEnabled()) return
@@ -125,8 +126,17 @@ class KitchenNewOrderAlert @Inject constructor(
         }
         val open = PendingIntent.getActivity(
             context,
-            0,
-            Intent(context, KitchenActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP),
+            // Its own request code: a later queue alarm must not inherit, or keep, the pushed order.
+            if (deepLink == null) OPEN_KITCHEN else OPEN_PUSHED_ORDER,
+            Intent(context, KitchenActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .apply {
+                    // The pushed order, read by KitchenActivity exactly as a push card's extras were.
+                    deepLink?.let {
+                        putExtra(EXTRA_TYPE, NewOrderPush.TYPE)
+                        putExtra(EXTRA_DEEP_LINK, it)
+                    }
+                },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val notification = NotificationCompat.Builder(context, NotificationChannelSpec.KITCHEN_NEW_ORDER.id)
@@ -154,6 +164,13 @@ class KitchenNewOrderAlert @Inject constructor(
     private companion object {
         const val NOTIFICATION_ID = 4101
         const val NOT_POSTED = -1
+
+        // The keys KitchenActivity.readPush reads.
+        const val EXTRA_TYPE = "type"
+        const val EXTRA_DEEP_LINK = "deep_link"
+
+        const val OPEN_KITCHEN = 0
+        const val OPEN_PUSHED_ORDER = 1
 
         /** A push-rung alarm: the queue's first count always replaces it. */
         const val PUSHED = 0

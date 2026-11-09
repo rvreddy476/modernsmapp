@@ -83,7 +83,7 @@ fun FeastCheckoutScreen(
                 BottomAction(
                     label = when {
                         ready.awaitingOutcome -> "Try again"
-                        else -> ready.bill.total?.let { "Pay ${it.toRupeeText()} with ${ready.method.label}" } ?: "Pay"
+                        else -> ready.shownTotal?.let { "Pay ${it.toRupeeText()} with ${ready.method.label}" } ?: "Pay"
                     },
                     onClick = viewModel::placeOrder,
                     enabled = ready.canSubmit,
@@ -133,6 +133,7 @@ fun FeastCheckoutScreen(
                         }
                     }
                 }
+                s.totalChanged?.let { change -> FeastCard { TotalChangedNote(change) } }
                 s.refusal?.let {
                     FeastCard { InfoNote(it, tone = if (s.awaitingOutcome) Tone.Warning else Tone.Danger) }
                 }
@@ -209,9 +210,28 @@ fun FeastCheckoutScreen(
 }
 
 /**
- * An order that exists and is unpaid. When the server re-priced it, the new
- * total is said here, before any sheet opens (food audit L2).
+ * 409 FOOD_ORDER_TOTAL_CHANGED: the server would charge a different total.
+ * Nothing was ordered or charged; Place order now asks for the new figure.
  */
+@Composable
+private fun TotalChangedNote(change: FeastTotalChange) {
+    Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s)) {
+        Text(
+            "Your total has changed",
+            style = MaterialTheme.typography.titleSmall,
+            color = UsTheme.extended.textPrimary,
+        )
+        InfoNote(
+            "The restaurant's prices or charges changed while you were checking out. Your order now comes to " +
+                change.now.toRupeeText() +
+                (change.was?.let { " (it was ${it.toRupeeText()})" } ?: "") +
+                ". Nothing has been ordered or charged yet.",
+            tone = Tone.Warning,
+        )
+    }
+}
+
+/** An order that exists and is unpaid: Pay now pays it, never places another. */
 @Composable
 private fun UnpaidPane(
     state: FeastCheckoutState.Unpaid,
@@ -220,17 +240,10 @@ private fun UnpaidPane(
 ) {
     val other = FeastPaymentMethod.entries.first { it != state.method }
     val amount = state.amount?.toRupeeText()
-    val changed = state.previousTotal
     MessagePane(
-        title = if (changed != null) "Your total has changed" else "Pay for order ${state.orderNumber}",
-        body = when {
-            changed != null && amount != null ->
-                "The restaurant's prices or charges changed while you were checking out. " +
-                    "Order ${state.orderNumber} now comes to $amount (it was ${changed.toRupeeText()})."
-            else ->
-                "Order ${state.orderNumber} is waiting for payment and is held for a few minutes. " +
-                    "If you already paid, it will be confirmed shortly: please don't pay twice."
-        },
+        title = "Pay for order ${state.orderNumber}",
+        body = "Order ${state.orderNumber} is waiting for payment and is held for a few minutes. " +
+            "If you already paid, it will be confirmed shortly: please don't pay twice.",
         icon = UsIcons.CreditCard,
         primaryLabel = amount?.let { "Pay $it with ${state.method.label}" } ?: "Pay with ${state.method.label}",
         onPrimary = { onPay(state.method) },

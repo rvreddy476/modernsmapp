@@ -1,5 +1,7 @@
 package com.us.android.feature.rider.location
 
+import com.us.android.core.food.repository.FoodError
+import com.us.android.core.food.repository.code
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
@@ -11,8 +13,11 @@ import javax.inject.Singleton
 
 /** Something the service tells the rider without changing whether they are on duty. */
 enum class DutyNotice {
-    /** The server would not take the rider offline (an active delivery, or no connection); still on duty. */
+    /** The server could not be asked, or refused for another reason; still on duty. */
     OFFLINE_REFUSED,
+
+    /** 409 WORK_BUSY: the server says the rider is carrying a delivery; still on duty. */
+    OFFLINE_REFUSED_ON_JOB,
 
     /** No location fix for two minutes during a delivery; still on duty, the customer's map is stale. */
     FIX_LOST_ON_JOB,
@@ -75,3 +80,14 @@ class RiderDuty @Inject constructor() {
         const val STOP_BUFFER = 4
     }
 }
+
+/**
+ * Which notice a refused "Go offline" gives. 409 WORK_BUSY (food server lane,
+ * 9 Nov 2026: refused while a job is held, with partnerwork on or off) says
+ * finish the delivery; any other failure, including no answer, keeps the
+ * general [DutyNotice.OFFLINE_REFUSED]. The rider stays on duty either way.
+ */
+fun offlineRefusal(error: FoodError): DutyNotice =
+    if (error.code == WORK_BUSY) DutyNotice.OFFLINE_REFUSED_ON_JOB else DutyNotice.OFFLINE_REFUSED
+
+private const val WORK_BUSY = "WORK_BUSY"

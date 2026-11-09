@@ -207,6 +207,13 @@ data class DeliveryOfferDto(
     /** What the rider earns (a batch: all of it). */
     @SerialName("payout_paise") val payoutPaise: Paise? = null,
     val currency: String? = null,
+    /**
+     * Whole seconds left on the offer when the server built the answer, on
+     * the server's clock, rounded down and never negative (food server lane,
+     * 9 Nov 2026). The countdown runs from this; absent (an older server, or a
+     * pushed offer) it falls back to [expiresAt] on the server clock.
+     */
+    @SerialName("seconds_to_expiry") val secondsToExpiry: Long? = null,
 )
 
 @Serializable

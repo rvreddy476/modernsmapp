@@ -64,4 +64,13 @@ class NewOrderPushTest {
 
         assertThat(hold.queueMaySilence(now.plusSeconds(1))).isTrue()
     }
+
+    @Test
+    fun `the data-only push's deep link names the order, and a blank one names none`() {
+        val link = "/kitchen/orders/o-1?restaurant_id=rst_1"
+
+        assertThat(NewOrderPush.deepLink(push + ("deep_link" to " $link "))).isEqualTo(link)
+        assertThat(NewOrderPush.deepLink(push + ("deep_link" to "  "))).isNull()
+        assertThat(NewOrderPush.deepLink(push)).isNull()
+    }
 }

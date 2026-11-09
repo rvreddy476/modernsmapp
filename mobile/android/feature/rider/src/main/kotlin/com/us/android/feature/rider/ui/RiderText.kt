@@ -18,6 +18,8 @@ fun FoodError.userMessage(): String = when (this) {
     FoodError.Unauthorized -> "Your session has ended. Please sign in again."
     FoodError.NotAvailable -> "This isn't available on the server yet."
     is FoodError.Network -> "You're offline. Check your connection and try again."
+    // Customer checkout only; a partner route never answers it.
+    is FoodError.TotalChanged -> "The total has changed. Please review it and try again."
     // A 5xx message is server internals, never shown.
     is FoodError.Unexpected -> message?.takeIf { it.isNotBlank() && (status ?: 0) < SERVER_ERROR }
         ?: "Something went wrong on our side. Please try again."

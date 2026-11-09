@@ -54,26 +54,33 @@ sealed interface FeastCheckoutState {
          * same key settles it (food audit M1).
          */
         val awaitingOutcome: Boolean = false,
+        /**
+         * The server refused the last Place order because the total it would
+         * charge is not the one on screen (409 FOOD_ORDER_TOTAL_CHANGED, food
+         * audit L2). No order exists and nothing was charged; the next Place
+         * order asks for [FeastTotalChange.now], which the screen says first.
+         */
+        val totalChanged: FeastTotalChange? = null,
     ) : FeastCheckoutState {
         /** While the outcome is unknown the resend is always allowed: it is the same order. */
         val canSubmit: Boolean get() = !placing && (awaitingOutcome || orderable)
+
+        /** The total the next Place order shows and sends as `expected_total_paise`. */
+        val shownTotal: Paise? get() = totalChanged?.now ?: bill.total
 
         private val orderable: Boolean get() = bill.payable && address != null
     }
 
     /**
      * An order exists and nothing has been paid on it yet: "Pay now" from
-     * tracking or orders, a checkout restored after process death before the
-     * sheet opened, or a total the server re-priced. [amount] is the server's
-     * figure; [previousTotal] is the bill the customer saw, when it differs
-     * (food audit L2).
+     * tracking or orders, or a checkout restored after process death before
+     * the sheet opened. [amount] is the server's figure.
      */
     data class Unpaid(
         val orderId: String,
         val orderNumber: String,
         val method: FeastPaymentMethod,
         val amount: Paise?,
-        val previousTotal: Paise? = null,
     ) : FeastCheckoutState
 
     /** The sheet is being opened from the Activity. */
@@ -102,6 +109,9 @@ sealed interface FeastCheckoutState {
     data class Failed(val message: String, val retryable: Boolean) : FeastCheckoutState
 }
 
+/** The server's total ([now]) for an order priced differently from the one the customer saw ([was]). */
+data class FeastTotalChange(val was: Paise?, val now: Paise)
+
 /**
  * Feast checkout: place the order, pay, and believe only the server.
  *
@@ -110,8 +120,12 @@ sealed interface FeastCheckoutState {
  *  1. ONE Idempotency-Key per customer decision, persisted before the request
  *     leaves and reused on a resend, so a lost response can never become a
  *     second order.
- *  2. The total is the server's `final_amount_paise` ([CartBill]); the client
- *     sends no amount anywhere.
+ *  2. The total is the server's `final_amount_paise` ([CartBill]). The client
+ *     sends the total it SHOWED as `expected_total_paise`, only to be
+ *     compared: a server that would charge anything else refuses with 409
+ *     FOOD_ORDER_TOTAL_CHANGED before an order exists, the new total is said,
+ *     and the customer decides again (food audit L2). The figure is held with
+ *     the key, so a resend is the same body.
  *  3. A sheet ending is evidence, never proof (A1/R-3): every ending moves to
  *     [FeastCheckoutState.Confirming] and polls `GET /orders/:id/payment`
  *     through [PaymentCoordinator.confirm]; only the server's `paid` renders
@@ -180,6 +194,8 @@ class FeastCheckoutViewModel @Inject constructor(
                 it.copy(
                     address = picked,
                     refusal = if (changed) null else it.refusal,
+                    // A new address re-prices the bill: the bill is now what is shown and sent.
+                    totalChanged = if (changed) null else it.totalChanged,
                     bill = repriced?.let(CartBill::from) ?: it.bill,
                     itemCount = repriced?.items?.sumOf { line -> line.quantity } ?: it.itemCount,
                 )
@@ -195,7 +211,7 @@ class FeastCheckoutViewModel @Inject constructor(
             // order it already made, or makes it now.
             val addressId = saved.addressId ?: return
             _state.value = ready.copy(placing = true)
-            viewModelScope.launch { submit(addressId, saved.method, ready) }
+            viewModelScope.launch { submit(addressId, saved.method, saved.expectedTotal, ready) }
             return
         }
         if (!ready.bill.payable) return
@@ -204,14 +220,16 @@ class FeastCheckoutViewModel @Inject constructor(
             _state.value = ready.copy(refusal = "Add a delivery address to continue.")
             return
         }
+        val expected = ready.shownTotal
         saved.addressId = address.id
         saved.restaurantId = ready.restaurantId
         saved.method = ready.method
+        saved.expectedTotal = expected
         // Recorded BEFORE the request leaves: recovery must know a request may
         // have created an order.
         saved.phase = FeastCheckoutContinuation.Phase.SUBMITTING
         _state.value = ready.copy(placing = true, refusal = null)
-        viewModelScope.launch { submit(address.id, ready.method, ready) }
+        viewModelScope.launch { submit(address.id, ready.method, expected, ready) }
     }
 
     /** Pay for the order that already exists: a NEW attempt, the SAME order. */
@@ -272,13 +290,52 @@ class FeastCheckoutViewModel @Inject constructor(
         )
     }
 
-    private suspend fun submit(addressId: String, method: FeastPaymentMethod, ready: FeastCheckoutState.Ready?) {
+    private suspend fun submit(
+        addressId: String,
+        method: FeastPaymentMethod,
+        expectedTotal: Paise?,
+        ready: FeastCheckoutState.Ready?,
+    ) {
         val key = saved.orderKey { repository.newIdempotencyKey() }
-        when (val result = repository.placeOrder(key, PlaceOrderRequest(addressId, method.wire))) {
-            is FoodResult.Success -> adopt(result.value, shownTotal = ready?.bill?.total)
-            is FoodResult.Failure ->
-                if (result.error.outcomeUnknown) awaitOutcome(ready) else refused(result.error, addressId, ready)
+        val body = PlaceOrderRequest(addressId, method.wire, expectedTotalPaise = expectedTotal)
+        when (val result = repository.placeOrder(key, body)) {
+            is FoodResult.Success -> adopt(result.value)
+            is FoodResult.Failure -> {
+                val error = result.error
+                when {
+                    error.outcomeUnknown -> awaitOutcome(ready)
+                    error is FoodError.TotalChanged -> totalChanged(error, expectedTotal, ready)
+                    else -> refused(error, addressId, ready)
+                }
+            }
         }
+    }
+
+    /**
+     * The server would charge a different total (409 FOOD_ORDER_TOTAL_CHANGED):
+     * no order exists and nothing was charged. Say the new total and wait for
+     * the customer to place again, which sends the new figure. The KEY is kept:
+     * the refused attempt left nothing under it on the server, so the next
+     * decision may reuse it, and a resend after a lost answer still finds it.
+     */
+    private suspend fun totalChanged(error: FoodError.TotalChanged, sent: Paise?, ready: FeastCheckoutState.Ready?) {
+        saved.phase = FeastCheckoutContinuation.Phase.FRESH
+        val change = FeastTotalChange(was = sent ?: error.expectedTotal, now = error.serverTotal)
+        val base = ready ?: run {
+            loadCart()
+            _state.value as? FeastCheckoutState.Ready
+        }
+        if (base == null) return
+        // The bill is re-read so its lines match the new total; if it cannot be, the total alone is said.
+        val repriced = (repository.cart() as? FoodResult.Success)?.value?.takeIf { it.items.isNotEmpty() }
+        _state.value = base.copy(
+            placing = false,
+            awaitingOutcome = false,
+            refusal = null,
+            totalChanged = change,
+            bill = repriced?.let(CartBill::from) ?: base.bill,
+            itemCount = repriced?.items?.sumOf { line -> line.quantity } ?: base.itemCount,
+        )
     }
 
     /**
@@ -308,18 +365,13 @@ class FeastCheckoutViewModel @Inject constructor(
     }
 
     /**
-     * The order exists. When the server priced it differently from the bill
-     * on screen, say so before any sheet opens (food audit L2); otherwise open
-     * payment straight away.
+     * The order exists, at the total the customer was shown: the server
+     * refuses any other before creating it (409 FOOD_ORDER_TOTAL_CHANGED), so
+     * payment opens straight away.
      */
-    private fun adopt(order: FeastOrderDto, shownTotal: Paise?) {
+    private fun adopt(order: FeastOrderDto) {
         saved.orderId = order.id
         saved.orderNumber = order.orderNumber
-        val charged = order.money?.totalsPaise?.finalAmountPaise
-        if (charged != null && shownTotal != null && charged != shownTotal) {
-            _state.value = FeastCheckoutState.Unpaid(order.id, order.orderNumber, saved.method, charged, shownTotal)
-            return
-        }
         openPayment(order.id, order.orderNumber)
     }
 
@@ -392,7 +444,7 @@ class FeastCheckoutViewModel @Inject constructor(
             return
         }
         _state.value = FeastCheckoutState.Loading
-        submit(addressId, saved.method, ready = null)
+        submit(addressId, saved.method, saved.expectedTotal, ready = null)
     }
 
     /**
@@ -510,6 +562,13 @@ internal class FeastCheckoutContinuation(private val handle: SavedStateHandle) {
             handle[KEY_METHOD] = v.wire
         }
 
+    /** The `expected_total_paise` sent under the held key: a resend must carry the same figure. */
+    var expectedTotal: Paise?
+        get() = handle.get<Long>(KEY_EXPECTED_TOTAL)?.let(::Paise)
+        set(v) {
+            handle[KEY_EXPECTED_TOTAL] = v?.value
+        }
+
     /** The attempt, in `:core:payments`' record keyed by Feast's application id. */
     val inFlight = InFlightPayment(
         store = object : PaymentStateStore {
@@ -529,5 +588,6 @@ internal class FeastCheckoutContinuation(private val handle: SavedStateHandle) {
         const val KEY_ADDRESS_ID = "feast.checkout.addressId"
         const val KEY_RESTAURANT_ID = "feast.checkout.restaurantId"
         const val KEY_METHOD = "feast.checkout.method"
+        const val KEY_EXPECTED_TOTAL = "feast.checkout.expectedTotal"
     }
 }

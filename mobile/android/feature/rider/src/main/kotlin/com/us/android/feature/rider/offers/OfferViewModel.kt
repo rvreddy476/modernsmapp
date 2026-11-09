@@ -114,7 +114,7 @@ class OfferViewModel @Inject constructor(
         if (listed != null) lastSeen = listed
         val offer = listed ?: lastSeen
         val gone = now.gone || (snapshot.loaded && listed == null && !now.responding)
-        val window = offer?.let { OfferCountdown.of(it.expiresAt).at(snapshot.clock.serverNow(clock.now())) }
+        val window = offer?.let { snapshot.windowOf(it, clock.now()) }
         return OfferUiState(
             loading = !snapshot.loaded && offer == null,
             offer = offer,

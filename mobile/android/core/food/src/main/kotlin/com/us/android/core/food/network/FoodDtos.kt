@@ -1,5 +1,6 @@
 package com.us.android.core.food.network
 
+import com.us.android.core.food.model.Paise
 import com.us.android.core.network.ApiMeta
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -258,4 +259,10 @@ data class FoodErrorBodyDto(
 data class FoodErrorDetailsDto(
     val field: String? = null,
     val missing: List<String>? = null,
+    /**
+     * 409 FOOD_ORDER_TOTAL_CHANGED (order_place_409_total_changed.json): what
+     * the order would cost now, and the total the app sent, both integer paise.
+     */
+    @SerialName("server_total_paise") val serverTotalPaise: Paise? = null,
+    @SerialName("expected_total_paise") val expectedTotalPaise: Paise? = null,
 )

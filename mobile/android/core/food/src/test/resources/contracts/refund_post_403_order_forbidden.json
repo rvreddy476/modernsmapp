@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_SUPPORT_ORDER_FORBIDDEN",
+    "message": "order or ticket is not available to this account"
+  },
+  "meta": {}
+}

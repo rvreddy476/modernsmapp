@@ -189,10 +189,13 @@ class FakeFeastApi : FeastApi {
     var ticketResponse: () -> Response<ApiEnvelope<SupportTicketDto>> =
         { ok(SupportTicketDto(id = "ticket-1", orderId = order.id)) }
     val ticketRequests = mutableListOf<CreateSupportTicketRequest>()
+    val ticketKeys = mutableListOf<String>()
 
     override suspend fun createSupportTicket(
+        idempotencyKey: String,
         body: CreateSupportTicketRequest,
     ): Response<ApiEnvelope<SupportTicketDto>> {
+        ticketKeys += idempotencyKey
         ticketRequests += body
         return ticketResponse()
     }
@@ -200,8 +203,13 @@ class FakeFeastApi : FeastApi {
     var refundResponse: () -> Response<ApiEnvelope<RefundRequestDto>> =
         { ok(RefundRequestDto(id = "refund-1", status = "requested")) }
     val refundRequests = mutableListOf<CreateRefundRequest>()
+    val refundKeys = mutableListOf<String>()
 
-    override suspend fun requestRefund(body: CreateRefundRequest): Response<ApiEnvelope<RefundRequestDto>> {
+    override suspend fun requestRefund(
+        idempotencyKey: String,
+        body: CreateRefundRequest,
+    ): Response<ApiEnvelope<RefundRequestDto>> {
+        refundKeys += idempotencyKey
         refundRequests += body
         return refundResponse()
     }

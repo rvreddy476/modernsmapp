@@ -14,6 +14,7 @@ import com.us.android.core.food.network.RestaurantSummaryDto
 import com.us.android.core.food.network.SettlementDto
 import com.us.android.core.food.network.VerifyPickupDto
 import com.us.android.core.food.network.VerifyPickupRequest
+import com.us.android.core.network.Paged
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -77,8 +78,46 @@ class KitchenRepository @Inject constructor(
     suspend fun setMenuItemAvailability(itemId: String, available: Boolean): FoodResult<Unit> =
         foodCall(json) { api.setMenuItemAvailability(itemId, AvailabilityRequest(available)) }.map { }
 
-    suspend fun orders(restaurantId: String): FoodResult<List<PartnerOrderDto>> =
-        foodCall(json) { api.listOrders(restaurantId) }.map { it.items }
+    /** One page of the restaurant's orders in [statuses] (every status when empty). */
+    suspend fun ordersPage(
+        restaurantId: String,
+        statuses: Collection<String>,
+        cursor: String? = null,
+        limit: Int = ORDERS_PAGE_LIMIT,
+    ): FoodResult<Paged<PartnerOrderDto>> =
+        foodCallPaged(json) { api.listOrders(restaurantId, statuses.toList(), limit, cursor) }
+
+    /**
+     * Every order of the restaurant in [statuses], newest first, read page by
+     * page until `meta.next_cursor` is absent (food audit M5: the Kitchen
+     * counts active orders from this, not from the latest 100 of any status).
+     *
+     * The read stops early, with [PartnerOrders.complete] false, after
+     * [maxPages] pages or if the server hands back a cursor it already gave:
+     * a misbehaving server must not keep the queue paging forever. Any page
+     * that fails fails the whole read, so a partial list is never shown as
+     * the full one.
+     */
+    suspend fun ordersIn(
+        restaurantId: String,
+        statuses: Collection<String>,
+        maxPages: Int = MAX_ORDER_PAGES,
+    ): FoodResult<PartnerOrders> {
+        val items = mutableListOf<PartnerOrderDto>()
+        val seen = mutableSetOf<String>()
+        var cursor: String? = null
+        repeat(maxPages) {
+            val page = when (val result = ordersPage(restaurantId, statuses, cursor)) {
+                is FoodResult.Failure -> return result
+                is FoodResult.Success -> result.value
+            }
+            items += page.items
+            val next = page.nextCursor ?: return FoodResult.Success(PartnerOrders(items, complete = true))
+            if (!seen.add(next)) return FoodResult.Success(PartnerOrders(items, complete = false))
+            cursor = next
+        }
+        return FoodResult.Success(PartnerOrders(items, complete = false))
+    }
 
     suspend fun kitchenQueue(restaurantId: String): FoodResult<List<KitchenOrderDto>> =
         foodCall(json) { api.kitchenQueue(restaurantId) }.map { it.orders }
@@ -113,3 +152,12 @@ class KitchenRepository @Inject constructor(
     suspend fun settlements(restaurantId: String): FoodResult<List<SettlementDto>> =
         foodCall(json) { api.settlements(restaurantId) }.map { it.items }
 }
+
+/** The orders [KitchenRepository.ordersIn] read, and whether it read to the last page. */
+data class PartnerOrders(val items: List<PartnerOrderDto>, val complete: Boolean)
+
+/** The partner orders route's page size, and its cap. */
+const val ORDERS_PAGE_LIMIT = 100
+
+/** 100 pages of 100: far beyond any kitchen's active orders; only a looping server reaches it. */
+const val MAX_ORDER_PAGES = 100

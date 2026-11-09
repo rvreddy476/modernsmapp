@@ -9,6 +9,7 @@ import retrofit2.http.Header
 import retrofit2.http.PATCH
 import retrofit2.http.POST
 import retrofit2.http.Path
+import retrofit2.http.Query
 
 /**
  * food-service's restaurant partner routes for the Kitchen app: restaurants,
@@ -78,8 +79,21 @@ interface KitchenApi {
 
     // Orders
 
+    /**
+     * The restaurant's orders, newest first (handler_partner_orders.go;
+     * golden partner_orders_get_200_page.json). [statuses] narrows the list
+     * (repeated `status=`; an unknown status is a 400, never ignored), [limit]
+     * is 1..100 (100 by default), and [cursor] is `meta.next_cursor` from the
+     * previous page, sent back untouched. `meta.next_cursor` is absent on the
+     * last page. With no query the answer is the latest 100 orders of any status.
+     */
     @GET("v1/food/partner/restaurants/{restaurantId}/orders")
-    suspend fun listOrders(@Path("restaurantId") restaurantId: String): Response<ApiEnvelope<ItemsDto<PartnerOrderDto>>>
+    suspend fun listOrders(
+        @Path("restaurantId") restaurantId: String,
+        @Query("status") statuses: List<String>? = null,
+        @Query("limit") limit: Int? = null,
+        @Query("cursor") cursor: String? = null,
+    ): Response<ApiEnvelope<ItemsDto<PartnerOrderDto>>>
 
     @GET("v1/food/partner/restaurants/{restaurantId}/kitchen-queue")
     suspend fun kitchenQueue(@Path("restaurantId") restaurantId: String): Response<ApiEnvelope<KitchenQueueDto>>

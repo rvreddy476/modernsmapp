@@ -35,9 +35,18 @@ data class OfferAlertChanges(val post: List<OfferAlert>, val cancel: Set<String>
  */
 object OfferAlertPlan {
 
-    fun diff(alerted: Set<String>, offers: List<DeliveryOfferDto>, serverNow: Instant): OfferAlertChanges {
+    /** [diff] for the feed's [snapshot] at device time [deviceNow], on the server's clock and countdowns. */
+    fun diff(alerted: Set<String>, snapshot: OfferSnapshot, deviceNow: Instant): OfferAlertChanges =
+        diff(alerted, snapshot.offers, snapshot.clock.serverNow(deviceNow), snapshot.countdowns)
+
+    fun diff(
+        alerted: Set<String>,
+        offers: List<DeliveryOfferDto>,
+        serverNow: Instant,
+        countdowns: Map<String, Instant> = emptyMap(),
+    ): OfferAlertChanges {
         val live = offers.mapNotNull { offer ->
-            val expiresAt = ServerTime.parse(offer.expiresAt) ?: return@mapNotNull null
+            val expiresAt = OfferExpiry.of(offer, countdowns) ?: return@mapNotNull null
             val remaining = Duration.between(serverNow, expiresAt)
             if (remaining > Duration.ZERO) OfferAlert(offer.id, remaining) else null
         }
@@ -67,8 +76,8 @@ class RiderOfferAlerts @Inject constructor(
 ) {
     private val alerted = mutableSetOf<String>()
 
-    fun update(offers: List<DeliveryOfferDto>, serverNow: Instant) {
-        val changes = OfferAlertPlan.diff(alerted, offers, serverNow)
+    fun update(snapshot: OfferSnapshot, deviceNow: Instant) {
+        val changes = OfferAlertPlan.diff(alerted, snapshot, deviceNow)
         changes.cancel.forEach(::cancel)
         changes.post.forEach(::post)
     }

@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_REFUND_NOT_ELIGIBLE",
+    "message": "order has no captured payment to refund"
+  },
+  "meta": {}
+}

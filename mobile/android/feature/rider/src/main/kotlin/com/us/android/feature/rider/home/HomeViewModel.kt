@@ -15,6 +15,7 @@ import com.us.android.feature.rider.location.OfflineReason
 import com.us.android.feature.rider.location.RiderDuty
 import com.us.android.feature.rider.money.RiderMoney
 import com.us.android.feature.rider.offers.LiveTransport
+import com.us.android.feature.rider.offers.OfferSnapshot
 import com.us.android.feature.rider.offers.RiderOfferWatch
 import com.us.android.feature.rider.ui.asMessage
 import com.us.android.feature.rider.ui.explanation
@@ -45,6 +46,8 @@ data class HomeUiState(
     val offers: List<DeliveryOfferDto> = emptyList(),
     val job: DeliveryAssignmentDto? = null,
     val transport: LiveTransport = LiveTransport.CONNECTING,
+    /** The offer feed's clocks: offers count down from these, never from the bare device time. */
+    val offerClock: OfferSnapshot = OfferSnapshot(),
     /** A delivery is active: Go offline and sign out are held until it ends (food audit M2). */
     val onJob: Boolean = false,
     val deliveriesToday: Int? = null,
@@ -103,7 +106,7 @@ class HomeViewModel @Inject constructor(
 
     private val _state = MutableStateFlow(HomeUiState())
     val state: StateFlow<HomeUiState> = combine(_state, watch.observe(), duty.onJob) { home, live, onJob ->
-        home.copy(offers = live.offers, job = live.job, transport = live.transport, onJob = onJob)
+        home.copy(offers = live.offers, job = live.job, transport = live.transport, offerClock = live, onJob = onJob)
     }.stateIn(viewModelScope, SharingStarted.WhileSubscribed(STOP_TIMEOUT_MILLIS), HomeUiState())
 
     private val _events = MutableSharedFlow<HomeEvent>(extraBufferCapacity = 4, onBufferOverflow = BufferOverflow.DROP_OLDEST)
@@ -189,7 +192,8 @@ class HomeViewModel @Inject constructor(
     private fun onDutyNotice(notice: DutyNotice) {
         val text = when (notice) {
             DutyNotice.OFFLINE_REFUSED ->
-                "You're still online: Feast couldn't take you offline. Finish any active delivery and try again."
+                "You're still online: Feast couldn't take you offline. Check your connection and try again."
+            DutyNotice.OFFLINE_REFUSED_ON_JOB -> OFFLINE_REFUSED_ON_JOB
             DutyNotice.FIX_LOST_ON_JOB ->
                 "No GPS signal for two minutes. You're still on duty; move into the open so the customer can see you."
             DutyNotice.FIX_BACK -> "GPS is back. The customer can see you again."
@@ -228,5 +232,7 @@ class HomeViewModel @Inject constructor(
     private companion object {
         const val STOP_TIMEOUT_MILLIS = 5_000L
         const val FINISH_FIRST = "Finish your delivery first. You stay online until it's delivered."
+        const val OFFLINE_REFUSED_ON_JOB =
+            "You're still online: you're carrying a delivery. Finish it, then go offline."
     }
 }

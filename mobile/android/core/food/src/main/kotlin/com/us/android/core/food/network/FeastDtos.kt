@@ -416,12 +416,21 @@ data class FeastAddressRequest(
 
 // ── Orders (golden: order_get_200*.json) ───────────────────────────────
 
-/** `payment_method` is the INSTRUMENT the customer chose: `upi` or `card` at launch. */
+/**
+ * `payment_method` is the INSTRUMENT the customer chose: `upi` or `card` at launch.
+ *
+ * [expectedTotalPaise] is the total the customer was shown (food server lane,
+ * 9 Nov 2026). The server charges its own total, never this one; when the two
+ * differ it refuses with 409 FOOD_ORDER_TOTAL_CHANGED and creates no order.
+ * It is part of the request the Idempotency-Key is bound to, so a resend of
+ * the same decision must carry the same figure.
+ */
 @Serializable
 data class PlaceOrderRequest(
     @SerialName("address_id") val addressId: String,
     @SerialName("payment_method") val paymentMethod: String,
     @SerialName("customer_instruction") val customerInstruction: String? = null,
+    @SerialName("expected_total_paise") val expectedTotalPaise: Paise? = null,
 )
 
 @Serializable
@@ -656,8 +665,9 @@ data class InvoiceLineDto(
 
 // ── Support: refund after the kitchen started (handler_support.go) ─────
 //
-// No golden fixture exists for these routes yet (server follow-up); the
-// shapes mirror postgres.Ticket and postgres.RefundRequest.
+// Goldens: support_ticket_post_*.json and refund_post_*.json. Both routes
+// take an optional Idempotency-Key (food server lane, 9 Nov 2026): a resend
+// under the same key answers with the ticket or request the first call made.
 
 /** `POST /v1/food/support/tickets`. [category] and [subject] are required. */
 @Serializable
@@ -671,9 +681,11 @@ data class CreateSupportTicketRequest(
 @Serializable
 data class SupportTicketDto(
     val id: String,
+    @SerialName("customer_id") val customerId: String? = null,
     @SerialName("order_id") val orderId: String? = null,
     val category: String = "",
     val subject: String = "",
+    val detail: String? = null,
     val status: String = "",
     @SerialName("created_at") val createdAt: String? = null,
 )
@@ -697,8 +709,11 @@ data class RefundRequestDto(
     val id: String,
     @SerialName("order_id") val orderId: String = "",
     @SerialName("ticket_id") val ticketId: String? = null,
+    @SerialName("customer_id") val customerId: String? = null,
     @Serializable(with = RupeesAsPaiseSerializer::class)
     val amount: Paise = Paise.ZERO,
+    val reason: String? = null,
     /** `requested`, then `approved` or `rejected` by Feast support. */
     val status: String = "",
+    @SerialName("created_at") val createdAt: String? = null,
 )

@@ -48,4 +48,51 @@ class OfferCountdownTest {
         assertThat(ServerClockOffset.from(serverTime = null, receivedAt = received)).isEqualTo(ServerClockOffset.NONE)
         assertThat(ServerClockOffset.NONE.serverNow(received)).isEqualTo(received)
     }
+
+    // ── seconds_to_expiry (food server lane, 9 Nov 2026) ───────────────
+
+    private val received = Instant.parse("2026-09-13T06:30:00Z")
+
+    @Test
+    fun `an offer's seconds_to_expiry wins over its expires_at`() {
+        val offer = goldenOffer().copy(secondsToExpiry = 12)
+
+        val countdowns = OfferExpiry.fromCountdowns(listOf(offer), received)
+
+        assertThat(OfferExpiry.of(offer, countdowns)).isEqualTo(received.plusSeconds(12))
+    }
+
+    @Test
+    fun `an offer without seconds_to_expiry falls back to its expires_at`() {
+        val older = goldenOffer().copy(secondsToExpiry = null)
+
+        val countdowns = OfferExpiry.fromCountdowns(listOf(older), received)
+
+        assertThat(countdowns).isEmpty()
+        assertThat(OfferExpiry.of(older, countdowns)).isEqualTo(GOLDEN_EXPIRY)
+    }
+
+    @Test
+    fun `a negative seconds_to_expiry is not read, and the offer falls back to its expires_at`() {
+        val odd = goldenOffer().copy(secondsToExpiry = -5)
+
+        assertThat(OfferExpiry.of(odd, OfferExpiry.fromCountdowns(listOf(odd), received))).isEqualTo(GOLDEN_EXPIRY)
+    }
+
+    @Test
+    fun `the countdown from seconds_to_expiry ignores the server clock offset`() {
+        val offer = goldenOffer()
+        val deviceAtReceipt = Instant.parse("2026-09-13T07:45:00Z")
+        // The phone runs 75 minutes fast; the Date header said 06:30:00.
+        val clock = ServerClockOffset.from(Instant.parse("2026-09-13T06:30:00Z"), deviceAtReceipt)
+        val snapshot = OfferSnapshot(
+            offers = listOf(offer),
+            clock = clock,
+            countdowns = OfferExpiry.fromCountdowns(listOf(offer), clock.serverNow(deviceAtReceipt)),
+        )
+
+        assertThat(snapshot.windowOf(offer, deviceAtReceipt.plusSeconds(5)))
+            .isEqualTo(OfferWindow.Open(15, urgent = false))
+        assertThat(snapshot.windowOf(offer, deviceAtReceipt.plusSeconds(20))).isEqualTo(OfferWindow.Expired)
+    }
 }

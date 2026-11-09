@@ -170,12 +170,11 @@ fun OrdersScreen(
                     onOpen = { onOpenOrder(order.id) },
                 )
             }
-            if (state.activeListTruncated) {
-                item(key = "truncated") {
+            if (state.activeListIncomplete) {
+                item(key = "incomplete") {
                     InfoNote(
-                        "These lists come from your latest $PARTNER_ORDER_LIST_LIMIT orders. " +
-                            "An older order still in progress may not show here; " +
-                            "ask Feast support if a rider is waiting for one you can't find.",
+                        "These lists may be missing some orders. " +
+                            "Ask Feast support if a rider is waiting for an order you can't find.",
                     )
                 }
             }

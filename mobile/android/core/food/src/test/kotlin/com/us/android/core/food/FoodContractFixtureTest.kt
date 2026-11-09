@@ -31,8 +31,10 @@ import com.us.android.core.food.network.PartnerOrderDto
 import com.us.android.core.food.network.PaymentIntentDto
 import com.us.android.core.food.network.PayoutAccountDto
 import com.us.android.core.food.network.RealtimeTokenDto
+import com.us.android.core.food.network.RefundRequestDto
 import com.us.android.core.food.network.RestaurantDocumentDto
 import com.us.android.core.food.network.SubmitDto
+import com.us.android.core.food.network.SupportTicketDto
 import com.us.android.core.food.network.VerifyDeliveryDto
 import com.us.android.core.food.repository.FoodError
 import com.us.android.core.food.repository.code
@@ -217,6 +219,9 @@ class FoodContractFixtureTest {
             assertThat(offer.tripDistanceMeters).isEqualTo(5_065L)
             assertThat(offer.payoutPaise).isEqualTo(Paise(2_320))
             assertThat(offer.currency).isEqualTo("INR")
+            assertThat(offer.expiresAt).isEqualTo("2026-09-13 06:30:20+00")
+            // Food server lane: the countdown runs from this, on the server's clock.
+            assertThat(offer.secondsToExpiry).isEqualTo(20L)
         },
         "delivery_history_get_200.json" to data(ItemsDto.serializer(DeliveryAssignmentDto.serializer())) {
             assertThat(it.items.map { i -> i.status }).containsExactly("DELIVERED", "CANCELLED").inOrder()
@@ -521,6 +526,43 @@ class FoodContractFixtureTest {
         "payment_intent_post_422_cod.json" to coded("PAYMENT_METHOD_UNAVAILABLE", FoodError.InvalidField::class.java),
         "payment_intent_post_422_unknown_method.json" to coded("PAYMENT_METHOD_INVALID", FoodError.InvalidField::class.java),
         "payment_intent_post_422_wallet.json" to coded("PAYMENT_METHOD_UNAVAILABLE", FoodError.InvalidField::class.java),
+
+        // ── Food server lane, 9 Nov 2026 ─────────────────────────────────
+        "delivery_availability_post_409_on_job.json" to coded("WORK_BUSY", FoodError.Unexpected::class.java),
+        "order_place_409_total_changed.json" to error {
+            assertThat(it).isEqualTo(FoodError.TotalChanged(serverTotal = Paise(47_200), expectedTotal = Paise(45_600)))
+            assertThat(it.code).isEqualTo("FOOD_ORDER_TOTAL_CHANGED")
+        },
+        // The list item carries the customer and money fields the queue does not read: lenient, as production.
+        "partner_orders_get_200_page.json" to { _, raw ->
+            val page = ApiEnvelope.serializer(ItemsDto.serializer(PartnerOrderDto.serializer()))
+            val envelope = lenient.decodeFromString(page, raw)
+            val items = checkNotNull(envelope.data).items
+            assertThat(items.map { o -> o.status }).containsExactly("CONFIRMED", "PREPARING").inOrder()
+            assertThat(items.map { o -> o.totals.finalAmount }).containsExactly(Paise(45_600), Paise(23_650)).inOrder()
+            assertThat(envelope.meta?.nextCursor).isEqualTo("1789280940000000.0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0032")
+        },
+        "refund_post_201.json" to data(RefundRequestDto.serializer()) {
+            assertThat(it.id).isEqualTo("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0031")
+            assertThat(it.ticketId).isEqualTo("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0030")
+            assertThat(it.amount).isEqualTo(Paise(45_600))
+            assertThat(it.reason).isEqualTo("Cold food")
+            assertThat(it.status).isEqualTo("requested")
+        },
+        "refund_post_403_order_forbidden.json" to
+            coded("FOOD_SUPPORT_ORDER_FORBIDDEN", FoodError.Unexpected::class.java),
+        "refund_post_409_not_eligible.json" to coded("FOOD_REFUND_NOT_ELIGIBLE", FoodError.Unexpected::class.java),
+        "refund_post_422_amount_invalid.json" to
+            coded("FOOD_REFUND_AMOUNT_INVALID", FoodError.InvalidField::class.java),
+        "support_ticket_post_201.json" to data(SupportTicketDto.serializer()) {
+            assertThat(it.id).isEqualTo("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0030")
+            assertThat(it.orderId).isEqualTo("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0015")
+            assertThat(it.category).isEqualTo("refund")
+            assertThat(it.detail).isEqualTo("Cold food")
+            assertThat(it.status).isEqualTo("open")
+        },
+        "support_ticket_post_403_order_forbidden.json" to
+            coded("FOOD_SUPPORT_ORDER_FORBIDDEN", FoodError.Unexpected::class.java),
 
         "submit_post_422_not_ready.json" to error {
             assertThat(it).isEqualTo(FoodError.NotReady(listOf("fssai_document", "payout_account")))

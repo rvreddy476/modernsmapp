@@ -1,7 +1,9 @@
 package com.us.android.core.food.repository
 
 import com.us.android.core.food.network.FoodErrorEnvelopeDto
+import com.us.android.core.food.network.ItemsDto
 import com.us.android.core.network.ApiEnvelope
+import com.us.android.core.network.Paged
 import kotlinx.coroutines.CancellationException
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
@@ -48,6 +50,7 @@ val FoodError.code: String?
     get() = when (this) {
         is FoodError.InvalidField -> code
         is FoodError.Unexpected -> code
+        is FoodError.TotalChanged -> FoodError.TOTAL_CHANGED
         else -> null
     }
 
@@ -89,4 +92,19 @@ suspend fun <T> foodCallTimed(json: Json, block: suspend () -> Response<ApiEnvel
     return foodCall(json) {
         block().also { response -> serverTime = response.headers().getDate("Date")?.toInstant() }
     }.map { ServerTimed(it, serverTime) }
+}
+
+/**
+ * [foodCall] for a list route that pages by cursor: the items under
+ * `data.items` and `meta.next_cursor`, which is opaque (sent back untouched)
+ * and null on the last page. An empty cursor is read as none.
+ */
+suspend fun <T> foodCallPaged(
+    json: Json,
+    block: suspend () -> Response<ApiEnvelope<ItemsDto<T>>>,
+): FoodResult<Paged<T>> {
+    var next: String? = null
+    return foodCall(json) {
+        block().also { response -> next = response.body()?.meta?.nextCursor?.takeIf { it.isNotEmpty() } }
+    }.map { Paged(it.items, next) }
 }

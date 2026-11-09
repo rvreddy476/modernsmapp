@@ -7,6 +7,7 @@ import android.app.NotificationManager
 import androidx.test.core.app.ApplicationProvider
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.notifications.NotificationChannelSpec
+import com.us.android.feature.kitchen.navigation.kitchenPushTarget
 import com.us.android.feature.kitchen.queue.NewOrderAlert
 import org.junit.Before
 import org.junit.Test
@@ -77,25 +78,74 @@ class KitchenNewOrderAlertTest {
         assertThat(manager.allNotifications).isEmpty()
     }
 
+    /** The push data-only `food_order_new` carries (notification-service FoodPushData + BuildFCMMessage). */
+    private val pushed = mapOf(
+        "type" to "food_order_new",
+        "order_id" to ORDER,
+        "deep_link" to "/kitchen/orders/$ORDER?restaurant_id=$RESTAURANT",
+        "accept_deadline_at" to "2026-11-08T06:31:00Z",
+        "title" to "New order #FG1",
+        "body" to "Accept before the timer runs out",
+        "collapse_key" to "food_order_new:$ORDER",
+    )
+
+    private class RecordingAlert : NewOrderAlert {
+        val rung = mutableListOf<Pair<Duration, String?>>()
+        override fun ring(waitingOrders: Int) = Unit
+        override fun silence() = Unit
+        override fun ringFromPush(ringFor: Duration, deepLink: String?) {
+            rung += ringFor to deepLink
+        }
+    }
+
     @Test
     fun `the push handler rings only for a new order, and drops one already past its deadline`() {
-        val rung = mutableListOf<Duration>()
-        val alert = object : NewOrderAlert {
-            override fun ring(waitingOrders: Int) = Unit
-            override fun silence() = Unit
-            override fun ringFromPush(ringFor: Duration) {
-                rung += ringFor
-            }
-        }
+        val alert = RecordingAlert()
         val now = Instant.parse("2026-11-08T06:30:00Z")
         val handler = KitchenOrderPushHandler(alert, { now }, { block -> block() })
 
         assertThat(handler.onPush(mapOf("type" to "food_kitchen_order_updated"))).isFalse()
-        assertThat(handler.onPush(mapOf("type" to "food_order_new", "accept_deadline_at" to "2026-11-08T06:29:00Z")))
-            .isTrue()
-        assertThat(rung).isEmpty()
-        assertThat(handler.onPush(mapOf("type" to "food_order_new", "accept_deadline_at" to "2026-11-08T06:31:00Z")))
-            .isTrue()
-        assertThat(rung).containsExactly(Duration.ofSeconds(60))
+        assertThat(handler.onPush(pushed + ("accept_deadline_at" to "2026-11-08T06:29:00Z"))).isTrue()
+        assertThat(alert.rung).isEmpty()
+        assertThat(handler.onPush(pushed)).isTrue()
+        assertThat(alert.rung.map { it.first }).containsExactly(Duration.ofSeconds(60))
+    }
+
+    @Test
+    fun `the data-only push is drawn by the handler alone, and names the pushed order`() {
+        val alert = RecordingAlert()
+        val handler = KitchenOrderPushHandler(alert, { Instant.parse("2026-11-08T06:30:00Z") }, { block -> block() })
+
+        // True: the generic presenter must not draw a second card for the same push.
+        assertThat(handler.onPush(pushed)).isTrue()
+
+        assertThat(alert.rung.single().second).isEqualTo("/kitchen/orders/$ORDER?restaurant_id=$RESTAURANT")
+    }
+
+    @Test
+    fun `opening a push-rung alarm opens the pushed order`() {
+        val link = "/kitchen/orders/$ORDER?restaurant_id=$RESTAURANT"
+        KitchenNewOrderAlert(context).ringFromPush(Duration.ofSeconds(60), link)
+
+        val opened = shadowOf(manager.allNotifications.single().contentIntent).savedIntent
+        val target = kitchenPushTarget(opened.getStringExtra("type"), opened.getStringExtra("deep_link"))
+        assertThat(target?.orderId).isEqualTo(ORDER)
+        assertThat(target?.restaurantId).isEqualTo(RESTAURANT)
+    }
+
+    @Test
+    fun `the queue's own alarm opens the kitchen, not an order`() {
+        val alert = KitchenNewOrderAlert(context)
+        alert.ringFromPush(Duration.ofSeconds(60), "/kitchen/orders/$ORDER?restaurant_id=$RESTAURANT")
+
+        alert.ring(waitingOrders = 2)
+
+        val opened = shadowOf(manager.allNotifications.single().contentIntent).savedIntent
+        assertThat(opened.getStringExtra("deep_link")).isNull()
+    }
+
+    private companion object {
+        const val ORDER = "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0015"
+        const val RESTAURANT = "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002"
     }
 }

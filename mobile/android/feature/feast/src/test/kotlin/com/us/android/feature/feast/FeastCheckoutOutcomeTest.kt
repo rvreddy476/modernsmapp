@@ -11,6 +11,7 @@ import com.us.android.core.testing.MainDispatcherRule
 import com.us.android.feature.feast.checkout.FeastCheckoutState
 import com.us.android.feature.feast.checkout.FeastCheckoutViewModel
 import com.us.android.feature.feast.checkout.FeastPaymentMethod
+import com.us.android.feature.feast.checkout.FeastTotalChange
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.StandardTestDispatcher
 import kotlinx.coroutines.test.TestScope
@@ -139,7 +140,6 @@ class FeastCheckoutOutcomeTest {
         val unpaid = model.state.value as FeastCheckoutState.Unpaid
         assertThat(unpaid.orderId).isEqualTo("order-1")
         assertThat(unpaid.amount).isEqualTo(Paise(64_912))
-        assertThat(unpaid.previousTotal).isNull()
         assertThat(api.cartReads).isEqualTo(0)
 
         model.retryPayment(FeastPaymentMethod.CARD)
@@ -160,19 +160,88 @@ class FeastCheckoutOutcomeTest {
     }
 
     @Test
-    fun `a total the server re-priced is shown before any sheet opens`() = runTest(dispatcher) {
+    fun `place order sends the total on screen, to be compared, never charged`() = runTest(dispatcher) {
         val model = readyModel()
-        api.order = api.order.copy(money = FeastOrderMoneyDto(FeastTotalsPaiseDto(finalAmountPaise = Paise(70_000))))
         model.placeOrder()
         settle()
 
-        val unpaid = model.state.value as FeastCheckoutState.Unpaid
-        assertThat(unpaid.amount).isEqualTo(Paise(70_000))
-        assertThat(unpaid.previousTotal).isEqualTo(Paise(64_912))
-
-        model.retryPayment()
+        assertThat(api.placeOrderBodies.single().expectedTotalPaise).isEqualTo(Paise(64_912))
         assertThat(model.state.value).isInstanceOf(FeastCheckoutState.OpeningPayment::class.java)
-        assertThat(api.placeOrderKeys).hasSize(1)
+    }
+
+    @Test
+    fun `a changed total is said with the server's figure, and nothing opens until the customer places again`() =
+        runTest(dispatcher) {
+            val model = readyModel()
+            api.placeOrderResponse = { refusedWithFixture(409, "order_place_409_total_changed.json") }
+            model.placeOrder()
+            settle()
+
+            val asked = model.state.value as FeastCheckoutState.Ready
+            assertThat(asked.totalChanged).isEqualTo(FeastTotalChange(was = Paise(64_912), now = Paise(47_200)))
+            assertThat(asked.shownTotal).isEqualTo(Paise(47_200))
+            assertThat(asked.awaitingOutcome).isFalse()
+            assertThat(asked.placing).isFalse()
+            assertThat(asked.canSubmit).isTrue()
+
+            api.placeOrderResponse = { ok(api.order) }
+            model.placeOrder()
+            settle()
+
+            assertThat(api.placeOrderBodies.map { it.expectedTotalPaise })
+                .containsExactly(Paise(64_912), Paise(47_200)).inOrder()
+            // The refused attempt left nothing under the key: the next decision reuses it.
+            assertThat(api.placeOrderKeys.distinct()).hasSize(1)
+            assertThat(model.state.value).isInstanceOf(FeastCheckoutState.OpeningPayment::class.java)
+        }
+
+    @Test
+    fun `a changed total re-reads the bill, so its lines match the new figure`() = runTest(dispatcher) {
+        val model = readyModel()
+        api.cart = pricedCart().copy(totalsPaise = FeastTotalsPaiseDto(finalAmountPaise = Paise(47_200)))
+        api.placeOrderResponse = { refusedWithFixture(409, "order_place_409_total_changed.json") }
+        model.placeOrder()
+        settle()
+
+        assertThat((model.state.value as FeastCheckoutState.Ready).bill.total).isEqualTo(Paise(47_200))
+        assertThat(api.cartReads).isEqualTo(2)
+    }
+
+    @Test
+    fun `a changed total after process death is still said, never paid`() = runTest(dispatcher) {
+        val handle = SavedStateHandle()
+        val first = readyModel(handle)
+        api.placeOrderResponse = { gatewayTimeout() }
+        first.placeOrder()
+        settle()
+
+        api.placeOrderResponse = { refusedWithFixture(409, "order_place_409_total_changed.json") }
+        val restored = SavedStateHandle().also { copy -> handle.keys().forEach { copy[it] = handle.get<Any?>(it) } }
+        val second = vm(restored)
+        settle()
+
+        val asked = second.state.value as FeastCheckoutState.Ready
+        assertThat(asked.totalChanged?.now).isEqualTo(Paise(47_200))
+        // The resend after process death carried the figure the lost request did.
+        assertThat(api.placeOrderBodies.map { it.expectedTotalPaise }).containsExactly(Paise(64_912), Paise(64_912))
+    }
+
+    @Test
+    fun `a new address prices a new bill, and that bill is what is sent`() = runTest(dispatcher) {
+        val model = readyModel()
+        api.placeOrderResponse = { refusedWithFixture(409, "order_place_409_total_changed.json") }
+        model.placeOrder()
+        settle()
+        val office = pinnedAddress.copy(id = "addr-2", label = "Office", isDefault = false)
+        api.addresses = listOf(pinnedAddress, office)
+        api.cart = pricedCart().copy(totalsPaise = FeastTotalsPaiseDto(finalAmountPaise = Paise(68_000)))
+        session.selectAddress(office)
+        model.refreshAddress()
+        settle()
+
+        val ready = model.state.value as FeastCheckoutState.Ready
+        assertThat(ready.totalChanged).isNull()
+        assertThat(ready.shownTotal).isEqualTo(Paise(68_000))
     }
 
     @Test

@@ -44,7 +44,7 @@ class OrderDetailViewModelTest {
 
         val state = viewModel().state.value
 
-        coVerify(exactly = 0) { kitchen.orders(any()) }
+        coVerify(exactly = 0) { kitchen.ordersIn(any(), any(), any()) }
         assertThat(state.loadError).isNull()
         assertThat(state.order?.status).isEqualTo("CONFIRMED")
         assertThat(state.order?.items?.map { it.name }).containsExactly("Paneer Tikka")

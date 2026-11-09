@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModelStore
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.food.network.FeastOrderDto
 import com.us.android.core.food.network.RefundRequestDto
+import com.us.android.core.food.network.SupportTicketDto
 import com.us.android.core.food.repository.FoodError
 import com.us.android.core.testing.MainDispatcherRule
 import com.us.android.feature.feast.checkout.logCode
@@ -202,6 +203,74 @@ class FeastOrderActionsTest {
         assertThat(api.ticketRequests).hasSize(1)
         assertThat(api.refundRequests.map { it.ticketId }).containsExactly("ticket-1", "ticket-1")
         assertThat(api.refundRequests.last().reason).isEqualTo(RefundRequestFlow.DEFAULT_REASON)
+    }
+
+    // ── Idempotency-Key per decision (food server lane, 9 Nov 2026) ─────
+
+    @Test
+    fun `a refund whose answer was lost is resent under the same key, and says so`() = runTest(dispatcher) {
+        val flow = RefundRequestFlow(api.repository())
+        api.refundResponse = { refused(504, "GATEWAY_TIMEOUT", "upstream timed out") }
+
+        val first = flow.submit(outForDelivery, null)
+        api.refundResponse = { ok(RefundRequestDto(id = "refund-1", status = "requested")) }
+        flow.submit(outForDelivery, null)
+
+        assertThat(first).isEqualTo(refusedWith(RefundRequestFlow.OUTCOME_UNKNOWN))
+        assertThat(api.refundKeys).hasSize(2)
+        assertThat(api.refundKeys.distinct()).hasSize(1)
+        // The ticket and the refund are separate requests: separate keys.
+        assertThat(api.ticketKeys.single()).isNotEqualTo(api.refundKeys.first())
+    }
+
+    @Test
+    fun `a ticket whose answer was lost is resent under the same key, never a second ticket`() = runTest(dispatcher) {
+        val flow = RefundRequestFlow(api.repository())
+        api.ticketResponse = { offline() }
+
+        val first = flow.submit(outForDelivery, null)
+        api.ticketResponse = { ok(SupportTicketDto(id = "ticket-1", orderId = outForDelivery.id)) }
+        flow.submit(outForDelivery, null)
+
+        assertThat(first).isEqualTo(refusedWith(RefundRequestFlow.OUTCOME_UNKNOWN))
+        assertThat(api.ticketKeys).hasSize(2)
+        assertThat(api.ticketKeys.distinct()).hasSize(1)
+        assertThat(api.refundRequests).hasSize(1)
+    }
+
+    @Test
+    fun `a definite refusal frees the refund key, so asking again is a new request`() = runTest(dispatcher) {
+        val flow = RefundRequestFlow(api.repository())
+        api.refundResponse = { refused(409, "FOOD_REFUND_NOT_ELIGIBLE", "order has no captured payment to refund") }
+
+        flow.submit(outForDelivery, null)
+        flow.submit(outForDelivery, null)
+
+        assertThat(api.refundKeys.distinct()).hasSize(2)
+        // The ticket was opened: it is reused, not re-opened.
+        assertThat(api.ticketKeys).hasSize(1)
+    }
+
+    @Test
+    fun `a definite ticket refusal frees the ticket key`() = runTest(dispatcher) {
+        val flow = RefundRequestFlow(api.repository())
+        api.ticketResponse = { refused(403, "FOOD_SUPPORT_ORDER_FORBIDDEN", "order does not belong to customer") }
+
+        val first = flow.submit(outForDelivery, null)
+        flow.submit(outForDelivery, null)
+
+        assertThat(first).isEqualTo(refusedWith(RefundRequestFlow.NOT_YOURS))
+        assertThat(api.ticketKeys.distinct()).hasSize(2)
+        assertThat(api.refundRequests).isEmpty()
+    }
+
+    @Test
+    fun `the refund golden is read as requested`() = runTest(dispatcher) {
+        api.refundResponse = { ok(fixture("refund_post_201.json", RefundRequestDto.serializer())) }
+
+        val outcome = RefundRequestFlow(api.repository()).submit(outForDelivery, "Cold food")
+
+        assertThat((outcome as RefundOutcome.Requested).refund.status).isEqualTo("requested")
     }
 
     @Test

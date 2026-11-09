@@ -1,6 +1,7 @@
 package com.us.android.core.food.repository
 
 import com.us.android.core.food.model.OnboardingChecklist
+import com.us.android.core.food.model.Paise
 import com.us.android.core.food.network.FoodErrorBodyDto
 
 /**
@@ -51,6 +52,13 @@ sealed interface FoodError {
     /** A 404 with no code: this server does not have the route yet. */
     data object NotAvailable : FoodError
 
+    /**
+     * 409 FOOD_ORDER_TOTAL_CHANGED: the order would now cost [serverTotal], not
+     * the [expectedTotal] the app showed and sent as `expected_total_paise`. No
+     * order was created and nothing was charged; the customer is asked again.
+     */
+    data class TotalChanged(val serverTotal: Paise, val expectedTotal: Paise?) : FoodError
+
     data class Network(val cause: Throwable?) : FoodError
 
     data class Unexpected(val status: Int?, val code: String?, val message: String?) : FoodError
@@ -72,6 +80,10 @@ sealed interface FoodError {
                 "FOOD_BANK_VERIFICATION_UNAVAILABLE" -> BankVerificationUnavailable
                 "INVALID_BODY" -> InvalidBody
                 "FOOD_NOT_FOUND" -> NotFound
+                TOTAL_CHANGED ->
+                    body?.details?.serverTotalPaise
+                        ?.let { TotalChanged(it, body?.details?.expectedTotalPaise) }
+                        ?: Unexpected(status, code, message)
                 null -> when (status) {
                     HTTP_UNAUTHORIZED -> Unauthorized
                     HTTP_NOT_FOUND -> NotAvailable
@@ -88,6 +100,9 @@ sealed interface FoodError {
         private const val HTTP_UNAUTHORIZED = 401
         private const val HTTP_NOT_FOUND = 404
         private const val HTTP_UNPROCESSABLE = 422
+
+        /** The stable code of [TotalChanged]. */
+        const val TOTAL_CHANGED = "FOOD_ORDER_TOTAL_CHANGED"
     }
 }
 

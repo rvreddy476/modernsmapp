@@ -9,12 +9,13 @@ import com.us.android.core.food.network.CartAddonRequest
 import com.us.android.core.food.network.DeliveryPoint
 import com.us.android.core.food.network.FeastAddressDto
 import com.us.android.core.food.network.FeastApi
-import com.us.android.core.food.network.deliveryPoint
 import com.us.android.core.food.network.PlaceOrderRequest
+import com.us.android.core.food.network.deliveryPoint
 import com.us.android.core.food.repository.FeastRepository
 import com.us.android.core.food.repository.FoodError
 import com.us.android.core.food.repository.FoodResult
 import com.us.android.core.food.repository.code
+import com.us.android.core.food.repository.outcomeUnknown
 import com.us.android.core.food.repository.serverMessage
 import com.us.android.core.network.di.NetworkModule
 import kotlinx.coroutines.runBlocking
@@ -211,45 +212,77 @@ class FeastRepositoryTest {
     }
 
     @Test
-    fun `a refund ticket is filed against the order under the refund category`() {
-        val ticket = """{"id":"t-1","order_id":"o-1","category":"refund",""" +
-            """"subject":"Refund request for order FG1","status":"open"}"""
-        enqueue("""{"data":$ticket}""", code = 201)
+    fun `a refund ticket is filed against the order under the refund category, under its key`() {
+        enqueue(fixture("support_ticket_post_201.json"), code = 201)
 
-        val result = runBlocking { repository.createRefundTicket("o-1", "FG1", "  cold food  ") }
+        val result = runBlocking {
+            repository.createRefundTicket("o-1", "FG1", "  cold food  ", idempotencyKey = "ticket-key-1")
+        }
 
         val request = server.takeRequest()
         assertThat(request.method).isEqualTo("POST")
         assertThat(request.target).isEqualTo("/v1/food/support/tickets")
+        assertThat(request.headers["Idempotency-Key"]).isEqualTo("ticket-key-1")
         val expected = """{"order_id":"o-1","category":"refund",""" +
             """"subject":"Refund request for order FG1","detail":"cold food"}"""
         assertThat(request.body?.utf8()).isEqualTo(expected)
-        assertThat((result as FoodResult.Success).value.id).isEqualTo("t-1")
+        assertThat((result as FoodResult.Success).value.id).isEqualTo("0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0030")
     }
 
     @Test
-    fun `a refund request sends exact rupees and its ticket, and reads the amount back as paise`() {
-        val refund = """{"id":"rr-1","order_id":"o-1","ticket_id":"t-1","amount":649.12,"status":"requested"}"""
-        enqueue("""{"data":$refund}""", code = 201)
+    fun `a refund request sends exact rupees, its ticket and its key, and reads the amount back as paise`() {
+        enqueue(fixture("refund_post_201.json"), code = 201)
 
-        val result = runBlocking { repository.requestRefund("o-1", "t-1", Paise(64_912), "Kitchen had started") }
+        val result = runBlocking {
+            repository.requestRefund(
+                "o-1",
+                "t-1",
+                Paise(64_912),
+                "Kitchen had started",
+                idempotencyKey = "refund-key-1",
+            )
+        }
 
         val request = server.takeRequest()
         assertThat(request.target).isEqualTo("/v1/food/refunds")
+        assertThat(request.headers["Idempotency-Key"]).isEqualTo("refund-key-1")
         assertThat(request.body?.utf8())
             .isEqualTo("""{"order_id":"o-1","amount":649.12,"reason":"Kitchen had started","ticket_id":"t-1"}""")
-        assertThat((result as FoodResult.Success).value.amount).isEqualTo(Paise(64_912))
+        assertThat((result as FoodResult.Success).value.amount).isEqualTo(Paise(45_600))
     }
 
     @Test
     fun `a refund above what is left keeps the server's code`() {
-        enqueue(
-            """{"error":{"code":"FOOD_REFUND_AMOUNT_INVALID","message":"refund amount exceeds remaining balance"}}""",
-            code = 422,
-        )
+        enqueue(fixture("refund_post_422_amount_invalid.json"), code = 422)
 
-        val result = runBlocking { repository.requestRefund("o-1", null, Paise(64_912), "Kitchen had started") }
+        val result = runBlocking { repository.requestRefund("o-1", null, Paise(64_912), "Kitchen had started", "k") }
 
         assertThat((result as FoodResult.Failure).error.code).isEqualTo("FOOD_REFUND_AMOUNT_INVALID")
+    }
+
+    @Test
+    fun `placing an order sends the total the customer was shown`() {
+        enqueue(fixture("order_place_201.json"), code = 201)
+
+        runBlocking {
+            repository.placeOrder("key-1", PlaceOrderRequest("a-1", "upi", expectedTotalPaise = Paise(64_912)))
+        }
+
+        assertThat(server.takeRequest().body?.utf8())
+            .isEqualTo("""{"address_id":"a-1","payment_method":"upi","expected_total_paise":64912}""")
+    }
+
+    @Test
+    fun `a changed total is read with the server's new figure, and is a definite refusal`() {
+        enqueue(fixture("order_place_409_total_changed.json"), code = 409)
+
+        val result = runBlocking {
+            repository.placeOrder("key-1", PlaceOrderRequest("a-1", "upi", expectedTotalPaise = Paise(45_600)))
+        }
+
+        val error = (result as FoodResult.Failure).error
+        assertThat(error).isEqualTo(FoodError.TotalChanged(serverTotal = Paise(47_200), expectedTotal = Paise(45_600)))
+        assertThat(error.code).isEqualTo("FOOD_ORDER_TOTAL_CHANGED")
+        assertThat(error.outcomeUnknown).isFalse()
     }
 }

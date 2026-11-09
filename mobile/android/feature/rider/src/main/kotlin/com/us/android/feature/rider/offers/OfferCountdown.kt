@@ -1,5 +1,6 @@
 package com.us.android.feature.rider.offers
 
+import com.us.android.core.food.network.DeliveryOfferDto
 import java.time.Duration
 import java.time.Instant
 import java.time.OffsetDateTime
@@ -27,12 +28,12 @@ sealed interface OfferWindow {
 }
 
 /**
- * The countdown to an offer's `expires_at`.
+ * The countdown to an offer's expiry.
  *
- * There is no server-computed "seconds left" on an offer, so the absolute
- * expiry is read against the SERVER's clock: callers pass
- * [ServerClockOffset.serverNow], never the bare device time (food audit L1).
- * A device clock 20 s fast would otherwise grey every offer. The server stays
+ * The expiry comes from [OfferExpiry]: the offer's `seconds_to_expiry` when
+ * the server sent one, else its absolute `expires_at`. Either is read against
+ * the SERVER's clock: callers pass [ServerClockOffset.serverNow], never the
+ * bare device time (food audit L1). A device clock 20 s fast would otherwise grey every offer. The server stays
  * the authority on accept either way; nothing here refuses a tap.
  */
 class OfferCountdown(
@@ -90,4 +91,27 @@ object ServerTime {
     }
 
     private val SHORT_OFFSET = Regex("T.*[+-][0-9]{2}$")
+}
+
+/**
+ * Each offer's expiry, on the server's clock, as the countdown should read it.
+ *
+ * An offer that carries `seconds_to_expiry` (food server lane, 9 Nov 2026)
+ * expires that many seconds after it was READ: `serverNow(receivedAt) + s`.
+ * Measured against `serverNow(now)` that is `receivedAt + s - now`, so the
+ * phone's clock and the `Date` header's one-second resolution drop out. An
+ * offer without it (an older server, a pushed offer) falls back to its
+ * `expires_at` on the server clock (food audit L1).
+ */
+object OfferExpiry {
+
+    /** The expiries the offers read at [serverNowAtReceipt] carry, by offer id. */
+    fun fromCountdowns(offers: List<DeliveryOfferDto>, serverNowAtReceipt: Instant): Map<String, Instant> =
+        offers.mapNotNull { offer ->
+            offer.secondsToExpiry?.takeIf { it >= 0 }?.let { offer.id to serverNowAtReceipt.plusSeconds(it) }
+        }.toMap()
+
+    /** [offer]'s expiry: its countdown when one was read, else its `expires_at`. */
+    fun of(offer: DeliveryOfferDto, countdowns: Map<String, Instant>): Instant? =
+        countdowns[offer.id] ?: ServerTime.parse(offer.expiresAt)
 }

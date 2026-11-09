@@ -46,7 +46,6 @@ import com.us.android.feature.rider.job.JobPhase
 import com.us.android.feature.rider.location.RiderLocationService
 import com.us.android.feature.rider.money.RiderMoney
 import com.us.android.feature.rider.offers.LiveTransport
-import com.us.android.feature.rider.offers.OfferCountdown
 import com.us.android.feature.rider.offers.OfferSummary
 import com.us.android.feature.rider.offers.OfferWindow
 import com.us.android.feature.rider.ui.CardHeading
@@ -185,7 +184,7 @@ fun HomeScreen(
                 }
             }
             items(state.offers, key = { it.id }) { offer ->
-                val window = OfferCountdown.of(offer.expiresAt).at(now)
+                val window = state.offerClock.windowOf(offer, now)
                 if (window != OfferWindow.Expired) {
                     val summary = OfferSummary.of(offer)
                     NavRow(

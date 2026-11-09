@@ -16,13 +16,13 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.flow
 import java.time.Instant
 
-/** The golden pending offer (delivery_offers_me_get_200.json): expires 2026-09-13 06:30:25Z. */
+/** The golden pending offer (delivery_offers_me_get_200.json): expires 2026-09-13 06:30:20Z, 20 s on its countdown. */
 internal fun goldenOffer(): DeliveryOfferDto =
     checkNotNull(
         RiderFixtures.success("delivery_offers_me_get_200.json", DeliveryOffersDto.serializer()).value.offers,
     ).single()
 
-internal val GOLDEN_EXPIRY: Instant = Instant.parse("2026-09-13T06:30:25Z")
+internal val GOLDEN_EXPIRY: Instant = Instant.parse("2026-09-13T06:30:20Z")
 
 /** A device clock the test moves by hand. */
 internal class HandClock(var now: Instant) : RiderClock {

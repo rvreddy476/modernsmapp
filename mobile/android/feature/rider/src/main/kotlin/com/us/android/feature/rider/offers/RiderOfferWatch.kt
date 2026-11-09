@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.time.Instant
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -35,8 +36,14 @@ data class OfferSnapshot(
     val loaded: Boolean = false,
     /** The server's clock against this device's, from the last offers read (food audit L1). */
     val clock: ServerClockOffset = ServerClockOffset.NONE,
+    /** Expiries from the last read's `seconds_to_expiry`, on the server clock ([OfferExpiry]). */
+    val countdowns: Map<String, Instant> = emptyMap(),
     val transport: LiveTransport = LiveTransport.CONNECTING,
-)
+) {
+    /** [offer]'s countdown at device time [deviceNow]. */
+    fun windowOf(offer: DeliveryOfferDto, deviceNow: Instant): OfferWindow =
+        OfferCountdown(OfferExpiry.of(offer, countdowns)).at(clock.serverNow(deviceNow))
+}
 
 /**
  * The rider's offers and current job, kept fresh by ONE [RiderLiveFeed] for
@@ -128,10 +135,12 @@ class RiderOfferWatch @Inject constructor(
         val job = rider.currentAssignment()
         _state.update { current ->
             if (offers is FoodResult.Success) {
+                val serverClock = ServerClockOffset.from(offers.value.serverTime, receivedAt)
                 current.copy(
                     offers = offers.value.value,
                     loaded = true,
-                    clock = ServerClockOffset.from(offers.value.serverTime, receivedAt),
+                    clock = serverClock,
+                    countdowns = OfferExpiry.fromCountdowns(offers.value.value, serverClock.serverNow(receivedAt)),
                     job = if (job is FoodResult.Success) job.value else current.job,
                 )
             } else {

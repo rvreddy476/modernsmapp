@@ -199,12 +199,14 @@ class RiderLocationService : Service() {
         }
         scope.launch {
             val answer = withContext(NonCancellable) { rider.setAvailability(online = false) }
-            if (answer is FoodResult.Success) {
-                endDuty(reason, tellServer = false)
-            } else if (running) {
-                perform(cadence.start(onJob = duty.onJob.value))
-                duty.report(DutyStatus.Online(lastPingOk = null))
-                duty.notice(DutyNotice.OFFLINE_REFUSED)
+            when {
+                answer is FoodResult.Success -> endDuty(reason, tellServer = false)
+                answer is FoodResult.Failure && running -> {
+                    perform(cadence.start(onJob = duty.onJob.value))
+                    duty.report(DutyStatus.Online(lastPingOk = null))
+                    // 409 WORK_BUSY says finish the delivery; anything else keeps the general refusal.
+                    duty.notice(offlineRefusal(answer.error))
+                }
             }
         }
     }
@@ -228,7 +230,7 @@ class RiderLocationService : Service() {
         if (offerHold == null) offerHold = offers.hold()
         offerAlerting = scope.launch {
             offers.state.collect { snapshot ->
-                offerAlerts.update(snapshot.offers, snapshot.clock.serverNow(clock.now()))
+                offerAlerts.update(snapshot, clock.now())
             }
         }
     }

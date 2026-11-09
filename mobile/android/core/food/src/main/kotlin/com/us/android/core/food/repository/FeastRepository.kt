@@ -110,14 +110,20 @@ class FeastRepository @Inject constructor(
     suspend fun createPaymentIntent(orderId: String, idempotencyKey: String, method: String): FoodResult<PaymentIntentDto> =
         call { api.createPaymentIntent(orderId, idempotencyKey, PaymentIntentRequest(method)) }
 
-    /** The ticket a refund request is filed under. Created once per request; reused on a retry. */
+    /**
+     * The ticket a refund request is filed under. [idempotencyKey] is minted
+     * once per customer decision and reused on every resend, so a lost answer
+     * gets the ticket the first call opened rather than a second ticket.
+     */
     suspend fun createRefundTicket(
         orderId: String,
         orderNumber: String,
         detail: String?,
+        idempotencyKey: String,
     ): FoodResult<SupportTicketDto> =
         call {
             api.createSupportTicket(
+                idempotencyKey,
                 CreateSupportTicketRequest(
                     orderId = orderId,
                     category = REFUND_TICKET_CATEGORY,
@@ -127,15 +133,21 @@ class FeastRepository @Inject constructor(
             )
         }
 
-    /** [amount] is the server's own figure for the order; Feast support decides the request. */
+    /**
+     * [amount] is the server's own figure for the order; Feast support decides
+     * the request. [idempotencyKey] as on [createRefundTicket]: a resend gets
+     * the first request back, never a second one or a balance refusal.
+     */
     suspend fun requestRefund(
         orderId: String,
         ticketId: String?,
         amount: Paise,
         reason: String,
+        idempotencyKey: String,
     ): FoodResult<RefundRequestDto> =
         call {
             api.requestRefund(
+                idempotencyKey,
                 CreateRefundRequest(orderId = orderId, amount = amount, reason = reason, ticketId = ticketId),
             )
         }

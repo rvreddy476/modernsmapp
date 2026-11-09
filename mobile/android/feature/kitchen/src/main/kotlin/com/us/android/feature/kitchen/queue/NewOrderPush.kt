@@ -40,6 +40,15 @@ object NewOrderPush {
             else -> left
         }
     }
+
+    /**
+     * The order the alarm opens: the push's `deep_link`, which notification-service
+     * sets to `/kitchen/orders/<id>?restaurant_id=<id>`. KitchenActivity checks it
+     * (kitchenPushTarget) before going anywhere. Null when the push names none.
+     */
+    fun deepLink(data: Map<String, String>): String? = data[DEEP_LINK_KEY]?.trim()?.takeIf { it.isNotEmpty() }
+
+    private const val DEEP_LINK_KEY = "deep_link"
 }
 
 /**

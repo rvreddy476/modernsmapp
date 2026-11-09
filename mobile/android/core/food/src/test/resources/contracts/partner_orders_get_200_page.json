@@ -1,0 +1,71 @@
+{
+  "data": {
+    "items": [
+      {
+        "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0015",
+        "order_number": "FG1000000000001",
+        "user_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0010",
+        "restaurant_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+        "restaurant_name": "Test Kitchen",
+        "status": "CONFIRMED",
+        "payment_status": "CAPTURED",
+        "payment_method": "ONLINE",
+        "placed_at": "2026-09-13 06:30:00+00",
+        "totals": {
+          "item_subtotal": 400,
+          "addon_total": 0,
+          "packaging_fee": 0,
+          "tax_total": 0,
+          "delivery_fee": 0,
+          "platform_fee": 0,
+          "restaurant_discount": 0,
+          "coupon_discount": 0,
+          "final_amount": 456,
+          "item_subtotal_paise": 40000,
+          "addon_total_paise": 0,
+          "packaging_fee_paise": 0,
+          "tax_total_paise": 0,
+          "delivery_fee_paise": 0,
+          "platform_fee_paise": 0,
+          "restaurant_discount_paise": 0,
+          "coupon_discount_paise": 0,
+          "final_amount_paise": 45600
+        }
+      },
+      {
+        "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0032",
+        "order_number": "FG1000000000002",
+        "user_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0010",
+        "restaurant_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
+        "restaurant_name": "Test Kitchen",
+        "status": "PREPARING",
+        "payment_status": "CAPTURED",
+        "payment_method": "ONLINE",
+        "placed_at": "2026-09-13 06:29:00+00",
+        "totals": {
+          "item_subtotal": 200,
+          "addon_total": 0,
+          "packaging_fee": 0,
+          "tax_total": 0,
+          "delivery_fee": 0,
+          "platform_fee": 0,
+          "restaurant_discount": 0,
+          "coupon_discount": 0,
+          "final_amount": 236.5,
+          "item_subtotal_paise": 20000,
+          "addon_total_paise": 0,
+          "packaging_fee_paise": 0,
+          "tax_total_paise": 0,
+          "delivery_fee_paise": 0,
+          "platform_fee_paise": 0,
+          "restaurant_discount_paise": 0,
+          "coupon_discount_paise": 0,
+          "final_amount_paise": 23650
+        }
+      }
+    ]
+  },
+  "meta": {
+    "next_cursor": "1789280940000000.0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0032"
+  }
+}

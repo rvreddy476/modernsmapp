@@ -15,7 +15,6 @@ import com.us.android.core.food.repository.outcomeUnknown
 import com.us.android.core.notifications.NotificationUpdates
 import com.us.android.core.realtime.SseClient
 import com.us.android.feature.kitchen.navigation.restaurantId
-import com.us.android.feature.kitchen.ui.OrderStatusText
 import com.us.android.feature.kitchen.ui.asMessage
 import com.us.android.feature.kitchen.ui.info
 import com.us.android.feature.kitchen.ui.success
@@ -41,8 +40,8 @@ data class OrdersUiState(
     val loaded: Boolean = false,
     val error: String? = null,
     val busyOrderIds: Set<String> = emptySet(),
-    /** The server lists only the latest [PARTNER_ORDER_LIST_LIMIT] orders; older active ones may be missing. */
-    val activeListTruncated: Boolean = false,
+    /** The active lists stopped before their last page ([ActiveOrders.incomplete]); they may be short. */
+    val activeListIncomplete: Boolean = false,
     val message: UsMessage? = null,
 )
 
@@ -181,13 +180,14 @@ class OrderQueueViewModel @Inject constructor(
     }
 
     private suspend fun refreshActive() {
-        val result = kitchen.orders(restaurantId)
+        val result = kitchen.ordersIn(restaurantId, ActiveOrders.STATUSES)
         if (result is FoodResult.Success) {
+            val active = ActiveOrders.of(result.value)
             _state.update { current ->
                 current.copy(
-                    preparing = result.value.filter { it.status == OrderStatusText.PREPARING },
-                    awaitingPickup = result.value.filter { it.status in OrderStatusText.AWAITING_PICKUP },
-                    activeListTruncated = result.value.size >= PARTNER_ORDER_LIST_LIMIT,
+                    preparing = active.preparing,
+                    awaitingPickup = active.awaitingPickup,
+                    activeListIncomplete = active.incomplete,
                 )
             }
         }
@@ -232,6 +232,3 @@ class OrderQueueViewModel @Inject constructor(
         const val TICK_MILLIS = 1_000L
     }
 }
-
-/** `ListPartnerOrders` answers at most this many, newest first, any status (food audit M5). */
-const val PARTNER_ORDER_LIST_LIMIT = 100
