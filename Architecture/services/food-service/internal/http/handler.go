@@ -79,7 +79,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			user.PATCH("/addresses/:addressId", h.UpdateAddress)
 			user.DELETE("/addresses/:addressId", h.DeleteAddress)
 
-			user.POST("/orders", h.PlaceOrder)
+			user.POST("/orders", h.PlaceOrderChecked)
 			user.GET("/orders", h.ListOrders)
 			user.GET("/orders/:orderId", h.GetOrder)
 			user.GET("/orders/:orderId/tracking", h.GetOrderTracking)
@@ -125,7 +125,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			partner.PATCH("/menu/items/:itemId", h.UpdateMenuItem)
 			partner.DELETE("/menu/items/:itemId", h.DeleteMenuItem)
 			partner.PATCH("/menu/items/:itemId/availability", h.SetMenuItemAvailability)
-			partner.GET("/restaurants/:restaurantId/orders", h.ListPartnerOrders)
+			partner.GET("/restaurants/:restaurantId/orders", h.ListPartnerOrdersPage)
 			partner.GET("/restaurants/:restaurantId/kitchen-queue", h.ListKitchenQueue)
 			partner.POST("/orders/:orderId/substitutions", h.PartnerProposeSubstitution)
 			partner.POST("/orders/:orderId/verify-pickup", h.PartnerVerifyPickupOTP)
@@ -582,47 +582,6 @@ func (h *Handler) DeleteAddress(c *gin.Context) {
 		return
 	}
 	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, map[string]string{"status": "deleted"})
-}
-
-func (h *Handler) PlaceOrder(c *gin.Context) {
-	userID, ok := h.currentUserID(c)
-	if !ok {
-		return
-	}
-	idempotencyKey := c.GetHeader("Idempotency-Key")
-	if idempotencyKey == "" {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "IDEMPOTENCY_KEY_REQUIRED", "Idempotency-Key header is required", nil)
-		return
-	}
-	var body struct {
-		AddressID           string `json:"address_id"`
-		PaymentMethod       string `json:"payment_method"`
-		CouponCode          string `json:"coupon_code"`
-		CustomerInstruction string `json:"customer_instruction"`
-	}
-	if err := c.ShouldBindJSON(&body); err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", err.Error(), nil)
-		return
-	}
-	addressID, err := uuid.Parse(body.AddressID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ADDRESS", "invalid address id", nil)
-		return
-	}
-	order, err := h.svc.PlaceOrder(c.Request.Context(), userID, postgres.PlaceOrderInput{
-		AddressID:           addressID,
-		PaymentMethod:       body.PaymentMethod,
-		CouponCode:          body.CouponCode,
-		CustomerInstruction: body.CustomerInstruction,
-	}, idempotencyKey)
-	if err != nil {
-		if writeKnownError(c, err) {
-			return
-		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_ORDER_PLACE_FAILED", err.Error(), nil)
-		return
-	}
-	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusCreated, order)
 }
 
 func (h *Handler) ListOrders(c *gin.Context) {
@@ -1305,24 +1264,6 @@ func (h *Handler) SetMenuItemAvailability(c *gin.Context) {
 		return
 	}
 	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, map[string]string{"status": "updated"})
-}
-
-func (h *Handler) ListPartnerOrders(c *gin.Context) {
-	userID, ok := h.currentUserID(c)
-	if !ok {
-		return
-	}
-	restaurantID, ok := parseUUIDParam(c, "restaurantId")
-	if !ok {
-		return
-	}
-	orders, err := h.svc.ListPartnerOrders(c.Request.Context(), userID, restaurantID)
-	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "FOOD_PARTNER_ORDERS_FAILED", err.Error(), nil)
-		return
-	}
-	// B8: totals carry *_paise siblings on the partner routes.
-	api.JSONWithContext(c.Request.Context(), c.Writer, http.StatusOK, map[string]any{"items": postgres.PartnerOrdersOf(orders)})
 }
 
 func (h *Handler) PartnerRestaurantSettlements(c *gin.Context) {
