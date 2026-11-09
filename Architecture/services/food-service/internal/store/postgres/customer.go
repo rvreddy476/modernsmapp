@@ -56,6 +56,12 @@ type PlaceOrderInput struct {
 	PaymentInstrument   string
 	CouponCode          string
 	CustomerInstruction string
+	// ExpectedTotalPaise is the total the customer was shown (food server
+	// lane, 9 Nov 2026). When set and the server's total differs, the order
+	// is refused with OrderTotalChangedError before anything is written, so
+	// no charge can follow. Omitted from the idempotency hash when nil, so
+	// keys from clients that never send it hash as before.
+	ExpectedTotalPaise *int64 `json:",omitempty"`
 }
 
 func (s *Store) GetCart(ctx context.Context, userID uuid.UUID) (*Cart, error) {
@@ -539,6 +545,9 @@ func (s *Store) PlaceOrder(ctx context.Context, userID uuid.UUID, in PlaceOrderI
 		return nil, err
 	}
 	totals := quote.Totals
+	if err := CheckExpectedTotal(in.ExpectedTotalPaise, totals.FinalAmountPaise); err != nil {
+		return nil, err
+	}
 	breakdownJSON, err := json.Marshal(quote.Breakdown)
 	if err != nil {
 		return nil, err

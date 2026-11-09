@@ -46,6 +46,10 @@ func TestKitchenQueueDBDurableRetryAudienceAndDuplicate(t *testing.T) {
 	if p.calls != 2 {
 		t.Fatalf("wrong audience retry: %d", p.calls)
 	}
+	// Food server lane: the ttl and the deadline the Kitchen alarm stops at.
+	if p.last["android_ttl"] == "" || p.last["accept_deadline_at"] != deadline.UTC().Format(time.RFC3339) {
+		t.Fatalf("kitchen push data lacks ttl or deadline: %v", p.last)
+	}
 	if status, _ := s.deliverPartnerNotification(ctx, j); status != "delivered" || p.calls != 2 {
 		t.Fatal("duplicate successful delivery")
 	}

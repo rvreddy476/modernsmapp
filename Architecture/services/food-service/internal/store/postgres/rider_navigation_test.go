@@ -242,7 +242,14 @@ func TestBuildDeliveryOfferViewRoundsTheDropAndNamesNoOne(t *testing.T) {
 	if sv := BuildDeliveryOfferView(offer, &stale, now, 2*time.Minute); sv.DistanceToRestaurantMeters != nil || sv.TripDistanceMeters == nil {
 		t.Fatalf("stale ping: distance_to_restaurant_meters = %v trip = %v", sv.DistanceToRestaurantMeters, sv.TripDistanceMeters)
 	}
-	bare, _ := json.Marshal(BuildDeliveryOfferView(offer, nil, now, 2*time.Minute))
+	// Without context the offer keeps its keys; the only addition is the
+	// server-clock countdown (food server lane, 9 Nov 2026).
+	bareView := BuildDeliveryOfferView(offer, nil, now, 2*time.Minute)
+	if bareView.SecondsToExpiry == nil || *bareView.SecondsToExpiry != 25 {
+		t.Fatalf("bare seconds_to_expiry = %v, want 25", bareView.SecondsToExpiry)
+	}
+	bareView.SecondsToExpiry = nil
+	bare, _ := json.Marshal(bareView)
 	old, _ := json.Marshal(offer)
 	if string(bare) != string(old) {
 		t.Fatalf("an offer without context changed shape:\n got %s\nwant %s", bare, old)

@@ -75,6 +75,7 @@ type Store interface {
 	DeleteMenuItem(ctx context.Context, ownerID, itemID uuid.UUID) error
 	SetMenuItemAvailability(ctx context.Context, ownerID, itemID uuid.UUID, available bool) error
 	ListPartnerOrders(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]postgres.Order, error)
+	ListPartnerOrdersPage(ctx context.Context, ownerID, restaurantID uuid.UUID, f postgres.PartnerOrderFilter) ([]postgres.Order, *postgres.OrderCursor, error)
 	PartnerUpdateOrderStatus(ctx context.Context, ownerID, orderID uuid.UUID, toStatus, reason, idempotencyKey string) (*postgres.Order, error)
 	ListKitchenQueue(ctx context.Context, ownerID, restaurantID uuid.UUID) ([]postgres.KitchenOrder, error)
 	AutoRejectExpiredOrders(ctx context.Context, batch int) ([]uuid.UUID, error)
@@ -111,7 +112,7 @@ type Store interface {
 	SetTicketStatus(ctx context.Context, adminID, ticketID uuid.UUID, status string) error
 	ListTicketsForAdmin(ctx context.Context, status string, limit int) ([]postgres.Ticket, error)
 	ListRefundsForAdmin(ctx context.Context, status string, limit int) ([]postgres.RefundRequest, error)
-	CreateRefundRequest(ctx context.Context, customerID, orderID uuid.UUID, ticketID *uuid.UUID, amount float64, reason string) (*postgres.RefundRequest, error)
+	RequestRefund(ctx context.Context, in postgres.RefundRequestInput) (*postgres.RefundRequest, error)
 	DecideRefund(ctx context.Context, adminID, refundID uuid.UUID, status, reason string) error
 	SupportRefundPlan(ctx context.Context, requestID uuid.UUID) (*postgres.RefundPlan, error)
 	CreateItemReview(ctx context.Context, in postgres.CreateItemReviewInput) (*postgres.ItemReview, error)

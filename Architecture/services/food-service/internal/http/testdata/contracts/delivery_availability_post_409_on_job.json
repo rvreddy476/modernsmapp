@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "WORK_BUSY",
+    "message": "finish the delivery you are carrying before going offline: partner work: finish current work before switching"
+  },
+  "meta": {}
+}

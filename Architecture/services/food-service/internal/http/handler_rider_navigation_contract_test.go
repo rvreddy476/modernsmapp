@@ -55,7 +55,7 @@ func (riderNavContractStore) ListMyPendingDeliveryOffers(_ context.Context, user
 	}
 	distance := 1.25
 	return []postgres.DeliveryOffer{{ID: ctRnOffer, OrderID: ctOrder, DeliveryPartnerID: ctPartner, Status: "pending",
-		DistanceKM: &distance, ExpiresAt: "2026-09-13 06:30:25+00", CreatedAt: "2026-09-13 06:30:00+00"}}, nil
+		DistanceKM: &distance, ExpiresAt: "2026-09-13 06:30:20+00", CreatedAt: "2026-09-13 06:30:00+00"}}, nil
 }
 
 func (riderNavContractStore) DeliveryOfferContexts(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]postgres.DeliveryOfferContext, error) {

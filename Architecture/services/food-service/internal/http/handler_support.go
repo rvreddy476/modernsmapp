@@ -34,12 +34,16 @@ func (h *Handler) CreateTicket(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "subject + category required", nil)
 		return
 	}
+	// Idempotency-Key is optional (food server lane, 9 Nov 2026): a resend
+	// after a lost answer gets the ticket the first call opened.
+	ticketKey := c.GetHeader("Idempotency-Key")
 	t, err := h.svc.CreateTicket(c.Request.Context(), postgres.CreateTicketInput{
-		CustomerID: uid,
-		OrderID:    req.OrderID,
-		Category:   req.Category,
-		Subject:    req.Subject,
-		Detail:     req.Detail,
+		CustomerID:     uid,
+		OrderID:        req.OrderID,
+		Category:       req.Category,
+		Subject:        req.Subject,
+		Detail:         req.Detail,
+		IdempotencyKey: ticketKey,
 	})
 	if err != nil {
 		if writeSupportError(c, err) {
@@ -210,7 +214,13 @@ func (h *Handler) CreateRefundRequest(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY", "amount must be > 0", nil)
 		return
 	}
-	r, err := h.svc.CreateRefundRequest(c.Request.Context(), uid, req.OrderID, req.TicketID, req.Amount, req.Reason)
+	// Idempotency-Key is optional (food server lane, 9 Nov 2026): a resend
+	// after a lost answer gets the first answer, not a balance refusal.
+	refundKey := c.GetHeader("Idempotency-Key")
+	r, err := h.svc.CreateRefundRequest(c.Request.Context(), postgres.RefundRequestInput{
+		CustomerID: uid, OrderID: req.OrderID, TicketID: req.TicketID, Amount: req.Amount, Reason: req.Reason,
+		IdempotencyKey: refundKey,
+	})
 	if err != nil {
 		if writeSupportError(c, err) {
 			return

@@ -21,7 +21,8 @@ func TestFoodPushesNameTheirAndroidChannel(t *testing.T) {
 			"order_id":            "o1",
 			AndroidChannelDataKey: tc.channel,
 		})
-		if _, has := msg["notification"]; has == (tc.typ == "food_delivery_offer") {
+		dataOnly := tc.typ != "food_order_status" // offers and the kitchen's new order (food audit M4)
+		if _, has := msg["notification"]; has == dataOnly {
 			t.Fatalf("%s: wrong system/app rendering contract", tc.typ)
 		}
 		data := msg["data"].(map[string]string)
@@ -36,7 +37,7 @@ func TestFoodPushesNameTheirAndroidChannel(t *testing.T) {
 			t.Fatalf("%s: no android config", tc.typ)
 		}
 		notification, _ := android["notification"].(map[string]string)
-		if tc.typ != "food_delivery_offer" && notification["channel_id"] != tc.channel {
+		if !dataOnly && notification["channel_id"] != tc.channel {
 			t.Fatalf("%s: channel = %v", tc.typ, android)
 		}
 		if (android["priority"] == "high") != tc.high {

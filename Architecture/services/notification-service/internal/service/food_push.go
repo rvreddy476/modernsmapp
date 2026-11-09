@@ -65,6 +65,7 @@ var FoodPushDataKeys = map[string]bool{
 	"body":                     true,
 	"offer_id":                 true, // offers only
 	"expires_at":               true, // offers only
+	"accept_deadline_at":       true, // kitchen new order only: the alarm stops here (RFC 3339, UTC)
 	"collapse_key":             true, // transport: lifted into android.collapse_key
 	push.AndroidChannelDataKey: true, // transport: lifted into android.notification.channel_id
 }
@@ -184,6 +185,13 @@ func FoodPushData(p FoodPush) map[string]string {
 		}
 		collapse = "food_offer:" + p.OfferID.String()
 	case FoodTypeOrderNew:
+		// The Kitchen app rings its looping alarm from this push alone and
+		// stops it at the deadline (feature/kitchen NewOrderPush.ringFor). A
+		// legacy event without a deadline sends none; the app then falls back
+		// to the restaurant default accept window.
+		if p.AcceptDeadlineAt != nil {
+			data["accept_deadline_at"] = p.AcceptDeadlineAt.UTC().Format(time.RFC3339)
+		}
 		collapse = "food_order_new:" + p.OrderID.String()
 	case FoodTypeDeliveryAccount, FoodTypeDeliveryDocument, FoodTypeKitchenAccount:
 		collapse = p.Type + ":" + p.EntityID.String()

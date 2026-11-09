@@ -1,0 +1,11 @@
+{
+  "error": {
+    "code": "FOOD_ORDER_TOTAL_CHANGED",
+    "message": "the order total has changed: you were shown 45600 paise, it is now 47200 paise",
+    "details": {
+      "expected_total_paise": 45600,
+      "server_total_paise": 47200
+    }
+  },
+  "meta": {}
+}

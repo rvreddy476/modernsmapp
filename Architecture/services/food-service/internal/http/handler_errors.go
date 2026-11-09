@@ -91,6 +91,9 @@ func writeKnownError(c *gin.Context, err error) bool {
 	if partnerwork.WriteError(c, err) {
 		return true
 	}
+	if writeOrderTotalChanged(c, err) {
+		return true
+	}
 	if m, ok := knownError(err); ok {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, m.status, m.code, err.Error(), nil)
 		return true
@@ -100,4 +103,21 @@ func writeKnownError(c *gin.Context, err error) bool {
 		return true
 	}
 	return false
+}
+
+// writeOrderTotalChanged answers a placement priced differently from the
+// total the customer was shown (food server lane, 9 Nov 2026): 409
+// FOOD_ORDER_TOTAL_CHANGED with both totals in paise under error.details, so
+// the app says "Your total has changed" with the new figure before any charge.
+func writeOrderTotalChanged(c *gin.Context, err error) bool {
+	var changed *postgres.OrderTotalChangedError
+	if !errors.As(err, &changed) {
+		return false
+	}
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "FOOD_ORDER_TOTAL_CHANGED", changed.Error(),
+		map[string]int64{
+			"server_total_paise":   changed.ServerTotalPaise,
+			"expected_total_paise": changed.ExpectedTotalPaise,
+		})
+	return true
 }

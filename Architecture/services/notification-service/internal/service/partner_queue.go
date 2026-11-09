@@ -221,11 +221,11 @@ func (s *Service) deliverPartnerNotification(ctx context.Context, j *postgres.Pa
 					return "expired", "partner_busy"
 				}
 			}
-			left := time.Until(*j.ExpiresAt)
-			if left < time.Second {
+			ttl, live := remainingAndroidTTL(*j.ExpiresAt, time.Now())
+			if !live {
 				return "expired", "offer_expired"
 			}
-			n.Data[push.AndroidTTLDataKey] = fmt.Sprintf("%ds", int64(left/time.Second))
+			n.Data[push.AndroidTTLDataKey] = ttl
 		}
 		err = s.pusher.Send(ctx, d.PushToken, d.Platform, n.Title, n.Body, n.Data)
 		if errors.Is(err, push.ErrDeviceRejected) {
@@ -278,4 +278,17 @@ func (s *Service) QueueCommerceDeliveryReview(ctx context.Context, typ, key stri
 	data := map[string]string{"type": typ, "entity_id": profile.String(), "deep_link": "/partner/commerce-delivery", "title": title, "body": body, "collapse_key": "commerce-delivery:" + profile.String()}
 	data[push.AndroidChannelDataKey] = "commerce_delivery_updates"
 	return s.queuePartnerNotice(ctx, PartnerNotice{ID: id, UserID: user, App: postgres.AppPartner, Type: typ, EntityID: profile, EntityType: "commerce_delivery_partner", Title: title, Body: body, DeepLink: data["deep_link"], Data: data, CreatedAt: at, Inbox: true})
+}
+
+// remainingAndroidTTL is the FCM android.ttl for a notice that expires at
+// expiresAt: the whole seconds left, so FCM drops a delivery it could only
+// make after the offer (food_delivery_offer) or the accept deadline
+// (food_order_new) has passed. live is false once under a second is left;
+// nothing is sent then. Recomputed on every attempt, never restarted.
+func remainingAndroidTTL(expiresAt, now time.Time) (ttl string, live bool) {
+	left := expiresAt.Sub(now)
+	if left < time.Second {
+		return "", false
+	}
+	return fmt.Sprintf("%ds", int64(left/time.Second)), true
 }

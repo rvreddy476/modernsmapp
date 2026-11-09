@@ -22,6 +22,8 @@ type Ticket struct {
 	AssignedTo *uuid.UUID `json:"assigned_to,omitempty"`
 	ResolvedAt *string    `json:"resolved_at,omitempty"`
 	CreatedAt  string     `json:"created_at"`
+	// Replayed: a resend under the same Idempotency-Key; nothing was written.
+	Replayed bool `json:"-"`
 }
 
 // TicketMessage mirrors food.ticket_messages.
@@ -50,6 +52,8 @@ type RefundRequest struct {
 	ExecutionRefundID *uuid.UUID `json:"execution_refund_id,omitempty"`
 	ExecutionStatus   *string    `json:"execution_status,omitempty"`
 	ExecutionError    *string    `json:"execution_error,omitempty"`
+	// Replayed: a resend under the same Idempotency-Key; nothing was written.
+	Replayed bool `json:"-"`
 }
 
 var ErrInvalidRefundAmount = errors.New("refund amount must be whole paise and within the remaining refundable balance")
@@ -74,12 +78,40 @@ type CreateTicketInput struct {
 	Category   string
 	Subject    string
 	Detail     string
+	// IdempotencyKey is the optional Idempotency-Key header.
+	IdempotencyKey string
 }
 
+// With in.IdempotencyKey, a resend of the same request answers with the
+// ticket the first call opened (Replayed), and a reuse for another request is
+// refused (409 FOOD_IDEMPOTENCY_PAYLOAD_MISMATCH).
 func (s *Store) CreateTicket(ctx context.Context, in CreateTicketInput) (*Ticket, error) {
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
+	if in.IdempotencyKey != "" {
+		body, handled, err := s.lockGenericIdempotency(ctx, tx, in.CustomerID, in.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+		if handled {
+			id, err := replayedEntityID(body)
+			if err != nil {
+				return nil, err
+			}
+			t, err := ownTicketTx(ctx, tx, id, in.CustomerID)
+			if err != nil {
+				return nil, err
+			}
+			t.Replayed = true
+			return t, nil
+		}
+	}
 	if in.OrderID != nil {
 		var allowed bool
-		if err := s.db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM food.orders o
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM food.orders o
 			WHERE o.id=$1 AND (o.user_id=$2 OR EXISTS(SELECT 1 FROM food.restaurants r WHERE r.id=o.restaurant_id AND r.owner_user_id=$2)
 			OR EXISTS(SELECT 1 FROM food.delivery_assignments a JOIN food.delivery_partners p ON p.id=a.delivery_partner_id WHERE a.order_id=o.id AND p.user_id=$2)))`, *in.OrderID, in.CustomerID).Scan(&allowed); err != nil {
 			return nil, err
@@ -89,7 +121,7 @@ func (s *Store) CreateTicket(ctx context.Context, in CreateTicketInput) (*Ticket
 		}
 	}
 	var t Ticket
-	if err := s.db.QueryRow(ctx, `
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO food.support_tickets (customer_id, order_id, category, subject, detail)
 		VALUES ($1, $2, $3, $4, NULLIF($5, ''))
 		RETURNING id, customer_id, order_id, category, subject, detail, status::text,
@@ -100,7 +132,10 @@ func (s *Store) CreateTicket(ctx context.Context, in CreateTicketInput) (*Ticket
 	); err != nil {
 		return nil, err
 	}
-	return &t, nil
+	if err := s.completeGenericIdempotency(ctx, tx, in.CustomerID, in.IdempotencyKey, 201, map[string]any{"id": t.ID.String()}); err != nil {
+		return nil, err
+	}
+	return &t, tx.Commit(ctx)
 }
 
 // ListMyTickets returns tickets visible to the customer.
@@ -277,6 +312,16 @@ func (s *Store) SetTicketStatus(ctx context.Context, adminID, ticketID uuid.UUID
 // CreateRefundRequest inserts a customer-requested refund. The admin
 // later approves/rejects it via DecideRefund.
 func (s *Store) CreateRefundRequest(ctx context.Context, customerID, orderID uuid.UUID, ticketID *uuid.UUID, amount float64, reason string) (*RefundRequest, error) {
+	return s.RequestRefund(ctx, RefundRequestInput{CustomerID: customerID, OrderID: orderID, TicketID: ticketID, Amount: amount, Reason: reason})
+}
+
+// RequestRefund is CreateRefundRequest with an optional Idempotency-Key
+// (food server lane, 9 Nov 2026): a resend after a lost answer gets the
+// request the first call made (Replayed) instead of a balance refusal, and a
+// reuse of the key for another request is refused. Only a success is
+// remembered: a refusal leaves the key free, as on every other food route.
+func (s *Store) RequestRefund(ctx context.Context, in RefundRequestInput) (*RefundRequest, error) {
+	customerID, orderID, ticketID, amount, reason := in.CustomerID, in.OrderID, in.TicketID, in.Amount, in.Reason
 	minor, err := refundAmountMinor(amount)
 	if err != nil {
 		return nil, err
@@ -286,6 +331,27 @@ func (s *Store) CreateRefundRequest(ctx context.Context, customerID, orderID uui
 		return nil, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
+	if in.IdempotencyKey != "" {
+		body, handled, err := s.lockGenericIdempotency(ctx, tx, customerID, in.IdempotencyKey)
+		if err != nil {
+			return nil, err
+		}
+		if handled {
+			id, err := replayedEntityID(body)
+			if err != nil {
+				return nil, err
+			}
+			r, err := ownRefundRequestTx(ctx, tx, id, customerID)
+			if err != nil {
+				return nil, err
+			}
+			if r.OrderID != orderID {
+				return nil, errGenericIdempotencyMismatch
+			}
+			r.Replayed = true
+			return r, nil
+		}
+	}
 	if _, err := tx.Exec(ctx, `SELECT id FROM food.orders WHERE id=$1 FOR UPDATE`, orderID); err != nil {
 		return nil, err
 	}
@@ -332,6 +398,9 @@ func (s *Store) CreateRefundRequest(ctx context.Context, customerID, orderID uui
 		return nil, err
 	}
 	if err := enqueueSupportRefundDecisionTx(ctx, tx, r.ID, orderID, customerID, "requested"); err != nil {
+		return nil, err
+	}
+	if err := s.completeGenericIdempotency(ctx, tx, customerID, in.IdempotencyKey, 201, map[string]any{"id": r.ID.String()}); err != nil {
 		return nil, err
 	}
 	return &r, tx.Commit(ctx)

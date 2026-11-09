@@ -154,8 +154,9 @@ func keepsChannelInData(notifType string) bool {
 // highPriorityTypes are operational pushes that must wake a Dozing device: a
 // kitchen that sees a new order late loses it to the accept SLA, a job or
 // ride offer expires in seconds, and a captain who has arrived is waiting at
-// the kerb. They keep the notification block — the system renders them on
-// the app's channel — unlike ringing calls.
+// the kerb. Most keep the notification block — the system renders them on
+// the app's channel; ringing calls, partner offers and the kitchen's new
+// order are data-only (see dataOnlyPush).
 var highPriorityTypes = map[string]bool{
 	"food_order_new":      true,
 	"food_delivery_offer": true,
@@ -209,9 +210,10 @@ func BuildFCMMessage(token, title, body string, data map[string]string) map[stri
 		android["collapse_key"] = ck
 	}
 
-	if callPushTypes[data["type"]] || partnerOfferDataMessage(data["type"]) {
+	if dataOnlyPush(data["type"]) {
 		// The Android offer presenter must reject expired deliveries and clear
 		// its countdown notification. No call/full-screen privileges for jobs.
+		// The Kitchen app rings its new-order alarm from accept_deadline_at.
 		enriched := make(map[string]string, len(data)+2)
 		for k, v := range data {
 			enriched[k] = v
@@ -245,6 +247,20 @@ func BuildFCMMessage(token, title, body string, data map[string]string) map[stri
 	return msg
 }
 
+// KitchenNewOrderType is Feast Kitchen's new-order push. It is data-only
+// (food audit M4): a notification block is drawn by the system as a one-shot
+// card while the app is in the background and never reaches
+// FirebaseMessagingService, so the Kitchen app (KitchenOrderPushHandler)
+// could not ring its looping alarm until accept_deadline_at.
+const KitchenNewOrderType = "food_order_new"
+
+// dataOnlyPush reports whether a push type goes without a notification
+// block, so the app always handles it itself: ringing calls, partner offers
+// and the kitchen's new order.
+func dataOnlyPush(typ string) bool {
+	return callPushTypes[typ] || partnerOfferDataMessage(typ) || typ == KitchenNewOrderType
+}
+
 func partnerOfferDataMessage(typ string) bool {
 	switch typ {
 	case "doorstep.pro.offer.new", "doorstep.pro.offer.expired", "captain.offer", "food_delivery_offer", "commerce.delivery.offer":
@@ -252,6 +268,27 @@ func partnerOfferDataMessage(typ string) bool {
 	default:
 		return false
 	}
+}
+
+// webKeepsNotification: a browser shows nothing for a data-only message
+// without its own service-worker handler, so on the web these data-only
+// types keep a plain notification. The ringing UI is app-only.
+func webKeepsNotification(typ string) bool {
+	switch typ {
+	case "doorstep.pro.offer.new", "doorstep.pro.offer.expired", KitchenNewOrderType:
+		return true
+	default:
+		return false
+	}
+}
+
+// MessageForPlatform is BuildFCMMessage for one device platform.
+func MessageForPlatform(token, platform, title, body string, data map[string]string) map[string]interface{} {
+	msg := BuildFCMMessage(token, title, body, data)
+	if platform == "web" && webKeepsNotification(data["type"]) {
+		msg["notification"] = map[string]string{"title": title, "body": body}
+	}
+	return msg
 }
 
 // Send delivers a push notification via FCM to an Android or Web device.
@@ -267,11 +304,7 @@ func (f *FCMPusher) Send(ctx context.Context, token, platform, title, body strin
 		return fmt.Errorf("fcm: get access token: %w", err)
 	}
 
-	msg := BuildFCMMessage(token, title, body, data)
-	if platform == "web" && (data["type"] == "doorstep.pro.offer.new" || data["type"] == "doorstep.pro.offer.expired") {
-		// Web remains a normal notification; the incoming request UI is app-only.
-		msg["notification"] = map[string]string{"title": title, "body": body}
-	}
+	msg := MessageForPlatform(token, platform, title, body, data)
 
 	payload := map[string]interface{}{
 		"message": msg,

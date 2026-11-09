@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "FOOD_REFUND_AMOUNT_INVALID",
+    "message": "refund amount must be whole paise and within the remaining refundable balance"
+  },
+  "meta": {}
+}

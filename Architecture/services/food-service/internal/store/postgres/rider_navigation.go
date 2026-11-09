@@ -96,6 +96,11 @@ type DeliveryOfferView struct {
 	// PayoutPaise is what the rider earns for this delivery (a batch: all of it).
 	PayoutPaise *int64 `json:"payout_paise,omitempty"`
 	Currency    string `json:"currency,omitempty"`
+	// SecondsToExpiry is the whole seconds left on the offer when the response
+	// was built, on the server's clock (food server lane, 9 Nov 2026): a
+	// rider whose phone clock is wrong still sees the true countdown. Never
+	// negative; absent only when expires_at cannot be read.
+	SecondsToExpiry *int64 `json:"seconds_to_expiry,omitempty"`
 }
 
 // DeliveryOfferContext is what DeliveryOfferContexts reads for one offer. It
@@ -127,6 +132,7 @@ type DeliveryOfferContext struct {
 func BuildDeliveryOfferView(o DeliveryOffer, c *DeliveryOfferContext, now time.Time, maxLocationAge time.Duration) DeliveryOfferView {
 	offer := o
 	v := DeliveryOfferView{DeliveryOffer: &offer}
+	v.SecondsToExpiry = OfferSecondsToExpiry(o.ExpiresAt, now)
 	if c == nil {
 		return v
 	}
@@ -393,4 +399,20 @@ func DeliveryEarningsMap(todayCount int, todayAmount float64, todayPaise int64, 
 		"total_earnings_paise": totalPaise,
 		"currency":             RiderCurrency,
 	}
+}
+
+// OfferSecondsToExpiry is the whole seconds from now until an offer's
+// expires_at (Postgres text or RFC 3339), rounded down so a rider is never
+// shown time the server will not honour, and floored at zero. Nil when
+// expires_at cannot be read.
+func OfferSecondsToExpiry(expiresAt string, now time.Time) *int64 {
+	expires := deliveryHistoryTime(expiresAt)
+	if expires.IsZero() {
+		return nil
+	}
+	left := int64(expires.Sub(now) / time.Second)
+	if left < 0 {
+		left = 0
+	}
+	return &left
 }

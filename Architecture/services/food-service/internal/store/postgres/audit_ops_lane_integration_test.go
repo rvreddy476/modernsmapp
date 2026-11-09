@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/atpost/shared/partnerwork"
 	"github.com/google/uuid"
 )
 
@@ -77,17 +78,28 @@ func TestSetDeliveryAvailability_OfflineMidJobKeepsTheJobWorkable(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	p, err := s.SetDeliveryAvailability(ctx, rider, false)
-	if err != nil {
-		t.Fatalf("go offline: %v", err)
+	// Food server lane (9 Nov 2026): with partnerwork off, going offline
+	// mid-job is now refused (409 WORK_BUSY), as partnerwork refuses it when
+	// on. The rider stays online and ACTIVE and finishes the job.
+	t.Setenv(partnerwork.EnabledVariable, "false")
+	if _, err := s.SetDeliveryAvailability(ctx, rider, false); !errors.Is(err, ErrRiderOnActiveJob) || !errors.Is(err, partnerwork.ErrBusy) {
+		t.Fatalf("go offline mid-job: want ErrRiderOnActiveJob (WORK_BUSY), got %v", err)
 	}
-	if p.IsOnline || p.Status != "ACTIVE" {
-		t.Fatalf("offline mid-job: online=%v status=%s, want offline and ACTIVE", p.IsOnline, p.Status)
+	p, err := s.GetDeliveryPartner(ctx, rider)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !p.IsOnline || p.Status != "ACTIVE" {
+		t.Fatalf("refused offline changed the rider: online=%v status=%s", p.IsOnline, p.Status)
 	}
 	if _, err := s.RiderVerifyDeliveryCode(ctx, rider, aid, delivery); err != nil {
-		t.Fatalf("verify after going offline mid-job: %v", err)
+		t.Fatalf("verify after a refused offline: %v", err)
 	}
 	assertOrderStatus(t, s, orderID, "DELIVERED")
+	// The job done, offline is allowed.
+	if p, err := s.SetDeliveryAvailability(ctx, rider, false); err != nil || p.IsOnline || p.Status != "OFFLINE" {
+		t.Fatalf("offline after the delivery: %+v %v", p, err)
+	}
 
 	// With no job, offline is OFFLINE as before.
 	idle, _ := seedDeliveryPartner(t, s)

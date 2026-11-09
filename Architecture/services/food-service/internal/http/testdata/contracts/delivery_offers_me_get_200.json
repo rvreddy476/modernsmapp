@@ -7,7 +7,7 @@
         "delivery_partner_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0006",
         "status": "pending",
         "distance_km": 1.25,
-        "expires_at": "2026-09-13 06:30:25+00",
+        "expires_at": "2026-09-13 06:30:20+00",
         "created_at": "2026-09-13 06:30:00+00",
         "restaurant": {
           "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0002",
@@ -25,7 +25,8 @@
         "distance_to_restaurant_meters": 1553,
         "trip_distance_meters": 5065,
         "payout_paise": 2320,
-        "currency": "INR"
+        "currency": "INR",
+        "seconds_to_expiry": 20
       }
     ]
   }

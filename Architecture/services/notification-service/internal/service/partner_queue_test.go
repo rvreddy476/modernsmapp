@@ -57,10 +57,12 @@ func TestPartnerQueueDBBusyPartnerNeverRingsQueuedOffers(t *testing.T) {
 type partnerQueuePush struct {
 	calls int
 	fail  bool
+	last  map[string]string // data of the latest send
 }
 
-func (p *partnerQueuePush) Send(context.Context, string, string, string, string, map[string]string) error {
+func (p *partnerQueuePush) Send(_ context.Context, _, _, _, _ string, data map[string]string) error {
 	p.calls++
+	p.last = data
 	if p.fail {
 		return errors.New("provider unavailable")
 	}

@@ -15,6 +15,9 @@ func (s *Service) CreateTicket(ctx context.Context, in postgres.CreateTicketInpu
 	if err != nil {
 		return nil, err
 	}
+	if t.Replayed {
+		return t, nil // a resend under the same Idempotency-Key: already announced
+	}
 	s.publishRealtime(ctx, "food.admin.support", "food.ticket.created", t)
 	return t, nil
 }
@@ -82,11 +85,17 @@ func (s *Service) SetTicketStatus(ctx context.Context, adminID, ticketID uuid.UU
 }
 
 // CreateRefundRequest validates ownership and available balance transactionally.
-func (s *Service) CreateRefundRequest(ctx context.Context, customerID, orderID uuid.UUID, ticketID *uuid.UUID, amount float64, reason string) (*postgres.RefundRequest, error) {
-	r, err := s.store.CreateRefundRequest(ctx, customerID, orderID, ticketID, amount, reason)
+// A resend under the same Idempotency-Key (in.IdempotencyKey) answers with the
+// request the first call made and announces nothing a second time.
+func (s *Service) CreateRefundRequest(ctx context.Context, in postgres.RefundRequestInput) (*postgres.RefundRequest, error) {
+	r, err := s.store.RequestRefund(ctx, in)
 	if err != nil {
 		return nil, err
 	}
+	if r.Replayed {
+		return r, nil
+	}
+	orderID := in.OrderID
 	s.publishRealtime(ctx, "food.admin.refunds", "food.refund.requested", r)
 	s.publishRealtime(ctx, "food.order."+orderID.String(), "food.refund.requested", r)
 	return r, nil

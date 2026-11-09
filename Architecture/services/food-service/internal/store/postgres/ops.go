@@ -577,6 +577,10 @@ func (s *Store) SetDeliveryAvailability(ctx context.Context, userID uuid.UUID, o
 	if err := partnerwork.DomainDutyTx(ctx, tx, userID, partnerwork.FoodDelivery, online); err != nil {
 		return nil, err
 	}
+	// Food server lane: with partnerwork off, refuse offline mid-delivery too.
+	if err := refuseOfflineOnJobTx(ctx, tx, userID, online); err != nil {
+		return nil, err
+	}
 	var partnerID uuid.UUID
 	if err := tx.QueryRow(ctx, `
 		UPDATE food.delivery_partners dp

@@ -1,0 +1,12 @@
+{
+  "data": {
+    "id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0031",
+    "ticket_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0030",
+    "order_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0015",
+    "customer_id": "0b8f3c52-8d0a-4c55-9a55-3f3f0e1a0010",
+    "amount": 456,
+    "reason": "Cold food",
+    "status": "requested",
+    "created_at": "2026-09-13 06:30:00+00"
+  }
+}
