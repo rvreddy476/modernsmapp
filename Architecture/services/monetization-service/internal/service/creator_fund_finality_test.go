@@ -90,6 +90,39 @@ func TestSettlementWaitsForEveryDayToBeFinal(t *testing.T) {
 	}
 }
 
+// An adjustment (a reversal, a correction) is stamped NOW(), so it lands in
+// the period containing today. That period always waits: today is never
+// final, whatever analytics' line, so the adjustment is reported by the run
+// that settles the period once it closes, never by a run during it. This is
+// why TestReverseFundEarningDropsFromStatement settles the current period
+// with the finality it will have, not with today's.
+func TestThePeriodContainingTodayAlwaysWaits(t *testing.T) {
+	s := &Service{} // no store: settling would panic
+	now := time.Date(2026, 11, 10, 15, 4, 0, 0, time.UTC)
+	for _, cadence := range []string{CadenceMonthly, CadenceSemiMonthly} {
+		current := PeriodContaining(now, cadence)
+		// Finality at its most generous is "every day before today".
+		for _, fin := range []analyticsFinality{
+			{before: utcDay(now), known: true},
+			{before: utcDay(now).AddDate(0, 0, -2), known: true},
+			{},
+		} {
+			if fin.periodFinal(current) {
+				t.Fatalf("%s period %s final under final_before %s", cadence, current.Key, fin.before.Format("2006-01-02"))
+			}
+			st, err := s.settlePeriodWithFinality(context.Background(), uuid.New(), current, fin, true)
+			if err != nil || st.Status != StatusAwaitingFinalAnalytics || st.Persisted || st.AdjustmentsCount != 0 {
+				t.Fatalf("%s current period = %+v, %v; want awaiting_final_analytics and nothing persisted", cadence, st, err)
+			}
+		}
+		// Once its last day is final it settles: the next run is the one
+		// that carries the adjustment.
+		if !(analyticsFinality{before: current.End, known: true}).periodFinal(current) {
+			t.Fatalf("%s period %s not final once every day of it is", cadence, current.Key)
+		}
+	}
+}
+
 func TestSettlementHoldReasonHoldsOnlySuspendedCreators(t *testing.T) {
 	if settlementHoldReason("suspended") == "" {
 		t.Fatal("a suspended creator's period must be held")

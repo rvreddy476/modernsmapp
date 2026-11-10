@@ -152,6 +152,14 @@ func TestPartialMembershipRefundIsOnTheStatement(t *testing.T) {
 	creator, payment := uuid.New(), uuid.New()
 	cleanupCreatorMoney(ctx, t, pool, creator)
 	at := time.Date(2024, 8, 12, 10, 0, 0, 0, time.UTC)
+	// transactions.wallet_id references creator_ledger(user_id): the
+	// creator's ledger row exists before any of its transactions, as
+	// EnsureWallet makes it on the real paths. 7000 is what the creator kept.
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO creator_ledger (user_id, balance, lifetime_earnings, pending_payout, currency, is_frozen, created_at, updated_at)
+		VALUES ($1, 7000, 10000, 0, 'INR', false, $2, $2)`, creator, at); err != nil {
+		t.Fatalf("seed ledger: %v", err)
+	}
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO transactions (id, wallet_id, type, amount, currency, status, reference_type, reference_id, description, created_at)
 		VALUES ($1, $2, 'earning', 10000, 'INR', 'completed', 'subscription', $3, 'Membership join', $4),

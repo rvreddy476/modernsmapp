@@ -315,9 +315,27 @@ func TestReverseFundEarningDropsFromStatement(t *testing.T) {
 	if second.AdjustmentsPaise != 0 {
 		t.Errorf("August 2025 statement shows adjustments_paise = %d; the adjustment landed now, not then", second.AdjustmentsPaise)
 	}
-	current, err := svc.SettleCreatorFundPeriod(ctx, creator, PeriodContaining(time.Now().UTC(), CadenceMonthly))
+	//
+	// Since the finality line (54533124e) the current period cannot settle
+	// yet: today is inside analytics' re-roll window. It must wait, persist
+	// nothing, and not fail.
+	currentPeriod := PeriodContaining(time.Now().UTC(), CadenceMonthly)
+	waiting, err := svc.SettleCreatorFundPeriod(ctx, creator, currentPeriod)
 	if err != nil {
-		t.Fatalf("settle current period: %v", err)
+		t.Fatalf("settle current period before it is final: %v", err)
+	}
+	if waiting.Status != StatusAwaitingFinalAnalytics || waiting.Persisted || waiting.NewlyCredited {
+		t.Fatalf("current period before it is final = status %q persisted %v newly credited %v, want awaiting_final_analytics, nothing persisted",
+			waiting.Status, waiting.Persisted, waiting.NewlyCredited)
+	}
+	// Once analytics finalises the period, the run that settles it must
+	// carry the adjustment. Settle it as that run will, with every day of
+	// the period final; accrue=false because no day of it has inputs and
+	// analytics has not really finalised them.
+	current, err := svc.settlePeriodWithFinality(ctx, creator, currentPeriod,
+		analyticsFinality{before: currentPeriod.End, known: true}, false)
+	if err != nil {
+		t.Fatalf("settle current period once final: %v", err)
 	}
 	if current.AdjustmentsPaise != -netA || current.AdjustmentsCount != 1 {
 		t.Errorf("current period adjustments = %d paise / %d, want %d / 1", current.AdjustmentsPaise, current.AdjustmentsCount, -netA)
