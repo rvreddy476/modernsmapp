@@ -160,19 +160,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/disputes", h.CreateDispute)
 		v1.GET("/disputes", h.ListUserDisputes)
 		v1.GET("/disputes/:id", h.GetDisputeByID)
-		v1.PATCH("/disputes/:id", h.ResolveDisputeAdmin)
-
-		// Refunds (admin)
-		v1.POST("/refunds", h.ProcessRefund)
-
-		// Fraud reviews (admin)
-		v1.GET("/admin/fraud-reviews", h.ListPendingFraudReviews)
-		v1.PATCH("/admin/fraud-reviews/:id", h.ResolveFraudReviewAdmin)
-
-		// Admin wallet operations
-		v1.POST("/admin/wallet/:userId/freeze", h.FreezeWallet)
-		v1.POST("/admin/wallet/:userId/unfreeze", h.UnfreezeWallet)
-		v1.POST("/admin/wallet/:userId/rebuild", h.RebuildWallet)
 
 		// Subscription lifecycle
 		v1.POST("/subscriptions/:id/pause", h.PauseSubscription)
@@ -216,29 +203,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 			// each of the three streams.
 			cf.GET("/statements", h.ListCreatorFundStatements)
 			cf.GET("/statements/:periodKey", h.GetCreatorFundStatement)
-		}
-		admin := v1.Group("/admin/creator-fund")
-		{
-			admin.GET("/rates", h.ListCreatorFundRatesAdmin)
-			admin.PUT("/rates", h.SetCreatorFundRate)
-			admin.PUT("/quality-bands", h.SetCreatorFundQualityBand)
-			admin.POST("/:userId/suspend", h.SuspendCreatorFund)
-			admin.POST("/:userId/unsuspend", h.UnsuspendCreatorFund)
-			// Re-measure one day (accrual only — moves no money).
-			admin.POST("/settle", h.ForceAccrueCreatorFundDay)
-			// The payment run. Same call the scheduled worker makes.
-			admin.POST("/settle-period", h.SettleCreatorFundPeriod)
-			admin.POST("/:userId/settle-period", h.SettleCreatorFundPeriodForCreator)
-			// Corrections (Phase 2A): reverse one accrual row; if it was
-			// credited the net comes back through a keyed adjustment.
-			// Behind hasAdminScope, and — like every admin route — behind
-			// the beta boundary until MONETIZATION_WRITES_ENABLED=true.
-			admin.POST("/earnings/:id/reverse", h.ReverseCreatorFundEarning)
-			admin.GET("/earnings/:id", h.GetCreatorFundEarningAdmin)
-			// The fund cap per settlement period (Phase 2C). Lowering below
-			// what has accrued is refused; nothing already earned is reduced.
-			admin.GET("/budgets", h.ListCreatorFundBudgets)
-			admin.PUT("/budgets", h.SetCreatorFundBudget)
 		}
 	}
 }

@@ -369,31 +369,65 @@ func TestAdminToken_EveryRouteNeedsItsPermission(t *testing.T) {
 	}
 }
 
-// The LEGACY path is unchanged: X-Scopes admin plus the key, the token ignored.
-func TestAdminToken_LegacyScopesStillWork(t *testing.T) {
+// The legacy X-Scopes admin family is removed: every former registration
+// answers 404 through the real router, whatever the headers or token say.
+func TestAdminToken_LegacyAdminFamilyIsGone(t *testing.T) {
 	rg := newAdminTokenRig(t)
 	r := routerFor(rg.handler())
-	legacy := "/v1/monetization/admin"
-	user := uuid.New()
-
-	if w := adminServe(r, http.MethodPost, reversePath(legacy), `{}`, legacyAdmin(user, "admin")); w.Code != http.StatusBadRequest || errorCode(t, w) != "REASON_REQUIRED" {
-		t.Fatalf("legacy admin: status=%d body=%s, want 400 REASON_REQUIRED (admitted)", w.Code, w.Body.String())
+	id := uuid.NewString()
+	removed := []struct{ method, path string }{
+		{http.MethodPatch, "/v1/monetization/disputes/" + id},
+		{http.MethodPost, "/v1/monetization/refunds"},
+		{http.MethodGet, "/v1/monetization/admin/fraud-reviews"},
+		{http.MethodPatch, "/v1/monetization/admin/fraud-reviews/" + id},
+		{http.MethodPost, "/v1/monetization/admin/wallet/" + id + "/freeze"},
+		{http.MethodPost, "/v1/monetization/admin/wallet/" + id + "/unfreeze"},
+		{http.MethodPost, "/v1/monetization/admin/wallet/" + id + "/rebuild"},
+		{http.MethodGet, "/v1/monetization/admin/creator-fund/rates"},
+		{http.MethodPut, "/v1/monetization/admin/creator-fund/rates"},
+		{http.MethodPut, "/v1/monetization/admin/creator-fund/quality-bands"},
+		{http.MethodPost, "/v1/monetization/admin/creator-fund/" + id + "/suspend"},
+		{http.MethodPost, "/v1/monetization/admin/creator-fund/" + id + "/unsuspend"},
+		{http.MethodPost, "/v1/monetization/admin/creator-fund/settle"},
+		{http.MethodPost, "/v1/monetization/admin/creator-fund/settle-period"},
+		{http.MethodPost, "/v1/monetization/admin/creator-fund/" + id + "/settle-period"},
+		{http.MethodPost, reversePath("/v1/monetization/admin")},
+		{http.MethodGet, "/v1/monetization/admin/creator-fund/earnings/" + id},
+		{http.MethodGet, "/v1/monetization/admin/creator-fund/budgets"},
+		{http.MethodPut, "/v1/monetization/admin/creator-fund/budgets"},
 	}
-	if w := adminServe(r, http.MethodPost, reversePath(legacy), `{}`, legacyAdmin(user, "moderator")); w.Code != http.StatusForbidden {
-		t.Fatalf("legacy moderator: status=%d, want 403", w.Code)
-	}
-	noKey := legacyAdmin(user, "admin")
-	delete(noKey, "X-Internal-Service-Key")
-	if w := adminServe(r, http.MethodPost, reversePath(legacy), `{}`, noKey); w.Code != http.StatusUnauthorized {
-		t.Fatalf("legacy without the internal key: status=%d, want 401", w.Code)
-	}
-	// A valid token does not stand in for the scope on the legacy family.
 	tok := rg.mint(t, rg.admin, AudienceMonetization, []string{PermFundReverse}, rg.actor.String())
-	hdr := bearer(tok)
-	hdr["X-Internal-Service-Key"] = adminTestInternalKey
-	if w := adminServe(r, http.MethodPost, reversePath(legacy), `{}`, hdr); w.Code != http.StatusForbidden {
-		t.Fatalf("legacy with token but no scope: status=%d, want 403", w.Code)
+	withToken := legacyAdmin(uuid.New(), "superadmin admin")
+	withToken[ServiceAuthHeader] = "Bearer " + tok
+	for _, rt := range removed {
+		for name, hdr := range map[string]map[string]string{"legacy headers": legacyAdmin(uuid.New(), "admin"), "token": withToken} {
+			if w := adminServe(r, rt.method, rt.path, `{"reason":"x"}`, hdr); w.Code != http.StatusNotFound {
+				t.Fatalf("%s %s (%s): status=%d body=%s, want 404 (route removed)", rt.method, rt.path, name, w.Code, w.Body.String())
+			}
+		}
 	}
+	// The user-facing dispute routes stay registered.
+	registered := map[string]bool{}
+	for _, ri := range r.Routes() {
+		registered[ri.Method+" "+ri.Path] = true
+	}
+	for _, want := range []string{"POST /v1/monetization/disputes", "GET /v1/monetization/disputes", "GET /v1/monetization/disputes/:id", "GET /v1/monetization/creator-fund/status"} {
+		if !registered[want] {
+			t.Fatalf("%s is no longer registered", want)
+		}
+	}
+	for _, ri := range r.Routes() {
+		if strings.HasPrefix(ri.Path, "/v1/monetization/admin/") {
+			t.Fatalf("legacy admin route still registered: %s %s", ri.Method, ri.Path)
+		}
+	}
+	// The same handlers stay reachable on the token family.
+	if w := adminServe(r, http.MethodPost, reversePath(InternalAdminPrefix), `{}`, bearer(tok)); w.Code != http.StatusBadRequest || errorCode(t, w) != "REASON_REQUIRED" {
+		t.Fatalf("token reverse: status=%d body=%s, want 400 REASON_REQUIRED", w.Code, w.Body.String())
+	}
+	// The gateway-header actor derivation itself is unchanged.
+	user := uuid.New()
+	legacy := "/v1/monetization/admin"
 	// The legacy actor is X-User-Id, recorded as via gateway.
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
@@ -539,10 +573,11 @@ func TestAdminToken_WritesDisabledServesReadsRefusesWrites(t *testing.T) {
 	if w := adminServe(r, http.MethodGet, probePath, ``, nil); w.Code != http.StatusUnauthorized {
 		t.Fatalf("no token on a read with writes disabled: status=%d, want 401", w.Code)
 	}
-	// The legacy admin family is unchanged: its reads stay closed in the beta.
+	// The legacy X-Scopes admin family is gone: not registered, so 404 (not the
+	// beta 503) whatever the headers say.
 	for _, p := range []string{"/v1/monetization/admin/fraud-reviews", "/v1/monetization/admin/creator-fund/budgets", "/v1/monetization/admin/creator-fund/rates"} {
-		if w := adminServe(r, http.MethodGet, p, ``, legacyAdmin(rg.actor, "admin")); w.Code != http.StatusServiceUnavailable || errorCode(t, w) != "MONETIZATION_NOT_LAUNCHED" {
-			t.Fatalf("legacy GET %s with writes disabled: status=%d body=%s, want 503 MONETIZATION_NOT_LAUNCHED", p, w.Code, w.Body.String())
+		if w := adminServe(r, http.MethodGet, p, ``, legacyAdmin(rg.actor, "admin")); w.Code != http.StatusNotFound {
+			t.Fatalf("legacy GET %s: status=%d body=%s, want 404 (route removed)", p, w.Code, w.Body.String())
 		}
 	}
 }

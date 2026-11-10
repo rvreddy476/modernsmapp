@@ -337,8 +337,8 @@ func TestAdminTokenIntegration_AuditFailureRollsBackTheChange(t *testing.T) {
 }
 
 // Settlement runs: a start row and a finish row sharing run_id, performer =
-// act; and the legacy route audits too, with X-User-Id as the actor.
-func TestAdminTokenIntegration_SettlementRunsAndLegacyActor(t *testing.T) {
+// act; the removed legacy route audits nothing.
+func TestAdminTokenIntegration_SettlementRunsAndLegacyRouteGone(t *testing.T) {
 	it := newAdminIT(t)
 	creator := uuid.New()
 	legacyUser := uuid.New()
@@ -374,15 +374,15 @@ func TestAdminTokenIntegration_SettlementRunsAndLegacyActor(t *testing.T) {
 		}
 	}
 
-	// Legacy route: the audit row names X-User-Id, via gateway.
+	// The legacy X-Scopes route is gone: 404, and nothing is audited for the
+	// gateway-header user.
 	it.exec(t, `INSERT INTO creator_ledger (user_id) VALUES ($1)`, creator)
 	w := adminServe(it.r, http.MethodPost, "/v1/monetization/admin/wallet/"+creator.String()+"/freeze", ``, legacyAdmin(legacyUser, "admin"))
-	if w.Code != http.StatusOK {
-		t.Fatalf("legacy freeze: status=%d body=%s", w.Code, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("legacy freeze: status=%d body=%s, want 404 (route removed)", w.Code, w.Body.String())
 	}
-	rows := it.auditRows(t, legacyUser)
-	if len(rows) != 1 || rows[0].Table != "creator_ledger" || rows[0].Op != "freeze" || rows[0].NewData["via"] != service.ViaGateway {
-		t.Fatalf("legacy freeze audit rows = %+v, want one creator_ledger/freeze via gateway", rows)
+	if rows := it.auditRows(t, legacyUser); len(rows) != 0 {
+		t.Fatalf("legacy freeze audit rows = %+v, want none", rows)
 	}
 }
 
@@ -589,10 +589,10 @@ func TestAdminTokenIntegration_ReadsServedWhileWritesDisabled(t *testing.T) {
 		t.Fatalf("writes with writes disabled left %d audit rows", after-before)
 	}
 
-	// Legacy admin reads stay closed in the beta.
+	// The legacy admin reads are gone: 404, not the beta 503.
 	w := adminServe(it.r, http.MethodGet, "/v1/monetization/admin/creator-fund/budgets", ``, legacyAdmin(it.actor, "admin"))
-	if w.Code != http.StatusServiceUnavailable || errorCode(t, w) != "MONETIZATION_NOT_LAUNCHED" {
-		t.Fatalf("legacy GET budgets with writes disabled: status=%d body=%s, want 503 MONETIZATION_NOT_LAUNCHED", w.Code, w.Body.String())
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("legacy GET budgets: status=%d body=%s, want 404 (route removed)", w.Code, w.Body.String())
 	}
 }
 

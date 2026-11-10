@@ -95,7 +95,10 @@ func TestJanuaryRemediationDryRun(t *testing.T) {
 		}
 	}
 	rateID, bandID := uuid.New(), uuid.New()
-	adminID := uuid.New()
+	// The legacy X-Scopes route is gone: the rehearsal goes through the
+	// admin-service token family, whose actor is the token's act.
+	rig := newAdminTokenRig(t)
+	adminID := rig.actor
 	t.Cleanup(func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM monetization_audit_log WHERE performer_id = $1`, adminID)
 		_, _ = pool.Exec(ctx, `DELETE FROM ledger_entries WHERE reference_id = ANY($1)`, ids)
@@ -185,7 +188,7 @@ func TestJanuaryRemediationDryRun(t *testing.T) {
 	// ---- the router, exactly as the container runs it with writes on --
 	gin.SetMode(gin.TestMode)
 	router := gin.New()
-	New(svc).WithInternalKey("").WithWritesEnabled(true).RegisterRoutes(router)
+	New(svc).WithInternalKey(adminTestInternalKey).WithServiceAuth(rig.v).WithWritesEnabled(true).RegisterRoutes(router)
 	type reverseResp struct {
 		Data struct {
 			Earning struct {
@@ -211,10 +214,9 @@ func TestJanuaryRemediationDryRun(t *testing.T) {
 	reverse := func(id uuid.UUID, reason string) (reverseResp, string) {
 		body, _ := json.Marshal(map[string]string{"reason": reason})
 		w := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/v1/monetization/admin/creator-fund/earnings/"+id.String()+"/reverse", bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, InternalAdminPrefix+"/creator-fund/earnings/"+id.String()+"/reverse", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("X-Scopes", "admin")
-		req.Header.Set("X-User-Id", adminID.String())
+		req.Header.Set(ServiceAuthHeader, "Bearer "+rig.mint(t, rig.admin, AudienceMonetization, []string{PermFundReverse}, adminID.String()))
 		router.ServeHTTP(w, req)
 		if w.Code != http.StatusOK {
 			t.Fatalf("reverse %s: status=%d body=%s", id, w.Code, w.Body.String())
@@ -240,18 +242,18 @@ func TestJanuaryRemediationDryRun(t *testing.T) {
 		return n
 	}
 
-	// Precondition: the boundary is real. Without X-Scopes the route is 403.
+	// Precondition: the boundary is real. Without a token the route is 401.
 	{
 		body, _ := json.Marshal(map[string]string{"reason": "x"})
 		w := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodPost, "/v1/monetization/admin/creator-fund/earnings/"+ids[0].String()+"/reverse", bytes.NewReader(body))
+		req := httptest.NewRequest(http.MethodPost, InternalAdminPrefix+"/creator-fund/earnings/"+ids[0].String()+"/reverse", bytes.NewReader(body))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("X-User-Id", adminID.String())
 		router.ServeHTTP(w, req)
-		if w.Code != http.StatusForbidden {
-			t.Fatalf("without X-Scopes: status=%d, want 403", w.Code)
+		if w.Code != http.StatusUnauthorized {
+			t.Fatalf("without a token: status=%d, want 401", w.Code)
 		}
-		t.Logf("OBSERVED precondition: POST reverse without X-Scopes -> %d %s", w.Code, strings.TrimSpace(w.Body.String()))
+		t.Logf("OBSERVED precondition: POST reverse without a token -> %d %s", w.Code, strings.TrimSpace(w.Body.String()))
 	}
 
 	// ---- step 1: evidence table and audit snapshot ---------------------
