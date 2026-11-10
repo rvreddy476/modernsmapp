@@ -1361,7 +1361,7 @@ func (s *Store) ApplyRefundWebhookAtomically(ctx context.Context, e WebhookEffec
 	}
 	switch classifyRefundTarget(settledPaymentID, e.ProviderPaymentID, owedReason(owed)) {
 	case refundOfOwedCapture:
-		recorded, err := applyOwedCaptureRefundTx(ctx, tx, owed, intentCurrency, e, providerRefundID)
+		recorded, err := applyOwedCaptureRefundOnceTx(ctx, tx, owed, intentCurrency, e, providerRefundID)
 		if err != nil {
 			return false, "", err
 		}
