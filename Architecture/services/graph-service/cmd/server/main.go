@@ -291,6 +291,12 @@ func main() {
 		slog.Warn(fmt.Sprintf(format, args...))
 	})
 
+	// M12 (10 Nov 2026): production refuses to boot without the key, as the
+	// other services do; an unset key elsewhere still only warns below.
+	if err := requireInternalKey(internalKey, isProductionEnv(os.Getenv)); err != nil {
+		slog.Error("graph-service: refusing to start", "error", err)
+		os.Exit(1)
+	}
 	if internalKey != "" {
 		graphHandler.WithInternalKey(internalKey)
 		slog.Info("graph-service: internal-service-key gate enabled")
