@@ -1,6 +1,7 @@
 package http
 
 import (
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -235,7 +236,7 @@ func handleServiceError(c *gin.Context, err error) {
 		contains(msg, "does not accept"):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "VALIDATION_ERROR", msg, nil)
 	default:
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", msg, nil)
+		writeInternalError(c, err)
 	}
 }
 
@@ -250,4 +251,12 @@ func containsStr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+// writeInternalError answers an unexpected (non-domain) failure. The real error
+// (often a driver/SQL message) is logged server-side with the request path and
+// never sent to the client.
+func writeInternalError(c *gin.Context, err error) {
+	slog.ErrorContext(c.Request.Context(), "group-service: internal error", "error", err, "method", c.Request.Method, "path", c.FullPath())
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error", nil)
 }

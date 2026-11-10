@@ -1411,7 +1411,7 @@ func (h *Handler) GetMyModuleProfile(c *gin.Context) {
 	mp, err := h.svc.GetModuleProfile(c.Request.Context(), userID, module)
 	if err != nil {
 		h.log.Error("failed to get module profile", "err", err, "user_id", userID, "module", module)
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		writeModuleProfileError(c, err)
 		return
 	}
 	if mp == nil {
@@ -1438,7 +1438,7 @@ func (h *Handler) UpsertMyModuleProfile(c *gin.Context) {
 	mp, err := h.svc.UpsertModuleProfile(c.Request.Context(), userID, module, params)
 	if err != nil {
 		h.log.Error("failed to upsert module profile", "err", err, "user_id", userID, "module", module)
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		writeModuleProfileError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, mp, nil)
@@ -1454,7 +1454,7 @@ func (h *Handler) DeleteMyModuleProfile(c *gin.Context) {
 
 	if err := h.svc.DeleteModuleProfile(c.Request.Context(), userID, module); err != nil {
 		h.log.Error("failed to delete module profile", "err", err, "user_id", userID, "module", module)
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		writeModuleProfileError(c, err)
 		return
 	}
 	c.JSON(http.StatusNoContent, nil)
@@ -1474,7 +1474,7 @@ func (h *Handler) GetUserModuleProfile(c *gin.Context) {
 	mp, err := h.svc.GetModuleProfile(c.Request.Context(), targetID, module)
 	if err != nil {
 		h.log.Error("failed to get user module profile", "err", err, "target_id", targetID, "module", module)
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		writeModuleProfileError(c, err)
 		return
 	}
 	if mp == nil {
@@ -1605,4 +1605,16 @@ func (h *Handler) GetProfileStats(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, stats, nil)
+}
+
+// writeModuleProfileError answers a module-profile service failure. Only the
+// service's own "invalid module" validation text reaches the client; any other
+// error (store, driver, cache) is logged by the caller and answered with a
+// generic 500 so no SQL or driver text leaks.
+func writeModuleProfileError(c *gin.Context, err error) {
+	if strings.HasPrefix(err.Error(), "invalid module") {
+		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		return
+	}
+	api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error", nil, nil)
 }

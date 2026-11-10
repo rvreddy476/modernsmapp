@@ -85,7 +85,8 @@ func (h *RealtimeHandler) stream(c *gin.Context) {
 	}
 	allowed, subject, err := h.verifier.Verify(token)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "INVALID_TOKEN", err.Error(), nil)
+		slog.WarnContext(c.Request.Context(), "realtime: token refused", "error", err)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnauthorized, "INVALID_TOKEN", "invalid or expired token", nil)
 		return
 	}
 

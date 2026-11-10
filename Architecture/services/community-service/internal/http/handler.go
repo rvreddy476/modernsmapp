@@ -3,6 +3,7 @@ package http
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
@@ -240,7 +241,7 @@ func handleServiceError(c *gin.Context, err error) {
 	case contains(msg, "invalid"), contains(msg, "must be between"), contains(msg, "is required"):
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "VALIDATION_ERROR", msg, nil)
 	default:
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", msg, nil)
+		writeInternalError(c, err)
 	}
 }
 
@@ -828,4 +829,12 @@ func (h *Handler) DiscoverCommunities(c *gin.Context) {
 
 func (h *Handler) Health(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"status": "ok"}, nil)
+}
+
+// writeInternalError answers an unexpected (non-domain) failure. The real error
+// (often a driver/SQL message) is logged server-side with the request path and
+// never sent to the client.
+func writeInternalError(c *gin.Context, err error) {
+	slog.ErrorContext(c.Request.Context(), "community-service: internal error", "error", err, "method", c.Request.Method, "path", c.FullPath())
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error", nil)
 }

@@ -334,7 +334,7 @@ func (h *Handler) GetMyGroups(c *gin.Context) {
 
 	groups, err := h.svc.GetMyGroups(c.Request.Context(), actorID, limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		writeInternalError(c, err)
 		return
 	}
 	if groups == nil {
@@ -353,7 +353,7 @@ func (h *Handler) DiscoverGroups(c *gin.Context) {
 
 	groups, err := h.svc.DiscoverGroupsForUser(c.Request.Context(), actorID, limit, offset, groupType)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		writeInternalError(c, err)
 		return
 	}
 	if groups == nil {
@@ -373,7 +373,7 @@ func (h *Handler) SearchGroups(c *gin.Context) {
 
 	groups, err := h.svc.SearchGroups(c.Request.Context(), query, limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		writeInternalError(c, err)
 		return
 	}
 	if groups == nil {
