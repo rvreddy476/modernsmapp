@@ -1,11 +1,13 @@
 package service
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 
+	"github.com/atpost/trust-safety-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
 
@@ -62,12 +64,33 @@ func ParseMessageEntityRef(ref string) (conversationID, messageID uuid.UUID, ok 
 	if len(parts) != 2 {
 		return uuid.Nil, uuid.Nil, false
 	}
-	conv, err1 := uuid.Parse(strings.TrimSpace(parts[0]))
-	msg, err2 := uuid.Parse(strings.TrimSpace(parts[1]))
-	if err1 != nil || err2 != nil || conv == uuid.Nil || msg == uuid.Nil {
+	conv, ok1 := ParseReportUUID(parts[0])
+	msg, ok2 := ParseReportUUID(parts[1])
+	if !ok1 || !ok2 {
 		return uuid.Nil, uuid.Nil, false
 	}
 	return conv, msg, true
+}
+
+// ParseReportUUID accepts a report target id in the one canonical form,
+// 8-4-4-4-12 hex with hyphens (either case, surrounding space ignored), and
+// refuses the nil UUID.
+//
+// uuid.Parse alone also takes "urn:uuid:<id>", "{<id>}" and 32 bare hex
+// digits. Those are not ids any service hands out, so a report naming one
+// is junk (security walk, 10 Nov 2026) and is refused with 400 like any
+// other malformed id. All four forms are exact lengths, so checking for the
+// 36-character form is enough.
+func ParseReportUUID(raw string) (uuid.UUID, bool) {
+	s := strings.TrimSpace(raw)
+	if len(s) != 36 {
+		return uuid.Nil, false
+	}
+	id, err := uuid.Parse(s)
+	if err != nil || id == uuid.Nil {
+		return uuid.Nil, false
+	}
+	return id, true
 }
 
 // MessageEntityKey is the canonical stored key of a message report.
@@ -111,9 +134,47 @@ func ResolveReportEntity(entityType, ref string) (uuid.UUID, string, error) {
 		}
 		return ReportEntityID(entityType, key), key, nil
 	}
-	id, err := uuid.Parse(strings.TrimSpace(ref))
-	if err != nil || id == uuid.Nil {
+	id, ok := ParseReportUUID(ref)
+	if !ok {
 		return uuid.Nil, "", fmt.Errorf("%w: invalid entity ID", ErrInvalidReport)
 	}
 	return id, "", nil
+}
+
+// Reports never consult the target (security walk, 10 Nov 2026).
+//
+// Filing a report does not look up whether the reported post, user,
+// comment, sound or message exists, or whether the reporter may see it.
+// Every well-formed report is recorded and answered the same way: 200, the
+// reporter's own copy of the report, status "open". That is deliberate. Any
+// filing-time existence check leaks through at least one channel: the
+// status (200 vs 404), the body, the latency of the lookup, the duplicate
+// rule (a dropped report never triggers 409 ACTIVE_REPORT_EXISTS on a
+// repeat) or the reporter's own list (GET /v1/reports?mine=true). A
+// private post must answer exactly like a missing one and like a public
+// one, and only "never look" achieves that for all five.
+//
+// A report against a target that does not exist is therefore recorded like
+// any other and resolved at triage, where the moderator opening it finds
+// nothing and dismisses it; the reporter sees the same "dismissed" outcome
+// a report on harmless content gets. Malformed ids never get that far: they
+// are 400 before anything is read or written (ParseReportUUID).
+
+// reportWriter stores a filed report (*postgres.ReportStore in production;
+// a fake in tests).
+type reportWriter interface {
+	CreateReport(ctx context.Context, report *postgres.Report) error
+}
+
+// WithReportWriter overrides where filed reports are written (tests).
+func (s *Service) WithReportWriter(w reportWriter) *Service {
+	s.reportWriter = w
+	return s
+}
+
+func (s *Service) writeReport(ctx context.Context, report *postgres.Report) error {
+	if s.reportWriter != nil {
+		return s.reportWriter.CreateReport(ctx, report)
+	}
+	return s.store.CreateReport(ctx, report)
 }

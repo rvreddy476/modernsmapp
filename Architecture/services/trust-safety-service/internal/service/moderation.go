@@ -129,6 +129,9 @@ type Service struct {
 	// reporterVolume overrides the per-reporter quota counter (reporter_quota.go);
 	// nil means store.
 	reporterVolume reporterVolume
+	// reportWriter overrides where a filed report is written
+	// (report_entities.go); nil means store.
+	reportWriter reportWriter
 	// grievanceVolume overrides the grievance quota reads (grievance_quota.go);
 	// nil means store.
 	grievanceVolume grievanceVolume
@@ -228,7 +231,7 @@ func (s *Service) FileReportWith(ctx context.Context, in FileReportInput) (*post
 		SourceEventID: in.SourceEventID,
 	}
 
-	if err := s.store.CreateReport(ctx, report); err != nil {
+	if err := s.writeReport(ctx, report); err != nil {
 		return nil, err
 	}
 
