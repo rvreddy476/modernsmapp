@@ -29,11 +29,11 @@ import (
 // dashboard query just works.
 
 const (
-	tipMinPaise            = int64(100)         // ₹1
-	tipMaxPaise            = int64(500_000)     // ₹5,000 per tip
-	tipDailyCapPerPair     = int64(2_000_000)   // ₹20,000 from one fan to one creator per 24h
-	tipMessageMaxChars     = 250
-	tipReferenceTypeBase   = "tip"
+	tipMinPaise          = int64(100)       // ₹1
+	tipMaxPaise          = int64(500_000)   // ₹5,000 per tip
+	tipDailyCapPerPair   = int64(2_000_000) // ₹20,000 from one fan to one creator per 24h
+	tipMessageMaxChars   = 250
+	tipReferenceTypeBase = "tip"
 )
 
 // MinTipPaise / TipCurrency are what validateTipInput and SendTip enforce,
@@ -187,10 +187,10 @@ func (s *Service) ListReceivedTips(ctx context.Context, recipientID uuid.UUID, c
 	return s.store.ListTipsByRecipient(ctx, recipientID, parseCursor(cursor), limit)
 }
 
-// ListTipsForPost is public-ish: anyone can see the supporters wall
-// for a post (the creator opted into tips on it).
-func (s *Service) ListTipsForPost(ctx context.Context, postID uuid.UUID, cursor string, limit int) ([]postgres.Tip, error) {
-	return s.store.ListTipsForPost(ctx, postID, parseCursor(cursor), limit)
+// ListTipsForPost returns the tips on a post that the viewer sent or
+// received; other people's tips (sender ids, messages) are not visible.
+func (s *Service) ListTipsForPost(ctx context.Context, viewerID, postID uuid.UUID, cursor string, limit int) ([]postgres.Tip, error) {
+	return s.store.ListTipsForPost(ctx, viewerID, postID, parseCursor(cursor), limit)
 }
 
 // ---------------------------------------------------------------------------

@@ -33,7 +33,9 @@ type AffiliateConversion struct {
 	ID          uuid.UUID `json:"id"`
 	AffiliateID uuid.UUID `json:"affiliate_id"`
 	OrderID     uuid.UUID `json:"order_id"`
-	BuyerID     uuid.UUID `json:"buyer_id"`
+	// BuyerID is stored for the platform and never serialised: an affiliate
+	// must not receive raw buyer user ids (review 2026-11).
+	BuyerID uuid.UUID `json:"-"`
 	// CommissionPaise is integer paise. The column is NUMERIC(8,2) rupees;
 	// it is written as paise / 100 and read back as ROUND(x * 100), both
 	// exact, so no float ever carries the money.
@@ -186,15 +188,19 @@ func (s *Store) RecordAffiliateConversion(ctx context.Context, c *AffiliateConve
 	return c, nil
 }
 
-// GetAffiliateConversions returns conversions for an affiliate link, ordered by created_at DESC.
-func (s *Store) GetAffiliateConversions(ctx context.Context, affiliateID uuid.UUID, limit, offset int) ([]AffiliateConversion, error) {
+// GetAffiliateConversionsForCreator returns the conversions on the creator's
+// OWN links, newest first. The ownership join is the authorisation: a link
+// id (linkID, optional) that is not the creator's matches nothing.
+func (s *Store) GetAffiliateConversionsForCreator(ctx context.Context, creatorID uuid.UUID, linkID *uuid.UUID, limit, offset int) ([]AffiliateConversion, error) {
 	rows, err := s.db.Query(ctx, `
-		SELECT id, affiliate_id, order_id, buyer_id, ROUND(commission_amt * 100)::BIGINT, status, created_at
-		FROM affiliate_conversions
-		WHERE affiliate_id = $1
-		ORDER BY created_at DESC
-		LIMIT $2 OFFSET $3
-	`, affiliateID, limit, offset)
+		SELECT c.id, c.affiliate_id, c.order_id, c.buyer_id, ROUND(c.commission_amt * 100)::BIGINT, c.status, c.created_at
+		FROM affiliate_conversions c
+		JOIN affiliate_links l ON l.id = c.affiliate_id
+		WHERE l.creator_id = $1
+		  AND ($2::uuid IS NULL OR c.affiliate_id = $2::uuid)
+		ORDER BY c.created_at DESC
+		LIMIT $3 OFFSET $4
+	`, creatorID, linkID, limit, offset)
 	if err != nil {
 		return nil, err
 	}

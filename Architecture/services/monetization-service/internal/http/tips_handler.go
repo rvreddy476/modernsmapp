@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
@@ -18,6 +19,19 @@ import (
 // parsing is testable without a ledger.
 type tipService interface {
 	SendTip(ctx context.Context, in service.SendTipInput) (*service.TipResult, error)
+}
+
+// tipLister is the post-tips read, an interface so the caller scoping is
+// testable without a database.
+type tipLister interface {
+	ListTipsForPost(ctx context.Context, viewerID, postID uuid.UUID, cursor string, limit int) ([]postgres.Tip, error)
+}
+
+func (h *Handler) tipLister() tipLister {
+	if h.tipList != nil {
+		return h.tipList
+	}
+	return h.svc
 }
 
 func (h *Handler) tipSender() tipService {
@@ -102,7 +116,14 @@ func (h *Handler) SendTip(c *gin.Context) {
 		case startsWith(err.Error(), "DAILY_TIP_CAP"):
 			status, code = http.StatusTooManyRequests, "DAILY_TIP_CAP_EXCEEDED"
 		case startsWith(err.Error(), "charge failed"):
-			status, code = http.StatusPaymentRequired, "CHARGE_FAILED"
+			// The wrapped wallet error stays in the log, not the response.
+			slog.WarnContext(c.Request.Context(), "monetization: tip charge failed", "error", err)
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusPaymentRequired, "CHARGE_FAILED", "The charge could not be completed.", nil)
+			return
+		}
+		if status == http.StatusInternalServerError {
+			serverError(c, err)
+			return
 		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, err.Error(), nil)
 		return
@@ -120,7 +141,7 @@ func (h *Handler) ListSentTips(c *gin.Context) {
 	limit := tipsLimit(c.Query("limit"))
 	tips, err := h.svc.ListSentTips(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		serverError(c, err)
 		return
 	}
 	if tips == nil {
@@ -139,7 +160,7 @@ func (h *Handler) ListReceivedTips(c *gin.Context) {
 	limit := tipsLimit(c.Query("limit"))
 	tips, err := h.svc.ListReceivedTips(c.Request.Context(), userID, cursor, limit)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		serverError(c, err)
 		return
 	}
 	if tips == nil {
@@ -149,9 +170,16 @@ func (h *Handler) ListReceivedTips(c *gin.Context) {
 }
 
 // ListTipsForPost — GET /v1/monetization/tips/post/:postId
-// Public; the post author already chose to allow tips. Used by the
-// "supporters wall" UI on a tipped post.
+//
+// L7 (2026-11): signed-in callers only; the list is narrowed in SQL to the
+// tips the caller sent or received on that post. Monetization has no
+// post-visibility client, so tip messages and sender ids are not shown to
+// everyone who can guess a post id.
 func (h *Handler) ListTipsForPost(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
 	postID, err := uuid.Parse(c.Param("postId"))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_ID", "Invalid post ID", nil)
@@ -159,9 +187,9 @@ func (h *Handler) ListTipsForPost(c *gin.Context) {
 	}
 	cursor := c.Query("cursor")
 	limit := tipsLimit(c.Query("limit"))
-	tips, err := h.svc.ListTipsForPost(c.Request.Context(), postID, cursor, limit)
+	tips, err := h.tipLister().ListTipsForPost(c.Request.Context(), userID, postID, cursor, limit)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		serverError(c, err)
 		return
 	}
 	if tips == nil {

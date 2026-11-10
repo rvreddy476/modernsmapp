@@ -119,7 +119,7 @@ func (h *Handler) CreateDispute(c *gin.Context) {
 		case "TRANSACTION_NOT_OWNED":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "TRANSACTION_NOT_OWNED", "Transaction does not belong to you", nil)
 		default:
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+			serverError(c, err)
 		}
 		return
 	}
@@ -137,7 +137,7 @@ func (h *Handler) ListUserDisputes(c *gin.Context) {
 
 	disputes, err := h.svc.ListUserDisputes(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		serverError(c, err)
 		return
 	}
 	if disputes == nil {
@@ -163,7 +163,7 @@ func (h *Handler) GetDisputeByID(c *gin.Context) {
 
 	dispute, err := h.svc.GetUserDispute(c.Request.Context(), userID, disputeID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		serverError(c, err)
 		return
 	}
 	if dispute == nil {
@@ -202,7 +202,7 @@ func (h *Handler) ResolveDisputeAdmin(c *gin.Context) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Dispute not found", nil)
 			return
 		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		serverError(c, err)
 		return
 	}
 
@@ -260,7 +260,7 @@ func (h *Handler) ProcessRefund(c *gin.Context) {
 		case "REFUND_ALREADY_EXISTS":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "REFUND_ALREADY_EXISTS", "Refund already exists for this transaction", nil)
 		default:
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+			serverError(c, err)
 		}
 		return
 	}
@@ -282,7 +282,7 @@ func (h *Handler) ListPendingFraudReviews(c *gin.Context) {
 
 	reviews, err := h.svc.ListPendingFraudReviews(c.Request.Context(), limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		serverError(c, err)
 		return
 	}
 	if reviews == nil {
@@ -320,7 +320,7 @@ func (h *Handler) ResolveFraudReviewAdmin(c *gin.Context) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Fraud review not found", nil)
 			return
 		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		serverError(c, err)
 		return
 	}
 

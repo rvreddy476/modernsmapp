@@ -40,6 +40,10 @@ type Handler struct {
 	// tips overrides the SendTip call (tips_handler.go); nil means svc.
 	// Tests only.
 	tips tipService
+	// tipList overrides the post-tips read (tips_handler.go). Tests only.
+	tipList tipLister
+	// affiliates overrides the affiliate reads (affiliate_handler.go). Tests only.
+	affiliates affiliateService
 }
 
 func New(svc *service.Service) *Handler {
@@ -140,6 +144,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.GET("/affiliate/links", h.ListAffiliateLinks)
 		v1.GET("/affiliate/links/:linkId", h.GetAffiliateLinkByID)
 		v1.GET("/affiliate/:linkCode", h.GetAffiliateLinkByCode)
+		v1.POST("/affiliate/:linkCode/click", h.RecordAffiliateClick)
 		v1.GET("/affiliate/conversions", h.ListAffiliateConversions)
 
 		// Fundraisers
@@ -691,7 +696,7 @@ func (h *Handler) RemovePayoutMethod(c *gin.Context) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Payout method not found", nil)
 			return
 		}
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		serverError(c, err)
 		return
 	}
 
@@ -706,7 +711,7 @@ func (h *Handler) GetPayoutMethods(c *gin.Context) {
 
 	methods, err := h.svc.GetPayoutMethods(c.Request.Context(), userID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		serverError(c, err)
 		return
 	}
 	if methods == nil {

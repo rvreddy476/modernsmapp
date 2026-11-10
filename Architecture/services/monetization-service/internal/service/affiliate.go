@@ -24,20 +24,20 @@ func (s *Service) CreateAffiliateLink(ctx context.Context, creatorID, listingID 
 	return s.store.CreateAffiliateLink(ctx, l)
 }
 
-// GetAffiliateLinkByCode looks up an affiliate link by its short code and increments the click count.
+// GetAffiliateLinkByCode looks up an affiliate link by its short code. It is a
+// pure read: it does not count a click (RecordAffiliateClick does).
 func (s *Service) GetAffiliateLinkByCode(ctx context.Context, code string) (*postgres.AffiliateLink, error) {
+	return s.store.GetAffiliateLinkByCode(ctx, code)
+}
+
+// RecordAffiliateClick counts one click on an active link and reports whether
+// the code names one.
+func (s *Service) RecordAffiliateClick(ctx context.Context, code string) (bool, error) {
 	link, err := s.store.GetAffiliateLinkByCode(ctx, code)
-	if err != nil {
-		return nil, err
+	if err != nil || link == nil || !link.IsActive {
+		return false, err
 	}
-	if link == nil {
-		return nil, nil
-	}
-
-	// Increment click count asynchronously — a failure here is non-fatal.
-	_ = s.store.IncrementAffiliateLinkClick(ctx, code)
-
-	return link, nil
+	return true, s.store.IncrementAffiliateLinkClick(ctx, code)
 }
 
 // GetAffiliateLinkByID returns the affiliate link by its UUID without
@@ -108,7 +108,8 @@ func AffiliateCommissionPaise(orderTotalPaise int64, commissionPct float32, comm
 	return 0
 }
 
-// ListAffiliateConversions returns paginated conversions for an affiliate link.
-func (s *Service) ListAffiliateConversions(ctx context.Context, affiliateID uuid.UUID, limit, offset int) ([]postgres.AffiliateConversion, error) {
-	return s.store.GetAffiliateConversions(ctx, affiliateID, limit, offset)
+// ListAffiliateConversions returns the conversions on the creator's own
+// links (optionally one of them), paginated. Ownership is enforced in SQL.
+func (s *Service) ListAffiliateConversions(ctx context.Context, creatorID uuid.UUID, linkID *uuid.UUID, limit, offset int) ([]postgres.AffiliateConversion, error) {
+	return s.store.GetAffiliateConversionsForCreator(ctx, creatorID, linkID, limit, offset)
 }

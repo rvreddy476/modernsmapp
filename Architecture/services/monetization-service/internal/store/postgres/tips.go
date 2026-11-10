@@ -93,12 +93,13 @@ func (s *Store) ListTipsByRecipient(ctx context.Context, recipientID uuid.UUID, 
 	)
 }
 
-// ListTipsForPost returns recent tips on a single post (Super Thanks
-// view). Public — the post author chose to accept tips on it.
-func (s *Store) ListTipsForPost(ctx context.Context, postID uuid.UUID, cursor time.Time, limit int) ([]Tip, error) {
+// ListTipsForPost returns recent tips on a single post, only those the
+// viewer sent or received (the recipient is the post author).
+func (s *Store) ListTipsForPost(ctx context.Context, viewerID, postID uuid.UUID, cursor time.Time, limit int) ([]Tip, error) {
 	return s.queryTips(ctx,
-		`WHERE post_id = $1 AND created_at < $2 AND status = 'completed'`,
-		postID, cursor, limit,
+		`WHERE post_id = $1 AND created_at < $2 AND status = 'completed'
+		   AND (sender_id = $4 OR recipient_id = $4)`,
+		postID, cursor, limit, viewerID,
 	)
 }
 
@@ -131,7 +132,7 @@ func (s *Store) SumTipsFromSenderToRecipientSince(ctx context.Context, senderID,
 	return total, err
 }
 
-func (s *Store) queryTips(ctx context.Context, where string, id uuid.UUID, cursor time.Time, limit int) ([]Tip, error) {
+func (s *Store) queryTips(ctx context.Context, where string, id uuid.UUID, cursor time.Time, limit int, extra ...interface{}) ([]Tip, error) {
 	if limit <= 0 || limit > 200 {
 		limit = 50
 	}
@@ -143,7 +144,7 @@ func (s *Store) queryTips(ctx context.Context, where string, id uuid.UUID, curso
 	`+where+`
 		ORDER BY created_at DESC
 		LIMIT $3
-	`, id, cursor, limit)
+	`, append([]interface{}{id, cursor, limit}, extra...)...)
 	if err != nil {
 		return nil, err
 	}

@@ -65,7 +65,7 @@ func (h *Handler) CreateFundraiser(c *gin.Context) {
 		case "INVALID_GOAL: goal_paise must be greater than zero":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_GOAL", "goal_paise must be greater than zero", nil)
 		default:
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+			serverError(c, err)
 		}
 		return
 	}
@@ -78,7 +78,7 @@ func (h *Handler) ListActiveFundraisers(c *gin.Context) {
 
 	fundraisers, err := h.svc.ListActiveFundraisers(c.Request.Context(), limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		serverError(c, err)
 		return
 	}
 	if fundraisers == nil {
@@ -97,7 +97,7 @@ func (h *Handler) GetFundraiser(c *gin.Context) {
 
 	fundraiser, err := h.svc.GetFundraiser(c.Request.Context(), fundraiserID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		serverError(c, err)
 		return
 	}
 	if fundraiser == nil {
@@ -118,7 +118,7 @@ func (h *Handler) ListMyFundraisers(c *gin.Context) {
 
 	fundraisers, err := h.svc.ListMyFundraisers(c.Request.Context(), userID, limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		serverError(c, err)
 		return
 	}
 	if fundraisers == nil {
@@ -147,7 +147,7 @@ func (h *Handler) PauseFundraiser(c *gin.Context) {
 		case "FORBIDDEN: not the fundraiser owner":
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "You do not own this fundraiser", nil)
 		default:
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+			serverError(c, err)
 		}
 		return
 	}
@@ -187,7 +187,7 @@ func (h *Handler) Donate(c *gin.Context) {
 		case strings.HasPrefix(err.Error(), "FUNDRAISER_NOT_ACTIVE"):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "FUNDRAISER_NOT_ACTIVE", err.Error(), nil)
 		default:
-			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+			serverError(c, err)
 		}
 		return
 	}
@@ -213,7 +213,7 @@ func (h *Handler) GetDonationsByFundraiser(c *gin.Context) {
 	}
 	donations, err := h.svc.GetDonationsByFundraiser(c.Request.Context(), viewer, fundraiserID, limit, offset)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		serverError(c, err)
 		return
 	}
 
