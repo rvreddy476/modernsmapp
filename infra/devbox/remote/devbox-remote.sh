@@ -182,9 +182,25 @@ cmd_up() {
   [ "${1:-}" = "--no-build" ] && build=""
   log="$LOGS/up-$(date +%Y%m%dT%H%M%S).log"
   svcs="$(services_to_run)"
+  # --only a,b,c (10 Nov 2026): build and restart just these services, one
+  # image at a time, then start the rest of the stack without building. A
+  # full parallel build of every image starves this box.
+  if [ "${1:-}" = "--only" ]; then
+    local only="${2:?usage: up --only svc1,svc2}"
+    only="$(printf '%s' "$only" | tr ',' ' ')"
+    ln -sfn "$log" "$LOGS/up-latest.log"
+    setsid bash -c "cd '$DOCKER_DIR' && { for s in $only; do echo \"[devbox] building \$s\"; COMPOSE_BAKE=false docker compose ${COMPOSE_FILES[*]} build \$s || echo \"[devbox] BUILD FAILED \$s\"; done; docker compose ${COMPOSE_FILES[*]} up -d --no-build $svcs; echo \"[devbox] compose exit=\$?\"; } > '$log' 2>&1" < /dev/null > /dev/null 2>&1 &
+    say "started: build one at a time ($(echo "$only" | wc -w) services), then up -d --no-build"
+    say "log: $log (./up.sh status shows its tail)"
+    return 0
+  fi
   ln -sfn "$log" "$LOGS/up-latest.log"
   # setsid + closed stdio: SSM returns now, compose keeps going.
-  setsid bash -c "cd '$DOCKER_DIR' && { docker compose ${COMPOSE_FILES[*]} up -d $build $svcs; echo \"[devbox] compose exit=\$?\"; } > '$log' 2>&1" < /dev/null > /dev/null 2>&1 &
+  # Builds run three at a time (10 Nov 2026): building all ~56 images at once
+  # through bake ran the box out of memory, the builder was killed and nothing
+  # was rebuilt. COMPOSE_BAKE=false uses the classic builder, which honours
+  # COMPOSE_PARALLEL_LIMIT.
+  setsid bash -c "cd '$DOCKER_DIR' && { COMPOSE_BAKE=false COMPOSE_PARALLEL_LIMIT=${DEVBOX_BUILD_PARALLEL:-3} docker compose ${COMPOSE_FILES[*]} up -d $build $svcs; echo \"[devbox] compose exit=\$?\"; } > '$log' 2>&1" < /dev/null > /dev/null 2>&1 &
   say "started: docker compose up -d $build ($(echo "$svcs" | wc -w) services)"
   say "log: $log (./up.sh status shows its tail)"
 }
@@ -214,6 +230,24 @@ cmd_status() {
   say "cloudflared: $(systemctl is-active cloudflared 2>/dev/null || echo not-installed)"
   say "boot unit: $(systemctl is-enabled atpost-stack.service 2>/dev/null || echo not-installed)"
   say "memory: $(free -h | awk '/^Mem:/{print $3" used of "$2}'), disk /: $(df -h / | awk 'NR==2{print $3" used, "$4" free"}')"
+}
+
+# kafka-reset (10 Nov 2026): recreate the dev Redpanda with empty storage
+# and recreate its topics. For a broker whose own log is damaged and that
+# crashes on every start. Events queued and unread in Kafka are lost;
+# databases are not touched. Dev only, founder-approved per use.
+cmd_kafka_reset() {
+  check_prereqs
+  compose rm -s -f -v redpanda
+  compose up -d --no-build --force-recreate --renew-anon-volumes redpanda
+  local i
+  for i in $(seq 1 30); do
+    compose exec -T redpanda rpk cluster health 2>/dev/null | grep -q 'Healthy:.*true' && break
+    sleep 5
+  done
+  compose exec -T redpanda rpk cluster health 2>/dev/null | sed 's/^/  /'
+  compose up -d --no-build --force-recreate redpanda-init devbox-topics redpanda-console
+  say "redpanda recreated; topics: $(compose exec -T redpanda rpk topic list 2>/dev/null | tail -n +2 | wc -l)"
 }
 
 cmd_logs() {
@@ -284,6 +318,7 @@ case "$sub" in
   boot)            cmd_boot "$@" ;;
   status)          cmd_status "$@" ;;
   logs)            cmd_logs "$@" ;;
+  kafka-reset)     cmd_kafka_reset "$@" ;;
   chat-backfill)   cmd_chat_backfill "$@" ;;
   load-image)      cmd_load_image "$@" ;;
   build-admin)     cmd_build_admin "$@" ;;
