@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Hidden chats › Forgot › Confirm it's you, for an account whose two-step
+      verification is an emailed code (founder, 10 Nov 2026). The code lives
+      5 minutes; a new one can be sent every 60 seconds.
+    -->
+    <string name="hidden_step_up_checking">Checking how to confirm it\'s you…</string>
+    <string name="hidden_step_up_email_body">We sent a 6-digit code to %1$s. Enter it to reset your hidden chats. It expires in 5 minutes.</string>
+    <string name="hidden_step_up_email_body_no_address">We sent a 6-digit code to your email. Enter it to reset your hidden chats. It expires in 5 minutes.</string>
+    <string name="hidden_step_up_none_body">You don\'t have two-step verification. Sign out and sign in again, then reset within 5 minutes.</string>
+    <string name="hidden_step_up_resend">Resend code</string>
+    <string name="hidden_step_up_resend_in">Resend code in %1$d s</string>
+    <string name="hidden_step_up_code_sent">We sent a new code. Only the newest one works.</string>
+    <string name="hidden_step_up_wrong_code">That code isn\'t right. Check the latest email and try again.</string>
+    <string name="hidden_step_up_code_expired">That code has expired or was already used. Send a new code.</string>
+    <string name="hidden_step_up_too_soon">A code was sent a moment ago. You can ask for another when the timer runs out.</string>
+    <string name="hidden_step_up_email_unavailable">We couldn\'t send the email just now. Try again in a few minutes.</string>
+    <string name="hidden_step_up_could_not_send">We couldn\'t send a code. Try again.</string>
+</resources>

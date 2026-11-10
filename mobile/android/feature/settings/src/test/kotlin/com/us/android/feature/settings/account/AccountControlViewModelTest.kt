@@ -88,6 +88,10 @@ class AccountControlViewModelTest {
         // Sign-in security routes (2FA, step-up, reset, OAuth) are not exercised here either.
         override suspend fun verifyTwoFactor(body: com.us.android.core.auth.dto.Verify2FARequestDto): ApiEnvelope<AuthResponseDto> =
             error("not used in account-control tests")
+        override suspend fun resendTwoFactor(
+            body: com.us.android.core.auth.dto.TwoFactorResendRequestDto,
+        ): ApiEnvelope<com.us.android.core.auth.dto.TwoFactorResendDto> =
+            error("not used in account-control tests")
         override suspend fun verifyStepUpEmail(body: com.us.android.core.auth.dto.StepUpVerifyRequestDto): ApiEnvelope<AuthResponseDto> =
             error("not used in account-control tests")
         override suspend fun verifyStepUpTwoFactor(body: com.us.android.core.auth.dto.StepUpVerifyRequestDto): ApiEnvelope<AuthResponseDto> =

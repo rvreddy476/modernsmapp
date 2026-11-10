@@ -104,3 +104,23 @@ data class OAuthVerifySignupRequestDto(
     @EncodeDefault(EncodeDefault.Mode.ALWAYS)
     val platform: String = "android",
 )
+
+/**
+ * `POST /v1/auth/2fa/resend` body (auth-service `internal/http/twofa_email.go`).
+ * Public: the pending token from the login response names the account, so no
+ * user id travels with it.
+ */
+@Serializable
+data class TwoFactorResendRequestDto(@SerialName("pending_token") val pendingToken: String)
+
+/**
+ * `POST /v1/auth/2fa/resend` on success: a new emailed code is on its way.
+ * Every field defaults, so a server that drops one never fails the decode.
+ */
+@Serializable
+data class TwoFactorResendDto(
+    val sent: Boolean = false,
+    @SerialName("expires_at") val expiresAt: String = "",
+    @SerialName("email_masked") val emailMasked: String = "",
+    @SerialName("resend_after_seconds") val resendAfterSeconds: Int = 0,
+)

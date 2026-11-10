@@ -59,6 +59,8 @@ internal fun partnerSignInStep(session: SessionState): LoginNavigation? = when (
     is SessionState.PendingTwoFactor -> LoginNavigation.TwoFactor(
         userId = session.userId,
         pendingToken = session.pendingToken,
+        method = session.method,
+        emailMasked = session.emailMasked,
     )
     is SessionState.PendingStepUp -> LoginNavigation.StepUp(
         pendingToken = session.pendingToken,
@@ -170,6 +172,8 @@ fun PartnerPhoneRoute(viewModel: PartnerPhoneViewModel = hiltViewModel()) {
         is LoginNavigation.TwoFactor -> TwoFactorRoute(
             userId = step.userId,
             pendingToken = step.pendingToken,
+            method = step.method,
+            emailMasked = step.emailMasked,
             onBackToLogin = viewModel::leavePendingStep,
         )
         is LoginNavigation.StepUp -> StepUpRoute(

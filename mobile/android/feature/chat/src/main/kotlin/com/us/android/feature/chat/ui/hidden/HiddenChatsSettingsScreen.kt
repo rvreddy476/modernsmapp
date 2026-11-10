@@ -20,6 +20,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -29,6 +30,7 @@ import com.us.android.core.chat.hidden.SECRET_KEY_MAX
 import com.us.android.core.chat.hidden.STRICT_MODE_WARNING
 import com.us.android.core.common.window.SecureWindow
 import com.us.android.core.designsystem.component.UsButton
+import com.us.android.core.designsystem.component.UsOtpField
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.component.UsTextField
@@ -39,6 +41,7 @@ import com.us.android.core.ui.UsLoadingState
 import com.us.android.core.ui.UsSettingsLinkRow
 import com.us.android.core.ui.UsSettingsSection
 import com.us.android.core.ui.UsSettingsSwitchRow
+import com.us.android.feature.chat.R
 
 /**
  * Settings › Privacy › Hidden chats: set up, change, strict mode, and
@@ -331,35 +334,75 @@ private fun StrictPasswordDialog(turningOn: Boolean, onConfirm: (String) -> Unit
     )
 }
 
-/** Forgot, step one: prove it's you — a 2-step code, or a sign-in in the last 5 minutes. */
+/**
+ * Forgot, step one: prove it's you — the emailed code or an authenticator
+ * code, whichever the account has (founder, 10 Nov 2026), or a sign-in in
+ * the last 5 minutes.
+ */
 @Composable
 private fun VerifySection(state: HiddenSettingsUiState, viewModel: HiddenChatsSettingsViewModel) {
     var code by remember { mutableStateOf("") }
+    val stepUp by viewModel.stepUp.collectAsStateWithLifecycle()
+    val emailed = stepUp.method == StepUpMethod.Email
     UsSettingsSection("Confirm it's you") {
         Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
             Text(
-                "Enter a code from your authenticator app. Without two-step verification, sign out and sign " +
-                    "in again, then reset within 5 minutes.",
+                verifyBody(stepUp),
                 style = MaterialTheme.typography.bodySmall,
                 color = UsTheme.extended.textMuted,
             )
-            UsTextField(
-                value = code,
-                onValueChange = { code = it.filter { ch -> !ch.isWhitespace() }.take(OTP_MAX) },
-                label = "2-step code",
-                keyboardType = KeyboardType.Number,
-                modifier = Modifier.fillMaxWidth().testTag("hidden-reset-code"),
-            )
-            UsButton(
-                text = "Confirm",
-                onClick = {
-                    viewModel.verifyCode(code)
-                    code = ""
-                },
-                loading = state.busy,
-                enabled = code.isNotEmpty(),
-                modifier = Modifier.fillMaxWidth().testTag("hidden-reset-verify"),
-            )
+            if (emailed) {
+                val inline = stepUp.notice?.takeIf { it.isError }?.let { stringResource(it.text) }
+                UsOtpField(
+                    value = code,
+                    onValueChange = { code = it.filter(Char::isDigit).take(EMAIL_CODE_LENGTH) },
+                    enabled = !state.busy,
+                    errorText = inline,
+                    modifier = Modifier.testTag("hidden-reset-email-code"),
+                )
+                stepUp.notice?.takeUnless { it.isError }?.let {
+                    Text(
+                        stringResource(it.text),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = UsTheme.extended.statusSuccess,
+                    )
+                }
+            } else if (stepUp.method == StepUpMethod.Authenticator) {
+                UsTextField(
+                    value = code,
+                    onValueChange = { code = it.filter { ch -> !ch.isWhitespace() }.take(OTP_MAX) },
+                    label = "2-step code",
+                    keyboardType = KeyboardType.Number,
+                    modifier = Modifier.fillMaxWidth().testTag("hidden-reset-code"),
+                )
+            }
+            if (emailed || stepUp.method == StepUpMethod.Authenticator) {
+                UsButton(
+                    text = "Confirm",
+                    onClick = {
+                        viewModel.verifyCode(code)
+                        code = ""
+                    },
+                    loading = state.busy,
+                    enabled = if (emailed) code.length == EMAIL_CODE_LENGTH else code.isNotEmpty(),
+                    modifier = Modifier.fillMaxWidth().testTag("hidden-reset-verify"),
+                )
+            }
+            if (emailed) {
+                TextButton(
+                    onClick = viewModel::resendStepUpCode,
+                    enabled = stepUp.canResend && !state.busy,
+                    modifier = Modifier.fillMaxWidth().testTag("hidden-reset-resend"),
+                ) {
+                    Text(
+                        if (stepUp.resendInSeconds > 0) {
+                            stringResource(R.string.hidden_step_up_resend_in, stepUp.resendInSeconds)
+                        } else {
+                            stringResource(R.string.hidden_step_up_resend)
+                        },
+                    )
+                }
+            }
             UsSecondaryButton(
                 text = "I signed in again just now",
                 onClick = viewModel::useFreshSignIn,
@@ -371,3 +414,18 @@ private fun VerifySection(state: HiddenSettingsUiState, viewModel: HiddenChatsSe
 }
 
 private const val OTP_MAX = 16
+private const val EMAIL_CODE_LENGTH = 6
+
+@Composable
+private fun verifyBody(stepUp: StepUpVerifyState): String = when (stepUp.method) {
+    StepUpMethod.Checking -> stringResource(R.string.hidden_step_up_checking)
+    StepUpMethod.Email -> if (stepUp.emailMasked.isBlank()) {
+        stringResource(R.string.hidden_step_up_email_body_no_address)
+    } else {
+        stringResource(R.string.hidden_step_up_email_body, stepUp.emailMasked)
+    }
+    StepUpMethod.None -> stringResource(R.string.hidden_step_up_none_body)
+    StepUpMethod.Authenticator ->
+        "Enter a code from your authenticator app. Without two-step verification, sign out and sign " +
+            "in again, then reset within 5 minutes."
+}

@@ -7,12 +7,14 @@ import com.us.android.core.profile.data.AccountSecurityApi
 import com.us.android.core.profile.data.ManageAccountApi
 import com.us.android.core.profile.data.ManageAccountRepository
 import com.us.android.core.profile.data.dto.AccountSummaryDto
-import com.us.android.core.profile.data.dto.CodeRequest
 import com.us.android.core.profile.data.dto.DisableTwoFactorRequest
+import com.us.android.core.profile.data.dto.EmailChallengeCodeRequest
+import com.us.android.core.profile.data.dto.EmailChallengeDto
+import com.us.android.core.profile.data.dto.EmailTwoFactorStartRequest
 import com.us.android.core.profile.data.dto.RegionDto
 import com.us.android.core.profile.data.dto.SecurityEventDto
 import com.us.android.core.profile.data.dto.StatusDto
-import com.us.android.core.profile.data.dto.TwoFactorSetupDto
+import com.us.android.core.profile.data.dto.TwoFactorStatusDto
 import com.us.android.core.profile.data.dto.UpdateRegionRequest
 import com.us.android.core.testing.MainDispatcherRule
 import kotlinx.coroutines.test.runTest
@@ -33,9 +35,10 @@ class ManageAccountViewModelTest {
         override suspend fun account() = ApiEnvelope(account)
         override suspend fun securityEvents() = ApiEnvelope(emptyList<SecurityEventDto>())
         override suspend fun acknowledgeEvent(id: String) = ApiEnvelope(StatusDto("ok"))
-        override suspend fun setupTwoFactor() = ApiEnvelope(TwoFactorSetupDto())
-        override suspend fun verifyTwoFactor(body: CodeRequest) = ApiEnvelope(StatusDto("ok"))
-        override suspend fun disableTwoFactor(body: DisableTwoFactorRequest) = ApiEnvelope(StatusDto("ok"))
+        override suspend fun startEmailTwoFactor(body: EmailTwoFactorStartRequest) = ApiEnvelope(EmailChallengeDto())
+        override suspend fun enableEmailTwoFactor(body: EmailChallengeCodeRequest) = ApiEnvelope(TwoFactorStatusDto())
+        override suspend fun disableEmailTwoFactor(body: EmailChallengeCodeRequest) = ApiEnvelope(TwoFactorStatusDto())
+        override suspend fun disableTwoFactor(body: DisableTwoFactorRequest) = ApiEnvelope(TwoFactorStatusDto())
     }
 
     private class FakeRegionApi : ManageAccountApi {

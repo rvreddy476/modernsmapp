@@ -58,6 +58,16 @@ class HiddenChatsSettingsViewModel @Inject constructor(
     private var stepUpToken: String? = null
     private var stepUpAt: Long = 0L
 
+    /** "Confirm it's you": emailed code or authenticator, whichever the account has. */
+    private val stepUpVerifier = StepUpVerifier(
+        scope = viewModelScope,
+        begin = hidden::beginStepUp,
+        sendAgain = hidden::startStepUpEmail,
+        verifyEmail = hidden::stepUpEmail,
+        verifyAuthenticator = hidden::stepUp,
+    )
+    val stepUp: StateFlow<StepUpVerifyState> = stepUpVerifier.state
+
     init {
         load()
     }
@@ -127,10 +137,17 @@ class HiddenChatsSettingsViewModel @Inject constructor(
 
     // ── Forgot ──────────────────────────────────────────────────────────
 
-    fun startReset() = _state.update { it.copy(resetStage = ResetStage.Verify, error = null, notice = null) }
+    fun startReset() {
+        _state.update { it.copy(resetStage = ResetStage.Verify, error = null, notice = null) }
+        stepUpVerifier.open()
+    }
+
+    /** Emailed-code accounts: a new code once the timer has run out. */
+    fun resendStepUpCode() = stepUpVerifier.resend()
 
     fun cancelReset() {
         stepUpToken = null
+        stepUpVerifier.close()
         _state.update { it.copy(resetStage = ResetStage.None, error = null) }
     }
 
@@ -138,14 +155,21 @@ class HiddenChatsSettingsViewModel @Inject constructor(
     fun verifyCode(otp: String) {
         if (otp.isBlank()) return
         launchBusy {
-            when (val r = hidden.stepUp(otp)) {
+            when (val r = stepUpVerifier.verify(otp)) {
                 is StepUpOutcome.Ok -> {
+                    stepUpVerifier.close()
                     stepUpToken = r.token
                     stepUpAt = System.currentTimeMillis()
                     _state.update { it.copy(resetStage = ResetStage.Secrets) }
                 }
-                StepUpOutcome.WrongCode -> _state.update { it.copy(error = "That code didn't work. Check it and try again.") }
-                StepUpOutcome.Replayed -> _state.update { it.copy(error = "That code was already used. Wait for the next one.") }
+                // An emailed code words these itself, under the field.
+                StepUpOutcome.WrongCode -> if (!emailed()) {
+                    _state.update { it.copy(error = "That code didn't work. Check it and try again.") }
+                }
+                StepUpOutcome.Replayed -> if (!emailed()) {
+                    _state.update { it.copy(error = "That code was already used. Wait for the next one.") }
+                }
+                StepUpOutcome.ChallengeExpired -> Unit
                 StepUpOutcome.NoTwoFactor -> _state.update {
                     it.copy(error = "You don't have two-step verification. Sign out and sign in again, then reset within 5 minutes.")
                 }
@@ -155,9 +179,12 @@ class HiddenChatsSettingsViewModel @Inject constructor(
         }
     }
 
+    private fun emailed() = stepUpVerifier.state.value.method == StepUpMethod.Email
+
     /** "I signed in again just now": the bearer itself is the fresh sign-in. */
     fun useFreshSignIn() {
         stepUpToken = null
+        stepUpVerifier.close()
         _state.update { it.copy(resetStage = ResetStage.Secrets, error = null) }
     }
 
@@ -178,6 +205,7 @@ class HiddenChatsSettingsViewModel @Inject constructor(
                 }
                 is HiddenResult.Err -> if (r.error == HiddenError.StepUpRequired) {
                     stepUpToken = null
+                    stepUpVerifier.open()
                     _state.update {
                         it.copy(
                             resetStage = ResetStage.Verify,

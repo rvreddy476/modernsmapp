@@ -105,6 +105,8 @@ data class AccountSummaryDto(
     @SerialName("email_verified") val emailVerified: Boolean = false,
     @SerialName("phone_verified") val phoneVerified: Boolean = false,
     @SerialName("two_factor_enabled") val twoFactorEnabled: Boolean = false,
+    /** `email` | `totp` | `` (off); absent on an older server. */
+    @SerialName("two_factor_method") val twoFactorMethod: String = "",
     @SerialName("account_type") val accountType: String = "",
     @SerialName("account_status") val accountStatus: String = "",
     @SerialName("age_verification") val ageVerification: String = "",
@@ -150,15 +152,50 @@ data class SecurityEventDto(
 
 @Serializable data class StatusDto(val status: String = "", val message: String = "")
 
-@Serializable data class CodeRequest(val code: String)
-
+/** `POST /v1/auth/2fa/disable` for an authenticator-app (legacy TOTP) account. */
 @Serializable data class DisableTwoFactorRequest(val password: String, val code: String)
 
+// ── Two-step verification by emailed code (founder, 10 Nov 2026) ───────
+// auth-service internal/http/twofa_email.go. App users get an emailed
+// 6-digit code; the authenticator app is for admin accounts only.
+
+/**
+ * `POST /v1/auth/2fa/email/start`. [purpose] is `enable` or `disable`; the
+ * password re-proves ownership before a code is mailed. No defaults, so both
+ * fields are always on the wire.
+ */
 @Serializable
-data class TwoFactorSetupDto(
-    val secret: String = "",
-    @SerialName("qr_code_url") val qrCodeUrl: String = "",
-    @SerialName("recovery_codes") val recoveryCodes: List<String> = emptyList(),
+data class EmailTwoFactorStartRequest(val password: String, val purpose: String)
+
+/**
+ * The answer to both start routes (`2fa/email/start`, `step-up/email/start`):
+ * the code went to [emailMasked], and [challengeToken] plus that code
+ * finishes the action before [expiresAt]. Defaults so a missing field never
+ * fails the decode.
+ */
+@Serializable
+data class EmailChallengeDto(
+    @SerialName("challenge_token") val challengeToken: String = "",
+    @SerialName("expires_at") val expiresAt: String = "",
+    @SerialName("email_masked") val emailMasked: String = "",
+)
+
+/** `POST /v1/auth/2fa/email/enable`, and `POST /v1/auth/2fa/disable` for an email account. */
+@Serializable
+data class EmailChallengeCodeRequest(
+    @SerialName("challenge_token") val challengeToken: String,
+    val code: String,
+)
+
+/**
+ * `2fa/email/enable` answers `{"enabled":true,"method":"email"}`; `2fa/disable`
+ * answers `{"message","enabled":false,"method":""}`.
+ */
+@Serializable
+data class TwoFactorStatusDto(
+    val enabled: Boolean = false,
+    val method: String = "",
+    val message: String = "",
 )
 
 @Serializable

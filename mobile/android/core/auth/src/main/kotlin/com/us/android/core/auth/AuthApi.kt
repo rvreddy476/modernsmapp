@@ -15,6 +15,8 @@ import com.us.android.core.auth.dto.RegisterRequestDto
 import com.us.android.core.auth.dto.ResendVerificationRequestDto
 import com.us.android.core.auth.dto.ResetPasswordRequestDto
 import com.us.android.core.auth.dto.StepUpVerifyRequestDto
+import com.us.android.core.auth.dto.TwoFactorResendDto
+import com.us.android.core.auth.dto.TwoFactorResendRequestDto
 import com.us.android.core.auth.dto.Verify2FARequestDto
 import com.us.android.core.auth.dto.VerifyEmailRequestDto
 import com.us.android.core.network.ApiEnvelope
@@ -97,6 +99,16 @@ interface AuthApi {
      */
     @POST("v1/auth/2fa/verify")
     suspend fun verifyTwoFactor(@Body body: Verify2FARequestDto): ApiEnvelope<AuthResponseDto>
+
+    /**
+     * Mails a fresh code for an emailed two-step sign-in (founder, 10 Nov
+     * 2026). Public, named by the pending token alone. 401 `AUTH_FAILED` when
+     * the pending sign-in is gone; 409 `TWO_FACTOR_METHOD_MISMATCH` for an
+     * authenticator-app sign-in; 429 `RATE_LIMITED` with `Retry-After` inside
+     * the 60-second cooldown; 503 `EMAIL_UNAVAILABLE` when nothing was sent.
+     */
+    @POST("v1/auth/2fa/resend")
+    suspend fun resendTwoFactor(@Body body: TwoFactorResendRequestDto): ApiEnvelope<TwoFactorResendDto>
 
     /**
      * Finishes an unusual sign-in with the emailed code. 401 with a specific

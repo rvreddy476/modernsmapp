@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Settings › Account and security › Two-step verification (founder,
+      10 Nov 2026). App users get an emailed 6-digit code that lives 5
+      minutes; a new one can be sent every 60 seconds. The authenticator app
+      is for admin accounts; app users already on it can only turn it off.
+    -->
+    <string name="two_factor_title">Two-step verification</string>
+    <string name="two_factor_off_status">Off</string>
+    <string name="two_factor_off_body">When you sign in, we\'ll email you a 6-digit code to enter after your password.</string>
+    <string name="two_factor_on_email">On · codes sent to %1$s</string>
+    <string name="two_factor_on_email_no_address">On · codes sent to your email</string>
+    <string name="two_factor_on_authenticator">On · authenticator app</string>
+    <string name="two_factor_on_other">On</string>
+    <string name="two_factor_needs_verified_email">Verify your email address first. Two-step codes are sent there.</string>
+    <string name="two_factor_turn_on">Turn on</string>
+    <string name="two_factor_turn_off">Turn off</string>
+    <string name="two_factor_cancel">Cancel</string>
+    <string name="two_factor_continue">Continue</string>
+    <string name="two_factor_password_label">Current password</string>
+    <string name="two_factor_password_enable">Enter your password. We\'ll then email you a code to confirm.</string>
+    <string name="two_factor_password_disable">Enter your password. We\'ll then email you a code to confirm turning it off.</string>
+    <string name="two_factor_code_sent_to">We sent a 6-digit code to %1$s. It expires in 5 minutes.</string>
+    <string name="two_factor_code_sent_to_your_email">We sent a 6-digit code to your email. It expires in 5 minutes.</string>
+    <string name="two_factor_resend">Resend code</string>
+    <string name="two_factor_resend_in">Resend code in %1$d s</string>
+    <string name="two_factor_authenticator_off_body">Enter your password and a code from your authenticator app. Once it\'s off, you can turn on emailed codes instead.</string>
+    <string name="two_factor_authenticator_code_label">6-digit authenticator code</string>
+
+    <string name="two_factor_done_on">Two-step verification is on. We\'ll email you a code each time you sign in.</string>
+    <string name="two_factor_done_off">Two-step verification is off.</string>
+    <string name="two_factor_done_resent">We sent a new code. Only the newest one works.</string>
+
+    <string name="two_factor_error_wrong_password">That password isn\'t right. Try again.</string>
+    <string name="two_factor_error_wrong_code">That code isn\'t right. Check the latest email and try again.</string>
+    <string name="two_factor_error_code_expired">That code has expired or was already used. Send a new code.</string>
+    <string name="two_factor_error_authenticator_rejected">Your password or the authenticator code wasn\'t accepted.</string>
+    <string name="two_factor_error_email_not_verified">Verify your email address first. Two-step codes are sent there.</string>
+    <string name="two_factor_error_email_unavailable">We couldn\'t send the email just now. Try again in a few minutes.</string>
+    <string name="two_factor_error_state_changed">Your two-step settings changed on another device. Here they are now.</string>
+    <string name="two_factor_error_too_many_wait">Too many tries. Wait %1$s and try again.</string>
+    <string name="two_factor_error_too_many">Too many tries. Wait a few minutes and try again.</string>
+    <string name="two_factor_error_offline">You\'re offline. Check your connection and try again.</string>
+    <string name="two_factor_error_failed">That didn\'t go through. Please try again.</string>
+    <plurals name="two_factor_seconds">
+        <item quantity="one">%d second</item>
+        <item quantity="other">%d seconds</item>
+    </plurals>
+    <plurals name="two_factor_minutes">
+        <item quantity="one">%d minute</item>
+        <item quantity="other">%d minutes</item>
+    </plurals>
+</resources>

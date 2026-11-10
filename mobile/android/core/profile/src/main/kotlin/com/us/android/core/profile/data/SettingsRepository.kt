@@ -9,14 +9,15 @@ import com.us.android.core.profile.data.dto.AboutItemDto
 import com.us.android.core.profile.data.dto.AccountSessionDto
 import com.us.android.core.profile.data.dto.AccountSummaryDto
 import com.us.android.core.profile.data.dto.ChangeHandleRequest
-import com.us.android.core.profile.data.dto.CodeRequest
 import com.us.android.core.profile.data.dto.DisableTwoFactorRequest
+import com.us.android.core.profile.data.dto.EmailChallengeCodeRequest
+import com.us.android.core.profile.data.dto.EmailChallengeDto
+import com.us.android.core.profile.data.dto.EmailTwoFactorStartRequest
 import com.us.android.core.profile.data.dto.PrivacySettingsDto
 import com.us.android.core.profile.data.dto.ProfileLinkDto
 import com.us.android.core.profile.data.dto.SaveProfileLinkRequest
 import com.us.android.core.profile.data.dto.SecurityEventDto
 import com.us.android.core.profile.data.dto.TrustedDeviceDto
-import com.us.android.core.profile.data.dto.TwoFactorSetupDto
 import com.us.android.core.profile.data.dto.UpdatePrivacySettingsRequest
 import com.us.android.core.profile.data.dto.UpsertAboutItemRequest
 import kotlinx.serialization.json.JsonPrimitive
@@ -83,12 +84,27 @@ class SecuritySettingsRepository @Inject constructor(
     suspend fun acknowledgeEvent(id: String): AppResult<Unit> =
         apiCall(errorMapper) { accountApi.acknowledgeEvent(id) }.map { }
 
-    suspend fun setupTwoFactor(): AppResult<TwoFactorSetup> =
-        apiCall(errorMapper) { accountApi.setupTwoFactor() }.map { it.toDomain() }
+    /**
+     * Mails a 6-digit code to turn emailed two-step verification on or off.
+     * Called again for Resend: each call issues a new challenge, and only
+     * the newest one is worth sending back.
+     */
+    suspend fun startEmailTwoFactor(password: String, purpose: TwoFactorPurpose): AppResult<EmailChallenge> =
+        apiCall(errorMapper) {
+            accountApi.startEmailTwoFactor(EmailTwoFactorStartRequest(password = password, purpose = purpose.wire))
+        }.map { it.toDomain() }
 
-    suspend fun verifyTwoFactor(code: String): AppResult<Unit> =
-        apiCall(errorMapper) { accountApi.verifyTwoFactor(CodeRequest(code)) }.map { }
+    suspend fun enableEmailTwoFactor(challengeToken: String, code: String): AppResult<Unit> =
+        apiCall(errorMapper) {
+            accountApi.enableEmailTwoFactor(EmailChallengeCodeRequest(challengeToken, code.trim()))
+        }.map { }
 
+    suspend fun disableEmailTwoFactor(challengeToken: String, code: String): AppResult<Unit> =
+        apiCall(errorMapper) {
+            accountApi.disableEmailTwoFactor(EmailChallengeCodeRequest(challengeToken, code.trim()))
+        }.map { }
+
+    /** A legacy authenticator-app account turns it off with the password and a current code. */
     suspend fun disableTwoFactor(password: String, code: String): AppResult<Unit> =
         apiCall(errorMapper) {
             accountApi.disableTwoFactor(DisableTwoFactorRequest(password, code))
@@ -206,6 +222,7 @@ internal fun AccountSummaryDto.toAccountSummary() = AccountSummary(
     createdAt,
     deactivatedAt = deactivatedAt?.takeIf { it.isNotBlank() },
     scheduledPurgeDate = scheduledPurgeDate?.takeIf { it.isNotBlank() },
+    twoFactorMethod = TwoFactorMethod.of(twoFactorEnabled, twoFactorMethod),
 )
 
 private fun AccountSummaryDto.toDomain() = toAccountSummary()
@@ -241,7 +258,7 @@ private fun SecurityEventDto.toDomain() = SecurityEvent(
     occurredAt,
 )
 
-private fun TwoFactorSetupDto.toDomain() = TwoFactorSetup(secret, qrCodeUrl, recoveryCodes)
+private fun EmailChallengeDto.toDomain() = EmailChallenge(challengeToken, expiresAt, emailMasked)
 
 private fun AboutItemDto.toDomain() = ProfileAboutItem(
     itemId = itemId,

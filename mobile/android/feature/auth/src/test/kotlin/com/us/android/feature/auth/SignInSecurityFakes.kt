@@ -22,6 +22,8 @@ import com.us.android.core.auth.dto.RegisterRequestDto
 import com.us.android.core.auth.dto.ResendVerificationRequestDto
 import com.us.android.core.auth.dto.ResetPasswordRequestDto
 import com.us.android.core.auth.dto.StepUpVerifyRequestDto
+import com.us.android.core.auth.dto.TwoFactorResendDto
+import com.us.android.core.auth.dto.TwoFactorResendRequestDto
 import com.us.android.core.auth.dto.Verify2FARequestDto
 import com.us.android.core.auth.dto.VerifyEmailRequestDto
 import com.us.android.core.auth.oauth.GoogleSignIn
@@ -113,6 +115,9 @@ internal class FakeAuthApi : AuthApi {
     var verifySignupError: Throwable? = null
     var partnerVerifyResponse: AuthResponseDto = sessionResponse()
     var partnerVerifyError: Throwable? = null
+    var resendResponse: TwoFactorResendDto =
+        TwoFactorResendDto(sent = true, emailMasked = "r***@gmail.com", resendAfterSeconds = 60)
+    var resendError: Throwable? = null
 
     val twoFactorRequests = mutableListOf<Verify2FARequestDto>()
     val stepUpEmailRequests = mutableListOf<StepUpVerifyRequestDto>()
@@ -122,6 +127,7 @@ internal class FakeAuthApi : AuthApi {
     val oauthTokenRequests = mutableListOf<Pair<String, OAuthTokenRequestDto>>()
     val completeSignupRequests = mutableListOf<OAuthCompleteSignupRequestDto>()
     val verifySignupRequests = mutableListOf<OAuthVerifySignupRequestDto>()
+    val resendRequests = mutableListOf<TwoFactorResendRequestDto>()
 
     override suspend fun login(body: LoginRequestDto): ApiEnvelope<AuthResponseDto> {
         loginError?.let { throw it }
@@ -132,6 +138,12 @@ internal class FakeAuthApi : AuthApi {
         twoFactorRequests += body
         twoFactorError?.let { throw it }
         return ApiEnvelope(twoFactorResponse)
+    }
+
+    override suspend fun resendTwoFactor(body: TwoFactorResendRequestDto): ApiEnvelope<TwoFactorResendDto> {
+        resendRequests += body
+        resendError?.let { throw it }
+        return ApiEnvelope(resendResponse)
     }
 
     override suspend fun verifyStepUpEmail(body: StepUpVerifyRequestDto): ApiEnvelope<AuthResponseDto> {

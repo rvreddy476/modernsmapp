@@ -393,6 +393,81 @@ class HiddenChatsHttpTest {
         assertThat(sent("/v1/auth/step-up").single().body!!.utf8()).isEqualTo("""{"otp":"123456"}""")
     }
 
+    // ── Emailed step-up codes (founder, 10 Nov 2026) ───────────────────
+
+    @Test
+    fun `an emailed-code account gets a code mailed and its challenge back`() = runTest {
+        route("GET", "/v1/auth/me") { ok("""{"data":{"two_factor_enabled":true,"two_factor_method":"email"}}""") }
+        route("POST", "/v1/auth/step-up/email/start") {
+            ok(
+                """{"data":{"challenge_token":"ch-1","expires_at":"2026-11-10T10:05:00Z",""" +
+                    """"email_masked":"r***@gmail.com"}}""",
+            )
+        }
+        val h = hidden(backgroundScope)
+
+        assertThat(h.beginStepUp()).isEqualTo(StepUpStart.Email("ch-1", "r***@gmail.com"))
+        assertThat(sent("/v1/auth/step-up/email/start")).hasSize(1)
+    }
+
+    @Test
+    fun `an authenticator account, an account without two-step and an unreadable account mail nothing`() = runTest {
+        val h = hidden(backgroundScope)
+
+        route("GET", "/v1/auth/me") { ok("""{"data":{"two_factor_enabled":true,"two_factor_method":"totp"}}""") }
+        assertThat(h.beginStepUp()).isEqualTo(StepUpStart.Authenticator)
+        route("GET", "/v1/auth/me") { ok("""{"data":{"two_factor_enabled":true}}""") }
+        assertThat(h.beginStepUp()).isEqualTo(StepUpStart.Authenticator)
+        route("GET", "/v1/auth/me") { ok("""{"data":{"two_factor_enabled":false,"two_factor_method":""}}""") }
+        assertThat(h.beginStepUp()).isEqualTo(StepUpStart.NoTwoFactor)
+        route("GET", "/v1/auth/me") { status(500, """{"error":{"code":"INTERNAL"}}""") }
+        assertThat(h.beginStepUp()).isEqualTo(StepUpStart.Authenticator)
+
+        assertThat(sent("/v1/auth/step-up/email/start")).isEmpty()
+    }
+
+    @Test
+    fun `step-up email start refusals`() = runTest {
+        val h = hidden(backgroundScope)
+
+        route("POST", "/v1/auth/step-up/email/start") {
+            MockResponse.Builder().code(429).addHeader("Retry-After", "45")
+                .body("""{"error":{"code":"RATE_LIMITED"}}""").build()
+        }
+        assertThat(h.startStepUpEmail()).isEqualTo(StepUpStart.RateLimited(45))
+        route("POST", "/v1/auth/step-up/email/start") {
+            status(409, """{"error":{"code":"TWO_FACTOR_METHOD_MISMATCH"}}""")
+        }
+        assertThat(h.startStepUpEmail()).isEqualTo(StepUpStart.Authenticator)
+        route("POST", "/v1/auth/step-up/email/start") { status(409, """{"error":{"code":"TWO_FACTOR_NOT_ENABLED"}}""") }
+        assertThat(h.startStepUpEmail()).isEqualTo(StepUpStart.NoTwoFactor)
+        route("POST", "/v1/auth/step-up/email/start") { status(503, """{"error":{"code":"EMAIL_UNAVAILABLE"}}""") }
+        assertThat(h.startStepUpEmail()).isEqualTo(StepUpStart.EmailUnavailable)
+        route("POST", "/v1/auth/step-up/email/start") { ok("""{"data":{}}""") }
+        assertThat(h.startStepUpEmail()).isEqualTo(StepUpStart.Failed)
+    }
+
+    @Test
+    fun `an emailed step-up sends the challenge and the code, and reads the token`() = runTest {
+        route("POST", "/v1/auth/step-up") { ok("""{"data":{"access_token":"su-e"}}""") }
+        val h = hidden(backgroundScope)
+
+        assertThat(h.stepUpEmail("ch-1", " 654321 ")).isEqualTo(StepUpOutcome.Ok("su-e"))
+        assertThat(sent("/v1/auth/step-up").single().body!!.utf8())
+            .isEqualTo("""{"challenge_token":"ch-1","code":"654321"}""")
+    }
+
+    @Test
+    fun `an emailed step-up tells a wrong code from a spent challenge`() = runTest {
+        val h = hidden(backgroundScope)
+
+        route("POST", "/v1/auth/step-up") { status(400, """{"error":{"code":"INVALID_CODE"}}""") }
+        assertThat(h.stepUpEmail("ch-1", "000000")).isEqualTo(StepUpOutcome.WrongCode)
+        route("POST", "/v1/auth/step-up") { status(400, """{"error":{"code":"INVALID_CHALLENGE"}}""") }
+        assertThat(h.stepUpEmail("ch-1", "000000")).isEqualTo(StepUpOutcome.ChallengeExpired)
+        assertThat(refreshes).isEqualTo(0)
+    }
+
     @Test
     fun `hide before setup is HIDDEN_CHATS_NOT_CONFIGURED, and hide marks the chat hidden`() = runTest {
         route("POST", "/v1/chat/conversations/c1/hide") { status(409, """{"error":{"code":"HIDDEN_CHATS_NOT_CONFIGURED"}}""") }

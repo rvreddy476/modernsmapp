@@ -25,9 +25,18 @@ import kotlinx.serialization.Serializable
  * token — the screen survives rotation and process death without a holder.
  */
 
-/** The authenticator-code step of a sign-in that answered `requires_2fa`. */
+/**
+ * The code step of a sign-in that answered `requires_2fa`. [method] is
+ * `email` (a code is already in the inbox at [emailMasked]) or `totp`; empty
+ * from an older server, which the screen reads as an authenticator app.
+ */
 @Serializable
-data class TwoFactorCodeRoute(val userId: String, val pendingToken: String)
+data class TwoFactorCodeRoute(
+    val userId: String,
+    val pendingToken: String,
+    val method: String = "",
+    val emailMasked: String = "",
+)
 
 /**
  * The unusual-sign-in step. [methods] is the server's `step_up_methods`
@@ -84,6 +93,8 @@ fun NavGraphBuilder.signInSecurityScreens(destinations: SignInSecurityDestinatio
         TwoFactorRoute(
             userId = route.userId,
             pendingToken = route.pendingToken,
+            method = route.method,
+            emailMasked = route.emailMasked,
             onBackToLogin = destinations.onBackToLogin,
         )
     }
@@ -117,7 +128,8 @@ fun NavGraphBuilder.signInSecurityScreens(destinations: SignInSecurityDestinatio
 
 /** The Login screen's pending outcome, as a push. One place maps the three. */
 fun NavController.navigateToSignInStep(step: LoginNavigation) = when (step) {
-    is LoginNavigation.TwoFactor -> navigate(TwoFactorCodeRoute(step.userId, step.pendingToken))
+    is LoginNavigation.TwoFactor ->
+        navigate(TwoFactorCodeRoute(step.userId, step.pendingToken, step.method, step.emailMasked))
     is LoginNavigation.StepUp -> navigate(StepUpVerifyRoute.of(step.pendingToken, step.methods))
     is LoginNavigation.OAuthCompleteSignup ->
         navigate(OAuthSignupRoute(step.pendingToken, step.provider, step.email, step.name))

@@ -83,6 +83,12 @@ fun openBody(chatPassword: String): JsonObject = buildJsonObject { put("chat_pas
 /** identity POST /v1/auth/step-up: the authenticator (or recovery) code. */
 fun stepUpBody(otp: String): JsonObject = buildJsonObject { put("otp", otp.trim()) }
 
+/** identity POST /v1/auth/step-up for an emailed-code account: the challenge from `step-up/email/start` and the code. */
+fun emailStepUpBody(challengeToken: String, code: String): JsonObject = buildJsonObject {
+    put("challenge_token", challengeToken)
+    put("code", code.trim())
+}
+
 /** The socket frame that subscribes a hidden chat's room: the open token rides in it, no entitlement. */
 fun hiddenSubscribeFrame(json: Json, conversationId: String, openToken: String): String =
     json.encodeToString(HiddenSubscribeFrame.serializer(), HiddenSubscribeFrame(conversationId = conversationId, openToken = openToken))
@@ -114,6 +120,25 @@ data class HiddenTokenDto(
 
 @Serializable
 data class StepUpTokenDto(@SerialName("access_token") val accessToken: String? = null)
+
+/**
+ * identity `GET /v1/auth/me`, only the two fields the step-up needs: which
+ * second step the account has (founder, 10 Nov 2026: `email` for app users,
+ * `totp` for admins and legacy accounts, empty when off or on an older server).
+ */
+@Serializable
+data class AccountTwoFactorDto(
+    @SerialName("two_factor_enabled") val twoFactorEnabled: Boolean = false,
+    @SerialName("two_factor_method") val twoFactorMethod: String = "",
+)
+
+/** identity `POST /v1/auth/step-up/email/start`: the code went to [emailMasked]. */
+@Serializable
+data class StepUpEmailChallengeDto(
+    @SerialName("challenge_token") val challengeToken: String? = null,
+    @SerialName("expires_at") val expiresAt: String? = null,
+    @SerialName("email_masked") val emailMasked: String? = null,
+)
 
 /** The account's hidden-chat settings, never a secret. */
 data class HiddenSettings(val configured: Boolean, val strict: Boolean)

@@ -279,6 +279,8 @@ class SessionManager @Inject constructor(
             dto.requires2fa -> SessionState.PendingTwoFactor(
                 pendingToken = dto.pendingToken,
                 userId = dto.user?.id.orEmpty(),
+                method = dto.twoFactorMethod.trim(),
+                emailMasked = dto.emailMasked.trim(),
             )
 
             dto.requiresStepUp -> SessionState.PendingStepUp(

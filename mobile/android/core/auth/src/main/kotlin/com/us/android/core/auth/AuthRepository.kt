@@ -12,6 +12,7 @@ import com.us.android.core.auth.dto.RegisterRequestDto
 import com.us.android.core.auth.dto.ResendVerificationRequestDto
 import com.us.android.core.auth.dto.ResetPasswordRequestDto
 import com.us.android.core.auth.dto.StepUpVerifyRequestDto
+import com.us.android.core.auth.dto.TwoFactorResendRequestDto
 import com.us.android.core.auth.dto.Verify2FARequestDto
 import com.us.android.core.auth.dto.VerifyEmailRequestDto
 import com.us.android.core.common.error.AppError
@@ -194,6 +195,16 @@ class AuthRepository @Inject constructor(
             Verify2FARequestDto(userId = userId, code = code.trim(), pendingToken = pendingToken),
         )
     }.map(sessionManager::applyAuthResponse)
+
+    /**
+     * Asks the server to mail another code for an emailed two-step sign-in.
+     * The pending token is unchanged by a resend: the screen keeps
+     * submitting to [verifyTwoFactor] with the same one.
+     */
+    suspend fun resendTwoFactorCode(pendingToken: String): AppResult<TwoFactorCodeSent> =
+        apiCall(errorMapper) {
+            authApi.resendTwoFactor(TwoFactorResendRequestDto(pendingToken = pendingToken))
+        }.map { TwoFactorCodeSent(emailMasked = it.emailMasked, resendAfterSeconds = it.resendAfterSeconds) }
 
     /**
      * Second step of an unusual sign-in ([SessionState.PendingStepUp]).

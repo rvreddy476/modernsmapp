@@ -9,7 +9,6 @@ import com.us.android.core.profile.data.AccountSummary
 import com.us.android.core.profile.data.SecurityEvent
 import com.us.android.core.profile.data.SecuritySettingsRepository
 import com.us.android.core.profile.data.TrustedDevice
-import com.us.android.core.profile.data.TwoFactorSetup
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -29,7 +28,6 @@ sealed interface SecuritySettingsUiState {
         val sessions: List<AccountSession>,
         val trustedDevices: List<TrustedDevice>,
         val events: List<SecurityEvent>,
-        val twoFactorSetup: TwoFactorSetup? = null,
         val busy: Boolean = false,
         val message: String? = null,
         val signedOut: Boolean = false,
@@ -70,58 +68,8 @@ class SecuritySettingsViewModel @Inject constructor(
     fun removeTrustedDevice(id: String) = runAction { settings.removeTrustedDevice(id) }
     fun acknowledge(id: String) = runAction { settings.acknowledgeEvent(id) }
 
-    fun setupTwoFactor() {
-        val current = _state.value as? SecuritySettingsUiState.Content ?: return
-        if (current.busy || current.account.twoFactorEnabled) return
-        _state.value = current.copy(busy = true, message = null)
-        viewModelScope.launch {
-            _state.value = when (val result = settings.setupTwoFactor()) {
-                is AppResult.Success -> current.copy(twoFactorSetup = result.data, busy = false)
-                is AppResult.Failure -> current.copy(busy = false, message = "Two-factor setup could not start.")
-            }
-        }
-    }
-
-    fun verifyTwoFactor(code: String) {
-        val current = _state.value as? SecuritySettingsUiState.Content ?: return
-        if (!current.canVerifyTwoFactor(code)) return
-        _state.value = current.copy(busy = true, message = null)
-        viewModelScope.launch {
-            _state.value = when (settings.verifyTwoFactor(code)) {
-                is AppResult.Success -> current.copy(
-                    account = current.account.copy(twoFactorEnabled = true),
-                    twoFactorSetup = null,
-                    busy = false,
-                    message = "Two-factor authentication enabled. Store your recovery codes safely.",
-                )
-
-                is AppResult.Failure -> current.copy(
-                    busy = false,
-                    message = "That authenticator code was not accepted.",
-                )
-            }
-        }
-    }
-
-    fun disableTwoFactor(password: String, code: String) {
-        val current = _state.value as? SecuritySettingsUiState.Content ?: return
-        if (!current.canDisableTwoFactor(password, code)) return
-        _state.value = current.copy(busy = true, message = null)
-        viewModelScope.launch {
-            _state.value = when (settings.disableTwoFactor(password, code)) {
-                is AppResult.Success -> current.copy(
-                    account = current.account.copy(twoFactorEnabled = false),
-                    busy = false,
-                    message = "Two-factor authentication disabled.",
-                )
-
-                is AppResult.Failure -> current.copy(
-                    busy = false,
-                    message = "Password or authenticator code was not accepted.",
-                )
-            }
-        }
-    }
+    // Two-step verification lives in TwoFactorSettingsViewModel (emailed
+    // codes, founder 10 Nov 2026); this screen hands it the loaded account.
 
     fun logoutEverywhere() {
         val current = _state.value as? SecuritySettingsUiState.Content ?: return
@@ -172,22 +120,6 @@ class SecuritySettingsViewModel @Inject constructor(
         )
     }
 
-    private fun SecuritySettingsUiState.Content.canVerifyTwoFactor(code: String): Boolean {
-        if (busy) return false
-        if (twoFactorSetup == null) return false
-        return code.length == AUTHENTICATOR_CODE_LENGTH
-    }
-
-    private fun SecuritySettingsUiState.Content.canDisableTwoFactor(
-        password: String,
-        code: String,
-    ): Boolean {
-        if (busy) return false
-        if (!account.twoFactorEnabled) return false
-        if (password.isBlank()) return false
-        return code.length == AUTHENTICATOR_CODE_LENGTH
-    }
-
     private data class SecurityLoadResults(
         val account: AppResult<AccountSummary>,
         val sessions: AppResult<List<AccountSession>>,
@@ -196,7 +128,6 @@ class SecuritySettingsViewModel @Inject constructor(
     )
 
     private companion object {
-        const val AUTHENTICATOR_CODE_LENGTH = 6
         const val LOAD_ERROR = "Account security details could not be loaded."
     }
 }

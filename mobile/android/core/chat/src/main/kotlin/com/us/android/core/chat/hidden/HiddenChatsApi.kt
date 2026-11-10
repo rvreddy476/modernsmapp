@@ -27,6 +27,7 @@ import java.io.IOException
  * Built on the chat Retrofit, whose client adds `X-Device-Id` to these
  * routes and never refreshes-and-replays a refused secret (HiddenChatsHttp.kt).
  */
+@Suppress("TooManyFunctions") // One function per contract route.
 interface HiddenChatsApi {
 
     @GET("v1/chat/hidden/settings")
@@ -82,6 +83,18 @@ interface HiddenChatsApi {
         @Header("Idempotency-Key") idempotencyKey: String,
         @Body body: JsonObject,
     ): Response<ApiEnvelope<StepUpTokenDto>>
+
+    /** identity's account summary: which second step the step-up asks for (`two_factor_method`). */
+    @GET("v1/auth/me")
+    suspend fun accountTwoFactor(): Response<ApiEnvelope<AccountTwoFactorDto>>
+
+    /**
+     * Mails a 6-digit step-up code to an emailed-code account (founder, 10 Nov
+     * 2026). 409 `TWO_FACTOR_NOT_ENABLED` / `TWO_FACTOR_METHOD_MISMATCH` /
+     * `EMAIL_NOT_VERIFIED`, 429 with `Retry-After`, 503 `EMAIL_UNAVAILABLE`.
+     */
+    @POST("v1/auth/step-up/email/start")
+    suspend fun startStepUpEmail(): Response<ApiEnvelope<StepUpEmailChallengeDto>>
 }
 
 /** The server's page cap; the hidden list is read whole, a page at a time. */

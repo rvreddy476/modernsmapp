@@ -5,8 +5,10 @@ import com.us.android.core.profile.data.dto.AboutItemDto
 import com.us.android.core.profile.data.dto.AccountSessionDto
 import com.us.android.core.profile.data.dto.AccountSummaryDto
 import com.us.android.core.profile.data.dto.ChangeHandleRequest
-import com.us.android.core.profile.data.dto.CodeRequest
 import com.us.android.core.profile.data.dto.DisableTwoFactorRequest
+import com.us.android.core.profile.data.dto.EmailChallengeCodeRequest
+import com.us.android.core.profile.data.dto.EmailChallengeDto
+import com.us.android.core.profile.data.dto.EmailTwoFactorStartRequest
 import com.us.android.core.profile.data.dto.KeywordFiltersDto
 import com.us.android.core.profile.data.dto.OwnProfileDto
 import com.us.android.core.profile.data.dto.PrivacySettingsDto
@@ -19,7 +21,7 @@ import com.us.android.core.profile.data.dto.ScreenTimeWeekDto
 import com.us.android.core.profile.data.dto.SecurityEventDto
 import com.us.android.core.profile.data.dto.StatusDto
 import com.us.android.core.profile.data.dto.TrustedDeviceDto
-import com.us.android.core.profile.data.dto.TwoFactorSetupDto
+import com.us.android.core.profile.data.dto.TwoFactorStatusDto
 import com.us.android.core.profile.data.dto.UpdateKeywordFiltersRequest
 import com.us.android.core.profile.data.dto.UpdatePrivacySettingsRequest
 import com.us.android.core.profile.data.dto.UpdateRegionRequest
@@ -106,16 +108,35 @@ interface AccountSecurityApi {
     @POST("v1/auth/security/anomalies/{id}/ack")
     suspend fun acknowledgeEvent(@Path("id") id: String): ApiEnvelope<StatusDto>
 
-    @POST("v1/auth/2fa/setup")
-    suspend fun setupTwoFactor(): ApiEnvelope<TwoFactorSetupDto>
+    /*
+     * Two-step verification (founder, 10 Nov 2026): app users get an EMAILED
+     * 6-digit code. `2fa/setup` and `2fa/verify-setup` (the authenticator app)
+     * answer 403 `TOTP_NOT_OFFERED` to app users, so this client no longer
+     * calls them; a legacy authenticator account can still turn it off.
+     */
 
-    @POST("v1/auth/2fa/verify-setup")
-    suspend fun verifyTwoFactor(@Body body: CodeRequest): ApiEnvelope<StatusDto>
+    /**
+     * Mails a code to turn two-step verification on or off. 401
+     * `INVALID_CREDENTIALS`; 409 `EMAIL_NOT_VERIFIED`,
+     * `TWO_FACTOR_ALREADY_ENABLED`, `TWO_FACTOR_NOT_ENABLED`,
+     * `TWO_FACTOR_METHOD_MISMATCH`; 429 with `Retry-After`; 503 `EMAIL_UNAVAILABLE`.
+     */
+    @POST("v1/auth/2fa/email/start")
+    suspend fun startEmailTwoFactor(@Body body: EmailTwoFactorStartRequest): ApiEnvelope<EmailChallengeDto>
 
+    /** 400 `INVALID_CODE` | `INVALID_CHALLENGE`, 409, 429. */
+    @POST("v1/auth/2fa/email/enable")
+    suspend fun enableEmailTwoFactor(@Body body: EmailChallengeCodeRequest): ApiEnvelope<TwoFactorStatusDto>
+
+    /** Turns off emailed-code two-step verification with a `purpose=disable` challenge. */
+    @POST("v1/auth/2fa/disable")
+    suspend fun disableEmailTwoFactor(@Body body: EmailChallengeCodeRequest): ApiEnvelope<TwoFactorStatusDto>
+
+    /** Turns off a legacy authenticator app: password and a current code. 400 `2FA_DISABLE_FAILED`. */
     @POST("v1/auth/2fa/disable")
     suspend fun disableTwoFactor(
         @Body body: DisableTwoFactorRequest,
-    ): ApiEnvelope<StatusDto>
+    ): ApiEnvelope<TwoFactorStatusDto>
 }
 
 /** Session and trusted-device lifecycle owned by identity auth-service. */

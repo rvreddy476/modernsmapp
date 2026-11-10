@@ -31,10 +31,46 @@ sealed interface StepUpOutcome {
     data object Replayed : StepUpOutcome
     data object NoTwoFactor : StepUpOutcome
     data class RateLimited(val retryAfterSec: Long?) : StepUpOutcome
+
+    /** An emailed code's challenge is spent or past its 5 minutes (400 `INVALID_CHALLENGE`): send a new code. */
+    data object ChallengeExpired : StepUpOutcome
     data object Failed : StepUpOutcome
 }
 
-/** Maps a refused `POST /v1/auth/step-up` (identity's codes: INVALID_OTP, OTP_REPLAYED, MFA_NOT_ENROLLED, RATE_LIMITED). */
+/**
+ * How this account confirms it's you (founder, 10 Nov 2026): an emailed
+ * 6-digit code for app users, an authenticator app for admins and legacy
+ * accounts. [Email] means the code is already on its way.
+ */
+sealed interface StepUpStart {
+    data class Email(val challengeToken: String, val emailMasked: String) : StepUpStart
+    data object Authenticator : StepUpStart
+    data object NoTwoFactor : StepUpStart
+    data class RateLimited(val retryAfterSec: Long?) : StepUpStart
+    data object EmailUnavailable : StepUpStart
+    data object Failed : StepUpStart
+}
+
+/** Maps a refused `POST /v1/auth/step-up/email/start`. */
+@Suppress("MagicNumber")
+fun stepUpStartOf(status: Int, body: String?, retryAfterHeader: String?, nowMs: Long): StepUpStart {
+    val code = errorCodeOf(body)
+    return when {
+        status == 429 -> StepUpStart.RateLimited(
+            (hiddenErrorOf(status, body, retryAfterHeader, nowMs) as? HiddenError.Locked)?.retryAfterSec,
+        )
+        code == "TWO_FACTOR_METHOD_MISMATCH" -> StepUpStart.Authenticator
+        code == "TWO_FACTOR_NOT_ENABLED" -> StepUpStart.NoTwoFactor
+        code == "EMAIL_UNAVAILABLE" || status == 503 -> StepUpStart.EmailUnavailable
+        else -> StepUpStart.Failed
+    }
+}
+
+/**
+ * Maps a refused `POST /v1/auth/step-up` (identity's codes: INVALID_OTP, OTP_REPLAYED,
+ * MFA_NOT_ENROLLED, RATE_LIMITED; for an emailed code INVALID_CODE, INVALID_CHALLENGE,
+ * TWO_FACTOR_NOT_ENABLED).
+ */
 @Suppress("MagicNumber")
 fun stepUpOutcomeOf(status: Int, body: String?, retryAfterHeader: String?, nowMs: Long): StepUpOutcome {
     val code = errorCodeOf(body)
@@ -42,7 +78,8 @@ fun stepUpOutcomeOf(status: Int, body: String?, retryAfterHeader: String?, nowMs
         status == 429 -> StepUpOutcome.RateLimited(
             (hiddenErrorOf(status, body, retryAfterHeader, nowMs) as? HiddenError.Locked)?.retryAfterSec,
         )
-        code == "MFA_NOT_ENROLLED" -> StepUpOutcome.NoTwoFactor
+        code == "MFA_NOT_ENROLLED" || code == "TWO_FACTOR_NOT_ENABLED" -> StepUpOutcome.NoTwoFactor
+        code == "INVALID_CHALLENGE" -> StepUpOutcome.ChallengeExpired
         code == "OTP_REPLAYED" -> StepUpOutcome.Replayed
         status == 401 || status == 400 -> StepUpOutcome.WrongCode
         else -> StepUpOutcome.Failed
@@ -140,8 +177,10 @@ class HiddenChats @Inject constructor(
         }
 
     /** identity's in-session step-up with a 2-step code; the token is the caller's, for this one reset. */
-    suspend fun stepUp(otp: String): StepUpOutcome = try {
-        val response = api.stepUp(UUID.randomUUID().toString(), stepUpBody(otp))
+    suspend fun stepUp(otp: String): StepUpOutcome = postStepUp(stepUpBody(otp))
+
+    private suspend fun postStepUp(body: kotlinx.serialization.json.JsonObject): StepUpOutcome = try {
+        val response = api.stepUp(UUID.randomUUID().toString(), body)
         if (response.isSuccessful) {
             response.body()?.data?.accessToken?.trim()?.takeIf { it.isNotEmpty() }
                 ?.let { StepUpOutcome.Ok(it) } ?: StepUpOutcome.Failed
@@ -158,6 +197,52 @@ class HiddenChats @Inject constructor(
     } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
         StepUpOutcome.Failed
     }
+
+    /**
+     * Before a step-up: which second step this account has, and for an
+     * emailed-code account the code is mailed now (founder, 10 Nov 2026). If
+     * the account cannot be read, the authenticator path stays on offer, as
+     * it was before emailed codes existed.
+     */
+    suspend fun beginStepUp(): StepUpStart {
+        val account = try {
+            api.accountTwoFactor().takeIf { it.isSuccessful }?.body()?.data
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (@Suppress("TooGenericExceptionCaught", "SwallowedException") e: Exception) {
+            null
+        } ?: return StepUpStart.Authenticator
+        return when {
+            !account.twoFactorEnabled -> StepUpStart.NoTwoFactor
+            account.twoFactorMethod.trim().equals(TWO_FACTOR_METHOD_EMAIL, ignoreCase = true) -> startStepUpEmail()
+            else -> StepUpStart.Authenticator
+        }
+    }
+
+    /** Mails a (new) step-up code to an emailed-code account; also the Resend. */
+    suspend fun startStepUpEmail(): StepUpStart = try {
+        val response = api.startStepUpEmail()
+        if (response.isSuccessful) {
+            response.body()?.data?.challengeToken?.trim()?.takeIf { it.isNotEmpty() }
+                ?.let { StepUpStart.Email(it, response.body()?.data?.emailMasked?.trim().orEmpty()) }
+                ?: StepUpStart.Failed
+        } else {
+            stepUpStartOf(
+                response.code(),
+                runCatching { response.errorBody()?.string() }.getOrNull(),
+                response.headers()["Retry-After"],
+                System.currentTimeMillis(),
+            )
+        }
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
+    } catch (@Suppress("TooGenericExceptionCaught") e: Exception) {
+        StepUpStart.Failed
+    }
+
+    /** identity's in-session step-up with an emailed code and its challenge. Never replayed. */
+    suspend fun stepUpEmail(challengeToken: String, code: String): StepUpOutcome =
+        postStepUp(emailStepUpBody(challengeToken, code))
 
     /**
      * Forgot: new secrets after re-auth. [stepUpToken] null means the bearer
@@ -334,5 +419,8 @@ class HiddenChats @Inject constructor(
     private companion object {
         /** A bound, not a target: ten pages of 100 hidden chats. */
         const val MAX_LIST_PAGES = 10
+
+        /** identity `two_factor_method` for an emailed-code account. */
+        const val TWO_FACTOR_METHOD_EMAIL = "email"
     }
 }

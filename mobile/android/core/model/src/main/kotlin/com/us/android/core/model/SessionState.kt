@@ -46,7 +46,24 @@ sealed interface SessionState {
     data class PendingTwoFactor(
         val pendingToken: String,
         val userId: String = "",
-    ) : SessionState
+        /**
+         * The login response's `two_factor_method` (founder, 10 Nov 2026):
+         * [METHOD_EMAIL] means the server has already emailed a 6-digit code
+         * to [emailMasked]; [METHOD_TOTP] is an authenticator app (admins,
+         * and app users who turned it on before the change). Empty on an
+         * older server, which reads as TOTP.
+         */
+        val method: String = "",
+        /** The address the code went to, already masked by the server (`r***@gmail.com`). */
+        val emailMasked: String = "",
+    ) : SessionState {
+        val isEmailCode: Boolean get() = method == METHOD_EMAIL
+
+        companion object {
+            const val METHOD_EMAIL = "email"
+            const val METHOD_TOTP = "totp"
+        }
+    }
 
     /**
      * Password accepted but the risk band demanded a second channel.

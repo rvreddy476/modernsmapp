@@ -139,6 +139,8 @@ data class AccountSummary(
     val createdAt: String,
     val deactivatedAt: String? = null,
     val scheduledPurgeDate: String? = null,
+    val twoFactorMethod: TwoFactorMethod =
+        if (twoFactorEnabled) TwoFactorMethod.Authenticator else TwoFactorMethod.None,
 )
 
 /** Screen-time controls owned by user-service (`/v1/users/me/wellbeing`). */
@@ -211,10 +213,42 @@ data class SecurityEvent(
     val occurredAt: String,
 )
 
-data class TwoFactorSetup(
-    val secret: String,
-    val qrCodeUrl: String,
-    val recoveryCodes: List<String>,
+/**
+ * How the account's second step is delivered (`GET /v1/auth/me`
+ * `two_factor_method`, founder 10 Nov 2026). [Email] is what app users turn
+ * on; [Authenticator] is a legacy authenticator app, still honoured but no
+ * longer offered. [Other] is a method this build does not know yet (`sms` is
+ * planned): shown as on, never offered a flow it cannot finish.
+ */
+enum class TwoFactorMethod {
+    None,
+    Email,
+    Authenticator,
+    Other,
+    ;
+
+    companion object {
+        /** An older server says only `two_factor_enabled`; on then means an authenticator app. */
+        fun of(enabled: Boolean, wire: String): TwoFactorMethod = when {
+            !enabled -> None
+            wire.equals("email", ignoreCase = true) -> Email
+            wire.isBlank() || wire.equals("totp", ignoreCase = true) -> Authenticator
+            else -> Other
+        }
+    }
+}
+
+/** Why an emailed code is being sent; the wire `purpose` of `2fa/email/start`. */
+enum class TwoFactorPurpose(val wire: String) {
+    Enable("enable"),
+    Disable("disable"),
+}
+
+/** A code is in the inbox at [emailMasked]; [challengeToken] plus that code finishes the action. */
+data class EmailChallenge(
+    val challengeToken: String,
+    val expiresAt: String,
+    val emailMasked: String,
 )
 
 data class ProfileAboutItem(

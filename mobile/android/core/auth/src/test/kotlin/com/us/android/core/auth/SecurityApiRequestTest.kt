@@ -114,6 +114,93 @@ class SecurityApiRequestTest {
         assertThat((error as AppError.RateLimited).retryAfterSeconds).isEqualTo(900)
     }
 
+    // ── Emailed two-step code (founder, 10 Nov 2026; twofa_email.go) ───
+
+    @Test
+    fun `login with an emailed second step carries the method and the masked address`() = runTest {
+        enqueue(
+            200,
+            """{"data":{"requires_2fa":true,"pending_token":"pt-e","user":{"id":"u1"},""" +
+                """"two_factor_method":"email","email_masked":"r***@gmail.com"}}""",
+        )
+
+        val state = (repository(this).login("raghu@example.com", "pw") as AppResult.Success).data
+
+        assertThat(state).isEqualTo(
+            SessionState.PendingTwoFactor(
+                pendingToken = "pt-e",
+                userId = "u1",
+                method = SessionState.PendingTwoFactor.METHOD_EMAIL,
+                emailMasked = "r***@gmail.com",
+            ),
+        )
+        assertThat((state as SessionState.PendingTwoFactor).isEmailCode).isTrue()
+        assertThat(tokenStore.hasRefreshToken()).isFalse()
+    }
+
+    @Test
+    fun `login from an older server without two_factor_method reads as an authenticator`() = runTest {
+        enqueue(200, """{"data":{"requires_2fa":true,"pending_token":"pt-o","user":{"id":"u1"}}}""")
+
+        val state = (repository(this).login("raghu@example.com", "pw") as AppResult.Success).data
+
+        assertThat(state).isEqualTo(SessionState.PendingTwoFactor(pendingToken = "pt-o", userId = "u1"))
+        assertThat((state as SessionState.PendingTwoFactor).isEmailCode).isFalse()
+    }
+
+    @Test
+    fun `2fa resend sends only the pending token and reads the cooldown`() = runTest {
+        enqueue(
+            200,
+            """{"data":{"sent":true,"expires_at":"2026-11-10T10:05:00Z","email_masked":"r***@gmail.com",""" +
+                """"resend_after_seconds":60}}""",
+        )
+
+        val result = repository(this).resendTwoFactorCode("pt-e")
+
+        val request = server.takeRequest()
+        assertThat(request.target).isEqualTo("/v1/auth/2fa/resend")
+        assertThat(request.bodyText()).isEqualTo("""{"pending_token":"pt-e"}""")
+        assertThat((result as AppResult.Success).data).isEqualTo(TwoFactorCodeSent("r***@gmail.com", 60))
+    }
+
+    @Test
+    fun `2fa resend tolerates a body with fields missing`() = runTest {
+        enqueue(200, """{"data":{"sent":true}}""")
+
+        val result = repository(this).resendTwoFactorCode("pt-e")
+
+        assertThat((result as AppResult.Success).data).isEqualTo(TwoFactorCodeSent("", 0))
+    }
+
+    @Test
+    fun `2fa resend inside the cooldown is a 429 with its Retry-After`() = runTest {
+        server.enqueue(
+            MockResponse.Builder().code(429).addHeader("Retry-After", "42")
+                .body("""{"error":{"code":"RATE_LIMITED","message":"wait"}}""").build(),
+        )
+
+        val error = (repository(this).resendTwoFactorCode("pt-e") as AppResult.Failure).error
+
+        assertThat((error as AppError.RateLimited).retryAfterSeconds).isEqualTo(42)
+    }
+
+    @Test
+    fun `2fa resend keeps the server's codes for an expired sign-in and a TOTP sign-in`() = runTest {
+        enqueue(401, """{"error":{"code":"AUTH_FAILED","message":"sign-in expired; sign in again"}}""")
+        enqueue(409, """{"error":{"code":"TWO_FACTOR_METHOD_MISMATCH","message":"totp"}}""")
+        enqueue(503, """{"error":{"code":"EMAIL_UNAVAILABLE","message":"down"}}""")
+
+        val repository = repository(this)
+        val expired = (repository.resendTwoFactorCode("pt-e") as AppResult.Failure).error
+        val mismatch = (repository.resendTwoFactorCode("pt-e") as AppResult.Failure).error
+        val unavailable = (repository.resendTwoFactorCode("pt-e") as AppResult.Failure).error
+
+        assertThat(expired).isEqualTo(AppError.AuthFailed(requestId = null, code = "AUTH_FAILED"))
+        assertThat((mismatch as AppError.Unknown).code).isEqualTo("TWO_FACTOR_METHOD_MISMATCH")
+        assertThat((unavailable as AppError.Server).code).isEqualTo("EMAIL_UNAVAILABLE")
+    }
+
     // ── Step-up ────────────────────────────────────────────────────────
 
     @Test

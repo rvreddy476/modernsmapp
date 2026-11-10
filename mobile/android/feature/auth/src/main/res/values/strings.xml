@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Two-step sign-in by emailed code (founder, 10 Nov 2026). The server mails
+      a 6-digit code as soon as the password is accepted; it lives 5 minutes,
+      and a new one can be asked for every 60 seconds.
+    -->
+    <string name="two_factor_email_body">We sent a 6-digit code to %1$s. Enter it to finish signing in. It expires in 5 minutes.</string>
+    <string name="two_factor_email_body_no_address">We sent a 6-digit code to your email. Enter it to finish signing in. It expires in 5 minutes.</string>
+    <string name="two_factor_email_resend">Resend code</string>
+    <string name="two_factor_email_resend_in">Resend code in %1$d s</string>
+    <string name="two_factor_email_wrong_code">That code isn\'t right or has expired. Check the latest email, or send a new code.</string>
+    <string name="two_factor_email_code_sent">We sent a new code. Only the newest one works.</string>
+    <string name="two_factor_email_resend_too_soon">A code was sent a moment ago. You can ask for another when the timer runs out.</string>
+    <string name="two_factor_email_unavailable">We couldn\'t send the email just now. Try again in a few minutes.</string>
+    <string name="two_factor_email_sign_in_expired">This sign-in has expired. Please sign in again.</string>
+</resources>

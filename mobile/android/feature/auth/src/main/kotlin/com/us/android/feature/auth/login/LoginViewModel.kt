@@ -28,8 +28,17 @@ import javax.inject.Inject
  * the screen never has to reach back into a shared holder for it.
  */
 sealed interface LoginNavigation {
-    /** `requires_2fa`: the authenticator code screen. */
-    data class TwoFactor(val userId: String, val pendingToken: String) : LoginNavigation
+    /**
+     * `requires_2fa`: the two-step code screen. [method] is the response's
+     * `two_factor_method` (`email` | `totp`, empty on an older server); for
+     * `email` the code is already in the inbox at [emailMasked].
+     */
+    data class TwoFactor(
+        val userId: String,
+        val pendingToken: String,
+        val method: String = "",
+        val emailMasked: String = "",
+    ) : LoginNavigation
 
     /** `requires_step_up`: the unusual-sign-in screen, with the channels the server accepts. */
     data class StepUp(val pendingToken: String, val methods: List<String>) : LoginNavigation
@@ -211,7 +220,12 @@ class LoginViewModel @Inject constructor(
 
     private fun LoginUiState.applySession(session: SessionState): LoginUiState = when (session) {
         is SessionState.PendingTwoFactor -> copy(
-            navigation = LoginNavigation.TwoFactor(userId = session.userId, pendingToken = session.pendingToken),
+            navigation = LoginNavigation.TwoFactor(
+                userId = session.userId,
+                pendingToken = session.pendingToken,
+                method = session.method,
+                emailMasked = session.emailMasked,
+            ),
         )
         is SessionState.PendingStepUp -> copy(
             navigation = LoginNavigation.StepUp(pendingToken = session.pendingToken, methods = session.methods),
@@ -229,7 +243,11 @@ class LoginViewModel @Inject constructor(
 
     private fun LoginNavigation.fallbackMessage(): UsMessage = when (this) {
         is LoginNavigation.TwoFactor -> UsMessage(
-            "Enter the code from your authenticator app to finish signing in.",
+            if (method == SessionState.PendingTwoFactor.METHOD_EMAIL) {
+                "Enter the code we emailed to ${emailMasked.ifBlank { "your email" }} to finish signing in."
+            } else {
+                "Enter the code from your authenticator app to finish signing in."
+            },
             UsMessageType.Info,
         )
         is LoginNavigation.StepUp -> UsMessage(

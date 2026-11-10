@@ -180,6 +180,10 @@ data class AuthResponseDto(
     @SerialName("session_id") val sessionId: String = "",
     @SerialName("requires_2fa") val requires2fa: Boolean = false,
     @SerialName("pending_token") val pendingToken: String = "",
+    /** `email` | `totp` beside `requires_2fa`; absent on an older server (read as TOTP). */
+    @SerialName("two_factor_method") val twoFactorMethod: String = "",
+    /** For an `email` method: where the server just mailed the code, masked. */
+    @SerialName("email_masked") val emailMasked: String = "",
     @SerialName("requires_step_up") val requiresStepUp: Boolean = false,
     @SerialName("step_up_methods") val stepUpMethods: List<String> = emptyList(),
     @SerialName("requires_verification") val requiresVerification: Boolean = false,

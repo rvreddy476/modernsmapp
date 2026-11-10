@@ -54,6 +54,29 @@ class LoginViewModelTest {
     }
 
     @Test
+    fun `an emailed second step carries the method and masked address to the code screen`() = runTest {
+        api.loginResponse = AuthResponseDto(
+            requires2fa = true,
+            pendingToken = "pt-e",
+            user = AuthUserDto(id = "u1"),
+            twoFactorMethod = "email",
+            emailMasked = "r***@gmail.com",
+        )
+        val vm = viewModel(this)
+
+        vm.signIn()
+
+        assertThat(vm.state.value.navigation).isEqualTo(
+            LoginNavigation.TwoFactor(
+                userId = "u1",
+                pendingToken = "pt-e",
+                method = "email",
+                emailMasked = "r***@gmail.com",
+            ),
+        )
+    }
+
+    @Test
     fun `requires_step_up routes to the unusual sign-in screen with the server's channels`() = runTest {
         api.loginResponse = AuthResponseDto(
             requiresStepUp = true,
