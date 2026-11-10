@@ -237,32 +237,24 @@ func (s *Service) startAnomalyStepUp(ctx context.Context, user *store.User, amr 
 		return nil, ErrAnomalyStepUpUnavailable
 	}
 
+	// Mail the code now when email is on offer, before the pending session
+	// is stored, so the methods handed back are ones that can really be
+	// completed. (Earlier the code was saved but never sent: nothing reads
+	// the anomaly_step_up purpose.) A code that could not be sent leaves
+	// email out; with no other channel left the sign-in cannot step up.
+	if containsMethod(methods, StepUpMethodEmail) {
+		if err := s.sendAnomalyStepUpCode(ctx, user); err != nil {
+			s.log.Error("anomaly step-up: email code not sent", "err", err, "user_id", user.ID)
+			methods = withoutMethod(methods, StepUpMethodEmail)
+			if len(methods) == 0 {
+				return nil, ErrAnomalyStepUpUnavailable
+			}
+		}
+	}
+
 	pendingToken, err := s.storePendingAnomalySession(ctx, user.ID, deviceID, platform, ip, userAgent, methods, amr)
 	if err != nil {
 		return nil, err
-	}
-
-	// If email-OTP is available, dispatch the code now. The user can
-	// still choose TOTP from the methods list — TOTP doesn't need a
-	// dispatch step, the user generates it from their authenticator
-	// app. We dispatch email even when TOTP is also available so the
-	// UI can let the user fall back without a second round-trip.
-	for _, m := range methods {
-		if m == StepUpMethodEmail && user.Email != nil && *user.Email != "" {
-			otp, gerr := s.generateOTP()
-			if gerr == nil {
-				_ = s.store.SaveOTP(ctx, *user.Email, otp, anomalyStepUpOTPPurpose, s.cfg.OTPExpiry)
-				// In production the SaveOTP path is hooked up to the
-				// email dispatcher (purpose-routed). The auth-service
-				// itself doesn't own SMTP — it persists the OTP and
-				// trusts the existing email-OTP dispatcher to fan it
-				// out. Same shape as RequestEmailVerification.
-				s.log.Info("anomaly step-up: email OTP dispatched", "user_id", user.ID)
-			} else {
-				s.log.Warn("anomaly step-up: failed to generate OTP", "err", gerr, "user_id", user.ID)
-			}
-			break
-		}
 	}
 
 	// Persist the anomaly with `challenged=true` so the security inbox
@@ -451,3 +443,54 @@ func (s *Service) finishAnomalyStepUpSession(ctx context.Context, user *store.Us
 // (no-op interface guard so go vet doesn't flag the unused net import
 // if a future refactor strips the subnet probe)
 var _ = net.ParseIP
+
+// sendAnomalyStepUpCode stores a fresh code for the unusual-sign-in check
+// and mails it to the account's verified address.
+func (s *Service) sendAnomalyStepUpCode(ctx context.Context, user *store.User) error {
+	to, ok := verifiedEmail(user)
+	if !ok {
+		return ErrTwoFactorEmailUnverified
+	}
+	if s.email == nil {
+		return ErrEmailDeliveryUnavailable
+	}
+	code, err := s.generateOTP()
+	if err != nil {
+		return fmt.Errorf("generate code: %w", err)
+	}
+	if err := s.store.SaveOTP(ctx, to, code, anomalyStepUpOTPPurpose, s.cfg.OTPExpiry); err != nil {
+		return fmt.Errorf("save code: %w", err)
+	}
+	subject, body := anomalyStepUpMessage(code, int(s.cfg.OTPExpiry.Minutes()))
+	if err := s.email.Send(ctx, EmailMessage{To: to, Subject: subject, TextBody: body}); err != nil {
+		return fmt.Errorf("%w: %v", ErrEmailDeliveryUnavailable, err)
+	}
+	return nil
+}
+
+func anomalyStepUpMessage(code string, minutes int) (string, string) {
+	return "Confirm it's you signing in", fmt.Sprintf(
+		"We noticed a sign-in to your Momentum account from a new device or place.\n\n"+
+			"If it was you, enter this code to finish signing in: %s\n\n"+
+			"It expires in %d minutes.\n\n"+
+			"If it was not you, do not share the code and change your password now.\n", code, minutes)
+}
+
+func containsMethod(methods []string, m string) bool {
+	for _, x := range methods {
+		if x == m {
+			return true
+		}
+	}
+	return false
+}
+
+func withoutMethod(methods []string, m string) []string {
+	out := make([]string, 0, len(methods))
+	for _, x := range methods {
+		if x != m {
+			out = append(out, x)
+		}
+	}
+	return out
+}

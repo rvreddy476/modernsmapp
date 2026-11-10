@@ -75,6 +75,7 @@ func TestOAuthSessionWithoutDeviceIDKeepsDefaults(t *testing.T) {
 // only answer a generic failure. It now comes back with the sentinel.
 func TestOAuthSignInReturnsTheStepUpEnvelope(t *testing.T) {
 	svc, fstore, mr := newTestService(t, "enforce")
+	svc.WithEmailSender(&outbox{})
 	email := "g@example.test"
 	user := &store.User{ID: uuid.New(), Email: &email, EmailVerified: true, AccountStatus: store.AccountStatusActive}
 	fstore.users = map[uuid.UUID]*store.User{user.ID: user}

@@ -162,6 +162,7 @@ func TestCreateSessionForUser_LowRiskShadowMode_IssuesSession(t *testing.T) {
 // and MUST NOT mint a session.
 func TestCreateSessionForUser_HighRiskEnforceMode_BlocksSession(t *testing.T) {
 	svc, fstore, mr := newTestService(t, "enforce")
+	svc.WithEmailSender(&outbox{})
 
 	email := "u@example.test"
 	user := &store.User{
