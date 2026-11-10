@@ -629,6 +629,9 @@ func (h *Handler) GetRelationship(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
+	if isEdgeRequest(c) {
+		rel = edgeRelationship(rel)
+	}
 	api.JSON(c.Writer, http.StatusOK, rel, nil)
 }
 
@@ -1173,6 +1176,9 @@ func (h *Handler) GetRelationshipBatch(c *gin.Context) {
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
+	}
+	if isEdgeRequest(c) {
+		result = edgeRelationshipBatch(result)
 	}
 	c.JSON(http.StatusOK, result)
 }
