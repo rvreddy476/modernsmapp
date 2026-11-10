@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/atpost/identity-profile-service/internal/service"
 	"github.com/atpost/identity-profile-service/internal/store"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -51,7 +52,7 @@ func TestUpsertModuleProfileHidesDriverError(t *testing.T) {
 
 func TestUpsertModuleProfileKeepsInvalidModuleMessage(t *testing.T) {
 	gin.SetMode(gin.TestMode)
-	h := &Handler{svc: &failingModuleService{err: errors.New("invalid module: must be postbook, posttube, or postgram")}, log: slog.Default()}
+	h := &Handler{svc: &failingModuleService{err: service.ErrInvalidModule}, log: slog.Default()}
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
 	c.Request = httptest.NewRequest(http.MethodPut, "/", strings.NewReader(`{}`))

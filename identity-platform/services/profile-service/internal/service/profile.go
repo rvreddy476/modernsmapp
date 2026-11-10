@@ -358,7 +358,7 @@ func (s *Service) IncrementLinkClick(ctx context.Context, linkID uuid.UUID) erro
 
 func (s *Service) FollowUser(ctx context.Context, followerID, followingID uuid.UUID) (*store.Follow, error) {
 	if followerID == followingID {
-		return nil, errors.New("cannot follow yourself")
+		return nil, ErrCannotFollowSelf
 	}
 
 	// Check if either user has blocked the other
@@ -367,7 +367,7 @@ func (s *Service) FollowUser(ctx context.Context, followerID, followingID uuid.U
 		return nil, fmt.Errorf("failed to check block status: %w", err)
 	}
 	if blocked {
-		return nil, errors.New("cannot follow this user")
+		return nil, ErrCannotFollowUser
 	}
 
 	f, changed, err := s.store.CreateFollow(ctx, followerID, followingID)
@@ -487,7 +487,7 @@ func (s *Service) ListBlocksCursor(ctx context.Context, userID uuid.UUID, limit 
 // BlockUser creates a block and auto-unfollows in both directions.
 func (s *Service) BlockUser(ctx context.Context, blockerID, blockedID uuid.UUID) error {
 	if blockerID == blockedID {
-		return errors.New("cannot block yourself")
+		return ErrCannotBlockSelf
 	}
 
 	// Create block record
@@ -602,7 +602,7 @@ func (s *Service) updateFollowSetsRemove(ctx context.Context, followerID, follow
 // GetModuleProfile returns a single module profile for a user+module.
 func (s *Service) GetModuleProfile(ctx context.Context, userID uuid.UUID, module string) (*store.ModuleProfile, error) {
 	if !isValidModule(module) {
-		return nil, errors.New("invalid module: must be postbook, posttube, or postgram")
+		return nil, ErrInvalidModule
 	}
 
 	cacheKey := fmt.Sprintf("module_profile:%s:%s", userID, module)
@@ -634,7 +634,7 @@ func (s *Service) GetModuleProfiles(ctx context.Context, userID uuid.UUID) ([]st
 // UpsertModuleProfile creates or updates a module profile and publishes an event.
 func (s *Service) UpsertModuleProfile(ctx context.Context, userID uuid.UUID, module string, params store.UpsertModuleProfileParams) (*store.ModuleProfile, error) {
 	if !isValidModule(module) {
-		return nil, errors.New("invalid module: must be postbook, posttube, or postgram")
+		return nil, ErrInvalidModule
 	}
 
 	mp, err := s.store.UpsertModuleProfile(ctx, userID, module, params)
@@ -656,7 +656,7 @@ func (s *Service) UpsertModuleProfile(ctx context.Context, userID uuid.UUID, mod
 // DeleteModuleProfile removes a module profile.
 func (s *Service) DeleteModuleProfile(ctx context.Context, userID uuid.UUID, module string) error {
 	if !isValidModule(module) {
-		return errors.New("invalid module: must be postbook, posttube, or postgram")
+		return ErrInvalidModule
 	}
 
 	if err := s.store.DeleteModuleProfile(ctx, userID, module); err != nil {
@@ -711,7 +711,7 @@ func (s *Service) ChangeHandle(ctx context.Context, userID uuid.UUID, newUsernam
 	newUsername = strings.TrimPrefix(newUsername, "@")
 	newUsername = strings.TrimSpace(newUsername)
 	if newUsername == "" {
-		return nil, errors.New("username cannot be empty")
+		return nil, ErrUsernameEmpty
 	}
 
 	// Get current profile
@@ -720,7 +720,7 @@ func (s *Service) ChangeHandle(ctx context.Context, userID uuid.UUID, newUsernam
 		return nil, fmt.Errorf("failed to get profile: %w", err)
 	}
 	if profile == nil {
-		return nil, errors.New("profile not found")
+		return nil, ErrProfileNotFound
 	}
 
 	oldUsername := ""
@@ -738,7 +738,7 @@ func (s *Service) ChangeHandle(ctx context.Context, userID uuid.UUID, newUsernam
 		return nil, fmt.Errorf("failed to check handle cooldown: %w", err)
 	}
 	if latest != nil && latest.CooldownUntil.After(time.Now()) {
-		return nil, fmt.Errorf("handle change on cooldown until %s", latest.CooldownUntil.Format(time.RFC3339))
+		return nil, &HandleCooldownError{Until: latest.CooldownUntil}
 	}
 
 	// Check if new username is taken
@@ -747,7 +747,7 @@ func (s *Service) ChangeHandle(ctx context.Context, userID uuid.UUID, newUsernam
 		return nil, fmt.Errorf("failed to check username availability: %w", err)
 	}
 	if existing != nil && existing.UserID != userID {
-		return nil, errors.New("username already taken")
+		return nil, ErrUsernameTaken
 	}
 
 	// Username only. Every other field is nil, which the store leaves alone.

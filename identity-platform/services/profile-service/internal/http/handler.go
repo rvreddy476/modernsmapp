@@ -449,8 +449,7 @@ func (h *Handler) UpdateMe(c *gin.Context) {
 
 	var req UpdateProfileRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		h.log.Warn("invalid request payload", "err", err, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeBindError(c, err)
 		return
 	}
 	if req.AvatarMediaID != nil || req.CoverMediaID != nil {
@@ -541,7 +540,7 @@ func (h *Handler) UpdateMyAvatar(c *gin.Context) {
 
 	var req UpdateMediaIDRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeBindError(c, err)
 		return
 	}
 	if h.media == nil {
@@ -575,7 +574,7 @@ func (h *Handler) UpdateMyCover(c *gin.Context) {
 
 	var req UpdateMediaIDRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeBindError(c, err)
 		return
 	}
 	if h.media == nil {
@@ -645,7 +644,7 @@ func (h *Handler) UpdateMyLinks(c *gin.Context) {
 
 	var req UpdateLinksRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeBindError(c, err)
 		return
 	}
 
@@ -754,11 +753,11 @@ func (h *Handler) UpsertMyAboutItem(c *gin.Context) {
 	section := c.Param("section")
 	var req UpsertAboutItemRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeBindError(c, err)
 		return
 	}
 	if err := validateAboutItem(section, req.Data, req.Visibility); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_ABOUT_ITEM", err.Error(), nil, nil)
+		h.writeValidationError(c, "INVALID_ABOUT_ITEM", err)
 		return
 	}
 
@@ -854,11 +853,11 @@ func (h *Handler) CreateMyProfileLink(c *gin.Context) {
 
 	var req CreateProfileLinkRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeBindError(c, err)
 		return
 	}
 	if err := validateProfileLink(req.Title, req.URL, req.Visibility); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PROFILE_LINK", err.Error(), nil, nil)
+		h.writeValidationError(c, "INVALID_PROFILE_LINK", err)
 		return
 	}
 	req.URL = normalizeProfileURL(req.URL)
@@ -914,11 +913,11 @@ func (h *Handler) UpdateMyProfileLink(c *gin.Context) {
 
 	var req UpdateProfileLinkRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", err.Error(), nil, nil)
+		h.writeBindError(c, err)
 		return
 	}
 	if err := validateProfileLink(req.Title, req.URL, req.Visibility); err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_PROFILE_LINK", err.Error(), nil, nil)
+		h.writeValidationError(c, "INVALID_PROFILE_LINK", err)
 		return
 	}
 	req.URL = normalizeProfileURL(req.URL)
@@ -1006,7 +1005,7 @@ func (h *Handler) FollowUser(c *gin.Context) {
 	f, err := h.svc.FollowUser(c.Request.Context(), followerID, target.UserID)
 	if err != nil {
 		h.log.Error("failed to follow user", "err", err, "follower_id", followerID, "following_id", target.UserID, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "FOLLOW_FAILED", err.Error(), nil, nil)
+		writeFollowError(c, err)
 		return
 	}
 
@@ -1259,7 +1258,7 @@ func (h *Handler) BlockUser(c *gin.Context) {
 
 	if err := h.svc.BlockUser(c.Request.Context(), blockerID, target.UserID); err != nil {
 		h.log.Error("failed to block user", "err", err, "blocker_id", blockerID, "blocked_id", target.UserID, "request_id", RequestIDFromContext(c))
-		api.Error(c.Writer, http.StatusBadRequest, "BLOCK_FAILED", err.Error(), nil, nil)
+		writeBlockError(c, err)
 		return
 	}
 
@@ -1510,7 +1509,7 @@ func (h *Handler) ChangeHandle(c *gin.Context) {
 	profile, err := h.svc.ChangeHandle(c.Request.Context(), userID, req.Username)
 	if err != nil {
 		h.log.Warn("handle change failed", "err", err, "user_id", userID)
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
+		writeHandleChangeError(c, err)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, profile, nil)
@@ -1605,16 +1604,4 @@ func (h *Handler) GetProfileStats(c *gin.Context) {
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, stats, nil)
-}
-
-// writeModuleProfileError answers a module-profile service failure. Only the
-// service's own "invalid module" validation text reaches the client; any other
-// error (store, driver, cache) is logged by the caller and answered with a
-// generic 500 so no SQL or driver text leaks.
-func writeModuleProfileError(c *gin.Context, err error) {
-	if strings.HasPrefix(err.Error(), "invalid module") {
-		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil, nil)
-		return
-	}
-	api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "internal error", nil, nil)
 }

@@ -2,7 +2,7 @@ package http
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -187,6 +187,35 @@ func validHexColor(raw string) bool {
 	return true
 }
 
+// Validation refusals for about items and profile links. Each message is fixed
+// copy written for the person editing their profile; writeValidationError
+// answers only these, so nothing else this package returns reaches a client.
+var (
+	errAboutSection      = errors.New("unsupported about section")
+	errVisibility        = errors.New("visibility must be public or private")
+	errAboutDataRequired = errors.New("data is required")
+	errAboutDataTooLarge = errors.New("about item must be valid JSON no larger than 16 KB")
+	errLinkTitle         = errors.New("title is required and must be 80 characters or fewer")
+	errLinkURL           = errors.New("URL must use http or https")
+)
+
+var knownValidationErrors = []error{
+	errAboutSection, errVisibility, errAboutDataRequired, errAboutDataTooLarge, errLinkTitle, errLinkURL,
+}
+
+// writeValidationError answers a validateAboutItem / validateProfileLink
+// refusal as 400 with code and the sentinel's fixed message. An error that is
+// not one of the known sentinels is answered as a generic 500 and logged.
+func (h *Handler) writeValidationError(c *gin.Context, code string, err error) {
+	for _, known := range knownValidationErrors {
+		if errors.Is(err, known) {
+			api.Error(c.Writer, http.StatusBadRequest, code, known.Error(), nil, nil)
+			return
+		}
+	}
+	h.writeInternalError(c, "unexpected validation failure", err)
+}
+
 var allowedAboutSections = map[string]bool{
 	"work": true, "education": true, "interests": true, "hobbies": true,
 	"skills": true, "languages": true, "places": true, "achievements": true,
@@ -194,30 +223,30 @@ var allowedAboutSections = map[string]bool{
 
 func validateAboutItem(section string, data map[string]interface{}, visibility string) error {
 	if !allowedAboutSections[strings.ToLower(strings.TrimSpace(section))] {
-		return fmt.Errorf("unsupported about section")
+		return errAboutSection
 	}
 	if visibility != "" && visibility != "public" && visibility != "private" {
-		return fmt.Errorf("visibility must be public or private")
+		return errVisibility
 	}
 	if len(data) == 0 {
-		return fmt.Errorf("data is required")
+		return errAboutDataRequired
 	}
 	raw, err := json.Marshal(data)
 	if err != nil || len(raw) > 16*1024 {
-		return fmt.Errorf("about item must be valid JSON no larger than 16 KB")
+		return errAboutDataTooLarge
 	}
 	return nil
 }
 
 func validateProfileLink(title, rawURL, visibility string) error {
 	if strings.TrimSpace(title) == "" || utf8.RuneCountInString(title) > 80 {
-		return fmt.Errorf("title is required and must be 80 characters or fewer")
+		return errLinkTitle
 	}
 	if !SafePublicURL(normalizeProfileURL(rawURL)) {
-		return fmt.Errorf("URL must use http or https")
+		return errLinkURL
 	}
 	if visibility != "" && visibility != "public" && visibility != "private" {
-		return fmt.Errorf("visibility must be public or private")
+		return errVisibility
 	}
 	return nil
 }
