@@ -26,6 +26,10 @@ type Handler struct {
 	// verifier admits sibling services to private profile fields. Nil admits
 	// none. See profile_visibility.go.
 	verifier         serviceTokenVerifier
+	// blocks hides a profile across a block in either direction. It is
+	// graphBlocks in production; nil (struct-literal test handlers) checks
+	// nothing. See profile_blocks.go.
+	blocks           blockChecker
 	store            *store.Store
 	graphURL         string
 	presenceStore    presenceBackend
@@ -51,6 +55,7 @@ func New(svc *service.Service, presenceStore *presence.Store, st *store.Store) *
 	}
 	h := &Handler{svc: svc, users: svc, store: st, graphURL: graphURL, presenceStore: presenceStore}
 	h.graphClient = httpclient.NewWithBreaker(5*time.Second, "user->graph")
+	h.blocks = graphBlocks{h: h}
 	if st != nil {
 		h.pageAdmin = st
 	}
@@ -239,9 +244,9 @@ func (h *Handler) GetUser(c *gin.Context) {
 		return
 	}
 	// A deactivated or deletion-scheduled account reads as missing to all but
-	// its owner and service callers (US-M1).
-	if !h.servable(c, u) {
-		respondUserNotFound(c)
+	// its owner and service callers (US-M1), and so does an account on the
+	// other side of a block (profile_blocks.go).
+	if !h.admitProfileRead(c, u) {
 		return
 	}
 
@@ -262,8 +267,7 @@ func (h *Handler) GetUserByUsername(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
-	if !h.servable(c, u) {
-		respondUserNotFound(c)
+	if !h.admitProfileRead(c, u) {
 		return
 	}
 

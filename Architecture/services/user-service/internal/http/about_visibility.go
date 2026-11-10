@@ -36,11 +36,19 @@ type aboutRelationship struct {
 // removes follows when a block lands, so this is belt and braces against a
 // stale cache entry or a connection row a block did not clear.
 func aboutAccessFromRelationship(rel aboutRelationship) service.ViewerAccess {
-	if rel.Blocked || rel.BlockedBy || rel.ViewerBlockedTarget || rel.TargetBlockedViewer {
+	if rel.blockedEitherWay() {
 		return service.ViewerAccess{}
 	}
 	return service.ViewerAccess{
 		IsFollower: rel.Follows,
 		IsFriend:   rel.IsConnection || (rel.Follows && rel.FollowedBy),
 	}
+}
+
+// blockedEitherWay reports a block in either direction. It reads the legacy
+// pair and the named pair alike, so an answer carrying only one of them
+// still counts. The About audience and the profile block gate
+// (profile_blocks.go) share it.
+func (rel aboutRelationship) blockedEitherWay() bool {
+	return rel.Blocked || rel.BlockedBy || rel.ViewerBlockedTarget || rel.TargetBlockedViewer
 }

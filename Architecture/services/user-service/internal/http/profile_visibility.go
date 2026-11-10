@@ -168,8 +168,7 @@ func (h *Handler) requireServableUser(c *gin.Context) {
 		c.Abort()
 		return
 	}
-	if !h.servable(c, u) {
-		respondUserNotFound(c)
+	if !h.admitProfileRead(c, u) {
 		c.Abort()
 		return
 	}

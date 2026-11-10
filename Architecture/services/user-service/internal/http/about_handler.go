@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -29,28 +30,42 @@ func (h *Handler) resolveViewerAccess(ctx *gin.Context, ownerID uuid.UUID) servi
 		return service.ViewerAccess{IsSelf: true}
 	}
 
-	url := fmt.Sprintf("%s/v1/graph/relationship?user_id=%s&other_id=%s", h.graphURL, viewerID, ownerID)
-	graphReq, err := h.newGraphRequest(ctx.Request.Context(), url)
+	rel, err := h.fetchViewerRelationship(ctx.Request.Context(), viewerID, ownerID)
 	if err != nil {
 		return service.ViewerAccess{}
+	}
+	return aboutAccessFromRelationship(rel)
+}
+
+// fetchViewerRelationship is the one GET /v1/graph/relationship call this
+// service makes: viewer as user_id, owner as other_id. It is an in-cluster
+// call (internal key, no X-Graph-Write-Source), so graph-service answers both
+// block directions truthfully; only the edge copy of that route hides the
+// target's block of the viewer. Any non-200 or undecodable answer is an
+// error, never "no relationship".
+func (h *Handler) fetchViewerRelationship(ctx context.Context, viewerID, ownerID uuid.UUID) (aboutRelationship, error) {
+	url := fmt.Sprintf("%s/v1/graph/relationship?user_id=%s&other_id=%s", h.graphURL, viewerID, ownerID)
+	graphReq, err := h.newGraphRequest(ctx, url)
+	if err != nil {
+		return aboutRelationship{}, err
 	}
 	graphReq.Header.Set("X-User-Id", viewerID.String())
 	resp, err := h.graphClient.Do(graphReq)
 	if err != nil {
-		return service.ViewerAccess{}
+		return aboutRelationship{}, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return service.ViewerAccess{}
+		return aboutRelationship{}, fmt.Errorf("graph relationship: status %d", resp.StatusCode)
 	}
 
 	var body struct {
 		Data aboutRelationship `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&body); err != nil {
-		return service.ViewerAccess{}
+		return aboutRelationship{}, fmt.Errorf("graph relationship: decode: %w", err)
 	}
-	return aboutAccessFromRelationship(body.Data)
+	return body.Data, nil
 }
 
 func (h *Handler) GetAbout(c *gin.Context) {
