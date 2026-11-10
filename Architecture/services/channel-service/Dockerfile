@@ -17,7 +17,7 @@ COPY shared /shared
 COPY services /services
 
 # Build the application
-RUN go build -mod=vendor -o /server ./services/channel-service/cmd/server/main.go
+RUN go build -mod=vendor -o /server ./services/channel-service/cmd/server
 # The media claim reconcile tool (cmd/media-claims): run in the pod with
 # `kubectl exec deploy/channel-service -- /media-claims` (dry run) or `-apply`.
 RUN go build -mod=vendor -o /media-claims ./services/channel-service/cmd/media-claims
