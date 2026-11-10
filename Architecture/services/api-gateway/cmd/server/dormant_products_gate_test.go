@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -502,5 +503,55 @@ func TestDoorstepPilotAllowlistParsing(t *testing.T) {
 	}
 	if got := throughGateway(t, map[string]string{"DOORSTEP_PILOT_USER_IDS": withInvalid}, "/v1/doorstep/catalogue", bearer(t, "call_a", "secret")); got.reached {
 		t.Error("dev: an invalid allowlist entry was honoured")
+	}
+}
+
+// A trusted contact opens a friend's panic alert or shared location from a
+// push, and may have no dating profile and be outside the pilot (founder
+// decision, 10 Nov 2026). Exactly those two reads, by id, signed in, pass the
+// closed dating gate; dating-service then answers only the alert's own
+// recipients. Everything else in dating stays closed.
+func TestDatingRecipientReadsPassTheClosedGate(t *testing.T) {
+	products := productsFrom(t, nil)
+	const id = "8d0f7a8e-3c1b-4f53-9d2a-6e3b1f0c9a11"
+	as := func(method, path, userID string) bool {
+		t.Helper()
+		res := httptest.NewRecorder()
+		req := httptest.NewRequest(method, path, nil)
+		if userID != "" {
+			req = req.WithContext(context.WithValue(req.Context(), verifiedUserIDKey{}, userID))
+		}
+		return serveDormantProductGate(res, req, products)
+	}
+	for _, path := range []string{"/v1/dating/safety/alerts/" + id, "/v1/dating/safety/shared-locations/" + id} {
+		if as(http.MethodGet, path, outsiderUser) {
+			t.Errorf("GET %s by a signed-in non-pilot user was gated", path)
+		}
+		if !as(http.MethodGet, path, "") {
+			t.Errorf("GET %s signed out was not gated", path)
+		}
+		for _, method := range []string{http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+			if !as(method, path, outsiderUser) {
+				t.Errorf("%s %s was not gated", method, path)
+			}
+		}
+	}
+	for _, path := range []string{
+		"/v1/dating/safety/alerts",
+		"/v1/dating/safety/shared-locations",
+		"/v1/dating/safety/alerts/not-a-uuid",
+		"/v1/dating/safety/alerts/" + id + "/ack",
+		"/v1/dating/safety/alerts/" + id + "x",
+		"/v1/dating/safety/trusted-contacts",
+		"/v1/dating/profile",
+		"/v1/dating/matches",
+	} {
+		if !as(http.MethodGet, path, outsiderUser) {
+			t.Errorf("GET %s by a non-pilot user was not gated", path)
+		}
+	}
+	// GET /v1/features still reports dating as closed for the same user.
+	if !dormantProductRefuses("/v1/dating/safety/alerts/"+id, outsiderUser, products) {
+		t.Error("dormantProductRefuses opened dating; the exemption belongs only in serveDormantProductGate")
 	}
 }

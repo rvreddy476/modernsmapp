@@ -12,6 +12,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -1445,6 +1446,14 @@ func (p dormantProduct) pilotAllows(userID string) bool {
 	return ok
 }
 
+// datingRecipientReadRe matches the two dating reads a trusted contact makes
+// from a push: one safety alert and one shared location, each by id. A
+// trusted contact needs no dating profile and may be outside the pilot;
+// dating-service answers these only to the alert's trusted contacts or the
+// share's recipient (founder decision, 10 Nov 2026). The lists and every other
+// dating route stay behind the gate.
+var datingRecipientReadRe = regexp.MustCompile(`^/v1/dating/safety/(alerts|shared-locations)/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
 // serveDormantProductGate answers 404 for a closed dormant product's public
 // prefix, unless the verified caller is on that product's pilot allowlist.
 // 404 rather than 503: an edge client should not learn that a product exists
@@ -1452,6 +1461,11 @@ func (p dormantProduct) pilotAllows(userID string) bool {
 // backstop below the route match. Internal service-to-service calls do not
 // pass through here. It must run after jwtExtractMiddleware.
 func serveDormantProductGate(w http.ResponseWriter, r *http.Request, products []dormantProduct) bool {
+	// Not in dormantProductRefuses: GET /v1/features calls that too, and must
+	// keep reporting dating as closed.
+	if r.Method == http.MethodGet && verifiedUserID(r) != "" && datingRecipientReadRe.MatchString(r.URL.Path) {
+		return false
+	}
 	if !dormantProductRefuses(r.URL.Path, verifiedUserID(r), products) {
 		return false
 	}
