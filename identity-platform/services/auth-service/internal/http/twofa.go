@@ -1,8 +1,10 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 
+	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -19,6 +21,9 @@ func (h *Handler) Setup2FA(c *gin.Context) {
 
 	resp, err := h.svc.Setup2FA(c.Request.Context(), userID)
 	if err != nil {
+		if writeTOTPNotOffered(c, err) {
+			return
+		}
 		h.log.Error("2FA setup failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusBadRequest, "2FA_SETUP_FAILED", err.Error(), nil, nil)
 		return
@@ -46,6 +51,13 @@ func (h *Handler) Verify2FASetup(c *gin.Context) {
 	}
 
 	if err := h.svc.Verify2FASetup(c.Request.Context(), userID, req.Code); err != nil {
+		if writeTOTPNotOffered(c, err) {
+			return
+		}
+		if errors.Is(err, service.ErrTwoFactorAlreadyEnabled) {
+			api.Error(c.Writer, http.StatusConflict, CodeTwoFactorAlreadyEnabled, err.Error(), nil, nil)
+			return
+		}
 		h.log.Warn("2FA setup verification failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusBadRequest, "2FA_VERIFY_FAILED", err.Error(), nil, nil)
 		return
@@ -54,9 +66,12 @@ func (h *Handler) Verify2FASetup(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, map[string]string{"message": "2FA enabled successfully"}, nil)
 }
 
+// Disable2FARequest: an email-2FA account sends {challenge_token, code} from
+// a purpose=disable challenge; a TOTP account sends {password, code}.
 type Disable2FARequest struct {
-	Password string `json:"password" binding:"required"`
-	Code     string `json:"code" binding:"required"`
+	Password       string `json:"password"`
+	Code           string `json:"code" binding:"required"`
+	ChallengeToken string `json:"challenge_token"`
 }
 
 func (h *Handler) Disable2FA(c *gin.Context) {
@@ -73,9 +88,30 @@ func (h *Handler) Disable2FA(c *gin.Context) {
 		return
 	}
 
+	if req.ChallengeToken != "" {
+		if err := h.svc.DisableEmail2FA(c.Request.Context(), userID, req.ChallengeToken, req.Code); err != nil {
+			h.writeTwoFAEmailErr(c, err, "2FA email disable failed")
+			return
+		}
+		api.JSON(c.Writer, http.StatusOK, map[string]any{
+			"message": "2FA disabled successfully", "enabled": false, "method": "",
+		}, nil)
+		return
+	}
+	if req.Password == "" {
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST",
+			"send challenge_token and code (email two-step verification) or password and code (authenticator app)", nil, nil)
+		return
+	}
+
 	if err := h.svc.Disable2FA(c.Request.Context(), userID, req.Password, req.Code); err != nil {
 		h.log.Warn("2FA disable failed", "err", err, "user_id", userID, "request_id", RequestIDFromContext(c))
 		if writeIfThrottled(c, err, "Too many attempts. Try again later.") {
+			return
+		}
+		if errors.Is(err, service.ErrTwoFactorMethodMismatch) {
+			api.Error(c.Writer, http.StatusConflict, CodeTwoFactorMethodMismatch,
+				"this account uses email two-step verification: POST /v1/auth/2fa/email/start with purpose=disable, then send challenge_token and code", nil, nil)
 			return
 		}
 		// M9 (login audit): never err.Error() here. It used to say "invalid
@@ -86,7 +122,9 @@ func (h *Handler) Disable2FA(c *gin.Context) {
 		return
 	}
 
-	api.JSON(c.Writer, http.StatusOK, map[string]string{"message": "2FA disabled successfully"}, nil)
+	api.JSON(c.Writer, http.StatusOK, map[string]any{
+		"message": "2FA disabled successfully", "enabled": false, "method": "",
+	}, nil)
 }
 
 type Verify2FARequest struct {

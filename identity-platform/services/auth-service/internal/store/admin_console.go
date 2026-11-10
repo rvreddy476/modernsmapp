@@ -62,7 +62,7 @@ func (s *Store) ListRoleHolders(ctx context.Context, f RoleHolderFilter) ([]Role
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT r.user_id, r.role, r.app, r.expires_at, r.reason, r.granted_by, r.granted_at,
-		       COALESCE(u.two_factor_enabled, FALSE), `+activeRoleAlias("r.")+`
+		       COALESCE(u.two_factor_enabled AND u.two_factor_method <> 'email', FALSE), `+activeRoleAlias("r.")+`
 		FROM auth.user_roles r
 		LEFT JOIN auth.users u ON u.user_id = r.user_id
 		WHERE r.role = ANY($1)

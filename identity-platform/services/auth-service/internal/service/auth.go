@@ -168,6 +168,9 @@ type Store interface {
 	DeleteTrustedDevice(ctx context.Context, userID, deviceID uuid.UUID) error
 	// 2FA
 	Enable2FA(ctx context.Context, userID uuid.UUID, secret string) error
+	// EnableEmail2FA: conditional on 2FA being off
+	// (store.ErrTwoFactorStateChanged otherwise).
+	EnableEmail2FA(ctx context.Context, userID uuid.UUID) error
 	Disable2FA(ctx context.Context, userID uuid.UUID) error
 	Get2FASecret(ctx context.Context, userID uuid.UUID) (string, error)
 	// OAuth
@@ -273,6 +276,10 @@ type AuthResponse struct {
 	SessionID               uuid.UUID   `json:"session_id"`
 	Requires2FA             bool        `json:"requires_2fa,omitempty"`
 	PendingToken            string      `json:"pending_token,omitempty"`
+	// With Requires2FA: which second factor POST /v1/auth/2fa/verify wants,
+	// "email" (a code was just mailed to EmailMasked) or "totp".
+	TwoFactorMethod string `json:"two_factor_method,omitempty"`
+	EmailMasked     string `json:"email_masked,omitempty"`
 	// A13 — anomaly step-up envelope. When RequiresStepUp is true the
 	// password / OTP check has passed but the risk band demanded a
 	// second channel; the UI must POST to /v1/auth/anomaly/verify-* to

@@ -172,7 +172,7 @@ func (s *Service) CapabilitiesForUser(ctx context.Context, userID uuid.UUID) Cap
 	adminCaps := AdminCapabilities{Admin: admin}
 	if !adminEmpty(admin) {
 		if u, uerr := s.store.GetUserByID(ctx, userID); uerr == nil && u != nil {
-			adminCaps.MFAEnrolled = u.TwoFactorEnabled
+			adminCaps.MFAEnrolled = u.HasTOTP()
 		}
 		// The token's admin_mfa was resolved at mint; enrolment is re-read
 		// live so disabling TOTP takes effect at once here too.

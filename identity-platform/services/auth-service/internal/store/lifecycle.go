@@ -368,6 +368,7 @@ func (s *Store) CompletePurge(ctx context.Context, userID uuid.UUID) error {
 		    phone = NULL,
 		    password_hash = '',
 		    two_factor_enabled = FALSE,
+		    two_factor_method = '',
 		    two_factor_secret = NULL,
 		    two_factor_secret_encrypted = NULL,
 		    login_provider = NULL,

@@ -44,6 +44,8 @@ type stubAuthService struct {
 	admin adminSessionStub
 	// Admin console token path; methods below, tests in admin_console_test.go.
 	console consoleStub
+	// Email 2FA; methods in twofa_email_test.go.
+	email2FA email2FAStub
 }
 
 func (s *stubAuthService) RequestOTP(ctx context.Context, phone, purpose string) error {
@@ -254,10 +256,20 @@ func (s *stubAuthService) ListAdminAudit(_ context.Context, _ uuid.UUID, _ int) 
 
 // 2FA stubs
 func (s *stubAuthService) Setup2FA(_ context.Context, _ uuid.UUID) (*service.TwoFASetupResponse, error) {
+	if s.email2FA.setupErr != nil {
+		return nil, s.email2FA.setupErr
+	}
 	return nil, nil
 }
-func (s *stubAuthService) Verify2FASetup(_ context.Context, _ uuid.UUID, _ string) error { return nil }
-func (s *stubAuthService) Disable2FA(_ context.Context, _ uuid.UUID, _, _ string) error  { return nil }
+func (s *stubAuthService) Verify2FASetup(_ context.Context, _ uuid.UUID, _ string) error {
+	return s.email2FA.setupErr
+}
+func (s *stubAuthService) Disable2FA(_ context.Context, u uuid.UUID, pw, code string) error {
+	if s.email2FA.disableTOTP != nil {
+		return s.email2FA.disableTOTP(u, pw, code)
+	}
+	return nil
+}
 func (s *stubAuthService) Verify2FA(_ context.Context, _ uuid.UUID, _, _ string) (*service.AuthResponse, error) {
 	return nil, nil
 }
@@ -324,6 +336,9 @@ func (s *stubAuthService) ExportUserData(_ context.Context, _ string) (*service.
 	return &service.DataExport{}, nil
 }
 func (s *stubAuthService) GetUserContact(_ context.Context, _ uuid.UUID) (*store.User, error) {
+	if s.email2FA.contact != nil {
+		return s.email2FA.contact, nil
+	}
 	return &store.User{}, nil
 }
 func (s *stubAuthService) IssueMiniAppSession(_ context.Context, appID, userID uuid.UUID, grantedPermissions []string) (*service.MiniAppSessionResponse, error) {

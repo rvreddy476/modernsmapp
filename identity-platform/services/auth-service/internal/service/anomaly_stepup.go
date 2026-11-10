@@ -153,7 +153,7 @@ func allowedStepUpMethods(u *store.User) []string {
 	if u.Email != nil && *u.Email != "" && u.EmailVerified {
 		methods = append(methods, StepUpMethodEmail)
 	}
-	if u.TwoFactorEnabled {
+	if u.HasTOTP() {
 		methods = append(methods, StepUpMethod2FA)
 	}
 	return methods
@@ -367,7 +367,7 @@ func (s *Service) ResolveAnomalyStepUp2FA(ctx context.Context, pendingToken, cod
 	if user.AccountStatus == "suspended" {
 		return nil, errors.New("account suspended")
 	}
-	if !user.TwoFactorEnabled {
+	if !user.HasTOTP() {
 		return nil, ErrAnomalyStepUpUnavailable
 	}
 

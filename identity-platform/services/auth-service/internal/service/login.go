@@ -264,7 +264,10 @@ func (s *Service) LoginWithPassword(ctx context.Context, identifier, password, d
 // the anomaly enforcement are both satisfied and skipped: re-entering them
 // asked a TOTP user for a second pending token forever.
 func (s *Service) createSessionForUser(ctx context.Context, user *store.User, amr []string, deviceID, platform, ip, userAgent string) (*AuthResponse, error) {
-	secondFactorDone := hasAMR(amr, AMROTP) || hasAMR(amr, AMRRecovery)
+	// "email" counts only for an email-2FA account: Verify2FA adds it after
+	// checking the mailed code. It never satisfies a TOTP account.
+	secondFactorDone := hasAMR(amr, AMROTP) || hasAMR(amr, AMRRecovery) ||
+		(hasAMR(amr, AMREmail) && user.SecondFactorMethod() == store.TwoFactorMethodEmail)
 	// Audit A6: enforce 2FA at every full-session entry point, not just
 	// the password-login path. Previously OAuth (Google/Apple) called
 	// this directly and skipped the TwoFactorEnabled check that
@@ -277,11 +280,21 @@ func (s *Service) createSessionForUser(ctx context.Context, user *store.User, am
 		if err != nil {
 			return nil, fmt.Errorf("failed to create pending 2FA session: %w", err)
 		}
-		return &AuthResponse{
-			Requires2FA:  true,
-			PendingToken: pendingToken,
-			User:         user,
-		}, nil
+		resp := &AuthResponse{
+			Requires2FA:     true,
+			PendingToken:    pendingToken,
+			User:            user,
+			TwoFactorMethod: user.SecondFactorMethod(),
+		}
+		if resp.TwoFactorMethod == store.TwoFactorMethodEmail {
+			// The code goes out now; /2fa/verify takes it, /2fa/resend
+			// sends another.
+			if to, ok := verifiedEmail(user); ok {
+				resp.EmailMasked = MaskEmail(to)
+			}
+			s.sendLoginCode(ctx, user)
+		}
+		return resp, nil
 	}
 
 	// A13 — anomaly enforcement. Probe BEFORE minting tokens so we can

@@ -84,6 +84,12 @@ var (
 	ActionAdminStepUp       = CredentialAction{Name: "admin_step_up", Account: bodyIdentifier}
 	ActionPasskeyLogin      = CredentialAction{Name: "passkey_login", Account: bodyIdentifier}
 	ActionRetiredOTP        = CredentialAction{Name: "verify_otp", Account: bodyIdentifier}
+
+	// Email 2FA. Per IP only: the account is the caller's session (start,
+	// enable) or the pending token (resend), and its caps are in the service.
+	ActionTwoFactorEmailStart  = CredentialAction{Name: "2fa_email_start"}
+	ActionTwoFactorEmailVerify = CredentialAction{Name: "2fa_email_verify"}
+	ActionTwoFactorResend      = CredentialAction{Name: "2fa_resend"}
 )
 
 // CredentialRateLimit caps action at lim.PerIP per client IP and, when the

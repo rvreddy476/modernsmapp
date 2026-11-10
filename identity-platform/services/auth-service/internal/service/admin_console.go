@@ -199,7 +199,7 @@ func (s *Service) envRoleHolders(ctx context.Context, role string) []EnvRoleHold
 		for _, id := range sortedIDs(src.set) {
 			h := EnvRoleHolder{UserID: id, Role: src.role, Source: "env:" + src.envVar}
 			if u, err := s.store.GetUserByID(ctx, id); err == nil && u != nil {
-				h.MFAEnrolled = u.TwoFactorEnabled
+				h.MFAEnrolled = u.HasTOTP()
 			}
 			out = append(out, h)
 		}

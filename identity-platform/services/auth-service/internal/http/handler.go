@@ -117,6 +117,13 @@ type AuthService interface {
 	Verify2FASetup(ctx context.Context, userID uuid.UUID, code string) error
 	Disable2FA(ctx context.Context, userID uuid.UUID, password, code string) error
 	Verify2FA(ctx context.Context, userID uuid.UUID, code, pendingToken string) (*service.AuthResponse, error)
+	// Email 2FA for app users (service/twofa_email.go).
+	StartEmail2FA(ctx context.Context, userID uuid.UUID, password, purpose string) (*service.EmailChallenge, error)
+	EnableEmail2FA(ctx context.Context, userID uuid.UUID, challengeToken, code string) error
+	DisableEmail2FA(ctx context.Context, userID uuid.UUID, challengeToken, code string) error
+	Resend2FACode(ctx context.Context, pendingToken string) (*service.EmailCodeSent, error)
+	StartStepUpEmail(ctx context.Context, userID, sessionID uuid.UUID) (*service.EmailChallenge, error)
+	StepUpEmail(ctx context.Context, userID, sessionID uuid.UUID, challengeToken, code string) (*service.StepUpResponse, error)
 	// OAuth
 	GetOAuthRedirectURL(ctx context.Context, provider string) (*service.OAuthStart, error)
 	HandleOAuthCallback(ctx context.Context, provider, code, state, binding string, client service.OAuthClient) (*service.OAuthCallbackResult, error)
@@ -244,6 +251,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 		// The per-account cap (5 per user_id per window) makes online brute
 		// force infeasible; the per-IP cap is sized for carrier NAT.
 		v1.POST("/2fa/verify", h.credentialLimit(middleware.ActionTwoFactor), h.Verify2FA)
+		// Email 2FA: another sign-in code for a pending login. Per IP here;
+		// the 60 s cooldown and the per-account resend caps are in the
+		// service, keyed on the account the pending token resolves to.
+		v1.POST("/2fa/resend", h.credentialLimit(middleware.ActionTwoFactorResend), h.Resend2FA)
 
 		// A13 — anomaly step-up. Public (the user is mid-login and
 		// doesn't have a session yet). Both endpoints consume a
@@ -331,11 +342,18 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, csrfMW gin.HandlerFunc) 
 
 			// Step-up (A2): re-verify TOTP, get a token with step_up_at.
 			// Login IP limiter here, plus a per-account limit in the service.
+			// Email-2FA accounts send {challenge_token, code} from
+			// /step-up/email/start instead of {otp}.
 			protected.POST("/step-up", h.strictCredentialLimit(middleware.ActionStepUp), h.StepUp)
+			protected.POST("/step-up/email/start", h.strictCredentialLimit(middleware.ActionTwoFactorEmailStart), h.StartStepUpEmail)
 
-			// 2FA management (protected)
+			// 2FA management (protected). setup / verify-setup are the
+			// authenticator app, admin accounts only (403 TOTP_NOT_OFFERED);
+			// app users enable email 2FA with password + emailed code.
 			protected.POST("/2fa/setup", h.Setup2FA)
 			protected.POST("/2fa/verify-setup", h.Verify2FASetup)
+			protected.POST("/2fa/email/start", h.strictCredentialLimit(middleware.ActionTwoFactorEmailStart), h.StartEmail2FA)
+			protected.POST("/2fa/email/enable", h.strictCredentialLimit(middleware.ActionTwoFactorEmailVerify), h.EnableEmail2FA)
 			protected.POST("/2fa/disable", h.Disable2FA)
 
 			// CLB-3: verify-email / verify-phone / resend-verification moved

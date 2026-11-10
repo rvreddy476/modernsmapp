@@ -30,6 +30,9 @@ var SchemaRequirements = []schemaguard.Requirement{
 			// and a missing purge_completed_at would let the worker re-purge.
 			"deactivated_at", "scheduled_purge_date",
 			"purge_requested_at", "purge_completed_at",
+			// Read on every sign-in: which second factor to ask for. Without
+			// it every user scan would fail.
+			"two_factor_method",
 		},
 	},
 	// Purge coordination: the worker completes a purge only when this table

@@ -146,7 +146,7 @@ func (s *Service) sessionClaims(ctx context.Context, user *store.User, sess *sto
 		s.log.Warn("admin permissions lookup failed at mint; env roles only", "user_id", user.ID, "err", err)
 	}
 	isAdmin := !adminEmpty(admin)
-	adminMFA := isAdmin && user.TwoFactorEnabled && hasAMR(sess.AMR, AMROTP)
+	adminMFA := isAdmin && user.HasTOTP() && hasAMR(sess.AMR, AMROTP)
 
 	scopes := s.resolveScopes(ctx, user.ID)
 	if !adminMFA && !(isAdmin && s.localAdminSession(sess)) {
@@ -222,7 +222,7 @@ func (s *Service) startSessionOfKind(ctx context.Context, user *store.User, devi
 		return nil, nil, err
 	}
 	return &AuthResponse{
-		LocalAdminPasswordLogin: s.localAdminSession(sess) && !(user.TwoFactorEnabled && hasAMR(sess.AMR, AMROTP)),
+		LocalAdminPasswordLogin: s.localAdminSession(sess) && !(user.HasTOTP() && hasAMR(sess.AMR, AMROTP)),
 		Tokens: TokenPair{
 			AccessToken:  accessToken,
 			RefreshToken: refreshToken,
@@ -322,7 +322,7 @@ func (s *Service) stepUpKind(ctx context.Context, userID, sessionID uuid.UUID, c
 	if user == nil || user.AccountStatus != store.AccountStatusActive {
 		return nil, ErrSessionNotLive
 	}
-	if !user.TwoFactorEnabled {
+	if !user.HasTOTP() {
 		return nil, ErrTOTPNotEnrolled
 	}
 	if err := s.verifyTOTPOnce(ctx, userID, code); err != nil {
@@ -364,7 +364,7 @@ func (s *Service) requireFreshAdminSession(ctx context.Context, actorID uuid.UUI
 	// Live re-check: a token minted before TOTP was disabled still says
 	// admin_mfa=true for up to 15 minutes.
 	actor, err := s.store.GetUserByID(ctx, actorID)
-	if err != nil || actor == nil || !actor.TwoFactorEnabled {
+	if err != nil || actor == nil || !actor.HasTOTP() {
 		return ErrMFARequired
 	}
 	if !accesstoken.StepUpFresh(sa.StepUpAt, time.Now()) {

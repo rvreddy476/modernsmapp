@@ -26,6 +26,10 @@ const (
 
 type stepUpRequest struct {
 	OTP string `json:"otp"`
+	// Email-2FA accounts: the challenge from POST /v1/auth/step-up/email/start
+	// and the code it mailed (errors as in twofa_email.go).
+	ChallengeToken string `json:"challenge_token"`
+	Code           string `json:"code"`
 }
 
 // StepUp — POST /v1/auth/step-up {"otp":"123456"}  (auth + CSRF)
@@ -43,6 +47,9 @@ type stepUpRequest struct {
 //	401 SESSION_REVOKED    the session behind the token is gone
 //	403 MFA_NOT_ENROLLED   no authenticator enrolled
 //	429 RATE_LIMITED       5 attempts / 15 min per account (+ login IP limiter)
+//
+// An email-2FA account sends {"challenge_token","code"} instead (from
+// POST /v1/auth/step-up/email/start); same 200 body, admin_mfa always false.
 func (h *Handler) StepUp(c *gin.Context) {
 	userID, ok := h.callerID(c)
 	if !ok {
@@ -54,14 +61,32 @@ func (h *Handler) StepUp(c *gin.Context) {
 		return
 	}
 	var req stepUpRequest
-	if err := c.ShouldBindJSON(&req); err != nil || strings.TrimSpace(req.OTP) == "" {
+	if err := c.ShouldBindJSON(&req); err != nil {
 		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "otp is required", nil, nil)
 		return
 	}
-	resp, err := h.svc.StepUp(c.Request.Context(), userID, sa.SessionID, req.OTP)
-	if err != nil {
-		h.writeStepUpErr(c, err)
-		return
+	var resp *service.StepUpResponse
+	var err error
+	if req.ChallengeToken != "" {
+		if strings.TrimSpace(req.Code) == "" {
+			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "code is required", nil, nil)
+			return
+		}
+		resp, err = h.svc.StepUpEmail(c.Request.Context(), userID, sa.SessionID, req.ChallengeToken, strings.TrimSpace(req.Code))
+		if err != nil {
+			h.writeTwoFAEmailErr(c, err, "email step-up failed")
+			return
+		}
+	} else {
+		if strings.TrimSpace(req.OTP) == "" {
+			api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "otp is required", nil, nil)
+			return
+		}
+		resp, err = h.svc.StepUp(c.Request.Context(), userID, sa.SessionID, req.OTP)
+		if err != nil {
+			h.writeStepUpErr(c, err)
+			return
+		}
 	}
 	// Replaces the access cookie setAuthCookies wrote, with the same
 	// attributes, so the browser keeps one cookie under one Domain/Secure.

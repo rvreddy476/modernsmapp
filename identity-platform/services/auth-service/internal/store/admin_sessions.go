@@ -125,7 +125,7 @@ func (s *Store) AdminHolderCandidates(ctx context.Context, envUserIDs []uuid.UUI
 			UNION
 			SELECT unnest($1::uuid[])
 		)
-		SELECT u.user_id, COALESCE(u.two_factor_enabled, FALSE),
+		SELECT u.user_id, COALESCE(u.two_factor_enabled AND u.two_factor_method <> 'email', FALSE),
 		       r.role, COALESCE(r.app, ''), r.expires_at
 		FROM ids
 		JOIN auth.users u ON u.user_id = ids.user_id AND u.account_status = $3

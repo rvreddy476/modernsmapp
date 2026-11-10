@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/atpost/identity-auth-service/internal/store"
 	"github.com/google/uuid"
 	"github.com/pquerna/otp/totp"
 	"github.com/redis/go-redis/v9"
@@ -48,8 +49,12 @@ type PendingTwoFASession struct {
 	AMR []string `json:"amr,omitempty"`
 }
 
-// Setup2FA generates a TOTP secret and recovery codes for the user.
+// Setup2FA generates a TOTP secret and recovery codes for the user. Admin
+// accounts only (ErrTOTPNotOffered): app users get email 2FA instead.
 func (s *Service) Setup2FA(ctx context.Context, userID uuid.UUID) (*TwoFASetupResponse, error) {
+	if err := s.requireTOTPOffered(ctx, userID); err != nil {
+		return nil, err
+	}
 	user, err := s.store.GetUserByID(ctx, userID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user: %w", err)
@@ -103,6 +108,21 @@ func (s *Service) Setup2FA(ctx context.Context, userID uuid.UUID) (*TwoFASetupRe
 
 // Verify2FASetup confirms the user can generate valid TOTP codes and enables 2FA.
 func (s *Service) Verify2FASetup(ctx context.Context, userID uuid.UUID, code string) error {
+	// Re-checked here: a setup secret minted before the account lost its
+	// admin role (or before this rule existed) must not finish enrolment.
+	if err := s.requireTOTPOffered(ctx, userID); err != nil {
+		return err
+	}
+	// Never overwrite a second factor turned on since setup began (an email
+	// 2FA account would otherwise be silently switched to this secret).
+	if user, err := s.store.GetUserByID(ctx, userID); err != nil {
+		return fmt.Errorf("failed to get user: %w", err)
+	} else if user == nil {
+		return errors.New("user not found")
+	} else if user.TwoFactorEnabled && !user.HasTOTP() {
+		return ErrTwoFactorAlreadyEnabled
+	}
+
 	// Retrieve the pending secret from Redis
 	secret, err := s.rdb.Get(ctx, "2fa:setup:"+userID.String()).Result()
 	if err != nil {
@@ -130,7 +150,7 @@ func (s *Service) Verify2FASetup(ctx context.Context, userID uuid.UUID, code str
 	// Clean up temp setup key
 	s.rdb.Del(ctx, "2fa:setup:"+userID.String())
 
-	s.log.Info("2FA enabled", "user_id", userID)
+	s.recordTwoFactorChange(ctx, userID, true, store.TwoFactorMethodTOTP)
 	return nil
 }
 
@@ -145,6 +165,10 @@ func (s *Service) Disable2FA(ctx context.Context, userID uuid.UUID, password, co
 	}
 	if !user.TwoFactorEnabled {
 		return errors.New("2FA is not enabled")
+	}
+	if !user.HasTOTP() {
+		// Email 2FA turns off with a "disable" challenge (DisableEmail2FA).
+		return ErrTwoFactorMethodMismatch
 	}
 
 	// M9 (login audit): this re-check of the password had no limit at all, so
@@ -177,7 +201,7 @@ func (s *Service) Disable2FA(ctx context.Context, userID uuid.UUID, password, co
 	// Remove recovery codes from Redis
 	s.rdb.Del(ctx, recoveryCodesPrefix+userID.String())
 
-	s.log.Info("2FA disabled", "user_id", userID)
+	s.recordTwoFactorChange(ctx, userID, false, store.TwoFactorMethodTOTP)
 	return nil
 }
 
@@ -240,36 +264,6 @@ func (s *Service) Verify2FA(ctx context.Context, userID uuid.UUID, code, pending
 		return nil, err
 	}
 
-	// Try TOTP first (validated and burned against replay in one place,
-	// shared with anomaly step-up and admin step-up), then a recovery code.
-	amr := withAMR(pending.AMR, AMROTP)
-	switch terr := s.verifyTOTPOnce(ctx, userID, code); {
-	case terr == nil:
-	case errors.Is(terr, ErrTOTPReplay):
-		return nil, ErrTOTPReplay
-	case errors.Is(terr, ErrInvalidOTP):
-		// A recovery code signs the user in, but is not "otp": it never
-		// yields an admin MFA session.
-		amr = withAMR(pending.AMR, AMRRecovery)
-		used, err := s.useRecoveryCode(ctx, userID, code)
-		if err != nil {
-			return nil, fmt.Errorf("failed to check recovery code: %w", err)
-		}
-		if !used {
-			s.burnPendingAfterFailures(ctx, pendingToken, parsedUserID)
-			return nil, errors.New("invalid 2FA code")
-		}
-	default:
-		return nil, terr
-	}
-
-	// Delete the pending session and drop it from the per-user index
-	// set so InvalidatePending2FASessions doesn't try to revoke a
-	// token that's already been consumed.
-	s.rdb.Del(ctx, key)
-	s.rdb.SRem(ctx, pendingByUserSetPrefix+parsedUserID.String(), pendingToken)
-
-	// Look up the user for session creation
 	user, err := s.store.GetUserByID(ctx, parsedUserID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get user: %w", err)
@@ -277,6 +271,51 @@ func (s *Service) Verify2FA(ctx context.Context, userID uuid.UUID, code, pending
 	if user == nil {
 		return nil, errors.New("user not found")
 	}
+
+	var amr []string
+	if user.SecondFactorMethod() == store.TwoFactorMethodEmail {
+		// Email 2FA: the code mailed at sign-in (or by /2fa/resend), capped
+		// per code and per account. There are no recovery codes: the
+		// email is the factor, and a password reset reaches the same inbox.
+		switch eerr := s.checkEmailCode(ctx, parsedUserID, emailCodeLogin, code); {
+		case eerr == nil:
+		case errors.Is(eerr, ErrVerifyCodeInvalid):
+			s.burnPendingAfterFailures(ctx, pendingToken, parsedUserID)
+			return nil, errors.New("invalid 2FA code")
+		default:
+			return nil, eerr
+		}
+		amr = withAMR(pending.AMR, AMREmail)
+	} else {
+		// Try TOTP first (validated and burned against replay in one place,
+		// shared with anomaly step-up and admin step-up), then a recovery code.
+		amr = withAMR(pending.AMR, AMROTP)
+		switch terr := s.verifyTOTPOnce(ctx, userID, code); {
+		case terr == nil:
+		case errors.Is(terr, ErrTOTPReplay):
+			return nil, ErrTOTPReplay
+		case errors.Is(terr, ErrInvalidOTP):
+			// A recovery code signs the user in, but is not "otp": it never
+			// yields an admin MFA session.
+			amr = withAMR(pending.AMR, AMRRecovery)
+			used, err := s.useRecoveryCode(ctx, userID, code)
+			if err != nil {
+				return nil, fmt.Errorf("failed to check recovery code: %w", err)
+			}
+			if !used {
+				s.burnPendingAfterFailures(ctx, pendingToken, parsedUserID)
+				return nil, errors.New("invalid 2FA code")
+			}
+		default:
+			return nil, terr
+		}
+	}
+
+	// Delete the pending session and drop it from the per-user index
+	// set so InvalidatePending2FASessions doesn't try to revoke a
+	// token that's already been consumed.
+	s.rdb.Del(ctx, key)
+	s.rdb.SRem(ctx, pendingByUserSetPrefix+parsedUserID.String(), pendingToken)
 
 	// Create the real session. amr carries the second factor, so the 2FA
 	// gate inside createSessionForUser is satisfied instead of issuing

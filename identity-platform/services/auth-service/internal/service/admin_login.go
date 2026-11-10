@@ -123,7 +123,7 @@ func (s *Service) adminEligible(ctx context.Context, user *store.User) error {
 	if err := s.adminAccountEligible(ctx, user); err != nil {
 		return err
 	}
-	if !user.TwoFactorEnabled {
+	if !user.HasTOTP() {
 		return ErrTOTPNotEnrolled
 	}
 	return nil

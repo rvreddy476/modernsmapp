@@ -496,6 +496,9 @@ func (f *fakeAnomalyStore) ListTrustedDevices(_ context.Context, _ uuid.UUID) ([
 func (f *fakeAnomalyStore) DeleteTrustedDevice(_ context.Context, _, _ uuid.UUID) error { return nil }
 func (f *fakeAnomalyStore) Enable2FA(_ context.Context, _ uuid.UUID, _ string) error    { return nil }
 func (f *fakeAnomalyStore) Disable2FA(_ context.Context, _ uuid.UUID) error             { return nil }
+func (f *fakeAnomalyStore) EnableEmail2FA(_ context.Context, _ uuid.UUID) error {
+	return nil
+}
 func (f *fakeAnomalyStore) Get2FASecret(_ context.Context, _ uuid.UUID) (string, error) {
 	return "", nil
 }

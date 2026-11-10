@@ -824,3 +824,52 @@ ALTER TABLE auth.email_delivery_jobs
 -- reuse, never honoured as a retry itself.
 ALTER TABLE auth.refresh_token_history
     ADD COLUMN IF NOT EXISTS replaced_on_retry BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Email two-step verification for app users (founder decision, 10 Nov 2026).
+-- (Unnumbered on purpose; append-only like every section above.)
+--
+-- App users turn 2FA on with a code sent to their verified email instead of
+-- an authenticator app; TOTP stays for admin-console accounts, and consumers
+-- already enrolled in TOTP keep it. two_factor_method says which factor a
+-- 2FA-enabled account uses:
+--
+--   ''      2FA off
+--   'totp'  authenticator app (two_factor_secret[_encrypted] holds the key)
+--   'email' a one-time code mailed to the verified address on every sign-in
+--   'sms'   reserved; there is no SMS provider yet
+--
+-- Every row enabled before this column existed is TOTP, so they are
+-- backfilled to 'totp'. The UPDATE is a no-op once they are (and the reader
+-- maps an enabled row with '' to 'totp' anyway, for a rolling deploy).
+ALTER TABLE auth.users
+    ADD COLUMN IF NOT EXISTS two_factor_method TEXT NOT NULL DEFAULT ''
+        CHECK (two_factor_method IN ('', 'totp', 'email', 'sms'));
+
+UPDATE auth.users
+SET two_factor_method = 'totp'
+WHERE two_factor_enabled = TRUE AND two_factor_method = '';
+
+-- The security inbox (auth.login_anomalies) records 2FA being turned on and
+-- off, so the account owner sees "Two-step verification turned on" for a
+-- change they did not make. The original CHECK also lacked the two step-up
+-- types the anomaly step-up path already writes (step_up_required,
+-- step_up_passed), so those inserts were failing; they are added here too.
+-- Re-created only while the constraint still lacks the new types.
+DO $$
+DECLARE
+    def TEXT;
+BEGIN
+    SELECT pg_get_constraintdef(c.oid) INTO def
+    FROM pg_constraint c
+    WHERE c.conrelid = 'auth.login_anomalies'::regclass
+      AND c.conname = 'login_anomalies_anomaly_type_check';
+    IF def IS NOT NULL AND def LIKE '%two_factor_enabled%' THEN
+        RETURN;
+    END IF;
+    ALTER TABLE auth.login_anomalies DROP CONSTRAINT IF EXISTS login_anomalies_anomaly_type_check;
+    ALTER TABLE auth.login_anomalies ADD CONSTRAINT login_anomalies_anomaly_type_check
+        CHECK (anomaly_type IN ('new_ip','new_device','new_country','impossible_travel',
+                                'many_failed','password_reset_used','session_revoked',
+                                'step_up_required','step_up_passed',
+                                'two_factor_enabled','two_factor_disabled'));
+END $$;

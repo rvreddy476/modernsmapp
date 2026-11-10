@@ -229,7 +229,7 @@ func (s *Service) refreshSessionOfKind(ctx context.Context, refreshToken, ip, us
 		},
 		User:                    user,
 		SessionID:               sess.ID,
-		LocalAdminPasswordLogin: s.localAdminSession(sess) && !(user.TwoFactorEnabled && hasAMR(sess.AMR, AMROTP)),
+		LocalAdminPasswordLogin: s.localAdminSession(sess) && !(user.HasTOTP() && hasAMR(sess.AMR, AMROTP)),
 	}, nil
 }
 

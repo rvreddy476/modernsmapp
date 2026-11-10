@@ -1,17 +1,72 @@
-// Two-factor authentication: enabling and disabling TOTP and reading the
-// secret, and the auth.recovery_codes that back it. Pure move out of
-// users.go; behaviour is unchanged.
+// Two-factor authentication: the second-factor method, enabling and
+// disabling TOTP or email 2FA, reading the TOTP secret, and the
+// auth.recovery_codes that back TOTP.
 
 package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/google/uuid"
 )
 
 // --- 2FA ---
+
+// Second-factor methods (auth.users.two_factor_method). App users get email
+// (founder decision, 10 Nov 2026); TOTP is offered only to admin-console
+// accounts, and legacy consumers already enrolled in it keep it. "sms" is
+// reserved for when an SMS provider exists.
+const (
+	TwoFactorMethodTOTP  = "totp"
+	TwoFactorMethodEmail = "email"
+	TwoFactorMethodSMS   = "sms"
+)
+
+// ErrTwoFactorStateChanged: a conditional 2FA write matched no row because
+// the account's 2FA state changed underneath it (a concurrent enable).
+var ErrTwoFactorStateChanged = errors.New("two-factor state changed")
+
+// SecondFactorMethod is the account's live second factor: "" when 2FA is
+// off, otherwise the stored method, with a legacy enabled row that predates
+// the method column read as "totp".
+func (u *User) SecondFactorMethod() string {
+	if u == nil || !u.TwoFactorEnabled {
+		return ""
+	}
+	if u.TwoFactorMethod == "" {
+		return TwoFactorMethodTOTP
+	}
+	return u.TwoFactorMethod
+}
+
+// HasTOTP reports whether the account's second factor is an authenticator
+// app. Every admin MFA decision reads this, never TwoFactorEnabled alone: an
+// email-2FA account has 2FA on but no TOTP secret.
+func (u *User) HasTOTP() bool { return u.SecondFactorMethod() == TwoFactorMethodTOTP }
+
+// EnableEmail2FA turns 2FA on with the email method. Conditional on 2FA being
+// off, so it can never overwrite (and silently drop) an enrolled TOTP secret;
+// ErrTwoFactorStateChanged when it was already on.
+func (s *Store) EnableEmail2FA(ctx context.Context, userID uuid.UUID) error {
+	tag, err := s.db.Exec(ctx, `
+		UPDATE auth.users
+		SET two_factor_enabled = TRUE,
+			two_factor_method = 'email',
+			two_factor_secret = NULL,
+			two_factor_secret_encrypted = NULL,
+			updated_at = NOW()
+		WHERE user_id = $1 AND two_factor_enabled = FALSE
+	`, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrTwoFactorStateChanged
+	}
+	return nil
+}
 
 // Enable2FA sets two_factor_enabled=true and stores the TOTP secret.
 // When the AES-256-GCM box is wired (WithTOTPEncryption), the secret
@@ -28,6 +83,7 @@ func (s *Store) Enable2FA(ctx context.Context, userID uuid.UUID, secret string) 
 		_, err = s.db.Exec(ctx, `
 			UPDATE auth.users
 			SET two_factor_enabled = TRUE,
+				two_factor_method = 'totp',
 				two_factor_secret_encrypted = $1,
 				two_factor_secret = NULL,
 				updated_at = NOW()
@@ -38,6 +94,7 @@ func (s *Store) Enable2FA(ctx context.Context, userID uuid.UUID, secret string) 
 	_, err := s.db.Exec(ctx, `
 		UPDATE auth.users
 		SET two_factor_enabled = TRUE,
+			two_factor_method = 'totp',
 			two_factor_secret = $1,
 			two_factor_secret_encrypted = NULL,
 			updated_at = NOW()
@@ -46,11 +103,13 @@ func (s *Store) Enable2FA(ctx context.Context, userID uuid.UUID, secret string) 
 	return err
 }
 
-// Disable2FA clears both the encrypted and plaintext TOTP columns.
+// Disable2FA turns 2FA off whatever the method, clearing the method and both
+// the encrypted and plaintext TOTP columns.
 func (s *Store) Disable2FA(ctx context.Context, userID uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE auth.users
 		SET two_factor_enabled = FALSE,
+			two_factor_method = '',
 			two_factor_secret = NULL,
 			two_factor_secret_encrypted = NULL,
 			updated_at = NOW()

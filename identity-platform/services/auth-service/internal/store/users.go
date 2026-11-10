@@ -27,6 +27,7 @@ type User struct {
 	EmailVerified       bool       `json:"email_verified"`
 	PhoneVerified       bool       `json:"phone_verified"`
 	TwoFactorEnabled    bool       `json:"two_factor_enabled"`
+	TwoFactorMethod     string     `json:"two_factor_method"` // "totp" | "email" | "" (off); read via SecondFactorMethod
 	TwoFactorSecret     *string    `json:"-"`
 	AccountType         string     `json:"account_type"`
 	AccountStatus       string     `json:"account_status"`
@@ -153,7 +154,7 @@ func (s *Store) WithTOTPEncryption(box *crypto.SecretBox) *Store {
 
 // allUserCols is the list of columns returned when scanning a User row.
 const allUserCols = `user_id, COALESCE(phone, ''), email, COALESCE(password_hash, ''),
-	email_verified, phone_verified, two_factor_enabled, two_factor_secret,
+	email_verified, phone_verified, two_factor_enabled, COALESCE(two_factor_method, ''), two_factor_secret,
 	account_type, account_status, login_provider, recovery_email, recovery_phone,
 	age_verification, consent_terms, consent_privacy, consent_age,
 	deletion_requested_at, scheduled_purge_date, deactivated_at,
@@ -164,7 +165,7 @@ func scanUser(row pgx.Row) (*User, error) {
 	var u User
 	err := row.Scan(
 		&u.ID, &u.Phone, &u.Email, &u.PasswordHash,
-		&u.EmailVerified, &u.PhoneVerified, &u.TwoFactorEnabled, &u.TwoFactorSecret,
+		&u.EmailVerified, &u.PhoneVerified, &u.TwoFactorEnabled, &u.TwoFactorMethod, &u.TwoFactorSecret,
 		&u.AccountType, &u.AccountStatus, &u.LoginProvider, &u.RecoveryEmail, &u.RecoveryPhone,
 		&u.AgeVerification, &u.ConsentTerms, &u.ConsentPrivacy, &u.ConsentAge,
 		&u.DeletionRequestedAt, &u.ScheduledPurgeDate, &u.DeactivatedAt,

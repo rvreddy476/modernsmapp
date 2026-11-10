@@ -70,6 +70,7 @@ func (h *Handler) Me(c *gin.Context) {
 		"email_verified":     user.EmailVerified,
 		"phone_verified":     user.PhoneVerified,
 		"two_factor_enabled": user.TwoFactorEnabled,
+		"two_factor_method":  user.SecondFactorMethod(), // "email" | "totp" | "" (off)
 		"account_type":       user.AccountType,
 		"account_status":     user.AccountStatus,
 		"age_verification":   user.AgeVerification,
