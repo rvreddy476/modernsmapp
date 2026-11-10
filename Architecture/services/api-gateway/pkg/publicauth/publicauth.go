@@ -39,6 +39,7 @@ var Paths = []string{
 	"/v1/auth/logout",
 	"/v1/auth/health",
 	"/v1/auth/2fa/verify",
+	"/v1/auth/2fa/resend",
 	"/v1/auth/anomaly/verify-email",
 	"/v1/auth/anomaly/verify-2fa",
 	"/v1/auth/.well-known/jwks.json",
