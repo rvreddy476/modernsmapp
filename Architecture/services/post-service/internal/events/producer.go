@@ -176,10 +176,28 @@ func UserMentionedPayload(mentionedUserID, authorID uuid.UUID, postID string, co
 	return payload
 }
 
+// UserMentionedMessage is the Kafka message PublishUserMentioned writes for
+// a post mention: the same envelope, key and payload, without the broker.
+// It exists so the wire contract notification-service consumes can be pinned
+// in a test (testdata/contracts/user_mentioned_post.json).
+func UserMentionedMessage(ctx context.Context, mentionedUserID, authorID uuid.UUID, postID string, at time.Time) (kafka.Message, error) {
+	return encodeMessage(ctx, events.EventUserMentioned, &authorID, UserMentionedPayload(mentionedUserID, authorID, postID, uuid.Nil, at))
+}
+
 func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.UUID, payload interface{}) error {
+	msg, err := encodeMessage(ctx, eventType, actorID, payload)
+	if err != nil {
+		return err
+	}
+	return p.writer.WriteMessages(ctx, msg)
+}
+
+// encodeMessage builds the envelope and partition key every direct publish
+// writes.
+func encodeMessage(ctx context.Context, eventType string, actorID *uuid.UUID, payload interface{}) (kafka.Message, error) {
 	payloadBytes, err := json.Marshal(payload)
 	if err != nil {
-		return fmt.Errorf("failed to marshal payload: %w", err)
+		return kafka.Message{}, fmt.Errorf("failed to marshal payload: %w", err)
 	}
 
 	var actorStr *string
@@ -192,7 +210,7 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.
 
 	envelopeBytes, err := json.Marshal(envelope)
 	if err != nil {
-		return fmt.Errorf("failed to marshal envelope: %w", err)
+		return kafka.Message{}, fmt.Errorf("failed to marshal envelope: %w", err)
 	}
 
 	// Partition key: prefer actorID so all events for the same user
@@ -205,10 +223,7 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.
 	if actorStr != nil {
 		key = []byte(*actorStr)
 	}
-	return p.writer.WriteMessages(ctx, kafka.Message{
-		Key:   key,
-		Value: envelopeBytes,
-	})
+	return kafka.Message{Key: key, Value: envelopeBytes}, nil
 }
 
 // PublishRaw publishes a pre-built EventEnvelope to Kafka (used by outbox worker).

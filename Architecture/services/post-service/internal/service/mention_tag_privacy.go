@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"log/slog"
 	"sync"
 
 	"github.com/atpost/post-service/pkg/graphclient"
@@ -92,16 +93,24 @@ func (s *Service) allowedMentions(ctx context.Context, authorID uuid.UUID, usern
 			targets = append(targets, r.id)
 		}
 	}
-	allowed := s.graphCan(ctx, authorID, graphclient.ActionMention, targets)
+	allowed, answered := s.graphCanResolved(ctx, authorID, graphclient.ActionMention, targets)
 	out := make([]string, 0, len(usernames))
 	for _, r := range resolved {
 		switch {
 		case r.err != nil:
 			log.Printf("Warning: mention @%s unresolved; dropped: %v", r.username, r.err)
 		case !r.found:
+			// Kept as text that links to nobody and is never notified.
+			// Logged because it is the commonest "my mention did nothing":
+			// a handle that is not the account's username.
+			slog.Info("post mention names no account; kept as text, nobody notified",
+				"author_id", authorID, "username", r.username)
 			out = append(out, r.username)
 		case r.id == authorID || allowed[r.id]:
 			out = append(out, r.username)
+		default:
+			slog.Info("post mention dropped by who_can_mention",
+				"author_id", authorID, "target_id", r.id, "graph_answered", answered)
 		}
 	}
 	return out
@@ -133,7 +142,16 @@ func (s *Service) mentionRecipients(ctx context.Context, authorID uuid.UUID, use
 	seen := make(map[uuid.UUID]bool, len(resolved))
 	candidates := make([]uuid.UUID, 0, len(resolved))
 	for _, r := range resolved {
-		if !r.found || r.id == authorID || seen[r.id] {
+		switch {
+		case r.err != nil:
+			slog.Warn("post mention not notified: username lookup failed",
+				"author_id", authorID, "username", r.username, "error", r.err)
+			continue
+		case !r.found:
+			slog.Info("post mention not notified: names no account",
+				"author_id", authorID, "username", r.username)
+			continue
+		case r.id == authorID || seen[r.id]:
 			continue
 		}
 		seen[r.id] = true
@@ -142,12 +160,15 @@ func (s *Service) mentionRecipients(ctx context.Context, authorID uuid.UUID, use
 	if len(candidates) == 0 {
 		return nil
 	}
-	allowed := s.graphCan(ctx, authorID, graphclient.ActionMention, candidates)
+	allowed, answered := s.graphCanResolved(ctx, authorID, graphclient.ActionMention, candidates)
 	out := make([]uuid.UUID, 0, len(candidates))
 	for _, id := range candidates {
 		if allowed[id] {
 			out = append(out, id)
+			continue
 		}
+		slog.Info("post mention not notified: who_can_mention denies the author",
+			"author_id", authorID, "target_id", id, "graph_answered", answered)
 	}
 	return out
 }
@@ -175,12 +196,18 @@ func (s *Service) publishPostMentions(ctx context.Context, postID, authorID uuid
 		return 0
 	}
 	sent := 0
-	for _, id := range s.mentionRecipients(ctx, authorID, usernames) {
+	recipients := s.mentionRecipients(ctx, authorID, usernames)
+	for _, id := range recipients {
 		if err := publish(ctx, id, authorID, postID.String()); err != nil {
 			log.Printf("Warning: failed to publish UserMentioned for %s on post %s: %v", id, postID, err)
 			continue
 		}
 		sent++
 	}
+	// One line per published post with mentions. names>0 with sent=0 is the
+	// line to look for when a mention notification never arrives; the reason
+	// for each name is logged just before it.
+	slog.Info("post mentions announced", "post_id", postID, "author_id", authorID,
+		"names", len(usernames), "recipients", len(recipients), "sent", sent)
 	return sent
 }

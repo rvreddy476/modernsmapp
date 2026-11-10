@@ -73,6 +73,9 @@ type Consumer struct {
 	// (follow_request_consumer.go); the service implements it, tests pass a
 	// fake.
 	followRequestNotify followRequestNotifier
+	// mentionNotify delivers user.mentioned (post and comment @mentions);
+	// the service implements it, tests pass a fake (mention_consumer_test.go).
+	mentionNotify mentionNotifier
 
 	// Like aggregation: key = "postID:postAuthorID"
 	likeAgg   map[string]*likeAggEntry
@@ -118,8 +121,14 @@ func NewConsumerWithDialer(brokers []string, groupID string, topic string, svc *
 		c.creditNotify = svc
 		c.copyrightNotify = svc
 		c.followRequestNotify = svc
+		c.mentionNotify = svc
 	}
 	return c
+}
+
+// mentionNotifier is the one service call a user.mentioned event makes.
+type mentionNotifier interface {
+	CreateNotification(ctx context.Context, userID, actorID uuid.UUID, notifType, entityType string, entityID uuid.UUID, deepLink string, createdAt time.Time) error
 }
 
 // Start runs the consumer with a bounded worker pool. Audit CR1:
@@ -414,7 +423,10 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		mentionedID, _ := uuid.Parse(e.MentionedUserID)
 		authorID, _ := uuid.Parse(e.AuthorID)
 		postID, _ := uuid.Parse(e.PostID)
-		return c.service.CreateNotification(ctx, mentionedID, authorID, "mention", "post", postID, mentionDeepLink(e), e.OccurredAt)
+		if c.mentionNotify == nil {
+			return nil
+		}
+		return c.mentionNotify.CreateNotification(ctx, mentionedID, authorID, "mention", "post", postID, mentionDeepLink(e), e.OccurredAt)
 
 	case events.EventPostCopyrightReview:
 		// Copyright title review (copyright_consumer.go): the author's notice.
