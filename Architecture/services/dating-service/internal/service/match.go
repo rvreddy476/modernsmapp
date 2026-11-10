@@ -401,6 +401,34 @@ func (s *Service) ListMatches(ctx context.Context, userID uuid.UUID, status stri
 	return s.decorateMatches(ctx, userID, matches), nil
 }
 
+// ListMatchesPage is one keyset page of ListMatches (limit 1..100) after
+// cursor ("" for the first page). next is "" on the last page.
+func (s *Service) ListMatchesPage(ctx context.Context, userID uuid.UUID, status string, limit int, cursor string) ([]*MatchWithPerson, string, error) {
+	var after *store.MatchCursor
+	if cursor != "" {
+		c, err := store.DecodeMatchCursor(cursor)
+		if err != nil {
+			return nil, "", err
+		}
+		after = c
+	}
+	if limit <= 0 {
+		limit = store.DefaultMatchPageLimit
+	}
+	if limit > store.MaxMatchPageLimit {
+		limit = store.MaxMatchPageLimit
+	}
+	matches, next, err := s.store.ListMatchesPageForUser(ctx, userID, status, limit, after)
+	if err != nil {
+		return nil, "", err
+	}
+	nextCursor := ""
+	if next != nil {
+		nextCursor = next.Encode()
+	}
+	return s.decorateMatches(ctx, userID, matches), nextCursor, nil
+}
+
 // GetMatch returns a single match with no viewer checks (internal callers).
 func (s *Service) GetMatch(ctx context.Context, matchID uuid.UUID) (*store.Match, error) {
 	return s.store.GetMatch(ctx, matchID)

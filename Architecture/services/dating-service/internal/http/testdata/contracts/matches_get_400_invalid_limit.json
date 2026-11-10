@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "INVALID_LIMIT",
+    "message": "limit must be a whole number from 1 to 100"
+  },
+  "meta": {}
+}

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/atpost/chat-message-service/internal/store/postgres"
 	"github.com/google/uuid"
 	"github.com/segmentio/kafka-go"
 )
@@ -43,6 +44,51 @@ type DatingConsumer struct {
 	// invalidate drops the send gate's cached state of a match once its
 	// closure is applied (dating backend audit H2). Optional.
 	invalidate func(matchID uuid.UUID)
+	// onClosed tells an open thread its match ended (the match_closed
+	// frame, service.PublishDatingMatchClosed). Optional; it runs only
+	// after the closure is durable and only when the store names what it
+	// closed (DatingClosureReporter).
+	onClosed func(ctx context.Context, closed postgres.ClosedDatingConversation)
+}
+
+// DatingClosureReporter is a DatingReconciler that also names the
+// conversations each closure applied to. postgres.ConversationStore is one.
+type DatingClosureReporter interface {
+	CloseDatingConversationsByMatch(ctx context.Context, matchID uuid.UUID) ([]postgres.ClosedDatingConversation, error)
+	CloseDatingConversationsByPair(ctx context.Context, userA, userB uuid.UUID) ([]postgres.ClosedDatingConversation, error)
+}
+
+// SetMatchClosedNotifier wires the real-time match_closed frame
+// (service.Service.PublishDatingMatchClosed).
+func (c *DatingConsumer) SetMatchClosedNotifier(fn func(ctx context.Context, closed postgres.ClosedDatingConversation)) {
+	c.onClosed = fn
+}
+
+// closeByMatch applies a match closure and returns what it closed (nil
+// when the store cannot say).
+func (c *DatingConsumer) closeByMatch(ctx context.Context, matchID uuid.UUID) ([]postgres.ClosedDatingConversation, error) {
+	if r, ok := c.store.(DatingClosureReporter); ok {
+		return r.CloseDatingConversationsByMatch(ctx, matchID)
+	}
+	return nil, c.store.MarkConversationClosedByMatch(ctx, matchID)
+}
+
+// closeByPair applies a block's closure and returns what it closed.
+func (c *DatingConsumer) closeByPair(ctx context.Context, a, b uuid.UUID) ([]postgres.ClosedDatingConversation, error) {
+	if r, ok := c.store.(DatingClosureReporter); ok {
+		return r.CloseDatingConversationsByPair(ctx, a, b)
+	}
+	return nil, c.store.MarkConversationsClosedByPair(ctx, a, b)
+}
+
+// notifyClosed sends the match_closed frame for each closed conversation.
+func (c *DatingConsumer) notifyClosed(ctx context.Context, closed []postgres.ClosedDatingConversation) {
+	if c.onClosed == nil {
+		return
+	}
+	for _, cl := range closed {
+		c.onClosed(ctx, cl)
+	}
 }
 
 // SetMatchStateInvalidator wires the send gate's cache invalidation
@@ -127,12 +173,14 @@ func (c *DatingConsumer) processMessage(ctx context.Context, message kafka.Messa
 		}
 		// Idempotent: a redelivered or duplicated closure (the outbox relay
 		// is at-least-once) keeps the first closed_at.
-		if err := c.store.MarkConversationClosedByMatch(ctx, matchID); err != nil {
+		closed, err := c.closeByMatch(ctx, matchID)
+		if err != nil {
 			return false, err
 		}
 		if c.invalidate != nil {
 			c.invalidate(matchID)
 		}
+		c.notifyClosed(ctx, closed)
 		c.log.Info("closed dating conversation for match", "match_id", matchID, "event_type", envelope.EventType)
 	case datingUserBlocked:
 		var payload datingUserBlockedPayload
@@ -147,9 +195,13 @@ func (c *DatingConsumer) processMessage(ctx context.Context, message kafka.Messa
 		if err != nil {
 			return true, err
 		}
-		if err := c.store.MarkConversationsClosedByPair(ctx, blocker, blocked); err != nil {
+		closed, err := c.closeByPair(ctx, blocker, blocked)
+		if err != nil {
 			return false, err
 		}
+		// The send gate caches match state; a block closes the match too,
+		// whose own dating.match.closed invalidates it.
+		c.notifyClosed(ctx, closed)
 		c.log.Info("closed dating conversations by pair", "blocker_id", blocker, "blocked_id", blocked)
 	default:
 		return true, nil

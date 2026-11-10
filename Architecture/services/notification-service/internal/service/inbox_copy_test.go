@@ -285,7 +285,7 @@ func TestNotificationFrameCarriesTitleAndIcon(t *testing.T) {
 	cases := []struct{ typ, title, icon string }{
 		{"incoming_video_call", "Video call from someone", InboxIconCall},
 		{"order_delivered", "Your order was delivered", InboxIconOrder},
-		{"dating.safety.location_shared", "Someone is sharing their live location with you", InboxIconDating},
+		{"dating.safety.location_shared", "Someone shared where they are", InboxIconDating},
 	}
 	for _, c := range cases {
 		raw, err := notificationFrame(&scylla.Notification{Type: c.typ, ActorUserID: uuid.New()})

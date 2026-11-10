@@ -4,7 +4,9 @@ package http
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
+	"strconv"
 
 	"github.com/atpost/dating-service/internal/service"
 	"github.com/atpost/dating-service/internal/store"
@@ -13,19 +15,71 @@ import (
 	"github.com/google/uuid"
 )
 
-// ListMatches — GET /v1/dating/matches?status=...
+// ListMatches — GET /v1/dating/matches?status=...[&limit=&cursor=]
+//
+// With neither limit nor cursor it answers as it always has: up to 200
+// matches and no meta. With either it is paged on a keyset (sort time, id),
+// newest first: limit 1..100 (default 50, larger clamped), cursor from the
+// previous page's meta.next_cursor ("" or absent = first page). meta and
+// meta.next_cursor are present only while another page follows.
+//
+//	400 INVALID_LIMIT   limit is not a whole number >= 1
+//	400 INVALID_CURSOR  cursor is not one this route issued
 func (h *Handler) ListMatches(c *gin.Context) {
 	userID, ok := getUserID(c)
 	if !ok {
 		return
 	}
 	status := c.DefaultQuery("status", "all")
+	limitRaw, hasLimit := c.GetQuery("limit")
+	cursor, hasCursor := c.GetQuery("cursor")
+	if hasLimit || hasCursor {
+		limit, perr := parseMatchPageLimit(limitRaw, hasLimit)
+		if perr != nil {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_LIMIT", perr.Error(), nil)
+			return
+		}
+		out, next, err := h.svc.ListMatchesPage(c.Request.Context(), userID, status, limit, cursor)
+		if errors.Is(err, store.ErrInvalidMatchCursor) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_CURSOR", err.Error(), nil)
+			return
+		}
+		if err != nil {
+			respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
+			return
+		}
+		var meta *api.Meta
+		if next != "" {
+			meta = &api.Meta{NextCursor: next}
+		}
+		api.JSON(c.Writer, http.StatusOK, out, meta)
+		return
+	}
+	// Unpaged (the shape every client shipped before 10 Nov 2026): up to
+	// store.LegacyMatchListLimit rows, no meta.
 	out, err := h.svc.ListMatches(c.Request.Context(), userID, status)
 	if err != nil {
 		respondServiceError(c, err, http.StatusInternalServerError, "QUERY_FAILED")
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// parseMatchPageLimit reads ?limit= for a paged match list: absent means
+// store.DefaultMatchPageLimit; a whole number from 1 up is accepted and one
+// over store.MaxMatchPageLimit is clamped; anything else is refused.
+func parseMatchPageLimit(raw string, present bool) (int, error) {
+	if !present {
+		return store.DefaultMatchPageLimit, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 {
+		return 0, fmt.Errorf("limit must be a whole number from 1 to %d", store.MaxMatchPageLimit)
+	}
+	if n > store.MaxMatchPageLimit {
+		n = store.MaxMatchPageLimit
+	}
+	return n, nil
 }
 
 // GetMatch — GET /v1/dating/matches/:id.

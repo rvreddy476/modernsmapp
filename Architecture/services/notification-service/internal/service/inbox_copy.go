@@ -262,7 +262,7 @@ var inboxCopyTable = map[string]inboxCopyEntry{
 	"dating.safety.panic.acknowledged":    own("Your safety alert was received", InboxIconDating),
 	"dating.safety.panic.responder":       own("A member triggered a safety alert", InboxIconDating),
 	"dating.safety.panic.trusted_contact": own("{actor} triggered a safety alert", InboxIconDating),
-	"dating.safety.location_shared":       own("{actor} is sharing their live location with you", InboxIconDating),
+	"dating.safety.location_shared":       own("{actor} shared where they are", InboxIconDating),
 	"dating.report.status_updated":        own("Your report was updated", InboxIconDating),
 	"dating.verification.completed":       own("Your verification is complete", InboxIconDating),
 	"dating.verification.rejected":        own("Your verification was not approved", InboxIconDating),

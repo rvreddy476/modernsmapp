@@ -15,7 +15,8 @@
 //  5. writes an ops alert row and logs at ERROR, critically when no
 //     responder could be paged.
 //
-// dating.safety.location_shared notifies the recipient of a live share.
+// dating.safety.location_shared notifies the recipient of a location share:
+// one reading taken when sharing starts, not a live track.
 package events
 
 import (
@@ -44,8 +45,8 @@ const (
 const (
 	datingPanicContactTitle   = "Someone who trusts you needs help"
 	datingPanicContactBody    = "Open the app to check on them."
-	datingLocationSharedTitle = "A live location was shared with you"
-	datingLocationSharedBody  = "Open the app to see it."
+	datingLocationSharedTitle = "A location was shared with you"
+	datingLocationSharedBody  = "Tap to see where they were when they shared."
 )
 
 // Ops alert kinds.
@@ -285,9 +286,10 @@ func recordOps(ctx context.Context, deps datingSafetyDeps, a postgres.OpsAlert) 
 	}
 }
 
-// processDatingLocationShared tells the recipient a live share started. The
+// processDatingLocationShared tells the recipient a share started (one point
+// taken when sharing starts, never updated). The
 // event and the notification carry no coordinates; the recipient reads the
-// point from dating-service while the share is live.
+// point from dating-service until the share expires or is stopped.
 func processDatingLocationShared(ctx context.Context, deps datingSafetyDeps, raw json.RawMessage) error {
 	var e datingLocationSharedPayload
 	if err := unmarshalPayload(raw, &e); err != nil {

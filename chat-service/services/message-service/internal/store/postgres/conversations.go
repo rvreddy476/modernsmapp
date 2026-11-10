@@ -316,12 +316,51 @@ func (s *ConversationStore) MarkConversationClosed(ctx context.Context, conversa
 // match_id rather than conversation_id. Used by the dating-event
 // consumer so the lookup is one hop instead of two.
 func (s *ConversationStore) MarkConversationClosedByMatch(ctx context.Context, matchID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
+	_, err := s.CloseDatingConversationsByMatch(ctx, matchID)
+	return err
+}
+
+// ClosedDatingConversation is one dating conversation a closure applied
+// to: the conversation, its match (uuid.Nil when the row has none) and the
+// closed_at it keeps.
+type ClosedDatingConversation struct {
+	ConversationID uuid.UUID
+	MatchID        uuid.UUID
+	ClosedAt       time.Time
+}
+
+func collectClosedDating(rows pgx.Rows) ([]ClosedDatingConversation, error) {
+	defer rows.Close()
+	var out []ClosedDatingConversation
+	for rows.Next() {
+		var c ClosedDatingConversation
+		var match *uuid.UUID
+		if err := rows.Scan(&c.ConversationID, &match, &c.ClosedAt); err != nil {
+			return nil, err
+		}
+		if match != nil {
+			c.MatchID = *match
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// CloseDatingConversationsByMatch is MarkConversationClosedByMatch that
+// names the conversation it closed, so the consumer can tell an open
+// thread in real time. A redelivered closure names it again (with the
+// first closed_at): the real-time frame is idempotent for the app.
+func (s *ConversationStore) CloseDatingConversationsByMatch(ctx context.Context, matchID uuid.UUID) ([]ClosedDatingConversation, error) {
+	rows, err := s.db.Query(ctx, `
 		UPDATE chat.conversations
 		SET closed_at = COALESCE(closed_at, NOW())
 		WHERE source_app = 'dating' AND match_id = $1
+		RETURNING id, match_id, closed_at
 	`, matchID)
-	return err
+	if err != nil {
+		return nil, err
+	}
+	return collectClosedDating(rows)
 }
 
 // MarkConversationsClosedByPair closes every source_app='dating'
@@ -333,7 +372,15 @@ func (s *ConversationStore) MarkConversationClosedByMatch(ctx context.Context, m
 // same person over time (rare but real after an unmatch + rematch).
 // Idempotent — re-running preserves closed_at.
 func (s *ConversationStore) MarkConversationsClosedByPair(ctx context.Context, userA, userB uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
+	_, err := s.CloseDatingConversationsByPair(ctx, userA, userB)
+	return err
+}
+
+// CloseDatingConversationsByPair is MarkConversationsClosedByPair that
+// names the conversations this call closed (ones already closed are left
+// alone and not named).
+func (s *ConversationStore) CloseDatingConversationsByPair(ctx context.Context, userA, userB uuid.UUID) ([]ClosedDatingConversation, error) {
+	rows, err := s.db.Query(ctx, `
 		UPDATE chat.conversations c
 		SET closed_at = COALESCE(closed_at, NOW())
 		WHERE c.source_app = 'dating'
@@ -346,8 +393,12 @@ func (s *ConversationStore) MarkConversationsClosedByPair(ctx context.Context, u
 		      SELECT 1 FROM chat.conversation_members mb
 		      WHERE mb.conversation_id = c.id AND mb.user_id = $2 AND mb.left_at IS NULL
 		  )
+		RETURNING c.id, c.match_id, c.closed_at
 	`, userA, userB)
-	return err
+	if err != nil {
+		return nil, err
+	}
+	return collectClosedDating(rows)
 }
 
 // HasOpenDatingMatch reports whether an OPEN dating-match conversation

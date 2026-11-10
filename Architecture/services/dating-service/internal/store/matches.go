@@ -6,9 +6,11 @@ package store
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -266,8 +268,98 @@ func (s *Store) GetMatchByUsers(ctx context.Context, userA, userB uuid.UUID) (*M
 // 'all'. A match is hidden when the pair is blocked either way or the other
 // participant's profile is deleted, suspended or gone.
 func (s *Store) ListMatchesForUser(ctx context.Context, userID uuid.UUID, status string) ([]*Match, error) {
+	out, _, err := s.ListMatchesPageForUser(ctx, userID, status, LegacyMatchListLimit, nil)
+	return out, err
+}
+
+// LegacyMatchListLimit is what GET /v1/dating/matches returned before it
+// was paged (a call with neither limit nor cursor still gets this many).
+// MaxMatchPageLimit caps a paged call; DefaultMatchPageLimit is a paged
+// call's size when only a cursor is sent.
+const (
+	LegacyMatchListLimit  = 200
+	DefaultMatchPageLimit = 50
+	MaxMatchPageLimit     = 100
+)
+
+// ErrInvalidMatchCursor: the cursor is not one this store issued.
+var ErrInvalidMatchCursor = errors.New("invalid: match list cursor is not valid")
+
+// MatchCursor is the keyset position after one row of a match list: the
+// row's sort time (MatchSortAt) and its id, which breaks ties.
+type MatchCursor struct {
+	SortAt time.Time
+	ID     uuid.UUID
+}
+
+const matchCursorVersion = "m1"
+
+// Encode renders the cursor as an opaque URL-safe string.
+func (c MatchCursor) Encode() string {
+	raw := matchCursorVersion + "|" + c.SortAt.UTC().Format(time.RFC3339Nano) + "|" + c.ID.String()
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+// DecodeMatchCursor parses a cursor from MatchCursor.Encode; anything else
+// is ErrInvalidMatchCursor.
+func DecodeMatchCursor(s string) (*MatchCursor, error) {
+	raw, err := base64.RawURLEncoding.DecodeString(s)
+	if err != nil {
+		return nil, ErrInvalidMatchCursor
+	}
+	parts := strings.Split(string(raw), "|")
+	if len(parts) != 3 || parts[0] != matchCursorVersion {
+		return nil, ErrInvalidMatchCursor
+	}
+	at, err := time.Parse(time.RFC3339Nano, parts[1])
+	if err != nil {
+		return nil, ErrInvalidMatchCursor
+	}
+	id, err := uuid.Parse(parts[2])
+	if err != nil || id == uuid.Nil {
+		return nil, ErrInvalidMatchCursor
+	}
+	return &MatchCursor{SortAt: at.UTC(), ID: id}, nil
+}
+
+// matchListSort is the SQL sort time of a bucket. 'sparks-waiting' orders by
+// when the match formed; every other bucket by the latest activity.
+func matchListSort(status string) string {
+	if status == "sparks-waiting" {
+		return `m.matched_at`
+	}
+	return `COALESCE(m.last_message_at, m.matched_at)`
+}
+
+// MatchSortAt is matchListSort evaluated in Go for one row; the cursor
+// after a row must carry exactly the value the SQL ordered it by.
+func MatchSortAt(m *Match, status string) time.Time {
+	if status != "sparks-waiting" && m.LastMessageAt != nil {
+		return *m.LastMessageAt
+	}
+	return m.MatchedAt
+}
+
+// pageMatches trims rows fetched with LIMIT limit+1 to one page and returns
+// the cursor after its last row, or nil when this was the last page.
+func pageMatches(rows []*Match, limit int, status string) ([]*Match, *MatchCursor) {
+	if limit <= 0 || len(rows) <= limit {
+		return rows, nil
+	}
+	rows = rows[:limit]
+	last := rows[limit-1]
+	return rows, &MatchCursor{SortAt: MatchSortAt(last, status).UTC(), ID: last.ID}
+}
+
+// ListMatchesPageForUser is one keyset page of ListMatchesForUser: limit
+// rows (1..MaxMatchPageLimit, or LegacyMatchListLimit for the unpaged
+// call) strictly after the cursor, newest first, ties broken by id. next is
+// nil on the last page.
+func (s *Store) ListMatchesPageForUser(ctx context.Context, userID uuid.UUID, status string, limit int, after *MatchCursor) ([]*Match, *MatchCursor, error) {
+	if limit <= 0 {
+		limit = DefaultMatchPageLimit
+	}
 	bucket := ""
-	order := `COALESCE(m.last_message_at, m.matched_at) DESC`
 	switch status {
 	case "active":
 		bucket = `AND m.status IN ('matched','conversing')`
@@ -275,21 +367,33 @@ func (s *Store) ListMatchesForUser(ctx context.Context, userID uuid.UUID, status
 		bucket = `AND m.status = 'quiet'`
 	case "sparks-waiting":
 		bucket = `AND m.status = 'matched' AND m.first_message_at IS NULL`
-		order = `m.matched_at DESC`
+	}
+	sortAt := matchListSort(status)
+	args := []any{userID, limit + 1}
+	keyset := ""
+	if after != nil {
+		keyset = `AND (` + sortAt + `, m.id) < ($3::timestamptz, $4::uuid)`
+		args = append(args, after.SortAt, after.ID)
 	}
 	rows, err := s.db.Query(ctx, `
         SELECT `+matchSelectCols+`
         FROM dating_matches m
         WHERE (m.user_a = $1 OR m.user_b = $1)
           `+bucket+`
+          `+keyset+`
           AND NOT `+blockedPairPredicate("m.user_a", "m.user_b")+`
           AND `+visibleProfilePredicate("CASE WHEN m.user_a = $1 THEN m.user_b ELSE m.user_a END")+`
-        ORDER BY `+order+`
-        LIMIT 200`, userID)
+        ORDER BY `+sortAt+` DESC, m.id DESC
+        LIMIT $2`, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list matches: %w", err)
+		return nil, nil, fmt.Errorf("list matches: %w", err)
 	}
-	return collectMatches(rows)
+	out, err := collectMatches(rows)
+	if err != nil {
+		return nil, nil, err
+	}
+	page, next := pageMatches(out, limit, status)
+	return page, next, nil
 }
 
 // ListMatchesForExport returns every match involving userID, unfiltered,

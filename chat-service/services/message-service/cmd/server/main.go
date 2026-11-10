@@ -210,6 +210,10 @@ func main() {
 	datingConsumer := events.NewDatingConsumerWithDialer(cfg.KafkaBrokers, cfg.DatingKafkaTopic, cfg.DatingKafkaGroupID, kafkaDialer, convStore, logger)
 	// Dating audit H2: a closure drops the send gate's cached match state.
 	datingConsumer.SetMatchStateInvalidator(svc.InvalidateDatingMatchState)
+	// 10 Nov 2026: an open Pulse thread hears match_closed and leaves.
+	datingConsumer.SetMatchClosedNotifier(func(ctx context.Context, closed pgStore.ClosedDatingConversation) {
+		svc.PublishDatingMatchClosed(ctx, closed.ConversationID, closed.MatchID, closed.ClosedAt)
+	})
 	go datingConsumer.Start(ctx)
 
 	// 7. Outbox Relay (background)

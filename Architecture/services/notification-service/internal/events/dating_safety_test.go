@@ -18,17 +18,17 @@ import (
 )
 
 type fakeSafetyDeps struct {
-	mu          sync.Mutex
-	claimed     map[uuid.UUID]bool
-	ctx         *datingPanicContext
-	ctxErr      error
-	ctxCalls    int
-	responders  []uuid.UUID
-	firstNames  map[uuid.UUID]string
-	alerts      []service.SafetyAlert
-	delivered   map[string]bool
-	ops         []postgres.OpsAlert
-	emails      []string
+	mu         sync.Mutex
+	claimed    map[uuid.UUID]bool
+	ctx        *datingPanicContext
+	ctxErr     error
+	ctxCalls   int
+	responders []uuid.UUID
+	firstNames map[uuid.UUID]string
+	alerts     []service.SafetyAlert
+	delivered  map[string]bool
+	ops        []postgres.OpsAlert
+	emails     []string
 }
 
 func newFakeSafetyDeps() *fakeSafetyDeps {
@@ -271,7 +271,7 @@ func TestDatingLocationSharedNotifiesRecipientWithoutCoordinates(t *testing.T) {
 		t.Fatalf("alert = %+v", a)
 	}
 	// Lock-screen copy (audit M2): the sharer is never named in the push.
-	if a.Title != "A live location was shared with you" || a.Body != "Open the app to see it." {
+	if a.Title != "A location was shared with you" || a.Body != "Tap to see where they were when they shared." {
 		t.Fatalf("copy = %q / %q", a.Title, a.Body)
 	}
 	if strings.Contains(a.Title+a.Body, "Asha") {
