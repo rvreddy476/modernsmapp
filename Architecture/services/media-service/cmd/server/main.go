@@ -134,6 +134,15 @@ func main() {
 		mediaSvc.SetRedis(rdb)
 	}
 
+	// Clip writes are tied to the post: post-service says which posts attach
+	// each clip's media (service/clips_authz.go). Unset, every clip write is
+	// refused.
+	if postURL := os.Getenv("POST_SERVICE_URL"); postURL != "" {
+		mediaSvc.WithPostMediaLinks(service.NewHTTPPostMediaLinks(postURL, os.Getenv("INTERNAL_SERVICE_KEY"), nil))
+	} else {
+		slog.Warn("POST_SERVICE_URL not set — clip writes (POST /v1/clips/:postId) will be refused")
+	}
+
 	// M4-P0-5 — byte-delivery authorization.
 	//
 	// The gate signs protected media with a bounded TTL after asking

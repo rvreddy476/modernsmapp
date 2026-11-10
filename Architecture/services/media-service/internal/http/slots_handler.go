@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 
@@ -56,6 +57,8 @@ func (h *Handler) AssignSlot(c *gin.Context) {
 	err = h.svc.AssignSlot(c.Request.Context(), userID, ownerType, ownerID, slotName, mediaAssetID, req.Crop)
 	if err != nil {
 		switch {
+		case errors.Is(err, service.ErrNotSlotOwner):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "You may not manage this item's media", nil)
 		case containsAny(err.Error(), "invalid owner_type", "invalid slot_name", "invalid owner_id", "not available"):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		case containsAny(err.Error(), "forbidden"):
@@ -84,6 +87,10 @@ func (h *Handler) RemoveSlot(c *gin.Context) {
 
 	err = h.svc.RemoveSlot(c.Request.Context(), userID, ownerType, ownerID, slotName)
 	if err != nil {
+		if errors.Is(err, service.ErrNotSlotOwner) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", "You may not manage this item's media", nil)
+			return
+		}
 		if containsAny(err.Error(), "no rows", "not found") {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Slot not found", nil)
 			return

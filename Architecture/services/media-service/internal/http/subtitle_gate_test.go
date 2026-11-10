@@ -3,6 +3,7 @@ package http
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -34,6 +35,8 @@ type fakeClipsService struct {
 	savedActor   uuid.UUID
 	savedPost    uuid.UUID
 	saveErr      error
+	clips        []postgres.MediaClip
+	renditions   *service.RenditionStatusResponse
 	// owner is the media's uploader; readAs the viewers the draft-aware
 	// reads were asked about. Rows are filtered by the real draft rule
 	// (service.SubtitlesVisibleTo), not a copy of it.
@@ -76,6 +79,27 @@ func (f *fakeClipsService) ViewerCaptionTrackVTT(_ context.Context, viewerID, _ 
 		}
 	}
 	return "", service.ErrCaptionTrackNotFound
+}
+
+// ViewerClips / ViewerRenditionStatus: the gate first (as the service does),
+// then the configured rows; renditions are redacted by the real rule.
+func (f *fakeClipsService) ViewerClips(_ context.Context, viewerID, _ uuid.UUID) ([]postgres.MediaClip, error) {
+	f.authorizedAs = append(f.authorizedAs, viewerID)
+	if f.authorizeErr != nil {
+		if errors.Is(f.authorizeErr, delivery.ErrDeliveryDenied) {
+			return nil, nil
+		}
+		return nil, f.authorizeErr
+	}
+	return f.clips, nil
+}
+
+func (f *fakeClipsService) ViewerRenditionStatus(_ context.Context, viewerID, _ uuid.UUID) (*service.RenditionStatusResponse, error) {
+	f.authorizedAs = append(f.authorizedAs, viewerID)
+	if f.authorizeErr != nil {
+		return nil, f.authorizeErr
+	}
+	return service.RedactRenditionStatus(f.renditions, f.isOwner(viewerID)), nil
 }
 
 func (f *fakeClipsService) SaveMediaClips(_ context.Context, actorID, postID uuid.UUID, _ []postgres.MediaClip) error {

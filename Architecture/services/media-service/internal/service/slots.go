@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
@@ -25,6 +26,36 @@ var (
 	allowedOwnerTypes = map[string]bool{"profile": true, "channel": true, "group": true, "module_profile": true}
 )
 
+// ErrNotSlotOwner means the caller may not manage the slots of the owner
+// entity. The message starts with "forbidden"; handlers map it to 403.
+var ErrNotSlotOwner = errors.New("forbidden: you may not manage media slots of this owner")
+
+// assertSlotOwner is the authorization for a slot write or removal: the
+// caller must own, or be allowed to manage, the owner entity the slot
+// belongs to.
+//
+// Only one owner type can be decided from inside media-service: a `profile`
+// is a person and a person's id is the user's own id, so the caller must BE
+// the owner. channel, group and module_profile belong to other services and
+// media-service has no client that can answer "does this user manage that
+// entity". Until one exists those types FAIL CLOSED rather than trusting any
+// signed-in user. (Before this check any caller could set or delete the
+// avatar, banner or cover of any profile, channel or group.)
+func assertSlotOwner(userID uuid.UUID, ownerType string, ownerID uuid.UUID) error {
+	if userID == uuid.Nil {
+		return ErrNotSlotOwner
+	}
+	switch ownerType {
+	case "profile":
+		if ownerID != userID {
+			return ErrNotSlotOwner
+		}
+		return nil
+	default:
+		return fmt.Errorf("%w: ownership of a %s cannot be verified", ErrNotSlotOwner, ownerType)
+	}
+}
+
 // AssignSlot validates and assigns a media asset to a slot for a given owner entity.
 func (s *Service) AssignSlot(ctx context.Context, userID uuid.UUID, ownerType, ownerID, slotName string, mediaAssetID uuid.UUID, crop *CropParams) error {
 	// Validate owner type
@@ -43,7 +74,13 @@ func (s *Service) AssignSlot(ctx context.Context, userID uuid.UUID, ownerType, o
 		return fmt.Errorf("invalid owner_id: %w", err)
 	}
 
-	// Verify the media asset exists and belongs to the user (or check ownership)
+	// The caller must own the owner entity before anything about the media
+	// asset is revealed or written.
+	if err := assertSlotOwner(userID, ownerType, ownerUUID); err != nil {
+		return err
+	}
+
+	// Verify the media asset exists and belongs to the user
 	media, err := s.pgStore.GetMedia(ctx, mediaAssetID)
 	if err != nil {
 		return fmt.Errorf("media asset not found")
@@ -95,6 +132,10 @@ func (s *Service) RemoveSlot(ctx context.Context, userID uuid.UUID, ownerType, o
 	ownerUUID, err := uuid.Parse(ownerID)
 	if err != nil {
 		return fmt.Errorf("invalid owner_id: %w", err)
+	}
+
+	if err := assertSlotOwner(userID, ownerType, ownerUUID); err != nil {
+		return err
 	}
 
 	if err := s.pgStore.RemoveSlot(ctx, ownerType, ownerUUID, slotName); err != nil {

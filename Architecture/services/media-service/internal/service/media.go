@@ -74,6 +74,9 @@ type Service struct {
 	// documentUploadLimit is the per-user DOCUMENT upload limiter (its own
 	// budget, document.go); nil means CheckDocumentUploadRateLimit.
 	documentUploadLimit func(ctx context.Context, userID uuid.UUID) error
+	// postLinks answers which posts attach a media asset; SaveMediaClips
+	// uses it to tie a clip write to the post (clips_authz.go). Nil refuses.
+	postLinks PostMediaLinks
 }
 
 // WithDeliveryGate wires byte-delivery authorization. Called from main.go.

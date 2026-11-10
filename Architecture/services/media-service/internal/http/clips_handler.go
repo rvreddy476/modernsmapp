@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/atpost/media-service/internal/delivery"
 	"github.com/atpost/media-service/internal/service"
 	"github.com/atpost/media-service/internal/store/postgres"
 	"github.com/atpost/shared/api"
@@ -30,6 +31,10 @@ type clipsService interface {
 	ViewerCaptionStatus(ctx context.Context, viewerID, mediaID uuid.UUID) (*service.CaptionStatus, error)
 	ViewerCaptionTrackVTT(ctx context.Context, viewerID, mediaID uuid.UUID, language string) (string, error)
 	SaveMediaClips(ctx context.Context, actorID, postID uuid.UUID, clips []postgres.MediaClip) error
+	// ViewerClips returns only the clips whose media the viewer may read.
+	ViewerClips(ctx context.Context, viewerID, postID uuid.UUID) ([]postgres.MediaClip, error)
+	// ViewerRenditionStatus is the gated, redacted renditions read.
+	ViewerRenditionStatus(ctx context.Context, viewerID, mediaID uuid.UUID) (*service.RenditionStatusResponse, error)
 }
 
 // SubtitleTrackRoute is the caption track a <track src> points at.
@@ -265,6 +270,10 @@ func (h *Handler) SaveClips(c *gin.Context) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
 			return
 		}
+		if errors.Is(err, delivery.ErrDeliveryUnresolved) {
+			writeDeliveryError(c, err)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}
@@ -279,8 +288,14 @@ func (h *Handler) GetClips(c *gin.Context) {
 		return
 	}
 
-	clips, err := h.svc.GetMediaClips(c.Request.Context(), postID)
+	// Each clip is a pointer to a media asset and is answered to that asset's
+	// audience; clips the viewer may not read are left out.
+	clips, err := h.clipsSvc().ViewerClips(c.Request.Context(), deliveryViewer(c), postID)
 	if err != nil {
+		if errors.Is(err, delivery.ErrDeliveryUnresolved) {
+			writeDeliveryError(c, err)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return
 	}

@@ -64,7 +64,8 @@ func (s *Service) GetAudioLibraryTrackByID(ctx context.Context, id uuid.UUID) (*
 // gun is still loaded.
 //
 // media-service does not know who owns a post, so it authorizes what it
-// does own: every media asset involved. The actor must own each asset
+// does own (every media asset involved) and asks post-service whether the
+// post attaches the media being written (assertClipsOnPost). The actor must own each asset
 // being written (AssertMediaOwner, the same check the caption writes use)
 // AND every asset already in the sequence being replaced — otherwise
 // owning one clip would be enough to delete somebody else's whole edit.
@@ -77,6 +78,10 @@ func (s *Service) SaveMediaClips(ctx context.Context, actorID, postID uuid.UUID,
 		return err
 	}
 	if err := assertClipsOwned(ctx, s.AssertMediaOwner, actorID, existing, clips); err != nil {
+		return err
+	}
+	// And the post must be the actor's: it must attach the media being written.
+	if err := assertClipsOnPost(ctx, s.postLinks, postID, clips); err != nil {
 		return err
 	}
 	return s.pgStore.SaveMediaClips(ctx, postID, clips)
@@ -114,7 +119,8 @@ func assertClipsOwned(
 	return nil
 }
 
-// GetMediaClips returns the ordered clip sequence for a Flick post.
+// GetMediaClips returns the ordered clip sequence for a Flick post, with no
+// viewer check: internal callers only. HTTP reads use ViewerClips.
 func (s *Service) GetMediaClips(ctx context.Context, postID uuid.UUID) ([]postgres.MediaClip, error) {
 	return s.pgStore.GetMediaClips(ctx, postID)
 }

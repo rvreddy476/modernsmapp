@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/atpost/media-service/internal/service"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -26,15 +25,12 @@ func (h *Handler) GetRenditions(c *gin.Context) {
 		return
 	}
 
-	// Rendition rows carry object keys, which name the uploader: an
-	// anonymous asset's are its uploader's alone.
-	if m, err := h.svc.GetMedia(c.Request.Context(), mediaID); err != nil || service.AnonymousScopeDenies(m, deliveryViewer(c)) {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
-		return
-	}
-	resp, err := h.svc.GetRenditionStatus(c.Request.Context(), mediaID)
+	// Gated like /url and the HLS routes: only a viewer who may see the asset
+	// gets its renditions (object keys and processing errors only for the
+	// uploader). A denial is the not-found of a missing asset.
+	resp, err := h.clipsSvc().ViewerRenditionStatus(c.Request.Context(), deliveryViewer(c), mediaID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", "Media not found", nil)
+		writeDeliveryError(c, err)
 		return
 	}
 

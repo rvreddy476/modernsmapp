@@ -2,10 +2,13 @@ package service
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
+	"github.com/atpost/media-service/internal/delivery"
 	"github.com/atpost/media-service/internal/store/postgres"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 // RenditionSpec defines a rendition to be created for a media asset.
@@ -120,4 +123,50 @@ func (s *Service) GetRenditionStatus(ctx context.Context, mediaID uuid.UUID) (*R
 		AllReady:   allReady,
 		Renditions: renditions,
 	}, nil
+}
+
+// ViewerRenditionStatus is GET /v1/media/:mediaId/renditions: the rendition
+// status of an asset, answered to the asset's audience.
+//
+// It goes through the same delivery gate as /url and the HLS routes
+// (authorizeCaptionRead -> Gate.AuthorizeAsset), after the local rules
+// (anonymous scope, dating scope, documents, moderation hold). A denial is
+// delivery.ErrDeliveryDenied, which handlers answer as not-found. Rows carry
+// object keys (which name the uploader) and raw processing errors, so only
+// the uploader gets those; everyone else gets status and shape alone.
+func (s *Service) ViewerRenditionStatus(ctx context.Context, viewerID, mediaID uuid.UUID) (*RenditionStatusResponse, error) {
+	media, err := s.pgStore.GetMediaWithVariants(ctx, mediaID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, delivery.ErrDeliveryDenied
+		}
+		return nil, fmt.Errorf("%w: load media: %v", delivery.ErrDeliveryUnresolved, err)
+	}
+	if AnonymousScopeDenies(media, viewerID) {
+		return nil, delivery.ErrDeliveryDenied
+	}
+	if err := authorizeCaptionRead(ctx, s.gate, media, viewerID); err != nil {
+		return nil, err
+	}
+	resp, err := s.GetRenditionStatus(ctx, mediaID)
+	if err != nil {
+		return nil, err
+	}
+	return RedactRenditionStatus(resp, viewerID != uuid.Nil && viewerID == media.UploaderID), nil
+}
+
+// RedactRenditionStatus returns resp as owner may see it: the uploader gets
+// it whole; anyone else gets a copy without object_key and error_message.
+func RedactRenditionStatus(resp *RenditionStatusResponse, owner bool) *RenditionStatusResponse {
+	if resp == nil || owner {
+		return resp
+	}
+	out := *resp
+	out.Renditions = make([]postgres.MediaRendition, len(resp.Renditions))
+	for i, r := range resp.Renditions {
+		r.ObjectKey = nil
+		r.ErrorMessage = nil
+		out.Renditions[i] = r
+	}
+	return &out
 }
