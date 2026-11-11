@@ -165,6 +165,32 @@ func TestValidRoleTracksVocabulary(t *testing.T) {
 	}
 }
 
+var timedRoleCheckRE = regexp.MustCompile(
+	`(?is)ADD\s+CONSTRAINT\s+user_roles_timed_role_check\s+CHECK\s*\(\s*role\s+NOT\s+IN\s*\(([^)]*)\)\s*OR\s+expires_at\s+IS\s+NOT\s+NULL`)
+
+// TestSetupSQLTimedRoleCheck: the database refuses a timed role (premium)
+// without an expiry, idempotently on every boot, and lists exactly
+// roles.Timed().
+func TestSetupSQLTimedRoleCheck(t *testing.T) {
+	if !strings.Contains(database.SetupSQL,
+		"ALTER TABLE auth.user_roles DROP CONSTRAINT IF EXISTS user_roles_timed_role_check") {
+		t.Fatal("database/setup.sql must DROP user_roles_timed_role_check before re-adding it")
+	}
+	m := timedRoleCheckRE.FindStringSubmatch(database.SetupSQL)
+	if m == nil {
+		t.Fatal("database/setup.sql must ADD user_roles_timed_role_check")
+	}
+	want := roles.Timed()
+	sort.Strings(want)
+	if got := parseSQLStringList(m[1]); !reflect.DeepEqual(got, want) {
+		t.Fatalf("timed-role CHECK lists %v, roles.Timed() is %v", got, want)
+	}
+	if strings.Index(database.SetupSQL, "ADD CONSTRAINT user_roles_timed_role_check") <
+		strings.Index(database.SetupSQL, "ADD COLUMN IF NOT EXISTS expires_at") {
+		t.Fatal("user_roles_timed_role_check must come after expires_at is added")
+	}
+}
+
 // parseSQLStringList turns "'a','b' , 'c'" into a sorted []string{"a","b","c"}.
 func parseSQLStringList(s string) []string {
 	var out []string

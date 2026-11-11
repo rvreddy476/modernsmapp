@@ -135,9 +135,9 @@ func TestMeCapabilities(t *testing.T) {
 	if !containsStr(env.Data.Admin.Apps["dating"], "dating:reports.act") || env.Data.Admin.Platform == nil {
 		t.Fatalf("admin=%+v (body %s)", env.Data.Admin, resp.Body.String())
 	}
-	// One key per token role: the seven that predate Doorstep plus
-	// service_professional.
-	if len(env.Data.Capabilities) != 8 || len(env.Data.Capabilities) != len(roles.TokenRoles()) {
+	// One key per token role: the seven that predate Doorstep, plus
+	// service_professional, plus premium (timed, 11 Nov 2026).
+	if len(env.Data.Capabilities) != 9 || len(env.Data.Capabilities) != len(roles.TokenRoles()) {
 		t.Fatalf("capabilities=%v want one entry per role", env.Data.Capabilities)
 	}
 	if _, ok := env.Data.Capabilities["customer"]; ok {

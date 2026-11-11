@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/atpost/identity-auth-service/internal/roles"
 	"github.com/atpost/identity-auth-service/internal/service"
@@ -31,29 +32,47 @@ import (
 // (trustedIdentityHeaders + injectInternalKeyMiddleware in
 // api-gateway/cmd/server/main.go), so a browser cannot present the key.
 //
-// That is NOT the same as "unreachable from a browser", and the difference is
-// worth stating plainly rather than assuming. The gateway proxies /v1/auth,
-// and its requireAdminForInternalPaths lets any request whose path contains
-// /internal/ through when the USER's token carries admin, moderator or
-// superadmin. So an ordinary user cannot reach these routes, but a moderator
-// with a browser can — and could grant themselves `seller`. The correct fix is
-// at the edge, not here (add "/v1/auth/internal" to
-// api-gateway/pkg/routepolicy.ForbiddenPrefixes, exactly as payments is
-// handled: services call this in-cluster, so it never needs to be proxied).
-// That file belongs to another stream; this comment is the handoff.
+// The edge does not forward these routes at all: "/v1/auth/internal" is in
+// api-gateway/pkg/routepolicy.ForbiddenPrefixes (with tests there), so the
+// gateway refuses the prefix even for a moderator or admin whose token would
+// otherwise pass its /internal/ admin gate. Services call this in-cluster,
+// so it never needs to be proxied. (An earlier version of this comment
+// described that hole as open; it was closed at the edge.)
+//
+// WHO THE CALLER IS
+//
+// The shared key proves the caller is inside the cluster, not WHICH service
+// it is. The `service` field is self-declared. It is recorded as the audit
+// actor, and it gates the timed role below, but that gate guards against a
+// wiring bug in another service, not against a caller that holds the key and
+// lies. Binding the caller's name needs a signed service token, which this
+// module cannot import today (see RequireServiceCallerNoUser).
 //
 // WHAT THEY MAY DO
 //
-// Only the ecosystem roles (roles.Ecosystem()). Enforced in
-// service.GrantEcosystemRole, not here, so it holds for every caller of the
-// service layer.
+//   - The ecosystem roles (roles.Ecosystem()), permanently: expires_at must
+//     NOT be sent (400 EXPIRES_AT_NOT_ALLOWED).
+//   - The timed role premium (roles.Timed()), only from its owning service
+//     (roles.TimedRoleGranter: monetization-service; anyone else gets 403
+//     ROLE_NOT_GRANTABLE) and only with a future expires_at (400
+//     EXPIRES_AT_REQUIRED when absent, 400 INVALID_EXPIRY when not in the
+//     future). premium is NOT in Ecosystem(), so it can never be granted
+//     without an expiry.
+//
+// Enforced in service.GrantEcosystemRole / RevokeEcosystemRole, not here, so
+// it holds for every caller of the service layer.
 
 type internalRoleRequest struct {
 	// UserID is the account the role is granted to or revoked from.
 	UserID string `json:"user_id" binding:"required"`
 	// Role must be one of: seller, restaurant_owner, delivery_partner,
-	// rider_partner, service_professional.
+	// rider_partner, service_professional, or premium (timed; see ExpiresAt).
 	Role string `json:"role" binding:"required"`
+	// ExpiresAt (RFC 3339) is REQUIRED for a timed role (premium) on grant
+	// and must be in the future; it replaces the expiry the role had, so an
+	// extension or a shortening is the same call with a new time. It must be
+	// absent for an ecosystem role. Ignored on revoke.
+	ExpiresAt *time.Time `json:"expires_at"`
 	// Service names the caller for the audit trail — "commerce-service",
 	// "food-service", "rider-service". Required: the audit row records this as
 	// the actor, and a blank one would be unattributable.
@@ -70,6 +89,17 @@ type internalRoleRequest struct {
 // writeInternalRoleErr maps the service-layer sentinels to HTTP.
 func (h *Handler) writeInternalRoleErr(c *gin.Context, err error) {
 	switch {
+	case errors.Is(err, service.ErrTimedRoleWrongService):
+		// Same code as any other refused role, so the shared client
+		// classifies it as a permanent caller bug; the detail says why.
+		api.Error(c.Writer, http.StatusForbidden, "ROLE_NOT_GRANTABLE", err.Error(),
+			map[string]any{"grantable_roles": roles.Ecosystem(), "timed_role_owner": timedRoleOwners()}, nil)
+	case errors.Is(err, service.ErrExpiryRequired):
+		api.Error(c.Writer, http.StatusBadRequest, "EXPIRES_AT_REQUIRED", err.Error(), nil, nil)
+	case errors.Is(err, service.ErrInvalidExpiry):
+		api.Error(c.Writer, http.StatusBadRequest, "INVALID_EXPIRY", err.Error(), nil, nil)
+	case errors.Is(err, service.ErrExpiryNotAllowed):
+		api.Error(c.Writer, http.StatusBadRequest, "EXPIRES_AT_NOT_ALLOWED", err.Error(), nil, nil)
 	case errors.Is(err, service.ErrRoleNotGrantableByService):
 		api.Error(c.Writer, http.StatusForbidden, "ROLE_NOT_GRANTABLE", err.Error(),
 			map[string]any{"grantable_roles": roles.Ecosystem()}, nil)
@@ -79,6 +109,15 @@ func (h *Handler) writeInternalRoleErr(c *gin.Context, err error) {
 		h.log.Error("internal role op failed", "err", err, "request_id", RequestIDFromContext(c))
 		api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
 	}
+}
+
+// timedRoleOwners maps each timed role to the one service that may grant it.
+func timedRoleOwners() map[string]string {
+	out := map[string]string{}
+	for _, r := range roles.Timed() {
+		out[r] = roles.TimedRoleGranter(r)
+	}
+	return out
 }
 
 // bindInternalRole parses and validates the shared request body.
@@ -113,23 +152,32 @@ func detailFor(req internalRoleRequest) string {
 //	200 {"status":"granted","user_id":"<uuid>","role":"seller"}
 //
 // IDEMPOTENT. Granting a role the user already holds is a 200, not an error —
-// auth.user_roles is keyed on (user_id, role) and the insert is ON CONFLICT DO
-// NOTHING. An approval flow that retries, or a backfill run twice, must not
-// fail.
+// auth.user_roles is keyed on (user_id, role, app) and the insert is ON
+// CONFLICT DO NOTHING. An approval flow that retries, or a backfill run
+// twice, must not fail.
+//
+// A timed role (premium) is different: the insert is an UPSERT that replaces
+// expires_at, so re-granting with a later time extends the role and with an
+// earlier one shortens it. A shortening revokes the user's sessions (they
+// sign in again and the new token carries the shorter grant):
+//
+//	{"user_id":"<uuid>","role":"premium","service":"monetization-service",
+//	 "reason":"pass PP-9 paid","expires_at":"2026-12-14T00:00:00Z"}
 //
 // The new role reaches the user's access token on its NEXT MINT. Refresh
-// re-mints, so POST /v1/auth/refresh is enough — no re-login.
+// re-mints, so POST /v1/auth/refresh is enough — no re-login. An expired
+// timed role never reaches a token: every role read filters on expires_at.
 func (h *Handler) InternalGrantRole(c *gin.Context) {
 	req, target, ok := h.bindInternalRole(c)
 	if !ok {
 		return
 	}
-	if err := h.svc.GrantEcosystemRole(c.Request.Context(), req.Service, target, req.Role, req.Reason); err != nil {
+	if err := h.svc.GrantEcosystemRole(c.Request.Context(), req.Service, target, req.Role, req.Reason, req.ExpiresAt); err != nil {
 		h.writeInternalRoleErr(c, err)
 		return
 	}
-	h.log.Info("ecosystem role granted", "service", req.Service, "user_id", target,
-		"role", req.Role, "reason", detailFor(req), "request_id", RequestIDFromContext(c))
+	h.log.Info("service role granted", "service", req.Service, "user_id", target,
+		"role", req.Role, "expires_at", req.ExpiresAt, "reason", detailFor(req), "request_id", RequestIDFromContext(c))
 	api.JSON(c.Writer, http.StatusOK, gin.H{
 		"status": "granted", "user_id": target.String(), "role": req.Role,
 	}, nil)
@@ -144,8 +192,12 @@ func (h *Handler) InternalGrantRole(c *gin.Context) {
 //
 // IDEMPOTENT. Revoking a role the user does not hold is a 200.
 //
-// NOTE: revoking does NOT invalidate access tokens already minted with the
-// role. The scope disappears on the next mint (≤ ACCESS_TOKEN_TTL, 15 minutes
+// premium may be revoked only by its owning service. Revoking a premium row
+// that is still live revokes the user's sessions so no token keeps the scope;
+// revoking one that has already lapsed does not.
+//
+// NOTE: for an ecosystem role, revoking does NOT invalidate access tokens
+// already minted with the role. The scope disappears on the next mint (≤ ACCESS_TOKEN_TTL, 15 minutes
 // by default). A suspension that must take effect immediately needs the owning
 // service to check its own state too — identity's role is the durable answer,
 // not a real-time kill switch.

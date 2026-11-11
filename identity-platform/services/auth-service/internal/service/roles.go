@@ -532,7 +532,8 @@ func (s *Service) RecordEnvBootstrap(ctx context.Context) error {
 // compromised commerce-service can do is make someone a seller.
 var ErrRoleNotGrantableByService = errors.New(
 	"a service may grant only ecosystem roles (seller, restaurant_owner, " +
-		"delivery_partner, rider_partner, service_professional); admin and " +
+		"delivery_partner, rider_partner, service_professional) and, with a " +
+		"future expires_at and from its owning service only, premium; admin and " +
 		"superadmin are granted by a superadmin through POST /v1/auth/admin/roles")
 
 // ErrCallingServiceRequired is returned when the internal role API is called
@@ -540,22 +541,54 @@ var ErrRoleNotGrantableByService = errors.New(
 // as the actor, so a blank one would produce an unattributable row.
 var ErrCallingServiceRequired = errors.New("calling service name is required")
 
-// GrantEcosystemRole grants one of the four ecosystem roles on behalf of a
-// SERVICE — commerce approving a seller, food onboarding a restaurant or
-// delivery partner, rider approving a fleet partner.
+// Timed-role (premium) errors on the internal role API. HTTP codes in
+// internal/http/internal_roles.go.
+var (
+	// ErrExpiryRequired: a timed role was asked for without expires_at. A
+	// timed role without an expiry would be a permanent grant of a paid role.
+	// 400 EXPIRES_AT_REQUIRED.
+	ErrExpiryRequired = errors.New("expires_at is required for a timed role (premium)")
+	// ErrExpiryNotAllowed: expires_at was sent for an ecosystem role, which is
+	// permanent by design ("is on this journey"). Refused rather than ignored,
+	// so a caller bug cannot silently produce a grant it did not intend.
+	// 400 EXPIRES_AT_NOT_ALLOWED.
+	ErrExpiryNotAllowed = errors.New("expires_at is accepted only for a timed role (premium); ecosystem roles do not expire")
+	// ErrTimedRoleWrongService: a timed role was granted or revoked by a
+	// service other than its owner (roles.TimedRoleGranter). Wraps
+	// ErrRoleNotGrantableByService, so it is a 403 ROLE_NOT_GRANTABLE — the
+	// shared client treats that as a permanent caller bug.
+	ErrTimedRoleWrongService = fmt.Errorf("%w (this timed role belongs to another service)", ErrRoleNotGrantableByService)
+)
+
+// GrantEcosystemRole grants a service-grantable role on behalf of a SERVICE:
+// an ecosystem role (commerce approving a seller, food onboarding a restaurant
+// or delivery partner, rider approving a fleet partner, doorstep creating a
+// professional) or a timed role (monetization-service granting premium for a
+// paid period).
 //
 // There is no acting user, so this does NOT go through authorizePrivileged:
 // the caller is authenticated at the HTTP layer by the shared internal-service
 // key, and authorised here by the role it is asking for. callingService names
 // the actor in the audit trail.
 //
-// Idempotent. auth.user_roles is keyed on (user_id, role) and the INSERT is
-// ON CONFLICT DO NOTHING, so re-granting is a success, not an error — an
-// approval flow that retries, or a backfill run twice, must not fail.
-func (s *Service) GrantEcosystemRole(ctx context.Context, callingService string, targetID uuid.UUID, role, reason string) error {
+// expiresAt must be nil for an ecosystem role and a future time for a timed
+// role (see grantTimedRole).
+//
+// Idempotent. For an ecosystem role auth.user_roles is keyed on (user_id,
+// role, app) and the INSERT is ON CONFLICT DO NOTHING, so re-granting is a
+// success, not an error — an approval flow that retries, or a backfill run
+// twice, must not fail.
+func (s *Service) GrantEcosystemRole(ctx context.Context, callingService string, targetID uuid.UUID, role, reason string, expiresAt *time.Time) error {
 	callingService = strings.TrimSpace(callingService)
 	if callingService == "" {
 		return ErrCallingServiceRequired
+	}
+	if roles.IsTimed(role) {
+		return s.grantTimedRole(ctx, callingService, targetID, role, reason, expiresAt)
+	}
+	if expiresAt != nil && store.ValidEcosystemRole(role) {
+		s.serviceAudit(ctx, targetID, callingService, "role.grant", "denied: expires_at on an ecosystem role, role="+role, false)
+		return ErrExpiryNotAllowed
 	}
 	if !store.ValidEcosystemRole(role) {
 		// Audited as a DENIED attempt. A service asking for `superadmin` is
@@ -582,6 +615,9 @@ func (s *Service) RevokeEcosystemRole(ctx context.Context, callingService string
 	if callingService == "" {
 		return ErrCallingServiceRequired
 	}
+	if roles.IsTimed(role) {
+		return s.revokeTimedRole(ctx, callingService, targetID, role, reason)
+	}
 	if !store.ValidEcosystemRole(role) {
 		s.serviceAudit(ctx, targetID, callingService, "role.revoke", "denied: role not revocable by a service, role="+role, false)
 		return ErrRoleNotGrantableByService
@@ -591,6 +627,89 @@ func (s *Service) RevokeEcosystemRole(ctx context.Context, callingService string
 	}
 	s.serviceAudit(ctx, targetID, callingService, "role.revoke", roleDetail(role, reason), true)
 	return nil
+}
+
+// grantTimedRole grants a timed role (premium) until expiresAt.
+//
+// Rules: only the role's owning service (roles.TimedRoleGranter) may grant it
+// (403 ROLE_NOT_GRANTABLE otherwise); expiresAt is required (400
+// EXPIRES_AT_REQUIRED) and must be in the future (400 INVALID_EXPIRY).
+//
+// It is an UPSERT that REPLACES expires_at, through store.ChangeRole (the
+// same path as an admin grant), so a second pass that extends the period
+// lands, and a refund that shortens it lands too. A shorter expiry than the
+// row had revokes the target's sessions in the same transaction, and each is
+// marked sess_revoked for the gateway, so a token minted under the longer
+// period cannot keep the scope. The audit row is written in that transaction,
+// with the calling service as actor. Re-granting the same expiry is a no-op
+// success.
+func (s *Service) grantTimedRole(ctx context.Context, callingService string, targetID uuid.UUID, role, reason string, expiresAt *time.Time) error {
+	if owner := roles.TimedRoleGranter(role); callingService != owner {
+		s.serviceAudit(ctx, targetID, callingService, "role.grant", "denied: timed role owned by "+owner+", role="+role, false)
+		return ErrTimedRoleWrongService
+	}
+	if expiresAt == nil || expiresAt.IsZero() {
+		s.serviceAudit(ctx, targetID, callingService, "role.grant", "denied: timed role without expires_at, role="+role, false)
+		return ErrExpiryRequired
+	}
+	if !expiresAt.After(time.Now()) {
+		s.serviceAudit(ctx, targetID, callingService, "role.grant", "denied: expires_at not in the future, role="+role, false)
+		return ErrInvalidExpiry
+	}
+	at := expiresAt.UTC()
+	return s.applyTimedRoleChange(ctx, callingService, store.RoleChange{
+		UserID:    targetID,
+		Role:      role,
+		ExpiresAt: &at,
+		Reason:    clampReason(reason),
+	}, "role.grant", roleDetail(role, reason)+" expires_at="+at.Format(time.RFC3339))
+}
+
+// revokeTimedRole removes a timed role. Owning service only, like the grant.
+// Revoking a live row revokes the target's sessions (as an admin revoke
+// does); revoking a row that has already lapsed does not, because it already
+// grants nothing and the lapse is the normal end of a paid period.
+// Idempotent: revoking an absent role is a success.
+func (s *Service) revokeTimedRole(ctx context.Context, callingService string, targetID uuid.UUID, role, reason string) error {
+	if owner := roles.TimedRoleGranter(role); callingService != owner {
+		s.serviceAudit(ctx, targetID, callingService, "role.revoke", "denied: timed role owned by "+owner+", role="+role, false)
+		return ErrTimedRoleWrongService
+	}
+	return s.applyTimedRoleChange(ctx, callingService, store.RoleChange{
+		Revoke:                    true,
+		UserID:                    targetID,
+		Role:                      role,
+		Reason:                    clampReason(reason),
+		LapsedRevokeKeepsSessions: true,
+	}, "role.revoke", roleDetail(role, reason))
+}
+
+// applyTimedRoleChange writes a timed-role change and its service-attributed
+// audit row in one transaction, then marks any sessions the change revoked.
+func (s *Service) applyTimedRoleChange(ctx context.Context, callingService string, ch store.RoleChange, action, detail string) error {
+	res, err := s.store.ChangeRole(ctx, ch, store.RoleAudit{
+		ActorService: callingService,
+		TargetID:     ch.UserID,
+		Action:       action,
+		Detail:       detail,
+	}, nil)
+	if err != nil {
+		return err
+	}
+	s.revokeCached(ctx, res.RevokedSessions)
+	if len(res.RevokedSessions) > 0 {
+		s.InvalidatePending2FASessions(ctx, ch.UserID)
+	}
+	return nil
+}
+
+// clampReason trims a free-text reason to the stored maximum.
+func clampReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if len(reason) > maxReasonLen {
+		reason = reason[:maxReasonLen]
+	}
+	return reason
 }
 
 // roleDetail renders the audit detail for a service-driven role change. The

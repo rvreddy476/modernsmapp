@@ -101,7 +101,8 @@ CREATE TABLE IF NOT EXISTS auth.user_roles (
                    'superadmin','admin','moderator',
                    'finance','support','kyc_reviewer','auditor',
                    'seller','restaurant_owner','delivery_partner','rider_partner',
-                   'service_professional'
+                   'service_professional',
+                   'premium'
                )),
     granted_by UUID,
     granted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -144,7 +145,8 @@ ALTER TABLE auth.user_roles ADD CONSTRAINT user_roles_role_check CHECK (role IN 
     'superadmin','admin','moderator',
     'finance','support','kyc_reviewer','auditor',
     'seller','restaurant_owner','delivery_partner','rider_partner',
-    'service_professional'
+    'service_professional',
+    'premium'
 ));
 
 -- Per-application admin roles (admin console, Wave 0 A1).
@@ -183,6 +185,16 @@ ALTER TABLE auth.user_roles ADD CONSTRAINT user_roles_app_check CHECK (app IS NU
 ALTER TABLE auth.user_roles DROP CONSTRAINT IF EXISTS user_roles_scoped_role_check;
 ALTER TABLE auth.user_roles ADD CONSTRAINT user_roles_scoped_role_check CHECK (
     app IS NULL OR role IN ('admin','moderator','finance','support','kyc_reviewer','auditor')
+);
+-- Timed roles (premium, 11 Nov 2026: Momentum Premium, granted by
+-- monetization-service) are bought for a period and must lapse by themselves,
+-- so a row without an expiry would be a permanent grant of a paid role. The
+-- service refuses one; the database refuses it too. Idempotent DROP/ADD, same
+-- reason as user_roles_role_check above. The list must equal roles.Timed()
+-- (TestSetupSQLTimedRoleCheck).
+ALTER TABLE auth.user_roles DROP CONSTRAINT IF EXISTS user_roles_timed_role_check;
+ALTER TABLE auth.user_roles ADD CONSTRAINT user_roles_timed_role_check CHECK (
+    role NOT IN ('premium') OR expires_at IS NOT NULL
 );
 
 -- Immutable audit trail of privileged actions (role grants/revokes, etc.).

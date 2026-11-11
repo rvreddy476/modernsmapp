@@ -55,7 +55,7 @@ func assertDoorstepAccepted(t *testing.T, pool *pgxpool.Pool) {
 	pro := uuid.New()
 
 	for i := 0; i < 2; i++ { // idempotent on the real key
-		if err := svc.GrantEcosystemRole(ctx, "doorstep-service", pro, roles.ServiceProfessional, "professional created"); err != nil {
+		if err := svc.GrantEcosystemRole(ctx, "doorstep-service", pro, roles.ServiceProfessional, "professional created", nil); err != nil {
 			t.Fatalf("grant service_professional #%d: %v", i+1, err)
 		}
 	}

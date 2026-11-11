@@ -34,6 +34,9 @@ type stubAuthService struct {
 	// Identity-as-SSO role surface.
 	grantEcosystemFn  func(callingService string, target uuid.UUID, role, reason string) error
 	revokeEcosystemFn func(callingService string, target uuid.UUID, role, reason string) error
+	// lastGrantExpiresAt records the expires_at the handler forwarded on the
+	// last grant (nil when none was sent).
+	lastGrantExpiresAt *time.Time
 	resolveRolesFn    func(userID uuid.UUID) []string
 	permissionsFn     func(userID uuid.UUID) (permissions.Admin, error)
 	stepUpFn          func(userID, sessionID uuid.UUID, code string) (*service.StepUpResponse, error)
@@ -210,7 +213,8 @@ func (s *stubAuthService) PermissionsForUser(_ context.Context, uid uuid.UUID) (
 
 // Ecosystem role stubs. The fns let a test observe what the handler forwarded
 // (and return the service-layer sentinels) without a second stub type.
-func (s *stubAuthService) GrantEcosystemRole(_ context.Context, callingService string, target uuid.UUID, role, reason string) error {
+func (s *stubAuthService) GrantEcosystemRole(_ context.Context, callingService string, target uuid.UUID, role, reason string, expiresAt *time.Time) error {
+	s.lastGrantExpiresAt = expiresAt
 	if s.grantEcosystemFn == nil {
 		return nil
 	}

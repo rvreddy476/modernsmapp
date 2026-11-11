@@ -130,7 +130,7 @@ func TestServiceCannotMintPlatformRoles(t *testing.T) {
 		st := newEcosystemStore()
 		svc := newEcosystemSvc(t, st)
 
-		err := svc.GrantEcosystemRole(context.Background(), "commerce-service", target, role, "")
+		err := svc.GrantEcosystemRole(context.Background(), "commerce-service", target, role, "", nil)
 		if !errors.Is(err, ErrRoleNotGrantableByService) {
 			t.Fatalf("grant %q: got %v, want ErrRoleNotGrantableByService", role, err)
 		}
@@ -158,7 +158,7 @@ func TestServiceCannotMintPlatformRoles(t *testing.T) {
 	for _, role := range []string{"customer", "bogus", "", "SELLER"} {
 		st := newEcosystemStore()
 		svc := newEcosystemSvc(t, st)
-		if err := svc.GrantEcosystemRole(context.Background(), "food-service", target, role, ""); !errors.Is(err, ErrRoleNotGrantableByService) {
+		if err := svc.GrantEcosystemRole(context.Background(), "food-service", target, role, "", nil); !errors.Is(err, ErrRoleNotGrantableByService) {
 			t.Fatalf("grant %q: got %v, want ErrRoleNotGrantableByService", role, err)
 		}
 	}
@@ -169,7 +169,7 @@ func TestGrantEcosystemRole_AllFourAllowed(t *testing.T) {
 	for _, role := range roles.Ecosystem() {
 		st := newEcosystemStore()
 		svc := newEcosystemSvc(t, st)
-		if err := svc.GrantEcosystemRole(context.Background(), "commerce-service", target, role, ""); err != nil {
+		if err := svc.GrantEcosystemRole(context.Background(), "commerce-service", target, role, "", nil); err != nil {
 			t.Fatalf("grant %q: %v", role, err)
 		}
 		if !st.granted[target][role] {
@@ -186,7 +186,7 @@ func TestGrantEcosystemRole_Idempotent(t *testing.T) {
 	target := uuid.New()
 
 	for i := 0; i < 3; i++ {
-		if err := svc.GrantEcosystemRole(context.Background(), "commerce-service", target, "seller", "SA-1042"); err != nil {
+		if err := svc.GrantEcosystemRole(context.Background(), "commerce-service", target, "seller", "SA-1042", nil); err != nil {
 			t.Fatalf("grant #%d: %v", i+1, err)
 		}
 	}
@@ -208,7 +208,7 @@ func TestRevokeEcosystemRole(t *testing.T) {
 	svc := newEcosystemSvc(t, st)
 	target := uuid.New()
 
-	if err := svc.GrantEcosystemRole(context.Background(), "commerce-service", target, "seller", ""); err != nil {
+	if err := svc.GrantEcosystemRole(context.Background(), "commerce-service", target, "seller", "", nil); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 	if err := svc.RevokeEcosystemRole(context.Background(), "commerce-service", target, "seller", "policy violation"); err != nil {
@@ -232,7 +232,7 @@ func TestServiceRoleAuditNamesTheService(t *testing.T) {
 	svc := newEcosystemSvc(t, st)
 	target := uuid.New()
 
-	if err := svc.GrantEcosystemRole(context.Background(), "food-service", target, "restaurant_owner", "onboarded RP-77"); err != nil {
+	if err := svc.GrantEcosystemRole(context.Background(), "food-service", target, "restaurant_owner", "onboarded RP-77", nil); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 	if len(st.userAudits) != 0 {
@@ -253,7 +253,7 @@ func TestDoorstepGrantsAndRevokesServiceProfessional(t *testing.T) {
 	svc := newEcosystemSvc(t, st)
 	target := uuid.New()
 
-	if err := svc.GrantEcosystemRole(context.Background(), "doorstep-service", target, roles.ServiceProfessional, "professional created"); err != nil {
+	if err := svc.GrantEcosystemRole(context.Background(), "doorstep-service", target, roles.ServiceProfessional, "professional created", nil); err != nil {
 		t.Fatalf("grant: %v", err)
 	}
 	if !st.granted[target]["service_professional"] {
@@ -277,7 +277,7 @@ func TestDoorstepGrantsAndRevokesServiceProfessional(t *testing.T) {
 	}
 	// Near-misses a hand-typed caller would send are refused and audited.
 	for _, bad := range []string{"service-professional", "professional", "doorstep_pro", "Service_Professional"} {
-		if err := svc.GrantEcosystemRole(context.Background(), "doorstep-service", target, bad, ""); !errors.Is(err, ErrRoleNotGrantableByService) {
+		if err := svc.GrantEcosystemRole(context.Background(), "doorstep-service", target, bad, "", nil); !errors.Is(err, ErrRoleNotGrantableByService) {
 			t.Fatalf("grant %q: got %v, want ErrRoleNotGrantableByService", bad, err)
 		}
 	}
@@ -292,7 +292,7 @@ func TestEcosystemRoleRequiresCallingService(t *testing.T) {
 	target := uuid.New()
 
 	for _, name := range []string{"", "   "} {
-		if err := svc.GrantEcosystemRole(context.Background(), name, target, "seller", ""); !errors.Is(err, ErrCallingServiceRequired) {
+		if err := svc.GrantEcosystemRole(context.Background(), name, target, "seller", "", nil); !errors.Is(err, ErrCallingServiceRequired) {
 			t.Fatalf("grant with service=%q: got %v, want ErrCallingServiceRequired", name, err)
 		}
 		if err := svc.RevokeEcosystemRole(context.Background(), name, target, "seller", ""); !errors.Is(err, ErrCallingServiceRequired) {
@@ -363,9 +363,9 @@ func TestCapabilitiesForUser(t *testing.T) {
 	if want := []string{"moderator", "seller"}; !reflect.DeepEqual(caps.Roles, want) {
 		t.Fatalf("roles=%v want %v", caps.Roles, want)
 	}
-	// One per token role — the shape that existed before staff roles, kept
-	// unchanged. Staff hats are expressed only in caps.Admin.
-	if len(caps.Capabilities) != len(roles.TokenRoles()) || len(caps.Capabilities) != 8 {
+	// One per token role (ladder, ecosystem, premium). Staff hats are
+	// expressed only in caps.Admin.
+	if len(caps.Capabilities) != len(roles.TokenRoles()) || len(caps.Capabilities) != 9 {
 		t.Fatalf("capabilities has %d entries, want one per token role (%d) so a client "+
 			"never has to know which roles exist", len(caps.Capabilities), len(roles.TokenRoles()))
 	}

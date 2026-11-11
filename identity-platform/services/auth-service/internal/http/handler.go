@@ -104,10 +104,11 @@ type AuthService interface {
 	AdminLogout(ctx context.Context, refreshToken string) error
 	AdminStepUp(ctx context.Context, userID, sessionID uuid.UUID, code string) (*service.StepUpResponse, error)
 	AdminSessionStatusFor(ctx context.Context, userID, sessionID uuid.UUID) (*service.AdminSessionStatus, error)
-	// Service-to-service ecosystem role management. Guarded at the route by
+	// Service-to-service role management. Guarded at the route by
 	// RequireInternalServiceKey and constrained in the service layer to the
-	// four ecosystem roles — a service can never mint admin or superadmin.
-	GrantEcosystemRole(ctx context.Context, callingService string, targetID uuid.UUID, role, reason string) error
+	// ecosystem roles plus the timed role premium (future expiresAt, owning
+	// service only) — a service can never mint admin or superadmin.
+	GrantEcosystemRole(ctx context.Context, callingService string, targetID uuid.UUID, role, reason string, expiresAt *time.Time) error
 	RevokeEcosystemRole(ctx context.Context, callingService string, targetID uuid.UUID, role, reason string) error
 	// Role read path. ResolveRoles is env-allowlist ∪ DB, implication-expanded.
 	ResolveRoles(ctx context.Context, userID uuid.UUID) []string

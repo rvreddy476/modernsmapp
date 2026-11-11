@@ -83,18 +83,24 @@ func (s *Store) RevokeAllSessionsAudited(ctx context.Context, userID uuid.UUID, 
 	return ids, nil
 }
 
-// insertAuditTx writes one allowed admin_audit row inside tx.
+// insertAuditTx writes one allowed admin_audit row inside tx. A service actor
+// (audit.ActorService) is recorded in actor_service with actor_id NULL, the
+// same shape InsertServiceAudit writes.
 func insertAuditTx(ctx context.Context, tx pgx.Tx, audit RoleAudit, detail string) error {
 	var actor, target *uuid.UUID
+	var actorService *string
 	if audit.ActorID != uuid.Nil {
 		actor = &audit.ActorID
+	}
+	if audit.ActorService != "" {
+		actorService = &audit.ActorService
 	}
 	if audit.TargetID != uuid.Nil {
 		target = &audit.TargetID
 	}
 	if _, err := tx.Exec(ctx, `
-		INSERT INTO auth.admin_audit (actor_id, action, target_id, detail, allowed)
-		VALUES ($1, $2, $3, $4, TRUE)`, actor, audit.Action, target, detail); err != nil {
+		INSERT INTO auth.admin_audit (actor_id, actor_service, action, target_id, detail, allowed)
+		VALUES ($1, $2, $3, $4, $5, TRUE)`, actor, actorService, audit.Action, target, detail); err != nil {
 		return fmt.Errorf("audit: %w", err)
 	}
 	return nil

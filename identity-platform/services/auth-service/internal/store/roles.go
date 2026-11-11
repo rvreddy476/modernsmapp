@@ -41,7 +41,8 @@ type SuperadminHolder struct {
 	ExpiresAt *time.Time
 }
 
-// RoleChange is one admin grant or revoke. App "" is platform-wide.
+// RoleChange is one admin grant or revoke, or a service's timed-role grant or
+// revoke. App "" is platform-wide.
 type RoleChange struct {
 	Revoke    bool
 	UserID    uuid.UUID
@@ -50,14 +51,24 @@ type RoleChange struct {
 	App       string
 	ExpiresAt *time.Time
 	Reason    string
+	// LapsedRevokeKeepsSessions: a revoke that deletes a row whose expiry had
+	// ALREADY passed does not revoke the target's sessions. Set for timed
+	// roles (premium), whose granting service revokes at lapse: the row
+	// already grants nothing, and signing every lapsed member out of every
+	// device would punish them for not renewing. A revoke of a live row still
+	// revokes sessions. The admin path leaves this false (unchanged).
+	LapsedRevokeKeepsSessions bool
 }
 
 // RoleAudit is the audit row written in the same transaction as a RoleChange.
+// Exactly one of ActorID (a person) and ActorService (a calling service, for
+// the internal role API) is set.
 type RoleAudit struct {
-	ActorID  uuid.UUID
-	TargetID uuid.UUID
-	Action   string
-	Detail   string
+	ActorID      uuid.UUID
+	ActorService string
+	TargetID     uuid.UUID
+	Action       string
+	Detail       string
 }
 
 // activeRole is the SQL predicate for "this row grants something now".
@@ -216,15 +227,22 @@ func (s *Store) ChangeRole(ctx context.Context, ch RoleChange, audit RoleAudit,
 	}
 	reduces := false
 	if ch.Revoke {
-		tag, err := tx.Exec(ctx, `
+		// At most one row: (user_id, role, COALESCE(app,'')) is unique.
+		var wasActive bool
+		err := tx.QueryRow(ctx, `
 			DELETE FROM auth.user_roles
-			WHERE user_id = $1 AND role = $2 AND COALESCE(app, '') = $3`,
-			ch.UserID, ch.Role, ch.App)
-		if err != nil {
+			WHERE user_id = $1 AND role = $2 AND COALESCE(app, '') = $3
+			RETURNING `+activeRole,
+			ch.UserID, ch.Role, ch.App).Scan(&wasActive)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+			res.Changed = false
+		case err != nil:
 			return res, fmt.Errorf("change role: revoke: %w", err)
+		default:
+			res.Changed = true
 		}
-		res.Changed = tag.RowsAffected() > 0
-		reduces = res.Changed
+		reduces = res.Changed && (wasActive || !ch.LapsedRevokeKeepsSessions)
 	} else {
 		var gb *uuid.UUID
 		if ch.GrantedBy != uuid.Nil {

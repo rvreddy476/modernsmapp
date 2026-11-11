@@ -62,6 +62,27 @@ const (
 	ServiceProfessional = "service_professional"
 )
 
+// The timed roles. A timed role is BOUGHT for a period and must lapse by
+// itself even if nobody ever revokes it, so it is held only with an expiry:
+// auth.user_roles.expires_at is required for it (service layer and a CHECK
+// constraint), and a row past its expiry grants nothing (every read filters
+// on expires_at).
+//
+// Premium is Momentum Premium (short-posts design 3.1, decided 11 Nov 2026):
+// monetization-service grants it when a pass is paid for, until the paid
+// period ends plus grace, through POST /v1/auth/internal/roles with
+// expires_at. It reaches the token's `scopes` (and the gateway's X-Scopes) so
+// clients can SHOW premium features; services still DECIDE with a live read.
+//
+// It is deliberately NOT an ecosystem role: Ecosystem() is the set a service
+// may grant WITHOUT an expiry, and adding premium there would let any service
+// grant it permanently. See TimedRoleGranter for who may grant it.
+//
+// The string must stay identical to shared/identityroles.RolePremium.
+const (
+	Premium = "premium"
+)
+
 // The staff roles (admin console). Granted by a superadmin through the same
 // route as the ladder, platform-wide or scoped to one application. Their
 // meaning is entirely the permission catalogue in internal/permissions.
@@ -90,11 +111,40 @@ var staff = []string{Finance, Support, KYCReviewer, Auditor}
 // service.GrantEcosystemRole.
 var ecosystem = []string{Seller, RestaurantOwner, DeliveryPartner, RiderPartner, ServiceProfessional}
 
+// timed is the set a service may grant only together with a future expiry.
+var timed = []string{Premium}
+
+// timedGranters names the ONE calling service allowed to grant or revoke each
+// timed role. The internal role API's caller name is self-declared (the
+// shared internal key proves only that the caller is inside the cluster), so
+// this guards against a wiring bug in another service; it is not
+// authentication. No other service has any business handing out a paid role.
+var timedGranters = map[string]string{
+	Premium: "monetization-service",
+}
+
 // Platform returns the privilege-ladder roles in canonical order.
 func Platform() []string { return append([]string(nil), platform...) }
 
 // Ecosystem returns the service-grantable roles in canonical order.
 func Ecosystem() []string { return append([]string(nil), ecosystem...) }
+
+// Timed returns the roles a service may grant only with an expiry.
+func Timed() []string { return append([]string(nil), timed...) }
+
+// IsTimed reports whether r may be held only with an expiry.
+func IsTimed(r string) bool {
+	for _, known := range timed {
+		if r == known {
+			return true
+		}
+	}
+	return false
+}
+
+// TimedRoleGranter returns the calling-service name allowed to grant and
+// revoke the timed role r, or "" when r is not a timed role.
+func TimedRoleGranter(r string) string { return timedGranters[r] }
 
 // Staff returns the admin-console staff roles in canonical order.
 func Staff() []string { return append([]string(nil), staff...) }
@@ -118,23 +168,24 @@ func IsAdminRole(r string) bool {
 }
 
 // TokenRoles returns the roles that can appear in the `scopes` claim and in
-// the capabilities switcher: the ladder and the ecosystem roles, exactly the
-// set that existed before staff roles. Kept separate so neither surface
-// changes shape.
+// the capabilities switcher: the ladder, the ecosystem roles and the timed
+// roles. Staff roles stay out (see the staff block above).
 func TokenRoles() []string {
-	out := make([]string, 0, len(platform)+len(ecosystem))
+	out := make([]string, 0, len(platform)+len(ecosystem)+len(timed))
 	out = append(out, platform...)
 	out = append(out, ecosystem...)
+	out = append(out, timed...)
 	return out
 }
 
 // All returns every assignable role in canonical order. The auth.user_roles
 // CHECK constraint must list exactly these values.
 func All() []string {
-	out := make([]string, 0, len(platform)+len(staff)+len(ecosystem))
+	out := make([]string, 0, len(platform)+len(staff)+len(ecosystem)+len(timed))
 	out = append(out, platform...)
 	out = append(out, staff...)
 	out = append(out, ecosystem...)
+	out = append(out, timed...)
 	return out
 }
 
@@ -176,7 +227,7 @@ func IsPlatform(r string) bool {
 //
 //	superadmin ⊇ admin ⊇ moderator
 //
-// The five ecosystem roles pass through untouched. They neither imply nor are
+// The five ecosystem roles and the timed role (premium) pass through untouched. They neither imply nor are
 // implied by anything, in either direction — being a superadmin does not make
 // you a seller, and being a seller does not make you a moderator. Adding an
 // implication here would silently hand one product's authority to another
@@ -192,8 +243,10 @@ func Expand(in []string) []string {
 		case Moderator:
 			set[Moderator] = struct{}{}
 		default:
-			// Ecosystem roles (and only those) survive as themselves.
-			if IsEcosystem(r) {
+			// Ecosystem and timed roles (and only those) survive as
+			// themselves. A timed role arrives here only from an unexpired
+			// row: every store read filters on expires_at.
+			if IsEcosystem(r) || IsTimed(r) {
 				set[r] = struct{}{}
 			}
 		}
@@ -237,6 +290,8 @@ func Label(r string) string {
 		return "Rider partner"
 	case ServiceProfessional:
 		return "Service professional"
+	case Premium:
+		return "Premium"
 	}
 	return r
 }

@@ -7,7 +7,7 @@ import (
 
 // TestVocabulary pins the exact set of assignable roles.
 //
-// Twelve, and only twelve. If someone adds a thirteenth this fails, which is the
+// Thirteen, and only thirteen. If someone adds a fourteenth this fails, which is the
 // point: the CHECK constraint in database/setup.sql is a copy of this list that
 // Go cannot import, and the two must not drift.
 func TestVocabulary(t *testing.T) {
@@ -16,6 +16,7 @@ func TestVocabulary(t *testing.T) {
 		"finance", "support", "kyc_reviewer", "auditor",
 		"seller", "restaurant_owner", "delivery_partner", "rider_partner",
 		"service_professional",
+		"premium",
 	}
 	if got := All(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("All() = %v, want %v", got, want)
@@ -25,11 +26,12 @@ func TestVocabulary(t *testing.T) {
 			t.Fatalf("Valid(%q) = false, want true", r)
 		}
 	}
-	// The token/capabilities surface keeps its pre-staff shape.
+	// The token/capabilities surface: no staff roles, premium included.
 	tokenWant := []string{
 		"superadmin", "admin", "moderator",
 		"seller", "restaurant_owner", "delivery_partner", "rider_partner",
 		"service_professional",
+		"premium",
 	}
 	if got := TokenRoles(); !reflect.DeepEqual(got, tokenWant) {
 		t.Fatalf("TokenRoles() = %v, want %v", got, tokenWant)
@@ -181,4 +183,55 @@ func containsRole(list []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// TestPremiumIsTimedNotEcosystem: premium may be granted by a service only
+// with an expiry. If it joined Ecosystem(), the internal API would accept it
+// with none — a permanent grant of a paid role — so it must stay out.
+func TestPremiumIsTimedNotEcosystem(t *testing.T) {
+	if IsEcosystem(Premium) {
+		t.Fatal("premium is in Ecosystem(): a service could grant it permanently")
+	}
+	for _, r := range Ecosystem() {
+		if r == Premium {
+			t.Fatal("Ecosystem() lists premium")
+		}
+		if IsTimed(r) {
+			t.Fatalf("IsTimed(%q) = true — ecosystem roles never expire", r)
+		}
+	}
+	if !IsTimed(Premium) || !reflect.DeepEqual(Timed(), []string{"premium"}) {
+		t.Fatalf("Timed() = %v, IsTimed(premium) = %v", Timed(), IsTimed(Premium))
+	}
+	if IsPlatform(Premium) || IsAdminRole(Premium) {
+		t.Fatal("premium must carry no platform or admin authority")
+	}
+	if got := TimedRoleGranter(Premium); got != "monetization-service" {
+		t.Fatalf("TimedRoleGranter(premium) = %q, want monetization-service", got)
+	}
+	if got := TimedRoleGranter(Seller); got != "" {
+		t.Fatalf("TimedRoleGranter(seller) = %q, want \"\"", got)
+	}
+	if Label(Premium) != "Premium" {
+		t.Fatalf("Label(premium) = %q", Label(Premium))
+	}
+}
+
+// TestPremiumReachesScopesAndImpliesNothing: premium passes through Expand
+// (so it reaches the token's `scopes` and the gateway's X-Scopes), in
+// canonical order, and neither implies nor is implied by anything.
+func TestPremiumReachesScopesAndImpliesNothing(t *testing.T) {
+	if got := Expand([]string{Premium}); !reflect.DeepEqual(got, []string{Premium}) {
+		t.Fatalf("Expand([premium]) = %v, want [premium]", got)
+	}
+	for _, p := range Platform() {
+		if containsRole(Expand([]string{p}), Premium) {
+			t.Fatalf("Expand([%q]) contains premium", p)
+		}
+	}
+	got := Expand([]string{Premium, "seller", "superadmin"})
+	want := []string{"superadmin", "admin", "moderator", "seller", "premium"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Expand = %v, want %v", got, want)
+	}
 }
