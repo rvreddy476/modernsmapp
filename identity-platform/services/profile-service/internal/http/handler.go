@@ -30,6 +30,8 @@ type Handler struct {
 	// Private-account display facts (is_private, follow_status). Nil means
 	// the fields render as their zero values; see profile_privacy.go.
 	privacy ProfilePrivacyResolver
+	// Person verification routes; nil answers 503 (person_verification.go).
+	person PersonVerification
 }
 
 // WithBlockChecker wires block denial on every profile read surface.
@@ -199,6 +201,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 		// Handle Change
 		protected.PUT("/me/handle", csrf, h.ChangeHandle)
 		protected.GET("/me/handle-history", h.GetHandleHistory)
+		// Person verification (the Verified tick); 503 unless enabled.
+		h.registerPersonVerificationRoutes(protected, csrf)
 	}
 
 	// Public: link click tracking

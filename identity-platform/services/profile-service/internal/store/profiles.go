@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/atpost/identity-shared/verification"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -358,6 +359,12 @@ type UpdateProfileParams struct {
 	// ClearStatusExpiresAt sets status_expires_at to NULL, the one nullable
 	// column a client can clear. It wins over StatusExpiresAt.
 	ClearStatusExpiresAt bool
+	// ClearPersonVerificationOnRename clears a person-verified tick
+	// (is_verified, verification_level 'person', the badge bit) when this
+	// write changes display_name. Decided under the row lock against the
+	// stored name, so it cannot race an approval. The service sets it unless
+	// the new name still matches the verified DigiLocker name.
+	ClearPersonVerificationOnRename bool
 }
 
 // UpdateProfile applies a partial profile write and returns the stored row.
@@ -383,6 +390,9 @@ func (s *Store) UpdateProfile(ctx context.Context, userID uuid.UUID, p UpdatePro
 			profile_theme_color = COALESCE($20, profile_theme_color), intro_media_url = COALESCE($21, intro_media_url), intro_media_type = COALESCE($22, intro_media_type),
 			cta_label = COALESCE($23, cta_label), cta_url = COALESCE($24, cta_url), member_since_badge = COALESCE($25, member_since_badge),
 			timezone = COALESCE($26, timezone),
+			is_verified = CASE WHEN `+renameClearsTick+` THEN FALSE ELSE is_verified END,
+			badge_flags = CASE WHEN `+renameClearsTick+` THEN badge_flags & ~$29::int ELSE badge_flags END,
+			verification_level = CASE WHEN `+renameClearsTick+` THEN '' ELSE verification_level END,
 			updated_at = NOW()
 		WHERE user_id = $1
 		RETURNING `+allProfileCols,
@@ -394,8 +404,14 @@ func (s *Store) UpdateProfile(ctx context.Context, userID uuid.UUID, p UpdatePro
 		p.ProfileThemeColor, p.IntroMediaURL, p.IntroMediaType,
 		p.CTALabel, p.CTAURL, p.MemberSinceBadge,
 		p.Timezone, p.ClearStatusExpiresAt,
+		p.ClearPersonVerificationOnRename, verification.BadgePersonVerified, verification.LevelPerson,
 	))
 }
+
+// renameClearsTick is true when the write changes display_name on a
+// person-verified profile and the caller asked for the tick to go ($28).
+// Column references on the right of SET read the row before the update.
+const renameClearsTick = `($28::boolean AND $2::text IS NOT NULL AND $2::text IS DISTINCT FROM display_name AND verification_level = $30::text)`
 
 // ---------------------------------------------------------------
 // User Links

@@ -82,6 +82,10 @@ func (s *Store) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 		`DELETE FROM profile.module_profiles WHERE user_id = $1`,
 		`DELETE FROM profile.profile_stats WHERE user_id = $1`,
 		`DELETE FROM profile.hidden_profiles WHERE user_id = $1`,
+		// Person verification: the attempts and the one-person binding go
+		// with the account, so the person may verify a new account later.
+		`DELETE FROM profile.person_verification_attempts WHERE user_id = $1`,
+		`DELETE FROM profile.verified_persons WHERE user_id = $1`,
 		`DELETE FROM profile.profiles WHERE user_id = $1`,
 	} {
 		if _, err := tx.Exec(ctx, stmt, userID); err != nil {

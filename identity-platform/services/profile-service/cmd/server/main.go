@@ -13,6 +13,7 @@ import (
 	"github.com/atpost/identity-profile-service/internal/events"
 	"github.com/atpost/identity-profile-service/internal/http"
 	"github.com/atpost/identity-profile-service/internal/mediaclient"
+	"github.com/atpost/identity-profile-service/internal/personverify"
 	"github.com/atpost/identity-profile-service/internal/purge"
 	"github.com/atpost/identity-profile-service/internal/service"
 	"github.com/atpost/identity-profile-service/internal/store"
@@ -143,6 +144,20 @@ func main() {
 	}()
 	profileSvc := service.New(profileStore, rdb, profileProducer, cfg, logger)
 	profileHandler := http.New(profileSvc, logger)
+
+	// Person verification (the Verified tick, short-posts design phase 0).
+	// Off unless PERSON_VERIFICATION_ENABLED=true: the routes answer 503.
+	// The rename hook is wired either way, so a verified account that
+	// changes its display name loses the tick even while the routes are off.
+	personCfg, err := personverify.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		logger.Error("refusing to start: person verification configuration", "err", err)
+		os.Exit(1)
+	}
+	personSvc := personverify.New(personCfg, profileStore, profileProducer, profileSvc.InvalidateProfileCache, logger)
+	profileSvc.WithPersonVerification(personSvc)
+	profileHandler.WithPersonVerification(personSvc)
+	logger.Info("profile-service: person verification", "enabled", personCfg.Enabled)
 	// Audit UC1: wire the internal-service-key gate. Without this,
 	// X-User-Id is effectively a public header — every other audit
 	// closed the same gap; this is the matching identity-platform fix.

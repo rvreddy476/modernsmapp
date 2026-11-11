@@ -25,6 +25,9 @@ const (
 	// Profile Sync + Cross-Post v3
 	ModuleProfileUpdated = "module_profile.updated" // payload: ModuleProfileUpdatedPayload
 	HandleChanged        = "handle.changed"         // payload: HandleChangedPayload
+
+	// Person verification (profile-service, short-posts design phase 0).
+	IdentityVerificationChanged = "identity.verification.changed" // payload: IdentityVerificationChangedPayload
 )
 
 // EventEnvelope is the CloudEvents-style structure used on Kafka.
@@ -129,4 +132,18 @@ type HandleChangedPayload struct {
 	OldUsername string    `json:"old_username"`
 	NewUsername string    `json:"new_username"`
 	ChangedAt   time.Time `json:"changed_at"`
+}
+
+// IdentityVerificationChangedPayload is emitted by profile-service when a
+// profile's verification mark changes: a person verification approved, or
+// the tick cleared because a verified account changed its display name.
+// Level and badge values are defined in identity-shared/verification. It
+// carries no name, date of birth, photo or identity hash.
+type IdentityVerificationChangedPayload struct {
+	UserID            string    `json:"user_id"`
+	IsVerified        bool      `json:"is_verified"`
+	VerificationLevel string    `json:"verification_level"`
+	BadgeFlags        int       `json:"badge_flags"`
+	Reason            string    `json:"reason"`
+	ChangedAt         time.Time `json:"changed_at"`
 }

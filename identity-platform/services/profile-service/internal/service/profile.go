@@ -12,6 +12,7 @@ import (
 	"github.com/atpost/identity-profile-service/internal/config"
 	"github.com/atpost/identity-profile-service/internal/events"
 	"github.com/atpost/identity-profile-service/internal/store"
+	"github.com/atpost/identity-shared/verification"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -33,6 +34,39 @@ type Service struct {
 	media  ProfileMediaStore
 	claims MediaClaims
 	now    func() time.Time
+	// person is person verification (internal/personverify). A display-name
+	// change clears a person-verified tick unless person says the new name
+	// still matches; nil clears it on every rename.
+	person PersonVerificationHooks
+}
+
+// PersonVerificationHooks is what UpdateProfile needs from person
+// verification (*personverify.Service).
+type PersonVerificationHooks interface {
+	// RenameKeepsTick reports whether newDisplayName still matches the
+	// verified DigiLocker name. False on any doubt.
+	RenameKeepsTick(ctx context.Context, userID uuid.UUID, newDisplayName string) bool
+	// AfterRename mirrors a cleared tick onto usr.users and emits
+	// identity.verification.changed.
+	AfterRename(ctx context.Context, userID uuid.UUID, p *store.Profile, wasPersonVerified bool)
+}
+
+// InvalidateProfileCache drops the cached card (and by-username entry) of p,
+// for writes that bypass UpdateProfile (a person verification approval).
+func (s *Service) InvalidateProfileCache(ctx context.Context, p *store.Profile) {
+	if s.rdb == nil || p == nil {
+		return
+	}
+	s.rdb.Del(ctx, fmt.Sprintf("profile:card:%s", p.UserID))
+	if p.Username != nil {
+		s.rdb.Del(ctx, fmt.Sprintf("profile:name:%s", *p.Username))
+	}
+}
+
+// WithPersonVerification wires person verification into the rename path.
+func (s *Service) WithPersonVerification(h PersonVerificationHooks) *Service {
+	s.person = h
+	return s
 }
 
 // ProfileWriteStore is what a validated profile write needs from storage.
@@ -207,12 +241,30 @@ func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, params st
 		return nil, err
 	}
 
+	// A display-name change on a person-verified account clears the tick
+	// unless the new name still matches the DigiLocker name (short-posts
+	// design 3.4). The store decides under the row lock whether the name
+	// actually changed and the profile is person-verified; this only says
+	// whether it may keep the tick.
+	wasPersonVerified := false
+	if params.DisplayName != nil {
+		params.ClearPersonVerificationOnRename = s.person == nil || !s.person.RenameKeepsTick(ctx, userID, *params.DisplayName)
+		if params.ClearPersonVerificationOnRename {
+			if before, err := s.profiles.GetProfile(ctx, userID); err == nil && before != nil {
+				wasPersonVerified = before.IsVerified && before.VerificationLevel == verification.LevelPerson
+			}
+		}
+	}
+
 	p, err := s.profiles.UpdateProfile(ctx, userID, params)
 	if err != nil {
 		return nil, err
 	}
 	if p == nil {
 		return nil, errors.New("profile not found")
+	}
+	if params.ClearPersonVerificationOnRename && s.person != nil {
+		s.person.AfterRename(ctx, userID, p, wasPersonVerified)
 	}
 
 	if dobChange != nil {

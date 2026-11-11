@@ -59,4 +59,12 @@ var SchemaRequirements = []schemaguard.Requirement{
 	// a request either — it would make a deactivated account's profile
 	// readable by everyone, silently.
 	{Table: "profile.hidden_profiles", Columns: []string{"user_id", "reason", "hidden_at"}},
+
+	// Person verification (person_verification.go). The verification
+	// columns on profile.profiles and usr.users are owned by auth-service's
+	// setup.sql; a missing one would fail every approval with a 500.
+	{Table: "profile.profiles", Columns: []string{"is_verified", "verification_level", "badge_flags"}},
+	{Table: "usr.users", Columns: []string{"id", "is_verified"}},
+	{Table: "profile.person_verification_attempts", Columns: []string{"state_hash", "code_verifier_sealed", "identity_hash", "name_hash", "reference_photo_sealed", "expires_at"}},
+	{Table: "profile.verified_persons", Columns: []string{"identity_hash", "user_id", "name_hash"}},
 }

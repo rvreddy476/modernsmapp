@@ -166,6 +166,16 @@ func (p *Producer) PublishHandleChanged(ctx context.Context, userID uuid.UUID, o
 	return p.publishEvent(ctx, sharedEvents.HandleChanged, userID.String(), &userID, payload)
 }
 
+// PublishVerificationChanged emits identity.verification.changed. The
+// payload carries no name, date of birth, photo or identity hash.
+func (p *Producer) PublishVerificationChanged(ctx context.Context, payload sharedEvents.IdentityVerificationChangedPayload) error {
+	userID, err := uuid.Parse(payload.UserID)
+	if err != nil {
+		return fmt.Errorf("verification changed: invalid user id: %w", err)
+	}
+	return p.publishEvent(ctx, sharedEvents.IdentityVerificationChanged, payload.UserID, &userID, payload)
+}
+
 func (p *Producer) Close() error {
 	return p.writer.Close()
 }

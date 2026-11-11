@@ -222,3 +222,53 @@ CREATE TABLE IF NOT EXISTS profile.hidden_profiles (
 
 COMMENT ON TABLE profile.hidden_profiles IS
     'Accounts hidden by auth-service deactivate/scheduled-deletion; reversible, never erases.';
+
+-- ---------------------------------------------------------------------------
+-- Person verification (short-posts design phase 0, section 3.4)
+-- ---------------------------------------------------------------------------
+
+-- One row per verification attempt: DigiLocker start -> callback -> selfie.
+--
+-- Nothing here is a name, a date of birth or an Aadhaar number:
+--   state_hash             SHA-256 of the single-use OAuth state
+--   code_verifier_sealed   the PKCE verifier, AES-256-GCM sealed
+--   identity_hash          keyed HMAC of the DigiLocker person key
+--   name_hash              keyed HMAC of the normalised DigiLocker name
+--   reference_photo_sealed the Aadhaar photo, AES-256-GCM sealed, held only
+--                          between the callback and the selfie step and
+--                          wiped (NULL) when the attempt ends either way
+CREATE TABLE IF NOT EXISTS profile.person_verification_attempts (
+    id                     UUID PRIMARY KEY,
+    user_id                UUID NOT NULL REFERENCES profile.profiles(user_id) ON DELETE CASCADE,
+    state_hash             TEXT NOT NULL UNIQUE,
+    code_verifier_sealed   BYTEA,
+    status                 TEXT NOT NULL DEFAULT 'started'
+        CHECK (status IN ('started', 'identity_checked', 'approved', 'refused')),
+    refusal_code           TEXT NOT NULL DEFAULT '',
+    identity_hash          TEXT,
+    name_hash              TEXT,
+    reference_photo_sealed BYTEA,
+    similarity             NUMERIC(5, 2),
+    state_used_at          TIMESTAMPTZ,
+    expires_at             TIMESTAMPTZ NOT NULL,
+    completed_at           TIMESTAMPTZ,
+    created_at             TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX IF NOT EXISTS idx_person_verification_attempts_user
+    ON profile.person_verification_attempts (user_id, created_at DESC);
+
+-- One verified account per person. identity_hash is a keyed HMAC
+-- (PERSON_VERIFICATION_HASH_KEY) of the DigiLocker person key; a second
+-- account presenting the same person is refused. The row outlives a tick
+-- cleared by a display-name change: the account stays bound to that person.
+-- name_hash lets a rename that still matches the DigiLocker name keep the tick.
+CREATE TABLE IF NOT EXISTS profile.verified_persons (
+    identity_hash TEXT PRIMARY KEY,
+    user_id       UUID NOT NULL UNIQUE REFERENCES profile.profiles(user_id) ON DELETE CASCADE,
+    name_hash     TEXT NOT NULL,
+    verified_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+COMMENT ON TABLE profile.verified_persons IS
+    'One verified account per person: keyed HMAC of the DigiLocker identity, never the identity itself.';
