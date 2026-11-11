@@ -425,6 +425,7 @@ var legacyOwnerDomains = map[string]string{
 	servicetoken.RefDoorstepBooking:    "doorstep-service",     // a Doorstep booking (migration 015)
 	servicetoken.RefDoorstepExtras:     "doorstep-service",     // a Doorstep extras bill (migration 015)
 	servicetoken.RefCreatorMembership:  "monetization-service", // a paid creator membership period (migration 016)
+	servicetoken.RefPlatformPremium:    "monetization-service", // a Momentum Premium pass (migration 019)
 }
 
 // legacyDomainForApplication is the domain that owns an application, from

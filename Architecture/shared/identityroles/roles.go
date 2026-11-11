@@ -119,6 +119,27 @@ func IsEcosystemRole(role string) bool {
 	return false
 }
 
+// RolePremium is Momentum Premium (short-posts design 3.1, decided 11 Nov
+// 2026): a PAID role, granted by monetization-service when a pass is paid
+// for and held until the paid period ends plus a 3-day grace.
+//
+// It is a TIMED role, not an ecosystem role, and the difference is the point:
+// an ecosystem role means "is on this journey" and has no end, while premium
+// is bought for a period and must lapse by itself even if nothing ever calls
+// Revoke. So it is granted only through Client.GrantUntil, which always
+// carries expires_at; Client.Grant refuses it. It is deliberately NOT in
+// Ecosystem(): that list mirrors identity's service-grantable set, and
+// identity must accept premium only together with an expiry.
+//
+// Timed roles are not delivered through the Outbox (whose rows carry no
+// expiry): the granting service keeps the desired expiry on its own row and
+// reconciles it (monetization's premium_entitlements).
+const RolePremium = "premium"
+
+// IsTimedRole reports whether role is granted only with an expiry
+// (Client.GrantUntil).
+func IsTimedRole(role string) bool { return role == RolePremium }
+
 // Op is the direction of an intent.
 type Op string
 

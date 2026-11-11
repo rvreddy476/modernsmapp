@@ -17,11 +17,13 @@ import (
 	"github.com/atpost/monetization-service/internal/events"
 	"github.com/atpost/monetization-service/internal/http"
 	"github.com/atpost/monetization-service/internal/payments"
+	"github.com/atpost/monetization-service/internal/premium"
 	"github.com/atpost/monetization-service/internal/runmode"
 	"github.com/atpost/monetization-service/internal/service"
 	"github.com/atpost/monetization-service/internal/store/postgres"
 	"github.com/atpost/monetization-service/internal/workers"
 	"github.com/atpost/shared/health"
+	"github.com/atpost/shared/identityroles"
 	"github.com/atpost/shared/middleware"
 	"github.com/atpost/shared/o11y/logging"
 	"github.com/atpost/shared/o11y/metrics"
@@ -58,6 +60,9 @@ func main() {
 		// Paid creator memberships on payments-service (23 Oct 2026): its own
 		// switch, independent of the writes flag.
 		MembershipsEnabled: envBool("MEMBERSHIPS_ENABLED"),
+		// Momentum Premium (short-posts design, phase 0, 11 Nov 2026): off
+		// unless PREMIUM_ENABLED=true.
+		PremiumEnabled: envBool("PREMIUM_ENABLED"),
 	})
 	if err != nil {
 		slog.Error("refusing to start", "error", err)
@@ -202,6 +207,40 @@ func main() {
 			os.Exit(1)
 		}
 	}
+	// 7a''. Momentum Premium (migration 027). Built only with PREMIUM_ENABLED.
+	// Prices are configuration: an unset price leaves that plan unbuyable
+	// (checkout answers 503 PREMIUM_PRICE_NOT_SET); a malformed one refuses
+	// boot. Without MONETIZATION_SERVICE_TOKEN_KEY/KID checkout answers 503
+	// PREMIUM_PAYMENTS_UNAVAILABLE. The role `premium` is granted through
+	// identity's internal roles API (IDENTITY_AUTH_URL).
+	var premiumSvc *service.Premium
+	if mode.PremiumEnabled {
+		prices, err := premium.PricesFromEnv(os.Getenv)
+		if err != nil {
+			slog.Error("refusing to start: premium prices", "error", err)
+			os.Exit(1)
+		}
+		premiumSvc = service.NewPremium(monetizationStore, prices)
+		client, err := payments.PremiumClientFromEnv(os.Getenv)
+		switch {
+		case err == nil:
+			premiumSvc.WithPayments(client, payments.IsLocalEnv(environment))
+		case errors.Is(err, payments.ErrNotConfigured):
+			slog.Warn("premium enabled but MONETIZATION_SERVICE_TOKEN_KEY/KID are unset: checkout answers 503 PREMIUM_PAYMENTS_UNAVAILABLE")
+		default:
+			slog.Error("refusing to start: premium payments client", "error", err)
+			os.Exit(1)
+		}
+		identityAuthURL := env("IDENTITY_AUTH_URL", env("AUTH_SERVICE_URL", "http://identity-auth:8081"))
+		premiumSvc.WithRoles(identityroles.NewClient(identityAuthURL, internalKey, "monetization-service"))
+		priced := make([]string, 0, len(prices))
+		for code := range prices {
+			priced = append(priced, code)
+		}
+		slog.Warn("premium ENABLED: application premium, role premium via identity", "priced_plans", strings.Join(priced, ","),
+			"payments_configured", err == nil)
+	}
+
 	// Eligibility to offer memberships (first tier): identity date of birth,
 	// graph follower count, trust-safety standing. An unset source is
 	// unknown, and unknown fails closed (the item is reported missing).
@@ -290,7 +329,8 @@ func main() {
 		WithWritesEnabled(writesEnabled).
 		WithPayoutsEnabled(payoutsEnabled).
 		WithMaintenance(mode.Maintenance).
-		WithMembershipsEnabled(mode.MembershipsEnabled)
+		WithMembershipsEnabled(mode.MembershipsEnabled).
+		WithPremium(premiumSvc, mode.PremiumEnabled)
 
 	// 7a. Kafka producer + background workers. Neither in maintenance
 	// mode: the point of that mode is that nothing but the operator's
@@ -329,6 +369,16 @@ func main() {
 			go consumer.Start(ctx)
 			defer consumer.Close()
 			slog.Warn("memberships payments consumer started", "group", payments.ConsumerGroup, "topic", payments.Topic)
+		}
+		if premiumSvc != nil {
+			// The ONLY thing that grants a Premium pass: the signed payments
+			// event for application premium, applied once.
+			premiumSvc.WithPublisher(monetizationProducer)
+			go workers.StartPremiumWorkers(ctx, premiumSvc)
+			premiumConsumer := payments.NewPremiumConsumer(premiumSvc, kafkaBrokers, metrics.NewKafkaConsumerMetrics("monetization-service-premium"))
+			go premiumConsumer.Start(ctx)
+			defer premiumConsumer.Close()
+			slog.Warn("premium payments consumer started", "group", payments.PremiumConsumerGroup, "topic", payments.Topic)
 		}
 	} else if mode.Maintenance {
 		slog.Warn("maintenance mode: zero workers started, no Kafka producer opened")

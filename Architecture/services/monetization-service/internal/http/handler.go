@@ -31,6 +31,10 @@ type Handler struct {
 	maintenance bool
 	// membershipsEnabled mirrors MEMBERSHIPS_ENABLED (membership_payments_handler.go).
 	membershipsEnabled bool
+	// premium is Momentum Premium and premiumEnabled mirrors PREMIUM_ENABLED
+	// (premium_handler.go).
+	premium        *service.Premium
+	premiumEnabled bool
 	// verifier admits admin-service tokens on the token-only admin family
 	// (admin_token.go); nil accepts none.
 	verifier *servicetoken.Verifier
@@ -168,6 +172,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/subscriptions/:id/upgrade", h.UpgradeSubscription)
 		v1.GET("/subscriptions/:id/events", h.GetSubscriptionEvents)
 		h.registerMembershipRoutes(v1)
+		// Momentum Premium (premium_handler.go), behind PREMIUM_ENABLED.
+		h.registerPremiumRoutes(v1)
 
 		// Tax profile & compliance
 		v1.POST("/tax-profile", h.SaveTaxProfile)
@@ -331,6 +337,22 @@ func (h *Handler) launchBoundary() gin.HandlerFunc {
 					},
 				})
 			}
+			return
+		}
+		// Momentum Premium runs on its own switch (premium_handler.go):
+		// PREMIUM_ENABLED opens it whatever the writes flag says, and with it
+		// off the premium routes stay closed even with writes on.
+		if handled, allow := h.premiumGate(c.Request.Method, c.FullPath()); handled {
+			if !allow {
+				c.AbortWithStatusJSON(http.StatusServiceUnavailable, gin.H{
+					"error": gin.H{
+						"code":    "PREMIUM_NOT_ENABLED",
+						"message": "Premium is not available here yet.",
+					},
+				})
+				return
+			}
+			c.Next()
 			return
 		}
 		// Memberships run on their own switch (membership_payments_handler.go):

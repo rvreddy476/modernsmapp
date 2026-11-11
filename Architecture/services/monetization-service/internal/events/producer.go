@@ -476,3 +476,61 @@ func (p *Producer) publishWithID(ctx context.Context, eventType, eventID string,
 }
 
 
+
+// ---------------------------------------------------------------------------
+// Momentum Premium (migration 027)
+// ---------------------------------------------------------------------------
+
+// Premium event types. Consumed by notification-service (a later lane):
+// a receipt, the renewal reminder with a pay button, and the end of access.
+const (
+	EventPremiumActivated  = "premium.activated"
+	EventPremiumRenewalDue = "premium.renewal_due"
+	EventPremiumEnded      = "premium.ended"
+)
+
+// PremiumPayload is the payload of every premium.* event. Times are RFC 3339
+// (UTC). PeriodID, PlanCode and AmountPaise are set on activated; DaysLeft
+// only on renewal_due (3 or 0). GraceEndsAt is when access stops if nothing
+// more is bought.
+type PremiumPayload struct {
+	UserID      string `json:"user_id"`
+	PeriodID    string `json:"period_id,omitempty"`
+	PlanCode    string `json:"plan_code,omitempty"`
+	AmountPaise int64  `json:"amount_paise,omitempty"`
+	Currency    string `json:"currency,omitempty"`
+	EndsAt      string `json:"ends_at"`
+	GraceEndsAt string `json:"grace_ends_at"`
+	DaysLeft    *int   `json:"days_left,omitempty"`
+}
+
+// IsPremiumEvent reports whether eventType is a premium.* event type.
+func IsPremiumEvent(eventType string) bool {
+	switch eventType {
+	case EventPremiumActivated, EventPremiumRenewalDue, EventPremiumEnded:
+		return true
+	}
+	return false
+}
+
+var premiumEventNamespace = uuid.NewSHA1(uuid.NameSpaceURL, []byte("https://momentum.app/events/premium"))
+
+// PremiumEventID is the stable envelope id of one logical premium change, so
+// a retried publish is delivered once (notification-service dedupes per id).
+func PremiumEventID(eventType, key string) string {
+	return uuid.NewSHA1(premiumEventNamespace, []byte(eventType+"|"+key)).String()
+}
+
+// PublishPremiumEvent publishes one premium.* event on the monetization topic,
+// actor = the buyer, event id = PremiumEventID(eventType, key).
+func (p *Producer) PublishPremiumEvent(ctx context.Context, eventType, key string, payload PremiumPayload) error {
+	if !IsPremiumEvent(eventType) {
+		return fmt.Errorf("not a premium event type: %q", eventType)
+	}
+	id := ""
+	if key != "" {
+		id = PremiumEventID(eventType, key)
+	}
+	u := payload.UserID
+	return p.publishWithID(ctx, eventType, id, &u, payload)
+}

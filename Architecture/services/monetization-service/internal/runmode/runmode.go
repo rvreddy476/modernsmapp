@@ -15,6 +15,10 @@
 //	                              membership + entitlement routes, the payments
 //	                              consumer, the producer and the membership
 //	                              workers, even with writes off (23 Oct 2026)
+//	PREMIUM_ENABLED               Momentum Premium (11 Nov 2026): its routes,
+//	                              its payments consumer (application premium),
+//	                              the producer and the premium workers (role
+//	                              sync, reminders, checkout sweep)
 //
 // Maintenance mode (reviewer correction B, 12 Sep 2026) exists so an
 // operator can run the admin corrections — the January reversals — with
@@ -42,6 +46,8 @@ type Config struct {
 	TDSApply       bool
 	// MembershipsEnabled mirrors MEMBERSHIPS_ENABLED (default false).
 	MembershipsEnabled bool
+	// PremiumEnabled mirrors PREMIUM_ENABLED (default false).
+	PremiumEnabled bool
 }
 
 // Mode is what the process will do about it.
@@ -76,6 +82,11 @@ type Mode struct {
 	// StartPaymentsConsumer: the payments-event consumer for application
 	// memberships, the only thing that applies membership money.
 	StartPaymentsConsumer bool
+
+	// PremiumEnabled: Momentum Premium is open (PREMIUM_ENABLED and not in
+	// maintenance): its routes, the premium payments consumer and the premium
+	// workers. Independent of writes and memberships; it moves no ledger money.
+	PremiumEnabled bool
 }
 
 var (
@@ -120,14 +131,16 @@ func Resolve(c Config) (Mode, error) {
 	m.MembershipsEnabled = c.MembershipsEnabled && !c.Maintenance
 	m.StartMembershipWorkers = m.MembershipsEnabled
 	m.StartPaymentsConsumer = m.MembershipsEnabled
-	m.StartKafka = (c.WritesEnabled || c.MembershipsEnabled) && !c.Maintenance
+	// Momentum Premium (11 Nov 2026): its own switch, the same shape.
+	m.PremiumEnabled = c.PremiumEnabled && !c.Maintenance
+	m.StartKafka = (c.WritesEnabled || c.MembershipsEnabled || c.PremiumEnabled) && !c.Maintenance
 	return m, nil
 }
 
 // BootLine is the one log line that states the mode. It is deliberately
 // flat so an operator can grep the container log for it.
 func (m Mode) BootLine() string {
-	return fmt.Sprintf("monetization run mode: maintenance=%t writes_enabled=%t payouts_enabled=%t tds_apply=%t workers=%t kafka_producer=%t redis=%t admin_key_required=%t memberships_enabled=%t membership_workers=%t payments_consumer=%t",
+	return fmt.Sprintf("monetization run mode: maintenance=%t writes_enabled=%t payouts_enabled=%t tds_apply=%t workers=%t kafka_producer=%t redis=%t admin_key_required=%t memberships_enabled=%t membership_workers=%t payments_consumer=%t premium_enabled=%t",
 		m.Maintenance, m.WritesEnabled, m.PayoutsEnabled, m.TDSApply, m.StartWorkers, m.StartKafka, m.RequireRedis, m.AdminKeyRequired,
-		m.MembershipsEnabled, m.StartMembershipWorkers, m.StartPaymentsConsumer)
+		m.MembershipsEnabled, m.StartMembershipWorkers, m.StartPaymentsConsumer, m.PremiumEnabled)
 }

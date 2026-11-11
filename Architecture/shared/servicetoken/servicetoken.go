@@ -397,7 +397,9 @@ const (
 // doorstep-service (Doorstep); `creator_membership` (one paid membership
 // period: a first join, a renewal or an upgrade difference; reference_id =
 // monetization's membership_payments.id) to monetization-service (application
-// memberships).
+// memberships); `platform_premium` (one Momentum Premium pass of 30 or 365
+// days; reference_id = monetization's premium_periods.id) to
+// monetization-service (application premium).
 const (
 	RefOrder              = "order"
 	RefFoodOrder          = "food_order"
@@ -407,6 +409,7 @@ const (
 	RefDoorstepBooking    = "doorstep_booking"
 	RefDoorstepExtras     = "doorstep_extras"
 	RefCreatorMembership  = "creator_membership"
+	RefPlatformPremium    = "platform_premium"
 )
 
 // AudiencePayments is the audience string payments-service accepts.

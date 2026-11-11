@@ -74,7 +74,7 @@ var refundStatuses = map[string]bool{
 // migration 010's backfill uses (payments.legacy_application_for, extended
 // with dating by migration 011, mopedu by migration 012, mopedu_subscription
 // by migration 013, doorstep_booking / doorstep_extras by migration 015 and
-// creator_membership by migration 016).
+// creator_membership by migration 016 and platform_premium by migration 019).
 var legacyApplications = map[string]string{
 	servicetoken.RefOrder:              "mstore",
 	servicetoken.RefFoodOrder:          "feast",
@@ -84,6 +84,7 @@ var legacyApplications = map[string]string{
 	servicetoken.RefDoorstepBooking:    "doorstep",
 	servicetoken.RefDoorstepExtras:     "doorstep",
 	servicetoken.RefCreatorMembership:  "memberships",
+	servicetoken.RefPlatformPremium:    "premium",
 }
 
 // WithCallerApplications installs the caller → application allowlist that

@@ -104,3 +104,33 @@ func TestContradictoryFlagsRefuseToBoot(t *testing.T) {
 		})
 	}
 }
+
+// PREMIUM_ENABLED (11 Nov 2026) defaults off, opens Premium and the Kafka
+// producer on its own, never starts the legacy money workers or Redis, and
+// maintenance wins over it.
+func TestPremiumSwitch(t *testing.T) {
+	cases := []struct {
+		name                              string
+		premium, maintenance              bool
+		wantPremium, wantKafka, wantRedis bool
+	}{
+		{"default off", false, false, false, false, false},
+		{"premium only", true, false, true, true, false},
+		{"premium in maintenance", true, true, false, false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := Resolve(Config{Environment: "development", InternalKey: "k", PremiumEnabled: tc.premium, Maintenance: tc.maintenance})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if m.PremiumEnabled != tc.wantPremium || m.StartKafka != tc.wantKafka || m.RequireRedis != tc.wantRedis ||
+				m.StartWorkers || m.MembershipsEnabled {
+				t.Fatalf("mode %+v", m)
+			}
+			if !strings.Contains(m.BootLine(), "premium_enabled=") {
+				t.Fatalf("boot line must state premium: %s", m.BootLine())
+			}
+		})
+	}
+}

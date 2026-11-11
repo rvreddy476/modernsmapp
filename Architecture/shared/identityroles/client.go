@@ -120,7 +120,31 @@ func (c *Client) Configured() bool { return c != nil && c.baseURL != "" }
 // POST /v1/auth/refresh. No re-login is needed, but the grant is not instant
 // in an already-issued token.
 func (c *Client) Grant(ctx context.Context, userID, role, reason string) error {
-	return c.mutate(ctx, http.MethodPost, userID, role, reason)
+	if !IsEcosystemRole(role) {
+		// Fail locally rather than spend a round trip learning identity's 403.
+		// A timed role (premium) never goes out without its expiry: GrantUntil.
+		return fmt.Errorf("%w: %q", ErrNotGrantable, role)
+	}
+	return c.mutate(ctx, http.MethodPost, userID, role, reason, nil)
+}
+
+// GrantUntil gives userID a TIMED role (IsTimedRole) that identity holds
+// until expiresAt: POST /v1/auth/internal/roles with "expires_at" (RFC 3339,
+// UTC). Re-granting with a later or earlier expiry replaces it, so a second
+// pass that extends the period, or a refund that shortens it, is the same
+// call with a new time. IDEMPOTENT for the same expiry.
+//
+// An expiry that is zero or not in the future is refused locally: a timed
+// role that has already ended is a Revoke.
+func (c *Client) GrantUntil(ctx context.Context, userID, role, reason string, expiresAt time.Time) error {
+	if !IsTimedRole(role) {
+		return fmt.Errorf("%w: %q is not a timed role", ErrNotGrantable, role)
+	}
+	if expiresAt.IsZero() || !expiresAt.After(time.Now()) {
+		return fmt.Errorf("%w: expires_at must be in the future", ErrBadRequest)
+	}
+	at := expiresAt.UTC()
+	return c.mutate(ctx, http.MethodPost, userID, role, reason, &at)
 }
 
 // Revoke removes the role. IDEMPOTENT — revoking a role the user does not hold
@@ -132,7 +156,10 @@ func (c *Client) Grant(ctx context.Context, userID, role, reason string) error {
 // own state too. That is one more reason suspension does not revoke: see the
 // package doc.
 func (c *Client) Revoke(ctx context.Context, userID, role, reason string) error {
-	return c.mutate(ctx, http.MethodDelete, userID, role, reason)
+	if !IsEcosystemRole(role) && !IsTimedRole(role) {
+		return fmt.Errorf("%w: %q", ErrNotGrantable, role)
+	}
+	return c.mutate(ctx, http.MethodDelete, userID, role, reason, nil)
 }
 
 type mutateBody struct {
@@ -140,21 +167,20 @@ type mutateBody struct {
 	Role    string `json:"role"`
 	Service string `json:"service"`
 	Reason  string `json:"reason,omitempty"`
+	// ExpiresAt is set only by GrantUntil (timed roles).
+	ExpiresAt *time.Time `json:"expires_at,omitempty"`
 }
 
-func (c *Client) mutate(ctx context.Context, method, userID, role, reason string) error {
+func (c *Client) mutate(ctx context.Context, method, userID, role, reason string, expiresAt *time.Time) error {
 	if !c.Configured() {
 		return ErrNotConfigured
 	}
-	if !IsEcosystemRole(role) {
-		// Fail locally rather than spend a round trip learning identity's 403.
-		return fmt.Errorf("%w: %q", ErrNotGrantable, role)
-	}
 	body, err := json.Marshal(mutateBody{
-		UserID:  userID,
-		Role:    role,
-		Service: c.service,
-		Reason:  reason,
+		UserID:    userID,
+		Role:      role,
+		Service:   c.service,
+		Reason:    reason,
+		ExpiresAt: expiresAt,
 	})
 	if err != nil {
 		return fmt.Errorf("%w: %v", ErrBadRequest, err)
