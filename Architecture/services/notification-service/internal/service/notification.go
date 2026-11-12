@@ -47,6 +47,9 @@ type Service struct {
 	// copyrightEmail emails the author on a copyright hold or block
 	// (copyright_email.go); nil = no copyright email.
 	copyrightEmail *copyrightEmailer
+	// premiumInvoiceEmail e-mails the buyer a Momentum Premium tax invoice or
+	// credit note (premium_invoice_email.go); nil = no such e-mail.
+	premiumInvoiceEmail *premiumInvoiceEmailer
 	// copyrightInAppSeam replaces the copyright notice's in-app delivery
 	// (tests only; nil in production).
 	copyrightInAppSeam func(ctx context.Context, n CopyrightReviewNotification) error

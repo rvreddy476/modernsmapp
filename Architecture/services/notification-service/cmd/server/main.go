@@ -262,6 +262,32 @@ func main() {
 		slog.Warn("copyright email disabled: IDENTITY_AUTH_URL is not set, so no verified address can be read")
 	}
 
+	// Momentum Premium invoice / credit-note e-mail (13 Nov 2026): the
+	// address from identity's verified-contact read (IDENTITY_AUTH_URL), the
+	// document's facts from monetization's internal route
+	// (MONETIZATION_SERVICE_URL + a notification-service token signed with
+	// NOTIFICATION_SERVICE_TOKEN_KEY / _KID, registered in monetization's
+	// SERVICE_CALLERS with monetization:premium-invoice-mail), and the
+	// "View invoice" link on WEB_APP_BASE_URL + /premium. Any piece missing:
+	// no invoice e-mail (the consumer then queues nothing).
+	premiumSigner, err := service.PremiumInvoiceSignerFromEnv(os.Getenv)
+	if err != nil {
+		slog.Error("premium invoice email disabled", "error", err)
+	}
+	premiumContacts := service.NewHTTPVerifiedEmails(os.Getenv("IDENTITY_AUTH_URL"), internalKey)
+	premiumInvoices := service.NewHTTPPremiumInvoices(os.Getenv("MONETIZATION_SERVICE_URL"), internalKey, premiumSigner)
+	if premiumContacts != nil && premiumInvoices != nil {
+		webBase := os.Getenv("WEB_APP_BASE_URL")
+		notifSvc.SetPremiumInvoiceEmail(premiumContacts, premiumInvoices, webBase)
+		if service.PremiumInvoicesPageURL(webBase) == "" {
+			slog.Warn("premium invoice email: WEB_APP_BASE_URL is not an absolute http(s) URL; emails carry no View invoice link")
+		}
+		go notifSvc.RunPremiumInvoiceEmailWorker(ctx)
+		slog.Info("premium invoice email configured", "view_link", service.PremiumInvoicesPageURL(webBase) != "")
+	} else {
+		slog.Warn("premium invoice email disabled: needs IDENTITY_AUTH_URL, MONETIZATION_SERVICE_URL and NOTIFICATION_SERVICE_TOKEN_KEY")
+	}
+
 	// 9. Kafka Consumers
 	consumer := events.NewConsumerWithDialer(
 		strings.Split(kafkaBrokers, ","),
@@ -527,6 +553,20 @@ func main() {
 	defer membershipConsumer.Close()
 	go membershipConsumer.Start(ctx)
 	slog.Info("kafka membership consumer started", "topic", monetizationTopic)
+
+	// Momentum Premium tax documents on the same topic, own group: each
+	// premium.invoice.issued / premium.credit_note.issued queues the buyer's
+	// e-mail (premium_invoice_email_jobs).
+	premiumInvoiceConsumer := events.NewPremiumInvoiceConsumerWithDialer(
+		strings.Split(kafkaBrokers, ","),
+		env("KAFKA_PREMIUM_INVOICE_GROUP_ID", "notification-service-premium-invoices"),
+		monetizationTopic,
+		notifSvc,
+		kafkaDialer,
+	)
+	defer premiumInvoiceConsumer.Close()
+	go premiumInvoiceConsumer.Start(ctx)
+	slog.Info("kafka premium invoice consumer started", "topic", monetizationTopic)
 
 	// 9a. Account control (auth-service 30-day deletion): suppress deliveries
 	// on user.deactivated / user.deletion_scheduled, lift on the reverse,

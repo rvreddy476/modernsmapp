@@ -15,6 +15,7 @@ package http
 //	GET  /v1/monetization/premium/invoices/:id      one document (JSON)
 //	GET  /v1/monetization/premium/invoices/:id/document   printable HTML
 //	GET  /v1/monetization/internal/premium/gst-register?from=&to=   GSTR-1 rows (service token)
+//	GET  /v1/monetization/internal/premium/invoices/:id?user_id=    the buyer e-mail's facts (notification-service token)
 
 import (
 	"encoding/json"
@@ -47,6 +48,7 @@ var premiumRoutes = []betaRule{
 	{http.MethodGet, "/v1/monetization/premium/invoices/:invoiceId"},
 	{http.MethodGet, "/v1/monetization/premium/invoices/:invoiceId/document"},
 	{http.MethodGet, "/v1/monetization/internal/premium/gst-register"},
+	{http.MethodGet, "/v1/monetization/internal/premium/invoices/:invoiceId"},
 }
 
 // premiumGate is the boundary's premium step: handled=true for a premium
@@ -69,6 +71,9 @@ func (h *Handler) registerPremiumRoutes(v1 *gin.RouterGroup) {
 	// The accountant's GSTR-1 register: a signed admin-service token only;
 	// the gateway refuses every /internal/ path at the edge.
 	v1.GET("/internal/premium/gst-register", h.requireServiceCaller(OpPremiumGSTRegister, premiumGSTRegisterCallers...), h.PremiumGSTRegister)
+	// The buyer's invoice e-mail: a signed notification-service token only
+	// (premium_invoice_mail.go).
+	v1.GET("/internal/premium/invoices/:invoiceId", h.requireServiceCaller(OpPremiumInvoiceMail, premiumInvoiceMailCallers...), h.PremiumInvoiceForMail)
 }
 
 func writePremiumError(c *gin.Context, err error) {
