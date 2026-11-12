@@ -44,7 +44,8 @@ type PremiumStore interface {
 	SetPremiumPeriodIntent(ctx context.Context, periodID, intentID uuid.UUID, orderID string) error
 	GetPremiumPeriod(ctx context.Context, periodID uuid.UUID) (*premium.Period, error)
 	GetPremiumEntitlement(ctx context.Context, userID uuid.UUID) (*premium.Entitlement, error)
-	ApplyPremiumPaymentEvent(ctx context.Context, ev premium.Event, now time.Time) (premium.Applied, error)
+	ApplyPremiumPaymentEvent(ctx context.Context, ev premium.Event, now time.Time, sup premium.Supplier) (premium.Applied, error)
+	PremiumInvoiceStore
 	DuePremiumRoleSyncs(ctx context.Context, now time.Time, limit int) ([]premium.Entitlement, error)
 	MarkPremiumRoleSynced(ctx context.Context, userID uuid.UUID, accessUntil time.Time, synced *time.Time) error
 	MarkPremiumRoleSyncRetry(ctx context.Context, userID uuid.UUID, next time.Time, cause string) error
@@ -65,6 +66,7 @@ type PremiumRoles interface {
 // PremiumPublisher publishes premium.* events (events.Producer).
 type PremiumPublisher interface {
 	PublishPremiumEvent(ctx context.Context, eventType, key string, p events.PremiumPayload) error
+	PublishPremiumInvoiceEvent(ctx context.Context, eventType string, p events.PremiumInvoicePayload) error
 }
 
 // Premium is the Momentum Premium service.
@@ -76,6 +78,8 @@ type Premium struct {
 	localEnv bool
 	roles    PremiumRoles
 	pub      PremiumPublisher
+	supplier premium.Supplier
+	profiles ProfileSource
 	now      func() time.Time
 }
 
@@ -234,6 +238,7 @@ func (p *Premium) Checkout(ctx context.Context, userID uuid.UUID, planCode strin
 	if err := p.store.SetPremiumPeriodIntent(ctx, period.ID, intent.ID, orderID); err != nil {
 		return nil, err
 	}
+	p.recordBuyerName(ctx, userID, period.ID)
 	if intent.ClientSession == nil && !p.localEnv {
 		return nil, ErrPaymentSessionUnavailable
 	}
@@ -279,6 +284,9 @@ type PremiumPassView struct {
 	Currency    string     `json:"currency"`
 	StartsAt    *time.Time `json:"starts_at"`
 	EndsAt      *time.Time `json:"ends_at"`
+	// InvoiceID is the pass's tax invoice once issued (on the signed
+	// capture), else null.
+	InvoiceID *uuid.UUID `json:"invoice_id"`
 	PremiumTaxView
 }
 
@@ -299,8 +307,13 @@ func (p *Premium) Pass(ctx context.Context, userID, passID uuid.UUID) (*PremiumP
 	case premium.StatusAbandoned:
 		status = premium.StatusFailed
 	}
+	invoiceID, err := p.store.PremiumInvoiceIDForPass(ctx, period.ID)
+	if err != nil {
+		return nil, err
+	}
 	return &PremiumPassView{PassID: period.ID, Plan: period.PlanCode, Status: status, AmountPaise: period.AmountPaise,
-		Currency: period.Currency, StartsAt: period.PeriodStart, EndsAt: period.PeriodEnd, PremiumTaxView: premiumTaxView(period.Tax)}, nil
+		Currency: period.Currency, StartsAt: period.PeriodStart, EndsAt: period.PeriodEnd, InvoiceID: invoiceID,
+		PremiumTaxView: premiumTaxView(period.Tax)}, nil
 }
 
 // ApplyPremiumPaymentEvent applies one signed payments event (the consumer's
@@ -308,9 +321,12 @@ func (p *Premium) Pass(ctx context.Context, userID, passID uuid.UUID) (*PremiumP
 // buyer's role at once. A publish or role failure never undoes the commit:
 // the role sync worker retries.
 func (p *Premium) ApplyPremiumPaymentEvent(ctx context.Context, ev premium.Event) (premium.Outcome, error) {
-	applied, err := p.store.ApplyPremiumPaymentEvent(ctx, ev, p.clock())
+	applied, err := p.store.ApplyPremiumPaymentEvent(ctx, ev, p.clock(), p.supplier)
 	if err != nil {
 		return "", err
+	}
+	if applied.Document != nil {
+		p.publishDocument(ctx, *applied.Document)
 	}
 	d := applied.Decision
 	if d.Notify == premium.EventActivated && applied.Entitlement != nil {

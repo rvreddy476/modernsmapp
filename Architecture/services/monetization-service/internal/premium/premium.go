@@ -494,6 +494,26 @@ type Applied struct {
 	Decision    Decision
 	Period      Period
 	Entitlement *Entitlement
+	// Document is the tax invoice or credit note this event issued in its
+	// transaction (invoice.go), nil when it issued none.
+	Document *Invoice
+}
+
+// DocumentFor answers what the event's decision must issue: an invoice on
+// activation, a credit note on the full refund of a pass that has an
+// invoice, else "".
+func DocumentFor(d Decision, hasInvoice, hasCreditNote bool) string {
+	switch d.Outcome {
+	case OutcomeActivated:
+		if !hasInvoice {
+			return KindInvoice
+		}
+	case OutcomeRefunded:
+		if hasInvoice && !hasCreditNote {
+			return KindCreditNote
+		}
+	}
+	return ""
 }
 
 // ReminderDue is one renewal reminder to send.

@@ -12,6 +12,8 @@ package workers
 //     day, once each per end;
 //   - ended: premium.ended once per access that ended;
 //   - checkout sweep: a checkout unpaid for 30 minutes → abandoned.
+//   - document outbox: premium.invoice.issued / premium.credit_note.issued
+//     for every tax invoice or credit note whose post-commit publish failed.
 
 import (
 	"context"
@@ -31,6 +33,7 @@ type premiumRunner interface {
 	SendReminders(ctx context.Context) (int, error)
 	SendEndedNotices(ctx context.Context) (int, error)
 	SweepAbandonedCheckouts(ctx context.Context) (int64, error)
+	PublishPendingDocuments(ctx context.Context) (int, error)
 }
 
 // StartPremiumWorkers launches the premium workers and blocks until ctx ends.
@@ -48,6 +51,11 @@ func runPremiumRolePass(ctx context.Context, p premiumRunner) {
 		slog.Error("premium worker: role sync pass failed", "error", err)
 	} else if n > 0 {
 		slog.Info("premium worker: roles synced", "count", n)
+	}
+	if n, err := p.PublishPendingDocuments(ctx); err != nil {
+		slog.Error("premium worker: document outbox pass failed", "error", err)
+	} else if n > 0 {
+		slog.Info("premium worker: document events retried", "count", n)
 	}
 }
 

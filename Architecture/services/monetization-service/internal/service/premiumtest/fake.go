@@ -35,6 +35,12 @@ type Store struct {
 	Ents      map[uuid.UUID]*Ent
 	Inbox     map[string]premium.Outcome
 	Reminders map[reminderKey]bool
+	// Invoices are the issued documents by id; Counters the last number per
+	// series and financial year; Buyers the names recorded at checkout.
+	Invoices  map[uuid.UUID]*premium.Invoice
+	Counters  map[string]int64
+	Buyers    map[uuid.UUID]string
+	Published map[uuid.UUID]time.Time
 	// FailApply makes ApplyPremiumPaymentEvent fail (a database outage).
 	FailApply error
 }
@@ -57,6 +63,10 @@ func New() *Store {
 		Ents:      map[uuid.UUID]*Ent{},
 		Inbox:     map[string]premium.Outcome{},
 		Reminders: map[reminderKey]bool{},
+		Invoices:  map[uuid.UUID]*premium.Invoice{},
+		Counters:  map[string]int64{},
+		Buyers:    map[uuid.UUID]string{},
+		Published: map[uuid.UUID]time.Time{},
 	}
 }
 
@@ -124,7 +134,7 @@ func (s *Store) GetPremiumEntitlement(_ context.Context, userID uuid.UUID) (*pre
 	return nil, nil
 }
 
-func (s *Store) ApplyPremiumPaymentEvent(_ context.Context, ev premium.Event, now time.Time) (premium.Applied, error) {
+func (s *Store) ApplyPremiumPaymentEvent(_ context.Context, ev premium.Event, now time.Time, sup premium.Supplier) (premium.Applied, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var applied premium.Applied
@@ -158,6 +168,16 @@ func (s *Store) ApplyPremiumPaymentEvent(_ context.Context, ev premium.Event, no
 	sort.Slice(chain, func(i, j int) bool { return chain[i].PeriodStart.Before(*chain[j].PeriodStart) })
 
 	d := premium.Decide(premium.Input{Period: *p, Entitlement: ent, Chain: chain, Event: ev, Now: now})
+	// Issue first and write nothing if it fails: the transaction rolls back.
+	after := *p
+	if d.Period != nil {
+		after = *d.Period
+	}
+	doc, err := s.issueLocked(d, after, sup, now)
+	if err != nil {
+		return applied, err
+	}
+	applied.Document = doc
 	applied.Decision, applied.Period, applied.Entitlement = d, *p, ent
 	if d.Period != nil {
 		c := *d.Period
@@ -382,7 +402,9 @@ type Published struct {
 type Publisher struct {
 	mu   sync.Mutex
 	Sent []Published
-	Fail error
+	// Documents are premium.invoice.issued / premium.credit_note.issued.
+	Documents []PublishedDocument
+	Fail      error
 }
 
 func (p *Publisher) PublishPremiumEvent(_ context.Context, eventType, key string, payload events.PremiumPayload) error {

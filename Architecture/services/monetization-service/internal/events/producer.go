@@ -15,12 +15,12 @@ const TopicMonetization = "monetization.events"
 
 // Event type constants for monetization domain.
 const (
-	EventSubscriptionCreated  = "subscription.created"
+	EventSubscriptionCreated   = "subscription.created"
 	EventSubscriptionCancelled = "subscription.cancelled"
-	EventSubscriptionRenewed  = "subscription.renewed"
-	EventSubscriptionExpired  = "subscription.expired"
-	EventDonationReceived     = "donation.received"
-	EventAffiliateConversion  = "affiliate.conversion"
+	EventSubscriptionRenewed   = "subscription.renewed"
+	EventSubscriptionExpired   = "subscription.expired"
+	EventDonationReceived      = "donation.received"
+	EventAffiliateConversion   = "affiliate.conversion"
 	// EventCreatorLedgerCredited is the canonical event name for a
 	// creator-earnings credit (Phase 2 §D4, 2026-04-30 rename).
 	EventCreatorLedgerCredited = "creator_ledger.credited"
@@ -28,7 +28,7 @@ const (
 	// published as an alias for one release so any downstream consumer
 	// that has not been updated keeps receiving the events. Schedule
 	// removal after 2026-10-30.
-	EventWalletCredited = "wallet.credited"
+	EventWalletCredited       = "wallet.credited"
 	EventSubscriptionPaused   = "subscription.paused"
 	EventSubscriptionResumed  = "subscription.resumed"
 	EventSubscriptionGrace    = "subscription.grace_started"
@@ -275,7 +275,7 @@ func (p *Producer) PublishAffiliateConversion(ctx context.Context, conversionID,
 		OrderID:         orderID.String(),
 		BuyerID:         buyerID.String(),
 		CommissionPaise: commissionPaise,
-		ConvertedAt:   time.Now(),
+		ConvertedAt:     time.Now(),
 	}
 	s := buyerID.String()
 	return p.publish(ctx, EventAffiliateConversion, &s, payload)
@@ -475,8 +475,6 @@ func (p *Producer) publishWithID(ctx context.Context, eventType, eventID string,
 	})
 }
 
-
-
 // ---------------------------------------------------------------------------
 // Momentum Premium (migration 027)
 // ---------------------------------------------------------------------------
@@ -533,4 +531,40 @@ func (p *Producer) PublishPremiumEvent(ctx context.Context, eventType, key strin
 	}
 	u := payload.UserID
 	return p.publishWithID(ctx, eventType, id, &u, payload)
+}
+
+// Premium tax documents (migration 029). Payload ids only: no amounts, names
+// or numbers travel on the topic; a consumer reads the document through the
+// buyer's own routes.
+const (
+	EventPremiumInvoiceIssued    = "premium.invoice.issued"
+	EventPremiumCreditNoteIssued = "premium.credit_note.issued"
+)
+
+// PremiumInvoicePayload is the payload of premium.invoice.issued and
+// premium.credit_note.issued. Kind is invoice | credit_note.
+type PremiumInvoicePayload struct {
+	UserID    string `json:"user_id"`
+	InvoiceID string `json:"invoice_id"`
+	PassID    string `json:"pass_id"`
+	Kind      string `json:"kind"`
+}
+
+// IsPremiumInvoiceEvent reports whether eventType announces a premium document.
+func IsPremiumInvoiceEvent(eventType string) bool {
+	return eventType == EventPremiumInvoiceIssued || eventType == EventPremiumCreditNoteIssued
+}
+
+// PublishPremiumInvoiceEvent publishes one document event, actor = the buyer,
+// event id = PremiumEventID(eventType, invoice id): a retried publish from
+// the outbox sweep carries the same id.
+func (p *Producer) PublishPremiumInvoiceEvent(ctx context.Context, eventType string, payload PremiumInvoicePayload) error {
+	if !IsPremiumInvoiceEvent(eventType) {
+		return fmt.Errorf("not a premium document event type: %q", eventType)
+	}
+	if payload.InvoiceID == "" {
+		return fmt.Errorf("premium document event without an invoice id")
+	}
+	u := payload.UserID
+	return p.publishWithID(ctx, eventType, PremiumEventID(eventType, payload.InvoiceID), &u, payload)
 }

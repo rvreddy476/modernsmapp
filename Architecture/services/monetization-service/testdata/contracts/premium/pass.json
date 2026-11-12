@@ -7,6 +7,7 @@
     "currency": "INR",
     "starts_at": "2026-11-13T10:00:00Z",
     "ends_at": "2026-12-13T10:00:00Z",
+    "invoice_id": "d4444444-4444-4444-8444-444444444444",
     "taxable_paise": 14900,
     "gst_paise": 2682,
     "cgst_paise": 1341,

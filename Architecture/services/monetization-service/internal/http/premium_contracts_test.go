@@ -27,10 +27,21 @@ import (
 // them byte for byte.
 
 var (
-	pcNow    = time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)
-	pcBuyer  = uuid.MustParse("a1111111-1111-4111-8111-111111111111")
-	pcPass   = "b2222222-2222-4222-8222-222222222222"
-	pcIntent = "c3333333-3333-4333-8333-333333333333"
+	pcNow     = time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC)
+	pcClock   = pcNow
+	pcBuyer   = uuid.MustParse("a1111111-1111-4111-8111-111111111111")
+	pcPass    = "b2222222-2222-4222-8222-222222222222"
+	pcIntent  = "c3333333-3333-4333-8333-333333333333"
+	pcInvoice = "d4444444-4444-4444-8444-444444444444"
+	// The credit-note fixture: a second buyer whose pass is refunded in full.
+	pcBuyer2  = uuid.MustParse("e5555555-5555-4555-8555-555555555555")
+	pcPass2   = "f6666666-6666-4666-8666-666666666666"
+	pcIntent2 = "a7777777-7777-4777-8777-777777777777"
+	pcInv2    = "b8888888-8888-4888-8888-888888888888"
+	pcCredit  = "c9999999-9999-4999-8999-999999999999"
+	// pcSupplier is synthetic: no real company or GSTIN.
+	pcSupplier = premium.Supplier{LegalName: "Example Supplier Private Limited", Address: "1 Example Road, Bengaluru 560001",
+		GSTIN: "29AAAAA0000A1Z0", StateCode: "29", StateName: "Karnataka"}
 )
 
 // premiumContracts serves the four routes on the estimate path (no GSTIN,
@@ -39,7 +50,8 @@ func premiumContracts(t *testing.T) map[string][]byte {
 	t.Helper()
 	store, pays := premiumtest.New(), premiumtest.NewPayments()
 	svc := service.NewPremium(store, premium.Prices{premium.Plan30d: 14900, premium.Plan365d: 149900}).
-		WithPayments(pays, false).WithRoles(&premiumtest.Roles{}).WithClock(func() time.Time { return pcNow })
+		WithPayments(pays, false).WithRoles(&premiumtest.Roles{}).WithClock(func() time.Time { return pcClock }).
+		WithSupplier(pcSupplier).WithProfiles(contractProfiles{pcBuyer: "Asha Rao"})
 	h := New(nil).WithPremium(svc, true)
 	user := pcBuyer.String()
 
@@ -74,8 +86,59 @@ func premiumContracts(t *testing.T) map[string][]byte {
 	}
 	out["me.json"] = w.Body.Bytes()
 
+	// Tax documents (migration 029).
+	w = serveJSON(h, http.MethodGet, "/v1/monetization/premium/invoices", user, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("invoices: %d %s", w.Code, w.Body.String())
+	}
+	out["invoices.json"] = w.Body.Bytes()
+	var list struct {
+		Invoices []service.PremiumInvoiceSummary `json:"invoices"`
+	}
+	decodeData(t, w, &list)
+	if len(list.Invoices) != 1 {
+		t.Fatalf("invoices: %+v", list)
+	}
+	invID := list.Invoices[0].ID
+	w = serveJSON(h, http.MethodGet, "/v1/monetization/premium/invoices/"+invID.String(), user, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("invoice: %d %s", w.Code, w.Body.String())
+	}
+	out["invoice.json"] = w.Body.Bytes()
+
+	// A second buyer, refunded in full the next day: the credit note.
+	user2 := pcBuyer2.String()
+	w = serveJSON(h, http.MethodPost, "/v1/monetization/premium/checkout", user2, `{"plan":"premium_30d"}`)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("checkout 2: %d %s", w.Code, w.Body.String())
+	}
+	var co2 service.PremiumCheckout
+	decodeData(t, w, &co2)
+	ev2 := premium.Event{EventID: "evt_contract_2", EventType: "payment.succeeded", IntentID: co2.IntentID.String(),
+		PeriodID: co2.PassID, PayerID: pcBuyer2, AmountMinor: co2.AmountPaise, Currency: "INR"}
+	if o, err := svc.ApplyPremiumPaymentEvent(context.Background(), ev2); err != nil || o != premium.OutcomeActivated {
+		t.Fatalf("activate 2: %s %v", o, err)
+	}
+	pcClock = pcNow.Add(24 * time.Hour)
+	defer func() { pcClock = pcNow }()
+	ev2.EventID, ev2.EventType = "evt_contract_2_refund", "payment.refunded"
+	if o, err := svc.ApplyPremiumPaymentEvent(context.Background(), ev2); err != nil || o != premium.OutcomeRefunded {
+		t.Fatalf("refund 2: %s %v", o, err)
+	}
+	decodeData(t, serveJSON(h, http.MethodGet, "/v1/monetization/premium/invoices", user2, ""), &list)
+	if len(list.Invoices) != 2 || list.Invoices[0].Kind != premium.KindCreditNote {
+		t.Fatalf("invoices 2: %+v", list)
+	}
+	creditID, inv2ID := list.Invoices[0].ID, list.Invoices[1].ID
+	w = serveJSON(h, http.MethodGet, "/v1/monetization/premium/invoices/"+creditID.String(), user2, "")
+	if w.Code != http.StatusOK {
+		t.Fatalf("credit note: %d %s", w.Code, w.Body.String())
+	}
+	out["credit_note.json"] = w.Body.Bytes()
+
 	pin := strings.NewReplacer(co.PassID.String(), pcPass, co.IntentID.String(), pcIntent,
-		"order_"+co.PassID.String()[:8], "order_"+pcPass[:8])
+		"order_"+co.PassID.String()[:8], "order_"+pcPass[:8], invID.String(), pcInvoice,
+		co2.PassID.String(), pcPass2, co2.IntentID.String(), pcIntent2, inv2ID.String(), pcInv2, creditID.String(), pcCredit)
 	for k, v := range out {
 		out[k] = []byte(pin.Replace(string(v)))
 	}
@@ -171,5 +234,75 @@ func TestPremiumFixturesMeanWhatTheContractSays(t *testing.T) {
 	}
 	if rp, _ := me["renewal_plans"].([]any); len(rp) != 2 || rp[0].(map[string]any)["total_paise"] != float64(17582) {
 		t.Fatalf("me renewal_plans: %v", me["renewal_plans"])
+	}
+}
+
+// contractProfiles names buyers for the invoice fixtures.
+type contractProfiles map[uuid.UUID]string
+
+func (c contractProfiles) Profiles(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]service.PublicProfile, error) {
+	out := map[uuid.UUID]service.PublicProfile{}
+	for _, id := range ids {
+		if n, ok := c[id]; ok {
+			out[id] = service.PublicProfile{DisplayName: n}
+		}
+	}
+	return out, nil
+}
+
+// The invoice fixtures carry what a GST document must: the pass's split to
+// the paisa, the supplier, the place of supply, a 16-character number, no
+// provisional flag; and the credit note is the exact negative of its invoice.
+func TestPremiumInvoiceFixturesMeanWhatTheContractSays(t *testing.T) {
+	dir := filepath.Join("..", "..", "testdata", "contracts", "premium")
+	read := func(name string) map[string]any {
+		b, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(name, "invoice") || strings.Contains(name, "credit") {
+			if strings.Contains(string(b), "provisional") {
+				t.Fatalf("%s exposes tax_provisional", name)
+			}
+		}
+		var env map[string]any
+		if err := json.Unmarshal(b, &env); err != nil {
+			t.Fatal(err)
+		}
+		return env["data"].(map[string]any)
+	}
+	list, _ := read("invoices.json")["invoices"].([]any)
+	if len(list) != 1 {
+		t.Fatalf("invoices: %v", list)
+	}
+	row := list[0].(map[string]any)
+	if row["number"] != "MP/26-27/000001" || row["kind"] != "invoice" || row["total_paise"] != float64(17582) || row["pass_id"] != pcPass {
+		t.Fatalf("list row %v", row)
+	}
+	inv, cn := read("invoice.json"), read("credit_note.json")
+	if inv["taxable_paise"] != float64(14900) || inv["cgst_paise"] != float64(1341) || inv["sgst_paise"] != float64(1341) ||
+		inv["igst_paise"] != float64(0) || inv["total_paise"] != float64(17582) || inv["reverse_charge"] != false ||
+		inv["buyer_name"] != "Asha Rao" || inv["original_invoice"] != nil {
+		t.Fatalf("invoice %v", inv)
+	}
+	if pos := inv["place_of_supply"].(map[string]any); pos["state_code"] != "29" {
+		t.Fatalf("place of supply %v", pos)
+	}
+	if line := inv["lines"].([]any)[0].(map[string]any); line["sac"] != "998439" || line["gst_rate_bp"] != float64(1800) ||
+		line["description"] != "Momentum Premium — 30 days" {
+		t.Fatalf("line %v", line)
+	}
+	for _, k := range []string{"taxable_paise", "cgst_paise", "sgst_paise", "igst_paise", "total_paise"} {
+		if cn[k].(float64) != -inv[k].(float64) {
+			t.Errorf("credit note %s = %v, invoice %v", k, cn[k], inv[k])
+		}
+	}
+	orig := cn["original_invoice"].(map[string]any)
+	if cn["number"] != "MPC/26-27/000001" || cn["kind"] != "credit_note" || orig["number"] != "MP/26-27/000002" || orig["id"] != pcInv2 ||
+		cn["date"] != "2026-11-14" || orig["date"] != "2026-11-13" {
+		t.Fatalf("credit note %v", cn)
+	}
+	if pass := read("pass.json"); pass["invoice_id"] != pcInvoice {
+		t.Fatalf("pass.invoice_id %v", pass["invoice_id"])
 	}
 }

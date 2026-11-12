@@ -42,6 +42,10 @@ func newPremiumDBRig(t *testing.T) *premiumDBRig {
 	t.Cleanup(func() {
 		bg := context.Background()
 		_, _ = pool.Exec(bg, `DELETE FROM premium_payment_inbox WHERE period_id IN (SELECT id FROM premium_periods WHERE user_id = $1)`, r.buyer)
+		// Documents first: they reference the pass (migration 029). A credit
+		// note references its invoice, so credit notes go before invoices.
+		_, _ = pool.Exec(bg, `DELETE FROM premium_invoices WHERE user_id = $1 AND kind = 'credit_note'`, r.buyer)
+		_, _ = pool.Exec(bg, `DELETE FROM premium_invoices WHERE user_id = $1`, r.buyer)
 		_, _ = pool.Exec(bg, `DELETE FROM premium_renewal_reminders WHERE user_id = $1`, r.buyer)
 		_, _ = pool.Exec(bg, `DELETE FROM premium_periods WHERE user_id = $1`, r.buyer)
 		_, _ = pool.Exec(bg, `DELETE FROM premium_entitlements WHERE user_id = $1`, r.buyer)

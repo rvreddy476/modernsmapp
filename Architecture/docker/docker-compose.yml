@@ -1570,6 +1570,11 @@ services:
       # The platform's GSTIN supplies Premium; required in production, empty
       # here uses the estimated split (same numbers, marked provisional).
       PREMIUM_PLATFORM_GSTIN: ${PREMIUM_PLATFORM_GSTIN:-}
+      # Tax invoices and credit notes (migration 029) are issued in the
+      # supplier's name. Production refuses Premium without these two and the
+      # GSTIN; empty here prints a dash on dev invoices.
+      PREMIUM_SUPPLIER_LEGAL_NAME: ${PREMIUM_SUPPLIER_LEGAL_NAME:-}
+      PREMIUM_SUPPLIER_ADDRESS: ${PREMIUM_SUPPLIER_ADDRESS:-}
       # Identity's internal roles API: the role `premium` with expires_at.
       IDENTITY_AUTH_URL: http://identity-auth:8081
       TRUST_SAFETY_SERVICE_URL: http://trust-safety-service:8091

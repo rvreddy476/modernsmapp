@@ -1,0 +1,47 @@
+{
+  "data": {
+    "id": "c9999999-9999-4999-8999-999999999999",
+    "number": "MPC/26-27/000001",
+    "kind": "credit_note",
+    "date": "2026-11-14",
+    "pass_id": "f6666666-6666-4666-8666-666666666666",
+    "supplier": {
+      "legal_name": "Example Supplier Private Limited",
+      "address": "1 Example Road, Bengaluru 560001",
+      "gstin": "29AAAAA0000A1Z0",
+      "state_name": "Karnataka",
+      "state_code": "29"
+    },
+    "buyer_name": null,
+    "place_of_supply": {
+      "state_name": "Karnataka",
+      "state_code": "29"
+    },
+    "reverse_charge": false,
+    "lines": [
+      {
+        "description": "Momentum Premium — 30 days",
+        "sac": "998439",
+        "quantity": 1,
+        "taxable_paise": -14900,
+        "gst_rate_bp": 1800,
+        "cgst_paise": -1341,
+        "sgst_paise": -1341,
+        "igst_paise": 0,
+        "total_paise": -17582
+      }
+    ],
+    "taxable_paise": -14900,
+    "cgst_paise": -1341,
+    "sgst_paise": -1341,
+    "igst_paise": 0,
+    "total_paise": -17582,
+    "currency": "INR",
+    "amount_in_words": "Indian Rupees One Hundred Seventy-Five and Eighty-Two Paise Only",
+    "original_invoice": {
+      "id": "b8888888-8888-4888-8888-888888888888",
+      "number": "MP/26-27/000002",
+      "date": "2026-11-13"
+    }
+  }
+}

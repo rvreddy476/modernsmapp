@@ -11,6 +11,10 @@ package http
 //	POST /v1/monetization/premium/checkout          {"plan": "premium_30d"}
 //	GET  /v1/monetization/premium/me                active / ends_at / in_grace
 //	GET  /v1/monetization/premium/passes/:passId    the app's poll after paying
+//	GET  /v1/monetization/premium/invoices          the buyer's tax invoices and credit notes
+//	GET  /v1/monetization/premium/invoices/:id      one document (JSON)
+//	GET  /v1/monetization/premium/invoices/:id/document   printable HTML
+//	GET  /v1/monetization/internal/premium/gst-register?from=&to=   GSTR-1 rows (service token)
 
 import (
 	"encoding/json"
@@ -39,6 +43,10 @@ var premiumRoutes = []betaRule{
 	{http.MethodPost, "/v1/monetization/premium/checkout"},
 	{http.MethodGet, "/v1/monetization/premium/me"},
 	{http.MethodGet, "/v1/monetization/premium/passes/:passId"},
+	{http.MethodGet, "/v1/monetization/premium/invoices"},
+	{http.MethodGet, "/v1/monetization/premium/invoices/:invoiceId"},
+	{http.MethodGet, "/v1/monetization/premium/invoices/:invoiceId/document"},
+	{http.MethodGet, "/v1/monetization/internal/premium/gst-register"},
 }
 
 // premiumGate is the boundary's premium step: handled=true for a premium
@@ -55,6 +63,12 @@ func (h *Handler) registerPremiumRoutes(v1 *gin.RouterGroup) {
 	v1.POST("/premium/checkout", h.PremiumCheckout)
 	v1.GET("/premium/me", h.GetMyPremium)
 	v1.GET("/premium/passes/:passId", h.GetPremiumPass)
+	v1.GET("/premium/invoices", h.ListPremiumInvoices)
+	v1.GET("/premium/invoices/:invoiceId", h.GetPremiumInvoice)
+	v1.GET("/premium/invoices/:invoiceId/document", h.GetPremiumInvoiceDocument)
+	// The accountant's GSTR-1 register: a signed admin-service token only;
+	// the gateway refuses every /internal/ path at the edge.
+	v1.GET("/internal/premium/gst-register", h.requireServiceCaller(OpPremiumGSTRegister, premiumGSTRegisterCallers...), h.PremiumGSTRegister)
 }
 
 func writePremiumError(c *gin.Context, err error) {
@@ -73,6 +87,10 @@ func writePremiumError(c *gin.Context, err error) {
 		e(http.StatusBadGateway, "PAYMENT_SESSION_UNAVAILABLE", "Checkout could not be opened; try again")
 	case errors.Is(err, service.ErrPremiumPassNotFound):
 		e(http.StatusNotFound, "NOT_FOUND", "Pass not found")
+	case errors.Is(err, service.ErrPremiumInvoiceNotFound):
+		e(http.StatusNotFound, "NOT_FOUND", "Invoice not found")
+	case errors.Is(err, service.ErrPremiumRegisterRange):
+		e(http.StatusBadRequest, "BAD_REQUEST", "from and to are dates (YYYY-MM-DD), from <= to, at most 366 days apart")
 	default:
 		e(http.StatusInternalServerError, "INTERNAL_ERROR", "Something went wrong")
 	}
@@ -166,6 +184,113 @@ func (h *Handler) GetPremiumPass(c *gin.Context) {
 		return
 	}
 	out, err := h.premium.Pass(c.Request.Context(), userID, passID)
+	if err != nil {
+		writePremiumError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// Premium tax documents (migration 029).
+const (
+	// OpPremiumGSTRegister is the operation a register token carries.
+	OpPremiumGSTRegister = "monetization:premium-gst-register" //nolint:gosec // G101: service-token operation name, not a credential
+)
+
+// premiumGSTRegisterCallers: admin-service, for the accountant's export (the
+// console screen is the founder's lane).
+var premiumGSTRegisterCallers = []string{IssuerAdminService}
+
+// ListPremiumInvoices — GET /v1/monetization/premium/invoices
+//
+//	200 {"data": {"invoices": [{"id","number","kind":"invoice|credit_note","date","total_paise","currency","pass_id"}]}}
+//
+// The caller's own documents only, newest first. A credit note's total is negative.
+func (h *Handler) ListPremiumInvoices(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	out, err := h.premium.Invoices(c.Request.Context(), userID)
+	if err != nil {
+		writePremiumError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"invoices": out}, nil)
+}
+
+func (h *Handler) premiumInvoiceID(c *gin.Context) (uuid.UUID, bool) {
+	id, err := uuid.Parse(c.Param("invoiceId"))
+	if err != nil {
+		writePremiumError(c, service.ErrPremiumInvoiceNotFound)
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+// GetPremiumInvoice — GET /v1/monetization/premium/invoices/:invoiceId
+//
+//	200 {"data": {"id","number","kind","date","pass_id","supplier":{...},"buyer_name"|null,
+//	              "place_of_supply":{...},"reverse_charge":false,"lines":[...],"taxable_paise",
+//	              "cgst_paise","sgst_paise","igst_paise","total_paise","currency","amount_in_words",
+//	              "original_invoice":{"id","number","date"}|null}}
+//	404 NOT_FOUND — no such document, or another buyer's (never 403).
+func (h *Handler) GetPremiumInvoice(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	id, ok := h.premiumInvoiceID(c)
+	if !ok {
+		return
+	}
+	out, err := h.premium.Invoice(c.Request.Context(), userID, id)
+	if err != nil {
+		writePremiumError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, out, nil)
+}
+
+// GetPremiumInvoiceDocument — GET /v1/monetization/premium/invoices/:invoiceId/document
+//
+//	200 text/html; Content-Disposition: attachment; filename="MP_26-27_000001.html"
+//
+// Printable HTML (the browser prints or saves it as PDF): the shared PDF
+// renderer needs wkhtmltopdf, which no image ships.
+func (h *Handler) GetPremiumInvoiceDocument(c *gin.Context) {
+	userID, ok := getUserID(c)
+	if !ok {
+		return
+	}
+	id, ok := h.premiumInvoiceID(c)
+	if !ok {
+		return
+	}
+	doc, err := h.premium.InvoiceDocument(c.Request.Context(), userID, id)
+	if err != nil {
+		writePremiumError(c, err)
+		return
+	}
+	c.Header("Content-Disposition", `attachment; filename="`+doc.Filename+`"`)
+	c.Header("Cache-Control", "private, no-store")
+	c.Header("X-Content-Type-Options", "nosniff")
+	c.Header("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'")
+	c.Data(http.StatusOK, doc.ContentType, doc.Body)
+}
+
+// PremiumGSTRegister — GET /v1/monetization/internal/premium/gst-register?from=YYYY-MM-DD&to=YYYY-MM-DD
+//
+//	200 {"data": {"from","to","supplier_gstin","rows":[{"kind","number","date","original_number"?,"original_date"?,
+//	              "place_of_supply_code","place_of_supply_name","supply_type","sac","gst_rate_bp",
+//	              "taxable_paise","cgst_paise","sgst_paise","igst_paise","total_paise","tax_provisional"}],
+//	              "totals":{...}}}
+//
+// Every document dated from..to (IST, inclusive; at most 366 days). B2C
+// only: no buyer is registered. Admin-service token with
+// monetization:premium-gst-register; never reachable through the gateway.
+func (h *Handler) PremiumGSTRegister(c *gin.Context) {
+	out, err := h.premium.GSTRegister(c.Request.Context(), c.Query("from"), c.Query("to"))
 	if err != nil {
 		writePremiumError(c, err)
 		return

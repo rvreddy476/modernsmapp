@@ -232,7 +232,24 @@ func main() {
 		if !premiumTax.Computed() {
 			slog.Warn("premium: PREMIUM_PLATFORM_GSTIN unset (not production): GST on Premium is the estimated split")
 		}
-		premiumSvc = service.NewPremium(monetizationStore, prices).WithTax(premiumTax)
+		// Tax invoices and credit notes (migration 029) are issued in the
+		// supplier's name: production refuses Premium without
+		// PREMIUM_SUPPLIER_LEGAL_NAME, PREMIUM_SUPPLIER_ADDRESS and
+		// PREMIUM_PLATFORM_GSTIN; elsewhere a missing field prints as a dash.
+		premiumSupplier, err := premium.SupplierFromEnv(os.Getenv, environment)
+		if err != nil {
+			slog.Error("refusing to start: premium invoice supplier", "error", err)
+			os.Exit(1)
+		}
+		if !premiumSupplier.Complete() {
+			slog.Warn("premium: supplier legal name, address or GSTIN unset (not production): invoices print a dash for them")
+		}
+		premiumSvc = service.NewPremium(monetizationStore, prices).WithTax(premiumTax).WithSupplier(premiumSupplier)
+		// The buyer's display name on the invoice (identity-profile batch
+		// read, best effort at checkout); unset prints none.
+		if p := eligibility.NewProfiles(os.Getenv("PROFILE_SERVICE_URL"), internalKey); p != nil {
+			premiumSvc.WithProfiles(p)
+		}
 		client, err := payments.PremiumClientFromEnv(os.Getenv)
 		switch {
 		case err == nil:

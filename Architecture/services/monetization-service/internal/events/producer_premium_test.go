@@ -41,3 +41,18 @@ func TestPremiumPayloadDaysLeftOnlyWhenSet(t *testing.T) {
 		t.Fatalf("days_left 0 must be present: %s", raw)
 	}
 }
+
+func TestPremiumInvoiceEventsCarryIdsOnly(t *testing.T) {
+	if EventPremiumInvoiceIssued != premium.EventInvoiceIssued || EventPremiumCreditNoteIssued != premium.EventCreditNoteIssued {
+		t.Fatal("premium document event names drifted between events and premium")
+	}
+	if !IsPremiumInvoiceEvent(EventPremiumCreditNoteIssued) || IsPremiumInvoiceEvent(EventPremiumActivated) || IsPremiumEvent(EventPremiumInvoiceIssued) {
+		t.Fatal("IsPremiumInvoiceEvent")
+	}
+	raw, _ := json.Marshal(PremiumInvoicePayload{UserID: "u", InvoiceID: "i", PassID: "p", Kind: "invoice"})
+	var m map[string]any
+	_ = json.Unmarshal(raw, &m)
+	if len(m) != 4 {
+		t.Fatalf("payload must carry ids and the kind only: %s", raw)
+	}
+}

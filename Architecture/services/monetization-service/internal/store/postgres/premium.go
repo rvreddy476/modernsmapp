@@ -195,7 +195,7 @@ func (premiumInbox) Claim(ctx context.Context, tx pgx.Tx, c paymentevents.Claim)
 // row, the decision and every write it implies commit together or not at
 // all. A duplicate event id is OutcomeDuplicate with nothing written; an
 // unknown pass is recorded as OutcomePeriodNotFound and committed.
-func (s *Store) ApplyPremiumPaymentEvent(ctx context.Context, ev premium.Event, now time.Time) (premium.Applied, error) {
+func (s *Store) ApplyPremiumPaymentEvent(ctx context.Context, ev premium.Event, now time.Time, sup premium.Supplier) (premium.Applied, error) {
 	var applied premium.Applied
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
@@ -206,7 +206,7 @@ func (s *Store) ApplyPremiumPaymentEvent(ctx context.Context, ev premium.Event, 
 	claim := paymentevents.Claim{EventID: ev.EventID, EventType: ev.EventType, IntentID: ev.IntentID,
 		ReferenceID: ev.PeriodID, AmountMinor: ev.AmountMinor, Currency: ev.Currency}
 	err = paymentevents.ApplyOnce(ctx, tx, premiumInbox{}, claim, func(ctx context.Context, tx pgx.Tx) error {
-		return applyPremiumEffectTx(ctx, tx, ev, now, &applied)
+		return applyPremiumEffectTx(ctx, tx, ev, now, sup, &applied)
 	})
 	switch {
 	case errors.Is(err, paymentevents.ErrDuplicate):
@@ -224,7 +224,7 @@ func recordPremiumInboxOutcomeTx(ctx context.Context, tx pgx.Tx, eventID string,
 	return err
 }
 
-func applyPremiumEffectTx(ctx context.Context, tx pgx.Tx, ev premium.Event, now time.Time, applied *premium.Applied) error {
+func applyPremiumEffectTx(ctx context.Context, tx pgx.Tx, ev premium.Event, now time.Time, sup premium.Supplier, applied *premium.Applied) error {
 	now = premium.Truncate(now)
 	var userID uuid.UUID
 	err := tx.QueryRow(ctx, `SELECT user_id FROM premium_periods WHERE id = $1`, ev.PeriodID).Scan(&userID)
@@ -294,6 +294,11 @@ func applyPremiumEffectTx(ctx context.Context, tx pgx.Tx, ev premium.Event, now 
 			return err
 		}
 		applied.Entitlement = d.Entitlement
+	}
+	// The tax invoice (activation) or credit note (full refund), in this
+	// transaction: the pass and its document commit together or not at all.
+	if err := issuePremiumDocumentTx(ctx, tx, d, applied.Period, sup, now, applied); err != nil {
+		return err
 	}
 	return recordPremiumInboxOutcomeTx(ctx, tx, ev.EventID, d)
 }
