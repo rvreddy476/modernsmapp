@@ -100,6 +100,8 @@ dependencies {
     // Paid memberships (2026-10-23): the creator's Memberships page and the
     // member's own list and detail. Only :app may depend on it (moduleGraphCheck (n)).
     implementation(projects.feature.memberships)
+    // Echo (2026-11-12): the short-posts screens, opened only while Product.ECHO is open.
+    implementation(projects.feature.echo)
     implementation(projects.core.memberships)
     // The payment attempt type the commerce routes carry.
     implementation(projects.core.commerce)

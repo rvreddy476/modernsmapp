@@ -113,6 +113,7 @@
                 <data android:pathPrefix="/channel/" />
                 <data android:pathPrefix="/u/" />
                 <data android:pathPrefix="/hashtag/" />
+                <data android:pathPrefix="/echo/note/" />
             </intent-filter>
             <!--
               Google sign-in's browser redirect (web parity, founder 21 Oct

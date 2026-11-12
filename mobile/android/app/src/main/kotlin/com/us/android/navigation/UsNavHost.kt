@@ -129,6 +129,10 @@ import com.us.android.feature.doorstep.navigation.navigateToDoorstep
 import com.us.android.feature.doorstep.navigation.navigateToDoorstepBooking
 import com.us.android.feature.doorstep.navigation.navigateToDoorstepOutstanding
 import com.us.android.feature.doorstep.payment.DoorstepPaymentRequest
+import com.us.android.feature.echo.navigation.echoScreens
+import com.us.android.feature.echo.navigation.navigateToEcho
+import com.us.android.feature.echo.navigation.navigateToEchoNote
+import com.us.android.feature.echo.ui.EchoProfileNotes
 import com.us.android.feature.feast.checkout.FeastPaymentRequest
 import com.us.android.feature.feast.navigation.feastScreens
 import com.us.android.feature.feast.navigation.navigateToFeast
@@ -207,6 +211,7 @@ import com.us.android.feature.profile.navigation.navigateToSettings
 import com.us.android.feature.profile.navigation.ownProfileScreen
 import com.us.android.feature.profile.navigation.profileScreen
 import com.us.android.feature.profile.navigation.settingsScreens
+import com.us.android.feature.profile.ui.ProfileEchoTab
 import com.us.android.feature.search.navigation.SearchDestinations
 import com.us.android.feature.search.navigation.SearchOrigin
 import com.us.android.feature.search.navigation.navigateToSearch
@@ -691,6 +696,11 @@ private suspend fun NavHostController.openPushDestination(
         PushDestinations.TYPE_WATCH_LINK -> if (destination.entityId.isNotBlank()) navigateToWatch(destination.entityId)
         PushDestinations.TYPE_SOUND_LINK -> if (destination.entityId.isNotBlank()) navigateToSound(destination.entityId)
         PushDestinations.TYPE_HASHTAG_LINK -> if (destination.entityId.isNotBlank()) navigateToHashtagPosts(destination.entityId)
+        // Echo (2026-11-12): a note link opens the note; a reply or quote push the
+        // note its deep link names. Both are behind the Echo product gate.
+        PushDestinations.TYPE_ECHO_NOTE_LINK ->
+            if (destination.entityId.isNotBlank()) navigateToEchoNote(destination.entityId)
+        in NotificationTarget.ECHO_TYPES -> openNotificationTarget(pushTargetOf(destination), onOpenReel)
         // A profile or channel link names a HANDLE; the screens take a user
         // id, so it is resolved first. An unknown handle (or a failed read)
         // lands on Search with the handle typed in — the closest screen that
@@ -891,6 +901,9 @@ private fun NavGraphBuilder.tabDestinations(
                 HomeMenuRow.SETTINGS -> navController.navigateToSettings()
             }
         },
+        // Echo (2026-11-12): a shortcut in the header, only while the gateway has Echo open.
+        echoOpen = { gate.isOpen(com.us.android.core.model.Product.ECHO) },
+        onOpenEcho = { navController.navigateToEcho() },
     )
 
     // The Friends feed: the same feed narrowed to mutual follows. A root
@@ -1409,7 +1422,7 @@ private fun NavGraphBuilder.tabDestinations(
     )
 
     // The Me tab's drawer "Upload" opens the same Create sheet as the bar's centre button.
-    profileDestinations(navController, onOpenUpload = { onOpenCreate(CreateScope.App) })
+    profileDestinations(navController, gate, onOpenUpload = { onOpenCreate(CreateScope.App) })
 
     // Post detail. Cross-feature navigation is resolved here: :feature:post
     // hands back an author id and :app decides that opens a profile. Neither
@@ -1431,6 +1444,7 @@ private fun NavGraphBuilder.tabDestinations(
  * yet, so they never reach here — the screen answers a "Soon" tap itself.
  * Each is a plain push, so Back returns to the launcher rather than to Home.
  */
+@Suppress("CyclomaticComplexMethod") // one branch per launcher tile
 private fun NavGraphBuilder.exploreDestinations(
     navController: NavHostController,
     gate: com.us.android.features.ProductGateState,
@@ -1460,6 +1474,7 @@ private fun NavGraphBuilder.exploreDestinations(
                     LauncherApp.MATCH -> navController.navigateToDating()
                     LauncherApp.RIDE -> navController.navigateToMopeduRider()
                     LauncherApp.DOORSTEP -> navController.navigateToDoorstep()
+                    LauncherApp.ECHO -> navController.navigateToEcho()
                     LauncherApp.ASK -> Unit
                 }
             },
@@ -1468,7 +1483,24 @@ private fun NavGraphBuilder.exploreDestinations(
 }
 
 /** Profile, edit-profile and settings destinations registered by the feature. */
-private fun NavGraphBuilder.profileDestinations(navController: NavHostController, onOpenUpload: () -> Unit) {
+@Suppress("LongMethod") // already over the limit (baselined); Echo's tab added the gate parameter
+private fun NavGraphBuilder.profileDestinations(
+    navController: NavHostController,
+    gate: com.us.android.features.ProductGateState,
+    onOpenUpload: () -> Unit,
+) {
+    // Echo's profile tab (2026-11-12): offered only while the gateway has Echo open.
+    val echoTab = ProfileEchoTab(
+        isOpen = { gate.isOpen(com.us.android.core.model.Product.ECHO) },
+        content = { userId, refreshSeq ->
+            EchoProfileNotes(
+                userId = userId,
+                onOpenNote = { navController.navigateToEchoNote(it) },
+                onOpenProfile = { navController.navigateToProfile(it) },
+                refreshSeq = refreshSeq,
+            )
+        },
+    )
     // Two registrations, one screen: the Me tab is a root with no back
     // control; a pushed profile has one.
     ownProfileScreen(
@@ -1488,6 +1520,7 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
         // The People tab's Blocked row (24 Oct 2026): own profile only.
         onOpenBlocked = { navController.navigate(com.us.android.feature.profile.navigation.BlockedAccountsRoute) },
         onOpenProfile = { userId -> navController.navigateToProfile(userId) },
+        echoTab = echoTab,
         // The end of the publish journey: the upload the viewer was watching
         // on this grid is live, so carry them to where it landed with it
         // first (founder, 2026-09-06). The post id travelled ahead through
@@ -1531,6 +1564,13 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
             onOpenMembers = { navController.navigateToCreatorMembers() },
         ),
     )
+    // Echo, the short-posts app (2026-11-12): home, a note, the composer. Every way in
+    // (tile, Home shortcut, link, push) is behind the Echo product gate.
+    echoScreens(
+        onBack = { navController.popBackStack() },
+        onOpenProfile = { userId -> navController.navigateToProfile(userId) },
+        navController = navController,
+    )
     profileScreen(
         onOpenFollowers = { navController.navigateToFollowList(it) },
         onOpenFollowing = { navController.navigateToFollowList(it) },
@@ -1542,6 +1582,7 @@ private fun NavGraphBuilder.profileDestinations(navController: NavHostController
         },
         onOpenPost = { postId, contentType -> navController.openProfilePost(postId, contentType) },
         onOpenProfile = { userId -> navController.navigateToProfile(userId) },
+        echoTab = echoTab,
     )
     editProfileScreen(
         onBack = { navController.popBackStack() },
@@ -1729,6 +1770,8 @@ private fun NavHostController.openNotificationTarget(
         NotificationTarget.CreatorHubUploads -> navigateToCreatorHubUploads()
         // Follow requests (2026-10-24): the private account's approval queue.
         NotificationTarget.FollowRequests -> navigateToFollowRequests()
+        // Echo (2026-11-12): the note, its conversation and its replies.
+        is NotificationTarget.EchoNote -> navigateToEchoNote(target.noteId)
         NotificationTarget.None -> Unit
     }
 }

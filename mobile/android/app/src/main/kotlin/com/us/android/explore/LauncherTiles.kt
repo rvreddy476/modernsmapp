@@ -53,6 +53,13 @@ enum class LauncherApp(val label: String, val module: AppModule?) {
 
     /** Doorstep: home services, Urban Company style (2026-10-04). After Ride, at the end of the grid. */
     DOORSTEP("Doorstep", AppModule.HOME_SERVICES),
+
+    /**
+     * Echo, the short-posts app (2026-11-12): no module choice of its own, and
+     * no tile at all while the gateway keeps it closed ([Product.ECHO], closed
+     * by default and while there is no answer).
+     */
+    ECHO("Echo", null),
 }
 
 /**

@@ -77,6 +77,8 @@ fun NavGraphBuilder.profileScreen(
     onOpenPost: (postId: String, contentType: String) -> Unit,
     /** A person in one of the profile's panels: `:app` opens their profile. */
     onOpenProfile: ((userId: String) -> Unit)? = null,
+    /** The Echo tab (2026-11-12): `:app` passes Echo's list; null never offers the tab. */
+    echoTab: com.us.android.feature.profile.ui.ProfileEchoTab? = null,
 ) {
     composable<ProfileRoute> {
         ProfileScreen(
@@ -92,6 +94,7 @@ fun NavGraphBuilder.profileScreen(
                 onOpenChat = onOpenChat,
                 onOpenPost = onOpenPost,
                 onOpenProfile = onOpenProfile,
+                echoTab = echoTab,
             ),
         )
     }
@@ -137,6 +140,8 @@ fun NavGraphBuilder.ownProfileScreen(
     onOpenBlocked: (() -> Unit)? = null,
     /** A person in one of the profile's panels: `:app` opens their profile. */
     onOpenProfile: ((userId: String) -> Unit)? = null,
+    /** The Echo tab (2026-11-12): `:app` passes Echo's list; null never offers the tab. */
+    echoTab: com.us.android.feature.profile.ui.ProfileEchoTab? = null,
 ) {
     composable<OwnProfileRoute> {
         ProfileScreen(
@@ -165,6 +170,7 @@ fun NavGraphBuilder.ownProfileScreen(
                 onOpenUpload = onOpenUpload,
                 onOpenBlocked = onOpenBlocked,
                 onOpenProfile = onOpenProfile,
+                echoTab = echoTab,
             ),
         )
     }

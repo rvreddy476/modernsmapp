@@ -362,10 +362,36 @@ sealed interface NotificationTarget {
      */
     data object FollowRequests : NotificationTarget
 
+    /**
+     * One Echo note (2026-11-12, echo-contract.md "notification-service"):
+     * `momentum://echo/note/{id}` on a push, `/echo/note/{id}` on the web.
+     * Built through [echoNoteOf], so the id is always a UUID. Echo is a parked
+     * product ([Product.ECHO]): a tap while it is closed lands on "Not available".
+     */
+    data class EchoNote(val noteId: String) : NotificationTarget
+
     /** Unparseable, or a surface this build does not have. Tapping does nothing. */
     data object None : NotificationTarget
 
     companion object {
+        /** The two Echo notice types: someone replied to, or quoted, the viewer's note. */
+        const val NOTE_REPLY_TYPE = "note_reply"
+        const val NOTE_QUOTE_TYPE = "note_quote"
+        val ECHO_TYPES: Set<String> = setOf(NOTE_REPLY_TYPE, NOTE_QUOTE_TYPE)
+
+        /** The Echo target for a note id, or [None] when it is not a UUID (the id goes into a request path). */
+        fun echoNoteOf(noteId: String): NotificationTarget {
+            val id = noteId.trim()
+            return if (UUID_SHAPE.matches(id)) EchoNote(id.lowercase()) else None
+        }
+
+        /**
+         * Where an Echo notice lands when its deep link does not say: the note
+         * its entity id names. [None] for every other type, or a bad id.
+         */
+        fun echoFallback(type: String, entityId: String): NotificationTarget =
+            if (type in ECHO_TYPES) echoNoteOf(entityId) else None
+
         /**
          * Parses the server's deep link.
          *
@@ -377,7 +403,21 @@ sealed interface NotificationTarget {
         fun parse(deepLink: String): NotificationTarget {
             val customer = CustomerNotification.target(deepLink)
             if (customer != None) return customer
-            val trimmed = deepLink.trim()
+            // Echo's push link is `momentum://echo/note/{id}` (echo-contract.md);
+            // read as the absolute path `/echo/note/{id}`, the web's spelling.
+            // The scheme is honoured for Echo only: no other route has ever been
+            // sent on it, so `momentum://post/…` stays [None] as it always was.
+            val raw = deepLink.trim()
+            if (raw.startsWith(MOMENTUM_SCHEME)) {
+                val parts = raw.removePrefix(MOMENTUM_SCHEME).substringBefore('?').substringBefore('#').split('/')
+                val isNote = parts.size == ECHO_NOTE_SEGMENTS && parts[0] == ECHO_SEGMENT && parts[1] == NOTE_SEGMENT
+                return if (isNote) {
+                    echoNoteOf(parts[2])
+                } else {
+                    None
+                }
+            }
+            val trimmed = raw
             // The contract is an ABSOLUTE PATH. Requiring the leading slash
             // rejects `post/abc`, and — the case that matters —
             // `https://host/post/abc`, which must never be treated as a route.
@@ -435,6 +475,10 @@ sealed interface NotificationTarget {
 
                 // Copyright title review (2026-10-24): the creator's uploads.
                 segments.size == 2 && segments[0] == "posttube" && segments[1] == HUB_SEGMENT -> CreatorHubUploads
+
+                // Echo (2026-11-12): one note.
+                segments.size == ECHO_NOTE_SEGMENTS && segments[0] == ECHO_SEGMENT && segments[1] == NOTE_SEGMENT ->
+                    echoNoteOf(segments[2])
 
                 else -> None
             }
@@ -535,6 +579,12 @@ sealed interface NotificationTarget {
 
         /** The contract is an absolute path; anything else is not a route. */
         private const val PATH_PREFIX = "/"
+
+        /** The app's own scheme on a push link; only Echo's `echo/note/{id}` and Doorstep's paths use it. */
+        private const val MOMENTUM_SCHEME = "momentum://"
+        private const val ECHO_SEGMENT = "echo"
+        private const val NOTE_SEGMENT = "note"
+        private const val ECHO_NOTE_SEGMENTS = 3
 
         /** The first segment of a watch link: today's `tube`, and the legacy `posttube` still in inboxes. */
         private val VIDEO_PREFIXES = setOf("tube", "posttube")

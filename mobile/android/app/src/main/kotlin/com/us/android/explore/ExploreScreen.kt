@@ -262,6 +262,7 @@ private val LauncherApp.icon: ImageVector
         LauncherApp.TUBE -> UsIcons.Tv
         LauncherApp.RIDE -> UsIcons.Gauge
         LauncherApp.DOORSTEP -> UsIcons.Wrench
+        LauncherApp.ECHO -> UsIcons.AtSign
     }
 
 @Preview(showBackground = true, widthDp = 360, heightDp = 800)

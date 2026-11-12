@@ -23,6 +23,14 @@ enum class Product(val wire: String, val title: String) {
     RIDER("rider", "Ride"),
     DATING("dating", "Match"),
     DOORSTEP("doorstep", "Doorstep"),
+
+    /**
+     * Echo, the short-posts app (2026-11-12, docs/designs/echo-contract.md):
+     * `/v1/notes` and `/v1/feed/notes`. Closed by default, and closed while
+     * the app has no answer ([HIDDEN_WITHOUT_FEATURES]): no launcher tile, no
+     * Home shortcut, no profile tab, and a link or push lands on "Not available".
+     */
+    ECHO("echo", "Echo"),
     ;
 
     companion object {
@@ -32,10 +40,11 @@ enum class Product(val wire: String, val title: String) {
 
 /**
  * Closed when the app has no answer from `GET /v1/features` at all (never
- * read, or every read failed): broadcast channels and communities. Every
- * other product follows the route alone.
+ * read, or every read failed): broadcast channels, communities and Echo
+ * (closed by default, echo-contract.md "Switches"). Every other product
+ * follows the route alone.
  */
-val HIDDEN_WITHOUT_FEATURES: Set<Product> = setOf(Product.BROADCAST_CHANNELS, Product.COMMUNITIES)
+val HIDDEN_WITHOUT_FEATURES: Set<Product> = setOf(Product.BROADCAST_CHANNELS, Product.COMMUNITIES, Product.ECHO)
 
 /** How old the last read may be before a resume reads `GET /v1/features` again. */
 const val FEATURES_REFRESH_MS: Long = 10L * 60L * 1000L
@@ -66,6 +75,7 @@ fun shouldReadFeatures(lastReadAtMs: Long?, nowMs: Long, inFlight: Boolean): Boo
 fun productOf(target: NotificationTarget): Product? = when (target) {
     is NotificationTarget.Customer -> productOf(target.service)
     NotificationTarget.CustomerDues -> Product.DOORSTEP
+    is NotificationTarget.EchoNote -> Product.ECHO
     else -> null
 }
 

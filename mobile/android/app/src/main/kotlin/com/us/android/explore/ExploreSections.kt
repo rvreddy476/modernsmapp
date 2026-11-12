@@ -20,6 +20,7 @@ internal val LauncherApp.description: String
         LauncherApp.TUBE -> "Watch & discover"
         LauncherApp.RIDE -> "Book a ride"
         LauncherApp.DOORSTEP -> "Home services"
+        LauncherApp.ECHO -> "Short notes, big conversations"
     }
 
 internal fun exploreSections(tiles: List<LauncherTile>, query: String): List<ExploreSection> {

@@ -1,6 +1,7 @@
 package com.us.android.features
 
 import com.us.android.core.model.CustomerNotification
+import com.us.android.core.model.NotificationTarget
 import com.us.android.core.model.Product
 import com.us.android.core.model.productOf
 import com.us.android.explore.LauncherApp
@@ -21,6 +22,7 @@ val LauncherApp.product: Product?
         LauncherApp.RIDE -> Product.RIDER
         LauncherApp.MATCH -> Product.DATING
         LauncherApp.DOORSTEP -> Product.DOORSTEP
+        LauncherApp.ECHO -> Product.ECHO
         LauncherApp.CHAT, LauncherApp.FRIENDS, LauncherApp.ALERTS, LauncherApp.LIVE,
         LauncherApp.MSTORE, LauncherApp.MSELLER, LauncherApp.TUBE,
         -> null
@@ -39,6 +41,9 @@ fun productOfPush(destination: PushDestination): Product? {
         -> Product.DATING
         in PushDestinations.RIDE_TYPES -> Product.RIDER
         in PushDestinations.DOORSTEP_TYPES -> Product.DOORSTEP
-        else -> null
+        // Echo (2026-11-12): a reply or quote push, a note link, or any push whose
+        // deep link names a note. A closed Echo never opens one of its notes.
+        PushDestinations.TYPE_ECHO_NOTE_LINK, in NotificationTarget.ECHO_TYPES -> Product.ECHO
+        else -> Product.ECHO.takeIf { NotificationTarget.parse(destination.deepLink) is NotificationTarget.EchoNote }
     }
 }

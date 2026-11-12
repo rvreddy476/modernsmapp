@@ -31,6 +31,10 @@ fun pushTargetOf(destination: PushDestination): NotificationTarget {
     NotificationTarget.copyrightFallback(destination.type, destination.entityId)
         .takeIf { it != NotificationTarget.None }
         ?.let { return it }
+    // Echo (2026-11-12): a reply or quote opens the note, only when its id is a UUID.
+    NotificationTarget.echoFallback(destination.type, destination.entityId)
+        .takeIf { it != NotificationTarget.None }
+        ?.let { return it }
     val postId = destination.entityId.trim()
     if (postId.isBlank()) return NotificationTarget.None
     return when (destination.type) {

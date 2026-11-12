@@ -85,6 +85,13 @@ enum class ProfileGridTab(val label: String, val contentType: String) {
 
     /** What the profile reposted (2026-10-24, `GET /v1/creators/:id/reposts`), quotes with their words. A panel. */
     REPOSTS("Reposts", ""),
+
+    /**
+     * The profile's Echo notes (2026-11-12): Notes, Replies and Reposts, drawn by
+     * `:feature:echo` through [ProfileEchoTab]. A panel, offered only while
+     * Echo is open ([gridTabsFor]'s `echo`).
+     */
+    ECHO("Echo", ""),
     SAVED("Saved", ""),
     LIKED("Liked", ""),
     ;
@@ -99,7 +106,7 @@ enum class ProfileGridTab(val label: String, val contentType: String) {
     val sortable: Boolean get() = authored
 
     /** Not a grid of tiles: a panel of its own (About, People, Reposts). */
-    val panel: Boolean get() = this == ABOUT || this == PEOPLE || this == REPOSTS
+    val panel: Boolean get() = this == ABOUT || this == PEOPLE || this == REPOSTS || this == ECHO
 }
 
 /**
@@ -116,12 +123,15 @@ fun gridTabsFor(
     members: Boolean = false,
     /** About, People and Reposts (2026-10-24), on anyone's profile; off where the host has no panels. */
     panels: Boolean = false,
+    /** Echo's tab (2026-11-12): only while the gateway has Echo open, and only where panels are. */
+    echo: Boolean = false,
 ): List<ProfileGridTab> =
     ProfileGridTab.entries.filter { tab ->
         when {
             tab.authored -> true
             tab.ownOnly -> isOwn
             tab == ProfileGridTab.MEMBERS -> members
+            tab == ProfileGridTab.ECHO -> echo && panels
             tab.panel -> panels
             else -> appearsIn
         }
@@ -298,6 +308,14 @@ class ProfileGridViewModel @Inject constructor(
 
     private var appearsIn = false
     private var offersMembers = false
+    private var echoOpen = false
+
+    /** Whether Echo is open (the gateway's switch, read by `:app`): its tab comes and goes with it. */
+    fun setEcho(open: Boolean) {
+        if (open == echoOpen) return
+        echoOpen = open
+        publishTabs()
+    }
 
     /** Asks whether "Appears in" would hold anything; again on every pull, so a new acceptance shows the tab. */
     fun checkAppearances() {
@@ -314,7 +332,7 @@ class ProfileGridViewModel @Inject constructor(
     }
 
     private fun publishTabs() {
-        val tabs = gridTabsFor(isOwn, appearsIn = appearsIn, members = offersMembers, panels = true)
+        val tabs = gridTabsFor(isOwn, appearsIn = appearsIn, members = offersMembers, panels = true, echo = echoOpen)
         _tabs.value = tabs
         if (_tab.value !in tabs) _tab.value = ProfileGridTab.POSTS
     }
@@ -445,7 +463,7 @@ class ProfileGridViewModel @Inject constructor(
             ProfileGridTab.VIDEOS -> tubeEntry.showFirst(postId)
             // Nothing is ever published INTO Saved, Liked or Appears in; pendingTabFor never answers them.
             ProfileGridTab.SAVED, ProfileGridTab.LIKED, ProfileGridTab.APPEARS_IN, ProfileGridTab.MEMBERS,
-            ProfileGridTab.ABOUT, ProfileGridTab.PEOPLE, ProfileGridTab.REPOSTS,
+            ProfileGridTab.ABOUT, ProfileGridTab.PEOPLE, ProfileGridTab.REPOSTS, ProfileGridTab.ECHO,
             -> return
         }
         _published.tryEmit(tab)

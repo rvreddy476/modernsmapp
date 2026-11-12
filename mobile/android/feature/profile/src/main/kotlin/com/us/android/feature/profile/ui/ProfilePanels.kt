@@ -61,6 +61,20 @@ data class ProfilePanelDestinations(
     val onOpenFollowing: ((FollowListRoute) -> Unit)? = null,
     /** The People tab's Blocked row: own profile only, so `:app` passes null on anyone else's. */
     val onOpenBlocked: (() -> Unit)? = null,
+    /** Echo's tab (2026-11-12): `:app` hands in the Echo module's list; null never offers the tab. */
+    val echoTab: ProfileEchoTab? = null,
+)
+
+/**
+ * The Echo tab's slot (2026-11-12). Feature modules never depend on one
+ * another, so `:app` passes Echo's list in. [isOpen] is read at composition
+ * (the gateway's switch, a State), so the tab comes and goes with it;
+ * [content] draws the notes for one profile and re-reads on [refreshSeq].
+ */
+@Immutable
+class ProfileEchoTab(
+    val isOpen: () -> Boolean,
+    val content: @Composable (userId: String, refreshSeq: Int) -> Unit,
 )
 
 /** One panel's read. */
@@ -219,6 +233,11 @@ internal fun ProfilePanel(
                     }
                 },
             )
+            // Echo (2026-11-12): drawn by :feature:echo; nothing while Echo is closed.
+            ProfileGridTab.ECHO -> {
+                val echo = destinations.echoTab
+                if (echo != null && echo.isOpen()) echo.content(userId, refreshSeq)
+            }
             ProfileGridTab.REPOSTS -> RepostsPanel(
                 load = state.reposts,
                 onOpenPost = destinations.onOpenPost,

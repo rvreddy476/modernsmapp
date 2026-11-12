@@ -62,6 +62,16 @@ class PushDestinationsWebLinkTest {
     }
 
     @Test
+    fun `an Echo note link is a note destination carrying the lower-cased id`() {
+        val destination = PushDestinations.linkDestinationOf("$ORIGIN/echo/note/${ID.uppercase()}?ref=share")
+        assertThat(destination?.type).isEqualTo(PushDestinations.TYPE_ECHO_NOTE_LINK)
+        assertThat(destination?.entityId).isEqualTo(ID)
+        assertThat(PushDestinations.linkDestinationOf("$ORIGIN/echo/note/not-a-uuid")).isNull()
+        assertThat(PushDestinations.linkDestinationOf("$ORIGIN/echo/note/$ID/extra")).isNull()
+        assertThat(PushDestinations.linkDestinationOf("$ORIGIN/echo/$ID")).isNull()
+    }
+
+    @Test
     fun `the shop route routes nowhere while commerce is paused`() {
         assertThat(PushDestinations.linkDestinationOf("$ORIGIN/shop/products/$ID")).isNull()
     }
@@ -76,6 +86,7 @@ class PushDestinationsWebLinkTest {
             PushDestinations.TYPE_CHANNEL_LINK,
             PushDestinations.TYPE_SOUND_LINK,
             PushDestinations.TYPE_HASHTAG_LINK,
+            PushDestinations.TYPE_ECHO_NOTE_LINK,
             PushDestinations.TYPE_CHAT_JOIN,
         )
         assertThat(types.toSet()).hasSize(types.size)

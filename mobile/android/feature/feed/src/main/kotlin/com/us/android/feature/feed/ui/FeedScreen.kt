@@ -111,6 +111,9 @@ fun FeedScreen(
     onOpenSound: (soundId: String) -> Unit,
     /** A row of the header's More menu was picked; :app opens that screen. */
     onOpenMenuRow: (HomeMenuRow) -> Unit,
+    /** Echo's header shortcut: shown only while [echoOpen] says Echo is open. */
+    echoOpen: () -> Boolean = { false },
+    onOpenEcho: () -> Unit = {},
     viewModel: FeedViewModel = hiltViewModel<FeedViewModel, FeedViewModel.Factory>(
         creationCallback = { factory -> factory.create(FeedMode.Home) },
     ),
@@ -175,6 +178,7 @@ fun FeedScreen(
                 onOpenMessages = onOpenMessages,
                 onOpenNotifications = onOpenNotifications,
                 onOpenSearch = onOpenSearch,
+                onOpenEcho = if (echoOpen()) onOpenEcho else null,
                 modifier = Modifier.align(Alignment.TopCenter),
             )
         }

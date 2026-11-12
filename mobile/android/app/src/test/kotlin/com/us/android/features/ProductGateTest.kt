@@ -1,6 +1,7 @@
 package com.us.android.features
 
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.model.NotificationTarget
 import com.us.android.core.model.Product
 import com.us.android.explore.LauncherApp
 import com.us.android.explore.launcherTiles
@@ -17,6 +18,10 @@ class ProductGateTest {
 
     private fun push(type: String) = PushDestination(type = type, entityId = "e1", deepLink = "")
 
+    private companion object {
+        const val NOTE = "b2f7d0c1-5c1e-4a0e-9d1a-0c7f6f1e2a33"
+    }
+
     @Test
     fun `every gated tile names its product, the rest none`() {
         assertThat(LauncherApp.entries.associateWith { it.product }.filterValues { it != null }).containsExactly(
@@ -25,6 +30,7 @@ class ProductGateTest {
             LauncherApp.RIDE, Product.RIDER,
             LauncherApp.MATCH, Product.DATING,
             LauncherApp.DOORSTEP, Product.DOORSTEP,
+            LauncherApp.ECHO, Product.ECHO,
         )
     }
 
@@ -47,7 +53,9 @@ class ProductGateTest {
         assertThat(tiles).containsAtLeast(LauncherApp.FEAST, LauncherApp.MATCH)
         assertThat(tiles).containsNoneOf(LauncherApp.ASK, LauncherApp.RIDE, LauncherApp.DOORSTEP)
 
-        assertThat(launcherTiles(null)).hasSize(LauncherApp.entries.size)
+        // No answer keeps every tile but Echo's: Echo is closed until the gateway opens it.
+        assertThat(launcherTiles(null).map { it.app })
+            .containsExactlyElementsIn(LauncherApp.entries - LauncherApp.ECHO)
     }
 
     @Test
@@ -73,6 +81,34 @@ class ProductGateTest {
         for (type in listOf("order_shipped", "like", PushDestinations.TYPE_POST_LINK, PushDestinations.TYPE_CHAT_JOIN, "")) {
             assertThat(productOfPush(push(type))).isNull()
         }
+    }
+
+    @Test
+    fun `Echo has a tile only while the gateway has it open`() {
+        assertThat(launcherTiles(null).map { it.app }).doesNotContain(LauncherApp.ECHO)
+        assertThat(launcherTiles(emptySet()).map { it.app }).doesNotContain(LauncherApp.ECHO)
+        assertThat(launcherTiles(setOf(Product.FOOD)).map { it.app }).doesNotContain(LauncherApp.ECHO)
+        val open = launcherTiles(setOf(Product.ECHO))
+        assertThat(open.map { it.app }.last()).isEqualTo(LauncherApp.ECHO)
+        assertThat(open.single { it.app == LauncherApp.ECHO }.soon).isFalse()
+    }
+
+    @Test
+    fun `every way into an Echo note is behind the Echo gate`() {
+        assertThat(productOfPush(push(NotificationTarget.NOTE_REPLY_TYPE))).isEqualTo(Product.ECHO)
+        assertThat(productOfPush(push(NotificationTarget.NOTE_QUOTE_TYPE))).isEqualTo(Product.ECHO)
+        assertThat(productOfPush(push(PushDestinations.TYPE_ECHO_NOTE_LINK))).isEqualTo(Product.ECHO)
+        // A push of any type whose deep link names a note: the link decides where it lands, so the gate follows it.
+        val linked = PushDestination(type = "something_new", entityId = "", deepLink = "momentum://echo/note/$NOTE")
+        assertThat(productOfPush(linked)).isEqualTo(Product.ECHO)
+        val web = PushDestination(type = "like", entityId = "", deepLink = "/echo/note/$NOTE")
+        assertThat(productOfPush(web)).isEqualTo(Product.ECHO)
+        // A note link through the App Link path.
+        assertThat(
+            productOfPush(PushDestinations.linkDestinationOf("https://cleestudio.com/echo/note/$NOTE")!!)
+        ).isEqualTo(Product.ECHO)
+        // A non-note link stays ungated.
+        assertThat(productOfPush(PushDestination(type = "like", entityId = "", deepLink = "/post/$NOTE"))).isNull()
     }
 
     @Test

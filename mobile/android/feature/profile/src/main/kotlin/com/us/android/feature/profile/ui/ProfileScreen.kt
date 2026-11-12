@@ -241,6 +241,8 @@ data class ProfileDestinations(
     val onOpenBlocked: (() -> Unit)? = null,
     /** A person in one of the profile's panels was tapped: `:app` opens their profile. */
     val onOpenProfile: ((userId: String) -> Unit)? = null,
+    /** The Echo tab (2026-11-12), drawn by `:feature:echo`; null never offers it. */
+    val echoTab: ProfileEchoTab? = null,
 )
 
 /**
@@ -494,6 +496,7 @@ private fun ProfileMedia(
                 onOpenFollowers = destinations.onOpenFollowers,
                 onOpenFollowing = destinations.onOpenFollowing,
                 onOpenBlocked = destinations.onOpenBlocked.takeIf { profile.isOwnProfile },
+                echoTab = destinations.echoTab,
             ),
         )
     }

@@ -166,6 +166,31 @@ class PushTargetsTest {
         )
     }
 
+    @Test
+    fun `an Echo reply or quote opens the note, by its link or else its id`() {
+        val linked = PushDestination(
+            type = NotificationTarget.NOTE_REPLY_TYPE,
+            entityId = "x",
+            deepLink = "momentum://echo/note/$STREAM"
+        )
+        assertThat(pushTargetOf(linked)).isEqualTo(NotificationTarget.EchoNote(STREAM))
+        val bare = PushDestination(
+            type = NotificationTarget.NOTE_QUOTE_TYPE,
+            entityId = STREAM.uppercase(),
+            deepLink = ""
+        )
+        assertThat(pushTargetOf(bare)).isEqualTo(NotificationTarget.EchoNote(STREAM))
+        // Not a UUID: nothing, never a guess.
+        assertThat(pushTargetOf(bare.copy(entityId = "../admin"))).isEqualTo(NotificationTarget.None)
+        // The momentum scheme is honoured for Echo notes only.
+        assertThat(pushTargetOf(PushDestination(type = "like", entityId = "", deepLink = "momentum://post/$STREAM")))
+            .isEqualTo(NotificationTarget.None)
+        // The Echo fallback belongs to the Echo types alone.
+        assertThat(
+            pushTargetOf(PushDestination(type = "like", entityId = STREAM, deepLink = ""))
+        ).isEqualTo(NotificationTarget.None)
+    }
+
     private companion object {
         const val STREAM = "3f2b8c1e-7a4d-4e9b-9c55-0d1e2f3a4b5c"
         const val OTHER_STREAM = "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d"

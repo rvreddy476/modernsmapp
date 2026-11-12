@@ -48,6 +48,9 @@ object WebLinks {
     /** `https://cleestudio.com/post/<postId>` — a post's public permalink. */
     fun postPermalink(postId: String): String = "$ORIGIN/$POST_SEGMENT/$postId"
 
+    /** `https://cleestudio.com/echo/note/<noteId>`: an Echo note's public page (echo-contract.md). */
+    fun echoNotePermalink(noteId: String): String = "$ORIGIN/$ECHO_SEGMENT/$NOTE_SEGMENT/$noteId"
+
     /**
      * `https://cleestudio.com/u/<username>` — a profile's public page, the
      * route postbook-ui serves at `src/app/u/[username]` (a public prefix
@@ -178,6 +181,8 @@ object WebLinks {
                     head == REELS_SEGMENT && middle == SOUND_SEGMENT -> tail.asSoundId()?.let(WebLinkTarget::Sound)
                     head == POSTTUBE_SEGMENT && middle == WATCH_SEGMENT -> tail.takeIf { it.isUuid() }?.let(WebLinkTarget::Watch)
                     head == POSTTUBE_SEGMENT && middle == CHANNEL_SEGMENT -> tail.asHandle()?.let(WebLinkTarget::Channel)
+                    head == ECHO_SEGMENT && middle == NOTE_SEGMENT ->
+                        tail.takeIf { it.isUuid() }?.lowercase()?.let(WebLinkTarget::EchoNote)
                     else -> null
                 }
             }
@@ -269,6 +274,8 @@ object WebLinks {
     private const val WATCH_SEGMENT = "watch"
     private const val CHANNEL_SEGMENT = "channel"
     private const val HASHTAG_SEGMENT = "hashtag"
+    private const val ECHO_SEGMENT = "echo"
+    private const val NOTE_SEGMENT = "note"
     private const val UNRESERVED_MARKS = "-._~"
     private const val HEX = "0123456789ABCDEF"
     private const val BYTE_MASK = 0xFF
@@ -308,4 +315,7 @@ sealed interface WebLinkTarget {
 
     /** `/hashtag/<tag>`: the tag's posts. */
     data class Hashtag(val tag: String) : WebLinkTarget
+
+    /** `/echo/note/<id>`: one Echo note (2026-11-12); a closed Echo lands on "Not available". */
+    data class EchoNote(val noteId: String) : WebLinkTarget
 }

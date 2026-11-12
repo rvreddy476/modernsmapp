@@ -284,3 +284,7 @@ include(":core:facear-model")
 // apps, the core free of every feature, and the feature reachable only from :app.
 include(":core:memberships")
 include(":feature:memberships")
+
+// Echo, the premium short-posts app (2026-11-12, docs/designs/echo-contract.md):
+// the timelines, a note, the composer and the profile tab. Behind Product.ECHO.
+include(":feature:echo")

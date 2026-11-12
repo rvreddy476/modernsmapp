@@ -164,6 +164,7 @@ class NotificationsJourneyTest {
                                     NotificationTarget.CreatorMemberships,
                                     NotificationTarget.CreatorHubUploads,
                                     NotificationTarget.FollowRequests,
+                                    is NotificationTarget.EchoNote,
                                     NotificationTarget.None,
                                     -> Unit
                                 }

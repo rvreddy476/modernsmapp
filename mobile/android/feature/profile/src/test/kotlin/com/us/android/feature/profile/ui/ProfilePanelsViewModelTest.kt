@@ -129,6 +129,27 @@ class ProfilePanelsViewModelTest {
         assertThat(ProfileGridTab.POSTS.panel).isFalse()
     }
 
+    /** Echo (2026-11-12): its tab only while the gateway has Echo open, and only where the host has panels. */
+    @Test
+    fun `the Echo tab is offered only while Echo is open`() {
+        assertThat(gridTabsFor(isOwn = false, panels = true)).doesNotContain(ProfileGridTab.ECHO)
+        assertThat(gridTabsFor(isOwn = true, panels = true)).doesNotContain(ProfileGridTab.ECHO)
+        assertThat(gridTabsFor(isOwn = false, echo = true)).doesNotContain(ProfileGridTab.ECHO)
+        assertThat(gridTabsFor(isOwn = false, panels = true, echo = true)).containsExactly(
+            ProfileGridTab.POSTS,
+            ProfileGridTab.REELS,
+            ProfileGridTab.VIDEOS,
+            ProfileGridTab.ABOUT,
+            ProfileGridTab.PEOPLE,
+            ProfileGridTab.REPOSTS,
+            ProfileGridTab.ECHO,
+        ).inOrder()
+        assertThat(gridTabsFor(isOwn = true, panels = true, echo = true)).contains(ProfileGridTab.ECHO)
+        assertThat(ProfileGridTab.ECHO.panel).isTrue()
+        assertThat(ProfileGridTab.ECHO.sortable).isFalse()
+        assertThat(ProfileGridTab.ECHO.ownOnly).isFalse()
+    }
+
     @Test
     fun `only an https link leaves the app from a profile`() {
         assertThat(isOpenableLink("https://ana.dev")).isTrue()

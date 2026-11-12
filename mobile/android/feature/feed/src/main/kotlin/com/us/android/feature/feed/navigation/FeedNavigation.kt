@@ -62,6 +62,12 @@ fun NavGraphBuilder.feedScreen(
     onOpenSound: (soundId: String) -> Unit,
     /** A row of Home's More menu (Friends, Live, Settings); `:app` opens that screen. */
     onOpenMenuRow: (HomeMenuRow) -> Unit,
+    /**
+     * Echo's shortcut in the header (2026-11-12): read at composition, so the
+     * icon appears and goes with the gateway's switch. Closed by default.
+     */
+    echoOpen: () -> Boolean = { false },
+    onOpenEcho: () -> Unit = {},
 ) {
     composable<FeedRoute> {
         FeedScreen(
@@ -72,6 +78,8 @@ fun NavGraphBuilder.feedScreen(
             onOpenHashtag = onOpenHashtag,
             onOpenSound = onOpenSound,
             onOpenMenuRow = onOpenMenuRow,
+            echoOpen = echoOpen,
+            onOpenEcho = onOpenEcho,
         )
     }
 }

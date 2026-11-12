@@ -75,6 +75,9 @@ class PushDestinations @Inject constructor() {
         /** `cleestudio.com/hashtag/{tag}`: the tag's posts. `entityId` is the tag, without `#`. */
         const val TYPE_HASHTAG_LINK = "hashtag_link"
 
+        /** An Echo note link (`/echo/note/<uuid>`, 2026-11-12): opens the note, only while Echo is open. */
+        const val TYPE_ECHO_NOTE_LINK = "echo_note_link"
+
         /** The link types whose `entityId` is a handle the nav host must resolve to a user id first. */
         val HANDLE_LINK_TYPES: Set<String> = setOf(TYPE_PROFILE_LINK, TYPE_CHANNEL_LINK)
 
@@ -98,6 +101,7 @@ class PushDestinations @Inject constructor() {
                 is WebLinkTarget.Channel -> PushDestination(TYPE_CHANNEL_LINK, target.handle, trimmed)
                 is WebLinkTarget.Sound -> PushDestination(TYPE_SOUND_LINK, target.soundId, trimmed)
                 is WebLinkTarget.Hashtag -> PushDestination(TYPE_HASHTAG_LINK, target.tag, trimmed)
+                is WebLinkTarget.EchoNote -> PushDestination(TYPE_ECHO_NOTE_LINK, target.noteId, trimmed)
                 null -> null
             }
         }

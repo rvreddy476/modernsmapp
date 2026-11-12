@@ -1064,7 +1064,8 @@ tasks.register("moduleGraphCheck") {
     //      phantom parents. Rule (n) keeps the screens to :app, the core free of
     //      every feature, and both out of the partner apps.
     // Still to add, one module at a time: :core:location, :core:kyc-ui.
-    val expectedModuleCount = 60
+    // 61 with :feature:echo (Echo short posts, 2026-11-12).
+    val expectedModuleCount = 61
 
     doLast {
         val allViolations = buildList {

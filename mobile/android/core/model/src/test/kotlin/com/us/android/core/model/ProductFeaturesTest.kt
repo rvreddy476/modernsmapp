@@ -11,14 +11,15 @@ class ProductFeaturesTest {
         // api-gateway cmd/server/features.go featureProductPrefixes.
         assertThat(Product.entries.map { it.wire }).containsExactly(
             "broadcast_channels", "communities", "groups", "qa", "pages",
-            "memories", "food", "rider", "dating", "doorstep",
+            "memories", "food", "rider", "dating", "doorstep", "echo",
         )
         assertThat(Product.fromWire("dating")).isEqualTo(Product.DATING)
         assertThat(Product.fromWire("shop")).isNull()
     }
 
     @Test
-    fun `with no answer, channels and communities are hidden and the rest follow nothing`() {
+    fun `with no answer, channels, communities and Echo are hidden and the rest follow nothing`() {
+        assertThat(productOpen(Product.ECHO, null)).isFalse()
         assertThat(productOpen(Product.BROADCAST_CHANNELS, null)).isFalse()
         assertThat(productOpen(Product.COMMUNITIES, null)).isFalse()
         for (p in Product.entries - HIDDEN_WITHOUT_FEATURES) assertThat(productOpen(p, null)).isTrue()

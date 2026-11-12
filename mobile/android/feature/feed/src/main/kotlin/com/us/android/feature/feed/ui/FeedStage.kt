@@ -370,6 +370,7 @@ internal fun FeedPoll.toCardPoll(localPollVotes: Set<String>): PostCardPoll {
  * White on the top scrim, under the status bar.
  */
 @Composable
+@Suppress("LongParameterList") // one callback per header control
 internal fun HomeStageHeader(
     selected: FeedTab,
     followingDot: Boolean,
@@ -379,6 +380,8 @@ internal fun HomeStageHeader(
     onOpenMessages: () -> Unit,
     onOpenNotifications: () -> Unit,
     onOpenSearch: () -> Unit,
+    /** Echo's shortcut; null hides it (Echo closed, or no answer yet). */
+    onOpenEcho: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     Row(
@@ -405,6 +408,11 @@ internal fun HomeStageHeader(
                     dot = tab == FeedTab.FOLLOWING && followingDot,
                     onClick = { onSelect(tab) },
                 )
+            }
+        }
+        if (onOpenEcho != null) {
+            IconButton(onClick = onOpenEcho, modifier = Modifier.testTag("home_header:echo")) {
+                Icon(imageVector = UsIcons.AtSign, contentDescription = "Echo", tint = UsTheme.extended.onMedia)
             }
         }
         IconButton(onClick = onOpenMessages, modifier = Modifier.testTag("home_header:messages")) {
