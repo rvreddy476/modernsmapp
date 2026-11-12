@@ -578,6 +578,11 @@ func routeDefinitions() []routeDef {
 		// the /v1/creators prefix above, because /v1/users goes to
 		// user-service. Never a query-token path.
 		{"/v1/credits", env("POST_SERVICE_URL", "http://post-service:8084")},
+		// Echo short notes (docs/designs/echo-contract.md): every /v1/notes
+		// route is post-service's, behind its ECHO_ENABLED switch (503
+		// ECHO_NOT_ENABLED while off). Stamped like every post-service prefix.
+		// /v1/feed/notes/* is feed-service's, under /v1/feed below.
+		{"/v1/notes", env("POST_SERVICE_URL", "http://post-service:8084")},
 		{"/v1/feed", env("FEED_SERVICE_URL", "http://feed-service:8086")},
 		// The curated sound library for the reel studio, media-service
 		// RegisterAudioRoutes:
@@ -1352,6 +1357,10 @@ func dormantProductsFromEnv(getenv func(string) string, production bool) ([]dorm
 	if err != nil {
 		return nil, err
 	}
+	echo, err := echoDormantProduct(getenv, production)
+	if err != nil {
+		return nil, err
+	}
 	return []dormantProduct{
 		// Groups and Communities shared DORMANT_PRODUCTS_ENABLED, which is the
 		// coupling the comment above warns against: opening Groups would have
@@ -1386,6 +1395,7 @@ func dormantProductsFromEnv(getenv func(string) string, production bool) ([]dorm
 		// Feast (food-service): the customer app, the restaurant console and
 		// the rider job feed all live under /v1/food; one flag opens them.
 		{prefixes: []string{"/v1/food"}, enabled: flag("FOOD_PUBLIC_ENABLED")},
+		echo,
 	}, nil
 }
 
