@@ -1566,6 +1566,10 @@ services:
       PREMIUM_ENABLED: ${PREMIUM_ENABLED:-false}
       PREMIUM_PRICE_30D_PAISE: ${PREMIUM_PRICE_30D_PAISE:-14900}
       PREMIUM_PRICE_365D_PAISE: ${PREMIUM_PRICE_365D_PAISE:-149900}
+      # Prices EXCLUDE GST (13 Nov 2026): 18% is added on top (14900 -> 17582).
+      # The platform's GSTIN supplies Premium; required in production, empty
+      # here uses the estimated split (same numbers, marked provisional).
+      PREMIUM_PLATFORM_GSTIN: ${PREMIUM_PLATFORM_GSTIN:-}
       # Identity's internal roles API: the role `premium` with expires_at.
       IDENTITY_AUTH_URL: http://identity-auth:8081
       TRUST_SAFETY_SERVICE_URL: http://trust-safety-service:8091

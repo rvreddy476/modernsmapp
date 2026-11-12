@@ -10,6 +10,10 @@
 //   - Prices are configuration (PREMIUM_PRICE_30D_PAISE,
 //     PREMIUM_PRICE_365D_PAISE). A plan with no price cannot be bought:
 //     checkout fails closed with PREMIUM_PRICE_NOT_SET. Nothing is hard-coded.
+//   - Prices EXCLUDE GST (founder, 13 Nov 2026): the configured price is the
+//     taxable value and GST is added on top (tax.go). The pass stores the
+//     split, and its amount is the total: the intent amount and the amount
+//     the signed event must carry.
 //   - Money moves only through payments-service (application `premium`,
 //     reference type platform_premium). A pass is granted ONLY from the
 //     signed payment.succeeded event, applied once (paymentevents.ApplyOnce),
@@ -152,19 +156,30 @@ type PlanRow struct {
 	SortOrder    int
 }
 
-// Plan is a plan as clients see it. PricePaise is nil while the founder has
-// not set it, and then Available is false.
+// Plan is a plan as clients see it. Prices EXCLUDE GST (founder, 13 Nov
+// 2026): PricePaise is the configured price, which is the taxable value
+// (equal to TaxablePaise); GSTPaise is added on top and TotalPaise is what
+// the buyer pays. The money fields are nil while the founder has not set
+// the price (or its tax cannot be computed), and then Available is false.
 type Plan struct {
-	Code         string `json:"code"`
-	Name         string `json:"name"`
-	DurationDays int    `json:"duration_days"`
-	PricePaise   *int64 `json:"price_paise"`
-	Currency     string `json:"currency"`
-	Available    bool   `json:"available"`
+	Code             string `json:"code"`
+	Name             string `json:"name"`
+	DurationDays     int    `json:"duration_days"`
+	PricePaise       *int64 `json:"price_paise"`
+	TaxablePaise     *int64 `json:"taxable_paise"`
+	GSTPaise         *int64 `json:"gst_paise"`
+	TotalPaise       *int64 `json:"total_paise"`
+	GSTRateBP        *int   `json:"gst_rate_bp"`
+	PricesExcludeGST bool   `json:"prices_exclude_gst"`
+	TaxProvisional   bool   `json:"tax_provisional"`
+	Currency         string `json:"currency"`
+	Available        bool   `json:"available"`
 }
 
-// Catalogue joins the active plan rows with the prices, in display order.
-func Catalogue(rows []PlanRow, prices Prices) []Plan {
+// Catalogue joins the active plan rows with the prices and their GST at
+// `at`, in display order. A plan whose tax cannot be computed is not
+// available: it is never shown at the pre-tax price.
+func Catalogue(rows []PlanRow, prices Prices, tax *Tax, at time.Time) []Plan {
 	sorted := append([]PlanRow(nil), rows...)
 	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].SortOrder < sorted[j].SortOrder })
 	out := make([]Plan, 0, len(sorted))
@@ -172,10 +187,13 @@ func Catalogue(rows []PlanRow, prices Prices) []Plan {
 		if !r.Active {
 			continue
 		}
-		p := Plan{Code: r.Code, Name: r.Name, DurationDays: r.DurationDays, Currency: Currency}
+		p := Plan{Code: r.Code, Name: r.Name, DurationDays: r.DurationDays, Currency: Currency, PricesExcludeGST: true}
 		if n, err := prices.Price(r.Code); err == nil {
-			price := n
-			p.PricePaise, p.Available = &price, true
+			if b, err := tax.Compute(n, "", at); err == nil {
+				price, taxable, gstPaise, total, rate := n, b.TaxablePaise, b.TaxPaise, b.TotalPaise, b.RateBP
+				p.PricePaise, p.TaxablePaise, p.GSTPaise, p.TotalPaise, p.GSTRateBP = &price, &taxable, &gstPaise, &total, &rate
+				p.TaxProvisional, p.Available = b.Provisional, true
+			}
 		}
 		out = append(out, p)
 	}
@@ -184,11 +202,16 @@ func Catalogue(rows []PlanRow, prices Prices) []Plan {
 
 // Period is a premium_periods row: one pass.
 type Period struct {
-	ID            uuid.UUID
-	UserID        uuid.UUID
-	PlanCode      string
-	DurationDays  int
-	AmountPaise   int64
+	ID           uuid.UUID
+	UserID       uuid.UUID
+	PlanCode     string
+	DurationDays int
+	// AmountPaise is what the buyer pays: the GST-inclusive total. It is the
+	// payments intent amount and what the signed event must carry.
+	AmountPaise int64
+	// Tax is the GST split stored with the pass (migration 028); nil on a
+	// pass opened before prices excluded GST.
+	Tax           *Breakdown
 	Currency      string
 	Status        string
 	IntentID      string

@@ -43,7 +43,7 @@ func TestCatalogueMarksUnpricedPlansUnavailable(t *testing.T) {
 		{Code: Plan30d, Name: "m", DurationDays: 30, Active: true, SortOrder: 1},
 		{Code: "retired", Name: "r", DurationDays: 7, Active: false},
 	}
-	got := Catalogue(rows, Prices{Plan30d: 14900})
+	got := Catalogue(rows, Prices{Plan30d: 14900}, EstimatedTax(), time.Date(2026, 11, 13, 10, 0, 0, 0, time.UTC))
 	if len(got) != 2 || got[0].Code != Plan30d || got[1].Code != Plan365d {
 		t.Fatalf("catalogue = %+v", got)
 	}

@@ -66,6 +66,17 @@ func TestPremiumIntegrationActivateReplayStackRefund(t *testing.T) {
 	if s, _ := r.svc.Status(r.ctx, r.buyer); s.Active {
 		t.Fatal("checkout must grant nothing")
 	}
+	// Prices exclude GST (migration 028): the stored pass is the total, with
+	// its split, and a capture of the pre-tax price is refused.
+	if stored, err := r.svc.Pass(r.ctx, r.buyer, co.PassID); err != nil || stored.AmountPaise != 17582 ||
+		stored.TaxablePaise == nil || *stored.TaxablePaise != 14900 || *stored.GSTPaise != 2682 || *stored.TotalPaise != 17582 {
+		t.Fatalf("stored split: %+v %v", stored, err)
+	}
+	short := ev
+	short.EventID, short.AmountMinor = uuid.NewString(), 14900
+	if out, err := r.svc.ApplyPremiumPaymentEvent(r.ctx, short); err != nil || out != premium.OutcomeMismatch {
+		t.Fatalf("pre-tax capture: %s %v", out, err)
+	}
 	if out, err := r.svc.ApplyPremiumPaymentEvent(r.ctx, ev); err != nil || out != premium.OutcomeActivated {
 		t.Fatalf("activate: %s %v", out, err)
 	}

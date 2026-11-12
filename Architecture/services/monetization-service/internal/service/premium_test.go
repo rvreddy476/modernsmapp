@@ -91,7 +91,7 @@ func grants(calls []premiumtest.RoleCall) []premiumtest.RoleCall {
 func TestPremiumActivatesOnlyFromTheSignedEvent(t *testing.T) {
 	r := newPremiumRig(t, priced())
 	co := r.checkout(t, premium.Plan30d)
-	if co.AmountPaise != 14900 || co.Status != "pending_payment" || co.ClientSession == nil {
+	if co.AmountPaise != 17582 || co.Status != "pending_payment" || co.ClientSession == nil {
 		t.Fatalf("checkout %+v", co)
 	}
 	if s := r.status(t); s.Active || s.EndsAt != nil {
@@ -165,7 +165,7 @@ func TestPremiumStackingExtendsFromTheCurrentEnd(t *testing.T) {
 	firstEnd := r.now.AddDate(0, 0, 30)
 	r.now = r.now.Add(5 * 24 * time.Hour)
 	co := r.checkout(t, premium.Plan365d)
-	if co.AmountPaise != 149900 {
+	if co.AmountPaise != 176882 {
 		t.Fatalf("365d amount %d", co.AmountPaise)
 	}
 	r.apply(t, r.event(t, co, "payment.succeeded"))
@@ -239,7 +239,7 @@ func TestPremiumRefundRevokes(t *testing.T) {
 	}
 
 	rest := r.event(t, co, "payment.refunded")
-	rest.AmountMinor, rest.PayerID, rest.Currency = 10000, uuid.Nil, ""
+	rest.AmountMinor, rest.PayerID, rest.Currency = 17582-4900, uuid.Nil, ""
 	if out := r.apply(t, rest); out != premium.OutcomeRefunded {
 		t.Fatalf("full: %s", out)
 	}

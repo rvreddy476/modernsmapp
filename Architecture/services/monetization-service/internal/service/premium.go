@@ -40,7 +40,7 @@ var (
 // premiumtest.Store in tests.
 type PremiumStore interface {
 	ListPremiumPlans(ctx context.Context) ([]premium.PlanRow, error)
-	OpenPremiumCheckout(ctx context.Context, userID uuid.UUID, plan premium.PlanRow, amountPaise int64, now time.Time) (*premium.Period, error)
+	OpenPremiumCheckout(ctx context.Context, userID uuid.UUID, plan premium.PlanRow, tax premium.Breakdown, now time.Time) (*premium.Period, error)
 	SetPremiumPeriodIntent(ctx context.Context, periodID, intentID uuid.UUID, orderID string) error
 	GetPremiumPeriod(ctx context.Context, periodID uuid.UUID) (*premium.Period, error)
 	GetPremiumEntitlement(ctx context.Context, userID uuid.UUID) (*premium.Entitlement, error)
@@ -71,6 +71,7 @@ type PremiumPublisher interface {
 type Premium struct {
 	store    PremiumStore
 	prices   premium.Prices
+	tax      *premium.Tax
 	payments payments.PremiumAPI
 	localEnv bool
 	roles    PremiumRoles
@@ -84,7 +85,16 @@ func NewPremium(store PremiumStore, prices premium.Prices) *Premium {
 	if prices == nil {
 		prices = premium.Prices{}
 	}
-	return &Premium{store: store, prices: prices, now: time.Now}
+	return &Premium{store: store, prices: prices, tax: premium.EstimatedTax(), now: time.Now}
+}
+
+// WithTax installs the GST computer (premium.TaxFromEnv). The default is the
+// dev-only estimate; production boot refuses Premium without a platform GSTIN.
+func (p *Premium) WithTax(t *premium.Tax) *Premium {
+	if t != nil {
+		p.tax = t
+	}
+	return p
 }
 
 // WithPayments installs the payments client. localEnv: outside local/dev an
@@ -121,11 +131,42 @@ func (p *Premium) Plans(ctx context.Context) ([]premium.Plan, error) {
 	if err != nil {
 		return nil, err
 	}
-	return premium.Catalogue(rows, p.prices), nil
+	return premium.Catalogue(rows, p.prices, p.tax, p.clock()), nil
+}
+
+// ErrPremiumAmountMismatch: the pass about to be charged does not carry the
+// GST-inclusive total it was priced at. Nothing is charged — 503.
+var ErrPremiumAmountMismatch = errors.New("PREMIUM_AMOUNT_MISMATCH")
+
+// PremiumTaxView is the GST split of a pass as clients see it (prices
+// exclude GST, founder 13 Nov 2026). Every field is null on a pass opened
+// before that, and prices_exclude_gst is then false.
+type PremiumTaxView struct {
+	TaxablePaise     *int64  `json:"taxable_paise"`
+	GSTPaise         *int64  `json:"gst_paise"`
+	CGSTPaise        *int64  `json:"cgst_paise"`
+	SGSTPaise        *int64  `json:"sgst_paise"`
+	IGSTPaise        *int64  `json:"igst_paise"`
+	TotalPaise       *int64  `json:"total_paise"`
+	GSTRateBP        *int    `json:"gst_rate_bp"`
+	SAC              *string `json:"sac"`
+	TaxProvisional   *bool   `json:"tax_provisional"`
+	PricesExcludeGST bool    `json:"prices_exclude_gst"`
+}
+
+func premiumTaxView(b *premium.Breakdown) PremiumTaxView {
+	if b == nil {
+		return PremiumTaxView{}
+	}
+	c := *b
+	return PremiumTaxView{TaxablePaise: &c.TaxablePaise, GSTPaise: &c.TaxPaise, CGSTPaise: &c.CGSTPaise, SGSTPaise: &c.SGSTPaise,
+		IGSTPaise: &c.IGSTPaise, TotalPaise: &c.TotalPaise, GSTRateBP: &c.RateBP, SAC: &c.SAC, TaxProvisional: &c.Provisional,
+		PricesExcludeGST: true}
 }
 
 // PremiumCheckout is what POST /premium/checkout answers: the pass to collect
 // and the public checkout values. Nothing is granted until the signed event.
+// AmountPaise is the GST-inclusive total (= total_paise), the intent amount.
 type PremiumCheckout struct {
 	PassID        uuid.UUID               `json:"pass_id"`
 	Plan          string                  `json:"plan"`
@@ -135,11 +176,14 @@ type PremiumCheckout struct {
 	Currency      string                  `json:"currency"`
 	IntentID      uuid.UUID               `json:"intent_id"`
 	ClientSession *payments.ClientSession `json:"client_session"`
+	PremiumTaxView
 }
 
 // Checkout opens (or, for a retry within 30 minutes, reopens) the buyer's
 // checkout for one plan. Fails closed: an unknown or retired plan, a plan
-// with no configured price, or no payments client — nothing is opened.
+// with no configured price, a price whose GST cannot be computed, or no
+// payments client — nothing is opened. The configured price is the taxable
+// value; the intent is opened for the total.
 func (p *Premium) Checkout(ctx context.Context, userID uuid.UUID, planCode string) (*PremiumCheckout, error) {
 	rows, err := p.store.ListPremiumPlans(ctx)
 	if err != nil {
@@ -158,12 +202,23 @@ func (p *Premium) Checkout(ctx context.Context, userID uuid.UUID, planCode strin
 	if err != nil {
 		return nil, err
 	}
+	tax, err := p.tax.Compute(price, premiumBuyerState, p.clock())
+	if err != nil {
+		slog.ErrorContext(ctx, "premium: GST could not be computed; nothing sold", "plan", plan.Code, "error", err)
+		return nil, err
+	}
 	if p.payments == nil {
 		return nil, ErrPremiumPaymentsUnavailable
 	}
-	period, err := p.store.OpenPremiumCheckout(ctx, userID, *plan, price, p.clock())
+	period, err := p.store.OpenPremiumCheckout(ctx, userID, *plan, tax, p.clock())
 	if err != nil {
 		return nil, err
+	}
+	// The intent is opened for the pass's own amount, which must be the
+	// GST-inclusive total of the split it carries.
+	if period.Tax == nil || period.AmountPaise != period.Tax.TotalPaise || period.AmountPaise != tax.TotalPaise {
+		slog.ErrorContext(ctx, "premium: pass amount is not its GST-inclusive total; nothing charged", "pass_id", period.ID)
+		return nil, ErrPremiumAmountMismatch
 	}
 	intent, err := p.payments.CreatePremiumIntent(ctx, payments.PremiumIntentInput{
 		PeriodID: period.ID, PayerID: userID, AmountMinor: period.AmountPaise, Currency: period.Currency,
@@ -185,8 +240,14 @@ func (p *Premium) Checkout(ctx context.Context, userID uuid.UUID, planCode strin
 	return &PremiumCheckout{
 		PassID: period.ID, Plan: period.PlanCode, DurationDays: period.DurationDays, Status: "pending_payment",
 		AmountPaise: period.AmountPaise, Currency: period.Currency, IntentID: intent.ID, ClientSession: intent.ClientSession,
+		PremiumTaxView: premiumTaxView(period.Tax),
 	}, nil
 }
+
+// premiumBuyerState is the place of supply the checkout passes: "" because
+// the platform keeps no address for the buyer, so the place of supply is
+// the supplier's state (IGST Act s.12(2)(b); adviser item, premium/tax.go).
+const premiumBuyerState = ""
 
 // PremiumStatusView is GET /premium/me.
 type PremiumStatusView struct {
@@ -218,6 +279,7 @@ type PremiumPassView struct {
 	Currency    string     `json:"currency"`
 	StartsAt    *time.Time `json:"starts_at"`
 	EndsAt      *time.Time `json:"ends_at"`
+	PremiumTaxView
 }
 
 // Pass answers one of the buyer's passes; anyone else gets not found.
@@ -238,7 +300,7 @@ func (p *Premium) Pass(ctx context.Context, userID, passID uuid.UUID) (*PremiumP
 		status = premium.StatusFailed
 	}
 	return &PremiumPassView{PassID: period.ID, Plan: period.PlanCode, Status: status, AmountPaise: period.AmountPaise,
-		Currency: period.Currency, StartsAt: period.PeriodStart, EndsAt: period.PeriodEnd}, nil
+		Currency: period.Currency, StartsAt: period.PeriodStart, EndsAt: period.PeriodEnd, PremiumTaxView: premiumTaxView(period.Tax)}, nil
 }
 
 // ApplyPremiumPaymentEvent applies one signed payments event (the consumer's

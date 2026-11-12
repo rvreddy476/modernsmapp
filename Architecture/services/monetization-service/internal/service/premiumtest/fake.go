@@ -66,21 +66,25 @@ func (s *Store) ListPremiumPlans(context.Context) ([]premium.PlanRow, error) {
 	return append([]premium.PlanRow(nil), s.Plans...), nil
 }
 
-func (s *Store) OpenPremiumCheckout(_ context.Context, userID uuid.UUID, plan premium.PlanRow, amount int64, now time.Time) (*premium.Period, error) {
+func (s *Store) OpenPremiumCheckout(_ context.Context, userID uuid.UUID, plan premium.PlanRow, tax premium.Breakdown, now time.Time) (*premium.Period, error) {
+	if !tax.Valid() {
+		return nil, premium.ErrTaxUnavailable
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now = premium.Truncate(now)
 	for _, p := range s.Periods {
 		if p.UserID == userID && p.PlanCode == plan.Code && p.Status == premium.StatusCreated {
-			if p.AmountPaise == amount && p.CreatedAt.After(now.Add(-premium.CheckoutTTL)) {
+			if p.AmountPaise == tax.TotalPaise && p.Tax != nil && *p.Tax == tax && p.CreatedAt.After(now.Add(-premium.CheckoutTTL)) {
 				c := *p
 				return &c, nil
 			}
 			p.Status = premium.StatusAbandoned
 		}
 	}
+	split := tax
 	p := &premium.Period{ID: uuid.New(), UserID: userID, PlanCode: plan.Code, DurationDays: plan.DurationDays,
-		AmountPaise: amount, Currency: premium.Currency, Status: premium.StatusCreated, CreatedAt: now}
+		AmountPaise: tax.TotalPaise, Tax: &split, Currency: premium.Currency, Status: premium.StatusCreated, CreatedAt: now}
 	s.Periods[p.ID] = p
 	c := *p
 	return &c, nil

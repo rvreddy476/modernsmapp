@@ -33,13 +33,25 @@ var (
 )
 
 const premiumPeriodColumns = `id, user_id, plan_code, duration_days, amount_paise, currency, status,
-	COALESCE(intent_id::text, ''), period_start, period_end, refunded_paise, created_at`
+	COALESCE(intent_id::text, ''), period_start, period_end, refunded_paise, created_at,
+	taxable_paise, cgst_paise, sgst_paise, igst_paise, total_paise, gst_rate_bp, sac, tax_provisional`
 
 func scanPremiumPeriod(row pgx.Row) (*premium.Period, error) {
 	var p premium.Period
+	var taxable, cgst, sgst, igst, total *int64
+	var rate *int
+	var sac *string
+	var provisional *bool
 	if err := row.Scan(&p.ID, &p.UserID, &p.PlanCode, &p.DurationDays, &p.AmountPaise, &p.Currency, &p.Status,
-		&p.IntentID, &p.PeriodStart, &p.PeriodEnd, &p.RefundedPaise, &p.CreatedAt); err != nil {
+		&p.IntentID, &p.PeriodStart, &p.PeriodEnd, &p.RefundedPaise, &p.CreatedAt,
+		&taxable, &cgst, &sgst, &igst, &total, &rate, &sac, &provisional); err != nil {
 		return nil, err
+	}
+	// Migration 028's CHECK keeps the split all-NULL (a pass from before
+	// prices excluded GST) or complete.
+	if taxable != nil && cgst != nil && sgst != nil && igst != nil && total != nil && rate != nil && sac != nil && provisional != nil {
+		p.Tax = &premium.Breakdown{TaxablePaise: *taxable, CGSTPaise: *cgst, SGSTPaise: *sgst, IGSTPaise: *igst,
+			TaxPaise: *cgst + *sgst + *igst, TotalPaise: *total, RateBP: *rate, SAC: *sac, Provisional: *provisional}
 	}
 	return &p, nil
 }
@@ -79,12 +91,16 @@ func (s *Store) ListPremiumPlans(ctx context.Context) ([]premium.PlanRow, error)
 }
 
 // OpenPremiumCheckout returns the buyer's open checkout for the plan when it
-// is younger than premium.CheckoutTTL and still at this price (a retry or a
-// double tap: one intent), and otherwise abandons it and opens a new one.
-func (s *Store) OpenPremiumCheckout(ctx context.Context, userID uuid.UUID, plan premium.PlanRow, amountPaise int64, now time.Time) (*premium.Period, error) {
+// is younger than premium.CheckoutTTL and still at this price and tax split
+// (a retry or a double tap: one intent), and otherwise abandons it and opens
+// a new one. The row's amount is the GST-inclusive total.
+func (s *Store) OpenPremiumCheckout(ctx context.Context, userID uuid.UUID, plan premium.PlanRow, tax premium.Breakdown, now time.Time) (*premium.Period, error) {
+	if !tax.Valid() {
+		return nil, fmt.Errorf("open premium checkout: %w", premium.ErrTaxUnavailable)
+	}
 	now = premium.Truncate(now)
 	for attempt := 0; attempt < 2; attempt++ {
-		p, err := s.openPremiumCheckoutOnce(ctx, userID, plan, amountPaise, now)
+		p, err := s.openPremiumCheckoutOnce(ctx, userID, plan, tax, now)
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			continue // a concurrent checkout opened one first: read it next time round
@@ -94,7 +110,7 @@ func (s *Store) OpenPremiumCheckout(ctx context.Context, userID uuid.UUID, plan 
 	return nil, fmt.Errorf("open premium checkout: concurrent checkouts did not settle")
 }
 
-func (s *Store) openPremiumCheckoutOnce(ctx context.Context, userID uuid.UUID, plan premium.PlanRow, amountPaise int64, now time.Time) (*premium.Period, error) {
+func (s *Store) openPremiumCheckoutOnce(ctx context.Context, userID uuid.UUID, plan premium.PlanRow, tax premium.Breakdown, now time.Time) (*premium.Period, error) {
 	tx, err := s.db.Begin(ctx)
 	if err != nil {
 		return nil, err
@@ -105,7 +121,7 @@ func (s *Store) openPremiumCheckoutOnce(ctx context.Context, userID uuid.UUID, p
 		WHERE user_id = $1 AND plan_code = $2 AND status = 'created' FOR UPDATE`, userID, plan.Code))
 	switch {
 	case err == nil:
-		if open.AmountPaise == amountPaise && open.CreatedAt.After(now.Add(-premium.CheckoutTTL)) {
+		if open.AmountPaise == tax.TotalPaise && open.Tax != nil && *open.Tax == tax && open.CreatedAt.After(now.Add(-premium.CheckoutTTL)) {
 			return open, tx.Commit(ctx)
 		}
 		if _, err := tx.Exec(ctx, `UPDATE premium_periods SET status = 'abandoned', updated_at = NOW() WHERE id = $1`, open.ID); err != nil {
@@ -116,10 +132,12 @@ func (s *Store) openPremiumCheckoutOnce(ctx context.Context, userID uuid.UUID, p
 	}
 	id := uuid.New()
 	p, err := scanPremiumPeriod(tx.QueryRow(ctx, `
-		INSERT INTO premium_periods (id, user_id, plan_code, duration_days, amount_paise, currency, idempotency_key, created_at, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+		INSERT INTO premium_periods (id, user_id, plan_code, duration_days, amount_paise, currency, idempotency_key, created_at, updated_at,
+			taxable_paise, cgst_paise, sgst_paise, igst_paise, total_paise, gst_rate_bp, sac, tax_provisional)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8, $9, $10, $11, $12, $5, $13, $14, $15)
 		RETURNING `+premiumPeriodColumns,
-		id, userID, plan.Code, plan.DurationDays, amountPaise, premium.Currency, premium.IntentKey(id), now))
+		id, userID, plan.Code, plan.DurationDays, tax.TotalPaise, premium.Currency, premium.IntentKey(id), now,
+		tax.TaxablePaise, tax.CGSTPaise, tax.SGSTPaise, tax.IGSTPaise, tax.RateBP, tax.SAC, tax.Provisional))
 	if err != nil {
 		return nil, err
 	}

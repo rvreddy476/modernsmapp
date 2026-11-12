@@ -67,7 +67,7 @@ func TestPremiumRoutesWhenOn(t *testing.T) {
 	}
 	var co service.PremiumCheckout
 	decodeData(t, w, &co)
-	if co.PassID == uuid.Nil || co.AmountPaise != 14900 || co.Status != "pending_payment" || co.ClientSession == nil {
+	if co.PassID == uuid.Nil || co.AmountPaise != 17582 || co.Status != "pending_payment" || co.ClientSession == nil {
 		t.Fatalf("checkout %+v", co)
 	}
 

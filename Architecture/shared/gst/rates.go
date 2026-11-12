@@ -35,6 +35,13 @@ const (
 	// s.9(5). The platform's own convenience fee on a ride is
 	// CategoryPlatformFee, as for food.
 	CategoryPassengerTransportViaECO Category = "PASSENGER_TRANSPORT_VIA_ECO"
+	// The platform's own digital subscription sold to consumers (Momentum
+	// Premium passes): access to premium features of the online platform,
+	// read as an online information and database access or retrieval
+	// service (OIDAR, IGST Act s.2(17)). The platform is the supplier and is
+	// liable; never s.9(5). platformSubscriptionRow has the SAC and the
+	// legal basis.
+	CategoryPlatformDigitalSubscription Category = "PLATFORM_DIGITAL_SUBSCRIPTION"
 
 	// Doorstep (home services), supplied by a gig service professional
 	// through the platform. Each family has two categories and the CALLER
@@ -319,12 +326,43 @@ func DefaultRateTable() *RateTable {
 		{Category: CategoryPassengerTransportViaECO, Supplier: SupplierDriver, ECOSection95: true, RateBP: 500, ITCAvailable: false, SAC: "996412", EffectiveFrom: d, NeedsAdviserConfirmation: true,
 			Note: "Passenger transport by motorcycle, auto-rickshaw or motor cab through the ECO (Mopedu ride fare): 5% without ITC, notified under s.9(5), so the ECO is liable; the 12%-with-ITC option for cabs is not modelled." + adviserNote},
 	}
+	rows = append(rows, platformSubscriptionRow(d))
 	rows = append(rows, doorstepRows(d)...)
 	t, err := NewRateTable(rows)
 	if err != nil {
 		panic("gst: seeded rate table is invalid: " + err.Error())
 	}
 	return t
+}
+
+// platformSubscriptionRow is the platform's own digital subscription sold to
+// consumers (Momentum Premium; founder, 13 Nov 2026: prices exclude GST).
+//
+// The team's reading (the adviser confirms):
+//
+//   - nature: a paid pass to premium features of the platform, delivered
+//     over the internet with minimal human intervention: an online
+//     information and database access or retrieval service (OIDAR) as
+//     defined in IGST Act s.2(17). For a supply inside India to an Indian
+//     consumer that changes nothing about the rate or the liability: it is
+//     an ordinary forward-charge supply by the platform (CGST s.9(1)); the
+//     OIDAR rules for a NON-resident supplier (IGST s.14) do not apply;
+//   - SAC 998439 "other on-line contents n.e.c." (group 99843 on-line
+//     content, heading 9984). 998431 "on-line text based information such
+//     as online books, newspapers, periodicals, directories" was considered
+//     and not chosen: Premium is access to features, not text content.
+//     998599 (the platform-fee row) was not chosen because Premium is not a
+//     support service to someone else's transaction;
+//   - rate: 18% under Notification 11/2017-CT(Rate), heading 9984
+//     (telecommunications, broadcasting and information supply services),
+//     unchanged by the 22 Sep 2025 rationalisation; ITC available;
+//   - place of supply (the caller decides it, not this package): IGST Act
+//     s.12(2)(b) for a supply to an unregistered person, the recipient's
+//     address on record, else the location of the supplier.
+func platformSubscriptionRow(d time.Time) RateRow {
+	return RateRow{Category: CategoryPlatformDigitalSubscription, Supplier: SupplierPlatform, ECOSection95: false, RateBP: 1800,
+		ITCAvailable: true, SAC: "998439", EffectiveFrom: d, NeedsAdviserConfirmation: true,
+		Note: "The platform's own digital subscription to consumers (Momentum Premium): OIDAR (IGST s.2(17)), SAC 998439 other on-line contents n.e.c. (998431 considered), 18% under Notification 11/2017-CT(Rate) heading 9984; the platform is the supplier and liable, never s.9(5); place of supply IGST s.12(2)(b)." + adviserNote}
 }
 
 // doorstepRows are the Doorstep (home services) rows: one _VIA_ECO and one

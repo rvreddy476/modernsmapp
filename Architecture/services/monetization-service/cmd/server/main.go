@@ -220,7 +220,19 @@ func main() {
 			slog.Error("refusing to start: premium prices", "error", err)
 			os.Exit(1)
 		}
-		premiumSvc = service.NewPremium(monetizationStore, prices)
+		// Prices exclude GST (13 Nov 2026): the platform supplies Premium and
+		// is liable, so production refuses Premium without
+		// PREMIUM_PLATFORM_GSTIN; elsewhere an unset GSTIN uses the
+		// estimated split (premium/tax.go).
+		premiumTax, err := premium.TaxFromEnv(os.Getenv, environment)
+		if err != nil {
+			slog.Error("refusing to start: premium GST", "error", err)
+			os.Exit(1)
+		}
+		if !premiumTax.Computed() {
+			slog.Warn("premium: PREMIUM_PLATFORM_GSTIN unset (not production): GST on Premium is the estimated split")
+		}
+		premiumSvc = service.NewPremium(monetizationStore, prices).WithTax(premiumTax)
 		client, err := payments.PremiumClientFromEnv(os.Getenv)
 		switch {
 		case err == nil:

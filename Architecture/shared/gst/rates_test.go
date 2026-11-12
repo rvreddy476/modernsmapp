@@ -132,6 +132,8 @@ func TestDefaultRateTable_Seed(t *testing.T) {
 		CategoryDeliveryFeePlatform:              {SupplierPlatform, false, 1800, true, "996813"},
 		CategoryDeliveryFeePartnerViaECO:         {SupplierDeliveryPartner, true, 1800, false, "996813"},
 		CategoryPassengerTransportViaECO:         {SupplierDriver, true, 500, false, "996412"},
+		// Momentum Premium.
+		CategoryPlatformDigitalSubscription: {SupplierPlatform, false, 1800, true, "998439"},
 		// Doorstep.
 		CategoryHomeCleaningViaECO:           {SupplierServiceProfessional, true, 1800, false, "998533"},
 		CategoryHomeCleaningRegistered:       {SupplierServiceProfessional, false, 1800, true, "998533"},

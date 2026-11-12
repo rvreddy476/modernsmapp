@@ -1,0 +1,34 @@
+{
+  "data": {
+    "plans": [
+      {
+        "code": "premium_30d",
+        "name": "Momentum Premium, 30 days",
+        "duration_days": 30,
+        "price_paise": 14900,
+        "taxable_paise": 14900,
+        "gst_paise": 2682,
+        "total_paise": 17582,
+        "gst_rate_bp": 1800,
+        "prices_exclude_gst": true,
+        "tax_provisional": true,
+        "currency": "INR",
+        "available": true
+      },
+      {
+        "code": "premium_365d",
+        "name": "Momentum Premium, 365 days",
+        "duration_days": 365,
+        "price_paise": 149900,
+        "taxable_paise": 149900,
+        "gst_paise": 26982,
+        "total_paise": 176882,
+        "gst_rate_bp": 1800,
+        "prices_exclude_gst": true,
+        "tax_provisional": true,
+        "currency": "INR",
+        "available": true
+      }
+    ]
+  }
+}
