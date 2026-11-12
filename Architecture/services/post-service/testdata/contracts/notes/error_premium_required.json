@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "PREMIUM_REQUIRED",
+    "message": "Posting on Echo needs Momentum Premium"
+  },
+  "meta": {}
+}

@@ -63,5 +63,6 @@ CREATE TABLE IF NOT EXISTS media_assets (
     alt_decorative BOOLEAN NOT NULL DEFAULT FALSE,
     hls_master_key TEXT,
     storage_key TEXT NOT NULL DEFAULT '',
+    mime_type TEXT NOT NULL DEFAULT '',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );

@@ -87,6 +87,10 @@ func (s *MetaStore) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 		`DELETE FROM feed_author_feedback WHERE user_id = $1 OR author_id = $1`,
 		`DELETE FROM celeb_authors WHERE author_id = $1`,
 		`DELETE FROM hidden_authors WHERE author_id = $1`,
+		// Echo (migration 009): the author's notes stop being pull and
+		// For You candidates, and the pull flag goes with the account.
+		`DELETE FROM echo_notes WHERE author_id = $1`,
+		`DELETE FROM echo_pull_authors WHERE author_id = $1`,
 	}
 	for _, stmt := range stmts {
 		if _, err := tx.Exec(ctx, stmt, userID); err != nil {

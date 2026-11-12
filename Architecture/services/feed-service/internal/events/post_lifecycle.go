@@ -64,6 +64,15 @@ func (c *Consumer) handlePostDeleted(ctx context.Context, envelope events.EventE
 	if err != nil {
 		return fmt.Errorf("PostDeleted: %w", err)
 	}
+	// Echo: the notes_timeline rows went with the rest above (reverse
+	// index); this stops the note being a pull or For You candidate.
+	// content_type is optional on this payload, so an unlabelled delete is
+	// applied too (it matches no echo_notes row unless it is a note).
+	if (event.ContentType == service.NoteContentType || event.ContentType == "") && c.service != nil {
+		if err := c.service.MarkNoteDeleted(ctx, postID, true); err != nil {
+			return fmt.Errorf("PostDeleted: note %s: %w", postID, err)
+		}
+	}
 
 	log.Printf("Processing PostDeleted: post=%s author=%s type=%s timeline_rows_removed=%d purge_at=%v",
 		event.PostID, event.AuthorID, event.ContentType, removed, event.PurgeAt)
@@ -297,6 +306,11 @@ func (c *Consumer) handlePostRestored(ctx context.Context, envelope events.Event
 			channelID = parsed
 		} else {
 			log.Printf("PostRestored %s: ignoring malformed channel_id %q: %v", event.PostID, event.ChannelID, err)
+		}
+	}
+	if contentType == service.NoteContentType {
+		if err := c.service.MarkNoteDeleted(ctx, postID, false); err != nil {
+			return fmt.Errorf("PostRestored: note %s: %w", postID, err)
 		}
 	}
 	if err := c.service.FanoutPost(ctx, postID, authorID, createdAt, contentType, event.Visibility, channelID); err != nil {

@@ -182,7 +182,7 @@ func authorPostsSQL(q AuthorPostsQuery, cur *authorCursor) (string, []any) {
 	args := []any{q.AuthorID, q.Limit + 1}
 	query := `SELECT ` + postCols + `, ` + authorLikesSelect(q.Sort) + `
 		FROM posts
-		WHERE author_id = $1 AND deleted_at IS NULL AND publish_at IS NULL`
+		WHERE author_id = $1 AND deleted_at IS NULL AND publish_at IS NULL AND ` + NotNoteSQL("")
 	if !q.IncludeNonApproved {
 		query += " AND " + viewerApprovedSQL
 	}

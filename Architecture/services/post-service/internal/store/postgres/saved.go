@@ -279,7 +279,7 @@ func trendingQuery(contentTypes []string, limit int, cursor string, now time.Tim
 	// to the week before the as-of time; a post created after it waits for
 	// the next scroll rather than shifting this one's pages.
 	conds := []string{
-		ViewerEligibleSQL("p"), "p.visibility = 'public'",
+		ViewerEligibleSQL("p"), "p.visibility = 'public'", NotNoteSQL("p"),
 		"p.created_at > $3", "p.created_at <= $2",
 	}
 	if len(contentTypes) > 0 {

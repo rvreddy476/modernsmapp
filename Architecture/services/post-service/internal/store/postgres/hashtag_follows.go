@@ -171,6 +171,7 @@ func (s *Store) GetPostsByHashtags(ctx context.Context, tags []string, viewerID 
 		WHERE p.hashtags && $1::text[]
 		  AND p.visibility = 'public'
 		  AND ` + ViewerEligibleSQL("p") + `
+		  AND ` + NotNoteSQL("p") + `
 		  AND p.author_id <> $3
 		  AND p.created_at >= $4`
 	if at, key, ok := decodeKeysetCursor(cursor); ok {

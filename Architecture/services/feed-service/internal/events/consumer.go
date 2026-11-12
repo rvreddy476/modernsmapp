@@ -257,6 +257,18 @@ func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.Event
 	// inline backfill and let the read-time hydrator surface celeb
 	// content. Also avoids a thundering-herd of backfills when many
 	// follows arrive for a single celeb in a short window.
+	// Echo notes: the followee's recent notes into the follower's notes
+	// timeline (skipped for a pulled author, whose notes are read live).
+	if c.service != nil {
+		n, err := c.service.BackfillNotesOnFollow(ctx, followerID, followeeID)
+		if err != nil {
+			return fmt.Errorf("UserFollowed: %w", err)
+		}
+		if n > 0 {
+			log.Printf("[feed] UserFollowed notes backfill: follower=%s followee=%s injected=%d", followerID, followeeID, n)
+		}
+	}
+
 	if c.service != nil {
 		if isCeleb, _ := c.service.IsCelebAuthor(ctx, followeeID); isCeleb {
 			log.Printf("[feed] UserFollowed backfill skipped — followee=%s is celeb (pull model)", followeeID)
@@ -331,6 +343,18 @@ func (c *Consumer) handleUserUnfollowed(ctx context.Context, envelope events.Eve
 		return fmt.Errorf("purge home timeline on unfollow: no service to establish the " +
 			"follower's remaining relationship; nothing purged")
 	}
+
+	// Echo notes fan out to followers only, so their purge has its own
+	// claim check (the follow alone) — see PurgeNotesAfterUnfollow. An
+	// error retries the event; both purges are idempotent.
+	notesPurged, err := c.service.PurgeNotesAfterUnfollow(ctx, followerID, followeeID)
+	if err != nil {
+		return fmt.Errorf("purge notes timeline on unfollow: %w", err)
+	}
+	if notesPurged > 0 {
+		log.Printf("[feed] UserUnfollowed: purged %d note row(s) follower=%s followee=%s", notesPurged, followerID, followeeID)
+	}
+
 	retained, why, err := c.service.FanoutClaimAfterUnfollow(ctx, followerID, followeeID)
 	if err != nil {
 		return fmt.Errorf("purge home timeline on unfollow: relationship for follower=%s "+
@@ -492,6 +516,15 @@ func (c *Consumer) handlePostCreated(ctx context.Context, envelope events.EventE
 	}
 
 	fmt.Printf("Processing PostCreated: %s by %s type=%s\n", event.PostID, event.AuthorID, contentType)
+	// Echo notes go to notes_timeline only (service/notes.go); a reply goes
+	// nowhere. Runs whatever ECHO_ENABLED says, so the timelines are full
+	// the day the routes are switched on.
+	if contentType == service.NoteContentType {
+		return c.service.FanoutNote(ctx, service.NoteCreated{
+			PostID: postID, AuthorID: authorID, CreatedAt: event.CreatedAt,
+			Visibility: event.Visibility, ReplyToID: event.ReplyToID,
+		})
+	}
 	return c.service.FanoutPost(ctx, postID, authorID, event.CreatedAt, contentType, event.Visibility, channelID)
 }
 

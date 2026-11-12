@@ -972,6 +972,10 @@ func (s *TimelineStore) DeletePostFromTimelines(ctx context.Context, postID uuid
 			stmt = `DELETE FROM home_timeline_by_user WHERE user_id = ? AND bucket = ? AND ts = ?`
 		case "author":
 			stmt = `DELETE FROM author_timeline_by_author WHERE author_id = ? AND bucket = ? AND ts = ?`
+		case NotesTimelineKind:
+			// Echo notes (notes.go): a note leaves every follower's
+			// Following timeline the same way a post leaves Home.
+			stmt = `DELETE FROM notes_timeline WHERE user_id = ? AND bucket = ? AND ts = ?`
 		default:
 			continue
 		}

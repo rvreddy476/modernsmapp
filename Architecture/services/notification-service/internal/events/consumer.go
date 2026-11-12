@@ -76,6 +76,11 @@ type Consumer struct {
 	// mentionNotify delivers user.mentioned (post and comment @mentions);
 	// the service implements it, tests pass a fake (mention_consumer_test.go).
 	mentionNotify mentionNotifier
+	// noteNotify delivers Echo note replies and quotes (note_consumer.go);
+	// the service implements it, tests pass a fake. noteBlocks is the
+	// graph client (set by WithGraph); without it note notices are dropped.
+	noteNotify noteNotifier
+	noteBlocks noteBlockChecker
 
 	// Like aggregation: key = "postID:postAuthorID"
 	likeAgg   map[string]*likeAggEntry
@@ -91,6 +96,10 @@ type Consumer struct {
 // for that event.
 func (c *Consumer) WithGraph(g *graph.Client) *Consumer {
 	c.graph = g
+	if g != nil {
+		// Guarded: a nil *graph.Client in the interface would be non-nil.
+		c.noteBlocks = g
+	}
 	return c
 }
 
@@ -122,6 +131,7 @@ func NewConsumerWithDialer(brokers []string, groupID string, topic string, svc *
 		c.copyrightNotify = svc
 		c.followRequestNotify = svc
 		c.mentionNotify = svc
+		c.noteNotify = svc
 	}
 	return c
 }
@@ -436,6 +446,11 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		// Video credits (credit_consumer.go): the request to the tagged
 		// person, the acceptance to the uploader.
 		return c.handleCreditEvent(ctx, envelope.EventType, envelope.Payload)
+
+	case events.EventNoteReplied, events.EventNoteQuoted:
+		// Echo (note_consumer.go): the parent note's author hears about a
+		// reply or a quote, never across a block, never about their own.
+		return c.handleNoteEvent(ctx, envelope, m.Value)
 
 	case events.EventPostReposted:
 		var e events.PostRepostedPayload

@@ -178,7 +178,9 @@ func categoryForEvent(eventType string) prefCategory {
 		return catSuperLikes
 	case "post.commented", "comment":
 		return catComments
-	case "comment.replied":
+	// Echo note replies and quotes (note_notify.go) ride the replies toggle
+	// pair with comment replies.
+	case "comment.replied", NoteReplyType, NoteQuoteType:
 		return catReplies
 	// Mentions and tags.
 	case "mention.created", "group.mention", "community.mention", "mention", "comment_mention":

@@ -1096,7 +1096,7 @@ func (s *Store) GetRecentPosts(ctx context.Context, excludeAuthor *uuid.UUID, co
 	query := `SELECT ` + postCols + `
 		FROM posts
 		WHERE visibility = 'public' AND deleted_at IS NULL
-			AND ` + viewerApprovedSQL + ` AND publish_at IS NULL`
+			AND ` + viewerApprovedSQL + ` AND publish_at IS NULL AND ` + NotNoteSQL("")
 
 	argIdx := 2
 	if excludeAuthor != nil {
@@ -1156,7 +1156,7 @@ func (s *Store) GetPostCountsByAuthor(ctx context.Context, authorID uuid.UUID) (
 	rows, err := s.db.Query(ctx, `
 		SELECT content_type, COUNT(*) as count
 		FROM posts
-		WHERE author_id = $1 AND deleted_at IS NULL
+		WHERE author_id = $1 AND deleted_at IS NULL AND `+NotNoteSQL("")+`
 		GROUP BY content_type
 	`, authorID)
 	if err != nil {
@@ -1467,7 +1467,7 @@ func (s *Store) GetBookmarks(ctx context.Context, userID uuid.UUID, contentTypes
 			FROM saved_items si
 			WHERE si.target_type = 'post' AND si.user_id = $1` + scopeCond + `
 		) b ON b.target_id = p.id
-		WHERE b.user_id = $1 AND p.deleted_at IS NULL
+		WHERE b.user_id = $1 AND p.deleted_at IS NULL AND ` + NotNoteSQL("p") + `
 		  AND (p.author_id = $1 OR (` + viewerApproved("p") + ` AND p.publish_at IS NULL))`
 
 	if len(contentTypes) > 0 {

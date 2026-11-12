@@ -193,6 +193,10 @@ type RenderOverride struct {
 	// Data adds keys to the push data map (chat: conversation_id,
 	// message_id, alert_tone). It never replaces a key buildPushData sets.
 	Data map[string]string
+	// PushDeepLink, when set, is the push's deep_link instead of the inbox
+	// row's. Echo notes (note_notify.go) store the web path on the row and
+	// send the app scheme to the device.
+	PushDeepLink string
 }
 
 // UploadNotification is one subscriber's copy of a creator upload, as
@@ -457,6 +461,12 @@ func notifTitleBody(notifType string) (string, string) {
 		return "Message Request", "You have a new message request"
 	case "post_reposted":
 		return "New Repost", "Someone reposted your post"
+	// Echo notes (note_notify.go). The named copy rides a render override;
+	// this is the anonymous fallback.
+	case NoteReplyType:
+		return "Someone replied to your note", "Tap to read the reply"
+	case NoteQuoteType:
+		return "Someone quoted your note", "Tap to see the quote"
 	// Video credits (credit_notify.go). The named copy rides a render
 	// override; this is the anonymous fallback.
 	case CreditTypeRequest:

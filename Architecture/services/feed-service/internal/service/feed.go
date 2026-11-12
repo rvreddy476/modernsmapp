@@ -84,6 +84,11 @@ type Service struct {
 	celebs    celebStore
 	// reposts removes an undone repost's rows (UndoRepostFanout).
 	reposts repostRemover
+	// Echo notes (notes.go): the notes_timeline store, the echo_notes /
+	// echo_pull_authors metadata, and the ECHO_* switches. Swapped by tests.
+	notesTimelines notesTimelineStore
+	notesMeta      notesMetaStore
+	echo           echoConfig
 }
 
 // timelineWriter is the slice of the Scylla store FanoutPost needs.
@@ -158,17 +163,20 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 		lvTiers:             loadLVTiers(),
 		celeb:               loadCelebConfig(),
 		discovery:           loadDiscoveryConfig(),
+		echo:                loadEchoConfig(),
 	}
 	// A typed-nil *MetaStore must not become a non-nil interface, or every
 	// hydration would fail closed on a nil pool instead of on a real error.
 	if pg != nil {
 		svc.feedback = pg
 		svc.celebs = pg
+		svc.notesMeta = pg
 	}
 	if scylla != nil {
 		svc.timelines = scylla
 		svc.windows = scylla
 		svc.reposts = scylla
+		svc.notesTimelines = scylla
 	}
 	return svc
 }
@@ -531,6 +539,12 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 	// in longvideo.go). Runs after the cold-start fallback so backfilled
 	// items are covered too.
 	candidates = dropShortForm(candidates)
+	// Echo notes never enter Home (echo-contract.md): their own timeline is
+	// notes_timeline, and this drops any that reach Home another way (the
+	// cold-start fill, a celeb pull, a row written before notes had a
+	// table). Independent of the main_feed=false policy filter below,
+	// which also excludes them, so a degraded policy lookup cannot leak one.
+	candidates = dropNotes(candidates)
 
 	// P0-1: drop posts whose distribution policy opted out of social home.
 	// Runs after the cold-start fallback so fallback items are covered too;
@@ -1119,6 +1133,13 @@ func (s *Service) FanoutPost(ctx context.Context, postID, authorID uuid.UUID, cr
 			fanoutIncomplete.Inc()
 		}
 	}()
+
+	// Echo notes have their own timeline and never touch Home or the author
+	// timeline (notes.go). PostRestored and post.visibility_changed reach
+	// here without reply_to_id, so the note's recorded kind decides.
+	if contentType == NoteContentType {
+		return s.refanoutNote(ctx, postID, authorID, createdAt, visibility)
+	}
 
 	// 1. Always add to Author Timeline
 	if err := s.timelines.AddToAuthorTimeline(ctx, authorID, postID, createdAt, contentType); err != nil {

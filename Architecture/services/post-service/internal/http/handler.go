@@ -237,6 +237,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	h.registerChannelRoutes(r)
 	h.registerTubeCatalogueInternalRoutes(r) // MTube search reindex source (channels_internal_list.go)
 
+	// Echo short notes (notes_handler.go, docs/designs/echo-contract.md),
+	// behind ECHO_ENABLED.
+	h.registerNoteRoutes(r)
+
 	// Stories
 	stories := r.Group("/v1/stories")
 	{

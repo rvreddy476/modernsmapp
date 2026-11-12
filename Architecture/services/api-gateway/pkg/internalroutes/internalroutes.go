@@ -394,6 +394,7 @@ var StampPolicy = map[string]bool{
 	"/v1/posts":        true,
 	"/v1/crossposts":   true,
 	"/v1/credits":      true,
+	"/v1/notes":        true, // Echo (2026-11-12)
 
 	// feed-service: engine-wide RequireInternalKey.
 	"/v1/feed": true,

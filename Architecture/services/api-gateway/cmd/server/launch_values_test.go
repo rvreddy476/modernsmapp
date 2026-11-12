@@ -156,6 +156,7 @@ func TestLaunchValuesFeaturesMap(t *testing.T) {
 		"rider":              false,
 		"dating":             false,
 		"doorstep":           false,
+		"echo":               false,
 	}
 	for _, tc := range []struct {
 		file       string

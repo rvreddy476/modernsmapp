@@ -1,6 +1,6 @@
 # Short posts ("Echo"): a premium, X/Threads-style surface
 
-Status: **design only, nothing built.** Written 2026-11-11 for founder approval.
+Status: **approved 2026-11-11, all 14 defaults taken (see section 9).** Echo ships after launch; only the phase 0 prerequisites are built now, switched off.
 Paths are relative to the repository root. "Echo" is a working name (see decision 1);
 the internal content type is `note` so the product name can change without a migration.
 

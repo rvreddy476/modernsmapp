@@ -58,6 +58,7 @@ var membersReadExempt = map[string]string{
 	"applyPostEdit":           "owner: edit after publish, author only",
 	"publishClaimedReelDraft": "owner: the author publishing their draft",
 	"publishDraftRow":         "owner: the author publishing their draft",
+	"newNoteRow":              "owner: builds the author's own new Echo note row (notes are always public); every note read goes through GetPostsByIDs, which redacts",
 	// Admin console.
 	"AdminGetPost": "admin: the token-gated admin console",
 	// Loaders and page steps inside reads that redact on the way out, or

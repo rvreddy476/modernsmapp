@@ -171,19 +171,29 @@ func TestEncodeQuery_NoBlocksLeavesQueryUnchanged(t *testing.T) {
 			[]interface{}{map[string]interface{}{"term": map[string]interface{}{"is_hidden": true}}}
 		return q
 	}
-	baseline, _ := json.Marshal(hiddenBaseline())
+	usersBaseline, _ := json.Marshal(hiddenBaseline())
+	// Posts also always carry the Echo note exclusion (blockfilter.go
+	// applyNoteMustNot), ahead of is_hidden.
+	postsQuery := freshQuery()
+	postsQuery["query"].(map[string]interface{})["bool"].(map[string]interface{})["must_not"] = []interface{}{
+		map[string]interface{}{"term": map[string]interface{}{"content_type": "note"}},
+		map[string]interface{}{"term": map[string]interface{}{"is_hidden": true}},
+	}
+	postsBaseline, _ := json.Marshal(postsQuery)
 
 	cases := []struct {
-		name    string
-		ctx     context.Context
-		idField string
+		name     string
+		ctx      context.Context
+		idField  string
+		baseline []byte
 	}{
-		{"posts, no scope resolved", context.Background(), "author_id"},
-		{"users, no scope resolved", context.Background(), "user_id"},
-		{"users, anonymous viewer", WithBlockedIDs(context.Background(), nil), "user_id"},
-		{"users, viewer blocks nobody", WithBlockedIDs(context.Background(), []string{}), "user_id"},
+		{"posts, no scope resolved", context.Background(), "author_id", postsBaseline},
+		{"users, no scope resolved", context.Background(), "user_id", usersBaseline},
+		{"users, anonymous viewer", WithBlockedIDs(context.Background(), nil), "user_id", usersBaseline},
+		{"users, viewer blocks nobody", WithBlockedIDs(context.Background(), []string{}), "user_id", usersBaseline},
 	}
 	for _, tc := range cases {
+		baseline := tc.baseline
 		t.Run(tc.name, func(t *testing.T) {
 			buf, err := encodeQuery(tc.ctx, freshQuery(), tc.idField)
 			if err != nil {

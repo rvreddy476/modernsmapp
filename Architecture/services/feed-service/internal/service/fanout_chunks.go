@@ -170,6 +170,14 @@ func (d *recipientDedupe) first(id uuid.UUID) bool {
 // waits for all of them. Any failed write fails the chunk, so its progress
 // is not saved and the retry rewrites it.
 func (s *Service) pushChunk(ctx context.Context, ids []uuid.UUID, postID, authorID uuid.UUID, createdAt time.Time, contentType string) error {
+	return pushChunkWith(ids, func(id uuid.UUID) error {
+		return s.timelines.AddToHomeTimeline(ctx, id, postID, authorID, createdAt, contentType)
+	})
+}
+
+// pushChunkWith is pushChunk's worker pool around any per-recipient write;
+// the Echo notes fan-out (notes.go) writes notes_timeline rows through it.
+func pushChunkWith(ids []uuid.UUID, writeOne func(id uuid.UUID) error) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -185,7 +193,7 @@ func (s *Service) pushChunk(ctx context.Context, ids []uuid.UUID, postID, author
 		go func() {
 			defer wg.Done()
 			for id := range ch {
-				if err := s.timelines.AddToHomeTimeline(ctx, id, postID, authorID, createdAt, contentType); err != nil {
+				if err := writeOne(id); err != nil {
 					log.Printf("Failed to push to timeline for user %s: %v", id, err)
 					failed.Add(1)
 					fanoutWrites.WithLabelValues("failed").Inc()

@@ -342,6 +342,12 @@ const (
 	EventPostReposted     = "post.reposted"
 	EventPostRepostUndone = "post.repost_undone"
 
+	// Echo notes (docs/designs/echo-contract.md). post-service writes both
+	// to its outbox in the creating transaction; notification-service
+	// delivers them. Never emitted when the actor is the recipient.
+	EventNoteReplied = "note.replied" // payload: NoteRepliedPayload
+	EventNoteQuoted  = "note.quoted"  // payload: NoteQuotedPayload
+
 	// Q&A Events
 	EventQAQuestionCreated      = "qa.question.created"
 	EventQAQuestionUpdated      = "qa.question.updated"
@@ -605,6 +611,13 @@ type PostCreatedPayload struct {
 	// ChannelID is the author's canonical broadcast channel when one
 	// exists — the subscriber fan-out key for PostTube uploads.
 	ChannelID string `json:"channel_id,omitempty"`
+	// Echo notes (content_type "note", docs/designs/echo-contract.md).
+	// ReplyToID is set on a reply (never fanned out to timelines);
+	// ConversationID is the top note of the conversation (its own id on a
+	// top-level note); QuoteOfID is set on a quote. All omitted elsewhere.
+	ReplyToID      string `json:"reply_to_id,omitempty"`
+	ConversationID string `json:"conversation_id,omitempty"`
+	QuoteOfID      string `json:"quote_of_id,omitempty"`
 	// ChannelName / ChannelHandle let the notification fan-out render
 	// "{channel} uploaded: {title}" straight from the event, so a push does
 	// not need a channel lookup per recipient. Optional: older producers
@@ -2337,3 +2350,24 @@ type StrikeVoidedPayload struct {
 // overturned or superseded by a later decision). Payload shape:
 // trust-safety-service internal/store/postgres AppealResolvedPayload.
 const AppealResolved = "AppealResolved"
+
+// NoteRepliedPayload is the payload of note.replied: ActorID replied to
+// RecipientID's note ReplyToID with NoteID.
+type NoteRepliedPayload struct {
+	NoteID         string    `json:"note_id"`
+	ConversationID string    `json:"conversation_id"`
+	ReplyToID      string    `json:"reply_to_id"`
+	ActorID        string    `json:"actor_id"`
+	RecipientID    string    `json:"recipient_id"`
+	CreatedAt      time.Time `json:"created_at"`
+}
+
+// NoteQuotedPayload is the payload of note.quoted: ActorID quoted
+// RecipientID's note QuoteOfID in NoteID.
+type NoteQuotedPayload struct {
+	NoteID      string    `json:"note_id"`
+	QuoteOfID   string    `json:"quote_of_id"`
+	ActorID     string    `json:"actor_id"`
+	RecipientID string    `json:"recipient_id"`
+	CreatedAt   time.Time `json:"created_at"`
+}

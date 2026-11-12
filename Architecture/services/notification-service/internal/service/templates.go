@@ -70,6 +70,21 @@ var Templates = map[string]NotificationTemplate{
 		CanAggregate: true, AggregateWindow: 15 * time.Minute,
 	},
 
+	// Echo notes (note_notify.go, 2026-11-12). Category `replies`
+	// (push_replies / inapp_replies), the one comment replies use. {actor}
+	// is the profile display name looked up at delivery ("Someone" when
+	// unknown); never aggregated, one notice per event and recipient.
+	NoteReplyType: {
+		EventType: NoteReplyType, TitleTemplate: "{actor} replied to your note",
+		BodyTemplate: "Tap to read the reply", Icon: "comment", Priority: "medium",
+		PushEligible: true, CanAggregate: false,
+	},
+	NoteQuoteType: {
+		EventType: NoteQuoteType, TitleTemplate: "{actor} quoted your note",
+		BodyTemplate: "Tap to see the quote", Icon: "echo", Priority: "medium",
+		PushEligible: true, CanAggregate: false,
+	},
+
 	// Video credits (credit_notify.go, 2026-10-23). Category `credits`
 	// (push_credits / inapp_credits). {uploader} and {name} are filled from
 	// the event; never aggregated, one notice per credit and recipient.

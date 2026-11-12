@@ -32,7 +32,8 @@ const HashtagTotalCap = 10000
 // $1 must be the tag. contentTypes and excludeAuthors are appended to
 // args; the returned args are the ones to pass.
 func hashtagPostsFilter(args []any, contentTypes []string, excludeAuthors []uuid.UUID) (string, []any) {
-	where := `p.hashtags @> ARRAY[$1]::text[] AND p.visibility = 'public' AND ` + ViewerEligibleSQL("p")
+	where := `p.hashtags @> ARRAY[$1]::text[] AND p.visibility = 'public' AND ` + ViewerEligibleSQL("p") +
+		` AND ` + NotNoteSQL("p")
 	if len(contentTypes) > 0 {
 		args = append(args, contentTypes)
 		where += fmt.Sprintf(` AND p.content_type = ANY($%d)`, len(args))

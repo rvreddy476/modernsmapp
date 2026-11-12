@@ -43,6 +43,7 @@ var featureProductPrefixes = map[string]string{
 	"rider":              "/v1/rider",
 	"dating":             "/v1/dating",
 	"doorstep":           "/v1/doorstep",
+	"echo":               "/v1/notes",
 }
 
 type featureState struct {

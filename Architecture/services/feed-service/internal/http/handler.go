@@ -100,6 +100,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		// the same handler, which picks the family from the seed.
 		v1.GET("/videos/:postId/related", h.GetRelatedVideos)
 		v1.GET("/watch", h.GetVideoFeed)
+		// Echo note timelines (notes.go); 503 while ECHO_ENABLED is off.
+		v1.GET("/notes/following", h.GetNotesFollowing)
+		v1.GET("/notes/for-you", h.GetNotesForYou)
 		v1.POST("/preference", h.SetPreference)
 		v1.GET("/preference", h.GetPreference)
 		v1.POST("/signal", h.PostSignal)

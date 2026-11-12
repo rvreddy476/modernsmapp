@@ -155,6 +155,7 @@ func (s *Service) deltaHome(ctx context.Context, userID uuid.UUID, since time.Ti
 	// not count them either — same position relative to
 	// filterMainFeedExcluded as in GetHomeFeed.
 	fresh = dropShortForm(fresh)
+	fresh = dropNotes(fresh) // Echo notes are never on Home, so never counted
 	fresh = s.filterMainFeedExcluded(ctx, fresh)
 	if s.GetLongVideoFrequency(ctx, userID) == "hidden" {
 		fresh = s.applyLongVideoFrequency(fresh, "hidden", false)

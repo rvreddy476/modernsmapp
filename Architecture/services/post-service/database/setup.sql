@@ -281,13 +281,47 @@ CREATE TABLE IF NOT EXISTS thread_idempotency (
 -- plus optional text). Mixed voice carousels are deferred, so this is a
 -- distinct content_type rather than a media-kind variation of 'post'.
 -- Idempotent: drop-if-exists then re-add, matching migration 021.
+--
+-- This file runs on EVERY boot, so the list here must be the whole current
+-- set (migration 044's union plus 082's 'note'): a narrower list would be
+-- re-applied at the next restart and either refuse rows that exist
+-- (flick_embed crossposts, notes) or fail the boot outright.
 ALTER TABLE posts DROP CONSTRAINT IF EXISTS chk_content_type;
 
 ALTER TABLE posts
     ADD CONSTRAINT chk_content_type
     CHECK (content_type IN (
-        'post', 'poll', 'reel', 'video', 'flick', 'long_video', 'video_embed', 'voice'
+        'post', 'poll', 'voice',
+        'flick', 'long_video',
+        'reel', 'video',
+        'video_embed', 'flick_embed',
+        'note'
     ));
+-- Echo notes (migration 082_echo_notes.sql, mirrored): the conversation
+-- columns. Only rows with content_type = 'note' carry meaning in them.
+ALTER TABLE posts
+    ADD COLUMN IF NOT EXISTS reply_to_id     UUID,
+    ADD COLUMN IF NOT EXISTS conversation_id UUID,
+    ADD COLUMN IF NOT EXISTS reply_policy    TEXT NOT NULL DEFAULT 'everyone',
+    ADD COLUMN IF NOT EXISTS reply_count     INT  NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS quote_of_id     UUID,
+    ADD COLUMN IF NOT EXISTS edited_at       TIMESTAMPTZ;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'chk_posts_reply_policy') THEN
+        ALTER TABLE posts ADD CONSTRAINT chk_posts_reply_policy
+            CHECK (reply_policy IN ('everyone', 'following', 'mentioned'));
+    END IF;
+END $$;
+CREATE INDEX IF NOT EXISTS idx_posts_note_replies
+    ON posts (reply_to_id, created_at)
+    WHERE content_type = 'note' AND reply_to_id IS NOT NULL AND deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_posts_note_conversation
+    ON posts (conversation_id, created_at)
+    WHERE content_type = 'note' AND deleted_at IS NULL;
+CREATE INDEX IF NOT EXISTS idx_posts_note_author
+    ON posts (author_id, created_at DESC)
+    WHERE content_type = 'note' AND deleted_at IS NULL;
 -- Module 1 fixes-v1 / Codex P1-3 + P1-4.
 --
 -- P1-3: immediate publication only READ the draft row; there was no

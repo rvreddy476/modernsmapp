@@ -63,6 +63,8 @@ var publicationEntryPoints = map[string]publicationEntry{
 	"CreateRepost":       {file: "post_reposts.go", gate: gateInteractive},
 	"CreateCrosspost":    {file: "crosspost.go", gate: gateInteractive},
 	"CreateStoryPending": {file: "story_surface.go", gate: gateInteractive},
+	"CreateNote":         {file: "notes_create.go", gate: gateInteractive},
+	"CreateNoteThread":   {file: "notes_create.go", gate: gateInteractive},
 	"CreateLiveVODPost":  {file: "live_vod.go", gate: gateBackground},
 
 	"PublishDraft":            {file: "drafts.go", gate: gateInteractive},
@@ -92,6 +94,7 @@ var serviceSinks = []string{
 	"pgStore.CreateRepost",
 	"pgStore.SwitchRepostType",
 	"liveVOD.CreateLiveVODPost",
+	"CreateNotes",  // Echo: store/postgres CreateNotes, through the note store seam
 	"s.CreatePost", // the service's own CreatePost is a sink for its wrappers
 }
 

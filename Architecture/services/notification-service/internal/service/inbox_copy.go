@@ -118,6 +118,8 @@ var inboxCopyTable = map[string]inboxCopyEntry{
 	CreditTypeAccepted:        own("{actor} accepted your credit", InboxIconSocial),
 	FollowRequestType:         reuse(FollowRequestType, InboxIconSocial),
 	FollowRequestAcceptedType: reuse(FollowRequestAcceptedType, InboxIconSocial),
+	NoteReplyType:             reuse(NoteReplyType, InboxIconSocial),
+	NoteQuoteType:             reuse(NoteQuoteType, InboxIconSocial),
 
 	// === Live ===
 	LiveNotifType:  own("{actor} is live now", InboxIconLive),

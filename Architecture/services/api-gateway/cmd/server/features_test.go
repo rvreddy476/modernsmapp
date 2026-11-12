@@ -25,6 +25,7 @@ var productFlag = map[string]string{
 	"rider":              "RIDER_PUBLIC_ENABLED",
 	"dating":             "DATING_PUBLIC_ENABLED",
 	"doorstep":           "DOORSTEP_PUBLIC_ENABLED",
+	"echo":               "ECHO_PUBLIC_ENABLED",
 }
 
 // upstreamRoutes points every route at one upstream that answers 200 with a
@@ -89,7 +90,7 @@ func sortedKeys(m map[string]bool) []string {
 	return keys
 }
 
-// The response carries exactly the ten contract keys, the cache header, and
+// The response carries exactly the contract keys, the cache header, and
 // with nothing configured only broadcast channels are open (they have no
 // gate of their own; the values files close them with the disabled list).
 func TestFeaturesShapeHeadersAndDefaults(t *testing.T) {

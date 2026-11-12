@@ -29,6 +29,9 @@ func buildPushData(userID uuid.UUID, notifType, entityType string, entityID uuid
 			body = render.Body
 		}
 	}
+	if render.PushDeepLink != "" {
+		deepLink = render.PushDeepLink
+	}
 	data = map[string]string{
 		"type":        notifType,
 		"entity_type": entityType,

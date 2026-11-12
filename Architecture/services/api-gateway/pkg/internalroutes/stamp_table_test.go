@@ -60,6 +60,7 @@ var wantStamp = map[string]bool{
 	"/v1/posts":                    true,
 	"/v1/crossposts":               true,
 	"/v1/credits":                  true,
+	"/v1/notes":                    true,
 	"/v1/feed":                     true,
 	"/v1/notifications":            true,
 	"/v1/unread":                   true,

@@ -179,6 +179,8 @@ type Service struct {
 	privacyGateState
 	// Hashtag SSE gate state (hashtag_stream_gate.go).
 	hashtagStreamGateState
+	// Echo notes (notes.go).
+	notesState
 
 	// channels is the Tube channel store (channels.go). Nil when there is no
 	// Postgres store; every channel flow then fails closed.

@@ -199,6 +199,24 @@ type HydratedPost struct {
 	// next to hashtags (explicit form field + caption-parsed).
 	Mentions json.RawMessage `json:"mentions,omitempty"`
 
+	// Echo notes (docs/designs/echo-contract.md, "Note"). post-service's
+	// batch carries these on a note; they are passed through byte for
+	// byte, including an explicit null (a RawMessage keeps "null"), so a
+	// note on /v1/feed/notes/* reads exactly as post-service wrote it. A
+	// post that is not a note gains no key: omitempty drops an absent one.
+	// repost_count is the existing field above.
+	EditedAt          json.RawMessage `json:"edited_at,omitempty"`
+	ReplyToID         json.RawMessage `json:"reply_to_id,omitempty"`
+	ConversationID    json.RawMessage `json:"conversation_id,omitempty"`
+	QuoteOfID         json.RawMessage `json:"quote_of_id,omitempty"`
+	ReplyPolicy       json.RawMessage `json:"reply_policy,omitempty"`
+	ReplyCount        json.RawMessage `json:"reply_count,omitempty"`
+	LikeCount         json.RawMessage `json:"like_count,omitempty"`
+	ViewerHasLiked    json.RawMessage `json:"viewer_has_liked,omitempty"`
+	ViewerHasReposted json.RawMessage `json:"viewer_has_reposted,omitempty"`
+	ViewerCanReply    json.RawMessage `json:"viewer_can_reply,omitempty"`
+	QuotedNote        json.RawMessage `json:"quoted_note,omitempty"`
+
 	// Repost metadata — populated when this entry is a repost in someone's timeline
 	IsRepost        bool       `json:"is_repost,omitempty"`
 	RepostedBy      *uuid.UUID `json:"reposted_by,omitempty"`
@@ -285,6 +303,14 @@ type Author struct {
 	// `avatar_url` on the same row, so this is the row's existing shape, not
 	// a new idea.
 	AvatarURL *string `json:"avatar_url,omitempty"`
+
+	// Verification marks, as post-service puts them on a note's author
+	// (echo-contract.md). Passed through from the batch row when present;
+	// profile-service's batch does not carry them, so enrichRenderData
+	// keeps these three while it rebuilds the rest. Absent otherwise.
+	IsVerified        *bool   `json:"is_verified,omitempty"`
+	VerificationLevel *string `json:"verification_level,omitempty"`
+	BadgeFlags        *int64  `json:"badge_flags,omitempty"`
 }
 
 // HydratedMedia preserves the existing media_id/kind contract and adds the
@@ -644,8 +670,12 @@ func (s *Service) enrichRenderData(ctx context.Context, posts []HydratedPost, vi
 
 	for i := range posts {
 		profile, ok := profiles[posts[i].AuthorID]
+		prev := posts[i].Author
 		posts[i].Author = Author{ID: posts[i].AuthorID, DisplayName: "Deleted account"}
 		if ok {
+			posts[i].Author.IsVerified = prev.IsVerified
+			posts[i].Author.VerificationLevel = prev.VerificationLevel
+			posts[i].Author.BadgeFlags = prev.BadgeFlags
 			posts[i].Author.DisplayName = profile.DisplayName
 			posts[i].Author.Username = profile.Username
 			posts[i].Author.AvatarMediaID = profile.AvatarMediaID

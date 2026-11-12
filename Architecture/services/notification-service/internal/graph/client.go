@@ -202,3 +202,59 @@ func (c *Client) FollowerIDs(ctx context.Context, userID uuid.UUID, cursor strin
 	}
 	return page, nil
 }
+
+// EitherBlocked reports whether a block stands between userID and otherID in
+// EITHER direction, over GET /v1/graph/relationship as an in-cluster caller
+// (internal key, explicit user_id; graph-service's boundActor honours the
+// explicit id only without the gateway's write-source header, which this
+// client never sends). Used by the Echo note notifications
+// (events/note_consumer.go): a reply or quote between two people with a block
+// between them is never notified.
+//
+// Not quiet on a nil or unconfigured client and any non-200 is an error, so
+// the caller can fail closed: "could not ask" must never read as "no block".
+func (c *Client) EitherBlocked(ctx context.Context, userID, otherID uuid.UUID) (bool, error) {
+	if c == nil || c.baseURL == "" {
+		return false, fmt.Errorf("graph relationship: no graph client configured")
+	}
+	q := url.Values{}
+	q.Set("user_id", userID.String())
+	q.Set("other_id", otherID.String())
+	target := fmt.Sprintf("%s/v1/graph/relationship?%s", c.baseURL, q.Encode())
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return false, err
+	}
+	if c.internalKey != "" {
+		req.Header.Set("X-Internal-Service-Key", c.internalKey)
+	}
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return false, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false, fmt.Errorf("graph relationship: status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return false, err
+	}
+	// Envelope: {"data": {"blocked": bool, "blocked_by": bool, ...}}.
+	// blocked = the other person blocked userID; blocked_by = userID blocked
+	// the other person (graph-service service.Relationship). Data is a
+	// pointer so a body of another shape is an error, not "no block".
+	var env struct {
+		Data *struct {
+			Blocked   bool `json:"blocked"`
+			BlockedBy bool `json:"blocked_by"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(body, &env); err != nil {
+		return false, fmt.Errorf("graph relationship decode: %w", err)
+	}
+	if env.Data == nil {
+		return false, fmt.Errorf("graph relationship: response carries no data")
+	}
+	return env.Data.Blocked || env.Data.BlockedBy, nil
+}

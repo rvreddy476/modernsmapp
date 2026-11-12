@@ -355,6 +355,12 @@ services:
       DOORSTEP_SERVICE_URL: http://doorstep-service:8122
       DOORSTEP_PUBLIC_ENABLED: ${DOORSTEP_PUBLIC_ENABLED:-false}
       DOORSTEP_PILOT_USER_IDS: ${DOORSTEP_PILOT_USER_IDS:-2d598287-eee7-40b4-a7f5-b46b9412e4e7,66668bc2-a3f6-40a5-9cdd-c998dcf72f29}
+      # Echo (/v1/notes, /v1/feed/notes) answers 404 at the edge unless
+      # ECHO_PUBLIC_ENABLED=true; while closed only ECHO_PILOT_USER_IDS get
+      # through (empty = nobody). post-service and feed-service keep their own
+      # ECHO_ENABLED switch behind this one.
+      ECHO_PUBLIC_ENABLED: ${ECHO_PUBLIC_ENABLED:-false}
+      ECHO_PILOT_USER_IDS: ${ECHO_PILOT_USER_IDS:-}
       # Parked products (security sweep #13): each answers 404 at the edge
       # unless its flag is "true". Open on dev so the services stay testable;
       # every launch environment sets them "false" (deploy/services/api-gateway
@@ -748,6 +754,14 @@ services:
       # Unset means the production values (20/hour, 50/day).
       MAX_POSTS_PER_HOUR: "${MAX_POSTS_PER_HOUR:-20}"
       MAX_POSTS_PER_DAY: "${MAX_POSTS_PER_DAY:-50}"
+      # Echo short notes (docs/designs/echo-contract.md). Off until the
+      # founder opens Echo: every /v1/notes route answers 503. Premium is
+      # read live from identity-auth (AUTH_SERVICE_URL below).
+      ECHO_ENABLED: ${ECHO_ENABLED:-false}
+      ECHO_NOTES_PER_HOUR: ${ECHO_NOTES_PER_HOUR:-30}
+      ECHO_NOTES_PER_DAY: ${ECHO_NOTES_PER_DAY:-200}
+      ECHO_REPLIES_PER_HOUR: ${ECHO_REPLIES_PER_HOUR:-60}
+      ECHO_REPLIES_PER_HOUR_FREE: ${ECHO_REPLIES_PER_HOUR_FREE:-20}
       # Location search (internal/places): Google Places Autocomplete with
       # the server key Feast already uses. Unset = free-text location only.
       GOOGLE_MAPS_SERVER_KEY: ${GOOGLE_MAPS_SERVER_KEY:-}
@@ -896,6 +910,10 @@ services:
       POST_SERVICE_URL: http://post-service:8084
       PROFILE_SERVICE_URL: http://identity-profile:8098
       MEDIA_SERVICE_URL: http://media-service:8087
+      # Echo timelines (/v1/feed/notes/*) answer 503 until this is true;
+      # the notes_timeline fan-out runs either way.
+      ECHO_ENABLED: ${ECHO_ENABLED:-false}
+      ECHO_FANOUT_MAX_FOLLOWERS: ${ECHO_FANOUT_MAX_FOLLOWERS:-100000}
       # Reads tc_close_friends_posts to gate close-friends ("trusted") fanout.
       USER_SERVICE_URL: http://identity-user:8110
       # Reads the viewer's self-service filter keywords (hidden posts).

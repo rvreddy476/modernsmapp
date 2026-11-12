@@ -121,6 +121,15 @@ func encodeQuery(ctx context.Context, q map[string]interface{}, idField string) 
 		if idField == privateAuthorField && scope.resolved {
 			applyPrivateAuthorMustNot(q, scope.allowedPrivateAuthors())
 		}
+		// Echo (2026-11-12, echo-contract "search-service"): notes stay out
+		// of ordinary post search. Every posts_v1 query (post search, the
+		// universal and ranked paths, hashtag aggregations and suggestions)
+		// is keyed on author_id and passes here, so this one clause covers
+		// them all, for every viewer and scope. Notes are still indexed; a
+		// separate notes search will query them without this exclusion.
+		if idField == privateAuthorField {
+			applyNoteMustNot(q)
+		}
 	}
 	// Account control (auth-service deactivate / 30-day scheduled
 	// deletion): a hidden user, and every post by a hidden author, must
@@ -183,6 +192,18 @@ func ownerFieldForIndex(index string) string {
 func applyHiddenMustNot(q map[string]interface{}) {
 	appendMustNot(q, map[string]interface{}{
 		"term": map[string]interface{}{"is_hidden": true},
+	})
+}
+
+// NoteContentType is the content_type post-service stamps on an Echo note.
+const NoteContentType = "note"
+
+// applyNoteMustNot injects `must_not: [{term: {content_type: "note"}}]`, so
+// Echo notes never surface in ordinary post search. Documents without a
+// content_type (legacy rows) are unaffected.
+func applyNoteMustNot(q map[string]interface{}) {
+	appendMustNot(q, map[string]interface{}{
+		"term": map[string]interface{}{"content_type": NoteContentType},
 	})
 }
 

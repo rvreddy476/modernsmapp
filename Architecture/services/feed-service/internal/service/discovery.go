@@ -223,6 +223,7 @@ func (s *Service) discoveryFor(ctx context.Context, viewerID uuid.UUID, page []F
 		return nil
 	}
 	ranked = dropShortForm(ranked)
+	ranked = dropNotes(ranked) // Echo notes never enter Home
 	if s.pgStore != nil { // the distribution policy lives in Postgres
 		ranked = s.filterMainFeedExcluded(ctx, ranked)
 	}
