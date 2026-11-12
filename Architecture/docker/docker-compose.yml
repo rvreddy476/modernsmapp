@@ -1564,8 +1564,8 @@ services:
       # founder's: a plan whose price is empty cannot be bought (checkout
       # answers 503 PREMIUM_PRICE_NOT_SET). Whole paise, e.g. 14900 = Rs 149.
       PREMIUM_ENABLED: ${PREMIUM_ENABLED:-false}
-      PREMIUM_PRICE_30D_PAISE: ${PREMIUM_PRICE_30D_PAISE:-}
-      PREMIUM_PRICE_365D_PAISE: ${PREMIUM_PRICE_365D_PAISE:-}
+      PREMIUM_PRICE_30D_PAISE: ${PREMIUM_PRICE_30D_PAISE:-14900}
+      PREMIUM_PRICE_365D_PAISE: ${PREMIUM_PRICE_365D_PAISE:-149900}
       # Identity's internal roles API: the role `premium` with expires_at.
       IDENTITY_AUTH_URL: http://identity-auth:8081
       TRUST_SAFETY_SERVICE_URL: http://trust-safety-service:8091
