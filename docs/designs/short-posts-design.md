@@ -469,3 +469,50 @@ phase 0.
 The founder accepted all 14 defaults above as written. Echo is the first app after launch (option B);
 phase 0 prerequisites (gateway security fix, Momentum Premium behind `PREMIUM_ENABLED`, person
 verification) are built now, switched off.
+
+## 10. Pending list (13 Nov 2026)
+
+Echo and Premium are built on the server, Android and web, and switched off. These items are still open:
+
+**Founder to supply or decide**
+
+1. The company's registered **legal name** (`PREMIUM_SUPPLIER_LEGAL_NAME`).
+2. The company's **principal place of business**, as a full address (`PREMIUM_SUPPLIER_ADDRESS`).
+3. The company's **GSTIN** (`PREMIUM_PLATFORM_GSTIN`). Production will not switch Premium on until 1, 2 and 3 are set.
+4. **Accountant sign-off** on three things:
+   - GST category SAC 998439 at 18%, with prices excluding GST;
+   - place of supply = the platform's state, since no buyer address is collected;
+   - the invoice format (`MP/26-27/000001`, credit notes `MPC/…`).
+5. **Google Play payments policy** checked before Android sells Premium (decision 4). Until then the Android app has no buy button.
+6. When to **open Echo to everyone** (`ECHO_PUBLIC_ENABLED=true`). Until then it is open to pilot accounts only.
+
+**Production configuration (lead)**
+
+7. Monetization `deploy/services/monetization-service/values-*.yaml`:
+   - `PREMIUM_ENABLED`;
+   - `PREMIUM_PRICE_30D_PAISE=14900` and `PREMIUM_PRICE_365D_PAISE=149900`;
+   - the three supplier settings above.
+
+   Not added yet, because those files carry the founder's uncommitted edits.
+8. Invoice e-mail:
+   - a notification-service token keypair (`NOTIFICATION_SERVICE_TOKEN_KEY`/`_KID`);
+   - monetization `SERVICE_CALLERS` with `notification-service` and op `monetization:premium-invoice-mail`;
+   - `WEB_APP_BASE_URL`.
+9. Before Echo runs anywhere:
+   - Scylla `social_feed.notes_timeline`;
+   - migrations post 082, feed 009, monetization 027–029, notification 020.
+
+**Not built yet**
+
+10. **Android Premium purchase** (waits on 5). Android also has no invoice list.
+11. **PDF invoices.** Invoices are a printable HTML page, because the server images have no wkhtmltopdf.
+12. **Official / Government badges** and the impersonation name check (design phase 3).
+13. **Echo extras:**
+    - hashtag-follow candidates in For You;
+    - keyword filtering inside quoted notes;
+    - `notes_timeline` maintenance tooling;
+    - `echo_notes` pruning;
+    - restoring `reply_count` when a deleted reply is restored;
+    - removing a reply's notification when the reply is deleted.
+14. **UPI Autopay renewal.** Today renewal is a reminder plus a fresh payment.
+15. **Real-device and browser walkthrough.** Nothing has been seen on a phone or in a browser yet.
