@@ -254,18 +254,36 @@ type PremiumDocumentFile struct {
 	Filename    string
 }
 
-// InvoiceDocument renders one of the buyer's documents as printable HTML
-// (no PDF binary ships in the image; the browser saves it as PDF).
-func (p *Premium) InvoiceDocument(ctx context.Context, userID, id uuid.UUID) (*PremiumDocumentFile, error) {
+// PremiumDocumentFormat is how a document is rendered.
+type PremiumDocumentFormat string
+
+const (
+	// PremiumDocumentPDF is the PDF tax invoice or credit note (pure Go, no
+	// binary in the image) — the default.
+	PremiumDocumentPDF PremiumDocumentFormat = "pdf"
+	// PremiumDocumentHTML is the printable HTML fallback (?format=html).
+	PremiumDocumentHTML PremiumDocumentFormat = "html"
+)
+
+// InvoiceDocument renders one of the buyer's documents: a PDF named
+// "MP-26-27-000001.pdf", or the printable HTML fallback.
+func (p *Premium) InvoiceDocument(ctx context.Context, userID, id uuid.UUID, format PremiumDocumentFormat) (*PremiumDocumentFile, error) {
 	inv, err := p.ownInvoice(ctx, userID, id)
 	if err != nil {
 		return nil, err
 	}
-	body, err := sharedinvoice.RenderServiceHTML(inv.Document())
+	if format == PremiumDocumentHTML {
+		body, err := sharedinvoice.RenderServiceHTML(inv.Document())
+		if err != nil {
+			return nil, fmt.Errorf("render premium document %s: %w", inv.ID, err)
+		}
+		return &PremiumDocumentFile{Body: body, ContentType: "text/html; charset=utf-8", Filename: sharedinvoice.ServiceFilename(inv.Number, ".html")}, nil
+	}
+	body, err := sharedinvoice.RenderServicePDF(inv.Document())
 	if err != nil {
 		return nil, fmt.Errorf("render premium document %s: %w", inv.ID, err)
 	}
-	return &PremiumDocumentFile{Body: body, ContentType: "text/html; charset=utf-8", Filename: sharedinvoice.ServiceFilename(inv.Number, ".html")}, nil
+	return &PremiumDocumentFile{Body: body, ContentType: "application/pdf", Filename: sharedinvoice.ServicePDFFilename(inv.Number)}, nil
 }
 
 // GSTRegisterRow is one B2C document for GSTR-1. Amounts are signed (a credit

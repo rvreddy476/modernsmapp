@@ -3,6 +3,7 @@ module github.com/atpost/shared
 go 1.26.0
 
 require (
+	codeberg.org/go-pdf/fpdf v0.12.0
 	github.com/alicebob/miniredis/v2 v2.38.0
 	github.com/gin-gonic/gin v1.9.1
 	github.com/google/uuid v1.6.0

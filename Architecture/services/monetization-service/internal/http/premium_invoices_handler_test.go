@@ -78,11 +78,31 @@ func TestPremiumInvoiceRoutesAreOwnerOnly(t *testing.T) {
 	}
 }
 
-func TestPremiumInvoiceDocumentIsAnHTMLAttachment(t *testing.T) {
+func TestPremiumInvoiceDocumentIsAPDFAttachment(t *testing.T) {
 	r := newInvoiceRig(t, true)
 	owner := uuid.New()
 	id := r.paid(t, owner)
-	w := serveJSON(r.h, http.MethodGet, "/v1/monetization/premium/invoices/"+id.String()+"/document", owner.String(), "")
+	path := "/v1/monetization/premium/invoices/" + id.String() + "/document"
+	for _, p := range []string{path, path + "?format=pdf"} {
+		w := serveJSON(r.h, http.MethodGet, p, owner.String(), "")
+		if w.Code != http.StatusOK || w.Header().Get("Content-Type") != "application/pdf" ||
+			w.Header().Get("Content-Disposition") != `attachment; filename="MP-26-27-000001.pdf"` ||
+			w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("X-Content-Type-Options") != "nosniff" ||
+			!strings.HasPrefix(w.Body.String(), "%PDF-") {
+			t.Fatalf("%s: %d %v", p, w.Code, w.Header())
+		}
+		if strings.Contains(strings.ToLower(w.Body.String()), "provisional") {
+			t.Fatal("the PDF mentions the provisional rate")
+		}
+	}
+	wantCode(t, "unknown format", serveJSON(r.h, http.MethodGet, path+"?format=docx", owner.String(), ""), http.StatusBadRequest, "BAD_REQUEST")
+}
+
+func TestPremiumInvoiceDocumentHTMLFallback(t *testing.T) {
+	r := newInvoiceRig(t, true)
+	owner := uuid.New()
+	id := r.paid(t, owner)
+	w := serveJSON(r.h, http.MethodGet, "/v1/monetization/premium/invoices/"+id.String()+"/document?format=html", owner.String(), "")
 	if w.Code != http.StatusOK || !strings.HasPrefix(w.Header().Get("Content-Type"), "text/html") ||
 		w.Header().Get("Content-Disposition") != `attachment; filename="MP_26-27_000001.html"` ||
 		w.Header().Get("Cache-Control") != "private, no-store" || w.Header().Get("X-Content-Type-Options") != "nosniff" {

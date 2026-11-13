@@ -259,10 +259,12 @@ func (h *Handler) GetPremiumInvoice(c *gin.Context) {
 
 // GetPremiumInvoiceDocument — GET /v1/monetization/premium/invoices/:invoiceId/document
 //
-//	200 text/html; Content-Disposition: attachment; filename="MP_26-27_000001.html"
+//	200 application/pdf; Content-Disposition: attachment; filename="MP-26-27-000001.pdf"
+//	?format=html → 200 text/html; filename="MP_26-27_000001.html" (printable fallback)
+//	any other format → 400 BAD_REQUEST
 //
-// Printable HTML (the browser prints or saves it as PDF): the shared PDF
-// renderer needs wkhtmltopdf, which no image ships.
+// The PDF is rendered in Go (shared/invoice, embedded Noto Sans); no binary
+// ships in the image.
 func (h *Handler) GetPremiumInvoiceDocument(c *gin.Context) {
 	userID, ok := getUserID(c)
 	if !ok {
@@ -272,7 +274,16 @@ func (h *Handler) GetPremiumInvoiceDocument(c *gin.Context) {
 	if !ok {
 		return
 	}
-	doc, err := h.premium.InvoiceDocument(c.Request.Context(), userID, id)
+	format := service.PremiumDocumentPDF
+	switch c.Query("format") {
+	case "", "pdf":
+	case "html":
+		format = service.PremiumDocumentHTML
+	default:
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "format is pdf or html", nil)
+		return
+	}
+	doc, err := h.premium.InvoiceDocument(c.Request.Context(), userID, id, format)
 	if err != nil {
 		writePremiumError(c, err)
 		return

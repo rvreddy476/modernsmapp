@@ -245,8 +245,11 @@ func TestPremiumInvoiceIsOwnerOnly(t *testing.T) {
 	if _, err := r.svc.Invoice(r.ctx, b, id); !errors.Is(err, ErrPremiumInvoiceNotFound) {
 		t.Fatalf("stranger's invoice: %v", err)
 	}
-	if _, err := r.svc.InvoiceDocument(r.ctx, b, id); !errors.Is(err, ErrPremiumInvoiceNotFound) {
+	if _, err := r.svc.InvoiceDocument(r.ctx, b, id, PremiumDocumentPDF); !errors.Is(err, ErrPremiumInvoiceNotFound) {
 		t.Fatalf("stranger's document: %v", err)
+	}
+	if _, err := r.svc.InvoiceDocument(r.ctx, b, id, PremiumDocumentHTML); !errors.Is(err, ErrPremiumInvoiceNotFound) {
+		t.Fatalf("stranger's html document: %v", err)
 	}
 	if _, err := r.svc.Invoice(r.ctx, b, uuid.New()); !errors.Is(err, ErrPremiumInvoiceNotFound) {
 		t.Fatalf("missing invoice: %v", err)
@@ -254,10 +257,17 @@ func TestPremiumInvoiceIsOwnerOnly(t *testing.T) {
 	if docs := r.docsOf(t, b); len(docs) != 0 {
 		t.Fatalf("stranger's list %+v", docs)
 	}
-	doc, err := r.svc.InvoiceDocument(r.ctx, a, id)
+	doc, err := r.svc.InvoiceDocument(r.ctx, a, id, PremiumDocumentPDF)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.ContentType != "application/pdf" || doc.Filename != "MP-26-27-000001.pdf" || !strings.HasPrefix(string(doc.Body), "%PDF-") {
+		t.Fatalf("pdf document %s %q %v", doc.ContentType, doc.Filename, err)
+	}
+	doc, err = r.svc.InvoiceDocument(r.ctx, a, id, PremiumDocumentHTML)
 	if err != nil || doc.ContentType != "text/html; charset=utf-8" || doc.Filename != "MP_26-27_000001.html" ||
 		!strings.Contains(string(doc.Body), "MP/26-27/000001") || !strings.Contains(string(doc.Body), invSupplier.LegalName) {
-		t.Fatalf("document %+v %v", doc, err)
+		t.Fatalf("html document %+v %v", doc, err)
 	}
 }
 
