@@ -28,6 +28,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import com.us.android.core.designsystem.component.UsButton
+import com.us.android.core.designsystem.component.UsSecondaryButton
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.model.WebLinks
@@ -37,13 +38,22 @@ import com.us.android.feature.echo.data.Note
 import kotlinx.coroutines.delay
 
 /**
- * Why this viewer cannot post or reply, in plain words. No purchase button
- * and no link out: Google Play's payments policy is still being checked
- * (founder decision 4), so Android does not sell Premium here.
+ * Why this viewer cannot post or reply, in plain words.
+ *
+ * Google Play's payments policy for selling Premium in-app is still being
+ * checked (founder decision 4), so by default there is no purchase button and
+ * no link out: OK only. "Get Premium" is drawn above OK only when the reason
+ * is Premium AND [premiumEntryShown] — `:app`'s purchase switch is on and the
+ * server's premium plans answered 200 (13 Nov 2026).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun EligibilitySheet(blocked: ComposeGate.Blocked, onDismiss: () -> Unit) {
+fun EligibilitySheet(
+    blocked: ComposeGate.Blocked,
+    onDismiss: () -> Unit,
+    premiumEntryShown: () -> Boolean = { false },
+    onGetPremium: () -> Unit = {},
+) {
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = UsTheme.extended.bgCardSolid) {
         Column(
             modifier = Modifier
@@ -64,11 +74,27 @@ fun EligibilitySheet(blocked: ComposeGate.Blocked, onDismiss: () -> Unit) {
                 style = MaterialTheme.typography.bodyMedium,
                 color = UsTheme.extended.textSecondary
             )
-            UsButton(
-                text = "OK",
-                onClick = onDismiss,
-                modifier = Modifier.fillMaxWidth().testTag("echo_eligibility_ok")
-            )
+            if (showGetPremium(blocked, premiumEntryShown())) {
+                UsButton(
+                    text = GET_PREMIUM,
+                    onClick = {
+                        onDismiss()
+                        onGetPremium()
+                    },
+                    modifier = Modifier.fillMaxWidth().testTag("echo_eligibility_get_premium"),
+                )
+                UsSecondaryButton(
+                    text = "OK",
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth().testTag("echo_eligibility_ok"),
+                )
+            } else {
+                UsButton(
+                    text = "OK",
+                    onClick = onDismiss,
+                    modifier = Modifier.fillMaxWidth().testTag("echo_eligibility_ok")
+                )
+            }
         }
     }
 }
@@ -179,3 +205,12 @@ private fun Context.shareNote(note: Note) {
 
 private const val REPORT_CLOSE_MILLIS = 1_200L
 private const val SHARE_EXCERPT = 120
+
+/** The sheet's purchase button, the web's words. */
+const val GET_PREMIUM = "Get Premium"
+
+/**
+ * Whether the sheet offers "Get Premium": only for the Premium reason, and only
+ * while `:app` draws a way in ([entryShown]). Pure, so it is a table test.
+ */
+fun showGetPremium(blocked: ComposeGate.Blocked, entryShown: Boolean): Boolean = entryShown && blocked.premiumRequired

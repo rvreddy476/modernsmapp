@@ -120,7 +120,14 @@ fun NoteDetailScreen(destinations: EchoDestinations, viewModel: NoteDetailViewMo
         }
     }
 
-    state.blocked?.let { EligibilitySheet(blocked = it, onDismiss = viewModel::dismissBlocked) }
+    state.blocked?.let {
+        EligibilitySheet(
+            blocked = it,
+            onDismiss = viewModel::dismissBlocked,
+            premiumEntryShown = destinations.premiumEntryShown,
+            onGetPremium = destinations.onGetPremium,
+        )
+    }
     menuFor?.let { target ->
         NoteMoreSheet(
             menu = viewModel.menuFor(target),

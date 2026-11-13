@@ -205,7 +205,10 @@ sealed interface ComposeGate {
     data object Open : ComposeGate
 
     /** The sheet: why this viewer cannot, in the contract's words. */
-    data class Blocked(val title: String, val detail: String) : ComposeGate
+    data class Blocked(val title: String, val detail: String) : ComposeGate {
+        /** The reason is Premium: the sheet may offer "Get Premium" when `:app` draws that way in. */
+        val premiumRequired: Boolean get() = title == EchoWords.PREMIUM_REQUIRED
+    }
 
     /** The read itself failed: fail closed, with the reason. */
     data class Failed(val message: String) : ComposeGate

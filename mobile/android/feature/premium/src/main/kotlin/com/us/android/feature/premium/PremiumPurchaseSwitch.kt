@@ -1,0 +1,18 @@
+package com.us.android.feature.premium
+
+/**
+ * The app-side switch for SELLING Premium on Android (founder, 13 Nov 2026).
+ *
+ * Google Play's payments policy for a digital pass bought in-app has not been
+ * checked yet, so the purchase flow ships dark. `:app` provides this from the
+ * build flag `BuildConfig.PREMIUM_PURCHASE_ENABLED`: true in debug builds
+ * (every flavour, for the dev walk), false in every release build. Turning it
+ * on for a release is a one-line change in `app/build.gradle.kts`, after the
+ * policy check.
+ *
+ * Off, nothing of this feature is reachable: no Settings row, no "Get
+ * Premium" on Echo's sheet (which keeps only OK), no request to the premium
+ * routes, and the screen itself — if a route were ever reached — says
+ * "Premium is not available yet" without touching the network.
+ */
+data class PremiumPurchaseSwitch(val enabled: Boolean)

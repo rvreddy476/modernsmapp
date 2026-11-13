@@ -37,12 +37,18 @@ fun NavGraphBuilder.echoScreens(
     onBack: () -> Unit,
     onOpenProfile: (userId: String) -> Unit,
     navController: NavController,
+    // Momentum Premium (2026-11-13): the premium sheet's "Get Premium", drawn only
+    // while :app says so (its purchase switch on AND premium plans answered 200).
+    premiumEntryShown: () -> Boolean = { false },
+    onGetPremium: () -> Unit = {},
 ) {
     val destinations = EchoDestinations(
         onBack = onBack,
         onOpenNote = { navController.navigateToEchoNote(it) },
         onOpenProfile = onOpenProfile,
         onCompose = { navController.navigateToEchoComposer(it) },
+        premiumEntryShown = premiumEntryShown,
+        onGetPremium = onGetPremium,
     )
     composable<EchoHomeRoute> { EchoHomeScreen(destinations = destinations) }
     composable<EchoNoteRoute> { NoteDetailScreen(destinations = destinations) }

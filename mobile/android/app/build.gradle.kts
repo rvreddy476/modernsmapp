@@ -42,6 +42,16 @@ android {
             useLegacyPackaging = true
         }
     }
+
+    // Momentum Premium's purchase switch (founder, 13 Nov 2026): Google Play's
+    // payments policy for selling a digital pass in-app is not checked yet, so
+    // the flow is built dark. On in debug builds (every flavour: the dev walk),
+    // OFF in every release build. Turning it on for a release is this one line,
+    // after the policy check. PremiumSwitchModule hands it to :feature:premium.
+    buildTypes {
+        getByName("debug") { buildConfigField("boolean", "PREMIUM_PURCHASE_ENABLED", "true") }
+        getByName("release") { buildConfigField("boolean", "PREMIUM_PURCHASE_ENABLED", "false") }
+    }
 }
 
 dependencies {
@@ -102,6 +112,9 @@ dependencies {
     implementation(projects.feature.memberships)
     // Echo (2026-11-12): the short-posts screens, opened only while Product.ECHO is open.
     implementation(projects.feature.echo)
+    // Momentum Premium (2026-11-13): the pass purchase and invoices, behind
+    // PREMIUM_PURCHASE_ENABLED below. Only :app may depend on it (moduleGraphCheck (o)).
+    implementation(projects.feature.premium)
     implementation(projects.core.memberships)
     // The payment attempt type the commerce routes carry.
     implementation(projects.core.commerce)

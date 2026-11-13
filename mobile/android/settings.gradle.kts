@@ -288,3 +288,9 @@ include(":feature:memberships")
 // Echo, the premium short-posts app (2026-11-12, docs/designs/echo-contract.md):
 // the timelines, a note, the composer and the profile tab. Behind Product.ECHO.
 include(":feature:echo")
+
+// Momentum Premium (2026-11-13): buy a pass and download its tax invoices, on
+// :core:payments as application "premium". Built dark behind :app's
+// PREMIUM_PURCHASE_ENABLED build flag (true in debug, false in release until
+// Google Play's payments policy is checked). Reachable only from :app (rule (o)).
+include(":feature:premium")

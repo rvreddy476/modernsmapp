@@ -46,8 +46,19 @@ const val PRODUCT_UNAVAILABLE_DETAIL = "This part of the app is not open right n
  * recompose when it changes.
  */
 @Stable
-class ProductGateState(private val open: State<Set<Product>?>) {
+class ProductGateState(
+    private val open: State<Set<Product>?>,
+    /**
+     * Momentum Premium's ways in (2026-11-13): the purchase switch on AND premium
+     * plans answered 200 (`:feature:premium` rememberPremiumEntry). Read the same
+     * lazy way, so the Settings row and Echo's "Get Premium" follow the answer.
+     */
+    private val premium: State<Boolean>? = null,
+) {
     fun isOpen(product: Product): Boolean = productOpen(product, open.value)
+
+    /** Whether a way into Momentum Premium may be drawn. False without an answer. */
+    fun premiumShown(): Boolean = premium?.value == true
 
     /** The launcher's tiles for the current answer: a closed product has none. */
     fun launcher(): List<LauncherTile> = launcherTiles(open.value)

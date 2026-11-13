@@ -97,6 +97,12 @@ enum class SettingsRow(
 
     /** Request verification (2026-10-24, the web's /settings/verification): a page of this feature. */
     VERIFICATION(SettingsGroup.ACCOUNT, "Request verification", "Apply for a verified badge", UsIcons.ShieldCheck),
+
+    /**
+     * Momentum Premium (2026-11-13): passes and invoices. Drawn only while `:app` says so — its
+     * purchase switch on AND the server's premium plans answered 200 ([SettingsSections.premiumShown]).
+     */
+    PREMIUM(SettingsGroup.ACCOUNT, "Momentum Premium", "Passes, invoices and posting on Echo", UsIcons.Sparkles),
     PRIVACY(SettingsGroup.PRIVACY, "Privacy", "Private account, messages, calls and discovery", UsIcons.Lock),
     BLOCKED_ACCOUNTS(SettingsGroup.PRIVACY, "Blocked accounts", "People you blocked or muted", UsIcons.Ban),
     INBOX_MESSAGING(
@@ -136,9 +142,14 @@ enum class SettingsRow(
     PRIVACY_POLICY(SettingsGroup.SUPPORT, "Privacy policy", null, UsIcons.Shield, WebLinks.PRIVACY_POLICY_URL),
 }
 
-/** The page, grouped: every group in order, each with its rows in order. Pure, so it is a table test. */
-fun settingsHubGroups(): List<Pair<SettingsGroup, List<SettingsRow>>> =
-    SettingsGroup.entries.map { group -> group to SettingsRow.entries.filter { it.group == group } }
+/**
+ * The page, grouped: every group in order, each with its rows in order. Pure, so it is a table test.
+ * [premium] draws the Momentum Premium row; off (the default), it is left out.
+ */
+fun settingsHubGroups(premium: Boolean = false): List<Pair<SettingsGroup, List<SettingsRow>>> =
+    SettingsGroup.entries.map { group ->
+        group to SettingsRow.entries.filter { it.group == group && (premium || it != SettingsRow.PREMIUM) }
+    }
 
 /**
  * What tapping [row] does: the screen `:app` gave for it, or the row's web
@@ -175,6 +186,7 @@ private fun SettingsSections.screenFor(row: SettingsRow): (() -> Unit)? = when (
     SettingsRow.BLOCKED_ACCOUNTS -> onBlockedAccounts
     SettingsRow.HIDDEN_CHANNELS -> onHiddenChannels
     SettingsRow.VERIFICATION -> onVerification
+    SettingsRow.PREMIUM -> onPremium.takeIf { premiumShown() }
     else -> null
 }
 
@@ -225,7 +237,7 @@ fun SettingsHubScreen(
                 .padding(horizontal = UsTheme.spacing.pageHorizontal)
                 .testTag("settings_hub"),
         ) {
-            settingsHubGroups().forEach { (group, rows) ->
+            settingsHubGroups(premium = sections.premiumShown()).forEach { (group, rows) ->
                 GroupHeading(group.title)
                 SettingsCard {
                     rows.forEachIndexed { index, row ->

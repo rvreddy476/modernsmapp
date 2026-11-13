@@ -119,7 +119,14 @@ fun EchoHomeScreen(destinations: EchoDestinations, viewModel: EchoHomeViewModel 
             UsMessageHost(message = message, onDismiss = viewModel::messageShown)
         }
     }
-    state.blocked?.let { EligibilitySheet(blocked = it, onDismiss = viewModel::dismissBlocked) }
+    state.blocked?.let {
+        EligibilitySheet(
+            blocked = it,
+            onDismiss = viewModel::dismissBlocked,
+            premiumEntryShown = destinations.premiumEntryShown,
+            onGetPremium = destinations.onGetPremium,
+        )
+    }
 }
 
 const val ECHO_TITLE = "Echo"

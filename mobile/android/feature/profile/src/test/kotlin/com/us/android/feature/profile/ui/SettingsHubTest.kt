@@ -61,7 +61,7 @@ class SettingsHubTest {
 
     @Test
     fun `every row is drawn exactly once`() {
-        val drawn = settingsHubGroups().flatMap { it.second }
+        val drawn = settingsHubGroups(premium = true).flatMap { it.second }
         assertThat(drawn).containsNoDuplicates()
         assertThat(drawn).containsExactlyElementsIn(SettingsRow.entries)
     }
@@ -114,6 +114,21 @@ class SettingsHubTest {
             "offline videos",
         ).inOrder()
         assertThat(web).hasSize(3)
+    }
+
+    @Test
+    fun `Momentum Premium is drawn and opens only while the shell says so`() {
+        assertThat(settingsHubGroups().flatMap { it.second }).doesNotContain(SettingsRow.PREMIUM)
+        assertThat(settingsHubGroups(premium = true).first { it.first == SettingsGroup.ACCOUNT }.second.last())
+            .isEqualTo(SettingsRow.PREMIUM)
+
+        var opened = 0
+        val hidden = SettingsSections({}, {}, {}, {}, {}, {}, {}, {}, {}, onPremium = { opened++ })
+        assertThat(settingsRowAction(SettingsRow.PREMIUM, hidden, {}, {}, {})).isNull()
+
+        val shown = hidden.copy(premiumShown = { true })
+        settingsRowAction(SettingsRow.PREMIUM, shown, {}, {}, {})!!.invoke()
+        assertThat(opened).isEqualTo(1)
     }
 
     @Test

@@ -106,6 +106,9 @@ tasks.register<Delete>("clean") {
  *      profile and post features use) reaches no `:feature:*` and no app. No
  *      partner app — Kitchen, Rider, Captain, Doorstep Pro — reaches either:
  *      memberships are Momentum's.
+ *   o. Momentum Premium (2026-11-13): `:feature:premium` — the pass purchase
+ *      and the buyer's tax invoices — is reachable ONLY from `:app` and
+ *      reaches no other `:feature:*`.
  *
  * (b)–(f) are TRANSITIVE over implementation/api/runtimeOnly project edges,
  * because the hazard is what ends up in the APK, not what one build file says.
@@ -278,6 +281,18 @@ fun applicationBoundaryViolations(direct: Map<String, Set<String>>): List<String
         listOf(":app-kitchen", ":app-rider", ":app-captain", ":app-doorstep-pro").filter { it in direct }.forEach { app ->
             if (":core:memberships" in reach(app)) {
                 add("$app must not depend on :core:memberships (directly or transitively) — memberships are Momentum's.")
+            }
+        }
+        // (o) Momentum Premium (2026-11-13): the purchase and invoice screens are
+        // Momentum's alone and reach no other feature.
+        direct.keys.filter { it != ":app" && it != ":feature:premium" }.forEach { module ->
+            if (":feature:premium" in reach(module)) {
+                add("$module must not depend on :feature:premium (directly or transitively) — Premium ships only in Momentum.")
+            }
+        }
+        if (":feature:premium" in direct) {
+            reach(":feature:premium").filter { it.startsWith(":feature:") && it != ":feature:premium" }.forEach { dep ->
+                add(":feature:premium must not depend on $dep (directly or transitively) — Premium shares code through :core only.")
             }
         }
         // (d)
@@ -1065,7 +1080,9 @@ tasks.register("moduleGraphCheck") {
     //      every feature, and both out of the partner apps.
     // Still to add, one module at a time: :core:location, :core:kyc-ui.
     // 61 with :feature:echo (Echo short posts, 2026-11-12).
-    val expectedModuleCount = 61
+    // 62 with :feature:premium (Momentum Premium purchase and invoices, 2026-11-13;
+    //      rule (o) keeps it to :app and off every other :feature:*).
+    val expectedModuleCount = 62
 
     doLast {
         val allViolations = buildList {

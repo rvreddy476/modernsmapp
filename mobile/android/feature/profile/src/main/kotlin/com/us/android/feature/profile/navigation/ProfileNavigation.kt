@@ -402,6 +402,14 @@ data class SettingsSections(
     val onHiddenChannels: () -> Unit = {},
     /** Account › Request verification (2026-10-24), a page of this feature: `:app` pushes [VerificationRoute]. */
     val onVerification: () -> Unit = {},
+    /**
+     * Account › Momentum Premium (2026-11-13), a `:feature:premium` page. The row is drawn only
+     * while this answers true — `:app`'s purchase switch on AND premium plans answered 200 — and
+     * is read where the page is drawn, so it follows the server's answer. False (the default):
+     * no row.
+     */
+    val premiumShown: () -> Boolean = { false },
+    val onPremium: () -> Unit = {},
 )
 
 /** Type-safe navigation to another user's profile. */

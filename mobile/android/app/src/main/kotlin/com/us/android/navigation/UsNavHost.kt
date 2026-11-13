@@ -193,6 +193,9 @@ import com.us.android.feature.post.navigation.navigateToPost
 import com.us.android.feature.post.navigation.navigateToStudio
 import com.us.android.feature.post.navigation.postScreen
 import com.us.android.feature.post.navigation.studioScreen
+import com.us.android.feature.premium.navigation.navigateToPremium
+import com.us.android.feature.premium.navigation.premiumScreens
+import com.us.android.feature.premium.navigation.rememberPremiumEntry
 import com.us.android.feature.profile.navigation.MomentumHeaderDestinations
 import com.us.android.feature.profile.navigation.NotificationSettingsRoute
 import com.us.android.feature.profile.navigation.PrivacySettingsRoute
@@ -381,7 +384,9 @@ fun UsNavHost(
         (shellState as? ShellState.Ready)?.let { TabResolver.resolve(it.prefs) }.orEmpty()
     }
     val openProductsState = rememberUpdatedState(openProducts)
-    val gate = remember { com.us.android.features.ProductGateState(openProductsState) }
+    // Momentum Premium (2026-11-13): switch on AND premium plans answered 200, re-read on sign-in.
+    val premiumEntry = rememberPremiumEntry(signedIn = sessionState.isAuthenticated)
+    val gate = remember { com.us.android.features.ProductGateState(openProductsState, premiumEntry) }
     val startDestination = shellState.startDestination()
 
     // An incoming ring fronts the call surface (foreground path; background
@@ -1570,6 +1575,9 @@ private fun NavGraphBuilder.profileDestinations(
         onBack = { navController.popBackStack() },
         onOpenProfile = { userId -> navController.navigateToProfile(userId) },
         navController = navController,
+        // The premium sheet's "Get Premium" (2026-11-13), only while Premium may be sold.
+        premiumEntryShown = { gate.premiumShown() },
+        onGetPremium = { navController.navigateToPremium() },
     )
     profileScreen(
         onOpenFollowers = { navController.navigateToFollowList(it) },
@@ -1642,6 +1650,9 @@ private fun NavGraphBuilder.profileDestinations(
                 onVerification = { navController.navigate(com.us.android.feature.profile.navigation.VerificationRoute) },
                 // Hidden chats (24 Oct 2026): Privacy › Hidden chats is a :feature:chat page.
                 onHiddenChats = { navController.navigateToHiddenChatsSettings() },
+                // Account › Momentum Premium (2026-11-13), only while Premium may be sold.
+                premiumShown = { gate.premiumShown() },
+                onPremium = { navController.navigateToPremium() },
             ),
             versionName = BuildConfig.VERSION_NAME,
         ),
@@ -1657,6 +1668,12 @@ private fun NavGraphBuilder.profileDestinations(
         onAccountControl = { navController.navigateToAccountControl() },
     )
     accountControlScreen(onBack = { navController.popBackStack() }, onSignedOut = onSignedOut)
+    // Momentum Premium (2026-11-13): passes, purchase and invoices. Its ways in are drawn
+    // only while gate.premiumShown(); the screen itself refuses with the switch off.
+    premiumScreens(
+        onBack = { navController.popBackStack() },
+        onPostOnEcho = { navController.navigateToEcho() },
+    )
     screenTimeScreen(onBack = { navController.popBackStack() })
     contentPreferencesScreen(onBack = { navController.popBackStack() })
     // Recently deleted: the 30-day restore window for soft-deleted posts.
