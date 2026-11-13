@@ -21,6 +21,7 @@ import (
 	"github.com/atpost/post-service/internal/places"
 	"github.com/atpost/post-service/internal/postpurge"
 	"github.com/atpost/post-service/internal/postschedule"
+	"github.com/atpost/post-service/internal/premium"
 	"github.com/atpost/post-service/internal/purge"
 	"github.com/atpost/post-service/internal/reconcile"
 	"github.com/atpost/post-service/internal/service"
@@ -282,6 +283,22 @@ func main() {
 		Emails:        actionlinks.NewHTTPEmails(env(actionlinks.EnvAuthServiceURL, actionlinks.DefaultAuthServiceURL), internalServiceKey),
 		MinAccountAge: actionMinAge,
 	})
+	// Echo short notes (docs/designs/echo-contract.md). ECHO_ENABLED defaults
+	// off: every /v1/notes route answers 503 ECHO_NOT_ENABLED. The premium
+	// role is read live from identity-auth and fails closed.
+	echoCfg := service.NoteConfig{
+		Enabled:  service.EchoEnabledFromEnv(os.Getenv),
+		Accounts: actionlinks.NewHTTPAccounts(env(actionlinks.EnvIdentityUserServiceURL, actionlinks.DefaultIdentityUserURL), internalServiceKey),
+		Limits:   service.NoteLimitsFromEnv(os.Getenv),
+	}
+	// Only a non-nil client goes into the interface: a nil *premium.Client
+	// would read as configured.
+	if pc := premium.New(env(actionlinks.EnvAuthServiceURL, actionlinks.DefaultAuthServiceURL), internalServiceKey); pc != nil {
+		echoCfg.Premium = pc
+	}
+	postSvc.SetNoteConfig(echoCfg)
+	slog.Info("echo notes", "enabled", echoCfg.Enabled)
+
 	switch {
 	case actionChecker != nil:
 		slog.Info("action link safety checker configured", "checker", actionChecker.Name())
