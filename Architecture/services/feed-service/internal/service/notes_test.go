@@ -101,6 +101,15 @@ func (f *fakeNotesTimelines) DeleteNotesTimelineEntriesByAuthorForUser(_ context
 	return n, nil
 }
 
+func (f *fakeNotesTimelines) DeleteNotesTimelineRow(_ context.Context, owner, post uuid.UUID, key string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if r, ok := f.rows[owner][post]; ok && r.CursorToken == key {
+		delete(f.rows[owner], post)
+	}
+	return nil
+}
+
 func (f *fakeNotesTimelines) UserInteractedPosts(_ context.Context, user uuid.UUID, _ int) ([]uuid.UUID, error) {
 	return f.liked[user], nil
 }

@@ -507,10 +507,124 @@ func (s *Store) UpdateNote(ctx context.Context, id, authorID uuid.UUID, e NoteEd
 	return tag.RowsAffected() == 1, nil
 }
 
-// DecrementNoteReplyCount takes one reply off parentID (never below zero).
-func (s *Store) DecrementNoteReplyCount(ctx context.Context, parentID uuid.UUID) error {
-	_, err := s.db.Exec(ctx, `
-		UPDATE posts SET reply_count = GREATEST(reply_count - 1, 0)
-		WHERE id = $1 AND content_type = '`+NoteContentType+`'`, parentID)
-	return err
+// ── Delete and restore (reply_count, notification recipients) ───────────
+//
+// A reply's parent counts it once while the reply is live. The count moves
+// inside the delete and restore transactions themselves
+// (DeleteUploadCascade, RestorePost), on the row's deleted_at transition:
+// the delete UPDATE only matches a live row and the restore only a deleted
+// one (locked FOR UPDATE), so a repeated delete or restore finds no
+// transition and moves nothing. Every delete path (DELETE /v1/notes/:id,
+// DELETE /v1/posts/:id, the bulk delete) goes through DeleteUploadCascade,
+// so a restore can never add back a reply that was never taken off.
+
+// noteReplyCountAdjustSQL moves a parent note's reply_count by $2, never
+// below zero, and only on a note row.
+const noteReplyCountAdjustSQL = `
+	UPDATE posts SET reply_count = GREATEST(reply_count + $2, 0)
+	WHERE id = $1 AND content_type = '` + NoteContentType + `'`
+
+// noteLinksSQL reads a note's reply / quote target and that target's
+// author: the parent author PostDeleted names so notification-service can
+// take its note_reply / note_quote notice back.
+const noteLinksSQL = `
+	SELECT n.reply_to_id, n.quote_of_id, t.author_id
+	FROM posts n
+	LEFT JOIN posts t ON t.id = COALESCE(n.reply_to_id, n.quote_of_id)
+	WHERE n.id = $1 AND n.content_type = '` + NoteContentType + `'`
+
+// NoteLinks are a note's conversation targets as a delete or restore reads
+// them. Each is nil when absent.
+type NoteLinks struct {
+	ReplyToID      *uuid.UUID
+	QuoteOfID      *uuid.UUID
+	TargetAuthorID *uuid.UUID
+}
+
+// noteLinksTx reads postID's links in tx; a row that is not a note has none.
+func noteLinksTx(ctx context.Context, tx pgx.Tx, postID uuid.UUID) (NoteLinks, error) {
+	var l NoteLinks
+	err := tx.QueryRow(ctx, noteLinksSQL, postID).Scan(&l.ReplyToID, &l.QuoteOfID, &l.TargetAuthorID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return NoteLinks{}, nil
+	}
+	if err != nil {
+		return NoteLinks{}, fmt.Errorf("note links: %w", err)
+	}
+	return l, nil
+}
+
+// noteReplyCountDelta is how a delete (restore=false) or a restore
+// (restore=true) of a note moves its parent's reply_count: -1 / +1 for a
+// reply, 0 for anything else. Pure, so the rule is pinned without a
+// database.
+func noteReplyCountDelta(contentType string, l NoteLinks, restore bool) int {
+	if contentType != NoteContentType || l.ReplyToID == nil {
+		return 0
+	}
+	if restore {
+		return 1
+	}
+	return -1
+}
+
+// noteDeleteOrRestoreTx is the note half of a delete or restore, run in
+// that transaction right after the deleted_at transition: the parent's
+// reply_count moves, and the links are returned for the event. A row that
+// is not a note reads nothing.
+func noteDeleteOrRestoreTx(ctx context.Context, tx pgx.Tx, postID uuid.UUID, contentType string, restore bool) (NoteLinks, error) {
+	if contentType != NoteContentType {
+		return NoteLinks{}, nil
+	}
+	l, err := noteLinksTx(ctx, tx, postID)
+	if err != nil {
+		return NoteLinks{}, err
+	}
+	if d := noteReplyCountDelta(contentType, l, restore); d != 0 {
+		if _, err := tx.Exec(ctx, noteReplyCountAdjustSQL, *l.ReplyToID, d); err != nil {
+			return NoteLinks{}, fmt.Errorf("note reply count: %w", err)
+		}
+	}
+	return l, nil
+}
+
+// ── Followed hashtags (feed-service For You) ─────────────────────────────
+
+// followedHashtagNotesSQL lists recent live public top-level notes that
+// carry any of $1, never the viewer's own ($2), created at or after $3,
+// newest first, at most $4. Pure, so the filters are pinned without a
+// database. The author gate (private accounts, blocks, mutes, hidden
+// authors) is feed-service's, which runs it on every For You candidate.
+func followedHashtagNotesSQL() string {
+	return `SELECT p.id FROM posts p
+		WHERE p.content_type = '` + NoteContentType + `'
+		  AND p.reply_to_id IS NULL -- top-level notes only
+		  AND p.hashtags && $1::text[]
+		  AND p.visibility = 'public'
+		  AND ` + ViewerEligibleSQL("p") + `
+		  AND p.author_id <> $2
+		  AND p.created_at >= $3
+		ORDER BY p.created_at DESC, p.id DESC
+		LIMIT $4`
+}
+
+// FollowedHashtagNoteIDs answers followedHashtagNotesSQL.
+func (s *Store) FollowedHashtagNoteIDs(ctx context.Context, tags []string, viewerID uuid.UUID, since time.Time, limit int) ([]uuid.UUID, error) {
+	if len(tags) == 0 || limit <= 0 {
+		return []uuid.UUID{}, nil
+	}
+	rows, err := s.db.Query(ctx, followedHashtagNotesSQL(), tags, viewerID, since, limit)
+	if err != nil {
+		return nil, fmt.Errorf("followed hashtag notes: %w", err)
+	}
+	defer rows.Close()
+	out := make([]uuid.UUID, 0, limit)
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }

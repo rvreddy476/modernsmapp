@@ -154,7 +154,31 @@ func postMatchesAnyKeyword(p HydratedPost, keywords []string) bool {
 			return true
 		}
 	}
-	return false
+	return quotedNoteMatchesAnyKeyword(p.QuotedNote, keywords)
+}
+
+// quotedNoteMatchesAnyKeyword checks an Echo quote's embedded quoted_note
+// (2026-11-13) on the same surfaces. A hit drops the WHOLE quote, which is
+// how Home already treats shared content: a repost row IS its original
+// post, so an original that hits a keyword takes the repost row with it
+// (and a blocked or muted original author does too, repostfilter.go).
+// Home has no partial preview to hide, so neither does Echo:
+// the outer note goes, rather than being served with quoted_note blanked.
+//
+// quoted_note is one level deep (contract), so this never recurses
+// further. A quoted_note that does not decode is matched on every string
+// it holds, so a malformed preview can only be dropped, never let through.
+func quotedNoteMatchesAnyKeyword(raw json.RawMessage, keywords []string) bool {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return false
+	}
+	var q HydratedPost
+	if err := json.Unmarshal(raw, &q); err != nil {
+		return textContainsAnyKeyword(richTextPlain(raw), keywords)
+	}
+	q.QuotedNote = nil
+	return postMatchesAnyKeyword(q, keywords)
 }
 
 // richTextPlain flattens a rich-text JSON payload to the string values it

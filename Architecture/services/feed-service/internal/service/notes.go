@@ -86,6 +86,7 @@ type notesTimelineStore interface {
 	DeleteNotesTimelineEntriesByAuthorForUser(ctx context.Context, userID, authorID uuid.UUID, bucketLookback int) (int, error)
 	UserInteractedPosts(ctx context.Context, userID uuid.UUID, limit int) ([]uuid.UUID, error)
 	GetHomeTimelineByContentTypes(ctx context.Context, userID uuid.UUID, contentTypes []string, limit int) ([]scylla.FeedItem, error)
+	DeleteNotesTimelineRow(ctx context.Context, ownerID, postID uuid.UUID, key string) error
 }
 
 // notesMetaStore is the Postgres slice (migration 009); the MetaStore
@@ -655,8 +656,9 @@ func (s *Service) rankNotes(ctx context.Context, viewerID uuid.UUID, pool []Feed
 	return out
 }
 
-// forYouCandidates gathers the three contract sources. Following is
-// required (an error fails the page); the other two are best effort.
+// forYouCandidates gathers the three contract sources plus notes carrying a
+// hashtag the viewer follows (notes_hashtags.go). Following is required (an
+// error fails the page); the others are best effort.
 func (s *Service) forYouCandidates(ctx context.Context, viewerID uuid.UUID) ([]FeedItem, error) {
 	rows, err := s.notesFollowingRows(ctx, viewerID, "", forYouFollowingRows)
 	if err != nil {
@@ -672,6 +674,11 @@ func (s *Service) forYouCandidates(ctx context.Context, viewerID uuid.UUID) ([]F
 		log.Printf("echo: For You rising source unavailable: %v", err)
 	} else {
 		pool = append(pool, rising...)
+	}
+	if tagged, err := s.forYouHashtagNotes(ctx, viewerID); err != nil {
+		log.Printf("echo: For You followed-hashtag source unavailable for %s: %v", viewerID, err)
+	} else {
+		pool = append(pool, tagged...)
 	}
 	return pool, nil
 }

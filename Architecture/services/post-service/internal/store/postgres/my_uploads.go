@@ -108,6 +108,14 @@ func (s *Store) DeleteUploadCascade(ctx context.Context, postID, authorID uuid.U
 	}
 	purgeAt := deletedAt.Add(purgeAfter)
 
+	// Echo (notes.go): a reply gives its parent's reply_count back on this
+	// transition, and a reply or quote names its target's author for
+	// notification-service. Nothing for a row that is not a note.
+	links, err := noteDeleteOrRestoreTx(ctx, tx, postID, contentType, false)
+	if err != nil {
+		return 0, err
+	}
+
 	// M2-P0-2: deletion removes the post from public search. Emitted in
 	// this same transaction so the removal cannot be lost.
 	rev, err := BumpSearchRevAndEmitTxRev(ctx, tx, postID)
@@ -117,6 +125,8 @@ func (s *Store) DeleteUploadCascade(ctx context.Context, postID, authorID uuid.U
 	if err := InsertOutboxEventTx(ctx, tx, events.PostDeleted, "post", postID, events.PostDeletedPayload{
 		PostID: postID.String(), AuthorID: authorID.String(), DeletedAt: deletedAt,
 		ContentType: contentType, CreatedAt: createdAt, SearchRev: rev, PurgeAt: &purgeAt,
+		ReplyToID: uuidString(links.ReplyToID), QuoteOfID: uuidString(links.QuoteOfID),
+		TargetAuthorID: uuidString(links.TargetAuthorID),
 	}); err != nil {
 		return 0, fmt.Errorf("emit PostDeleted: %w", err)
 	}

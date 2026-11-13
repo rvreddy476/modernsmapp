@@ -51,10 +51,38 @@ func (s *MetaStore) NoteMeta(ctx context.Context, postID uuid.UUID) (NoteRow, bo
 }
 
 // SetNoteDeleted follows PostDeleted (true) and PostRestored (false). A
-// post that is not a recorded note matches no row.
+// post that is not a recorded note matches no row. deleted_at (migration
+// 010) keeps the first delete's time, so a redelivered PostDeleted does not
+// restart the pruning window, and a restore clears it.
 func (s *MetaStore) SetNoteDeleted(ctx context.Context, postID uuid.UUID, deleted bool) error {
-	_, err := s.db.Exec(ctx, `UPDATE echo_notes SET deleted = $2 WHERE post_id = $1`, postID, deleted)
+	_, err := s.db.Exec(ctx, `
+		UPDATE echo_notes
+		SET deleted = $2,
+		    deleted_at = CASE WHEN $2 THEN COALESCE(deleted_at, NOW()) ELSE NULL END
+		WHERE post_id = $1`, postID, deleted)
 	return err
+}
+
+// pruneEchoNotesSQL deletes at most $3 echo_notes rows created before $1
+// (past the timeline retention) or deleted before $2 (past the restore
+// window, so purged upstream). One bounded batch per call.
+const pruneEchoNotesSQL = `
+	DELETE FROM echo_notes WHERE post_id IN (
+		SELECT post_id FROM echo_notes
+		WHERE created_at < $1 OR (deleted AND deleted_at < $2)
+		LIMIT $3)`
+
+// PruneEchoNotes runs one batch of pruneEchoNotesSQL and reports how many
+// rows went.
+func (s *MetaStore) PruneEchoNotes(ctx context.Context, createdBefore, deletedBefore time.Time, batch int) (int64, error) {
+	if batch <= 0 {
+		return 0, nil
+	}
+	tag, err := s.db.Exec(ctx, pruneEchoNotesSQL, createdBefore, deletedBefore, batch)
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 // SetNoteVisibility follows post.visibility_changed.

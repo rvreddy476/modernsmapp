@@ -949,14 +949,21 @@ type UserUnfollowedPayload struct {
 //     barrier: an auto barrier lands ABOVE the canonical revision, and the
 //     restore that follows (rev+1) would then be dropped as stale.
 //   - PurgeAt is when the purge worker will hard-delete unless restored.
+//   - ReplyToID / QuoteOfID / TargetAuthorID (Echo, 2026-11-13) ride only
+//     on a note that replies to or quotes another: the target note and its
+//     author, so notification-service can take the note_reply / note_quote
+//     notice out of that author's inbox.
 type PostDeletedPayload struct {
-	PostID      string     `json:"post_id"`
-	AuthorID    string     `json:"author_id"`
-	DeletedAt   time.Time  `json:"deleted_at"`
-	ContentType string     `json:"content_type,omitempty"`
-	CreatedAt   time.Time  `json:"created_at,omitempty"`
-	SearchRev   int64      `json:"search_rev,omitempty"`
-	PurgeAt     *time.Time `json:"purge_at,omitempty"`
+	PostID         string     `json:"post_id"`
+	AuthorID       string     `json:"author_id"`
+	DeletedAt      time.Time  `json:"deleted_at"`
+	ContentType    string     `json:"content_type,omitempty"`
+	CreatedAt      time.Time  `json:"created_at,omitempty"`
+	SearchRev      int64      `json:"search_rev,omitempty"`
+	PurgeAt        *time.Time `json:"purge_at,omitempty"`
+	ReplyToID      string     `json:"reply_to_id,omitempty"`
+	QuoteOfID      string     `json:"quote_of_id,omitempty"`
+	TargetAuthorID string     `json:"target_author_id,omitempty"`
 }
 
 // PostRestoredPayload undoes a soft delete within the restore window.

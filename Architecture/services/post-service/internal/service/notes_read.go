@@ -15,7 +15,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"strings"
 
@@ -384,7 +383,7 @@ func (s *Service) PatchNote(ctx context.Context, id, callerID uuid.UUID, in Note
 
 // DeleteNote is DELETE /v1/notes/:id: the ordinary soft delete (Recently
 // deleted, restorable), by the author only. A reply gives its parent's
-// reply_count back.
+// reply_count back, in the store's delete transaction.
 func (s *Service) DeleteNote(ctx context.Context, id, callerID uuid.UUID) error {
 	store, err := s.notesStore()
 	if err != nil {
@@ -410,11 +409,9 @@ func (s *Service) DeleteNote(ctx context.Context, id, callerID uuid.UUID) error 
 		}
 		return err
 	}
-	if n.ReplyToID != nil {
-		if err := store.DecrementNoteReplyCount(ctx, *n.ReplyToID); err != nil {
-			slog.Warn("note delete: parent reply_count not decremented", "note_id", id, "parent_id", *n.ReplyToID, "err", err)
-		}
-	}
+	// The parent's reply_count moves inside the delete transaction
+	// (postgres.noteDeleteOrRestoreTx), on every delete path, and comes
+	// back on restore; nothing more to do here.
 	return nil
 }
 

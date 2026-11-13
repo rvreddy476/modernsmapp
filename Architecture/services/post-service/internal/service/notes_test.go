@@ -519,7 +519,11 @@ func TestNoteRule_Edit(t *testing.T) {
 
 // ── Delete ──────────────────────────────────────────────────────────────
 
-func TestNoteDelete_AuthorOnlyAndGivesTheReplyCountBack(t *testing.T) {
+// The parent's reply_count moves inside the store's delete transaction
+// (postgres.noteDeleteOrRestoreTx, pinned in notes_lifecycle_test.go and
+// the integration suite), so the service must not move it a second time:
+// the stand-in delete here models no store, and the count stays at 1.
+func TestNoteDelete_AuthorOnlyAndLeavesTheReplyCountToTheStore(t *testing.T) {
 	r := newNoteRig(t)
 	parent := r.note(r.alice, nil)
 	v, err := r.create(r.bob, func(in *CreateNoteInput) { in.ReplyToID = &parent.Post.ID })
@@ -533,7 +537,7 @@ func TestNoteDelete_AuthorOnlyAndGivesTheReplyCountBack(t *testing.T) {
 	if err := r.svc.DeleteNote(context.Background(), v.Post.ID, r.bob); err != nil {
 		t.Fatal(err)
 	}
-	if got := r.store.Note(parent.Post.ID).ReplyCount; got != 0 || len(r.deleted) != 1 {
+	if got := r.store.Note(parent.Post.ID).ReplyCount; got != 1 || len(r.deleted) != 1 {
 		t.Fatalf("after delete: reply_count %d, deletes %v", got, r.deleted)
 	}
 	wantErr(t, r.svc.DeleteNote(context.Background(), v.Post.ID, r.bob), ErrNoteNotFound)

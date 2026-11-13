@@ -75,6 +75,12 @@ func (s *Store) RestorePost(ctx context.Context, postID, authorID uuid.UUID, win
 		WHERE id = $1`, postID); err != nil {
 		return 0, fmt.Errorf("restore: clear deleted_at: %w", err)
 	}
+	// Echo (notes.go): a restored reply counts on its parent again. Only on
+	// this transition, so a second restore (ErrPostNotDeleted above) never
+	// counts twice. Its note_reply / note_quote notice is not re-created.
+	if _, err := noteDeleteOrRestoreTx(ctx, tx, postID, contentType, true); err != nil {
+		return 0, fmt.Errorf("restore: %w", err)
+	}
 	// Search: the canonical transition re-reads the row (deleted=false,
 	// visibility, review_status) and carries the body when eligible, so
 	// search-service re-indexes without a read-back.

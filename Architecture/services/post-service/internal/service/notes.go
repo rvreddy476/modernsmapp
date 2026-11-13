@@ -205,7 +205,6 @@ type noteStore interface {
 	CreateNotes(ctx context.Context, w *postgres.NoteWrite) (*postgres.NoteWriteResult, error)
 	LookupCreateIdempotency(ctx context.Context, actorID uuid.UUID, key string) (uuid.UUID, string, bool, error)
 	UpdateNote(ctx context.Context, id, authorID uuid.UUID, e postgres.NoteEdit) (bool, error)
-	DecrementNoteReplyCount(ctx context.Context, parentID uuid.UUID) error
 }
 
 // noteRateLimiter counts one action against key; false = over limit.
@@ -234,6 +233,9 @@ type notesState struct {
 	// noteEmitEvents makes the note paths write their outbox events with
 	// no Kafka producer (tests read them off the write).
 	noteEmitEvents bool
+	// noteHashtagSeam stands in for the Postgres store on the
+	// followed-hashtag notes read (notes_hashtags.go).
+	noteHashtagSeam followedHashtagNoteStore
 }
 
 // SetNoteConfig wires Echo (cmd/server).

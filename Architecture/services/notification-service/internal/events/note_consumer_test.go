@@ -186,3 +186,100 @@ func TestPostCreated_NoteNeverFansOutToSubscribers(t *testing.T) {
 		t.Fatalf("UploadNotifType(note) = %q, want none", got)
 	}
 }
+
+type inboxDelete struct{ user, entity uuid.UUID }
+
+type fakeInboxDeleter struct {
+	calls []inboxDelete
+	err   error
+}
+
+func (f *fakeInboxDeleter) DeleteNotificationsForEntity(_ context.Context, user, entity uuid.UUID) (int, error) {
+	f.calls = append(f.calls, inboxDelete{user, entity})
+	return 1, f.err
+}
+
+func postDeletedMessage(t *testing.T, p sharedevents.PostDeletedPayload) kafka.Message {
+	return noteMessage(t, sharedevents.PostDeleted, p)
+}
+
+// A deleted reply or quote takes its notice out of the target author's
+// inbox (the row's entity is the deleted note), after the author's own.
+func TestPostDeleted_NoteRemovesTheTargetAuthorsNotice(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload sharedevents.PostDeletedPayload
+	}{
+		{"reply", sharedevents.PostDeletedPayload{PostID: ncNote, AuthorID: ncActor, ContentType: "note", ReplyToID: ncParent, TargetAuthorID: ncRecipient}},
+		{"quote", sharedevents.PostDeletedPayload{PostID: ncNote, AuthorID: ncActor, ContentType: "note", QuoteOfID: ncParent, TargetAuthorID: ncRecipient}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			del := &fakeInboxDeleter{}
+			c := &Consumer{inboxDeleter: del}
+			if err := c.processMessage(context.Background(), postDeletedMessage(t, tc.payload)); err != nil {
+				t.Fatal(err)
+			}
+			want := []inboxDelete{
+				{uuid.MustParse(ncActor), uuid.MustParse(ncNote)},
+				{uuid.MustParse(ncRecipient), uuid.MustParse(ncNote)},
+			}
+			if len(del.calls) != 2 || del.calls[0] != want[0] || del.calls[1] != want[1] {
+				t.Fatalf("deletes %+v, want %+v", del.calls, want)
+			}
+		})
+	}
+}
+
+// Only the author's inbox for anything else: a post, a top-level note, a
+// self-reply, an older payload without a target author, a non-note that
+// somehow carries one.
+func TestPostDeleted_OnlyTheAuthorsInboxOtherwise(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		payload sharedevents.PostDeletedPayload
+	}{
+		{"post", sharedevents.PostDeletedPayload{PostID: ncNote, AuthorID: ncActor, ContentType: "post"}},
+		{"post carrying a target", sharedevents.PostDeletedPayload{PostID: ncNote, AuthorID: ncActor, ContentType: "post", ReplyToID: ncParent, TargetAuthorID: ncRecipient}},
+		{"top-level note", sharedevents.PostDeletedPayload{PostID: ncNote, AuthorID: ncActor, ContentType: "note"}},
+		{"top-level note naming a target", sharedevents.PostDeletedPayload{PostID: ncNote, AuthorID: ncActor, ContentType: "note", TargetAuthorID: ncRecipient}},
+		{"self reply", sharedevents.PostDeletedPayload{PostID: ncNote, AuthorID: ncActor, ContentType: "note", ReplyToID: ncParent, TargetAuthorID: ncActor}},
+		{"older producer", sharedevents.PostDeletedPayload{PostID: ncNote, AuthorID: ncActor, ContentType: "note", ReplyToID: ncParent}},
+		{"bad target", sharedevents.PostDeletedPayload{PostID: ncNote, AuthorID: ncActor, ContentType: "note", ReplyToID: ncParent, TargetAuthorID: "nope"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			del := &fakeInboxDeleter{}
+			c := &Consumer{inboxDeleter: del}
+			if err := c.processMessage(context.Background(), postDeletedMessage(t, tc.payload)); err != nil {
+				t.Fatal(err)
+			}
+			if len(del.calls) != 1 || del.calls[0] != (inboxDelete{uuid.MustParse(ncActor), uuid.MustParse(ncNote)}) {
+				t.Fatalf("deletes %+v, want only the author's inbox", del.calls)
+			}
+		})
+	}
+}
+
+// A failed delete is retried (both deletes are idempotent).
+func TestPostDeleted_InboxErrorIsRetried(t *testing.T) {
+	c := &Consumer{inboxDeleter: &fakeInboxDeleter{err: errors.New("scylla down")}}
+	err := c.processMessage(context.Background(), postDeletedMessage(t, sharedevents.PostDeletedPayload{
+		PostID: ncNote, AuthorID: ncActor, ContentType: "note", ReplyToID: ncParent, TargetAuthorID: ncRecipient,
+	}))
+	if err == nil {
+		t.Fatal("inbox delete error swallowed")
+	}
+}
+
+// A restore re-creates nothing.
+func TestPostRestored_NoteNoticeIsNotRecreated(t *testing.T) {
+	notify, del := &fakeNoteNotifier{}, &fakeInboxDeleter{}
+	c := &Consumer{noteNotify: notify, noteBlocks: &fakeNoteBlocks{}, inboxDeleter: del}
+	if err := c.processMessage(context.Background(), noteMessage(t, sharedevents.PostRestored, sharedevents.PostRestoredPayload{
+		PostID: ncNote, AuthorID: ncActor, ContentType: "note", Visibility: "public", CreatedAt: ncAt, RestoredAt: ncAt,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	if len(notify.got) != 0 || len(del.calls) != 0 {
+		t.Fatalf("restore: notices %+v deletes %+v", notify.got, del.calls)
+	}
+}

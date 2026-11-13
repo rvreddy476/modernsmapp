@@ -9,6 +9,7 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"time"
 
@@ -99,4 +100,63 @@ func (c *Consumer) handleNoteEvent(ctx context.Context, env events.EventEnvelope
 		return nil
 	}
 	return c.noteNotify.CreateNoteNotification(ctx, n)
+}
+
+// inboxEntityDeleter removes every row in one user's inbox that points at an
+// entity; *service.Service satisfies it (DeleteNotificationsForEntity).
+type inboxEntityDeleter interface {
+	DeleteNotificationsForEntity(ctx context.Context, userID, entityID uuid.UUID) (int, error)
+}
+
+// noteNoticeHolder is whose inbox holds the note_reply / note_quote notice
+// a deleted note produced: the author of the note it replied to or quoted,
+// which post-service names on PostDeleted (target_author_id). ok is false
+// for anything that is not a reply or quote note, a payload without a
+// parseable target author (an older producer), or a target that is the
+// deleter themself (no notice was sent; the author's inbox is cleared
+// anyway).
+func noteNoticeHolder(e events.PostDeletedPayload, authorID uuid.UUID) (uuid.UUID, bool) {
+	if e.ContentType != "note" || (e.ReplyToID == "" && e.QuoteOfID == "") {
+		return uuid.Nil, false
+	}
+	holder, err := uuid.Parse(e.TargetAuthorID)
+	if err != nil || holder == uuid.Nil || holder == authorID {
+		return uuid.Nil, false
+	}
+	return holder, true
+}
+
+// handlePostDeleted takes a soft-deleted post's notifications back: the rows
+// in the author's own inbox (likes, comments, mentions, reposts on the
+// post) and, for an Echo reply or quote, the note_reply / note_quote row in
+// the target author's inbox (its entity is the deleted note). Both
+// deletes are idempotent, so an error is returned and the event retried. A
+// restore (PostRestored) re-creates neither.
+func (c *Consumer) handlePostDeleted(ctx context.Context, e events.PostDeletedPayload) error {
+	authorID, err := uuid.Parse(e.AuthorID)
+	if err != nil {
+		return nil
+	}
+	postID, err := uuid.Parse(e.PostID)
+	if err != nil {
+		return nil
+	}
+	if c.inboxDeleter == nil {
+		return nil
+	}
+	n, err := c.inboxDeleter.DeleteNotificationsForEntity(ctx, authorID, postID)
+	if err != nil {
+		return fmt.Errorf("PostDeleted: remove author inbox rows for %s: %w", postID, err)
+	}
+	slog.Info("post deleted: author inbox rows removed", "post_id", postID, "author_id", authorID, "rows", n)
+	holder, ok := noteNoticeHolder(e, authorID)
+	if !ok {
+		return nil
+	}
+	n, err = c.inboxDeleter.DeleteNotificationsForEntity(ctx, holder, postID)
+	if err != nil {
+		return fmt.Errorf("PostDeleted: remove note notice for %s from %s: %w", postID, holder, err)
+	}
+	slog.Info("note deleted: target author's notice removed", "note_id", postID, "recipient_id", holder, "rows", n)
+	return nil
 }

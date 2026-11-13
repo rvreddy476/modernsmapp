@@ -26,15 +26,16 @@ import (
 // PlanPartition decides, per (owner, bucket) partition, and is pure;
 // Maintainer scans token ranges and carries the plan out.
 
-// TimelineRow is one row of home_timeline_by_user ("home") or
-// author_timeline_by_author ("author") as the maintenance pass reads it.
+// TimelineRow is one row of home_timeline_by_user ("home"),
+// author_timeline_by_author ("author") or notes_timeline ("notes", Echo)
+// as the maintenance pass reads it.
 type TimelineRow struct {
 	Kind        string
 	Owner       gocql.UUID // user_id or author_id
 	Bucket      int
 	TS          gocql.UUID
 	PostID      *gocql.UUID // nil: a ghost an UPDATE created
-	AuthorID    gocql.UUID  // home rows; author rows use Owner
+	AuthorID    gocql.UUID  // home and notes rows; author rows use Owner
 	CreatedAt   time.Time   // zero when the column is null
 	ContentType string
 	HasTTL      bool
@@ -55,6 +56,7 @@ const (
 	WhyRekey     = "rekey"     // the post's only row, at a non-canonical key
 	WhyTTL       = "ttl"       // canonical row with no TTL
 	WhyIndex     = "index"     // index entry for a kept row
+	WhyAuthor    = "author"    // a notes author purge (PlanNotesAuthorPurge)
 )
 
 // MaintenanceAction is one step of a plan.
@@ -193,11 +195,30 @@ func (s *MaintenanceStats) Merge(other MaintenanceStats) {
 	}
 }
 
-// Maintainer runs PlanPartition over a token range of one table.
+// PlanNotesAuthorPurge plans an author purge of one notes_timeline
+// partition: every row the author wrote is deleted with its index entries,
+// every other row is left exactly as it is. A ghost row (no post_id) is
+// not the author's to judge and is left too.
+func PlanNotesAuthorPurge(rows []TimelineRow, author gocql.UUID) []MaintenanceAction {
+	var plan []MaintenanceAction
+	for _, r := range rows {
+		if r.Kind != NotesTimelineKind || r.PostID == nil || r.AuthorID != author {
+			continue
+		}
+		plan = append(plan, MaintenanceAction{Op: OpDelete, Why: WhyAuthor, Row: r})
+	}
+	return plan
+}
+
+// Maintainer runs PlanPartition over a token range of one table, or, with
+// PurgeNotesAuthor, PlanNotesAuthorPurge over notes_timeline.
 type Maintainer struct {
 	session *gocql.Session
 	apply   bool
 	now     func() time.Time
+	// purgeAuthor, when set, makes a notes pass delete that author's rows
+	// and nothing else.
+	purgeAuthor *gocql.UUID
 }
 
 // NewMaintainer returns a maintainer; apply=false only counts.
@@ -205,20 +226,50 @@ func NewMaintainer(session *gocql.Session, apply bool) *Maintainer {
 	return &Maintainer{session: session, apply: apply, now: time.Now}
 }
 
-// Range plans, and with apply carries out, every partition of kind's
-// table ("home" or "author") whose token is in r.
-func (m *Maintainer) Range(ctx context.Context, kind string, r TokenRange) (MaintenanceStats, error) {
-	var stats MaintenanceStats
-	var stmt string
+// PurgeNotesAuthor turns the maintainer into an author purge of
+// notes_timeline: a "notes" pass deletes every row author wrote, in every
+// follower's partition, and changes nothing else. Other kinds refuse.
+func (m *Maintainer) PurgeNotesAuthor(author uuid.UUID) *Maintainer {
+	a := gocql.UUID(author)
+	m.purgeAuthor = &a
+	return m
+}
+
+// planFor is the plan a pass makes for one partition of kind.
+func (m *Maintainer) planFor(kind string, partition []TimelineRow) []MaintenanceAction {
+	if m.purgeAuthor != nil {
+		return PlanNotesAuthorPurge(partition, *m.purgeAuthor)
+	}
+	return PlanPartition(partition, m.now())
+}
+
+// maintenanceScan is the token-range SELECT for kind; ok is false for an
+// unknown kind. home and notes rows carry author_id as an eighth column.
+func maintenanceScan(kind string) (string, bool) {
 	switch kind {
 	case "home":
-		stmt = `SELECT user_id, bucket, ts, post_id, created_at, content_type, TTL(post_id), author_id
-		        FROM home_timeline_by_user WHERE token(user_id, bucket) >= ? AND token(user_id, bucket) <= ?`
+		return `SELECT user_id, bucket, ts, post_id, created_at, content_type, TTL(post_id), author_id
+		        FROM home_timeline_by_user WHERE token(user_id, bucket) >= ? AND token(user_id, bucket) <= ?`, true
 	case "author":
-		stmt = `SELECT author_id, bucket, ts, post_id, created_at, content_type, TTL(post_id)
-		        FROM author_timeline_by_author WHERE token(author_id, bucket) >= ? AND token(author_id, bucket) <= ?`
-	default:
+		return `SELECT author_id, bucket, ts, post_id, created_at, content_type, TTL(post_id)
+		        FROM author_timeline_by_author WHERE token(author_id, bucket) >= ? AND token(author_id, bucket) <= ?`, true
+	case NotesTimelineKind:
+		return `SELECT user_id, bucket, ts, post_id, created_at, content_type, TTL(post_id), author_id
+		        FROM notes_timeline WHERE token(user_id, bucket) >= ? AND token(user_id, bucket) <= ?`, true
+	}
+	return "", false
+}
+
+// Range plans, and with apply carries out, every partition of kind's
+// table ("home", "author" or "notes") whose token is in r.
+func (m *Maintainer) Range(ctx context.Context, kind string, r TokenRange) (MaintenanceStats, error) {
+	var stats MaintenanceStats
+	stmt, ok := maintenanceScan(kind)
+	if !ok {
 		return stats, fmt.Errorf("unknown timeline kind %q", kind)
+	}
+	if m.purgeAuthor != nil && kind != NotesTimelineKind {
+		return stats, fmt.Errorf("an author purge covers notes_timeline only, not %q", kind)
 	}
 	iter := m.session.Query(stmt, r.Start, r.End).WithContext(ctx).PageSize(1000).Iter()
 
@@ -227,7 +278,7 @@ func (m *Maintainer) Range(ctx context.Context, kind string, r TokenRange) (Main
 		if len(partition) == 0 {
 			return nil
 		}
-		for _, a := range PlanPartition(partition, m.now()) {
+		for _, a := range m.planFor(kind, partition) {
 			stats.Add(a)
 			if m.apply {
 				if err := m.do(ctx, a); err != nil {
@@ -249,7 +300,7 @@ func (m *Maintainer) Range(ctx context.Context, kind string, r TokenRange) (Main
 			ttl       *int
 		)
 		dest := []interface{}{&row.Owner, &row.Bucket, &row.TS, &postID, &createdAt, &ct, &ttl}
-		if kind == "home" {
+		if kind == "home" || kind == NotesTimelineKind {
 			dest = append(dest, &authorID)
 		}
 		if !iter.Scan(dest...) {
@@ -288,10 +339,7 @@ func (m *Maintainer) do(ctx context.Context, a MaintenanceAction) error {
 	}
 	switch a.Op {
 	case OpDelete:
-		table, col := "home_timeline_by_user", "user_id"
-		if r.Kind == "author" {
-			table, col = "author_timeline_by_author", "author_id"
-		}
+		table, col := maintenanceTable(r.Kind)
 		if err := q(`DELETE FROM `+table+` WHERE `+col+` = ? AND bucket = ? AND ts = ?`, r.Owner, r.Bucket, r.TS); err != nil {
 			return err
 		}
@@ -305,7 +353,8 @@ func (m *Maintainer) do(ctx context.Context, a MaintenanceAction) error {
 			          VALUES (?, ?, ?, ?, ?, ?) USING TTL ?`,
 				r.Owner, r.Bucket, r.TS, *r.PostID, r.CreatedAt, r.ContentType, a.TTL)
 		}
-		return q(`INSERT INTO home_timeline_by_user (user_id, bucket, ts, post_id, author_id, created_at, content_type)
+		table, _ := maintenanceTable(r.Kind)
+		return q(`INSERT INTO `+table+` (user_id, bucket, ts, post_id, author_id, created_at, content_type)
 		          VALUES (?, ?, ?, ?, ?, ?, ?) USING TTL ?`,
 			r.Owner, r.Bucket, r.TS, *r.PostID, r.AuthorID, r.CreatedAt, r.ContentType, a.TTL)
 	case OpIndex:
@@ -314,6 +363,18 @@ func (m *Maintainer) do(ctx context.Context, a MaintenanceAction) error {
 			*r.PostID, IndexShard(uuid.UUID(r.Owner)), r.Kind, r.Owner, r.Bucket, r.TS, a.TTL)
 	}
 	return fmt.Errorf("unknown maintenance op %q", a.Op)
+}
+
+// maintenanceTable is the table and partition-owner column of a row kind.
+// notes_timeline has the home timeline's shape (database/scylla/notes_timeline.cql).
+func maintenanceTable(kind string) (table, ownerCol string) {
+	switch kind {
+	case "author":
+		return "author_timeline_by_author", "author_id"
+	case NotesTimelineKind:
+		return "notes_timeline", "user_id"
+	}
+	return "home_timeline_by_user", "user_id"
 }
 
 func (m *Maintainer) unindex(ctx context.Context, r TimelineRow) error {

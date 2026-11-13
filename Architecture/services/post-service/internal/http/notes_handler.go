@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/shared/api"
@@ -52,6 +53,40 @@ func (h *Handler) registerNoteRoutes(r *gin.Engine) {
 		notes.PATCH("/:id", h.PatchNote)
 		notes.DELETE("/:id", h.DeleteNote)
 	}
+	// feed-service's Echo For You (notes_hashtags.go). Internal key only
+	// (the engine-wide gate in RegisterRoutes); not behind ECHO_ENABLED,
+	// which feed-service's own read routes already answer.
+	r.GET("/internal/users/:userId/followed-hashtag-notes", h.FollowedHashtagNotesInternal)
+}
+
+// FollowedHashtagNotesInternal handles
+// GET /internal/users/:userId/followed-hashtag-notes?since=<RFC3339>&limit=
+// -> {"note_ids": [...]}.
+func (h *Handler) FollowedHashtagNotesInternal(c *gin.Context) {
+	ctx := c.Request.Context()
+	userID, err := uuid.Parse(c.Param("userId"))
+	if err != nil {
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid user ID", nil)
+		return
+	}
+	var since time.Time
+	if raw := c.Query("since"); raw != "" {
+		if since, err = time.Parse(time.RFC3339, raw); err != nil {
+			api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid since", nil)
+			return
+		}
+	}
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "0"))
+	ids, err := h.svc.FollowedHashtagNoteIDs(ctx, userID, since, limit)
+	if err != nil {
+		api.ErrorWithContext(ctx, c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "followed hashtag notes unavailable", nil)
+		return
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, id.String())
+	}
+	api.JSON(c.Writer, http.StatusOK, map[string]any{"note_ids": out}, nil)
 }
 
 // requireEcho is the ECHO_ENABLED switch.

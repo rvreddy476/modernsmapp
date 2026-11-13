@@ -246,15 +246,6 @@ func (s *Store) UpdateNote(_ context.Context, id, authorID uuid.UUID, e postgres
 	return true, nil
 }
 
-func (s *Store) DecrementNoteReplyCount(_ context.Context, parentID uuid.UUID) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if p := s.Notes[parentID]; p != nil && p.ReplyCount > 0 {
-		p.ReplyCount--
-	}
-	return nil
-}
-
 // Delete soft-deletes id (the service's delete stand-in).
 func (s *Store) Delete(id uuid.UUID) {
 	s.mu.Lock()

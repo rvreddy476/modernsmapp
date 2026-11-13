@@ -156,6 +156,11 @@ func main() {
 	topicProjector := pipeline.NewTopicProjector(dbPool, rdb)
 	go topicProjector.Start(ctx)
 
+	// Echo: echo_notes rows past the 360-day timeline retention, or deleted
+	// longer than post-service's restore window, are pruned in batches
+	// (service/notes_prune.go). Idempotent, so every replica may run it.
+	go service.NewEchoNotesPruner(pgStore).Start(ctx)
+
 	feedHandler := http.New(feedSvc).WithRedis(rdb)
 
 	// Audit CF2: gate every /v1/feed route behind the shared internal

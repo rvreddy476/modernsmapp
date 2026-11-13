@@ -81,6 +81,10 @@ type Consumer struct {
 	// graph client (set by WithGraph); without it note notices are dropped.
 	noteNotify noteNotifier
 	noteBlocks noteBlockChecker
+	// inboxDeleter removes inbox rows pointing at a deleted post
+	// (PostDeleted, note_consumer.go); the service implements it, tests
+	// pass a fake.
+	inboxDeleter inboxEntityDeleter
 
 	// Like aggregation: key = "postID:postAuthorID"
 	likeAgg   map[string]*likeAggEntry
@@ -132,6 +136,7 @@ func NewConsumerWithDialer(brokers []string, groupID string, topic string, svc *
 		c.followRequestNotify = svc
 		c.mentionNotify = svc
 		c.noteNotify = svc
+		c.inboxDeleter = svc
 	}
 	return c
 }
@@ -480,24 +485,14 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		// subscriber upload fan-out ("X posted a new video") reaches many
 		// inboxes and cannot be enumerated here; those rows stay and the
 		// client resolves a 404 post as "content no longer available".
+		// A deleted Echo reply or quote also leaves the note_reply /
+		// note_quote notice in its target's author's inbox; that row goes
+		// too (note_consumer.go handlePostDeleted).
 		var e events.PostDeletedPayload
 		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
 			return err
 		}
-		authorID, err := uuid.Parse(e.AuthorID)
-		if err != nil {
-			return nil
-		}
-		postID, err := uuid.Parse(e.PostID)
-		if err != nil {
-			return nil
-		}
-		n, err := c.service.DeleteNotificationsForEntity(ctx, authorID, postID)
-		if err != nil {
-			return fmt.Errorf("PostDeleted: remove author inbox rows for %s: %w", postID, err)
-		}
-		slog.Info("post deleted: author inbox rows removed", "post_id", postID, "author_id", authorID, "rows", n)
-		return nil
+		return c.handlePostDeleted(ctx, e)
 
 	case events.PostContentTypeChanged:
 		// M11: tell the author when post-service reclassifies their

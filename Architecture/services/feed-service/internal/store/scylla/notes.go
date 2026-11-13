@@ -216,3 +216,25 @@ func (s *TimelineStore) UserInteractedPosts(ctx context.Context, userID uuid.UUI
 	}
 	return out, nil
 }
+
+// DeleteNotesTimelineRow deletes one row of ownerID's notes timeline by its
+// timeline key (the row's CursorToken) and its reverse-index row: the stale
+// sweep of a notes rebuild (service.RebuildNotesTimeline). The bucket is
+// the key's own month, which is how every row is written (TimelineTS).
+func (s *TimelineStore) DeleteNotesTimelineRow(ctx context.Context, ownerID, postID uuid.UUID, key string) error {
+	ts, err := gocql.ParseUUID(key)
+	if err != nil {
+		return fmt.Errorf("notes row key %q: %w", key, err)
+	}
+	b := bucket(ts.Time().UTC())
+	if err := s.session.Query(`
+		DELETE FROM notes_timeline
+		WHERE user_id = ? AND bucket = ? AND ts = ?
+	`, toGocql(ownerID), b, ts).WithContext(ctx).Exec(); err != nil {
+		return err
+	}
+	return s.session.Query(`
+		DELETE FROM timeline_index_by_post_v2
+		WHERE post_id = ? AND shard = ? AND timeline_kind = 'notes' AND owner_id = ? AND bucket = ? AND ts = ?
+	`, toGocql(postID), IndexShard(ownerID), toGocql(ownerID), b, ts).WithContext(ctx).Exec()
+}
