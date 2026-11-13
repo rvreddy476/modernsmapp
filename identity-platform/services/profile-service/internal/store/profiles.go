@@ -35,7 +35,11 @@ type Profile struct {
 	BadgeFlags        int        `json:"badge_flags"`
 	IsVerified        bool       `json:"is_verified"`
 	VerificationLevel string     `json:"verification_level"`
-	StatusText        *string    `json:"status_text,omitempty"`
+	// OrganisationName is the registered name behind an Official
+	// (organisation) or Government mark: the registry-confirmed legal name,
+	// or the invited body's name. "" for every other profile.
+	OrganisationName string     `json:"organisation_name"`
+	StatusText       *string    `json:"status_text,omitempty"`
 	StatusEmoji       *string    `json:"status_emoji,omitempty"`
 	StatusExpiresAt   *time.Time `json:"status_expires_at,omitempty"`
 	ProfileThemeColor string     `json:"profile_theme_color"`
@@ -176,24 +180,31 @@ func New(db *pgxpool.Pool) *Store {
 const allProfileCols = `user_id, username, display_name, first_name, last_name,
 	preferred_name, pronouns, bio, dob, gender,
 	avatar_media_id, cover_media_id, category, profession, website, location, badge_flags,
-	is_verified, verification_level, status_text, status_emoji, status_expires_at,
+	is_verified, verification_level, organisation_name, status_text, status_emoji, status_expires_at,
 	profile_theme_color, intro_media_url, intro_media_type, cta_label, cta_url,
 	member_since_badge, timezone,
 	follower_count, following_count, friend_count, post_count,
 	created_at, updated_at`
 
-func scanProfile(row pgx.Row) (*Profile, error) {
-	var p Profile
-	err := row.Scan(
+// profileScanDest is the Scan destination list for allProfileCols, in
+// order. Every reader of allProfileCols scans through it, so a new column is
+// added in two places only: here and allProfileCols.
+func profileScanDest(p *Profile) []any {
+	return []any{
 		&p.UserID, &p.Username, &p.DisplayName, &p.FirstName, &p.LastName,
 		&p.PreferredName, &p.Pronouns, &p.Bio, &p.DoB, &p.Gender,
 		&p.AvatarMediaID, &p.CoverMediaID, &p.Category, &p.Profession, &p.Website, &p.Location, &p.BadgeFlags,
-		&p.IsVerified, &p.VerificationLevel, &p.StatusText, &p.StatusEmoji, &p.StatusExpiresAt,
+		&p.IsVerified, &p.VerificationLevel, &p.OrganisationName, &p.StatusText, &p.StatusEmoji, &p.StatusExpiresAt,
 		&p.ProfileThemeColor, &p.IntroMediaURL, &p.IntroMediaType, &p.CTALabel, &p.CTAURL,
 		&p.MemberSinceBadge, &p.Timezone,
 		&p.FollowerCount, &p.FollowingCount, &p.FriendCount, &p.PostCount,
 		&p.CreatedAt, &p.UpdatedAt,
-	)
+	}
+}
+
+func scanProfile(row pgx.Row) (*Profile, error) {
+	var p Profile
+	err := row.Scan(profileScanDest(&p)...)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -265,16 +276,7 @@ func (s *Store) ListProfiles(ctx context.Context, limit, offset int) ([]Profile,
 	var profiles []Profile
 	for rows.Next() {
 		var p Profile
-		err := rows.Scan(
-			&p.UserID, &p.Username, &p.DisplayName, &p.FirstName, &p.LastName,
-			&p.PreferredName, &p.Pronouns, &p.Bio, &p.DoB, &p.Gender,
-			&p.AvatarMediaID, &p.CoverMediaID, &p.Category, &p.Profession, &p.Website, &p.Location, &p.BadgeFlags,
-			&p.IsVerified, &p.VerificationLevel, &p.StatusText, &p.StatusEmoji, &p.StatusExpiresAt,
-			&p.ProfileThemeColor, &p.IntroMediaURL, &p.IntroMediaType, &p.CTALabel, &p.CTAURL,
-			&p.MemberSinceBadge, &p.Timezone,
-			&p.FollowerCount, &p.FollowingCount, &p.FriendCount, &p.PostCount,
-			&p.CreatedAt, &p.UpdatedAt,
-		)
+		err := rows.Scan(profileScanDest(&p)...)
 		if err != nil {
 			return nil, 0, err
 		}
@@ -301,16 +303,7 @@ func (s *Store) ListProfilesChangedSince(ctx context.Context, since time.Time, l
 	var profiles []Profile
 	for rows.Next() {
 		var p Profile
-		err := rows.Scan(
-			&p.UserID, &p.Username, &p.DisplayName, &p.FirstName, &p.LastName,
-			&p.PreferredName, &p.Pronouns, &p.Bio, &p.DoB, &p.Gender,
-			&p.AvatarMediaID, &p.CoverMediaID, &p.Category, &p.Profession, &p.Website, &p.Location, &p.BadgeFlags,
-			&p.IsVerified, &p.VerificationLevel, &p.StatusText, &p.StatusEmoji, &p.StatusExpiresAt,
-			&p.ProfileThemeColor, &p.IntroMediaURL, &p.IntroMediaType, &p.CTALabel, &p.CTAURL,
-			&p.MemberSinceBadge, &p.Timezone,
-			&p.FollowerCount, &p.FollowingCount, &p.FriendCount, &p.PostCount,
-			&p.CreatedAt, &p.UpdatedAt,
-		)
+		err := rows.Scan(profileScanDest(&p)...)
 		if err != nil {
 			return nil, err
 		}
@@ -359,12 +352,13 @@ type UpdateProfileParams struct {
 	// ClearStatusExpiresAt sets status_expires_at to NULL, the one nullable
 	// column a client can clear. It wins over StatusExpiresAt.
 	ClearStatusExpiresAt bool
-	// ClearPersonVerificationOnRename clears a person-verified tick
-	// (is_verified, verification_level 'person', the badge bit) when this
-	// write changes display_name. Decided under the row lock against the
-	// stored name, so it cannot race an approval. The service sets it unless
-	// the new name still matches the verified DigiLocker name.
-	ClearPersonVerificationOnRename bool
+	// ClearVerificationOnRename clears a verification mark (is_verified,
+	// verification_level person, organisation or government, and every mark
+	// bit) when this write changes display_name. Decided under the row lock
+	// against the stored name, so it cannot race an approval. The service sets
+	// it unless the new name still matches the verified name (the DigiLocker
+	// name for a person, organisation_name for an Official or Government mark).
+	ClearVerificationOnRename bool
 }
 
 // UpdateProfile applies a partial profile write and returns the stored row.
@@ -404,14 +398,14 @@ func (s *Store) UpdateProfile(ctx context.Context, userID uuid.UUID, p UpdatePro
 		p.ProfileThemeColor, p.IntroMediaURL, p.IntroMediaType,
 		p.CTALabel, p.CTAURL, p.MemberSinceBadge,
 		p.Timezone, p.ClearStatusExpiresAt,
-		p.ClearPersonVerificationOnRename, verification.BadgePersonVerified, verification.LevelPerson,
+		p.ClearVerificationOnRename, verification.BadgeAllMarks, verification.MarkedLevels,
 	))
 }
 
 // renameClearsTick is true when the write changes display_name on a
-// person-verified profile and the caller asked for the tick to go ($28).
+// profile holding a verification mark and the caller asked for the tick to go ($28).
 // Column references on the right of SET read the row before the update.
-const renameClearsTick = `($28::boolean AND $2::text IS NOT NULL AND $2::text IS DISTINCT FROM display_name AND verification_level = $30::text)`
+const renameClearsTick = `($28::boolean AND $2::text IS NOT NULL AND $2::text IS DISTINCT FROM display_name AND verification_level = ANY($30::text[]))`
 
 // ---------------------------------------------------------------
 // User Links
@@ -1164,16 +1158,7 @@ func (s *Store) GetProfilesByIDs(ctx context.Context, ids []uuid.UUID) ([]Profil
 	var profiles []Profile
 	for rows.Next() {
 		var p Profile
-		err := rows.Scan(
-			&p.UserID, &p.Username, &p.DisplayName, &p.FirstName, &p.LastName,
-			&p.PreferredName, &p.Pronouns, &p.Bio, &p.DoB, &p.Gender,
-			&p.AvatarMediaID, &p.CoverMediaID, &p.Category, &p.Profession, &p.Website, &p.Location, &p.BadgeFlags,
-			&p.IsVerified, &p.VerificationLevel, &p.StatusText, &p.StatusEmoji, &p.StatusExpiresAt,
-			&p.ProfileThemeColor, &p.IntroMediaURL, &p.IntroMediaType, &p.CTALabel, &p.CTAURL,
-			&p.MemberSinceBadge, &p.Timezone,
-			&p.FollowerCount, &p.FollowingCount, &p.FriendCount, &p.PostCount,
-			&p.CreatedAt, &p.UpdatedAt,
-		)
+		err := rows.Scan(profileScanDest(&p)...)
 		if err != nil {
 			return nil, err
 		}

@@ -67,7 +67,7 @@ func (f *fakeStore) UpdateProfile(_ context.Context, id uuid.UUID, p store.Updat
 		return nil, nil
 	}
 	if p.DisplayName != nil {
-		if p.ClearPersonVerificationOnRename && *p.DisplayName != cur.DisplayName && cur.VerificationLevel == verification.LevelPerson {
+		if p.ClearVerificationOnRename && *p.DisplayName != cur.DisplayName && cur.VerificationLevel == verification.LevelPerson {
 			cur.IsVerified = false
 			cur.VerificationLevel = ""
 			cur.BadgeFlags &^= verification.BadgePersonVerified

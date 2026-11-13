@@ -13,6 +13,7 @@ import (
 	"github.com/atpost/identity-profile-service/internal/events"
 	"github.com/atpost/identity-profile-service/internal/http"
 	"github.com/atpost/identity-profile-service/internal/mediaclient"
+	"github.com/atpost/identity-profile-service/internal/officialverify"
 	"github.com/atpost/identity-profile-service/internal/personverify"
 	"github.com/atpost/identity-profile-service/internal/purge"
 	"github.com/atpost/identity-profile-service/internal/service"
@@ -158,6 +159,21 @@ func main() {
 	profileSvc.WithPersonVerification(personSvc)
 	profileHandler.WithPersonVerification(personSvc)
 	logger.Info("profile-service: person verification", "enabled", personCfg.Enabled)
+
+	// Official (organisation) and Government marks (short-posts design 3.4).
+	// Off unless ORG_VERIFICATION_ENABLED / GOVERNMENT_VERIFICATION_ENABLED.
+	// The Official mark needs a registry provider and code delivery, and
+	// neither has a production implementation yet, so production refuses to
+	// start with it on. Renames clear these marks either way (service.UpdateProfile).
+	officialCfg, err := officialverify.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		logger.Error("refusing to start: official verification configuration", "err", err)
+		os.Exit(1)
+	}
+	officialSvc := officialverify.New(officialCfg, profileStore, profileProducer, profileSvc.InvalidateProfileCache, logger)
+	profileHandler.WithOfficialVerification(officialSvc)
+	logger.Info("profile-service: official verification", "organisation_enabled", officialCfg.OrgEnabled,
+		"government_enabled", officialCfg.GovEnabled)
 	// Audit UC1: wire the internal-service-key gate. Without this,
 	// X-User-Id is effectively a public header — every other audit
 	// closed the same gap; this is the matching identity-platform fix.

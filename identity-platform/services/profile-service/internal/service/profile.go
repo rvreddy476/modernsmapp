@@ -12,7 +12,6 @@ import (
 	"github.com/atpost/identity-profile-service/internal/config"
 	"github.com/atpost/identity-profile-service/internal/events"
 	"github.com/atpost/identity-profile-service/internal/store"
-	"github.com/atpost/identity-shared/verification"
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 )
@@ -38,6 +37,9 @@ type Service struct {
 	// change clears a person-verified tick unless person says the new name
 	// still matches; nil clears it on every rename.
 	person PersonVerificationHooks
+	// names is the impersonation hold (names.go). Nil checks nothing: only
+	// unit tests without a store run that way.
+	names NameReservations
 }
 
 // PersonVerificationHooks is what UpdateProfile needs from person
@@ -89,7 +91,11 @@ func New(s *store.Store, rdb *redis.Client, producer *events.Producer, cfg *conf
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return &Service{store: s, rdb: rdb, producer: producer, cfg: cfg, log: logger, profiles: s, handles: s, media: s, now: time.Now}
+	svc := &Service{store: s, rdb: rdb, producer: producer, cfg: cfg, log: logger, profiles: s, handles: s, media: s, now: time.Now}
+	if s != nil {
+		svc.names = s
+	}
+	return svc
 }
 
 // WithHandleChangeStore replaces the storage behind ChangeHandle. For tests.
@@ -111,9 +117,9 @@ func (s *Service) WithProfileWriteStore(w ProfileWriteStore, now func() time.Tim
 
 // CreateProfile handles profile creation from UserRegistered event.
 func (s *Service) CreateProfile(ctx context.Context, userID uuid.UUID, firstName, lastName, dob, gender string) error {
-	displayName := firstName + " " + lastName
-	if displayName == " " {
-		displayName = "User " + userID.String()[:8]
+	displayName, err := s.signupDisplayName(ctx, userID, firstName, lastName)
+	if err != nil {
+		return err
 	}
 	// auth-service gates registration on the same rule, so a refusal here
 	// means a malformed or stale event. The profile is still created — a
@@ -241,18 +247,28 @@ func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, params st
 		return nil, err
 	}
 
-	// A display-name change on a person-verified account clears the tick
-	// unless the new name still matches the DigiLocker name (short-posts
-	// design 3.4). The store decides under the row lock whether the name
-	// actually changed and the profile is person-verified; this only says
-	// whether it may keep the tick.
-	wasPersonVerified := false
+	// Names (short-posts design 3.4). A new display name or handle that
+	// closely matches an Official or Government name, or a verified person's
+	// name, held by another account is refused (ErrNameReserved). A
+	// display-name change on a marked account clears the mark unless the new
+	// name still matches the verified one: the DigiLocker name for a person,
+	// the organisation name for an Official or Government mark. The store
+	// decides under the row lock whether the name actually changed and the
+	// profile holds a mark; this only says whether it may keep it.
+	var before *store.Profile
+	if params.DisplayName != nil || params.Username != nil {
+		if before, err = s.profiles.GetProfile(ctx, userID); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.checkNamesNotReserved(ctx, userID, before, params.DisplayName, params.Username); err != nil {
+		return nil, err
+	}
+	wasMarked := false
 	if params.DisplayName != nil {
-		params.ClearPersonVerificationOnRename = s.person == nil || !s.person.RenameKeepsTick(ctx, userID, *params.DisplayName)
-		if params.ClearPersonVerificationOnRename {
-			if before, err := s.profiles.GetProfile(ctx, userID); err == nil && before != nil {
-				wasPersonVerified = before.IsVerified && before.VerificationLevel == verification.LevelPerson
-			}
+		params.ClearVerificationOnRename = !s.renameKeepsMark(ctx, userID, before, *params.DisplayName)
+		if params.ClearVerificationOnRename && before != nil {
+			wasMarked = before.IsVerified && isMarkedLevel(before.VerificationLevel)
 		}
 	}
 
@@ -263,8 +279,11 @@ func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, params st
 	if p == nil {
 		return nil, errors.New("profile not found")
 	}
-	if params.ClearPersonVerificationOnRename && s.person != nil {
-		s.person.AfterRename(ctx, userID, p, wasPersonVerified)
+	if params.ClearVerificationOnRename && s.person != nil {
+		s.person.AfterRename(ctx, userID, p, wasMarked)
+	}
+	if params.DisplayName != nil || params.Username != nil {
+		s.refreshReservedNames(ctx, userID)
 	}
 
 	if dobChange != nil {
@@ -802,6 +821,14 @@ func (s *Service) ChangeHandle(ctx context.Context, userID uuid.UUID, newUsernam
 		return nil, ErrUsernameTaken
 	}
 
+	// Impersonation hold: a handle that closely matches another account's
+	// Official, Government or verified-person name is refused.
+	if held, err := s.nameHeld(ctx, userID, newUsername); err != nil {
+		return nil, fmt.Errorf("failed to check reserved names: %w", err)
+	} else if held {
+		return nil, ErrNameReserved
+	}
+
 	// Username only. Every other field is nil, which the store leaves alone.
 	// This used to copy display_name, bio, category, profession, website,
 	// location and theme colour from the read above (overwriting any edit
@@ -811,6 +838,8 @@ func (s *Service) ChangeHandle(ctx context.Context, userID uuid.UUID, newUsernam
 	if err != nil {
 		return nil, fmt.Errorf("failed to update username: %w", err)
 	}
+
+	s.refreshReservedNames(ctx, userID)
 
 	// Record handle change history
 	if oldUsername != "" {

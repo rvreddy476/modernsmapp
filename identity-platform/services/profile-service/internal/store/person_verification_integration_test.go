@@ -52,6 +52,12 @@ CREATE TABLE IF NOT EXISTS profile.verified_persons (
     name_hash     TEXT NOT NULL,
     verified_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+CREATE TABLE IF NOT EXISTS profile.reserved_names (
+    variant TEXT NOT NULL,
+    user_id UUID NOT NULL REFERENCES profile.profiles(user_id) ON DELETE CASCADE,
+    kind    TEXT NOT NULL CHECK (kind IN ('person', 'organisation', 'government')),
+    PRIMARY KEY (variant, user_id)
+);
 `
 
 func personPool(t *testing.T) (*pgxpool.Pool, *Store) {
@@ -76,6 +82,7 @@ func seedPerson(t *testing.T, pool *pgxpool.Pool, displayName string) uuid.UUID 
 	t.Cleanup(func() {
 		_, _ = pool.Exec(context.Background(), `DELETE FROM profile.person_verification_attempts WHERE user_id = $1`, id)
 		_, _ = pool.Exec(context.Background(), `DELETE FROM profile.verified_persons WHERE user_id = $1`, id)
+		_, _ = pool.Exec(context.Background(), `DELETE FROM profile.reserved_names WHERE user_id = $1`, id)
 	})
 	return id
 }
@@ -148,17 +155,17 @@ func TestPersonVerification_RenameClearsTheTickOnlyWhenAsked(t *testing.T) {
 		t.Fatal(err)
 	}
 	keep := "RAO Asha"
-	p, err := s.UpdateProfile(ctx, a, UpdateProfileParams{DisplayName: &keep, ClearPersonVerificationOnRename: false})
+	p, err := s.UpdateProfile(ctx, a, UpdateProfileParams{DisplayName: &keep, ClearVerificationOnRename: false})
 	if err != nil || !p.IsVerified {
 		t.Fatalf("kept rename = %+v %v", p, err)
 	}
 	// Same name sent back with the flag set: not a rename, tick stays.
-	p, err = s.UpdateProfile(ctx, a, UpdateProfileParams{DisplayName: &keep, ClearPersonVerificationOnRename: true})
+	p, err = s.UpdateProfile(ctx, a, UpdateProfileParams{DisplayName: &keep, ClearVerificationOnRename: true})
 	if err != nil || !p.IsVerified {
 		t.Fatalf("unchanged name = %+v %v", p, err)
 	}
 	other := "Someone Else"
-	p, err = s.UpdateProfile(ctx, a, UpdateProfileParams{DisplayName: &other, ClearPersonVerificationOnRename: true})
+	p, err = s.UpdateProfile(ctx, a, UpdateProfileParams{DisplayName: &other, ClearVerificationOnRename: true})
 	if err != nil || p.IsVerified || p.VerificationLevel != "" || p.BadgeFlags&verification.BadgePersonVerified != 0 || p.DisplayName != other {
 		t.Fatalf("clearing rename = %+v %v", p, err)
 	}

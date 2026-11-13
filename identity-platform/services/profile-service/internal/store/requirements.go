@@ -67,4 +67,11 @@ var SchemaRequirements = []schemaguard.Requirement{
 	{Table: "usr.users", Columns: []string{"id", "is_verified"}},
 	{Table: "profile.person_verification_attempts", Columns: []string{"state_hash", "code_verifier_sealed", "identity_hash", "name_hash", "reference_photo_sealed", "expires_at"}},
 	{Table: "profile.verified_persons", Columns: []string{"identity_hash", "user_id", "name_hash"}},
+
+	// Official and Government marks, impersonation holds
+	// (official_verification.go, reserved_names.go).
+	{Table: "profile.profiles", Columns: []string{"organisation_name"}},
+	{Table: "profile.organisation_verification_applications", Columns: []string{"id", "user_id", "status", "email_code_hash", "email_code_attempts", "registry_confirmed"}},
+	{Table: "profile.government_invitations", Columns: []string{"id", "user_id", "code_hash", "approver_one", "approver_two", "status"}},
+	{Table: "profile.reserved_names", Columns: []string{"variant", "user_id", "kind"}},
 }

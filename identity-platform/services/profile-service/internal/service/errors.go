@@ -19,6 +19,11 @@ var (
 	ErrUsernameEmpty  = errors.New("username cannot be empty")
 	ErrUsernameTaken  = errors.New("username already taken")
 	ErrHandleCooldown = errors.New("handle change on cooldown")
+
+	// ErrNameReserved: the display name or handle closely matches an
+	// Official or Government name, or a verified person's name, held by
+	// another account (impersonation hold, short-posts design 3.4).
+	ErrNameReserved = errors.New("name is reserved")
 )
 
 // HandleCooldownError is a handle change refused because the last change is

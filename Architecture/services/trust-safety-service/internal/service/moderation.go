@@ -62,7 +62,7 @@ var validReportCategories = map[string]bool{
 	"scam_fraud":            true,
 	"sexual_content":        true,
 	"hate_abuse":            true,
-	"impersonation":         true,
+	ReasonImpersonation:     true,
 	"child_safety":          true,
 	"violence_threat":       true,
 	"self_harm":             true,
@@ -103,6 +103,16 @@ var CopyrightReasonLabels = map[string]string{
 // copyrightEntityTypes are the entity types a copyright report may target:
 // a post (the reel and video aliases normalise to post).
 var copyrightEntityTypes = map[string]bool{"post": true}
+
+// ReasonImpersonation is "pretending to be someone else" (short-posts design
+// 3.4: an account presenting as a person, organisation or public body it is
+// not). It is about an account, so it targets a profile ("user") or a post
+// (the note or video in which the account presents as someone else).
+const ReasonImpersonation = "impersonation"
+
+// impersonationEntityTypes are the entity types an impersonation report may
+// target.
+var impersonationEntityTypes = map[string]bool{"post": true, "user": true}
 
 // scamLinkEntityTypes are the entity types a scam_link report may target:
 // a post's Action button, or a profile's ("user").
@@ -194,6 +204,9 @@ func (s *Service) FileReportWith(ctx context.Context, in FileReportInput) (*post
 	}
 	if reason == ReasonScamLink && !scamLinkEntityTypes[entityType] {
 		return nil, fmt.Errorf("%w: reason scam_link applies to posts and profiles only", ErrInvalidReport)
+	}
+	if reason == ReasonImpersonation && !impersonationEntityTypes[entityType] {
+		return nil, fmt.Errorf("%w: reason impersonation applies to profiles and posts only", ErrInvalidReport)
 	}
 	if (reason == ReasonCopyrightMine || reason == ReasonCopyrightMedia) && !copyrightEntityTypes[entityType] {
 		return nil, fmt.Errorf("%w: reason %s applies to posts (videos and reels) only", ErrInvalidReport, reason)

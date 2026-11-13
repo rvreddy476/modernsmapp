@@ -76,6 +76,8 @@ func writeHandleChangeError(c *gin.Context, err error) {
 	case errors.As(err, &cooldown):
 		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "You changed your handle recently. Try again later.",
 			map[string]any{"reason": "HANDLE_COOLDOWN", "cooldown_until": cooldown.Until.UTC().Format(time.RFC3339)}, nil)
+	case errors.Is(err, service.ErrNameReserved):
+		writeNameReserved(c)
 	case errors.Is(err, service.ErrUsernameTaken):
 		api.Error(c.Writer, http.StatusBadRequest, "BAD_REQUEST", "That username is already taken",
 			map[string]any{"reason": "USERNAME_TAKEN"}, nil)
@@ -106,4 +108,11 @@ func writeModuleProfileError(c *gin.Context, err error) {
 // the underlying error with its context.
 func writeGenericInternal(c *gin.Context) {
 	api.Error(c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Internal server error", nil, nil)
+}
+
+// writeNameReserved answers a display name or handle held as possible
+// impersonation: 409 NAME_RESERVED. It never says which account holds it.
+func writeNameReserved(c *gin.Context) {
+	api.Error(c.Writer, http.StatusConflict, "NAME_RESERVED",
+		"This name is too close to a verified, official or government account's name", nil, nil)
 }

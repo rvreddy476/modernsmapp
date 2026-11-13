@@ -296,6 +296,10 @@ func (s *Store) ApprovePerson(ctx context.Context, in ApprovePersonInput) (*Prof
 	if _, err := tx.Exec(ctx, `UPDATE usr.users SET is_verified = TRUE, updated_at = NOW() WHERE id = $1`, in.UserID); err != nil {
 		return nil, fmt.Errorf("approve person: set usr.users: %w", err)
 	}
+	// The verified name is now held against impersonation (exact match).
+	if err := refreshReservedNamesTx(ctx, tx, in.UserID); err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("approve person: commit: %w", err)
 	}

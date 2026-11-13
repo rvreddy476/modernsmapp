@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/atpost/identity-profile-service/internal/store"
+	"github.com/atpost/identity-shared/verification"
 	"github.com/google/uuid"
 )
 
@@ -60,6 +61,9 @@ type PublicProfile struct {
 	BadgeFlags        int    `json:"badge_flags"`
 	IsVerified        bool   `json:"is_verified"`
 	VerificationLevel string `json:"verification_level"`
+	// OrganisationName is the registered name behind an Official or
+	// Government mark, shown with the mark; "" otherwise (publicOrganisationName).
+	OrganisationName string `json:"organisation_name"`
 
 	StatusText      *string    `json:"status_text,omitempty"`
 	StatusEmoji     *string    `json:"status_emoji,omitempty"`
@@ -135,6 +139,7 @@ func ToPublicProfile(p *store.Profile) *PublicProfile {
 		BadgeFlags:        p.BadgeFlags,
 		IsVerified:        p.IsVerified,
 		VerificationLevel: p.VerificationLevel,
+		OrganisationName:  publicOrganisationName(p),
 
 		StatusText:      p.StatusText,
 		StatusEmoji:     p.StatusEmoji,
@@ -272,4 +277,17 @@ func ToPublicProfileMap(m map[uuid.UUID]*store.Profile) map[uuid.UUID]*PublicPro
 		out[id] = ToPublicProfile(p)
 	}
 	return out
+}
+
+// publicOrganisationName publishes organisation_name only while the profile
+// holds an Official or Government mark: a mark lost by a rename keeps the
+// stored name for re-checking, but it is no longer shown.
+func publicOrganisationName(p *store.Profile) string {
+	if p == nil || !p.IsVerified {
+		return ""
+	}
+	if p.VerificationLevel != verification.LevelOrganisation && p.VerificationLevel != verification.LevelGovernment {
+		return ""
+	}
+	return p.OrganisationName
 }

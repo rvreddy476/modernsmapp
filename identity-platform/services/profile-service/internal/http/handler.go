@@ -2,12 +2,14 @@ package http
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/atpost/identity-profile-service/internal/service"
 	"github.com/atpost/identity-profile-service/internal/store"
 	"github.com/atpost/identity-shared/api"
 	"github.com/gin-gonic/gin"
@@ -32,6 +34,9 @@ type Handler struct {
 	privacy ProfilePrivacyResolver
 	// Person verification routes; nil answers 503 (person_verification.go).
 	person PersonVerification
+	// Official and Government mark routes; nil answers 503
+	// (official_verification.go).
+	official OfficialVerification
 }
 
 // WithBlockChecker wires block denial on every profile read surface.
@@ -135,6 +140,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 		// so only a path it does not route can be service-only. It carries its
 		// own guard rather than relying on the engine-wide key check above.
 		r.GET(InternalIdentityPath, requireInternalServiceCaller(h.internalKey), h.GetInternalIdentityBasics)
+		// Official-mark review and Government invitations: service-only.
+		h.registerOfficialVerificationInternalRoutes(r)
 	}
 	v1 := r.Group("/v1/profiles")
 	{
@@ -203,6 +210,8 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 		protected.GET("/me/handle-history", h.GetHandleHistory)
 		// Person verification (the Verified tick); 503 unless enabled.
 		h.registerPersonVerificationRoutes(protected, csrf)
+		// Official and Government marks; 503 unless enabled.
+		h.registerOfficialVerificationRoutes(protected, csrf)
 	}
 
 	// Public: link click tracking
@@ -516,6 +525,10 @@ func (h *Handler) UpdateMe(c *gin.Context) {
 
 	p, err := h.svc.UpdateProfile(c.Request.Context(), userID, params)
 	if writeFieldError(c, err) {
+		return
+	}
+	if errors.Is(err, service.ErrNameReserved) {
+		writeNameReserved(c)
 		return
 	}
 	if err != nil {

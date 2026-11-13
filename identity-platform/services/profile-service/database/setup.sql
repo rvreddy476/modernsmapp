@@ -272,3 +272,95 @@ CREATE TABLE IF NOT EXISTS profile.verified_persons (
 
 COMMENT ON TABLE profile.verified_persons IS
     'One verified account per person: keyed HMAC of the DigiLocker identity, never the identity itself.';
+
+-- ---------------------------------------------------------------------------
+-- Official (organisation) and Government marks, impersonation holds
+-- (short-posts design section 3.4)
+-- ---------------------------------------------------------------------------
+
+-- The registered name behind an Official or Government mark. profile.profiles
+-- is provisioned by auth-service; this column belongs to the marks below, so
+-- it is added here (the foreign keys above already need the table to exist).
+ALTER TABLE profile.profiles
+    ADD COLUMN IF NOT EXISTS organisation_name TEXT NOT NULL DEFAULT '';
+
+-- One row per Official-mark application. The registration number, domain and
+-- signatory address are the organisation's public business details, not a
+-- person's identity data. The e-mail code is stored only as a SHA-256 hash
+-- bound to the application id.
+--
+-- status:
+--   email_pending  submitted; waiting for the code sent to signatory_email
+--   in_review      code proven, but the registry did not confirm (a document
+--                  was uploaded instead): the one human review fallback
+--   approved       the mark is set
+--   rejected       a reviewer refused it
+--   refused        an automatic check refused it (refusal_code says which)
+--   superseded     replaced by a newer application before its code was used
+CREATE TABLE IF NOT EXISTS profile.organisation_verification_applications (
+    id                    UUID PRIMARY KEY,
+    user_id               UUID NOT NULL REFERENCES profile.profiles(user_id) ON DELETE CASCADE,
+    legal_name            TEXT NOT NULL,
+    registration_kind     TEXT NOT NULL CHECK (registration_kind IN ('gstin', 'cin')),
+    registration_number   TEXT NOT NULL,
+    official_domain       TEXT NOT NULL,
+    signatory_email       TEXT NOT NULL,
+    registry_confirmed    BOOLEAN NOT NULL DEFAULT FALSE,
+    registry_name         TEXT NOT NULL DEFAULT '',
+    registry_provider     TEXT NOT NULL DEFAULT '',
+    document_media_id     UUID,
+    status                TEXT NOT NULL DEFAULT 'email_pending'
+        CHECK (status IN ('email_pending', 'in_review', 'approved', 'rejected', 'refused', 'superseded')),
+    refusal_code          TEXT NOT NULL DEFAULT '',
+    email_code_hash       TEXT,
+    email_code_attempts   INT NOT NULL DEFAULT 0,
+    email_code_expires_at TIMESTAMPTZ,
+    reviewer_id           UUID,
+    review_reason         TEXT NOT NULL DEFAULT '',
+    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    completed_at          TIMESTAMPTZ
+);
+
+CREATE INDEX IF NOT EXISTS idx_org_verification_user
+    ON profile.organisation_verification_applications (user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_org_verification_in_review
+    ON profile.organisation_verification_applications (created_at)
+    WHERE status = 'in_review';
+
+-- Government mark invitations. Created only by a service route, with two
+-- distinct admin approvers recorded (two-person rule); accepted by the
+-- invited account with the code, stored here only as a SHA-256 hash.
+CREATE TABLE IF NOT EXISTS profile.government_invitations (
+    id            UUID PRIMARY KEY,
+    user_id       UUID NOT NULL REFERENCES profile.profiles(user_id) ON DELETE CASCADE,
+    official_name TEXT NOT NULL,
+    code_hash     TEXT NOT NULL UNIQUE,
+    approver_one  UUID NOT NULL,
+    approver_two  UUID NOT NULL,
+    reason        TEXT NOT NULL DEFAULT '',
+    status        TEXT NOT NULL DEFAULT 'pending'
+        CHECK (status IN ('pending', 'accepted', 'revoked')),
+    expires_at    TIMESTAMPTZ NOT NULL,
+    created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    accepted_at   TIMESTAMPTZ,
+    CHECK (approver_one <> approver_two),
+    CHECK (approver_one <> user_id AND approver_two <> user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_government_invitations_user
+    ON profile.government_invitations (user_id, created_at DESC);
+
+-- Names held against impersonation: the skeleton keys (and, for Official and
+-- Government names, their one-deletion variants) of every marked account's
+-- display name, handle and organisation name. Rebuilt for a user whenever
+-- their mark or names change (store/reserved_names.go); a name change by
+-- anyone else whose keys meet one of these is refused with NAME_RESERVED.
+CREATE TABLE IF NOT EXISTS profile.reserved_names (
+    variant TEXT NOT NULL,
+    user_id UUID NOT NULL REFERENCES profile.profiles(user_id) ON DELETE CASCADE,
+    kind    TEXT NOT NULL CHECK (kind IN ('person', 'organisation', 'government')),
+    PRIMARY KEY (variant, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reserved_names_user ON profile.reserved_names (user_id);

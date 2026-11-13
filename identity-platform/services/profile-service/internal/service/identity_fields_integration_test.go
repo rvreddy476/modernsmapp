@@ -70,6 +70,7 @@ ALTER TABLE profile.profiles
     ADD COLUMN IF NOT EXISTS pronouns            TEXT,
     ADD COLUMN IF NOT EXISTS is_verified         BOOLEAN NOT NULL DEFAULT FALSE,
     ADD COLUMN IF NOT EXISTS verification_level  TEXT    NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS organisation_name   TEXT    NOT NULL DEFAULT '',
     ADD COLUMN IF NOT EXISTS status_text         TEXT    NOT NULL DEFAULT '',
     ADD COLUMN IF NOT EXISTS status_emoji        TEXT    NOT NULL DEFAULT '',
     ADD COLUMN IF NOT EXISTS status_expires_at   TIMESTAMPTZ,
