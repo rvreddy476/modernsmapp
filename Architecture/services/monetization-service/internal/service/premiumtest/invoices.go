@@ -81,6 +81,10 @@ func (s *Store) sorted(keep func(*premium.Invoice) bool) []premium.Invoice {
 		if !out[a].IssuedAt.Equal(out[b].IssuedAt) {
 			return out[a].IssuedAt.After(out[b].IssuedAt)
 		}
+		// As the Postgres store: a credit note first on a tie.
+		if ca, cb := out[a].Kind == premium.KindCreditNote, out[b].Kind == premium.KindCreditNote; ca != cb {
+			return ca
+		}
 		return out[a].Seq > out[b].Seq
 	})
 	return out

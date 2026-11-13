@@ -169,10 +169,13 @@ func (s *Store) SetPremiumPeriodBuyer(ctx context.Context, periodID uuid.UUID, n
 	return err
 }
 
-// ListPremiumInvoices answers the buyer's documents, newest first.
+// ListPremiumInvoices answers the buyer's documents, newest first. On an
+// equal issued_at a credit note sorts first: it always follows the invoice
+// it reverses, and the two series number independently, so seq alone would
+// put MP/000007 above MPC/000002.
 func (s *Store) ListPremiumInvoices(ctx context.Context, userID uuid.UUID) ([]premium.Invoice, error) {
 	return s.queryPremiumInvoices(ctx, `SELECT `+premiumInvoiceColumns+` FROM premium_invoices
-		WHERE user_id = $1 ORDER BY issued_at DESC, seq DESC LIMIT 500`, userID)
+		WHERE user_id = $1 ORDER BY issued_at DESC, (kind = 'credit_note') DESC, seq DESC LIMIT 500`, userID)
 }
 
 // GetPremiumInvoice answers one document, or nil. The service checks the owner.
