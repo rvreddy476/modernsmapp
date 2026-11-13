@@ -23,7 +23,11 @@ func TestCreatorDashboardSkipsDeletedContent(t *testing.T) {
 	agg := postgres.NewAggregateStore(pool)
 
 	creator, live, gone := uuid.New(), uuid.New(), uuid.New()
-	hour := time.Now().UTC().Truncate(time.Hour).Add(-2 * time.Hour)
+	// The current hour: GetCreatorPeriodTotals reads closed UTC days from
+	// content_daily_summary (not seeded here) and only today's hours from
+	// content_hourly_agg, so an hour two back failed every run between
+	// 00:00 and 02:00 UTC.
+	hour := time.Now().UTC().Truncate(time.Hour)
 	t.Cleanup(func() {
 		pool.Exec(ctx, `DELETE FROM analytics.content_hourly_agg WHERE creator_id = $1`, creator)
 		pool.Exec(ctx, `DELETE FROM analytics.content_ownership WHERE creator_id = $1`, creator)
