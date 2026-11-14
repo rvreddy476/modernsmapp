@@ -18,6 +18,8 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -25,6 +27,8 @@ import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.UsLoadingState
+import com.us.android.feature.echo.data.Note
+import kotlinx.coroutines.flow.distinctUntilChanged
 import java.time.Instant
 
 /**
@@ -44,6 +48,8 @@ fun NoteList(
     emptyDetail: String? = null,
     contentPadding: PaddingValues = PaddingValues(),
     header: (LazyListScope.() -> Unit)? = null,
+    /** The notes that came on screen, for the view count (contract section 2). */
+    onSeen: (List<Note>) -> Unit = {},
 ) {
     val listState = rememberLazyListState()
     val nearEnd by remember {
@@ -54,6 +60,13 @@ fun NoteList(
     }
     LaunchedEffect(nearEnd, feed.cursor, feed.loaded) { if (nearEnd && feed.canLoadMore) onLoadMore() }
     val now = remember(feed.items) { Instant.now() }
+    val items by rememberUpdatedState(feed.items)
+    val seen by rememberUpdatedState(onSeen)
+    LaunchedEffect(listState) {
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.mapNotNull { it.key as? String }.toSet() }
+            .distinctUntilChanged()
+            .collect { keys -> items.filter { it.id in keys }.takeIf { it.isNotEmpty() }?.let(seen) }
+    }
 
     LazyColumn(
         state = listState,

@@ -57,6 +57,7 @@ class NoteDetailViewModel @Inject constructor(
     private val media: EchoMediaUrls,
     private val session: SessionStateProvider,
     @EchoClock private val clock: Clock,
+    deps: EchoActionDeps,
 ) : ViewModel() {
 
     val noteId: String = savedStateHandle.get<String>(NOTE_ID_KEY).orEmpty()
@@ -70,6 +71,20 @@ class NoteDetailViewModel @Inject constructor(
         onPage = { notes -> viewModelScope.launch { media.load(notes) } },
     )
     val replyFeed: StateFlow<NoteFeed> = replies.feed
+
+    /** Bookmark, vote, share and the ··· menu, on the note, its conversation and its replies. */
+    val actions = EchoNoteActions(
+        scope = viewModelScope,
+        deps = deps,
+        apply = ::applyEverywhere,
+        remove = { predicate ->
+            replies.removeWhere(predicate)
+            _state.update { s ->
+                val gone = s.note?.let(predicate) == true
+                s.copy(conversation = s.conversation.filterNot(predicate), deleted = s.deleted || gone)
+            }
+        },
+    )
     val mediaUrls: StateFlow<Map<String, String>> = media.urls
 
     /** A reply was opened from here: the replies are read again on return. */
@@ -160,6 +175,11 @@ class NoteDetailViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /** The ··· menu's Edit opened the composer: the note is read again on return. */
+    fun composeFromMenu(request: ComposeRequest) {
+        if (request.mode in RETURNING_MODES) replyOpened = true
     }
 
     fun composerOpened() {

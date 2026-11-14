@@ -1,20 +1,33 @@
 package com.us.android.feature.echo
 
 import com.us.android.core.auth.SessionStateProvider
+import com.us.android.core.chat.data.PostShareChats
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.engagement.data.ReportOutcome
 import com.us.android.core.model.SessionState
+import com.us.android.feature.echo.data.BookmarkState
+import com.us.android.feature.echo.data.EchoPeople
 import com.us.android.feature.echo.data.EchoRepository
+import com.us.android.feature.echo.data.EchoViews
 import com.us.android.feature.echo.data.Eligibility
 import com.us.android.feature.echo.data.EligibilityReason
 import com.us.android.feature.echo.data.Note
 import com.us.android.feature.echo.data.NotePage
+import com.us.android.feature.echo.data.NoteSearchTab
+import com.us.android.feature.echo.data.PollDraft
 import com.us.android.feature.echo.data.ProfileNotesTab
 import com.us.android.feature.echo.data.ReplyPolicy
 import com.us.android.feature.echo.data.Timeline
+import com.us.android.feature.echo.data.Trend
+import com.us.android.feature.echo.ui.EchoActionDeps
+import io.mockk.every
+import io.mockk.mockk
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import java.time.Clock
+import java.time.Instant
+import java.time.ZoneOffset
 
 /** Builds a note for tests. */
 fun note(
@@ -74,6 +87,8 @@ class FakeEchoRepository : EchoRepository {
         val replyToId: String?,
         val quoteOfId: String?,
         val policy: ReplyPolicy?,
+        val poll: PollDraft? = null,
+        val scheduledAt: String? = null,
     )
 
     override suspend fun timeline(timeline: Timeline, cursor: String?): AppResult<NotePage> {
@@ -104,8 +119,10 @@ class FakeEchoRepository : EchoRepository {
         replyToId: String?,
         quoteOfId: String?,
         replyPolicy: ReplyPolicy?,
+        poll: PollDraft?,
+        scheduledAt: String?,
     ): AppResult<Note> {
-        posts += Posted(idempotencyKey, text, mediaIds, replyToId, quoteOfId, replyPolicy)
+        posts += Posted(idempotencyKey, text, mediaIds, replyToId, quoteOfId, replyPolicy, poll, scheduledAt)
         return postResult
     }
 
@@ -139,7 +156,80 @@ class FakeEchoRepository : EchoRepository {
     }
 
     override suspend fun report(id: String, reason: String, details: String): ReportOutcome = ReportOutcome.Filed
+
+    // ── Echo v2 ──
+    var voteResult: AppResult<Note>? = null
+    var bookmarkResult: AppResult<BookmarkState>? = null
+    var shareResult: AppResult<Unit> = AppResult.Success(Unit)
+    var viewsResult: AppResult<Unit> = AppResult.Success(Unit)
+    var rescheduleResult: AppResult<Note> = AppResult.Success(com.us.android.feature.echo.note("rescheduled"))
+    var trendsResult: AppResult<List<Trend>> = AppResult.Success(emptyList())
+    val votes = mutableListOf<Pair<String, Int>>()
+    val bookmarkCalls = mutableListOf<Pair<String, Boolean>>()
+    val shares = mutableListOf<String>()
+    val viewBatches = mutableListOf<List<String>>()
+    val reschedules = mutableListOf<Pair<String, String>>()
+    val scheduledDeletes = mutableListOf<String>()
+
+    override suspend fun vote(id: String, optionIndex: Int): AppResult<Note> {
+        votes += id to optionIndex
+        return voteResult ?: AppResult.Success(com.us.android.feature.echo.note(id))
+    }
+
+    override suspend fun scheduled(cursor: String?): AppResult<NotePage> = AppResult.Success(
+        NotePage(emptyList(), null)
+    )
+
+    override suspend fun reschedule(id: String, scheduledAt: String): AppResult<Note> {
+        reschedules += id to scheduledAt
+        return rescheduleResult
+    }
+
+    override suspend fun deleteScheduled(id: String): AppResult<Unit> {
+        scheduledDeletes += id
+        return AppResult.Success(Unit)
+    }
+
+    override suspend fun setBookmarked(id: String, bookmarked: Boolean): AppResult<BookmarkState> {
+        bookmarkCalls += id to bookmarked
+        return bookmarkResult ?: AppResult.Success(BookmarkState(bookmarked, if (bookmarked) 1 else 0))
+    }
+
+    override suspend fun bookmarks(cursor: String?): AppResult<NotePage> = AppResult.Success(
+        NotePage(emptyList(), null)
+    )
+
+    override suspend fun recordViews(ids: List<String>): AppResult<Unit> {
+        viewBatches += ids
+        return viewsResult
+    }
+
+    override suspend fun quotes(id: String, cursor: String?): AppResult<NotePage> = AppResult.Success(
+        NotePage(emptyList(), null)
+    )
+
+    override suspend fun trends(): AppResult<List<Trend>> = trendsResult
+
+    override suspend fun hashtag(tag: String, tab: NoteSearchTab, cursor: String?): AppResult<NotePage> =
+        AppResult.Success(NotePage(emptyList(), null))
+
+    override suspend fun search(query: String, tab: NoteSearchTab, cursor: String?): AppResult<NotePage> =
+        AppResult.Success(NotePage(emptyList(), null))
+
+    override suspend fun recordShare(id: String): AppResult<Unit> {
+        shares += id
+        return shareResult
+    }
 }
+
+/** Note actions over [repo]: the viewer is [viewerId]; chats and views are inert. */
+fun testDeps(repo: EchoRepository, viewerId: String = "me"): EchoActionDeps = EchoActionDeps(
+    repository = repo,
+    people = mockk<EchoPeople>(relaxed = true).also { every { it.viewerId } returns viewerId },
+    chats = mockk<PostShareChats>(relaxed = true),
+    views = mockk<EchoViews>(relaxed = true),
+    clock = Clock.fixed(Instant.parse("2026-11-12T09:40:00Z"), ZoneOffset.UTC),
+)
 
 class FakeSession(userId: String = "me") : SessionStateProvider {
     override val sessionState: StateFlow<SessionState> = MutableStateFlow(SessionState.Authenticated(userId, "s1"))

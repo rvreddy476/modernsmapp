@@ -26,13 +26,22 @@ object EchoErrorCodes {
     const val MEDIA_NOT_OWNED = "MEDIA_NOT_OWNED"
     const val MEDIA_NOT_FOUND = "MEDIA_NOT_FOUND"
     const val MEDIA_NOT_READY = "MEDIA_NOT_READY"
+
+    // Echo v2 (echo-v2-contract.md section 2).
+    const val INVALID_POLL = "INVALID_POLL"
+    const val POLL_WITH_MEDIA = "POLL_WITH_MEDIA"
+    const val INVALID_SCHEDULE = "INVALID_SCHEDULE"
+    const val POLL_CLOSED = "POLL_CLOSED"
+    const val ALREADY_VOTED = "ALREADY_VOTED"
+    const val OWN_POLL = "OWN_POLL"
 }
 
 /** The words for the eligibility sheet and the matching refusals. */
 object EchoWords {
-    const val PREMIUM_REQUIRED = "Posting on Echo needs Momentum Premium"
+    const val PREMIUM_REQUIRED = "Posting on Echo needs Premium"
     const val PREMIUM_REQUIRED_DETAIL =
-        "You can still read, like, repost and reply. Premium members can post notes, threads and quotes."
+        "You can still reply, like, bookmark and vote. Premium members post, start threads and quote."
+    const val UNAVAILABLE = "This isn't available yet. Try again later."
     const val ACCOUNT_TOO_NEW = "Your account is too new to reply on Echo"
     const val ACCOUNT_TOO_NEW_DETAIL = "Accounts can reply once they are 7 days old."
     const val SUSPENDED = "Your account can't post on Echo right now"
@@ -80,7 +89,27 @@ fun echoErrorMessage(error: AppError): String {
         EchoErrorCodes.MEDIA_NOT_FOUND -> "One of these photos is missing. Remove it and add it again."
         EchoErrorCodes.MEDIA_NOT_READY -> "Your photos are still processing. Try again in a moment."
         EchoErrorCodes.RATE_LIMITED -> rateLimitedMessage(null)
+        EchoErrorCodes.INVALID_POLL -> "A poll needs 2 to 4 choices of up to 25 characters, open 5 minutes to 7 days."
+        EchoErrorCodes.POLL_WITH_MEDIA -> "A poll can't have photos or a GIF."
+        EchoErrorCodes.INVALID_SCHEDULE -> "Pick a time between 5 minutes and 18 months from now."
+        EchoErrorCodes.POLL_CLOSED -> "This poll has ended."
+        EchoErrorCodes.ALREADY_VOTED -> "You already voted in this poll."
+        EchoErrorCodes.OWN_POLL -> "You can't vote in your own poll."
         else -> if (error is AppError.NotFound) EchoWords.NOTE_NOT_FOUND else EchoWords.GENERIC
+    }
+}
+
+/**
+ * A list that would not load (trends, search, bookmarks, scheduled, quotes):
+ * a route the server has not deployed yet (a bare 404) or Echo switched off
+ * (503) reads as "not available yet" rather than "this note isn't available".
+ */
+fun echoListErrorMessage(error: AppError): String {
+    val code = echoCode(error)
+    return when {
+        error is AppError.NotFound && code != EchoErrorCodes.NOTE_NOT_FOUND -> EchoWords.UNAVAILABLE
+        error is AppError.Server && code != EchoErrorCodes.ECHO_NOT_ENABLED -> EchoWords.UNAVAILABLE
+        else -> echoErrorMessage(error)
     }
 }
 

@@ -92,7 +92,7 @@ class EchoRulesTest {
     @Test
     fun `every contract code has its own sentence`() {
         val codes = mapOf(
-            EchoErrorCodes.PREMIUM_REQUIRED to "Posting on Echo needs Momentum Premium",
+            EchoErrorCodes.PREMIUM_REQUIRED to "Posting on Echo needs Premium",
             EchoErrorCodes.ACCOUNT_TOO_NEW to "Accounts can reply once they are 7 days old.",
             EchoErrorCodes.REPLY_NOT_ALLOWED to EchoWords.REPLY_NOT_ALLOWED,
             EchoErrorCodes.NOTE_TOO_LONG to "Notes can be up to 500 characters.",

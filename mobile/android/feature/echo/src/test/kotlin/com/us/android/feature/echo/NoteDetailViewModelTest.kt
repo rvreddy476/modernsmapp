@@ -41,7 +41,8 @@ class NoteDetailViewModelTest {
             repo,
             media,
             FakeSession("me"),
-            clock
+            clock,
+            testDeps(repo),
         )
 
     @Test

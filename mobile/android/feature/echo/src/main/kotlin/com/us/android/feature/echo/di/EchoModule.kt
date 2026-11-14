@@ -1,9 +1,11 @@
 package com.us.android.feature.echo.di
 
 import com.us.android.feature.echo.data.DefaultEchoMediaUploader
+import com.us.android.feature.echo.data.DefaultEchoPeople
 import com.us.android.feature.echo.data.DefaultEchoRepository
 import com.us.android.feature.echo.data.EchoApi
 import com.us.android.feature.echo.data.EchoMediaUploader
+import com.us.android.feature.echo.data.EchoPeople
 import com.us.android.feature.echo.data.EchoRepository
 import dagger.Binds
 import dagger.Module
@@ -21,6 +23,9 @@ abstract class EchoModule {
 
     @Binds
     abstract fun bindEchoRepository(repository: DefaultEchoRepository): EchoRepository
+
+    @Binds
+    abstract fun bindEchoPeople(people: DefaultEchoPeople): EchoPeople
 
     @Binds
     abstract fun bindEchoMediaUploader(uploader: DefaultEchoMediaUploader): EchoMediaUploader

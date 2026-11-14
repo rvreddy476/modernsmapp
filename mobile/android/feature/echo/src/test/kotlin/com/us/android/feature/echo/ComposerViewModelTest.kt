@@ -8,6 +8,7 @@ import com.us.android.core.testing.MainDispatcherRule
 import com.us.android.feature.echo.data.EchoMediaUploader
 import com.us.android.feature.echo.data.EchoMediaUrls
 import com.us.android.feature.echo.data.EchoWords
+import com.us.android.feature.echo.data.GIF_FAILED
 import com.us.android.feature.echo.data.MEDIA_LIMIT_MESSAGE
 import com.us.android.feature.echo.data.ReplyPolicy
 import com.us.android.feature.echo.ui.ComposeMode
@@ -44,6 +45,14 @@ class ComposerViewModelTest {
         override fun isGif(uri: String) = "gif" in uri
         override suspend fun upload(uri: String): AppResult<String> =
             if ("bad" in uri) AppResult.Failure(AppError.Unknown(null, null)) else AppResult.Success("m-$uri")
+
+        /** A Giphy pick downloads to `local-<last path part>.gif`; a URL containing "bad" fails. */
+        override suspend fun fetchGif(url: String): AppResult<String> =
+            if ("bad" in url) {
+                AppResult.Failure(AppError.Unknown(null, null))
+            } else {
+                AppResult.Success("local-${url.substringAfterLast('/')}.gif")
+            }
     }
 
     private var now = Instant.parse("2026-11-12T09:40:00Z")
@@ -111,6 +120,24 @@ class ComposerViewModelTest {
         gif.addMedia(0, listOf("p1"))
         advanceUntilIdle()
         assertThat(gif.state.value.entries[0].media.map { it.localKey }).containsExactly("a.gif")
+    }
+
+    @Test
+    fun `a Giphy pick is downloaded, then staged and uploaded as the entry's one GIF`() = runTest(dispatcher) {
+        val vm = model()
+        advanceUntilIdle()
+        vm.addGif(0, "https://media.giphy.com/x/cat")
+        advanceUntilIdle()
+        val staged = vm.state.value.entries[0].media.single()
+        assertThat(staged.isGif).isTrue()
+        assertThat(staged.mediaId).isEqualTo("m-local-cat.gif")
+
+        val failed = model()
+        advanceUntilIdle()
+        failed.addGif(0, "https://media.giphy.com/x/bad")
+        advanceUntilIdle()
+        assertThat(failed.state.value.entries[0].media).isEmpty()
+        assertThat(failed.state.value.error).isEqualTo(GIF_FAILED)
     }
 
     @Test
@@ -270,5 +297,49 @@ class ComposerViewModelTest {
         advanceUntilIdle()
         assertThat(vm.state.value.blocked?.detail).isEqualTo(EchoWords.NOTE_NOT_FOUND)
         assertThat(vm.state.value.canSubmit).isFalse()
+    }
+
+    @Test
+    fun `a poll goes with the post, never with photos`() = runTest(dispatcher) {
+        val vm = model()
+        advanceUntilIdle()
+        vm.setText(0, "Snack?")
+        assertThat(vm.state.value.canAddPoll).isTrue()
+        vm.startPoll()
+        assertThat(vm.state.value.canAddMedia).isFalse()
+        assertThat(vm.state.value.canSubmit).isFalse()
+        vm.setPollOption(0, "Bajji")
+        vm.setPollOption(1, "Samosa")
+        vm.setPollLength(60)
+        assertThat(vm.state.value.canSubmit).isTrue()
+        vm.submit()
+        advanceUntilIdle()
+        val sent = repo.posts.single().poll!!
+        assertThat(sent.options).containsExactly("Bajji", "Samosa").inOrder()
+        assertThat(sent.durationMinutes).isEqualTo(60)
+
+        val photos = model()
+        advanceUntilIdle()
+        photos.addMedia(0, listOf("p1"))
+        advanceUntilIdle()
+        assertThat(photos.state.value.canAddPoll).isFalse()
+    }
+
+    @Test
+    fun `a schedule outside 5 minutes to 18 months is refused, inside it is sent`() = runTest(dispatcher) {
+        val vm = model()
+        advanceUntilIdle()
+        vm.setText(0, "later")
+        vm.setSchedule(now.plusSeconds(60))
+        assertThat(vm.state.value.canSubmit).isFalse()
+        vm.setSchedule(now.plus(java.time.Duration.ofDays(541)))
+        assertThat(vm.state.value.canSubmit).isFalse()
+        val at = now.plus(java.time.Duration.ofHours(3))
+        vm.setSchedule(at)
+        assertThat(vm.state.value.canSubmit).isTrue()
+        vm.submit()
+        advanceUntilIdle()
+        assertThat(repo.posts.single().scheduledAt).isEqualTo(at.toString())
+        assertThat(vm.state.value.doneScheduled).isTrue()
     }
 }

@@ -5,8 +5,8 @@ import androidx.compose.runtime.Immutable
 /** Who may reply to a note (echo-contract.md): the author picks one per note. */
 enum class ReplyPolicy(val wire: String, val label: String) {
     EVERYONE("everyone", "Everyone"),
-    FOLLOWING("following", "People you follow"),
-    MENTIONED("mentioned", "Only people you mention"),
+    FOLLOWING("following", "Accounts you follow"),
+    MENTIONED("mentioned", "Only accounts you mention"),
     ;
 
     companion object {
@@ -75,9 +75,81 @@ data class Note(
     val viewerCanReply: Boolean,
     /** One level deep; null when there is none, or the quoted note is gone (then [quoteOfId] stays). */
     val quoted: Note?,
+    // Echo v2 (echo-v2-contract.md section 1): always present on the wire.
+    val viewCount: Long = 0,
+    val bookmarkCount: Long = 0,
+    val bookmarked: Boolean = false,
+    val quoteCount: Long = 0,
+    val status: NoteStatus = NoteStatus.PUBLISHED,
+    /** RFC3339; set only on the author's scheduled notes. */
+    val scheduledAt: String? = null,
+    val poll: NotePoll? = null,
+    /** Why a due scheduled note did not publish (contract section 3); the author's own list only. */
+    val publishError: String? = null,
 ) {
     val edited: Boolean get() = !editedAt.isNullOrBlank()
 }
+
+/** `published`, `scheduled`, or `failed` (a scheduled note dropped after 24 hours of retries). */
+enum class NoteStatus(val wire: String) {
+    PUBLISHED("published"),
+    SCHEDULED("scheduled"),
+    FAILED("failed"),
+    ;
+
+    companion object {
+        fun fromWire(wire: String?): NoteStatus = entries.firstOrNull { it.wire == wire } ?: PUBLISHED
+    }
+}
+
+/** One choice of a poll. [votes] is null while the server withholds counts from this viewer. */
+@Immutable
+data class PollOption(val index: Int, val label: String, val votes: Long?)
+
+/** A note's poll. Counts are withheld (null) until the viewer voted, the poll closed, or for the author. */
+@Immutable
+data class NotePoll(
+    val options: List<PollOption>,
+    val totalVotes: Long,
+    val endsAt: String,
+    val closed: Boolean,
+    val viewerVote: Int?,
+)
+
+/** One trending hashtag (`GET /v1/notes/trends`), without its `#`. */
+@Immutable
+data class Trend(val tag: String, val noteCount: Long, val rank: Int)
+
+/** Top or Latest: hashtag pages and search. */
+enum class NoteSearchTab(val wire: String, val label: String) {
+    TOP("top", "Top"),
+    LATEST("latest", "Latest"),
+}
+
+/** The bookmark answer: the viewer's state and the public count. */
+data class BookmarkState(val bookmarked: Boolean, val count: Long)
+
+/** An Echo profile's header, read from the profile service. */
+@Immutable
+data class EchoProfile(
+    val userId: String,
+    val username: String,
+    val displayName: String,
+    val bio: String,
+    val avatarMediaId: String?,
+    val coverMediaId: String?,
+    val mark: VerificationMark,
+    val followers: Long,
+    val following: Long,
+    val joinedAt: String,
+    val viewerFollows: Boolean,
+) {
+    val name: String get() = displayName.ifBlank { username }
+    val handle: String get() = if (username.isBlank()) "" else "@$username"
+}
+
+/** A new poll as the composer sends it (`poll: {options, duration_minutes}`). */
+data class PollDraft(val options: List<String>, val durationMinutes: Int)
 
 /** A page of notes and the server's cursor; null means the last page. */
 data class NotePage(val items: List<Note>, val nextCursor: String?)
@@ -104,10 +176,24 @@ enum class ProfileNotesTab(val wire: String, val label: String) {
     REPOSTS("reposts", "Reposts"),
 }
 
-/** The two timelines. Following is the default on first open (design §2). */
+/**
+ * The tabs of Echo's own profile page, X's four. Media has no route of its
+ * own: it is the Posts tab narrowed to notes with pictures.
+ */
+enum class EchoProfileTab(val label: String, val source: ProfileNotesTab, val mediaOnly: Boolean = false) {
+    POSTS("Posts", ProfileNotesTab.NOTES),
+    REPLIES("Replies", ProfileNotesTab.REPLIES),
+    REPOSTS("Reposts", ProfileNotesTab.REPOSTS),
+    MEDIA("Media", ProfileNotesTab.NOTES, mediaOnly = true),
+}
+
+/**
+ * The two timelines, in X's order: For you, then Following. Following is
+ * still the one selected on first open (design section 2, decision kept).
+ */
 enum class Timeline(val label: String) {
+    FOR_YOU("For you"),
     FOLLOWING("Following"),
-    FOR_YOU("For You"),
 }
 
 fun NoteDto.toNote(): Note = Note(
@@ -140,7 +226,25 @@ fun NoteDto.toNote(): Note = Note(
     reposted = viewerHasReposted,
     viewerCanReply = viewerCanReply,
     quoted = quotedNote?.toNote(),
+    viewCount = viewCount,
+    bookmarkCount = bookmarkCount,
+    bookmarked = viewerHasBookmarked,
+    quoteCount = quoteCount,
+    status = NoteStatus.fromWire(status),
+    scheduledAt = scheduledAt?.takeIf { it.isNotBlank() },
+    poll = poll?.toPoll(),
+    publishError = publishError?.takeIf { it.isNotBlank() },
 )
+
+fun PollDto.toPoll(): NotePoll = NotePoll(
+    options = options.orEmpty().sortedBy { it.index }.map { PollOption(it.index, it.label, it.votes) },
+    totalVotes = totalVotes,
+    endsAt = endsAt,
+    closed = closed,
+    viewerVote = viewerVote,
+)
+
+fun TrendDto.toTrend(): Trend = Trend(tag = tag.removePrefix("#"), noteCount = noteCount, rank = rank)
 
 fun EligibilityDto.toEligibility(): Eligibility =
     Eligibility(canPost = canPost, canReply = canReply, reason = EligibilityReason.fromWire(reason))

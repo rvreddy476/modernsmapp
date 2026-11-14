@@ -35,7 +35,7 @@ class EchoHomeViewModelTest {
     private val repo = FakeEchoRepository()
     private val media = mockk<EchoMediaUrls>(relaxed = true)
 
-    private fun model() = EchoHomeViewModel(repo, media)
+    private fun model() = EchoHomeViewModel(repo, media, testDeps(repo))
 
     @Test
     fun `Following is first and read at once, For You only when opened`() = runTest(dispatcher) {

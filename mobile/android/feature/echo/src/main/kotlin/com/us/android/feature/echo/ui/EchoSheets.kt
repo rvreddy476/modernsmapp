@@ -2,40 +2,30 @@ package com.us.android.feature.echo.ui
 
 import android.content.Context
 import android.content.Intent
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import com.us.android.core.designsystem.component.UsButton
+import com.us.android.core.designsystem.component.UsMessage
+import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsSecondaryButton
-import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.model.WebLinks
-import com.us.android.core.ui.UsPostReportState
-import com.us.android.core.ui.UsPostReportStep
 import com.us.android.feature.echo.data.Note
-import kotlinx.coroutines.delay
 
 /**
  * Why this viewer cannot post or reply, in plain words.
@@ -99,84 +89,6 @@ fun EligibilitySheet(
     }
 }
 
-/**
- * A note's ⋮: Edit (the author, within 30 minutes) and Delete (the author),
- * or Report (anyone else) through the shared report step, target `post`.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun NoteMoreSheet(
-    menu: NoteMenu,
-    report: UsPostReportState,
-    onEdit: () -> Unit,
-    onDelete: () -> Unit,
-    onReport: (reason: String, details: String) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    var reporting by rememberSaveable { mutableStateOf(false) }
-    var confirmDelete by rememberSaveable { mutableStateOf(false) }
-    LaunchedEffect(report) {
-        if (report == UsPostReportState.Sent || report == UsPostReportState.AlreadyReported) {
-            delay(REPORT_CLOSE_MILLIS)
-            onDismiss()
-        }
-    }
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = UsTheme.extended.bgCardSolid) {
-        Column(modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = UsTheme.spacing.l)) {
-            when {
-                reporting -> UsPostReportStep(
-                    report = report,
-                    onBack = { reporting = false },
-                    onSubmit = { reason, details -> onReport(reason.wire, details) },
-                    subject = "note",
-                )
-                confirmDelete -> Column(
-                    modifier = Modifier.padding(horizontal = UsTheme.spacing.pageHorizontal),
-                    verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-                ) {
-                    Text(
-                        text = "Delete this note?",
-                        style = MaterialTheme.typography.titleMedium,
-                        fontWeight = FontWeight.Bold,
-                        color = UsTheme.extended.textPrimary,
-                    )
-                    Text(
-                        text = "It will be removed from Echo and from your profile.",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = UsTheme.extended.textSecondary,
-                    )
-                    UsButton(
-                        text = "Delete",
-                        onClick = onDelete,
-                        modifier = Modifier.fillMaxWidth().testTag("echo_delete_confirm")
-                    )
-                }
-                else -> {
-                    if (menu.edit) MenuRow(UsIcons.Pencil, "Edit", "edit", onEdit)
-                    if (menu.delete) MenuRow(UsIcons.Trash, "Delete", "delete") { confirmDelete = true }
-                    if (menu.report) MenuRow(UsIcons.Flag, "Report", "report") { reporting = true }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun MenuRow(icon: ImageVector, label: String, tag: String, onClick: () -> Unit) {
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = UsTheme.spacing.pageHorizontal, vertical = UsTheme.spacing.l)
-            .testTag("echo_menu:$tag"),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
-    ) {
-        Icon(icon, contentDescription = null, tint = UsTheme.extended.textPrimary)
-        Text(text = label, style = MaterialTheme.typography.bodyLarge, color = UsTheme.extended.textPrimary)
-    }
-}
-
 /** The system chooser with the note's web address, `https://cleestudio.com/echo/note/{id}`. */
 @Composable
 fun rememberNoteSharer(): (Note) -> Unit {
@@ -195,15 +107,17 @@ fun noteShareText(note: Note): String {
     return if (head.isBlank()) link else "$head\n$link"
 }
 
-private fun Context.shareNote(note: Note) {
+/** Opens the system chooser; true when it opened (only then is the share counted). */
+internal fun Context.shareNote(note: Note): Boolean {
     val send = Intent(Intent.ACTION_SEND).apply {
         type = "text/plain"
         putExtra(Intent.EXTRA_TEXT, noteShareText(note))
     }
-    runCatching { startActivity(Intent.createChooser(send, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+    return runCatching {
+        startActivity(Intent.createChooser(send, null).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }.isSuccess
 }
 
-private const val REPORT_CLOSE_MILLIS = 1_200L
 private const val SHARE_EXCERPT = 120
 
 /** The sheet's purchase button, the web's words. */
@@ -214,3 +128,11 @@ const val GET_PREMIUM = "Get Premium"
  * while `:app` draws a way in ([entryShown]). Pure, so it is a table test.
  */
 fun showGetPremium(blocked: ComposeGate.Blocked, entryShown: Boolean): Boolean = entryShown && blocked.premiumRequired
+
+/** A [UsMessageHost] for hosts drawn outside a Box (sheets, gates): it lays its own full-size Box. */
+@Composable
+internal fun EchoMessageHost(message: UsMessage?, onDismiss: () -> Unit) {
+    Box(modifier = Modifier.fillMaxSize()) {
+        UsMessageHost(message = message, onDismiss = onDismiss)
+    }
+}

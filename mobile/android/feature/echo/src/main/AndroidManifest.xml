@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!--
+          A GIF picked in the composer is downloaded into cacheDir/echo_gifs and
+          handed to the upload pipeline as a content:// URI, because :core:media
+          reads type and size through the ContentResolver. A FileProvider SUBCLASS
+          so its manifest key never collides with another library's entry; it
+          shares only that one directory (res/xml/echo_gif_paths.xml).
+        -->
+        <provider
+            android:name="com.us.android.feature.echo.data.EchoGifFileProvider"
+            android:authorities="${applicationId}.echo.gifs"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <!-- FileProvider.getUriForFile reads the paths from here, not from the constructor. -->
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/echo_gif_paths" />
+        </provider>
+    </application>
+
+</manifest>

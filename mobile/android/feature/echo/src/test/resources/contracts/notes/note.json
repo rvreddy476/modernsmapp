@@ -43,7 +43,6 @@
       "shares": 0,
       "saves": 0
     },
-    "view_count": 0,
     "has_reacted": true,
     "is_bookmarked": false,
     "has_reposted": false,
@@ -123,7 +122,6 @@
         "shares": 0,
         "saves": 0
       },
-      "view_count": 0,
       "has_reacted": true,
       "is_bookmarked": false,
       "has_reposted": false,
@@ -152,7 +150,21 @@
         "verification_level": "person",
         "badge_flags": 0
       },
-      "quoted_note": null
-    }
+      "quoted_note": null,
+      "view_count": 0,
+      "bookmark_count": 0,
+      "viewer_has_bookmarked": false,
+      "quote_count": 1,
+      "status": "published",
+      "scheduled_at": null,
+      "poll": null
+    },
+    "view_count": 0,
+    "bookmark_count": 0,
+    "viewer_has_bookmarked": false,
+    "quote_count": 0,
+    "status": "published",
+    "scheduled_at": null,
+    "poll": null
   }
 }

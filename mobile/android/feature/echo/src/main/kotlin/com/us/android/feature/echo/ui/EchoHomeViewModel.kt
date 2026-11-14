@@ -5,6 +5,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.feature.echo.data.EchoMediaUrls
 import com.us.android.feature.echo.data.EchoRepository
+import com.us.android.feature.echo.data.Eligibility
 import com.us.android.feature.echo.data.Note
 import com.us.android.feature.echo.data.Timeline
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -28,8 +29,12 @@ enum class ComposeMode(val wire: String) {
     }
 }
 
-/** A composer the gate let through: the screen navigates, then calls the consume function. */
-data class ComposeRequest(val mode: ComposeMode, val targetId: String = "")
+/**
+ * A composer the gate let through: the screen navigates, then calls the
+ * consume function. [thread] starts a new note as a two-entry thread (the
+ * compose button's "Thread").
+ */
+data class ComposeRequest(val mode: ComposeMode, val targetId: String = "", val thread: Boolean = false)
 
 @Immutable
 data class EchoHomeUiState(
@@ -42,15 +47,16 @@ data class EchoHomeUiState(
 )
 
 /**
- * Echo's home: Following (the default) and For You, each its own paged list,
- * read the first time its tab is shown. The compose button and a card's
- * Quote ask eligibility first; a viewer who may not post gets the sheet, not
- * the composer.
+ * Echo's Home tab: For you and Following, each its own paged list, read the
+ * first time its tab is shown (Following first, design section 2). The
+ * compose button and every Quote ask eligibility first; a viewer who may not
+ * post gets the Premium sheet, not the composer. Replies open the note's page.
  */
 @HiltViewModel
 class EchoHomeViewModel @Inject constructor(
     private val repository: EchoRepository,
     private val media: EchoMediaUrls,
+    deps: EchoActionDeps,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(EchoHomeUiState())
@@ -68,9 +74,19 @@ class EchoHomeViewModel @Inject constructor(
     val forYou: StateFlow<NoteFeed> = feeds.getValue(Timeline.FOR_YOU).feed
     val mediaUrls: StateFlow<Map<String, String>> = media.urls
 
+    /** Bookmark, vote, share and the ··· menu, on both timelines at once. */
+    val actions = EchoNoteActions(
+        scope = viewModelScope,
+        deps = deps,
+        apply = ::applyEverywhere,
+        remove = { predicate -> feeds.values.forEach { it.removeWhere(predicate) } },
+    )
+
     init {
         feeds.getValue(Timeline.FOLLOWING).loadIfNeeded()
     }
+
+    fun feed(timeline: Timeline): StateFlow<NoteFeed> = feeds.getValue(timeline).feed
 
     fun select(timeline: Timeline) {
         _state.update { it.copy(timeline = timeline) }
@@ -94,10 +110,13 @@ class EchoHomeViewModel @Inject constructor(
     /** The compose button: Premium only. */
     fun compose() = gate(ComposeRequest(ComposeMode.NEW), ::postGate)
 
+    /** The compose button's "Thread": Premium only, like any new post. */
+    fun composeThread() = gate(ComposeRequest(ComposeMode.NEW, thread = true), ::postGate)
+
     /** A card's Quote: a quote is a note, so Premium only too. */
     fun quote(note: Note) = gate(ComposeRequest(ComposeMode.QUOTE, note.id), ::postGate)
 
-    private fun gate(request: ComposeRequest, rule: (com.us.android.feature.echo.data.Eligibility) -> ComposeGate) {
+    private fun gate(request: ComposeRequest, rule: (Eligibility) -> ComposeGate) {
         if (_state.value.checking) return
         _state.update { it.copy(checking = true) }
         viewModelScope.launch {

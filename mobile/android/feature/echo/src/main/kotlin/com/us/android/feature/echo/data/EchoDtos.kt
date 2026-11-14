@@ -4,8 +4,8 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
- * The wire shapes of docs/designs/echo-contract.md, pinned by the golden
- * fixtures copied byte for byte from post-service
+ * The wire shapes of docs/designs/echo-contract.md and echo-v2-contract.md,
+ * pinned by the golden fixtures copied byte for byte from post-service
  * (`testdata/contracts/notes/`). A note is the post JSON with the Echo
  * fields always present; only what the screens read is declared here, and
  * the app's Json ignores the rest.
@@ -35,6 +35,15 @@ data class NoteDto(
     @SerialName("viewer_can_reply") val viewerCanReply: Boolean = false,
     val author: NoteAuthorDto? = null,
     @SerialName("quoted_note") val quotedNote: NoteDto? = null,
+    // Echo v2 (echo-v2-contract.md section 1).
+    @SerialName("view_count") val viewCount: Long = 0,
+    @SerialName("bookmark_count") val bookmarkCount: Long = 0,
+    @SerialName("viewer_has_bookmarked") val viewerHasBookmarked: Boolean = false,
+    @SerialName("quote_count") val quoteCount: Long = 0,
+    val status: String = "",
+    @SerialName("scheduled_at") val scheduledAt: String? = null,
+    val poll: PollDto? = null,
+    @SerialName("publish_error") val publishError: String? = null,
 )
 
 @Serializable
@@ -58,6 +67,23 @@ data class NoteMediaDto(
     @SerialName("processing_status") val processingStatus: String = "",
 )
 
+/** A note's poll. Each `votes` is null while counts are withheld from this viewer. */
+@Serializable
+data class PollDto(
+    val options: List<PollOptionDto>? = null,
+    @SerialName("total_votes") val totalVotes: Long = 0,
+    @SerialName("ends_at") val endsAt: String = "",
+    val closed: Boolean = false,
+    @SerialName("viewer_vote") val viewerVote: Int? = null,
+)
+
+@Serializable
+data class PollOptionDto(
+    val index: Int = 0,
+    val label: String = "",
+    val votes: Long? = null,
+)
+
 /** `{items:[Note], next_cursor}`: the timelines, replies and a profile's tab. The cursor rides in `data`. */
 @Serializable
 data class NoteListDto(
@@ -79,7 +105,11 @@ data class EligibilityDto(
     val reason: String = "",
 )
 
-/** `POST /v1/notes`. [replyToId] and [quoteOfId] are mutually exclusive (400 INVALID_REQUEST). */
+/**
+ * `POST /v1/notes`. [replyToId] and [quoteOfId] are mutually exclusive
+ * (400 INVALID_REQUEST); a [poll] note carries no media (400
+ * POLL_WITH_MEDIA); a reply is never scheduled.
+ */
 @Serializable
 data class CreateNoteRequest(
     val text: String,
@@ -87,6 +117,15 @@ data class CreateNoteRequest(
     @SerialName("reply_to_id") val replyToId: String? = null,
     @SerialName("quote_of_id") val quoteOfId: String? = null,
     @SerialName("reply_policy") val replyPolicy: String? = null,
+    val poll: CreatePollRequest? = null,
+    @SerialName("scheduled_at") val scheduledAt: String? = null,
+)
+
+/** `poll` on `POST /v1/notes`: 2 to 4 options of up to 25 characters, open 5 minutes to 7 days. */
+@Serializable
+data class CreatePollRequest(
+    val options: List<String>,
+    @SerialName("duration_minutes") val durationMinutes: Int,
 )
 
 @Serializable
@@ -107,4 +146,34 @@ data class CreateThreadRequest(
 data class EditNoteRequest(
     val text: String? = null,
     @SerialName("reply_policy") val replyPolicy: String? = null,
+)
+
+/** `POST /v1/notes/:id/poll/vote`. No Kotlin default, so option 0 is still sent. */
+@Serializable
+data class VoteRequest(@SerialName("option_index") val optionIndex: Int)
+
+/** `PATCH /v1/notes/:id/schedule`. */
+@Serializable
+data class ScheduleRequest(@SerialName("scheduled_at") val scheduledAt: String)
+
+/** `POST|DELETE /v1/notes/:id/bookmark` answers the viewer's state and the public count. */
+@Serializable
+data class BookmarkDto(
+    val bookmarked: Boolean = false,
+    val count: Long = 0,
+)
+
+/** `POST /v1/notes/views`: up to 50 ids. */
+@Serializable
+data class ViewsRequest(@SerialName("note_ids") val noteIds: List<String>)
+
+/** `GET /v1/notes/trends`. */
+@Serializable
+data class TrendListDto(val items: List<TrendDto>? = null)
+
+@Serializable
+data class TrendDto(
+    val tag: String = "",
+    @SerialName("note_count") val noteCount: Long = 0,
+    val rank: Int = 0,
 )

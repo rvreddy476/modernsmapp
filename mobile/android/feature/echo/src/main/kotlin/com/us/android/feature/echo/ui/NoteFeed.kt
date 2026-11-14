@@ -1,6 +1,7 @@
 package com.us.android.feature.echo.ui
 
 import androidx.compose.runtime.Immutable
+import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.feature.echo.data.EchoRepository
 import com.us.android.feature.echo.data.EchoWords
@@ -61,6 +62,7 @@ class NoteFeedController(
     private val scope: CoroutineScope,
     private val fetch: suspend (cursor: String?) -> AppResult<NotePage>,
     private val onPage: suspend (List<Note>) -> Unit = {},
+    private val errorText: (AppError) -> String = ::echoErrorMessage,
 ) {
     private val _feed = MutableStateFlow(NoteFeed())
     val feed: StateFlow<NoteFeed> = _feed.asStateFlow()
@@ -97,7 +99,7 @@ class NoteFeedController(
                 }
                 is AppResult.Failure -> {
                     if (gen != generation) return@launch
-                    val message = echoErrorMessage(result.error)
+                    val message = errorText(result.error)
                     _feed.update {
                         // A failed refresh keeps the list that is on screen.
                         if (it.loaded && it.items.isNotEmpty()) {
@@ -126,7 +128,7 @@ class NoteFeedController(
                 }
                 is AppResult.Failure -> {
                     if (gen != generation) return@launch
-                    _feed.update { it.copy(loadingMore = false, moreError = echoErrorMessage(result.error)) }
+                    _feed.update { it.copy(loadingMore = false, moreError = errorText(result.error)) }
                 }
             }
         }
@@ -140,6 +142,11 @@ class NoteFeedController(
     /** A deleted note leaves the list. */
     fun remove(id: String) {
         _feed.update { it.copy(items = it.items.filterNot { note -> note.id == id }) }
+    }
+
+    /** Notes matching [predicate] leave the list (Not interested, Mute, Block). */
+    fun removeWhere(predicate: (Note) -> Boolean) {
+        _feed.update { it.copy(items = it.items.filterNot(predicate)) }
     }
 
     /** A note just posted, at the top. */

@@ -10,11 +10,14 @@ import com.us.android.core.model.SessionState
 import com.us.android.feature.echo.data.EchoErrorCodes
 import com.us.android.feature.echo.data.EchoMediaUploader
 import com.us.android.feature.echo.data.EchoMediaUrls
+import com.us.android.feature.echo.data.EchoPollRules
 import com.us.android.feature.echo.data.EchoRepository
 import com.us.android.feature.echo.data.EchoRules
 import com.us.android.feature.echo.data.EligibilityReason
+import com.us.android.feature.echo.data.GIF_FAILED
 import com.us.android.feature.echo.data.MEDIA_LIMIT_MESSAGE
 import com.us.android.feature.echo.data.Note
+import com.us.android.feature.echo.data.PollDraft
 import com.us.android.feature.echo.data.ReplyPolicy
 import com.us.android.feature.echo.data.StagedMedia
 import com.us.android.feature.echo.data.acceptedPicks
@@ -23,6 +26,8 @@ import com.us.android.feature.echo.data.echoCode
 import com.us.android.feature.echo.data.echoErrorMessage
 import com.us.android.feature.echo.data.eligibilityWords
 import com.us.android.feature.echo.data.entryProblem
+import com.us.android.feature.echo.data.pollProblem
+import com.us.android.feature.echo.data.scheduleProblem
 import com.us.android.feature.echo.di.EchoClock
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -31,8 +36,18 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.time.Clock
+import java.time.Instant
 import java.util.UUID
 import javax.inject.Inject
+
+/** The poll in the composer: its choices as typed and its length in minutes. */
+@Immutable
+data class PollEditor(
+    val options: List<String> = listOf("", ""),
+    val minutes: Int = EchoPollRules.DEFAULT_MINUTES,
+) {
+    val canAddOption: Boolean get() = options.size < EchoPollRules.MAX_OPTIONS
+}
 
 /** One note of the draft. A thread is several. */
 @Immutable
@@ -61,14 +76,33 @@ data class ComposerUiState(
     val notice: String? = null,
     /** Posted: the id of the note to open (the top of a thread). */
     val doneNoteId: String? = null,
+    /** Posted for later: the composer closes to the Scheduled list rather than a note page. */
+    val doneScheduled: Boolean = false,
+    /** The poll being written (X: 2–4 choices and a length); null when there is none. */
+    val poll: PollEditor? = null,
+    /** When the post goes out; null posts now. */
+    val scheduledAt: Instant? = null,
+    /** Why [scheduledAt] is not allowed, checked against the clock when it was picked and at Post. */
+    val scheduleProblem: String? = null,
 ) {
     val isThread: Boolean get() = entries.size > 1
 
-    /** Threads are for new notes only; a reply, a quote and an edit are one note. */
-    val canAddEntry: Boolean get() = mode == ComposeMode.NEW && entries.size < EchoRules.THREAD_MAX && !submitting
+    /** Threads are for new notes only, and carry no poll and no schedule (the thread route takes neither). */
+    val canAddEntry: Boolean
+        get() = mode == ComposeMode.NEW && entries.size < EchoRules.THREAD_MAX && !submitting &&
+            poll == null && scheduledAt == null
 
-    /** Media cannot change on an edit (PATCH takes text and reply policy only). */
-    val canAddMedia: Boolean get() = mode != ComposeMode.EDIT && !submitting
+    /** Media cannot change on an edit (PATCH takes text and reply policy only), nor join a poll (X). */
+    val canAddMedia: Boolean get() = mode != ComposeMode.EDIT && !submitting && poll == null
+
+    /** A poll: a new note or a quote, one entry, no pictures. */
+    val canAddPoll: Boolean
+        get() = (mode == ComposeMode.NEW || mode == ComposeMode.QUOTE) && entries.size == 1 &&
+            entries.first().media.isEmpty() && !submitting
+
+    /** Scheduling: never a reply or an edit, never a thread. */
+    val canSchedule: Boolean
+        get() = (mode == ComposeMode.NEW || mode == ComposeMode.QUOTE) && entries.size == 1 && !submitting
 
     /** Replies take their target's conversation; everything else picks who can reply. */
     val showsReplyPolicy: Boolean get() = mode != ComposeMode.REPLY
@@ -77,7 +111,10 @@ data class ComposerUiState(
     val problem: String? get() = when {
         mode == ComposeMode.EDIT -> entries.first().problem.takeUnless { textLocked }
         entries.size > EchoRules.THREAD_MAX -> "A thread can have up to ${EchoRules.THREAD_MAX} notes."
+        poll != null && entries.first().media.isNotEmpty() -> "A poll can't have photos or a GIF."
         else -> entries.firstNotNullOfOrNull { it.problem }
+            ?: poll?.let { pollProblem(it.options, it.minutes) }
+            ?: scheduleProblem
     }
 
     val canSubmit: Boolean get() = !checking && blocked == null && !submitting && problem == null && doneNoteId == null
@@ -109,12 +146,18 @@ class ComposerViewModel @Inject constructor(
         ComposerUiState(
             mode = ComposeMode.fromWire(savedStateHandle.get<String>(MODE_KEY)),
             targetId = savedStateHandle.get<String>(TARGET_KEY).orEmpty(),
+            // The compose button's "Thread": a new post that starts as two entries.
+            entries = if (savedStateHandle.get<Boolean>(THREAD_KEY) == true) {
+                listOf(ComposerEntry(key = 0), ComposerEntry(key = 1))
+            } else {
+                listOf(ComposerEntry(key = 0))
+            },
         ),
     )
     val state: StateFlow<ComposerUiState> = _state.asStateFlow()
     val mediaUrls: StateFlow<Map<String, String>> = media.urls
 
-    private var nextKey = 1
+    private var nextKey = 2
 
     /** The key of the draft last sent; null once the draft changes or posts. */
     private var idempotencyKey: String? = null
@@ -186,6 +229,42 @@ class ComposerViewModel @Inject constructor(
 
     fun setReplyPolicy(policy: ReplyPolicy) = draftChanged { it.copy(replyPolicy = policy) }
 
+    // ── Poll (X: 2–4 choices of 25 characters, 5 minutes to 7 days) ──
+
+    fun startPoll() {
+        if (!_state.value.canAddPoll || _state.value.poll != null) return
+        draftChanged { it.copy(poll = PollEditor()) }
+    }
+
+    fun removePoll() = draftChanged { it.copy(poll = null) }
+
+    fun setPollOption(index: Int, text: String) = draftChanged { s ->
+        val poll = s.poll ?: return@draftChanged s
+        s.copy(poll = poll.copy(options = poll.options.mapIndexed { i, o -> if (i == index) text else o }))
+    }
+
+    fun addPollOption() = draftChanged { s ->
+        val poll = s.poll?.takeIf { it.canAddOption } ?: return@draftChanged s
+        s.copy(poll = poll.copy(options = poll.options + ""))
+    }
+
+    fun removePollOption(index: Int) = draftChanged { s ->
+        val poll = s.poll?.takeIf { it.options.size > EchoPollRules.MIN_OPTIONS } ?: return@draftChanged s
+        s.copy(poll = poll.copy(options = poll.options.filterIndexed { i, _ -> i != index }))
+    }
+
+    fun setPollLength(minutes: Int) = draftChanged { s -> s.copy(poll = s.poll?.copy(minutes = minutes)) }
+
+    // ── Schedule (5 minutes to 18 months ahead) ──
+
+    /** Posts at [at] instead of now; refused (and said) when it is outside the window. */
+    fun setSchedule(at: Instant) {
+        if (!_state.value.canSchedule) return
+        draftChanged { it.copy(scheduledAt = at, scheduleProblem = scheduleProblem(at, clock.instant())) }
+    }
+
+    fun clearSchedule() = draftChanged { it.copy(scheduledAt = null, scheduleProblem = null) }
+
     /** Thread mode: one more note under the last, up to 25. */
     fun addEntry() {
         if (!_state.value.canAddEntry) return
@@ -202,6 +281,17 @@ class ComposerViewModel @Inject constructor(
      * 1 GIF alone) are staged and uploaded; the rest are left out, and the
      * composer says so.
      */
+    /** A GIF picked from Giphy: downloaded, then staged like a gallery GIF (alone on its entry). */
+    fun addGif(index: Int, url: String) {
+        if (!_state.value.canAddMedia) return
+        viewModelScope.launch {
+            when (val fetched = uploader.fetchGif(url)) {
+                is AppResult.Success -> addMedia(index, listOf(fetched.data))
+                is AppResult.Failure -> _state.update { it.copy(error = GIF_FAILED) }
+            }
+        }
+    }
+
     fun addMedia(index: Int, uris: List<String>) {
         val s = _state.value
         if (!s.canAddMedia || uris.isEmpty()) return
@@ -264,6 +354,12 @@ class ComposerViewModel @Inject constructor(
 
     @Suppress("CyclomaticComplexMethod") // new, reply, quote, thread and edit share one key and one guard
     fun submit() {
+        val checked = _state.value.scheduledAt?.let { scheduleProblem(it, clock.instant()) }
+        if (checked != null) {
+            // The window moved while the composer sat open: say so, send nothing.
+            _state.update { it.copy(scheduleProblem = checked) }
+            return
+        }
         val s = _state.value
         if (!s.canSubmit) return
         val key = idempotencyKey ?: UUID.randomUUID().toString().also { idempotencyKey = it }
@@ -277,7 +373,9 @@ class ComposerViewModel @Inject constructor(
             when (result) {
                 is AppResult.Success -> {
                     idempotencyKey = null
-                    _state.update { it.copy(submitting = false, doneNoteId = result.data) }
+                    _state.update {
+                        it.copy(submitting = false, doneNoteId = result.data, doneScheduled = s.scheduledAt != null)
+                    }
                 }
                 is AppResult.Failure -> {
                     val code = echoCode(result.error)
@@ -310,6 +408,8 @@ class ComposerViewModel @Inject constructor(
             replyToId = s.targetId.takeIf { s.mode == ComposeMode.REPLY },
             quoteOfId = s.targetId.takeIf { s.mode == ComposeMode.QUOTE },
             replyPolicy = s.replyPolicy.takeIf { s.showsReplyPolicy },
+            poll = s.poll?.let { PollDraft(it.options.map(String::trim), it.minutes) },
+            scheduledAt = s.scheduledAt?.takeIf { s.canSchedule }?.toString(),
         ).idOf()
     }
 
@@ -351,6 +451,7 @@ class ComposerViewModel @Inject constructor(
     companion object {
         const val MODE_KEY = "mode"
         const val TARGET_KEY = "targetId"
+        const val THREAD_KEY = "thread"
         const val CANNOT_CHECK_TITLE = "We couldn't check if you can post"
         const val NOTE_UNAVAILABLE_TITLE = "This note isn't available"
     }
