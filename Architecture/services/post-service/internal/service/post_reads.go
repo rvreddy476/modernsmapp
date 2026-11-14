@@ -70,7 +70,9 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 
 	// Load poll if present: the poll and the viewer's votes, as GET
 	// /v1/posts/:id/poll reads them (GetPoll). Best-effort, as before.
-	if hasPoll, _ := s.pgStore.HasPoll(ctx, id); hasPoll {
+	// Never on a note: a note's poll is the Note JSON's (GET /v1/notes/:id),
+	// which hides the counts until the viewer voted.
+	if hasPoll, _ := s.pgStore.HasPoll(ctx, id); hasPoll && p.ContentType != NoteContentType {
 		if poll, err := s.GetPoll(ctx, id, viewerID); err == nil && poll != nil {
 			p.Poll = poll
 		}

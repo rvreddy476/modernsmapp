@@ -20,6 +20,7 @@ import (
 	"github.com/atpost/post-service/internal/mediaclaims"
 	"github.com/atpost/post-service/internal/places"
 	"github.com/atpost/post-service/internal/postpurge"
+	"github.com/atpost/post-service/internal/noteschedule"
 	"github.com/atpost/post-service/internal/postschedule"
 	"github.com/atpost/post-service/internal/premium"
 	"github.com/atpost/post-service/internal/purge"
@@ -639,6 +640,11 @@ func main() {
 	// tick (default 30s). See internal/postschedule.
 	scheduleCfg := postschedule.ConfigFromEnv()
 	go postschedule.NewWorker(pgStore, postSvc, scheduleCfg, slog.Default()).Start(consumerCtx)
+
+	// Echo v2 scheduled notes (internal/noteschedule): claims due notes with
+	// FOR UPDATE SKIP LOCKED, re-checks standing and Premium, publishes.
+	// NOTE_SCHEDULE_INTERVAL is the tick (default 30s).
+	go noteschedule.NewWorker(postSvc, noteschedule.ConfigFromEnv(), slog.Default()).Start(consumerCtx)
 
 	// Daily Web Risk recheck of Action-button links (internal/actionrecheck):
 	// a link turning unsafe is blocked. Only with a checker.

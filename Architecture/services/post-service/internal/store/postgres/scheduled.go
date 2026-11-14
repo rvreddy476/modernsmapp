@@ -49,6 +49,7 @@ func (s *Store) ListDueScheduledPosts(ctx context.Context, now time.Time, limit 
 	rows, err := s.db.Query(ctx, `
 		SELECT p.id, p.author_id, p.publish_at FROM posts p
 		WHERE p.publish_at IS NOT NULL AND p.publish_at <= $1 AND p.deleted_at IS NULL
+		  AND `+NotNoteSQL("p")+` -- notes publish through internal/noteschedule
 		  AND NOT EXISTS (SELECT 1 FROM post_publish_blocks b WHERE b.post_id = p.id)
 		ORDER BY p.publish_at ASC
 		LIMIT $2`, now, limit)
@@ -330,7 +331,7 @@ func (s *Store) ListScheduledPostsByAuthor(ctx context.Context, authorID uuid.UU
 	args := []interface{}{authorID, limit + 1}
 	query := `SELECT ` + postCols + `
 		FROM posts
-		WHERE author_id = $1 AND publish_at IS NOT NULL AND deleted_at IS NULL`
+		WHERE author_id = $1 AND publish_at IS NOT NULL AND deleted_at IS NULL AND ` + NotNoteSQL("")
 	if cursor != "" {
 		if cursorTime, err := time.Parse(time.RFC3339Nano, cursor); err == nil {
 			query += ` AND publish_at < $3`

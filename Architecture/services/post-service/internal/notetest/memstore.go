@@ -30,6 +30,16 @@ type Store struct {
 	Hidden map[uuid.UUID]bool
 	// Fail makes every call answer this error.
 	Fail error
+
+	// Echo v2 (v2.go).
+	Polls     map[uuid.UUID]*postgres.PollData
+	Votes     map[[2]uuid.UUID][]uuid.UUID // (note, voter) -> options
+	Bookmarks map[[2]uuid.UUID]time.Time   // (user, note) -> saved at
+	Views     map[[2]uuid.UUID]time.Time   // (note, viewer) -> counted at
+	Schedules map[uuid.UUID]*ScheduleState
+	// Publishes is every PublishScheduledNote that committed, with the
+	// events it wrote.
+	Publishes []Publish
 }
 
 type claim struct {
@@ -43,6 +53,9 @@ func New() *Store {
 		Notes: map[uuid.UUID]*postgres.Note{}, Deleted: map[uuid.UUID]bool{},
 		Media: map[uuid.UUID]postgres.NoteMediaRow{}, Claims: map[string]claim{},
 		Reposts: map[[2]uuid.UUID]string{}, Hidden: map[uuid.UUID]bool{},
+		Polls: map[uuid.UUID]*postgres.PollData{}, Votes: map[[2]uuid.UUID][]uuid.UUID{},
+		Bookmarks: map[[2]uuid.UUID]time.Time{}, Views: map[[2]uuid.UUID]time.Time{},
+		Schedules: map[uuid.UUID]*ScheduleState{},
 	}
 }
 
@@ -102,7 +115,7 @@ func (s *Store) GetNotes(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]*pos
 	}
 	out := map[uuid.UUID]*postgres.Note{}
 	for _, id := range ids {
-		if n := s.Notes[id]; n != nil && !s.Deleted[id] {
+		if n := s.Notes[id]; n != nil && !s.Deleted[id] && n.Post.PublishAt == nil {
 			c := *n
 			out[id] = &c
 		}
@@ -131,7 +144,7 @@ func (s *Store) ListNotes(_ context.Context, q postgres.NoteListQuery) ([]postgr
 	}
 	var out []postgres.Note
 	for id, n := range s.Notes {
-		if s.Deleted[id] {
+		if s.Deleted[id] || n.Post.PublishAt != nil {
 			continue
 		}
 		switch {
@@ -199,6 +212,9 @@ func (s *Store) CreateNotes(_ context.Context, w *postgres.NoteWrite) (*postgres
 			n.ReplyPolicy = "everyone"
 		}
 		s.Notes[p.ID] = &n
+		if p.Poll != nil {
+			s.putPoll(p.ID, p.Poll)
+		}
 	}
 	if w.ReplyParent != nil {
 		if parent := s.Notes[*w.ReplyParent]; parent != nil {

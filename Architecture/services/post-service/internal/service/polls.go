@@ -41,6 +41,13 @@ var (
 // So the enforcement lived on one route and the error handling on the other.
 // Both routes now call this.
 func (s *Service) CastPollVote(ctx context.Context, postID, optionID, userID uuid.UUID) error {
+	// A note's poll is voted only through POST /v1/notes/:id/poll/vote
+	// (own-poll refusal, final vote); these routes do not see it.
+	if isNote, err := s.pgStore.IsNote(ctx, postID); err != nil {
+		return err
+	} else if isNote {
+		return ErrPollNotFound
+	}
 	poll, err := s.pgStore.GetPoll(ctx, postID)
 	if err != nil {
 		return err

@@ -73,6 +73,11 @@ func hiddenWhileScheduled(p *postgres.Post, viewerID *uuid.UUID) bool {
 	if p == nil || p.PublishAt == nil {
 		return false
 	}
+	// A scheduled Echo note is hidden from its author too: the contract
+	// shows it only through GET /v1/notes/me/scheduled.
+	if p.ContentType == postgres.NoteContentType {
+		return true
+	}
 	return viewerID == nil || *viewerID != p.AuthorID
 }
 
@@ -384,6 +389,11 @@ func (s *Service) PublishScheduled(ctx context.Context, postID uuid.UUID, author
 	if p == nil || p.PublishAt == nil {
 		return false, nil
 	}
+	// Notes publish through internal/noteschedule (Premium re-check,
+	// note events); this path never takes one.
+	if p.ContentType == NoteContentType {
+		return false, nil
+	}
 	if authorID != nil && p.AuthorID != *authorID {
 		return false, nil
 	}
@@ -486,7 +496,8 @@ func (s *Service) ReschedulePost(ctx context.Context, postID, actorID uuid.UUID,
 	if err != nil {
 		return nil, err
 	}
-	if p == nil {
+	if p == nil || p.ContentType == postgres.NoteContentType {
+		// A scheduled note moves only through PATCH /v1/notes/:id/schedule.
 		return nil, ErrPostNotFound
 	}
 	if p.AuthorID != actorID {

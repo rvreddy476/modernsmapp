@@ -37,6 +37,13 @@ const (
 	CodeInvalidThread           = "INVALID_THREAD"
 	CodeEditWindowClosed        = "EDIT_WINDOW_CLOSED"
 	CodeNotAuthor               = "NOT_AUTHOR"
+	// Echo v2.
+	CodeInvalidPoll     = "INVALID_POLL"
+	CodePollWithMedia   = "POLL_WITH_MEDIA"
+	CodeInvalidSchedule = "INVALID_SCHEDULE"
+	CodePollClosed      = "POLL_CLOSED"
+	CodeAlreadyVoted    = "ALREADY_VOTED"
+	CodeOwnPoll         = "OWN_POLL"
 )
 
 func (h *Handler) registerNoteRoutes(r *gin.Engine) {
@@ -47,12 +54,28 @@ func (h *Handler) registerNoteRoutes(r *gin.Engine) {
 		// Static segments before /:id, so "me" and "users" are never ids.
 		notes.GET("/me/eligibility", h.NoteEligibility)
 		notes.GET("/users/:userId", h.ListUserNotes)
+		// Echo v2 (notes_v2_handler.go); static segments first.
+		notes.GET("/me/scheduled", h.ListMyScheduledNotes)
+		notes.GET("/bookmarks", h.ListNoteBookmarks)
+		notes.POST("/views", h.RecordNoteViews)
+		notes.GET("/trends", h.NoteTrends)
+		notes.GET("/hashtags/:tag", h.NotesByHashtag)
+		notes.GET("/search", h.SearchNotes)
 		notes.GET("/:id", h.GetNote)
 		notes.GET("/:id/replies", h.ListNoteReplies)
 		notes.GET("/:id/conversation", h.NoteConversation)
+		notes.GET("/:id/quotes", h.ListNoteQuotes)
 		notes.PATCH("/:id", h.PatchNote)
 		notes.DELETE("/:id", h.DeleteNote)
+		notes.POST("/:id/poll/vote", h.VoteNotePoll)
+		notes.PATCH("/:id/schedule", h.RescheduleNote)
+		notes.DELETE("/:id/schedule", h.DeleteScheduledNote)
+		notes.POST("/:id/bookmark", h.BookmarkNote)
+		notes.DELETE("/:id/bookmark", h.UnbookmarkNote)
 	}
+	// feed-service's notes hydration: the Note JSON by id for a viewer.
+	// Internal key only, like the route below.
+	r.GET("/internal/notes/batch", h.NotesBatchInternal)
 	// feed-service's Echo For You (notes_hashtags.go). Internal key only
 	// (the engine-wide gate in RegisterRoutes); not behind ECHO_ENABLED,
 	// which feed-service's own read routes already answer.
@@ -138,6 +161,18 @@ func writeNoteError(c *gin.Context, err error) {
 		e(http.StatusForbidden, CodeEditWindowClosed, err.Error())
 	case errors.Is(err, service.ErrNotNoteAuthor):
 		e(http.StatusForbidden, CodeNotAuthor, err.Error())
+	case errors.Is(err, service.ErrNotePollMedia):
+		e(http.StatusBadRequest, CodePollWithMedia, err.Error())
+	case errors.Is(err, service.ErrInvalidNotePoll):
+		e(http.StatusBadRequest, CodeInvalidPoll, err.Error())
+	case errors.Is(err, service.ErrInvalidSchedule):
+		e(http.StatusBadRequest, CodeInvalidSchedule, err.Error())
+	case errors.Is(err, service.ErrNotePollClosed):
+		e(http.StatusConflict, CodePollClosed, "This poll has closed")
+	case errors.Is(err, service.ErrNoteAlreadyVoted):
+		e(http.StatusConflict, CodeAlreadyVoted, "You already voted on this poll")
+	case errors.Is(err, service.ErrOwnNotePoll):
+		e(http.StatusForbidden, CodeOwnPoll, "You cannot vote on your own poll")
 	case writeCreateGuardError(c, err):
 		// media ownership / readiness, IDEMPOTENCY_KEY_REUSED
 	default:
@@ -199,6 +234,12 @@ type CreateNoteRequest struct {
 	ReplyToID   *uuid.UUID  `json:"reply_to_id"`
 	QuoteOfID   *uuid.UUID  `json:"quote_of_id"`
 	ReplyPolicy string      `json:"reply_policy"`
+	// Echo v2.
+	Poll *struct {
+		Options         []string `json:"options"`
+		DurationMinutes int      `json:"duration_minutes"`
+	} `json:"poll"`
+	ScheduledAt *time.Time `json:"scheduled_at"`
 }
 
 // CreateNoteThreadRequest is POST /v1/notes/thread.
@@ -223,10 +264,15 @@ func (h *Handler) CreateNote(c *gin.Context) {
 	if !bindNoteBody(c, &req) {
 		return
 	}
-	v, err := h.svc.CreateNote(c.Request.Context(), &service.CreateNoteInput{
+	in := &service.CreateNoteInput{
 		AuthorID: author, Text: req.Text, MediaIDs: req.MediaIDs, ReplyToID: req.ReplyToID,
 		QuoteOfID: req.QuoteOfID, ReplyPolicy: req.ReplyPolicy, IdempotencyKey: key,
-	})
+		ScheduledAt: req.ScheduledAt,
+	}
+	if req.Poll != nil {
+		in.Poll = &service.NotePollInput{Options: req.Poll.Options, DurationMinutes: req.Poll.DurationMinutes}
+	}
+	v, err := h.svc.CreateNote(c.Request.Context(), in)
 	if err != nil {
 		writeNoteError(c, err)
 		return

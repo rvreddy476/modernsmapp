@@ -2,6 +2,7 @@ package http
 
 import (
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
@@ -21,14 +22,14 @@ import (
 //
 // Both are signed in only, and answer 503 ECHO_NOT_ENABLED while the
 // ECHO_ENABLED switch is off (the fan-out keeps running). Items are
-// hydrated exactly like Home (HydratePosts: post-service's batch plus the
-// keyword, privacy, listing and feedback filters); each Note carries the
-// contract fields post-service put on the row.
+// hydrated by HydrateNotes (post-service's /internal/notes/batch for this
+// viewer, plus the keyword, privacy, listing and feedback filters); each
+// Note is exactly the JSON post-service answered (echo-v2-contract.md).
 
 // notesPage is the body of both routes. next_cursor is null at the end.
 type notesPage struct {
-	Items      []service.HydratedPost `json:"items"`
-	NextCursor *string                `json:"next_cursor"`
+	Items      []json.RawMessage `json:"items"`
+	NextCursor *string           `json:"next_cursor"`
 }
 
 // notesGate answers the switch and the signed-in check; ok is false when it
@@ -103,7 +104,7 @@ func (h *Handler) GetNotesForYou(c *gin.Context) {
 }
 
 func (h *Handler) writeNotesPage(c *gin.Context, userID uuid.UUID, items []service.FeedItem, next *string) {
-	hydrated, err := h.svc.HydratePosts(c.Request.Context(), items, userID)
+	hydrated, err := h.svc.HydrateNotes(c.Request.Context(), items, userID)
 	if err != nil {
 		// Never the raw candidates: they skipped every hydration-time check.
 		log.Printf("notes feed hydration failed: %v", err)
@@ -111,19 +112,7 @@ func (h *Handler) writeNotesPage(c *gin.Context, userID uuid.UUID, items []servi
 			"FEED_UNAVAILABLE", "Feed is temporarily unavailable", nil)
 		return
 	}
-	api.JSON(c.Writer, http.StatusOK, notesPage{Items: onlyNotes(hydrated), NextCursor: next}, nil)
-}
-
-// onlyNotes keeps the hydrated rows post-service says are notes: a row
-// whose post turned out to be anything else does not belong on Echo.
-func onlyNotes(posts []service.HydratedPost) []service.HydratedPost {
-	out := make([]service.HydratedPost, 0, len(posts))
-	for _, p := range posts {
-		if p.ContentType == service.NoteContentType {
-			out = append(out, p)
-		}
-	}
-	return out
+	api.JSON(c.Writer, http.StatusOK, notesPage{Items: hydrated, NextCursor: next}, nil)
 }
 
 // For You cursors are base64url("fy1:<snapshot>:<offset>").

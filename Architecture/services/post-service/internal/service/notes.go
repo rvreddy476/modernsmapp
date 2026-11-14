@@ -456,6 +456,19 @@ type NoteView struct {
 	ViewerCanReply    bool                 `json:"viewer_can_reply"`
 	Author            *NoteAuthor          `json:"author,omitempty"`
 	QuotedNote        *NoteView            `json:"quoted_note"`
+
+	// Echo v2 (docs/designs/echo-v2-contract.md §1), always present.
+	// view_count shadows the post's own (which notes never fill).
+	ViewCount           int64      `json:"view_count"`
+	BookmarkCount       int64      `json:"bookmark_count"`
+	ViewerHasBookmarked bool       `json:"viewer_has_bookmarked"`
+	QuoteCount          int64      `json:"quote_count"`
+	Status              string     `json:"status"`
+	ScheduledAt         *time.Time `json:"scheduled_at"`
+	Poll                *NotePoll  `json:"poll"`
+	// PublishError is the author's view of a scheduled note whose publish
+	// check failed (premium_required, suspended, ...); absent otherwise.
+	PublishError *string `json:"publish_error,omitempty"`
 }
 
 // NotePage is a listing's answer.
@@ -489,6 +502,8 @@ func buildNoteView(d *PostDetail, n *postgres.Note) *NoteView {
 		ReplyPolicy: n.ReplyPolicy,
 		ReplyCount:  n.ReplyCount,
 		RepostCount: d.RepostCount,
+		ViewCount:   n.ViewCount,
+		Status:      NoteStatusPublished,
 	}
 	if v.Media == nil {
 		v.Media = []postgres.PostMedia{}

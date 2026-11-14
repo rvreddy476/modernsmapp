@@ -34,6 +34,10 @@ type CreateNoteInput struct {
 	QuoteOfID      *uuid.UUID
 	ReplyPolicy    string
 	IdempotencyKey string
+	// Poll, when set, attaches a poll (v2 contract; no media).
+	Poll *NotePollInput
+	// ScheduledAt, when set, stores the note scheduled (not on a reply).
+	ScheduledAt *time.Time
 }
 
 // CreateNoteThreadInput is POST /v1/notes/thread.
@@ -211,7 +215,13 @@ func (s *Service) noteEventsOn() bool { return s.producer != nil || s.noteEmitEv
 // notePostCreated is PostCreated for a note: the ordinary payload plus the
 // conversation fields (omitted when empty).
 func (s *Service) notePostCreated(ctx context.Context, p *postgres.Post, pol *DistributionPolicy, f postgres.NoteFields) events.PostCreatedPayload {
-	pc := s.buildPostCreatedPayload(ctx, p, pol, 0, 0, 1)
+	return s.notePostCreatedRev(ctx, p, pol, f, 1)
+}
+
+// notePostCreatedRev is notePostCreated with the row's search revision (a
+// scheduled note publishes at a later revision).
+func (s *Service) notePostCreatedRev(ctx context.Context, p *postgres.Post, pol *DistributionPolicy, f postgres.NoteFields, rev int64) events.PostCreatedPayload {
+	pc := s.buildPostCreatedPayload(ctx, p, pol, 0, 0, rev)
 	if f.ReplyToID != nil {
 		pc.ReplyToID = f.ReplyToID.String()
 	}
@@ -258,6 +268,12 @@ func (s *Service) replayNote(ctx context.Context, postID, author uuid.UUID) (*No
 	if v := views[postID]; v != nil {
 		return v, nil
 	}
+	// A scheduled create replays as the author's scheduled view.
+	if store, err := s.notesV2(); err == nil {
+		if n, err := s.loadOwnScheduledNote(ctx, store, postID, author); err == nil {
+			return s.scheduledNoteView(ctx, n)
+		}
+	}
 	return nil, fmt.Errorf("replay created note %s: not readable", postID)
 }
 
@@ -278,12 +294,31 @@ func (s *Service) CreateNote(ctx context.Context, in *CreateNoteInput) (*NoteVie
 	if err := ValidateNoteMediaCount(in.MediaIDs); err != nil {
 		return nil, err
 	}
+	reply := in.ReplyToID != nil
+	// Schedule and poll (v2): a reply is never scheduled; a poll carries
+	// no media and runs from publication.
+	var scheduledAt *time.Time
+	pollStart := s.clock()
+	if in.ScheduledAt != nil {
+		if reply {
+			return nil, fmt.Errorf("%w: a reply cannot be scheduled", ErrInvalidSchedule)
+		}
+		if err := ValidateNoteSchedule(*in.ScheduledAt, s.clock()); err != nil {
+			return nil, err
+		}
+		at := in.ScheduledAt.UTC()
+		scheduledAt = &at
+		pollStart = at
+	}
+	poll, err := validateNotePoll(in.Poll, len(in.MediaIDs), pollStart)
+	if err != nil {
+		return nil, err
+	}
 	store, err := s.notesStore()
 	if err != nil {
 		return nil, err
 	}
 	author := in.AuthorID
-	reply := in.ReplyToID != nil
 
 	// Standing first, as on every publication path (publish_standing.go).
 	if err := s.requirePublishStanding(ctx, author); err != nil {
@@ -307,13 +342,15 @@ func (s *Service) CreateNote(ctx context.Context, in *CreateNoteInput) (*NoteVie
 	// the rate limit.
 	clientKey := noteIdemPrefix + in.IdempotencyKey
 	fingerprint := noteFingerprint(struct {
-		Text      string      `json:"text"`
-		Media     []uuid.UUID `json:"media_ids"`
-		ReplyTo   *uuid.UUID  `json:"reply_to_id"`
-		QuoteOf   *uuid.UUID  `json:"quote_of_id"`
-		Policy    string      `json:"reply_policy"`
-		ActorNote string      `json:"kind"`
-	}{text, in.MediaIDs, in.ReplyToID, in.QuoteOfID, policy, "note"})
+		Text      string         `json:"text"`
+		Media     []uuid.UUID    `json:"media_ids"`
+		ReplyTo   *uuid.UUID     `json:"reply_to_id"`
+		QuoteOf   *uuid.UUID     `json:"quote_of_id"`
+		Policy    string         `json:"reply_policy"`
+		ActorNote string         `json:"kind"`
+		Poll      *NotePollInput `json:"poll,omitempty"`
+		Scheduled *time.Time     `json:"scheduled_at,omitempty"`
+	}{text, in.MediaIDs, in.ReplyToID, in.QuoteOfID, policy, "note", in.Poll, scheduledAt})
 	if in.IdempotencyKey != "" {
 		postID, fp, found, err := store.LookupCreateIdempotency(ctx, author, clientKey)
 		if err != nil {
@@ -369,6 +406,9 @@ func (s *Service) CreateNote(ctx context.Context, in *CreateNoteInput) (*NoteVie
 
 	id := uuid.New()
 	p := newNoteRow(id, author, text, media, hashtags, mentions, review, dist, s.clock())
+	p.Poll = poll
+	p.PublishAt = scheduledAt
+	p.IsScheduled = scheduledAt != nil
 	conv := id
 	f := postgres.NoteFields{ConversationID: &conv, ReplyPolicy: policy, QuoteOfID: in.QuoteOfID}
 	w := &postgres.NoteWrite{Notes: []*postgres.Post{p}, Fields: []postgres.NoteFields{f}}
@@ -383,11 +423,14 @@ func (s *Service) CreateNote(ctx context.Context, in *CreateNoteInput) (*NoteVie
 		w.Fields[0] = f
 		w.ReplyParent = &parent
 	}
-	if in.QuoteOfID != nil {
+	// A scheduled note writes the row alone: its quote repost row,
+	// PostCreated, note.quoted and mentions all wait for publication
+	// (publishScheduledNote).
+	if in.QuoteOfID != nil && scheduledAt == nil {
 		w.QuoteRepost = &postgres.Repost{UserID: author, OriginalPostID: target.Post.ID,
 			QuoteText: text, Visibility: target.Post.Visibility}
 	}
-	if s.noteEventsOn() {
+	if s.noteEventsOn() && scheduledAt == nil {
 		w.Events = append(w.Events, postgres.ThreadOutboxEvent{
 			EventType: events.PostCreated, PostID: id, Payload: s.notePostCreated(ctx, p, pol, f)})
 		w.Events = append(w.Events, noteReplyEvents(p, f, target)...)
@@ -406,6 +449,9 @@ func (s *Service) CreateNote(ctx context.Context, in *CreateNoteInput) (*NoteVie
 			return nil, ErrCreateKeyReused
 		}
 		return nil, err
+	}
+	if scheduledAt != nil {
+		return s.scheduledNoteView(ctx, &postgres.ScheduledNote{Note: postgres.Note{Post: *p, NoteFields: f}})
 	}
 	s.afterNoteCreated(ctx, p, mentions)
 	if res != nil && res.QuoteRepostWritten && w.QuoteRepost != nil {
@@ -471,6 +517,9 @@ func (s *Service) freshNoteView(ctx context.Context, p *postgres.Post, f postgre
 	author := p.AuthorID
 	if a := s.noteAuthors(ctx, &author, []uuid.UUID{author}); a != nil {
 		v.Author = a[author]
+	}
+	if p.Poll != nil {
+		v.Poll = notePollView(p.Poll, author, &author, nil, s.clock())
 	}
 	if quote && target != nil {
 		quoted, err := s.loadNoteViews(ctx, []uuid.UUID{target.Post.ID}, &author, false)

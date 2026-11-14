@@ -41,6 +41,8 @@ type NoteFields struct {
 	ReplyPolicy    string
 	ReplyCount     int
 	EditedAt       *time.Time
+	// ViewCount is posts.note_view_count (migration 083).
+	ViewCount int64
 }
 
 // Note is a note row: the post and its conversation columns.
@@ -51,14 +53,14 @@ type Note struct {
 
 // noteCols is postCols plus the conversation columns, unqualified.
 const noteCols = postCols + `,
-	reply_to_id, conversation_id, reply_policy, reply_count, quote_of_id, edited_at`
+	reply_to_id, conversation_id, reply_policy, reply_count, quote_of_id, edited_at, note_view_count`
 
 func scanNoteRows(rows pgx.Rows, extra ...any) ([]Note, error) {
 	var out []Note
 	for rows.Next() {
 		var n Note
 		dest := append(postScanDestinations(&n.Post),
-			&n.ReplyToID, &n.ConversationID, &n.ReplyPolicy, &n.ReplyCount, &n.QuoteOfID, &n.EditedAt)
+			&n.ReplyToID, &n.ConversationID, &n.ReplyPolicy, &n.ReplyCount, &n.QuoteOfID, &n.EditedAt, &n.ViewCount)
 		dest = append(dest, extra...)
 		if err := rows.Scan(dest...); err != nil {
 			return nil, err
@@ -87,17 +89,17 @@ func (s *Store) attachNoteMedia(ctx context.Context, notes []Note) error {
 	return nil
 }
 
-// GetNotes returns the live (not deleted) notes among ids, whatever their
-// review state: the service gates every read. A row that is not a note is
-// absent, exactly like a missing one.
+// GetNotes returns the live (not deleted) published notes among ids,
+// whatever their review state: the service gates every read. A row that is
+// not a note is absent, exactly like a missing one, and so is a scheduled
+// (or failed) note: those are read only through GetScheduledNote and
+// ListScheduledNotes (notes_v2.go), the author's Scheduled list.
 func (s *Store) GetNotes(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]*Note, error) {
 	out := make(map[uuid.UUID]*Note, len(ids))
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := s.db.Query(ctx, `SELECT `+noteCols+`
-		FROM posts
-		WHERE id = ANY($1) AND content_type = '`+NoteContentType+`' AND deleted_at IS NULL`, ids)
+	rows, err := s.db.Query(ctx, getNotesSQL, ids)
 	if err != nil {
 		return nil, fmt.Errorf("get notes: %w", err)
 	}
@@ -115,6 +117,12 @@ func (s *Store) GetNotes(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]*N
 	}
 	return out, nil
 }
+
+// getNotesSQL is GetNotes' query: published notes only.
+const getNotesSQL = `SELECT ` + noteCols + `
+		FROM posts
+		WHERE id = ANY($1) AND content_type = '` + NoteContentType + `' AND deleted_at IS NULL
+		  AND publish_at IS NULL`
 
 // GetNoteThread returns the live entries of the note thread rooted at
 // rootID in thread order (the thread columns, migration 027).
@@ -276,7 +284,7 @@ func (s *Store) ListNotes(ctx context.Context, q NoteListQuery) ([]Note, string,
 		var n Note
 		var key time.Time
 		dest := append(postScanDestinations(&n.Post),
-			&n.ReplyToID, &n.ConversationID, &n.ReplyPolicy, &n.ReplyCount, &n.QuoteOfID, &n.EditedAt, &key)
+			&n.ReplyToID, &n.ConversationID, &n.ReplyPolicy, &n.ReplyCount, &n.QuoteOfID, &n.EditedAt, &n.ViewCount, &key)
 		if err := rows.Scan(dest...); err != nil {
 			rows.Close()
 			return nil, "", fmt.Errorf("scan notes: %w", err)

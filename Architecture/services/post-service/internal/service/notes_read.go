@@ -93,6 +93,11 @@ func (s *Service) hydrateNotes(ctx context.Context, notes []*postgres.Note, view
 		if d == nil || d.Post == nil || d.Post.ContentType != NoteContentType {
 			continue
 		}
+		// A scheduled (or failed) note is in no read path, its author's
+		// included: only GET /v1/notes/me/scheduled shows it.
+		if n.Post.PublishAt != nil || d.Post.PublishAt != nil {
+			continue
+		}
 		v := buildNoteView(d, n)
 		if viewerID != nil {
 			v.ViewerCanReply = s.viewerCanReplyCached(ctx, n, *viewerID, follows)
@@ -108,6 +113,8 @@ func (s *Service) hydrateNotes(ctx context.Context, notes []*postgres.Note, view
 			v.Author = authors[v.Post.AuthorID]
 		}
 	}
+	// v2 fields: counts, the viewer's bookmark, the poll (notes_v2.go).
+	s.attachNoteExtras(ctx, out, viewerID)
 
 	if withQuotes {
 		var quoteIDs []uuid.UUID

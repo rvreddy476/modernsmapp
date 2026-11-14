@@ -347,6 +347,7 @@ func noteContracts(t *testing.T) map[string][]byte {
 	get("note_list.json", "GET", "/v1/notes/"+ntTop.String()+"/replies?limit=20", &ntBob, "", false, 200)
 	get("eligibility.json", "GET", "/v1/notes/me/eligibility", &ntBob, "", false, 200)
 	get("error_premium_required.json", "POST", "/v1/notes", &ntBob, `{"text":"hello"}`, true, 403)
+	addNoteV2Contracts(t, nr, get) // notes_v2_routes_test.go
 	return out
 }
 

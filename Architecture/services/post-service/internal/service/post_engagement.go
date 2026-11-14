@@ -92,6 +92,13 @@ func (s *Service) GetBookmarks(ctx context.Context, userID uuid.UUID, contentTyp
 
 // GetPoll returns poll data with vote counts and optionally the viewer's votes.
 func (s *Service) GetPoll(ctx context.Context, postID uuid.UUID, viewerID *uuid.UUID) (*postgres.PollData, error) {
+	// A note's counts are hidden until the viewer votes (Echo v2); the
+	// generic poll read would show them, so it does not see notes.
+	if isNote, err := s.pgStore.IsNote(ctx, postID); err != nil {
+		return nil, err
+	} else if isNote {
+		return nil, nil
+	}
 	poll, err := s.pgStore.GetPoll(ctx, postID)
 	if err != nil {
 		return nil, err

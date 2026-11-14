@@ -524,13 +524,17 @@ func (s *Store) GetTrendingHashtags24h(ctx context.Context, limit int) ([]Hashta
 		limit = 15
 	}
 
-	const sql = `
+	// Notes never count toward ordinary trending (Echo contract), and a
+	// scheduled post's tags are not public until it publishes.
+	sql := `
 		SELECT lower(h)        AS normalized_name,
 		       MIN(h)          AS display_sample,
 		       COUNT(*)::BIGINT AS post_count
 		FROM posts p, unnest(p.hashtags) AS h
 		WHERE p.deleted_at IS NULL
 		  AND p.visibility = 'public'
+		  AND p.publish_at IS NULL
+		  AND ` + NotNoteSQL("p") + `
 		  AND p.created_at >= NOW() - INTERVAL '24 hours'
 		GROUP BY lower(h)
 		ORDER BY post_count DESC, normalized_name ASC
