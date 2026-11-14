@@ -42,7 +42,12 @@
             android:name="com.us.android.feature.mopedu.captain.selfie.CaptainSelfieFileProvider"
             android:authorities="${applicationId}.captain.selfie"
             android:exported="false"
-            android:grantUriPermissions="true" />
+            android:grantUriPermissions="true">
+            <!-- FileProvider.getUriForFile reads the paths from here, not from the constructor. -->
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/captain_selfie_paths" />
+        </provider>
         <!--
           On duty: a location foreground service, started only after the
           disclosure, the permission grant and the server accepting the captain online.

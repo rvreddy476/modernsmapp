@@ -13,7 +13,12 @@
             android:name="com.us.android.feature.doorsteppro.camera.ProPhotoFileProvider"
             android:authorities="${applicationId}.doorsteppro.photos"
             android:exported="false"
-            android:grantUriPermissions="true" />
+            android:grantUriPermissions="true">
+            <!-- FileProvider.getUriForFile reads the paths from here, not from the constructor. -->
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/doorstep_pro_photo_paths" />
+        </provider>
     </application>
 
 </manifest>

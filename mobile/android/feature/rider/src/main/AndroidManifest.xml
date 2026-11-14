@@ -13,7 +13,12 @@
             android:name="com.us.android.feature.rider.selfie.SelfieFileProvider"
             android:authorities="${applicationId}.rider.selfie"
             android:exported="false"
-            android:grantUriPermissions="true" />
+            android:grantUriPermissions="true">
+            <!-- FileProvider.getUriForFile reads the paths from here, not from the constructor. -->
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/rider_selfie_paths" />
+        </provider>
     </application>
 
 </manifest>
