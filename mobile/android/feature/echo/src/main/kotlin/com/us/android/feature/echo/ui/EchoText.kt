@@ -79,7 +79,8 @@ fun echoRichText(text: String, links: UsRichTextLinks?, onHashtag: (String) -> U
 fun rememberEchoText(text: String): AnnotatedString {
     val links = LocalUsRichTextLinks.current
     val hashtag = LocalEchoHashtag.current
-    val color = UsTheme.extended.accent
+    // Echo's own ember (echo-look-v3), readable in both themes.
+    val color = UsTheme.extended.echo.text
     return remember(text, links, hashtag, color) { echoRichText(text, links, hashtag, color) }
 }
 

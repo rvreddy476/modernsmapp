@@ -6,7 +6,9 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,7 +16,6 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -28,13 +29,18 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.icon.UsIcons
+import com.us.android.core.designsystem.theme.UsEchoType
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.feature.echo.data.Note
 import com.us.android.feature.echo.data.NoteAuthor
@@ -45,10 +51,11 @@ import com.us.android.feature.echo.data.shortAge
 import java.time.Instant
 
 /**
- * One note, X's card: the avatar on the left; name, mark, @handle · age and
- * `···` on the first line; the text with its links; up to 4 pictures or a
- * GIF, or a poll; the quoted note; then the action row: replies, reposts,
- * likes, views, bookmark, share.
+ * One note as Echo's serif conversation card (echo-look-v3): the topic line
+ * (`#tag · 2h`) on top, the text in Bodoni, pictures, a poll or the quoted
+ * note, the author's signature under it, up to two top replies as bubbles
+ * with "N replies", and the labelled pills: Reply, Echo it, the heart and
+ * More. No left avatar column, no bare icon row.
  */
 @Composable
 fun NoteCard(
@@ -59,56 +66,86 @@ fun NoteCard(
     now: Instant = Instant.now(),
     /** Kept for the profile tab's older callers: a focused card does not tap through. */
     focused: Boolean = false,
+    /** The first replies, once they arrived; null draws no bubble area. */
+    preview: ReplyPreview? = null,
 ) {
-    Row(
-        modifier = modifier
-            .fillMaxWidth()
-            .then(if (focused) Modifier else Modifier.clickable { callbacks.onOpen(note) })
-            .padding(start = UsTheme.spacing.xxl, end = UsTheme.spacing.l, top = UsTheme.spacing.l)
-            .testTag("echo_note:${note.id}"),
-        verticalAlignment = Alignment.Top,
+    EchoCard(
+        modifier = modifier.testTag("echo_note:${note.id}"),
+        onClick = if (focused) null else ({ callbacks.onOpen(note) }),
     ) {
-        val author = note.author
-        UsAvatar(
-            name = author?.name ?: "",
-            seed = note.authorId,
-            imageUrl = author?.avatarUrl,
-            size = UsAvatarSize.Medium,
-            modifier = Modifier.clickable { callbacks.onOpenAuthor(note.authorId) },
+        TopicText(topicLine(note, shortAge(note.createdAt, now), thread = preview?.thread == true))
+        NoteText(
+            note = note,
+            style = if (isLongNote(note.text)) UsEchoType.noteLong else UsEchoType.note,
         )
-        Column(modifier = Modifier.weight(1f).padding(start = UsTheme.spacing.l)) {
-            AuthorLine(
-                author = author,
-                age = shortAge(note.createdAt, now),
-                edited = note.edited,
-                onMore = callbacks.onMore?.let { { it(note) } },
+        NoteAttachments(note = note, mediaUrls = mediaUrls, callbacks = callbacks, now = now)
+        Signature(author = note.author, authorId = note.authorId, onOpenAuthor = callbacks.onOpenAuthor)
+        preview?.let {
+            ReplyBubbles(
+                preview = it,
+                onOpenNote = { callbacks.onOpen(note) },
+                onOpenReply = callbacks.onOpen,
             )
-            NoteBody(note = note, mediaUrls = mediaUrls, callbacks = callbacks, now = now)
-            NoteActionRow(note = note, callbacks = callbacks)
         }
+        NotePills(note = note, callbacks = callbacks)
     }
-    HorizontalDivider(color = UsTheme.extended.borderSubtle)
 }
 
-/** The text, pictures or poll, and the quoted note: shared by the card and the post page. */
+/**
+ * Echo's card: rounded 16, the surface colour, a hairline border (the ember
+ * one when [accent], the note page's focused note), padding 14.
+ */
 @Composable
-internal fun NoteBody(
-    note: Note,
-    mediaUrls: Map<String, String>,
-    callbacks: NoteCallbacks,
-    now: Instant,
-    large: Boolean = false,
+internal fun EchoCard(
+    modifier: Modifier = Modifier,
+    accent: Boolean = false,
+    onClick: (() -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit,
 ) {
-    if (note.text.isNotBlank()) {
-        Text(
-            text = rememberEchoText(note.text),
-            style = if (large) MaterialTheme.typography.bodyLarge else MaterialTheme.typography.bodyMedium,
-            color = UsTheme.extended.textPrimary,
-            modifier = Modifier.padding(top = UsTheme.spacing.xs).testTag("echo_note_text"),
-        )
-    }
+    val shape = RoundedCornerShape(UsTheme.radii.large)
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(UsTheme.extended.bgCardSolid)
+            .border(1.dp, if (accent) UsTheme.extended.echo.border else UsTheme.extended.borderSubtle, shape)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(UsTheme.spacing.xl),
+        content = content,
+    )
+}
+
+/** The topic line: ember when it names something, secondary text when it is only the time. */
+@Composable
+internal fun TopicText(line: TopicLine, modifier: Modifier = Modifier) {
+    if (line.text.isBlank()) return
+    Text(
+        text = line.text,
+        style = MaterialTheme.typography.labelMedium,
+        color = if (line.accent) UsTheme.extended.echo.text else UsTheme.extended.textTertiary,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = modifier.testTag("echo_topic"),
+    )
+}
+
+/** The note's words in the serif, with their links. */
+@Composable
+internal fun NoteText(note: Note, style: TextStyle) {
+    if (note.text.isBlank()) return
+    Text(
+        text = rememberEchoText(note.text),
+        style = style,
+        color = UsTheme.extended.textPrimary,
+        modifier = Modifier.padding(top = UsTheme.spacing.s).testTag("echo_note_text"),
+    )
+}
+
+/** Pictures or a GIF, a poll, and the quoted note: inside the card, between the text and the signature. */
+@Composable
+internal fun NoteAttachments(note: Note, mediaUrls: Map<String, String>, callbacks: NoteCallbacks, now: Instant) {
     if (note.media.isNotEmpty()) {
-        NoteMediaGrid(media = note.media, urls = mediaUrls, modifier = Modifier.padding(top = UsTheme.spacing.m))
+        NoteMediaGrid(media = note.media, urls = mediaUrls, modifier = Modifier.padding(top = UsTheme.spacing.l))
     }
     note.poll?.let { poll ->
         PollView(
@@ -116,7 +153,7 @@ internal fun NoteBody(
             viewerIsAuthor = callbacks.viewerId.isNotBlank() && callbacks.viewerId == note.authorId,
             now = now,
             onVote = callbacks.onVote?.let { vote -> { index: Int -> vote(note, index) } },
-            modifier = Modifier.padding(top = UsTheme.spacing.m),
+            modifier = Modifier.padding(top = UsTheme.spacing.l),
         )
     }
     when {
@@ -125,53 +162,64 @@ internal fun NoteBody(
             mediaUrls = mediaUrls,
             now = now,
             onOpen = { callbacks.onOpen(note.quoted) },
-            modifier = Modifier.padding(top = UsTheme.spacing.m),
+            modifier = Modifier.padding(top = UsTheme.spacing.l),
         )
-        note.quoteOfId != null -> QuoteGone(modifier = Modifier.padding(top = UsTheme.spacing.m))
+        note.quoteOfId != null -> QuoteGone(modifier = Modifier.padding(top = UsTheme.spacing.l))
     }
 }
 
+/**
+ * The signature under the text: a small avatar and the display name, then
+ * the @handle and the mark in secondary text. [trailing] is the note page's
+ * Follow pill.
+ */
 @Composable
-private fun AuthorLine(author: NoteAuthor?, age: String, edited: Boolean, onMore: (() -> Unit)?) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Row(modifier = Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
+internal fun Signature(
+    author: NoteAuthor?,
+    authorId: String,
+    onOpenAuthor: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    trailing: (@Composable RowScope.() -> Unit)? = null,
+) {
+    Row(
+        modifier = modifier.fillMaxWidth().padding(top = UsTheme.spacing.l).testTag("echo_signature"),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(
+            modifier = Modifier
+                .weight(1f)
+                .clip(RoundedCornerShape(UsTheme.radii.full))
+                .clickable { onOpenAuthor(authorId) },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            UsAvatar(
+                name = author?.name.orEmpty(),
+                seed = authorId,
+                imageUrl = author?.avatarUrl,
+                size = UsAvatarSize.Tiny,
+            )
             Text(
-                text = author?.name ?: "",
-                style = MaterialTheme.typography.titleSmall,
+                text = author?.name.orEmpty(),
+                style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
                 color = UsTheme.extended.textPrimary,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
+                modifier = Modifier.padding(start = UsTheme.spacing.m).weight(1f, fill = false),
             )
+            author?.handle?.takeIf { it.isNotBlank() }?.let { handle ->
+                Text(
+                    text = handle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.textTertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = UsTheme.spacing.xs).weight(1f, fill = false),
+                )
+            }
             author?.mark?.takeIf { it != VerificationMark.NONE }?.let { VerificationTick(it) }
-            val meta = listOfNotNull(
-                author?.handle?.takeIf { it.isNotBlank() },
-                age.takeIf { it.isNotBlank() },
-                EDITED.takeIf { edited },
-            )
-            Text(
-                text = meta.joinToString(" · ").let { if (it.isBlank()) it else " $it" },
-                style = MaterialTheme.typography.bodyMedium,
-                color = UsTheme.extended.textTertiary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.weight(1f, fill = false),
-            )
         }
-        if (onMore != null) {
-            Icon(
-                imageVector = UsIcons.More,
-                contentDescription = "More",
-                tint = UsTheme.extended.textTertiary,
-                modifier = Modifier
-                    .clip(RoundedCornerShape(UsTheme.radii.full))
-                    .clickable(onClick = onMore)
-                    .padding(UsTheme.spacing.xs)
-                    .size(MORE_ICON)
-                    .testTag("echo_note_more"),
-            )
-        }
+        trailing?.invoke(this)
     }
 }
 
@@ -199,13 +247,155 @@ internal fun VerificationTick(mark: VerificationMark) {
 }
 
 /**
- * X's picture layouts: one wide; two side by side; three as one tall on the
- * left and two stacked on the right; four as a 2 x 2 grid. A GIF is alone.
+ * Up to two top replies as chat bubbles (bold name, the text, one line
+ * each), then "Read the thread" when the author continued it, and "N
+ * replies", which opens the note.
+ */
+@Composable
+internal fun ReplyBubbles(preview: ReplyPreview, onOpenNote: () -> Unit, onOpenReply: (Note) -> Unit) {
+    Column(
+        modifier = Modifier.fillMaxWidth().padding(top = UsTheme.spacing.l).testTag("echo_reply_bubbles"),
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+    ) {
+        val nameColor = UsTheme.extended.textPrimary
+        preview.bubbles.forEach { reply ->
+            val name = reply.author?.name.orEmpty()
+            Text(
+                text = buildAnnotatedString {
+                    if (name.isNotBlank()) {
+                        withStyle(SpanStyle(fontWeight = FontWeight.Bold, color = nameColor)) { append(name) }
+                        append("  ")
+                    }
+                    append(reply.text.replace('\n', ' '))
+                },
+                style = MaterialTheme.typography.bodyMedium,
+                color = UsTheme.extended.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(UsTheme.radii.medium))
+                    .background(UsTheme.extended.bgRaised)
+                    .clickable { onOpenReply(reply) }
+                    .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.m)
+                    .testTag("echo_reply_bubble:${reply.id}"),
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
+            if (preview.thread) {
+                Text(
+                    text = READ_THREAD,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = UsTheme.extended.echo.text,
+                    modifier = Modifier.clickable(onClick = onOpenNote).testTag("echo_read_thread"),
+                )
+            }
+            preview.label?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.labelMedium,
+                    color = UsTheme.extended.textTertiary,
+                    modifier = Modifier.clickable(onClick = onOpenNote).testTag("echo_replies_count"),
+                )
+            }
+        }
+    }
+}
+
+/**
+ * The card's labelled pills: Reply, Echo it (the Re-echo / Quote sheet), the
+ * heart with its count, and More (Save, Share, Copy link, Report, Mute ...).
+ * Where the host draws no menu, More is the share sheet.
+ */
+@Composable
+internal fun NotePills(note: Note, callbacks: NoteCallbacks) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(top = UsTheme.spacing.l),
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        EchoPill(
+            icon = UsIcons.Comment,
+            label = REPLY,
+            description = REPLY,
+            tag = "echo_action:reply",
+        ) { callbacks.onReply(note) }
+        EchoPill(
+            icon = UsIcons.Repost,
+            label = ECHO_IT,
+            description = if (note.reposted) UNDO_RE_ECHO else ECHO_IT,
+            lit = note.reposted,
+            tag = "echo_action:repost",
+        ) { callbacks.onRepost(note) }
+        val hearts = compactCount(note.likeCount)
+        EchoPill(
+            icon = if (note.liked) UsIcons.HeartFilled else UsIcons.HeartOutline,
+            label = hearts.ifEmpty { null },
+            description = (if (note.liked) "Unlike" else "Like") + if (hearts.isEmpty()) "" else ", $hearts",
+            lit = note.liked,
+            tag = "echo_action:like",
+        ) { callbacks.onLike(note) }
+        Box(modifier = Modifier.weight(1f))
+        val onMore = callbacks.onMore
+        EchoPill(
+            icon = UsIcons.More,
+            label = null,
+            description = if (onMore != null) MORE else SHARE,
+            tag = if (onMore != null) "echo_note_more" else "echo_action:share",
+        ) { if (onMore != null) onMore(note) else callbacks.onShare(note) }
+    }
+}
+
+/**
+ * One labelled pill: radius full, a hairline border, 12 sp. [lit] draws it in
+ * Echo's ember (a heart given, a note re-echoed, a note saved).
+ */
+@Composable
+@Suppress("LongParameterList")
+internal fun EchoPill(
+    icon: ImageVector?,
+    label: String?,
+    description: String,
+    tag: String,
+    modifier: Modifier = Modifier,
+    lit: Boolean = false,
+    onClick: (() -> Unit)?,
+) {
+    val shape = RoundedCornerShape(UsTheme.radii.full)
+    val tint: Color = if (lit) UsTheme.extended.echo.text else UsTheme.extended.textSecondary
+    Row(
+        modifier = modifier
+            .clip(shape)
+            .border(1.dp, if (lit) UsTheme.extended.echo.border else UsTheme.extended.borderMedium, shape)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.s)
+            .semantics { contentDescription = description }
+            .testTag(tag),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+    ) {
+        icon?.let {
+            Icon(imageVector = it, contentDescription = null, tint = tint, modifier = Modifier.size(PILL_ICON))
+        }
+        label?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.labelMedium,
+                color = tint,
+                maxLines = 1,
+            )
+        }
+    }
+}
+
+/**
+ * Picture layouts, radius 12: one wide; two side by side; three as one tall
+ * on the left and two stacked on the right; four as a 2 x 2 grid. A GIF is alone.
  */
 @Composable
 internal fun NoteMediaGrid(media: List<NoteMedia>, urls: Map<String, String>, modifier: Modifier = Modifier) {
     val shown = media.take(MAX_SHOWN)
-    val shape = RoundedCornerShape(UsTheme.radii.media)
+    val shape = RoundedCornerShape(UsTheme.radii.medium)
     val frame = modifier
         .fillMaxWidth()
         .clip(shape)
@@ -259,7 +449,7 @@ private fun MediaTile(item: NoteMedia, urls: Map<String, String>, modifier: Modi
     }
 }
 
-/** The quoted note, one level deep, as a bordered card. */
+/** The quoted note, one level deep, as a smaller nested serif card (radius 12). */
 @Composable
 internal fun QuotedNote(
     note: Note,
@@ -268,47 +458,22 @@ internal fun QuotedNote(
     onOpen: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    val shape = RoundedCornerShape(UsTheme.radii.large)
+    val shape = RoundedCornerShape(UsTheme.radii.medium)
     Column(
         modifier = modifier
             .fillMaxWidth()
             .clip(shape)
-            .border(1.dp, UsTheme.extended.borderMedium, shape)
+            .background(UsTheme.extended.bgRaised)
+            .border(1.dp, UsTheme.extended.borderSubtle, shape)
             .clickable(onClick = onOpen)
             .padding(UsTheme.spacing.l)
             .testTag("echo_quoted:${note.id}"),
     ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            UsAvatar(
-                name = note.author?.name.orEmpty(),
-                seed = note.authorId,
-                imageUrl = note.author?.avatarUrl,
-                size = UsAvatarSize.Small,
-                modifier = Modifier.padding(end = UsTheme.spacing.s),
-            )
-            Text(
-                text = note.author?.name.orEmpty(),
-                style = MaterialTheme.typography.labelLarge,
-                fontWeight = FontWeight.Bold,
-                color = UsTheme.extended.textPrimary,
-                maxLines = 1,
-            )
-            note.author?.mark?.takeIf { it != VerificationMark.NONE }?.let { VerificationTick(it) }
-            Text(
-                text = listOfNotNull(
-                    note.author?.handle?.takeIf { it.isNotBlank() },
-                    shortAge(note.createdAt, now).takeIf { it.isNotBlank() },
-                ).joinToString(" · ").let { if (it.isBlank()) it else " $it" },
-                style = MaterialTheme.typography.bodySmall,
-                color = UsTheme.extended.textTertiary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
+        TopicText(topicLine(note, shortAge(note.createdAt, now)))
         if (note.text.isNotBlank()) {
             Text(
                 text = note.text,
-                style = MaterialTheme.typography.bodyMedium,
+                style = UsEchoType.quoted,
                 color = UsTheme.extended.textPrimary,
                 maxLines = QUOTE_LINES,
                 overflow = TextOverflow.Ellipsis,
@@ -318,98 +483,59 @@ internal fun QuotedNote(
         if (note.media.isNotEmpty()) {
             NoteMediaGrid(media = note.media, urls = mediaUrls, modifier = Modifier.padding(top = UsTheme.spacing.s))
         }
+        Row(modifier = Modifier.padding(top = UsTheme.spacing.m), verticalAlignment = Alignment.CenterVertically) {
+            UsAvatar(
+                name = note.author?.name.orEmpty(),
+                seed = note.authorId,
+                imageUrl = note.author?.avatarUrl,
+                size = UsAvatarSize.Tiny,
+            )
+            Text(
+                text = note.author?.name.orEmpty(),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.Bold,
+                color = UsTheme.extended.textPrimary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(start = UsTheme.spacing.s).weight(1f, fill = false),
+            )
+            note.author?.handle?.takeIf { it.isNotBlank() }?.let {
+                Text(
+                    text = it,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.textTertiary,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.padding(start = UsTheme.spacing.xs).weight(1f, fill = false),
+                )
+            }
+            note.author?.mark?.takeIf { it != VerificationMark.NONE }?.let { VerificationTick(it) }
+        }
     }
 }
 
 /** A quote whose note is gone or hidden (`quoted_note: null`, `quote_of_id` kept). */
 @Composable
 private fun QuoteGone(modifier: Modifier = Modifier) {
-    val shape = RoundedCornerShape(UsTheme.radii.large)
+    val shape = RoundedCornerShape(UsTheme.radii.medium)
     Text(
-        text = "This post is unavailable.",
+        text = "This note is unavailable.",
         style = MaterialTheme.typography.bodySmall,
         color = UsTheme.extended.textTertiary,
         modifier = modifier
             .fillMaxWidth()
             .clip(shape)
-            .background(UsTheme.extended.fillSubtle)
+            .background(UsTheme.extended.bgRaised)
             .padding(UsTheme.spacing.l),
     )
 }
 
-/** X's action row: reply, repost, like, views, bookmark, share. */
-@Composable
-internal fun NoteActionRow(note: Note, callbacks: NoteCallbacks, showCounts: Boolean = true) {
-    val idle = UsTheme.extended.textTertiary
-    Row(
-        modifier = Modifier.fillMaxWidth().padding(vertical = UsTheme.spacing.xs),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        val count: (Long) -> Long = { if (showCounts) it else 0 }
-        ActionButton(UsIcons.Comment, "Reply", count(note.replyCount), idle, "reply") { callbacks.onReply(note) }
-        ActionButton(
-            UsIcons.Repost,
-            if (note.reposted) "Undo repost" else "Repost",
-            count(note.repostCount),
-            if (note.reposted) UsTheme.extended.statusSuccess else idle,
-            "repost",
-        ) { callbacks.onRepost(note) }
-        ActionButton(
-            if (note.liked) UsIcons.HeartFilled else UsIcons.HeartOutline,
-            if (note.liked) "Unlike" else "Like",
-            count(note.likeCount),
-            if (note.liked) UsTheme.extended.accent else idle,
-            "like",
-        ) { callbacks.onLike(note) }
-        ActionButton(UsIcons.Poll, "Views", count(note.viewCount), idle, "views", onClick = null)
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            callbacks.onBookmark?.let { onBookmark ->
-                ActionButton(
-                    if (note.bookmarked) UsIcons.BookmarkFilled else UsIcons.BookmarkOutline,
-                    if (note.bookmarked) "Remove bookmark" else "Bookmark",
-                    0,
-                    if (note.bookmarked) UsTheme.extended.accent else idle,
-                    "bookmark",
-                ) { onBookmark(note) }
-            }
-            ActionButton(UsIcons.Share, "Share", 0, idle, "share") { callbacks.onShare(note) }
-        }
-    }
-}
-
-@Composable
-private fun ActionButton(
-    icon: ImageVector,
-    label: String,
-    count: Long,
-    tint: Color,
-    tag: String,
-    onClick: (() -> Unit)?,
-) {
-    val text = compactCount(count)
-    Row(
-        modifier = Modifier
-            .clip(RoundedCornerShape(UsTheme.radii.full))
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(UsTheme.spacing.s)
-            .semantics { contentDescription = if (text.isEmpty()) label else "$label, $text" }
-            .testTag("echo_action:$tag"),
-        verticalAlignment = Alignment.CenterVertically,
-    ) {
-        Icon(imageVector = icon, contentDescription = null, tint = tint, modifier = Modifier.size(ACTION_ICON))
-        if (text.isNotEmpty()) {
-            Text(
-                text = text,
-                style = MaterialTheme.typography.labelMedium,
-                color = tint,
-                modifier = Modifier.padding(start = UsTheme.spacing.xs),
-            )
-        }
-    }
-}
-
-private const val EDITED = "Edited"
+const val REPLY = "Reply"
+const val ECHO_IT = "Echo it"
+const val UNDO_RE_ECHO = "Undo re-echo"
+const val READ_THREAD = "Read the thread"
+private const val MORE = "More"
+private const val SHARE = "Share"
 private const val MAX_SHOWN = 4
 private const val THREE_PICTURES = 3
 private const val SINGLE_ASPECT = 16f / 10f
@@ -417,5 +543,4 @@ private const val GRID_ASPECT = 16f / 9f
 private const val QUOTE_LINES = 4
 private val GRID_GAP = 2.dp
 private val TICK_SIZE = 16.dp
-private val MORE_ICON = 18.dp
-private val ACTION_ICON = 18.dp
+private val PILL_ICON = 14.dp

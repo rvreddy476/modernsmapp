@@ -54,6 +54,62 @@ val MomentumWordmarkFontFamily = FontFamily(
 )
 
 /**
+ * Bodoni Moda at reading weights, from the same variable font as the
+ * wordmark: Echo's note text (look v3, 14 Nov 2026). Regular to Bold, so a
+ * note can be set long without the wordmark's Black.
+ */
+@OptIn(ExperimentalTextApi::class)
+private fun bodoni(weight: Int) = Font(
+    resId = R.font.bodoni_moda_variable,
+    weight = FontWeight(weight),
+    variationSettings = FontVariation.Settings(FontVariation.weight(weight)),
+)
+
+val EchoSerifFontFamily = FontFamily(
+    bodoni(400),
+    bodoni(500),
+    bodoni(600),
+    bodoni(700),
+)
+
+/**
+ * Echo's serif text styles (docs/designs/echo-look-v3.md): a note is set in
+ * Bodoni Moda, larger than body text, at a line height of about 1.4. Names,
+ * buttons and counts stay in the UI faces of [UsTypography].
+ */
+object UsEchoType {
+    /** A note on a timeline card: 18 sp. */
+    val note = serifStyle(18, 25)
+
+    /** A long note (over ~280 characters) on a timeline card: 16 sp. */
+    val noteLong = serifStyle(16, 22)
+
+    /** The note on its own page: 22 sp. */
+    val notePage = serifStyle(22, 31)
+
+    /** The composer's text area: 20 sp. */
+    val composer = serifStyle(20, 28)
+
+    /** A quoted note nested inside a card, and a reply-mode parent: 15 sp. */
+    val quoted = serifStyle(15, 21)
+
+    /** The "Echo" header and wordmark inside Echo. */
+    val title = TextStyle(
+        fontFamily = EchoSerifFontFamily,
+        fontWeight = FontWeight.Bold,
+        fontSize = 26.sp,
+        lineHeight = 32.sp,
+    )
+
+    private fun serifStyle(size: Int, line: Int) = TextStyle(
+        fontFamily = EchoSerifFontFamily,
+        fontWeight = FontWeight.Normal,
+        fontSize = size.sp,
+        lineHeight = line.sp,
+    )
+}
+
+/**
  * Figtree, bundled as a variable font asset — Momentum's body/label
  * typeface. Outfit remains the heading face (see [UsTypography]); Figtree is
  * what a reader spends the most time actually reading, and the Momentum

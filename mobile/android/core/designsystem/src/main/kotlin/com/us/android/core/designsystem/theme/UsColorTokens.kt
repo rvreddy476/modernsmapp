@@ -115,6 +115,16 @@ internal object UsColorTokens {
         /** `--theme-brand-outline` 185 212 236: an accent-coloured outline. */
         val AccentOutline = Color(0xFFB9D4EC)
 
+        // ── Echo (look v3, 14 Nov 2026) ────────────────────────────────
+        /** Echo's ember where it is read (a topic line, a link): 5.18:1 on white. */
+        val EchoAccentText = Color(0xFFC2410C)
+
+        /** Echo's ember tint: a selected pill tab's ground. */
+        val EchoAccentTint = Color(0xFFFFF1E8)
+
+        /** Echo's ember hairline: the focused note's ring, the line joining a thread. */
+        val EchoAccentBorder = Color(0xFFF2A97A)
+
         /** `--theme-on-primary` 255 255 255. */
         val OnPrimary = Color(0xFFFFFFFF)
 
@@ -229,6 +239,16 @@ internal object UsColorTokens {
 
         /** `--theme-brand-outline` 44 74 104. */
         val AccentOutline = Color(0xFF2C4A68)
+
+        // ── Echo (look v3, 14 Nov 2026) ────────────────────────────────
+        /** Echo's ember where it is read: 8.6:1 on black. */
+        val EchoAccentText = Color(0xFFFB923C)
+
+        /** Echo's ember tint: a selected pill tab's ground. */
+        val EchoAccentTint = Color(0xFF2A1508)
+
+        /** Echo's ember hairline: the focused note's ring, the line joining a thread. */
+        val EchoAccentBorder = Color(0xFF9A3412)
 
         /** `--theme-on-primary` 15 20 25: the label on Material's `primary`, which is the light ink here. */
         val OnPrimary = Color(0xFF0F1419)
@@ -361,6 +381,12 @@ internal object UsColorTokens {
     // stops live on here although the app's accent is no longer ember.
     val CreateEmberLight = Color(0xFFFB923C)
     val CreateEmberDeep = Color(0xFFDC2626)
+
+    /**
+     * Echo's filled ember (look v3): the "Write a note" and "Post note" pills,
+     * under a white label (5.18:1), the same in both themes.
+     */
+    val EchoAccentFill = Color(0xFFC2410C)
     val CreatePhotoLight = Color(0xFF34D399)
     val CreatePhotoDeep = Color(0xFF059669)
     val CreateReelLight = Color(0xFFFB7185)

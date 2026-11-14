@@ -1,7 +1,8 @@
 package com.us.android.feature.echo.ui
 
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,18 +19,15 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.SecondaryTabRow
-import androidx.compose.material3.Tab
-import androidx.compose.material3.TabRowDefaults
-import androidx.compose.material3.TabRowDefaults.tabIndicatorOffset
 import androidx.compose.material3.Text
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.pulltorefresh.PullToRefreshDefaults
@@ -44,12 +42,14 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextOverflow
@@ -61,6 +61,7 @@ import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.icon.UsIcons
+import com.us.android.core.designsystem.theme.UsEchoType
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.model.Notification
 import com.us.android.core.ui.UsEmptyState
@@ -113,36 +114,55 @@ internal fun TabbedPage(
                 verticalAlignment = Alignment.CenterVertically,
                 content = top,
             )
-            SecondaryTabRow(
-                selectedTabIndex = pager.currentPage,
-                containerColor = UsTheme.extended.bgCanvas,
-                contentColor = UsTheme.extended.textPrimary,
-                indicator = {
-                    TabRowDefaults.PrimaryIndicator(
-                        modifier = Modifier.tabIndicatorOffset(pager.currentPage, matchContentSize = true),
-                        color = UsTheme.extended.accent,
-                        width = Dp.Unspecified,
-                    )
-                },
-                divider = { HorizontalDivider(color = UsTheme.extended.borderSubtle) },
-            ) {
-                tabs.forEachIndexed { index, label ->
-                    val selected = pager.currentPage == index
-                    Tab(
-                        selected = selected,
-                        onClick = { scope.launch { pager.animateScrollToPage(index) } },
-                        text = {
-                            Text(
-                                text = label,
-                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                            )
-                        },
-                        selectedContentColor = UsTheme.extended.textPrimary,
-                        unselectedContentColor = UsTheme.extended.textTertiary,
-                        modifier = Modifier.testTag("${tagPrefix}_tab:$index"),
-                    )
-                }
-            }
+            PillTabs(
+                labels = tabs,
+                selected = pager.currentPage,
+                tagPrefix = tagPrefix,
+                onSelect = { index -> scope.launch { pager.animateScrollToPage(index) } },
+                modifier = Modifier.padding(bottom = UsTheme.spacing.m),
+            )
+        }
+    }
+}
+
+/**
+ * Echo's tabs as pills (echo-look-v3): the selected one on the ember tint,
+ * the rest outlined. Scrolls sideways when there are more than fit.
+ */
+@Composable
+internal fun PillTabs(
+    labels: List<String>,
+    selected: Int,
+    tagPrefix: String,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    /** Each tab's test tag; by default `<tagPrefix>_tab:<index>`. */
+    tagOf: (Int) -> String = { "${tagPrefix}_tab:$it" },
+) {
+    val echo = UsTheme.extended.echo
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.xs),
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+    ) {
+        labels.forEachIndexed { index, label ->
+            val lit = index == selected
+            val shape = RoundedCornerShape(UsTheme.radii.full)
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = if (lit) FontWeight.Bold else FontWeight.Medium,
+                color = if (lit) echo.text else UsTheme.extended.textSecondary,
+                modifier = Modifier
+                    .clip(shape)
+                    .then(if (lit) Modifier.background(echo.tint) else Modifier)
+                    .border(1.dp, if (lit) echo.border else UsTheme.extended.borderMedium, shape)
+                    .selectable(selected = lit, role = Role.Tab, onClick = { onSelect(index) })
+                    .padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.s)
+                    .testTag(tagOf(index)),
+            )
         }
     }
 }
@@ -205,13 +225,17 @@ internal fun HomeTab(
                 callbacks = callbacks,
                 emptyTitle = if (timeline == Timeline.FOLLOWING) "Welcome to Echo" else "Nothing here yet",
                 emptyDetail = if (timeline == Timeline.FOLLOWING) {
-                    "Posts from accounts you follow show up here."
+                    "Notes from accounts you follow show up here."
                 } else {
-                    "Posts picked for you show up here."
+                    "Notes picked for you show up here."
                 },
                 onRetry = viewModel::retry,
                 onLoadMore = viewModel::loadMore,
-                contentPadding = padding,
+                // Room under the last card for the "Write a note" pill above the bottom bar.
+                contentPadding = PaddingValues(
+                    top = padding.calculateTopPadding(),
+                    bottom = padding.calculateBottomPadding() + WRITE_PILL_ROOM,
+                ),
                 onSeen = actions::seen,
                 modifier = Modifier.testTag("echo_timeline:${timeline.name.lowercase()}"),
             )
@@ -241,7 +265,7 @@ internal fun ExploreTab(
     )
     TabbedPage(
         bars = bars,
-        tabs = listOf("Trending", "Latest"),
+        tabs = listOf(TALKED_ABOUT_NOW, "Latest"),
         initialPage = 0,
         onPage = { if (it == 1) viewModel.showLatest() },
         tagPrefix = "echo_explore",
@@ -271,7 +295,7 @@ internal fun ExploreTab(
                     mediaUrls = urls,
                     callbacks = callbacks,
                     emptyTitle = "Nothing new yet",
-                    emptyDetail = "The latest posts on Echo show up here.",
+                    emptyDetail = "The latest notes on Echo show up here.",
                     onRetry = viewModel::retryLatest,
                     onLoadMore = viewModel::loadMoreLatest,
                     contentPadding = padding,
@@ -326,7 +350,11 @@ private fun TrendList(
     onOpen: (Trend) -> Unit,
     onRetry: () -> Unit
 ) {
-    LazyColumn(modifier = Modifier.fillMaxSize().testTag("echo_trends"), contentPadding = padding) {
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().testTag("echo_trends"),
+        contentPadding = padding,
+        verticalArrangement = Arrangement.spacedBy(CARD_GAP),
+    ) {
         when {
             trends.loading && trends.items.isEmpty() -> item {
                 UsLoadingState(
@@ -348,31 +376,26 @@ private fun TrendList(
                 )
             }
             else -> items(trends.items, key = { it.tag }) { trend ->
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable { onOpen(trend) }
-                        .padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.l)
-                        .testTag("echo_trend:${trend.tag}"),
+                EchoCard(
+                    modifier = Modifier.padding(horizontal = UsTheme.spacing.l).testTag("echo_trend:${trend.tag}"),
+                    onClick = { onOpen(trend) },
                 ) {
                     Text(
-                        text = "${trend.rank} · Trending",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = UsTheme.extended.textTertiary,
+                        text = "$TALKED_ABOUT_NOW · ${trend.rank}",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = UsTheme.extended.echo.text,
                     )
                     Text(
                         text = "#${trend.tag}",
-                        style = MaterialTheme.typography.titleSmall,
-                        fontWeight = FontWeight.Bold,
+                        style = UsEchoType.note,
                         color = UsTheme.extended.textPrimary,
+                        modifier = Modifier.padding(top = UsTheme.spacing.xs),
                     )
                     Text(
                         text = if (trend.noteCount == 1L) {
-                            "1 post"
+                            "1 note"
                         } else {
-                            "${compactCount(
-                                trend.noteCount
-                            ).ifEmpty { "0" }} posts"
+                            "${compactCount(trend.noteCount).ifEmpty { "0" }} notes"
                         },
                         style = MaterialTheme.typography.bodySmall,
                         color = UsTheme.extended.textTertiary,
@@ -426,7 +449,7 @@ internal fun NotificationsTab(
                 emptyDetail = if (tab == EchoNotificationsTab.MENTIONS) {
                     "When someone mentions you, you'll find it here."
                 } else {
-                    "Likes, reposts, replies and follows show up here."
+                    "Hearts, echoes, replies and follows show up here."
                 },
                 onOpen = { n ->
                     viewModel.opened(n)
@@ -462,7 +485,8 @@ private fun NotificationList(
     LazyColumn(
         state = state,
         modifier = Modifier.fillMaxSize().testTag("echo_notifications"),
-        contentPadding = padding
+        contentPadding = padding,
+        verticalArrangement = Arrangement.spacedBy(CARD_GAP),
     ) {
         when {
             !feed.loaded && feed.loading -> item {
@@ -485,32 +509,29 @@ private fun NotificationList(
                 )
             }
             else -> items(feed.items, key = { it.id }) { n ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(if (n.isRead) UsTheme.extended.bgCanvas else UsTheme.extended.unreadRow)
-                        .clickable { onOpen(n) }
-                        .padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.l)
-                        .testTag("echo_notification:${n.id}"),
-                    horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+                EchoCard(
+                    modifier = Modifier.padding(horizontal = UsTheme.spacing.l).testTag("echo_notification:${n.id}"),
+                    accent = !n.isRead,
+                    onClick = { onOpen(n) },
                 ) {
-                    UsAvatar(name = n.actorName, seed = n.actorUserId, size = UsAvatarSize.Small)
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = n.title ?: n.actorName.ifBlank { "Something new" },
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = UsTheme.extended.textPrimary,
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                        Text(
-                            text = shortAge(n.createdAt, now),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = UsTheme.extended.textTertiary,
-                        )
+                    Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
+                        UsAvatar(name = n.actorName, seed = n.actorUserId, size = UsAvatarSize.Small)
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = n.title ?: n.actorName.ifBlank { "Something new" },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = UsTheme.extended.textPrimary,
+                                maxLines = 3,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Text(
+                                text = shortAge(n.createdAt, now),
+                                style = MaterialTheme.typography.labelMedium,
+                                color = if (n.isRead) UsTheme.extended.textTertiary else UsTheme.extended.echo.text,
+                            )
+                        }
                     }
                 }
-                HorizontalDivider(color = UsTheme.extended.borderSubtle)
             }
         }
     }
@@ -521,3 +542,7 @@ private const val LOAD_AHEAD = 4
 private val TOP_ROW = 52.dp
 private val SEARCH_HEIGHT = 38.dp
 private val SEARCH_ICON = 18.dp
+
+// The "Write a note" pill and its margins, above the bottom bar.
+private val WRITE_PILL_ROOM = 76.dp
+const val TALKED_ABOUT_NOW = "Talked about now"

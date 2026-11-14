@@ -6,6 +6,7 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -63,6 +64,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsAvatar
 import com.us.android.core.designsystem.component.UsAvatarSize
 import com.us.android.core.designsystem.icon.UsIcons
+import com.us.android.core.designsystem.theme.UsEchoType
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.feature.echo.data.EchoProfile
 import com.us.android.feature.echo.data.VerificationMark
@@ -171,11 +173,11 @@ fun EchoShell(
                     )
                 }
                 if (tab == EchoTab.HOME) {
-                    ComposeButton(
+                    WriteNoteButton(
                         onPost = home::compose,
                         onThread = home::composeThread,
                         modifier = Modifier
-                            .align(Alignment.BottomEnd)
+                            .align(Alignment.BottomCenter)
                             .graphicsLayer { translationY = bars.hidden * bars.bottomHeight }
                             .padding(bottom = with(LocalDensity.current) { bars.bottomHeight.toDp() }),
                     )
@@ -216,13 +218,12 @@ internal fun ShellAvatar(me: EchoProfile?, url: String?, onClick: () -> Unit) {
     )
 }
 
-/** The Echo mark, centred in the Home top bar. */
+/** The Echo mark, in the serif, centred in the Home top bar. */
 @Composable
 internal fun EchoMark(modifier: Modifier = Modifier) {
     Text(
         text = ECHO_TITLE,
-        style = MaterialTheme.typography.titleLarge,
-        fontWeight = FontWeight.Black,
+        style = UsEchoType.title,
         color = UsTheme.extended.textPrimary,
         modifier = modifier.semantics { contentDescription = ECHO_TITLE }.testTag("echo_logo"),
     )
@@ -291,36 +292,38 @@ private fun BarItem(icon: ImageVector, label: String, active: Boolean, badge: In
 }
 
 /**
- * X's floating compose button: a tap writes a post; a long press opens
- * "Post" and "Thread" above it.
+ * Echo's "Write a note": a centred ember pill with the feather, above the
+ * bottom bar (echo-look-v3), in place of X's floating button. A tap writes a
+ * note; a long press offers "Note" and "Thread" above it.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun ComposeButton(onPost: () -> Unit, onThread: () -> Unit, modifier: Modifier = Modifier) {
+private fun WriteNoteButton(onPost: () -> Unit, onThread: () -> Unit, modifier: Modifier = Modifier) {
     var open by rememberSaveable { mutableStateOf(false) }
+    val echo = UsTheme.extended.echo
     Column(
         modifier = modifier.padding(UsTheme.spacing.xxl),
-        horizontalAlignment = Alignment.End,
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
     ) {
         AnimatedVisibility(visible = open, enter = fadeIn(), exit = fadeOut()) {
-            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.l)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
                 MiniAction("Thread", UsIcons.Type, "thread") {
                     open = false
                     onThread()
                 }
-                MiniAction("Post", UsIcons.SquarePen, "post") {
+                MiniAction("Note", UsIcons.Feather, "post") {
                     open = false
                     onPost()
                 }
             }
         }
-        Box(
+        val shape = RoundedCornerShape(UsTheme.radii.full)
+        Row(
             modifier = Modifier
-                .size(FAB)
-                .shadow(FAB_ELEVATION, CircleShape)
-                .clip(CircleShape)
-                .background(UsTheme.extended.accent)
+                .shadow(PILL_ELEVATION, shape)
+                .clip(shape)
+                .background(echo.fill)
                 .combinedClickable(
                     interactionSource = remember { MutableInteractionSource() },
                     indication = androidx.compose.material3.ripple(),
@@ -329,14 +332,23 @@ private fun ComposeButton(onPost: () -> Unit, onThread: () -> Unit, modifier: Mo
                     },
                     onLongClick = { open = !open },
                 )
-                .semantics { contentDescription = "Post" }
+                .padding(horizontal = UsTheme.spacing.xxxxl, vertical = UsTheme.spacing.l)
+                .semantics { contentDescription = WRITE_A_NOTE }
                 .testTag("echo_compose"),
-            contentAlignment = Alignment.Center,
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
         ) {
             Icon(
-                if (open) UsIcons.Close else UsIcons.Create,
+                if (open) UsIcons.Close else UsIcons.Feather,
                 contentDescription = null,
-                tint = UsTheme.extended.onAccent,
+                tint = echo.onFill,
+                modifier = Modifier.size(PILL_ICON),
+            )
+            Text(
+                text = WRITE_A_NOTE,
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = echo.onFill,
             )
         }
     }
@@ -344,26 +356,26 @@ private fun ComposeButton(onPost: () -> Unit, onThread: () -> Unit, modifier: Mo
 
 @Composable
 private fun MiniAction(label: String, icon: ImageVector, tag: String, onClick: () -> Unit) {
+    val shape = RoundedCornerShape(UsTheme.radii.full)
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.l),
-        modifier = Modifier.clickable(onClick = onClick).testTag("echo_compose:$tag"),
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+        modifier = Modifier
+            .shadow(PILL_ELEVATION, shape)
+            .clip(shape)
+            .background(UsTheme.extended.bgCardSolid)
+            .border(1.dp, UsTheme.extended.borderMedium, shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.s)
+            .testTag("echo_compose:$tag"),
     ) {
+        Icon(icon, contentDescription = null, tint = UsTheme.extended.echo.text, modifier = Modifier.size(PILL_ICON))
         Text(
             text = label,
-            style = MaterialTheme.typography.titleSmall,
+            style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.Bold,
             color = UsTheme.extended.textPrimary,
-            modifier = Modifier
-                .background(UsTheme.extended.bgCardSolid, RoundedCornerShape(UsTheme.radii.full))
-                .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.xs),
         )
-        Box(
-            modifier = Modifier.size(MINI_FAB).clip(CircleShape).background(UsTheme.extended.bgCardSolid),
-            contentAlignment = Alignment.Center,
-        ) {
-            Icon(icon, contentDescription = null, tint = UsTheme.extended.accent)
-        }
     }
 }
 
@@ -419,7 +431,7 @@ private fun EchoDrawer(me: EchoProfile?, avatarUrl: String?, destinations: EchoD
                 go(destinations.onGetPremium)
             )
         }
-        DrawerRow(UsIcons.BookmarkOutline, "Bookmarks", "bookmarks", go(destinations.onOpenBookmarks))
+        DrawerRow(UsIcons.BookmarkOutline, "Saved", "bookmarks", go(destinations.onOpenBookmarks))
         DrawerRow(UsIcons.Clock, "Scheduled", "scheduled", go(destinations.onOpenScheduled))
         DrawerRow(UsIcons.Settings, "Settings", "settings", go(destinations.onOpenSettings))
         HorizontalDivider(color = UsTheme.extended.borderSubtle)
@@ -470,6 +482,6 @@ private const val MAX_BADGE = 99
 private val BAR_HEIGHT = 52.dp
 private val ICON = 24.dp
 private val ICON_ACTIVE = 26.dp
-private val FAB = 56.dp
-private val MINI_FAB = 44.dp
-private val FAB_ELEVATION = 6.dp
+const val WRITE_A_NOTE = "Write a note"
+private val PILL_ICON = 18.dp
+private val PILL_ELEVATION = 4.dp

@@ -101,6 +101,30 @@ class EchoNoteActions(
 
     val viewerId: String get() = deps.people.viewerId
 
+    /** The first replies of the cards on screen, for their reply bubbles (read lazily, never blocking). */
+    val replyPreviews = ReplyPreviewStore(scope) { id -> repository.replyPreview(id, ReplyPreviewStore.LIMIT) }
+
+    private val _follows = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+
+    /** Whether the viewer follows each author asked about with [readFollow]: the note page's Follow pill. */
+    val follows: StateFlow<Map<String, Boolean>> = _follows.asStateFlow()
+
+    /** Reads whether the viewer follows [authorId], once; never for the viewer's own notes. */
+    fun readFollow(authorId: String) {
+        if (authorId.isBlank() || authorId == viewerId) return
+        if (viewerId.isBlank() || authorId in _follows.value) return
+        scope.launch {
+            val follows = (deps.people.follows(authorId) as? AppResult.Success)?.data ?: return@launch
+            _follows.update { it + (authorId to follows) }
+        }
+    }
+
+    /** The Follow pill: Follow or Unfollow, by what [readFollow] read. */
+    fun toggleFollowAuthor(note: Note) {
+        val follows = _follows.value[note.authorId] ?: return
+        toggleFollow(note, follows)
+    }
+
     // ── heart, repost, bookmark, vote ─────────────────────────────────
 
     fun toggleLike(note: Note) {
@@ -248,7 +272,10 @@ class EchoNoteActions(
         val handle = note.author?.handle?.ifBlank { null } ?: "them"
         scope.launch {
             when (val result = deps.people.setFollowing(note.authorId, !follows)) {
-                is AppResult.Success -> say(if (follows) "You unfollowed $handle" else "You followed $handle")
+                is AppResult.Success -> {
+                    _follows.update { it + (note.authorId to !follows) }
+                    say(if (follows) "You unfollowed $handle" else "You followed $handle")
+                }
                 is AppResult.Failure -> say(echoErrorMessage(result.error))
             }
         }

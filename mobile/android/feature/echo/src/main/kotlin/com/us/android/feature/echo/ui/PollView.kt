@@ -33,7 +33,7 @@ import com.us.android.feature.echo.data.pollShowsResults
 import java.time.Instant
 
 /**
- * A note's poll, X's way: before voting, one outlined button per choice;
+ * A note's poll inside its card: before voting, one outlined pill per choice;
  * after voting (or once closed, or for the author) a bar per choice with its
  * share, the viewer's own choice ticked and the leader in bold. A count the
  * server withheld is never drawn.
@@ -57,7 +57,7 @@ fun PollView(
         poll.options.forEach { option ->
             if (results) {
                 val percent = pollPercent(option, poll.totalVotes)
-                val shape = RoundedCornerShape(UsTheme.radii.small)
+                val shape = RoundedCornerShape(UsTheme.radii.medium)
                 Box(modifier = Modifier.fillMaxWidth().height(ROW_HEIGHT).testTag("echo_poll_option:${option.index}")) {
                     Box(
                         modifier = Modifier
@@ -66,7 +66,7 @@ fun PollView(
                             .clip(shape)
                             .background(
                                 if (option.index == leader) {
-                                    UsTheme.extended.accentOutline
+                                    UsTheme.extended.echo.tint
                                 } else {
                                     UsTheme.extended.fillSubtle
                                 },
@@ -110,11 +110,15 @@ fun PollView(
                     text = option.label,
                     style = MaterialTheme.typography.bodyMedium,
                     fontWeight = FontWeight.Bold,
-                    color = if (canVote) UsTheme.extended.accent else UsTheme.extended.textTertiary,
+                    color = if (canVote) UsTheme.extended.echo.text else UsTheme.extended.textTertiary,
                     modifier = Modifier
                         .fillMaxWidth()
                         .clip(shape)
-                        .border(1.dp, if (canVote) UsTheme.extended.accent else UsTheme.extended.borderMedium, shape)
+                        .border(
+                            1.dp,
+                            if (canVote) UsTheme.extended.echo.border else UsTheme.extended.borderMedium,
+                            shape,
+                        )
                         .clickable(enabled = canVote) { onVote?.invoke(option.index) }
                         .padding(vertical = UsTheme.spacing.m, horizontal = UsTheme.spacing.l)
                         .testTag("echo_poll_vote:${option.index}"),

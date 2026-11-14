@@ -9,7 +9,7 @@ data class NoteCallbacks(
     val onOpen: (Note) -> Unit,
     val onOpenAuthor: (userId: String) -> Unit,
     val onReply: (Note) -> Unit,
-    /** The repost button: X opens a sheet (Repost / Undo repost, Quote). */
+    /** The "Echo it" pill: opens the sheet (Re-echo / Undo re-echo, Quote). */
     val onRepost: (Note) -> Unit,
     val onQuote: (Note) -> Unit,
     val onLike: (Note) -> Unit,
@@ -22,6 +22,8 @@ data class NoteCallbacks(
     val onVote: ((Note, Int) -> Unit)? = null,
     /** Who is looking: a poll's author sees results, never the vote buttons. */
     val viewerId: String = "",
+    /** The cards' reply bubbles, read as they come on screen; null draws none. */
+    val replyPreviews: ReplyPreviewStore? = null,
 )
 
 /**
@@ -49,5 +51,6 @@ fun rememberNoteCallbacks(
         onBookmark = actions::toggleBookmark,
         onVote = actions::vote,
         viewerId = actions.viewerId,
+        replyPreviews = actions.replyPreviews,
     )
 }

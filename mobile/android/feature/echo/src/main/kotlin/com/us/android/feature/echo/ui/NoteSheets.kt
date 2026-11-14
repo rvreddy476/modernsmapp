@@ -121,22 +121,22 @@ fun NoteActionsHost(actions: EchoNoteActions, destinations: EchoDestinations, on
     EchoMessageHost(message = message, onDismiss = actions::messageShown)
 }
 
-/** X's repost sheet: Repost (or Undo repost) and Quote. */
+/** The "Echo it" menu: Re-echo (the plain repost, or Undo re-echo) and Quote. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun RepostSheet(note: Note, onRepost: () -> Unit, onQuote: () -> Unit, onDismiss: () -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = UsTheme.extended.bgSheet) {
         Column(modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(bottom = UsTheme.spacing.l)) {
-            SheetRow(UsIcons.Repost, if (note.reposted) "Undo repost" else "Repost", "repost", onClick = onRepost)
+            SheetRow(UsIcons.Repost, if (note.reposted) UNDO_RE_ECHO else "Re-echo", "repost", onClick = onRepost)
             SheetRow(UsIcons.Pencil, "Quote", "quote", onClick = onQuote)
         }
     }
 }
 
 /**
- * X's `···` menu. Someone else's post: Not interested, Follow / Unfollow,
- * Mute, Block, Copy link, Report. The viewer's own: Edit (30 minutes),
- * Delete, Copy link.
+ * A card's More menu. Every note: Save (the bookmark), Share, Copy link.
+ * Someone else's: Not interested, Follow / Unfollow, Mute, Block, Report.
+ * The viewer's own: Edit (30 minutes) and Delete.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -182,15 +182,17 @@ fun NoteMenuSheet(menu: NoteMenuState, report: UsPostReportState, actions: EchoN
                     tag = "delete_confirm",
                 ) { actions.delete(note) }
                 menu.own -> {
-                    if (menu.canEdit) SheetRow(UsIcons.Pencil, "Edit post", "edit") { actions.edit(note) }
-                    SheetRow(UsIcons.Trash, "Delete post", "delete", danger = true, onClick = actions::askDelete)
+                    if (menu.canEdit) SheetRow(UsIcons.Pencil, "Edit note", "edit") { actions.edit(note) }
+                    SaveAndShareRows(note, actions)
                     SheetRow(UsIcons.Link, "Copy link", "copy_link") {
                         copy(scope, clipboard, link)
                         actions.closeMenu()
                         onCopyLink()
                     }
+                    SheetRow(UsIcons.Trash, "Delete note", "delete", danger = true, onClick = actions::askDelete)
                 }
                 else -> {
+                    SaveAndShareRows(note, actions)
                     SheetRow(UsIcons.ThumbsDown, "Not interested in this post", "not_interested") {
                         actions.notInterested(note)
                     }
@@ -214,6 +216,23 @@ fun NoteMenuSheet(menu: NoteMenuState, report: UsPostReportState, actions: EchoN
                 }
             }
         }
+    }
+}
+
+/** Save (the bookmark, on or off) and Share: on the card these live in More (echo-look-v3). */
+@Composable
+private fun SaveAndShareRows(note: Note, actions: EchoNoteActions) {
+    SheetRow(
+        if (note.bookmarked) UsIcons.BookmarkFilled else UsIcons.BookmarkOutline,
+        if (note.bookmarked) "Remove from saved" else "Save",
+        "save",
+    ) {
+        actions.closeMenu()
+        actions.toggleBookmark(note)
+    }
+    SheetRow(UsIcons.Share, "Share", "share") {
+        actions.closeMenu()
+        actions.openShare(note)
     }
 }
 

@@ -35,6 +35,8 @@ import kotlin.math.absoluteValue
 
 /** The sizes the product actually uses. A free-form Dp invites one-off sizes. */
 enum class UsAvatarSize(val diameter: Dp, val initialsSize: TextUnit) {
+    /** A signature beside a name: Echo's note cards and reply bubbles (look v3). */
+    Tiny(20.dp, UsTypeScale.xs2.size),
     Small(32.dp, UsTypeScale.sm.size),
 
     /** Momentum's feed-card header and activity rows. */

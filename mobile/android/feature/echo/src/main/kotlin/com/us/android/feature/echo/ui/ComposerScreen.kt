@@ -11,13 +11,12 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -26,9 +25,6 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -46,6 +42,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -64,6 +61,7 @@ import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsMessageType
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.icon.UsIcons
+import com.us.android.core.designsystem.theme.UsEchoType
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.echo.data.EchoPollRules
@@ -75,9 +73,10 @@ import com.us.android.feature.echo.data.scheduleLabel
 import java.time.Instant
 
 /**
- * X's full-screen composer: Cancel and Post on top; one post, or a thread
- * with "+"; a reply, a quote (the quoted post under the text) or an edit.
- * The toolbar adds photos, a poll or a time to send; the ring counts to 500.
+ * Echo's composer (echo-look-v3): Cancel and a filled "Post note" pill on
+ * top; the text area is a serif card, and a thread stacks its parts as cards;
+ * a reply (its parent shown above), a quote or an edit. Labelled pills add
+ * photos, a GIF, a poll or a later time; "N left" counts to 500.
  * A viewer the eligibility read refuses sees why (and Get Premium when
  * Premium is the answer and `:app` allows it), and nothing can be sent.
  */
@@ -213,6 +212,7 @@ private fun ComposerTopBar(
     onCancel: () -> Unit,
     onSubmit: () -> Unit,
 ) {
+    val echo = UsTheme.extended.echo
     Row(
         modifier = Modifier.fillMaxWidth().padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.s),
         verticalAlignment = Alignment.CenterVertically,
@@ -227,8 +227,8 @@ private fun ComposerTopBar(
                 enabled = enabled,
                 shape = RoundedCornerShape(UsTheme.radii.full),
                 colors = ButtonDefaults.buttonColors(
-                    containerColor = UsTheme.extended.accent,
-                    contentColor = UsTheme.extended.onAccent,
+                    containerColor = echo.fill,
+                    contentColor = echo.onFill,
                     disabledContainerColor = UsTheme.extended.bgCardHover,
                     disabledContentColor = UsTheme.extended.textDim,
                 ),
@@ -237,7 +237,7 @@ private fun ComposerTopBar(
                 if (submitting) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(SPINNER),
-                        color = UsTheme.extended.onAccent,
+                        color = echo.onFill,
                         strokeWidth = 2.dp
                     )
                 } else {
@@ -276,8 +276,13 @@ private fun BlockedView(
     }
 }
 
+/**
+ * The draft: in reply mode the parent note as a small card above; then each
+ * entry as a serif card (a thread's parts stack as cards), the first carrying
+ * who can reply; the poll under the first; the quoted note; the schedule.
+ */
 @Composable
-@Suppress("LongMethod", "LongParameterList") // the entries, poll, schedule line, quote and policy chip
+@Suppress("LongMethod", "LongParameterList") // the entries, poll, schedule line, quote and policy pill
 private fun ComposerBody(
     state: ComposerUiState,
     urls: Map<String, String>,
@@ -286,59 +291,36 @@ private fun ComposerBody(
     onPolicy: () -> Unit,
     onSchedule: () -> Unit,
 ) {
-    LazyColumn(modifier = Modifier.fillMaxSize().testTag("echo_composer")) {
-        state.scheduledAt?.let { at ->
-            item(key = "schedule") {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .clickable(onClick = onSchedule)
-                        .padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.m)
-                        .testTag("echo_composer_schedule_line"),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Icon(
-                        UsIcons.Clock,
-                        contentDescription = null,
-                        tint = UsTheme.extended.textTertiary,
-                        modifier = Modifier.size(SMALL_ICON)
-                    )
+    LazyColumn(
+        modifier = Modifier.fillMaxSize().testTag("echo_composer"),
+        contentPadding = PaddingValues(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.m),
+        verticalArrangement = Arrangement.spacedBy(CARD_GAP),
+    ) {
+        state.target?.takeIf { state.mode == ComposeMode.REPLY }?.let { parent ->
+            item(key = "replying") {
+                Column {
+                    val who = parent.author?.handle?.takeIf { it.isNotBlank() } ?: parent.author?.name.orEmpty()
                     Text(
-                        text = scheduleLabel(at),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = UsTheme.extended.textTertiary,
-                        modifier = Modifier.weight(1f).padding(start = UsTheme.spacing.s),
+                        text = "Replying to $who",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = UsTheme.extended.echo.text,
+                        modifier = Modifier.padding(bottom = UsTheme.spacing.s),
                     )
-                    Icon(
-                        UsIcons.Close,
-                        contentDescription = "Don't schedule",
-                        tint = UsTheme.extended.textTertiary,
-                        modifier = Modifier.clickable(
-                            onClick = viewModel::clearSchedule
-                        ).size(SMALL_ICON).testTag("echo_composer_unschedule"),
-                    )
+                    QuotedNote(note = parent, mediaUrls = urls, now = Instant.now(), onOpen = {})
                 }
             }
         }
-        state.target?.takeIf { state.mode == ComposeMode.REPLY }?.let { parent ->
-            item(key = "replying") {
-                val who = parent.author?.handle?.takeIf { it.isNotBlank() } ?: parent.author?.name.orEmpty()
-                Text(
-                    text = "Replying to $who",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = UsTheme.extended.textTertiary,
-                    modifier = Modifier.padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.m),
-                )
-            }
-        }
         itemsIndexed(state.entries, key = { _, e -> e.key }) { index, entry ->
-            EntryEditor(
+            EntryCard(
                 index = index,
                 entry = entry,
                 total = state.entries.size,
+                mode = state.mode,
                 locked = state.textLocked,
                 canAddMedia = state.canAddMedia,
                 urls = urls,
+                policy = state.replyPolicy.takeIf { index == 0 && state.showsReplyPolicy },
+                onPolicy = onPolicy,
                 onText = { viewModel.setText(index, it) },
                 onRemove = { viewModel.removeEntry(index) },
                 onPick = { onPick(index) },
@@ -359,38 +341,40 @@ private fun ComposerBody(
         }
         state.target?.takeIf { state.mode == ComposeMode.QUOTE }?.let { quoted ->
             item(key = "quoted") {
-                QuotedNote(
-                    note = quoted,
-                    mediaUrls = urls,
-                    now = Instant.now(),
-                    onOpen = {},
-                    modifier = Modifier.padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.m),
-                )
+                QuotedNote(note = quoted, mediaUrls = urls, now = Instant.now(), onOpen = {})
             }
         }
-        if (state.showsReplyPolicy) {
-            item(key = "policy") {
+        state.scheduledAt?.let { at ->
+            item(key = "schedule") {
                 Row(
                     modifier = Modifier
-                        .padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.l)
+                        .fillMaxWidth()
                         .clip(RoundedCornerShape(UsTheme.radii.full))
-                        .clickable(onClick = onPolicy)
-                        .padding(horizontal = UsTheme.spacing.m, vertical = UsTheme.spacing.xs)
-                        .testTag("echo_reply_policy_chip"),
+                        .background(UsTheme.extended.echo.tint)
+                        .clickable(onClick = onSchedule)
+                        .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.s)
+                        .testTag("echo_composer_schedule_line"),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Icon(
-                        policyIcon(state.replyPolicy),
+                        UsIcons.Clock,
                         contentDescription = null,
-                        tint = UsTheme.extended.accent,
+                        tint = UsTheme.extended.echo.text,
                         modifier = Modifier.size(SMALL_ICON)
                     )
                     Text(
-                        text = policyChip(state.replyPolicy),
-                        style = MaterialTheme.typography.labelLarge,
-                        fontWeight = FontWeight.Bold,
-                        color = UsTheme.extended.accent,
-                        modifier = Modifier.padding(start = UsTheme.spacing.s),
+                        text = scheduleLabel(at),
+                        style = MaterialTheme.typography.labelMedium,
+                        color = UsTheme.extended.echo.text,
+                        modifier = Modifier.weight(1f).padding(start = UsTheme.spacing.s),
+                    )
+                    Icon(
+                        UsIcons.Close,
+                        contentDescription = "Don't schedule",
+                        tint = UsTheme.extended.echo.text,
+                        modifier = Modifier.clickable(
+                            onClick = viewModel::clearSchedule
+                        ).size(SMALL_ICON).testTag("echo_composer_unschedule"),
                     )
                 }
             }
@@ -403,14 +387,14 @@ private fun ComposerBody(
                     text = it,
                     style = MaterialTheme.typography.bodySmall,
                     color = UsTheme.extended.statusDanger,
-                    modifier = Modifier.padding(horizontal = UsTheme.spacing.xxl).testTag("echo_composer_problem"),
+                    modifier = Modifier.padding(horizontal = UsTheme.spacing.s).testTag("echo_composer_problem"),
                 )
             }
         }
     }
 }
 
-/** X's poll card: 2 to 4 choices of up to 25 characters, the length, Remove poll. */
+/** The poll card: 2 to 4 choices of up to 25 characters, the length, Remove poll. */
 @Composable
 @Suppress("LongParameterList", "LongMethod")
 private fun PollEditorView(
@@ -421,95 +405,92 @@ private fun PollEditorView(
     onLength: (Int) -> Unit,
     onRemove: () -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.m)
-            .border(BorderStroke(1.dp, UsTheme.extended.borderSubtle), RoundedCornerShape(UsTheme.radii.medium))
-            .padding(UsTheme.spacing.l)
-            .testTag("echo_poll_editor"),
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
-    ) {
-        poll.options.forEachIndexed { index, option ->
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    modifier = Modifier
-                        .weight(1f)
-                        .border(
-                            BorderStroke(1.dp, UsTheme.extended.borderSubtle),
-                            RoundedCornerShape(UsTheme.radii.small)
-                        )
-                        .padding(UsTheme.spacing.m),
-                ) {
-                    if (option.isEmpty()) {
-                        Text(
-                            text = "Choice ${index + 1}" +
-                                if (index >= EchoPollRules.MIN_OPTIONS) " (optional)" else "",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = UsTheme.extended.textDim,
-                        )
-                    }
-                    BasicTextField(
-                        value = option,
-                        onValueChange = { onOption(index, it) },
-                        singleLine = true,
-                        textStyle = MaterialTheme.typography.bodyMedium.copy(color = UsTheme.extended.textPrimary),
-                        cursorBrush = SolidColor(UsTheme.extended.accent),
-                        modifier = Modifier.fillMaxWidth().testTag("echo_poll_option:$index"),
-                    )
-                }
-                Text(
-                    text = "${option.length}/${EchoPollRules.MAX_OPTION_CHARS}",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = if (option.length > EchoPollRules.MAX_OPTION_CHARS) {
-                        UsTheme.extended.statusDanger
-                    } else {
-                        UsTheme.extended.textTertiary
-                    },
-                    modifier = Modifier.padding(start = UsTheme.spacing.s),
-                )
-                if (poll.options.size > EchoPollRules.MIN_OPTIONS) {
-                    IconButton(
-                        onClick = { onRemoveOption(index) },
-                        modifier = Modifier.testTag("echo_poll_remove_option:$index")
+    val echo = UsTheme.extended.echo
+    EchoCard(modifier = Modifier.padding(top = CARD_GAP).testTag("echo_poll_editor")) {
+        Column(verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s)) {
+            poll.options.forEachIndexed { index, option ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .border(
+                                BorderStroke(1.dp, UsTheme.extended.borderMedium),
+                                RoundedCornerShape(UsTheme.radii.medium)
+                            )
+                            .padding(UsTheme.spacing.m),
                     ) {
-                        Icon(UsIcons.Close, contentDescription = "Remove choice", tint = UsTheme.extended.textTertiary)
+                        if (option.isEmpty()) {
+                            Text(
+                                text = "Choice ${index + 1}" +
+                                    if (index >= EchoPollRules.MIN_OPTIONS) " (optional)" else "",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = UsTheme.extended.textDim,
+                            )
+                        }
+                        BasicTextField(
+                            value = option,
+                            onValueChange = { onOption(index, it) },
+                            singleLine = true,
+                            textStyle = MaterialTheme.typography.bodyMedium.copy(color = UsTheme.extended.textPrimary),
+                            cursorBrush = SolidColor(echo.text),
+                            modifier = Modifier.fillMaxWidth().testTag("echo_poll_option:$index"),
+                        )
+                    }
+                    Text(
+                        text = "${option.length}/${EchoPollRules.MAX_OPTION_CHARS}",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = if (option.length > EchoPollRules.MAX_OPTION_CHARS) {
+                            UsTheme.extended.statusDanger
+                        } else {
+                            UsTheme.extended.textTertiary
+                        },
+                        modifier = Modifier.padding(start = UsTheme.spacing.s),
+                    )
+                    if (poll.options.size > EchoPollRules.MIN_OPTIONS) {
+                        IconButton(
+                            onClick = { onRemoveOption(index) },
+                            modifier = Modifier.testTag("echo_poll_remove_option:$index")
+                        ) {
+                            Icon(
+                                UsIcons.Close,
+                                contentDescription = "Remove choice",
+                                tint = UsTheme.extended.textTertiary,
+                            )
+                        }
                     }
                 }
             }
-        }
-        if (poll.canAddOption) {
-            TextButton(onClick = onAdd, modifier = Modifier.testTag("echo_poll_add_option")) {
-                Text("Add a choice", color = UsTheme.extended.accent)
+            if (poll.canAddOption) {
+                TextButton(onClick = onAdd, modifier = Modifier.testTag("echo_poll_add_option")) {
+                    Text("Add a choice", color = echo.text)
+                }
             }
-        }
-        Text("Poll length", style = MaterialTheme.typography.labelLarge, color = UsTheme.extended.textSecondary)
-        FlowRow(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s)) {
-            EchoPollRules.LENGTHS.forEach { minutes ->
-                FilterChip(
-                    selected = poll.minutes == minutes,
-                    onClick = { onLength(minutes) },
-                    label = { Text(pollLengthLabel(minutes)) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = UsTheme.extended.accent,
-                        selectedLabelColor = UsTheme.extended.onAccent,
-                        labelColor = UsTheme.extended.textSecondary,
-                    ),
-                    modifier = Modifier.testTag("echo_poll_length:$minutes"),
-                )
+            Text("Poll length", style = MaterialTheme.typography.labelLarge, color = UsTheme.extended.textSecondary)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+                verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
+            ) {
+                EchoPollRules.LENGTHS.forEach { minutes ->
+                    EchoPill(
+                        icon = null,
+                        label = pollLengthLabel(minutes),
+                        description = pollLengthLabel(minutes),
+                        lit = poll.minutes == minutes,
+                        tag = "echo_poll_length:$minutes",
+                    ) { onLength(minutes) }
+                }
             }
-        }
-        HorizontalDivider(color = UsTheme.extended.borderSubtle)
-        TextButton(onClick = onRemove, modifier = Modifier.fillMaxWidth().testTag("echo_poll_remove")) {
-            Text("Remove poll", color = UsTheme.extended.statusDanger)
+            TextButton(onClick = onRemove, modifier = Modifier.fillMaxWidth().testTag("echo_poll_remove")) {
+                Text("Remove poll", color = UsTheme.extended.statusDanger)
+            }
         }
     }
 }
 
 /**
- * X's order: photos, GIF, poll, schedule; then the ring and the thread's "+".
- * GIF shows only when this build has a Giphy key, and only while the entry
- * has no media (a GIF stands alone).
+ * The tools as labelled pills: Photo, GIF, Poll, Later (schedule); then Add
+ * to thread and "N left". GIF shows only when this build has a Giphy key,
+ * and only while the entry has no media (a GIF stands alone).
  */
 @Composable
 @Suppress("LongParameterList")
@@ -521,103 +502,88 @@ private fun ComposerToolbar(
     onSchedule: () -> Unit,
     onAddEntry: () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxWidth().background(UsTheme.extended.bgCanvas)) {
-        HorizontalDivider(color = UsTheme.extended.borderSubtle)
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = UsTheme.spacing.m),
-            verticalAlignment = Alignment.CenterVertically,
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(UsTheme.extended.bgCanvas)
+            .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.m),
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+    ) {
+        FlowRow(
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+            verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
         ) {
-            ToolButton(UsIcons.ImagePlus, "Add photos", "echo_tool_photos", state.canAddMedia, onPhotos)
+            ToolPill(UsIcons.ImagePlus, "Photo", "Add photos", "echo_tool_photos", state.canAddMedia, onPhotos)
             if (EchoGiphy.available) {
-                GifToolButton(enabled = state.canAddMedia && state.entries.last().media.isEmpty(), onClick = onGif)
-            }
-            ToolButton(UsIcons.Poll, "Add a poll", "echo_tool_poll", state.canAddPoll && state.poll == null, onPoll)
-            ToolButton(UsIcons.Clock, "Schedule", "echo_tool_schedule", state.canSchedule, onSchedule)
-            Box(modifier = Modifier.weight(1f))
-            val last = state.entries.last()
-            CharacterRing(remaining = last.remaining)
-            if (state.canAddEntry) {
-                Box(
-                    modifier = Modifier
-                        .padding(start = UsTheme.spacing.m)
-                        .width(1.dp)
-                        .height(RING)
-                        .background(UsTheme.extended.borderSubtle),
+                ToolPill(
+                    icon = null,
+                    label = "GIF",
+                    description = "Add a GIF",
+                    tag = "echo_tool_gif",
+                    enabled = state.canAddMedia && state.entries.last().media.isEmpty(),
+                    onClick = onGif,
                 )
-                ToolButton(UsIcons.Create, "Add to thread", "echo_add_entry", enabled = true, onClick = onAddEntry)
             }
+            val canPoll = state.canAddPoll && state.poll == null
+            ToolPill(UsIcons.Poll, "Poll", "Add a poll", "echo_tool_poll", canPoll, onPoll)
+            ToolPill(UsIcons.Clock, "Later", "Schedule", "echo_tool_schedule", state.canSchedule, onSchedule)
+        }
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (state.canAddEntry) {
+                ToolPill(UsIcons.Create, "Add to thread", "Add to thread", "echo_add_entry", true, onAddEntry)
+            }
+            Box(modifier = Modifier.weight(1f))
+            CharactersLeft(remaining = state.entries.last().remaining)
         }
     }
 }
 
-/** X's GIF button: the word in a rounded box, tinted like the other tools. */
 @Composable
-private fun GifToolButton(enabled: Boolean, onClick: () -> Unit) {
-    val tint = if (enabled) UsTheme.extended.accent else UsTheme.extended.textDim
-    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.testTag("echo_tool_gif")) {
-        Text(
-            text = "GIF",
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Black,
-            color = tint,
-            modifier = Modifier
-                .semantics { contentDescription = "Add a GIF" }
-                .border(BorderStroke(GIF_BORDER, tint), RoundedCornerShape(GIF_RADIUS))
-                .padding(horizontal = GIF_PAD_H, vertical = GIF_PAD_V),
-        )
-    }
+@Suppress("LongParameterList")
+private fun ToolPill(
+    icon: ImageVector?,
+    label: String,
+    description: String,
+    tag: String,
+    enabled: Boolean,
+    onClick: () -> Unit,
+) {
+    EchoPill(
+        icon = icon,
+        label = label,
+        description = description,
+        tag = tag,
+        modifier = Modifier.alpha(if (enabled) 1f else DISABLED_ALPHA),
+        onClick = if (enabled) onClick else null,
+    )
 }
 
+/** "N left" toward 500: amber in the last 20, red past the limit. */
 @Composable
-private fun ToolButton(icon: ImageVector, label: String, tag: String, enabled: Boolean, onClick: () -> Unit) {
-    IconButton(onClick = onClick, enabled = enabled, modifier = Modifier.testTag(tag)) {
-        Icon(
-            icon,
-            contentDescription = label,
-            tint = if (enabled) UsTheme.extended.accent else UsTheme.extended.textDim
-        )
-    }
-}
-
-/** X's ring: fills toward 500; the number shows in the last 20, red past the limit. */
-@Composable
-internal fun CharacterRing(remaining: Int) {
-    val used = (EchoRules.MAX_CHARS - remaining).coerceAtLeast(0)
-    val progress = (used.toFloat() / EchoRules.MAX_CHARS).coerceIn(0f, 1f)
+internal fun CharactersLeft(remaining: Int, modifier: Modifier = Modifier) {
     val color = when {
         remaining < 0 -> UsTheme.extended.statusDanger
         remaining <= EchoRules.WARN_AT_REMAINING -> UsTheme.extended.statusWarning
-        else -> UsTheme.extended.accent
+        else -> UsTheme.extended.textTertiary
     }
-    Box(
-        modifier = Modifier
-            .size(RING)
+    Text(
+        text = charactersLeft(remaining),
+        style = MaterialTheme.typography.labelMedium,
+        color = color,
+        modifier = modifier
             .semantics { contentDescription = "$remaining characters left" }
             .testTag("echo_ring"),
-        contentAlignment = Alignment.Center,
-    ) {
-        CircularProgressIndicator(
-            progress = { progress },
-            modifier = Modifier.size(RING),
-            color = color,
-            trackColor = UsTheme.extended.borderSubtle,
-            strokeWidth = 2.dp,
-        )
-        if (remaining <= EchoRules.WARN_AT_REMAINING) {
-            Text(
-                text = remaining.toString(),
-                style = MaterialTheme.typography.labelSmall,
-                color = color,
-                modifier = Modifier.testTag("echo_ring_count"),
-            )
-        }
-    }
+    )
 }
+
+/** "500 left", "3 left", "12 over". */
+internal fun charactersLeft(remaining: Int): String =
+    if (remaining < 0) "${-remaining} over" else "$remaining left"
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ReplyPolicySheet(chosen: ReplyPolicy, onPick: (ReplyPolicy) -> Unit, onDismiss: () -> Unit) {
-    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = UsTheme.extended.bgCanvas) {
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = UsTheme.extended.bgSheet) {
         Column(modifier = Modifier.padding(bottom = UsTheme.spacing.xxl).testTag("echo_reply_policy_sheet")) {
             Text(
                 text = "Who can reply?",
@@ -627,7 +593,7 @@ private fun ReplyPolicySheet(chosen: ReplyPolicy, onPick: (ReplyPolicy) -> Unit,
                 modifier = Modifier.padding(horizontal = UsTheme.spacing.xxl),
             )
             Text(
-                text = "Pick who can reply to this post. Anyone mentioned can always reply.",
+                text = "Pick who can reply to this note. Anyone mentioned can always reply.",
                 style = MaterialTheme.typography.bodySmall,
                 color = UsTheme.extended.textTertiary,
                 modifier = Modifier.padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.s),
@@ -641,7 +607,7 @@ private fun ReplyPolicySheet(chosen: ReplyPolicy, onPick: (ReplyPolicy) -> Unit,
                         .testTag("echo_reply_policy:${policy.wire}"),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Icon(policyIcon(policy), contentDescription = null, tint = UsTheme.extended.accent)
+                    Icon(policyIcon(policy), contentDescription = null, tint = UsTheme.extended.echo.text)
                     Text(
                         text = policy.label,
                         style = MaterialTheme.typography.bodyLarge,
@@ -649,7 +615,7 @@ private fun ReplyPolicySheet(chosen: ReplyPolicy, onPick: (ReplyPolicy) -> Unit,
                         modifier = Modifier.weight(1f).padding(start = UsTheme.spacing.l),
                     )
                     if (policy == chosen) {
-                        Icon(UsIcons.Check, contentDescription = "Selected", tint = UsTheme.extended.accent)
+                        Icon(UsIcons.Check, contentDescription = "Selected", tint = UsTheme.extended.echo.text)
                     }
                 }
             }
@@ -657,31 +623,59 @@ private fun ReplyPolicySheet(chosen: ReplyPolicy, onPick: (ReplyPolicy) -> Unit,
     }
 }
 
+/**
+ * One entry of the draft as a serif card: who can reply on top of the first
+ * (the existing reply-policy control), the text in the serif, its pictures,
+ * and on a thread its own Photo, Remove and "N left".
+ */
 @Composable
-@Suppress("LongParameterList")
-private fun EntryEditor(
+@Suppress("LongParameterList", "LongMethod")
+private fun EntryCard(
     index: Int,
     entry: ComposerEntry,
     total: Int,
+    mode: ComposeMode,
     locked: Boolean,
     canAddMedia: Boolean,
     urls: Map<String, String>,
+    policy: ReplyPolicy?,
+    onPolicy: () -> Unit,
     onText: (String) -> Unit,
     onRemove: () -> Unit,
     onPick: () -> Unit,
     onRemoveMedia: (String) -> Unit,
 ) {
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.m)
-            .testTag("echo_entry:$index"),
-    ) {
+    EchoCard(modifier = Modifier.testTag("echo_entry:$index"), accent = index == 0) {
+        if (policy != null || total > 1) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(bottom = UsTheme.spacing.m),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                if (total > 1) {
+                    Text(
+                        text = "${index + 1} of $total",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = UsTheme.extended.echo.text,
+                        modifier = Modifier.padding(end = UsTheme.spacing.m),
+                    )
+                }
+                Box(modifier = Modifier.weight(1f))
+                policy?.let {
+                    EchoPill(
+                        icon = policyIcon(it),
+                        label = policyChip(it),
+                        description = policyChip(it),
+                        tag = "echo_reply_policy_chip",
+                        onClick = onPolicy,
+                    )
+                }
+            }
+        }
         Box {
             if (entry.text.isEmpty()) {
                 Text(
-                    text = if (index == 0) "What's happening?" else "Add another post",
-                    style = MaterialTheme.typography.bodyLarge,
+                    text = placeholder(mode, index),
+                    style = UsEchoType.composer,
                     color = UsTheme.extended.textDim,
                 )
             }
@@ -689,8 +683,8 @@ private fun EntryEditor(
                 value = entry.text,
                 onValueChange = onText,
                 readOnly = locked,
-                textStyle = MaterialTheme.typography.bodyLarge.copy(color = UsTheme.extended.textPrimary),
-                cursorBrush = SolidColor(UsTheme.extended.accent),
+                textStyle = UsEchoType.composer.copy(color = UsTheme.extended.textPrimary),
+                cursorBrush = SolidColor(UsTheme.extended.echo.text),
                 modifier = Modifier.fillMaxWidth().testTag("echo_entry_text:$index"),
             )
         }
@@ -709,22 +703,17 @@ private fun EntryEditor(
             }
         }
         if (total > 1) {
-            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                modifier = Modifier.fillMaxWidth().padding(top = UsTheme.spacing.m),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+            ) {
                 if (canAddMedia) {
-                    IconButton(onClick = onPick, modifier = Modifier.testTag("echo_pick_media:$index")) {
-                        Icon(UsIcons.ImagePlus, contentDescription = "Add photos", tint = UsTheme.extended.accent)
-                    }
+                    EchoPill(UsIcons.ImagePlus, "Photo", "Add photos", "echo_pick_media:$index", onClick = onPick)
                 }
-                IconButton(onClick = onRemove, modifier = Modifier.testTag("echo_remove_entry:$index")) {
-                    Icon(UsIcons.Trash, contentDescription = "Remove this post", tint = UsTheme.extended.textTertiary)
-                }
+                EchoPill(UsIcons.Trash, "Remove", "Remove this note", "echo_remove_entry:$index", onClick = onRemove)
                 Box(modifier = Modifier.weight(1f))
-                Text(
-                    text = entry.remaining.toString(),
-                    style = MaterialTheme.typography.labelMedium,
-                    color = if (entry.remaining < 0) UsTheme.extended.statusDanger else UsTheme.extended.textTertiary,
-                    modifier = Modifier.testTag("echo_counter:$index"),
-                )
+                CharactersLeft(remaining = entry.remaining, modifier = Modifier.testTag("echo_counter:$index"))
             }
         }
     }
@@ -732,7 +721,7 @@ private fun EntryEditor(
 
 @Composable
 private fun StagedThumb(media: StagedMedia, url: String?, onRemove: () -> Unit) {
-    val shape = RoundedCornerShape(UsTheme.radii.small)
+    val shape = RoundedCornerShape(UsTheme.radii.medium)
     Box(modifier = Modifier.size(THUMB).clip(shape).background(UsTheme.extended.fillSubtle)) {
         AsyncImage(
             model = url ?: media.localKey,
@@ -769,6 +758,13 @@ private fun StagedThumb(media: StagedMedia, url: String?, onRemove: () -> Unit) 
     }
 }
 
+/** The empty text area's words: "What's worth saying today?", "Your reply…", "Add another note". */
+internal fun placeholder(mode: ComposeMode, index: Int): String = when {
+    index > 0 -> "Add another note"
+    mode == ComposeMode.REPLY -> "Your reply…"
+    else -> "What's worth saying today?"
+}
+
 internal fun policyChip(policy: ReplyPolicy): String = when (policy) {
     ReplyPolicy.EVERYONE -> "Everyone can reply"
     ReplyPolicy.FOLLOWING -> "Accounts you follow can reply"
@@ -782,26 +778,22 @@ private fun policyIcon(policy: ReplyPolicy): ImageVector = when (policy) {
 }
 
 internal fun titleFor(mode: ComposeMode): String = when (mode) {
-    ComposeMode.NEW -> "New post"
+    ComposeMode.NEW -> "New note"
     ComposeMode.REPLY -> "Reply"
     ComposeMode.QUOTE -> "Quote"
-    ComposeMode.EDIT -> "Edit post"
+    ComposeMode.EDIT -> "Edit note"
 }
 
 internal fun submitLabel(mode: ComposeMode, thread: Boolean): String = when {
     mode == ComposeMode.EDIT -> "Save"
     mode == ComposeMode.REPLY -> "Reply"
-    thread -> "Post all"
-    else -> "Post"
+    thread -> "Post thread"
+    else -> "Post note"
 }
 
 private const val DEFAULT_AHEAD_SECONDS = 60L * 60
+private const val DISABLED_ALPHA = 0.4f
 private val SPINNER = 18.dp
 private val THUMB = 72.dp
 private val CLOSE_ICON = 14.dp
 private val SMALL_ICON = 16.dp
-private val RING = 24.dp
-private val GIF_BORDER = 1.5.dp
-private val GIF_RADIUS = 4.dp
-private val GIF_PAD_H = 3.dp
-private val GIF_PAD_V = 1.dp

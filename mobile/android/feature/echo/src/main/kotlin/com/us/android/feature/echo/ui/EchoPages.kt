@@ -1,26 +1,21 @@
 package com.us.android.feature.echo.ui
 
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.SecondaryScrollableTabRow
-import androidx.compose.material3.SecondaryTabRow
-import androidx.compose.material3.Tab
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -30,9 +25,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -43,6 +40,8 @@ import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.component.UsTopBar
+import com.us.android.core.designsystem.icon.UsIcons
+import com.us.android.core.designsystem.theme.UsEchoType
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsEmptyState
 import com.us.android.core.ui.UsErrorState
@@ -105,7 +104,6 @@ fun EchoProfileScreen(destinations: EchoDestinations, viewModel: EchoProfileView
                                     TabStrip(
                                         labels = EchoProfileTab.entries.map { it.label },
                                         selected = state.tab.ordinal,
-                                        scrollable = true,
                                         tagPrefix = "echo_profile",
                                         onSelect = { viewModel.select(EchoProfileTab.entries[it]) },
                                     )
@@ -130,8 +128,14 @@ private fun profileEmpty(tab: EchoProfileTab): String = when (tab) {
     EchoProfileTab.MEDIA -> "No photos yet"
 }
 
+/**
+ * The profile header as an Echo card (echo-look-v3): the cover as a rounded
+ * banner of its own (never X's avatar cropped over it), then the avatar
+ * beside the name in the serif, the mark, @handle, bio, joined, the counts
+ * and Follow / Edit profile.
+ */
 @Composable
-@Suppress("LongParameterList", "LongMethod") // X's header: cover, avatar, button, names, bio, joined, counts
+@Suppress("LongParameterList", "LongMethod") // cover, avatar, button, names, bio, joined, counts
 private fun ProfileHeader(
     profile: EchoProfile,
     urls: Map<String, String>,
@@ -140,125 +144,105 @@ private fun ProfileHeader(
     onFollow: () -> Unit,
     onEditProfile: () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxWidth().testTag("echo_profile_header")) {
-        Box(modifier = Modifier.fillMaxWidth().height(COVER_HEIGHT).background(UsTheme.extended.fillSubtle)) {
-            profile.coverMediaId?.let(urls::get)?.let { url ->
-                AsyncImage(
-                    model = url,
-                    contentDescription = null,
-                    contentScale = ContentScale.Crop,
-                    modifier = Modifier.fillMaxSize()
-                )
-            }
+    EchoCard(
+        modifier = Modifier
+            .padding(start = UsTheme.spacing.l, end = UsTheme.spacing.l, top = UsTheme.spacing.m)
+            .testTag("echo_profile_header"),
+    ) {
+        profile.coverMediaId?.let(urls::get)?.let { url ->
+            AsyncImage(
+                model = url,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(COVER_HEIGHT)
+                    .clip(RoundedCornerShape(UsTheme.radii.medium))
+                    .background(UsTheme.extended.fillSubtle),
+            )
+            Spacer(modifier = Modifier.height(UsTheme.spacing.l))
         }
-        Row(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = UsTheme.spacing.xxl),
-            verticalAlignment = Alignment.Top,
-        ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
             UsAvatar(
                 name = profile.name,
                 seed = profile.userId,
                 imageUrl = profile.avatarMediaId?.let(urls::get),
-                size = UsAvatarSize.Large,
-                modifier = Modifier.offset(y = -AVATAR_LIFT),
+                size = UsAvatarSize.Chat,
             )
-            Box(
-                modifier = Modifier.weight(1f).padding(top = UsTheme.spacing.l),
-                contentAlignment = Alignment.CenterEnd
-            ) {
-                val label = when {
-                    own -> "Edit profile"
-                    profile.viewerFollows -> "Following"
-                    else -> "Follow"
+            Column(modifier = Modifier.weight(1f).padding(start = UsTheme.spacing.l)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = profile.name,
+                        style = UsEchoType.note,
+                        fontWeight = FontWeight.Bold,
+                        color = UsTheme.extended.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f, fill = false),
+                    )
+                    if (profile.mark != VerificationMark.NONE) VerificationTick(profile.mark)
                 }
-                OutlinedButton(
-                    onClick = if (own) onEditProfile else onFollow,
-                    enabled = !followBusy,
-                    border = BorderStroke(1.dp, UsTheme.extended.borderSubtle),
-                    shape = RoundedCornerShape(UsTheme.radii.full),
-                    modifier = Modifier.testTag("echo_profile_follow"),
-                ) { Text(label, fontWeight = FontWeight.Bold, color = UsTheme.extended.textPrimary) }
-            }
-        }
-        Column(modifier = Modifier.padding(horizontal = UsTheme.spacing.xxl).offset(y = -AVATAR_LIFT / 2)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
-                    text = profile.name,
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold,
-                    color = UsTheme.extended.textPrimary,
+                    text = profile.handle,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = UsTheme.extended.textTertiary
                 )
-                if (profile.mark != VerificationMark.NONE) VerificationTick(profile.mark)
             }
-            Text(
-                text = profile.handle,
-                style = MaterialTheme.typography.bodyMedium,
-                color = UsTheme.extended.textTertiary
+            val label = when {
+                own -> "Edit profile"
+                profile.viewerFollows -> "Following"
+                else -> "Follow"
+            }
+            EchoPill(
+                icon = null,
+                label = label,
+                description = label,
+                lit = !own && !profile.viewerFollows,
+                tag = "echo_profile_follow",
+                onClick = if (followBusy) null else if (own) onEditProfile else onFollow,
             )
-            if (profile.bio.isNotBlank()) {
-                Text(
-                    text = rememberEchoText(profile.bio),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = UsTheme.extended.textPrimary,
-                    modifier = Modifier.padding(top = UsTheme.spacing.m),
-                )
-            }
-            joinedLabel(profile.joinedAt).takeIf { it.isNotBlank() }?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = UsTheme.extended.textTertiary,
-                    modifier = Modifier.padding(top = UsTheme.spacing.m).testTag("echo_profile_joined"),
-                )
-            }
-            Row(
-                modifier = Modifier.padding(top = UsTheme.spacing.m),
-                horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xl),
-            ) {
-                CountLabel(count = profile.following, label = "Following")
-                CountLabel(count = profile.followers, label = if (profile.followers == 1L) "Follower" else "Followers")
-            }
+        }
+        if (profile.bio.isNotBlank()) {
+            Text(
+                text = rememberEchoText(profile.bio),
+                style = MaterialTheme.typography.bodyMedium,
+                color = UsTheme.extended.textPrimary,
+                modifier = Modifier.padding(top = UsTheme.spacing.l),
+            )
+        }
+        joinedLabel(profile.joinedAt).takeIf { it.isNotBlank() }?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.labelMedium,
+                color = UsTheme.extended.textTertiary,
+                modifier = Modifier.padding(top = UsTheme.spacing.m).testTag("echo_profile_joined"),
+            )
+        }
+        Row(
+            modifier = Modifier.padding(top = UsTheme.spacing.m),
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xl),
+        ) {
+            CountLabel(count = profile.following, label = "Following")
+            CountLabel(count = profile.followers, label = if (profile.followers == 1L) "Follower" else "Followers")
         }
     }
 }
 
-/** A row of tabs inside a list (profile, search, hashtag). */
+/** A row of tabs inside a list (profile, search, hashtag): Echo's pill tabs. */
 @Composable
 internal fun TabStrip(
     labels: List<String>,
     selected: Int,
-    scrollable: Boolean,
     tagPrefix: String,
     onSelect: (Int) -> Unit
 ) {
-    val tabs: @Composable () -> Unit = {
-        labels.forEachIndexed { index, label ->
-            Tab(
-                selected = index == selected,
-                onClick = { onSelect(index) },
-                text = { Text(label, fontWeight = if (index == selected) FontWeight.Bold else FontWeight.Medium) },
-                selectedContentColor = UsTheme.extended.textPrimary,
-                unselectedContentColor = UsTheme.extended.textTertiary,
-                modifier = Modifier.testTag("${tagPrefix}_tab:$index"),
-            )
-        }
-    }
-    if (scrollable) {
-        SecondaryScrollableTabRow(
-            selectedTabIndex = selected,
-            containerColor = UsTheme.extended.bgCanvas,
-            edgePadding = 0.dp,
-            divider = { HorizontalDivider(color = UsTheme.extended.borderSubtle) },
-            tabs = tabs,
-        )
-    } else {
-        SecondaryTabRow(
-            selectedTabIndex = selected,
-            containerColor = UsTheme.extended.bgCanvas,
-            divider = { HorizontalDivider(color = UsTheme.extended.borderSubtle) },
-            tabs = tabs,
-        )
-    }
+    PillTabs(
+        labels = labels,
+        selected = selected,
+        tagPrefix = tagPrefix,
+        onSelect = onSelect,
+        modifier = Modifier.background(UsTheme.extended.bgCanvas).padding(vertical = UsTheme.spacing.s),
+    )
 }
 
 /** A hashtag, search results (Top / Latest), Bookmarks or a post's Quotes. */
@@ -283,7 +267,6 @@ fun EchoListScreen(destinations: EchoDestinations, viewModel: EchoListViewModel 
                     TabStrip(
                         labels = NoteSearchTab.entries.map { it.label },
                         selected = tab.ordinal,
-                        scrollable = false,
                         tagPrefix = "echo_list",
                         onSelect = { viewModel.select(NoteSearchTab.entries[it]) },
                     )
@@ -309,13 +292,13 @@ fun EchoListScreen(destinations: EchoDestinations, viewModel: EchoListViewModel 
 
 private fun listEmptyTitle(kind: EchoListKind): String = when (kind) {
     EchoListKind.HASHTAG, EchoListKind.SEARCH -> "No results"
-    EchoListKind.BOOKMARKS -> "Save posts for later"
+    EchoListKind.BOOKMARKS -> "Save notes for later"
     EchoListKind.QUOTES -> "No quotes yet"
 }
 
 private fun listEmptyDetail(kind: EchoListKind): String? = when (kind) {
     EchoListKind.HASHTAG, EchoListKind.SEARCH -> "Try searching for something else."
-    EchoListKind.BOOKMARKS -> "Bookmark posts to easily find them again in the future."
+    EchoListKind.BOOKMARKS -> "Save notes from their More menu to find them again here."
     EchoListKind.QUOTES -> null
 }
 
@@ -333,7 +316,11 @@ fun ScheduledScreen(destinations: EchoDestinations, viewModel: ScheduledViewMode
     ) { padding ->
         Box(modifier = Modifier.padding(padding).fillMaxSize()) {
             EchoRefresh(refreshing = feed.refreshing, onRefresh = viewModel::refresh, top = 0.dp) {
-                LazyColumn(modifier = Modifier.fillMaxSize().testTag("echo_scheduled")) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize().testTag("echo_scheduled"),
+                    contentPadding = PaddingValues(vertical = CARD_GAP),
+                    verticalArrangement = Arrangement.spacedBy(CARD_GAP),
+                ) {
                     when {
                         feed.loading && !feed.loaded -> item {
                             UsLoadingState(
@@ -349,8 +336,8 @@ fun ScheduledScreen(destinations: EchoDestinations, viewModel: ScheduledViewMode
                         }
                         feed.empty -> item {
                             UsEmptyState(
-                                title = "No scheduled posts",
-                                detail = "Schedule a post from the composer and it shows up here.",
+                                title = "No scheduled notes",
+                                detail = "Pick Later in the composer and the note shows up here.",
                                 modifier = Modifier.fillParentMaxHeight(STATE_HEIGHT),
                             )
                         }
@@ -404,11 +391,9 @@ fun ScheduledScreen(destinations: EchoDestinations, viewModel: ScheduledViewMode
 @Composable
 private fun ScheduledRow(note: Note, onEdit: () -> Unit, onDelete: () -> Unit) {
     val failed = note.status == NoteStatus.FAILED
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.l)
-            .testTag("echo_scheduled:${note.id}"),
+    EchoCard(
+        modifier = Modifier.padding(horizontal = UsTheme.spacing.l).testTag("echo_scheduled:${note.id}"),
+        accent = !failed,
     ) {
         val at = parseInstant(note.scheduledAt)
         Text(
@@ -417,30 +402,29 @@ private fun ScheduledRow(note: Note, onEdit: () -> Unit, onDelete: () -> Unit) {
                 at != null -> scheduleLabel(at)
                 else -> "Scheduled"
             },
-            style = MaterialTheme.typography.bodySmall,
-            color = if (failed) UsTheme.extended.statusDanger else UsTheme.extended.textTertiary,
+            style = MaterialTheme.typography.labelMedium,
+            color = if (failed) UsTheme.extended.statusDanger else UsTheme.extended.echo.text,
             modifier = Modifier.testTag(if (failed) "echo_scheduled_failed" else "echo_scheduled_when"),
         )
         Text(
             text = note.text.ifBlank { if (note.poll != null) "Poll" else "Photo" },
-            style = MaterialTheme.typography.bodyMedium,
+            style = UsEchoType.note,
             color = UsTheme.extended.textPrimary,
             maxLines = PREVIEW_LINES,
-            modifier = Modifier.padding(top = UsTheme.spacing.xs),
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.padding(top = UsTheme.spacing.s),
         )
-        Row(horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m)) {
-            TextButton(onClick = onEdit, modifier = Modifier.testTag("echo_scheduled_edit")) {
-                Text(if (failed) "Pick a new time" else "Change time", color = UsTheme.extended.accent)
-            }
-            TextButton(onClick = onDelete, modifier = Modifier.testTag("echo_scheduled_delete")) {
-                Text("Delete", color = UsTheme.extended.statusDanger)
-            }
+        Row(
+            modifier = Modifier.padding(top = UsTheme.spacing.l),
+            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        ) {
+            val change = if (failed) "Pick a new time" else "Change time"
+            EchoPill(UsIcons.Clock, change, change, "echo_scheduled_edit", onClick = onEdit)
+            EchoPill(UsIcons.Trash, "Delete", "Delete", "echo_scheduled_delete", onClick = onDelete)
         }
     }
-    HorizontalDivider(color = UsTheme.extended.borderSubtle)
 }
 
 private const val STATE_HEIGHT = 0.7f
 private const val PREVIEW_LINES = 4
 private val COVER_HEIGHT = 128.dp
-private val AVATAR_LIFT = 36.dp

@@ -69,7 +69,7 @@ fun SchedulePicker(
                     },
                     enabled = dateState.selectedDateMillis != null,
                     modifier = Modifier.testTag("echo_schedule_date_next"),
-                ) { Text("Next", color = UsTheme.extended.accent) }
+                ) { Text("Next", color = UsTheme.extended.echo.text) }
             },
             dismissButton = {
                 TextButton(onClick = onDismiss) { Text("Cancel", color = UsTheme.extended.textSecondary) }
@@ -87,7 +87,7 @@ fun SchedulePicker(
                         onPicked(picked.atTime(LocalTime.of(timeState.hour, timeState.minute)).atZone(zone).toInstant())
                     },
                     modifier = Modifier.testTag("echo_schedule_confirm"),
-                ) { Text("Confirm", color = UsTheme.extended.accent) }
+                ) { Text("Confirm", color = UsTheme.extended.echo.text) }
             },
             dismissButton = {
                 TextButton(onClick = { date = null }) { Text("Back", color = UsTheme.extended.textSecondary) }

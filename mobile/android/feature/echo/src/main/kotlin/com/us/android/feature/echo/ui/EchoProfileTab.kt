@@ -1,12 +1,8 @@
 package com.us.android.feature.echo.ui
 
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -55,24 +51,14 @@ fun EchoProfileNotes(
     )
 
     Column(modifier = Modifier.fillMaxWidth().testTag("echo_profile_tab")) {
-        Row(
+        PillTabs(
+            labels = ProfileNotesTab.entries.map { it.label },
+            selected = tab.ordinal,
+            tagPrefix = "echo_profile_tab",
+            tagOf = { "echo_profile_tab:${ProfileNotesTab.entries[it].wire}" },
+            onSelect = { viewModel.select(ProfileNotesTab.entries[it]) },
             modifier = Modifier.padding(vertical = UsTheme.spacing.m),
-            horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s),
-        ) {
-            ProfileNotesTab.entries.forEach { t ->
-                FilterChip(
-                    selected = t == tab,
-                    onClick = { viewModel.select(t) },
-                    label = { Text(t.label) },
-                    colors = FilterChipDefaults.filterChipColors(
-                        selectedContainerColor = UsTheme.extended.accent,
-                        selectedLabelColor = UsTheme.extended.onAccent,
-                        labelColor = UsTheme.extended.textSecondary,
-                    ),
-                    modifier = Modifier.testTag("echo_profile_tab:${t.wire}"),
-                )
-            }
-        }
+        )
         when {
             feed.loading && !feed.loaded -> UsLoadingState(modifier = Modifier.fillMaxWidth())
             feed.error != null -> UsErrorState(message = feed.error.orEmpty(), onRetry = viewModel::retry)
@@ -83,14 +69,22 @@ fun EchoProfileNotes(
                 modifier = Modifier.padding(vertical = UsTheme.spacing.xxl),
             )
             else -> {
-                feed.items.forEach { note -> NoteCard(note = note, mediaUrls = urls, callbacks = callbacks, now = now) }
+                feed.items.forEach { note ->
+                    NoteCard(
+                        note = note,
+                        mediaUrls = urls,
+                        callbacks = callbacks,
+                        now = now,
+                        modifier = Modifier.padding(bottom = CARD_GAP),
+                    )
+                }
                 if (feed.canLoadMore || feed.loadingMore || feed.moreError != null) {
                     if (feed.moreError == null && !feed.loadingMore) {
                         androidx.compose.material3.TextButton(
                             onClick = viewModel::loadMore,
                             modifier = Modifier.testTag("echo_profile_more")
                         ) {
-                            Text("Show more", color = UsTheme.extended.accent)
+                            Text("Show more", color = UsTheme.extended.echo.text)
                         }
                     } else {
                         ListFoot(feed = feed, onRetry = viewModel::loadMore)

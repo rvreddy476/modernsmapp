@@ -197,6 +197,40 @@ data class UsExtendedColors(
      * The ONE token for the read colour; chat settings may swap it per viewer.
      */
     val receiptSeen: Color = UsColorTokens.Dark.ReceiptSeen,
+    /** Echo's ember accent (look v3, 14 Nov 2026). See [UsEchoColors]. */
+    val echo: UsEchoColors = DarkEchoColors,
+)
+
+/**
+ * Echo's own accent (docs/designs/echo-look-v3.md): ember, where the rest of
+ * the app is cerulean. [text] is the readable ember (a topic line, a link, a
+ * lit pill's label); [fill] is what a filled pill sits on, under [onFill];
+ * [tint] a selected pill's ground; [border] the focused note's ring and the
+ * line that joins a thread's parts.
+ */
+@Immutable
+data class UsEchoColors(
+    val text: Color,
+    val fill: Color,
+    val onFill: Color,
+    val tint: Color,
+    val border: Color,
+)
+
+internal val DarkEchoColors = UsEchoColors(
+    text = UsColorTokens.Dark.EchoAccentText,
+    fill = UsColorTokens.EchoAccentFill,
+    onFill = UsColorTokens.OnAccentFill,
+    tint = UsColorTokens.Dark.EchoAccentTint,
+    border = UsColorTokens.Dark.EchoAccentBorder,
+)
+
+internal val LightEchoColors = UsEchoColors(
+    text = UsColorTokens.Light.EchoAccentText,
+    fill = UsColorTokens.EchoAccentFill,
+    onFill = UsColorTokens.OnAccentFill,
+    tint = UsColorTokens.Light.EchoAccentTint,
+    border = UsColorTokens.Light.EchoAccentBorder,
 )
 
 /** One own-bubble colour and the ink drawn on it. */
@@ -505,4 +539,5 @@ internal val LightExtendedColors = DarkExtendedColors.copy(
     chatAccentText = UsColorTokens.Light.ChatAccentText,
     chatSenders = UsColorTokens.Light.ChatSenders,
     receiptSeen = UsColorTokens.Light.ReceiptSeen,
+    echo = LightEchoColors,
 )

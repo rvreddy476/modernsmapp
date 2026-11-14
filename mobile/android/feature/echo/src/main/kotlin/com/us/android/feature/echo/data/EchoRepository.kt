@@ -20,6 +20,14 @@ interface EchoRepository {
     suspend fun note(id: String): AppResult<Note>
     suspend fun conversation(id: String): AppResult<List<Note>>
     suspend fun replies(id: String, cursor: String?): AppResult<NotePage>
+
+    /**
+     * The first [limit] replies of a note (the same replies route, first
+     * page), for a timeline card's reply bubbles.
+     */
+    suspend fun replyPreview(id: String, limit: Int): AppResult<List<Note>> =
+        replies(id, null).map { it.items.take(limit) }
+
     suspend fun byUser(userId: String, tab: ProfileNotesTab, cursor: String?): AppResult<NotePage>
     suspend fun eligibility(): AppResult<Eligibility>
 
@@ -106,6 +114,9 @@ class DefaultEchoRepository @Inject constructor(
 
     override suspend fun replies(id: String, cursor: String?): AppResult<NotePage> =
         page { api.replies(id, cursor, PAGE_SIZE) }
+
+    override suspend fun replyPreview(id: String, limit: Int): AppResult<List<Note>> =
+        page { api.replies(id, null, limit) }.map { it.items.take(limit) }
 
     override suspend fun byUser(userId: String, tab: ProfileNotesTab, cursor: String?): AppResult<NotePage> =
         page { api.byUser(userId, tab.wire, cursor, PAGE_SIZE) }

@@ -35,7 +35,7 @@ enum class EchoListKind(val wire: String, val tabbed: Boolean) {
 fun listTitle(kind: EchoListKind, arg: String): String = when (kind) {
     EchoListKind.HASHTAG -> "#" + arg.removePrefix("#")
     EchoListKind.SEARCH -> arg
-    EchoListKind.BOOKMARKS -> "Bookmarks"
+    EchoListKind.BOOKMARKS -> "Saved"
     EchoListKind.QUOTES -> "Quotes"
 }
 

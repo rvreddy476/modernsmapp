@@ -104,6 +104,15 @@ class FakeEchoRepository : EchoRepository {
     override suspend fun replies(id: String, cursor: String?): AppResult<NotePage> =
         repliesPages[cursor] ?: AppResult.Success(NotePage(emptyList(), null))
 
+    /** A card's first replies, by note id; unset reads as none. */
+    val previewResults = mutableMapOf<String, AppResult<List<Note>>>()
+    val previewCalls = mutableListOf<Pair<String, Int>>()
+
+    override suspend fun replyPreview(id: String, limit: Int): AppResult<List<Note>> {
+        previewCalls += id to limit
+        return previewResults[id] ?: AppResult.Success(emptyList())
+    }
+
     override suspend fun byUser(userId: String, tab: ProfileNotesTab, cursor: String?): AppResult<NotePage> =
         userPages[tab to cursor] ?: AppResult.Success(NotePage(emptyList(), null))
 
