@@ -589,6 +589,7 @@ func (s *Service) GetNotesForYouPage(ctx context.Context, viewerID uuid.UUID, li
 	if page, err = s.applyHiddenAuthorFilter(ctx, page); err != nil {
 		return nil, nil, err
 	}
+	s.recordServedNotes(ctx, viewerID, page, time.Now())
 	var next *ForYouCursor
 	if end < len(snap.Items) {
 		next = &ForYouCursor{Snapshot: snap.ID, Offset: end}
@@ -637,8 +638,9 @@ func filterForYouPool(pool []FeedItem, viewerID uuid.UUID, blocked map[uuid.UUID
 	return applyBlockFilter(out, blocked)
 }
 
-// rankNotes orders the pool with the ranking package; without a ranker, or
-// when it fails, newest first.
+// rankNotes orders the pool with the ranking package, then applies the Echo
+// rescoring (notes_rescore.go); without a ranker, or when it fails, newest
+// first and no rescoring.
 func (s *Service) rankNotes(ctx context.Context, viewerID uuid.UUID, pool []FeedItem) []FeedItem {
 	if len(pool) == 0 {
 		return pool
@@ -646,7 +648,13 @@ func (s *Service) rankNotes(ctx context.Context, viewerID uuid.UUID, pool []Feed
 	if s.ranker != nil {
 		ranked, err := s.ranker.Rank(ctx, viewerID, feedItemsToCandidates(pool), len(pool))
 		if err == nil {
-			return wholeWindow(pool, candidatesToFeedItems(ranked))
+			ordered := wholeWindow(pool, candidatesToFeedItems(ranked))
+			ids := make([]uuid.UUID, len(ordered))
+			for i, c := range ordered {
+				ids[i] = c.PostID
+			}
+			now := time.Now()
+			return rescoreForYou(ordered, s.noteRankSignals(ctx, viewerID, ids), s.servedNotes(ctx, viewerID, now), now)
 		}
 		log.Printf("echo: For You ranking failed for %s, newest first: %v", viewerID, err)
 		rankFallbacks.WithLabelValues("echo_for_you").Inc()
