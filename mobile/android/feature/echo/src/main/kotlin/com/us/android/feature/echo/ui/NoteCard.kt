@@ -51,9 +51,10 @@ import com.us.android.feature.echo.data.shortAge
 import java.time.Instant
 
 /**
- * One note as Echo's serif conversation card (echo-look-v3): the topic line
- * (`#tag · 2h`) on top, the text in Bodoni, pictures, a poll or the quoted
- * note, the author's signature under it, up to two top replies as bubbles
+ * One note as Echo's serif conversation card (echo-look-v3): the author's
+ * name and how long ago it was posted (`Asha Rao · 2h`) on top with the
+ * topic (`#tag`, Thread, Quote) at the right, the text in Bodoni, pictures,
+ * a poll or the quoted note, up to two top replies as bubbles
  * with "N replies", and the labelled pills: Reply, Echo it, the heart and
  * More. No left avatar column, no bare icon row.
  */
@@ -73,13 +74,23 @@ fun NoteCard(
         modifier = modifier.testTag("echo_note:${note.id}"),
         onClick = if (focused) null else ({ callbacks.onOpen(note) }),
     ) {
-        TopicText(topicLine(note, shortAge(note.createdAt, now), thread = preview?.thread == true))
+        val topic = topicLine(note, age = "", thread = preview?.thread == true)
+        Signature(
+            author = note.author,
+            authorId = note.authorId,
+            onOpenAuthor = callbacks.onOpenAuthor,
+            age = shortAge(note.createdAt, now),
+            trailing = if (topic.text.isBlank()) {
+                null
+            } else {
+                { TopicText(topic, Modifier.padding(start = UsTheme.spacing.m)) }
+            },
+        )
         NoteText(
             note = note,
             style = if (isLongNote(note.text)) UsEchoType.noteLong else UsEchoType.note,
         )
         NoteAttachments(note = note, mediaUrls = mediaUrls, callbacks = callbacks, now = now)
-        Signature(author = note.author, authorId = note.authorId, onOpenAuthor = callbacks.onOpenAuthor)
         preview?.let {
             ReplyBubbles(
                 preview = it,
@@ -169,9 +180,11 @@ internal fun NoteAttachments(note: Note, mediaUrls: Map<String, String>, callbac
 }
 
 /**
- * The signature under the text: a small avatar and the display name, then
- * the @handle and the mark in secondary text. [trailing] is the note page's
- * Follow pill.
+ * The author row on top of a note: a small avatar and the display name, the
+ * mark, then how long ago it was posted (`· 2h`) when [age] is given, or the
+ * @handle in secondary text when it is not (the note page, whose meta line
+ * carries the full date). [trailing] is the topic on a card, or the note
+ * page's Follow pill.
  */
 @Composable
 internal fun Signature(
@@ -179,10 +192,11 @@ internal fun Signature(
     authorId: String,
     onOpenAuthor: (String) -> Unit,
     modifier: Modifier = Modifier,
+    age: String? = null,
     trailing: (@Composable RowScope.() -> Unit)? = null,
 ) {
     Row(
-        modifier = modifier.fillMaxWidth().padding(top = UsTheme.spacing.l).testTag("echo_signature"),
+        modifier = modifier.fillMaxWidth().testTag("echo_signature"),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Row(
@@ -207,20 +221,35 @@ internal fun Signature(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(start = UsTheme.spacing.m).weight(1f, fill = false),
             )
-            author?.handle?.takeIf { it.isNotBlank() }?.let { handle ->
-                Text(
-                    text = handle,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = UsTheme.extended.textTertiary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(start = UsTheme.spacing.xs).weight(1f, fill = false),
-                )
+            if (age == null) {
+                author?.handle?.takeIf { it.isNotBlank() }?.let { handle ->
+                    Text(
+                        text = handle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = UsTheme.extended.textTertiary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.padding(start = UsTheme.spacing.xs).weight(1f, fill = false),
+                    )
+                }
             }
             author?.mark?.takeIf { it != VerificationMark.NONE }?.let { VerificationTick(it) }
+            age?.takeIf { it.isNotBlank() }?.let { AgeText(it, Modifier.testTag("echo_age")) }
         }
         trailing?.invoke(this)
     }
+}
+
+/** "· 2h" after the name, in secondary text. */
+@Composable
+private fun AgeText(age: String, modifier: Modifier = Modifier) {
+    Text(
+        text = "· $age",
+        style = MaterialTheme.typography.bodySmall,
+        color = UsTheme.extended.textTertiary,
+        maxLines = 1,
+        modifier = modifier.padding(start = UsTheme.spacing.xs),
+    )
 }
 
 /**
@@ -469,21 +498,7 @@ internal fun QuotedNote(
             .padding(UsTheme.spacing.l)
             .testTag("echo_quoted:${note.id}"),
     ) {
-        TopicText(topicLine(note, shortAge(note.createdAt, now)))
-        if (note.text.isNotBlank()) {
-            Text(
-                text = note.text,
-                style = UsEchoType.quoted,
-                color = UsTheme.extended.textPrimary,
-                maxLines = QUOTE_LINES,
-                overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.padding(top = UsTheme.spacing.xs),
-            )
-        }
-        if (note.media.isNotEmpty()) {
-            NoteMediaGrid(media = note.media, urls = mediaUrls, modifier = Modifier.padding(top = UsTheme.spacing.s))
-        }
-        Row(modifier = Modifier.padding(top = UsTheme.spacing.m), verticalAlignment = Alignment.CenterVertically) {
+        Row(modifier = Modifier.padding(bottom = UsTheme.spacing.xs), verticalAlignment = Alignment.CenterVertically) {
             UsAvatar(
                 name = note.author?.name.orEmpty(),
                 seed = note.authorId,
@@ -499,17 +514,22 @@ internal fun QuotedNote(
                 overflow = TextOverflow.Ellipsis,
                 modifier = Modifier.padding(start = UsTheme.spacing.s).weight(1f, fill = false),
             )
-            note.author?.handle?.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    text = it,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = UsTheme.extended.textTertiary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.padding(start = UsTheme.spacing.xs).weight(1f, fill = false),
-                )
-            }
             note.author?.mark?.takeIf { it != VerificationMark.NONE }?.let { VerificationTick(it) }
+            AgeText(shortAge(note.createdAt, now))
+        }
+        TopicText(topicLine(note, age = ""))
+        if (note.text.isNotBlank()) {
+            Text(
+                text = note.text,
+                style = UsEchoType.quoted,
+                color = UsTheme.extended.textPrimary,
+                maxLines = QUOTE_LINES,
+                overflow = TextOverflow.Ellipsis,
+                modifier = Modifier.padding(top = UsTheme.spacing.xs),
+            )
+        }
+        if (note.media.isNotEmpty()) {
+            NoteMediaGrid(media = note.media, urls = mediaUrls, modifier = Modifier.padding(top = UsTheme.spacing.s))
         }
     }
 }

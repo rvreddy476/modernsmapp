@@ -15,11 +15,14 @@ full-width Like / Comment / Share bar).
   timeline 18 sp/px (16 for a long note over ~280 chars), note page 22, composer 20.
   Line height ~1.4. Everything else (names, buttons, counts) stays in the normal UI
   fonts (Figtree for body, Outfit for headings).
-- **Topic line on top** of every note: `#firsthashtag · 2h` (or `Thread · 3 parts · 5h`,
-  `Quote · 2h`, `Reply to @name · 2h`) in the **ember accent** colour, small (12).
-  No hashtag → just the time, in secondary text.
-- **Signature below the text**: small avatar (20) + display name, then @handle and the
-  verified mark in secondary text. **No left avatar column anywhere.**
+- **Author on top** (changed 15 Nov 2026 at the founder's request): small avatar +
+  display name + verified mark, then how long ago it was posted (`Asha Rao · 2h`,
+  `· Edited`) in secondary text. On a card the topic (`#firsthashtag`, `Thread`,
+  `Quote`, `Reply to @name`) sits at the right end of that row in the **ember accent**,
+  small (12). No @handle on cards. The note page shows the name with @handle and the
+  Follow pill on top, then the meta line (`#tag · 2:14 pm · 1.2k views`), then the text.
+  Quoted notes put their author and age above their text too.
+  **No left avatar column anywhere.**
 - **Card**: rounded 16, surface colour, hairline border, padding 14. Cards are separate
   with a 10 gap, not full-bleed rows with dividers.
 - **Replies inside the card**: on the timeline, up to **2** top replies as chat bubbles

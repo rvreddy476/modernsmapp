@@ -236,12 +236,6 @@ private fun FocusedNote(
             replyToHandle = replyToHandle,
         )
         val views = compactCount(note.viewCount).takeIf { it.isNotEmpty() }?.let { "$it views" }
-        TopicText(
-            line = topic.copy(text = listOfNotNull(topic.text.ifBlank { null }, views).joinToString(" · ")),
-            modifier = Modifier.testTag("echo_focus_meta"),
-        )
-        NoteText(note = note, style = UsEchoType.notePage)
-        NoteAttachments(note = note, mediaUrls = urls, callbacks = callbacks, now = now)
         Signature(
             author = note.author,
             authorId = note.authorId,
@@ -261,6 +255,12 @@ private fun FocusedNote(
                 }
             },
         )
+        TopicText(
+            line = topic.copy(text = listOfNotNull(topic.text.ifBlank { null }, views).joinToString(" · ")),
+            modifier = Modifier.padding(top = UsTheme.spacing.s).testTag("echo_focus_meta"),
+        )
+        NoteText(note = note, style = UsEchoType.notePage)
+        NoteAttachments(note = note, mediaUrls = urls, callbacks = callbacks, now = now)
         CountPills(note = note, callbacks = callbacks, onOpenQuotes = onOpenQuotes)
     }
 }
