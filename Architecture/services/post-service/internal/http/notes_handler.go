@@ -28,6 +28,8 @@ const (
 	CodeNoteTooLong             = "NOTE_TOO_LONG"
 	CodeTooManyMedia            = "TOO_MANY_MEDIA"
 	CodeMediaNotAllowed         = "MEDIA_NOT_ALLOWED"
+	CodeVideoTooLong            = "VIDEO_TOO_LONG"
+	CodeVideoTooLarge           = "VIDEO_TOO_LARGE"
 	CodePremiumRequired         = "PREMIUM_REQUIRED"
 	CodePremiumCheckUnavailable = "PREMIUM_CHECK_UNAVAILABLE"
 	CodeAccountTooNew           = "ACCOUNT_TOO_NEW"
@@ -139,6 +141,10 @@ func writeNoteError(c *gin.Context, err error) {
 		e(http.StatusBadRequest, CodeTooManyMedia, err.Error())
 	case errors.Is(err, service.ErrNoteMediaNotAllowed):
 		e(http.StatusBadRequest, CodeMediaNotAllowed, err.Error())
+	case errors.Is(err, service.ErrNoteVideoTooLong):
+		e(http.StatusBadRequest, CodeVideoTooLong, err.Error())
+	case errors.Is(err, service.ErrNoteVideoTooLarge):
+		e(http.StatusBadRequest, CodeVideoTooLarge, err.Error())
 	case errors.Is(err, service.ErrInvalidNoteThread):
 		e(http.StatusBadRequest, CodeInvalidThread, err.Error())
 	case errors.Is(err, service.ErrInvalidNoteRequest), errors.Is(err, service.ErrInvalidNoteTab):

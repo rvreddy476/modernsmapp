@@ -232,6 +232,8 @@ func TestNoteRoutes_Refusals(t *testing.T) {
 	nr.store.Media[gif] = postgres.NoteMediaRow{UploaderID: ntAlice, Kind: "image", MimeType: "image/gif", ProcessingStatus: "ready", ModerationStatus: "passed"}
 	video := uuid.New()
 	nr.store.Media[video] = postgres.NoteMediaRow{UploaderID: ntAlice, Kind: "video", MimeType: "video/mp4", ProcessingStatus: "ready", ModerationStatus: "passed"}
+	longVideo := uuid.New()
+	nr.store.Media[longVideo] = postgres.NoteMediaRow{UploaderID: ntAlice, Kind: "video", MimeType: "video/mp4", ProcessingStatus: "ready", ModerationStatus: "passed", DurationMs: 600_001}
 	img := func(owner uuid.UUID) string {
 		id := uuid.New()
 		nr.store.Media[id] = postgres.NoteMediaRow{UploaderID: owner, Kind: "image", MimeType: "image/jpeg", ProcessingStatus: "ready", ModerationStatus: "passed"}
@@ -254,7 +256,8 @@ func TestNoteRoutes_Refusals(t *testing.T) {
 		{"too long", "POST", "/v1/notes", &ntAlice, `{"text":"` + strings.Repeat("a", 501) + `"}`, true, 400, CodeNoteTooLong},
 		{"five images", "POST", "/v1/notes", &ntAlice, `{"media_ids":[` + strings.Join([]string{img(ntAlice), img(ntAlice), img(ntAlice), img(ntAlice), img(ntAlice)}, ",") + `]}`, true, 400, CodeTooManyMedia},
 		{"gif and image", "POST", "/v1/notes", &ntAlice, `{"media_ids":["` + gif.String() + `",` + img(ntAlice) + `]}`, true, 400, CodeTooManyMedia},
-		{"video", "POST", "/v1/notes", &ntAlice, `{"media_ids":["` + video.String() + `"]}`, true, 400, CodeMediaNotAllowed},
+		{"video and image", "POST", "/v1/notes", &ntAlice, `{"media_ids":["` + video.String() + `",` + img(ntAlice) + `]}`, true, 400, CodeTooManyMedia},
+		{"video over 10 minutes", "POST", "/v1/notes", &ntAlice, `{"media_ids":["` + longVideo.String() + `"]}`, true, 400, CodeVideoTooLong},
 		{"someone else's image", "POST", "/v1/notes", &ntAlice, `{"media_ids":[` + img(ntBob) + `]}`, true, 403, "MEDIA_NOT_OWNED"},
 		{"reply and quote", "POST", "/v1/notes", &ntAlice, `{"text":"x","reply_to_id":"` + top + `","quote_of_id":"` + top + `"}`, true, 400, "INVALID_REQUEST"},
 		{"not premium", "POST", "/v1/notes", &ntBob, `{"text":"x"}`, true, 403, CodePremiumRequired},

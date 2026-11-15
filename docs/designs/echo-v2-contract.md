@@ -122,3 +122,32 @@ second Echo menu.
 - GIFs: pick from the existing GIF search route, download the chosen GIF and upload it through the
   normal media flow as `image/gif` (phase-1 rule: exactly one GIF). No external URLs are stored.
 - Emoji: a local picker inserting into the text.
+
+## Video in notes (15 Nov 2026)
+
+The founder asked for short video in notes, after X's limits. Hours-long video stays on PostTube.
+
+- **What a note may carry:** up to 4 images, or one GIF on its own, or **one video on its own**
+  (no images or GIF beside it). Threads take a video per entry under the same rule.
+- **Limits,** decided by the poster when the note is written:
+
+  | Poster | Longest video | Largest file |
+  |---|---|---|
+  | Without Premium (replies) | 140 s (2 min 20 s) | 512 MB |
+  | With Premium (notes, threads, quotes, and their replies) | 10 minutes | the platform's own upload cap |
+
+- **Upload:** the normal media flow with `file_type:"video"`, `media_subtype:"general"`:
+  `POST /v1/media/init` → `PUT` → `POST /v1/media/confirm`. A file the simple path refuses with
+  `413 USE_RESUMABLE_UPLOAD` goes up through the resumable path. Then `POST /v1/notes` with
+  `media_ids:[id]`; there is no need to wait for transcoding.
+- **Checks:** clients check length and size before uploading, from the local file. The server
+  refuses a known-too-large file (`400 VIDEO_TOO_LARGE`) and a known-too-long one
+  (`400 VIDEO_TOO_LONG`) at create. The length is usually measured only after transcoding, so the
+  limit is stored on the note (`posts.note_video_max_ms`, migration 084).
+- **Reading:** a video note has `post_type:"video"` and one `media` entry with `kind:"video"`,
+  `duration_ms` and `hls_url` once ready. As with every post, it is shown only to its author
+  until the video is `ready` + `passed` (`is_processing:true` meanwhile). A video that turns out
+  longer than its note allows is shown **only to its author**, with `video_too_long:true`; clients
+  say "This video is longer than {limit} and is only visible to you."
+- **Playing:** muted autoplay in timelines when in view, tap for sound; HLS first (hls.js on the
+  web, Media3 on Android), the note page plays with controls. Views count as for any note.

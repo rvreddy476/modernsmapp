@@ -99,6 +99,12 @@ func (s *Service) hydrateNotes(ctx context.Context, notes []*postgres.Note, view
 			continue
 		}
 		v := buildNoteView(d, n)
+		if noteVideoTooLong(d.Post, n.VideoMaxMs) {
+			if viewerID == nil || *viewerID != n.Post.AuthorID {
+				continue
+			}
+			v.VideoTooLong = true
+		}
 		if viewerID != nil {
 			v.ViewerCanReply = s.viewerCanReplyCached(ctx, n, *viewerID, follows)
 		}

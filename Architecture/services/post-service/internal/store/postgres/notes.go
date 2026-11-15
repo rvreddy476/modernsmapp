@@ -43,6 +43,9 @@ type NoteFields struct {
 	EditedAt       *time.Time
 	// ViewCount is posts.note_view_count (migration 083).
 	ViewCount int64
+	// VideoMaxMs is posts.note_video_max_ms (migration 084): the longest
+	// video this note may carry, fixed at create. Nil when it has no video.
+	VideoMaxMs *int
 }
 
 // Note is a note row: the post and its conversation columns.
@@ -53,14 +56,20 @@ type Note struct {
 
 // noteCols is postCols plus the conversation columns, unqualified.
 const noteCols = postCols + `,
-	reply_to_id, conversation_id, reply_policy, reply_count, quote_of_id, edited_at, note_view_count`
+	reply_to_id, conversation_id, reply_policy, reply_count, quote_of_id, edited_at, note_view_count, note_video_max_ms`
+
+// noteScanDestinations is the scan list for noteCols, in order. Every query
+// that selects noteCols scans through it, so a new column is added once.
+func noteScanDestinations(n *Note) []any {
+	return append(postScanDestinations(&n.Post),
+		&n.ReplyToID, &n.ConversationID, &n.ReplyPolicy, &n.ReplyCount, &n.QuoteOfID, &n.EditedAt, &n.ViewCount, &n.VideoMaxMs)
+}
 
 func scanNoteRows(rows pgx.Rows, extra ...any) ([]Note, error) {
 	var out []Note
 	for rows.Next() {
 		var n Note
-		dest := append(postScanDestinations(&n.Post),
-			&n.ReplyToID, &n.ConversationID, &n.ReplyPolicy, &n.ReplyCount, &n.QuoteOfID, &n.EditedAt, &n.ViewCount)
+		dest := noteScanDestinations(&n)
 		dest = append(dest, extra...)
 		if err := rows.Scan(dest...); err != nil {
 			return nil, err
@@ -283,8 +292,7 @@ func (s *Store) ListNotes(ctx context.Context, q NoteListQuery) ([]Note, string,
 	for rows.Next() {
 		var n Note
 		var key time.Time
-		dest := append(postScanDestinations(&n.Post),
-			&n.ReplyToID, &n.ConversationID, &n.ReplyPolicy, &n.ReplyCount, &n.QuoteOfID, &n.EditedAt, &n.ViewCount, &key)
+		dest := append(noteScanDestinations(&n), &key)
 		if err := rows.Scan(dest...); err != nil {
 			rows.Close()
 			return nil, "", fmt.Errorf("scan notes: %w", err)
@@ -317,6 +325,9 @@ type NoteMediaRow struct {
 	MimeType         string
 	ProcessingStatus string
 	ModerationStatus string
+	// DurationMs is 0 until media-service has measured the file.
+	DurationMs int
+	SizeBytes  int64
 }
 
 // NoteMedia reads kind, MIME type and state for ids in one round trip.
@@ -328,7 +339,8 @@ func (s *Store) NoteMedia(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]N
 	}
 	rows, err := s.db.Query(ctx, `
 		SELECT id, uploader_id, file_type, COALESCE(mime_type, ''),
-		       COALESCE(processing_status, ''), COALESCE(moderation_status, '')
+		       COALESCE(processing_status, ''), COALESCE(moderation_status, ''),
+		       COALESCE(duration_ms, 0), COALESCE(file_size_bytes, 0)
 		FROM media_assets WHERE id = ANY($1)`, ids)
 	if err != nil {
 		return nil, fmt.Errorf("note media: %w", err)
@@ -337,7 +349,7 @@ func (s *Store) NoteMedia(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]N
 	for rows.Next() {
 		var id uuid.UUID
 		var m NoteMediaRow
-		if err := rows.Scan(&id, &m.UploaderID, &m.Kind, &m.MimeType, &m.ProcessingStatus, &m.ModerationStatus); err != nil {
+		if err := rows.Scan(&id, &m.UploaderID, &m.Kind, &m.MimeType, &m.ProcessingStatus, &m.ModerationStatus, &m.DurationMs, &m.SizeBytes); err != nil {
 			return nil, fmt.Errorf("note media scan: %w", err)
 		}
 		out[id] = m
@@ -426,8 +438,8 @@ func (s *Store) CreateNotes(ctx context.Context, w *NoteWrite) (*NoteWriteResult
 		}
 		if _, err := tx.Exec(ctx, `
 			UPDATE posts SET reply_to_id = $2, conversation_id = $3, quote_of_id = $4, reply_policy = $5,
-				reply_count = $6
-			WHERE id = $1`, p.ID, f.ReplyToID, f.ConversationID, f.QuoteOfID, policy, f.ReplyCount); err != nil {
+				reply_count = $6, note_video_max_ms = $7
+			WHERE id = $1`, p.ID, f.ReplyToID, f.ConversationID, f.QuoteOfID, policy, f.ReplyCount, f.VideoMaxMs); err != nil {
 			return nil, fmt.Errorf("note fields: %w", err)
 		}
 	}

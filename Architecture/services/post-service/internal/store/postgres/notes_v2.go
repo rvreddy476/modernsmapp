@@ -48,9 +48,7 @@ func scanScheduledNotes(rows pgx.Rows) ([]ScheduledNote, error) {
 	var out []ScheduledNote
 	for rows.Next() {
 		var n ScheduledNote
-		dest := append(postScanDestinations(&n.Post),
-			&n.ReplyToID, &n.ConversationID, &n.ReplyPolicy, &n.ReplyCount, &n.QuoteOfID, &n.EditedAt, &n.ViewCount,
-			&n.PublishError, &n.Failed)
+		dest := append(noteScanDestinations(&n.Note), &n.PublishError, &n.Failed)
 		if err := rows.Scan(dest...); err != nil {
 			return nil, err
 		}
@@ -549,8 +547,7 @@ func (s *Store) scanNotePage(ctx context.Context, query string, args []any) ([]N
 	for rows.Next() {
 		var n Note
 		var key time.Time
-		dest := append(postScanDestinations(&n.Post),
-			&n.ReplyToID, &n.ConversationID, &n.ReplyPolicy, &n.ReplyCount, &n.QuoteOfID, &n.EditedAt, &n.ViewCount, &key)
+		dest := append(noteScanDestinations(&n), &key)
 		if err := rows.Scan(dest...); err != nil {
 			return nil, nil, fmt.Errorf("scan notes: %w", err)
 		}

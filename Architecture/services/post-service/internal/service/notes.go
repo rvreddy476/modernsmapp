@@ -63,8 +63,8 @@ var (
 	ErrEchoNotEnabled           = errors.New("echo is not enabled")
 	ErrEmptyNote                = errors.New("a note needs text or an image")
 	ErrNoteTooLong              = errors.New("note text is longer than 500 characters")
-	ErrTooManyNoteMedia         = errors.New("a note carries at most 4 images or one GIF")
-	ErrNoteMediaNotAllowed      = errors.New("a note carries images or one GIF only")
+	ErrTooManyNoteMedia         = errors.New("a note carries at most 4 images, one GIF or one video")
+	ErrNoteMediaNotAllowed      = errors.New("a note carries images, one GIF or one video only")
 	ErrPremiumRequired          = errors.New("echo posting needs Momentum Premium")
 	ErrPremiumCheckUnavailable  = errors.New("premium check unavailable")
 	ErrAccountTooNew            = errors.New("account is too new to reply")
@@ -111,11 +111,15 @@ func ValidateNoteMediaCount(ids []uuid.UUID) error {
 	return nil
 }
 
-// NoteMediaRule is the media rule on the assets' kinds: images only (never
-// video or audio), at most 4, and a GIF (image/gif) only on its own.
+// NoteMediaRule is the media rule on the assets' kinds: up to 4 images, or
+// one GIF (image/gif) on its own, or one video on its own; never audio.
 func NoteMediaRule(rows []postgres.NoteMediaRow) error {
-	gifs := 0
+	gifs, videos := 0, 0
 	for _, m := range rows {
+		if m.Kind == mediaKindVideo {
+			videos++
+			continue
+		}
 		if m.Kind != mediaKindImage {
 			return fmt.Errorf("%w: %s", ErrNoteMediaNotAllowed, m.Kind)
 		}
@@ -128,6 +132,9 @@ func NoteMediaRule(rows []postgres.NoteMediaRow) error {
 	}
 	if gifs > 0 && len(rows) != 1 {
 		return fmt.Errorf("%w: a GIF is attached on its own", ErrTooManyNoteMedia)
+	}
+	if videos > 0 && len(rows) != 1 {
+		return fmt.Errorf("%w: a video is attached on its own", ErrTooManyNoteMedia)
 	}
 	return nil
 }
@@ -470,6 +477,9 @@ type NoteView struct {
 	// (the root included): 0 for a note that roots no thread. Timeline
 	// cards read it as "Thread · 3 parts".
 	ThreadParts int64 `json:"thread_parts"`
+	// VideoTooLong is true on the author's own note whose video turned out
+	// longer than the note allows; nobody else is shown that note.
+	VideoTooLong bool `json:"video_too_long,omitempty"`
 	// PublishError is the author's view of a scheduled note whose publish
 	// check failed (premium_required, suspended, ...); absent otherwise.
 	PublishError *string `json:"publish_error,omitempty"`

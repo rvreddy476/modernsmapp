@@ -64,5 +64,7 @@ CREATE TABLE IF NOT EXISTS media_assets (
     hls_master_key TEXT,
     storage_key TEXT NOT NULL DEFAULT '',
     mime_type TEXT NOT NULL DEFAULT '',
+    file_size_bytes BIGINT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+ALTER TABLE media_assets ADD COLUMN IF NOT EXISTS file_size_bytes BIGINT;

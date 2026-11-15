@@ -85,6 +85,9 @@ func newNoteRow(id, author uuid.UUID, text string, media []postgres.PostMedia, h
 	postType := postTypeText
 	if len(media) > 0 {
 		postType = postTypeImage
+		if media[0].Kind == mediaKindVideo {
+			postType = postTypeVideo
+		}
 	}
 	return &postgres.Post{
 		ID: id, AuthorID: author, Text: text, Visibility: "public",
@@ -101,7 +104,7 @@ func newNoteRow(id, author uuid.UUID, text string, media []postgres.PostMedia, h
 // noteMedia checks one note's attachments: every asset exists, the note
 // media rule (images, at most 4, a GIF alone), then the authority rule
 // every post attachment passes (owned, confirmed, not refused).
-func (s *Service) noteMedia(ctx context.Context, store noteStore, author uuid.UUID, ids []uuid.UUID) ([]postgres.PostMedia, map[uuid.UUID]postgres.NoteMediaRow, error) {
+func (s *Service) noteMedia(ctx context.Context, store noteStore, author uuid.UUID, ids []uuid.UUID, lim noteVideoLimit) ([]postgres.PostMedia, map[uuid.UUID]postgres.NoteMediaRow, error) {
 	if len(ids) == 0 {
 		return nil, nil, nil
 	}
@@ -109,10 +112,10 @@ func (s *Service) noteMedia(ctx context.Context, store noteStore, author uuid.UU
 	if err != nil {
 		return nil, nil, fmt.Errorf("verify note media: %w", err)
 	}
-	return noteMediaFrom(author, ids, rows)
+	return noteMediaFrom(author, ids, rows, lim)
 }
 
-func noteMediaFrom(author uuid.UUID, ids []uuid.UUID, rows map[uuid.UUID]postgres.NoteMediaRow) ([]postgres.PostMedia, map[uuid.UUID]postgres.NoteMediaRow, error) {
+func noteMediaFrom(author uuid.UUID, ids []uuid.UUID, rows map[uuid.UUID]postgres.NoteMediaRow, lim noteVideoLimit) ([]postgres.PostMedia, map[uuid.UUID]postgres.NoteMediaRow, error) {
 	list := make([]postgres.NoteMediaRow, 0, len(ids))
 	for _, id := range ids {
 		m, ok := rows[id]
@@ -129,7 +132,14 @@ func noteMediaFrom(author uuid.UUID, ids []uuid.UUID, rows map[uuid.UUID]postgre
 		m := rows[id]
 		own := postgres.MediaOwnership{UploaderID: m.UploaderID, Kind: m.Kind,
 			ProcessingStatus: m.ProcessingStatus, ModerationStatus: m.ModerationStatus}
-		if err := checkMediaAuthority(id, author, own, true, NoteContentType, postTypeImage); err != nil {
+		postType := postTypeImage
+		if m.Kind == mediaKindVideo {
+			postType = postTypeVideo
+		}
+		if err := checkMediaAuthority(id, author, own, true, NoteContentType, postType); err != nil {
+			return nil, nil, err
+		}
+		if err := checkNoteVideo(m, lim); err != nil {
 			return nil, nil, err
 		}
 		out = append(out, postgres.PostMedia{MediaID: id, Kind: m.Kind})
@@ -389,7 +399,7 @@ func (s *Service) CreateNote(ctx context.Context, in *CreateNoteInput) (*NoteVie
 		}
 	}
 
-	media, _, err := s.noteMedia(ctx, store, author, in.MediaIDs)
+	media, _, err := s.noteMedia(ctx, store, author, in.MediaIDs, noteVideoLimitFor(isPremium))
 	if err != nil {
 		return nil, err
 	}
@@ -410,7 +420,8 @@ func (s *Service) CreateNote(ctx context.Context, in *CreateNoteInput) (*NoteVie
 	p.PublishAt = scheduledAt
 	p.IsScheduled = scheduledAt != nil
 	conv := id
-	f := postgres.NoteFields{ConversationID: &conv, ReplyPolicy: policy, QuoteOfID: in.QuoteOfID}
+	f := postgres.NoteFields{ConversationID: &conv, ReplyPolicy: policy, QuoteOfID: in.QuoteOfID,
+		VideoMaxMs: noteVideoMax(media, noteVideoLimitFor(isPremium))}
 	w := &postgres.NoteWrite{Notes: []*postgres.Post{p}, Fields: []postgres.NoteFields{f}}
 	if reply {
 		parent := target.Post.ID
@@ -608,9 +619,10 @@ func (s *Service) CreateNoteThread(ctx context.Context, in *CreateNoteThreadInpu
 	}
 	medias := make([][]postgres.PostMedia, n)
 	for i, e := range in.Entries {
-		m, _, err := noteMediaFrom(author, e.MediaIDs, rows)
+		m, _, err := noteMediaFrom(author, e.MediaIDs, rows, noteVideoLimitFor(true))
 		if err != nil {
-			if errors.Is(err, ErrTooManyNoteMedia) || errors.Is(err, ErrNoteMediaNotAllowed) {
+			if errors.Is(err, ErrTooManyNoteMedia) || errors.Is(err, ErrNoteMediaNotAllowed) ||
+				errors.Is(err, ErrNoteVideoTooLong) || errors.Is(err, ErrNoteVideoTooLarge) {
 				return nil, fmt.Errorf("%w: entry %d: %v", ErrInvalidNoteThread, i, err)
 			}
 			return nil, err
@@ -642,7 +654,8 @@ func (s *Service) CreateNoteThread(ctx context.Context, in *CreateNoteThreadInpu
 		root := rootID
 		p.ThreadRootID = &root
 		p.ThreadSeq = i
-		f := postgres.NoteFields{ConversationID: &root, ReplyPolicy: policy}
+		f := postgres.NoteFields{ConversationID: &root, ReplyPolicy: policy,
+			VideoMaxMs: noteVideoMax(medias[i], noteVideoLimitFor(true))}
 		if prev != nil {
 			replyTo := *prev
 			p.ThreadReplyToID = &replyTo

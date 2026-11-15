@@ -175,7 +175,7 @@ func TestNoteRule_Media(t *testing.T) {
 		want  error
 	}{
 		{"five images", []uuid.UUID{img(), img(), img(), img(), img()}, ErrTooManyNoteMedia},
-		{"a video", []uuid.UUID{video}, ErrNoteMediaNotAllowed},
+		{"a video with an image", []uuid.UUID{video, img()}, ErrTooManyNoteMedia},
 		{"audio", []uuid.UUID{audio}, ErrNoteMediaNotAllowed},
 		{"a GIF with an image", []uuid.UUID{gif, img()}, ErrTooManyNoteMedia},
 		{"someone else's image", []uuid.UUID{foreign}, ErrMediaNotOwned},
@@ -190,12 +190,17 @@ func TestNoteRule_Media(t *testing.T) {
 	for name, media := range map[string][]uuid.UUID{
 		"four images": {img(), img(), img(), img()},
 		"one GIF":     {gif},
+		"one video":   {video},
 	} {
 		v, err := r.create(r.alice, func(in *CreateNoteInput) { in.MediaIDs = media; in.Text = "" })
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if len(v.Media) != len(media) || v.Post.PostType != "image" {
+		want := "image"
+		if name == "one video" {
+			want = "video"
+		}
+		if len(v.Media) != len(media) || v.Post.PostType != want {
 			t.Fatalf("%s: media %+v post_type %q", name, v.Media, v.Post.PostType)
 		}
 	}
@@ -396,7 +401,7 @@ func TestNoteRule_Thread(t *testing.T) {
 	_, err = thread(e("ok"), e("  "))
 	wantErr(t, err, ErrInvalidNoteThread)
 	video := r.image(r.alice, "video/mp4", "video")
-	_, err = thread(e("ok"), ThreadEntryInput{Text: "v", MediaIDs: []uuid.UUID{video}})
+	_, err = thread(e("ok"), ThreadEntryInput{Text: "v", MediaIDs: []uuid.UUID{video, r.image(r.alice, "image/png", "image")}})
 	wantErr(t, err, ErrInvalidNoteThread)
 	if len(r.store.Writes) != 0 {
 		t.Fatal("a refused thread was written")
@@ -803,7 +808,12 @@ func TestNoteMediaHelpers(t *testing.T) {
 	}
 	wantErr(t, NoteMediaRule([]postgres.NoteMediaRow{img, img, img, img, img}), ErrTooManyNoteMedia)
 	wantErr(t, NoteMediaRule([]postgres.NoteMediaRow{img, gif}), ErrTooManyNoteMedia)
-	wantErr(t, NoteMediaRule([]postgres.NoteMediaRow{{Kind: "video", MimeType: "video/mp4"}}), ErrNoteMediaNotAllowed)
+	vid := postgres.NoteMediaRow{Kind: "video", MimeType: "video/mp4"}
+	if err := NoteMediaRule([]postgres.NoteMediaRow{vid}); err != nil {
+		t.Fatalf("one video: %v", err)
+	}
+	wantErr(t, NoteMediaRule([]postgres.NoteMediaRow{vid, img}), ErrTooManyNoteMedia)
+	wantErr(t, NoteMediaRule([]postgres.NoteMediaRow{vid, vid}), ErrTooManyNoteMedia)
 	wantErr(t, NoteMediaRule([]postgres.NoteMediaRow{{Kind: "audio", MimeType: "audio/mpeg"}}), ErrNoteMediaNotAllowed)
 }
 
