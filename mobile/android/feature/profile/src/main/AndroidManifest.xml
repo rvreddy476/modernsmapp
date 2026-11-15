@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Verify you're a real person (2026-11-15): the camera for a 3-second front-camera
+    selfie clip, asked for with the system prompt when the person taps "Take selfie".
+    No audio is recorded, so no microphone permission.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <uses-feature
+        android:name="android.hardware.camera.front"
+        android:required="false" />
+</manifest>

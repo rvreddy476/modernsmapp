@@ -114,6 +114,9 @@
                 <data android:pathPrefix="/u/" />
                 <data android:pathPrefix="/hashtag/" />
                 <data android:pathPrefix="/echo/note/" />
+                <!-- DigiLocker's return for Verify you're a real person (2026-11-15): code + state for
+                     the callback, claimed by :feature:profile PersonVerificationReturns. -->
+                <data android:pathPrefix="/settings/verification/person/return" />
             </intent-filter>
             <!--
               Google sign-in's browser redirect (web parity, founder 21 Oct

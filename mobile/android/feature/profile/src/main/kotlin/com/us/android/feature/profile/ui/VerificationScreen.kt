@@ -14,6 +14,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -40,11 +41,12 @@ fun VerificationScreen(
     onBack: () -> Unit,
     /** Opens the Official mark page; the row shows only while the mark serves (status read 200). */
     onOpenOfficialMark: () -> Unit = {},
+    /** Opens Verify you're a real person; the row shows only while the status read answers 200. */
+    onOpenPersonVerification: () -> Unit = {},
     viewModel: VerificationViewModel = hiltViewModel(),
-    officialMark: OfficialMarkEntryViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
-    val officialShown by officialMark.shown.collectAsStateWithLifecycle()
+    val entries: @Composable () -> Unit = { VerificationEntries(onOpenOfficialMark, onOpenPersonVerification) }
     UsScaffold(
         topBar = { UsTopBar(title = "Request verification", onBack = onBack) },
         applyPageGutter = false,
@@ -65,7 +67,7 @@ fun VerificationScreen(
                     color = UsTheme.extended.statusSuccess,
                     modifier = Modifier.testTag("verification_sent"),
                 )
-                if (officialShown) OfficialMarkRow(onOpenOfficialMark)
+                entries()
                 return@Column
             }
             Text(
@@ -112,7 +114,7 @@ fun VerificationScreen(
                 loading = state.submitting,
                 modifier = Modifier.fillMaxWidth().testTag("verification_send"),
             )
-            if (officialShown) OfficialMarkRow(onOpenOfficialMark)
+            entries()
         }
     }
 }
@@ -124,6 +126,42 @@ private fun OfficialMarkRow(onClick: () -> Unit) {
         Text("Official mark", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
         Text(
             "For organisations, brands, media outlets and public bodies.",
+            style = MaterialTheme.typography.bodySmall,
+            color = UsTheme.extended.textMuted,
+        )
+    }
+}
+
+/**
+ * The rows below the form: Verify you're a real person ABOVE the Official mark, each shown only
+ * while its status read answers 200.
+ */
+@Composable
+private fun VerificationEntries(
+    onOpenOfficialMark: () -> Unit,
+    onOpenPersonVerification: () -> Unit,
+    officialMark: OfficialMarkEntryViewModel = hiltViewModel(),
+    personEntry: PersonVerificationEntryViewModel = hiltViewModel(),
+) {
+    val officialShown by officialMark.shown.collectAsStateWithLifecycle()
+    val person by personEntry.state.collectAsStateWithLifecycle()
+    // Each time the page comes into view, so the row reads "Verified" after the flow.
+    LaunchedEffect(personEntry) { personEntry.refresh() }
+    if (person.shown) PersonVerificationRow(person.verified, onOpenPersonVerification)
+    if (officialShown) OfficialMarkRow(onOpenOfficialMark)
+}
+
+/** The way into Verify you're a real person (2026-11-15); its second line reads "Verified" once done. */
+@Composable
+private fun PersonVerificationRow(verified: Boolean, onClick: () -> Unit) {
+    UsSurfaceCard(onClick = onClick, modifier = Modifier.fillMaxWidth().testTag("verification_person")) {
+        Text(
+            "Verify you're a real person",
+            style = MaterialTheme.typography.bodyLarge,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            if (verified) "Verified" else "Uses DigiLocker and a quick selfie.",
             style = MaterialTheme.typography.bodySmall,
             color = UsTheme.extended.textMuted,
         )

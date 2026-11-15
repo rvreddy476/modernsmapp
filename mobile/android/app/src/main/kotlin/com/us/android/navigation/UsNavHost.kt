@@ -418,6 +418,16 @@ fun UsNavHost(
             navController.openPushDestination(destination, onOpenReel, resolveLinkUserId)
         }
     }
+    // Verify you're a real person (2026-11-15): DigiLocker's return opens the page that posts it, signed in only.
+    if (sessionState.isAuthenticated) {
+        com.us.android.feature.profile.navigation.PersonVerificationReturnEffect(
+            onReturn = {
+                navController.navigate(com.us.android.feature.profile.navigation.PersonVerificationRoute) {
+                    launchSingleTop = true
+                }
+            },
+        )
+    }
 
     // The bar lives OUTSIDE the NavHost so it survives destination changes
     // rather than being recomposed away and back on every navigation.
@@ -1651,6 +1661,12 @@ private fun NavGraphBuilder.profileDestinations(
                 // Request verification › Official mark (2026-11-15).
                 onOfficialMark = {
                     navController.navigate(com.us.android.feature.profile.navigation.OfficialMarkRoute)
+                },
+                // Request verification › Verify you're a real person (2026-11-15).
+                onPersonVerification = {
+                    navController.navigate(com.us.android.feature.profile.navigation.PersonVerificationRoute) {
+                        launchSingleTop = true
+                    }
                 },
                 // Hidden chats (24 Oct 2026): Privacy › Hidden chats is a :feature:chat page.
                 onHiddenChats = { navController.navigateToHiddenChatsSettings() },

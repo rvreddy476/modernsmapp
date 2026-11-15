@@ -5,12 +5,8 @@
 
 package com.us.android.feature.profile.navigation
 
-import androidx.activity.compose.BackHandler
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.runtime.setValue
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.navigation.NavController
@@ -25,7 +21,6 @@ import com.us.android.feature.profile.ui.FollowListTab
 import com.us.android.feature.profile.ui.FollowRequestsScreen
 import com.us.android.feature.profile.ui.HiddenChannelsScreen
 import com.us.android.feature.profile.ui.NotificationSettingsScreen
-import com.us.android.feature.profile.ui.OfficialMarkScreen
 import com.us.android.feature.profile.ui.PrivacySettingsScreen
 import com.us.android.feature.profile.ui.ProfileDestinations
 import com.us.android.feature.profile.ui.ProfileDetailsScreen
@@ -34,7 +29,6 @@ import com.us.android.feature.profile.ui.SecuritySettingsScreen
 import com.us.android.feature.profile.ui.SettingsDataRows
 import com.us.android.feature.profile.ui.SettingsHubScreen
 import com.us.android.feature.profile.ui.SettingsLogoutViewModel
-import com.us.android.feature.profile.ui.VerificationScreen
 import kotlinx.serialization.Serializable
 
 /**
@@ -279,6 +273,9 @@ data object EditProfileRoute
 /** Request verification › Official mark (2026-11-15): the organisation mark and a Government invitation. */
 @Serializable data object OfficialMarkRoute
 
+/** Request verification › Verify you're a real person (2026-11-15): DigiLocker, then a selfie. */
+@Serializable data object PersonVerificationRoute
+
 /**
  * Registers the edit-profile destination.
  *
@@ -338,22 +335,9 @@ fun NavGraphBuilder.settingsScreens(
             ),
         )
     }
-    composable<VerificationRoute> {
-        // Until `:app` passes [SettingsSections.onOfficialMark], the page opens in place,
-        // inside this destination, and back returns to Request verification.
-        var officialInPlace by rememberSaveable { mutableStateOf(false) }
-        val openOfficial = destinations.sections.onOfficialMark
-        if (officialInPlace) {
-            BackHandler { officialInPlace = false }
-            OfficialMarkScreen(onBack = { officialInPlace = false })
-        } else {
-            VerificationScreen(
-                onBack = destinations.onBack,
-                onOpenOfficialMark = openOfficial ?: { officialInPlace = true },
-            )
-        }
-    }
-    composable<OfficialMarkRoute> { OfficialMarkScreen(onBack = destinations.onBack) }
+    composable<VerificationRoute> { VerificationPages(VerificationPage.Request, destinations) }
+    composable<PersonVerificationRoute> { VerificationPages(VerificationPage.Person, destinations) }
+    composable<OfficialMarkRoute> { VerificationPages(VerificationPage.Official, destinations) }
     composable<ProfileDetailsRoute> { ProfileDetailsScreen(destinations.onBack) }
     composable<PrivacySettingsRoute> {
         PrivacySettingsScreen(
@@ -431,6 +415,11 @@ data class SettingsSections(
      */
     val onOfficialMark: (() -> Unit)? = null,
     /**
+     * Request verification › Verify you're a real person (2026-11-15), a page of this feature: `:app`
+     * pushes [PersonVerificationRoute]. Null (the default) opens the page in place, like [onOfficialMark].
+     */
+    val onPersonVerification: (() -> Unit)? = null,
+    /**
      * Account › Momentum Premium (2026-11-13), a `:feature:premium` page. The row is drawn only
      * while this answers true — `:app`'s purchase switch on AND premium plans answered 200 — and
      * is read where the page is drawn, so it follows the server's answer. False (the default):
@@ -450,3 +439,6 @@ fun NavController.navigateToOwnProfile() = navigate(ProfileRoute())
 fun NavController.navigateToEditProfile() = navigate(EditProfileRoute)
 fun NavController.navigateToSettings() = navigate(SettingsRoute)
 fun NavController.navigateToInboxSettings() = navigate(InboxSettingsRoute)
+
+/** The DigiLocker return lands here; single-top, so an open page is reused rather than stacked. */
+fun NavController.navigateToPersonVerification() = navigate(PersonVerificationRoute) { launchSingleTop = true }

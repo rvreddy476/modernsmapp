@@ -38,6 +38,8 @@ import com.us.android.core.designsystem.theme.UsTheme
 @Composable
 fun OfficialMarkScreen(
     onBack: () -> Unit,
+    /** Opens Verify you're a real person, offered when the server answers PERSON_VERIFICATION_REQUIRED. */
+    onOpenPersonVerification: () -> Unit = {},
     viewModel: OfficialMarkViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
@@ -60,7 +62,14 @@ fun OfficialMarkScreen(
                 style = MaterialTheme.typography.bodyMedium,
                 color = UsTheme.extended.textSecondary,
             )
-            state.personRequired?.let { ErrorCard(it) }
+            state.personRequired?.let {
+                ErrorCard(it)
+                UsButton(
+                    text = "Verify you're a real person",
+                    onClick = onOpenPersonVerification,
+                    modifier = Modifier.fillMaxWidth().testTag("official_verify_person"),
+                )
+            }
             val step = state.step
             when {
                 state.loading && step == null -> Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {

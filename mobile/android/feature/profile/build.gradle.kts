@@ -43,6 +43,12 @@ dependencies {
     implementation(libs.kotlinx.serialization.json)
     implementation(libs.coil.compose)
     implementation(libs.paging.compose)
+    // Verify you're a real person (2026-11-15): the front-camera selfie clip, the same CameraX
+    // 1.4.1 stack :feature:dating records its selfie with (camera-view is not used).
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.video)
 
     testImplementation(projects.core.testing)
     testImplementation(libs.okhttp.mockwebserver)

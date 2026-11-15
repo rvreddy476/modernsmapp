@@ -70,6 +70,10 @@ class MainActivity : ComponentActivity(), ActivityPaymentHost {
     @Inject
     lateinit var googleSignIn: GoogleSignIn
 
+    /** Verify you're a real person (2026-11-15): DigiLocker's return App Link, claimed before the link parser. */
+    @Inject
+    lateinit var personReturns: com.us.android.feature.profile.data.PersonVerificationReturns
+
     /**
      * Where the PSP's result goes — the launcher holding the in-flight sheet.
      * Only the Activity holds this seam: nothing above this line should be able
@@ -125,7 +129,7 @@ class MainActivity : ComponentActivity(), ActivityPaymentHost {
         offerPushDestination(intent)
         // The OAuth redirect is not a deep link; claimed first, it never
         // reaches the link parser (which would refuse it anyway).
-        if (!googleSignIn.offerRedirect(intent?.data?.toString())) pushDestinations.offerLink(intent?.data)
+        offerIncomingLink(intent?.data)
 
         setContent {
             // The Appearance setting (T-32, 2026-10-15): System follows the
@@ -194,7 +198,18 @@ class MainActivity : ComponentActivity(), ActivityPaymentHost {
         offerPushDestination(intent)
         // Google's redirect arriving on the live activity, or an App Link
         // (atpost.app/chat/join/…) — one or the other, never both.
-        if (!googleSignIn.offerRedirect(intent.data?.toString())) pushDestinations.offerLink(intent.data)
+        offerIncomingLink(intent.data)
+    }
+
+    /**
+     * An incoming URI goes to exactly one owner: Google sign-in's redirect,
+     * DigiLocker's return for person verification (2026-11-15), or the link
+     * parser for everything else.
+     */
+    private fun offerIncomingLink(link: android.net.Uri?) {
+        val raw = link?.toString()
+        if (googleSignIn.offerRedirect(raw) || personReturns.offerRedirect(raw)) return
+        pushDestinations.offerLink(link)
     }
 
     /**
