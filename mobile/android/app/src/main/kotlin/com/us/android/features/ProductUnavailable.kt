@@ -25,6 +25,7 @@ import com.us.android.core.model.Product
 import com.us.android.core.model.productOpen
 import com.us.android.explore.LauncherTile
 import com.us.android.explore.launcherTiles
+import com.us.android.feature.premium.entry.PremiumEntry
 import kotlinx.serialization.Serializable
 
 /**
@@ -49,16 +50,23 @@ const val PRODUCT_UNAVAILABLE_DETAIL = "This part of the app is not open right n
 class ProductGateState(
     private val open: State<Set<Product>?>,
     /**
-     * Momentum Premium's ways in (2026-11-13): the purchase switch on AND premium
-     * plans answered 200 (`:feature:premium` rememberPremiumEntry). Read the same
-     * lazy way, so the Settings row and Echo's "Get Premium" follow the answer.
+     * Momentum Premium's ways in (`:feature:premium` rememberPremiumEntry). Read
+     * the same lazy way, so the Settings row and Echo's "Get Premium" follow
+     * the answer.
      */
-    private val premium: State<Boolean>? = null,
+    private val premium: State<PremiumEntry>? = null,
 ) {
     fun isOpen(product: Product): Boolean = productOpen(product, open.value)
 
-    /** Whether a way into Momentum Premium may be drawn. False without an answer. */
-    fun premiumShown(): Boolean = premium?.value == true
+    /**
+     * Settings › Momentum Premium: while Premium may be sold, or (15 Nov 2026)
+     * while selling is off for a viewer who already holds Premium or has an
+     * invoice. False without an answer.
+     */
+    fun premiumShown(): Boolean = premium?.value?.settingsRow == true
+
+    /** Echo's "Get Premium": only while Premium may be sold on Android. False without an answer. */
+    fun premiumBuyable(): Boolean = premium?.value?.canBuy == true
 
     /** The launcher's tiles for the current answer: a closed product has none. */
     fun launcher(): List<LauncherTile> = launcherTiles(open.value)

@@ -11,6 +11,7 @@ import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
 import com.us.android.feature.premium.entry.PremiumAvailability
+import com.us.android.feature.premium.entry.PremiumEntry
 import com.us.android.feature.premium.ui.PremiumScreen
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.StateFlow
@@ -37,7 +38,7 @@ fun NavController.navigateToPremium() = navigate(PremiumRoute) { launchSingleTop
 class PremiumEntryViewModel @Inject constructor(
     private val availability: PremiumAvailability,
 ) : ViewModel() {
-    val shown: StateFlow<Boolean> = availability.shown
+    val entry: StateFlow<PremiumEntry> = availability.entry
 
     fun refresh() {
         viewModelScope.launch { availability.refresh() }
@@ -47,15 +48,14 @@ class PremiumEntryViewModel @Inject constructor(
 }
 
 /**
- * Whether the ways into Premium may be drawn — the app's switch is on AND
- * `GET premium/plans` answered 200 — re-read whenever [signedIn] changes.
- * Call once, from the shell (outside the NavHost), and read the [State] lazily
- * where a row or button is drawn.
+ * Which ways into Premium may be drawn ([PremiumEntry]), re-read whenever
+ * [signedIn] changes. Call once, from the shell (outside the NavHost), and
+ * read the [State] lazily where a row or button is drawn.
  */
 @Composable
-fun rememberPremiumEntry(signedIn: Boolean, viewModel: PremiumEntryViewModel = hiltViewModel()): State<Boolean> {
+fun rememberPremiumEntry(signedIn: Boolean, viewModel: PremiumEntryViewModel = hiltViewModel()): State<PremiumEntry> {
     LaunchedEffect(signedIn) {
         if (signedIn) viewModel.refresh() else viewModel.clear()
     }
-    return viewModel.shown.collectAsState()
+    return viewModel.entry.collectAsState()
 }

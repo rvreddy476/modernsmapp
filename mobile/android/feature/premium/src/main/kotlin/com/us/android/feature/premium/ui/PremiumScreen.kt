@@ -112,7 +112,8 @@ fun PremiumScreen(
                         onDownload = download,
                     )
                     StatusCard(status = state.status, error = state.statusError)
-                    Plans(state = state, onBuy = viewModel::buy)
+                    // Selling off (15 Nov 2026): no passes drawn; status and invoices stay.
+                    if (state.canBuy) Plans(state = state, onBuy = viewModel::buy)
                     PerksCard()
                     InvoicesSection(
                         invoices = state.invoices,

@@ -504,8 +504,10 @@ Echo and Premium are built on the server, Android and web, and switched off. The
 
 **Not built yet**
 
-10. **Android Premium purchase** (waits on 5). Android also has no invoice list.
-11. **PDF invoices.** Invoices are a printable HTML page, because the server images have no wkhtmltopdf.
+10. **Android Premium purchase** — built dark in `92920078c` (13 Nov): on in debug, off in release until 5.
+    The invoice list is built too; since 15 Nov a buyer with a pass or an invoice reaches it with selling
+    off, while "Get Premium" and the passes stay hidden.
+11. ~~**PDF invoices**~~ — done 13 Nov in `76bed8a27`: rendered in Go (shared/invoice); HTML stays as `?format=html`.
 12. **Official / Government badges** and the impersonation name check (design phase 3).
 13. ~~**Echo extras**~~ — done 13 Nov in `b962362eb`: hashtag-follow candidates in For You,
     keyword filtering inside quoted notes, `notes_timeline` maintenance modes, `echo_notes`

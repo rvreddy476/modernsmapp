@@ -1576,7 +1576,7 @@ private fun NavGraphBuilder.profileDestinations(
         onOpenProfile = { userId -> navController.navigateToProfile(userId) },
         navController = navController,
         // The premium sheet's "Get Premium" (2026-11-13), only while Premium may be sold.
-        premiumEntryShown = { gate.premiumShown() },
+        premiumEntryShown = { gate.premiumBuyable() },
         onGetPremium = { navController.navigateToPremium() },
     )
     profileScreen(
@@ -1669,7 +1669,7 @@ private fun NavGraphBuilder.profileDestinations(
     )
     accountControlScreen(onBack = { navController.popBackStack() }, onSignedOut = onSignedOut)
     // Momentum Premium (2026-11-13): passes, purchase and invoices. Its ways in are drawn
-    // only while gate.premiumShown(); the screen itself refuses with the switch off.
+    // only while gate.premiumShown(); with selling off the screen shows status and invoices only.
     premiumScreens(
         onBack = { navController.popBackStack() },
         onPostOnEcho = { navController.navigateToEcho() },

@@ -55,11 +55,15 @@ class FakePremiumApi : PremiumApi {
     val checkoutAnswers = ArrayDeque<() -> ApiEnvelope<CheckoutDto>>()
     val planAnswers = ArrayDeque<() -> ApiEnvelope<PlansDto>>()
     val passAnswers = ArrayDeque<() -> ApiEnvelope<PassDto>>()
+    val meAnswers = ArrayDeque<() -> ApiEnvelope<StatusDto>>()
+    val invoiceAnswers = ArrayDeque<() -> ApiEnvelope<InvoicesDto>>()
     var lastPass: () -> ApiEnvelope<PassDto> = { passAnswer("confirming") }
     var passReads = 0
+    var planReads = 0
 
     override suspend fun plans(): ApiEnvelope<PlansDto> {
         requests++
+        planReads++
         return planAnswers.removeFirstOrNull()?.invoke() ?: envelope("plans.json", PlansDto.serializer())
     }
 
@@ -71,7 +75,7 @@ class FakePremiumApi : PremiumApi {
 
     override suspend fun me(): ApiEnvelope<StatusDto> {
         requests++
-        return envelope("me.json", StatusDto.serializer())
+        return meAnswers.removeFirstOrNull()?.invoke() ?: envelope("me.json", StatusDto.serializer())
     }
 
     override suspend fun pass(passId: String): ApiEnvelope<PassDto> {
@@ -82,7 +86,7 @@ class FakePremiumApi : PremiumApi {
 
     override suspend fun invoices(): ApiEnvelope<InvoicesDto> {
         requests++
-        return envelope("invoices.json", InvoicesDto.serializer())
+        return invoiceAnswers.removeFirstOrNull()?.invoke() ?: envelope("invoices.json", InvoicesDto.serializer())
     }
 
     override suspend fun invoice(invoiceId: String): ApiEnvelope<InvoiceDto> {

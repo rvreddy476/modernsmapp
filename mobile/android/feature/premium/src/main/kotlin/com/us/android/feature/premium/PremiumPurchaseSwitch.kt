@@ -10,9 +10,10 @@ package com.us.android.feature.premium
  * on for a release is a one-line change in `app/build.gradle.kts`, after the
  * policy check.
  *
- * Off, nothing of this feature is reachable: no Settings row, no "Get
- * Premium" on Echo's sheet (which keeps only OK), no request to the premium
- * routes, and the screen itself — if a route were ever reached — says
- * "Premium is not available yet" without touching the network.
+ * Off, nothing can be bought: no "Get Premium" on Echo's sheet (which keeps
+ * only OK), no passes on the screen, and no request to `plans` or `checkout`.
+ * A viewer who already holds Premium or has an invoice (bought on the web)
+ * still gets the Settings row and a screen with their status and invoices
+ * (15 Nov 2026); everyone else gets no Settings row.
  */
 data class PremiumPurchaseSwitch(val enabled: Boolean)

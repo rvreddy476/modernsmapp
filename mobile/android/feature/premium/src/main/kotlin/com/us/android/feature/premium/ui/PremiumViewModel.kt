@@ -44,8 +44,13 @@ data class InvoiceDownloadState(
 )
 
 data class PremiumUiState(
-    /** The app's switch is off, or the server answered PREMIUM_NOT_ENABLED: "Premium is not available yet". */
+    /** The server answered PREMIUM_NOT_ENABLED: "Premium is not available yet". */
     val off: Boolean = false,
+    /**
+     * The app may sell Premium ([PremiumPurchaseSwitch] on). False: the passes and
+     * the purchase are not drawn; status and invoices still are (15 Nov 2026).
+     */
+    val canBuy: Boolean = false,
     val loading: Boolean = true,
     val plans: List<PremiumPlan> = emptyList(),
     val plansError: String? = null,
@@ -74,9 +79,9 @@ class ContentResolverInvoiceTarget @Inject constructor(
  * server's GST breakdown, the purchase ([PremiumPurchaseFlow]), and the tax
  * invoices and credit notes.
  *
- * With the app's [PremiumPurchaseSwitch] off it says "Premium is not
- * available yet" and makes NO request: no route leads here then, and this is
- * the backstop if one ever did.
+ * With the app's [PremiumPurchaseSwitch] off (15 Nov 2026) it shows the
+ * viewer's status and invoices only: no plans or checkout are ever asked,
+ * and no pass can be bought — a web buyer still reaches their documents.
  */
 // Constructor injection of the screen's collaborators; a wrapper would add indirection, not clarity.
 @Suppress("LongParameterList", "TooManyFunctions")
@@ -108,7 +113,7 @@ class PremiumViewModel @Inject constructor(
         null
     }
 
-    private val _state = MutableStateFlow(PremiumUiState(off = !switch.enabled, loading = switch.enabled))
+    private val _state = MutableStateFlow(PremiumUiState(canBuy = switch.enabled))
     val state: StateFlow<PremiumUiState> = _state.asStateFlow()
 
     /** The document the buyer is choosing a place for, between Download and "Save to". */
@@ -131,10 +136,10 @@ class PremiumViewModel @Inject constructor(
                 f.resume()
             }
         }
+        if (flow == null) viewModelScope.launch { load() }
     }
 
     fun refresh() {
-        if (flow == null) return
         _state.update { it.copy(loading = true) }
         viewModelScope.launch { load() }
     }
@@ -163,7 +168,7 @@ class PremiumViewModel @Inject constructor(
 
     /** Download pressed on [invoiceId]: the screen opens "Save to"; [saveTo] gets the answer. */
     fun startDownload(invoiceId: String): Boolean {
-        if (flow == null || _state.value.download.pendingId != null) return false
+        if (_state.value.off || _state.value.download.pendingId != null) return false
         downloadTarget = invoiceId
         return true
     }
@@ -199,7 +204,7 @@ class PremiumViewModel @Inject constructor(
     fun dismissDownloadMessage() = _state.update { it.copy(download = InvoiceDownloadState()) }
 
     private suspend fun load() {
-        val plans = repository.plans()
+        val plans = if (switch.enabled) repository.plans() else AppResult.Success(emptyList())
         val me = repository.me()
         val off = plans.offError() || me.offError()
         _state.update {

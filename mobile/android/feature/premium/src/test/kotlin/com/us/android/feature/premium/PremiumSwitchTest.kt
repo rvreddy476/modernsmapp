@@ -3,11 +3,15 @@ package com.us.android.feature.premium
 import android.net.Uri
 import androidx.lifecycle.SavedStateHandle
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
 import com.us.android.core.payments.PaymentHandoff
 import com.us.android.core.testing.MainDispatcherRule
+import com.us.android.feature.premium.data.InvoicesDto
 import com.us.android.feature.premium.data.PremiumRepository
+import com.us.android.feature.premium.data.StatusDto
 import com.us.android.feature.premium.entry.PremiumAvailability
+import com.us.android.feature.premium.entry.PremiumEntry
 import com.us.android.feature.premium.payment.PremiumPaymentOpener
 import com.us.android.feature.premium.ui.InvoiceFileTarget
 import com.us.android.feature.premium.ui.PremiumViewModel
@@ -19,9 +23,10 @@ import org.junit.Test
 
 /**
  * The founder's switch (13 Nov 2026): selling Premium on Android ships dark.
- * Off, no way in is drawn and nothing is asked of the server; on, a way in is
- * drawn only after premium plans answered 200 — a 503 PREMIUM_NOT_ENABLED or
- * any failure keeps it hidden.
+ * Off, nothing can be bought and plans/checkout are never asked; a viewer who
+ * already holds Premium or has an invoice still reaches their status and
+ * invoices (15 Nov 2026). On, selling is drawn only after premium plans
+ * answered 200 — a 503 PREMIUM_NOT_ENABLED or any failure keeps it hidden.
  */
 @OptIn(ExperimentalCoroutinesApi::class)
 class PremiumSwitchTest {
@@ -35,12 +40,42 @@ class PremiumSwitchTest {
     private fun availability(enabled: Boolean) = PremiumAvailability(PremiumPurchaseSwitch(enabled), repository)
 
     @Test
-    fun `switch off — every way in stays hidden and the server is never asked`() = runTest {
+    fun `switch off and nothing owned — no way in, and plans are never asked`() = runTest {
+        api.meAnswers += { ApiEnvelope(data = StatusDto(active = false)) }
+        api.invoiceAnswers += { ApiEnvelope(data = InvoicesDto()) }
         val entry = availability(enabled = false)
         entry.refresh()
 
-        assertThat(entry.shown.value).isFalse()
-        assertThat(api.requests).isEqualTo(0)
+        assertThat(entry.entry.value).isEqualTo(PremiumEntry.Hidden)
+        assertThat(api.planReads).isEqualTo(0)
+    }
+
+    @Test
+    fun `switch off with a live pass — the Settings row shows, Get Premium does not`() = runTest {
+        val entry = availability(enabled = false)
+        entry.refresh()
+
+        assertThat(entry.entry.value).isEqualTo(PremiumEntry(settingsRow = true, canBuy = false))
+        assertThat(api.planReads).isEqualTo(0)
+    }
+
+    @Test
+    fun `switch off with only an old invoice — the Settings row shows`() = runTest {
+        api.meAnswers += { ApiEnvelope(data = StatusDto(active = false)) }
+        val entry = availability(enabled = false)
+        entry.refresh()
+
+        assertThat(entry.entry.value.settingsRow).isTrue()
+        assertThat(entry.entry.value.canBuy).isFalse()
+    }
+
+    @Test
+    fun `switch off and the server's switch off (503) — hidden`() = runTest {
+        api.meAnswers += { refused(503, "PREMIUM_NOT_ENABLED") }
+        val entry = availability(enabled = false)
+        entry.refresh()
+
+        assertThat(entry.entry.value).isEqualTo(PremiumEntry.Hidden)
     }
 
     @Test
@@ -48,7 +83,7 @@ class PremiumSwitchTest {
         val entry = availability(enabled = true)
         entry.refresh()
 
-        assertThat(entry.shown.value).isTrue()
+        assertThat(entry.entry.value).isEqualTo(PremiumEntry(settingsRow = true, canBuy = true))
         assertThat(api.requests).isEqualTo(1)
     }
 
@@ -58,23 +93,23 @@ class PremiumSwitchTest {
         val entry = availability(enabled = true)
         entry.refresh()
 
-        assertThat(entry.shown.value).isFalse()
+        assertThat(entry.entry.value).isEqualTo(PremiumEntry.Hidden)
     }
 
     @Test
     fun `a failed read hides what an earlier answer showed, and sign-out hides it too`() = runTest {
         val entry = availability(enabled = true)
         entry.refresh()
-        assertThat(entry.shown.value).isTrue()
+        assertThat(entry.entry.value).isEqualTo(PremiumEntry(settingsRow = true, canBuy = true))
 
         api.planAnswers += { offline() }
         entry.refresh()
-        assertThat(entry.shown.value).isFalse()
+        assertThat(entry.entry.value).isEqualTo(PremiumEntry.Hidden)
 
         entry.refresh()
-        assertThat(entry.shown.value).isTrue()
+        assertThat(entry.entry.value).isEqualTo(PremiumEntry(settingsRow = true, canBuy = true))
         entry.clear()
-        assertThat(entry.shown.value).isFalse()
+        assertThat(entry.entry.value).isEqualTo(PremiumEntry.Hidden)
     }
 
     private fun viewModel(enabled: Boolean): PremiumViewModel {
@@ -92,18 +127,35 @@ class PremiumSwitchTest {
     }
 
     @Test
-    fun `switch off — the screen says not available, asks nothing, and Buy does nothing`() = runTest {
+    fun `switch off — status and invoices load, no plans are asked, and Buy does nothing`() = runTest {
+        val vm = viewModel(enabled = false)
+        advanceUntilIdle()
+
+        val s = vm.state.value
+        assertThat(s.off).isFalse()
+        assertThat(s.loading).isFalse()
+        assertThat(s.canBuy).isFalse()
+        assertThat(s.plans).isEmpty()
+        assertThat(s.status!!.active).isTrue()
+        assertThat(s.invoices.single().number).isEqualTo("MP/26-27/000001")
+
+        vm.refresh()
+        vm.pay()
+        advanceUntilIdle()
+        assertThat(api.planReads).isEqualTo(0)
+        assertThat(api.checkoutBodies).isEmpty()
+        // A web buyer's invoice still downloads.
+        assertThat(vm.startDownload("d4444444-4444-4444-8444-444444444444")).isTrue()
+    }
+
+    @Test
+    fun `switch off and the server's PREMIUM_NOT_ENABLED — not available, no download`() = runTest {
+        api.meAnswers += { refused(503, "PREMIUM_NOT_ENABLED") }
         val vm = viewModel(enabled = false)
         advanceUntilIdle()
 
         assertThat(vm.state.value.off).isTrue()
-        assertThat(vm.state.value.loading).isFalse()
-        vm.refresh()
-        vm.pay()
         assertThat(vm.startDownload("d4444444-4444-4444-8444-444444444444")).isFalse()
-        advanceUntilIdle()
-        assertThat(api.requests).isEqualTo(0)
-        assertThat(api.checkoutBodies).isEmpty()
     }
 
     @Test
