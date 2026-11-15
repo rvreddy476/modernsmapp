@@ -68,6 +68,7 @@ import java.time.Instant
 fun NoteDetailScreen(destinations: EchoDestinations, viewModel: NoteDetailViewModel = hiltViewModel()) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val replies by viewModel.replyFeed.collectAsStateWithLifecycle()
+    val children by viewModel.children.collectAsStateWithLifecycle()
     val urls by viewModel.mediaUrls.collectAsStateWithLifecycle()
     val now = remember(state.note, replies.items) { Instant.now() }
     val actions = viewModel.actions
@@ -150,9 +151,26 @@ fun NoteDetailScreen(destinations: EchoDestinations, viewModel: NoteDetailViewMo
                             )
                             ConversationLabel(count = note.replyCount)
                         }
-                        val rows = replyRows(note.id, replies.items)
-                        itemsIndexed(rows, key = { _, row -> "r:" + row.note.id }) { _, row ->
-                            ReplyBubbleRow(row = row, urls = urls, callbacks = callbacks, now = now)
+                        val lines = replyItems(note.id, replies.items, children)
+                        itemsIndexed(lines, key = { _, line -> line.key }) { _, line ->
+                            when (line) {
+                                is ReplyItem.Reply -> ReplyBubbleRow(
+                                    row = line.row,
+                                    urls = urls,
+                                    callbacks = callbacks,
+                                    now = now,
+                                )
+                                is ReplyItem.ViewReplies -> ChildRepliesLink(
+                                    depth = line.depth,
+                                    text = viewRepliesLabel(line.parent.replyCount),
+                                    tag = "echo_view_replies:${line.parent.id}",
+                                    onClick = { viewModel.openReplies(line.parent.id) },
+                                )
+                                is ReplyItem.ChildStatus -> ChildRepliesStatus(
+                                    line = line,
+                                    onMore = { viewModel.moreChildReplies(line.parentId) },
+                                )
+                            }
                         }
                         item(key = "foot") {
                             when {
@@ -519,3 +537,46 @@ private val THREAD_LINE = 2.dp
 
 // Under the signature avatar's centre: the card's inset (12) + its padding (14) + half the avatar (10) - 1.
 private val THREAD_LINE_START = 35.dp
+
+/** "View N replies" or "Show more replies", lined up with the bubbles at [depth]. */
+@Composable
+private fun ChildRepliesLink(depth: Int, text: String, tag: String, onClick: () -> Unit) {
+    Text(
+        text = text,
+        style = MaterialTheme.typography.labelMedium,
+        color = UsTheme.extended.echo.text,
+        modifier = Modifier
+            .padding(start = UsTheme.spacing.l + REPLY_INDENT * depth + CHILD_LINK_OFFSET, bottom = UsTheme.spacing.l)
+            .clip(RoundedCornerShape(UsTheme.radii.full))
+            .clickable(onClick = onClick)
+            .padding(vertical = UsTheme.spacing.xs)
+            .testTag(tag),
+    )
+}
+
+/** Under a reply's opened replies: loading, a retry when the page failed, or "Show more replies". */
+@Composable
+private fun ChildRepliesStatus(line: ReplyItem.ChildStatus, onMore: () -> Unit) {
+    val state = line.state
+    when {
+        state.loading -> Text(
+            text = LOADING_REPLIES,
+            style = MaterialTheme.typography.labelMedium,
+            color = UsTheme.extended.textTertiary,
+            modifier = Modifier
+                .padding(
+                    start = UsTheme.spacing.l + REPLY_INDENT * line.depth + CHILD_LINK_OFFSET,
+                    bottom = UsTheme.spacing.l,
+                )
+                .testTag("echo_child_loading:${line.parentId}"),
+        )
+        state.error -> ChildRepliesLink(line.depth, RETRY_REPLIES, "echo_child_retry:${line.parentId}", onMore)
+        else -> ChildRepliesLink(line.depth, MORE_REPLIES, "echo_more_replies:${line.parentId}", onMore)
+    }
+}
+
+/** The avatar and its gap, so the link starts under the bubble's left edge. */
+private val CHILD_LINK_OFFSET = 40.dp
+private const val LOADING_REPLIES = "Loading replies…"
+private const val RETRY_REPLIES = "Couldn't load replies. Try again"
+private const val MORE_REPLIES = "Show more replies"

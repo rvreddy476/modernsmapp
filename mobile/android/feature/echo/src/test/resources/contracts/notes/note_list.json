@@ -77,7 +77,8 @@
         "quote_count": 0,
         "status": "published",
         "scheduled_at": null,
-        "poll": null
+        "poll": null,
+        "thread_parts": 0
       },
       {
         "id": "f3333333-3333-4333-8333-333333333333",
@@ -155,7 +156,8 @@
         "quote_count": 0,
         "status": "published",
         "scheduled_at": null,
-        "poll": null
+        "poll": null,
+        "thread_parts": 0
       }
     ],
     "next_cursor": ""

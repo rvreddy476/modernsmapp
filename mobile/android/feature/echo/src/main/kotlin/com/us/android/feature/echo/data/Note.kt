@@ -86,6 +86,8 @@ data class Note(
     val poll: NotePoll? = null,
     /** Why a due scheduled note did not publish (contract section 3); the author's own list only. */
     val publishError: String? = null,
+    /** On a thread's first note, its live part count (the first included); 0 otherwise. */
+    val threadParts: Int = 0,
 ) {
     val edited: Boolean get() = !editedAt.isNullOrBlank()
 }
@@ -234,6 +236,7 @@ fun NoteDto.toNote(): Note = Note(
     scheduledAt = scheduledAt?.takeIf { it.isNotBlank() },
     poll = poll?.toPoll(),
     publishError = publishError?.takeIf { it.isNotBlank() },
+    threadParts = threadParts,
 )
 
 fun PollDto.toPoll(): NotePoll = NotePoll(

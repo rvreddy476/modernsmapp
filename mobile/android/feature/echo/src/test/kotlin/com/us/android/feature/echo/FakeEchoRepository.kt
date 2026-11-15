@@ -60,6 +60,9 @@ class FakeEchoRepository : EchoRepository {
     val timelines = mutableMapOf<Pair<Timeline, String?>, AppResult<NotePage>>()
     val notes = mutableMapOf<String, AppResult<Note>>()
     val repliesPages = mutableMapOf<String?, AppResult<NotePage>>()
+
+    /** A reply's own replies, by "id|cursor" (checked before [repliesPages]). */
+    val repliesOf = mutableMapOf<String, AppResult<NotePage>>()
     val userPages = mutableMapOf<Pair<ProfileNotesTab, String?>, AppResult<NotePage>>()
     var conversationResult: AppResult<List<Note>> = AppResult.Success(emptyList())
     var postResult: AppResult<Note> = AppResult.Success(com.us.android.feature.echo.note("posted"))
@@ -102,7 +105,7 @@ class FakeEchoRepository : EchoRepository {
     override suspend fun conversation(id: String): AppResult<List<Note>> = conversationResult
 
     override suspend fun replies(id: String, cursor: String?): AppResult<NotePage> =
-        repliesPages[cursor] ?: AppResult.Success(NotePage(emptyList(), null))
+        repliesOf["$id|$cursor"] ?: repliesPages[cursor] ?: AppResult.Success(NotePage(emptyList(), null))
 
     /** A card's first replies, by note id; unset reads as none. */
     val previewResults = mutableMapOf<String, AppResult<List<Note>>>()

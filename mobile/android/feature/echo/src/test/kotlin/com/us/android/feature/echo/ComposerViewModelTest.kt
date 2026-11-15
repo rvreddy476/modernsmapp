@@ -65,7 +65,22 @@ class ComposerViewModelTest {
         media,
         FakeSession("me"),
         clock,
+        mockk(relaxed = true),
     )
+
+    @Test
+    fun `a draft is anything written, picked or set up, so a tap outside the sheet keeps it`() = runTest(dispatcher) {
+        val vm = model()
+        advanceUntilIdle()
+        assertThat(vm.state.value.hasDraft).isFalse()
+        vm.setText(0, "  ")
+        assertThat(vm.state.value.hasDraft).isFalse()
+        vm.setText(0, "Hello")
+        assertThat(vm.state.value.hasDraft).isTrue()
+        vm.setText(0, "")
+        vm.startPoll()
+        assertThat(vm.state.value.hasDraft).isTrue()
+    }
 
     @Test
     fun `a viewer without Premium gets the sheet and nothing can be sent`() = runTest(dispatcher) {

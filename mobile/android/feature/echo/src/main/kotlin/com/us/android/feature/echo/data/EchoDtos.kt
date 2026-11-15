@@ -44,6 +44,7 @@ data class NoteDto(
     @SerialName("scheduled_at") val scheduledAt: String? = null,
     val poll: PollDto? = null,
     @SerialName("publish_error") val publishError: String? = null,
+    @SerialName("thread_parts") val threadParts: Int = 0,
 )
 
 @Serializable

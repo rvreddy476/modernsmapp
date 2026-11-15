@@ -6,23 +6,29 @@ import com.us.android.core.common.result.AppResult
 import com.us.android.feature.echo.data.Note
 import com.us.android.feature.echo.data.NoteAuthor
 import com.us.android.feature.echo.data.VerificationMark
+import com.us.android.feature.echo.ui.ChildReplies
 import com.us.android.feature.echo.ui.ComposeMode
 import com.us.android.feature.echo.ui.EchoNoteActions
+import com.us.android.feature.echo.ui.ReplyItem
 import com.us.android.feature.echo.ui.ReplyPreviewStore
 import com.us.android.feature.echo.ui.TopicLine
 import com.us.android.feature.echo.ui.charactersLeft
+import com.us.android.feature.echo.ui.childReplyPlacement
 import com.us.android.feature.echo.ui.continuesThread
 import com.us.android.feature.echo.ui.countWords
 import com.us.android.feature.echo.ui.firstHashtag
 import com.us.android.feature.echo.ui.isLongNote
+import com.us.android.feature.echo.ui.isThreadCard
 import com.us.android.feature.echo.ui.placeholder
 import com.us.android.feature.echo.ui.repliesLabel
+import com.us.android.feature.echo.ui.replyItems
 import com.us.android.feature.echo.ui.replyPreview
 import com.us.android.feature.echo.ui.replyPrompt
 import com.us.android.feature.echo.ui.replyRows
 import com.us.android.feature.echo.ui.submitLabel
 import com.us.android.feature.echo.ui.threadPartsEndingAt
 import com.us.android.feature.echo.ui.topicLine
+import com.us.android.feature.echo.ui.viewRepliesLabel
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runTest
@@ -215,5 +221,53 @@ class EchoLookTest {
         assertThat(submitLabel(ComposeMode.REPLY, thread = false)).isEqualTo("Reply")
         assertThat(charactersLeft(500)).isEqualTo("500 left")
         assertThat(charactersLeft(-3)).isEqualTo("3 over")
+    }
+
+    // ── thread part count ──
+
+    @Test
+    fun `a card is a thread by the server's part count or the author's own first reply`() {
+        val root = note("t")
+        assertThat(isThreadCard(root.copy(threadParts = 3), null)).isTrue()
+        assertThat(isThreadCard(root.copy(threadParts = 1), null)).isFalse()
+        assertThat(isThreadCard(root, null)).isFalse()
+        val own = note("p2", replyToId = "t")
+        assertThat(isThreadCard(root, replyPreview(root, listOf(own)))).isTrue()
+        assertThat(topicLine(root, "", thread = true, threadParts = 3).text).isEqualTo("Thread · 3 parts")
+    }
+
+    // ── replies to replies ──
+
+    @Test
+    fun `an opened reply's replies sit one step in, then flat with Replying to`() {
+        assertThat(childReplyPlacement(0, "@bob")).isEqualTo(1 to null)
+        assertThat(childReplyPlacement(1, "@bob")).isEqualTo(2 to null)
+        assertThat(childReplyPlacement(2, "@bob")).isEqualTo(2 to "@bob")
+        assertThat(childReplyPlacement(2, "")).isEqualTo(2 to null)
+        assertThat(viewRepliesLabel(1)).isEqualTo("View 1 reply")
+        assertThat(viewRepliesLabel(4)).isEqualTo("View 4 replies")
+    }
+
+    @Test
+    fun `the note page lists View N replies, then the opened replies and their status`() {
+        val r1 = note("r1", replyToId = "n").copy(replyCount = 2).by("bob")
+        val r2 = note("r2", replyToId = "n")
+        val closed = replyItems("n", listOf(r1, r2), emptyMap())
+        assertThat(closed.map { it.key }).containsExactly("r:r1", "v:r1", "r:r2").inOrder()
+
+        val loading = replyItems("n", listOf(r1, r2), mapOf("r1" to ChildReplies()))
+        assertThat(loading.map { it.key }).containsExactly("r:r1", "s:r1", "r:r2").inOrder()
+
+        val kid = note("k1", replyToId = "r1").copy(replyCount = 1)
+        val page = ChildReplies(listOf(kid), loading = false, cursor = "c2")
+        val open = replyItems("n", listOf(r1, r2), mapOf("r1" to page))
+        assertThat(open.map { it.key }).containsExactly("r:r1", "r:k1", "v:k1", "s:r1", "r:r2").inOrder()
+        val kidRow = (open[1] as ReplyItem.Reply).row
+        assertThat(kidRow.depth).isEqualTo(1)
+        assertThat((open[2] as ReplyItem.ViewReplies).depth).isEqualTo(1)
+
+        val last = ChildReplies(listOf(kid.copy(replyCount = 0)), loading = false)
+        val done = replyItems("n", listOf(r1, r2), mapOf("r1" to last))
+        assertThat(done.map { it.key }).containsExactly("r:r1", "r:k1", "r:r2").inOrder()
     }
 }

@@ -139,7 +139,88 @@ fun continuesThread(note: Note, next: Note?): Boolean =
 
 const val MAX_BUBBLES = 2
 const val MAX_REPLY_DEPTH = 2
-private const val MIN_THREAD_PARTS = 2
+internal const val MIN_THREAD_PARTS = 2
 private const val LONG_NOTE_CHARS = 280
 private const val EDITED = "Edited"
 private const val SEPARATOR = " · "
+
+/**
+ * Whether a timeline card is a thread: the server's part count on its first
+ * note (`thread_parts`), or the author's own reply among its first replies.
+ */
+fun isThreadCard(note: Note, preview: ReplyPreview?): Boolean =
+    note.threadParts >= MIN_THREAD_PARTS || preview?.thread == true
+
+/**
+ * A reply's own replies, opened under it on the note page with "View N
+ * replies": what has arrived, whether a page is on its way or failed, and
+ * the cursor of the next page (null when there is none).
+ */
+@Immutable
+data class ChildReplies(
+    val items: List<Note> = emptyList(),
+    val loading: Boolean = true,
+    val error: Boolean = false,
+    val cursor: String? = null,
+)
+
+/** One line of the note page's replies. */
+sealed interface ReplyItem {
+    val key: String
+
+    /** A reply bubble. */
+    data class Reply(val row: ReplyRow) : ReplyItem {
+        override val key: String get() = "r:" + row.note.id
+    }
+
+    /** "View N replies" under [parent], whose own replies are not open yet. */
+    data class ViewReplies(val parent: Note, val depth: Int) : ReplyItem {
+        override val key: String get() = "v:" + parent.id
+    }
+
+    /** Under [parentId]'s opened replies: loading, a retry, or "Show more replies". */
+    data class ChildStatus(val parentId: String, val depth: Int, val state: ChildReplies) : ReplyItem {
+        override val key: String get() = "s:$parentId"
+    }
+}
+
+/**
+ * Where a reply opened under a reply sits: one step further in, up to
+ * [MAX_REPLY_DEPTH]; past that it stays at the last step and says whose
+ * reply it answers ([parentHandle], "Replying to @x").
+ */
+fun childReplyPlacement(parentDepth: Int, parentHandle: String?): Pair<Int, String?> {
+    val level = parentDepth + 1
+    return if (level <= MAX_REPLY_DEPTH) level to null else MAX_REPLY_DEPTH to parentHandle?.takeIf { it.isNotBlank() }
+}
+
+/** "View 1 reply", "View 12 replies". */
+fun viewRepliesLabel(count: Long): String = "View " + countWords(count, "reply", "replies")
+
+/**
+ * The note page's replies with each reply's own replies where they were
+ * opened ([open], by parent id): the direct replies as [replyRows] lays
+ * them out, a "View N replies" line under a reply that has replies and is
+ * not open, and under an open one its replies (one step in) and their status.
+ * A note shows once, wherever it first appears.
+ */
+fun replyItems(focusId: String, replies: List<Note>, open: Map<String, ChildReplies>): List<ReplyItem> {
+    val out = ArrayList<ReplyItem>()
+    val seen = HashSet<String>()
+    fun emit(row: ReplyRow) {
+        if (!seen.add(row.note.id)) return
+        out += ReplyItem.Reply(row)
+        val kids = open[row.note.id]
+        if (kids == null) {
+            if (row.note.replyCount > 0) out += ReplyItem.ViewReplies(row.note, row.depth)
+            return
+        }
+        val (depth, replyingTo) = childReplyPlacement(row.depth, row.note.author?.handle)
+        kids.items.forEach { emit(ReplyRow(note = it, depth = depth, replyingTo = replyingTo)) }
+        if (kids.loading || kids.error || kids.cursor != null) {
+            out += ReplyItem.ChildStatus(row.note.id, depth, kids)
+        }
+    }
+    replyRows(focusId, replies).forEach(::emit)
+    return out
+}

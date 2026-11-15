@@ -72,6 +72,11 @@ class NoteDetailViewModel @Inject constructor(
     )
     val replyFeed: StateFlow<NoteFeed> = replies.feed
 
+    private val _children = MutableStateFlow<Map<String, ChildReplies>>(emptyMap())
+
+    /** Replies opened under a reply ("View N replies"), by that reply's id. */
+    val children: StateFlow<Map<String, ChildReplies>> = _children.asStateFlow()
+
     /** Bookmark, vote, share and the ··· menu, on the note, its conversation and its replies. */
     val actions = EchoNoteActions(
         scope = viewModelScope,
@@ -79,6 +84,7 @@ class NoteDetailViewModel @Inject constructor(
         apply = ::applyEverywhere,
         remove = { predicate ->
             replies.removeWhere(predicate)
+            dropFromChildren(predicate)
             _state.update { s ->
                 val gone = s.note?.let(predicate) == true
                 s.copy(conversation = s.conversation.filterNot(predicate), deleted = s.deleted || gone)
@@ -128,6 +134,7 @@ class NoteDetailViewModel @Inject constructor(
         if (!replyOpened) return
         replyOpened = false
         replies.refresh()
+        _children.value.keys.forEach { loadChildren(it, cursor = null) }
         viewModelScope.launch {
             val fresh = (repository.note(noteId) as? AppResult.Success)?.data
             if (fresh != null) _state.update { it.copy(note = fresh) }
@@ -137,6 +144,39 @@ class NoteDetailViewModel @Inject constructor(
     fun loadMoreReplies() = replies.loadMore()
 
     fun retryReplies() = replies.retry()
+
+    /** "View N replies" under [parentId]: reads its first page of replies. */
+    fun openReplies(parentId: String) {
+        if (_children.value.containsKey(parentId)) return
+        loadChildren(parentId, cursor = null)
+    }
+
+    /** Under opened replies: the next page, or the failed page again. */
+    fun moreChildReplies(parentId: String) {
+        val open = _children.value[parentId] ?: return
+        if (open.loading) return
+        loadChildren(parentId, open.cursor)
+    }
+
+    private fun loadChildren(parentId: String, cursor: String?) {
+        _children.update { it + (parentId to (it[parentId] ?: ChildReplies()).copy(loading = true, error = false)) }
+        viewModelScope.launch {
+            when (val result = repository.replies(parentId, cursor)) {
+                is AppResult.Success -> {
+                    media.load(result.data.items)
+                    _children.update { open ->
+                        val had = open[parentId]?.items.orEmpty().takeIf { cursor != null }.orEmpty()
+                        val fresh = result.data.items.filterNot { n -> had.any { it.id == n.id } }
+                        val page = ChildReplies(items = had + fresh, loading = false, cursor = result.data.nextCursor)
+                        open + (parentId to page)
+                    }
+                }
+                is AppResult.Failure -> _children.update { open ->
+                    open + (parentId to (open[parentId] ?: ChildReplies()).copy(loading = false, error = true))
+                }
+            }
+        }
+    }
 
     fun menuFor(note: Note): NoteMenu {
         val own = isAuthor(note, viewerId)
@@ -202,6 +242,7 @@ class NoteDetailViewModel @Inject constructor(
                         _state.update { it.copy(deleting = false, deleted = true) }
                     } else {
                         replies.remove(note.id)
+                        dropFromChildren { it.id == note.id }
                         _state.update { it.copy(deleting = false, message = "Note deleted") }
                     }
                 }
@@ -236,7 +277,11 @@ class NoteDetailViewModel @Inject constructor(
             s.copy(note = s.note?.mapNote(id, transform), conversation = s.conversation.mapNote(id, transform))
         }
         replies.mapNote(id, transform)
+        _children.update { open -> open.mapValues { (_, c) -> c.copy(items = c.items.mapNote(id, transform)) } }
     }
+
+    private fun dropFromChildren(predicate: (Note) -> Boolean) =
+        _children.update { open -> open.mapValues { (_, c) -> c.copy(items = c.items.filterNot(predicate)) } }
 
     private fun say(message: String) = _state.update { it.copy(message = message) }
 

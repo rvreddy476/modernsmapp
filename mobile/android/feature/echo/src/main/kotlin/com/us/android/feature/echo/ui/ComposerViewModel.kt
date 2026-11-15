@@ -10,7 +10,9 @@ import com.us.android.core.model.SessionState
 import com.us.android.feature.echo.data.EchoErrorCodes
 import com.us.android.feature.echo.data.EchoMediaUploader
 import com.us.android.feature.echo.data.EchoMediaUrls
+import com.us.android.feature.echo.data.EchoPeople
 import com.us.android.feature.echo.data.EchoPollRules
+import com.us.android.feature.echo.data.EchoProfile
 import com.us.android.feature.echo.data.EchoRepository
 import com.us.android.feature.echo.data.EchoRules
 import com.us.android.feature.echo.data.EligibilityReason
@@ -104,6 +106,10 @@ data class ComposerUiState(
     val canSchedule: Boolean
         get() = (mode == ComposeMode.NEW || mode == ComposeMode.QUOTE) && entries.size == 1 && !submitting
 
+    /** Something is written, picked or set up: a tap outside the sheet must not lose it. */
+    val hasDraft: Boolean
+        get() = entries.any { it.text.isNotBlank() || it.media.isNotEmpty() } || poll != null || scheduledAt != null
+
     /** Replies take their target's conversation; everything else picks who can reply. */
     val showsReplyPolicy: Boolean get() = mode != ComposeMode.REPLY
 
@@ -133,6 +139,7 @@ data class ComposerUiState(
  *    sends the same key; any change to the draft mints a new one.
  */
 @HiltViewModel
+@Suppress("LongParameterList") // the draft's readers, the uploader, the clock and the viewer's profile
 class ComposerViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val repository: EchoRepository,
@@ -140,6 +147,7 @@ class ComposerViewModel @Inject constructor(
     private val media: EchoMediaUrls,
     private val session: SessionStateProvider,
     @EchoClock private val clock: Clock,
+    private val people: EchoPeople,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(
@@ -157,6 +165,11 @@ class ComposerViewModel @Inject constructor(
     val state: StateFlow<ComposerUiState> = _state.asStateFlow()
     val mediaUrls: StateFlow<Map<String, String>> = media.urls
 
+    private val _me = MutableStateFlow<EchoProfile?>(null)
+
+    /** The signed-in account, for the author row on top of the draft; null until read. */
+    val me: StateFlow<EchoProfile?> = _me.asStateFlow()
+
     private var nextKey = 2
 
     /** The key of the draft last sent; null once the draft changes or posts. */
@@ -167,6 +180,13 @@ class ComposerViewModel @Inject constructor(
 
     init {
         viewModelScope.launch { prepare() }
+        viewModelScope.launch {
+            val own = people.ownProfile()
+            if (own is AppResult.Success) {
+                _me.value = own.data
+                media.loadIds(listOfNotNull(own.data.avatarMediaId))
+            }
+        }
     }
 
     private suspend fun prepare() {

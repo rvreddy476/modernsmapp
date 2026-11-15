@@ -74,7 +74,9 @@ fun NoteCard(
         modifier = modifier.testTag("echo_note:${note.id}"),
         onClick = if (focused) null else ({ callbacks.onOpen(note) }),
     ) {
-        val topic = topicLine(note, age = "", thread = preview?.thread == true)
+        // The server counts a thread's parts on its first note; the replies only hint at one.
+        val thread = isThreadCard(note, preview)
+        val topic = topicLine(note, age = "", thread = thread, threadParts = note.threadParts.takeIf { it > 0 })
         Signature(
             author = note.author,
             authorId = note.authorId,
@@ -91,7 +93,8 @@ fun NoteCard(
             style = if (isLongNote(note.text)) UsEchoType.noteLong else UsEchoType.note,
         )
         NoteAttachments(note = note, mediaUrls = mediaUrls, callbacks = callbacks, now = now)
-        preview?.let {
+        val shown = preview?.copy(thread = thread) ?: ReplyPreview(emptyList(), null, thread = true).takeIf { thread }
+        shown?.let {
             ReplyBubbles(
                 preview = it,
                 onOpenNote = { callbacks.onOpen(note) },

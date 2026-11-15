@@ -157,7 +157,8 @@
       "quote_count": 1,
       "status": "published",
       "scheduled_at": null,
-      "poll": null
+      "poll": null,
+      "thread_parts": 0
     },
     "view_count": 0,
     "bookmark_count": 0,
@@ -165,6 +166,7 @@
     "quote_count": 0,
     "status": "published",
     "scheduled_at": null,
-    "poll": null
+    "poll": null,
+    "thread_parts": 0
   }
 }

@@ -7,14 +7,19 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -59,13 +64,14 @@ import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsMessage
 import com.us.android.core.designsystem.component.UsMessageHost
 import com.us.android.core.designsystem.component.UsMessageType
-import com.us.android.core.designsystem.component.UsScaffold
 import com.us.android.core.designsystem.icon.UsIcons
 import com.us.android.core.designsystem.theme.UsEchoType
 import com.us.android.core.designsystem.theme.UsTheme
 import com.us.android.core.ui.UsLoadingState
 import com.us.android.feature.echo.data.EchoPollRules
+import com.us.android.feature.echo.data.EchoProfile
 import com.us.android.feature.echo.data.EchoRules
+import com.us.android.feature.echo.data.NoteAuthor
 import com.us.android.feature.echo.data.ReplyPolicy
 import com.us.android.feature.echo.data.StagedMedia
 import com.us.android.feature.echo.data.pollLengthLabel
@@ -92,6 +98,7 @@ fun ComposerScreen(
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
     val urls by viewModel.mediaUrls.collectAsStateWithLifecycle()
+    val me by viewModel.me.collectAsStateWithLifecycle()
     var pickingFor by rememberSaveable { mutableIntStateOf(0) }
     var policySheet by remember { mutableStateOf(false) }
     var scheduling by remember { mutableStateOf(false) }
@@ -113,32 +120,19 @@ fun ComposerScreen(
         }
     }
 
-    UsScaffold(
-        applyPageGutter = false,
-        topBar = {
-            ComposerTopBar(
-                label = if (state.scheduledAt != null) "Schedule" else submitLabel(state.mode, state.isThread),
-                enabled = state.canSubmit,
-                submitting = state.submitting,
-                showSubmit = state.blocked == null && !state.checking,
-                onCancel = onClose,
-                onSubmit = viewModel::submit,
-            )
-        },
-        bottomBar = {
-            if (state.blocked == null && !state.checking) {
-                ComposerToolbar(
-                    state = state,
-                    onPhotos = { pick(state.entries.lastIndex) },
-                    onGif = { pickingGif = true },
-                    onPoll = viewModel::startPoll,
-                    onSchedule = { scheduling = true },
-                    onAddEntry = viewModel::addEntry,
-                )
-            }
-        },
-    ) { padding ->
-        Box(modifier = Modifier.padding(padding).fillMaxSize()) {
+    // A sheet over the page it was opened from (look v3 §3). Tapping outside
+    // closes it only while nothing is written, so a draft is never lost to a
+    // stray tap; Cancel and Back always close.
+    ComposerSheetFrame(onOutside = { if (!state.hasDraft) onClose() }) {
+        ComposerTopBar(
+            label = if (state.scheduledAt != null) "Schedule" else submitLabel(state.mode, state.isThread),
+            enabled = state.canSubmit,
+            submitting = state.submitting,
+            showSubmit = state.blocked == null && !state.checking,
+            onCancel = onClose,
+            onSubmit = viewModel::submit,
+        )
+        Box(modifier = Modifier.weight(1f).fillMaxWidth()) {
             val blocked = state.blocked
             when {
                 state.checking -> UsLoadingState(label = "Checking")
@@ -150,6 +144,7 @@ fun ComposerScreen(
                 )
                 else -> ComposerBody(
                     state = state,
+                    me = me,
                     urls = urls,
                     viewModel = viewModel,
                     onPick = pick,
@@ -166,6 +161,16 @@ fun ComposerScreen(
                     viewModel.errorShown()
                     viewModel.noticeShown()
                 },
+            )
+        }
+        if (state.blocked == null && !state.checking) {
+            ComposerToolbar(
+                state = state,
+                onPhotos = { pick(state.entries.lastIndex) },
+                onGif = { pickingGif = true },
+                onPoll = viewModel::startPoll,
+                onSchedule = { scheduling = true },
+                onAddEntry = viewModel::addEntry,
             )
         }
     }
@@ -199,6 +204,50 @@ fun ComposerScreen(
             },
             onDismiss = { scheduling = false },
         )
+    }
+}
+
+/**
+ * The composer as a sheet over the page it was opened from: a handle, then
+ * [content], on the sheet colour with rounded top corners, lifted by the
+ * keyboard. [onOutside] is a tap above the sheet.
+ */
+@Composable
+private fun ComposerSheetFrame(onOutside: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .clickable(
+                interactionSource = remember { MutableInteractionSource() },
+                indication = null,
+                onClick = onOutside,
+            )
+            .testTag("echo_composer_outside"),
+        contentAlignment = Alignment.BottomCenter,
+    ) {
+        val shape = RoundedCornerShape(topStart = UsTheme.radii.large, topEnd = UsTheme.radii.large)
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .fillMaxHeight(SHEET_HEIGHT)
+                .clip(shape)
+                .background(UsTheme.extended.bgSheet)
+                // Taps on the sheet stay on the sheet.
+                .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) {}
+                .navigationBarsPadding()
+                .imePadding()
+                .testTag("echo_composer_sheet"),
+        ) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.CenterHorizontally)
+                    .padding(top = UsTheme.spacing.m)
+                    .size(width = HANDLE_WIDTH, height = HANDLE_HEIGHT)
+                    .clip(RoundedCornerShape(UsTheme.radii.full))
+                    .background(UsTheme.extended.borderSubtle),
+            )
+            content()
+        }
     }
 }
 
@@ -285,6 +334,7 @@ private fun BlockedView(
 @Suppress("LongMethod", "LongParameterList") // the entries, poll, schedule line, quote and policy pill
 private fun ComposerBody(
     state: ComposerUiState,
+    me: EchoProfile?,
     urls: Map<String, String>,
     viewModel: ComposerViewModel,
     onPick: (Int) -> Unit,
@@ -319,6 +369,9 @@ private fun ComposerBody(
                 locked = state.textLocked,
                 canAddMedia = state.canAddMedia,
                 urls = urls,
+                author = me?.takeIf { index == 0 }?.let { own ->
+                    own.asAuthor().copy(avatarUrl = own.avatarMediaId?.let(urls::get))
+                },
                 policy = state.replyPolicy.takeIf { index == 0 && state.showsReplyPolicy },
                 onPolicy = onPolicy,
                 onText = { viewModel.setText(index, it) },
@@ -638,6 +691,8 @@ private fun EntryCard(
     locked: Boolean,
     canAddMedia: Boolean,
     urls: Map<String, String>,
+    /** The viewer, on the first card: the author row on top (look v3 §3). */
+    author: NoteAuthor?,
     policy: ReplyPolicy?,
     onPolicy: () -> Unit,
     onText: (String) -> Unit,
@@ -646,7 +701,28 @@ private fun EntryCard(
     onRemoveMedia: (String) -> Unit,
 ) {
     EchoCard(modifier = Modifier.testTag("echo_entry:$index"), accent = index == 0) {
-        if (policy != null || total > 1) {
+        // The first card is signed by the viewer, with who can reply beside the name.
+        val ownPolicy = policy?.takeIf { author == null }
+        author?.let {
+            Signature(
+                author = it,
+                authorId = it.id,
+                onOpenAuthor = {},
+                modifier = Modifier.padding(bottom = UsTheme.spacing.m).testTag("echo_composer_author"),
+                trailing = policy?.let { p ->
+                    {
+                        EchoPill(
+                            icon = policyIcon(p),
+                            label = policyChip(p),
+                            description = policyChip(p),
+                            tag = "echo_reply_policy_chip",
+                            onClick = onPolicy,
+                        )
+                    }
+                },
+            )
+        }
+        if (ownPolicy != null || total > 1) {
             Row(
                 modifier = Modifier.fillMaxWidth().padding(bottom = UsTheme.spacing.m),
                 verticalAlignment = Alignment.CenterVertically,
@@ -660,7 +736,7 @@ private fun EntryCard(
                     )
                 }
                 Box(modifier = Modifier.weight(1f))
-                policy?.let {
+                ownPolicy?.let {
                     EchoPill(
                         icon = policyIcon(it),
                         label = policyChip(it),
@@ -797,3 +873,12 @@ private val SPINNER = 18.dp
 private val THUMB = 72.dp
 private val CLOSE_ICON = 14.dp
 private val SMALL_ICON = 16.dp
+
+/** The sheet's share of the screen; the page it was opened from shows above it. */
+private const val SHEET_HEIGHT = 0.94f
+private val HANDLE_WIDTH = 36.dp
+private val HANDLE_HEIGHT = 4.dp
+
+/** The signed-in account as a note's author, for the row on top of the draft. */
+internal fun EchoProfile.asAuthor(): NoteAuthor =
+    NoteAuthor(id = userId, username = username, displayName = displayName, avatarUrl = null, mark = mark)

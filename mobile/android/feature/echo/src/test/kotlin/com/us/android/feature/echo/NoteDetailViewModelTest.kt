@@ -2,6 +2,7 @@ package com.us.android.feature.echo
 
 import androidx.lifecycle.SavedStateHandle
 import com.google.common.truth.Truth.assertThat
+import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.testing.MainDispatcherRule
 import com.us.android.feature.echo.data.EchoMediaUrls
@@ -59,6 +60,34 @@ class NoteDetailViewModelTest {
         vm.loadMoreReplies()
         advanceUntilIdle()
         assertThat(vm.replyFeed.value.items.map { it.id }).containsExactly("r1", "r2").inOrder()
+    }
+
+    @Test
+    fun `View N replies reads a reply's own replies, pages them, and retries a failed page`() = runTest(dispatcher) {
+        repo.notes["n1"] = AppResult.Success(note("n1"))
+        repo.repliesPages[null] = AppResult.Success(NotePage(listOf(note("r1", replyToId = "n1")), null))
+        repo.repliesOf["r1|null"] = AppResult.Success(NotePage(listOf(note("k1", replyToId = "r1")), "c2"))
+        repo.repliesOf["r1|c2"] = AppResult.Failure(AppError.NoNetwork())
+        val vm = model()
+        advanceUntilIdle()
+        assertThat(vm.children.value).isEmpty()
+
+        vm.openReplies("r1")
+        advanceUntilIdle()
+        assertThat(vm.children.value["r1"]?.items?.map { it.id }).containsExactly("k1")
+        assertThat(vm.children.value["r1"]?.cursor).isEqualTo("c2")
+
+        vm.moreChildReplies("r1")
+        advanceUntilIdle()
+        assertThat(vm.children.value["r1"]?.error).isTrue()
+        assertThat(vm.children.value["r1"]?.items?.map { it.id }).containsExactly("k1")
+
+        repo.repliesOf["r1|c2"] = AppResult.Success(NotePage(listOf(note("k2", replyToId = "r1")), null))
+        vm.moreChildReplies("r1")
+        advanceUntilIdle()
+        assertThat(vm.children.value["r1"]?.items?.map { it.id }).containsExactly("k1", "k2").inOrder()
+        assertThat(vm.children.value["r1"]?.cursor).isNull()
+        assertThat(vm.children.value["r1"]?.error).isFalse()
     }
 
     @Test

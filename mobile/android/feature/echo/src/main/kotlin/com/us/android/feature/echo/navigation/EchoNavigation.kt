@@ -1,8 +1,10 @@
 package com.us.android.feature.echo.navigation
 
+import androidx.compose.ui.window.DialogProperties
 import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
 import androidx.navigation.compose.composable
+import androidx.navigation.compose.dialog
 import androidx.navigation.toRoute
 import com.us.android.core.model.NotificationTarget
 import com.us.android.feature.echo.ui.ComposeMode
@@ -109,7 +111,10 @@ fun NavGraphBuilder.echoScreens(
     composable<EchoProfileRoute> { EchoProfileScreen(destinations = destinations) }
     composable<EchoListRoute> { EchoListScreen(destinations = destinations) }
     composable<EchoScheduledRoute> { ScheduledScreen(destinations = destinations) }
-    composable<EchoComposeRoute> { entry ->
+    // A dialog destination: the composer is a sheet over the page it was opened from (look v3 §3).
+    dialog<EchoComposeRoute>(
+        dialogProperties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) { entry ->
         val mode = ComposeMode.fromWire(entry.toRoute<EchoComposeRoute>().mode)
         ComposerScreen(
             onClose = onBack,
