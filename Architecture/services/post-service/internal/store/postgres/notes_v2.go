@@ -150,7 +150,7 @@ func (s *Store) RescheduleNote(ctx context.Context, id, authorID uuid.UUID, at t
 	if _, err := tx.Exec(ctx, `UPDATE posts SET publish_at = $2, updated_at = NOW() WHERE id = $1`, id, at); err != nil {
 		return false, fmt.Errorf("reschedule note: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE polls SET ends_at = $2 + (ends_at - $3) WHERE post_id = $1 AND ends_at IS NOT NULL`,
+	if _, err := tx.Exec(ctx, shiftPollEndsSQL,
 		id, at, old); err != nil {
 		return false, fmt.Errorf("reschedule note poll: %w", err)
 	}
@@ -253,7 +253,7 @@ func (s *Store) PublishScheduledNote(ctx context.Context, w *NotePublish) (*Note
 		RETURNING search_rev`, w.ID, w.Now).Scan(&out.SearchRev); err != nil {
 		return nil, fmt.Errorf("publish note: flip: %w", err)
 	}
-	if _, err := tx.Exec(ctx, `UPDATE polls SET ends_at = $2 + (ends_at - $3) WHERE post_id = $1 AND ends_at IS NOT NULL`,
+	if _, err := tx.Exec(ctx, shiftPollEndsSQL,
 		w.ID, w.Now, old); err != nil {
 		return nil, fmt.Errorf("publish note: poll: %w", err)
 	}
@@ -624,3 +624,9 @@ func (s *Store) IsNote(ctx context.Context, id uuid.UUID) (bool, error) {
 	err := s.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM posts WHERE id = $1 AND content_type = '`+NoteContentType+`')`, id).Scan(&ok)
 	return ok, err
 }
+
+// shiftPollEndsSQL moves a note's poll deadline by as much as the note moved
+// ($2 new time, $3 old time). Both are typed: untyped, Postgres reads $2 as
+// an interval and the update fails with SQLSTATE 42804 (CI, 15 Nov 2026).
+const shiftPollEndsSQL = `UPDATE polls SET ends_at = $2::timestamptz + (ends_at - $3::timestamptz)
+	WHERE post_id = $1 AND ends_at IS NOT NULL`
