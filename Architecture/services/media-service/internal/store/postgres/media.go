@@ -425,6 +425,19 @@ func (s *MediaAssetStore) DeleteMedia(ctx context.Context, id uuid.UUID) ([]stri
 	// record: a reel the owner deleted kept its ladder in storage forever,
 	// and one failed delete leaked an object for good. The rows go only
 	// together with the record of what to remove.
+	// The video's sound sits outside its prefix (asset_purge.go,
+	// soundObjectKeysSQL) and goes with it.
+	soundsPresent, err := tableExists(ctx, tx, "audio_tracks")
+	if err != nil {
+		return nil, fmt.Errorf("probe audio_tracks: %w", err)
+	}
+	if soundsPresent {
+		soundKeys, err := collectSoundKeys(ctx, tx, soundObjectKeysSQL("= $1"), id)
+		if err != nil {
+			return nil, fmt.Errorf("fetch sound keys: %w", err)
+		}
+		objectKeys = append(objectKeys, soundKeys...)
+	}
 	reclaim := append([]string(nil), objectKeys...)
 	if prefix, ok := AssetPrefixForKey(storageKey); ok {
 		reclaim = append(reclaim, prefix)
@@ -451,6 +464,11 @@ func (s *MediaAssetStore) DeleteMedia(ctx context.Context, id uuid.UUID) ([]stri
 	}
 	if err := purgeCopyrightDataTx(ctx, tx, id); err != nil {
 		return nil, err
+	}
+	if soundsPresent {
+		if _, err := tx.Exec(ctx, soundRetireSQL("= $1"), id); err != nil {
+			return nil, fmt.Errorf("retire sound: %w", err)
+		}
 	}
 	if _, err := tx.Exec(ctx, `DELETE FROM media_assets WHERE id = $1`, id); err != nil {
 		if isForeignKeyViolation(err) {

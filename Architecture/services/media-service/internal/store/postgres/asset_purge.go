@@ -124,6 +124,22 @@ func (s *MediaAssetStore) DeleteAssetForReferrer(ctx context.Context, mediaID uu
 		}
 		rows.Close()
 	}
+	// The sound extracted from this video (service/sounds.go) lives OUTSIDE
+	// the asset prefix, under audio/<uploader>/<media>/, so neither the
+	// prefix listing nor the variant rows find it. Its objects go with the
+	// asset: a sound whose source is gone is refused everywhere
+	// (service/audio_reads.go admitToTrack), so nothing can play them again.
+	soundsPresent, err := tableExists(ctx, tx, "audio_tracks")
+	if err != nil {
+		return nil, fmt.Errorf("purge asset: probe audio_tracks: %w", err)
+	}
+	if soundsPresent {
+		soundKeys, err := collectSoundKeys(ctx, tx, soundObjectKeysSQL("= $1"), mediaID)
+		if err != nil {
+			return nil, fmt.Errorf("purge asset: sound keys: %w", err)
+		}
+		keys = append(keys, soundKeys...)
+	}
 	for _, k := range keys {
 		if k == "" {
 			continue
@@ -149,7 +165,7 @@ func (s *MediaAssetStore) DeleteAssetForReferrer(ctx context.Context, mediaID uu
 		{"media_caption_jobs", `DELETE FROM media_caption_jobs WHERE media_id = $1`},
 		{"media_transcode_inbox", `DELETE FROM media_transcode_inbox WHERE media_asset_id = $1`},
 		{"media_clips", `DELETE FROM media_clips WHERE media_asset_id = $1`},
-		{"audio_tracks", `UPDATE audio_tracks SET source_media_id = NULL WHERE source_media_id = $1`},
+		{"audio_tracks", soundRetireSQL("= $1")},
 		{"media_event_outbox", `DELETE FROM media_event_outbox WHERE media_asset_id = $1`},
 		{"owner_media_resolved", `DELETE FROM owner_media_resolved WHERE media_asset_id = $1`},
 	}
@@ -216,4 +232,65 @@ func referrerPurgeChecks(mediaID, referrerID uuid.UUID) []referrerCheck {
 		// last POST to use the asset, but a channel update still shows it.
 		{"media_claims", `SELECT EXISTS (SELECT 1 FROM media_claims WHERE media_id = $1)`, []any{mediaID}},
 	}
+}
+
+// ── The sound of a purged source ────────────────────────────────────────────
+//
+// A sound is extracted once per source video and its objects are written to
+// audio/<uploader>/<media>/ (service/sounds.go), outside the asset prefix.
+// When the source is purged (here, or by an account erasure, PurgeUser) the
+// sound can never be heard again: admitToTrack refuses a sound with no
+// source, on every route, for every reel that carried it. So its objects are
+// reclaimed with the asset, and its row is kept (post-service's
+// posts.audio_track_id still names it) but marked deleted, with no keys.
+//
+// sources is the SQL predicate on source_media_id: "= $1" for one asset,
+// "IN (<the user's assets>)" for an erasure.
+
+// soundObjectKeysSQL selects (object_key, source_media_id) of every sound
+// object taken from the sources: the audio and the waveform. A key that a
+// sound row of ANY other source also names (a library row, a row another
+// service wrote) is left out, so reclaiming one source never deletes an
+// object something else still plays.
+func soundObjectKeysSQL(sources string) string {
+	return `SELECT DISTINCT ON (s.k) s.k, s.source_media_id FROM (
+			SELECT source_media_id, audio_key AS k FROM audio_tracks WHERE source_media_id ` + sources + `
+			UNION ALL
+			SELECT source_media_id, waveform_key AS k FROM audio_tracks WHERE source_media_id ` + sources + `
+		) s
+		WHERE s.k IS NOT NULL AND s.k <> ''
+		  AND NOT EXISTS (
+			SELECT 1 FROM audio_tracks o
+			WHERE (o.source_media_id IS NULL OR NOT (o.source_media_id ` + sources + `))
+			  AND (o.audio_key = s.k OR o.waveform_key = s.k))`
+}
+
+// soundRetireSQL marks the sounds of the sources deleted and forgets their
+// source and keys, so the row can never sign a link to an object that is
+// gone.
+func soundRetireSQL(sources string) string {
+	return `UPDATE audio_tracks
+		SET source_media_id = NULL, status = 'deleted', audio_key = NULL, waveform_key = NULL, updated_at = NOW()
+		WHERE source_media_id ` + sources
+}
+
+// collectSoundKeys runs soundObjectKeysSQL and returns the keys.
+func collectSoundKeys(ctx context.Context, tx pgx.Tx, sql string, args ...any) ([]string, error) {
+	rows, err := tx.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var k string
+		var source *uuid.UUID
+		if err := rows.Scan(&k, &source); err != nil {
+			return nil, err
+		}
+		if k != "" {
+			out = append(out, k)
+		}
+	}
+	return out, rows.Err()
 }
