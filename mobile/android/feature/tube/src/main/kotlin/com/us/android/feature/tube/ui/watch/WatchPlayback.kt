@@ -61,6 +61,13 @@ internal class WatchPlayback(
      * is locked or gone, or [Playback] is not one the caller can refresh).
      */
     private val freshOriginal: suspend (stale: Playback) -> Playback?,
+    /**
+     * A playback whose address is a server route that signs afresh on every
+     * request — a dubbed track, `/v1/media/<id>/serve/dub_<lang>_<rung>`
+     * (2026-11-16): healed by preparing the SAME address again, never by a read.
+     */
+    private val reopensItself: (Playback) -> Boolean = { false },
+    private val now: () -> Long = System::currentTimeMillis,
 ) {
     private val hlsRefresh = HlsRefresh(player, sourceFor)
 
@@ -84,13 +91,36 @@ internal class WatchPlayback(
     private var originalRefreshes = 0
     private var reprepare: Job? = null
 
+    /** When the viewer last paused a self-reopening playback; null while it plays. */
+    private var pausedAtMillis: Long? = null
+
     private val listener = object : Player.Listener {
         override fun onPlayerError(error: PlaybackException) {
             val current = playback ?: return
             if (current.kind != PlaybackKind.Progressive || !error.isExpiredSignature()) return
             if (originalRefreshes >= MAX_ORIGINAL_REFRESHES) return
             originalRefreshes++
-            reload(current, player.currentPosition, player.playWhenReady, readAgain = true)
+            reload(current, player.currentPosition, player.playWhenReady, readAgain = !reopensItself(current))
+        }
+
+        /**
+         * A dub's route redirects to a link signed for a few minutes. A pause
+         * longer than that may have outlived the link the player holds, so
+         * Play after one opens the route again where the video was, before
+         * the old link is asked for anything (2026-11-16).
+         */
+        override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+            val current = playback ?: return
+            if (!reopensItself(current) || held) return
+            if (!playWhenReady) {
+                pausedAtMillis = now()
+                return
+            }
+            val pausedAt = pausedAtMillis ?: return
+            pausedAtMillis = null
+            if (now() - pausedAt >= REOPEN_AFTER_PAUSE_MILLIS) {
+                reload(current, player.currentPosition, play = true, readAgain = false)
+            }
         }
 
         override fun onPlayerErrorChanged(error: PlaybackException?) = noteFailure()
@@ -172,6 +202,7 @@ internal class WatchPlayback(
     private fun load(target: Playback, positionMs: Long, play: Boolean) {
         reprepare?.cancel()
         playback = target
+        pausedAtMillis = null
         held = false
         heldAtEnd = false
         hlsRefresh.prepared(target)
@@ -202,6 +233,12 @@ internal class WatchPlayback(
     companion object {
         /** Fresh MP4 addresses in a row without reaching READY before the error is left to show. */
         const val MAX_ORIGINAL_REFRESHES = 1
+
+        /**
+         * A dub's redirect goes to a link with at least three minutes left;
+         * a pause this long opens the route again on Play.
+         */
+        const val REOPEN_AFTER_PAUSE_MILLIS = 150_000L
     }
 }
 

@@ -36,6 +36,14 @@ internal class FakeWatchPlayer {
         Handler(),
     ) as ExoPlayer
 
+    /** The viewer's Play or Pause: the value, then the event, as a real player sends it. */
+    fun press(play: Boolean) {
+        playWhenReady = play
+        listeners.toList().forEach {
+            it.onPlayWhenReadyChanged(play, Player.PLAY_WHEN_READY_CHANGE_REASON_USER_REQUEST)
+        }
+    }
+
     fun state(state: Int) {
         playbackState = state
         listeners.toList().forEach { it.onPlaybackStateChanged(state) }

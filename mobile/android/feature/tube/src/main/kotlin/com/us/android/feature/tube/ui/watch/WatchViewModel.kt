@@ -45,6 +45,7 @@ import com.us.android.core.media.MediaSources
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.media.Playback
 import com.us.android.core.media.PlaybackCaption
+import com.us.android.core.media.PlaybackKind
 import com.us.android.core.media.PlayerFactory
 import com.us.android.core.media.applyCaption
 import com.us.android.core.media.captionChoice
@@ -335,7 +336,15 @@ class WatchViewModel @Inject constructor(
         volume = 1f
     }
 
-    private val watchPlayback = WatchPlayback(player, sources::create, viewModelScope, ::refreshedOriginal)
+    private val watchPlayback = WatchPlayback(
+        player = player,
+        sourceFor = sources::create,
+        scope = viewModelScope,
+        freshOriginal = ::refreshedOriginal,
+        // A dub is the only progressive playback that is not the video's own:
+        // its route signs afresh on every request (2026-11-16).
+        reopensItself = { it.kind == PlaybackKind.Progressive && it != basePlayback },
+    )
 
     /** The player stopped on an error nothing healed (audit H1): the screen draws Retry. */
     val playbackFailed: StateFlow<Boolean> = watchPlayback.failed

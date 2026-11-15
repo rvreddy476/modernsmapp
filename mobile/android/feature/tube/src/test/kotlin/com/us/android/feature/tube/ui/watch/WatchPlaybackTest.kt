@@ -36,6 +36,8 @@ class WatchPlaybackTest {
     private val mp4 = Playback(url = "https://cdn/m1/original.mp4?sig=old", kind = PlaybackKind.Progressive)
     private val freshMp4 = mp4.copy(url = "https://cdn/m1/original.mp4?sig=new")
     private val hls = Playback(url = "https://api/v1/media/m1/hls/master.m3u8", kind = PlaybackKind.Hls)
+    private val dub = Playback(url = "https://api/v1/media/m1/serve/dub_hi_720p", kind = PlaybackKind.Progressive)
+    private var clock = 1_000_000L
 
     private val fake = FakeWatchPlayer()
     private val built = mutableListOf<Playback>()
@@ -53,6 +55,8 @@ class WatchPlaybackTest {
             reads += stale
             answer.await()
         },
+        reopensItself = { it == dub },
+        now = { clock },
     )
 
     private fun forbidden(): ExoPlaybackException = ExoPlaybackException.createForSource(
@@ -253,5 +257,56 @@ class WatchPlaybackTest {
         assertThat(transportTap(failed = true, ended = false)).isEqualTo(TransportTap.RETRY)
         assertThat(transportTap(failed = false, ended = true)).isEqualTo(TransportTap.REPLAY)
         assertThat(transportTap(failed = false, ended = false)).isEqualTo(TransportTap.TOGGLE)
+    }
+
+    // ── A dubbed track (2026-11-16) ───────────────────────────────────────
+
+    @Test
+    fun `a refused dub opens its own route again where it was, with no read`() {
+        playing(dub)
+
+        fake.fail(forbidden())
+
+        assertThat(reads).isEmpty()
+        assertThat(built).containsExactly(dub)
+        assertThat(fake.calls).containsExactly("setMediaSource@42000", "prepare", "playWhenReady=true").inOrder()
+        assertThat(playback.failed.value).isFalse()
+    }
+
+    @Test
+    fun `Play after a long pause opens the dub's route again where it was`() {
+        playing(dub)
+        fake.press(play = false)
+        clock += WatchPlayback.REOPEN_AFTER_PAUSE_MILLIS
+
+        fake.press(play = true)
+
+        assertThat(reads).isEmpty()
+        assertThat(built).containsExactly(dub)
+        assertThat(fake.calls).containsExactly("setMediaSource@42000", "prepare", "playWhenReady=true").inOrder()
+    }
+
+    @Test
+    fun `Play after a short pause keeps the dub's open link`() {
+        playing(dub)
+        fake.press(play = false)
+        clock += WatchPlayback.REOPEN_AFTER_PAUSE_MILLIS - 1
+
+        fake.press(play = true)
+
+        assertThat(built).isEmpty()
+        assertThat(fake.calls).isEmpty()
+    }
+
+    @Test
+    fun `the video's own MP4 is not reopened by a long pause`() {
+        playing(mp4)
+        fake.press(play = false)
+        clock += WatchPlayback.REOPEN_AFTER_PAUSE_MILLIS * 4
+
+        fake.press(play = true)
+
+        assertThat(built).isEmpty()
+        assertThat(reads).isEmpty()
     }
 }
