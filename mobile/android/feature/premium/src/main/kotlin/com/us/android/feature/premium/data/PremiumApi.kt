@@ -7,6 +7,7 @@ import retrofit2.http.Body
 import retrofit2.http.GET
 import retrofit2.http.POST
 import retrofit2.http.Path
+import retrofit2.http.Query
 import retrofit2.http.Streaming
 
 /**
@@ -42,11 +43,17 @@ interface PremiumApi {
     suspend fun invoice(@Path("invoiceId") invoiceId: String): ApiEnvelope<InvoiceDto>
 
     /**
-     * The printable HTML (`Content-Disposition: attachment`, `no-store`). Not
-     * an envelope: the body IS the document. Streamed straight into the file
-     * the buyer picked.
+     * The PDF (`Content-Disposition: attachment`, `no-store`; `format=pdf` asked
+     * for explicitly, 16 Nov 2026). Not an envelope: the body IS the document.
+     * Streamed straight into the file the buyer picked.
      */
     @Streaming
     @GET("v1/monetization/premium/invoices/{invoiceId}/document")
-    suspend fun invoiceDocument(@Path("invoiceId") invoiceId: String): Response<ResponseBody>
+    suspend fun invoiceDocument(
+        @Path("invoiceId") invoiceId: String,
+        @Query("format") format: String = INVOICE_FORMAT_PDF,
+    ): Response<ResponseBody>
 }
+
+/** The invoice document format Android saves (the server also has `html`, a printable fallback). */
+const val INVOICE_FORMAT_PDF = "pdf"

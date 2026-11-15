@@ -94,8 +94,11 @@ class FakePremiumApi : PremiumApi {
         return envelope("invoice.json", InvoiceDto.serializer())
     }
 
-    override suspend fun invoiceDocument(invoiceId: String): Response<ResponseBody> {
+    var lastDocumentFormat: String? = null
+
+    override suspend fun invoiceDocument(invoiceId: String, format: String): Response<ResponseBody> {
         requests++
+        lastDocumentFormat = format
         return Response.success("<html>invoice</html>".toResponseBody("text/html".toMediaType()))
     }
 }

@@ -478,7 +478,7 @@ private fun DownloadNote(download: InvoiceDownloadState, onDismiss: () -> Unit) 
 }
 
 /** The document's type: printable HTML (the server ships no PDF renderer). */
-private const val INVOICE_MIME = "text/html"
+private const val INVOICE_MIME = "application/pdf"
 
 /** The purchase banner card, tagged by its state for UI tests. */
 private fun bannerModifier(state: String): Modifier = Modifier.fillMaxWidth().testTag("premium_purchase:$state")

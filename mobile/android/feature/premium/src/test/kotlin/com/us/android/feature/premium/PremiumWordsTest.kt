@@ -130,8 +130,8 @@ class PremiumWordsTest {
         assertThat(note.reversed(rows)?.number).isEqualTo("MP/26-27/000001")
         assertThat(rows[1].reversed(rows)).isNull()
         assertThat(invoiceDate("2026-11-03")).isEqualTo("03 Nov 2026")
-        assertThat(invoiceFileName("MP/26-27/000001")).isEqualTo("MP-26-27-000001.html")
-        assertThat(invoiceFileName(" ")).isEqualTo("invoice.html")
+        assertThat(invoiceFileName("MP/26-27/000001")).isEqualTo("MP-26-27-000001.pdf")
+        assertThat(invoiceFileName(" ")).isEqualTo("invoice.pdf")
     }
 
     @Test

@@ -129,10 +129,10 @@ fun PremiumInvoice.reversed(all: List<PremiumInvoice>): PremiumInvoice? {
     return all.firstOrNull { it.kind == InvoiceKind.INVOICE && it.passId == passId }
 }
 
-/** "MP/26-27/000001" → "MP-26-27-000001.html". */
+/** "MP/26-27/000001" → "MP-26-27-000001.pdf". */
 fun invoiceFileName(number: String): String {
     val safe = number.trim().replace('/', '-').replace(Regex("[^A-Za-z0-9._-]"), "_")
-    return "${safe.ifEmpty { "invoice" }}.html"
+    return "${safe.ifEmpty { "invoice" }}.pdf"
 }
 
 /** The web's invoice date keeps the server's two-digit day: "03 Nov 2026". */

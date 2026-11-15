@@ -177,7 +177,8 @@ class PremiumContractTest {
         assertThat(written).isEqualTo(out.size().toLong())
         val request = server.takeRequest()
         val document = "/v1/monetization/premium/invoices/d4444444-4444-4444-8444-444444444444/document"
-        assertThat(request.target).isEqualTo(document)
+        // The PDF, asked for by name (16 Nov 2026): the server's default stays its printable HTML.
+        assertThat(request.target).isEqualTo("$document?format=pdf")
         assertThat(request.target).doesNotContain("token")
     }
 
