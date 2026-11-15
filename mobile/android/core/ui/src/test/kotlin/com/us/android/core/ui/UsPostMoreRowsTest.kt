@@ -395,7 +395,15 @@ class UsPostMoreRowsTest {
         assertThat(UsReportReason.forSubject("post")).contains(UsReportReason.SCAM_LINK)
         assertThat(UsReportReason.forSubject("account")).contains(UsReportReason.SCAM_LINK)
         assertThat(UsReportReason.forSubject("comment")).doesNotContain(UsReportReason.SCAM_LINK)
-        assertThat(UsReportReason.forSubject("comment")).hasSize(UsReportReason.entries.size - 3)
+        assertThat(UsReportReason.forSubject("comment")).hasSize(UsReportReason.entries.size - 4)
+    }
+
+    @Test
+    fun `impersonation is offered on posts and profiles, never on a comment`() {
+        assertThat(UsReportReason.forSubject("post")).contains(UsReportReason.IMPERSONATION)
+        assertThat(UsReportReason.forSubject("post", video = true)).contains(UsReportReason.IMPERSONATION)
+        assertThat(UsReportReason.forSubject("account")).contains(UsReportReason.IMPERSONATION)
+        assertThat(UsReportReason.forSubject("comment")).doesNotContain(UsReportReason.IMPERSONATION)
     }
 
     /**

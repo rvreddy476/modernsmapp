@@ -631,6 +631,8 @@ enum class UsReportReason(val label: String, val wire: String) {
 
     /** A fake job or a scam behind an Action button (2026-10-23): posts and profiles only, never a comment. */
     SCAM_LINK("Fake job or scam link", "scam_link"),
+
+    /** Pretending to be someone else: profiles and posts only, never a comment (trust-safety 400). */
     IMPERSONATION("Impersonation", "impersonation"),
     SELF_HARM("Self-harm", "self_harm"),
     INTELLECTUAL_PROPERTY("Intellectual property", "intellectual_property"),
@@ -650,8 +652,12 @@ enum class UsReportReason(val label: String, val wire: String) {
     /** A copyright reason: offered on a video or a reel, never a photo post, a profile or a comment. */
     val isCopyright: Boolean get() = this == COPYRIGHT_MINE || this == COPYRIGHT_MEDIA
 
-    /** Offered on a comment's report too; [SCAM_LINK] is about a post's or a profile's link. */
-    val appliesToComments: Boolean get() = this != SCAM_LINK && !isCopyright
+    /**
+     * Offered on a comment's report too. [SCAM_LINK] is about a post's or a
+     * profile's link, and trust-safety refuses [IMPERSONATION] on a comment
+     * with a 400 (moderation.go impersonationEntityTypes: profiles and posts).
+     */
+    val appliesToComments: Boolean get() = this != SCAM_LINK && this != IMPERSONATION && !isCopyright
 
     companion object {
         /**
