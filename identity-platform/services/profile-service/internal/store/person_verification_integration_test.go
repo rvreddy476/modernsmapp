@@ -58,6 +58,7 @@ CREATE TABLE IF NOT EXISTS profile.reserved_names (
     kind    TEXT NOT NULL CHECK (kind IN ('person', 'organisation', 'government')),
     PRIMARY KEY (variant, user_id)
 );
+CREATE INDEX IF NOT EXISTS idx_reserved_names_user ON profile.reserved_names (user_id);
 `
 
 func personPool(t *testing.T) (*pgxpool.Pool, *Store) {

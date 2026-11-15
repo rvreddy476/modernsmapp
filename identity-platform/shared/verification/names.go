@@ -25,7 +25,10 @@ import (
 // sorted word order. A candidate name additionally loses decorations an
 // impersonator adds ("official", "real", "the", "hq", "india", ...), on the
 // candidate side only: "NASA Official" is held against NASA, but "Air" is
-// not held against "Air India".
+// not held against "Air India". An Official or Government name is also stored
+// without its legal form (ReservedOrgKeys): "ACME PRIVATE LIMITED" holds
+// "Acme" and "Acme Official". Decorations are also trimmed one by one from
+// either end, so "Air India Official" is held against "Air India".
 //
 // "Closely matches" for Official and Government names is edit distance one
 // on the skeleton, found with deletion neighbourhoods (FuzzyVariants) so the
@@ -47,6 +50,7 @@ var decorationWords = []string{
 	"official", "offical", "officiel", "real", "the", "hq", "team", "verified",
 	"original", "page", "account", "support", "india", "in", "global", "tv",
 	"ltd", "limited", "pvt", "private", "inc", "llp", "corp", "company", "co",
+	"incorporated", "corporation", "plc", "opc",
 }
 
 var (
@@ -194,6 +198,46 @@ func ReservedKeys(name string) []string {
 	return keyList(set)
 }
 
+// legalFormWords are the legal-form words of a registered organisation name
+// (the corporate suffixes OrgNamesMatch ignores). Folded at init.
+var legalFormWords = []string{
+	"limited", "ltd", "private", "pvt", "pvtltd", "llp", "inc", "incorporated",
+	"corporation", "corp", "co", "company", "plc", "opc",
+}
+
+var foldedLegalForms = func() map[string]bool {
+	m := map[string]bool{}
+	for _, w := range legalFormWords {
+		m[skeleton(w)] = true
+	}
+	return m
+}()
+
+// ReservedOrgKeys are the keys an Official or Government name is stored
+// under: ReservedKeys, plus the same with legal-form words removed. A
+// registry name carries its legal form ("ACME PRIVATE LIMITED") but the
+// organisation is known, and impersonated, without it: "Acme Official"
+// must be held. Only the legal form is dropped, never another word, so
+// "Air" is still not held against "Air India".
+func ReservedOrgKeys(name string) []string {
+	set := map[string]bool{}
+	for _, k := range ReservedKeys(name) {
+		set[k] = true
+	}
+	ws := words(name)
+	kept := make([]string, 0, len(ws))
+	for _, w := range ws {
+		if !foldedLegalForms[w] {
+			kept = append(kept, w)
+		}
+	}
+	if len(kept) > 0 && len(kept) < len(ws) {
+		addKey(set, joinKey(kept))
+		addKey(set, joinKey(sortedCopy(kept)))
+	}
+	return keyList(set)
+}
+
 // CandidateKeys are the skeletons a new display name or handle is checked
 // under: the reserved keys, plus the same with impersonation decorations
 // removed (whole words, and long decorations at either end of an unspaced
@@ -213,6 +257,25 @@ func CandidateKeys(name string) []string {
 	if len(kept) > 0 {
 		addKey(set, joinKey(kept))
 		addKey(set, joinKey(sortedCopy(kept)))
+	}
+	// Decorations added around a name that itself holds one ("Air India
+	// Official" against "Air India"): every trim of leading and trailing
+	// decoration words, not only removing all of them.
+	lead := 0
+	for lead < len(ws) && foldedDecorations[ws[lead]] {
+		lead++
+	}
+	trail := 0
+	for trail < len(ws)-lead && foldedDecorations[ws[len(ws)-1-trail]] {
+		trail++
+	}
+	for i := 0; i <= lead; i++ {
+		for j := 0; j <= trail; j++ {
+			if part := ws[i : len(ws)-j]; len(part) > 0 && (i > 0 || j > 0) {
+				addKey(set, joinKey(part))
+				addKey(set, joinKey(sortedCopy(part)))
+			}
+		}
 	}
 	for _, k := range keyList(set) {
 		addKey(set, stripJoinedDecorations(k))

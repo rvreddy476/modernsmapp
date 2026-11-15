@@ -34,3 +34,44 @@ func TestReservedNameRows_PersonExactOrganisationFuzzy(t *testing.T) {
 		t.Fatalf("government rows = %v (%s)", gov, kind)
 	}
 }
+
+// rowsHold is FindReservedNameHolder's SQL on the pure functions: a
+// non-person row holds a candidate when one of its variants is among the
+// candidate keys' fuzzy variants.
+func rowsHold(rows []string, candidate string) bool {
+	stored := map[string]bool{}
+	for _, v := range rows {
+		stored[v] = true
+	}
+	for _, v := range verification.FuzzyVariantsOf(verification.CandidateKeys(candidate)) {
+		if stored[v] {
+			return true
+		}
+	}
+	return false
+}
+
+// The registered name of an Official mark carries its legal form ("Private
+// Limited"); an impersonator drops it, adds "Official", or both. Every one of
+// these must be held, as the approve integration test expects.
+func TestReservedNameRows_OrganisationHeldWithoutItsLegalForm(t *testing.T) {
+	rows, _ := ReservedNameRows(verification.LevelOrganisation, true, "ACME PRIVATE LIMITED")
+	for _, c := range []string{
+		"Acme Private Limited Official",
+		"ACME PRIVATE LIMITED",
+		"Acme",
+		"Acme Official",
+		"Acme Pvt Ltd",
+		"The Real Acme",
+		"acmeofficial",
+	} {
+		if !rowsHold(rows, c) {
+			t.Errorf("%q is not held against ACME PRIVATE LIMITED", c)
+		}
+	}
+	for _, c := range []string{"Acne Studios", "Some One"} {
+		if rowsHold(rows, c) {
+			t.Errorf("%q is held against ACME PRIVATE LIMITED", c)
+		}
+	}
+}

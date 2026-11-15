@@ -83,7 +83,7 @@ func ReservedNameRows(level string, isVerified bool, names ...string) (variants 
 	for _, n := range names {
 		keys := verification.ReservedKeys(n)
 		if kind != verification.LevelPerson {
-			keys = verification.FuzzyVariantsOf(keys)
+			keys = verification.FuzzyVariantsOf(verification.ReservedOrgKeys(n))
 		}
 		for _, k := range keys {
 			set[k] = true

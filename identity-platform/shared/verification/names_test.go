@@ -126,3 +126,34 @@ func TestFuzzyVariants(t *testing.T) {
 		t.Fatalf("FuzzyVariants(abcde) = %v", v)
 	}
 }
+
+// An Official name is stored with and without its legal form, so the
+// organisation's everyday name, and that name decorated, are held.
+func TestReservedOrgKeys_DropOnlyTheLegalForm(t *testing.T) {
+	heldOrg := func(candidate, reserved string) bool {
+		stored := map[string]bool{}
+		for _, v := range FuzzyVariantsOf(ReservedOrgKeys(reserved)) {
+			stored[v] = true
+		}
+		for _, v := range FuzzyVariantsOf(CandidateKeys(candidate)) {
+			if stored[v] {
+				return true
+			}
+		}
+		return false
+	}
+	for _, c := range []string{"Acme Private Limited Official", "Acme", "Acme Official", "ACME Pvt. Ltd.", "acme_official"} {
+		if !heldOrg(c, "ACME PRIVATE LIMITED") {
+			t.Errorf("%q is not held against ACME PRIVATE LIMITED", c)
+		}
+	}
+	if heldOrg("Air", "Air India Limited") {
+		t.Error(`"Air" is held against "Air India Limited": only the legal form may be dropped`)
+	}
+	if !heldOrg("Air India Official", "Air India Limited") {
+		t.Error(`"Air India Official" is not held against "Air India Limited"`)
+	}
+	if got, want := ReservedOrgKeys("Co Ltd"), ReservedKeys("Co Ltd"); len(got) != len(want) {
+		t.Errorf("a name that is only a legal form reserved %v, want only %v", got, want)
+	}
+}

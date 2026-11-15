@@ -85,6 +85,17 @@ ALTER TABLE profile.profiles
     ADD COLUMN IF NOT EXISTS following_count     INT     NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS friend_count        INT     NOT NULL DEFAULT 0,
     ADD COLUMN IF NOT EXISTS post_count          INT     NOT NULL DEFAULT 0;
+
+-- Matches database/setup.sql. ChangeHandle and every UpdateProfile that
+-- carries a display name or handle read and rebuild these holds.
+CREATE TABLE IF NOT EXISTS profile.reserved_names (
+    variant TEXT NOT NULL,
+    user_id UUID NOT NULL REFERENCES profile.profiles(user_id) ON DELETE CASCADE,
+    kind    TEXT NOT NULL CHECK (kind IN ('person', 'organisation', 'government')),
+    PRIMARY KEY (variant, user_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_reserved_names_user ON profile.reserved_names (user_id);
 `
 
 func serviceITPool(t *testing.T) *pgxpool.Pool {
