@@ -507,12 +507,10 @@ Echo and Premium are built on the server, Android and web, and switched off. The
 10. **Android Premium purchase** (waits on 5). Android also has no invoice list.
 11. **PDF invoices.** Invoices are a printable HTML page, because the server images have no wkhtmltopdf.
 12. **Official / Government badges** and the impersonation name check (design phase 3).
-13. **Echo extras:**
-    - hashtag-follow candidates in For You;
-    - keyword filtering inside quoted notes;
-    - `notes_timeline` maintenance tooling;
-    - `echo_notes` pruning;
-    - restoring `reply_count` when a deleted reply is restored;
-    - removing a reply's notification when the reply is deleted.
+13. ~~**Echo extras**~~ — done 13 Nov in `b962362eb`: hashtag-follow candidates in For You,
+    keyword filtering inside quoted notes, `notes_timeline` maintenance modes, `echo_notes`
+    pruning (feed migration 010), reply counts that follow delete and restore, and a deleted
+    reply or quote taking its notice out of the inbox.
 14. **UPI Autopay renewal.** Today renewal is a reminder plus a fresh payment.
-15. **Real-device and browser walkthrough.** Nothing has been seen on a phone or in a browser yet.
+15. **Real-device walkthrough.** Walked on the emulator and in the browser (15 Nov); not yet on a
+    real phone.
