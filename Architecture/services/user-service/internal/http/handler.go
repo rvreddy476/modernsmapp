@@ -46,6 +46,11 @@ type Handler struct {
 	// adminVerifier admits admin-service tokens (audience "social") to the
 	// token-only family /v1/users/internal/admin. Nil admits none.
 	adminVerifier *servicetoken.Verifier
+	// linkClicks and clickDedupe back the signed-in link click counter
+	// (link_clicks_handler.go). A nil store answers 503; a nil deduper
+	// counts nothing.
+	linkClicks  linkClickStore
+	clickDedupe clickDeduper
 }
 
 func New(svc *service.Service, presenceStore *presence.Store, st *store.Store) *Handler {
@@ -58,6 +63,7 @@ func New(svc *service.Service, presenceStore *presence.Store, st *store.Store) *
 	h.blocks = graphBlocks{h: h}
 	if st != nil {
 		h.pageAdmin = st
+		h.linkClicks = st
 	}
 	h.pageAdmins = map[string]bool{}
 	for _, id := range strings.Split(os.Getenv("PAGES_ADMIN_USER_IDS"), ",") {
@@ -160,9 +166,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 		v1.POST("/:userId/endorse", h.requireServableUser, retiredUserRoute(whyEndorsementsRetired, ""))
 		v1.GET("/:userId/compatibility", h.requireServableUser, retiredUserRoute(whyCompatibilityRetired, ""))
 
-		// Link Analytics. The anonymous click counter is RETIRED (US-L4); the
-		// owner's read of the counts stays.
-		v1.POST("/links/:platform/click", retiredUserRoute(whyCounterRetired, ""))
+		// Link Analytics. The anonymous click counter is RETIRED (US-L4); its
+		// signed-in, deduplicated replacement names the owner
+		// (link_clicks_handler.go). The owner's read of the counts stays.
+		v1.POST("/links/:platform/click", retiredUserRoute(whyCounterRetired, canonicalLinkClickRoute))
+		v1.POST("/:userId/links/:platform/click", requireSignedInViewer, h.requireServableUser, h.RecordLinkClick)
 		v1.GET("/me/links/analytics", h.GetLinkAnalytics)
 
 		// Presence

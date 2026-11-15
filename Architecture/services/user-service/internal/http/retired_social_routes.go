@@ -32,6 +32,7 @@ import (
 const (
 	canonicalAboutUpsertRoute = "PUT /v1/profiles/me/about/{section}"
 	canonicalAboutDeleteRoute = "DELETE /v1/profiles/me/about/{section}/{itemId}"
+	canonicalLinkClickRoute   = "POST /v1/users/{userId}/links/{platform}/click"
 )
 
 const (

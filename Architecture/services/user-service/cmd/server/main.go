@@ -112,7 +112,7 @@ func main() {
 			"(channel picture/banner, portfolio media, page avatar/cover) are refused with 503 MEDIA_UNAVAILABLE")
 	}
 	presenceStore := presence.New(rdb)
-	userHandler := http.New(userSvc, presenceStore, userStore).WithInternalRoutes(internalKey)
+	userHandler := http.New(userSvc, presenceStore, userStore).WithInternalRoutes(internalKey).WithLinkClickDedupe(rdb)
 	if err := http.CheckInternalKeyConfig(internalKey, os.Getenv); err != nil {
 		slog.Error("refusing to start", "error", err)
 		os.Exit(1)
