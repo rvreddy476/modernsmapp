@@ -48,6 +48,7 @@ All bodies and answers use the existing `api` envelope.
 | `GET /v1/notes/:id` | optional (signed-out works for public notes) | — | `200 Note` |
 | `GET /v1/notes/:id/replies` | optional | `?cursor=&limit=` (default 20, max 50) | `200 {items:[Note], next_cursor}` |
 | `GET /v1/notes/:id/conversation` | optional | — | `200 {items:[Note]}`, from the top note down to the parent of `:id` |
+| `GET /v1/notes/:id/thread` | optional | — | `200 {items:[Note]}`, every live part of the thread `:id` is in (its first note or any later part), first part first; `{items:[]}` when it is in no thread (added 16 Nov 2026) |
 | `PATCH /v1/notes/:id` | author | `{text?, reply_policy?}` | `200 Note` |
 | `DELETE /v1/notes/:id` | author | — | `204` (the existing soft delete and restore) |
 | `GET /v1/notes/users/:userId` | optional | `?tab=notes\|replies\|reposts&cursor=&limit=` | `200 {items:[Note], next_cursor}` |

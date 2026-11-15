@@ -64,6 +64,7 @@ func (h *Handler) registerNoteRoutes(r *gin.Engine) {
 		notes.GET("/:id", h.GetNote)
 		notes.GET("/:id/replies", h.ListNoteReplies)
 		notes.GET("/:id/conversation", h.NoteConversation)
+		notes.GET("/:id/thread", h.NoteThread)
 		notes.GET("/:id/quotes", h.ListNoteQuotes)
 		notes.PATCH("/:id", h.PatchNote)
 		notes.DELETE("/:id", h.DeleteNote)
@@ -337,6 +338,24 @@ func (h *Handler) NoteConversation(c *gin.Context) {
 		return
 	}
 	items, err := h.svc.NoteConversation(c.Request.Context(), id, optionalCallerID(c))
+	if err != nil {
+		writeNoteError(c, err)
+		return
+	}
+	if items == nil {
+		items = []*service.NoteView{}
+	}
+	api.JSON(c.Writer, http.StatusOK, gin.H{"items": items}, nil)
+}
+
+// NoteThread is GET /v1/notes/:id/thread: the thread's parts, first first;
+// `{"items": []}` for a note in no thread.
+func (h *Handler) NoteThread(c *gin.Context) {
+	id, ok := noteIDParam(c, "id")
+	if !ok {
+		return
+	}
+	items, err := h.svc.NoteThread(c.Request.Context(), id, optionalCallerID(c))
 	if err != nil {
 		writeNoteError(c, err)
 		return

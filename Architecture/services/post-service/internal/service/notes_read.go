@@ -271,6 +271,38 @@ func (s *Service) NoteConversation(ctx context.Context, id uuid.UUID, viewerID *
 	return s.hydrateNotes(ctx, chain, viewerID, true)
 }
 
+// NoteThread is GET /v1/notes/:id/thread: every live part of the thread
+// the note belongs to (its first note or any later part), first part first;
+// empty when the note is in no thread. A part this viewer may not see is
+// left out, as everywhere else.
+func (s *Service) NoteThread(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID) ([]*NoteView, error) {
+	store, err := s.notesStore()
+	if err != nil {
+		return nil, err
+	}
+	if _, err := s.GetNote(ctx, id, viewerID); err != nil {
+		return nil, err
+	}
+	rows, err := store.GetNotes(ctx, []uuid.UUID{id})
+	if err != nil {
+		return nil, err
+	}
+	n := rows[id]
+	if n == nil || n.Post.ThreadRootID == nil {
+		return []*NoteView{}, nil
+	}
+	parts, err := store.GetNoteThread(ctx, *n.Post.ThreadRootID)
+	if err != nil {
+		return nil, err
+	}
+	ptrs := make([]*postgres.Note, 0, len(parts))
+	for i := range parts {
+		// A scheduled part is in no read path (hydrateNotes drops it too).
+		ptrs = append(ptrs, &parts[i])
+	}
+	return s.hydrateNotes(ctx, ptrs, viewerID, true)
+}
+
 // ListUserNotes is GET /v1/notes/users/:userId?tab=notes|replies|reposts.
 // A viewer who may not see the account's posts gets an empty page.
 func (s *Service) ListUserNotes(ctx context.Context, userID uuid.UUID, viewerID *uuid.UUID, tab, cursor string, limit int) (*NotePage, error) {

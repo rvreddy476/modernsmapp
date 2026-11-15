@@ -433,6 +433,18 @@ func TestNoteRule_Thread(t *testing.T) {
 	if got, err := r.svc.GetNote(context.Background(), views[1].Post.ID, &r.alice); err != nil || got.ThreadParts != 0 {
 		t.Fatalf("part 2 thread_parts = %v (%v), want 0", got, err)
 	}
+	// GET /v1/notes/:id/thread: every part, first first, from any part.
+	for _, from := range []uuid.UUID{root, views[2].Post.ID} {
+		parts, err := r.svc.NoteThread(context.Background(), from, &r.alice)
+		if err != nil || len(parts) != 3 {
+			t.Fatalf("thread from %v: %d parts (%v), want 3", from, len(parts), err)
+		}
+		for i, p := range parts {
+			if p.Post.ID != views[i].Post.ID {
+				t.Fatalf("thread part %d is %v, want %v", i, p.Post.ID, views[i].Post.ID)
+			}
+		}
+	}
 }
 
 // ── Rate limits ─────────────────────────────────────────────────────────
