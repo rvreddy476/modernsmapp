@@ -288,6 +288,11 @@ func applyPaymentSucceededTx(ctx context.Context, tx pgx.Tx, e PaymentEvent) err
 		  WHERE id = $1`, e.OrderID, e.ProviderRef); err != nil {
 		return err
 	}
+	if confirmHistoryOnCapture(verdict, status) {
+		if err := recordPaidConfirmationTx(ctx, tx, e.OrderID, status); err != nil {
+			return err
+		}
+	}
 
 	// M-8: the fulfilment job is created IN this transaction. It used to be
 	// a separate best-effort write (jobs.go's EnqueueFulfillPaidOrder), so a
@@ -315,6 +320,38 @@ func applyPaymentSucceededTx(ctx context.Context, tx pgx.Tx, e PaymentEvent) err
 		return err
 	}
 	return nil
+}
+
+// confirmHistoryOnCapture reports whether a payment.succeeded writes the
+// order's "→ confirmed" history line: only the capture that applies, and only
+// when the order was not already confirmed (a COD order confirmed at checkout
+// changes payment_status only). A redelivery, a duplicate or a late capture
+// never does, so a redelivered event cannot write a second line.
+func confirmHistoryOnCapture(v captureVerdict, fromStatus string) bool {
+	return v == captureApplies && fromStatus != "confirmed"
+}
+
+// recordPaidConfirmationTx writes the payment_pending → confirmed history row
+// of a webhook-confirmed order, in the capture transaction. Before this the
+// row existed only where the gated migration had attached
+// trg_order_transition (which writes it from the UPDATE itself); on a
+// boot-migrated database the webhook path confirmed orders with no history
+// line. So, like transitionOrderStatusTx, the INSERT runs only when that
+// trigger is absent, and never when the same line is already there.
+func recordPaidConfirmationTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, fromStatus string) error {
+	_, err := tx.Exec(ctx, `
+		INSERT INTO order_status_history (id, order_id, from_status, to_status, actor_type, notes, created_at)
+		SELECT gen_random_uuid(), $1, $2, 'confirmed', 'system', 'payment confirmed', clock_timestamp()
+		 WHERE NOT EXISTS (
+			SELECT 1 FROM pg_trigger
+			 WHERE tgrelid = 'orders'::regclass
+			   AND tgname = 'trg_order_transition'
+			   AND tgenabled <> 'D')
+		   AND NOT EXISTS (
+			SELECT 1 FROM order_status_history
+			 WHERE order_id = $1 AND from_status = $2 AND to_status = 'confirmed')`,
+		orderID, fromStatus)
+	return err
 }
 
 // ApplyPaymentFailed releases the hold so the stock returns to sale, when the
