@@ -876,7 +876,7 @@ func (e *contractEnv) fixtures() []ctFixture {
 				"code": "newyear 25", "description": "25% off the canvas cap", "discount_type": "percentage",
 				"discount_value": 2500, "max_discount_minor": 10000, "min_order_minor": 40000,
 				"max_uses": 500, "max_uses_per_user": 1, "applicable_to": "product",
-				"applicable_ids": []string{ctP2.String()}, "expires_at": "2027-01-15T18:29:59Z", "is_public": true,
+				"applicable_ids": []string{ctP2.String()}, "expires_at": "2030-01-15T18:29:59Z", "is_public": true,
 			})
 			var env struct {
 				Data struct {
@@ -938,7 +938,7 @@ func (e *contractEnv) fixtures() []ctFixture {
 			w := e.adminDo(http.MethodPost, "/v1/commerce/internal/admin/coupons", PermCouponsManage, map[string]any{
 				"code": "FESTIVE200", "description": "₹200 off orders above ₹1,000", "discount_type": "flat",
 				"discount_value": 20000, "min_order_minor": 100000, "max_uses_per_user": 1, "applicable_to": "all",
-				"expires_at": "2026-11-15T18:29:59Z", "is_public": true, "is_active": true, "reason": "Diwali campaign",
+				"expires_at": "2030-11-15T18:29:59Z", "is_public": true, "is_active": true, "reason": "Diwali campaign",
 			})
 			var env struct {
 				Data struct {
