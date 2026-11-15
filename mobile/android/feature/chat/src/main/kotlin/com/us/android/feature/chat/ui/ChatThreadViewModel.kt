@@ -73,6 +73,11 @@ import javax.inject.Inject
  */
 data class ThreadRenderState(
     val thread: ThreadUiState,
+    /**
+     * The Pulse match behind this chat ended (a `match_closed` frame,
+     * 2026-11-10): the screen leaves the thread. Never set back.
+     */
+    val matchClosed: Boolean = false,
     val pendingSends: List<PendingSend> = emptyList(),
     /**
      * A hidden chat's queued sends, as COUNTS (24 Oct 2026): their bodies are
@@ -1216,6 +1221,11 @@ class ChatThreadViewModel @Inject constructor(
                     store.clearUnread(conversationId)
                 } else {
                     applySocketEvent(event)
+                }
+                // A closed Pulse match: the open thread is left (the server
+                // refuses its sends with 409 MATCH_CLOSED either way).
+                is ChatSocketEvent.MatchClosed -> if (event.conversationId == conversationId) {
+                    _state.update { it.copy(matchClosed = true) }
                 }
                 else -> applySocketEvent(event)
             }

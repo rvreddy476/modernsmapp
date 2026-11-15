@@ -375,6 +375,8 @@ class ThreadController(
             else -> onReaction(event.messageId, event.emoji, event.userId, event.added)
         }
 
+        // A closed Pulse match closes the screen: the ViewModel's business.
+        is ChatSocketEvent.MatchClosed,
         // Presence is the header's business (the ViewModel knows the peer).
         is ChatSocketEvent.PresenceUpdate,
         // An expired request is the Requests list's business (the recipient

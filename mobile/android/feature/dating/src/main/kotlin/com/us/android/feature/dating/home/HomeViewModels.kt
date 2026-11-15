@@ -33,6 +33,7 @@ import com.us.android.feature.dating.ui.infoMessage
 import com.us.android.feature.dating.ui.successMessage
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
@@ -903,20 +904,71 @@ class MatchesViewModel @Inject constructor(
     val state: StateFlow<ListState<MatchUi>> =
         list.state(session) { it.toUi() }.stateIn(viewModelScope, SharingStarted.Eagerly, ListState.Loading)
 
+    /**
+     * Where the next page comes from (2026-11-10): the open buckets are read
+     * one after the other, `active` then `quiet`, each a page at a time.
+     * Null once both are read to the end.
+     */
+    private var next: MatchesPosition? = null
+    private var reading: Job? = null
+
+    private val _hasMore = MutableStateFlow(false)
+
+    /** Another page follows: the list asks for it ([loadMore]) as its end comes into view. */
+    val hasMore: StateFlow<Boolean> = _hasMore.asStateFlow()
+
     init {
         refresh()
     }
 
+    /** From the top: the rows on screen stay until the first page replaces them. */
     fun refresh() {
-        viewModelScope.launch {
-            when (val result = repository.matches()) {
-                is DatingResult.Success -> {
-                    list.failure.value = null
-                    list.rows.value = result.value.filterNot { it.status == STATUS_CLOSED }
+        reading?.cancel()
+        reading = viewModelScope.launch { read(MatchesPosition.FIRST, replace = true) }
+    }
+
+    /** The next page, if one follows and none is being read. */
+    fun loadMore() {
+        val from = next ?: return
+        if (reading?.isActive == true) return
+        reading = viewModelScope.launch { read(from, replace = false) }
+    }
+
+    /**
+     * Reads one page from [from]. A bucket read to its end moves straight on
+     * to the next bucket's first page, so a short `active` list still shows
+     * the quiet matches below it. A failed first page fails the list; a
+     * failed later page keeps what is shown and offers it again.
+     */
+    private suspend fun read(from: MatchesPosition, replace: Boolean) {
+        var at: MatchesPosition? = from
+        val got = mutableListOf<MatchDto>()
+        while (at != null) {
+            when (val page = repository.matchesPage(at.bucket, at.cursor)) {
+                is DatingResult.Failure -> {
+                    if (replace) list.failure.value = DatingCopy.forError(page.error)
+                    next = at
+                    _hasMore.value = got.isNotEmpty() || !replace
+                    if (got.isNotEmpty() || !replace) show(got, replace)
+                    return
                 }
-                is DatingResult.Failure -> list.failure.value = DatingCopy.forError(result.error)
+                is DatingResult.Success -> {
+                    got += page.value.matches
+                    val following = at.after(page.value.nextCursor)
+                    // Only a bucket that ended moves on in the same read.
+                    at = following.takeIf { page.value.nextCursor == null }
+                    next = following
+                }
             }
         }
+        list.failure.value = null
+        _hasMore.value = next != null
+        show(got, replace)
+    }
+
+    private fun show(rows: List<MatchDto>, replace: Boolean) {
+        val open = rows.filterNot { it.status == STATUS_CLOSED }
+        list.rows.update { shown -> ((if (replace) emptyList() else shown.orEmpty()) + open).distinctBy { it.id } }
     }
 
     private fun MatchDto.toUi(): MatchUi = toUi(person?.userId ?: session.otherOf(userA, userB), urls)
@@ -1267,5 +1319,23 @@ class MatchDetailViewModel @Inject constructor(
         private const val CODE_QUESTION_UNKNOWN = "OPENING_QUESTION_UNKNOWN"
         private const val CODE_MECHANIC_NOT_ENABLED = "MECHANIC_NOT_ENABLED"
         private const val CODE_EXTEND_LIMIT = "EXTEND_LIMIT_REACHED"
+    }
+}
+
+/**
+ * A place in the Matches tab's reading (2026-11-10): which open bucket, and
+ * the server's cursor into it (null for its first page).
+ */
+internal data class MatchesPosition(val bucket: String, val cursor: String?) {
+    /** Where reading goes after a page of this bucket whose `next_cursor` was [nextCursor]. */
+    fun after(nextCursor: String?): MatchesPosition? = when {
+        nextCursor != null -> copy(cursor = nextCursor)
+        else -> BUCKETS.getOrNull(BUCKETS.indexOf(bucket) + 1)?.let { MatchesPosition(it, null) }
+    }
+
+    companion object {
+        /** The open buckets, in the order they are shown (audit L4). */
+        val BUCKETS = listOf(DatingRepository.STATUS_ACTIVE, DatingRepository.STATUS_QUIET)
+        val FIRST = MatchesPosition(BUCKETS.first(), null)
     }
 }

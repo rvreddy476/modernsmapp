@@ -221,6 +221,26 @@ class DatingContractFixtureTest {
             // The match list stays COMPACT: the server omits detail here on purpose.
             assertThat(person.detail).isNull()
         },
+        // ── Paged matches (2026-11-10): meta.next_cursor only while a page follows ──
+        "matches_get_200_page_first.json" to { _, raw ->
+            val envelope = strict.decodeFromString(ApiEnvelope.serializer(listSerializer(MatchDto.serializer())), raw)
+            assertThat(checkNotNull(envelope.data).single().person?.firstName).isEqualTo("Asha")
+            assertThat(envelope.meta?.nextCursor).isEqualTo("<cursor>")
+        },
+        "matches_get_200_page_last.json" to { _, raw ->
+            val envelope = strict.decodeFromString(ApiEnvelope.serializer(listSerializer(MatchDto.serializer())), raw)
+            assertThat(checkNotNull(envelope.data).single().conversationId).isEqualTo("<conversation>")
+            // The last page carries no meta at all: nothing follows.
+            assertThat(envelope.meta).isNull()
+        },
+        "matches_get_400_invalid_cursor.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_CURSOR")
+            assertThat((error as DatingError.Refused).status).isEqualTo(400)
+        },
+        "matches_get_400_invalid_limit.json" to error { error, _ ->
+            assertThat(refusedCode(error)).isEqualTo("INVALID_LIMIT")
+            assertThat((error as DatingError.Refused).status).isEqualTo(400)
+        },
         "panic_post_200.json" to data(PanicDto.serializer()) {
             assertThat(it.recorded).isTrue()
             assertThat(it.status).isEqualTo("open")

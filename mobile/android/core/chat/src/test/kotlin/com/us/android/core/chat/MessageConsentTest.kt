@@ -202,6 +202,18 @@ class MessageConsentTest {
         assertThat(event).isEqualTo(com.us.android.core.chat.data.ChatSocketEvent.MessageRequestRemoved("c7", "expired"))
     }
 
+    @Test
+    fun `a closed match's frame is read, with no reason and with or without its match`() {
+        val parse = { raw: String -> com.us.android.core.chat.data.parseChatFrame(json, raw) }
+        val withMatch = """{"type":"match_closed","payload":{"conversation_id":"c7","match_id":"m1"}}"""
+        val withoutMatch = """{"type":"match_closed","payload":{"conversation_id":"c7","closed_at":"2026-11-10"}}"""
+        assertThat(parse(withMatch)).isEqualTo(com.us.android.core.chat.data.ChatSocketEvent.MatchClosed("c7", "m1"))
+        assertThat(parse(withoutMatch))
+            .isEqualTo(com.us.android.core.chat.data.ChatSocketEvent.MatchClosed("c7", null))
+        assertThat(parse("""{"type":"match_closed","payload":{"match_id":"m1"}}"""))
+            .isInstanceOf(com.us.android.core.chat.data.ChatSocketEvent.Malformed::class.java)
+    }
+
     // ── The outgoing request's composer ─────────────────────────────────
 
     @Test

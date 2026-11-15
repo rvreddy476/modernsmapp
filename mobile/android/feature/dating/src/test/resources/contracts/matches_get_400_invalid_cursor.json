@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "INVALID_CURSOR",
+    "message": "invalid: match list cursor is not valid"
+  },
+  "meta": {}
+}

@@ -325,6 +325,31 @@ class ChatThreadReconnectTest {
         assertThat(threadLoadErrorText(unavailable)).isEqualTo("We couldn't load this conversation.")
     }
 
+    // ── A closed Pulse match (2026-11-10) ───────────────────────────────────
+
+    @Test
+    fun `a match_closed frame for this chat leaves the thread`() = runTest {
+        val h = harness(pages = listOf(page(2, 1)))
+        awaitUntil { h.shownIds().size == 2 }
+        assertThat(h.vm.state.value.matchClosed).isFalse()
+
+        h.events.emit(ChatSocketEvent.MatchClosed(CONVERSATION, matchId = "match-1"))
+
+        awaitUntil { h.vm.state.value.matchClosed }
+    }
+
+    @Test
+    fun `another chat's match_closed frame leaves this one open`() = runTest {
+        val h = harness(pages = listOf(page(2, 1)))
+        awaitUntil { h.shownIds().size == 2 }
+
+        h.events.emit(ChatSocketEvent.MatchClosed("another-conversation"))
+        h.events.emit(ChatSocketEvent.MessageReceived(message(3)))
+
+        awaitUntil { "m3" in h.shownIds() }
+        assertThat(h.vm.state.value.matchClosed).isFalse()
+    }
+
     private companion object {
         const val CONVERSATION = "conv"
         const val VIEWER = "viewer"

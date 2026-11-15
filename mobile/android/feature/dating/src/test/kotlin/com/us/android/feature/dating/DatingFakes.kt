@@ -3,6 +3,7 @@ package com.us.android.feature.dating
 import android.app.Activity
 import com.us.android.core.network.ApiConfig
 import com.us.android.core.network.ApiEnvelope
+import com.us.android.core.network.ApiMeta
 import com.us.android.core.network.di.NetworkModule
 import com.us.android.core.payments.PaymentAttempt
 import com.us.android.core.payments.PaymentCoordinator
@@ -617,19 +618,28 @@ class FakeDatingApi : DatingApi {
     var matchesBucketResponse: ((String?) -> Response<ApiEnvelope<List<MatchDto>>>?)? = null
 
     /** Each `GET /matches` read records `matches:<status>`; one look at the open matches is `matches:active` then `matches:quiet`. */
-    override suspend fun matches(status: String?): Response<ApiEnvelope<List<MatchDto>>> {
+    override suspend fun matches(status: String?, limit: Int?, cursor: String?): Response<ApiEnvelope<List<MatchDto>>> {
         calls += "matches:$status"
+        if (limit != null || cursor != null) matchPageReads += "$status:$limit:$cursor"
         matchesBucketResponse?.invoke(status)?.let { return it }
         matchesResponse?.let { return it() }
         // The server's buckets (store/matches.go ListMatchesForUser).
-        return ok(
-            when (status) {
-                "active" -> matches.filter { it.status == "matched" || it.status == "conversing" }
-                "quiet" -> matches.filter { it.status == "quiet" }
-                else -> matches
-            },
-        )
+        val bucket = when (status) {
+            "active" -> matches.filter { it.status == "matched" || it.status == "conversing" }
+            "quiet" -> matches.filter { it.status == "quiet" }
+            else -> matches
+        }
+        if (limit == null && cursor == null) return ok(bucket)
+        // Paged (2026-11-10): the cursor is the next row's index; meta only while a page follows.
+        val from = cursor?.toIntOrNull() ?: 0
+        val size = limit ?: DatingRepository.MATCH_PAGE_LIMIT
+        val next = (from + size).takeIf { it < bucket.size }?.toString()
+        val meta = next?.let { ApiMeta(nextCursor = it) }
+        return Response.success(ApiEnvelope(data = bucket.drop(from).take(size), meta = meta))
     }
+
+    /** Each paged `GET /matches` read, as `<status>:<limit>:<cursor>` (2026-11-10). */
+    val matchPageReads = mutableListOf<String>()
 
     override suspend fun match(id: String): Response<ApiEnvelope<MatchDto>> =
         matches.firstOrNull { it.id == id }?.let { ok(it) } ?: refused(404, "NOT_FOUND")

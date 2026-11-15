@@ -173,6 +173,15 @@ sealed interface ChatSocketEvent {
      * Surfaced rather than dropped so an unhandled server event is visible in
      * logs instead of looking like a dead socket.
      */
+    /**
+     * Pulse (2026-11-10): the dating match behind [conversationId] ended —
+     * unmatched, expired, or a block either way (`match_closed
+     * {conversation_id, match_id?, closed_at}`). It names no reason on
+     * purpose. An open thread on it is left; sends to it are refused 409
+     * MATCH_CLOSED regardless.
+     */
+    data class MatchClosed(val conversationId: String, val matchId: String? = null) : ChatSocketEvent
+
     data class Unknown(val type: String) : ChatSocketEvent
 
     /**
@@ -544,6 +553,10 @@ fun parseChatFrame(json: Json, text: String): ChatSocketEvent? {
 
         FRAME_PIN_UPDATE -> parsePinUpdate(payload)
 
+        FRAME_MATCH_CLOSED -> payload.str("conversation_id")?.trim()?.takeIf { it.isNotEmpty() }
+            ?.let { ChatSocketEvent.MatchClosed(it, payload.str("match_id")?.takeIf { id -> id.isNotBlank() }) }
+            ?: ChatSocketEvent.Malformed(FRAME_MATCH_CLOSED, "missing conversation")
+
         FRAME_MESSAGE_REQUEST_REMOVED -> payload.str("conversation_id")?.takeIf { it.isNotBlank() }
             ?.let { ChatSocketEvent.MessageRequestRemoved(it, payload.str("reason")) }
             ?: ChatSocketEvent.Malformed(FRAME_MESSAGE_REQUEST_REMOVED, "missing conversation")
@@ -758,6 +771,7 @@ private const val DELETE_REASON_EXPIRED = "expired"
 
 /** DM consent: a request left the recipient's Requests (it expired). */
 private const val FRAME_MESSAGE_REQUEST_REMOVED = "message_request_removed"
+private const val FRAME_MATCH_CLOSED = "match_closed"
 private const val FRAME_REACTION = "reaction"
 private const val FRAME_PRESENCE_UPDATE = "presence_update"
 

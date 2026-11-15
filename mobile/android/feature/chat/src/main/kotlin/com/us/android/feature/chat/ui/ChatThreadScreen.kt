@@ -126,6 +126,8 @@ fun ChatThreadScreen(
     val hiddenChat = com.us.android.feature.chat.ui.hidden.LocalHiddenChat.current
     // Dating audit M3: a Pulse match's chat is never screenshotted or snapshotted.
     DatingChatProtection(protectsThread(render.conversation))
+    // A closed Pulse match (2026-11-10): nothing more can be said here.
+    LaunchedEffect(render.matchClosed) { if (render.matchClosed) onBack() }
     val listState = rememberLazyListState()
     var cameraOpen by remember { mutableStateOf(false) }
     var locationOpen by remember { mutableStateOf(false) }

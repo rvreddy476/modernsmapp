@@ -292,6 +292,25 @@ class DatingRepository @Inject constructor(
         return DatingResult.Success(open)
     }
 
+    /**
+     * One page of one open bucket ([STATUS_ACTIVE] or [STATUS_QUIET]), for
+     * the Matches tab (2026-11-10): [cursor] null for the first page, then
+     * the last page's [MatchPage.nextCursor], which is null on the last page.
+     */
+    suspend fun matchesPage(status: String, cursor: String?, limit: Int = MATCH_PAGE_LIMIT): DatingResult<MatchPage> {
+        var next: String? = null
+        val rows = list {
+            api.matches(status = status, limit = limit, cursor = cursor).also { next = it.body()?.meta?.nextCursor }
+        }
+        return when (rows) {
+            is DatingResult.Failure -> rows
+            is DatingResult.Success -> {
+                rows.value.forEach(::rememberConversation)
+                DatingResult.Success(MatchPage(rows.value, next?.takeIf { it.isNotBlank() }))
+            }
+        }
+    }
+
     suspend fun match(matchId: String): DatingResult<MatchDto> = call { api.match(matchId) }.also { result ->
         if (result is DatingResult.Success) rememberConversation(result.value)
     }
@@ -471,5 +490,11 @@ class DatingRepository @Inject constructor(
         /** `GET /matches?status=` buckets the server recognises (store.ListMatchesForUser). */
         const val STATUS_ACTIVE = "active"
         const val STATUS_QUIET = "quiet"
+
+        /** Rows per page of the Matches tab (the server allows 1..100). */
+        const val MATCH_PAGE_LIMIT = 30
     }
 }
+
+/** One page of matches and the cursor to the next; [nextCursor] null on the last page. */
+data class MatchPage(val matches: List<MatchDto>, val nextCursor: String?)

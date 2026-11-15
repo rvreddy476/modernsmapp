@@ -17,6 +17,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -240,6 +241,7 @@ private fun MatchesList(
         checkIns.shown()
     }
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val hasMore by viewModel.hasMore.collectAsStateWithLifecycle()
     val now by rememberNow()
     // Mechanic M14: the "How did it go?" asks sit above the matches; none while the mechanic is off.
     val prompts = if (checkIn.available) checkIn.prompts else emptyList()
@@ -285,6 +287,19 @@ private fun MatchesList(
                                 }
                             }
                             Icon(UsIcons.ChevronRight, contentDescription = null, tint = UsTheme.extended.textDim)
+                        }
+                    }
+                }
+                // Paged (2026-11-10): the row at the end asks for the next page as it comes into view.
+                if (hasMore) {
+                    item(key = "more") {
+                        LaunchedEffect(s.items.size) { viewModel.loadMore() }
+                        Box(Modifier.fillMaxWidth().padding(UsTheme.spacing.l), contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(
+                                color = UsTheme.extended.accentSolid,
+                                strokeWidth = 3.dp,
+                                modifier = Modifier.size(24.dp),
+                            )
                         }
                     }
                 }

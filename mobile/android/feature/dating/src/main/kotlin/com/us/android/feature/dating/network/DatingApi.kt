@@ -222,8 +222,18 @@ interface DatingApi {
 
     // Matches
 
+    /**
+     * One bucket of the caller's matches. With [limit] or [cursor] the list is
+     * paged (2026-11-10): newest first, `meta.next_cursor` while another page
+     * follows; 400 INVALID_LIMIT / INVALID_CURSOR. With neither, the old
+     * unpaged answer (up to 200 rows, no meta).
+     */
     @GET("v1/dating/matches")
-    suspend fun matches(@Query("status") status: String? = null): Response<ApiEnvelope<List<MatchDto>>>
+    suspend fun matches(
+        @Query("status") status: String? = null,
+        @Query("limit") limit: Int? = null,
+        @Query("cursor") cursor: String? = null,
+    ): Response<ApiEnvelope<List<MatchDto>>>
 
     @GET("v1/dating/matches/{id}")
     suspend fun match(@Path("id") id: String): Response<ApiEnvelope<MatchDto>>
