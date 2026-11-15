@@ -62,6 +62,10 @@ dependencies {
     implementation(libs.androidx.navigation.compose)
     implementation(libs.hilt.navigation.compose)
     implementation(libs.coil.compose)
+    // Video in notes (15 Nov 2026): the app's player stack (PlayerFactory +
+    // MediaSources in :core:media) on a media3 surface, as chat's video bubble.
+    implementation(libs.media3.exoplayer)
+    implementation(libs.media3.ui.compose)
     implementation(libs.kotlinx.serialization.json)
 
     testImplementation(projects.core.testing)

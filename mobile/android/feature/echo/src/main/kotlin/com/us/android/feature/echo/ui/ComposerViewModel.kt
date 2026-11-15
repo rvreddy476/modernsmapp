@@ -5,6 +5,7 @@ import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.auth.SessionStateProvider
+import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.model.SessionState
 import com.us.android.feature.echo.data.EchoErrorCodes
@@ -22,6 +23,9 @@ import com.us.android.feature.echo.data.Note
 import com.us.android.feature.echo.data.PollDraft
 import com.us.android.feature.echo.data.ReplyPolicy
 import com.us.android.feature.echo.data.StagedMedia
+import com.us.android.feature.echo.data.VIDEO_ALONE_MESSAGE
+import com.us.android.feature.echo.data.VIDEO_UNREADABLE
+import com.us.android.feature.echo.data.VideoLimit
 import com.us.android.feature.echo.data.acceptedPicks
 import com.us.android.feature.echo.data.canEditText
 import com.us.android.feature.echo.data.echoCode
@@ -30,6 +34,7 @@ import com.us.android.feature.echo.data.eligibilityWords
 import com.us.android.feature.echo.data.entryProblem
 import com.us.android.feature.echo.data.pollProblem
 import com.us.android.feature.echo.data.scheduleProblem
+import com.us.android.feature.echo.data.videoLimitFor
 import com.us.android.feature.echo.di.EchoClock
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -56,6 +61,9 @@ data class PollEditor(
 data class ComposerEntry(val key: Int, val text: String = "", val media: List<StagedMedia> = emptyList()) {
     val remaining: Int get() = EchoRules.remaining(text)
     val problem: String? get() = entryProblem(text, media)
+
+    /** A video stands alone: no photos or GIF join it. */
+    val hasVideo: Boolean get() = media.any { it.isVideo }
 }
 
 @Immutable
@@ -86,7 +94,21 @@ data class ComposerUiState(
     val scheduledAt: Instant? = null,
     /** Why [scheduledAt] is not allowed, checked against the clock when it was picked and at Post. */
     val scheduleProblem: String? = null,
+    /**
+     * Whether the poster has Premium (`can_post`), which sets the video limit:
+     * every new note, thread and quote needs it; a reply may be without it.
+     */
+    val premium: Boolean = true,
 ) {
+    /** How long and how large a video may be for this poster. */
+    val videoLimit: VideoLimit get() = videoLimitFor(premium)
+
+    /** Photos (and a GIF) for the last entry: not beside a video. */
+    val canAddPhotos: Boolean get() = canAddMedia && !entries.last().hasVideo
+
+    /** A video for the last entry: on its own, so only while it has no media (and no poll). */
+    val canAddVideo: Boolean get() = canAddMedia && entries.last().media.isEmpty()
+
     val isThread: Boolean get() = entries.size > 1
 
     /** Threads are for new notes only, and carry no poll and no schedule (the thread route takes neither). */
@@ -117,7 +139,7 @@ data class ComposerUiState(
     val problem: String? get() = when {
         mode == ComposeMode.EDIT -> entries.first().problem.takeUnless { textLocked }
         entries.size > EchoRules.THREAD_MAX -> "A thread can have up to ${EchoRules.THREAD_MAX} notes."
-        poll != null && entries.first().media.isNotEmpty() -> "A poll can't have photos or a GIF."
+        poll != null && entries.first().media.isNotEmpty() -> "A poll can't have photos, a GIF or a video."
         else -> entries.firstNotNullOfOrNull { it.problem }
             ?: poll?.let { pollProblem(it.options, it.minutes) }
             ?: scheduleProblem
@@ -139,7 +161,8 @@ data class ComposerUiState(
  *    sends the same key; any change to the draft mints a new one.
  */
 @HiltViewModel
-@Suppress("LongParameterList") // the draft's readers, the uploader, the clock and the viewer's profile
+// The draft's readers, the uploader, the clock and the viewer's profile; one function per composer control.
+@Suppress("LongParameterList", "TooManyFunctions")
 class ComposerViewModel @Inject constructor(
     savedStateHandle: SavedStateHandle,
     private val repository: EchoRepository,
@@ -221,12 +244,14 @@ class ComposerViewModel @Inject constructor(
             }
             return
         }
+        var premium = true
         val gate = readGate(repository) { eligibility ->
+            premium = eligibility.canPost
             if (s.mode == ComposeMode.REPLY && target != null) replyGate(eligibility, target) else postGate(eligibility)
         }
         _state.update {
             when (gate) {
-                ComposeGate.Open -> it.copy(target = target, checking = false)
+                ComposeGate.Open -> it.copy(target = target, checking = false, premium = premium)
                 is ComposeGate.Blocked -> it.copy(target = target, checking = false, blocked = gate)
                 // Fail closed: nothing is sent without a good answer.
                 is ComposeGate.Failed -> it.copy(
@@ -316,6 +341,10 @@ class ComposerViewModel @Inject constructor(
         val s = _state.value
         if (!s.canAddMedia || uris.isEmpty()) return
         val entry = s.entries.getOrNull(index) ?: return
+        if (entry.hasVideo) {
+            _state.update { it.copy(notice = VIDEO_ALONE_MESSAGE) }
+            return
+        }
         val fresh = uris.filter { uri -> entry.media.none { it.localKey == uri } }
         val gifs = fresh.map { uploader.isGif(it) }
         val accepted = acceptedPicks(entry.media, gifs)
@@ -352,6 +381,75 @@ class ComposerViewModel @Inject constructor(
             }
             idempotencyKey = null
         }
+    }
+
+    /**
+     * One video picked for entry [index]: on its own (the entry must have no
+     * media and the draft no poll), checked against the poster's limit from
+     * the local file before a byte goes up, then uploaded with progress.
+     */
+    fun addVideo(index: Int, uri: String) {
+        val s = _state.value
+        if (!s.canAddMedia || s.entries.getOrNull(index)?.media?.isNotEmpty() != false) return
+        viewModelScope.launch {
+            val probe = uploader.probeVideo(uri)
+            val problem = if (probe == null) {
+                VIDEO_UNREADABLE
+            } else {
+                _state.value.videoLimit.check(probe.durationMs, probe.sizeBytes)
+            }
+            if (problem != null) {
+                _state.update { it.copy(error = problem) }
+                return@launch
+            }
+            val still = _state.value
+            if (!still.canAddMedia || still.entries.getOrNull(index)?.media?.isNotEmpty() != false) return@launch
+            val staged = StagedMedia(
+                localKey = uri,
+                isGif = false,
+                isVideo = true,
+                durationMs = probe?.durationMs ?: 0L,
+            )
+            draftChanged { st ->
+                st.copy(
+                    entries = st.entries.mapIndexed { i, e -> if (i == index) e.copy(media = listOf(staged)) else e },
+                )
+            }
+            uploadVideo(uri)
+        }
+    }
+
+    private suspend fun uploadVideo(localKey: String) {
+        val result = uploader.uploadVideo(localKey) { fraction ->
+            updateStaged(localKey) { it.copy(progress = fraction.coerceIn(0f, 1f)) }
+        }
+        updateStaged(localKey) { m ->
+            when (result) {
+                is AppResult.Success -> m.copy(mediaId = result.data, failed = false, progress = 1f)
+                is AppResult.Failure -> m.copy(failed = true)
+            }
+        }
+        if (result is AppResult.Failure && stagedExists(localKey)) {
+            val words = (result.error as? AppError.InvalidRequest)?.message?.takeIf { it.isNotBlank() }
+                ?: echoErrorMessage(result.error)
+            _state.update { it.copy(error = words) }
+        }
+        idempotencyKey = null
+    }
+
+    private fun stagedExists(localKey: String): Boolean =
+        _state.value.entries.any { e -> e.media.any { it.localKey == localKey } }
+
+    private fun updateStaged(localKey: String, change: (StagedMedia) -> StagedMedia) = _state.update { s ->
+        s.copy(
+            entries = s.entries.map { e ->
+                if (e.media.none { it.localKey == localKey }) {
+                    e
+                } else {
+                    e.copy(media = e.media.map { m -> if (m.localKey == localKey) change(m) else m })
+                }
+            },
+        )
     }
 
     fun removeMedia(index: Int, localKey: String) = draftChanged { s ->

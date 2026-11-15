@@ -6,7 +6,6 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -23,6 +22,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.testTag
@@ -147,7 +147,6 @@ fun NoteDetailScreen(destinations: EchoDestinations, viewModel: NoteDetailViewMo
                                 replyToHandle = parent?.author?.handle,
                                 follows = follows[note.authorId]?.takeIf { note.authorId != actions.viewerId },
                                 onFollow = { actions.toggleFollowAuthor(note) },
-                                onOpenQuotes = { destinations.onOpenQuotes(note.id) },
                             )
                         }
                         // The author's thread carrying on under the note, part 3 and on included.
@@ -162,7 +161,12 @@ fun NoteDetailScreen(destinations: EchoDestinations, viewModel: NoteDetailViewMo
                                 modifier = Modifier.padding(horizontal = UsTheme.spacing.l).testTag("echo_thread_part"),
                             )
                         }
-                        item(key = "label") { ConversationLabel(count = note.replyCount) }
+                        item(key = "label") {
+                            ConversationLabel(
+                                count = note.replyCount,
+                                onOpenQuotes = { destinations.onOpenQuotes(note.id) },
+                            )
+                        }
                         val partIds = after.mapTo(HashSet()) { it.id }
                         val lines = replyItems(note.id, replies.items.filterNot { it.id in partIds }, children)
                         itemsIndexed(lines, key = { _, line -> line.key }) { _, line ->
@@ -256,7 +260,6 @@ private fun FocusedNote(
     /** Null while unknown, or for the viewer's own note: no Follow pill. */
     follows: Boolean?,
     onFollow: () -> Unit,
-    onOpenQuotes: () -> Unit,
 ) {
     EchoCard(modifier = Modifier.padding(horizontal = UsTheme.spacing.l).testTag("echo_focus"), accent = true) {
         val topic = topicLine(
@@ -266,7 +269,6 @@ private fun FocusedNote(
             threadParts = threadParts,
             replyToHandle = replyToHandle,
         )
-        val views = compactCount(note.viewCount).takeIf { it.isNotEmpty() }?.let { "$it views" }
         Signature(
             author = note.author,
             authorId = note.authorId,
@@ -286,78 +288,138 @@ private fun FocusedNote(
                 }
             },
         )
+        // The tag and the date only: the views are the Eye pill below.
         TopicText(
-            line = topic.copy(text = listOfNotNull(topic.text.ifBlank { null }, views).joinToString(" · ")),
+            line = topic,
             modifier = Modifier.padding(top = UsTheme.spacing.s).testTag("echo_focus_meta"),
         )
         NoteText(note = note, style = UsEchoType.notePage)
-        NoteAttachments(note = note, mediaUrls = urls, callbacks = callbacks, now = now)
-        CountPills(note = note, callbacks = callbacks, onOpenQuotes = onOpenQuotes)
+        NoteAttachments(note = note, mediaUrls = urls, callbacks = callbacks, now = now, controls = true)
+        CountPills(note = note, callbacks = callbacks)
     }
 }
 
 /**
- * The counts as labelled pills: `42 hearts` (the heart), `3 echoes` (the
- * Echo it menu), quotes (opens them), Save (the bookmark), Share and More.
+ * The counts as an even grid of labelled pills ([FOCUS_PILL_ROWS]): 3 equal
+ * columns by 2 rows, the same gap across and down. `42 hearts` (the heart),
+ * `3 echoes` (the Echo it menu), `120 views` (the Eye); Save (the
+ * bookmark), Share and More. A cell the host has no action for stays empty,
+ * so the grid keeps its shape.
  */
 @Composable
-private fun CountPills(note: Note, callbacks: NoteCallbacks, onOpenQuotes: () -> Unit) {
-    FlowRow(
+private fun CountPills(note: Note, callbacks: NoteCallbacks) {
+    Column(
         modifier = Modifier.fillMaxWidth().padding(top = UsTheme.spacing.l).testTag("echo_counts"),
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
-        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        verticalArrangement = Arrangement.spacedBy(GRID_GAP),
     ) {
-        EchoPill(
-            icon = if (note.liked) UsIcons.HeartFilled else UsIcons.HeartOutline,
-            label = countWords(note.likeCount, "heart", "hearts"),
-            description = if (note.liked) "Unlike" else "Like",
-            lit = note.liked,
-            tag = "echo_action:like",
-        ) { callbacks.onLike(note) }
-        EchoPill(
-            icon = UsIcons.Repost,
-            label = countWords(note.repostCount, "echo", "echoes"),
-            description = if (note.reposted) UNDO_RE_ECHO else ECHO_IT,
-            lit = note.reposted,
-            tag = "echo_action:repost",
-        ) { callbacks.onRepost(note) }
-        EchoPill(
-            icon = UsIcons.Pencil,
-            label = if (note.quoteCount > 0) countWords(note.quoteCount, "quote", "quotes") else "View quotes",
-            description = "View quotes",
-            tag = "echo_view_quotes",
-            onClick = onOpenQuotes,
-        )
-        callbacks.onBookmark?.let { onBookmark ->
-            val saves = compactCount(note.bookmarkCount)
-            EchoPill(
-                icon = if (note.bookmarked) UsIcons.BookmarkFilled else UsIcons.BookmarkOutline,
-                label = (if (note.bookmarked) "Saved" else "Save") + if (saves.isEmpty()) "" else " · $saves",
-                description = if (note.bookmarked) "Remove from saved" else "Save",
-                lit = note.bookmarked,
-                tag = "echo_action:bookmark",
-            ) { onBookmark(note) }
-        }
-        EchoPill(icon = UsIcons.Share, label = "Share", description = "Share", tag = "echo_action:share") {
-            callbacks.onShare(note)
-        }
-        callbacks.onMore?.let { onMore ->
-            EchoPill(icon = UsIcons.More, label = null, description = "More", tag = "echo_note_more") { onMore(note) }
+        FOCUS_PILL_ROWS.forEach { row ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(GRID_GAP),
+            ) {
+                row.forEach { pill ->
+                    Box(modifier = Modifier.weight(1f)) {
+                        FocusPillCell(pill = pill, note = note, callbacks = callbacks)
+                    }
+                }
+            }
         }
     }
 }
 
 @Composable
-private fun ConversationLabel(count: Long) {
-    Text(
-        text = if (count > 0) "$CONVERSATION · ${compactCount(count)}" else CONVERSATION,
-        style = MaterialTheme.typography.labelLarge,
-        fontWeight = FontWeight.Bold,
-        color = UsTheme.extended.textPrimary,
+@Suppress("CyclomaticComplexMethod") // one branch per grid cell
+private fun FocusPillCell(pill: FocusPill, note: Note, callbacks: NoteCallbacks) {
+    val cell = Modifier.fillMaxWidth()
+    when (pill) {
+        FocusPill.HEARTS -> EchoPill(
+            icon = if (note.liked) UsIcons.HeartFilled else UsIcons.HeartOutline,
+            label = compactCountWords(note.likeCount, "heart", "hearts"),
+            description = if (note.liked) "Unlike" else "Like",
+            lit = note.liked,
+            tag = "echo_action:like",
+            modifier = cell,
+            compact = true,
+        ) { callbacks.onLike(note) }
+        FocusPill.ECHOES -> EchoPill(
+            icon = UsIcons.Repost,
+            label = compactCountWords(note.repostCount, "echo", "echoes"),
+            description = if (note.reposted) UNDO_RE_ECHO else ECHO_IT,
+            lit = note.reposted,
+            tag = "echo_action:repost",
+            modifier = cell,
+            compact = true,
+        ) { callbacks.onRepost(note) }
+        FocusPill.VIEWS -> EchoPill(
+            icon = UsIcons.Eye,
+            label = viewsWords(note.viewCount),
+            description = viewsWords(note.viewCount),
+            tag = "echo_action:views",
+            modifier = cell,
+            compact = true,
+            onClick = null,
+        )
+        FocusPill.SAVE -> callbacks.onBookmark?.let { onBookmark ->
+            EchoPill(
+                icon = if (note.bookmarked) UsIcons.BookmarkFilled else UsIcons.BookmarkOutline,
+                label = if (note.bookmarked) "Saved" else "Save",
+                description = if (note.bookmarked) "Remove from saved" else "Save",
+                lit = note.bookmarked,
+                tag = "echo_action:bookmark",
+                modifier = cell,
+                compact = true,
+            ) { onBookmark(note) }
+        }
+        FocusPill.SHARE -> EchoPill(
+            icon = UsIcons.Share,
+            label = "Share",
+            description = "Share",
+            tag = "echo_action:share",
+            modifier = cell,
+            compact = true,
+        ) { callbacks.onShare(note) }
+        FocusPill.MORE -> callbacks.onMore?.let { onMore ->
+            EchoPill(
+                icon = UsIcons.More,
+                label = null,
+                description = "More",
+                tag = "echo_note_more",
+                modifier = cell,
+                compact = true,
+            ) { onMore(note) }
+        }
+    }
+}
+
+/** "Conversation · 12" and, at the right, the accent "View quotes" link (as the web has it). */
+@Composable
+private fun ConversationLabel(count: Long, onOpenQuotes: () -> Unit) {
+    Row(
         modifier = Modifier
-            .padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.l)
-            .testTag("echo_relevant"),
-    )
+            .fillMaxWidth()
+            .padding(horizontal = UsTheme.spacing.xxl, vertical = UsTheme.spacing.l),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text = if (count > 0) "$CONVERSATION · ${compactCount(count)}" else CONVERSATION,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = UsTheme.extended.textPrimary,
+            modifier = Modifier.weight(1f).testTag("echo_relevant"),
+        )
+        Text(
+            text = VIEW_QUOTES,
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.Bold,
+            color = UsTheme.extended.echo.text,
+            modifier = Modifier
+                .clip(RoundedCornerShape(UsTheme.radii.full))
+                .clickable(onClick = onOpenQuotes)
+                .semantics { role = Role.Button }
+                .padding(horizontal = UsTheme.spacing.s, vertical = UsTheme.spacing.xs)
+                .testTag("echo_view_quotes"),
+        )
+    }
 }
 
 /**
@@ -546,6 +608,9 @@ internal fun replyClosedText(note: Note): String = when (note.replyPolicy) {
 private const val NOTE_TITLE = "Note"
 private const val CONVERSATION = "Conversation"
 private val REPLY_INDENT = 20.dp
+
+/** The note page's pill grid: the same gap across and down. */
+private val GRID_GAP = 8.dp
 private val THREAD_LINE = 2.dp
 
 // Under the signature avatar's centre: the card's inset (12) + its padding (14) + half the avatar (10) - 1.

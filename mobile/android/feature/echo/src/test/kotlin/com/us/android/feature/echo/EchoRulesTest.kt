@@ -9,6 +9,7 @@ import com.us.android.feature.echo.data.MEDIA_LIMIT_MESSAGE
 import com.us.android.feature.echo.data.Note
 import com.us.android.feature.echo.data.ReplyPolicy
 import com.us.android.feature.echo.data.StagedMedia
+import com.us.android.feature.echo.data.TOO_MANY_MEDIA_MESSAGE
 import com.us.android.feature.echo.data.acceptedPicks
 import com.us.android.feature.echo.data.canEditText
 import com.us.android.feature.echo.data.compactCount
@@ -97,8 +98,10 @@ class EchoRulesTest {
             EchoErrorCodes.REPLY_NOT_ALLOWED to EchoWords.REPLY_NOT_ALLOWED,
             EchoErrorCodes.NOTE_TOO_LONG to "Notes can be up to 500 characters.",
             EchoErrorCodes.EMPTY_NOTE to "Write something or add a photo.",
-            EchoErrorCodes.TOO_MANY_MEDIA to MEDIA_LIMIT_MESSAGE,
-            EchoErrorCodes.MEDIA_NOT_ALLOWED to "Echo takes photos and GIFs only.",
+            EchoErrorCodes.TOO_MANY_MEDIA to TOO_MANY_MEDIA_MESSAGE,
+            EchoErrorCodes.MEDIA_NOT_ALLOWED to "Echo takes photos, GIFs and videos only.",
+            EchoErrorCodes.VIDEO_TOO_LONG to "This video is too long for this note.",
+            EchoErrorCodes.VIDEO_TOO_LARGE to "This video is too large.",
             EchoErrorCodes.NOTE_NOT_FOUND to EchoWords.NOTE_NOT_FOUND,
             EchoErrorCodes.EDIT_WINDOW_CLOSED to "Notes can only be edited for 30 minutes after posting.",
             EchoErrorCodes.NOT_AUTHOR to "Only the author can change this note.",

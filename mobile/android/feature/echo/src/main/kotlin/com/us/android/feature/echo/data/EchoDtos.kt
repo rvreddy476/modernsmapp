@@ -45,6 +45,12 @@ data class NoteDto(
     val poll: PollDto? = null,
     @SerialName("publish_error") val publishError: String? = null,
     @SerialName("thread_parts") val threadParts: Int = 0,
+    // Video in notes (echo-v2-contract.md "Video in notes", 15 Nov 2026).
+    @SerialName("post_type") val postType: String = "",
+    /** True until every asset is ready and passed; only the author is shown the note meanwhile. */
+    @SerialName("is_processing") val isProcessing: Boolean = false,
+    /** The author's own note whose video is longer than the note allows; omitted when false. */
+    @SerialName("video_too_long") val videoTooLong: Boolean = false,
 )
 
 @Serializable
@@ -58,7 +64,7 @@ data class NoteAuthorDto(
     @SerialName("badge_flags") val badgeFlags: Int = 0,
 )
 
-/** One existing post media item. Notes carry images and GIFs only. */
+/** One existing post media item: an image, a GIF, or (15 Nov 2026) one video. */
 @Serializable
 data class NoteMediaDto(
     @SerialName("media_id") val mediaId: String = "",
@@ -66,6 +72,10 @@ data class NoteMediaDto(
     @SerialName("alt_text") val altText: String = "",
     val position: Int = 0,
     @SerialName("processing_status") val processingStatus: String = "",
+    /** A video's length once measured (usually after transcoding); omitted while unknown. */
+    @SerialName("duration_ms") val durationMs: Long = 0,
+    /** Gateway-relative master playlist, once the transcode produced one. */
+    @SerialName("hls_url") val hlsUrl: String? = null,
 )
 
 /** A note's poll. Each `votes` is null while counts are withheld from this viewer. */

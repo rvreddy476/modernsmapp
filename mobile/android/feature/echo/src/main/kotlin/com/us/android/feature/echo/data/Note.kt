@@ -50,9 +50,21 @@ data class NoteAuthor(
     val handle: String get() = if (username.isBlank()) "" else "@$username"
 }
 
-/** One image or GIF on a note. The address is read from media-service by id. */
+/**
+ * One image, GIF or video on a note. The picture's (or the video's poster's)
+ * address is read from media-service by id; a video plays from [hlsUrl]
+ * (gateway-relative) once transcoded.
+ */
 @Immutable
-data class NoteMedia(val mediaId: String, val isGif: Boolean, val altText: String)
+data class NoteMedia(
+    val mediaId: String,
+    val isGif: Boolean,
+    val altText: String,
+    val isVideo: Boolean = false,
+    /** A video's length; 0 while unknown. */
+    val durationMs: Long = 0,
+    val hlsUrl: String? = null,
+)
 
 @Immutable
 data class Note(
@@ -88,8 +100,15 @@ data class Note(
     val publishError: String? = null,
     /** On a thread's first note, its live part count (the first included); 0 otherwise. */
     val threadParts: Int = 0,
+    /** The video is still being processed (only its author is shown the note meanwhile). */
+    val isProcessing: Boolean = false,
+    /** The author's note whose video is longer than the note allows: shown to them alone. */
+    val videoTooLong: Boolean = false,
 ) {
     val edited: Boolean get() = !editedAt.isNullOrBlank()
+
+    /** The note's one video, when it carries one (a video stands alone). */
+    val video: NoteMedia? get() = media.firstOrNull { it.isVideo }
 }
 
 /** `published`, `scheduled`, or `failed` (a scheduled note dropped after 24 hours of retries). */
@@ -214,7 +233,16 @@ fun NoteDto.toNote(): Note = Note(
     media = media.orEmpty()
         .sortedBy { it.position }
         .filter { it.mediaId.isNotBlank() }
-        .map { NoteMedia(it.mediaId, isGif = it.kind == KIND_GIF, altText = it.altText) },
+        .map {
+            NoteMedia(
+                mediaId = it.mediaId,
+                isGif = it.kind == KIND_GIF,
+                altText = it.altText,
+                isVideo = it.kind == KIND_VIDEO,
+                durationMs = it.durationMs.coerceAtLeast(0),
+                hlsUrl = it.hlsUrl?.takeIf { url -> url.isNotBlank() },
+            )
+        },
     createdAt = createdAt,
     editedAt = editedAt?.takeIf { it.isNotBlank() },
     replyToId = replyToId?.takeIf { it.isNotBlank() },
@@ -237,6 +265,8 @@ fun NoteDto.toNote(): Note = Note(
     poll = poll?.toPoll(),
     publishError = publishError?.takeIf { it.isNotBlank() },
     threadParts = threadParts,
+    isProcessing = isProcessing,
+    videoTooLong = videoTooLong,
 )
 
 fun PollDto.toPoll(): NotePoll = NotePoll(
@@ -253,3 +283,4 @@ fun EligibilityDto.toEligibility(): Eligibility =
     Eligibility(canPost = canPost, canReply = canReply, reason = EligibilityReason.fromWire(reason))
 
 private const val KIND_GIF = "gif"
+private const val KIND_VIDEO = "video"

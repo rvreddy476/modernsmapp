@@ -34,6 +34,10 @@ object EchoErrorCodes {
     const val POLL_CLOSED = "POLL_CLOSED"
     const val ALREADY_VOTED = "ALREADY_VOTED"
     const val OWN_POLL = "OWN_POLL"
+
+    // Video in notes (15 Nov 2026).
+    const val VIDEO_TOO_LONG = "VIDEO_TOO_LONG"
+    const val VIDEO_TOO_LARGE = "VIDEO_TOO_LARGE"
 }
 
 /** The words for the eligibility sheet and the matching refusals. */
@@ -75,8 +79,10 @@ fun echoErrorMessage(error: AppError): String {
         EchoErrorCodes.REPLY_NOT_ALLOWED -> EchoWords.REPLY_NOT_ALLOWED
         EchoErrorCodes.NOTE_TOO_LONG -> "Notes can be up to ${EchoRules.MAX_CHARS} characters."
         EchoErrorCodes.EMPTY_NOTE -> "Write something or add a photo."
-        EchoErrorCodes.TOO_MANY_MEDIA -> MEDIA_LIMIT_MESSAGE
-        EchoErrorCodes.MEDIA_NOT_ALLOWED -> "Echo takes photos and GIFs only."
+        EchoErrorCodes.TOO_MANY_MEDIA -> TOO_MANY_MEDIA_MESSAGE
+        EchoErrorCodes.MEDIA_NOT_ALLOWED -> "Echo takes photos, GIFs and videos only."
+        EchoErrorCodes.VIDEO_TOO_LONG -> "This video is too long for this note."
+        EchoErrorCodes.VIDEO_TOO_LARGE -> VIDEO_TOO_LARGE_TO_UPLOAD
         EchoErrorCodes.NOTE_NOT_FOUND -> EchoWords.NOTE_NOT_FOUND
         EchoErrorCodes.EDIT_WINDOW_CLOSED -> "Notes can only be edited for 30 minutes after posting."
         EchoErrorCodes.NOT_AUTHOR -> "Only the author can change this note."
@@ -131,6 +137,9 @@ fun eligibilityWords(reason: EligibilityReason): Pair<String, String>? = when (r
     EligibilityReason.SUSPENDED -> EchoWords.SUSPENDED to EchoWords.SUSPENDED_DETAIL
     EligibilityReason.NONE -> null
 }
+
+/** The server's TOO_MANY_MEDIA: too many pictures, or a GIF or a video with anything else. */
+const val TOO_MANY_MEDIA_MESSAGE = "Add up to 4 photos, or 1 GIF or 1 video on its own."
 
 private fun plural(n: Long, unit: String) = if (n == 1L) "1 $unit" else "$n ${unit}s"
 

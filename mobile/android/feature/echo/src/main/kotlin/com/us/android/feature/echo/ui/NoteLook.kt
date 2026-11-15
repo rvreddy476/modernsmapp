@@ -2,6 +2,7 @@ package com.us.android.feature.echo.ui
 
 import androidx.compose.runtime.Immutable
 import com.us.android.feature.echo.data.Note
+import com.us.android.feature.echo.data.compactCount
 
 /*
  * The words and the shape of Echo's "serif conversation cards"
@@ -84,6 +85,45 @@ fun repliesLabel(count: Long): String? = when {
 /** "3 echoes", "1 echo", "42 hearts": a count pill's words. */
 fun countWords(count: Long, one: String, many: String): String =
     if (count == 1L) "1 $one" else "$count $many"
+
+/** "0 hearts", "1 heart", "1.2K hearts": [countWords] with the count shortened, for the note page's grid. */
+fun compactCountWords(count: Long, one: String, many: String): String = when {
+    count == 1L -> "1 $one"
+    count <= 0L -> "0 $many"
+    else -> "${compactCount(count)} $many"
+}
+
+/** "1 view", "1.2K views": the views pill's words (and the card's Eye description). */
+fun viewsWords(count: Long): String = compactCountWords(count, "view", "views")
+
+/** "Echo it", or "Echo it 3" once the note has been re-echoed. */
+fun echoItLabel(count: Long): String = compactCount(count).let { if (it.isEmpty()) ECHO_IT else "$ECHO_IT $it" }
+
+/**
+ * A timeline card's action row, left to right, on one line spread evenly
+ * across the card: Reply, Echo it (count), the heart (count), the Eye
+ * (views; opens the note) and More.
+ */
+enum class CardAction { REPLY, ECHO, HEART, VIEWS, MORE }
+
+/** The card's row in order. */
+val CARD_ACTIONS: List<CardAction> = CardAction.entries.toList()
+
+/** One cell of the note page's pill grid. */
+enum class FocusPill { HEARTS, ECHOES, VIEWS, SAVE, SHARE, MORE }
+
+/**
+ * The note page's pills as an even grid, 3 equal columns by 2 rows:
+ * hearts, echoes, views; then Save, Share, More. Quotes are not a pill:
+ * "View quotes" sits on the Conversation line.
+ */
+val FOCUS_PILL_ROWS: List<List<FocusPill>> = listOf(
+    listOf(FocusPill.HEARTS, FocusPill.ECHOES, FocusPill.VIEWS),
+    listOf(FocusPill.SAVE, FocusPill.SHARE, FocusPill.MORE),
+)
+
+/** The Conversation line's link to a note's quotes. */
+const val VIEW_QUOTES = "View quotes"
 
 /**
  * One reply on a note's page: [depth] steps of indent (0 to [MAX_REPLY_DEPTH]),

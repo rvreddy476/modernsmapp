@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -53,10 +54,10 @@ import java.time.Instant
 /**
  * One note as Echo's serif conversation card (echo-look-v3): the author's
  * name and how long ago it was posted (`Asha Rao · 2h`) on top with the
- * topic (`#tag`, Thread, Quote) at the right, the text in Bodoni, pictures,
- * a poll or the quoted note, up to two top replies as bubbles
- * with "N replies", and the labelled pills: Reply, Echo it, the heart and
- * More. No left avatar column, no bare icon row.
+ * topic (`#tag`, Thread, Quote) at the right, the text in Bodoni, pictures
+ * or a video, a poll or the quoted note, up to two top replies as bubbles
+ * with "N replies", and the labelled pills: Reply, Echo it, the heart, the
+ * views and More. No left avatar column, no bare icon row.
  */
 @Composable
 fun NoteCard(
@@ -155,10 +156,29 @@ internal fun NoteText(note: Note, style: TextStyle) {
     )
 }
 
-/** Pictures or a GIF, a poll, and the quoted note: inside the card, between the text and the signature. */
+/**
+ * Pictures, a GIF or a video, a poll, and the quoted note: inside the card,
+ * between the text and the signature. A video plays muted on a timeline and
+ * with [controls] on the note page.
+ */
 @Composable
-internal fun NoteAttachments(note: Note, mediaUrls: Map<String, String>, callbacks: NoteCallbacks, now: Instant) {
-    if (note.media.isNotEmpty()) {
+internal fun NoteAttachments(
+    note: Note,
+    mediaUrls: Map<String, String>,
+    callbacks: NoteCallbacks,
+    now: Instant,
+    controls: Boolean = false,
+) {
+    val video = note.video
+    if (video != null) {
+        NoteVideo(
+            note = note,
+            video = video,
+            posterUrl = mediaUrls[video.mediaId],
+            controls = controls,
+            modifier = Modifier.padding(top = UsTheme.spacing.l),
+        )
+    } else if (note.media.isNotEmpty()) {
         NoteMediaGrid(media = note.media, urls = mediaUrls, modifier = Modifier.padding(top = UsTheme.spacing.l))
     }
     note.poll?.let { poll ->
@@ -335,52 +355,78 @@ internal fun ReplyBubbles(preview: ReplyPreview, onOpenNote: () -> Unit, onOpenR
 }
 
 /**
- * The card's labelled pills: Reply, Echo it (the Re-echo / Quote sheet), the
- * heart with its count, and More (Save, Share, Copy link, Report, Mute ...).
+ * The card's labelled pills on one line, spread across the card with equal
+ * gaps ([CARD_ACTIONS]): Reply, Echo it with its count (the Re-echo / Quote
+ * sheet), the heart with its count, the Eye with the views (opens the note,
+ * as the card does), and More (Save, Share, Copy link, Report, Mute ...).
  * Where the host draws no menu, More is the share sheet.
  */
 @Composable
 internal fun NotePills(note: Note, callbacks: NoteCallbacks) {
     Row(
-        modifier = Modifier.fillMaxWidth().padding(top = UsTheme.spacing.l),
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
+        modifier = Modifier.fillMaxWidth().padding(top = UsTheme.spacing.l).testTag("echo_actions"),
+        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        EchoPill(
+        CARD_ACTIONS.forEach { action -> CardActionPill(action, note, callbacks) }
+    }
+}
+
+@Composable
+private fun CardActionPill(action: CardAction, note: Note, callbacks: NoteCallbacks) {
+    when (action) {
+        CardAction.REPLY -> EchoPill(
             icon = UsIcons.Comment,
             label = REPLY,
             description = REPLY,
             tag = "echo_action:reply",
+            compact = true,
         ) { callbacks.onReply(note) }
-        EchoPill(
+        CardAction.ECHO -> EchoPill(
             icon = UsIcons.Repost,
-            label = ECHO_IT,
+            label = echoItLabel(note.repostCount),
             description = if (note.reposted) UNDO_RE_ECHO else ECHO_IT,
             lit = note.reposted,
             tag = "echo_action:repost",
+            compact = true,
         ) { callbacks.onRepost(note) }
-        val hearts = compactCount(note.likeCount)
-        EchoPill(
-            icon = if (note.liked) UsIcons.HeartFilled else UsIcons.HeartOutline,
-            label = hearts.ifEmpty { null },
-            description = (if (note.liked) "Unlike" else "Like") + if (hearts.isEmpty()) "" else ", $hearts",
-            lit = note.liked,
-            tag = "echo_action:like",
-        ) { callbacks.onLike(note) }
-        Box(modifier = Modifier.weight(1f))
-        val onMore = callbacks.onMore
-        EchoPill(
-            icon = UsIcons.More,
-            label = null,
-            description = if (onMore != null) MORE else SHARE,
-            tag = if (onMore != null) "echo_note_more" else "echo_action:share",
-        ) { if (onMore != null) onMore(note) else callbacks.onShare(note) }
+        CardAction.HEART -> {
+            val hearts = compactCount(note.likeCount)
+            EchoPill(
+                icon = if (note.liked) UsIcons.HeartFilled else UsIcons.HeartOutline,
+                label = hearts.ifEmpty { null },
+                description = (if (note.liked) "Unlike" else "Like") + if (hearts.isEmpty()) "" else ", $hearts",
+                lit = note.liked,
+                tag = "echo_action:like",
+                compact = true,
+            ) { callbacks.onLike(note) }
+        }
+        CardAction.VIEWS -> EchoPill(
+            icon = UsIcons.Eye,
+            label = compactCount(note.viewCount).ifEmpty { null },
+            description = viewsWords(note.viewCount),
+            tag = "echo_action:views",
+            compact = true,
+        ) { callbacks.onOpen(note) }
+        CardAction.MORE -> {
+            val onMore = callbacks.onMore
+            EchoPill(
+                icon = UsIcons.More,
+                label = null,
+                description = if (onMore != null) MORE else SHARE,
+                tag = if (onMore != null) "echo_note_more" else "echo_action:share",
+                compact = true,
+            ) { if (onMore != null) onMore(note) else callbacks.onShare(note) }
+        }
     }
 }
 
 /**
  * One labelled pill: radius full, a hairline border, 12 sp. [lit] draws it in
- * Echo's ember (a heart given, a note re-echoed, a note saved).
+ * Echo's ember (a heart given, a note re-echoed, a note saved). [compact]
+ * narrows its side padding so five fit on one line of a timeline card. Its
+ * icon and label sit in the middle, so a pill stretched to a grid cell
+ * stays centred.
  */
 @Composable
 @Suppress("LongParameterList")
@@ -391,20 +437,25 @@ internal fun EchoPill(
     tag: String,
     modifier: Modifier = Modifier,
     lit: Boolean = false,
+    compact: Boolean = false,
     onClick: (() -> Unit)?,
 ) {
     val shape = RoundedCornerShape(UsTheme.radii.full)
     val tint: Color = if (lit) UsTheme.extended.echo.text else UsTheme.extended.textSecondary
     Row(
         modifier = modifier
+            .heightIn(min = PILL_MIN_HEIGHT)
             .clip(shape)
             .border(1.dp, if (lit) UsTheme.extended.echo.border else UsTheme.extended.borderMedium, shape)
             .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
-            .padding(horizontal = UsTheme.spacing.l, vertical = UsTheme.spacing.s)
+            .padding(
+                horizontal = if (compact) UsTheme.spacing.m else UsTheme.spacing.l,
+                vertical = UsTheme.spacing.s,
+            )
             .semantics { contentDescription = description }
             .testTag(tag),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+        horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs, Alignment.CenterHorizontally),
     ) {
         icon?.let {
             Icon(imageVector = it, contentDescription = null, tint = tint, modifier = Modifier.size(PILL_ICON))
@@ -415,6 +466,7 @@ internal fun EchoPill(
                 style = MaterialTheme.typography.labelMedium,
                 color = tint,
                 maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
             )
         }
     }
@@ -456,6 +508,10 @@ internal fun NoteMediaGrid(media: List<NoteMedia>, urls: Map<String, String>, mo
 
 @Composable
 private fun MediaTile(item: NoteMedia, urls: Map<String, String>, modifier: Modifier) {
+    if (item.isVideo) {
+        VideoPosterTile(item = item, posterUrl = urls[item.mediaId], modifier = modifier)
+        return
+    }
     Box(modifier = modifier.background(UsTheme.extended.fillSubtle)) {
         urls[item.mediaId]?.let { url ->
             AsyncImage(
@@ -567,3 +623,6 @@ private const val QUOTE_LINES = 4
 private val GRID_GAP = 2.dp
 private val TICK_SIZE = 16.dp
 private val PILL_ICON = 14.dp
+
+// Every pill is this tall, icon-only or labelled, so a row of them lines up (the web's min-h-8).
+private val PILL_MIN_HEIGHT = 32.dp

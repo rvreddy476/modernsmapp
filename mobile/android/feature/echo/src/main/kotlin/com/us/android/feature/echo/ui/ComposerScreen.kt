@@ -112,6 +112,14 @@ fun ComposerScreen(
         pickingFor = index
         picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
     }
+    // One video, on its own (video in notes, 15 Nov 2026).
+    val videoPicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri ->
+        uri?.let { viewModel.addVideo(pickingFor, it.toString()) }
+    }
+    val pickVideo: (Int) -> Unit = { index ->
+        pickingFor = index
+        videoPicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.VideoOnly))
+    }
 
     LaunchedEffect(state.doneNoteId, state.doneScheduled) {
         when {
@@ -148,6 +156,7 @@ fun ComposerScreen(
                     urls = urls,
                     viewModel = viewModel,
                     onPick = pick,
+                    onPickVideo = pickVideo,
                     onPolicy = { policySheet = true },
                     onSchedule = { scheduling = true },
                 )
@@ -167,6 +176,7 @@ fun ComposerScreen(
             ComposerToolbar(
                 state = state,
                 onPhotos = { pick(state.entries.lastIndex) },
+                onVideo = { pickVideo(state.entries.lastIndex) },
                 onGif = { pickingGif = true },
                 onPoll = viewModel::startPoll,
                 onSchedule = { scheduling = true },
@@ -338,6 +348,7 @@ private fun ComposerBody(
     urls: Map<String, String>,
     viewModel: ComposerViewModel,
     onPick: (Int) -> Unit,
+    onPickVideo: (Int) -> Unit,
     onPolicy: () -> Unit,
     onSchedule: () -> Unit,
 ) {
@@ -377,6 +388,7 @@ private fun ComposerBody(
                 onText = { viewModel.setText(index, it) },
                 onRemove = { viewModel.removeEntry(index) },
                 onPick = { onPick(index) },
+                onPickVideo = { onPickVideo(index) },
                 onRemoveMedia = { key -> viewModel.removeMedia(index, key) },
             )
             if (index == 0) {
@@ -541,15 +553,18 @@ private fun PollEditorView(
 }
 
 /**
- * The tools as labelled pills: Photo, GIF, Poll, Later (schedule); then Add
- * to thread and "N left". GIF shows only when this build has a Giphy key,
- * and only while the entry has no media (a GIF stands alone).
+ * The tools as labelled pills: Photo, Video, GIF, Poll, Later (schedule);
+ * then Add to thread and "N left". GIF shows only when this build has a
+ * Giphy key, and only while the entry has no media (a GIF stands alone); a
+ * video stands alone too, so Video waits for an empty entry and Photo is
+ * off beside a video.
  */
 @Composable
 @Suppress("LongParameterList")
 private fun ComposerToolbar(
     state: ComposerUiState,
     onPhotos: () -> Unit,
+    onVideo: () -> Unit,
     onGif: () -> Unit,
     onPoll: () -> Unit,
     onSchedule: () -> Unit,
@@ -566,7 +581,8 @@ private fun ComposerToolbar(
             horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
             verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
         ) {
-            ToolPill(UsIcons.ImagePlus, "Photo", "Add photos", "echo_tool_photos", state.canAddMedia, onPhotos)
+            ToolPill(UsIcons.ImagePlus, "Photo", "Add photos", "echo_tool_photos", state.canAddPhotos, onPhotos)
+            ToolPill(UsIcons.Video, "Video", "Add a video", "echo_tool_video", state.canAddVideo, onVideo)
             if (EchoGiphy.available) {
                 ToolPill(
                     icon = null,
@@ -682,7 +698,7 @@ private fun ReplyPolicySheet(chosen: ReplyPolicy, onPick: (ReplyPolicy) -> Unit,
  * and on a thread its own Photo, Remove and "N left".
  */
 @Composable
-@Suppress("LongParameterList", "LongMethod")
+@Suppress("LongParameterList", "LongMethod", "CyclomaticComplexMethod")
 private fun EntryCard(
     index: Int,
     entry: ComposerEntry,
@@ -698,6 +714,7 @@ private fun EntryCard(
     onText: (String) -> Unit,
     onRemove: () -> Unit,
     onPick: () -> Unit,
+    onPickVideo: () -> Unit,
     onRemoveMedia: (String) -> Unit,
 ) {
     EchoCard(modifier = Modifier.testTag("echo_entry:$index"), accent = index == 0) {
@@ -764,7 +781,14 @@ private fun EntryCard(
                 modifier = Modifier.fillMaxWidth().testTag("echo_entry_text:$index"),
             )
         }
-        if (entry.media.isNotEmpty()) {
+        val video = entry.media.firstOrNull { it.isVideo }
+        if (video != null) {
+            StagedVideo(
+                media = video,
+                onRemove = { onRemoveMedia(video.localKey) },
+                modifier = Modifier.padding(top = UsTheme.spacing.m),
+            )
+        } else if (entry.media.isNotEmpty()) {
             Row(
                 modifier = Modifier.padding(top = UsTheme.spacing.m),
                 horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.s)
@@ -784,8 +808,11 @@ private fun EntryCard(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
             ) {
-                if (canAddMedia) {
+                if (canAddMedia && !entry.hasVideo) {
                     EchoPill(UsIcons.ImagePlus, "Photo", "Add photos", "echo_pick_media:$index", onClick = onPick)
+                }
+                if (canAddMedia && entry.media.isEmpty()) {
+                    EchoPill(UsIcons.Video, "Video", "Add a video", "echo_pick_video:$index", onClick = onPickVideo)
                 }
                 EchoPill(UsIcons.Trash, "Remove", "Remove this note", "echo_remove_entry:$index", onClick = onRemove)
                 Box(modifier = Modifier.weight(1f))

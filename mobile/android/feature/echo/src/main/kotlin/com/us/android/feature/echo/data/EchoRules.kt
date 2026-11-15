@@ -38,12 +38,19 @@ object EchoRules {
     fun remaining(text: String): Int = MAX_CHARS - length(text)
 }
 
-/** One staged picture on a composer entry. [mediaId] is set once the upload is ready. */
+/**
+ * One staged picture or video on a composer entry. [mediaId] is set once
+ * the upload is ready (a video: once confirmed; it transcodes behind the
+ * note). [progress] is a video's upload, 0 to 1.
+ */
 data class StagedMedia(
     val localKey: String,
     val isGif: Boolean,
     val mediaId: String? = null,
     val failed: Boolean = false,
+    val isVideo: Boolean = false,
+    val durationMs: Long = 0,
+    val progress: Float = 0f,
 ) {
     val uploading: Boolean get() = mediaId == null && !failed
 }
@@ -51,18 +58,20 @@ data class StagedMedia(
 /** Why an entry cannot be posted yet, or null when it can. Pure, so the words are tests. */
 fun entryProblem(text: String, media: List<StagedMedia>): String? {
     val length = EchoRules.length(text)
+    val video = media.any { it.isVideo }
     return when {
         length > EchoRules.MAX_CHARS -> "Notes can be up to ${EchoRules.MAX_CHARS} characters."
         length == 0 && media.isEmpty() -> "Write something or add a photo."
-        media.any { it.failed } -> "A photo didn't upload. Remove it and try again."
-        media.any { it.uploading } -> "Your photos are still uploading."
+        media.any { it.failed } -> if (video) VIDEO_FAILED_PROBLEM else PHOTO_FAILED_PROBLEM
+        media.any { it.uploading } -> if (video) VIDEO_UPLOADING_PROBLEM else PHOTOS_UPLOADING_PROBLEM
         mediaProblem(media) != null -> mediaProblem(media)
         else -> null
     }
 }
 
-/** The media rule: up to 4 images, or exactly 1 GIF on its own. */
+/** The media rule: up to 4 images, or exactly 1 GIF on its own, or exactly 1 video on its own. */
 fun mediaProblem(media: List<StagedMedia>): String? = when {
+    media.any { it.isVideo } && media.size > 1 -> VIDEO_ALONE_MESSAGE
     media.count { it.isGif } > 1 || (media.any { it.isGif } && media.size > 1) -> MEDIA_LIMIT_MESSAGE
     media.size > EchoRules.MAX_IMAGES -> MEDIA_LIMIT_MESSAGE
     else -> null
@@ -87,6 +96,10 @@ fun acceptedPicks(current: List<StagedMedia>, incomingGifs: List<Boolean>): Int 
 }
 
 const val MEDIA_LIMIT_MESSAGE = "Add up to 4 photos or 1 GIF."
+private const val VIDEO_FAILED_PROBLEM = "The video didn't upload. Remove it and try again."
+private const val PHOTO_FAILED_PROBLEM = "A photo didn't upload. Remove it and try again."
+private const val VIDEO_UPLOADING_PROBLEM = "Your video is still uploading."
+private const val PHOTOS_UPLOADING_PROBLEM = "Your photos are still uploading."
 
 /**
  * Whether [viewerId] may still change [note]'s text at [now]: the author,

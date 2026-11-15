@@ -11,6 +11,9 @@ import com.us.android.feature.echo.data.EchoWords
 import com.us.android.feature.echo.data.GIF_FAILED
 import com.us.android.feature.echo.data.MEDIA_LIMIT_MESSAGE
 import com.us.android.feature.echo.data.ReplyPolicy
+import com.us.android.feature.echo.data.VIDEO_ALONE_MESSAGE
+import com.us.android.feature.echo.data.VIDEO_UNREADABLE
+import com.us.android.feature.echo.data.VideoProbe
 import com.us.android.feature.echo.ui.ComposeMode
 import com.us.android.feature.echo.ui.ComposerViewModel
 import io.mockk.mockk
@@ -53,7 +56,20 @@ class ComposerViewModelTest {
             } else {
                 AppResult.Success("local-${url.substringAfterLast('/')}.gif")
             }
+
+        /** Every video probes as [videoProbe]; a uri containing "unreadable" can't be read. */
+        override suspend fun probeVideo(uri: String): VideoProbe? = videoProbe.takeUnless { "unreadable" in uri }
+
+        /** A video uploads as `v-<uri>` at half then full progress; one containing "bad" is refused. */
+        override suspend fun uploadVideo(uri: String, onProgress: (Float) -> Unit): AppResult<String> {
+            onProgress(0.5f)
+            if ("bad" in uri) return AppResult.Failure(AppError.InvalidRequest("This video is too large."))
+            onProgress(1f)
+            return AppResult.Success("v-$uri")
+        }
     }
+
+    private var videoProbe = VideoProbe(durationMs = 30_000L, sizeBytes = 10L * 1024 * 1024)
 
     private var now = Instant.parse("2026-11-12T09:40:00Z")
     private val clock get() = Clock.fixed(now, ZoneOffset.UTC)
@@ -338,6 +354,105 @@ class ComposerViewModelTest {
         photos.addMedia(0, listOf("p1"))
         advanceUntilIdle()
         assertThat(photos.state.value.canAddPoll).isFalse()
+    }
+
+    // ── video in notes ──
+
+    @Test
+    fun `a video stands alone and posts its confirmed id`() = runTest(dispatcher) {
+        val vm = model()
+        advanceUntilIdle()
+        assertThat(vm.state.value.canAddVideo).isTrue()
+        vm.addVideo(0, "clip")
+        advanceUntilIdle()
+        val staged = vm.state.value.entries.single().media.single()
+        assertThat(staged.isVideo).isTrue()
+        assertThat(staged.mediaId).isEqualTo("v-clip")
+        assertThat(staged.durationMs).isEqualTo(30_000L)
+        // No photos, GIF, second video or poll beside it.
+        assertThat(vm.state.value.canAddPhotos).isFalse()
+        assertThat(vm.state.value.canAddVideo).isFalse()
+        assertThat(vm.state.value.canAddPoll).isFalse()
+        vm.addMedia(0, listOf("p1"))
+        assertThat(vm.state.value.entries.single().media).hasSize(1)
+        assertThat(vm.state.value.notice).isEqualTo(VIDEO_ALONE_MESSAGE)
+        vm.submit()
+        advanceUntilIdle()
+        assertThat(repo.posts.single().mediaIds).containsExactly("v-clip")
+    }
+
+    @Test
+    fun `photos or a poll keep the Video pill off`() = runTest(dispatcher) {
+        val photos = model()
+        advanceUntilIdle()
+        photos.addMedia(0, listOf("p1"))
+        advanceUntilIdle()
+        assertThat(photos.state.value.canAddVideo).isFalse()
+        photos.addVideo(0, "clip")
+        advanceUntilIdle()
+        assertThat(photos.state.value.entries.single().media.none { it.isVideo }).isTrue()
+
+        val poll = model()
+        advanceUntilIdle()
+        poll.startPoll()
+        assertThat(poll.state.value.canAddVideo).isFalse()
+    }
+
+    @Test
+    fun `an over-limit video is refused before it uploads`() = runTest(dispatcher) {
+        videoProbe = VideoProbe(durationMs = 601_000L, sizeBytes = 1L)
+        val vm = model()
+        advanceUntilIdle()
+        vm.addVideo(0, "long")
+        advanceUntilIdle()
+        assertThat(vm.state.value.entries.single().media).isEmpty()
+        assertThat(vm.state.value.error).isEqualTo("Videos can be up to 10 minutes.")
+
+        val unreadable = model()
+        advanceUntilIdle()
+        unreadable.addVideo(0, "unreadable")
+        advanceUntilIdle()
+        assertThat(unreadable.state.value.error).isEqualTo(VIDEO_UNREADABLE)
+    }
+
+    @Test
+    fun `a reply without Premium gets the 2 min 20 s and 512 MB limit`() = runTest(dispatcher) {
+        repo.eligibility = AppResult.Success(NOT_PREMIUM)
+        repo.notes["p"] = AppResult.Success(note("p"))
+        videoProbe = VideoProbe(durationMs = 141_000L, sizeBytes = 1L)
+        val reply = model(ComposeMode.REPLY, "p")
+        advanceUntilIdle()
+        assertThat(reply.state.value.premium).isFalse()
+        reply.addVideo(0, "clip")
+        advanceUntilIdle()
+        assertThat(reply.state.value.error).isEqualTo("Videos can be up to 2 min 20 s.")
+
+        videoProbe = VideoProbe(durationMs = 60_000L, sizeBytes = 600L * 1024 * 1024)
+        reply.errorShown()
+        reply.addVideo(0, "big")
+        advanceUntilIdle()
+        assertThat(reply.state.value.error).isEqualTo("Videos can be up to 512 MB.")
+
+        // A member's reply takes the 10-minute limit.
+        repo.eligibility = AppResult.Success(PREMIUM)
+        videoProbe = VideoProbe(durationMs = 300_000L, sizeBytes = 600L * 1024 * 1024)
+        val member = model(ComposeMode.REPLY, "p")
+        advanceUntilIdle()
+        member.addVideo(0, "clip")
+        advanceUntilIdle()
+        assertThat(member.state.value.entries.single().media.single().mediaId).isEqualTo("v-clip")
+    }
+
+    @Test
+    fun `a refused upload says why and holds Post`() = runTest(dispatcher) {
+        val vm = model()
+        advanceUntilIdle()
+        vm.setText(0, "look")
+        vm.addVideo(0, "bad")
+        advanceUntilIdle()
+        assertThat(vm.state.value.entries.single().media.single().failed).isTrue()
+        assertThat(vm.state.value.error).isEqualTo("This video is too large.")
+        assertThat(vm.state.value.canSubmit).isFalse()
     }
 
     @Test
