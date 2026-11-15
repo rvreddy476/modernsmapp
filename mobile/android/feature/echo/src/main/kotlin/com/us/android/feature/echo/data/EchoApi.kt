@@ -46,6 +46,9 @@ interface EchoApi {
     @GET("v1/notes/{id}/conversation")
     suspend fun conversation(@Path("id") id: String): ApiEnvelope<NoteListDto>
 
+    @GET("v1/notes/{id}/thread")
+    suspend fun thread(@Path("id") id: String): ApiEnvelope<NoteListDto>
+
     @GET("v1/notes/users/{userId}")
     suspend fun byUser(
         @Path("userId") userId: String,

@@ -149,9 +149,22 @@ fun NoteDetailScreen(destinations: EchoDestinations, viewModel: NoteDetailViewMo
                                 onFollow = { actions.toggleFollowAuthor(note) },
                                 onOpenQuotes = { destinations.onOpenQuotes(note.id) },
                             )
-                            ConversationLabel(count = note.replyCount)
                         }
-                        val lines = replyItems(note.id, replies.items, children)
+                        // The author's thread carrying on under the note, part 3 and on included.
+                        val after = state.threadAfter
+                        itemsIndexed(after, key = { _, p -> "t:" + p.id }) { _, part ->
+                            ThreadJoin(joined = true)
+                            NoteCard(
+                                note = part,
+                                mediaUrls = urls,
+                                callbacks = callbacks,
+                                now = now,
+                                modifier = Modifier.padding(horizontal = UsTheme.spacing.l).testTag("echo_thread_part"),
+                            )
+                        }
+                        item(key = "label") { ConversationLabel(count = note.replyCount) }
+                        val partIds = after.mapTo(HashSet()) { it.id }
+                        val lines = replyItems(note.id, replies.items.filterNot { it.id in partIds }, children)
                         itemsIndexed(lines, key = { _, line -> line.key }) { _, line ->
                             when (line) {
                                 is ReplyItem.Reply -> ReplyBubbleRow(

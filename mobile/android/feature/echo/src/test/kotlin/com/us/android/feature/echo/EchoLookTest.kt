@@ -26,6 +26,7 @@ import com.us.android.feature.echo.ui.replyPreview
 import com.us.android.feature.echo.ui.replyPrompt
 import com.us.android.feature.echo.ui.replyRows
 import com.us.android.feature.echo.ui.submitLabel
+import com.us.android.feature.echo.ui.threadPartsAfter
 import com.us.android.feature.echo.ui.threadPartsEndingAt
 import com.us.android.feature.echo.ui.topicLine
 import com.us.android.feature.echo.ui.viewRepliesLabel
@@ -199,6 +200,15 @@ class EchoLookTest {
         assertThat(threadPartsEndingAt(listOf(one, two), theirs)).isEqualTo(1)
         assertThat(continuesThread(two, theirs)).isFalse()
         assertThat(continuesThread(two, null)).isFalse()
+    }
+
+    @Test
+    fun `the thread page lists every part after the open note`() {
+        val parts = listOf(note("1"), note("2", replyToId = "1"), note("3", replyToId = "2"))
+        assertThat(threadPartsAfter("1", parts).map { it.id }).containsExactly("2", "3").inOrder()
+        assertThat(threadPartsAfter("2", parts).map { it.id }).containsExactly("3")
+        assertThat(threadPartsAfter("3", parts)).isEmpty()
+        assertThat(threadPartsAfter("x", parts)).isEmpty()
     }
 
     @Test

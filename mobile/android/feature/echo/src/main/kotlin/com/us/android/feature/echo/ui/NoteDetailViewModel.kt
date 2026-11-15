@@ -32,6 +32,8 @@ data class NoteDetailUiState(
     val error: String? = null,
     /** From the top of the conversation down to this note's parent. */
     val conversation: List<Note> = emptyList(),
+    /** The author's thread parts after this note, in order (part 3 and on included). */
+    val threadAfter: List<Note> = emptyList(),
     val checking: Boolean = false,
     val openComposer: ComposeRequest? = null,
     val blocked: ComposeGate.Blocked? = null,
@@ -87,7 +89,11 @@ class NoteDetailViewModel @Inject constructor(
             dropFromChildren(predicate)
             _state.update { s ->
                 val gone = s.note?.let(predicate) == true
-                s.copy(conversation = s.conversation.filterNot(predicate), deleted = s.deleted || gone)
+                s.copy(
+                    conversation = s.conversation.filterNot(predicate),
+                    threadAfter = s.threadAfter.filterNot(predicate),
+                    deleted = s.deleted || gone,
+                )
             }
         },
     )
@@ -112,6 +118,7 @@ class NoteDetailViewModel @Inject constructor(
                     media.load(listOf(result.data))
                     replies.refresh()
                     if (result.data.replyToId != null) loadConversation()
+                    if (result.data.replyToId != null || result.data.threadParts > 1) loadThread()
                 }
                 is AppResult.Failure -> {
                     val error = echoErrorMessage(result.error)
@@ -126,6 +133,15 @@ class NoteDetailViewModel @Inject constructor(
         if (result is AppResult.Success) {
             _state.update { it.copy(conversation = result.data) }
             media.load(result.data)
+        }
+    }
+
+    private suspend fun loadThread() {
+        val result = repository.thread(noteId)
+        if (result is AppResult.Success) {
+            val after = threadPartsAfter(noteId, result.data)
+            _state.update { it.copy(threadAfter = after) }
+            media.load(after)
         }
     }
 
@@ -274,7 +290,11 @@ class NoteDetailViewModel @Inject constructor(
 
     private fun applyEverywhere(id: String, transform: (Note) -> Note) {
         _state.update { s ->
-            s.copy(note = s.note?.mapNote(id, transform), conversation = s.conversation.mapNote(id, transform))
+            s.copy(
+                note = s.note?.mapNote(id, transform),
+                conversation = s.conversation.mapNote(id, transform),
+                threadAfter = s.threadAfter.mapNote(id, transform),
+            )
         }
         replies.mapNote(id, transform)
         _children.update { open -> open.mapValues { (_, c) -> c.copy(items = c.items.mapNote(id, transform)) } }

@@ -133,6 +133,12 @@ fun threadPartsEndingAt(conversation: List<Note>, focus: Note): Int {
     return parts
 }
 
+/** The thread parts after [noteId], in order; empty when the note is not in [thread]. */
+fun threadPartsAfter(noteId: String, thread: List<Note>): List<Note> {
+    val i = thread.indexOfFirst { it.id == noteId }
+    return if (i < 0) emptyList() else thread.drop(i + 1)
+}
+
 /** Whether [next] continues [note] as the same author's next thread part (the thin accent line). */
 fun continuesThread(note: Note, next: Note?): Boolean =
     next != null && next.replyToId == note.id && next.authorId == note.authorId

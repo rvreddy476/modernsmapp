@@ -19,6 +19,9 @@ interface EchoRepository {
     suspend fun timeline(timeline: Timeline, cursor: String?): AppResult<NotePage>
     suspend fun note(id: String): AppResult<Note>
     suspend fun conversation(id: String): AppResult<List<Note>>
+
+    /** Every part of the thread the note is in, first part first; empty when it is in none. */
+    suspend fun thread(id: String): AppResult<List<Note>>
     suspend fun replies(id: String, cursor: String?): AppResult<NotePage>
 
     /**
@@ -111,6 +114,9 @@ class DefaultEchoRepository @Inject constructor(
 
     override suspend fun conversation(id: String): AppResult<List<Note>> =
         page { api.conversation(id) }.map { it.items }
+
+    override suspend fun thread(id: String): AppResult<List<Note>> =
+        page { api.thread(id) }.map { it.items }
 
     override suspend fun replies(id: String, cursor: String?): AppResult<NotePage> =
         page { api.replies(id, cursor, PAGE_SIZE) }

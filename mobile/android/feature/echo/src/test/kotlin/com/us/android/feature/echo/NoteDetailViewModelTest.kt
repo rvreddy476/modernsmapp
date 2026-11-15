@@ -47,6 +47,17 @@ class NoteDetailViewModelTest {
         )
 
     @Test
+    fun `a thread's first note lists every later part, part 3 included`() = runTest(dispatcher) {
+        repo.notes["n1"] = AppResult.Success(note("n1").copy(threadParts = 3))
+        repo.threadOfResult = AppResult.Success(
+            listOf(note("n1"), note("p2", replyToId = "n1"), note("p3", replyToId = "p2"))
+        )
+        val vm = model()
+        advanceUntilIdle()
+        assertThat(vm.state.value.threadAfter.map { it.id }).containsExactly("p2", "p3").inOrder()
+    }
+
+    @Test
     fun `a reply shows its conversation above and its replies below`() = runTest(dispatcher) {
         repo.notes["n1"] = AppResult.Success(note("n1", replyToId = "top"))
         repo.conversationResult = AppResult.Success(listOf(note("top")))

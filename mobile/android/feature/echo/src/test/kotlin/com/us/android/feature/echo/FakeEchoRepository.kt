@@ -65,6 +65,7 @@ class FakeEchoRepository : EchoRepository {
     val repliesOf = mutableMapOf<String, AppResult<NotePage>>()
     val userPages = mutableMapOf<Pair<ProfileNotesTab, String?>, AppResult<NotePage>>()
     var conversationResult: AppResult<List<Note>> = AppResult.Success(emptyList())
+    var threadOfResult: AppResult<List<Note>> = AppResult.Success(emptyList())
     var postResult: AppResult<Note> = AppResult.Success(com.us.android.feature.echo.note("posted"))
     var threadResult: AppResult<List<Note>> = AppResult.Success(
         listOf(com.us.android.feature.echo.note("t1"), com.us.android.feature.echo.note("t2"))
@@ -103,6 +104,7 @@ class FakeEchoRepository : EchoRepository {
         notes[id] ?: AppResult.Failure(AppError.NotFound(code = "NOTE_NOT_FOUND"))
 
     override suspend fun conversation(id: String): AppResult<List<Note>> = conversationResult
+    override suspend fun thread(id: String): AppResult<List<Note>> = threadOfResult
 
     override suspend fun replies(id: String, cursor: String?): AppResult<NotePage> =
         repliesOf["$id|$cursor"] ?: repliesPages[cursor] ?: AppResult.Success(NotePage(emptyList(), null))
