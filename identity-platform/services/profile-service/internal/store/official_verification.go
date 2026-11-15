@@ -229,10 +229,9 @@ func (s *Store) ApproveOrganisation(ctx context.Context, in ApproveOrganisationI
 	if err != nil {
 		return nil, fmt.Errorf("approve organisation: lock profile: %w", err)
 	}
-	if !HoldsPersonMark(verified, level, badges) {
-		return nil, ErrPersonMarkRequired
-	}
-
+	// The application is closed first: approving a closed one is "gone",
+	// even though its approval also took the person mark away (the profile
+	// is an organisation now). The person check below then rolls back.
 	tag, err := tx.Exec(ctx, `
 		UPDATE profile.organisation_verification_applications
 		   SET status = 'approved', email_code_hash = NULL, reviewer_id = $4, review_reason = $5,
@@ -244,6 +243,9 @@ func (s *Store) ApproveOrganisation(ctx context.Context, in ApproveOrganisationI
 	}
 	if tag.RowsAffected() == 0 {
 		return nil, ErrApplicationGone
+	}
+	if !HoldsPersonMark(verified, level, badges) {
+		return nil, ErrPersonMarkRequired
 	}
 	p, err := setMarkTx(ctx, tx, in.UserID, verification.LevelOrganisation, verification.BadgeOrganisation, in.OrganisationName)
 	if err != nil {
