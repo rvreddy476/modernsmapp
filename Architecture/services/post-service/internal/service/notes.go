@@ -466,6 +466,10 @@ type NoteView struct {
 	Status              string     `json:"status"`
 	ScheduledAt         *time.Time `json:"scheduled_at"`
 	Poll                *NotePoll  `json:"poll"`
+	// ThreadParts is how many live parts the thread this note roots has
+	// (the root included): 0 for a note that roots no thread. Timeline
+	// cards read it as "Thread · 3 parts".
+	ThreadParts int64 `json:"thread_parts"`
 	// PublishError is the author's view of a scheduled note whose publish
 	// check failed (premium_required, suspended, ...); absent otherwise.
 	PublishError *string `json:"publish_error,omitempty"`

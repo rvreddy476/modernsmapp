@@ -18,9 +18,14 @@ Limits copy X's, so nothing here is invented: poll 2–4 choices, 25 characters 
   "quote_count": 0,
   "status": "published",
   "scheduled_at": null,
-  "poll": null
+  "poll": null,
+  "thread_parts": 0
 }
 ```
+
+`thread_parts` (added 16 Nov 2026): on the first note of a thread, how many
+live parts the thread has, the first included (`3` → "Thread · 3 parts");
+`0` on every other note, later thread parts included.
 
 `poll`, when the note has one:
 

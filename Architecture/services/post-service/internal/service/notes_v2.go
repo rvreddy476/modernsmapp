@@ -229,6 +229,7 @@ func (s *Service) attachNoteExtras(ctx context.Context, views []*NoteView, viewe
 		for _, v := range views {
 			c := counts[v.Post.ID]
 			v.QuoteCount, v.BookmarkCount = c.Quotes, c.Bookmarks
+			v.ThreadParts = c.ThreadParts
 		}
 	} else {
 		slog.Debug("note counts skipped", "err", err)

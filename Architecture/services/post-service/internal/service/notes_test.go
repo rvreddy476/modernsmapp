@@ -426,6 +426,13 @@ func TestNoteRule_Thread(t *testing.T) {
 	if NoteThreadMin != 2 || NoteThreadMax != 25 {
 		t.Fatal("thread bounds drifted from the contract")
 	}
+	// thread_parts: the root carries the part count, a later part 0.
+	if got, err := r.svc.GetNote(context.Background(), root, &r.alice); err != nil || got.ThreadParts != 3 {
+		t.Fatalf("root thread_parts = %v (%v), want 3", got, err)
+	}
+	if got, err := r.svc.GetNote(context.Background(), views[1].Post.ID, &r.alice); err != nil || got.ThreadParts != 0 {
+		t.Fatalf("part 2 thread_parts = %v (%v), want 0", got, err)
+	}
 }
 
 // ── Rate limits ─────────────────────────────────────────────────────────

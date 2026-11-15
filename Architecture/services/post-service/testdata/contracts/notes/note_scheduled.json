@@ -81,7 +81,8 @@
         "quote_count": 0,
         "status": "scheduled",
         "scheduled_at": "2026-11-12T12:40:00Z",
-        "poll": null
+        "poll": null,
+        "thread_parts": 0
       }
     ],
     "next_cursor": ""

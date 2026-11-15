@@ -331,15 +331,21 @@ func (s *Store) RecordNotePublishFailure(ctx context.Context, id uuid.UUID, reas
 type NoteCounts struct {
 	Quotes    int64
 	Bookmarks int64
+	// ThreadParts is the live parts of the thread this note roots (the
+	// root included); 0 for a note that roots no thread.
+	ThreadParts int64
 }
 
 // noteCountsSQL: per id, live published quotes (a scheduled quote is not
-// counted until it publishes) and saves.
+// counted until it publishes), saves, and the live parts of the thread it
+// roots (idx_posts_thread).
 var noteCountsSQL = `
 	SELECT x.id,
 		(SELECT COUNT(*) FROM posts q
 		 WHERE q.quote_of_id = x.id AND q.content_type = '` + NoteContentType + `' AND ` + ViewerEligibleSQL("q") + `),
-		(SELECT COUNT(*) FROM saved_items si WHERE si.target_type = 'post' AND si.target_id = x.id)
+		(SELECT COUNT(*) FROM saved_items si WHERE si.target_type = 'post' AND si.target_id = x.id),
+		(SELECT COUNT(*) FROM posts t
+		 WHERE t.thread_root_id = x.id AND t.content_type = '` + NoteContentType + `' AND t.deleted_at IS NULL AND t.publish_at IS NULL)
 	FROM unnest($1::uuid[]) AS x(id)`
 
 // NoteCountsFor answers noteCountsSQL.
@@ -356,7 +362,7 @@ func (s *Store) NoteCountsFor(ctx context.Context, ids []uuid.UUID) (map[uuid.UU
 	for rows.Next() {
 		var id uuid.UUID
 		var c NoteCounts
-		if err := rows.Scan(&id, &c.Quotes, &c.Bookmarks); err != nil {
+		if err := rows.Scan(&id, &c.Quotes, &c.Bookmarks, &c.ThreadParts); err != nil {
 			return nil, err
 		}
 		out[id] = c

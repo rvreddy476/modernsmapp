@@ -285,6 +285,11 @@ func (s *Store) NoteCountsFor(_ context.Context, ids []uuid.UUID) (map[uuid.UUID
 				c.Bookmarks++
 			}
 		}
+		for tid, n := range s.Notes {
+			if n.Post.ThreadRootID != nil && *n.Post.ThreadRootID == id && !s.Deleted[tid] && n.Post.PublishAt == nil {
+				c.ThreadParts++
+			}
+		}
 		out[id] = c
 	}
 	return out, nil
