@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/atpost/search-service/internal/privacyclient"
+	"github.com/atpost/search-service/internal/reindex"
 	"github.com/atpost/search-service/internal/store/search"
 )
 
@@ -24,11 +25,9 @@ import (
 // identity user-service the live consumer asks. A row whose flags cannot
 // be resolved is skipped, never written as public.
 
-// hiddenAccountStatuses are the auth-service states search hides, in step
-// with the lifecycle events (purge.Handler): deactivated and
-// pending_deletion are hidden, and purged is hidden too in case an erased
-// account's row is still listed anywhere.
-var hiddenAccountStatuses = []string{"deactivated", "pending_deletion", "purged"}
+// hiddenAccountStatuses are the auth-service states search hides: one list,
+// shared with the server's users reindex (reindex/lifecycle.go).
+var hiddenAccountStatuses = reindex.HiddenAccountStatuses
 
 // visibilitySource resolves an author's flags for the rebuild.
 type visibilitySource struct {
@@ -75,22 +74,9 @@ func loadHiddenAccounts(ctx context.Context, identityDSN string) (map[string]boo
 		return nil, fmt.Errorf("the rebuild cannot tell deactivated accounts from active ones: %w", err)
 	}
 	defer pool.Close()
-	rows, err := pool.Query(ctx,
-		`SELECT user_id::text FROM auth.users WHERE account_status = ANY($1)`, hiddenAccountStatuses)
+	out, err := reindex.LoadHiddenAccounts(ctx, pool)
 	if err != nil {
-		return nil, fmt.Errorf("read auth.users.account_status: %w", err)
-	}
-	defer rows.Close()
-	out := map[string]bool{}
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan hidden account: %w", err)
-		}
-		out[id] = true
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("read auth.users.account_status: %w", err)
+		return nil, err
 	}
 	slog.Info("backfill: hidden accounts loaded from auth.users", "count", len(out))
 	return out, nil

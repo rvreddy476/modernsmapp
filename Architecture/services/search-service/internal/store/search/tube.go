@@ -26,9 +26,9 @@ import (
 //
 //  2. tube_channels_v1 — Tube channels (post-service `channels`: name,
 //     handle, about), NOT the broadcast channels_v1 index the multi-entity
-//     search reads. Fed by the tube reindex (internal/reindex/tube.go):
-//     post-service publishes no channel events, so the walk over its
-//     internal listing is the only feed.
+//     search reads. Added by the tube reindex (internal/reindex/tube.go);
+//     edits also arrive as tube.channel.created / .updated, applied in
+//     version order onto the existing document (tube_channel_state.go).
 //
 //  3. tube_collections_v1 — public playlists. Same feed. The visibility
 //     filter is applied at index time (a non-public playlist is DELETED
@@ -52,6 +52,10 @@ type TubeChannelDoc struct {
 	FollowerCount int       `json:"follower_count"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+	// SourceUpdatedUs is the row's version (SourceVersion of UpdatedAt): a
+	// rewrite older than the stored document keeps the stored one
+	// (keepHiddenUpsertScript, tube_channel_state.go).
+	SourceUpdatedUs int64 `json:"source_updated_us,omitempty"`
 	// ReindexedAt is when the Tube reindex last wrote this document. The
 	// sweep after a complete walk deletes what was not rewritten (S-M3).
 	ReindexedAt *time.Time `json:"reindexed_at,omitempty"`
@@ -96,7 +100,8 @@ func (s *Store) initTubeIndices(ctx context.Context) {
 				"created_at":      { "type": "date" },
 				"updated_at":      { "type": "date" },
 				"is_hidden":       { "type": "boolean" },
-				"reindexed_at":    { "type": "date" }
+				"reindexed_at":    { "type": "date" },
+				"source_updated_us": { "type": "long" }
 			}
 		}
 	}`)
@@ -127,6 +132,8 @@ func (s *Store) initTubeIndices(ctx context.Context) {
 		s.putPrivacyMapping(ctx, index, "is_hidden")
 		s.putFieldMapping(ctx, index, "reindexed_at", "date")
 	}
+	// Tube channel events (2026-11-15): the row version, additive.
+	s.putFieldMapping(ctx, IndexTubeChannels, "source_updated_us", "long")
 }
 
 // putVideoFilterMapping adds the four video-filter fields (and

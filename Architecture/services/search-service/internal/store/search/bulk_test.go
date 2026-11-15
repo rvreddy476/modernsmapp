@@ -184,7 +184,7 @@ func TestKeepHiddenScript_KeepsAStoredHide(t *testing.T) {
 	for _, want := range []string{
 		"boolean hidden = ctx._source.is_hidden == true;",
 		"ctx._source.putAll(params.doc);",
-		"if (hidden) {\n  ctx._source.is_hidden = true;\n}",
+		"if (hidden) {\n    ctx._source.is_hidden = true;\n  }",
 	} {
 		if !strings.Contains(keepHiddenUpsertScript, want) {
 			t.Fatalf("keepHiddenUpsertScript lost %q:\n%s", want, keepHiddenUpsertScript)

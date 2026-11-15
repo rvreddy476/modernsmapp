@@ -200,12 +200,29 @@ func (s *Store) sendBulk(ctx context.Context, index string, body []byte, n int) 
 // index replace therefore reset is_hidden to false and brought deactivated
 // and deletion-scheduled accounts back into search. Here a stored true
 // survives the rewrite; only the lifecycle path clears it.
+//
+// Version order (2026-11-15): a document that carries source_updated_us (a
+// Tube channel, tube_channel_state.go) is not rewritten by an older one —
+// the reindex read the row before an event that has since landed. The
+// stored document stays; only reindexed_at is stamped, so the sweep still
+// knows the row is listed. Documents without the field (users, playlists,
+// channels written before it) are rewritten as before.
 const keepHiddenUpsertScript = `
 boolean hidden = ctx._source.is_hidden == true;
-ctx._source.clear();
-ctx._source.putAll(params.doc);
-if (hidden) {
-  ctx._source.is_hidden = true;
+boolean stale = false;
+if (ctx._source.source_updated_us != null && params.doc.source_updated_us != null) {
+  stale = ((Number) ctx._source.source_updated_us).longValue() > ((Number) params.doc.source_updated_us).longValue();
+}
+if (stale) {
+  if (params.doc.reindexed_at != null) {
+    ctx._source.reindexed_at = params.doc.reindexed_at;
+  }
+} else {
+  ctx._source.clear();
+  ctx._source.putAll(params.doc);
+  if (hidden) {
+    ctx._source.is_hidden = true;
+  }
 }
 `
 

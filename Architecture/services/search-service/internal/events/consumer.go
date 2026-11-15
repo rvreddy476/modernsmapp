@@ -948,6 +948,18 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		}
 		return c.store.AddToEngagementScore(ctx, search.IndexChannels, p.ChannelID, -1)
 
+	// --- Tube channels (post-service outbox, 2026-11-15) ---
+	//
+	// The row as committed, keyed by the owner: applied in version order
+	// onto the owner's channel document (store/search/tube_channel_state.go).
+	// A channel not yet in search is added by the Tube reindex, as before.
+	case events.TubeChannelCreated, events.TubeChannelUpdated:
+		var p events.ChannelPayload
+		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+			return err
+		}
+		return c.store.ApplyTubeChannelEvent(ctx, tubeChannelUpdateOf(p))
+
 	// --- Tube playlists (post-service outbox, 2026-11-07) ---
 	case events.TubePlaylistDeleted, events.TubePlaylistVisibilityChanged:
 		var p events.TubePlaylistPayload
@@ -1261,6 +1273,22 @@ func (c *Consumer) applyChannelUpdate(ctx context.Context, p channelUpdatedPaylo
 		return nil
 	}
 	return c.store.ApplyChannelState(ctx, p.Channel.doc(p.ChannelID))
+}
+
+// tubeChannelUpdateOf converts post-service's ChannelPayload. Pure.
+func tubeChannelUpdateOf(p events.ChannelPayload) search.TubeChannelUpdate {
+	u := search.TubeChannelUpdate{
+		OwnerID:   p.UserID,
+		Name:      p.Name,
+		Handle:    p.Handle,
+		About:     p.About,
+		CreatedAt: p.CreatedAt,
+		UpdatedAt: p.UpdatedAt,
+	}
+	if p.AvatarMediaID != nil {
+		u.AvatarMediaID = *p.AvatarMediaID
+	}
+	return u
 }
 
 // applyPlaylistRemoval handles the two playlist events. tube_collections_v1

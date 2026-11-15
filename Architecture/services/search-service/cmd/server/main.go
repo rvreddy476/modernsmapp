@@ -150,6 +150,25 @@ func main() {
 		slog.Warn("search-service: IDENTITY_USER_SERVICE_URL not set — private accounts index as public. Do not run this in production.")
 	}
 
+	// Account lifecycle for the users reindex (reindex/lifecycle.go): which
+	// accounts are deactivated or scheduled for deletion, read from
+	// auth.users on the identity database — the same DSN the backfill uses.
+	// Without it an auto-heal after a wipe writes deactivated accounts back
+	// into search as visible. pgxpool.New does not dial; the reindex reads
+	// it once per run and refuses to run if it cannot.
+	var hiddenAccounts reindex.HiddenAccounts
+	if dsn := os.Getenv("IDENTITY_POSTGRES_DSN"); dsn != "" {
+		identityPool, err := pgxpool.New(ctx, dsn)
+		if err != nil {
+			slog.Error("search-service: IDENTITY_POSTGRES_DSN is invalid; the users reindex cannot tell deactivated accounts", "err", err)
+		} else {
+			defer identityPool.Close()
+			hiddenAccounts = reindex.NewPostgresHiddenAccounts(identityPool)
+		}
+	} else {
+		slog.Warn("search-service: IDENTITY_POSTGRES_DSN not set — the users reindex writes deactivated accounts visible after an index wipe. Do not run this in production.")
+	}
+
 	// Commerce catalogue client — the product read-back.
 	//
 	// commerce-service publishes commerce.product.published /
@@ -305,6 +324,9 @@ func main() {
 	gc := graphclient.New(graphServiceURL, internalKey, rdb)
 	handler.WithGraphClient(gc)
 	handler.WithPrivacyLookup(privacyLookup)
+	if hiddenAccounts != nil {
+		handler.WithHiddenAccounts(hiddenAccounts)
+	}
 	slog.Info("search-service: graph client wired", "url", graphServiceURL)
 
 	// Media-service client — turns the media ids on result rows (first
@@ -337,7 +359,7 @@ func main() {
 	// OpenSearch volume / events lost beyond Kafka retention), rebuild
 	// it from profile-service rather than waiting for users to
 	// re-register. A populated index is left alone.
-	reindex.AutoHealUsersOnStartup(ctx, nil, profileServiceURL, internalKey, searchStore, privacyLookup, slog.Default())
+	reindex.AutoHealUsersOnStartup(ctx, nil, profileServiceURL, internalKey, searchStore, privacyLookup, hiddenAccounts, slog.Default())
 
 	// 9. Gin with middleware stack
 	gin.SetMode(gin.ReleaseMode)

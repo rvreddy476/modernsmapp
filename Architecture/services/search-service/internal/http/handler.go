@@ -12,6 +12,7 @@ import (
 	"github.com/atpost/search-service/internal/mediaclient"
 	"github.com/atpost/search-service/internal/postclient"
 	"github.com/atpost/search-service/internal/privacyclient"
+	"github.com/atpost/search-service/internal/reindex"
 	"github.com/atpost/search-service/internal/store/postgres"
 	"github.com/atpost/search-service/internal/store/search"
 	"github.com/atpost/shared/api"
@@ -32,6 +33,9 @@ type Handler struct {
 	httpClient        *http.Client
 	// privacy stamps is_private during the admin users reindex.
 	privacy privacyclient.Lookup
+	// hiddenAccounts marks deactivated accounts hidden during the admin
+	// users reindex (reindex/lifecycle.go); nil on a dev rig.
+	hiddenAccounts reindex.HiddenAccounts
 	// mediaClient resolves thumbnails / avatars for result rows (nil-safe).
 	mediaClient *mediaclient.Client
 	// commerceClient reads the attribute definitions a facet response is
@@ -53,6 +57,13 @@ type Handler struct {
 // WithPrivacyLookup wires the identity settings lookup the reindex uses.
 func (h *Handler) WithPrivacyLookup(l privacyclient.Lookup) *Handler {
 	h.privacy = l
+	return h
+}
+
+// WithHiddenAccounts wires the account-lifecycle source for the users
+// reindex.
+func (h *Handler) WithHiddenAccounts(a reindex.HiddenAccounts) *Handler {
+	h.hiddenAccounts = a
 	return h
 }
 

@@ -97,6 +97,8 @@ func newFakeOS(t *testing.T) (*search.Store, *fakeOS) {
 			parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/"), "/")
 			f.deleted[parts[0]] = append(f.deleted[parts[0]], parts[2])
 			fmt.Fprint(w, `{"result":"deleted"}`)
+		case strings.HasSuffix(r.URL.Path, "/_search"):
+			fmt.Fprint(w, `{"hits":{"total":{"value":0},"hits":[]}}`)
 		case strings.HasSuffix(r.URL.Path, "/_count"):
 			fmt.Fprint(w, `{"count":0}`)
 		default:
@@ -308,4 +310,17 @@ func sweepCutoff(t *testing.T, body map[string]any) time.Time {
 		t.Fatalf("sweep cut-off: %v", err)
 	}
 	return at
+}
+
+// The listing row's updated_at is the document's version, so a listing read
+// before a tube.channel.updated never rewrites the newer document.
+func TestTubeChannelDocOf_CarriesTheRowVersion(t *testing.T) {
+	at := time.Date(2026, 11, 15, 9, 0, 0, 123456000, time.UTC)
+	doc := TubeChannelDocOf(postclient.TubeChannel{ID: chanID, OwnerID: pubID, UpdatedAt: at})
+	if doc.SourceUpdatedUs != at.UnixMicro() {
+		t.Fatalf("SourceUpdatedUs = %d, want %d", doc.SourceUpdatedUs, at.UnixMicro())
+	}
+	if TubeChannelDocOf(postclient.TubeChannel{ID: chanID}).SourceUpdatedUs != 0 {
+		t.Fatal("a row without updated_at must be unversioned")
+	}
 }

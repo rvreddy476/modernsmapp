@@ -4,8 +4,10 @@ package reindex
 //
 // tube_channels_v1 and tube_collections_v1 (store/search/tube.go) have no
 // event feed that WRITES documents (account erasure and deactivation aside:
-// purge_adapter.go): search reads nothing when a channel is created or
-// renamed, or when a playlist is made or edited. Since 2026-11-07 a deleted
+// purge_adapter.go): search reads nothing when a playlist is made or
+// edited, and a channel event (tube.channel.created / .updated, since
+// 2026-11-15) only updates a channel document this walk already wrote —
+// the event has no channel id to create one under. Since 2026-11-07 a deleted
 // playlist, or one made unlisted or private, is REMOVED by its event
 // (tube.playlist.deleted / visibility_changed, consumer.go); this walk is
 // still what adds and updates, and its sweep is the backstop for
@@ -206,6 +208,9 @@ func TubeChannelDocOf(ch postclient.TubeChannel) search.TubeChannelDoc {
 		FollowerCount: ch.FollowerCount,
 		CreatedAt:     ch.CreatedAt,
 		UpdatedAt:     ch.UpdatedAt,
+		// The row's version: an older listing never rewrites a document a
+		// newer tube.channel.updated already wrote.
+		SourceUpdatedUs: search.SourceVersion(ch.UpdatedAt),
 	}
 	if ch.AvatarMediaID != nil {
 		doc.AvatarMediaID = *ch.AvatarMediaID

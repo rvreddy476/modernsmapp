@@ -29,7 +29,7 @@ func (h *Handler) ReindexUsers(c *gin.Context) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 		defer cancel()
 		res, err := reindex.ReindexUsers(
-			ctx, h.httpClient, h.profileServiceURL, h.internalKey, h.store, h.privacy, slog.Default(),
+			ctx, h.httpClient, h.profileServiceURL, h.internalKey, h.store, h.privacy, h.hiddenAccounts, slog.Default(),
 		)
 		if err != nil {
 			slog.Error("admin reindex/users failed", "err", err,
@@ -39,7 +39,8 @@ func (h *Handler) ReindexUsers(c *gin.Context) {
 		slog.Info("admin reindex/users finished",
 			"fetched", res.Fetched, "indexed", res.Indexed,
 			"usernames_preserved", res.UsernamesPreserved,
-			"usernames_missing", res.UsernamesMissing)
+			"usernames_missing", res.UsernamesMissing,
+			"lifecycle_checked", res.LifecycleChecked, "hidden", res.Hidden)
 	}()
 
 	api.JSON(c.Writer, http.StatusAccepted, map[string]string{

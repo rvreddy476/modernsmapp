@@ -79,6 +79,13 @@ type UsersResult struct {
 	// UsernamesMissing counts indexed documents that ended the run with no
 	// username from any source. Those accounts cannot be found by handle.
 	UsernamesMissing int
+	// LifecycleChecked reports whether the run knew which accounts are
+	// deactivated or scheduled for deletion (a HiddenAccounts source).
+	// Without it a stored hide survives, but a missing document is written
+	// visible: after a wipe, deactivated accounts come back.
+	LifecycleChecked bool
+	// Hidden counts documents written hidden from that source.
+	Hidden int
 }
 
 // ReindexUsers walks profile-service's /v1/profiles/discover endpoint and
@@ -93,17 +100,34 @@ type UsersResult struct {
 // BulkIndexUsers is a full replace, so omitting it would reset every
 // private account to public. A nil lookup indexes everyone as public and is
 // only acceptable on a dev rig without the identity user-service.
+//
+// hidden says which accounts are deactivated or scheduled for deletion
+// (lifecycle.go); their documents are written is_hidden. It is read once,
+// before the walk, and a failure stops the run: a reindex that cannot tell
+// is refused rather than run blind. A nil source is the dev rig again: a
+// stored hide still survives the rewrite, a missing document does not.
 func ReindexUsers(
 	ctx context.Context,
 	httpClient *http.Client,
 	profileServiceURL, internalKey string,
 	store *search.Store,
 	privacy privacyclient.Lookup,
+	hidden HiddenAccounts,
 	log *slog.Logger,
 ) (UsersResult, error) {
 	var res UsersResult
 	if profileServiceURL == "" {
 		return res, fmt.Errorf("reindex: PROFILE_SERVICE_URL not configured")
+	}
+	var hiddenSet map[string]bool
+	if hidden != nil {
+		set, err := hidden.HiddenUserIDs(ctx)
+		if err != nil {
+			return res, fmt.Errorf("reindex: the account lifecycle is unknown, so deactivated accounts cannot be told apart; nothing written: %w", err)
+		}
+		hiddenSet, res.LifecycleChecked = set, true
+	} else {
+		log.Warn("reindex: no account-lifecycle source (IDENTITY_POSTGRES_DSN); a deactivated account with no document is written visible")
 	}
 	httpClient = orDefaultClient(httpClient)
 
@@ -191,17 +215,19 @@ func ReindexUsers(
 				}
 				doc.IsPrivate = private
 			}
+			if hiddenSet[p.UserID] {
+				doc.IsHidden = true
+				res.Hidden++
+			}
 			if doc.Username == "" {
 				res.UsernamesMissing++
 			}
 			docs = append(docs, doc)
 		}
 
-		// is_hidden is not set here: profile-service does not know the account
-		// lifecycle. BulkIndexUsers keeps a stored hide (bulk.go, S-M1), so a
-		// reindex over a live index cannot bring a deactivated account back.
-		// After a wipe nothing is stored; until identity serves the lifecycle
-		// state here, run cmd/backfill -entity users,posts, which reads it.
+		// is_hidden comes from the lifecycle source above; BulkIndexUsers
+		// also keeps a stored hide (bulk.go, S-M1), so a hide applied by a
+		// lifecycle event during the run is not undone either.
 		n, err := store.BulkIndexUsers(ctx, docs)
 		if err != nil {
 			// Log and continue — a partial reindex is better than none,
@@ -218,7 +244,8 @@ func ReindexUsers(
 	log.Info("reindex: users complete",
 		"fetched", res.Fetched, "indexed", res.Indexed,
 		"usernames_preserved", res.UsernamesPreserved,
-		"usernames_missing", res.UsernamesMissing)
+		"usernames_missing", res.UsernamesMissing,
+		"lifecycle_checked", res.LifecycleChecked, "hidden", res.Hidden)
 	if res.UsernamesMissing > 0 {
 		log.Warn("reindex: users indexed with no username — unfindable by handle",
 			"count", res.UsernamesMissing,
@@ -275,6 +302,7 @@ func AutoHealUsersOnStartup(
 	profileServiceURL, internalKey string,
 	store *search.Store,
 	privacy privacyclient.Lookup,
+	hidden HiddenAccounts,
 	log *slog.Logger,
 ) {
 	count, err := store.CountUsers(ctx)
@@ -290,7 +318,7 @@ func AutoHealUsersOnStartup(
 	go func() {
 		healCtx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		if _, err := ReindexUsers(healCtx, httpClient, profileServiceURL, internalKey, store, privacy, log); err != nil {
+		if _, err := ReindexUsers(healCtx, httpClient, profileServiceURL, internalKey, store, privacy, hidden, log); err != nil {
 			log.Error("reindex: startup auto-heal failed", "err", err)
 		}
 	}()
