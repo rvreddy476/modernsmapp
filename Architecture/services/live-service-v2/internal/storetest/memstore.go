@@ -49,6 +49,8 @@ type MemStore struct {
 	// PostLookups is the recording post lookup of each done import
 	// (recording_post.go).
 	PostLookups map[uuid.UUID]*PostLookupRow
+	// Parts is each stream's recording parts, in order (recording_parts.go).
+	Parts map[uuid.UUID][]*PartRow
 
 	// Live surfaces (surfaces.go).
 	Reminders map[uuid.UUID]map[uuid.UUID]bool

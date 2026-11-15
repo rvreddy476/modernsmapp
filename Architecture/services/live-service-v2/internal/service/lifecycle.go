@@ -182,21 +182,22 @@ func (s *Service) transition(ctx context.Context, id uuid.UUID, trig Trigger, au
 // None of them can un-commit the status: the database is the truth.
 func (s *Service) afterTransition(ctx context.Context, res *postgres.TransitionResult, trig Trigger) {
 	next := res.Next
-	if next.Status == stLive && res.Prev.Status == stStarting && (next.EgressID == nil || *next.EgressID == "") && s.livekit != nil {
-		objectKey := recordingObjectKeyPrefix + next.ID.String() + ".mp4"
-		if egressID, err := s.livekit.StartEgressToS3(ctx, next.LiveKitRoom, objectKey); err != nil {
-			// The broadcast goes on without a recording.
-			slog.Warn("live-v2: egress start failed; live without recording", "stream_id", next.ID, "err", err)
-		} else if err := s.store.SetEgressID(ctx, next.ID, egressID); err != nil {
-			slog.Warn("live-v2: egress id not stored", "stream_id", next.ID, "err", err)
+	if next.Status == stLive {
+		// First go-live and every return from reconnecting: a reconnect into
+		// a new room needs a new egress (recording_parts.go); one into the
+		// same room finds its part still recording and starts nothing.
+		s.ensureRecording(ctx, next)
+	}
+	if postgres.IsTerminal(next.Status) {
+		// Every part still recording ends now; once its egress_ended arrives
+		// the import is queued. When nothing records any more it is queued
+		// here (e.g. the host's last room closed, then the grace ran out).
+		s.stopRecording(ctx, next)
+		if err := s.queueImport(ctx, next.ID); err != nil {
+			slog.Warn("live-v2: queue recording import", "stream_id", next.ID, "err", err)
 		}
 	}
 	if postgres.IsTerminal(next.Status) && s.livekit != nil {
-		if next.EgressID != nil && *next.EgressID != "" {
-			if err := s.livekit.StopEgress(ctx, *next.EgressID); err != nil {
-				slog.Warn("live-v2: stop egress", "stream_id", next.ID, "err", err)
-			}
-		}
 		// room_finished means LiveKit already closed it; admin stop closed
 		// it before the transition. Everything else closes it now so no
 		// viewer stays connected to an ended stream.
@@ -455,6 +456,7 @@ func (s *Service) Sweep(ctx context.Context) error {
 	}
 	s.reconcile(ctx)
 	s.sweepIngresses(ctx)
+	s.sweepRecordings(ctx)
 	s.RunImports(ctx)
 	s.ResolveRecordingPosts(ctx)
 	if err := s.store.PruneWebhookEvents(ctx, webhookIDRetention); err != nil {
@@ -505,6 +507,11 @@ func (s *Service) reconcile(ctx context.Context) {
 			continue
 		}
 		if st.Status == stLive {
+			if hostPublishing {
+				// A lost or late egress_ended must not leave a live,
+				// publishing host unrecorded (no-op while a part records).
+				s.ensureRecording(ctx, st)
+			}
 			s.publishViewerCount(ctx, st)
 		}
 	}

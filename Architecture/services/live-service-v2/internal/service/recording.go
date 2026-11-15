@@ -208,13 +208,52 @@ func (m *HTTPMediaImporter) ImportRecording(ctx context.Context, in ImportRecord
 	return ImportResult{MediaID: id, ProcessingStatus: strings.ToLower(strings.TrimSpace(out.Data.ProcessingStatus))}, nil
 }
 
-// onEgressEnded stores the recording of a COMPLETE egress and queues its
-// media import. A failed or aborted egress has no recording to announce.
+// onEgressEnded finishes the recording part the egress wrote
+// (recording_parts.go): a live stream left with nothing recording while the
+// host publishes gets its next part, and an ended one has its import queued
+// once no part records any more. A stream with no part (recorded before
+// migration 008) keeps the old path below.
 func (s *Service) onEgressEnded(ctx context.Context, st *postgres.LiveStream, eg *EgressResult) error {
 	if eg == nil {
 		return nil
 	}
-	if eg.Status != "" && eg.Status != "EGRESS_COMPLETE" {
+	complete := eg.Status == "" || eg.Status == "EGRESS_COMPLETE"
+	f := postgres.PartFinish{
+		EgressID:     eg.EgressID,
+		ObjectKey:    strings.TrimLeft(eg.Filename, "/"),
+		Complete:     complete,
+		RecordingURL: eg.Location,
+		DurationMs:   eg.DurationNs / int64(time.Millisecond),
+	}
+	if !complete {
+		f.Error = "egress ended " + eg.Status
+	}
+	matched, hasParts, err := s.store.FinishRecordingPart(ctx, st.ID, f)
+	if err != nil {
+		return mapStoreErr(err)
+	}
+	if matched || hasParts {
+		if !matched {
+			slog.Warn("live-v2: egress_ended for an egress no part records", "stream_id", st.ID, "egress_id", eg.EgressID)
+		}
+		if !complete {
+			slog.Warn("live-v2: egress ended without a recording", "stream_id", st.ID, "status", eg.Status)
+		}
+		cur, err := s.store.GetByID(ctx, st.ID)
+		if err != nil {
+			return mapStoreErr(err)
+		}
+		switch {
+		case postgres.IsTerminal(cur.Status):
+			return s.queueImport(ctx, cur.ID)
+		case cur.Status == stLive && s.hostPublishing(ctx, cur):
+			// The room this egress recorded closed and the host is already
+			// back in a new one (or the egress failed): record again.
+			s.ensureRecording(ctx, cur)
+		}
+		return nil
+	}
+	if !complete {
 		slog.Warn("live-v2: egress ended without a recording", "stream_id", st.ID, "status", eg.Status)
 		return nil
 	}
@@ -228,7 +267,7 @@ func (s *Service) onEgressEnded(ctx context.Context, st *postgres.LiveStream, eg
 	if url == "" {
 		url = s.resolveRecordingURL(st.ID)
 	}
-	_, err := s.store.SetRecording(ctx, st.ID, url, int(eg.DurationNs/int64(time.Second)), postgres.RecordingImport{
+	_, err = s.store.SetRecording(ctx, st.ID, url, int(eg.DurationNs/int64(time.Second)), postgres.RecordingImport{
 		Bucket:     s.s3Bucket,
 		ObjectKey:  key,
 		DurationMs: eg.DurationNs / int64(time.Millisecond),

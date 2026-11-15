@@ -36,6 +36,8 @@ type recLiveKit struct {
 	deleted      []string
 	removed      []string
 	egressStarts int
+	egressKeys   []string // the object key of each started egress
+	egressErr    error    // StartEgressToS3 fails
 	egressStops  []string
 	rooms        map[string][]livekit.Participant
 	listErr      error
@@ -79,11 +81,15 @@ func (r *recLiveKit) ListParticipants(_ context.Context, room string) ([]livekit
 	return p, nil
 }
 
-func (r *recLiveKit) StartEgressToS3(context.Context, string, string) (string, error) {
+func (r *recLiveKit) StartEgressToS3(_ context.Context, _ string, key string) (string, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.egressErr != nil {
+		return "", r.egressErr
+	}
 	r.egressStarts++
-	return "EG_1", nil
+	r.egressKeys = append(r.egressKeys, key)
+	return fmt.Sprintf("EG_%d", r.egressStarts), nil
 }
 
 func (r *recLiveKit) StopEgress(_ context.Context, id string) error {

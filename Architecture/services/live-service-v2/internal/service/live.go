@@ -122,8 +122,15 @@ type Store interface {
 
 	// Lifecycle (lifecycle.go).
 	ApplyTransition(ctx context.Context, id uuid.UUID, decide postgres.TransitionFunc, events postgres.EventsFunc, audit *postgres.AuditEntry) (*postgres.TransitionResult, error)
-	SetEgressID(ctx context.Context, id uuid.UUID, egressID string) error
 	SetRecording(ctx context.Context, id uuid.UUID, url string, durationSec int, job postgres.RecordingImport) (*postgres.LiveStream, error)
+	// Recording parts, one per egress (store/postgres/recording_parts.go).
+	ReserveRecordingPart(ctx context.Context, streamID uuid.UUID, p postgres.ReservePartParams) (*postgres.RecordingPart, bool, error)
+	AttachRecordingEgress(ctx context.Context, streamID uuid.UUID, part int, egressID string) (bool, error)
+	FailRecordingPart(ctx context.Context, streamID uuid.UUID, part int, msg string) error
+	FinishRecordingPart(ctx context.Context, streamID uuid.UUID, f postgres.PartFinish) (matched, hasParts bool, err error)
+	ActiveRecordingEgresses(ctx context.Context, streamID uuid.UUID) ([]string, error)
+	QueueRecordingImport(ctx context.Context, streamID uuid.UUID, p postgres.QueueImportParams) (bool, error)
+	ListAwaitingImport(ctx context.Context, within time.Duration, limit int) ([]uuid.UUID, error)
 	ClaimDueImports(ctx context.Context, limit int, lease time.Duration) ([]postgres.RecordingImport, error)
 	CompleteImport(ctx context.Context, streamID, mediaID uuid.UUID, events func(*postgres.LiveStream, postgres.RecordingImport) ([]postgres.OutboxEvent, error)) error
 	RetryImport(ctx context.Context, streamID uuid.UUID, mediaID *uuid.UUID, processingStatus, msg string, retryIn time.Duration) error
@@ -924,14 +931,7 @@ func (s *Service) relationshipCached(ctx context.Context, viewerID, creatorID uu
 }
 
 func (s *Service) resolveRecordingURL(streamID uuid.UUID) string {
-	key := recordingObjectKeyPrefix + streamID.String() + ".mp4"
-	if s.recordingPublicBaseURL != "" {
-		return strings.TrimRight(s.recordingPublicBaseURL, "/") + "/" + key
-	}
-	if s.s3Endpoint != "" && s.s3Bucket != "" {
-		return strings.TrimRight(s.s3Endpoint, "/") + "/" + s.s3Bucket + "/" + key
-	}
-	return key
+	return s.recordingURLForKey(recordingObjectKeyPrefix + streamID.String() + ".mp4")
 }
 
 // --- helpers ---
