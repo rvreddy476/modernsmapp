@@ -500,7 +500,7 @@ Echo and Premium are built on the server, Android and web, and switched off. The
    - `WEB_APP_BASE_URL`.
 9. Before Echo runs anywhere:
    - Scylla `social_feed.notes_timeline`;
-   - migrations post 082, feed 009, monetization 027–029, notification 020.
+   - migrations post 082–084, feed 009–010, monetization 027–029, notification 020.
 
 **Not built yet**
 
