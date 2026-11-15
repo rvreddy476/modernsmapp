@@ -113,10 +113,23 @@ func IsProduction(environment string) bool {
 	return false
 }
 
+// configured reads a supplier setting. A value made only of X's (the
+// "XXXXXXXXXXXXX" placeholder the env files carry until the company has its
+// GSTIN, 15 Nov 2026) counts as unset: it never prints on an invoice, never
+// reaches GSTIN validation, and production still refuses Premium without
+// the real value.
+func configured(getenv func(string) string, key string) string {
+	v := strings.TrimSpace(getenv(key))
+	if v != "" && strings.Trim(v, "Xx \t\r\n") == "" {
+		return ""
+	}
+	return v
+}
+
 // TaxFromEnv reads PREMIUM_PLATFORM_GSTIN. Production refuses to start
 // without it; anywhere, a GSTIN that does not validate refuses to start.
 func TaxFromEnv(getenv func(string) string, environment string) (*Tax, error) {
-	raw := strings.TrimSpace(getenv(EnvPlatformGSTIN))
+	raw := configured(getenv, EnvPlatformGSTIN)
 	if raw == "" && IsProduction(environment) {
 		return nil, ErrPlatformGSTINRequired
 	}

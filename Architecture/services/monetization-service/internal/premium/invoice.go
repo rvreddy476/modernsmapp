@@ -86,10 +86,10 @@ func (s Supplier) Complete() bool {
 // a dash. A GSTIN that does not validate refuses anywhere.
 func SupplierFromEnv(getenv func(string) string, environment string) (Supplier, error) {
 	s := Supplier{
-		LegalName: collapse(getenv(EnvSupplierLegalName), 200),
-		Address:   collapse(getenv(EnvSupplierAddress), 500),
+		LegalName: collapse(configured(getenv, EnvSupplierLegalName), 200),
+		Address:   collapse(configured(getenv, EnvSupplierAddress), 500),
 	}
-	if raw := strings.TrimSpace(getenv(EnvPlatformGSTIN)); raw != "" {
+	if raw := configured(getenv, EnvPlatformGSTIN); raw != "" {
 		v, err := kyc.ValidateGSTIN(raw)
 		if err != nil {
 			return Supplier{}, fmt.Errorf("%w: %v", ErrPlatformGSTINInvalid, err)

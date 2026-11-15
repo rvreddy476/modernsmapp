@@ -195,6 +195,23 @@ func TestSupplierFromEnvRefusesProductionWithoutTheSupplier(t *testing.T) {
 			t.Errorf("dev without %s must start: %v", missing, err)
 		}
 	}
+	// The XXXX placeholders in the env files count as unset: dev starts and
+	// prints dashes, production still refuses.
+	ph := map[string]string{EnvSupplierLegalName: "XXXXXXXXXXXXX", EnvSupplierAddress: " XXXXXXXXXXXXX ",
+		EnvPlatformGSTIN: "XXXXXXXXXXXXXXX"}
+	s, err = SupplierFromEnv(get(ph), "dev")
+	if err != nil || s.LegalName != "" || s.Address != "" || s.GSTIN != "" {
+		t.Fatalf("placeholders must read as unset in dev: %+v %v", s, err)
+	}
+	if _, err := SupplierFromEnv(get(ph), "production"); !errors.Is(err, ErrSupplierRequired) {
+		t.Fatalf("production with placeholders: %v", err)
+	}
+	if tx, err := TaxFromEnv(get(ph), "dev"); err != nil || tx.Computed() {
+		t.Fatalf("placeholder GSTIN in dev must use the estimate: %v", err)
+	}
+	if _, err := TaxFromEnv(get(ph), "production"); !errors.Is(err, ErrPlatformGSTINRequired) {
+		t.Fatalf("placeholder GSTIN in production: %v", err)
+	}
 	bad := map[string]string{EnvPlatformGSTIN: "29AAAAA0000A1Z0X"}
 	if _, err := SupplierFromEnv(get(bad), "dev"); !errors.Is(err, ErrPlatformGSTINInvalid) {
 		t.Fatalf("a malformed GSTIN refuses anywhere: %v", err)
