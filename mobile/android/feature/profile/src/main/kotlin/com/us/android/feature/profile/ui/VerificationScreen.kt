@@ -24,6 +24,7 @@ import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
+import com.us.android.core.designsystem.component.UsSurfaceCard
 import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
@@ -37,9 +38,13 @@ import com.us.android.core.profile.data.VerificationKind
 @Composable
 fun VerificationScreen(
     onBack: () -> Unit,
+    /** Opens the Official mark page; the row shows only while the mark serves (status read 200). */
+    onOpenOfficialMark: () -> Unit = {},
     viewModel: VerificationViewModel = hiltViewModel(),
+    officialMark: OfficialMarkEntryViewModel = hiltViewModel(),
 ) {
     val state by viewModel.state.collectAsStateWithLifecycle()
+    val officialShown by officialMark.shown.collectAsStateWithLifecycle()
     UsScaffold(
         topBar = { UsTopBar(title = "Request verification", onBack = onBack) },
         applyPageGutter = false,
@@ -60,6 +65,7 @@ fun VerificationScreen(
                     color = UsTheme.extended.statusSuccess,
                     modifier = Modifier.testTag("verification_sent"),
                 )
+                if (officialShown) OfficialMarkRow(onOpenOfficialMark)
                 return@Column
             }
             Text(
@@ -106,6 +112,20 @@ fun VerificationScreen(
                 loading = state.submitting,
                 modifier = Modifier.fillMaxWidth().testTag("verification_send"),
             )
+            if (officialShown) OfficialMarkRow(onOpenOfficialMark)
         }
+    }
+}
+
+/** The way into the Official mark page (2026-11-15). */
+@Composable
+private fun OfficialMarkRow(onClick: () -> Unit) {
+    UsSurfaceCard(onClick = onClick, modifier = Modifier.fillMaxWidth().testTag("verification_official_mark")) {
+        Text("Official mark", style = MaterialTheme.typography.bodyLarge, fontWeight = FontWeight.SemiBold)
+        Text(
+            "For organisations, brands, media outlets and public bodies.",
+            style = MaterialTheme.typography.bodySmall,
+            color = UsTheme.extended.textMuted,
+        )
     }
 }

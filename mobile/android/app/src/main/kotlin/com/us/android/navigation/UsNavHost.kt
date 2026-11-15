@@ -1648,6 +1648,10 @@ private fun NavGraphBuilder.profileDestinations(
                 onHiddenChannels = { navController.navigate(com.us.android.feature.profile.navigation.HiddenChannelsRoute) },
                 // Account › Request verification (2026-10-24).
                 onVerification = { navController.navigate(com.us.android.feature.profile.navigation.VerificationRoute) },
+                // Request verification › Official mark (2026-11-15).
+                onOfficialMark = {
+                    navController.navigate(com.us.android.feature.profile.navigation.OfficialMarkRoute)
+                },
                 // Hidden chats (24 Oct 2026): Privacy › Hidden chats is a :feature:chat page.
                 onHiddenChats = { navController.navigateToHiddenChatsSettings() },
                 // Account › Momentum Premium (2026-11-13), only while Premium may be sold.
