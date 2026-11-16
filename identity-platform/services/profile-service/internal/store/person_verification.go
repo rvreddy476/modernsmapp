@@ -283,10 +283,14 @@ func (s *Store) ApprovePerson(ctx context.Context, in ApprovePersonInput) (*Prof
 
 	p, err := scanProfile(tx.QueryRow(ctx, `
 		UPDATE profile.profiles
-		   SET is_verified = TRUE, verification_level = $2, badge_flags = badge_flags | $3, updated_at = NOW()
+		   SET is_verified = TRUE,
+		       -- An Official or Government mark is never lowered to person (16 Nov 2026).
+		       verification_level = CASE WHEN verification_level IN ($4, $5) THEN verification_level ELSE $2 END,
+		       badge_flags = badge_flags | $3, updated_at = NOW()
 		 WHERE user_id = $1
 		RETURNING `+allProfileCols,
-		in.UserID, verification.LevelPerson, verification.BadgePersonVerified))
+		in.UserID, verification.LevelPerson, verification.BadgePersonVerified,
+		verification.LevelOrganisation, verification.LevelGovernment))
 	if err != nil {
 		return nil, fmt.Errorf("approve person: set profile: %w", err)
 	}

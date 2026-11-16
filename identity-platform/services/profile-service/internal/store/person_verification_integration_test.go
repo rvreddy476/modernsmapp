@@ -146,6 +146,28 @@ func TestPersonVerification_ApproveSetsBothTablesAndRefusesASecondAccount(t *tes
 	}
 }
 
+// Approval never lowers an Official or Government level to person (16 Nov 2026).
+func TestPersonVerification_ApproveKeepsAHigherLevel(t *testing.T) {
+	pool, s := personPool(t)
+	ctx := context.Background()
+	u := seedPerson(t, pool, "Asha Rao")
+	if _, err := pool.Exec(ctx, `UPDATE profile.profiles SET is_verified = TRUE, verification_level = $2, badge_flags = $3 WHERE user_id = $1`,
+		u, verification.LevelGovernment, verification.BadgeGovernment); err != nil {
+		t.Fatal(err)
+	}
+	ih := "ih-" + uuid.NewString()
+	att := checkedAttempt(t, s, u, ih)
+	p, err := s.ApprovePerson(ctx, ApprovePersonInput{AttemptID: att, UserID: u, IdentityHash: ih, NameHash: "name:" + ih,
+		HashName: func(string) string { return "name:" + ih }, Similarity: 97})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := verification.BadgeGovernment | verification.BadgePersonVerified
+	if !p.IsVerified || p.VerificationLevel != verification.LevelGovernment || p.BadgeFlags&want != want {
+		t.Fatalf("profile = %+v", p)
+	}
+}
+
 func TestPersonVerification_RenameClearsTheTickOnlyWhenAsked(t *testing.T) {
 	pool, s := personPool(t)
 	ctx := context.Background()

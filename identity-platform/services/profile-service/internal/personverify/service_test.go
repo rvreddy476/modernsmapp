@@ -211,7 +211,10 @@ func (f *fakeStore) ApprovePerson(_ context.Context, in store.ApprovePersonInput
 	}
 	f.bindings[in.IdentityHash] = store.PersonBinding{IdentityHash: in.IdentityHash, UserID: in.UserID, NameHash: in.NameHash}
 	a.Status, a.ReferencePhotoSealed = store.PersonAttemptApproved, nil
-	p.IsVerified, p.VerificationLevel = true, verification.LevelPerson
+	p.IsVerified = true
+	if p.VerificationLevel != verification.LevelOrganisation && p.VerificationLevel != verification.LevelGovernment {
+		p.VerificationLevel = verification.LevelPerson
+	}
 	p.BadgeFlags |= verification.BadgePersonVerified
 	f.usrVerify[in.UserID] = true
 	cp := *p
@@ -572,6 +575,46 @@ func TestSelfie_NameChangedSinceCallbackIsRefused(t *testing.T) {
 	f.st.profiles[userA].DisplayName = "Someone Else"
 	_, err := f.svc.SubmitSelfie(context.Background(), userA, uuid.New())
 	wantCode(t, err, "NAME_MISMATCH")
+}
+
+// The Official mark moves the level up and keeps the person bit (16 Nov 2026):
+// the account is still a verified person, never asked for DigiLocker again.
+func TestOfficialAccount_IsStillAVerifiedPerson(t *testing.T) {
+	f := newFixture(t)
+	if _, err := f.verify(t, userA); err != nil {
+		t.Fatal(err)
+	}
+	p := f.st.profiles[userA]
+	p.VerificationLevel = verification.LevelOrganisation
+	p.BadgeFlags |= verification.BadgeOrganisation
+
+	st, err := f.svc.Status(context.Background(), userA)
+	if err != nil || st.Next != "" {
+		t.Fatalf("status next = %q (%v), want done", st.Next, err)
+	}
+	_, err = f.svc.Start(context.Background(), userA)
+	wantCode(t, err, "ALREADY_VERIFIED")
+}
+
+// A Government account without the person bit may still verify as a person,
+// and doing so keeps the Government level.
+func TestGovernmentAccount_PersonVerificationKeepsItsLevel(t *testing.T) {
+	f := newFixture(t)
+	p := f.st.profiles[userA]
+	p.IsVerified, p.VerificationLevel, p.BadgeFlags = true, verification.LevelGovernment, verification.BadgeGovernment
+
+	st, err := f.svc.Status(context.Background(), userA)
+	if err != nil || st.Next != "digilocker" {
+		t.Fatalf("status next = %q (%v), want digilocker", st.Next, err)
+	}
+	if _, err := f.verify(t, userA); err != nil {
+		t.Fatal(err)
+	}
+	p = f.st.profiles[userA]
+	if p.VerificationLevel != verification.LevelGovernment || p.BadgeFlags&verification.BadgeGovernment == 0 ||
+		p.BadgeFlags&verification.BadgePersonVerified == 0 {
+		t.Fatalf("profile = %+v", p)
+	}
 }
 
 func TestSuccess_SetsColumnsBindsPersonAndEmitsEvent(t *testing.T) {

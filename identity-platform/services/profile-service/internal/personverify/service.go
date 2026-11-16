@@ -166,7 +166,7 @@ func (s *Service) Start(ctx context.Context, userID uuid.UUID) (*StartResult, er
 	if p == nil {
 		return nil, errProfileNotFound
 	}
-	if p.IsVerified && p.VerificationLevel == verification.LevelPerson {
+	if personVerified(p) {
 		return nil, errAlreadyVerified
 	}
 	now := s.now().UTC()
@@ -371,6 +371,13 @@ func (s *Service) SubmitSelfie(ctx context.Context, userID, selfieMediaID uuid.U
 	}, nil
 }
 
+// personVerified reads the person bit, not the level (16 Nov 2026): an account
+// that goes on to earn the Official or Government mark keeps
+// BadgePersonVerified while its level moves up, and is still a verified person.
+func personVerified(p *store.Profile) bool {
+	return p.IsVerified && p.BadgeFlags&verification.BadgePersonVerified != 0
+}
+
 // Status is the owner's verification state and newest attempt.
 func (s *Service) Status(ctx context.Context, userID uuid.UUID) (*Status, error) {
 	if !s.Enabled() {
@@ -391,9 +398,8 @@ func (s *Service) Status(ctx context.Context, userID uuid.UUID) (*Status, error)
 	if a != nil {
 		out.Attempt = &AttemptStatus{ID: a.ID, Status: a.Status, RefusalCode: a.RefusalCode, ExpiresAt: a.ExpiresAt}
 	}
-	personVerified := p.IsVerified && p.VerificationLevel == verification.LevelPerson
 	switch {
-	case personVerified:
+	case personVerified(p):
 		out.Next = ""
 	case a != nil && a.Status == store.PersonAttemptIdentityChecked && a.ExpiresAt.After(s.now()):
 		out.Next = "selfie"
