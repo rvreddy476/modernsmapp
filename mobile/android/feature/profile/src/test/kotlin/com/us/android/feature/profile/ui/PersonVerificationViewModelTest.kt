@@ -194,6 +194,31 @@ class PersonVerificationViewModelTest {
     }
 
     @Test
+    fun `back in view on done re-reads, and a held Official mark drops the Apply offer`() {
+        source.statuses += ok("")
+        val vm = vm()
+        assertThat(vm.state.value.holdsHigherMark).isFalse()
+
+        source.statuses += AppResult.Success(PersonStatus(verificationLevel = "organisation", next = ""))
+        vm.refreshIfDone()
+
+        assertThat(source.statusReads).isEqualTo(2)
+        assertThat(vm.state.value.holdsHigherMark).isTrue()
+        assertThat(PersonVerificationUiState(status = PersonStatus(verificationLevel = "government")).holdsHigherMark)
+            .isTrue()
+    }
+
+    @Test
+    fun `back in view mid-flow does not re-read`() {
+        source.statuses += ok("selfie")
+        val vm = vm()
+
+        vm.refreshIfDone()
+
+        assertThat(source.statusReads).isEqualTo(1)
+    }
+
+    @Test
     fun `the row is hidden on 503 and on any failure, and reads verified when done`() {
         val entrySource = FakePersonSource()
         val entry = PersonVerificationEntryViewModel(entrySource)

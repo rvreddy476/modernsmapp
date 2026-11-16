@@ -35,6 +35,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.core.content.ContextCompat
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsButton
 import com.us.android.core.designsystem.component.UsScaffold
@@ -58,6 +59,10 @@ fun PersonVerificationScreen(
     val context = LocalContext.current
     LaunchedEffect(viewModel) {
         viewModel.open.collect { url -> if (!context.openDigiLocker(url)) viewModel.onBrowserMissing() }
+    }
+    LifecycleResumeEffect(viewModel) {
+        viewModel.refreshIfDone()
+        onPauseOrDispose {}
     }
     UsScaffold(
         topBar = { UsTopBar(title = "Verify you're a real person", onBack = onBack) },
@@ -89,7 +94,7 @@ fun PersonVerificationScreen(
                 }
                 step == PersonStep.DigiLocker -> DigiLockerStep(state, viewModel::start)
                 step == PersonStep.Selfie -> SelfieStep(state, viewModel)
-                else -> DoneStep(onOpenOfficialMark)
+                else -> DoneStep(offerOfficialMark = !state.holdsHigherMark, onOpenOfficialMark = onOpenOfficialMark)
             }
         }
     }
@@ -179,7 +184,7 @@ private fun SelfieStep(state: PersonVerificationUiState, viewModel: PersonVerifi
 }
 
 @Composable
-private fun DoneStep(onOpenOfficialMark: () -> Unit) {
+private fun DoneStep(offerOfficialMark: Boolean, onOpenOfficialMark: () -> Unit) {
     UsSurfaceCard(modifier = Modifier.fillMaxWidth().testTag("person_done")) {
         Text("You're verified", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
         Text(
@@ -188,11 +193,13 @@ private fun DoneStep(onOpenOfficialMark: () -> Unit) {
             color = UsTheme.extended.textSecondary,
         )
     }
-    UsButton(
-        text = "Apply for the Official mark",
-        onClick = onOpenOfficialMark,
-        modifier = Modifier.fillMaxWidth().testTag("person_apply_official"),
-    )
+    if (offerOfficialMark) {
+        UsButton(
+            text = "Apply for the Official mark",
+            onClick = onOpenOfficialMark,
+            modifier = Modifier.fillMaxWidth().testTag("person_apply_official"),
+        )
+    }
 }
 
 @Composable

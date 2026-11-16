@@ -50,8 +50,13 @@ data class PersonVerificationUiState(
     val showRefused: Boolean
         get() = step == PersonStep.DigiLocker && status?.attempt?.status == ATTEMPT_REFUSED
 
+    /** The account already holds the Official or Government mark: no "Apply" on the done state. */
+    val holdsHigherMark: Boolean
+        get() = status?.verificationLevel in HIGHER_LEVELS
+
     companion object {
         const val ATTEMPT_REFUSED = "refused"
+        private val HIGHER_LEVELS = setOf("organisation", "government")
 
         fun stepOf(next: String): PersonStep = when (next) {
             "" -> PersonStep.Done
@@ -103,6 +108,14 @@ class PersonVerificationViewModel @Inject constructor(
                 }
             }
         }
+    }
+
+    /**
+     * Back in view on the done state (16 Nov 2026): re-read, so the page stops offering
+     * "Apply for the Official mark" once the mark is held. Mid-flow steps are left alone.
+     */
+    fun refreshIfDone() {
+        if (_state.value.step == PersonStep.Done) load()
     }
 
     /** "Continue with DigiLocker". */

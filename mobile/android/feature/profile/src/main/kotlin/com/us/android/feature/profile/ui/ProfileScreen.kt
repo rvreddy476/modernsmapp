@@ -906,13 +906,17 @@ private fun ProfileHeader(
                     style = MaterialTheme.typography.headlineSmall,
                     fontWeight = FontWeight.Bold,
                     color = UsTheme.extended.textPrimary,
-                    modifier = Modifier.semantics { heading() },
+                    // A long name wraps within its share; the labels after it keep theirs
+                    // (16 Nov 2026: "Verified" drew one letter per line beside a company name).
+                    modifier = Modifier.weight(1f, fill = false).semantics { heading() },
                 )
                 if (profile.isVerified) {
                     Text(
                         text = "Verified",
                         style = MaterialTheme.typography.labelSmall,
                         color = UsTheme.extended.statusSuccess,
+                        maxLines = 1,
+                        softWrap = false,
                     )
                 }
                 if (profile.isPrivate) {
