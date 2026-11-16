@@ -559,6 +559,12 @@ services:
       # are resolved by graph-service's permission matrix.
       USER_SERVICE_URL: http://identity-user:8110
       INTERNAL_SERVICE_KEY: ${INTERNAL_SERVICE_KEY:-local_dev_internal_service_key_change_me}
+      # Official/Government marks in the admin console (16 Nov 2026):
+      # admin-service calls /internal/v1/profiles/admin/* with a token,
+      # audience "profile". The same public key every product registers.
+      # Empty = the family is not registered.
+      ADMIN_SERVICE_TOKEN_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      ADMIN_SERVICE_TOKEN_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
       # Account control (deactivate/delete/purge): ack topic for the
       # existing identity-topic consumer's user.purge_requested handling.
       PURGE_ACKS_TOPIC: platform.purge-acks.v1
@@ -1778,6 +1784,8 @@ services:
       # <NAME>_SERVICE_CALLERS below.
       POST_SERVICE_URL: http://post-service:8084
       USER_SERVICE_URL: http://user-service:8082
+      # Official marks page: profile-service's token family (audience "profile").
+      PROFILE_SERVICE_URL: http://identity-profile:8098
       QA_SERVICE_URL: http://qa-service:8108
       CHANNEL_SERVICE_URL: http://channel-service:8106
       GROUP_SERVICE_URL: http://group-service:8090

@@ -508,7 +508,15 @@ Echo and Premium are built on the server, Android and web, and switched off. The
     The invoice list is built too; since 15 Nov a buyer with a pass or an invoice reaches it with selling
     off, while "Get Premium" and the passes stay hidden.
 11. ~~**PDF invoices**~~ — done 13 Nov in `76bed8a27`: rendered in Go (shared/invoice); HTML stays as `?format=html`.
-12. **Official / Government badges** and the impersonation name check (design phase 3).
+12. ~~**Official / Government badges**~~ and the impersonation name check — built 15 Nov
+    (application screens on web and Android, name check in profile-service). Admin console
+    review built 16 Nov (`a77c7241e`, `ffb88c40d`, atpost-web `feat/admin-official-marks`;
+    contract `docs/designs/official-marks-console-contract.md`). Still open:
+    - the web and Android application screens do not offer the registration-document upload,
+      so nothing reaches human review yet;
+    - media-service's private evidence route serves images only, so a PDF document shows 404;
+    - staging/prod values: profile-service `ADMIN_SERVICE_TOKEN_PUBKEY`/`_KID`,
+      admin-service `PROFILE_SERVICE_URL` (those values files carry uncommitted edits).
 13. ~~**Echo extras**~~ — done 13 Nov in `b962362eb`: hashtag-follow candidates in For You,
     keyword filtering inside quoted notes, `notes_timeline` maintenance modes, `echo_notes`
     pruning (feed migration 010), reply counts that follow delete and restore, and a deleted
