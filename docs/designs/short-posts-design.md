@@ -512,9 +512,8 @@ Echo and Premium are built on the server, Android and web, and switched off. The
     (application screens on web and Android, name check in profile-service). Admin console
     review built 16 Nov (`a77c7241e`, `ffb88c40d`, atpost-web `feat/admin-official-marks`;
     contract `docs/designs/official-marks-console-contract.md`). Still open:
-    - the web and Android application screens do not offer the registration-document upload,
-      so nothing reaches human review yet;
-    - media-service's private evidence route serves images only, so a PDF document shows 404;
+    - certificate upload (web, Android) and the PDF view-only console viewer built 16 Nov
+      (contract section 6); dev needs MEDIA_SERVICE_CALLERS to name admin-service;
     - staging/prod values: profile-service `ADMIN_SERVICE_TOKEN_PUBKEY`/`_KID`,
       admin-service `PROFILE_SERVICE_URL` (those values files carry uncommitted edits).
 13. ~~**Echo extras**~~ — done 13 Nov in `b962362eb`: hashtag-follow candidates in For You,
