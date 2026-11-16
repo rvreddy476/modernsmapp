@@ -470,7 +470,7 @@ The founder accepted all 14 defaults above as written. Echo is the first app aft
 phase 0 prerequisites (gateway security fix, Momentum Premium behind `PREMIUM_ENABLED`, person
 verification) are built now, switched off.
 
-## 10. Pending list (13 Nov 2026)
+## 10. Pending list (13 Nov 2026, updated 16 Nov)
 
 Echo and Premium are built on the server, Android and web, and switched off. These items are still open:
 
@@ -501,6 +501,12 @@ Echo and Premium are built on the server, Android and web, and switched off. The
 9. Before Echo runs anywhere:
    - Scylla `social_feed.notes_timeline`;
    - migrations post 082–084, feed 009–010, monetization 027–029, notification 020.
+   - all of it waits on the AWS dev account being cleared (blocked since 13 Nov).
+9a. Official marks in the console:
+   - dev: `MEDIA_SERVICE_CALLERS` must name `admin-service` (key, kid and ops are in compose);
+   - staging/prod: profile-service `ADMIN_SERVICE_TOKEN_PUBKEY`/`_KID`, admin-service
+     `PROFILE_SERVICE_URL`, media-service admin-service caller (those values files carry
+     uncommitted edits).
 
 **Not built yet**
 
@@ -511,11 +517,9 @@ Echo and Premium are built on the server, Android and web, and switched off. The
 12. ~~**Official / Government badges**~~ and the impersonation name check — built 15 Nov
     (application screens on web and Android, name check in profile-service). Admin console
     review built 16 Nov (`a77c7241e`, `ffb88c40d`, atpost-web `feat/admin-official-marks`;
-    contract `docs/designs/official-marks-console-contract.md`). Still open:
-    - certificate upload (web, Android) and the PDF view-only console viewer built 16 Nov
-      (contract section 6); dev needs MEDIA_SERVICE_CALLERS to name admin-service;
-    - staging/prod values: profile-service `ADMIN_SERVICE_TOKEN_PUBKEY`/`_KID`,
-      admin-service `PROFILE_SERVICE_URL` (those values files carry uncommitted edits).
+    contract `docs/designs/official-marks-console-contract.md`). Certificate upload on web and
+    Android and the PDF view-only console viewer built 16 Nov (contract section 6), walked end to
+    end on the local stack. Configuration left: item 9a.
 13. ~~**Echo extras**~~ — done 13 Nov in `b962362eb`: hashtag-follow candidates in For You,
     keyword filtering inside quoted notes, `notes_timeline` maintenance modes, `echo_notes`
     pruning (feed migration 010), reply counts that follow delete and restore, and a deleted
@@ -523,3 +527,15 @@ Echo and Premium are built on the server, Android and web, and switched off. The
 14. **UPI Autopay renewal.** Today renewal is a reminder plus a fresh payment.
 15. **Real-device walkthrough.** Walked on the emulator and in the browser (15 Nov); not yet on a
     real phone.
+
+**Still to check by hand**
+
+16. The certificate upload on the Android Official mark screen (needs the emulator).
+17. The console's Official marks page in a browser, signed in as an admin with admin-service
+    running (only its automated and Playwright tests have run).
+
+**Housekeeping**
+
+18. `mobile/android/app/.../UsNavHost.kt`: 14 uncommitted lines of Echo navigation wiring
+    (chat, settings, notifications, back to VChat), not from the Echo lanes; commit once the
+    founder says.
