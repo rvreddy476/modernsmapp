@@ -48,3 +48,41 @@ variable "operator_replicas" {
   type        = number
   default     = 2
 }
+
+# ─── Backups (backup.tf) ────────────────────────────────────────────
+
+variable "backup_enabled" {
+  description = "Install Scylla Manager and schedule the daily backup task to S3. When true, backup_bucket_name and backup_irsa_role_arn are required."
+  type        = bool
+  default     = false
+}
+
+variable "backup_bucket_name" {
+  description = "S3 bucket Scylla Manager backs up to (envs/<env>/scylla-backup.tf)."
+  type        = string
+  default     = ""
+}
+
+variable "backup_irsa_role_arn" {
+  description = "IAM role for ServiceAccount scylla/<cluster>-member: read/write/delete on the backup bucket."
+  type        = string
+  default     = ""
+}
+
+variable "backup_cron" {
+  description = "When the daily backup runs, cron in UTC. 20:30 UTC = 02:00 IST."
+  type        = string
+  default     = "30 20 * * *"
+}
+
+variable "backup_retention" {
+  description = "How many backups Scylla Manager keeps. One backup a day, so this is days."
+  type        = number
+  default     = 14
+}
+
+variable "aws_region" {
+  description = "Region of the backup bucket (the agent's s3.region)."
+  type        = string
+  default     = "ap-south-1"
+}

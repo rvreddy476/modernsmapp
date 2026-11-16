@@ -124,6 +124,9 @@ resource "helm_release" "kube_prometheus_stack" {
       }
 
       # ─── Alertmanager ─────────────────────────────────────────────
+      # Receivers and routes are a second values document
+      # (local.alert_routing_values, alerting.tf), merged in when
+      # var.alert_routing_enabled is true.
       alertmanager = {
         alertmanagerSpec = {
           replicas = var.alertmanager_replicas
@@ -210,6 +213,9 @@ resource "helm_release" "kube_prometheus_stack" {
           effect   = "NoSchedule"
         }]
       }
-    })
+    }),
+    # Alert routing (alerting.tf). An empty document when routing is off, so
+    # the release is what it was before the block existed.
+    var.alert_routing_enabled ? yamlencode(local.alert_routing_values) : "{}",
   ]
 }

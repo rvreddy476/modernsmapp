@@ -79,3 +79,11 @@ ingress:
     paths:
     - path: /
       pathType: Prefix
+
+# Default chart alerts (charts/atpost-service/values.yaml, defaultAlerts).
+# The gateway serves /metrics but records no per-request metrics (it does
+# not use the shared HTTP metrics middleware), so the 5xx and p99 rules are
+# off. Turn them on when it exports atpost_api_gateway_http_* metrics.
+defaultAlerts:
+  http:
+    enabled: false

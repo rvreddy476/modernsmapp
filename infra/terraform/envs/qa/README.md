@@ -134,6 +134,8 @@ terraform plan -var-file=qa.tfvars -out=pass1.plan \
   -target=module.bucket_live_recordings -target=module.bucket_commerce_invoices \
   -target=module.bucket_food_files -target=module.service_secrets \
   -target=module.ses -target=module.ops \
+  -target=module.bucket_scylla_backups -target=module.scylla_backup_irsa \
+  -target=aws_iam_role_policy_attachment.scylla_backup_bucket \
   -target=aws_iam_policy.rekognition -target=aws_iam_policy.livekit_egress \
   -target=aws_iam_role_policy_attachment.ci_codeartifact \
   -target=aws_iam_role_policy_attachment.commerce_pii_kms \

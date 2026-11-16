@@ -88,25 +88,83 @@ pdb:
   minAvailable: 1
 
 # Feed alerts (metrics: Architecture/services/feed-service/internal/service/
-# metrics.go and the shared Kafka consumer). Thresholds are starting points;
-# tune them against the k6 scenarios in docs/production-readiness/FEED_AUDIT.md.
+# metrics.go and the shared Kafka consumer, Architecture/shared/o11y/metrics/
+# kafka.go). Thresholds are starting points; tune them against the k6
+# scenarios in docs/production-readiness/FEED_AUDIT.md. values-qa.yaml carries
+# the same rules: keep the two lists identical.
+#
+# The feed consumer retries a failed event until it succeeds (feed-06), so an
+# outage of Scylla, Postgres, graph-service or post-service shows as a stalled
+# consumer and growing lag, NOT as dead letters. Three signals cover it:
+#
+#   FeedConsumerStalled      every attempt fails and nothing succeeds. Built
+#                            from two counters that exist today
+#                            (kafka_messages_errors_total goes up on every
+#                            failed attempt, at least once per 32 s while an
+#                            event is retried; kafka_messages_processed_total
+#                            does not move). This is the outage alert.
+#   FeedConsumerLagHigh /    the lag gauge the consumer exports. LIMIT: the
+#   FeedConsumerLagCritical  gauge is kafka-go's reader lag (high watermark
+#                            minus the last FETCHED offset, set when a fetch
+#                            returns, shared/kafka/consumer.go reportLag). A
+#                            stalled handler stops fetching after 100 queued
+#                            messages, so the gauge freezes at its last value
+#                            and does not grow during a full stall. It is
+#                            right for a consumer that is slow but moving.
+#   FeedEventRetryStuck      INERT until shared/kafka exports
+#                            atpost_feed_service_kafka_message_retry_age_seconds
+#                            {topic, consumer_group} (seconds since the first
+#                            failed attempt of the event now being retried, 0
+#                            when none). The metric does not exist yet; the
+#                            rule never fires until it does.
+#
+# Consumer groups: feed-service-group reads social.events.v1,
+# feed-service-qa-group reads qa-events (feed-service cmd/server/main.go).
+# Dead letters still happen for events that can never succeed (malformed,
+# refused with 400/413/414/422): FeedEventsDeadLettered stays.
 prometheusRule:
   enabled: true
   rules:
-    - alert: FeedConsumerLagHigh
-      expr: max by (consumer_group) (atpost_feed_service_kafka_consumer_lag{consumer_group="feed-service-group"}) > 10000
-      for: 10m
-      labels: { severity: page }
+    - alert: FeedConsumerStalled
+      expr: |-
+        (sum by (consumer_group, topic) (increase(atpost_feed_service_kafka_messages_errors_total{consumer_group=~"feed-service-group|feed-service-qa-group"}[3m])) > 0)
+        unless
+        (sum by (consumer_group, topic) (increase(atpost_feed_service_kafka_messages_processed_total{consumer_group=~"feed-service-group|feed-service-qa-group"}[3m])) > 0)
+      for: 5m
+      labels: { severity: critical }
       annotations:
-        summary: feed-service is more than 10k social events behind
-        description: New posts, deletes and unfollows are reaching feeds late. Check fan-out duration and Scylla/graph health.
+        summary: A feed consumer has been retrying an event for more than 5 minutes with no success
+        description: The consumer group in the alert is stuck on one event; every later event waits behind it, so new posts, deletes and unfollows do not reach feeds. A dependency is down (Scylla, Postgres, graph-service, post-service). The feed-service log line "retrying message" carries the error.
+    - alert: FeedEventRetryStuck
+      # Depends on a metric the Go code does not export yet (see the comment
+      # above). Remove FeedConsumerStalled once this one is proven.
+      expr: max by (consumer_group, topic) (atpost_feed_service_kafka_message_retry_age_seconds{consumer_group=~"feed-service-group|feed-service-qa-group"}) > 300
+      for: 1m
+      labels: { severity: critical }
+      annotations:
+        summary: A feed event has been retried for more than 5 minutes
+        description: Same meaning as FeedConsumerStalled, measured directly. The feed-service log line "retrying message" carries the error.
+    - alert: FeedConsumerLagHigh
+      expr: max by (consumer_group, topic) (atpost_feed_service_kafka_consumer_lag{consumer_group=~"feed-service-group|feed-service-qa-group"}) > 1000
+      for: 10m
+      labels: { severity: warning }
+      annotations:
+        summary: A feed consumer has been more than 1,000 events behind for 10 minutes
+        description: New posts, deletes and unfollows are reaching feeds late. Check fan-out duration and Scylla/graph health. The gauge does not grow during a full stall (see FeedConsumerStalled).
+    - alert: FeedConsumerLagCritical
+      expr: max by (consumer_group, topic) (atpost_feed_service_kafka_consumer_lag{consumer_group=~"feed-service-group|feed-service-qa-group"}) > 1000
+      for: 30m
+      labels: { severity: critical }
+      annotations:
+        summary: A feed consumer has been more than 1,000 events behind for 30 minutes
+        description: Feeds are stale. The consumer is not catching up; check fan-out duration, Scylla and graph-service, and whether FeedConsumerStalled is also firing.
     - alert: FeedEventsDeadLettered
       expr: sum(increase(atpost_feed_service_kafka_dlq_messages_total[15m])) > 0
       for: 0m
       labels: { severity: ticket }
       annotations:
         summary: feed-service parked events on social.events.v1.dlq
-        description: An event failed every retry. Inspect the x-dlq-error header and replay once fixed.
+        description: An event that can never succeed (malformed, or refused by a dependency with 400/413/414/422) was dead-lettered. Inspect the x-dlq-error header. An outage does NOT land here; see FeedConsumerStalled.
     - alert: FeedFanoutIncomplete
       expr: sum(rate(atpost_feed_service_fanout_incomplete_total[10m])) / clamp_min(sum(rate(atpost_feed_service_fanout_duration_seconds_count[10m])), 1e-9) > 0.05
       for: 15m

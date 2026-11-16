@@ -15,3 +15,8 @@ output "prometheus_service_url" {
 output "alertmanager_service_url" {
   value = "http://alertmanager-operated.observability.svc.cluster.local:9093"
 }
+
+output "alertmanager_irsa_role_arn" {
+  value       = one(aws_iam_role.alertmanager[*].arn)
+  description = "Role the Alertmanager pod assumes to publish to the ops SNS topic. Null when alert routing is off."
+}

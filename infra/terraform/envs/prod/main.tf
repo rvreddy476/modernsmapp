@@ -298,6 +298,13 @@ module "scylla" {
   cpu_per_replica     = var.scylla_cpu_per_replica
   memory_per_replica  = var.scylla_memory_per_replica
   storage_per_replica = var.scylla_storage_per_replica
+
+  # Daily backup to S3 through Scylla Manager (scylla-backup.tf; feed-12).
+  backup_enabled       = true
+  backup_bucket_name   = module.bucket_scylla_backups.bucket_name
+  backup_irsa_role_arn = module.scylla_backup_irsa.role_arn
+  backup_retention     = var.scylla_backup_retention
+  aws_region           = var.aws_region
 }
 
 module "argocd" {
@@ -349,6 +356,14 @@ module "observability" {
   acm_certificate_arn    = module.dns.wildcard_cert_arn
 
   # Prod defaults already match (100Gi PVC, 70GB soft retention, 15d).
+
+  # Service alerts reach a person: Alertmanager publishes to the ops SNS
+  # topic (ops.tf), which e-mails var.ops_alert_email (feed-10).
+  alert_routing_enabled = true
+  alert_sns_topic_arn   = module.ops.ops_alerts_topic_arn
+  oidc_provider_arn     = module.eks.oidc_provider_arn
+  oidc_provider_url     = module.eks.oidc_provider_url
+  aws_region            = var.aws_region
 }
 
 resource "random_id" "tempo_suffix" {

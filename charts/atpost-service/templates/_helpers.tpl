@@ -151,3 +151,17 @@ account id); the tag is stamped by CI.
 {{- define "atpost-service.image" -}}
 {{ tpl .Values.image.repository . }}:{{ .Values.image.tag }}
 {{- end }}
+
+{{/*
+One service-specific alert rule (prometheusRule.rules entry) as a YAML list
+item, with the labels source=atpost-service and service=<name> added unless
+the rule sets them itself. The Alertmanager route (infra/terraform/modules/
+observability) matches on source=atpost-service.
+Usage: {{- include "atpost-service.alertRule" (dict "rule" . "name" $name) | nindent 8 }}
+*/}}
+{{- define "atpost-service.alertRule" -}}
+{{- $rule := deepCopy .rule -}}
+{{- $labels := merge (dict) (default (dict) $rule.labels) (dict "source" "atpost-service" "service" .name) -}}
+{{- $_ := set $rule "labels" $labels -}}
+{{- toYaml (list $rule) -}}
+{{- end }}

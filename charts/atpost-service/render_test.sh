@@ -38,9 +38,30 @@
 #        - QA size (one replica, HPA max 2, no drain-blocking PDB) and QA-only
 #          ingress hosts in the renders.
 #
+#   7. Alerts and probes (feed-10, 16 Nov 2026):
+#        static (no Docker):
+#        - the chart's probe defaults are /livez and /readyz, no service
+#          values file overrides them, and each service's Go code serves
+#          both (the services that do not are listed in KNOWN_PROBE_GAPS and
+#          printed on every run; a new gap, or a fixed one still listed,
+#          fails);
+#        - the default HTTP alert rules are on exactly for the services that
+#          record atpost_<service>_http_* (metrics.NewHTTPMetrics("<name>"))
+#          and the switch is the same in every values file of a service;
+#        - the feed rules are the same list in values-prod.yaml and
+#          values-qa.yaml and carry the stall, lag and dead-letter alerts;
+#        rendered:
+#        - every prod and QA render has a PrometheusRule with the pod and
+#          readiness rules, and the 5xx / p99 rules against the service's own
+#          metric names when they are on, absent when they are off;
+#        - every rendered probe path of a Go service is /livez or /readyz;
+#        - defaultAlerts.enabled=false renders no PrometheusRule; thresholds
+#          follow the values.
+#
 #   QA_GUARDS_ONLY=1 ./charts/atpost-service/render_test.sh
-#      runs only the static QA guards (no Docker): a quick check while
-#      editing values-qa.yaml. The full run is the gate.
+#      runs only the static guards (the QA guards and the static half of 7;
+#      no Docker): a quick check while editing values files. The full run is
+#      the gate.
 #
 # Helm is not installed on the dev machine, so it runs through the official
 # image (one container for all renders). Same binary CI would use.
@@ -194,10 +215,127 @@ qa_static_guards() {
   return 0
 }
 qa_static_guards
+
+# ── alert and probe static guards (no Docker) ──────────────────────────────
+# deploy service name → the directory its Go code lives in.
+src_of() {
+  case "$1" in
+    identity-auth-service)    echo identity-platform/services/auth-service ;;
+    identity-profile-service) echo identity-platform/services/profile-service ;;
+    identity-user-service)    echo identity-platform/services/user-service ;;
+    chat-call-service)        echo chat-service/services/call-service ;;
+    chat-message-service)     echo chat-service/services/message-service ;;
+    chat-ws-gateway)          echo chat-service/services/ws-gateway ;;
+    *)                        echo "Architecture/services/$1" ;;
+  esac
+}
+# serves <source dir> <path>: non-test Go code registers the path itself, or
+# calls RegisterRoutes of shared/health (which serves /livez, /healthz and
+# /readyz: Architecture/shared/health/checker.go).
+serves() {
+  local lit shared
+  lit=$(grep -rlF --include='*.go' "\"$2\"" "$1" 2>/dev/null | grep -v '_test\.go$' | head -1 || true)
+  [[ -n "$lit" ]] && return 0
+  shared=$(grep -rlE --include='*.go' '^[^/]*checker\.RegisterRoutes\(' "$1" 2>/dev/null | grep -v '_test\.go$' \
+    | xargs -r grep -lF 'github.com/atpost/shared/health"' 2>/dev/null | head -1 || true)
+  [[ -n "$shared" ]]
+}
+# "<off|on>" for the default HTTP alert rules of one values file: off when
+# the file sets defaultAlerts.http.enabled: false.
+http_alerts_of() {
+  tr -d '\r' < "$1" | awk '/^defaultAlerts:/ { d = 1; next } /^[^ #]/ { d = 0 }
+       d && /^  [a-z]+:/ { h = ($1 == "http:") }
+       d && h && /^    enabled: false/ { off = 1 }
+       END { print (off ? "off" : "on") }'
+}
+# Probe paths a service's code does not serve today. The kubelet restarts a
+# pod whose liveness path answers 404 and never routes to one whose readiness
+# path does, so each entry is a service that cannot run on this chart until
+# its code registers the path (or its values override the probe). Listed so
+# the gap is printed on every run instead of failing a gate nobody can turn
+# green from this folder; remove an entry when the service is fixed (a stale
+# entry fails).
+KNOWN_PROBE_GAPS=" identity-auth-service:/livez identity-auth-service:/readyz identity-profile-service:/livez identity-profile-service:/readyz identity-user-service:/livez identity-user-service:/readyz chat-call-service:/livez chat-call-service:/readyz chat-message-service:/livez chat-message-service:/readyz chat-ws-gateway:/livez chat-ws-gateway:/readyz "
+alert_probe_static_guards() {
+  echo
+  echo "── alert and probe guards (static) ──"
+  local f d svc src p key hits gaps="" probefail=0 httpfail=0 state want
+  local values=charts/atpost-service/values.yaml
+
+  # Chart defaults.
+  [[ "$(tr -d '\r' < $values | awk '/^livenessProbe:/{p=1;next} p&&/^  path:/{print $2; exit}')" == /livez ]] || { bad "chart: livenessProbe.path default is not /livez"; probefail=1; }
+  [[ "$(tr -d '\r' < $values | awk '/^readinessProbe:/{p=1;next} p&&/^  path:/{print $2; exit}')" == /readyz ]] || { bad "chart: readinessProbe.path default is not /readyz"; probefail=1; }
+  # No Go service overrides a probe; the two web apps name their own page.
+  hits=$(grep -nE '^(livenessProbe|readinessProbe):' deploy/services/*/values-*.yaml || true)
+  [[ -z "$hits" ]] || { bad "a service values file overrides a probe (services use the chart's /livez and /readyz):"$'\n'"$hits"; probefail=1; }
+  for f in deploy/web/app/values-prod.yaml deploy/web/app/values-qa.yaml; do
+    [[ "$(tr -d '\r' < "$f" | awk '/^(livenessProbe|readinessProbe):/{p=1;next} p&&/^  path:/{print $2; p=0}' | sort -u)" == /login ]] || { bad "$f: probes must both be /login"; probefail=1; }
+  done
+  for f in deploy/web/admin-console/values-prod.yaml deploy/web/admin-console/values-qa.yaml; do
+    [[ "$(tr -d '\r' < "$f" | awk '/^(livenessProbe|readinessProbe):/{p=1;next} p&&/^  path:/{print $2; p=0}' | sort -u)" == /api/health ]] || { bad "$f: probes must both be /api/health"; probefail=1; }
+  done
+
+  for d in deploy/services/*/; do
+    svc="$(basename "$d")"; src="$(src_of "$svc")"
+    [[ -d "$src" ]] || { bad "$svc: source directory $src not found (src_of in this script)"; probefail=1; continue; }
+    for p in /livez /readyz; do
+      key="$svc:$p"
+      if serves "$src" "$p"; then
+        [[ "$KNOWN_PROBE_GAPS" == *" $key "* ]] && { bad "$svc now serves $p: remove $key from KNOWN_PROBE_GAPS"; probefail=1; }
+      elif [[ "$KNOWN_PROBE_GAPS" == *" $key "* ]]; then
+        gaps+=" $key"
+      else
+        bad "$svc: the chart probes $p but $src does not serve it"; probefail=1
+      fi
+    done
+
+    # Default HTTP alert rules: on exactly when the service records the
+    # shared HTTP metrics under its own deploy name.
+    want=off
+    grep -rqF --include='*.go' "NewHTTPMetrics(\"$svc\")" "$src" 2>/dev/null && want=on
+    for f in "$d"values-*.yaml; do
+      state="$(http_alerts_of "$f")"
+      if [[ "$state" != "$want" ]]; then
+        if [[ "$want" == off ]]; then
+          bad "$f: default HTTP alerts are on but $src never calls metrics.NewHTTPMetrics(\"$svc\"): set defaultAlerts.http.enabled: false"
+        else
+          bad "$f: default HTTP alerts are off but $src records atpost_${svc//-/_}_http_*: remove the switch"
+        fi
+        httpfail=1
+      fi
+    done
+  done
+  [[ $probefail -eq 0 ]] && ok "probes: chart defaults /livez + /readyz, no service override, every service outside the known gaps serves both"
+  if [[ -n "$gaps" ]]; then
+    echo "KNOWN GAP (not a failure; these pods cannot pass their probes until fixed):"
+    for key in $gaps; do echo "       ${key%%:*} does not serve ${key##*:}"; done
+  fi
+  [[ $httpfail -eq 0 ]] && ok "default HTTP alerts: on exactly where metrics.NewHTTPMetrics(\"<service>\") is called, same switch in every values file"
+
+  # Feed rules: one list, in prod and in QA.
+  local fp=deploy/services/feed-service/values-prod.yaml fq=deploy/services/feed-service/values-qa.yaml a
+  if [[ "$(tr -d '\r' < $fp | sed -n '/^prometheusRule:/,$p')" == "$(tr -d '\r' < $fq | sed -n '/^prometheusRule:/,$p')" ]]; then
+    ok "feed rules: values-qa.yaml carries the same list as values-prod.yaml"
+  else
+    bad "feed rules differ between $fp and $fq (keep the two lists identical)"
+  fi
+  for a in FeedConsumerStalled FeedConsumerLagHigh FeedConsumerLagCritical FeedEventsDeadLettered; do
+    grep -q "^    - alert: $a" "$fp" || bad "$fp: alert $a is missing"
+  done
+  # The lag gauge and the two counters the stall rule reads must be the names
+  # the shared consumer exports.
+  for a in kafka_consumer_lag kafka_messages_errors_total kafka_messages_processed_total kafka_dlq_messages_total; do
+    grep -q "Name: \"$a\"" Architecture/shared/o11y/metrics/kafka.go || bad "feed rules read atpost_feed_service_$a but shared/o11y/metrics/kafka.go no longer exports $a"
+    grep -q "atpost_feed_service_$a" "$fp" || bad "$fp: no rule reads atpost_feed_service_$a"
+  done
+  return 0
+}
+alert_probe_static_guards
+
 if [[ "${QA_GUARDS_ONLY:-}" == 1 ]]; then
   echo
-  [[ "$fail" -ne 0 ]] && { echo "QA GUARDS FAILED"; exit 1; }
-  echo "QA guards passed (static only; run without QA_GUARDS_ONLY for the renders)"
+  [[ "$fail" -ne 0 ]] && { echo "STATIC GUARDS FAILED"; exit 1; }
+  echo "static guards passed (QA + alerts/probes; run without QA_GUARDS_ONLY for the renders)"
   exit 0
 fi
 
@@ -216,6 +354,8 @@ job neg-worker-tag      err "-f $M --set-string global.awsAccountId=$ACCT --set-
 job neg-placeholder     err "-f $M $BASE"
 job pos-no-placeholder  ok  "-f $G $BASE"
 job commerce-migrate-on ok  "-f deploy/services/commerce-service/values-prod.yaml $LOCAL --set migrationJob.enabled=true"
+job alerts-off          ok  "-f $G $BASE --set defaultAlerts.enabled=false"
+job alerts-thresholds   ok  "-f $G $BASE --set defaultAlerts.http.errorRatio=0.2 --set defaultAlerts.http.p99Seconds=2.5 --set defaultAlerts.pods.restartsPer30m=7"
 
 # ── the ApplicationSets (production, then QA) ──────────────────────────────
 # check_appset <file> <tag> <revision> <values file name> <env label>
@@ -462,6 +602,55 @@ grep -q 'host: "admin-qa.cleestudio.com"' <<<"$qadm" && ok "QA admin console: ad
 for f in deploy/web/app/values-qa.yaml deploy/web/admin-console/values-qa.yaml deploy/services/chat-ws-gateway/values-qa.yaml; do
   [[ "$(ann $f 'alb.ingress.kubernetes.io/wafv2-acl-arn')" == "$(ann $qgw 'alb.ingress.kubernetes.io/wafv2-acl-arn')" ]] || bad "$f: QA ingress names a different WAF ACL (QA has one web ACL)"
 done
+
+echo
+echo "── alert rules and probe paths in the renders ──"
+EXCL='path!~"/livez|/readyz|/healthz|/metrics"'
+alertfail=0
+for f in "${PROD[@]}" "${QA[@]}"; do
+  id="$(id_of "$f")"; [[ -f "$WORK/out/$id.out" ]] || continue
+  out="$(R "$id")"
+  svc="$(basename "$(dirname "$f")")"
+  # The PrometheusRule document alone.
+  rule="$(awk '/^---/{p=0} /^kind: PrometheusRule/{p=1} p' <<<"$out")"
+  [[ -n "$rule" ]] || { bad "$f: renders no PrometheusRule"; alertfail=1; continue; }
+  for a in ServicePodCrashLooping ServicePodRestarting ServiceNoReadyPod ServiceReadinessFailing; do
+    grep -q "alert: $a\$" <<<"$rule" || { bad "$f: default rule $a did not render"; alertfail=1; }
+  done
+  if grep -qE '\{\{|\}\}|<no value>|%!' <<<"$rule"; then bad "$f: an alert rule rendered template leftovers"; alertfail=1; fi
+  grep -qF "container=\"$svc\"" <<<"$rule" || [[ "$f" == deploy/web/* ]] || { bad "$f: pod rules do not select container $svc"; alertfail=1; }
+  [[ $(grep -c 'source: atpost-service' <<<"$rule") -eq $(grep -c -- '- alert: ' <<<"$rule") ]] \
+    || { bad "$f: not every rule carries source: atpost-service (the Alertmanager route would drop it)"; alertfail=1; }
+  if [[ "$f" == deploy/web/* || "$(http_alerts_of "$f")" == off ]]; then
+    grep -q 'alert: ServiceHttp' <<<"$rule" && { bad "$f: HTTP rules rendered for a service that records no HTTP metrics"; alertfail=1; }
+  else
+    m="atpost_${svc//-/_}"
+    grep -qF "${m}_http_requests_total{status=~\"5..\", $EXCL}[5m]" <<<"$rule" || { bad "$f: 5xx rule does not read ${m}_http_requests_total"; alertfail=1; }
+    grep -qF "histogram_quantile(0.99, sum by (le) (rate(${m}_http_request_duration_seconds_bucket{$EXCL}[5m])))" <<<"$rule" || { bad "$f: p99 rule does not read ${m}_http_request_duration_seconds_bucket"; alertfail=1; }
+    grep -q 'alert: ServiceMetricsTargetDown$' <<<"$rule" || { bad "$f: scrape-target rule did not render"; alertfail=1; }
+  fi
+  # Probe paths of the server container: /livez and /readyz for a Go service.
+  if [[ "$f" != deploy/web/* ]]; then
+    probes="$(awk '/^ +(livenessProbe|readinessProbe):/{k=$1; n=NR} /^ +path:/ && n && NR == n + 2 {print k $2}' <<<"$out" | sort -u | tr '\n' ' ')"
+    [[ "$probes" == "livenessProbe:/livez readinessProbe:/readyz " ]] || { bad "$f: probes render as [$probes], want /livez and /readyz"; alertfail=1; }
+  fi
+done
+[[ $alertfail -eq 0 ]] && ok "every prod and QA render: pod + readiness rules, HTTP rules on the service's own metrics where recorded, probes on /livez and /readyz"
+
+for f in deploy/services/feed-service/values-prod.yaml deploy/services/feed-service/values-qa.yaml; do
+  feed="$(R "$(id_of "$f")")"
+  for a in FeedConsumerStalled FeedEventRetryStuck FeedConsumerLagHigh FeedConsumerLagCritical FeedEventsDeadLettered FeedFanoutIncomplete FeedRankerFallingBack FeedHydrationFailing FeedHomeLatencyHigh; do
+    grep -q "alert: $a\$" <<<"$feed" || bad "$f: feed rule $a did not render"
+  done
+  grep -q 'name: feed-service.default$' <<<"$feed" && grep -q 'name: feed-service$' <<<"$feed" || bad "$f: want two rule groups (feed-service.default and feed-service)"
+  grep -q 'severity: page' <<<"$feed" || bad "$f: a feed rule lost its own severity label"
+done
+ok "feed-service: stall, lag, dead-letter and the other feed rules render in prod and QA"
+
+grep -q '^kind: PrometheusRule' "$WORK/out/alerts-off.out" && bad "defaultAlerts.enabled=false still renders a PrometheusRule" || ok "defaultAlerts.enabled=false renders no PrometheusRule"
+thr="$(cat "$WORK/out/alerts-thresholds.out")"
+{ grep -qF '1e-9) > 0.2' <<<"$thr" && grep -qF '[5m]))) > 2.5' <<<"$thr" && grep -qF '[30m])) > 7' <<<"$thr"; } \
+  && ok "default alert thresholds follow the values" || bad "default alert thresholds did not follow --set"
 
 echo
 if [[ "$fail" -ne 0 ]]; then

@@ -1,8 +1,30 @@
-{{- if and .Values.prometheusRule .Values.prometheusRule.enabled .Values.prometheusRule.rules -}}
+{{- /*
+  PrometheusRule: two groups.
+
+    <service>.default   the rule set every service gets (defaultAlerts.*):
+                        crash loop, restarts, no ready pod / fewer ready pods
+                        than wanted, metrics target down, 5xx ratio, p99
+                        latency. Pod and Deployment rules read
+                        kube-state-metrics; the HTTP rules read the metrics
+                        Architecture/shared/middleware/metrics.go records:
+                          atpost_<service>_http_requests_total
+                          atpost_<service>_http_request_duration_seconds_bucket
+                        labels: method, path, status, service.
+    <service>           the service's own rules (prometheusRule.rules).
+
+  Every rule is labelled source=atpost-service and service=<name>: the
+  Alertmanager route in infra/terraform/modules/observability sends
+  source=atpost-service to the ops e-mail topic.
+*/ -}}
+{{- $name := include "atpost-service.name" . -}}
+{{- $ns := .Release.Namespace -}}
+{{- $d := .Values.defaultAlerts -}}
+{{- $own := and .Values.prometheusRule .Values.prometheusRule.enabled .Values.prometheusRule.rules -}}
+{{- if or $d.enabled $own }}
 apiVersion: monitoring.coreos.com/v1
 kind: PrometheusRule
 metadata:
-  name: {{ include "atpost-service.name" . }}
+  name: {{ $name }}
   labels:
     {{- include "atpost-service.labels" . | nindent 4 }}
     # Same selector label as the ServiceMonitor: kube-prometheus-stack's
@@ -10,7 +32,79 @@ metadata:
     release: prometheus
 spec:
   groups:
-    - name: {{ include "atpost-service.name" . }}
+    {{- if $d.enabled }}
+    {{- $prefix := default (printf "atpost_%s" (replace "-" "_" $name)) $d.http.metricPrefix }}
+    {{- $paths := printf "path!~%s" ($d.http.excludePathsRegex | quote) }}
+    - name: {{ $name }}.default
       rules:
-        {{- toYaml .Values.prometheusRule.rules | nindent 8 }}
+        {{- if $d.pods.enabled }}
+        - alert: ServicePodCrashLooping
+          expr: max by (namespace, pod) (kube_pod_container_status_waiting_reason{namespace={{ $ns | quote }}, container={{ $name | quote }}, reason="CrashLoopBackOff"}) > 0
+          for: 5m
+          labels: { severity: critical, source: atpost-service, service: {{ $name | quote }} }
+          annotations:
+            summary: {{ printf "%s: a pod is in CrashLoopBackOff" $name | quote }}
+            description: "The container exits right after it starts. Read the previous container's log: kubectl -n {{ $ns }} logs <pod> --previous. Runbook: docs/runbooks/service-rollback.md"
+        - alert: ServicePodRestarting
+          expr: sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{namespace={{ $ns | quote }}, container={{ $name | quote }}}[30m])) > {{ $d.pods.restartsPer30m }}
+          for: 0m
+          labels: { severity: warning, source: atpost-service, service: {{ $name | quote }} }
+          annotations:
+            summary: {{ printf "%s: a pod restarted more than %v times in 30 minutes" $name $d.pods.restartsPer30m | quote }}
+            description: "Out of memory, a failing liveness probe (/livez) or a panic. kubectl -n {{ $ns }} describe pod <pod> shows the last exit reason."
+        {{- end }}
+        {{- if $d.availability.enabled }}
+        - alert: ServiceNoReadyPod
+          expr: kube_deployment_status_replicas_available{namespace={{ $ns | quote }}, deployment={{ $name | quote }}} == 0
+          for: 3m
+          labels: { severity: critical, source: atpost-service, service: {{ $name | quote }} }
+          annotations:
+            summary: {{ printf "%s: no pod is ready, the service is down" $name | quote }}
+            description: "Every pod fails its readiness probe (/readyz) or none is running. /readyz answers 503 when a dependency check fails; its body names the check."
+        - alert: ServiceReadinessFailing
+          expr: kube_deployment_status_replicas_unavailable{namespace={{ $ns | quote }}, deployment={{ $name | quote }}} > 0
+          for: 15m
+          labels: { severity: warning, source: atpost-service, service: {{ $name | quote }} }
+          annotations:
+            summary: {{ printf "%s: fewer ready pods than wanted for 15 minutes" $name | quote }}
+            description: "At least one pod is not ready (failing /readyz, pending, or stuck in a rollout). kubectl -n {{ $ns }} get pods -l app.kubernetes.io/name={{ $name }}"
+        {{- end }}
+        {{- if and $d.target.enabled .Values.serviceMonitor.enabled }}
+        - alert: ServiceMetricsTargetDown
+          expr: absent(up{namespace={{ $ns | quote }}, job={{ $name | quote }}} == 1)
+          for: 10m
+          labels: { severity: warning, source: atpost-service, service: {{ $name | quote }} }
+          annotations:
+            summary: {{ printf "%s: Prometheus cannot scrape /metrics on any pod" $name | quote }}
+            description: "While this fires the service's other alerts are blind. Check the ServiceMonitor target in the Prometheus UI (Status, Targets)."
+        {{- end }}
+        {{- if and $d.http.enabled .Values.serviceMonitor.enabled }}
+        - alert: ServiceHttp5xxRatioHigh
+          expr: |-
+            sum(rate({{ $prefix }}_http_requests_total{status=~"5..", {{ $paths }}}[5m]))
+              / clamp_min(sum(rate({{ $prefix }}_http_requests_total{ {{- $paths -}} }[5m])), 1e-9) > {{ $d.http.errorRatio }}
+            and sum(rate({{ $prefix }}_http_requests_total{ {{- $paths -}} }[5m])) > {{ $d.http.minRequestRate }}
+          for: 10m
+          labels: { severity: critical, source: atpost-service, service: {{ $name | quote }} }
+          annotations:
+            summary: {{ printf "%s: more than %v of requests answer 5xx" $name $d.http.errorRatio | quote }}
+            description: "Ratio of 5xx answers over 5 minutes, probe paths excluded. Break it down by path: sum by (path, status) (rate({{ $prefix }}_http_requests_total[5m]))."
+        - alert: ServiceHttpP99LatencyHigh
+          expr: |-
+            histogram_quantile(0.99, sum by (le) (rate({{ $prefix }}_http_request_duration_seconds_bucket{ {{- $paths -}} }[5m]))) > {{ $d.http.p99Seconds }}
+            and sum(rate({{ $prefix }}_http_requests_total{ {{- $paths -}} }[5m])) > {{ $d.http.minRequestRate }}
+          for: 15m
+          labels: { severity: warning, source: atpost-service, service: {{ $name | quote }} }
+          annotations:
+            summary: {{ printf "%s: p99 latency above %vs for 15 minutes" $name $d.http.p99Seconds | quote }}
+            description: "99th percentile of request duration over 5 minutes, probe paths excluded. Per path: histogram_quantile(0.99, sum by (le, path) (rate({{ $prefix }}_http_request_duration_seconds_bucket[5m])))."
+        {{- end }}
+    {{- end }}
+    {{- if $own }}
+    - name: {{ $name }}
+      rules:
+        {{- range .Values.prometheusRule.rules }}
+        {{- include "atpost-service.alertRule" (dict "rule" . "name" $name) | nindent 8 }}
+        {{- end }}
+    {{- end }}
 {{- end }}

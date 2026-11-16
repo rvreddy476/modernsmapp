@@ -51,3 +51,41 @@ variable "grafana_ingress_scheme" {
   type        = string
   default     = "internal"
 }
+
+# ─── Alert routing (alerting.tf) ────────────────────────────────────
+
+variable "alert_routing_enabled" {
+  description = "Give Alertmanager a receiver and routes: alerts from the atpost-service chart (label source=atpost-service) are published to alert_sns_topic_arn. A plain bool (not derived from the topic ARN) because it drives count. When true, alert_sns_topic_arn, oidc_provider_arn and oidc_provider_url are required."
+  type        = bool
+  default     = false
+}
+
+variable "alert_sns_topic_arn" {
+  description = "SNS topic Alertmanager publishes to: the ops-baseline module's ops_alerts_topic_arn (e-mails the ops address)."
+  type        = string
+  default     = ""
+}
+
+variable "oidc_provider_arn" {
+  description = "EKS OIDC provider ARN (eks module output). For the Alertmanager IRSA role."
+  type        = string
+  default     = ""
+}
+
+variable "oidc_provider_url" {
+  description = "EKS OIDC issuer URL (eks module output). For the Alertmanager IRSA role."
+  type        = string
+  default     = ""
+}
+
+variable "aws_region" {
+  description = "Region of the SNS topic (SigV4 signing region)."
+  type        = string
+  default     = "ap-south-1"
+}
+
+variable "route_platform_critical" {
+  description = "Also e-mail kube-prometheus-stack's own severity=critical alerts. Off by default: on EKS the stack's scheduler/controller-manager/etcd rules fire permanently until those components are disabled in the stack."
+  type        = bool
+  default     = false
+}

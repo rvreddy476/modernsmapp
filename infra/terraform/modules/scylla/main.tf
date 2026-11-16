@@ -94,7 +94,7 @@ resource "kubernetes_manifest" "scylla_cluster" {
       name      = "atpost-${var.environment}"
       namespace = kubernetes_namespace.scylla.metadata[0].name
     }
-    spec = {
+    spec = merge({
       version      = var.scylla_version
       agentVersion = var.scylla_agent_version
 
@@ -154,7 +154,7 @@ resource "kubernetes_manifest" "scylla_cluster" {
           }
         ]
       }
-    }
+    }, local.backup_spec) # backup.tf: adds `backups` when var.backup_enabled
   }
 
   depends_on = [helm_release.scylla_operator]

@@ -11,3 +11,8 @@ output "client_service" {
   value       = "atpost-${var.environment}-client.scylla.svc.cluster.local"
   description = "Cluster DNS for the gocql driver. Port 9042 (CQL). The operator load-balances across pods."
 }
+
+output "backup_location" {
+  value       = var.backup_enabled ? "s3:${var.backup_bucket_name}" : null
+  description = "Scylla Manager backup location (sctool -L). Null when backups are off."
+}

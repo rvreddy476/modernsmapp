@@ -135,10 +135,57 @@ serviceMonitor:
 
 # Optional PrometheusRule with service-specific alerts. Off unless a
 # service's values enable it and list rules (standard Prometheus rule
-# objects: alert, expr, for, labels, annotations).
+# objects: alert, expr, for, labels, annotations). The chart adds the labels
+# source=atpost-service and service=<name> to each rule.
 prometheusRule:
   enabled: false
   rules: []
+
+# Default alert rules every service gets (feed-10). Rendered into the same
+# PrometheusRule object, group "<service>.default". Each block can be turned
+# off per service; thresholds are starting points.
+#
+#   pods          ServicePodCrashLooping (critical, 5m in CrashLoopBackOff)
+#                 ServicePodRestarting   (warning, more than restartsPer30m
+#                                         restarts of one pod in 30 minutes)
+#   availability  ServiceNoReadyPod       (critical, 0 ready pods for 3m)
+#                 ServiceReadinessFailing (warning, fewer ready pods than
+#                                          wanted for 15m)
+#   target        ServiceMetricsTargetDown (warning, /metrics not scraped for
+#                                           10m; needs serviceMonitor.enabled)
+#   http          ServiceHttp5xxRatioHigh   (critical, 5xx share above
+#                                            errorRatio for 10m)
+#                 ServiceHttpP99LatencyHigh (warning, p99 above p99Seconds
+#                                            for 15m)
+#
+# pods and availability read kube-state-metrics (installed by the
+# observability Terraform module). http reads the metrics the shared Gin
+# middleware records (Architecture/shared/middleware/metrics.go):
+#   atpost_<service with - as _>_http_requests_total{method,path,status,service}
+#   atpost_<service with - as _>_http_request_duration_seconds_bucket{...,le}
+# so it must be turned OFF (http.enabled: false) for a service that does not
+# use that middleware: api-gateway, the identity-* and chat-* services and
+# the two web apps. It is skipped automatically when serviceMonitor.enabled
+# is false. Both http rules stay silent below minRequestRate requests per
+# second, so an idle service cannot trip them on one slow request.
+defaultAlerts:
+  enabled: true
+  pods:
+    enabled: true
+    restartsPer30m: 3
+  availability:
+    enabled: true
+  target:
+    enabled: true
+  http:
+    enabled: true
+    # Empty = atpost_<service.name with "-" replaced by "_">.
+    metricPrefix: ""
+    errorRatio: 0.05
+    p99Seconds: 1
+    minRequestRate: 0.2
+    # Probe and scrape paths are left out of the ratio and the percentile.
+    excludePathsRegex: "/livez|/readyz|/healthz|/metrics"
 
 # Liveness + readiness probes. The shared/health package's defaults
 # expose /livez and /readyz on the same port as the HTTP service.
