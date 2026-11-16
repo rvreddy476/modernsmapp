@@ -168,6 +168,11 @@ func deadRedisLimiter() *engagement.RateLimiter {
 func repostSvc(contentType, visibility string) *Service {
 	return NewForHandlerTests(HandlerTestDeps{
 		RateLimiter: deadRedisLimiter(),
+		// CreateRepost and SharePost read through the engagement loader
+		// (feed-03); ShareReel keeps the bare read.
+		EngagementPost: func(_ context.Context, postID, _ uuid.UUID) (*postgres.Post, error) {
+			return &postgres.Post{ID: postID, AuthorID: uuid.New(), ContentType: contentType, Visibility: visibility}, nil
+		},
 		RepostTarget: func(_ context.Context, postID uuid.UUID) (*postgres.Post, error) {
 			return &postgres.Post{ID: postID, AuthorID: uuid.New(), ContentType: contentType, Visibility: visibility}, nil
 		},
@@ -260,8 +265,8 @@ func TestHeartOnlyCallSites(t *testing.T) {
 		"GetPost":           {"applyViewerReaction", "repostableContent"},
 		"loadPostsByIDs":    {"applyViewerReaction", "repostableContent"},
 		"GetReactionCounts": {"foldPostReactionCounts"},
-		"CreateRepost":      {"checkRepostContentType", "loadRepostTarget"},
-		"SharePost":         {"checkRepostContentType", "loadRepostTarget"},
+		"CreateRepost":      {"checkRepostContentType", "loadPostForEngagement"},
+		"SharePost":         {"checkRepostContentType", "loadPostForEngagement"},
 		"ShareReel":         {"checkRepostContentType", "loadRepostTarget"},
 	}
 	files, err := filepath.Glob("*.go")

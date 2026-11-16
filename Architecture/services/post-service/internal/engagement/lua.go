@@ -27,11 +27,21 @@ type CommentReactionResult struct {
 	OppositeRemoved bool // true if the opposite reaction was removed (e.g. dislike removed when liking)
 }
 
-// likeToggleScript atomically toggles a like in a single Redis RTT:
+// likeSetScript records a like that was SET or REMOVED in the Redis copies,
+// in one round trip:
 //   - INCR per-user sequence counter
-//   - Toggle membership key (SET with TTL / DEL)
-//   - HINCRBY engagement counter (+1 / -1)
+//   - membership key (SET with TTL / DEL)
+//   - HINCRBY engagement counter (+1 / -1, never below zero)
 //   - SADD / SREM liker set (shared with feed-service)
+//
+// It does not decide anything (feed-49). It used to be a toggle that flipped
+// on EXISTS of the membership key, and that key expires after 24 h: a tap
+// meant to unlike, a day later, ran the "like" branch and counted the viewer
+// again here, in engagement_counters and in PostgreSQL like_count. The
+// stored reaction (Scylla reactions_by_post, written IF NOT EXISTS / IF
+// EXISTS) decides now, and the caller runs this only when that write changed
+// the row, so one like moves each counter once. The membership key is a
+// cache of that answer and may expire freely.
 //
 // KEYS[1] = liked:{uid}:{pid}     (membership)
 // KEYS[2] = post:eng:{pid}        (counter hash)
@@ -39,9 +49,10 @@ type CommentReactionResult struct {
 // KEYS[4] = eng:seq:{uid}         (sequence counter)
 // ARGV[1] = userID string
 // ARGV[2] = nowMicro (microsecond timestamp)
+// ARGV[3] = "1" the like was set, "0" it was removed
 //
 // Returns: {is_set(0/1), count, seq, nowMicro}
-var likeToggleScript = redis.NewScript(`
+var likeSetScript = redis.NewScript(`
 	local likeKey   = KEYS[1]
 	local engKey    = KEYS[2]
 	local likersKey = KEYS[3]
@@ -52,19 +63,21 @@ var likeToggleScript = redis.NewScript(`
 	local seq = redis.call('INCR', seqKey)
 	redis.call('EXPIRE', seqKey, 86400)
 
-	local exists = redis.call('EXISTS', likeKey)
-	if exists == 1 then
-		redis.call('DEL', likeKey)
-		redis.call('HINCRBY', engKey, 'likes', -1)
-		redis.call('SREM', likersKey, userID)
-		local count = redis.call('HGET', engKey, 'likes')
-		return {0, tonumber(count) or 0, seq, nowMicro}
-	else
+	if ARGV[3] == '1' then
 		redis.call('SET', likeKey, '1', 'EX', 86400)
-		redis.call('HINCRBY', engKey, 'likes', 1)
+		local count = redis.call('HINCRBY', engKey, 'likes', 1)
 		redis.call('SADD', likersKey, userID)
-		local count = redis.call('HGET', engKey, 'likes')
-		return {1, tonumber(count) or 0, seq, nowMicro}
+		return {1, count, seq, nowMicro}
+	else
+		redis.call('DEL', likeKey)
+		local count = redis.call('HINCRBY', engKey, 'likes', -1)
+		if count < 0 then
+			-- a like recorded by a route that does not count here
+			redis.call('HSET', engKey, 'likes', 0)
+			count = 0
+		end
+		redis.call('SREM', likersKey, userID)
+		return {0, count, seq, nowMicro}
 	end
 `)
 
@@ -182,8 +195,10 @@ var commentDislikeToggleScript = redis.NewScript(`
 	end
 `)
 
-// ToggleLike executes the atomic like toggle Lua script.
-func ToggleLike(ctx context.Context, rdb *redis.Client, userID uuid.UUID, postID uuid.UUID) (*LuaToggleResult, error) {
+// SetLike records in Redis that the viewer's like on a post was set (set =
+// true) or removed, and returns the counter after it. Call it only when the
+// stored reaction changed (likeSetScript): it counts every call.
+func SetLike(ctx context.Context, rdb *redis.Client, userID uuid.UUID, postID uuid.UUID, set bool) (*LuaToggleResult, error) {
 	uid := userID.String()
 	pid := postID.String()
 	nowMicro := time.Now().UnixMicro()
@@ -194,10 +209,14 @@ func ToggleLike(ctx context.Context, rdb *redis.Client, userID uuid.UUID, postID
 		fmt.Sprintf("post:likers:%s", pid),
 		fmt.Sprintf("eng:seq:%s", uid),
 	}
+	flag := "0"
+	if set {
+		flag = "1"
+	}
 
-	res, err := likeToggleScript.Run(ctx, rdb, keys, uid, nowMicro).Int64Slice()
+	res, err := likeSetScript.Run(ctx, rdb, keys, uid, nowMicro, flag).Int64Slice()
 	if err != nil {
-		return nil, fmt.Errorf("like toggle lua: %w", err)
+		return nil, fmt.Errorf("like set lua: %w", err)
 	}
 
 	return &LuaToggleResult{

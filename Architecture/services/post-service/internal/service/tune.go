@@ -16,9 +16,9 @@ import (
 	  GET    /v1/posts/:id/tune/me   {tuned}
 
 	Like and tune are mutually exclusive: tuning a post the viewer likes
-	removes the like (through the same ToggleLike path the like button
-	uses, so the counters, Scylla and the engagement events all agree), and
-	liking a tuned post removes the tune row (ToggleLike, post.go). The tune
+	removes the like (through setLike, the write the like button uses, so
+	the counters, Scylla and the engagement events all agree), and
+	liking a tuned post removes the tune row (like_toggle.go). The tune
 	row lives in Postgres and the like in Redis + Scylla, so "one
 	transaction" here is one ordered operation: the tune row is written
 	first and the like is toggled off after it; if the toggle fails the
@@ -32,13 +32,13 @@ func (s *Service) CreateTune(ctx context.Context, userID, postID uuid.UUID) erro
 	if err := s.pgStore.CreateTune(ctx, userID, postID); err != nil {
 		return err
 	}
-	if s.rdb != nil && s.IsLikedFromRedis(ctx, userID, postID) {
-		// ToggleLike on a liked post is the unlike; it does not touch the
-		// tune row on the way down (only a like being SET clears the tune).
-		if _, err := s.ToggleLike(ctx, postID, userID); err != nil {
-			slog.WarnContext(ctx, "tune: could not remove the like", "post_id", postID, "err", err)
-			return fmt.Errorf("tune recorded but the like could not be removed: %w", err)
-		}
+	// The stored reaction says whether there is a like to remove (feed-49);
+	// the Redis membership key this used to ask expires after 24 h, so an
+	// older like, or one made through /reactions, stayed on a disliked post.
+	// removeLike does not touch the tune row (only a like being SET clears it).
+	if err := s.removeLike(ctx, postID, userID); err != nil {
+		slog.WarnContext(ctx, "tune: could not remove the like", "post_id", postID, "err", err)
+		return fmt.Errorf("tune recorded but the like could not be removed: %w", err)
 	}
 	return nil
 }

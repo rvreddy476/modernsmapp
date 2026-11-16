@@ -367,7 +367,11 @@ func TestCanViewThread_FriendsIsMutualOnly(t *testing.T) {
 }
 
 func TestRepostableVisibility(t *testing.T) {
-	for v, want := range map[string]bool{"public": true, "followers": true, "unlisted": true, "private": false, "friends": false, "Friends": false} {
+	for v, want := range map[string]bool{
+		"public": true, "unlisted": true, "": true, " Public ": true,
+		"followers": false, "Followers": false, "private": false, "friends": false, "Friends": false,
+		"circle": false, "staged": false, "something-new": false,
+	} {
 		if got := repostableVisibility(v); got != want {
 			t.Errorf("repostableVisibility(%q) = %v, want %v", v, got, want)
 		}

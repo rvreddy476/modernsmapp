@@ -13,6 +13,16 @@ import (
 
 type Producer struct {
 	writer *kafka.Writer
+	// relay is the outbox relay's own writer (PublishOutbox): same brokers
+	// and topic, but partitioned by the message key, so every event of one
+	// aggregate lands on one partition in the order the relay wrote it. The
+	// direct publishes about a user keep their own writer and its balancer;
+	// the direct publishes about one post go through this writer too, keyed
+	// by the post (publishForPost).
+	relay *kafka.Writer
+	// send writes one message through a writer; nil means the writer's own
+	// WriteMessages. Tests set it to see which writer and key a publish used.
+	send func(ctx context.Context, w *kafka.Writer, msg kafka.Message) error
 }
 
 func NewProducer(brokers []string, topic string) *Producer {
@@ -26,7 +36,18 @@ func NewProducerWithDialer(brokers []string, topic string, dialer *kafka.Dialer)
 		Balancer: &kafka.LeastBytes{},
 		Dialer:   dialer,
 	})
-	return &Producer{writer: w}
+	relay := kafka.NewWriter(kafka.WriterConfig{
+		Brokers:      brokers,
+		Topic:        topic,
+		Balancer:     &kafka.Hash{},
+		RequiredAcks: int(kafka.RequireAll),
+		// The relay writes one message at a time and waits for it, under the
+		// relay lock; the default one-second batch window would be a second
+		// of waiting per outbox row.
+		BatchTimeout: 10 * time.Millisecond,
+		Dialer:       dialer,
+	})
+	return &Producer{writer: w, relay: relay}
 }
 
 // PublishPostCreated publishes a PostCreated event directly (not via the
@@ -71,7 +92,7 @@ func (p *Producer) PublishPostCreated(ctx context.Context, postID, authorID uuid
 		ReviewStatus:    reviewStatus,
 		SearchRev:       1,
 	}
-	return p.publish(ctx, events.PostCreated, &authorID, payload)
+	return p.publishForPost(ctx, events.PostCreated, &authorID, postID, payload)
 }
 
 // PublishPostContentTypeChanged is fired by the MediaTranscodeConsumer
@@ -88,7 +109,7 @@ func (p *Producer) PublishPostContentTypeChanged(ctx context.Context, postID, au
 		NewType:   newType,
 		ChangedAt: time.Now(),
 	}
-	return p.publish(ctx, events.PostContentTypeChanged, &authorID, payload)
+	return p.publishForPost(ctx, events.PostContentTypeChanged, &authorID, postID, payload)
 }
 
 func (p *Producer) PublishPostReacted(ctx context.Context, postID, postAuthorID, reactorID uuid.UUID, reactType string) error {
@@ -99,7 +120,7 @@ func (p *Producer) PublishPostReacted(ctx context.Context, postID, postAuthorID,
 		ReactType:    reactType,
 		CreatedAt:    time.Now(),
 	}
-	return p.publish(ctx, events.PostReacted, &reactorID, payload)
+	return p.publishForPost(ctx, events.PostReacted, &reactorID, postID, payload)
 }
 
 func (p *Producer) PublishCommentReacted(ctx context.Context, commentID, postID, commentAuthorID, reactorID uuid.UUID, reactType string) error {
@@ -123,7 +144,7 @@ func (p *Producer) PublishCommentCreated(ctx context.Context, commentID, postID,
 		Text:         text,
 		CreatedAt:    time.Now(),
 	}
-	return p.publish(ctx, events.CommentCreated, &authorID, payload)
+	return p.publishForPost(ctx, events.CommentCreated, &authorID, postID, payload)
 }
 
 func (p *Producer) PublishSpamDetected(ctx context.Context, userID uuid.UUID, reason string, score float64) error {
@@ -189,7 +210,63 @@ func (p *Producer) publish(ctx context.Context, eventType string, actorID *uuid.
 	if err != nil {
 		return err
 	}
-	return p.writer.WriteMessages(ctx, msg)
+	return p.write(ctx, p.writer, msg)
+}
+
+func (p *Producer) write(ctx context.Context, w *kafka.Writer, msg kafka.Message) error {
+	if p.send != nil {
+		return p.send(ctx, w, msg)
+	}
+	return w.WriteMessages(ctx, msg)
+}
+
+/*
+	publishForPost is the direct (non-outbox) publish of an event about one
+	post (feed-07 leftover).
+
+	These used to go out like every other direct publish: keyed by the actor,
+	on a writer whose balancer ignores the key. The outbox relay writes a
+	post's lifecycle events (created, deleted, restored, visibility) keyed by
+	the post id through the key-hashing writer, so a direct event about the
+	same post sat on some other partition and a consumer could apply it on
+	either side of them: a crosspost's PostCreated after its PostDeleted, a
+	repost's undo before the repost.
+
+	Now the key is the post id and the writer is the relay's, so a post's
+	direct events share its partition with its outbox events and are consumed
+	in the order the brokers took them. The envelope is unchanged (the actor
+	is still on it); no consumer reads the key except to copy it onto a
+	dead-letter message.
+
+	What this does not do: a direct publish happens at request time and an
+	outbox row waits for the relay, so a direct event can still reach the
+	partition ahead of an older outbox row that has not been relayed yet.
+	Closing that needs these events written to the outbox (feed-29).
+*/
+func (p *Producer) publishForPost(ctx context.Context, eventType string, actorID *uuid.UUID, postID uuid.UUID, payload interface{}) error {
+	msg, err := encodePostMessage(ctx, eventType, actorID, postID, payload)
+	if err != nil {
+		return err
+	}
+	w := p.relay
+	if w == nil { // a Producer built without the relay writer
+		w = p.writer
+	}
+	return p.write(ctx, w, msg)
+}
+
+// encodePostMessage is encodeMessage with the post id as the partition key.
+// A post id that is not known (uuid.Nil) keeps encodeMessage's key rather
+// than piling every such event on one partition.
+func encodePostMessage(ctx context.Context, eventType string, actorID *uuid.UUID, postID uuid.UUID, payload interface{}) (kafka.Message, error) {
+	msg, err := encodeMessage(ctx, eventType, actorID, payload)
+	if err != nil {
+		return kafka.Message{}, err
+	}
+	if postID != uuid.Nil {
+		msg.Key = []byte(postID.String())
+	}
+	return msg, nil
 }
 
 // encodeMessage builds the envelope and partition key every direct publish
@@ -226,17 +303,40 @@ func encodeMessage(ctx context.Context, eventType string, actorID *uuid.UUID, pa
 	return kafka.Message{Key: key, Value: envelopeBytes}, nil
 }
 
-// PublishRaw publishes a pre-built EventEnvelope to Kafka (used by outbox worker).
-func (p *Producer) PublishRaw(ctx context.Context, envelope events.EventEnvelope) error {
+// OutboxMessage is the Kafka message the outbox relay writes for one
+// post_outbox_events row (feed-07).
+//
+// The event id is the row's own id, so a row that is published again (a
+// crash or a failed mark-published between the write and the UPDATE) carries
+// the id it carried the first time, and a consumer that dedupes on event_id
+// (shared/kafka) recognises it. It used to be a fresh uuid per publish.
+//
+// The key is the aggregate id (the post id on every post event), so with the
+// relay's key-hashing writer all events of one post share a partition and
+// are consumed in the order they were written: a delete can no longer
+// overtake the restore that followed it. It used to be the fresh event id.
+// A row with no aggregate id is keyed by its own id.
+func OutboxMessage(ctx context.Context, rowID uuid.UUID, eventType string, aggregateID uuid.UUID, payload json.RawMessage) (kafka.Message, error) {
+	envelope := events.NewEnvelope(ctx, eventType, nil, payload)
+	envelope.EventID = rowID.String()
 	envelopeBytes, err := json.Marshal(envelope)
 	if err != nil {
-		return fmt.Errorf("failed to marshal envelope: %w", err)
+		return kafka.Message{}, fmt.Errorf("failed to marshal envelope: %w", err)
 	}
+	key := aggregateID
+	if key == uuid.Nil {
+		key = rowID
+	}
+	return kafka.Message{Key: []byte(key.String()), Value: envelopeBytes}, nil
+}
 
-	return p.writer.WriteMessages(ctx, kafka.Message{
-		Key:   []byte(envelope.EventID),
-		Value: envelopeBytes,
-	})
+// PublishOutbox writes one OutboxMessage through the relay's key-hashing
+// writer and returns once the brokers have acknowledged it.
+func (p *Producer) PublishOutbox(ctx context.Context, msg kafka.Message) error {
+	if p.relay == nil {
+		return fmt.Errorf("outbox relay writer is not configured")
+	}
+	return p.write(ctx, p.relay, msg)
 }
 
 // PublishUploadDeleted emits an upload.deleted event when a user deletes their upload.
@@ -247,7 +347,7 @@ func (p *Producer) PublishUploadDeleted(ctx context.Context, postID, authorID uu
 		ContentType: contentType,
 		DeletedAt:   time.Now(),
 	}
-	return p.publish(ctx, events.UploadDeleted, &authorID, payload)
+	return p.publishForPost(ctx, events.UploadDeleted, &authorID, postID, payload)
 }
 
 // PublishCrosspostRemoved emits a crosspost.removed event.
@@ -259,7 +359,7 @@ func (p *Producer) PublishCrosspostRemoved(ctx context.Context, crosspostID, sou
 		TargetPostID: targetPostID.String(),
 		RemovedAt:    time.Now(),
 	}
-	return p.publish(ctx, events.CrosspostRemoved, nil, payload)
+	return p.publishForPost(ctx, events.CrosspostRemoved, nil, targetPostID, payload)
 }
 
 // PublishPostReposted emits a post.reposted event when a user reposts a post.
@@ -276,7 +376,7 @@ func (p *Producer) PublishPostReposted(ctx context.Context, repostID, reposterID
 		SourceContextID:   sourceCtxID,
 		CreatedAt:         time.Now(),
 	}
-	return p.publish(ctx, events.EventPostReposted, &reposterID, payload)
+	return p.publishForPost(ctx, events.EventPostReposted, &reposterID, originalPostID, payload)
 }
 
 // PublishPostRepostUndone emits a post.repost_undone event when a user undoes a repost.
@@ -289,9 +389,15 @@ func (p *Producer) PublishPostRepostUndone(ctx context.Context, repostID, repost
 		RepostType:       repostType,
 		UndoneAt:         time.Now(),
 	}
-	return p.publish(ctx, events.EventPostRepostUndone, &reposterID, payload)
+	return p.publishForPost(ctx, events.EventPostRepostUndone, &reposterID, originalPostID, payload)
 }
 
 func (p *Producer) Close() error {
-	return p.writer.Close()
+	err := p.writer.Close()
+	if p.relay != nil {
+		if relayErr := p.relay.Close(); err == nil {
+			err = relayErr
+		}
+	}
+	return err
 }

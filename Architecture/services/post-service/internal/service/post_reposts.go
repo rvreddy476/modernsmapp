@@ -52,8 +52,11 @@ func (s *Service) CreateRepost(ctx context.Context, input CreateRepostInput) (*R
 		return nil, fmt.Errorf("RATE_LIMITED")
 	}
 
-	// 1. Verify original post exists and is not deleted (GetPost filters deleted_at IS NULL)
-	post, err := s.loadRepostTarget(ctx, input.PostID)
+	// 1. The post exists, is not deleted, and is one this caller may see
+	// (feed-03): the loader the like and comment routes use, so the author's
+	// blocks, a private account and the post's own audience all apply. A post
+	// the caller may not see answers exactly as one that does not exist.
+	post, err := s.loadPostForEngagement(ctx, input.PostID, input.UserID)
 	if err != nil || post == nil {
 		return nil, fmt.Errorf("POST_NOT_FOUND")
 	}
@@ -65,7 +68,9 @@ func (s *Service) CreateRepost(ctx context.Context, input CreateRepostInput) (*R
 		return nil, err
 	}
 
-	// 2. Visibility check — private or followers-only posts cannot be reposted
+	// 2. Audience check: only a public or unlisted post is reposted. A
+	// followers, friends or private post is not, whoever asks (a follower
+	// and the author included): a repost shows it to the reposter's audience.
 	if !repostableVisibility(post.Visibility) {
 		return nil, fmt.Errorf("NOT_ELIGIBLE")
 	}

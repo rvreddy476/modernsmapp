@@ -3,7 +3,6 @@ package service
 import (
 	"context"
 	"errors"
-	"log"
 	"strconv"
 
 	"github.com/atpost/post-service/internal/store/postgres"
@@ -18,18 +17,17 @@ import (
 
 	  POST/DELETE /v1/posts/:id/reactions  Scylla reactions_by_post
 	                                       (web reels and Android use this)
-	  POST /v1/posts/:id/like              Redis toggle + reactions_by_post
+	  POST /v1/posts/:id/like              Scylla reactions_by_post (like_toggle.go)
 	  POST /v1/posts/:id/react             Postgres reactions + reactions_by_post
 	  POST/DELETE /v1/reels/:id/react      Scylla reel_reactions
 
 	reactions_by_post is the heart's state, but it is keyed by post and
 	cannot be listed by viewer. Postgres reactions can (idx_reactions_user),
 	and is already what /react writes and every post purge cleans up. So it
-	is the per-viewer record: every path above now writes it too (the
-	idempotent routes before their Scylla write, so a failure returns an
-	error the client can retry; the /like toggle after its Redis toggle,
-	logged on failure, since a retried toggle would flip back), and the
-	list reads only it.
+	is the per-viewer record: every path above now writes it too (before
+	the Scylla write, so a failure returns an error the client can retry;
+	that includes /like since feed-49, whose tap is decided by the stored
+	reaction and no longer by a Redis toggle), and the list reads only it.
 
 	Backfill: likes recorded before this change exist only in Scylla.
 	A one-off copy of reactions_by_post into reactions (target_type 'post',
@@ -138,12 +136,4 @@ func (s *Service) indexReaction(ctx context.Context, postID, userID uuid.UUID, r
 		return s.likedReels.UpsertPostReaction(ctx, postID, userID, reaction)
 	}
 	return s.likedReels.DeletePostReaction(ctx, postID, userID)
-}
-
-// indexReactionBestEffort is indexReaction for a toggle whose primary
-// write has already happened and cannot be retried safely.
-func (s *Service) indexReactionBestEffort(ctx context.Context, postID, userID uuid.UUID, reaction string, set bool) {
-	if err := s.indexReaction(ctx, postID, userID, reaction, set); err != nil {
-		log.Printf("Warning: failed to index reaction for the liked list (post %s): %v", postID, err)
-	}
 }

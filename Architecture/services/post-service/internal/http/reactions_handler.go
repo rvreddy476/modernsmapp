@@ -173,6 +173,11 @@ func (h *Handler) SharePost(c *gin.Context) {
 		return
 	}
 
+	// The post detail's read gate (read_gate.go), as on the like and comment
+	// routes: a post the caller may not open is the same 404 as a missing one.
+	if !h.requirePostReadable(c, postID, &userID) { // feed-03: share
+		return
+	}
 	result, err := h.svc.SharePost(c.Request.Context(), postID, userID, req.ShareType, req.QuoteText)
 	if err != nil {
 		if writeHeartOnlyError(c, err) {

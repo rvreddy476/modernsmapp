@@ -334,9 +334,16 @@ type Service struct {
 	// database.
 	engagementPostSeam func(ctx context.Context, postID, viewerID uuid.UUID) (*postgres.Post, error)
 	commentLookupSeam  func(ctx context.Context, commentID uuid.UUID) (*postgres.Comment, error)
-	// repostTargetSeam stands in for the post read the repost routes make
-	// (heart_only.go: loadRepostTarget).
+	// repostTargetSeam stands in for ShareReel's post read (heart_only.go:
+	// loadRepostTarget). CreateRepost and SharePost use engagementPostSeam.
 	repostTargetSeam func(ctx context.Context, postID uuid.UUID) (*postgres.Post, error)
+	// reactionToggleSeam / reactionMirrorSeam stand in for the Postgres
+	// reaction row and its Scylla copy on ToggleReaction (post_reactions.go);
+	// nil = the real stores. Set only by tests.
+	reactionToggleSeam reactionToggleStore
+	reactionMirrorSeam reactionMirror
+	// The like route's seams (like_toggle.go).
+	likeSeams
 
 	// Copyright title review (copyright_title_review.go, migration 073):
 	// the store slice (nil = the Postgres store), this replica's catalogue

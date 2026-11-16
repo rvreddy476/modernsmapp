@@ -27,13 +27,25 @@ func New(session *gocql.Session) *InteractionStore {
 	return &InteractionStore{session: session}
 }
 
+// The conditional writes to reactions_by_post. Each is a lightweight
+// transaction whose answer (applied or not) is the ONLY thing that moves
+// post_counters.like_count, and the only thing the like routes count and
+// announce on (service/like_toggle.go, feed-49): without the IF clause every
+// repeat tap would count again. interactions_cql_test.go pins the clauses;
+// the behaviour is proved against Scylla in CI (the like integration tests).
+const (
+	reactInsertCQL   = `INSERT INTO reactions_by_post (post_id, user_id, reaction, created_at) VALUES (?, ?, ?, toTimestamp(now())) IF NOT EXISTS`
+	reactRetypeCQL   = `UPDATE reactions_by_post SET reaction = ? WHERE post_id = ? AND user_id = ? IF EXISTS`
+	unreactDeleteCQL = `DELETE FROM reactions_by_post WHERE post_id = ? AND user_id = ? IF EXISTS`
+)
+
 // React records the viewer's reaction and keeps post_counters.like_count in
 // step with the reactions_by_post rows. It reports whether a NEW reaction
 // was recorded (false: the viewer had already reacted; a different type
 // rewrites the row and leaves the count alone).
 //
 // Both the row write and the decision to count are one lightweight
-// transaction (INSERT … IF NOT EXISTS). This used to read the row, then
+// transaction (reactInsertCQL, a conditional insert). This used to read the row, then
 // write it, then increment: two concurrent taps both read "no reaction"
 // and both incremented, so the visible like count drifted above the number
 // of people who liked the post, and never came back down. Every write to
@@ -42,22 +54,14 @@ func New(session *gocql.Session) *InteractionStore {
 func (s *InteractionStore) React(ctx context.Context, postID, userID uuid.UUID, reaction string) (bool, error) {
 	pid, uid := postID.String(), userID.String()
 
-	inserted, err := s.session.Query(`
-		INSERT INTO reactions_by_post (post_id, user_id, reaction, created_at)
-		VALUES (?, ?, ?, toTimestamp(now()))
-		IF NOT EXISTS
-	`, pid, uid, reaction).WithContext(ctx).MapScanCAS(map[string]interface{}{})
+	inserted, err := s.session.Query(reactInsertCQL, pid, uid, reaction).WithContext(ctx).MapScanCAS(map[string]interface{}{})
 	if err != nil {
 		return false, err
 	}
 	if !inserted {
 		// Already reacted: keep the viewer's current type on the row (the
 		// feed reads it back as viewer_reaction). The count does not move.
-		if _, err := s.session.Query(`
-			UPDATE reactions_by_post SET reaction = ?
-			WHERE post_id = ? AND user_id = ?
-			IF EXISTS
-		`, reaction, pid, uid).WithContext(ctx).MapScanCAS(map[string]interface{}{}); err != nil {
+		if _, err := s.session.Query(reactRetypeCQL, reaction, pid, uid).WithContext(ctx).MapScanCAS(map[string]interface{}{}); err != nil {
 			return false, err
 		}
 		return false, nil
@@ -74,10 +78,7 @@ func (s *InteractionStore) React(ctx context.Context, postID, userID uuid.UUID, 
 func (s *InteractionStore) Unreact(ctx context.Context, postID, userID uuid.UUID) (bool, error) {
 	pid, uid := postID.String(), userID.String()
 
-	deleted, err := s.session.Query(`
-		DELETE FROM reactions_by_post WHERE post_id = ? AND user_id = ?
-		IF EXISTS
-	`, pid, uid).WithContext(ctx).MapScanCAS(map[string]interface{}{})
+	deleted, err := s.session.Query(unreactDeleteCQL, pid, uid).WithContext(ctx).MapScanCAS(map[string]interface{}{})
 	if err != nil {
 		return false, err
 	}

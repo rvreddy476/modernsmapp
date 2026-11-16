@@ -140,7 +140,9 @@ func repostableContent(contentType, visibility string) bool {
 	return !isShortFormContentType(contentType) && repostableVisibility(visibility)
 }
 
-// loadRepostTarget is the post a repost route reads (nil, nil when absent).
+// loadRepostTarget is the bare post read behind ShareReel's content-type
+// check (nil, nil when absent). It applies no viewer rule: CreateRepost and
+// SharePost read through loadPostForEngagement instead (feed-03).
 func (s *Service) loadRepostTarget(ctx context.Context, postID uuid.UUID) (*postgres.Post, error) {
 	if s.repostTargetSeam != nil {
 		return s.repostTargetSeam(ctx, postID)

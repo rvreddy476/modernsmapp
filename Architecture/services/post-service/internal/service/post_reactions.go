@@ -159,6 +159,33 @@ type ReactionToggleResult struct {
 	Counts       *postgres.ReactionCounts `json:"counts"`
 }
 
+// reactionToggleStore is the Postgres side of ToggleReaction: the reaction
+// row (with its outbox event) and the counts read back after it.
+type reactionToggleStore interface {
+	ToggleReactionMirrored(ctx context.Context, targetType string, targetID, userID uuid.UUID, reactionType string, event postgres.ReactionEventFunc, mirror postgres.ReactionMirrorFunc) (postgres.ReactionToggle, error)
+	GetReactionCounts(ctx context.Context, targetType string, targetID uuid.UUID) (*postgres.ReactionCounts, error)
+}
+
+// reactionMirror is the Scylla copy of a post reaction that feed hydration reads.
+type reactionMirror interface {
+	React(ctx context.Context, postID, userID uuid.UUID, reaction string) (bool, error)
+	Unreact(ctx context.Context, postID, userID uuid.UUID) (bool, error)
+}
+
+func (s *Service) reactionToggles() reactionToggleStore {
+	if s.reactionToggleSeam != nil {
+		return s.reactionToggleSeam
+	}
+	return s.pgStore
+}
+
+func (s *Service) reactionMirrors() reactionMirror {
+	if s.reactionMirrorSeam != nil {
+		return s.reactionMirrorSeam
+	}
+	return s.scyllaStore
+}
+
 // ToggleReaction sets, changes, or removes a reaction on a post.
 func (s *Service) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, reactionType string) (*ReactionToggleResult, error) {
 	// Heart only (heart_only.go). The store toggles any existing reaction
@@ -189,30 +216,35 @@ func (s *Service) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, 
 	// Audit H4: the reaction event rides the reaction's own transaction
 	// (store/postgres/reactions.go). Self-reactions announce nothing, as
 	// before. `post` is already in scope from the visibility check above.
-	toggle, err := s.pgStore.ToggleReaction(ctx, "post", postID, userID, reactionType, func(t postgres.ReactionToggle) (string, interface{}, bool) {
+	//
+	// feed-30: the Scylla copy feed hydration reads is written by the store
+	// too, inside the same transaction and under the viewer's lock on this
+	// post (mirrorReactionToggle), so two taps' copies land in the order
+	// their rows were written. A copy that fails fails the toggle: the row
+	// is rolled back and the client retries, instead of Postgres and the
+	// feed card disagreeing until the viewer taps twice more.
+	toggle, err := s.reactionToggles().ToggleReactionMirrored(ctx, "post", postID, userID, reactionType, func(t postgres.ReactionToggle) (string, interface{}, bool) {
 		if s.producer == nil || post.AuthorID == userID {
 			return "", nil, false
 		}
 		return reactionEvent(t, postID, post.AuthorID, userID)
+	}, func(ctx context.Context, t postgres.ReactionToggle) error {
+		return mirrorReactionToggle(ctx, s.reactionMirrors(), postID, userID, t)
 	})
 	if err != nil {
 		return nil, err
 	}
 	newType, isSet := toggle.NewType, toggle.IsSet
 
-	// Also sync to ScyllaDB for feed hydration compatibility
-	if isSet {
-		if _, err := s.scyllaStore.React(ctx, postID, userID, newType); err != nil {
-			log.Printf("Warning: failed to sync reaction to ScyllaDB: %v", err)
-		}
-	} else {
-		if _, err := s.scyllaStore.Unreact(ctx, postID, userID); err != nil {
-			log.Printf("Warning: failed to remove reaction from ScyllaDB: %v", err)
-		}
-	}
+	// feed-04: the toggle committed, so the viewer's cached feed row
+	// (feed:hydrate:<viewer>:<post>, 5 minutes) is stale whatever the outcome
+	// was: set, changed or removed. After the Scylla copy, which the next
+	// hydration reads. Without this a web like looked undone on the next feed
+	// refetch, and the tap to "fix" it removed the like.
+	s.invalidateFeedHydration(ctx, userID, postID) // feed-04
 
 	// Get updated counts
-	counts, err := s.pgStore.GetReactionCounts(ctx, "post", postID)
+	counts, err := s.reactionToggles().GetReactionCounts(ctx, "post", postID)
 	if err != nil {
 		log.Printf("Warning: failed to get reaction counts: %v", err)
 	}
@@ -222,6 +254,32 @@ func (s *Service) ToggleReaction(ctx context.Context, postID, userID uuid.UUID, 
 		IsSet:        isSet,
 		Counts:       foldPostReactionCounts(counts),
 	}, nil
+}
+
+// mirrorReactionToggle copies a toggle's outcome to the Scylla row feed
+// hydration reads: the reaction now stored, or its removal. Both writes are
+// conditional and idempotent, so a retried toggle that finds the copy
+// already made changes nothing.
+//
+// An error with nothing written is returned (the store rolls the toggle
+// back). An error after the copy was written (the row changed and its
+// counter update failed) is logged and the toggle stands: rolling back then
+// would leave the feed card ahead of the row.
+func mirrorReactionToggle(ctx context.Context, mirror reactionMirror, postID, userID uuid.UUID, t postgres.ReactionToggle) error {
+	var changed bool
+	var err error
+	if t.IsSet {
+		changed, err = mirror.React(ctx, postID, userID, t.NewType)
+	} else {
+		changed, err = mirror.Unreact(ctx, postID, userID)
+	}
+	if err != nil && !changed {
+		return err
+	}
+	if err != nil {
+		log.Printf("Warning: reaction copied to ScyllaDB but its counter update failed (post %s): %v", postID, err)
+	}
+	return nil
 }
 
 // reactionEvent is the event a reaction toggle announces: PostReacted for a

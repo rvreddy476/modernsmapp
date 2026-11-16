@@ -57,14 +57,19 @@ var (
 	ErrInvalidLocationPlaceID = fmt.Errorf("location_place_id must be 1-%d characters of letters, digits, '-', '_', ':' or '.'", MaxLocationPlaceIDLength)
 )
 
-// repostableVisibility is IsRepostable: a private or friends-only post
-// cannot be reposted or quoted to the reposter's own audience.
+// repostableVisibility is IsRepostable: only a post anyone may open (public,
+// or unlisted by link) is reposted or quoted to the reposter's own audience.
+// A followers, friends or private post is not, for a follower either: the
+// repost would show it to people its author did not choose (the rule
+// shareRestricted applies to POST /share). Any other stored value (the
+// retired circle values, 'staged', something unknown) refuses, as every
+// audience rule here does.
 func repostableVisibility(v string) bool {
 	switch strings.ToLower(strings.TrimSpace(v)) {
-	case "private", PostVisibilityFriends:
-		return false
+	case "public", "unlisted", "":
+		return true
 	}
-	return true
+	return false
 }
 
 // NormalizeLinkURL trims raw and returns nil for "" (no link). Anything

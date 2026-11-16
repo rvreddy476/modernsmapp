@@ -70,6 +70,11 @@ func (h *Handler) CreateRepost(c *gin.Context) {
 		}
 	}
 
+	// The post detail's read gate (read_gate.go), as on the like and comment
+	// routes: a post the caller may not open is the same 404 as a missing one.
+	if !h.requirePostReadable(c, postID, &userID) { // feed-03: repost
+		return
+	}
 	result, err := h.svc.CreateRepost(c.Request.Context(), service.CreateRepostInput{
 		UserID:            userID,
 		PostID:            postID,

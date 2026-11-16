@@ -139,6 +139,27 @@ jobs:
         if: matrix.blocked == ''
         run: bash scripts/ci/integration-setup.sh "${{ matrix.module }}"
 
+      # post-service only (feed-14): its like tests need ScyllaDB's
+      # conditional writes, so this one job starts a single bounded node, the
+      # way module-05-messaging-safety.yml does. The tests create and use
+      # their own keyspace (post_it_test) and skip without the variable, so a
+      # node that does not come up fails the job here instead.
+      - name: Start ScyllaDB (post-service like tests)
+        if: matrix.blocked == '' && matrix.module == 'Architecture/services/post-service'
+        run: |
+          docker run -d --name post-it-scylla -p 9042:9042 \
+            scylladb/scylla:5.4 \
+            --smp 1 --memory 750M --overprovisioned 1 --developer-mode 1
+          for i in $(seq 1 90); do
+            if docker exec post-it-scylla cqlsh -e 'SELECT release_version FROM system.local' >/dev/null 2>&1; then
+              echo "POST_SCYLLA_IT_HOSTS=127.0.0.1" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs post-it-scylla
+          exit 1
+
       - name: Build, vet, unit and integration tests
         if: matrix.blocked == ''
         run: bash scripts/verify/go.sh --full --db "$INTEG_DSN" "${{ matrix.module }}"

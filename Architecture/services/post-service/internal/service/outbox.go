@@ -2,11 +2,15 @@ package service
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
+	postEvents "github.com/atpost/post-service/internal/events"
+	"github.com/atpost/post-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
 	"github.com/google/uuid"
+	"github.com/segmentio/kafka-go"
 )
 
 // PublishOutboxEvents polls the outbox table and publishes pending events to Kafka.
@@ -15,23 +19,73 @@ func (s *Service) PublishOutboxEvents(ctx context.Context) error {
 	if s.producer == nil {
 		return nil
 	}
+	return relayOutboxPass(ctx, s.pgStore, s.producer.PublishOutbox)
+}
 
-	outboxEvents, err := s.pgStore.GetUnpublishedOutboxEvents(ctx, 100)
+// outboxRelayStore is what one relay pass needs of the Postgres store.
+type outboxRelayStore interface {
+	TryOutboxRelayLock(ctx context.Context) (release func(), ok bool, err error)
+	GetUnpublishedOutboxEvents(ctx context.Context, limit int) ([]postgres.OutboxEvent, error)
+	MarkOutboxEventPublished(ctx context.Context, id uuid.UUID) error
+}
+
+/*
+	relayOutboxPass is one pass of the outbox relay (feed-07).
+
+	One pass at a time across replicas: every pod runs the relay, so the pass
+	holds a Postgres advisory lock and a replica that does not get it skips;
+	the holder publishes the rows, and the next tick tries again. The lock is
+	released on every way out of the function.
+
+	Each row goes out as postEvents.OutboxMessage builds it: event id = the row
+	id (the same on every re-publish, so consumers that dedupe on event_id
+	drop the repeat) and key = the aggregate id (one partition per post, so
+	its events are consumed in the order written here).
+
+	Order within one aggregate is kept through failures too. When a row cannot
+	be published, or is published but cannot be marked, the later rows of the
+	same aggregate wait for the next pass rather than overtaking it; rows of
+	other aggregates carry on. A row whose message cannot even be built is
+	logged and holds nothing back: it would never succeed, and waiting on it
+	would park that aggregate for good.
+*/
+func relayOutboxPass(ctx context.Context, store outboxRelayStore, publish func(context.Context, kafka.Message) error) error {
+	release, ok, err := store.TryOutboxRelayLock(ctx)
+	if err != nil {
+		return fmt.Errorf("outbox relay lock: %w", err)
+	}
+	if !ok {
+		return nil // another replica's pass is running
+	}
+	defer release()
+
+	outboxEvents, err := store.GetUnpublishedOutboxEvents(ctx, 100)
 	if err != nil {
 		return err
 	}
 
+	held := map[uuid.UUID]bool{} // aggregates with an earlier row still unsettled
 	for _, evt := range outboxEvents {
-		envelope := events.NewEnvelope(ctx, evt.EventType, nil, evt.Payload)
-		if err := s.producer.PublishRaw(ctx, envelope); err != nil {
-			slog.Error("outbox: failed to publish event",
+		if held[evt.AggregateID] {
+			continue
+		}
+		msg, err := postEvents.OutboxMessage(ctx, evt.ID, evt.EventType, evt.AggregateID, evt.Payload)
+		if err != nil {
+			slog.Error("outbox: failed to build event",
 				"event_id", evt.ID, "event_type", evt.EventType, "error", err)
 			continue
 		}
+		if err := publish(ctx, msg); err != nil {
+			slog.Error("outbox: failed to publish event",
+				"event_id", evt.ID, "event_type", evt.EventType, "error", err)
+			held[evt.AggregateID] = true // not published
+			continue
+		}
 
-		if err := s.pgStore.MarkOutboxEventPublished(ctx, evt.ID); err != nil {
+		if err := store.MarkOutboxEventPublished(ctx, evt.ID); err != nil {
 			slog.Error("outbox: failed to mark event published",
 				"event_id", evt.ID, "error", err)
+			held[evt.AggregateID] = true // published, not marked
 		}
 	}
 
