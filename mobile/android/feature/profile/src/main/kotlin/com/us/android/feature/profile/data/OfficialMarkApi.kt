@@ -26,8 +26,10 @@ import javax.inject.Singleton
  *     POST /v1/profiles/me/verification/government/accept          → 200 OrgStatus
  *
  * Both marks are off by default: a disabled mark answers 503 `ORG_VERIFICATION_DISABLED`
- * or `GOVERNMENT_VERIFICATION_DISABLED`. The optional `document_media_id` is deliberately
- * not sent: nobody can review a hand-uploaded document yet.
+ * or `GOVERNMENT_VERIFICATION_DISABLED`. The optional `document_media_id` (contract §6,
+ * 16 Nov 2026) is the registration certificate, uploaded as media-service's private
+ * `document` kind; with it the registry is not asked and the application goes to human
+ * review after the e-mail code.
  */
 interface OfficialMarkApi {
 
@@ -44,7 +46,10 @@ interface OfficialMarkApi {
     suspend fun acceptGovernment(@Body body: GovernmentInviteBody): ApiEnvelope<OrgStatus>
 }
 
-/** `officialverify.OrgApplicationRequest`; exactly one of [gstin] and [cin] is set, the other omitted. */
+/**
+ * `officialverify.OrgApplicationRequest`; exactly one of [gstin] and [cin] is set, the other
+ * omitted. [documentMediaId] is omitted when no certificate is attached.
+ */
 @Serializable
 data class OrgApplicationBody(
     @SerialName("legal_name") val legalName: String,
@@ -52,6 +57,7 @@ data class OrgApplicationBody(
     val cin: String? = null,
     @SerialName("official_domain") val officialDomain: String,
     @SerialName("signatory_email") val signatoryEmail: String,
+    @SerialName("document_media_id") val documentMediaId: String? = null,
 )
 
 @Serializable

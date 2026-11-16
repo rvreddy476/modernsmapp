@@ -7,6 +7,7 @@ import com.us.android.core.network.ErrorMapper
 import kotlinx.coroutines.runBlocking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import mockwebserver3.MockResponse
 import mockwebserver3.MockWebServer
 import okhttp3.MediaType.Companion.toMediaType
@@ -89,6 +90,26 @@ class OfficialMarkContractTest {
         assertThat(request.method).isEqualTo("POST")
         val body = Json.parseToJsonElement(request.body!!.utf8()).jsonObject
         assertThat(body.keys).containsExactly("legal_name", "gstin", "official_domain", "signatory_email")
+    }
+
+    @Test
+    fun `an apply with a certificate carries document_media_id`(): Unit = runBlocking {
+        answer(201, """{"data":{"next":"email_code"}}""")
+
+        repository.apply(
+            OrgApplicationBody(
+                legalName = "Acme",
+                cin = "U12345KA2020PTC123456",
+                officialDomain = "acme.in",
+                signatoryEmail = "legal@acme.in",
+                documentMediaId = "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+            ),
+        )
+
+        val body = Json.parseToJsonElement(server.takeRequest().body!!.utf8()).jsonObject
+        assertThat(body.keys)
+            .containsExactly("legal_name", "cin", "official_domain", "signatory_email", "document_media_id")
+        assertThat(body["document_media_id"]!!.jsonPrimitive.content).isEqualTo("7c9e6679-7425-40de-944b-e07fc1f90ae7")
     }
 
     @Test

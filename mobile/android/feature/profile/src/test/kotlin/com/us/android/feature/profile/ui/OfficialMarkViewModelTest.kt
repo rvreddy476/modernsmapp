@@ -3,13 +3,19 @@ package com.us.android.feature.profile.ui
 import com.google.common.truth.Truth.assertThat
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
+import com.us.android.core.media.upload.UploadSource
 import com.us.android.core.testing.MainDispatcherRule
+import com.us.android.feature.profile.data.CertificateReader
 import com.us.android.feature.profile.data.OFFICIAL_FALLBACK_MESSAGE
+import com.us.android.feature.profile.data.OfficialCertificateUploader
 import com.us.android.feature.profile.data.OfficialMarkSource
 import com.us.android.feature.profile.data.OrgApplicationBody
 import com.us.android.feature.profile.data.OrgStatus
+import com.us.android.feature.profile.data.PickedCertificate
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.Rule
 import org.junit.Test
+import java.io.ByteArrayInputStream
 
 /** Request verification › Official mark (2026-11-15): every step is the server's `next`. */
 class OfficialMarkViewModelTest {
@@ -19,7 +25,152 @@ class OfficialMarkViewModelTest {
 
     private val source = FakeOfficialMarkSource()
 
-    private fun vm() = OfficialMarkViewModel(source)
+    private val reader = FakeCertificateReader()
+    private val uploader = FakeCertificateUploader()
+
+    private fun vm() = OfficialMarkViewModel(source, reader, uploader)
+
+    private fun certificateForm(): OfficialMarkViewModel {
+        source.statuses += AppResult.Success(OrgStatus(next = "apply"))
+        source.applyResult = AppResult.Success(OrgStatus(next = "email_code"))
+        return vm().apply { fillForm() }
+    }
+
+    @Test
+    fun `a certificate of the wrong type is refused before any upload`() {
+        val vm = certificateForm()
+        reader.picked = certificate(mime = "application/msword")
+
+        vm.onCertificatePicked("content://doc/1")
+
+        assertThat(vm.state.value.certificateError).isEqualTo("Upload a PDF, JPEG or PNG.")
+        assertThat(vm.state.value.certificateMediaId).isNull()
+        assertThat(vm.state.value.uploadingCertificate).isFalse()
+        assertThat(uploader.uploads).isEmpty()
+    }
+
+    @Test
+    fun `a certificate over 10 MB is refused before any upload, and exactly 10 MB is let through`() {
+        val vm = certificateForm()
+        reader.picked = certificate(size = 10_485_761L)
+
+        vm.onCertificatePicked("content://doc/1")
+
+        assertThat(vm.state.value.certificateError).isEqualTo("The certificate must be 10 MB or smaller.")
+        assertThat(uploader.uploads).isEmpty()
+
+        reader.picked = certificate(size = 10_485_760L)
+        vm.onCertificatePicked("content://doc/2")
+        assertThat(uploader.uploads).hasSize(1)
+        assertThat(vm.state.value.certificateError).isNull()
+    }
+
+    @Test
+    fun `an uploaded certificate is sent as document_media_id`() {
+        val vm = certificateForm()
+        reader.picked = certificate(name = "gst-certificate.pdf")
+        uploader.result = "7c9e6679-7425-40de-944b-e07fc1f90ae7"
+
+        vm.onCertificatePicked("content://doc/1")
+
+        assertThat(vm.state.value.certificateName).isEqualTo("gst-certificate.pdf")
+        assertThat(uploader.uploads.single().mimeType).isEqualTo("application/pdf")
+        vm.submit()
+        assertThat(source.applied.single().documentMediaId).isEqualTo("7c9e6679-7425-40de-944b-e07fc1f90ae7")
+    }
+
+    @Test
+    fun `a JPEG and a PNG are accepted too`() {
+        val vm = certificateForm()
+        reader.picked = certificate(mime = "image/jpeg")
+        vm.onCertificatePicked("content://doc/1")
+        vm.removeCertificate()
+        reader.picked = certificate(mime = "image/png")
+        vm.onCertificatePicked("content://doc/2")
+
+        assertThat(uploader.uploads.map { it.mimeType }).containsExactly("image/jpeg", "image/png").inOrder()
+    }
+
+    @Test
+    fun `send code is disabled while the certificate uploads`() {
+        val vm = certificateForm()
+        reader.picked = certificate()
+        uploader.gate = CompletableDeferred()
+
+        vm.onCertificatePicked("content://doc/1")
+
+        assertThat(vm.state.value.uploadingCertificate).isTrue()
+        assertThat(vm.state.value.canSubmit).isFalse()
+        vm.submit()
+        assertThat(source.applied).isEmpty()
+
+        uploader.gate!!.complete(Unit)
+        assertThat(vm.state.value.uploadingCertificate).isFalse()
+        assertThat(vm.state.value.canSubmit).isTrue()
+    }
+
+    @Test
+    fun `a failed upload says so, attaches nothing and never submits`() {
+        val vm = certificateForm()
+        reader.picked = certificate()
+        uploader.result = null
+
+        vm.onCertificatePicked("content://doc/1")
+
+        assertThat(vm.state.value.certificateError)
+            .isEqualTo("The certificate didn't upload. Check your connection and try again.")
+        assertThat(vm.state.value.certificateMediaId).isNull()
+        assertThat(source.applied).isEmpty()
+        vm.submit()
+        assertThat(source.applied.single().documentMediaId).isNull()
+    }
+
+    @Test
+    fun `an unreadable pick says the upload failed`() {
+        val vm = certificateForm()
+        reader.picked = null
+
+        vm.onCertificatePicked("content://doc/1")
+
+        assertThat(vm.state.value.certificateError)
+            .isEqualTo("The certificate didn't upload. Check your connection and try again.")
+        assertThat(uploader.uploads).isEmpty()
+    }
+
+    @Test
+    fun `remove drops the certificate from the submit`() {
+        val vm = certificateForm()
+        reader.picked = certificate()
+
+        vm.onCertificatePicked("content://doc/1")
+        assertThat(vm.state.value.certificateMediaId).isNotNull()
+        vm.removeCertificate()
+
+        assertThat(vm.state.value.certificateName).isNull()
+        assertThat(vm.state.value.certificateMediaId).isNull()
+        vm.submit()
+        assertThat(source.applied.single().documentMediaId).isNull()
+    }
+
+    @Test
+    fun `an application with a certificate shows the review step after the code`() {
+        val vm = certificateForm()
+        reader.picked = certificate()
+        vm.onCertificatePicked("content://doc/1")
+        vm.submit()
+        source.confirmResult = AppResult.Success(OrgStatus(next = "review", status = "in_review"))
+        vm.onCode("123456")
+
+        vm.confirm()
+
+        assertThat(vm.state.value.step).isEqualTo(OfficialStep.Review)
+    }
+
+    private fun certificate(
+        name: String = "certificate.pdf",
+        mime: String = "application/pdf",
+        size: Long = 200_000L,
+    ) = PickedCertificate(name, mime, size, UploadSource { ByteArrayInputStream(ByteArray(0)) })
 
     private fun OfficialMarkViewModel.fillForm() {
         onLegalName("Acme Media Private Limited")
@@ -246,6 +397,24 @@ class OfficialMarkViewModelTest {
 
     private fun refusal(code: String, message: String, status: Int = 422) =
         AppResult.Failure(AppError.Unknown(code = code, statusCode = status, message = message))
+}
+
+private class FakeCertificateReader : CertificateReader {
+    var picked: PickedCertificate? = null
+    override suspend fun read(uri: String): PickedCertificate? = picked
+}
+
+/** Records each upload; [gate] holds it in flight until completed. */
+private class FakeCertificateUploader : OfficialCertificateUploader {
+    var result: String? = "media-1"
+    var gate: CompletableDeferred<Unit>? = null
+    val uploads = mutableListOf<PickedCertificate>()
+
+    override suspend fun upload(certificate: PickedCertificate): String? {
+        uploads += certificate
+        gate?.await()
+        return result
+    }
 }
 
 /** Answers each call from its queue; records what was sent. */

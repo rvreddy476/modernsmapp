@@ -1,5 +1,9 @@
 package com.us.android.feature.profile.di
 
+import com.us.android.feature.profile.data.CertificateReader
+import com.us.android.feature.profile.data.ContentCertificateReader
+import com.us.android.feature.profile.data.MediaOfficialCertificateUploader
+import com.us.android.feature.profile.data.OfficialCertificateUploader
 import com.us.android.feature.profile.data.OfficialMarkApi
 import com.us.android.feature.profile.data.OfficialMarkRepository
 import com.us.android.feature.profile.data.OfficialMarkSource
@@ -24,4 +28,11 @@ object OfficialMarkModule {
 
     @Provides
     fun provideOfficialMarkSource(impl: OfficialMarkRepository): OfficialMarkSource = impl
+
+    @Provides
+    fun provideCertificateReader(impl: ContentCertificateReader): CertificateReader = impl
+
+    @Provides
+    fun provideOfficialCertificateUploader(impl: MediaOfficialCertificateUploader): OfficialCertificateUploader =
+        impl
 }

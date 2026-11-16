@@ -5,6 +5,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
+import com.us.android.feature.profile.data.CERTIFICATE_MAX_BYTES
+import com.us.android.feature.profile.data.CERTIFICATE_MIME_TYPES
+import com.us.android.feature.profile.data.CertificateReader
+import com.us.android.feature.profile.data.OfficialCertificateUploader
 import com.us.android.feature.profile.data.OfficialMarkSource
 import com.us.android.feature.profile.data.OrgApplicationBody
 import com.us.android.feature.profile.data.OrgStatus
@@ -20,6 +24,11 @@ import javax.inject.Inject
 
 /** Which step the Official mark screen draws, from the server's `next`. */
 enum class OfficialStep { Apply, EmailCode, Review, Done }
+
+/** Contract §6, word for word with the web. */
+const val CERTIFICATE_WRONG_TYPE = "Upload a PDF, JPEG or PNG."
+const val CERTIFICATE_TOO_BIG = "The certificate must be 10 MB or smaller."
+const val CERTIFICATE_FAILED = "The certificate didn't upload. Check your connection and try again."
 
 private const val GSTIN_LENGTH = 15
 private const val CIN_LENGTH = 21
@@ -54,6 +63,13 @@ data class OfficialMarkUiState(
     val inviteCode: String = "",
     val accepting: Boolean = false,
     val inviteError: String? = null,
+    /** The registration certificate (contract §6): its file name once uploaded. */
+    val certificateName: String? = null,
+    /** Its media id, sent as `document_media_id`; null when none is attached. */
+    val certificateMediaId: String? = null,
+    val uploadingCertificate: Boolean = false,
+    /** Wrong type, too big or failed, in the contract's words. */
+    val certificateError: String? = null,
 ) {
     val step: OfficialStep?
         get() = when {
@@ -68,7 +84,7 @@ data class OfficialMarkUiState(
             (status?.status == STATUS_REFUSED || status?.status == STATUS_REJECTED)
 
     val canSubmit: Boolean
-        get() = !submitting && legalName.isNotBlank() && registration.isNotBlank() &&
+        get() = !submitting && !uploadingCertificate && legalName.isNotBlank() && registration.isNotBlank() &&
             domain.isNotBlank() && email.isNotBlank()
 
     val canConfirm: Boolean get() = !submitting && code.isNotBlank()
@@ -99,6 +115,8 @@ data class OfficialMarkUiState(
 @HiltViewModel
 class OfficialMarkViewModel @Inject constructor(
     private val source: OfficialMarkSource,
+    private val certificates: CertificateReader,
+    private val certificateUploader: OfficialCertificateUploader,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(OfficialMarkUiState())
@@ -148,6 +166,52 @@ class OfficialMarkViewModel @Inject constructor(
 
     fun startAgain() = _state.update { it.copy(startedAgain = true, code = "", error = null) }
 
+    /**
+     * A file from the system document picker: type and size are checked before any byte
+     * moves (media-service checks both again), then init → PUT → confirm. Ignored while
+     * one is already uploading or the form is being sent.
+     */
+    fun onCertificatePicked(uri: String) {
+        val now = _state.value
+        if (now.uploadingCertificate || now.submitting) return
+        _state.update { it.copy(uploadingCertificate = true, certificateError = null) }
+        viewModelScope.launch {
+            val picked = certificates.read(uri)
+            val refusal = when {
+                picked == null -> CERTIFICATE_FAILED
+                picked.mimeType.lowercase() !in CERTIFICATE_MIME_TYPES -> CERTIFICATE_WRONG_TYPE
+                picked.sizeBytes > CERTIFICATE_MAX_BYTES -> CERTIFICATE_TOO_BIG
+                else -> null
+            }
+            if (picked == null || refusal != null) {
+                _state.update { it.copy(uploadingCertificate = false, certificateError = refusal) }
+                return@launch
+            }
+            val mediaId = certificateUploader.upload(picked)
+            _state.update {
+                if (mediaId == null) {
+                    it.copy(uploadingCertificate = false, certificateError = CERTIFICATE_FAILED)
+                } else {
+                    it.copy(
+                        uploadingCertificate = false,
+                        certificateName = picked.name,
+                        certificateMediaId = mediaId,
+                        certificateError = null,
+                    )
+                }
+            }
+        }
+    }
+
+    /** Remove: the application goes without a certificate (the registry is asked). */
+    fun removeCertificate() = _state.update {
+        if (it.uploadingCertificate) {
+            it
+        } else {
+            it.copy(certificateName = null, certificateMediaId = null, certificateError = null)
+        }
+    }
+
     fun submit() {
         val now = _state.value
         if (!now.canSubmit) return
@@ -158,6 +222,7 @@ class OfficialMarkViewModel @Inject constructor(
             cin = registration.takeIf { now.registrationKind == RegistrationKind.CIN },
             officialDomain = now.domain.trim(),
             signatoryEmail = now.email.trim(),
+            documentMediaId = now.certificateMediaId,
         )
         _state.update { it.copy(submitting = true, error = null) }
         viewModelScope.launch {
@@ -169,6 +234,9 @@ class OfficialMarkViewModel @Inject constructor(
                         startedAgain = false,
                         code = "",
                         personRequired = null,
+                        // Sent with this application; a fresh one after Start again uploads its own.
+                        certificateName = null,
+                        certificateMediaId = null,
                     )
                 }
                 is AppResult.Failure -> _state.update { refused(it.copy(submitting = false), result.error) }

@@ -1,8 +1,11 @@
 package com.us.android.feature.profile.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -19,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.us.android.core.designsystem.component.UsButton
@@ -30,6 +34,7 @@ import com.us.android.core.designsystem.component.UsSurfaceCard
 import com.us.android.core.designsystem.component.UsTextField
 import com.us.android.core.designsystem.component.UsTopBar
 import com.us.android.core.designsystem.theme.UsTheme
+import com.us.android.feature.profile.data.CERTIFICATE_MIME_TYPES
 
 /**
  * Settings › Account › Request verification › Official mark (2026-11-15). The words match
@@ -146,6 +151,7 @@ private fun ApplyForm(state: OfficialMarkUiState, viewModel: OfficialMarkViewMod
         enabled = !busy,
         modifier = Modifier.fillMaxWidth().testTag("official_registration"),
     )
+    CertificateField(state, viewModel)
     HelpedField(
         value = state.domain,
         onValueChange = viewModel::onDomain,
@@ -172,6 +178,66 @@ private fun ApplyForm(state: OfficialMarkUiState, viewModel: OfficialMarkViewMod
         modifier = Modifier.fillMaxWidth().testTag("official_send_code"),
     )
     state.error?.let { ErrorLine(it) }
+}
+
+/**
+ * Registration certificate (optional), contract §6: the system document picker
+ * (OpenDocument, so no storage permission), PDF/JPEG/PNG up to 10 MB.
+ */
+@Composable
+private fun CertificateField(state: OfficialMarkUiState, viewModel: OfficialMarkViewModel) {
+    val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let { viewModel.onCertificatePicked(it.toString()) }
+    }
+    Column(
+        verticalArrangement = Arrangement.spacedBy(UsTheme.spacing.xs),
+        modifier = Modifier.testTag("official_certificate"),
+    ) {
+        Text(
+            "Registration certificate (optional)",
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = FontWeight.SemiBold,
+        )
+        Text(
+            "Upload your GST or incorporation certificate as a PDF, JPEG or PNG, up to 10 MB. " +
+                "With a certificate, a person on our team checks your application instead of the registry. " +
+                "This can take a few days.",
+            style = MaterialTheme.typography.bodySmall,
+            color = UsTheme.extended.textMuted,
+        )
+        val name = state.certificateName
+        if (name != null && state.certificateMediaId != null) {
+            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+                Text(
+                    name,
+                    style = MaterialTheme.typography.bodyMedium,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f).testTag("official_certificate_name"),
+                )
+                TextButton(
+                    onClick = viewModel::removeCertificate,
+                    enabled = !state.submitting,
+                    modifier = Modifier.testTag("official_certificate_remove"),
+                ) { Text("Remove") }
+            }
+        } else {
+            UsSecondaryButton(
+                text = if (state.uploadingCertificate) "Uploading…" else "Upload certificate",
+                onClick = { picker.launch(CERTIFICATE_MIME_TYPES.toTypedArray()) },
+                enabled = !state.uploadingCertificate && !state.submitting,
+                modifier = Modifier.fillMaxWidth().testTag("official_certificate_upload"),
+            )
+        }
+        state.certificateError?.let {
+            Text(
+                text = it,
+                style = MaterialTheme.typography.bodySmall,
+                color = UsTheme.extended.statusDanger,
+                modifier = Modifier.testTag("official_certificate_error"),
+            )
+        }
+    }
 }
 
 @Composable
