@@ -202,19 +202,19 @@ for svc in "${SERVICES[@]}"; do
     case "$dir" in
         Architecture/*)
             module_root="$REPO_ROOT/Architecture"
-            cmd_path="./${dir#Architecture/}/cmd/server/main.go"
+            cmd_path="./${dir#Architecture/}/cmd/server"
             ;;
         identity-platform/*)
             module_root="$REPO_ROOT/identity-platform"
-            cmd_path="./${dir#identity-platform/}/cmd/server/main.go"
+            cmd_path="./${dir#identity-platform/}/cmd/server"
             ;;
         chat-service/*)
             module_root="$REPO_ROOT/chat-service"
-            cmd_path="./${dir#chat-service/}/cmd/server/main.go"
+            cmd_path="./${dir#chat-service/}/cmd/server"
             ;;
         *)
             module_root="$full_dir"
-            cmd_path="./cmd/server/main.go"
+            cmd_path="./cmd/server"
             ;;
     esac
 

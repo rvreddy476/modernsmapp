@@ -116,6 +116,12 @@ jobs:
           up -d --wait
 
       - name: Start services
+        env:
+          # post-service refuses to start without these (32 bytes or more).
+          # CI-only placeholders, like the internal key and JWT secret below;
+          # Architecture/docker/local.env carries neither.
+          STORY_MODERATION_HMAC_KEY: ci_e2e_only_story_moderation_hmac_key_change_me
+          POST_MODERATION_HMAC_KEY: ci_e2e_only_post_moderation_hmac_key_change_me
         run: |
           # run-local.sh backgrounds each service then waits; background the
           # whole script so the job continues. Logs stream to services.log.
