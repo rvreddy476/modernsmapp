@@ -251,3 +251,45 @@ func TestCaptureOnAnIntentOfAnotherOrder_IsRefused(t *testing.T) {
 		t.Fatalf("the order moved on a refused capture: %+v, was %+v", s, before)
 	}
 }
+
+// The buyer is told: no notice while the order has only its own payment
+// (including a redelivery of it), and a duplicate_capture notice with the
+// extra payment's amount once a second intent is captured.
+func TestDuplicateCapture_BuyerPaymentNotice(t *testing.T) {
+	ctx := context.Background()
+	f, res, intent := pendingOrder(t)
+	own := capture(f, res, intent)
+	if err := f.store.ApplyPaymentSucceeded(ctx, own); err != nil {
+		t.Fatalf("own capture: %v", err)
+	}
+	again := own
+	again.EventID = "evt-" + uuid.NewString()
+	if err := f.store.ApplyPaymentSucceeded(ctx, again); err != nil {
+		t.Fatalf("redelivered capture: %v", err)
+	}
+	if n, err := f.store.PaymentNoticeForOrder(ctx, res.OrderID); err != nil || n != nil {
+		t.Fatalf("notice before any duplicate: %+v, %v; want none", n, err)
+	}
+
+	dup := capture(f, res, uuid.NewString())
+	if err := f.store.ApplyPaymentSucceeded(ctx, dup); err != nil {
+		t.Fatalf("duplicate capture: %v", err)
+	}
+	// The same duplicate under another event id is still one extra payment.
+	dupAgain := dup
+	dupAgain.EventID = "evt-" + uuid.NewString()
+	if err := f.store.ApplyPaymentSucceeded(ctx, dupAgain); err != nil {
+		t.Fatalf("duplicate capture announced again: %v", err)
+	}
+	n, err := f.store.PaymentNoticeForOrder(ctx, res.OrderID)
+	if err != nil {
+		t.Fatalf("payment notice: %v", err)
+	}
+	if n == nil || n.Code != PaymentNoticeDuplicateCapture || n.AmountMinor != res.TotalMinor ||
+		n.Currency != "INR" || n.Payments != 1 || n.DetectedAt.IsZero() || n.DetectedAtEpoch != n.DetectedAt.Unix() {
+		t.Fatalf("notice after a duplicate: %+v, want duplicate_capture owing %d INR over one payment", n, res.TotalMinor)
+	}
+	if s := readCaptureState(t, res.OrderID); s.payStatus != "paid" || s.commands != 0 {
+		t.Fatalf("the notice read moved the order: %+v", s)
+	}
+}

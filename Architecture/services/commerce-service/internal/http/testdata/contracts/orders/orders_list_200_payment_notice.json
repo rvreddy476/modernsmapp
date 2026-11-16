@@ -1,0 +1,38 @@
+{
+  "data": {
+    "items": [
+      {
+        "id": "00000000-0000-4000-8000-0000000c0250",
+        "order_number": "ORD-2026-009999",
+        "subtotal_minor": 129900,
+        "discount_minor": 0,
+        "shipping_minor": 4900,
+        "tax_minor": 18582,
+        "total_minor": 121810,
+        "currency": "INR",
+        "payment_method": "card",
+        "payment_status": "paid",
+        "status": "confirmed",
+        "payment_notice": {
+          "code": "duplicate_capture",
+          "amount_minor": 121810,
+          "currency": "INR",
+          "payments": 1,
+          "detected_at": "2026-09-09T10:05:00Z",
+          "detected_at_epoch": 1788948300
+        },
+        "item_count": 1,
+        "seller_count": 1,
+        "first_product_id": "00000000-0000-4000-8000-0000000c0100",
+        "first_product_title": "Momentum Wireless Earbuds",
+        "first_item_image_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0001/medium_1080.jpg",
+        "first_item_thumbnail_url": "https://media.example.test/00000000-0000-4000-8000-0000000d0001/thumb_150.jpg",
+        "created_at": "2026-09-09T10:00:00Z",
+        "created_at_epoch": 1788948000
+      }
+    ],
+    "next_cursor": ""
+  },
+  "meta": {}
+}
+

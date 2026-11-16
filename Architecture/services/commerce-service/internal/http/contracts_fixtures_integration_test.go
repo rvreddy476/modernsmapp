@@ -11,6 +11,7 @@ package http
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -104,7 +105,11 @@ var (
 	ctCpnLastUse  = uuid.MustParse("00000000-0000-4000-8000-0000000c0509") // ONEUSELEFT: 0 of 1 used
 	ctOOffer      = uuid.MustParse("00000000-0000-4000-8000-0000000c0250") // paid with a coupon and a bank offer
 	ctIOffer      = uuid.MustParse("00000000-0000-4000-8000-0000000c0251")
-	ctBankOffer   = uuid.MustParse("00000000-0000-4000-8000-0000000c0d01")
+	// ctOOffer's own payment intent, and the intent of the second payment
+	// the buyer made for it (the duplicate capture behind payment_notice).
+	ctOOfferIntent    = uuid.MustParse("00000000-0000-4000-8000-0000000c0252")
+	ctOOfferDupIntent = uuid.MustParse("00000000-0000-4000-8000-0000000c0253")
+	ctBankOffer       = uuid.MustParse("00000000-0000-4000-8000-0000000c0d01")
 )
 
 // ─── The seed ────────────────────────────────────────────────────────────
@@ -123,7 +128,7 @@ func (e *contractEnv) seed() {
 		ctOFailed, ctIFailed, ctORefund, ctIRefund, ctOPending, ctIPending, ctReview, ctCart,
 		ctTax0, ctTax5, ctTax12, ctTax18, ctTax28, ctMedia1, ctMedia2, ctMediaNew, ctMediaKYC,
 		ctAdmin, ctCpnPct, ctCpnEarbuds, ctCpnSecret, ctCpnBigSpend, ctCpnExpired, ctCpnUsedUp, ctCpnOther,
-		ctCpnPlatform, ctCpnLastUse, ctOOffer, ctIOffer, ctBankOffer,
+		ctCpnPlatform, ctCpnLastUse, ctOOffer, ctIOffer, ctBankOffer, ctOOfferIntent, ctOOfferDupIntent,
 		uuid.MustParse("00000000-0000-4000-8000-0000000c0d02"), uuid.MustParse("00000000-0000-4000-8000-0000000c0d03"),
 	} {
 		e.knownIDs[id.String()] = true
@@ -428,6 +433,17 @@ func (e *contractEnv) seed() {
 	           9291,9291,0,1800,'confirmed',$6,'8518','2026-09-09T10:00:00Z')`,
 		ctIOffer, ctOOffer, ctP1, ctV1, ctSeller, ctTax18)
 
+	// The same order was then paid a second time, on another intent: a
+	// duplicate capture (p0.go's captureDuplicate). Its inbox rows are what the
+	// buyer's payment_notice is read from: the order's own capture on the
+	// bound intent, and the extra payment five minutes later on another one.
+	// The intent ids never reach a response.
+	e.exec(`UPDATE orders SET payment_intent_id = $2 WHERE id = $1`, ctOOffer, ctOOfferIntent)
+	e.exec(`INSERT INTO payment_event_inbox (event_id,event_type,intent_id,order_id,amount_minor,processed_at) VALUES
+	        ('ct-evt-offer-own','payment.succeeded',$2,$1,121810,'2026-09-09T10:01:00Z'),
+	        ('ct-evt-offer-dup','payment.succeeded',$3,$1,121810,'2026-09-09T10:05:00Z')`,
+		ctOOffer, ctOOfferIntent.String(), ctOOfferDupIntent.String())
+
 	// Fresh orders continue the seeded series.
 	e.exec(`ALTER SEQUENCE order_number_seq RESTART WITH 10006`)
 }
@@ -598,6 +614,12 @@ func (e *contractEnv) fixtures() []ctFixture {
 		// ── orders (seeded; read before the checkout chain adds one) ───
 		{name: "orders/orders_list_200", run: func(e *contractEnv) *httptest.ResponseRecorder {
 			return e.get("/v1/commerce/orders?limit=2", ctBuyer)
+		}},
+		// The page after ctOConfirmed: the oldest order, paid twice, whose card
+		// carries the duplicate-capture payment_notice. Last page, so no cursor.
+		{name: "orders/orders_list_200_payment_notice", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			cursor := base64.URLEncoding.EncodeToString([]byte("2026-09-10T10:00:00Z|" + ctOConfirmed.String()))
+			return e.get("/v1/commerce/orders?limit=1&cursor="+cursor, ctBuyer)
 		}},
 		{name: "orders/order_get_200_confirmed", run: func(e *contractEnv) *httptest.ResponseRecorder {
 			return e.get("/v1/commerce/orders/"+ctOConfirmed.String(), ctBuyer)

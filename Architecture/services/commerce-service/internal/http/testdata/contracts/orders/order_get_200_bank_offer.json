@@ -17,6 +17,14 @@
     "payment_method": "card",
     "payment_status": "paid",
     "status": "confirmed",
+    "payment_notice": {
+      "code": "duplicate_capture",
+      "amount_minor": 121810,
+      "currency": "INR",
+      "payments": 1,
+      "detected_at": "2026-09-09T10:05:00Z",
+      "detected_at_epoch": 1788948300
+    },
     "items": [
       {
         "id": "00000000-0000-4000-8000-0000000c0251",

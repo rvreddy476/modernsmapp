@@ -59,12 +59,41 @@ func (s *Service) ListOrderCards(ctx context.Context, userID uuid.UUID, limit in
 		return nil, err
 	}
 	s.hydrateOrderCardImages(ctx, cards)
+	s.attachPaymentNotices(ctx, cards)
 	res := &ListOrderCardsResult{Items: cards}
 	if hasMore && len(cards) > 0 {
 		last := cards[len(cards)-1]
 		res.NextCursor = encodeOrderCursor(last.CreatedAt, last.ID)
 	}
 	return res, nil
+}
+
+// attachPaymentNotices sets each card's payment notice (a duplicate capture
+// the buyer should hear about) in one query for the page. A failure is logged
+// and the page renders without notices: the notice is supplementary, and an
+// order list that will not load is worse.
+func (s *Service) attachPaymentNotices(ctx context.Context, cards []postgres.OrderCard) {
+	if len(cards) == 0 {
+		return
+	}
+	ids := make([]uuid.UUID, 0, len(cards))
+	for _, c := range cards {
+		ids = append(ids, c.ID)
+	}
+	notices, err := s.store.PaymentNoticesForOrders(ctx, ids)
+	if err != nil {
+		slog.Warn("order list: could not load payment notices", "error", err)
+		return
+	}
+	applyPaymentNotices(cards, notices)
+}
+
+// applyPaymentNotices puts each order's notice on its card; cards with none
+// keep a nil notice (omitted from the JSON).
+func applyPaymentNotices(cards []postgres.OrderCard, notices map[uuid.UUID]*postgres.PaymentNotice) {
+	for i := range cards {
+		cards[i].PaymentNotice = notices[cards[i].ID]
+	}
 }
 
 // encodeOrderCursor / decodeOrderCursor are deliberately opaque to the
@@ -369,6 +398,10 @@ type OrderDetail struct {
 	PaymentMethod *string `json:"payment_method,omitempty"`
 	PaymentStatus string  `json:"payment_status"`
 	Status        string  `json:"status"`
+	// PaymentNotice is what the buyer should be told about the order's money
+	// (today: a second payment on an already-paid order, owed back), or
+	// absent. Same object as the order list's. See postgres.PaymentNotice.
+	PaymentNotice *postgres.PaymentNotice `json:"payment_notice,omitempty"`
 
 	Items []OrderDetailItem `json:"items"`
 
@@ -487,6 +520,14 @@ func (s *Service) GetOrderDetail(ctx context.Context, orderID, userID uuid.UUID)
 		return nil, err
 	}
 	out.PaymentOffer, out.AmountPaidMinor = paymentOfferView(order, offer)
+
+	// Logged and skipped on failure, as the shipments below are: the notice
+	// is supplementary to the order screen.
+	if notice, err := s.store.PaymentNoticeForOrder(ctx, orderID); err == nil {
+		out.PaymentNotice = notice
+	} else {
+		slog.Warn("order detail: could not load the payment notice", "order_id", orderID, "error", err)
+	}
 
 	// The first shipment that actually has a tracking URL. Multi-seller
 	// orders can hold several; the buyer's screen shows one link and

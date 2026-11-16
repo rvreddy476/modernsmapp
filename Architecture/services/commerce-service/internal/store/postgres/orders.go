@@ -196,13 +196,17 @@ type OrderCard struct {
 	TotalMinor    money.Paise `json:"total_minor"`
 	Currency      string      `json:"currency"`
 
-	PaymentMethod     *string    `json:"payment_method,omitempty"`
-	PaymentStatus     string     `json:"payment_status"`
-	Status            string     `json:"status"`
-	ItemCount         int        `json:"item_count"`
-	SellerCount       int        `json:"seller_count"`
-	FirstProductID    *uuid.UUID `json:"first_product_id,omitempty"`
-	FirstProductTitle string     `json:"first_product_title,omitempty"`
+	PaymentMethod *string `json:"payment_method,omitempty"`
+	PaymentStatus string  `json:"payment_status"`
+	Status        string  `json:"status"`
+	// PaymentNotice is what the buyer should be told about the order's
+	// money (today: a duplicate capture), or absent. Filled by the service
+	// in one batch for the page; see payment_notice.go.
+	PaymentNotice     *PaymentNotice `json:"payment_notice,omitempty"`
+	ItemCount         int            `json:"item_count"`
+	SellerCount       int            `json:"seller_count"`
+	FirstProductID    *uuid.UUID     `json:"first_product_id,omitempty"`
+	FirstProductTitle string         `json:"first_product_title,omitempty"`
 	// FirstItemMediaID is the first line's product cover (primary image,
 	// else the first gallery image), resolved into the two URLs below by
 	// the service in one media batch for the page. The list drew no
