@@ -76,3 +76,35 @@ func TestUserProfileUpdated_WithoutATimestampIsUnversioned(t *testing.T) {
 		t.Fatalf("version = %d, want 0", versionOf(w))
 	}
 }
+
+// The partial writers carry their own event time to their own group
+// version (handle_updated_us, privacy_updated_us).
+func TestHandleChanged_CarriesTheChangeVersion(t *testing.T) {
+	r := newRecordingOS(t)
+	c := r.consumer(t)
+	at := time.Date(2026, 11, 16, 9, 30, 0, 654321000, time.UTC)
+	if err := c.processMessage(context.Background(), msg(t, events.HandleChanged, events.HandleChangedPayload{
+		UserID: profileUser, OldUsername: "old", NewUsername: "new", ChangedAt: at,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	w := userUpdate(t, r)
+	if versionOf(w) != at.UnixMicro() || paramsOf(w)["version_field"] != "handle_updated_us" || docOf(w)["username"] != "new" {
+		t.Fatalf("params = %v, want username at the change's %d", paramsOf(w), at.UnixMicro())
+	}
+}
+
+func TestUserSettingsChanged_CarriesTheSettingsVersion(t *testing.T) {
+	r := newRecordingOS(t)
+	c := r.consumer(t)
+	at := time.Date(2026, 11, 16, 9, 45, 0, 111111000, time.UTC)
+	if err := c.processMessage(context.Background(), msg(t, events.UserSettingsChanged, map[string]any{
+		"user_id": profileUser, "account_visibility": "private", "occurred_at": at,
+	})); err != nil {
+		t.Fatal(err)
+	}
+	w := userUpdate(t, r)
+	if versionOf(w) != at.UnixMicro() || paramsOf(w)["version_field"] != "privacy_updated_us" || docOf(w)["is_private"] != true {
+		t.Fatalf("params = %v, want is_private at the event's %d", paramsOf(w), at.UnixMicro())
+	}
+}

@@ -77,3 +77,51 @@ func TestOpenSearch_UserProfileEventsEndAtTheNewest(t *testing.T) {
 		t.Fatalf("stored = %v, want the edit applied and the account still hidden", doc)
 	}
 }
+
+// Per-group versions live: a late UserProfileUpdated newer than the
+// document but older than a HandleChanged / UserSettingsChanged keeps the
+// newer username and privacy; older partials are no-ops.
+func TestOpenSearch_UserHandleAndPrivacyOutliveALateRewrite(t *testing.T) {
+	store := liveStore(t)
+	c := liveConsumer(t, store)
+	ctx := context.Background()
+	t0 := time.Now().UTC().Truncate(time.Microsecond)
+	id := uuid.New().String()
+	t.Cleanup(func() { dropEntity(search.IndexUsers, id) })
+
+	process := func(eventType string, payload any) {
+		t.Helper()
+		if err := c.processMessage(ctx, msg(t, eventType, payload)); err != nil {
+			t.Fatalf("%s: %v (an ordered no-op must ack)", eventType, err)
+		}
+	}
+	process(events.UserProfileUpdated, events.UserProfileUpdatedPayload{
+		UserID: id, Username: "old", DisplayName: "first", UpdatedAt: t0,
+	})
+	process(events.HandleChanged, events.HandleChangedPayload{
+		UserID: id, OldUsername: "old", NewUsername: "new", ChangedAt: t0.Add(3 * time.Second),
+	})
+	if err := store.UpdateUserPrivacy(ctx, id, true, search.SourceVersion(t0.Add(3*time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	// The late edit (committed at t0+2s, before both partials).
+	process(events.UserProfileUpdated, events.UserProfileUpdatedPayload{
+		UserID: id, Username: "old", DisplayName: "late edit", UpdatedAt: t0.Add(2 * time.Second),
+	})
+	doc := rawEntity(t, search.IndexUsers, id)
+	if doc["display_name"] != "late edit" || doc["username"] != "new" || doc["is_private"] != true {
+		t.Fatalf("stored = %v, want the late edit's profile with the newer username and privacy", doc)
+	}
+
+	// Older partials are no-ops.
+	process(events.HandleChanged, events.HandleChangedPayload{
+		UserID: id, OldUsername: "x", NewUsername: "stale", ChangedAt: t0.Add(time.Second),
+	})
+	if err := store.UpdateUserPrivacy(ctx, id, false, search.SourceVersion(t0.Add(time.Second))); err != nil {
+		t.Fatal(err)
+	}
+	doc = rawEntity(t, search.IndexUsers, id)
+	if doc["username"] != "new" || doc["is_private"] != true {
+		t.Fatalf("stored = %v, an older partial applied", doc)
+	}
+}

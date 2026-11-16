@@ -1180,52 +1180,26 @@ func (s *Store) DeleteUser(ctx context.Context, userID string) error {
 	return nil
 }
 
-// UpdateUserUsername performs a partial update on a user document to change the username field.
-func (s *Store) UpdateUserUsername(ctx context.Context, userID, newUsername string) error {
-	doc := map[string]interface{}{
-		"doc": map[string]interface{}{
-			"username": newUsername,
-		},
-	}
-	body, _ := json.Marshal(doc)
-	req := opensearchapi.UpdateRequest{
-		Index:      "users_v1",
-		DocumentID: userID,
-		Body:       bytes.NewReader(body),
-	}
-	res, err := req.Do(ctx, s.client)
-	if err != nil {
-		slog.Error("opensearch: failed to update user username", "user_id", userID, "error", err)
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() && res.StatusCode != 404 {
-		err = fmt.Errorf("opensearch update user error: %s", res.String())
+// UpdateUserUsername sets the username of one users_v1 document at version
+// (SourceVersion of HandleChanged's changed_at; 0 unversioned). Ordered by
+// handle_updated_us (user_profile_state.go): an equal or older change is a
+// no-op, and no later full rewrite older than it puts the old username
+// back. A missing document is not an error.
+func (s *Store) UpdateUserUsername(ctx context.Context, userID, newUsername string, version int64) error {
+	if err := s.updateUserPartial(ctx, userID, userGroupHandle, map[string]any{"username": newUsername}, version); err != nil {
 		slog.Error("opensearch: failed to update user username", "user_id", userID, "error", err)
 		return err
 	}
 	return nil
 }
 
-// UpdateUserPrivacy flips is_private on one users_v1 document. A missing
-// document is not an error — the profile event that creates it carries the
-// current flag itself.
-func (s *Store) UpdateUserPrivacy(ctx context.Context, userID string, isPrivate bool) error {
-	body, _ := json.Marshal(map[string]any{"doc": map[string]any{"is_private": isPrivate}})
-	req := opensearchapi.UpdateRequest{
-		Index:      IndexUsers,
-		DocumentID: userID,
-		Body:       bytes.NewReader(body),
-	}
-	res, err := req.Do(ctx, s.client)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.IsError() && res.StatusCode != 404 {
-		return fmt.Errorf("opensearch update user privacy error: %s", res.String())
-	}
-	return nil
+// UpdateUserPrivacy sets is_private on one users_v1 document at version
+// (SourceVersion of UserSettingsChanged's occurred_at; 0 unversioned).
+// Ordered by privacy_updated_us (user_profile_state.go). A missing document
+// is not an error — the profile event that creates it carries the current
+// flag itself.
+func (s *Store) UpdateUserPrivacy(ctx context.Context, userID string, isPrivate bool, version int64) error {
+	return s.updateUserPartial(ctx, userID, userGroupPrivacy, map[string]any{"is_private": isPrivate}, version)
 }
 
 // UpdatePostsAuthorPrivacy rewrites author_is_private on EVERY posts_v1

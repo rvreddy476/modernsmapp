@@ -28,7 +28,8 @@ import (
 //     handle, about), NOT the broadcast channels_v1 index the multi-entity
 //     search reads. Added by the tube reindex (internal/reindex/tube.go);
 //     edits also arrive as tube.channel.created / .updated, applied in
-//     version order onto the existing document (tube_channel_state.go).
+//     version order (tube_channel_state.go); an event carrying channel_id
+//     creates the document when it is absent.
 //
 //  3. tube_collections_v1 — public playlists. Same feed. The visibility
 //     filter is applied at index time (a non-public playlist is DELETED

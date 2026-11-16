@@ -6,8 +6,9 @@ package reindex
 // event feed that WRITES documents (account erasure and deactivation aside:
 // purge_adapter.go): search reads nothing when a playlist is made or
 // edited, and a channel event (tube.channel.created / .updated, since
-// 2026-11-15) only updates a channel document this walk already wrote —
-// the event has no channel id to create one under. Since 2026-11-07 a deleted
+// 2026-11-15) updates a channel document this walk wrote and, since
+// 2026-11-16 when it carries channel_id, creates one that is absent
+// (tube_channel_state.go). Since 2026-11-07 a deleted
 // playlist, or one made unlisted or private, is REMOVED by its event
 // (tube.playlist.deleted / visibility_changed, consumer.go); this walk is
 // still what adds and updates, and its sweep is the backstop for

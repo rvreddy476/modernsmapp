@@ -239,4 +239,8 @@ func (s *Store) initEntityIndices() {
 	// document without it is unversioned and the next versioned write
 	// stamps one.
 	s.putFieldMapping(ctx, IndexUsers, "source_updated_us", "long")
+	// Per-group versions for the username and is_private (same file).
+	// Additive; a document without them falls back to source_updated_us.
+	s.putFieldMapping(ctx, IndexUsers, "handle_updated_us", "long")
+	s.putFieldMapping(ctx, IndexUsers, "privacy_updated_us", "long")
 }

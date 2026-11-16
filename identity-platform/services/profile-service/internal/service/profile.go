@@ -318,8 +318,11 @@ func (s *Service) UpdateProfile(ctx context.Context, userID uuid.UUID, params st
 	if p.Username != nil {
 		usernameStr = *p.Username
 	}
+	// Versioned by the committed row's updated_at (the store sets
+	// updated_at = NOW() on every UpdateProfile and returns the row), not
+	// the publish time: search orders profile events by it.
 	if s.producer != nil {
-		if err := s.producer.PublishUserProfileUpdated(ctx, userID, usernameStr, p.DisplayName, p.Bio, p.AvatarMediaID, fnPtr, lnPtr); err != nil {
+		if err := s.producer.PublishUserProfileUpdated(ctx, userID, usernameStr, p.DisplayName, p.Bio, p.AvatarMediaID, fnPtr, lnPtr, p.UpdatedAt); err != nil {
 			s.log.Warn("failed to publish profile updated event", "err", err, "user_id", userID)
 		}
 	}
@@ -857,9 +860,16 @@ func (s *Service) ChangeHandle(ctx context.Context, userID uuid.UUID, newUsernam
 		s.rdb.Del(ctx, fmt.Sprintf("profile:name:%s", newUsername))
 	}
 
-	// Publish event
+	// Publish event, versioned by the committed row's updated_at (the store
+	// sets updated_at = NOW() on every UpdateProfile), the same clock as
+	// UserProfileUpdated. A write that returned no row leaves it zero and the
+	// producer falls back to now.
+	var changedAt time.Time
+	if updated != nil {
+		changedAt = updated.UpdatedAt
+	}
 	if s.producer != nil {
-		if err := s.producer.PublishHandleChanged(ctx, userID, oldUsername, newUsername); err != nil {
+		if err := s.producer.PublishHandleChanged(ctx, userID, oldUsername, newUsername, changedAt); err != nil {
 			s.log.Warn("failed to publish handle changed event", "err", err, "user_id", userID)
 		}
 	}

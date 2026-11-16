@@ -11,8 +11,33 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
+// MessageWriter is the slice of *kafka.Writer the producer uses; a fake in
+// tests (NewProducerForWriter).
+type MessageWriter interface {
+	WriteMessages(ctx context.Context, msgs ...kafka.Message) error
+	Close() error
+}
+
 type Producer struct {
-	writer *kafka.Writer
+	writer MessageWriter
+}
+
+// NewProducerForWriter builds a producer over any writer. For tests that
+// read what was published.
+func NewProducerForWriter(w MessageWriter) *Producer {
+	return &Producer{writer: w}
+}
+
+// rowTime is the time a profile event carries: the committed row's
+// updated_at, so search (users_v1 source_updated_us / handle_updated_us)
+// orders the events on the clock the rows were written with. A zero time
+// (a caller with no row in hand) falls back to now, the behaviour before
+// 2026-11-16. Every caller today passes the row's time.
+func rowTime(t time.Time) time.Time {
+	if t.IsZero() {
+		return time.Now()
+	}
+	return t
 }
 
 func NewProducer(brokers []string, topic string) *Producer {
@@ -28,7 +53,10 @@ func NewProducerWithDialer(brokers []string, topic string, dialer *kafka.Dialer)
 	})}
 }
 
-func (p *Producer) PublishUserProfileUpdated(ctx context.Context, userID uuid.UUID, username, displayName, bio string, avatarMediaID *uuid.UUID, firstName, lastName string) error {
+// PublishUserProfileUpdated emits UserProfileUpdated. updatedAt is the
+// committed profile row's updated_at (the UPDATE ... RETURNING the service
+// publishes from); search versions the user document by it.
+func (p *Producer) PublishUserProfileUpdated(ctx context.Context, userID uuid.UUID, username, displayName, bio string, avatarMediaID *uuid.UUID, firstName, lastName string, updatedAt time.Time) error {
 	var avatarStr *string
 	if avatarMediaID != nil {
 		s := avatarMediaID.String()
@@ -43,7 +71,7 @@ func (p *Producer) PublishUserProfileUpdated(ctx context.Context, userID uuid.UU
 		LastName:      lastName,
 		Bio:           bio,
 		AvatarMediaID: avatarStr,
-		UpdatedAt:     time.Now(),
+		UpdatedAt:     rowTime(updatedAt),
 	}
 
 	payloadBytes, err := json.Marshal(payload)
@@ -155,13 +183,16 @@ func (p *Producer) PublishModuleProfileUpdated(ctx context.Context, userID uuid.
 	return p.publishEvent(ctx, sharedEvents.ModuleProfileUpdated, userID.String(), &userID, payload)
 }
 
-// PublishHandleChanged emits a HandleChanged event.
-func (p *Producer) PublishHandleChanged(ctx context.Context, userID uuid.UUID, oldUsername, newUsername string) error {
+// PublishHandleChanged emits a HandleChanged event. changedAt is the
+// committed profile row's updated_at from the username write: the same clock
+// as UserProfileUpdated's updated_at, so search orders the username against
+// the full profile rewrites (handle_updated_us).
+func (p *Producer) PublishHandleChanged(ctx context.Context, userID uuid.UUID, oldUsername, newUsername string, changedAt time.Time) error {
 	payload := sharedEvents.HandleChangedPayload{
 		UserID:      userID.String(),
 		OldUsername: oldUsername,
 		NewUsername: newUsername,
-		ChangedAt:   time.Now(),
+		ChangedAt:   rowTime(changedAt),
 	}
 	return p.publishEvent(ctx, sharedEvents.HandleChanged, userID.String(), &userID, payload)
 }

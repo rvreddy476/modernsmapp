@@ -500,6 +500,9 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		var p struct {
 			UserID            string `json:"user_id"`
 			AccountVisibility string `json:"account_visibility"`
+			// The user document's privacy version (privacy_updated_us,
+			// user_profile_state.go); zero from an older producer.
+			OccurredAt time.Time `json:"occurred_at"`
 		}
 		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
 			return err
@@ -527,7 +530,7 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if primer, ok := c.privacy.(interface{ Prime(string, bool) }); ok && c.privacy != nil {
 			primer.Prime(p.UserID, isPrivate)
 		}
-		if err := c.store.UpdateUserPrivacy(ctx, p.UserID, isPrivate); err != nil {
+		if err := c.store.UpdateUserPrivacy(ctx, p.UserID, isPrivate, search.SourceVersion(p.OccurredAt)); err != nil {
 			return fmt.Errorf("settings_changed: update user %s privacy: %w", p.UserID, err)
 		}
 		if err := c.store.UpdatePostsAuthorPrivacy(ctx, p.UserID, isPrivate); err != nil {
@@ -846,8 +849,10 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
 			return err
 		}
-		// Update the user's username in the search index via partial update
-		return c.store.UpdateUserUsername(ctx, p.UserID, p.NewUsername)
+		// Ordered partial update at the change's time (handle_updated_us,
+		// user_profile_state.go): an older change is a no-op, and a late
+		// profile rewrite older than it keeps this username.
+		return c.store.UpdateUserUsername(ctx, p.UserID, p.NewUsername, search.SourceVersion(p.ChangedAt))
 
 	// --- Communities ---
 	case events.EventCommunityCreated:
@@ -958,9 +963,10 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 
 	// --- Tube channels (post-service outbox, 2026-11-15) ---
 	//
-	// The row as committed, keyed by the owner: applied in version order
-	// onto the owner's channel document (store/search/tube_channel_state.go).
-	// A channel not yet in search is added by the Tube reindex, as before.
+	// The row as committed, applied in version order (store/search/
+	// tube_channel_state.go). With channel_id the document is upserted by id,
+	// so a channel not yet in search is created (hidden if its owner is);
+	// without it, the owner's document is updated and the reindex adds new ones.
 	case events.TubeChannelCreated, events.TubeChannelUpdated:
 		var p events.ChannelPayload
 		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
