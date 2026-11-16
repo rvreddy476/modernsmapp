@@ -13,6 +13,11 @@ type KafkaConsumerMetrics struct {
 	DedupHits         *prometheus.CounterVec
 	DLQMessages       *prometheus.CounterVec
 	ConsumerLag       *prometheus.GaugeVec
+	// RetryAge is how long the event now being retried has been failing, in
+	// seconds since its first failed attempt; 0 when nothing is being
+	// retried. A RetryForever consumer shows an outage here (the partition
+	// waits behind the event) and not on the dead-letter counter.
+	RetryAge *prometheus.GaugeVec
 }
 
 // NewKafkaConsumerMetrics creates Kafka consumer metrics for the given service.
@@ -69,6 +74,14 @@ func NewKafkaConsumerMetrics(serviceName string) *KafkaConsumerMetrics {
 				Help: "Current consumer lag (messages behind).",
 			},
 			[]string{"topic", "partition", "consumer_group"},
+		),
+		RetryAge: promauto.NewGaugeVec(
+			prometheus.GaugeOpts{
+				Namespace: ns, Subsystem: sub,
+				Name: "kafka_message_retry_age_seconds",
+				Help: "Seconds since the first failed attempt of the event being retried; 0 when none.",
+			},
+			[]string{"topic", "consumer_group"},
 		),
 	}
 }

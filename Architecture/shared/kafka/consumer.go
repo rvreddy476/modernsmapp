@@ -106,15 +106,14 @@ type Consumer struct {
 	// because the ordering being proven is "effect before receipt before
 	// commit" and that sequence cannot be observed through a live broker.
 	commit func(context.Context, kafkago.Message) error
+
+	// dlqWrite is the same kind of seam over the DLQ writer; nil means no
+	// DLQ is configured. Production wires it to writer.WriteMessages.
+	dlqWrite func(context.Context, kafkago.Message) error
 }
 
-// NewConsumer creates a new resilient consumer.
-func NewConsumer(
-	cfg ConsumerConfig,
-	rdb *redis.Client,
-	m *metrics.KafkaConsumerMetrics,
-	handler HandlerFunc,
-) *Consumer {
+// applyDefaults fills the zero-valued retry and dedupe settings.
+func (cfg *ConsumerConfig) applyDefaults() {
 	if cfg.MaxRetries == 0 {
 		cfg.MaxRetries = 3
 	}
@@ -124,6 +123,16 @@ func NewConsumer(
 	if cfg.DedupTTL == 0 {
 		cfg.DedupTTL = 24 * time.Hour
 	}
+}
+
+// NewConsumer creates a new resilient consumer.
+func NewConsumer(
+	cfg ConsumerConfig,
+	rdb *redis.Client,
+	m *metrics.KafkaConsumerMetrics,
+	handler HandlerFunc,
+) *Consumer {
+	cfg.applyDefaults()
 
 	dialer, err := transport.KafkaDialerFromEnv()
 	if err != nil {
@@ -164,6 +173,11 @@ func NewConsumer(
 	}
 	c.commit = func(ctx context.Context, msg kafkago.Message) error {
 		return c.reader.CommitMessages(ctx, msg)
+	}
+	if writer != nil {
+		c.dlqWrite = func(ctx context.Context, msg kafkago.Message) error {
+			return writer.WriteMessages(ctx, msg)
+		}
 	}
 	return c
 }
@@ -269,6 +283,14 @@ func (c *Consumer) processWithRetry(ctx context.Context, logger *slog.Logger, ms
 	// Retry with exponential backoff. Launch-critical consumers retry
 	// transient failures forever; only handler-marked poison reaches DLQ.
 	var lastErr error
+	// firstFailure feeds the retry-age gauge: set on every failed attempt,
+	// back to 0 on any way out (success, dead letter, shutdown).
+	var firstFailure time.Time
+	defer func() {
+		if !firstFailure.IsZero() {
+			c.setRetryAge(0)
+		}
+	}()
 	for attempt := 0; c.cfg.RetryForever || attempt <= c.cfg.MaxRetries; attempt++ {
 		start := time.Now()
 		err := c.handler(msgCtx, &envelope)
@@ -297,6 +319,10 @@ func (c *Consumer) processWithRetry(ctx context.Context, logger *slog.Logger, ms
 		}
 
 		lastErr = err
+		if firstFailure.IsZero() {
+			firstFailure = start
+		}
+		c.setRetryAge(time.Since(firstFailure).Seconds())
 		if c.metrics != nil {
 			c.metrics.ProcessingErrors.WithLabelValues(
 				c.cfg.Topic, c.cfg.GroupID, envelope.EventType, "processing",
@@ -344,8 +370,16 @@ func (c *Consumer) processWithRetry(ctx context.Context, logger *slog.Logger, ms
 	}
 }
 
+// setRetryAge reports the retry-age gauge; a no-op without metrics.
+func (c *Consumer) setRetryAge(seconds float64) {
+	if c.metrics == nil || c.metrics.RetryAge == nil {
+		return
+	}
+	c.metrics.RetryAge.WithLabelValues(c.cfg.Topic, c.cfg.GroupID).Set(seconds)
+}
+
 func (c *Consumer) sendToDLQ(ctx context.Context, logger *slog.Logger, msg kafkago.Message, env events.EventEnvelope, lastErr error) error {
-	if c.writer == nil {
+	if c.dlqWrite == nil {
 		return fmt.Errorf("no DLQ writer configured")
 	}
 
@@ -355,7 +389,7 @@ func (c *Consumer) sendToDLQ(ctx context.Context, logger *slog.Logger, msg kafka
 		kafkago.Header{Key: "x-dlq-original-topic", Value: []byte(c.cfg.Topic)},
 	)
 
-	err := c.writer.WriteMessages(ctx, kafkago.Message{
+	err := c.dlqWrite(ctx, kafkago.Message{
 		Key:     msg.Key,
 		Value:   msg.Value,
 		Headers: dlqHeaders,
@@ -373,7 +407,7 @@ func (c *Consumer) sendToDLQ(ctx context.Context, logger *slog.Logger, msg kafka
 }
 
 func (c *Consumer) sendToDLQRaw(ctx context.Context, logger *slog.Logger, msg kafkago.Message, lastErr error) error {
-	if c.writer == nil {
+	if c.dlqWrite == nil {
 		return fmt.Errorf("no DLQ writer configured")
 	}
 
@@ -383,7 +417,7 @@ func (c *Consumer) sendToDLQRaw(ctx context.Context, logger *slog.Logger, msg ka
 		kafkago.Header{Key: "x-dlq-original-topic", Value: []byte(c.cfg.Topic)},
 	)
 
-	err := c.writer.WriteMessages(ctx, kafkago.Message{
+	err := c.dlqWrite(ctx, kafkago.Message{
 		Key:     msg.Key,
 		Value:   msg.Value,
 		Headers: dlqHeaders,
@@ -484,6 +518,9 @@ func (c *Consumer) reportLag(ctx context.Context) {
 func (c *Consumer) Close() error {
 	if c.writer != nil {
 		c.writer.Close()
+	}
+	if c.reader == nil { // NewTestConsumer: nothing to close
+		return nil
 	}
 	return c.reader.Close()
 }

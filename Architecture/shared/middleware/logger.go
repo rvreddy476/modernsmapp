@@ -8,11 +8,11 @@ import (
 )
 
 // Logger is a Gin middleware that logs every request in structured JSON.
-// It skips /healthz, /readyz, and /metrics to avoid log noise.
+// It skips /healthz, /livez, /readyz, and /metrics to avoid log noise.
 func Logger() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		path := c.Request.URL.Path
-		if path == "/healthz" || path == "/readyz" || path == "/metrics" {
+		if path == "/healthz" || path == "/livez" || path == "/readyz" || path == "/metrics" {
 			c.Next()
 			return
 		}

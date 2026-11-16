@@ -108,7 +108,9 @@ func (c *Checker) Run(ctx context.Context) Result {
 	}
 }
 
-// LivenessHandler returns a simple /healthz handler (always 200 if process is alive).
+// LivenessHandler returns the /livez and /healthz handler: always 200 while
+// the process is alive. It must never run a dependency check, or one database
+// outage would make Kubernetes restart every pod.
 func LivenessHandler() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{"status": "alive"})
@@ -131,8 +133,12 @@ func (c *Checker) ReadinessHandler() gin.HandlerFunc {
 	}
 }
 
-// RegisterRoutes adds /healthz (liveness) and /readyz (readiness) to the router.
+// RegisterRoutes adds /livez and /healthz (liveness) and /readyz (readiness)
+// to the router. /livez is the path the Helm chart's liveness probe calls
+// (charts/atpost-service/values.yaml); /healthz is the older name, kept for
+// docker-compose healthchecks and anything else that still calls it.
 func (c *Checker) RegisterRoutes(r *gin.Engine) {
+	r.GET("/livez", LivenessHandler())
 	r.GET("/healthz", LivenessHandler())
 	r.GET("/readyz", c.ReadinessHandler())
 }
