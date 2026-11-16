@@ -50,6 +50,23 @@ type fakeRecordStore struct {
 	mu       sync.Mutex
 	inserted int
 	filled   int
+
+	// Retired sounds (sound_retirement_handler_test.go): carriers maps
+	// {sound, post} to the post's first video when the post is live and
+	// plays the sound; carrierFail fails the lookup.
+	carriers    map[[2]uuid.UUID]uuid.UUID
+	carrierFail error
+}
+
+func (f *fakeRecordStore) RetiredSoundCarrier(_ context.Context, soundID, postID uuid.UUID) (*uuid.UUID, error) {
+	if f.carrierFail != nil {
+		return nil, f.carrierFail
+	}
+	m, ok := f.carriers[[2]uuid.UUID{soundID, postID}]
+	if !ok {
+		return nil, nil
+	}
+	return &m, nil
 }
 
 func (f *fakeRecordStore) page(match func(*postgres.AudioTrack) bool, limit, offset int) ([]postgres.AudioTrack, error) {

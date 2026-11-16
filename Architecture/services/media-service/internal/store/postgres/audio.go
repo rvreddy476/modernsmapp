@@ -140,6 +140,11 @@ func (a AudioTrack) unavailableReason() string {
 	if a.ReuseBlock != "" {
 		return a.ReuseBlock
 	}
+	if a.Status == SoundStatusRetired {
+		// Its source video was deleted by its author: the reels that
+		// already play it keep it, nothing new may (migration 032).
+		return SoundStatusRetired
+	}
 	if a.Status != "ready" {
 		return "not_ready"
 	}

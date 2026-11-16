@@ -257,6 +257,9 @@ func (s *reelSoundStore) IncrementAudioUsageCount(context.Context, uuid.UUID) er
 	s.uses++
 	return nil
 }
+func (s *reelSoundStore) RetiredSoundCarrier(context.Context, uuid.UUID, uuid.UUID) (*uuid.UUID, error) {
+	return nil, nil
+}
 
 func librarySound(title, block string) *postgres.AudioTrack {
 	lib := uuid.New()

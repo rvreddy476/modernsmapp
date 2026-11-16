@@ -126,6 +126,36 @@ func validateVideoOriginalSize(size int64) error {
 	return nil
 }
 
+// VideoTooLargeMessage is the text of a VIDEO_TOO_LARGE refusal for a cap
+// of capBytes. Product rule (2026-11-16): a long video has NO length cap;
+// the cap is the transcode worker's processing limit on one FILE (its
+// scratch volume holds the original plus about 2x for the ladder), so the
+// message says that, and says how to get under it, instead of reading like
+// a limit on how long a video may be.
+func VideoTooLargeMessage(capBytes int64) string {
+	size := formatByteSize(capBytes)
+	return "This video file is larger than " + size + ", the most our video processing can take in one file. " +
+		"There is no limit on video length: export the same video at a lower bitrate or resolution so the file is under " +
+		size + ", then upload it again."
+}
+
+// formatByteSize writes a byte count as GiB (or MiB below 1 GiB), with one
+// decimal only when it is not whole: 16 GiB, 6 GiB, 1.5 GiB, 700 MiB.
+func formatByteSize(n int64) string {
+	const kib, mib, gib = int64(1) << 10, int64(1) << 20, int64(1) << 30
+	unit, name := gib, "GiB"
+	if n < gib {
+		unit, name = mib, "MiB"
+	}
+	if n < mib {
+		unit, name = kib, "KiB"
+	}
+	if n%unit == 0 {
+		return fmt.Sprintf("%d %s", n/unit, name)
+	}
+	return fmt.Sprintf("%.1f %s", float64(n)/float64(unit), name)
+}
+
 // ValidateUploadSize is the simple-upload size gate. A video may be up to
 // MaxSimpleVideoUploadBytes (beyond that: ErrUseResumableUpload, unless it
 // is over the worker's cap: ErrVideoTooLarge); anything else up to

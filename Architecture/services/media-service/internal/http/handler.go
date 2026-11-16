@@ -65,6 +65,9 @@ type Handler struct {
 	// (trending_sounds_handler.go); nil answers the list 503 and every
 	// badge null.
 	trending trendingSoundsService
+	// takedowns backs POST /v1/media/internal/sounds/:audioId/takedown
+	// (sound_takedown_handler.go); nil means the service.
+	takedowns soundTakedownService
 	// imageBytes backs GET /v1/media/internal/:mediaId/image-bytes
 	// (image_bytes_handler.go); nil means the service's reader. An interface
 	// so a test can stand fake stores behind the real reader.
@@ -217,6 +220,10 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, authMW, optionalAuthMW gin.Handl
 			// Trending sounds (2026-10-24): post-service's sound page asks
 			// for the badge and the cover (trending_sounds_handler.go).
 			internal.GET("/sounds/:audioId/extras", refuseGatewayIdentity(), h.GetSoundExtrasInternal)
+			// Retired sounds (2026-11-16): a copyright or moderation
+			// takedown of one sound; its objects go and every reel that
+			// plays it goes silent (sound_takedown_handler.go).
+			internal.POST(SoundTakedownPath, refuseGatewayIdentity(), h.TakeDownSoundInternal)
 			// Copyright Match phase 1 (shadow): queue or inspect the visual
 			// fingerprint job of a ready video. No URLs, no user ids.
 			internal.POST("/:mediaId/fingerprint", h.EnqueueFingerprint)

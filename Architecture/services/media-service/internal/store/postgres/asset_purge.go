@@ -125,16 +125,16 @@ func (s *MediaAssetStore) DeleteAssetForReferrer(ctx context.Context, mediaID uu
 		rows.Close()
 	}
 	// The sound extracted from this video (service/sounds.go) lives OUTSIDE
-	// the asset prefix, under audio/<uploader>/<media>/, so neither the
-	// prefix listing nor the variant rows find it. Its objects go with the
-	// asset: a sound whose source is gone is refused everywhere
-	// (service/audio_reads.go admitToTrack), so nothing can play them again.
+	// the asset prefix, under audio/<uploader>/<media>/. A READY sound is
+	// retired with the video and keeps its objects: the reels that already
+	// play it keep playing it (soundRetireSQL, below). Only a sound that
+	// never became playable goes with the asset.
 	soundsPresent, err := tableExists(ctx, tx, "audio_tracks")
 	if err != nil {
 		return nil, fmt.Errorf("purge asset: probe audio_tracks: %w", err)
 	}
 	if soundsPresent {
-		soundKeys, err := collectSoundKeys(ctx, tx, soundObjectKeysSQL("= $1"), mediaID)
+		soundKeys, err := collectSoundKeys(ctx, tx, soundObjectKeysSQL(soundUnplayableOfSource("= $1")), mediaID)
 		if err != nil {
 			return nil, fmt.Errorf("purge asset: sound keys: %w", err)
 		}
@@ -165,6 +165,8 @@ func (s *MediaAssetStore) DeleteAssetForReferrer(ctx context.Context, mediaID uu
 		{"media_caption_jobs", `DELETE FROM media_caption_jobs WHERE media_id = $1`},
 		{"media_transcode_inbox", `DELETE FROM media_transcode_inbox WHERE media_asset_id = $1`},
 		{"media_clips", `DELETE FROM media_clips WHERE media_asset_id = $1`},
+		// Destroy the unplayable sound, then retire the ready one.
+		{"audio_tracks", soundDestroySQL(soundUnplayableOfSource("= $1"))},
 		{"audio_tracks", soundRetireSQL("= $1")},
 		{"media_event_outbox", `DELETE FROM media_event_outbox WHERE media_asset_id = $1`},
 		{"owner_media_resolved", `DELETE FROM owner_media_resolved WHERE media_asset_id = $1`},
@@ -234,44 +236,88 @@ func referrerPurgeChecks(mediaID, referrerID uuid.UUID) []referrerCheck {
 	}
 }
 
-// ── The sound of a purged source ────────────────────────────────────────────
+// ── The sound of a deleted source ───────────────────────────────────────────
 //
 // A sound is extracted once per source video and its objects are written to
 // audio/<uploader>/<media>/ (service/sounds.go), outside the asset prefix.
-// When the source is purged (here, or by an account erasure, PurgeUser) the
-// sound can never be heard again: admitToTrack refuses a sound with no
-// source, on every route, for every reel that carried it. So its objects are
-// reclaimed with the asset, and its row is kept (post-service's
-// posts.audio_track_id still names it) but marked deleted, with no keys.
 //
-// sources is the SQL predicate on source_media_id: "= $1" for one asset,
-// "IN (<the user's assets>)" for an erasure.
+// When the AUTHOR deletes the source video (the owner's delete, DeleteMedia,
+// or the post purge after the restore window, DeleteAssetForReferrer) a
+// ready sound is RETIRED (decision 2026-11-16, migration 032): it keeps its
+// objects and its row, loses its source, and may no longer go on a new reel
+// or appear in search, trending or its sound page; a reel that already
+// plays it keeps playing it (service/audio_reads.go admits a viewer of that
+// reel). Before, the objects went with the video and every such reel went
+// silent.
+//
+// The objects are reclaimed, and the row marked 'deleted' with no keys (it
+// stays: post-service's posts.audio_track_id still names it), only:
+//
+//	(a) by an account erasure (PurgeUser, soundOfErasedUser);
+//	(b) by a takedown (TakeDownSound);
+//	(c) once no post references a retired sound (ReclaimUnusedRetiredSounds);
+//
+// and, with the video, a sound of it that never became playable (status
+// other than 'ready'): no post can carry one, since an attach needs 'ready'.
 
-// soundObjectKeysSQL selects (object_key, source_media_id) of every sound
-// object taken from the sources: the audio and the waveform. A key that a
-// sound row of ANY other source also names (a library row, a row another
-// service wrote) is left out, so reclaiming one source never deletes an
-// object something else still plays.
-func soundObjectKeysSQL(sources string) string {
-	return `SELECT DISTINCT ON (s.k) s.k, s.source_media_id FROM (
-			SELECT source_media_id, audio_key AS k FROM audio_tracks WHERE source_media_id ` + sources + `
+// SoundStatusRetired is audio_tracks.status of a retired sound.
+const SoundStatusRetired = "retired"
+
+// soundUnplayableOfSource matches the sounds of the sources (a predicate on
+// source_media_id: "= $1") that never became playable.
+func soundUnplayableOfSource(sources string) string {
+	return `source_media_id ` + sources + ` AND status <> 'ready'`
+}
+
+// soundOfErasedUser matches every sound whose objects are user $1's: those
+// of the videos they still own, and those they retired by deleting a video
+// earlier (source gone, owner recorded).
+func soundOfErasedUser(owned string) string {
+	return `(source_media_id IN (` + owned + `) OR (source_media_id IS NULL AND source_uploader_id = $1))`
+}
+
+// soundObjectKeysSQL selects (object_key, ledger media id) of every object of
+// the sounds that match (an unqualified predicate over audio_tracks): the
+// audio and the waveform. The ledger id is the source, the former source of
+// a retired sound, or the sound itself (media_blob_reclaim.media_id is NOT
+// NULL). A key that any OTHER sound row also names (a library row, a row
+// another service wrote, a retired sound) is left out, so reclaiming one
+// sound never deletes an object something else still plays.
+func soundObjectKeysSQL(match string) string {
+	return `SELECT DISTINCT ON (s.k) s.k, s.ledger_id FROM (
+			SELECT COALESCE(source_media_id, former_source_media_id, id) AS ledger_id, audio_key AS k FROM audio_tracks WHERE ` + match + `
 			UNION ALL
-			SELECT source_media_id, waveform_key AS k FROM audio_tracks WHERE source_media_id ` + sources + `
+			SELECT COALESCE(source_media_id, former_source_media_id, id), waveform_key FROM audio_tracks WHERE ` + match + `
 		) s
 		WHERE s.k IS NOT NULL AND s.k <> ''
 		  AND NOT EXISTS (
 			SELECT 1 FROM audio_tracks o
-			WHERE (o.source_media_id IS NULL OR NOT (o.source_media_id ` + sources + `))
+			WHERE o.id NOT IN (SELECT id FROM audio_tracks WHERE ` + match + `)
 			  AND (o.audio_key = s.k OR o.waveform_key = s.k))`
 }
 
-// soundRetireSQL marks the sounds of the sources deleted and forgets their
-// source and keys, so the row can never sign a link to an object that is
-// gone.
-func soundRetireSQL(sources string) string {
+// soundDestroySQL marks the matching sounds deleted and forgets their source
+// and keys, so the row can never sign a link to an object that is gone. Run
+// after soundObjectKeysSQL over the same match has recorded the keys.
+func soundDestroySQL(match string) string {
 	return `UPDATE audio_tracks
 		SET source_media_id = NULL, status = 'deleted', audio_key = NULL, waveform_key = NULL, updated_at = NOW()
-		WHERE source_media_id ` + sources
+		WHERE ` + match
+}
+
+// soundRetireSQL retires the READY sounds of the sources (a predicate on
+// source_media_id) whose video the author is deleting: the source is
+// forgotten (the asset row is about to go), what the row needs later is
+// kept (former_source_media_id for the ledger, source_uploader_id for an
+// erasure, retired_at for the sweep's grace), and the keys stay. Run before
+// the media_assets row is deleted, so the owner can still be read.
+func soundRetireSQL(sources string) string {
+	return `UPDATE audio_tracks t
+		SET former_source_media_id = t.source_media_id,
+		    source_uploader_id = COALESCE(t.source_uploader_id,
+		        (SELECT m.uploader_id FROM media_assets m WHERE m.id = t.source_media_id)),
+		    source_media_id = NULL, status = '` + SoundStatusRetired + `', retired_at = NOW(), updated_at = NOW()
+		WHERE t.source_media_id ` + sources + ` AND t.status = 'ready'`
 }
 
 // collectSoundKeys runs soundObjectKeysSQL and returns the keys.
@@ -284,8 +330,8 @@ func collectSoundKeys(ctx context.Context, tx pgx.Tx, sql string, args ...any) (
 	var out []string
 	for rows.Next() {
 		var k string
-		var source *uuid.UUID
-		if err := rows.Scan(&k, &source); err != nil {
+		var ledger *uuid.UUID
+		if err := rows.Scan(&k, &ledger); err != nil {
 			return nil, err
 		}
 		if k != "" {
@@ -293,4 +339,45 @@ func collectSoundKeys(ctx context.Context, tx pgx.Tx, sql string, args ...any) (
 		}
 	}
 	return out, rows.Err()
+}
+
+// destroySoundsTx reclaims the objects of the sounds that match and marks
+// them deleted, in tx: every key is recorded in media_blob_reclaim (with its
+// ledger id) BEFORE the rows forget it, so a failed object delete is retried
+// by the reclaim worker. It returns the recorded keys.
+func destroySoundsTx(ctx context.Context, tx pgx.Tx, match string, args ...any) ([]string, error) {
+	rows, err := tx.Query(ctx, soundObjectKeysSQL(match), args...)
+	if err != nil {
+		return nil, fmt.Errorf("sound keys: %w", err)
+	}
+	type ledgerKey struct {
+		key    string
+		ledger uuid.UUID
+	}
+	var found []ledgerKey
+	for rows.Next() {
+		var lk ledgerKey
+		if err := rows.Scan(&lk.key, &lk.ledger); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("sound keys: %w", err)
+		}
+		found = append(found, lk)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("sound keys: %w", err)
+	}
+	keys := make([]string, 0, len(found))
+	for _, lk := range found {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO media_blob_reclaim (object_key, media_id) VALUES ($1, $2)
+			ON CONFLICT (object_key) DO NOTHING`, lk.key, lk.ledger); err != nil {
+			return nil, fmt.Errorf("record sound reclaim: %w", err)
+		}
+		keys = append(keys, lk.key)
+	}
+	if _, err := tx.Exec(ctx, soundDestroySQL(match), args...); err != nil {
+		return nil, fmt.Errorf("destroy sound: %w", err)
+	}
+	return keys, nil
 }

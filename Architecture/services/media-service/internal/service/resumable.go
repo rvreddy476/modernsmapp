@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/atpost/media-service/internal/store/blob"
@@ -67,6 +68,22 @@ func resumableChunkPlan(totalBytes int64) (chunkSize, totalParts int, err error)
 			ErrResumableUploadTooLarge, totalBytes, parts, chunk/mib, maxUploadParts, MaxResumableUploadBytes)
 	}
 	return int(chunk), int(parts), nil
+}
+
+// checkResumableVideoBytes is the worker's cap (validateVideoOriginalSize)
+// applied to a video session after init: to the size it declared and to
+// the bytes received so far (receivedBytes). Init already refused a
+// declared size over the cap; this catches a session opened under a larger
+// cap, so the creator learns it at the next chunk, not after the last one
+// and a failed transcode. A non-video session is not the worker's.
+func checkResumableVideoBytes(upload *postgres.ResumableUpload, receivedBytes int64) error {
+	if upload == nil || !strings.HasPrefix(strings.ToLower(strings.TrimSpace(upload.MimeType)), "video/") {
+		return nil
+	}
+	if err := validateVideoOriginalSize(upload.TotalBytes); err != nil {
+		return err
+	}
+	return validateVideoOriginalSize(receivedBytes)
 }
 
 // InitResumableUploadResponse is returned when initiating a multipart upload.
@@ -246,6 +263,12 @@ func (s *Service) UploadPart(ctx context.Context, uploadID, userID uuid.UUID, pa
 	if size != expectedSize {
 		return nil, fmt.Errorf("part %d has %d bytes, expected %d", partNumber, size, expectedSize)
 	}
+	// The cap again, on the bytes this part would bring the file to: a
+	// session opened before the cap was lowered (or before it existed)
+	// stops here, not after the last part.
+	if err := checkResumableVideoBytes(upload, int64(upload.ChunkSize)*int64(partNumber-1)+size); err != nil {
+		return nil, err
+	}
 
 	part, err := s.blobStore.UploadPart(ctx, upload.ObjectKey, upload.StorageUploadID, partNumber, data, size)
 	if err != nil {
@@ -299,6 +322,13 @@ func (s *Service) CompleteResumableUpload(ctx context.Context, uploadID, userID 
 	}
 	if len(parts) < upload.TotalParts {
 		return nil, fmt.Errorf("incomplete: %d of %d parts uploaded", len(parts), upload.TotalParts)
+	}
+	var received int64
+	for _, p := range parts {
+		received += p.SizeBytes
+	}
+	if err := checkResumableVideoBytes(upload, received); err != nil {
+		return nil, err
 	}
 
 	blobParts := make([]blob.MultipartPart, len(parts))

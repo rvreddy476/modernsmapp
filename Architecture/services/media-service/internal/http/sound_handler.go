@@ -23,7 +23,11 @@ import (
 //	  422  NOT_A_VIDEO | TOO_LONG | NOT_READY | NO_AUDIO
 //	  503  SOUND_UNAVAILABLE storage, ffmpeg or store fault; retry
 //
-//	GET  /v1/audio/:audioId/serve
+//	GET  /v1/audio/:audioId/serve[?post_id=<the reel playing it>]
+//	  post_id is required to hear a RETIRED sound (its source video was
+//	  deleted by its author): it must name a live post that plays the sound,
+//	  and the viewer must be admitted to that post's video. 400 when it is
+//	  not a uuid.
 //	  307  Location: the presigned audio; Cache-Control / Vary as the media
 //	       serve route writes them
 //	HEAD /v1/audio/:audioId/serve
@@ -146,7 +150,11 @@ func (h *Handler) authorizedSoundURL(c *gin.Context) (string, bool) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid audio ID", nil)
 		return "", false
 	}
-	url, err := h.recordsSvc().AudioTrackURLForViewer(c.Request.Context(), deliveryViewer(c), audioID)
+	viaPost, ok := soundCarrierPost(c)
+	if !ok {
+		return "", false
+	}
+	url, err := h.recordsSvc().AudioTrackURLForViewerVia(c.Request.Context(), deliveryViewer(c), audioID, viaPost)
 	if err != nil {
 		writeDeliveryErrorAs(c, err, "Audio track not found")
 		return "", false

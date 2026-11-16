@@ -90,9 +90,11 @@ func purgeUserSteps() []purgeStep {
 			SELECT object_key, media_id FROM resumable_uploads WHERE (media_id IN (` + owned + `) OR uploader_id = $1) AND object_key <> ''
 			ON CONFLICT (object_key) DO NOTHING`},
 		// The sounds taken from the user's videos live outside the asset
-		// prefixes (asset_purge.go, soundObjectKeysSQL).
+		// prefixes (asset_purge.go, soundObjectKeysSQL). An erasure takes
+		// them all, the ones retired when the user deleted a video earlier
+		// included: the reels of others that play them go silent.
 		{"audio_tracks", `INSERT INTO media_blob_reclaim (object_key, media_id)
-			` + soundObjectKeysSQL(`IN (`+owned+`)`) + `
+			` + soundObjectKeysSQL(soundOfErasedUser(owned)) + `
 			ON CONFLICT (object_key) DO NOTHING`},
 		// 2. Dependent rows.
 		{"media_variants", `DELETE FROM media_variants WHERE media_asset_id IN (` + owned + `)`},
@@ -112,7 +114,7 @@ func purgeUserSteps() []purgeStep {
 		// would keep the user's media forever.
 		{"media_claims", `DELETE FROM media_claims WHERE media_id IN (` + owned + `)`},
 		{"media_clips", `DELETE FROM media_clips WHERE media_asset_id IN (` + owned + `)`},
-		{"audio_tracks", soundRetireSQL(`IN (` + owned + `)`)},
+		{"audio_tracks", soundDestroySQL(soundOfErasedUser(owned))},
 		{"media_event_outbox", `DELETE FROM media_event_outbox WHERE media_asset_id IN (` + owned + `)`},
 		{"owner_media_slots", `DELETE FROM owner_media_slots WHERE media_asset_id IN (` + owned + `) OR (owner_type = 'profile' AND owner_id = $1)`},
 		{"owner_media_resolved", `DELETE FROM owner_media_resolved WHERE media_asset_id IN (` + owned + `) OR (owner_type = 'profile' AND owner_id = $1)`},

@@ -88,3 +88,41 @@ func TestInitUploadOverVideoCapIsVideoTooLarge(t *testing.T) {
 		}
 	}
 }
+
+// The refusal says what the limit is: a processing limit on the FILE, with
+// the cap in bytes and as text, never a limit on video length (product
+// rule: long videos have no length cap).
+func TestVideoTooLargeBodySaysProcessingLimitNotLength(t *testing.T) {
+	r := uploadSizeRouter()
+	limit := service.VideoOriginalCap()
+	req := httptest.NewRequest(http.MethodPost, "/resumable/init", strings.NewReader(
+		`{"file_type":"video","mime_type":"video/mp4","total_bytes":`+strconv.FormatInt(limit+1, 10)+`}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-User-Id", "11111111-1111-1111-1111-111111111111")
+	rec := httptest.NewRecorder()
+	r.ServeHTTP(rec, req)
+	var env struct {
+		Error struct {
+			Code    string         `json:"code"`
+			Message string         `json:"message"`
+			Details map[string]any `json:"details"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatalf("body %s: %v", rec.Body.String(), err)
+	}
+	if rec.Code != http.StatusRequestEntityTooLarge || env.Error.Code != CodeVideoTooLarge {
+		t.Fatalf("got %d %s", rec.Code, env.Error.Code)
+	}
+	if env.Error.Details["limit"] != VideoTooLargeLimit || env.Error.Details["max_bytes"] != float64(limit) {
+		t.Fatalf("details = %v", env.Error.Details)
+	}
+	if env.Error.Message != service.VideoTooLargeMessage(limit) ||
+		!strings.Contains(env.Error.Message, "no limit on video length") || !strings.Contains(env.Error.Message, "16 GiB") {
+		t.Fatalf("message %q", env.Error.Message)
+	}
+	// The byte arithmetic of the refusal stays on the server.
+	if strings.Contains(env.Error.Message, strconv.FormatInt(limit+1, 10)) {
+		t.Fatalf("message carries the raw sizes: %q", env.Error.Message)
+	}
+}

@@ -2,6 +2,7 @@ package http
 
 import (
 	"errors"
+	"log/slog"
 	"net/http"
 	"strconv"
 
@@ -60,13 +61,28 @@ func (h *Handler) InitResumableUpload(c *gin.Context) {
 }
 
 // CodeVideoTooLarge: a video original over the cap the transcode worker
-// takes, refused at init on either upload route (413, details.max_bytes).
+// takes (processing.VideoOriginalCap, env MEDIA_WORKER_MAX_ORIGINAL_BYTES),
+// refused at init on either upload route, and again on a resumable chunk or
+// complete whose bytes pass it (a session opened under a larger cap).
 // Not USE_RESUMABLE_UPLOAD: the other route refuses it too.
+//
+//	413 {"error": {"code": "VIDEO_TOO_LARGE", "message": <VideoTooLargeMessage>,
+//	      "details": {"max_bytes": <cap>, "limit": "processing_file_size"}}}
+//
+// The limit is on the FILE, for processing; long videos have no length cap.
 const CodeVideoTooLarge = "VIDEO_TOO_LARGE"
 
+// VideoTooLargeLimit is details.limit of a VIDEO_TOO_LARGE refusal.
+const VideoTooLargeLimit = "processing_file_size"
+
 func writeVideoTooLarge(c *gin.Context, err error) {
-	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusRequestEntityTooLarge, CodeVideoTooLarge, err.Error(),
-		map[string]any{"max_bytes": service.VideoOriginalCap()})
+	if err != nil {
+		slog.InfoContext(c.Request.Context(), "upload refused: video over the processing cap", "error", err)
+	}
+	limit := service.VideoOriginalCap()
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusRequestEntityTooLarge, CodeVideoTooLarge,
+		service.VideoTooLargeMessage(limit),
+		map[string]any{"max_bytes": limit, "limit": VideoTooLargeLimit})
 }
 
 func (h *Handler) GetResumableUploadStatus(c *gin.Context) {
@@ -122,6 +138,10 @@ func (h *Handler) UploadChunk(c *gin.Context) {
 
 	resp, err := h.svc.UploadPart(c.Request.Context(), uploadID, userID, partNumber, c.Request.Body, size)
 	if err != nil {
+		if errors.Is(err, service.ErrVideoTooLarge) {
+			writeVideoTooLarge(c, err)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}
@@ -144,6 +164,10 @@ func (h *Handler) CompleteResumableUpload(c *gin.Context) {
 
 	media, err := h.svc.CompleteResumableUpload(c.Request.Context(), uploadID, userID)
 	if err != nil {
+		if errors.Is(err, service.ErrVideoTooLarge) {
+			writeVideoTooLarge(c, err)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", err.Error(), nil)
 		return
 	}

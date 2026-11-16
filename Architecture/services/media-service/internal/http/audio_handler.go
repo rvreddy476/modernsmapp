@@ -91,7 +91,11 @@ func (h *Handler) GetAudioTrack(c *gin.Context) {
 	// A sound is a piece of its source video: its record is answered to that
 	// video's audience (service/audio_reads.go). It used to be answered to
 	// anyone holding the id, storage key and source included.
-	track, err := h.recordsSvc().AudioTrackForViewer(c.Request.Context(), deliveryViewer(c), audioID)
+	viaPost, ok := soundCarrierPost(c)
+	if !ok {
+		return
+	}
+	track, err := h.recordsSvc().AudioTrackForViewerVia(c.Request.Context(), deliveryViewer(c), audioID, viaPost)
 	if err != nil {
 		writeDeliveryErrorAs(c, err, "Audio track not found")
 		return
@@ -116,13 +120,39 @@ func (h *Handler) GetAudioTrackURL(c *gin.Context) {
 	// video's audience through the delivery gate (service/record_read.go).
 	// It used to take no viewer at all. A denial is the same body as a
 	// missing track; an unresolved authority is a retryable 503.
-	url, err := h.recordsSvc().AudioTrackURLForViewer(c.Request.Context(), deliveryViewer(c), audioID)
+	viaPost, ok := soundCarrierPost(c)
+	if !ok {
+		return
+	}
+	url, err := h.recordsSvc().AudioTrackURLForViewerVia(c.Request.Context(), deliveryViewer(c), audioID, viaPost)
 	if err != nil {
 		writeDeliveryErrorAs(c, err, "Audio track not found")
 		return
 	}
 
 	api.JSON(c.Writer, http.StatusOK, gin.H{"url": url}, nil)
+}
+
+// soundCarrierParam names the reel a viewer is playing a sound on
+// (GET /v1/audio/:id, /url, /serve and HEAD /serve). Optional; a RETIRED
+// sound (its source video deleted by its author) is heard only through a
+// live reel that plays it, so a client playing a post's sound always sends
+// it. When the request does not name one it is uuid.Nil.
+const soundCarrierParam = "post_id"
+
+// soundCarrierPost reads ?post_id=; a value that is not a uuid is answered
+// 400 here (false).
+func soundCarrierPost(c *gin.Context) (uuid.UUID, bool) {
+	raw := c.Query(soundCarrierParam)
+	if raw == "" {
+		return uuid.Nil, true
+	}
+	id, err := uuid.Parse(raw)
+	if err != nil || id == uuid.Nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "Invalid post_id", nil)
+		return uuid.Nil, false
+	}
+	return id, true
 }
 
 func (h *Handler) SearchAudio(c *gin.Context) {

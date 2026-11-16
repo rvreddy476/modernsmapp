@@ -67,6 +67,10 @@ type recordReadStore interface {
 	// The sound search and the usage counter (audio_reads.go).
 	SearchAudioTracks(ctx context.Context, query string, limit, offset int) ([]postgres.AudioTrack, error)
 	IncrementAudioUsageCount(ctx context.Context, id uuid.UUID) error
+	// The reel through which a retired sound is still heard
+	// (audio_reads.go admitToTrackVia): the post's first video when the
+	// post is live and plays the sound, else nil.
+	RetiredSoundCarrier(ctx context.Context, soundID, postID uuid.UUID) (*uuid.UUID, error)
 }
 
 // recordPresigner signs the one URL a record read still hands out: the
@@ -229,7 +233,14 @@ func mediaStatusResponse(ctx context.Context, media *postgres.MediaAsset,
 // A library sound whose library row named an https URL is sent there as it
 // is; every other audio_key is a storage key and is presigned.
 func (r *RecordReads) AudioTrackURLForViewer(ctx context.Context, viewerID, audioID uuid.UUID) (string, error) {
-	track, err := r.AudioTrackForViewer(ctx, viewerID, audioID)
+	return r.AudioTrackURLForViewerVia(ctx, viewerID, audioID, uuid.Nil)
+}
+
+// AudioTrackURLForViewerVia is AudioTrackURLForViewer through the reel the
+// viewer is playing (?post_id=), which only a retired sound needs
+// (audio_reads.go admitToTrackVia).
+func (r *RecordReads) AudioTrackURLForViewerVia(ctx context.Context, viewerID, audioID, viaPost uuid.UUID) (string, error) {
+	track, err := r.AudioTrackForViewerVia(ctx, viewerID, audioID, viaPost)
 	if err != nil {
 		return "", err
 	}

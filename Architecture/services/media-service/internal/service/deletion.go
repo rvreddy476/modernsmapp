@@ -163,6 +163,9 @@ func (s *Service) StartBlobReclaimWorker(ctx context.Context) {
 				return
 			case <-ticker.C:
 				s.expireResumableUploads(ctx)
+				// Retired sounds no post plays any more (migration 032):
+				// their keys join the ledger drained just below.
+				reclaimUnusedRetiredSounds(ctx, s.pgStore)
 				keys, err := s.pgStore.PendingBlobReclaims(ctx, 200)
 				if err != nil {
 					slog.Error("blob reclaim: list failed", "error", err)

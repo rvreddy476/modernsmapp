@@ -21,9 +21,11 @@ type recordReadService interface {
 	MediaForService(ctx context.Context, mediaID uuid.UUID) (*postgres.MediaAsset, error)
 	StatusForViewer(ctx context.Context, viewerID, mediaID uuid.UUID) (*service.MediaStatusResponse, error)
 	StatusForService(ctx context.Context, mediaID uuid.UUID) (*service.MediaStatusResponse, error)
-	AudioTrackURLForViewer(ctx context.Context, viewerID, audioID uuid.UUID) (string, error)
-	// The sound reads (service/audio_reads.go).
-	AudioTrackForViewer(ctx context.Context, viewerID, audioID uuid.UUID) (*postgres.AudioTrack, error)
+	// The sound reads (service/audio_reads.go). viaPost is the reel the
+	// viewer is playing (?post_id=), uuid.Nil when none is named; only a
+	// retired sound needs it.
+	AudioTrackURLForViewerVia(ctx context.Context, viewerID, audioID, viaPost uuid.UUID) (string, error)
+	AudioTrackForViewerVia(ctx context.Context, viewerID, audioID, viaPost uuid.UUID) (*postgres.AudioTrack, error)
 	SearchAudioForViewer(ctx context.Context, viewerID uuid.UUID, query string, limit, offset int) ([]postgres.AudioTrack, error)
 	UseAudioTrackAsViewer(ctx context.Context, viewerID, audioID uuid.UUID) error
 }

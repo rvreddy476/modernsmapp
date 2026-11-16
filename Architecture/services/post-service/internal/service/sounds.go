@@ -135,6 +135,12 @@ type PostSound struct {
 	// LibraryID is set on a platform library sound only (the curated
 	// library row it was made from); absent on every other sound.
 	LibraryID *uuid.UUID `json:"library_id,omitempty"`
+	// Retired is true on a sound whose source video its author deleted
+	// (media-service migration 032): this post keeps playing it, but no
+	// new post may use it and it has no sound page. Its bytes are
+	// media-service's /v1/audio/:id/serve?post_id=<this post>; without
+	// post_id they are refused. Absent on every other sound.
+	Retired bool `json:"retired,omitempty"`
 }
 
 // SoundTrending is the sound page's trending badge (trending sounds,
@@ -344,15 +350,39 @@ func (s *Service) attachSounds(ctx context.Context, viewerID *uuid.UUID, details
 			continue
 		}
 		t := tracks[*d.Post.AudioTrackID]
-		if !playableSound(t) || (needsAudience(t) && !allowed[*t.MediaID]) {
-			continue
-		}
 		startMs := 0
 		if d.Post.AudioStartMs != nil {
 			startMs = *d.Post.AudioStartMs
 		}
+		if retiredSound(t) {
+			// Its source video is gone, so there is no media to ask; the
+			// post this viewer is reading already carries it. media-service
+			// re-gates the bytes on this post's video (?post_id=).
+			d.Sound = postSoundOf(t, startMs)
+			d.Sound.Retired = true
+			continue
+		}
+		if !playableSound(t) || (needsAudience(t) && !allowed[*t.MediaID]) {
+			continue
+		}
 		d.Sound = postSoundOf(t, startMs)
 	}
+}
+
+// audioTrackRetired is media-service's status of a sound whose source video
+// its author deleted (media-service migration 032).
+const audioTrackRetired = "retired"
+
+// errSoundRetired is soundForViewer's answer for a retired sound: it IS
+// ErrSoundNotFound (no sound page, no reuse), and UseSound tells it apart.
+var errSoundRetired = fmt.Errorf("%w: retired", ErrSoundNotFound)
+
+// retiredSound reports whether the sound is retired: it plays on the posts
+// that already carry it and nowhere else. It is never playableSound, so it
+// is never reusable, listed by sound, or attached to a new post (that
+// needs 'ready').
+func retiredSound(t *postgres.AudioTrack) bool {
+	return t != nil && t.Status == audioTrackRetired && !t.IsLibrarySound()
 }
 
 // soundForViewer reads one sound for a viewer who wants to reuse it, or
@@ -368,6 +398,11 @@ func (s *Service) soundForViewer(ctx context.Context, viewerID *uuid.UUID, sound
 		return nil, fmt.Errorf("%w: read: %v", ErrSoundUnavailable, err)
 	}
 	track := tracks[soundID]
+	if retiredSound(track) {
+		// Not reusable and no sound page; still ErrSoundNotFound to every
+		// caller but "use this sound" (UseSound), which says why.
+		return nil, errSoundRetired
+	}
 	if !reusableSound(track, viewerID) {
 		return nil, ErrSoundNotFound
 	}
@@ -456,6 +491,11 @@ func (s *Service) UseSound(ctx context.Context, viewerID, postID uuid.UUID) (*Po
 				return nil, ErrSoundReuseNotAllowed
 			}
 			return postSoundOf(track, 0), nil
+		case errors.Is(err, errSoundRetired):
+			// The reel plays a sound whose source video its author deleted:
+			// it keeps playing here, but goes on no new post. Not the reel's
+			// own audio either: the viewer asked for the sound they hear.
+			return nil, &SoundUnavailableError{Reason: audioTrackRetired}
 		case errors.Is(err, ErrSoundNotFound):
 			// Not theirs to hear: what they may use is the reel's own audio.
 		default:

@@ -37,6 +37,11 @@ import (
 // is ready. A list leaves out what the viewer may not
 // hear; it never says that something was left out.
 //
+// A RETIRED sound (2026-11-16: its source video was deleted by its author,
+// migration 032) has no source either. It answers only through a reel that
+// already plays it (?post_id=<reel> on GET /v1/audio/:id, /url and /serve):
+// to the audience of that reel's video. Never in a list, never for a use.
+//
 // Fail-closed: an authority that cannot answer is ErrDeliveryUnresolved for
 // the whole request. A list that silently dropped the sounds it could not
 // check would look complete and be cached as such.
@@ -56,7 +61,16 @@ func clampAudioPage(limit, offset int) (int, int) {
 
 // AudioTrackForViewer is GET /v1/audio/:audioId for viewerID (uuid.Nil is
 // signed-out): the row, once the viewer is admitted to the source video.
+// A retired sound is refused here: it is heard only through a reel that
+// carries it (AudioTrackForViewerVia).
 func (r *RecordReads) AudioTrackForViewer(ctx context.Context, viewerID, audioID uuid.UUID) (*postgres.AudioTrack, error) {
+	return r.AudioTrackForViewerVia(ctx, viewerID, audioID, uuid.Nil)
+}
+
+// AudioTrackForViewerVia is AudioTrackForViewer with the reel the viewer is
+// playing (viaPost, ?post_id=; uuid.Nil when the request names none). The
+// reel matters only for a retired sound (admitToTrackVia).
+func (r *RecordReads) AudioTrackForViewerVia(ctx context.Context, viewerID, audioID, viaPost uuid.UUID) (*postgres.AudioTrack, error) {
 	if r == nil || r.store == nil {
 		return nil, fmt.Errorf("%w: record store not configured", delivery.ErrDeliveryUnresolved)
 	}
@@ -70,10 +84,38 @@ func (r *RecordReads) AudioTrackForViewer(ctx context.Context, viewerID, audioID
 	if track == nil {
 		return nil, delivery.ErrDeliveryDenied
 	}
-	if err := r.admitToTrack(ctx, viewerID, track); err != nil {
+	if err := r.admitToTrackVia(ctx, viewerID, track, viaPost); err != nil {
 		return nil, err
 	}
 	return track, nil
+}
+
+// admitToTrackVia is admitToTrack, except for a RETIRED sound (its source
+// video deleted by its author, migration 032): that one is heard by the
+// viewers of a reel that already plays it, and by nobody else. viaPost must
+// be a live post that plays this sound, and the viewer must be admitted to
+// that post's video (the same content-authority question as its bytes).
+// Without a carrying post the answer is the missing one: a retired sound is
+// never found for a new attachment, a search or its own page.
+func (r *RecordReads) admitToTrackVia(ctx context.Context, viewerID uuid.UUID, track *postgres.AudioTrack, viaPost uuid.UUID) error {
+	if track == nil {
+		return delivery.ErrDeliveryDenied
+	}
+	if track.Status != postgres.SoundStatusRetired || track.IsLibrarySound() {
+		return r.admitToTrack(ctx, viewerID, track)
+	}
+	if viaPost == uuid.Nil || track.AudioKey == "" {
+		return delivery.ErrDeliveryDenied
+	}
+	carrier, err := r.store.RetiredSoundCarrier(ctx, track.ID, viaPost)
+	if err != nil {
+		return fmt.Errorf("%w: retired sound carrier: %v", delivery.ErrDeliveryUnresolved, err)
+	}
+	if carrier == nil || *carrier == uuid.Nil {
+		return delivery.ErrDeliveryDenied
+	}
+	_, err = r.MediaForViewer(ctx, viewerID, *carrier)
+	return err
 }
 
 // admitToTrack is the audience decision for one sound.
@@ -87,6 +129,11 @@ func (r *RecordReads) admitToTrack(ctx context.Context, viewerID uuid.UUID, trac
 			return delivery.ErrDeliveryDenied
 		}
 		return nil
+	}
+	if track.Status == postgres.SoundStatusRetired {
+		// Heard only through a reel that carries it (admitToTrackVia):
+		// lists, trending and the sound page never answer it.
+		return delivery.ErrDeliveryDenied
 	}
 	if track.SourceMediaID == nil || *track.SourceMediaID == uuid.Nil {
 		return delivery.ErrDeliveryDenied
