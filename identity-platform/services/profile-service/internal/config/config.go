@@ -20,6 +20,11 @@ type Config struct {
 	JWTSecretPrevious string
 	JWTKIDPrevious    string
 	TrustedProxies    []string
+	// Admin console token family (internal/http/official_verification_admin.go):
+	// admin-service's Ed25519 public key, base64, and the kid it signs with.
+	// No key: the family is not registered.
+	AdminServiceTokenPubKey string
+	AdminServiceTokenKID    string
 }
 
 func Load() *Config {
@@ -36,6 +41,9 @@ func Load() *Config {
 		JWTSecretPrevious: getEnv("JWT_SECRET_PREVIOUS", ""),
 		JWTKIDPrevious:    getEnv("JWT_KID_PREVIOUS", ""),
 		TrustedProxies:    splitAndClean(getEnv("TRUSTED_PROXIES", "")),
+
+		AdminServiceTokenPubKey: getEnv("ADMIN_SERVICE_TOKEN_PUBKEY", ""),
+		AdminServiceTokenKID:    getEnv("ADMIN_SERVICE_TOKEN_KID", "a1"),
 	}
 }
 

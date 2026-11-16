@@ -58,6 +58,10 @@ CREATE TABLE IF NOT EXISTS profile.government_invitations (
     CHECK (approver_one <> approver_two),
     CHECK (approver_one <> user_id AND approver_two <> user_id)
 );
+ALTER TABLE profile.government_invitations
+    ADD COLUMN IF NOT EXISTS revoked_at    TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS revoked_by    UUID,
+    ADD COLUMN IF NOT EXISTS revoke_reason TEXT NOT NULL DEFAULT '';
 `
 
 func officialStore(t *testing.T) (*Store, func(name string, person bool) uuid.UUID) {

@@ -14,8 +14,11 @@ import (
 //	ORG_VERIFICATION_REGISTRY_MODE   disabled (default) | mock (refused in production)
 //	ORG_VERIFICATION_EMAIL_MODE      disabled (default) | mock (refused in production)
 //	GOVERNMENT_VERIFICATION_ENABLED  true | false (default)
-//	AUTH_SERVICE_URL, INTERNAL_SERVICE_KEY
-//	                                 the admin-role read (reviewers, approvers)
+//
+// Reviewers and approvers are no longer checked here against auth-service's
+// admin role: the admin console's token family (ADMIN_SERVICE_TOKEN_PUBKEY,
+// see internal/http/official_verification_admin.go) carries the permission
+// admin-service checked.
 //
 // Enabling the Official mark needs a registry provider and code delivery;
 // production has neither yet, so production cannot enable it.
@@ -24,8 +27,6 @@ const (
 	EnvRegistryMode = "ORG_VERIFICATION_REGISTRY_MODE"
 	EnvEmailMode    = "ORG_VERIFICATION_EMAIL_MODE"
 	EnvGovEnabled   = "GOVERNMENT_VERIFICATION_ENABLED"
-	EnvAuthURL      = "AUTH_SERVICE_URL"
-	EnvInternalKey  = "INTERNAL_SERVICE_KEY" //nolint:gosec // G101: name of the env variable, not its value
 
 	ModeDisabled = "disabled"
 	ModeMock     = "mock"
@@ -41,7 +42,6 @@ type Config struct {
 	// FixedCode, when set, is issued instead of a random code (email mock
 	// mode in development only).
 	FixedCode string
-	Roles     RoleChecker
 }
 
 func parseBool(getenv func(string) string, name string) (bool, error) {
@@ -109,13 +109,6 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		if cfg.Mailer == nil {
 			return Config{}, fmt.Errorf("%s=true needs code delivery (%s)", EnvOrgEnabled, EnvEmailMode)
 		}
-	}
-	if cfg.OrgEnabled || cfg.GovEnabled {
-		roles := NewAuthRoleClient(getenv(EnvAuthURL), getenv(EnvInternalKey))
-		if roles == nil {
-			return Config{}, fmt.Errorf("official and government marks need %s and %s for the admin-role check", EnvAuthURL, EnvInternalKey)
-		}
-		cfg.Roles = roles
 	}
 	return cfg, nil
 }

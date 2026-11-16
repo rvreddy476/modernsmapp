@@ -96,6 +96,10 @@ var publicRoutePolicy = map[string]routePolicy{
 	// No target.
 	"/v1/profiles/health": policyNoTarget,
 	"/v1/links/:id/click": policyNoTarget,
+	// The admin console marks family, unconfigured: a plain 404 for every
+	// path (official_verification_admin.go). Configured, it is token-only and
+	// never public.
+	"/internal/v1/profiles/admin/*path": policyNoTarget,
 
 	// Many targets.
 	"/v1/profiles/discover": policyListSurface,

@@ -13,11 +13,18 @@
 //	           the mark is set automatically (founder rule 19 Sep). An
 //	           application that carried a hand-uploaded document instead of a
 //	           registry confirmation goes to in_review, the single human
-//	           fallback, decided by a service route (Review).
+//	           fallback, decided in the admin console (Review).
 //
-// Government, invitation-only: a service route creates an invitation for a
-// user with two distinct approvers who both hold the admin role (two-person
-// rule); the invited user accepts it with the code.
+// Government, invitation-only: the admin console creates an invitation for a
+// user with two distinct approvers (two-person rule: the admin who asked and
+// the admin who approved); the invited user accepts it with the code.
+//
+// The console reaches this service through admin-service's signed token
+// (internal/http/official_verification_admin.go). The token's scope is the
+// authority: admin-service checked the permission against identity before it
+// signed, so this package no longer asks auth-service for an admin role. The
+// rules it keeps are about the decision itself: a reason, a reviewer who is
+// not the applicant, two distinct approvers neither of whom is the invitee.
 //
 // Never logged: registration numbers, signatory addresses, codes and code
 // hashes. Log lines carry user, application and invitation ids and a code.
@@ -99,12 +106,14 @@ var (
 	errApplicationNotFound = refusal(http.StatusNotFound, "APPLICATION_NOT_FOUND", "Application not found")
 	errNotInReview         = refusal(http.StatusConflict, "APPLICATION_NOT_IN_REVIEW", "This application is not waiting for review")
 	errInvalidDecision     = refusal(http.StatusBadRequest, "INVALID_DECISION", "decision must be approve or reject")
-	errReviewerNotAdmin    = refusal(http.StatusForbidden, "REVIEWER_NOT_ADMIN", "The reviewer must hold the admin role")
+	errReasonRequired      = refusal(http.StatusBadRequest, "REASON_REQUIRED", "Give a reason of 1 to 500 characters")
 	errReviewerIsApplicant = refusal(http.StatusForbidden, "REVIEWER_IS_APPLICANT", "An applicant cannot review their own application")
-	errRolesUnavailable    = refusal(http.StatusServiceUnavailable, "ROLE_CHECK_UNAVAILABLE", "The admin-role check is unavailable; try again shortly")
+	errReviewPersonMark    = refusal(http.StatusUnprocessableEntity, "PERSON_MARK_REQUIRED", "The applicant is no longer a verified person; the application was refused")
+	errDocumentNotFound    = refusal(http.StatusNotFound, "DOCUMENT_NOT_FOUND", "This application has no registration document")
 	errTwoApprovers        = refusal(http.StatusBadRequest, "TWO_APPROVERS_REQUIRED", "Two distinct approvers are required")
 	errApproverIsInvitee   = refusal(http.StatusForbidden, "APPROVER_IS_INVITEE", "An approver cannot invite themselves")
-	errApproverNotAdmin    = refusal(http.StatusForbidden, "APPROVER_NOT_ADMIN", "Every approver must hold the admin role")
+	errInvitationNotFound  = refusal(http.StatusNotFound, "INVITATION_NOT_FOUND", "Invitation not found")
+	errInvitationNotPend   = refusal(http.StatusConflict, "INVITATION_NOT_PENDING", "This invitation is no longer pending")
 	errInvalidOfficialName = refusal(http.StatusBadRequest, "INVALID_OFFICIAL_NAME", "Enter the government body's official name")
 	errAlreadyGovernment   = refusal(http.StatusConflict, "ALREADY_GOVERNMENT", "This account already holds the Government mark")
 	errInvalidInvitation   = refusal(http.StatusBadRequest, "INVALID_INVITATION", "This invitation code is invalid or has expired")
@@ -125,6 +134,13 @@ type Store interface {
 	ApproveOrganisation(ctx context.Context, in store.ApproveOrganisationInput) (*store.Profile, error)
 	CreateGovInvitation(ctx context.Context, g store.GovInvitation) error
 	AcceptGovInvitation(ctx context.Context, userID uuid.UUID, codeHash string, now time.Time) (*store.Profile, error)
+	// Admin console (admin.go).
+	ListOrgApplicationsAdmin(ctx context.Context, status string, limit int, after *store.Keyset) ([]store.AdminOrgApplication, error)
+	GetOrgApplicationAdmin(ctx context.Context, id uuid.UUID) (*store.AdminOrgApplication, error)
+	MarksStats(ctx context.Context, since, now time.Time) (*store.MarksStats, error)
+	ListGovInvitationsAdmin(ctx context.Context, status string, limit int, after *store.Keyset, now time.Time) ([]store.AdminGovInvitation, error)
+	GetGovInvitationAdmin(ctx context.Context, id uuid.UUID, now time.Time) (*store.AdminGovInvitation, error)
+	RevokeGovInvitation(ctx context.Context, id, revokedBy uuid.UUID, reason string, now time.Time) error
 }
 
 // Publisher emits identity.verification.changed (*events.Producer).
@@ -417,21 +433,29 @@ func (s *Service) OrganisationStatus(ctx context.Context, userID uuid.UUID) (*Or
 	return out, nil
 }
 
-// ReviewDecision is a reviewer's answer on an application in review.
+// ReviewDecision is a reviewer's answer on an application in review. The
+// reviewer is the signed act claim of the admin-service token, never a body
+// field.
 type ReviewDecision struct {
 	Decision   string    `json:"decision"`
-	ReviewerID uuid.UUID `json:"reviewer_id"`
 	Reason     string    `json:"reason"`
+	ReviewerID uuid.UUID `json:"-"`
 }
 
-// ReviewOrganisation applies a human decision to an in_review application.
-// The reviewer must hold the admin role and must not be the applicant.
-func (s *Service) ReviewOrganisation(ctx context.Context, applicationID uuid.UUID, d ReviewDecision) (*OrgStatus, error) {
+// ReviewOrganisation applies a human decision to an in_review application and
+// returns the application after it. The reviewer must not be the applicant
+// and must give a reason. (Whether the reviewer may review at all is the
+// token's scope, checked by the HTTP guard.)
+func (s *Service) ReviewOrganisation(ctx context.Context, applicationID uuid.UUID, d ReviewDecision) (*Application, error) {
 	if !s.OrgEnabled() {
 		return nil, ErrOrgDisabled
 	}
 	if d.Decision != "approve" && d.Decision != "reject" {
 		return nil, errInvalidDecision
+	}
+	reason, ok := validReason(d.Reason)
+	if !ok {
+		return nil, errReasonRequired
 	}
 	app, err := s.store.GetOrgApplication(ctx, applicationID)
 	if err != nil {
@@ -446,11 +470,7 @@ func (s *Service) ReviewOrganisation(ctx context.Context, applicationID uuid.UUI
 	if d.ReviewerID == uuid.Nil || d.ReviewerID == app.UserID {
 		return nil, errReviewerIsApplicant
 	}
-	if err := s.requireAdmin(ctx, d.ReviewerID, errReviewerNotAdmin); err != nil {
-		return nil, err
-	}
 	now := s.now().UTC()
-	reason := truncate(strings.TrimSpace(d.Reason), 500)
 	if d.Decision == "reject" {
 		if err := s.store.RejectOrgApplication(ctx, app.ID, d.ReviewerID, reason, now); err != nil {
 			if errors.Is(err, store.ErrApplicationGone) {
@@ -459,7 +479,7 @@ func (s *Service) ReviewOrganisation(ctx context.Context, applicationID uuid.UUI
 			return nil, err
 		}
 		s.log.Info("organisation verification rejected in review", "user_id", app.UserID, "application_id", app.ID, "reviewer_id", d.ReviewerID)
-		return s.OrganisationStatus(ctx, app.UserID)
+		return s.GetApplication(ctx, app.ID)
 	}
 	reviewer := d.ReviewerID
 	p, err := s.store.ApproveOrganisation(ctx, store.ApproveOrganisationInput{
@@ -468,7 +488,7 @@ func (s *Service) ReviewOrganisation(ctx context.Context, applicationID uuid.UUI
 	})
 	switch {
 	case errors.Is(err, store.ErrPersonMarkRequired):
-		return nil, s.refuse(ctx, app, errPersonMarkRequired)
+		return nil, s.refuse(ctx, app, errReviewPersonMark)
 	case errors.Is(err, store.ErrApplicationGone):
 		return nil, errNotInReview
 	case err != nil:
@@ -476,15 +496,19 @@ func (s *Service) ReviewOrganisation(ctx context.Context, applicationID uuid.UUI
 	}
 	s.log.Info("organisation verification approved in review", "user_id", app.UserID, "application_id", app.ID, "reviewer_id", d.ReviewerID)
 	s.changed(ctx, p, verification.ReasonOrganisationVerified)
-	return s.OrganisationStatus(ctx, app.UserID)
+	return s.GetApplication(ctx, app.ID)
 }
 
-// GovInvitationRequest creates a Government invitation.
+// GovInvitationRequest creates a Government invitation. RequestedBy is the
+// admin who asked (admin-service's two-person requester); ApproverID is the
+// admin who approved, the signed act claim, never a body field. The two are
+// the invitation's approvers.
 type GovInvitationRequest struct {
-	UserID       uuid.UUID   `json:"user_id"`
-	OfficialName string      `json:"official_name"`
-	ApproverIDs  []uuid.UUID `json:"approver_ids"`
-	Reason       string      `json:"reason"`
+	UserID       uuid.UUID `json:"user_id"`
+	OfficialName string    `json:"official_name"`
+	Reason       string    `json:"reason"`
+	RequestedBy  uuid.UUID `json:"requested_by"`
+	ApproverID   uuid.UUID `json:"-"`
 }
 
 // GovInvitationResult carries the code, returned once, to be handed to the
@@ -495,16 +519,17 @@ type GovInvitationResult struct {
 	ExpiresAt    time.Time `json:"expires_at"`
 }
 
-// CreateGovInvitation records an invitation approved by two distinct admins.
+// CreateGovInvitation records an invitation approved by two distinct admins:
+// approver_ids = [requested_by, act].
 func (s *Service) CreateGovInvitation(ctx context.Context, req GovInvitationRequest) (*GovInvitationResult, error) {
 	if !s.GovEnabled() {
 		return nil, ErrGovDisabled
 	}
-	if len(req.ApproverIDs) != 2 || req.ApproverIDs[0] == uuid.Nil || req.ApproverIDs[1] == uuid.Nil ||
-		req.ApproverIDs[0] == req.ApproverIDs[1] {
+	approvers := [2]uuid.UUID{req.RequestedBy, req.ApproverID}
+	if approvers[0] == uuid.Nil || approvers[1] == uuid.Nil || approvers[0] == approvers[1] {
 		return nil, errTwoApprovers
 	}
-	for _, a := range req.ApproverIDs {
+	for _, a := range approvers {
 		if a == req.UserID {
 			return nil, errApproverIsInvitee
 		}
@@ -513,10 +538,9 @@ func (s *Service) CreateGovInvitation(ctx context.Context, req GovInvitationRequ
 	if n := utf8.RuneCountInString(name); n < 2 || n > maxNameLen || verification.NormaliseOrgName(name) == "" {
 		return nil, errInvalidOfficialName
 	}
-	for _, a := range req.ApproverIDs {
-		if err := s.requireAdmin(ctx, a, errApproverNotAdmin); err != nil {
-			return nil, err
-		}
+	reason, ok := validReason(req.Reason)
+	if !ok {
+		return nil, errReasonRequired
 	}
 	p, err := s.store.GetProfile(ctx, req.UserID)
 	if err != nil {
@@ -535,7 +559,7 @@ func (s *Service) CreateGovInvitation(ctx context.Context, req GovInvitationRequ
 	now := s.now().UTC()
 	g := store.GovInvitation{
 		ID: uuid.New(), UserID: req.UserID, OfficialName: name, CodeHash: inviteHash(code),
-		ApproverOne: req.ApproverIDs[0], ApproverTwo: req.ApproverIDs[1], Reason: truncate(strings.TrimSpace(req.Reason), 500),
+		ApproverOne: approvers[0], ApproverTwo: approvers[1], Reason: reason,
 		ExpiresAt: now.Add(InvitationTTL), CreatedAt: now,
 	}
 	if err := s.store.CreateGovInvitation(ctx, g); err != nil {
@@ -568,23 +592,6 @@ func (s *Service) AcceptGovInvitation(ctx context.Context, userID uuid.UUID, cod
 		IsVerified: p.IsVerified, VerificationLevel: p.VerificationLevel, BadgeFlags: p.BadgeFlags,
 		OrganisationName: p.OrganisationName,
 	}, nil
-}
-
-// requireAdmin refuses with notAdmin unless userID holds the admin role.
-// An unavailable role read is never "is admin".
-func (s *Service) requireAdmin(ctx context.Context, userID uuid.UUID, notAdmin *Error) error {
-	if s.cfg.Roles == nil {
-		return errRolesUnavailable
-	}
-	ok, err := s.cfg.Roles.HasRole(ctx, userID, AdminRole)
-	if err != nil {
-		s.log.Warn("official verification: admin role check unavailable", "user_id", userID)
-		return errRolesUnavailable
-	}
-	if !ok {
-		return notAdmin
-	}
-	return nil
 }
 
 func (s *Service) refuse(ctx context.Context, app *store.OrgApplication, e *Error) error {
@@ -654,11 +661,4 @@ func validInviteCode(code string) bool {
 func inviteHash(code string) string {
 	sum := sha256.Sum256([]byte("gov-invite.v1\x00" + code))
 	return hex.EncodeToString(sum[:])
-}
-
-func truncate(s string, n int) string {
-	if utf8.RuneCountInString(s) <= n {
-		return s
-	}
-	return string([]rune(s)[:n])
 }

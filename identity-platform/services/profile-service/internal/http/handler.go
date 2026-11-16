@@ -12,6 +12,7 @@ import (
 	"github.com/atpost/identity-profile-service/internal/service"
 	"github.com/atpost/identity-profile-service/internal/store"
 	"github.com/atpost/identity-shared/api"
+	"github.com/atpost/identity-shared/servicetoken"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -37,6 +38,9 @@ type Handler struct {
 	// Official and Government mark routes; nil answers 503
 	// (official_verification.go).
 	official OfficialVerification
+	// adminTokens verifies admin-service's tokens for the console family;
+	// nil means the family is not registered (official_verification_admin.go).
+	adminTokens *servicetoken.Verifier
 }
 
 // WithBlockChecker wires block denial on every profile read surface.
@@ -133,6 +137,12 @@ func New(svc ProfileService, logger *slog.Logger) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.HandlerFunc) {
+	// The admin console's Official/Government marks family is token-only and
+	// registered BEFORE the engine-wide internal-key gate below, so that gate
+	// is not in its chain: admin-service sends a signed token and no internal
+	// key, and the key would be no evidence anyway (the gateway stamps it on
+	// edge traffic). See official_verification_admin.go.
+	h.registerAdminMarksRoutes(r)
 	if h.internalKey != "" {
 		r.Use(RequireInternalServiceKey(h.internalKey))
 		// Internal identity read (dating lane D2). Outside /v1/ on purpose: the
@@ -140,8 +150,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 		// so only a path it does not route can be service-only. It carries its
 		// own guard rather than relying on the engine-wide key check above.
 		r.GET(InternalIdentityPath, requireInternalServiceCaller(h.internalKey), h.GetInternalIdentityBasics)
-		// Official-mark review and Government invitations: service-only.
-		h.registerOfficialVerificationInternalRoutes(r)
 	}
 	v1 := r.Group("/v1/profiles")
 	{

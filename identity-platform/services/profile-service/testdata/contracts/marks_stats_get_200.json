@@ -1,0 +1,10 @@
+{
+  "data": {
+    "in_review": 3,
+    "approved_30d": 5,
+    "rejected_30d": 1,
+    "invitations_pending": 0,
+    "official_accounts": 12,
+    "government_accounts": 1
+  }
+}

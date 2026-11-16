@@ -21,36 +21,31 @@ import (
 //	POST /v1/profiles/me/verification/organisation/confirm-email  {code}
 //	POST /v1/profiles/me/verification/government/accept           {invite_code}
 //
-// Service-only (the future admin console calls these through admin-service,
-// in-cluster). Outside /v1 on purpose, like InternalIdentityPath: the gateway
-// proxies /v1/profiles/* with the internal key attached, and refuses every
-// path with an "internal" segment anyway (api-gateway pkg/internalroutes).
-// Guarded by requireInternalServiceCaller: no end-user identity header, and
-// the internal key. Not registered without a key.
-//
-//	POST /internal/v1/profiles/verification/organisation/applications/:applicationId/review
-//	     {decision: approve|reject, reviewer_id, reason}
-//	POST /internal/v1/profiles/verification/government/invitations
-//	     {user_id, official_name, approver_ids: [a, b], reason}
-
-// Service-only paths.
-const (
-	InternalOrgReviewPath     = "/internal/v1/profiles/verification/organisation/applications/:applicationId/review"
-	InternalGovInvitationPath = "/internal/v1/profiles/verification/government/invitations"
-)
+// Reviewing applications and issuing Government invitations is the admin
+// console's, through admin-service's signed token: see
+// official_verification_admin.go. (The two internal-key routes that did it
+// before, with an admin-role read against auth-service, were removed on 16
+// Nov 2026.)
 
 // OfficialVerification is the official-marks service.
 type OfficialVerification interface {
 	SubmitOrganisation(ctx context.Context, userID uuid.UUID, req officialverify.OrgApplicationRequest) (*officialverify.OrgStatus, error)
 	ConfirmOrganisationEmail(ctx context.Context, userID uuid.UUID, code string) (*officialverify.OrgStatus, error)
 	OrganisationStatus(ctx context.Context, userID uuid.UUID) (*officialverify.OrgStatus, error)
-	ReviewOrganisation(ctx context.Context, applicationID uuid.UUID, d officialverify.ReviewDecision) (*officialverify.OrgStatus, error)
-	CreateGovInvitation(ctx context.Context, req officialverify.GovInvitationRequest) (*officialverify.GovInvitationResult, error)
 	AcceptGovInvitation(ctx context.Context, userID uuid.UUID, code string) (*officialverify.OrgStatus, error)
+	// Admin console (official_verification_admin.go).
+	Stats(ctx context.Context) (*officialverify.MarksStats, error)
+	ListApplications(ctx context.Context, q officialverify.ListQuery) (*officialverify.ApplicationPage, error)
+	GetApplication(ctx context.Context, id uuid.UUID) (*officialverify.Application, error)
+	ApplicationDocument(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	ReviewOrganisation(ctx context.Context, applicationID uuid.UUID, d officialverify.ReviewDecision) (*officialverify.Application, error)
+	ListInvitations(ctx context.Context, q officialverify.ListQuery) (*officialverify.InvitationPage, error)
+	CreateGovInvitation(ctx context.Context, req officialverify.GovInvitationRequest) (*officialverify.GovInvitationResult, error)
+	RevokeInvitation(ctx context.Context, id, actor uuid.UUID, reason string) (*officialverify.Invitation, error)
 }
 
 // WithOfficialVerification wires the official-mark routes. Unwired, the user
-// routes answer 503 and the service routes are not registered.
+// routes answer 503 and the console family is not registered.
 func (h *Handler) WithOfficialVerification(o OfficialVerification) *Handler {
 	h.official = o
 	return h
@@ -61,15 +56,6 @@ func (h *Handler) registerOfficialVerificationRoutes(protected *gin.RouterGroup,
 	protected.POST("/me/verification/organisation", csrf, h.SubmitOrganisationVerification)
 	protected.POST("/me/verification/organisation/confirm-email", csrf, h.ConfirmOrganisationEmail)
 	protected.POST("/me/verification/government/accept", csrf, h.AcceptGovernmentInvitation)
-}
-
-func (h *Handler) registerOfficialVerificationInternalRoutes(r *gin.Engine) {
-	if h.internalKey == "" || h.official == nil {
-		return
-	}
-	guard := requireInternalServiceCaller(h.internalKey)
-	r.POST(InternalOrgReviewPath, guard, h.ReviewOrganisationApplication)
-	r.POST(InternalGovInvitationPath, guard, h.CreateGovernmentInvitation)
 }
 
 // GetOrganisationVerification — GET /v1/profiles/me/verification/organisation.
@@ -129,36 +115,6 @@ func (h *Handler) AcceptGovernmentInvitation(c *gin.Context) {
 	}
 	out, err := h.official.AcceptGovInvitation(c.Request.Context(), userID, req.InviteCode)
 	h.writeOfficial(c, http.StatusOK, out, err)
-}
-
-// ReviewOrganisationApplication — service route, see the file comment.
-func (h *Handler) ReviewOrganisationApplication(c *gin.Context) {
-	appID, err := uuid.Parse(c.Param("applicationId"))
-	if err != nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "invalid application id", nil, nil)
-		return
-	}
-	var d officialverify.ReviewDecision
-	if err := c.ShouldBindJSON(&d); err != nil {
-		h.writeBindError(c, err)
-		return
-	}
-	h.logger().Info("official verification review requested", "application_id", appID,
-		"reviewer_id", d.ReviewerID, "caller", c.GetHeader(callerServiceHeader))
-	out, err := h.official.ReviewOrganisation(c.Request.Context(), appID, d)
-	h.writeOfficial(c, http.StatusOK, out, err)
-}
-
-// CreateGovernmentInvitation — service route, see the file comment.
-func (h *Handler) CreateGovernmentInvitation(c *gin.Context) {
-	var req officialverify.GovInvitationRequest
-	if err := c.ShouldBindJSON(&req); err != nil || req.UserID == uuid.Nil {
-		api.Error(c.Writer, http.StatusBadRequest, "INVALID_REQUEST", "user_id, official_name and approver_ids are required", nil, nil)
-		return
-	}
-	h.logger().Info("government invitation requested", "user_id", req.UserID, "caller", c.GetHeader(callerServiceHeader))
-	out, err := h.official.CreateGovInvitation(c.Request.Context(), req)
-	h.writeOfficial(c, http.StatusCreated, out, err)
 }
 
 // officialUser answers the disabled refusal when unwired and 401 without a user.

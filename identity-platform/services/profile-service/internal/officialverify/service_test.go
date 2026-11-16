@@ -3,6 +3,7 @@ package officialverify
 import (
 	"context"
 	"errors"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -30,22 +31,44 @@ var validGSTIN = func() string {
 }()
 
 type fakeStore struct {
-	mu          sync.Mutex
-	profiles    map[uuid.UUID]*store.Profile
-	apps        map[uuid.UUID]*store.OrgApplication
-	invites     map[string]*store.GovInvitation
-	inviteState map[string]string
-	heldByOther bool
+	mu           sync.Mutex
+	profiles     map[uuid.UUID]*store.Profile
+	apps         map[uuid.UUID]*store.OrgApplication
+	invites      map[string]*store.GovInvitation
+	inviteState  map[string]string
+	heldByOther  bool
+	reviewReason map[uuid.UUID]string
+	completedAt  map[uuid.UUID]*time.Time
+	revokedBy    map[uuid.UUID]uuid.UUID
+	revokeReason map[uuid.UUID]string
+	listCalls    int
+	statsSince   time.Time
+	statsNow     time.Time
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{profiles: map[uuid.UUID]*store.Profile{}, apps: map[uuid.UUID]*store.OrgApplication{},
-		invites: map[string]*store.GovInvitation{}, inviteState: map[string]string{}}
+		invites: map[string]*store.GovInvitation{}, inviteState: map[string]string{},
+		reviewReason: map[uuid.UUID]string{}, completedAt: map[uuid.UUID]*time.Time{},
+		revokedBy: map[uuid.UUID]uuid.UUID{}, revokeReason: map[uuid.UUID]string{}}
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func (f *fakeStore) addPerson(id uuid.UUID, name string) {
-	f.profiles[id] = &store.Profile{UserID: id, DisplayName: name, IsVerified: true,
+	handle := strings.ToLower(strings.ReplaceAll(name, " ", "_"))
+	f.profiles[id] = &store.Profile{UserID: id, Username: &handle, DisplayName: name, IsVerified: true,
 		VerificationLevel: verification.LevelPerson, BadgeFlags: verification.BadgePersonVerified}
+}
+
+func (f *fakeStore) closed(id uuid.UUID, reason string, now time.Time) {
+	f.reviewReason[id] = reason
+	f.completedAt[id] = &now
 }
 
 func (f *fakeStore) GetProfile(_ context.Context, id uuid.UUID) (*store.Profile, error) {
@@ -133,12 +156,13 @@ func (f *fakeStore) MoveOrgApplicationToReview(_ context.Context, id uuid.UUID, 
 	return nil
 }
 
-func (f *fakeStore) RejectOrgApplication(_ context.Context, id, reviewer uuid.UUID, _ string, _ time.Time) error {
+func (f *fakeStore) RejectOrgApplication(_ context.Context, id, reviewer uuid.UUID, reason string, now time.Time) error {
 	a, ok := f.apps[id]
 	if !ok || a.Status != store.OrgAppInReview {
 		return store.ErrApplicationGone
 	}
 	a.Status, a.ReviewerID = store.OrgAppRejected, &reviewer
+	f.closed(id, reason, now)
 	return nil
 }
 
@@ -155,6 +179,7 @@ func (f *fakeStore) ApproveOrganisation(_ context.Context, in store.ApproveOrgan
 		return nil, store.ErrApplicationGone
 	}
 	a.Status, a.ReviewerID = store.OrgAppApproved, in.ReviewerID
+	f.closed(a.ID, in.ReviewReason, in.Now)
 	p.IsVerified, p.VerificationLevel = true, verification.LevelOrganisation
 	p.BadgeFlags |= verification.BadgeOrganisation
 	p.OrganisationName, p.DisplayName = in.OrganisationName, in.OrganisationName
@@ -187,18 +212,148 @@ func (f *fakeStore) AcceptGovInvitation(_ context.Context, userID uuid.UUID, has
 	return &cp, nil
 }
 
-type fakeRoles struct {
-	admins map[uuid.UUID]bool
-	err    error
-	asked  []uuid.UUID
+func (f *fakeStore) adminApp(a *store.OrgApplication) store.AdminOrgApplication {
+	out := store.AdminOrgApplication{OrgApplication: *a, ReviewReason: f.reviewReason[a.ID], CompletedAt: f.completedAt[a.ID]}
+	if p := f.profiles[a.UserID]; p != nil {
+		out.Applicant = store.MarksApplicant{Username: deref(p.Username), DisplayName: p.DisplayName, IsVerified: p.IsVerified,
+			VerificationLevel: p.VerificationLevel, BadgeFlags: p.BadgeFlags}
+	}
+	return out
 }
 
-func (r *fakeRoles) HasRole(_ context.Context, id uuid.UUID, role string) (bool, error) {
-	r.asked = append(r.asked, id)
-	if r.err != nil {
-		return false, r.err
+func (f *fakeStore) ListOrgApplicationsAdmin(_ context.Context, status string, limit int, after *store.Keyset) ([]store.AdminOrgApplication, error) {
+	f.listCalls++
+	asc := status == store.OrgAppInReview
+	var rows []store.AdminOrgApplication
+	for _, a := range f.apps {
+		if a.Status == status {
+			rows = append(rows, f.adminApp(a))
+		}
 	}
-	return role == AdminRole && r.admins[id], nil
+	less := func(x, y store.AdminOrgApplication) bool {
+		if !x.CreatedAt.Equal(y.CreatedAt) {
+			return x.CreatedAt.Before(y.CreatedAt)
+		}
+		return x.ID.String() < y.ID.String()
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if asc {
+			return less(rows[i], rows[j])
+		}
+		return less(rows[j], rows[i])
+	})
+	out := []store.AdminOrgApplication{}
+	for _, r := range rows {
+		if after != nil {
+			k := store.AdminOrgApplication{OrgApplication: store.OrgApplication{ID: after.ID, CreatedAt: after.CreatedAt}}
+			if asc && !less(k, r) || !asc && !less(r, k) {
+				continue
+			}
+		}
+		out = append(out, r)
+		if len(out) == limit+1 {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) GetOrgApplicationAdmin(_ context.Context, id uuid.UUID) (*store.AdminOrgApplication, error) {
+	a, ok := f.apps[id]
+	if !ok {
+		return nil, nil
+	}
+	out := f.adminApp(a)
+	return &out, nil
+}
+
+func (f *fakeStore) MarksStats(_ context.Context, since, now time.Time) (*store.MarksStats, error) {
+	f.statsSince, f.statsNow = since, now
+	m := &store.MarksStats{}
+	for _, a := range f.apps {
+		if a.Status == store.OrgAppInReview {
+			m.InReview++
+		}
+		if c := f.completedAt[a.ID]; c != nil && !c.Before(since) {
+			switch a.Status {
+			case store.OrgAppApproved:
+				m.ApprovedSince++
+			case store.OrgAppRejected:
+				m.RejectedSince++
+			}
+		}
+	}
+	for h, g := range f.invites {
+		if f.inviteState[h] == "pending" && g.ExpiresAt.After(now) {
+			m.InvitationsPending++
+		}
+	}
+	return m, nil
+}
+
+func (f *fakeStore) adminGov(h string, now time.Time) store.AdminGovInvitation {
+	g := f.invites[h]
+	st := f.inviteState[h]
+	if st == "pending" && !g.ExpiresAt.After(now) {
+		st = store.InvitationExpired
+	}
+	out := store.AdminGovInvitation{ID: g.ID, UserID: g.UserID, OfficialName: g.OfficialName, Status: st,
+		ApproverOne: g.ApproverOne, ApproverTwo: g.ApproverTwo, Reason: g.Reason, ExpiresAt: g.ExpiresAt, CreatedAt: g.CreatedAt}
+	if p := f.profiles[g.UserID]; p != nil {
+		out.Invitee = store.MarksApplicant{Username: deref(p.Username), DisplayName: p.DisplayName, VerificationLevel: p.VerificationLevel}
+	}
+	return out
+}
+
+func (f *fakeStore) ListGovInvitationsAdmin(_ context.Context, status string, limit int, after *store.Keyset, now time.Time) ([]store.AdminGovInvitation, error) {
+	var rows []store.AdminGovInvitation
+	for h := range f.invites {
+		if g := f.adminGov(h, now); g.Status == status {
+			rows = append(rows, g)
+		}
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if !rows[i].CreatedAt.Equal(rows[j].CreatedAt) {
+			return rows[i].CreatedAt.After(rows[j].CreatedAt)
+		}
+		return rows[i].ID.String() > rows[j].ID.String()
+	})
+	out := []store.AdminGovInvitation{}
+	for _, r := range rows {
+		if after != nil && !(r.CreatedAt.Before(after.CreatedAt) || r.CreatedAt.Equal(after.CreatedAt) && r.ID.String() < after.ID.String()) {
+			continue
+		}
+		out = append(out, r)
+		if len(out) == limit+1 {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeStore) GetGovInvitationAdmin(_ context.Context, id uuid.UUID, now time.Time) (*store.AdminGovInvitation, error) {
+	for h, g := range f.invites {
+		if g.ID == id {
+			out := f.adminGov(h, now)
+			return &out, nil
+		}
+	}
+	return nil, nil
+}
+
+func (f *fakeStore) RevokeGovInvitation(_ context.Context, id, by uuid.UUID, reason string, now time.Time) error {
+	for h, g := range f.invites {
+		if g.ID != id {
+			continue
+		}
+		if f.inviteState[h] != "pending" || !g.ExpiresAt.After(now) {
+			return store.ErrInvitationNotPending
+		}
+		f.inviteState[h] = "revoked"
+		f.revokedBy[id], f.revokeReason[id] = by, reason
+		return nil
+	}
+	return store.ErrInvitationNotFound
 }
 
 type fakePub struct {
@@ -214,7 +369,6 @@ type fixture struct {
 	st    *fakeStore
 	reg   *MockRegistry
 	mail  *MockMailer
-	roles *fakeRoles
 	pub   *fakePub
 	svc   *Service
 	clock time.Time
@@ -226,12 +380,11 @@ func newFixture(t *testing.T) *fixture {
 		st:    newFakeStore(),
 		reg:   &MockRegistry{Records: map[string]RegistryRecord{validGSTIN: {Found: true, Active: true, LegalName: "ACME PRIVATE LIMITED", Provider: "test"}}},
 		mail:  &MockMailer{},
-		roles: &fakeRoles{admins: map[uuid.UUID]bool{adminA: true, adminB: true}},
 		pub:   &fakePub{},
 		clock: t0,
 	}
 	f.st.addPerson(applicant, "Asha Rao")
-	f.svc = New(Config{OrgEnabled: true, GovEnabled: true, Registry: f.reg, Mailer: f.mail, Roles: f.roles},
+	f.svc = New(Config{OrgEnabled: true, GovEnabled: true, Registry: f.reg, Mailer: f.mail},
 		f.st, f.pub, nil, nil).WithClock(func() time.Time { return f.clock })
 	return f
 }
@@ -440,74 +593,153 @@ func reviewFixture(t *testing.T) (*fixture, uuid.UUID) {
 	return f, *st.ApplicationID
 }
 
-func TestReview_AdminApproves(t *testing.T) {
+func approve(reviewer uuid.UUID) ReviewDecision {
+	return ReviewDecision{Decision: "approve", ReviewerID: reviewer, Reason: "GST certificate checked"}
+}
+
+func TestReview_ApprovesAndReturnsTheApplication(t *testing.T) {
 	f, id := reviewFixture(t)
-	st, err := f.svc.ReviewOrganisation(context.Background(), id, ReviewDecision{Decision: "approve", ReviewerID: adminA, Reason: "GST certificate checked"})
-	if err != nil || st.VerificationLevel != verification.LevelOrganisation || st.OrganisationName != "Acme Pvt. Ltd." {
-		t.Fatalf("review = %+v, %v", st, err)
+	f.clock = t0.Add(time.Hour)
+	app, err := f.svc.ReviewOrganisation(context.Background(), id, approve(adminA))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if r := f.st.apps[id].ReviewerID; r == nil || *r != adminA {
-		t.Fatal("reviewer not recorded")
+	if app.Status != store.OrgAppApproved || app.ReviewerID == nil || *app.ReviewerID != adminA ||
+		app.ReviewReason != "GST certificate checked" || app.ReviewedAt == nil || !app.ReviewedAt.Equal(t0.Add(time.Hour)) {
+		t.Fatalf("application = %+v", app)
+	}
+	if p := f.st.profiles[applicant]; p.VerificationLevel != verification.LevelOrganisation || p.OrganisationName != "Acme Pvt. Ltd." {
+		t.Fatalf("profile = %+v", p)
+	}
+	if len(f.pub.events) != 1 || f.pub.events[0].Reason != verification.ReasonOrganisationVerified {
+		t.Fatalf("events = %+v", f.pub.events)
 	}
 }
 
-func TestReview_ReviewerMustBeAdmin(t *testing.T) {
+func TestReview_AnyReviewerButTheApplicant(t *testing.T) {
+	// No admin-role read any more: the token's scope is the authority, so
+	// any reviewer who is not the applicant decides.
 	f, id := reviewFixture(t)
-	_, err := f.svc.ReviewOrganisation(context.Background(), id, ReviewDecision{Decision: "approve", ReviewerID: notAdmin})
-	wantRefusal(t, err, "REVIEWER_NOT_ADMIN")
-	if f.st.profiles[applicant].VerificationLevel != verification.LevelPerson {
-		t.Fatal("a non-admin approved")
+	if _, err := f.svc.ReviewOrganisation(context.Background(), id, approve(notAdmin)); err != nil {
+		t.Fatalf("review by a scoped reviewer: %v", err)
 	}
-	f.roles.err = ErrRolesUnavailable
-	_, err = f.svc.ReviewOrganisation(context.Background(), id, ReviewDecision{Decision: "approve", ReviewerID: adminA})
-	wantRefusal(t, err, "ROLE_CHECK_UNAVAILABLE")
 }
 
 func TestReview_ApplicantCannotReviewThemselves(t *testing.T) {
 	f, id := reviewFixture(t)
-	f.roles.admins[applicant] = true
-	_, err := f.svc.ReviewOrganisation(context.Background(), id, ReviewDecision{Decision: "approve", ReviewerID: applicant})
+	_, err := f.svc.ReviewOrganisation(context.Background(), id, approve(applicant))
 	wantRefusal(t, err, "REVIEWER_IS_APPLICANT")
+	_, err = f.svc.ReviewOrganisation(context.Background(), id, approve(uuid.Nil))
+	wantRefusal(t, err, "REVIEWER_IS_APPLICANT")
+	if f.st.apps[id].Status != store.OrgAppInReview {
+		t.Fatal("a refused review changed the application")
+	}
+}
+
+func TestReview_ReasonRequired(t *testing.T) {
+	f, id := reviewFixture(t)
+	for name, reason := range map[string]string{
+		"empty": "", "blank": "   \n", "too long": strings.Repeat("é", 501),
+	} {
+		d := approve(adminA)
+		d.Reason = reason
+		_, err := f.svc.ReviewOrganisation(context.Background(), id, d)
+		var e *Error
+		if !errors.As(err, &e) || e.Code != "REASON_REQUIRED" {
+			t.Errorf("%s: err = %v", name, err)
+		}
+	}
+	d := approve(adminA)
+	d.Reason = strings.Repeat("é", 500)
+	if _, err := f.svc.ReviewOrganisation(context.Background(), id, d); err != nil {
+		t.Fatalf("500 runes refused: %v", err)
+	}
 }
 
 func TestReview_RejectAndStateChecks(t *testing.T) {
 	f, id := reviewFixture(t)
-	_, err := f.svc.ReviewOrganisation(context.Background(), id, ReviewDecision{Decision: "maybe", ReviewerID: adminA})
+	d := approve(adminA)
+	d.Decision = "maybe"
+	_, err := f.svc.ReviewOrganisation(context.Background(), id, d)
 	wantRefusal(t, err, "INVALID_DECISION")
-	if _, err := f.svc.ReviewOrganisation(context.Background(), id, ReviewDecision{Decision: "reject", ReviewerID: adminA}); err != nil {
-		t.Fatal(err)
+	d.Decision = "reject"
+	app, err := f.svc.ReviewOrganisation(context.Background(), id, d)
+	if err != nil || app.Status != store.OrgAppRejected || app.ReviewerID == nil || *app.ReviewerID != adminA {
+		t.Fatalf("reject = %+v, %v", app, err)
 	}
-	_, err = f.svc.ReviewOrganisation(context.Background(), id, ReviewDecision{Decision: "approve", ReviewerID: adminA})
+	if f.st.profiles[applicant].VerificationLevel != verification.LevelPerson {
+		t.Fatal("a rejection set the mark")
+	}
+	_, err = f.svc.ReviewOrganisation(context.Background(), id, approve(adminA))
 	wantRefusal(t, err, "APPLICATION_NOT_IN_REVIEW")
-	_, err = f.svc.ReviewOrganisation(context.Background(), uuid.New(), ReviewDecision{Decision: "approve", ReviewerID: adminA})
+	_, err = f.svc.ReviewOrganisation(context.Background(), uuid.New(), approve(adminA))
 	wantRefusal(t, err, "APPLICATION_NOT_FOUND")
+}
+
+func TestReview_ApplicantLostThePersonMark(t *testing.T) {
+	f, id := reviewFixture(t)
+	f.st.profiles[applicant].BadgeFlags = 0
+	_, err := f.svc.ReviewOrganisation(context.Background(), id, approve(adminA))
+	var e *Error
+	if !errors.As(err, &e) || e.Code != "PERSON_MARK_REQUIRED" || e.Status != 422 {
+		t.Fatalf("err = %v", err)
+	}
+	if a := f.st.apps[id]; a.Status != store.OrgAppRefused || a.RefusalCode != "PERSON_MARK_REQUIRED" {
+		t.Fatalf("application = %s %s, want refused", a.Status, a.RefusalCode)
+	}
 }
 
 func TestOrganisation_Disabled(t *testing.T) {
 	svc := New(Config{}, newFakeStore(), nil, nil, nil)
-	_, err := svc.SubmitOrganisation(context.Background(), applicant, goodRequest())
+	ctx := context.Background()
+	_, err := svc.SubmitOrganisation(ctx, applicant, goodRequest())
 	wantRefusal(t, err, "ORG_VERIFICATION_DISABLED")
-	_, err = svc.AcceptGovInvitation(context.Background(), applicant, "GOV-X")
+	_, err = svc.AcceptGovInvitation(ctx, applicant, "GOV-X")
+	wantRefusal(t, err, "GOVERNMENT_VERIFICATION_DISABLED")
+	// The console family answers the same refusals.
+	_, err = svc.Stats(ctx)
+	wantRefusal(t, err, "ORG_VERIFICATION_DISABLED")
+	_, err = svc.ListApplications(ctx, ListQuery{})
+	wantRefusal(t, err, "ORG_VERIFICATION_DISABLED")
+	_, err = svc.GetApplication(ctx, uuid.New())
+	wantRefusal(t, err, "ORG_VERIFICATION_DISABLED")
+	_, err = svc.ApplicationDocument(ctx, uuid.New())
+	wantRefusal(t, err, "ORG_VERIFICATION_DISABLED")
+	_, err = svc.ReviewOrganisation(ctx, uuid.New(), approve(adminA))
+	wantRefusal(t, err, "ORG_VERIFICATION_DISABLED")
+	_, err = svc.ListInvitations(ctx, ListQuery{})
+	wantRefusal(t, err, "GOVERNMENT_VERIFICATION_DISABLED")
+	_, err = svc.CreateGovInvitation(ctx, invite(adminA, adminB))
+	wantRefusal(t, err, "GOVERNMENT_VERIFICATION_DISABLED")
+	_, err = svc.RevokeInvitation(ctx, uuid.New(), adminA, "r")
 	wantRefusal(t, err, "GOVERNMENT_VERIFICATION_DISABLED")
 }
 
 func govFixture(t *testing.T) *fixture {
 	t.Helper()
 	f := newFixture(t)
-	f.st.profiles[official] = &store.Profile{UserID: official, DisplayName: "Some Name"}
+	handle := "ministry_example"
+	f.st.profiles[official] = &store.Profile{UserID: official, Username: &handle, DisplayName: "Some Name"}
 	return f
+}
+
+// invite is a create request as admin-service sends it: requestedBy in the
+// body, the approver from the token's act.
+func invite(requestedBy, approver uuid.UUID) GovInvitationRequest {
+	return GovInvitationRequest{UserID: official, OfficialName: "Ministry of Example Affairs", Reason: "MoU 12",
+		RequestedBy: requestedBy, ApproverID: approver}
 }
 
 func TestGovernment_TwoAdminsInviteAndTheUserAccepts(t *testing.T) {
 	f := govFixture(t)
-	inv, err := f.svc.CreateGovInvitation(context.Background(), GovInvitationRequest{
-		UserID: official, OfficialName: "Ministry of Example Affairs", ApproverIDs: []uuid.UUID{adminA, adminB}, Reason: "MoU 12",
-	})
-	if err != nil || !strings.HasPrefix(inv.InviteCode, "GOV-") {
+	inv, err := f.svc.CreateGovInvitation(context.Background(), invite(adminA, adminB))
+	if err != nil || !strings.HasPrefix(inv.InviteCode, "GOV-") || !inv.ExpiresAt.Equal(t0.Add(InvitationTTL)) {
 		t.Fatalf("invite = %+v, %v", inv, err)
 	}
-	if len(f.roles.asked) != 2 {
-		t.Fatalf("roles asked for %v", f.roles.asked)
+	for _, g := range f.st.invites {
+		if g.ApproverOne != adminA || g.ApproverTwo != adminB || g.Reason != "MoU 12" {
+			t.Fatalf("stored = %+v, want approvers [requested_by, act]", g)
+		}
 	}
 	// Another account cannot use the code.
 	_, err = f.svc.AcceptGovInvitation(context.Background(), applicant, inv.InviteCode)
@@ -526,18 +758,15 @@ func TestGovernment_TwoAdminsInviteAndTheUserAccepts(t *testing.T) {
 	wantRefusal(t, err, "INVALID_INVITATION")
 }
 
-func TestGovernment_TwoPersonRule(t *testing.T) {
-	for name, approvers := range map[string][]uuid.UUID{
-		"one":   {adminA},
-		"same":  {adminA, adminA},
-		"three": {adminA, adminB, notAdmin},
-		"nil":   {adminA, uuid.Nil},
-		"none":  nil,
+func TestGovernment_TwoApproversMustDiffer(t *testing.T) {
+	for name, pair := range map[string][2]uuid.UUID{
+		"same":         {adminA, adminA},
+		"no requester": {uuid.Nil, adminB},
+		"no act":       {adminA, uuid.Nil},
+		"neither":      {uuid.Nil, uuid.Nil},
 	} {
 		f := govFixture(t)
-		_, err := f.svc.CreateGovInvitation(context.Background(), GovInvitationRequest{
-			UserID: official, OfficialName: "Ministry of Example Affairs", ApproverIDs: approvers,
-		})
+		_, err := f.svc.CreateGovInvitation(context.Background(), invite(pair[0], pair[1]))
 		var e *Error
 		if !errors.As(err, &e) || e.Code != "TWO_APPROVERS_REQUIRED" {
 			t.Errorf("%s: err = %v", name, err)
@@ -548,39 +777,48 @@ func TestGovernment_TwoPersonRule(t *testing.T) {
 	}
 }
 
-func TestGovernment_ApproversMustBeAdmins(t *testing.T) {
+func TestGovernment_InviteeIsNotAnApprover(t *testing.T) {
+	for name, pair := range map[string][2]uuid.UUID{
+		"requester": {official, adminB},
+		"approver":  {adminA, official},
+	} {
+		f := govFixture(t)
+		_, err := f.svc.CreateGovInvitation(context.Background(), invite(pair[0], pair[1]))
+		var e *Error
+		if !errors.As(err, &e) || e.Code != "APPROVER_IS_INVITEE" {
+			t.Errorf("%s: err = %v", name, err)
+		}
+		if len(f.st.invites) != 0 {
+			t.Errorf("%s: an invitation was created", name)
+		}
+	}
+}
+
+func TestGovernment_CreateRefusals(t *testing.T) {
 	f := govFixture(t)
-	_, err := f.svc.CreateGovInvitation(context.Background(), GovInvitationRequest{
-		UserID: official, OfficialName: "Ministry of Example Affairs", ApproverIDs: []uuid.UUID{adminA, notAdmin},
-	})
-	wantRefusal(t, err, "APPROVER_NOT_ADMIN")
-	_, err = f.svc.CreateGovInvitation(context.Background(), GovInvitationRequest{
-		UserID: official, OfficialName: "Ministry of Example Affairs", ApproverIDs: []uuid.UUID{notAdmin, adminB},
-	})
-	wantRefusal(t, err, "APPROVER_NOT_ADMIN")
-	f.roles.err = ErrRolesUnavailable
-	_, err = f.svc.CreateGovInvitation(context.Background(), GovInvitationRequest{
-		UserID: official, OfficialName: "Ministry of Example Affairs", ApproverIDs: []uuid.UUID{adminA, adminB},
-	})
-	wantRefusal(t, err, "ROLE_CHECK_UNAVAILABLE")
+	req := invite(adminA, adminB)
+	req.Reason = " "
+	_, err := f.svc.CreateGovInvitation(context.Background(), req)
+	wantRefusal(t, err, "REASON_REQUIRED")
+	req = invite(adminA, adminB)
+	req.OfficialName = "x"
+	_, err = f.svc.CreateGovInvitation(context.Background(), req)
+	wantRefusal(t, err, "INVALID_OFFICIAL_NAME")
+	req = invite(adminA, adminB)
+	req.UserID = uuid.New()
+	_, err = f.svc.CreateGovInvitation(context.Background(), req)
+	wantRefusal(t, err, "PROFILE_NOT_FOUND")
+	f.st.profiles[official].IsVerified, f.st.profiles[official].VerificationLevel = true, verification.LevelGovernment
+	_, err = f.svc.CreateGovInvitation(context.Background(), invite(adminA, adminB))
+	wantRefusal(t, err, "ALREADY_GOVERNMENT")
 	if len(f.st.invites) != 0 {
 		t.Fatal("an invitation was created")
 	}
 }
 
-func TestGovernment_ApproverCannotInviteThemselves(t *testing.T) {
-	f := govFixture(t)
-	_, err := f.svc.CreateGovInvitation(context.Background(), GovInvitationRequest{
-		UserID: adminA, OfficialName: "Ministry of Example Affairs", ApproverIDs: []uuid.UUID{adminA, adminB},
-	})
-	wantRefusal(t, err, "APPROVER_IS_INVITEE")
-}
-
 func TestGovernment_ExpiredOrMalformedCodes(t *testing.T) {
 	f := govFixture(t)
-	inv, err := f.svc.CreateGovInvitation(context.Background(), GovInvitationRequest{
-		UserID: official, OfficialName: "Ministry of Example Affairs", ApproverIDs: []uuid.UUID{adminA, adminB},
-	})
+	inv, err := f.svc.CreateGovInvitation(context.Background(), invite(adminA, adminB))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -595,7 +833,7 @@ func TestGovernment_ExpiredOrMalformedCodes(t *testing.T) {
 
 func TestConfig_ProductionRefusesMocksAndNeedsProviders(t *testing.T) {
 	env := func(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
-	base := map[string]string{"APP_ENV": "production", EnvAuthURL: "http://auth", EnvInternalKey: "k"}
+	base := map[string]string{"APP_ENV": "production"}
 
 	// Off by default.
 	cfg, err := ConfigFromEnv(env(map[string]string{}))
@@ -615,15 +853,15 @@ func TestConfig_ProductionRefusesMocksAndNeedsProviders(t *testing.T) {
 		t.Fatalf("production without a registry accepted: %v", err)
 	}
 	// Development with mocks: allowed, and the dev code is fixed.
-	dev := map[string]string{"APP_ENV": "dev", EnvOrgEnabled: "true", EnvRegistryMode: "mock", EnvEmailMode: "mock", EnvAuthURL: "http://auth", EnvInternalKey: "k"}
+	// No AUTH_SERVICE_URL or internal key is needed any more: there is no
+	// admin-role read (the console's token carries the permission).
+	dev := map[string]string{"APP_ENV": "dev", EnvOrgEnabled: "true", EnvRegistryMode: "mock", EnvEmailMode: "mock"}
 	cfg, err = ConfigFromEnv(env(dev))
 	if err != nil || cfg.Registry == nil || cfg.FixedCode != MockEmailCode {
 		t.Fatalf("dev = %+v, %v", cfg, err)
 	}
-	// Enabled without the role read: refused.
-	delete(dev, EnvAuthURL)
-	if _, err := ConfigFromEnv(env(dev)); err == nil {
-		t.Fatal("enabled without AUTH_SERVICE_URL")
+	if cfg, err := ConfigFromEnv(env(map[string]string{"APP_ENV": "production", EnvGovEnabled: "true"})); err != nil || !cfg.GovEnabled {
+		t.Fatalf("government alone in production = %+v, %v", cfg, err)
 	}
 	// Mock email in production: refused even when the registry is fine.
 	if _, _, err := MailerFromEnv(env(nil), true); err != nil {

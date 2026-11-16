@@ -310,7 +310,10 @@ func (s *Store) CreateGovInvitation(ctx context.Context, g GovInvitation) error 
 		return fmt.Errorf("government invitation: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
-	if _, err := tx.Exec(ctx, `UPDATE profile.government_invitations SET status = 'revoked' WHERE user_id = $1 AND status = 'pending'`, g.UserID); err != nil {
+	if _, err := tx.Exec(ctx, `
+		UPDATE profile.government_invitations
+		   SET status = 'revoked', revoked_at = $2, revoke_reason = 'superseded by a new invitation'
+		 WHERE user_id = $1 AND status = 'pending'`, g.UserID, g.CreatedAt); err != nil {
 		return fmt.Errorf("government invitation: revoke previous: %w", err)
 	}
 	if _, err := tx.Exec(ctx, `

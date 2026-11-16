@@ -1,0 +1,27 @@
+{
+  "data": {
+    "application_id": "22222222-2222-4222-8222-222222222222",
+    "user_id": "11111111-1111-4111-8111-111111111111",
+    "status": "rejected",
+    "created_at": "2026-11-14T09:30:00Z",
+    "legal_name": "Acme India Private Limited",
+    "registration_kind": "gstin",
+    "official_domain": "acme.co.in",
+    "registry_confirmed": false,
+    "has_document": true,
+    "registration_number": "29AAACA1234A1Z5",
+    "signatory_email": "asha@acme.co.in",
+    "registry_name": "",
+    "registry_provider": "",
+    "reviewer_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+    "review_reason": "The certificate's legal name does not match the application",
+    "reviewed_at": "2026-11-16T08:00:00Z",
+    "applicant": {
+      "username": "acme_india",
+      "display_name": "Asha Rao",
+      "verification_level": "person",
+      "badge_flags": 1,
+      "is_person_verified": true
+    }
+  }
+}

@@ -240,6 +240,9 @@ func TestForTable(t *testing.T) {
 var consolePermissionHolders = map[string][]string{
 	"platform:users.search":             {roles.Moderator, roles.Support},
 	"platform:roles.read":               {roles.Auditor},
+	"platform:official_marks.read":      {roles.KYCReviewer, roles.Auditor},
+	"platform:official_marks.review":    {roles.KYCReviewer},
+	"platform:government_marks.invite":  nil,
 	"food:stats.read":                   {roles.Finance, roles.Support},
 	"food:restaurant.suspend":           nil,
 	"food:delivery_partner.suspend":     nil,

@@ -2,16 +2,8 @@ package officialverify
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
-	"net/http"
-	"net/url"
-	"strings"
 	"time"
-
-	"github.com/google/uuid"
 )
 
 // ---------------------------------------------------------------------------
@@ -110,72 +102,3 @@ func (m *MockMailer) SendDomainCode(_ context.Context, to, _, code string, _ tim
 // MockEmailCode is the code a development deployment in email mock mode
 // issues. Never used in production (the mock mode is refused there).
 const MockEmailCode = "246810"
-
-// ---------------------------------------------------------------------------
-// Admin roles (auth-service)
-// ---------------------------------------------------------------------------
-
-// ErrRolesUnavailable: the role read failed. Never treated as "is admin".
-var ErrRolesUnavailable = errors.New("role check is unavailable")
-
-// AdminRole is the role an approver or reviewer must hold. auth-service
-// answers the implication-expanded list, so a superadmin carries it too.
-const AdminRole = "admin"
-
-// RoleChecker answers whether a user holds a platform role.
-type RoleChecker interface {
-	HasRole(ctx context.Context, userID uuid.UUID, role string) (bool, error)
-}
-
-// AuthRoleClient reads GET {base}/v1/auth/internal/roles/:userId on
-// auth-service with the internal service key.
-type AuthRoleClient struct {
-	base string
-	key  string
-	http *http.Client
-}
-
-// NewAuthRoleClient returns a client, or nil when base or key is empty.
-func NewAuthRoleClient(base, key string) *AuthRoleClient {
-	base, key = strings.TrimRight(strings.TrimSpace(base), "/"), strings.TrimSpace(key)
-	if base == "" || key == "" {
-		return nil
-	}
-	return &AuthRoleClient{base: base, key: key, http: &http.Client{Timeout: 3 * time.Second}}
-}
-
-// HasRole implements RoleChecker. Any failure is ErrRolesUnavailable.
-func (c *AuthRoleClient) HasRole(ctx context.Context, userID uuid.UUID, role string) (bool, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.base+"/v1/auth/internal/roles/"+url.PathEscape(userID.String()), nil)
-	if err != nil {
-		return false, ErrRolesUnavailable
-	}
-	req.Header.Set("X-Internal-Service-Key", c.key)
-	req.Header.Set("X-Caller-Service", "profile-service")
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return false, ErrRolesUnavailable
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Errorf("%w: status %d", ErrRolesUnavailable, resp.StatusCode)
-	}
-	var body struct {
-		Data struct {
-			UserID string   `json:"user_id"`
-			Roles  []string `json:"roles"`
-		} `json:"data"`
-	}
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 64<<10)).Decode(&body); err != nil {
-		return false, ErrRolesUnavailable
-	}
-	if body.Data.UserID != userID.String() {
-		return false, ErrRolesUnavailable
-	}
-	for _, r := range body.Data.Roles {
-		if r == role {
-			return true, nil
-		}
-	}
-	return false, nil
-}

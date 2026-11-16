@@ -442,7 +442,18 @@ var catalogue = map[string][]entry{
 		p("sessions.revoke"),
 		p("roles.read", audr),
 		{action: "roles.manage", superOnly: true},
+		p("flags.manage"),
 		p("audit.read", audr),
+		// Official (organisation) and Government marks in the console
+		// (docs/designs/official-marks-console-contract.md). The detail
+		// carries a GSTIN/CIN and a signatory e-mail, so moderators and
+		// support hold none of these.
+		p("official_marks.read", kyc, audr),
+		p("official_marks.review", kyc),
+		// government_marks.invite: create and revoke Government invitations.
+		// No default role (admin only); admin-service always runs it
+		// two-person.
+		p("government_marks.invite"),
 	},
 }
 

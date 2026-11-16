@@ -17,10 +17,18 @@ import (
 	"github.com/google/uuid"
 )
 
+// stubOfficial records what reached the service. err, when set, is every
+// console method's answer.
 type stubOfficial struct {
-	reviews     int
-	invitations int
-	gotUser     uuid.UUID
+	calls     int
+	gotUser   uuid.UUID
+	gotID     uuid.UUID
+	gotActor  uuid.UUID
+	gotReason string
+	gotQuery  officialverify.ListQuery
+	gotReview officialverify.ReviewDecision
+	gotInvite officialverify.GovInvitationRequest
+	err       error
 }
 
 func (s *stubOfficial) SubmitOrganisation(_ context.Context, u uuid.UUID, _ officialverify.OrgApplicationRequest) (*officialverify.OrgStatus, error) {
@@ -35,18 +43,75 @@ func (s *stubOfficial) OrganisationStatus(_ context.Context, u uuid.UUID) (*offi
 	s.gotUser = u
 	return &officialverify.OrgStatus{Next: "apply"}, nil
 }
-func (s *stubOfficial) ReviewOrganisation(context.Context, uuid.UUID, officialverify.ReviewDecision) (*officialverify.OrgStatus, error) {
-	s.reviews++
-	return &officialverify.OrgStatus{}, nil
-}
-func (s *stubOfficial) CreateGovInvitation(context.Context, officialverify.GovInvitationRequest) (*officialverify.GovInvitationResult, error) {
-	s.invitations++
-	return &officialverify.GovInvitationResult{InviteCode: "GOV-X"}, nil
-}
 func (s *stubOfficial) AcceptGovInvitation(_ context.Context, u uuid.UUID, _ string) (*officialverify.OrgStatus, error) {
 	s.gotUser = u
 	return &officialverify.OrgStatus{VerificationLevel: "government"}, nil
 }
+func (s *stubOfficial) Stats(context.Context) (*officialverify.MarksStats, error) {
+	s.calls++
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &officialverify.MarksStats{InReview: 3}, nil
+}
+func (s *stubOfficial) ListApplications(_ context.Context, q officialverify.ListQuery) (*officialverify.ApplicationPage, error) {
+	s.calls++
+	s.gotQuery = q
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &officialverify.ApplicationPage{Items: []officialverify.ApplicationSummary{}}, nil
+}
+func (s *stubOfficial) GetApplication(_ context.Context, id uuid.UUID) (*officialverify.Application, error) {
+	s.calls++
+	s.gotID = id
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &officialverify.Application{ApplicationSummary: officialverify.ApplicationSummary{ApplicationID: id}}, nil
+}
+func (s *stubOfficial) ApplicationDocument(_ context.Context, id uuid.UUID) (uuid.UUID, error) {
+	s.calls++
+	s.gotID = id
+	if s.err != nil {
+		return uuid.Nil, s.err
+	}
+	return stubDocumentID, nil
+}
+func (s *stubOfficial) ReviewOrganisation(_ context.Context, id uuid.UUID, d officialverify.ReviewDecision) (*officialverify.Application, error) {
+	s.calls++
+	s.gotID, s.gotReview = id, d
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &officialverify.Application{ApplicationSummary: officialverify.ApplicationSummary{ApplicationID: id, Status: "approved"}}, nil
+}
+func (s *stubOfficial) ListInvitations(_ context.Context, q officialverify.ListQuery) (*officialverify.InvitationPage, error) {
+	s.calls++
+	s.gotQuery = q
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &officialverify.InvitationPage{Items: []officialverify.Invitation{}}, nil
+}
+func (s *stubOfficial) CreateGovInvitation(_ context.Context, req officialverify.GovInvitationRequest) (*officialverify.GovInvitationResult, error) {
+	s.calls++
+	s.gotInvite = req
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &officialverify.GovInvitationResult{InvitationID: uuid.New(), InviteCode: "GOV-X"}, nil
+}
+func (s *stubOfficial) RevokeInvitation(_ context.Context, id, actor uuid.UUID, reason string) (*officialverify.Invitation, error) {
+	s.calls++
+	s.gotID, s.gotActor, s.gotReason = id, actor, reason
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &officialverify.Invitation{InvitationID: id, Status: "revoked"}, nil
+}
+
+var stubDocumentID = uuid.MustParse("5a5a5a5a-0000-4000-8000-000000000001")
 
 const testInternalKey = "test-internal-key"
 
@@ -80,10 +145,6 @@ func officialCall(r *gin.Engine, method, path string, headers map[string]string,
 	return w
 }
 
-var reviewPath = "/internal/v1/profiles/verification/organisation/applications/" + uuid.NewString() + "/review"
-
-const invitePath = "/internal/v1/profiles/verification/government/invitations"
-
 func TestOfficialRoutes_UnwiredAnswer503(t *testing.T) {
 	r := officialRouter(nil, "")
 	user := map[string]string{"X-User-Id": uuid.NewString()}
@@ -116,63 +177,28 @@ func TestOfficialRoutes_UserRoutesUseTheSignedInUser(t *testing.T) {
 	}
 }
 
-func TestOfficialInternalRoutes_ServiceCallerOnly(t *testing.T) {
+// The two internal-key routes that reviewed applications and created
+// Government invitations were removed (16 Nov 2026): the console's token
+// family replaces them. Nothing answers on the old paths, with or without the
+// internal key, and the gateway-proxied prefix never reaches a console route.
+func TestOfficialInternalKeyRoutes_AreGone(t *testing.T) {
 	o := &stubOfficial{}
 	r := officialRouter(o, testInternalKey)
-	review := map[string]any{"decision": "approve", "reviewer_id": uuid.NewString()}
-	invite := map[string]any{"user_id": uuid.NewString(), "official_name": "Ministry", "approver_ids": []string{uuid.NewString(), uuid.NewString()}}
-
-	for _, tc := range []struct {
-		name    string
-		headers map[string]string
-		status  int
-	}{
-		{"no key", map[string]string{}, http.StatusUnauthorized},
-		{"wrong key", map[string]string{"X-Internal-Service-Key": "nope"}, http.StatusUnauthorized},
-		{"user identity with the key", map[string]string{"X-Internal-Service-Key": testInternalKey, "X-User-Id": uuid.NewString()}, http.StatusForbidden},
-		{"admin scope with the key", map[string]string{"X-Internal-Service-Key": testInternalKey, "X-Scopes": "admin"}, http.StatusForbidden},
-	} {
-		if w := officialCall(r, http.MethodPost, reviewPath, tc.headers, review); w.Code != tc.status {
-			t.Errorf("review, %s: %d %s", tc.name, w.Code, w.Body.String())
-		}
-		if w := officialCall(r, http.MethodPost, invitePath, tc.headers, invite); w.Code != tc.status {
-			t.Errorf("invite, %s: %d %s", tc.name, w.Code, w.Body.String())
-		}
-	}
-	if o.reviews != 0 || o.invitations != 0 {
-		t.Fatalf("a refused caller reached the service: %d reviews, %d invitations", o.reviews, o.invitations)
-	}
 	svc := map[string]string{"X-Internal-Service-Key": testInternalKey, "X-Caller-Service": "admin-service"}
-	if w := officialCall(r, http.MethodPost, reviewPath, svc, review); w.Code != http.StatusOK {
-		t.Fatalf("service review = %d %s", w.Code, w.Body.String())
-	}
-	if w := officialCall(r, http.MethodPost, invitePath, svc, invite); w.Code != http.StatusCreated {
-		t.Fatalf("service invite = %d %s", w.Code, w.Body.String())
-	}
-}
-
-func TestOfficialInternalRoutes_NotUnderTheGatewayPrefix(t *testing.T) {
-	o := &stubOfficial{}
-	r := officialRouter(o, testInternalKey)
-	svc := map[string]string{"X-Internal-Service-Key": testInternalKey}
-	// The gateway proxies /v1/profiles/* with the key attached: nothing
-	// service-only may answer there.
 	for _, p := range []string{
+		"/internal/v1/profiles/verification/organisation/applications/" + uuid.NewString() + "/review",
+		"/internal/v1/profiles/verification/government/invitations",
 		"/v1/profiles/verification/government/invitations",
 		"/v1/profiles/internal/verification/government/invitations",
-		"/v1/profiles/me/verification/government/invitations",
+		"/v1/profiles/admin/marks/government/invitations",
 	} {
-		if w := officialCall(r, http.MethodPost, p, svc, map[string]any{}); w.Code == http.StatusCreated || o.invitations != 0 {
-			t.Fatalf("%s reached the invitation route: %d", p, w.Code)
+		w := officialCall(r, http.MethodPost, p, svc, map[string]any{"decision": "approve", "user_id": uuid.NewString()})
+		if w.Code != http.StatusNotFound {
+			t.Errorf("%s = %d %s", p, w.Code, w.Body.String())
 		}
 	}
-}
-
-func TestOfficialInternalRoutes_NotRegisteredWithoutAKey(t *testing.T) {
-	o := &stubOfficial{}
-	r := officialRouter(o, "")
-	if w := officialCall(r, http.MethodPost, invitePath, nil, map[string]any{}); w.Code != http.StatusNotFound || o.invitations != 0 {
-		t.Fatalf("invite without a configured key = %d", w.Code)
+	if o.calls != 0 {
+		t.Fatalf("a removed route reached the service %d times", o.calls)
 	}
 }
 

@@ -174,6 +174,19 @@ func main() {
 	profileHandler.WithOfficialVerification(officialSvc)
 	logger.Info("profile-service: official verification", "organisation_enabled", officialCfg.OrgEnabled,
 		"government_enabled", officialCfg.GovEnabled)
+	// The admin console's marks family (/internal/v1/profiles/admin), token
+	// only: admin-service's Ed25519 public key. No key → not registered (404).
+	adminTokens, err := http.AdminServiceVerifier(cfg.AdminServiceTokenPubKey, cfg.AdminServiceTokenKID)
+	if err != nil {
+		logger.Error("refusing to start: admin console token configuration", "err", err)
+		os.Exit(1)
+	}
+	if adminTokens != nil {
+		profileHandler.WithAdminTokenVerifier(adminTokens)
+		logger.Info("profile-service: admin console marks family enabled", "kid", cfg.AdminServiceTokenKID)
+	} else {
+		logger.Info("profile-service: ADMIN_SERVICE_TOKEN_PUBKEY not set; the admin console marks family is not registered")
+	}
 	// Audit UC1: wire the internal-service-key gate. Without this,
 	// X-User-Id is effectively a public header — every other audit
 	// closed the same gap; this is the matching identity-platform fix.

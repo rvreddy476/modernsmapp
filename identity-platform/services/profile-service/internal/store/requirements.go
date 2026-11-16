@@ -73,5 +73,8 @@ var SchemaRequirements = []schemaguard.Requirement{
 	{Table: "profile.profiles", Columns: []string{"organisation_name"}},
 	{Table: "profile.organisation_verification_applications", Columns: []string{"id", "user_id", "status", "email_code_hash", "email_code_attempts", "registry_confirmed"}},
 	{Table: "profile.government_invitations", Columns: []string{"id", "user_id", "code_hash", "approver_one", "approver_two", "status"}},
+	// The admin console's queue, detail and revoke (official_verification_admin.go).
+	{Table: "profile.organisation_verification_applications", Columns: []string{"document_media_id", "reviewer_id", "review_reason", "completed_at"}},
+	{Table: "profile.government_invitations", Columns: []string{"expires_at", "accepted_at", "revoked_at", "revoked_by", "revoke_reason"}},
 	{Table: "profile.reserved_names", Columns: []string{"variant", "user_id", "kind"}},
 }

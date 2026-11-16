@@ -351,6 +351,19 @@ CREATE TABLE IF NOT EXISTS profile.government_invitations (
 CREATE INDEX IF NOT EXISTS idx_government_invitations_user
     ON profile.government_invitations (user_id, created_at DESC);
 
+-- Admin console (docs/designs/official-marks-console-contract.md, 16 Nov
+-- 2026). A revoke records who revoked, when and why; the console lists
+-- applications and invitations by status, newest (or, for the review queue,
+-- oldest) first, with a (created_at, id) cursor.
+ALTER TABLE profile.government_invitations
+    ADD COLUMN IF NOT EXISTS revoked_at    TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS revoked_by    UUID,
+    ADD COLUMN IF NOT EXISTS revoke_reason TEXT NOT NULL DEFAULT '';
+CREATE INDEX IF NOT EXISTS idx_government_invitations_status
+    ON profile.government_invitations (status, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_org_verification_status
+    ON profile.organisation_verification_applications (status, created_at, id);
+
 -- Names held against impersonation: the skeleton keys (and, for Official and
 -- Government names, their one-deletion variants) of every marked account's
 -- display name, handle and organisation name. Rebuilt for a user whenever

@@ -1,0 +1,25 @@
+{
+  "data": {
+    "items": [
+      {
+        "invitation_id": "44444444-4444-4444-8444-444444444444",
+        "user_id": "55555555-5555-4555-8555-555555555555",
+        "official_name": "Ministry of Example Affairs",
+        "status": "pending",
+        "created_at": "2026-11-15T10:00:00Z",
+        "expires_at": "2026-11-22T10:00:00Z",
+        "approver_ids": [
+          "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+          "cccccccc-cccc-4ccc-8ccc-cccccccccccc"
+        ],
+        "reason": "MoU 12 signed with the ministry",
+        "invitee": {
+          "username": "example_ministry",
+          "display_name": "Example Ministry",
+          "verification_level": ""
+        }
+      }
+    ],
+    "next_cursor": null
+  }
+}
