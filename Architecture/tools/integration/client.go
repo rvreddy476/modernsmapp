@@ -249,9 +249,32 @@ func (h *HTTPClient) MustOK(t *testing.T, ctx context.Context, method, path stri
 	return env.Data
 }
 
-// SkipIfDown bails out the test if the relevant base URL doesn't
-// answer a /health probe. Lets the suite run cleanly on a dev box
-// where only some services are up.
+// StackRequired reports whether a missing stack is a failure rather than a
+// skip. It is true in CI (GitHub Actions sets CI=true) and whenever the caller
+// asks for it with ATPOST_E2E_REQUIRE_STACK=1, which .github/workflows/e2e.yml
+// also sets. A developer with no stack running has neither, and still gets a
+// skip.
+//
+// Why it exists: the e2e workflow reported success for every domain while the
+// gateway was not listening, because "not reachable" was always a skip
+// (finding feed-13). A run that tests nothing must not be green.
+func StackRequired() bool {
+	return os.Getenv("CI") == "true" || os.Getenv("ATPOST_E2E_REQUIRE_STACK") == "1"
+}
+
+// missingStack skips on a developer machine and fails where the stack is
+// required (StackRequired).
+func missingStack(t *testing.T, format string, args ...any) {
+	t.Helper()
+	if StackRequired() {
+		t.Fatalf("integration: "+format+" (the stack is required here: CI=true or ATPOST_E2E_REQUIRE_STACK=1)", args...)
+	}
+	t.Skipf("integration: "+format, args...)
+}
+
+// SkipIfDown bails out of the test if a base URL doesn't answer a /health
+// probe: a skip on a dev box where only some services are up, a FAILURE where
+// the stack is required (StackRequired).
 func SkipIfDown(t *testing.T, urls ...string) {
 	t.Helper()
 	c := &http.Client{Timeout: 2 * time.Second}
@@ -260,15 +283,31 @@ func SkipIfDown(t *testing.T, urls ...string) {
 			continue
 		}
 		resp, err := c.Get(strings.TrimRight(u, "/") + "/health")
-		if err != nil || resp.StatusCode >= 500 {
-			if resp != nil {
-				resp.Body.Close()
-			}
-			t.Skipf("integration: %s not reachable (set up docker compose first)", u)
+		if err != nil {
+			missingStack(t, "%s not reachable: %v (set up docker compose first)", u, err)
 			return
 		}
 		resp.Body.Close()
+		if resp.StatusCode >= 500 {
+			missingStack(t, "%s/health answered %d (set up docker compose first)", u, resp.StatusCode)
+			return
+		}
 	}
+}
+
+// E2EUsers returns two existing users for flows that need real rows in
+// user-service's users table (graph-service refuses to follow an id it does
+// not know). ATPOST_E2E_USER_A and ATPOST_E2E_USER_B carry their ids; the e2e
+// workflow seeds both and exports them. Without them the flow skips on a
+// developer machine and fails where the stack is required.
+func E2EUsers(t *testing.T) (uuid.UUID, uuid.UUID) {
+	t.Helper()
+	a, errA := uuid.Parse(os.Getenv("ATPOST_E2E_USER_A"))
+	b, errB := uuid.Parse(os.Getenv("ATPOST_E2E_USER_B"))
+	if errA != nil || errB != nil || a == b {
+		missingStack(t, "set ATPOST_E2E_USER_A and ATPOST_E2E_USER_B to the ids of two different existing users")
+	}
+	return a, b
 }
 
 // SkipIfNotIntegration is a belt-and-suspenders gate: even with the
