@@ -70,6 +70,10 @@ import (
 // The zeros are reported explicitly on every statement rather than left
 // implied, so the day someone introduces a tip fee it shows up as a
 // changed number on a creator's statement instead of a silent haircut.
+//
+// Since 16 Nov 2026 every stream also goes through the introductory zero
+// commission (intro_commission.go): 0 bps on an earning inside the
+// creator's window, recorded per fund row and per statement line.
 
 const (
 	// CadenceMonthly settles one calendar month at a time: 2026-09.
@@ -235,6 +239,16 @@ type StreamLine struct {
 	// credited to the wallet when they happened. This flag is the whole
 	// double-pay defence, made visible on the statement.
 	CreditedByThisRun bool `json:"credited_by_this_run"`
+
+	// CommissionReason says why PlatformFeeBps is what it is:
+	// "intro_zero_commission" (the whole line was earned inside the
+	// creator's zero-commission window), "standard", or "mixed" (the period
+	// straddles a window edge; PlatformFeeBps is then the standard rate and
+	// Commission says which part took which). Commission is the line split
+	// by the rule each earning was priced under; the slices sum to the line.
+	// Both are absent on a statement written before migration 030.
+	CommissionReason string            `json:"commission_reason,omitempty"`
+	Commission       []CommissionSlice `json:"commission,omitempty"`
 }
 
 // PeriodStatement is what a creator sees for a period, and what the
@@ -330,6 +344,11 @@ type PeriodStatement struct {
 	// silent: CheckStatementArithmetic refuses a statement whose fund rows
 	// mix versions this field does not list.
 	RuleVersions []string `json:"rule_versions,omitempty"`
+
+	// IntroCommission is the creator's introductory zero-commission window
+	// ([window_start, window_end) in UTC), with applies_to_period set when
+	// this period overlaps it. Nil when the creator has none.
+	IntroCommission *IntroCommissionTerms `json:"intro_commission,omitempty"`
 }
 
 // CheckStatementArithmetic re-derives every total from the three stream
@@ -400,6 +419,13 @@ func CheckStatementArithmetic(s *PeriodStatement) error {
 	if err := checkRuleVersionsExplained(s); err != nil {
 		return err
 	}
+	// Each line's commission slices must add up to the line, and no slice
+	// inside the intro window may carry commission.
+	for _, line := range []StreamLine{s.Fund, s.Tips, s.Subs} {
+		if err := checkCommissionSlices(line); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -420,6 +446,7 @@ func ExplainStatement(s *PeriodStatement) string {
 		float64(s.Tips.PlatformFeeBps)/100.0,
 		float64(s.Subs.PlatformFeeBps)/100.0,
 		rupees(s.PlatformFeePaise))
+	b.WriteString(explainIntroCommission(s))
 	fmt.Fprintf(&b, " Net to you: %s — %s paid by this settlement, %s already in your wallet (tips and subscriptions land the moment they happen).",
 		rupees(s.NetPaise), rupees(s.CreditedPaise), rupees(s.AlreadyCreditedPaise))
 	switch {
@@ -631,35 +658,54 @@ func (s *Service) settlePeriodWithFinality(ctx context.Context, creatorID uuid.U
 		st.BudgetCapPaise = &cap
 		st.BudgetExhaustedOnDay = budget.ExhaustedOnDay
 	}
+	// The creator's introductory zero-commission window, from the approval
+	// date the eligibility row keeps (it never moves once stamped).
+	eligibility, err := s.store.GetCreatorFundEligibility(ctx, creatorID)
+	if err != nil {
+		return nil, fmt.Errorf("read eligibility for the commission window: %w", err)
+	}
+	window := s.introWindow(eligibility)
+	if window != nil {
+		st.IntroCommission = introTerms(window)
+		_, _, st.IntroCommission.AppliesToPeriod = window.overlap(period.Start, period.End)
+	}
+
 	st.Fund = StreamLine{
 		Stream:            "creator_fund",
 		Count:             fund.Rows,
 		GrossPaise:        fund.GrossPaise,
-		PlatformFeeBps:    s.creatorFundCfg.PlatformFeeBps,
 		PlatformFeePaise:  fund.PlatformFeePaise,
 		NetPaise:          fund.NetPaise,
 		CreditedByThisRun: true,
 	}
-	// Tips and subscriptions take no platform share today. Reported at
-	// their measured value with the fee stated as the zero it is.
-	st.Tips = StreamLine{
-		Stream:            "tips",
-		Count:             tipCount,
-		GrossPaise:        tipGross,
-		PlatformFeeBps:    tipsPlatformFeeBps,
-		PlatformFeePaise:  tipGross * tipsPlatformFeeBps / 10_000,
-		CreditedByThisRun: false,
+	// The fund line's rate is whatever its rows were priced at — read back
+	// per rule, never re-decided here.
+	fundGroups, err := s.store.SumCreatorFundAccrualsByCommission(ctx, creatorID, period.Start, period.End, defaultRegionCode)
+	if err != nil {
+		return nil, fmt.Errorf("sum fund accruals by commission: %w", err)
 	}
-	st.Tips.NetPaise = st.Tips.GrossPaise - st.Tips.PlatformFeePaise
-	st.Subs = StreamLine{
-		Stream:            "subscriptions",
-		Count:             subCount,
-		GrossPaise:        subGross,
-		PlatformFeeBps:    subscriptionsPlatformFeeBps,
-		PlatformFeePaise:  subGross * subscriptionsPlatformFeeBps / 10_000,
-		CreditedByThisRun: false,
+	priceFundStream(&st.Fund, fundGroups, s.creatorFundCfg.PlatformFeeBps, window, period.Start, period.End)
+
+	// Tips and subscriptions take no platform share today (0 bps either
+	// side of the window). They still go through the same rule, split at
+	// the window edge by each earning's own time, so the statement says
+	// which part was under the intro offer and a future standard rate on
+	// either stream is waived inside the window without another change.
+	var tipsIntro, subsIntro eventStreamTotals
+	if window != nil {
+		if from, to, ok := window.overlap(period.Start, period.End); ok {
+			if tipsIntro.Count, tipsIntro.GrossPaise, err = s.store.SumTipsToRecipientBetween(ctx, creatorID, from, to); err != nil {
+				return nil, fmt.Errorf("sum tips in the commission window: %w", err)
+			}
+			if subsIntro.Count, subsIntro.GrossPaise, err = s.store.SumSubscriptionEarningsBetween(ctx, creatorID, from, to); err != nil {
+				return nil, fmt.Errorf("sum subscription earnings in the commission window: %w", err)
+			}
+		}
 	}
-	st.Subs.NetPaise = st.Subs.GrossPaise - st.Subs.PlatformFeePaise
+	st.Tips = priceEventStream("tips", eventStreamTotals{Count: tipCount, GrossPaise: tipGross}, tipsIntro,
+		tipsPlatformFeeBps, window, period.Start, period.End)
+	st.Subs = priceEventStream("subscriptions", eventStreamTotals{Count: subCount, GrossPaise: subGross}, subsIntro,
+		subscriptionsPlatformFeeBps, window, period.Start, period.End)
 
 	st.GrossPaise = st.Fund.GrossPaise + st.Tips.GrossPaise + st.Subs.GrossPaise
 	st.PlatformFeePaise = st.Fund.PlatformFeePaise + st.Tips.PlatformFeePaise + st.Subs.PlatformFeePaise
@@ -816,6 +862,9 @@ func toSettlementRow(id uuid.UUID, st *PeriodStatement) *postgres.PeriodSettleme
 		BudgetCapPaise:       st.BudgetCapPaise,
 		BudgetExhaustedOnDay: st.BudgetExhaustedOnDay,
 		FundRowsSkipped:      st.FundRowsSkipped,
+		CommissionJSON:       encodeStatementCommission(st),
+		IntroWindowStart:     introWindowStart(st.IntroCommission),
+		IntroWindowEnd:       introWindowEnd(st.IntroCommission),
 		Status:               "settled",
 	}
 }
@@ -1020,13 +1069,15 @@ func (s *Service) GetCreatorPeriodStatement(ctx context.Context, creatorID uuid.
 		return nil, err
 	}
 	if summary != nil {
-		feeBps := st.Fund.PlatformFeeBps
 		for i := range summary.Breakdown {
 			r := &summary.Breakdown[i]
 			band, bErr := s.ResolveQualityBand(ctx, r.ContentType, defaultRegionCode, r.DayBucket)
 			if bErr != nil {
 				band = DefaultQualityBand()
 			}
+			// The rate the row was priced at; a pre-030 row has none recorded
+			// and was priced at the line's (standard) rate.
+			feeBps := rowPlatformFeeBps(r, st.Fund.PlatformFeeBps)
 			r.Explanation = ExplainQualityPayout(QualityPayoutExplanation{
 				ViewCount:        r.ViewCount,
 				RpmPaise:         r.RpmPaise,
@@ -1042,7 +1093,7 @@ func (s *Service) GetCreatorPeriodStatement(ctx context.Context, creatorID uuid.
 				PlatformFeeBps:   feeBps,
 				PlatformFeePaise: r.GrossPaise - r.NetPaise,
 				NetPaise:         r.NetPaise,
-			})
+			}) + explainRowCommission(r)
 		}
 		st.FundBreakdown = summary.Breakdown
 	}
@@ -1101,6 +1152,7 @@ func fromSettlementRow(r *postgres.PeriodSettlement) *PeriodStatement {
 	if p, err := ParsePeriodKey(r.PeriodKey); err == nil {
 		st.PeriodLabel = p.Label()
 	}
+	decodeStatementCommission(r.CommissionJSON, st)
 	st.Explanation = ExplainStatement(st)
 	return st
 }

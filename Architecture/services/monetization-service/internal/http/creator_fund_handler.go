@@ -37,6 +37,9 @@ func (h *Handler) GetCreatorFundStatus(c *gin.Context) {
 		"row":              status.Row,
 		"decision":         status.Decision,
 		"platform_fee_bps": cfg.PlatformFeeBps,
+		// The creator's 0% introductory window ([window_start, window_end),
+		// UTC); absent until they are approved or when the offer is off.
+		"intro_commission": status.IntroCommission,
 	}, nil)
 }
 

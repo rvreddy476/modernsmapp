@@ -75,6 +75,14 @@ type CreatorFundConfig struct {
 	// SettlementHourUTC is the hour of the day the settlement worker will
 	// attempt the closed period.
 	SettlementHourUTC int
+
+	// IntroZeroCommissionLaunch and IntroZeroCommissionMonths are the
+	// "0% commission for the first 3 months" offer (intro_commission.go):
+	// a creator's window opens on the day they were approved, or on the
+	// launch date if they were approved before it, and lasts this many
+	// calendar months. Months 0 (the zero value) switches the offer off.
+	IntroZeroCommissionLaunch time.Time
+	IntroZeroCommissionMonths int
 }
 
 // DefaultCreatorFundConfig returns the launch-baseline configuration.
@@ -89,6 +97,9 @@ func DefaultCreatorFundConfig() CreatorFundConfig {
 		SettlementCadence:       CadenceMonthly,
 		SettlementLagDays:       defaultSettlementLagDays,
 		SettlementHourUTC:       defaultSettlementHourUTC,
+
+		IntroZeroCommissionLaunch: defaultIntroZeroCommissionLaunch,
+		IntroZeroCommissionMonths: defaultIntroZeroCommissionMonths,
 	}
 }
 
@@ -209,6 +220,9 @@ func (s *Service) EvaluateEligibility(ctx context.Context, creatorID uuid.UUID) 
 type CreatorFundStatus struct {
 	Row      *postgres.CreatorFundEligibility `json:"row,omitempty"`
 	Decision EligibilityDecision              `json:"decision"`
+	// IntroCommission is the creator's zero-commission window, nil when
+	// they have not been approved or the offer is off.
+	IntroCommission *IntroCommissionTerms `json:"intro_commission,omitempty"`
 }
 
 func (s *Service) GetCreatorFundStatus(ctx context.Context, creatorID uuid.UUID) (*CreatorFundStatus, error) {
@@ -225,7 +239,7 @@ func (s *Service) GetCreatorFundStatus(ctx context.Context, creatorID uuid.UUID)
 	if row != nil && row.Status == "suspended" {
 		d.Status = "suspended"
 	}
-	return &CreatorFundStatus{Row: row, Decision: d}, nil
+	return &CreatorFundStatus{Row: row, Decision: d, IntroCommission: introTerms(s.introWindow(row))}, nil
 }
 
 // Suspending a creator from the fund (blocking future fund earnings; past
@@ -286,13 +300,13 @@ func (s *Service) GetCreatorFundEarnings(ctx context.Context, creatorID uuid.UUI
 	if err != nil || summary == nil {
 		return summary, err
 	}
-	feeBps := s.creatorFundCfg.PlatformFeeBps
 	for i := range summary.Breakdown {
 		row := &summary.Breakdown[i]
 		band, bErr := s.ResolveQualityBand(ctx, row.ContentType, defaultRegionCode, row.DayBucket)
 		if bErr != nil {
 			band = DefaultQualityBand()
 		}
+		feeBps := rowPlatformFeeBps(row, s.creatorFundCfg.PlatformFeeBps)
 		row.Explanation = ExplainQualityPayout(QualityPayoutExplanation{
 			ViewCount:        row.ViewCount,
 			RpmPaise:         row.RpmPaise,
@@ -308,7 +322,7 @@ func (s *Service) GetCreatorFundEarnings(ctx context.Context, creatorID uuid.UUI
 			PlatformFeeBps:   feeBps,
 			PlatformFeePaise: row.GrossPaise - row.NetPaise,
 			NetPaise:         row.NetPaise,
-		})
+		}) + explainRowCommission(row)
 	}
 	return summary, nil
 }

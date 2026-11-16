@@ -64,6 +64,16 @@ type PeriodSettlement struct {
 	BudgetExhaustedOnDay *time.Time `json:"budget_exhausted_on_day,omitempty"`
 	FundRowsSkipped      int64      `json:"fund_rows_skipped"`
 
+	// Commission (migration 030). CommissionJSON is the per-stream
+	// commission breakdown the service rendered (rate applied, reason,
+	// window), stored as written and handed back as is; empty on a
+	// statement from before the column existed. IntroWindowStart/End is the
+	// creator's zero-commission window as it stood when the row was last
+	// written, nil when they had none.
+	CommissionJSON   string     `json:"-"`
+	IntroWindowStart *time.Time `json:"intro_window_start,omitempty"`
+	IntroWindowEnd   *time.Time `json:"intro_window_end,omitempty"`
+
 	Status    string    `json:"status"`
 	SettledAt time.Time `json:"settled_at"`
 }
@@ -146,6 +156,57 @@ func (s *Store) SumCreatorFundAccruals(ctx context.Context, creatorID uuid.UUID,
 		&t.Rows, &t.Views, &t.WatchTimeMs, &t.GrossPaise, &t.PlatformFeePaise, &t.NetPaise, &t.RuleVersions,
 	)
 	return t, err
+}
+
+// FundCommissionGroup is the settled fund rows of a period that were priced
+// under one commission rule. Reason is empty and PlatformFeeBps nil for
+// rows written before migration 030 recorded the rule.
+type FundCommissionGroup struct {
+	Reason           string
+	PlatformFeeBps   *int64
+	WindowStart      *time.Time
+	WindowEnd        *time.Time
+	Rows             int64
+	GrossPaise       int64
+	PlatformFeePaise int64
+	NetPaise         int64
+}
+
+// SumCreatorFundAccrualsByCommission is SumCreatorFundAccruals split by the
+// commission rule recorded on each row, in a fixed order (intro first,
+// then standard, then unrecorded) so a statement renders identically on
+// every run. The groups sum to SumCreatorFundAccruals over the same range.
+func (s *Store) SumCreatorFundAccrualsByCommission(ctx context.Context, creatorID uuid.UUID, start, end time.Time, regionCode string) ([]FundCommissionGroup, error) {
+	rows, err := s.db.Query(ctx, `
+		SELECT COALESCE(commission_reason, ''), platform_fee_bps,
+		       commission_window_start, commission_window_end,
+		       COUNT(*)::BIGINT,
+		       COALESCE(SUM(gross_paise), 0)::BIGINT,
+		       COALESCE(SUM(platform_fee_paise), 0)::BIGINT,
+		       COALESCE(SUM(net_paise), 0)::BIGINT
+		FROM creator_fund_earnings
+		WHERE creator_id = $1
+		  AND day_bucket >= $2 AND day_bucket < $3
+		  AND region_code = $4
+		  AND status = 'settled'
+		GROUP BY 1, 2, 3, 4
+		ORDER BY CASE COALESCE(commission_reason, '') WHEN 'intro_zero_commission' THEN 0 WHEN 'standard' THEN 1 ELSE 2 END,
+		         platform_fee_bps NULLS LAST, commission_window_start NULLS LAST
+	`, creatorID, start, end, regionCode)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FundCommissionGroup
+	for rows.Next() {
+		var g FundCommissionGroup
+		if err := rows.Scan(&g.Reason, &g.PlatformFeeBps, &g.WindowStart, &g.WindowEnd,
+			&g.Rows, &g.GrossPaise, &g.PlatformFeePaise, &g.NetPaise); err != nil {
+			return nil, err
+		}
+		out = append(out, g)
+	}
+	return out, rows.Err()
 }
 
 // SumReversedFundAccruals totals the REVERSED fund rows in [start, end)
@@ -422,7 +483,8 @@ func (s *Store) UpsertPeriodSettlement(ctx context.Context, p *PeriodSettlement)
 			credited_paise, already_credited_paise, pending_paise,
 			status, settled_at, updated_at,
 			reversed_paise, fund_reversed_rows, adjustments_paise, adjustments_count,
-			budget_cap_paise, budget_exhausted_on_day, fund_rows_skipped
+			budget_cap_paise, budget_exhausted_on_day, fund_rows_skipped,
+			commission, intro_window_start, intro_window_end
 		) VALUES ($1,$2,$3,$4,$5,$6,$7,
 		          $8,$9,$10,$11,$12,$13,$14,
 		          $15,$16,$17,$18,$19,
@@ -430,7 +492,8 @@ func (s *Store) UpsertPeriodSettlement(ctx context.Context, p *PeriodSettlement)
 		          $25,$26,$27,
 		          $28,$29,$30,
 		          $31, NOW(), NOW(),
-		          $32, $33, $34, $35, $36, $37, $38)
+		          $32, $33, $34, $35, $36, $37, $38,
+		          $39::jsonb, $40, $41)
 		ON CONFLICT (creator_id, period_key, region_code) DO NOTHING
 	`,
 		p.ID, p.CreatorID, p.PeriodKey, p.PeriodStart, p.PeriodEnd, p.RegionCode, p.Currency,
@@ -443,6 +506,7 @@ func (s *Store) UpsertPeriodSettlement(ctx context.Context, p *PeriodSettlement)
 		p.Status,
 		p.ReversedPaise, p.FundReversedRows, p.AdjustmentsPaise, p.AdjustmentsCount,
 		p.BudgetCapPaise, p.BudgetExhaustedOnDay, p.FundRowsSkipped,
+		nullableString(p.CommissionJSON), p.IntroWindowStart, p.IntroWindowEnd,
 	)
 	if err != nil {
 		return nil, false, err
@@ -471,6 +535,8 @@ func (s *Store) RefreshPeriodSettlement(ctx context.Context, id uuid.UUID, p *Pe
 			credited_paise = $19, already_credited_paise = $20, pending_paise = $21,
 			reversed_paise = $22, fund_reversed_rows = $23, adjustments_paise = $24, adjustments_count = $25,
 			budget_cap_paise = $26, budget_exhausted_on_day = $27, fund_rows_skipped = $28,
+			fund_platform_fee_bps = $29, tips_platform_fee_bps = $30, subs_platform_fee_bps = $31,
+			commission = $32::jsonb, intro_window_start = $33, intro_window_end = $34,
 			updated_at = NOW()
 		WHERE id = $1
 	`, id,
@@ -482,6 +548,8 @@ func (s *Store) RefreshPeriodSettlement(ctx context.Context, id uuid.UUID, p *Pe
 		p.CreditedPaise, p.AlreadyCreditedPaise, p.PendingPaise,
 		p.ReversedPaise, p.FundReversedRows, p.AdjustmentsPaise, p.AdjustmentsCount,
 		p.BudgetCapPaise, p.BudgetExhaustedOnDay, p.FundRowsSkipped,
+		p.FundPlatformFeeBps, p.TipsPlatformFeeBps, p.SubsPlatformFeeBps,
+		nullableString(p.CommissionJSON), p.IntroWindowStart, p.IntroWindowEnd,
 	)
 	return err
 }
@@ -642,7 +710,8 @@ const periodSettlementSelect = `
 	       gross_paise, platform_fee_paise, net_paise, credited_paise, already_credited_paise, pending_paise,
 	       reversed_paise, fund_reversed_rows, adjustments_paise, adjustments_count,
 	       budget_cap_paise, budget_exhausted_on_day, fund_rows_skipped,
-	       status, settled_at
+	       status, settled_at,
+	       COALESCE(commission::text, ''), intro_window_start, intro_window_end
 	FROM creator_fund_period_settlements
 `
 
@@ -662,6 +731,7 @@ func scanPeriodSettlement(r rowScanner) (*PeriodSettlement, error) {
 		&p.ReversedPaise, &p.FundReversedRows, &p.AdjustmentsPaise, &p.AdjustmentsCount,
 		&p.BudgetCapPaise, &p.BudgetExhaustedOnDay, &p.FundRowsSkipped,
 		&p.Status, &p.SettledAt,
+		&p.CommissionJSON, &p.IntroWindowStart, &p.IntroWindowEnd,
 	)
 	if err != nil {
 		return nil, err

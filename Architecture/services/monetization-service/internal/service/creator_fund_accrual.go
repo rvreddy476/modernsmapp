@@ -500,6 +500,11 @@ func (s *Service) accrueDay(ctx context.Context, creatorID uuid.UUID, day time.T
 
 	cfg := s.creatorFundCfg
 	period := PeriodContaining(day, cfg.SettlementCadence)
+	// The commission is decided once per (creator, day) from the day itself:
+	// the fund's earning event time is the UTC day the views happened on.
+	// It is recorded on the row and never re-decided, so a re-run, a later
+	// change of the launch date, or a later approval date cannot reprice it.
+	commission := DecideCommission(day, s.introWindow(row), cfg.PlatformFeeBps)
 
 	// With payouts on, an accrual is a claim on real money, and a claim
 	// against a fund nobody has sized is refused outright — before any
@@ -558,6 +563,7 @@ func (s *Service) accrueDay(ctx context.Context, creatorID uuid.UUID, day time.T
 		multiplierBps := ComputeQualityMultiplierBps(m.AvgCQS, m.Impressions, band)
 		grossMicro := ComputeGrossMicroPaise(m.ViewCount, rate.RpmPaise, multiplierBps)
 		rateID := rate.ID
+		feeBps := commission.PlatformFeeBps
 
 		earning := &postgres.CreatorFundEarning{
 			CreatorID:            creatorID,
@@ -580,6 +586,11 @@ func (s *Service) accrueDay(ctx context.Context, creatorID uuid.UUID, day time.T
 			BuildSHA:             buildinfo.SHA,
 			InputRevision:        g.Revision,
 			GrossMicroPaise:      grossMicro,
+
+			PlatformFeeBps:        &feeBps,
+			CommissionReason:      commission.Reason,
+			CommissionWindowStart: commission.WindowStart,
+			CommissionWindowEnd:   commission.WindowEnd,
 		}
 
 		var outcome postgres.AccrueDayOutcome
@@ -588,7 +599,7 @@ func (s *Service) accrueDay(ctx context.Context, creatorID uuid.UUID, day time.T
 				Earning:   earning,
 				PeriodKey: period.Key,
 				Price: func(carryIn int64, remaining *int64) postgres.PricedDay {
-					return PriceAccrualDay(grossMicro, carryIn, remaining, cfg.PlatformFeeBps)
+					return PriceAccrualDay(grossMicro, carryIn, remaining, feeBps)
 				},
 			})
 			outcome = o

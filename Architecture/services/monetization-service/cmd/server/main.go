@@ -509,6 +509,27 @@ func loadCreatorFundConfig() service.CreatorFundConfig {
 			cfg.SettlementHourUTC = n
 		}
 	}
+	// "0% commission for the first 3 months": the launch date (YYYY-MM-DD,
+	// UTC) a creator approved before it gets their window from, and the
+	// window's length in calendar months (0 switches the offer off). An
+	// unparseable value is refused loudly and the default kept, rather than
+	// silently starting or ending a money rule on a date nobody chose.
+	if v := strings.TrimSpace(os.Getenv("CF_INTRO_ZERO_COMMISSION_LAUNCH_DATE")); v != "" {
+		if d, err := time.Parse("2006-01-02", v); err == nil {
+			cfg.IntroZeroCommissionLaunch = d.UTC()
+		} else {
+			slog.Error("CF_INTRO_ZERO_COMMISSION_LAUNCH_DATE is not YYYY-MM-DD; keeping the default",
+				"default", cfg.IntroZeroCommissionLaunch.Format("2006-01-02"))
+		}
+	}
+	if v := strings.TrimSpace(os.Getenv("CF_INTRO_ZERO_COMMISSION_MONTHS")); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n >= 0 && n <= 24 {
+			cfg.IntroZeroCommissionMonths = n
+		} else {
+			slog.Error("CF_INTRO_ZERO_COMMISSION_MONTHS must be 0-24; keeping the default",
+				"default", cfg.IntroZeroCommissionMonths)
+		}
+	}
 	return cfg
 }
 

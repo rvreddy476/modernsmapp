@@ -99,6 +99,16 @@ type CreatorFundEarning struct {
 	// the row, from internal/buildinfo. Empty on rows from before the column
 	// existed; "unknown" on a binary built outside the release path.
 	BuildSHA string `json:"build_sha,omitempty"`
+
+	// Commission (migration 030): the platform rate this row was ACTUALLY
+	// priced at and why. CommissionReason is "intro_zero_commission" (with
+	// the creator's window, [start, end) in UTC) or "standard". Nil/empty on
+	// rows priced before the column existed, which were all at the
+	// configured standard rate. Never rewritten after the row is written.
+	PlatformFeeBps        *int64     `json:"platform_fee_bps,omitempty"`
+	CommissionReason      string     `json:"commission_reason,omitempty"`
+	CommissionWindowStart *time.Time `json:"commission_window_start,omitempty"`
+	CommissionWindowEnd   *time.Time `json:"commission_window_end,omitempty"`
 }
 
 // DailyInputRow is one analytics.v_creator_daily_metrics_v1 row as the accrual
@@ -170,7 +180,13 @@ type EarningsDailyBreakdown struct {
 	// 019). Carried per row so a statement can see when its days were not
 	// all priced the same way.
 	RuleVersion          string  `json:"rule_version"`
-	Explanation          string  `json:"explanation,omitempty"`
+	// The commission actually applied to this day (migration 030); see
+	// CreatorFundEarning. Absent on rows priced before it was recorded.
+	PlatformFeeBps        *int64     `json:"platform_fee_bps,omitempty"`
+	CommissionReason      string     `json:"commission_reason,omitempty"`
+	CommissionWindowStart *time.Time `json:"commission_window_start,omitempty"`
+	CommissionWindowEnd   *time.Time `json:"commission_window_end,omitempty"`
+	Explanation           string     `json:"explanation,omitempty"`
 }
 
 // EarningsSummary aggregates a creator's fund earnings over a time range.
@@ -514,10 +530,12 @@ func insertCreatorFundEarning(ctx context.Context, q DBTX, e *CreatorFundEarning
 			base_gross_paise, quality_cqs, quality_effective_cqs,
 			quality_impressions, quality_multiplier_bps,
 			rate_id, band_id, rule_version, input_revision,
-			gross_micro_paise, carry_in_micro_paise, carry_out_micro_paise, skip_reason, build_sha
+			gross_micro_paise, carry_in_micro_paise, carry_out_micro_paise, skip_reason, build_sha,
+			platform_fee_bps, commission_reason, commission_window_start, commission_window_end
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13,
 		          $14, $15, $16, $17, $18,
-		          $19, $20, $21, $22, $23, $24, $25, $26, $27)
+		          $19, $20, $21, $22, $23, $24, $25, $26, $27,
+		          $28, $29, $30, $31)
 		ON CONFLICT (creator_id, day_bucket, content_type, region_code) DO NOTHING
 	`,
 		e.ID, e.CreatorID, e.DayBucket, e.ContentType, e.RegionCode,
@@ -527,6 +545,7 @@ func insertCreatorFundEarning(ctx context.Context, q DBTX, e *CreatorFundEarning
 		e.QualityImpressions, e.QualityMultiplierBps,
 		e.RateID, e.BandID, e.RuleVersion, nullableString(e.InputRevision),
 		e.GrossMicroPaise, e.CarryInMicroPaise, e.CarryOutMicroPaise, nullableString(e.SkipReason), nullableString(e.BuildSHA),
+		e.PlatformFeeBps, nullableString(e.CommissionReason), e.CommissionWindowStart, e.CommissionWindowEnd,
 	)
 	if err != nil {
 		return false, err
@@ -544,7 +563,8 @@ const creatorFundEarningSelect = `
 	       reversed_at, COALESCE(reversal_reason, ''), reversal_transaction_id,
 	       rate_id, band_id, rule_version, COALESCE(input_revision, ''),
 	       gross_micro_paise, carry_in_micro_paise, carry_out_micro_paise, COALESCE(skip_reason, ''),
-	       COALESCE(build_sha, '')
+	       COALESCE(build_sha, ''),
+	       platform_fee_bps, COALESCE(commission_reason, ''), commission_window_start, commission_window_end
 	FROM creator_fund_earnings`
 
 func scanCreatorFundEarning(r rowScanner) (*CreatorFundEarning, error) {
@@ -559,6 +579,7 @@ func scanCreatorFundEarning(r rowScanner) (*CreatorFundEarning, error) {
 		&e.ReversedAt, &e.ReversalReason, &e.ReversalTransactionID,
 		&e.RateID, &e.BandID, &e.RuleVersion, &e.InputRevision,
 		&e.GrossMicroPaise, &e.CarryInMicroPaise, &e.CarryOutMicroPaise, &e.SkipReason, &e.BuildSHA,
+		&e.PlatformFeeBps, &e.CommissionReason, &e.CommissionWindowStart, &e.CommissionWindowEnd,
 	); err != nil {
 		return nil, err
 	}
@@ -696,7 +717,8 @@ func (s *Store) GetCreatorFundEarningsSummary(ctx context.Context, creatorID uui
 		SELECT day_bucket, content_type, view_count, gross_paise, net_paise,
 		       rpm_paise, base_gross_paise, quality_cqs, quality_effective_cqs,
 		       quality_impressions, quality_multiplier_bps,
-		       carry_in_micro_paise, carry_out_micro_paise, COALESCE(skip_reason, ''), rule_version
+		       carry_in_micro_paise, carry_out_micro_paise, COALESCE(skip_reason, ''), rule_version,
+		       platform_fee_bps, COALESCE(commission_reason, ''), commission_window_start, commission_window_end
 		FROM creator_fund_earnings
 		WHERE creator_id = $1
 		  AND day_bucket >= $2
@@ -714,7 +736,8 @@ func (s *Store) GetCreatorFundEarningsSummary(ctx context.Context, creatorID uui
 			&b.GrossPaise, &b.NetPaise, &b.RpmPaise, &b.BaseGrossPaise,
 			&b.QualityCQS, &b.QualityEffectiveCQS, &b.QualityImpressions,
 			&b.QualityMultiplierBps, &b.CarryInMicroPaise, &b.CarryOutMicroPaise,
-			&b.SkipReason, &b.RuleVersion); err != nil {
+			&b.SkipReason, &b.RuleVersion,
+			&b.PlatformFeeBps, &b.CommissionReason, &b.CommissionWindowStart, &b.CommissionWindowEnd); err != nil {
 			return nil, err
 		}
 		summary.Breakdown = append(summary.Breakdown, b)
