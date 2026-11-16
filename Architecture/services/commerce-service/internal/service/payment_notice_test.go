@@ -14,7 +14,7 @@ func dupNotice() *postgres.PaymentNotice {
 	at := time.Date(2026, 3, 4, 5, 6, 7, 0, time.UTC)
 	return &postgres.PaymentNotice{
 		Code: postgres.PaymentNoticeDuplicateCapture, AmountMinor: 134800, Currency: "INR",
-		Payments: 1, DetectedAt: at, DetectedAtEpoch: at.Unix(),
+		Payments: 1, DetectedAt: at, DetectedAtEpoch: at.Unix(), RefundStatus: "pending",
 	}
 }
 
@@ -34,7 +34,7 @@ func TestOrderDetail_Duplicate_PaymentNoticeAfterStatus(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := `"status":"confirmed","payment_notice":{"code":"duplicate_capture","amount_minor":134800,"currency":"INR",` +
-		`"payments":1,"detected_at":"2026-03-04T05:06:07Z","detected_at_epoch":1772600767},"items"`
+		`"payments":1,"detected_at":"2026-03-04T05:06:07Z","detected_at_epoch":1772600767,"refund_status":"pending"},"items"`
 	if !strings.Contains(string(b), want) {
 		t.Fatalf("order detail JSON %s\nwant it to contain %s", b, want)
 	}

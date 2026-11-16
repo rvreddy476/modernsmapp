@@ -446,10 +446,18 @@ func (e *contractEnv) seed() {
 	// bound intent, and the extra payment five minutes later on another one.
 	// The intent ids never reach a response.
 	e.exec(`UPDATE orders SET payment_intent_id = $2 WHERE id = $1`, ctOOffer, ctOOfferIntent)
-	e.exec(`INSERT INTO payment_event_inbox (event_id,event_type,intent_id,order_id,amount_minor,processed_at) VALUES
-	        ('ct-evt-offer-own','payment.succeeded',$2,$1,121810,'2026-09-09T10:01:00Z'),
-	        ('ct-evt-offer-dup','payment.succeeded',$3,$1,121810,'2026-09-09T10:05:00Z')`,
+	e.exec(`INSERT INTO payment_event_inbox (event_id,event_type,intent_id,order_id,amount_minor,captured_minor,processed_at) VALUES
+	        ('ct-evt-offer-own','payment.succeeded',$2,$1,121810,109629,'2026-09-09T10:01:00Z'),
+	        ('ct-evt-offer-dup','payment.succeeded',$3,$1,121810,109629,'2026-09-09T10:05:00Z')`,
 		ctOOffer, ctOOfferIntent.String(), ctOOfferDupIntent.String())
+	// Migration 055: the duplicate as commerce records it. The buyer paid
+	// 109629 on it (the bank offer's price, not the 121810 order value), and
+	// payments-service refunded it (payment.owed_capture, resolved).
+	e.exec(`INSERT INTO order_owed_captures (order_id,owed_key,intent_id,payments_owed_id,reason,amount_minor,amount_exact,
+	           currency,refund_via,refund_due_minor,refunded_minor,refund_status,refunded_at,detected_at,updated_at)
+	        VALUES ($1,'intent:'||$2,$2,253,'duplicate_order_capture',109629,TRUE,'INR','payments',109629,109629,'refunded',
+	           '2026-09-09T11:00:00Z','2026-09-09T10:05:00Z','2026-09-09T11:00:00Z')`,
+		ctOOffer, ctOOfferDupIntent.String())
 
 	// Migration 054: shipped by the seller with their own courier. No carrier
 	// will report it; the seller marks it delivered (fixtures at the end).

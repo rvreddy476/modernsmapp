@@ -123,6 +123,12 @@ func (s *Service) CustomerPaymentStatusFor(ctx context.Context, orderID, userID 
 // CanRetryPayment: the order is in payment_failed and the caller is its
 // payer. This is what OrderDetail.can_retry_payment reports and what
 // RetryPaymentForOrder requires. A pure rule so the two cannot drift.
+//
+// A payment_failed order on which money nevertheless landed (a late capture,
+// refund_pending or refunded) is not retryable: that money is being returned,
+// and a retry would charge the buyer again (store.ErrPaymentAlreadyCaptured
+// refuses it under the row lock as well). Its payment_notice says why.
 func CanRetryPayment(order *postgres.Order, userID uuid.UUID) bool {
-	return order != nil && order.Status == "payment_failed" && order.CustomerUserID == userID
+	return order != nil && order.Status == "payment_failed" && order.CustomerUserID == userID &&
+		!moneyTaken[order.PaymentStatus]
 }

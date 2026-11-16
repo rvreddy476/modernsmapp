@@ -108,6 +108,7 @@ func (s *Service) ApplyWebhook(ctx context.Context, in WebhookInput) error {
 		Currency:          in.Currency,
 	}
 	_, err := s.store.ApplyWebhookAtomically(ctx, effect)
+	lowerCapture := errors.Is(err, postgres.ErrCaptureBelowIntent)
 	if errors.Is(err, postgres.ErrCaptureBelowIntent) && s.offersEnabled {
 		// Bank offers (migration 014). The capture is LOWER than the intent, in
 		// its currency, and the transaction above rolled back in full. Razorpay
@@ -150,6 +151,8 @@ func (s *Service) ApplyWebhook(ctx context.Context, in WebhookInput) error {
 			"provider", in.Provider, "event_id", in.EventID,
 			"provider_order_id", in.ProviderOrderID,
 			"event_minor", in.AmountMinor, "currency", in.Currency, "error", err)
+		// The money moved all the same: owe it back (capture_mismatch.go).
+		s.recordMismatchedCapture(ctx, effect, lowerCapture)
 		return err
 	case err != nil:
 		return err
@@ -1129,4 +1132,41 @@ func (s *Service) StampOwnerDomain(ctx context.Context, id uuid.UUID, domain str
 // authorization check.
 func (s *Service) IntentOwnerDomain(ctx context.Context, id uuid.UUID) (string, error) {
 	return s.store.IntentOwnerDomain(ctx, id)
+}
+
+// shouldRefundMismatch decides whether a capture ApplyWebhookAtomically
+// refused for its money is recorded as owed back. Every final refusal of a
+// capture is, except a LOWER capture while bank offers are on: that one is
+// decided by the offer rule, whose provider evidence can disagree with the
+// event about the money itself, so it stays an operator alarm rather than a
+// refund of a figure nobody has confirmed. It has no I/O.
+func shouldRefundMismatch(newStatus string, lowerCapture, offersEnabled bool) bool {
+	if newStatus != "succeeded" {
+		return false
+	}
+	return !(lowerCapture && offersEnabled)
+}
+
+// recordMismatchedCapture records a refused capture as owed back, so the
+// refund-required worker returns it (postgres.RecordMismatchedCapture). A
+// failure here is logged and left to the provider's retry of the same event,
+// which comes back through this path.
+func (s *Service) recordMismatchedCapture(ctx context.Context, effect postgres.WebhookEffect, lowerCapture bool) {
+	if !shouldRefundMismatch(effect.NewStatus, lowerCapture, s.offersEnabled) {
+		return
+	}
+	recorded, err := s.store.RecordMismatchedCapture(ctx, effect)
+	switch {
+	case err != nil:
+		slog.Error("payments: MISMATCHED CAPTURE NOT RECORDED FOR REFUND — the money is still owed",
+			"provider", effect.Provider, "event_id", effect.EventID,
+			"provider_order_id", effect.ProviderOrderID, "provider_payment_id", effect.ProviderPaymentID,
+			"amount_minor", effect.AmountMinor, "currency", effect.Currency, "error", err)
+	case recorded:
+		slog.Error("payments: MISMATCHED CAPTURE OWED BACK — recorded in payments.refund_required; "+
+			"the refund-required worker returns it and the intent stays pending",
+			"provider", effect.Provider, "event_id", effect.EventID,
+			"provider_order_id", effect.ProviderOrderID, "provider_payment_id", effect.ProviderPaymentID,
+			"amount_minor", effect.AmountMinor, "currency", effect.Currency)
+	}
 }

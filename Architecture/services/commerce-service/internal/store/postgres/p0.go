@@ -61,6 +61,12 @@ type PaymentEvent struct {
 	// still the ORDER VALUE and is what the capture check compares; the offer
 	// is recorded for display and never changes that rule.
 	Offer *PaymentOffer
+
+	// CapturedMinor is the money the provider captured, as payment.succeeded
+	// states it (captured_minor); nil when the event did not state it. It is
+	// recorded on the inbox row and is what an owed payment shows the buyer
+	// (capturedMoney). It never takes part in the capture check.
+	CapturedMinor *money.Paise
 }
 
 // PaymentOffer is a bank offer applied at payment, as payment.succeeded
@@ -180,6 +186,15 @@ func applyPaymentSucceededTx(ctx context.Context, tx pgx.Tx, e PaymentEvent) err
 		return err
 	}
 
+	// The money actually captured, beside the order value the event states
+	// (migration 055). Recorded whatever the verdict below.
+	if paid, exact := capturedMoney(e); exact {
+		if _, err := tx.Exec(ctx,
+			`UPDATE payment_event_inbox SET captured_minor = $2 WHERE event_id = $1`, e.EventID, paid); err != nil {
+			return err
+		}
+	}
+
 	boundIntent := ""
 	if intentID != nil {
 		boundIntent = *intentID
@@ -214,6 +229,13 @@ func applyPaymentSucceededTx(ctx context.Context, tx pgx.Tx, e PaymentEvent) err
 		paymentevents.Observed{AmountMinor: e.AmountMinor.Int64(), Currency: e.Currency, PayerID: e.PayerID, IntentID: e.IntentID},
 		paymentevents.AllowUnstated,
 	); err != nil {
+		// The buyer's money moved all the same. When it is this intent's
+		// first money, it is refunded as an owed payment and the event is
+		// acknowledged; otherwise (a redelivery of money already counted, or
+		// nothing a refund could name) it stays poison and pages.
+		if refusedCaptureRefundable(verdict, e) {
+			return refuseCaptureTx(ctx, tx, e, err)
+		}
 		return fmt.Errorf("%w: %v", ErrAmountMismatch, err)
 	}
 	if verdict == captureApplies || verdict == captureLate {
@@ -259,6 +281,18 @@ func applyPaymentSucceededTx(ctx context.Context, tx pgx.Tx, e PaymentEvent) err
 		// and the repeat moved a refunded order back to refund_pending.
 		if err := createRefundCommandTx(ctx, tx, e.OrderID, e.IntentID, e.AmountMinor,
 			"late_capture_after_expiry", lateCaptureKey(e.OrderID, e.IntentID)); err != nil {
+			return err
+		}
+		// What the buyer is told (payment_notice: late_capture). The refund
+		// is the order's own command above, so its progress follows the
+		// order's refund ledger (advanceOrderPathOwedTx).
+		paid, exact := capturedMoney(e)
+		if _, err := recordOwedCaptureTx(ctx, tx, owedCapture{
+			OrderID: e.OrderID, Key: owedKeyForCapture(e.OrderID, e.IntentID), IntentID: e.IntentID,
+			Reason: OwedReasonLateCapture, AmountMinor: paid, AmountExact: exact, Currency: e.Currency,
+			RefundVia: refundViaOrder, RefundDueMinor: e.AmountMinor.Int64(),
+			Detail: "order " + status + " before the payment landed",
+		}); err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx,
@@ -957,6 +991,17 @@ func recordDuplicateCaptureTx(ctx context.Context, tx pgx.Tx, e PaymentEvent, bo
 		"the order is unchanged and the payment is owed back",
 		"order_id", e.OrderID, "intent_id", e.IntentID, "bound_intent_id", boundIntent,
 		"event_id", e.EventID, "amount_minor", e.AmountMinor.Int64(), "currency", e.Currency)
+	// The buyer is told what they actually paid (captured, not the order
+	// value), and payment.owed_capture later carries payments' own figure
+	// and the refund's progress onto this same row.
+	paid, exact := capturedMoney(e)
+	if _, err := recordOwedCaptureTx(ctx, tx, owedCapture{
+		OrderID: e.OrderID, Key: owedKeyForIntent(e.IntentID), IntentID: e.IntentID,
+		Reason: OwedReasonDuplicateOrderCapture, AmountMinor: paid, AmountExact: exact, Currency: e.Currency,
+		RefundVia: refundViaPayments, RefundDueMinor: paid,
+	}); err != nil {
+		return err
+	}
 	return enqueueOutboxTx(ctx, tx, events.EventCommerceOrderDuplicateCapture, e.OrderID.String(),
 		duplicateCapturePayload(e, boundIntent))
 }
@@ -974,9 +1019,18 @@ func duplicateCapturePayload(e PaymentEvent, boundIntent string) events.Commerce
 		PayerID:        payer,
 		AmountMinor:    e.AmountMinor.Int64(),
 		Currency:       e.Currency,
-		RefundDueMinor: e.AmountMinor.Int64(),
+		RefundDueMinor: refundDueOfDuplicate(e),
 		Reason:         "a second payment for an order that is already paid",
 	}
+}
+
+// refundDueOfDuplicate is the money a duplicate capture owes back: what was
+// captured when the event states it, else the stated value. Informational on
+// the wire — payments-service refunds from its own ledger and checks
+// amount_minor, not this.
+func refundDueOfDuplicate(e PaymentEvent) int64 {
+	paid, _ := capturedMoney(e)
+	return paid
 }
 
 // cancelRefundDue is what a cancellation must still refund: the order total
@@ -997,7 +1051,8 @@ func orderRefundedAndOwedTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID) (
 	err = tx.QueryRow(ctx,
 		`SELECT (SELECT COALESCE(SUM(amount_minor),0) FROM order_refund_settlements WHERE order_id = $1),
 		        (SELECT COALESCE(SUM(amount_minor),0) FROM order_refund_commands
-		          WHERE order_id = $1 AND status IN ('pending','submitted','needs_attention'))`,
+		          WHERE order_id = $1 AND scope = 'order'
+		            AND status IN ('pending','submitted','needs_attention'))`,
 		orderID).Scan(&settled, &owed)
 	return settled, owed, err
 }
@@ -1072,11 +1127,20 @@ func restockPaidOrderTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID) error
 // ─── Durable refund commands, commerce side (LB-8) ───────────────────
 
 func createRefundCommandTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, intentID string, amount money.Paise, reason, idemKey string) error {
+	return createScopedRefundCommandTx(ctx, tx, orderID, intentID, amount, reason, idemKey, refundScopeOrder)
+}
+
+// createScopedRefundCommandTx is createRefundCommandTx with an explicit scope
+// (migration 055): "order" for the order's own refunds, "owed_capture" for a
+// refund of a payment the order refused, which the order's refund ledger
+// never counts.
+func createScopedRefundCommandTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID, intentID string, amount money.Paise,
+	reason, idemKey, scope string) error {
 	_, err := tx.Exec(ctx,
-		`INSERT INTO order_refund_commands (order_id, intent_id, amount_minor, reason, idempotency_key)
-		 VALUES ($1, NULLIF($2,''), $3, $4, $5)
+		`INSERT INTO order_refund_commands (order_id, intent_id, amount_minor, reason, idempotency_key, scope)
+		 VALUES ($1, NULLIF($2,''), $3, $4, $5, $6)
 		 ON CONFLICT (idempotency_key) DO NOTHING`,
-		orderID, intentID, amount.Int64(), reason, idemKey)
+		orderID, intentID, amount.Int64(), reason, idemKey, scope)
 	return err
 }
 
@@ -1138,9 +1202,20 @@ func (s *Store) MarkRefundFailed(ctx context.Context, id uuid.UUID, reason strin
 	if terminal {
 		status = "needs_attention"
 	}
+	// A parked command also parks what the buyer is told about the owed
+	// payment it was returning (a late or refused capture): failed, not
+	// pending. One statement, so the two cannot disagree.
 	_, err := s.db.Exec(ctx,
-		`UPDATE order_refund_commands SET status = $3, last_error = $2, updated_at = NOW()
-		  WHERE id = $1 AND status IN ('pending','submitted')`, id, reason, status)
+		`WITH cmd AS (
+		     UPDATE order_refund_commands SET status = $3, last_error = $2, updated_at = NOW()
+		      WHERE id = $1 AND status IN ('pending','submitted')
+		  RETURNING order_id, lower(btrim(COALESCE(intent_id,''))) AS intent_id, status)
+		 UPDATE order_owed_captures w
+		    SET refund_status = 'failed', failed_at = NOW(), failure_code = 'refund_refused', updated_at = NOW()
+		   FROM cmd
+		  WHERE cmd.status = 'needs_attention'
+		    AND w.order_id = cmd.order_id AND COALESCE(w.intent_id,'') = cmd.intent_id
+		    AND w.refund_via IN ('order','owed_command') AND w.refund_status = 'pending'`, id, reason, status)
 	return err
 }
 

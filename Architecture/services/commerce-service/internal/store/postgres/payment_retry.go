@@ -27,6 +27,27 @@ import (
 // ErrPaymentNotRetryable: the order is not in payment_failed.
 var ErrPaymentNotRetryable = errors.New("this order's payment cannot be retried")
 
+// ErrPaymentAlreadyCaptured: the order is payment_failed, but money landed on
+// it after the failure (a late capture, recorded and being refunded). A retry
+// would unbind the intent that captured and charge the buyer a second time
+// for an order whose first payment is on its way back. It wraps
+// ErrPaymentNotRetryable, so every caller that maps that keeps working; the
+// buyer's payment_notice (late_capture) says why.
+var ErrPaymentAlreadyCaptured = fmt.Errorf("%w: a payment already landed on this order and is being refunded",
+	ErrPaymentNotRetryable)
+
+// retryRefusedForCapture reports whether a payment_failed order must not be
+// retried because money already landed on it: its payment status records a
+// capture (captureLanded), or a late capture was recorded. Before this the
+// retry checked the status alone, cleared payment_intent_id and reset
+// payment_status to pending over refund_pending, so the late capture's
+// refund could no longer settle (its intent was no longer the order's) and
+// the retry's own capture was then taken for a redelivery of it: charged
+// twice, no order. It has no I/O.
+func retryRefusedForCapture(paymentStatus string, lateCaptureRecorded bool) bool {
+	return captureLanded(paymentStatus, lateCaptureRecorded)
+}
+
 // RetryPaymentReservation re-holds the order's lines and moves it back to
 // payment_pending as the customer. It returns the attempt number — how many
 // times this order has entered payment_pending, counted from its history —
@@ -45,12 +66,15 @@ func (s *Store) RetryPaymentReservation(ctx context.Context, orderID, userID uui
 	}
 
 	var (
-		customerID uuid.UUID
-		status     string
+		customerID   uuid.UUID
+		status       string
+		payStatus    string
+		lateRecorded bool
 	)
 	err = tx.QueryRow(ctx,
-		`SELECT customer_user_id, status FROM orders WHERE id = $1 FOR UPDATE`, orderID).
-		Scan(&customerID, &status)
+		`SELECT customer_user_id, status, payment_status, late_capture_refund_id IS NOT NULL
+		   FROM orders WHERE id = $1 FOR UPDATE`, orderID).
+		Scan(&customerID, &status, &payStatus, &lateRecorded)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return 0, ErrOrderNotFoundP0
@@ -62,6 +86,9 @@ func (s *Store) RetryPaymentReservation(ctx context.Context, orderID, userID uui
 	}
 	if status != "payment_failed" {
 		return 0, fmt.Errorf("%w: order is %s", ErrPaymentNotRetryable, status)
+	}
+	if retryRefusedForCapture(payStatus, lateRecorded) {
+		return 0, fmt.Errorf("%w (payment_status %s)", ErrPaymentAlreadyCaptured, payStatus)
 	}
 
 	// The lines, as the order recorded them. Quantity and identity only: the

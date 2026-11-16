@@ -426,6 +426,11 @@ func (s *Store) ApplyWebhookAtomically(ctx context.Context, e WebhookEffect) (*P
 	if domainEvent != "" {
 		payer := intent.PayerID.String()
 		var payload any = intent
+		// A capture without an offer publishes the intent exactly as before
+		// bank offers (testdata/no_offer_payment.golden pins it byte for
+		// byte): its amount_minor IS the money captured, because the
+		// exact-money check above refused anything else. Only an offer
+		// capture moves different money, and it says how much (captured_minor).
 		if offer != nil {
 			payload = offerSucceededPayload{
 				PaymentIntent:      &intent,
@@ -499,19 +504,21 @@ func isDuplicateCapture(intentStatus, settledPaymentID string, e WebhookEffect) 
 // refund webhook resolves it.
 func recordLateCaptureTx(ctx context.Context, tx pgx.Tx, intent *PaymentIntent, e WebhookEffect, reason string) (bool, error) {
 	key := lateCapturePaymentKey(e)
-	tag, err := tx.Exec(ctx,
+	var rowID int64
+	err := tx.QueryRow(ctx,
 		`INSERT INTO payments.refund_required
 		     (intent_id, provider, provider_order_id, provider_payment_id, event_id,
 		      amount_minor, currency, reason, application_id)
 		 VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,NULLIF($7,''),$8,
 		         (SELECT application_id FROM payments.payment_intents WHERE id = $1))
-		 ON CONFLICT (provider, provider_payment_id) DO NOTHING`,
-		intent.ID, e.Provider, e.ProviderOrderID, key, e.EventID, e.AmountMinor, e.Currency, reason)
+		 ON CONFLICT (provider, provider_payment_id) DO NOTHING
+		 RETURNING id`,
+		intent.ID, e.Provider, e.ProviderOrderID, key, e.EventID, e.AmountMinor, e.Currency, reason).Scan(&rowID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil // this payment is already recorded as owed back
+	}
 	if err != nil {
 		return false, fmt.Errorf("payments: record %s on %s intent %s: %w", reason, intent.Status, intent.ID, err)
-	}
-	if tag.RowsAffected() == 0 {
-		return false, nil // this payment is already recorded as owed back
 	}
 	if _, err := tx.Exec(ctx,
 		`INSERT INTO payments.payment_audit_log (intent_id, event, old_status, new_status, metadata)
@@ -519,6 +526,10 @@ func recordLateCaptureTx(ctx context.Context, tx pgx.Tx, intent *PaymentIntent, 
 		intent.ID, auditEventForRefundRequired(reason), intent.Status,
 		[]byte(fmt.Sprintf(`{"provider":%q,"event_id":%q,"provider_payment_id":%q,"amount_minor":%d}`,
 			e.Provider, e.EventID, key, e.AmountMinor))); err != nil {
+		return false, err
+	}
+	// The buyer's domain hears of it (owed_capture_event.go).
+	if err := enqueueOwedCaptureTx(ctx, tx, rowID); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -1364,6 +1375,13 @@ func (s *Store) ApplyRefundWebhookAtomically(ctx context.Context, e WebhookEffec
 		recorded, err := applyOwedCaptureRefundOnceTx(ctx, tx, owed, intentCurrency, e, providerRefundID)
 		if err != nil {
 			return false, "", err
+		}
+		if recorded {
+			// Never payment.refunded (the order was not refunded); the
+			// owner domain hears that the owed payment came back.
+			if err := enqueueOwedCaptureTx(ctx, tx, owed.ID); err != nil {
+				return false, "", err
+			}
 		}
 		if err := tx.Commit(ctx); err != nil {
 			return false, "", err

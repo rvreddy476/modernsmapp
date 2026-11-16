@@ -328,7 +328,7 @@ func TestC3SignedWebhookInAnotherCurrencyCannotSettle(t *testing.T) {
 	if _, err := applySigned(t, svcWith(t, newCreateStub(t).provider()), hdr, body); err == nil {
 		t.Fatal("a capture denominated in USD settled an INR intent")
 	}
-	requireNoTerminalEffect(t, si, "signed webhook in another currency")
+	requireRefusedAndOwedBack(t, si, "pay_usd", "signed webhook in another currency")
 }
 
 func TestC3SignedWebhookWithNoAmountCannotSettle(t *testing.T) {
@@ -352,7 +352,7 @@ func TestC3SignedWebhookWithTheWrongAmountCannotSettle(t *testing.T) {
 	if _, err := applySigned(t, svcWith(t, newCreateStub(t).provider()), hdr, body); err == nil {
 		t.Fatal("a ₹0.01 capture settled a ₹1,180 intent")
 	}
-	requireNoTerminalEffect(t, si, "signed webhook with the wrong amount")
+	requireRefusedAndOwedBack(t, si, "pay_wrongamt", "signed webhook with the wrong amount")
 }
 
 // ─── The policy is one policy ────────────────────────────────────────

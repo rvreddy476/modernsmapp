@@ -50,6 +50,11 @@ type RefundEvent struct {
 	// reports it. Recorded, not trusted for the decision: commerce decides
 	// full versus partial from its own cumulative sum.
 	ProviderStatus string
+	// ReturnedMinor is amount_returned_minor: the MONEY returned, which on a
+	// bank-offer intent is less than AmountMinor (the order value). nil when
+	// the event does not state it. Used only for an owed payment refunded on
+	// payments' ledger (owedRefundUnit); the order's ledger counts order value.
+	ReturnedMinor *int64
 }
 
 // RefundSettlement is what SettleRefund did, for logging.
@@ -222,6 +227,19 @@ func (s *Store) SettleRefund(ctx context.Context, ev RefundEvent) (RefundSettlem
 		}
 		out.PaymentStatus = o.PaymentStatus
 
+		// A refund of a payment the order did NOT keep (owed_captures.go):
+		// booked to that payment, never to the order's refund ledger, which
+		// would count money that was never the order's. A refund naming an
+		// intent the order neither holds nor owes back still falls through to
+		// decideRefund and is refused (CheckRefund: intent mismatch).
+		owed, err := owedRefundTargetTx(ctx, tx, ev.OrderID, ev.IntentID, o.IntentID)
+		if err != nil {
+			return err
+		}
+		if owed != nil {
+			return settleOwedRefundTx(ctx, tx, ev.OrderID, *owed, ev, refundID, &out)
+		}
+
 		// The same provider refund under another event id: already counted.
 		var seen bool
 		if err := tx.QueryRow(ctx,
@@ -259,9 +277,12 @@ func (s *Store) SettleRefund(ctx context.Context, ev RefundEvent) (RefundSettlem
 		}
 		switch {
 		case d.CloseAll:
+			// The order's own commands only: a refund of a refused capture
+			// (scope owed_capture) is still owed whatever the order's
+			// ledger says.
 			if _, err := tx.Exec(ctx,
 				`UPDATE order_refund_commands SET status = 'succeeded', settled_at = NOW(), updated_at = NOW()
-				  WHERE order_id = $1 AND status <> 'succeeded'`, ev.OrderID); err != nil {
+				  WHERE order_id = $1 AND scope = 'order' AND status <> 'succeeded'`, ev.OrderID); err != nil {
 				return err
 			}
 		case d.SettleCommand != nil:
@@ -282,6 +303,11 @@ func (s *Store) SettleRefund(ctx context.Context, ev RefundEvent) (RefundSettlem
 		if _, moved := refundRecordableStatuses[o.PaymentStatus]; !moved {
 			slog.Error("commerce: refund settled on an order commerce never saw paid; recorded, payment state unchanged",
 				"order_id", ev.OrderID, "payment_status", o.PaymentStatus, "refund_minor", ev.AmountMinor.Int64())
+		}
+		// A late capture is refunded through this ledger; what the buyer is
+		// told about it follows (payment_notice: late_capture).
+		if err := advanceOrderPathOwedTx(ctx, tx, ev.OrderID, ev.IntentID, ev.AmountMinor.Int64(), d.Full); err != nil {
+			return err
 		}
 		if d.OutboxType == "" {
 			return nil
@@ -304,7 +330,7 @@ func (s *Store) SettleRefund(ctx context.Context, ev RefundEvent) (RefundSettlem
 func openRefundCommandsTx(ctx context.Context, tx pgx.Tx, orderID uuid.UUID) ([]openRefundCommand, error) {
 	rows, err := tx.Query(ctx,
 		`SELECT id, COALESCE(intent_id,''), amount_minor FROM order_refund_commands
-		  WHERE order_id = $1 AND status <> 'succeeded'
+		  WHERE order_id = $1 AND scope = 'order' AND status <> 'succeeded'
 		  ORDER BY created_at, id
 		  FOR UPDATE`, orderID)
 	if err != nil {

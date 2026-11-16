@@ -19,11 +19,14 @@
     "status": "confirmed",
     "payment_notice": {
       "code": "duplicate_capture",
-      "amount_minor": 121810,
+      "amount_minor": 109629,
       "currency": "INR",
       "payments": 1,
       "detected_at": "2026-09-09T10:05:00Z",
-      "detected_at_epoch": 1788948300
+      "detected_at_epoch": 1788948300,
+      "refund_status": "refunded",
+      "refunded_at": "2026-09-09T11:00:00Z",
+      "refunded_at_epoch": 1788951600
     },
     "items": [
       {

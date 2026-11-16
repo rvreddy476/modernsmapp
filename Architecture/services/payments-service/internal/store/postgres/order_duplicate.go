@@ -210,18 +210,20 @@ func (s *Store) RecordOrderDuplicateCapture(ctx context.Context, ev OrderDuplica
 	}
 
 	key := duplicateOrderPaymentKey(dup)
-	tag, err := tx.Exec(ctx,
+	var rowID int64
+	err = tx.QueryRow(ctx,
 		`INSERT INTO payments.refund_required
 		     (intent_id, provider, provider_order_id, provider_payment_id, event_id,
 		      amount_minor, currency, reason, application_id)
 		 VALUES ($1,$2,NULLIF($3,''),$4,$5,$6,$7,$8,
 		         (SELECT application_id FROM payments.payment_intents WHERE id = $1))
-		 ON CONFLICT (provider, provider_payment_id) DO NOTHING`,
-		dup.ID, dup.Provider, dup.ProviderOrderID, key, ev.EventID, owed, dup.Currency, reasonDuplicateOrderCapture)
-	if err != nil {
+		 ON CONFLICT (provider, provider_payment_id) DO NOTHING
+		 RETURNING id`,
+		dup.ID, dup.Provider, dup.ProviderOrderID, key, ev.EventID, owed, dup.Currency, reasonDuplicateOrderCapture).Scan(&rowID)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return false, err
 	}
-	if tag.RowsAffected() == 0 {
+	if errors.Is(err, pgx.ErrNoRows) {
 		// Already recorded. It must be this intent's: one provider payment
 		// owed back on two intents is a reconciliation break.
 		var owner uuid.UUID
@@ -241,6 +243,11 @@ func (s *Store) RecordOrderDuplicateCapture(ctx context.Context, ev OrderDuplica
 		dup.ID, dup.Status,
 		[]byte(fmt.Sprintf(`{"order_id":%q,"bound_intent_id":%q,"event_id":%q,"provider_payment_id":%q,"amount_minor":%d}`,
 			ev.OrderID, bound.ID, ev.EventID, key, owed))); err != nil {
+		return false, err
+	}
+	// Commerce hears what this ledger owes back: the captured money, which
+	// on a bank-offer capture is less than the order value it reported.
+	if err := enqueueOwedCaptureTx(ctx, tx, rowID); err != nil {
 		return false, err
 	}
 	return true, tx.Commit(ctx)
