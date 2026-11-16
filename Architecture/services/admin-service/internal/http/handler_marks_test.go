@@ -25,7 +25,7 @@ import (
 var marksAll = []string{permMarksRead, permMarksReview, permGovInvite}
 
 // marksRig is a productsRig wired with only the Marks page: a profile stub
-// (audience "profile") and media-service's evidence stub (audience "media"),
+// (audience "profile") and media-service's document-bytes stub (audience "media"),
 // plus /me and the approvals routes. h is kept for executor unit checks.
 type marksRig struct {
 	*productsRig
@@ -83,7 +83,8 @@ func newMarksRig(t *testing.T) *marksRig {
 		return srv.URL
 	}
 	profileURL := stub("profile", marksAll)
-	evidenceURL := stub("media", []string{permMediaEvidenceRead})
+	// The literal contract operation (section 6), not the constant under test.
+	mediaURL := stub("media", []string{"media:document-bytes.read"})
 	signer, err := servicetoken.NewSignerFromBase64("admin-service", "a1", priv)
 	if err != nil {
 		t.Fatal(err)
@@ -93,7 +94,7 @@ func newMarksRig(t *testing.T) *marksRig {
 	rg.r.Use(middleware.RequestID())
 	rg.gate = NewGate(rg.perms, rg.rec, true)
 	h := New(&stubAdminService{}, rg.gate, approvals.NewService(rg.store, rg.holders))
-	h.WithEvidence(service.NewEvidenceClient(evidenceURL, signer)).WithProfile(service.NewProfileConsoleClient(profileURL, signer))
+	h.WithMediaDocuments(service.NewMediaDocumentClient(mediaURL, marksTestInternalKey, signer)).WithProfile(service.NewProfileConsoleClient(profileURL, signer))
 	h.RegisterMeRoute(rg.r)
 	h.RegisterApprovalRoutes(rg.r)
 	h.RegisterMarksRoutes(rg.r)
@@ -222,9 +223,25 @@ func TestMarks_ReviewAuditsTheDecision(t *testing.T) {
 	}
 }
 
-// docCase stubs profile's detail and document routes and media's evidence.
+// marksTestInternalKey is a test-only stand-in for media's internal group key.
+const marksTestInternalKey = "marks-test-internal-key"
+
+// Bodies that start with their type's magic bytes.
+var (
+	marksPNG  = append([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}, []byte("registration-certificate")...)
+	marksJPEG = append([]byte{0xFF, 0xD8, 0xFF, 0xE0}, []byte("registration-certificate")...)
+	marksPDF  = []byte("%PDF-1.7 registration certificate")
+)
+
+// docCase stubs profile's detail and document routes and media's
+// document-bytes route, which serves only when owner_id is the applicant
+// (media-service's own binding, mirrored so a wrong owner is its 404).
 type docCase struct {
 	app, owner, media string
+}
+
+func marksDocumentBytesPath(media string) string {
+	return "/v1/media/internal/" + media + "/document-bytes"
 }
 
 func newDocCase(rg *marksRig, ct string, body []byte) docCase {
@@ -238,7 +255,16 @@ func newDocCase(rg *marksRig, ct string, body []byte) docCase {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"data":{"document_media_id":"` + d.media + `"}}`))
 	})
-	rg.on(http.MethodGet, "/v1/media/admin/evidence/"+d.media, serveImage(ct, body, true))
+	serve := serveImage(ct, body, true)
+	rg.on(http.MethodGet, marksDocumentBytesPath(d.media), func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("owner_id") != d.owner {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = w.Write([]byte(`{"error":{"code":"MEDIA_NOT_FOUND","message":"Media not found"}}`))
+			return
+		}
+		serve(w, r)
+	})
 	return d
 }
 
@@ -252,16 +278,36 @@ func reviewer(rg *marksRig) string {
 	return a
 }
 
+// lastAudit is the request's own row: other routes may add rows of their
+// own, so the tests read the last one rather than counting.
+func lastAudit(t *testing.T, a []postgres.AdminAuditEntry) postgres.AdminAuditEntry {
+	t.Helper()
+	if len(a) == 0 {
+		t.Fatal("no audit row")
+	}
+	return a[len(a)-1]
+}
+
+// documentViewRows counts the rows that record a successful document view.
+func documentViewRows(a []postgres.AdminAuditEntry) int {
+	n := 0
+	for _, e := range a {
+		if e.Operation == opMarksDocumentView && e.Outcome == postgres.AuditOutcomeSuccess {
+			n++
+		}
+	}
+	return n
+}
+
 func TestMarks_DocumentViewStreamsWithTheKYCHeaders(t *testing.T) {
 	rg := newMarksRig(t)
-	img := []byte("\x89PNG-registration-certificate")
-	d := newDocCase(rg, "image/png", img)
+	d := newDocCase(rg, "image/png", marksPNG)
 	actor := reviewer(rg)
 	w := rg.do(http.MethodGet, d.path(), "", actor, true)
-	if w.Code != http.StatusOK || w.Body.String() != string(img) {
+	if w.Code != http.StatusOK || w.Body.String() != string(marksPNG) {
 		t.Fatalf("view: %d %q", w.Code, w.Body.String())
 	}
-	if w.Header().Get("Content-Type") != "image/png" || w.Header().Get("Content-Length") != strconv.Itoa(len(img)) {
+	if w.Header().Get("Content-Type") != "image/png" || w.Header().Get("Content-Length") != strconv.Itoa(len(marksPNG)) {
 		t.Fatalf("type/length %q %q", w.Header().Get("Content-Type"), w.Header().Get("Content-Length"))
 	}
 	for _, kv := range kycViewHeaders {
@@ -270,6 +316,9 @@ func TestMarks_DocumentViewStreamsWithTheKYCHeaders(t *testing.T) {
 		}
 	}
 	// The media id never reaches the console: not in the body, not in a header.
+	if strings.Contains(w.Body.String(), d.media) {
+		t.Fatal("the body carries the media id")
+	}
 	for k, vs := range w.Header() {
 		for _, v := range vs {
 			if strings.Contains(v, d.media) {
@@ -281,30 +330,38 @@ func TestMarks_DocumentViewStreamsWithTheKYCHeaders(t *testing.T) {
 	if len(hits) != 3 {
 		t.Fatalf("hits %+v", hits)
 	}
-	wantScope := []string{permMarksRead, permMarksReview, permMediaEvidenceRead}
+	wantScope := []string{"platform:official_marks.read", "platform:official_marks.review", "media:document-bytes.read"}
 	wantAud := []string{"profile", "profile", "media"}
 	for i, h := range hits {
 		if h.verifyErr != nil || h.aud != wantAud[i] || h.verified.Actor != actor || len(h.verified.Scope) != 1 || h.verified.Scope[0] != wantScope[i] ||
-			h.userHdr != "" || h.keyHdr != "" {
-			t.Fatalf("hit %d unsafe: %+v", i, h)
+			h.userHdr != "" {
+			t.Fatalf("hit %d unsafe: aud=%s path=%s err=%v", i, h.aud, h.path, h.verifyErr)
 		}
 	}
+	// Profile never gets the internal key; media's internal group does.
+	if hits[0].keyHdr != "" || hits[1].keyHdr != "" {
+		t.Fatal("the internal key was sent to profile")
+	}
+	if hits[2].keyHdr != marksTestInternalKey {
+		t.Fatal("media's document-bytes request did not carry the internal key")
+	}
 	q, _ := url.ParseQuery(hits[2].query)
-	if hits[2].path != "/v1/media/admin/evidence/"+d.media || q.Get("owner_id") != d.owner || q.Get("kind") != marksDocumentKind {
+	if hits[2].path != marksDocumentBytesPath(d.media) || q.Get("owner_id") != d.owner || len(q) != 1 {
 		t.Fatalf("media request %s ?%s", hits[2].path, hits[2].query)
 	}
 	a := rg.takeAudit()
-	if len(a) != 1 || a[0].Operation != opMarksDocumentView || a[0].Outcome != postgres.AuditOutcomeSuccess ||
-		a[0].TargetType != marksTargetApplication || a[0].TargetID != d.app || a[0].Actor != actor {
+	row := lastAudit(t, a)
+	if row.Operation != opMarksDocumentView || row.Outcome != postgres.AuditOutcomeSuccess ||
+		row.TargetType != marksTargetApplication || row.TargetID != d.app || row.Actor != actor || documentViewRows(a) != 1 {
 		t.Fatalf("view audit %+v", a)
 	}
-	if raw, _ := json.Marshal(a[0]); strings.Contains(string(raw), d.media) {
-		t.Fatalf("audit row carries the media id: %s", raw)
+	if raw, _ := json.Marshal(a); strings.Contains(string(raw), d.media) {
+		t.Fatalf("audit rows carry the media id: %s", raw)
 	}
 
 	// Every view is one more row.
 	rg.do(http.MethodGet, d.path(), "", actor, true)
-	if a := rg.takeAudit(); len(a) != 1 || a[0].Operation != opMarksDocumentView {
+	if a := rg.takeAudit(); documentViewRows(a) != 1 || lastAudit(t, a).Operation != opMarksDocumentView {
 		t.Fatalf("second view audit %+v", a)
 	}
 	rg.takeHits()
@@ -312,7 +369,7 @@ func TestMarks_DocumentViewStreamsWithTheKYCHeaders(t *testing.T) {
 
 func TestMarks_DocumentViewRefusals(t *testing.T) {
 	rg := newMarksRig(t)
-	d := newDocCase(rg, "image/jpeg", []byte("jpeg-bytes"))
+	d := newDocCase(rg, "image/jpeg", marksJPEG)
 
 	// review without read: refused before profile is called.
 	only := uuid.NewString()
@@ -323,7 +380,7 @@ func TestMarks_DocumentViewRefusals(t *testing.T) {
 	if hits := rg.takeHits(); len(hits) != 0 {
 		t.Fatalf("review-only reached profile: %+v", hits)
 	}
-	if a := rg.takeAudit(); len(a) != 1 || a[0].Outcome != postgres.AuditOutcomeDenied {
+	if a := lastAudit(t, rg.takeAudit()); a.Outcome != postgres.AuditOutcomeDenied {
 		t.Fatalf("review-only audit %+v", a)
 	}
 
@@ -351,8 +408,48 @@ func TestMarks_DocumentViewRefusals(t *testing.T) {
 	if hits := rg.takeHits(); len(hits) != 2 {
 		t.Fatalf("no document hits %+v", hits)
 	}
-	if a := rg.takeAudit(); len(a) != 1 || a[0].Outcome == postgres.AuditOutcomeSuccess {
+	if a := rg.takeAudit(); lastAudit(t, a).Outcome == postgres.AuditOutcomeSuccess || documentViewRows(a) != 0 {
 		t.Fatalf("no document audit %+v", a)
+	}
+}
+
+// The owner named to media is the applicant profile answered: a document
+// media says belongs to someone else is a 404, never bytes, never a view row.
+func TestMarks_DocumentViewOwnerIsTheApplicant(t *testing.T) {
+	rg := newMarksRig(t)
+	d := newDocCase(rg, "image/png", marksPNG)
+	// Profile's detail now names a different applicant than the uploader.
+	other := uuid.NewString()
+	rg.on(http.MethodGet, service.ProfileAdminPrefix+"/marks/organisation/applications/"+d.app, func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"application_id":"` + d.app + `","user_id":"` + other + `","has_document":true}}`))
+	})
+	w := rg.do(http.MethodGet, d.path(), "", reviewer(rg), true)
+	if w.Code != http.StatusNotFound || !hasCode(w, CodeDocumentNotFound) || strings.Contains(w.Body.String(), "registration-certificate") {
+		t.Fatalf("another owner: %d %s", w.Code, w.Body.String())
+	}
+	hits := rg.takeHits()
+	if len(hits) != 3 {
+		t.Fatalf("hits %+v", hits)
+	}
+	if q, _ := url.ParseQuery(hits[2].query); q.Get("owner_id") != other {
+		t.Fatalf("owner_id sent %q, want the applicant profile named", q.Get("owner_id"))
+	}
+	if a := rg.takeAudit(); documentViewRows(a) != 0 || lastAudit(t, a).Outcome == postgres.AuditOutcomeSuccess {
+		t.Fatalf("a refused view was audited as a view: %+v", a)
+	}
+}
+
+func TestMarks_DocumentViewWithoutMediaClientIs503(t *testing.T) {
+	rg := newMarksRig(t)
+	rg.h.WithMediaDocuments(nil)
+	d := newDocCase(rg, "image/png", marksPNG)
+	w := rg.do(http.MethodGet, d.path(), "", reviewer(rg), true)
+	if w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), "registration-certificate") {
+		t.Fatalf("no media client: %d %s", w.Code, w.Body.String())
+	}
+	if a := rg.takeAudit(); documentViewRows(a) != 0 {
+		t.Fatalf("no media client audited a view: %+v", a)
 	}
 }
 
@@ -362,11 +459,16 @@ func TestMarks_DocumentViewTypesAndAudit(t *testing.T) {
 		body     []byte
 		code     int
 	}{
-		{"pdf", "application/pdf", []byte("%PDF-1.7 registration"), http.StatusOK},
-		{"webp", "image/webp", []byte("RIFFwebp"), http.StatusOK},
+		{"pdf", "application/pdf", marksPDF, http.StatusOK},
+		{"png", "image/png", marksPNG, http.StatusOK},
+		{"jpeg", "image/jpeg", marksJPEG, http.StatusOK},
+		{"webp", "image/webp", []byte("RIFF\x00\x00\x00\x00WEBPVP8 "), http.StatusBadGateway},
 		{"html", "text/html", []byte("<script>x</script>"), http.StatusBadGateway},
 		{"svg", "image/svg+xml", []byte("<svg/>"), http.StatusBadGateway},
 		{"fake pdf", "application/pdf", []byte("<html>not a pdf"), http.StatusBadGateway},
+		{"fake png", "image/png", []byte("<html>not a png at all"), http.StatusBadGateway},
+		{"fake jpeg", "image/jpeg", []byte("<html>not a jpeg at all"), http.StatusBadGateway},
+		{"png labelled jpeg", "image/jpeg", marksPNG, http.StatusBadGateway},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -376,25 +478,39 @@ func TestMarks_DocumentViewTypesAndAudit(t *testing.T) {
 			if w.Code != tc.code {
 				t.Fatalf("%s: %d %s", tc.name, w.Code, w.Body.String())
 			}
-			if tc.code != http.StatusOK && strings.Contains(w.Body.String(), string(tc.body)) {
-				t.Fatal("refused document bytes were relayed")
+			a := rg.takeAudit()
+			if tc.code != http.StatusOK {
+				if !hasCode(w, CodeDocumentUnsupported) {
+					t.Fatalf("%s: %s, want %s", tc.name, w.Body.String(), CodeDocumentUnsupported)
+				}
+				if strings.Contains(w.Body.String(), string(tc.body)) {
+					t.Fatal("refused document bytes were relayed")
+				}
+				if documentViewRows(a) != 0 {
+					t.Fatalf("a refused document was audited as a view: %+v", a)
+				}
+				return
 			}
-			if tc.ct == "application/pdf" && tc.code == http.StatusOK && w.Header().Get("Content-Disposition") != kycPDFDisposition {
+			if w.Body.String() != string(tc.body) || documentViewRows(a) != 1 {
+				t.Fatalf("%s: body or audit wrong: %d view rows", tc.name, documentViewRows(a))
+			}
+			if tc.ct == "application/pdf" && w.Header().Get("Content-Disposition") != kycPDFDisposition {
 				t.Fatalf("pdf disposition %q", w.Header().Get("Content-Disposition"))
 			}
 		})
 	}
 	// Over the size cap: refused whole.
 	rg := newMarksRig(t)
-	d := newDocCase(rg, "image/png", make([]byte, maxKYCDocumentBytes+1))
+	big := append(append([]byte{}, marksPNG...), make([]byte, maxKYCDocumentBytes)...)
+	d := newDocCase(rg, "image/png", big)
 	if w := rg.do(http.MethodGet, d.path(), "", reviewer(rg), true); w.Code != http.StatusBadGateway || !hasCode(w, CodeDocumentTooLarge) {
 		t.Fatalf("oversize: %d", w.Code)
 	}
 	// No audit row, no bytes.
 	rg2 := newMarksRig(t)
-	d2 := newDocCase(rg2, "image/png", []byte("png-bytes"))
+	d2 := newDocCase(rg2, "image/png", marksPNG)
 	rg2.rec.err = context.DeadlineExceeded
-	if w := rg2.do(http.MethodGet, d2.path(), "", reviewer(rg2), true); w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), "png-bytes") {
+	if w := rg2.do(http.MethodGet, d2.path(), "", reviewer(rg2), true); w.Code != http.StatusServiceUnavailable || strings.Contains(w.Body.String(), "registration-certificate") {
 		t.Fatalf("document escaped without an audit row: %d", w.Code)
 	}
 }

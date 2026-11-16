@@ -29,7 +29,10 @@ import (
 //     api-gateway 404s /v1/media/internal/* at the edge.
 //   - Any gateway-set end-user identity header: 403 USER_CALLER_REFUSED.
 //   - A service token in X-Service-Authorization (audience "media",
-//     operation media:document-bytes.read) issued by commerce-service. With
+//     operation media:document-bytes.read) issued by commerce-service, or by
+//     admin-service (16 Nov 2026, Official-mark registration documents) with
+//     a signed "act" and ?owner_id=<uploader> (missing or another owner:
+//     404 MEDIA_NOT_FOUND, the same answer as no document). With
 //     no token the answer is 401 SERVICE_TOKEN_REQUIRED on EVERY environment:
 //     like partner evidence, the bare internal key never reads a document.
 //     Anything else is 403 SERVICE_TOKEN_REJECTED.
@@ -50,10 +53,26 @@ const DocumentBytesRoute = "/:mediaId/document-bytes"
 // OpDocumentBytesRead is the operation a token must carry for document-bytes.
 const OpDocumentBytesRead = "media:document-bytes.read"
 
+// IssuerAdminService is admin-service, which reads an Official-mark
+// application's registration document (16 Nov 2026) for the reviewer.
+const IssuerAdminService = "admin-service"
+
 // documentBytesIssuers is the closed set of services document-bytes answers.
 // Doorstep's professional documents are images and stay on image-bytes.
+//
+// admin-service is answered only for a document whose uploader is the
+// owner_id it names (documentBytesOwnerBound), and only on behalf of a person
+// (a signed "act"). commerce-service's reads are unchanged: it resolves the
+// media id from its own seller record, so it names no owner.
 var documentBytesIssuers = map[string]bool{
 	IssuerCommerceService: true,
+	IssuerAdminService:    true,
+}
+
+// documentBytesOwnerBound lists the issuers whose read must name the
+// document's uploader in owner_id; anything else is 404 MEDIA_NOT_FOUND.
+var documentBytesOwnerBound = map[string]bool{
+	IssuerAdminService: true,
 }
 
 // DocumentCSP is the Content-Security-Policy every served document carries.
@@ -76,7 +95,8 @@ func (h *Handler) documentBytesSvc() documentBytesService {
 // requireDocumentBytesCaller admits a commerce-service token carrying
 // media:document-bytes.read, and nothing else. It runs after the group's
 // internal-key check. The verifier is the image-bytes one
-// (SERVICE_CALLER_COMMERCE_SERVICE_OPS must list the operation).
+// (SERVICE_CALLER_COMMERCE_SERVICE_OPS / SERVICE_CALLER_ADMIN_SERVICE_OPS
+// must list the operation).
 func (h *Handler) requireDocumentBytesCaller() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
@@ -106,6 +126,14 @@ func (h *Handler) requireDocumentBytesCaller() gin.HandlerFunc {
 			api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, CodeServiceTokenRejected, "service token rejected", nil)
 			c.Abort()
 			return
+		}
+		if documentBytesOwnerBound[verified.Issuer] {
+			if actor, err := uuid.Parse(verified.Actor); err != nil || actor == uuid.Nil {
+				slog.WarnContext(ctx, "media-service: document-bytes token refused: no acting person", "issuer", verified.Issuer)
+				api.ErrorWithContext(ctx, c.Writer, http.StatusForbidden, CodeServiceTokenRejected, "service token rejected", nil)
+				c.Abort()
+				return
+			}
 		}
 		c.Set(ctxDocumentBytesCaller, verified.Issuer)
 		c.Next()
@@ -145,6 +173,19 @@ func (h *Handler) GetDocumentBytes(c *gin.Context) {
 		notFound()
 		return
 	}
+	caller, _ := c.Get(ctxDocumentBytesCaller)
+	callerName, _ := caller.(string)
+	// An owner-bound caller (admin-service) names the uploader; a missing or
+	// malformed owner_id is the same not-found as a wrong one.
+	var owner uuid.UUID
+	ownerBound := documentBytesOwnerBound[callerName]
+	if ownerBound {
+		owner, err = uuid.Parse(strings.TrimSpace(c.Query("owner_id")))
+		if err != nil || owner == uuid.Nil {
+			notFound()
+			return
+		}
+	}
 	doc, err := h.documentBytesSvc().DocumentBytes(ctx, mediaID)
 	if errors.Is(err, service.ErrDocumentNotFound) {
 		notFound()
@@ -162,8 +203,10 @@ func (h *Handler) GetDocumentBytes(c *gin.Context) {
 		notFound()
 		return
 	}
-	caller, _ := c.Get(ctxDocumentBytesCaller)
-	callerName, _ := caller.(string)
+	if ownerBound && doc.UploaderID != owner {
+		notFound()
+		return
+	}
 	slog.InfoContext(ctx, "media-service: document bytes served", "media_id", mediaID.String(), "caller", callerName)
 	c.Header("Content-Disposition", `attachment; filename="`+documentFilename(doc.ContentType)+`"`)
 	c.Header("Content-Security-Policy", DocumentCSP)

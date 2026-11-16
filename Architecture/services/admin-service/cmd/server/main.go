@@ -168,6 +168,9 @@ func main() {
 	// Official marks: profile-service's console family (audience "profile";
 	// it registers ADMIN_SERVICE_TOKEN_PUBKEY / _KID for admin-service).
 	handler.WithProfile(service.NewProfileConsoleClient(env("PROFILE_SERVICE_URL", "http://identity-profile:8098"), tokenSigner))
+	// Its registration document: media-service's document-bytes route
+	// (audience "media"; media lists admin-service in SERVICE_CALLERS).
+	handler.WithMediaDocuments(service.NewMediaDocumentClient(env("MEDIA_SERVICE_URL", "http://media-service:8087"), internalKey, tokenSigner))
 	slog.Info("every refund is two-person (Feast, monetization, payments): no amount threshold")
 
 	// 7. Gin with middleware stack

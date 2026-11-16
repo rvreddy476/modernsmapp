@@ -35,10 +35,12 @@ import (
 //
 // The registration document is viewed, not downloaded: admin-service asks
 // profile for the applicant and the document's media id, then streams the
-// bytes from media-service's private-evidence route exactly as the Doorstep
-// evidence views do (relayDocumentImage: type and size checked, one audit row
-// before the first byte, the KYC view headers). The media id never reaches
-// the console or the audit row.
+// bytes from media-service's private document-bytes route with owner_id = the
+// applicant (contract section 6), exactly as the seller KYC views relay
+// (relayDocumentImage: type and size checked, a PDF's first bytes checked,
+// one audit row before the first byte, the KYC view headers). PDF, JPEG and
+// PNG only; the media client also checks each type's first bytes. The media
+// id never reaches the console or the audit row.
 //
 // The invite code the profile service answers to the approver is relayed to
 // that approver once. admin.approvals keeps only the result status and
@@ -49,8 +51,8 @@ const (
 	permMarksReview = "platform:official_marks.review"
 	permGovInvite   = "platform:government_marks.invite"
 
-	// permMediaEvidenceRead is media-service's private-evidence scope.
-	permMediaEvidenceRead = "media:partner-evidence.read"
+	// permMediaDocumentBytesRead is media-service's document-bytes scope.
+	permMediaDocumentBytesRead = service.MediaDocumentBytesRead
 
 	marksAuditApp = "platform"
 	marksPrefix   = "/v1/admin/marks"
@@ -69,10 +71,6 @@ const (
 	marksTargetApplication = "official_application"
 	marksTargetInvitation  = "government_invitation"
 	marksTargetUser        = "user"
-
-	// marksDocumentKind is the kind sent to media-service's evidence route
-	// (any kind but introduction_video is an image read there).
-	marksDocumentKind = "registration_document"
 
 	CodeSecondApproverRequired = "SECOND_APPROVER_REQUIRED"
 	CodeInvalidOfficialName    = "INVALID_OFFICIAL_NAME"
@@ -101,6 +99,18 @@ func (h *Handler) WithProfile(pc *service.ProductClient) *Handler {
 	h.profile = pc
 	return h
 }
+
+// WithMediaDocuments wires media-service's document-bytes client
+// (service.NewMediaDocumentClient). Without it the document view answers 503
+// PRODUCT_UNAVAILABLE.
+func (h *Handler) WithMediaDocuments(mc *service.ProductClient) *Handler {
+	h.mediaDocs = mc
+	return h
+}
+
+// marksDocumentTypes are what the registration-document view relays
+// (contract section 6): PDF, JPEG and PNG, never WebP or anything else.
+var marksDocumentTypes = map[string]bool{kycPDFType: true, "image/jpeg": true, "image/png": true}
 
 // govInviteBody is the console's invitation request.
 type govInviteBody struct {
@@ -178,9 +188,10 @@ func marksApplicationID(c *gin.Context) (string, bool) {
 //     holder of official_marks.review also holds in the catalogue; an admin
 //     without it is refused);
 //  2. the document's media id (scope official_marks.review); none → 404;
-//  3. the bytes from media-service's private-evidence route, owned by the
-//     applicant, through relayDocumentImage (types jpeg/png/webp/pdf, size
-//     cap, one audit row before the first byte, the KYC view headers).
+//  3. the bytes from media-service's document-bytes route with owner_id =
+//     the applicant (another owner is media's 404), through
+//     relayDocumentImage (types pdf/jpeg/png, size cap, magic bytes, one
+//     audit row before the first byte, the KYC view headers).
 func (h *Handler) marksDocumentView(p product) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		ctx := c.Request.Context()
@@ -232,11 +243,11 @@ func (h *Handler) marksDocumentView(p product) gin.HandlerFunc {
 		}
 
 		// 3. The bytes.
-		h.relayDocumentImage(c, product{client: h.evidence, label: "Registration document"}, info, service.ProductRequest{
-			Method: http.MethodGet, Path: "/" + media.String(),
-			Query:      url.Values{"owner_id": {owner.String()}, "kind": {marksDocumentKind}},
-			Permission: permMediaEvidenceRead, Actor: actorFrom(c),
-		}, kycSellerDocumentTypes, notFound, "official mark document stream ended early", "application_id", id)
+		h.relayDocumentImage(c, product{client: h.mediaDocs, label: "Registration document"}, info, service.ProductRequest{
+			Method: http.MethodGet, Path: "/" + media.String() + "/document-bytes",
+			Query:      url.Values{"owner_id": {owner.String()}},
+			Permission: permMediaDocumentBytesRead, Actor: actorFrom(c),
+		}, marksDocumentTypes, notFound, "official mark document stream ended early", "application_id", id)
 	}
 }
 

@@ -103,6 +103,8 @@ type Handler struct {
 	identity      *service.ProductClient
 	// Official marks: profile-service's console family (handler_marks.go).
 	profile *service.ProductClient
+	// Official marks: media-service's document-bytes route (handler_marks.go).
+	mediaDocs *service.ProductClient
 	notifications *service.ProductClient
 }
 

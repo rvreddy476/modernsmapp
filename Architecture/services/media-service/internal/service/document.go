@@ -179,6 +179,9 @@ var ErrDocumentNotFound = errors.New("media: document not available")
 type DocumentBytes struct {
 	Bytes       []byte
 	ContentType string
+	// UploaderID is the account that uploaded the document. The route binds
+	// an admin-service read to it (owner_id); it is never served.
+	UploaderID uuid.UUID
 }
 
 // documentRecords / documentObjects are the store slices the reader needs.
@@ -253,5 +256,5 @@ func (r *DocumentReader) DocumentBytes(ctx context.Context, mediaID uuid.UUID) (
 	if !DocumentMagicMatches(m.MimeType, data) {
 		return nil, ErrDocumentNotFound
 	}
-	return &DocumentBytes{Bytes: data, ContentType: SniffDocumentType(data)}, nil
+	return &DocumentBytes{Bytes: data, ContentType: SniffDocumentType(data), UploaderID: m.UploaderID}, nil
 }
