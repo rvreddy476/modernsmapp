@@ -348,6 +348,21 @@ var DerivedMediaTables = []string{
 	"copyright_pairs",              // media_lo/media_hi: not matched by name, listed for completeness
 }
 
+// NonClaimMediaReferences name a media id but deliberately do NOT pin it.
+// Each records an asset that is already gone (or going) by design; holding
+// it as a claim would keep a deleted asset's bytes forever. Listed by
+// table.column so a new column still refuses until someone classifies it.
+var NonClaimMediaReferences = []MediaReference{
+	{
+		// Migration 032: when the author deletes a video its ready sound is
+		// RETIRED, and the deleted video's id moves here as history. The
+		// sound keeps its own audio objects; the video's bytes must still be
+		// reclaimed like any other deleted upload.
+		Table: "audio_tracks", Column: "former_source_media_id",
+		Why: "history of a retired sound's deleted source video; pinning it would keep deleted video bytes",
+	},
+}
+
 // UploadPurposeComposer is the lease written by the social composer's `init`.
 //
 // Recorded on every composer upload and still the intended scope for confirmed
@@ -414,6 +429,10 @@ func resolveAgainstCatalog(present map[string]catalogColumn) ([]resolvedReferenc
 	for _, ref := range LiveMediaReferences {
 		classified[ref.Table+"."+ref.Column] = true
 	}
+	nonClaim := map[string]bool{}
+	for _, ref := range NonClaimMediaReferences {
+		nonClaim[ref.Table+"."+ref.Column] = true
+	}
 	derived := map[string]bool{}
 	for _, t := range DerivedMediaTables {
 		derived[t] = true
@@ -421,7 +440,7 @@ func resolveAgainstCatalog(present map[string]catalogColumn) ([]resolvedReferenc
 
 	var unknown []string
 	for key, col := range present {
-		if classified[key] || derived[col.table] {
+		if classified[key] || nonClaim[key] || derived[col.table] {
 			continue
 		}
 		unknown = append(unknown, key+" ("+col.udt+")")

@@ -339,6 +339,33 @@ func TestUnknownColumnStillRefuses(t *testing.T) {
 	}
 }
 
+// A retired sound's former source is classified but never a claim: it
+// resolves, and it does not appear among the live references.
+func TestFormerSourceIsClassifiedButNotAClaim(t *testing.T) {
+	refs, err := resolveAgainstCatalog(catalogOf(map[string]string{
+		"audio_tracks.former_source_media_id": "uuid",
+		"audio_tracks.source_media_id":        "uuid",
+	}))
+	if err != nil {
+		t.Fatalf("former_source_media_id must be classified: %v", err)
+	}
+	for _, r := range refs {
+		if r.ref.Column == "former_source_media_id" {
+			t.Fatal("former_source_media_id must not pin the deleted video")
+		}
+	}
+	if len(refs) != 1 {
+		t.Fatalf("want only source_media_id as a claim, got %d", len(refs))
+	}
+	for _, nc := range NonClaimMediaReferences {
+		for _, live := range LiveMediaReferences {
+			if nc.Table == live.Table && nc.Column == live.Column {
+				t.Errorf("%s.%s is both a claim and a non-claim", nc.Table, nc.Column)
+			}
+		}
+	}
+}
+
 // Every live entry that is an array column is declared as one: a `_ids`
 // column name is the schema's convention for UUID[].
 func TestIdsColumnsAreDeclaredArrays(t *testing.T) {
