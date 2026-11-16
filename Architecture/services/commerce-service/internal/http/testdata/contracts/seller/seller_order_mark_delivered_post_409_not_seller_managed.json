@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "SHIPMENT_NOT_SELLER_MANAGED",
+    "message": "this order's parcel is tracked by a courier; it is marked delivered by the courier's scan"
+  },
+  "meta": {}
+}
+

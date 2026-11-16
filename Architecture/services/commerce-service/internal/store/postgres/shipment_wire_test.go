@@ -50,8 +50,24 @@ func TestShipmentGoesOutInSnakeCase(t *testing.T) {
 
 	want := []string{
 		"courier", "courier_order_id", "created_at", "delivered_at", "eta", "id",
-		"label_url", "last_event_at", "order_id", "seller_id", "shipped_at",
+		"label_url", "last_event_at", "order_id", "seller_id", "seller_managed", "shipped_at",
 		"status", "tracking_number", "tracking_url", "updated_at",
+	}
+	// delivery_confirmation is omitted until someone other than a courier
+	// confirmed delivery (migration 054); then it is an object.
+	if _, present := got["delivery_confirmation"]; present {
+		t.Errorf("delivery_confirmation is on the wire for a shipment nobody confirmed")
+	}
+	marked := wireKeys(t, &Shipment{DeliveryConfirmation: &DeliveryConfirmation{ConfirmedBy: ConfirmedBySeller, DeliveredAt: now, MarkedAt: now}})
+	conf, ok := marked["delivery_confirmation"].(map[string]any)
+	if !ok {
+		t.Fatalf("delivery_confirmation = %v; want an object", marked["delivery_confirmation"])
+	}
+	if k := sortedKeys(conf); !equalStrings(k, []string{"confirmed_by", "delivered_at", "marked_at", "note", "proof_media_id"}) {
+		t.Errorf("delivery_confirmation keys = %v", k)
+	}
+	if conf["confirmed_by"] != "seller" {
+		t.Errorf("confirmed_by = %v, want seller", conf["confirmed_by"])
 	}
 	if k := sortedKeys(got); !equalStrings(k, want) {
 		t.Fatalf("shipment keys = %v\nwant %v", k, want)

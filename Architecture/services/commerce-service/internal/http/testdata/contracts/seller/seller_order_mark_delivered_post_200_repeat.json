@@ -1,0 +1,15 @@
+{
+  "data": {
+    "order_id": "00000000-0000-4000-8000-0000000c0260",
+    "status": "delivered",
+    "applied": false,
+    "delivery_confirmation": {
+      "confirmed_by": "seller",
+      "delivered_at": "2026-09-07T15:00:00Z",
+      "marked_at": "2026-09-30T10:00:00Z",
+      "note": "Handed to the buyer at the door",
+      "proof_media_id": null
+    }
+  }
+}
+

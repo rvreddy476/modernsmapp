@@ -577,13 +577,18 @@ func userServiceBaseURL() string {
 }
 
 // verifyBusinessPageOwner asks user-service's internal ownership route
-// whether userID owns pageID. It fails closed: no key, an unreachable
-// service or an unexpected answer refuses the id.
+// whether pageID exists, is active (linkablePageStatuses) and is managed by
+// userID (its owner, or an owner/admin role on it). It fails closed: no key,
+// an unreachable service or an unexpected answer refuses the id.
 func (s *Service) verifyBusinessPageOwner(ctx context.Context, userID, pageID uuid.UUID) error {
 	if s.internalServiceKey == "" {
 		return ErrBusinessPageCheckUnavailable
 	}
-	endpoint := fmt.Sprintf("%s/internal/pages/%s/owner", userServiceBaseURL(), url.PathEscape(pageID.String()))
+	// ?user_id asks for the caller's role too, so a page admin is admitted
+	// as well as its owner. A user-service that predates the parameter
+	// ignores it and sends no user_role: only the owner passes then.
+	endpoint := fmt.Sprintf("%s/internal/pages/%s/owner?user_id=%s", userServiceBaseURL(),
+		url.PathEscape(pageID.String()), url.QueryEscape(userID.String()))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return ErrBusinessPageCheckUnavailable
@@ -609,14 +614,48 @@ func (s *Service) verifyBusinessPageOwner(ctx context.Context, userID, pageID uu
 	}
 	var body struct {
 		Data struct {
-			UserID uuid.UUID `json:"user_id"`
+			UserID   uuid.UUID `json:"user_id"`
+			Status   string    `json:"status"`
+			UserRole string    `json:"user_role"`
 		} `json:"data"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<16)).Decode(&body); err != nil {
 		return ErrBusinessPageCheckUnavailable
 	}
-	if body.Data.UserID == uuid.Nil || body.Data.UserID != userID {
+	return decideBusinessPage(userID, body.Data.UserID, body.Data.UserRole, body.Data.Status)
+}
+
+// ErrBusinessPageInactive refuses a page the caller manages but that is
+// suspended, disabled or rejected (or in a status this build does not know).
+// Told apart from ErrBusinessPageNotOwned only for someone who manages the
+// page, so it reveals nothing to a stranger.
+var ErrBusinessPageInactive = errors.New("that business page is not active")
+
+// linkablePageStatuses are the user-service page statuses (internal/pages)
+// a shop may be linked to. pending_review and draft are included on
+// purpose: the seller's own approval is what approves a pending page
+// (user-service ApplySellerApproval), so requiring `approved` here would
+// refuse the normal path. Anything else, and any status this build does not
+// know, is refused: fail closed.
+var linkablePageStatuses = map[string]bool{
+	"draft":          true,
+	"pending_review": true,
+	"approved":       true,
+}
+
+// decideBusinessPage is the whole rule, pure: the caller must be the page's
+// owner or hold the owner/admin role on it, and the page must be linkable.
+func decideBusinessPage(caller, owner uuid.UUID, callerRole, status string) error {
+	manages := owner != uuid.Nil && owner == caller
+	switch strings.ToLower(strings.TrimSpace(callerRole)) {
+	case "owner", "admin":
+		manages = true
+	}
+	if caller == uuid.Nil || !manages {
 		return ErrBusinessPageNotOwned
+	}
+	if !linkablePageStatuses[strings.ToLower(strings.TrimSpace(status))] {
+		return ErrBusinessPageInactive
 	}
 	return nil
 }

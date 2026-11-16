@@ -231,6 +231,7 @@ POST /v1/commerce/seller/bulk-import/:jobId/upload-complete
 POST /v1/commerce/seller/bulk-import/presigned-url
 POST /v1/commerce/seller/coupons
 POST /v1/commerce/seller/orders/:orderId/cancel
+POST /v1/commerce/seller/orders/:orderId/mark-delivered
 POST /v1/commerce/seller/orders/:orderId/pack
 POST /v1/commerce/seller/orders/:orderId/ship
 POST /v1/commerce/seller/sell-scope/upgrade

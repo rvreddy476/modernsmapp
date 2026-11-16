@@ -418,6 +418,11 @@ type OrderDetail struct {
 	// CanRetryPayment and RetryPaymentForOrder.
 	CanRetryPayment bool    `json:"can_retry_payment"`
 	TrackingURL     *string `json:"tracking_url,omitempty"`
+	// DeliveryConfirmation is present when the order was marked delivered
+	// by the SELLER (confirmed_by "seller") rather than by a courier scan;
+	// the buyer's screen says "Marked delivered by the seller". Absent
+	// otherwise. See service.SellerMarkDelivered.
+	DeliveryConfirmation *postgres.DeliveryConfirmation `json:"delivery_confirmation,omitempty"`
 
 	CreatedAt      time.Time `json:"created_at"`
 	CreatedAtEpoch int64     `json:"created_at_epoch"`
@@ -539,6 +544,7 @@ func (s *Service) GetOrderDetail(ctx context.Context, orderID, userID uuid.UUID)
 				break
 			}
 		}
+		out.DeliveryConfirmation = firstDeliveryConfirmation(shipments)
 	} else {
 		slog.Warn("order detail: could not load shipments", "order_id", orderID, "error", err)
 	}

@@ -22,14 +22,15 @@ const sellerOrderID = "8a1f0b3c-0000-4000-8000-000000000001"
 func TestSellerFulfilmentRoutesAreRegistered(t *testing.T) {
 	r := productionEngine(t)
 	want := map[string]bool{
-		"POST /v1/commerce/seller/orders/:orderId/pack":   false,
-		"POST /v1/commerce/seller/orders/:orderId/cancel": false,
-		"POST /v1/commerce/seller/orders/:orderId/ship":   false,
-		"GET /v1/commerce/seller/orders/:orderId/history": false,
-		"POST /v1/commerce/orders/:orderId/shipment":      false,
-		"GET /v1/commerce/orders/:orderId/shipments":      false,
-		"POST /v1/commerce/orders/:orderId/cancel":        false,
-		"GET /v1/commerce/seller/orders":                  false,
+		"POST /v1/commerce/seller/orders/:orderId/pack":           false,
+		"POST /v1/commerce/seller/orders/:orderId/cancel":         false,
+		"POST /v1/commerce/seller/orders/:orderId/ship":           false,
+		"POST /v1/commerce/seller/orders/:orderId/mark-delivered": false,
+		"GET /v1/commerce/seller/orders/:orderId/history":         false,
+		"POST /v1/commerce/orders/:orderId/shipment":              false,
+		"GET /v1/commerce/orders/:orderId/shipments":              false,
+		"POST /v1/commerce/orders/:orderId/cancel":                false,
+		"GET /v1/commerce/seller/orders":                          false,
 	}
 	for _, ri := range r.Routes() {
 		key := ri.Method + " " + ri.Path
@@ -49,6 +50,7 @@ func TestSellerFulfilmentRoutesAreNotFenced(t *testing.T) {
 		"/v1/commerce/seller/orders/" + sellerOrderID + "/pack",
 		"/v1/commerce/seller/orders/" + sellerOrderID + "/cancel",
 		"/v1/commerce/seller/orders/" + sellerOrderID + "/ship",
+		"/v1/commerce/seller/orders/" + sellerOrderID + "/mark-delivered",
 		"/v1/commerce/seller/orders/" + sellerOrderID + "/history",
 		"/v1/commerce/orders/" + sellerOrderID + "/shipment",
 	}
@@ -67,6 +69,7 @@ func TestSellerFulfilmentRoutesReachTheirHandlers(t *testing.T) {
 		{http.MethodPost, "/v1/commerce/seller/orders/" + sellerOrderID + "/pack"},
 		{http.MethodPost, "/v1/commerce/seller/orders/" + sellerOrderID + "/cancel"},
 		{http.MethodPost, "/v1/commerce/seller/orders/" + sellerOrderID + "/ship"},
+		{http.MethodPost, "/v1/commerce/seller/orders/" + sellerOrderID + "/mark-delivered"},
 		{http.MethodGet, "/v1/commerce/seller/orders/" + sellerOrderID + "/history"},
 		{http.MethodPost, "/v1/commerce/orders/" + sellerOrderID + "/shipment"},
 	}

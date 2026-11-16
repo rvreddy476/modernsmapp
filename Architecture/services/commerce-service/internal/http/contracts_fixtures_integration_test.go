@@ -110,6 +110,12 @@ var (
 	ctOOfferIntent    = uuid.MustParse("00000000-0000-4000-8000-0000000c0252")
 	ctOOfferDupIntent = uuid.MustParse("00000000-0000-4000-8000-0000000c0253")
 	ctBankOffer       = uuid.MustParse("00000000-0000-4000-8000-0000000c0d01")
+	// Migration 054: an order the seller shipped with their own courier
+	// (seller_managed), which they then mark delivered. Oldest order in the
+	// seed, so no list fixture's page moves.
+	ctOSelfShip    = uuid.MustParse("00000000-0000-4000-8000-0000000c0260")
+	ctISelfShip    = uuid.MustParse("00000000-0000-4000-8000-0000000c0261")
+	ctSelfShipment = uuid.MustParse("00000000-0000-4000-8000-0000000c0262")
 )
 
 // ─── The seed ────────────────────────────────────────────────────────────
@@ -130,6 +136,7 @@ func (e *contractEnv) seed() {
 		ctAdmin, ctCpnPct, ctCpnEarbuds, ctCpnSecret, ctCpnBigSpend, ctCpnExpired, ctCpnUsedUp, ctCpnOther,
 		ctCpnPlatform, ctCpnLastUse, ctOOffer, ctIOffer, ctBankOffer, ctOOfferIntent, ctOOfferDupIntent,
 		uuid.MustParse("00000000-0000-4000-8000-0000000c0d02"), uuid.MustParse("00000000-0000-4000-8000-0000000c0d03"),
+		ctOSelfShip, ctISelfShip, ctSelfShipment,
 	} {
 		e.knownIDs[id.String()] = true
 	}
@@ -443,6 +450,22 @@ func (e *contractEnv) seed() {
 	        ('ct-evt-offer-own','payment.succeeded',$2,$1,121810,'2026-09-09T10:01:00Z'),
 	        ('ct-evt-offer-dup','payment.succeeded',$3,$1,121810,'2026-09-09T10:05:00Z')`,
 		ctOOffer, ctOOfferIntent.String(), ctOOfferDupIntent.String())
+
+	// Migration 054: shipped by the seller with their own courier. No carrier
+	// will report it; the seller marks it delivered (fixtures at the end).
+	order(ctOSelfShip, "ORD-2026-009998", "shipped", "paid", 129900, 19815, 134800, "2026-09-05T10:00:00Z")
+	item(ctISelfShip, ctOSelfShip, ctP1, ctV1, "Momentum Wireless Earbuds", "MOM-EB-BLK", 149900, 129900, 19815, "shipped", "", "2026-09-05T10:00:00Z")
+	e.exec(`INSERT INTO shipments (id,order_id,seller_id,courier,tracking_number,status,shipped_at,created_at,updated_at,seller_managed)
+	        VALUES ($1,$2,$3,'Delhivery','DL0C0260','booked','2026-09-06T12:00:00Z','2026-09-06T12:00:00Z','2026-09-06T12:00:00Z',TRUE)`,
+		ctSelfShipment, ctOSelfShip, ctSeller)
+	e.exec(`INSERT INTO shipment_events (shipment_id,status,location,remark,occurred_at,created_at) VALUES
+	        ($1,'booked','','recorded by seller: Delhivery DL0C0260','2026-09-06T12:00:00Z','2026-09-06T12:00:00Z')`, ctSelfShipment)
+	e.exec(`UPDATE order_items SET shipment_id = $2, tracking_number = 'DL0C0260' WHERE order_id = $1`, ctOSelfShip, ctSelfShipment)
+	e.exec(`INSERT INTO order_status_history (order_id,from_status,to_status,actor_type,notes,created_at) VALUES
+	        ($1,NULL,'payment_pending','customer','checkout','2026-09-05T10:00:00Z'),
+	        ($1,'payment_pending','confirmed','system','payment.succeeded','2026-09-05T10:01:00Z'),
+	        ($1,'confirmed','packed','seller','packed by seller','2026-09-06T11:00:00Z'),
+	        ($1,'packed','shipped','seller','shipment booked','2026-09-06T12:00:00Z')`, ctOSelfShip)
 
 	// Fresh orders continue the seeded series.
 	e.exec(`ALTER SEQUENCE order_number_seq RESTART WITH 10006`)
@@ -1056,6 +1079,30 @@ func (e *contractEnv) fixtures() []ctFixture {
 		{name: "seller/product_patch_400_return_policy_invalid", run: func(e *contractEnv) *httptest.ResponseRecorder {
 			return e.do(ctReq{method: http.MethodPatch, path: "/v1/commerce/products/" + ctP1.String(),
 				user: ctSellerUser, body: map[string]any{"return_policy_type": "14_days", "return_policy_days": 14}})
+		}},
+
+		// ── seller: mark delivered (migration 054) ─────────────────────
+		// Last, so no fresh id or timestamp they produce renumbers an
+		// earlier fixture. ctOSelfShip was shipped with the seller's own
+		// courier; ctOConfirmed was booked through the courier adapter by
+		// seller/seller_order_ship_post_201 above.
+		{name: "seller/seller_order_mark_delivered_post_200", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.post("/v1/commerce/seller/orders/"+ctOSelfShip.String()+"/mark-delivered", ctSellerUser, map[string]any{
+				"delivered_at": "2026-09-07T15:00:00Z", "note": "Handed to the buyer at the door",
+			})
+		}},
+		{name: "seller/seller_order_mark_delivered_post_200_repeat", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.post("/v1/commerce/seller/orders/"+ctOSelfShip.String()+"/mark-delivered", ctSellerUser, nil)
+		}},
+		{name: "seller/seller_order_mark_delivered_post_409_not_seller_managed", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.post("/v1/commerce/seller/orders/"+ctOConfirmed.String()+"/mark-delivered", ctSellerUser, nil)
+		}},
+		{name: "seller/seller_order_mark_delivered_post_409_not_shipped", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.post("/v1/commerce/seller/orders/"+ctORefund.String()+"/mark-delivered", ctSellerUser, nil)
+		}},
+		// The buyer sees who said it was delivered.
+		{name: "orders/order_get_200_seller_marked_delivered", run: func(e *contractEnv) *httptest.ResponseRecorder {
+			return e.get("/v1/commerce/orders/"+ctOSelfShip.String(), ctBuyer)
 		}},
 	}
 }

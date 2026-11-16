@@ -286,6 +286,9 @@ func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID
 			ShippedAt:      &now,
 		}
 		manual := applyManualBooking(s.courier, booking, sh)
+		// Recorded with the seller's own courier: no carrier webhook will
+		// ever report it, so its seller may mark it delivered (054).
+		sh.SellerManaged = manual
 		if err := s.store.CreateShipment(ctx, sh); err != nil {
 			// A seller's own tracking number colliding with another
 			// shipment's is their mistake to correct, and the answer has

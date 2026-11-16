@@ -569,6 +569,10 @@ func writeCommerceError(c *gin.Context, err error) {
 		api.ErrorWithContext(ctx, w, http.StatusNotFound, "BUSINESS_PAGE_NOT_FOUND", "business page not found", nil)
 		return
 	}
+	if errors.Is(err, service.ErrBusinessPageInactive) {
+		api.ErrorWithContext(ctx, w, http.StatusConflict, "BUSINESS_PAGE_INACTIVE", "that business page is suspended, disabled or rejected", nil)
+		return
+	}
 	if errors.Is(err, service.ErrBusinessPageCheckUnavailable) {
 		api.ErrorWithContext(ctx, w, http.StatusServiceUnavailable, "BUSINESS_PAGE_CHECK_UNAVAILABLE", "could not check the business page; try again", nil)
 		return

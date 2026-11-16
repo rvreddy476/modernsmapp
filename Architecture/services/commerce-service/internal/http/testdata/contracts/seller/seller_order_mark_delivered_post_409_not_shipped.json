@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "ORDER_NOT_SHIPPED",
+    "message": "only a shipped order can be marked delivered (the order is cancelled)"
+  },
+  "meta": {}
+}
+

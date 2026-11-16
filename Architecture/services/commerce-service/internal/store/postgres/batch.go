@@ -256,9 +256,7 @@ func (s *Store) GetShipmentsByOrderAndSeller(ctx context.Context, orderIDs []uui
 		return map[uuid.UUID]*Shipment{}, nil
 	}
 	rows, err := s.db.Query(ctx, `
-		SELECT id, order_id, seller_id, courier, tracking_number, courier_order_id,
-		       label_url, tracking_url, status, eta, shipped_at, delivered_at,
-		       last_event_at, created_at, updated_at
+		SELECT `+shipmentColumns+`
 		FROM shipments
 		WHERE order_id = ANY($1) AND seller_id = $2`, orderIDs, sellerID)
 	if err != nil {
@@ -267,10 +265,8 @@ func (s *Store) GetShipmentsByOrderAndSeller(ctx context.Context, orderIDs []uui
 	defer rows.Close()
 	out := make(map[uuid.UUID]*Shipment, len(orderIDs))
 	for rows.Next() {
-		sh := &Shipment{}
-		if err := rows.Scan(&sh.ID, &sh.OrderID, &sh.SellerID, &sh.Courier, &sh.TrackingNumber,
-			&sh.CourierOrderID, &sh.LabelURL, &sh.TrackingURL, &sh.Status, &sh.ETA,
-			&sh.ShippedAt, &sh.DeliveredAt, &sh.LastEventAt, &sh.CreatedAt, &sh.UpdatedAt); err != nil {
+		sh, err := scanShipment(rows)
+		if err != nil {
 			return nil, err
 		}
 		out[sh.OrderID] = sh

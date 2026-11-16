@@ -127,6 +127,77 @@ type Shipment struct {
 	LastEventAt    *time.Time `db:"last_event_at" json:"last_event_at"`
 	CreatedAt      time.Time  `db:"created_at" json:"created_at"`
 	UpdatedAt      time.Time  `db:"updated_at" json:"updated_at"`
+	// SellerManaged: the seller recorded their own courier and tracking
+	// number (migration 054), so no carrier webhook will ever report this
+	// parcel delivered. Only such a shipment may be marked delivered by its
+	// seller (POST /seller/orders/:id/mark-delivered). Clients offer "Mark
+	// delivered" on it and nowhere else.
+	SellerManaged bool `db:"seller_managed" json:"seller_managed"`
+	// DeliveryConfirmation is set when someone other than the courier
+	// confirmed delivery (today: the seller, on a seller-managed shipment);
+	// absent for a courier-reported delivery.
+	DeliveryConfirmation *DeliveryConfirmation `json:"delivery_confirmation,omitempty"`
+}
+
+// DeliveryConfirmation is a delivery that was NOT reported by a courier
+// scan: the seller said it was delivered. The buyer's order screen shows it
+// as "marked delivered by the seller", so a seller's word is never presented
+// as tracking. The seller's user id is stored (delivery_confirmed_by_user)
+// but never sent to a client.
+type DeliveryConfirmation struct {
+	// ConfirmedBy is who said so: "seller".
+	ConfirmedBy string `json:"confirmed_by"`
+	// DeliveredAt is when the seller says the parcel was handed over
+	// (defaults to the moment they marked it). Never in the future, never
+	// before the shipment's shipped_at.
+	DeliveredAt time.Time `json:"delivered_at"`
+	// MarkedAt is when the seller marked it, by the server's clock.
+	MarkedAt time.Time `json:"marked_at"`
+	// Note is the seller's optional note to the buyer.
+	Note *string `json:"note"`
+	// ProofMediaID is the seller's optional proof photo (a media-service
+	// image the seller uploaded); null when none was given.
+	ProofMediaID *uuid.UUID `json:"proof_media_id"`
+}
+
+// ConfirmedBySeller is DeliveryConfirmation.ConfirmedBy for a seller's mark.
+const ConfirmedBySeller = "seller"
+
+// shipmentColumns is every column a Shipment is read from, in scanShipment's
+// order. One list, so a new column cannot be added to one read and missed by
+// another (the seller dashboard's batch read in batch.go uses it too).
+const shipmentColumns = `id, order_id, seller_id, courier, tracking_number, courier_order_id, label_url, tracking_url,
+		       status, eta, shipped_at, delivered_at, last_event_at, created_at, updated_at,
+		       seller_managed, delivery_confirmed_by, delivery_confirmed_at, delivery_note, delivery_proof_media_id`
+
+// scanShipment reads one row selected with shipmentColumns (rowScanner is
+// attributes.go's: pgx.Row and pgx.Rows alike).
+func scanShipment(r rowScanner) (*Shipment, error) {
+	sh := &Shipment{}
+	var confirmedBy, note *string
+	var confirmedAt *time.Time
+	var proof *uuid.UUID
+	if err := r.Scan(&sh.ID, &sh.OrderID, &sh.SellerID, &sh.Courier, &sh.TrackingNumber, &sh.CourierOrderID,
+		&sh.LabelURL, &sh.TrackingURL, &sh.Status, &sh.ETA, &sh.ShippedAt, &sh.DeliveredAt,
+		&sh.LastEventAt, &sh.CreatedAt, &sh.UpdatedAt,
+		&sh.SellerManaged, &confirmedBy, &confirmedAt, &note, &proof); err != nil {
+		return nil, err
+	}
+	sh.DeliveryConfirmation = deliveryConfirmationFrom(confirmedBy, confirmedAt, sh.DeliveredAt, note, proof)
+	return sh, nil
+}
+
+// deliveryConfirmationFrom builds the confirmation from its columns, or nil
+// when nobody but the courier confirmed delivery.
+func deliveryConfirmationFrom(by *string, markedAt, deliveredAt *time.Time, note *string, proof *uuid.UUID) *DeliveryConfirmation {
+	if by == nil || *by == "" || markedAt == nil {
+		return nil
+	}
+	c := &DeliveryConfirmation{ConfirmedBy: *by, MarkedAt: *markedAt, DeliveredAt: *markedAt, Note: note, ProofMediaID: proof}
+	if deliveredAt != nil {
+		c.DeliveredAt = *deliveredAt
+	}
+	return c
 }
 
 // ErrTrackingNumberInUse: shipments are UNIQUE on (courier, tracking_number),
@@ -139,11 +210,12 @@ var ErrTrackingNumberInUse = errors.New("that tracking number is already on anot
 func (s *Store) CreateShipment(ctx context.Context, sh *Shipment) error {
 	err := s.db.QueryRow(ctx, `
 		INSERT INTO shipments
-		  (order_id, seller_id, courier, tracking_number, courier_order_id, label_url, tracking_url, status, eta, shipped_at)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+		  (order_id, seller_id, courier, tracking_number, courier_order_id, label_url, tracking_url, status, eta, shipped_at,
+		   seller_managed)
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
 		RETURNING id, created_at, updated_at
 	`, sh.OrderID, sh.SellerID, sh.Courier, sh.TrackingNumber, sh.CourierOrderID,
-		sh.LabelURL, sh.TrackingURL, sh.Status, sh.ETA, sh.ShippedAt,
+		sh.LabelURL, sh.TrackingURL, sh.Status, sh.ETA, sh.ShippedAt, sh.SellerManaged,
 	).Scan(&sh.ID, &sh.CreatedAt, &sh.UpdatedAt)
 	if isUniqueViolation(err) {
 		return ErrTrackingNumberInUse
@@ -152,19 +224,11 @@ func (s *Store) CreateShipment(ctx context.Context, sh *Shipment) error {
 }
 
 func (s *Store) GetShipmentByOrder(ctx context.Context, orderID uuid.UUID) (*Shipment, error) {
-	sh := &Shipment{}
-	err := s.db.QueryRow(ctx, `
-		SELECT id, order_id, seller_id, courier, tracking_number, courier_order_id, label_url, tracking_url,
-		       status, eta, shipped_at, delivered_at, last_event_at, created_at, updated_at
+	return scanShipment(s.db.QueryRow(ctx, `
+		SELECT `+shipmentColumns+`
 		FROM shipments WHERE order_id = $1
 		ORDER BY created_at DESC LIMIT 1
-	`, orderID).Scan(&sh.ID, &sh.OrderID, &sh.SellerID, &sh.Courier, &sh.TrackingNumber, &sh.CourierOrderID,
-		&sh.LabelURL, &sh.TrackingURL, &sh.Status, &sh.ETA, &sh.ShippedAt, &sh.DeliveredAt,
-		&sh.LastEventAt, &sh.CreatedAt, &sh.UpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return sh, nil
+	`, orderID))
 }
 
 // ListShipmentsByOrder returns every shipment for the order, ordered oldest
@@ -176,8 +240,7 @@ func (s *Store) ListShipmentsByOrder(ctx context.Context, orderID uuid.UUID) ([]
 	// largest multi-seller carts on the platform sit around ~10 sellers,
 	// but a defensive LIMIT 100 keeps a corrupt row from streaming forever.
 	rows, err := s.db.Query(ctx, `
-		SELECT id, order_id, seller_id, courier, tracking_number, courier_order_id, label_url, tracking_url,
-		       status, eta, shipped_at, delivered_at, last_event_at, created_at, updated_at
+		SELECT `+shipmentColumns+`
 		FROM shipments WHERE order_id = $1
 		ORDER BY created_at ASC
 		LIMIT 100
@@ -188,10 +251,8 @@ func (s *Store) ListShipmentsByOrder(ctx context.Context, orderID uuid.UUID) ([]
 	defer rows.Close()
 	var out []*Shipment
 	for rows.Next() {
-		sh := &Shipment{}
-		if err := rows.Scan(&sh.ID, &sh.OrderID, &sh.SellerID, &sh.Courier, &sh.TrackingNumber, &sh.CourierOrderID,
-			&sh.LabelURL, &sh.TrackingURL, &sh.Status, &sh.ETA, &sh.ShippedAt, &sh.DeliveredAt,
-			&sh.LastEventAt, &sh.CreatedAt, &sh.UpdatedAt); err != nil {
+		sh, err := scanShipment(rows)
+		if err != nil {
 			return nil, err
 		}
 		out = append(out, sh)
@@ -203,30 +264,18 @@ func (s *Store) ListShipmentsByOrder(ctx context.Context, orderID uuid.UUID) ([]
 // in the order, or pgx.ErrNoRows if that seller hasn't been booked yet.
 // Used by the multi-seller idempotency check in CreateShipmentsForOrder.
 func (s *Store) GetShipmentByOrderAndSeller(ctx context.Context, orderID, sellerID uuid.UUID) (*Shipment, error) {
-	sh := &Shipment{}
-	err := s.db.QueryRow(ctx, `
-		SELECT id, order_id, seller_id, courier, tracking_number, courier_order_id, label_url, tracking_url,
-		       status, eta, shipped_at, delivered_at, last_event_at, created_at, updated_at
+	return scanShipment(s.db.QueryRow(ctx, `
+		SELECT `+shipmentColumns+`
 		FROM shipments WHERE order_id = $1 AND seller_id = $2
 		ORDER BY created_at DESC LIMIT 1
-	`, orderID, sellerID).Scan(&sh.ID, &sh.OrderID, &sh.SellerID, &sh.Courier, &sh.TrackingNumber, &sh.CourierOrderID,
-		&sh.LabelURL, &sh.TrackingURL, &sh.Status, &sh.ETA, &sh.ShippedAt, &sh.DeliveredAt,
-		&sh.LastEventAt, &sh.CreatedAt, &sh.UpdatedAt)
-	if err != nil {
-		return nil, err
-	}
-	return sh, nil
+	`, orderID, sellerID))
 }
 
 func (s *Store) GetShipmentByTracking(ctx context.Context, courier, tracking string) (*Shipment, error) {
-	sh := &Shipment{}
-	err := s.db.QueryRow(ctx, `
-		SELECT id, order_id, seller_id, courier, tracking_number, courier_order_id, label_url, tracking_url,
-		       status, eta, shipped_at, delivered_at, last_event_at, created_at, updated_at
+	sh, err := scanShipment(s.db.QueryRow(ctx, `
+		SELECT `+shipmentColumns+`
 		FROM shipments WHERE courier = $1 AND tracking_number = $2
-	`, courier, tracking).Scan(&sh.ID, &sh.OrderID, &sh.SellerID, &sh.Courier, &sh.TrackingNumber,
-		&sh.CourierOrderID, &sh.LabelURL, &sh.TrackingURL, &sh.Status, &sh.ETA, &sh.ShippedAt,
-		&sh.DeliveredAt, &sh.LastEventAt, &sh.CreatedAt, &sh.UpdatedAt)
+	`, courier, tracking))
 	if err != nil {
 		return nil, err
 	}

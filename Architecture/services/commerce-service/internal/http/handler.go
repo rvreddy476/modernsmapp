@@ -130,6 +130,7 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	v1.POST("/seller/orders/:orderId/pack", h.SellerPackOrder)
 	v1.POST("/seller/orders/:orderId/cancel", h.SellerCancelOrder)
 	v1.POST("/seller/orders/:orderId/ship", h.SellerShipOrder)
+	v1.POST("/seller/orders/:orderId/mark-delivered", h.SellerMarkDelivered)
 
 	// ── Cart ─────────────────────────────────────────────────
 	v1.GET("/cart", h.GetCart)

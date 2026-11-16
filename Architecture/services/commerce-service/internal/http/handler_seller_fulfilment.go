@@ -5,6 +5,9 @@ package http
 //	POST /v1/commerce/seller/orders/:orderId/pack     confirmed -> packed
 //	POST /v1/commerce/seller/orders/:orderId/cancel   confirmed|packed -> cancelled, body {reason}
 //	POST /v1/commerce/seller/orders/:orderId/ship     books the shipment, body {courier, tracking_number}
+//	POST /v1/commerce/seller/orders/:orderId/mark-delivered
+//	                                                  shipped|out_for_delivery -> delivered, seller-shipped
+//	                                                  parcels only, body {delivered_at?, note?, proof_media_id?}
 //	GET  /v1/commerce/seller/orders/:orderId/history  order_status_history, oldest first
 //
 // None of these sit under a fenced prefix (handler_p0.go FencedPrefixes
@@ -24,7 +27,9 @@ package http
 
 import (
 	"errors"
+	"io"
 	"net/http"
+	"time"
 
 	"github.com/atpost/commerce-service/internal/service"
 	"github.com/atpost/commerce-service/internal/store/postgres"
@@ -62,6 +67,19 @@ func writeSellerFulfilmentError(c *gin.Context, err error) {
 			"this order has lines from other sellers and cannot be moved by one of them", nil)
 	case errors.Is(err, service.ErrCancelReasonRequired):
 		api.ErrorWithContext(ctx, w, http.StatusBadRequest, "REASON_REQUIRED", err.Error(), nil)
+	// Mark delivered (seller_delivery.go).
+	case errors.Is(err, service.ErrShipmentNotSellerManaged):
+		api.ErrorWithContext(ctx, w, http.StatusConflict, "SHIPMENT_NOT_SELLER_MANAGED",
+			"this order's parcel is tracked by a courier; it is marked delivered by the courier's scan", nil)
+	case errors.Is(err, service.ErrOrderNotShipped):
+		api.ErrorWithContext(ctx, w, http.StatusConflict, "ORDER_NOT_SHIPPED", err.Error(), nil)
+	case errors.Is(err, service.ErrDeliveredAtInFuture):
+		api.ErrorWithContext(ctx, w, http.StatusBadRequest, "DELIVERED_AT_IN_FUTURE", err.Error(), nil)
+	case errors.Is(err, service.ErrDeliveredAtBeforeShipped):
+		api.ErrorWithContext(ctx, w, http.StatusBadRequest, "DELIVERED_AT_BEFORE_SHIPPED", err.Error(), nil)
+	case errors.Is(err, service.ErrDeliveryNoteTooLong):
+		api.ErrorWithContext(ctx, w, http.StatusBadRequest, "NOTE_TOO_LONG",
+			"the note can be at most 500 characters", nil)
 	default:
 		writeCommerceError(c, err)
 	}
@@ -110,6 +128,39 @@ func (h *Handler) SellerCancelOrder(c *gin.Context) {
 // body; it exists so the seller surface is one prefix.
 func (h *Handler) SellerShipOrder(c *gin.Context) {
 	h.CreateShipment(c)
+}
+
+type sellerMarkDeliveredReq struct {
+	// RFC 3339; omitted means now.
+	DeliveredAt  *time.Time `json:"delivered_at"`
+	Note         string     `json:"note"`
+	ProofMediaID *uuid.UUID `json:"proof_media_id"`
+}
+
+// SellerMarkDelivered POST /v1/commerce/seller/orders/:orderId/mark-delivered
+//
+// Only for an order the seller shipped with their own courier (every
+// shipment seller_managed); see service.SellerMarkDelivered. The body is
+// optional. A repeat answers 200 with applied=false.
+func (h *Handler) SellerMarkDelivered(c *gin.Context) {
+	userID, seller, orderID, ok := h.sellerOrderCall(c)
+	if !ok {
+		return
+	}
+	var req sellerMarkDeliveredReq
+	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_BODY",
+			"body must be {delivered_at?: RFC 3339 time, note?: string, proof_media_id?: uuid}", nil)
+		return
+	}
+	res, err := h.svc.SellerMarkDelivered(c.Request.Context(), seller.ID, userID, orderID, service.MarkDeliveredInput{
+		DeliveredAt: req.DeliveredAt, Note: req.Note, ProofMediaID: req.ProofMediaID,
+	})
+	if err != nil {
+		writeSellerFulfilmentError(c, err)
+		return
+	}
+	api.JSON(c.Writer, http.StatusOK, res, nil)
 }
 
 // SellerOrderHistory GET /v1/commerce/seller/orders/:orderId/history
