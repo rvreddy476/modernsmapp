@@ -122,10 +122,71 @@ jobs:
           # Architecture/docker/local.env carries neither.
           STORY_MODERATION_HMAC_KEY: ci_e2e_only_story_moderation_hmac_key_change_me
           POST_MODERATION_HMAC_KEY: ci_e2e_only_post_moderation_hmac_key_change_me
+          # local.env names no environment, and a service with none assumes
+          # production: dating, commerce and wallet then refuse to start on
+          # this stack's mock partners and local blob store.
+          ENV: local
         run: |
+          set -e
+          # Every service here shares one database and creates its own
+          # tables when it boots, and some migration chains point at another
+          # service's tables: graph-service and post-service at users
+          # (user-service), post-service at user_preferences (feed-service)
+          # and media_assets (media-service). docker compose restarts a
+          # service that lost that race; run-local.sh does not, so the
+          # owners go first here.
+          all=" ${{ matrix.services }} "
+          psql_app() {
+            docker compose \
+              -f Architecture/docker/docker-compose.infra.yml \
+              -f .github/e2e/docker-compose.e2e.yml \
+              exec -T postgres psql -U postgres -d app -v ON_ERROR_STOP=1 -q "$@"
+          }
+          : > services.log
+          if [[ "$all" == *" post-service "* ]]; then
+            if [[ "$all" != *" media-service "* ]]; then
+              psql_app < Architecture/services/media-service/database/setup.sql
+            fi
+            if [[ "$all" != *" feed-service "* ]]; then
+              # Only the column post-service's migrations alter rows by.
+              psql_app -c "CREATE TABLE IF NOT EXISTS user_preferences (user_id UUID PRIMARY KEY);"
+            fi
+          fi
+          first=""
+          rest=""
+          for svc in ${{ matrix.services }}; do
+            case "$svc" in
+              user-service|feed-service) first="$first $svc" ;;
+              *) rest="$rest $svc" ;;
+            esac
+          done
+          # Owners are started only when something that needs them follows.
+          if [[ -n "$first" && ( "$all" == *" post-service "* || "$all" == *" graph-service "* ) ]]; then
+            nohup bash Architecture/docker/run-local.sh $first >> services.log 2>&1 &
+            for svc in $first; do
+              case "$svc" in
+                user-service) port=8082 ;;
+                feed-service) port=8086 ;;
+              esac
+              ok=""
+              for i in $(seq 1 240); do
+                code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$port/healthz" || true)
+                if [ "$code" = "200" ]; then ok=1; break; fi
+                sleep 2
+              done
+              if [ -z "$ok" ]; then
+                echo "✗ $svc did not come up before the services that need its tables"
+                tail -n 200 services.log
+                exit 1
+              fi
+              echo "✓ $svc is up; its tables exist"
+            done
+          else
+            rest="${{ matrix.services }}"
+          fi
           # run-local.sh backgrounds each service then waits; background the
           # whole script so the job continues. Logs stream to services.log.
-          nohup bash Architecture/docker/run-local.sh ${{ matrix.services }} > services.log 2>&1 &
+          nohup bash Architecture/docker/run-local.sh $rest >> services.log 2>&1 &
           echo "RUN_LOCAL_PID=$!" >> "$GITHUB_ENV"
 
       - name: Wait for health
