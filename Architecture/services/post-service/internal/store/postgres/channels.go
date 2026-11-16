@@ -131,6 +131,11 @@ func channelPayload(ch *Channel) events.ChannelPayload {
 		CreatedAt: ch.CreatedAt,
 		UpdatedAt: ch.UpdatedAt,
 	}
+	// channel_id (2026-11-16): the row id tube_channels_v1 is keyed by.
+	// Left empty (omitted) for a row that was never scanned.
+	if ch.ID != uuid.Nil {
+		p.ChannelID = ch.ID.String()
+	}
 	if ch.AvatarMediaID != nil {
 		s := ch.AvatarMediaID.String()
 		p.AvatarMediaID = &s

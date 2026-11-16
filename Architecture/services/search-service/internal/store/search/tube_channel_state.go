@@ -27,6 +27,11 @@ import (
 // search with the next Tube reindex, exactly as before. What the event
 // fixes is the edit: a channel already in search follows its row.
 //
+// Since 2026-11-16 post-service also sends channel_id; when present the
+// _update_by_query targets that document by id instead of owner_id (still
+// update-only, never a create). Events from older producers keep the owner
+// path.
+//
 // ORDER. The outbox and the DLQ replayer can deliver an older edit after a
 // newer one, and the reindex can write a listing read before an edit after
 // it. Every writer therefore carries the row's version (source_updated_us,
@@ -46,6 +51,10 @@ import (
 // TubeChannelUpdate is one tube.channel.created / tube.channel.updated: the
 // row as committed. An empty AvatarMediaID means the channel has none.
 type TubeChannelUpdate struct {
+	// ChannelID is the channel row id (the document _id), carried since
+	// 2026-11-16. When set the event targets that document by id; an older
+	// producer's event has none and falls back to owner_id.
+	ChannelID     string
 	OwnerID       string
 	Name          string
 	Handle        string
@@ -123,8 +132,12 @@ func tubeChannelEventBody(u TubeChannelUpdate) map[string]any {
 	if !u.CreatedAt.IsZero() {
 		fields["created_at"] = u.CreatedAt
 	}
+	query := map[string]any{"term": map[string]any{"owner_id": u.OwnerID}}
+	if u.ChannelID != "" {
+		query = map[string]any{"ids": map[string]any{"values": []string{u.ChannelID}}}
+	}
 	return map[string]any{
-		"query": map[string]any{"term": map[string]any{"owner_id": u.OwnerID}},
+		"query": query,
 		"script": map[string]any{
 			"lang":   "painless",
 			"source": tubeChannelEventScript,
@@ -142,7 +155,7 @@ func tubeChannelEventBody(u TubeChannelUpdate) map[string]any {
 // (the reindex adds it); a conflict or a failure is, so the event is
 // redelivered.
 func (s *Store) ApplyTubeChannelEvent(ctx context.Context, u TubeChannelUpdate) error {
-	if u.OwnerID == "" {
+	if u.OwnerID == "" && u.ChannelID == "" {
 		return nil
 	}
 	data, err := json.Marshal(tubeChannelEventBody(u))

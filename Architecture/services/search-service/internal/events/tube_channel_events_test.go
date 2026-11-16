@@ -19,7 +19,10 @@ import (
 // row as committed, applied in version order onto the owner's channel
 // document (store/search/tube_channel_state.go).
 
-const testTubeOwnerID = "9b1e4c2a-7d3f-4e5a-8c6b-1a2b3c4d5e02"
+const (
+	testTubeOwnerID   = "9b1e4c2a-7d3f-4e5a-8c6b-1a2b3c4d5e02"
+	testTubeChannelID = "3f2a1b0c-9d8e-4f7a-8b6c-5d4e3f2a1b01"
+)
 
 // The fixture is the shared events.ChannelPayload post-service marshals,
 // field for field; it must decode and update the owner's channel at the
@@ -49,7 +52,8 @@ func TestTubeChannelUpdated_ContractFixtureUpdatesTheOwnersChannel(t *testing.T)
 	if err := c.processMessage(context.Background(), kafka.Message{Value: env}); err != nil {
 		t.Fatalf("processMessage: %v", err)
 	}
-	w := wantTubeChannelUpdate(t, rec.writes(search.IndexTubeChannels))
+	// The fixture carries channel_id, so the document is targeted by id.
+	w := wantTubeChannelUpdate(t, rec.writes(search.IndexTubeChannels), testTubeChannelID)
 	if want := time.Date(2026, 11, 15, 9, 0, 0, 123456000, time.UTC).UnixMicro(); versionOf(w) != want {
 		t.Fatalf("version = %d, want the row's updated_at %d", versionOf(w), want)
 	}
@@ -69,14 +73,33 @@ func TestTubeChannelCreated_AppliesAndClearsAnAbsentAvatar(t *testing.T) {
 	})); err != nil {
 		t.Fatalf("processMessage: %v", err)
 	}
-	w := wantTubeChannelUpdate(t, rec.writes(search.IndexTubeChannels))
+	// No channel_id (an older producer): falls back to the owner.
+	w := wantTubeChannelUpdate(t, rec.writes(search.IndexTubeChannels), "")
 	fields, _ := paramsOf(w)["fields"].(map[string]any)
 	if v, ok := fields["avatar_media_id"]; !ok || v != "" {
 		t.Fatalf("avatar_media_id = %v (present %v), want cleared", v, ok)
 	}
 }
 
-func wantTubeChannelUpdate(t *testing.T, got []recordedReq) recordedReq {
+// An event that carries channel_id is applied to that document by id.
+func TestTubeChannelUpdated_PrefersChannelIDOverOwner(t *testing.T) {
+	rec := newRecordingOS(t)
+	c := rec.consumer(t)
+	if err := c.processMessage(context.Background(), msg(t, events.TubeChannelUpdated, events.ChannelPayload{
+		ChannelID: testTubeChannelID, UserID: testTubeOwnerID, Name: "Renamed", Handle: "renamed", UpdatedAt: time.Now(),
+	})); err != nil {
+		t.Fatalf("processMessage: %v", err)
+	}
+	w := wantTubeChannelUpdate(t, rec.writes(search.IndexTubeChannels), testTubeChannelID)
+	fields, _ := paramsOf(w)["fields"].(map[string]any)
+	if fields["name"] != "Renamed" {
+		t.Fatalf("fields = %v", fields)
+	}
+}
+
+// wantTubeChannelUpdate wants exactly one update_by_query: on the channel
+// document by id when channelID is set, else on the owner's channel.
+func wantTubeChannelUpdate(t *testing.T, got []recordedReq, channelID string) recordedReq {
 	t.Helper()
 	var ubq []recordedReq
 	for _, r := range got {
@@ -90,6 +113,14 @@ func wantTubeChannelUpdate(t *testing.T, got []recordedReq) recordedReq {
 		t.Fatalf("writes = %+v, want one update_by_query", got)
 	}
 	q, _ := ubq[0].body["query"].(map[string]any)
+	if channelID != "" {
+		ids, _ := q["ids"].(map[string]any)
+		values, _ := ids["values"].([]any)
+		if len(values) != 1 || values[0] != channelID {
+			t.Fatalf("query = %v, want the channel document %s by id", q, channelID)
+		}
+		return ubq[0]
+	}
 	term, _ := q["term"].(map[string]any)
 	if term["owner_id"] != testTubeOwnerID {
 		t.Fatalf("query = %v, want the owner's channel", q)

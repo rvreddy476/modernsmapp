@@ -972,7 +972,11 @@ type PostDeletedPayload struct {
 // the same transaction (SearchRev here equals that event's revision).
 // ChannelPayload is the wire shape of tube.channel.created / tube.channel.updated.
 // One channel per account, keyed by the owner: user_id is the identity.
+// ChannelID (2026-11-16, additive) is the channel row id — the key
+// tube_channels_v1 and the subscription events use. omitempty so a consumer
+// can tell an older producer's event (no id) and fall back to user_id.
 type ChannelPayload struct {
+	ChannelID     string    `json:"channel_id,omitempty"`
 	UserID        string    `json:"user_id"`
 	Name          string    `json:"name"`
 	Handle        string    `json:"handle"`

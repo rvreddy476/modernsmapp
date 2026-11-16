@@ -1278,6 +1278,7 @@ func (c *Consumer) applyChannelUpdate(ctx context.Context, p channelUpdatedPaylo
 // tubeChannelUpdateOf converts post-service's ChannelPayload. Pure.
 func tubeChannelUpdateOf(p events.ChannelPayload) search.TubeChannelUpdate {
 	u := search.TubeChannelUpdate{
+		ChannelID: p.ChannelID,
 		OwnerID:   p.UserID,
 		Name:      p.Name,
 		Handle:    p.Handle,

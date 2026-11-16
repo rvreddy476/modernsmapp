@@ -12,6 +12,23 @@ import (
 // Tube reindex rewrite (keepHiddenUpsertScript). The Painless halves run
 // live in internal/events/tube_channel_order_integration_test.go.
 
+// channel_id (2026-11-16) targets the document by its _id; an event
+// without one falls back to the owner, as before.
+func TestTubeChannelEventBody_PrefersChannelIDThenOwner(t *testing.T) {
+	byID := tubeChannelEventBody(TubeChannelUpdate{ChannelID: "ch-1", OwnerID: "u-1"})
+	q, _ := byID["query"].(map[string]any)
+	ids, _ := q["ids"].(map[string]any)
+	if v, _ := ids["values"].([]string); len(v) != 1 || v[0] != "ch-1" {
+		t.Fatalf("query = %v, want ids [ch-1]", q)
+	}
+	byOwner := tubeChannelEventBody(TubeChannelUpdate{OwnerID: "u-1"})
+	q, _ = byOwner["query"].(map[string]any)
+	term, _ := q["term"].(map[string]any)
+	if term["owner_id"] != "u-1" {
+		t.Fatalf("query = %v, want term owner_id u-1", q)
+	}
+}
+
 func TestTubeEventApplies_Rules(t *testing.T) {
 	want := map[versionOrder]bool{
 		orderNewer:               true,
