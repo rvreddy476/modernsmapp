@@ -34,6 +34,8 @@ var navigationOrder = []struct{ app, label string }{
 	// anyone holding one of accessPermissions; its app name is not one
 	// identity knows, so it never collides with a permission map key.
 	{accessNavApp, "Access"},
+	// Official marks (handler_marks.go), for holders of official_marks.read.
+	{marksNavApp, "Official marks"},
 }
 
 // accessNavApp is the navigation entry for the Access page.
@@ -129,6 +131,9 @@ func navigation(p adminauth.Permissions) []NavigationItem {
 			visible[accessNavApp] = true
 			break
 		}
+	}
+	if p.Has(permMarksRead) {
+		visible[marksNavApp] = true
 	}
 	// Payments confined to applications: a payments view held in a product app.
 	var confined []string

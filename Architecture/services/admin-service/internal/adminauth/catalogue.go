@@ -386,6 +386,10 @@ var catalogue = map[string][]entry{
 		p("roles.read", audr),
 		{action: "roles.manage", superOnly: true},
 		p("audit.read", audr),
+		// Official and Government marks (profile-service console family).
+		p("official_marks.read", kyc, audr),
+		p("official_marks.review", kyc),
+		p("government_marks.invite"),
 	},
 }
 

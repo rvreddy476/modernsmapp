@@ -101,6 +101,8 @@ type Handler struct {
 	sounds *service.ProductClient
 	// Access page: identity's admin console family (roles, users, sessions).
 	identity      *service.ProductClient
+	// Official marks: profile-service's console family (handler_marks.go).
+	profile *service.ProductClient
 	notifications *service.ProductClient
 }
 
@@ -215,6 +217,7 @@ func (h *Handler) RegisterAllRoutes(r *gin.Engine) error {
 	h.RegisterRiderRoutes(r)
 	h.RegisterDoorstepRoutes(r)
 	h.RegisterAccessRoutes(r)
+	h.RegisterMarksRoutes(r)
 	h.RegisterNotificationOpsRoutes(r)
 	if err := h.gate.VerifyDeclared(r); err != nil {
 		return err

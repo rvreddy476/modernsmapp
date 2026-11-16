@@ -166,3 +166,16 @@ const (
 func NewMediaSoundsClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
 	return newProductClient(baseURL, MediaSoundsAdminPrefix, MediaAudience, signer)
 }
+
+// Official and Government marks (identity's profile-service): its token-only
+// console family (docs/designs/official-marks-console-contract.md section 2),
+// audience "profile". Unlike identity's family it does not require a jti.
+const (
+	ProfileAudience    = "profile"
+	ProfileAdminPrefix = "/internal/v1/profiles/admin"
+)
+
+// NewProfileConsoleClient builds the client for profile-service's marks family.
+func NewProfileConsoleClient(baseURL string, signer *servicetoken.Signer) *ProductClient {
+	return newProductClient(baseURL, ProfileAdminPrefix, ProfileAudience, signer)
+}

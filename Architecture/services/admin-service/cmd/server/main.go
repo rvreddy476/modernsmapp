@@ -165,6 +165,9 @@ func main() {
 		// AUTH_SERVICE_URL the permission lookups use (audience "identity";
 		// identity registers the same public key as ADMIN_SERVICE_TOKEN_PUBKEY).
 		WithIdentity(service.NewIdentityConsoleClient(authURL, tokenSigner))
+	// Official marks: profile-service's console family (audience "profile";
+	// it registers ADMIN_SERVICE_TOKEN_PUBKEY / _KID for admin-service).
+	handler.WithProfile(service.NewProfileConsoleClient(env("PROFILE_SERVICE_URL", "http://identity-profile:8098"), tokenSigner))
 	slog.Info("every refund is two-person (Feast, monetization, payments): no amount threshold")
 
 	// 7. Gin with middleware stack
