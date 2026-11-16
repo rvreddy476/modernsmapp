@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -83,5 +85,27 @@ func TestInternalKeyFromEnvFailsClosedInProduction(t *testing.T) {
 	t.Setenv("INTERNAL_SERVICE_KEY", "")
 	if key, err := internalKeyFromEnv(); err != nil || key != "" {
 		t.Fatalf("development with no key: key=%q err=%v, want empty and no error", key, err)
+	}
+}
+
+// The Helm chart's liveness probe calls GET /livez with no credentials
+// (charts/atpost-service/values.yaml). It must be 200 without the internal key
+// and while a dependency is down; the same outage shows on /readyz as 503,
+// which also proves the key gate is not what answered.
+func TestRouterServesLivezWithoutKeyWhileADependencyIsDown(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	checker := health.New("ai-service")
+	checker.Register("postgres", func(context.Context) error { return errors.New("connection refused") })
+	r := newRouter(aihttp.New(nil), testInternalKey, nil, func(r *gin.Engine) {
+		checker.RegisterRoutes(r)
+	})
+
+	for _, path := range []string{"/livez", "/healthz"} {
+		if got := serve(r, path, ""); got != http.StatusOK {
+			t.Errorf("%s without key, dependency down: status=%d, want 200", path, got)
+		}
+	}
+	if got := serve(r, "/readyz", ""); got != http.StatusServiceUnavailable {
+		t.Errorf("/readyz without key, dependency down: status=%d, want 503", got)
 	}
 }

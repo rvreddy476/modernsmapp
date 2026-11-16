@@ -134,9 +134,9 @@ func main() {
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())
 	r.Use(middleware.Metrics(httpMetrics))
-	r.Use(middleware.RequireInternalKey(internalKey))
+	// Probes first, then the key: the kubelet holds no key (see probes.go).
+	installProbesThenInternalKey(r, checker, internalKey)
 
-	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())
 	handler.RegisterRoutes(r)
 

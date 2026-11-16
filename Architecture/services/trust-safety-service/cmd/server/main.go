@@ -303,10 +303,11 @@ func main() {
 	// the internal key installed on the next line: it is judged by the
 	// admin-service token alone (the gateway stamps the key on edge traffic,
 	// so the key is no evidence). Everything registered after keeps the key.
+	// The probes are registered ahead of the key for the same reason: the
+	// kubelet holds no key (see probes.go).
 	handler.RegisterAdminTokenRoutes(r)
-	r.Use(middleware.RequireInternalKey(env("INTERNAL_SERVICE_KEY", "")))
+	installProbesThenInternalKey(r, checker, env("INTERNAL_SERVICE_KEY", ""))
 
-	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())
 	handler.RegisterRoutes(r)
 

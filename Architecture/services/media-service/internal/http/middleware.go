@@ -221,11 +221,19 @@ func OptionalAuthMiddlewareWithKeys(keys JWTKeySet) gin.HandlerFunc {
 	}
 }
 
+// isProbePath reports whether path is one of the three probe routes
+// shared/health registers.
+func isProbePath(path string) bool {
+	return path == "/livez" || path == "/healthz" || path == "/readyz"
+}
+
 // RequestLoggerMiddleware logs each request with method, path, status, duration.
-// Skips /healthz to avoid log noise.
+// Skips the probe paths (/livez, /healthz, /readyz) to avoid log noise: the
+// kubelet calls /livez and /readyz every few seconds
+// (charts/atpost-service/values.yaml), and only /healthz used to be skipped.
 func RequestLoggerMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {
-		if c.Request.URL.Path == "/healthz" {
+		if isProbePath(c.Request.URL.Path) {
 			c.Next()
 			return
 		}

@@ -32,9 +32,15 @@ func Healthz() gin.HandlerFunc {
 }
 
 // RegisterHealthRoutes is a drop-in for checker.RegisterRoutes(r): the
-// same two routes, with /healthz carrying build_sha. main.go swaps the
-// one call for this one.
+// same three routes, with the liveness body carrying build_sha.
+//
+// /livez is the path the Helm chart's liveness probe calls
+// (charts/atpost-service/values.yaml). It was missing here, so in a cluster
+// the kubelet got 404 and restarted the pod forever. /livez and /healthz
+// answer the same thing and never run a dependency check: a database outage
+// must make the pod unready (/readyz), not get it killed.
 func RegisterHealthRoutes(r *gin.Engine, checker *health.Checker) {
+	r.GET("/livez", Healthz())
 	r.GET("/healthz", Healthz())
 	r.GET("/readyz", checker.ReadinessHandler())
 }
