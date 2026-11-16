@@ -624,6 +624,13 @@ func runTranscode(parent context.Context, env transcodeEnv, subject *transcodeSu
 	}
 	defer os.RemoveAll(tmpDir)
 
+	// 0. A multi-part live recording has no original yet: join its parts
+	// into one first (recording_join.go). "" = nothing joined.
+	joinedPath, err := joinRecordingParts(parent, blobStore, pgStore, subject, tmpDir, env.cfg.maxOriginalBytes, setDeadline)
+	if err != nil {
+		return err
+	}
+
 	statCtx, cancel := context.WithTimeout(parent, s3MetadataCall)
 	info, err := blobStore.StatObject(statCtx, subject.StorageKey)
 	cancel()
@@ -652,14 +659,16 @@ func runTranscode(parent context.Context, env transcodeEnv, subject *transcodeSu
 	if pin == "" {
 		pin = info.ETag
 	}
-	dlCtx, cancel := context.WithTimeout(ctx, s3Timeout(info.Size))
-	_, err = blobStore.DownloadObjectToFileIfMatch(dlCtx, subject.StorageKey, inputPath, pin)
-	cancel()
-	if err != nil {
-		if errors.Is(err, blob.ErrObjectNotFound) {
-			return permanentTranscode(fmt.Errorf("download original: %w", err))
+	if joinedPath == "" { // a joined original is already on disk at inputPath
+		dlCtx, cancel := context.WithTimeout(ctx, s3Timeout(info.Size))
+		_, err = blobStore.DownloadObjectToFileIfMatch(dlCtx, subject.StorageKey, inputPath, pin)
+		cancel()
+		if err != nil {
+			if errors.Is(err, blob.ErrObjectNotFound) {
+				return permanentTranscode(fmt.Errorf("download original: %w", err))
+			}
+			return classifyDownloadError(parent, err)
 		}
-		return classifyDownloadError(parent, err)
 	}
 
 	// The bytes must be the container the upload declared (finding 7), and

@@ -44,6 +44,15 @@ import (
 	     'processing') and the media.transcode.requested outbox row, so HLS,
 	     the thumbnail and the copyright fingerprint run as for any upload.
 
+	Multi-part streams (16 Nov 2026): an encoder reconnect leaves several
+	parts, sent as `keys` in part order. Each listed part goes through 1 and
+	3; a part missing from the bucket is left out and logged (none found is
+	404 RECORDING_NOT_FOUND, retried, as for one key); one found takes the
+	single-key path. Two or more must total at most MaxBytes and are copied
+	to <prefix>parts/NNN.mp4 (processing.RecordingPartKey) with NO original:
+	the worker joins them into the original first (cmd/worker/
+	recording_join.go), then transcodes as for any upload.
+
 	Nothing in the recordings bucket is written or deleted. The only object
 	this code ever deletes is its OWN copy in the media bucket, when the row
 	that would name it was not written (a lost race or a failed insert).
@@ -87,11 +96,19 @@ type RecordingImportInput struct {
 	OwnerUserID string
 	Bucket      string
 	Key         string
+	// Keys are a multi-part stream's parts, in order (16 Nov 2026): two or
+	// more are copied under the asset's prefix as parts/NNN.mp4 and the
+	// worker joins them into the original. Empty: Key alone, as before.
+	// When both are set, Key must be one of Keys.
+	Keys        []string
 	ContentType string
 	DurationMs  int64
 	Source      string
 	SourceRef   string
 }
+
+// MaxRecordingParts bounds Keys (live-service caps a stream at 20 parts).
+const MaxRecordingParts = processing.MaxJoinParts
 
 // RecordingImportResult is the asset the import resolved to.
 type RecordingImportResult struct {
@@ -182,6 +199,8 @@ type validRecording struct {
 	ref    string // canonical stream id
 	bucket string
 	key    string
+	// keys are the parts to join, in order; nil = the single key.
+	keys []string
 }
 
 // validate is step 1 of the package comment. Pure.
@@ -208,10 +227,38 @@ func (r *RecordingImporter) validate(in RecordingImportInput) (validRecording, e
 		return v, ErrRecordingBucketNotAllowed
 	}
 	ref := streamID.String()
-	if err := ValidateRecordingKey(in.Key, ref); err != nil {
-		return v, err
+	if len(in.Keys) == 0 {
+		if err := ValidateRecordingKey(in.Key, ref); err != nil {
+			return v, err
+		}
+		return validRecording{owner: owner, ref: ref, bucket: in.Bucket, key: in.Key}, nil
 	}
-	return validRecording{owner: owner, ref: ref, bucket: in.Bucket, key: in.Key}, nil
+	if len(in.Keys) > MaxRecordingParts {
+		return v, fmt.Errorf("%w: at most %d keys", ErrRecordingInvalid, MaxRecordingParts)
+	}
+	seen := make(map[string]bool, len(in.Keys))
+	for _, k := range in.Keys {
+		if err := ValidateRecordingKey(k, ref); err != nil {
+			return v, err
+		}
+		if seen[k] {
+			return v, fmt.Errorf("%w: key %q listed twice", ErrRecordingInvalid, k)
+		}
+		seen[k] = true
+	}
+	if in.Key != "" && !seen[in.Key] {
+		return v, fmt.Errorf("%w: key must be one of keys", ErrRecordingInvalid)
+	}
+	v = validRecording{owner: owner, ref: ref, bucket: in.Bucket, key: in.Key}
+	if v.key == "" {
+		v.key = in.Keys[0]
+	}
+	if len(in.Keys) > 1 {
+		v.keys = append([]string(nil), in.Keys...)
+	} else {
+		v.key = in.Keys[0]
+	}
+	return v, nil
 }
 
 // ValidateRecordingKey accepts a plain relative object key: at most 512
@@ -260,80 +307,176 @@ func (r *RecordingImporter) Import(ctx context.Context, in RecordingImportInput)
 		return existingResult(existing, v.owner)
 	}
 
+	if len(v.keys) > 1 {
+		return r.importParts(ctx, v)
+	}
+
 	// 3. The source, checked by its bytes.
-	info, err := r.blob.StatObjectIn(ctx, v.bucket, v.key)
-	if errors.Is(err, blob.ErrObjectNotFound) {
-		return nil, ErrRecordingNotFound
-	}
+	info, err := r.checkSource(ctx, v.bucket, v.key)
 	if err != nil {
-		return nil, fmt.Errorf("stat recording: %w", err)
-	}
-	if info.Size <= 0 {
-		return nil, fmt.Errorf("%w: empty object", ErrRecordingNotVideo)
-	}
-	if info.Size > r.cfg.MaxBytes {
-		return nil, fmt.Errorf("%w: %d bytes (max %d)", ErrRecordingTooLarge, info.Size, r.cfg.MaxBytes)
-	}
-	headerEnd := int64(63)
-	if info.Size-1 < headerEnd {
-		headerEnd = info.Size - 1
-	}
-	header, err := r.blob.ReadObjectRangeIn(ctx, v.bucket, v.key, 0, headerEnd)
-	if errors.Is(err, blob.ErrObjectNotFound) {
-		return nil, ErrRecordingNotFound
-	}
-	if err != nil {
-		return nil, fmt.Errorf("read recording header: %w", err)
-	}
-	if kind, ok := processing.ValidateVideoMagicBytes(header); !ok || kind != RecordingContentType {
-		return nil, ErrRecordingNotVideo
+		return nil, err
 	}
 
 	// 4. Server-side copy into this service's layout.
 	mediaID := uuid.New()
 	dstKey := fmt.Sprintf("user/%s/%s/original", v.owner, mediaID)
-	copied, err := r.blob.CopyObjectFrom(ctx, v.bucket, v.key, info.ETag, dstKey, RecordingContentType)
-	switch {
-	case errors.Is(err, blob.ErrObjectChanged):
-		r.dropCopy(ctx, dstKey)
-		return nil, ErrRecordingChanged
-	case errors.Is(err, blob.ErrObjectNotFound):
-		r.dropCopy(ctx, dstKey)
-		return nil, ErrRecordingNotFound
-	case err != nil:
-		r.dropCopy(ctx, dstKey)
-		return nil, fmt.Errorf("copy recording: %w", err)
-	}
-	if copied.Size != info.Size {
-		r.dropCopy(ctx, dstKey)
-		return nil, fmt.Errorf("%w: copied %d bytes of %d", ErrRecordingChanged, copied.Size, info.Size)
+	copied, err := r.copySource(ctx, v.bucket, v.key, info, dstKey)
+	if err != nil {
+		return nil, err
 	}
 
 	// 5. Row + transcode request, one transaction.
+	return r.register(ctx, v, mediaID, dstKey, info.Size, copied.ETag, []string{dstKey})
+}
+
+// checkSource is step 3 for one object: it exists, is not empty, at most
+// MaxBytes, and starts with an MP4 ftyp box.
+func (r *RecordingImporter) checkSource(ctx context.Context, bucket, key string) (blob.ObjectInfo, error) {
+	info, err := r.blob.StatObjectIn(ctx, bucket, key)
+	if errors.Is(err, blob.ErrObjectNotFound) {
+		return info, ErrRecordingNotFound
+	}
+	if err != nil {
+		return info, fmt.Errorf("stat recording: %w", err)
+	}
+	if info.Size <= 0 {
+		return info, fmt.Errorf("%w: empty object", ErrRecordingNotVideo)
+	}
+	if info.Size > r.cfg.MaxBytes {
+		return info, fmt.Errorf("%w: %d bytes (max %d)", ErrRecordingTooLarge, info.Size, r.cfg.MaxBytes)
+	}
+	headerEnd := int64(63)
+	if info.Size-1 < headerEnd {
+		headerEnd = info.Size - 1
+	}
+	header, err := r.blob.ReadObjectRangeIn(ctx, bucket, key, 0, headerEnd)
+	if errors.Is(err, blob.ErrObjectNotFound) {
+		return info, ErrRecordingNotFound
+	}
+	if err != nil {
+		return info, fmt.Errorf("read recording header: %w", err)
+	}
+	if kind, ok := processing.ValidateVideoMagicBytes(header); !ok || kind != RecordingContentType {
+		return info, ErrRecordingNotVideo
+	}
+	return info, nil
+}
+
+// copySource is step 4 for one object, pinned on the ETag checkSource saw.
+// On failure the copy is dropped.
+func (r *RecordingImporter) copySource(ctx context.Context, bucket, key string, info blob.ObjectInfo, dstKey string) (blob.ObjectInfo, error) {
+	copied, err := r.blob.CopyObjectFrom(ctx, bucket, key, info.ETag, dstKey, RecordingContentType)
+	switch {
+	case errors.Is(err, blob.ErrObjectChanged):
+		r.dropCopy(ctx, dstKey)
+		return copied, ErrRecordingChanged
+	case errors.Is(err, blob.ErrObjectNotFound):
+		r.dropCopy(ctx, dstKey)
+		return copied, ErrRecordingNotFound
+	case err != nil:
+		r.dropCopy(ctx, dstKey)
+		return copied, fmt.Errorf("copy recording: %w", err)
+	}
+	if copied.Size != info.Size {
+		r.dropCopy(ctx, dstKey)
+		return copied, fmt.Errorf("%w: copied %d bytes of %d", ErrRecordingChanged, copied.Size, info.Size)
+	}
+	return copied, nil
+}
+
+// register is step 5: the row and the transcode request, one transaction.
+// owned are the objects this import copied, dropped when the row is not
+// written.
+func (r *RecordingImporter) register(ctx context.Context, v validRecording, mediaID uuid.UUID, dstKey string,
+	size int64, etag string, owned []string) (*RecordingImportResult, error) {
 	got, created, err := r.store.CreateImportedVideo(ctx, postgres.ImportedVideo{
 		ID:            mediaID,
 		OwnerID:       v.owner,
 		MimeType:      RecordingContentType,
-		SizeBytes:     info.Size,
+		SizeBytes:     size,
 		StorageBucket: r.blob.Bucket(),
 		StorageKey:    dstKey,
-		OriginalETag:  copied.ETag,
+		OriginalETag:  etag,
 		UploadPurpose: postgres.UploadPurposeLiveRecording,
-		Source:        source,
+		Source:        postgres.ImportSourceLiveRecording,
 		SourceRef:     v.ref,
 	})
 	if err != nil {
-		r.dropCopy(ctx, dstKey)
+		r.dropCopies(ctx, owned)
 		return nil, err
 	}
 	if !created {
 		// Another import of this stream committed first; ours names nothing.
-		r.dropCopy(ctx, dstKey)
+		r.dropCopies(ctx, owned)
 		return existingResult(got, v.owner)
 	}
 	slog.InfoContext(ctx, "media-service: live recording imported",
-		"media_id", got.ID.String(), "owner_id", v.owner.String(), "stream_id", v.ref, "size_bytes", info.Size)
+		"media_id", got.ID.String(), "owner_id", v.owner.String(), "stream_id", v.ref,
+		"size_bytes", size, "parts", len(owned))
 	return &RecordingImportResult{MediaID: got.ID, ProcessingStatus: got.ProcessingStatus, Created: true}, nil
+}
+
+// importParts imports a multi-part stream. Every listed part is checked; a
+// part missing from the recordings bucket is left out and logged, and none
+// found is ErrRecordingNotFound (retried, as for one key). One found is the
+// single-key import. Two or more are copied, in order, to
+// <prefix>parts/NNN.mp4 and registered with NO original: the worker joins
+// the copies into the original before it transcodes (and removes them).
+// Their total must fit MaxBytes, the worker's cap on one original.
+func (r *RecordingImporter) importParts(ctx context.Context, v validRecording) (*RecordingImportResult, error) {
+	type found struct {
+		key  string
+		info blob.ObjectInfo
+	}
+	var parts []found
+	var total int64
+	for _, k := range v.keys {
+		info, err := r.checkSource(ctx, v.bucket, k)
+		if errors.Is(err, ErrRecordingNotFound) {
+			slog.WarnContext(ctx, "media-service: live recording part missing; joining the rest",
+				"stream_id", v.ref, "key", k)
+			continue
+		}
+		if err != nil {
+			return nil, err
+		}
+		parts = append(parts, found{key: k, info: info})
+		total += info.Size
+	}
+	switch len(parts) {
+	case 0:
+		return nil, ErrRecordingNotFound
+	case 1:
+		mediaID := uuid.New()
+		dstKey := fmt.Sprintf("user/%s/%s/original", v.owner, mediaID)
+		copied, err := r.copySource(ctx, v.bucket, parts[0].key, parts[0].info, dstKey)
+		if err != nil {
+			return nil, err
+		}
+		return r.register(ctx, v, mediaID, dstKey, parts[0].info.Size, copied.ETag, []string{dstKey})
+	}
+	if total > r.cfg.MaxBytes {
+		return nil, fmt.Errorf("%w: parts total %d bytes (max %d)", ErrRecordingTooLarge, total, r.cfg.MaxBytes)
+	}
+	mediaID := uuid.New()
+	prefix := fmt.Sprintf("user/%s/%s/", v.owner, mediaID)
+	var owned []string
+	for i, p := range parts {
+		dst := processing.RecordingPartKey(prefix, i+1)
+		if _, err := r.copySource(ctx, v.bucket, p.key, p.info, dst); err != nil {
+			r.dropCopies(ctx, owned)
+			return nil, err
+		}
+		owned = append(owned, dst)
+	}
+	return r.register(ctx, v, mediaID, prefix+"original", total, "", owned)
+}
+
+// dropCopies drops each of this import's own copies.
+func (r *RecordingImporter) dropCopies(ctx context.Context, keys []string) {
+	for _, k := range keys {
+		r.dropCopy(ctx, k)
+	}
 }
 
 // existingResult answers a repeated import: the same owner gets the asset,

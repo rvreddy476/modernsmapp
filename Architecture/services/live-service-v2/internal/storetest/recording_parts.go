@@ -173,18 +173,18 @@ func (m *MemStore) QueueRecordingImport(_ context.Context, streamID uuid.UUID, p
 		ended = *st.EndedAt
 	}
 	endedLongAgo := m.Now().Sub(ended) > p.WaitActive
-	var best *PartRow
+	var all []postgres.RecordingPart
 	for _, pr := range m.Parts[streamID] {
 		if (pr.State == postgres.PartStarting || pr.State == postgres.PartRecording) && !endedLongAgo {
 			return false, nil
 		}
-		if pr.State == postgres.PartComplete && (best == nil || pr.DurationMs > best.DurationMs) {
-			best = pr
-		}
+		all = append(all, pr.RecordingPart)
 	}
-	if best == nil {
+	plan, ok := postgres.PlanPartsImport(all)
+	if !ok {
 		return false, nil
 	}
+	best := &plan.Longest
 	url := ""
 	if best.RecordingURL != nil {
 		url = *best.RecordingURL
@@ -192,11 +192,11 @@ func (m *MemStore) QueueRecordingImport(_ context.Context, streamID uuid.UUID, p
 	if url == "" && p.URLFor != nil {
 		url = p.URLFor(best.ObjectKey)
 	}
-	d := int(best.DurationMs / 1000)
+	d := int(plan.DurationMs / 1000)
 	st.RecordingURL, st.RecordingDurationSeconds = &url, &d
 	m.Imports[streamID] = &postgres.RecordingImport{
 		StreamID: streamID, OwnerUserID: st.CreatorUserID, Bucket: p.Bucket, ObjectKey: best.ObjectKey,
-		RecordingURL: url, DurationMs: best.DurationMs, State: postgres.ImportPending,
+		ObjectKeys: plan.Keys, RecordingURL: url, DurationMs: plan.DurationMs, State: postgres.ImportPending,
 	}
 	m.ImportDue[streamID] = m.Now()
 	m.ImportCreated[streamID] = m.Now()

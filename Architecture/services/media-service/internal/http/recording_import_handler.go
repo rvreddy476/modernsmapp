@@ -18,7 +18,8 @@ import (
 // POST /v1/media/internal/recordings/import
 //
 //	{"owner_user_id","bucket","key","content_type":"video/mp4",
-//	 "duration_ms","source":"live_recording","source_ref":"<stream id>"}
+//	 "duration_ms","source":"live_recording","source_ref":"<stream id>",
+//	 "keys":["recordings/<id>.mp4","recordings/<id>_part2.mp4",...]}  (optional)
 //	-> 201 {"data":{"media_id","processing_status"}}   created by this call
 //	-> 200 {"data":{"media_id","processing_status"}}   already imported
 //
@@ -122,13 +123,14 @@ func (h *Handler) requireRecordingImportCaller() gin.HandlerFunc {
 }
 
 type recordingImportRequest struct {
-	OwnerUserID string `json:"owner_user_id"`
-	Bucket      string `json:"bucket"`
-	Key         string `json:"key"`
-	ContentType string `json:"content_type"`
-	DurationMs  int64  `json:"duration_ms"`
-	Source      string `json:"source"`
-	SourceRef   string `json:"source_ref"`
+	OwnerUserID string   `json:"owner_user_id"`
+	Bucket      string   `json:"bucket"`
+	Key         string   `json:"key"`
+	Keys        []string `json:"keys"`
+	ContentType string   `json:"content_type"`
+	DurationMs  int64    `json:"duration_ms"`
+	Source      string   `json:"source"`
+	SourceRef   string   `json:"source_ref"`
 }
 
 // ImportRecording — POST /v1/media/internal/recordings/import
@@ -143,6 +145,7 @@ func (h *Handler) ImportRecording(c *gin.Context) {
 		OwnerUserID: body.OwnerUserID,
 		Bucket:      body.Bucket,
 		Key:         body.Key,
+		Keys:        body.Keys,
 		ContentType: body.ContentType,
 		DurationMs:  body.DurationMs,
 		Source:      body.Source,

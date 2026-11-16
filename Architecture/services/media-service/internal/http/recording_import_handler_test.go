@@ -253,3 +253,29 @@ func TestRecordingImport_ErrorMapping(t *testing.T) {
 		}
 	}
 }
+
+// TestRecordingImport_KeysPassThroughInOrder: the multi-part keys reach the
+// importer as sent, in order; a body without keys carries none.
+func TestRecordingImport_KeysPassThroughInOrder(t *testing.T) {
+	f := newRecordingImportFixture(t)
+	r := f.router(t, true)
+	stream := uuid.NewString()
+	k1, k2 := "recordings/"+stream+".mp4", "recordings/"+stream+"_part2.mp4"
+	body := fmt.Sprintf(`{"owner_user_id":%q,"bucket":"live-recordings","key":%q,"keys":[%q,%q],"content_type":"video/mp4","duration_ms":61000,"source":"live_recording","source_ref":%q}`,
+		uuid.NewString(), k2, k1, k2, stream)
+	if w := postRecordingImport(r, recordingImportKey, "", body, nil); w.Code != http.StatusCreated {
+		t.Fatalf("status = %d: %s", w.Code, w.Body.String())
+	}
+	if w := postRecordingImport(r, recordingImportKey, "", recordingImportBody(), nil); w.Code != http.StatusCreated {
+		t.Fatalf("single-key status = %d", w.Code)
+	}
+	if len(f.imp.calls) != 2 {
+		t.Fatalf("calls = %d", len(f.imp.calls))
+	}
+	if got := f.imp.calls[0]; got.Key != k2 || len(got.Keys) != 2 || got.Keys[0] != k1 || got.Keys[1] != k2 {
+		t.Fatalf("multi-part input = %+v", got)
+	}
+	if got := f.imp.calls[1]; got.Keys != nil {
+		t.Fatalf("single-key input carries keys: %+v", got)
+	}
+}

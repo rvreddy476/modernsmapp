@@ -80,7 +80,8 @@ func TestIntegrationRecordingParts(t *testing.T) {
 		t.Fatal("queued twice")
 	}
 	j, err := s.GetImport(ctx, st.ID)
-	if err != nil || j.ObjectKey != keyFor(1) || j.DurationMs != 120000 || j.RecordingURL != "https://s3/a" {
+	if err != nil || j.ObjectKey != keyFor(1) || j.DurationMs != 150000 || j.RecordingURL != "https://s3/a" ||
+		len(j.ObjectKeys) != 2 || j.ObjectKeys[0] != keyFor(1) || j.ObjectKeys[1] != keyFor(2) {
 		t.Fatalf("import = %+v %v", j, err)
 	}
 

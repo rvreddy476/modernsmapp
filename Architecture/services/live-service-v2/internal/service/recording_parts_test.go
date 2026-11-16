@@ -61,7 +61,7 @@ func equalStrings(a, b []string) bool {
 // TestEncoderReconnectIntoNewRoomRecordsAgain: the encoder drops, LiveKit
 // closes the room (its egress ends with it), the encoder reconnects into a
 // new room: a second egress records the rest under its own key; the import
-// waits for the end and takes the longest complete part.
+// waits for the end and lists both parts in order.
 func TestEncoderReconnectIntoNewRoomRecordsAgain(t *testing.T) {
 	host := uuid.New()
 	r := newRig(host)
@@ -107,8 +107,9 @@ func TestEncoderReconnectIntoNewRoomRecordsAgain(t *testing.T) {
 	}
 	mustWebhook(t, r, partEgressEnded(st, "EG_2", key2, "EGRESS_COMPLETE", 40*time.Minute))
 	j := r.store.Imports[st.ID]
-	if j == nil || j.ObjectKey != key2 || j.DurationMs != (40*time.Minute).Milliseconds() || j.Bucket != "live-recordings" {
-		t.Fatalf("import = %+v, want part 2", j)
+	if j == nil || j.ObjectKey != key2 || j.DurationMs != (42*time.Minute).Milliseconds() || j.Bucket != "live-recordings" ||
+		!equalStrings(j.ObjectKeys, []string{key1, key2}) {
+		t.Fatalf("import = %+v, want both parts (longest as the fallback key)", j)
 	}
 	if r.lk.egressStarts != 2 {
 		t.Fatalf("egress started after the end: %d", r.lk.egressStarts)

@@ -33,15 +33,16 @@ package service
 //   - At most maxRecordingParts per stream, so a failing egress cannot loop.
 //
 // The import. media-service imports ONE MP4 per stream (idempotent on
-// source_ref = the stream id) and post-service makes ONE video per stream,
-// so neither "parts as separate videos" nor a join is something the
-// existing import supports, and joining MP4s needs a remux (ffmpeg) this
-// service does not have. The smallest correct step here: every part is kept
-// in the recordings bucket under its own key (nothing overwrites part 1),
-// the import waits until the stream has ended and no part is still
-// recording, and then imports the LONGEST complete part (ties: the
-// earliest). A join belongs in media-service's worker (it already runs
-// ffmpeg) and can read the part list from live_recording_parts.
+// source_ref = the stream id) and post-service makes ONE video per stream.
+// Every part is kept in the recordings bucket under its own key (nothing
+// overwrites part 1); the import waits until the stream has ended and no
+// part is still recording, then freezes on the job (migration 009) the keys
+// of EVERY complete part in part order — failed and abandoned parts are
+// left out — with their summed duration. The import request carries them as
+// `keys` (two or more parts only) and media-service's worker joins them
+// with ffmpeg into the one replay; this service has no ffmpeg. `key` stays
+// the longest complete part (ties: the earliest), so a single-part stream
+// takes exactly the old path and an older media-service still imports one.
 
 import (
 	"context"

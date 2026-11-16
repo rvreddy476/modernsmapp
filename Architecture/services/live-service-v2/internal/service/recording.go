@@ -12,7 +12,8 @@ package service
 //
 //	POST {MEDIA_SERVICE_URL}/v1/media/internal/recordings/import   (internal key, no user identity)
 //	{"owner_user_id","bucket","key","content_type":"video/mp4","duration_ms",
-//	 "source":"live_recording","source_ref":"<stream id>"}
+//	 "source":"live_recording","source_ref":"<stream id>",
+//	 "keys":["recordings/<id>.mp4","recordings/<id>_part2.mp4",...]}  (keys: 2+ parts only)
 //	-> 200/201 {"data":{"media_id":"<uuid>","processing_status":"..."}}
 //	   (idempotent on (source, source_ref): re-asking returns the current status)
 //
@@ -55,10 +56,15 @@ type ImportRecordingRequest struct {
 	OwnerUserID string `json:"owner_user_id"`
 	Bucket      string `json:"bucket"`
 	Key         string `json:"key"`
-	ContentType string `json:"content_type"`
-	DurationMs  int64  `json:"duration_ms"`
-	Source      string `json:"source"`
-	SourceRef   string `json:"source_ref"`
+	// Keys are every complete part's key in part order (16 Nov 2026), sent
+	// only when there are two or more: media-service joins them into the
+	// one replay. Key stays set (the longest part) so a media-service that
+	// predates Keys still imports something.
+	Keys        []string `json:"keys,omitempty"`
+	ContentType string   `json:"content_type"`
+	DurationMs  int64    `json:"duration_ms"`
+	Source      string   `json:"source"`
+	SourceRef   string   `json:"source_ref"`
 }
 
 // ImportResult is media-service's answer.
@@ -356,15 +362,7 @@ func (s *Service) runImport(ctx context.Context, j postgres.RecordingImport) {
 		retry(nil, "", "media service not configured (MEDIA_SERVICE_URL)", importBackoff(j.Attempts+1))
 		return
 	}
-	res, err := s.media.ImportRecording(ctx, ImportRecordingRequest{
-		OwnerUserID: j.OwnerUserID.String(),
-		Bucket:      j.Bucket,
-		Key:         j.ObjectKey,
-		ContentType: "video/mp4",
-		DurationMs:  j.DurationMs,
-		Source:      "live_recording",
-		SourceRef:   j.StreamID.String(),
-	})
+	res, err := s.media.ImportRecording(ctx, importRequestFor(j))
 	var ie *ImportError
 	switch {
 	case errors.As(err, &ie) && ie.Terminal:
@@ -398,6 +396,25 @@ func (s *Service) runImport(ctx context.Context, j postgres.RecordingImport) {
 	if err != nil {
 		retry(&mediaID, res.ProcessingStatus, err.Error(), importBackoff(j.Attempts+1))
 	}
+}
+
+// importRequestFor is the import body of a job. One part (or a pre-parts
+// stream) sends the single key exactly as before; two or more complete
+// parts also send their keys in part order, for media-service to join.
+func importRequestFor(j postgres.RecordingImport) ImportRecordingRequest {
+	req := ImportRecordingRequest{
+		OwnerUserID: j.OwnerUserID.String(),
+		Bucket:      j.Bucket,
+		Key:         j.ObjectKey,
+		ContentType: "video/mp4",
+		DurationMs:  j.DurationMs,
+		Source:      "live_recording",
+		SourceRef:   j.StreamID.String(),
+	}
+	if len(j.ObjectKeys) > 1 {
+		req.Keys = append([]string(nil), j.ObjectKeys...)
+	}
+	return req
 }
 
 // truncateMsg joins the attempt's message and why its media id was not

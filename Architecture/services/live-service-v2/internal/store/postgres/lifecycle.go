@@ -280,10 +280,14 @@ func (s *Store) ListEndedWithIngress(ctx context.Context, failedKeep time.Durati
 
 // RecordingImport is one live_recording_imports job.
 type RecordingImport struct {
-	StreamID         uuid.UUID
-	OwnerUserID      uuid.UUID
-	Bucket           string
-	ObjectKey        string
+	StreamID    uuid.UUID
+	OwnerUserID uuid.UUID
+	Bucket      string
+	ObjectKey   string
+	// ObjectKeys are the keys of every complete part in part order
+	// (migration 009), frozen when the job was queued. Empty: the single
+	// ObjectKey path (pre-parts streams, pre-009 jobs).
+	ObjectKeys       []string
 	RecordingURL     string
 	DurationMs       int64
 	State            string // pending | done | failed
@@ -334,14 +338,14 @@ func (s *Store) SetRecording(ctx context.Context, id uuid.UUID, url string, dura
 	return st, nil
 }
 
-const importColumns = `stream_id, owner_user_id, bucket, object_key, recording_url, duration_ms,
+const importColumns = `stream_id, owner_user_id, bucket, object_key, object_keys, recording_url, duration_ms,
 		          state, media_id, processing_status, attempts, last_error, done_at,
 		          EXTRACT(EPOCH FROM (NOW() - created_at))::float8`
 
 func scanImport(row pgx.Row) (RecordingImport, error) {
 	var j RecordingImport
 	var ageSec float64
-	err := row.Scan(&j.StreamID, &j.OwnerUserID, &j.Bucket, &j.ObjectKey, &j.RecordingURL, &j.DurationMs,
+	err := row.Scan(&j.StreamID, &j.OwnerUserID, &j.Bucket, &j.ObjectKey, &j.ObjectKeys, &j.RecordingURL, &j.DurationMs,
 		&j.State, &j.MediaID, &j.ProcessingStatus, &j.Attempts, &j.LastError, &j.DoneAt, &ageSec)
 	j.Age = time.Duration(ageSec * float64(time.Second))
 	return j, err

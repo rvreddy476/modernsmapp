@@ -6,6 +6,7 @@ package postgres
 import (
 	"context"
 	"errors"
+	"sort"
 	"time"
 
 	"github.com/google/uuid"
@@ -233,9 +234,46 @@ type QueueImportParams struct {
 	WaitActive time.Duration
 }
 
-// QueueRecordingImport queues the stream's media import from its longest
-// complete part (ties: the earliest), with the recording pointer on the
-// stream, in one transaction under the stream's row lock — only once the
+// PartsImport is what one stream's import is queued from.
+type PartsImport struct {
+	// Keys are the object keys of every complete part, in part order: the
+	// replay media-service joins.
+	Keys []string
+	// Longest is the longest complete part (ties: the earliest): the
+	// single-key fallback (object_key) and the stream's recording pointer.
+	Longest RecordingPart
+	// DurationMs is the sum of the complete parts.
+	DurationMs int64
+}
+
+// PlanPartsImport plans the import from a stream's parts (any order, any
+// state): only complete parts count. ok=false: none is complete. Pure.
+func PlanPartsImport(parts []RecordingPart) (PartsImport, bool) {
+	var complete []RecordingPart
+	for _, p := range parts {
+		if p.State == PartComplete {
+			complete = append(complete, p)
+		}
+	}
+	if len(complete) == 0 {
+		return PartsImport{}, false
+	}
+	sort.SliceStable(complete, func(i, j int) bool { return complete[i].Part < complete[j].Part })
+	var plan PartsImport
+	for i, p := range complete {
+		plan.Keys = append(plan.Keys, p.ObjectKey)
+		plan.DurationMs += p.DurationMs
+		if i == 0 || p.DurationMs > plan.Longest.DurationMs {
+			plan.Longest = p
+		}
+	}
+	return plan, true
+}
+
+// QueueRecordingImport queues the stream's media import from all its
+// complete parts (PlanPartsImport: keys in part order, the longest part as
+// the single-key fallback, the summed duration), with the recording pointer
+// on the stream, in one transaction under the stream's row lock — only once the
 // stream is terminal and no part is still starting or recording (or it
 // ended more than WaitActive ago). queued=false: not yet, nothing complete,
 // or a job already exists (the import is one per stream).
@@ -275,17 +313,31 @@ func (s *Store) QueueRecordingImport(ctx context.Context, streamID uuid.UUID, p 
 	if active > 0 && !endedLongAgo {
 		return false, nil
 	}
-	var part RecordingPart
-	err = tx.QueryRow(ctx, `
+	rows, err := tx.Query(ctx, `
 		SELECT part, object_key, recording_url, duration_ms FROM live_recording_parts
 		WHERE stream_id = $1 AND state = 'complete'
-		ORDER BY duration_ms DESC, part ASC LIMIT 1`, streamID).Scan(&part.Part, &part.ObjectKey, &part.RecordingURL, &part.DurationMs)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
-	}
+		ORDER BY part`, streamID)
 	if err != nil {
 		return false, err
 	}
+	var complete []RecordingPart
+	for rows.Next() {
+		p := RecordingPart{StreamID: streamID, State: PartComplete}
+		if err := rows.Scan(&p.Part, &p.ObjectKey, &p.RecordingURL, &p.DurationMs); err != nil {
+			rows.Close()
+			return false, err
+		}
+		complete = append(complete, p)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return false, err
+	}
+	plan, ok := PlanPartsImport(complete)
+	if !ok {
+		return false, nil
+	}
+	part := plan.Longest
 	url := ""
 	if part.RecordingURL != nil {
 		url = *part.RecordingURL
@@ -297,15 +349,15 @@ func (s *Store) QueueRecordingImport(ctx context.Context, streamID uuid.UUID, p 
 	if err := tx.QueryRow(ctx, `
 		UPDATE live_streams
 		SET recording_url = $2, recording_duration_seconds = $3, updated_at = NOW()
-		WHERE id = $1 RETURNING creator_user_id`, streamID, url, int(part.DurationMs/1000)).Scan(&owner); err != nil {
+		WHERE id = $1 RETURNING creator_user_id`, streamID, url, int(plan.DurationMs/1000)).Scan(&owner); err != nil {
 		return false, err
 	}
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO live_recording_imports
-		    (stream_id, owner_user_id, bucket, object_key, recording_url, duration_ms)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		    (stream_id, owner_user_id, bucket, object_key, object_keys, recording_url, duration_ms)
+		VALUES ($1, $2, $3, $4, $5, $6, $7)
 		ON CONFLICT (stream_id) DO NOTHING`,
-		streamID, owner, p.Bucket, part.ObjectKey, url, part.DurationMs)
+		streamID, owner, p.Bucket, part.ObjectKey, plan.Keys, url, plan.DurationMs)
 	if err != nil {
 		return false, err
 	}
