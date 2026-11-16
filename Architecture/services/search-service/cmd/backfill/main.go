@@ -644,6 +644,12 @@ func backfillUsers(ctx context.Context, store *search.Store, identityDSN, appDSN
 		q += limitClause(limit, 1)
 		args = append(args, limit)
 	}
+	// The run's version (user_profile_state.go): the time the SELECT
+	// started. Its snapshot holds every edit committed before it, so it
+	// outranks those edits' late events and loses to any edit after it —
+	// the same rule as the users reindex. Taken before the query, never
+	// after.
+	runVersion := search.SourceVersion(time.Now())
 	rows, err := pool.Query(ctx, q, args...)
 	if err != nil {
 		// Schema may differ — fall back to a simpler shape used in
@@ -698,6 +704,7 @@ func backfillUsers(ctx context.Context, store *search.Store, identityDSN, appDSN
 			return count, err
 		}
 		d.CreatedAt = createdAt
+		d.SourceVersion = runVersion
 		if d.Username == "" {
 			d.Username = handles[d.UserID]
 		}

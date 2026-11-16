@@ -240,8 +240,10 @@ func assertKeepHiddenBody(t *testing.T, raw []byte, userID string) {
 	if err := json.Unmarshal(raw, &body); err != nil {
 		t.Fatalf("update body: %v: %s", err, raw)
 	}
-	if !body.ScriptedUpsert || body.Script.Source != keepHiddenUpsertScript || body.Script.Params.Doc["user_id"] != userID {
-		t.Fatalf("not the keep-hidden upsert: %s", raw)
+	// users_v1 rewrites through the ordered form of the keep-hidden upsert
+	// (user_profile_state.go); its is_hidden clauses are checked there.
+	if !body.ScriptedUpsert || body.Script.Source != userProfileUpsertScript || body.Script.Params.Doc["user_id"] != userID {
+		t.Fatalf("not the ordered keep-hidden user upsert: %s", raw)
 	}
 }
 

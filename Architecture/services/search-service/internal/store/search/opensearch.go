@@ -314,6 +314,13 @@ type UserDoc struct {
 	// zero year 1 date onto it and telling the decay function this
 	// account is two millennia old.
 	CreatedAt *time.Time `json:"created_at,omitempty"`
+	// SourceVersion orders the full rewrites (user_profile_state.go): the
+	// writer's version in microseconds (SourceVersion of the event's
+	// updated_at / created_at, or of a reindex's read time); zero means
+	// unversioned. Stored as source_updated_us by the write script; never
+	// on the wire of a search result (json "-"), since an edit time is
+	// activity timing profile-service itself does not publish.
+	SourceVersion int64 `json:"-"`
 }
 
 type PostDoc struct {
@@ -488,12 +495,13 @@ type UniversalSearchResult struct {
 	Posts []PostDoc `json:"posts"`
 }
 
-// IndexUser rewrites one user document. It goes through the same
-// keep-hidden upsert as BulkIndexUsers (bulk.go), so a profile event never
-// brings a deactivated account back. No forced refresh (audit HS1): the
+// IndexUser rewrites one user document. It goes through the same ordered,
+// keep-hidden upsert as BulkIndexUsers (user_profile_state.go), so a
+// profile event never brings a deactivated account back and an event older
+// than the stored document is a no-op. No forced refresh (audit HS1): the
 // index refresh_interval surfaces the write within seconds.
 func (s *Store) IndexUser(ctx context.Context, doc UserDoc) error {
-	return s.upsertKeepingHidden(ctx, IndexUsers, doc.UserID, doc)
+	return s.upsertUserProfile(ctx, doc)
 }
 
 // IndexPost
@@ -524,12 +532,14 @@ func (s *Store) IndexPost(ctx context.Context, doc PostDoc) error {
 const bulkChunkSize = 500
 
 // BulkIndexUsers rewrites many user documents: chunked, every id checked
-// as a UUID and every action line marshalled (bulk.go), and a stored
-// is_hidden kept. Returns how many OpenSearch accepted; a chunk failure
-// stops the run and the count covers what landed before it.
+// as a UUID and every action line marshalled (bulk.go), a stored is_hidden
+// kept, and a stored document newer than the doc's SourceVersion left as it
+// is (user_profile_state.go; a skipped document still counts as accepted).
+// Returns how many OpenSearch accepted; a chunk failure stops the run and
+// the count covers what landed before it.
 func (s *Store) BulkIndexUsers(ctx context.Context, docs []UserDoc) (int, error) {
 	ids, anys := toAnySlice(docs, func(d UserDoc) string { return d.UserID })
-	return s.bulkWrite(ctx, IndexUsers, ids, anys, buildBulkKeepHiddenBody)
+	return s.bulkWrite(ctx, IndexUsers, ids, anys, buildBulkUserProfileBody)
 }
 
 // CountUsers returns the number of documents in users_v1. Used by the

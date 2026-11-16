@@ -457,10 +457,14 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if err != nil {
 			return err
 		}
+		// Version: the account's creation time, so a late or redelivered
+		// registration never rewrites a profile edit or a reindex over it
+		// (user_profile_state.go).
 		return c.store.IndexUser(ctx, search.UserDoc{
-			UserID:      p.UserID,
-			DisplayName: displayName,
-			IsPrivate:   isPrivate,
+			UserID:        p.UserID,
+			DisplayName:   displayName,
+			IsPrivate:     isPrivate,
+			SourceVersion: search.SourceVersion(p.CreatedAt),
 		})
 
 	case events.UserProfileUpdated:
@@ -473,6 +477,9 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if err != nil {
 			return err
 		}
+		// Version: the payload's updated_at. An edit older than the stored
+		// document (redelivery, DLQ replay, a reindex that read it later)
+		// is a no-op and the message is acked (user_profile_state.go).
 		return c.store.IndexUser(ctx, search.UserDoc{
 			UserID:        p.UserID,
 			Username:      p.Username,
@@ -481,6 +488,7 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 			AvatarMediaID: p.AvatarMediaID,
 			IsVerified:    p.IsVerified,
 			IsPrivate:     isPrivate,
+			SourceVersion: search.SourceVersion(p.UpdatedAt),
 		})
 
 	case events.UserSettingsChanged:

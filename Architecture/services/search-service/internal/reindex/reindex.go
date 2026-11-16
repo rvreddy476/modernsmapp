@@ -36,6 +36,10 @@ import (
 // not a hot path.
 const profilePageSize = 200
 
+// reindexClock stamps a users reindex page's version. A variable for the
+// tests.
+var reindexClock = time.Now
+
 // defaultHTTPClient is used when a caller passes a nil client.
 var defaultHTTPClient = &http.Client{Timeout: 15 * time.Second}
 
@@ -132,6 +136,13 @@ func ReindexUsers(
 	httpClient = orDefaultClient(httpClient)
 
 	for offset := 0; ; offset += profilePageSize {
+		// The page's version (user_profile_state.go): the time it was
+		// requested. profile-service's discover listing carries no
+		// updated_at, and the page holds every edit committed before this
+		// instant, so it outranks those edits' events and loses to any
+		// edit after it. Taken BEFORE the request, never after: a later
+		// stamp could outrank an edit the page did not see.
+		pageVersion := search.SourceVersion(reindexClock())
 		profiles, err := fetchProfilePage(ctx, httpClient, profileServiceURL, internalKey, profilePageSize, offset)
 		if err != nil {
 			return res, fmt.Errorf("reindex: fetch page at offset %d: %w", offset, err)
@@ -178,10 +189,11 @@ func ReindexUsers(
 		docs := make([]search.UserDoc, 0, len(profiles))
 		for _, p := range profiles {
 			doc := search.UserDoc{
-				UserID:      p.UserID,
-				DisplayName: p.DisplayName,
-				Bio:         p.Bio,
-				IsVerified:  p.IsVerified,
+				UserID:        p.UserID,
+				DisplayName:   p.DisplayName,
+				Bio:           p.Bio,
+				IsVerified:    p.IsVerified,
+				SourceVersion: pageVersion,
 			}
 			if p.Username != nil {
 				doc.Username = *p.Username

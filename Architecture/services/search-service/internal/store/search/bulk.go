@@ -205,8 +205,10 @@ func (s *Store) sendBulk(ctx context.Context, index string, body []byte, n int) 
 // Tube channel, tube_channel_state.go) is not rewritten by an older one —
 // the reindex read the row before an event that has since landed. The
 // stored document stays; only reindexed_at is stamped, so the sweep still
-// knows the row is listed. Documents without the field (users, playlists,
-// channels written before it) are rewritten as before.
+// knows the row is listed. Documents without the field (playlists, channels
+// written before it) are rewritten as before. users_v1 no longer uses this
+// script: since 2026-11-16 it has its own ordered form with the same
+// is_hidden rule (userProfileUpsertScript, user_profile_state.go).
 const keepHiddenUpsertScript = `
 boolean hidden = ctx._source.is_hidden == true;
 boolean stale = false;
@@ -257,6 +259,12 @@ func (s *Store) upsertKeepingHidden(ctx context.Context, index, id string, doc a
 	if err != nil {
 		return err
 	}
+	return s.sendScriptedUpdate(ctx, index, id, body)
+}
+
+// sendScriptedUpdate sends one scripted _update. A script that answers
+// ctx.op = 'none' is a 200 "noop", not an error.
+func (s *Store) sendScriptedUpdate(ctx context.Context, index, id string, body map[string]any) error {
 	data, err := json.Marshal(body)
 	if err != nil {
 		return err

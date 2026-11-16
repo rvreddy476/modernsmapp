@@ -231,6 +231,9 @@ func (h *Handler) rankedUserItems(ctx context.Context, viewerID uuid.UUID, items
 	}
 
 	for _, it := range items {
+		// The write version (user_profile_state.go) is an edit time:
+		// activity timing that profile-service does not publish either.
+		delete(it, "source_updated_us")
 		id, _ := it["user_id"].(string)
 		if url, ok := avatars[id]; ok && url != nil {
 			it["avatar_url"] = *url

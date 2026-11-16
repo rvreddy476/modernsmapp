@@ -234,4 +234,9 @@ func (s *Store) initEntityIndices() {
 		s.putFieldMapping(ctx, index, "removed", "boolean")
 		s.putFieldMapping(ctx, index, "deleted", "boolean")
 	}
+
+	// Profile write order (2026-11-16, user_profile_state.go). Additive; a
+	// document without it is unversioned and the next versioned write
+	// stamps one.
+	s.putFieldMapping(ctx, IndexUsers, "source_updated_us", "long")
 }
