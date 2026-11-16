@@ -1,0 +1,39 @@
+{
+  "module": "feed",
+  "audit_date": "2026-11-16",
+  "status": "COMPLETE",
+  "verdict": "NO-GO",
+  "trees": {
+    "backend_android": {"path": "C:/workspace/modernsmapp", "branch": "codex/module-01-02-launch-safety", "head": "3c860874e", "dirty": true},
+    "web": {"path": "C:/workspace/wt/pb-echo", "branch": "feat/echo-web", "head": "ca96921", "dirty": false}
+  },
+  "stages": {
+    "0_map": "done: 00-map.md",
+    "1_baseline": "done: 01-baseline.md",
+    "2_parallel_review": "done: tracks/track-a..f (interrupted once by a usage limit, resumed and completed)",
+    "3_verification": "done: all 15 P0/P1 findings and 10 claimed-sound items re-checked by fresh reviewers; results in 03-findings.md (Verification lines) and 04-launch-gate.md",
+    "4_report": "done: 02-feature-status.md, 03-findings.md, 04-launch-gate.md, 05-fix-plan.md"
+  },
+  "findings": {"total": 80, "P0": 2, "P1": 13, "P2": 45, "P3": 20,
+    "primary_evidence": {"VERIFIED-RUN": 5, "VERIFIED-READ": 67, "SUSPECTED": 7, "UNVERIFIED": 1}},
+  "gate": {"1": "FAIL", "2": "FAIL", "3": "FAIL", "4": "UNVERIFIED", "5": "UNVERIFIED", "6": "UNVERIFIED", "7": "NOT APPLICABLE", "8": "FAIL", "9": "FAIL", "10": "FAIL", "11": "FAIL", "12": "UNVERIFIED"},
+  "not_verified": [
+    "Any runtime behaviour: no database, server, device or deployed environment was used.",
+    "Security scans (gitleaks, govulncheck, Trivy, static analysis) on the current head: tools not installed locally, and running govulncheck was blocked by session permissions. Last passing CI scan is 44f00fafe (31 Oct), 158 commits back.",
+    "Whether the private-key and aws-access-token hits in git history are real credentials.",
+    "Media URL audience enforcement end to end.",
+    "Comment and share client write paths; comment previews; blocked authors in comment lists.",
+    "Migrations from empty (not run; not all 82 post-service files were read in order).",
+    "Helm chart rendering (helm not installed), live cloud state, branch protection.",
+    "All latencies and capacities: no load test exists.",
+    "Android instrumented and device behaviour; Android test bodies were cited by name only.",
+    "Which web branch ships (audited feat/echo-web)."
+  ],
+  "open_questions": [
+    "Which web branch ships to production? AGENT-RULES names wt/pb-integ (feat/tiktok-parity-web), which is not on this machine.",
+    "Launch traffic forecast, needed to set load-test rates.",
+    "Founder decisions for feed-02: AWS account, secrets, qa and release/prod branches."
+  ],
+  "notes_for_next_runs": "The founder asked on 16 Nov that the reels and long-video runs also cover Settings and Upload-settings gaps, how live monetization figures are, and an appendix of feature ideas, kept apart from the verdict.",
+  "scratch": "Throwaway logs and the assembly script were kept in the session scratchpad, outside the repository; nothing to delete in the repo."
+}
