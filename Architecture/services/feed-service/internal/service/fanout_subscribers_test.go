@@ -55,19 +55,12 @@ func (c fixedCelebs) IsCeleb(context.Context, uuid.UUID) (bool, error) { return 
 // post-service stub (channel subscriber-ids) behind one Service.
 func fanoutStubs(t *testing.T, followers, connections, subscribers []uuid.UUID, celeb bool) (*Service, *recordingTimelines) {
 	t.Helper()
-	encode := func(w http.ResponseWriter, ids []uuid.UUID) {
-		out := make([]string, 0, len(ids))
-		for _, id := range ids {
-			out = append(out, id.String())
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": out})
-	}
 	graph := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.Contains(r.URL.Path, "/followers/"):
-			encode(w, followers)
+			writeGraphIDPage(w, r, followers)
 		case strings.Contains(r.URL.Path, "/connections/"):
-			encode(w, connections)
+			writeGraphIDPage(w, r, connections)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}

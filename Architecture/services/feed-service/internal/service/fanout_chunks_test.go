@@ -21,8 +21,9 @@ import (
 // records its progress per event, resumes at the failed chunk on retry, and
 // recognises a celeb before pushing anything.
 
-// pagedGraph serves /followers/ and /connections/ with real offset paging
-// and counts how often each (kind, offset) was asked for.
+// pagedGraph serves /followers/ and /connections/ with real cursor paging
+// and counts how often each page (kind, position of its first row) was
+// asked for.
 type pagedGraph struct {
 	mu          sync.Mutex
 	followers   []uuid.UUID
@@ -55,18 +56,18 @@ func (g *pagedGraph) serve(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
-	offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	g.hits[kind+":"+strconv.Itoa(offset)]++
-	end := offset + limit
-	if end > len(list) {
-		end = len(list)
+	// A page is named by the position of its first row, so the tests can
+	// say "the chunk at 100" whatever the cursor looks like.
+	start := 0
+	if _, rawID, ok := strings.Cut(r.URL.Query().Get("cursor"), ":"); ok {
+		for i, id := range list {
+			if id.String() == rawID {
+				start = i + 1
+			}
+		}
 	}
-	page := []string{}
-	for _, id := range list[min(offset, len(list)):end] {
-		page = append(page, id.String())
-	}
-	_ = json.NewEncoder(w).Encode(map[string]any{"data": page})
+	g.hits[kind+":"+strconv.Itoa(start)]++
+	writeGraphIDPage(w, r, list)
 }
 
 func (g *pagedGraph) hitsAt(key string) int {
@@ -126,8 +127,8 @@ func TestFanoutPost_RetryResumesAtTheFailedChunk(t *testing.T) {
 	if err := s.FanoutPost(ctx, post, author, time.Now(), "post", "public", uuid.Nil); err == nil {
 		t.Fatal("a failed chunk was swallowed; the event must be retried")
 	}
-	if got := mr.HGet(FanoutProgressKey(post, "event-1"), "followers"); got != "100" {
-		t.Fatalf("progress after a failure in the second chunk = %q, want 100 (the failed chunk's offset)", got)
+	if got, want := mr.HGet(FanoutProgressKey(post, "event-1"), "followers"), encodeLegPosition(100, stubGraphCursor(g.followers[99])); got != want {
+		t.Fatalf("progress after a failure in the second chunk = %q, want %q (100 read, the cursor of the last row of the first chunk)", got, want)
 	}
 	// The third chunk is not reached on the failing run: chunks are units.
 	if n := g.hitsAt("followers:200"); n != 0 {
@@ -283,7 +284,7 @@ func (c *countingTransport) count() int {
 // burst cannot open the breaker the request path's fail-closed filters use.
 func TestBackgroundTrafficUsesTheFanoutClients(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": []string{}, "user_ids": []string{}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"ids": []string{}, "next_cursor": ""}, "user_ids": []string{}})
 	}))
 	defer srv.Close()
 	request, background := &countingTransport{}, &countingTransport{}

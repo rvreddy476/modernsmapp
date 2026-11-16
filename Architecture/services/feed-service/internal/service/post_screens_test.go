@@ -22,25 +22,18 @@ import (
 func friendsFanoutStubs(t *testing.T, followers, following, connections, subscribers []uuid.UUID, failFollowing bool) (*Service, *recordingTimelines) {
 	t.Helper()
 	s, tl := fanoutStubs(t, followers, connections, subscribers, false)
-	encode := func(w http.ResponseWriter, ids []uuid.UUID) {
-		out := make([]string, 0, len(ids))
-		for _, id := range ids {
-			out = append(out, id.String())
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": out})
-	}
 	graph := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.Contains(r.URL.Path, "/followers/"):
-			encode(w, followers)
+			writeGraphIDPage(w, r, followers)
 		case strings.Contains(r.URL.Path, "/following/"):
 			if failFollowing {
 				w.WriteHeader(http.StatusBadGateway)
 				return
 			}
-			encode(w, following)
+			writeGraphIDPage(w, r, following)
 		case strings.Contains(r.URL.Path, "/connections/"):
-			encode(w, connections)
+			writeGraphIDPage(w, r, connections)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}

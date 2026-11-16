@@ -358,7 +358,7 @@ func (s *Service) fetchRelationships(ctx context.Context, viewerID uuid.UUID, ta
 			return nil, fmt.Errorf("read response body: %w", err)
 		}
 		if resp.StatusCode != http.StatusOK {
-			return nil, fmt.Errorf("graph-service returned %d: %s", resp.StatusCode, truncateForLog(raw))
+			return nil, &UpstreamStatusError{Service: "graph-service", Status: resp.StatusCode, Body: truncateForLog(raw)}
 		}
 		// The batch route answers with a bare {target_id: relationship}
 		// map, not the {"data": ...} envelope the GET routes use.

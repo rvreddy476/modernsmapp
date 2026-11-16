@@ -82,6 +82,9 @@ type Service struct {
 	timelines timelineWriter
 	windows   timelineReader
 	celebs    celebStore
+	// authorTimelines is the followee's own timeline, read by the follow
+	// backfill (follow_backfill.go). Swapped by tests.
+	authorTimelines authorTimelineReader
 	// reposts removes an undone repost's rows (UndoRepostFanout).
 	reposts repostRemover
 	// Echo notes (notes.go): the notes_timeline store, the echo_notes /
@@ -174,6 +177,7 @@ func New(scylla *scylla.TimelineStore, pg *postgres.MetaStore, rdb *redis.Client
 	}
 	if scylla != nil {
 		svc.timelines = scylla
+		svc.authorTimelines = scylla
 		svc.windows = scylla
 		svc.reposts = scylla
 		svc.notesTimelines = scylla
@@ -388,79 +392,33 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		fetchLimit = 200
 	}
 
-	// 1. Get Home Timeline candidates
-	var items []scylla.FeedItem
-	var err error
-	switch {
-	case cursor.Token != "":
-		items, err = s.scyllaStore.GetHomeTimelineBeforeToken(ctx, userID, cursor.Token, fetchLimit)
-	case cursor.Time != nil:
-		items, err = s.scyllaStore.GetHomeTimelineBefore(ctx, userID, *cursor.Time, fetchLimit)
-	default:
-		items, err = s.scyllaStore.GetHomeTimeline(ctx, userID, fetchLimit)
-	}
-	if err != nil {
-		return HomeFeedResult{}, err
-	}
-
-	// Celeb pull (celebpull.go): followed celebs' own timelines join the
-	// read before any filter, merged by timeline key. Not on a legacy
-	// timestamp cursor — that page was cut before pull rows existed.
-	if s.celeb.pull && cursor.Time == nil {
-		pulled, pullErr := s.pullCelebRows(ctx, userID, cursor.Token, fetchLimit)
-		if pullErr != nil {
-			log.Printf("celeb pull unavailable for %s, page served from the pushed timeline only: %v", userID, pullErr)
-		}
-		if len(pulled) > 0 {
-			items = mergeTimelineRows(items, pulled, fetchLimit)
-		}
-	}
-
-	// Convert to FeedItems, optionally filtering out viewer's own original posts.
-	// Reposts are kept even when excludeSelf is true — the user wants to see
-	// content they reposted (it's someone else's post they chose to amplify).
-	candidates := make([]FeedItem, 0, len(items))
-	for _, item := range items {
-		if excludeSelf && item.AuthorID == userID && item.ContentType != "repost" {
-			continue
-		}
-		candidates = append(candidates, FeedItem{
-			PostID:      item.PostID,
-			AuthorID:    item.AuthorID,
-			CreatedAt:   item.CreatedAt,
-			ContentType: item.ContentType,
-			CursorToken: item.CursorToken,
-		})
-	}
-
-	// Filter out blocked/muted authors.
+	// What the per-window filters below need is resolved ONCE, before the
+	// first read: a page may take several timeline windows to fill
+	// (collectHomeCandidates), and every window must be cut by the same
+	// sets.
 	//
-	// M2-P0-3: this must FAIL CLOSED. The previous code only filtered when
-	// the lookup succeeded, so any graph-service outage served an
-	// unfiltered feed — the one moment a blocked person's content reaching
-	// their target is most likely to go unnoticed, because nothing in the
-	// response says the safety filter was skipped. Returning an error
-	// costs an unavailable feed; the alternative costs a safety guarantee.
-	// The same set carries the viewer's "Don't recommend" authors, so the
-	// window and the cold-start fill below are cut without them.
+	// Blocked/muted authors. M2-P0-3: this must FAIL CLOSED. The previous
+	// code only filtered when the lookup succeeded, so any graph-service
+	// outage served an unfiltered feed — the one moment a blocked person's
+	// content reaching their target is most likely to go unnoticed, because
+	// nothing in the response says the safety filter was skipped. Returning
+	// an error costs an unavailable feed; the alternative costs a safety
+	// guarantee. The same set carries the viewer's "Don't recommend"
+	// authors, so the windows and the cold-start fill are cut without them.
 	blockedSet, err := s.resolveBlockedSet(ctx, userID)
 	if err != nil {
 		return HomeFeedResult{}, err
 	}
-	candidates = applyBlockFilter(candidates, blockedSet)
-	if candidates, err = s.applyHiddenAuthorFilter(ctx, candidates); err != nil {
-		return HomeFeedResult{}, err
-	}
 
-	// Filter to circle-only (friends) if requested.
+	// circle_only (friends).
 	//
-	// Resolved even when the timeline came back empty, unlike the version
-	// that only ran on a non-empty candidate list: "you have no
-	// connections" and "your connections have posted nothing recently" are
-	// different answers, and the empty reason below is the only place the
-	// client can learn which. Fails CLOSED, like the reels and watch
-	// Following tabs: an unresolved graph is an error, never a page under
-	// a heading that promises friends.
+	// Resolved even when the timeline is empty: "you have no connections"
+	// and "your connections have posted nothing recently" are different
+	// answers, and the empty reason below is the only place the client can
+	// learn which. Fails CLOSED, like the reels and watch Following tabs:
+	// an unresolved graph is an error, never a page under a heading that
+	// promises friends.
+	var friendSet map[uuid.UUID]struct{}
 	if circleOnly {
 		friends, err := s.viewerConnections(ctx, userID)
 		if err != nil {
@@ -470,27 +428,20 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		if len(friends) == 0 {
 			emptyReason = EmptyNoConnections
 		}
-		friendSet := make(map[uuid.UUID]struct{}, len(friends))
+		friendSet = make(map[uuid.UUID]struct{}, len(friends))
 		for _, fid := range friends {
 			friendSet[fid] = struct{}{}
 		}
-		filtered := candidates[:0]
-		for _, c := range candidates {
-			if _, ok := friendSet[c.AuthorID]; ok {
-				c.Source = sourceCircle
-				filtered = append(filtered, c)
-			}
-		}
-		candidates = filtered
 	}
 
-	// Filter to following-only (one-way follow) if requested.
-	// Distinct from circle_only, which is mutual friends. Following matches the
-	// "Following" tab semantics: posts authored by users the viewer follows.
-	// Same two rules as circle_only above: resolved unconditionally, and
-	// failing closed rather than serving the unfiltered timeline.
+	// following_only (one-way follow). Distinct from circle_only, which is
+	// mutual friends. Following matches the "Following" tab semantics:
+	// posts authored by users the viewer follows. Same two rules as
+	// circle_only above: resolved unconditionally, and failing closed
+	// rather than serving the unfiltered timeline.
+	var following []uuid.UUID
 	if followingOnly {
-		following, err := s.viewerFollowing(ctx, userID)
+		following, err = s.viewerFollowing(ctx, userID)
 		if err != nil {
 			log.Printf("following_only filter: failed to fetch follows for %s: %v", userID, err)
 			return HomeFeedResult{}, fmt.Errorf("home following filter: %w", err)
@@ -498,65 +449,160 @@ func (s *Service) GetHomeFeed(ctx context.Context, userID uuid.UUID, limit int, 
 		if len(following) == 0 && emptyReason == "" {
 			emptyReason = EmptyNoFollows
 		}
-		candidates = filterByAuthorSet(candidates, following)
 	}
 
-	// Cold-start fallback: if the timeline is empty, fetch recent public
-	// posts. See coldStartAllowed — in particular, an explicit narrowing
-	// (following_only / circle_only) forbids it, because backfilling
-	// strangers under a heading that promises follows is a lie the client
-	// has no way to detect.
-	// len(candidates) would count the viewer's own posts as a populated feed;
-	// see countFromOthers for what that did to accounts that posted early.
-	if coldStartAllowed(cursor.FirstPage(), feedMode, countFromOthers(candidates, userID), circleOnly, followingOnly) {
-		log.Printf("Cold-start fallback triggered for user %s (nothing from others in timeline), fetching from %s", userID, s.postServiceURL)
-		coldItems, err := s.getRecentPublicPosts(ctx, limit*2)
-		if err != nil {
-			log.Printf("Cold-start fallback failed: %v", err)
-		} else {
-			log.Printf("Cold-start fallback returned %d posts", len(coldItems))
-			// M2-P0-3: cold-start candidates come from post-service's
-			// recent-public endpoint rather than the viewer's timeline, so
-			// they have never passed through any per-viewer filtering.
-			// They must go through the SAME block filter as timeline
-			// candidates — this is the path most likely to surface a
-			// stranger who blocked the viewer, because it is precisely the
-			// path used for viewers with no graph of their own.
-			visible, hideErr := s.applyHiddenAuthorFilter(ctx, applyBlockFilter(coldItems, blockedSet))
-			if hideErr != nil {
-				return HomeFeedResult{}, hideErr
-			}
-			for _, item := range visible {
-				if excludeSelf && item.AuthorID == userID {
-					continue
-				}
-				candidates = append(candidates, item)
-			}
-		}
-	}
-
-	// Reels belong to the Reels page, not the main feed (see dropShortForm
-	// in longvideo.go). Runs after the cold-start fallback so backfilled
-	// items are covered too.
-	candidates = dropShortForm(candidates)
-	// Echo notes never enter Home (echo-contract.md): their own timeline is
-	// notes_timeline, and this drops any that reach Home another way (the
-	// cold-start fill, a celeb pull, a row written before notes had a
-	// table). Independent of the main_feed=false policy filter below,
-	// which also excludes them, so a degraded policy lookup cannot leak one.
-	candidates = dropNotes(candidates)
-
-	// P0-1: drop posts whose distribution policy opted out of social home.
-	// Runs after the cold-start fallback so fallback items are covered too;
-	// server-enforced on every page and mode — the client cannot opt back in.
-	candidates = s.filterMainFeedExcluded(ctx, candidates)
-
-	// P0-4: hidden tier is a hard content filter and must apply before
+	// P0-4: the hidden tier is a hard content filter and must apply before
 	// ranking so no page or fallback path can leak a long video.
 	lvFreq := s.GetLongVideoFrequency(ctx, userID)
-	if lvFreq == "hidden" {
-		candidates = s.applyLongVideoFrequency(candidates, lvFreq, false)
+
+	// 1. One timeline window: the request's own cursor for the first read,
+	// the last row of the window before it for a refill read.
+	read := func(ctx context.Context, before string) ([]scylla.FeedItem, error) {
+		var rows []scylla.FeedItem
+		var err error
+		token := cursor.Token
+		switch {
+		case before != "":
+			token = before
+			rows, err = s.scyllaStore.GetHomeTimelineBeforeToken(ctx, userID, before, fetchLimit)
+		case cursor.Token != "":
+			rows, err = s.scyllaStore.GetHomeTimelineBeforeToken(ctx, userID, cursor.Token, fetchLimit)
+		case cursor.Time != nil:
+			rows, err = s.scyllaStore.GetHomeTimelineBefore(ctx, userID, *cursor.Time, fetchLimit)
+		default:
+			rows, err = s.scyllaStore.GetHomeTimeline(ctx, userID, fetchLimit)
+		}
+		if err != nil {
+			return nil, err
+		}
+		// Celeb pull (celebpull.go): followed celebs' own timelines join the
+		// read before any filter, merged by timeline key. Not on a legacy
+		// timestamp cursor — that page was cut before pull rows existed.
+		if s.celeb.pull && cursor.Time == nil {
+			pulled, pullErr := s.pullCelebRows(ctx, userID, token, fetchLimit)
+			if pullErr != nil {
+				log.Printf("celeb pull unavailable for %s, page served from the pushed timeline only: %v", userID, pullErr)
+			}
+			if len(pulled) > 0 {
+				rows = mergeTimelineRows(rows, pulled, fetchLimit)
+			}
+		}
+		return rows, nil
 	}
+
+	// The filters that run on timeline rows and cold-start items alike.
+	lastFilters := func(candidates []FeedItem) []FeedItem {
+		// Reels belong to the Reels page, not the main feed (see
+		// dropShortForm in longvideo.go).
+		candidates = dropShortForm(candidates)
+		// Echo notes never enter Home (echo-contract.md): their own timeline
+		// is notes_timeline, and this drops any that reach Home another way
+		// (the cold-start fill, a celeb pull, a row written before notes had
+		// a table). Independent of the main_feed=false policy filter below,
+		// which also excludes them, so a degraded policy lookup cannot leak
+		// one.
+		candidates = dropNotes(candidates)
+		// P0-1: drop posts whose distribution policy opted out of social
+		// home. Server-enforced on every page and mode — the client cannot
+		// opt back in.
+		candidates = s.filterMainFeedExcluded(ctx, candidates)
+		if lvFreq == "hidden" {
+			candidates = s.applyLongVideoFrequency(candidates, lvFreq, false)
+		}
+		return candidates
+	}
+
+	// Cold-start items (first window only, see below). They did not come
+	// from the timeline, carry no cursor and go after every timeline row.
+	var cold []FeedItem
+
+	// Every filter of one window, in order. Runs once per window read.
+	filter := func(ctx context.Context, rows []scylla.FeedItem, first bool) ([]FeedItem, error) {
+		// Convert to FeedItems, optionally filtering out viewer's own
+		// original posts. Reposts are kept even when excludeSelf is true —
+		// the user wants to see content they reposted (it's someone else's
+		// post they chose to amplify).
+		candidates := make([]FeedItem, 0, len(rows))
+		for _, item := range rows {
+			if excludeSelf && item.AuthorID == userID && item.ContentType != "repost" {
+				continue
+			}
+			candidates = append(candidates, FeedItem{
+				PostID:      item.PostID,
+				AuthorID:    item.AuthorID,
+				CreatedAt:   item.CreatedAt,
+				ContentType: item.ContentType,
+				CursorToken: item.CursorToken,
+			})
+		}
+		candidates = applyBlockFilter(candidates, blockedSet)
+		candidates, err := s.applyHiddenAuthorFilter(ctx, candidates)
+		if err != nil {
+			return nil, err
+		}
+		if circleOnly {
+			filtered := candidates[:0]
+			for _, c := range candidates {
+				if _, ok := friendSet[c.AuthorID]; ok {
+					c.Source = sourceCircle
+					filtered = append(filtered, c)
+				}
+			}
+			candidates = filtered
+		}
+		if followingOnly {
+			candidates = filterByAuthorSet(candidates, following)
+		}
+
+		// Cold-start fallback: if the timeline is empty, fetch recent public
+		// posts. See coldStartAllowed — in particular, an explicit narrowing
+		// (following_only / circle_only) forbids it, because backfilling
+		// strangers under a heading that promises follows is a lie the
+		// client has no way to detect.
+		// len(candidates) would count the viewer's own posts as a populated
+		// feed; see countFromOthers for what that did to accounts that
+		// posted early. Decided on the first window, before the reel and
+		// policy filters, as it always was.
+		if first && coldStartAllowed(cursor.FirstPage(), feedMode, countFromOthers(candidates, userID), circleOnly, followingOnly) {
+			log.Printf("Cold-start fallback triggered for user %s (nothing from others in timeline), fetching from %s", userID, s.postServiceURL)
+			coldItems, err := s.getRecentPublicPosts(ctx, limit*2)
+			if err != nil {
+				log.Printf("Cold-start fallback failed: %v", err)
+			} else {
+				log.Printf("Cold-start fallback returned %d posts", len(coldItems))
+				// M2-P0-3: cold-start candidates come from post-service's
+				// recent-public endpoint rather than the viewer's timeline,
+				// so they have never passed through any per-viewer
+				// filtering. They must go through the SAME block filter as
+				// timeline candidates — this is the path most likely to
+				// surface a stranger who blocked the viewer, because it is
+				// precisely the path used for viewers with no graph of
+				// their own.
+				visible, hideErr := s.applyHiddenAuthorFilter(ctx, applyBlockFilter(coldItems, blockedSet))
+				if hideErr != nil {
+					return nil, hideErr
+				}
+				for _, item := range visible {
+					if excludeSelf && item.AuthorID == userID {
+						continue
+					}
+					cold = append(cold, item)
+				}
+				cold = lastFilters(cold)
+			}
+		}
+		return lastFilters(candidates), nil
+	}
+
+	// Read windows until the page is full (feed-05): one read used to be
+	// all a page got, so a Following page whose newest rows were all reels
+	// came back empty with a cursor. `items` is the LAST window read; its
+	// length and last row are what homeWindow needs for the cursor.
+	candidates, items, err := collectHomeCandidates(ctx, read, filter, fetchLimit, func() int { return limit - len(cold) })
+	if err != nil {
+		return HomeFeedResult{}, err
+	}
+	candidates = append(candidates, cold...)
 
 	// Out-of-network discovery (discovery.go): a share of a ranked For You
 	// page goes to people the viewer does not follow. Not when the
@@ -1501,7 +1547,7 @@ func (s *Service) fetchCloseFriends(ctx context.Context, userID uuid.UUID) ([]uu
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("graph-service returned %d: %s", resp.StatusCode, string(body))
+		return nil, &UpstreamStatusError{Service: "graph-service", Status: resp.StatusCode, Body: string(body)}
 	}
 	var envelope struct {
 		Data []uuid.UUID `json:"data"`

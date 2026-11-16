@@ -130,7 +130,7 @@ func TestDiscoveryForPicksOutOfNetworkPostsOnce(t *testing.T) {
 	defer postSvc.Close()
 	graph := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		graphCalls.Add(1)
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": []string{followed.String()}})
+		writeGraphIDPage(w, r, []uuid.UUID{followed})
 	}))
 	defer graph.Close()
 
@@ -212,7 +212,7 @@ func TestDiscoveryOfferedSetIsBounded(t *testing.T) {
 	}))
 	defer postSvc.Close()
 	graph := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": []string{}})
+		writeGraphIDPage(w, r, nil)
 	}))
 	defer graph.Close()
 	s := &Service{rdb: rdb, postServiceURL: postSvc.URL, postClient: postSvc.Client(), graphURL: graph.URL, graphClient: graph.Client()}
@@ -251,7 +251,7 @@ func TestDiscoveryOfferedSetDropsOldOffers(t *testing.T) {
 	}))
 	defer postSvc.Close()
 	graph := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": []string{}})
+		writeGraphIDPage(w, r, nil)
 	}))
 	defer graph.Close()
 	s := &Service{rdb: rdb, postServiceURL: postSvc.URL, postClient: postSvc.Client(), graphURL: graph.URL, graphClient: graph.Client()}

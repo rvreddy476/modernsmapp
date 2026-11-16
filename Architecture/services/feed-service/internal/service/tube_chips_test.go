@@ -78,12 +78,8 @@ func newTubeFixture(t *testing.T) *tubeFixture {
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"keywords": []string{}}})
 		case r.URL.Path == "/v1/profiles/batch":
 			_ = json.NewEncoder(w).Encode(map[string]any{})
-		case strings.HasPrefix(r.URL.Path, "/v1/graph/following/"):
-			ids := make([]string, 0, len(f.following))
-			for _, id := range f.following {
-				ids = append(ids, id.String())
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": ids})
+		case graphListKind(r.URL.Path) == "following":
+			writeGraphIDPage(w, r, f.following)
 		case r.URL.Path == "/v1/videos/history":
 			if f.historyErr {
 				w.WriteHeader(http.StatusInternalServerError)

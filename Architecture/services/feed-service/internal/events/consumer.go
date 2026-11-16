@@ -18,7 +18,8 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
-// DefaultDLQTopic is where a feed event lands once its retries are spent.
+// DefaultDLQTopic is where a feed event lands when it can never be applied
+// (classify.go); an event that merely failed is retried, not sent here.
 // It already exists in every environment (infra/terraform/modules/msk/
 // topics-job/variables.tf) and is shared with the other social.events.v1
 // consumers; the x-dlq-consumer-group / x-dlq-original-topic headers the
@@ -29,9 +30,23 @@ const DefaultDLQTopic = "social.events.v1.dlq"
 //
 // Delivery is the shared at-least-once consumer (shared/kafka): the offset
 // is committed only after the handler succeeded or the message was durably
-// written to the DLQ, a failed handler is retried with backoff first, and a
-// processed event leaves a receipt so a redelivery of the same event_id is
-// skipped. It replaced a kafka-go ReadMessage loop that committed every
+// written to the DLQ, and a processed event leaves a receipt so a redelivery
+// of the same event_id is skipped.
+//
+// A failed handler is retried until it succeeds (RetryForever), with a
+// backoff that doubles from one second to a 32-second ceiling, so an outage
+// of Scylla, Postgres, Redis, graph-service or post-service delays feed
+// events and loses none. The partition waits meanwhile: consumer lag is the
+// signal, not the DLQ. Only an event that can never be applied goes to the
+// DLQ, at once and without retries; classify.go says which those are.
+// Shutdown is not held up: the wait between attempts ends when Start's
+// context is cancelled, the offset stays uncommitted and the event is
+// redelivered to the next pod. Until 16 Nov 2026 an event was given up on
+// after three retries (1 s, 2 s, 4 s), so a seven-second outage parked every
+// fan-out, delete and unfollow purge of that window on a DLQ nothing
+// replays (finding feed-06).
+//
+// It replaced a kafka-go ReadMessage loop that committed every
 // offset BEFORE the handler ran and only logged what came back — so any
 // transient Scylla, graph or Postgres error lost the fan-out, delete or
 // unfollow purge for good — and that exited on its first read error, after
@@ -51,20 +66,30 @@ type Consumer struct {
 	// rederive, when set (tests only), replaces the audience-change branch
 	// of handlePostVisibilityChanged (rederiveVisibility).
 	rederive func(ctx context.Context, event events.PostVisibilityChangedPayload) error
+	// backfillHome, when set (tests only), replaces
+	// service.BackfillHomeOnFollow in handleUserFollowed.
+	backfillHome func(ctx context.Context, followerID, followeeID uuid.UUID) (service.FollowBackfillResult, error)
 }
 
 // NewConsumer builds the consumer for one topic. An empty dlqTopic disables
-// the DLQ: a message whose retries are spent then blocks its partition until
-// it succeeds (shared/kafka retryDurable) instead of being skipped.
+// the DLQ: an event that can never be applied then blocks its partition
+// (shared/kafka retryDurable) instead of being skipped.
 func NewConsumer(brokers []string, groupID, topic, dlqTopic string, svc *service.Service, rdb *redis.Client, ts *scylla.TimelineStore, m *metrics.KafkaConsumerMetrics) *Consumer {
 	c := &Consumer{service: svc, rdb: rdb, timelineStore: ts, deadline: eventDeadline()}
-	c.inner = sharedkafka.NewConsumer(sharedkafka.ConsumerConfig{
-		Brokers:  brokers,
-		GroupID:  groupID,
-		Topic:    topic,
-		DLQTopic: dlqTopic,
-	}, rdb, m, c.handle)
+	c.inner = sharedkafka.NewConsumer(consumerConfig(brokers, groupID, topic, dlqTopic), rdb, m, c.handle)
 	return c
+}
+
+// consumerConfig is the shared consumer's configuration for a feed topic.
+// RetryBackoff is left at the shared default: 1 s doubling to 32 s.
+func consumerConfig(brokers []string, groupID, topic, dlqTopic string) sharedkafka.ConsumerConfig {
+	return sharedkafka.ConsumerConfig{
+		Brokers:      brokers,
+		GroupID:      groupID,
+		Topic:        topic,
+		DLQTopic:     dlqTopic,
+		RetryForever: true,
+	}
 }
 
 // Start blocks until ctx is cancelled. A fetch error is logged and retried
@@ -74,8 +99,9 @@ func (c *Consumer) Start(ctx context.Context) {
 }
 
 // handle is the shared consumer's handler; the envelope is already decoded.
+// classify decides what the consumer does with a failure: retry, or DLQ.
 func (c *Consumer) handle(ctx context.Context, envelope *events.EventEnvelope) error {
-	return c.dispatch(ctx, *envelope)
+	return classify(c.dispatch(ctx, *envelope))
 }
 
 // processMessage decodes a raw message and dispatches it. Production goes
@@ -143,9 +169,17 @@ func (c *Consumer) dispatch(ctx context.Context, envelope events.EventEnvelope) 
 		var p events.UserDeletionRequestedPayload
 		payloadBytes, _ := json.Marshal(envelope.Payload)
 		if err := json.Unmarshal(payloadBytes, &p); err != nil {
+			return malformed(envelope, "payload", err)
+		}
+		// A deletion that names no usable account can never be applied. It
+		// used to run the delete for the nil id and be committed as done.
+		authorID, err := eventUUID(envelope, "UserID", p.UserID)
+		if err != nil {
 			return err
 		}
-		authorID, _ := uuid.Parse(p.UserID)
+		if authorID == uuid.Nil {
+			return malformed(envelope, "UserID", errNilID)
+		}
 		if c.timelineStore != nil {
 			return c.timelineStore.DeleteTimelineEntriesByAuthor(ctx, authorID)
 		}
@@ -213,9 +247,9 @@ func (c *Consumer) dispatch(ctx context.Context, envelope events.EventEnvelope) 
 // follow landed (via PostCreated fan-out on write) ever reached the
 // follower, which surfaced as "I followed X but my feed is empty."
 //
-// We pull up to backfillLimit rows from author_timeline_by_author
-// across the last bucketLookback months and write each into
-// home_timeline_by_user.
+// service.BackfillHomeOnFollow does the copy: the followee's newest posts
+// that this follower may be listed, written through the fan-out's worker
+// pool. A failed row fails the event (it is retried until it succeeds).
 //
 // Idempotent: AddToHomeTimeline keys each row by scylla.TimelineTS, a pure
 // function of (post, created_at), so a follow → unfollow → refollow cycle
@@ -227,20 +261,17 @@ func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.Event
 		return nil
 	}
 
-	const backfillLimit = 50
-	const bucketLookback = 3
-
 	var p events.UserFollowedPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &p); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
 
-	followerID, err := uuid.Parse(p.FollowerID)
+	followerID, err := eventUUID(envelope, "FollowerID", p.FollowerID)
 	if err != nil {
 		return fmt.Errorf("parse follower_id: %w", err)
 	}
-	followeeID, err := uuid.Parse(p.FolloweeID)
+	followeeID, err := eventUUID(envelope, "FolloweeID", p.FolloweeID)
 	if err != nil {
 		return fmt.Errorf("parse followee_id: %w", err)
 	}
@@ -276,23 +307,27 @@ func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.Event
 		}
 	}
 
-	items, err := c.timelineStore.GetAuthorTimelineMultiBucket(ctx, followeeID, backfillLimit, bucketLookback)
-	if err != nil {
-		return fmt.Errorf("read author timeline for backfill: %w", err)
+	// The home backfill itself: service.BackfillHomeOnFollow (bounded
+	// concurrent writes, listable posts only). A failed row used to be
+	// logged and dropped here; it now fails the event, which is retried
+	// until it succeeds (the writes upsert).
+	backfill := c.backfillHome
+	if backfill == nil {
+		if c.service == nil {
+			return nil
+		}
+		backfill = c.service.BackfillHomeOnFollow
 	}
-	if len(items) == 0 {
+	res, err := backfill(ctx, followerID, followeeID)
+	if err != nil {
+		return fmt.Errorf("UserFollowed: %w", err)
+	}
+	if res.Found == 0 {
 		log.Printf("[feed] UserFollowed: nothing to backfill (follower=%s followee=%s)", followerID, followeeID)
 		return nil
 	}
-
-	var failures int
-	for _, it := range items {
-		if err := c.timelineStore.AddToHomeTimeline(ctx, followerID, it.PostID, followeeID, it.CreatedAt, it.ContentType); err != nil {
-			failures++
-			log.Printf("[feed] UserFollowed backfill: AddToHomeTimeline failed post=%s err=%v", it.PostID, err)
-		}
-	}
-	log.Printf("[feed] UserFollowed backfill: follower=%s followee=%s injected=%d failed=%d", followerID, followeeID, len(items)-failures, failures)
+	log.Printf("[feed] UserFollowed backfill: follower=%s followee=%s injected=%d skipped_not_listable=%d",
+		followerID, followeeID, res.Written, res.Skipped)
 	return nil
 }
 
@@ -309,9 +344,9 @@ func (c *Consumer) handleUserFollowed(ctx context.Context, envelope events.Event
 // established leaves everything in place — see unfollow_purge.go, FAILING
 // CLOSED. TestUnfollowPurgeIsGuardedByTheClaimCheck pins the gate.
 //
-// An error returned from here is retried by the shared consumer and then
-// parked on the DLQ, so a relationship that could not be established is
-// revisited rather than abandoned. The purge itself is idempotent.
+// An error returned from here is retried by the shared consumer until it
+// succeeds (classify.go), so a relationship that could not be established
+// is revisited rather than abandoned. The purge itself is idempotent.
 func (c *Consumer) handleUserUnfollowed(ctx context.Context, envelope events.EventEnvelope) error {
 	if c.timelineStore == nil {
 		return nil
@@ -322,16 +357,21 @@ func (c *Consumer) handleUserUnfollowed(ctx context.Context, envelope events.Eve
 	var p events.UserUnfollowedPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &p); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
 
-	followerID, err := uuid.Parse(p.FollowerID)
+	followerID, err := eventUUID(envelope, "FollowerID", p.FollowerID)
 	if err != nil {
 		return fmt.Errorf("parse follower_id: %w", err)
 	}
-	followeeID, err := uuid.Parse(p.FolloweeID)
+	followeeID, err := eventUUID(envelope, "FolloweeID", p.FolloweeID)
 	if err != nil {
 		return fmt.Errorf("parse followee_id: %w", err)
+	}
+	// The all-zero id parses, and both claim checks below refuse it with an
+	// error on every attempt: malformed, not a dependency that will recover.
+	if followerID == uuid.Nil || followeeID == uuid.Nil {
+		return malformed(envelope, "FollowerID/FolloweeID", errNilID)
 	}
 
 	// A celeb the follower no longer follows must stop being pulled now.
@@ -390,9 +430,9 @@ func (c *Consumer) handlePostContentTypeChanged(ctx context.Context, envelope ev
 	var p events.PostContentTypeChangedPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &p); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
-	postID, err := uuid.Parse(p.PostID)
+	postID, err := eventUUID(envelope, "PostID", p.PostID)
 	if err != nil {
 		return fmt.Errorf("PostContentTypeChanged: bad post_id %q: %w", p.PostID, err)
 	}
@@ -418,7 +458,7 @@ func (c *Consumer) handleQAQuestionCreated(ctx context.Context, envelope events.
 	}
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
 	questionID, err := uuid.Parse(event.QuestionID)
 	if err != nil {
@@ -442,7 +482,7 @@ func (c *Consumer) handleQAQuestionRemoved(ctx context.Context, envelope events.
 	}
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
 	questionID, err := uuid.Parse(event.QuestionID)
 	if err != nil {
@@ -456,14 +496,14 @@ func (c *Consumer) handlePostCreated(ctx context.Context, envelope events.EventE
 	var event events.PostCreatedPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
 
-	postID, err := uuid.Parse(event.PostID)
+	postID, err := eventUUID(envelope, "PostID", event.PostID)
 	if err != nil {
 		return err
 	}
-	authorID, err := uuid.Parse(event.AuthorID)
+	authorID, err := eventUUID(envelope, "AuthorID", event.AuthorID)
 	if err != nil {
 		return err
 	}
@@ -495,7 +535,7 @@ func (c *Consumer) handlePostCreated(ctx context.Context, envelope events.EventE
 		rev = 1
 	}
 	if err := c.service.RecordDistribution(ctx, postID, mainFeed, rev); err != nil {
-		// Fail the message so the consumer retries (then DLQs) it: losing
+		// Fail the message so the consumer retries it: losing
 		// this row would leak a PostTube-only video into social home.
 		return fmt.Errorf("record distribution for %s: %w", event.PostID, err)
 	}
@@ -544,9 +584,9 @@ func (c *Consumer) handleChannelSubscriptionChanged(ctx context.Context, envelop
 	var event events.ChannelSubscriptionPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
-	subscriberID, err := uuid.Parse(event.SubscriberID)
+	subscriberID, err := eventUUID(envelope, "SubscriberID", event.SubscriberID)
 	if err != nil {
 		return fmt.Errorf("%s: bad subscriber_id %q: %w", envelope.EventType, event.SubscriberID, err)
 	}
@@ -560,9 +600,9 @@ func (c *Consumer) handlePostDistributionUpdated(ctx context.Context, envelope e
 	var event events.PostDistributionUpdatedPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
-	postID, err := uuid.Parse(event.PostID)
+	postID, err := eventUUID(envelope, "PostID", event.PostID)
 	if err != nil {
 		return err
 	}
@@ -578,7 +618,7 @@ func (c *Consumer) handlePostReacted(ctx context.Context, envelope events.EventE
 	var event events.PostReactedPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
 
 	postID := event.PostID
@@ -611,36 +651,53 @@ func (c *Consumer) handlePostReacted(ctx context.Context, envelope events.EventE
 	return nil
 }
 
-// unreactScript decrements a velocity counter without taking it below zero
-// (a PostUnreacted for a reaction this service never counted — one made
-// before the counter existed, or whose key already expired — must not make
-// the post look less popular than nothing).
+// unreactScript applies one PostUnreacted in a single atomic step: the
+// reactor leaves the likers set (KEYS[2]) and, ONLY IF they were in it, the
+// velocity counter (KEYS[1]) comes down by one, never below zero. It
+// returns 1 when it counted the un-react and 0 when there was nothing to
+// count.
+//
+// The set membership is what makes the event idempotent. The two steps used
+// to be separate commands: the decrement, then SREM. When the decrement
+// succeeded and the SREM failed the handler returned an error, the event
+// was retried (without limit since 16 Nov 2026) and every retry took
+// another one off the counter, so one un-like under a Redis blip could
+// erase several other people's likes from a post's trending velocity. Now a
+// retry, a redelivery or a duplicate publish finds the reactor already gone
+// and changes nothing.
+//
+// It also keeps the old floor's intent: a PostUnreacted for a reaction this
+// service never counted (made before the counter existed, or whose keys
+// already expired) is not in the set, so it cannot make the post look less
+// popular than it is.
+//
+// Two keys in one script: fine on the cluster-mode-disabled Redis this
+// service runs on (infra/terraform/modules/elasticache). A move to cluster
+// mode needs a hash tag on the post id in both key names first.
 var unreactScript = redis.NewScript(`
+if redis.call('SREM', KEYS[2], ARGV[1]) == 0 then return 0 end
 local n = tonumber(redis.call('GET', KEYS[1]) or '0')
-if n > 0 then return redis.call('DECR', KEYS[1]) end
-return 0`)
+if n > 0 then redis.call('DECR', KEYS[1]) end
+return 1`)
 
 // handlePostUnreacted is handlePostReacted's inverse: the velocity counter
 // comes back down and the reactor leaves the likers set. Before PostUnreacted
 // existed the counter only ever went up, so a like taken back still counted
-// toward a post's trending velocity for a week.
+// toward a post's trending velocity for a week. Idempotent: see
+// unreactScript.
 func (c *Consumer) handlePostUnreacted(ctx context.Context, envelope events.EventEnvelope) error {
 	var event events.PostReactedPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
 	if c.rdb == nil || event.PostID == "" {
 		return nil
 	}
 	counterKey := fmt.Sprintf("post:counters:%s:likes", event.PostID)
-	if err := unreactScript.Run(ctx, c.rdb, []string{counterKey}).Err(); err != nil {
-		return fmt.Errorf("PostUnreacted: decrement %s: %w", counterKey, err)
-	}
-	if event.ReactorID != "" {
-		if err := c.rdb.SRem(ctx, fmt.Sprintf("post:likers:%s", event.PostID), event.ReactorID).Err(); err != nil {
-			return fmt.Errorf("PostUnreacted: likers %s: %w", event.PostID, err)
-		}
+	likersKey := fmt.Sprintf("post:likers:%s", event.PostID)
+	if err := unreactScript.Run(ctx, c.rdb, []string{counterKey, likersKey}, event.ReactorID).Err(); err != nil {
+		return fmt.Errorf("PostUnreacted: post %s: %w", event.PostID, err)
 	}
 	return nil
 }
@@ -649,7 +706,7 @@ func (c *Consumer) handleCommentCreated(ctx context.Context, envelope events.Eve
 	var event events.CommentCreatedPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
 
 	postID := event.PostID
@@ -686,7 +743,7 @@ func (c *Consumer) handleCrosspostRemoved(ctx context.Context, envelope events.E
 	var event events.CrosspostRemovedPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
 
 	// The target embed post has been soft-deleted in Postgres.
@@ -705,10 +762,10 @@ func (c *Consumer) handleUploadDeleted(ctx context.Context, envelope events.Even
 	var event events.UploadDeletedPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
 
-	postID, err := uuid.Parse(event.PostID)
+	postID, err := eventUUID(envelope, "PostID", event.PostID)
 	if err != nil {
 		return err
 	}
@@ -744,7 +801,7 @@ func (c *Consumer) handleHandleChanged(ctx context.Context, envelope events.Even
 	var event events.HandleChangedPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
 
 	// Invalidate any cached profile data for this user so feed hydration
@@ -764,18 +821,18 @@ func (c *Consumer) handlePostReposted(ctx context.Context, envelope events.Event
 	var event events.PostRepostedPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
 
-	repostID, err := uuid.Parse(event.RepostID)
+	repostID, err := eventUUID(envelope, "RepostID", event.RepostID)
 	if err != nil {
 		return err
 	}
-	originalPostID, err := uuid.Parse(event.OriginalPostID)
+	originalPostID, err := eventUUID(envelope, "OriginalPostID", event.OriginalPostID)
 	if err != nil {
 		return err
 	}
-	reposterID, err := uuid.Parse(event.ReposterUserID)
+	reposterID, err := eventUUID(envelope, "ReposterUserID", event.ReposterUserID)
 	if err != nil {
 		return err
 	}
@@ -790,19 +847,19 @@ func (c *Consumer) handlePostRepostUndone(ctx context.Context, envelope events.E
 	var event events.PostRepostUndonePayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
 
-	repostID, err := uuid.Parse(event.RepostID)
+	repostID, err := eventUUID(envelope, "RepostID", event.RepostID)
 	if err != nil {
 		return err
 	}
-	originalPostID, err := uuid.Parse(event.OriginalPostID)
+	originalPostID, err := eventUUID(envelope, "OriginalPostID", event.OriginalPostID)
 	if err != nil {
 		return err
 	}
 
-	reposterID, err := uuid.Parse(event.ReposterUserID)
+	reposterID, err := eventUUID(envelope, "ReposterUserID", event.ReposterUserID)
 	if err != nil {
 		return fmt.Errorf("PostRepostUndone: bad reposter_user_id %q: %w", event.ReposterUserID, err)
 	}

@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -23,10 +22,7 @@ func followingGraph(t *testing.T, following []uuid.UUID, calls *int32) *httptest
 	t.Helper()
 	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		atomic.AddInt32(calls, 1)
-		if following == nil {
-			following = []uuid.UUID{}
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": following})
+		writeGraphIDPage(w, r, following)
 	}))
 }
 

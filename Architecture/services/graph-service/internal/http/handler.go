@@ -40,6 +40,9 @@ type Handler struct {
 	// the routes that only remove (decline, cancel, remove). It is svc in
 	// production; tests substitute a fake.
 	legacyConnections legacyConnectionStore
+	// idPages serves the keyset-paged internal id lists (internal_lists.go).
+	// It is svc in production; tests substitute a fake.
+	idPages idPageReader
 }
 
 // legacyConnectionStore is the slice of the service the surviving
@@ -86,7 +89,7 @@ func (h *Handler) WithCanonicalWriteSource(strict bool, warn func(string, ...any
 }
 
 func New(svc *service.Service) *Handler {
-	return &Handler{svc: svc, relationships: svc, permissions: svc, connections: svc, legacyConnections: svc}
+	return &Handler{svc: svc, relationships: svc, permissions: svc, connections: svc, legacyConnections: svc, idPages: svc}
 }
 
 // WithInternalKey sets the internal service key used to authenticate
@@ -190,6 +193,11 @@ func (h *Handler) RegisterRoutes(r *gin.Engine) {
 	// comment against each target. Internal-key only; the gateway does not
 	// proxy /v1/internal.
 	internal.POST("/can", h.CanInternal)
+	// Keyset-paged id lists for fan-out and whole-list reads (feed-service).
+	// No offset, so no 10,000 cap. See internal_lists.go.
+	internal.GET("/followers/:userId", h.listIDsInternal(store.ListFollowers))
+	internal.GET("/following/:userId", h.listIDsInternal(store.ListFollowing))
+	internal.GET("/connections/:userId", h.listIDsInternal(store.ListConnections))
 
 	// Permission check API (spec §9.8). Single source of truth for
 	// "can actor do X to target" — used by clients to render buttons

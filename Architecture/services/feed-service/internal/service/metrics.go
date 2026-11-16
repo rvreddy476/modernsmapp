@@ -46,4 +46,9 @@ var (
 		Help:    "Items on a served home-feed page before hydration (short pages mean filters are eating the window).",
 		Buckets: []float64{0, 1, 5, 10, 15, 20, 30, 50, 100},
 	})
+	homeRefillReads = promauto.NewCounter(prometheus.CounterOpts{
+		Namespace: "atpost", Subsystem: "feed_service",
+		Name: "home_refill_reads_total",
+		Help: "Extra timeline windows read because the filters left a home page short (feed-05).",
+	})
 )

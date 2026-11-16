@@ -35,10 +35,10 @@ func (g *graphCounter) server(t *testing.T) *httptest.Server {
 			_ = json.NewEncoder(w).Encode(map[string]any{"user_ids": []string{}})
 		case strings.Contains(r.URL.Path, "/following/"):
 			g.following.Add(1)
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": []string{uuid.New().String()}})
+			writeGraphIDPage(w, r, []uuid.UUID{uuid.New()})
 		case strings.Contains(r.URL.Path, "/connections/"):
 			g.connections.Add(1)
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": []string{uuid.New().String()}})
+			writeGraphIDPage(w, r, []uuid.UUID{uuid.New()})
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}

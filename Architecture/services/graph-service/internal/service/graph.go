@@ -569,6 +569,12 @@ func (s *Service) GetFollowingCursor(ctx context.Context, userID uuid.UUID, limi
 	return s.store.GetFollowingCursor(ctx, userID, limit, cursor)
 }
 
+// ListIDPage is the keyset-paged id list behind the internal list routes
+// (store/id_pages.go): followers, following or connections, newest first.
+func (s *Service) ListIDPage(ctx context.Context, kind string, userID uuid.UUID, limit int, after *store.ListCursor) ([]uuid.UUID, string, error) {
+	return s.store.ListIDPage(ctx, kind, userID, limit, after)
+}
+
 func (s *Service) GetMutualFollowers(ctx context.Context, userA, userB uuid.UUID, limit int) ([]uuid.UUID, error) {
 	return s.store.GetMutualFollowers(ctx, userA, userB, limit)
 }

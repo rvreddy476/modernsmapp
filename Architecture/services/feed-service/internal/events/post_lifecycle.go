@@ -42,9 +42,9 @@ func (c *Consumer) handlePostDeleted(ctx context.Context, envelope events.EventE
 	var event events.PostDeletedPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
-	postID, err := uuid.Parse(event.PostID)
+	postID, err := eventUUID(envelope, "PostID", event.PostID)
 	if err != nil {
 		return fmt.Errorf("PostDeleted: bad post_id %q: %w", event.PostID, err)
 	}
@@ -112,9 +112,9 @@ func (c *Consumer) handlePostVisibilityChanged(ctx context.Context, envelope eve
 	var event events.PostVisibilityChangedPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
-	postID, err := uuid.Parse(event.PostID)
+	postID, err := eventUUID(envelope, "PostID", event.PostID)
 	if err != nil {
 		return fmt.Errorf("PostVisibilityChanged: bad post_id %q: %w", event.PostID, err)
 	}
@@ -138,12 +138,20 @@ func (c *Consumer) handlePostVisibilityChanged(ctx context.Context, envelope eve
 func (c *Consumer) rederiveVisibility(ctx context.Context, postID uuid.UUID, event events.PostVisibilityChangedPayload) error {
 	authorID, err := uuid.Parse(event.AuthorID)
 	if err != nil {
-		return fmt.Errorf("PostVisibilityChanged: bad author_id %q: %w", event.AuthorID, err)
+		return malformed(events.EventEnvelope{EventType: events.EventPostVisibilityChanged}, "AuthorID",
+			fmt.Errorf("PostVisibilityChanged: bad author_id %q: %w", event.AuthorID, err))
 	}
 
-	removed, err := c.removePostFromTimelines(ctx, postID, event.AuthorID)
-	if err != nil {
-		return fmt.Errorf("PostVisibilityChanged: %w", err)
+	// feed-28: the removal runs once per event, not once per attempt. The
+	// re-fan-out saves its progress under this event's id and a retry
+	// resumes from it, so removing again on the retry would delete the rows
+	// the earlier attempt wrote and never write them back.
+	removed := 0
+	if !c.refanoutUnderWay(ctx, postID) {
+		removed, err = c.removePostFromTimelines(ctx, postID, event.AuthorID)
+		if err != nil {
+			return fmt.Errorf("PostVisibilityChanged: %w", err)
+		}
 	}
 	if c.service == nil {
 		return nil
@@ -168,6 +176,26 @@ func (c *Consumer) rederiveVisibility(ctx context.Context, postID uuid.UUID, eve
 	log.Printf("Processing PostVisibilityChanged: post=%s %s -> %s reason=%q timeline_rows_removed=%d",
 		event.PostID, event.OldVisibility, event.NewVisibility, event.Reason, removed)
 	return nil
+}
+
+// refanoutUnderWay reports whether an earlier attempt at this same event
+// already got as far as fanning the post out again: its saved progress
+// exists only once the removal before it has finished. Unknown (no Redis,
+// no event id, a Redis error) is false: the removal then runs again and the
+// stale progress is dropped with it, so the fan-out starts from the first
+// chunk rather than resuming over rows that were just deleted.
+func (c *Consumer) refanoutUnderWay(ctx context.Context, postID uuid.UUID) bool {
+	eventID := service.FanoutKeyFrom(ctx)
+	if c.rdb == nil || eventID == "" {
+		return false
+	}
+	key := service.FanoutProgressKey(postID, eventID)
+	n, err := c.rdb.Exists(ctx, key).Result()
+	if err != nil {
+		c.rdb.Del(ctx, key) // best effort; see above
+		return false
+	}
+	return n > 0
 }
 
 // rederiveAudience reports whether a visibility_changed event calls for
@@ -213,15 +241,15 @@ func (c *Consumer) markStale(ctx context.Context, postID uuid.UUID) error {
 // cleared shows it again — so each one writes the stale marker and nothing
 // else: post-service's batch answer is the gate, and the marker makes
 // every viewer's cached row go back and ask it. A malformed post id fails
-// the event (retried, then the DLQ) rather than leaving a blocked video in
+// the event (straight to the DLQ: it can never be applied) rather than leaving a blocked video in
 // caches.
 func (c *Consumer) handlePostCopyrightReview(ctx context.Context, envelope events.EventEnvelope) error {
 	var event events.PostCopyrightReviewPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
-	postID, err := uuid.Parse(event.PostID)
+	postID, err := eventUUID(envelope, "PostID", event.PostID)
 	if err != nil {
 		return fmt.Errorf("PostCopyrightReview: bad post_id %q: %w", event.PostID, err)
 	}
@@ -264,13 +292,13 @@ func (c *Consumer) handlePostRestored(ctx context.Context, envelope events.Event
 	var event events.PostRestoredPayload
 	payloadBytes, _ := json.Marshal(envelope.Payload)
 	if err := json.Unmarshal(payloadBytes, &event); err != nil {
-		return err
+		return malformed(envelope, "payload", err)
 	}
-	postID, err := uuid.Parse(event.PostID)
+	postID, err := eventUUID(envelope, "PostID", event.PostID)
 	if err != nil {
 		return fmt.Errorf("PostRestored: bad post_id %q: %w", event.PostID, err)
 	}
-	authorID, err := uuid.Parse(event.AuthorID)
+	authorID, err := eventUUID(envelope, "AuthorID", event.AuthorID)
 	if err != nil {
 		return fmt.Errorf("PostRestored: bad author_id %q: %w", event.AuthorID, err)
 	}

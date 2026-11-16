@@ -9,7 +9,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -244,7 +243,7 @@ func (m *fakeNotesMeta) CelebsAmong(_ context.Context, ids []uuid.UUID) ([]uuid.
 	return out, nil
 }
 
-// notesGraph is a graph-service stub: followers / following lists (offset
+// notesGraph is a graph-service stub: followers / following lists (cursor
 // paged), the follower count, the viewer's blocked-and-muted set and the
 // relationship batch.
 type notesGraph struct {
@@ -259,27 +258,16 @@ type notesGraph struct {
 
 func (g *notesGraph) server(t *testing.T) *httptest.Server {
 	t.Helper()
-	page := func(w http.ResponseWriter, r *http.Request, ids []uuid.UUID) {
-		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-		if limit == 0 {
-			limit = 100
-		}
-		out := []string{}
-		for i := offset; i < len(ids) && i < offset+limit; i++ {
-			out = append(out, ids[i].String())
-		}
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": out})
-	}
+	page := writeGraphIDPage
 	idFrom := func(path string) uuid.UUID {
 		id, _ := uuid.Parse(path[strings.LastIndex(path, "/")+1:])
 		return id
 	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case strings.HasPrefix(r.URL.Path, "/v1/graph/followers/"):
+		case strings.HasPrefix(r.URL.Path, "/v1/internal/graph/followers/"):
 			page(w, r, g.followers[idFrom(r.URL.Path)])
-		case strings.HasPrefix(r.URL.Path, "/v1/graph/following/"):
+		case strings.HasPrefix(r.URL.Path, "/v1/internal/graph/following/"):
 			page(w, r, g.following[idFrom(r.URL.Path)])
 		case strings.HasPrefix(r.URL.Path, "/v1/graph/counts/"):
 			n, ok := g.counts[idFrom(r.URL.Path)]

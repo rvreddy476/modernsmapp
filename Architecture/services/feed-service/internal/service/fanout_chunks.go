@@ -8,8 +8,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -41,6 +43,10 @@ import (
 const (
 	// fanoutPageSize is the graph page size of every fan-out leg.
 	fanoutPageSize = 100
+	// graphListPageSize is the page size of a whole-list read (graphIDList:
+	// a viewer's following list on the request path). graph-service's
+	// internal lists allow up to 500, a fifth of the round trips of 100.
+	graphListPageSize = 500
 	// fanoutWorkers bounds the concurrent timeline writes of one chunk.
 	fanoutWorkers = 16
 	// fanoutDedupeCap bounds the set that keeps one recipient from being
@@ -74,8 +80,9 @@ func fanoutKeyFrom(ctx context.Context) string {
 }
 
 // FanoutProgressKey is the Redis hash holding one event's fan-out progress
-// for one post: field <leg> is the next cursor, field <leg>:done is set
-// once the leg has finished.
+// for one post: field <leg> is the leg's position (a graph leg:
+// encodeLegPosition; the subscriber leg: post-service's cursor), field
+// <leg>:done is set once the leg has finished.
 func FanoutProgressKey(postID uuid.UUID, eventID string) string {
 	return fmt.Sprintf("feed:fanout:progress:%s:%s", postID, eventID)
 }
@@ -194,7 +201,7 @@ func pushChunkWith(ids []uuid.UUID, writeOne func(id uuid.UUID) error) error {
 			defer wg.Done()
 			for id := range ch {
 				if err := writeOne(id); err != nil {
-					log.Printf("Failed to push to timeline for user %s: %v", id, err)
+					log.Printf("timeline write failed for %s: %v", id, err)
 					failed.Add(1)
 					fanoutWrites.WithLabelValues("failed").Inc()
 					continue
@@ -218,71 +225,151 @@ func pushChunkWith(ids []uuid.UUID, writeOne func(id uuid.UUID) error) error {
 // out to be at the celeb threshold.
 var errCelebThresholdReached = errors.New("celeb threshold reached")
 
-// graphLeg runs one offset-paged graph leg (followers or connections) chunk
+// legPositionPrefix marks a saved graph-leg position in the cursor form:
+// "k1:<recipients read so far>:<graph cursor>". Before 16 Nov 2026 the
+// position was a bare offset ("300"); graph-service no longer pages these
+// lists by offset, so a position in any other form restarts its leg from
+// the first page. That is safe: every timeline write upserts.
+const legPositionPrefix = "k1:"
+
+func encodeLegPosition(seen int, cursor string) string {
+	return legPositionPrefix + strconv.Itoa(seen) + ":" + cursor
+}
+
+// decodeLegPosition reads a saved position. ok is false for anything that
+// is not the cursor form (an old offset, a damaged value); the caller then
+// starts the leg over.
+func decodeLegPosition(raw string) (cursor string, seen int, ok bool) {
+	if raw == "" {
+		return "", 0, true
+	}
+	rest, found := strings.CutPrefix(raw, legPositionPrefix)
+	if !found {
+		return "", 0, false
+	}
+	count, cursor, found := strings.Cut(rest, ":")
+	if !found || cursor == "" {
+		return "", 0, false
+	}
+	seen, err := strconv.Atoi(count)
+	if err != nil || seen < 0 {
+		return "", 0, false
+	}
+	return cursor, seen, true
+}
+
+// graphLeg runs one cursor-paged graph leg (followers or connections) chunk
 // by chunk from its saved position. pageFilter may narrow a page (friends
-// audience) or stop the leg (celeb threshold) before the page is written.
+// audience) or stop the leg (celeb threshold) before the page is written;
+// its first argument is how many recipients the leg has read so far, this
+// page included.
+//
+// The list is paged by graph-service's keyset cursor, not by offset: there
+// is no depth cap (the offset lists refuse anything past 10,000), and a
+// follow or unfollow while the walk is under way neither repeats nor skips
+// a follower who was there throughout.
 func (s *Service) graphLeg(ctx context.Context, prog *fanoutProgress, leg, kind string, authorID uuid.UUID,
 	pageFilter func(seen int, ids []uuid.UUID) ([]uuid.UUID, error), write func(ids []uuid.UUID) error) error {
 	if prog.done(leg) {
 		return nil
 	}
-	offset, _ := strconv.Atoi(prog.cursor(leg))
+	cursor, seen, ok := decodeLegPosition(prog.cursor(leg))
+	if !ok {
+		log.Printf("fanout %s leg for %s: saved position %q is not a cursor (saved before cursor paging?); restarting the leg",
+			leg, authorID, prog.cursor(leg))
+	}
+	// resumed: this page is being read from a SAVED cursor. If graph-service
+	// refuses that cursor the leg starts over once, rather than the event
+	// being dead-lettered over a position record.
+	resumed := cursor != ""
 	for {
-		ids, err := s.graphIDPage(ctx, kind, authorID, offset, fanoutPageSize)
+		ids, next, err := s.graphIDPage(ctx, kind, authorID, cursor, fanoutPageSize)
 		if err != nil {
-			return fmt.Errorf("fetch %s at offset %d: %w", kind, offset, err)
+			if resumed && UpstreamRejected(err) {
+				log.Printf("fanout %s leg for %s: saved cursor %q refused (%v); restarting the leg", leg, authorID, cursor, err)
+				cursor, seen, resumed = "", 0, false
+				continue
+			}
+			return fmt.Errorf("fetch %s after cursor %q: %w", kind, cursor, err)
 		}
+		resumed = false
 		chunk := ids
 		if pageFilter != nil {
-			if chunk, err = pageFilter(offset+len(ids), ids); err != nil {
+			if chunk, err = pageFilter(seen+len(ids), ids); err != nil {
 				return err
 			}
 		}
 		if err := write(chunk); err != nil {
-			return fmt.Errorf("%s chunk at offset %d: %w", kind, offset, err)
+			return fmt.Errorf("%s chunk after cursor %q: %w", kind, cursor, err)
 		}
-		if len(ids) < fanoutPageSize {
+		if next == "" {
 			prog.finish(ctx, leg)
 			return nil
 		}
-		offset += fanoutPageSize
-		prog.save(ctx, leg, strconv.Itoa(offset))
+		seen += len(ids)
+		cursor = next
+		prog.save(ctx, leg, encodeLegPosition(seen, cursor))
 	}
 }
 
-// graphIDPage reads one page of a graph id list: kind is "followers",
-// "following" or "connections". A non-200, a transport error and a
-// malformed body are all errors, never an empty page.
-func (s *Service) graphIDPage(ctx context.Context, kind string, userID uuid.UUID, offset, limit int) ([]uuid.UUID, error) {
-	url := fmt.Sprintf("%s/v1/graph/%s/%s?limit=%d&offset=%d", s.graphURL, kind, userID.String(), limit, offset)
+// graphIDPage reads one page of a graph id list from graph-service's
+// internal keyset route (GET /v1/internal/graph/<kind>/<id>?limit=&cursor=;
+// contract: testdata/contracts/graph_internal_lists). kind is "followers",
+// "following" or "connections"; cursor "" is the first page; the returned
+// next is "" on the last page. A non-200, a transport error, a malformed
+// body and a cursor that does not advance are all errors, never an empty
+// page.
+func (s *Service) graphIDPage(ctx context.Context, kind string, userID uuid.UUID, cursor string, limit int) (ids []uuid.UUID, next string, err error) {
+	url := fmt.Sprintf("%s/v1/internal/graph/%s/%s?limit=%d", s.graphURL, kind, userID.String(), limit)
+	if cursor != "" {
+		url += "&cursor=" + neturl.QueryEscape(cursor)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("create request: %w", err)
+		return nil, "", fmt.Errorf("create request: %w", err)
 	}
-	// Forward the internal-service key so graph-service's CG2 gate
-	// accepts the request when configured.
+	// The internal-service key: graph-service gates every route on it when
+	// configured.
 	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
 		req.Header.Set("X-Internal-Service-Key", key)
 	}
 	resp, err := s.graphFor(ctx).Do(req)
 	if err != nil {
-		return nil, fmt.Errorf("graph-service request failed: %w", err)
+		return nil, "", fmt.Errorf("graph-service request failed: %w", err)
 	}
 	body, err := io.ReadAll(resp.Body)
 	resp.Body.Close()
 	if err != nil {
-		return nil, fmt.Errorf("read response body: %w", err)
+		return nil, "", fmt.Errorf("read response body: %w", err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("graph-service returned %d: %s", resp.StatusCode, string(body))
+		return nil, "", &UpstreamStatusError{Service: "graph-service", Status: resp.StatusCode, Body: string(body)}
 	}
+	return decodeGraphIDPage(kind, cursor, body)
+}
+
+// decodeGraphIDPage reads a 200 body of the internal id-list contract. Both
+// members must be present: a body without `ids` (another route's shape, a
+// proxy's error page) decoded leniently would be "nobody follows this
+// author", the one answer a fan-out must never invent.
+func decodeGraphIDPage(kind, cursor string, body []byte) ([]uuid.UUID, string, error) {
 	var envelope struct {
-		Data []uuid.UUID `json:"data"`
+		Data *struct {
+			IDs        *[]uuid.UUID `json:"ids"`
+			NextCursor *string      `json:"next_cursor"`
+		} `json:"data"`
 	}
 	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, fmt.Errorf("unmarshal %s: %w", kind, err)
+		return nil, "", fmt.Errorf("unmarshal %s: %w", kind, err)
 	}
-	return envelope.Data, nil
+	if envelope.Data == nil || envelope.Data.IDs == nil || envelope.Data.NextCursor == nil {
+		return nil, "", fmt.Errorf("unmarshal %s: response has no data.ids / data.next_cursor", kind)
+	}
+	next := *envelope.Data.NextCursor
+	if next != "" && next == cursor {
+		return nil, "", fmt.Errorf("%s page after cursor %q named the same cursor as its next page", kind, cursor)
+	}
+	return *envelope.Data.IDs, next, nil
 }
 
 // graphIDList reads a whole graph id list, page by page. For lists the
@@ -291,17 +378,17 @@ func (s *Service) graphIDPage(ctx context.Context, kind string, userID uuid.UUID
 // streamed by graphLeg instead.
 func (s *Service) graphIDList(ctx context.Context, kind string, userID uuid.UUID) ([]uuid.UUID, error) {
 	var all []uuid.UUID
-	offset := 0
+	cursor := ""
 	for {
-		ids, err := s.graphIDPage(ctx, kind, userID, offset, fanoutPageSize)
+		ids, next, err := s.graphIDPage(ctx, kind, userID, cursor, graphListPageSize)
 		if err != nil {
 			return nil, err
 		}
 		all = append(all, ids...)
-		if len(ids) < fanoutPageSize {
+		if next == "" {
 			return all, nil
 		}
-		offset += fanoutPageSize
+		cursor = next
 	}
 }
 

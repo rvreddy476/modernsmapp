@@ -7,7 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -77,12 +76,8 @@ func newReelCategoryFixture(t *testing.T) *reelCategoryFixture {
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"keywords": []string{}}})
 		case r.URL.Path == "/v1/profiles/batch":
 			_ = json.NewEncoder(w).Encode(map[string]any{})
-		case strings.HasPrefix(r.URL.Path, "/v1/graph/following/"):
-			ids := make([]string, 0, len(f.following))
-			for _, id := range f.following {
-				ids = append(ids, id.String())
-			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"data": ids})
+		case graphListKind(r.URL.Path) == "following":
+			writeGraphIDPage(w, r, f.following)
 		case r.URL.Path == "/v1/analytics/internal/content-views":
 			_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{}})
 		case r.URL.Path == "/v1/posts/batch":

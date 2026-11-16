@@ -964,8 +964,10 @@ func (s *TimelineStore) DeletePostFromTimelines(ctx context.Context, postID uuid
 		}
 	}
 
-	owners := make([]TimelineOwner, 0, len(rows))
-	for _, r := range rows {
+	// One DELETE per timeline that carried the post, through a bounded pool
+	// (finding feed-08): for a widely delivered post this was one sequential
+	// delete per follower, on a consumer that handles one event at a time.
+	owners, err := deleteIndexedRows(rows, func(r indexedRow) (bool, error) {
 		var stmt string
 		switch r.kind {
 		case "home":
@@ -977,12 +979,14 @@ func (s *TimelineStore) DeletePostFromTimelines(ctx context.Context, postID uuid
 			// Following timeline the same way a post leaves Home.
 			stmt = `DELETE FROM notes_timeline WHERE user_id = ? AND bucket = ? AND ts = ?`
 		default:
-			continue
+			return false, nil
 		}
-		if err := s.session.Query(stmt, r.owner, r.b, r.ts).WithContext(ctx).Exec(); err != nil {
-			return owners, err
-		}
-		owners = append(owners, TimelineOwner{Kind: r.kind, OwnerID: uuid.UUID(r.owner)})
+		return true, s.session.Query(stmt, r.owner, r.b, r.ts).WithContext(ctx).Exec()
+	})
+	if err != nil {
+		// The index is kept: the rows that failed are still addressable
+		// for the retry.
+		return owners, err
 	}
 	if err := s.dropPostIndex(ctx, gPost); err != nil {
 		return owners, err

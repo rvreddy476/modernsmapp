@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "INVALID_CURSOR",
+    "message": "cursor is not one this route issued; restart the list without it"
+  },
+  "meta": {}
+}

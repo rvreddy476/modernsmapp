@@ -476,58 +476,21 @@ func (s *Service) HydratePosts(ctx context.Context, items []FeedItem, viewerID u
 		return merged, nil
 	}
 
-	// 2. Build request body
-	reqBody, err := json.Marshal(map[string]interface{}{
-		"ids":       ids,
-		"viewer_id": viewerID.String(),
-	})
+	// 2-4. Fetch the uncached posts from post-service's batch endpoint, in
+	// groups it accepts (postBatch).
+	fresh, err := s.postBatch(ctx, viewerID, ids)
 	if err != nil {
-		return nil, fmt.Errorf("marshal batch request: %w", err)
-	}
-
-	// 3. Call post-service batch endpoint
-	url := fmt.Sprintf("%s/v1/posts/batch", s.postServiceURL)
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
-	if err != nil {
-		return nil, fmt.Errorf("create batch request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-User-Id", viewerID.String())
-	if key := os.Getenv("INTERNAL_SERVICE_KEY"); key != "" {
-		req.Header.Set("X-Internal-Service-Key", key)
-	}
-
-	resp, err := s.postFor(ctx).Do(req)
-	if err != nil {
-		return nil, fmt.Errorf("post-service batch request failed: %w", err)
-	}
-	defer resp.Body.Close()
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read batch response: %w", err)
-	}
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("post-service returned %d: %s", resp.StatusCode, string(body))
-	}
-
-	// 4. Parse response: {"data": {"uuid1": {...}, "uuid2": {...}}}
-	var envelope struct {
-		Data map[string]HydratedPost `json:"data"`
-	}
-	if err := json.Unmarshal(body, &envelope); err != nil {
-		return nil, fmt.Errorf("unmarshal batch response: %w", err)
+		return nil, err
 	}
 
 	// 4a. Merge the fresh response with anything we got from cache.
-	for k, v := range envelope.Data {
+	for k, v := range fresh {
 		envelopeData[k] = v
 	}
 
 	// 4b. Populate cache for fresh entries so subsequent feed pages
 	// reuse them. Fire-and-forget; never block the response.
-	s.storeHydratedCache(viewerID, envelope.Data)
+	s.storeHydratedCache(viewerID, fresh)
 
 	merged := s.mergeHydratedItems(items, envelopeData, nil, viewerID)
 	// Instant publish: a post still processing is the author's alone.

@@ -323,7 +323,7 @@ func (s *Service) getInternalIDPage(ctx context.Context, url, field string) (ids
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 2048))
-		return nil, "", false, fmt.Errorf("post-service returned %d: %s", resp.StatusCode, string(body))
+		return nil, "", false, &UpstreamStatusError{Service: "post-service", Status: resp.StatusCode, Body: string(body)}
 	}
 	var envelope struct {
 		Data struct {

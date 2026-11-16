@@ -43,6 +43,10 @@ type ChannelUpdateConsumer struct {
 	handle  func(context.Context, kafka.Message) error
 	commit  func(context.Context, kafka.Message) error
 	backoff time.Duration
+	// maxBackoff caps the doubling wait (0 = channelInjectMaxBackoff).
+	maxBackoff time.Duration
+	// sleepFn replaces the real wait in tests (nil = wait on a timer).
+	sleepFn func(context.Context, time.Duration) bool
 }
 
 // NewChannelUpdateConsumer creates a consumer for channel update feed injection.
@@ -74,18 +78,21 @@ func NewChannelUpdateConsumerWithDialer(brokers []string, timelineStore *scylla.
 	return c
 }
 
-// channelInjectAttempts bounds the retries of one message. There is no DLQ
-// for this topic and a channel update is not worth stalling the partition
-// for, so after the last attempt the message is logged and committed.
-const channelInjectAttempts = 5
+// channelInjectMaxBackoff caps the wait between attempts of one message.
+// The wait doubles from c.backoff (1 s) up to this.
+const channelInjectMaxBackoff = 30 * time.Second
+
+// channelInjectLoudAfter is the attempt from which a still-failing message
+// is logged at error level on every attempt, so a long outage is visible in
+// the logs (this consumer has no metrics yet).
+const channelInjectLoudAfter = 5
 
 // Start begins consuming messages in a blocking loop. Run this in a goroutine.
 //
-// At-least-once: the offset is committed only after the message was applied
-// (or its retries were exhausted). It used to be ReadMessage, which commits
-// before returning, so a failed timeline insert was lost; and the loop
-// returned on its first read error, ending consumption for the life of the
-// pod.
+// At-least-once: the offset is committed only after the message was applied.
+// It used to be ReadMessage, which commits before returning, so a failed
+// timeline insert was lost; and the loop returned on its first read error,
+// ending consumption for the life of the pod.
 func (c *ChannelUpdateConsumer) Start(ctx context.Context) {
 	slog.Info("channel update feed-inject consumer started",
 		"topic", "atpost.channel.feed-inject",
@@ -111,8 +118,19 @@ func (c *ChannelUpdateConsumer) Start(ctx context.Context) {
 	}
 }
 
-// apply runs one message to completion — handled, or retries spent — and
-// then commits it. It returns false only when ctx is cancelled.
+// apply runs one message until it is handled, then commits it. It returns
+// false only when ctx is cancelled, and then nothing was committed.
+//
+// A failed message is retried until it succeeds (16 Nov 2026). It used to
+// be given up on after 5 attempts (about 15 s), logged and committed; the
+// topic has no dead letter, so a Scylla outage longer than that silently
+// dropped every channel update that arrived during it. The only error
+// processMessage returns is a failed timeline write, which is an outage and
+// never a property of the message (malformed messages are skipped inside
+// processMessage and return nil), so there is nothing a retry cannot fix.
+// The partition waits behind the failing message, which is what keeps the
+// updates behind it from being lost too; the wait between attempts doubles
+// up to channelInjectMaxBackoff.
 func (c *ChannelUpdateConsumer) apply(ctx context.Context, m kafka.Message) bool {
 	wait := c.backoff
 	for attempt := 1; ; attempt++ {
@@ -120,18 +138,20 @@ func (c *ChannelUpdateConsumer) apply(ctx context.Context, m kafka.Message) bool
 		if err == nil {
 			break
 		}
-		if attempt >= channelInjectAttempts {
-			slog.Error("channel update consumer: giving up on message after retries",
-				"error", err, "attempts", attempt,
-				"offset", m.Offset, "partition", m.Partition)
-			break
+		if ctx.Err() != nil {
+			return false // shutting down: no commit, the message is redelivered
 		}
-		slog.Warn("channel update consumer: retrying message",
-			"error", err, "attempt", attempt, "offset", m.Offset, "partition", m.Partition)
+		level := slog.LevelWarn
+		if attempt >= channelInjectLoudAfter {
+			level = slog.LevelError
+		}
+		slog.Log(ctx, level, "channel update consumer: message failed; retrying until it is applied",
+			"error", err, "attempt", attempt, "next_wait", wait.String(),
+			"offset", m.Offset, "partition", m.Partition)
 		if !c.sleep(ctx, wait) {
 			return false
 		}
-		wait *= 2
+		wait = c.nextWait(wait)
 	}
 	// Commit before fetching the next message: a crash before this point
 	// replays the message (harmless, the insert upserts) instead of losing it.
@@ -141,17 +161,33 @@ func (c *ChannelUpdateConsumer) apply(ctx context.Context, m kafka.Message) bool
 		if err == nil {
 			return true
 		}
+		if ctx.Err() != nil {
+			return false
+		}
 		slog.Error("channel update consumer: offset commit failed; retrying", "error", err, "offset", m.Offset)
 		if !c.sleep(ctx, wait) {
 			return false
 		}
-		if wait < 30*time.Second {
-			wait *= 2
-		}
+		wait = c.nextWait(wait)
 	}
 }
 
+// nextWait doubles the wait up to the cap.
+func (c *ChannelUpdateConsumer) nextWait(wait time.Duration) time.Duration {
+	limit := c.maxBackoff
+	if limit <= 0 {
+		limit = channelInjectMaxBackoff
+	}
+	if wait *= 2; wait > limit {
+		wait = limit
+	}
+	return wait
+}
+
 func (c *ChannelUpdateConsumer) sleep(ctx context.Context, d time.Duration) bool {
+	if c.sleepFn != nil {
+		return c.sleepFn(ctx, d)
+	}
 	select {
 	case <-ctx.Done():
 		return false
