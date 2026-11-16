@@ -15,7 +15,8 @@
 // The internal key is no evidence and neither is X-User-Id. Only the token is.
 //
 // Scope is deliberately small: the community report queue (list, detail) and a
-// decision (uphold or dismiss, with a reason), plus stats. A decision does not
+// decision (uphold or dismiss, with a reason), plus stats, plus suspending and
+// unsuspending a community (admin_moderation.go). A decision does not
 // enforce anything — removing a member, deleting a post or archiving a community
 // are owner and moderator flows and are not wired here. community-service
 // also has no route that files a community report, so the queue stays empty
@@ -50,7 +51,7 @@ const (
 
 // AdminPermissions lists every permission an admin-service token may carry
 // to community-service. Deployment registers admin-service with exactly these.
-var AdminPermissions = []string{PermStatsRead, PermReportsRead, PermReportsAct}
+var AdminPermissions = []string{PermStatsRead, PermReportsRead, PermReportsAct, PermCommunitiesModerate}
 
 // Error codes for the token path.
 const (
@@ -165,6 +166,7 @@ func (h *Handler) registerAdminTokenRoutes(r *gin.Engine) {
 	g.GET("/reports", h.requireAdminToken(PermReportsRead), h.AdminListReports)
 	g.GET("/reports/:reportId", h.requireAdminToken(PermReportsRead), h.AdminGetReport)
 	g.POST("/reports/:reportId/decision", h.requireAdminToken(PermReportsAct), h.AdminDecideReport)
+	h.registerAdminModerationRoutes(g)
 }
 
 // AdminDecisionRequest is the body of POST .../reports/:id/decision.

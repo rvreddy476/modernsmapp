@@ -18,9 +18,10 @@ import (
 // signed act claim the HTTP layer hands down.
 //
 // A decision records the moderator's judgement only. It does not remove a
-// member, delete a post, or archive or suspend a community: removal, ban,
-// post deletion and archive exist for community owners and moderators, and
-// none of them is wired to admin-service or audited here yet.
+// member, delete a post, or archive a community: removal, ban, post deletion
+// and archive exist for community owners and moderators, and none of them is
+// wired to admin-service or audited here yet. Suspending a community is its
+// own admin action (admin_suspension.go).
 
 var (
 	ErrAdminNotFound      = errors.New("not found")
@@ -64,8 +65,8 @@ type CommunityAdminStats struct {
 	ReportsDecided7d   int `json:"reports_decided_7d"`
 	ReportsUpheld7d    int `json:"reports_upheld_7d"`
 	ReportsDismissed7d int `json:"reports_dismissed_7d"`
-	// SuspendedCommunities: the CHECK admits 'suspended'; nothing in this
-	// service writes it yet, so this is expected to read 0.
+	// SuspendedCommunities: communities an admin has suspended
+	// (admin_suspension.go) and not yet unsuspended.
 	SuspendedCommunities int        `json:"suspended_communities"`
 	OldestOpenReportAt   *time.Time `json:"oldest_open_report_at,omitempty"`
 	GeneratedAt          time.Time  `json:"generated_at"`

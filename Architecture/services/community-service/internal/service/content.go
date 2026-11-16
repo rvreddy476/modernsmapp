@@ -134,6 +134,9 @@ func (s *Service) DeleteCommunityPost(ctx context.Context, communityID, postID, 
 	if err != nil {
 		return err
 	}
+	if err := refuseWhileSuspended(acc.c); err != nil {
+		return err
+	}
 	p, err := s.post(ctx, communityID, postID)
 	if err != nil {
 		return err
@@ -171,7 +174,11 @@ func (s *Service) moderatePost(ctx context.Context, communityID, postID, actorID
 // AcceptAnswer: only the question's author, and the answer must be a reply
 // to that question (the store's WHERE holds this too).
 func (s *Service) AcceptAnswer(ctx context.Context, communityID, postID, answerID, actorID uuid.UUID) error {
-	if _, err := s.authorize(ctx, communityID, &actorID, accessRead); err != nil {
+	acc, err := s.authorize(ctx, communityID, &actorID, accessRead)
+	if err != nil {
+		return err
+	}
+	if err := refuseWhileSuspended(acc.c); err != nil {
 		return err
 	}
 	p, err := s.post(ctx, communityID, postID)
@@ -194,33 +201,41 @@ func (s *Service) AcceptAnswer(ctx context.Context, communityID, postID, answerI
 // engagementGate is the one gate for spark, stash and view: a signed-in
 // viewer who may read the community, on a published post of it. These ran
 // with no gate at all, and stash and view with an empty user id (K-M2).
-func (s *Service) engagementGate(ctx context.Context, communityID, postID uuid.UUID, viewerID uuid.UUID) error {
+// write is true for spark and stash, which a suspended community refuses; a
+// view is a read and is still recorded.
+func (s *Service) engagementGate(ctx context.Context, communityID, postID uuid.UUID, viewerID uuid.UUID, write bool) error {
 	if viewerID == uuid.Nil {
 		return ErrNotCommunityMember
 	}
-	if _, err := s.authorize(ctx, communityID, &viewerID, accessRead); err != nil {
+	acc, err := s.authorize(ctx, communityID, &viewerID, accessRead)
+	if err != nil {
 		return err
 	}
-	_, err := s.post(ctx, communityID, postID)
+	if write {
+		if err := refuseWhileSuspended(acc.c); err != nil {
+			return err
+		}
+	}
+	_, err = s.post(ctx, communityID, postID)
 	return err
 }
 
 func (s *Service) SparkCommunityPost(ctx context.Context, communityID, postID, viewerID uuid.UUID, isSupernova bool) error {
-	if err := s.engagementGate(ctx, communityID, postID, viewerID); err != nil {
+	if err := s.engagementGate(ctx, communityID, postID, viewerID, true); err != nil {
 		return err
 	}
 	return s.store.SparkCommunityPost(ctx, postID, viewerID.String(), isSupernova)
 }
 
 func (s *Service) StashCommunityPost(ctx context.Context, communityID, postID, viewerID uuid.UUID) error {
-	if err := s.engagementGate(ctx, communityID, postID, viewerID); err != nil {
+	if err := s.engagementGate(ctx, communityID, postID, viewerID, true); err != nil {
 		return err
 	}
 	return s.store.StashCommunityPost(ctx, postID, viewerID.String())
 }
 
 func (s *Service) RecordCommunityPostView(ctx context.Context, communityID, postID, viewerID uuid.UUID) error {
-	if err := s.engagementGate(ctx, communityID, postID, viewerID); err != nil {
+	if err := s.engagementGate(ctx, communityID, postID, viewerID, false); err != nil {
 		return err
 	}
 	return s.store.RecordCommunityPostView(ctx, postID, viewerID.String())

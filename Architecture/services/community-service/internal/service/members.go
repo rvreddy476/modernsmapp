@@ -24,7 +24,15 @@ func (s *Service) GetCommunity(ctx context.Context, communityID uuid.UUID, viewe
 	if err != nil {
 		return nil, err
 	}
-	return &CommunityWithMembership{Community: acc.c, ViewerRole: acc.role}, nil
+	out := &CommunityWithMembership{Community: acc.c, ViewerRole: acc.role}
+	if acc.c.Status == store.CommunityStatusSuspended {
+		// The gate let a member or the owner through: show them why it is
+		// read-only (suspension.go).
+		if out.Suspension, err = s.store.GetCommunitySuspension(ctx, communityID); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 func (s *Service) DeleteCommunity(ctx context.Context, communityID, actorID uuid.UUID) error {

@@ -335,6 +335,9 @@ func (s *Service) CreateCommunity(ctx context.Context, ownerID uuid.UUID, params
 type CommunityWithMembership struct {
 	*store.Community
 	ViewerRole string `json:"viewer_role,omitempty"`
+	// Suspension is set only while the community is suspended (status
+	// "suspended"); only its owner and members ever see the card then.
+	Suspension *store.CommunitySuspension `json:"suspension,omitempty"`
 }
 
 type UpdateCommunityParams struct {

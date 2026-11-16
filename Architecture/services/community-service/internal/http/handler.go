@@ -49,6 +49,8 @@ func writeAuthError(c *gin.Context, err error) bool {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "INSUFFICIENT_ROLE", "role does not permit this action", nil)
 	case service.ErrNotPostAuthor:
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "NOT_AUTHOR", "only the post author can perform this action", nil)
+	case service.ErrCommunitySuspended:
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, CodeCommunitySuspended, "this community is suspended and read-only", nil)
 	default:
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", ae.Error(), nil)
 	}
@@ -63,6 +65,9 @@ type Handler struct {
 	verifier *servicetoken.Verifier
 	// admin backs the token-only admin handlers; the store in production.
 	admin CommunityAdmin
+	// moderation backs suspend and unsuspend (admin_moderation.go); the
+	// service in production, so the change is announced.
+	moderation CommunityModeration
 }
 
 func New(svc *service.Service) *Handler {

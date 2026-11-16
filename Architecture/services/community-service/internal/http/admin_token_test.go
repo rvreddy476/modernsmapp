@@ -24,8 +24,10 @@ func init() { gin.SetMode(gin.TestMode) }
 const adminTestInternalKey = "community-admin-token-test-key"
 
 type adminFakeBackend struct {
-	actors []uuid.UUID
-	calls  int
+	actors      []uuid.UUID
+	calls       int
+	suspensions []suspensionCall
+	err         error
 }
 
 func (f *adminFakeBackend) AdminListCommunityReports(context.Context, string, int, string) ([]store.CommunityReport, string, error) {
@@ -47,6 +49,34 @@ func (f *adminFakeBackend) AdminDecideCommunityReport(_ context.Context, actor, 
 func (f *adminFakeBackend) AdminCommunityStats(context.Context) (*store.CommunityAdminStats, error) {
 	f.calls++
 	return &store.CommunityAdminStats{}, nil
+}
+
+// The fake is also the suspend/unsuspend backend (admin_moderation.go). It
+// records what the handler handed down; err, when set, is returned instead.
+type suspensionCall struct {
+	suspend          bool
+	actor, community uuid.UUID
+	reasonCode, note string
+}
+
+func (f *adminFakeBackend) SuspendCommunity(_ context.Context, actor, id uuid.UUID, reasonCode, note string) (*store.CommunitySuspensionChange, error) {
+	f.calls++
+	f.actors = append(f.actors, actor)
+	f.suspensions = append(f.suspensions, suspensionCall{true, actor, id, reasonCode, note})
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &store.CommunitySuspensionChange{CommunityID: id, PreviousStatus: "active", Status: "suspended", Changed: true, ReasonCode: reasonCode}, nil
+}
+
+func (f *adminFakeBackend) UnsuspendCommunity(_ context.Context, actor, id uuid.UUID, note string) (*store.CommunitySuspensionChange, error) {
+	f.calls++
+	f.actors = append(f.actors, actor)
+	f.suspensions = append(f.suspensions, suspensionCall{false, actor, id, "", note})
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &store.CommunitySuspensionChange{CommunityID: id, PreviousStatus: "suspended", Status: "active", Changed: true}, nil
 }
 
 type adminTokenRig struct {
@@ -109,6 +139,9 @@ func adminTokenRouter(be CommunityAdmin, v *servicetoken.Verifier, key string) *
 	h := New(nil).WithInternalKey(key).WithServiceAuth(v)
 	if be != nil {
 		h.WithAdmin(be)
+		if m, ok := be.(CommunityModeration); ok {
+			h.WithModeration(m)
+		}
 	}
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -175,14 +208,17 @@ func uuidParams(path string) string {
 	return strings.Join(parts, "/")
 }
 
-const adminBody = `{"decision":"uphold","reason":"harassment in community"}`
+// adminBody is valid for every admin route: a decision, and a suspension.
+const adminBody = `{"decision":"uphold","reason":"harassment in community","reason_code":"harassment","note":"report upheld"}`
 
 func adminRoutePermissions() map[string]string {
 	return map[string]string{
-		"GET /stats":                       PermStatsRead,
-		"GET /reports":                     PermReportsRead,
-		"GET /reports/:reportId":           PermReportsRead,
-		"POST /reports/:reportId/decision": PermReportsAct,
+		"GET /stats":                               PermStatsRead,
+		"GET /reports":                             PermReportsRead,
+		"GET /reports/:reportId":                   PermReportsRead,
+		"POST /reports/:reportId/decision":         PermReportsAct,
+		"POST /communities/:communityId/suspend":   PermCommunitiesModerate,
+		"POST /communities/:communityId/unsuspend": PermCommunitiesModerate,
 	}
 }
 

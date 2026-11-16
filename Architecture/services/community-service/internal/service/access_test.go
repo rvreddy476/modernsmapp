@@ -47,7 +47,18 @@ func TestDecideCommunityAccess(t *testing.T) {
 		{"missing", nil, v, "", accessRead, ErrCommunityNotFound},
 		{"archived, even for a member", archived, v, "member", accessRead, ErrCommunityNotFound},
 		{"archived, even for the owner", archived, o, "owner", accessCard, ErrCommunityNotFound},
-		{"suspended", suspended, v, "member", accessCard, ErrCommunityNotFound},
+		{"suspended, stranger: same as missing", suspended, v, "", accessCard, ErrCommunityNotFound},
+		{"suspended, signed out: same as missing", suspended, nil, "", accessRead, ErrCommunityNotFound},
+		{"suspended, pending: same as missing", suspended, v, "pending", accessCard, ErrCommunityNotFound},
+		{"suspended, banned member: same as missing", suspended, v, "banned", accessCard, ErrCommunityNotFound},
+		{"suspended, stranger write: same as missing", suspended, v, "", accessWrite, ErrCommunityNotFound},
+		{"suspended, member sees the card", suspended, v, "member", accessCard, nil},
+		{"suspended, member reads", suspended, v, "member", accessRead, nil},
+		{"suspended, member cannot write", suspended, v, "member", accessWrite, ErrCommunitySuspended},
+		{"suspended, admin cannot write", suspended, v, "admin", accessWrite, ErrCommunitySuspended},
+		{"suspended, owner reads", suspended, o, "owner", accessRead, nil},
+		{"suspended, owner with no row reads", suspended, o, "", accessCard, nil},
+		{"suspended, owner cannot write", suspended, o, "owner", accessWrite, ErrCommunitySuspended},
 
 		{"public read, stranger", pub, v, "", accessRead, nil},
 		{"public read, signed out", pub, nil, "", accessRead, nil},
@@ -276,6 +287,10 @@ func TestEveryCommunityScopedMethodGoesThroughTheGate(t *testing.T) {
 		"invalidateMemberCache": "cache",
 		"lockMediaHolder":       "lock",
 		"releaseCommunityMedia": "after the owner-only delete",
+		// Platform moderation: the caller is an admin-service token
+		// (http/admin_moderation.go), not a member of the community.
+		"SuspendCommunity":   "admin-service token, not a member",
+		"UnsuspendCommunity": "admin-service token, not a member",
 	}
 	bodies, scoped := serviceFuncs(t)
 	var missing []string

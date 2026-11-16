@@ -24,8 +24,9 @@ import (
 //   - the member lookup fails CLOSED: a database error is returned, never
 //     read as "not a member" (which on a public community would admit a
 //     banned caller);
-//   - a community that is not active (archived, suspended) and a private
-//     community the caller is not in answer exactly as a missing one;
+//   - a community that is not active (archived; suspended, for anyone but
+//     its owner and members) and a private community the caller is not in
+//     answer exactly as a missing one;
 //   - the owner's authority comes from communities.owner_id, so it survives
 //     a missing or edited member row.
 
@@ -76,7 +77,10 @@ func isBannedRole(role string) bool {
 
 // decideCommunityAccess is the whole community-level decision.
 //
-//	missing or not active (archived, suspended)  -> not found, for everyone
+//	missing, archived or deleted                  -> not found, for everyone
+//	suspended (platform), not owner or member     -> not found
+//	suspended, owner or member, write             -> community suspended
+//	suspended, owner or member, card or read      -> allowed (read-only)
 //	the owner                                    -> allowed
 //	not public, caller not a member               -> not found (banned too)
 //	banned or suspended, anything but the card    -> banned
@@ -84,10 +88,26 @@ func isBannedRole(role string) bool {
 //
 // role is the caller's community_members role, "" for none or anonymous.
 func decideCommunityAccess(c *store.Community, viewerID *uuid.UUID, role string, mode accessMode) error {
-	if c == nil || c.Status != "active" {
+	if c == nil {
 		return ErrCommunityNotFound
 	}
-	if viewerID != nil && c.OwnerID == *viewerID {
+	isOwner := viewerID != nil && c.OwnerID == *viewerID
+	switch c.Status {
+	case store.CommunityStatusActive:
+	case store.CommunityStatusSuspended:
+		// A platform suspension (suspension.go): out of sight for everyone
+		// but its own people, who keep read-only access and see why.
+		if !isOwner && !isMemberRole(role) {
+			return ErrCommunityNotFound
+		}
+		if mode == accessWrite {
+			return ErrCommunitySuspended
+		}
+		return nil
+	default:
+		return ErrCommunityNotFound
+	}
+	if isOwner {
 		return nil
 	}
 	if !communityIsPublic(c) && !isMemberRole(role) {

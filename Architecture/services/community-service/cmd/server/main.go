@@ -153,7 +153,9 @@ func main() {
 		slog.Info("community member-count sharded flush worker started")
 	}
 
-	communityHandler := http.New(communitySvc).WithAdmin(communityStore)
+	// Suspend/unsuspend go through the service so the change is announced on
+	// community.updated (search hides a suspended community).
+	communityHandler := http.New(communitySvc).WithAdmin(communityStore).WithModeration(communitySvc)
 
 	// Admin console (Wave 2 — Chat): admin-service tokens on
 	// /v1/communities/internal/admin. Blank SERVICE_CALLERS accepts no token
