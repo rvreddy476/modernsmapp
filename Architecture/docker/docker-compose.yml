@@ -1006,6 +1006,14 @@ services:
       SERVICE_CALLER_LIVE_SERVICE_V2_KID: ${LIVE_SERVICE_TOKEN_KID:-l1}
       SERVICE_CALLER_LIVE_SERVICE_V2_PUBKEY: ${LIVE_SERVICE_TOKEN_PUBKEY:-}
       SERVICE_CALLER_LIVE_SERVICE_V2_OPS: media:recording.import
+      # Official-mark registration certificates (16 Nov 2026): admin-service
+      # reads the applicant's private document through document-bytes, bound
+      # to owner_id = the applicant; this one scope only. Takes effect once
+      # MEDIA_SERVICE_CALLERS names admin-service AND ADMIN_SERVICE_TOKEN_PUBKEY
+      # is set; naming it without the key refuses boot.
+      SERVICE_CALLER_ADMIN_SERVICE_KID: ${ADMIN_SERVICE_TOKEN_KID:-a1}
+      SERVICE_CALLER_ADMIN_SERVICE_PUBKEY: ${ADMIN_SERVICE_TOKEN_PUBKEY:-}
+      SERVICE_CALLER_ADMIN_SERVICE_OPS: media:document-bytes.read
       MEDIA_LIVE_RECORDINGS_BUCKET: ${MINIO_BUCKET_LIVE_RECORDINGS:-live-recordings}
       # Lane D5: internal blink liveness + face comparison for dating selfie
       # verification (POST /internal/v1/media/faces/liveness and /compare).

@@ -178,9 +178,43 @@ Stats strip on top: in review, approved/rejected last 30 days, pending invitatio
   `government_invitation`, `user`.
 - Invitation create with only one holder of `government_marks.invite`: 409
   `SECOND_APPROVER_REQUIRED`, nothing stored.
-- The document view reads bytes from media-service's private evidence route
-  (`media:partner-evidence.read`, owner = applicant, kind
-  `registration_document`), so it needs both `official_marks.read` and
-  `official_marks.review`. That route serves images only: a PDF answers 404,
-  and the console shows images only.
+- The document view (section 6) reads media-service's document-bytes route, bound to
+  owner_id = the applicant, and relays PDF, JPEG and PNG; the console draws PDFs
+  view-only with pdf.js.
 - Invitation lists are newest first for every status.
+
+## 6. Registration-document upload (16 Nov 2026, founder: PDFs view-only in the console)
+
+The applicant may attach the registration certificate. With it the registry is
+not asked and the application goes to human review after the e-mail code
+(profile-service already does this; no profile change).
+
+**Upload (web and Android, same words).** media-service's private `document`
+kind: `POST /v1/media/init {file_type:"document", mime_type, file_size_bytes}`
+→ PUT the bytes → `POST /v1/media/confirm`. Types `application/pdf`,
+`image/jpeg`, `image/png`; at most 10 MB (10 485 760 bytes). Checked in the
+client before upload and again by media-service. The media id goes into the
+existing submit body as `document_media_id`.
+
+Words on the Official mark application form, under the registration fields:
+
+- Label: **Registration certificate (optional)**
+- Help: *Upload your GST or incorporation certificate as a PDF, JPEG or PNG, up to 10 MB. With a certificate, a person on our team checks your application instead of the registry. This can take a few days.*
+- Button: **Upload certificate**; while uploading **Uploading…**; when done the file name and **Remove**.
+- Wrong type: *Upload a PDF, JPEG or PNG.* Too big: *The certificate must be 10 MB or smaller.* Failed: *The certificate didn't upload. Check your connection and try again.*
+- Submit is disabled while an upload is in flight.
+
+**Reading it (media-service + admin-service).** `GET
+/v1/media/internal/:mediaId/document-bytes?owner_id=<applicant>` gains issuer
+`admin-service` (operation `media:document-bytes.read`). For that issuer
+`owner_id` is required and must equal the uploader, else 404
+`MEDIA_NOT_FOUND`; commerce-service's calls are unchanged. admin-service's
+marks document view switches from partner evidence to this route and relays
+PDF, JPEG and PNG with the KYC view headers.
+
+**Console.** The document view draws a PDF view-only: every page rendered to
+the same watermarked canvas as images (pdf.js, worker served from the
+console's own origin under its CSP), page by page with Previous/Next, no
+download, no text layer, no print button. At most 30 pages drawn; past that
+the viewer says *This document has more than 30 pages; the first 30 are
+shown.*
