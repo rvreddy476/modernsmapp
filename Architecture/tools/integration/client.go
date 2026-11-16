@@ -210,6 +210,9 @@ func (h *HTTPClient) Do(ctx context.Context, method, path string, body interface
 	if k := internalKey(); k != "" {
 		req.Header.Set("X-Internal-Service-Key", k)
 	}
+	for k, v := range h.Headers {
+		req.Header.Set(k, v)
+	}
 	resp, err := h.c.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("http: %w", err)

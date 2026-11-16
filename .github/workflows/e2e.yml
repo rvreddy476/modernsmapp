@@ -53,8 +53,16 @@ jobs:
             health: "http://localhost:8080 http://localhost:8087"
             run: "TestE2E_Media"
           - domain: chat
-            services: "api-gateway chat-message-service"
-            health: "http://localhost:8080 http://localhost:8092"
+            # A direct chat is decided by the sender's chat policy (identity
+            # user-service) and by graph-service (the recipient follows the
+            # sender), so both are part of the stack, with two seeded users.
+            services: "api-gateway identity-auth identity-user user-service graph-service chat-message-service"
+            health: "http://localhost:8080 http://localhost:8081 http://localhost:8097 http://localhost:8082 http://localhost:8083 http://localhost:8092"
+            seed_users: true
+            seed_identity: true
+            # graph-service reads privacy settings from the identity
+            # user-service here, as it does under docker compose.
+            graph_user_url: http://localhost:8097
             run: "TestE2E_Chat"
           - domain: monetization
             services: "api-gateway user-service analytics-service graph-service post-service monetization-service"
@@ -88,12 +96,15 @@ jobs:
             health: "http://localhost:8080 http://localhost:8082 http://localhost:8084 http://localhost:8090 http://localhost:8106 http://localhost:8107 http://localhost:8108 http://localhost:8104"
             run: "TestE2E_Group|TestE2E_Channel|TestE2E_Community|TestE2E_QA|TestE2E_Memories"
           - domain: discovery
-            services: "api-gateway search-service notification-service analytics-service suggestion-service feature-flag-service ai-service"
-            health: "http://localhost:8080 http://localhost:8089 http://localhost:8088 http://localhost:8094 http://localhost:8100 http://localhost:8095 http://localhost:8098"
+            # graph-service: a signed-in search reads the viewer's blocks from it
+            # and fails closed (503) without it; user-service owns its users table.
+            services: "api-gateway user-service graph-service search-service notification-service analytics-service suggestion-service feature-flag-service ai-service"
+            health: "http://localhost:8080 http://localhost:8082 http://localhost:8083 http://localhost:8089 http://localhost:8088 http://localhost:8094 http://localhost:8100 http://localhost:8095 http://localhost:8098"
             run: "TestE2E_Search|TestE2E_Notification|TestE2E_Analytics|TestE2E_Suggestion|TestE2E_FeatureFlag|TestE2E_AI"
           - domain: live
-            services: "api-gateway live-service live-service-v2"
-            health: "http://localhost:8080 http://localhost:8103 http://localhost:8117"
+            # live-service (v1) is retired: the gateway answers 410 before routing.
+            services: "api-gateway live-service-v2"
+            health: "http://localhost:8080 http://localhost:8117"
             run: "TestE2E_Live"
     steps:
       - uses: actions/checkout@v4
@@ -126,6 +137,15 @@ jobs:
           # production: dating, commerce and wallet then refuse to start on
           # this stack's mock partners and local blob store.
           ENV: local
+          # Where chat-message-service finds the two user services; neither
+          # is in local.env, and the defaults are docker compose host names.
+          IDENTITY_USER_SERVICE_URL: http://localhost:8097
+          APP_USER_SERVICE_URL: http://localhost:8082
+          # Empty except in the chat job (run-local.sh, graph-service).
+          GRAPH_USER_SERVICE_URL: ${{ matrix.graph_user_url }}
+          # One fixed id on the live pilot list, for the host path of the live
+          # flows (ATPOST_E2E_LIVE_PILOT_USER below). Not a real account.
+          LIVE_PILOT_USER_IDS: 0e2e0000-0000-4000-8000-000000000001
           # commerce-service will not start without its PII salt and, on a
           # local stack, two 32-byte data keys. CI-only placeholders.
           COMMERCE_PII_LOOKUP_SALT: ci_e2e_only_pii_lookup_salt
@@ -140,6 +160,10 @@ jobs:
           # and media_assets (media-service). docker compose restarts a
           # service that lost that race; run-local.sh does not, so the
           # owners go first here.
+          # local.env sends AI calls to 8117, which is live-service-v2;
+          # run-local.sh starts ai-service on 8098. The file exports the
+          # value unconditionally, so it is corrected in this checkout only.
+          sed -i 's#^export AI_SERVICE_URL=.*#export AI_SERVICE_URL="http://localhost:8098"#' Architecture/docker/local.env
           all=" ${{ matrix.services }} "
           psql_app() {
             docker compose \
@@ -165,8 +189,9 @@ jobs:
           rest=""
           for svc in ${{ matrix.services }}; do
             case "$svc" in
-              user-service|feed-service|analytics-service) tier1="$tier1 $svc" ;;
-              graph-service|post-service) tier2="$tier2 $svc" ;;
+              user-service|feed-service|analytics-service|identity-auth) tier1="$tier1 $svc" ;;
+              # identity-user only alters tables identity-auth creates.
+              graph-service|post-service|identity-user) tier2="$tier2 $svc" ;;
               *) rest="$rest $svc" ;;
             esac
           done
@@ -177,6 +202,16 @@ jobs:
               post-service) echo 8084 ;;
               feed-service) echo 8086 ;;
               analytics-service) echo 8094 ;;
+              identity-auth) echo 8081 ;;
+              identity-user) echo 8097 ;;
+            esac
+          }
+          # The identity services have no root /healthz.
+          path_of() {
+            case "$1" in
+              identity-auth) echo /v1/auth/health ;;
+              identity-user) echo /v1/users/health ;;
+              *) echo /healthz ;;
             esac
           }
           start_tier() {
@@ -186,7 +221,7 @@ jobs:
               port=$(port_of "$svc")
               ok=""
               for i in $(seq 1 300); do
-                code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$port/healthz" || true)
+                code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$port$(path_of "$svc")" || true)
                 if [ "$code" = "200" ]; then ok=1; break; fi
                 sleep 2
               done
@@ -263,6 +298,11 @@ jobs:
             -f .github/e2e/docker-compose.e2e.yml \
             exec -T postgres psql -U postgres -d app -v ON_ERROR_STOP=1 -c \
             "INSERT INTO users (id, display_name, created_at, updated_at) VALUES ('$a', 'E2E user A', now(), now()), ('$b', 'E2E user B', now(), now());"
+          if [ "${{ matrix.seed_identity }}" = "true" ]; then
+            # The same two ids as identity accounts with open message
+            # settings (the columns auth-service's CreateUserRecordTx writes).
+            docker compose               -f Architecture/docker/docker-compose.infra.yml               -f .github/e2e/docker-compose.e2e.yml               exec -T postgres psql -U postgres -d identity_db -v ON_ERROR_STOP=1 -c               "INSERT INTO usr.users (id, status, is_verified, created_at, updated_at) VALUES ('$a','active',false,now(),now()), ('$b','active',false,now(),now()); INSERT INTO usr.user_settings (user_id, account_visibility, allow_messages_from, allow_comments_from, created_at, updated_at) VALUES ('$a','public','everyone','everyone',now(),now()), ('$b','public','everyone','everyone',now(),now());"
+          fi
           echo "ATPOST_E2E_USER_A=$a" >> "$GITHUB_ENV"
           echo "ATPOST_E2E_USER_B=$b" >> "$GITHUB_ENV"
 
@@ -274,6 +314,10 @@ jobs:
           # it (tools/integration client.go, StackRequired). CI=true already
           # does this on GitHub; the flag says so in this file.
           ATPOST_E2E_REQUIRE_STACK: "1"
+          # The auth flow reads its e-mail verification code from the
+          # development mail sender's line in the service log.
+          ATPOST_E2E_MAIL_LOG: ${{ github.workspace }}/services.log
+          ATPOST_E2E_LIVE_PILOT_USER: 0e2e0000-0000-4000-8000-000000000001
           # The services this entry started, for TestSmokeHealthChecks.
           ATPOST_E2E_HEALTH_URLS: ${{ matrix.health }}
           ATPOST_API_GATEWAY_URL: http://localhost:8080

@@ -218,6 +218,15 @@ for svc in "${SERVICES[@]}"; do
             ;;
     esac
 
+    # graph-service reads privacy settings from USER_SERVICE_URL. local.env
+    # points it at the app user-service; docker compose points it at the
+    # identity user-service. GRAPH_USER_SERVICE_URL picks one for a stack
+    # that runs both (the chat e2e job).
+    svc_user_url="${USER_SERVICE_URL:-}"
+    if [[ "$svc" == "graph-service" && -n "${GRAPH_USER_SERVICE_URL:-}" ]]; then
+        svc_user_url="$GRAPH_USER_SERVICE_URL"
+    fi
+
     # Override per-service env, run from module root
     case "$svc" in
         chat-*)
@@ -227,14 +236,15 @@ for svc in "${SERVICES[@]}"; do
             ALLOWED_ORIGINS="$CORS_ORIGINS" \
             SCYLLA_KEYSPACE="chatservice" \
             KAFKA_TOPIC="chat.events.v1" \
-                go run "$cmd_path" 2>&1 | sed "s/^/[$svc] /") &
+                go run "$cmd_path" 2>&1 | sed -u "s/^/[$svc] /") &
             ;;
         *)
             (cd "$module_root" && \
             HTTP_PORT="$port" \
             POSTGRES_DSN="$dsn" \
             ALLOWED_ORIGINS="$CORS_ORIGINS" \
-                go run "$cmd_path" 2>&1 | sed "s/^/[$svc] /") &
+            USER_SERVICE_URL="$svc_user_url" \
+                go run "$cmd_path" 2>&1 | sed -u "s/^/[$svc] /") &
             ;;
     esac
 
