@@ -108,6 +108,8 @@ type HTTPClient struct {
 	// instead of a minted one — used by the auth E2E flow to carry the real
 	// access token returned by login/refresh.
 	BearerOverride string
+	// Headers are sent on every request, after the ones above (WithHeader).
+	Headers map[string]string
 	c              *http.Client
 }
 
@@ -130,6 +132,18 @@ func NewHTTPClient(baseURL string, userID uuid.UUID) *HTTPClient {
 func (h *HTTPClient) WithAdminRole() *HTTPClient {
 	clone := *h
 	clone.AdminRole = "admin"
+	return &clone
+}
+
+// WithHeader returns a copy that sends one more header on every request,
+// for routes that require one (Idempotency-Key on writes).
+func (h *HTTPClient) WithHeader(key, value string) *HTTPClient {
+	clone := *h
+	clone.Headers = map[string]string{}
+	for k, v := range h.Headers {
+		clone.Headers[k] = v
+	}
+	clone.Headers[key] = value
 	return &clone
 }
 

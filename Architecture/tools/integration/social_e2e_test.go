@@ -53,8 +53,9 @@ func TestE2E_Social_PostFollowFeedLike(t *testing.T) {
 		t.Fatalf("follow: status %q, want \"followed\" (err=%v raw=%s)", follow.Status, err, string(followRaw))
 	}
 
-	// A creates a public post.
-	postRaw := a.MustOK(t, ctx, "POST", "/v1/posts", map[string]any{
+	// A creates a public post. The route refuses a write with no
+	// Idempotency-Key (400 MISSING_IDEMPOTENCY_KEY).
+	postRaw := a.WithHeader("Idempotency-Key", uuid.NewString()).MustOK(t, ctx, "POST", "/v1/posts", map[string]any{
 		"text":         "E2E social flow " + uuid.NewString(),
 		"visibility":   "public",
 		"content_type": "post",

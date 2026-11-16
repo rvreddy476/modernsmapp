@@ -57,8 +57,8 @@ jobs:
             health: "http://localhost:8080 http://localhost:8092"
             run: "TestE2E_Chat"
           - domain: monetization
-            services: "api-gateway user-service graph-service post-service monetization-service"
-            health: "http://localhost:8080 http://localhost:8082 http://localhost:8083 http://localhost:8084 http://localhost:8099"
+            services: "api-gateway user-service analytics-service graph-service post-service monetization-service"
+            health: "http://localhost:8080 http://localhost:8082 http://localhost:8094 http://localhost:8083 http://localhost:8084 http://localhost:8099"
             run: "TestE2E_Monetization|TestTip|TestMembership|TestCreatorFund"
           - domain: reviewer
             services: "api-gateway reviewer-service"
@@ -84,8 +84,8 @@ jobs:
             health: "http://localhost:8080 http://localhost:8112"
             run: "TestE2E_Dating"
           - domain: content
-            services: "api-gateway group-service channel-service community-service qa-service memories-service"
-            health: "http://localhost:8080 http://localhost:8090 http://localhost:8106 http://localhost:8107 http://localhost:8108 http://localhost:8104"
+            services: "api-gateway user-service post-service group-service channel-service community-service qa-service memories-service"
+            health: "http://localhost:8080 http://localhost:8082 http://localhost:8084 http://localhost:8090 http://localhost:8106 http://localhost:8107 http://localhost:8108 http://localhost:8104"
             run: "TestE2E_Group|TestE2E_Channel|TestE2E_Community|TestE2E_QA|TestE2E_Memories"
           - domain: discovery
             services: "api-gateway search-service notification-service analytics-service suggestion-service feature-flag-service ai-service"
@@ -126,6 +126,11 @@ jobs:
           # production: dating, commerce and wallet then refuse to start on
           # this stack's mock partners and local blob store.
           ENV: local
+          # commerce-service will not start without its PII salt and, on a
+          # local stack, two 32-byte data keys. CI-only placeholders.
+          COMMERCE_PII_LOOKUP_SALT: ci_e2e_only_pii_lookup_salt
+          COMMERCE_PII_DEV_KEY_PROFILE: ci_e2e_only_pii_profile_key_0000
+          COMMERCE_PII_DEV_KEY_SNAPSHOT: ci_e2e_only_pii_snapshot_key_000
         run: |
           set -e
           # Every service here shares one database and creates its own
@@ -152,24 +157,35 @@ jobs:
               psql_app -c "CREATE TABLE IF NOT EXISTS user_preferences (user_id UUID PRIMARY KEY);"
             fi
           fi
-          first=""
+          # Three tiers, each waited for before the next: table owners
+          # (user, feed, analytics), then the services other chains point at
+          # (graph, post: group-service needs posts), then everything else.
+          tier1=""
+          tier2=""
           rest=""
           for svc in ${{ matrix.services }}; do
             case "$svc" in
-              user-service|feed-service) first="$first $svc" ;;
+              user-service|feed-service|analytics-service) tier1="$tier1 $svc" ;;
+              graph-service|post-service) tier2="$tier2 $svc" ;;
               *) rest="$rest $svc" ;;
             esac
           done
-          # Owners are started only when something that needs them follows.
-          if [[ -n "$first" && ( "$all" == *" post-service "* || "$all" == *" graph-service "* ) ]]; then
-            nohup bash Architecture/docker/run-local.sh $first >> services.log 2>&1 &
-            for svc in $first; do
-              case "$svc" in
-                user-service) port=8082 ;;
-                feed-service) port=8086 ;;
-              esac
+          port_of() {
+            case "$1" in
+              user-service) echo 8082 ;;
+              graph-service) echo 8083 ;;
+              post-service) echo 8084 ;;
+              feed-service) echo 8086 ;;
+              analytics-service) echo 8094 ;;
+            esac
+          }
+          start_tier() {
+            [ -n "$1" ] || return 0
+            nohup bash Architecture/docker/run-local.sh $1 >> services.log 2>&1 &
+            for svc in $1; do
+              port=$(port_of "$svc")
               ok=""
-              for i in $(seq 1 240); do
+              for i in $(seq 1 300); do
                 code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$port/healthz" || true)
                 if [ "$code" = "200" ]; then ok=1; break; fi
                 sleep 2
@@ -181,9 +197,11 @@ jobs:
               fi
               echo "✓ $svc is up; its tables exist"
             done
-          else
-            rest="${{ matrix.services }}"
-          fi
+          }
+          # Every job has api-gateway in the last tier, so there is always
+          # something for the earlier tiers to go ahead of.
+          start_tier "$tier1"
+          start_tier "$tier2"
           # run-local.sh backgrounds each service then waits; background the
           # whole script so the job continues. Logs stream to services.log.
           nohup bash Architecture/docker/run-local.sh $rest >> services.log 2>&1 &
