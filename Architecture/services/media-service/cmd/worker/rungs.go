@@ -503,3 +503,15 @@ func blurHashOf(path string) string {
 	}
 	return h
 }
+
+// variantsFor returns the rendition rows of a finished run with the asset's
+// id on each. The markers they are read from do not carry it, and a row
+// without it fails media_variants' foreign key on every attempt.
+func variantsFor(mediaID uuid.UUID, res *rungResult) []postgres.MediaVariant {
+	out := make([]postgres.MediaVariant, len(res.variants))
+	for i, v := range res.variants {
+		v.MediaAssetID = mediaID
+		out[i] = v
+	}
+	return out
+}

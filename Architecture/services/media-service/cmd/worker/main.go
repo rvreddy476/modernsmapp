@@ -822,7 +822,7 @@ func runTranscode(parent context.Context, env transcodeEnv, subject *transcodeSu
 		return err
 	}
 	log.Printf("Renditions for media %s: %s", mediaAssetID, describeRungs(rr, rungs))
-	variants := rungs.variants
+	variants := variantsFor(mediaAssetID, rungs)
 
 	// 6. Insert variants into DB
 	if len(variants) == 0 {
