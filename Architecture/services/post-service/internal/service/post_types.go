@@ -194,6 +194,11 @@ type CreatePostInput struct {
 	// runs the label / URL / eligibility / safety checks before anything is
 	// written and inserts the link in the post's own transaction.
 	Action *ActionInput
+
+	// AgeRestricted is the 18+ gate from birth (lv-9): CreatePost writes it
+	// on the row in the post's own insert, video kinds only
+	// (ErrAgeRestrictionNotAllowed otherwise).
+	AgeRestricted bool
 }
 
 // CreatePollInput holds poll creation data.

@@ -49,7 +49,24 @@ var (
 	ErrAgeSignIn     = errors.New("sign in to confirm your age to watch this")
 	ErrAgeRestricted = errors.New("this content is age-restricted")
 	ErrAgeUnverified = errors.New("confirm your date of birth to watch age-restricted content")
+	// ErrAgeRestrictionNotAllowed: age_restricted=true on the create of a
+	// kind that is not a video (lv-9). 400 AGE_RESTRICTION_NOT_ALLOWED.
+	ErrAgeRestrictionNotAllowed = errors.New("age_restricted can be set at create only on a video (flick or long_video)")
 )
+
+// createAgeRestriction is CreatePost's 18+ rule (lv-9): the flag is accepted
+// on the video kinds (contentType already normalized: flick, long_video) and
+// refused on every other kind, so a request that asked for the gate is never
+// published without it.
+func createAgeRestriction(contentType string, requested bool) (bool, error) {
+	if !requested {
+		return false, nil
+	}
+	if !isVideoContentType(contentType) {
+		return false, ErrAgeRestrictionNotAllowed
+	}
+	return true, nil
+}
 
 // AdultAge is the age an age-restricted post requires.
 const AdultAge = 18

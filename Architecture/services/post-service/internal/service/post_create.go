@@ -123,6 +123,13 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		return nil, err
 	}
 
+	// 18+ from birth (lv-9, age_gate.go): by the INTENT, like the credits,
+	// and before anything is written; stored by the post's own insert.
+	ageRestricted, err := createAgeRestriction(contentType, input.AgeRestricted)
+	if err != nil {
+		return nil, err
+	}
+
 	// Tube: a long video is listed under a channel, so the account must have
 	// created one first (founder rule, 2026-09-05). Reels/flicks are not gated.
 	if err := s.gateVideoBehindChannel(ctx, input.AuthorID, contentType); err != nil {
@@ -303,6 +310,8 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		// same transaction as the row and its PostCreated outbox event.
 		TierRequiredID: copyTierID(input.TierRequiredID),
 		ActionWrite:    actionWrite,
+		// lv-9: the 18+ gate, in the same insert (posts.age_restricted).
+		AgeRestricted: ageRestricted,
 	}
 
 	// Persist the validated policy verbatim; rev 1 marks "has a policy",

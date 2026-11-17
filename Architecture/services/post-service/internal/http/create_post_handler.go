@@ -163,6 +163,14 @@ type CreatePostRequest struct {
 	// author's eligibility and the safety check all run before anything is
 	// written. omitempty for the fingerprint reason above.
 	Action *service.ActionInput `json:"action,omitempty"`
+
+	// AgeRestricted is the 18+ gate from birth (lv-9, 2026-11-17): true
+	// stores posts.age_restricted in the create transaction, so the gate
+	// never depends on a follow-up PATCH. Video kinds only (content_type
+	// flick / reel / long_video / video); true on any other kind is 400
+	// AGE_RESTRICTION_NOT_ALLOWED. Absent or false = not restricted.
+	// omitempty for the fingerprint reason above.
+	AgeRestricted bool `json:"age_restricted,omitempty"`
 }
 
 // createPostResponse is the create body: the post as before, plus a long
@@ -269,6 +277,9 @@ func writeCreateGuardError(c *gin.Context, err error) bool {
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_LOCATION_PLACE_ID", err.Error(), nil)
 	case errors.Is(err, service.ErrInvalidVisibility):
 		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "INVALID_VISIBILITY", err.Error(), nil)
+	case errors.Is(err, service.ErrAgeRestrictionNotAllowed):
+		// lv-9: 18+ at create is for video kinds only.
+		api.ErrorWithContext(ctx, c.Writer, http.StatusBadRequest, "AGE_RESTRICTION_NOT_ALLOWED", err.Error(), nil)
 	case writeTierGateError(c, err):
 	case writeCreditFieldError(c, err):
 	case writeActionError(c, err):
@@ -555,6 +566,7 @@ func (h *Handler) CreatePost(c *gin.Context) {
 		},
 		TierRequiredID: req.TierRequiredID,
 		Action:         req.Action,
+		AgeRestricted:  req.AgeRestricted,
 	}
 
 	if req.Poll != nil {

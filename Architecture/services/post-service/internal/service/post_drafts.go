@@ -122,6 +122,12 @@ type PostDraftPayload struct {
 	// checked when the draft is saved; eligibility and the safety check at
 	// publication (CreatePost).
 	Action *ActionInput `json:"action,omitempty"`
+
+	// ── 18+ (lv-9, age_gate.go) ─────────────────────────────────────────
+	// The age gate from birth: written on the post's row at publication
+	// (CreatePost), so a scheduled restricted video is never published
+	// open. Video kinds only. Absent = not restricted.
+	AgeRestricted bool `json:"age_restricted,omitempty"`
 }
 
 // videoCredits is the payload's credit fields.
@@ -249,6 +255,10 @@ func validateDraftDetails(postType string, payload *PostDraftPayload) error {
 		return bad(err)
 	}
 	if _, _, err := validatedVideoCredits(draftPayloadKind(postType, payload), payload.videoCredits(), time.Now()); err != nil {
+		return bad(err)
+	}
+	// lv-9: 18+ on a video kind only, as CreatePost will insist.
+	if _, err := createAgeRestriction(draftPayloadKind(postType, payload), payload.AgeRestricted); err != nil {
 		return bad(err)
 	}
 	// Whether the tier is one of the author's active tiers is asked at
@@ -714,6 +724,8 @@ func buildDraftCreateInput(d *postgres.PostDraft, payload *PostDraftPayload) *Cr
 	input.VideoCredits = payload.videoCredits()
 	// Members-only: CreatePost checks the tier and writes it on the row.
 	input.TierRequiredID = copyTierID(payload.TierRequiredID)
+	// 18+ (lv-9): CreatePost checks the kind and writes it on the row.
+	input.AgeRestricted = payload.AgeRestricted
 	// The Action button: CreatePost checks eligibility and safety.
 	if payload.Action != nil {
 		a := *payload.Action

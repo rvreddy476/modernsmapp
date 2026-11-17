@@ -835,7 +835,8 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 			created_at, updated_at,
 			publish_at, mention_usernames,
 			is_branded, ai_generated, link_url, location_place_id,
-			genres, release_year, production_house)
+			genres, release_year, production_house,
+			age_restricted)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11,
 			$12, $13, $14, $15, $16, $17, $18, $19, $20,
 			$21, $22, $23, $24, $25,
@@ -851,7 +852,8 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 			$50, $50,
 			$51, $52,
 			$53, $54, $55, $56,
-			$57, $58, $59)
+			$57, $58, $59,
+			$60)
 	`, p.ID, p.AuthorID, p.Text, p.Visibility, p.ContentType,
 		p.Feeling, p.Activity, p.ActivityDetail, p.RichText,
 		p.NoComments, p.NoLikes,
@@ -870,7 +872,9 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 		p.CreatedAt,
 		p.PublishAt, p.MentionUsernames,
 		p.IsBranded, p.AIGenerated, p.LinkURL, p.LocationPlaceID,
-		genres, p.ReleaseYear, p.ProductionHouse)
+		genres, p.ReleaseYear, p.ProductionHouse,
+		// lv-9: the 18+ gate from birth (migration 052's column).
+		p.AgeRestricted)
 	if err != nil {
 		return err
 	}
