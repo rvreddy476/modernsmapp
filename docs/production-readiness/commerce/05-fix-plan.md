@@ -198,3 +198,46 @@
 
 **Tests**
 - com-64 (commerce refund worker), com-65 (web contract fixtures fail instead of skip), com-66 (every `orders.status` writer goes through the matrix).
+
+## Operator steps for fixes already made
+
+These fixes are in the code. Each one leaves a data step that the code cannot do safely by itself.
+
+### com-3: variant images that point at someone else's media
+
+Commerce cannot tell who owns a media item, so the clean-up crosses two databases. Run it once, after the fix is deployed.
+
+1. In the commerce database, list every variant image with the seller's user id:
+
+   ```sql
+   SELECT pv.id, pv.image_media_id, sl.user_id
+   FROM product_variants pv
+   JOIN products p ON p.id = pv.product_id
+   JOIN sellers sl ON sl.id = p.seller_id
+   WHERE pv.image_media_id IS NOT NULL;
+   ```
+
+   Do the same for `product_attributes.value_media_id`.
+2. In the media database, keep the rows where `media_assets.id` matches and `uploader_id` is not the seller's user id. Those are the bad references.
+3. In the commerce database, clear them:
+
+   ```sql
+   UPDATE product_variants
+   SET image_media_id = NULL, updated_at = now()
+   WHERE id = ANY($bad);
+   ```
+
+### com-1: orders the old job shipped by itself
+
+No data fix is written, because under a real courier a pickup may already have happened. This query finds the orders so that someone can decide each case:
+
+```sql
+SELECT o.id, o.order_number, o.status, o.payment_status,
+       h.from_status, h.created_at,
+       s.courier, s.tracking_number, s.status
+FROM order_status_history h
+JOIN orders o ON o.id = h.order_id
+LEFT JOIN shipments s ON s.order_id = o.id
+WHERE h.to_status = 'shipped' AND h.actor_type = 'system'
+ORDER BY h.created_at;
+```
