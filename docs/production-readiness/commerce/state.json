@@ -1,0 +1,44 @@
+{
+  "module": "commerce",
+  "product_names": ["MStore", "MSeller"],
+  "harness": "https://claude.ai/artifact/3jJjbBDb5d25LuSC4dGgaS",
+  "branch": "codex/module-01-02-launch-safety",
+  "head_at_audit": "be57a46bf",
+  "web_tree": "C:\\workspace\\wt\\pb-echo @ 1b596b4 (feat/echo-web)",
+  "date": "2026-11-17",
+  "verdict": "NO-GO",
+  "stages": {
+    "0-map": "complete (00-map.md, written at d83616ad6)",
+    "1-baseline": "complete (01-baseline.md); integration tests not run locally (CI only)",
+    "2-tracks": "complete (tracks/track-a..f)",
+    "3-verification": "complete (verify/v1..v3). Every P0 and P1 was re-checked from its cited evidence by a fresh agent",
+    "4-report": "complete (02, 03, 04, 05, state.json)"
+  },
+  "counts": {
+    "P0": 3, "P1": 19, "P2": 44, "P3": 19, "total": 85, "merged_from_original_ids": 104,
+    "VERIFIED-RUN": 7, "VERIFIED-READ": 69, "SUSPECTED": 9, "UNVERIFIED": 0,
+    "inherited_platform_rows_not_counted": 21
+  },
+  "launch_gate": {
+    "1": "FAIL", "2": "FAIL", "3": "FAIL", "4": "PASS", "5": "UNVERIFIED", "6": "FAIL",
+    "7": "FAIL", "8": "FAIL", "9": "FAIL", "10": "FAIL", "11": "UNVERIFIED", "12": "FAIL"
+  },
+  "p0": ["com-1", "com-2", "com-3"],
+  "fix_order": ["com-21", "com-2", "com-3", "com-1", "com-5", "com-22", "com-4", "com-8", "com-9", "com-7", "com-6", "com-10", "com-12", "com-11", "com-13", "com-14", "com-15", "com-16", "com-20", "com-19", "com-18", "com-17"],
+  "escalations": [
+    "com-22 (Razorpay declared manual-capture, nothing calls capture) becomes P0 if the account really uses manual capture."
+  ],
+  "open_questions": [
+    "Razorpay dashboard: is capture automatic or manual? Then run one test-mode payment on QA (com-22).",
+    "Founder: courier for launch, a stated flat fee or Shiprocket switched on (com-5).",
+    "Founder: how and when sellers are paid, with commission and TDS rates (com-11).",
+    "Founder: is an order auto-booked with the courier at payment, or when the seller presses Ship (com-1)?",
+    "Founder: refunds after shipping and returns for launch, or fenced with a stated support process (com-6).",
+    "Tax adviser: invoice series per seller and financial year, place of supply, credit notes (com-12).",
+    "DPDP: account deletion and export for commerce and payments, against the tax retention duty (com-13).",
+    "Deployed state: did the gated migrations run anywhere, and what do the live secrets hold (courier mode, Razorpay keys)?",
+    "Where the admin console's commerce screens live; they were not found in pb-echo.",
+    "Capacity: every figure in Track D is arithmetic. Needs EXPLAIN on a large fixture and k6 runs."
+  ],
+  "next": "Founder decides: start the Commerce P0 fixes, or audit another module first."
+}
