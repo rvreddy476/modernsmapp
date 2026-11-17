@@ -132,6 +132,14 @@ env:
   # LB-9 — reconciliation.
   PAYMENTS_RECONCILE_INTERVAL_SEC: '60'
   PAYMENTS_PENDING_AGE_SEC: '600'
+  # com-2 — money owed back is returned. A capture after the intent failed, a
+  # second capture, an amount/currency mismatch and a duplicate order capture
+  # are recorded in payments.refund_required; the worker refunds them at the
+  # provider and the consumer records commerce's duplicates. With ENV=prod
+  # main.go refuses to boot with either set to 'false' unless
+  # PAYMENTS_ALLOW_OWED_REFUNDS_OFF=true (incident use only; never set here).
+  PAYMENTS_REFUND_REQUIRED_WORKER: 'true'
+  PAYMENTS_DUPLICATE_CAPTURE_CONSUMER: 'true'
   # Bank offers (Razorpay Offers): dev only; absent means off.
 
 ingress:
@@ -180,3 +188,48 @@ networkPolicy:
 pdb:
   enabled: true
   minAvailable: 1
+
+# com-2 / com-15 — money owed back to buyers. Routed like every service rule:
+# the chart labels each one source=atpost-service and service=payments-service,
+# and Alertmanager sends source=atpost-service to the ops e-mail receiver.
+# Metrics: Architecture/services/payments-service/internal/obs/metrics.go,
+# refreshed from the database by every replica (max(), not sum()). The QA file
+# carries this list unchanged (payments internal/config deploy_values_test.go).
+prometheusRule:
+  enabled: true
+  rules:
+    # A capture recorded in payments.refund_required (late after the intent
+    # failed, a second capture, an amount/currency mismatch, a duplicate
+    # order capture) has not been refunded for an hour.
+    - alert: PaymentsOwedCaptureNotRefunded
+      expr: max(payments_owed_captures_oldest_age_seconds) > 3600
+      for: 5m
+      labels: { severity: critical }
+      annotations:
+        summary: A buyer's owed capture has waited more than an hour for its refund
+        description: "Is the refund-required worker on (boot log 'refund-required worker ... enabled')? Read last_error: SELECT id, reason, refund_attempts, last_error, failure_code, parked_at, detected_at FROM payments.refund_required WHERE resolved_at IS NULL ORDER BY detected_at LIMIT 20. A submitted row resolves only on the signed refund webhook."
+    # The worker stopped on a row it can never refund as recorded.
+    - alert: PaymentsOwedCaptureParked
+      expr: max(payments_owed_captures_parked) > 0
+      for: 5m
+      labels: { severity: critical }
+      annotations:
+        summary: An owed capture is parked and will not be refunded without a person
+        description: "SELECT id, intent_id, provider_payment_id, amount_minor, failure_code, last_error FROM payments.refund_required WHERE resolved_at IS NULL AND parked_at IS NOT NULL. Fix the cause, then retry it through admin-service (payments POST refund-required/:id/retry), or refund it at the provider (the signed webhook resolves the row)."
+    # Any failed refund attempt of an owed capture, by reason (retryable =
+    # retried with backoff; any other reason parked the row).
+    - alert: PaymentsOwedRefundFailures
+      expr: sum by (reason) (increase(payments_owed_refund_failures_total[30m])) > 0
+      for: 0m
+      labels: { severity: warning }
+      annotations:
+        summary: Refunds of owed captures are failing at the provider
+        description: "reason=retryable: provider 5xx, 429, timeout or auth; the worker retries every 30 s to 4 min. Other reasons parked the row (see PaymentsOwedCaptureParked). Worker logs: 'owed-capture refund'."
+    # A refund command (an order's own refund) parked in needs_attention.
+    - alert: PaymentsRefundNeedsAttention
+      expr: max(payments_refunds_needs_attention) > 0
+      for: 5m
+      labels: { severity: critical }
+      annotations:
+        summary: A refund command is parked in needs_attention; the money is still owed
+        description: "Runbook: docs/runbooks/payments-refund-needs-attention.md"

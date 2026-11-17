@@ -190,9 +190,10 @@ func TestResolve(t *testing.T) {
 	}
 }
 
-// PAYMENTS_REFUND_REQUIRED_WORKER (migration 018): explicit true/false wins;
-// unset is ON for a dev ENV only, so prod, QA (ENV=prod) and staging stay OFF
-// until a deploy turns it on; anything else refuses to boot.
+// PAYMENTS_REFUND_REQUIRED_WORKER (migration 018, com-2): explicit true/false
+// wins; unset is ON in every ENV, so prod, QA (ENV=prod) and staging return
+// owed captures without a deploy remembering to; anything else refuses to
+// boot. An explicit false in production is TestResolveOwedRefundsOffInProd.
 func TestResolveRefundRequiredWorker(t *testing.T) {
 	for _, tc := range []struct {
 		name, env, flag string
@@ -201,8 +202,9 @@ func TestResolveRefundRequiredWorker(t *testing.T) {
 		{"dev compose: no ENV, unset", "", "", true},
 		{"dev, unset", "dev", "", true},
 		{"local, unset", "local", "", true},
-		{"staging, unset", "staging", "", false},
-		{"prod, unset", "prod", "", false},
+		{"staging, unset", "staging", "", true},
+		{"staging, explicitly off", "staging", "false", false},
+		{"prod, unset", "prod", "", true},
 		{"prod, explicitly on", "prod", "true", true},
 		{"dev, explicitly off", "dev", "false", false},
 		{"surrounding blanks", "", " false ", false},
@@ -235,8 +237,8 @@ func TestResolveRefundRequiredWorker(t *testing.T) {
 }
 
 // PAYMENTS_DUPLICATE_CAPTURE_CONSUMER: the same rule as the worker, resolved
-// on its own, so a deploy can record duplicate order captures before it lets
-// the worker refund them.
+// on its own, so a non-production deploy can record duplicate order captures
+// before it lets the worker refund them.
 func TestResolveDuplicateCaptureConsumer(t *testing.T) {
 	for _, tc := range []struct {
 		name, env, flag, worker string
@@ -244,9 +246,10 @@ func TestResolveDuplicateCaptureConsumer(t *testing.T) {
 	}{
 		{"dev compose: no ENV, unset", "", "", "", true, true},
 		{"local, unset", "local", "", "", true, true},
-		{"staging, unset", "staging", "", "", false, false},
-		{"prod, unset", "prod", "", "", false, false},
-		{"prod, consumer on, worker off", "prod", "true", "", true, false},
+		{"staging, unset", "staging", "", "", true, true},
+		{"staging, consumer on, worker off", "staging", "true", "false", true, false},
+		{"prod, unset", "prod", "", "", true, true},
+		{"prod, both explicitly on", "prod", "true", "true", true, true},
 		{"dev, consumer off, worker on", "dev", "false", "", false, true},
 		{"surrounding blanks", "", " false ", "", false, true},
 	} {
@@ -273,6 +276,51 @@ func TestResolveDuplicateCaptureConsumer(t *testing.T) {
 			_, err := Resolve(envMap(map[string]string{"PAYMENTS_ALLOW_STUB": "true", "PAYMENTS_DUPLICATE_CAPTURE_CONSUMER": raw}))
 			if !errors.Is(err, ErrInvalidDuplicateCaptureConsumer) {
 				t.Fatalf("err = %v, want ErrInvalidDuplicateCaptureConsumer", err)
+			}
+		})
+	}
+}
+
+// com-2: production (prod and QA, both ENV=prod) refuses to boot with either
+// owed-refund switch off, unless the one named override says so. Staging and
+// dev may switch them off freely.
+func TestResolveOwedRefundsOffInProd(t *testing.T) {
+	prod := func(worker, consumer, override string) map[string]string {
+		return map[string]string{"ENV": "prod", "SERVICE_CALLERS": "commerce-service",
+			"RAZORPAY_KEY_ID": "k", "RAZORPAY_KEY_SECRET": "s", "RAZORPAY_WEBHOOK_SECRET": "w",
+			"PAYMENTS_REFUND_REQUIRED_WORKER": worker, "PAYMENTS_DUPLICATE_CAPTURE_CONSUMER": consumer,
+			"PAYMENTS_ALLOW_OWED_REFUNDS_OFF": override}
+	}
+	for _, tc := range []struct {
+		name                     string
+		env                      map[string]string
+		refused                  bool
+		wantWorker, wantConsumer bool
+	}{
+		{"prod, worker off", prod("false", "true", ""), true, false, true},
+		{"prod, consumer off", prod("true", "false", ""), true, true, false},
+		{"prod, both off", prod("false", "false", ""), true, false, false},
+		{"prod, worker off, override not exactly true", prod("false", "", "yes"), true, false, true},
+		{"prod, worker off with the override", prod("false", "", "true"), false, false, true},
+		{"prod, both off with the override", prod("false", "false", " true "), false, false, false},
+		{"prod, both on, override set anyway", prod("true", "true", "true"), false, true, true},
+		{"staging, both off, no override", map[string]string{"ENV": "staging", "PAYMENTS_ALLOW_STUB": "true",
+			"PAYMENTS_REFUND_REQUIRED_WORKER": "false", "PAYMENTS_DUPLICATE_CAPTURE_CONSUMER": "false"}, false, false, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := Resolve(envMap(tc.env))
+			if tc.refused {
+				if !errors.Is(err, ErrOwedRefundsOff) {
+					t.Fatalf("err = %v, want ErrOwedRefundsOff", err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if cfg.RefundRequiredWorker != tc.wantWorker || cfg.DuplicateCaptureConsumer != tc.wantConsumer {
+				t.Fatalf("worker/consumer = %v/%v, want %v/%v",
+					cfg.RefundRequiredWorker, cfg.DuplicateCaptureConsumer, tc.wantWorker, tc.wantConsumer)
 			}
 		})
 	}

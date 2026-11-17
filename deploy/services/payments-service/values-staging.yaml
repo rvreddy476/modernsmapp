@@ -146,6 +146,10 @@ env:
 
   PAYMENTS_RECONCILE_INTERVAL_SEC: '60'
   PAYMENTS_PENDING_AGE_SEC: '300'
+  # com-2 — money owed back (late, duplicate or mismatched captures) is
+  # refunded, as in prod. Unset is on as well; set so a reader sees it.
+  PAYMENTS_REFUND_REQUIRED_WORKER: 'true'
+  PAYMENTS_DUPLICATE_CAPTURE_CONSUMER: 'true'
   # Add per-service inter-service URLs here. Common ones:
   #   USER_SERVICE_URL:  http://user-service.atpost.svc.cluster.local:8082
   #   GRAPH_SERVICE_URL: http://graph-service.atpost.svc.cluster.local:8083

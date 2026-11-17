@@ -55,11 +55,12 @@ type Config struct {
 	OffersEnabled bool
 
 	// RefundRequiredWorker runs the refund-required worker (migration 018):
-	// captures recorded in payments.refund_required (late or duplicate) are
-	// refunded to the buyer automatically. PAYMENTS_REFUND_REQUIRED_WORKER=
-	// true|false; unset is ON only on a dev ENV ("", dev, local) and OFF
-	// everywhere else (staging, prod, and QA, which runs as ENV=prod), so a
-	// production deploy turns it on explicitly.
+	// captures recorded in payments.refund_required (late, duplicate or
+	// mismatched) are refunded to the buyer automatically.
+	// PAYMENTS_REFUND_REQUIRED_WORKER=true|false; unset is ON in every ENV
+	// (com-2: unset used to mean OFF outside dev, so prod and QA kept buyers'
+	// money). With ENV=prod an explicit false refuses to boot
+	// (ErrOwedRefundsOff) unless PAYMENTS_ALLOW_OWED_REFUNDS_OFF=true.
 	RefundRequiredWorker bool
 
 	// DuplicateCaptureConsumer runs the commerce consumer
@@ -67,9 +68,15 @@ type Config struct {
 	// intent on one order, is recorded in payments.refund_required for the
 	// refund-required worker to return. It writes the record only; no money
 	// moves unless RefundRequiredWorker is on too.
-	// PAYMENTS_DUPLICATE_CAPTURE_CONSUMER=true|false; unset follows the same
-	// rule as the worker: ON only on a dev ENV.
+	// PAYMENTS_DUPLICATE_CAPTURE_CONSUMER=true|false; the same rule as the
+	// worker: unset is ON, and false in production needs the override.
 	DuplicateCaptureConsumer bool
+
+	// OwedRefundsOffAllowed is PAYMENTS_ALLOW_OWED_REFUNDS_OFF=true: the one
+	// named override that lets a production boot run with either owed-refund
+	// switch off (an incident: the provider is refunding wrongly). Off, the
+	// gauge payments_owed_captures_oldest_age_seconds still pages.
+	OwedRefundsOffAllowed bool
 }
 
 // DefaultFailedAttemptWindow applies when PAYMENTS_FAILED_ATTEMPT_WINDOW is
@@ -102,6 +109,12 @@ var (
 	// that key in production) could not be reached by anyone.
 	ErrServiceCallersRequired = errors.New("SERVICE_CALLERS is required when ENV=prod: register each calling service " +
 		"(SERVICE_CALLER_<NAME>_KID, _PUBKEY, _OPS, _REFTYPES); the internal service key alone is not a production credential")
+	// ErrOwedRefundsOff refuses a production boot that would record money
+	// owed back to buyers and never return it (com-2): the refund-required
+	// worker or the duplicate-capture consumer switched off without the named
+	// override.
+	ErrOwedRefundsOff = errors.New("PAYMENTS_REFUND_REQUIRED_WORKER and PAYMENTS_DUPLICATE_CAPTURE_CONSUMER must not be false when ENV=prod: " +
+		"captures owed back to buyers would never be refunded; set PAYMENTS_ALLOW_OWED_REFUNDS_OFF=true only during an incident")
 )
 
 // Resolve reads the environment through getenv (os.Getenv in production,
@@ -140,16 +153,20 @@ func Resolve(getenv func(string) string) (Config, error) {
 		}
 		cfg.FailedAttemptWindow = d
 	}
-	on, err := devDefaultFlag(getenv("PAYMENTS_REFUND_REQUIRED_WORKER"), getenv("ENV"), ErrInvalidRefundRequiredWorker)
+	on, err := owedRefundFlag(getenv("PAYMENTS_REFUND_REQUIRED_WORKER"), ErrInvalidRefundRequiredWorker)
 	if err != nil {
 		return Config{}, err
 	}
 	cfg.RefundRequiredWorker = on
-	on, err = devDefaultFlag(getenv("PAYMENTS_DUPLICATE_CAPTURE_CONSUMER"), getenv("ENV"), ErrInvalidDuplicateCaptureConsumer)
+	on, err = owedRefundFlag(getenv("PAYMENTS_DUPLICATE_CAPTURE_CONSUMER"), ErrInvalidDuplicateCaptureConsumer)
 	if err != nil {
 		return Config{}, err
 	}
 	cfg.DuplicateCaptureConsumer = on
+	cfg.OwedRefundsOffAllowed = strings.TrimSpace(getenv("PAYMENTS_ALLOW_OWED_REFUNDS_OFF")) == "true"
+	if cfg.Production && !(cfg.RefundRequiredWorker && cfg.DuplicateCaptureConsumer) && !cfg.OwedRefundsOffAllowed {
+		return Config{}, ErrOwedRefundsOff
+	}
 	allowStub := getenv("PAYMENTS_ALLOW_STUB") == "true"
 
 	switch {
@@ -169,20 +186,15 @@ func Resolve(getenv func(string) string) (Config, error) {
 	return cfg, nil
 }
 
-// devDefaultFlag resolves a money worker's flag (PAYMENTS_REFUND_REQUIRED_WORKER,
+// owedRefundFlag resolves an owed-refund switch (PAYMENTS_REFUND_REQUIRED_WORKER,
 // PAYMENTS_DUPLICATE_CAPTURE_CONSUMER): an explicit true or false wins; unset
-// is on for a dev ENV only; anything else is invalid.
-func devDefaultFlag(raw, env string, invalid error) (bool, error) {
+// is ON in every environment, because the safe state for money owed back is
+// to return it; anything else is invalid.
+func owedRefundFlag(raw string, invalid error) (bool, error) {
 	switch strings.TrimSpace(raw) {
-	case "true":
+	case "true", "":
 		return true, nil
 	case "false":
-		return false, nil
-	case "":
-		switch strings.TrimSpace(env) {
-		case "", "dev", "local":
-			return true, nil
-		}
 		return false, nil
 	}
 	return false, fmt.Errorf("%w (got %q)", invalid, raw)

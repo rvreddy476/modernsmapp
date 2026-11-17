@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/atpost/payments-service/internal/gateway"
+	"github.com/atpost/payments-service/internal/obs"
 	"github.com/atpost/payments-service/internal/store/postgres"
 )
 
@@ -134,6 +135,7 @@ func (s *Service) attemptOwedRefund(ctx context.Context, o postgres.OwedCapture)
 			s.parkOwedRefund(ctx, o, refundFailureCode(err), reason)
 			return
 		}
+		obs.OwedRefundFailed(owedFailRetryable)
 		slog.Warn("payments: owed-capture refund attempt failed; will retry",
 			"refund_required_id", o.ID, "attempt", o.Attempts, "error", reason)
 		if merr := s.store.MarkRefundRequiredAttemptFailed(ctx, o.ID, reason); merr != nil {
@@ -144,6 +146,9 @@ func (s *Service) attemptOwedRefund(ctx context.Context, o postgres.OwedCapture)
 	if err := s.store.MarkRefundRequiredSubmitted(ctx, o.ID, res.ProviderRefundID); err != nil {
 		slog.Warn("payments: could not mark the owed-capture refund submitted", "refund_required_id", o.ID, "error", err)
 		return
+	}
+	if o.ProviderRefundID == "" { // a re-claim under the same key is the same refund
+		obs.OwedRefundIssued(owedIssuedSubmitted)
 	}
 	slog.Info("payments: owed-capture refund submitted; the signed refund webhook resolves it",
 		"refund_required_id", o.ID, "intent_id", o.IntentID, "reason", o.Reason,
@@ -166,6 +171,7 @@ func (s *Service) settleOwedAlreadyRefunded(ctx context.Context, o postgres.Owed
 	}
 	refunds, err := lister.FetchPaymentRefunds(ctx, o.ProviderPaymentID)
 	if err != nil {
+		obs.OwedRefundFailed(owedFailRefundList)
 		_ = s.store.MarkRefundRequiredAttemptFailed(ctx, o.ID, "listing the payment's refunds: "+gateway.RedactError(err))
 		return
 	}
@@ -195,7 +201,9 @@ func (s *Service) settleOwedAlreadyRefunded(ctx context.Context, o postgres.Owed
 		s.parkOwedRefund(ctx, o, RefundFailAlreadyRefundedUnmatched, fmt.Sprintf(
 			"provider reports payment %s fully refunded, but none of its %d refund(s) is processed",
 			o.ProviderPaymentID, len(refunds)))
+		return
 	}
+	obs.OwedRefundIssued(owedIssuedAlreadyRefunded)
 }
 
 // settleStubOwedRefund settles an owed capture on a stub deployment. No
@@ -219,6 +227,9 @@ func (s *Service) settleStubOwedRefund(ctx context.Context, o postgres.OwedCaptu
 		slog.Error("payments: stub owed-capture refund failed; retried on the next claim",
 			"refund_required_id", o.ID, "error", err)
 	}
+	if err == nil {
+		obs.OwedRefundIssued(owedIssuedStubSettled)
+	}
 }
 
 // parkOwedRefund stops the worker on a row and says so at ERROR: the money is
@@ -231,6 +242,7 @@ func (s *Service) parkOwedRefund(ctx context.Context, o postgres.OwedCapture, co
 		return
 	}
 	if parked {
+		obs.OwedRefundFailed(code)
 		slog.Error("payments: OWED CAPTURE NEEDS ATTENTION — not refunded automatically; the money is still owed",
 			"refund_required_id", o.ID, "intent_id", o.IntentID, "reason", o.Reason,
 			"provider_payment_id", o.ProviderPaymentID, "amount_minor", o.AmountMinor,

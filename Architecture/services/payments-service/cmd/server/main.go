@@ -334,19 +334,27 @@ func main() {
 	// key so a retry after an ambiguous timeout yields one refund.
 	go svc.RunRefundWorker(workerCtx, 15*time.Second)
 
-	// Migration 018: late and duplicate captures recorded in
+	// Migration 018: late, duplicate and mismatched captures recorded in
 	// payments.refund_required are refunded to the buyer by this worker and
-	// resolved by the provider's signed refund webhook. Off unless
-	// PAYMENTS_REFUND_REQUIRED_WORKER=true, or on a dev ENV with it unset.
+	// resolved by the provider's signed refund webhook. On unless
+	// PAYMENTS_REFUND_REQUIRED_WORKER=false, which production refuses without
+	// PAYMENTS_ALLOW_OWED_REFUNDS_OFF=true (config.ErrOwedRefundsOff, com-2).
 	if cfg.RefundRequiredWorker {
 		go svc.RunRefundRequiredWorker(workerCtx, 30*time.Second)
 	}
 	slog.Info("payments: refund-required worker (late/duplicate captures)", "enabled", cfg.RefundRequiredWorker)
+	if !cfg.RefundRequiredWorker || !cfg.DuplicateCaptureConsumer {
+		slog.Error("payments: OWED-CAPTURE REFUNDS ARE OFF — buyers' late, duplicate and mismatched captures are recorded but not returned",
+			"worker", cfg.RefundRequiredWorker, "consumer", cfg.DuplicateCaptureConsumer,
+			"override", cfg.OwedRefundsOffAllowed)
+	}
+	// The alarm gauges run whatever the switches say (com-15).
+	go svc.RunOwedCaptureGauges(workerCtx, 30*time.Second)
 
 	// commerce.order.duplicate_capture: a second paid intent on one commerce
 	// order is recorded in payments.refund_required, for the worker above to
-	// refund. Off unless PAYMENTS_DUPLICATE_CAPTURE_CONSUMER=true, or on a dev
-	// ENV with it unset.
+	// refund. On unless PAYMENTS_DUPLICATE_CAPTURE_CONSUMER=false (the same
+	// production rule as the worker).
 	if cfg.DuplicateCaptureConsumer {
 		commerceConsumer := consumers.NewCommerceConsumer(store, strings.Split(kafkaBrokers, ","),
 			metrics.NewKafkaConsumerMetrics("payments-service"))
