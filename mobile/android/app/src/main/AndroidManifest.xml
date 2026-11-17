@@ -169,6 +169,7 @@
             android:screenOrientation="portrait"
             android:theme="@style/Theme.Momentum.VideoCreation"
             android:windowSoftInputMode="adjustResize"
+            tools:ignore="MissingClass"
             tools:replace="android:theme" />
         <!--
           Banuba Photo Editor (2026-09-05): the same licence, entered from the
@@ -178,7 +179,8 @@
         -->
         <activity
             android:name="com.banuba.sdk.pe.PhotoCreationActivity"
-            android:theme="@style/Theme.Momentum.PhotoCreation" />
+            android:theme="@style/Theme.Momentum.PhotoCreation"
+            tools:ignore="MissingClass" />
 
         <!-- Hilt WorkManager: the default androidx.startup initializer would
              build WorkManager with the STOCK factory before our
