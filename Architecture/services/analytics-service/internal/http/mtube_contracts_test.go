@@ -241,9 +241,10 @@ func TestContentInsightsAreOwnerOnlyAndNonEnumerating(t *testing.T) {
 	if rec := mtubeGet(r, "/v1/analytics/content/not-a-uuid", map[string]string{"X-User-Id": mtubeOwner.String()}); rec.Code != http.StatusNotFound {
 		t.Fatalf("bad id: status=%d", rec.Code)
 	}
-	// The existing /views route on the same prefix is untouched.
-	if rec := mtubeGet(r, path+"/views", nil); rec.Code != http.StatusOK {
-		t.Fatalf("/views: status=%d body=%s", rec.Code, rec.Body.String())
+	// The /views route on the same prefix is owner-gated too (reels-7);
+	// content_views_gate_test.go covers it.
+	if rec := mtubeGet(r, path+"/views", nil); rec.Code != http.StatusServiceUnavailable && rec.Code != http.StatusUnauthorized {
+		t.Fatalf("/views anonymous: status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

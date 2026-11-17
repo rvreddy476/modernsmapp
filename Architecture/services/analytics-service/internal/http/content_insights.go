@@ -46,6 +46,13 @@ type contentInsightsStore interface {
 	GetContentTrafficBySurface(ctx context.Context, contentID uuid.UUID, since time.Time) ([]postgres.SurfaceViews, error)
 }
 
+// contentOwnership is the one question the owner-or-admin gate asks. The
+// insights route and the view-bucket route (GetContentViews) both answer
+// it from the same analytics.content_ownership read.
+type contentOwnership interface {
+	OwnsContent(ctx context.Context, creatorID, contentID uuid.UUID) (bool, error)
+}
+
 // ContentInsights is the response body.
 type ContentInsights struct {
 	ContentID             uuid.UUID               `json:"content_id"`
@@ -117,7 +124,7 @@ func requireOwnedContentID(c *gin.Context, owns func(ctx context.Context, creato
 // requireOwnedOrAdminContentID widens the gate to an admin caller. The
 // admin still needs a verified user id; the ownership query is skipped,
 // not answered yes, so an unknown id is still a 404 for everyone.
-func requireOwnedOrAdminContentID(c *gin.Context, store contentInsightsStore) (uuid.UUID, bool) {
+func requireOwnedOrAdminContentID(c *gin.Context, store contentOwnership) (uuid.UUID, bool) {
 	if !callerIsAdmin(c) {
 		return requireOwnedContentID(c, store.OwnsContent)
 	}

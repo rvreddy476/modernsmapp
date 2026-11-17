@@ -1,6 +1,7 @@
 package http
 
 import (
+	"context"
 	"errors"
 	"log"
 	"net/http"
@@ -35,6 +36,26 @@ type Handler struct {
 	// tests; nil means time.Now.
 	insights contentInsightsStore
 	now      func() time.Time
+	// viewBuckets backs GET /v1/analytics/content/:contentId/views; nil
+	// means aggStore. A test seam like insights.
+	viewBuckets contentViewBucketsStore
+}
+
+// contentViewBucketsStore is what GetContentViews reads: the ownership
+// gate and the bucket sums.
+type contentViewBucketsStore interface {
+	contentOwnership
+	GetContentViewBuckets(ctx context.Context, contentID uuid.UUID) (*pgstore.ContentViewBuckets, error)
+}
+
+func (h *Handler) viewBucketsStore() contentViewBucketsStore {
+	if h.viewBuckets != nil {
+		return h.viewBuckets
+	}
+	if h.aggStore == nil {
+		return nil
+	}
+	return h.aggStore
 }
 
 // WithAggregateStore wires the durable aggregate store that backs the
@@ -179,35 +200,39 @@ func (h *Handler) IngestEvents(c *gin.Context) {
 // which subscribed to events nothing produced, so it was always empty
 // (plan 5B, issue M-13). The aggregate is the only source now. Response
 // shape is unchanged — the same six fields.
+//
+// Owner or admin only (reels-7), through the same gate as
+// GetContentInsights: no verified X-User-Id is a 401; a stranger, an
+// unknown id, a malformed id and private, pending or deleted content all
+// get the one identical 404. The engine-wide internal key is no guard
+// here: the gateway stamps it on every /v1/analytics request, anonymous
+// ones included. No in-cluster service reads this route (feeds and
+// post-service use /internal/content-views), so there is no identity-less
+// service caller to admit.
 func (h *Handler) GetContentViews(c *gin.Context) {
-	contentID := c.Param("contentId")
-	if contentID == "" {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "content_id is required", nil)
+	store := h.viewBucketsStore()
+	if store == nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "aggregate store not configured", nil)
+		return
+	}
+	contentID, ok := requireOwnedOrAdminContentID(c, store)
+	if !ok {
 		return
 	}
 
-	counts := make(map[string]int64)
-	if h.aggStore != nil {
-		if parsed, err := uuid.Parse(contentID); err == nil {
-			buckets, bErr := h.aggStore.GetContentViewBuckets(c.Request.Context(), parsed)
-			if bErr != nil {
-				log.Printf("Aggregate view lookup failed for %s: %v", contentID, bErr)
-			} else {
-				counts["display"] = buckets.Display
-				counts["views_1s"] = buckets.Views1s
-				counts["views_3s"] = buckets.Views3s
-				counts["views_10s"] = buckets.Views10s
-				counts["views_30s"] = buckets.Views30s
-				counts["views_60s"] = buckets.Views60s
-			}
-		}
+	counts := map[string]int64{
+		"display": 0, "views_1s": 0, "views_3s": 0, "views_10s": 0, "views_30s": 0, "views_60s": 0,
 	}
-
-	// Ensure all expected fields exist with zero defaults
-	for _, field := range []string{"display", "views_1s", "views_3s", "views_10s", "views_30s", "views_60s"} {
-		if _, ok := counts[field]; !ok {
-			counts[field] = 0
-		}
+	buckets, err := store.GetContentViewBuckets(c.Request.Context(), contentID)
+	if err != nil {
+		log.Printf("Aggregate view lookup failed for %s: %v", contentID, err)
+	} else if buckets != nil {
+		counts["display"] = buckets.Display
+		counts["views_1s"] = buckets.Views1s
+		counts["views_3s"] = buckets.Views3s
+		counts["views_10s"] = buckets.Views10s
+		counts["views_30s"] = buckets.Views30s
+		counts["views_60s"] = buckets.Views60s
 	}
 
 	api.JSON(c.Writer, http.StatusOK, counts, nil)
