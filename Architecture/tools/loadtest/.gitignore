@@ -1,0 +1,7 @@
+# Bearer tokens and exported id lists never enter the repository.
+*.tokens
+*.tsv
+data/
+# Raw k6 output; the recorded result goes in the results table instead.
+results/
+*.log
