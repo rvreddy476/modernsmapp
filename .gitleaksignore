@@ -123,3 +123,11 @@ ebc53d8b5814ddd368818b4bc84a727dea1193f0:mobile/android/core/database/src/test/k
 # fake: Made-up AKIA id (an alphabet run) the smoke-log scrubber test checks gets removed.
 18d4ce24aa0432100c34ae80738d946ba11de092:scripts/smoke/dev-smoke.test.mjs:aws-access-token:80
 18d4ce24aa0432100c34ae80738d946ba11de092:scripts/smoke/dev-smoke.test.mjs:aws-access-token:85
+
+# fake (added 2026-11-18, full-history scan with gitleaks 8.24.3, deploy-ci-2):
+# the shared service-token test fixture (kid fixture-1, audience "identity",
+# a token for the in-repo Ed25519 fixture public key beside it), and a
+# placeholder Google ID token a MockWebServer returns in the Android PKCE
+# sign-in unit test.
+a77c7241ec02cb3598db666c69c2107bea422df1:identity-platform/shared/servicetoken/fixture_shared_test.go:jwt:22
+b785d452a6a5b59b40e3bbb90181a6e396c0ef3d:mobile/android/core/auth/src/test/kotlin/com/us/android/core/auth/oauth/GoogleAuthorizationFlowTest.kt:generic-api-key:145

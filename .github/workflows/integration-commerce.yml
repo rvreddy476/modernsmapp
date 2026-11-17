@@ -26,8 +26,22 @@ on:
       - 'Architecture/shared/outbox/**'
       - 'Architecture/shared/store/migrationrunner/**'
       - '.github/workflows/integration-commerce.yml'
+  # Release branches too (gate line 9, 18 Nov): on PRs only this gate went
+  # 19 commits stale on codex/module-01-02-launch-safety. Same paths as the
+  # PR trigger, so unrelated pushes do not run it.
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'codex/**'
+      - 'feat/**'
+    paths:
+      - 'Architecture/services/commerce-service/**'
+      - 'Architecture/services/payments-service/**'
+      - 'Architecture/services/api-gateway/**'
+      - 'Architecture/shared/servicetoken/**'
+      - 'Architecture/shared/outbox/**'
+      - 'Architecture/shared/store/migrationrunner/**'
+      - '.github/workflows/integration-commerce.yml'
 
 jobs:
   # ─────────────────────────────────────────────────────────────────

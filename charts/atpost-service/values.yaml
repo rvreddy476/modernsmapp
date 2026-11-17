@@ -242,11 +242,17 @@ worker:
   # Bounded scratch for ffmpeg intermediates. Mounted at /tmp; the root
   # filesystem is read-only.
   scratchSizeLimit: 20Gi
-  # How long the kubelet waits after SIGTERM before SIGKILL. It only buys
-  # anything once the worker drains on SIGTERM (stops fetching, lets the
-  # current step finish; reels-56 / lv-5). Until then the worker cancels its
-  # jobs at once and the job is redelivered.
+  # How long the kubelet waits after SIGTERM before SIGKILL. The media worker
+  # drains on SIGTERM (stops fetching, lets the current step finish; reels-56
+  # / lv-5) for this long minus a margin, read from
+  # MEDIA_WORKER_TERMINATION_GRACE_SECONDS (limitsEnv below).
   terminationGracePeriodSeconds: 300
+  # REG-2: when true the worker container also gets
+  # MEDIA_WORKER_TERMINATION_GRACE_SECONDS (= terminationGracePeriodSeconds;
+  # the media worker sizes its SIGTERM drain from it) and
+  # MEDIA_WORKER_SCRATCH_LIMIT_BYTES (scratchSizeLimit in bytes), per class.
+  # OFF by default (dating-service's exporter reads neither).
+  limitsEnv: false
   livenessProbe: {}
   nodeSelector: {}
   tolerations: []

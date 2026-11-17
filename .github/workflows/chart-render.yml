@@ -1,0 +1,59 @@
+name: Chart render
+
+# N-2 (re-audit 17 Nov): charts/atpost-service/render_test.sh ran in no
+# workflow, so the worker split, do-not-disrupt, the worker PDBs, the
+# PodMonitor and the alert rules shipped without ever being rendered by helm.
+# This runs the QA/alert static guards and then the full render gate (every
+# prod, QA and staging values file, the ApplicationSets, the refusals and the
+# worker/partition/grace guards) with a pinned, checksum-verified helm.
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'charts/**'
+      - 'deploy/**'
+      - 'infra/terraform/modules/msk/topics-job/**'
+      - 'infra/terraform/envs/*/variables.tf'
+      - '.github/workflows/chart-render.yml'
+  push:
+    paths:
+      - 'charts/**'
+      - 'deploy/**'
+      - 'infra/terraform/modules/msk/topics-job/**'
+      - 'infra/terraform/envs/*/variables.tf'
+      - '.github/workflows/chart-render.yml'
+
+concurrency:
+  group: chart-render-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  render:
+    name: helm render gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      HELM_VERSION: v3.16.3
+      HELM_SHA256: f5355c79190951eed23c5432a3b920e071f4c00a64f75e077de0dd4cb7b294ea
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install helm (pinned)
+        run: |
+          set -euo pipefail
+          tgz="helm-${HELM_VERSION}-linux-amd64.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$tgz" "https://get.helm.sh/$tgz"
+          echo "${HELM_SHA256}  $RUNNER_TEMP/$tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tgz" -C "$RUNNER_TEMP" linux-amd64/helm
+          echo "HELM_BIN=$RUNNER_TEMP/linux-amd64/helm" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/linux-amd64/helm" version --short
+
+      - name: Static guards (QA + alerts/probes)
+        run: QA_GUARDS_ONLY=1 bash charts/atpost-service/render_test.sh
+
+      - name: Full render gate
+        run: bash charts/atpost-service/render_test.sh

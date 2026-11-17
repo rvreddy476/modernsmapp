@@ -21,10 +21,7 @@ externalSecret:
   data:
   - secretKey: INTERNAL_SERVICE_KEY
     remoteRef: internal_service_key
-  - secretKey: JWT_SECRET
-    remoteRef: jwt_secret
-  - secretKey: JWT_KID
-    remoteRef: jwt_kid
+  # REG-1: RS256 only, as values-staging.yaml; the HS256 secret is not mounted.
   - secretKey: JWT_PUBLIC_KEY_PEM
     remoteRef: jwt_public_key_pem
   secretStoreName: azure-key-vault
@@ -39,6 +36,16 @@ env:
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   JWT_RS256_KID: rsa-1
+  # RS256 only outside production (internal/http/jwt_config.go). Azure
+  # staging's identity-auth mounts JWT_PRIVATE_KEY_PEM, so it signs RS256.
+  JWT_DISABLE_HS256: "true"
+  # TODO(REG-1, needs a human): no JWT_ISSUER / JWT_AUDIENCE here because
+  # deploy/services/api-gateway/values-azure-staging.yaml and
+  # identity-auth-service/values-azure-staging.yaml set neither (identity-auth
+  # then mints its defaults). Outside production media-service checks them
+  # only when set; pin the same pair in all three files. Do NOT copy
+  # values-staging.yaml's atpost-api-staging audience unless Azure staging's
+  # identity-auth is given it too.
 ingress:
   enabled: false
 # P-17: the transcode worker is its own image (ffmpeg + cmd/worker); the server
@@ -58,3 +65,6 @@ worker:
       cpu: 2
       memory: 2Gi
   scratchSizeLimit: 20Gi
+  # REG-2: the chart's grace period and the scratch size as worker env; the
+  # worker sizes its SIGTERM drain from the grace.
+  limitsEnv: true

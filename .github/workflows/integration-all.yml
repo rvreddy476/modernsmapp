@@ -164,6 +164,34 @@ jobs:
         if: matrix.blocked == ''
         run: bash scripts/verify/go.sh --full --db "$INTEG_DSN" "${{ matrix.module }}"
 
+      # The money-critical packages run with -v (go_flags in
+      # scripts/ci/integration-services.yaml); print each test's result line
+      # so a named test can be confirmed from this log, pass or fail.
+      - name: Money-critical test names
+        if: >-
+          always() && matrix.blocked == '' &&
+          (matrix.module == 'Architecture/services/payments-service' ||
+           matrix.module == 'Architecture/services/commerce-service')
+        env:
+          MODULE: ${{ matrix.module }}
+        run: |
+          set -euo pipefail
+          case "$MODULE" in
+            */payments-service) pkg=internal/service ;;
+            *) pkg=internal/http ;;
+          esac
+          log="$(ls "$VERIFY_LOG_DIR"/integration-*"$(basename "$MODULE")"*.log 2>/dev/null | head -1 || true)"
+          if [ -z "$log" ]; then echo "::warning::no integration log for $MODULE"; exit 0; fi
+          # go test -p 1 -v prints a package's results, then its ok/FAIL line.
+          awk -v want="/$(basename "$MODULE")/$pkg" '
+            /^[ \t]*--- (PASS|FAIL|SKIP):/ { buf = buf $0 "\n"; next }
+            /^(ok|FAIL)[ \t]/ && NF >= 2 {
+              p = $2
+              if (substr(p, length(p) - length(want) + 1) == want) { printf "%s", buf; print; n++ }
+              buf = ""
+            }
+            END { if (!n) print "no result lines for *" want " (did the stage run?)" }' "$log"
+
       - name: Keep the logs
         if: failure() && matrix.blocked == ''
         uses: actions/upload-artifact@v4

@@ -1063,8 +1063,16 @@ services:
     build:
       context: ..
       dockerfile: services/media-service/Dockerfile.worker
+    # REG-2: on SIGTERM the worker stops taking jobs and lets the rendition in
+    # hand finish for MEDIA_WORKER_TERMINATION_GRACE_SECONDS minus a margin
+    # (cmd/worker/drain.go; 20 s when unset). Docker's default 10 s stop
+    # would leave a 5 s window. The two values below must stay equal. An idle
+    # worker still exits at once; `docker compose kill media-worker` ends a
+    # drain early. Same grace as the chart's long class.
+    stop_grace_period: 3600s
     environment: &media_worker_env
       <<: [*kafka_client_env]
+      MEDIA_WORKER_TERMINATION_GRACE_SECONDS: "3600"
       # Transcode classes (2026-11-07): short (reels, <= 10 min) and long.
       # The default runs both as separate consumer loops, so a reel never
       # waits behind a long video on this one worker. To split them across

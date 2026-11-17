@@ -35,9 +35,9 @@ externalSecret:
     - { secretKey: REDIS_PASSWORD, remoteRef: redis_password }
     - { secretKey: KAFKA_BROKERS, remoteRef: kafka_brokers }
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
-    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
-    - { secretKey: JWT_KID, remoteRef: jwt_kid }
-    # RS256 verification (public key); HS256 stays accepted in parallel.
+    # RS256 only, as production (REG-1 / reels-15): JWT_SECRET / JWT_KID are
+    # no longer mounted, since a verifier holding the HS256 secret can also
+    # mint. Staging identity-auth signs RS256 (it mounts JWT_PRIVATE_KEY_PEM).
     - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
     - { secretKey: MEDIA_CDN_BASE_URL, remoteRef: media_cdn_base_url }
     - { secretKey: MEDIA_CLOUDFRONT_KEY_PAIR_ID, remoteRef: media_cloudfront_key_pair_id }
@@ -58,6 +58,12 @@ env:
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   JWT_RS256_KID: rsa-1
+  # RS256 only outside production too (internal/http/jwt_config.go), with the
+  # issuer and audience of this environment's api-gateway / identity-auth
+  # (deploy/services/api-gateway/values-staging.yaml).
+  JWT_DISABLE_HS256: "true"
+  JWT_ISSUER: auth-service
+  JWT_AUDIENCE: "atpost-api-staging"
   DEPLOY_ENV: staging
   AWS_REGION: ap-south-1
   AWS_EC2_METADATA_DISABLED: "true"
@@ -118,3 +124,7 @@ worker:
       cpu: 2
       memory: 2Gi
   scratchSizeLimit: 20Gi
+  # REG-2: the chart's grace period (terminationGracePeriodSeconds default)
+  # and the scratch size reach the worker as env; it sizes its SIGTERM drain
+  # from the grace, so a drain always ends before the kubelet's SIGKILL.
+  limitsEnv: true

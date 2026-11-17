@@ -63,8 +63,11 @@
 #      no Docker): a quick check while editing values files. The full run is
 #      the gate.
 #
-# Helm is not installed on the dev machine, so it runs through the official
-# image (one container for all renders). Same binary CI would use.
+# Helm: with HELM_BIN set (or `helm` on PATH and no Docker requested) the
+# renders run with that binary; CI (.github/workflows/chart-render.yml) installs
+# a pinned, checksum-verified helm and uses this path. Otherwise they run
+# through the official image (one container for all renders).
+#   HELM_BIN=/path/to/helm ./charts/atpost-service/render_test.sh
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -151,7 +154,14 @@ qa_static_guards() {
 
   # Prod hosts: app./api./ws./admin./media.cleestudio.com, the bare domain
   # (any cleestudio.com not preceded by a label), comments included.
-  hits=$(grep -nE '(^|[^a-z0-9.-])((app|api|ws|admin|media)\.)?cleestudio\.com' "${QA_ALL[@]}" || true)
+  # One exemption (lv-67): post-service's ACTION_LINK_OWN_DOMAINS is the
+  # registrable domain whose host AND SUBDOMAINS count as in-app links
+  # (actionlinks.ParseOwnDomains / IsOwnDomain). It names no prod host: QA's
+  # qa./api-qa. hosts are subdomains of it, so QA needs the same value, and
+  # the launch-switch check below still holds it equal to prod's. Only that
+  # key, with exactly that value, is exempt.
+  hits=$(grep -nE '(^|[^a-z0-9.-])((app|api|ws|admin|media)\.)?cleestudio\.com' "${QA_ALL[@]}" \
+    | grep -vE "^deploy/services/post-service/values-qa\\.yaml:[0-9]+:  ACTION_LINK_OWN_DOMAINS: $QUOTE?cleestudio\\.com$QUOTE?\$" || true)
   [[ -z "$hits" ]] && ok "QA: no prod or bare-domain host in any QA file" || bad "QA: prod host in a QA file:"$'\n'"$hits"
   hits=$(grep -nE 'atpost/prod/|atpost-prod-|10\.30\.0\.0/16|release/prod' "${QA_ALL[@]}" || true)
   [[ -z "$hits" ]] && ok "QA: no atpost/prod/, atpost-prod-, prod CIDR or release/prod in any QA file" || bad "QA: prod name in a QA file:"$'\n'"$hits"
@@ -357,6 +367,10 @@ fi
 for f in "${PROD[@]}"; do job "$(id_of "$f")" ok "-f $f $LOCAL"; done
 for f in "${STAGING[@]}"; do job "$(id_of "$f")" ok "-f $f --set-string global.awsAccountId=$ACCT --set global.allowPlaceholders=true"; done
 for f in "${QA[@]}"; do job "$(id_of "$f")" ok "-f $f $LOCAL"; done
+# The Azure media overlays (REG-1 / REG-2): they must at least render, and the
+# worker grace checks below read them.
+AZURE_MEDIA=(deploy/services/media-service/values-azure-staging.yaml deploy/services/media-service/values-azure-prod.yaml)
+for f in "${AZURE_MEDIA[@]}"; do job "$(id_of "$f")" ok "-f $f $LOCAL"; done
 
 
 M=deploy/services/media-service/values-prod.yaml
@@ -459,9 +473,27 @@ while IFS='|' read -r id expect args; do
 done < /wkout/jobs.txt
 EOS
 cp "$JOBS" "$WORK/out/jobs.txt"
-MSYS_NO_PATHCONV=1 docker run --rm \
-  -v "$(host_path "$REPO_ROOT"):/wk" -v "$(host_path "$WORK/out"):/wkout" -w /wk \
-  --entrypoint sh "$HELM_IMAGE" /wkout/run.sh
+if [[ -z "${HELM_BIN:-}" ]] && ! command -v docker >/dev/null 2>&1 && command -v helm >/dev/null 2>&1; then
+  HELM_BIN="$(command -v helm)"
+fi
+if [[ -n "${HELM_BIN:-}" ]]; then
+  # Local helm: same jobs, with /wkout pointing at the work directory.
+  echo "rendering with $("$HELM_BIN" version --short 2>/dev/null || echo "$HELM_BIN")"
+  while IFS='|' read -r id expect args; do
+    [[ -z "$id" ]] && continue
+    args="${args//\/wkout\//$WORK/out/}"
+    # shellcheck disable=SC2086
+    if "$HELM_BIN" template rel ./charts/atpost-service $args > "$WORK/out/$id.out" 2> "$WORK/out/$id.err"; then
+      echo 0 > "$WORK/out/$id.rc"
+    else
+      echo 1 > "$WORK/out/$id.rc"
+    fi
+  done < "$JOBS"
+else
+  MSYS_NO_PATHCONV=1 docker run --rm \
+    -v "$(host_path "$REPO_ROOT"):/wk" -v "$(host_path "$WORK/out"):/wkout" -w /wk \
+    --entrypoint sh "$HELM_IMAGE" /wkout/run.sh
+fi
 
 R() { cat "$WORK/out/$1.out"; }
 while IFS='|' read -r id expect _; do
@@ -544,6 +576,82 @@ grep -q 'serviceAccountName: media-service' <<<"$media" || bad "worker does not 
 grep -q '^ *command:$' <<<"$media" && bad "media worker renders a command it never set"
 ok "worker: distinct name/selector/image, no Service, same IRSA identity, image CMD kept"
 
+# reels-4: a worker class never has more replicas than its topic has
+# partitions (the extra consumers sit idle in the group). The topics Job
+# (infra/terraform/modules/msk/topics-job) creates every topic, media.events
+# and media.events.long included, with ONE count, var.partitions, which each
+# environment passes as msk_topic_partitions (envs/<env>/variables.tf
+# default; a committed *.tfvars assignment would win).
+# deploy_replicas <render> → "<deployment name> <replicas>" lines.
+deploy_replicas() { awk '/^---/{k=""; n=""} /^kind: /{k=$2} k=="Deployment" && /^  name: /{n=$2} k=="Deployment" && /^  replicas: /{print n, $2}' <<<"$1"; }
+tf_partitions() {
+  local env="$1" v
+  v=$(cat infra/terraform/envs/"$env"/*.tfvars 2>/dev/null | awk '/^[ \t]*msk_topic_partitions[ \t]*=/{gsub(/[^0-9]/, "", $0); print; exit}')
+  [[ -n "$v" ]] || v=$(awk '/^variable "msk_topic_partitions"/{p=1} p && /default/{gsub(/[^0-9]/, "", $0); print; exit}' infra/terraform/envs/"$env"/variables.tf)
+  echo "$v"
+}
+TOPICS_TF=infra/terraform/modules/msk/topics-job
+for t in media.events media.events.long; do
+  grep -qE "^[[:space:]]*\"${t//./\\.}\",?[[:space:]]*(#.*)?\$" $TOPICS_TF/variables.tf || bad "reels-4: topic $t is not in $TOPICS_TF/variables.tf"
+done
+grep -qE -- '--partitions \$\{var\.partitions\}' $TOPICS_TF/main.tf || bad "reels-4: $TOPICS_TF/main.tf no longer creates every topic with var.partitions; teach this guard the per-topic count"
+for pair in prod:deploy/services/media-service/values-prod.yaml qa:deploy/services/media-service/values-qa.yaml; do
+  env="${pair%%:*}"; f="${pair#*:}"
+  parts="$(tf_partitions "$env")"
+  if [[ ! "$parts" =~ ^[0-9]+$ ]]; then bad "reels-4: no msk_topic_partitions for $env"; continue; fi
+  reps="$(deploy_replicas "$(R "$(id_of "$f")")")"
+  for cls in short:media.events long:media.events.long; do
+    n=$(awk -v d="media-service-worker-${cls%%:*}" '$1 == d {print $2}' <<<"$reps")
+    if [[ ! "$n" =~ ^[0-9]+$ ]]; then bad "reels-4: $f renders no media-service-worker-${cls%%:*} replicas"
+    elif (( n > parts )); then bad "reels-4: $f: media-service-worker-${cls%%:*} has $n replicas but ${cls#*:} has $parts partitions in $env"
+    else ok "reels-4: $env media-service-worker-${cls%%:*} $n replicas <= $parts partitions of ${cls#*:}"; fi
+  done
+done
+
+# REG-2: each worker Deployment carries its own grace period and scratch size
+# in bytes as env, equal to its pod spec (the worker sizes its SIGTERM drain
+# from MEDIA_WORKER_TERMINATION_GRACE_SECONDS, cmd/worker/drain.go).
+# worker_env <render> <deployment> <NAME> → the value in that Deployment.
+worker_env() { awk -v d="$2" -v e="$3" '/^---/{k=""; n=""} /^kind: /{k=$2} k=="Deployment" && /^  name: /{n=$2}
+  n==d && $1=="-" && $2=="name:" && $3==e { getline; v=$2; gsub(/"/, "", v); print v; exit }' <<<"$1"; }
+worker_grace() { awk -v d="$2" '/^---/{k=""; n=""} /^kind: /{k=$2} k=="Deployment" && /^  name: /{n=$2}
+  n==d && /terminationGracePeriodSeconds:/ {print $2; exit}' <<<"$1"; }
+for f in deploy/services/media-service/values-prod.yaml deploy/services/media-service/values-qa.yaml; do
+  out="$(R "$(id_of "$f")")"
+  for spec in short:600:53687091200 long:3600:85899345920; do
+    IFS=: read -r cls grace bytes <<<"$spec"; d="media-service-worker-$cls"
+    [[ "$(worker_grace "$out" "$d")" == "$grace" ]] || bad "REG-2: $f $d grace is not $grace"
+    [[ "$(worker_env "$out" "$d" MEDIA_WORKER_TERMINATION_GRACE_SECONDS)" == "$grace" ]] || bad "REG-2: $f $d MEDIA_WORKER_TERMINATION_GRACE_SECONDS is not $grace"
+    [[ "$(worker_env "$out" "$d" MEDIA_WORKER_SCRATCH_LIMIT_BYTES)" == "$bytes" ]] || bad "REG-2: $f $d MEDIA_WORKER_SCRATCH_LIMIT_BYTES is not $bytes"
+  done
+done
+# Staging and Azure: one both-class worker on the chart's default grace; the
+# env must equal whatever the pod spec says.
+for f in "${STAGING[@]}" "${AZURE_MEDIA[@]}"; do
+  [[ "$f" == deploy/services/media-service/* ]] || continue
+  out="$(R "$(id_of "$f")")"; g="$(worker_grace "$out" media-service-worker)"
+  [[ "$g" =~ ^[0-9]+$ && "$(worker_env "$out" media-service-worker MEDIA_WORKER_TERMINATION_GRACE_SECONDS)" == "$g" ]] \
+    || bad "REG-2: $f: MEDIA_WORKER_TERMINATION_GRACE_SECONDS does not equal the worker's grace ($g)"
+  [[ "$(worker_env "$out" media-service-worker MEDIA_WORKER_SCRATCH_LIMIT_BYTES)" =~ ^[0-9]+$ ]] || bad "REG-2: $f: no MEDIA_WORKER_SCRATCH_LIMIT_BYTES"
+done
+grep -q 'MEDIA_WORKER_TERMINATION_GRACE_SECONDS' <<<"$(R "$(id_of deploy/services/dating-service/values-prod.yaml)")" && bad "REG-2: dating worker got the media worker's limits env"
+ok "REG-2: worker grace and scratch bytes rendered as env per class (prod, QA, staging, Azure)"
+# N-1: the per-class queue rules collapse the pods per class (every worker
+# reports both classes), and the dead pipeline-wide class="" rule is gone.
+for f in deploy/services/media-service/values-prod.yaml deploy/services/media-service/values-qa.yaml; do
+  out="$(R "$(id_of "$f")")"
+  for cls in short long; do
+    grep -qF "max by (class) (media_transcode_queue_oldest_waiting_seconds{class=\"$cls\"})" <<<"$out" || bad "N-1: $f: the $cls queue rule does not read max by (class)"
+  done
+  grep -qF 'class=""' <<<"$out" && bad "N-1: $f: a rule still reads the unlabelled queue gauge"
+done
+ok "N-1: queue-wait rules are per class, one series per class"
+# REG-1: no media-service values file mounts the HS256 secret any more
+# (internal/http/jwt_config.go refuses it in production; staging and Azure
+# are RS256 only by JWT_DISABLE_HS256).
+hits=$(grep -nE 'secretKey: *JWT_SECRET(_PREVIOUS)?\b' deploy/services/media-service/values-*.yaml || true)
+[[ -z "$hits" ]] && ok "REG-1: no media-service values file mounts JWT_SECRET" || bad "REG-1: media-service mounts the HS256 secret:"$'\n'"$hits"
+
 dating="$(R "$(id_of deploy/services/dating-service/values-prod.yaml)")"
 { grep -q 'name: dating-service-worker' <<<"$dating" && grep -q -- '- /data-exporter' <<<"$dating"; } && ok "dating worker runs /data-exporter" || bad "dating worker is not the data exporter"
 
@@ -602,8 +710,13 @@ hits=$(grep -nE '(name|secretKey): "?(PAYMENTS_ALLOW_STUB|OTP_BYPASS_CODE|CALLS_
 # Only the four QA hosts are served.
 hits=$(grep -hoE '^ *- host: "?[^" ]+' "${QA_OUTS[@]}" | sed -E 's/.*host: "?//' | sort -u | grep -vxE '(qa|api-qa|ws-qa|admin-qa)\.cleestudio\.com' || true)
 [[ -z "$hits" ]] && ok "QA renders: ingress hosts are qa., api-qa., ws-qa., admin-qa. only" || bad "QA renders: unexpected ingress host(s): $hits"
-hits=$(grep -l '^kind: PodDisruptionBudget' "${QA_OUTS[@]}" || true)
-[[ -z "$hits" ]] && ok "QA renders: no PodDisruptionBudget (one replica)" || bad "QA renders: PDB with one replica: $hits"
+# With one replica a PDB blocks every node drain unless it allows one pod out.
+# The only PDB a QA render may carry is maxUnavailable >= 1 with no
+# minAvailable (the media worker PDBs, kept for parity with prod: lv-5).
+hits=$(awk '/^---/{p=0} /^kind: PodDisruptionBudget/{p=1; n=""} p && /^  name: /{n=$2}
+            p && /^  minAvailable:/ {print FILENAME ": " n " minAvailable " $2}
+            p && /^  maxUnavailable:/ && ($2 + 0) < 1 {print FILENAME ": " n " maxUnavailable " $2}' "${QA_OUTS[@]}")
+[[ -z "$hits" ]] && ok "QA renders: no drain-blocking PodDisruptionBudget (one replica; only maxUnavailable >= 1 worker budgets)" || bad "QA renders: drain-blocking PDB with one replica:"$'\n'"$hits"
 qpay="$(R "$(id_of deploy/services/payments-service/values-qa.yaml)")"
 grep -q 'cidr: "10.40.0.0/16"' <<<"$qpay" || bad "QA payments: the ALB (QA VPC CIDR) is not allowed to reach the webhook"
 grep -q 'host: "api-qa.cleestudio.com"' <<<"$qpay" || bad "QA payments: webhook is not on api-qa."

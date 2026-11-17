@@ -192,6 +192,8 @@ worker:
   # reels-5: the worker's /metrics on :9091, scraped by a PodMonitor.
   metrics:
     enabled: true
+  # REG-2: grace and scratch bytes as worker env (see values-prod).
+  limitsEnv: true
   # One replica per class, so maxUnavailable 1 never blocks a drain; kept
   # for parity with prod.
   pdb:
@@ -240,33 +242,26 @@ worker:
 prometheusRule:
   enabled: true
   rules:
-    # A video waited to START. media_transcode_queue_oldest_waiting_seconds
-    # (cmd/worker/readiness_metrics.go). Until the worker labels it by class
-    # it is one platform-wide series with no class label: this rule reads
-    # only that unlabelled series and goes quiet by itself once the class
-    # label lands, when the two rules below take over.
-    - alert: MediaTranscodeQueueWaiting
-      expr: max(media_transcode_queue_oldest_waiting_seconds{class=""}) > 1800
-      for: 10m
-      labels: { severity: warning }
-      annotations:
-        summary: A video has waited more than 30 minutes for a transcode worker to start it
-        description: "Workers are saturated, scaled to zero or not consuming. kubectl -n atpost get pods -l app.kubernetes.io/name=media-service,app.kubernetes.io/component=worker; worker logs."
-    # NEEDS class="short"|"long" on media_transcode_queue_oldest_waiting_seconds.
+    # A video waited to START, per class (N-1, lv-21). Since dc36af16e
+    # media_transcode_queue_oldest_waiting_seconds{class} is each class's OWN
+    # oldest wait (cmd/worker/readiness_metrics.go; 0 when nothing waits), so
+    # a long video's wait never reaches the short rule. Every worker pod
+    # reports BOTH classes with the same value: `max by (class)` collapses
+    # the pods into one series per class and never adds them up.
     - alert: MediaTranscodeShortQueueWaiting
-      expr: max(media_transcode_queue_oldest_waiting_seconds{class="short"}) > 600
+      expr: max by (class) (media_transcode_queue_oldest_waiting_seconds{class="short"}) > 600
       for: 10m
       labels: { severity: critical }
       annotations:
         summary: A reel has waited more than 10 minutes for a transcode worker
         description: "The short (reel) workers are saturated or down; new reels stay in processing. Check media-service-worker-short pods and media_transcode_total."
     - alert: MediaTranscodeLongQueueWaiting
-      expr: max(media_transcode_queue_oldest_waiting_seconds{class="long"}) > 21600
+      expr: max by (class) (media_transcode_queue_oldest_waiting_seconds{class="long"}) > 21600
       for: 15m
       labels: { severity: warning }
       annotations:
         summary: A long video has waited more than 6 hours for a transcode worker
-        description: "Every long worker is busy with multi-hour jobs or down. Check media-service-worker-long pods; consider more replicas (media.events.long has 6 partitions)."
+        description: "Every long worker is busy with multi-hour jobs or down. Check media-service-worker-long pods; consider more replicas (up to the partition count of media.events.long)."
     # NEEDS media_transcode_quarantined_total{class,reason} (counter, +1 per
     # QuarantineTranscode row; reels-5).
     - alert: MediaTranscodeQuarantined

@@ -26,14 +26,9 @@ externalSecret:
   data:
   - secretKey: INTERNAL_SERVICE_KEY
     remoteRef: internal_service_key
-  - secretKey: JWT_SECRET
-    remoteRef: jwt_secret
-  - secretKey: JWT_KID
-    remoteRef: jwt_kid
-  - secretKey: JWT_SECRET_PREVIOUS
-    remoteRef: jwt_secret_previous
-  - secretKey: JWT_KID_PREVIOUS
-    remoteRef: jwt_kid_previous
+  # REG-1 / N-4: no JWT_SECRET / JWT_SECRET_PREVIOUS (or their KIDs): with
+  # ENV prod media-service refuses to start while either is mounted
+  # (internal/http/jwt_config.go). Only the public key, as values-prod.yaml.
   - secretKey: JWT_PUBLIC_KEY_PEM
     remoteRef: jwt_public_key_pem
   secretStoreName: azure-key-vault
@@ -42,6 +37,16 @@ env:
   LOG_LEVEL: info
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   JWT_RS256_KID: rsa-1
+  # TODO(REG-1, needs a human): media-service in production ALSO refuses to
+  # start without JWT_ISSUER and JWT_AUDIENCE. They must equal what Azure
+  # prod's identity-auth mints and its api-gateway pins, but neither
+  # deploy/services/api-gateway/values-azure-prod.yaml nor
+  # identity-auth-service/values-azure-prod.yaml sets them (both run ENV prod
+  # and would refuse to start the same way). Set all three files together,
+  # e.g. as values-prod.yaml does (auth-service / atpost-api), or regenerate
+  # with scripts/gen-azure-values.sh prod.
+  # JWT_ISSUER: <azure prod issuer>
+  # JWT_AUDIENCE: <azure prod audience>
 ingress:
   enabled: false
 pdb:
@@ -64,3 +69,6 @@ worker:
       cpu: "4"
       memory: 4Gi
   scratchSizeLimit: 50Gi
+  # REG-2: the chart's grace period and the scratch size as worker env; the
+  # worker sizes its SIGTERM drain from the grace.
+  limitsEnv: true

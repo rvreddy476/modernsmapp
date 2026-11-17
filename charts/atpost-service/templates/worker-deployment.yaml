@@ -130,6 +130,25 @@ spec:
             - name: METRICS_PORT
               value: {{ $v.metrics.port | quote }}
             {{- end }}
+            {{- /*
+              REG-2: the pod's own grace period and scratch size, as the
+              worker sees them (worker.limitsEnv; media-service only). The
+              worker derives its SIGTERM drain window from
+              MEDIA_WORKER_TERMINATION_GRACE_SECONDS (cmd/worker/drain.go:
+              the grace minus a fifth, margin 5-60 s; 20 s when absent), so
+              the drain always ends before the kubelet's SIGKILL. A key the
+              worker env sets itself wins.
+            */}}
+            {{- if $v.limitsEnv }}
+            {{- if not (hasKey $v.env "MEDIA_WORKER_TERMINATION_GRACE_SECONDS") }}
+            - name: MEDIA_WORKER_TERMINATION_GRACE_SECONDS
+              value: {{ int $v.terminationGracePeriodSeconds | quote }}
+            {{- end }}
+            {{- if not (hasKey $v.env "MEDIA_WORKER_SCRATCH_LIMIT_BYTES") }}
+            - name: MEDIA_WORKER_SCRATCH_LIMIT_BYTES
+              value: {{ include "atpost-service.quantityBytes" $v.scratchSizeLimit | quote }}
+            {{- end }}
+            {{- end }}
             {{- range $k, $v := $v.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}

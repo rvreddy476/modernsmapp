@@ -160,7 +160,9 @@ modules:
     extra_dbs:
       - db: commerce_delivery_it_test
         vars: [COMMERCE_DELIVERY_TEST_DSN]
-    go_flags: "-timeout 30m -skip ^(TestProofFencedSurfacesRefuseWrites|TestProofNegativeControl_FenceRemovedAllowsTheWrite|TestProofIllegalOrderTransitionRejected|TestC3DatabaseRefusesAnUnsupportedMethodDirectly)$"
+    # -v: integration-all.yml prints the test names of the money-critical
+    # packages (commerce internal/http, payments internal/service) from the log.
+    go_flags: "-v -timeout 30m -skip ^(TestProofFencedSurfacesRefuseWrites|TestProofNegativeControl_FenceRemovedAllowsTheWrite|TestProofIllegalOrderTransitionRejected|TestC3DatabaseRefusesAnUnsupportedMethodDirectly)$"
 
   # payments-service: setup + migrations, never gated 998 (application_id NOT
   # NULL breaks seeds that leave it out). Needs a superuser
@@ -174,7 +176,9 @@ modules:
       - Architecture/services/payments-service/database/setup.sql
       - Architecture/services/payments-service/database/migrations/*.sql
     record_migrations: payments-service
-    go_flags: "-timeout 30m"
+    # -v: integration-all.yml prints the test names of the money-critical
+    # packages (commerce internal/http, payments internal/service) from the log.
+    go_flags: "-v -timeout 30m"
 
   # monetization-service bootstraps its own schema but reads analytics'
   # content_daily_summary and v_creator_daily_metrics_v1 (module-06 order).

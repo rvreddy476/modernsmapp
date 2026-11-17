@@ -200,3 +200,22 @@ app.kubernetes.io/component: worker
 atpost.io/worker-class: {{ .class }}
 {{- end }}
 {{- end }}
+
+{{/*
+A Kubernetes quantity ("50Gi", "512Mi", "20G", "1048576") as whole bytes,
+for env vars the worker reads as a byte count (MEDIA_WORKER_SCRATCH_LIMIT_BYTES
+from worker.scratchSizeLimit, REG-2 / lv-13). Integers and the binary/decimal
+suffixes Ki Mi Gi Ti K M G T only; anything else (a fraction, "50gi") fails
+the render rather than exporting a wrong limit.
+Usage: include "atpost-service.quantityBytes" "50Gi"
+*/}}
+{{- define "atpost-service.quantityBytes" -}}
+{{- $q := toString . | trim -}}
+{{- $units := dict "" 1 "Ki" 1024 "Mi" 1048576 "Gi" 1073741824 "Ti" 1099511627776 "K" 1000 "M" 1000000 "G" 1000000000 "T" 1000000000000 -}}
+{{- $n := regexFind "^[0-9]+" $q -}}
+{{- $u := trimPrefix $n $q -}}
+{{- if or (not $n) (not (hasKey $units $u)) -}}
+{{- fail (printf "cannot read quantity %q as bytes (want an integer with Ki/Mi/Gi/Ti/K/M/G/T)" $q) -}}
+{{- end -}}
+{{- mul (int64 $n) (index $units $u) -}}
+{{- end }}

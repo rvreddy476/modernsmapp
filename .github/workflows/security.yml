@@ -26,14 +26,36 @@ jobs:
   gitleaks:
     name: gitleaks (secrets scan)
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: gitleaks/gitleaks-action@v2
+      # Push and PR: the action scans only the commits in the push / PR
+      # (fast; it logs "N commits scanned").
+      - if: github.event_name == 'push' || github.event_name == 'pull_request'
+        uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Gate line 4: the weekly run and a manual dispatch scan the WHOLE
+      # history of every ref fetched, with the same gitleaks the action uses
+      # and the same .gitleaksignore. Pinned release, checksum-verified.
+      # --redact: a finding prints its fingerprint, never the value.
+      - name: gitleaks full history
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        env:
+          GITLEAKS_VERSION: 8.24.3
+          GITLEAKS_SHA256: 9991e0b2903da4c8f6122b5c3186448b927a5da4deef1fe45271c3793f4ee29c
+        run: |
+          set -euo pipefail
+          tgz="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$tgz" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$tgz"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$tgz" | sha256sum -c -
+          tar -xzf "$RUNNER_TEMP/$tgz" -C "$RUNNER_TEMP" gitleaks
+          git fetch --no-tags --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          "$RUNNER_TEMP/gitleaks" git --redact --no-banner \
+            --log-opts="--full-history --all" \
+            --gitleaks-ignore-path .gitleaksignore .
 
   govulncheck:
     name: govulncheck (${{ matrix.workspace }})
