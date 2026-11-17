@@ -361,6 +361,13 @@ var NonClaimMediaReferences = []MediaReference{
 		Table: "audio_tracks", Column: "former_source_media_id",
 		Why: "history of a retired sound's deleted source video; pinning it would keep deleted video bytes",
 	},
+	{
+		// Migration 034: the daily upload budget charges one row per
+		// confirmed video. Deleting the video does not refund the charge, so
+		// the row outlives the asset on purpose.
+		Table: "media_upload_usage", Column: "media_id",
+		Why: "upload-budget ledger row; it records a charge, and pinning it would keep every deleted upload's bytes",
+	},
 }
 
 // UploadPurposeComposer is the lease written by the social composer's `init`.

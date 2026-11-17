@@ -541,7 +541,7 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 
 	case events.PostCreated:
 		var p events.PostCreatedPayload
-		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+		if err := unmarshalPostPayload(envelope.Payload, &p); err != nil {
 			return err
 		}
 
@@ -671,7 +671,7 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		// M2-P0-2: the single contract for approval, rejection, flagging,
 		// needs-changes, takedown, visibility change, and deletion.
 		var p events.PostSearchEligibilityChangedPayload
-		if err := unmarshalPayload(envelope.Payload, &p); err != nil {
+		if err := unmarshalPostPayload(envelope.Payload, &p); err != nil {
 			return err
 		}
 		// Members-only gate (membership_gate.go): post-service emits this

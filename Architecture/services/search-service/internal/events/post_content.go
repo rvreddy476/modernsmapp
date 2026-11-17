@@ -177,3 +177,24 @@ func normalizeTags(in []string) []string {
 	}
 	return out
 }
+
+// unmarshalPostPayload decodes a post payload into the shared typed struct
+// without the four content fields above. The shared struct types them
+// (events.PostSearchTaxonomy), so one field of the wrong JSON type would
+// fail the whole event and hold the partition. applyContentFields reads them
+// from the raw payload instead, field by field.
+func unmarshalPostPayload(raw json.RawMessage, v any) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		// Not an object: let the typed decode report it as before.
+		return unmarshalPayload(raw, v)
+	}
+	for _, k := range []string{"tags", "hashtags", "category", "language"} {
+		delete(fields, k)
+	}
+	stripped, err := json.Marshal(fields)
+	if err != nil {
+		return unmarshalPayload(raw, v)
+	}
+	return unmarshalPayload(stripped, v)
+}
