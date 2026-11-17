@@ -3,7 +3,6 @@ package processing
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -134,6 +133,10 @@ type VideoMeta struct {
 // A fractional timestamp is required for short clips: rounding a one-second
 // upload to second 1 seeks to EOF and produces no thumbnail.
 func ExtractThumbnail(ctx context.Context, inputPath, outputPath string, atSecond float64, size int) error {
+	return extractThumbnailWith(ctx, runFFmpegArgs, inputPath, outputPath, atSecond, size)
+}
+
+func extractThumbnailWith(ctx context.Context, run ffmpegRunner, inputPath, outputPath string, atSecond float64, size int) error {
 	args := []string{
 		"-y", "-ss", fmt.Sprintf("%.3f", atSecond),
 		"-i", inputPath,
@@ -143,7 +146,7 @@ func ExtractThumbnail(ctx context.Context, inputPath, outputPath string, atSecon
 		"-map_metadata", "-1",
 		outputPath,
 	}
-	if out, err := runFFmpeg(ctx, args...); err != nil {
+	if out, err := run(ctx, args); err != nil {
 		return fmt.Errorf("ffmpeg thumbnail: %w: %s", err, lastLine(out))
 	}
 	return nil
@@ -199,15 +202,16 @@ func keyframeArgs() []string {
 	return []string{"-force_key_frames", fmt.Sprintf("expr:gte(t,n_forced*%d)", keyframeIntervalSeconds)}
 }
 
-// mp4TranscodeArgs builds the ffmpeg arguments for one MP4 rendition. No
-// -threads: ffmpeg's default (0, auto) lets x264 use every CPU the container
-// is given; pinning it would throw the worker's CPU limit away.
+// mp4TranscodeArgs builds the ffmpeg arguments for one MP4 rendition. The
+// thread count is explicit (threads.go, lv-13): ffmpeg's auto default reads
+// the node's CPU count, not the container's limit.
 func mp4TranscodeArgs(inputPath, outputPath string, maxHeight int, p mp4Profile) []string {
 	args := []string{
 		"-y", "-i", inputPath,
 		"-vf", fmt.Sprintf("scale=-2:%d", maxHeight),
 		"-c:v", "libx264", "-preset", p.Preset, "-crf", p.CRF,
 	}
+	args = append(args, threadArgs()...)
 	args = append(args, keyframeArgs()...)
 	args = append(args,
 		"-c:a", "aac", "-b:a", "128k",
@@ -379,135 +383,24 @@ func TranscodeToMP4Fast(ctx context.Context, inputPath, outputPath string, maxHe
 	return nil
 }
 
-// TranscodeReel runs a reel-optimized pipeline: no 1080p/4K, faster preset, 720p cap.
+// TranscodeReel runs a reel-optimized pipeline: no 1080p/4K, faster preset,
+// 720p cap. A rung that fails is logged and left out.
 func TranscodeReel(ctx context.Context, inputPath, tmpDir string) ([]TranscodeOutput, *VideoMeta, error) {
 	meta, err := ProbeVideo(ctx, inputPath)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	var outputs []TranscodeOutput
-
-	// 1. Thumbnail at 25% of duration
-	thumbAt := thumbnailTimestamp(meta.DurationFloat)
-	thumbPath := filepath.Join(tmpDir, "thumb_150.jpg")
-	if err := ExtractThumbnail(ctx, inputPath, thumbPath, thumbAt, 150); err == nil {
-		outputs = append(outputs, TranscodeOutput{
-			Name: "thumb_150", FilePath: thumbPath,
-			Width: 150, Height: 150, Mime: "image/jpeg",
-		})
-	}
-
-	// 2. 360p
-	if meta.Height >= 360 {
-		path360 := filepath.Join(tmpDir, "360p.mp4")
-		if err := TranscodeToMP4Fast(ctx, inputPath, path360, 360); err == nil {
-			outputs = append(outputs, TranscodeOutput{
-				Name: "360p", FilePath: path360,
-				Width: 0, Height: 360, Mime: "video/mp4",
-			})
-		}
-	}
-
-	// 3. 480p
-	if meta.Height >= 480 {
-		path480 := filepath.Join(tmpDir, "480p.mp4")
-		if err := TranscodeToMP4Fast(ctx, inputPath, path480, 480); err == nil {
-			outputs = append(outputs, TranscodeOutput{
-				Name: "480p", FilePath: path480,
-				Width: 0, Height: 480, Mime: "video/mp4",
-			})
-		}
-	}
-
-	// 4. 720p — cap for reels (no 1080p, no 4K)
-	if meta.Height >= 720 {
-		path720 := filepath.Join(tmpDir, "720p.mp4")
-		if err := TranscodeToMP4Fast(ctx, inputPath, path720, 720); err == nil {
-			outputs = append(outputs, TranscodeOutput{
-				Name: "720p", FilePath: path720,
-				Width: 0, Height: 720, Mime: "video/mp4",
-			})
-		}
-	}
-
-	return outputs, meta, nil
+	return transcodeLadder(ctx, inputPath, tmpDir, meta, true, runFFmpegArgs), meta, nil
 }
 
 // TranscodeVideo runs the full transcoding pipeline for a video file.
-// Returns output files that were created in tmpDir.
+// Returns output files that were created in tmpDir. A rung that fails is
+// logged and left out. The worker no longer calls this (it runs one rung at
+// a time, cmd/worker/rungs.go); the real-ffmpeg tests do.
 func TranscodeVideo(ctx context.Context, inputPath, tmpDir string) ([]TranscodeOutput, *VideoMeta, error) {
 	meta, err := ProbeVideo(ctx, inputPath)
 	if err != nil {
 		return nil, nil, err
 	}
-
-	var outputs []TranscodeOutput
-
-	// 1. Thumbnail at 25% of duration
-	thumbAt := thumbnailTimestamp(meta.DurationFloat)
-	thumbPath := filepath.Join(tmpDir, "thumb_150.jpg")
-	if err := ExtractThumbnail(ctx, inputPath, thumbPath, thumbAt, 150); err == nil {
-		outputs = append(outputs, TranscodeOutput{
-			Name: "thumb_150", FilePath: thumbPath,
-			Width: 150, Height: 150, Mime: "image/jpeg",
-		})
-	}
-
-	// 2. 360p (if source is >= 360p)
-	if meta.Height >= 360 {
-		path360 := filepath.Join(tmpDir, "360p.mp4")
-		if err := TranscodeToMP4(ctx, inputPath, path360, 360); err == nil {
-			outputs = append(outputs, TranscodeOutput{
-				Name: "360p", FilePath: path360,
-				Width: 0, Height: 360, Mime: "video/mp4",
-			})
-		}
-	}
-
-	// 3. 480p (if source is >= 480p)
-	if meta.Height >= 480 {
-		path480 := filepath.Join(tmpDir, "480p.mp4")
-		if err := TranscodeToMP4(ctx, inputPath, path480, 480); err == nil {
-			outputs = append(outputs, TranscodeOutput{
-				Name: "480p", FilePath: path480,
-				Width: 0, Height: 480, Mime: "video/mp4",
-			})
-		}
-	}
-
-	// 4. 720p (if source is >= 720p)
-	if meta.Height >= 720 {
-		path720 := filepath.Join(tmpDir, "720p.mp4")
-		if err := TranscodeToMP4(ctx, inputPath, path720, 720); err == nil {
-			outputs = append(outputs, TranscodeOutput{
-				Name: "720p", FilePath: path720,
-				Width: 0, Height: 720, Mime: "video/mp4",
-			})
-		}
-	}
-
-	// 5. 1080p (if source is >= 1080p)
-	if meta.Height >= 1080 {
-		path1080 := filepath.Join(tmpDir, "1080p.mp4")
-		if err := TranscodeToMP4(ctx, inputPath, path1080, 1080); err == nil {
-			outputs = append(outputs, TranscodeOutput{
-				Name: "1080p", FilePath: path1080,
-				Width: 0, Height: 1080, Mime: "video/mp4",
-			})
-		}
-	}
-
-	// 6. 4k (if source is >= 2160p)
-	if meta.Height >= 2160 {
-		path4k := filepath.Join(tmpDir, "4k.mp4")
-		if err := TranscodeToMP4(ctx, inputPath, path4k, 2160); err == nil {
-			outputs = append(outputs, TranscodeOutput{
-				Name: "4k", FilePath: path4k,
-				Width: 0, Height: 2160, Mime: "video/mp4",
-			})
-		}
-	}
-
-	return outputs, meta, nil
+	return transcodeLadder(ctx, inputPath, tmpDir, meta, false, runFFmpegArgs), meta, nil
 }

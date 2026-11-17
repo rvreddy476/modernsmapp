@@ -102,9 +102,7 @@ func TestToolTimeoutComesFromTheContextBudget(t *testing.T) {
 // A real ffmpeg is killed at its deadline and reported as ErrToolTimeout.
 // Tiny synthetic input; skipped where ffmpeg is not installed.
 func TestFFmpegIsKilledAtItsDeadline(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not installed")
-	}
+	requireFFmpegTools(t)
 	in := writeHead(t, mp4Head) // passes the guard; ffmpeg itself is what runs
 	ctx := WithToolTimeout(context.Background(), time.Nanosecond)
 	_, err := runTool(ctx, "ffmpeg", []string{"-i", in, "-f", "null", "-"}, true)
@@ -235,9 +233,7 @@ func TestRenditionsDropEveryMetadataTag(t *testing.T) {
 // End to end on a 1-second synthetic clip carrying a location and a title:
 // the 360p rendition has neither. Skipped without ffmpeg.
 func TestRenditionCarriesNoLocation(t *testing.T) {
-	if _, err := exec.LookPath("ffmpeg"); err != nil {
-		t.Skip("ffmpeg not installed")
-	}
+	requireFFmpegTools(t)
 	dir := t.TempDir()
 	in, out := filepath.Join(dir, "in"), filepath.Join(dir, "360p.mp4")
 	gen := exec.Command("ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "testsrc=size=640x360:rate=10",
@@ -245,7 +241,7 @@ func TestRenditionCarriesNoLocation(t *testing.T) {
 		"-metadata", "location=+37.7749-122.4194/", "-metadata", "title=secret",
 		"-movflags", "+use_metadata_tags", "-f", "mp4", in)
 	if b, err := gen.CombinedOutput(); err != nil {
-		t.Skipf("cannot synthesise a clip: %v %s", err, b)
+		skipOrFailFixture(t, "cannot synthesise a clip: %v %s", err, b)
 	}
 	if err := TranscodeToMP4Fast(context.Background(), in, out, 360); err != nil {
 		t.Fatal(err)

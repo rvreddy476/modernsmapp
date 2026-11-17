@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,13 +24,24 @@ import (
 //	GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go test -c -o fp.test ./internal/fingerprint
 //	docker run --rm --name fp-harness -v "$PWD:/t" atpost_stack-media-worker:latest /t/fp.test -test.run Harness -test.v
 
+// requireFFmpeg gates the harness: skipped in -short and without ffmpeg,
+// unless REQUIRE_FFMPEG=1 (the CI lane that installs ffmpeg), which runs it
+// or FAILS (reels-12: a skip without -v is invisible in CI).
 func requireFFmpeg(t *testing.T) {
 	t.Helper()
-	if testing.Short() {
-		t.Skip("ffmpeg harness skipped in -short")
+	required := false
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("REQUIRE_FFMPEG"))) {
+	case "1", "true", "yes":
+		required = true
 	}
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
+		if required {
+			t.Fatalf("ffmpeg is required (REQUIRE_FFMPEG=1) but not installed: %v", err)
+		}
 		t.Skipf("ffmpeg not installed: %v", err)
+	}
+	if testing.Short() && !required {
+		t.Skip("ffmpeg harness skipped in -short")
 	}
 }
 

@@ -137,6 +137,13 @@ type fakeLockedStore struct {
 	completes []string
 	complete  error
 	applied   bool
+
+	beginErr      error
+	deliveryEvent string
+	starts        int
+	finishes      int
+	jobTargets    []string
+	jobFailures   []string
 }
 
 func (f *fakeLockedStore) GetMedia(_ context.Context, _ uuid.UUID) (*postgres.MediaAsset, error) {
@@ -171,6 +178,42 @@ func (f *fakeLockedStore) CompleteTranscode(_ context.Context, _ string, _ uuid.
 	return f.complete
 }
 func (f *fakeLockedStore) ActivatePendingSlot(context.Context, uuid.UUID) error { return nil }
+
+// The delivery counter, as migration 033 keeps it: per request (event id).
+func (f *fakeLockedStore) BeginTranscodeDelivery(_ context.Context, _ uuid.UUID, eventID string) (int, int, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.beginErr != nil {
+		return 0, 0, f.beginErr
+	}
+	if f.deliveryEvent != eventID {
+		f.deliveryEvent, f.starts, f.finishes = eventID, 0, 0
+	}
+	f.starts++
+	return f.starts, f.finishes, nil
+}
+func (f *fakeLockedStore) FinishTranscodeDelivery(_ context.Context, _ uuid.UUID, eventID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.deliveryEvent == eventID {
+		f.finishes++
+	}
+	return nil
+}
+func (f *fakeLockedStore) CreateTranscodingJob(_ context.Context, job *postgres.TranscodingJob) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.jobTargets = append(f.jobTargets, job.TargetQuality)
+	return nil
+}
+func (f *fakeLockedStore) UpdateTranscodingJob(_ context.Context, _ uuid.UUID, status string, _ *string, _ *int64, msg *string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if status == "failed" && msg != nil {
+		f.jobFailures = append(f.jobFailures, *msg)
+	}
+	return nil
+}
 
 type prefixBlobs struct {
 	keys    []string

@@ -48,6 +48,12 @@ type workerConfig struct {
 	maxOriginalBytes int64
 	// scratchDir holds every job's temp files.
 	scratchDir string
+	// maxLostWorkers: runs of one request that may die without returning
+	// (crash, OOM kill, eviction) before it is recorded failed (lv-6).
+	maxLostWorkers int
+	// scratchLimitBytes is the scratch volume's own size limit (the pod's
+	// emptyDir sizeLimit), which statfs cannot see; 0 = unknown (lv-13).
+	scratchLimitBytes int64
 }
 
 const (
@@ -73,13 +79,18 @@ func loadWorkerConfig(getenv func(string) string) workerConfig {
 	// maxOriginalBytes: the upload routes refuse at init with this same cap
 	// (processing.MaxVideoOriginalBytes is the one source of truth).
 	cfg := workerConfig{
-		maxAttempts:      envIntFrom(getenv, "MEDIA_TRANSCODE_MAX_ATTEMPTS", defaultMaxAttempts),
-		limits:           lim,
-		maxOriginalBytes: processing.VideoOriginalCap(getenv),
-		scratchDir:       os.TempDir(),
+		maxAttempts:       envIntFrom(getenv, "MEDIA_TRANSCODE_MAX_ATTEMPTS", defaultMaxAttempts),
+		limits:            lim,
+		maxOriginalBytes:  processing.VideoOriginalCap(getenv),
+		scratchDir:        os.TempDir(),
+		maxLostWorkers:    envIntFrom(getenv, maxLostWorkersEnv, defaultMaxLostWorkers),
+		scratchLimitBytes: int64(envIntFrom(getenv, scratchLimitEnv, 0)),
 	}
 	if cfg.maxAttempts < 1 {
 		cfg.maxAttempts = 1
+	}
+	if cfg.maxLostWorkers < 1 {
+		cfg.maxLostWorkers = 1
 	}
 	return cfg
 }
@@ -110,6 +121,8 @@ type retryPolicy struct {
 	maxAttempts    int
 	initialBackoff time.Duration
 	maxBackoff     time.Duration
+	// class labels media_transcode_quarantined_total.
+	class transcodeClass
 }
 
 // errAttemptsExhausted wraps the last error of a message that failed
@@ -148,6 +161,7 @@ func retryUntilDurable(ctx context.Context, m kafka.Message, attempt func() erro
 			} else {
 				log.Printf("PERMANENTLY UNDELIVERABLE transcode message partition=%d offset=%d: %v "+
 					"(durably quarantined; committing so the partition is not stalled)", m.Partition, m.Offset, err)
+				transcodeQuarantined.WithLabelValues(labelOr(string(p.class), "unknown"), quarantineReason(err)).Inc()
 				return true
 			}
 		}
@@ -254,6 +268,61 @@ func checkOriginalBeforeDownload(info blob.ObjectInfo, subject *transcodeSubject
 		return fmt.Errorf("scratch volume has %d bytes free, %d needed for %s", space.free, need, subject.ID)
 	}
 	return nil
+}
+
+// scratchLimitEnv is the scratch volume's size limit in bytes: the pod's
+// emptyDir sizeLimit, which the kernel does not report (lv-13). statfs on an
+// emptyDir returns the NODE's disk, so a 48 GiB need passed on a 100 GiB node
+// with a 50 GiB emptyDir already half full, and the pod was evicted mid-job.
+const scratchLimitEnv = "MEDIA_WORKER_SCRATCH_LIMIT_BYTES"
+
+// boundedScratchSpace applies the volume's own limit to what statfs saw:
+// total is at most limit, and free is at most limit minus what is already
+// written under the scratch directory (by any job on this pod).
+func boundedScratchSpace(fs scratchSpace, known bool, limit, used int64) (scratchSpace, bool) {
+	if limit <= 0 {
+		return fs, known
+	}
+	out := scratchSpace{total: limit, free: limit - used}
+	if out.free < 0 {
+		out.free = 0
+	}
+	if known {
+		if fs.total > 0 && fs.total < out.total {
+			out.total = fs.total
+		}
+		if fs.free < out.free {
+			out.free = fs.free
+		}
+	}
+	return out, true
+}
+
+// scratchSpaceFor is the space the next job may use on the scratch volume
+// it actually writes to (cfg.scratchDir, where every job's temp dir lives).
+func scratchSpaceFor(cfg workerConfig) (scratchSpace, bool) {
+	fs, known := scratchSpaceOf(cfg.scratchDir)
+	if cfg.scratchLimitBytes <= 0 {
+		return fs, known
+	}
+	return boundedScratchSpace(fs, known, cfg.scratchLimitBytes, dirBytes(cfg.scratchDir))
+}
+
+// dirBytes is the total size of the regular files under dir.
+func dirBytes(dir string) int64 {
+	var n int64
+	_ = filepath.WalkDir(dir, func(_ string, d os.DirEntry, err error) error {
+		if err != nil {
+			return nil //nolint:nilerr // a file vanishing mid-walk (another job's cleanup) is not an error here
+		}
+		if d.Type().IsRegular() {
+			if info, err := d.Info(); err == nil {
+				n += info.Size()
+			}
+		}
+		return nil
+	})
+	return n
 }
 
 // classifyDownloadError: a changed object (If-Match failed) is permanent;

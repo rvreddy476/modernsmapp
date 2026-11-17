@@ -123,6 +123,7 @@ func hlsEncodeArgs(inputPath, outputM3U8, segmentPattern string, v HLSVariant, p
 		"-i", inputPath,
 		"-vf", fmt.Sprintf("scale=-2:%d", v.Height),
 		"-c:v", "libx264", "-preset", preset,
+		"-threads", strconv.Itoa(FFmpegThreads()),
 		"-b:v", v.VideoBitrate,
 		"-c:a", "aac", "-b:a", v.AudioBitrate,
 		"-map_metadata", "-1", "-map_metadata:s", "-1", "-map_chapters", "-1",
@@ -135,47 +136,12 @@ func hlsEncodeArgs(inputPath, outputM3U8, segmentPattern string, v HLSVariant, p
 }
 
 func generateHLS(ctx context.Context, inputPath, outputDir string, plan HLSPlan, run ffmpegRunner) (masterPlaylistPath string, variantPaths []string, results []hlsRungResult, err error) {
-	variants := hlsVariantsFor(plan)
-	preset := hlsPreset(plan)
-	for _, v := range variants {
-		outputM3U8 := filepath.Join(outputDir, v.Quality+".m3u8")
-		segmentPattern := filepath.Join(outputDir, v.Quality+"_%03d.ts")
-		res := hlsRungResult{Quality: v.Quality, Method: hlsRungEncoded}
-
-		if src, ok := hlsRenditionFor(plan, v); ok {
-			reason := copyHLSRung(ctx, run, src, outputM3U8, segmentPattern)
-			if reason == "" {
-				res.Method = hlsRungCopied
-			} else {
-				if ctx.Err() != nil {
-					return "", nil, results, ctx.Err()
-				}
-				res.FallbackReason = reason
-				log.Printf("HLS %s: stream copy of %s rejected (%s); encoding from the original",
-					v.Quality, filepath.Base(src), reason)
-				// A failed copy can leave a partial playlist and segments;
-				// the encode must not inherit a stale tail.
-				removeHLSRungFiles(outputDir, v.Quality)
-			}
-		} else if len(plan.Renditions) > 0 {
-			res.FallbackReason = "no MP4 rendition of this height"
-			log.Printf("HLS %s: no MP4 rendition of this height; encoding from the original", v.Quality)
+	for _, v := range hlsVariantsFor(plan) {
+		paths, res, err := generateHLSRung(ctx, inputPath, outputDir, plan, v, run)
+		if err != nil {
+			return "", nil, results, err
 		}
-
-		if res.Method == hlsRungEncoded {
-			if out, runErr := run(ctx, hlsEncodeArgs(inputPath, outputM3U8, segmentPattern, v, preset)); runErr != nil {
-				return "", nil, results, fmt.Errorf("ffmpeg HLS %s failed: %w\n%s", v.Quality, runErr, out)
-			}
-		}
-
-		variantPaths = append(variantPaths, outputM3U8)
-		tsFiles, _ := filepath.Glob(filepath.Join(outputDir, v.Quality+"_*.ts"))
-		variantPaths = append(variantPaths, tsFiles...)
-
-		res.BandwidthBPS = nominalHLSBandwidth[v.Quality]
-		if bps, ok := peakSegmentBandwidth(outputM3U8); ok {
-			res.BandwidthBPS = bps
-		}
+		variantPaths = append(variantPaths, paths...)
 		results = append(results, res)
 	}
 
@@ -184,6 +150,95 @@ func generateHLS(ctx context.Context, inputPath, outputDir string, plan HLSPlan,
 		return "", nil, results, fmt.Errorf("write HLS master: %w", err)
 	}
 	return masterPlaylistPath, variantPaths, results, nil
+}
+
+// generateHLSRung produces ONE rung of the ladder in outputDir: a stream copy
+// of its MP4 rendition when the plan has one, else (or when the copy is
+// unusable) an encode from inputPath. Returns the rung's playlist followed by
+// its segments.
+func generateHLSRung(ctx context.Context, inputPath, outputDir string, plan HLSPlan, v HLSVariant, run ffmpegRunner) ([]string, hlsRungResult, error) {
+	outputM3U8 := filepath.Join(outputDir, v.Quality+".m3u8")
+	segmentPattern := filepath.Join(outputDir, v.Quality+"_%03d.ts")
+	res := hlsRungResult{Quality: v.Quality, Method: hlsRungEncoded}
+
+	if src, ok := hlsRenditionFor(plan, v); ok {
+		reason := copyHLSRung(ctx, run, src, outputM3U8, segmentPattern)
+		if reason == "" {
+			res.Method = hlsRungCopied
+		} else {
+			if ctx.Err() != nil {
+				return nil, res, ctx.Err()
+			}
+			res.FallbackReason = reason
+			log.Printf("HLS %s: stream copy of %s rejected (%s); encoding from the original",
+				v.Quality, filepath.Base(src), reason)
+			// A failed copy can leave a partial playlist and segments;
+			// the encode must not inherit a stale tail.
+			removeHLSRungFiles(outputDir, v.Quality)
+		}
+	} else if len(plan.Renditions) > 0 {
+		res.FallbackReason = "no MP4 rendition of this height"
+		log.Printf("HLS %s: no MP4 rendition of this height; encoding from the original", v.Quality)
+	}
+
+	if res.Method == hlsRungEncoded {
+		if out, runErr := run(ctx, hlsEncodeArgs(inputPath, outputM3U8, segmentPattern, v, hlsPreset(plan))); runErr != nil {
+			return nil, res, fmt.Errorf("ffmpeg HLS %s failed: %w\n%s", v.Quality, runErr, out)
+		}
+	}
+
+	paths := []string{outputM3U8}
+	tsFiles, _ := filepath.Glob(filepath.Join(outputDir, v.Quality+"_*.ts"))
+	paths = append(paths, tsFiles...)
+
+	res.BandwidthBPS = nominalHLSBandwidth[v.Quality]
+	if bps, ok := peakSegmentBandwidth(outputM3U8); ok {
+		res.BandwidthBPS = bps
+	}
+	return paths, res, nil
+}
+
+// HLSRungsFor is the ladder (one HLSVariant per rung) a plan produces.
+func HLSRungsFor(plan HLSPlan) []HLSVariant { return hlsVariantsFor(plan) }
+
+// HLSRungOutput is one rung produced on its own (GenerateHLSRung).
+type HLSRungOutput struct {
+	Quality string
+	// Files is the rung's media playlist followed by its segments, all in
+	// the output directory, named exactly as the master expects.
+	Files        []string
+	BandwidthBPS int
+}
+
+// GenerateHLSRung produces one rung of the ladder (the worker's durable,
+// rung-at-a-time pipeline, lv-5): a stream copy of renditionPath when it is
+// a usable file, else an encode from inputPath. renditionPath "" means the
+// rung has no MP4 rendition.
+func GenerateHLSRung(ctx context.Context, inputPath, renditionPath, outputDir string, plan HLSPlan, v HLSVariant) (HLSRungOutput, error) {
+	plan.Renditions = nil
+	if renditionPath != "" {
+		plan.Renditions = map[string]string{v.Quality: renditionPath}
+	}
+	files, res, err := generateHLSRung(ctx, inputPath, outputDir, plan, v, execFFmpeg)
+	if err != nil {
+		return HLSRungOutput{}, err
+	}
+	return HLSRungOutput{Quality: v.Quality, Files: files, BandwidthBPS: res.BandwidthBPS}, nil
+}
+
+// HLSMasterRung is one line of the master playlist.
+type HLSMasterRung struct {
+	Quality      string
+	BandwidthBPS int
+}
+
+// HLSMasterPlaylist is the master playlist for the rungs given, in order.
+func HLSMasterPlaylist(rungs []HLSMasterRung) string {
+	rs := make([]hlsRungResult, 0, len(rungs))
+	for _, r := range rungs {
+		rs = append(rs, hlsRungResult{Quality: r.Quality, BandwidthBPS: r.BandwidthBPS})
+	}
+	return hlsMasterPlaylist(rs)
 }
 
 // hlsMasterPlaylist lists only the rungs that were produced: a master

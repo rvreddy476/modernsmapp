@@ -60,7 +60,7 @@ func TestLivePoisonOffsetWaitsForDurableQuarantine(t *testing.T) {
 		_, _ = pool.Exec(context.Background(), `ALTER TABLE IF EXISTS media_transcode_quarantine_offline RENAME TO media_transcode_quarantine`)
 	}()
 	blockedCtx, stop := context.WithTimeout(ctx, 250*time.Millisecond)
-	mayCommit := handleUntilDurable(blockedCtx, m, store, nil, processing.Scanner(nil))
+	mayCommit := handleUntilDurable(blockedCtx, blockedCtx, classShort, m, store, nil, processing.Scanner(nil))
 	stop()
 	if mayCommit {
 		t.Fatal("poison message was declared committable without a durable quarantine row")
@@ -72,7 +72,7 @@ func TestLivePoisonOffsetWaitsForDurableQuarantine(t *testing.T) {
 	if _, err := pool.Exec(ctx, `ALTER TABLE media_transcode_quarantine_offline RENAME TO media_transcode_quarantine`); err != nil {
 		t.Fatalf("restore quarantine sink: %v", err)
 	}
-	if !handleUntilDurable(ctx, m, store, nil, processing.Scanner(nil)) {
+	if !handleUntilDurable(ctx, ctx, classShort, m, store, nil, processing.Scanner(nil)) {
 		t.Fatal("durably quarantined poison was not committable")
 	}
 	if err := reader.CommitMessages(ctx, m); err != nil {

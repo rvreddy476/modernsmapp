@@ -226,12 +226,14 @@ func (r *longRouter) forwardIfLong(ctx context.Context, m kafka.Message) bool {
 
 // consume is one class's consumer loop: fetch, handle until durable, then
 // commit (the offset is committed only after the durable effect; see main).
-func consume(ctx context.Context, name string, reader *kafka.Reader, tracker *busyTracker, handle func(kafka.Message) bool) {
+// Fetching stops with fetchCtx (SIGTERM); a job that completes during the
+// drain is still committed, under commitCtx (drain.go).
+func consume(fetchCtx, commitCtx context.Context, name string, reader *kafka.Reader, tracker *busyTracker, handle func(kafka.Message) bool) {
 	log.Printf("Transcode consumer %q started", name)
 	for {
-		m, err := reader.FetchMessage(ctx)
+		m, err := reader.FetchMessage(fetchCtx)
 		if err != nil {
-			if ctx.Err() != nil {
+			if fetchCtx.Err() != nil {
 				break
 			}
 			log.Printf("Fetch error (%s): %v\n", name, err)
@@ -247,7 +249,7 @@ func consume(ctx context.Context, name string, reader *kafka.Reader, tracker *bu
 			log.Printf("Context cancelled before commit (%s); stopping without committing", name)
 			break
 		}
-		if err := reader.CommitMessages(ctx, m); err != nil {
+		if err := reader.CommitMessages(commitCtx, m); err != nil {
 			// The effect is durable and idempotent, so the redelivery this
 			// causes is absorbed by the inbox.
 			log.Printf("Commit error (%s; message will be redelivered): %v", name, err)

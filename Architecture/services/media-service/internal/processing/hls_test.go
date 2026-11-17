@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -282,7 +283,8 @@ func TestHLSCopyArgsAreAStreamCopyWithTheSameNames(t *testing.T) {
 // (reels audit 2026-10-30, finding 4).
 func TestHLSEncodeArgsAreTheOriginalLadderEncode(t *testing.T) {
 	got := strings.Join(hlsEncodeArgs("/in/o", "/h/720p.m3u8", "/h/720p_%03d.ts", defaultHLSVariants[1], "fast"), " ")
-	want := "-i /in/o -vf scale=-2:720 -c:v libx264 -preset fast -b:v 2500k -c:a aac -b:a 128k " +
+	want := "-i /in/o -vf scale=-2:720 -c:v libx264 -preset fast -threads " + strconv.Itoa(FFmpegThreads()) +
+		" -b:v 2500k -c:a aac -b:a 128k " +
 		"-map_metadata -1 -map_metadata:s -1 -map_chapters -1 " +
 		"-hls_time 6 -hls_playlist_type vod -hls_segment_filename /h/720p_%03d.ts /h/720p.m3u8 -y"
 	if got != want {
@@ -310,8 +312,10 @@ func TestMP4RenditionsForceKeyframesOnTheSegmentGrid(t *testing.T) {
 		if args[len(args)-1] != "/t/720p.mp4" {
 			t.Fatalf("mp4 args end with %q, want the output", args[len(args)-1])
 		}
-		if slices.Contains(args, "-threads") {
-			t.Fatalf("mp4 args pin the thread count: %q", joined)
+		// lv-13: the thread count is explicit, from the container's CPU
+		// limit, never ffmpeg's node-wide auto.
+		if !strings.Contains(joined, "-threads "+strconv.Itoa(FFmpegThreads())+" ") {
+			t.Fatalf("mp4 args %q do not pin the thread count to %d", joined, FFmpegThreads())
 		}
 	}
 }

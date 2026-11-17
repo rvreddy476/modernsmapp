@@ -35,14 +35,19 @@ var (
 		Help:    "Seconds a transcode request waited before a worker started it.",
 		Buckets: []float64{1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600},
 	})
-	oldestPendingAge = promauto.NewGauge(prometheus.GaugeOpts{
+	// Both gauges carry class ("short"/"long"): each worker Deployment
+	// (MEDIA_TRANSCODE_CLASSES) reports under the class(es) it consumes, so
+	// alert rules can select one. The VALUE is still the store's
+	// pipeline-wide oldest age: the store cannot yet tell a queued reel from
+	// a queued long video (that needs the class recorded on the request).
+	oldestPendingAge = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "media_transcode_oldest_pending_age_seconds",
-		Help: "Age of the oldest asset still at uploaded/processing (OldestPendingTranscodeAge).",
-	})
-	oldestQueuedWait = promauto.NewGauge(prometheus.GaugeOpts{
+		Help: "Age of the oldest asset still at uploaded/processing (OldestPendingTranscodeAge), reported by the worker of each class.",
+	}, []string{"class"})
+	oldestQueuedWait = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "media_transcode_queue_oldest_waiting_seconds",
-		Help: "Age of the oldest video queued for a worker and not yet started.",
-	})
+		Help: "Age of the oldest video queued for a worker and not yet started, reported by the worker of each class.",
+	}, []string{"class"})
 )
 
 // readinessProbe is the store surface the gauges poll.
@@ -51,12 +56,13 @@ type readinessProbe interface {
 	OldestQueuedTranscodeWait(ctx context.Context) (float64, error)
 }
 
-// runReadinessGauges refreshes the two gauges every interval.
-func runReadinessGauges(ctx context.Context, store readinessProbe, interval time.Duration) {
+// runReadinessGauges refreshes the two gauges every interval, under each
+// class this worker consumes.
+func runReadinessGauges(ctx context.Context, store readinessProbe, interval time.Duration, classes []transcodeClass) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
-		refreshReadinessGauges(ctx, store)
+		refreshReadinessGauges(ctx, store, classes)
 		select {
 		case <-ctx.Done():
 			return
@@ -65,7 +71,7 @@ func runReadinessGauges(ctx context.Context, store readinessProbe, interval time
 	}
 }
 
-func refreshReadinessGauges(ctx context.Context, store readinessProbe) {
+func refreshReadinessGauges(ctx context.Context, store readinessProbe, classes []transcodeClass) {
 	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	if age, err := store.OldestPendingTranscodeAge(pctx); err != nil {
@@ -73,14 +79,18 @@ func refreshReadinessGauges(ctx context.Context, store readinessProbe) {
 			log.Printf("Warning: oldest pending transcode age: %v", err)
 		}
 	} else {
-		oldestPendingAge.Set(age)
+		for _, c := range classes {
+			oldestPendingAge.WithLabelValues(string(c)).Set(age)
+		}
 	}
 	if wait, err := store.OldestQueuedTranscodeWait(pctx); err != nil {
 		if ctx.Err() == nil {
 			log.Printf("Warning: oldest queued transcode wait: %v", err)
 		}
 	} else {
-		oldestQueuedWait.Set(wait)
+		for _, c := range classes {
+			oldestQueuedWait.WithLabelValues(string(c)).Set(wait)
+		}
 	}
 }
 

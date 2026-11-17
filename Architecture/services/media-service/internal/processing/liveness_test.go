@@ -336,9 +336,7 @@ func TestMockLivenessAnalyzer_UnmarkedPassesAndMarkersFail(t *testing.T) {
 // Real ffmpeg, when installed on the test host: a generated 2 s clip samples
 // at 8 fps; a 6 s clip is refused without extracting frames.
 func TestFFmpegFrameSampler_Real(t *testing.T) {
-	if err := RequireFFmpeg(); err != nil {
-		t.Skipf("ffmpeg not installed: %v", err)
-	}
+	requireFFmpegTools(t)
 	dir := t.TempDir()
 	gen := func(seconds int) []byte {
 		p := filepath.Join(dir, fmt.Sprintf("clip_%d.mp4", seconds))

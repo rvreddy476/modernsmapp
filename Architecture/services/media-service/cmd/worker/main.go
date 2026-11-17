@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"image"
 	_ "image/jpeg"
 	"log"
 	"net/http"
@@ -23,7 +21,6 @@ import (
 	"github.com/atpost/media-service/internal/store/postgres"
 	"github.com/atpost/shared/events"
 	"github.com/atpost/shared/transport"
-	"github.com/buckket/go-blurhash"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -110,8 +107,16 @@ func main() {
 		log.Fatalf("Transcode classes: %v", err)
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
+	// Graceful shutdown (drain.go): stopCtx ends on SIGTERM and stops new
+	// work; ctx (the work context every job runs under) ends only at the
+	// drain deadline, so the rendition in hand can finish.
+	sig := make(chan os.Signal, 2)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
+	drain := drainWindow(os.Getenv, classes)
+	stopCtx, ctx, cancel := drainContexts(sig, drain)
 	defer cancel()
+	precreateWorkerMetrics()
+	log.Printf("SIGTERM drain window: %s (%s)", drain, drainSecondsEnv)
 
 	// Database
 	poolCfg, err := pgxpool.ParseConfig(pgDSN)
@@ -158,14 +163,6 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to configure Kafka dialer: %v\n", err)
 	}
-	// Graceful shutdown
-	go func() {
-		sig := make(chan os.Signal, 1)
-		signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-		<-sig
-		log.Println("Shutting down worker...")
-		cancel()
-	}()
 
 	go startMetricsServer()
 
@@ -182,15 +179,15 @@ func main() {
 	// consumer loop; the tracker tells it whether this worker is busy.
 	tracker := newBusyTracker(time.Now())
 	if stallSweepEnabled() {
-		go runStallSweeper(ctx, pgStore, tracker, postgres.DefaultStallPolicy(), stallSweepInterval)
+		go runStallSweeper(stopCtx, pgStore, tracker, postgres.DefaultStallPolicy(), stallSweepInterval)
 	} else {
 		log.Println("Transcode stall sweeper DISABLED (MEDIA_TRANSCODE_STALL_SWEEP=off)")
 	}
 
 	// Readiness gauges (P-16) and the Copyright Match fingerprint runner
 	// (shadow mode; claims nothing unless COPYRIGHT_FINGERPRINT_ENABLED).
-	go runReadinessGauges(ctx, pgStore, 30*time.Second)
-	go runFingerprintLoop(ctx, &fingerprintRunner{
+	go runReadinessGauges(stopCtx, pgStore, 30*time.Second, classes)
+	go runFingerprintLoop(stopCtx, &fingerprintRunner{
 		store:      pgStore,
 		blobs:      blobStore,
 		tracker:    tracker,
@@ -214,7 +211,11 @@ func main() {
 	//
 	// One loop per class (transcode_classes.go), so a reel never waits
 	// behind a long video in this process.
-	transcode := func(m kafka.Message) bool { return handleUntilDurable(ctx, m, pgStore, blobStore, scanner) }
+	transcodeFor := func(class transcodeClass) func(kafka.Message) bool {
+		return func(m kafka.Message) bool {
+			return handleUntilDurable(stopCtx, ctx, class, m, pgStore, blobStore, scanner)
+		}
+	}
 	var forward *kafka.Writer
 	var wg sync.WaitGroup
 	for _, class := range classes {
@@ -227,6 +228,7 @@ func main() {
 			MaxBytes: 10e6,
 			Dialer:   kafkaDialer,
 		})
+		transcode := transcodeFor(class)
 		handle := transcode
 		if class == classShort {
 			forward = kafka.NewWriter(kafka.WriterConfig{
@@ -246,7 +248,7 @@ func main() {
 		wg.Add(1)
 		go func(name string) {
 			defer wg.Done()
-			consume(ctx, name, reader, tracker, handle)
+			consume(stopCtx, ctx, name, reader, tracker, handle)
 			_ = reader.Close()
 		}(string(class) + " " + topic)
 	}
@@ -257,7 +259,7 @@ func main() {
 	log.Println("Worker stopped")
 }
 
-func processMessage(ctx context.Context, m kafka.Message, pgStore *postgres.MediaAssetStore, blobStore *blob.Store, scanner processing.Scanner) error {
+func processMessage(ctx context.Context, stopping func() bool, m kafka.Message, pgStore *postgres.MediaAssetStore, blobStore *blob.Store, scanner processing.Scanner) error {
 	var envelope events.EventEnvelope
 	if err := json.Unmarshal(m.Value, &envelope); err != nil {
 		// No redelivery will make this parse. Marked permanent so the retry
@@ -285,7 +287,7 @@ func processMessage(ctx context.Context, m kafka.Message, pgStore *postgres.Medi
 		return permanentTranscode(fmt.Errorf("parse media_asset_id: %w", err))
 	}
 
-	env := transcodeEnv{store: pgStore, blobs: blobStore, scanner: scanner, cfg: activeConfig}
+	env := transcodeEnv{store: pgStore, blobs: blobStore, scanner: scanner, cfg: activeConfig, stopping: stopping}
 	// Cheap replay check before expensive work. The guarantee is the inbox
 	// primary key inside CompleteTranscode; this only avoids re-running ffmpeg
 	// over an asset another replica already finished.
@@ -312,6 +314,8 @@ type lockedStore interface {
 	CompleteTranscode(ctx context.Context, eventID string, mediaAssetID uuid.UUID, outcome, hlsMasterKey,
 		moderationStatus string, completion postgres.TranscodeCompletion) error
 	ActivatePendingSlot(ctx context.Context, mediaAssetID uuid.UUID) error
+	deliveryCounter
+	jobRecorder
 }
 
 // transcodeRun is one transcode of a resolved subject (transcodeVideo in
@@ -358,18 +362,43 @@ func processTranscodeLocked(ctx context.Context, envelope events.EventEnvelope,
 		observeQueueWait(timing.RequestedAt, time.Now())
 	}
 
-	// The lease: stamped now and every heartbeatInterval until this returns,
-	// or until the job is past its budget (finding 3). A failed stamp is
-	// logged inside and never fails the job.
-	budget := &jobBudget{}
-	stopHeartbeat := startBudgetedHeartbeat(ctx, store, mediaAssetID, heartbeatInterval, budget)
-	defer stopHeartbeat()
+	// lv-6: count this run BEFORE any work, durably. A run that is
+	// OOM-killed, evicted or crashes never returns, so the retry cap never
+	// saw it and Kafka redelivered it for ever; starts minus finishes is how
+	// many runs of this request lost their worker.
+	lost, err := beginDelivery(ctx, store, mediaAssetID, envelope.EventID)
+	if errors.Is(err, postgres.ErrMediaNotFound) {
+		return skipGoneAsset(ctx, store, envelope.EventID, mediaAssetID)
+	}
+	if err != nil {
+		return err
+	}
+	// Recorded finished whatever the outcome, a clean drain included, and
+	// even once the work context has ended.
+	defer finishDelivery(ctx, store, mediaAssetID, envelope.EventID)
 
-	transcodeStart := time.Now()
 	moderationResult := ""
-	transcodeErr := run(ctx, subject, budget, &moderationResult)
-	transcodeDuration.Observe(time.Since(transcodeStart).Seconds())
+	var transcodeErr error
+	if lost >= activeConfig.maxLostWorkers {
+		transcodeErr = lostWorkerFailure(ctx, store, mediaAssetID, lost)
+	} else {
+		// The lease: stamped now and every heartbeatInterval until this
+		// returns, or until the job is past its budget (finding 3). A failed
+		// stamp is logged inside and never fails the job.
+		budget := &jobBudget{}
+		stopHeartbeat := startBudgetedHeartbeat(ctx, store, mediaAssetID, heartbeatInterval, budget)
+		defer stopHeartbeat()
 
+		transcodeStart := time.Now()
+		transcodeErr = run(ctx, subject, budget, &moderationResult)
+		transcodeDuration.Observe(time.Since(transcodeStart).Seconds())
+	}
+
+	if errors.Is(transcodeErr, errWorkerDraining) {
+		// Shutdown, not a failure: the finished renditions are durable and
+		// the offset stays uncommitted for the next owner.
+		return transcodeErr
+	}
 	if transcodeErr != nil {
 		if ctx.Err() == nil && assetGone(ctx, store, mediaAssetID) {
 			// Deleted while it ran (an FK failure on the variants, a
@@ -551,17 +580,25 @@ var activeConfig = loadWorkerConfig(os.Getenv)
 // at most activeConfig.maxAttempts times (retryUntilDurable). Reports
 // whether the message may now be committed; false means the context was
 // cancelled first and the offset must be left where it is.
+//
+// stopCtx ends on SIGTERM: no new attempt starts after it. The attempt
+// itself runs under workCtx, which lasts until the drain deadline (drain.go).
 func handleUntilDurable(
-	ctx context.Context,
+	stopCtx, workCtx context.Context,
+	class transcodeClass,
 	m kafka.Message,
 	pgStore *postgres.MediaAssetStore,
 	blobStore *blob.Store,
 	scanner processing.Scanner,
 ) bool {
-	return retryUntilDurable(ctx, m,
-		func() error { return processMessage(ctx, m, pgStore, blobStore, scanner) },
+	if stopCtx.Err() != nil {
+		return false // fetched as the drain began: leave it for the next owner
+	}
+	jobCtx := withTranscodeClass(workCtx, class)
+	return retryUntilDurable(stopCtx, m,
+		func() error { return processMessage(jobCtx, stoppingFunc(stopCtx), m, pgStore, blobStore, scanner) },
 		pgStore.QuarantineTranscode,
-		retryPolicy{maxAttempts: activeConfig.maxAttempts, initialBackoff: 2 * time.Second, maxBackoff: 2 * time.Minute})
+		retryPolicy{maxAttempts: activeConfig.maxAttempts, initialBackoff: 2 * time.Second, maxBackoff: 2 * time.Minute, class: class})
 }
 
 // transcodeEnv is what one transcode works with.
@@ -570,6 +607,17 @@ type transcodeEnv struct {
 	blobs   *blob.Store
 	scanner processing.Scanner
 	cfg     workerConfig
+	// stopping reports a SIGTERM (drain.go): the pipeline finishes the
+	// rendition in hand and starts no other.
+	stopping func() bool
+}
+
+// describeRungs is one log line of what a run encoded, reused and lost.
+func describeRungs(rr *rungRun, res *rungResult) string {
+	if res == nil {
+		return "no renditions recorded in this run"
+	}
+	return fmt.Sprintf("encoded %v, reused %v, failed %v (generation %d)", res.encoded, res.reused, res.failed, rr.generation)
 }
 
 // errJobBudgetExceeded: the transcode ran past processing.TranscodeJobBudget.
@@ -646,7 +694,7 @@ func runTranscode(parent context.Context, env transcodeEnv, subject *transcodeSu
 	if payload.RotateDegrees != 0 {
 		pinned.OriginalETag = ""
 	}
-	space, spaceKnown := scratchSpaceOf(tmpDir)
+	space, spaceKnown := scratchSpaceFor(env.cfg)
 	if err := checkOriginalBeforeDownload(info, &pinned, env.cfg.maxOriginalBytes, space, spaceKnown); err != nil {
 		return err
 	}
@@ -659,6 +707,9 @@ func runTranscode(parent context.Context, env transcodeEnv, subject *transcodeSu
 	if pin == "" {
 		pin = info.ETag
 	}
+	// The bytes every rendition is made from; a stored rendition is reused
+	// only for these same bytes (rungs.go).
+	sourceETag := pin
 	if joinedPath == "" { // a joined original is already on disk at inputPath
 		dlCtx, cancel := context.WithTimeout(ctx, s3Timeout(info.Size))
 		_, err = blobStore.DownloadObjectToFileIfMatch(dlCtx, subject.StorageKey, inputPath, pin)
@@ -704,6 +755,7 @@ func runTranscode(parent context.Context, env transcodeEnv, subject *transcodeSu
 		log.Printf("Rotation override %d° applied to original of media %s (%d bytes)", //nolint:gosec // G706: an int, a parsed uuid and an int64; nothing can forge a log line
 			payload.RotateDegrees, mediaAssetID, rotated.Size)
 		inputPath = rotatedPath
+		sourceETag = rotated.ETag
 	}
 
 	// 3. Probe, and refuse what is outside the limits before any encode
@@ -731,113 +783,46 @@ func runTranscode(parent context.Context, env transcodeEnv, subject *transcodeSu
 	// portrait/square. Landscape is long-form at any length.
 	isReel := processing.IsShortFormEncode(meta)
 
-	type jobEntry struct {
-		name  string
-		jobID uuid.UUID
-	}
-	var jobEntries []jobEntry
-	qualityHeights := []struct {
-		name   string
-		height int
-	}{
-		{"thumb_150", 0}, {"360p", 360}, {"480p", 480}, {"720p", 720}, {"1080p", 1080}, {"4k", 2160},
-	}
-	for _, q := range qualityHeights {
-		if q.height > 0 && meta.Height < q.height {
-			continue
-		}
-		// Skip 1080p and 4K for reels — cap at 720p
-		if isReel && (q.name == "1080p" || q.name == "4k") {
-			continue
-		}
+	// One transcoding_jobs row per rendition, so the status route can show
+	// each one; the rung pipeline completes or fails each row.
+	jobIDs := map[string]uuid.UUID{}
+	for _, rung := range processing.RungPlan(meta, isReel) {
 		jobID := uuid.New()
 		job := &postgres.TranscodingJob{
 			ID:            jobID,
 			MediaAssetID:  mediaAssetID,
-			TargetQuality: q.name,
+			TargetQuality: rung.Name,
 			Status:        "queued",
 		}
 		if err := pgStore.CreateTranscodingJob(ctx, job); err != nil {
-			return fmt.Errorf("create transcode job %s: %w", q.name, err)
+			return fmt.Errorf("create transcode job %s: %w", rung.Name, err)
 		}
 		if err := pgStore.UpdateTranscodingJob(ctx, jobID, "processing", nil, nil, nil); err != nil {
-			return fmt.Errorf("mark transcode job %s processing: %w", q.name, err)
+			return fmt.Errorf("mark transcode job %s processing: %w", rung.Name, err)
 		}
-		jobEntries = append(jobEntries, jobEntry{name: q.name, jobID: jobID})
+		jobIDs[rung.Name] = jobID
 	}
 
-	// 4. Run FFmpeg transcode pipeline (reel-optimized or standard)
-	var outputs []processing.TranscodeOutput
-	if isReel {
-		outputs, _, err = processing.TranscodeReel(ctx, inputPath, tmpDir)
-	} else {
-		outputs, _, err = processing.TranscodeVideo(ctx, inputPath, tmpDir)
-	}
-	if err != nil {
-		// Mark all jobs as failed
-		errMsg := err.Error()
-		for _, je := range jobEntries {
-			_ = pgStore.UpdateTranscodingJob(ctx, je.jobID, "failed", nil, nil, &errMsg)
-		}
-		return permanentUnlessCancelled(parent, fmt.Errorf("transcode: %w", err))
-	}
-
-	// 4b. Storyboard (MTube seek preview, 2026-09-27): a sprite sheet plus
-	// a VTT cue file for videos longer than a minute, recorded as the
-	// storyboard_jpg / storyboard_vtt variants. A failure here is logged
-	// and skipped rather than failing the transcode: the video plays
-	// without a hover preview, which beats never becoming ready.
-	if plan, ok := processing.PlanStoryboard(meta.DurationFloat); ok {
-		if sb, sbErr := processing.GenerateStoryboard(ctx, inputPath, tmpDir, plan); sbErr != nil {
-			if ctx.Err() != nil {
-				return sbErr
-			}
-			log.Printf("Warning: storyboard for media %s not generated: %v", mediaAssetID, sbErr)
-		} else {
-			outputs = append(outputs, sb...)
-		}
-	}
-
-	// 5. Upload variants and update job records. Keys derive from the
-	// ROW's storage key (finding 13).
+	// 4-5. Renditions, storyboard and HLS ladder, one durable unit at a
+	// time (rungs.go): each unit is uploaded and recorded complete before
+	// the next starts, its local files are deleted at once, and a re-run
+	// reuses every unit an earlier run finished. Keys derive from the ROW's
+	// storage key (finding 13).
 	baseKey := strings.TrimSuffix(subject.StorageKey, "/original")
-	var variants []postgres.MediaVariant
-
-	for _, out := range outputs {
-		objectName := out.ObjectName
-		if objectName == "" {
-			objectName = out.Name
-		}
-		objectKey := fmt.Sprintf("%s/%s", baseKey, objectName)
-		// Streamed from disk: a 1080p/4K rendition of an hours-long video is
-		// GiBs and must not be read into memory first.
-		sz, err := uploadFileBounded(ctx, blobStore, objectKey, out.FilePath, out.Mime)
-		if err != nil {
-			return fmt.Errorf("upload transcode variant %s: %w", out.Name, err)
-		}
-
-		w := out.Width
-		h := out.Height
-		variants = append(variants, postgres.MediaVariant{
-			MediaAssetID: mediaAssetID,
-			Name:         out.Name,
-			Width:        &w,
-			Height:       &h,
-			SizeBytes:    &sz,
-			Mime:         out.Mime,
-			ObjectKey:    objectKey,
-		})
-
-		// Update matching job record to completed
-		for _, je := range jobEntries {
-			if je.name == out.Name {
-				if err := pgStore.UpdateTranscodingJob(ctx, je.jobID, "completed", &objectKey, &sz, nil); err != nil {
-					return fmt.Errorf("mark transcode job %s complete: %w", out.Name, err)
-				}
-				break
-			}
-		}
+	rr := &rungRun{
+		mediaID: mediaAssetID, baseKey: baseKey, generation: payload.MediaGeneration,
+		sourceETag: sourceETag, input: inputPath, scratch: tmpDir, reel: isReel, meta: meta,
+		jobIDs: jobIDs, stopping: env.stopping,
 	}
+	rungs, err := runRungs(ctx, rr, blobStore, pgStore, ffmpegEncoder{})
+	if err != nil {
+		if errors.Is(err, errWorkerDraining) {
+			log.Printf("Transcode of media %s paused for shutdown after %s; the next run resumes from there", mediaAssetID, describeRungs(rr, rungs))
+		}
+		return err
+	}
+	log.Printf("Renditions for media %s: %s", mediaAssetID, describeRungs(rr, rungs))
+	variants := rungs.variants
 
 	// 6. Insert variants into DB
 	if len(variants) == 0 {
@@ -866,23 +851,9 @@ func runTranscode(parent context.Context, env transcodeEnv, subject *transcodeSu
 		}
 	}
 
-	// 7. Generate blurhash from video thumbnail
-	var videoBlurHash string
-	for _, out := range outputs {
-		if out.Name == "thumb_150" {
-			thumbData, readErr := os.ReadFile(out.FilePath)
-			if readErr == nil {
-				img, _, decErr := image.Decode(bytes.NewReader(thumbData))
-				if decErr == nil {
-					hash, hashErr := blurhash.Encode(4, 3, img)
-					if hashErr == nil {
-						videoBlurHash = hash
-					}
-				}
-			}
-			break
-		}
-	}
+	// 7. Blurhash: computed from the poster when it was encoded and kept in
+	// its marker, so a re-run that reuses the poster still has it.
+	videoBlurHash := rungs.blurHash
 
 	// 8. Update media metadata (dimensions, duration, blurhash)
 	durationSeconds := meta.DurationSeconds
@@ -912,52 +883,18 @@ func runTranscode(parent context.Context, env transcodeEnv, subject *transcodeSu
 		return fmt.Errorf("update media URLs: %w", err)
 	}
 
-	// 10. Generate HLS adaptive bitrate variants
-	hlsDir, err := os.MkdirTemp(env.cfg.scratchDir, "hls-"+mediaAssetID.String())
-	if err != nil {
-		return fmt.Errorf("create HLS temp dir: %w", err)
-	}
-	defer os.RemoveAll(hlsDir)
-	// The same reel/source facts that sized the MP4 renditions size the HLS
-	// ladder, so a phone reel is not re-encoded at 1080p after the MP4 pass
-	// deliberately skipped it. Each rung is repackaged from the MP4
-	// rendition of its height (still in tmpDir) instead of being encoded a
-	// second time; only a rung without one is encoded from the original.
-	masterPath, variantFiles, hlsErr := processing.GenerateHLSVariantsFor(
-		ctx, inputPath, hlsDir, processing.HLSPlan{
-			Reel:         isReel,
-			SourceHeight: meta.Height,
-			Renditions:   processing.MP4Renditions(outputs),
-		},
-	)
-	if hlsErr != nil {
-		return permanentUnlessCancelled(parent, fmt.Errorf("generate HLS variants: %w", hlsErr))
+	// 10. The HLS master over the rungs the pipeline produced or reused.
+	if len(rungs.hls) == 0 {
+		return permanentTranscode(fmt.Errorf("transcode produced no HLS rung"))
 	}
 	masterKey := baseKey + "/hls/master.m3u8"
-	masterData, err := os.ReadFile(masterPath)
-	if err != nil {
-		return fmt.Errorf("read HLS master: %w", err)
-	}
-	if err := uploadBytesBounded(ctx, blobStore, masterKey, masterData, "application/x-mpegURL"); err != nil {
+	if err := uploadBytesBounded(ctx, blobStore, masterKey, []byte(processing.HLSMasterPlaylist(rungs.hls)), "application/x-mpegURL"); err != nil {
 		return fmt.Errorf("upload HLS master: %w", err)
 	}
-	hlsPrefix := baseKey + "/hls/"
+	hlsPrefix := rr.hlsPrefix()
 	uploadedHLS := map[string]bool{masterKey: true}
-	for _, f := range variantFiles {
-		rel := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(f, hlsDir), "/"), "\\")
-		key := hlsPrefix + rel
-		uploadedHLS[key] = true
-		contentType := "video/MP2T"
-		if strings.HasSuffix(f, ".m3u8") {
-			contentType = "application/x-mpegURL"
-		}
-		fData, err := os.ReadFile(f)
-		if err != nil {
-			return fmt.Errorf("read HLS file %s: %w", f, err)
-		}
-		if err := uploadBytesBounded(ctx, blobStore, key, fData, contentType); err != nil {
-			return fmt.Errorf("upload HLS file %s: %w", key, err)
-		}
+	for k := range rungs.hlsKeys {
+		uploadedHLS[k] = true
 	}
 	// A re-run with a shorter ladder leaves the old rung's playlist and
 	// segments behind; nothing references them once the new master is up,
@@ -980,7 +917,6 @@ func runTranscode(parent context.Context, env transcodeEnv, subject *transcodeSu
 	if err := pgStore.UpdateHLSMasterKey(ctx, mediaAssetID, masterKey); err != nil {
 		return fmt.Errorf("store HLS master key: %w", err)
 	}
-	log.Printf("HLS generation completed for media %s", mediaAssetID)
 
 	// 10b. Content-safety scan — frame-sample the original and run each
 	// frame through the scanner. A single unsafe frame rejects the video.
@@ -1040,22 +976,14 @@ func classifyScanError(err error) error {
 // transcoding job, so the status route can say why the upload failed.
 // Best-effort: the terminal failure is recorded either way.
 func recordRefusal(ctx context.Context, store *postgres.MediaAssetStore, mediaID uuid.UUID, refusal error) {
-	jobID := uuid.New()
-	if err := store.CreateTranscodingJob(ctx, &postgres.TranscodingJob{
-		ID: jobID, MediaAssetID: mediaID, TargetQuality: "limits", Status: "queued",
-	}); err != nil {
-		log.Printf("Warning: refusal of media %s not recorded: %v", mediaID, err)
-		return
-	}
-	msg := refusal.Error()
-	if err := store.UpdateTranscodingJob(ctx, jobID, "failed", nil, nil, &msg); err != nil {
-		log.Printf("Warning: refusal of media %s not recorded: %v", mediaID, err)
-	}
+	recordJobFailure(ctx, store, mediaID, "limits", refusal)
 }
 
 // uploadFileBounded / uploadBytesBounded / deleteObjectBounded are the
 // worker's blob writes with a per-call deadline (finding 14).
-func uploadFileBounded(ctx context.Context, blobs *blob.Store, key, path, mime string) (int64, error) {
+func uploadFileBounded(ctx context.Context, blobs interface {
+	UploadFile(ctx context.Context, objectKey, path, contentType string) (int64, error)
+}, key, path, mime string) (int64, error) {
 	var size int64
 	if st, err := os.Stat(path); err == nil {
 		size = st.Size()
@@ -1065,7 +993,9 @@ func uploadFileBounded(ctx context.Context, blobs *blob.Store, key, path, mime s
 	return blobs.UploadFile(c, key, path, mime)
 }
 
-func uploadBytesBounded(ctx context.Context, blobs *blob.Store, key string, data []byte, mime string) error {
+func uploadBytesBounded(ctx context.Context, blobs interface {
+	UploadObject(ctx context.Context, objectKey string, data []byte, contentType string) error
+}, key string, data []byte, mime string) error {
 	c, cancel := context.WithTimeout(ctx, s3Timeout(int64(len(data))))
 	defer cancel()
 	return blobs.UploadObject(c, key, data, mime)

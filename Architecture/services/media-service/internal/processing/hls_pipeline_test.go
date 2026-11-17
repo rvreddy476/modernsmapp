@@ -36,15 +36,8 @@ import (
 // "repack@<preset>:<crf>" repackages renditions encoded with that profile.
 // MEDIA_PIPELINE_BENCH_REEL=1 benchmarks the reel pipeline instead.
 
-func requireFFmpegOrSkip(t *testing.T) {
-	t.Helper()
-	if testing.Short() {
-		t.Skip("real ffmpeg pipeline skipped in -short")
-	}
-	if err := RequireFFmpeg(); err != nil {
-		t.Skipf("ffmpeg not installed: %v", err)
-	}
-}
+// requireFFmpegOrSkip lives in ffmpeg_gate_test.go (REQUIRE_FFMPEG=1 turns
+// a missing ffmpeg into a failure, reels-12).
 
 // synthSource writes a lavfi clip: testsrc2 (moving, detailed) plus a sine
 // tone, H.264/AAC in MP4 like a phone upload.
