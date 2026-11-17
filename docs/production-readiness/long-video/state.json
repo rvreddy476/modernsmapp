@@ -1,6 +1,9 @@
 {
   "module": "long-video",
-  "product_names": ["PostTube", "MTube"],
+  "product_names": [
+    "PostTube",
+    "MTube"
+  ],
   "harness": "https://claude.ai/artifact/3jJjbBDb5d25LuSC4dGgaS",
   "branch": "codex/module-01-02-launch-safety",
   "head_at_audit": "7765e81a7",
@@ -17,16 +20,64 @@
   },
   "counts": {
     "new": {
-      "P0": 0, "P1": 11, "P2": 31, "P3": 35, "total": 77, "merged_from_original_ids": 90,
-      "VERIFIED-RUN": 9, "VERIFIED-READ": 64, "SUSPECTED": 4, "UNVERIFIED": 0
+      "P0": 0,
+      "P1": 11,
+      "P2": 31,
+      "P3": 35,
+      "total": 77,
+      "merged_from_original_ids": 90,
+      "VERIFIED-RUN": 9,
+      "VERIFIED-READ": 64,
+      "SUSPECTED": 4,
+      "UNVERIFIED": 0
     },
-    "inherited_from_reels": { "P1": 13, "P2": 34, "P3": 11, "total": 58 }
+    "inherited_from_reels": {
+      "P1": 13,
+      "P2": 34,
+      "P3": 11,
+      "total": 58
+    }
   },
   "launch_gate": {
-    "1": "FAIL", "2": "PASS", "3": "FAIL", "4": "UNVERIFIED", "5": "UNVERIFIED", "6": "FAIL",
-    "7": "N/A", "8": "FAIL", "9": "FAIL", "10": "FAIL", "11": "UNVERIFIED", "12": "FAIL"
+    "1": "FAIL",
+    "2": "PASS",
+    "3": "FAIL",
+    "4": "UNVERIFIED",
+    "5": "UNVERIFIED",
+    "6": "FAIL",
+    "7": "N/A",
+    "8": "FAIL",
+    "9": "FAIL",
+    "10": "FAIL",
+    "11": "UNVERIFIED",
+    "12": "FAIL"
   },
-  "p1_fix_order": ["reels-9", "reels-3", "lv-7", "reels-8", "lv-9", "lv-8", "lv-2 (with lv-27)", "reels-7", "reels-1", "lv-1", "lv-3", "reels-5", "lv-6", "lv-5", "reels-4", "lv-4", "reels-2", "reels-6", "reels-12", "reels-13", "reels-10", "lv-10", "reels-11", "lv-11"],
+  "p1_fix_order": [
+    "reels-9",
+    "reels-3",
+    "lv-7",
+    "reels-8",
+    "lv-9",
+    "lv-8",
+    "lv-2 (with lv-27)",
+    "reels-7",
+    "reels-1",
+    "lv-1",
+    "lv-3",
+    "reels-5",
+    "lv-6",
+    "lv-5",
+    "reels-4",
+    "lv-4",
+    "reels-2",
+    "reels-6",
+    "reels-12",
+    "reels-13",
+    "reels-10",
+    "lv-10",
+    "reels-11",
+    "lv-11"
+  ],
   "escalations": [
     "lv-27 (web restarts at 0:00 on an expired segment) becomes P1 if reels-2 is confirmed.",
     "lv-13 (worker sizing) becomes P1 if a measured encode shows eviction or OOM."
@@ -42,5 +93,38 @@
     "Founder: 'no length cap' against the worker's 4 h limit and the 24 h upload session. Which should change?",
     "Founder: does 'more realtime monetization' mean that creators see earnings and eligibility update live? Not yet confirmed."
   ],
-  "next": "Founder decides: start the P1 fixes (the order above clears reels and long video together), or audit another module first."
+  "next": "Founder decides: start the P1 fixes (the order above clears reels and long video together), or audit another module first.",
+  "reaudit": {
+    "date": "2026-11-17",
+    "head": "cdb530dd5",
+    "verdict": "NO-GO",
+    "p1": {
+      "fixed": 8,
+      "partly_fixed": 3,
+      "open": 0
+    },
+    "inherited_reels_p1": {
+      "fixed": 8,
+      "partly_fixed": 5,
+      "open": 0
+    },
+    "launch_gate_failing_1_to_8": [
+      "3",
+      "6"
+    ],
+    "now_passing": [
+      "8",
+      "12"
+    ],
+    "line_1": "UNVERIFIED; FAIL if Android must share playlists",
+    "files": [
+      "reaudit/r1-findings.md",
+      "../reaudit-2026-11-17.md",
+      "../reaudit-regression-review.md"
+    ],
+    "blocking": [
+      "lv-28 cover-frame thumbnail_url unchecked",
+      "nine stranger tests missing (line 3)"
+    ]
+  }
 }

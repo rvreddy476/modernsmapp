@@ -15,14 +15,47 @@
     "extra-scope": "complete (06-extra-scope.md), kept out of the verdict"
   },
   "counts": {
-    "P0": 0, "P1": 14, "P2": 56, "P3": 35, "total": 105, "merged_from_original_ids": 119,
-    "VERIFIED-RUN": 9, "VERIFIED-READ": 83, "SUSPECTED": 13, "UNVERIFIED": 0
+    "P0": 0,
+    "P1": 14,
+    "P2": 56,
+    "P3": 35,
+    "total": 105,
+    "merged_from_original_ids": 119,
+    "VERIFIED-RUN": 9,
+    "VERIFIED-READ": 83,
+    "SUSPECTED": 13,
+    "UNVERIFIED": 0
   },
   "launch_gate": {
-    "1": "FAIL", "2": "PASS", "3": "FAIL", "4": "UNVERIFIED", "5": "UNVERIFIED", "6": "FAIL",
-    "7": "N/A", "8": "FAIL", "9": "FAIL", "10": "FAIL", "11": "UNVERIFIED", "12": "FAIL"
+    "1": "FAIL",
+    "2": "PASS",
+    "3": "FAIL",
+    "4": "UNVERIFIED",
+    "5": "UNVERIFIED",
+    "6": "FAIL",
+    "7": "N/A",
+    "8": "FAIL",
+    "9": "FAIL",
+    "10": "FAIL",
+    "11": "UNVERIFIED",
+    "12": "FAIL"
   },
-  "p1_fix_order": ["reels-9", "reels-3", "reels-1", "reels-5", "reels-4", "reels-2", "reels-6", "reels-8", "reels-7", "reels-12", "reels-10", "reels-13", "reels-14", "reels-11"],
+  "p1_fix_order": [
+    "reels-9",
+    "reels-3",
+    "reels-1",
+    "reels-5",
+    "reels-4",
+    "reels-2",
+    "reels-6",
+    "reels-8",
+    "reels-7",
+    "reels-12",
+    "reels-10",
+    "reels-13",
+    "reels-14",
+    "reels-11"
+  ],
   "open_questions": [
     "D-1 / reels-2: browser test on staging (steps in verify/v2-security-perf.md). If the MP4 fallback also fails CORS, reels-2 becomes P0 for the web.",
     "reels-E-3: terraform plan, to see whether the EKS module ignores disk_size=100 (worker scratch on a 20 GiB node disk).",
@@ -33,5 +66,35 @@
     "Do post-service and search-service share one Redis for trending?",
     "Extra scope: does 'more realtime monetization' mean that creators see earnings and eligibility update live? Not yet confirmed with the founder."
   ],
-  "next": "Long-video audit with the same harness and the same extra scope (Settings, Upload settings, realtime monetization, creative features)."
+  "next": "Long-video audit with the same harness and the same extra scope (Settings, Upload settings, realtime monetization, creative features).",
+  "reaudit": {
+    "date": "2026-11-17",
+    "head": "cdb530dd5",
+    "verdict": "NO-GO",
+    "p1": {
+      "fixed": 7,
+      "partly_fixed": 7,
+      "open": 0
+    },
+    "launch_gate_failing_1_to_8": [
+      "1",
+      "3",
+      "6"
+    ],
+    "now_passing": [
+      "8",
+      "12"
+    ],
+    "files": [
+      "reaudit/r1-findings.md",
+      "../reaudit-2026-11-17.md",
+      "../reaudit-regression-review.md"
+    ],
+    "blocking": [
+      "reels-39 web upload resume",
+      "reels-18 like/comment on a pending reel",
+      "voiceover route: no size cap, unhardened ffmpeg",
+      "swipe and report-moderation journeys never executed"
+    ]
+  }
 }
