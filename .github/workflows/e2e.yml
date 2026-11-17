@@ -42,14 +42,18 @@ jobs:
           - domain: social
             # trust-safety-service: the home feed reads the viewer's keyword
             # filters from it and answers 502 HYDRATION_FAILED without it.
-            services: "api-gateway user-service graph-service post-service feed-service trust-safety-service"
+            # identity-profile: every feed card carries its author's profile,
+            # and the feed answers 502 when it cannot read one. Its tables
+            # are identity-auth's, so that starts too.
+            services: "api-gateway identity-auth identity-profile user-service graph-service post-service feed-service trust-safety-service"
             # Every service the flow calls, feed-service (8086) included: it
             # was missing, so the feed could be polled before it listened.
-            health: "http://localhost:8080 http://localhost:8082 http://localhost:8083 http://localhost:8084 http://localhost:8086 http://localhost:8091"
+            health: "http://localhost:8080 http://localhost:8081 http://localhost:8098 http://localhost:8082 http://localhost:8083 http://localhost:8084 http://localhost:8086 http://localhost:8091"
             run: "TestE2E_Social"
             # graph-service only follows ids it finds in user-service's users
             # table, so the flow needs two real rows (see "Seed E2E users").
             seed_users: true
+            seed_identity: true
           - domain: media
             services: "api-gateway media-service"
             health: "http://localhost:8080 http://localhost:8087"
@@ -206,7 +210,7 @@ jobs:
             case "$svc" in
               user-service|feed-service|analytics-service|identity-auth) tier1="$tier1 $svc" ;;
               # identity-user only alters tables identity-auth creates.
-              graph-service|post-service|identity-user) tier2="$tier2 $svc" ;;
+              graph-service|post-service|identity-user|identity-profile) tier2="$tier2 $svc" ;;
               *) rest="$rest $svc" ;;
             esac
           done
@@ -219,6 +223,7 @@ jobs:
               analytics-service) echo 8094 ;;
               identity-auth) echo 8081 ;;
               identity-user) echo 8097 ;;
+              identity-profile) echo 8098 ;;
             esac
           }
           # The identity services have no root /healthz.
@@ -226,6 +231,7 @@ jobs:
             case "$1" in
               identity-auth) echo /v1/auth/health ;;
               identity-user) echo /v1/users/health ;;
+              identity-profile) echo /v1/profiles/health ;;
               *) echo /healthz ;;
             esac
           }

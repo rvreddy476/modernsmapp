@@ -93,7 +93,9 @@ func TestE2E_Chat_DirectMessage(t *testing.T) {
 	// 2. A opens a direct conversation with B. It must be a chat, not a
 	// message request: is_request=true would mean graph did not see B's
 	// follow or could not read a setting.
-	convRaw := a.MustOK(t, ctx, "POST", "/v1/chat/conversations/direct", map[string]any{
+	// The route refuses a create with no Idempotency-Key (400
+	// MISSING_IDEMPOTENCY_KEY).
+	convRaw := a.WithHeader("Idempotency-Key", uuid.NewString()).MustOK(t, ctx, "POST", "/v1/chat/conversations/direct", map[string]any{
 		"other_user_id": bID.String(),
 	})
 	var conv struct {

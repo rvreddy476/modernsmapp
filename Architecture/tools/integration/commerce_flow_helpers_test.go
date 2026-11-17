@@ -187,7 +187,9 @@ func commerceOpenShop(t *testing.T, ctx context.Context, seller *HTTPClient, sto
 			"business_type": "individual",
 		}))
 	sellerID := field(t, started, "id")
-	if st := field(t, started, "status"); st != "draft" {
+	// The start answer carries the row as built in memory, whose status is
+	// empty; the stored status is what the status read returns.
+	if st := commerceShopStatus(t, ctx, seller); st != "draft" {
 		t.Fatalf("a new shop is %q, want draft", st)
 	}
 	must(t, "seller fulfilment step",
