@@ -21,6 +21,7 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"net/http"
 	"os"
 	"testing"
 	"time"
@@ -166,6 +167,29 @@ func TestCreatorFundSettlementEndToEnd(t *testing.T) {
 	}
 	if balance != 3500 {
 		t.Errorf("idempotency broken: wallet balance after re-run = %d, want 3500", balance)
+	}
+}
+
+// TestCreatorFundSettleNeedsAdminToken guards the door the end-to-end above
+// cannot open. The settle routes live in the token-only admin family
+// (monetization-service admin_token.go, /v1/monetization/internal/admin): the
+// only credential is a short-lived admin-service token in
+// X-Service-Authorization. The internal service key, a user id, admin scopes
+// in the user's own token and X-Admin-Role together are not one: the answer
+// is 401 ADMIN_SERVICE_TOKEN_REQUIRED, with money writes on or off (the token
+// is checked before the launch boundary).
+func TestCreatorFundSettleNeedsAdminToken(t *testing.T) {
+	urls, ctx := monetizationForFlow(t)
+	day := time.Now().UTC().AddDate(0, 0, -1).Format("2006-01-02")
+	admin := NewHTTPClient(urls.Monetization, uuid.New()).WithAdminRole()
+
+	for _, path := range []string{
+		"/v1/monetization/internal/admin/creator-fund/settle?day=" + day,
+		"/v1/monetization/internal/admin/creator-fund/settle-period",
+		"/v1/monetization/internal/admin/creator-fund/" + uuid.NewString() + "/settle-period",
+	} {
+		env := admin.MustDo(t, ctx, "POST", path, nil)
+		wantRefusal(t, env, "POST "+path+" without an admin-service token", http.StatusUnauthorized, "ADMIN_SERVICE_TOKEN_REQUIRED")
 	}
 }
 

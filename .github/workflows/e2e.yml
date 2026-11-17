@@ -137,6 +137,12 @@ jobs:
           # production: dating, commerce and wallet then refuse to start on
           # this stack's mock partners and local blob store.
           ENV: local
+          # post-service asks trust-safety for the author's standing before
+          # every publication and fails closed (503 STANDING_UNAVAILABLE)
+          # without the signed-token key pair. This is the switch its own
+          # start-up warning names for a dev stack; the standing check is
+          # therefore NOT covered by these flows.
+          PUBLISH_REQUIRE_STANDING_CHECK: "false"
           # Where chat-message-service finds the two user services; neither
           # is in local.env, and the defaults are docker compose host names.
           IDENTITY_USER_SERVICE_URL: http://localhost:8097
@@ -222,7 +228,14 @@ jobs:
               ok=""
               for i in $(seq 1 300); do
                 code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:$port$(path_of "$svc")" || true)
-                if [ "$code" = "200" ]; then ok=1; break; fi
+                # Any answer below 500 means it is listening, and a service
+                # applies its schema before it listens. Not only 200: the
+                # identity user-service answers 401 on its health route
+                # without the internal key.
+                case "$code" in
+                  000|5*) ;;
+                  *) ok=1; break ;;
+                esac
                 sleep 2
               done
               if [ -z "$ok" ]; then
