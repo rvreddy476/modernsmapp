@@ -36,6 +36,11 @@ type PostDetail struct {
 	// (watch_later system collection).
 	ViewerDisliked bool `json:"viewer_disliked"`
 	ViewerQueued   bool `json:"viewer_queued"`
+	// The author's takedown reason (author_moderation_note.go): present
+	// only for the post's author while a moderation decision holds it
+	// rejected; absent for everyone else and otherwise.
+	ModerationReason     *string `json:"moderation_reason,omitempty"`
+	ModerationAppealable *bool   `json:"moderation_appealable,omitempty"`
 	// Chapters: saved media_chapters, or for a long video the chapters
 	// derived from description timestamps (chapters.go). Always an array
 	// on the direct read (GET /v1/posts/:id); null on list surfaces, which

@@ -119,6 +119,8 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 	s.attachSounds(ctx, viewerID, []*PostDetail{detail})
 	// A long video's credits, as this viewer may see them (credits.go).
 	s.attachCredits(ctx, detail, viewerID)
+	// Why a rejected post was taken down, for its author only.
+	s.attachModerationNote(ctx, detail, viewerID)
 
 	return detail, nil
 }

@@ -346,6 +346,9 @@ type Service struct {
 	likeSeams
 	// The video creator tools' seams (video_tools_store.go).
 	videoToolSeams
+	// moderationNotesSeam stands in for the author's takedown reason read
+	// (author_moderation_note.go) in tests; nil = the Postgres store.
+	moderationNotesSeam moderationNoteReader
 
 	// Copyright title review (copyright_title_review.go, migration 073):
 	// the store slice (nil = the Postgres store), this replica's catalogue
