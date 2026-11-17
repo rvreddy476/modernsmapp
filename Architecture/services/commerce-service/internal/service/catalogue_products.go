@@ -619,10 +619,10 @@ func (s *Service) verifyVariantImagePatch(ctx context.Context, actorID uuid.UUID
 // (data type `media`), so a write can check each is the seller's own.
 func attributeMediaIDs(sets []postgres.AttributeValueSet) []*uuid.UUID {
 	var ids []*uuid.UUID
-	for i := range sets {
-		for j := range sets[i].Values {
-			if id := sets[i].Values[j].ValueMediaID; id != nil {
-				ids = append(ids, id)
+	for _, set := range sets {
+		for _, value := range set.Values {
+			if value.ValueMediaID != nil {
+				ids = append(ids, value.ValueMediaID)
 			}
 		}
 	}

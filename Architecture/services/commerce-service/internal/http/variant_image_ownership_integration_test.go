@@ -92,13 +92,16 @@ func TestVariantImage_TheSellersOwnImageIsStored(t *testing.T) {
 		t.Fatal("the seller cannot see their own variant image through commerce")
 	}
 
-	// Clearing the image needs no media check and is always allowed.
-	w = call(t, r, http.MethodPatch, "/v1/commerce/variants/"+s.variantID.String(), s.sellerUserID,
+	// Clearing the image needs no media check and is always allowed. It runs
+	// on a second listing: the edit above sent the first one back to review,
+	// and a listing in review cannot be edited at all.
+	other := seedSellerSurface(t, 5)
+	w = call(t, r, http.MethodPatch, "/v1/commerce/variants/"+other.variantID.String(), other.sellerUserID,
 		map[string]any{"image_media_id": nil, "revalidate": true})
 	if w.Code != http.StatusOK {
 		t.Fatalf("PATCH clearing the image = %d, want 200\n%s", w.Code, w.Body.String())
 	}
-	if image, _ := variantImageRow(t, s.variantID); image != nil {
+	if image, _ := variantImageRow(t, other.variantID); image != nil {
 		t.Fatalf("variant image_media_id = %s after clearing, want NULL", image)
 	}
 }
