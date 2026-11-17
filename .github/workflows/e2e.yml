@@ -40,10 +40,12 @@ jobs:
             health: "http://localhost:8080 http://localhost:8081 http://localhost:8082"
             run: "TestE2E_Auth|TestSmoke"
           - domain: social
-            services: "api-gateway user-service graph-service post-service feed-service"
+            # trust-safety-service: the home feed reads the viewer's keyword
+            # filters from it and answers 502 HYDRATION_FAILED without it.
+            services: "api-gateway user-service graph-service post-service feed-service trust-safety-service"
             # Every service the flow calls, feed-service (8086) included: it
             # was missing, so the feed could be polled before it listened.
-            health: "http://localhost:8080 http://localhost:8082 http://localhost:8083 http://localhost:8084 http://localhost:8086"
+            health: "http://localhost:8080 http://localhost:8082 http://localhost:8083 http://localhost:8084 http://localhost:8086 http://localhost:8091"
             run: "TestE2E_Social"
             # graph-service only follows ids it finds in user-service's users
             # table, so the flow needs two real rows (see "Seed E2E users").
@@ -81,11 +83,16 @@ jobs:
             health: "http://localhost:8080 http://localhost:8114"
             run: "TestE2E_Wallet"
           - domain: commerce
-            # TestE2E_Commerce_FullJourney approves the seller + product via
-            # /v1/admin/commerce/* on admin-service; the prepaid confirm path
-            # verifies intents against payments-service.
-            services: "api-gateway commerce-service admin-service payments-service"
-            health: "http://localhost:8080 http://localhost:8109 http://localhost:8096 http://localhost:8102"
+            # The journey approves the seller and the product through the
+            # admin console route: gateway (admin cookie + CSRF), admin-service
+            # (permission read from identity-auth), then a signed service
+            # token to commerce-service. commerce verifies product images
+            # with media-service, and intents with payments-service.
+            services: "api-gateway identity-auth media-service commerce-service admin-service payments-service"
+            health: "http://localhost:8080 http://localhost:8081 http://localhost:8087 http://localhost:8109 http://localhost:8096 http://localhost:8102"
+            # A fixed id, not a real account: identity-auth's committed
+            # bootstrap allowlist (SUPERADMIN_USER_IDS) makes it the admin.
+            superadmin: 0e2e0000-0000-4000-8000-0000000000ad
             run: "TestE2E_Commerce"
           - domain: dating
             services: "api-gateway dating-service"
@@ -137,6 +144,8 @@ jobs:
           # production: dating, commerce and wallet then refuse to start on
           # this stack's mock partners and local blob store.
           ENV: local
+          # Empty except in the commerce job.
+          SUPERADMIN_USER_IDS: ${{ matrix.superadmin }}
           # post-service asks trust-safety for the author's standing before
           # every publication and fails closed (503 STANDING_UNAVAILABLE)
           # without the signed-token key pair. This is the switch its own
@@ -250,6 +259,26 @@ jobs:
           # something for the earlier tiers to go ahead of.
           start_tier "$tier1"
           start_tier "$tier2"
+          if [ -n "${{ matrix.superadmin }}" ] && [[ "$all" == *" commerce-service "* ]]; then
+            # admin-service signs each call to commerce-service with an
+            # Ed25519 key, and commerce accepts only registered callers.
+            # A pair made for this run and never printed. The caller
+            # registration is given to commerce-service alone:
+            # payments-service reads the same variables and refuses to
+            # start when admin-service holds operations that are not its own.
+            openssl genpkey -algorithm ed25519 -out "$RUNNER_TEMP/adm.pem" 2>/dev/null
+            ADMIN_SERVICE_TOKEN_KEY=$(openssl pkey -in "$RUNNER_TEMP/adm.pem" -outform DER | tail -c 32 | base64 -w0)
+            echo "::add-mask::$ADMIN_SERVICE_TOKEN_KEY"
+            export ADMIN_SERVICE_TOKEN_KEY
+            export ADMIN_SERVICE_TOKEN_KID=a1
+            adm_pub=$(openssl pkey -in "$RUNNER_TEMP/adm.pem" -pubout -outform DER | tail -c 32 | base64 -w0)
+            SERVICE_CALLERS=admin-service \
+            SERVICE_CALLER_ADMIN_SERVICE_KID=a1 \
+            SERVICE_CALLER_ADMIN_SERVICE_PUBKEY="$adm_pub" \
+            SERVICE_CALLER_ADMIN_SERVICE_OPS=commerce:seller.approve,commerce:products.moderate \
+              nohup bash Architecture/docker/run-local.sh commerce-service >> services.log 2>&1 &
+            rest="${rest// commerce-service/}"
+          fi
           # run-local.sh backgrounds each service then waits; background the
           # whole script so the job continues. Logs stream to services.log.
           nohup bash Architecture/docker/run-local.sh $rest >> services.log 2>&1 &
@@ -314,7 +343,8 @@ jobs:
           if [ "${{ matrix.seed_identity }}" = "true" ]; then
             # The same two ids as identity accounts with open message
             # settings (the columns auth-service's CreateUserRecordTx writes).
-            docker compose               -f Architecture/docker/docker-compose.infra.yml               -f .github/e2e/docker-compose.e2e.yml               exec -T postgres psql -U postgres -d identity_db -v ON_ERROR_STOP=1 -c               "INSERT INTO usr.users (id, status, is_verified, created_at, updated_at) VALUES ('$a','active',false,now(),now()), ('$b','active',false,now(),now()); INSERT INTO usr.user_settings (user_id, account_visibility, allow_messages_from, allow_comments_from, created_at, updated_at) VALUES ('$a','public','everyone','everyone',now(),now()), ('$b','public','everyone','everyone',now(),now());"
+            # usr.users points at auth.users, so that row goes first.
+            docker compose               -f Architecture/docker/docker-compose.infra.yml               -f .github/e2e/docker-compose.e2e.yml               exec -T postgres psql -U postgres -d identity_db -v ON_ERROR_STOP=1 -c               "INSERT INTO auth.users (user_id, email) VALUES ('$a','e2e-a-$a@example.test'), ('$b','e2e-b-$b@example.test'); INSERT INTO usr.users (id, status, is_verified, created_at, updated_at) VALUES ('$a','active',false,now(),now()), ('$b','active',false,now(),now()); INSERT INTO usr.user_settings (user_id, account_visibility, allow_messages_from, allow_comments_from, created_at, updated_at) VALUES ('$a','public','everyone','everyone',now(),now()), ('$b','public','everyone','everyone',now(),now());"
           fi
           echo "ATPOST_E2E_USER_A=$a" >> "$GITHUB_ENV"
           echo "ATPOST_E2E_USER_B=$b" >> "$GITHUB_ENV"
@@ -327,6 +357,8 @@ jobs:
           # it (tools/integration client.go, StackRequired). CI=true already
           # does this on GitHub; the flag says so in this file.
           ATPOST_E2E_REQUIRE_STACK: "1"
+          # The commerce job's console admin (matrix.superadmin); empty elsewhere.
+          ATPOST_E2E_ADMIN_USER: ${{ matrix.superadmin }}
           # The auth flow reads its e-mail verification code from the
           # development mail sender's line in the service log.
           ATPOST_E2E_MAIL_LOG: ${{ github.workspace }}/services.log
@@ -350,6 +382,13 @@ jobs:
             exit 1
           fi
 
-      - name: Dump service logs on failure
+
+      - name: Service warnings and errors (on failure)
         if: failure()
-        run: tail -n 300 services.log || true
+        run: |
+          # The flows step does not print the service log, and a failing
+          # flow is usually explained there. WARN and ERROR lines only: INFO
+          # carries the development mail sender's verification codes.
+          if [ -f services.log ]; then
+            grep -E '"level":"(WARN|ERROR)"|"msg":"ERROR|exit status|panic' services.log | tail -n 300 || true
+          fi

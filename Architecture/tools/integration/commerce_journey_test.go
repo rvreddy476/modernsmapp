@@ -5,207 +5,209 @@ package integration
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/google/uuid"
 )
 
-// TestE2E_Commerce_FullJourney drives the end-to-end commerce flow through the
-// gateway, exercising all four roles the way a real order does:
+// TestE2E_Commerce_FullJourney drives one order end to end through the
+// gateway, with every role acting the way it does in the product:
 //
-//	Seller  : onboard → create product (+variant) → submit
-//	Admin   : approve the product (privileged scopes via WithAdminRole)
-//	Customer: browse → add address → add to cart → checkout (COD)
-//	Shipping: stub courier (COURIER_PROVIDER=stub) auto-confirms the shipment
+//	Seller  : open a shop (draft) → draft a listing → attach an image → submit
+//	Admin   : approve the shop, then the listing, on admin-service's own
+//	          routes with an admin console session (never a consumer token)
+//	Customer: address → cart → quote → checkout (UPI) → pay
+//	Payment : commerce opens the intent at payments-service; the dev stack
+//	          settles through the stub confirm, which payments-service verifies
+//	Shipping: the fulfilment worker books the stub courier; the order ships
 //
-// COD is used so the happy path runs without a payment gateway. The online
-// (Razorpay) payment path needs PAYMENTS_ALLOW_STUB=true on commerce-service +
-// the stub gateway IDs — added separately once this is green.
+// It has two halves. The first needs only api-gateway and commerce-service
+// and pins what an unapproved shop cannot do and who cannot approve it, with
+// exact codes. The second needs an admin (ATPOST_E2E_ADMIN_USER, see
+// commerceAdmin), identity-auth for the permission lookup and media-service
+// for the listing's image; without the admin it stops there.
 //
-// Run: ATPOST_INTERNAL_KEY=local_dev_internal_service_key_change_me \
-//      ./run-integration.sh -run TestE2E_Commerce_FullJourney
+// Cash on delivery is not a launch payment method, so the journey is prepaid
+// (it used to be COD "so the happy path runs without a payment gateway").
 func TestE2E_Commerce_FullJourney(t *testing.T) {
 	SkipIfNotIntegration(t)
 	urls := LoadServiceURLs()
 	SkipIfDown(t, urls.APIGateway)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
 	defer cancel()
 
 	seller := NewHTTPClient(urls.APIGateway, uuid.New())
-	admin := NewHTTPClient(urls.APIGateway, uuid.New()).WithAdminRole()
 	customer := NewHTTPClient(urls.APIGateway, uuid.New())
+	anonymous := NewHTTPClient(urls.APIGateway, uuid.Nil)
 
-	// ── Seller: onboard ───────────────────────────────────────────
-	onboarding := must(t, "seller onboarding/start",
-		seller.MustDo(t, ctx, "POST", "/v1/commerce/onboarding/start", map[string]any{
-			"store_name":    "E2E Test Store",
-			"email":         "seller-" + uuid.NewString()[:8] + "@example.com",
-			"seller_type":   "individual",
-			"business_type": "individual",
-		}))
-	sellerID := field(t, onboarding, "id")
+	// ── Seller: a shop that is not approved ───────────────────────
+	sellerID := commerceOpenShop(t, ctx, seller, "E2E Test Store")
+	// A shop with no KYC documents and no payout account cannot put itself
+	// in the review queue.
+	commerceRefused(t, "seller submits an incomplete application",
+		seller.MustDo(t, ctx, "POST", "/v1/commerce/onboarding/submit", nil), 409, "APPLICATION_INCOMPLETE")
 
-	// Enable COD on the seller so the COD checkout is accepted.
-	seller.MustDo(t, ctx, "PUT", "/v1/commerce/onboarding/step/fulfillment", map[string]any{
-		"delivery_modes":     []string{"standard"},
-		"cod_enabled":        true,
-		"dispatch_sla_hours": 24,
-		"return_supported":   true,
-		"return_window_days": 7,
+	commerceRefused(t, "create product without a GST class",
+		seller.MustDo(t, ctx, "POST", "/v1/commerce/products",
+			commerceProductBody("E2E No Tax Widget", "E2E-NT-"+uuid.NewString()[:8], "")), 400, "TAX_CLASS_REQUIRED")
+	productID, variantID := commerceDraftProduct(t, ctx, seller, "E2E Widget")
+	t.Logf("seller=%s product=%s variant=%s", sellerID, productID, variantID)
+
+	// The completeness gate comes before everything else on submit, and a
+	// listing with no image is not complete.
+	incomplete := seller.MustDo(t, ctx, "POST", "/v1/commerce/products/"+productID+"/submit", nil)
+	commerceRefused(t, "submit a listing with no image", incomplete, 422, "PRODUCT_INCOMPLETE")
+	if !strings.Contains(string(incomplete.Error.Details), `"listing.image"`) {
+		t.Fatalf("PRODUCT_INCOMPLETE does not name listing.image: %s", string(incomplete.Error.Details))
+	}
+
+	// ── Nobody but an admin console session approves a shop ───────
+	approvePath := "/v1/admin/commerce/sellers/" + sellerID + "/approve"
+	approveBody := map[string]any{"reason": "e2e", "notes": "must be refused"}
+	commerceRefused(t, "approve seller, not signed in",
+		anonymous.MustDo(t, ctx, "POST", approvePath, approveBody), 401, "ADMIN_SESSION_REQUIRED")
+	// A consumer token is not read on /v1/admin at all, whatever scopes it
+	// claims: this is the call the flow used to make.
+	commerceRefused(t, "approve seller, consumer token claiming admin scopes",
+		seller.WithAdminRole().MustDo(t, ctx, "POST", approvePath, approveBody), 401, "ADMIN_SESSION_REQUIRED")
+	commerceRefused(t, "approve seller, consumer token in the admin cookie",
+		commerceConsoleClient(urls.APIGateway, mintToken(seller.UserID, "admin superadmin"), true).
+			MustDo(t, ctx, "POST", approvePath, approveBody), 401, "WRONG_SESSION")
+	commerceRefused(t, "approve seller, admin session without the CSRF header",
+		commerceConsoleClient(urls.APIGateway, commerceSessionToken(uuid.New(), "admin"), false).
+			MustDo(t, ctx, "POST", approvePath, approveBody), 403, "CSRF_FAILED")
+	// commerce-service's own admin routes are service-only: the edge refuses
+	// every /internal/ path, for the seller as for anyone.
+	for _, p := range []string{
+		"/v1/commerce/internal/sellers/" + sellerID + "/approve",
+		"/v1/commerce/internal/admin/sellers/" + sellerID + "/approve",
+	} {
+		commerceRefused(t, "approve seller on "+p, seller.MustDo(t, ctx, "POST", p, approveBody), 404, "NOT_FOUND")
+	}
+	// An admin session is no use anywhere else either.
+	commerceRefused(t, "admin session on a shopper route",
+		NewHTTPClient(urls.APIGateway, uuid.Nil).
+			WithHeader("Authorization", "Bearer "+commerceSessionToken(uuid.New(), "admin")).
+			MustDo(t, ctx, "GET", "/v1/commerce/cart", nil), 401, "WRONG_SESSION")
+
+	if st := commerceShopStatus(t, ctx, seller); st != "draft" {
+		t.Fatalf("the shop is %q after the refused approvals, want draft", st)
+	}
+	// And an unapproved shop's listing does not exist for a shopper.
+	commerceRefused(t, "shopper reads an unapproved listing",
+		customer.MustDo(t, ctx, "GET", "/v1/commerce/products/"+productID, nil), 404, "PRODUCT_NOT_FOUND")
+	commerceRefused(t, "shopper adds an unapproved listing to the cart",
+		customer.MustDo(t, ctx, "POST", "/v1/commerce/cart/items", map[string]any{"variant_id": variantID, "quantity": 1}),
+		409, "PRODUCT_UNAVAILABLE")
+	t.Log("the shop awaits approval: no shopper sees it and no non-admin caller can approve it")
+
+	// ── Admin: approve the shop, then the listing ─────────────────
+	admin := commerceAdmin(t, urls.APIGateway)
+	// A console session whose user holds no role is refused by admin-service
+	// itself, on the permission identity resolves for it.
+	commerceRefused(t, "approve seller, admin session with no role",
+		commerceConsoleClient(urls.APIGateway, commerceSessionToken(uuid.New(), "admin"), true).
+			MustDo(t, ctx, "POST", approvePath, approveBody), 403, "PERMISSION_DENIED")
+
+	// With its image the listing is complete, and the next gate is the shop.
+	commerceAttachImage(t, ctx, seller, productID)
+	commerceRefused(t, "submit a complete listing from an unapproved shop",
+		seller.MustDo(t, ctx, "POST", "/v1/commerce/products/"+productID+"/submit", nil), 409, "SELLER_NOT_APPROVED")
+
+	must(t, "admin approves the seller", commerceApprove(t, ctx, admin, "sellers", sellerID))
+	if st := commerceShopStatus(t, ctx, seller); st != "approved" {
+		t.Fatalf("the shop is %q after the admin approved it, want approved", st)
+	}
+
+	must(t, "submit product", seller.MustDo(t, ctx, "POST", "/v1/commerce/products/"+productID+"/submit", nil))
+	// Submitted is not live: products queue for a moderator on this stack
+	// (COMMERCE_PRODUCT_AUTO_APPROVE is off in every committed environment).
+	commerceRefused(t, "shopper reads a submitted, unapproved listing",
+		customer.MustDo(t, ctx, "GET", "/v1/commerce/products/"+productID, nil), 404, "PRODUCT_NOT_FOUND")
+	must(t, "admin approves the product", commerceApprove(t, ctx, admin, "products", productID))
+	must(t, "shopper reads the live listing",
+		customer.MustDo(t, ctx, "GET", "/v1/commerce/products/"+productID, nil))
+	must(t, "customer browses products", customer.MustDo(t, ctx, "GET", "/v1/commerce/products", nil))
+
+	// ── Customer: address, cart, quote, checkout ──────────────────
+	addressID := commerceAddAddress(t, ctx, customer)
+	q := commerceCartAndQuote(t, ctx, customer, "journey", variantID, addressID)
+	t.Logf("quote %s: subtotal=%d shipping=%d total=%d courier=%s", q.QuoteID, q.SubtotalMinor, q.ShippingMinor, q.TotalMinor, q.CourierCode)
+
+	const checkout = "/v1/commerce/v2/orders/checkout"
+	commerceRefused(t, "checkout without an Idempotency-Key",
+		customer.MustDo(t, ctx, "POST", checkout, commerceCheckoutBody(addressID, q, "upi")), 400, "IDEMPOTENCY_KEY_REQUIRED")
+	commerceRefused(t, "checkout, cash on delivery",
+		customer.WithHeader("Idempotency-Key", uuid.NewString()).
+			MustDo(t, ctx, "POST", checkout, commerceCheckoutBody(addressID, q, "cod")), 400, "COD_NOT_SUPPORTED")
+
+	buyer := customer.WithHeader("Idempotency-Key", uuid.NewString())
+	var order, replay commerceOrder
+	if err := json.Unmarshal(must(t, "checkout (upi)",
+		buyer.MustDo(t, ctx, "POST", checkout, commerceCheckoutBody(addressID, q, "upi"))), &order); err != nil || order.OrderID == "" {
+		t.Fatalf("checkout answer unusable (err=%v)", err)
+	}
+	if order.TotalMinor != q.TotalMinor {
+		t.Fatalf("order total %d, want the quoted %d", order.TotalMinor, q.TotalMinor)
+	}
+	// The same key and body is the same order, not a second one.
+	if err := json.Unmarshal(must(t, "checkout again, same Idempotency-Key",
+		buyer.MustDo(t, ctx, "POST", checkout, commerceCheckoutBody(addressID, q, "upi"))), &replay); err != nil || replay.OrderID != order.OrderID {
+		t.Fatalf("a retried checkout answered order %q, want the first order %s (err=%v)", replay.OrderID, order.OrderID, err)
+	}
+	if s, ps := commerceOrderState(t, ctx, customer, order.OrderID); s != "payment_pending" || ps != "pending" {
+		t.Fatalf("a fresh prepaid order is %s/%s, want payment_pending/pending", s, ps)
+	}
+	t.Logf("order: %s total=%d", order.OrderID, order.TotalMinor)
+
+	// ── Payment: intent at payments-service, settled by the stub ──
+	intent := commerceOpenIntent(t, ctx, customer, "journey", order)
+	if intent.ClientSession["provider"] != "stub" {
+		t.Fatalf("the stack's payment provider is %q; this flow settles only on the stub", intent.ClientSession["provider"])
+	}
+	paymentID := "pay_e2e_" + uuid.NewString()[:8]
+	must(t, "customer confirms the payment (stub)",
+		customer.MustDo(t, ctx, "POST", "/v1/commerce/orders/"+order.OrderID+"/payment/confirm",
+			commerceStubConfirmBody(intent, paymentID, order.TotalMinor)))
+	if st, amount := commercePaymentState(t, ctx, customer, order.OrderID); st != "paid" || amount != order.TotalMinor {
+		t.Fatalf("payment is %s for %d after the confirm, want paid for %d", st, amount, order.TotalMinor)
+	}
+	if s, ps := commerceOrderState(t, ctx, customer, order.OrderID); !commercePaidStatus(s) || ps != "paid" {
+		t.Fatalf("the order is %s/%s after payment, want a paid status", s, ps)
+	}
+
+	// ── Fulfilment: the worker books the stub courier ─────────────
+	Eventually(t, 45*time.Second, "the paid order should ship once the fulfilment worker books the stub courier", func() bool {
+		s, _ := commerceOrderState(t, ctx, customer, order.OrderID)
+		return s == "shipped" || s == "out_for_delivery" || s == "delivered"
 	})
-
-	// Product submission is intentionally gated on seller approval. Approve the
-	// synthetic seller before creating/submitting its catalog item.
-	must(t, "admin approve seller",
-		admin.MustDo(t, ctx, "POST", "/v1/admin/commerce/sellers/"+sellerID+"/approve", map[string]any{
-			"notes": "approved by e2e",
-		}))
-
-	// ── Seller: create product with one purchasable variant ───────
-	sku := "E2E-TW-" + uuid.NewString()[:8]
-	prod := must(t, "create product",
-		seller.MustDo(t, ctx, "POST", "/v1/commerce/products", map[string]any{
-			"title":              "E2E Widget",
-			"product_type":       "physical",
-			"condition":          "new",
-			"return_policy_type": "7_days",
-			"return_policy_days":  7,
-			"variants": []map[string]any{{
-				"sku":           sku,
-				"mrp":           1000,
-				"selling_price": 900,
-				"stock_qty":     50,
-			}},
-		}))
-	productID := field(t, prod, "id")
-	t.Logf("product: %s", productID)
-
-	// Variant id from the variants list (more reliable than parsing nested).
-	variants := must(t, "list variants",
-		seller.MustDo(t, ctx, "GET", "/v1/commerce/products/"+productID+"/variants", nil))
-	variantID := firstID(t, variants)
-	t.Logf("variant: %s", variantID)
-
-	// ── Seller: submit for review ─────────────────────────────────
-	must(t, "submit product",
-		seller.MustDo(t, ctx, "POST", "/v1/commerce/products/"+productID+"/submit", nil))
-
-	// ── Admin: approve the product ────────────────────────────────
-	must(t, "admin approve product",
-		admin.MustDo(t, ctx, "POST", "/v1/admin/commerce/products/"+productID+"/approve", map[string]any{
-			"notes": "approved by e2e",
-		}))
-
-	// ── Customer: browse ──────────────────────────────────────────
-	must(t, "customer browse products",
-		customer.MustDo(t, ctx, "GET", "/v1/commerce/products", nil))
-
-	// ── Customer: add a shipping address ──────────────────────────
-	addr := must(t, "add address",
-		customer.MustDo(t, ctx, "POST", "/v1/commerce/addresses", map[string]any{
-			"address_type":   "home",
-			"full_name":      "E2E Buyer",
-			"phone":          "9999999999",
-			"address_line_1": "1 Integration Way",
-			"city":           "Bengaluru",
-			"state":          "Karnataka",
-			"postal_code":    "560001",
-			"country":        "IN",
-			"is_default":     true,
-		}))
-	addressID := field(t, addr, "id")
-
-	// ── Customer: add to cart ─────────────────────────────────────
-	must(t, "add to cart",
-		customer.MustDo(t, ctx, "POST", "/v1/commerce/cart/items", map[string]any{
-			"variant_id": variantID,
-			"quantity":   1,
-		}))
-
-	// ── Customer: checkout (COD) ──────────────────────────────────
-	order := must(t, "checkout (cod)",
-		customer.MustDo(t, ctx, "POST", "/v1/commerce/orders/checkout", map[string]any{
-			"address_id":      addressID,
-			"payment_method":  "cod",
-			"idempotency_key": uuid.NewString(),
-		}))
-	orderID := field(t, order, "id")
-	t.Logf("order: %s", orderID)
-
-	// ── Verify the order is readable + shipment progresses ────────
-	must(t, "get order",
-		customer.MustDo(t, ctx, "GET", "/v1/commerce/orders/"+orderID, nil))
-
-	// Stub courier auto-confirms asynchronously; give it a moment, then assert
-	// the order is no longer in a pre-shipment state. (Loosened on purpose —
-	// tighten to a specific shipment status once we see the real field.)
-	Eventually(t, 20*time.Second, "order should remain readable while the shipment is created", func() bool {
-		env := customer.MustDo(t, ctx, "GET", "/v1/commerce/orders/"+orderID, nil)
-		return env.Status == 200
-	})
-	t.Log("✓ full commerce journey (seller→admin→customer→COD→shipment) passed")
-}
-
-// ── small helpers (test file only) ───────────────────────────────
-
-// must fails the test with the server's error + body when status is not 2xx,
-// and returns the response Data for field extraction.
-func must(t *testing.T, label string, env *Envelope) json.RawMessage {
-	t.Helper()
-	if env.Status < 200 || env.Status >= 300 {
-		code, msg := "", ""
-		if env.Error != nil {
-			code, msg = env.Error.Code, env.Error.Message
-		}
-		t.Fatalf("%s -> %d %s %s | data=%s", label, env.Status, code, msg, string(env.Data))
+	shipRaw := must(t, "customer reads the shipments",
+		customer.MustDo(t, ctx, "GET", "/v1/commerce/orders/"+order.OrderID+"/shipments", nil))
+	var ships struct {
+		Shipments []struct {
+			Shipment struct {
+				Courier       string `json:"courier"`
+				SellerID      string `json:"seller_id"`
+				SellerManaged bool   `json:"seller_managed"`
+			} `json:"shipment"`
+		} `json:"shipments"`
 	}
-	t.Logf("%s -> %d", label, env.Status)
-	return env.Data
-}
-
-// field pulls a top-level string field (e.g. "id") out of a data object.
-func field(t *testing.T, raw json.RawMessage, name string) string {
-	t.Helper()
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &m); err != nil {
-		t.Fatalf("parse object for %q: %v | raw=%s", name, err, string(raw))
+	if err := json.Unmarshal(shipRaw, &ships); err != nil || len(ships.Shipments) != 1 {
+		t.Fatalf("want exactly one shipment for a one-seller order (err=%v raw=%s)", err, string(shipRaw))
 	}
-	v, ok := m[name]
-	if !ok {
-		t.Fatalf("field %q missing in: %s", name, string(raw))
+	if sh := ships.Shipments[0].Shipment; sh.Courier != "stub" || sh.SellerID != sellerID || sh.SellerManaged {
+		t.Fatalf("shipment is courier=%q seller=%s seller_managed=%v, want the stub courier's booking for seller %s",
+			sh.Courier, sh.SellerID, sh.SellerManaged, sellerID)
 	}
-	var s string
-	if err := json.Unmarshal(v, &s); err != nil {
-		t.Fatalf("field %q not a string: %s", name, string(v))
-	}
-	return s
-}
-
-// firstID returns the "id" of the first element, tolerating either a bare
-// array or a wrapper object ({items|variants|data:[...]}).
-func firstID(t *testing.T, raw json.RawMessage) string {
-	t.Helper()
-	var arr []map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &arr); err != nil {
-		var wrap map[string]json.RawMessage
-		if err2 := json.Unmarshal(raw, &wrap); err2 != nil {
-			t.Fatalf("firstID: not array or object: %s", string(raw))
-		}
-		for _, k := range []string{"items", "variants", "data", "results"} {
-			if inner, ok := wrap[k]; ok {
-				return firstID(t, inner)
-			}
-		}
-		t.Fatalf("firstID: no list field in: %s", string(raw))
-	}
-	if len(arr) == 0 {
-		t.Fatalf("firstID: empty list")
-	}
-	var s string
-	if err := json.Unmarshal(arr[0]["id"], &s); err != nil {
-		t.Fatalf("firstID: element has no string id: %s", string(raw))
-	}
-	return s
+	must(t, "seller reads the order",
+		seller.MustDo(t, ctx, "GET", "/v1/commerce/seller/orders/"+order.OrderID, nil))
+	// A courier-tracked parcel is delivered by the courier's scan, never by
+	// the seller's word.
+	commerceRefused(t, "seller marks a courier-tracked parcel delivered",
+		seller.MustDo(t, ctx, "POST", "/v1/commerce/seller/orders/"+order.OrderID+"/mark-delivered", nil),
+		409, "SHIPMENT_NOT_SELLER_MANAGED")
+	t.Log("full commerce journey (seller, admin, customer, stub payment, shipment) passed")
 }

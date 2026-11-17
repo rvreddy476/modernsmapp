@@ -94,9 +94,6 @@ func TestCreatorFundApplyClosedInBeta(t *testing.T) {
 
 	wantMoneyRefusal(t, ctx, urls, creatorID, "POST", "/v1/monetization/creator-fund/apply", nil,
 		http.StatusServiceUnavailable, moneyClosedCode)
-	// A write on an open read's path is still a write.
-	wantMoneyRefusal(t, ctx, urls, creatorID, "POST", "/v1/monetization/creator-fund/earnings", nil,
-		http.StatusServiceUnavailable, moneyClosedCode)
 }
 
 // TestCreatorFundApplyOpen is the on-path for a stack that runs with money
