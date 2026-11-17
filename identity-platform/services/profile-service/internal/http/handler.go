@@ -143,6 +143,9 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 	// key, and the key would be no evidence anyway (the gateway stamps it on
 	// edge traffic). See official_verification_admin.go.
 	h.registerAdminMarksRoutes(r)
+	// Also before the gate: docker-compose healthchecks and CI call the
+	// health route with no key and were answered 401.
+	r.GET("/v1/profiles/health", h.Health)
 	if h.internalKey != "" {
 		r.Use(RequireInternalServiceKey(h.internalKey))
 		// Internal identity read (dating lane D2). Outside /v1/ on purpose: the
@@ -153,7 +156,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 	}
 	v1 := r.Group("/v1/profiles")
 	{
-		v1.GET("/health", h.Health)
 		// Internal static routes must be registered before the public :userId
 		// wildcard so a framework upgrade cannot reinterpret "internal" as a
 		// public profile identifier.

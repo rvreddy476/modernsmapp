@@ -33,3 +33,17 @@ func handleProbe(w http.ResponseWriter, r *http.Request, routeCount int) bool {
 	}
 	return false
 }
+
+// isKubeletProbe reports a request for /livez or /readyz, the two paths the
+// chart's probes call (charts/atpost-service/values.yaml). edgeChain serves
+// them without the token, rate-limit and session-revocation layers: both
+// answers are fixed strings that touch no upstream, and behind the limiters a
+// probe could be answered 429 (the per-IP bucket) or made to wait on the
+// Redis limiter, and a liveness probe that times out restarts the pod.
+// /health and /v1/health stay inside the chain: clients call those.
+func isKubeletProbe(r *http.Request) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	return r.URL.Path == "/livez" || r.URL.Path == "/readyz"
+}

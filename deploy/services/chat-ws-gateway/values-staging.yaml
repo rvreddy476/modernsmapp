@@ -81,10 +81,13 @@ ingress:
         - { path: /, pathType: Prefix }
 
 # Default chart alerts (charts/atpost-service/values.yaml, defaultAlerts).
-# This service has no /metrics endpoint and does not use the shared HTTP
-# metrics middleware, so the scrape-target and HTTP rules are off (they
-# would fire for ever or never). Pod and readiness rules stay on. Turn
-# both back on when the service exports atpost_<service>_http_* metrics.
+# This service exports no /metrics on purpose: its one port is on the
+# public ingress, and a request there lasts as long as the socket, so a
+# p99 rule would fire constantly. The scrape and the scrape-target and
+# HTTP rules are therefore off; pod and readiness rules stay on. Metrics
+# here need a second, non-ingress port in the chart first.
+serviceMonitor:
+  enabled: false
 defaultAlerts:
   target:
     enabled: false

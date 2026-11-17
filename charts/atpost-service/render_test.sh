@@ -231,14 +231,23 @@ src_of() {
 }
 # serves <source dir> <path>: non-test Go code registers the path itself, or
 # calls RegisterRoutes of shared/health (which serves /livez, /healthz and
-# /readyz: Architecture/shared/health/checker.go).
+# /readyz: Architecture/shared/health/checker.go), or uses the health
+# package of its own tree (identity-platform/shared/health,
+# chat-service/shared/health), which serves /livez and /readyz.
 serves() {
-  local lit shared
+  local lit shared own
   lit=$(grep -rlF --include='*.go' "\"$2\"" "$1" 2>/dev/null | grep -v '_test\.go$' | head -1 || true)
   [[ -n "$lit" ]] && return 0
   shared=$(grep -rlE --include='*.go' '^[^/]*checker\.RegisterRoutes\(' "$1" 2>/dev/null | grep -v '_test\.go$' \
     | xargs -r grep -lF 'github.com/atpost/shared/health"' 2>/dev/null | head -1 || true)
-  [[ -n "$shared" ]]
+  [[ -n "$shared" ]] && return 0
+  own=$(grep -rlE --include='*.go' '"github.com/atpost/(identity|chat)-shared/health"' "$1" 2>/dev/null | grep -v '_test\.go$' | head -1 || true)
+  [[ -n "$own" ]] || return 1
+  case "$1" in
+    identity-platform/*) grep -qF "\"$2\"" identity-platform/shared/health/health.go ;;
+    chat-service/*)      grep -qF "\"$2\"" chat-service/shared/health/health.go ;;
+    *)                   return 1 ;;
+  esac
 }
 # "<off|on>" for the default HTTP alert rules of one values file: off when
 # the file sets defaultAlerts.http.enabled: false.
@@ -255,7 +264,7 @@ http_alerts_of() {
 # the gap is printed on every run instead of failing a gate nobody can turn
 # green from this folder; remove an entry when the service is fixed (a stale
 # entry fails).
-KNOWN_PROBE_GAPS=" identity-auth-service:/livez identity-auth-service:/readyz identity-profile-service:/livez identity-profile-service:/readyz identity-user-service:/livez identity-user-service:/readyz chat-call-service:/livez chat-call-service:/readyz chat-message-service:/livez chat-message-service:/readyz chat-ws-gateway:/livez chat-ws-gateway:/readyz "
+KNOWN_PROBE_GAPS=" "
 alert_probe_static_guards() {
   echo
   echo "── alert and probe guards (static) ──"
@@ -293,6 +302,12 @@ alert_probe_static_guards() {
     # shared HTTP metrics under its own deploy name.
     want=off
     grep -rqF --include='*.go' "NewHTTPMetrics(\"$svc\")" "$src" 2>/dev/null && want=on
+    # The identity and chat trees have their own metrics package, which
+    # records the same series under the name the service passes it.
+    if grep -rqE --include='*.go' '"github.com/atpost/(identity-shared/o11y|chat-shared)/metrics"' "$src" 2>/dev/null \
+       && grep -rqE --include='*.go' "ServiceName = \"$svc\"" "$src" 2>/dev/null; then
+      want=on
+    fi
     for f in "$d"values-*.yaml; do
       state="$(http_alerts_of "$f")"
       if [[ "$state" != "$want" ]]; then

@@ -19,12 +19,11 @@ import (
 	"github.com/atpost/identity-auth-service/internal/service"
 	"github.com/atpost/identity-auth-service/internal/store"
 	authcrypto "github.com/atpost/identity-shared/crypto"
+	"github.com/atpost/identity-shared/health"
 	"github.com/atpost/identity-shared/logging"
-	sharedmiddleware "github.com/atpost/identity-shared/middleware"
 	tracepkg "github.com/atpost/identity-shared/o11y/trace"
 	"github.com/atpost/identity-shared/store/schemaguard"
 	"github.com/atpost/identity-shared/transport"
-	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -261,26 +260,6 @@ func main() {
 	go service.NewSessionJanitor(authStore, logger).Start(ctx)
 
 	// 5. Server
-	r := gin.New()
-	// Body cap first: the rate limiters and idempotency middleware read the
-	// whole body, so the limit must be in place before any of them runs.
-	r.Use(internalhttp.BodyLimitMiddleware(internalhttp.MaxRequestBodyBytes))
-	// Phase F3.7 — tracing middleware runs first so the span context
-	// is available to RequestID + Logger downstream. Same ordering
-	// as the Architecture-side services.
-	r.Use(sharedmiddleware.OtelTracing("auth-service"))
-	r.Use(internalhttp.RequestIDMiddleware())
-	r.Use(internalhttp.LoggerMiddleware(logger))
-	r.Use(internalhttp.RecoveryMiddleware(logger))
-	// CORS is handled by the API Gateway — do not add duplicate headers here.
-	proxies := cfg.TrustedProxies
-	if len(proxies) == 0 {
-		proxies = nil
-	}
-	if err := r.SetTrustedProxies(proxies); err != nil {
-		logger.Error("failed to set trusted proxies", "err", err)
-		os.Exit(1)
-	}
 	// A10 — pass Redis so the JWT middleware can consult the session
 	// revocation cache. Fail-open on miss; the access-token TTL caps
 	// the worst-case revocation lag.
@@ -317,12 +296,28 @@ func main() {
 	}
 	authMW := internalhttp.AuthMiddlewareWithKeys(jwtKeys, rdb)
 	csrfMW := internalhttp.RequireCSRFMiddleware()
-	authHandler.RegisterRoutes(r, authMW, csrfMW)
-	// Admin console sign-in (B3): its own cookies, its own middleware (admin
-	// cookie only, sk=admin only).
-	authHandler.RegisterAdminSessionRoutes(r, internalhttp.AdminAuthMiddlewareWithKeys(jwtKeys, rdb))
-	authHandler.RegisterWebAuthnRoutes(r, authMW, csrfMW) // no-op unless built with -tags webauthn
-	authHandler.RegisterDocsRoutes(r)
+	// Readiness (/readyz) is Postgres and Redis. Redis is not a cache here: the
+	// credential rate limiters fail closed on a Redis error, so without it
+	// login, register, refresh and 2FA are all refused. Kafka is not checked:
+	// events go through the outbox and are relayed when it returns.
+	probes := health.New("auth-service", logger)
+	probes.Register("postgres", dbPool.Ping)
+	probes.Register("redis", func(ctx context.Context) error { return rdb.Ping(ctx).Err() })
+	// Middleware order, /livez, /readyz and /metrics: see internalhttp.NewRouter.
+	r, err := internalhttp.NewRouter(authHandler, internalhttp.RouterConfig{
+		Logger:         logger,
+		TrustedProxies: cfg.TrustedProxies,
+		Probes:         probes,
+		Auth:           authMW,
+		// Admin console sign-in (B3): its own cookies, its own middleware
+		// (admin cookie only, sk=admin only).
+		AdminAuth: internalhttp.AdminAuthMiddlewareWithKeys(jwtKeys, rdb),
+		CSRF:      csrfMW,
+	})
+	if err != nil {
+		logger.Error("failed to build router", "err", err)
+		os.Exit(1)
+	}
 
 	srv := internalhttp.NewServer(":"+cfg.HTTPPort, r)
 

@@ -34,6 +34,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/ssooidc v1.38.5 // indirect
 	github.com/aws/aws-sdk-go-v2/service/sts v1.45.5 // indirect
 	github.com/aws/smithy-go v1.27.7 // indirect
+	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
 	github.com/bytedance/gopkg v0.1.3 // indirect
 	github.com/bytedance/sonic v1.15.0 // indirect
@@ -70,6 +71,10 @@ require (
 	github.com/pelletier/go-toml/v2 v2.2.4 // indirect
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.15 // indirect
+	github.com/prometheus/client_golang v1.19.0 // indirect
+	github.com/prometheus/client_model v0.5.0 // indirect
+	github.com/prometheus/common v0.48.0 // indirect
+	github.com/prometheus/procfs v0.12.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/quic-go/quic-go v0.59.1 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect

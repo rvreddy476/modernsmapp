@@ -180,9 +180,9 @@ func main() {
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())
 	r.Use(middleware.Metrics(httpMetrics))
-	r.Use(middleware.RequireInternalKey(env("INTERNAL_SERVICE_KEY", "")))
+	// Probes first, then the key: the kubelet holds no key (see probes.go).
+	installProbesThenInternalKey(r, checker, env("INTERNAL_SERVICE_KEY", ""))
 
-	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())
 	if err := handler.RegisterAllRoutes(r); err != nil {
 		slog.Error("refusing to boot: admin route table is not fully declared", "error", err)

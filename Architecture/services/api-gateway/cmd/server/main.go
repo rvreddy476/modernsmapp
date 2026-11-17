@@ -339,11 +339,20 @@ func edgeHandler(allowedOrigins []string, proxies clientip.Resolver, inner http.
 // internal key here: that happens per route, in newRoute, and only for
 // upstreams internalroutes.StampPolicy names.
 func edgeChain(keys jwtKeySet, policy tokenpolicy.Policy, rateLimit func(http.Handler) http.Handler, checker sessionrevocation.Checker, core http.Handler) http.Handler {
-	return requestIDMiddleware(
+	chain := requestIDMiddleware(
 		jwtExtractMiddleware(keys, policy,
 			rateLimit(
 				internalroutes.Middleware(
 					sessionrevocation.MiddlewareWithOptions(checker, revocationOptions, core)))))
+	// The kubelet's probes skip the chain (isKubeletProbe, probes.go): a
+	// liveness check must not wait on Redis or lose to a rate limit.
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if isKubeletProbe(r) {
+			core.ServeHTTP(w, r)
+			return
+		}
+		chain.ServeHTTP(w, r)
+	})
 }
 
 // revocationOptions lets a revoked session's leftover credential fall back to

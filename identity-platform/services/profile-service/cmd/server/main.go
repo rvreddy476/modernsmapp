@@ -18,13 +18,12 @@ import (
 	"github.com/atpost/identity-profile-service/internal/purge"
 	"github.com/atpost/identity-profile-service/internal/service"
 	"github.com/atpost/identity-profile-service/internal/store"
+	"github.com/atpost/identity-shared/health"
 	"github.com/atpost/identity-shared/logging"
-	sharedmiddleware "github.com/atpost/identity-shared/middleware"
 	tracepkg "github.com/atpost/identity-shared/o11y/trace"
 	"github.com/atpost/identity-shared/store/schemabootstrap"
 	"github.com/atpost/identity-shared/store/schemaguard"
 	"github.com/atpost/identity-shared/transport"
-	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -268,26 +267,28 @@ func main() {
 	go consumer.Start(ctx)
 
 	// 4. Server
-	r := gin.New()
-	// Phase F3.7 — tracing middleware first.
-	r.Use(sharedmiddleware.OtelTracing("profile-service"))
-	r.Use(http.RequestIDMiddleware())
-	r.Use(http.LoggerMiddleware(logger))
-	r.Use(http.RecoveryMiddleware(logger))
-	proxies := cfg.TrustedProxies
-	if len(proxies) == 0 {
-		proxies = nil
-	}
-	if err := r.SetTrustedProxies(proxies); err != nil {
-		logger.Error("failed to set trusted proxies", "err", err)
+	// Readiness (/readyz) is Postgres only. Redis is a cache here (a failed
+	// read falls through to Postgres) and Kafka feeds the consumer, so
+	// neither takes the pod out of the Service.
+	probes := health.New("profile-service", logger)
+	probes.Register("postgres", dbPool.Ping)
+	// Middleware order, /livez, /readyz and /metrics: see http.NewRouter.
+	r, err := http.NewRouter(profileHandler, http.RouterConfig{
+		Logger:         logger,
+		TrustedProxies: cfg.TrustedProxies,
+		Probes:         probes,
+		Auth: http.AuthMiddlewareWithKeys(http.JWTKeySet{
+			ActiveKID:      cfg.JWTKID,
+			ActiveSecret:   cfg.JWTSecret,
+			PreviousKID:    cfg.JWTKIDPrevious,
+			PreviousSecret: cfg.JWTSecretPrevious,
+		}),
+		CSRF: http.RequireCSRFMiddleware(),
+	})
+	if err != nil {
+		logger.Error("failed to build router", "err", err)
 		os.Exit(1)
 	}
-	profileHandler.RegisterRoutes(r, http.AuthMiddlewareWithKeys(http.JWTKeySet{
-		ActiveKID:      cfg.JWTKID,
-		ActiveSecret:   cfg.JWTSecret,
-		PreviousKID:    cfg.JWTKIDPrevious,
-		PreviousSecret: cfg.JWTSecretPrevious,
-	}), http.RequireCSRFMiddleware())
 
 	logger.Info("starting profile-service", "port", cfg.HTTPPort)
 	if err := r.Run(":" + cfg.HTTPPort); err != nil {

@@ -46,6 +46,10 @@ func (h *Handler) WithInternalKey(key string) *Handler {
 }
 
 func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.HandlerFunc) {
+	// Registered BEFORE the engine-wide internal-key gate below, so the gate
+	// is not in its chain: docker-compose healthchecks and CI call it with no
+	// key and were answered 401.
+	r.GET("/v1/users/health", h.Health)
 	if h.internalKey != "" {
 		r.Use(RequireInternalServiceKey(h.internalKey))
 	}
@@ -56,7 +60,6 @@ func (h *Handler) RegisterRoutes(r *gin.Engine, auth gin.HandlerFunc, csrf gin.H
 		// Internal-key gated (no user JWT): lets the permission resolver
 		// in graph-service read any target user's privacy settings.
 		v1.GET("/:userId/settings", h.GetUserSettings)
-		v1.GET("/health", h.Health)
 	}
 
 	protected := v1.Group("")

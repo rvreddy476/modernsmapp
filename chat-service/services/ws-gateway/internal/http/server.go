@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/atpost/chat-shared/callauth"
+	"github.com/atpost/chat-shared/health"
 	"github.com/atpost/chat-shared/presence"
 	"github.com/atpost/chat-shared/roomauth"
 	"github.com/google/uuid"
@@ -177,6 +178,8 @@ type Server struct {
 	// hub is this process's single Redis pub/sub connection, shared by
 	// every socket (audit M5, pubsub_hub.go).
 	hub *pubsubHub
+	// ready holds the GET /readyz dependency checks (probes.go).
+	ready *health.Checker
 }
 
 func NewServer(rdb *redis.Client, log *slog.Logger, opts ServerOptions) *Server {
@@ -214,6 +217,7 @@ func NewServer(rdb *redis.Client, log *slog.Logger, opts ServerOptions) *Server 
 		fanout:   newPresenceFanout(opts.PresencePeers, opts.PresenceVisibility, rdb, log),
 		hub:      newPubsubHub(rdb, log),
 	}
+	s.ready = newReadiness(s)
 	s.upgrader = websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 1024,
@@ -238,7 +242,7 @@ func (s *Server) Routes() nethttp.Handler {
 	// handler — chat + posts + presence + notifications all multiplex
 	// over the single connection.
 	mux.HandleFunc("/v1/ws/notifications", s.handleWS)
-	return loggingMiddleware(s.log, s.opts.TrustedProxies, mux)
+	return s.withProbes(loggingMiddleware(s.log, s.opts.TrustedProxies, mux))
 }
 
 // watchTokenExpiry fires `cancel` the moment the JWT exp passes,

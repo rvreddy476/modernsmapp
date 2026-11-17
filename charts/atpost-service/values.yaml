@@ -164,8 +164,9 @@ prometheusRule:
 #   atpost_<service with - as _>_http_requests_total{method,path,status,service}
 #   atpost_<service with - as _>_http_request_duration_seconds_bucket{...,le}
 # so it must be turned OFF (http.enabled: false) for a service that does not
-# use that middleware: api-gateway, the identity-* and chat-* services and
-# the two web apps. It is skipped automatically when serviceMonitor.enabled
+# record those series: api-gateway, chat-ws-gateway and the two web apps.
+# (The identity-* services and the chat message and call services record
+# the same names from their own trees' metrics packages.) It is skipped automatically when serviceMonitor.enabled
 # is false. Both http rules stay silent below minRequestRate requests per
 # second, so an idle service cannot trip them on one slow request.
 defaultAlerts:

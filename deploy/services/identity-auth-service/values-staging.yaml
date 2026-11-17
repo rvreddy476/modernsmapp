@@ -100,14 +100,3 @@ env:
 # Internal-only — api-gateway is the external surface.
 ingress:
   enabled: false
-
-# Default chart alerts (charts/atpost-service/values.yaml, defaultAlerts).
-# This service has no /metrics endpoint and does not use the shared HTTP
-# metrics middleware, so the scrape-target and HTTP rules are off (they
-# would fire for ever or never). Pod and readiness rules stay on. Turn
-# both back on when the service exports atpost_<service>_http_* metrics.
-defaultAlerts:
-  target:
-    enabled: false
-  http:
-    enabled: false

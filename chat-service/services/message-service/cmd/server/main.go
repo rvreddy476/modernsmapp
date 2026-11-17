@@ -24,7 +24,6 @@ import (
 	"github.com/atpost/chat-shared/fieldcrypt"
 	"github.com/atpost/chat-shared/logging"
 	"github.com/atpost/chat-shared/transport"
-	"github.com/gin-gonic/gin"
 	"github.com/gocql/gocql"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -258,31 +257,32 @@ func main() {
 	}
 
 	// 9. HTTP Server
-	r := gin.New()
-	r.Use(http.RequestIDMiddleware())
-	r.Use(http.LoggerMiddleware(logger))
-	r.Use(http.RecoveryMiddleware(logger))
-	r.Use(http.CORSMiddleware())
-	r.Use(http.AuthMiddlewareWithKeys(http.JWTKeySet{
-		ActiveKID:          cfg.JWTKID,
-		ActiveSecret:       cfg.JWTSecret,
-		PreviousKID:        cfg.JWTKIDPrevious,
-		PreviousSecret:     cfg.JWTSecretPrevious,
-		AccessKeys:         authKeys,
-		Policy:             authPolicy,
-		InternalServiceKey: cfg.InternalServiceKey,
-	}, logger))
+	// Kubernetes readiness (GET /readyz): see readiness.go for what is
+	// checked and what is deliberately not.
+	ready := newReadiness(logger, dbPool.Ping,
+		func(ctx context.Context) error {
+			return scyllaSession.Query("SELECT key FROM system.local").WithContext(ctx).Consistency(gocql.One).Exec()
+		},
+		func(ctx context.Context) error { return rdb.Ping(ctx).Err() })
 
-	proxies := cfg.TrustedProxies
-	if len(proxies) == 0 {
-		proxies = nil
-	}
-	if err := r.SetTrustedProxies(proxies); err != nil {
-		logger.Error("failed to set trusted proxies", "err", err)
+	r, err := http.NewRouter(handler, http.RouterDeps{
+		Logger: logger,
+		Keys: http.JWTKeySet{
+			ActiveKID:          cfg.JWTKID,
+			ActiveSecret:       cfg.JWTSecret,
+			PreviousKID:        cfg.JWTKIDPrevious,
+			PreviousSecret:     cfg.JWTSecretPrevious,
+			AccessKeys:         authKeys,
+			Policy:             authPolicy,
+			InternalServiceKey: cfg.InternalServiceKey,
+		},
+		TrustedProxies: cfg.TrustedProxies,
+		Ready:          ready,
+	})
+	if err != nil {
+		logger.Error("failed to build the http router", "err", err)
 		os.Exit(1)
 	}
-
-	handler.RegisterRoutes(r)
 
 	srv := http.NewServer(":"+cfg.HTTPPort, r)
 	go func() {

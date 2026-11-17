@@ -24,7 +24,6 @@ import (
 	"github.com/atpost/chat-shared/accessauth"
 	"github.com/atpost/chat-shared/logging"
 	"github.com/atpost/chat-shared/transport"
-	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/segmentio/kafka-go"
 )
@@ -267,32 +266,30 @@ func main() {
 	go authRefresher.Start(ctx)
 
 	// 8. HTTP Server
-	r := gin.New()
-	r.Use(callhttp.RequestIDMiddleware())
-	r.Use(callhttp.LoggerMiddleware(logger))
-	r.Use(callhttp.RecoveryMiddleware(logger))
-	r.Use(callhttp.CORSMiddleware())
-	r.Use(callhttp.AuthMiddlewareWithKeys(callhttp.JWTKeySet{
-		ActiveKID:      cfg.JWTKID,
-		ActiveSecret:   cfg.JWTSecret,
-		PreviousKID:    cfg.JWTKIDPrevious,
-		PreviousSecret: cfg.JWTSecretPrevious,
-		AccessKeys:     authKeys,
-		Policy:         authPolicy,
-		// Admits the AI pipeline to /internal/v1/calls/* without a user JWT.
-		InternalServiceKey: cfg.InternalServiceKey,
-	}, logger))
+	// Kubernetes readiness (GET /readyz): see readiness.go for what is
+	// checked and what is deliberately not.
+	ready := newReadiness(logger, dbPool.Ping,
+		func(ctx context.Context) error { return rdb.Ping(ctx).Err() })
 
-	proxies := cfg.TrustedProxies
-	if len(proxies) == 0 {
-		proxies = nil
-	}
-	if err := r.SetTrustedProxies(proxies); err != nil {
-		logger.Error("failed to set trusted proxies", "err", err)
+	r, err := callhttp.NewRouter(handler, callhttp.RouterDeps{
+		Logger: logger,
+		Keys: callhttp.JWTKeySet{
+			ActiveKID:      cfg.JWTKID,
+			ActiveSecret:   cfg.JWTSecret,
+			PreviousKID:    cfg.JWTKIDPrevious,
+			PreviousSecret: cfg.JWTSecretPrevious,
+			AccessKeys:     authKeys,
+			Policy:         authPolicy,
+			// Admits the AI pipeline to /internal/v1/calls/* without a user JWT.
+			InternalServiceKey: cfg.InternalServiceKey,
+		},
+		TrustedProxies: cfg.TrustedProxies,
+		Ready:          ready,
+	})
+	if err != nil {
+		logger.Error("failed to build the http router", "err", err)
 		os.Exit(1)
 	}
-
-	handler.RegisterRoutes(r)
 
 	// Audit L1: gin's Run has no timeouts, so anything reaching the pod
 	// directly could hold a connection open indefinitely.
