@@ -215,6 +215,10 @@ func categoryForEvent(eventType string) prefCategory {
 	// the author's own video, in the system toggles and tab.
 	case CopyrightTypeHold, CopyrightTypeCleared, CopyrightTypeBlocked:
 		return catSystem
+	// Post author notices (author_notice.go): moderation decisions on, and
+	// failed schedules of, the author's own post.
+	case AuthorNoticeTypeTakedown, AuthorNoticeTypeRestored, AuthorNoticeTypeScheduledFailed:
+		return catSystem
 	// LIVE.
 	case "creator_went_live", "live.started":
 		return catLive

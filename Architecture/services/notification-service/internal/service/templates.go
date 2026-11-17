@@ -355,6 +355,25 @@ var Templates = map[string]NotificationTemplate{
 		PushEligible: true, CanAggregate: false,
 	},
 
+	// Post author notices (author_notice.go, reels-29). Category `system`;
+	// one notice per decision, never aggregated. The rendered copy names
+	// reel / video / post; these are the generic titles.
+	AuthorNoticeTypeTakedown: {
+		EventType: AuthorNoticeTypeTakedown, TitleTemplate: "Your post was removed",
+		BodyTemplate: "{reason} You can appeal this decision.", Icon: "system", Priority: "high",
+		PushEligible: true, CanAggregate: false,
+	},
+	AuthorNoticeTypeRestored: {
+		EventType: AuthorNoticeTypeRestored, TitleTemplate: "Your post is back",
+		BodyTemplate: "{post_title} is visible again.", Icon: "system", Priority: "high",
+		PushEligible: true, CanAggregate: false,
+	},
+	AuthorNoticeTypeScheduledFailed: {
+		EventType: AuthorNoticeTypeScheduledFailed, TitleTemplate: "Your scheduled video was not published",
+		BodyTemplate: "{reason}", Icon: "system", Priority: "high",
+		PushEligible: true, CanAggregate: false,
+	},
+
 	// === Pulse (dating) mechanics, dating_pulse.go ===
 	// A scam alert is a safety notice: critical, so even if it ever reaches
 	// the general resolver no toggle, mute or quiet hours can hold it back.

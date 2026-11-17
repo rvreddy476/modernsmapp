@@ -69,6 +69,10 @@ type Consumer struct {
 	// copyrightNotify delivers the author's copyright review notices
 	// (copyright_consumer.go); the service implements it, tests pass a fake.
 	copyrightNotify copyrightNotifier
+	// authorNotify delivers post.author_notice to the post's author
+	// (author_notice_consumer.go); the service implements it, tests pass a
+	// fake.
+	authorNotify authorNoticeNotifier
 	// followRequestNotify delivers private-account follow-request notices
 	// (follow_request_consumer.go); the service implements it, tests pass a
 	// fake.
@@ -133,6 +137,7 @@ func NewConsumerWithDialer(brokers []string, groupID string, topic string, svc *
 		c.datingNotify = svc
 		c.creditNotify = svc
 		c.copyrightNotify = svc
+		c.authorNotify = svc
 		c.followRequestNotify = svc
 		c.mentionNotify = svc
 		c.noteNotify = svc
@@ -223,7 +228,9 @@ func commitsAfterProcessing(typ string) bool {
 	switch typ {
 	case events.EventRiderRideAssigned, events.EventRiderRideCancelled, events.EventRiderRideCompleted,
 		events.EventRiderRideOffered, events.EventRiderRidePaymentPaid,
-		events.EventPostCopyrightReview:
+		// post.author_notice (author_notice_consumer.go): the author's
+		// takedown / restore / failed-schedule notice is never skipped.
+		events.EventPostCopyrightReview, EventPostAuthorNotice:
 		return true
 	}
 	return commerceDeliveryNotificationType(typ) || partnerSupportNotificationType(typ)
@@ -459,6 +466,10 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 	case events.EventPostCopyrightReview:
 		// Copyright title review (copyright_consumer.go): the author's notice.
 		return c.handleCopyrightReviewEvent(ctx, envelope.Payload)
+
+	case EventPostAuthorNotice:
+		// A decision on the author's own post (author_notice_consumer.go).
+		return c.handleAuthorNoticeEvent(ctx, envelope.Payload)
 
 	case events.EventPostCreditRequested, events.EventPostCreditAccepted:
 		// Video credits (credit_consumer.go): the request to the tagged

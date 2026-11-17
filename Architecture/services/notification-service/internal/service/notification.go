@@ -53,6 +53,9 @@ type Service struct {
 	// copyrightInAppSeam replaces the copyright notice's in-app delivery
 	// (tests only; nil in production).
 	copyrightInAppSeam func(ctx context.Context, n CopyrightReviewNotification) error
+	// authorNoticeInAppSeam replaces the author notice's delivery
+	// (author_notice.go; tests only, nil in production).
+	authorNoticeInAppSeam func(ctx context.Context, n AuthorNotice) error
 	// suppressionSeam replaces the account-suppression lookup for the
 	// fan-out delivery path (tests only; nil in production).
 	suppressionSeam func(ctx context.Context, userID uuid.UUID) (bool, error)
@@ -508,6 +511,14 @@ func notifTitleBody(notifType string) (string, string) {
 		return "Your video cleared copyright review", "It is now visible to everyone"
 	case CopyrightTypeBlocked:
 		return "Your video was blocked for copyright", "It stays hidden"
+	// Post author notices (author_notice.go): the rendered copy rides an
+	// override; these are the fallbacks.
+	case AuthorNoticeTypeTakedown:
+		return "Your post was removed", "Tap to see why. You can appeal this decision."
+	case AuthorNoticeTypeRestored:
+		return "Your post is back", "It is visible again."
+	case AuthorNoticeTypeScheduledFailed:
+		return "Your scheduled video was not published", "Upload it again to publish it."
 	case "creator_went_live":
 		return "LIVE now", "Someone you follow just went live"
 	case "missed_call":

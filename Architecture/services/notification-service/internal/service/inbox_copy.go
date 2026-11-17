@@ -329,6 +329,10 @@ var inboxCopyTable = map[string]inboxCopyEntry{
 	CopyrightTypeHold:    reuse(CopyrightTypeHold, InboxIconAccount),
 	CopyrightTypeCleared: reuse(CopyrightTypeCleared, InboxIconAccount),
 	CopyrightTypeBlocked: reuse(CopyrightTypeBlocked, InboxIconAccount),
+	// Post author notices (author_notice.go): the author's own post.
+	AuthorNoticeTypeTakedown:        own("Your post was removed. Tap to see why and appeal", InboxIconAccount),
+	AuthorNoticeTypeRestored:        reuse(AuthorNoticeTypeRestored, InboxIconAccount),
+	AuthorNoticeTypeScheduledFailed: reuse(AuthorNoticeTypeScheduledFailed, InboxIconAccount),
 }
 
 // inboxFamily is the fallback for a type the table does not name: the
