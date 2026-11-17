@@ -362,7 +362,7 @@ func classifyUpload(v authorView, policy UploadPolicy) *postState {
 	}
 	// The creator's per-upload switch. Enforced here too, because the
 	// "post became visible" trigger does not carry it.
-	if false {
+	if v.NotifySubscribers != nil && !*v.NotifySubscribers {
 		return skip("creator_opted_out")
 	}
 	// "" is a legacy row that predates review_status; it was always read
