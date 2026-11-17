@@ -11,6 +11,11 @@ set -uo pipefail
 #   ./run-local.sh api-gateway user-service post-service
 #   ./run-local.sh all-core          # api-gw + identity + user + post + feed + media
 #   ./run-local.sh list              # show available services
+#   ./run-local.sh stop [--signal KILL] <service> [service...]
+#                                    # stop services another run of this
+#                                    # script started (default SIGTERM;
+#                                    # KILL simulates a crash). Start one
+#                                    # again with ./run-local.sh <service>.
 # ─────────────────────────────────────────────────────────────
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -157,9 +162,79 @@ CORE_SERVICES="api-gateway identity-auth identity-profile user-service post-serv
 # playlists, watch progress, the subscriber fan-out. Needs ffmpeg on PATH and
 # the media.events + media.events.long topics. .github/workflows/e2e.yml
 # lists the same services in its "video" matrix entry.
-VIDEO_E2E_SERVICES="user-service feed-service identity-auth graph-service post-service identity-profile media-service media-worker trust-safety-service notification-service e2e-deny-authority api-gateway"
+VIDEO_E2E_SERVICES="user-service feed-service identity-auth identity-user graph-service post-service identity-profile media-service media-worker trust-safety-service notification-service search-service e2e-deny-authority api-gateway"
+
+# module_root_of <dir>: the Go module a service is run from (Architecture/,
+# identity-platform/, chat-service/, or the service dir itself).
+module_root_of() {
+    case "$1" in
+        Architecture/*)      echo "$REPO_ROOT/Architecture" ;;
+        identity-platform/*) echo "$REPO_ROOT/identity-platform" ;;
+        chat-service/*)      echo "$REPO_ROOT/chat-service" ;;
+        *)                   echo "$REPO_ROOT/$1" ;;
+    esac
+}
 
 # ── Commands ──
+if [[ "${1:-}" == "stop" ]]; then
+    # Stops services started by another run of this script: each one is a
+    # `go run <pkg>` (from its module root) whose child is the built binary.
+    # The signal goes to the binary first, so KILL is a real crash (no
+    # shutdown hook runs), then to the `go run` parent. Used by the e2e
+    # worker-kill flow (tools/integration video_long_recovery_e2e_test.go).
+    shift
+    sig=TERM
+    if [[ "${1:-}" == "--signal" ]]; then
+        sig="${2:?--signal needs a signal name, e.g. KILL}"
+        shift 2
+    fi
+    if [[ $# -eq 0 ]]; then
+        echo "Usage: $0 stop [--signal KILL] <service> [service...]"
+        exit 1
+    fi
+    rc=0
+    for svc in "$@"; do
+        dir="${SERVICE_DIR[$svc]:-}"
+        if [[ -z "$dir" ]]; then
+            echo "Unknown service: $svc (run '$0 list' to see available services)"
+            exit 1
+        fi
+        root="$(module_root_of "$dir")"
+        rel="${dir#Architecture/}"; rel="${rel#identity-platform/}"; rel="${rel#chat-service/}"
+        [[ "$root" == "$REPO_ROOT/$dir" ]] && rel=""
+        pkg="./${rel:+$rel/}${SERVICE_CMD[$svc]:-cmd/server}"
+        found=""
+        for pid in $(pgrep -f "go run ${pkg}\$" || true); do
+            # The same relative package exists in two modules (the app and
+            # the identity user-service): match the module root too.
+            [[ "$(readlink "/proc/$pid/cwd" 2>/dev/null)" == "$root" ]] || continue
+            found="$found $pid"
+            for child in $(pgrep -P "$pid" || true); do
+                kill -s "$sig" "$child" 2>/dev/null || true
+            done
+            kill -s "$sig" "$pid" 2>/dev/null || true
+        done
+        if [[ -z "$found" ]]; then
+            echo "$svc: not running (no 'go run $pkg' from $root)"
+            rc=1
+            continue
+        fi
+        for _ in $(seq 1 30); do
+            alive=""
+            for pid in $found; do kill -0 "$pid" 2>/dev/null && alive=1; done
+            [[ -z "$alive" ]] && break
+            sleep 0.5
+        done
+        if [[ -n "$alive" ]]; then
+            echo "$svc: still running 15 s after SIG$sig (pids$found)"
+            rc=1
+        else
+            echo "Stopped $svc with SIG$sig (pids$found)"
+        fi
+    done
+    exit "$rc"
+fi
+
 if [[ "${1:-}" == "list" ]]; then
     echo "Available services:"
     for svc in $(echo "${!SERVICE_DIR[@]}" | tr ' ' '\n' | sort); do

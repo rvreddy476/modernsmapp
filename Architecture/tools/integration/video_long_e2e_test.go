@@ -10,8 +10,11 @@ package integration
 //
 // Tracked skips (trackedCheck, ATPOST_E2E_KNOWN_OPEN):
 //
-//	lv-1  B's "new upload" notification after processing
-//	lv-2  a segment URL issued before "private" stops within the window
+//	lv-1   B's "new upload" notification after processing
+//	lv-2   a segment URL issued before "private" stops within the window
+//	lv-28  cover-frame refuses a thumbnail_url that is not A's own image
+//
+// Journey 6 (the worker killed mid-transcode) is video_long_recovery_e2e_test.go.
 
 import (
 	"context"
@@ -38,10 +41,13 @@ import (
 //	watch progress written on B's phone resumes on B's second device
 //	V2 (unlisted) opens by link but is absent from trending, the channel
 //	  listing and feed, the video feeds and search; V1 is the control
-//	A's playlist: create, add V1 and V2, move V2 first
+//	A's playlist: create, add V1 and V2, move V2 first; shared signed out
+//	  it lists V1 (not the unlisted V2); a private playlist is refused
+//	A cannot set V2's cover from B's image or a free-form URL (lv-28)
 //	B is notified of V1 after processing                     (lv-1)
-//	A makes V1 private: B's master and child playlists are refused at once;
-//	  a segment URL B already holds expires within the window (lv-2)
+//	A makes V1 private while B's player is open: the next refresh of every
+//	  child playlist, the master and /url are refused at once; a segment
+//	  URL B already holds expires within the window (lv-2)
 func TestE2E_Video_LongVideo_UploadRoutePublishPlay(t *testing.T) {
 	SkipIfNotIntegration(t)
 	urls := LoadServiceURLs()
@@ -214,13 +220,14 @@ func TestE2E_Video_LongVideo_UploadRoutePublishPlay(t *testing.T) {
 	})
 
 	t.Run("unlisted absent from search", func(t *testing.T) {
-		// search-service needs OpenSearch, which the video tier does not
-		// start unless asked (ATPOST_E2E_REQUIRE_SEARCH=1).
+		// The video tier runs search-service on the infra OpenSearch and sets
+		// ATPOST_E2E_REQUIRE_SEARCH=1; without search the flow fails where
+		// the stack is required and skips only on a developer machine.
 		required := envInt("ATPOST_E2E_REQUIRE_SEARCH", 0) == 1
 		q := "/v1/search/posts?q=" + url.QueryEscape("E2E long "+run)
 		var ids []string
 		found := false
-		deadline := time.Now().Add(60 * time.Second)
+		deadline := time.Now().Add(90 * time.Second)
 		lastStatus := 0
 		for time.Now().Before(deadline) {
 			env, err := b.Do(ctx, "GET", q, nil)
@@ -238,9 +245,10 @@ func TestE2E_Video_LongVideo_UploadRoutePublishPlay(t *testing.T) {
 		}
 		if !found {
 			if required {
-				t.Fatalf("search never indexed the public V1 (last status %d)", lastStatus)
+				t.Fatalf("search never returned the public V1 within 90 s (last status %d): search-service indexing or OpenSearch", lastStatus)
 			}
-			t.Skipf("TIER GAP: search did not answer for the public control (last status %d); run with search-service + OpenSearch and ATPOST_E2E_REQUIRE_SEARCH=1", lastStatus)
+			missingStack(t, "search did not return the public control (last status %d); run search-service with OpenSearch", lastStatus)
+			return
 		}
 		if containsID(ids, v2.ID) {
 			t.Fatalf("unlisted V2 is in B's search results")
@@ -292,6 +300,76 @@ func TestE2E_Video_LongVideo_UploadRoutePublishPlay(t *testing.T) {
 		if got := order(a.MustOK(t, ctx, "GET", "/v1/playlists/"+pl.ID+"/items", nil)); fmt.Sprint(got) != fmt.Sprint([]string{v2.ID, v1.ID}) {
 			t.Fatalf("playlist order after moving V2 first %v, want [V2 V1]", got)
 		}
+
+		// ── journey 4, share: a shared link opened signed out ──
+		// The public playlist and its items read without a token; an
+		// unlisted video in it is listed only to its author
+		// (post-service playlists.go playlistItemsPage HideUnlisted).
+		if env := stranger.MustDo(t, ctx, "GET", "/v1/playlists/"+pl.ID, nil); env.Status != http.StatusOK {
+			t.Fatalf("public playlist signed out: %d %s, want 200", env.Status, envelopeError(env))
+		}
+		shared := order(stranger.MustOK(t, ctx, "GET", "/v1/playlists/"+pl.ID+"/items", nil))
+		if !containsID(shared, v1.ID) {
+			t.Fatalf("public playlist items signed out %v: public V1 missing", shared)
+		}
+		if containsID(shared, v2.ID) {
+			t.Fatalf("public playlist items signed out %v: unlisted V2 is listed", shared)
+		}
+		// A private playlist is not readable by anyone but its owner,
+		// signed out or as another account.
+		var priv struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(a.MustOK(t, ctx, "POST", "/v1/playlists", map[string]any{
+			"title": "E2E private playlist " + run, "visibility": "private",
+		}), &priv); err != nil || priv.ID == "" {
+			t.Fatalf("create private playlist: id missing (err=%v)", err)
+		}
+		a.MustOK(t, ctx, "POST", "/v1/playlists/"+priv.ID+"/items", map[string]any{"post_id": v1.ID})
+		a.MustOK(t, ctx, "GET", "/v1/playlists/"+priv.ID, nil)
+		for _, who := range []struct {
+			name string
+			c    *HTTPClient
+		}{{"signed out", stranger}, {"as B", b}} {
+			for _, path := range []string{"/v1/playlists/" + priv.ID, "/v1/playlists/" + priv.ID + "/items"} {
+				env := who.c.MustDo(t, ctx, "GET", path, nil)
+				// post-service answers 403 FORBIDDEN (ErrPlaylistPrivate);
+				// 404 would also do. Never a 2xx, never a 5xx.
+				if env.Status != http.StatusForbidden && env.Status != http.StatusNotFound {
+					t.Fatalf("private playlist %s: GET %s %d %s, want 403 or 404", who.name, path, env.Status, envelopeError(env))
+				}
+			}
+		}
+	})
+
+	// ── lv-28: the cover is the creator's own platform image ──
+	t.Run("cover-frame refuses a foreign or free-form thumbnail_url (lv-28)", func(t *testing.T) {
+		// B's own uploaded image: a real platform image, but not A's.
+		bImg := mediaInitAndPut(t, ctx, b, "image", "image/png", e2ePNG(t, 64))
+		b.MustOK(t, ctx, "POST", "/v1/media/confirm", map[string]any{"media_id": bImg})
+		bURL := urls.APIGateway + "/v1/media/" + bImg
+		var u struct {
+			URL string `json:"url"`
+		}
+		if env := b.MustDo(t, ctx, "GET", "/v1/media/"+bImg+"/url", nil); env.Status == http.StatusOK &&
+			json.Unmarshal(env.Data, &u) == nil && u.URL != "" {
+			bURL = u.URL
+		}
+		const pixel = "https://tracker.e2e.example.test/pixel.gif"
+		var parts []string
+		holds := true
+		for _, c := range []struct{ name, url string }{{"another user's image", bURL}, {"a free-form URL", pixel}} {
+			env := a.MustDo(t, ctx, "POST", "/v1/videos/"+v2.ID+"/cover-frame", map[string]any{"thumbnail_url": c.url})
+			refused := env.Status >= 400 && env.Status < 500
+			holds = holds && refused
+			parts = append(parts, fmt.Sprintf("%s: %d %q", c.name, env.Status, envelopeCode(env)))
+		}
+		// Whatever the answer, neither URL may now be the video's cover.
+		raw := string(a.MustOK(t, ctx, "GET", "/v1/posts/"+v2.ID, nil))
+		stored := strings.Contains(raw, "tracker.e2e.example.test") || strings.Contains(raw, bImg)
+		holds = holds && !stored
+		trackedCheck(t, "lv-28", holds, fmt.Sprintf("cover-frame with thumbnail_url, want a 4xx refusal and nothing stored: %s; stored=%v",
+			strings.Join(parts, "; "), stored))
 	})
 
 	// ── lv-1: the subscriber hears about the upload once it is playable ──
@@ -333,27 +411,47 @@ func TestE2E_Video_LongVideo_UploadRoutePublishPlay(t *testing.T) {
 		if notified && matches != 1 {
 			t.Fatalf("subscriber B got %d creator_uploaded_video notifications for V1, want exactly 1", matches)
 		}
+		// The detail is printed on a pass too, so it says what was seen.
+		detail := "subscriber B (notify_on=all) got no creator_uploaded_video notification for V1 within 60 s of it becoming playable (last: " + last + ")"
 		if notified {
-			t.Logf("lv-1 asserted: one creator_uploaded_video for V1 after %d poll(s), %s", polls, time.Since(start).Round(time.Second))
+			detail = fmt.Sprintf("subscriber B got exactly one creator_uploaded_video for V1 after %d poll(s), %s", polls, time.Since(start).Round(time.Second))
 		}
-		trackedCheck(t, "lv-1", notified,
-			"subscriber B (notify_on=all) got no creator_uploaded_video notification for V1 within 60 s of it becoming playable (last: "+last+")")
+		trackedCheck(t, "lv-1", notified, detail)
 	})
 
 	// ── private: refused at once; issued segments stop within the window ──
 	seg := rungs["360p"]
-	a.MustOK(t, ctx, "PATCH", "/v1/posts/"+v1.ID, map[string]any{"visibility": "private"})
-	if r := rawDo(t, ctx, b, "GET", masterPath(v1Media), nil, ""); r.Status != http.StatusNotFound {
-		t.Fatalf("private V1: master playlist as B %d, want 404 immediately", r.Status)
-	}
-	if r := rawDo(t, ctx, b, "GET", seg.ChildPath, nil, ""); r.Status != http.StatusNotFound {
-		t.Fatalf("private V1: child playlist as B %d, want 404 immediately", r.Status)
-	}
-	if env := b.MustDo(t, ctx, "GET", "/v1/media/"+v1Media+"/url", nil); env.Status != http.StatusNotFound {
-		t.Fatalf("private V1: url as B %d, want 404 immediately", env.Status)
-	}
-	if code, _ := postAs(ctx, stranger, v1.ID); code != http.StatusNotFound {
-		t.Fatalf("private V1: GET post signed out %d, want 404", code)
+
+	// Journey 3, the open player: B's player holds the master it loaded and
+	// refreshes each child playlist (hls.js and ExoPlayer re-fetch a child
+	// before its signed segments expire). Right up to the change every
+	// refresh works; the NEXT refresh after it is refused, for every rung.
+	t.Run("open player: the next playlist refresh after private is refused", func(t *testing.T) {
+		master := rawDo(t, ctx, b, "GET", masterPath(v1Media), nil, "")
+		requirePlaylist(t, master, "master playlist before private")
+		children := playlistLines(master.Body)
+		for _, child := range children {
+			requirePlaylist(t, rawDo(t, ctx, b, "GET", child, nil, ""), "refresh of "+child+" before private")
+		}
+		a.MustOK(t, ctx, "PATCH", "/v1/posts/"+v1.ID, map[string]any{"visibility": "private"})
+		for _, child := range children {
+			if r := rawDo(t, ctx, b, "GET", child, nil, ""); r.Status != http.StatusNotFound {
+				t.Errorf("private V1: the next refresh of %s as B got %d, want 404 immediately", child, r.Status)
+			}
+		}
+		if r := rawDo(t, ctx, b, "GET", masterPath(v1Media), nil, ""); r.Status != http.StatusNotFound {
+			t.Errorf("private V1: master playlist as B %d, want 404 immediately", r.Status)
+		}
+		if env := b.MustDo(t, ctx, "GET", "/v1/media/"+v1Media+"/url", nil); env.Status != http.StatusNotFound {
+			t.Errorf("private V1: url as B %d, want 404 immediately", env.Status)
+		}
+		if code, _ := postAs(ctx, stranger, v1.ID); code != http.StatusNotFound {
+			t.Errorf("private V1: GET post signed out %d, want 404", code)
+		}
+	})
+	// The window check below needs V1 private whatever happened above.
+	if code, p := postAs(ctx, a, v1.ID); code != http.StatusOK || p.Visibility != "private" {
+		t.Fatalf("V1 as its author after the private PATCH: %d visibility %q, want private", code, p.Visibility)
 	}
 
 	t.Run("issued segment URL stops within the window (lv-2)", func(t *testing.T) {
