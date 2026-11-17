@@ -132,6 +132,8 @@ data class ShipmentDto(
     @SerialName("last_event_at") val lastEventAt: String? = null,
     @SerialName("created_at") val createdAt: String? = null,
     @SerialName("updated_at") val updatedAt: String? = null,
+    /** True when the seller ships the order themselves, not through a courier. */
+    @SerialName("seller_managed") val sellerManaged: Boolean = false,
 )
 
 /** One courier scan on a shipment, as `postgres.ShipmentEvent` marshals it. */
