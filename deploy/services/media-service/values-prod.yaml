@@ -48,11 +48,8 @@ externalSecret:
     - { secretKey: KAFKA_SASL_USERNAME, remoteRef: kafka_sasl_username }
     - { secretKey: KAFKA_SASL_PASSWORD, remoteRef: kafka_sasl_password }
     - { secretKey: INTERNAL_SERVICE_KEY, remoteRef: internal_service_key }
-    - { secretKey: JWT_SECRET, remoteRef: jwt_secret }
-    - { secretKey: JWT_KID, remoteRef: jwt_kid }
-    - { secretKey: JWT_SECRET_PREVIOUS, remoteRef: jwt_secret_previous }
-    - { secretKey: JWT_KID_PREVIOUS, remoteRef: jwt_kid_previous }
-    # RS256 verification (public key); HS256 stays accepted in parallel.
+    # RS256 only: media-service refuses to start in production while it
+    # holds JWT_SECRET (reels-15). Only the public key is mounted.
     - { secretKey: JWT_PUBLIC_KEY_PEM, remoteRef: jwt_public_key_pem }
     # CloudFront signed URLs: the key pair id and private key of the W1
     # signing key (media-service refuses to start in production without
@@ -88,6 +85,12 @@ env:
   AWS_EC2_METADATA_DISABLED: "true"
   OTEL_EXPORTER_OTLP_ENDPOINT: http://tempo.observability.svc.cluster.local:4318
   JWT_RS256_KID: rsa-1
+  # Must equal the api-gateway values: tokens are checked for both.
+  JWT_ISSUER: "auth-service"
+  JWT_AUDIENCE: "atpost-api"
+  # How long an issued video segment URL may outlive a visibility change
+  # (1m to 15m). Players re-fetch the playlist for fresh URLs (lv-2).
+  MEDIA_HLS_SEGMENT_TTL: 10m
 
   # ── Managed stores ────────────────────────────────────────────────────────
   REDIS_TLS_ENABLED: "true"

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/rsa"
 	"fmt"
 	"log/slog"
 	"os"
@@ -37,9 +36,12 @@ func main() {
 	// 2. Config
 	port := env("HTTP_PORT", "8087")
 	pgDSN := os.Getenv("POSTGRES_DSN")
-	jwtSecret := os.Getenv("JWT_SECRET")
-	if jwtSecret == "" {
-		slog.Error("JWT_SECRET environment variable is required")
+	// reels-15: access-token keys and policy. Production is RS256 only, with
+	// exp, iss and aud checked, and refuses to start holding JWT_SECRET;
+	// elsewhere JWT_SECRET stays required unless JWT_DISABLE_HS256=true.
+	jwtKeys, err := mediaHttp.LoadJWTKeySet(os.Getenv)
+	if err != nil {
+		slog.Error("access-token configuration refused", "error", err)
 		os.Exit(1)
 	}
 
@@ -245,23 +247,9 @@ func main() {
 	checker.Register("postgres", health.PingCheck(dbPool))
 
 	// 9. HTTP Server with middleware
-	// C7 — accept the previous secret too during a kid rotation window.
-	jwtKeys := mediaHttp.JWTKeySet{
-		ActiveKID:      env("JWT_KID", "v1"),
-		ActiveSecret:   jwtSecret,
-		PreviousKID:    os.Getenv("JWT_KID_PREVIOUS"),
-		PreviousSecret: os.Getenv("JWT_SECRET_PREVIOUS"),
-	}
-	// Optional RS256 verification (additive): load auth-service's public key.
-	if pubPEM := os.Getenv("JWT_PUBLIC_KEY_PEM"); pubPEM != "" {
-		pub, perr := mediaHttp.ParseRSAPublicKeyPEM(pubPEM)
-		if perr != nil {
-			slog.Error("failed to parse JWT_PUBLIC_KEY_PEM", "err", perr)
-			os.Exit(1)
-		}
-		jwtKeys.RSAKeys = map[string]*rsa.PublicKey{env("JWT_RS256_KID", "rsa-1"): pub}
-		slog.Info("RS256 token verification enabled", "kid", env("JWT_RS256_KID", "rsa-1"))
-	}
+	// jwtKeys (step 2, mediaHttp.LoadJWTKeySet): C7 kid rotation for HS256
+	// outside production, RS256 current + previous key, iss/aud policy.
+	slog.Info("access-token verification", "rs256_keys", len(jwtKeys.RSAKeys), "hs256_accepted", !jwtKeys.DisableHS256)
 	authMW := mediaHttp.AuthMiddlewareWithKeys(jwtKeys)
 	optionalAuthMW := mediaHttp.OptionalAuthMiddlewareWithKeys(jwtKeys)
 	// Module 1 fixes-v3 / LB-1: wire the internal service key.
@@ -442,6 +430,8 @@ func main() {
 	r.Use(middleware.RequestID())
 	r.Use(middleware.Logger())
 	r.Use(middleware.Metrics(httpMetrics))
+	// reels-6: X-User-Id only from the internal key or a verified token.
+	r.Use(mediaHttp.TrustedViewerIdentity(jwtKeys, internalServiceKey))
 
 	checker.RegisterRoutes(r)
 	r.GET("/metrics", metrics.Handler())

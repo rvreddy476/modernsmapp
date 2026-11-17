@@ -31,8 +31,7 @@ func ExtractAudio(ctx context.Context, inputPath, outputDir string) (outputPath 
 		outputPath,
 	}
 
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	out, cmdErr := cmd.CombinedOutput()
+	out, cmdErr := runAudioTool(ctx, "ffmpeg", args, true)
 	if cmdErr != nil {
 		return "", nil, fmt.Errorf("ffmpeg audio extraction failed: %w\n%s", cmdErr, out)
 	}
@@ -55,7 +54,7 @@ func ProbeAudio(ctx context.Context, inputPath string) (*AudioMeta, error) {
 		inputPath,
 	}
 
-	out, err := exec.CommandContext(ctx, "ffprobe", args...).Output()
+	out, err := runAudioTool(ctx, "ffprobe", args, false)
 	if err != nil {
 		return nil, fmt.Errorf("ffprobe audio: %w", err)
 	}
@@ -101,8 +100,7 @@ func GenerateWaveform(ctx context.Context, inputPath, outputDir string, numBins 
 		pcmPath,
 	}
 
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
-	if out, cmdErr := cmd.CombinedOutput(); cmdErr != nil {
+	if out, cmdErr := runAudioTool(ctx, "ffmpeg", args, true); cmdErr != nil {
 		return "", fmt.Errorf("ffmpeg waveform extraction failed: %w\n%s", cmdErr, out)
 	}
 

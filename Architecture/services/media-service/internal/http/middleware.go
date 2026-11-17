@@ -23,6 +23,12 @@ type jwtClaims struct {
 	// Sid is the auth-service session the token was minted for (hidden-chat
 	// open tokens are bound to it; chat_open.go).
 	Sid string `json:"sid"`
+	// Iss, Aud and the token type are checked against the key set's policy
+	// (reels-15), the same claims the api-gateway checks.
+	Iss       string `json:"iss"`
+	Aud       any    `json:"aud"` // string or []string per RFC 7519
+	TokenType string `json:"typ"`
+	Type      string `json:"type"`
 }
 
 // JWTKeySet — C7. Active is the current signing secret; previous is the
@@ -36,11 +42,21 @@ type JWTKeySet struct {
 	// RSAKeys (optional) verify RS256 tokens, keyed by `kid`. HS256 above stays
 	// active in parallel so pre-cutover tokens keep verifying.
 	RSAKeys map[string]*rsa.PublicKey
+	// DisableHS256 refuses every symmetric token (reels-15): production
+	// always sets it (LoadJWTKeySet), so a pod holding the shared secret can
+	// no longer mint a user for this service.
+	DisableHS256 bool
+	// Issuers, when non-empty, must contain the token's `iss`. Audience,
+	// when set, must appear in its `aud`. Both come from JWT_ISSUER /
+	// JWT_AUDIENCE, the gateway's names, and are required in production.
+	Issuers  []string
+	Audience string
 }
 
 func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
 	if kid == "" || kid == k.ActiveKID {
-		return []byte(k.ActiveSecret), true
+		// An empty secret is no key: an HMAC under "" is mintable by anyone.
+		return []byte(k.ActiveSecret), k.ActiveSecret != ""
 	}
 	if k.PreviousSecret != "" && kid == k.PreviousKID {
 		return []byte(k.PreviousSecret), true
@@ -107,6 +123,9 @@ func verifyJWTClaims(tokenStr string, keys JWTKeySet) (jwtClaims, error) {
 	signingInput := parts[0] + "." + parts[1]
 	switch header.Alg {
 	case "HS256":
+		if keys.DisableHS256 {
+			return jwtClaims{}, fmt.Errorf("HS256 tokens are not accepted")
+		}
 		secret, ok := keys.secretFor(header.Kid)
 		if !ok {
 			return jwtClaims{}, fmt.Errorf("unknown kid")
@@ -144,8 +163,37 @@ func verifyJWTClaims(tokenStr string, keys JWTKeySet) (jwtClaims, error) {
 		return jwtClaims{}, fmt.Errorf("claims parse: %w", err)
 	}
 
-	if claims.Exp > 0 && time.Now().Unix() > claims.Exp {
+	// reels-15: exp is mandatory. A token without one never expired.
+	if claims.Exp == 0 {
+		return jwtClaims{}, fmt.Errorf("token has no exp claim")
+	}
+	if time.Now().Unix() > claims.Exp {
 		return jwtClaims{}, fmt.Errorf("token expired")
+	}
+
+	// A refresh (or any non-access) token must not authenticate a call.
+	typ := claims.TokenType
+	if typ == "" {
+		typ = claims.Type
+	}
+	if typ != "" && !strings.EqualFold(typ, "access") && !strings.EqualFold(typ, "at+jwt") {
+		return jwtClaims{}, fmt.Errorf("token is not an access token")
+	}
+
+	if len(keys.Issuers) > 0 {
+		allowed := false
+		for _, iss := range keys.Issuers {
+			if claims.Iss == iss {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			return jwtClaims{}, fmt.Errorf("token issuer is not allowed")
+		}
+	}
+	if keys.Audience != "" && !audienceContains(claims.Aud, keys.Audience) {
+		return jwtClaims{}, fmt.Errorf("token audience is not allowed")
 	}
 
 	if claims.subject() == "" {
@@ -153,6 +201,22 @@ func verifyJWTClaims(tokenStr string, keys JWTKeySet) (jwtClaims, error) {
 	}
 
 	return claims, nil
+}
+
+// audienceContains reports whether a JWT `aud` (a string or an array of
+// strings) names want.
+func audienceContains(aud any, want string) bool {
+	switch v := aud.(type) {
+	case string:
+		return v == want
+	case []any:
+		for _, item := range v {
+			if s, ok := item.(string); ok && s == want {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // extractToken gets the JWT from Authorization header or access_token cookie.

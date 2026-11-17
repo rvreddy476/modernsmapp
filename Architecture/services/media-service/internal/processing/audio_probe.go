@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"os/exec"
 	"strconv"
 )
 
@@ -27,12 +26,13 @@ var ErrProbeUnreadable = errors.New("ffprobe: unreadable output")
 
 // ProbeAudioFile runs ffprobe over a local file.
 func ProbeAudioFile(ctx context.Context, path string) (*AudioFileProbe, error) {
-	out, err := exec.CommandContext(ctx, "ffprobe",
+	// reels-16: restricted input and ProbeTimeout (audio_tool.go).
+	out, err := runAudioTool(ctx, "ffprobe", []string{
 		"-v", "error",
 		"-show_entries", "stream=codec_type,codec_name,duration:stream_disposition=attached_pic:format=duration",
 		"-of", "json",
 		path,
-	).Output()
+	}, false)
 	if err != nil {
 		return nil, fmt.Errorf("ffprobe audio file: %w", err)
 	}

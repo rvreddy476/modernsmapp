@@ -3,7 +3,6 @@ package processing
 import (
 	"context"
 	"fmt"
-	"os/exec"
 )
 
 // Alternate audio tracks (2026-09-27): replace a video variant's audio with a
@@ -32,8 +31,9 @@ func MuxAudioArgs(videoPath, audioPath, outPath string) []string {
 
 // MuxAudio runs MuxAudioArgs through ffmpeg.
 func MuxAudio(ctx context.Context, videoPath, audioPath, outPath string) error {
-	cmd := exec.CommandContext(ctx, "ffmpeg", MuxAudioArgs(videoPath, audioPath, outPath)...) //nolint:gosec // G204: fixed ffmpeg binary, argv without a shell; paths are worker-built temp files
-	if out, err := cmd.CombinedOutput(); err != nil {
+	// reels-16: both inputs restricted (file protocol, sniffed demuxer) and
+	// the call bounded (audio_tool.go).
+	if out, err := runAudioTool(ctx, "ffmpeg", MuxAudioArgs(videoPath, audioPath, outPath), true); err != nil {
 		return fmt.Errorf("ffmpeg audio mux failed: %w\n%s", err, truncateOutput(out, 2048))
 	}
 	return nil
