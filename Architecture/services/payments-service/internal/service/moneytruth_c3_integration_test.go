@@ -319,16 +319,65 @@ func TestC3SignedWebhookWithNoCurrencyCannotSettle(t *testing.T) {
 	requireNoTerminalEffect(t, si, "signed webhook with no currency")
 }
 
+// c3OwedBackOnce asserts the refused capture is owed back in full, in the
+// currency it was paid in, and that the refund-required worker (com-2)
+// refunds it exactly once.
+//
+// Payment ids in these proofs are unique per run: refund_required is keyed by
+// (provider, provider_payment_id), and CI runs TestC3 twice against one
+// database ("C3 provider money truth", then "The C3 proofs actually
+// executed"). A fixed id made the second run's capture find the first run's
+// row and record nothing for its own intent (run 44123855383).
+func c3OwedBackOnce(t *testing.T, si staleIntent, payID string, amount int64, currency string) {
+	t.Helper()
+	var (
+		id       int64
+		owed     int64
+		cur, why string
+	)
+	if err := recPool.QueryRow(context.Background(),
+		`SELECT id, amount_minor, COALESCE(currency,''), reason FROM payments.refund_required
+		  WHERE intent_id = $1 AND provider_payment_id = $2`, si.id, payID).Scan(&id, &owed, &cur, &why); err != nil {
+		t.Fatalf("owed row for %s: %v", payID, err)
+	}
+	if why != "capture_mismatch" || owed != amount || cur != currency {
+		t.Fatalf("owed row = %s %d %s, want capture_mismatch %d %s", why, owed, cur, amount, currency)
+	}
+	rzp := newRWRazorpay(t)
+	svc := svcWith(t, rzp.provider())
+	refundID := "rfnd_c3_" + uuid.NewString()[:10]
+	rzp.scriptRefund(payID, rwOK(rwRefundEntity(refundID, payID, amount, "processed")))
+	rrTick(t, svc, id)
+	if err := svc.ApplyWebhook(context.Background(), WebhookInput{
+		Provider: "razorpay", EventID: "evt_c3rf_" + uuid.NewString()[:12], EventType: "refund.processed",
+		ProviderPaymentID: payID, ProviderRefundID: refundID, AmountMinor: amount, Currency: currency,
+	}); err != nil {
+		t.Fatalf("refund webhook: %v", err)
+	}
+	rrTick(t, svc, id) // resolved: never claimed again
+	if n := rzp.count("POST /v1/payments/" + payID + "/refund"); n != 1 {
+		t.Fatalf("refund requests for the mismatched capture = %d, want exactly 1", n)
+	}
+	if got := rrRead(t, si.id, payID); !got.resolved || got.refundedMinor != amount {
+		t.Fatalf("owed row after the refund = %+v, want resolved with %d refunded", got, amount)
+	}
+	if s := statusOf(t, si.id); s != "pending" {
+		t.Fatalf("the intent moved to %q after the owed refund, want pending", s)
+	}
+}
+
 func TestC3SignedWebhookInAnotherCurrencyCannotSettle(t *testing.T) {
 	si := seedStale(t, 118000, "INR", "order_wh_usd_"+uuid.NewString()[:8])
+	pay := "pay_usd_" + uuid.NewString()[:8]
 	hdr, body := signedWebhook(t, "evt_usd_"+uuid.NewString(), "payment.captured", map[string]any{
-		"id": "pay_usd", "order_id": si.providerOrder, "amount": 118000,
+		"id": pay, "order_id": si.providerOrder, "amount": 118000,
 		"currency": "USD", "status": "captured",
 	})
 	if _, err := applySigned(t, svcWith(t, newCreateStub(t).provider()), hdr, body); err == nil {
 		t.Fatal("a capture denominated in USD settled an INR intent")
 	}
-	requireRefusedAndOwedBack(t, si, "pay_usd", "signed webhook in another currency")
+	requireRefusedAndOwedBack(t, si, pay, "signed webhook in another currency")
+	c3OwedBackOnce(t, si, pay, 118000, "USD")
 }
 
 func TestC3SignedWebhookWithNoAmountCannotSettle(t *testing.T) {
@@ -345,14 +394,16 @@ func TestC3SignedWebhookWithNoAmountCannotSettle(t *testing.T) {
 
 func TestC3SignedWebhookWithTheWrongAmountCannotSettle(t *testing.T) {
 	si := seedStale(t, 118000, "INR", "order_wh_wrongamt_"+uuid.NewString()[:8])
+	pay := "pay_wrongamt_" + uuid.NewString()[:8]
 	hdr, body := signedWebhook(t, "evt_wrongamt_"+uuid.NewString(), "payment.captured", map[string]any{
-		"id": "pay_wrongamt", "order_id": si.providerOrder, "amount": 1,
+		"id": pay, "order_id": si.providerOrder, "amount": 100,
 		"currency": "INR", "status": "captured",
 	})
 	if _, err := applySigned(t, svcWith(t, newCreateStub(t).provider()), hdr, body); err == nil {
-		t.Fatal("a ₹0.01 capture settled a ₹1,180 intent")
+		t.Fatal("a ₹1 capture settled a ₹1,180 intent")
 	}
-	requireRefusedAndOwedBack(t, si, "pay_wrongamt", "signed webhook with the wrong amount")
+	requireRefusedAndOwedBack(t, si, pay, "signed webhook with the wrong amount")
+	c3OwedBackOnce(t, si, pay, 100, "INR")
 }
 
 // ─── The policy is one policy ────────────────────────────────────────
