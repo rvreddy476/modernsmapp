@@ -155,6 +155,9 @@ jobs:
           ffprobe -hide_banner -version | head -1
       - name: go test -v (ffmpeg packages)
         working-directory: Architecture/services/media-service
+        env:
+          # A missing ffmpeg fails these tests instead of skipping them.
+          REQUIRE_FFMPEG: "1"
         run: |
           set -o pipefail
           go test -count=1 -v -timeout 20m ./internal/processing/... ./internal/fingerprint/... 2>&1 | tee "$RUNNER_TEMP/ffmpeg-tests.log"
