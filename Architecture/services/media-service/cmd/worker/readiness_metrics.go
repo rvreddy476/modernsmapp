@@ -5,6 +5,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/atpost/media-service/internal/store/postgres"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 )
@@ -35,11 +36,12 @@ var (
 		Help:    "Seconds a transcode request waited before a worker started it.",
 		Buckets: []float64{1, 2, 5, 10, 30, 60, 120, 300, 600, 1800, 3600},
 	})
-	// Both gauges carry class ("short"/"long"): each worker Deployment
-	// (MEDIA_TRANSCODE_CLASSES) reports under the class(es) it consumes, so
-	// alert rules can select one. The VALUE is still the store's
-	// pipeline-wide oldest age: the store cannot yet tell a queued reel from
-	// a queued long video (that needs the class recorded on the request).
+	// Both gauges carry class ("short"/"long") and, since 2026-11-18 (N-1,
+	// lv-21; migration 035), each class's OWN oldest age: the short consumer
+	// records the class it routed each request into, and anything not yet
+	// routed is waiting on the short intake. Every worker reports BOTH
+	// classes (the values are the same on every pod; the rules take max), so
+	// a long video waiting while every long worker is down still shows.
 	oldestPendingAge = promauto.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "media_transcode_oldest_pending_age_seconds",
 		Help: "Age of the oldest asset still at uploaded/processing (OldestPendingTranscodeAge), reported by the worker of each class.",
@@ -52,17 +54,18 @@ var (
 
 // readinessProbe is the store surface the gauges poll.
 type readinessProbe interface {
-	OldestPendingTranscodeAge(ctx context.Context) (float64, error)
-	OldestQueuedTranscodeWait(ctx context.Context) (float64, error)
+	OldestTranscodeAgesByClass(ctx context.Context) (postgres.TranscodeAgesByClass, error)
 }
 
-// runReadinessGauges refreshes the two gauges every interval, under each
-// class this worker consumes.
-func runReadinessGauges(ctx context.Context, store readinessProbe, interval time.Duration, classes []transcodeClass) {
+// gaugeClasses: every worker reports every class (see the gauges above).
+var gaugeClasses = []transcodeClass{classShort, classLong}
+
+// runReadinessGauges refreshes the two gauges every interval.
+func runReadinessGauges(ctx context.Context, store readinessProbe, interval time.Duration) {
 	t := time.NewTicker(interval)
 	defer t.Stop()
 	for {
-		refreshReadinessGauges(ctx, store, classes)
+		refreshReadinessGauges(ctx, store)
 		select {
 		case <-ctx.Done():
 			return
@@ -71,26 +74,21 @@ func runReadinessGauges(ctx context.Context, store readinessProbe, interval time
 	}
 }
 
-func refreshReadinessGauges(ctx context.Context, store readinessProbe, classes []transcodeClass) {
+// refreshReadinessGauges sets each class's gauge to that class's own oldest
+// age; a class with nothing waiting is 0. A failed read leaves the gauges.
+func refreshReadinessGauges(ctx context.Context, store readinessProbe) {
 	pctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	if age, err := store.OldestPendingTranscodeAge(pctx); err != nil {
+	ages, err := store.OldestTranscodeAgesByClass(pctx)
+	if err != nil {
 		if ctx.Err() == nil {
-			log.Printf("Warning: oldest pending transcode age: %v", err)
+			log.Printf("Warning: oldest transcode ages by class: %v", err)
 		}
-	} else {
-		for _, c := range classes {
-			oldestPendingAge.WithLabelValues(string(c)).Set(age)
-		}
+		return
 	}
-	if wait, err := store.OldestQueuedTranscodeWait(pctx); err != nil {
-		if ctx.Err() == nil {
-			log.Printf("Warning: oldest queued transcode wait: %v", err)
-		}
-	} else {
-		for _, c := range classes {
-			oldestQueuedWait.WithLabelValues(string(c)).Set(wait)
-		}
+	for _, c := range gaugeClasses {
+		oldestPendingAge.WithLabelValues(string(c)).Set(ages.Pending[string(c)])
+		oldestQueuedWait.WithLabelValues(string(c)).Set(ages.Queued[string(c)])
 	}
 }
 

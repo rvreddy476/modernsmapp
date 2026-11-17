@@ -142,6 +142,8 @@ type fakeLockedStore struct {
 	deliveryEvent string
 	starts        int
 	finishes      int
+	drains        int
+	drainErr      error
 	jobTargets    []string
 	jobFailures   []string
 }
@@ -197,6 +199,20 @@ func (f *fakeLockedStore) FinishTranscodeDelivery(_ context.Context, _ uuid.UUID
 	defer f.mu.Unlock()
 	if f.deliveryEvent == eventID {
 		f.finishes++
+	}
+	return nil
+}
+
+// As migration 035 keeps it: a drain is a finish plus one drain.
+func (f *fakeLockedStore) DrainTranscodeDelivery(_ context.Context, _ uuid.UUID, eventID string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.drainErr != nil {
+		return f.drainErr
+	}
+	if f.deliveryEvent == eventID {
+		f.finishes++
+		f.drains++
 	}
 	return nil
 }

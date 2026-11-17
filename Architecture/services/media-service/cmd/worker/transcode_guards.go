@@ -60,9 +60,9 @@ const (
 	// defaultMaxAttempts: with the 2 s doubling backoff capped at 2 min,
 	// eight attempts span about a quarter of an hour of retries, enough to
 	// ride out a database restart or a blob-store blip. A message still
-	// failing after that is quarantined; its asset stays 'processing' and
-	// the stall sweeper re-queues it with a fresh request (and fails it
-	// after its own attempts cap), so nothing is lost silently.
+	// failing after that is quarantined AND its asset recorded failed with
+	// the reason (quarantine.go), so nothing is lost silently and nothing
+	// shows 'processing' for ever; the internal reprocess route replays it.
 	defaultMaxAttempts = 8
 	// scratchHeadroom is how many times the original's size must be free
 	// on the scratch volume before the download starts.

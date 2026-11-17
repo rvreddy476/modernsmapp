@@ -150,11 +150,33 @@ type messageWriter interface {
 	WriteMessages(ctx context.Context, msgs ...kafka.Message) error
 }
 
+// classRecorder records the class a request was routed into
+// (*postgres.MediaAssetStore; migration 035), which the per-class queue
+// gauges read (readiness_metrics.go, N-1).
+type classRecorder interface {
+	RecordTranscodeClass(ctx context.Context, mediaID uuid.UUID, eventID, class string) error
+}
+
 // longRouter is the short consumer's sorting step.
 type longRouter struct {
 	store   mediaReader
 	blobs   originalReader
 	forward messageWriter
+	// classes, when set, records where each request went. Best-effort: a
+	// failure costs the gauge's accuracy, never the request.
+	classes classRecorder
+}
+
+// recordClass notes that request eventID of mediaID waits in class.
+func (r *longRouter) recordClass(ctx context.Context, mediaID uuid.UUID, eventID string, class transcodeClass) {
+	if r.classes == nil {
+		return
+	}
+	c, cancel := context.WithTimeout(context.WithoutCancel(ctx), deliveryWriteTimeout)
+	defer cancel()
+	if err := r.classes.RecordTranscodeClass(c, mediaID, eventID, string(class)); err != nil {
+		log.Printf("Warning: transcode class of media %s not recorded: %v", mediaID, err)
+	}
 }
 
 // classify decides the class of the request for mediaID. A request that
@@ -209,6 +231,7 @@ func (r *longRouter) forwardIfLong(ctx context.Context, m kafka.Message) bool {
 	class, reason := r.classify(ctx, mediaID)
 	if class != classLong {
 		transcodeRouted.WithLabelValues(string(class), "local").Inc()
+		r.recordClass(ctx, mediaID, envelope.EventID, classShort)
 		return false
 	}
 	if err := r.forward.WriteMessages(ctx, kafka.Message{Key: m.Key, Value: m.Value, Headers: m.Headers}); err != nil {
@@ -217,10 +240,12 @@ func (r *longRouter) forwardIfLong(ctx context.Context, m kafka.Message) bool {
 				mediaID, reason, longTopic, err)
 			transcodeRouted.WithLabelValues(string(class), "forward_failed").Inc()
 		}
+		r.recordClass(ctx, mediaID, envelope.EventID, classShort) // it waits on the short consumer
 		return false
 	}
 	log.Printf("Transcode for media %s forwarded to %s (%s)", mediaID, topicForClass(class), reason)
 	transcodeRouted.WithLabelValues(string(class), "forwarded").Inc()
+	r.recordClass(ctx, mediaID, envelope.EventID, classLong)
 	return true
 }
 

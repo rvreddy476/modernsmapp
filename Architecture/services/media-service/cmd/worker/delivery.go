@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"sync"
 	"time"
 
 	"github.com/atpost/media-service/internal/store/postgres"
@@ -38,6 +39,73 @@ var errLostWorker = errors.New("transcode lost its worker too many times (crash,
 type deliveryCounter interface {
 	BeginTranscodeDelivery(ctx context.Context, mediaID uuid.UUID, eventID string) (starts, finishes int, err error)
 	FinishTranscodeDelivery(ctx context.Context, mediaID uuid.UUID, eventID string) error
+	DrainTranscodeDelivery(ctx context.Context, mediaID uuid.UUID, eventID string) error
+}
+
+// deliveryRun accounts for ONE run exactly once (REG-2): either as drained,
+// written the moment the worker starts draining (before it waits out the
+// window, so a hard kill at the end of the grace period is not a lost
+// worker), or as finished when the run returns. Whichever comes first wins;
+// a drain write that fails leaves the finish to be written on return.
+type deliveryRun struct {
+	store   deliveryCounter
+	mediaID uuid.UUID
+	eventID string
+
+	mu        sync.Mutex
+	accounted bool
+	stop      chan struct{}
+	watching  sync.WaitGroup
+}
+
+func newDeliveryRun(store deliveryCounter, mediaID uuid.UUID, eventID string) *deliveryRun {
+	return &deliveryRun{store: store, mediaID: mediaID, eventID: eventID, stop: make(chan struct{})}
+}
+
+// watchDrain records the drain when draining closes before the run ends.
+func (d *deliveryRun) watchDrain(ctx context.Context, draining <-chan struct{}) {
+	if draining == nil {
+		return
+	}
+	d.watching.Add(1)
+	go func() {
+		defer d.watching.Done()
+		select {
+		case <-draining:
+			d.markDraining(ctx)
+		case <-d.stop:
+		}
+	}()
+}
+
+// markDraining writes the drain, unless the run is already accounted for.
+func (d *deliveryRun) markDraining(ctx context.Context) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.accounted {
+		return
+	}
+	c, cancel := context.WithTimeout(context.WithoutCancel(ctx), deliveryWriteTimeout)
+	defer cancel()
+	if err := d.store.DrainTranscodeDelivery(c, d.mediaID, d.eventID); err != nil {
+		log.Printf("Warning: transcode drain for media %s not recorded; the finish will be written on return: %v", d.mediaID, err)
+		return
+	}
+	d.accounted = true // the drain is this run's one record
+	log.Printf("Transcode of media %s draining: recorded, so a kill at the end of the grace period is not a lost worker", d.mediaID)
+}
+
+// end stops the drain watch and records the finish unless the drain did.
+func (d *deliveryRun) end(ctx context.Context) {
+	close(d.stop)
+	d.watching.Wait()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.accounted {
+		return
+	}
+	d.accounted = true
+	finishDelivery(ctx, d.store, d.mediaID, d.eventID)
 }
 
 // jobRecorder writes transcoding_jobs rows (the status route reads them).

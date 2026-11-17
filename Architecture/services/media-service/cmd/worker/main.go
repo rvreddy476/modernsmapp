@@ -41,7 +41,9 @@ var (
 	transcodeDuration = promauto.NewHistogram(prometheus.HistogramOpts{
 		Name:    "media_transcode_duration_seconds",
 		Help:    "Wall-clock duration of a video transcode job.",
-		Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600},
+		// lv-21: long videos run for hours (budget up to 48 h); the buckets
+		// used to end at 600 s, so every long job fell in +Inf.
+		Buckets: []float64{1, 5, 15, 30, 60, 120, 300, 600, 1800, 3600, 7200, 14400, 28800, 86400, 172800},
 	})
 )
 
@@ -112,11 +114,12 @@ func main() {
 	// drain deadline, so the rendition in hand can finish.
 	sig := make(chan os.Signal, 2)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM)
-	drain := drainWindow(os.Getenv, classes)
+	drain := drainWindow(os.Getenv)
 	stopCtx, ctx, cancel := drainContexts(sig, drain)
 	defer cancel()
 	precreateWorkerMetrics()
-	log.Printf("SIGTERM drain window: %s (%s)", drain, drainSecondsEnv)
+	log.Printf("SIGTERM drain window: %s (%s=%q, %s=%q)", drain,
+		graceSecondsEnv, os.Getenv(graceSecondsEnv), drainSecondsEnv, os.Getenv(drainSecondsEnv))
 
 	// Database
 	poolCfg, err := pgxpool.ParseConfig(pgDSN)
@@ -186,7 +189,7 @@ func main() {
 
 	// Readiness gauges (P-16) and the Copyright Match fingerprint runner
 	// (shadow mode; claims nothing unless COPYRIGHT_FINGERPRINT_ENABLED).
-	go runReadinessGauges(stopCtx, pgStore, 30*time.Second, classes)
+	go runReadinessGauges(stopCtx, pgStore, 30*time.Second)
 	go runFingerprintLoop(stopCtx, &fingerprintRunner{
 		store:      pgStore,
 		blobs:      blobStore,
@@ -240,7 +243,7 @@ func main() {
 				BatchSize:    1, // one request per write: no batch wait
 				Dialer:       kafkaDialer,
 			})
-			router := &longRouter{store: pgStore, blobs: blobStore, forward: forward}
+			router := &longRouter{store: pgStore, blobs: blobStore, forward: forward, classes: pgStore}
 			handle = func(m kafka.Message) bool {
 				return router.forwardIfLong(ctx, m) || transcode(m)
 			}
@@ -291,16 +294,31 @@ func processMessage(ctx context.Context, stopping func() bool, m kafka.Message, 
 	// Cheap replay check before expensive work. The guarantee is the inbox
 	// primary key inside CompleteTranscode; this only avoids re-running ffmpeg
 	// over an asset another replica already finished.
-	return pgStore.WithTranscodeEventLock(ctx, envelope.EventID, func() error {
-		var blobs prefixCleaner
-		if blobStore != nil {
-			blobs = blobStore
-		}
+	var blobs prefixCleaner
+	if blobStore != nil {
+		blobs = blobStore
+	}
+	return withTranscodeLock(ctx, pgStore, mediaAssetID, func() error {
 		return processTranscodeLocked(ctx, envelope, payload, mediaAssetID, pgStore, blobs,
 			func(ctx context.Context, subject *transcodeSubject, budget *jobBudget, moderation *string) error {
 				return transcodeVideo(ctx, env, subject, payload, budget, moderation)
 			})
 	})
+}
+
+// transcodeLocker serialises the runs of one asset (*postgres.MediaAssetStore).
+type transcodeLocker interface {
+	WithTranscodeMediaLock(ctx context.Context, mediaID uuid.UUID, fn func() error) error
+}
+
+// withTranscodeLock runs fn holding the asset's transcode lock (REG-9). The
+// lock is on the MEDIA id, not the event id: a reprocess (a new event id)
+// and the run it supersedes used to hold two different locks and could
+// write the same HLS segment keys and rung markers at once. Every delivery
+// of one event names one media id, so the old per-event guarantee still
+// holds.
+func withTranscodeLock(ctx context.Context, locker transcodeLocker, mediaID uuid.UUID, fn func() error) error {
+	return locker.WithTranscodeMediaLock(ctx, mediaID, fn)
 }
 
 // lockedStore is what processTranscodeLocked needs from the store.
@@ -373,9 +391,13 @@ func processTranscodeLocked(ctx context.Context, envelope events.EventEnvelope,
 	if err != nil {
 		return err
 	}
-	// Recorded finished whatever the outcome, a clean drain included, and
-	// even once the work context has ended.
-	defer finishDelivery(ctx, store, mediaAssetID, envelope.EventID)
+	// Recorded finished whatever the outcome, and even once the work context
+	// has ended; or recorded DRAINED the moment the worker starts draining,
+	// before it waits, so a kill at the end of the pod's grace period is not
+	// a lost worker (REG-2).
+	thisRun := newDeliveryRun(store, mediaAssetID, envelope.EventID)
+	thisRun.watchDrain(ctx, drainSignal(ctx))
+	defer thisRun.end(ctx)
 
 	moderationResult := ""
 	var transcodeErr error
@@ -594,10 +616,10 @@ func handleUntilDurable(
 	if stopCtx.Err() != nil {
 		return false // fetched as the drain began: leave it for the next owner
 	}
-	jobCtx := withTranscodeClass(workCtx, class)
+	jobCtx := withDrainSignal(withTranscodeClass(workCtx, class), stopCtx.Done())
 	return retryUntilDurable(stopCtx, m,
 		func() error { return processMessage(jobCtx, stoppingFunc(stopCtx), m, pgStore, blobStore, scanner) },
-		pgStore.QuarantineTranscode,
+		quarantineAndFail(pgStore),
 		retryPolicy{maxAttempts: activeConfig.maxAttempts, initialBackoff: 2 * time.Second, maxBackoff: 2 * time.Minute, class: class})
 }
 
