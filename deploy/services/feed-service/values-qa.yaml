@@ -133,6 +133,17 @@ pdb:
 prometheusRule:
   enabled: true
   rules:
+    # Pages are being filtered without a fresh keyword answer from
+    # trust-safety (keywordfilter.go, 17 Nov 2026): viewers get their last
+    # known keywords, and a viewer with none known gets no keyword filter.
+    # The feed stays up, so this is the only signal that it is degraded.
+    - alert: FeedKeywordFilterFallback
+      expr: sum(rate(atpost_feed_service_keyword_filter_fallback_total[5m])) > 0
+      for: 10m
+      labels: { severity: warning }
+      annotations:
+        summary: The feed cannot read keyword filters from trust-safety and is using last known values
+        description: trust-safety-service is unreachable or refusing feed-service (check its health and the internal key). Viewers keep their last known filter keywords; a viewer with none known sees posts their keywords would hide. The source label says which.
     - alert: FeedConsumerStalled
       expr: |-
         (sum by (consumer_group, topic) (increase(atpost_feed_service_kafka_messages_errors_total{consumer_group=~"feed-service-group|feed-service-qa-group"}[3m])) > 0)

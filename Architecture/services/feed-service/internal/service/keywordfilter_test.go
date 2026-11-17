@@ -175,16 +175,8 @@ func TestGetFilterKeywords_MalformedBodyIsAnError(t *testing.T) {
 	}
 }
 
-// applyKeywordHideFilter must propagate the lookup failure — this is the
-// call HydratePosts makes, so this is the fail-closed guarantee the
-// handlers rely on.
-func TestApplyKeywordHideFilter_FailsClosed(t *testing.T) {
-	s := newFeedServiceWithTrust("http://127.0.0.1:1")
-	posts := []HydratedPost{hydratedWithText("anything")}
-	if _, err := s.applyKeywordHideFilter(context.Background(), uuid.New(), posts); err == nil {
-		t.Fatal("a failed keyword lookup must fail the page, not serve it unfiltered")
-	}
-}
+// What a page does with a failed lookup is in keywordfilter_outage_test.go:
+// it is served with the viewer's last known keywords, not failed.
 
 // The happy path parses, and the empty set — the common case — is served
 // from cache: the second call within the TTL must not hit trust-safety.

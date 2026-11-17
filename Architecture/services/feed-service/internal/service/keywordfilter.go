@@ -21,10 +21,21 @@ import (
 // flicks, videos, watch) passes through the same HydratePosts tail, so every
 // surface gets the same filter.
 //
-// Fail-closed, same policy as block/mute (M2-P0-3 / blocksafety_test.go):
-// a failed keyword lookup is an ERROR, never "nobody filtered". The empty
+// The lookup itself is strict (M2-P0-3 / blocksafety_test.go): a failed
+// keyword lookup is an ERROR, never read as "nobody filtered". The empty
 // keyword set is the overwhelmingly common case and is cached like any
 // other answer, so the steady-state cost is one map lookup per request.
+//
+// What a page does with that error changed on 17 Nov 2026. It used to fail
+// the page, so every surface answered 502 for every viewer while
+// trust-safety was unreachable, although almost nobody has a keyword. Now
+// the page is filtered with the viewer's LAST KNOWN keywords (this process's
+// copy, then the copy in Redis), and only a viewer with no known keywords is
+// served without the keyword filter (keywordsOrLastKnown). This is not the
+// block/mute policy and must not be copied to it: a keyword hides content
+// from the viewer at the viewer's own wish, where a block also keeps the
+// viewer's content away from someone else. Blocks, mutes and feed mutes
+// still fail the page.
 
 // keywordFilterCacheTTL bounds how stale a viewer's keyword set may be.
 // A keyword added in trust-safety takes effect within a minute.
@@ -34,6 +45,19 @@ const keywordFilterCacheTTL = 60 * time.Second
 // viewer, so without a cap every viewer since the process started stayed
 // in memory. 100k viewers is a few MB; past it, boundTTLMap evicts.
 const keywordCacheMaxEntries = 100000
+
+// keywordLastKnownTTL is how long the Redis copy of a viewer's keywords is
+// kept for use while trust-safety cannot be asked. Longer than any outage
+// worth planning for; a keyword removed during an outage keeps hiding posts
+// until trust-safety answers again, which errs on the side the viewer chose.
+const keywordLastKnownTTL = 7 * 24 * time.Hour
+
+// keywordLastKnownKey holds a viewer's last non-empty keyword set as JSON.
+// Only non-empty sets are stored: no key means "no keywords known", which is
+// what an empty set means too, so the common case costs Redis nothing.
+func keywordLastKnownKey(viewerID uuid.UUID) string {
+	return "feed:kwfilter:last:" + viewerID.String()
+}
 
 type keywordCacheEntry struct {
 	keywords []string
@@ -63,6 +87,8 @@ func (s *Service) getFilterKeywords(ctx context.Context, viewerID uuid.UUID) ([]
 	if s.kwCache == nil {
 		s.kwCache = make(map[uuid.UUID]keywordCacheEntry)
 	}
+	previous, hadPrevious := s.kwCache[viewerID]
+	s.rememberKeywords(ctx, viewerID, keywords, hadPrevious && len(previous.keywords) > 0)
 	s.kwCache[viewerID] = keywordCacheEntry{keywords: keywords, expires: now.Add(keywordFilterCacheTTL)}
 	boundTTLMap(s.kwCache, keywordCacheMaxEntries, now, func(e keywordCacheEntry) time.Time { return e.expires })
 	s.kwMu.Unlock()
@@ -105,15 +131,75 @@ func (s *Service) fetchFilterKeywords(ctx context.Context, viewerID uuid.UUID) (
 	return envelope.Data.Keywords, nil
 }
 
-// applyKeywordHideFilter drops every hydrated post whose visible text
-// contains one of the viewer's filter keywords. Fail-closed: a lookup
-// failure propagates as an error and the surface answers with an error
-// response rather than an unfiltered page.
-func (s *Service) applyKeywordHideFilter(ctx context.Context, viewerID uuid.UUID, posts []HydratedPost) ([]HydratedPost, error) {
-	keywords, err := s.getFilterKeywords(ctx, viewerID)
-	if err != nil {
-		return nil, fmt.Errorf("feed unavailable: keyword filters could not be resolved: %w", err)
+// rememberKeywords keeps the Redis copy of a freshly fetched set in step:
+// a non-empty set is stored, and a set that has become empty removes the
+// copy this process knows it stored. Best effort: a Redis failure only
+// means there is less to fall back on.
+func (s *Service) rememberKeywords(ctx context.Context, viewerID uuid.UUID, keywords []string, hadKeywords bool) {
+	if s.rdb == nil {
+		return
 	}
+	if len(keywords) == 0 {
+		if hadKeywords {
+			s.rdb.Del(ctx, keywordLastKnownKey(viewerID))
+		}
+		return
+	}
+	raw, err := json.Marshal(keywords)
+	if err != nil {
+		return
+	}
+	s.rdb.Set(ctx, keywordLastKnownKey(viewerID), raw, keywordLastKnownTTL)
+}
+
+// Where a page's keywords came from, for the fallback counter.
+const (
+	keywordSourceFresh       = "fresh"
+	keywordSourceStaleMemory = "stale_memory"
+	keywordSourceStaleRedis  = "stale_redis"
+	keywordSourceNone        = "none"
+)
+
+// keywordsOrLastKnown is getFilterKeywords for a page that must be served:
+// when trust-safety cannot be asked it returns the viewer's last known
+// keywords (this process's expired cache entry, then the Redis copy), and
+// with neither, no keywords. The source says which, and every source but
+// "fresh" is counted.
+func (s *Service) keywordsOrLastKnown(ctx context.Context, viewerID uuid.UUID) ([]string, string) {
+	keywords, err := s.getFilterKeywords(ctx, viewerID)
+	if err == nil {
+		return keywords, keywordSourceFresh
+	}
+
+	s.kwMu.Lock()
+	entry, ok := s.kwCache[viewerID]
+	s.kwMu.Unlock()
+	if ok {
+		keywordFilterFallbacks.WithLabelValues(keywordSourceStaleMemory).Inc()
+		return entry.keywords, keywordSourceStaleMemory
+	}
+
+	if s.rdb != nil {
+		if raw, rerr := s.rdb.Get(ctx, keywordLastKnownKey(viewerID)).Bytes(); rerr == nil {
+			var stored []string
+			if json.Unmarshal(raw, &stored) == nil && len(stored) > 0 {
+				keywordFilterFallbacks.WithLabelValues(keywordSourceStaleRedis).Inc()
+				return stored, keywordSourceStaleRedis
+			}
+		}
+	}
+
+	keywordFilterFallbacks.WithLabelValues(keywordSourceNone).Inc()
+	return nil, keywordSourceNone
+}
+
+// applyKeywordHideFilter drops every hydrated post whose visible text
+// contains one of the viewer's filter keywords. A failed trust-safety lookup
+// does not fail the page: it is filtered with the viewer's last known
+// keywords (keywordsOrLastKnown). Feed mutes are this service's own data and
+// still fail the page when they cannot be read.
+func (s *Service) applyKeywordHideFilter(ctx context.Context, viewerID uuid.UUID, posts []HydratedPost) ([]HydratedPost, error) {
+	keywords, _ := s.keywordsOrLastKnown(ctx, viewerID)
 	// Topics and hashtags muted through /v1/feed/mute (feedmutes.go).
 	mutes, err := s.feedMutes(ctx, viewerID)
 	if err != nil {

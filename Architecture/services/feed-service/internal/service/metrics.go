@@ -46,6 +46,11 @@ var (
 		Help:    "Items on a served home-feed page before hydration (short pages mean filters are eating the window).",
 		Buckets: []float64{0, 1, 5, 10, 15, 20, 30, 50, 100},
 	})
+	keywordFilterFallbacks = promauto.NewCounterVec(prometheus.CounterOpts{
+		Namespace: "atpost", Subsystem: "feed_service",
+		Name: "keyword_filter_fallback_total",
+		Help: "Pages filtered without a fresh keyword answer from trust-safety, by what was used instead (stale_memory, stale_redis, none = served without the keyword filter).",
+	}, []string{"source"})
 	homeRefillReads = promauto.NewCounter(prometheus.CounterOpts{
 		Namespace: "atpost", Subsystem: "feed_service",
 		Name: "home_refill_reads_total",
