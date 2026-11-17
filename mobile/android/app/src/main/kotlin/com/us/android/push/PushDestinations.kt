@@ -78,6 +78,9 @@ class PushDestinations @Inject constructor() {
         /** An Echo note link (`/echo/note/<uuid>`, 2026-11-12): opens the note, only while Echo is open. */
         const val TYPE_ECHO_NOTE_LINK = "echo_note_link"
 
+        /** `cleestudio.com/posttube/playlists/{id}` (lv-31): that collection's page. `entityId` is the collection id. */
+        const val TYPE_PLAYLIST_LINK = "playlist_link"
+
         /** The link types whose `entityId` is a handle the nav host must resolve to a user id first. */
         val HANDLE_LINK_TYPES: Set<String> = setOf(TYPE_PROFILE_LINK, TYPE_CHANNEL_LINK)
 
@@ -102,6 +105,7 @@ class PushDestinations @Inject constructor() {
                 is WebLinkTarget.Sound -> PushDestination(TYPE_SOUND_LINK, target.soundId, trimmed)
                 is WebLinkTarget.Hashtag -> PushDestination(TYPE_HASHTAG_LINK, target.tag, trimmed)
                 is WebLinkTarget.EchoNote -> PushDestination(TYPE_ECHO_NOTE_LINK, target.noteId, trimmed)
+                is WebLinkTarget.Playlist -> PushDestination(TYPE_PLAYLIST_LINK, target.collectionId, trimmed)
                 null -> null
             }
         }

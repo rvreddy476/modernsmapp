@@ -74,8 +74,10 @@ class MediaUploader @Inject constructor(
         // The server binds `oneof=image video`; image stays the default so
         // every existing call site keeps its exact request.
         fileType: String = FILE_TYPE_IMAGE,
-    ): AppResult<MediaInitDto> = uploadInitCall(errorMapper) {
-        // A 413 keeps its details here: VIDEO_TOO_LARGE names the cap.
+        // A video's length as the phone read it; 0 = unknown, left off the wire (N-3).
+        durationMs: Long = 0L,
+    ): AppResult<MediaInitDto> = uploadCall(errorMapper) {
+        // A refusal keeps its code, details and Retry-After here (VideoSizeCap.kt).
         api.init(
             MediaInitRequest(
                 fileType = fileType,
@@ -83,6 +85,7 @@ class MediaUploader @Inject constructor(
                 mimeType = mimeType,
                 fileSizeBytes = sizeBytes,
                 uploadPurpose = uploadPurpose,
+                durationMs = durationMs.coerceAtLeast(0L),
             ),
         )
     }
@@ -112,9 +115,13 @@ class MediaUploader @Inject constructor(
         onProgress: (Long, Long) -> Unit,
     ): PresignedPutResult = presigned.put(uploadUrl, mimeType, sizeBytes, source, onProgress)
 
-    /** Step 3: tell the server the bytes are there. Idempotent server-side. */
+    /**
+     * Step 3: tell the server the bytes are there. Idempotent server-side.
+     * A quota refusal here (2026-11-17) keeps the upload server-side, and
+     * keeps its code and Retry-After so the caller can say when to retry.
+     */
     suspend fun confirm(mediaId: String): AppResult<MediaAssetDto> =
-        apiCall(errorMapper) { api.confirm(MediaConfirmRequest(mediaId)) }
+        uploadCall(errorMapper) { api.confirm(MediaConfirmRequest(mediaId)) }
 
     /** Poll for readiness. */
     suspend fun status(mediaId: String): AppResult<MediaStatusDto> =

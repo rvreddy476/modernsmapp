@@ -28,7 +28,7 @@ fun ReelPublishState.ring(): PublishRing = when (this) {
 
 /** The words under the ring, for a screen reader and the tile's caption. */
 fun ReelPublishState.ringLabel(): String = when (this) {
-    is ReelPublishState.Uploading -> "Uploading ${percent()}%"
+    is ReelPublishState.Uploading -> note?.let { "$it Uploading ${percent()}%" } ?: "Uploading ${percent()}%"
     ReelPublishState.Preparing -> "Preparing"
     ReelPublishState.Processing -> "Processing"
     ReelPublishState.Posting -> "Posting"

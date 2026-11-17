@@ -2,6 +2,7 @@ package com.us.android.feature.post.createhub
 
 import android.content.Context
 import android.content.Intent
+import android.media.MediaMetadataRetriever
 import android.net.Uri
 import com.us.android.core.common.di.Dispatcher
 import com.us.android.core.common.di.UsDispatcher
@@ -387,7 +388,27 @@ class AndroidReelPublishFiles @Inject constructor(
             mimeType = mimeType,
             sizeBytes = size,
             source = StashedFileSource(file),
+            durationMs = readDurationMs(file),
         )
+    }
+
+    /**
+     * The video's length from its header (N-3), so `init` can declare it and
+     * an over-long file is refused before a byte goes up. A header read, not
+     * a decode. Any failure is "unknown" (0): never a reason to stop the
+     * upload, since the server reads the file again at confirm.
+     */
+    private fun readDurationMs(file: File): Long {
+        val retriever = runCatching { MediaMetadataRetriever() }.getOrNull() ?: return 0L
+        return try {
+            // A plain RuntimeException on an unreadable file: unknown, never a stop.
+            runCatching {
+                retriever.setDataSource(file.absolutePath)
+                retriever.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull()
+            }.getOrNull()?.takeIf { it > 0L } ?: 0L
+        } finally {
+            runCatching { retriever.release() }
+        }
     }
 
     /**

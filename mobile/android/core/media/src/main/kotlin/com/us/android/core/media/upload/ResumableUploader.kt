@@ -3,7 +3,6 @@ package com.us.android.core.media.upload
 import com.us.android.core.common.error.AppError
 import com.us.android.core.common.result.AppResult
 import com.us.android.core.network.ErrorMapper
-import com.us.android.core.network.apiCall
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -15,7 +14,6 @@ import okhttp3.RequestBody
 import okio.BufferedSink
 import okio.source
 import java.io.IOException
-import java.time.OffsetDateTime
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -56,7 +54,11 @@ data class ResumableSession(
     val chunkSize: Long,
     val totalParts: Int,
     val totalBytes: Long,
-    /** RFC 3339 as the server sent it; empty when it said nothing. */
+    /**
+     * RFC 3339, the LATEST the server sent (init, then each part and status
+     * answer: it slides). Empty when it said nothing. Kept for the record;
+     * whether the session lives is always the server's answer, never this.
+     */
     val expiresAt: String = "",
 )
 
@@ -82,6 +84,8 @@ sealed interface ResumableOutcome {
         val discardSession: Boolean,
         val transient: Boolean = false,
         val progressed: Boolean = false,
+        /** The server said the session expired (410 `UPLOAD_EXPIRED`, or status `expired`). */
+        val expired: Boolean = false,
     ) : ResumableOutcome
 }
 
@@ -102,19 +106,20 @@ class RetrofitResumableTransport @Inject constructor(
     private val errorMapper: ErrorMapper,
 ) : ResumableUploadTransport {
     override suspend fun init(request: ResumableInitRequest): AppResult<ResumableInitDto> =
-        uploadInitCall(errorMapper) { api.init(request) }
+        uploadCall(errorMapper) { api.init(request) }
 
+    // Every route keeps the upload refusals' codes, details and Retry-After.
     override suspend fun uploadPart(
         uploadId: String,
         partNumber: Int,
         body: RequestBody,
-    ): AppResult<ResumableChunkDto> = apiCall(errorMapper) { api.uploadPart(uploadId, partNumber, body) }
+    ): AppResult<ResumableChunkDto> = uploadCall(errorMapper) { api.uploadPart(uploadId, partNumber, body) }
 
     override suspend fun complete(uploadId: String): AppResult<MediaAssetDto> =
-        apiCall(errorMapper) { api.complete(uploadId) }
+        uploadCall(errorMapper) { api.complete(uploadId) }
 
     override suspend fun status(uploadId: String): AppResult<ResumableStatusDto> =
-        apiCall(errorMapper) { api.status(uploadId) }
+        uploadCall(errorMapper) { api.status(uploadId) }
 }
 
 /**
@@ -143,6 +148,20 @@ class RetrofitResumableTransport @Inject constructor(
  * (expired, unknown, refused) is replaced by ONE fresh `init` in the same
  * call before giving up.
  *
+ * ## EXPIRY IS THE SERVER'S (lv-16, 2026-11-18)
+ *
+ * A session expires on inactivity: every accepted part pushes `expires_at`
+ * on, up to a 7-day ceiling, and every part and status answer carries the
+ * new value. The uploader keeps the latest one on the session it persists,
+ * and NEVER discards a session on the phone's clock: a stored session is
+ * always asked about (`status`) and only the server's "expired" (status
+ * `expired` or 410 `UPLOAD_EXPIRED`) starts again from byte zero. The old
+ * rule — give up locally 24 h after `init` — threw away live sessions that
+ * had been moving for days. A session that expires mid-run is replaced by
+ * one fresh `init` in the same call, and [upload]'s `onRestarted` tells the
+ * caller so the creator can be told. A `complete` refused 409
+ * `UPLOAD_INCOMPLETE` reads the status and sends the missing parts once.
+ *
  * ## PROGRESS
  *
  * Bytes, monotonic: a retried part does not move the bar backwards. The
@@ -165,7 +184,14 @@ class ResumableUploader internal constructor(
     /**
      * Upload [totalBytes] of [source] as one asset. [resume] is a session a
      * previous run persisted, or null. [onSession] is called with every
-     * session this call opens — persist it before the first part goes up.
+     * session this call opens — persist it before the first part goes up —
+     * and again whenever the server moves the session's `expires_at` on.
+     *
+     * [durationMs] is the video's length as the phone read it, 0 when it
+     * could not (N-3): declared at `init` so an over-long video is refused
+     * with 413 `VIDEO_TOO_LONG` before a single part is sent.
+     * [onRestarted] is called when the server expired the session and a new
+     * one is starting from the beginning.
      */
     @Suppress("LongParameterList")
     suspend fun upload(
@@ -176,58 +202,76 @@ class ResumableUploader internal constructor(
         onSession: suspend (ResumableSession) -> Unit,
         onProgress: (uploaded: Long, total: Long) -> Unit,
         fileType: String = FILE_TYPE_VIDEO,
+        durationMs: Long = 0L,
+        onRestarted: () -> Unit = {},
     ): ResumableOutcome {
         require(totalBytes > 0L) { "nothing to upload" }
         val progress = ProgressGate(totalBytes, onProgress)
-        val outcome = uploadOnce(mimeType, totalBytes, source, resume, onSession, progress, fileType)
+        val request = ResumableInitRequest(
+            fileType = fileType,
+            mimeType = mimeType,
+            totalBytes = totalBytes,
+            durationMs = durationMs.coerceAtLeast(0L),
+        )
+        val outcome = uploadOnce(request, source, resume, onSession, progress, onRestarted)
         // Whether this call moved the upload on, whichever session it ran.
         return if (outcome is ResumableOutcome.Failed) outcome.copy(progressed = progress.partsLanded > 0) else outcome
     }
 
     @Suppress("LongParameterList")
     private suspend fun uploadOnce(
-        mimeType: String,
-        totalBytes: Long,
+        request: ResumableInitRequest,
         source: UploadSource,
         resume: ResumableSession?,
         onSession: suspend (ResumableSession) -> Unit,
         progress: ProgressGate,
-        fileType: String,
+        onRestarted: () -> Unit,
     ): ResumableOutcome {
-        val resumable = resume?.takeIf { it.totalBytes == totalBytes && !it.isExpired(now()) }
+        // Never judged on the phone's clock: the status call says whether it lives.
+        val resumable = resume?.takeIf { it.totalBytes == request.totalBytes }
+        var restarted = false
         if (resumable != null) {
-            val resumed = runSession(resumable, source, progress, resumed = true)
+            val resumed = runSession(resumable, source, progress, resumed = true, onSession)
             if (resumed !is ResumableOutcome.Failed || !resumed.discardSession) return resumed
+            if (resumed.expired) {
+                progress.restart()
+                onRestarted()
+                restarted = true
+            }
         }
-        val opened = when (val result = open(mimeType, totalBytes, fileType, progress)) {
+        val fresh = openAndRun(request, source, progress, onSession)
+        if (restarted || fresh !is ResumableOutcome.Failed || !fresh.expired) return fresh
+        // The fresh session expired under this very run (a stall of hours): once more, from zero.
+        progress.restart()
+        onRestarted()
+        return openAndRun(request, source, progress, onSession)
+    }
+
+    private suspend fun openAndRun(
+        request: ResumableInitRequest,
+        source: UploadSource,
+        progress: ProgressGate,
+        onSession: suspend (ResumableSession) -> Unit,
+    ): ResumableOutcome {
+        val opened = when (val result = open(request, progress)) {
             is Step.Done -> result.value
             is Step.Stopped -> return result.outcome
         }
         onSession(opened)
-        return runSession(opened, source, progress, resumed = false)
+        return runSession(opened, source, progress, resumed = false, onSession)
     }
 
     // ── One session ─────────────────────────────────────────────────────
 
-    private suspend fun open(
-        mimeType: String,
-        totalBytes: Long,
-        fileType: String,
-        progress: ProgressGate,
-    ): Step<ResumableSession> {
-        val request = ResumableInitRequest(fileType = fileType, mimeType = mimeType, totalBytes = totalBytes)
+    private suspend fun open(request: ResumableInitRequest, progress: ProgressGate): Step<ResumableSession> {
+        val totalBytes = request.totalBytes
         val init = when (val result = withRetries(progress) { transport.init(request) }) {
             is Attempt.Ok -> result.value
-            // The server refused THIS file; asking again gets the same answer.
-            is Attempt.Refused -> return Step.Stopped(
-                ResumableOutcome.Failed(
-                    // Over the platform's cap (2026-11-07): say so, and the cap.
-                    message = result.error.videoTooLarge()?.message ?: START_REFUSED,
-                    retryable = !result.error.isFinalRefusal(),
-                    discardSession = true,
-                ),
+            // The server refused THIS file, or this moment (a quota, a wait).
+            is Attempt.Refused -> return Step.Stopped(initRefused(result.error))
+            is Attempt.Exhausted -> return Step.Stopped(
+                failed(result.error.uploadRefusal()?.message ?: START_FAILED, discard = true, transient = true),
             )
-            is Attempt.Exhausted -> return Step.Stopped(failed(START_FAILED, discard = true, transient = true))
         }
         val session = ResumableSession(
             uploadId = init.uploadId,
@@ -243,72 +287,166 @@ class ResumableUploader internal constructor(
         return Step.Done(session)
     }
 
+    /** `init` said no: the refusal's own words when it is one we know, and whether waiting helps. */
+    private fun initRefused(error: AppError): ResumableOutcome.Failed {
+        val refusal = error.uploadRefusal()
+        return ResumableOutcome.Failed(
+            // Over the platform's caps (2026-11-07, 2026-11-17): say so, and the cap.
+            message = refusal?.message ?: error.videoTooLarge()?.message ?: START_REFUSED,
+            // A quota or a wait is worth a later Retry; the same file over a cap is not.
+            retryable = refusal?.let { !it.final } ?: !error.isFinalRefusal(),
+            discardSession = true,
+        )
+    }
+
+    // One loop over the parts, then one bounded re-send round; one exit per way a session stops.
+    @Suppress("CyclomaticComplexMethod", "ReturnCount")
     private suspend fun runSession(
         session: ResumableSession,
         source: UploadSource,
         progress: ProgressGate,
         resumed: Boolean,
+        onSession: suspend (ResumableSession) -> Unit,
     ): ResumableOutcome {
         if (!session.planFits()) return ResumableOutcome.Failed(PLAN_MISMATCH, false, discardSession = true)
-        val landed = if (resumed) {
-            when (val known = landedParts(session, progress)) {
+        val keeper = SessionKeeper(session, onSession, now)
+        var landed = if (resumed) {
+            when (val known = landedParts(keeper, progress)) {
                 is Step.Done -> known.value
                 is Step.Stopped -> return known.outcome
             }
         } else {
             emptySet()
         }
-        var confirmed = landed.sumOf { session.partLength(it) }
-        progress.report(confirmed)
-        for (part in 1..session.totalParts) {
-            if (part in landed) continue
-            val offset = session.partOffset(part)
-            val length = session.partLength(part)
-            val sent = withRetries(progress) {
-                val body = PartRequestBody(source, offset, length) { inPart -> progress.report(confirmed + inPart) }
-                transport.uploadPart(session.uploadId, part, body)
-            }
-            when (sent) {
-                is Attempt.Ok -> Unit
-                // A refusal is the session's, not the network's: forget it.
-                is Attempt.Refused -> return failed(PART_FAILED, discard = true)
-                is Attempt.Exhausted -> return failed(PART_FAILED, discard = false, transient = true)
-            }
-            progress.partsLanded++
-            confirmed += length
+        var round = 0
+        while (true) {
+            var confirmed = landed.sumOf { session.partLength(it) }
             progress.report(confirmed)
+            for (part in 1..session.totalParts) {
+                if (part in landed) continue
+                val offset = session.partOffset(part)
+                val length = session.partLength(part)
+                val sent = withRetries(progress) {
+                    val body = PartRequestBody(source, offset, length) { inPart -> progress.report(confirmed + inPart) }
+                    transport.uploadPart(session.uploadId, part, body)
+                }
+                when (sent) {
+                    is Attempt.Ok -> keeper.saw(sent.value.expiresAt)
+                    is Attempt.Refused -> return partRefused(sent.error)
+                    is Attempt.Exhausted -> return failed(
+                        sent.error.uploadRefusal()?.message ?: PART_FAILED,
+                        discard = false,
+                        transient = true,
+                    )
+                }
+                progress.partsLanded++
+                confirmed += length
+                progress.report(confirmed)
+            }
+            val finished = finish(keeper.session, progress)
+            // 409 UPLOAD_INCOMPLETE: ask which parts are missing and send those, once.
+            if (finished !== Incomplete) return finished
+            if (round++ > 0) return failed(COMPLETE_FAILED, discard = false)
+            landed = when (val known = landedParts(keeper, progress)) {
+                is Step.Done -> known.value
+                is Step.Stopped -> return known.outcome
+            }
         }
-        return finish(session, progress)
     }
 
     /**
-     * Which parts the server already holds. A session it no longer knows
-     * — or one it says has expired — is discarded; a COMPLETED one needs
-     * nothing but the (idempotent) complete.
+     * A part the server refused. Expired: say so and start again. Over the
+     * byte cap: final. Anything else is the session's, not the network's:
+     * forget it, and the next attempt opens a fresh one.
      */
-    private suspend fun landedParts(session: ResumableSession, progress: ProgressGate): Step<Set<Int>> =
-        when (val result = withRetries(progress) { transport.status(session.uploadId) }) {
-            is Attempt.Ok -> when (result.value.status) {
-                RESUMABLE_STATUS_EXPIRED ->
-                    Step.Stopped(ResumableOutcome.Failed(EXPIRED, retryable = true, discardSession = true))
-                RESUMABLE_STATUS_COMPLETED -> Step.Done((1..session.totalParts).toSet())
-                else -> Step.Done(result.value.uploadedParts.filter { it in 1..session.totalParts }.toSet())
-            }
-            is Attempt.Refused -> Step.Stopped(failed(RESUME_FAILED, discard = true))
-            is Attempt.Exhausted -> Step.Stopped(failed(RESUME_FAILED, discard = false, transient = true))
+    private fun partRefused(error: AppError): ResumableOutcome.Failed {
+        if (error.isExpiredSession()) return expiredOutcome()
+        error.videoTooLarge()?.let {
+            return ResumableOutcome.Failed(it.message, retryable = false, discardSession = true)
         }
+        return failed(PART_FAILED, discard = true)
+    }
 
     /**
-     * `complete` — retried on the transport like a part. A refusal keeps the
-     * session: the server says what is missing on the next status, and the
-     * next run sends just that.
+     * Which parts the server already holds, and its latest expiry. A session
+     * it no longer knows is discarded; one it says has expired is discarded
+     * AS expired (the creator is told); a COMPLETED one needs nothing but the
+     * (idempotent) complete.
+     */
+    private suspend fun landedParts(keeper: SessionKeeper, progress: ProgressGate): Step<Set<Int>> {
+        val session = keeper.session
+        return when (val result = withRetries(progress) { transport.status(session.uploadId) }) {
+            is Attempt.Ok -> {
+                keeper.saw(result.value.expiresAt, always = true)
+                when (result.value.status) {
+                    RESUMABLE_STATUS_EXPIRED -> Step.Stopped(expiredOutcome())
+                    RESUMABLE_STATUS_COMPLETED -> Step.Done((1..session.totalParts).toSet())
+                    else -> Step.Done(result.value.uploadedParts.filter { it in 1..session.totalParts }.toSet())
+                }
+            }
+            is Attempt.Refused -> Step.Stopped(
+                if (result.error.isExpiredSession()) expiredOutcome() else failed(RESUME_FAILED, discard = true),
+            )
+            is Attempt.Exhausted -> Step.Stopped(
+                failed(result.error.uploadRefusal()?.message ?: RESUME_FAILED, discard = false, transient = true),
+            )
+        }
+    }
+
+    /**
+     * `complete` — retried on the transport like a part. [Incomplete] when
+     * the server says parts are missing (the caller re-sends them). A quota
+     * or "long video in progress" refusal keeps the session: the server kept
+     * the upload, and a later Retry completes it. Over the length cap is
+     * final. Any other refusal keeps the session too: the next status says
+     * what is missing.
      */
     private suspend fun finish(session: ResumableSession, progress: ProgressGate): ResumableOutcome =
         when (val result = withRetries(progress) { transport.complete(session.uploadId) }) {
             is Attempt.Ok -> ResumableOutcome.Completed(result.value.id.ifBlank { session.mediaId })
-            is Attempt.Refused -> failed(COMPLETE_FAILED, discard = false)
-            is Attempt.Exhausted -> failed(COMPLETE_FAILED, discard = false, transient = true)
+            is Attempt.Refused -> {
+                val refusal = result.error.uploadRefusal()
+                when {
+                    refusal?.code == CODE_UPLOAD_INCOMPLETE -> Incomplete
+                    result.error.isExpiredSession() -> expiredOutcome()
+                    refusal?.final == true -> ResumableOutcome.Failed(refusal.message, false, discardSession = true)
+                    refusal != null -> failed(refusal.message, discard = false)
+                    else -> failed(COMPLETE_FAILED, discard = false)
+                }
+            }
+            is Attempt.Exhausted -> failed(
+                result.error.uploadRefusal()?.message ?: COMPLETE_FAILED,
+                discard = false,
+                transient = true,
+            )
         }
+
+    private fun expiredOutcome() =
+        ResumableOutcome.Failed(EXPIRED, retryable = true, discardSession = true, expired = true)
+
+    /**
+     * The session as the server last described it. Every part and status
+     * answer may move `expires_at` on; the new value is persisted through
+     * `onSession` — at once after a status read, and at most once a minute
+     * while parts stream (a write per 5 MiB part would be thousands).
+     */
+    private class SessionKeeper(
+        var session: ResumableSession,
+        private val onSession: suspend (ResumableSession) -> Unit,
+        private val now: () -> Long,
+    ) {
+        private var persistedAt = now()
+
+        suspend fun saw(expiresAt: String, always: Boolean = false) {
+            if (expiresAt.isBlank() || expiresAt == session.expiresAt) return
+            session = session.copy(expiresAt = expiresAt)
+            val at = now()
+            if (always || at - persistedAt >= PERSIST_EVERY_MILLIS) {
+                persistedAt = at
+                onSession(session)
+            }
+        }
+    }
 
     // ── Retry ───────────────────────────────────────────────────────────
 
@@ -366,8 +504,15 @@ class ResumableUploader internal constructor(
         fun defaultBackoffMillis(attempt: Int): Long =
             minOf(BASE_BACKOFF_MILLIS shl (attempt - 1).coerceIn(0, MAX_BACKOFF_SHIFT), MAX_BACKOFF_MILLIS)
 
-        /** A session closer than this to its expiry is not resumed: the rest may not land in time. */
-        private const val EXPIRY_MARGIN_MILLIS = 10L * 60L * 1_000L
+        /** How often a moving `expires_at` is written back while parts stream. */
+        private const val PERSIST_EVERY_MILLIS = 60_000L
+
+        /** [finish]'s private answer to 409 `UPLOAD_INCOMPLETE`; compared by identity, never returned. */
+        private val Incomplete =
+            ResumableOutcome.Failed("incomplete", retryable = true, discardSession = false)
+
+        /** What the creator is told when the server expired the session and it starts again (lv-16). */
+        const val RESTARTED = "Upload expired. Starting again."
 
         const val START_FAILED = "Couldn't start the upload. Check your connection."
         const val START_REFUSED = "The server wouldn't take this video."
@@ -376,15 +521,12 @@ class ResumableUploader internal constructor(
         const val COMPLETE_FAILED = "The server didn't finish the upload. Try again."
         const val EXPIRED = "The upload took too long and expired. Try again."
         const val PLAN_MISMATCH = "The server's upload plan doesn't fit this file."
-
-        internal fun ResumableSession.isExpired(nowMillis: Long): Boolean {
-            if (expiresAt.isBlank()) return false
-            val expiry = runCatching { OffsetDateTime.parse(expiresAt).toInstant().toEpochMilli() }.getOrNull()
-                ?: return false
-            return nowMillis >= expiry - EXPIRY_MARGIN_MILLIS
-        }
     }
 }
+
+/** The server's word that a resumable session is gone for good: 410 `UPLOAD_EXPIRED`. */
+private fun AppError.isExpiredSession(): Boolean =
+    this is AppError.Unknown && (code == CODE_UPLOAD_EXPIRED || (code == null && statusCode == HTTP_GONE))
 
 /** Transport-shaped failures, which a repeat may fix. Everything else is the server's answer. */
 private fun AppError.isTransient(): Boolean = when (this) {
@@ -428,6 +570,11 @@ private class ProgressGate(private val total: Long, private val sink: (Long, Lon
     /** Parts the server confirmed during this call: the upload moved on. */
     var partsLanded = 0
     private var reported = -1L
+
+    /** The server expired the session and the bytes go up again from zero: the bar may start over, once. */
+    fun restart() {
+        reported = -1L
+    }
 
     @Suppress("TooGenericExceptionCaught")
     fun report(bytes: Long) {

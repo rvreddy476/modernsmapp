@@ -25,8 +25,12 @@ sealed interface ReelPublishState {
     /** The picked video is being copied into app storage. */
     data object Preparing : ReelPublishState
 
-    /** Bytes are leaving the device; [fraction] is 0..1 of the video. */
-    data class Uploading(val fraction: Float) : ReelPublishState
+    /**
+     * Bytes are leaving the device; [fraction] is 0..1 of the video. [note]
+     * is a sentence the tile shows under the ring while it holds — the
+     * server expired the upload and it started again (lv-16). Null normally.
+     */
+    data class Uploading(val fraction: Float, val note: String? = null) : ReelPublishState
 
     /**
      * The server is transcoding and moderating the video BEFORE the post can
@@ -231,10 +235,15 @@ class ReelPublishTracker @Inject constructor() {
     private fun reconcile(current: ReelPublishState, next: ReelPublishState): ReelPublishState {
         if (next !is ReelPublishState.Uploading) return next
         val clamped = next.fraction.coerceIn(0f, 1f)
-        return if (current is ReelPublishState.Uploading && current.fraction > clamped) {
-            current
+        // The note rides along: a restart's notice is kept until a state without one replaces it.
+        val previous = current as? ReelPublishState.Uploading
+        val note = next.note ?: previous?.note
+        // A NEW notice is a restart from byte zero: the bar may go back, once.
+        val restarting = next.note != null && previous?.note == null
+        return if (previous != null && previous.fraction > clamped && !restarting) {
+            previous.copy(note = note)
         } else {
-            ReelPublishState.Uploading(clamped)
+            ReelPublishState.Uploading(clamped, note)
         }
     }
 }

@@ -709,6 +709,8 @@ private suspend fun NavHostController.openPushDestination(
             navigateToTopLevel(TopLevelDestination.REELS)
         }
         PushDestinations.TYPE_WATCH_LINK -> if (destination.entityId.isNotBlank()) navigateToWatch(destination.entityId)
+        PushDestinations.TYPE_PLAYLIST_LINK ->
+            if (destination.entityId.isNotBlank()) navigateToTubeCollection(destination.entityId)
         PushDestinations.TYPE_SOUND_LINK -> if (destination.entityId.isNotBlank()) navigateToSound(destination.entityId)
         PushDestinations.TYPE_HASHTAG_LINK -> if (destination.entityId.isNotBlank()) navigateToHashtagPosts(destination.entityId)
         // Echo (2026-11-12): a note link opens the note; a reply or quote push the

@@ -186,6 +186,11 @@ class ReelPublishPipeline @Inject constructor(
                 onSession = { session -> current = checkpoint(run, current.copy(resumableSession = session)) },
                 reserved = pending.reservedVideoId,
                 onReserved = { id -> current = checkpoint(run, current.copy(reservedVideoId = id)) },
+                // The server expired the upload and it starts again (lv-16): the tile says so.
+                onNotice = { note ->
+                    lastPercent = -1
+                    tracker.update(run.key, ReelPublishState.Uploading(0f, note))
+                },
             ) { fraction ->
                 // A discarded publish stops the bytes here: the PUT fails, the
                 // step reports, and nothing of it is written back.

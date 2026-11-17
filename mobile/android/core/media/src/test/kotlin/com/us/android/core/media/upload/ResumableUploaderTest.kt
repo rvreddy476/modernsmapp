@@ -46,6 +46,12 @@ class ResumableUploaderTest {
         var completeFailures = ArrayDeque<AppError>()
         var status: AppResult<ResumableStatusDto>? = null
 
+        /** Answers queued for status, in order, before [status]. */
+        val statusAnswers = ArrayDeque<AppResult<ResumableStatusDto>>()
+
+        /** The sliding expiry each accepted part answers with (2026-11-17). */
+        var partExpiresAt: (Int) -> String = { "" }
+
         override suspend fun init(request: ResumableInitRequest): AppResult<ResumableInitDto> {
             inits += request
             initResult?.let { return it }
@@ -83,7 +89,9 @@ class ResumableUploaderTest {
             }
             assertThat(buffer.size).isEqualTo(body.contentLength())
             partBytes[partNumber] = buffer.readByteArray()
-            return AppResult.Success(ResumableChunkDto(uploadId = uploadId, partNumber = partNumber))
+            return AppResult.Success(
+                ResumableChunkDto(uploadId = uploadId, partNumber = partNumber, expiresAt = partExpiresAt(partNumber)),
+            )
         }
 
         override suspend fun complete(uploadId: String): AppResult<MediaAssetDto> {
@@ -94,6 +102,7 @@ class ResumableUploaderTest {
 
         override suspend fun status(uploadId: String): AppResult<ResumableStatusDto> {
             statusCalls += uploadId
+            statusAnswers.removeFirstOrNull()?.let { return it }
             return status ?: AppResult.Success(ResumableStatusDto(uploadId = uploadId, status = "uploading"))
         }
     }
@@ -121,17 +130,20 @@ class ResumableUploaderTest {
 
     private fun file(size: Int) = ByteArray(size) { (it % 251).toByte() }
 
-    private fun uploader(transport: ResumableUploadTransport, now: Long = 0L) =
+    private fun uploader(transport: ResumableUploadTransport, now: Long = 0L) = uploader(transport) { now }
+
+    private fun uploader(transport: ResumableUploadTransport, now: () -> Long) =
         ResumableUploader(
             transport = transport,
             maxAttempts = ResumableUploader.MAX_ATTEMPTS,
             backoffMillis = { ResumableUploader.defaultBackoffMillis(it) },
-            now = { now },
+            now = now,
         )
 
     private class Recorder {
         val sessions = mutableListOf<ResumableSession>()
         val progress = mutableListOf<Long>()
+        var restarts = 0
     }
 
     private suspend fun ResumableUploader.run(
@@ -139,6 +151,7 @@ class ResumableUploaderTest {
         source: UploadSource = RecordingSource(bytes),
         resume: ResumableSession? = null,
         recorder: Recorder = Recorder(),
+        durationMs: Long = 0L,
         onProgress: (Long, Long) -> Unit = { sent, _ -> recorder.progress += sent },
     ): ResumableOutcome = upload(
         mimeType = "video/mp4",
@@ -147,6 +160,8 @@ class ResumableUploaderTest {
         resume = resume,
         onSession = { recorder.sessions += it },
         onProgress = onProgress,
+        durationMs = durationMs,
+        onRestarted = { recorder.restarts++ },
     )
 
     // ── Slicing ─────────────────────────────────────────────────────────
@@ -446,17 +461,165 @@ class ResumableUploaderTest {
         assertThat(transport.partAttempts).containsExactly(1, 2, 3).inOrder()
     }
 
+    /**
+     * lv-16: the old rule gave up on the phone's clock 24 h after init (or
+     * near the stored expiry) and re-sent everything from byte zero. The
+     * server's expiry now slides on every part, so only the server decides.
+     */
     @Test
-    fun `an expired or near-expiry session is not resumed at all`() = runTest {
-        val transport = FakeTransport(chunk = 10L)
-        val expired = stored.copy(expiresAt = "2026-10-21T10:00:00+05:30")
-        val now = java.time.OffsetDateTime.parse("2026-10-21T09:55:00+05:30").toInstant().toEpochMilli()
+    fun `a session past its stored expiry is still asked about and resumed while the server keeps it`() = runTest {
+        val transport = FakeTransport(chunk = 10L).apply {
+            status = AppResult.Success(
+                ResumableStatusDto(
+                    uploadId = "up-9",
+                    status = "uploading",
+                    uploadedParts = listOf(1, 2),
+                    expiresAt = "2026-10-28T10:00:00+05:30",
+                ),
+            )
+        }
+        // Stored from init: long past by the phone's clock.
+        val old = stored.copy(expiresAt = "2026-10-21T10:00:00+05:30")
+        val now = java.time.OffsetDateTime.parse("2026-10-23T09:55:00+05:30").toInstant().toEpochMilli()
+        val recorder = Recorder()
 
-        val outcome = uploader(transport, now = now).run(file(25), resume = expired)
+        val outcome = uploader(transport, now = now).run(file(25), resume = old, recorder = recorder)
+
+        assertThat(outcome).isEqualTo(ResumableOutcome.Completed("media-9"))
+        assertThat(transport.statusCalls).containsExactly("up-9")
+        assertThat(transport.inits).isEmpty()
+        assertThat(transport.partAttempts).containsExactly(3)
+        // The server's newer expiry is kept on the persisted session.
+        assertThat(recorder.sessions.single().expiresAt).isEqualTo("2026-10-28T10:00:00+05:30")
+        assertThat(recorder.restarts).isEqualTo(0)
+    }
+
+    @Test
+    fun `each part's sliding expiry is kept and written back at most once a minute`() = runTest {
+        var clock = 0L
+        val transport = FakeTransport(chunk = 10L).apply { partExpiresAt = { part -> "2099-02-0${part}T00:00:00Z" } }
+        val recorder = Recorder()
+        val uploader = uploader(transport) { clock.also { clock += 40_000L } }
+
+        uploader.run(file(25), recorder = recorder)
+
+        // The init's session, then part 2's expiry (part 1's came too soon after; part 3's too).
+        assertThat(recorder.sessions.map { it.expiresAt })
+            .containsExactly("2099-01-01T00:00:00Z", "2099-02-02T00:00:00Z").inOrder()
+    }
+
+    @Test
+    fun `a resumed session the server expired starts again from zero and the creator is told`() = runTest {
+        val transport = FakeTransport(chunk = 10L).apply {
+            status = AppResult.Success(ResumableStatusDto(uploadId = "up-9", status = RESUMABLE_STATUS_EXPIRED))
+        }
+        val recorder = Recorder()
+
+        val outcome = uploader(transport).run(file(25), resume = stored, recorder = recorder)
 
         assertThat(outcome).isEqualTo(ResumableOutcome.Completed("media-1"))
-        assertThat(transport.statusCalls).isEmpty()
+        assertThat(recorder.restarts).isEqualTo(1)
+        assertThat(transport.partAttempts).containsExactly(1, 2, 3).inOrder()
+        assertThat(recorder.progress.first()).isEqualTo(0L)
+    }
+
+    @Test
+    fun `a part refused 410 UPLOAD_EXPIRED mid-run opens one fresh session and says so`() = runTest {
+        val transport = FakeTransport(chunk = 10L)
+        transport.partFailures[2] = ArrayDeque(listOf(AppError.Unknown(code = CODE_UPLOAD_EXPIRED, statusCode = 410)))
+        val recorder = Recorder()
+
+        val outcome = uploader(transport).run(file(25), recorder = recorder)
+
+        assertThat(outcome).isEqualTo(ResumableOutcome.Completed("media-2"))
+        assertThat(transport.inits).hasSize(2)
+        assertThat(recorder.restarts).isEqualTo(1)
+        // The bar starts over with the new session.
+        assertThat(recorder.progress.count { it == 0L }).isEqualTo(2)
+    }
+
+    @Test
+    fun `a session that expires twice in one run stops with the expiry message`() = runTest {
+        val transport = FakeTransport(chunk = 10L)
+        transport.partFailures[1] = ArrayDeque(
+            listOf(
+                AppError.Unknown(code = CODE_UPLOAD_EXPIRED, statusCode = 410),
+                AppError.Unknown(code = CODE_UPLOAD_EXPIRED, statusCode = 410),
+            ),
+        )
+
+        val outcome = uploader(transport).run(file(25)) as ResumableOutcome.Failed
+
+        assertThat(outcome.message).isEqualTo(ResumableUploader.EXPIRED)
+        assertThat(outcome.discardSession).isTrue()
+        assertThat(transport.inits).hasSize(2)
+    }
+
+    @Test
+    fun `a complete refused UPLOAD_INCOMPLETE reads the status and sends only the missing part`() = runTest {
+        val transport = FakeTransport(chunk = 10L).apply {
+            completeFailures = ArrayDeque(listOf(AppError.Unknown(code = CODE_UPLOAD_INCOMPLETE, statusCode = 409)))
+            statusAnswers += AppResult.Success(
+                ResumableStatusDto(uploadId = "up-1", status = "uploading", uploadedParts = listOf(1, 3)),
+            )
+        }
+
+        val outcome = uploader(transport).run(file(25))
+
+        assertThat(outcome).isEqualTo(ResumableOutcome.Completed("media-1"))
+        assertThat(transport.partAttempts).containsExactly(1, 2, 3, 2).inOrder()
+        assertThat(transport.completes).containsExactly("up-1", "up-1")
         assertThat(transport.inits).hasSize(1)
+    }
+
+    @Test
+    fun `a quota refusal at complete keeps the session and says when to try again`() = runTest {
+        val transport = FakeTransport(chunk = 10L).apply {
+            completeFailures = ArrayDeque(
+                listOf(
+                    AppError.Unknown(
+                        code = CODE_LONG_VIDEO_IN_PROGRESS,
+                        statusCode = 429,
+                        message = "You already have 2 long videos processing.",
+                        details = mapOf(DETAIL_RETRY_AFTER_SECONDS to "600"),
+                    ),
+                ),
+            )
+        }
+
+        val outcome = uploader(transport).run(file(25)) as ResumableOutcome.Failed
+
+        assertThat(outcome.message)
+            .isEqualTo("You already have 2 long videos processing. You can try again in about 10 minutes.")
+        assertThat(outcome.discardSession).isFalse()
+        assertThat(outcome.retryable).isTrue()
+        assertThat(outcome.transient).isFalse()
+        assertThat(transport.completes).hasSize(1)
+    }
+
+    @Test
+    fun `init declares the length and an over-long refusal is final with the server's words`() = runTest {
+        val transport = FakeTransport().apply {
+            initResult = AppResult.Failure(
+                AppError.Unknown(
+                    code = CODE_VIDEO_TOO_LONG,
+                    statusCode = 413,
+                    message = "This video is longer than 4 hours, the longest we can process right now.",
+                ),
+            )
+        }
+
+        val outcome = uploader(transport).run(file(25), durationMs = 15_000_000L)
+
+        assertThat(transport.inits.single().durationMs).isEqualTo(15_000_000L)
+        assertThat(outcome).isEqualTo(
+            ResumableOutcome.Failed(
+                "This video is longer than 4 hours, the longest we can process right now.",
+                retryable = false,
+                discardSession = true,
+            ),
+        )
+        assertThat(transport.partAttempts).isEmpty()
     }
 
     @Test

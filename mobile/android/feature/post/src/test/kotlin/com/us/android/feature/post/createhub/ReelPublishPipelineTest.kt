@@ -103,6 +103,9 @@ class ReelPublishPipelineTest {
         /** media-service over the transcode cap (2026-11-07): 413 VIDEO_TOO_LARGE for a video. */
         var videoOverCap = false
 
+        /** media-service over the length cap (2026-11-17): 413 VIDEO_TOO_LONG for a declared length. */
+        var videoTooLong = false
+
         /** Every confirm, by media id; [confirmFailures] answers the next ones, in order, before success. */
         val confirms = mutableListOf<String>()
         val confirmFailures = ArrayDeque<Throwable>()
@@ -111,6 +114,7 @@ class ReelPublishPipelineTest {
             inits += body
             if (body.fileType == refuseFileType) error("init refused for ${body.fileType}")
             if (videoOverCap && body.fileType == "video") throw videoTooLarge()
+            if (videoTooLong && body.fileType == "video" && body.durationMs > 0L) throw videoTooLong()
             if (videoTooLargeForSimple && body.fileType == "video") throw useResumable()
             val id = "${body.fileType}-${++nextId}"
             return ApiEnvelope(MediaInitDto(mediaId = id, uploadUrl = "https://obj/put/$id"))
@@ -215,6 +219,7 @@ class ReelPublishPipelineTest {
         var unreadable = false
         var shortBytes: Long? = null
         var videoBytes = 1_000L
+        var videoDurationMs = 0L
         val stashed = mutableListOf<String>()
         val released = mutableListOf<String>()
 
@@ -235,7 +240,13 @@ class ReelPublishPipelineTest {
         // The source is never read by the fakes for a big video: the resumable
         // fake takes each part's declared length, so no gigabytes are allocated.
         override fun openVideo(path: String, mimeType: String): PickedMedia =
-            PickedMedia(path, mimeType, videoBytes, UploadSource { ByteArrayInputStream(ByteArray(8)) })
+            PickedMedia(
+                uri = path,
+                mimeType = mimeType,
+                sizeBytes = videoBytes,
+                source = UploadSource { ByteArrayInputStream(ByteArray(8)) },
+                durationMs = videoDurationMs,
+            )
 
         override suspend fun readBytes(path: String): ByteArray = ByteArray(64)
 
@@ -1483,6 +1494,92 @@ class ReelPublishPipelineTest {
         assertThat(outcome.message).isEqualTo(ReelMediaUploads.START_FAILED)
         assertThat(outcome.transient).isFalse()
     }
+
+    // ── Length declared at init, refusals in words (N-3, lv-30; 2026-11-17) ──
+
+    @Test
+    fun `the video's length goes with the init on both paths`() = runTest {
+        val small = harness(files = FakeFiles().apply { videoDurationMs = 754_000L })
+        run(small, pending())
+        assertThat(small.api.inits.first().durationMs).isEqualTo(754_000L)
+        // The cover is an image: no length.
+        assertThat(small.api.inits.last().durationMs).isEqualTo(0L)
+
+        val big = harness(
+            files = FakeFiles().apply {
+                videoBytes = bigVideo
+                videoDurationMs = 9_000_000L
+            },
+        )
+        run(big, pending())
+        assertThat(big.resumable.inits.single().durationMs).isEqualTo(9_000_000L)
+    }
+
+    @Test
+    fun `an over-long video is refused before any byte with the server's sentence and no Retry`() = runTest {
+        val api = FakeUploadApi().apply { videoTooLong = true }
+        val h = harness(api = api, files = FakeFiles().apply { videoDurationMs = 5L * 3_600_000L })
+
+        val outcome = run(h, pending())
+
+        assertThat(outcome).isEqualTo(
+            ReelPublishPipeline.Outcome.Failed(TOO_LONG_SENTENCE, retryable = false),
+        )
+        assertThat(api.confirms).isEmpty()
+        assertThat(h.resumable.inits).isEmpty()
+    }
+
+    @Test
+    fun `a quota refusal at confirm keeps the upload and says when to try again`() = runTest {
+        val api = FakeUploadApi().apply { confirmFailures += quotaExceeded() }
+        val h = harness(api = api)
+
+        val outcome = run(h, pending()) as ReelPublishPipeline.Outcome.Failed
+
+        assertThat(outcome.message).isEqualTo(
+            "You can upload up to 32 GB of video a day. You can try again in about an hour.",
+        )
+        assertThat(outcome.retryable).isTrue()
+        assertThat(outcome.transient).isFalse()
+        // The server kept the bytes: the next run confirms the same id, no new upload.
+        assertThat(h.store.record?.reservedVideoId).isEqualTo("video-1")
+    }
+}
+
+private const val TOO_LONG_SENTENCE =
+    "This video is longer than 4 hours, the longest we can process right now. Trim it or split it into parts, " +
+        "then upload again."
+
+/** media-service's init for a declared length over the cap (2026-11-17). */
+private fun videoTooLong(): HttpException = HttpException(
+    Response.error<Any>(
+        413,
+        (
+            """{"error":{"code":"VIDEO_TOO_LONG","message":"$TOO_LONG_SENTENCE",""" +
+                """"details":{"max_duration_seconds":14400,"limit":"processing_duration"}}}"""
+            ).toResponseBody(),
+    ),
+)
+
+/** media-service's confirm over the daily byte quota, with its Retry-After (2026-11-17). */
+private fun quotaExceeded(): HttpException {
+    val raw = okhttp3.Response.Builder()
+        .code(429)
+        .message("Too Many Requests")
+        .protocol(okhttp3.Protocol.HTTP_1_1)
+        .request(okhttp3.Request.Builder().url("http://localhost/v1/media/confirm").build())
+        .header("Retry-After", "3600")
+        .build()
+    return HttpException(
+        Response.error<Any>(
+            (
+                """{"error":{"code":"UPLOAD_QUOTA_EXCEEDED","message":"You can upload up to 32 GB of video a day.",""" +
+                    """"details":{"limit":"daily_video_bytes","max":34359738368,""" +
+                    """"used":34359000000,"requested":1000}}}"""
+                ).toResponseBody(),
+            raw,
+        ),
+    )
 }
 
 /** What media-service answers either init for a video over the worker's cap (2026-11-07). */

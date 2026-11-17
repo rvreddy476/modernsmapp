@@ -137,6 +137,20 @@ class WebLinkRoutesTest {
             .isEqualTo(WebLinkTarget.Watch(ID))
     }
 
+    @Test
+    fun `a playlist link is minted the web's way and opens that collection (lv-31)`() {
+        assertThat(WebLinks.playlistUrl(ID)).isEqualTo("$ORIGIN/posttube/playlists/$ID")
+        assertThat(WebLinks.playlistUrl("  ")).isNull()
+        assertThat(WebLinks.playlistUrl("a/b?c")).isEqualTo("$ORIGIN/posttube/playlists/a%2Fb%3Fc")
+        assertThat(WebLinks.targetOf("$ORIGIN/posttube/playlists/$ID?ref=abc123def4&utm_source=share"))
+            .isEqualTo(WebLinkTarget.Playlist(ID))
+        assertThat(WebLinks.targetOf("https://app.cleestudio.com/posttube/playlists/${ID.uppercase()}/"))
+            .isEqualTo(WebLinkTarget.Playlist(ID))
+        assertThat(WebLinks.targetOf("$ORIGIN/posttube/playlists/watch-later")).isNull()
+        assertThat(WebLinks.targetOf("$ORIGIN/posttube/playlists")).isNull()
+        assertThat(WebLinks.targetOf("https://evil.example/posttube/playlists/$ID")).isNull()
+    }
+
     private companion object {
         const val ORIGIN = "https://cleestudio.com"
         const val ID = "b2f7d0c1-5c1e-4a0e-9d1a-0c7f6f1e2a33"

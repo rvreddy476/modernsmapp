@@ -92,6 +92,14 @@ class PushDestinationsWebLinkTest {
         assertThat(types.toSet()).hasSize(types.size)
     }
 
+    @Test
+    fun `a playlist link is a playlist destination carrying the collection id (lv-31)`() {
+        val link = "$ORIGIN/posttube/playlists/$ID?ref=abc123def4&utm_source=share"
+        assertThat(PushDestinations.linkDestinationOf(link))
+            .isEqualTo(PushDestination(PushDestinations.TYPE_PLAYLIST_LINK, ID, link))
+        assertThat(PushDestinations.linkDestinationOf("$ORIGIN/posttube/playlists/nope")).isNull()
+    }
+
     private companion object {
         const val ORIGIN = "https://cleestudio.com"
         const val ID = "b2f7d0c1-5c1e-4a0e-9d1a-0c7f6f1e2a33"

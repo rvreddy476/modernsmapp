@@ -123,6 +123,13 @@ data class MediaInitRequest(
      */
     @EncodeDefault(EncodeDefault.Mode.ALWAYS)
     @SerialName("upload_purpose") val uploadPurpose: String = "",
+    /**
+     * The video's length as the phone read it (lv-30, N-3). Over the
+     * platform's length cap the server answers 413 `VIDEO_TOO_LONG` HERE,
+     * before a byte is sent. 0 (unknown, or not a video) is left off the
+     * wire, which the server reads as "not declared".
+     */
+    @SerialName("duration_ms") val durationMs: Long = 0L,
 )
 
 /** Response of `init`. `upload_url` is presigned and short-lived. */
@@ -327,6 +334,8 @@ data class ResumableInitRequest(
     @SerialName("file_type") val fileType: String = FILE_TYPE_VIDEO,
     @SerialName("mime_type") val mimeType: String,
     @SerialName("total_bytes") val totalBytes: Long,
+    /** As [MediaInitRequest.durationMs]: declared so an over-long video is refused before any part. */
+    @SerialName("duration_ms") val durationMs: Long = 0L,
 )
 
 @Serializable
@@ -346,6 +355,11 @@ data class ResumableChunkDto(
     @SerialName("uploaded_bytes") val uploadedBytes: Long = 0L,
     @SerialName("total_bytes") val totalBytes: Long = 0L,
     @SerialName("all_parts_in") val allPartsIn: Boolean = false,
+    /**
+     * The session's expiry AFTER this part (2026-11-17): it slides on every
+     * accepted part, up to a 7-day ceiling. The uploader keeps the latest.
+     */
+    @SerialName("expires_at") val expiresAt: String = "",
 )
 
 @Serializable
@@ -366,7 +380,7 @@ data class ResumableStatusDto(
 /** The session status after `complete` succeeded once. */
 const val RESUMABLE_STATUS_COMPLETED = "completed"
 
-/** The session status once its 24-hour window has passed. */
+/** The session status once its expiry passed (it slides on activity, 7-day ceiling; 2026-11-17). */
 const val RESUMABLE_STATUS_EXPIRED = "expired"
 
 /**

@@ -22,6 +22,7 @@ import com.us.android.core.feed.data.reconcileCollectionOrder
 import com.us.android.core.feed.data.videoThumb
 import com.us.android.core.media.MediaUrlResolver
 import com.us.android.core.model.FeedItem
+import com.us.android.core.model.WebLinks
 import com.us.android.feature.tube.data.TubeQueue
 import com.us.android.feature.tube.navigation.TubeCollectionRoute
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -105,6 +106,18 @@ fun collectionPermissions(collection: VideoCollection): CollectionPermissions = 
     canReorder = !collection.isSystem,
     canRemove = !collection.isLiked,
 )
+
+/**
+ * The link Share hands out (lv-31, the web's `canShareCollection` and
+ * `collectionShareUrl`): a list someone made that is Public or Unlisted,
+ * at `https://cleestudio.com/posttube/playlists/<id>` with a share ref. Null
+ * for a Private list and for Watch later and Liked videos, which only their
+ * owner can read, so there is no Share for them at all. Pure: a table test.
+ */
+fun collectionShareLink(collection: VideoCollection): String? {
+    if (collection.isSystem || collection.visibility == CollectionVisibility.PRIVATE) return null
+    return WebLinks.playlistUrl(collection.id)?.let(WebLinks::withShareRef)
+}
 
 /** The details sheet's progress: closed, open, or saving. */
 enum class CollectionEditState { CLOSED, OPEN, SAVING }

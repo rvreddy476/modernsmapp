@@ -257,4 +257,154 @@ class ResumableUploadWireTest {
         assertThat(second.details).isEmpty()
         assertThat(second.code).isEqualTo("BAD_REQUEST")
     }
+
+    // ── 2026-11-17 contract: duration_ms, sliding expires_at, refusal codes ──
+
+    private fun simpleApi(): MediaUploadApi = Retrofit.Builder()
+        .baseUrl(server.url("/"))
+        .client(client)
+        .addConverterFactory(json.asConverterFactory("application/json".toMediaType()))
+        .build()
+        .create(MediaUploadApi::class.java)
+
+    private fun enqueueRefusal(code: Int, body: String, retryAfter: String? = null) {
+        val builder = MockResponse.Builder().code(code).body(body).setHeader("Content-Type", "application/json")
+        retryAfter?.let { builder.setHeader("Retry-After", it) }
+        server.enqueue(builder.build())
+    }
+
+    @Test
+    fun `both inits declare duration_ms when the length is known (N-3)`() = runBlocking {
+        enqueueJson("""{"data":{"upload_id":"u1","media_id":"m1","chunk_size":10,"total_parts":1}}""")
+        enqueueJson("""{"data":{"media_id":"m2","upload_url":"http://x"}}""")
+
+        api.init(ResumableInitRequest(mimeType = "video/mp4", totalBytes = 10L, durationMs = 754_321L))
+        MediaUploader(simpleApi(), PresignedUploader(client), ErrorMapper(json))
+            .reserve("video/mp4", 10L, fileType = FILE_TYPE_VIDEO, durationMs = 61_000L)
+
+        val resumable = json.parseToJsonElement(server.takeRequest().body!!.utf8()).jsonObject
+        val simple = json.parseToJsonElement(server.takeRequest().body!!.utf8()).jsonObject
+        assertThat(resumable["duration_ms"]!!.jsonPrimitive.content).isEqualTo("754321")
+        assertThat(simple["duration_ms"]!!.jsonPrimitive.content).isEqualTo("61000")
+    }
+
+    @Test
+    fun `a part's answer carries the session's new expiry`() = runBlocking {
+        enqueueJson("""{"data":{"upload_id":"u1","part_number":1,"expires_at":"2026-11-20T10:00:00Z"}}""")
+
+        val answer = api.uploadPart("u1", 1, ByteArray(1).toRequestBody("application/octet-stream".toMediaType()))
+
+        assertThat(answer.data?.expiresAt).isEqualTo("2026-11-20T10:00:00Z")
+    }
+
+    @Test
+    fun `a quota 429 is shown with its wait, once, never retried as a blip`() = runBlocking {
+        enqueueRefusal(
+            429,
+            """{"error":{"code":"UPLOAD_QUOTA_EXCEEDED","message":"You can upload up to 32 GB of video a day. """ +
+                """Try again later, or contact support to raise your limit.",""" +
+                """"details":{"limit":"daily_video_bytes",""" +
+                """"max":34359738368,"used":34000000000,"requested":900000000,"window_seconds":86400}}}""",
+            retryAfter = "3600",
+        )
+        val uploader = ResumableUploader(RetrofitResumableTransport(api, ErrorMapper(json)))
+
+        val outcome = uploader.upload(
+            mimeType = "video/mp4",
+            totalBytes = 900_000_000L,
+            source = UploadSource { ByteArrayInputStream(ByteArray(0)) },
+            resume = null,
+            onSession = {},
+            onProgress = { _, _ -> },
+        ) as ResumableOutcome.Failed
+
+        assertThat(outcome.message).isEqualTo(
+            "You can upload up to 32 GB of video a day. Try again later, or contact support to raise your limit. " +
+                "You can try again in about an hour.",
+        )
+        assertThat(outcome.retryable).isTrue()
+        assertThat(outcome.transient).isFalse()
+        assertThat(server.requestCount).isEqualTo(1)
+    }
+
+    @Test
+    fun `an over-long video is refused at init with the server's sentence and no Retry`() = runBlocking {
+        enqueueRefusal(
+            413,
+            """{"error":{"code":"VIDEO_TOO_LONG","message":"This video is longer than 4 hours, the longest we can """ +
+                """process right now. Trim it or split it into parts, then upload again.",""" +
+                """"details":{"max_duration_seconds":14400,"limit":"processing_duration"}}}""",
+        )
+        val uploader = ResumableUploader(RetrofitResumableTransport(api, ErrorMapper(json)))
+
+        val outcome = uploader.upload(
+            mimeType = "video/mp4",
+            totalBytes = 900_000_000L,
+            source = UploadSource { ByteArrayInputStream(ByteArray(0)) },
+            resume = null,
+            onSession = {},
+            onProgress = { _, _ -> },
+            durationMs = 5L * 3_600_000L,
+        ) as ResumableOutcome.Failed
+
+        assertThat(outcome.message).startsWith("This video is longer than 4 hours")
+        assertThat(outcome.retryable).isFalse()
+        assertThat(server.requestCount).isEqualTo(1)
+        val sent = json.parseToJsonElement(server.takeRequest().body!!.utf8()).jsonObject
+        assertThat(sent["duration_ms"]!!.jsonPrimitive.content).isEqualTo("18000000")
+    }
+
+    @Test
+    fun `a long-video wait and an hour's rate limit keep their codes, a short 429 and the limiter stay retryable`() =
+        runBlocking {
+            enqueueRefusal(
+                429,
+                """{"error":{"code":"LONG_VIDEO_IN_PROGRESS","message":"busy","details":{"max":2,"used":2}}}""",
+                "600",
+            )
+            enqueueRefusal(429, """{"error":{"code":"RATE_LIMITED","message":"upload rate limit exceeded"}}""", "3600")
+            enqueueRefusal(429, """{"error":{"code":"RATE_LIMITED","message":"slow down"}}""", "5")
+            enqueueRefusal(503, """{"error":{"code":"UPLOAD_LIMITER_UNAVAILABLE","message":"paused"}}""", "30")
+            val transport = RetrofitResumableTransport(api, ErrorMapper(json))
+            val request = ResumableInitRequest(mimeType = "video/mp4", totalBytes = 1L)
+
+            val long = (transport.init(request) as AppResult.Failure).error
+            val hourly = (transport.init(request) as AppResult.Failure).error
+            val blip = (transport.init(request) as AppResult.Failure).error
+            val limiter = (transport.init(request) as AppResult.Failure).error
+
+            assertThat(long.uploadRefusal())
+                .isEqualTo(UploadRefusal(CODE_LONG_VIDEO_IN_PROGRESS, "busy", mapOf("max" to "2", "used" to "2"), 600L))
+            assertThat(long.uploadRefusal()!!.message).isEqualTo("busy You can try again in about 10 minutes.")
+            assertThat(hourly.uploadRefusal()!!.message)
+                .isEqualTo("You've started too many uploads for now. You can try again in about an hour.")
+            assertThat(blip).isInstanceOf(AppError.RateLimited::class.java)
+            assertThat(limiter).isEqualTo(AppError.Server(statusCode = 503, code = CODE_UPLOAD_LIMITER_UNAVAILABLE))
+            assertThat(limiter.uploadRefusal()!!.message)
+                .isEqualTo("Uploads are paused for a moment. Try again in a minute.")
+        }
+
+    @Test
+    fun `a part refused 410 starts one fresh session and the creator is told`() = runBlocking {
+        enqueueJson("""{"data":{"upload_id":"u1","media_id":"m1","chunk_size":10,"total_parts":1}}""")
+        enqueueRefusal(410, """{"error":{"code":"UPLOAD_EXPIRED","message":"The upload took too long and expired."}}""")
+        enqueueJson("""{"data":{"upload_id":"u2","media_id":"m2","chunk_size":10,"total_parts":1}}""")
+        enqueueJson("""{"data":{"upload_id":"u2","part_number":1}}""")
+        enqueueJson("""{"data":{"id":"m2"}}""")
+        val uploader = ResumableUploader(RetrofitResumableTransport(api, ErrorMapper(json)))
+        var told = 0
+
+        val outcome = uploader.upload(
+            mimeType = "video/mp4",
+            totalBytes = 10L,
+            source = UploadSource { ByteArrayInputStream(ByteArray(10)) },
+            resume = null,
+            onSession = {},
+            onProgress = { _, _ -> },
+            onRestarted = { told++ },
+        )
+
+        assertThat(outcome).isEqualTo(ResumableOutcome.Completed("m2"))
+        assertThat(told).isEqualTo(1)
+    }
 }

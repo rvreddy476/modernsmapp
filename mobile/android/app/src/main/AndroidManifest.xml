@@ -110,6 +110,8 @@
                 <data android:pathPrefix="/reels/" />
                 <data android:pathPrefix="/posttube/watch/" />
                 <data android:pathPrefix="/posttube/channel/" />
+                <!-- A shared collection (lv-31, 2026-11-18): /posttube/playlists/{id}. -->
+                <data android:pathPrefix="/posttube/playlists/" />
                 <data android:pathPrefix="/channel/" />
                 <data android:pathPrefix="/u/" />
                 <data android:pathPrefix="/hashtag/" />

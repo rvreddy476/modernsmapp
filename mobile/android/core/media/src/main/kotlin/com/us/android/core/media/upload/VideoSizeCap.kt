@@ -64,19 +64,36 @@ internal fun formatCap(bytes: Long): String {
 suspend fun <T> uploadInitCall(
     errorMapper: ErrorMapper,
     block: suspend () -> ApiEnvelope<T>,
+): AppResult<T> = uploadCall(errorMapper, block)
+
+/**
+ * [apiCall] for any upload route (2026-11-18): a 413's details as above, and
+ * the upload refusals media-service added on 17 Nov kept whole — their code,
+ * their details and the `Retry-After` header (see [UploadRefusal]).
+ *
+ * [ErrorMapper] turns every 429 into [AppError.RateLimited], which the
+ * uploaders treat as a blip to retry in seconds. A quota refusal or a "long
+ * video already processing" is not a blip: retrying it six times only delays
+ * the message. Those 429s, and any 429 asking for more than a minute, become
+ * an [AppError.Unknown] carrying their code, so the tile can say what happened
+ * and when to try again.
+ */
+suspend fun <T> uploadCall(
+    errorMapper: ErrorMapper,
+    block: suspend () -> ApiEnvelope<T>,
 ): AppResult<T> {
-    var details: Map<String, String> = emptyMap()
+    var refusal: RawUploadRefusal? = null
     val result = apiCall(errorMapper) {
         try {
             block()
         } catch (e: HttpException) {
-            details = e.payloadTooLargeDetails()
+            refusal = e.rawUploadRefusal()
             throw e
         }
     }
-    val error = (result as? AppResult.Failure)?.error
-    if (error !is AppError.Unknown || details.isEmpty()) return result
-    return AppResult.Failure(error.copy(details = details))
+    val error = (result as? AppResult.Failure)?.error ?: return result
+    val raw = refusal ?: return result
+    return AppResult.Failure(raw.reshape(error))
 }
 
 /** A 413's `error.details` primitives, read without consuming the body. Empty for anything else. */
@@ -85,6 +102,34 @@ internal fun HttpException.payloadTooLargeDetails(): Map<String, String> {
     val raw = runCatching { response()?.errorBody()?.source()?.peek()?.readUtf8() }.getOrNull() ?: return emptyMap()
     return errorDetails(raw)
 }
+
+/** `error.code` of an envelope body, or null. Pure. */
+internal fun errorCode(body: String): String? = runCatching {
+    val error = Json.parseToJsonElement(body).jsonObject["error"] as? JsonObject
+    (error?.get("code") as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.takeIf { it.isNotBlank() }
+}.getOrNull()
+
+/** `error.message` of an envelope body, or null. Pure. */
+internal fun errorMessage(body: String): String? = runCatching {
+    val error = Json.parseToJsonElement(body).jsonObject["error"] as? JsonObject
+    (error?.get("message") as? JsonPrimitive)?.takeIf { it !is JsonNull }?.content?.takeIf { it.isNotBlank() }
+}.getOrNull()
+
+/** An upload refusal as it came off the wire, peeked so the mapper still reads the body. */
+private fun HttpException.rawUploadRefusal(): RawUploadRefusal? {
+    if (code() !in REFUSAL_STATUSES) return null
+    val body = runCatching { response()?.errorBody()?.source()?.peek()?.readUtf8() }.getOrNull().orEmpty()
+    return RawUploadRefusal(
+        status = code(),
+        code = errorCode(body),
+        message = errorMessage(body),
+        details = errorDetails(body),
+        retryAfterSeconds = response()?.headers()?.get("Retry-After")?.trim()?.toLongOrNull()?.takeIf { it >= 0L },
+    )
+}
+
+private val REFUSAL_STATUSES =
+    setOf(HTTP_CONFLICT, HTTP_GONE, HTTP_PAYLOAD_TOO_LARGE, HTTP_TOO_MANY_REQUESTS, HTTP_SERVICE_UNAVAILABLE)
 
 /** `error.details` of an envelope body, primitives only, as their content. Pure, for the table test. */
 internal fun errorDetails(body: String): Map<String, String> {

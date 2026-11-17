@@ -86,6 +86,19 @@ object WebLinks {
         return "$ORIGIN/$LIVE_SEGMENT/${id.percentEncoded()}"
     }
 
+    /**
+     * `https://cleestudio.com/posttube/playlists/<id>`: a collection's page,
+     * the route postbook-ui serves at `src/app/posttube/playlists/[id]` and
+     * shares from `CollectionView` (`collectionShareUrl`, lv-31). The web
+     * lets it through signed out. Encoded like [liveUrl]; null for a blank id.
+     * Parsed back by [targetOf] as [WebLinkTarget.Playlist].
+     */
+    fun playlistUrl(collectionId: String?): String? {
+        val id = collectionId?.trim().orEmpty()
+        if (id.isEmpty()) return null
+        return "$ORIGIN/$POSTTUBE_SEGMENT/$PLAYLISTS_SEGMENT/${id.percentEncoded()}"
+    }
+
     // ---- share refs (web `features/share/shareRef.ts`, 21 Oct 2026) ----
 
     const val SHARE_REF_PARAM = "ref"
@@ -154,6 +167,7 @@ object WebLinks {
      *  - `/u/<username>`             → [WebLinkTarget.Profile]
      *  - `/posttube/channel/<handle>`, `/channel/<handle>` → [WebLinkTarget.Channel]
      *  - `/hashtag/<tag>`            → [WebLinkTarget.Hashtag]
+     *  - `/posttube/playlists/<uuid>` → [WebLinkTarget.Playlist] (lv-31, 2026-11-18)
      *
      * `/shop/products/<id>` is deliberately absent: commerce is paused (21 Oct 2026).
      * A handle or tag is percent-decoded and then checked against the
@@ -181,6 +195,8 @@ object WebLinks {
                     head == REELS_SEGMENT && middle == SOUND_SEGMENT -> tail.asSoundId()?.let(WebLinkTarget::Sound)
                     head == POSTTUBE_SEGMENT && middle == WATCH_SEGMENT -> tail.takeIf { it.isUuid() }?.let(WebLinkTarget::Watch)
                     head == POSTTUBE_SEGMENT && middle == CHANNEL_SEGMENT -> tail.asHandle()?.let(WebLinkTarget::Channel)
+                    head == POSTTUBE_SEGMENT && middle == PLAYLISTS_SEGMENT ->
+                        tail.takeIf { it.isUuid() }?.lowercase()?.let(WebLinkTarget::Playlist)
                     head == ECHO_SEGMENT && middle == NOTE_SEGMENT ->
                         tail.takeIf { it.isUuid() }?.lowercase()?.let(WebLinkTarget::EchoNote)
                     else -> null
@@ -273,6 +289,7 @@ object WebLinks {
     private const val POSTTUBE_SEGMENT = "posttube"
     private const val WATCH_SEGMENT = "watch"
     private const val CHANNEL_SEGMENT = "channel"
+    private const val PLAYLISTS_SEGMENT = "playlists"
     private const val HASHTAG_SEGMENT = "hashtag"
     private const val ECHO_SEGMENT = "echo"
     private const val NOTE_SEGMENT = "note"
@@ -318,4 +335,7 @@ sealed interface WebLinkTarget {
 
     /** `/echo/note/<id>`: one Echo note (2026-11-12); a closed Echo lands on "Not available". */
     data class EchoNote(val noteId: String) : WebLinkTarget
+
+    /** `/posttube/playlists/<id>`: one collection's page (lv-31); the server decides whether it is readable. */
+    data class Playlist(val collectionId: String) : WebLinkTarget
 }

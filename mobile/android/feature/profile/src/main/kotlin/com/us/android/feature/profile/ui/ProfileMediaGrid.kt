@@ -70,6 +70,7 @@ import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
@@ -893,11 +894,26 @@ private fun PendingTile(tile: PendingVideoTile, onClick: () -> Unit, modifier: M
                 )
             }
         } else {
-            PublishRingView(
-                ring = tile.state.ring(),
-                label = tile.state.ringPercentLabel(),
-                modifier = Modifier.size(RING_SIZE),
-            )
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                PublishRingView(
+                    ring = tile.state.ring(),
+                    label = tile.state.ringPercentLabel(),
+                    modifier = Modifier.size(RING_SIZE),
+                )
+                // The server expired the upload and it started again (lv-16).
+                (tile.state as? ReelPublishState.Uploading)?.note?.let { note ->
+                    Text(
+                        text = note,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = UsTheme.extended.onMedia,
+                        textAlign = TextAlign.Center,
+                        maxLines = 2,
+                        modifier = Modifier
+                            .padding(top = UsTheme.spacing.xs, start = UsTheme.spacing.xs, end = UsTheme.spacing.xs)
+                            .testTag("profile_pending_note:${tile.creationKey}"),
+                    )
+                }
+            }
         }
     }
 }

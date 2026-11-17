@@ -19,6 +19,12 @@ data class PickedMedia(
     val mimeType: String,
     val sizeBytes: Long,
     val source: UploadSource,
+    /**
+     * A video's length, read before the upload so `init` can declare it
+     * (N-3); 0 when unknown or not read. Unknown never blocks an upload:
+     * the server checks the file itself at confirm.
+     */
+    val durationMs: Long = 0L,
 )
 
 /** Product-neutral bridge between Android's URI grants and the upload core. */

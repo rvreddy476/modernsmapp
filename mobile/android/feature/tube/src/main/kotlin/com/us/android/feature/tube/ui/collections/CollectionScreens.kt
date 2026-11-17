@@ -1,5 +1,7 @@
 package com.us.android.feature.tube.ui.collections
 
+import android.content.Context
+import android.content.Intent
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -26,6 +28,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
@@ -84,6 +87,7 @@ fun CollectionScreen(
     val deleting by viewModel.deleting.collectAsStateWithLifecycle()
     val deleted by viewModel.deleted.collectAsStateWithLifecycle()
     var rowMenuFor by rememberSaveable { mutableStateOf<String?>(null) }
+    val context = LocalContext.current
     RefreshOnResume(viewModel::refresh)
 
     // Deleted: the page has nothing left to show. The Collections index reads again on resume.
@@ -112,6 +116,7 @@ fun CollectionScreen(
                         edit = viewModel::openEdit,
                         delete = viewModel::askDelete,
                         deleting = deleting,
+                        share = { link, title -> context.shareCollectionLink(link, title) },
                     ),
                     bottomPadding = padding,
                 )
@@ -167,7 +172,26 @@ private fun RefreshOnResume(onResume: () -> Unit) {
     }
 }
 
+/**
+ * The system chooser with the list's name and its link (lv-31): the link
+ * last, on its own line, so a messenger's preview reads it. The chooser,
+ * never the bare intent, so a share is never silently sent to an old default.
+ */
+private fun Context.shareCollectionLink(link: String, title: String) {
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, title)
+        putExtra(Intent.EXTRA_TEXT, collectionShareText(link, title))
+    }
+    runCatching { startActivity(Intent.createChooser(send, null)) }
+}
+
+/** What the share carries: the title, then the link. Pure. */
+internal fun collectionShareText(link: String, title: String): String =
+    if (title.isBlank()) link else "${title.trim()}\n$link"
+
 /** Everything the page's rows and header can ask, grouped, so the body stays short. */
+@Suppress("LongParameterList") // This class IS the grouping; one callback per thing the page can ask.
 private class CollectionPageActions(
     val thumbFor: (FeedItem) -> VideoThumb,
     val open: (FeedItem) -> Unit,
@@ -176,6 +200,8 @@ private class CollectionPageActions(
     val edit: () -> Unit,
     val delete: () -> Unit,
     val deleting: Boolean,
+    /** The system share sheet with the list's web link (lv-31). */
+    val share: (link: String, title: String) -> Unit,
 )
 
 @Composable
@@ -273,24 +299,36 @@ private fun CollectionTitle(
                 modifier = Modifier.testTag("tube_collection_description"),
             )
         }
-        if (permissions.canEdit) {
+        // Share (lv-31): a Public or Unlisted list, to anyone reading it; never a Private or system one.
+        val shareLink = collectionShareLink(collection)
+        if (permissions.canEdit || shareLink != null) {
             Row(
                 horizontalArrangement = Arrangement.spacedBy(UsTheme.spacing.m),
                 modifier = Modifier.padding(top = UsTheme.spacing.s),
             ) {
-                UsPillButton(
-                    text = "Edit",
-                    onClick = actions.edit,
-                    filled = false,
-                    modifier = Modifier.testTag("tube_collection_edit"),
-                )
-                UsPillButton(
-                    text = "Delete",
-                    onClick = actions.delete,
-                    filled = false,
-                    busy = actions.deleting,
-                    modifier = Modifier.testTag("tube_collection_delete"),
-                )
+                if (shareLink != null) {
+                    UsPillButton(
+                        text = "Share",
+                        onClick = { actions.share(shareLink, collection.title) },
+                        filled = false,
+                        modifier = Modifier.testTag("tube_collection_share"),
+                    )
+                }
+                if (permissions.canEdit) {
+                    UsPillButton(
+                        text = "Edit",
+                        onClick = actions.edit,
+                        filled = false,
+                        modifier = Modifier.testTag("tube_collection_edit"),
+                    )
+                    UsPillButton(
+                        text = "Delete",
+                        onClick = actions.delete,
+                        filled = false,
+                        busy = actions.deleting,
+                        modifier = Modifier.testTag("tube_collection_delete"),
+                    )
+                }
             }
         }
     }

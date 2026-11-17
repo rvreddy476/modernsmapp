@@ -20,6 +20,7 @@ import com.us.android.core.media.upload.ResumableSession
 import com.us.android.core.media.upload.ResumableUploader
 import com.us.android.core.media.upload.UploadSource
 import com.us.android.core.media.upload.asksForResumableUpload
+import com.us.android.core.media.upload.uploadRefusal
 import com.us.android.core.media.upload.videoTooLarge
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.delay
@@ -119,15 +120,23 @@ class ReelMediaUploads @Inject constructor(
         onSession: suspend (ResumableSession?) -> Unit = {},
         reserved: String? = null,
         onReserved: suspend (String?) -> Unit = {},
+        onNotice: (String) -> Unit = {},
         onProgress: (Float) -> Unit,
     ): Outcome {
         if (resume != null || video.sizeBytes >= RESUMABLE_THRESHOLD_BYTES) {
-            return uploadResumable(video, resume, onSession, onProgress)
+            return uploadResumable(video, resume, onSession, onNotice, onProgress)
         }
         if (reserved != null) confirmReserved(reserved, onReserved)?.let { return it }
-        val init = when (val result = uploader.reserve(video.mimeType, video.sizeBytes, fileType = FILE_TYPE_VIDEO)) {
-            is AppResult.Failure -> return reserveRefused(result.error, video, onSession, onProgress)
-            is AppResult.Success -> result.data
+        // The length goes with the reserve (N-3): an over-long video is refused before the PUT.
+        val reservedInit = uploader.reserve(
+            video.mimeType,
+            video.sizeBytes,
+            fileType = FILE_TYPE_VIDEO,
+            durationMs = video.durationMs,
+        )
+        val init = when (reservedInit) {
+            is AppResult.Failure -> return reserveRefused(reservedInit.error, video, onSession, onNotice, onProgress)
+            is AppResult.Success -> reservedInit.data
         }
         onReserved(init.mediaId)
         val put = withContext(io) {
@@ -153,11 +162,22 @@ class ReelMediaUploads @Inject constructor(
     private suspend fun confirmReserved(mediaId: String, onReserved: suspend (String?) -> Unit): Outcome? =
         when (val confirmed = uploader.confirm(mediaId)) {
             is AppResult.Success -> Outcome.Ready(mediaId)
-            is AppResult.Failure -> if (confirmed.error.isTransient()) {
-                CONFIRM_FAILED
-            } else {
-                onReserved(null)
-                null
+            is AppResult.Failure -> {
+                val refusal = confirmed.error.uploadRefusal()
+                when {
+                    confirmed.error.isTransient() -> refusal?.let { CONFIRM_FAILED.copy(message = it.message) }
+                        ?: CONFIRM_FAILED
+                    // A quota or a wait at confirm: the server KEPT the upload; say when to retry.
+                    refusal != null && !refusal.final -> Outcome.Failed(refusal.message, retryable = true)
+                    refusal != null -> {
+                        onReserved(null)
+                        Outcome.Failed(refusal.message, retryable = false)
+                    }
+                    else -> {
+                        onReserved(null)
+                        null
+                    }
+                }
             }
         }
 
@@ -185,28 +205,44 @@ class ReelMediaUploads @Inject constructor(
     private suspend fun confirmOrKeep(mediaId: String, onReserved: suspend (String?) -> Unit): Outcome =
         when (val confirmed = uploader.confirm(mediaId)) {
             is AppResult.Success -> Outcome.Ready(mediaId)
-            is AppResult.Failure -> if (confirmed.error.isTransient()) {
-                CONFIRM_FAILED
-            } else {
-                onReserved(null)
-                CONFIRM_FAILED.copy(transient = false)
+            is AppResult.Failure -> {
+                val refusal = confirmed.error.uploadRefusal()
+                when {
+                    confirmed.error.isTransient() -> refusal?.let { CONFIRM_FAILED.copy(message = it.message) }
+                        ?: CONFIRM_FAILED
+                    // A quota or a wait at confirm keeps the id: the server kept the bytes.
+                    refusal != null && !refusal.final -> Outcome.Failed(refusal.message, retryable = true)
+                    else -> {
+                        onReserved(null)
+                        refusal?.let { Outcome.Failed(it.message, retryable = false) }
+                            ?: CONFIRM_FAILED.copy(transient = false)
+                    }
+                }
             }
         }
 
     /**
-     * The simple `init` said no. Over the platform's cap (413
-     * `VIDEO_TOO_LARGE`, 2026-11-07) is final and says the cap — never the
-     * resumable fallback, which refuses it too. `USE_RESUMABLE_UPLOAD` is
-     * the fallback. Anything else is the start failing.
+     * The simple `init` said no. Over the platform's caps (413
+     * `VIDEO_TOO_LARGE`, 2026-11-07; 413 `VIDEO_TOO_LONG`, 2026-11-17) is
+     * final and says the cap — never the resumable fallback, which refuses
+     * it too. A quota, a wait or the limiter says what happened and when to
+     * try again. `USE_RESUMABLE_UPLOAD` is the fallback. Anything else is
+     * the start failing.
      */
     private suspend fun reserveRefused(
         error: AppError,
         video: PickedMedia,
         onSession: suspend (ResumableSession?) -> Unit,
+        onNotice: (String) -> Unit,
         onProgress: (Float) -> Unit,
     ): Outcome {
         error.videoTooLarge()?.let { return Outcome.Failed(it.message, retryable = false) }
-        if (error.asksForResumableUpload()) return uploadResumable(video, resume = null, onSession, onProgress)
+        error.uploadRefusal()?.let {
+            return Outcome.Failed(it.message, retryable = !it.final, transient = error.isTransient())
+        }
+        if (error.asksForResumableUpload()) {
+            return uploadResumable(video, resume = null, onSession, onNotice, onProgress)
+        }
         return Outcome.Failed(START_FAILED, retryable = true, transient = error.isTransient())
     }
 
@@ -214,6 +250,7 @@ class ReelMediaUploads @Inject constructor(
         video: PickedMedia,
         resume: ResumableSession?,
         onSession: suspend (ResumableSession?) -> Unit,
+        onNotice: (String) -> Unit,
         onProgress: (Float) -> Unit,
     ): Outcome {
         val outcome = resumable.upload(
@@ -223,6 +260,8 @@ class ReelMediaUploads @Inject constructor(
             resume = resume,
             onSession = { onSession(it) },
             onProgress = { sent, total -> if (total > 0) onProgress(sent.toFloat() / total) },
+            durationMs = video.durationMs,
+            onRestarted = { onNotice(ResumableUploader.RESTARTED) },
         )
         return when (outcome) {
             is ResumableOutcome.Completed -> Outcome.Ready(outcome.mediaId)
