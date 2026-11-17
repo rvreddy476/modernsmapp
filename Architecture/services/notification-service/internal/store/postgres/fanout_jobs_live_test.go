@@ -79,7 +79,7 @@ func TestFanoutJobsIntegration_LiveJobPhasesAndIdempotency(t *testing.T) {
 	if err := store.AdvanceFanoutReminders(ctx, stream, "tok-1", 3, false); err != nil {
 		t.Fatalf("advance: %v", err)
 	}
-	if err := store.ReleaseFanoutJob(ctx, stream, "retry"); err != nil {
+	if err := store.ReleaseFanoutJob(ctx, stream, "retry", time.Now().Add(-time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	got = claimOne(t, store, stream)
@@ -92,7 +92,7 @@ func TestFanoutJobsIntegration_LiveJobPhasesAndIdempotency(t *testing.T) {
 	if err := store.AdvanceFanoutReminders(ctx, stream, "tok-1", 2, true); err != nil {
 		t.Fatalf("advance done: %v", err)
 	}
-	if err := store.ReleaseFanoutJob(ctx, stream, "retry"); err != nil {
+	if err := store.ReleaseFanoutJob(ctx, stream, "retry", time.Now().Add(-time.Second)); err != nil {
 		t.Fatal(err)
 	}
 	got = claimOne(t, store, stream)

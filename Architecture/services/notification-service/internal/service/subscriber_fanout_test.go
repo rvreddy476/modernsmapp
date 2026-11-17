@@ -51,6 +51,11 @@ type fakeStore struct {
 	followerBegins   int
 	followerAdvances []followerAdvance
 	order            []string
+	// Job outcomes in order (completed, released, deferred:<reason>,
+	// failed, expired:<reason>) and the not-before each release or
+	// deferral asked for.
+	outcomes []string
+	dueAt    []time.Time
 }
 
 type reminderAdvance struct {
@@ -103,9 +108,41 @@ func (s *fakeStore) AdvanceFanoutCursor(_ context.Context, _ uuid.UUID, cursor u
 	s.order = append(s.order, "s")
 	return nil
 }
-func (s *fakeStore) CompleteFanoutJob(context.Context, uuid.UUID) error        { return nil }
-func (s *fakeStore) ReleaseFanoutJob(context.Context, uuid.UUID, string) error { return nil }
-func (s *fakeStore) FailFanoutJob(context.Context, uuid.UUID, string) error    { return nil }
+func (s *fakeStore) CompleteFanoutJob(context.Context, uuid.UUID) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.outcomes = append(s.outcomes, "completed")
+	return nil
+}
+func (s *fakeStore) ReleaseFanoutJob(_ context.Context, _ uuid.UUID, _ string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.outcomes = append(s.outcomes, "released")
+	s.dueAt = append(s.dueAt, at)
+	return nil
+}
+func (s *fakeStore) DeferFanoutJob(_ context.Context, _ uuid.UUID, reason string, at time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.outcomes = append(s.outcomes, "deferred:"+reason)
+	s.dueAt = append(s.dueAt, at)
+	return nil
+}
+func (s *fakeStore) FailFanoutJob(context.Context, uuid.UUID, string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.outcomes = append(s.outcomes, "failed")
+	return nil
+}
+func (s *fakeStore) ExpireFanoutJob(_ context.Context, _ uuid.UUID, reason string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.outcomes = append(s.outcomes, "expired:"+reason)
+	return nil
+}
+func (s *fakeStore) RequeueFailedFanoutJobs(context.Context, int, time.Duration, time.Duration) (int64, error) {
+	return 0, nil
+}
 func (s *fakeStore) CleanupFanoutRecords(context.Context, time.Duration) (int64, error) {
 	return 0, nil
 }

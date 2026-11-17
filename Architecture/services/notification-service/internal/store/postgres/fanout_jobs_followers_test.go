@@ -24,7 +24,7 @@ func TestFanoutJobsIntegration_LiveJobFollowerPhaseAndCursor(t *testing.T) {
 	})
 	reclaim := func() FanoutJob {
 		t.Helper()
-		if err := store.ReleaseFanoutJob(ctx, stream, "retry"); err != nil {
+		if err := store.ReleaseFanoutJob(ctx, stream, "retry", time.Now().Add(-time.Second)); err != nil {
 			t.Fatal(err)
 		}
 		return claimOne(t, store, stream)

@@ -3,6 +3,8 @@ package events
 import (
 	"context"
 	"log/slog"
+	"strings"
+	"time"
 
 	"github.com/atpost/notification-service/internal/service"
 	sharedevents "github.com/atpost/shared/events"
@@ -107,5 +109,81 @@ func (c *Consumer) enqueueSubscriberFanout(ctx context.Context, e sharedevents.P
 		// name once per job in that case.
 		Title:       e.Title,
 		ChannelName: e.ChannelName,
+	})
+}
+
+// visibleTriggerWindow bounds which posts the "post became visible" trigger
+// may announce: only uploads created this recently. It stays inside the
+// 7-day retention of completed fan-out rows (CleanupFanoutRecords), so a
+// post announced earlier always still has the row that makes a second
+// trigger a no-op, and a months-old video made public is not pushed to
+// every subscriber as if it were new.
+const visibleTriggerWindow = 6 * 24 * time.Hour
+
+// fanoutNow is the trigger's clock; tests pin it.
+var fanoutNow = time.Now
+
+// enqueueOnVisible is the second trigger for the upload fan-out (lv-1,
+// lv-17, reels-30). post-service writes PostSearchEligibilityChanged in the
+// same transaction as every review-status and visibility change, including
+// the review gate's flip when a video finishes processing. When the event
+// says the post is now approved, published and in an audience that
+// notifies, the upload job is enqueued, or the waiting job for it is woken.
+//
+// Exactly once: the job table holds one row per post, so PostCreated and
+// this trigger (and every repeat of either) share it; a completed job is
+// never run again (store EnqueueFanoutJob). The event does not carry the
+// creator's notify_subscribers choice; the worker reads it from the post
+// before anyone is told.
+func (c *Consumer) enqueueOnVisible(ctx context.Context, e sharedevents.PostSearchEligibilityChangedPayload) error {
+	if c.fanout == nil {
+		return nil
+	}
+	notifType := service.UploadNotifType(e.ContentType)
+	if notifType == "" {
+		return nil
+	}
+	if e.Deleted || e.Scheduled || e.Restricted {
+		return nil
+	}
+	if strings.ToLower(e.ReviewStatus) != "approved" {
+		return nil
+	}
+	switch strings.ToLower(e.Visibility) {
+	case "", "public", "followers", "friends":
+	default:
+		// private, unlisted, staged, retired audiences: nothing to announce.
+		return nil
+	}
+	if e.CreatedAt.IsZero() || fanoutNow().Sub(e.CreatedAt) > visibleTriggerWindow {
+		return nil
+	}
+
+	postID, err := uuid.Parse(e.PostID)
+	if err != nil {
+		return nil // malformed payload — don't retry forever
+	}
+	authorID, err := uuid.Parse(e.AuthorID)
+	if err != nil {
+		return nil
+	}
+	channelID := c.fanout.ResolveChannel(ctx, authorID)
+	if channelID == uuid.Nil {
+		return nil // no channel ⇒ no subscribers; never followers
+	}
+
+	return c.fanout.Enqueue(ctx, service.EnqueueParams{
+		PostID:      postID,
+		AuthorID:    authorID,
+		ChannelID:   channelID,
+		ContentType: e.ContentType,
+		Visibility:  e.Visibility,
+		DeepLink:    service.UploadDeepLink(e.ContentType, e.PostID),
+		NotifType:   notifType,
+		CreatedAt:   e.CreatedAt,
+		// Empty for a gated or non-public post (post-service keeps the body
+		// off the bus); the worker fills it from the post and resolves the
+		// channel name once per job.
+		Title: e.Title,
 	})
 }

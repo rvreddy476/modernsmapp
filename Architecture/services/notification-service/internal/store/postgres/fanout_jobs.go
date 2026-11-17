@@ -40,6 +40,9 @@ type FanoutJob struct {
 	// token for the third and last phase of a live job, the creator's
 	// followers. Upload jobs never touch it.
 	FollowerCursor string
+	// Waits (migration 021) counts consecutive deferrals of an upload job
+	// whose post was not visible yet; it bounds the wait.
+	Waits int
 }
 
 // Fan-out phases (subscriber_fanout_jobs.phase). A live job walks them in
@@ -53,6 +56,16 @@ const (
 // EnqueueFanoutJob records a fan-out durably. Idempotent on post_id: a
 // duplicate PostCreated (or live.stream.started) delivery does not create a
 // second job. An empty Phase is the upload default, 'subscribers'.
+//
+// An UPLOAD job is also woken or reopened by a repeated trigger (migration
+// 021): PostCreated and the later "post became visible" signal
+// (PostSearchEligibilityChanged) share this one row per post, so
+//   - a job waiting for its post becomes due now;
+//   - a FAILED job is reopened from its cursor; the per-(post, user)
+//     markers keep anyone already told from hearing it twice;
+//   - a completed or running job is left alone: one announcement per post.
+//
+// A "creator is live" job keeps plain DO NOTHING semantics.
 func (s *Store) EnqueueFanoutJob(ctx context.Context, j *FanoutJob) error {
 	phase := j.Phase
 	if phase == "" {
@@ -63,11 +76,28 @@ func (s *Store) EnqueueFanoutJob(ctx context.Context, j *FanoutJob) error {
 			(post_id, channel_id, author_id, content_type, deep_link,
 			 notif_type, visibility, post_created_at, title, channel_name, phase)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		ON CONFLICT (post_id) DO NOTHING`,
+		ON CONFLICT (post_id) DO UPDATE
+		SET status = 'pending', available_at = NOW(), waits = 0,
+		    attempts = 0, wait_reason = '',
+		    visibility = EXCLUDED.visibility,
+		    title = CASE WHEN subscriber_fanout_jobs.title = ''
+		                 THEN EXCLUDED.title ELSE subscriber_fanout_jobs.title END,
+		    updated_at = NOW()
+		WHERE EXCLUDED.notif_type <> $12
+		  AND subscriber_fanout_jobs.notif_type <> $12
+		  AND (subscriber_fanout_jobs.status = 'failed'
+		       OR (subscriber_fanout_jobs.status = 'pending'
+		           AND subscriber_fanout_jobs.available_at > NOW()))`,
 		j.PostID, j.ChannelID, j.AuthorID, j.ContentType, j.DeepLink,
-		j.NotifType, j.Visibility, j.PostCreatedAt, j.Title, j.ChannelName, phase)
+		j.NotifType, j.Visibility, j.PostCreatedAt, j.Title, j.ChannelName, phase,
+		liveNotifType)
 	return err
 }
+
+// liveNotifType mirrors service.LiveNotifType (the store cannot import the
+// service package): live jobs are never woken or replayed, because a late
+// "is live" push is worse than none.
+const liveNotifType = "creator_went_live"
 
 // AdvanceFanoutReminders persists progress through a live job's reminder
 // holders. `cursor` is live-service-v2's opaque next_after token. When
@@ -118,7 +148,7 @@ func (s *Store) ClaimFanoutJobs(ctx context.Context, staleAfter time.Duration, l
 	rows, err := s.db.Query(ctx, `
 		WITH claimable AS (
 			SELECT post_id FROM subscriber_fanout_jobs
-			WHERE status = 'pending'
+			WHERE (status = 'pending' AND available_at <= NOW())
 			   OR (status = 'running' AND claimed_at < $1)
 			ORDER BY created_at ASC
 			LIMIT $2
@@ -131,7 +161,7 @@ func (s *Store) ClaimFanoutJobs(ctx context.Context, staleAfter time.Duration, l
 		RETURNING j.post_id, j.channel_id, j.author_id, j.content_type,
 		          j.deep_link, j.notif_type, j.visibility, j.post_created_at,
 		          j.cursor, j.delivered, j.attempts, j.title, j.channel_name,
-		          j.phase, j.reminder_cursor, j.follower_cursor`,
+		          j.phase, j.reminder_cursor, j.follower_cursor, j.waits`,
 		time.Now().Add(-staleAfter), limit)
 	if err != nil {
 		return nil, err
@@ -144,7 +174,7 @@ func (s *Store) ClaimFanoutJobs(ctx context.Context, staleAfter time.Duration, l
 		if err := rows.Scan(&j.PostID, &j.ChannelID, &j.AuthorID, &j.ContentType,
 			&j.DeepLink, &j.NotifType, &j.Visibility, &j.PostCreatedAt,
 			&j.Cursor, &j.Delivered, &j.Attempts, &j.Title, &j.ChannelName,
-			&j.Phase, &j.ReminderCursor, &j.FollowerCursor); err != nil {
+			&j.Phase, &j.ReminderCursor, &j.FollowerCursor, &j.Waits); err != nil {
 			return nil, err
 		}
 		jobs = append(jobs, j)
@@ -172,23 +202,71 @@ func (s *Store) CompleteFanoutJob(ctx context.Context, postID uuid.UUID) error {
 	return err
 }
 
-// ReleaseFanoutJob returns a job to 'pending' after a transient failure
-// so the next tick resumes it from its cursor.
-func (s *Store) ReleaseFanoutJob(ctx context.Context, postID uuid.UUID, reason string) error {
+// ReleaseFanoutJob returns a job to 'pending' after a transient failure,
+// due again at retryAt (backoff, migration 021), resuming from its cursor.
+func (s *Store) ReleaseFanoutJob(ctx context.Context, postID uuid.UUID, reason string, retryAt time.Time) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE subscriber_fanout_jobs
-		SET status = 'pending', last_error = $2, updated_at = NOW()
+		SET status = 'pending', last_error = $2, available_at = $3,
+		    wait_reason = '', waits = 0, updated_at = NOW()
+		WHERE post_id = $1`, postID, reason, retryAt)
+	return err
+}
+
+// DeferFanoutJob parks an upload job whose post is not visible yet until
+// `until`. The claim that found it so was not a failed attempt, so the
+// attempt it took is given back; waits bounds the wait instead.
+func (s *Store) DeferFanoutJob(ctx context.Context, postID uuid.UUID, reason string, until time.Time) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE subscriber_fanout_jobs
+		SET status = 'pending', wait_reason = $2, last_error = $2,
+		    available_at = $3, waits = waits + 1,
+		    attempts = GREATEST(attempts - 1, 0), updated_at = NOW()
+		WHERE post_id = $1`, postID, reason, until)
+	return err
+}
+
+// FailFanoutJob parks a job after exhausting its retries. An upload job
+// stays replayable (RequeueFailedFanoutJobs) and a new trigger reopens it.
+func (s *Store) FailFanoutJob(ctx context.Context, postID uuid.UUID, reason string) error {
+	_, err := s.db.Exec(ctx, `
+		UPDATE subscriber_fanout_jobs
+		SET status = 'failed', last_error = $2, wait_reason = '', updated_at = NOW()
 		WHERE post_id = $1`, postID, reason)
 	return err
 }
 
-// FailFanoutJob parks a job permanently after exhausting retries.
-func (s *Store) FailFanoutJob(ctx context.Context, postID uuid.UUID, reason string) error {
+// ExpireFanoutJob ends an upload job whose post never became visible within
+// the wait ceiling. Keeping wait_reason keeps it out of the automatic
+// replay; a later trigger for the post still reopens it.
+func (s *Store) ExpireFanoutJob(ctx context.Context, postID uuid.UUID, reason string) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE subscriber_fanout_jobs
-		SET status = 'failed', last_error = $2, updated_at = NOW()
+		SET status = 'failed', last_error = 'expired waiting: ' || $2,
+		    wait_reason = $2, updated_at = NOW()
 		WHERE post_id = $1`, postID, reason)
 	return err
+}
+
+// RequeueFailedFanoutJobs is the replay path for upload jobs that failed on
+// errors (post-service or graph down for longer than the retry budget):
+// each one quiet for at least `cooldown` and younger than `window` goes back
+// to pending, at most maxReplays times per job. Live jobs and jobs that
+// expired waiting for their post are never replayed.
+func (s *Store) RequeueFailedFanoutJobs(ctx context.Context, maxReplays int, cooldown, window time.Duration) (int64, error) {
+	now := time.Now()
+	tag, err := s.db.Exec(ctx, `
+		UPDATE subscriber_fanout_jobs
+		SET status = 'pending', attempts = 0, available_at = NOW(),
+		    replays = replays + 1, updated_at = NOW()
+		WHERE status = 'failed' AND wait_reason = ''
+		  AND notif_type <> $1 AND replays < $2
+		  AND updated_at < $3 AND created_at > $4`,
+		liveNotifType, maxReplays, now.Add(-cooldown), now.Add(-window))
+	if err != nil {
+		return 0, err
+	}
+	return tag.RowsAffected(), nil
 }
 
 // AlreadyDelivered reports whether this recipient already reached a

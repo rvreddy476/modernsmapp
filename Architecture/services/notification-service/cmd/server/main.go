@@ -322,6 +322,17 @@ func main() {
 	// blocks, followers-only access, deletion, and moderation state. The
 	// same post-service base URL also serves the channel-name fallback.
 	fanout.SetEligibilityDeps(graphURL, postURL, internalKey)
+	// Two founder decisions still open (lv-56, lv-71). Both default to true:
+	// members-only uploads notify every subscriber (today's behaviour) and
+	// 18+ uploads notify (the watch page applies the age gate on open).
+	uploadPolicy := service.UploadPolicy{
+		NotifyMembersOnly:   envBool("UPLOAD_FANOUT_NOTIFY_MEMBERS_ONLY", true),
+		NotifyAgeRestricted: envBool("UPLOAD_FANOUT_NOTIFY_AGE_RESTRICTED", true),
+	}
+	fanout.SetUploadPolicy(uploadPolicy)
+	slog.Info("upload fan-out policy",
+		"notify_members_only", uploadPolicy.NotifyMembersOnly,
+		"notify_age_restricted", uploadPolicy.NotifyAgeRestricted)
 	// "Creator is live" rides the same jobs: live.stream.started tells the
 	// stream's reminder holders (paged from live-service-v2's internal
 	// route), then the channel's subscribers, then every follower of the
@@ -646,6 +657,17 @@ func main() {
 func env(key, fallback string) string {
 	if v := os.Getenv(key); v != "" {
 		return v
+	}
+	return fallback
+}
+
+// envBool reads a boolean flag; unset or unparsable keeps the fallback.
+func envBool(key string, fallback bool) bool {
+	if v := os.Getenv(key); v != "" {
+		if b, err := strconv.ParseBool(strings.TrimSpace(v)); err == nil {
+			return b
+		}
+		slog.Warn("ignoring unparsable boolean env var", "key", key)
 	}
 	return fallback
 }

@@ -36,9 +36,43 @@ const (
 	fanoutPageSize     = 500
 	fanoutWorkers      = 16
 	fanoutStaleAfter   = 10 * time.Minute
-	fanoutMaxAttempts  = 5
 	fanoutJobBatchSize = 10
+
+	// Transient failures (post-service, graph, inbox) retry with backoff:
+	// 30 s doubling to 30 min, 12 attempts, about 3.5 h in all (lv-19).
+	// Before: every 5 s, 5 attempts, lost after ~30 s.
+	fanoutMaxAttempts = 12
+	fanoutRetryBase   = 30 * time.Second
+	fanoutRetryCap    = 30 * time.Minute
+
+	// A post not visible yet (processing, pending review, scheduled,
+	// private for now) is waited for on the same curve, up to about 72 h:
+	// long transcodes take hours (lv-1, lv-17). The "post became visible"
+	// trigger wakes a waiting job at once, so the curve is only the backstop.
+	fanoutMaxWaits = 150
+
+	// Replay of jobs that failed on errors: hourly sweep, after an hour of
+	// quiet, at most twice per job, only within three days of the upload.
+	fanoutReplayEvery    = time.Hour
+	fanoutReplayCooldown = time.Hour
+	fanoutReplayWindow   = 72 * time.Hour
+	fanoutMaxReplays     = 2
 )
+
+// fanoutBackoff is the delay before the n-th retry or wait (n from 1).
+func fanoutBackoff(n int) time.Duration {
+	if n < 1 {
+		n = 1
+	}
+	d := fanoutRetryBase
+	for i := 1; i < n && d < fanoutRetryCap; i++ {
+		d *= 2
+	}
+	if d > fanoutRetryCap {
+		d = fanoutRetryCap
+	}
+	return d
+}
 
 // subscriberSource pages notify-eligible subscriber ids and resolves an
 // author to their channel. Served by post-service since the Tube channel
@@ -58,8 +92,11 @@ type fanoutStore interface {
 	BeginFanoutFollowers(ctx context.Context, postID uuid.UUID) error
 	AdvanceFanoutFollowers(ctx context.Context, postID uuid.UUID, cursor string, deliveredDelta int64) error
 	CompleteFanoutJob(ctx context.Context, postID uuid.UUID) error
-	ReleaseFanoutJob(ctx context.Context, postID uuid.UUID, reason string) error
+	ReleaseFanoutJob(ctx context.Context, postID uuid.UUID, reason string, retryAt time.Time) error
+	DeferFanoutJob(ctx context.Context, postID uuid.UUID, reason string, until time.Time) error
 	FailFanoutJob(ctx context.Context, postID uuid.UUID, reason string) error
+	ExpireFanoutJob(ctx context.Context, postID uuid.UUID, reason string) error
+	RequeueFailedFanoutJobs(ctx context.Context, maxReplays int, cooldown, window time.Duration) (int64, error)
 	AlreadyDelivered(ctx context.Context, postID, userID uuid.UUID) (bool, error)
 	MarkDelivered(ctx context.Context, postID, userID uuid.UUID) (bool, error)
 	CleanupFanoutRecords(ctx context.Context, retention time.Duration) (int64, error)
@@ -99,6 +136,21 @@ type SubscriberFanout struct {
 	nameCacheAuthor uuid.UUID
 	nameCache       string
 	nameCacheAt     time.Time
+
+	// Upload policy flags (members-only, 18+); DefaultUploadPolicy until
+	// SetUploadPolicy is called.
+	policy    UploadPolicy
+	policySet bool
+
+	// now is the clock for backoff deadlines; tests pin it.
+	now func() time.Time
+}
+
+func (f *SubscriberFanout) clock() time.Time {
+	if f.now != nil {
+		return f.now()
+	}
+	return time.Now()
 }
 
 // NewSubscriberFanout wires the production dependencies. A nil pointer
@@ -195,6 +247,8 @@ func (f *SubscriberFanout) StartWorker(ctx context.Context) {
 		defer ticker.Stop()
 		cleanup := time.NewTicker(6 * time.Hour)
 		defer cleanup.Stop()
+		replay := time.NewTicker(fanoutReplayEvery)
+		defer replay.Stop()
 		for {
 			select {
 			case <-ctx.Done():
@@ -203,6 +257,8 @@ func (f *SubscriberFanout) StartWorker(ctx context.Context) {
 				if err := f.drainOnce(ctx); err != nil {
 					slog.Error("fanout: drain error", "error", err)
 				}
+			case <-replay.C:
+				f.replayFailed(ctx)
 			case <-cleanup.C:
 				if n, err := f.pg.CleanupFanoutRecords(ctx, 7*24*time.Hour); err != nil {
 					slog.Error("fanout: cleanup error", "error", err)
@@ -223,18 +279,64 @@ func (f *SubscriberFanout) drainOnce(ctx context.Context) error {
 		job := jobs[i]
 		if job.Attempts > fanoutMaxAttempts {
 			_ = f.pg.FailFanoutJob(ctx, job.PostID, "exceeded max attempts")
-			slog.Error("fanout: job failed permanently",
+			slog.Error("fanout: job failed; the hourly replay or a new trigger reopens it",
 				"post_id", job.PostID, "attempts", job.Attempts)
 			continue
 		}
-		if err := f.processJob(ctx, &job); err != nil {
-			_ = f.pg.ReleaseFanoutJob(ctx, job.PostID, err.Error())
-			slog.Warn("fanout: job released for retry", "post_id", job.PostID, "error", err)
-			continue
-		}
-		_ = f.pg.CompleteFanoutJob(ctx, job.PostID)
+		f.settle(ctx, &job, f.processJob(ctx, &job))
 	}
 	return nil
+}
+
+// settle records the outcome of one pass over a job.
+//
+//   - done: completed, never run again for this post.
+//   - skip (deleted, creator opted out, policy): completed without telling
+//     anyone.
+//   - wait (post not visible yet): deferred on the backoff curve without
+//     deciding anybody and without spending an attempt; expired after
+//     about 72 h, and even then a later trigger reopens it.
+//   - any other error: released with backoff; failed after the attempts run
+//     out, where the replay sweep and any new trigger can reopen it.
+func (f *SubscriberFanout) settle(ctx context.Context, job *postgres.FanoutJob, err error) {
+	if err == nil {
+		_ = f.pg.CompleteFanoutJob(ctx, job.PostID)
+		return
+	}
+	if s, ok := isSkip(err); ok {
+		slog.Info("fanout: upload job ends without notifying", "post_id", job.PostID, "reason", s.reason)
+		_ = f.pg.CompleteFanoutJob(ctx, job.PostID)
+		return
+	}
+	if w, ok := isWait(err); ok {
+		if job.Waits >= fanoutMaxWaits {
+			slog.Warn("fanout: post never became visible; job expired",
+				"post_id", job.PostID, "reason", w.reason, "waits", job.Waits)
+			_ = f.pg.ExpireFanoutJob(ctx, job.PostID, w.reason)
+			return
+		}
+		until := f.clock().Add(fanoutBackoff(job.Waits + 1))
+		slog.Info("fanout: post not visible yet; job deferred",
+			"post_id", job.PostID, "reason", w.reason, "until", until)
+		_ = f.pg.DeferFanoutJob(ctx, job.PostID, w.reason, until)
+		return
+	}
+	retryAt := f.clock().Add(fanoutBackoff(job.Attempts))
+	_ = f.pg.ReleaseFanoutJob(ctx, job.PostID, err.Error(), retryAt)
+	slog.Warn("fanout: job released for retry", "post_id", job.PostID, "retry_at", retryAt, "error", err)
+}
+
+// replayFailed is the automatic replay of upload jobs that failed on
+// errors. Safe to repeat: delivered recipients carry markers.
+func (f *SubscriberFanout) replayFailed(ctx context.Context) {
+	n, err := f.pg.RequeueFailedFanoutJobs(ctx, fanoutMaxReplays, fanoutReplayCooldown, fanoutReplayWindow)
+	if err != nil {
+		slog.Error("fanout: replay sweep failed", "error", err)
+		return
+	}
+	if n > 0 {
+		slog.Warn("fanout: failed upload jobs requeued", "count", n)
+	}
 }
 
 // processJob pages subscribers from the cursor to exhaustion, delivering
@@ -242,6 +344,27 @@ func (f *SubscriberFanout) drainOnce(ctx context.Context) error {
 // live" job walks three groups in order, each resumable from its own
 // cursor: reminder holders, subscribers, then the creator's followers.
 func (f *SubscriberFanout) processJob(ctx context.Context, job *postgres.FanoutJob) error {
+	// An upload job first asks whether its post can be announced at all,
+	// fresh on every pass: wait and skip end the pass before anyone is
+	// decided, so a post still processing is announced once it is ready
+	// rather than written off as deleted (lv-1).
+	if job.NotifType != LiveNotifType && f.elig != nil && f.elig.postURL != "" {
+		f.forgetPostState()
+		state, err := f.postStateFor(ctx, job)
+		if err != nil {
+			return err
+		}
+		switch state.gate {
+		case gateWait:
+			return &fanoutWaitError{reason: state.reason}
+		case gateSkip:
+			return &fanoutSkipError{reason: state.reason}
+		}
+		if job.Title == "" {
+			job.Title = state.title
+		}
+	}
+
 	// Render input missing from the event (older producer): one lookup
 	// for the whole job, never one per recipient.
 	if job.ChannelName == "" {

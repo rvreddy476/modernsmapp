@@ -275,6 +275,19 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		}
 		return c.enqueueSubscriberFanout(ctx, e)
 
+	case events.PostSearchEligibilityChanged:
+		// lv-1 / lv-17 / reels-30: the "post became visible" trigger. The
+		// review gate's ready flip, a visibility edit to public and an
+		// appeal or copyright clear all emit this; an upload whose
+		// PostCreated found it still processing is woken here, and one
+		// first published private or unlisted gets its job now. One job
+		// per post, so it never double-notifies (subscriber_fanout.go).
+		var e events.PostSearchEligibilityChangedPayload
+		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
+			return err
+		}
+		return c.enqueueOnVisible(ctx, e)
+
 	case events.PostReacted:
 		var e events.PostReactedPayload
 		if err := unmarshalPayload(envelope.Payload, &e); err != nil {
