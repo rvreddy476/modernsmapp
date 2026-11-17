@@ -14,6 +14,12 @@ name: Lint
 # itself fails nothing until someone decides to burn it down. The config is
 # .golangci.yml at the repo root (v2 schema).
 
+#
+# Pushes to codex/** and feat/** run it too (17 Nov, reels-9): release work
+# lands as direct pushes with no open PR, so the PR trigger alone left it
+# 177 commits stale. A push compares against the commit before the push,
+# so it fails only on lines that push changed.
+
 on:
   # Manual run from any branch (lead verifies harness changes without a PR).
   workflow_dispatch:
@@ -24,6 +30,20 @@ on:
       - 'chat-service/**'
       - '.github/workflows/lint.yml'
       - '.golangci.yml'
+  push:
+    branches:
+      - 'codex/**'
+      - 'feat/**'
+    paths:
+      - 'Architecture/**'
+      - 'identity-platform/**'
+      - 'chat-service/**'
+      - '.github/workflows/lint.yml'
+      - '.golangci.yml'
+
+concurrency:
+  group: lint-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   GOLANGCI_LINT_VERSION: v2.14.0
@@ -58,7 +78,18 @@ jobs:
           WS: ${{ matrix.workspace }}
           # A manual run has no PR base: compare against main.
           BASE_REF: ${{ github.base_ref || 'main' }}
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
         run: |
+          # A push compares against the commit before it (a new branch, or a
+          # force-push whose old head is gone, falls back to main).
+          BASE="origin/$BASE_REF"
+          if [ "$EVENT_NAME" = push ] && [ -n "$BEFORE" ] &&
+             [ "$BEFORE" != 0000000000000000000000000000000000000000 ] &&
+             git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            BASE="$BEFORE"
+          fi
+          echo "new issues since: $BASE"
           mapfile -t MODULES < <(cd "$WS" && go work edit -json | jq -r '.Use[].DiskPath' | sed 's#^\./##' | sort)
           failed=()
           for m in "${MODULES[@]}"; do
@@ -72,7 +103,7 @@ jobs:
             # Reported paths are relative to the root .golangci.yml (v2
             # relative-path-mode: cfg), i.e. repo-relative.
             if (cd "$WS/$m" && golangci-lint run --timeout=10m "${tags[@]}" \
-                  --new-from-rev="origin/$BASE_REF" ./...); then
+                  --new-from-rev="$BASE" ./...); then
               echo "PASS lint $WS/$m"
             else
               echo "FAIL lint $WS/$m"

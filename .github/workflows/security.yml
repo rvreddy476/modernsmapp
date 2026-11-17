@@ -4,12 +4,23 @@ on:
   # Manual run from any branch (lead verifies harness changes without a PR).
   workflow_dispatch:
   pull_request:
+  # codex/** too (17 Nov, reels-9): the scheduled run below always uses the
+  # copy of this file on main, which predates the per-module govulncheck and
+  # .gitleaksignore fixes on the release branch, so it has failed every week
+  # since 30 Aug and says nothing about the code being released. Pushes to
+  # the release branch scan its head with the fixed jobs.
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'codex/**'
   schedule:
     # Weekly Sunday 02:00 UTC — keeps govulncheck/Trivy current without
     # blocking every PR on slow scans.
     - cron: '0 2 * * 0'
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'push' && github.ref != 'refs/heads/main' }}
 
 jobs:
   gitleaks:

@@ -14,6 +14,12 @@ name: Go CI
 #
 # No databases here: suites that need one skip without their DSN and run in
 # integration-all.yml. govulncheck + gosec run weekly (security.yml).
+#
+# Triggers: until 17 Nov this ran on push to main and on PRs only, but the
+# release work lands as direct pushes to codex/** branches with no open PR,
+# so it last ran 177 commits back (reels-9). Pushes to codex/** and feat/**
+# now run it too, as integration-all.yml already does. The path lists of
+# push and pull_request must stay identical.
 
 on:
   # Manual run from any branch (lead verifies harness changes without a PR).
@@ -30,9 +36,35 @@ on:
       - 'infra/terraform/**'
       - 'scripts/verify/go.sh'
       - 'scripts/verify/lib.sh'
+      - 'scripts/ci/kafka-topics-check.sh'
+      - 'scripts/ci/kafka-topics/**'
+      - 'scripts/ci/go-test-skip-check.sh'
       - '.github/workflows/go-ci.yml'
   push:
-    branches: [main]
+    branches:
+      - main
+      - 'codex/**'
+      - 'feat/**'
+    paths:
+      - 'Architecture/**'
+      - 'identity-platform/**'
+      - 'chat-service/**'
+      - 'tools/prodsecrets/**'
+      - 'deploy/services/**'
+      - 'deploy/web/**'
+      - 'deploy/argocd/**'
+      - 'infra/terraform/**'
+      - 'scripts/verify/go.sh'
+      - 'scripts/verify/lib.sh'
+      - 'scripts/ci/kafka-topics-check.sh'
+      - 'scripts/ci/kafka-topics/**'
+      - 'scripts/ci/go-test-skip-check.sh'
+      - '.github/workflows/go-ci.yml'
+
+# A newer push to the same branch supersedes the running one.
+concurrency:
+  group: go-ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   workspace:
@@ -81,6 +113,59 @@ jobs:
           name: go-ci-logs-${{ strategy.job-index }}
           path: verify-logs/
           retention-days: 7
+
+  # Every Kafka topic the Go code names is in the MSK topic list
+  # (infra/terraform/modules/msk/topics-job/variables.tf). MSK has topic
+  # auto-create off, so a missing one does not exist in QA or prod (reels-3).
+  # Parses the code; no build, no broker.
+  kafka-topics:
+    name: Kafka topics provisioned
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Architecture/go.work
+          cache: false
+      - name: kafka-topics-check.sh
+        run: bash scripts/ci/kafka-topics-check.sh
+
+  # media-service's real-ffmpeg tests (HLS playable, no GPS in renditions,
+  # ffmpeg killed at its deadline, fingerprint harness) skip without ffmpeg
+  # on PATH, and go.sh runs without -v, so the shards above cannot show
+  # whether they ran (reels-12). Here ffmpeg is installed, the packages run
+  # with -v, and the job fails if any test skips for want of ffmpeg or if
+  # the named tests do not PASS. Uninstall ffmpeg and this job goes red.
+  media-ffmpeg:
+    name: media-service real ffmpeg
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: Architecture/go.work
+          cache-dependency-path: Architecture/**/go.sum
+      - name: Install ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends ffmpeg
+          ffmpeg -hide_banner -version | head -1
+          ffprobe -hide_banner -version | head -1
+      - name: go test -v (ffmpeg packages)
+        working-directory: Architecture/services/media-service
+        run: |
+          set -o pipefail
+          go test -count=1 -v -timeout 20m ./internal/processing/... ./internal/fingerprint/... 2>&1 | tee "$RUNNER_TEMP/ffmpeg-tests.log"
+      # TestTranscodePipelineTiming skips on purpose (MEDIA_PIPELINE_BENCH);
+      # its reason does not mention ffmpeg, so it does not trip this.
+      - name: No ffmpeg test skipped; the named ones passed
+        run: |
+          bash scripts/ci/go-test-skip-check.sh "$RUNNER_TEMP/ffmpeg-tests.log" 'ffmpeg|ffprobe' \
+            TestHLSRepackagedReelIsPlayable TestHLSRepackagedFromRenditionsIsPlayable \
+            TestRenditionCarriesNoLocation TestFFmpegIsKilledAtItsDeadline TestFFmpegFrameSampler_Real \
+            TestHarnessDeadlineStopsFFmpeg
 
   # The secrets seeder (tools/prodsecrets, stdlib only; --env prod|qa). Its
   # tests include the drift guards, per environment: every externalSecret
