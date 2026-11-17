@@ -23,7 +23,10 @@ variable "topics" {
 Every topic the services produce to or consume from. The 18 from
 Architecture/docker/init-topics.sh plus the ones the code uses without
 being in that script (aws-fixes contract, 3 Oct 2026). Adding a topic
-re-runs the Job; removing one does NOT delete it.
+re-runs the Job; removing one does NOT delete it. Every topic gets the same
+partitions, replication_factor and topic_configs below.
+scripts/ci/kafka-topics-check.sh (Go CI) fails when the code names a topic
+that is not here.
 EOT
   type        = list(string)
   default = [
@@ -37,6 +40,15 @@ EOT
     "call.analytics",
     "platform-events",
     "media.events",
+    # Long transcode requests the short consumer forwards (media-service
+    # cmd/worker/transcode_classes.go, intakeTopic + ".long"; prod runs
+    # MEDIA_TRANSCODE_CLASSES "short,long"). Same partitions as media.events,
+    # so long-class workers scale like the short ones (reels-3).
+    "media.events.long",
+    # Dead letters of the post-service entitlement consumer
+    # (internal/consumers/entitlement.go). Without it a dead-lettered
+    # monetization event is lost.
+    "monetization.events.dlq",
     "media.copyright.pairs",
     "atpost.channel.updates",
     "atpost.channel.notifications",
