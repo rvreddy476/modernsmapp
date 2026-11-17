@@ -13,6 +13,7 @@ import (
 	"github.com/atpost/analytics-service/internal/consumers"
 	httpHandler "github.com/atpost/analytics-service/internal/http"
 	"github.com/atpost/analytics-service/internal/personalization"
+	"github.com/atpost/analytics-service/internal/purge"
 	"github.com/atpost/analytics-service/internal/service"
 	pgstore "github.com/atpost/analytics-service/internal/store/postgres"
 	scyllaStore "github.com/atpost/analytics-service/internal/store/scylla"
@@ -227,6 +228,31 @@ func main() {
 			go followerConsumer.Start(workerCtx, strings.Split(kafkaBrokers, ","), kafkaTopic, kafkaDialer)
 			slog.Info("follower delta consumer started", "group", consumers.FollowerDeltaGroupID)
 		}
+
+		// Account erasure (reels-8): on user.purge_requested from
+		// auth-service, erase the user's watch sessions and viewer history
+		// (Scylla), raw events, receipts, sessions and per-user rows
+		// (PostgreSQL, postgres.PurgePlan) and signal keys (Redis), then
+		// ack as "analytics" onto platform.purge-acks.v1. auth-service
+		// does not complete a purge without that ack. This replaced the
+		// user.deletion_requested branch of the engagement consumer, an
+		// event auth-service no longer emits.
+		purgeAcks := purge.NewKafkaAckPublisher(strings.Split(kafkaBrokers, ","),
+			env("PURGE_ACKS_TOPIC", purge.DefaultAcksTopic), kafkaDialer)
+		defer purgeAcks.Close()
+		var watchEraser purge.WatchStore // untyped nil without Scylla
+		if watchStore != nil {
+			watchEraser = watchStore
+		}
+		lifecycle := purge.NewConsumer(strings.Split(kafkaBrokers, ","),
+			env("IDENTITY_KAFKA_TOPIC", "identity.events.v1"), "analytics-service-identity-group", kafkaDialer,
+			purge.NewHandler("analytics", purge.NewEraser(store, watchEraser, personalizationWarmer), purgeAcks, nil, slog.Default()),
+			slog.Default())
+		defer lifecycle.Close()
+		go lifecycle.Start(workerCtx)
+		slog.Info("account lifecycle consumer started", "ack_as", "analytics")
+	} else {
+		slog.Warn("KAFKA_BROKERS unset: account erasure is not consumed; auth-service purges will wait for the analytics ack")
 	}
 
 	// 11. (retired) The TrustFactor worker scanned sess:anomaly:* keys that

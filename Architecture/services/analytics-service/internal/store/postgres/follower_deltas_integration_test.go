@@ -171,7 +171,7 @@ func TestFollowerDeltaErasedWithTheAccount(t *testing.T) {
 	applyFollower(t, store, "erase-2", "UserFollowed", postgres.FollowerDelta{CreatorID: kept, Day: now, Follows: 1})
 
 	for i := 0; i < 2; i++ { // idempotent
-		if err := store.DeleteEventsByUser(ctx, gone.String()); err != nil {
+		if err := store.PurgeUser(ctx, gone); err != nil {
 			t.Fatal(err)
 		}
 	}

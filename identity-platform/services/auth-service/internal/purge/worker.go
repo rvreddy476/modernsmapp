@@ -39,9 +39,11 @@ type Store interface {
 // confirm erasure before auth anonymises the credential row. Names are the
 // ack `service` strings each consumer emits: the identity user-service acks
 // as "user", the Architecture user-service (wellbeing, pages, portfolio) as
-// "user-extras", the two live services as "live" and "live-v2". Leaving one
-// out means a purge can complete while that slice still holds data.
-const DefaultRequiredServices = "graph,post,feed,user,user-extras,profile,message,call,notification,media,search,live,live-v2,trust-safety,dating"
+// "user-extras", the two live services as "live" and "live-v2", and
+// analytics-service (raw events, watch sessions, history, signals) as
+// "analytics" (reels-8). Leaving one out means a purge can complete while
+// that slice still holds data.
+const DefaultRequiredServices = "graph,post,feed,user,user-extras,profile,message,call,notification,media,search,live,live-v2,trust-safety,dating,analytics"
 
 const (
 	// DefaultTickInterval — how often the worker scans for due accounts.

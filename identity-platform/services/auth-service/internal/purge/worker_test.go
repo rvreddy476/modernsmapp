@@ -268,3 +268,26 @@ func TestParseAck(t *testing.T) {
 		}
 	}
 }
+
+// reels-8: analytics-service holds viewing history, so a purge acked by
+// every other service but not analytics stays pending.
+func TestTick_AnalyticsAckIsRequired(t *testing.T) {
+	required := ParseRequiredServices("")
+	if !strings.Contains(","+strings.Join(required, ",")+",", ",analytics,") {
+		t.Fatalf("default required services %v do not include analytics", required)
+	}
+	f := newFakePurgeStore()
+	id := f.addDue(1)
+	for _, s := range required {
+		if s != "analytics" {
+			f.ack(id, s)
+		}
+	}
+	if rep := newTestWorker(f, "").Tick(context.Background()); len(rep.Purged) != 0 {
+		t.Fatalf("purged without the analytics ack: %v", rep.Purged)
+	}
+	f.ack(id, "analytics")
+	if rep := newTestWorker(f, "").Tick(context.Background()); len(rep.Purged) != 1 {
+		t.Fatalf("not purged once analytics acked: %+v", rep)
+	}
+}
