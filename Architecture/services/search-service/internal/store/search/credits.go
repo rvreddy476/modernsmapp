@@ -37,7 +37,7 @@ import (
 // postTextFields is the one multi_match field list for the post searches
 // (SearchPostsFiltered and BuildVideoSearchQuery), so the two can never
 // weigh a credited name differently. Title and caption keep their weights.
-var postTextFields = []string{"title^3", "text^2", "hashtags", "credit_names^2", "genres", "production_house"}
+var postTextFields = []string{"title^3", "text^2", "hashtags", "credit_names^2", "genres", "production_house", "tags"}
 
 // PostTextFields returns a copy of the post multi_match fields, for tests
 // and callers that build their own body.

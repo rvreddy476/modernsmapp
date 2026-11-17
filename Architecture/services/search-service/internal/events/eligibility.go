@@ -2,6 +2,7 @@ package events
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 
@@ -34,7 +35,11 @@ import (
 // below at this event's revision, so the ordinary revision barrier stops an
 // older un-gated event from resurrecting it, and a newer un-gated event
 // (gate cleared) indexes it again.
-func (c *Consumer) applySearchEligibility(ctx context.Context, p events.PostSearchEligibilityChangedPayload, membersOnly bool) error {
+//
+// raw is the event's payload as received, for the optional creator
+// metadata (tags, category, language, hashtag column) read by
+// applyContentFields; it is consulted only on the index path.
+func (c *Consumer) applySearchEligibility(ctx context.Context, p events.PostSearchEligibilityChangedPayload, membersOnly bool, raw json.RawMessage) error {
 	if p.PostID == "" {
 		return nil // malformed; nothing addressable
 	}
@@ -116,6 +121,9 @@ func (c *Consumer) applySearchEligibility(ctx context.Context, p events.PostSear
 	// Video credits (2026-10-23, credits.go): long videos only. The
 	// document is replaced whole, so these ride along like the title.
 	applyCreditFields(&doc, p.ContentType, p.PostCreditSearchFields)
+	// A metadata edit re-emits this event (post_content.go): the new tags,
+	// category, language and hashtag column replace the old ones here.
+	applyContentFields(&doc, raw)
 	if err := c.store.IndexPostUnlessAuthorErased(ctx, search.PostProjection{
 		PostID: p.PostID,
 		Rev:    p.SearchRev,

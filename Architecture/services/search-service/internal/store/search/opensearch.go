@@ -101,7 +101,10 @@ func (s *Store) initIndices() {
 				"credit_roles":    { "type": "text" },
 				"genres":          { "type": "keyword" },
 				"release_year":    { "type": "integer" },
-				"production_house": { "type": "text" }
+				"production_house": { "type": "text" },
+				"tags":            { "type": "text", "fields": { "keyword": { "type": "keyword", "ignore_above": 256 } } },
+				"category":        { "type": "keyword" },
+				"language":        { "type": "keyword" }
 			}
 		}
 	}`)
@@ -395,6 +398,15 @@ type PostDoc struct {
 	Genres          []string `json:"genres,omitempty"`
 	ReleaseYear     int      `json:"release_year,omitempty"`
 	ProductionHouse string   `json:"production_house,omitempty"`
+
+	// Creator metadata (2026-11-17, post_content.go): the post's own tags
+	// (matched by the post searches), its category and language (keyword,
+	// stored for filters). Written from the optional fields post-service
+	// puts on PostCreated / PostSearchEligibilityChanged, so a metadata
+	// edit re-projects them with the title and text.
+	Tags     []string `json:"tags,omitempty"`
+	Category string   `json:"category,omitempty"`
+	Language string   `json:"language,omitempty"`
 }
 
 // PostSearchKind is the page-scoped ?type= filter for post searches.
@@ -1954,7 +1966,7 @@ func buildFunctionScoreQuery(entity, q string, opts RankedSearchOptions) map[str
 				"query": q,
 				// Credited names, genres and production house since
 				// 2026-10-23 (credits.go); roles are not matched.
-				"fields": []string{"title^3", "text^3", "hashtags^2", "author_username", "credit_names^2", "genres", "production_house"},
+				"fields": []string{"title^3", "text^3", "hashtags^2", "author_username", "credit_names^2", "genres", "production_house", "tags"},
 			},
 		}
 		// Always exclude non-public and non-approved posts

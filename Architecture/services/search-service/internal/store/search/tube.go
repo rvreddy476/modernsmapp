@@ -86,6 +86,8 @@ func (s *Store) initTubeIndices(ctx context.Context) {
 	s.putVideoFilterMapping(ctx, IndexPosts)
 	// Video credits (2026-10-23, credits.go), additive like the line above.
 	s.putCreditsMapping(ctx, IndexPosts)
+	// Creator metadata (2026-11-17, post_content.go), additive likewise.
+	s.putPostContentMapping(ctx, IndexPosts)
 
 	s.createIndexIfNotExists(ctx, IndexTubeChannels, `{
 		"settings": `+settings+`,

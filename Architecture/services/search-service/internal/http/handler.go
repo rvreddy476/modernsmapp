@@ -543,33 +543,20 @@ func (h *Handler) SearchHashtags(c *gin.Context) {
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"hashtags": hashtags}, nil)
 }
 
-// GetTrending handles GET /v1/discover/trending
-// Reads from Redis sorted set `trending:hashtags:{YYYY-MM-DD}` and returns top 20.
+// GetTrending handles GET /v1/discover/trending: the top 20 hashtags over
+// public, approved posts of the last 24 hours (store/search/trending.go).
+//
+// It no longer reads post-service's Redis counter trending:hashtags:{date},
+// which counted private, pending, rejected and scheduled posts and was
+// never decremented on delete (reels-19 / V4-4). Same response shape:
+// {"trending":[{"hashtag","score"}]}, score now the number of posts.
 func (h *Handler) GetTrending(c *gin.Context) {
-	today := time.Now().UTC().Format("2006-01-02")
-	key := "trending:hashtags:" + today
-
-	// ZRevRangeWithScores returns top members by score descending
-	results, err := h.rdb.ZRevRangeWithScores(c.Request.Context(), key, 0, 19).Result()
+	items, err := h.store.TrendingHashtags(c.Request.Context(), 20)
 	if err != nil {
-		slog.Error("GetTrending Redis error", "error", err)
+		slog.Error("GetTrending error", "error", err)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "Failed to fetch trending hashtags", nil)
 		return
 	}
-
-	type TrendingItem struct {
-		Hashtag string  `json:"hashtag"`
-		Score   float64 `json:"score"`
-	}
-
-	items := make([]TrendingItem, 0, len(results))
-	for _, z := range results {
-		items = append(items, TrendingItem{
-			Hashtag: z.Member.(string),
-			Score:   z.Score,
-		})
-	}
-
 	api.JSON(c.Writer, http.StatusOK, map[string]interface{}{"trending": items}, nil)
 }
 

@@ -188,7 +188,7 @@ func (h *Handler) ReindexProducts(c *gin.Context) {
 		slog.Error("admin reindex/products failed", "err", err,
 			"fetched", res.Fetched, "indexed", res.Indexed)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway,
-			"REINDEX_FAILED", err.Error(), res)
+			"REINDEX_FAILED", "Product reindex failed", res)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, res, nil)
@@ -206,8 +206,9 @@ func (h *Handler) ProductsAlias(c *gin.Context) {
 	ctx := c.Request.Context()
 	target, err := h.store.ProductsAliasTarget(ctx)
 	if err != nil {
+		slog.Error("admin products alias read failed", "err", err)
 		api.ErrorWithContext(ctx, c.Writer, http.StatusInternalServerError,
-			"ALIAS_UNREADABLE", err.Error(), nil)
+			"ALIAS_UNREADABLE", "The products alias could not be read", nil)
 		return
 	}
 	v1, _ := h.store.CountIndexDocs(ctx, search.IndexProductsV1)
@@ -253,8 +254,9 @@ func (h *Handler) MoveProductsAlias(c *gin.Context) {
 		return
 	}
 	if err := h.store.MoveProductsAlias(c.Request.Context(), req.Index); err != nil {
+		slog.Error("admin products alias move failed", "index", req.Index, "err", err)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError,
-			"ALIAS_MOVE_FAILED", err.Error(), nil)
+			"ALIAS_MOVE_FAILED", "The products alias could not be moved", nil)
 		return
 	}
 	target, _ := h.store.ProductsAliasTarget(c.Request.Context())

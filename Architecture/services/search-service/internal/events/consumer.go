@@ -639,6 +639,8 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		}
 		// Video credits (2026-10-23, credits.go): long videos only.
 		applyCreditFields(&doc, p.ContentType, p.PostCreditSearchFields)
+		// Tags, category, language, hashtag column (post_content.go).
+		applyContentFields(&doc, envelope.Payload)
 		// Author: private from the identity settings; hidden is not known
 		// here, so a stored lifecycle hide is kept (projection.go).
 		return c.store.IndexPostUnlessAuthorErased(ctx, search.PostProjection{
@@ -679,7 +681,9 @@ func (c *Consumer) processMessage(ctx context.Context, m kafka.Message) error {
 		if err != nil {
 			return err
 		}
-		return c.applySearchEligibility(ctx, p, membersOnly)
+		// Also the carrier for metadata edits (post_content.go): the raw
+		// payload supplies the optional tags/category/language/hashtags.
+		return c.applySearchEligibility(ctx, p, membersOnly, envelope.Payload)
 
 	case events.ContentTakenDown:
 		// M2-P0-2: an explicit takedown must leave the index even if the

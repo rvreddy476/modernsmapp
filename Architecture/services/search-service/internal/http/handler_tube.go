@@ -235,7 +235,7 @@ func (h *Handler) ReindexTube(c *gin.Context) {
 		slog.Error("admin reindex/tube failed", "err", err,
 			"channels_indexed", res.ChannelsIndexed, "collections_indexed", res.CollectionsIndexed)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadGateway,
-			"REINDEX_FAILED", err.Error(), res)
+			"REINDEX_FAILED", "Tube reindex failed", res)
 		return
 	}
 	api.JSON(c.Writer, http.StatusOK, res, nil)
