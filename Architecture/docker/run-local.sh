@@ -20,7 +20,9 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 source "$SCRIPT_DIR/local.env"
 
 # ── Service registry: name → module dir + port ──
-declare -A SERVICE_DIR SERVICE_PORT SERVICE_DSN
+# SERVICE_CMD: the main package under the service dir when it is not
+# cmd/server (the media worker, the e2e stub).
+declare -A SERVICE_DIR SERVICE_PORT SERVICE_DSN SERVICE_CMD
 
 # Architecture services
 SERVICE_DIR[api-gateway]="Architecture/services/api-gateway"
@@ -40,6 +42,22 @@ SERVICE_PORT[feed-service]=8086
 
 SERVICE_DIR[media-service]="Architecture/services/media-service"
 SERVICE_PORT[media-service]=8087
+
+# The transcode worker (cmd/worker): consumes media.events (short class) and
+# media.events.long (long class), runs ffmpeg/ffprobe from PATH, and serves
+# only /metrics, on this port (METRICS_PORT). Both classes in one process.
+SERVICE_DIR[media-worker]="Architecture/services/media-service"
+SERVICE_CMD[media-worker]="cmd/worker"
+SERVICE_PORT[media-worker]=9191
+
+# E2E ONLY, never a real service: answers 404 to every media-access question
+# on the chat (8092), commerce (8109) and group (8090) ports, so the media
+# delivery gate can say a clean "no" without those stacks
+# (Architecture/tools/integration/cmd/e2e-deny-authority). Do not start it
+# beside the real chat-message-service, commerce-service or group-service.
+SERVICE_DIR[e2e-deny-authority]="Architecture/tools/integration"
+SERVICE_CMD[e2e-deny-authority]="cmd/e2e-deny-authority"
+SERVICE_PORT[e2e-deny-authority]=8092
 
 SERVICE_DIR[notification-service]="Architecture/services/notification-service"
 SERVICE_PORT[notification-service]=8088
@@ -134,6 +152,12 @@ SERVICE_PORT[chat-ws-gateway]=8093
 
 # ── Preset groups ──
 CORE_SERVICES="api-gateway identity-auth identity-profile user-service post-service feed-service media-service"
+# The e2e "video" tier (reels + long video, TestE2E_Video_*): upload,
+# transcode on both classes, review gate, reels and video feeds, channels,
+# playlists, watch progress, the subscriber fan-out. Needs ffmpeg on PATH and
+# the media.events + media.events.long topics. .github/workflows/e2e.yml
+# lists the same services in its "video" matrix entry.
+VIDEO_E2E_SERVICES="user-service feed-service identity-auth graph-service post-service identity-profile media-service media-worker trust-safety-service notification-service e2e-deny-authority api-gateway"
 
 # ── Commands ──
 if [[ "${1:-}" == "list" ]]; then
@@ -144,6 +168,7 @@ if [[ "${1:-}" == "list" ]]; then
     echo ""
     echo "Presets:"
     echo "  all-core  →  $CORE_SERVICES"
+    echo "  video-e2e →  $VIDEO_E2E_SERVICES"
     exit 0
 fi
 
@@ -159,6 +184,7 @@ SERVICES=()
 for arg in "$@"; do
     case "$arg" in
         all-core) SERVICES+=($CORE_SERVICES) ;;
+        video-e2e) SERVICES+=($VIDEO_E2E_SERVICES) ;;
         *)        SERVICES+=("$arg") ;;
     esac
 done
@@ -199,22 +225,23 @@ for svc in "${SERVICES[@]}"; do
     # For identity-platform/chat-service: module root is identity-platform/ or chat-service/, relative is services/xxx/cmd/server/main.go
     module_root=""
     cmd_path=""
+    main_pkg="${SERVICE_CMD[$svc]:-cmd/server}"
     case "$dir" in
         Architecture/*)
             module_root="$REPO_ROOT/Architecture"
-            cmd_path="./${dir#Architecture/}/cmd/server"
+            cmd_path="./${dir#Architecture/}/$main_pkg"
             ;;
         identity-platform/*)
             module_root="$REPO_ROOT/identity-platform"
-            cmd_path="./${dir#identity-platform/}/cmd/server"
+            cmd_path="./${dir#identity-platform/}/$main_pkg"
             ;;
         chat-service/*)
             module_root="$REPO_ROOT/chat-service"
-            cmd_path="./${dir#chat-service/}/cmd/server"
+            cmd_path="./${dir#chat-service/}/$main_pkg"
             ;;
         *)
             module_root="$full_dir"
-            cmd_path="./cmd/server"
+            cmd_path="./$main_pkg"
             ;;
     esac
 
@@ -236,6 +263,20 @@ for svc in "${SERVICES[@]}"; do
             ALLOWED_ORIGINS="$CORS_ORIGINS" \
             SCYLLA_KEYSPACE="chatservice" \
             KAFKA_TOPIC="chat.events.v1" \
+                go run "$cmd_path" 2>&1 | sed -u "s/^/[$svc] /") &
+            ;;
+        media-worker)
+            # Metrics only (no HTTP API). Both transcode classes unless the
+            # caller narrows MEDIA_TRANSCODE_CLASSES.
+            (cd "$module_root" && \
+            METRICS_PORT="$port" \
+            POSTGRES_DSN="$dsn" \
+            MEDIA_TRANSCODE_CLASSES="${MEDIA_TRANSCODE_CLASSES:-short,long}" \
+                go run "$cmd_path" 2>&1 | sed -u "s/^/[$svc] /") &
+            ;;
+        e2e-deny-authority)
+            (cd "$module_root" && \
+            E2E_DENY_PORTS="${E2E_DENY_PORTS:-8092,8109,8090}" \
                 go run "$cmd_path" 2>&1 | sed -u "s/^/[$svc] /") &
             ;;
         *)

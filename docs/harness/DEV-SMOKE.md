@@ -19,6 +19,7 @@ You need Node 20 or newer. The script has no dependencies and does not need jq.
 | `--only a,b` / `--skip a,b` | Run or skip groups (`health login me feed post follow video shop cleanup logout`) or single steps (`post.heart`). `login` is added automatically when a selected step needs a session. |
 | `--keep` | Skip cleanup. Prints a `KEEP <what> <id>` line for each item the run created. |
 | `--video <file>` | Clip to upload (default: `scripts/smoke/fixtures/smoke-2s-portrait.mp4`). |
+| `--long-video <file>` | Long-class `.mp4` (over 600 s) for the `longvideo` steps (default: generated with ffmpeg). |
 | `--follow-user <name>` | Account to follow (default `call_b`). |
 | `--video-timeout <s>` | How long to wait for the transcode (default 300). |
 
@@ -56,6 +57,11 @@ auth-service logs in by phone or email and cannot look up a username.
 | video.post | `POST /v1/posts` with `content_type: flick` and `visibility: private`. A clip of a few seconds is a Short, so the long-video guards (title, channel) do not apply. |
 | video.publish | `POST /v1/videos/:postId/publish`. It takes the **post** id, not the media id. |
 | video.play | `GET /v1/media/:id/url`, then the playback URL. Expects either the HLS master (`application/vnd.apple.mpegurl`, starting with `#EXTM3U`) or the original as `video/*`. |
+| longvideo.fixture | Refuses again unless the API host is localhost or dev-labelled with no prod/staging/live word. Uses `--long-video <file>` / `DEV_SMOKE_LONG_VIDEO`, else generates a 605 s 640x360 1 fps clip with `ffmpeg` (testsrc2, a few hundred KB) in the temp dir; `SKIP` when neither is available. |
+| longvideo.upload | `POST /v1/media/init`, `PUT <upload_url>`, `POST /v1/media/confirm` |
+| longvideo.ready | Polls status every 5 s, up to twice `--video-timeout`, until `ready` + `passed`; fails if `duration_ms` is under 600 000 (not long-class) |
+| longvideo.post | `POST /v1/posts` `content_type: long_video`, `visibility: private`, with a title |
+| longvideo.play | `GET /v1/media/:id/url` → `hls_url`, the master, the first child playlist, then its first segment (`video/*`) |
 | shop.home | `GET /v1/commerce/home` |
 | shop.pick | `GET /v1/commerce/cart`, `GET /v1/commerce/products?in_stock=true`, `GET /v1/commerce/products/:id`. Picks an active variant with stock, not already in the bag, from the bag's seller if the bag is not empty. |
 | shop.add | `POST /v1/commerce/cart/items` `{variant_id, quantity: 1}` |
@@ -104,6 +110,7 @@ created, and each action prints its own PASS or FAIL line:
    the posts go to "Recently deleted", and the purge worker removes them and their
    media later.
 4. `cleanup.media`: `DELETE /v1/media/:id`, only for an upload that never became a post.
+   `cleanup.longvideo-post` / `cleanup.longvideo-media` do the same for the long video.
 5. `cleanup.unfollow`: `POST /v1/graph/unfollow`, or `DELETE /v1/graph/follow-requests/:id`
    for a pending request. This runs only if this run created the follow.
 

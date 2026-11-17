@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import {
   hostIsDev, storageHostIsDev, checkTarget, parseEnv, redact, scrubPatterns, scrubSecrets, summarize,
   parseArgs, isSelected, mimeFor, isUuid, BODY_LIMIT, DEFAULT_API,
+  longVideoRefusal, longVideoFfmpegArgs, playlistUris, LONG_VIDEO_SECONDS, STEPS,
 } from './dev-smoke.mjs';
 
 const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'dev-smoke.mjs');
@@ -125,6 +126,34 @@ test('isSelected: groups, skip wins, login and cleanup follow the selection', ()
   assert.equal(isSelected('cleanup.post', ['post'], []), true);
   assert.equal(isSelected('video.ready', [], ['video']), false);
   assert.equal(isSelected('post.heart', ['post'], ['post.heart']), false);
+});
+
+test('long-video steps refuse every non-dev host on their own', () => {
+  assert.equal(longVideoRefusal(DEFAULT_API), null);
+  assert.equal(longVideoRefusal('http://localhost:8080'), null);
+  for (const o of ['https://api.cleestudio.com', 'https://api-prod.cleestudio.com', 'https://api.dev.live.example.com',
+    'https://staging-dev.example.com', 'not a url']) {
+    assert.notEqual(longVideoRefusal(o), null, o);
+  }
+});
+
+test('long-video clip is long-class and the steps are wired', () => {
+  assert.ok(LONG_VIDEO_SECONDS > 600);
+  const args = longVideoFfmpegArgs('out.mp4');
+  assert.equal(args.at(-1), 'out.mp4');
+  assert.ok(args.some((a) => a.includes(`duration=${LONG_VIDEO_SECONDS}`)));
+  assert.ok(args.some((a) => /size=640x360/.test(a)), 'landscape');
+  for (const s of ['longvideo.fixture', 'longvideo.upload', 'longvideo.ready', 'longvideo.post', 'longvideo.play',
+    'cleanup.longvideo-post', 'cleanup.longvideo-media']) {
+    assert.ok(STEPS.includes(s), s);
+  }
+  assert.equal(parseArgs(['--long-video', 'a.mp4']).longVideo, 'a.mp4');
+  assert.equal(isSelected('longvideo.play', [], ['longvideo']), false);
+  assert.equal(isSelected('login', ['longvideo'], []), true);
+});
+
+test('playlistUris keeps only URI lines', () => {
+  assert.deepEqual(playlistUris('#EXTM3U\r\n#EXT-X-STREAM-INF:BANDWIDTH=1\r\n/v1/media/x/hls/360p.m3u8\r\n\r\n'), ['/v1/media/x/hls/360p.m3u8']);
 });
 
 test('small helpers', () => {

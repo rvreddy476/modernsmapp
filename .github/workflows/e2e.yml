@@ -30,7 +30,7 @@ jobs:
   e2e:
     name: e2e (${{ matrix.domain }})
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: ${{ matrix.timeout || 30 }}
     strategy:
       fail-fast: false
       matrix:
@@ -117,6 +117,19 @@ jobs:
             services: "api-gateway live-service-v2"
             health: "http://localhost:8080 http://localhost:8117"
             run: "TestE2E_Live"
+          - domain: video
+            # Reels and long video (reels-10, reels-13, lv-10): upload,
+            # transcode on both classes (media-worker with ffmpeg), review
+            # gate, feeds, channels, playlists, progress, subscriber fan-out.
+            # e2e-deny-authority answers the chat/commerce/group media-access
+            # questions with a clean 404 (tools/integration/cmd).
+            services: "user-service feed-service identity-auth graph-service post-service identity-profile media-service media-worker trust-safety-service notification-service e2e-deny-authority api-gateway"
+            health: "http://localhost:8080 http://localhost:8081 http://localhost:8098 http://localhost:8082 http://localhost:8083 http://localhost:8084 http://localhost:8086 http://localhost:8087 http://localhost:8088 http://localhost:8091 http://localhost:9191 http://localhost:8092"
+            seed_users: true
+            seed_identity: true
+            ffmpeg: true
+            timeout: 50
+            run: "TestE2E_Video"
     steps:
       - uses: actions/checkout@v4
 
@@ -128,6 +141,12 @@ jobs:
           # each service from a cold cache.
           cache-dependency-path: Architecture/go.work.sum
 
+      - name: Install ffmpeg (video tier)
+        # The media worker runs ffmpeg/ffprobe from PATH, and the video
+        # flows generate their fixtures with it.
+        if: matrix.ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg && ffmpeg -version | head -1
+
       - name: Start infra (Postgres/Redis/Scylla/Redpanda/MinIO)
         # The override swaps the MinIO image only: minio/minio no longer
         # exists on Docker Hub (see the override file).
@@ -136,6 +155,17 @@ jobs:
           -f Architecture/docker/docker-compose.infra.yml
           -f .github/e2e/docker-compose.e2e.yml
           up -d --wait
+
+      - name: Create the media topics (video tier)
+        # The worker reads media.events (short) and media.events.long (long);
+        # do not rely on the one-shot redpanda-init container for them.
+        if: matrix.ffmpeg
+        run: |
+          set -e
+          dc() { docker compose -f Architecture/docker/docker-compose.infra.yml -f .github/e2e/docker-compose.e2e.yml "$@"; }
+          dc exec -T redpanda rpk topic create media.events media.events.long media.events.dlq -p 3 -r 1 || true
+          dc exec -T redpanda rpk topic describe media.events.long > /dev/null
+          dc exec -T redpanda rpk topic list
 
       - name: Start services
         env:
@@ -150,6 +180,15 @@ jobs:
           ENV: local
           # Empty except in the commerce job.
           SUPERADMIN_USER_IDS: ${{ matrix.superadmin }}
+          # media-service's delivery gate needs the chat authority's URL
+          # (the real chat-message-service in the chat job, the deny stub
+          # in the video job; both on 8092).
+          CHAT_MESSAGE_SERVICE_URL: http://localhost:8092
+          # Video tier: a low duration cap keeps the over-long fixture tiny,
+          # and a 1 min segment window lets the lv-2 check wait it out.
+          MEDIA_MAX_VIDEO_DURATION_SEC: "900"
+          MEDIA_HLS_SEGMENT_TTL: 1m
+          MEDIA_TRANSCODE_CLASSES: short,long
           # post-service asks trust-safety for the author's standing before
           # every publication and fails closed (503 STANDING_UNAVAILABLE)
           # without the signed-token key pair. This is the switch its own
@@ -208,7 +247,9 @@ jobs:
           rest=""
           for svc in ${{ matrix.services }}; do
             case "$svc" in
-              user-service|feed-service|analytics-service|identity-auth) tier1="$tier1 $svc" ;;
+              # media-service: post-service's chain points at media_assets,
+              # and the media worker reads its tables.
+              user-service|feed-service|analytics-service|identity-auth|media-service) tier1="$tier1 $svc" ;;
               # identity-user only alters tables identity-auth creates.
               graph-service|post-service|identity-user|identity-profile) tier2="$tier2 $svc" ;;
               *) rest="$rest $svc" ;;
@@ -224,6 +265,7 @@ jobs:
               identity-auth) echo 8081 ;;
               identity-user) echo 8097 ;;
               identity-profile) echo 8098 ;;
+              media-service) echo 8087 ;;
             esac
           }
           # The identity services have no root /healthz.
@@ -371,6 +413,12 @@ jobs:
           ATPOST_E2E_LIVE_PILOT_USER: 0e2e0000-0000-4000-8000-000000000001
           # The services this entry started, for TestSmokeHealthChecks.
           ATPOST_E2E_HEALTH_URLS: ${{ matrix.health }}
+          # Video flows: the worker's routing line, the caps set above, and
+          # the findings whose assertions may skip (dropped as fixes land).
+          ATPOST_E2E_SERVICE_LOG: ${{ github.workspace }}/services.log
+          ATPOST_E2E_MAX_VIDEO_SECONDS: "900"
+          ATPOST_E2E_HLS_SEGMENT_WINDOW: 1m
+          ATPOST_E2E_KNOWN_OPEN: lv-1,lv-2
           ATPOST_API_GATEWAY_URL: http://localhost:8080
           ATPOST_USER_URL: http://localhost:8082
           ATPOST_GRAPH_URL: http://localhost:8083
@@ -380,7 +428,7 @@ jobs:
           ATPOST_JWT_SECRET: local_dev_jwt_change_me
         run: |
           set -o pipefail
-          go test -tags integration -v -count=1 -run "${{ matrix.run }}" ./... | tee "$RUNNER_TEMP/e2e.out"
+          go test -tags integration -v -count=1 -timeout 45m -run "${{ matrix.run }}" ./... | tee "$RUNNER_TEMP/e2e.out"
           # go test exits 0 when every flow skipped, or when -run matched
           # nothing ("no tests to run"). Neither is a pass.
           if ! grep -q -- '^--- PASS' "$RUNNER_TEMP/e2e.out"; then

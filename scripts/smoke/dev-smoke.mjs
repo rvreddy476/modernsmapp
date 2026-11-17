@@ -2,7 +2,8 @@
 // Post-deploy dev smoke test. Dependency-free: Node 20+ built-ins only.
 //
 //   bash scripts/smoke/dev-smoke.sh [--api <url>] [--only a,b] [--skip a,b]
-//                                   [--keep] [--video <file>] [--follow-user <name>]
+//                                   [--keep] [--video <file>] [--long-video <file>]
+//                                   [--follow-user <name>]
 //
 // Output contract (same shape as scripts/verify):
 //   PASS <step> (<ms>ms) [note]
@@ -24,8 +25,10 @@
 //
 // Routes are documented in docs/harness/DEV-SMOKE.md.
 
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, statSync, unlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -175,8 +178,10 @@ export const STEPS = [
   'post.create', 'post.heart', 'post.comment', 'post.comment-read',
   'follow.resolve', 'follow.check', 'follow.follow', 'follow.verify',
   'video.init', 'video.upload', 'video.confirm', 'video.ready', 'video.post', 'video.publish', 'video.play',
+  'longvideo.fixture', 'longvideo.upload', 'longvideo.ready', 'longvideo.post', 'longvideo.play',
   'shop.home', 'shop.pick', 'shop.add', 'shop.quote',
-  'cleanup.bag', 'cleanup.comment', 'cleanup.post', 'cleanup.video-post', 'cleanup.media', 'cleanup.unfollow',
+  'cleanup.bag', 'cleanup.comment', 'cleanup.post', 'cleanup.video-post', 'cleanup.media',
+  'cleanup.longvideo-post', 'cleanup.longvideo-media', 'cleanup.unfollow',
   'logout',
 ];
 export const GROUPS = [...new Set(STEPS.map((s) => s.split('.')[0]))];
@@ -187,7 +192,7 @@ function splitList(v) {
 
 /** Parses argv into options. Throws Error with a usage message on bad input. */
 export function parseArgs(argv) {
-  const opts = { api: DEFAULT_API, only: [], skip: [], keep: false, video: null, followUser: DEFAULT_FOLLOW_USER, videoTimeoutSec: 300, help: false };
+  const opts = { api: DEFAULT_API, only: [], skip: [], keep: false, video: null, longVideo: null, followUser: DEFAULT_FOLLOW_USER, videoTimeoutSec: 300, help: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     const eq = a.indexOf('=');
@@ -204,6 +209,7 @@ export function parseArgs(argv) {
       case '--skip': opts.skip.push(...splitList(next())); break;
       case '--keep': opts.keep = true; break;
       case '--video': opts.video = next(); break;
+      case '--long-video': opts.longVideo = next(); break;
       case '--follow-user': opts.followUser = next(); break;
       case '--video-timeout': {
         const n = Number(next());
@@ -257,6 +263,43 @@ export function trendingNote(res, kind, onBad) {
   return `${items.length} items`;
 }
 
+// Long video: 605 s is just past the 10-minute shorts boundary, so the worker
+// routes it to media.events.long and post-service files it as long_video.
+export const LONG_VIDEO_SECONDS = 605;
+
+/**
+ * The long-video steps upload a 10-minute video, so they get their own guard
+ * on top of checkTarget: the API host must be localhost or carry a dev label,
+ * and must not carry a prod/staging/live word. Returns null when allowed, or
+ * the reason it is not.
+ */
+export function longVideoRefusal(origin) {
+  let host;
+  try {
+    host = new URL(origin).hostname;
+  } catch {
+    return 'not a URL';
+  }
+  if (NON_DEV_WORDS.test(host)) return `${host} carries a prod/staging/live label`;
+  if (!hostIsDev(host)) return `${host} is not a dev host`;
+  return null;
+}
+
+/** ffmpeg arguments for the generated long-class clip: 640x360 landscape at 1 fps, a few hundred KB. */
+export function longVideoFfmpegArgs(outFile, seconds = LONG_VIDEO_SECONDS) {
+  return [
+    '-hide_banner', '-loglevel', 'error', '-y',
+    '-f', 'lavfi', '-i', `testsrc2=size=640x360:rate=1:duration=${seconds}`,
+    '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '40', '-g', '30', '-pix_fmt', 'yuv420p',
+    '-movflags', '+faststart', outFile,
+  ];
+}
+
+/** The URI lines of an m3u8 body. */
+export function playlistUris(text) {
+  return String(text).split(/\r?\n/).map((l) => l.trim()).filter((l) => l !== '' && !l.startsWith('#'));
+}
+
 // ── Runner ───────────────────────────────────────────────────────────────
 
 class StepError extends Error {}
@@ -273,7 +316,7 @@ class Smoke {
     this.refreshToken = null;
     this.refreshed = false;
     this.me = null;
-    this.created = { post: null, comment: null, videoPost: null, media: null, follow: null, bagVariant: null };
+    this.created = { post: null, comment: null, videoPost: null, media: null, longPost: null, longMedia: null, follow: null, bagVariant: null };
     this.aborted = false;
     this.runId = new Date().toISOString().replace(/[-:.TZ]/g, '').slice(0, 14);
   }
@@ -702,6 +745,142 @@ class Smoke {
     });
   }
 
+  // The long-video journey: a generated 605 s landscape clip (or
+  // --long-video / DEV_SMOKE_LONG_VIDEO), uploaded, transcoded on the long
+  // class, posted as a PRIVATE long_video and played through every hop of
+  // HLS (master, child playlist, one segment). Never against prod: the run
+  // is already refused off a dev host, and these steps check again.
+  async longVideo() {
+    let file = null;
+    let generated = false;
+    let bytes = null;
+    await this.step('longvideo.fixture', ['login'], async () => {
+      const refusal = longVideoRefusal(this.origin);
+      if (refusal) fail(`refusing to upload a long video: ${refusal}`);
+      const pick = this.opts.longVideo || process.env.DEV_SMOKE_LONG_VIDEO;
+      if (pick) {
+        file = path.resolve(pick);
+        if (!existsSync(file) || !statSync(file).isFile()) fail(`--long-video ${pick} is not a file`);
+      } else {
+        file = path.join(os.tmpdir(), `dev-smoke-long-${this.runId}.mp4`);
+        const r = spawnSync('ffmpeg', longVideoFfmpegArgs(file), { encoding: 'utf8', timeout: 180000 });
+        if (r.error && r.error.code === 'ENOENT') return { skip: 'needs ffmpeg on PATH or --long-video <file>' };
+        if (r.status !== 0) fail(`ffmpeg could not generate the clip: ${String(r.stderr || r.error || '').trim().slice(0, 200)}`);
+        generated = true;
+      }
+      if (mimeFor(file) !== 'video/mp4') fail(`the long-video clip must be an .mp4: ${path.basename(file)}`);
+      bytes = readFileSync(file);
+      return `${path.basename(file)} ${bytes.length} bytes${generated ? ` (generated, ${LONG_VIDEO_SECONDS}s 640x360)` : ''}`;
+    });
+    try {
+      await this.step('longvideo.upload', ['longvideo.fixture'], async () => {
+        const r = await this.api('POST', '/v1/media/init', {
+          body: { file_type: 'video', mime_type: 'video/mp4', file_size_bytes: bytes.length, media_subtype: 'general', upload_purpose: 'composer' },
+        });
+        this.expect(r, [200, 201], 'POST /v1/media/init (long video)');
+        const d = r.data || {};
+        if (!isUuid(d.media_id) || typeof d.upload_url !== 'string') fail(`init returned no media_id/upload_url ${this.safe(r.text)}`);
+        this.created.longMedia = d.media_id;
+        let target;
+        try {
+          target = new URL(d.upload_url.replace(/\\u0026/g, '&'));
+        } catch {
+          fail('upload_url is not a URL');
+        }
+        if (!storageHostIsDev(target.hostname)) fail(`upload_url host ${target.hostname} is not a dev host; not uploading`);
+        let res;
+        try {
+          res = await fetch(target, { method: 'PUT', headers: { 'Content-Type': 'video/mp4' }, body: bytes, signal: AbortSignal.timeout(300000) });
+        } catch (err) {
+          fail(`PUT upload_url: network error: ${err && err.cause && err.cause.code ? err.cause.code : (err && err.name) || 'unknown'}`);
+        }
+        const text = await res.text();
+        if (res.status !== 200 && res.status !== 204) fail(`PUT upload_url (${target.hostname}): HTTP ${res.status} ${this.safe(text)}`);
+        const c = await this.api('POST', '/v1/media/confirm', { body: { media_id: this.created.longMedia } });
+        this.expect(c, [200, 201, 202], 'POST /v1/media/confirm (long video)');
+        return `media ${this.created.longMedia}`;
+      });
+    } finally {
+      if (generated && file) {
+        try { unlinkSync(file); } catch { /* temp file; the OS cleans it */ }
+      }
+    }
+    await this.step('longvideo.ready', ['longvideo.upload'], async () => {
+      // The long class has its own queue; give it the same budget twice over.
+      const timeout = this.opts.videoTimeoutSec * 2;
+      const deadline = Date.now() + timeout * 1000;
+      let last = '';
+      for (;;) {
+        if (this.aborted) fail('interrupted while waiting for the long transcode');
+        const r = this.expect(await this.api('GET', `/v1/media/${this.created.longMedia}/status`), [200], 'GET /v1/media/:id/status');
+        const d = r.data || {};
+        last = `processing_status=${d.processing_status} moderation_status=${d.moderation_status}`;
+        if (d.processing_status === 'ready' && d.moderation_status === 'passed') {
+          if (d.duration_ms && d.duration_ms < 600000) fail(`duration_ms=${d.duration_ms}: not a long-class video`);
+          return `${last}${d.duration_ms ? ` duration_ms=${d.duration_ms}` : ''}`;
+        }
+        if (['failed', 'rejected'].includes(d.processing_status) || d.moderation_status === 'rejected') fail(`stopped at ${last}`);
+        if (Date.now() > deadline) fail(`timed out after ${timeout}s at ${last} (long-class worker running?)`);
+        await new Promise((resolve) => setTimeout(resolve, 5000));
+      }
+    });
+    await this.step('longvideo.post', ['longvideo.ready'], async () => {
+      // Private ("only you"), with the title the long-video guard requires.
+      const r = await this.api('POST', '/v1/posts', {
+        headers: { 'Idempotency-Key': randomUUID() },
+        body: {
+          text: `dev-smoke long video ${this.runId}`,
+          title: `dev-smoke long ${this.runId}`,
+          visibility: 'private',
+          content_type: 'long_video',
+          media_ids: [this.created.longMedia],
+        },
+      });
+      this.expect(r, [201], 'POST /v1/posts (long_video)');
+      const id = r.data && r.data.id;
+      if (!isUuid(id)) fail(`no post id ${this.safe(r.text)}`);
+      if (r.data.content_type && r.data.content_type !== 'long_video') fail(`content_type=${r.data.content_type}, want long_video`);
+      this.created.longPost = id;
+      return `post ${id}`;
+    });
+    await this.step('longvideo.play', ['longvideo.post'], async () => {
+      const u = this.expect(await this.api('GET', `/v1/media/${this.created.longMedia}/url`), [200], 'GET /v1/media/:id/url (long video)');
+      const master = u.data && u.data.hls_url;
+      if (typeof master !== 'string' || !master.startsWith('/')) fail(`no HLS master for a ready long video ${this.safe(u.text)}`);
+      const m = await this.api('GET', master, { headers: { Accept: '*/*' } });
+      if (m.status !== 200 || !/mpegurl/i.test(m.headers.get('content-type') || '') || !m.text.startsWith('#EXTM3U')) {
+        fail(`GET master: HTTP ${m.status} content-type ${m.headers.get('content-type')}`);
+      }
+      const children = playlistUris(m.text);
+      if (children.length === 0) fail('the master playlist lists no variants');
+      const child = children[0];
+      if (!child.startsWith('/')) fail('the master lists a variant off the API origin');
+      const c = await this.api('GET', child, { headers: { Accept: '*/*' } });
+      if (c.status !== 200 || !c.text.startsWith('#EXTM3U')) fail(`GET child playlist: HTTP ${c.status}`);
+      const segs = playlistUris(c.text);
+      if (segs.length === 0) fail('the child playlist lists no segments');
+      let res;
+      if (segs[0].startsWith('/')) {
+        res = await this.api('GET', segs[0], { headers: { Accept: '*/*' } });
+      } else {
+        let target;
+        try {
+          target = new URL(segs[0]);
+        } catch {
+          fail('segment URI is not a URL');
+        }
+        if (!storageHostIsDev(target.hostname)) fail(`segment host ${target.hostname} is not a dev host; not fetching`);
+        const r = await fetch(target, { signal: AbortSignal.timeout(30000) });
+        await r.arrayBuffer().catch(() => undefined);
+        res = { status: r.status, headers: r.headers };
+      }
+      const ct = res.headers.get('content-type') || '';
+      if (res.status !== 200) fail(`GET segment: HTTP ${res.status}`);
+      if (!/^video\//i.test(ct)) fail(`GET segment: content-type ${ct || '<none>'} is not video`);
+      return `${children.length} rung(s), segment content-type=${ct}`;
+    });
+  }
+
   async shop() {
     let pick = null;
     await this.step('shop.home', ['login'], async () => {
@@ -795,6 +974,15 @@ class Smoke {
         this.expect(await this.api('DELETE', `/v1/media/${c.media}`), [200, 204], 'DELETE /v1/media/:id');
       });
     }
+    if (c.longPost) {
+      await this.step('cleanup.longvideo-post', [], async () => {
+        this.expect(await this.api('DELETE', `/v1/posts/${c.longPost}`), [200, 204], 'DELETE /v1/posts/:id (long video)');
+      });
+    } else if (c.longMedia) {
+      await this.step('cleanup.longvideo-media', [], async () => {
+        this.expect(await this.api('DELETE', `/v1/media/${c.longMedia}`), [200, 204], 'DELETE /v1/media/:id (long video)');
+      });
+    }
     if (c.follow) {
       await this.step('cleanup.unfollow', [], async () => {
         if (c.follow.status === 'requested') {
@@ -833,6 +1021,7 @@ class Smoke {
     await this.posts();
     await this.follow();
     await this.video();
+    await this.longVideo();
     await this.shop();
     await this.cleanup();
     await this.logout();
@@ -846,8 +1035,8 @@ class Smoke {
 }
 
 const USAGE = `usage: bash scripts/smoke/dev-smoke.sh [--api <url>] [--only <step,...>] [--skip <step,...>]
-                                      [--keep] [--video <file>] [--follow-user <username>]
-                                      [--video-timeout <seconds>]
+                                      [--keep] [--video <file>] [--long-video <file>]
+                                      [--follow-user <username>] [--video-timeout <seconds>]
 steps or groups: ${GROUPS.join(', ')}
 see docs/harness/DEV-SMOKE.md`;
 
