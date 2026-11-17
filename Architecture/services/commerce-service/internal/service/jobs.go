@@ -37,20 +37,25 @@ func (s *Service) EnqueueProcessReturnApproved(ctx context.Context, returnID uui
 	}
 }
 
-// FulfillPaidOrderJob is the idempotent handler the worker invokes. The
-// underlying IssueInvoice + CreateShipmentForOrder calls are safe to
-// retry (each guards by order state).
+// FulfillPaidOrderJob is the idempotent handler the worker invokes after
+// payment: it issues the invoice (IssueInvoice guards by order state, so a
+// retry is safe). Confirmation, stock commit and the buyer's notifications
+// happen in the paid transaction itself, not here.
+//
+// It does NOT book the courier (com-1). It used to, about a second after
+// payment, and then moved the order to `shipped` as "system": the buyer lost
+// the right to cancel, the seller's pack, cancel and own-courier steps all
+// stopped working, the buyer was told "shipped" before anything was packed,
+// and under the stub courier the order never reached `delivered`. A paid
+// order now stays `confirmed` until its seller ships it with POST
+// /seller/orders/:id/ship (CreateShipmentsForOrder as "seller"), which is the
+// only thing that books a courier and moves an order to `shipped`.
 func (s *Service) FulfillPaidOrderJob(ctx context.Context, orderID uuid.UUID) error {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	if s.blob != nil {
 		if _, err := s.IssueInvoice(ctx, orderID); err != nil {
 			return fmt.Errorf("issue invoice: %w", err)
-		}
-	}
-	if s.courier != nil {
-		if _, err := s.CreateShipmentForOrder(ctx, orderID); err != nil {
-			return fmt.Errorf("create shipment: %w", err)
 		}
 	}
 	return nil

@@ -342,8 +342,9 @@ func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID
 	// D6 matrix does not hold, with the error discarded: on a gated
 	// database the order silently stayed `confirmed` behind a booked
 	// shipment. It now runs as the actor who booked (the matrix admits
-	// packed -> shipped for a seller and, since migration 033, for the
-	// worker), and a refusal is an error the caller sees, because a
+	// packed -> shipped for a seller; migration 033's "system" rows are no
+	// longer used, since the worker stopped booking at payment, com-1), and
+	// a refusal is an error the caller sees, because a
 	// shipment whose order does not say shipped is the defect this fixes.
 	allMoving := true
 	for _, shipment := range out {
@@ -358,17 +359,6 @@ func (s *Service) CreateShipmentsForOrder(ctx context.Context, orderID uuid.UUID
 		return out, fmt.Errorf("mark order shipped: %w", err)
 	}
 	return out, nil
-}
-
-// CreateShipmentForOrder is the worker's single-shipment wrapper: it books
-// as "system" and returns the first shipment. Prefer CreateShipmentsForOrder
-// for callers that need to surface every shipment in a multi-seller order.
-func (s *Service) CreateShipmentForOrder(ctx context.Context, orderID uuid.UUID) (*postgres.Shipment, error) {
-	shipments, err := s.CreateShipmentsForOrder(ctx, orderID, ShipmentBooking{ActorType: "system"})
-	if err != nil {
-		return nil, err
-	}
-	return shipments[0], nil
 }
 
 // GetShipmentForOrder returns the latest shipment for an order plus its
