@@ -373,6 +373,23 @@ jobs:
             done
           done
 
+      - name: Wait for the media worker's consumers (video tier)
+        # :9191 answering only proves the metrics listener; the consumer
+        # loops start after it. Fail here, with the worker's own lines,
+        # rather than after 12 minutes of "processing".
+        if: matrix.ffmpeg
+        run: |
+          for i in $(seq 1 90); do
+            if grep -F '[media-worker]' services.log | grep -qF 'Media transcode worker started'; then
+              grep -F '[media-worker]' services.log | tail -n 40
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::media-worker never logged 'Media transcode worker started'"
+          grep -F '[media-worker]' services.log | tail -n 200 || true
+          exit 1
+
       - name: Seed E2E users
         if: matrix.seed_users
         run: |
@@ -437,12 +454,50 @@ jobs:
           fi
 
 
+      - name: Video tier diagnostics (on failure)
+        # Run 44083423118: no transcode finished and nothing in the dump
+        # below said why. The worker logs with log.Printf (plain text, no
+        # "level"), so the WARN/ERROR filter drops every one of its lines.
+        # Here: every [media-worker] line, media-service's relay/transcode
+        # lines, the outbox and asset rows, the consumer groups' offsets and
+        # the worker's counters. No secrets: the worker logs ids and states,
+        # and the rows below are ids, statuses and error strings.
+        if: failure() && matrix.ffmpeg
+        run: |
+          dc() { docker compose -f Architecture/docker/docker-compose.infra.yml -f .github/e2e/docker-compose.e2e.yml "$@"; }
+          psql_app() { dc exec -T postgres psql -U postgres -d app -P pager=off -c "$1" || true; }
+          echo "::group::[media-worker] lines (every level)"
+          grep -F '[media-worker]' services.log | tail -n 400 || true
+          echo "::endgroup::"
+          echo "::group::media-service outbox / transcode / kafka lines (every level)"
+          grep -F '[media-service]' services.log | grep -v '"msg":"http request"' | grep -iE 'outbox|transcode|kafka|producer|relay|probe' | tail -n 200 || true
+          echo "::endgroup::"
+          echo "::group::media_event_outbox"
+          psql_app "SELECT event_type, count(*) AS rows, count(published_at) AS published, max(attempts) AS max_attempts, max(last_error) AS last_error FROM media_event_outbox GROUP BY event_type;"
+          echo "::endgroup::"
+          echo "::group::video assets"
+          psql_app "SELECT id, processing_status, moderation_status, file_size_bytes, duration_ms, created_at, updated_at FROM media_assets WHERE file_type = 'video' ORDER BY created_at DESC LIMIT 30;"
+          psql_app "SELECT media_asset_id, target_quality, status, left(coalesce(error_message, ''), 200) AS error FROM transcoding_jobs ORDER BY created_at DESC LIMIT 40;"
+          echo "::endgroup::"
+          echo "::group::consumer groups and topic offsets"
+          for g in media-transcode-worker media-transcode-worker-long post-service-media-transcode; do
+            dc exec -T redpanda rpk group describe "$g" || true
+          done
+          dc exec -T redpanda rpk topic describe media.events media.events.long -p || true
+          echo "::endgroup::"
+          echo "::group::worker metrics"
+          curl -s --max-time 5 http://localhost:9191/metrics | grep -E '^media_' | head -n 80 || true
+          echo "::endgroup::"
+
       - name: Service warnings and errors (on failure)
         if: failure()
         run: |
           # The flows step does not print the service log, and a failing
           # flow is usually explained there. WARN and ERROR lines only: INFO
           # carries the development mail sender's verification codes.
+          # [media-worker] lines are plain log.Printf text with no level, so
+          # they are printed whole (the video tier's diagnostics step has
+          # more); the worker never logs a code or a token.
           if [ -f services.log ]; then
-            grep -E '"level":"(WARN|ERROR)"|"msg":"ERROR|exit status|panic' services.log | tail -n 300 || true
+            grep -E '"level":"(WARN|ERROR)"|"msg":"ERROR|exit status|panic|^\[media-worker\]' services.log | tail -n 400 || true
           fi

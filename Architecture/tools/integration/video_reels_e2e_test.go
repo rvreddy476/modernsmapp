@@ -235,9 +235,10 @@ func TestE2E_Video_Reels_DeleteDuringProcessing(t *testing.T) {
 //	oversized         init and resumable init 413 VIDEO_TOO_LARGE
 //	disguised         a PNG declared video/mp4, and an MP4 declared
 //	                  video/webm: confirm 409 UPLOAD_INTEGRITY_ERROR
-//	over-long         confirm accepts (length is unknown until probed); the
-//	                  worker refuses it: processing_status failed, a post
-//	                  refused with MEDIA_NOT_READY, no playlist
+//	over-long         413 VIDEO_TOO_LONG at init (declared duration_ms, on
+//	                  both init routes) and at confirm (probed length, when
+//	                  nothing was declared); no transcode is queued, a post
+//	                  is refused with MEDIA_NOT_READY, no playlist
 func TestE2E_Video_Reels_RefusedUploads(t *testing.T) {
 	SkipIfNotIntegration(t)
 	urls := LoadServiceURLs()
@@ -305,23 +306,38 @@ func TestE2E_Video_Reels_RefusedUploads(t *testing.T) {
 	})
 
 	t.Run("over-long", func(t *testing.T) {
-		// The worker's cap is MEDIA_MAX_VIDEO_DURATION_SEC (default 4 h);
-		// the e2e tier sets it low so this clip stays tiny. Tell the flow
-		// the same number.
+		// The cap is MEDIA_MAX_VIDEO_DURATION_SEC (default 4 h), read by
+		// media-service at init and confirm (media-service
+		// internal/http/upload_limit_errors.go) and by the worker. The e2e
+		// tier sets it low so this clip stays tiny; the flow is told the
+		// same number.
 		limit := envInt("ATPOST_E2E_MAX_VIDEO_SECONDS", 14400)
 		clip := overLongFixture(t, limit+30)
+		declared := int64(clip.Seconds) * 1000
+
+		// Declared at init: refused before a byte is sent, on both routes.
+		expectCode(t, a.MustDo(t, ctx, "POST", "/v1/media/init", map[string]any{
+			"file_type": "video", "mime_type": "video/mp4", "file_size_bytes": len(clip.Bytes), "duration_ms": declared,
+		}), http.StatusRequestEntityTooLarge, "VIDEO_TOO_LONG", "init declaring an over-long video")
+		expectCode(t, a.MustDo(t, ctx, "POST", "/v1/media/upload/resumable/init", map[string]any{
+			"file_type": "video", "mime_type": "video/mp4", "total_bytes": len(clip.Bytes), "duration_ms": declared,
+		}), http.StatusRequestEntityTooLarge, "VIDEO_TOO_LONG", "resumable init declaring an over-long video")
+
+		// Not declared: the bytes land, and confirm refuses on the probed
+		// length.
 		mediaID := mediaInitAndPut(t, ctx, a, "video", "video/mp4", clip.Bytes)
-		a.MustOK(t, ctx, "POST", "/v1/media/confirm", map[string]any{"media_id": mediaID})
-		var last mediaState
-		Eventually(t, 4*time.Minute, "worker refuses the over-long video", func() bool {
-			_, s, err := mediaStatusOf(ctx, a, mediaID)
-			last = s
-			if err == nil && s.ProcessingStatus == "ready" {
-				t.Fatalf("over-long video (%d s, cap %d s) was transcoded", clip.Seconds, limit)
+		expectCode(t, a.MustDo(t, ctx, "POST", "/v1/media/confirm", map[string]any{"media_id": mediaID}),
+			http.StatusRequestEntityTooLarge, "VIDEO_TOO_LONG", "confirm of an over-long video")
+
+		// No transcode is queued: the asset never reaches processing or
+		// ready, for as long as a worker would take to pick it up.
+		for i := 0; i < 5; i++ {
+			code, s, err := mediaStatusOf(ctx, a, mediaID)
+			if err == nil && code == http.StatusOK && (s.ProcessingStatus == "processing" || s.ProcessingStatus == "ready") {
+				t.Fatalf("over-long video refused at confirm is %s: a transcode was queued", s.ProcessingStatus)
 			}
-			return err == nil && (s.ProcessingStatus == "failed" || s.ProcessingStatus == "rejected")
-		})
-		t.Logf("over-long video ended processing_status=%s moderation_status=%s", last.ProcessingStatus, last.ModerationStatus)
+			time.Sleep(2 * time.Second)
+		}
 		env := a.WithHeader("Idempotency-Key", uuid.NewString()).MustDo(t, ctx, "POST", "/v1/posts", map[string]any{
 			"title": "E2E over-long", "visibility": "public", "content_type": "flick", "media_ids": []string{mediaID},
 		})
