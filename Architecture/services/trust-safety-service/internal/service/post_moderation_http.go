@@ -131,44 +131,15 @@ func (c *HTTPPostModerationClient) GetSubject(ctx context.Context, postID uuid.U
 // ErrPostDecisionConflict (the id was used with other claims). Anything
 // else is a transient failure the caller may retry with the same claims.
 func (c *HTTPPostModerationClient) OverturnAppeal(ctx context.Context, appeal *postgres.ContentAppeal, reviewerID uuid.UUID, contentRevision int64, reason string) error {
-	if c.tokens == nil {
-		return ErrPostModerationNotConfigured
-	}
-	tok, err := c.tokens.Mint("post", "appeal-overturn", []string{postModerationOp}, nil, time.Minute)
-	if err != nil {
-		return err
-	}
-	claims, capability, err := c.signer.Sign(moderationcap.Claims{
+	status, code, err := c.command(ctx, "appeal-overturn", moderationcap.Claims{
 		SubjectID: appeal.ContentID.String(), ContentRevision: contentRevision,
 		Decision: "approve", Reason: reason, DecisionID: appeal.ID.String(),
 		PolicyVersion: "appeal-v1", ActorID: reviewerID.String(),
 	})
-	if err != nil {
+	if err != nil || status/100 == 2 {
 		return err
 	}
-	body, err := json.Marshal(map[string]any{"claims": claims, "capability": capability})
-	if err != nil {
-		return err
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
-		c.baseURL+"/v1/posts/internal/moderation", bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Service-Authorization", "Bearer "+tok)
-	req.Header.Set("X-Internal-Service-Key", c.internalKey)
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil
-	}
-	code := errorCodeOf(resp.Body)
-	if resp.StatusCode == http.StatusConflict {
+	if status == http.StatusConflict {
 		switch code {
 		case "STALE_MODERATION_SUBJECT", "INVALID_TRANSITION", "SUPERSEDED":
 			return fmt.Errorf("%w (%s)", ErrPostDecisionSuperseded, code)
@@ -176,7 +147,80 @@ func (c *HTTPPostModerationClient) OverturnAppeal(ctx context.Context, appeal *p
 			return ErrPostDecisionConflict
 		}
 	}
-	return fmt.Errorf("post moderation command returned %d %s", resp.StatusCode, code)
+	return fmt.Errorf("post moderation command returned %d %s", status, code)
+}
+
+// reportPolicyVersion marks a decision as an upheld report to post-service
+// (its reportPolicyPrefix "report-"): recorded with source "report", and
+// only a reject is accepted from it.
+const reportPolicyVersion = "report-v1"
+
+// RejectReportedPost sends the reject an upheld report owes (reels-29):
+// decision id = the report id, so a replay is the same decision. The
+// refusals map for the takedown sender: STALE_MODERATION_SUBJECT is
+// ErrPostSubjectStale (read the revision again and retry);
+// INVALID_TRANSITION / SUPERSEDED are ErrPostDecisionSuperseded (nothing to
+// take down); DECISION_CONFLICT is ErrPostDecisionConflict and a 400 is
+// ErrPostDecisionRefused (both final). Anything else is transient.
+func (c *HTTPPostModerationClient) RejectReportedPost(ctx context.Context, reportID, postID, moderatorID uuid.UUID, contentRevision int64, reason string) error {
+	status, code, err := c.command(ctx, "report-takedown", moderationcap.Claims{
+		SubjectID: postID.String(), ContentRevision: contentRevision,
+		Decision: "reject", Reason: reason, DecisionID: reportID.String(),
+		PolicyVersion: reportPolicyVersion, ActorID: moderatorID.String(),
+	})
+	if err != nil || status/100 == 2 {
+		return err
+	}
+	switch {
+	case status == http.StatusConflict && code == "STALE_MODERATION_SUBJECT":
+		return fmt.Errorf("%w (%s)", ErrPostSubjectStale, code)
+	case status == http.StatusConflict && (code == "INVALID_TRANSITION" || code == "SUPERSEDED"):
+		return fmt.Errorf("%w (%s)", ErrPostDecisionSuperseded, code)
+	case status == http.StatusConflict && code == "DECISION_CONFLICT":
+		return ErrPostDecisionConflict
+	case status == http.StatusBadRequest:
+		return fmt.Errorf("%w (%s)", ErrPostDecisionRefused, code)
+	}
+	return fmt.Errorf("post moderation command returned %d %s", status, code)
+}
+
+// command signs claims, sends them with a post:moderation.write token
+// (purpose names the token's use) and returns post-service's status and
+// error code. err is a failure to send at all.
+func (c *HTTPPostModerationClient) command(ctx context.Context, purpose string, cl moderationcap.Claims) (int, string, error) {
+	if c.tokens == nil {
+		return 0, "", ErrPostModerationNotConfigured
+	}
+	tok, err := c.tokens.Mint("post", purpose, []string{postModerationOp}, nil, time.Minute)
+	if err != nil {
+		return 0, "", err
+	}
+	claims, capability, err := c.signer.Sign(cl)
+	if err != nil {
+		return 0, "", err
+	}
+	body, err := json.Marshal(map[string]any{"claims": claims, "capability": capability})
+	if err != nil {
+		return 0, "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost,
+		c.baseURL+"/v1/posts/internal/moderation", bytes.NewReader(body))
+	if err != nil {
+		return 0, "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Service-Authorization", "Bearer "+tok)
+	req.Header.Set("X-Internal-Service-Key", c.internalKey)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode/100 == 2 {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return resp.StatusCode, "", nil
+	}
+	return resp.StatusCode, errorCodeOf(resp.Body), nil
 }
 
 // errorCodeOf reads the error code from an api error envelope; "" when

@@ -23,7 +23,11 @@ var validSeverities = map[string]bool{
 // The appeal API (SubmitAppeal, ReviewAppeal, the sweeper) is in appeals.go.
 
 func (s *Service) SetExtrasStore(store *postgres.TrustExtrasStore)     { s.extras = store }
-func (s *Service) SetPostModerationClient(client PostModerationClient) { s.postModeration = client }
+func (s *Service) SetPostModerationClient(client PostModerationClient) {
+	s.postModeration = client
+	// The same client sends report takedowns when it can (report_takedown.go).
+	s.takedownSender, _ = client.(reportTakedownSender)
+}
 
 // Remaining extras are deliberately retained but are not routed through the
 // launch client. Their validation stays server-side.

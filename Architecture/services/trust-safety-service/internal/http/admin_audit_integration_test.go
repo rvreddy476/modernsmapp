@@ -73,6 +73,7 @@ func openTrustTestDB(t *testing.T) *pgxpool.Pool {
 		"migrations/018_copyright_report_reasons.sql",
 		"migrations/019_copyright_blocks.sql",
 		"migrations/020_copyright_block_overturn.sql",
+		"migrations/021_report_takedown.sql",
 	} {
 		raw, err := database.Migrations.ReadFile(name)
 		if err != nil {

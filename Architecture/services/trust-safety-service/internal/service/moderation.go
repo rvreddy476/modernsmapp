@@ -130,6 +130,10 @@ type Service struct {
 	extras         *postgres.TrustExtrasStore
 	kafkaWriter    *kafka.Writer
 	postModeration PostModerationClient
+	// takedownSender sends an upheld post report's reject; takedowns is its
+	// queue, nil meaning store (report_takedown.go).
+	takedownSender reportTakedownSender
+	takedowns      reportTakedownStore
 	// overturnGrace overrides DefaultOverturnReplayGrace when set (appeals.go).
 	overturnGrace *time.Duration
 	// copyright owns the case shell and restriction commands (copyright.go);
@@ -336,6 +340,15 @@ func (s *Service) UpdateReport(ctx context.Context, meta postgres.AuditMeta, rep
 			return nil, fmt.Errorf("report not found: %w", err)
 		}
 		return nil, err
+	}
+	// An upheld post report's takedown was queued with the resolution; the
+	// first attempt is made now, and the report re-read so the response
+	// shows how it went (report_takedown.go).
+	if report.TakedownStatus == postgres.TakedownPending {
+		s.attemptReportTakedown(ctx, report.ID)
+		if fresh, err := s.store.GetReport(ctx, report.ID); err == nil {
+			report = fresh
+		}
 	}
 	actorID := meta.Actor.Service
 	if meta.Actor.UserID != uuid.Nil {

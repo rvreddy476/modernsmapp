@@ -143,6 +143,10 @@ func main() {
 	// with the same decision id and claims once it is older than the grace
 	// period (so it never races the request that started it).
 	go svc.RunOverturnSweeper(ctx, time.Minute, service.DefaultOverturnReplayGrace)
+	// reels-29: an upheld post report's takedown (the report-v1 reject) is
+	// queued on the report with its resolution; this retries the ones whose
+	// first attempt did not reach post-service, with the same decision id.
+	go svc.RunReportTakedownSweeper(ctx, service.ReportTakedownSweepInterval)
 	handler := http.New(svc)
 	// Admin console (Wave 1 — B4): admin-service calls the token-only family
 	// under http.InternalAdminPrefix with a per-call signed token. The same

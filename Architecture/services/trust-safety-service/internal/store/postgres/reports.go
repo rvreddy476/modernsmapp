@@ -39,6 +39,22 @@ type Report struct {
 	// SourceEventID is the idempotency key of an event-driven or
 	// service-filed report. Internal only.
 	SourceEventID string `json:"-"`
+	// Takedown is the post takedown an upheld post report owes post-service
+	// (migration 021, report_takedown.go): pending, sent, superseded, failed
+	// or cancelled, with the attempts made and the last error while it is
+	// retried. Empty when nothing is owed. Moderator views only.
+	TakedownStatus    string     `json:"takedown_status,omitempty"`
+	TakedownAttempts  int        `json:"takedown_attempts,omitempty"`
+	TakedownLastError string     `json:"takedown_last_error,omitempty"`
+	TakedownDoneAt    *time.Time `json:"takedown_done_at,omitempty"`
+}
+
+// reportTakedownColumns are the takedown columns the moderator reads add.
+const reportTakedownColumns = `, COALESCE(takedown_status, ''), takedown_attempts, COALESCE(takedown_last_error, ''), takedown_done_at`
+
+// takedownDest are the scan targets for reportTakedownColumns.
+func (r *Report) takedownDest() []any {
+	return []any{&r.TakedownStatus, &r.TakedownAttempts, &r.TakedownLastError, &r.TakedownDoneAt}
 }
 
 // ErrDuplicateSourceEvent: a report was already filed for this source event
@@ -119,7 +135,7 @@ func (s *ReportStore) CheckDuplicate(ctx context.Context, reporterID, entityID u
 func (s *ReportStore) GetReports(ctx context.Context, limit int, offset int) ([]Report, error) {
 	query := `
 		SELECT id, reporter_id, entity_type, entity_id, COALESCE(entity_key, ''), reason, details, status,
-		       assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at, evidence::text
+		       assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at, evidence::text` + reportTakedownColumns + `
 		FROM trust.reports
 		ORDER BY
 			CASE reason
@@ -141,10 +157,10 @@ func (s *ReportStore) GetReports(ctx context.Context, limit int, offset int) ([]
 	var reports []Report
 	for rows.Next() {
 		var r Report
-		if err := rows.Scan(
+		if err := rows.Scan(append([]any{
 			&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.EntityKey, &r.Reason, &r.Details, &r.Status,
 			&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt, evidenceScan{&r.Evidence},
-		); err != nil {
+		}, r.takedownDest()...)...); err != nil {
 			return nil, err
 		}
 		reports = append(reports, r)
@@ -186,14 +202,14 @@ func (s *ReportStore) GetReportsByReporter(ctx context.Context, reporterID uuid.
 func (s *ReportStore) GetReport(ctx context.Context, reportID uuid.UUID) (*Report, error) {
 	query := `
         SELECT id, reporter_id, entity_type, entity_id, COALESCE(entity_key, ''), reason, details, status,
-               assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at, evidence::text
+               assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at, evidence::text` + reportTakedownColumns + `
         FROM trust.reports WHERE id = $1
     `
 	var r Report
-	err := s.db.QueryRow(ctx, query, reportID).Scan(
+	err := s.db.QueryRow(ctx, query, reportID).Scan(append([]any{
 		&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.EntityKey, &r.Reason, &r.Details, &r.Status,
 		&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt, evidenceScan{&r.Evidence},
-	)
+	}, r.takedownDest()...)...)
 	if err != nil {
 		return nil, err
 	}
@@ -209,16 +225,23 @@ func (s *ReportStore) UpdateReport(ctx context.Context, reportID uuid.UUID, allo
 	}
 	var r Report
 	err := withTx(ctx, s.db.Begin, func(tx pgx.Tx) error {
-		var prevStatus, prevNotes string
+		var prevStatus, prevNotes, entityType, category, prevTakedown string
 		var prevAssignee *uuid.UUID
 		if err := tx.QueryRow(ctx, `
-			SELECT status, assigned_to, COALESCE(resolution_notes, '')
+			SELECT status, assigned_to, COALESCE(resolution_notes, ''), entity_type, reason, COALESCE(takedown_status, '')
 			FROM trust.reports WHERE id = $1 FOR UPDATE
-		`, reportID).Scan(&prevStatus, &prevAssignee, &prevNotes); err != nil {
+		`, reportID).Scan(&prevStatus, &prevAssignee, &prevNotes, &entityType, &category, &prevTakedown); err != nil {
 			return err
 		}
 		if allow != nil && !allow(prevStatus) {
 			return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, prevStatus, status)
+		}
+		// An upheld post report owes post-service its takedown: recorded
+		// here, in the resolution's transaction (report_takedown.go).
+		if err := applyTakedownTransitionTx(ctx, tx, reportID,
+			TakedownOnTransition(entityType, status, prevTakedown),
+			meta.Actor.UserID, ReportTakedownReason(resolutionNotes, category)); err != nil {
+			return err
 		}
 		if err := tx.QueryRow(ctx, `
 			UPDATE trust.reports
@@ -229,11 +252,11 @@ func (s *ReportStore) UpdateReport(ctx context.Context, reportID uuid.UUID, allo
 			    updated_at = NOW()
 			WHERE id = $1
 			RETURNING id, reporter_id, entity_type, entity_id, COALESCE(entity_key, ''), reason, details, status,
-			          assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at, evidence::text
-		`, reportID, status, assignedTo, resolutionNotes).Scan(
+			          assigned_to, resolved_at, COALESCE(resolution_notes,''), created_at, updated_at, evidence::text`+reportTakedownColumns+`
+		`, reportID, status, assignedTo, resolutionNotes).Scan(append([]any{
 			&r.ID, &r.ReporterID, &r.EntityType, &r.EntityID, &r.EntityKey, &r.Reason, &r.Details, &r.Status,
 			&r.AssignedTo, &r.ResolvedAt, &r.ResolutionNotes, &r.CreatedAt, &r.UpdatedAt, evidenceScan{&r.Evidence},
-		); err != nil {
+		}, r.takedownDest()...)...); err != nil {
 			return err
 		}
 		return insertAudit(ctx, tx, meta, auditChange{
