@@ -1,0 +1,22 @@
+-- Migration 022: a "post became visible" trigger that lands while its upload
+-- fan-out job is RUNNING is remembered instead of dropped (re-audit REG-5).
+--
+-- Before: the enqueue upsert woke only a failed job or a pending one not yet
+-- due. A worker that had claimed the job, read the post as still processing
+-- and was about to defer it never heard of the trigger, so the announcement
+-- waited for the next backoff tick (up to 30 min).
+--
+-- wake_requested  set by the trigger on a running upload job, and only
+--                 there. Every way a pass ends except completion
+--                 (defer, release, fail, expire) honours it by leaving the
+--                 job pending and due NOW, exactly as the trigger would have
+--                 left it had it arrived a moment later. A claim clears it
+--                 (the new pass reads the post fresh); completion clears it
+--                 (a completed job is never reopened). The per-(post, user)
+--                 delivery markers still make a re-run tell nobody twice.
+--
+-- Rollback: the column has a default and the previous binary names it
+-- nowhere, so it keeps working and simply ignores the flag (today's
+-- behaviour: the trigger is lost and the backoff tick announces it).
+-- Dropping the column is safe once no binary of this version runs.
+ALTER TABLE subscriber_fanout_jobs ADD COLUMN IF NOT EXISTS wake_requested BOOLEAN NOT NULL DEFAULT false;

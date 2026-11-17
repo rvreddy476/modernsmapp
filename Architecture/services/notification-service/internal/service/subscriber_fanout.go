@@ -224,15 +224,21 @@ func (f *SubscriberFanout) Enqueue(ctx context.Context, p EnqueueParams) error {
 // ResolveChannel returns the author's canonical channel id, or uuid.Nil
 // when they have none (⇒ no subscriber fan-out, no fallback).
 func (f *SubscriberFanout) ResolveChannel(ctx context.Context, authorID uuid.UUID) uuid.UUID {
-	if f == nil || f.subs == nil {
-		return uuid.Nil
-	}
-	channelID, err := f.subs.ChannelByOwner(ctx, authorID)
+	channelID, err := f.LookupChannel(ctx, authorID)
 	if err != nil {
 		slog.Warn("fanout: channel lookup failed", "author_id", authorID, "error", err)
 		return uuid.Nil
 	}
 	return channelID
+}
+
+// LookupChannel is ResolveChannel that reports a failed lookup instead of
+// folding it into "no channel".
+func (f *SubscriberFanout) LookupChannel(ctx context.Context, authorID uuid.UUID) (uuid.UUID, error) {
+	if f == nil || f.subs == nil {
+		return uuid.Nil, nil
+	}
+	return f.subs.ChannelByOwner(ctx, authorID)
 }
 
 // StartWorker runs the claim/drain loop until ctx is cancelled. Safe to
@@ -390,6 +396,17 @@ func (f *SubscriberFanout) processJob(ctx context.Context, job *postgres.FanoutJ
 	// one. A live job already in its follower phase has finished them.
 	// No channel ⇒ no subscribers to walk.
 	live := job.NotifType == LiveNotifType
+	if !live && job.ChannelID == uuid.Nil {
+		// An upload job enqueued without its channel: the "post became
+		// visible" trigger could not look it up. Resolved here, where a
+		// failure is retried with backoff rather than losing the job;
+		// a clean "no channel" ends it below with nobody to tell.
+		channelID, err := f.subs.ChannelByOwner(ctx, job.AuthorID)
+		if err != nil {
+			return fmt.Errorf("channel lookup: %w", err)
+		}
+		job.ChannelID = channelID
+	}
 	if !live || job.Phase != postgres.FanoutPhaseFollowers {
 		if job.ChannelID != uuid.Nil {
 			if err := f.drainSubscribers(ctx, job); err != nil {

@@ -171,3 +171,139 @@ func TestFanoutJobsIntegration_LiveJobNeverReopened(t *testing.T) {
 		t.Fatalf("live job reopened: %s", st)
 	}
 }
+
+// REG-5 (migration 022): a "post became visible" trigger that lands while
+// the job is RUNNING (claimed, post read as not visible, defer not yet
+// written) is remembered, so the pass leaves the job due now instead of on
+// the backoff curve. The running pass is not disturbed, a completed job is
+// never reopened, and a live job is never marked.
+func TestFanoutJobsIntegration_TriggerDuringRunningPassIsKept(t *testing.T) {
+	pool := notificationTestPool(t)
+	store := New(pool)
+	ctx := context.Background()
+	far := time.Now().Add(time.Hour)
+
+	newJob := func(t *testing.T) *FanoutJob {
+		t.Helper()
+		post := uuid.New()
+		t.Cleanup(func() {
+			_, _ = pool.Exec(context.Background(), `DELETE FROM subscriber_fanout_jobs WHERE post_id = $1`, post)
+		})
+		return &FanoutJob{
+			PostID: post, ChannelID: uuid.New(), AuthorID: uuid.New(),
+			ContentType: "long_video", DeepLink: "/tube/watch/" + post.String(),
+			NotifType: "creator_uploaded_video", Visibility: "public",
+			PostCreatedAt: time.Now().UTC(),
+		}
+	}
+	wake := func(t *testing.T, post uuid.UUID) bool {
+		t.Helper()
+		var w bool
+		if err := pool.QueryRow(context.Background(),
+			`SELECT wake_requested FROM subscriber_fanout_jobs WHERE post_id = $1`, post).Scan(&w); err != nil {
+			t.Fatalf("read wake: %v", err)
+		}
+		return w
+	}
+	// startPass enqueues, claims, and fires the trigger mid-pass.
+	startPass := func(t *testing.T, triggered bool) *FanoutJob {
+		t.Helper()
+		job := newJob(t)
+		if err := store.EnqueueFanoutJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		if !claimable(t, store, job.PostID) {
+			t.Fatal("fresh job not claimable")
+		}
+		if triggered {
+			if err := store.EnqueueFanoutJob(ctx, job); err != nil {
+				t.Fatal(err)
+			}
+			if st, _, _, _ := jobStatus(t, store, job.PostID); st != "running" {
+				t.Fatalf("the trigger disturbed the running pass: %s", st)
+			}
+			if !wake(t, job.PostID) {
+				t.Fatal("the trigger on a running job was dropped")
+			}
+		}
+		return job
+	}
+
+	ends := map[string]func(post uuid.UUID) error{
+		"defer":   func(p uuid.UUID) error { return store.DeferFanoutJob(ctx, p, "processing", far) },
+		"release": func(p uuid.UUID) error { return store.ReleaseFanoutJob(ctx, p, "post-service 502", far) },
+		"fail":    func(p uuid.UUID) error { return store.FailFanoutJob(ctx, p, "exceeded max attempts") },
+		"expire":  func(p uuid.UUID) error { return store.ExpireFanoutJob(ctx, p, "processing") },
+	}
+	for name, end := range ends {
+		t.Run(name+" after trigger is due now", func(t *testing.T) {
+			job := startPass(t, true)
+			if err := end(job.PostID); err != nil {
+				t.Fatal(err)
+			}
+			if st, reason, waits, attempts := jobStatus(t, store, job.PostID); st != "pending" || reason != "" || waits != 0 || attempts != 0 {
+				t.Fatalf("after %s: %s %q waits=%d attempts=%d", name, st, reason, waits, attempts)
+			}
+			if wake(t, job.PostID) {
+				t.Fatal("wake flag survived the pass")
+			}
+			if !claimable(t, store, job.PostID) {
+				t.Fatalf("a trigger during the pass left the job parked after %s", name)
+			}
+		})
+		t.Run(name+" without trigger keeps its schedule", func(t *testing.T) {
+			job := startPass(t, false)
+			if err := end(job.PostID); err != nil {
+				t.Fatal(err)
+			}
+			if claimable(t, store, job.PostID) {
+				t.Fatalf("an untriggered %s made the job due at once", name)
+			}
+		})
+	}
+
+	t.Run("a pass that completes is final", func(t *testing.T) {
+		job := startPass(t, true)
+		if err := store.CompleteFanoutJob(ctx, job.PostID); err != nil {
+			t.Fatal(err)
+		}
+		if err := store.EnqueueFanoutJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		if st, _, _, _ := jobStatus(t, store, job.PostID); st != "completed" || wake(t, job.PostID) {
+			t.Fatalf("completed job touched: %s wake=%v", st, wake(t, job.PostID))
+		}
+	})
+
+	t.Run("a new claim starts clean", func(t *testing.T) {
+		job := startPass(t, true)
+		// The worker died mid-pass: the stale claim is reclaimed and reads
+		// the post afresh, so the flag it carried is spent.
+		if _, err := pool.Exec(ctx, `UPDATE subscriber_fanout_jobs SET claimed_at = NOW() - INTERVAL '2 hours' WHERE post_id = $1`, job.PostID); err != nil {
+			t.Fatal(err)
+		}
+		if !claimable(t, store, job.PostID) {
+			t.Fatal("stale running job not reclaimed")
+		}
+		if wake(t, job.PostID) {
+			t.Fatal("a fresh claim kept the previous pass's wake")
+		}
+	})
+
+	t.Run("a running live job is never marked", func(t *testing.T) {
+		job := newJob(t)
+		job.NotifType, job.ContentType, job.Phase = "creator_went_live", "live", FanoutPhaseReminders
+		if err := store.EnqueueFanoutJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		if !claimable(t, store, job.PostID) {
+			t.Fatal("live job not claimable")
+		}
+		if err := store.EnqueueFanoutJob(ctx, job); err != nil {
+			t.Fatal(err)
+		}
+		if wake(t, job.PostID) {
+			t.Fatal("a redelivered live.stream.started marked the running live job")
+		}
+	})
+}

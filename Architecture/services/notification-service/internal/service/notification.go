@@ -53,6 +53,9 @@ type Service struct {
 	// copyrightInAppSeam replaces the copyright notice's in-app delivery
 	// (tests only; nil in production).
 	copyrightInAppSeam func(ctx context.Context, n CopyrightReviewNotification) error
+	// suppressionSeam replaces the account-suppression lookup for the
+	// fan-out delivery path (tests only; nil in production).
+	suppressionSeam func(ctx context.Context, userID uuid.UUID) (bool, error)
 }
 
 func New(scyllaStore *scylla.NotificationStore, rdb *redis.Client) *Service {
@@ -261,8 +264,17 @@ func renderUpload(n UploadNotification) RenderOverride {
 // channel collapse key instead of the generic per-type text. Entity stays
 // post/{postID} so inbox rows, deletes on post removal and client deep
 // links are unchanged.
+//
+// A suppression lookup that FAILS is returned as an error here, unlike
+// recipientSuppressed's drop: the fan-out writes a terminal marker for
+// every nil return, so a dropped recipient would never hear of the upload
+// at all. The error holds the recipient and the job retries with backoff.
 func (s *Service) CreateUploadNotification(ctx context.Context, n UploadNotification) error {
-	if s.recipientSuppressed(ctx, n.RecipientID, n.NotifType) {
+	suppressed, err := s.uploadRecipientSuppressed(ctx, n.RecipientID)
+	if err != nil {
+		return fmt.Errorf("suppression lookup: %w", err)
+	}
+	if suppressed {
 		return nil
 	}
 	decision := s.resolveGeneralDelivery(ctx, n.RecipientID, n.NotifType)
@@ -281,6 +293,18 @@ func fanoutDelivery(n UploadNotification) (string, RenderOverride) {
 		return liveEntityType, renderLive(n)
 	}
 	return "post", renderUpload(n)
+}
+
+// uploadRecipientSuppressed is the account-control gate for fan-out
+// deliveries, with the lookup error kept for the caller.
+func (s *Service) uploadRecipientSuppressed(ctx context.Context, userID uuid.UUID) (bool, error) {
+	if s.suppressionSeam != nil {
+		return s.suppressionSeam(ctx, userID)
+	}
+	if s.pgStore == nil {
+		return false, nil
+	}
+	return s.pgStore.IsSuppressed(ctx, userID)
 }
 
 // recipientSuppressed is the account-control gate shared by every

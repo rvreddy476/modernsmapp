@@ -13,6 +13,8 @@ import (
 type fakeFanout struct {
 	channel  uuid.UUID
 	enqueued []service.EnqueueParams
+	// lookupErr makes LookupChannel fail (post-service down).
+	lookupErr error
 }
 
 func (f *fakeFanout) Enqueue(_ context.Context, p service.EnqueueParams) error {
@@ -21,6 +23,13 @@ func (f *fakeFanout) Enqueue(_ context.Context, p service.EnqueueParams) error {
 }
 
 func (f *fakeFanout) ResolveChannel(context.Context, uuid.UUID) uuid.UUID { return f.channel }
+
+func (f *fakeFanout) LookupChannel(context.Context, uuid.UUID) (uuid.UUID, error) {
+	if f.lookupErr != nil {
+		return uuid.Nil, f.lookupErr
+	}
+	return f.channel, nil
+}
 
 func boolp(b bool) *bool { return &b }
 

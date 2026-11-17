@@ -19,6 +19,10 @@ import (
 type subscriberFanout interface {
 	Enqueue(ctx context.Context, p service.EnqueueParams) error
 	ResolveChannel(ctx context.Context, authorID uuid.UUID) uuid.UUID
+	// LookupChannel is ResolveChannel with the failure kept apart from
+	// "no channel" (uuid.Nil, nil), for a caller that must not drop work
+	// on a lookup error.
+	LookupChannel(ctx context.Context, authorID uuid.UUID) (uuid.UUID, error)
 }
 
 // WithSubscriberFanout attaches the durable fan-out pipeline. Without it
@@ -118,6 +122,17 @@ func (c *Consumer) enqueueSubscriberFanout(ctx context.Context, e sharedevents.P
 // post announced earlier always still has the row that makes a second
 // trigger a no-op, and a months-old video made public is not pushed to
 // every subscriber as if it were new.
+//
+// Known limit, kept on purpose (product decision, 18 Nov): an upload whose
+// FIRST public moment comes more than 6 days after it was created (kept
+// private or unlisted for a week, or a scheduled post published private
+// and opened up later) is never announced. Lifting it safely needs more
+// than a longer window: the row that stops a second announcement is
+// deleted 7 days after completion, so a post announced, cleaned up and then
+// made private and public again would be pushed to every subscriber a
+// second time. The fix, if wanted, is a permanent post_id tombstone written
+// on completion and checked here before the window, plus the decision that
+// an old video's first publication is news to its subscribers.
 const visibleTriggerWindow = 6 * 24 * time.Hour
 
 // fanoutNow is the trigger's clock; tests pin it.
@@ -167,8 +182,19 @@ func (c *Consumer) enqueueOnVisible(ctx context.Context, e sharedevents.PostSear
 	if err != nil {
 		return nil
 	}
-	channelID := c.fanout.ResolveChannel(ctx, authorID)
-	if channelID == uuid.Nil {
+	// A lookup that FAILS must not lose the trigger: for a post first
+	// published private it is the only one there will be. Returning the
+	// error would not help (this event type is committed when it is
+	// queued, and holding the read loop on post-service would stall every
+	// notification), so the job is enqueued without a channel and the
+	// worker resolves it, retrying with backoff (SubscriberFanout.
+	// processJob). Only a clean "no channel" answer skips the job.
+	channelID, err := c.fanout.LookupChannel(ctx, authorID)
+	if err != nil {
+		slog.Warn("fanout: channel lookup failed on the visible trigger; the worker resolves it",
+			"author_id", authorID, "post_id", postID, "error", err)
+		channelID = uuid.Nil
+	} else if channelID == uuid.Nil {
 		return nil // no channel ⇒ no subscribers; never followers
 	}
 

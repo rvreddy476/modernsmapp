@@ -3,6 +3,7 @@ package events
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
 
@@ -102,5 +103,28 @@ func TestUploadTriggers_ShareOneJobKey(t *testing.T) {
 	a, b := f.enqueued[0], f.enqueued[1]
 	if a.PostID != b.PostID || a.NotifType != b.NotifType || a.DeepLink != b.DeepLink {
 		t.Fatalf("triggers disagree on the job: %+v vs %+v", a, b)
+	}
+}
+
+// A channel lookup that fails while handling the trigger must not lose it:
+// for a post first published private it is the only trigger there will
+// be. The job is enqueued without a channel for the worker to resolve with
+// backoff; a clean "no channel" answer still enqueues nothing.
+func TestEnqueueOnVisible_ChannelLookupFailureKeepsTrigger(t *testing.T) {
+	postID, authorID := uuid.New(), uuid.New()
+	e := sharedevents.PostSearchEligibilityChangedPayload{
+		PostID: postID.String(), AuthorID: authorID.String(),
+		ContentType: "long_video", Visibility: "public", ReviewStatus: "approved",
+		CreatedAt: time.Now().Add(-time.Hour), SearchRev: 4,
+	}
+	f := &fakeFanout{channel: uuid.New(), lookupErr: errors.New("post-service 503")}
+	if err := (&Consumer{fanout: f}).enqueueOnVisible(context.Background(), e); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+	if len(f.enqueued) != 1 {
+		t.Fatalf("a failed channel lookup dropped the trigger: %d jobs", len(f.enqueued))
+	}
+	if j := f.enqueued[0]; j.PostID != postID || j.AuthorID != authorID || j.ChannelID != uuid.Nil || j.NotifType == "" {
+		t.Fatalf("job: %+v", j)
 	}
 }

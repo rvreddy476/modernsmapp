@@ -63,7 +63,12 @@ const (
 //   - a job waiting for its post becomes due now;
 //   - a FAILED job is reopened from its cursor; the per-(post, user)
 //     markers keep anyone already told from hearing it twice;
-//   - a completed or running job is left alone: one announcement per post.
+//   - a RUNNING job is only marked wake_requested (migration 022, REG-5):
+//     the pass in flight may already have read the post as not visible,
+//     so however it ends short of completion (defer, release, fail,
+//     expire) it leaves the job pending and due now, not on the backoff
+//     curve. The running pass itself is not disturbed;
+//   - a completed job is left alone: one announcement per post.
 //
 // A "creator is live" job keeps plain DO NOTHING semantics.
 func (s *Store) EnqueueFanoutJob(ctx context.Context, j *FanoutJob) error {
@@ -72,22 +77,24 @@ func (s *Store) EnqueueFanoutJob(ctx context.Context, j *FanoutJob) error {
 		phase = FanoutPhaseSubscribers
 	}
 	_, err := s.db.Exec(ctx, `
-		INSERT INTO subscriber_fanout_jobs
+		INSERT INTO subscriber_fanout_jobs AS j
 			(post_id, channel_id, author_id, content_type, deep_link,
 			 notif_type, visibility, post_created_at, title, channel_name, phase)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		ON CONFLICT (post_id) DO UPDATE
-		SET status = 'pending', available_at = NOW(), waits = 0,
-		    attempts = 0, wait_reason = '',
+		SET status = CASE WHEN j.status = 'running' THEN 'running' ELSE 'pending' END,
+		    wake_requested = (j.status = 'running'),
+		    available_at = CASE WHEN j.status = 'running' THEN j.available_at ELSE NOW() END,
+		    waits = CASE WHEN j.status = 'running' THEN j.waits ELSE 0 END,
+		    attempts = CASE WHEN j.status = 'running' THEN j.attempts ELSE 0 END,
+		    wait_reason = CASE WHEN j.status = 'running' THEN j.wait_reason ELSE '' END,
 		    visibility = EXCLUDED.visibility,
-		    title = CASE WHEN subscriber_fanout_jobs.title = ''
-		                 THEN EXCLUDED.title ELSE subscriber_fanout_jobs.title END,
+		    title = CASE WHEN j.title = '' THEN EXCLUDED.title ELSE j.title END,
 		    updated_at = NOW()
 		WHERE EXCLUDED.notif_type <> $12
-		  AND subscriber_fanout_jobs.notif_type <> $12
-		  AND (subscriber_fanout_jobs.status = 'failed'
-		       OR (subscriber_fanout_jobs.status = 'pending'
-		           AND subscriber_fanout_jobs.available_at > NOW()))`,
+		  AND j.notif_type <> $12
+		  AND (j.status IN ('failed', 'running')
+		       OR (j.status = 'pending' AND j.available_at > NOW()))`,
 		j.PostID, j.ChannelID, j.AuthorID, j.ContentType, j.DeepLink,
 		j.NotifType, j.Visibility, j.PostCreatedAt, j.Title, j.ChannelName, phase,
 		liveNotifType)
@@ -156,7 +163,7 @@ func (s *Store) ClaimFanoutJobs(ctx context.Context, staleAfter time.Duration, l
 		)
 		UPDATE subscriber_fanout_jobs j
 		SET status = 'running', claimed_at = NOW(),
-		    attempts = j.attempts + 1, updated_at = NOW()
+		    attempts = j.attempts + 1, wake_requested = false, updated_at = NOW()
 		FROM claimable WHERE j.post_id = claimable.post_id
 		RETURNING j.post_id, j.channel_id, j.author_id, j.content_type,
 		          j.deep_link, j.notif_type, j.visibility, j.post_created_at,
@@ -193,22 +200,27 @@ func (s *Store) AdvanceFanoutCursor(ctx context.Context, postID, cursor uuid.UUI
 	return err
 }
 
-// CompleteFanoutJob marks a job finished.
+// CompleteFanoutJob marks a job finished. A wake that arrived during the
+// pass goes with it: the pass just decided every recipient.
 func (s *Store) CompleteFanoutJob(ctx context.Context, postID uuid.UUID) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE subscriber_fanout_jobs
-		SET status = 'completed', updated_at = NOW()
+		SET status = 'completed', wake_requested = false, updated_at = NOW()
 		WHERE post_id = $1`, postID)
 	return err
 }
 
 // ReleaseFanoutJob returns a job to 'pending' after a transient failure,
 // due again at retryAt (backoff, migration 021), resuming from its cursor.
+// A trigger that arrived during the pass (wake_requested) makes it due now
+// with a fresh attempt budget, as the trigger does to a pending job.
 func (s *Store) ReleaseFanoutJob(ctx context.Context, postID uuid.UUID, reason string, retryAt time.Time) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE subscriber_fanout_jobs
-		SET status = 'pending', last_error = $2, available_at = $3,
-		    wait_reason = '', waits = 0, updated_at = NOW()
+		SET status = 'pending', last_error = $2,
+		    available_at = CASE WHEN wake_requested THEN NOW() ELSE $3 END,
+		    attempts = CASE WHEN wake_requested THEN 0 ELSE attempts END,
+		    wait_reason = '', waits = 0, wake_requested = false, updated_at = NOW()
 		WHERE post_id = $1`, postID, reason, retryAt)
 	return err
 }
@@ -216,34 +228,52 @@ func (s *Store) ReleaseFanoutJob(ctx context.Context, postID uuid.UUID, reason s
 // DeferFanoutJob parks an upload job whose post is not visible yet until
 // `until`. The claim that found it so was not a failed attempt, so the
 // attempt it took is given back; waits bounds the wait instead.
+//
+// REG-5: when the "post became visible" trigger arrived while this pass was
+// running (wake_requested), the read that said "wait" may be stale, so the
+// job is left due NOW with the counters the trigger gives a pending job,
+// instead of parked for up to 30 minutes.
 func (s *Store) DeferFanoutJob(ctx context.Context, postID uuid.UUID, reason string, until time.Time) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE subscriber_fanout_jobs
-		SET status = 'pending', wait_reason = $2, last_error = $2,
-		    available_at = $3, waits = waits + 1,
-		    attempts = GREATEST(attempts - 1, 0), updated_at = NOW()
+		SET status = 'pending', last_error = $2,
+		    wait_reason = CASE WHEN wake_requested THEN '' ELSE $2 END,
+		    available_at = CASE WHEN wake_requested THEN NOW() ELSE $3 END,
+		    waits = CASE WHEN wake_requested THEN 0 ELSE waits + 1 END,
+		    attempts = CASE WHEN wake_requested THEN 0 ELSE GREATEST(attempts - 1, 0) END,
+		    wake_requested = false, updated_at = NOW()
 		WHERE post_id = $1`, postID, reason, until)
 	return err
 }
 
 // FailFanoutJob parks a job after exhausting its retries. An upload job
-// stays replayable (RequeueFailedFanoutJobs) and a new trigger reopens it.
+// stays replayable (RequeueFailedFanoutJobs) and a new trigger reopens it;
+// one that arrived during this pass (wake_requested) reopens it here.
 func (s *Store) FailFanoutJob(ctx context.Context, postID uuid.UUID, reason string) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE subscriber_fanout_jobs
-		SET status = 'failed', last_error = $2, wait_reason = '', updated_at = NOW()
+		SET status = CASE WHEN wake_requested THEN 'pending' ELSE 'failed' END,
+		    available_at = CASE WHEN wake_requested THEN NOW() ELSE available_at END,
+		    attempts = CASE WHEN wake_requested THEN 0 ELSE attempts END,
+		    waits = CASE WHEN wake_requested THEN 0 ELSE waits END,
+		    last_error = $2, wait_reason = '', wake_requested = false, updated_at = NOW()
 		WHERE post_id = $1`, postID, reason)
 	return err
 }
 
 // ExpireFanoutJob ends an upload job whose post never became visible within
 // the wait ceiling. Keeping wait_reason keeps it out of the automatic
-// replay; a later trigger for the post still reopens it.
+// replay; a later trigger for the post still reopens it, and one that
+// arrived during this pass (wake_requested) reopens it here.
 func (s *Store) ExpireFanoutJob(ctx context.Context, postID uuid.UUID, reason string) error {
 	_, err := s.db.Exec(ctx, `
 		UPDATE subscriber_fanout_jobs
-		SET status = 'failed', last_error = 'expired waiting: ' || $2,
-		    wait_reason = $2, updated_at = NOW()
+		SET status = CASE WHEN wake_requested THEN 'pending' ELSE 'failed' END,
+		    available_at = CASE WHEN wake_requested THEN NOW() ELSE available_at END,
+		    attempts = CASE WHEN wake_requested THEN 0 ELSE attempts END,
+		    waits = CASE WHEN wake_requested THEN 0 ELSE waits END,
+		    wait_reason = CASE WHEN wake_requested THEN '' ELSE $2 END,
+		    last_error = 'expired waiting: ' || $2, wake_requested = false, updated_at = NOW()
 		WHERE post_id = $1`, postID, reason)
 	return err
 }

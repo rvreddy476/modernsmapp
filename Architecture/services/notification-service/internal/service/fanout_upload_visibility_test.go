@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -97,6 +98,9 @@ type fakeGraph struct {
 	mu      sync.Mutex
 	follows map[uuid.UUID]bool
 	status  int
+	// blocked: the author blocked this viewer; blockedBy: the viewer
+	// blocked the author; muted: the viewer muted the author.
+	blocked, blockedBy, muted map[uuid.UUID]bool
 }
 
 func (g *fakeGraph) handler() http.Handler {
@@ -108,7 +112,10 @@ func (g *fakeGraph) handler() http.Handler {
 			return
 		}
 		viewer := uuid.MustParse(r.URL.Query().Get("user_id"))
-		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"follows": g.follows[viewer]}})
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{
+			"follows": g.follows[viewer], "blocked": g.blocked[viewer],
+			"blocked_by": g.blockedBy[viewer], "is_muted": g.muted[viewer],
+		}})
 	})
 }
 
@@ -484,5 +491,123 @@ func TestClassifyUpload(t *testing.T) {
 				t.Fatalf("gate %v reason %q, want %v %q", st.gate, st.reason, c.gate, c.reason)
 			}
 		})
+	}
+}
+
+// Blocks hold in both directions on a public upload, where no per-viewer
+// post read is made; a mute is not a visibility rule, so a subscriber who
+// muted the author is still told (the decision pinned here).
+func TestUploadFanout_BlocksBothDirectionsMuteDoesNot(t *testing.T) {
+	r := newUploadRig(t, 4, publicReady())
+	blocked, blocker, muter, plain := r.subs[0], r.subs[1], r.subs[2], r.subs[3]
+	r.graph.blocked = map[uuid.UUID]bool{blocked: true}
+	r.graph.blockedBy = map[uuid.UUID]bool{blocker: true}
+	r.graph.muted = map[uuid.UUID]bool{muter: true}
+
+	r.pass()
+	got := r.notifier.recipients()
+	if _, ok := got[blocked]; ok {
+		t.Fatal("a viewer the author blocked was told")
+	}
+	if _, ok := got[blocker]; ok {
+		t.Fatal("a viewer who blocked the author was told")
+	}
+	if _, ok := got[muter]; !ok {
+		t.Fatal("a subscriber who muted the author was dropped")
+	}
+	if _, ok := got[plain]; !ok || len(got) != 2 {
+		t.Fatalf("notified %v, want the muter and the plain subscriber", got)
+	}
+	if !r.store.delivered[blocked] || !r.store.delivered[blocker] {
+		t.Fatal("blocked recipients must be decided (marked), not retried")
+	}
+}
+
+// A follow removed between enqueue and delivery is read at delivery: the
+// former follower is not told about a followers-only upload.
+func TestUploadFanout_FollowRemovedBeforeDelivery(t *testing.T) {
+	post := publicReady()
+	post["visibility"] = "followers"
+	r := newUploadRig(t, 1, post)
+	sub := r.subs[0]
+	r.post.set(func(p *fakePostService) { p.anonVisible = false; p.viewers[sub] = true })
+	r.graph.follows[sub] = true
+	r.graph.follows[sub] = false // unfollowed while the job waited
+
+	r.pass()
+	if len(r.notifier.got) != 0 {
+		t.Fatal("a former follower was told about a followers-only upload")
+	}
+}
+
+// channelSource is the rerunSource with a controllable channel lookup.
+type channelSource struct {
+	rerunSource
+	mu      sync.Mutex
+	channel uuid.UUID
+	err     error
+}
+
+func (s *channelSource) ChannelByOwner(context.Context, uuid.UUID) (uuid.UUID, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.channel, s.err
+}
+
+// An upload job enqueued without its channel (the visible trigger's lookup
+// failed) resolves it in the worker: a failure is a retry with backoff,
+// never a completion, and the retry tells everyone; a clean "no channel"
+// ends the job with nobody told.
+func TestUploadFanout_ChannelResolvedByWorker(t *testing.T) {
+	r := newUploadRig(t, 2, publicReady())
+	channel := uuid.New()
+	src := &channelSource{rerunSource: rerunSource{ids: r.subs}, err: errors.New("post-service 503")}
+	r.f.subs = src
+	r.job.ChannelID = uuid.Nil
+
+	r.pass()
+	if got := r.lastOutcome(t); got != "released" || len(r.notifier.got) != 0 {
+		t.Fatalf("lookup failure: outcome %q notified %d; want released, 0", got, len(r.notifier.got))
+	}
+
+	src.mu.Lock()
+	src.channel, src.err = channel, nil
+	src.mu.Unlock()
+	r.pass()
+	if got := r.lastOutcome(t); got != "completed" || len(r.notifier.got) != 2 {
+		t.Fatalf("after recovery: outcome %q notified %d; want completed, 2", got, len(r.notifier.got))
+	}
+	for _, u := range r.notifier.got {
+		if u.ChannelID != channel {
+			t.Fatalf("notification channel %s, want %s", u.ChannelID, channel)
+		}
+	}
+
+	r = newUploadRig(t, 2, publicReady())
+	r.f.subs = &channelSource{rerunSource: rerunSource{ids: r.subs}}
+	r.job.ChannelID = uuid.Nil
+	r.pass()
+	if got := r.lastOutcome(t); got != "completed" || len(r.notifier.got) != 0 {
+		t.Fatalf("no channel: outcome %q notified %d; want completed, 0", got, len(r.notifier.got))
+	}
+}
+
+// A deactivated or deletion-scheduled recipient is told nothing; a
+// suppression lookup that fails is an error (the fan-out holds the
+// recipient and retries), never a silent drop that the fan-out would then
+// mark as decided for good.
+func TestCreateUploadNotification_SuppressionLookup(t *testing.T) {
+	n := UploadNotification{RecipientID: uuid.New(), AuthorID: uuid.New(), NotifType: "creator_uploaded_video", PostID: uuid.New()}
+
+	s := &Service{suppressionSeam: func(context.Context, uuid.UUID) (bool, error) { return true, nil }}
+	if err := s.CreateUploadNotification(context.Background(), n); err != nil {
+		t.Fatalf("suppressed recipient: %v, want a quiet nil", err)
+	}
+
+	s = &Service{suppressionSeam: func(context.Context, uuid.UUID) (bool, error) {
+		return false, errors.New("postgres: connection reset")
+	}}
+	if err := s.CreateUploadNotification(context.Background(), n); err == nil {
+		t.Fatal("a failed suppression lookup was swallowed; the fan-out would mark the recipient told")
 	}
 }
