@@ -161,14 +161,32 @@ func TestE2E_Video_LongVideo_UploadRoutePublishPlay(t *testing.T) {
 		for _, path := range []string{byAuthor, channelFeed} {
 			path := path
 			var ids []string
-			Eventually(t, 60*time.Second, "public V1 is listed at "+path, func() bool {
+			last := "no answer"
+			deadline := time.Now().Add(60 * time.Second)
+			for {
 				env, err := b.Do(ctx, "GET", path, nil)
-				if err != nil || env.Status != http.StatusOK {
-					return false
+				switch {
+				case err != nil:
+					last = err.Error()
+				case env.Status != http.StatusOK:
+					last = fmt.Sprintf("HTTP %d %s", env.Status, envelopeError(env))
+				default:
+					ids, _ = listIDs(env.Data)
+					last = fmt.Sprintf("HTTP 200, %d items without V1", len(ids))
 				}
-				ids, _ = listIDs(env.Data)
-				return containsID(ids, v1.ID)
-			})
+				if containsID(ids, v1.ID) {
+					break
+				}
+				if time.Now().After(deadline) {
+					// A 404 on the channel feed means graph-service judged the
+					// creator not visible to a signed-out viewer (channel_feed.go
+					// asks canViewAuthor with a nil viewer): check graph's
+					// privacy source (GRAPH_USER_SERVICE_URL) before the feed.
+					t.Fatalf("public V1 never listed at %s within 60 s (last: %s)", path, last)
+				}
+				time.Sleep(2 * time.Second)
+			}
+			t.Logf("%s: public V1 listed (%d items)", path, len(ids))
 			if containsID(ids, v2.ID) {
 				t.Fatalf("unlisted V2 is listed to B at %s", path)
 			}
@@ -278,29 +296,48 @@ func TestE2E_Video_LongVideo_UploadRoutePublishPlay(t *testing.T) {
 
 	// ── lv-1: the subscriber hears about the upload once it is playable ──
 	t.Run("subscriber notified after processing (lv-1)", func(t *testing.T) {
-		notified := false
-		deadline := time.Now().Add(60 * time.Second)
+		notified, matches, polls := false, 0, 0
+		last := "no answer"
+		start := time.Now()
+		deadline := start.Add(60 * time.Second)
 		for !notified && time.Now().Before(deadline) {
+			polls++
 			env, err := b.Do(ctx, "GET", "/v1/notifications?limit=50", nil)
-			if err == nil && env.Status == http.StatusOK {
+			switch {
+			case err != nil:
+				last = err.Error()
+			case env.Status != http.StatusOK:
+				last = fmt.Sprintf("HTTP %d %s", env.Status, envelopeError(env))
+			default:
 				var ns []struct {
 					Type     string `json:"type"`
 					EntityID string `json:"entity_id"`
 				}
-				if json.Unmarshal(env.Data, &ns) == nil {
-					for _, n := range ns {
-						if n.Type == "creator_uploaded_video" && n.EntityID == v1.ID {
-							notified = true
-						}
+				if err := json.Unmarshal(env.Data, &ns); err != nil {
+					last = "notifications unreadable: " + err.Error()
+					break
+				}
+				matches = 0
+				for _, n := range ns {
+					if n.Type == "creator_uploaded_video" && n.EntityID == v1.ID {
+						matches++
 					}
 				}
+				last = fmt.Sprintf("HTTP 200, %d notifications, %d for V1", len(ns), matches)
+				notified = matches > 0
 			}
 			if !notified {
 				time.Sleep(3 * time.Second)
 			}
 		}
+		if notified && matches != 1 {
+			t.Fatalf("subscriber B got %d creator_uploaded_video notifications for V1, want exactly 1", matches)
+		}
+		if notified {
+			t.Logf("lv-1 asserted: one creator_uploaded_video for V1 after %d poll(s), %s", polls, time.Since(start).Round(time.Second))
+		}
 		trackedCheck(t, "lv-1", notified,
-			"subscriber B (notify_on=all) got no creator_uploaded_video notification for V1 within 60 s of it becoming playable")
+			"subscriber B (notify_on=all) got no creator_uploaded_video notification for V1 within 60 s of it becoming playable (last: "+last+")")
 	})
 
 	// ── private: refused at once; issued segments stop within the window ──
@@ -330,7 +367,12 @@ func TestE2E_Video_LongVideo_UploadRoutePublishPlay(t *testing.T) {
 		lifetime := expiry.Sub(playedAt)
 		holds := lifetime <= window+5*time.Second
 		detail := fmt.Sprintf("segment URL issued at play time expires %s later, window %s", lifetime.Round(time.Second), window)
+		if holds && window > 3*time.Minute {
+			detail += "; not fetched after expiry (window over 3m), signed lifetime only"
+		}
 		if holds && window <= 3*time.Minute {
+			// The earlier steps often outlast a 1m window, so no wait is
+			// needed; the fetch below is the assertion either way.
 			wait := time.Until(expiry) + 5*time.Second
 			if wait > 0 {
 				t.Logf("waiting %s for the issued segment URL to expire", wait.Round(time.Second))

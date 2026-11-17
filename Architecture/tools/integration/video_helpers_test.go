@@ -625,6 +625,7 @@ func trackedCheck(t *testing.T, findingID string, holds bool, detail string) {
 	case holds && knownOpen(findingID):
 		t.Fatalf("tracked skip %s is stale: the assertion now holds; remove %s from ATPOST_E2E_KNOWN_OPEN (%s)", findingID, findingID, detail)
 	case holds:
+		t.Logf("%s holds: %s", findingID, detail)
 		return
 	case knownOpen(findingID):
 		t.Skipf("TRACKED SKIP %s (docs/production-readiness, finding %s still open): %s", findingID, findingID, detail)

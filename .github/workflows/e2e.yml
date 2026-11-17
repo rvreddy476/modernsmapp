@@ -123,11 +123,16 @@ jobs:
             # gate, feeds, channels, playlists, progress, subscriber fan-out.
             # e2e-deny-authority answers the chat/commerce/group media-access
             # questions with a clean 404 (tools/integration/cmd).
-            services: "user-service feed-service identity-auth graph-service post-service identity-profile media-service media-worker trust-safety-service notification-service e2e-deny-authority api-gateway"
-            health: "http://localhost:8080 http://localhost:8081 http://localhost:8098 http://localhost:8082 http://localhost:8083 http://localhost:8084 http://localhost:8086 http://localhost:8087 http://localhost:8088 http://localhost:8091 http://localhost:9191 http://localhost:8092"
+            # graph-service reads the creator's privacy from the identity
+            # user-service: the app user-service has no /v1/users/:id/settings,
+            # so without it graph fails closed and the anonymous-gated channel
+            # feed answers 404.
+            services: "user-service feed-service identity-auth identity-user graph-service post-service identity-profile media-service media-worker trust-safety-service notification-service e2e-deny-authority api-gateway"
+            health: "http://localhost:8080 http://localhost:8081 http://localhost:8097 http://localhost:8098 http://localhost:8082 http://localhost:8083 http://localhost:8084 http://localhost:8086 http://localhost:8087 http://localhost:8088 http://localhost:8091 http://localhost:9191 http://localhost:8092"
             seed_users: true
             seed_identity: true
             ffmpeg: true
+            graph_user_url: http://localhost:8097
             timeout: 50
             run: "TestE2E_Video"
     steps:
