@@ -666,6 +666,10 @@ func (s *Service) UpdateProduct(ctx context.Context, in UpdateProductInput) (*Up
 	if err != nil {
 		return nil, err
 	}
+	// A `media` attribute answer is a media reference the seller sets (com-3).
+	if err := s.verifyMedia(ctx, in.ActorUserID, media.KindAny, attributeMediaIDs(sets)...); err != nil {
+		return nil, err
+	}
 
 	// ── The matrix ──────────────────────────────────────────
 	variation, err := s.resolveVariationPatch(ctx, in.ProductID, targetCategory, in.Variation)

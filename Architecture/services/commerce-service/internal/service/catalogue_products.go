@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/atpost/commerce-service/internal/media"
 	"github.com/atpost/commerce-service/internal/store/postgres"
@@ -149,6 +150,11 @@ func (s *Service) CreateProduct(ctx context.Context, in CreateProductInput) (*po
 	// control. Incompleteness is NOT checked: a draft may be unfinished.
 	attrSets, err := s.resolveAttributeValues(ctx, in.CategoryID, in.Attributes)
 	if err != nil {
+		return nil, err
+	}
+	// A `media` attribute answer is a media reference the seller sets; same
+	// rule as every other one (com-3).
+	if err := s.verifyMedia(ctx, in.ActorUserID, media.KindAny, attributeMediaIDs(attrSets)...); err != nil {
 		return nil, err
 	}
 
@@ -433,6 +439,13 @@ func (s *Service) AddProductVariant(ctx context.Context, actorID, productID uuid
 			return nil, err
 		}
 	}
+	// com-3: a variant image is vouched for to media-service by
+	// VisibleProductMediaIDs, so it must be the actor's own finished image.
+	// Before anything is read or written. The HTTP body carries no image
+	// today; this guards every caller that builds the variant itself.
+	if err := s.verifyMedia(ctx, actorID, media.KindImage, v.ImageMediaID); err != nil {
+		return nil, err
+	}
 	product, err := s.store.GetProductByID(ctx, productID)
 	if err != nil {
 		return nil, err
@@ -523,6 +536,13 @@ func (s *Service) AddProductVariant(ctx context.Context, actorID, productID uuid
 // Returns whether the listing was sent back to review, so the handler can
 // say so in the same response as the success.
 func (s *Service) UpdateProductVariant(ctx context.Context, actorID, variantID uuid.UUID, updates map[string]any, ack bool) (*postgres.ProductVariant, bool, error) {
+	// com-3: first, before anything is read or written. The store writes
+	// image_media_id as sent, and commerce then vouches for it to
+	// media-service. The check is about the ACTOR's media only, so running it
+	// before the ownership check tells a non-owner nothing about the variant.
+	if err := s.verifyVariantImagePatch(ctx, actorID, updates); err != nil {
+		return nil, false, err
+	}
 	variant, err := s.store.GetVariantByID(ctx, variantID)
 	if err != nil {
 		return nil, false, err
@@ -564,6 +584,49 @@ func (s *Service) UpdateProductVariant(ctx context.Context, actorID, variantID u
 	}
 	stored, err := s.store.GetVariantByID(ctx, variantID)
 	return stored, revalidate, err
+}
+
+// verifyVariantImagePatch is com-3's write-side guard for PATCH
+// /variants/:id. VisibleProductMediaIDs tells media-service that the seller
+// (and, once the listing is live, everyone) may see a variant's image, so the
+// id must be the actor's own finished, moderated image. Without this a seller
+// could name another user's private photo and read it back through commerce.
+//
+//   - absent or JSON null (clearing the image): nothing to check;
+//   - anything but a UUID string: refused as MEDIA_NOT_FOUND, never written;
+//   - any id, the one the variant already holds included: media-service must
+//     say it is the actor's ready, passed image (NOT_YOUR_MEDIA,
+//     MEDIA_NOT_READY, MEDIA_NOT_MODERATED, MEDIA_WRONG_KIND otherwise). No
+//     client echoes the image on a PATCH today, and re-asking means a foreign
+//     id left by the old code cannot be saved again.
+func (s *Service) verifyVariantImagePatch(ctx context.Context, actorID uuid.UUID, updates map[string]any) error {
+	raw, present := updates["image_media_id"]
+	if !present || raw == nil {
+		return nil
+	}
+	text, isString := raw.(string)
+	if !isString {
+		return fmt.Errorf("%w: image_media_id must be a media id", media.ErrMediaNotFound)
+	}
+	id, err := uuid.Parse(strings.TrimSpace(text))
+	if err != nil || id == uuid.Nil {
+		return fmt.Errorf("%w: image_media_id must be a media id", media.ErrMediaNotFound)
+	}
+	return s.verifyMedia(ctx, actorID, media.KindImage, &id)
+}
+
+// attributeMediaIDs lists every media id a set of attribute answers names
+// (data type `media`), so a write can check each is the seller's own.
+func attributeMediaIDs(sets []postgres.AttributeValueSet) []*uuid.UUID {
+	var ids []*uuid.UUID
+	for i := range sets {
+		for j := range sets[i].Values {
+			if id := sets[i].Values[j].ValueMediaID; id != nil {
+				ids = append(ids, id)
+			}
+		}
+	}
+	return ids
 }
 
 // ErrVariantFieldRequired is returned when a PATCH /variants/:id body blanks
