@@ -74,7 +74,11 @@ func (s *Service) GetVideoDetailForCaller(ctx context.Context, postID uuid.UUID,
 
 // UpdateVideoTrim updates trim points for a video.
 func (s *Service) UpdateVideoTrim(ctx context.Context, postID, userID uuid.UUID, startMs int, endMs *int) error {
-	authorID, err := s.pgStore.GetPostAuthorID(ctx, postID)
+	store := s.videoTools()
+	if store == nil {
+		return errVideoToolsUnavailable()
+	}
+	authorID, err := store.GetPostAuthorID(ctx, postID)
 	if err != nil {
 		return fmt.Errorf("post not found")
 	}
@@ -82,7 +86,7 @@ func (s *Service) UpdateVideoTrim(ctx context.Context, postID, userID uuid.UUID,
 		return fmt.Errorf("unauthorized")
 	}
 
-	vm, err := s.pgStore.GetVideoMetadata(ctx, postID)
+	vm, err := store.GetVideoMetadata(ctx, postID)
 	if err != nil {
 		return fmt.Errorf("video metadata not found")
 	}
@@ -103,12 +107,16 @@ func (s *Service) UpdateVideoTrim(ctx context.Context, postID, userID uuid.UUID,
 		return fmt.Errorf("trim_end_ms exceeds video duration")
 	}
 
-	return s.pgStore.UpdateTrim(ctx, postID, startMs, endMs)
+	return store.UpdateTrim(ctx, postID, startMs, endMs)
 }
 
 // OverrideCategory overrides the video category classification.
 func (s *Service) OverrideCategory(ctx context.Context, postID, userID uuid.UUID, category string) error {
-	authorID, err := s.pgStore.GetPostAuthorID(ctx, postID)
+	store := s.videoTools()
+	if store == nil {
+		return errVideoToolsUnavailable()
+	}
+	authorID, err := store.GetPostAuthorID(ctx, postID)
 	if err != nil {
 		return fmt.Errorf("post not found")
 	}
@@ -120,7 +128,7 @@ func (s *Service) OverrideCategory(ctx context.Context, postID, userID uuid.UUID
 		return fmt.Errorf("invalid category: must be flick or long_video")
 	}
 
-	vm, err := s.pgStore.GetVideoMetadata(ctx, postID)
+	vm, err := store.GetVideoMetadata(ctx, postID)
 	if err != nil {
 		return fmt.Errorf("video metadata not found")
 	}
@@ -129,17 +137,30 @@ func (s *Service) OverrideCategory(ctx context.Context, postID, userID uuid.UUID
 		return err
 	}
 
-	return s.pgStore.UpdateFinalCategory(ctx, postID, category)
+	return store.UpdateFinalCategory(ctx, postID, category)
 }
 
 // SetCoverFrame sets the cover frame for a video.
 func (s *Service) SetCoverFrame(ctx context.Context, postID, userID uuid.UUID, coverMediaID *uuid.UUID, thumbnailURL *string) error {
-	authorID, err := s.pgStore.GetPostAuthorID(ctx, postID)
+	store := s.videoTools()
+	if store == nil {
+		return errVideoToolsUnavailable()
+	}
+	authorID, err := store.GetPostAuthorID(ctx, postID)
 	if err != nil {
 		return fmt.Errorf("post not found")
 	}
 	if authorID != userID {
 		return fmt.Errorf("unauthorized")
+	}
+
+	// lv-28: the thumbnail is the caller's own platform image or nothing,
+	// judged before ANY write so a refused thumbnail leaves the cover alone.
+	var thumbnail *string
+	if thumbnailURL != nil {
+		if thumbnail, err = s.normalizeCoverThumbnail(ctx, authorID, *thumbnailURL); err != nil {
+			return err
+		}
 	}
 
 	// Update cover_media_id on the post
@@ -152,7 +173,7 @@ func (s *Service) SetCoverFrame(ctx context.Context, postID, userID uuid.UUID, c
 		// Claimed before the row names it; the cover it replaces is
 		// released after (media_claims.go).
 		if err := s.setPostCoverClaimed(ctx, postID, *coverMediaID, func() error {
-			return s.pgStore.UpdatePostCoverMedia(ctx, postID, coverMediaID)
+			return store.UpdatePostCoverMedia(ctx, postID, coverMediaID)
 		}); err != nil {
 			return err
 		}
@@ -160,14 +181,14 @@ func (s *Service) SetCoverFrame(ctx context.Context, postID, userID uuid.UUID, c
 		s.InvalidatePostBodyCache(ctx, postID)
 	}
 
-	// Update thumbnail_url on video_metadata
+	// Update thumbnail_url on video_metadata: the normalised serve path.
 	if thumbnailURL != nil {
-		vm, err := s.pgStore.GetVideoMetadata(ctx, postID)
+		vm, err := store.GetVideoMetadata(ctx, postID)
 		if err != nil {
 			return fmt.Errorf("video metadata not found")
 		}
-		vm.ThumbnailURL = thumbnailURL
-		return s.pgStore.UpdateVideoMetadata(ctx, vm)
+		vm.ThumbnailURL = thumbnail
+		return store.UpdateVideoMetadata(ctx, vm)
 	}
 
 	return nil
@@ -184,7 +205,11 @@ func (s *Service) SetCoverFrame(ctx context.Context, postID, userID uuid.UUID, c
 // upload studio publishes through the create path and PATCH
 // /v1/posts/:id/schedule, so nothing relied on the old flip.
 func (s *Service) PublishVideo(ctx context.Context, postID, userID uuid.UUID) error {
-	authorID, err := s.pgStore.GetPostAuthorID(ctx, postID)
+	store := s.videoTools()
+	if store == nil {
+		return errVideoToolsUnavailable()
+	}
+	authorID, err := store.GetPostAuthorID(ctx, postID)
 	if err != nil {
 		return fmt.Errorf("post not found")
 	}
@@ -192,7 +217,7 @@ func (s *Service) PublishVideo(ctx context.Context, postID, userID uuid.UUID) er
 		return fmt.Errorf("unauthorized")
 	}
 
-	vm, err := s.pgStore.GetVideoMetadata(ctx, postID)
+	vm, err := store.GetVideoMetadata(ctx, postID)
 	if err != nil {
 		return fmt.Errorf("video metadata not found")
 	}
@@ -201,7 +226,14 @@ func (s *Service) PublishVideo(ctx context.Context, postID, userID uuid.UUID) er
 		return fmt.Errorf("video not ready: current status is %s", vm.UploadStatus)
 	}
 
-	if _, err := s.PublishScheduled(ctx, postID, &userID, false); err != nil {
+	// PublishScheduled carries the standing check (publish_standing.go);
+	// publishScheduledSeam stands in for it in tests only.
+	if s.publishScheduledSeam != nil {
+		_, err = s.publishScheduledSeam(ctx, postID, &userID, false)
+	} else {
+		_, err = s.PublishScheduled(ctx, postID, &userID, false)
+	}
+	if err != nil {
 		return err
 	}
 	return nil
@@ -225,9 +257,13 @@ func (s *Service) UpdateDistribution(ctx context.Context, postID, actorID uuid.U
 		return nil, err
 	}
 
+	store := s.videoTools()
+	if store == nil {
+		return nil, errVideoToolsUnavailable()
+	}
 	// Fetch first for the event's content_type + existence/ownership
 	// pre-check (the UPDATE re-checks ownership atomically).
-	existing, err := s.pgStore.GetPost(ctx, postID)
+	existing, err := store.GetPost(ctx, postID)
 	if err != nil {
 		return nil, err
 	}
@@ -239,7 +275,7 @@ func (s *Service) UpdateDistribution(ctx context.Context, postID, actorID uuid.U
 	}
 
 	resolved := ResolveDistribution(policy)
-	_, err = s.pgStore.UpdateDistribution(ctx, postID, actorID, stored,
+	_, err = store.UpdateDistribution(ctx, postID, actorID, stored,
 		func(rev int64) (string, interface{}) {
 			return events.PostDistributionUpdated, events.PostDistributionUpdatedPayload{
 				PostID:            postID.String(),
@@ -254,5 +290,5 @@ func (s *Service) UpdateDistribution(ctx context.Context, postID, actorID uuid.U
 	if err != nil {
 		return nil, err
 	}
-	return s.pgStore.GetPost(ctx, postID)
+	return store.GetPost(ctx, postID)
 }

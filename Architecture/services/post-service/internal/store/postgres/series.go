@@ -21,6 +21,10 @@ type FlickSeries struct {
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
+// ErrFlickEpisodeNumberTaken: another post already holds this episode number
+// in the reels series (lv-74).
+var ErrFlickEpisodeNumberTaken = errors.New("episode number already taken in this series")
+
 type FlickSeriesItem struct {
 	SeriesID   uuid.UUID `json:"series_id"`
 	PostID     uuid.UUID `json:"post_id"`
@@ -80,13 +84,20 @@ func (s *Store) AddEpisodeToSeries(ctx context.Context, seriesID, postID uuid.UU
 	defer tx.Rollback(ctx)
 
 	item := &FlickSeriesItem{}
+	// lv-74: an occupied episode number is refused, never overwritten (the
+	// former DO UPDATE silently replaced an episode). Re-adding the same
+	// post at its own number is the no-op it always was.
 	err = tx.QueryRow(ctx, `
 		INSERT INTO flick_series_items (series_id, post_id, episode_num)
 		VALUES ($1, $2, $3)
 		ON CONFLICT (series_id, episode_num) DO UPDATE SET post_id = EXCLUDED.post_id
+		WHERE flick_series_items.post_id = EXCLUDED.post_id
 		RETURNING series_id, post_id, episode_num, added_at`,
 		seriesID, postID, episodeNum,
 	).Scan(&item.SeriesID, &item.PostID, &item.EpisodeNum, &item.AddedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrFlickEpisodeNumberTaken
+	}
 	if err != nil {
 		return nil, err
 	}

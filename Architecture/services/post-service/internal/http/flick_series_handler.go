@@ -46,7 +46,7 @@ func (h *Handler) GetFlickSeries(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid series id", nil)
 		return
 	}
-	fs, err := h.svc.GetFlickSeries(c.Request.Context(), seriesID)
+	fs, err := h.svc.GetFlickSeries(c.Request.Context(), seriesID, optionalCallerID(c))
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
 		return
@@ -102,6 +102,11 @@ func (h *Handler) AddEpisodeToSeries(c *gin.Context) {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
 			return
 		}
+		// lv-74: an occupied episode number is refused, not overwritten.
+		if errors.Is(err, service.ErrFlickEpisodeNumberTaken) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "EPISODE_NUMBER_TAKEN", err.Error(), nil)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "ADD_EPISODE_ERROR", err.Error(), nil)
 		return
 	}
@@ -150,7 +155,7 @@ func (h *Handler) ListCreatorSeries(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "invalid creator id", nil)
 		return
 	}
-	series, err := h.svc.ListFlickSeriesByCreator(c.Request.Context(), creatorID, 20, 0)
+	series, err := h.svc.ListFlickSeriesByCreator(c.Request.Context(), creatorID, optionalCallerID(c), 20, 0)
 	if err != nil {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
 		return

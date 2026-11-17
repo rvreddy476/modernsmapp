@@ -161,24 +161,16 @@ func TestLikedCollectionMirrorsLongVideosOnly(t *testing.T) {
 
 // Queueing consults the post's visibility BEFORE the collection is touched:
 // with no post store behind the gate the request cannot get past it (the
-// nil store panics), and the collection store sees nothing. A gate that
-// stopped gating would write the row and return quietly.
+// gate fails closed with ErrAuthoringStoreUnavailable), and the collection
+// store sees nothing. A gate that stopped gating would write the row and
+// return quietly.
 func TestAddToWatchLaterGatesOnVisibilityFirst(t *testing.T) {
 	store := newFakeSystemPlaylistStore()
 	svc := &Service{systemPlaylists: store}
 	ctx := context.Background()
 	viewer, post := uuid.New(), uuid.New()
-	panicked := false
-	func() {
-		defer func() {
-			if recover() != nil {
-				panicked = true
-			}
-		}()
-		_, _ = svc.AddToWatchLater(ctx, viewer, post)
-	}()
-	if !panicked {
-		t.Fatal("AddToWatchLater did not consult the post store before writing")
+	if _, err := svc.AddToWatchLater(ctx, viewer, post); !errors.Is(err, ErrAuthoringStoreUnavailable) {
+		t.Fatalf("AddToWatchLater did not consult the post store before writing: %v", err)
 	}
 	if len(store.adds) != 0 {
 		t.Fatal("the collection was written before the visibility gate answered")

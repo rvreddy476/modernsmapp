@@ -111,27 +111,47 @@ func (h *Handler) ModeratePostInternal(c *gin.Context) {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "INVALID_CAPABILITY", "Moderation capability rejected", nil)
 		return
 	}
-	postID, err := uuid.Parse(req.Claims.SubjectID)
-	if err != nil {
+	in, ok := internalModerationInput(req.Claims)
+	if !ok {
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "INVALID_CAPABILITY", "Moderation capability rejected", nil)
 		return
 	}
-	decisionID, err := uuid.Parse(req.Claims.DecisionID)
+	h.applyModeration(c, in)
+}
+
+// reportPolicyPrefix marks a signed decision as an upheld user report
+// (policy_version "report-v1"): trust-safety's report resolution. Any other
+// policy version is an appeal outcome ("appeal-v1"), as before.
+const reportPolicyPrefix = "report-"
+
+// internalModerationInput turns verified capability claims into the decision
+// write. A report decision is recorded with source "report" and the report
+// id (the claims' decision_id: one takedown per report, so a replay of the
+// same resolution is the same decision) as its source_ref_id; the store
+// refuses anything but "reject" from that source. false = a malformed id.
+func internalModerationInput(cl moderationcap.Claims) (postgres.ModeratePostInput, bool) {
+	postID, err := uuid.Parse(cl.SubjectID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "INVALID_CAPABILITY", "Moderation capability rejected", nil)
-		return
+		return postgres.ModeratePostInput{}, false
 	}
-	actorID, err := uuid.Parse(req.Claims.ActorID)
+	decisionID, err := uuid.Parse(cl.DecisionID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "INVALID_CAPABILITY", "Moderation capability rejected", nil)
-		return
+		return postgres.ModeratePostInput{}, false
+	}
+	actorID, err := uuid.Parse(cl.ActorID)
+	if err != nil {
+		return postgres.ModeratePostInput{}, false
+	}
+	source := "appeal"
+	if strings.HasPrefix(strings.TrimSpace(cl.PolicyVersion), reportPolicyPrefix) {
+		source = "report"
 	}
 	sourceRef := decisionID
-	h.applyModeration(c, postgres.ModeratePostInput{
+	return postgres.ModeratePostInput{
 		DecisionID: decisionID, PostID: postID, ActorID: actorID,
-		Action: req.Claims.Decision, Reason: req.Claims.Reason,
-		Source: "appeal", SourceRefID: &sourceRef, ExpectedRevision: req.Claims.ContentRevision,
-	})
+		Action: cl.Decision, Reason: cl.Reason,
+		Source: source, SourceRefID: &sourceRef, ExpectedRevision: cl.ContentRevision,
+	}, true
 }
 
 func (h *Handler) applyModeration(c *gin.Context, in postgres.ModeratePostInput) {
@@ -142,6 +162,8 @@ func (h *Handler) applyModeration(c *gin.Context, in postgres.ModeratePostInput)
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "DECISION_CONFLICT", err.Error(), nil)
 		case errors.Is(err, postgres.ErrModerationRevision):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "STALE_MODERATION_SUBJECT", err.Error(), nil)
+		case errors.Is(err, postgres.ErrModerationInput):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_DECISION", err.Error(), nil)
 		case errors.Is(err, postgres.ErrModerationTransition):
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusConflict, "INVALID_TRANSITION", err.Error(), nil)
 		default:

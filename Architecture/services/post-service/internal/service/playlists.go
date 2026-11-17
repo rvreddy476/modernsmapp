@@ -244,6 +244,16 @@ func (s *Service) AddPlaylistItem(ctx context.Context, callerID, playlistID, pos
 	if err := s.requireUserPlaylistOwner(ctx, callerID, playlistID); err != nil {
 		return nil, err
 	}
+	// The post must be one the caller may open (reels-18): adding a
+	// pending, rejected, processing, scheduled or out-of-audience post
+	// answers as a missing one and writes nothing. An age refusal is not
+	// applied here, as on the like and save routes.
+	if _, err := s.loadPostForEngagement(ctx, postID, callerID); err != nil {
+		if errors.Is(err, ErrPostNotVisible) {
+			return nil, ErrPostNotFound
+		}
+		return nil, err
+	}
 	item, err := s.playlistItemWrites().AddPlaylistItem(ctx, playlistID, postID, position, postgres.MaxPlaylistItems)
 	switch {
 	case errors.Is(err, postgres.ErrPlaylistItemExists):

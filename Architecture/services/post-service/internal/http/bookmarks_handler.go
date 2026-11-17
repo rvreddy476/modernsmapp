@@ -5,6 +5,7 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -41,6 +42,13 @@ func (h *Handler) AddBookmark(c *gin.Context) {
 	if err := h.svc.AddBookmarkTo(c.Request.Context(), userID, postID, collectionID); err != nil {
 		if isSavedCollectionError(err) {
 			writeSavedCollectionError(c, err)
+			return
+		}
+		// A post the caller may not open (pending, rejected, processing,
+		// scheduled, or outside its audience) answers exactly as a missing
+		// one (reels-18): it used to be a 500 echoing which of the two it was.
+		if errors.Is(err, service.ErrPostNotFound) || errors.Is(err, service.ErrPostNotVisible) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "POST_NOT_FOUND", "post not found", nil)
 			return
 		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)

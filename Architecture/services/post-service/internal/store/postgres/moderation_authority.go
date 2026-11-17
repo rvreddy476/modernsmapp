@@ -15,6 +15,9 @@ var (
 	ErrModerationDecisionConflict = errors.New("moderation decision id was already used with different claims")
 	ErrModerationTransition       = errors.New("moderation transition is not allowed")
 	ErrModerationRevision         = errors.New("moderation subject revision changed")
+	// ErrModerationInput: a missing id or reason, an unknown action, or an
+	// action the source may not take (a report only takes a post down).
+	ErrModerationInput = errors.New("invalid moderation decision input")
 )
 
 type ModerationSubject struct {
@@ -152,8 +155,8 @@ func (s *Store) ModeratePost(ctx context.Context, in ModeratePostInput) (*Modera
 	in.Reason = strings.TrimSpace(in.Reason)
 	if in.DecisionID == uuid.Nil || in.PostID == uuid.Nil || in.ActorID == uuid.Nil ||
 		moderationTarget(in.Action) == "" || in.Reason == "" ||
-		(in.Source != "admin" && in.Source != "appeal") {
-		return nil, fmt.Errorf("invalid moderation decision input")
+		!moderationSourceAllowed(in.Source, in.Action) {
+		return nil, ErrModerationInput
 	}
 
 	tx, err := s.db.Begin(ctx)
@@ -231,6 +234,13 @@ func (s *Store) ModeratePost(ctx context.Context, in ModeratePostInput) (*Modera
 		// (visibility_events.go), in this transaction.
 		if moderationNarrows(current, resulting) {
 			if err := emitVisibilityNarrowedTx(ctx, tx, in.PostID, VisibilityReasonModeration); err != nil {
+				return nil, err
+			}
+		}
+		// The author is told why (takedown) or that it is back (an appeal
+		// or a moderator reversing it), in this transaction.
+		if kind := moderationNoticeKind(current, resulting); kind != "" {
+			if err := emitModerationNoticeTx(ctx, tx, decision, kind); err != nil {
 				return nil, err
 			}
 		}

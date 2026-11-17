@@ -31,6 +31,10 @@ import (
 // it; tests substitute a fake.
 type Store interface {
 	ListDueScheduledPosts(ctx context.Context, now time.Time, limit int) ([]postgres.ScheduledCandidate, error)
+	// REG-6: a scheduled video whose media failed leaves the schedule for
+	// the rejected state and its creator is told (scheduled_failed_video.go).
+	ListFailedScheduledVideos(ctx context.Context, limit int) ([]uuid.UUID, error)
+	ResolveFailedScheduledVideo(ctx context.Context, postID uuid.UUID) (bool, error)
 }
 
 // Publisher makes one due post live. It must report false — not an error —
@@ -108,11 +112,16 @@ type TickReport struct {
 	Published int
 	Skipped   int // due when listed, not scheduled any more when flipped
 	Failed    int
+	// MediaFailed counts scheduled videos taken off the schedule because
+	// their media failed (REG-6).
+	MediaFailed int
 }
 
-// Tick publishes every due post.
+// Tick resolves scheduled videos whose media failed, then publishes every
+// due post.
 func (w *Worker) Tick(ctx context.Context) TickReport {
 	var rep TickReport
+	w.resolveFailedVideos(ctx, &rep)
 	cands, err := w.store.ListDueScheduledPosts(ctx, w.now(), w.cfg.Batch)
 	if err != nil {
 		w.log.Error("post schedule: list failed", "err", err)
@@ -137,4 +146,32 @@ func (w *Worker) Tick(ctx context.Context) TickReport {
 			"post_id", c.PostID, "author_id", c.AuthorID, "publish_at", c.PublishAt)
 	}
 	return rep
+}
+
+// resolveFailedVideos is REG-6: every scheduled video whose media failed
+// leaves the schedule (rejected, author-only) and its creator is notified,
+// in the store's one transaction. A failure is logged and retried on the
+// next tick; it never holds up publishing.
+func (w *Worker) resolveFailedVideos(ctx context.Context, rep *TickReport) {
+	ids, err := w.store.ListFailedScheduledVideos(ctx, w.cfg.Batch)
+	if err != nil {
+		w.log.Error("post schedule: list failed-media videos failed", "err", err)
+		return
+	}
+	for _, id := range ids {
+		if ctx.Err() != nil {
+			return
+		}
+		resolved, err := w.store.ResolveFailedScheduledVideo(ctx, id)
+		if err != nil {
+			rep.Failed++
+			w.log.Error("post schedule: resolve failed-media video failed", "post_id", id, "err", err)
+			continue
+		}
+		if resolved {
+			rep.MediaFailed++
+			w.log.Warn("post schedule: scheduled video's media failed; taken off the schedule and rejected",
+				"event", "post_scheduled_media_failed", "post_id", id)
+		}
+	}
 }

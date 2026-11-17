@@ -52,23 +52,52 @@ func (s *Service) loadPostForEngagement(ctx context.Context, postID, viewerID uu
 	if s.engagementPostSeam != nil {
 		return s.engagementPostSeam(ctx, postID, viewerID)
 	}
-	post, err := s.pgStore.GetPost(ctx, postID)
+	store := s.listReads()
+	if store == nil {
+		return nil, ErrAuthoringStoreUnavailable
+	}
+	post, err := store.GetPost(ctx, postID)
 	if err != nil {
 		return nil, err
 	}
 	if post == nil {
 		return nil, ErrPostNotFound
 	}
-	// One visibility rule (2026-09-29): this used to restate
-	// viewerMayViewPost without 'unlisted' and without the private share
-	// list, so a viewer the detail let in (an unlisted link, a user a
-	// private post is shared with) was refused every engagement — while
-	// the routes gated by the detail's gate let them through. Same fail-
-	// closed answers: an unknown value or a graph outage denies.
-	if !s.viewerMayViewPost(ctx, post, &viewerID) {
+	// One decision (reels-18, 2026-11-18): the direct read's whole gate —
+	// review status, still processing, still scheduled, then the audience
+	// (viewerMayViewPost, incl. unlisted and the private share list). This
+	// used to apply the audience only, so a stranger could like, comment on,
+	// save or share a pending, rejected, processing or scheduled post and
+	// learn it existed. A refusal answers as a missing post does (404).
+	open, err := s.postOpenToViewer(ctx, post, &viewerID)
+	if err != nil {
+		return nil, err
+	}
+	if !open {
 		return nil, ErrPostNotVisible
 	}
 	return post, nil
+}
+
+// postOpenToViewer is GetPost's decision on an already-loaded post, the one
+// every single-post read and every engagement write shares: a post whose
+// effective review status is not approved, one still processing and one
+// still scheduled are the author's alone; then the audience rule. The live
+// media state is overlaid here (attachMediaState) so "processing" is never
+// read from a stale body. An unreadable media table is an error: fail closed.
+func (s *Service) postOpenToViewer(ctx context.Context, p *postgres.Post, viewerID *uuid.UUID) (bool, error) {
+	if !isOwnPost(viewerID, p.AuthorID) {
+		if st := p.EffectiveReviewStatus(); st != "" && st != "approved" {
+			return false, nil
+		}
+	}
+	if err := s.attachMediaState(ctx, []*postgres.Post{p}); err != nil {
+		return false, err
+	}
+	if hiddenFromViewer(p, viewerID) {
+		return false, nil
+	}
+	return s.viewerMayViewPost(ctx, p, viewerID), nil
 }
 
 // viewerMayViewPost applies the visibility policy to an ALREADY-LOADED post

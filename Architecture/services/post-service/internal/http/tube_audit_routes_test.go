@@ -72,6 +72,10 @@ func newTubeRig(t *testing.T) *tubeRig {
 	r.gateRig = newGateRig(t, func(uuid.UUID, *uuid.UUID) error { return nil }, func(d *service.HandlerTestDeps) {
 		d.Authoring = auth
 		d.PlaylistItems = r.items
+		// The added post is one the owner may open (reels-18's gate).
+		d.EngagementPost = func(_ context.Context, id, _ uuid.UUID) (*postgres.Post, error) {
+			return &postgres.Post{ID: id, AuthorID: r.owner, Visibility: "public", ReviewStatus: "approved"}, nil
+		}
 		d.Chapters = r.chapters
 		d.PostGate = func(context.Context, uuid.UUID) (uuid.UUID, *uuid.UUID, error) { return r.owner, r.tier, nil }
 		d.BatchPosts = func(context.Context, []uuid.UUID, *uuid.UUID) (map[uuid.UUID]*service.PostDetail, error) {

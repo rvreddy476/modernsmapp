@@ -307,16 +307,12 @@ func (s *Service) loadVisiblePost(ctx context.Context, postID uuid.UUID, viewerI
 	if p == nil {
 		return nil, nil
 	}
-	if p.EffectiveReviewStatus() != "" && p.EffectiveReviewStatus() != "approved" {
-		if viewerID == nil || *viewerID != p.AuthorID {
-			return nil, nil
-		}
-	}
-	if hiddenFromViewer(p, viewerID) {
-		return nil, nil
-	}
-	if !s.viewerMayViewPost(ctx, p, viewerID) {
-		return nil, nil
+	// GetPost's whole decision (post_visibility.go), the live processing
+	// state included (reels-18): this used to skip it, so a route behind
+	// PostReadGate let a stranger act on a still-processing post.
+	open, err := s.postOpenToViewer(ctx, p, viewerID)
+	if err != nil || !open {
+		return nil, err
 	}
 	return p, nil
 }

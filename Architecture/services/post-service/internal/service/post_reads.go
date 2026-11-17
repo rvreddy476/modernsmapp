@@ -29,32 +29,15 @@ func (s *Service) GetPost(ctx context.Context, id uuid.UUID, viewerID *uuid.UUID
 		return nil, nil
 	}
 
-	// reels/posttube item 5: a post the spam detector or auto-moderation
-	// flagged/rejected — or one still pending a verdict — must not be
-	// reachable by direct link. Feeds already filter on review_status;
-	// this closes the GetPost hole. The author still sees their own.
-	if p.EffectiveReviewStatus() != "" && p.EffectiveReviewStatus() != "approved" {
-		if viewerID == nil || *viewerID != p.AuthorID {
-			return nil, nil
-		}
-	}
-
-	// Instant publish (processing.go): overlay the live media pipeline
-	// state — AFTER the cache, never from it — and hide a still-processing
-	// post from everyone but its author. Same 404 as the other gates.
-	if err := s.attachMediaState(ctx, []*postgres.Post{p}); err != nil {
+	// The one open decision (postOpenToViewer, post_visibility.go), shared
+	// with every engagement write: a flagged, rejected or pending post
+	// (reels/posttube item 5), a still-processing one (the live media state,
+	// overlaid AFTER the cache, never from it) and a scheduled one are the
+	// author's alone; then the audience. Renders as 404, not 403: a denial
+	// that confirms existence is itself a leak.
+	if open, err := s.postOpenToViewer(ctx, p, viewerID); err != nil {
 		return nil, err
-	}
-	if hiddenFromViewer(p, viewerID) {
-		return nil, nil
-	}
-
-	// Visibility gate on the direct-link read. The engagement endpoints,
-	// feed batch and repost paths were already gated; this was the one
-	// door left open — anyone with the id could read a private or
-	// followers-only post. Renders as 404, not 403: a denial that
-	// confirms existence is itself a leak.
-	if !s.viewerMayViewPost(ctx, p, viewerID) {
+	} else if !open {
 		return nil, nil
 	}
 	// Age-restricted (age_gate.go): only after the viewer may see the post

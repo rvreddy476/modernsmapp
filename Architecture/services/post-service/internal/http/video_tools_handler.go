@@ -216,6 +216,11 @@ func (h *Handler) SetCoverFrame(c *gin.Context) {
 		if writeCoverMediaError(c, err) || writeMediaClaimsError(c, err) {
 			return
 		}
+		// lv-28: an off-platform thumbnail_url is the client's mistake.
+		if errors.Is(err, service.ErrInvalidCoverThumbnail) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "INVALID_THUMBNAIL_URL", err.Error(), nil)
+			return
+		}
 		if strings.Contains(err.Error(), "unauthorized") {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
 			return

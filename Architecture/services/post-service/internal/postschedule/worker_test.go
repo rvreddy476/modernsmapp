@@ -22,6 +22,55 @@ type fakeStore struct {
 	deleted   map[uuid.UUID]bool
 	published []uuid.UUID
 	listErr   error
+	// mediaFailed: scheduled videos whose media failed (REG-6); rejected
+	// and notified record what ResolveFailedScheduledVideo did.
+	mediaFailed map[uuid.UUID]bool
+	rejected    map[uuid.UUID]bool
+	notified    []uuid.UUID
+}
+
+func (f *fakeStore) ListFailedScheduledVideos(_ context.Context, limit int) ([]uuid.UUID, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []uuid.UUID
+	for id := range f.mediaFailed {
+		if at := f.publishAt[id]; at != nil && !f.deleted[id] {
+			out = append(out, id)
+		}
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out, nil
+}
+
+// ResolveFailedScheduledVideo models the guarded UPDATE: only a still
+// scheduled, failed, live post moves, and the notice is written with it.
+func (f *fakeStore) ResolveFailedScheduledVideo(_ context.Context, postID uuid.UUID) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if at := f.publishAt[postID]; at == nil || f.deleted[postID] || !f.mediaFailed[postID] {
+		return false, nil
+	}
+	f.publishAt[postID] = nil
+	if f.rejected == nil {
+		f.rejected = map[uuid.UUID]bool{}
+	}
+	f.rejected[postID] = true
+	f.notified = append(f.notified, postID)
+	return true, nil
+}
+
+// failMedia marks a scheduled post's video as terminally failed. The fake's
+// ListDueScheduledPosts still skips nothing for it, so the test also proves
+// the resolve runs BEFORE the publish pass.
+func (f *fakeStore) failMedia(id uuid.UUID) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.mediaFailed == nil {
+		f.mediaFailed = map[uuid.UUID]bool{}
+	}
+	f.mediaFailed[id] = true
 }
 
 func newFakeStore() *fakeStore {
@@ -182,6 +231,49 @@ func TestTickListFailureIsNotFatal(t *testing.T) {
 	rep := NewWorker(st, st, Config{}, nil).Tick(context.Background())
 	if rep != (TickReport{}) {
 		t.Fatalf("report %+v", rep)
+	}
+}
+
+// REG-6: a scheduled video whose media failed for good leaves the schedule
+// for the rejected state, its creator is told once, and it is never
+// published — whether its slot has passed or not. A healthy scheduled post
+// beside it is untouched.
+func TestTickTakesAFailedMediaVideoOffTheScheduleAndTellsTheCreator(t *testing.T) {
+	st := newFakeStore()
+	now := time.Now()
+	failedDue := st.schedule(now.Add(-time.Minute))
+	failedLater := st.schedule(now.Add(time.Hour))
+	healthy := st.schedule(now.Add(time.Hour))
+	st.failMedia(failedDue)
+	st.failMedia(failedLater)
+
+	w := NewWorker(st, st, Config{}, nil)
+	rep := w.Tick(context.Background())
+	if rep.MediaFailed != 2 || rep.Published != 0 || rep.Failed != 0 {
+		t.Fatalf("report %+v, want 2 media-failed and nothing published", rep)
+	}
+	for _, id := range []uuid.UUID{failedDue, failedLater} {
+		if st.publishAt[id] != nil {
+			t.Fatalf("failed-media post %s is still scheduled", id)
+		}
+		if !st.rejected[id] {
+			t.Fatalf("failed-media post %s was not rejected", id)
+		}
+	}
+	for _, id := range st.published {
+		if id == failedDue || id == failedLater {
+			t.Fatal("a failed-media video was published")
+		}
+	}
+	if st.publishAt[healthy] == nil || st.rejected[healthy] {
+		t.Fatal("a healthy scheduled post was touched")
+	}
+	if len(st.notified) != 2 {
+		t.Fatalf("notified %d times, want once per failed video", len(st.notified))
+	}
+	// A second tick finds nothing left to resolve and tells nobody again.
+	if rep := w.Tick(context.Background()); rep.MediaFailed != 0 || len(st.notified) != 2 {
+		t.Fatalf("second tick re-resolved: %+v, notices %d", rep, len(st.notified))
 	}
 }
 

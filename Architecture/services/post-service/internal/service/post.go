@@ -344,6 +344,8 @@ type Service struct {
 	reactionMirrorSeam reactionMirror
 	// The like route's seams (like_toggle.go).
 	likeSeams
+	// The video creator tools' seams (video_tools_store.go).
+	videoToolSeams
 
 	// Copyright title review (copyright_title_review.go, migration 073):
 	// the store slice (nil = the Postgres store), this replica's catalogue

@@ -580,6 +580,10 @@ func TestAddPlaylistItemAppendsAndRefusesDuplicatesAndOverflow(t *testing.T) {
 	items := &fakePlaylistItems{}
 	s := newAuthoringService(&fakeAuthoringStore{playlist: pl})
 	s.playlistItemsSeam = items
+	// Every added post is one the owner may open (reels-18's gate).
+	s.engagementPostSeam = func(_ context.Context, id, _ uuid.UUID) (*postgres.Post, error) {
+		return &postgres.Post{ID: id, AuthorID: uuid.New(), Visibility: "public", ReviewStatus: "approved"}, nil
+	}
 	ctx := context.Background()
 
 	item, err := s.AddPlaylistItem(ctx, owner, pl.ID, uuid.New(), nil)
