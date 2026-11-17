@@ -590,6 +590,13 @@ func writeCommerceError(c *gin.Context, err error) {
 		return
 	}
 
+	// The admin review actions' state guards: 404 for a seller or product
+	// that does not exist, 409 for one in a state the action may not move
+	// from (handler_onboarding.go, store adminreview.go).
+	if writeReviewError(c, err) {
+		return
+	}
+
 	// Out of stock carries per-line detail so the cart can grey the right
 	// rows instead of showing a generic failure.
 	var oos *postgres.OutOfStockError

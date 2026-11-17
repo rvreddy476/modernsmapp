@@ -373,8 +373,9 @@ func (s *Service) AdminRequestSellerChanges(ctx context.Context, sellerID, actor
 	if err := s.store.RequestSellerChanges(ctx, sellerID, actorID, changes, notes); err != nil {
 		return err
 	}
-	// A seller sent back for changes is no longer approved, so their listings
-	// leave the storefront; search has to hear it too.
+	// Only a seller in the review queue can be sent back for changes (store
+	// adminreview.go), so nothing of theirs was on the storefront; the event
+	// is still published, and search's read-back makes it a no-op.
 	s.publishSellerCatalogueVisibility(ctx, sellerID)
 	return nil
 }

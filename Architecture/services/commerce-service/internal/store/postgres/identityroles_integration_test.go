@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/atpost/shared/identityroles"
@@ -70,6 +71,18 @@ func newDraftSeller(t *testing.T, s *Store) (sellerID, userID uuid.UUID) {
 	return sel.ID, userID
 }
 
+// newSubmittedSeller is a draft that has submitted its application, which is
+// the only state an admin decision applies to (adminreview.go). The submit is
+// the store's own; the completeness gate in front of it is the service's.
+func newSubmittedSeller(t *testing.T, s *Store) (sellerID, userID uuid.UUID) {
+	t.Helper()
+	sellerID, userID = newDraftSeller(t, s)
+	if err := s.SubmitSellerApplication(context.Background(), userID); err != nil {
+		t.Fatalf("SubmitSellerApplication: %v", err)
+	}
+	return sellerID, userID
+}
+
 func TestIdentityRole_GrantedAtOnboardingStartNotAtApproval(t *testing.T) {
 	s := rolesStore(t)
 	_, userID := newDraftSeller(t, s)
@@ -85,7 +98,7 @@ func TestIdentityRole_GrantedAtOnboardingStartNotAtApproval(t *testing.T) {
 
 func TestIdentityRole_ApprovalReGrants(t *testing.T) {
 	s := rolesStore(t)
-	sellerID, userID := newDraftSeller(t, s)
+	sellerID, userID := newSubmittedSeller(t, s)
 
 	if err := s.ApproveSellerByAdmin(context.Background(), sellerID, uuid.New(), "looks good"); err != nil {
 		t.Fatalf("ApproveSellerByAdmin: %v", err)
@@ -100,7 +113,7 @@ func TestIdentityRole_ApprovalReGrants(t *testing.T) {
 
 func TestIdentityRole_RejectionRevokes(t *testing.T) {
 	s := rolesStore(t)
-	sellerID, userID := newDraftSeller(t, s)
+	sellerID, userID := newSubmittedSeller(t, s)
 
 	if err := s.RejectSellerByAdmin(context.Background(), sellerID, uuid.New(), "fake docs", ""); err != nil {
 		t.Fatalf("RejectSellerByAdmin: %v", err)
@@ -115,14 +128,19 @@ func TestIdentityRole_RejectionRevokes(t *testing.T) {
 
 func TestIdentityRole_SuspensionDoesNotRevoke(t *testing.T) {
 	s := rolesStore(t)
-	sellerID, userID := newDraftSeller(t, s)
+	// Only an approved seller can be suspended, so this one is submitted and
+	// approved first: two grants (start, approval) before the suspension.
+	sellerID, userID := newSubmittedSeller(t, s)
+	if err := s.ApproveSellerByAdmin(context.Background(), sellerID, uuid.New(), "ok"); err != nil {
+		t.Fatalf("ApproveSellerByAdmin: %v", err)
+	}
 
 	if err := s.SuspendSellerByAdmin(context.Background(), sellerID, uuid.New(), "policy", ""); err != nil {
 		t.Fatalf("SuspendSellerByAdmin: %v", err)
 	}
 	got := roleIntentsFor(t, userID)
-	if len(got) != 1 {
-		t.Fatalf("intents = %v, want only the create-time grant. A suspended seller is "+
+	if len(got) != 2 || got[0] != "grant" || got[1] != "grant" {
+		t.Fatalf("intents = %v, want only the two grants (start, approval). A suspended seller is "+
 			"still a seller — they must reach the seller area to read why and to appeal, "+
 			"and sellers.status already carries the suspension", got)
 	}
@@ -130,7 +148,7 @@ func TestIdentityRole_SuspensionDoesNotRevoke(t *testing.T) {
 
 func TestIdentityRole_RequestChangesDoesNotRevoke(t *testing.T) {
 	s := rolesStore(t)
-	sellerID, userID := newDraftSeller(t, s)
+	sellerID, userID := newSubmittedSeller(t, s)
 
 	if err := s.RequestSellerChanges(context.Background(), sellerID, uuid.New(), "fix the GST", ""); err != nil {
 		t.Fatalf("RequestSellerChanges: %v", err)
@@ -164,12 +182,11 @@ func TestIdentityRole_UnattachedQueueIsANoOp(t *testing.T) {
 }
 
 func TestIdentityRole_ApproveUnknownSellerIsNotFound(t *testing.T) {
-	// Behaviour change worth pinning: the approve/reject writes moved from
-	// Exec to QueryRow ... RETURNING user_id, so an unknown sellerId is now
-	// pgx.ErrNoRows (which writeCommerceError renders as 404) instead of a
-	// silent 204.
+	// An unknown sellerId is ErrSellerNotFound (404 SELLER_NOT_FOUND at the
+	// edge), told apart from a seller in the wrong state (409). It was a
+	// silent 204 once, then a bare pgx.ErrNoRows.
 	s := rolesStore(t)
-	if err := s.ApproveSellerByAdmin(context.Background(), uuid.New(), uuid.New(), ""); err == nil {
-		t.Fatal("approving an unknown seller must be an error, not a silent success")
+	if err := s.ApproveSellerByAdmin(context.Background(), uuid.New(), uuid.New(), ""); !errors.Is(err, ErrSellerNotFound) {
+		t.Fatalf("approving an unknown seller: %v, want ErrSellerNotFound", err)
 	}
 }

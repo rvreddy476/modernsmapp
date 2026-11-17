@@ -1,6 +1,7 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -404,6 +405,65 @@ func (h *Handler) SubmitProduct(c *gin.Context) {
 
 // ─── Internal admin handlers ────────────────────────────────────
 
+// The refusals of the admin review actions. Stable: admin-service relays
+// them and the console keys on them.
+const (
+	// CodeSellerNotFound is the code the KYC document routes already answer
+	// with (handler_seller_documents.go).
+	CodeSellerNotFound = "SELLER_NOT_FOUND"
+	// CodeSellerTransitionNotAllowed: the seller exists and is not in a state
+	// the action applies to (approving a draft, an already approved or a
+	// rejected seller; suspending one that is not live; ...).
+	CodeSellerTransitionNotAllowed = "SELLER_TRANSITION_NOT_ALLOWED"
+	// CodeProductTransitionNotAllowed: the product exists and is not in a
+	// state the action applies to (approving one never sent for review).
+	CodeProductTransitionNotAllowed = "PRODUCT_TRANSITION_NOT_ALLOWED"
+	// CodeProductSellerNotApproved: the product is in the queue and its shop
+	// is not approved, so approving it would put an unreviewed (or
+	// suspended) shop's goods on sale.
+	CodeProductSellerNotApproved = "PRODUCT_SELLER_NOT_APPROVED"
+	// CodeApplicationAlreadySubmitted: a second submit of a seller
+	// application. It reached the default arm as a 500 before.
+	CodeApplicationAlreadySubmitted = "APPLICATION_ALREADY_SUBMITTED"
+)
+
+// writeReviewError answers the state-guard refusals of the review actions
+// and reports whether err was one. 404 when the row does not exist; 409 when
+// it does and is in the wrong state, with the state it is in and the states
+// the action applies to, so the console can say why rather than "failed".
+// Nothing was written in either case (store adminreview.go).
+func writeReviewError(c *gin.Context, err error) bool {
+	ctx := c.Request.Context()
+	w := c.Writer
+
+	var seller *postgres.SellerTransitionError
+	var product *postgres.ProductTransitionError
+	var shop *postgres.ProductSellerNotApprovedError
+	switch {
+	case errors.As(err, &seller):
+		api.ErrorWithContext(ctx, w, http.StatusConflict, CodeSellerTransitionNotAllowed,
+			"the seller is not in a state this action applies to", gin.H{
+				"action": seller.Action, "status": seller.Status, "allowed_from": seller.AllowedFrom,
+			})
+	case errors.As(err, &product):
+		api.ErrorWithContext(ctx, w, http.StatusConflict, CodeProductTransitionNotAllowed,
+			"the product is not in a state this action applies to", gin.H{
+				"action": product.Action, "approval_status": product.ApprovalStatus, "allowed_from": product.AllowedFrom,
+			})
+	case errors.As(err, &shop):
+		api.ErrorWithContext(ctx, w, http.StatusConflict, CodeProductSellerNotApproved,
+			"the product's seller is not approved", gin.H{"seller_status": shop.SellerStatus})
+	case errors.Is(err, postgres.ErrSellerNotFound):
+		api.ErrorWithContext(ctx, w, http.StatusNotFound, CodeSellerNotFound, "seller not found", nil)
+	case errors.Is(err, postgres.ErrAlreadySubmitted):
+		api.ErrorWithContext(ctx, w, http.StatusConflict, CodeApplicationAlreadySubmitted,
+			"this application has already been submitted", nil)
+	default:
+		return false
+	}
+	return true
+}
+
 func actorID(c *gin.Context) uuid.UUID {
 	if id, ok := tokenActor(c); ok {
 		return id
@@ -514,10 +574,11 @@ func (h *Handler) AdminSuspendSeller(c *gin.Context) {
 	c.Status(http.StatusNoContent)
 }
 
-// AdminUnsuspendSeller lifts a suspension. 404 when the seller is not
-// currently suspended, because the store's UPDATE is guarded on that state —
-// unsuspending a draft or rejected seller would silently promote them to
-// approved.
+// AdminUnsuspendSeller lifts a suspension. 409
+// SELLER_TRANSITION_NOT_ALLOWED when the seller is not currently suspended
+// (it was a bare 404 NOT_FOUND, the same answer as an unknown id), because
+// the store's UPDATE is guarded on that state — unsuspending a draft or
+// rejected seller would silently promote them to approved.
 func (h *Handler) AdminUnsuspendSeller(c *gin.Context) {
 	sellerID, ok := parseUUID(c, "sellerId")
 	if !ok {

@@ -176,7 +176,8 @@ func firstID(t *testing.T, raw json.RawMessage) string {
 // quote needs later: a fulfilment setting and a pickup address (the origin
 // pincode of the courier quote and the seller half of the GST place of
 // supply; commerce-service internal/service/checkout_p0.go PrepareQuote). It
-// returns the seller id. The shop is a draft: nothing here approves it.
+// returns the seller id. The shop is a draft: nothing here completes its
+// application, submits it or approves it.
 func commerceOpenShop(t *testing.T, ctx context.Context, seller *HTTPClient, storeName string) string {
 	t.Helper()
 	started := must(t, "seller onboarding/start",
@@ -187,8 +188,11 @@ func commerceOpenShop(t *testing.T, ctx context.Context, seller *HTTPClient, sto
 			"business_type": "individual",
 		}))
 	sellerID := field(t, started, "id")
-	// The start answer carries the row as built in memory, whose status is
-	// empty; the stored status is what the status read returns.
+	// The start answer is the stored row, the same one the status read
+	// returns (it used to carry an empty status).
+	if st := field(t, started, "status"); st != "draft" {
+		t.Fatalf("onboarding/start answers status %q, want draft", st)
+	}
 	if st := commerceShopStatus(t, ctx, seller); st != "draft" {
 		t.Fatalf("a new shop is %q, want draft", st)
 	}
@@ -220,6 +224,63 @@ func commerceShopStatus(t *testing.T, ctx context.Context, seller *HTTPClient) s
 	t.Helper()
 	return field(t, must(t, "seller reads onboarding status",
 		seller.MustDo(t, ctx, "GET", "/v1/commerce/onboarding/status", nil)), "status")
+}
+
+// Test values for the seller application. None is a real identifier: the
+// GSTIN is the made-up one commerce-service's own journey test uses (state
+// code 29, Karnataka, like the pickup address; its check character is valid,
+// which is all the service checks: shared/kyc ValidateGSTIN), and the bank
+// account is digits under an IFSC no bank holds ("TEST").
+const (
+	commerceTestGSTIN       = "29AAACM1234A1Z4"
+	commerceTestBankAccount = "000111222333"
+	commerceTestIFSC        = "TEST0000001"
+)
+
+// commerceCompleteApplication fills what the submit gate asks of an
+// all-categories shop beyond what commerceOpenShop already saved (store name,
+// email, pickup address): its GSTIN, a payout account and one KYC document
+// (commerce-service internal/store/postgres/sellerreadiness.go, Missing).
+//
+// Every step is the seller's own route. The document is a real upload through
+// media-service, because commerce-service accepts a KYC media id only when
+// media-service says it is the seller's own, ready and passed
+// (internal/service/onboarding.go verifyKYCMedia); an image is accepted while
+// COMMERCE_KYC_REQUIRE_DOCUMENT_KIND is off, its default. No number rides with
+// the document. Nothing here is verified against a registry: there is no
+// DigiLocker or penny-drop call on the path to submit.
+func commerceCompleteApplication(t *testing.T, ctx context.Context, seller *HTTPClient) {
+	t.Helper()
+	must(t, "seller sell-scope step (GSTIN)",
+		seller.MustDo(t, ctx, "PUT", "/v1/commerce/onboarding/step/sell-scope", map[string]any{
+			"sell_scope": "all_categories",
+			"gstin":      commerceTestGSTIN,
+		}))
+	must(t, "seller payout step",
+		seller.MustDo(t, ctx, "PUT", "/v1/commerce/onboarding/step/payout", map[string]any{
+			"account_holder_name": "E2E Seller",
+			"bank_name":           "E2E Test Bank",
+			"account_number":      commerceTestBankAccount,
+			"ifsc_code":           commerceTestIFSC,
+		}))
+	must(t, "seller documents step",
+		seller.MustDo(t, ctx, "PUT", "/v1/commerce/onboarding/step/documents", map[string]any{
+			"documents": []map[string]any{{
+				"document_type": "gst_certificate",
+				"media_id":      commerceUploadImage(t, ctx, seller),
+			}},
+		}))
+}
+
+// commerceSubmitApplication sends the complete application for review and
+// checks that the shop is now in the queue, not live.
+func commerceSubmitApplication(t *testing.T, ctx context.Context, seller *HTTPClient) {
+	t.Helper()
+	must(t, "seller submits the application",
+		seller.MustDo(t, ctx, "POST", "/v1/commerce/onboarding/submit", nil))
+	if st := commerceShopStatus(t, ctx, seller); st != "submitted" {
+		t.Fatalf("the shop is %q after its application was submitted, want submitted", st)
+	}
 }
 
 // commerceTaxClass picks a GST class from the public rate table. A product
@@ -288,7 +349,10 @@ func commerceDraftProduct(t *testing.T, ctx context.Context, seller *HTTPClient,
 // returns the media id once it reads "ready". commerce-service accepts a
 // product image only when media-service says it is the seller's own, ready
 // and passed (commerce-service internal/media/media.go VerifyOwned), so a
-// listing cannot be submitted on a stack without media-service.
+// listing cannot be submitted on a stack without media-service. The seller
+// application's KYC document is uploaded the same way
+// (commerceCompleteApplication), so the labels below say "product image" for
+// both.
 func commerceUploadImage(t *testing.T, ctx context.Context, owner *HTTPClient) string {
 	t.Helper()
 	const side = 64
@@ -369,16 +433,48 @@ func commerceApprove(t *testing.T, ctx context.Context, admin *HTTPClient, what,
 	})
 }
 
+// commerceRefusedByConsole stops the flow unless a console (admin-service)
+// call was refused with exactly this status by the owning service.
+//
+// The code is checked whenever the answer carries one. On the approve, reject
+// and suspend routes admin-service relays commerce-service's status and drops
+// its body (admin-service internal/http handler_products.go writeProduct,
+// statusOnly), so today there is no code to read there; the code itself is
+// pinned where it is produced (commerce-service internal/http
+// adminreview_errors_test.go and adminreview_integration_test.go). A
+// different code, on any route, fails the flow.
+func commerceRefusedByConsole(t *testing.T, label string, env *Envelope, status int, code string) {
+	t.Helper()
+	if env.Status != status {
+		got := ""
+		if env.Error != nil {
+			got = env.Error.Code
+		}
+		t.Fatalf("%s: want %d %s, got %d %q", label, status, code, env.Status, got)
+	}
+	if env.Error != nil && env.Error.Code != code {
+		t.Fatalf("%s: want %d %s, got %d %q", label, status, code, env.Status, env.Error.Code)
+	}
+	if env.Error == nil {
+		t.Logf("%s -> %d (admin-service relayed the status without commerce's body; %s not visible here)", label, status, code)
+		return
+	}
+	t.Logf("%s -> %d %s", label, status, code)
+}
+
 // commerceLiveListing takes a fresh seller all the way to a listing a shopper
-// can buy: shop opened, product drafted with an image, shop approved by an
-// admin, product submitted, product approved by an admin. It returns the
-// variant id. The journey flow walks the same steps one by one and asserts
-// what each refuses; this is the short form for flows about what comes after.
+// can buy: shop opened, application completed and submitted, shop approved by
+// an admin, product drafted with an image and submitted, product approved by
+// an admin. It returns the variant id. The journey flow walks the same steps
+// one by one and asserts what each refuses; this is the short form for flows
+// about what comes after.
 func commerceLiveListing(t *testing.T, ctx context.Context, admin, seller *HTTPClient, storeName string) string {
 	t.Helper()
 	sellerID := commerceOpenShop(t, ctx, seller, storeName)
 	productID, variantID := commerceDraftProduct(t, ctx, seller, storeName+" Widget")
 	commerceAttachImage(t, ctx, seller, productID)
+	commerceCompleteApplication(t, ctx, seller)
+	commerceSubmitApplication(t, ctx, seller)
 	must(t, "admin approves the seller", commerceApprove(t, ctx, admin, "sellers", sellerID))
 	must(t, "submit product", seller.MustDo(t, ctx, "POST", "/v1/commerce/products/"+productID+"/submit", nil))
 	must(t, "admin approves the product", commerceApprove(t, ctx, admin, "products", productID))

@@ -35,15 +35,19 @@ func (s *Store) StartSellerOnboarding(ctx context.Context, sel *Seller) error {
 	}
 	defer func() { _ = tx.Rollback(ctx) }() // no-op after Commit
 
-	if _, err := tx.Exec(ctx, `
+	// RETURNING, so the caller's row carries what was stored. The start
+	// answer used to be the struct as built in memory, whose status was ""
+	// while GET /onboarding/status said `draft`.
+	if err := tx.QueryRow(ctx, `
 		INSERT INTO sellers (id, user_id, business_page_id, seller_type, business_type, store_name,
 		  brand_name, owner_name, slug, description, tagline, email, phone,
 		  state, city, postal_code, status, onboarding_step, created_at, updated_at, sell_scope)
-		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'draft',1,$17,$18,$19)`,
+		VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'draft',1,$17,$18,$19)
+		RETURNING status, onboarding_step, sell_scope`,
 		sel.ID, sel.UserID, sel.BusinessPageID, sel.SellerType, sel.BusinessType, sel.StoreName,
 		sel.BrandName, sel.OwnerName, sel.Slug, sel.Description, sel.Tagline, sel.Email, sel.Phone,
 		sel.State, sel.City, sel.PostalCode, sel.CreatedAt, sel.UpdatedAt, sellScopeOrDefault(sel.SellScope),
-	); err != nil {
+	).Scan(&sel.Status, &sel.OnboardingStep, &sel.SellScope); err != nil {
 		return err
 	}
 	if err := s.enqueueRoleIntent(ctx, tx, identityroles.OpGrant, sel.UserID,
@@ -319,6 +323,11 @@ func (s *Store) ListSellerQueue(ctx context.Context, limit, offset int) ([]*Sell
 
 // ApproveSellerByAdmin sets status=approved and logs the action.
 //
+// Only out of the review queue (sellerActionFrom): a draft that never
+// submitted its application is refused with a *SellerTransitionError, an
+// unknown id with ErrSellerNotFound, and nothing is written for either. See
+// adminreview.go.
+//
 // Re-grants the `seller` role even though StartSellerOnboarding already
 // granted it. That is deliberate, not redundant: identity's grant is
 // idempotent (200 on a role already held), and this second grant is the safety
@@ -333,11 +342,9 @@ func (s *Store) ApproveSellerByAdmin(ctx context.Context, sellerID, actorID uuid
 	}
 	defer tx.Rollback(ctx)
 
-	var userID uuid.UUID
-	if err := tx.QueryRow(ctx,
-		`UPDATE sellers SET status='approved', approved_at=$2, store_status='active', updated_at=$2
-		  WHERE id=$1 RETURNING user_id`,
-		sellerID, now).Scan(&userID); err != nil {
+	userID, err := moveSeller(ctx, tx, SellerActionApprove, sellerID,
+		`status='approved', approved_at=$3, store_status='active', updated_at=$3`, now)
+	if err != nil {
 		return err
 	}
 	if err := s.enqueueRoleIntent(ctx, tx, identityroles.OpGrant, userID,
@@ -361,6 +368,11 @@ func (s *Store) ApproveSellerByAdmin(ctx context.Context, sellerID, actorID uuid
 // "go and fix it" outcome is AdminRequestSellerChanges
 // (status='changes_required'), which deliberately does NOT revoke — that
 // applicant still has to reach the seller area to make the changes.
+//
+// Only out of the review queue, like the approval: it is terminal and it
+// revokes a role, so it must not reach a draft nobody submitted, and a reject
+// that loses a race to an approve must not overwrite it (a live shop is
+// taken down by SuspendSellerByAdmin, which has a way back).
 func (s *Store) RejectSellerByAdmin(ctx context.Context, sellerID, actorID uuid.UUID, reason, notes string) error {
 	now := time.Now()
 	tx, err := s.db.Begin(ctx)
@@ -369,11 +381,9 @@ func (s *Store) RejectSellerByAdmin(ctx context.Context, sellerID, actorID uuid.
 	}
 	defer tx.Rollback(ctx)
 
-	var userID uuid.UUID
-	if err := tx.QueryRow(ctx,
-		`UPDATE sellers SET status='rejected', rejected_at=$2, rejection_reason=$3, updated_at=$2
-		  WHERE id=$1 RETURNING user_id`,
-		sellerID, now, reason).Scan(&userID); err != nil {
+	userID, err := moveSeller(ctx, tx, SellerActionReject, sellerID,
+		`status='rejected', rejected_at=$3, rejection_reason=$4, updated_at=$3`, now, reason)
+	if err != nil {
 		return err
 	}
 	if err := s.enqueueRoleIntent(ctx, tx, identityroles.OpRevoke, userID,
@@ -390,6 +400,9 @@ func (s *Store) RejectSellerByAdmin(ctx context.Context, sellerID, actorID uuid.
 }
 
 // RequestSellerChanges sets status=changes_required and logs the action.
+//
+// Only out of the review queue. Unguarded it was a side door to approval:
+// request changes on a draft, and the queue then offers approve.
 func (s *Store) RequestSellerChanges(ctx context.Context, sellerID, actorID uuid.UUID, changes, notes string) error {
 	now := time.Now()
 	tx, err := s.db.Begin(ctx)
@@ -398,9 +411,8 @@ func (s *Store) RequestSellerChanges(ctx context.Context, sellerID, actorID uuid
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx,
-		`UPDATE sellers SET status='changes_required', changes_requested=$2, updated_at=$3 WHERE id=$1`,
-		sellerID, changes, now); err != nil {
+	if _, err := moveSeller(ctx, tx, SellerActionRequestChanges, sellerID,
+		`status='changes_required', changes_requested=$3, updated_at=$4`, changes, now); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx,
@@ -432,6 +444,10 @@ func (s *Store) RequestSellerChanges(ctx context.Context, sellerID, actorID uuid
 // this module is curing. identity says who you are; commerce says what state
 // you are in. See shared/identityroles' package doc, and keep this in step
 // with food-service's SUSPENDED and rider-service's suspended.
+//
+// Only an approved seller can be suspended. The comment on
+// UnsuspendSellerByAdmin always said so; the UPDATE did not, and suspend
+// followed by unsuspend moved a draft or rejected seller to approved.
 func (s *Store) SuspendSellerByAdmin(ctx context.Context, sellerID, actorID uuid.UUID, reason, notes string) error {
 	now := time.Now()
 	tx, err := s.db.Begin(ctx)
@@ -440,12 +456,9 @@ func (s *Store) SuspendSellerByAdmin(ctx context.Context, sellerID, actorID uuid
 	}
 	defer tx.Rollback(ctx)
 
-	var userID uuid.UUID
-	if err := tx.QueryRow(ctx,
-		`UPDATE sellers SET status='suspended', store_status='suspended',
-		        suspension_reason=$2, updated_at=$3
-		  WHERE id=$1 RETURNING user_id`,
-		sellerID, reason, now).Scan(&userID); err != nil {
+	if _, err := moveSeller(ctx, tx, SellerActionSuspend, sellerID,
+		`status='suspended', store_status='suspended', suspension_reason=$3, updated_at=$4`,
+		reason, now); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx,
@@ -484,12 +497,9 @@ func (s *Store) UnsuspendSellerByAdmin(ctx context.Context, sellerID, actorID uu
 	// Guarded on the current state: unsuspending something that was never
 	// suspended would quietly promote a draft or rejected seller to
 	// approved, which is the same class of bug in the opposite direction.
-	var userID uuid.UUID
-	if err := tx.QueryRow(ctx,
-		`UPDATE sellers SET status='approved', store_status='active',
-		        suspension_reason=NULL, updated_at=$2
-		  WHERE id=$1 AND status='suspended' RETURNING user_id`,
-		sellerID, now).Scan(&userID); err != nil {
+	if _, err := moveSeller(ctx, tx, SellerActionUnsuspend, sellerID,
+		`status='approved', store_status='active', suspension_reason=NULL, updated_at=$3`,
+		now); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(ctx,
@@ -570,6 +580,10 @@ func (s *Store) AutoApproveProduct(ctx context.Context, productID uuid.UUID) err
 }
 
 // approveProduct is the one approval write, for both actors.
+//
+// Guarded (adminreview.go): only a listing its seller sent for review, and
+// only while that seller is approved. The automatic approval runs straight
+// after a successful submit by an approved shop, so it passes the same guard.
 func (s *Store) approveProduct(ctx context.Context, productID, actorID uuid.UUID, notes string) error {
 	now := time.Now()
 	tx, err := s.db.Begin(ctx)
@@ -578,9 +592,8 @@ func (s *Store) approveProduct(ctx context.Context, productID, actorID uuid.UUID
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx,
-		`UPDATE products SET approval_status='approved', status='active', published_at=$2, updated_at=$2 WHERE id=$1`,
-		productID, now); err != nil {
+	if err := moveProduct(ctx, tx, ProductActionApprove, productID,
+		`approval_status='approved', status='active', published_at=$3, updated_at=$3`, now); err != nil {
 		return err
 	}
 	// Migration 027's dual-write: the seller's offer carries its own copy of
@@ -612,9 +625,8 @@ func (s *Store) RequestProductChangesByAdmin(ctx context.Context, productID, act
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx,
-		`UPDATE products SET approval_status='changes_requested', rejection_reason=$2, updated_at=$3 WHERE id=$1`,
-		productID, message, now); err != nil {
+	if err := moveProduct(ctx, tx, ProductActionRequestChanges, productID,
+		`approval_status='changes_requested', rejection_reason=$3, updated_at=$4`, message, now); err != nil {
 		return err
 	}
 	if err := syncOfferLifecycleTx(ctx, tx, productID); err != nil {
@@ -638,9 +650,8 @@ func (s *Store) RejectProductByAdmin(ctx context.Context, productID, actorID uui
 	}
 	defer tx.Rollback(ctx)
 
-	if _, err := tx.Exec(ctx,
-		`UPDATE products SET approval_status='rejected', rejection_reason=$2, updated_at=$3 WHERE id=$1`,
-		productID, reason, now); err != nil {
+	if err := moveProduct(ctx, tx, ProductActionReject, productID,
+		`approval_status='rejected', rejection_reason=$3, updated_at=$4`, reason, now); err != nil {
 		return err
 	}
 	if err := syncOfferLifecycleTx(ctx, tx, productID); err != nil {

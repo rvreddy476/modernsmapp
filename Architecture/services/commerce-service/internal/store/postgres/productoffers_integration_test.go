@@ -25,6 +25,7 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -257,15 +258,37 @@ func TestOfferDualWrite_EveryLifecycleTransitionMovesBothCopies(t *testing.T) {
 	}
 	f.assertAgrees("after request-changes")
 
-	// 4. reject (RejectProductByAdmin)
+	// 4. reject (RejectProductByAdmin). A moderation decision applies to a
+	//    listing in the queue or on the storefront (adminreview.go), so the
+	//    seller resubmits the sent-back listing first; rejecting it where it
+	//    stands is refused and moves neither copy.
+	if err := f.store.RejectProductByAdmin(ctx, f.productID, actor, "counterfeit"); !errors.Is(err, ErrProductTransitionNotAllowed) {
+		t.Fatalf("reject of a changes_requested listing: %v, want ErrProductTransitionNotAllowed", err)
+	}
+	f.assertAgrees("after the refused reject")
+	if err := f.store.SubmitProductForReview(ctx, f.productID, f.sellerID, nil, 0, nil); err != nil {
+		t.Fatalf("resubmit after request-changes: %v", err)
+	}
+	f.assertAgrees("after resubmit")
 	if err := f.store.RejectProductByAdmin(ctx, f.productID, actor, "counterfeit"); err != nil {
 		t.Fatalf("reject: %v", err)
 	}
 	f.assertAgrees("after reject")
+	if got := f.offer().ApprovalStatus; got != "rejected" {
+		t.Errorf("after reject the offer says %q", got)
+	}
 
 	// 5. the patch's revalidation bounce (PatchProduct with Revalidate),
 	//    which writes approval_status, status and published_at as literals
 	//    inside the patch statement rather than through a named transition.
+	//    A rejected listing is approved only after its seller resubmits it.
+	if err := f.store.ApproveProductByAdmin(ctx, f.productID, actor, "resolved"); !errors.Is(err, ErrProductTransitionNotAllowed) {
+		t.Fatalf("approve of a rejected listing: %v, want ErrProductTransitionNotAllowed", err)
+	}
+	f.assertAgrees("after the refused approve")
+	if err := f.store.SubmitProductForReview(ctx, f.productID, f.sellerID, nil, 0, nil); err != nil {
+		t.Fatalf("resubmit after reject: %v", err)
+	}
 	if err := f.store.ApproveProductByAdmin(ctx, f.productID, actor, "resolved"); err != nil {
 		t.Fatalf("re-approve: %v", err)
 	}

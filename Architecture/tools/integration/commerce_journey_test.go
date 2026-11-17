@@ -15,9 +15,13 @@ import (
 // TestE2E_Commerce_FullJourney drives one order end to end through the
 // gateway, with every role acting the way it does in the product:
 //
-//	Seller  : open a shop (draft) → draft a listing → attach an image → submit
-//	Admin   : approve the shop, then the listing, on admin-service's own
-//	          routes with an admin console session (never a consumer token)
+//	Seller  : open a shop (draft) → draft a listing → attach an image →
+//	          complete the application (GSTIN, payout account, KYC document)
+//	          → submit it → submit the listing
+//	Admin   : approve the shop out of the review queue, then the listing, on
+//	          admin-service's own routes with an admin console session (never
+//	          a consumer token); a draft shop and a never-submitted listing
+//	          are refused
 //	Customer: address → cart → quote → checkout (UPI) → pay
 //	Payment : commerce opens the intent at payments-service; the dev stack
 //	          settles through the stub confirm, which payments-service verifies
@@ -27,7 +31,8 @@ import (
 // and pins what an unapproved shop cannot do and who cannot approve it, with
 // exact codes. The second needs an admin (ATPOST_E2E_ADMIN_USER, see
 // commerceAdmin), identity-auth for the permission lookup and media-service
-// for the listing's image; without the admin it stops there.
+// for the listing's image and the application's KYC document; without the
+// admin it stops there.
 //
 // Cash on delivery is not a launch payment method, so the journey is prepaid
 // (it used to be COD "so the happy path runs without a payment gateway").
@@ -112,15 +117,50 @@ func TestE2E_Commerce_FullJourney(t *testing.T) {
 		commerceConsoleClient(urls.APIGateway, commerceSessionToken(uuid.New(), "admin"), true).
 			MustDo(t, ctx, "POST", approvePath, approveBody), 403, "PERMISSION_DENIED")
 
+	// A real admin cannot approve this shop either: it is a draft that never
+	// submitted its application (no GSTIN, no KYC document, no payout
+	// account). This is the call both commerce flows used to make.
+	commerceRefusedByConsole(t, "admin approves a draft shop",
+		commerceApprove(t, ctx, admin, "sellers", sellerID), 409, "SELLER_TRANSITION_NOT_ALLOWED")
+	if st := commerceShopStatus(t, ctx, seller); st != "draft" {
+		t.Fatalf("the shop is %q after an admin tried to approve a draft, want draft", st)
+	}
+
 	// With its image the listing is complete, and the next gate is the shop.
 	commerceAttachImage(t, ctx, seller, productID)
-	commerceRefused(t, "submit a complete listing from an unapproved shop",
+	commerceRefused(t, "submit a complete listing from a draft shop",
 		seller.MustDo(t, ctx, "POST", "/v1/commerce/products/"+productID+"/submit", nil), 409, "SELLER_NOT_APPROVED")
+
+	// ── Seller: the application, completed and sent for review ────
+	commerceCompleteApplication(t, ctx, seller)
+	commerceSubmitApplication(t, ctx, seller)
+	commerceRefused(t, "seller submits the application a second time",
+		seller.MustDo(t, ctx, "POST", "/v1/commerce/onboarding/submit", nil), 409, "APPLICATION_ALREADY_SUBMITTED")
+	// In the queue is not approved: the listing still cannot be submitted and
+	// no shopper sees it.
+	commerceRefused(t, "submit a complete listing from a shop awaiting review",
+		seller.MustDo(t, ctx, "POST", "/v1/commerce/products/"+productID+"/submit", nil), 409, "SELLER_NOT_APPROVED")
+	commerceRefused(t, "shopper reads a listing of a shop awaiting review",
+		customer.MustDo(t, ctx, "GET", "/v1/commerce/products/"+productID, nil), 404, "PRODUCT_NOT_FOUND")
 
 	must(t, "admin approves the seller", commerceApprove(t, ctx, admin, "sellers", sellerID))
 	if st := commerceShopStatus(t, ctx, seller); st != "approved" {
 		t.Fatalf("the shop is %q after the admin approved it, want approved", st)
 	}
+	// An approval is a move out of the queue, so there is no second one.
+	commerceRefusedByConsole(t, "admin approves an already approved shop",
+		commerceApprove(t, ctx, admin, "sellers", sellerID), 409, "SELLER_TRANSITION_NOT_ALLOWED")
+	if st := commerceShopStatus(t, ctx, seller); st != "approved" {
+		t.Fatalf("the shop is %q after the refused second approval, want approved", st)
+	}
+
+	// The shop is approved; its listing was never sent for review, so an
+	// admin cannot put it on sale. It stays invisible, and it is still the
+	// seller's to submit (the submit below would be refused had it moved).
+	commerceRefusedByConsole(t, "admin approves a never-submitted listing",
+		commerceApprove(t, ctx, admin, "products", productID), 409, "PRODUCT_TRANSITION_NOT_ALLOWED")
+	commerceRefused(t, "shopper reads a listing an admin could not approve",
+		customer.MustDo(t, ctx, "GET", "/v1/commerce/products/"+productID, nil), 404, "PRODUCT_NOT_FOUND")
 
 	must(t, "submit product", seller.MustDo(t, ctx, "POST", "/v1/commerce/products/"+productID+"/submit", nil))
 	// Submitted is not live: products queue for a moderator on this stack
@@ -128,6 +168,8 @@ func TestE2E_Commerce_FullJourney(t *testing.T) {
 	commerceRefused(t, "shopper reads a submitted, unapproved listing",
 		customer.MustDo(t, ctx, "GET", "/v1/commerce/products/"+productID, nil), 404, "PRODUCT_NOT_FOUND")
 	must(t, "admin approves the product", commerceApprove(t, ctx, admin, "products", productID))
+	commerceRefusedByConsole(t, "admin approves an already approved listing",
+		commerceApprove(t, ctx, admin, "products", productID), 409, "PRODUCT_TRANSITION_NOT_ALLOWED")
 	must(t, "shopper reads the live listing",
 		customer.MustDo(t, ctx, "GET", "/v1/commerce/products/"+productID, nil))
 	must(t, "customer browses products", customer.MustDo(t, ctx, "GET", "/v1/commerce/products", nil))
