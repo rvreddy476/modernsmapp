@@ -38,9 +38,19 @@ class WatchProgressRepository @Inject constructor(
             is AppResult.Failure -> null
         }
 
-    /** Records the playhead, unless History is paused. The answer is not needed; a failure is retried by the next report. */
-    suspend fun save(postId: String, positionMs: Long, durationMs: Long, completed: Boolean) {
+    /**
+     * Records the playhead, unless History is paused. The answer is not
+     * needed; a failure is retried by the next report. [sentAtMs] is when the
+     * report was taken (the server's ordering guard, lv-53); it defaults to now.
+     */
+    suspend fun save(
+        postId: String,
+        positionMs: Long,
+        durationMs: Long,
+        completed: Boolean,
+        sentAtMs: Long = System.currentTimeMillis(),
+    ) {
         if (pause.paused.first()) return
-        apiCall(errorMapper) { api.save(postId, WatchProgressRequest(positionMs, durationMs, completed)) }
+        apiCall(errorMapper) { api.save(postId, WatchProgressRequest(positionMs, durationMs, completed, sentAtMs)) }
     }
 }

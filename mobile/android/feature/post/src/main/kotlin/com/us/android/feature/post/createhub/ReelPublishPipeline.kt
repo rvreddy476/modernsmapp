@@ -14,6 +14,7 @@ import com.us.android.core.media.publish.ReelPublishTracker
 import com.us.android.core.memberships.data.membersOnlyRefusal
 import com.us.android.core.model.ActionDraft
 import com.us.android.core.model.CopyrightReview
+import com.us.android.feature.post.data.AgeRestrictionGuard
 import com.us.android.feature.post.data.ComposerRepository
 import com.us.android.feature.post.data.PublishedVideoReview
 import com.us.android.feature.post.data.dto.CONTENT_TYPE_FLICK
@@ -72,6 +73,7 @@ import kotlin.math.min
  * user has thrown away — the store would otherwise grow it back.
  */
 @Singleton
+@Suppress("LongParameterList") // Injected collaborators, one per publish step.
 class ReelPublishPipeline @Inject constructor(
     private val repository: ComposerRepository,
     private val uploads: ReelMediaUploads,
@@ -79,6 +81,7 @@ class ReelPublishPipeline @Inject constructor(
     private val store: ReelPublishStore,
     private val tracker: ReelPublishTracker,
     private val reviews: PublishedVideoReview,
+    private val ageGate: AgeRestrictionGuard,
 ) {
 
     sealed interface Outcome {
@@ -88,7 +91,16 @@ class ReelPublishPipeline @Inject constructor(
          * the create's answer does not carry it; null for a reel, a
          * scheduled video, a video that was not flagged, or a failed read.
          */
-        data class Published(val postId: String, val copyrightReview: CopyrightReview? = null) : Outcome
+        data class Published(
+            val postId: String,
+            val copyrightReview: CopyrightReview? = null,
+            /**
+             * 18+ (lv-9): what the creator must be told when the gate they
+             * chose could not be confirmed — the video was made private, or
+             * could not be. Null when it was stored, or not asked for.
+             */
+            val ageNotice: String? = null,
+        ) : Outcome
 
         /** The fallback poll is still waiting and this run's budget is spent. */
         data object Continue : Outcome
@@ -253,7 +265,7 @@ class ReelPublishPipeline @Inject constructor(
         report(run, ReelPublishState.Posting)
         val videoId = pending.confirmedVideoId ?: fail(run, pending, "The upload didn't finish. Try again.", true)
         val request = buildRequest(pending, videoId, pending.readyCoverId)
-        return when (val result = repository.createPost(pending.creationKey, request)) {
+        return when (val result = repository.createVideoPost(pending.creationKey, request)) {
             is AppResult.Success -> published(pending, result.data)
             is AppResult.Failure -> if (result.error.isNotReady()) {
                 val ready = awaitVideo(run, pending, videoId, now, runUntil)
@@ -265,7 +277,7 @@ class ReelPublishPipeline @Inject constructor(
     }
 
     private suspend fun createReadyFlick(run: Run, pending: PendingReelPublish, request: CreatePostRequest): Outcome =
-        when (val result = repository.createPost(pending.creationKey, request)) {
+        when (val result = repository.createVideoPost(pending.creationKey, request)) {
             is AppResult.Success -> published(pending, result.data)
             is AppResult.Failure -> refused(run, pending, result.error)
         }
@@ -276,11 +288,25 @@ class ReelPublishPipeline @Inject constructor(
      * viewers, and its tile says so instead of "Uploaded successfully". A
      * reel is never held by the rule, and a scheduled video is checked only
      * when it goes live, so neither costs a read.
+     *
+     * 18+ (lv-9): when the creator chose it and the create's answer did not
+     * say it was stored, [ageGate] sets it by PATCH or, failing that, makes
+     * the video private; the creator is told either way it was not confirmed.
      */
-    private suspend fun published(pending: PendingReelPublish, postId: String): Outcome.Published {
+    private suspend fun published(
+        pending: PendingReelPublish,
+        created: ComposerRepository.CreatedPost,
+    ): Outcome.Published {
+        val postId = created.id
+        val wantsGate = pending.kind == PublishKind.LONG && pending.ageRestricted
+        val ageNotice = if (wantsGate && created.ageRestricted != true) {
+            ageGate.secure(postId, pending.visibility).notice
+        } else {
+            null
+        }
         val checks = pending.kind == PublishKind.LONG && pending.publishAt.isNullOrBlank()
         val review = if (checks) reviews.reviewOf(postId)?.takeIf { it.isHeld } else null
-        return Outcome.Published(postId, review)
+        return Outcome.Published(postId, review, ageNotice)
     }
 
     /**
@@ -490,6 +516,10 @@ class ReelPublishPipeline @Inject constructor(
                 action = pending.actionLabel?.takeIf { it.isNotBlank() }
                     ?.let { ActionDraft(it, pending.actionUrl.orEmpty()) }
                     .toWriteDto(),
+                // The "AI-generated" label (reels-38): reel and long video, only when on.
+                aiGenerated = true.takeIf { pending.aiGenerated },
+                // 18+ from birth (lv-9): a long video only, only when chosen.
+                ageRestricted = true.takeIf { long && pending.ageRestricted },
             )
         }
 

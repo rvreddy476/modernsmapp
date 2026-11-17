@@ -802,6 +802,7 @@ class ReelsViewModel @Inject constructor(
     fun resetView() {
         _mode.value = ReelsMode.NORMAL
         _paused.value = false
+        shownReelId = null
         // The screen is leaving composition, so the view is over. `paused`
         // rather than `ended` — the reel did not finish, the viewer left.
         endWatchAnalytics(PlayEndReason.PAUSED)
@@ -1054,8 +1055,14 @@ class ReelsViewModel @Inject constructor(
      * carries a channel, so a reel without one never asks the channel
      * routes for an answer that would be 404.
      */
-    fun onReelShown(item: FeedItem, probe: (suspend () -> WatchProbe)? = null, page: Int? = null) {
-        _paused.value = false
+    fun onReelShown(item: FeedItem, probe: (suspend () -> WatchProbe)? = null, page: Int? = null): Boolean {
+        // The pause clears only when the settled reel CHANGES (reels-100): the
+        // pager re-runs this when a page is appended, and that must not undo a
+        // pause the viewer made on the reel still on screen.
+        if (item.id != shownReelId) {
+            _paused.value = false
+            shownReelId = item.id
+        }
         // The caption choice carried to this reel, by the long video's rule.
         _captionLanguage.value = captionChoice(_captionLanguage.value, captions(item).map { it.language })
         viewModelScope.launch { follows.ensureKnown(listOf(item.author.id)) }
@@ -1066,7 +1073,11 @@ class ReelsViewModel @Inject constructor(
         // viewer's language played when this reel has it.
         viewModelScope.launch { audio.ensure(item) }
         startWatchAnalytics(item, probe, page)
+        return _paused.value
     }
+
+    /** The reel [onReelShown] last settled on; its pause survives a re-run for the same reel. */
+    private var shownReelId: String? = null
 
     /**
      * Opens the analytics view for the settled reel and closes the previous one.

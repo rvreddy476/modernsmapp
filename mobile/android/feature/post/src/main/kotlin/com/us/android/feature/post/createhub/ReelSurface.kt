@@ -80,8 +80,6 @@ import com.us.android.core.feed.data.credits.creditsSummary
 import com.us.android.core.feed.ui.action.ActionEditor
 import com.us.android.core.feed.ui.action.ActionSurface
 import com.us.android.core.feed.ui.channel.CreateChannelSheet
-import com.us.android.core.memberships.ui.MembersOnlyLevelSheet
-import com.us.android.core.memberships.ui.membersOnlySummary
 import com.us.android.core.feed.ui.schedule.ScheduleSheet
 import com.us.android.core.feed.ui.sound.LibrarySoundSheet
 import com.us.android.core.feed.ui.sound.SoundPreviewButton
@@ -90,6 +88,8 @@ import com.us.android.core.media.ChosenSound
 import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.REEL_MAX_MINUTES
 import com.us.android.core.media.sound.SoundPreview
+import com.us.android.core.memberships.ui.MembersOnlyLevelSheet
+import com.us.android.core.memberships.ui.membersOnlySummary
 import com.us.android.core.ui.UsErrorState
 import com.us.android.core.ui.usSwitchColors
 import com.us.android.feature.post.createhub.ReelPublishViewModel.Phase
@@ -103,6 +103,7 @@ import com.us.android.feature.post.createhub.studio.StudioActions
 import com.us.android.feature.post.data.dto.VISIBILITY_FOLLOWERS
 import com.us.android.feature.post.data.dto.VISIBILITY_PRIVATE
 import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
+import com.us.android.feature.post.data.dto.VISIBILITY_UNLISTED
 import kotlin.math.roundToInt
 
 /**
@@ -245,8 +246,9 @@ private fun rememberVideoSources(onSource: (String) -> Unit): VideoSources {
     val pickVideo = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia(),
     ) { uri -> uri?.let { latest(it.toString()) } }
+    // Ten minutes per camera clip (founder, 2026-10-21) — see CaptureVideoUpTo.
     val captureVideo = rememberLauncherForActivityResult(
-        ActivityResultContracts.CaptureVideo(),
+        CaptureVideoUpTo(),
     ) { saved -> if (saved) cameraTarget?.let { latest(it.toString()) } }
     val openCamera = rememberCameraLaunch {
         val target = captureUri(context, "mp4")
@@ -615,7 +617,7 @@ private fun ReelPickerSheets(
     when (sheet) {
         ReelSheet.Audience -> ReelOptionSheet(
             title = "Audience",
-            options = AudienceOptions,
+            options = audienceOptions(state.kind),
             selected = state.visibility,
             onPick = {
                 viewModel.onVisibilityChanged(it)
@@ -902,7 +904,7 @@ private fun DetailsCard(
         DetailRow(
             icon = UsIcons.Globe,
             title = "Audience",
-            value = AudienceOptions.firstOrNull { it.value == state.visibility }?.label.orEmpty(),
+            value = audienceOptions(state.kind).firstOrNull { it.value == state.visibility }?.label.orEmpty(),
             enabled = enabled,
             onClick = onAudience,
             testTag = "reel-audience-row",
@@ -1028,6 +1030,27 @@ private fun SwitchesCard(
                 onCheckedChange = viewModel::onAllowRemixChanged,
                 enabled = enabled,
                 testTag = "reel-allow-remix",
+            )
+        }
+        // The label viewers see (reels-38), as the web studio's "AI-generated" switch.
+        RowDivider()
+        ReelSwitchRow(
+            title = "AI-generated",
+            checked = state.aiGenerated,
+            onCheckedChange = viewModel::onAiGeneratedChanged,
+            enabled = enabled,
+            testTag = "reel-ai-generated",
+        )
+        // 18+ from birth (lv-9): a long video only, as the web's long-video
+        // studio and the Edit sheet ("Age restriction (18+)").
+        if (state.kind == PublishKind.LONG) {
+            RowDivider()
+            ReelSwitchRow(
+                title = "Age restriction (18+)",
+                checked = state.ageRestricted,
+                onCheckedChange = viewModel::onAgeRestrictedChanged,
+                enabled = enabled,
+                testTag = "reel-age-restricted",
             )
         }
     }
@@ -1427,6 +1450,19 @@ private val AudienceOptions = listOf(
     ReelOption(VISIBILITY_FOLLOWERS, "Followers", "People who follow you"),
     ReelOption(VISIBILITY_PRIVATE, "Private", "Only you"),
 )
+
+/**
+ * The Audience sheet's choices for [kind]. A long video adds Unlisted (lv-33,
+ * was LV-A-3), as the Edit sheet offers it; a reel never does.
+ */
+internal fun audienceOptions(kind: PublishKind): List<ReelOption> =
+    if (kind == PublishKind.LONG) {
+        AudienceOptions.take(2) +
+            ReelOption(VISIBILITY_UNLISTED, "Unlisted", "Anyone with the link; not in feeds or search") +
+            AudienceOptions.drop(2)
+    } else {
+        AudienceOptions
+    }
 
 // ── Metrics ─────────────────────────────────────────────────────────────
 

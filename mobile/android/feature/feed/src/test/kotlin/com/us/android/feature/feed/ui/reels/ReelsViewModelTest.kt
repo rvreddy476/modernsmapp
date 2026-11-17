@@ -643,6 +643,43 @@ class ReelsViewModelTest {
         assertThat(vm.paused.value).isFalse()
     }
 
+    /**
+     * reels-100: the pager re-runs onReelShown for the SAME reel when the next
+     * page is appended; the viewer's pause must survive that, and only a
+     * different reel clears it.
+     */
+    @Test
+    fun `a pause stays when the same reel is shown again after a page loads`() = runTest {
+        val vm = viewModel()
+        val first = item(video())
+        val second = first.copy(id = "p2")
+
+        assertThat(vm.onReelShown(first)).isFalse()
+        vm.togglePaused()
+
+        // Page count changed: the same settled reel is announced again.
+        assertThat(vm.onReelShown(first)).isTrue()
+        assertThat(vm.paused.value).isTrue()
+
+        assertThat(vm.onReelShown(second)).isFalse()
+        assertThat(vm.paused.value).isFalse()
+    }
+
+    /** Leaving the screen forgets the reel, so coming back to it plays. */
+    @Test
+    fun `after the screen is left the same reel plays again`() = runTest {
+        val vm = viewModel()
+        val reel = item(video())
+        vm.onReelShown(reel)
+        vm.togglePaused()
+
+        vm.resetView()
+        vm.togglePaused()
+        vm.onReelShown(reel)
+
+        assertThat(vm.paused.value).isFalse()
+    }
+
     /** A double-tap is about the frame, never the playback: full mode does not pause. */
     @Test
     fun `toggling the mode leaves the pause alone`() {

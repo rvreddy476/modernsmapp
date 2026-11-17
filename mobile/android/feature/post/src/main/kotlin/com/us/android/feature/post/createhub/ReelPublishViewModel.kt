@@ -14,13 +14,14 @@ import com.us.android.core.feed.data.credits.creditsOffered
 import com.us.android.core.feed.data.credits.releaseYearOrNull
 import com.us.android.core.feed.data.credits.toInput
 import com.us.android.core.feed.ui.credits.CreditsEditor
-import com.us.android.core.memberships.data.MembershipLevel
 import com.us.android.core.media.ChosenSound
 import com.us.android.core.media.SoundEntry
 import com.us.android.core.media.publish.PublishKind
 import com.us.android.core.media.publish.ScheduleWindow
+import com.us.android.core.memberships.data.MembershipLevel
 import com.us.android.core.model.ActionButtons
 import com.us.android.core.model.ActionDraft
+import com.us.android.feature.post.data.dto.LongVideoAudience
 import com.us.android.feature.post.data.dto.SupportedAudience
 import com.us.android.feature.post.data.dto.VISIBILITY_PUBLIC
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -211,6 +212,13 @@ class ReelPublishViewModel @Inject constructor(
         val membersLevelId: String? = null,
         /** The Action button (2026-10-23): label and link as the editor holds them, or null for none. */
         val action: ActionDraft? = null,
+        /**
+         * 18+ (lv-9): offered on a LONG video only, as on the web's long-video
+         * studio; sent with the create. Ignored for a reel.
+         */
+        val ageRestricted: Boolean = false,
+        /** "AI-generated" (reels-38): the label viewers see, on a reel and a long video alike. */
+        val aiGenerated: Boolean = false,
     ) {
         val isBusy: Boolean
             get() = phase is Phase.Preparing || phase is Phase.Enqueued
@@ -543,9 +551,16 @@ class ReelPublishViewModel @Inject constructor(
         s.copy(membersLevelId = levelId?.takeIf { id -> s.membersLevels.any { it.id == id } })
     }
 
+    /** A reel takes [SupportedAudience]; a long video adds Unlisted ([LongVideoAudience], lv-33). */
     fun onVisibilityChanged(value: String) = _state.update {
-        if (value in SupportedAudience) it.copy(visibility = value) else it
+        if (value in audienceFor(it.kind)) it.copy(visibility = value) else it
     }
+
+    /** 18+ on a long video (lv-9). A reel has no such switch, so a reel's value is never sent. */
+    fun onAgeRestrictedChanged(on: Boolean) = _state.update { it.copy(ageRestricted = on) }
+
+    /** The "AI-generated" label (reels-38). */
+    fun onAiGeneratedChanged(on: Boolean) = _state.update { it.copy(aiGenerated = on) }
 
     /**
      * An empty id is "None" — a real answer, not "unanswered", which is why
@@ -784,7 +799,6 @@ class ReelPublishViewModel @Inject constructor(
             kind = current.kind,
             title = current.title,
             caption = current.caption,
-            visibility = current.visibility,
             // The suggestion counts when the author left it standing — it was
             // on the form in front of them, under Category, before they posted.
             category = current.effectiveCategory,
@@ -808,6 +822,15 @@ class ReelPublishViewModel @Inject constructor(
             // The Action button (2026-10-23): the trimmed label and link, or nothing.
             actionLabel = ActionButtons.createWrite(current.action)?.label,
             actionUrl = ActionButtons.createWrite(current.action)?.url,
+            // 18+ is a long video's only (lv-9); the AI label goes on both (reels-38).
+            ageRestricted = current.ageRestricted && current.kind == PublishKind.LONG,
+            aiGenerated = current.aiGenerated,
+            // A reel never posts Unlisted, even after a kind switch the other way.
+            visibility = current.visibility.takeIf { it in audienceFor(current.kind) } ?: VISIBILITY_PUBLIC,
         )
+
+        /** The audiences the form may post with, by kind (lv-33). */
+        fun audienceFor(kind: PublishKind): Set<String> =
+            if (kind == PublishKind.LONG) LongVideoAudience else SupportedAudience
     }
 }

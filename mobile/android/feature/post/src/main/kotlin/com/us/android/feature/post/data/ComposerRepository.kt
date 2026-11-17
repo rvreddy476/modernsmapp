@@ -38,6 +38,23 @@ open class ComposerRepository @Inject constructor(
     }
 
     /**
+     * The video create (reel and long video): the SERVER's id, plus what the
+     * server says it stored for `age_restricted` (lv-9) — `true` only when it
+     * kept the 18+ gate at create, `null` when the answer does not say
+     * (a server from before the field). The publish pipeline reads it to
+     * decide whether the gate still needs securing.
+     */
+    open suspend fun createVideoPost(
+        creationKey: String,
+        request: CreatePostRequest,
+    ): AppResult<CreatedPost> = when (
+        val result = apiCall(errorMapper) { api.createPost(creationKey, request) }
+    ) {
+        is AppResult.Success -> AppResult.Success(CreatedPost(result.data.id, result.data.ageRestricted))
+        is AppResult.Failure -> result
+    }
+
+    /**
      * True when retrying cannot possibly succeed.
      *
      * The distinction drives whether the UI offers Retry at all, so getting it
@@ -88,6 +105,9 @@ open class ComposerRepository @Inject constructor(
         "PAYLOAD_TOO_LARGE" -> "That post is too large to send."
         else -> GENERIC_FAILURE
     }
+
+    /** A created post: its id and the stored 18+ flag, when the answer carries it. */
+    data class CreatedPost(val id: String, val ageRestricted: Boolean? = null)
 
     private companion object {
         const val GENERIC_FAILURE = "We couldn't publish that. Try again."

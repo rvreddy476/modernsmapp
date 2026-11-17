@@ -29,16 +29,19 @@ import com.us.android.core.media.upload.ResumableUploadTransport
 import com.us.android.core.media.upload.ResumableUploader
 import com.us.android.core.media.upload.UploadSource
 import com.us.android.core.memberships.data.INVALID_TIER
+import com.us.android.core.memberships.data.TIERS_UNAVAILABLE
+import com.us.android.core.memberships.data.membersOnlyRefusal
 import com.us.android.core.model.CopyrightCopy
 import com.us.android.core.model.CopyrightReview
 import com.us.android.core.model.CopyrightReviewState
-import com.us.android.feature.post.data.PublishedVideoReview
-import com.us.android.core.memberships.data.TIERS_UNAVAILABLE
-import com.us.android.core.memberships.data.membersOnlyRefusal
 import com.us.android.core.network.ApiEnvelope
 import com.us.android.core.network.ErrorMapper
+import com.us.android.feature.post.data.AgeGateOutcome
+import com.us.android.feature.post.data.AgeRestrictionGuard
 import com.us.android.feature.post.data.ComposerRepository
+import com.us.android.feature.post.data.ComposerRepository.CreatedPost
 import com.us.android.feature.post.data.PostApi
+import com.us.android.feature.post.data.PublishedVideoReview
 import com.us.android.feature.post.data.dto.CONTENT_TYPE_FLICK
 import com.us.android.feature.post.data.dto.CONTENT_TYPE_LONG_VIDEO
 import com.us.android.feature.post.data.dto.CreatePostRequest
@@ -158,10 +161,28 @@ class ReelPublishPipelineTest {
         /** Answers for the next creates, in order, before [result] takes over. */
         val queued = ArrayDeque<AppResult<String>>()
 
-        override suspend fun createPost(creationKey: String, request: CreatePostRequest): AppResult<String> {
+        /** What the create's answer says about `age_restricted` (lv-9): null = not carried. */
+        var echoAgeRestricted: Boolean? = null
+
+        override suspend fun createVideoPost(
+            creationKey: String,
+            request: CreatePostRequest,
+        ): AppResult<CreatedPost> {
             keys += creationKey
             requests += request
-            return queued.removeFirstOrNull() ?: result
+            return when (val answer = queued.removeFirstOrNull() ?: result) {
+                is AppResult.Success -> AppResult.Success(CreatedPost(answer.data, echoAgeRestricted))
+                is AppResult.Failure -> answer
+            }
+        }
+    }
+
+    /** The 18+ fallback (lv-9): records each call and answers [outcome]. */
+    private class FakeAgeGate(var outcome: AgeGateOutcome = AgeGateOutcome.Confirmed) : AgeRestrictionGuard {
+        val calls = mutableListOf<Pair<String, String>>()
+        override suspend fun secure(postId: String, visibility: String): AgeGateOutcome {
+            calls += postId to visibility
+            return outcome
         }
     }
 
@@ -276,6 +297,7 @@ class ReelPublishPipelineTest {
         val tracker: ReelPublishTracker = ReelPublishTracker(),
         val resumable: FakeResumableTransport = FakeResumableTransport(),
         val reviews: FakeReviews = FakeReviews(),
+        val ageGate: FakeAgeGate = FakeAgeGate(),
         json: Json,
     ) {
         val pipeline = ReelPublishPipeline(
@@ -289,6 +311,7 @@ class ReelPublishPipelineTest {
             store = store,
             tracker = tracker,
             reviews = reviews,
+            ageGate = ageGate,
         )
     }
 
@@ -375,6 +398,103 @@ class ReelPublishPipelineTest {
         assertThat(request.hideShare).isTrue()
         assertThat(request.mediaIds).containsExactly("video-1")
         assertThat(request.coverMediaId).isEqualTo("image-2")
+    }
+
+    // ── 18+ at create (lv-9), AI label (reels-38), Unlisted (lv-33) ─────
+
+    private fun wire(request: CreatePostRequest) =
+        json.parseToJsonElement(json.encodeToString(CreatePostRequest.serializer(), request)).jsonObject
+
+    @Test
+    fun `an 18+ long video sends age_restricted true in the create body`() {
+        val long = pending("hi").copy(kind = PublishKind.LONG, title = "T", ageRestricted = true)
+
+        val sent = wire(ReelPublishPipeline.buildRequest(long, "v", "c"))
+
+        assertThat(sent["age_restricted"]!!.jsonPrimitive.content).isEqualTo("true")
+    }
+
+    @Test
+    fun `a reel never sends age_restricted and an unrestricted video omits it`() {
+        val reel = wire(ReelPublishPipeline.buildRequest(pending("hi").copy(ageRestricted = true), "v", "c"))
+        val unrestricted = pending("hi").copy(kind = PublishKind.LONG, title = "T")
+        val open = wire(ReelPublishPipeline.buildRequest(unrestricted, "v", "c"))
+
+        assertThat(reel).doesNotContainKey("age_restricted")
+        assertThat(open).doesNotContainKey("age_restricted")
+    }
+
+    @Test
+    fun `the AI label is sent as ai_generated on a reel and a video, and omitted when off`() {
+        val reel = wire(ReelPublishPipeline.buildRequest(pending("hi").copy(aiGenerated = true), "v", "c"))
+        val long = wire(
+            ReelPublishPipeline.buildRequest(
+                pending("hi").copy(kind = PublishKind.LONG, title = "T", aiGenerated = true),
+                "v",
+                "c",
+            ),
+        )
+        val off = wire(ReelPublishPipeline.buildRequest(pending("hi"), "v", "c"))
+
+        assertThat(reel["ai_generated"]!!.jsonPrimitive.content).isEqualTo("true")
+        assertThat(long["ai_generated"]!!.jsonPrimitive.content).isEqualTo("true")
+        assertThat(off).doesNotContainKey("ai_generated")
+    }
+
+    @Test
+    fun `an unlisted long video goes on the wire as visibility unlisted`() {
+        val long = pending("hi", visibility = "unlisted").copy(kind = PublishKind.LONG, title = "T")
+
+        assertThat(wire(ReelPublishPipeline.buildRequest(long, "v", "c"))["visibility"]!!.jsonPrimitive.content)
+            .isEqualTo("unlisted")
+    }
+
+    @Test
+    fun `a create that echoes age_restricted true needs no follow-up`() = runTest {
+        val h = harness()
+        h.repository.echoAgeRestricted = true
+
+        val outcome = run(h, pending().copy(kind = PublishKind.LONG, title = "T", ageRestricted = true))
+
+        assertThat(outcome).isEqualTo(ReelPublishPipeline.Outcome.Published("post-1"))
+        assertThat(h.ageGate.calls).isEmpty()
+    }
+
+    @Test
+    fun `a create that does not confirm 18+ is secured, and a private fallback is told to the creator`() = runTest {
+        val gate = FakeAgeGate(AgeGateOutcome.Private(AgeGateOutcome.MADE_PRIVATE))
+        val h = Harness(repository = RecordingRepository(json), ageGate = gate, json = json)
+        h.repository.echoAgeRestricted = null
+
+        val outcome = run(h, pending().copy(kind = PublishKind.LONG, title = "T", ageRestricted = true))
+
+        assertThat(gate.calls).containsExactly("post-1" to VISIBILITY_PUBLIC)
+        assertThat(outcome).isEqualTo(
+            ReelPublishPipeline.Outcome.Published("post-1", ageNotice = AgeGateOutcome.MADE_PRIVATE),
+        )
+        val tile = publishedState(outcome as ReelPublishPipeline.Outcome.Published, publishAt = null)
+        assertThat(tile.notice).isEqualTo(AgeGateOutcome.MADE_PRIVATE)
+    }
+
+    @Test
+    fun `an echo of false is not trusted either`() = runTest {
+        val gate = FakeAgeGate(AgeGateOutcome.Exposed(AgeGateOutcome.EXPOSED))
+        val h = Harness(repository = RecordingRepository(json), ageGate = gate, json = json)
+        h.repository.echoAgeRestricted = false
+
+        val outcome = run(h, pending().copy(kind = PublishKind.LONG, title = "T", ageRestricted = true))
+
+        assertThat((outcome as ReelPublishPipeline.Outcome.Published).ageNotice).isEqualTo(AgeGateOutcome.EXPOSED)
+    }
+
+    @Test
+    fun `without 18+ chosen the gate is never consulted`() = runTest {
+        val h = harness()
+
+        run(h, pending().copy(kind = PublishKind.LONG, title = "T"))
+        run(h, pending().copy(ageRestricted = true))
+
+        assertThat(h.ageGate.calls).isEmpty()
     }
 
     /** The builder alone, both kinds side by side: the ONE place the form becomes bytes. */

@@ -149,7 +149,8 @@ data class Countdown(val next: SeriesEpisode, val secondsLeft: Int)
  * the viewer had not all but finished ([resumePositionMs]); progress is
  * reported every ten seconds while playing, whenever playback pauses (a
  * tap, the end, the app going to the background) and when the screen is
- * left, `completed` at 95% ([isCompleted]). A report needs a duration —
+ * left, `completed` at 90%, the server's rule ([isCompleted]); each report
+ * carries `sent_at_ms`, the time it was taken. A report needs a duration —
  * the server binds it required — so a video whose length is not yet known
  * is not reported until it is.
  *

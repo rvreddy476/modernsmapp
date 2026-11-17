@@ -112,6 +112,14 @@ data class PendingReelPublish(
     val actionLabel: String? = null,
     val actionUrl: String? = null,
     /**
+     * 18+ (lv-9, 2026-11-17): a long video the creator restricted, sent as
+     * `age_restricted` WITH the create. Never set on a reel (the web's
+     * shorts never ask). Defaulted, so an older record loads.
+     */
+    val ageRestricted: Boolean = false,
+    /** The "AI-generated" label (reels-38), sent as `ai_generated` with the create. Defaulted. */
+    val aiGenerated: Boolean = false,
+    /**
      * Bytes landed and `confirm` succeeded. This is the id the post is
      * created with — instant reels need nothing more than confirmed.
      */

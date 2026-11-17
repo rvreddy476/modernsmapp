@@ -65,6 +65,15 @@ class WatchActionsTest {
         assertThat(watchDescriptionShown(video().copy(title = "Six Days", text = "Lyrics by Tokyo Drift"))).isTrue()
     }
 
+    /** reels-38: the creator's AI-generated label is shown under the title, and nothing when undeclared. */
+    @Test
+    fun `an AI-generated video shows its label under the title`() {
+        val ai = video().copy(disclosure = com.us.android.core.model.FeedDisclosure(aiGenerated = true))
+
+        assertThat(watchDisclosureLine(ai)).isEqualTo("AI-generated")
+        assertThat(watchDisclosureLine(video())).isNull()
+    }
+
     /** Share left the More sheet for this row (2026-10-19); the creator's share switch still takes it away. */
     @Test
     fun `share is on the row unless the creator turned sharing off`() {

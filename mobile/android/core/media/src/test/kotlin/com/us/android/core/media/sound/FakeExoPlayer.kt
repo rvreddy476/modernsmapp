@@ -9,6 +9,7 @@ import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
 import androidx.media3.common.Timeline
+import androidx.media3.common.TrackSelectionParameters
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSpec
 import androidx.media3.exoplayer.ExoPlayer
@@ -42,6 +43,16 @@ internal class FakeExoPlayer(val name: String = "player") {
     var repeatMode = Player.REPEAT_MODE_ONE
     var playing = false
     var released = false
+
+    /** What a fresh player selects: no caps. Read under Robolectric only (it needs a context). */
+    private var trackSelectionSet: TrackSelectionParameters? = null
+    var trackSelection: TrackSelectionParameters
+        get() = trackSelectionSet ?: TrackSelectionParameters.getDefaults(
+            androidx.test.core.app.ApplicationProvider.getApplicationContext(),
+        )
+        set(value) {
+            trackSelectionSet = value
+        }
 
     /** Every write, in order: `volume=0.2`, `seekTo=6500`, `prepare`… */
     val calls = mutableListOf<String>()
@@ -147,6 +158,11 @@ internal class FakeExoPlayer(val name: String = "player") {
             "stop" -> write("stop") { playbackState = Player.STATE_IDLE }
             "clearMediaItems" -> write("clearMediaItems") {}
             "release" -> write("release") { released = true }
+            // The pool's data-saver cap reads and writes these (PlayerPoolTest).
+            "getTrackSelectionParameters" -> trackSelection
+            "setTrackSelectionParameters" -> write("trackSelection") {
+                trackSelection = args!![0] as TrackSelectionParameters
+            }
             "seekTo" -> write("seekTo=${args!!.last()}") {
                 positionMs = args.last() as Long
                 // A seek on a prepared player buffers until it has landed.

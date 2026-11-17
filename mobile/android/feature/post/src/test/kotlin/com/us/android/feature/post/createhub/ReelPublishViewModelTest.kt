@@ -257,6 +257,48 @@ class ReelPublishViewModelTest {
     }
 
     @Test
+    fun `a long video offers Unlisted and carries 18+ and the AI label into the record`() = runTest {
+        val launcher = FakeLauncher()
+        val vm = viewModel(launcher = launcher, surface = CreateSurface.Video)
+
+        vm.onVideoPicked("content://video/1")
+        vm.onTitleChanged("T")
+        vm.onCategoryChanged("comedy")
+        vm.onVisibilityChanged("unlisted")
+        vm.onAgeRestrictedChanged(true)
+        vm.onAiGeneratedChanged(true)
+        vm.onPost()
+        advanceUntilIdle()
+
+        val pending = launcher.enqueued.single()
+        assertThat(pending.kind).isEqualTo(PublishKind.LONG)
+        assertThat(pending.visibility).isEqualTo("unlisted")
+        assertThat(pending.ageRestricted).isTrue()
+        assertThat(pending.aiGenerated).isTrue()
+    }
+
+    @Test
+    fun `a reel carries the AI label but never 18+`() = runTest {
+        val launcher = FakeLauncher()
+        val vm = viewModel(launcher = launcher)
+
+        vm.onAgeRestrictedChanged(true)
+        vm.onAiGeneratedChanged(true)
+        vm.pickAndPost()
+        advanceUntilIdle()
+
+        val pending = launcher.enqueued.single()
+        assertThat(pending.ageRestricted).isFalse()
+        assertThat(pending.aiGenerated).isTrue()
+    }
+
+    @Test
+    fun `the Audience sheet offers Unlisted on a video and not on a reel`() {
+        assertThat(audienceOptions(PublishKind.LONG).map { it.value }).contains("unlisted")
+        assertThat(audienceOptions(PublishKind.REEL).map { it.value }).doesNotContain("unlisted")
+    }
+
+    @Test
     fun `a chosen category is carried and a new video starts a new post with a new key`() = runTest {
         val launcher = FakeLauncher()
         val vm = viewModel(launcher = launcher)

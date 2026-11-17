@@ -80,6 +80,11 @@ data class PostDto(
     @SerialName("link_url") val linkUrl: String? = null,
     @SerialName("hide_share") val hideShare: Boolean = false,
     /**
+     * The 18+ gate (lv-9). Null when the answer does not carry it — an older
+     * create answer — so "not stored" and "not said" stay apart.
+     */
+    @SerialName("age_restricted") val ageRestricted: Boolean? = null,
+    /**
      * Members-only (paid memberships, 2026-10-23), post-service posts.go:131-137:
      * the level on every gated post, `body_redacted` where the body was emptied
      * for this viewer, and the video length kept on a redacted row.

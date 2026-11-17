@@ -36,6 +36,13 @@ data class WatchProgressRequest(
     @SerialName("position_ms") val positionMs: Long,
     @SerialName("duration_ms") val durationMs: Long,
     val completed: Boolean,
+    /**
+     * When the report was taken, Unix milliseconds (lv-53, was LV-C-3).
+     * post-service applies a report only if it is not older than the stored
+     * one, so a late heartbeat or a retry cannot move the resume point back
+     * or clear `completed`; a time ahead of the server's is clamped to now.
+     */
+    @SerialName("sent_at_ms") val sentAtMs: Long,
 )
 
 /** The stored row. `updated_at` is the agreed name; `last_watched_at` is what the store has carried. */

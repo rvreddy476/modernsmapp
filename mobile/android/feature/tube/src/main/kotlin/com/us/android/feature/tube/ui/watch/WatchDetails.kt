@@ -251,8 +251,23 @@ private fun TitleBlock(item: FeedItem) {
             style = MaterialTheme.typography.bodySmall,
             color = UsTheme.extended.textMuted,
         )
+        // The creator's declared labels under the title (reels-38): the web
+        // watch page's disclosures, in the shared FeedDisclosure words.
+        watchDisclosureLine(item)?.let { labels ->
+            Text(
+                text = labels,
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = UsTheme.extended.textSecondary,
+                modifier = Modifier.testTag("watch_disclosures"),
+            )
+        }
     }
 }
+
+/** "AI-generated", "Paid partnership · AI-generated" — or null when the creator declared nothing. */
+fun watchDisclosureLine(item: FeedItem): String? =
+    item.disclosure.labels.takeIf { it.isNotEmpty() }?.joinToString(" · ")
 
 @Composable
 private fun AuthorRow(item: FeedItem, subscription: WatchSubscription, actions: WatchDetailsActions) {

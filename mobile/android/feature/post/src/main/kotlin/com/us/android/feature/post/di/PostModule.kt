@@ -34,6 +34,12 @@ object PostModule {
     @Provides
     fun providePublishedVideoReview(impl: ApiPublishedVideoReview): PublishedVideoReview = impl
 
+    /** 18+ (lv-9): the fail-closed fallback when a create did not confirm the gate. */
+    @Provides
+    fun provideAgeRestrictionGuard(
+        impl: com.us.android.feature.post.data.PatchAgeRestrictionGuard,
+    ): com.us.android.feature.post.data.AgeRestrictionGuard = impl
+
     @Provides
     @Singleton
     fun providePostApi(retrofit: Retrofit): PostApi = retrofit.create(PostApi::class.java)

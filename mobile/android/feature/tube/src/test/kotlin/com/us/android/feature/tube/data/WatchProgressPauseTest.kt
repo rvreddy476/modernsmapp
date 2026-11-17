@@ -18,9 +18,11 @@ class WatchProgressPauseTest {
 
     private class FakeApi : WatchProgressApi {
         val saved = mutableListOf<String>()
+        val bodies = mutableListOf<WatchProgressRequest>()
         var reads = 0
 
         override suspend fun save(postId: String, body: WatchProgressRequest): ApiEnvelope<WatchProgressDto> {
+            bodies += body
             saved += "$postId@${body.positionMs}/${body.durationMs}:${body.completed}"
             return ApiEnvelope(WatchProgressDto(body.positionMs, body.durationMs, body.completed))
         }
@@ -61,6 +63,30 @@ class WatchProgressPauseTest {
         pause.setPaused(false)
         repository.save("p1", 20_000, 60_000, completed = false)
         assertThat(api.saved).containsExactly("p1@20000/60000:false")
+    }
+
+    /** lv-53: every report carries when it was taken, so the server can refuse a late one. */
+    @Test
+    fun `a report carries sent_at_ms on the wire`() = runTest {
+        val api = FakeApi()
+
+        WatchProgressRepository(api, errors, Pause(false))
+            .save("p1", 10_000, 60_000, completed = false, sentAtMs = 1_763_400_000_000L)
+
+        val body = NetworkModule.provideJson().encodeToString(WatchProgressRequest.serializer(), api.bodies.single())
+        assertThat(body).isEqualTo(
+            """{"position_ms":10000,"duration_ms":60000,"completed":false,"sent_at_ms":1763400000000}""",
+        )
+    }
+
+    @Test
+    fun `without a time given the report is stamped now`() = runTest {
+        val api = FakeApi()
+        val before = System.currentTimeMillis()
+
+        WatchProgressRepository(api, errors, Pause(false)).save("p1", 10_000, 60_000, completed = false)
+
+        assertThat(api.bodies.single().sentAtMs).isAtLeast(before)
     }
 
     @Test

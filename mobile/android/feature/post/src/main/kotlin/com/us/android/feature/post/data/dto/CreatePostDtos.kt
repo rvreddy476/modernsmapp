@@ -265,6 +265,16 @@ data class CreatePostRequest(
 
     /** `{label, url}`, or null for no button. The legacy [linkUrl] is NOT the action. */
     val action: ActionWriteDto? = null,
+
+    // ── 18+ from birth (lv-9, 2026-11-17) ───────────────────────────────
+    //
+    // post-service stores `age_restricted` in the create transaction, so the
+    // gate never depends on a follow-up PATCH. Video kinds only (anything else
+    // is 400 AGE_RESTRICTION_NOT_ALLOWED). Null — not restricted — is left
+    // out, so every other request is byte-identical to before.
+
+    /** `true` when the creator chose 18+ for a long video; otherwise null (omitted). */
+    @SerialName("age_restricted") val ageRestricted: Boolean? = null,
 )
 
 /**
@@ -322,6 +332,14 @@ const val VISIBILITY_PRIVATE = "private"
 /** Mutual follows — "followers you follow back" (2026-10-18). */
 const val VISIBILITY_FRIENDS = "friends"
 
+/**
+ * Anyone with the link; kept out of feeds, trending and search. Offered on
+ * the LONG video form only (lv-33, was LV-A-3), as the Edit sheet offers it
+ * (`PostEditChoices.visibility`) and post-service's create binds it
+ * (`oneof=public followers friends private unlisted`).
+ */
+const val VISIBILITY_UNLISTED = "unlisted"
+
 /** `comment_access` values the details screen sends. */
 const val COMMENT_ACCESS_EVERYONE = "everyone"
 const val COMMENT_ACCESS_NOBODY = "nobody"
@@ -369,3 +387,11 @@ const val DISTRIBUTION_VERSION = 1
  */
 val SupportedAudience: Set<String> =
     setOf(VISIBILITY_PUBLIC, VISIBILITY_FOLLOWERS, VISIBILITY_FRIENDS, VISIBILITY_PRIVATE)
+
+/**
+ * A LONG video's audiences: [SupportedAudience] plus [VISIBILITY_UNLISTED]
+ * (lv-33). Unlisted is explained on the video form's Audience sheet ("Anyone
+ * with the link") and is a Tube concept; a reel, a post and a poll keep
+ * [SupportedAudience].
+ */
+val LongVideoAudience: Set<String> = SupportedAudience + VISIBILITY_UNLISTED

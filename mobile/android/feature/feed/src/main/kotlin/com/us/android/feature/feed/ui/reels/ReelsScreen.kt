@@ -908,7 +908,7 @@ internal class ReelActions(
      * (a reel still transcoding), which means the view is not counted. The
      * last argument is the pager's page, for the view's rank.
      */
-    val onShown: (FeedItem, (suspend () -> WatchProbe)?, Int) -> Unit,
+    val onShown: (FeedItem, (suspend () -> WatchProbe)?, Int) -> Boolean,
     /** The reel of the settled page, or null when the settled page has none (the pending head). */
     val onSettledReel: (FeedItem?) -> Unit,
     /** The player of the settled page, or null when the settled page has none (the pending head). */
@@ -1119,10 +1119,11 @@ private fun ReelsPager(
         // already has the creator's mix; a reel without one lets it go.
         val track = reel?.let(soundTrackFor)
         if (player != null && track != null) sound.attach(player, track, reel.soundMix()) else sound.detach()
-        reel?.let { actions.onShown(it, player?.let(::watchProbe), current) }
-        // The pause is the reel's it was made on, and onShown has cleared
-        // it; what may still hold the reel is the choice of sound.
-        if (soundChoiceRead) pool.playOnly(current)
+        val held = reel?.let { actions.onShown(it, player?.let(::watchProbe), current) } ?: false
+        // The pause is the reel's it was made on: onShown clears it for a new
+        // reel and KEEPS it when this re-runs for the same one (a page
+        // appended, reels-100). What may also hold the reel is the choice of sound.
+        if (soundChoiceRead && !held) pool.playOnly(current)
         listOf(current - 1, current + 1).forEach { index ->
             reelAt(index)?.let { neighbour -> playbackFor(neighbour)?.let { pool.preload(index, it, neighbour.id) } }
         }
@@ -1764,16 +1765,7 @@ private fun ReelOverlay(
     clearNavigationBar: Boolean = false,
 ) {
     StageCaption(
-        state = StageCaptionState(
-            postId = item.id,
-            handle = reelAuthorLabel(item.author.username, item.author.nameForDisplay),
-            date = formatRelativeTime(item.createdAt).takeIf { it.isNotBlank() },
-            title = reelTitle(item),
-            text = item.text,
-            hashtags = reelHashtags(item),
-            // The sound is named here (2026-10-19): the rail has no sound disc.
-            soundLabel = soundLine?.label,
-        ),
+        state = reelCaptionState(item, soundLine?.label),
         onOpenAuthor = { actions.onOpenAuthor(item.author.id) },
         onOpenHashtag = actions.onOpenHashtag,
         onSound = actions.onSoundLine,
@@ -1800,6 +1792,24 @@ private fun ReelOverlay(
             ),
     )
 }
+
+/**
+ * The reel's caption block, as data. [StageCaptionState.labels] carries the
+ * author's declared labels — "AI-generated", "Paid partnership", "Your own
+ * brand" — under the name line, as the web's reel overlay and the Home stage
+ * draw them (reels-38, was A-2b).
+ */
+internal fun reelCaptionState(item: FeedItem, soundLabel: String?) = StageCaptionState(
+    postId = item.id,
+    handle = reelAuthorLabel(item.author.username, item.author.nameForDisplay),
+    date = formatRelativeTime(item.createdAt).takeIf { it.isNotBlank() },
+    labels = item.disclosure.labels,
+    title = reelTitle(item),
+    text = item.text,
+    hashtags = reelHashtags(item),
+    // The sound is named here (2026-10-19): the rail has no sound disc.
+    soundLabel = soundLabel,
+)
 
 /** What the caption block can ask for: the author, a tag's posts, the sound. */
 internal class ReelOverlayActions(

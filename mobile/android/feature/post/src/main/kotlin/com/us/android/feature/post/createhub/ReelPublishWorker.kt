@@ -394,5 +394,9 @@ internal fun publishedState(outcome: ReelPublishPipeline.Outcome.Published, publ
     ReelPublishState.Published(
         postId = outcome.postId,
         publishAt = publishAt,
-        notice = outcome.copyrightReview?.takeIf { it.isHeld }?.let { CopyrightCopy.notice(it).message },
+        // 18+ not confirmed (lv-9) comes first: it is the one the creator must act on.
+        notice = listOfNotNull(
+            outcome.ageNotice,
+            outcome.copyrightReview?.takeIf { it.isHeld }?.let { CopyrightCopy.notice(it).message },
+        ).joinToString(" ").ifBlank { null },
     )
