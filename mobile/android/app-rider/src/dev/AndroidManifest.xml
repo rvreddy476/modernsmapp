@@ -18,6 +18,7 @@
     <application>
         <activity
             android:name=".RiderActivity"
+            android:exported="true"
             tools:node="merge">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />

@@ -20,6 +20,7 @@
     <application>
         <activity
             android:name=".DoorstepProActivity"
+            android:exported="true"
             tools:node="merge">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW" />
