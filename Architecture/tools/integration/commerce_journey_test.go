@@ -25,7 +25,8 @@ import (
 //	Customer: address → cart → quote → checkout (UPI) → pay
 //	Payment : commerce opens the intent at payments-service; the dev stack
 //	          settles through the stub confirm, which payments-service verifies
-//	Shipping: the fulfilment worker books the stub courier; the order ships
+//	Shipping: a paid order stays confirmed with no shipment until the seller
+//	          packs and ships it; the ship books the stub courier once
 //
 // It has two halves. The first needs only api-gateway and commerce-service
 // and pins what an unapproved shop cannot do and who cannot approve it, with
@@ -217,30 +218,45 @@ func TestE2E_Commerce_FullJourney(t *testing.T) {
 	if st, amount := commercePaymentState(t, ctx, customer, order.OrderID); st != "paid" || amount != order.TotalMinor {
 		t.Fatalf("payment is %s for %d after the confirm, want paid for %d", st, amount, order.TotalMinor)
 	}
-	if s, ps := commerceOrderState(t, ctx, customer, order.OrderID); !commercePaidStatus(s) || ps != "paid" {
-		t.Fatalf("the order is %s/%s after payment, want a paid status", s, ps)
+	if s, ps := commerceOrderState(t, ctx, customer, order.OrderID); s != "confirmed" || ps != "paid" {
+		t.Fatalf("the order is %s/%s after payment, want confirmed/paid", s, ps)
 	}
 
-	// ── Fulfilment: the worker books the stub courier ─────────────
-	Eventually(t, 45*time.Second, "the paid order should ship once the fulfilment worker books the stub courier", func() bool {
-		s, _ := commerceOrderState(t, ctx, customer, order.OrderID)
-		return s == "shipped" || s == "out_for_delivery" || s == "delivered"
-	})
-	shipRaw := must(t, "customer reads the shipments",
-		customer.MustDo(t, ctx, "GET", "/v1/commerce/orders/"+order.OrderID+"/shipments", nil))
-	var ships struct {
-		Shipments []struct {
-			Shipment struct {
-				Courier       string `json:"courier"`
-				SellerID      string `json:"seller_id"`
-				SellerManaged bool   `json:"seller_managed"`
-			} `json:"shipment"`
-		} `json:"shipments"`
+	// ── Fulfilment: nothing ships by itself (com-1) ───────────────
+	// The fulfilment worker polls every second. It used to book the courier
+	// and move the order to shipped before the seller packed anything; now
+	// a paid order waits for its seller.
+	time.Sleep(5 * time.Second)
+	if s, ps := commerceOrderState(t, ctx, customer, order.OrderID); s != "confirmed" || ps != "paid" {
+		t.Fatalf("the paid order moved to %s/%s by itself, want confirmed/paid until the seller ships", s, ps)
 	}
-	if err := json.Unmarshal(shipRaw, &ships); err != nil || len(ships.Shipments) != 1 {
-		t.Fatalf("want exactly one shipment for a one-seller order (err=%v raw=%s)", err, string(shipRaw))
+	if n := len(commerceShipments(t, ctx, customer, order.OrderID)); n != 0 {
+		t.Fatalf("the paid order has %d shipment(s) before the seller shipped, want 0", n)
 	}
-	if sh := ships.Shipments[0].Shipment; sh.Courier != "stub" || sh.SellerID != sellerID || sh.SellerManaged {
+
+	// ── The seller packs, then ships ──────────────────────────────
+	sellerOrder := "/v1/commerce/seller/orders/" + order.OrderID
+	if env := seller.MustDo(t, ctx, "POST", sellerOrder+"/pack", nil); env.Status != 200 {
+		must(t, "seller packs the order", env)
+		t.Fatalf("seller packs the order -> %d, want 200", env.Status)
+	}
+	if s, _ := commerceOrderState(t, ctx, customer, order.OrderID); s != "packed" {
+		t.Fatalf("the order is %s after the seller packed, want packed", s)
+	}
+	for _, label := range []string{"seller ships the order", "seller ships again (idempotent)"} {
+		if env := seller.MustDo(t, ctx, "POST", sellerOrder+"/ship", nil); env.Status != 201 {
+			must(t, label, env)
+			t.Fatalf("%s -> %d, want 201", label, env.Status)
+		}
+	}
+	if s, _ := commerceOrderState(t, ctx, customer, order.OrderID); s != "shipped" {
+		t.Fatalf("the order is %s after the seller shipped, want shipped", s)
+	}
+	ships := commerceShipments(t, ctx, customer, order.OrderID)
+	if len(ships) != 1 {
+		t.Fatalf("want exactly one shipment for a one-seller order after two ships, got %d", len(ships))
+	}
+	if sh := ships[0].Shipment; sh.Courier != "stub" || sh.SellerID != sellerID || sh.SellerManaged {
 		t.Fatalf("shipment is courier=%q seller=%s seller_managed=%v, want the stub courier's booking for seller %s",
 			sh.Courier, sh.SellerID, sh.SellerManaged, sellerID)
 	}

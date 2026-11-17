@@ -643,13 +643,29 @@ func commercePaymentState(t *testing.T, ctx context.Context, customer *HTTPClien
 	return st.Status, st.AmountMinor
 }
 
-// commercePaidStatus reports whether an order status is one a paid order
-// passes through. Payment lands it in "confirmed"; the fulfilment worker then
-// books the stub courier and moves it on, so no flow asserts "confirmed".
-func commercePaidStatus(status string) bool {
-	switch status {
-	case "confirmed", "packed", "shipped", "out_for_delivery", "delivered":
-		return true
+// Payment lands an order in "confirmed", and it stays there until its seller
+// packs and ships it (com-1): nothing books the courier at payment any more,
+// so the flows assert "confirmed" exactly after a payment.
+
+// commerceShipment is one row of GET /orders/:id/shipments.
+type commerceShipment struct {
+	Shipment struct {
+		Courier       string `json:"courier"`
+		SellerID      string `json:"seller_id"`
+		SellerManaged bool   `json:"seller_managed"`
+	} `json:"shipment"`
+}
+
+// commerceShipments reads the order's shipments as its customer.
+func commerceShipments(t *testing.T, ctx context.Context, customer *HTTPClient, orderID string) []commerceShipment {
+	t.Helper()
+	raw := must(t, "customer reads the shipments",
+		customer.MustDo(t, ctx, "GET", "/v1/commerce/orders/"+orderID+"/shipments", nil))
+	var out struct {
+		Shipments []commerceShipment `json:"shipments"`
 	}
-	return false
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("shipments: %v (raw=%s)", err, string(raw))
+	}
+	return out.Shipments
 }

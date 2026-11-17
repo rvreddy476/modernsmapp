@@ -107,8 +107,8 @@ func TestE2E_Commerce_PrepaidStub(t *testing.T) {
 	if st, amount := commercePaymentState(t, ctx, customer, order.OrderID); st != "paid" || amount != order.TotalMinor {
 		t.Fatalf("payment is %s for %d after the confirm, want paid for %d", st, amount, order.TotalMinor)
 	}
-	if s, ps := commerceOrderState(t, ctx, customer, order.OrderID); !commercePaidStatus(s) || ps != "paid" {
-		t.Fatalf("the order is %s/%s after the confirm, want a paid status", s, ps)
+	if s, ps := commerceOrderState(t, ctx, customer, order.OrderID); s != "confirmed" || ps != "paid" {
+		t.Fatalf("the order is %s/%s after the confirm, want confirmed/paid", s, ps)
 	}
 	// A replay naming a different payment id answers 204 and changes nothing.
 	must(t, "customer confirms again (idempotent)",
@@ -163,5 +163,19 @@ func TestE2E_Commerce_PrepaidStub(t *testing.T) {
 		t.Fatalf("an unverifiable webhook moved the order to %s/%s", s, ps)
 	}
 	t.Log("webhook -> 503, the second order is still unpaid")
-	t.Log("prepaid stub flow (intent, ownership, stub confirm, replay, closed edge, webhook) passed")
+
+	// ── The buyer cancels the paid, unshipped order (com-1) ───────
+	// Nothing shipped it by itself (the 3 s above included), so the buyer may
+	// still cancel, and a refund is owed.
+	if s, ps := commerceOrderState(t, ctx, customer, order.OrderID); s != "confirmed" || ps != "paid" {
+		t.Fatalf("the paid order is %s/%s before the cancel, want confirmed/paid: it must not ship by itself", s, ps)
+	}
+	if env := customer.MustDo(t, ctx, "POST", orderPath+"/cancel", map[string]any{"reason": "e2e: ordered by mistake"}); env.Status != 204 {
+		must(t, "customer cancels the paid order", env)
+		t.Fatalf("customer cancels the paid order -> %d, want 204", env.Status)
+	}
+	if s, ps := commerceOrderState(t, ctx, customer, order.OrderID); s != "cancelled" || (ps != "refund_pending" && ps != "refunded") {
+		t.Fatalf("the cancelled paid order is %s/%s, want cancelled with a refund owed (refund_pending or refunded)", s, ps)
+	}
+	t.Log("prepaid stub flow (intent, ownership, stub confirm, replay, closed edge, webhook, buyer cancel) passed")
 }
