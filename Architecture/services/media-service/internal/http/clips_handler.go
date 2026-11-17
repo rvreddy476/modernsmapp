@@ -429,9 +429,15 @@ func (h *Handler) CreateSubtitle(c *gin.Context) {
 			"content_url is derived by media-service and must not be sent; send the transcript in content", nil)
 		return
 	}
-	if req.Format == "" {
-		req.Format = "vtt"
+	// format vtt|srt: content is a caption file, parsed and stored as
+	// sanitised WebVTT cues. Absent or "text": a plain transcript, as before.
+	format, content, err := service.NormalizeCaptionUpload(req.Format, req.Content)
+	if err != nil {
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest,
+			service.CaptionFileErrorCode(err), err.Error(), nil)
+		return
 	}
+	req.Format, req.Content = format, content
 
 	sub, err := h.svc.CreateSubtitle(c.Request.Context(), actorID, &postgres.MediaSubtitle{
 		MediaAssetID: mediaID,

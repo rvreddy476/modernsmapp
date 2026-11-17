@@ -314,8 +314,20 @@ func (s *Service) renderCaptionTrack(ctx context.Context, mediaID uuid.UUID, sub
 	return body, nil
 }
 
-// subtitleCues turns a stored row into cues, preferring word timings.
+// subtitleCues turns a stored row into cues: an uploaded caption file
+// (content opens with WEBVTT) keeps its own timings; otherwise word timings
+// are preferred, then the flat transcript as one cue.
+//
+// A stored file is parsed with the same validator the upload passed, and its
+// text is sanitised again when rendered. A row that does not parse (one
+// stored before uploads were validated) degrades to the flat transcript,
+// fully escaped, exactly as before.
 func subtitleCues(track *postgres.MediaSubtitle, durationMs int64) []captions.Cue {
+	if captions.LooksLikeWebVTT(track.Content) {
+		if cues, err := captions.ParseWebVTT(track.Content); err == nil {
+			return cues
+		}
+	}
 	var words []captions.Word
 	if len(track.WordLevelJSON) > 0 {
 		if err := json.Unmarshal(track.WordLevelJSON, &words); err != nil {

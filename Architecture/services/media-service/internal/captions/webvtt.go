@@ -25,6 +25,11 @@ type Cue struct {
 	StartMs int64
 	EndMs   int64
 	Text    string
+	// Markup marks Text as cue text parsed from an uploaded caption file:
+	// it may carry the basic <b>/<i>/<u> tags and entities, so it is
+	// rendered through SanitizeCueText rather than escaped wholesale.
+	// Transcripts (Markup false) are plain text and fully escaped.
+	Markup bool
 }
 
 // Cue grouping for word-level transcripts. A karaoke word stream is not
@@ -51,18 +56,34 @@ const (
 // A cue with an empty payload is skipped rather than emitted: an empty
 // payload is not valid, and one bad cue makes a parser discard the file.
 func RenderWebVTT(cues []Cue) string {
+	return renderWebVTT(cues, FormatVTTTimestamp)
+}
+
+// RenderCompactWebVTT is RenderWebVTT with the hours field left out below
+// one hour. It is the stored form of an uploaded caption file, so a file
+// that fit the size cap as uploaded still fits once normalised.
+func RenderCompactWebVTT(cues []Cue) string {
+	return renderWebVTT(cues, formatCompactVTTTimestamp)
+}
+
+func renderWebVTT(cues []Cue, stamp func(int64) string) string {
 	var b strings.Builder
 	b.WriteString("WEBVTT\n")
 	for _, cue := range cues {
-		text := escapeCueText(cue.Text)
+		var text string
+		if cue.Markup {
+			text = SanitizeCueText(cue.Text)
+		} else {
+			text = escapeCueText(cue.Text)
+		}
 		if text == "" {
 			continue
 		}
 		start, end := normalizeCueTimes(cue.StartMs, cue.EndMs)
 		b.WriteString("\n")
-		b.WriteString(FormatVTTTimestamp(start))
+		b.WriteString(stamp(start))
 		b.WriteString(" --> ")
-		b.WriteString(FormatVTTTimestamp(end))
+		b.WriteString(stamp(end))
 		b.WriteString("\n")
 		b.WriteString(text)
 		b.WriteString("\n")
@@ -102,6 +123,16 @@ func FormatVTTTimestamp(ms int64) string {
 	seconds := ms / 1000
 	millis := ms - seconds*1000
 	return fmt.Sprintf("%02d:%02d:%02d.%03d", hours, minutes, seconds, millis)
+}
+
+// formatCompactVTTTimestamp is MM:SS.mmm below one hour, else
+// HH:MM:SS.mmm. Both are valid WebVTT.
+func formatCompactVTTTimestamp(ms int64) string {
+	full := FormatVTTTimestamp(ms)
+	if strings.HasPrefix(full, "00:") {
+		return full[3:]
+	}
+	return full
 }
 
 // escapeCueText makes an arbitrary transcript safe as a cue payload.
