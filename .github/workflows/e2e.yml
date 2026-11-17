@@ -453,7 +453,7 @@ jobs:
           #   reels-report-takedown  reels-29: an upheld report removes the reel
           #   reels-18               engagement on an unapproved/removed reel
           #   lv-28                  cover-frame thumbnail_url unchecked
-          ATPOST_E2E_KNOWN_OPEN: "reels-report-takedown,reels-18,lv-28"
+          ATPOST_E2E_KNOWN_OPEN: "reels-report-takedown"
           # Video tier: search is part of the stack, so search checks fail
           # rather than skip.
           ATPOST_E2E_REQUIRE_SEARCH: ${{ matrix.search && '1' || '' }}
