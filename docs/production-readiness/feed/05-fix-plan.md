@@ -81,23 +81,24 @@ Not in this round: feed-02 (environment and AWS decisions), feed-09 and the web 
 ## CI proof, 17 Nov 2026
 
 - **Integration (all Go services):** run 43936139069 at `91dba85cb`, all 33 jobs green, including post-service with a real Scylla node and graph-service. The log has no per-test lines; the new tests' skip conditions (Postgres DSN, Scylla host) were not met, so they ran.
+- **Latest, at `770f5ed9d`:** end-to-end run 44008085438 and integration run 44008075845, both green (probes for every service, commerce review guards).
 - **End-to-end:** run 43995894510 at `c10efb1f6`, all 13 jobs green, 39 tests passed, 9 skipped, 0 failed. This is the first time the workflow has run a flow at all: before 16 Nov its wait step counted a refused connection as healthy and every flow skipped. feed-13 is closed: `TestE2E_Social_PostFollowFeedLike` follows, posts, sees the post in the follower's home feed and likes it, through the gateway.
 - The 9 skips are the "open" paths of features closed for launch (money writes, memberships, groups, communities, Q&A, memories, reviewer programme). Their "closed" answers are asserted.
 
 What the end-to-end stack does not cover: the author-standing check at publication (the stack sets `PUBLISH_REQUIRE_STANDING_CHECK=false`), a completed tip or paid membership, console sign-in with MFA, and the signed payment webhook (the stack uses the stub provider). The stack runs as `ENV=local`.
 
-### Product findings the end-to-end runs exposed (not fixed)
+### Product findings the end-to-end runs exposed
 
 | Finding | Evidence | Note |
 |---|---|---|
 | The home feed answers 502 when trust-safety-service is unreachable: it resolves the viewer's keyword filters on every request and fails closed. | feed-service log, run 43994563478: "keyword filters could not be resolved". | Missed by the audit's dependency list. **Fixed 17 Nov:** a page is now filtered with the viewer's last known keywords (process cache, then a Redis copy kept 7 days); a viewer with none known is served without the keyword filter. Counter `keyword_filter_fallback_total`, alert `FeedKeywordFilterFallback`. Blocks, mutes and feed mutes still fail the page. 7 tests, 6 mutations killed. Not run against a real outage. |
 | The home feed answers 502 when the identity profile service is unreachable. | feed-service log, run 43995307297: "profile hydration failed". | Also missing from the dependency list. Defensible, but it is one more hard dependency. |
-| The identity user-service answers 401 on its health route without the internal key. | Chat job start, run 43973930994. | Same class as feed-01; the six identity and chat services also have no `/livez` or `/readyz`. |
-| Seller approval and product approval have no state guard: an admin can approve a draft shop with no KYC, and any product id. | `commerce-service/internal/store/postgres/onboarding.go:338-339`, `:582`. | Both commerce flows approve a draft this way. |
-| `POST /v1/commerce/onboarding/start` returns the new shop with an empty status; the status route returns `draft`. | Commerce job, run 43995307297. | |
+| The identity user-service answers 401 on its health route without the internal key. | Chat job start, run 43973930994. | **Fixed 17 Nov (`3d008bdbe`):** all six identity and chat services serve `/livez` and `/readyz` without credentials; admin-service registers its probes ahead of the key; the gateway answers its probes ahead of the rate limiters. The chart’s static test has no known probe gaps left. |
+| Seller approval and product approval have no state guard: an admin can approve a draft shop with no KYC, and any product id. | `commerce-service/internal/store/postgres/onboarding.go:338-339`, `:582`. | **Fixed 17 Nov (`770f5ed9d`):** every admin review action is one guarded UPDATE from the states it belongs to; refusals answer 409. The flows now file a real application first. Open: admin-service drops the error body on these routes, so the console sees a bare 409. |
+| `POST /v1/commerce/onboarding/start` returns the new shop with an empty status; the status route returns `draft`. | Commerce job, run 43995307297. | **Fixed 17 Nov (`770f5ed9d`).** |
 | Image uploads: the magic-byte check accepts any image type whatever MIME was declared. | `media-service/internal/service/upload.go:445`. | Video does check its container. |
 | `Architecture/docker/local.env` points `AI_SERVICE_URL` at port 8117 (live-service-v2); `run-local.sh` starts ai-service on 8098, a port it also gives identity-profile. | Corrected on the CI checkout only. | |
-| The dating flow asserts only "not a server error", and dating sits behind the dormant-product gate (404), so its job proves nothing. | `dating_e2e_test.go`. | |
+| The dating flow asserts only "not a server error", and dating sits behind the dormant-product gate (404), so its job proves nothing. | `dating_e2e_test.go`. | **Fixed 17 Nov (`3d008bdbe`):** asserts the closed-at-launch 404. |
 
 ## After the P1s
 
