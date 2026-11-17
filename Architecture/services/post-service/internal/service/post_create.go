@@ -558,6 +558,14 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	}
 	held := p.TitleReviewWrite != nil
 
+	// The video_metadata row commits in the post's own transaction (reels-1):
+	// it used to be inserted after the commit and only logged on failure, so a
+	// post could exist with no row for the transcode consumer to find, and
+	// stay pending for ever.
+	if videoMediaID != uuid.Nil {
+		p.VideoMetadataWrite = buildCreateVideoMetadata(p.ID, p.ContentType, videoMediaID, mediaMeta, maxDuration, videoW, videoH)
+	}
+
 	// Creation is always revision 1; later transitions increment.
 	createEventType, createPayload := s.createdEventFor(ctx, p, effectivePolicy, maxDuration, videoH)
 
@@ -612,67 +620,12 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 	// notification — user.mentioned is only emitted at publish time.
 	s.storeMentions(ctx, p.ID, p.ContentType, mentions)
 
-	// Create video_metadata for video content types.
-	//
-	// ALWAYS for a video attachment, even before transcode has measured it
-	// (instant publish, 2026-09-04). The row is the join the
-	// MediaTranscodeConsumer uses to find this post when the transcode
-	// completes — to flip the `pending` review gate, wire the HLS URL and
-	// reclassify. A post created while its media was still processing used
-	// to get no row at all, so it could never be released.
-	if videoMediaID != uuid.Nil {
-		// upload_status starts at "pending" and is flipped to "ready" by
-		// the MediaTranscodeCompleted consumer — which is the ONLY other
-		// writer of the column. That made the ordering load-bearing in a
-		// way no client was told about: a browser that uploaded, waited
-		// for the transcode (the natural thing to do, since you want a
-		// preview and a duration before filling in the details), and only
-		// then created the post, produced a row the completion event had
-		// already flown past. Nothing would ever set it, so
-		// GET /v1/videos/:id reported a fully-transcoded video as
-		// "pending" forever and POST /v1/videos/:id/publish answered 409
-		// NOT_READY for the life of the post.
-		//
-		// The transcode having already finished is not a missed event, it
-		// is a fact we can read: seed the column from the live
-		// media_assets row instead of asserting a state we haven't
-		// checked. A still-processing asset is unchanged — "pending", and
-		// the consumer flips it as before.
-		uploadStatus := "pending"
-		if meta, ok := mediaMeta[videoMediaID]; ok && meta.ProcessingStatus == mediaReady {
-			uploadStatus = mediaReady
-		}
-		vm := &postgres.VideoMetadata{
-			PostID:       p.ID,
-			UploadStatus: uploadStatus,
-			MediaAssetID: &videoMediaID,
-		}
-		// final_category is the kind the post *is* — what the author chose,
-		// or the measurement when they chose nothing (resolveVideoContentType
-		// already settled that on p.ContentType). computed_category is the
-		// measurement alone, kept for analytics: how many author-flicks are
-		// landscape, how many author-videos are short verticals.
-		vm.FinalCategory = p.ContentType
-		if maxDuration > 0 {
-			category, orientation := ClassifyVideo(float64(maxDuration), videoW, videoH)
-			vm.DurationSeconds = float64(maxDuration)
-			vm.Width = &videoW
-			vm.Height = &videoH
-			vm.Orientation = orientation
-			vm.ComputedCategory = category
-		} else {
-			// Duration unknown: record the provisional answer; the
-			// MediaTranscodeConsumer rewrites the measurement once the
-			// transcode reports duration + dimensions.
-			vm.ComputedCategory = p.ContentType
-			vm.Orientation = deriveOrientation(0, 0)
-			if p.ContentType == "flick" {
-				vm.Orientation = "portrait"
-			}
-		}
-		if err := s.pgStore.CreateVideoMetadata(ctx, vm); err != nil {
-			log.Printf("Warning: failed to create video_metadata for post %s: %v", p.ID, err)
-		}
+	// reels-1: a video post still pending (media-service unreachable at the
+	// gate, or the transcode finished between the gate and the commit, its
+	// completion finding no video_metadata row) is decided once more from
+	// post-service's own read of media_assets. The reconciler is the backstop.
+	if reviewStatus == "pending" && p.VideoMetadataWrite != nil {
+		s.reconcilePendingVideoPost(ctx, p.ID, videoMediaID)
 	}
 
 	// Invalidate author content counts cache
@@ -717,4 +670,53 @@ func (s *Service) CreatePost(ctx context.Context, input *CreatePostInput) (*post
 		}, true)
 	}
 	return p, nil
+}
+
+// buildCreateVideoMetadata is the video_metadata row a new post with a video
+// attachment is created with, written in the post's own transaction
+// (reels-1). Pure.
+//
+// ALWAYS for a video attachment, even before transcode has measured it
+// (instant publish, 2026-09-04): the row is the join the
+// MediaTranscodeConsumer uses to find this post when the transcode completes
+// — to flip the `pending` review gate, wire the HLS URL and reclassify.
+//
+// upload_status is seeded from the live media_assets row: a transcode that
+// already finished is a fact we can read, not an event we wait for (a
+// browser that waits for /renditions before creating the post would
+// otherwise leave the row "pending" for ever). A still-processing asset is
+// "pending" and the consumer flips it.
+func buildCreateVideoMetadata(postID uuid.UUID, contentType string, videoMediaID uuid.UUID,
+	mediaMeta map[uuid.UUID]postgres.MediaMetadata, maxDuration, videoW, videoH int) *postgres.VideoMetadata {
+	uploadStatus := "pending"
+	if meta, ok := mediaMeta[videoMediaID]; ok && meta.ProcessingStatus == mediaReady {
+		uploadStatus = mediaReady
+	}
+	media := videoMediaID
+	vm := &postgres.VideoMetadata{
+		PostID:       postID,
+		UploadStatus: uploadStatus,
+		MediaAssetID: &media,
+		// final_category is the kind the post *is*; computed_category is
+		// the measurement alone, kept for analytics.
+		FinalCategory: contentType,
+	}
+	if maxDuration > 0 {
+		category, orientation := ClassifyVideo(float64(maxDuration), videoW, videoH)
+		w, h := videoW, videoH
+		vm.DurationSeconds = float64(maxDuration)
+		vm.Width = &w
+		vm.Height = &h
+		vm.Orientation = orientation
+		vm.ComputedCategory = category
+	} else {
+		// Duration unknown: the provisional answer; the consumer rewrites the
+		// measurement once the transcode reports it.
+		vm.ComputedCategory = contentType
+		vm.Orientation = deriveOrientation(0, 0)
+		if contentType == "flick" {
+			vm.Orientation = "portrait"
+		}
+	}
+	return vm
 }

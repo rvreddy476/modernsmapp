@@ -437,7 +437,7 @@ func TestGatedPostHasNoPublicHashtags(t *testing.T) {
 	if got := publicHashtags(&postgres.Post{Hashtags: []string{"secret"}, TierRequiredID: &tier}); got != nil {
 		t.Fatalf("gated post hashtags = %v, want none", got)
 	}
-	if got := publicHashtags(&postgres.Post{Hashtags: []string{"open"}}); len(got) != 1 {
+	if got := publicHashtags(&postgres.Post{Hashtags: []string{"open"}, Visibility: "public", ReviewStatus: "approved"}); len(got) != 1 {
 		t.Fatalf("open post hashtags = %v", got)
 	}
 }

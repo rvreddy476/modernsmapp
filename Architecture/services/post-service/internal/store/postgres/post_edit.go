@@ -253,7 +253,7 @@ func (s *Store) UpdatePostFields(ctx context.Context, postID, actorID uuid.UUID,
 	// Search re-reads the post when its visibility or anything search
 	// indexes about a long video's credits changed (migration 070): the
 	// document is replaced whole by the eligibility event.
-	if creditSearchChanged(changes) || tierChanged(changes) {
+	if creditSearchChanged(changes) || tierChanged(changes) || indexedFieldChanged(changes) {
 		if _, visChanged := changes["visibility"]; !visChanged {
 			if err := BumpSearchRevAndEmitTx(ctx, tx, postID); err != nil {
 				return nil, fmt.Errorf("emit search eligibility on credits edit: %w", err)
@@ -470,6 +470,19 @@ func nextTierRequired(cur *uuid.UUID, patch PostEditPatch) string {
 
 // creditSearchChanged reports an edit to what search indexes about a long
 // video's credits (credit names and roles, genres, year, production house).
+// indexedFieldChanged: an edit to anything the search document carries
+// (2026-11-17). Title, description (text), tags, hashtags, category,
+// language and thumbnail (cover_media_id) used to change in the row while
+// search kept the old document until some unrelated transition.
+func indexedFieldChanged(changes map[string]PostEditChange) bool {
+	for _, k := range []string{"title", "text", "tags", "hashtags", "category", "language", "cover_media_id"} {
+		if _, ok := changes[k]; ok {
+			return true
+		}
+	}
+	return false
+}
+
 func creditSearchChanged(changes map[string]PostEditChange) bool {
 	for _, k := range []string{"credits", "genres", "release_year", "production_house"} {
 		if _, ok := changes[k]; ok {
@@ -656,10 +669,19 @@ func (s *Store) CountCreatorContent(ctx context.Context, authorID uuid.UUID) (Cr
 
 // UpdatePostCategory sets posts.category (already validated against the
 // taxonomy by the service) on a live post.
+// Category is indexed (2026-11-17): a change re-indexes in the same
+// transaction; an unchanged category writes nothing.
 func (s *Store) UpdatePostCategory(ctx context.Context, postID uuid.UUID, category string) error {
-	_, err := s.db.Exec(ctx,
-		`UPDATE posts SET category = $2, updated_at = NOW() WHERE id = $1 AND deleted_at IS NULL`,
-		postID, category)
+	_, err := s.WithSearchEligibilityTx(ctx, postID, func(ctx context.Context, tx pgx.Tx) (bool, error) {
+		tag, err := tx.Exec(ctx,
+			`UPDATE posts SET category = $2, updated_at = NOW()
+			 WHERE id = $1 AND deleted_at IS NULL AND category IS DISTINCT FROM $2`,
+			postID, category)
+		if err != nil {
+			return false, err
+		}
+		return tag.RowsAffected() > 0, nil
+	})
 	return err
 }
 

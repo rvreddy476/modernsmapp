@@ -76,6 +76,9 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		// (copyright_owner_tracks, migration 075). Carried on EVERY event, so
 		// no later transition re-grants earnings to a tracked post.
 		earningsExcluded bool
+		// taxonomy: tags, hashtags, category, language (2026-11-17); on the
+		// payload only when the post is eligible, like the body.
+		taxonomy events.PostSearchTaxonomy
 	)
 	// The search document is replaced whole on re-approval, so the
 	// result-row projection (title, attached assets in carousel order, the
@@ -95,10 +98,11 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		                    WHERE pm.post_id = posts.id AND pm.kind = 'video'), 0)::int,
 		          COALESCE((SELECT vm.height FROM video_metadata vm WHERE vm.post_id = posts.id), 0)::int,
 		          tier_required_id,
-		          EXISTS (SELECT 1 FROM copyright_owner_tracks ct WHERE ct.post_id = posts.id)`, postID).
+		          EXISTS (SELECT 1 FROM copyright_owner_tracks ct WHERE ct.post_id = posts.id),
+		          COALESCE(tags, '{}'), COALESCE(hashtags, '{}'), COALESCE(category, ''), COALESCE(language, '')`, postID).
 		Scan(&authorID, &visibility, &review, &text, &title, &contentType,
 			&createdAt, &deletedAt, &publishAt, &rev, &effective, &restricted, &mediaIDs, &mediaKinds, &durationMs, &height, &tier,
-			&earningsExcluded)
+			&earningsExcluded, &taxonomy.Tags, &taxonomy.Hashtags, &taxonomy.Category, &taxonomy.Language)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, ErrPostRowMissing
 	}
@@ -141,6 +145,7 @@ func BumpSearchRevAndEmitTxRev(ctx context.Context, tx pgx.Tx, postID uuid.UUID)
 		// recorded in video_metadata (0 = unknown). has_subtitles is left
 		// unset: caption state lives only in media-service.
 		payload.Height = height
+		payload.PostSearchTaxonomy = taxonomy
 		for i, id := range mediaIDs {
 			kind := ""
 			if i < len(mediaKinds) {

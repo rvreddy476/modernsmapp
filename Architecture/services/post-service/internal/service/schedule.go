@@ -131,6 +131,14 @@ func (s *Service) buildPostCreatedPayload(ctx context.Context, p *postgres.Post,
 		// indexes it publicly. "" (omitted) for an open post.
 		TierRequiredID: tierRequiredIDString(p.TierRequiredID),
 	}
+	// Search taxonomy (2026-11-17), on the same rule as the eligibility
+	// event: only for a post search may index. PublishAt is not consulted:
+	// the publish path builds this after the flip.
+	if p.TierRequiredID == nil && events.SearchEligible(p.Visibility, p.EffectiveReviewStatus(), p.DeletedAt != nil) {
+		pc.PostSearchTaxonomy = events.PostSearchTaxonomy{
+			Tags: p.Tags, Hashtags: p.Hashtags, Category: p.Category, Language: p.Language,
+		}
+	}
 	// Additive pointer fields: stamped whenever an intent exists —
 	// either a typed policy or explicit legacy fields (P1-1). Events
 	// for clients that expressed no opinion stay byte-compatible.
@@ -155,10 +163,20 @@ func (s *Service) buildPostCreatedPayload(ctx context.Context, p *postgres.Post,
 // per-hashtag live streams: a members-only post's hashtags are part of its
 // body (cleared for non-members), so it contributes none.
 func publicHashtags(p *postgres.Post) []string {
-	if p == nil || p.TierRequiredID != nil {
+	if !publiclySearchable(p) {
 		return nil
 	}
 	return p.Hashtags
+}
+
+// publiclySearchable is the search rule applied to a loaded post: public,
+// approved (effective status, so a held post is not), not deleted, not
+// scheduled, not members-only. Trending counts only such posts
+// (2026-11-17): a pending, private, unlisted or held post's hashtags used to
+// count, and the trending page showed what no viewer could open.
+func publiclySearchable(p *postgres.Post) bool {
+	return p != nil && p.PublishAt == nil && p.TierRequiredID == nil &&
+		events.SearchEligible(p.Visibility, p.EffectiveReviewStatus(), p.DeletedAt != nil) // public + approved + live
 }
 
 // redactGatedPostCreated keeps a members-only post's body off the bus

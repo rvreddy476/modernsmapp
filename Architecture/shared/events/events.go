@@ -663,6 +663,8 @@ type PostCreatedPayload struct {
 	// Video credits (2026-10-23), long videos only and only when set; see
 	// PostCreditSearchFields.
 	PostCreditSearchFields
+	// Tags, hashtags, category, language (PostSearchTaxonomy).
+	PostSearchTaxonomy
 
 	// TierRequiredID is the members-only gate (posts.tier_required_id,
 	// 2026-10-23): the tier's UUID string, "" (omitted) when the post is
@@ -766,6 +768,18 @@ type PostCreditSearchFields struct {
 	ProductionHouse string   `json:"production_house,omitempty"`
 }
 
+// PostSearchTaxonomy is what search indexes about a post beyond its text and
+// title (2026-11-17): tags, hashtags, category and language. Embedded in
+// PostCreatedPayload and PostSearchEligibilityChangedPayload, so the keys
+// sit at the top level of both. post-service fills it only when the post is
+// eligible (the same rule as the body); omitted otherwise. Additive.
+type PostSearchTaxonomy struct {
+	Tags     []string `json:"tags,omitempty"`
+	Hashtags []string `json:"hashtags,omitempty"`
+	Category string   `json:"category,omitempty"`
+	Language string   `json:"language,omitempty"`
+}
+
 // PostMediaRef is one attached asset as carried on the post events: enough
 // for a consumer to resolve a thumbnail through media-service without a
 // read-back into post-service.
@@ -841,6 +855,8 @@ type PostSearchEligibilityChangedPayload struct {
 	HasSubtitles bool `json:"has_subtitles,omitempty"`
 	// Video credits, as on PostCreatedPayload and for the same reason.
 	PostCreditSearchFields
+	// Tags, hashtags, category, language (PostSearchTaxonomy).
+	PostSearchTaxonomy
 
 	// TierRequiredID is the members-only gate, as on PostCreatedPayload:
 	// the tier's UUID string, "" (omitted) when the post is open to

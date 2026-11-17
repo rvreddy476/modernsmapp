@@ -37,6 +37,21 @@ type ScheduledCandidate struct {
 	PublishAt time.Time
 }
 
+// scheduledVideoReadySQL is the schedule worker's video readiness rule
+// (lv-17, long-video readiness audit, 2026-11-17): a scheduled post that
+// carries a video (it has a video_metadata row) is not due until its
+// transcode is ready and its review gate has left 'pending'. It used to be
+// published at publish_at while still transcoding, invisible to everyone but
+// the author, with its PostCreated (and the subscribers' notification) spent
+// on a post nobody could open. The worker re-lists every tick, so the post
+// goes live on the first tick after it is both due and ready; the guarded
+// UPDATE stays the exactly-once gate. A post without video is unaffected.
+// alias names the posts row ("p" in the scan, "posts" in the UPDATE).
+func scheduledVideoReadySQL(alias string) string {
+	return `NOT EXISTS (SELECT 1 FROM video_metadata vm WHERE vm.post_id = ` + alias + `.id
+		AND (vm.upload_status <> 'ready' OR ` + alias + `.review_status = 'pending'))`
+}
+
 // ListDueScheduledPosts returns live (not deleted) scheduled posts whose
 // publish_at is at or before `now`, earliest first. Index: idx_posts_scheduled.
 func (s *Store) ListDueScheduledPosts(ctx context.Context, now time.Time, limit int) ([]ScheduledCandidate, error) {
@@ -51,6 +66,7 @@ func (s *Store) ListDueScheduledPosts(ctx context.Context, now time.Time, limit 
 		WHERE p.publish_at IS NOT NULL AND p.publish_at <= $1 AND p.deleted_at IS NULL
 		  AND `+NotNoteSQL("p")+` -- notes publish through internal/noteschedule
 		  AND NOT EXISTS (SELECT 1 FROM post_publish_blocks b WHERE b.post_id = p.id)
+		  AND `+scheduledVideoReadySQL("p")+`
 		ORDER BY p.publish_at ASC
 		LIMIT $2`, now, limit)
 	if err != nil {
@@ -131,12 +147,15 @@ func (s *Store) PublishScheduledPostWithHold(
 		SET publish_at = NULL,
 		    published_at = $2,
 		    created_at = $2,
-		    updated_at = $2,
-		    search_rev = search_rev + 1
+		    updated_at = $2
 		WHERE id = $1 AND publish_at IS NOT NULL AND deleted_at IS NULL`
 	args := []interface{}{postID, now}
 	if dueOnly {
-		query += ` AND publish_at <= $2`
+		// lv-17: the worker also waits for the video, inside the guarded
+		// UPDATE, so a post listed ready and then re-checked can never go
+		// live while still transcoding. "Publish now" (dueOnly=false) has
+		// its own readiness check (service.PublishVideo).
+		query += ` AND publish_at <= $2 AND ` + scheduledVideoReadySQL("posts")
 	}
 	if authorID != nil {
 		args = append(args, *authorID)
@@ -157,6 +176,19 @@ func (s *Store) PublishScheduledPostWithHold(
 	held, err := scheduledFlipHeldTx(ctx, tx, postID, rowAuthor, hold, &rev)
 	if err != nil {
 		return nil, err
+	}
+
+	// The publish is an eligibility transition like any other (2026-11-17):
+	// search and the notification lane's second trigger read
+	// PostSearchEligibilityChanged, which the flip used to skip (it bumped
+	// search_rev inline and wrote only PostCreated). Not for a held post:
+	// placing the hold already wrote its (ineligible) transition, and the
+	// reviewer's clear writes the eligible one. PostCreated carries the
+	// same revision.
+	if !held {
+		if rev, err = BumpSearchRevAndEmitTxRev(ctx, tx, postID); err != nil {
+			return nil, fmt.Errorf("publish scheduled: eligibility: %w", err)
+		}
 	}
 
 	if event != nil && !held {

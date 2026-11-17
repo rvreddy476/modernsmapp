@@ -227,11 +227,14 @@ func (h *Handler) CreateVideoSeries(c *gin.Context) {
 			vs.CoverMediaID = &id
 		}
 	}
-	if req.TrailerPostID != nil {
-		if id, err := uuid.Parse(*req.TrailerPostID); err == nil {
-			vs.TrailerPostID = &id
-		}
+	// The trailer is an ownership claim too (403 NOT_OWN_VIDEO from the
+	// service), so a bad id is a 400 rather than dropped.
+	trailerID, ok := parseOptionalTargetID(req.TrailerPostID)
+	if !ok {
+		badRequest(c, "INVALID_ID", "trailer_post_id must be a UUID")
+		return
 	}
+	vs.TrailerPostID = trailerID
 
 	if err := h.svc.CreateVideoSeries(c.Request.Context(), vs); err != nil {
 		writeVideoSeriesError(c, err)
@@ -259,6 +262,10 @@ func writeVideoSeriesError(c *gin.Context, err error) {
 		errors.Is(err, service.ErrVideoSeriesPrivate):
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+	// The trailer is someone else's post: the same code as an episode.
+	case errors.Is(err, service.ErrTrailerNotCreatorsVideo):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusForbidden, "NOT_OWN_VIDEO", err.Error(), nil)
 	// lv-7: channel_id names someone else's channel.
 	case errors.Is(err, service.ErrNotChannelOwner):
 		api.ErrorWithContext(c.Request.Context(), c.Writer,

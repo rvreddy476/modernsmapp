@@ -129,9 +129,14 @@ func (r gateScan) Scan(dest ...any) error {
 	if !strings.Contains(r.sql, "SET search_rev = search_rev + 1") {
 		return fmt.Errorf("unexpected query: %s", r.sql)
 	}
-	if len(dest) != 18 {
-		return fmt.Errorf("RETURNING scans %d columns; this fake knows 18", len(dest))
+	if len(dest) != 22 {
+		return fmt.Errorf("RETURNING scans %d columns; this fake knows 22", len(dest))
 	}
+	// Search taxonomy (2026-11-17): tags, hashtags, category, language.
+	*dest[18].(*[]string) = []string{"tag"}
+	*dest[19].(*[]string) = []string{"momentum"}
+	*dest[20].(*string) = "music"
+	*dest[21].(*string) = "te"
 	row := r.t.row
 	row.rev++
 	r.t.row.rev = row.rev

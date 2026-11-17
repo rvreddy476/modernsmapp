@@ -101,6 +101,10 @@ type Post struct {
 	// ActionWrite, when set on a post being created, makes the insert write
 	// its action link in the same transaction. Never on the wire or cached.
 	ActionWrite *ActionLinkWrite `json:"-"`
+	// VideoMetadataWrite, when set on a post being created, makes the insert
+	// write its video_metadata row in the same transaction (reels-1). Never
+	// on the wire or cached.
+	VideoMetadataWrite *VideoMetadata `json:"-"`
 	// TitleReviewWrite, when set on a post being created, holds it for
 	// copyright title review in the same transaction (migration 073,
 	// copyright_title_review.go). Never on the wire or cached.
@@ -894,6 +898,16 @@ func insertPostTx(ctx context.Context, tx pgx.Tx, p *Post) error {
 		pid := p.ID
 		if _, err := insertActionLinkTx(ctx, tx, &pid, nil, p.AuthorID, p.ActionWrite); err != nil {
 			return fmt.Errorf("insert action link: %w", err)
+		}
+	}
+
+	// The video_metadata row (reels-1), in the post's own transaction: the
+	// transcode consumer finds the post through it, so a post must never
+	// commit without it. It used to be inserted after the commit, log-only.
+	if p.VideoMetadataWrite != nil {
+		p.VideoMetadataWrite.PostID = p.ID
+		if err := insertVideoMetadata(ctx, tx, p.VideoMetadataWrite); err != nil {
+			return fmt.Errorf("insert video_metadata: %w", err)
 		}
 	}
 

@@ -137,6 +137,10 @@ func (s *Service) CreateVideoSeries(ctx context.Context, vs *postgres.VideoSerie
 	if err := s.requireOwnChannelRef(ctx, vs.CreatorID, vs.ChannelID); err != nil {
 		return err
 	}
+	// The trailer is the creator's own video (channel_ref_authz.go).
+	if err := s.requireOwnTrailer(ctx, vs.CreatorID, vs.TrailerPostID); err != nil {
+		return err
+	}
 	// The cover is media-claimed before the row names it
 	// (tube_cover_claims.go).
 	return s.createVideoSeriesClaimed(ctx, vs)
@@ -317,6 +321,10 @@ func (s *Service) UpdateVideoSeries(ctx context.Context, callerID, seriesID uuid
 	}
 	// lv-7: a new channel is the owner's own (channel_ref_authz.go).
 	if err := s.requireOwnChannelRef(ctx, callerID, patch.ChannelID); err != nil {
+		return nil, err
+	}
+	// A new trailer is the owner's own video (channel_ref_authz.go).
+	if err := s.requireOwnTrailer(ctx, callerID, patch.TrailerPostID); err != nil {
 		return nil, err
 	}
 	// A new cover is claimed before the row names it, the old one released

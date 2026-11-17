@@ -6,17 +6,20 @@ package consumers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
 	postEvents "github.com/atpost/post-service/internal/events"
 	"github.com/atpost/post-service/internal/service"
 	"github.com/atpost/post-service/internal/store/postgres"
+	"github.com/atpost/post-service/internal/videogate"
 	"github.com/atpost/shared/events"
 	sharedkafka "github.com/atpost/shared/kafka"
 	"github.com/atpost/shared/o11y/metrics"
 	"github.com/atpost/shared/postclassify"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -33,6 +36,8 @@ type MediaTranscodeConsumer struct {
 	// titleReview settles copyright title holds that waited for the
 	// measurement (service.ResolveTitleReviewMeasurement). nil = off.
 	titleReview titleReviewResolver
+	// gate stands in for store in the review-gate step (tests); nil = store.
+	gate reviewGateStore
 }
 
 // titleReviewResolver is the service seam the consumer needs.
@@ -107,7 +112,11 @@ func (c *MediaTranscodeConsumer) handle(ctx context.Context, env *events.EventEn
 	// reels/posttube items 2+3 — finalize the video publish gate: flip a
 	// still-'pending' post to approved/rejected now that transcode and the
 	// content scan have produced a verdict.
-	c.finalizeReviewGate(ctx, mediaID, &p)
+	// reels-1: an error retries the message (then the DLQ) instead of
+	// committing it with the post still pending.
+	if err := c.finalizeReviewGate(ctx, mediaID, &p); err != nil {
+		return err
+	}
 
 	// Only ready transcodes carry useful URLs to wire through; a failed
 	// transcode is otherwise a no-op here (the gate above handled it) and
@@ -350,49 +359,58 @@ func (c *MediaTranscodeConsumer) handleVoiceSafetyResolved(ctx context.Context, 
 	return nil
 }
 
-func (c *MediaTranscodeConsumer) finalizeReviewGate(ctx context.Context, mediaID uuid.UUID, p *events.MediaTranscodeCompletedPayload) {
-	var decision string
-	switch {
-	case p.ProcessingStatus == "failed":
-		decision = "rejected"
-	case p.ProcessingStatus == "ready" && p.ModerationStatus == "rejected":
-		decision = "rejected"
-	case p.ProcessingStatus == "ready" && (p.ModerationStatus == "passed" || p.ModerationStatus == "approved"):
-		decision = "approved"
-	default:
-		return // intermediate or non-approved status (pending, manual_review, scanner failure, etc.) — wait for a terminal verdict
-	}
+// reviewGateStore is what finalizeReviewGate needs; *postgres.Store
+// implements it, tests substitute a fake (the gate field).
+type reviewGateStore interface {
+	GetVideoMetadataByMediaAsset(ctx context.Context, mediaAssetID uuid.UUID) (*postgres.VideoMetadata, error)
+	videogate.Store
+}
 
-	vm, err := c.store.GetVideoMetadataByMediaAsset(ctx, mediaID)
-	if err != nil || vm == nil {
-		return // no post mapped to this media yet — nothing to gate
+func (c *MediaTranscodeConsumer) gateStore() reviewGateStore {
+	if c.gate != nil {
+		return c.gate
 	}
+	return c.store
+}
 
-	flipped, err := c.store.FlipReviewStatusFromPending(ctx, vm.PostID, decision)
+// finalizeReviewGate flips a still-'pending' video post to its terminal
+// review_status once transcode finishes — 'rejected' on a failed transcode
+// or a rejected content scan, 'approved' on a clean ready transcode (the
+// rule is videogate.Decide, shared with the reconciler). A post that already
+// has a terminal status (finalized at create time, or a manual moderator
+// decision) is left untouched.
+//
+// reels-1: every failure is returned, so the message is retried and then
+// dead-lettered by the consumer's policy instead of committed with the post
+// still pending. Only "no video_metadata row for this media" (pgx.ErrNoRows)
+// means there is nothing to gate; the flip is a compare-and-set from
+// 'pending', so a redelivery is safe.
+func (c *MediaTranscodeConsumer) finalizeReviewGate(ctx context.Context, mediaID uuid.UUID, p *events.MediaTranscodeCompletedPayload) error {
+	decision, terminal, mediaFailed := videogate.Decide(p.ProcessingStatus, p.ModerationStatus)
+	if !terminal {
+		return nil // intermediate or non-approved status (pending, manual_review, scanner failure, etc.) — wait for a terminal verdict
+	}
+	st := c.gateStore()
+	vm, err := st.GetVideoMetadataByMediaAsset(ctx, mediaID)
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && vm == nil) {
+		return nil // no post mapped to this media yet; the create path and the sweep decide it
+	}
 	if err != nil {
-		slog.Warn("media transcode consumer: review-gate flip failed",
-			"post_id", vm.PostID, "error", err)
-		return
+		return fmt.Errorf("review gate: video_metadata for media %s: %w", mediaID, err)
 	}
-	if !flipped {
-		return // post wasn't pending — leave its existing status
+	out, err := videogate.Flip(ctx, st, vm.PostID, decision, mediaFailed, c.bustPostBody)
+	if err != nil {
+		return fmt.Errorf("review gate: flip post %s: %w", vm.PostID, err)
 	}
+	if out == videogate.Approved || out == videogate.Rejected {
+		slog.Info("media transcode consumer: publish gate finalized",
+			"post_id", vm.PostID, "decision", decision)
+	}
+	return nil
+}
 
-	// Audit row for the verdict + bust the cached post body so the new
-	// review_status is visible immediately.
-	confidence := 1.0
-	if err := c.store.InsertModerationReview(ctx, &postgres.ModerationReview{
-		ReelID:       vm.PostID,
-		ReviewerType: "auto",
-		Decision:     decision,
-		Confidence:   &confidence,
-	}); err != nil {
-		slog.Warn("media transcode consumer: moderation review insert failed",
-			"post_id", vm.PostID, "error", err)
-	}
+func (c *MediaTranscodeConsumer) bustPostBody(ctx context.Context, postID uuid.UUID) {
 	if c.rdb != nil {
-		_ = c.rdb.Del(ctx, "post:body:"+vm.PostID.String()).Err()
+		_ = c.rdb.Del(ctx, "post:body:"+postID.String()).Err()
 	}
-	slog.Info("media transcode consumer: publish gate finalized",
-		"post_id", vm.PostID, "decision", decision)
 }

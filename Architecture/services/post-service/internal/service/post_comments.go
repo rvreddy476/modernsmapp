@@ -183,7 +183,9 @@ func (s *Service) CreateCommentPG(ctx context.Context, postID, authorID uuid.UUI
 
 	// Bump trending scores for hashtags in the comment body (max 5 per design spec).
 	// Fire-and-forget: comment hashtags influence trending but are not stored per-comment.
-	if commentTags := extractHashtags(body); len(commentTags) > 0 {
+	// Only under a post search may show (2026-11-17): a comment on a
+	// private, pending or held post no longer feeds the public trending set.
+	if commentTags := extractHashtags(body); len(commentTags) > 0 && publiclySearchable(post) {
 		if len(commentTags) > 5 {
 			commentTags = commentTags[:5]
 		}

@@ -31,6 +31,7 @@ import (
 	"github.com/atpost/post-service/internal/store/scylla"
 	"github.com/atpost/post-service/internal/streamhub"
 	"github.com/atpost/post-service/internal/trending"
+	"github.com/atpost/post-service/internal/videogate"
 	"github.com/atpost/shared/counters"
 	"github.com/atpost/shared/health"
 	"github.com/atpost/shared/middleware"
@@ -640,6 +641,12 @@ func main() {
 	// tick (default 30s). See internal/postschedule.
 	scheduleCfg := postschedule.ConfigFromEnv()
 	go postschedule.NewWorker(pgStore, postSvc, scheduleCfg, slog.Default()).Start(consumerCtx)
+
+	// Video review-gate reconciler (reels-1): video posts still pending
+	// after VIDEO_GATE_SWEEP_MIN_AGE (default 5m) are judged again from
+	// media_assets, one bounded batch per VIDEO_GATE_SWEEP_INTERVAL. See
+	// internal/videogate.
+	go videogate.NewSweeper(pgStore, videogate.ConfigFromEnv(), postSvc.BustPostBody).Start(consumerCtx)
 
 	// Echo v2 scheduled notes (internal/noteschedule): claims due notes with
 	// FOR UPDATE SKIP LOCKED, re-checks standing and Premium, publishes.

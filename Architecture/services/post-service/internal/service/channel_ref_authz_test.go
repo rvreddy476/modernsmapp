@@ -140,3 +140,33 @@ func TestRequireOwnChannelRefFailsClosed(t *testing.T) {
 		t.Fatal("an unwired channel store allowed the reference")
 	}
 }
+
+// The trailer, like an episode, is the creator's own video: a stranger's
+// post is refused on create and on PATCH and nothing is written; the
+// creator's own is stored. (A missing post is requireOwnEpisodePost's 404,
+// pinned with the episode rule.)
+func TestSeriesTrailerMustBeTheCreatorsOwnVideo(t *testing.T) {
+	r := newChannelRefRig()
+	mine, theirs := uuid.New(), uuid.New()
+	r.series.postAuthors = map[uuid.UUID]uuid.UUID{mine: r.owner, theirs: uuid.New()}
+	ctx := context.Background()
+
+	if err := r.s.CreateVideoSeries(ctx, &postgres.VideoSeries{CreatorID: r.owner, Title: "x", TrailerPostID: &theirs}); !errors.Is(err, ErrTrailerNotCreatorsVideo) {
+		t.Fatalf("create with a stranger's trailer: err=%v", err)
+	}
+	if len(r.rows.series) != 0 {
+		t.Fatal("a refused trailer reached the store")
+	}
+	if _, err := r.s.UpdateVideoSeries(ctx, r.owner, r.seriesID, postgres.VideoSeriesPatch{TrailerPostID: &theirs}); !errors.Is(err, ErrTrailerNotCreatorsVideo) {
+		t.Fatalf("PATCH with a stranger's trailer: err=%v", err)
+	}
+	if len(r.series.patches) != 0 {
+		t.Fatal("a refused trailer patch reached the store")
+	}
+	if err := r.s.CreateVideoSeries(ctx, &postgres.VideoSeries{CreatorID: r.owner, Title: "x", TrailerPostID: &mine}); err != nil {
+		t.Fatalf("own trailer on create: %v", err)
+	}
+	if _, err := r.s.UpdateVideoSeries(ctx, r.owner, r.seriesID, postgres.VideoSeriesPatch{TrailerPostID: &mine}); err != nil {
+		t.Fatalf("own trailer on PATCH: %v", err)
+	}
+}

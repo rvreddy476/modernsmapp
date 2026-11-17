@@ -7,6 +7,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // VideoMetadata represents the video_metadata table row.
@@ -58,11 +59,22 @@ func scanVideoMetadata(row pgx.Row) (*VideoMetadata, error) {
 
 // CreateVideoMetadata inserts a new video_metadata row.
 func (s *Store) CreateVideoMetadata(ctx context.Context, vm *VideoMetadata) error {
+	return insertVideoMetadata(ctx, s.db, vm)
+}
+
+// videoMetadataExecer is the pool or the create transaction.
+type videoMetadataExecer interface {
+	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
+}
+
+// insertVideoMetadata is the one INSERT, on the pool or inside the post's
+// create transaction (posts.go, reels-1).
+func insertVideoMetadata(ctx context.Context, db videoMetadataExecer, vm *VideoMetadata) error {
 	now := time.Now()
 	vm.CreatedAt = now
 	vm.UpdatedAt = now
 
-	_, err := s.db.Exec(ctx, `
+	_, err := db.Exec(ctx, `
 		INSERT INTO video_metadata (
 			post_id, duration_seconds, width, height, aspect_ratio, orientation,
 			file_size_bytes, mime_type, codec_video, codec_audio, frame_rate,

@@ -203,6 +203,23 @@ func TestCreateSeriesAndPlaylistRejectAnInvalidChannelID(t *testing.T) {
 	}
 }
 
+// The trailer on create is an ownership claim too: a bad id is a 400, and a
+// stranger's post (from the service) is 403 NOT_OWN_VIDEO.
+func TestCreateSeriesTrailerIDIsChecked(t *testing.T) {
+	headers := map[string]string{"X-User-Id": uuid.NewString()}
+	w := performVideoSeriesRequestWithBody(t, http.MethodPost, "/v1/video-series", headers, `{"title":"x","trailer_post_id":"nope"}`)
+	if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "INVALID_ID") {
+		t.Fatalf("trailer_post_id=nope: %d %s; want 400 INVALID_ID", w.Code, w.Body.String())
+	}
+	rec := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(rec)
+	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+	writeVideoSeriesError(c, service.ErrTrailerNotCreatorsVideo)
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "NOT_OWN_VIDEO") {
+		t.Fatalf("stranger's trailer: %d %s; want 403 NOT_OWN_VIDEO", rec.Code, rec.Body.String())
+	}
+}
+
 // lv-7: the service's refusal is 403 NOT_OWN_CHANNEL on both mappings.
 func TestNotOwnChannelMapsTo403(t *testing.T) {
 	for name, write := range map[string]func(*gin.Context, error){

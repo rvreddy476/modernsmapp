@@ -48,3 +48,29 @@ func (s *Service) requireOwnChannelRef(ctx context.Context, callerID uuid.UUID, 
 	}
 	return nil
 }
+
+// ErrTrailerNotCreatorsVideo is the 403 NOT_OWN_VIDEO refusal for a series
+// trailer that is someone else's post (lv-7 follow-up, 2026-11-17): the
+// trailer, like an episode, is the creator's own video.
+var ErrTrailerNotCreatorsVideo = errors.New("forbidden: the trailer must be one of your own videos")
+
+// requireOwnTrailer allows a nil trailer and the creator's own post; a
+// missing post is ErrEpisodePostNotFound (404), someone else's
+// ErrTrailerNotCreatorsVideo (403), a lookup failure an error (500). Fails
+// closed without a series store.
+func (s *Service) requireOwnTrailer(ctx context.Context, creatorID uuid.UUID, trailer *uuid.UUID) error {
+	if trailer == nil {
+		return nil
+	}
+	if s.videoSeries == nil {
+		return ErrVideoSeriesStoreUnavailable
+	}
+	if creatorID == uuid.Nil {
+		return ErrTrailerNotCreatorsVideo
+	}
+	err := s.requireOwnEpisodePost(ctx, creatorID, *trailer)
+	if errors.Is(err, ErrEpisodeNotCreatorsVideo) {
+		return ErrTrailerNotCreatorsVideo
+	}
+	return err
+}
