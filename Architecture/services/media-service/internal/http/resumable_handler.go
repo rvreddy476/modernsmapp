@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/atpost/media-service/internal/service"
 	"github.com/atpost/shared/api"
@@ -27,6 +28,9 @@ type InitResumableUploadRequest struct {
 	FileType   string `json:"file_type" binding:"required,oneof=image video"`
 	MimeType   string `json:"mime_type" binding:"required"`
 	TotalBytes int64  `json:"total_bytes" binding:"required,min=1"`
+	// DurationMs is the video's length as the client read it (optional):
+	// over the length cap the upload is refused before it starts (lv-30).
+	DurationMs int64 `json:"duration_ms" binding:"min=0"`
 }
 
 func (h *Handler) InitResumableUpload(c *gin.Context) {
@@ -42,8 +46,18 @@ func (h *Handler) InitResumableUpload(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.svc.InitResumableUpload(c.Request.Context(), userID, req.FileType, req.MimeType, req.TotalBytes)
+	resp, err := h.svc.InitResumableUpload(c.Request.Context(), userID, req.FileType, req.MimeType, req.TotalBytes,
+		service.WithDeclaredDurationMs(req.DurationMs))
 	if err != nil {
+		if writeUploadLimitError(c, err) {
+			return
+		}
+		if strings.Contains(err.Error(), "upload rate limit exceeded") {
+			// The count limit InitUpload answers 429 for; this route said 400.
+			c.Header("Retry-After", "3600")
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusTooManyRequests, "RATE_LIMITED", err.Error(), nil)
+			return
+		}
 		if errors.Is(err, service.ErrVideoTooLarge) {
 			writeVideoTooLarge(c, err)
 			return
@@ -100,7 +114,12 @@ func (h *Handler) GetResumableUploadStatus(c *gin.Context) {
 
 	upload, err := h.svc.GetResumableUploadStatus(c.Request.Context(), uploadID, userID)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusNotFound, "NOT_FOUND", err.Error(), nil)
+		if writeUploadLimitError(c, err) {
+			return
+		}
+		// A store failure is not "your upload is gone": a client discards a
+		// session on 404, so an outage answers 500 and the client retries.
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "could not read the upload", nil)
 		return
 	}
 
@@ -138,6 +157,9 @@ func (h *Handler) UploadChunk(c *gin.Context) {
 
 	resp, err := h.svc.UploadPart(c.Request.Context(), uploadID, userID, partNumber, c.Request.Body, size)
 	if err != nil {
+		if writeUploadLimitError(c, err) {
+			return
+		}
 		if errors.Is(err, service.ErrVideoTooLarge) {
 			writeVideoTooLarge(c, err)
 			return
@@ -164,6 +186,9 @@ func (h *Handler) CompleteResumableUpload(c *gin.Context) {
 
 	media, err := h.svc.CompleteResumableUpload(c.Request.Context(), uploadID, userID)
 	if err != nil {
+		if writeUploadLimitError(c, err) {
+			return
+		}
 		if errors.Is(err, service.ErrVideoTooLarge) {
 			writeVideoTooLarge(c, err)
 			return

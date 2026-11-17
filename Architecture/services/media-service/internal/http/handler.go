@@ -299,6 +299,9 @@ type InitUploadRequest struct {
 	// omitted value leaves the column NULL, which is what keeps every existing
 	// asset and every other surface permanently out of the sweep.
 	UploadPurpose string `json:"upload_purpose"`
+	// DurationMs is the video's length as the client read it (optional):
+	// over the length cap it is refused here, before the upload (lv-30).
+	DurationMs int64 `json:"duration_ms" binding:"min=0"`
 }
 
 func (h *Handler) InitUpload(c *gin.Context) {
@@ -320,8 +323,12 @@ func (h *Handler) InitUpload(c *gin.Context) {
 		subtype = "general"
 	}
 
-	res, err := h.svc.InitUpload(c.Request.Context(), userID, req.FileType, subtype, req.MimeType, req.FileSizeBytes, req.AltText, req.Decorative, req.UploadPurpose)
+	res, err := h.svc.InitUpload(c.Request.Context(), userID, req.FileType, subtype, req.MimeType, req.FileSizeBytes, req.AltText, req.Decorative, req.UploadPurpose,
+		service.WithDeclaredDurationMs(req.DurationMs))
 	if err != nil {
+		if writeUploadLimitError(c, err) {
+			return
+		}
 		msg := err.Error()
 		switch {
 		case errors.Is(err, service.ErrVideoTooLarge):
@@ -378,6 +385,9 @@ func (h *Handler) ConfirmUpload(c *gin.Context) {
 
 	res, err := h.svc.ConfirmUpload(c.Request.Context(), mediaID, userID)
 	if err != nil {
+		if writeUploadLimitError(c, err) {
+			return
+		}
 		status, code := confirmUploadError(err)
 		api.ErrorWithContext(c.Request.Context(), c.Writer, status, code, err.Error(), nil)
 		return

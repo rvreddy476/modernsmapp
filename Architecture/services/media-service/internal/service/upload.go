@@ -128,10 +128,18 @@ func ValidateUpload(fileType, mediaSubtype, mimeType string, fileSizeBytes int64
 	return nil
 }
 
-func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, mediaSubtype, mimeType string, fileSizeBytes int64, altText string, decorative bool, uploadPurpose string) (*InitUploadResponse, error) {
+func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, mediaSubtype, mimeType string, fileSizeBytes int64, altText string, decorative bool, uploadPurpose string, opts ...InitOption) (*InitUploadResponse, error) {
 	// Absolute size cap (applies to all file types)
 	if err := ValidateUploadSize(fileType, fileSizeBytes); err != nil {
 		return nil, err
+	}
+	initOpts := collectInitOptions(opts)
+	// lv-30: a declared length over the worker's cap is refused before the
+	// upload; confirm checks the probed length again.
+	if fileType == "video" {
+		if err := validateVideoDurationMs(initOpts.declaredDurationMs); err != nil {
+			return nil, err
+		}
 	}
 
 	// MIME allow-list check
@@ -156,6 +164,11 @@ func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, me
 		altText, decorative, uploadPurpose = "", false, ""
 	} else if err := s.checkUploadLimit(ctx, userID); err != nil {
 		return nil, err
+	} else if fileType == "video" {
+		// lv-3: the declared size (and length) must fit the daily budget.
+		if err := s.checkVideoBudgetAtInit(ctx, userID, fileSizeBytes, initOpts.declaredDurationMs); err != nil {
+			return nil, err
+		}
 	}
 
 	// Subtype/file-type-specific size + MIME validation (existing)
@@ -286,6 +299,15 @@ func (s *Service) ConfirmUpload(ctx context.Context, mediaID uuid.UUID, userID u
 			return nil, fmt.Errorf("reject invalid %s and persist status: %w", media.FileType, updateErr)
 		}
 		return nil, headerErr
+	}
+	// A video is admitted before it is marked uploaded (lv-3, lv-30): the
+	// probed length against the cap, and the charge against the account's
+	// daily budget. A budget refusal leaves it pending_upload, so a later
+	// confirm can try again.
+	if media.FileType == "video" {
+		if err := s.admitVideoUpload(ctx, media, info.Size); err != nil {
+			return nil, err
+		}
 	}
 
 	// 2. Update status to 'uploaded' and pin the upload-time identity

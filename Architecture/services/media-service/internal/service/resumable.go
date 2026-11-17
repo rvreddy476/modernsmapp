@@ -11,6 +11,7 @@ import (
 	"github.com/atpost/media-service/internal/store/blob"
 	"github.com/atpost/media-service/internal/store/postgres"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 )
 
 const (
@@ -34,13 +35,34 @@ const (
 	// of S3 parts and Cloudflare's request cap; a video is refused well
 	// below it, at the worker's cap (ErrVideoTooLarge).
 	MaxResumableUploadBytes int64 = maxChunkSize * maxUploadParts
-
-	resumableUploadTTL = 24 * time.Hour
 )
 
-// ErrResumableUploadTooLarge is returned when a file would need more than
-// maxUploadParts chunks even at maxChunkSize.
-var ErrResumableUploadTooLarge = errors.New("file too large for a resumable upload")
+// A session's life (lv-16): it expires uploadLimits.ResumableIdleTTL after
+// its last accepted part (or its init), and never later than
+// uploadLimits.ResumableMaxLifetime after init. expires_at in
+// resumable_uploads is the one rule: UploadPart and complete slide it
+// (TouchResumableUpload), and the expiry sweep (ExpireResumableUploads) and
+// orphan GC (OpenResumableMediaIDs) read it.
+
+var (
+	// ErrResumableUploadTooLarge is returned when a file would need more
+	// than maxUploadParts chunks even at maxChunkSize.
+	ErrResumableUploadTooLarge = errors.New("file too large for a resumable upload")
+	// ErrResumableNotFound: no session with this id for this caller
+	// (someone else's answers the same). 404 NOT_FOUND.
+	ErrResumableNotFound = errors.New("upload not found")
+	// ErrResumableExpired: the session passed its expiry (idle too long,
+	// or its absolute ceiling). 410 UPLOAD_EXPIRED; start a new upload.
+	ErrResumableExpired = errors.New("upload expired")
+	// ErrResumableBadPart: a part number out of range, or a part of the
+	// wrong size. 400 BAD_REQUEST.
+	ErrResumableBadPart = errors.New("invalid part")
+	// ErrResumableIncomplete: complete before every part landed.
+	// 409 UPLOAD_INCOMPLETE; status lists the parts held.
+	ErrResumableIncomplete = errors.New("upload incomplete")
+	// ErrResumableCompleted: a part sent to a completed session.
+	ErrResumableCompleted = errors.New("upload already completed")
+)
 
 // resumableChunkPlan sizes a resumable upload's chunks:
 //
@@ -86,18 +108,83 @@ func checkResumableVideoBytes(upload *postgres.ResumableUpload, receivedBytes in
 	return validateVideoOriginalSize(receivedBytes)
 }
 
+// resumableDB is the session state the resumable flow needs
+// (*postgres.MediaAssetStore in production; a fake in tests).
+type resumableDB interface {
+	CreateMedia(ctx context.Context, m *postgres.MediaAsset) error
+	CreateResumableUpload(ctx context.Context, u *postgres.ResumableUpload) error
+	GetResumableUpload(ctx context.Context, uploadID uuid.UUID) (*postgres.ResumableUpload, error)
+	ListUploadParts(ctx context.Context, uploadID uuid.UUID) ([]postgres.UploadPartRecord, error)
+	RecordUploadPart(ctx context.Context, uploadID uuid.UUID, partNumber int, etag string, sizeBytes int64) error
+	UpdateResumableUploadProgress(ctx context.Context, uploadID uuid.UUID, uploadedBytes int64, status string) error
+	CompleteResumableUpload(ctx context.Context, uploadID uuid.UUID) error
+	TouchResumableUpload(ctx context.Context, uploadID uuid.UUID, idleTTL, maxLifetime time.Duration) (time.Time, error)
+}
+
+// multipartBlobs is the object store's multipart API (*blob.Store).
+type multipartBlobs interface {
+	Bucket() string
+	InitMultipartUpload(ctx context.Context, objectKey, contentType string) (string, error)
+	AbortMultipartUpload(ctx context.Context, objectKey, storageUploadID string) error
+	UploadPart(ctx context.Context, objectKey, storageUploadID string, partNumber int, data io.Reader, size int64) (blob.MultipartPart, error)
+	CompleteMultipartUpload(ctx context.Context, objectKey, storageUploadID string, parts []blob.MultipartPart) error
+	StatObject(ctx context.Context, objectKey string) (blob.ObjectInfo, error)
+}
+
+// resumableFlow is the resumable upload logic over its two stores, so the
+// server half can be tested without PostgreSQL or S3 (reels-13).
+type resumableFlow struct {
+	db      resumableDB
+	blobs   multipartBlobs
+	limits  UploadLimits
+	now     func() time.Time
+	confirm func(ctx context.Context, mediaID, userID uuid.UUID) (*postgres.MediaAsset, error)
+	// admit runs the init-time checks that need the caller's account
+	// (upload count, daily budget); nil admits.
+	admit func(ctx context.Context, userID uuid.UUID, fileType string, totalBytes int64, o initOptions) error
+}
+
+func (s *Service) resumable() *resumableFlow {
+	return &resumableFlow{
+		db:      s.pgStore,
+		blobs:   s.blobStore,
+		limits:  uploadLimits,
+		now:     time.Now,
+		confirm: s.ConfirmUpload,
+		admit: func(ctx context.Context, userID uuid.UUID, fileType string, totalBytes int64, o initOptions) error {
+			// Security sweep #20: a resumable init counts against the same
+			// per-user hourly/daily upload limits as InitUpload.
+			if err := s.checkUploadLimit(ctx, userID); err != nil {
+				return err
+			}
+			if fileType == "video" {
+				return s.checkVideoBudgetAtInit(ctx, userID, totalBytes, o.declaredDurationMs)
+			}
+			return nil
+		},
+	}
+}
+
 // InitResumableUploadResponse is returned when initiating a multipart upload.
 type InitResumableUploadResponse struct {
 	UploadID   uuid.UUID `json:"upload_id"`
 	MediaID    uuid.UUID `json:"media_id"`
 	ChunkSize  int       `json:"chunk_size"`
 	TotalParts int       `json:"total_parts"`
-	ExpiresAt  time.Time `json:"expires_at"`
+	// ExpiresAt slides: each accepted part moves it to at least
+	// now + MEDIA_RESUMABLE_IDLE_TTL, up to MEDIA_RESUMABLE_MAX_LIFETIME
+	// after init. Clients should keep the latest value from a chunk or
+	// status answer, not this first one.
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // InitResumableUpload creates a media asset record, opens an object-store
 // multipart upload, and records a resumable upload session.
-func (s *Service) InitResumableUpload(ctx context.Context, userID uuid.UUID, fileType, mimeType string, totalBytes int64) (*InitResumableUploadResponse, error) {
+func (s *Service) InitResumableUpload(ctx context.Context, userID uuid.UUID, fileType, mimeType string, totalBytes int64, opts ...InitOption) (*InitResumableUploadResponse, error) {
+	return s.resumable().init(ctx, userID, fileType, mimeType, totalBytes, collectInitOptions(opts))
+}
+
+func (f *resumableFlow) init(ctx context.Context, userID uuid.UUID, fileType, mimeType string, totalBytes int64, o initOptions) (*InitResumableUploadResponse, error) {
 	// A video is capped at what the worker transcodes (ErrVideoTooLarge,
 	// processing.MaxVideoOriginalBytes): the chunk plan alone would take
 	// 625 GiB that the worker then refuses after the whole upload.
@@ -113,15 +200,19 @@ func (s *Service) InitResumableUpload(ctx context.Context, userID uuid.UUID, fil
 		if err := validateVideoOriginalSize(totalBytes); err != nil {
 			return nil, err
 		}
+		// lv-30: a declared length over the worker's cap is refused before
+		// a byte is sent; confirm checks the probed length again.
+		if err := validateVideoDurationMs(o.declaredDurationMs); err != nil {
+			return nil, err
+		}
 	}
 	if err := ValidateUpload(fileType, "general", mimeType, totalBytes); err != nil {
 		return nil, err
 	}
-	// Security sweep #20: a resumable init counts against the same per-user
-	// hourly/daily upload limits as InitUpload. Before this, multipart
-	// sessions (24 h TTL each) were unlimited.
-	if err := s.checkUploadLimit(ctx, userID); err != nil {
-		return nil, err
+	if f.admit != nil {
+		if err := f.admit(ctx, userID, fileType, totalBytes, o); err != nil {
+			return nil, err
+		}
 	}
 	chunkSize, totalParts, err := resumableChunkPlan(totalBytes)
 	if err != nil {
@@ -133,11 +224,12 @@ func (s *Service) InitResumableUpload(ctx context.Context, userID uuid.UUID, fil
 
 	// Open the multipart upload on the object store first — if this fails
 	// we never create the half-built media / session rows.
-	storageUploadID, err := s.blobStore.InitMultipartUpload(ctx, objectKey, mimeType)
+	storageUploadID, err := f.blobs.InitMultipartUpload(ctx, objectKey, mimeType)
 	if err != nil {
 		return nil, fmt.Errorf("open multipart upload: %w", err)
 	}
 
+	now := f.now()
 	media := &postgres.MediaAsset{
 		ID:               mediaID,
 		UploaderID:       userID,
@@ -145,17 +237,17 @@ func (s *Service) InitResumableUpload(ctx context.Context, userID uuid.UUID, fil
 		MediaSubtype:     "general",
 		MimeType:         mimeType,
 		FileSizeBytes:    totalBytes,
-		StorageBucket:    s.blobStore.Bucket(),
+		StorageBucket:    f.blobs.Bucket(),
 		StorageKey:       objectKey,
 		ProcessingStatus: "pending_upload",
-		CreatedAt:        time.Now(),
+		CreatedAt:        now,
 	}
-	if err := s.pgStore.CreateMedia(ctx, media); err != nil {
-		_ = s.blobStore.AbortMultipartUpload(ctx, objectKey, storageUploadID)
+	if err := f.db.CreateMedia(ctx, media); err != nil {
+		_ = f.blobs.AbortMultipartUpload(ctx, objectKey, storageUploadID)
 		return nil, fmt.Errorf("create media record: %w", err)
 	}
 
-	expiresAt := time.Now().Add(resumableUploadTTL)
+	expiresAt := now.Add(f.limits.ResumableIdleTTL)
 	upload := &postgres.ResumableUpload{
 		MediaID:         mediaID,
 		UploaderID:      userID,
@@ -168,8 +260,8 @@ func (s *Service) InitResumableUpload(ctx context.Context, userID uuid.UUID, fil
 		StorageUploadID: storageUploadID,
 		ExpiresAt:       expiresAt,
 	}
-	if err := s.pgStore.CreateResumableUpload(ctx, upload); err != nil {
-		_ = s.blobStore.AbortMultipartUpload(ctx, objectKey, storageUploadID)
+	if err := f.db.CreateResumableUpload(ctx, upload); err != nil {
+		_ = f.blobs.AbortMultipartUpload(ctx, objectKey, storageUploadID)
 		return nil, fmt.Errorf("create resumable upload: %w", err)
 	}
 
@@ -200,14 +292,31 @@ type ResumableUploadStatus struct {
 // GetResumableUploadStatus returns the current state of a resumable upload
 // session, including which parts have already landed.
 func (s *Service) GetResumableUploadStatus(ctx context.Context, uploadID, userID uuid.UUID) (*ResumableUploadStatus, error) {
-	upload, err := s.pgStore.GetResumableUpload(ctx, uploadID)
+	return s.resumable().status(ctx, uploadID, userID)
+}
+
+// owned reads a session and refuses one that is missing or someone else's
+// with the same ErrResumableNotFound.
+func (f *resumableFlow) owned(ctx context.Context, uploadID, userID uuid.UUID) (*postgres.ResumableUpload, error) {
+	upload, err := f.db.GetResumableUpload(ctx, uploadID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, ErrResumableNotFound
+	}
 	if err != nil {
-		return nil, fmt.Errorf("upload not found: %w", err)
+		return nil, fmt.Errorf("read upload: %w", err)
 	}
 	if upload.UploaderID != userID {
-		return nil, fmt.Errorf("forbidden: you do not own this upload")
+		return nil, ErrResumableNotFound
 	}
-	parts, err := s.pgStore.ListUploadParts(ctx, uploadID)
+	return upload, nil
+}
+
+func (f *resumableFlow) status(ctx context.Context, uploadID, userID uuid.UUID) (*ResumableUploadStatus, error) {
+	upload, err := f.owned(ctx, uploadID, userID)
+	if err != nil {
+		return nil, err
+	}
+	parts, err := f.db.ListUploadParts(ctx, uploadID)
 	if err != nil {
 		return nil, fmt.Errorf("list parts: %w", err)
 	}
@@ -215,11 +324,17 @@ func (s *Service) GetResumableUploadStatus(ctx context.Context, uploadID, userID
 	for i, p := range parts {
 		nums[i] = p.PartNumber
 	}
+	status := upload.Status
+	// Past its expiry but not yet swept: say expired, as the next part
+	// would be refused.
+	if (status == "initiated" || status == "uploading") && !f.now().Before(upload.ExpiresAt) {
+		status = "expired"
+	}
 	return &ResumableUploadStatus{
 		UploadID: upload.UploadID, MediaID: upload.MediaID,
 		TotalBytes: upload.TotalBytes, UploadedBytes: upload.UploadedBytes,
 		ChunkSize: upload.ChunkSize, TotalParts: upload.TotalParts,
-		Status: upload.Status, MimeType: upload.MimeType,
+		Status: status, MimeType: upload.MimeType,
 		ExpiresAt: upload.ExpiresAt, UploadedParts: nums,
 	}, nil
 }
@@ -231,37 +346,57 @@ type UploadChunkResponse struct {
 	UploadedBytes int64     `json:"uploaded_bytes"`
 	TotalBytes    int64     `json:"total_bytes"`
 	AllPartsIn    bool      `json:"all_parts_in"`
+	// ExpiresAt is the session's expiry after this part (it slides).
+	ExpiresAt time.Time `json:"expires_at"`
 }
 
 // UploadPart streams one part's bytes to the object store and records its
 // ETag. Re-uploading a part number is safe — the ETag is overwritten and
 // progress recomputed from the recorded parts.
 func (s *Service) UploadPart(ctx context.Context, uploadID, userID uuid.UUID, partNumber int, data io.Reader, size int64) (*UploadChunkResponse, error) {
-	upload, err := s.pgStore.GetResumableUpload(ctx, uploadID)
-	if err != nil {
-		return nil, fmt.Errorf("upload not found: %w", err)
+	return s.resumable().uploadPart(ctx, uploadID, userID, partNumber, data, size)
+}
+
+// touch slides an open session's expiry, or reports why it cannot.
+func (f *resumableFlow) touch(ctx context.Context, upload *postgres.ResumableUpload) (time.Time, error) {
+	exp, err := f.db.TouchResumableUpload(ctx, upload.UploadID, f.limits.ResumableIdleTTL, f.limits.ResumableMaxLifetime)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// Not open any more: completed by a racing complete, or expired.
+		cur, readErr := f.db.GetResumableUpload(ctx, upload.UploadID)
+		if readErr == nil && cur.Status == "completed" {
+			return time.Time{}, ErrResumableCompleted
+		}
+		return time.Time{}, ErrResumableExpired
 	}
-	if upload.UploaderID != userID {
-		return nil, fmt.Errorf("forbidden")
+	if err != nil {
+		return time.Time{}, fmt.Errorf("extend upload: %w", err)
+	}
+	return exp, nil
+}
+
+func (f *resumableFlow) uploadPart(ctx context.Context, uploadID, userID uuid.UUID, partNumber int, data io.Reader, size int64) (*UploadChunkResponse, error) {
+	upload, err := f.owned(ctx, uploadID, userID)
+	if err != nil {
+		return nil, err
 	}
 	if upload.Status == "completed" {
-		return nil, fmt.Errorf("upload already completed")
+		return nil, ErrResumableCompleted
 	}
-	if upload.Status == "expired" || time.Now().After(upload.ExpiresAt) {
-		return nil, fmt.Errorf("upload expired")
+	if upload.Status == "expired" || upload.Status == "aborted" || !f.now().Before(upload.ExpiresAt) {
+		return nil, ErrResumableExpired
 	}
 	if partNumber < 1 || partNumber > upload.TotalParts {
-		return nil, fmt.Errorf("part_number %d out of range (1..%d)", partNumber, upload.TotalParts)
+		return nil, fmt.Errorf("%w: part_number %d out of range (1..%d)", ErrResumableBadPart, partNumber, upload.TotalParts)
 	}
 	if size <= 0 {
-		return nil, fmt.Errorf("empty part")
+		return nil, fmt.Errorf("%w: empty part", ErrResumableBadPart)
 	}
 	expectedSize := int64(upload.ChunkSize)
 	if partNumber == upload.TotalParts {
 		expectedSize = upload.TotalBytes - int64(upload.ChunkSize)*int64(upload.TotalParts-1)
 	}
 	if size != expectedSize {
-		return nil, fmt.Errorf("part %d has %d bytes, expected %d", partNumber, size, expectedSize)
+		return nil, fmt.Errorf("%w: part %d has %d bytes, expected %d", ErrResumableBadPart, partNumber, size, expectedSize)
 	}
 	// The cap again, on the bytes this part would bring the file to: a
 	// session opened before the cap was lowered (or before it existed)
@@ -269,18 +404,25 @@ func (s *Service) UploadPart(ctx context.Context, uploadID, userID uuid.UUID, pa
 	if err := checkResumableVideoBytes(upload, int64(upload.ChunkSize)*int64(partNumber-1)+size); err != nil {
 		return nil, err
 	}
-
-	part, err := s.blobStore.UploadPart(ctx, upload.ObjectKey, upload.StorageUploadID, partNumber, data, size)
+	// lv-16: an accepted part is activity. Slide the expiry BEFORE the
+	// bytes move, so the expiry sweep cannot abort the multipart upload
+	// under a part that is being written.
+	expiresAt, err := f.touch(ctx, upload)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.pgStore.RecordUploadPart(ctx, uploadID, partNumber, part.ETag, part.Size); err != nil {
+
+	part, err := f.blobs.UploadPart(ctx, upload.ObjectKey, upload.StorageUploadID, partNumber, data, size)
+	if err != nil {
+		return nil, err
+	}
+	if err := f.db.RecordUploadPart(ctx, uploadID, partNumber, part.ETag, part.Size); err != nil {
 		return nil, fmt.Errorf("record part: %w", err)
 	}
 
 	// Recompute progress from the recorded parts so a re-uploaded part
 	// does not double-count.
-	parts, err := s.pgStore.ListUploadParts(ctx, uploadID)
+	parts, err := f.db.ListUploadParts(ctx, uploadID)
 	if err != nil {
 		return nil, fmt.Errorf("list parts: %w", err)
 	}
@@ -288,7 +430,7 @@ func (s *Service) UploadPart(ctx context.Context, uploadID, userID uuid.UUID, pa
 	for _, p := range parts {
 		uploaded += p.SizeBytes
 	}
-	if err := s.pgStore.UpdateResumableUploadProgress(ctx, uploadID, uploaded, "uploading"); err != nil {
+	if err := f.db.UpdateResumableUploadProgress(ctx, uploadID, uploaded, "uploading"); err != nil {
 		return nil, fmt.Errorf("update progress: %w", err)
 	}
 
@@ -298,36 +440,56 @@ func (s *Service) UploadPart(ctx context.Context, uploadID, userID uuid.UUID, pa
 		UploadedBytes: uploaded,
 		TotalBytes:    upload.TotalBytes,
 		AllPartsIn:    len(parts) >= upload.TotalParts,
+		ExpiresAt:     expiresAt,
 	}, nil
 }
 
 // CompleteResumableUpload assembles the uploaded parts into the final
 // object, then runs the same confirm / processing flow as a simple upload.
 func (s *Service) CompleteResumableUpload(ctx context.Context, uploadID, userID uuid.UUID) (*postgres.MediaAsset, error) {
-	upload, err := s.pgStore.GetResumableUpload(ctx, uploadID)
+	return s.resumable().complete(ctx, uploadID, userID)
+}
+
+func (f *resumableFlow) complete(ctx context.Context, uploadID, userID uuid.UUID) (*postgres.MediaAsset, error) {
+	upload, err := f.owned(ctx, uploadID, userID)
 	if err != nil {
-		return nil, fmt.Errorf("upload not found: %w", err)
-	}
-	if upload.UploaderID != userID {
-		return nil, fmt.Errorf("forbidden")
+		return nil, err
 	}
 	if upload.Status == "completed" {
 		// Idempotent — a retried complete just re-confirms.
-		return s.ConfirmUpload(ctx, upload.MediaID, userID)
+		return f.confirm(ctx, upload.MediaID, userID)
+	}
+	if upload.Status == "expired" || upload.Status == "aborted" {
+		return nil, ErrResumableExpired
 	}
 
-	parts, err := s.pgStore.ListUploadParts(ctx, uploadID)
+	parts, err := f.db.ListUploadParts(ctx, uploadID)
 	if err != nil {
 		return nil, fmt.Errorf("list parts: %w", err)
 	}
 	if len(parts) < upload.TotalParts {
-		return nil, fmt.Errorf("incomplete: %d of %d parts uploaded", len(parts), upload.TotalParts)
+		return nil, fmt.Errorf("%w: %d of %d parts uploaded", ErrResumableIncomplete, len(parts), upload.TotalParts)
 	}
 	var received int64
 	for _, p := range parts {
 		received += p.SizeBytes
 	}
+	if received != upload.TotalBytes {
+		return nil, fmt.Errorf("%w: %d of %d bytes received", ErrResumableIncomplete, received, upload.TotalBytes)
+	}
 	if err := checkResumableVideoBytes(upload, received); err != nil {
+		return nil, err
+	}
+	// Hold the session open while the object store assembles it: the
+	// expiry sweep only takes a session past its expiry, and this moves it
+	// on. A session that already expired (or was swept a moment ago) is
+	// refused here, before the assembly, so complete and the sweep's abort
+	// never both act on one multipart upload. A racing complete that won
+	// leaves it 'completed': answer as the idempotent path does.
+	if _, err := f.touch(ctx, upload); err != nil {
+		if errors.Is(err, ErrResumableCompleted) {
+			return f.confirm(ctx, upload.MediaID, userID)
+		}
 		return nil, err
 	}
 
@@ -345,18 +507,18 @@ func (s *Service) CompleteResumableUpload(ctx context.Context, uploadID, userID 
 	// embeds the media id), so an object of exactly the declared size means
 	// an earlier complete succeeded — carry on to confirm, which re-checks
 	// size and magic bytes.
-	if err := s.blobStore.CompleteMultipartUpload(ctx, upload.ObjectKey, upload.StorageUploadID, blobParts); err != nil {
-		info, statErr := s.blobStore.StatObject(ctx, upload.ObjectKey)
+	if err := f.blobs.CompleteMultipartUpload(ctx, upload.ObjectKey, upload.StorageUploadID, blobParts); err != nil {
+		info, statErr := f.blobs.StatObject(ctx, upload.ObjectKey)
 		if statErr != nil || info.Size != upload.TotalBytes {
 			return nil, err
 		}
 	}
 
-	if err := s.pgStore.CompleteResumableUpload(ctx, uploadID); err != nil {
+	if err := f.db.CompleteResumableUpload(ctx, uploadID); err != nil {
 		return nil, fmt.Errorf("mark complete: %w", err)
 	}
 
 	// Same confirm flow as simple uploads — validates the object exists
 	// and triggers image processing / video transcode.
-	return s.ConfirmUpload(ctx, upload.MediaID, userID)
+	return f.confirm(ctx, upload.MediaID, userID)
 }

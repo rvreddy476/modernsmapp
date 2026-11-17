@@ -86,6 +86,19 @@ func (w *OrphanGCWorker) sweep(ctx context.Context) {
 	if len(ids) == 0 {
 		return
 	}
+	// lv-16: an asset whose resumable session is still open (its expiry
+	// slides with activity, up to MEDIA_RESUMABLE_MAX_LIFETIME) is not an
+	// orphan at 24 h. The session's expires_at is the one rule; once the
+	// expiry sweep closes it, the next pass here collects the asset.
+	open, err := w.svc.pgStore.OpenResumableMediaIDs(ctx, ids)
+	if err != nil {
+		w.log.Warn("orphan media: open-session check failed; skipping this sweep", "err", err)
+		return
+	}
+	ids = withoutOpenSessions(ids, open)
+	if len(ids) == 0 {
+		return
+	}
 
 	w.log.Info("orphan media sweep starting", "candidates", len(ids))
 	var purged, failed int
@@ -98,6 +111,17 @@ func (w *OrphanGCWorker) sweep(ctx context.Context) {
 		purged++
 	}
 	w.log.Info("orphan media sweep done", "purged", purged, "failed", failed)
+}
+
+// withoutOpenSessions drops the ids with an open resumable session.
+func withoutOpenSessions(ids []uuid.UUID, open map[uuid.UUID]bool) []uuid.UUID {
+	out := ids[:0:0]
+	for _, id := range ids {
+		if !open[id] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // purgeOne reclaims a single orphan through the DURABLE protocol.
