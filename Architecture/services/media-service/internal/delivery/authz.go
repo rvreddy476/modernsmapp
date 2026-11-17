@@ -511,10 +511,14 @@ type Gate struct {
 	// cache reuses protected signatures for most of their life
 	// (sign_cache.go). Authorization is never cached.
 	cache *signCache
+	// hlsSegmentTTL is the window an HLS segment URL is signed for
+	// (MEDIA_HLS_SEGMENT_TTL, sign_cache.go): how long a viewer can keep
+	// playing after losing access.
+	hlsSegmentTTL time.Duration
 }
 
 func NewGate(signer URLSigner, authz ContentAuthorizer) *Gate {
-	return &Gate{signer: signer, authz: authz, cache: newSignCache()}
+	return &Gate{signer: signer, authz: authz, cache: newSignCache(), hlsSegmentTTL: hlsSegmentTTLOrDefault()}
 }
 
 // URLFor returns a delivery URL for objectKey, or an error.
@@ -626,13 +630,16 @@ func (g *Gate) URLsForAsset(ctx context.Context, viewerID, mediaID string, keys 
 }
 
 // HLSURLsForAsset is URLsForAsset for one HLS media playlist: one
-// authorization for the asset, then every HLS segment key signed for
-// segmentTTL (HLSSegmentTTL of the video) and every other key for
-// MaxProtectedTTL. See sign_cache.go for why segments live longer.
+// authorization for the asset on EVERY call (never cached), then every HLS
+// segment key signed for segmentTTL clamped to the gate's segment window
+// (MEDIA_HLS_SEGMENT_TTL) and every other key for MaxProtectedTTL. With a
+// SegmentDirSigner all the segments of the playlist share one signature.
+// See sign_cache.go.
 //
 // expiresAt is the instant until which every signed segment URL in the
 // result stays valid, cache reuse included; the client re-fetches the
-// playlist after it. It is zero when no protected segment was signed (a
+// playlist at or before it (or on a segment 403) and the re-fetch is
+// authorized again. It is zero when no protected segment was signed (a
 // master playlist, public segments): nothing in the result then expires
 // mid-play.
 func (g *Gate) HLSURLsForAsset(ctx context.Context, viewerID, mediaID string, keys map[string]string, segmentTTL time.Duration) (urls map[string]string, expiresAt time.Time, err error) {
@@ -645,6 +652,7 @@ func (g *Gate) HLSURLsForAsset(ctx context.Context, viewerID, mediaID string, ke
 	if err := g.AuthorizeAsset(ctx, viewerID, mediaID, keys); err != nil {
 		return nil, time.Time{}, err
 	}
+	segmentTTL = g.segmentWindow(segmentTTL)
 	now := time.Now()
 	out := make(map[string]string, len(keys))
 	signedSegment := false

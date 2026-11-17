@@ -161,26 +161,9 @@ func (s *Signer) signResource(resource string, ttl time.Duration, now time.Time)
 // caller: MaxProtectedTTL everywhere except HLS segments
 // (SignProtectedSegment, MaxHLSSegmentTTL).
 func (s *Signer) signResourceUpTo(resource string, ttl, maxTTL time.Duration, now time.Time) (string, error) {
-	if ttl <= 0 || ttl > maxTTL {
-		return "", fmt.Errorf("delivery: ttl %s outside (0, %s]", ttl, maxTTL)
-	}
-	expires := now.Add(ttl).Unix()
-
-	policy := cannedPolicy{
-		Statement: []statement{{
-			Resource:  resource,
-			Condition: condition{DateLessThan: epoch{EpochTime: expires}},
-		}},
-	}
-	raw, err := json.Marshal(policy)
+	expires, _, sig, err := s.signPolicy(resource, ttl, maxTTL, now)
 	if err != nil {
-		return "", fmt.Errorf("delivery: encode policy: %w", err)
-	}
-
-	sum := sha1.Sum(raw)
-	sig, err := rsa.SignPKCS1v15(rand.Reader, s.privateKey, crypto.SHA1, sum[:])
-	if err != nil {
-		return "", fmt.Errorf("delivery: sign: %w", err)
+		return "", err
 	}
 
 	q := url.Values{}
@@ -196,6 +179,49 @@ func (s *Signer) signResourceUpTo(resource string, ttl, maxTTL time.Duration, no
 		sep = "&"
 	}
 	return resource + sep + q.Encode(), nil
+}
+
+// signPolicy builds the policy statement for resource (which a custom
+// policy may end in a wildcard) expiring at now+ttl, and RSA-SHA1 signs
+// it. The canned and the custom form sign the same JSON; they differ only
+// in whether the URL carries Expires (canned: CloudFront rebuilds the
+// policy from the URL) or the policy itself (custom).
+func (s *Signer) signPolicy(resource string, ttl, maxTTL time.Duration, now time.Time) (expires int64, raw, sig []byte, err error) {
+	if ttl <= 0 || ttl > maxTTL {
+		return 0, nil, nil, fmt.Errorf("delivery: ttl %s outside (0, %s]", ttl, maxTTL)
+	}
+	expires = now.Add(ttl).Unix()
+	policy := cannedPolicy{
+		Statement: []statement{{
+			Resource:  resource,
+			Condition: condition{DateLessThan: epoch{EpochTime: expires}},
+		}},
+	}
+	raw, err = json.Marshal(policy)
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("delivery: encode policy: %w", err)
+	}
+	sum := sha1.Sum(raw)
+	sig, err = rsa.SignPKCS1v15(rand.Reader, s.privateKey, crypto.SHA1, sum[:])
+	if err != nil {
+		return 0, nil, nil, fmt.Errorf("delivery: sign: %w", err)
+	}
+	return expires, raw, sig, nil
+}
+
+// signCustomPolicy signs a custom policy over resource (wildcards allowed)
+// for ttl, up to maxTTL, and returns the query string to append to every
+// URL the resource matches: Policy, Signature, Key-Pair-Id.
+func (s *Signer) signCustomPolicy(resource string, ttl, maxTTL time.Duration, now time.Time) (string, error) {
+	_, raw, sig, err := s.signPolicy(resource, ttl, maxTTL, now)
+	if err != nil {
+		return "", err
+	}
+	q := url.Values{}
+	q.Set("Policy", cloudFrontBase64(raw))
+	q.Set("Signature", cloudFrontBase64(sig))
+	q.Set("Key-Pair-Id", s.keyPairID)
+	return q.Encode(), nil
 }
 
 // cloudFrontBase64 is standard base64 with the characters that are unsafe in a
