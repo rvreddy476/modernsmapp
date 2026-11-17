@@ -232,7 +232,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: '1.26.10' }
+        with: { go-version: '1.26.11' }
 
       # LB-24: the PII key ring and the KMS-backed provider. No AWS account
       # needed — a fake KMS client behind the real provider interface, which
@@ -322,7 +322,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: '1.26.10' }
+        with: { go-version: '1.26.11' }
 
       - name: Create scratch databases
         run: |
@@ -875,7 +875,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
-        with: { go-version: '1.26.10' }
+        with: { go-version: '1.26.11' }
 
       # Review §5.1: 007-013 must be expand-phase only. A destructive step
       # in the boot set would break a mixed fleet mid-rollout.

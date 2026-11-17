@@ -135,7 +135,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26.10'
+          go-version: '1.26.11'
           # Architecture is a Go workspace: there is no Architecture/go.sum, so
           # the old path made every run log "Restore cache failed" and build
           # each service from a cold cache.
