@@ -418,7 +418,7 @@ jobs:
           ATPOST_E2E_SERVICE_LOG: ${{ github.workspace }}/services.log
           ATPOST_E2E_MAX_VIDEO_SECONDS: "900"
           ATPOST_E2E_HLS_SEGMENT_WINDOW: 1m
-          ATPOST_E2E_KNOWN_OPEN: lv-1,lv-2
+          ATPOST_E2E_KNOWN_OPEN: ""
           ATPOST_API_GATEWAY_URL: http://localhost:8080
           ATPOST_USER_URL: http://localhost:8082
           ATPOST_GRAPH_URL: http://localhost:8083
