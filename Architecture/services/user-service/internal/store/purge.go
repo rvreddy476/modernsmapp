@@ -74,6 +74,13 @@ func (s *Store) PurgeUser(ctx context.Context, userID uuid.UUID) error {
 		{"channel_milestones", `DELETE FROM channel_milestones WHERE channel_id IN (SELECT id FROM channels WHERE user_id = $1)`},
 		{"channel_members", `DELETE FROM channel_members WHERE channel_id IN (SELECT id FROM channels WHERE user_id = $1)`},
 		{"channel_subscriptions", `DELETE FROM channel_subscriptions WHERE channel_id IN (SELECT id FROM channels WHERE user_id = $1)`},
+		// lv-7: post-service's series and playlists (same database) may name
+		// the user's channel, including ANOTHER user's rows; until
+		// post-service migration 086 makes those FKs ON DELETE SET NULL, a
+		// remaining reference fails the channel delete for ever. Cleared
+		// here so the purge never depends on that migration having run.
+		{"video_series", `UPDATE video_series SET channel_id = NULL WHERE channel_id IN (SELECT id FROM channels WHERE user_id = $1)`},
+		{"playlists", `UPDATE playlists SET channel_id = NULL WHERE channel_id IN (SELECT id FROM channels WHERE user_id = $1)`},
 		{"channels", `DELETE FROM channels WHERE user_id = $1`},
 		{"users", `DELETE FROM users WHERE id = $1`},
 	}

@@ -100,6 +100,10 @@ func (s *Service) CreatePlaylist(ctx context.Context, p *postgres.Playlist) erro
 		return err
 	}
 	p.CoverURL = cover
+	// lv-7: only the creator's own channel (channel_ref_authz.go).
+	if err := s.requireOwnChannelRef(ctx, p.CreatorID, p.ChannelID); err != nil {
+		return err
+	}
 	// The cover is media-claimed before the row names it
 	// (tube_cover_claims.go).
 	return s.createPlaylistClaimed(ctx, p)

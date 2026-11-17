@@ -51,6 +51,10 @@ func writeVideoAuthoringError(c *gin.Context, err error) {
 		errors.Is(err, service.ErrPlaylistPrivate):
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+	// lv-7: a playlist's channel_id names someone else's channel.
+	case errors.Is(err, service.ErrNotChannelOwner):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusForbidden, "NOT_OWN_CHANNEL", err.Error(), nil)
 	// A server-owned collection (Queue / Loved) refuses rename, delete,
 	// visibility change and the generic item writes (2026-09-27).
 	case errors.Is(err, service.ErrSystemPlaylist):
@@ -160,6 +164,18 @@ func invalidFieldMessage(field string, index int, key, why string) string {
 	return fmt.Sprintf("%s[%d].%s %s", field, index, key, why)
 }
 
+// parseChannelRef reads a create request's optional channel_id (lv-7). Absent
+// or "" is no channel; anything else must be a UUID, or the request is
+// answered 400 INVALID_ID here and ok is false.
+func parseChannelRef(c *gin.Context, raw *string) (*uuid.UUID, bool) {
+	id, ok := parseOptionalTargetID(raw)
+	if !ok {
+		badRequest(c, "INVALID_ID", "channel_id must be a UUID")
+		return nil, false
+	}
+	return id, true
+}
+
 func badRequest(c *gin.Context, code, message string) {
 	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, code, message, nil)
 }
@@ -198,11 +214,14 @@ func (h *Handler) CreateVideoSeries(c *gin.Context) {
 	if req.IsPublic != nil {
 		vs.IsPublic = *req.IsPublic
 	}
-	if req.ChannelID != nil {
-		if id, err := uuid.Parse(*req.ChannelID); err == nil {
-			vs.ChannelID = &id
-		}
+	// lv-7: channel_id is an ownership claim, so an id that does not parse
+	// is a 400, never silently dropped; the service checks it is the
+	// caller's own channel (403 NOT_OWN_CHANNEL).
+	channelID, ok := parseChannelRef(c, req.ChannelID)
+	if !ok {
+		return
 	}
+	vs.ChannelID = channelID
 	if req.CoverMediaID != nil {
 		if id, err := uuid.Parse(*req.CoverMediaID); err == nil {
 			vs.CoverMediaID = &id
@@ -240,6 +259,10 @@ func writeVideoSeriesError(c *gin.Context, err error) {
 		errors.Is(err, service.ErrVideoSeriesPrivate):
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+	// lv-7: channel_id names someone else's channel.
+	case errors.Is(err, service.ErrNotChannelOwner):
+		api.ErrorWithContext(c.Request.Context(), c.Writer,
+			http.StatusForbidden, "NOT_OWN_CHANNEL", err.Error(), nil)
 	case errors.Is(err, service.ErrEpisodePostDuplicate):
 		api.ErrorWithContext(c.Request.Context(), c.Writer,
 			http.StatusConflict, "EPISODE_EXISTS", err.Error(), nil)
@@ -303,8 +326,9 @@ type updateVideoSeriesRequest struct {
 // UpdateVideoSeries is PATCH /v1/video-series/:seriesId. Any subset of the
 // fields; a field left out is left alone.
 //
-// Unlike CreateVideoSeries, which drops an unparseable id on the floor and
-// creates the series without it, an unparseable id here is a 400. On create
+// Unlike CreateVideoSeries, which drops an unparseable cover or trailer id on
+// the floor (channel_id is a 400 there too since lv-7), an unparseable id here
+// is a 400. On create
 // the id is an optional extra; on a patch it is the whole request, and a
 // silent drop would answer 200 to an edit that did not happen.
 func (h *Handler) UpdateVideoSeries(c *gin.Context) {
@@ -584,11 +608,13 @@ func (h *Handler) CreatePlaylist(c *gin.Context) {
 		Visibility:  vis,
 		CoverURL:    req.CoverURL,
 	}
-	if req.ChannelID != nil {
-		if id, err := uuid.Parse(*req.ChannelID); err == nil {
-			p.ChannelID = &id
-		}
+	// lv-7: as on series create, a bad id is a 400 and only the caller's
+	// own channel is accepted (403 NOT_OWN_CHANNEL, from the service).
+	channelID, ok := parseChannelRef(c, req.ChannelID)
+	if !ok {
+		return
 	}
+	p.ChannelID = channelID
 
 	if err := h.svc.CreatePlaylist(c.Request.Context(), p); err != nil {
 		writeVideoAuthoringError(c, err)

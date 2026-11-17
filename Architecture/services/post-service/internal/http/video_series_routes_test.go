@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/atpost/post-service/internal/service"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
@@ -182,6 +183,39 @@ func TestUpdateVideoSeriesRejectsInvalidIDs(t *testing.T) {
 			w := performVideoSeriesRequestWithBody(t, http.MethodPatch, path, headers, `{"`+field+`":"not-a-uuid"}`)
 			if w.Code != http.StatusBadRequest {
 				t.Fatalf("PATCH with %s=not-a-uuid: status=%d want 400 (body %s)", field, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// lv-7: on create a channel_id is an ownership claim, so one that does not
+// parse is a 400 before the (nil) service — it used to be dropped and the
+// row created without it.
+func TestCreateSeriesAndPlaylistRejectAnInvalidChannelID(t *testing.T) {
+	headers := map[string]string{"X-User-Id": uuid.NewString()}
+	for _, path := range []string{"/v1/video-series", "/v1/playlists"} {
+		t.Run(path, func(t *testing.T) {
+			w := performVideoSeriesRequestWithBody(t, http.MethodPost, path, headers, `{"title":"x","channel_id":"not-a-uuid"}`)
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "INVALID_ID") {
+				t.Fatalf("POST %s with channel_id=not-a-uuid: status=%d want 400 INVALID_ID (body %s)", path, w.Code, w.Body.String())
+			}
+		})
+	}
+}
+
+// lv-7: the service's refusal is 403 NOT_OWN_CHANNEL on both mappings.
+func TestNotOwnChannelMapsTo403(t *testing.T) {
+	for name, write := range map[string]func(*gin.Context, error){
+		"series":    writeVideoSeriesError,
+		"authoring": writeVideoAuthoringError,
+	} {
+		t.Run(name, func(t *testing.T) {
+			w := httptest.NewRecorder()
+			c, _ := gin.CreateTestContext(w)
+			c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
+			write(c, service.ErrNotChannelOwner)
+			if w.Code != http.StatusForbidden || !strings.Contains(w.Body.String(), "NOT_OWN_CHANNEL") {
+				t.Fatalf("status=%d body=%s; want 403 NOT_OWN_CHANNEL", w.Code, w.Body.String())
 			}
 		})
 	}
