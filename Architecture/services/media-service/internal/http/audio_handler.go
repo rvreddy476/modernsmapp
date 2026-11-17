@@ -216,31 +216,62 @@ func (h *Handler) UploadVoiceover(c *gin.Context) {
 		return
 	}
 
+	// reels-16: bound the whole body before the multipart parser buffers it
+	// (service.MaxVoiceoverUploadBytes plus room for the multipart framing),
+	// then the file part itself. It used to be io.ReadAll with no cap.
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, service.MaxVoiceoverUploadBytes+multipartOverheadBytes)
 	file, header, err := c.Request.FormFile("audio")
 	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			writeVoiceoverTooLarge(c)
+			return
+		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "audio file required (form field: audio)", nil)
 		return
 	}
 	defer file.Close()
 
-	data, err := io.ReadAll(file)
+	data, err := io.ReadAll(io.LimitReader(file, service.MaxVoiceoverUploadBytes+1))
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "failed to read file", nil)
+		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusBadRequest, "BAD_REQUEST", "failed to read file", nil)
+		return
+	}
+	if int64(len(data)) > service.MaxVoiceoverUploadBytes {
+		writeVoiceoverTooLarge(c)
 		return
 	}
 
+	// Informational only: the demuxer is chosen from the bytes.
 	mimeType := header.Header.Get("Content-Type")
-	if mimeType == "" {
-		mimeType = "audio/webm"
-	}
 
 	asset, err := h.svc.RecordVoiceover(c.Request.Context(), userID, data, mimeType)
 	if err != nil {
-		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)
+		switch {
+		case errors.Is(err, service.ErrVoiceoverTooLarge):
+			writeVoiceoverTooLarge(c)
+		case errors.Is(err, service.ErrVoiceoverUnsupported):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnsupportedMediaType, "UNSUPPORTED_MEDIA_TYPE",
+				"voiceover must be MP4/M4A, WebM, Ogg, WAV, FLAC, MP3, AAC or AMR audio", nil)
+		case errors.Is(err, service.ErrVoiceoverUnreadable):
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusUnprocessableEntity, "AUDIO_UNREADABLE",
+				"the audio could not be decoded", nil)
+		default:
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", "could not store the voiceover", nil)
+		}
 		return
 	}
 
 	api.JSON(c.Writer, http.StatusCreated, asset, nil)
+}
+
+// multipartOverheadBytes is the room a multipart body gets above its file
+// part's cap: boundaries, part headers and small form fields.
+const multipartOverheadBytes = 64 * 1024
+
+func writeVoiceoverTooLarge(c *gin.Context) {
+	api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusRequestEntityTooLarge, "PAYLOAD_TOO_LARGE",
+		"voiceover exceeds 50 MB", map[string]any{"max_bytes": service.MaxVoiceoverUploadBytes})
 }
 
 func (h *Handler) GetAudioLibrary(c *gin.Context) {

@@ -48,12 +48,16 @@ const (
 
 // Error codes a client can show. Stable: they are the API's 400 codes.
 const (
-	CodeCaptionEmpty       = "CAPTION_EMPTY"
-	CodeCaptionTooLarge    = "CAPTION_TOO_LARGE"
-	CodeCaptionEncoding    = "CAPTION_BAD_ENCODING"
-	CodeCaptionHeader      = "CAPTION_BAD_HEADER"
-	CodeCaptionTiming      = "CAPTION_BAD_TIMING"
-	CodeCaptionOverlap     = "CAPTION_OVERLAP"
+	CodeCaptionEmpty    = "CAPTION_EMPTY"
+	CodeCaptionTooLarge = "CAPTION_TOO_LARGE"
+	CodeCaptionEncoding = "CAPTION_BAD_ENCODING"
+	CodeCaptionHeader   = "CAPTION_BAD_HEADER"
+	CodeCaptionTiming   = "CAPTION_BAD_TIMING"
+	// CodeCaptionOverlap is no longer returned (REG-4): overlapping cues are
+	// valid WebVTT. Kept so the code is never reused for something else.
+	CodeCaptionOverlap = "CAPTION_OVERLAP"
+	// CodeCaptionOrder: a cue starts before the previous cue starts.
+	CodeCaptionOrder       = "CAPTION_OUT_OF_ORDER"
 	CodeCaptionCue         = "CAPTION_BAD_CUE"
 	CodeCaptionTooManyCues = "CAPTION_TOO_MANY_CUES"
 	CodeCaptionFormat      = "CAPTION_FORMAT_UNSUPPORTED"
@@ -96,7 +100,8 @@ func isWebVTTSignature(line string) bool {
 }
 
 // ParseWebVTT parses and validates a WebVTT file into cues with sanitised
-// text (Cue.Markup is set). Cues must be in order and must not overlap.
+// text (Cue.Markup is set). Cues must be in start-time order; they may
+// overlap (two speakers, rolling captions), as WebVTT allows (REG-4).
 func ParseWebVTT(src string) ([]Cue, error) {
 	lines, err := splitCaptionLines(src)
 	if err != nil {
@@ -167,9 +172,9 @@ func isBlockKeyword(line, keyword string) bool {
 // parseCueBlocks reads blank-line separated blocks from lines[from:].
 func parseCueBlocks(lines []string, from int, vtt bool) ([]Cue, error) {
 	var (
-		cues    []Cue
-		prevEnd int64 = -1
-		timed   int
+		cues      []Cue
+		prevStart int64 = -1
+		timed     int
 	)
 	for i := from; i < len(lines); {
 		if lines[i] == "" {
@@ -200,12 +205,14 @@ func parseCueBlocks(lines []string, from int, vtt bool) ([]Cue, error) {
 		if err != nil {
 			return nil, err
 		}
-		if startMs < prevEnd {
-			return nil, fileErr(CodeCaptionOverlap, lineNo,
-				"cue starts at %s, before the previous cue ends at %s; cues must be in order and must not overlap",
-				FormatVTTTimestamp(startMs), FormatVTTTimestamp(prevEnd))
+		// REG-4: overlapping cues are valid WebVTT (two speakers, rolling
+		// captions, YouTube exports); only the start-time order is required.
+		if startMs < prevStart {
+			return nil, fileErr(CodeCaptionOrder, lineNo,
+				"cue starts at %s, before the previous cue starts at %s; cues must be in start-time order",
+				FormatVTTTimestamp(startMs), FormatVTTTimestamp(prevStart))
 		}
-		prevEnd = endMs
+		prevStart = startMs
 
 		payload := block[timingAt+1:]
 		for k, line := range payload {
@@ -262,11 +269,15 @@ func parseTimingLine(line string, vtt bool, lineNo int) (int64, int64, error) {
 	return startMs, endMs, nil
 }
 
-// parseCueTimestamp reads [H+:]MM:SS.mmm (SRT also takes a comma). No sign,
-// minutes and seconds 00-59, exactly three millisecond digits.
-func parseCueTimestamp(s string, vtt bool) (int64, bool) {
+// parseCueTimestamp reads [H+:]MM:SS.mmm. No sign, minutes and seconds
+// 00-59, exactly three millisecond digits. Tolerated in both formats, as real
+// files and converters write them (REG-4, REG-8's server half): one to four
+// hour digits ("0:00:01.000"), no hours ("00:01.000"), and a comma or a full
+// stop before the milliseconds (an SRT converted to VTT that kept its comma).
+// The served file is always re-rendered in the canonical form.
+func parseCueTimestamp(s string, _ bool) (int64, bool) {
 	sep := strings.LastIndexAny(s, ".,")
-	if sep < 0 || (vtt && s[sep] != '.') {
+	if sep < 0 {
 		return 0, false
 	}
 	frac := s[sep+1:]

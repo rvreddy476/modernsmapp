@@ -181,6 +181,35 @@ func (s *Service) StartBlobReclaimWorker(ctx context.Context) {
 	}()
 }
 
+// What a delete leaves behind, and who can read it (reels-17, gate line 6;
+// established 2026-11-18 from this file, internal/delivery and
+// infra/terraform/modules/media/main.tf):
+//
+//   - Rows: gone in the same transaction that records the keys, so every
+//     route (serve, url, hls, batch, captions, audio tracks, download)
+//     answers the not-found of a missing asset from that commit on, and no
+//     new URL of any kind is signed.
+//   - Objects: DeleteObject on each key and on the asset prefix. The prod
+//     bucket is VERSIONED, so S3 writes a delete marker: the current object
+//     is gone, an unversioned GET (a presigned URL, or CloudFront's OAC
+//     origin fetch) answers 404 at once.
+//   - Noncurrent versions: kept by the lifecycle rule "noncurrent-versions"
+//     (Standard-IA after 30 days, expired after 90). This is the bucket's
+//     recovery window for an accidental overwrite or delete, not a product
+//     restore: the 72-hour post restore keeps the asset rows and objects
+//     untouched until post-service purges, and never reads old versions.
+//     Nothing can read a noncurrent version through this service: no code
+//     path passes a version id; CloudFront's OAC grant is s3:GetObject only
+//     (versioned reads need s3:GetObjectVersion); a presigned URL is signed
+//     without a versionId and cannot have one added. Only a holder of the
+//     media-service / media-worker IRSA role (s3:GetObjectVersion) can.
+//   - CDN copies: there is no CloudFront invalidation. An edge-cached
+//     segment stays servable only to a viewer whose signed grant was issued
+//     before the delete, until it expires (MEDIA_HLS_SEGMENT_TTL, 10 min in
+//     prod, never more than 15); a new grant is never issued.
+//
+// Shortening the 90 days, or purging versions on an erasure request, is a
+// Terraform lifecycle (and retention policy) decision, not this code's.
 func (s *Service) DeleteMedia(ctx context.Context, mediaID uuid.UUID, userID uuid.UUID) error {
 	// 1. Fetch and verify ownership
 	media, err := s.pgStore.GetMedia(ctx, mediaID)

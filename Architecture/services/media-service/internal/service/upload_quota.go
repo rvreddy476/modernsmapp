@@ -22,6 +22,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/atpost/media-service/internal/processing"
@@ -111,6 +113,10 @@ type initOptions struct {
 	// declaredDurationMs: the client's local reading of the video's
 	// length; 0 when not sent. Only ever used to refuse early.
 	declaredDurationMs int64
+	// mimeType: the declared MIME, set by the init path itself (not an
+	// option a caller passes). Decides whether confirm will be able to
+	// read the length from the header (REG-3).
+	mimeType string
 }
 
 // InitOption is an optional upload-init field.
@@ -200,21 +206,65 @@ func decideVideoBudget(l UploadLimits, u postgres.UploadUsage, o *postgres.Uploa
 }
 
 // checkVideoBudgetAtInit is the init-time check: read-only, nothing charged.
-func (s *Service) checkVideoBudgetAtInit(ctx context.Context, userID uuid.UUID, bytes, declaredMs int64) error {
-	return videoBudgetAtInit(ctx, s.pgStore, uploadLimits, time.Now(), userID, bytes, declaredMs)
+func (s *Service) checkVideoBudgetAtInit(ctx context.Context, userID uuid.UUID, bytes int64, o initOptions) error {
+	return videoBudgetAtInit(ctx, s.pgStore, uploadLimits, time.Now(), userID, bytes, o.declaredDurationMs, o.mimeType)
 }
 
 func videoBudgetAtInit(ctx context.Context, store uploadQuotaStore, l UploadLimits, now time.Time,
-	userID uuid.UUID, bytes, declaredMs int64) error {
+	userID uuid.UUID, bytes, declaredMs int64, mimeType string) error {
 	usage, override, err := store.UploadUsageFor(ctx, userID, now.Add(-quotaWindow), uuid.Nil)
 	if err != nil {
 		// The budget cannot be read: refuse, as the count limit does.
 		return fmt.Errorf("%w: %v", ErrUploadLimiterUnavailable, err)
 	}
-	// Only a DECLARED long video meets the in-flight cap at init: an
-	// undeclared one (most reels) is classified at confirm.
-	declaredLong := declaredMs > 0 && isLongVideoSeconds(float64(declaredMs)/1000)
-	return decideVideoBudget(l, usage, override, bytes, declaredMs, declaredLong, declaredLong)
+	// A DECLARED long video meets the in-flight cap at init. So does an
+	// undeclared one that confirm is already bound to count as long (REG-3):
+	// a container whose header carries no length (WebM/Matroska), too big
+	// for confirm's whole-file probe and over the unknown-length bound.
+	// Refusing it here saves uploading gigabytes only to get the 429 at
+	// confirm. An undeclared MP4/MOV is classified at confirm, from its
+	// header, as before.
+	long := declaredMs > 0 && isLongVideoSeconds(float64(declaredMs)/1000)
+	if declaredMs <= 0 && !headerCarriesLength(mimeType) && bytes > maxWholeFileProbeBytes {
+		long = unknownLengthIsLong(l, bytes)
+	}
+	return decideVideoBudget(l, usage, override, bytes, declaredMs, long, long)
+}
+
+// ── REG-3: a length the header does not give ─────────────────────────
+//
+// The rule, at confirm:
+//  1. MP4/MOV: the length is read from the header (processing.MP4Duration).
+//  2. Anything else (WebM from a browser's MediaRecorder, MKV, AVI) up to
+//     maxWholeFileProbeBytes: the whole file is copied to a temp file and
+//     ffprobe reads it through the hardened video runner (file protocol
+//     only, demuxer chosen from the bytes, ProbeTimeout). The real length
+//     classifies it and is charged against the seconds budget.
+//  3. Still unknown: the video is charged its bytes and no seconds, and it
+//     counts against the long-video in-flight cap only when it is larger
+//     than UnknownLengthShortMaxBytes (MEDIA_UPLOAD_UNKNOWN_LENGTH_SHORT_MAX_BYTES,
+//     default 512 MiB; 0 restores "unknown is always long"). A ten-minute
+//     reel recorded in a browser is far below that; the worker classifies
+//     by its own ffprobe of the whole file anyway, and applies the length
+//     cap there.
+
+// maxWholeFileProbeBytes is the largest non-MP4 video confirm copies into
+// the API pod to ffprobe (64 MiB: minutes of browser-recorded WebM).
+const maxWholeFileProbeBytes int64 = 64 << 20
+
+// headerCarriesLength: confirm reads this container's length from its
+// header (MP4/MOV).
+func headerCarriesLength(mimeType string) bool {
+	switch normaliseMIME(mimeType) {
+	case "video/mp4", "video/quicktime":
+		return true
+	}
+	return false
+}
+
+// unknownLengthIsLong is step 3 of the rule above.
+func unknownLengthIsLong(l UploadLimits, bytes int64) bool {
+	return l.UnknownLengthShortMaxBytes <= 0 || bytes > l.UnknownLengthShortMaxBytes
 }
 
 // admitVideoAtConfirm runs at confirm for a video, before it is marked
@@ -225,9 +275,10 @@ func admitVideoAtConfirm(ctx context.Context, store uploadQuotaStore, l UploadLi
 	media *postgres.MediaAsset, sizeBytes int64, probeSeconds func() (float64, error), reject func() error) error {
 	seconds, err := probeSeconds()
 	if err != nil || seconds <= 0 || math.IsNaN(seconds) || math.IsInf(seconds, 0) {
-		// Not an MP4/MOV header the probe reads: the length is unknown. The
-		// worker still applies the cap after its own ffprobe; here the
-		// video is charged as long, with no seconds.
+		// Neither the header nor (for a small file) ffprobe gave a length:
+		// unknown. The worker still applies the cap after its own ffprobe;
+		// here the video is charged no seconds, and is long only by size
+		// (REG-3, step 3 above).
 		seconds = 0
 	}
 	if err := checkVideoDuration(l.VideoMaxDurationSeconds, seconds); err != nil {
@@ -238,6 +289,9 @@ func admitVideoAtConfirm(ctx context.Context, store uploadQuotaStore, l UploadLi
 	}
 	durationMs := int64(math.Round(seconds * 1000))
 	isLong := isLongVideoSeconds(seconds)
+	if seconds == 0 {
+		isLong = unknownLengthIsLong(l, sizeBytes)
+	}
 	charge := postgres.VideoUploadCharge{
 		MediaID: media.ID, UploaderID: media.UploaderID, Bytes: sizeBytes, DurationMs: durationMs, IsLong: isLong,
 	}
@@ -256,9 +310,21 @@ func (s *Service) admitVideoUpload(ctx context.Context, media *postgres.MediaAss
 	probe := func() (float64, error) {
 		pctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		return processing.MP4Duration(func(off, n int64) ([]byte, error) {
+		seconds, err := processing.MP4Duration(func(off, n int64) ([]byte, error) {
 			return s.blobStore.ReadObjectRange(pctx, media.StorageKey, off, off+n-1)
 		}, sizeBytes)
+		if err == nil && seconds > 0 {
+			return seconds, nil
+		}
+		// REG-3 step 2: not an MP4/MOV header; a small file is probed whole.
+		return probeWholeFileSeconds(pctx, sizeBytes, func(path string) error {
+			rc, _, openErr := s.blobStore.OpenObject(pctx, media.StorageKey)
+			if openErr != nil {
+				return openErr
+			}
+			defer rc.Close()
+			return copyBounded(rc, sizeBytes, path, maxWholeFileProbeBytes)
+		}, processing.ProbeVideo)
 	}
 	reject := func() error {
 		slog.InfoContext(ctx, "upload refused: video over the length cap", "media_id", media.ID)
@@ -270,4 +336,32 @@ func (s *Service) admitVideoUpload(ctx context.Context, media *postgres.MediaAss
 		return fmt.Errorf("%w: %v", ErrUploadLimiterUnavailable, err)
 	}
 	return err
+}
+
+// probeWholeFileSeconds is REG-3 step 2: a video of at most
+// maxWholeFileProbeBytes is fetched whole into a temp file and ffprobe
+// (processing.ProbeVideo, the hardened runner) reads its length. A larger
+// one, a failed fetch or a failed probe is an unknown length (an error).
+func probeWholeFileSeconds(ctx context.Context, sizeBytes int64,
+	fetch func(path string) error, probe func(ctx context.Context, path string) (*processing.VideoMeta, error)) (float64, error) {
+	if sizeBytes <= 0 || sizeBytes > maxWholeFileProbeBytes {
+		return 0, fmt.Errorf("length unknown: %d bytes is over the whole-file probe bound", sizeBytes)
+	}
+	dir, err := os.MkdirTemp("", "confirm-probe-")
+	if err != nil {
+		return 0, err
+	}
+	defer os.RemoveAll(dir)
+	path := filepath.Join(dir, "input")
+	if err := fetch(path); err != nil {
+		return 0, fmt.Errorf("fetch for probe: %w", err)
+	}
+	meta, err := probe(ctx, path)
+	if err != nil {
+		return 0, err
+	}
+	if meta == nil || !(meta.DurationFloat > 0) || math.IsInf(meta.DurationFloat, 0) {
+		return 0, fmt.Errorf("length unknown: ffprobe reported none")
+	}
+	return meta.DurationFloat, nil
 }

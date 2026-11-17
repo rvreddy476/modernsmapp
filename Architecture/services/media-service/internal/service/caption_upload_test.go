@@ -55,7 +55,7 @@ func TestCaptionUploadRefusals(t *testing.T) {
 	}{
 		{"vtt without header", "vtt", "00:00:01.000 --> 00:00:02.000\nhi\n", captions.CodeCaptionHeader},
 		{"plain text sent as vtt", "vtt", "a transcript", captions.CodeCaptionHeader},
-		{"overlap", "vtt", "WEBVTT\n\n00:01.000 --> 00:03.000\na\n\n00:02.000 --> 00:04.000\nb\n", captions.CodeCaptionOverlap},
+		{"out of order", "vtt", "WEBVTT\n\n00:05.000 --> 00:06.000\na\n\n00:02.000 --> 00:04.000\nb\n", captions.CodeCaptionOrder},
 		{"negative", "vtt", "WEBVTT\n\n-00:01.000 --> 00:03.000\na\n", captions.CodeCaptionTiming},
 		{"oversize", "vtt", "WEBVTT\n\n00:01.000 --> 00:03.000\n" + strings.Repeat("a", 200_001), captions.CodeCaptionTooLarge},
 		// Under the input cap, over the stored cap once every & is escaped.

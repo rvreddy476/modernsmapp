@@ -1,9 +1,11 @@
 package http
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
+	"github.com/atpost/media-service/internal/service"
 	"github.com/atpost/shared/api"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
@@ -56,6 +58,11 @@ func (h *Handler) ExtractFrames(c *gin.Context) {
 	if err != nil {
 		if err.Error() == "forbidden: you do not own this media" {
 			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusForbidden, "FORBIDDEN", err.Error(), nil)
+			return
+		}
+		if errors.Is(err, service.ErrFrameSourceTooLarge) {
+			api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusRequestEntityTooLarge, "FRAME_SOURCE_TOO_LARGE",
+				"this video is too large for server-side frames; pick a cover in the app", map[string]any{"max_bytes": service.MaxFrameSourceBytes})
 			return
 		}
 		api.ErrorWithContext(c.Request.Context(), c.Writer, http.StatusInternalServerError, "INTERNAL_ERROR", err.Error(), nil)

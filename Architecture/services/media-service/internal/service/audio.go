@@ -7,10 +7,11 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
+	"path/filepath"
 	"time"
 
 	"github.com/atpost/media-service/internal/delivery"
+	"github.com/atpost/media-service/internal/processing"
 	"github.com/atpost/media-service/internal/store/postgres"
 	"github.com/google/uuid"
 )
@@ -151,7 +152,14 @@ func (s *Service) AssertMediaOwner(ctx context.Context, mediaID, actorID uuid.UU
 	if err != nil {
 		return err
 	}
-	if media == nil || media.UploaderID != actorID {
+	return mediaOwnerVerdict(media, actorID)
+}
+
+// mediaOwnerVerdict is AssertMediaOwner's decision, without the store, so the
+// stranger refusal is pinned by a unit test (caption_owner_test.go) as well
+// as end to end (caption_owner_integration_test.go).
+func mediaOwnerVerdict(media *postgres.MediaAsset, actorID uuid.UUID) error {
+	if actorID == uuid.Nil || media == nil || media.UploaderID != actorID {
 		return ErrNotMediaOwner
 	}
 	return nil
@@ -336,34 +344,71 @@ func (s *Service) generateAutoCaptions(ctx context.Context, mediaID uuid.UUID, l
 
 // ─── Voiceover ───────────────────────────────────────────────────────
 
+// MaxVoiceoverUploadBytes bounds one POST /v1/audio/voiceover body (reels-16,
+// gate line 6). 50 MB, the alternate-audio-track cap: a voiceover spans a
+// reel of at most ten minutes, which is about 10 MB as 128 kbps AAC and
+// about 100 MB only as uncompressed stereo WAV, which recorders do not send.
+// The handler refuses a larger body with 413 PAYLOAD_TOO_LARGE before the
+// multipart parser buffers it; this check is the service's own backstop.
+const MaxVoiceoverUploadBytes int64 = 50 * 1024 * 1024
+
+// voiceoverFFmpegTimeout is the deadline of the one ffmpeg call a voiceover
+// gets in the API process. Re-encoding ten minutes of audio to AAC takes
+// seconds; a call still running after two minutes is stuck on hostile input.
+const voiceoverFFmpegTimeout = 2 * time.Minute
+
+var (
+	// ErrVoiceoverTooLarge: the body is over MaxVoiceoverUploadBytes (413).
+	ErrVoiceoverTooLarge = errors.New("voiceover exceeds the size limit")
+	// ErrVoiceoverUnsupported: the first bytes are not an audio container
+	// the hardened tool may open (415).
+	ErrVoiceoverUnsupported = errors.New("voiceover is not a supported audio file")
+	// ErrVoiceoverUnreadable: an allowed container ffmpeg could not decode,
+	// or that ran past its deadline (422). Nothing is stored.
+	ErrVoiceoverUnreadable = errors.New("voiceover audio could not be decoded")
+)
+
 // RecordVoiceover transcodes raw audio to AAC, uploads it to blob storage,
 // and creates a media_assets record so it can be attached as a Flick overlay.
+//
+// reels-16: the user's bytes reach ffmpeg only through the hardened audio
+// path (processing.ExtractAudio → runAudioTool: file protocol only, the
+// demuxer chosen from the bytes, a deadline), after a size cap and a magic
+// byte check. It used to run a bare ffmpeg with no whitelist, no forced
+// demuxer and no deadline, and stored the RAW upload as audio/mp4 when
+// ffmpeg failed; a file ffmpeg cannot decode is now refused, never stored.
 func (s *Service) RecordVoiceover(ctx context.Context, uploaderID uuid.UUID, audioData []byte, mimeType string) (*postgres.MediaAsset, error) {
+	if int64(len(audioData)) > MaxVoiceoverUploadBytes {
+		return nil, fmt.Errorf("%w: %d bytes (max %d)", ErrVoiceoverTooLarge, len(audioData), MaxVoiceoverUploadBytes)
+	}
+	if _, ok := processing.ValidateAudioMagicBytes(audioData); !ok {
+		return nil, ErrVoiceoverUnsupported
+	}
 	tmpDir, err := os.MkdirTemp("", "voiceover-")
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	ext := ".webm"
-	switch mimeType {
-	case "audio/mp4", "audio/aac":
-		ext = ".m4a"
-	case "audio/ogg":
-		ext = ".ogg"
-	}
-	inputPath := tmpDir + "/input" + ext
-	if err := os.WriteFile(inputPath, audioData, 0644); err != nil {
+	// No extension: the demuxer comes from the bytes, never from the
+	// client's Content-Type.
+	inputPath := filepath.Join(tmpDir, "input")
+	if err := os.WriteFile(inputPath, audioData, 0o600); err != nil {
 		return nil, fmt.Errorf("write input: %w", err)
 	}
 
-	outputPath := tmpDir + "/output.m4a"
-	cmd := exec.CommandContext(ctx, "ffmpeg", "-y", "-i", inputPath,
-		"-c:a", "aac", "-b:a", "128k", outputPath)
-	if out, cmdErr := cmd.CombinedOutput(); cmdErr != nil {
-		slog.Warn("ffmpeg voiceover transcode failed, using raw audio",
-			"err", cmdErr, "output", string(out))
-		outputPath = inputPath
+	toolCtx := processing.WithToolTimeout(ctx, voiceoverFFmpegTimeout)
+	outputPath, _, err := processing.ExtractAudio(toolCtx, inputPath, tmpDir)
+	if err != nil {
+		if errors.Is(err, processing.ErrInputFormatRefused) {
+			return nil, ErrVoiceoverUnsupported
+		}
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		slog.Warn("voiceover: audio could not be transcoded; refused",
+			"uploader_id", uploaderID, "declared_mime", mimeType, "error", err)
+		return nil, ErrVoiceoverUnreadable
 	}
 
 	outData, err := os.ReadFile(outputPath)

@@ -37,9 +37,14 @@ const (
 	// may confirm in a rolling 24 h. Default 8 h: two at the 4 h cap.
 	UploadDailyVideoSecondsEnv = "MEDIA_UPLOAD_DAILY_VIDEO_SECONDS"
 	// UploadMaxInflightLongEnv: how many long (over the reel length, or of
-	// unknown length) videos of one account may be queued or transcoding
+	// unknown length and over the unknown-length bound) videos of one account may be queued or transcoding
 	// at once. Default 2.
 	UploadMaxInflightLongEnv = "MEDIA_UPLOAD_MAX_INFLIGHT_LONG"
+	// UploadUnknownLengthShortMaxBytesEnv (REG-3): a video whose length
+	// neither the header nor confirm's whole-file probe could read counts
+	// against the in-flight long cap only above this size. Default 512 MiB;
+	// 0 counts every unknown length as long.
+	UploadUnknownLengthShortMaxBytesEnv = "MEDIA_UPLOAD_UNKNOWN_LENGTH_SHORT_MAX_BYTES"
 
 	// ResumableIdleTTLEnv: how long a resumable session lives after its
 	// last accepted part (or its init). Default 24h. Go duration syntax.
@@ -55,11 +60,12 @@ const (
 	// closed. Never set it in a deployed environment.
 	UploadRateLimitOptionalEnv = "MEDIA_UPLOAD_RATE_LIMIT_OPTIONAL"
 
-	defaultDailyVideoBytes   int64 = 32 << 30
-	defaultDailyVideoSeconds int64 = 8 * 60 * 60
-	defaultMaxInflightLong         = 2
-	defaultResumableIdleTTL        = 24 * time.Hour
-	defaultResumableMaxLife        = 7 * 24 * time.Hour
+	defaultDailyVideoBytes      int64 = 32 << 30
+	defaultDailyVideoSeconds    int64 = 8 * 60 * 60
+	defaultMaxInflightLong            = 2
+	defaultUnknownShortMaxBytes       = int64(512 << 20)
+	defaultResumableIdleTTL           = 24 * time.Hour
+	defaultResumableMaxLife           = 7 * 24 * time.Hour
 )
 
 // UploadLimits is the configuration of the upload path's env-driven limits.
@@ -71,6 +77,8 @@ type UploadLimits struct {
 	DailyVideoSeconds int64
 	// MaxInflightLong: 0 means no cap.
 	MaxInflightLong int
+	// UnknownLengthShortMaxBytes: see UploadUnknownLengthShortMaxBytesEnv.
+	UnknownLengthShortMaxBytes int64
 	// ResumableIdleTTL / ResumableMaxLifetime: see the env constants.
 	ResumableIdleTTL     time.Duration
 	ResumableMaxLifetime time.Duration
@@ -90,9 +98,11 @@ func loadUploadLimits(getenv func(string) string) UploadLimits {
 		DailyVideoBytes:         envNonNegInt64(getenv, UploadDailyVideoBytesEnv, defaultDailyVideoBytes),
 		DailyVideoSeconds:       envNonNegInt64(getenv, UploadDailyVideoSecondsEnv, defaultDailyVideoSeconds),
 		MaxInflightLong:         int(envNonNegInt64(getenv, UploadMaxInflightLongEnv, defaultMaxInflightLong)),
-		ResumableIdleTTL:        envPositiveDuration(getenv, ResumableIdleTTLEnv, defaultResumableIdleTTL),
-		ResumableMaxLifetime:    envPositiveDuration(getenv, ResumableMaxLifetimeEnv, defaultResumableMaxLife),
-		RateLimitOptional:       strings.EqualFold(strings.TrimSpace(getenv(UploadRateLimitOptionalEnv)), "true"),
+		UnknownLengthShortMaxBytes: envNonNegInt64(getenv, UploadUnknownLengthShortMaxBytesEnv,
+			defaultUnknownShortMaxBytes),
+		ResumableIdleTTL:     envPositiveDuration(getenv, ResumableIdleTTLEnv, defaultResumableIdleTTL),
+		ResumableMaxLifetime: envPositiveDuration(getenv, ResumableMaxLifetimeEnv, defaultResumableMaxLife),
+		RateLimitOptional:    strings.EqualFold(strings.TrimSpace(getenv(UploadRateLimitOptionalEnv)), "true"),
 	}
 	if l.ResumableMaxLifetime < l.ResumableIdleTTL {
 		slog.Warn("resumable max lifetime is shorter than the idle TTL; using the idle TTL",

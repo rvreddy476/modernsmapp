@@ -76,8 +76,10 @@ func LoadJWTKeySet(getenv func(string) string) (JWTKeySet, error) {
 		}
 		return keys, nil
 	}
-	// RS256 only from here: the symmetric secrets are never used.
+	// RS256 only from here: the symmetric secrets are never used, and every
+	// token is auth-service's, which always carries typ "access".
 	keys.ActiveSecret, keys.PreviousSecret = "", ""
+	keys.RequireAccessType = true
 	if len(keys.RSAKeys) == 0 {
 		return keys, errors.Join(ErrJWTConfig, errors.New("JWT_PUBLIC_KEY_PEM is required when HS256 is refused"))
 	}

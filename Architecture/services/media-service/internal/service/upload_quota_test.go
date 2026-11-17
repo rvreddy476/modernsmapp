@@ -172,25 +172,25 @@ func TestVideoBudgetAtInitReadsTheWindowAndChargesNothing(t *testing.T) {
 	l := testLimits()
 	now := time.Now()
 	st := &fakeQuotaStore{usage: postgres.UploadUsage{Bytes: 9 << 30, InflightLong: 1}}
-	if err := videoBudgetAtInit(context.Background(), st, l, now, uuid.New(), 2<<30, 0); !errors.Is(err, ErrUploadQuotaExceeded) {
+	if err := videoBudgetAtInit(context.Background(), st, l, now, uuid.New(), 2<<30, 0, "video/mp4"); !errors.Is(err, ErrUploadQuotaExceeded) {
 		t.Fatalf("declared size over the budget: %v", err)
 	}
 	if !st.sinceGot.Equal(now.Add(-24 * time.Hour)) {
 		t.Fatalf("window starts %v, want now - 24h", st.sinceGot)
 	}
 	// An undeclared length does not meet the in-flight cap at init.
-	if err := videoBudgetAtInit(context.Background(), st, l, now, uuid.New(), 1<<20, 0); err != nil {
+	if err := videoBudgetAtInit(context.Background(), st, l, now, uuid.New(), 1<<20, 0, "video/mp4"); err != nil {
 		t.Fatalf("undeclared length at init: %v", err)
 	}
 	// A declared long one does.
-	if err := videoBudgetAtInit(context.Background(), st, l, now, uuid.New(), 1<<20, 3600*1000); !errors.Is(err, ErrLongVideoInFlight) {
+	if err := videoBudgetAtInit(context.Background(), st, l, now, uuid.New(), 1<<20, 3600*1000, "video/mp4"); !errors.Is(err, ErrLongVideoInFlight) {
 		t.Fatalf("declared long video with one in flight: %v", err)
 	}
 	if len(st.charged) != 0 {
 		t.Fatal("init charged the ledger")
 	}
 	st.readErr = errors.New("db down")
-	if err := videoBudgetAtInit(context.Background(), st, l, now, uuid.New(), 1, 0); !errors.Is(err, ErrUploadLimiterUnavailable) {
+	if err := videoBudgetAtInit(context.Background(), st, l, now, uuid.New(), 1, 0, "video/mp4"); !errors.Is(err, ErrUploadLimiterUnavailable) {
 		t.Fatalf("unreadable budget: %v, want fail closed", err)
 	}
 }
@@ -222,9 +222,18 @@ func TestAdmitVideoAtConfirm(t *testing.T) {
 	if c := st.charged[reel.ID]; c.DurationMs != 30000 || c.IsLong || c.Bytes != 1<<20 {
 		t.Fatalf("reel charge %+v", c)
 	}
-	// An unreadable length is charged as long, with no seconds.
+	// REG-3: an unreadable length no bigger than a short clip can be is
+	// charged with no seconds and does NOT count as long.
+	smallUnknown := video()
+	if err := admitVideoAtConfirm(ctx, st, l, time.Now(), smallUnknown, 30<<20, probe(0, errors.New("not mp4")), reject); err != nil {
+		t.Fatalf("small unknown length: %v", err)
+	}
+	if c := st.charged[smallUnknown.ID]; c.DurationMs != 0 || c.IsLong || c.Bytes != 30<<20 {
+		t.Fatalf("small unknown-length charge %+v", c)
+	}
+	// An unreadable length over the bound is charged as long, with no seconds.
 	unknown := video()
-	if err := admitVideoAtConfirm(ctx, st, l, time.Now(), unknown, 1<<20, probe(0, errors.New("not mp4")), reject); err != nil {
+	if err := admitVideoAtConfirm(ctx, st, l, time.Now(), unknown, l.UnknownLengthShortMaxBytes+1, probe(0, errors.New("not mp4")), reject); err != nil {
 		t.Fatalf("unknown length: %v", err)
 	}
 	if c := st.charged[unknown.ID]; c.DurationMs != 0 || !c.IsLong {

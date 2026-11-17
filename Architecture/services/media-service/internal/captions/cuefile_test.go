@@ -97,11 +97,12 @@ func TestParseWebVTTRefusesMalformed(t *testing.T) {
 		{"bad seconds", "WEBVTT\n\n00:00:61.000 --> 00:01:02.000\nhi\n", CodeCaptionTiming},
 		{"bad minutes", "WEBVTT\n\n00:60:00.000 --> 01:00:02.000\nhi\n", CodeCaptionTiming},
 		{"short millis", "WEBVTT\n\n00:00:01.00 --> 00:00:02.000\nhi\n", CodeCaptionTiming},
-		{"comma in vtt", "WEBVTT\n\n00:00:01,000 --> 00:00:02.000\nhi\n", CodeCaptionTiming},
+		{"colon before millis", "WEBVTT\n\n00:00:01:000 --> 00:00:02.000\nhi\n", CodeCaptionTiming},
+		{"one minute digit", "WEBVTT\n\n0:1.000 --> 00:02.000\nhi\n", CodeCaptionTiming},
 		{"no end", "WEBVTT\n\n00:00:01.000 -->\nhi\n", CodeCaptionTiming},
 		{"past 48 hours", "WEBVTT\n\n47:59:59.000 --> 48:00:00.001\nhi\n", CodeCaptionTiming},
-		{"overlap", "WEBVTT\n\n00:00:01.000 --> 00:00:03.000\na\n\n00:00:02.000 --> 00:00:04.000\nb\n", CodeCaptionOverlap},
-		{"out of order", "WEBVTT\n\n00:00:05.000 --> 00:00:06.000\na\n\n00:00:01.000 --> 00:00:02.000\nb\n", CodeCaptionOverlap},
+		{"out of order", "WEBVTT\n\n00:00:05.000 --> 00:00:06.000\na\n\n00:00:01.000 --> 00:00:02.000\nb\n", CodeCaptionOrder},
+		{"out of order inside an overlap", "WEBVTT\n\n00:00:02.000 --> 00:00:09.000\na\n\n00:00:01.000 --> 00:00:03.000\nb\n", CodeCaptionOrder},
 		{"missing timing", "WEBVTT\n\nhello\nthere\n", CodeCaptionCue},
 		{"missing blank line between cues", "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\na\n00:00:02.000 --> 00:00:03.000\nb\n", CodeCaptionCue},
 		{"invalid utf8", "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\n\xff\xfe\n", CodeCaptionEncoding},
@@ -150,7 +151,7 @@ func TestParseSRTRefusesMalformed(t *testing.T) {
 		{"vtt sent as srt", "WEBVTT\n\n00:00:01.000 --> 00:00:02.000\nhi\n", CodeCaptionHeader},
 		{"garbage", "hello world\n", CodeCaptionCue},
 		{"inverted", "1\n00:00:02,000 --> 00:00:01,000\nhi\n", CodeCaptionTiming},
-		{"overlap", "1\n00:00:01,000 --> 00:00:03,000\na\n\n2\n00:00:02,000 --> 00:00:04,000\nb\n", CodeCaptionOverlap},
+		{"out of order", "1\n00:00:05,000 --> 00:00:06,000\na\n\n2\n00:00:01,000 --> 00:00:02,000\nb\n", CodeCaptionOrder},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := ParseSRT(tc.src)

@@ -51,6 +51,13 @@ type JWTKeySet struct {
 	// JWT_AUDIENCE, the gateway's names, and are required in production.
 	Issuers  []string
 	Audience string
+	// RequireAccessType refuses a token with no `typ`/`type` claim (reels-15
+	// remainder). auth-service stamps every access token typ "access"
+	// (pkg/accesstoken), the gateway requires it, and refresh tokens are
+	// opaque; so in RS256-only mode an untyped token is not one of ours.
+	// LoadJWTKeySet sets it whenever HS256 is refused; legacy HS256 dev
+	// tokens, which may carry no type, are only accepted when it is off.
+	RequireAccessType bool
 }
 
 func (k JWTKeySet) secretFor(kid string) ([]byte, bool) {
@@ -178,6 +185,9 @@ func verifyJWTClaims(tokenStr string, keys JWTKeySet) (jwtClaims, error) {
 	}
 	if typ != "" && !strings.EqualFold(typ, "access") && !strings.EqualFold(typ, "at+jwt") {
 		return jwtClaims{}, fmt.Errorf("token is not an access token")
+	}
+	if typ == "" && keys.RequireAccessType {
+		return jwtClaims{}, fmt.Errorf("token has no access token type")
 	}
 
 	if len(keys.Issuers) > 0 {

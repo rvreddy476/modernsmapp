@@ -16,7 +16,7 @@ func TestCreateSubtitleRefusesMalformedFilesWithClearCodes(t *testing.T) {
 	r := captionRouter(&fakeClipsService{})
 	for _, tc := range []struct{ name, body, code string }{
 		{"no WEBVTT header", `{"language":"en","source":"manual","format":"vtt","content":"00:00:01.000 --> 00:00:02.000\nhi\n"}`, "CAPTION_BAD_HEADER"},
-		{"overlapping cues", `{"language":"en","source":"manual","format":"vtt","content":"WEBVTT\n\n00:01.000 --> 00:03.000\na\n\n00:02.000 --> 00:04.000\nb\n"}`, "CAPTION_OVERLAP"},
+		{"cues out of order", `{"language":"en","source":"manual","format":"vtt","content":"WEBVTT\n\n00:05.000 --> 00:06.000\na\n\n00:02.000 --> 00:04.000\nb\n"}`, "CAPTION_OUT_OF_ORDER"},
 		{"end before start", `{"language":"en","source":"manual","format":"srt","content":"1\n00:00:02,000 --> 00:00:01,000\nhi\n"}`, "CAPTION_BAD_TIMING"},
 		{"unknown format", `{"language":"en","source":"manual","format":"ass","content":"x"}`, "CAPTION_FORMAT_UNSUPPORTED"},
 	} {

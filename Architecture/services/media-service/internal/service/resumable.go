@@ -158,7 +158,7 @@ func (s *Service) resumable() *resumableFlow {
 				return err
 			}
 			if fileType == "video" {
-				return s.checkVideoBudgetAtInit(ctx, userID, totalBytes, o.declaredDurationMs)
+				return s.checkVideoBudgetAtInit(ctx, userID, totalBytes, o)
 			}
 			return nil
 		},
@@ -210,6 +210,7 @@ func (f *resumableFlow) init(ctx context.Context, userID uuid.UUID, fileType, mi
 		return nil, err
 	}
 	if f.admit != nil {
+		o.mimeType = mimeType // REG-3: the container decides how init classifies an undeclared length
 		if err := f.admit(ctx, userID, fileType, totalBytes, o); err != nil {
 			return nil, err
 		}

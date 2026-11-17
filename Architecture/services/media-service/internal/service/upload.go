@@ -166,7 +166,8 @@ func (s *Service) InitUpload(ctx context.Context, userID uuid.UUID, fileType, me
 		return nil, err
 	} else if fileType == "video" {
 		// lv-3: the declared size (and length) must fit the daily budget.
-		if err := s.checkVideoBudgetAtInit(ctx, userID, fileSizeBytes, initOpts.declaredDurationMs); err != nil {
+		initOpts.mimeType = mimeType // REG-3: see videoBudgetAtInit
+		if err := s.checkVideoBudgetAtInit(ctx, userID, fileSizeBytes, initOpts); err != nil {
 			return nil, err
 		}
 	}
@@ -487,6 +488,12 @@ func sameMIME(a, b string) bool {
 
 // processImage handles synchronous image processing (resize + upload variants).
 func (s *Service) processImage(ctx context.Context, media *postgres.MediaAsset) error {
+	// Decompression bombs: the pixel count from the header, before the
+	// scanner or ProcessImage decodes anything (image_pixels.go).
+	if err := checkImagePixels(ctx, s.blobStore, media); err != nil {
+		slog.Warn("media: image refused before decoding", "media_id", media.ID, "error", err)
+		return err
+	}
 	moderationStatus := "passed"
 	// Lane D6: the scanner's full label list is kept with the verdict, so
 	// dating-service can review borderline photos the verdict let through.
