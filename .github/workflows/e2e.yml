@@ -318,8 +318,32 @@ jobs:
           }
           # Every job has api-gateway in the last tier, so there is always
           # something for the earlier tiers to go ahead of.
+          # reels-29: an upheld post report reaches post-service as a reject
+          # command that post-service admits only with a post:moderation.write
+          # service token from trust-safety (security sweep #11). Where both
+          # run (video, social), a run-only Ed25519 pair, never printed:
+          # trust-safety signs with TRUST_SAFETY_SERVICE_TOKEN_KEY/_KID
+          # (internal/restriction TokenSignerFromEnv) and post-service alone
+          # registers the caller (internal/http ServiceCallersFromEnv). The
+          # capability itself is POST_MODERATION_HMAC_KEY, set above.
+          if [[ "$all" == *" trust-safety-service "* && "$all" == *" post-service "* ]]; then
+            openssl genpkey -algorithm ed25519 -out "$RUNNER_TEMP/ts.pem" 2>/dev/null
+            TRUST_SAFETY_SERVICE_TOKEN_KEY=$(openssl pkey -in "$RUNNER_TEMP/ts.pem" -outform DER | tail -c 32 | base64 -w0)
+            echo "::add-mask::$TRUST_SAFETY_SERVICE_TOKEN_KEY"
+            export TRUST_SAFETY_SERVICE_TOKEN_KEY TRUST_SAFETY_SERVICE_TOKEN_KID=ts1
+            ts_pub=$(openssl pkey -in "$RUNNER_TEMP/ts.pem" -pubout -outform DER | tail -c 32 | base64 -w0)
+            tier2="${tier2// post-service/}"
+          fi
           start_tier "$tier1"
           start_tier "$tier2"
+          if [ -n "${ts_pub:-}" ]; then
+            # Still ahead of "rest": group-service's chain needs posts.
+            SERVICE_CALLERS=trust-safety-service \
+            SERVICE_CALLER_TRUST_SAFETY_SERVICE_KID=ts1 \
+            SERVICE_CALLER_TRUST_SAFETY_SERVICE_PUBKEY="$ts_pub" \
+            SERVICE_CALLER_TRUST_SAFETY_SERVICE_OPS=post:moderation.write,post:restrictions.read \
+              start_tier "post-service"
+          fi
           if [ -n "${{ matrix.superadmin }}" ] && [[ "$all" == *" commerce-service "* ]]; then
             # admin-service signs each call to commerce-service with an
             # Ed25519 key, and commerce accepts only registered callers.

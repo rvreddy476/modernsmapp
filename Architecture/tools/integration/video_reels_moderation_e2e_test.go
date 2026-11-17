@@ -109,7 +109,8 @@ func TestE2E_Video_Reels_PendingEngagementRefused(t *testing.T) {
 //	  resolves it: upheld
 //	B and a signed-out stranger: the post and its master playlist are 404
 //	  and the reel leaves B's reels feed
-//	A still opens the reel, no longer approved, with a reason
+//	A still opens the reel, no longer approved, with moderation_reason set
+//	  and moderation_appealable true
 //	A can appeal the decision (POST /v1/appeals)
 //	B cannot like, comment on or save the removed reel (reels-18)
 func TestE2E_Video_Reels_ReportTakedown(t *testing.T) {
@@ -181,7 +182,6 @@ func TestE2E_Video_Reels_ReportTakedown(t *testing.T) {
 	takedown := false
 	t.Run("upheld report takes the reel down (reels-report-takedown)", func(t *testing.T) {
 		var state string
-		authorReason := ""
 		deadline := time.Now().Add(60 * time.Second)
 		for {
 			bPost, _ := postAs(ctx, b, post.ID)
@@ -193,13 +193,17 @@ func TestE2E_Video_Reels_ReportTakedown(t *testing.T) {
 				ids, _ := listIDs(env.Data)
 				inFeed = containsID(ids, post.ID)
 			}
-			aCode, aState, reason := authorView(ctx, a, post.ID)
-			authorReason = reason
+			av := authorView(ctx, a, post.ID)
+			appealable := "absent"
+			if av.Appealable != nil {
+				appealable = fmt.Sprint(*av.Appealable)
+			}
 			takedown = bPost == http.StatusNotFound && sPost == http.StatusNotFound &&
 				bMaster.Status == http.StatusNotFound && sMaster.Status == http.StatusNotFound && !inFeed &&
-				aCode == http.StatusOK && aState.ReviewStatus != "" && aState.ReviewStatus != "approved" && reason != ""
-			state = fmt.Sprintf("post as B %d, signed out %d; master as B %d, signed out %d; in B's reels feed %v; author %d review_status=%q reason=%q",
-				bPost, sPost, bMaster.Status, sMaster.Status, inFeed, aCode, aState.ReviewStatus, authorReason)
+				av.Status == http.StatusOK && av.ReviewStatus != "" && av.ReviewStatus != "approved" &&
+				strings.TrimSpace(av.Reason) != "" && appealable == "true"
+			state = fmt.Sprintf("post as B %d, signed out %d; master as B %d, signed out %d; in B's reels feed %v; author %d review_status=%q moderation_reason=%q moderation_appealable=%s",
+				bPost, sPost, bMaster.Status, sMaster.Status, inFeed, av.Status, av.ReviewStatus, av.Reason, appealable)
 			if takedown || time.Now().After(deadline) {
 				break
 			}
@@ -238,44 +242,31 @@ func TestE2E_Video_Reels_ReportTakedown(t *testing.T) {
 	})
 }
 
-// authorView is the author's read of their own post: the status, the state
-// and the first non-empty field whose name says it carries the reason for a
-// moderation decision (the contract for that field is the fix's to pin).
-func authorView(ctx context.Context, author *HTTPClient, postID string) (int, postState, string) {
-	env, err := author.Do(ctx, "GET", "/v1/posts/"+postID, nil)
-	if err != nil {
-		return 0, postState{}, ""
-	}
-	var p postState
-	var fields map[string]any
-	if env.Status == http.StatusOK {
-		_ = json.Unmarshal(env.Data, &p)
-		_ = json.Unmarshal(env.Data, &fields)
-	}
-	return env.Status, p, findReason(fields)
+// authorPostView is the author's read of their own post. moderation_reason
+// and moderation_appealable are the author-only fields post-service gives a
+// rejected post (reels-29): the moderator's reason, and whether POST
+// /v1/appeals will take it. Appealable is nil when the field is absent.
+type authorPostView struct {
+	Status       int
+	ReviewStatus string
+	Reason       string
+	Appealable   *bool
 }
 
-// findReason walks a decoded JSON object for a non-empty string under a key
-// containing "reason" (moderation_reason, removal_reason, reason, ...).
-func findReason(v any) string {
-	switch x := v.(type) {
-	case map[string]any:
-		for k, val := range x {
-			if s, ok := val.(string); ok && strings.Contains(strings.ToLower(k), "reason") && strings.TrimSpace(s) != "" {
-				return s
-			}
-		}
-		for _, val := range x {
-			if s := findReason(val); s != "" {
-				return s
-			}
-		}
-	case []any:
-		for _, val := range x {
-			if s := findReason(val); s != "" {
-				return s
-			}
-		}
+func authorView(ctx context.Context, author *HTTPClient, postID string) authorPostView {
+	env, err := author.Do(ctx, "GET", "/v1/posts/"+postID, nil)
+	if err != nil {
+		return authorPostView{}
 	}
-	return ""
+	out := authorPostView{Status: env.Status}
+	if env.Status == http.StatusOK {
+		var p struct {
+			ReviewStatus string `json:"review_status"`
+			Reason       string `json:"moderation_reason"`
+			Appealable   *bool  `json:"moderation_appealable"`
+		}
+		_ = json.Unmarshal(env.Data, &p)
+		out.ReviewStatus, out.Reason, out.Appealable = p.ReviewStatus, p.Reason, p.Appealable
+	}
+	return out
 }
