@@ -69,6 +69,53 @@ spec:
             summary: {{ printf "%s: fewer ready pods than wanted for 15 minutes" $name | quote }}
             description: "At least one pod is not ready (failing /readyz, pending, or stuck in a rollout). kubectl -n {{ $ns }} get pods -l app.kubernetes.io/name={{ $name }}"
         {{- end }}
+        {{- if .Values.worker.enabled }}
+        {{- /*
+          reels-5: the rules above match the SERVER container and Deployment
+          only; the worker's container is <service>-worker and its
+          Deployments <service>-worker[-<class>]. Same signals for it, routed
+          the same way (source=atpost-service → ops-email).
+        */}}
+        {{- $wc := printf "%s-worker" $name }}
+        {{- $wd := printf "%s-worker|%s-worker-.+" $name $name }}
+        {{- if $d.pods.enabled }}
+        - alert: WorkerPodCrashLooping
+          expr: max by (namespace, pod) (kube_pod_container_status_waiting_reason{namespace={{ $ns | quote }}, container={{ $wc | quote }}, reason="CrashLoopBackOff"}) > 0
+          for: 5m
+          labels: { severity: critical, source: atpost-service, service: {{ $name | quote }}, component: worker }
+          annotations:
+            summary: {{ printf "%s: a worker pod is in CrashLoopBackOff" $name | quote }}
+            description: "The worker exits right after it starts; nothing is being processed by that pod. kubectl -n {{ $ns }} logs <pod> --previous. Runbook: docs/runbooks/service-rollback.md"
+        - alert: WorkerPodRestarting
+          expr: sum by (namespace, pod) (increase(kube_pod_container_status_restarts_total{namespace={{ $ns | quote }}, container={{ $wc | quote }}}[30m])) > {{ $d.pods.restartsPer30m }}
+          for: 0m
+          labels: { severity: warning, source: atpost-service, service: {{ $name | quote }}, component: worker }
+          annotations:
+            summary: {{ printf "%s: a worker pod restarted more than %v times in 30 minutes" $name $d.pods.restartsPer30m | quote }}
+            description: "Usually OOMKilled (ffmpeg past the memory limit) or scratch over its sizeLimit (evicted). kubectl -n {{ $ns }} describe pod <pod> shows the last exit reason."
+        {{- end }}
+        {{- if $d.availability.enabled }}
+        - alert: WorkerNoAvailablePod
+          expr: |-
+            (kube_deployment_spec_replicas{namespace={{ $ns | quote }}, deployment=~{{ $wd | quote }}} > 0)
+              and on (namespace, deployment)
+            (kube_deployment_status_replicas_available{namespace={{ $ns | quote }}, deployment=~{{ $wd | quote }}} == 0)
+          for: 15m
+          labels: { severity: critical, source: atpost-service, service: {{ $name | quote }}, component: worker }
+          annotations:
+            summary: {{ printf "%s: a worker Deployment has no running pod" $name | quote }}
+            description: "Nothing consumes that worker's queue (Pending: no node fits the requests; ImagePullBackOff; crash loop). kubectl -n {{ $ns }} get pods -l app.kubernetes.io/name={{ $name }},app.kubernetes.io/component=worker"
+        {{- end }}
+        {{- if and $d.target.enabled .Values.worker.metrics.enabled }}
+        - alert: WorkerMetricsTargetDown
+          expr: absent(up{namespace={{ $ns | quote }}, pod=~{{ printf "%s-worker-.+" $name | quote }}} == 1)
+          for: 10m
+          labels: { severity: warning, source: atpost-service, service: {{ $name | quote }}, component: worker }
+          annotations:
+            summary: {{ printf "%s: Prometheus cannot scrape any worker's /metrics" $name | quote }}
+            description: "While this fires every worker queue and failure alert is blind. Check the PodMonitor {{ $name }}-worker in the Prometheus UI (Status, Targets)."
+        {{- end }}
+        {{- end }}
         {{- if and $d.target.enabled .Values.serviceMonitor.enabled }}
         - alert: ServiceMetricsTargetDown
           expr: absent(up{namespace={{ $ns | quote }}, job={{ $name | quote }}} == 1)

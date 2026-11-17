@@ -165,3 +165,38 @@ Usage: {{- include "atpost-service.alertRule" (dict "rule" . "name" $name) | nin
 {{- $_ := set $rule "labels" $labels -}}
 {{- toYaml (list $rule) -}}
 {{- end }}
+
+{{/*
+The worker Deployments (worker-deployment.yaml, worker-pdb.yaml,
+worker-podmonitor.yaml, prometheusrule.yaml): a YAML list of
+{class, fullname}. worker.variants empty → one entry, class "" and the
+historical name <service>-worker; otherwise one entry per key, sorted,
+named <service>-worker-<key>. Only strings, so the fromYamlArray round trip
+cannot change a number; each template deep-merges the class entry over
+worker itself (mergeOverwrite of deepCopies, so .Values is never mutated).
+*/}}
+{{- define "atpost-service.workerList" -}}
+{{- $name := include "atpost-service.name" . -}}
+{{- if .Values.worker.variants }}
+{{- range $k := keys .Values.worker.variants | sortAlpha }}
+- class: {{ $k | quote }}
+  fullname: {{ printf "%s-worker-%s" $name $k | quote }}
+{{- end }}
+{{- else }}
+- class: ""
+  fullname: {{ printf "%s-worker" $name | quote }}
+{{- end }}
+{{- end }}
+
+{{/*
+Selector labels of one worker class's pods: the service selector labels,
+component=worker, and atpost.io/worker-class when the class is named.
+Usage: include "atpost-service.workerSelectorLabels" (dict "root" $ "class" $class)
+*/}}
+{{- define "atpost-service.workerSelectorLabels" -}}
+{{ include "atpost-service.selectorLabels" .root }}
+app.kubernetes.io/component: worker
+{{- if .class }}
+atpost.io/worker-class: {{ .class }}
+{{- end }}
+{{- end }}

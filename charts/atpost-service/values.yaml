@@ -242,12 +242,37 @@ worker:
   # Bounded scratch for ffmpeg intermediates. Mounted at /tmp; the root
   # filesystem is read-only.
   scratchSizeLimit: 20Gi
-  # Long enough for an in-flight transcode to finish and commit its offset
-  # rather than being killed mid-job and redelivered.
+  # How long the kubelet waits after SIGTERM before SIGKILL. It only buys
+  # anything once the worker drains on SIGTERM (stops fetching, lets the
+  # current step finish; reels-56 / lv-5). Until then the worker cancels its
+  # jobs at once and the job is redelivered.
   terminationGracePeriodSeconds: 300
   livenessProbe: {}
   nodeSelector: {}
   tolerations: []
+  # Prometheus scrape of the worker's own /metrics (reels-5). OFF by default
+  # (render regression: dating-service's worker serves no metrics). When on,
+  # the container declares the port as `metrics` and a PodMonitor scrapes
+  # every worker pod; the chart's PrometheusRule also gets a target-down rule.
+  metrics:
+    enabled: false
+    port: 9091
+    path: /metrics
+    interval: 30s
+  # PodDisruptionBudget for the worker pods ONLY (lv-5). The server PDB above
+  # excludes worker pods whenever worker.enabled, so the two never share a
+  # budget. One PDB per worker Deployment. OFF by default.
+  pdb:
+    enabled: false
+    maxUnavailable: 1
+  # Worker classes: one Deployment per entry, named <service>-worker-<key>,
+  # each the worker block above deep-merged with the entry (env, resources,
+  # nodeSelector, podAnnotations ... override per class; lists replace).
+  # Each Deployment's selector carries atpost.io/worker-class: <key>, so two
+  # classes never select each other's pods. EMPTY (the default) renders the
+  # single <service>-worker Deployment exactly as before.
+  # Example (media-service): short: { env: { MEDIA_TRANSCODE_CLASSES: short } }
+  variants: {}
 
 # Cross-service schema ordering (release-gate finding, Module 7 verification).
 #

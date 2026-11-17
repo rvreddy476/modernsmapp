@@ -14,4 +14,12 @@ spec:
   selector:
     matchLabels:
       {{- include "atpost-service.selectorLabels" . | nindent 6 }}
+    {{- if .Values.worker.enabled }}
+    # Worker pods carry the same selector labels; without this the server's
+    # budget counted them (lv-5). They have their own (worker-pdb.yaml).
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: NotIn
+        values: [worker]
+    {{- end }}
 {{- end }}

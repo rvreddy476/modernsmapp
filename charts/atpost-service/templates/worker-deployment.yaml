@@ -23,28 +23,46 @@ images: the server image has no ffmpeg and does not contain the worker binary.
 NO SERVICE, NO INGRESS, NO HPA BY DEFAULT
 
 The worker takes no inbound traffic. Giving it a Service would publish an
-endpoint nothing should call.
+endpoint nothing should call. Its /metrics port (worker.metrics) is scraped
+through a PodMonitor, not a Service.
+
+CLASSES (worker.variants, lv-4 / reels-4)
+
+With worker.variants empty this renders ONE Deployment, <service>-worker, as
+it always did. With entries it renders one Deployment per entry,
+<service>-worker-<key>, from the same image: the worker block deep-merged with
+the entry. media-service runs a short (reels) class and a long class this way,
+each consuming only its own topic (MEDIA_TRANSCODE_CLASSES), so a reel never
+shares CPU, scratch or a rollout with a multi-hour transcode.
 */}}
+{{- range $w := include "atpost-service.workerList" . | fromYamlArray }}
+{{- $v := $.Values.worker }}
+{{- if $w.class }}
+{{- $v = mergeOverwrite (deepCopy $.Values.worker) (deepCopy (index $.Values.worker.variants $w.class)) }}
+{{- end }}
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  {{- /* Distinct name so the two Deployments cannot collide. */}}
-  name: {{ include "atpost-service.name" . }}-worker
+  {{- /* Distinct name so the Deployments cannot collide. */}}
+  name: {{ $w.fullname }}
   labels:
-    {{- include "atpost-service.labels" . | nindent 4 }}
+    {{- include "atpost-service.labels" $ | nindent 4 }}
     app.kubernetes.io/component: worker
+    {{- if $w.class }}
+    atpost.io/worker-class: {{ $w.class }}
+    {{- end }}
 spec:
-  replicas: {{ .Values.worker.replicaCount }}
+  replicas: {{ $v.replicaCount }}
   selector:
     matchLabels:
-      {{- include "atpost-service.selectorLabels" . | nindent 6 }}
+      {{- include "atpost-service.workerSelectorLabels" (dict "root" $ "class" $w.class) | nindent 6 }}
       {{- /*
         The component label is part of the SELECTOR, not just metadata. Without
         it both Deployments would select the same pods and each would try to
         scale the other's replicas to its own count — a fight that looks like
-        random pod churn.
+        random pod churn. The class label does the same between worker classes.
       */}}
-      app.kubernetes.io/component: worker
   strategy:
     {{- /*
       Recreate, not RollingUpdate. During a rolling update two generations of
@@ -56,16 +74,15 @@ spec:
   template:
     metadata:
       labels:
-        {{- include "atpost-service.selectorLabels" . | nindent 8 }}
-        app.kubernetes.io/component: worker
+        {{- include "atpost-service.workerSelectorLabels" (dict "root" $ "class" $w.class) | nindent 8 }}
       annotations:
-        {{- with .Values.worker.podAnnotations }}
+        {{- with $v.podAnnotations }}
         {{- toYaml . | nindent 8 }}
         {{- end }}
     spec:
       {{- /* Same ServiceAccount, so the worker gets the SAME IRSA role as the
              service it belongs to and no broader AWS permission than that. */}}
-      serviceAccountName: {{ include "atpost-service.serviceAccountName" . }}
+      serviceAccountName: {{ include "atpost-service.serviceAccountName" $ }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001
@@ -79,15 +96,15 @@ spec:
       volumes:
         - name: scratch
           emptyDir:
-            sizeLimit: {{ .Values.worker.scratchSizeLimit }}
-      terminationGracePeriodSeconds: {{ .Values.worker.terminationGracePeriodSeconds }}
+            sizeLimit: {{ $v.scratchSizeLimit }}
+      terminationGracePeriodSeconds: {{ $v.terminationGracePeriodSeconds }}
       containers:
-        - name: {{ .Values.service.name }}-worker
-          image: "{{ tpl .Values.worker.image.repository . }}:{{ .Values.worker.image.tag }}"
-          imagePullPolicy: {{ .Values.worker.image.pullPolicy }}
+        - name: {{ $.Values.service.name }}-worker
+          image: "{{ tpl $v.image.repository $ }}:{{ $v.image.tag }}"
+          imagePullPolicy: {{ $v.image.pullPolicy }}
           {{- /* Optional: a worker binary shipped inside the server image
                  (dating-service's data-exporter). Unset renders nothing. */}}
-          {{- with .Values.worker.command }}
+          {{- with $v.command }}
           command:
             {{- toYaml . | nindent 12 }}
           {{- end }}
@@ -96,40 +113,51 @@ spec:
             readOnlyRootFilesystem: true
             capabilities:
               drop: ["ALL"]
+          {{- if $v.metrics.enabled }}
+          ports:
+            - name: metrics
+              containerPort: {{ $v.metrics.port }}
+              protocol: TCP
+          {{- end }}
           volumeMounts:
             - name: scratch
               mountPath: /tmp
           env:
             - name: TMPDIR
               value: /tmp
-            {{- include "atpost-service.commonAndServiceEnv" . | nindent 12 }}
-            {{- range $k, $v := .Values.worker.env }}
+            {{- include "atpost-service.commonAndServiceEnv" $ | nindent 12 }}
+            {{- if $v.metrics.enabled }}
+            - name: METRICS_PORT
+              value: {{ $v.metrics.port | quote }}
+            {{- end }}
+            {{- range $k, $v := $v.env }}
             - name: {{ $k }}
               value: {{ $v | quote }}
             {{- end }}
-          {{- $ef := include "atpost-service.envFrom" . }}
+          {{- $ef := include "atpost-service.envFrom" $ }}
           {{- if $ef }}
           envFrom:
             {{- $ef | nindent 12 }}
           {{- end }}
           resources:
-            {{- toYaml .Values.worker.resources | nindent 12 }}
+            {{- toYaml $v.resources | nindent 12 }}
           {{- /*
             No readiness probe: the worker serves nothing, so readiness has no
             meaning and a probe would only add a way to be marked unready while
             working correctly. Liveness is opt-in because a naive one restarts
             a pod mid-transcode and guarantees the job never finishes.
           */}}
-          {{- with .Values.worker.livenessProbe }}
+          {{- with $v.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-      {{- with .Values.worker.nodeSelector }}
+      {{- with $v.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
       {{- end }}
-      {{- with .Values.worker.tolerations }}
+      {{- with $v.tolerations }}
       tolerations:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+{{- end }}
 {{- end }}

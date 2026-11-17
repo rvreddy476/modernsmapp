@@ -1,0 +1,25 @@
+{{- if and .Values.worker.enabled .Values.worker.pdb.enabled }}
+{{/*
+lv-5 — a PodDisruptionBudget per worker Deployment, separate from the server's
+(pdb.yaml excludes worker pods whenever worker.enabled). maxUnavailable, not
+minAvailable: a voluntary eviction (node drain, managed node group upgrade)
+takes at most this many pods of one class at a time and never blocks a drain
+outright. Karpenter consolidation of a busy worker is stopped by the
+karpenter.sh/do-not-disrupt pod annotation (worker.podAnnotations), not here.
+*/}}
+{{- range $w := include "atpost-service.workerList" . | fromYamlArray }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $w.fullname }}
+  labels:
+    {{- include "atpost-service.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: worker
+spec:
+  maxUnavailable: {{ $.Values.worker.pdb.maxUnavailable }}
+  selector:
+    matchLabels:
+      {{- include "atpost-service.workerSelectorLabels" (dict "root" $ "class" $w.class) | nindent 6 }}
+{{- end }}
+{{- end }}

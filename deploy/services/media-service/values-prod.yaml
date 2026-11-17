@@ -107,6 +107,15 @@ env:
   MEDIA_SCANNER_ENABLED: "true"
   MEDIA_SCANNER_ALLOW_STUB: "false"
   MEDIA_SCANNER_BACKEND: rekognition
+  # Largest original accepted (reels-35, reels-62, lv-13; 2026-11-17): the
+  # server refuses a larger video at upload init (413 VIDEO_TOO_LARGE) and
+  # the worker before downloading one. 16 GiB, set EXPLICITLY: it is the
+  # code default prod already admitted, so no upload that works today starts
+  # failing ("long videos unlimited", founder 21 Oct); any lower cap is a
+  # product decision. The worker needs about 3x the original free, so each
+  # class's scratch (worker.variants below) is sized for 48 GiB or more. Same
+  # value in QA, which the chart's QA guard requires.
+  MEDIA_WORKER_MAX_ORIGINAL_BYTES: "17179869184"
   # Lane D5: dating / Mopedu selfie liveness + face compare on the same IRSA
   # Rekognition client (DetectFaces + CompareFaces, or every compare is 503).
   MEDIA_FACE_COMPARE_ENABLED: "true"
@@ -150,27 +159,188 @@ pdb:
 # Module 4 M4-P0-3 — the transcode worker. A DIFFERENT image (ffmpeg + the
 # worker binary); the server image carries neither. Same env + secret as
 # the server, so S3/IRSA, Kafka SASL and the scanner apply unchanged.
+#
+# Two classes from the same image (lv-4, reels-4; 2026-11-17), one
+# Deployment each (worker.variants): media-service-worker-short consumes only
+# media.events (group media-transcode-worker) and forwards videos over 10 min
+# (or of unknown length) to media.events.long; media-service-worker-long
+# consumes only media.events.long (group media-transcode-worker-long). A reel
+# never shares CPU, scratch or a rollout with a multi-hour transcode. If
+# media.events.long does not exist yet (MSK topics job) the forward fails and
+# the short worker transcodes the long video itself, as before; nothing is
+# lost. Replaces the single media-service-worker Deployment: prune it.
 worker:
   enabled: true
-  replicaCount: 2
+  replicaCount: 2 # each class sets its own below
   image:
     repository: '{{ required "global.awsAccountId is required" .Values.global.awsAccountId }}.dkr.ecr.ap-south-1.amazonaws.com/atpost/media-worker'
     tag: "" # set by CI (commit sha, scripts/ci/bump-service-tags.sh); empty refuses to render
-  resources:
-    requests:
-      cpu: "1"
-      memory: 1Gi
-    limits:
-      cpu: "3"
-      memory: 4Gi
-  scratchSizeLimit: 50Gi
-  # Transcode classes (2026-11-07). Every request lands on media.events; the
-  # short loop forwards videos over 10 min (or of unknown length) to
-  # media.events.long, which the long loop consumes (group
-  # media-transcode-worker-long). Each replica runs BOTH loops, so a reel
-  # never waits behind a long video. A dedicated long-video Deployment
-  # (MEDIA_TRANSCODE_CLASSES=long, 1 replica, with these at "short") needs
-  # the chart to render a second worker; charts/atpost-service renders one.
-  # The topic must exist first: init-topics.sh / the MSK topics job.
-  env:
-    MEDIA_TRANSCODE_CLASSES: "short,long"
+  # lv-5: Karpenter never consolidates, drifts or expires a node under a
+  # worker pod, so a running transcode is not stopped by node housekeeping.
+  # (Static: the node stays while the pod runs, busy or idle; a worker
+  # rollout or scale-down still frees it.) Spot reclaim ignores it, which is
+  # why the long class runs on on-demand capacity only.
+  podAnnotations:
+    karpenter.sh/do-not-disrupt: "true"
+  # Karpenter nodes only: their root volume is 100Gi (modules/karpenter
+  # EC2NodeClass), which the scratch below needs; the managed groups' disk
+  # is not provably that size (reels-35), and Karpenter is what the
+  # annotation above governs.
+  nodeSelector:
+    workload: general
+    provisioner: karpenter
+  # reels-5: the worker's /metrics on :9091, scraped by a PodMonitor.
+  metrics:
+    enabled: true
+  # lv-5: a budget of its own per class (the server PDB above no longer
+  # counts worker pods): a drain takes one worker of a class at a time.
+  pdb:
+    enabled: true
+    maxUnavailable: 1
+  variants:
+    # Reels and videos up to 10 min. 6 replicas = the 6 partitions of
+    # media.events (reels-4 fix a): more would sit idle, fewer leaves
+    # partitions queued behind one sequential loop. Autoscaling on lag needs
+    # KEDA or a Kafka lag exporter, neither installed (follow-up).
+    short:
+      replicaCount: 6
+      env:
+        MEDIA_TRANSCODE_CLASSES: short
+      resources:
+        requests:
+          cpu: "2"
+          memory: 2Gi
+          # Scheduler-visible share of the node disk for the scratch below,
+          # so pods cannot be packed onto a node whose disk they would fill.
+          ephemeral-storage: 20Gi
+        limits:
+          cpu: "3"
+          memory: 4Gi
+      # 3x a 16 GiB original (MEDIA_WORKER_MAX_ORIGINAL_BYTES) is 48 GiB: the
+      # worst case, a long video the short loop keeps because the forward
+      # failed. A reel (10 min max) needs far less.
+      scratchSizeLimit: 50Gi
+      # Covers the longest step of a 10-minute reel once the worker drains
+      # on SIGTERM (reels-56). Spot reclaim gives 2 minutes regardless.
+      terminationGracePeriodSeconds: 600
+    # Long videos. 2 replicas: two concurrent long transcodes, as today, now
+    # without reels in the same pod. Each holds a lane for hours, so this is
+    # the number to raise first when MediaTranscodeLongQueueWaiting fires
+    # (up to the 6 partitions of media.events.long).
+    long:
+      replicaCount: 2
+      env:
+        MEDIA_TRANSCODE_CLASSES: long
+      resources:
+        requests:
+          cpu: "3"
+          memory: 6Gi
+          # 60Gi: no two long workers on one 100Gi node.
+          ephemeral-storage: 60Gi
+        limits:
+          cpu: "4"
+          memory: 8Gi
+      # lv-13: a 16 GiB original plus every MP4 rung and the HLS copies of a
+      # 4 h video is estimated at ~78 GiB (unmeasured, load test L5); 80Gi is
+      # the most a 100Gi node root holds with the OS, images and the
+      # kubelet's 10% eviction reserve. A bigger long video needs a larger
+      # node volume (follow-up), not a bigger number here.
+      scratchSizeLimit: 80Gi
+      # One hour for the rung in progress to finish once the worker drains
+      # on SIGTERM (reels-56); a rollout waits at most that long. A 1080p
+      # rung of a multi-hour video takes longer, so until rungs already
+      # uploaded are reused (lv-5, M) a rollout during a long job still
+      # costs that job's work: check for in-flight long jobs first.
+      terminationGracePeriodSeconds: 3600
+      nodeSelector:
+        karpenter.sh/capacity-type: on-demand
+
+# Transcode pipeline alerts (reels-5, lv-21; 2026-11-17). SAME LIST in
+# values-qa.yaml. The chart adds source=atpost-service and service=
+# media-service, so the Alertmanager route (infra/terraform/modules/
+# observability/alerting.tf) sends every one to the ops-email receiver (the
+# ops SNS topic's e-mail): critical repeats every 2 h, warning every 24 h.
+# Worker crash loop, no running worker and worker scrape down are chart
+# defaults (WorkerPodCrashLooping, WorkerNoAvailablePod,
+# WorkerMetricsTargetDown). Metrics come from the worker's :9091 through the
+# PodMonitor (worker.metrics). Those marked NEEDS are not exported yet: the
+# rule is silent (never wrong) until the worker exports the agreed name.
+prometheusRule:
+  enabled: true
+  rules:
+    # A video waited to START. media_transcode_queue_oldest_waiting_seconds
+    # (cmd/worker/readiness_metrics.go). Until the worker labels it by class
+    # it is one platform-wide series with no class label: this rule reads
+    # only that unlabelled series and goes quiet by itself once the class
+    # label lands, when the two rules below take over.
+    - alert: MediaTranscodeQueueWaiting
+      expr: max(media_transcode_queue_oldest_waiting_seconds{class=""}) > 1800
+      for: 10m
+      labels: { severity: warning }
+      annotations:
+        summary: A video has waited more than 30 minutes for a transcode worker to start it
+        description: "Workers are saturated, scaled to zero or not consuming. kubectl -n atpost get pods -l app.kubernetes.io/name=media-service,app.kubernetes.io/component=worker; worker logs."
+    # NEEDS class="short"|"long" on media_transcode_queue_oldest_waiting_seconds.
+    - alert: MediaTranscodeShortQueueWaiting
+      expr: max(media_transcode_queue_oldest_waiting_seconds{class="short"}) > 600
+      for: 10m
+      labels: { severity: critical }
+      annotations:
+        summary: A reel has waited more than 10 minutes for a transcode worker
+        description: "The short (reel) workers are saturated or down; new reels stay in processing. Check media-service-worker-short pods and media_transcode_total."
+    - alert: MediaTranscodeLongQueueWaiting
+      expr: max(media_transcode_queue_oldest_waiting_seconds{class="long"}) > 21600
+      for: 15m
+      labels: { severity: warning }
+      annotations:
+        summary: A long video has waited more than 6 hours for a transcode worker
+        description: "Every long worker is busy with multi-hour jobs or down. Check media-service-worker-long pods; consider more replicas (media.events.long has 6 partitions)."
+    # NEEDS media_transcode_quarantined_total{class,reason} (counter, +1 per
+    # QuarantineTranscode row; reels-5).
+    - alert: MediaTranscodeQuarantined
+      expr: sum(increase(media_transcode_quarantined_total[30m])) > 0
+      for: 0m
+      labels: { severity: warning }
+      annotations:
+        summary: A transcode request was quarantined (media_transcode_quarantine)
+        description: "A message failed permanently or past its retries and was set aside; its asset may stay in processing. SELECT * FROM media_transcode_quarantine ORDER BY 1 DESC LIMIT 20 on the media database."
+    # media_transcode_stall_reclaims_total{action} (cmd/worker/transcode_lease.go).
+    - alert: MediaTranscodeStallGaveUp
+      expr: sum(increase(media_transcode_stall_reclaims_total{action="give_up"}[1h])) > 0
+      for: 0m
+      labels: { severity: warning }
+      annotations:
+        summary: The stall sweeper gave up on a stalled transcode
+        description: "A video stalled more times than the sweeper retries and was marked failed. Worker logs around the time; look for OOMKilled or evicted worker pods."
+    # media_transcode_routed_total{class,outcome} (cmd/worker/transcode_classes.go):
+    # a long video the short loop could not forward runs in the reel loop.
+    - alert: MediaTranscodeLongForwardFailed
+      expr: sum(increase(media_transcode_routed_total{outcome="forward_failed"}[15m])) > 0
+      for: 0m
+      labels: { severity: warning }
+      annotations:
+        summary: A long video could not be forwarded to media.events.long and is transcoding in the reel queue
+        description: "Usually the media.events.long topic is missing (MSK topics job) or Kafka refused the write. Reels queue behind it until fixed."
+    # media_transcode_total{result} (cmd/worker/main.go).
+    - alert: MediaTranscodeFailureRatioHigh
+      expr: |-
+        sum(rate(media_transcode_total{result="failure"}[30m]))
+          / clamp_min(sum(rate(media_transcode_total[30m])), 1e-9) > 0.2
+        and sum(increase(media_transcode_total[30m])) >= 5
+      for: 15m
+      labels: { severity: warning }
+      annotations:
+        summary: More than 20% of transcodes fail
+        description: "Scanner (Rekognition) outage, S3 errors or bad inputs. Worker logs; sum by (result) (rate(media_transcode_total[30m]))."
+    # media.events dead letters: post-service's consumer of media.events
+    # writes media.events.dlq (internal/consumers/media.go) and counts it in
+    # atpost_post_service_kafka_dlq_messages_total (shared/o11y/metrics/kafka.go).
+    # A count of messages dead-lettered, not a depth: no Kafka lag or depth
+    # exporter runs in the cluster.
+    - alert: MediaEventsDeadLettered
+      expr: sum(increase(atpost_post_service_kafka_dlq_messages_total{consumer_group="post-service-media-transcode"}[30m])) > 0
+      for: 0m
+      labels: { severity: warning }
+      annotations:
+        summary: post-service dead-lettered a media.events message (media.events.dlq)
+        description: "A transcode result did not reach its post; the post may show processing for good. post-service logs for the media consumer; the message is on media.events.dlq."

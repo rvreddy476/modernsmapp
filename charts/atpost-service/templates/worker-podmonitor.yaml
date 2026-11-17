@@ -1,0 +1,28 @@
+{{- if and .Values.worker.enabled .Values.worker.metrics.enabled }}
+{{/*
+reels-5 — the worker serves /metrics on its own port (media-service
+cmd/worker/main.go startMetricsServer, METRICS_PORT, default 9091) and has no
+Service, so the server's ServiceMonitor never saw it. One PodMonitor selects
+every worker pod of this service (all classes) by component=worker. The
+observability module's Prometheus selects every PodMonitor in the cluster
+(podMonitorSelectorNilUsesHelmValues = false); the release label matches the
+ServiceMonitor's for a stack that does filter.
+*/}}
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: {{ include "atpost-service.name" . }}-worker
+  labels:
+    {{- include "atpost-service.labels" . | nindent 4 }}
+    app.kubernetes.io/component: worker
+    release: prometheus
+spec:
+  selector:
+    matchLabels:
+      {{- include "atpost-service.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: worker
+  podMetricsEndpoints:
+    - port: metrics
+      path: {{ .Values.worker.metrics.path }}
+      interval: {{ .Values.worker.metrics.interval }}
+{{- end }}
