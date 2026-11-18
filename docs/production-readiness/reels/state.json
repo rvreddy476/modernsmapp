@@ -96,5 +96,33 @@
       "voiceover route: no size cap, unhardened ffmpeg",
       "swipe and report-moderation journeys never executed"
     ]
+  },
+  "reaudit_2": {
+    "date": "2026-11-18",
+    "head": "b10cc0b4b",
+    "verdict": "GO WITH CONDITIONS",
+    "lines_1_to_8_failing": [],
+    "unverified": [
+      "1",
+      "4",
+      "5",
+      "9",
+      "10",
+      "11"
+    ],
+    "passing_now": [
+      "3",
+      "6"
+    ],
+    "counts": {
+      "fixed": 6,
+      "partly_fixed": 8,
+      "open": 1
+    },
+    "open": [
+      "reels-27"
+    ],
+    "file": "../reaudit-2026-11-18.md",
+    "note": "Line 6 becomes FAIL if erasure must purge noncurrent object versions (founder decision)."
   }
 }

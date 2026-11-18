@@ -126,5 +126,31 @@
       "lv-28 cover-frame thumbnail_url unchecked",
       "nine stranger tests missing (line 3)"
     ]
+  },
+  "reaudit_2": {
+    "date": "2026-11-18",
+    "head": "b10cc0b4b",
+    "verdict": "GO WITH CONDITIONS",
+    "lines_1_to_8_failing": [],
+    "unverified": [
+      "1",
+      "4",
+      "5",
+      "9",
+      "11"
+    ],
+    "failing_outside_1_to_8": [
+      "10"
+    ],
+    "counts": {
+      "fixed": 9,
+      "partly_fixed": 6,
+      "open": 2
+    },
+    "open": [
+      "lv-32",
+      "lv-34"
+    ],
+    "file": "../reaudit-2026-11-18.md"
   }
 }
