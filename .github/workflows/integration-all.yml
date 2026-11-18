@@ -167,6 +167,11 @@ jobs:
       # The money-critical packages run with -v (go_flags in
       # scripts/ci/integration-services.yaml); print each test's result line
       # so a named test can be confirmed from this log, pass or fail.
+      # go.sh's run_stage writes the integration stage to
+      # $VERIFY_LOG_DIR/integration-<module basename>.log (lib.sh).
+      # Silence fails (18 Nov, ci-scans): no log, or no `--- PASS/FAIL/SKIP`
+      # line for the package, fails the job, so a dropped -v, a renamed log
+      # or a stage that never ran cannot pass quietly.
       - name: Money-critical test names
         if: >-
           always() && matrix.blocked == '' &&
@@ -180,17 +185,30 @@ jobs:
             */payments-service) pkg=internal/service ;;
             *) pkg=internal/http ;;
           esac
-          log="$(ls "$VERIFY_LOG_DIR"/integration-*"$(basename "$MODULE")"*.log 2>/dev/null | head -1 || true)"
-          if [ -z "$log" ]; then echo "::warning::no integration log for $MODULE"; exit 0; fi
+          log="$VERIFY_LOG_DIR/integration-$(basename "$MODULE").log"
+          if [ ! -s "$log" ]; then
+            echo "::error title=No integration log::$log is missing or empty; the integration stage of $MODULE did not run."
+            ls -la "$VERIFY_LOG_DIR" || true
+            exit 1
+          fi
           # go test -p 1 -v prints a package's results, then its ok/FAIL line.
+          # Exit 3: the package's ok/FAIL line was found with no test line.
+          rc=0
           awk -v want="/$(basename "$MODULE")/$pkg" '
-            /^[ \t]*--- (PASS|FAIL|SKIP):/ { buf = buf $0 "\n"; next }
+            /^[ \t]*--- (PASS|FAIL|SKIP):/ { buf = buf $0 "\n"; nb++; next }
             /^(ok|FAIL)[ \t]/ && NF >= 2 {
               p = $2
-              if (substr(p, length(p) - length(want) + 1) == want) { printf "%s", buf; print; n++ }
-              buf = ""
+              if (substr(p, length(p) - length(want) + 1) == want) { printf "%s", buf; print; tests += nb }
+              buf = ""; nb = 0
             }
-            END { if (!n) print "no result lines for *" want " (did the stage run?)" }' "$log"
+            END {
+              if (!tests) { print "no --- PASS/FAIL/SKIP lines for *" want; exit 3 }
+              print tests " result lines for *" want
+            }' "$log" || rc=$?
+          if [ "$rc" -ne 0 ]; then
+            echo "::error title=No money-critical test lines::$MODULE $pkg printed no test result lines (is -v still in go_flags in scripts/ci/integration-services.yaml?)."
+            exit 1
+          fi
 
       - name: Keep the logs
         if: failure() && matrix.blocked == ''

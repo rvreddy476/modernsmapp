@@ -20,6 +20,9 @@ on:
       - 'scripts/verify/android.sh'
       - 'scripts/verify/lib.sh'
       - 'scripts/ci/android-placeholder-google-services.sh'
+      - 'scripts/ci/android-deps-lockfile.sh'
+      - 'scripts/ci/android-release-deps.init.gradle'
+      - 'scripts/ci/osv-gate.mjs'
   pull_request:
     paths:
       - 'mobile/android/**'
@@ -27,7 +30,14 @@ on:
       - 'scripts/verify/android.sh'
       - 'scripts/verify/lib.sh'
       - 'scripts/ci/android-placeholder-google-services.sh'
+      - 'scripts/ci/android-deps-lockfile.sh'
+      - 'scripts/ci/android-release-deps.init.gradle'
+      - 'scripts/ci/osv-gate.mjs'
   workflow_dispatch:
+  schedule:
+    # Weekly, Sunday 03:00 UTC: the dependency scan only (new advisories
+    # land without a code change). Runs the copy of this file on main.
+    - cron: '0 3 * * 0'
 
 concurrency:
   group: android-native-${{ github.ref }}
@@ -43,6 +53,7 @@ env:
 jobs:
   build:
     name: Assemble, test and analyse
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 45
 
@@ -180,6 +191,75 @@ jobs:
             mobile/android/**/build/test-results/**
           retention-days: 14
           if-no-files-found: ignore
+
+  # ── Gate line 5: dependency vulnerability scan ──────────────────────
+  # osv-scanner over the release runtime classpaths of every application
+  # module (scripts/ci/android-deps-lockfile.sh writes them as a Gradle
+  # lockfile; the project keeps no lockfiles of its own). FAILS on a HIGH or
+  # CRITICAL finding with a fixed version; everything else only prints
+  # (scripts/ci/osv-gate.mjs). Never needs GOOGLE_SERVICES_JSON: Gradle
+  # configuration gets the placeholder file. To accept a finding, add an
+  # [[IgnoredVulns]] entry (id, ignoreUntil, reason) to an osv-scanner.toml
+  # next to the lockfile and pass it with --config.
+  dependency-scan:
+    name: Dependency scan (osv-scanner)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      OSV_SCANNER_VERSION: 2.7.0
+      OSV_SCANNER_SHA256: 160c6253e2922e9e0a6a9771c5c4c40a4b3c6090b34a3cdd5e80c96cc2e4218b
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
+          packages: 'platform-tools platforms;android-37.0 build-tools;37.0.0'
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: true
+
+      - name: Placeholder google-services.json
+        run: |
+          bash ../../scripts/ci/android-placeholder-google-services.sh app/google-services.json \
+            com.us.android com.us.android.dev com.us.android.staging
+
+      - name: Release dependency list
+        run: bash ../../scripts/ci/android-deps-lockfile.sh "$RUNNER_TEMP/android-release.lockfile"
+
+      - name: Install osv-scanner ${{ env.OSV_SCANNER_VERSION }}
+        run: |
+          set -euo pipefail
+          bin="$RUNNER_TEMP/osv-scanner"
+          curl -sSfL -o "$bin" "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          echo "${OSV_SCANNER_SHA256}  $bin" | sha256sum -c -
+          chmod +x "$bin"
+          "$bin" --version
+
+      - name: Scan (fail on high/critical with a fix)
+        run: |
+          set -euo pipefail
+          rc=0
+          "$RUNNER_TEMP/osv-scanner" scan source \
+            -L "gradle.lockfile:$RUNNER_TEMP/android-release.lockfile" \
+            --format json --output-file "$RUNNER_TEMP/osv.json" || rc=$?
+          # 0 = clean, 1 = findings (the gate decides); anything else is an
+          # error (127) or no packages read (128), which must not pass.
+          if [ "$rc" -gt 1 ]; then
+            echo "::error title=osv-scanner failed::exit $rc"
+            exit 1
+          fi
+          node ../../scripts/ci/osv-gate.mjs "$RUNNER_TEMP/osv.json"
 
   # Reserved. Enabled in Phase 4, when the macrobenchmark module exists and
   # jank / startup numbers become merge gates (parent plan §7).

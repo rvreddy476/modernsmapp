@@ -109,7 +109,9 @@ jobs:
     if: github.event_name != 'pull_request'
     steps:
       - uses: actions/checkout@v4
-      - uses: aquasecurity/trivy-action@master
+      # Pinned to the v0.36.0 commit (was @master, a moving branch of a
+      # third-party action that runs with this job's token).
+      - uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: 'fs'
           scan-ref: '.'
