@@ -118,8 +118,8 @@ func main() {
 	stopCtx, ctx, cancel := drainContexts(sig, drain)
 	defer cancel()
 	precreateWorkerMetrics()
-	log.Printf("SIGTERM drain window: %s (%s=%q, %s=%q)", drain,
-		graceSecondsEnv, os.Getenv(graceSecondsEnv), drainSecondsEnv, os.Getenv(drainSecondsEnv))
+	graceEnv, drainEnv := os.Getenv(graceSecondsEnv), os.Getenv(drainSecondsEnv)
+	log.Printf("SIGTERM drain window: %s (%s=%q, %s=%q)", drain, graceSecondsEnv, graceEnv, drainSecondsEnv, drainEnv) //nolint:gosec // G706: operator env values, %q-quoted so they cannot forge log lines
 
 	// Database
 	poolCfg, err := pgxpool.ParseConfig(pgDSN)

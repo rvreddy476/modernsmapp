@@ -64,15 +64,19 @@ func workerITStore(t *testing.T) (*postgres.MediaAssetStore, *pgxpool.Pool) {
 	return postgres.New(pool), pool
 }
 
-// seedQueuedVideo: a processing video with its request published.
+// seedQueuedVideo: a processing video with its request published. The
+// columns are postgres.seedLeaseAsset's (unexported, so not callable from
+// here): setup.sql makes created_at and updated_at NOT NULL with no default.
 func seedQueuedVideo(t *testing.T, pool *pgxpool.Pool) (uuid.UUID, kafka.Message) {
 	t.Helper()
 	ctx := context.Background()
 	id, uploader := uuid.New(), uuid.New()
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO media_assets (id, uploader_id, file_type, media_subtype, mime_type,
-		    file_size_bytes, storage_bucket, storage_key, processing_status)
-		VALUES ($1, $2, 'video', 'general', 'video/mp4', 100, 'media', $3, 'processing')`,
+		    file_size_bytes, storage_bucket, storage_key, processing_status,
+		    created_at, updated_at)
+		VALUES ($1, $2, 'video', 'general', 'video/mp4', 100, 'media', $3, 'processing',
+		    NOW() - INTERVAL '1 hour', NOW() - INTERVAL '1 hour')`,
 		id, uploader, workerITPrefix+id.String()+"/original"); err != nil {
 		t.Fatalf("seed asset: %v", err)
 	}

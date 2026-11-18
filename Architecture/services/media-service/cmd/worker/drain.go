@@ -74,7 +74,7 @@ func drainWindow(getenv func(string) string) time.Duration {
 		if w := time.Duration(envIntFrom(getenv, drainSecondsEnv, 0)) * time.Second; w < limit {
 			return w
 		}
-		log.Printf("%s=%s is longer than the pod's grace allows; using %s", drainSecondsEnv, v, limit)
+		log.Printf("%s=%q is longer than the pod's grace allows; using %s", drainSecondsEnv, v, limit) //nolint:gosec // G706: operator env value, %q-quoted so it cannot forge log lines
 	}
 	return limit
 }

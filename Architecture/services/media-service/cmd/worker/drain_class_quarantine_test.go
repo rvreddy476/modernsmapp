@@ -279,7 +279,9 @@ func TestTranscodeLockIsTheAssetsNotTheEvents(t *testing.T) {
 	if ran != 2 || len(l.ids) != 2 || l.ids[0] != id || l.ids[1] != id {
 		t.Fatalf("ran=%d locks=%v, want both runs under media %s", ran, l.ids, id)
 	}
-	if postgres.TranscodeMediaLockKey(id) != postgres.TranscodeMediaLockKey(id) ||
+	// The same asset parsed afresh (another delivery's payload) gets the same
+	// key; another asset gets a different one.
+	if postgres.TranscodeMediaLockKey(id) != postgres.TranscodeMediaLockKey(uuid.MustParse(id.String())) ||
 		postgres.TranscodeMediaLockKey(id) == postgres.TranscodeMediaLockKey(uuid.New()) {
 		t.Fatal("lock key is not per asset")
 	}
