@@ -69,6 +69,23 @@ internal fun Project.configureKotlinAndroid(commonExtension: CommonExtension) {
         libs.findLibrary("desugar-jdk-libs").get(),
     )
 
+    // Security floors for transitive libraries that the dependency scan
+    // (.github/workflows/android-native.yml, dependency-scan) flags and whose
+    // direct parents ship no fixed release we can take. A constraint only
+    // raises a version already on the graph; it never adds a library. Set
+    // here so every application module, and every library's tests, resolve
+    // the same version. Versions and advisory ids: libs.versions.toml.
+    listOf(
+        "guava-floor" to "GHSA-xxph-c9ww-hj94 (via androidx.media3)",
+        "protobuf-javalite-floor" to "GHSA-735f-pc8j-v9w8 (via livekit-android)",
+    ).forEach { (alias, reason) ->
+        val lib = libs.findLibrary(alias).get().get()
+        val notation = "${lib.module}:${lib.versionConstraint.requiredVersion}"
+        dependencies.constraints.add("implementation", notation) {
+            because(reason)
+        }
+    }
+
     extensions.configure(KotlinAndroidProjectExtension::class.java) {
         compilerOptions {
             jvmTarget.set(JvmTarget.JVM_17)
