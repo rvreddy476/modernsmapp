@@ -126,6 +126,7 @@ func NewCallConsumerWithDialer(brokers []string, groupID string, topic string, s
 		Dialer:   dialer,
 	})
 	dlq := newKafkaDLQ(brokers, topic, dialer)
+	dlqMessages.WithLabelValues(topic) // at zero, so the first dead letter is seen
 	return &CallConsumer{
 		source:       reader,
 		quarantine:   dlq,
@@ -192,6 +193,7 @@ func (c *CallConsumer) handleUntilDurable(ctx context.Context, m kafka.Message) 
 		if errors.Is(err, errPermanentEvent) {
 			qErr := c.quarantine.Quarantine(ctx, m, err.Error())
 			if qErr == nil {
+				dlqMessages.WithLabelValues(m.Topic).Inc() // lv-21
 				log.Printf("Quarantined permanent poison call message to DLQ (offset %d): %v\n",
 					m.Offset, err)
 				return true

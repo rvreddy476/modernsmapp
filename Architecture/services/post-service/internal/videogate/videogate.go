@@ -152,6 +152,23 @@ var sweepCounter = promauto.NewCounterVec(prometheus.CounterOpts{
 	Help: "Pending video posts the review-gate reconciler looked at, by outcome (approved, rejected, still_pending, already_decided, error).",
 }, []string{"outcome"})
 
+// oldestPendingGauge (lv-21): how long the oldest video post the sweep found
+// still pending has been waiting since it was created, published once per
+// full pass over the pending list (the list is in created_at order, so the
+// first still-pending row of a pass is the oldest). 0 when none is left.
+// Posts younger than MinAge are the consumer's and are not seen. Every
+// replica sweeps the same rows: alert on max.
+var oldestPendingGauge = promauto.NewGauge(prometheus.GaugeOpts{
+	Name: "post_video_gate_oldest_pending_seconds",
+	Help: "Age of the oldest video post still pending its review gate at the end of the last full sweep pass; 0 when none.",
+})
+
+func init() {
+	for _, o := range []string{"approved", "rejected", "still_pending", "already_decided", "error"} {
+		sweepCounter.WithLabelValues(o)
+	}
+}
+
 // Config is read from the environment by ConfigFromEnv.
 type Config struct {
 	Interval time.Duration // VIDEO_GATE_SWEEP_INTERVAL, default 1m
@@ -182,6 +199,9 @@ type Sweeper struct {
 	bust   func(context.Context, uuid.UUID)
 	now    func() time.Time
 	cursor *postgres.PendingVideoCursor
+	// oldest is the created_at of the first row of this pass still pending
+	// after it was judged (zero: none yet); published at the pass's end.
+	oldest time.Time
 }
 
 // NewSweeper builds a sweeper; bust may be nil.
@@ -225,12 +245,21 @@ type Report struct {
 // tick saw and wrapping to the start when the list runs out.
 func (w *Sweeper) Tick(ctx context.Context) Report {
 	var rep Report
+	if w.cursor == nil {
+		w.oldest = time.Time{} // a new pass over the pending list
+	}
 	rows, err := w.store.ListPendingVideoPosts(ctx, w.now().Add(-w.cfg.MinAge), w.cursor, w.cfg.Batch)
 	if err != nil {
 		slog.Error("video gate sweep: list failed", "error", err)
 		sweepCounter.WithLabelValues("error").Inc()
 		return rep
 	}
+	passEnds := len(rows) < w.cfg.Batch
+	defer func() {
+		if passEnds && ctx.Err() == nil {
+			w.publishOldestPending()
+		}
+	}()
 	if len(rows) < w.cfg.Batch {
 		w.cursor = nil // reached the end: the next tick starts over
 	} else {
@@ -246,6 +275,7 @@ func (w *Sweeper) Tick(ctx context.Context) Report {
 		if err != nil {
 			rep.Failed++
 			sweepCounter.WithLabelValues("error").Inc()
+			w.notePending(row.CreatedAt)
 			slog.Error("video gate sweep: apply failed", "post_id", row.PostID, "error", err)
 			continue
 		}
@@ -262,6 +292,7 @@ func (w *Sweeper) Tick(ctx context.Context) Report {
 		default:
 			rep.StillPending++
 			sweepCounter.WithLabelValues("still_pending").Inc()
+			w.notePending(row.CreatedAt)
 		}
 		if out == Approved || out == Rejected {
 			slog.Info("video gate sweep: pending post resolved", "post_id", row.PostID,
@@ -270,4 +301,25 @@ func (w *Sweeper) Tick(ctx context.Context) Report {
 		}
 	}
 	return rep
+}
+
+// notePending records a row left pending; rows come oldest first, so the
+// first one of a pass is the oldest.
+func (w *Sweeper) notePending(createdAt time.Time) {
+	if w.oldest.IsZero() {
+		w.oldest = createdAt
+	}
+}
+
+// publishOldestPending sets the gauge at the end of a pass.
+func (w *Sweeper) publishOldestPending() {
+	if w.oldest.IsZero() {
+		oldestPendingGauge.Set(0)
+		return
+	}
+	age := w.now().Sub(w.oldest).Seconds()
+	if age < 0 {
+		age = 0
+	}
+	oldestPendingGauge.Set(age)
 }

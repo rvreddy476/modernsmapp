@@ -125,7 +125,9 @@ type LikeToggleResult struct {
 func (s *Service) ToggleLike(ctx context.Context, postID, userID uuid.UUID) (*LikeToggleResult, error) {
 	// Audit C5 + H2: one fetch covers visibility, NoLikes flag, and
 	// the author-id used for the PostReacted event below.
-	post, err := s.loadPostForEngagement(ctx, postID, userID)
+	// NEW-3: a like the viewer already holds can be taken off a post they
+	// can no longer open (taken down, gone private); ownOnly marks that case.
+	post, ownOnly, err := s.loadPostForOwnReactionRemoval(ctx, postID, userID)
 	if err != nil {
 		return nil, err
 	}
@@ -149,7 +151,50 @@ func (s *Service) ToggleLike(ctx context.Context, postID, userID uuid.UUID) (*Li
 	if err != nil {
 		return nil, fmt.Errorf("read stored reaction: %w", err)
 	}
+	if ownOnly && stored == "" {
+		// The like went away since the check (another tap): this tap would
+		// LIKE a post the viewer may not see. Answer as the gate does.
+		return nil, ErrPostNotVisible
+	}
 	return s.setLike(ctx, hearts, post, userID, stored == "")
+}
+
+// loadPostForOwnReactionRemoval is loadPostForEngagement for a write that
+// may only take the viewer's OWN reaction off (NEW-3, reaudit 18 Nov). A
+// post the viewer can no longer open (taken down, private, blocked) is
+// still returned when they hold a reaction on it, with ownOnly set, so
+// they can remove it; the caller must then refuse to add one. A viewer
+// with no reaction there gets the gate's answer, so the route says nothing
+// new about a hidden post.
+func (s *Service) loadPostForOwnReactionRemoval(ctx context.Context, postID, viewerID uuid.UUID) (post *postgres.Post, ownOnly bool, err error) {
+	post, err = s.loadPostForEngagement(ctx, postID, viewerID)
+	if !errors.Is(err, ErrPostNotVisible) {
+		return post, false, err
+	}
+	hidden := err
+	hearts := s.hearts()
+	if hearts == nil {
+		return nil, false, hidden
+	}
+	stored, rerr := hearts.GetReaction(ctx, postID, viewerID)
+	if rerr != nil {
+		return nil, false, fmt.Errorf("read stored reaction: %w", rerr)
+	}
+	if stored == "" {
+		return nil, false, hidden
+	}
+	store := s.listReads()
+	if store == nil {
+		return nil, false, ErrAuthoringStoreUnavailable
+	}
+	p, gerr := store.GetPost(ctx, postID)
+	if gerr != nil {
+		return nil, false, gerr
+	}
+	if p == nil {
+		return nil, false, ErrPostNotFound
+	}
+	return p, true, nil
 }
 
 // setLike puts the viewer's like on a post into the wanted state and answers
@@ -290,7 +335,7 @@ func (s *Service) removeLike(ctx context.Context, postID, userID uuid.UUID) erro
 	if stored == "" {
 		return nil
 	}
-	post, err := s.loadPostForEngagement(ctx, postID, userID)
+	post, _, err := s.loadPostForOwnReactionRemoval(ctx, postID, userID) // NEW-3
 	if err != nil {
 		return err
 	}

@@ -21,9 +21,13 @@ RUN go build -mod=vendor -o /server ./services/post-service/cmd/server/main.go
 # The media claim reconcile tool (cmd/media-claims): run in the pod with
 # `kubectl exec deploy/post-service -- /media-claims` (dry run) or `-apply`.
 RUN go build -mod=vendor -o /media-claims ./services/post-service/cmd/media-claims
+# The dead-letter replay tool (cmd/dlq-replay, docs/runbooks/dlq-replay.md):
+# `kubectl exec deploy/post-service -- /dlq-replay -dlq media.events.dlq`.
+RUN go build -mod=vendor -o /dlq-replay ./services/post-service/cmd/dlq-replay
 
 FROM alpine:3.19
 WORKDIR /
 COPY --from=builder /server /server
 COPY --from=builder /media-claims /media-claims
+COPY --from=builder /dlq-replay /dlq-replay
 CMD ["/server"]

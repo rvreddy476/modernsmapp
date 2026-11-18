@@ -52,30 +52,53 @@ type outboxRelayStore interface {
 func relayOutboxPass(ctx context.Context, store outboxRelayStore, publish func(context.Context, kafka.Message) error) error {
 	release, ok, err := store.TryOutboxRelayLock(ctx)
 	if err != nil {
+		outboxRelayErrors.WithLabelValues("lock").Inc()
 		return fmt.Errorf("outbox relay lock: %w", err)
 	}
 	if !ok {
-		return nil // another replica's pass is running
+		outboxOldestUnpublished.Set(0) // the holder reports the age
+		return nil                     // another replica's pass is running
 	}
 	defer release()
 
 	outboxEvents, err := store.GetUnpublishedOutboxEvents(ctx, 100)
 	if err != nil {
+		outboxRelayErrors.WithLabelValues("list").Inc()
 		return err
 	}
+
+	// lv-21: the oldest row this pass leaves unpublished (rows come oldest
+	// first); a row that cannot be built is counted, not aged.
+	var oldestLeft time.Time
+	leave := func(evt postgres.OutboxEvent, result string) {
+		outboxRelayRows.WithLabelValues(result).Inc()
+		if oldestLeft.IsZero() || evt.CreatedAt.Before(oldestLeft) {
+			oldestLeft = evt.CreatedAt
+		}
+	}
+	defer func() {
+		if oldestLeft.IsZero() {
+			outboxOldestUnpublished.Set(0)
+			return
+		}
+		outboxOldestUnpublished.Set(max(time.Since(oldestLeft).Seconds(), 0))
+	}()
 
 	held := map[uuid.UUID]bool{} // aggregates with an earlier row still unsettled
 	for _, evt := range outboxEvents {
 		if held[evt.AggregateID] {
+			leave(evt, outboxHeld)
 			continue
 		}
 		msg, err := postEvents.OutboxMessage(ctx, evt.ID, evt.EventType, evt.AggregateID, evt.Payload)
 		if err != nil {
+			outboxRelayRows.WithLabelValues(outboxBuildFailed).Inc()
 			slog.Error("outbox: failed to build event",
 				"event_id", evt.ID, "event_type", evt.EventType, "error", err)
 			continue
 		}
 		if err := publish(ctx, msg); err != nil {
+			leave(evt, outboxPublishFailed)
 			slog.Error("outbox: failed to publish event",
 				"event_id", evt.ID, "event_type", evt.EventType, "error", err)
 			held[evt.AggregateID] = true // not published
@@ -83,10 +106,13 @@ func relayOutboxPass(ctx context.Context, store outboxRelayStore, publish func(c
 		}
 
 		if err := store.MarkOutboxEventPublished(ctx, evt.ID); err != nil {
+			leave(evt, outboxMarkFailed)
 			slog.Error("outbox: failed to mark event published",
 				"event_id", evt.ID, "error", err)
 			held[evt.AggregateID] = true // published, not marked
+			continue
 		}
+		outboxRelayRows.WithLabelValues(outboxPublished).Inc()
 	}
 
 	return nil

@@ -206,7 +206,7 @@ func (f *SubscriberFanout) Enqueue(ctx context.Context, p EnqueueParams) error {
 	if f == nil || f.pg == nil {
 		return nil
 	}
-	return f.pg.EnqueueFanoutJob(ctx, &postgres.FanoutJob{
+	err := f.pg.EnqueueFanoutJob(ctx, &postgres.FanoutJob{
 		PostID:        p.PostID,
 		ChannelID:     p.ChannelID,
 		AuthorID:      p.AuthorID,
@@ -219,6 +219,12 @@ func (f *SubscriberFanout) Enqueue(ctx context.Context, p EnqueueParams) error {
 		ChannelName:   p.ChannelName,
 		Phase:         p.Phase,
 	})
+	result := "ok"
+	if err != nil {
+		result = "error"
+	}
+	fanoutJobsEnqueued.WithLabelValues(fanoutKind(p.NotifType), result).Inc()
+	return err
 }
 
 // ResolveChannel returns the author's canonical channel id, or uuid.Nil
@@ -248,9 +254,13 @@ func (f *SubscriberFanout) StartWorker(ctx context.Context) {
 		slog.Info("fanout: worker not started (missing dependencies)")
 		return
 	}
+	precreateFanoutMetrics()
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
 		defer ticker.Stop()
+		gauges := time.NewTicker(fanoutGaugeEvery)
+		defer gauges.Stop()
+		f.sampleFanoutQueue(ctx)
 		cleanup := time.NewTicker(6 * time.Hour)
 		defer cleanup.Stop()
 		replay := time.NewTicker(fanoutReplayEvery)
@@ -265,6 +275,8 @@ func (f *SubscriberFanout) StartWorker(ctx context.Context) {
 				}
 			case <-replay.C:
 				f.replayFailed(ctx)
+			case <-gauges.C:
+				f.sampleFanoutQueue(ctx)
 			case <-cleanup.C:
 				if n, err := f.pg.CleanupFanoutRecords(ctx, 7*24*time.Hour); err != nil {
 					slog.Error("fanout: cleanup error", "error", err)
@@ -285,6 +297,7 @@ func (f *SubscriberFanout) drainOnce(ctx context.Context) error {
 		job := jobs[i]
 		if job.Attempts > fanoutMaxAttempts {
 			_ = f.pg.FailFanoutJob(ctx, job.PostID, "exceeded max attempts")
+			countFanoutSettled(job.NotifType, fanoutSettledFailed, fanoutReasonAttemptsExhausted)
 			slog.Error("fanout: job failed; the hourly replay or a new trigger reopens it",
 				"post_id", job.PostID, "attempts", job.Attempts)
 			continue
@@ -307,11 +320,13 @@ func (f *SubscriberFanout) drainOnce(ctx context.Context) error {
 func (f *SubscriberFanout) settle(ctx context.Context, job *postgres.FanoutJob, err error) {
 	if err == nil {
 		_ = f.pg.CompleteFanoutJob(ctx, job.PostID)
+		countFanoutSettled(job.NotifType, fanoutSettledCompleted, fanoutReasonNone)
 		return
 	}
 	if s, ok := isSkip(err); ok {
 		slog.Info("fanout: upload job ends without notifying", "post_id", job.PostID, "reason", s.reason)
 		_ = f.pg.CompleteFanoutJob(ctx, job.PostID)
+		countFanoutSettled(job.NotifType, fanoutSettledSkipped, fanoutSkipReason(s.reason))
 		return
 	}
 	if w, ok := isWait(err); ok {
@@ -319,16 +334,19 @@ func (f *SubscriberFanout) settle(ctx context.Context, job *postgres.FanoutJob, 
 			slog.Warn("fanout: post never became visible; job expired",
 				"post_id", job.PostID, "reason", w.reason, "waits", job.Waits)
 			_ = f.pg.ExpireFanoutJob(ctx, job.PostID, w.reason)
+			countFanoutSettled(job.NotifType, fanoutSettledExpired, fanoutWaitReason(w.reason))
 			return
 		}
 		until := f.clock().Add(fanoutBackoff(job.Waits + 1))
 		slog.Info("fanout: post not visible yet; job deferred",
 			"post_id", job.PostID, "reason", w.reason, "until", until)
 		_ = f.pg.DeferFanoutJob(ctx, job.PostID, w.reason, until)
+		countFanoutSettled(job.NotifType, fanoutSettledDeferred, fanoutWaitReason(w.reason))
 		return
 	}
 	retryAt := f.clock().Add(fanoutBackoff(job.Attempts))
 	_ = f.pg.ReleaseFanoutJob(ctx, job.PostID, err.Error(), retryAt)
+	countFanoutSettled(job.NotifType, fanoutSettledRetried, fanoutReasonError)
 	slog.Warn("fanout: job released for retry", "post_id", job.PostID, "retry_at", retryAt, "error", err)
 }
 
@@ -337,9 +355,11 @@ func (f *SubscriberFanout) settle(ctx context.Context, job *postgres.FanoutJob, 
 func (f *SubscriberFanout) replayFailed(ctx context.Context) {
 	n, err := f.pg.RequeueFailedFanoutJobs(ctx, fanoutMaxReplays, fanoutReplayCooldown, fanoutReplayWindow)
 	if err != nil {
+		fanoutReplayErrors.Inc()
 		slog.Error("fanout: replay sweep failed", "error", err)
 		return
 	}
+	fanoutReplayedJobs.Add(float64(n))
 	if n > 0 {
 		slog.Warn("fanout: failed upload jobs requeued", "count", n)
 	}
@@ -494,6 +514,7 @@ func (f *SubscriberFanout) deliverPage(ctx context.Context, job *postgres.Fanout
 				// Self-exclusion: an author subscribed to their own
 				// channel is never notified about their own upload.
 				if uid == job.AuthorID {
+					countFanoutRecipient(job.NotifType, fanoutRecipientSelf)
 					continue
 				}
 
@@ -504,12 +525,14 @@ func (f *SubscriberFanout) deliverPage(ctx context.Context, job *postgres.Fanout
 				already, err := f.pg.AlreadyDelivered(ctx, job.PostID, uid)
 				if err != nil {
 					slog.Warn("fanout: dedup read failed", "user_id", uid, "error", err)
+					countFanoutRecipient(job.NotifType, fanoutRecipientFailed)
 					mu.Lock()
 					failed++
 					mu.Unlock()
 					continue
 				}
 				if already {
+					countFanoutRecipient(job.NotifType, fanoutRecipientAlready)
 					continue
 				}
 
@@ -519,12 +542,14 @@ func (f *SubscriberFanout) deliverPage(ctx context.Context, job *postgres.Fanout
 				eligible, err := f.eligible(ctx, job, uid)
 				if err != nil {
 					slog.Warn("fanout: eligibility check failed", "user_id", uid, "error", err)
+					countFanoutRecipient(job.NotifType, fanoutRecipientFailed)
 					mu.Lock()
 					failed++
 					mu.Unlock()
 					continue
 				}
 				if !eligible {
+					countFanoutRecipient(job.NotifType, fanoutRecipientIneligible)
 					// Terminal: record it so we don't re-evaluate this
 					// recipient on every retry of the job.
 					if _, err := f.pg.MarkDelivered(ctx, job.PostID, uid); err != nil {
@@ -553,6 +578,7 @@ func (f *SubscriberFanout) deliverPage(ctx context.Context, job *postgres.Fanout
 					// No marker is written, so this recipient is retried.
 					slog.Warn("fanout: notify failed",
 						"user_id", uid, "post_id", job.PostID, "error", err)
+					countFanoutRecipient(job.NotifType, fanoutRecipientFailed)
 					mu.Lock()
 					failed++
 					mu.Unlock()
@@ -564,12 +590,14 @@ func (f *SubscriberFanout) deliverPage(ctx context.Context, job *postgres.Fanout
 				// that harmless.
 				if _, err := f.pg.MarkDelivered(ctx, job.PostID, uid); err != nil {
 					slog.Warn("fanout: delivered marker failed", "user_id", uid, "error", err)
+					countFanoutRecipient(job.NotifType, fanoutRecipientFailed)
 					mu.Lock()
 					failed++
 					mu.Unlock()
 					continue
 				}
 
+				countFanoutRecipient(job.NotifType, fanoutRecipientNotified)
 				mu.Lock()
 				delivered++
 				mu.Unlock()

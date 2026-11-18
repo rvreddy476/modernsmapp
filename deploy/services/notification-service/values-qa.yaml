@@ -115,3 +115,52 @@ ingress:
 
 pdb:
   enabled: false # QA runs one replica: any PDB would block node drains
+
+# Alert rules (lv-21, 18 Nov 2026): the subscriber upload fan-out and the
+# dead letters. The SAME list is in values-prod.yaml and values-qa.yaml
+# (render_test.sh and internal/service/deploy_values_test.go check it). The
+# chart adds source=atpost-service and service=notification-service, which
+# the Alertmanager route sends to the ops e-mail. Every replica samples the
+# same job table, so the queue gauges are equal on every pod: max, never sum.
+# Metrics: internal/service/fanout_metrics.go, internal/events/
+# fanout_trigger_metrics.go, internal/events/dlq_metrics.go.
+prometheusRule:
+  enabled: true
+  rules:
+    # A job is due and nobody claims it (the worker ticks every 5 s), or a
+    # claimed job has made no progress for 30 min (stale reclaim is 10 min).
+    - alert: NotificationFanoutJobStuck
+      expr: |-
+        max(atpost_notification_service_fanout_queue_oldest_seconds{state="due"}) > 900
+        or max(atpost_notification_service_fanout_queue_oldest_seconds{state="running"}) > 1800
+      for: 10m
+      labels: { severity: critical }
+      annotations:
+        summary: An upload notification fan-out job is stuck; subscribers are not being told about new uploads
+        description: "The fan-out worker is down, wedged, or every pass fails before it moves. Logs: 'fanout:' on notification-service. SELECT post_id, status, attempts, last_error, available_at FROM subscriber_fanout_jobs WHERE status IN ('pending','running') ORDER BY available_at LIMIT 20."
+    # Jobs that ran out of attempts (post-service, graph or the inbox down
+    # for about 3.5 h). The hourly replay reopens them twice within 72 h.
+    - alert: NotificationFanoutJobsFailing
+      expr: sum(increase(atpost_notification_service_fanout_jobs_settled_total{outcome="failed"}[1h])) > 0
+      for: 0m
+      labels: { severity: warning }
+      annotations:
+        summary: An upload notification fan-out job failed after all its retries
+        description: "Its subscribers have not been told. The replay sweep retries it (atpost_notification_service_fanout_replayed_jobs_total). last_error on subscriber_fanout_jobs WHERE status = 'failed' says why."
+    # A trigger event that could not become a job: the enqueue failed (the
+    # consumer retries) or the pipeline is not wired at all.
+    - alert: NotificationFanoutTriggersLost
+      expr: sum by (trigger, outcome) (increase(atpost_notification_service_fanout_trigger_events_total{outcome=~"enqueue_error|dropped_no_pipeline"}[15m])) > 0
+      for: 5m
+      labels: { severity: warning }
+      annotations:
+        summary: Upload notification triggers are not becoming fan-out jobs
+        description: "enqueue_error: the job insert fails (database). dropped_no_pipeline: the fan-out is not wired in this build. The outcome label says which."
+    # notification-service wrote a dead letter (today only the call consumer).
+    - alert: NotificationEventsDeadLettered
+      expr: sum by (topic) (increase(atpost_notification_service_dlq_messages_total[30m])) > 0
+      for: 0m
+      labels: { severity: warning }
+      annotations:
+        summary: notification-service dead-lettered a message
+        description: "The message is on <topic>.dlq. List it with post-service's dlq-replay (docs/runbooks/dlq-replay.md); a call notification is stale by then and is not replayed."

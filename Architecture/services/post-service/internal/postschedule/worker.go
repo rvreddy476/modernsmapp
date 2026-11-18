@@ -121,12 +121,16 @@ type TickReport struct {
 // due post.
 func (w *Worker) Tick(ctx context.Context) TickReport {
 	var rep TickReport
+	// lv-21: the backlog gauges are read after every tick, whatever it did.
+	defer w.sampleBacklog(ctx)
 	w.resolveFailedVideos(ctx, &rep)
 	cands, err := w.store.ListDueScheduledPosts(ctx, w.now(), w.cfg.Batch)
 	if err != nil {
+		scheduledPosts.WithLabelValues(resultListFailed).Inc()
 		w.log.Error("post schedule: list failed", "err", err)
 		return rep
 	}
+	scheduledPosts.WithLabelValues(resultDue).Add(float64(len(cands)))
 	for _, c := range cands {
 		if ctx.Err() != nil {
 			return rep
@@ -134,14 +138,20 @@ func (w *Worker) Tick(ctx context.Context) TickReport {
 		published, err := w.publisher.PublishScheduled(ctx, c.PostID, nil, true)
 		if err != nil {
 			rep.Failed++
+			scheduledPosts.WithLabelValues(resultFailed).Inc()
 			w.log.Error("post schedule: publish failed", "post_id", c.PostID, "err", err)
 			continue
 		}
 		if !published {
 			rep.Skipped++
+			scheduledPosts.WithLabelValues(resultSkipped).Inc()
 			continue
 		}
 		rep.Published++
+		scheduledPosts.WithLabelValues(resultPublished).Inc()
+		if lag := w.now().Sub(c.PublishAt); lag >= 0 {
+			scheduledPublishLag.Observe(lag.Seconds())
+		}
 		w.log.Info("post schedule: published", "event", "post_scheduled_published",
 			"post_id", c.PostID, "author_id", c.AuthorID, "publish_at", c.PublishAt)
 	}
@@ -155,6 +165,7 @@ func (w *Worker) Tick(ctx context.Context) TickReport {
 func (w *Worker) resolveFailedVideos(ctx context.Context, rep *TickReport) {
 	ids, err := w.store.ListFailedScheduledVideos(ctx, w.cfg.Batch)
 	if err != nil {
+		scheduledPosts.WithLabelValues(resultListFailed).Inc()
 		w.log.Error("post schedule: list failed-media videos failed", "err", err)
 		return
 	}
@@ -165,11 +176,13 @@ func (w *Worker) resolveFailedVideos(ctx context.Context, rep *TickReport) {
 		resolved, err := w.store.ResolveFailedScheduledVideo(ctx, id)
 		if err != nil {
 			rep.Failed++
+			scheduledPosts.WithLabelValues(resultFailed).Inc()
 			w.log.Error("post schedule: resolve failed-media video failed", "post_id", id, "err", err)
 			continue
 		}
 		if resolved {
 			rep.MediaFailed++
+			scheduledPosts.WithLabelValues(resultMediaFailed).Inc()
 			w.log.Warn("post schedule: scheduled video's media failed; taken off the schedule and rejected",
 				"event", "post_scheduled_media_failed", "post_id", id)
 		}

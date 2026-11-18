@@ -84,7 +84,9 @@ func (s *Service) React(ctx context.Context, postID, userID uuid.UUID, reaction 
 }
 
 func (s *Service) Unreact(ctx context.Context, postID, userID uuid.UUID) error {
-	if err := s.checkEngagementVisibility(ctx, postID, userID); err != nil {
+	// NEW-3: the viewer's own reaction comes off a post they can no longer
+	// open; without one, the gate answers as before.
+	if _, _, err := s.loadPostForOwnReactionRemoval(ctx, postID, userID); err != nil {
 		return err
 	}
 	if err := s.indexReaction(ctx, postID, userID, "", false); err != nil {

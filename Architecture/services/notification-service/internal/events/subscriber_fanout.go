@@ -49,8 +49,14 @@ func (c *Consumer) WithSubscriberFanout(f *service.SubscriberFanout) *Consumer {
 //   - creator choice: distribution.notify_subscribers=false suppresses.
 //   - channel: no channel ⇒ no notification. No follower fallback.
 func (c *Consumer) enqueueSubscriberFanout(ctx context.Context, e sharedevents.PostCreatedPayload) error {
+	outcome, err := c.enqueueSubscriberFanoutOutcome(ctx, e)
+	countFanoutTrigger(fanoutTriggerPostCreated, outcome)
+	return err
+}
+
+func (c *Consumer) enqueueSubscriberFanoutOutcome(ctx context.Context, e sharedevents.PostCreatedPayload) (string, error) {
 	if c.fanout == nil {
-		return nil
+		return triggerDroppedNoPipeline, nil
 	}
 
 	// Routing lives in the service package so enqueue and delivery can
@@ -58,28 +64,28 @@ func (c *Consumer) enqueueSubscriberFanout(ctx context.Context, e sharedevents.P
 	notifType := service.UploadNotifType(e.ContentType)
 	if notifType == "" {
 		// Not an upload — nothing to notify subscribers about.
-		return nil
+		return triggerIgnoredNotUpload, nil
 	}
 	deepLink := service.UploadDeepLink(e.ContentType, e.PostID)
 
 	if e.Visibility == "private" || e.Visibility == "unlisted" {
-		return nil
+		return triggerIgnoredAudience, nil
 	}
 
 	// Creator choice (P0-1 policy). Legacy events omit the field: nil
 	// means "no policy", which keeps the pre-existing notify behavior.
 	if e.NotifySubscribers != nil && !*e.NotifySubscribers {
 		slog.Debug("fanout: suppressed by creator notify_subscribers=false", "post_id", e.PostID)
-		return nil
+		return triggerIgnoredOptedOut, nil
 	}
 
 	postID, err := uuid.Parse(e.PostID)
 	if err != nil {
-		return nil // malformed payload — don't retry forever
+		return triggerDroppedMalformed, nil // malformed payload — don't retry forever
 	}
 	authorID, err := uuid.Parse(e.AuthorID)
 	if err != nil {
-		return nil
+		return triggerDroppedMalformed, nil
 	}
 
 	// Subscriber fan-out is keyed on the author's channel. The producer
@@ -96,10 +102,10 @@ func (c *Consumer) enqueueSubscriberFanout(ctx context.Context, e sharedevents.P
 	if channelID == uuid.Nil {
 		slog.Debug("fanout: author has no channel; no subscriber notifications",
 			"author_id", authorID, "post_id", postID)
-		return nil
+		return triggerIgnoredNoChannel, nil
 	}
 
-	return c.fanout.Enqueue(ctx, service.EnqueueParams{
+	return enqueueOutcome(c.fanout.Enqueue(ctx, service.EnqueueParams{
 		PostID:      postID,
 		AuthorID:    authorID,
 		ChannelID:   channelID,
@@ -113,7 +119,7 @@ func (c *Consumer) enqueueSubscriberFanout(ctx context.Context, e sharedevents.P
 		// name once per job in that case.
 		Title:       e.Title,
 		ChannelName: e.ChannelName,
-	})
+	}))
 }
 
 // visibleTriggerWindow bounds which posts the "post became visible" trigger
@@ -151,36 +157,42 @@ var fanoutNow = time.Now
 // creator's notify_subscribers choice; the worker reads it from the post
 // before anyone is told.
 func (c *Consumer) enqueueOnVisible(ctx context.Context, e sharedevents.PostSearchEligibilityChangedPayload) error {
+	outcome, err := c.enqueueOnVisibleOutcome(ctx, e)
+	countFanoutTrigger(fanoutTriggerPostVisible, outcome)
+	return err
+}
+
+func (c *Consumer) enqueueOnVisibleOutcome(ctx context.Context, e sharedevents.PostSearchEligibilityChangedPayload) (string, error) {
 	if c.fanout == nil {
-		return nil
+		return triggerDroppedNoPipeline, nil
 	}
 	notifType := service.UploadNotifType(e.ContentType)
 	if notifType == "" {
-		return nil
+		return triggerIgnoredNotUpload, nil
 	}
 	if e.Deleted || e.Scheduled || e.Restricted {
-		return nil
+		return triggerIgnoredState, nil
 	}
 	if strings.ToLower(e.ReviewStatus) != "approved" {
-		return nil
+		return triggerIgnoredState, nil
 	}
 	switch strings.ToLower(e.Visibility) {
 	case "", "public", "followers", "friends":
 	default:
 		// private, unlisted, staged, retired audiences: nothing to announce.
-		return nil
+		return triggerIgnoredAudience, nil
 	}
 	if e.CreatedAt.IsZero() || fanoutNow().Sub(e.CreatedAt) > visibleTriggerWindow {
-		return nil
+		return triggerIgnoredTooOld, nil
 	}
 
 	postID, err := uuid.Parse(e.PostID)
 	if err != nil {
-		return nil // malformed payload — don't retry forever
+		return triggerDroppedMalformed, nil // malformed payload — don't retry forever
 	}
 	authorID, err := uuid.Parse(e.AuthorID)
 	if err != nil {
-		return nil
+		return triggerDroppedMalformed, nil
 	}
 	// A lookup that FAILS must not lose the trigger: for a post first
 	// published private it is the only one there will be. Returning the
@@ -195,10 +207,10 @@ func (c *Consumer) enqueueOnVisible(ctx context.Context, e sharedevents.PostSear
 			"author_id", authorID, "post_id", postID, "error", err)
 		channelID = uuid.Nil
 	} else if channelID == uuid.Nil {
-		return nil // no channel ⇒ no subscribers; never followers
+		return triggerIgnoredNoChannel, nil // no channel ⇒ no subscribers; never followers
 	}
 
-	return c.fanout.Enqueue(ctx, service.EnqueueParams{
+	return enqueueOutcome(c.fanout.Enqueue(ctx, service.EnqueueParams{
 		PostID:      postID,
 		AuthorID:    authorID,
 		ChannelID:   channelID,
@@ -211,5 +223,5 @@ func (c *Consumer) enqueueOnVisible(ctx context.Context, e sharedevents.PostSear
 		// off the bus); the worker fills it from the post and resolves the
 		// channel name once per job.
 		Title: e.Title,
-	})
+	}))
 }

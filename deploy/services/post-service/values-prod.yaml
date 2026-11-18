@@ -163,3 +163,58 @@ schemaDependencies:
   - media_assets
   - user_preferences
   - users
+
+# Alert rules (lv-21, 18 Nov 2026): the schedule publisher, the review gate's
+# pending videos, the outbox relay and the dead letters. The SAME list is in
+# values-prod.yaml and values-qa.yaml (render_test.sh and
+# internal/postschedule/deploy_values_test.go check it). The chart adds
+# source=atpost-service and service=post-service, which the Alertmanager
+# route sends to the ops e-mail. Every replica runs the same workers over the
+# same tables, so the gauges are equal on every pod: max, never sum.
+# media.events dead letters (group post-service-media-transcode) are alerted
+# by media-service's MediaEventsDeadLettered; the rule here covers the rest.
+prometheusRule:
+  enabled: true
+  rules:
+    # A scheduled post past publish_at that is publishable (no video, or its
+    # video is ready) and still not live. The worker ticks every 30 s.
+    # internal/postschedule/metrics.go.
+    - alert: PostScheduledPublishOverdue
+      expr: max(atpost_post_service_scheduled_oldest_overdue_seconds{state="due"}) > 600
+      for: 5m
+      labels: { severity: critical }
+      annotations:
+        summary: A scheduled post is more than 10 minutes late going live
+        description: "The schedule worker is failing (sum by (result) (rate(atpost_post_service_scheduled_posts_total[15m]))) or behind. Logs: 'post schedule:' on post-service. A held video is not counted here (state held_video)."
+    # A video post still pending its review gate 12 h after upload: longer
+    # than a 4 h encode plus the 6 h long-queue alert. The gauge is set at the
+    # end of each sweep pass. internal/videogate/videogate.go.
+    - alert: PostVideoPendingTooLong
+      expr: max(post_video_gate_oldest_pending_seconds) > 43200
+      for: 30m
+      labels: { severity: warning }
+      annotations:
+        summary: A video post has waited more than 12 hours for its transcode or review verdict
+        description: "The transcode is stuck or failed without its result reaching post-service. Check media-service's transcode alerts and media.events.dlq (docs/runbooks/dlq-replay.md); sum by (outcome) (rate(post_video_gate_sweep_posts_total[1h]))."
+    # Outbox rows (PostCreated, the fan-out's trigger, among them) not
+    # reaching Kafka. internal/service/outbox_metrics.go.
+    - alert: PostOutboxRelayStuck
+      expr: max(atpost_post_service_outbox_oldest_unpublished_seconds) > 300
+      for: 5m
+      labels: { severity: critical }
+      annotations:
+        summary: post-service outbox events are more than 5 minutes late reaching Kafka
+        description: "Kafka refuses the writes or the rows cannot be marked. Feeds, search and subscriber notifications wait. sum by (result) (rate(atpost_post_service_outbox_events_total[5m])); logs 'outbox:'."
+    # Any other post-service consumer dead-lettered a message. A count, not a
+    # depth: the second clause catches a pod's first dead letter (the series
+    # appears at 1, which increase() alone does not see).
+    - alert: PostEventsDeadLettered
+      expr: |-
+        (sum by (topic, consumer_group) (increase(atpost_post_service_kafka_dlq_messages_total{consumer_group!="post-service-media-transcode"}[30m])) > 0)
+        or
+        (count by (topic, consumer_group) (atpost_post_service_kafka_dlq_messages_total{consumer_group!="post-service-media-transcode"} unless atpost_post_service_kafka_dlq_messages_total offset 30m) > 0)
+      for: 0m
+      labels: { severity: warning }
+      annotations:
+        summary: post-service dead-lettered a message
+        description: "The message is on <topic>.dlq with its error. List it and replay it after the fix with dlq-replay (docs/runbooks/dlq-replay.md)."

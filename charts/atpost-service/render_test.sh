@@ -50,6 +50,10 @@
 #          and the switch is the same in every values file of a service;
 #        - the feed rules are the same list in values-prod.yaml and
 #          values-qa.yaml and carry the stall, lag and dead-letter alerts;
+#        - the same for the notification-service fan-out rules and the
+#          post-service schedule, pending-video, outbox and dead-letter rules
+#          (lv-21), and every metric they name is registered in that
+#          service's Go code;
 #        rendered:
 #        - every prod and QA render has a PrometheusRule with the pod and
 #          readiness rules, and the 5xx / p99 rules against the service's own
@@ -352,6 +356,35 @@ alert_probe_static_guards() {
   for a in kafka_consumer_lag kafka_messages_errors_total kafka_messages_processed_total kafka_dlq_messages_total; do
     grep -q "Name: \"$a\"" Architecture/shared/o11y/metrics/kafka.go || bad "feed rules read atpost_feed_service_$a but shared/o11y/metrics/kafka.go no longer exports $a"
     grep -q "atpost_feed_service_$a" "$fp" || bad "$fp: no rule reads atpost_feed_service_$a"
+  done
+
+  # lv-21 (18 Nov 2026): the upload fan-out (notification-service) and the
+  # schedule publisher, pending-video, outbox and dead-letter rules
+  # (post-service): one list in prod and QA, the named alerts present, and
+  # every metric an expression or annotation names registered by the
+  # service's Go code (or the shared Kafka consumer metrics it records).
+  local spec s list m short src hit
+  for spec in \
+    "notification-service:NotificationFanoutJobStuck NotificationFanoutJobsFailing NotificationFanoutTriggersLost NotificationEventsDeadLettered" \
+    "post-service:PostScheduledPublishOverdue PostVideoPendingTooLong PostOutboxRelayStuck PostEventsDeadLettered"; do
+    s="${spec%%:*}"; list="${spec#*:}"
+    fp=deploy/services/$s/values-prod.yaml; fq=deploy/services/$s/values-qa.yaml
+    if [[ "$(tr -d '\r' < $fp | sed -n '/^prometheusRule:/,$p')" == "$(tr -d '\r' < $fq | sed -n '/^prometheusRule:/,$p')" ]]; then
+      ok "$s rules: values-qa.yaml carries the same list as values-prod.yaml"
+    else
+      bad "$s rules differ between $fp and $fq (keep the two lists identical)"
+    fi
+    for a in $list; do
+      grep -q "^    - alert: $a\$" "$fp" || bad "$fp: alert $a is missing"
+    done
+    src="$(src_of "$s")"
+    for m in $(tr -d '\r' < "$fp" | sed -n '/^prometheusRule:/,$p' \
+               | grep -oE "atpost_${s//-/_}_[a-z0-9_]+|post_video_gate_[a-z0-9_]+" | sort -u); do
+      short="${m#atpost_${s//-/_}_}"; short="${short%_bucket}"; short="${short%_count}"; short="${short%_sum}"
+      hit=$(grep -rlE --include='*.go' "Name:[[:space:]]*\"$short\"" "$src" Architecture/shared/o11y/metrics/kafka.go 2>/dev/null \
+            | grep -v '_test\.go$' | head -1 || true)
+      [[ -n "$hit" ]] || bad "$fp: a rule reads $m but $src registers no metric named $short"
+    done
   done
   return 0
 }
@@ -778,6 +811,21 @@ for f in deploy/services/feed-service/values-prod.yaml deploy/services/feed-serv
   grep -q 'severity: page' <<<"$feed" || bad "$f: a feed rule lost its own severity label"
 done
 ok "feed-service: stall, lag, dead-letter and the other feed rules render in prod and QA"
+
+# lv-21: the fan-out and schedule rules render, in their own group, routed.
+for spec in \
+  "notification-service:NotificationFanoutJobStuck NotificationFanoutJobsFailing NotificationFanoutTriggersLost NotificationEventsDeadLettered" \
+  "post-service:PostScheduledPublishOverdue PostVideoPendingTooLong PostOutboxRelayStuck PostEventsDeadLettered"; do
+  s="${spec%%:*}"
+  for f in deploy/services/$s/values-prod.yaml deploy/services/$s/values-qa.yaml; do
+    out="$(R "$(id_of "$f")")"
+    for a in ${spec#*:}; do
+      grep -q "alert: $a\$" <<<"$out" || bad "$f: rule $a did not render"
+    done
+    grep -q "name: $s\$" <<<"$out" || bad "$f: the $s rule group did not render"
+  done
+done
+ok "notification-service fan-out and post-service schedule/outbox/dead-letter rules render in prod and QA"
 
 grep -q '^kind: PrometheusRule' "$WORK/out/alerts-off.out" && bad "defaultAlerts.enabled=false still renders a PrometheusRule" || ok "defaultAlerts.enabled=false renders no PrometheusRule"
 thr="$(cat "$WORK/out/alerts-thresholds.out")"
