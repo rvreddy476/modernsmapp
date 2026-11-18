@@ -154,8 +154,16 @@ func (s *Service) SetCoverFrame(ctx context.Context, postID, userID uuid.UUID, c
 		return fmt.Errorf("unauthorized")
 	}
 
-	// lv-28: the thumbnail is the caller's own platform image or nothing,
-	// judged before ANY write so a refused thumbnail leaves the cover alone.
+	// Both inputs are judged before ANY write, the cover first so its
+	// specific refusal (not owned, not found, not an image) wins when both
+	// are wrong; nothing is written, thumbnail included, when either fails.
+	if coverMediaID != nil {
+		// Authority before the write (cover_guard.go).
+		if err := s.verifyCoverOnWrite(ctx, authorID, *coverMediaID); err != nil {
+			return err
+		}
+	}
+	// lv-28: the thumbnail is the caller's own platform image or nothing.
 	var thumbnail *string
 	if thumbnailURL != nil {
 		if thumbnail, err = s.normalizeCoverThumbnail(ctx, authorID, *thumbnailURL); err != nil {
@@ -165,11 +173,6 @@ func (s *Service) SetCoverFrame(ctx context.Context, postID, userID uuid.UUID, c
 
 	// Update cover_media_id on the post
 	if coverMediaID != nil {
-		// Authority before the write (cover_guard.go); nothing is written,
-		// thumbnail included, when it fails.
-		if err := s.verifyCoverOnWrite(ctx, authorID, *coverMediaID); err != nil {
-			return err
-		}
 		// Claimed before the row names it; the cover it replaces is
 		// released after (media_claims.go).
 		if err := s.setPostCoverClaimed(ctx, postID, *coverMediaID, func() error {

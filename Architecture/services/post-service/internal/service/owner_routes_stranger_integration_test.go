@@ -90,6 +90,11 @@ func TestIntegrationOwnerRoutesStrangerFlickEpisodeNumberIsNotOverwritten(t *tes
 	ctx := context.Background()
 	store := postgres.New(pool)
 	owner := uuid.New()
+	// flick_series.creator_id references users(id) (migration 011); seed the
+	// creator the way the other suites do (users is CI's stub table).
+	if _, err := pool.Exec(ctx, `INSERT INTO users (id) VALUES ($1) ON CONFLICT DO NOTHING`, owner); err != nil {
+		t.Fatal(err)
+	}
 	first, second := uuid.New(), uuid.New()
 	for _, id := range []uuid.UUID{first, second} {
 		if _, err := pool.Exec(ctx, `
