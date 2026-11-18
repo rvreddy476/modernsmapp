@@ -513,26 +513,35 @@ func playAllRungs(t *testing.T, ctx context.Context, viewer *HTTPClient, mediaID
 	return out
 }
 
-// segmentExpiry is when a signed segment URL stops working: the
-// X-HLS-Expires-At header of its child playlist when present, else the
-// X-Amz-Date + X-Amz-Expires of a presigned object URL.
+// segmentExpiry is when a signed segment URL stops working, read from the
+// URL's own signature: X-Amz-Date + X-Amz-Expires (a presigned object-store
+// URL) or Expires (a CloudFront canned URL). Only when the URL carries
+// neither does it fall back to the child playlist's X-HLS-Expires-At.
+//
+// That header is NOT the URL's expiry: it is the refresh time, the LEAST
+// lifetime any URL in the playlist has left (media-service
+// delivery/sign_cache.go segmentGuarantee = window minus the signature
+// reuse window, half of a short window). With a 1m window it is 30 s after
+// the play while the URL itself is good for up to 60 s, so waiting for the
+// header fetched a URL that was still valid (run 44243397397, HTTP 200).
 func segmentExpiry(r playedRung) (time.Time, bool) {
+	if u, err := url.Parse(r.SegmentURI); err == nil {
+		q := u.Query()
+		if signed, err := time.Parse("20060102T150405Z", q.Get("X-Amz-Date")); err == nil {
+			if secs, err := strconv.Atoi(q.Get("X-Amz-Expires")); err == nil {
+				return signed.Add(time.Duration(secs) * time.Second), true
+			}
+		}
+		if secs, err := strconv.ParseInt(q.Get("Expires"), 10, 64); err == nil && secs > 0 {
+			return time.Unix(secs, 0), true
+		}
+	}
 	if v := r.Header.Get("X-HLS-Expires-At"); v != "" {
 		if ts, err := time.Parse(time.RFC3339, v); err == nil {
 			return ts, true
 		}
 	}
-	u, err := url.Parse(r.SegmentURI)
-	if err != nil {
-		return time.Time{}, false
-	}
-	q := u.Query()
-	signed, err1 := time.Parse("20060102T150405Z", q.Get("X-Amz-Date"))
-	secs, err2 := strconv.Atoi(q.Get("X-Amz-Expires"))
-	if err1 != nil || err2 != nil {
-		return time.Time{}, false
-	}
-	return signed.Add(time.Duration(secs) * time.Second), true
+	return time.Time{}, false
 }
 
 // ── Identity ────────────────────────────────────────────────────────────

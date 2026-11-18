@@ -469,9 +469,16 @@ func TestE2E_Video_LongVideo_UploadRoutePublishPlay(t *testing.T) {
 			detail += "; not fetched after expiry (window over 3m), signed lifetime only"
 		}
 		if holds && window <= 3*time.Minute {
-			// The earlier steps often outlast a 1m window, so no wait is
-			// needed; the fetch below is the assertion either way.
+			// expiry is the URL's own signed expiry (segmentExpiry), not
+			// the playlist's refresh header. Wait until that instant plus a
+			// margin for the object store's clock; the lifetime check above
+			// bounds the wait by the window. The earlier steps often outlast
+			// a 1m window, so often no wait is needed; the fetch below is
+			// the assertion either way.
 			wait := time.Until(expiry) + 5*time.Second
+			if wait > window+10*time.Second {
+				t.Fatalf("segment URL expires in %s, beyond the %s window", time.Until(expiry).Round(time.Second), window)
+			}
 			if wait > 0 {
 				t.Logf("waiting %s for the issued segment URL to expire", wait.Round(time.Second))
 				select {
